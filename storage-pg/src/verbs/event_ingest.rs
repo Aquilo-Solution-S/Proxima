@@ -4,16 +4,50 @@
 //! Replay is detected by the `(event_id)` unique on `memories`; the
 //! caller observes `idempotent_replay = true` and the original
 //! `change_event_seq`.
+//!
+//! [`ingest_event_in_tx`] exposes the same body inside an existing
+//! transaction so flavor crates can append a typed sidecar row
+//! atomically with the Fact materialization (M3.B.5+). The pool-level
+//! [`ingest_event_atomic`] is a thin wrapper that opens its own tx.
 
 use proxima_core::verbs::event_ingest::{EventDraft, EventIngestOutcome};
 use proxima_core::{Principal, StorageError};
-use sqlx::PgPool;
+use sqlx::{PgPool, Postgres, Transaction};
 
 use crate::error::map_err;
 
-#[allow(clippy::too_many_lines)]
-pub(crate) async fn ingest_event_atomic(
+/// Pool-scoped `EventIngest`. Opens its own transaction; commits on
+/// success.
+///
+/// # Errors
+///
+/// Constraint violations map to `ConstraintViolation`; sqlx failures
+/// map to `Internal`.
+pub async fn ingest_event_atomic(
     pool: &PgPool,
+    draft: &EventDraft,
+) -> Result<EventIngestOutcome, StorageError> {
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| StorageError::Internal(e.to_string()))?;
+    let outcome = ingest_event_in_tx(&mut tx, draft).await?;
+    tx.commit().await.map_err(map_err)?;
+    Ok(outcome)
+}
+
+/// Run the `EventIngest` body inside an already-open transaction. The
+/// caller owns `tx` and is responsible for committing or rolling back.
+/// Flavors use this to bundle the typed sidecar insert with the core
+/// Fact materialization in a single atomic write.
+///
+/// # Errors
+///
+/// Constraint violations map to `ConstraintViolation`; sqlx failures
+/// map to `Internal`.
+#[allow(clippy::too_many_lines)]
+pub async fn ingest_event_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
     draft: &EventDraft,
 ) -> Result<EventIngestOutcome, StorageError> {
     let event_id = draft.event_id();
@@ -25,16 +59,11 @@ pub(crate) async fn ingest_event_atomic(
     };
     let owner_org_id = draft.owner.org_id.into_inner();
 
-    let mut tx = pool
-        .begin()
-        .await
-        .map_err(|e| StorageError::Internal(e.to_string()))?;
-
     // Replay check.
     let existing: Option<(uuid::Uuid,)> =
         sqlx::query_as("SELECT memory_id FROM proxima_core.memories WHERE event_id = $1")
             .bind(&event_id_bytes[..])
-            .fetch_optional(&mut *tx)
+            .fetch_optional(&mut **tx)
             .await
             .map_err(map_err)?;
 
@@ -44,11 +73,9 @@ pub(crate) async fn ingest_event_atomic(
              WHERE entity_memory_id = $1 ORDER BY seq ASC LIMIT 1",
         )
         .bind(memory_id)
-        .fetch_one(&mut *tx)
+        .fetch_one(&mut **tx)
         .await
         .map_err(map_err)?;
-
-        tx.commit().await.map_err(map_err)?;
 
         return Ok(EventIngestOutcome {
             event_id,
@@ -82,7 +109,7 @@ pub(crate) async fn ingest_event_atomic(
     .bind(owner_principal_id)
     .bind(owner_org_id)
     .bind(&draft.cited_object.content_hash[..])
-    .fetch_one(&mut *tx)
+    .fetch_one(&mut **tx)
     .await
     .map_err(map_err)?;
 
@@ -100,7 +127,7 @@ pub(crate) async fn ingest_event_atomic(
     .bind(owner_kind)
     .bind(owner_principal_id)
     .bind(owner_org_id)
-    .execute(&mut *tx)
+    .execute(&mut **tx)
     .await
     .map_err(map_err)?;
 
@@ -124,7 +151,7 @@ pub(crate) async fn ingest_event_atomic(
     .bind(draft.schema_version.into_inner().cast_signed())
     .bind(draft.observed_at)
     .bind(draft.occurred_at)
-    .execute(&mut *tx)
+    .execute(&mut **tx)
     .await
     .map_err(map_err)?;
 
@@ -142,7 +169,7 @@ pub(crate) async fn ingest_event_atomic(
     .bind(draft.schema_id.as_str())
     .bind(&event_id_bytes[..])
     .bind(citation_mapping_id)
-    .execute(&mut *tx)
+    .execute(&mut **tx)
     .await
     .map_err(map_err)?;
 
@@ -161,7 +188,7 @@ pub(crate) async fn ingest_event_atomic(
     .bind(owner_kind)
     .bind(owner_principal_id)
     .bind(owner_org_id)
-    .execute(&mut *tx)
+    .execute(&mut **tx)
     .await
     .map_err(map_err)?;
 
@@ -181,11 +208,9 @@ pub(crate) async fn ingest_event_atomic(
     .bind(memory_id)
     .bind(draft.schema_id.as_str())
     .bind(draft.schema_version.into_inner().cast_signed())
-    .execute(&mut *tx)
+    .execute(&mut **tx)
     .await
     .map_err(map_err)?;
-
-    tx.commit().await.map_err(map_err)?;
 
     Ok(EventIngestOutcome {
         event_id,

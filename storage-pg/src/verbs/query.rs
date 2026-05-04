@@ -1,8 +1,19 @@
 //! `Query` verb — paginated read of `memories` with optional
-//! supersession-head filtering.
+//! head filtering. Two head modes (docs/02 §Re-derivation, docs/03
+//! §Stateful Fact schemas):
+//!
+//! - A/P: `NOT EXISTS (m2.supersedes = m.memory_id)` (lineage scan).
+//! - Stateful Fact: `NOT EXISTS` of a row under the same NK tuple
+//!   with a later `created_at` (head-by-natural-key).
+//!
+//! `stateful_heads` is set by the engine from the schema registry
+//! before dispatch when the request is heads-only and `schema_id`
+//! resolves to a stateful Fact schema.
+
+use std::fmt::Write as _;
 
 use proxima_core::verbs::query::{
-    EntityKind, MemoryRow, QueryRequest, QueryResponse, SupersessionStatus,
+    EntityKind, MemoryRow, QueryRequest, QueryResponse, StatefulHeadsFilter, SupersessionStatus,
 };
 use proxima_core::{
     GroupId, MemoryId, OrgId, Owner, Principal, SchemaId, SchemaVersion, StorageError, UserId,
@@ -37,36 +48,80 @@ pub(crate) async fn query_memories(
         });
     }
 
+    let stateful = req
+        .stateful_heads
+        .as_ref()
+        .filter(|_| matches!(req.supersession, SupersessionStatus::HeadsOnly))
+        .map(validate_stateful_filter)
+        .transpose()?;
+
+    let schema_id_filter = req.schema_id.as_ref().map(|s| s.as_str().to_string());
+
     let mut sql = String::from(
-        "SELECT memory_id, owner_principal_kind, owner_principal_id, \
-                owner_org_id, schema_id, kind, event_id \
-         FROM proxima_core.memories \
-         WHERE owner_principal_kind = $1 AND owner_principal_id = $2 \
-           AND owner_org_id = $3",
+        "SELECT m.memory_id, m.owner_principal_kind, m.owner_principal_id, \
+                m.owner_org_id, m.schema_id, m.kind, m.event_id \
+         FROM proxima_core.memories m",
     );
+
+    if let Some(sf) = &stateful {
+        write!(sql, " JOIN {sidecar} s USING (memory_id)", sidecar = sf.sidecar_table)
+            .expect("write to String is infallible");
+    }
+
+    sql.push_str(
+        " WHERE m.owner_principal_kind = $1 AND m.owner_principal_id = $2 \
+           AND m.owner_org_id = $3",
+    );
+
     match req.entity_kind {
         None => {}
         Some(EntityKind::Fact) => {
-            sql.push_str(" AND event_id IS NOT NULL AND kind IS NULL");
+            sql.push_str(" AND m.event_id IS NOT NULL AND m.kind IS NULL");
         }
-        Some(EntityKind::Abstraction) => sql.push_str(" AND kind = 'Abstraction'"),
-        Some(EntityKind::Perspective) => sql.push_str(" AND kind = 'Perspective'"),
+        Some(EntityKind::Abstraction) => sql.push_str(" AND m.kind = 'Abstraction'"),
+        Some(EntityKind::Perspective) => sql.push_str(" AND m.kind = 'Perspective'"),
         Some(EntityKind::Goal) => unreachable!(),
     }
 
-    let schema_id_filter = req.schema_id.as_ref().map(|s| s.as_str().to_string());
     if schema_id_filter.is_some() {
-        sql.push_str(" AND schema_id = $4");
+        sql.push_str(" AND m.schema_id = $4");
     }
 
     if matches!(req.supersession, SupersessionStatus::HeadsOnly) {
-        sql.push_str(
-            " AND NOT EXISTS (SELECT 1 FROM proxima_core.memories m2 \
-                              WHERE m2.supersedes = proxima_core.memories.memory_id)",
-        );
+        if let Some(sf) = &stateful {
+            // Head-by-natural-key: latest memories.created_at per NK tuple
+            // under the same schema_id. docs/03 §Stateful Fact schemas.
+            let nk_pairs = sf
+                .natural_key_columns
+                .iter()
+                .map(|c| format!("s2.{c} = s.{c}"))
+                .collect::<Vec<_>>()
+                .join(" AND ");
+            write!(
+                sql,
+                " AND NOT EXISTS ( \
+                     SELECT 1 FROM proxima_core.memories m2 \
+                     JOIN {sidecar} s2 USING (memory_id) \
+                     WHERE m2.schema_id = m.schema_id \
+                       AND m2.owner_principal_kind = m.owner_principal_kind \
+                       AND m2.owner_principal_id = m.owner_principal_id \
+                       AND m2.owner_org_id = m.owner_org_id \
+                       AND {nk_pairs} \
+                       AND m2.created_at > m.created_at \
+                  )",
+                sidecar = sf.sidecar_table,
+                nk_pairs = nk_pairs
+            )
+            .expect("write to String is infallible");
+        } else {
+            sql.push_str(
+                " AND NOT EXISTS (SELECT 1 FROM proxima_core.memories m2 \
+                                  WHERE m2.supersedes = m.memory_id)",
+            );
+        }
     }
 
-    sql.push_str(" ORDER BY created_at DESC LIMIT ");
+    sql.push_str(" ORDER BY m.created_at DESC LIMIT ");
     sql.push_str(&u64::from(req.limit).to_string());
 
     let mut q = sqlx::query_as::<_, MemoryRowDb>(&sql)
@@ -130,9 +185,6 @@ async fn read_seq_high_water(
     owner_principal_id: uuid::Uuid,
     owner_org_id: uuid::Uuid,
 ) -> Result<Option<uuid::Uuid>, StorageError> {
-    // Postgres has no MAX(uuid). UUIDv7 sorts lexicographically by
-    // generation time, so ORDER BY seq DESC LIMIT 1 is the
-    // monotonic high-water for our usage.
     let row: Option<(uuid::Uuid,)> = sqlx::query_as(
         "SELECT seq FROM proxima_core.change_event \
          WHERE owner_principal_kind = $1 AND owner_principal_id = $2 \
@@ -146,4 +198,54 @@ async fn read_seq_high_water(
     .await
     .map_err(|e| StorageError::Internal(e.to_string()))?;
     Ok(row.map(|(v,)| v))
+}
+
+/// Validate identifiers from `StatefulHeadsFilter` before splicing them
+/// into SQL. The values come from build-time-registered schemas
+/// (`FactPayload::sidecar_table`, `FactPayload::natural_key_columns`)
+/// which are `&'static str` constants — author-controlled, not
+/// caller-controlled. This is a defense-in-depth check that catches
+/// typos and rejects anything that doesn't look like a postgres
+/// identifier.
+fn validate_stateful_filter(
+    sf: &StatefulHeadsFilter,
+) -> Result<&StatefulHeadsFilter, StorageError> {
+    if !is_qualified_table_ident(&sf.sidecar_table) {
+        return Err(StorageError::Internal(format!(
+            "invalid sidecar_table identifier: {:?}",
+            sf.sidecar_table
+        )));
+    }
+    if sf.natural_key_columns.is_empty() {
+        return Err(StorageError::Internal(
+            "stateful_heads with empty natural_key_columns".into(),
+        ));
+    }
+    for col in &sf.natural_key_columns {
+        if !is_column_ident(col) {
+            return Err(StorageError::Internal(format!(
+                "invalid natural_key column identifier: {col:?}"
+            )));
+        }
+    }
+    Ok(sf)
+}
+
+fn is_qualified_table_ident(s: &str) -> bool {
+    // Allow `schema.table` (single dot) or `table`.
+    let parts: Vec<&str> = s.split('.').collect();
+    if parts.len() > 2 || parts.is_empty() {
+        return false;
+    }
+    parts.iter().all(|p| is_column_ident(p))
+}
+
+fn is_column_ident(s: &str) -> bool {
+    !s.is_empty()
+        && s.chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && s.len() <= 63
 }

@@ -23,7 +23,7 @@ use tokio::sync::broadcast;
 mod authorship;
 mod error;
 pub mod outbox;
-mod verbs;
+pub mod verbs;
 
 use outbox::BROADCAST_CAPACITY;
 

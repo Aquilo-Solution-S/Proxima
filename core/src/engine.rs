@@ -10,7 +10,7 @@ use crate::error::ProtocolError;
 use crate::storage::{NoopStorage, StorageError, StorageHandle};
 use crate::verbs::event_ingest::{EventDraft, EventIngestOutcome};
 use crate::verbs::goal_write::{GoalDraft, GoalWriteOutcome};
-use crate::verbs::query::{MemoryStore, QueryRequest, QueryResponse};
+use crate::verbs::query::{MemoryStore, QueryRequest, QueryResponse, SupersessionStatus};
 use crate::verbs::schema::{PayloadKind, SchemaRegistry, SchemaRequest, SchemaResponse};
 use crate::verbs::subscribe::{ChangeEventStream, SubscribeRequest};
 
@@ -62,6 +62,13 @@ impl Engine {
     /// docs/14 §"Query" — Owner-scoped. Caller passes the
     /// transport-extracted credentials; engine resolves and
     /// gates `req.owner ∈ resolved.accessible_owners`.
+    ///
+    /// For heads-only requests targeting a stateful Fact schema (one
+    /// whose `FactPayload::natural_key_columns()` is non-empty), the
+    /// engine populates `QueryRequest::stateful_heads` from the
+    /// registry before dispatch. Storage emits the per-NK head SQL
+    /// when the field is `Some`; otherwise the existing
+    /// `supersedes`-based head scan applies (A/P).
     pub async fn query(
         &self,
         creds: &Credentials,
@@ -76,8 +83,15 @@ impl Engine {
                 "principal cannot access requested owner",
             ));
         }
+        let mut effective = req.clone();
+        if matches!(effective.supersession, SupersessionStatus::HeadsOnly)
+            && effective.stateful_heads.is_none()
+            && let Some(sid) = effective.schema_id.as_ref()
+        {
+            effective.stateful_heads = self.registry.stateful_filter_for(sid);
+        }
         self.storage
-            .query_memories(req)
+            .query_memories(&effective)
             .await
             .map_err(|e| ProtocolError::internal(e.to_string()))
     }

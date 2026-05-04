@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["core", "bin/proxima-engine", "storage-pg"]
+members = ["core", "bin/proxima-engine", "bin/proxima-code", "flavors/code", "storage-pg"]
 
 [workspace.package]
 edition = "2024"
@@ -30,3 +30,10 @@ blake3 = "1"
 time = { version = "0.3", default-features = false, features = ["serde", "std"] }
 tracing = { version = "0.1", default-features = false, features = ["std"] }
 tokio-stream = { version = "0.1", default-features = false, features = ["sync"] }
+
+# tree-sitter deps for code flavor (Rust + TypeScript).
+# Version trio verified to build together on rust 1.95 + edition 2024:
+# tree-sitter 0.25, tree-sitter-rust 0.24, tree-sitter-typescript 0.23.
+tree-sitter = "0.25"
+tree-sitter-rust = "0.24"
+tree-sitter-typescript = "0.23"

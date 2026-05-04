@@ -41,18 +41,24 @@ fn schemas_for_test() -> Vec<SchemaInfo> {
             schema_version: SchemaVersion::new(1),
             kind: PayloadKind::Fact,
             filter_keys: vec![],
+            sidecar_table: None,
+            natural_key_columns: vec![],
         },
         SchemaInfo {
             schema_id: SchemaId::new("test/cited_blob".into()),
             schema_version: SchemaVersion::new(1),
             kind: PayloadKind::CitedObject,
             filter_keys: vec![],
+            sidecar_table: None,
+            natural_key_columns: vec![],
         },
         SchemaInfo {
             schema_id: SchemaId::new("test/citation_blob".into()),
             schema_version: SchemaVersion::new(1),
             kind: PayloadKind::CitationMapping,
             filter_keys: vec![],
+            sidecar_table: None,
+            natural_key_columns: vec![],
         },
     ]
 }

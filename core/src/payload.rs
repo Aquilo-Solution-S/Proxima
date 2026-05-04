@@ -15,6 +15,13 @@ pub trait FactPayload: serde::Serialize + serde::de::DeserializeOwned + 'static 
     const SCHEMA_VERSION: u32;
     fn render(&self) -> String;
     fn sidecar_table() -> &'static str;
+    /// Natural-key columns on the sidecar table for stateful Fact
+    /// schemas. Default empty = stateless (every observation is a
+    /// distinct head). When non-empty, the schema participates in
+    /// head-by-natural-key queries (docs/03 §Stateful Fact schemas).
+    fn natural_key_columns() -> &'static [&'static str] {
+        &[]
+    }
     fn schema_id() -> SchemaId {
         SchemaId::new(Self::SCHEMA_ID.to_string())
     }

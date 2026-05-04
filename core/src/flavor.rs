@@ -24,6 +24,11 @@ impl FlavorRegistry {
             schema_version: SchemaVersion::new(F::SCHEMA_VERSION),
             kind: PayloadKind::Fact,
             filter_keys: vec![],
+            sidecar_table: Some(F::sidecar_table().to_string()),
+            natural_key_columns: F::natural_key_columns()
+                .iter()
+                .map(|s| (*s).to_string())
+                .collect(),
         });
     }
 
@@ -33,6 +38,8 @@ impl FlavorRegistry {
             schema_version: SchemaVersion::new(A::SCHEMA_VERSION),
             kind: PayloadKind::Abstraction,
             filter_keys: vec![],
+            sidecar_table: Some(A::sidecar_table().to_string()),
+            natural_key_columns: vec![],
         });
     }
 
@@ -42,6 +49,8 @@ impl FlavorRegistry {
             schema_version: SchemaVersion::new(P::SCHEMA_VERSION),
             kind: PayloadKind::Perspective,
             filter_keys: vec![],
+            sidecar_table: Some(P::sidecar_table().to_string()),
+            natural_key_columns: vec![],
         });
     }
 
