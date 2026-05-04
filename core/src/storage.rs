@@ -8,6 +8,9 @@ use std::sync::Arc;
 use crate::GoalId;
 use crate::Owner;
 use crate::SourceBatchId;
+use crate::operators::{
+    ConsolidateBatchF2AOutcome, ConsolidateBatchF2ARequest, FactRow, SidecarSpec,
+};
 use crate::verbs::close_batch::CloseBatchOutcome;
 use crate::verbs::event_ingest::{EventDraft, EventIngestOutcome};
 use crate::verbs::goal_write::{GoalDraft, GoalWriteOutcome};
@@ -107,6 +110,66 @@ pub trait Storage: Send + Sync {
         owner: &Owner,
         source_batch_id: SourceBatchId,
     ) -> Result<CloseBatchOutcome, StorageError>;
+
+    /// Load all Facts in a closed source-batch with their typed
+    /// sidecar payloads serialized to JSON. The engine builds
+    /// `sidecars` from its `SchemaRegistry` (Fact schemas with a
+    /// declared `sidecar_table`); storage emits one
+    /// `row_to_json(s.*)` join per spec and unions the rows.
+    ///
+    /// Used by the F→A dispatcher (M5+) — the operator's `run()`
+    /// receives these rows pre-loaded.
+    ///
+    /// # Errors
+    ///
+    /// Returns `NotFound` when the batch doesn't exist for `owner`;
+    /// `Internal` on sqlx failure.
+    async fn load_batch_facts(
+        &self,
+        owner: &Owner,
+        batch_id: SourceBatchId,
+        sidecars: &[SidecarSpec],
+    ) -> Result<Vec<FactRow>, StorageError>;
+
+    /// Atomic F→A consolidation persistence. Inserts N memory rows
+    /// (Abstractions) + N typed sidecar rows + M provenance edges +
+    /// N embedding rows + outbox change_events + the
+    /// `source_batch_f2a` dedup row, all in a single transaction.
+    /// Idempotent on `(batch_id, operator_id)` — a re-call with the
+    /// row already present returns `already_consolidated = true`
+    /// without writing.
+    ///
+    /// Re-running with a different `prompt_version` is a *new*
+    /// invocation and produces fresh Abstractions superseding the
+    /// prior ones; the dedup is keyed on operator_id alone, so
+    /// callers are responsible for staging supersession via the
+    /// dispatcher (M6 enrichment — M5 surfaces idempotent runs only).
+    ///
+    /// # Errors
+    ///
+    /// Returns `ConstraintViolation` for schema/owner-mismatch
+    /// violations; `Internal` on sqlx failure.
+    async fn consolidate_batch_f2a(
+        &self,
+        req: &ConsolidateBatchF2ARequest<'_>,
+    ) -> Result<ConsolidateBatchF2AOutcome, StorageError>;
+
+    /// List `source_batches` for `owner` that are closed
+    /// (`closed_at IS NOT NULL`) and have no `source_batch_f2a` row
+    /// for `operator_id`. The Engine's dispatcher uses this to
+    /// "catch up" — running F→A against any batch that the source
+    /// closed without going through the auth-gated
+    /// `Engine::close_batch` surface (M4-era `LocalGitSource` is
+    /// such a caller).
+    ///
+    /// # Errors
+    ///
+    /// `Internal` on sqlx failure.
+    async fn list_unconsolidated_batches(
+        &self,
+        owner: &Owner,
+        operator_id: &str,
+    ) -> Result<Vec<SourceBatchId>, StorageError>;
 }
 
 pub type StorageHandle = Arc<dyn Storage>;
@@ -164,5 +227,29 @@ impl Storage for NoopStorage {
         _source_batch_id: SourceBatchId,
     ) -> Result<CloseBatchOutcome, StorageError> {
         Err(StorageError::Internal("NoopStorage rejects writes".into()))
+    }
+
+    async fn load_batch_facts(
+        &self,
+        _owner: &Owner,
+        _batch_id: SourceBatchId,
+        _sidecars: &[SidecarSpec],
+    ) -> Result<Vec<FactRow>, StorageError> {
+        Ok(Vec::new())
+    }
+
+    async fn consolidate_batch_f2a(
+        &self,
+        _req: &ConsolidateBatchF2ARequest<'_>,
+    ) -> Result<ConsolidateBatchF2AOutcome, StorageError> {
+        Err(StorageError::Internal("NoopStorage rejects writes".into()))
+    }
+
+    async fn list_unconsolidated_batches(
+        &self,
+        _owner: &Owner,
+        _operator_id: &str,
+    ) -> Result<Vec<SourceBatchId>, StorageError> {
+        Ok(Vec::new())
     }
 }

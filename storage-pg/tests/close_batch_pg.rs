@@ -129,9 +129,7 @@ async fn close_batch_idempotent_and_owner_scoped() {
         // Open a batch by ingesting one event under owner A.
         let batch_id = SourceBatchId::new(Uuid::now_v7());
         let draft = fresh_draft(owner_a.clone(), batch_id);
-        engine_a
-            .event_ingest(&Credentials::None, draft)
-            .await?;
+        engine_a.event_ingest(&Credentials::None, draft).await?;
 
         // Initial close.
         let outcome = engine_a
@@ -163,12 +161,11 @@ async fn close_batch_idempotent_and_owner_scoped() {
         assert_eq!(missing.code, ErrorCode::NotFound);
 
         // SQL probe: closed_at is not NULL on the row.
-        let (closed_at,): (Option<time::OffsetDateTime>,) = sqlx::query_as(
-            "SELECT closed_at FROM proxima_core.source_batches WHERE id = $1",
-        )
-        .bind(batch_id.into_inner())
-        .fetch_one(pg.pool())
-        .await?;
+        let (closed_at,): (Option<time::OffsetDateTime>,) =
+            sqlx::query_as("SELECT closed_at FROM proxima_core.source_batches WHERE id = $1")
+                .bind(batch_id.into_inner())
+                .fetch_one(pg.pool())
+                .await?;
         assert!(closed_at.is_some());
 
         Ok(())

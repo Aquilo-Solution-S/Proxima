@@ -96,8 +96,7 @@ fn make_draft<P: serde::Serialize>(
     citation: Citation,
     observed_at: time::OffsetDateTime,
 ) -> Result<EventDraft, IngestError> {
-    let bytes =
-        serde_json::to_vec(payload).map_err(|e| IngestError::Serialize(e.to_string()))?;
+    let bytes = serde_json::to_vec(payload).map_err(|e| IngestError::Serialize(e.to_string()))?;
     Ok(EventDraft {
         source_id: SourceId::new(LOCAL_GIT_SOURCE_ID),
         source_batch_id,
@@ -128,8 +127,7 @@ pub async fn close_local_git_batch(
     owner: &Owner,
     source_batch_id: SourceBatchId,
 ) -> Result<(), IngestError> {
-    match proxima_storage_pg::verbs::close_batch::close_batch(pool, owner, source_batch_id).await
-    {
+    match proxima_storage_pg::verbs::close_batch::close_batch(pool, owner, source_batch_id).await {
         Ok(_) | Err(proxima_core::StorageError::NotFound) => Ok(()),
         Err(e) => Err(IngestError::Storage(e.to_string())),
     }
@@ -158,7 +156,10 @@ pub async fn ingest_commit(
         observed_at,
     )?;
 
-    let mut tx = pool.begin().await.map_err(|e| IngestError::Storage(e.to_string()))?;
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| IngestError::Storage(e.to_string()))?;
     let outcome = ingest_event_in_tx(&mut tx, &draft)
         .await
         .map_err(|e| IngestError::Storage(e.to_string()))?;
@@ -185,7 +186,9 @@ pub async fn ingest_commit(
         .await
         .map_err(|e| IngestError::Storage(e.to_string()))?;
     }
-    tx.commit().await.map_err(|e| IngestError::Storage(e.to_string()))?;
+    tx.commit()
+        .await
+        .map_err(|e| IngestError::Storage(e.to_string()))?;
     Ok(outcome)
 }
 
@@ -212,7 +215,10 @@ pub async fn ingest_file_revision(
         observed_at,
     )?;
 
-    let mut tx = pool.begin().await.map_err(|e| IngestError::Storage(e.to_string()))?;
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| IngestError::Storage(e.to_string()))?;
     let outcome = ingest_event_in_tx(&mut tx, &draft)
         .await
         .map_err(|e| IngestError::Storage(e.to_string()))?;
@@ -239,7 +245,9 @@ pub async fn ingest_file_revision(
         .await
         .map_err(|e| IngestError::Storage(e.to_string()))?;
     }
-    tx.commit().await.map_err(|e| IngestError::Storage(e.to_string()))?;
+    tx.commit()
+        .await
+        .map_err(|e| IngestError::Storage(e.to_string()))?;
     Ok(outcome)
 }
 
@@ -273,7 +281,10 @@ pub async fn ingest_code_chunk(
         observed_at,
     )?;
 
-    let mut tx = pool.begin().await.map_err(|e| IngestError::Storage(e.to_string()))?;
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| IngestError::Storage(e.to_string()))?;
     let outcome = ingest_event_in_tx(&mut tx, &draft)
         .await
         .map_err(|e| IngestError::Storage(e.to_string()))?;
@@ -305,7 +316,9 @@ pub async fn ingest_code_chunk(
         .await
         .map_err(|e| IngestError::Storage(e.to_string()))?;
     }
-    tx.commit().await.map_err(|e| IngestError::Storage(e.to_string()))?;
+    tx.commit()
+        .await
+        .map_err(|e| IngestError::Storage(e.to_string()))?;
     Ok(outcome)
 }
 
@@ -438,10 +451,7 @@ pub async fn present_chunk_indexes(
 /// proxima-code flavor's schemas plus the helper-required cited /
 /// citation schemas. Used by tests and the composite binary.
 #[must_use]
-pub fn build_engine(
-    storage: PgStorage,
-    auth: Box<dyn proxima_core::auth::AuthResolver>,
-) -> Engine {
+pub fn build_engine(storage: PgStorage, auth: Box<dyn proxima_core::auth::AuthResolver>) -> Engine {
     use proxima_core::verbs::query::MemoryStore;
     use proxima_core::verbs::schema::{PayloadKind, SchemaInfo, SchemaRegistry};
     use proxima_core::{FlavorRegistry, SchemaId, SchemaVersion};
@@ -479,8 +489,12 @@ pub fn build_engine(
         });
     }
 
-    Engine::new(SchemaRegistry::with_schemas(schemas), MemoryStore::new(), auth)
-        .with_storage(Arc::new(storage))
+    Engine::new(
+        SchemaRegistry::with_schemas(schemas),
+        MemoryStore::new(),
+        auth,
+    )
+    .with_storage(Arc::new(storage))
 }
 
 // Suppress dead-code from the convenience exports until the composite

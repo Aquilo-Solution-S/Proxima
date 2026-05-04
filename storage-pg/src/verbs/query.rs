@@ -38,13 +38,8 @@ pub(crate) async fn query_memories(
     if matches!(req.entity_kind, Some(EntityKind::Goal)) {
         return Ok(QueryResponse {
             memories: Vec::new(),
-            seq_high_water: read_seq_high_water(
-                pool,
-                owner_kind,
-                owner_principal_id,
-                owner_org_id,
-            )
-            .await?,
+            seq_high_water: read_seq_high_water(pool, owner_kind, owner_principal_id, owner_org_id)
+                .await?,
         });
     }
 
@@ -64,8 +59,12 @@ pub(crate) async fn query_memories(
     );
 
     if let Some(sf) = &stateful {
-        write!(sql, " JOIN {sidecar} s USING (memory_id)", sidecar = sf.sidecar_table)
-            .expect("write to String is infallible");
+        write!(
+            sql,
+            " JOIN {sidecar} s USING (memory_id)",
+            sidecar = sf.sidecar_table
+        )
+        .expect("write to String is infallible");
     }
 
     sql.push_str(
@@ -245,7 +244,6 @@ fn is_column_ident(s: &str) -> bool {
         && s.chars()
             .next()
             .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
-        && s.chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
         && s.len() <= 63
 }

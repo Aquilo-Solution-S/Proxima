@@ -2,12 +2,19 @@
 //! an AuthResolver behind the typed verb surfaces of
 //! docs/14-protocol-surface.md.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::GoalId;
+use crate::MemoryId;
+use crate::Owner;
 use crate::SourceBatchId;
 use crate::auth::{AuthResolver, Credentials};
 use crate::error::ProtocolError;
+use crate::operators::{
+    ConsolidateBatchF2ARequest, EmbeddingClient, F2AContext, FactRow, LlmClient, OperatorError,
+    OperatorRegistry, PersonalitySnapshot, SidecarSpec,
+};
 use crate::storage::{NoopStorage, StorageError, StorageHandle};
 use crate::verbs::close_batch::CloseBatchOutcome;
 use crate::verbs::event_ingest::{EventDraft, EventIngestOutcome};
@@ -22,6 +29,9 @@ pub struct Engine {
     memories: MemoryStore,
     auth: Box<dyn AuthResolver>,
     storage: StorageHandle,
+    operators: OperatorRegistry,
+    llm: Option<Arc<dyn LlmClient>>,
+    embed: Option<Arc<dyn EmbeddingClient>>,
 }
 
 impl std::fmt::Debug for Engine {
@@ -46,12 +56,38 @@ impl Engine {
             memories,
             auth,
             storage: Arc::new(NoopStorage),
+            operators: OperatorRegistry::new(),
+            llm: None,
+            embed: None,
         }
     }
 
     #[must_use]
     pub fn with_storage(mut self, storage: StorageHandle) -> Self {
         self.storage = storage;
+        self
+    }
+
+    /// Register operators (M5: F→A only). Bare-Engine without
+    /// operators behaves identically to M4 — `close_batch` flips
+    /// `closed_at` and returns. With operators registered AND an
+    /// LLM + embed client wired in, `close_batch` also runs F→A
+    /// consolidation inline (docs/04 §"F→A").
+    #[must_use]
+    pub fn with_operators(mut self, registry: OperatorRegistry) -> Self {
+        self.operators = registry;
+        self
+    }
+
+    #[must_use]
+    pub fn with_llm(mut self, llm: Arc<dyn LlmClient>) -> Self {
+        self.llm = Some(llm);
+        self
+    }
+
+    #[must_use]
+    pub fn with_embed(mut self, embed: Arc<dyn EmbeddingClient>) -> Self {
+        self.embed = Some(embed);
         self
     }
 
@@ -231,13 +267,210 @@ impl Engine {
                 "principal cannot access requested owner",
             ));
         }
-        self.storage
+        let outcome = self
+            .storage
             .close_batch(&owner, source_batch_id)
             .await
             .map_err(|e| match e {
                 StorageError::NotFound => ProtocolError::not_found("source batch not found"),
                 other => ProtocolError::internal(other.to_string()),
+            })?;
+
+        // Run registered F→A operators against the just-closed batch.
+        // Skipped for already-closed batches (idempotent re-close) —
+        // dedup at the storage layer would short-circuit the persist
+        // step anyway, but skipping here avoids redundant LLM calls.
+        if !outcome.already_closed
+            && !self.operators.f2a_operators().is_empty()
+            && self.llm.is_some()
+            && self.embed.is_some()
+        {
+            self.run_f2a_for_batch(&owner, source_batch_id).await?;
+        }
+        Ok(outcome)
+    }
+
+    /// Run F→A operators against any closed-but-unconsolidated batches
+    /// for `owner`. Returns the set of `(operator_id, batch_id)` pairs
+    /// that produced at least one Abstraction this call.
+    ///
+    /// This is the catch-up entrypoint: M4-era `LocalGitSource` closes
+    /// batches at the storage layer (bypassing
+    /// `Engine::close_batch`), so a binary that wants F→A consolidation
+    /// invokes this after each poll. Idempotent on the
+    /// `source_batch_f2a` dedup row — already-consolidated batches are
+    /// invisible to this query.
+    ///
+    /// No-op if no F→A operators are registered or LLM/embed clients
+    /// are missing.
+    pub async fn run_pending_f2a(
+        &self,
+        owner: &Owner,
+    ) -> Result<Vec<(&'static str, SourceBatchId)>, ProtocolError> {
+        let mut consolidated = Vec::new();
+        if self.operators.f2a_operators().is_empty() || self.llm.is_none() || self.embed.is_none() {
+            return Ok(consolidated);
+        }
+
+        // Snapshot the per-operator pending list — we don't mutate
+        // mid-iteration.
+        let mut pending: Vec<(&'static str, Vec<SourceBatchId>)> =
+            Vec::with_capacity(self.operators.f2a_operators().len());
+        for op in self.operators.f2a_operators() {
+            let batches = self
+                .storage
+                .list_unconsolidated_batches(owner, op.operator_id())
+                .await
+                .map_err(|e| {
+                    ProtocolError::internal(format!("list_unconsolidated_batches: {e}"))
+                })?;
+            pending.push((op.operator_id(), batches));
+        }
+
+        // Walk operator-by-operator, batch-by-batch.
+        for op in self.operators.f2a_operators() {
+            let Some((_, batches)) = pending.iter().find(|(id, _)| *id == op.operator_id()) else {
+                continue;
+            };
+            for &batch_id in batches {
+                if self
+                    .run_f2a_op_on_batch(owner, op.as_ref(), batch_id)
+                    .await?
+                {
+                    consolidated.push((op.operator_id(), batch_id));
+                }
+            }
+        }
+        Ok(consolidated)
+    }
+
+    /// Run every registered F→A operator against the just-closed
+    /// batch. Synchronous in M5 — bounded queues + worker pools land
+    /// in M6 (per Beyond v1 in ROADMAP).
+    async fn run_f2a_for_batch(
+        &self,
+        owner: &Owner,
+        batch_id: SourceBatchId,
+    ) -> Result<(), ProtocolError> {
+        for op in self.operators.f2a_operators() {
+            self.run_f2a_op_on_batch(owner, op.as_ref(), batch_id)
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// Single-operator, single-batch dispatch. Returns whether an
+    /// Abstraction was actually persisted (false on empty input or
+    /// empty operator output — neither writes to `source_batch_f2a`).
+    async fn run_f2a_op_on_batch(
+        &self,
+        owner: &Owner,
+        op: &dyn crate::operators::F2AOperator,
+        batch_id: SourceBatchId,
+    ) -> Result<bool, ProtocolError> {
+        let llm = self.llm.as_ref().expect("guarded by caller");
+        let embed = self.embed.as_ref().expect("guarded by caller");
+
+        // Fact schemas registered with a sidecar — the input universe.
+        let sidecars: Vec<SidecarSpec> = self
+            .registry
+            .list()
+            .iter()
+            .filter(|s| s.kind == PayloadKind::Fact && s.sidecar_table.is_some())
+            .map(|s| SidecarSpec {
+                schema_id: s.schema_id.clone(),
+                sidecar_table: s.sidecar_table.clone().unwrap(),
             })
+            .collect();
+
+        let facts = self
+            .storage
+            .load_batch_facts(owner, batch_id, &sidecars)
+            .await
+            .map_err(|e| ProtocolError::internal(format!("load_batch_facts: {e}")))?;
+
+        let batch_memory_ids: HashSet<MemoryId> = facts.iter().map(|f| f.memory_id).collect();
+        let personality = PersonalitySnapshot::default_snapshot();
+
+        let filtered: Vec<FactRow> = facts
+            .iter()
+            .filter(|f| op.consumes(&f.schema_id))
+            .cloned()
+            .collect();
+
+        if filtered.is_empty() {
+            tracing::debug!(
+                operator = op.operator_id(),
+                batch_id = %batch_id.into_inner(),
+                "F→A skipped: no matching facts"
+            );
+            return Ok(false);
+        }
+
+        let ctx = F2AContext {
+            batch_id,
+            owner: owner.clone(),
+            facts: &filtered,
+            personality: &personality,
+            llm: llm.as_ref(),
+            embed: embed.as_ref(),
+        };
+
+        let abstractions = op.run(ctx).await.map_err(map_operator_err)?;
+
+        if abstractions.is_empty() {
+            tracing::info!(
+                operator = op.operator_id(),
+                batch_id = %batch_id.into_inner(),
+                "F→A returned no Abstractions; not recording a run"
+            );
+            return Ok(false);
+        }
+
+        for abs in &abstractions {
+            for prov in &abs.provenance {
+                if !batch_memory_ids.contains(prov) {
+                    return Err(ProtocolError::internal(format!(
+                        "operator {} returned provenance {:?} not in batch",
+                        op.operator_id(),
+                        prov
+                    )));
+                }
+            }
+        }
+
+        let output_sidecar = self
+            .registry
+            .list()
+            .into_iter()
+            .find(|s| {
+                s.schema_id.as_str() == op.output_schema_id() && s.kind == PayloadKind::Abstraction
+            })
+            .and_then(|s| s.sidecar_table)
+            .ok_or_else(|| {
+                ProtocolError::internal(format!(
+                    "operator {} output schema {} has no registered Abstraction sidecar",
+                    op.operator_id(),
+                    op.output_schema_id()
+                ))
+            })?;
+
+        let req = ConsolidateBatchF2ARequest {
+            batch_id,
+            owner: owner.clone(),
+            operator_id: op.operator_id(),
+            model_id: llm.model_id(),
+            prompt_version: op.prompt_version(),
+            personality: &personality,
+            abstractions: &abstractions,
+            output_sidecar_table: &output_sidecar,
+        };
+
+        self.storage
+            .consolidate_batch_f2a(&req)
+            .await
+            .map_err(|e| ProtocolError::internal(format!("consolidate_batch_f2a: {e}")))?;
+        Ok(true)
     }
 
     /// docs/14 §"Subscribe" — Owner-scoped stream with optional
@@ -273,4 +506,8 @@ fn map_storage_err_for_goal_write(
         StorageError::NotFound => ProtocolError::not_found("prior goal not found"),
         other => ProtocolError::internal(other.to_string()),
     }
+}
+
+fn map_operator_err(e: OperatorError) -> ProtocolError {
+    ProtocolError::internal(format!("operator: {e}"))
 }

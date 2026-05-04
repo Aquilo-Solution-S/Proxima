@@ -161,19 +161,47 @@ async fn heads_only_returns_latest_per_natural_key() {
         let repo_id = Uuid::now_v7();
 
         // 3 revisions of file_a — same NK, increasing created_at.
-        let _r1 = seed_file_revision(pg.pool(), &engine, owner.clone(), repo_id, "src/a.rs", b"v1")
-            .await?;
+        let _r1 = seed_file_revision(
+            pg.pool(),
+            &engine,
+            owner.clone(),
+            repo_id,
+            "src/a.rs",
+            b"v1",
+        )
+        .await?;
         tokio::time::sleep(Duration::from_millis(20)).await;
-        let _r2 = seed_file_revision(pg.pool(), &engine, owner.clone(), repo_id, "src/a.rs", b"v2")
-            .await?;
+        let _r2 = seed_file_revision(
+            pg.pool(),
+            &engine,
+            owner.clone(),
+            repo_id,
+            "src/a.rs",
+            b"v2",
+        )
+        .await?;
         tokio::time::sleep(Duration::from_millis(20)).await;
-        let r3 = seed_file_revision(pg.pool(), &engine, owner.clone(), repo_id, "src/a.rs", b"v3")
-            .await?;
+        let r3 = seed_file_revision(
+            pg.pool(),
+            &engine,
+            owner.clone(),
+            repo_id,
+            "src/a.rs",
+            b"v3",
+        )
+        .await?;
 
         // 1 revision of file_b — distinct NK.
         tokio::time::sleep(Duration::from_millis(20)).await;
-        let r_b = seed_file_revision(pg.pool(), &engine, owner.clone(), repo_id, "src/b.rs", b"b1")
-            .await?;
+        let r_b = seed_file_revision(
+            pg.pool(),
+            &engine,
+            owner.clone(),
+            repo_id,
+            "src/b.rs",
+            b"b1",
+        )
+        .await?;
 
         // Heads-only query — engine populates stateful_heads from the
         // registered NK columns on FileRevisionV1.
@@ -196,7 +224,10 @@ async fn heads_only_returns_latest_per_natural_key() {
             resp.memories.iter().map(|m| m.id).collect::<Vec<_>>()
         );
         let ids: Vec<Uuid> = resp.memories.iter().map(|m| m.id.into_inner()).collect();
-        assert!(ids.contains(&r3), "expected latest NK_a head ({r3}) in heads");
+        assert!(
+            ids.contains(&r3),
+            "expected latest NK_a head ({r3}) in heads"
+        );
         assert!(ids.contains(&r_b), "expected NK_b head ({r_b}) in heads");
 
         // IncludeSuperseded — all 4 rows visible.
@@ -265,7 +296,11 @@ async fn heads_only_no_op_for_stateless_fact_schema() {
             stateful_heads: None,
         };
         let resp = engine.query(&Credentials::None, &req).await?;
-        assert_eq!(resp.memories.len(), 2, "stateless Facts: every row is a head");
+        assert_eq!(
+            resp.memories.len(),
+            2,
+            "stateless Facts: every row is a head"
+        );
 
         Ok(())
     }

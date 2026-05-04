@@ -34,11 +34,16 @@ async fn flavor_migrations_apply_to_fresh_db() {
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
-        pg.run_migrations().await?;                       // core
-        proxima_code::migrator().run(pg.pool()).await?;   // flavor
+        pg.run_migrations().await?; // core
+        proxima_code::migrator().run(pg.pool()).await?; // flavor
 
-        // Verify all three tables exist.
-        for table in ["commit_v1", "file_revision_v1", "code_chunk_v1"] {
+        // Verify the four flavor sidecar tables exist (M3 + M5).
+        for table in [
+            "commit_v1",
+            "file_revision_v1",
+            "code_chunk_v1",
+            "commit_summary_v1",
+        ] {
             let row = sqlx::query(
                 "SELECT 1 AS ok FROM information_schema.tables
                  WHERE table_schema = 'proxima_code' AND table_name = $1",
@@ -47,6 +52,18 @@ async fn flavor_migrations_apply_to_fresh_db() {
             .fetch_optional(pg.pool())
             .await?;
             assert!(row.is_some(), "expected table proxima_code.{table}");
+        }
+
+        // Verify the M5 core tables exist.
+        for table in ["source_batch_f2a", "edges", "embeddings"] {
+            let row = sqlx::query(
+                "SELECT 1 AS ok FROM information_schema.tables
+                 WHERE table_schema = 'proxima_core' AND table_name = $1",
+            )
+            .bind(table)
+            .fetch_optional(pg.pool())
+            .await?;
+            assert!(row.is_some(), "expected table proxima_core.{table}");
         }
 
         // Idempotency — a second run must not error.

@@ -11,6 +11,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use proxima_core::operators::{
+    ConsolidateBatchF2AOutcome, ConsolidateBatchF2ARequest, FactRow, SidecarSpec,
+};
 use proxima_core::verbs::close_batch::CloseBatchOutcome;
 use proxima_core::verbs::event_ingest::{EventDraft, EventIngestOutcome};
 use proxima_core::verbs::goal_write::{GoalDraft, GoalWriteOutcome};
@@ -120,14 +123,23 @@ impl PgStorage {
     /// applied migrations in `_sqlx_migrations`. Call once
     /// at process start before any verb dispatch.
     ///
+    /// `ignore_missing = true` matches the per-flavor migrator
+    /// (`flavors/*/migrations.rs`): core and every flavor share the
+    /// default `_sqlx_migrations` table, so on a second run the core
+    /// migrator sees flavor-authored versions it doesn't know about.
+    /// Without this relaxation the second run fails with
+    /// `VersionMissing(<flavor version>)`. The core version-set is
+    /// still validated; we only relax the cross-author check.
+    ///
     /// # Errors
     ///
     /// Returns `StorageError::Internal` on any sqlx
     /// migration failure (broken file, conflict with the
     /// recorded checksum, etc.).
     pub async fn run_migrations(&self) -> Result<(), StorageError> {
-        sqlx::migrate!("./migrations")
-            .run(&self.pool)
+        let mut m = sqlx::migrate!("./migrations");
+        m.set_ignore_missing(true);
+        m.run(&self.pool)
             .await
             .map_err(|e| StorageError::Internal(e.to_string()))?;
         Ok(())
@@ -143,10 +155,7 @@ impl Storage for PgStorage {
         verbs::event_ingest::ingest_event_atomic(&self.pool, draft).await
     }
 
-    async fn write_goal_atomic(
-        &self,
-        draft: &GoalDraft,
-    ) -> Result<GoalWriteOutcome, StorageError> {
+    async fn write_goal_atomic(&self, draft: &GoalDraft) -> Result<GoalWriteOutcome, StorageError> {
         verbs::goal_write::write_goal_atomic(&self.pool, draft).await
     }
 
@@ -166,10 +175,7 @@ impl Storage for PgStorage {
         verbs::subscribe::subscribe_changes(&self.pool, &self.tx, owner, since).await
     }
 
-    async fn query_memories(
-        &self,
-        req: &QueryRequest,
-    ) -> Result<QueryResponse, StorageError> {
+    async fn query_memories(&self, req: &QueryRequest) -> Result<QueryResponse, StorageError> {
         verbs::query::query_memories(&self.pool, req).await
     }
 
@@ -179,5 +185,29 @@ impl Storage for PgStorage {
         source_batch_id: SourceBatchId,
     ) -> Result<CloseBatchOutcome, StorageError> {
         verbs::close_batch::close_batch(&self.pool, owner, source_batch_id).await
+    }
+
+    async fn load_batch_facts(
+        &self,
+        owner: &Owner,
+        batch_id: SourceBatchId,
+        sidecars: &[SidecarSpec],
+    ) -> Result<Vec<FactRow>, StorageError> {
+        verbs::consolidate::load_batch_facts(&self.pool, owner, batch_id, sidecars).await
+    }
+
+    async fn consolidate_batch_f2a(
+        &self,
+        req: &ConsolidateBatchF2ARequest<'_>,
+    ) -> Result<ConsolidateBatchF2AOutcome, StorageError> {
+        verbs::consolidate::consolidate_batch_f2a(&self.pool, req).await
+    }
+
+    async fn list_unconsolidated_batches(
+        &self,
+        owner: &Owner,
+        operator_id: &str,
+    ) -> Result<Vec<SourceBatchId>, StorageError> {
+        verbs::consolidate::list_unconsolidated_batches(&self.pool, owner, operator_id).await
     }
 }
