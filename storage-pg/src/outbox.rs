@@ -22,7 +22,7 @@ pub const BROADCAST_CAPACITY: usize = 1024;
 /// entity_goal_id)` is non-NULL for `EntityAppend`, and same for
 /// supersedes columns.
 #[allow(clippy::too_many_lines)]
-async fn hydrate_change_event(
+pub(crate) async fn hydrate_change_event(
     pool: &sqlx::PgPool,
     seq: Uuid,
 ) -> Result<Option<ChangeEvent>, StorageError> {
