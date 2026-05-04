@@ -1,0 +1,706 @@
+# 02 — Memory
+
+## The layering principle
+
+All memories are one of three kinds, with a **strict, irreversible
+production order**:
+
+```
+                personality (= Perspective + Goals)
+                       │ biases (F→A and A→P)
+                       ▼
+   Facts ────────► Abstraction ────────► Perspective
+                                                 │
+                                                 │
+   ↑                                             │
+   │                                             │
+   └────── Perspective can link Facts ───────────┘
+```
+
+Operators (the arrows) produce higher-layer memories from lower:
+
+- **F→A** — Facts → Abstraction. Biased by personality (Perspective + Goals).
+- **A→P** — Abstractions → Perspective. Biased by full personality (Q4).
+
+Perspective may additionally **link existing Facts** with interpretive
+edges. The Facts are unchanged; the edge is authored by the Perspective —
+the only legal cross-Fact edge channel besides Event-Source authorship.
+
+Forbidden: any operator that lowers layer (A→F, P→A, P→F); any edge that
+references a higher layer (F→A-edge, F→P-edge, A→P-edge). Full edge
+directionality table under §Edges.
+
+## Formalization
+
+Sets:
+
+- **F** = { m ∈ Memory | kind = Fact }
+- **A** = { m ∈ Memory | kind = Abstraction }
+- **P** = { m ∈ Memory | kind = Perspective }
+
+Layer function `ℓ : Memory → {0, 1, 2}` with `ℓ(F)=0, ℓ(A)=1, ℓ(P)=2`.
+
+Personality `Π = PersonalityFlavor::snapshot(owner)` — an opaque
+flavor-produced value with structure `(personality_id, P_active,
+G_active, state_hash)`. `P_active ⊆ P` and `G_active ⊆ Goal` are
+selected by the flavor under its own rules (identity, goal-relevant,
+topical, recency — flavor's choice; see §Personality and [08](docs/08-core-and-flavors.md)).
+The substrate does not legislate selection.
+
+Multiple personality flavors may be active per Owner. Each operator
+invocation runs under one personality at a time; parallel personalities
+produce parallel A/P lineages tagged by `personality_id`.
+
+Operators are families indexed by Π:
+
+| Operator | Signature | Restriction |
+|---|---|---|
+| F→A   | `2^F × Π → A`      | `S ⊆ F` sharing `source_batch_id` (intra-source); at most one F→A per (Fact schema, Abstraction schema); multiple F→A operators may coexist over the same Fact schema, each producing a distinct typed Abstraction. Mirrors A→P. |
+| A→P   | `2^A × Π → P`      | `S ⊆ A` retrieved per operator scope (intra-flavor or cross-flavor); plural A→P operators allowed |
+| link  | `P × F × F → Edge` | only legal cross-Fact edge channel besides Event-Source authorship |
+
+Edge constraint: for every edge `e : m_s → m_t`, `ℓ(m_s) ≥ ℓ(m_t)`.
+
+**Stepping between layers.** Π biases operators *downward*: a P or G
+change reshapes future F→A / A→P outputs and authorises new `link` edges
+over existing F. Operator outputs propagate *upward* via new memories
+and supersession edges; never by mutation.
+
+**Causa proxima.** A "why" answer for `f ∈ F` is a path through
+`link(p, ·, f)` for some `p ∈ P_active`, justified by `prov(p) ⊆ A` and
+the source batches of each `a ∈ prov(p)`. Not extractable from F alone:
+F yields correlation in time; the causal chain is A/P-mediated.
+
+## Why this layering — the trauma test
+
+> Self cannot change Facts, only the Perspective about them. Trauma is
+> resolved by accepting the real Facts and rebuilding Perspective above them.
+
+Consequences (load-bearing on the entity shape):
+
+1. **Facts immutable.** Once recorded from an Event, a Fact stays.
+2. **Abstractions re-derivable.** Same F-subset under a different Π yields
+   a new Abstraction. Both coexist; older has older provenance.
+3. **Perspectives evolve.** A Perspective is superseded by a new
+   Perspective derived from a richer A-set or under a different Π.
+4. **Healing = re-run F→A under updated Π.** A "traumatic" Abstraction is
+   one produced under a Π that didn't fit the Facts. Update Π, re-run.
+
+## The core entity
+
+All three kinds share the same row. Content storage is *kind-appropriate*:
+Facts in a typed sidecar (always, no `text`); Abstractions and Perspectives
+both in a `text` column **and** in a typed sidecar (always — every A and
+P registers a schema; see [03 §AbstractionPayload / PerspectivePayload](docs/03-schema-registry.md#abstractionpayload-and-perspectivepayload)).
+
+```rust
+struct MemoryRecord {
+    // Shared across every kind, declared once.
+    id:         MemoryId,                   // UUIDv7
+    owner:      Owner,                      // scope (see [01](docs/01-event-source.md))
+    schema_id:  SchemaId,                   // NOT NULL for every memory
+    created_at: Timestamp,
+    body:       MemoryBody,
+}
+
+enum MemoryBody {
+    Fact {
+        event_id:            EventId,
+        citation_mapping_id: CitationMappingId,
+    },
+    Derived {
+        kind:                   DerivedKind,      // Abstraction | Perspective
+        text:                   String,
+        operator_kind:          OperatorKind,     // FtoA | AtoP
+        model_id:               ModelId,
+        prompt_version:         PromptVersion,
+        personality_id:         PersonalityId,    // which personality flavor produced this (08)
+        personality_state_hash: Hash,             // that flavor's snapshot at run time (04 §Personality state)
+    },
+}
+
+enum DerivedKind { Abstraction, Perspective }
+enum OperatorKind { FtoA, AtoP }
+```
+
+Storage layout for this entity is defined in [07-storage.md](docs/07-storage.md).
+
+`event_id` carries the Fact-side dedup constraint (FK to `events`,
+unique among Facts). `id` is a fresh UUIDv7 for every memory regardless
+of kind — Fact identity is not the content hash, the FK to the source
+event is.
+
+`citation_mapping_id` is **bibliographic only**. Full model in
+[11-citations.md](docs/11-citations.md). A/P memories have no direct
+citation; their bibliographic provenance accumulates by walking
+provenance edges down to Facts.
+
+Operator-invocation columns (`operator_kind`, `model_id`,
+`prompt_version`, `personality_id`, `personality_state_hash`) are inline
+reproducibility metadata for A/P — inputs to the F→A / A→P invocation
+key (see [04 §Idempotence](docs/04-consolidation.md#idempotence-and-reproducibility)).
+`personality_id` keeps parallel personalities' outputs on disjoint
+invocation keys: the same `(model, prompt, hash)` under two different
+personality flavors never collides on dedup.
+
+A Fact's `owner` equals its source Event's `owner`. Abstractions and
+Perspectives inherit `owner` from their input memories — operators run
+within one owner; outputs share that owner.
+
+The enum design eliminates field duplication: `id`, `owner`, `schema_id`,
+`created_at` exist once with direct field access (`m.id`, `m.owner`).
+Variant-specific fields stay variant-typed — match on `body` to access
+them. The persistence boundary is a one-to-one projection: shared
+columns + a kind-discriminated tail.
+
+Version is implicit in sidecar table membership — a row in
+`fact_forgejo_commit_v3` is by definition at version 3.
+
+There is **no `description` field**. A memory does not describe itself or
+anything else; it *is* what it is.
+
+- A **Fact** is its typed payload — a structured observation from Reality,
+  stored in `fact_<schema>_v<n>` joined by `memory_id`. Text is rendered
+  on-demand from the payload (`FactPayload::render`). Nothing is stored.
+  Version is implicit in the sidecar table name.
+- An **Abstraction** is its `text` — a paragraph of synthesised
+  understanding, written by the F→A operator at creation. Immutable.
+  Every Abstraction also carries a typed sidecar row in
+  `abstraction_<schema>_v<n>` — the **queryable scaffolding** (selective
+  extraction, see [03](docs/03-schema-registry.md)). `text` is the playing space; the sidecar is the
+  query surface. Version is implicit in the sidecar table name.
+- A **Perspective** is its `text` — a paragraph of integrated meta-model,
+  written by the A→P operator at creation. Immutable. Same shape as
+  Abstraction: required typed sidecar alongside `text`. Version is
+  implicit in the sidecar table name.
+
+Dreams do not "enrich" existing memories. Dreams produce *new* memories
+(Abstractions, Perspectives) whose provenance edges reference the source
+memories they were derived from. Memories never get rewritten by later passes.
+
+A Fact's `citation_mapping_id` points to a typed `CitationMapping`
+→ `CitedObject` (see [11-citations.md](docs/11-citations.md)). Abstractions and
+Perspectives have no citation_mapping_id; their bibliographic provenance
+is the transitive closure over provenance edges into the Fact layer.
+
+Reproducibility metadata for A/P is inline on the memory row, not a citation.
+Provenance — *which* source memories produced this Abstraction or
+Perspective — is carried by **edges**, not by JSON inside the Memory row.
+
+## Operator scope
+
+| Operator | Scope | Input | Why |
+|---|---|---|---|
+| **F→A** | intra-source-batch (always intra) | Facts sharing one `source_batch_id` (one PDF, one chat session, one repo crawl) | local understanding; sources are not blended at this layer; a batch belongs to one source. Multiple F→A operators may run in parallel over the same batch, each producing a different typed Abstraction — parallel cognitive frames over the same Reality. |
+| **A→P** | intra-flavor or cross-flavor | Abstractions retrieved by similarity / relevance, scoped per the operator's declaration | personalization; weaving disparate sources is what makes a Perspective *this agent's*; multiple A→P operators may run in parallel and produce different typed Perspectives |
+
+A **source batch** is the set of Facts emitted as a single observation
+event from an Event Source. `source_batch_id` is a **UUIDv7 declared
+opaquely by the source** at emit time; the engine validates uniqueness
+within `(source_id, owner)` and rejects collisions. Sources already
+control observation grouping — letting them set the id directly drops
+one piece of determinism API.
+
+Cadence: each operator declares its own predicate (batch-close,
+goal-write, schedule, abstraction threshold). F→A typically fires on
+batch-close; A→P operators choose. Engine evaluates predicates and
+dispatches (04 §Phase 2).
+
+## Edges
+
+Edges connect any pair of addressable entities in the graph — Memories
+*or* Goals. The four-pillar ontology (universe.md) puts Goals outside
+the F/A/P layering as their own axis ([06](docs/06-goals-and-self.md)); the edge graph therefore
+addresses them with a sum type.
+
+```rust
+enum EntityId {
+    Memory(MemoryId),
+    Goal(GoalId),
+}
+
+enum EntityKind {
+    Fact,
+    Abstraction,
+    Perspective,
+    Goal,
+}
+
+struct Edge {
+    id:           EdgeId,
+    source_id:    EntityId,
+    target_id:    EntityId,
+    relation:     Relation,
+    authored_by:  Authorship,    // the reasoning concept; edges do not cite (see [11](docs/11-citations.md))
+    created_at:   Timestamp,
+}
+
+struct Relation { id: RelationId }   // descriptor-keyed; see §Relation registry
+
+enum Authorship {
+    // Phase-1 / payload-derived: edges that fall out of an event payload by construction.
+    EventSource(SourceId),
+
+    // Phase-2 / operator-derived: edges authored by an interpretive operator.
+    OperatorFtoA(MemoryId),         // provenance A→F; owned by the source Abstraction
+    OperatorAtoP(MemoryId),         // provenance P→A; owned by the source Perspective
+    OperatorAtoGoal(GoalId),        // provenance Goal→A; owned by the produced Goal (04 §A→Goal)
+    PerspectiveLink(MemoryId),      // interpretive F→F (within-F set), owned by a Perspective
+
+    // Core / infrastructure: supersession and explicit user edits; not flavor-pluggable.
+    Core(CoreAuthor),
+}
+
+enum CoreAuthor {
+    Engine,            // engine-authored: supersession (P→P, A→A, Goal→Goal)
+    User(UserId),      // user-authored via API: Goal parents, future user edits
+}
+```
+
+`MemoryBody` (Fact / Derived with Abstraction | Perspective) is the
+discriminator on the `MemoryRecord` row; `EntityKind` is the strict
+superset used by the relation registry and edge endpoint typing.
+
+**Ownership rule.** Within F/A/P, cross-set edges are **top-down**: the
+higher-layer endpoint owns the edge. So a P→A edge is owned by its
+source P, an A→F edge by its source A, a P→F edge by its source P.
+Within-set edges (F→F, A→A, P→P) are trivial — owned by whoever
+authored them in that context (`EventSource` for structural payload
+edges, `PerspectiveLink` for interpretive F→F edges, `Core(Engine)` for
+P→P and A→A supersession). No edge is ever co-owned by both endpoints.
+
+For Goal-involved edges, ownership is determined by the producing
+operator, source, engine, or user API rather than by layer comparison
+(Goals sit outside the F/A/P layering): `OperatorAtoGoal(g)` for
+A→Goal-derived provenance, `EventSource(SYSTEM)` for tool-emitted
+Action-Fact → Goal motivation hints, `PerspectiveLink(p)` for P-mediated
+motivation, `Core(Engine)` for Goal→Goal supersession, `Core(User(u))`
+for user-authored Goal parents.
+
+Authorship has three structural classes: Phase-1 (payload-derived via
+`EventSource`), Phase-2 (operator-derived via `Operator*` and
+`PerspectiveLink`), and Core (infrastructure: `Engine` and `User`).
+Operator variants are flavor-pluggable; Core variants are built-in.
+`Engine` and `User` authorship are valid for any edge whose
+`RelationDescriptor` masks permit them; they are not bound by the
+layer comparison rule.
+
+### Relation registry
+
+Every `relation.id` must resolve to a `RelationDescriptor` registered by
+some flavor (or by core, for cross-cutting relations like
+`core/motivated-by`, `core/derived-from`, `core/parent`,
+`core/supersedes`) at startup. Engine rejects edges with unregistered
+relations.
+
+```rust
+struct RelationDescriptor {
+    id:                RelationId,         // flavor-qualified, e.g. "code/commit-fixes"
+    class:             RelationClass,
+    source_kind_mask:  EntityKindMask,     // which EntityKind values may be source (incl. Goal)
+    target_kind_mask:  EntityKindMask,     // which EntityKind values may be target (incl. Goal)
+    authorship_mask:   AuthorshipMask,     // which Authorship variants may author it
+}
+
+enum RelationClass {
+    Structural,    // EventSource-authored from payload (commit→parent_commit, …)
+    Provenance,    // operator-authored A→F or P→A
+    Supersedes,    // engine-authored on re-derivation
+    Causal,        // PerspectiveLink — causa proxima carrier
+    Interpretive,  // PerspectiveLink — non-causal interpretation
+}
+```
+
+Registered via `reg.add_relation(descriptor)` in the flavor's `register`
+call (see [08](docs/08-core-and-flavors.md)). The descriptor is the source of truth for what edges are
+legal; the directionality rule below is the *minimum* additional check.
+
+### The directionality rule
+
+> Within F/A/P, an edge from layer `m` to layer `n` is permitted iff
+> `m ≥ n`. Goal-involved edges sit outside this rule and are governed
+> by the relation descriptor's kind masks alone. Authorship classes
+> are the producing operator, source, engine, or user API.
+
+Within F/A/P:
+
+| From → To | Allowed? | Typical class | Authorship |
+|---|---|---|---|
+| Fact → Fact | ✓ | `Structural` (Event Source) or `Causal`/`Interpretive` (PerspectiveLink) | `EventSource`, `PerspectiveLink` |
+| Abstraction → Fact | ✓ | `Provenance` | `OperatorFtoA` |
+| Abstraction → Abstraction | ✓ | `Structural` / flavor-specific | `Core(Engine)` for supersession |
+| Perspective → Fact | ✓ | `Causal` / `Interpretive` | `PerspectiveLink` |
+| Perspective → Abstraction | ✓ | `Provenance` | `OperatorAtoP` |
+| Perspective → Perspective | ✓ | meta-level / `Supersedes` | `Core(Engine)` for supersession |
+| Fact → Abstraction | ✗ | Facts don't reference higher layers. | — |
+| Fact → Perspective | ✗ | Same. | — |
+| Abstraction → Perspective | ✗ | Forbidden by strict layering. | — |
+
+Goal-involved (Goal sits outside F/A/P; descriptor masks govern):
+
+| From → To | Allowed? | Typical class | Authorship |
+|---|---|---|---|
+| Goal → Abstraction | ✓ | `Provenance` | `OperatorAtoGoal(g)` ([04](docs/04-consolidation.md)) |
+| Goal → Goal | ✓ | `Structural` (parent) / `Supersedes` | `Core(User(u))` for parent, `Core(Engine)` for supersession |
+| Fact → Goal | ✓ | `Causal` (`core/motivated-by`) | `EventSource(SYSTEM)` for tool-emitted Action-Facts |
+| Perspective → Goal | ✓ | `Causal` (`core/motivated-by`) | `PerspectiveLink(p)` for P-mediated motivation |
+| Goal → Fact / Perspective | — | only as registered; no built-in core relation | — |
+
+The F/A/P layer rule is **hardcoded**: it falls out of the operators'
+set signatures (F→A : 2^F × Π → A; A→P : 2^A × Π → P; link : P × F ×
+F → Edge). No registered relation can permit an upward F/A/P edge —
+descriptor masks tighten the rule per relation, never relax it.
+Database check constraint joins `edge.source_id`/`edge.target_id` to
+`kind` for the storage-level guarantee. For Goal endpoints the check
+constraint validates `EntityKind` against the descriptor's masks; the
+F/A/P layer comparison short-circuits when either endpoint is Goal.
+
+### Edge scope invariant
+
+`source.owner == target.owner` for every edge — including Goal
+endpoints, since Goals carry `Owner` (06). Cross-owner edges are
+rejected. Sharing across owners (v2+) is a query-layer concern via
+the `AccessGrant` extension (see [01](docs/01-event-source.md)); it does not write cross-owner
+edges.
+
+## Causal chain query
+
+A "why" answer for `f ∈ F` is a query, not an entity. Defined parallel
+to how Self is "a pure query" (Q5 / 06):
+
+```
+chain(f, P_active) = transitive closure over Edge starting from f, where:
+    - relation.class ∈ {Causal, Structural}
+    - authorship ∈ {EventSource, PerspectiveLink(p) for p ∈ P_active}
+returning the DAG of (Memory, Edge) plus the A-provenance subtree of
+every contributing Perspective (P → A → F via Provenance edges).
+```
+
+Properties:
+
+- **Π-relative.** Different `P_active` → different chains over the same
+  Facts. Causa proxima is a *modeled* answer, not an objective one.
+- **Append-only-safe.** A chain query never writes; supersession of a
+  Perspective shifts which edges count for `P_active` without
+  invalidating prior chains' citations.
+- **No new entity.** A materialised view is permitted as a perf cache,
+  never authoritative. The graph is the source of truth.
+
+Chains compose with relation-class filtering: ask `chain(f, P_active)`
+restricted to `RelationClass::Structural` for the EventSource-only
+backbone (no interpretation), or to `RelationClass::Causal` for the
+Perspective-mediated explanations (no plain succession).
+
+## The operators
+
+### F→A: Fact-to-Abstraction (intra-source)
+
+```rust
+fn fact_to_abstraction(
+    source_batch: SourceBatchId,            // the batch this F→A operates on
+    facts:        Vec<MemoryRef<Fact>>,     // Facts with this source_batch_id
+    personality:  &PersonalitySnapshot,     // produced by a PersonalityFlavor (08)
+) -> (
+    Memory,                                 // the new Abstraction tagged with personality_id
+    Vec<Edge>,                              // provenance edges Abstraction→Facts
+);
+```
+
+Same Facts under different Π → different Abstractions. This is how Self
+shapes interpretation while leaving Facts untouched. Same Facts under
+different *personalities* produce parallel Abstraction lineages; each
+output carries its producing `personality_id`, and the lineages do not
+collide on supersession.
+
+Cardinality: a source batch may produce one or many Abstractions per
+personality; the operator decides granularity (e.g. chunks → chapters →
+themes → top-level Abstraction for a book).
+
+Reproducibility: not pure (LLM nondeterminism), but reproducible given
+`(source_batch, facts, personality_id, personality_state_hash, model,
+prompt)`.
+
+### A→P: Abstraction-to-Perspective (intra-flavor or cross-flavor)
+
+```rust
+fn abstraction_to_perspective(
+    abstractions: Vec<MemoryRef<Abstraction>>,  // retrieved per operator scope + personality scope
+    personality:  &PersonalitySnapshot,          // produced by a PersonalityFlavor (08); see Q4 below
+) -> (
+    Memory,                                      // the new Perspective tagged with personality_id
+    Vec<Edge>,                                   // provenance edges Perspective→Abstractions
+);
+```
+
+Scope is operator-declared along two orthogonal axes:
+
+- **Flavor scope** — intra-flavor (only the operator's own A schemas)
+  vs cross-flavor (union over all linked flavors).
+- **Personality scope** — own-personality-only (default) vs
+  all-personalities (opt-in, gated by the per-Owner read-scope matrix
+  below). A "Synthesist" personality whose job is to integrate other
+  personalities' outputs declares all-personalities; default operators
+  stay own-personality.
+
+Multiple A→P operators may coexist and run in parallel against the
+same A pool — each produces its own typed `PerspectivePayload` (04 §Phase 2).
+Multiple personalities applied to the same A→P operator produce
+parallel Perspective lineages tagged by `personality_id`.
+
+Personalization: same A-set under different Π yields different P. Bias is
+full personality (Q4).
+
+## Re-derivation and supersession
+
+Memories are **never destroyed**. When personality state drifts and a new
+Abstraction is derived from the same Facts under the **same**
+personality flavor:
+
+1. The old Abstraction stays. Its provenance edges point to the same Facts
+   under the older `personality_state_hash`.
+2. The new Abstraction is added. Its provenance edges also point to those
+   Facts, but under the newer `personality_state_hash`.
+3. The two are linked by a `supersedes` edge: `new_abstraction →
+   old_abstraction`, authored by `Core(Engine)`.
+
+Consumers querying "current state" follow `supersedes` chains to the head;
+consumers querying history walk the chain backward.
+
+**Supersession is intra-personality by default.** Re-deriving under a
+different `personality_id` produces a *parallel* lineage, not a
+supersession — Stoic Visionary's Abstraction over Fact `f` does not
+supersede Workhorse Programmer's Abstraction over the same `f`. They
+coexist as parallel interpretations.
+
+**Cross-personality supersession is an editorial gesture** — "this
+voice replaces that one across the agent's identity." It is reserved
+for `Core(User(u))` authorship; operators do not get to make
+cross-personality editorial decisions. When a personality flavor is
+retired from a binary, its existing rows stay readable (orphaned by the
+unlinked operator); a new active personality may explicitly supersede
+them via user-API write. See §Read-scope matrix for how parallel
+lineages are addressable at query time.
+
+This mirrors the supersession pattern already in hippocampus.
+
+## Personality
+
+**Personality is a flavor**, not a fixed core concept. The substrate
+ships only the trait shape and the runtime contract; selection of
+`P_active`, `G_active`, identity-vs-context weighting, and the Self
+projection all live in registered `PersonalityFlavor` impls (see
+[08 §Registration mechanism](docs/08-core-and-flavors.md#registration-mechanism)
+and [13 §Authoring contract](13-flavor-marketplace.md#authoring-contract)).
+
+```rust
+trait PersonalityFlavor {
+    const PERSONALITY_ID: PersonalityId;            // flavor-prefixed, e.g. "stoic-self/v1"
+
+    fn snapshot(&self, owner: Owner, ctx: SnapshotCtx) -> PersonalitySnapshot;
+    fn project_self(&self, owner: Owner) -> SelfView;   // see [06 §Self](06-goals-and-self.md)
+}
+
+struct PersonalitySnapshot {
+    personality_id:  PersonalityId,                  // which flavor produced this
+    perspective_ids: Vec<MemoryId>,                  // P_active per this flavor's rules
+    goal_ids:        Vec<GoalId>,                    // G_active per this flavor's rules
+    state_hash:      Hash,                           // canonical hash for invocation key
+    captured_at:     Timestamp,
+}
+```
+
+The substrate guarantees the snapshot has a stable hash (so re-runs
+under the same state coalesce on the invocation key) and that the
+hash is recorded inline on every produced A/P / Goal row. It does not
+legislate *what* the snapshot contains beyond that.
+
+**Selection primitives** a `PersonalityFlavor` typically composes:
+
+| Primitive | Cost | Use |
+|---|---|---|
+| Identity Perspectives    | filter by schema flag      | always-active foundational views |
+| Recency window           | O(window)                   | floor when other channels are thin |
+| Topical (similarity)     | embedding pass at snapshot  | retrospect — what the agent already thinks here |
+| Goal-relevant            | filter by Goal-edge citations | intent — what supports the agent's current ambitions |
+
+These are *primitives*. A flavor decides which to combine, with what
+top-K caps, and how to fuse them into a deterministic `state_hash`.
+The substrate does not pick a canonical combination because there is
+no canonical answer — different personality flavors are *exactly* the
+business of having different combinations.
+
+**Multiple personality flavors per Owner.** v1 minimum: many
+personality flavors may be linked into one binary; each Owner has at
+least one active. Operators run per (Owner, active personality) pair;
+a single Event produces *N* parallel A/P sets where *N* is the number
+of active personalities. The substrate hosts plural selves; the agent
+*runs* a topology over its own memory. Identity is configurable.
+
+## Read-scope matrix
+
+When multiple personalities are active per Owner, retrieval needs an
+explicit answer for cross-personality reads. The substrate provides
+this via a **per-Owner boolean adjacency matrix** over linked
+personalities:
+
+```
+M[self][other] = 1   →  `self` can retrieve `other`'s A/P (and Goals) as input
+M[self][other] = 0   →  retrieval excludes `other`'s outputs
+```
+
+Invariants:
+
+- **Identity diagonal.** `M[p][p] = 1` for every linked personality `p`,
+  always. A personality's own outputs are always readable to itself.
+- **F is below the matrix.** Facts are objective; every personality
+  always sees every Fact. The matrix governs the interpretive layer
+  (A, P, and Goals derived under a personality) only.
+- **Asymmetry is a feature.** `M[a][b] = 1 ∧ M[b][a] = 0` is well-formed
+  and load-bearing — e.g. a Synthesist that integrates everyone's views
+  without those views being polluted by Synthesist's meta-output.
+- **Direct reads only.** The matrix governs *direct* retrieval scope;
+  transitive influence happens through the graph naturally and is not
+  re-checked at read time. A Perspective written by `S` that synthesises
+  `W`'s view is a memory authored by `S`; readers of `S` see it via
+  `M[reader][S]` regardless of `M[reader][W]`.
+- **Append-only-safe.** Toggling `M[a][b]` from 0 to 1 changes future
+  retrieval scope for `a`, but does not alter or invalidate `a`'s
+  existing memories. Re-deriving `a`'s A/P under the new matrix is an
+  explicit re-run.
+
+The matrix is per-Owner config; storage lives in
+[07 §Core tables](07-storage.md#core-tables-abstract) (`read_scope_matrix`).
+Default for newly-linked personalities is the identity row + identity
+column only (each new personality starts isolated; cross-reads opt in).
+
+The matrix is hashed into `personality_state_hash` at snapshot time so
+that a matrix toggle which admits new sources is a different invocation
+key — re-running under the new matrix produces a fresh A/P rather than
+coalescing with a prior run that didn't see those sources.
+
+## Sub-questions — all resolved
+
+### Q1. Typed Fact payloads via build-time schema registration
+
+Facts carry typed payloads via `FactPayload` impls registered at build
+time through `proxima_flavor!` ([08](docs/08-core-and-flavors.md)). The system materialises per-schema
+sidecar tables. See 03.
+
+### Q2. Facts share the core entity; content storage is kind-appropriate
+
+Shared `Memory` row carries `id` (UUIDv7), `owner`, `kind`,
+`schema_id` (NOT NULL for every memory), and timestamps. Version is
+implicit in sidecar table membership. Facts also carry `event_id`
+(FK to `events`) and `citation_mapping_id` (FK to `citation_mappings`,
+see [11](docs/11-citations.md)), with `text = NULL` and operator-invocation
+columns NULL. Abstractions and Perspectives have `event_id = NULL`,
+`citation_mapping_id = NULL`, non-null operator-authored `text`, a typed
+sidecar row, and inline operator-invocation reproducibility columns.
+No `description`. Renderer on-demand for Facts; immutable text for
+A and P. Dreams produce new memories, never rewrite.
+
+### Q3. Strict layering — no upward edges from any layer
+
+Resolved: **strict**. Facts cannot link to anything above. Abstractions
+cannot link to Perspectives. Perspective → Abstraction is provenance only;
+the reverse is never authored. Matches the trauma invariant (Reality is
+fixed; layers above derive from below, never the other way). Enforceable
+as a check constraint joining `edge.source.kind` and `edge.target.kind`.
+
+### Q4. A→P biased by full personality
+
+Resolved: **full personality** — Π is the `PersonalitySnapshot` produced
+by the active `PersonalityFlavor`, carrying its own selection of
+`P_active` and `G_active`. Both bias A→P identically to F→A. Reason:
+perspective evolution needs continuity with the prior perspective set
+or each new A→P run is computed from scratch, breaking the human
+"perspectives shift slowly under personality drift" pattern. Stuck-loop
+risk is mitigated by the existing handles (Goal updates, new Facts
+triggering re-derivation, personality flavor swap, future Hint mechanism
+— see trauma-findings).
+
+What "full personality" *includes* is the flavor's call. The substrate
+guarantees only that whatever the flavor put in the snapshot is what
+biases the operator and what hashes into the invocation key.
+
+### Q5. Self as flavor projection — see [06](docs/06-goals-and-self.md)
+
+Resolved: **flavor-projected query** via
+`PersonalityFlavor::project_self(owner)`. No Self entity, no cache, no
+operator. Different personality flavors project different Selves over
+the same memory graph; a binary's composition determines which Selves
+it can present. Full treatment in
+[`docs/06-goals-and-self.md`](06-goals-and-self.md).
+
+## What's settled
+
+- Strict Facts → Abstraction → Perspective layering, no exceptions
+  (Q3).
+- Single core `Memory` entity, all three kinds. UUIDv7 ids; Facts
+  carry an `event_id` FK to `events` for re-receipt dedup. Typed
+  payloads on every memory via the schema registry ([03](docs/03-schema-registry.md)). Owner per
+  memory ([01](docs/01-event-source.md)).
+- **Citations are bibliographic and Fact-only.** Full model in
+  [11-citations.md](docs/11-citations.md). A/P bibliographic provenance
+  accumulates by walking provenance edges to Facts. Edges have **no**
+  `citation_id`; `authored_by` carries the reasoning concept.
+- Edge directionality: outbound only to same or lower layer; same-Owner
+  invariant.
+- F→A intra-source-batch (always intra); A→P intra-flavor or
+  cross-flavor. Multiple F→A operators may coexist over the same Fact
+  schema, each producing a distinct typed Abstraction (at most one per
+  (Fact schema, Abstraction schema) pair). Multiple A→P operators may
+  coexist and run in parallel. Both biased by full personality (Q4).
+- **Personality is a flavor.** `PersonalityFlavor` produces a
+  `PersonalitySnapshot` (`personality_id, P_active, G_active,
+  state_hash`) per Owner per invocation. The substrate hosts plural
+  personalities per Owner; A/P/Goal rows tag with `personality_id`;
+  parallel personalities yield parallel lineages, never collide on
+  supersession. Cross-personality supersession requires user-API
+  authorship.
+- **Read-scope matrix.** Per-Owner boolean adjacency over personalities
+  governs cross-personality retrieval. Identity diagonal = 1; F always
+  shared; A/P/Goals gated. Hashed into the invocation key.
+- Memories immutable in Facts and additive elsewhere; supersession links
+  new derivations to old, scoped within personality.
+- Self is a flavor projection (Q5 → 06).
+- **Relations are typed and flavor-registered** via
+  `RelationDescriptor`. Engine rejects edges with unregistered
+  `relation.id`; Phase-1 EventSource edges obey the same registry
+  (see [04](docs/04-consolidation.md)). Built-in relation classes: `Structural`, `Provenance`,
+  `Supersedes`, `Causal`, `Interpretive`.
+- **Abstractions and Perspectives are always typed** via
+  `AbstractionPayload` / `PerspectivePayload` (03). Typing is
+  required per memory and **selective** — the typed payload captures
+  queryable scaffolding only, `text` remains the playing space. No
+  JSON escape hatch; required fields only. Build-time registration
+  only — no runtime schema-registration API at any tier.
+- **Causa proxima is a query**, not an entity:
+  `chain(f, P_active)` returns the Π-relative DAG over `Causal` and
+  `Structural` edges plus the contributing P/A provenance subtree.
+  Materialised view permitted as a perf cache, never authoritative.
+
+## Anchors
+
+- `the-layering-principle`
+- `formalization`
+- `why-this-layering-the-trauma-test`
+- `the-core-entity`
+- `operator-scope`
+- `edges`
+- `relation-registry`
+- `the-directionality-rule`
+- `edge-scope-invariant`
+- `causal-chain-query`
+- `the-operators`
+- `f-to-a-fact-to-abstraction`
+- `a-to-p-abstraction-to-perspective`
+- `re-derivation-and-supersession`
+- `personality`
+- `read-scope-matrix`
+- `sub-questions-all-resolved`
+- `q1-typed-fact-payloads-via-build-time-schema-registration`
+- `q2-facts-share-the-core-entity-content-storage-is-kind-appropriate`
+- `q3-strict-layering-no-upward-edges-from-any-layer`
+- `q4-a-p-biased-by-full-personality`
+- `q5-self-as-flavor-projection-see-06`

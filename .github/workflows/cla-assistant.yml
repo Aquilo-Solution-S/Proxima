@@ -1,0 +1,27 @@
+name: "CLA Assistant"
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: write
+  repository-projects: read
+
+jobs:
+  CLA-Assistant:
+    if: github.event_name == 'pull_request_target' && (github.event.action == 'opened' || github.event.action == 'reopened' || github.event.action == 'synchronize')
+    runs-on: ubuntu-latest
+    steps:
+      - name: "CLA Assistant"
+        if: (contains(fromJson('[' + github.event.pull_request.labels.*.name + ']'), 'CLA signed') == false || github.event.action == 'synchronize') && github.actor != 'cla-assistant' && github.actor != 'dependabot[bot]'
+        uses: contributor-assistant/github-action@v2.3.2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PERSONAL_ACCESS_TOKEN: ${{ secrets.CLA_ASSISTANT_TOKEN }}
+        with:
+          path-to-signatures: '.github/cla/signatures.json'
+          path-to-document: 'https://github.com/Aquilo-Solution-S/Proxima/blob/main/.github/cla/CLA.md'
+          branch: 'main'
+          allowlist: 'heinrichvonhelmolt,cla-assistant,dependabot,dependabot[bot]'
