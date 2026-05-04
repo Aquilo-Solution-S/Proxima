@@ -27,7 +27,7 @@ here.
 
 ## Milestones to v1
 
-### M1 — Engine skeleton
+### M1 — Engine skeleton — closed 2026-05-04
 
 - **Compiles**: `proxima-core` crate with `Schema` and `Query` verbs
   over an in-memory store; `NoAuth` resolver; single Owner.
