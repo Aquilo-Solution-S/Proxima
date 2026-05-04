@@ -4,12 +4,14 @@
 
 use std::sync::Arc;
 
+use crate::GoalId;
 use crate::auth::{AuthResolver, Credentials};
 use crate::error::ProtocolError;
-use crate::storage::{NoopStorage, StorageHandle};
+use crate::storage::{NoopStorage, StorageError, StorageHandle};
 use crate::verbs::event_ingest::{EventDraft, EventIngestOutcome};
+use crate::verbs::goal_write::{GoalDraft, GoalWriteOutcome};
 use crate::verbs::query::{MemoryStore, QueryRequest, QueryResponse};
-use crate::verbs::schema::{SchemaRegistry, SchemaRequest, SchemaResponse};
+use crate::verbs::schema::{PayloadKind, SchemaRegistry, SchemaRequest, SchemaResponse};
 
 pub struct Engine {
     registry: SchemaRegistry,
@@ -114,5 +116,84 @@ impl Engine {
             .ingest_event_atomic(&draft)
             .await
             .map_err(|e| ProtocolError::internal(e.to_string()))
+    }
+
+    /// docs/14 §"GoalWrite" — Owner-scoped write. Validates
+    /// schema is registered as PayloadKind::Goal and delegates to
+    /// storage.
+    pub async fn write_goal(
+        &self,
+        creds: &Credentials,
+        draft: GoalDraft,
+    ) -> Result<GoalWriteOutcome, ProtocolError> {
+        let resolved = self
+            .auth
+            .resolve(creds)
+            .map_err(|_| ProtocolError::auth_required())?;
+        if !resolved.accessible_owners.contains(&draft.owner) {
+            return Err(ProtocolError::forbidden(
+                "principal cannot access requested owner",
+            ));
+        }
+        // Validate goal schema is registered AND has PayloadKind::Goal.
+        match self.registry.lookup(&draft.schema_id, draft.schema_version) {
+            Some(info) if info.kind == PayloadKind::Goal => {}
+            _ => {
+                return Err(ProtocolError::unknown_schema(
+                    draft.schema_id.as_str(),
+                    draft.schema_version.into_inner(),
+                ));
+            }
+        }
+        self.storage
+            .write_goal_atomic(&draft)
+            .await
+            .map_err(map_storage_err_for_goal_write(&draft.request_id))
+    }
+
+    /// docs/14 §"GoalWrite" — supersede path. Same auth and schema
+    /// validation as write_goal, plus validates prior exists and
+    /// belongs to the same owner.
+    pub async fn supersede_goal(
+        &self,
+        creds: &Credentials,
+        prior: GoalId,
+        draft: GoalDraft,
+    ) -> Result<GoalWriteOutcome, ProtocolError> {
+        let resolved = self
+            .auth
+            .resolve(creds)
+            .map_err(|_| ProtocolError::auth_required())?;
+        if !resolved.accessible_owners.contains(&draft.owner) {
+            return Err(ProtocolError::forbidden(
+                "principal cannot access requested owner",
+            ));
+        }
+        // Validate goal schema is registered AND has PayloadKind::Goal.
+        match self.registry.lookup(&draft.schema_id, draft.schema_version) {
+            Some(info) if info.kind == PayloadKind::Goal => {}
+            _ => {
+                return Err(ProtocolError::unknown_schema(
+                    draft.schema_id.as_str(),
+                    draft.schema_version.into_inner(),
+                ));
+            }
+        }
+        self.storage
+            .supersede_goal_atomic(prior, &draft)
+            .await
+            .map_err(map_storage_err_for_goal_write(&draft.request_id))
+    }
+}
+
+fn map_storage_err_for_goal_write(
+    request_id: &str,
+) -> impl FnOnce(StorageError) -> ProtocolError + '_ {
+    move |e| match e {
+        StorageError::ConstraintViolation(msg) if msg.starts_with("idempotency_conflict:") => {
+            ProtocolError::idempotency_conflict(request_id)
+        }
+        StorageError::NotFound => ProtocolError::not_found("prior goal not found"),
+        other => ProtocolError::internal(other.to_string()),
     }
 }

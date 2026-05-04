@@ -151,3 +151,105 @@ impl SourceId {
         &self.0
     }
 }
+
+// M2.5 — GoalWrite verb newtypes.
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct OperatorId(uuid::Uuid);
+
+impl OperatorId {
+    pub const fn new(inner: uuid::Uuid) -> Self {
+        Self(inner)
+    }
+
+    pub const fn into_inner(self) -> uuid::Uuid {
+        self.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct ToolId(String);
+
+impl ToolId {
+    pub fn new(inner: impl Into<String>) -> Self {
+        Self(inner.into())
+    }
+
+    pub fn into_inner(self) -> String {
+        self.0
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct ModelId(String);
+
+impl ModelId {
+    pub fn new(inner: impl Into<String>) -> Self {
+        Self(inner.into())
+    }
+
+    pub fn into_inner(self) -> String {
+        self.0
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct PromptVersion(String);
+
+impl PromptVersion {
+    pub fn new(inner: impl Into<String>) -> Self {
+        Self(inner.into())
+    }
+
+    pub fn into_inner(self) -> String {
+        self.0
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct PersonalityId(String);
+
+impl PersonalityId {
+    pub fn new(inner: impl Into<String>) -> Self {
+        Self(inner.into())
+    }
+
+    pub fn into_inner(self) -> String {
+        self.0
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// BLAKE3-32 hash of personality state for reproducibility.
+/// Same shape as EventId (docs/07 §"ID types").
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct PersonalityStateHash([u8; 32]);
+
+impl PersonalityStateHash {
+    pub const fn new(inner: [u8; 32]) -> Self {
+        Self(inner)
+    }
+
+    pub const fn into_inner(self) -> [u8; 32] {
+        self.0
+    }
+
+    pub const fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+}

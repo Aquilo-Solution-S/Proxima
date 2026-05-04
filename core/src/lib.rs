@@ -13,3 +13,6 @@ pub use error::*;
 pub use ids::*;
 pub use owner::*;
 pub use storage::*;
+
+// Re-export verb modules for convenience.
+pub use verbs::*;
