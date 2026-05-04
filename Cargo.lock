@@ -948,6 +948,7 @@ dependencies = [
  "proxima-core",
  "sqlx",
  "thiserror",
+ "time",
  "tokio",
  "uuid",
 ]
