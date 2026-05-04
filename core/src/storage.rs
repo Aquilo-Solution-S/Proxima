@@ -81,6 +81,14 @@ pub trait Storage: Send + Sync {
         owner: &crate::Owner,
         since: Option<uuid::Uuid>,
     ) -> Result<ChangeEventStream, StorageError>;
+
+    /// Owner-scoped snapshot read of memories per docs/14 §"Query".
+    /// Returns MemoryRow substrate shape; sidecar joins for typed
+    /// payload retrieval land in M3.B+.
+    async fn query_memories(
+        &self,
+        req: &crate::verbs::query::QueryRequest,
+    ) -> Result<crate::verbs::query::QueryResponse, StorageError>;
 }
 
 pub type StorageHandle = Arc<dyn Storage>;
@@ -120,5 +128,15 @@ impl Storage for NoopStorage {
         _since: Option<uuid::Uuid>,
     ) -> Result<ChangeEventStream, StorageError> {
         Ok(Box::pin(futures_util::stream::empty()))
+    }
+
+    async fn query_memories(
+        &self,
+        _req: &crate::verbs::query::QueryRequest,
+    ) -> Result<crate::verbs::query::QueryResponse, StorageError> {
+        Ok(crate::verbs::query::QueryResponse {
+            memories: Vec::new(),
+            seq_high_water: None,
+        })
     }
 }

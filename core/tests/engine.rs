@@ -38,13 +38,14 @@ fn schema_verb_returns_empty_registry() {
     assert!(resp.schemas.is_empty(), "M1 registry must be empty");
 }
 
-#[test]
-fn query_verb_returns_empty_for_configured_owner() {
+#[tokio::test]
+async fn query_verb_returns_empty_for_configured_owner() {
     let (principal, owner) = fresh_owner();
     let engine = boot_engine(principal, owner.clone());
 
     let resp = engine
         .query(&Credentials::None, &QueryRequest::for_owner(owner))
+        .await
         .expect("NoAuth single-Owner query must succeed");
 
     assert!(resp.memories.is_empty(), "M1 store must be empty");
@@ -54,8 +55,8 @@ fn query_verb_returns_empty_for_configured_owner() {
     );
 }
 
-#[test]
-fn query_verb_rejects_foreign_owner_with_forbidden() {
+#[tokio::test]
+async fn query_verb_rejects_foreign_owner_with_forbidden() {
     let (principal, configured) = fresh_owner();
     let engine = boot_engine(principal, configured);
 
@@ -65,6 +66,7 @@ fn query_verb_rejects_foreign_owner_with_forbidden() {
 
     let err = engine
         .query(&Credentials::None, &QueryRequest::for_owner(foreign))
+        .await
         .expect_err("foreign Owner must be rejected");
     assert_eq!(err.code, ErrorCode::Forbidden);
 }
