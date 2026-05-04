@@ -6,6 +6,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use proxima_core::verbs::event_ingest::{EventDraft, EventIngestOutcome};
 use proxima_core::{Storage, StorageError, StorageHandle};
 use sqlx::PgPool;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
@@ -83,4 +84,14 @@ impl PgStorage {
     }
 }
 
-impl Storage for PgStorage {}
+#[async_trait::async_trait]
+impl Storage for PgStorage {
+    async fn ingest_event_atomic(
+        &self,
+        _draft: &EventDraft,
+    ) -> Result<EventIngestOutcome, StorageError> {
+        Err(StorageError::Internal(
+            "M2.4b implements ingest_event_atomic".into(),
+        ))
+    }
+}

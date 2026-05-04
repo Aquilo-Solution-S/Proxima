@@ -9,13 +9,13 @@ pub struct ProtocolError {
 }
 
 /// Subset of docs/14's `ErrorCode` exercised in M1. Additional
-/// variants land with the verbs that raise them
-/// (`UnknownSchema` with M3 schema validation,
-/// `IdempotencyConflict` with M2 `GoalWrite`, etc.).
+/// variants land with the verbs that raise them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorCode {
     AuthRequired,
     Forbidden,
+    UnknownSchema,
+    AlreadyIngested,
     Internal,
 }
 
@@ -32,6 +32,22 @@ impl ProtocolError {
         Self {
             code: ErrorCode::AuthRequired,
             message: "authentication required".into(),
+            request_id: None,
+        }
+    }
+
+    pub fn unknown_schema(schema_id: impl AsRef<str>, version: u32) -> Self {
+        Self {
+            code: ErrorCode::UnknownSchema,
+            message: format!("schema not registered: {} v{}", schema_id.as_ref(), version),
+            request_id: None,
+        }
+    }
+
+    pub fn internal(message: impl Into<String>) -> Self {
+        Self {
+            code: ErrorCode::Internal,
+            message: message.into(),
             request_id: None,
         }
     }

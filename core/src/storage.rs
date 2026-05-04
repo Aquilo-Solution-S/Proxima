@@ -2,13 +2,10 @@
 //! engine.
 //!
 //! See docs/07-storage.md and AGENTS.md invariants 2, 3, 5.
-//! Method signatures land per-verb in subsequent M2 substeps:
-//! the trait's role here is to fix the trait-object boundary
-//! (`Send + Sync`, `async`-capable via async-fn-in-trait) so
-//! the engine can hold `Box<dyn Storage>` regardless of
-//! backend.
 
 use std::sync::Arc;
+
+use crate::verbs::event_ingest::{EventDraft, EventIngestOutcome};
 
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum StorageError {
@@ -22,16 +19,37 @@ pub enum StorageError {
     Internal(String),
 }
 
-/// Backend-neutral persistence boundary. Implementations land
-/// in dedicated crates (e.g. `storage-pg`); the trait stays
-/// in core so the engine and verbs are backend-agnostic.
-///
-/// Methods are added per-verb in M2.4+ (EventIngest,
-/// GoalWrite, Subscribe, Query). Empty for now.
-pub trait Storage: Send + Sync {}
+#[async_trait::async_trait]
+pub trait Storage: Send + Sync {
+    /// Atomic Fact materialization per docs/14 §EventIngest.
+    /// Single transaction inserting cited_object, event,
+    /// memory(Fact), citation_mapping, change_event. Replay
+    /// (event_id collision) returns the original outcome with
+    /// `idempotent_replay = true`.
+    ///
+    /// # Errors
+    ///
+    /// Constraint violations map to ConstraintViolation; sqlx
+    /// failures map to Internal.
+    async fn ingest_event_atomic(
+        &self,
+        draft: &EventDraft,
+    ) -> Result<EventIngestOutcome, StorageError>;
+}
 
-/// Engine-side handle to a Storage impl. `Arc<dyn Storage>`
-/// so the engine can clone the handle into the outbox
-/// publisher (M2.6) and the Subscribe stream (M2.7) without
-/// transferring ownership.
 pub type StorageHandle = Arc<dyn Storage>;
+
+/// Storage that rejects all writes — used by the in-memory
+/// demo path and by tests that don't want PG.
+#[derive(Debug, Default, Clone)]
+pub struct NoopStorage;
+
+#[async_trait::async_trait]
+impl Storage for NoopStorage {
+    async fn ingest_event_atomic(
+        &self,
+        _draft: &EventDraft,
+    ) -> Result<EventIngestOutcome, StorageError> {
+        Err(StorageError::Internal("NoopStorage rejects writes".into()))
+    }
+}

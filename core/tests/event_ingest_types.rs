@@ -1,0 +1,51 @@
+//! Unit smoke for EventIngest types.
+
+use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
+use proxima_core::{
+    OrgId, Owner, Principal, SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId,
+};
+use uuid::Uuid;
+
+fn fresh_draft() -> EventDraft {
+    let user = UserId::new(Uuid::now_v7());
+    let now = time::OffsetDateTime::now_utc();
+    EventDraft {
+        source_id: SourceId::new("test/source"),
+        source_batch_id: SourceBatchId::new(Uuid::now_v7()),
+        owner: Owner {
+            principal: Principal::User(user),
+            org_id: OrgId::new(Uuid::now_v7()),
+        },
+        schema_id: SchemaId::new("test/fact_blob".to_string()),
+        schema_version: SchemaVersion::new(1),
+        payload: b"hello".to_vec(),
+        observed_at: now,
+        occurred_at: now,
+        cited_object: CitedObjectHint {
+            schema_id: SchemaId::new("test/cited_blob".to_string()),
+            schema_version: SchemaVersion::new(1),
+            content_hash: [0u8; 32],
+        },
+        citation_mapping: CitationMappingHint {
+            schema_id: SchemaId::new("test/citation_blob".to_string()),
+            schema_version: SchemaVersion::new(1),
+        },
+    }
+}
+
+#[test]
+fn event_id_is_deterministic() {
+    let draft = fresh_draft();
+    let h1 = draft.event_id();
+    let h2 = draft.event_id();
+    assert_eq!(h1, h2);
+}
+
+#[test]
+fn event_id_changes_with_payload() {
+    let mut draft = fresh_draft();
+    let h1 = draft.event_id();
+    draft.payload = b"different".to_vec();
+    let h2 = draft.event_id();
+    assert_ne!(h1, h2);
+}
