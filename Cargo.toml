@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["core", "bin/proxima-engine"]
+members = ["core", "bin/proxima-engine", "storage-pg"]
 
 [workspace.package]
 edition = "2024"
