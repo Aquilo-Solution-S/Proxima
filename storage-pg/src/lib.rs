@@ -11,9 +11,13 @@ use proxima_core::verbs::event_ingest::{EventDraft, EventIngestOutcome};
 use proxima_core::verbs::goal_write::{
     GoalAuthorship, GoalDraft, GoalState, OperatorKind, SystemOrigin,
 };
-use proxima_core::{Principal, Storage, StorageError, StorageHandle};
+use proxima_core::{ChangeEvent, Principal, Storage, StorageError, StorageHandle};
 use sqlx::PgPool;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+use tokio::sync::broadcast;
+
+pub mod outbox;
+use outbox::BROADCAST_CAPACITY;
 
 /// Default DB URL when `DATABASE_URL` is unset. Matches the
 /// dev DB created locally via `createdb proxima_dev`.
@@ -22,6 +26,7 @@ pub const DEFAULT_DATABASE_URL: &str = "postgres://postgres@localhost/proxima_de
 #[derive(Debug, Clone)]
 pub struct PgStorage {
     pool: PgPool,
+    tx: broadcast::Sender<ChangeEvent>,
 }
 
 impl PgStorage {
@@ -49,7 +54,9 @@ impl PgStorage {
             .await
             .map_err(|e| StorageError::Unavailable(e.to_string()))?;
 
-        Ok(Self { pool })
+        let tx = broadcast::channel(BROADCAST_CAPACITY).0;
+
+        Ok(Self { pool, tx })
     }
 
     /// Read `DATABASE_URL` from env, fallback to
@@ -67,6 +74,34 @@ impl PgStorage {
     #[must_use]
     pub fn into_handle(self) -> StorageHandle {
         Arc::new(self)
+    }
+
+    /// Return a fresh broadcast receiver for `ChangeEvents`.
+    /// Multiple calls produce independent receivers that each
+    /// see all future events.
+    #[must_use]
+    pub fn changes(&self) -> broadcast::Receiver<ChangeEvent> {
+        self.tx.subscribe()
+    }
+
+    /// Spawn the outbox publisher task.
+    ///
+    /// Opens a `PgListener` on the same pool, LISTENs on
+    /// `outbox::NOTIFY_CHANNEL`, and publishes typed `ChangeEvent`s to
+    /// the broadcast channel. On error, logs and reconnects with
+    /// exponential backoff.
+    ///
+    /// # Errors
+    ///
+    /// This function always returns `Ok(())`; the listener task runs
+    /// in the background and handles its own errors with backoff.
+    pub fn start_outbox(&self) -> Result<(), StorageError> {
+        let pool = self.pool.clone();
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            outbox::outbox_publisher(pool, tx).await;
+        });
+        Ok(())
     }
 
     /// Apply all pending migrations under
