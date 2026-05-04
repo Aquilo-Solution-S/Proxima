@@ -3,3 +3,5 @@
 .DS_Store
 vibe-home/
 .exactor.yml
+target/
+CLAUDE.md
