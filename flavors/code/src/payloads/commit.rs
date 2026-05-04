@@ -9,9 +9,14 @@ pub struct CommitV1 {
     pub parents: Vec<String>,
     pub author_name: String,
     pub author_email: String,
+    // RFC 3339 explicit for round-trip through Postgres `row_to_json`
+    // which renders timestamptz as `2026-05-04T21:55:05+00:00` —
+    // distinct from `time`'s default human-readable format.
+    #[serde(with = "time::serde::rfc3339")]
     pub author_time: OffsetDateTime,
     pub committer_name: String,
     pub committer_email: String,
+    #[serde(with = "time::serde::rfc3339")]
     pub committer_time: OffsetDateTime,
     pub message: String,
 }
@@ -19,7 +24,9 @@ pub struct CommitV1 {
 impl FactPayload for CommitV1 {
     const SCHEMA_ID: &'static str = proxima_schema_id!("commit-v1");
     const SCHEMA_VERSION: u32 = 1;
-    fn sidecar_table() -> &'static str { "proxima_code.commit_v1" }
+    fn sidecar_table() -> &'static str {
+        "proxima_code.commit_v1"
+    }
     fn render(&self) -> String {
         let short = self.sha.get(..7).unwrap_or(&self.sha);
         let first_line = self.message.lines().next().unwrap_or("");

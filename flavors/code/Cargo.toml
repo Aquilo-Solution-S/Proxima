@@ -12,6 +12,7 @@ name = "proxima_code"
 [dependencies]
 proxima-core = { path = "../../core" }
 proxima-storage-pg = { path = "../../storage-pg" }
+async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }

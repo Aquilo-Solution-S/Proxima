@@ -1,0 +1,22 @@
+[package]
+name = "proxima-llm-ollama"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "proxima_llm_ollama"
+
+[dependencies]
+proxima-core = { path = "../core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "http2"] }
+
+[lints]
+workspace = true

@@ -69,7 +69,7 @@ here.
 - **Done when**: every commit on `main` appears as a Code Fact, and
   new commits stream in within seconds of `git push`.
 
-### M5 — F→A operator
+### M5 — F→A operator — closed 2026-05-05
 
 - **Compiles**: Code's first F→A operator per
   [04](docs/04-consolidation.md), with prompts and cadence policy.
@@ -103,6 +103,25 @@ here.
 No commitment, ordering loose. Each is a candidate next milestone
 once `code-demo` is live.
 
+- Lift the F→A dispatcher out of inline `Engine::close_batch` and
+  `Engine::run_pending_f2a` into a proper bounded-MPSC + worker-pool
+  shape per [04 §"Execution model and isolation"](docs/04-consolidation.md#execution-model-and-isolation):
+  per-operator queue, per-(Owner, `personality_id`) fairness, global
+  LLM cost-cap. M5 ships synchronous-inline runs, single-tenant, no
+  retries — fine for `code-demo` but not for multi-Owner.
+- Cross-batch supersession: bump `prompt_version` and re-run F→A
+  produces a new Abstraction superseding the prior. M5 dedupes on
+  `(batch_id, operator_id)` and short-circuits on collision; the
+  `head_memory_id` column on `source_batch_f2a` is wired to support
+  the supersession write but the dispatcher does not yet drive it.
+- Swap `proxima_core.embeddings.vec` from `float4[]` to pgvector's
+  `vector(N)` plus an HNSW index when A→P retrieval lands. The table
+  shape is otherwise stable.
+- Per-Owner LLM credentials, model tiers, fallback policy, build-time
+  `(vendor, model_id)` registry, and Action-Fact emission for
+  `LlmCallV1` / `EmbeddingCallV1` per [10](docs/10-configuration.md).
+  M5 wires a single binary-wide Ollama endpoint (gemma4:31b,
+  qwen3-embedding:8b) read from env.
 - Reintroduce `EventSource` trait once a uniform source-coordination
   surface is actually needed (multi-source scheduler, central cursor
   persistence, runtime source discovery). Corrected shape per

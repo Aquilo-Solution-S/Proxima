@@ -5,7 +5,9 @@
 //!     proxima-code index --repo-path <path> --repo-id <uuidv7> \
 //!         --owner-user <uuidv7> --owner-org <uuidv7> \
 //!         [--database-url postgres://...] \
-//!         [--watch] [--poll-interval-ms 2000]
+//!         [--watch] [--poll-interval-ms 2000] \
+//!         [--llm-model gemma4:31b] [--embed-model qwen3-embedding:8b] \
+//!         [--embed-dim 4096] [--no-f2a]
 //!
 //! The CLI is intentionally minimal — no `clap`, no subcommand
 //! dispatch framework. Args are positional/keyworded by hand. v1
@@ -16,17 +18,29 @@
 //! the in-flight poll drains before the process exits. The cursor is
 //! kept in memory only — restarts begin from an empty cursor.
 //! Idempotency on `event_id` makes that safe.
+//!
+//! After each successful poll, registered F→A operators run against
+//! every closed-but-unconsolidated batch. Pass `--no-f2a` to skip
+//! consolidation (e.g. when iterating on the source path without an
+//! Ollama running).
 
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::Arc;
 use std::time::Duration;
 
-use proxima_code::{IndexReport, LocalGitSource, migrator};
+use proxima_code::{CommitSummaryOperator, IndexReport, LocalGitSource, build_engine, migrator};
+use proxima_core::auth::NoAuth;
+use proxima_core::operators::OperatorRegistry;
 use proxima_core::{Cursor, OrgId, Owner, Principal, UserId};
+use proxima_llm_ollama::{OllamaEmbeddingClient, OllamaLlmClient};
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
 
 const DEFAULT_POLL_INTERVAL_MS: u64 = 2000;
+const DEFAULT_LLM_MODEL: &str = "gemma4:31b";
+const DEFAULT_EMBED_MODEL: &str = "qwen3-embedding:8b";
+const DEFAULT_EMBED_DIM: usize = 4096;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
@@ -45,7 +59,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     match args.next().as_deref() {
         Some("index") => {}
         Some(other) => return Err(format!("unknown subcommand: {other}").into()),
-        None => return Err("usage: proxima-code index --repo-path <p> --repo-id <id> --owner-user <id> --owner-org <id> [--database-url <url>] [--watch] [--poll-interval-ms <n>]".into()),
+        None => return Err("usage: proxima-code index --repo-path <p> --repo-id <id> --owner-user <id> --owner-org <id> [--database-url <url>] [--watch] [--poll-interval-ms <n>] [--llm-model <m>] [--embed-model <m>] [--embed-dim <n>] [--no-f2a]".into()),
     }
 
     let mut repo_path: Option<PathBuf> = None;
@@ -55,10 +69,18 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut database_url: Option<String> = None;
     let mut watch = false;
     let mut poll_interval_ms: u64 = DEFAULT_POLL_INTERVAL_MS;
+    let mut llm_model: String = DEFAULT_LLM_MODEL.into();
+    let mut embed_model: String = DEFAULT_EMBED_MODEL.into();
+    let mut embed_dim: usize = DEFAULT_EMBED_DIM;
+    let mut no_f2a = false;
 
     while let Some(flag) = args.next() {
         if flag == "--watch" {
             watch = true;
+            continue;
+        }
+        if flag == "--no-f2a" {
+            no_f2a = true;
             continue;
         }
         let value = args
@@ -71,6 +93,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             "--owner-org" => owner_org = Some(Uuid::parse_str(&value)?),
             "--database-url" => database_url = Some(value),
             "--poll-interval-ms" => poll_interval_ms = value.parse()?,
+            "--llm-model" => llm_model = value,
+            "--embed-model" => embed_model = value,
+            "--embed-dim" => embed_dim = value.parse()?,
             other => return Err(format!("unknown flag: {other}").into()),
         }
     }
@@ -90,13 +115,38 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     pg.run_migrations().await?;
     migrator().run(pg.pool()).await?;
 
-    let source = LocalGitSource::new(repo_id, repo_path, owner);
+    let source = LocalGitSource::new(repo_id, repo_path, owner.clone());
+
+    // F→A engine: optional. Without --no-f2a we wire Ollama for both
+    // LLM and embeddings. The engine isn't needed for ingest itself
+    // (LocalGitSource talks to the pool directly per M4); we only
+    // build it to invoke run_pending_f2a after each poll.
+    let engine = if no_f2a {
+        None
+    } else {
+        let llm = OllamaLlmClient::from_env(&llm_model)?;
+        let embed = OllamaEmbeddingClient::from_env(&embed_model, embed_dim)?;
+        let mut ops = OperatorRegistry::new();
+        ops.register_f2a(CommitSummaryOperator::new());
+        let engine = build_engine(
+            pg.clone(),
+            Box::new(NoAuth::new(owner.principal.clone(), owner.clone())),
+        )
+        .with_operators(ops)
+        .with_llm(Arc::new(llm))
+        .with_embed(Arc::new(embed));
+        eprintln!("F→A enabled — llm={llm_model} embed={embed_model} (dim={embed_dim})");
+        Some(engine)
+    };
 
     if watch {
-        watch_loop(&source, &pg, poll_interval_ms).await
+        watch_loop(&source, &pg, engine.as_ref(), &owner, poll_interval_ms).await
     } else {
         let (report, _cursor) = source.run_poll(pg.pool(), &Cursor::empty()).await?;
         print_report(&report);
+        if let Some(eng) = engine.as_ref() {
+            run_f2a_pass(eng, &owner).await?;
+        }
         Ok(())
     }
 }
@@ -104,6 +154,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 async fn watch_loop(
     source: &LocalGitSource,
     pg: &PgStorage,
+    engine: Option<&proxima_core::Engine>,
+    owner: &Owner,
     poll_interval_ms: u64,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut cursor = Cursor::empty();
@@ -127,6 +179,13 @@ async fn watch_loop(
                 if poll_emitted_anything(&report) {
                     print_report(&report);
                 }
+                if let Some(eng) = engine
+                    && let Err(e) = run_f2a_pass(eng, owner).await {
+                        // F→A failure shouldn't drop the watch loop —
+                        // log and continue. The unconsolidated batch
+                        // stays pending and the next pass will pick it up.
+                        eprintln!("F→A pass failed: {e}");
+                    }
             }
         }
         tokio::select! {
@@ -139,8 +198,22 @@ async fn watch_loop(
     }
 }
 
+async fn run_f2a_pass(
+    engine: &proxima_core::Engine,
+    owner: &Owner,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let consolidated = engine.run_pending_f2a(owner).await?;
+    if !consolidated.is_empty() {
+        eprintln!("F→A consolidated {} batch(es)", consolidated.len());
+    }
+    Ok(())
+}
+
 fn poll_emitted_anything(r: &IndexReport) -> bool {
-    r.commits_emitted + r.files_present_emitted + r.files_tombstoned + r.chunks_emitted
+    r.commits_emitted
+        + r.files_present_emitted
+        + r.files_tombstoned
+        + r.chunks_emitted
         + r.chunks_tombstoned
         > 0
 }

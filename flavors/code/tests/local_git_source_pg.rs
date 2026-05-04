@@ -21,9 +21,7 @@ use proxima_code::{
 };
 use proxima_core::auth::{Credentials, NoAuth};
 use proxima_core::verbs::query::{QueryRequest, SupersessionStatus};
-use proxima_core::{
-    FactPayload, OrgId, Owner, Principal, SchemaId, SchemaVersion, UserId,
-};
+use proxima_core::{FactPayload, OrgId, Owner, Principal, SchemaId, SchemaVersion, UserId};
 use proxima_storage_pg::PgStorage;
 use sqlx::{Connection, Executor, PgConnection, Row};
 use tempfile::TempDir;
@@ -94,11 +92,7 @@ fn fixture_repo() -> TempDir {
     dir
 }
 
-async fn count_present_chunks(
-    pool: &sqlx::PgPool,
-    owner: &Owner,
-    repo_id: Uuid,
-) -> i64 {
+async fn count_present_chunks(pool: &sqlx::PgPool, owner: &Owner, repo_id: Uuid) -> i64 {
     let (kind, principal_id) = match &owner.principal {
         Principal::User(u) => ("User", u.into_inner()),
         Principal::Group(g) => ("Group", g.into_inner()),
@@ -245,10 +239,7 @@ async fn local_git_source_full_cycle() {
         .bind(repo_id)
         .fetch_one(pg.pool())
         .await?;
-        assert!(
-            linkage.0 > 0,
-            "expected at least one chunk for src/lib.rs"
-        );
+        assert!(linkage.0 > 0, "expected at least one chunk for src/lib.rs");
         assert_eq!(
             linkage.0, linkage.1,
             "every chunk must share cited_object_id with a file-revision-v1 \
@@ -312,7 +303,11 @@ async fn local_git_source_full_cycle() {
              pub fn goodbye() -> &'static str {\n    \"bye\"\n}\n"
                 .as_bytes(),
         );
-        assert_eq!(row.0, new_hash.as_bytes(), "lib.rs head must reflect new content");
+        assert_eq!(
+            row.0,
+            new_hash.as_bytes(),
+            "lib.rs head must reflect new content"
+        );
 
         // Old revision still exists as history (IncludeSuperseded view).
         let q_all = QueryRequest {
@@ -371,15 +366,27 @@ async fn local_git_source_full_cycle() {
         .bind(repo_id)
         .fetch_one(pg.pool())
         .await?;
-        assert!(md_chunk_count.0 >= 1, "markdown should still be chunked via fallback");
+        assert!(
+            md_chunk_count.0 >= 1,
+            "markdown should still be chunked via fallback"
+        );
 
         // ----------------------------------------------------------------
         // Re-running index without changes must be idempotent (no new
         // emissions, all unchanged).
         let (r_idem, _cursor) = source.run_poll(pg.pool(), &cursor).await?;
-        assert_eq!(r_idem.files_present_emitted, 0, "idempotent reindex emitted files");
-        assert_eq!(r_idem.chunks_emitted, 0, "idempotent reindex emitted chunks");
-        assert_eq!(r_idem.files_tombstoned, 0, "idempotent reindex tombstoned files");
+        assert_eq!(
+            r_idem.files_present_emitted, 0,
+            "idempotent reindex emitted files"
+        );
+        assert_eq!(
+            r_idem.chunks_emitted, 0,
+            "idempotent reindex emitted chunks"
+        );
+        assert_eq!(
+            r_idem.files_tombstoned, 0,
+            "idempotent reindex tombstoned files"
+        );
 
         // schema_version sanity.
         assert_eq!(FileRevisionV1::SCHEMA_VERSION, 1);

@@ -82,8 +82,7 @@ pub(crate) async fn write_goal_atomic(
         let supersedes_match = existing_row.4.is_none(); // supersedes must be NULL for write_goal
 
         // Also need to check authorship fields.
-        let authorship_matches =
-            check_authorship_match(&mut tx, existing_goal_id, draft).await?;
+        let authorship_matches = check_authorship_match(&mut tx, existing_goal_id, draft).await?;
 
         let body_matches =
             schema_id_match && text_match && state_match && parents_match && supersedes_match;
@@ -186,8 +185,7 @@ pub(crate) async fn supersede_goal_atomic(
         let supersedes_match = existing_row.4 == Some(prior.into_inner());
 
         // Also need to check authorship fields.
-        let authorship_matches =
-            check_authorship_match(&mut tx, existing_goal_id, draft).await?;
+        let authorship_matches = check_authorship_match(&mut tx, existing_goal_id, draft).await?;
 
         let body_matches =
             schema_id_match && text_match && state_match && parents_match && supersedes_match;

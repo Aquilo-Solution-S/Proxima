@@ -245,12 +245,7 @@ fn span_of(node: Node, label: &'static str) -> Span {
 fn is_chunk_candidate(node: &Node) -> bool {
     !matches!(
         node.kind(),
-        "source_file"
-            | "translation_unit"
-            | "module"
-            | "program"
-            | "compilation_unit"
-            | "ERROR"
+        "source_file" | "translation_unit" | "module" | "program" | "compilation_unit" | "ERROR"
     )
 }
 
@@ -348,7 +343,11 @@ fn fallback_chunks(file_path: &str, text: &str, language: Option<&'static str>) 
 /// for language label separately).
 #[must_use]
 pub fn detect_language(file_path: &str) -> Option<&'static str> {
-    let ext = file_path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    let ext = file_path
+        .rsplit('.')
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
     match ext.as_str() {
         "rs" => Some("rust"),
         "ts" | "mts" | "cts" => Some("typescript"),
@@ -361,7 +360,11 @@ pub fn detect_language(file_path: &str) -> Option<&'static str> {
 /// Used for `chunk_type = "file"` chunks to provide a language label.
 #[must_use]
 pub fn fallback_language(file_path: &str) -> Option<&'static str> {
-    let ext = file_path.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    let ext = file_path
+        .rsplit('.')
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
     match ext.as_str() {
         "rs" => Some("rust"),
         "ts" | "mts" | "cts" => Some("typescript"),

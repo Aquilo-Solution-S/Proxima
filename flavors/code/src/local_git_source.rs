@@ -363,7 +363,11 @@ struct CommitInfo {
 }
 
 fn run_git(repo: &Path, args: &[&str]) -> Result<Vec<u8>, IndexError> {
-    let out = Command::new("git").arg("-C").arg(repo).args(args).output()?;
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(args)
+        .output()?;
     if !out.status.success() {
         return Err(IndexError::Git(format!(
             "git {args:?}: {}",
@@ -392,10 +396,7 @@ fn git_log(repo: &Path) -> Result<Vec<CommitInfo>, IndexError> {
 }
 
 fn git_log_range(repo: &Path, from: &str, to: &str) -> Result<Vec<CommitInfo>, IndexError> {
-    git_log_args(
-        repo,
-        &["log", "--first-parent", &format!("{from}..{to}")],
-    )
+    git_log_args(repo, &["log", "--first-parent", &format!("{from}..{to}")])
 }
 
 fn git_log_args(repo: &Path, base_args: &[&str]) -> Result<Vec<CommitInfo>, IndexError> {

@@ -6,6 +6,7 @@ pub mod chunker;
 pub mod ingest;
 pub mod local_git_source;
 pub mod migrations;
+pub mod operators;
 pub mod payloads;
 
 pub use ingest::{
@@ -15,9 +16,8 @@ pub use ingest::{
 };
 pub use local_git_source::{IndexError, IndexReport, LocalGitSource};
 pub use migrations::migrator;
-pub use payloads::{
-    CommitV1, CodeChunkV1, FileRevisionV1, FileState,
-};
+pub use operators::CommitSummaryOperator;
+pub use payloads::{CodeChunkV1, CommitSummaryV1, CommitV1, FileRevisionV1, FileState};
 
 proxima_core::proxima_flavor! {
     name = "proxima-code",
@@ -25,6 +25,9 @@ proxima_core::proxima_flavor! {
         payloads::CommitV1,
         payloads::FileRevisionV1,
         payloads::CodeChunkV1,
+    ],
+    abstraction_schemas = [
+        payloads::CommitSummaryV1,
     ],
 }
 
@@ -40,13 +43,11 @@ mod tests {
         let frozen = registry.freeze();
 
         let schemas = frozen.list();
-        let schema_ids: HashSet<_> = schemas
-            .iter()
-            .map(|s| s.schema_id.as_str())
-            .collect();
+        let schema_ids: HashSet<_> = schemas.iter().map(|s| s.schema_id.as_str()).collect();
 
         assert!(schema_ids.contains("proxima-code/commit-v1"));
         assert!(schema_ids.contains("proxima-code/file-revision-v1"));
         assert!(schema_ids.contains("proxima-code/code-chunk-v1"));
+        assert!(schema_ids.contains("proxima-code/commit-summary-v1"));
     }
 }
