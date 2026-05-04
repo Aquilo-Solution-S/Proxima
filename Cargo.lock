@@ -202,6 +202,7 @@ name = "proxima-engine"
 version = "0.1.0"
 dependencies = [
  "proxima-core",
+ "uuid",
 ]
 
 [[package]]
