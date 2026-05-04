@@ -291,7 +291,9 @@ Every `relation.id` must resolve to a `RelationDescriptor` registered by
 some flavor (or by core, for cross-cutting relations like
 `core/motivated-by`, `core/derived-from`, `core/parent`,
 `core/supersedes`) at startup. Engine rejects edges with unregistered
-relations.
+relations. `core/supersedes` is registered with a kind mask that
+permits A→A, P→P, and Goal→Goal only — F→F supersession is not
+expressible at the edge layer (see §Re-derivation and supersession).
 
 ```rust
 struct RelationDescriptor {
@@ -326,7 +328,7 @@ Within F/A/P:
 
 | From → To | Allowed? | Typical class | Authorship |
 |---|---|---|---|
-| Fact → Fact | ✓ | `Structural` (Event Source) or `Causal`/`Interpretive` (PerspectiveLink) | `EventSource`, `PerspectiveLink` |
+| Fact → Fact | ✓ | `Structural` (Event Source) or `Causal`/`Interpretive` (PerspectiveLink); **never `Supersedes`** | `EventSource`, `PerspectiveLink` |
 | Abstraction → Fact | ✓ | `Provenance` | `OperatorFtoA` |
 | Abstraction → Abstraction | ✓ | `Structural` / flavor-specific | `Core(Engine)` for supersession |
 | Perspective → Fact | ✓ | `Causal` / `Interpretive` | `PerspectiveLink` |
@@ -451,6 +453,23 @@ Personalization: same A-set under different Π yields different P. Bias is
 full personality (Q4).
 
 ## Re-derivation and supersession
+
+**Supersession applies to A, P, and Goals only.** Facts have a stricter
+contract: each Fact is one observation at one time, immutable at the
+identity layer, never replaced and never linked to a successor. The
+Fact layer therefore registers no `Supersedes`-class relation; the
+F→F directionality row in the table above admits only `Structural`
+(Event-Source authored) and `Causal`/`Interpretive` (PerspectiveLink)
+edges.
+
+Stateful Fact projections — "current revision of file X", "latest
+snapshot of resource Y" — are expressed at **query time** as
+head-by-natural-key over the schema's sidecar (latest by natural-key
+columns ordered by `observed_at` desc, limit 1), not as a `supersedes`
+chain. Deletion observations are themselves Facts under a
+`state: Tombstone` enum field on the sidecar — same schema, different
+state. The pattern and its sidecar contract live in
+[03 §Stateful Fact schemas](docs/03-schema-registry.md#stateful-fact-schemas--head-by-natural-key).
 
 Memories are **never destroyed**. When personality state drifts and a new
 Abstraction is derived from the same Facts under the **same**

@@ -58,9 +58,17 @@ breaks if these slip.
    sidecar bytes, not Fact identity.
    See [03 §Schema evolution](docs/03-schema-registry.md#schema-evolution-code--migration),
    [07 §Identity rules](docs/07-storage.md#identity-rules).
-3. **Append-only.** State transitions = new row + `supersedes`; the
-   only `DELETE` path is GDPR erasure.
-   See [07 §Append-only](docs/07-storage.md#append-only).
+3. **Append-only; the only `DELETE` path is GDPR erasure.** Supersession
+   is the lifecycle mechanism for **A, P, and Goals only** — `new row +
+   supersedes` carrying lineage in `personality_id` (A/P) or by
+   `Core(Engine)` / `Core(User)` authorship (Goals). Facts have no
+   `supersedes` link: each Fact is one observation, immutable, never
+   replaced. Stateful Fact projections (file revisions, snapshot
+   indexes) express "current state" via head-by-natural-key queries
+   on the sidecar, not via lineage replacement.
+   See [07 §Append-only](docs/07-storage.md#append-only),
+   [02 §Re-derivation and supersession](docs/02-memory.md#re-derivation-and-supersession),
+   [03 §Stateful Fact schemas](docs/03-schema-registry.md#stateful-fact-schemas--head-by-natural-key).
 4. **Owner is per-row; `org_id` is not in the access predicate.**
    Cross-owner edges rejected.
    See [01 §Owner — scoping primitive](docs/01-event-source.md#owner--scoping-primitive).

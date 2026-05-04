@@ -144,7 +144,7 @@ memories(
     prompt_version        nullable,         -- Derived: NOT NULL; Fact: NULL
     personality_id         nullable,         -- Derived: NOT NULL — which personality flavor produced this (08); Fact: NULL
     personality_state_hash nullable,         -- Derived: NOT NULL; Fact: NULL
-    supersedes            nullable          -- UUIDv7 of prior memory in same personality_id lineage
+    supersedes            nullable          -- Derived only: UUIDv7 of prior memory in same personality_id lineage; Fact: NULL
 )
 -- Entity definition in [02-memory.md](docs/02-memory.md#the-core-entity).
 -- Check constraint: exactly one variant present per row.
@@ -152,15 +152,23 @@ memories(
 --              AND kind IS NULL AND text IS NULL AND operator_kind IS NULL
 --              AND model_id IS NULL AND prompt_version IS NULL
 --              AND personality_id IS NULL AND personality_state_hash IS NULL
+--              AND supersedes IS NULL
 --   Derived:   kind NOT NULL AND text NOT NULL AND operator_kind NOT NULL
 --              AND model_id NOT NULL AND prompt_version NOT NULL
 --              AND personality_id NOT NULL AND personality_state_hash NOT NULL
 --              AND event_id IS NULL AND citation_mapping_id IS NULL
--- Supersession constraint: when supersedes IS NOT NULL, the prior row's
--- personality_id must match this row's personality_id. Cross-personality
--- supersession is rejected at this layer; user-API writes that intend
--- cross-personality replacement bypass via the explicit
--- `Core(User(u))`-authored path (see 02 §Re-derivation and supersession).
+-- Fact immutability: the Fact branch's `supersedes IS NULL` is the
+-- storage-level enforcement of the trauma-test invariant
+-- (02 §Re-derivation and supersession). Stateful Fact projections
+-- ("current revision of file X") express heads via head-by-natural-key
+-- queries on the schema's sidecar (03 §Stateful Fact schemas), not
+-- via lineage replacement.
+-- Supersession constraint (Derived only): when supersedes IS NOT NULL,
+-- the prior row's personality_id must match this row's personality_id.
+-- Cross-personality supersession is rejected at this layer; user-API
+-- writes that intend cross-personality replacement bypass via the
+-- explicit `Core(User(u))`-authored path (see 02 §Re-derivation and
+-- supersession).
 
 edges(
     edge_id               pk,
