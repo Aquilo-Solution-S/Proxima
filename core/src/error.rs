@@ -16,6 +16,8 @@ pub enum ErrorCode {
     Forbidden,
     UnknownSchema,
     AlreadyIngested,
+    IdempotencyConflict,
+    NotFound,
     Internal,
 }
 
@@ -40,6 +42,25 @@ impl ProtocolError {
         Self {
             code: ErrorCode::UnknownSchema,
             message: format!("schema not registered: {} v{}", schema_id.as_ref(), version),
+            request_id: None,
+        }
+    }
+
+    pub fn idempotency_conflict(request_id: impl AsRef<str>) -> Self {
+        Self {
+            code: ErrorCode::IdempotencyConflict,
+            message: format!(
+                "request_id already used with different body: {}",
+                request_id.as_ref(),
+            ),
+            request_id: None,
+        }
+    }
+
+    pub fn not_found(message: impl Into<String>) -> Self {
+        Self {
+            code: ErrorCode::NotFound,
+            message: message.into(),
             request_id: None,
         }
     }
