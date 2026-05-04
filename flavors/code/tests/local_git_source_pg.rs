@@ -208,12 +208,53 @@ async fn local_git_source_full_cycle() {
         let repo = fixture_repo();
         let repo_id = Uuid::now_v7();
         let source = LocalGitSource::new(repo_id, repo.path().to_path_buf(), owner.clone());
-        let r1 = source.index(pg.pool()).await?;
+        let cursor = proxima_core::Cursor::empty();
+        let (r1, cursor) = source.run_poll(pg.pool(), &cursor).await?;
         assert!(r1.commits_emitted >= 1, "expected at least one commit");
         assert!(r1.files_present_emitted >= 3, "expected ≥3 file-revisions");
         assert!(r1.chunks_emitted >= 3, "expected ≥3 chunks");
         let chunks_after_initial = count_present_chunks(pg.pool(), &owner, repo_id).await;
         assert!(chunks_after_initial >= 3);
+
+        // Citation linkage proof — chunks share `cited_object_id`
+        // with their parent `file-revision-v1` Fact via the
+        // substrate's UNIQUE on (owner, schema_id, content_hash).
+        // This is what makes `parent_file_revision_id` redundant
+        // in the chunk Fact payload (docs/11 §"Three-layer model").
+        let linkage: (i64, i64) = sqlx::query_as(
+            "WITH revision_cited AS ( \
+                 SELECT cm.cited_object_id, fr.repo_id, fr.file_path \
+                 FROM proxima_core.citation_mappings cm \
+                 JOIN proxima_code.file_revision_v1 fr USING (memory_id) \
+                 WHERE fr.repo_id = $1 AND fr.file_path = 'src/lib.rs' \
+             ), \
+             chunk_cited AS ( \
+                 SELECT cm.cited_object_id, ch.repo_id, ch.file_path \
+                 FROM proxima_core.citation_mappings cm \
+                 JOIN proxima_code.code_chunk_v1 ch USING (memory_id) \
+                 WHERE ch.repo_id = $1 AND ch.file_path = 'src/lib.rs' \
+                   AND ch.state = 'Present' \
+             ) \
+             SELECT \
+                 (SELECT COUNT(*)::bigint FROM chunk_cited), \
+                 (SELECT COUNT(*)::bigint FROM chunk_cited c \
+                  WHERE EXISTS ( \
+                      SELECT 1 FROM revision_cited r \
+                      WHERE r.cited_object_id = c.cited_object_id))",
+        )
+        .bind(repo_id)
+        .fetch_one(pg.pool())
+        .await?;
+        assert!(
+            linkage.0 > 0,
+            "expected at least one chunk for src/lib.rs"
+        );
+        assert_eq!(
+            linkage.0, linkage.1,
+            "every chunk must share cited_object_id with a file-revision-v1 \
+             Fact for the same blob — got {} chunks, {} linked",
+            linkage.0, linkage.1,
+        );
 
         // Heads-only chunk Query through the Engine — the path that
         // matters for downstream consumers.
@@ -243,11 +284,12 @@ async fn local_git_source_full_cycle() {
         git(repo.path(), &["add", "src/lib.rs"]);
         git(repo.path(), &["commit", "-q", "-m", "expand lib"]);
 
-        let r2 = source.index(pg.pool()).await?;
-        // src/lib.rs touched → 1 file-revision; chunks re-emitted for it.
-        assert!(r2.files_present_emitted >= 1);
-        // README.md and src/main.ts unchanged → counted in unchanged.
-        assert!(r2.files_unchanged >= 2);
+        let (r2, cursor) = source.run_poll(pg.pool(), &cursor).await?;
+        // One new commit ("expand lib") → one batch with one
+        // file-revision Fact (src/lib.rs) and its chunks. README.md
+        // and main.ts aren't in this commit's diff, so they aren't
+        // re-emitted.
+        assert_eq!(r2.files_present_emitted, 1);
 
         // src/lib.rs head must now have new content.
         let row: (Vec<u8>,) = sqlx::query_as(
@@ -295,7 +337,7 @@ async fn local_git_source_full_cycle() {
         git(repo.path(), &["add", "-A"]);
         git(repo.path(), &["commit", "-q", "-m", "drop main.ts"]);
 
-        let r3 = source.index(pg.pool()).await?;
+        let (r3, cursor) = source.run_poll(pg.pool(), &cursor).await?;
         assert!(r3.files_tombstoned >= 1, "expected tombstone for main.ts");
         let main_state = fetch_file_revision_state(pg.pool(), &owner, repo_id, "src/main.ts").await;
         assert_eq!(main_state.as_deref(), Some("Tombstone"));
@@ -310,7 +352,7 @@ async fn local_git_source_full_cycle() {
         git(repo.path(), &["add", "-A"]);
         git(repo.path(), &["commit", "-q", "-m", "rename README"]);
 
-        let _r4 = source.index(pg.pool()).await?;
+        let (_r4, cursor) = source.run_poll(pg.pool(), &cursor).await?;
         let old_state = fetch_file_revision_state(pg.pool(), &owner, repo_id, "README.md").await;
         let new_state =
             fetch_file_revision_state(pg.pool(), &owner, repo_id, "docs/README.md").await;
@@ -334,7 +376,7 @@ async fn local_git_source_full_cycle() {
         // ----------------------------------------------------------------
         // Re-running index without changes must be idempotent (no new
         // emissions, all unchanged).
-        let r_idem = source.index(pg.pool()).await?;
+        let (r_idem, _cursor) = source.run_poll(pg.pool(), &cursor).await?;
         assert_eq!(r_idem.files_present_emitted, 0, "idempotent reindex emitted files");
         assert_eq!(r_idem.chunks_emitted, 0, "idempotent reindex emitted chunks");
         assert_eq!(r_idem.files_tombstoned, 0, "idempotent reindex tombstoned files");
@@ -390,7 +432,8 @@ async fn polyglot_markdown_emits_file_revision_and_fallback_chunks() {
 
         let repo_id = Uuid::now_v7();
         let source = LocalGitSource::new(repo_id, dir.path().to_path_buf(), owner.clone());
-        let report = source.index(pg.pool()).await?;
+        let cursor = proxima_core::Cursor::empty();
+        let (report, _cursor) = source.run_poll(pg.pool(), &cursor).await?;
         assert!(report.files_present_emitted >= 1);
 
         let state = fetch_file_revision_state(pg.pool(), &owner, repo_id, "doc.md").await;

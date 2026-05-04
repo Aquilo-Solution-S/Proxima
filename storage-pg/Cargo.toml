@@ -19,6 +19,7 @@ async-trait = { workspace = true }
 tracing = { workspace = true }
 futures-util = { workspace = true }
 tokio-stream = { workspace = true }
+time = { workspace = true }
 
 [lints]
 workspace = true

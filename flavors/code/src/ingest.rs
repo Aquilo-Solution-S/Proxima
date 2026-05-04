@@ -33,12 +33,38 @@ use crate::payloads::{CodeChunkV1, CommitV1, FileRevisionV1, FileState};
 /// Stable source-id namespace for `LocalGitSource` events.
 pub const LOCAL_GIT_SOURCE_ID: &str = "proxima-code/local-git";
 
-/// Stable schema-ids for the flavor's helper-required hints. The
-/// composite binary is responsible for registering these (or whatever
-/// schemas it prefers) in the `SchemaRegistry` so `Engine::event_ingest`
-/// validation passes.
-pub const CITED_OBJECT_SCHEMA: &str = "proxima-code/cited-object-v1";
-pub const CITATION_MAPPING_SCHEMA: &str = "proxima-code/citation-mapping-v1";
+// Per-fact-type citation schema-ids (docs/11). file_revision and chunk
+// Facts cite the same artefact (the file blob, keyed by content_sha256)
+// via `code-blob-v1`, so the substrate's UNIQUE on
+// `(owner, schema_id, content_hash)` deduplicates the CitedObject row
+// and the chunks share a `cited_object_id` with their parent revision
+// — no embedded MemoryId FK in the chunk payload.
+//
+// CitationMapping schemas differentiate the annotation:
+// `whole` for facts that reference the whole artefact, `byte-range`
+// for chunks. The byte/line ranges themselves stay on the chunk Fact
+// payload (the substrate doesn't store typed CitationMapping bodies
+// yet; the schema_id is currently a label, not a sidecar key).
+
+/// CitedObject schema for a file blob (idempotency_key = blob's
+/// `content_sha256`). Shared by `file-revision-v1` and `code-chunk-v1`.
+pub const CODE_BLOB_SCHEMA: &str = "proxima-code/code-blob-v1";
+
+/// CitedObject schema for a git commit object
+/// (idempotency_key = blake3(commit sha)).
+pub const CODE_COMMIT_OBJECT_SCHEMA: &str = "proxima-code/code-commit-object-v1";
+
+/// CitationMapping for "this Fact references the whole blob"
+/// (used by `file-revision-v1`).
+pub const CODE_BLOB_WHOLE_SCHEMA: &str = "proxima-code/code-blob-whole-v1";
+
+/// CitationMapping for "this Fact references a byte/line range of
+/// the blob" (used by `code-chunk-v1`).
+pub const CODE_BLOB_BYTE_RANGE_SCHEMA: &str = "proxima-code/code-blob-byte-range-v1";
+
+/// CitationMapping for "this Fact references the whole commit object"
+/// (used by `commit-v1`).
+pub const CODE_COMMIT_WHOLE_SCHEMA: &str = "proxima-code/code-commit-whole-v1";
 
 /// Errors raised by the typed-ingest helpers.
 #[derive(Debug, thiserror::Error)]
@@ -51,12 +77,23 @@ pub enum IngestError {
     Protocol(#[from] ProtocolError),
 }
 
+/// Per-fact-type citation triple: which artefact schema, which content
+/// hash deduplicates the artefact within Owner, and which annotation
+/// schema labels the linkage. v1 holds schema-version at 1 across the
+/// flavor.
+#[derive(Clone, Copy)]
+struct Citation {
+    cited_object_schema: &'static str,
+    content_hash: [u8; 32],
+    mapping_schema: &'static str,
+}
+
 fn make_draft<P: serde::Serialize>(
     owner: &Owner,
     source_batch_id: SourceBatchId,
     payload: &P,
     schema_id: &str,
-    cited_object_hash: [u8; 32],
+    citation: Citation,
     observed_at: time::OffsetDateTime,
 ) -> Result<EventDraft, IngestError> {
     let bytes =
@@ -71,18 +108,36 @@ fn make_draft<P: serde::Serialize>(
         observed_at,
         occurred_at: observed_at,
         cited_object: CitedObjectHint {
-            schema_id: SchemaId::new(CITED_OBJECT_SCHEMA.into()),
+            schema_id: SchemaId::new(citation.cited_object_schema.into()),
             schema_version: SchemaVersion::new(1),
-            content_hash: cited_object_hash,
+            content_hash: citation.content_hash,
         },
         citation_mapping: CitationMappingHint {
-            schema_id: SchemaId::new(CITATION_MAPPING_SCHEMA.into()),
+            schema_id: SchemaId::new(citation.mapping_schema.into()),
             schema_version: SchemaVersion::new(1),
         },
     })
 }
 
-/// Atomic Fact + sidecar write for `commit-v1`.
+/// Close a `source_batch` opened by the typed-ingest helpers under a
+/// LocalGitSource poll. Idempotent. Maps `NotFound` to `Ok(())` so
+/// callers can safely call this after no-op polls (no events → no
+/// batch row was ever inserted).
+pub async fn close_local_git_batch(
+    pool: &PgPool,
+    owner: &Owner,
+    source_batch_id: SourceBatchId,
+) -> Result<(), IngestError> {
+    match proxima_storage_pg::verbs::close_batch::close_batch(pool, owner, source_batch_id).await
+    {
+        Ok(_) | Err(proxima_core::StorageError::NotFound) => Ok(()),
+        Err(e) => Err(IngestError::Storage(e.to_string())),
+    }
+}
+
+/// Atomic Fact + sidecar write for `commit-v1`. Cites the commit
+/// object (keyed by blake3 of the commit sha) with a "whole-commit"
+/// CitationMapping.
 pub async fn ingest_commit(
     pool: &PgPool,
     owner: &Owner,
@@ -90,13 +145,16 @@ pub async fn ingest_commit(
     payload: &CommitV1,
     observed_at: time::OffsetDateTime,
 ) -> Result<EventIngestOutcome, IngestError> {
-    let cited_hash = blake3::hash(payload.sha.as_bytes()).into();
     let draft = make_draft(
         owner,
         source_batch_id,
         payload,
         CommitV1::SCHEMA_ID,
-        cited_hash,
+        Citation {
+            cited_object_schema: CODE_COMMIT_OBJECT_SCHEMA,
+            content_hash: blake3::hash(payload.sha.as_bytes()).into(),
+            mapping_schema: CODE_COMMIT_WHOLE_SCHEMA,
+        },
         observed_at,
     )?;
 
@@ -131,7 +189,9 @@ pub async fn ingest_commit(
     Ok(outcome)
 }
 
-/// Atomic Fact + sidecar write for `file-revision-v1`.
+/// Atomic Fact + sidecar write for `file-revision-v1`. Cites the
+/// file blob (keyed by `content_sha256`) with a "whole-blob"
+/// CitationMapping. Tombstones cite the null blob (`[0u8; 32]`).
 pub async fn ingest_file_revision(
     pool: &PgPool,
     owner: &Owner,
@@ -144,7 +204,11 @@ pub async fn ingest_file_revision(
         source_batch_id,
         payload,
         FileRevisionV1::SCHEMA_ID,
-        payload.content_sha256,
+        Citation {
+            cited_object_schema: CODE_BLOB_SCHEMA,
+            content_hash: payload.content_sha256,
+            mapping_schema: CODE_BLOB_WHOLE_SCHEMA,
+        },
         observed_at,
     )?;
 
@@ -179,21 +243,33 @@ pub async fn ingest_file_revision(
     Ok(outcome)
 }
 
-/// Atomic Fact + sidecar write for `code-chunk-v1`.
+/// Atomic Fact + sidecar write for `code-chunk-v1`. Cites the parent
+/// blob (the same `cited_object_id` as the chunk's parent
+/// `file-revision-v1`, by way of the substrate's UNIQUE on
+/// `(owner, schema_id, content_hash)`) with a "byte-range"
+/// CitationMapping. Tombstone chunks cite the null blob (`[0u8; 32]`).
+///
+/// `parent_blob_sha256` is the caller's responsibility — for Present
+/// chunks it's the blob the chunker just operated on; for Tombstones
+/// it's `[0u8; 32]`.
 pub async fn ingest_code_chunk(
     pool: &PgPool,
     owner: &Owner,
     source_batch_id: SourceBatchId,
     payload: &CodeChunkV1,
+    parent_blob_sha256: [u8; 32],
     observed_at: time::OffsetDateTime,
 ) -> Result<EventIngestOutcome, IngestError> {
-    let cited_hash = blake3::hash(payload.text.as_bytes()).into();
     let draft = make_draft(
         owner,
         source_batch_id,
         payload,
         CodeChunkV1::SCHEMA_ID,
-        cited_hash,
+        Citation {
+            cited_object_schema: CODE_BLOB_SCHEMA,
+            content_hash: parent_blob_sha256,
+            mapping_schema: CODE_BLOB_BYTE_RANGE_SCHEMA,
+        },
         observed_at,
     )?;
 
@@ -208,16 +284,15 @@ pub async fn ingest_code_chunk(
         };
         sqlx::query(
             "INSERT INTO proxima_code.code_chunk_v1 \
-                (memory_id, repo_id, file_path, chunk_index, parent_file_revision_id, \
+                (memory_id, repo_id, file_path, chunk_index, \
                  text, language, chunk_type, byte_range_start, byte_range_end, \
                  line_range_start, line_range_end, state) \
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)",
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)",
         )
         .bind(outcome.memory_id.into_inner())
         .bind(payload.repo_id)
         .bind(&payload.file_path)
         .bind(i32::try_from(payload.chunk_index).unwrap_or(i32::MAX))
-        .bind(payload.parent_file_revision_id.into_inner())
         .bind(&payload.text)
         .bind(payload.language.as_deref())
         .bind(&payload.chunk_type)
@@ -374,22 +449,35 @@ pub fn build_engine(
     let mut flavor = FlavorRegistry::new();
     crate::register(&mut flavor);
     let mut schemas = flavor.freeze().list();
-    schemas.push(SchemaInfo {
-        schema_id: SchemaId::new(CITED_OBJECT_SCHEMA.into()),
-        schema_version: SchemaVersion::new(1),
-        kind: PayloadKind::CitedObject,
-        filter_keys: vec![],
-        sidecar_table: None,
-        natural_key_columns: vec![],
-    });
-    schemas.push(SchemaInfo {
-        schema_id: SchemaId::new(CITATION_MAPPING_SCHEMA.into()),
-        schema_version: SchemaVersion::new(1),
-        kind: PayloadKind::CitationMapping,
-        filter_keys: vec![],
-        sidecar_table: None,
-        natural_key_columns: vec![],
-    });
+
+    // CitedObject schemas — file blob (shared by file_revision + chunk)
+    // and commit object.
+    for cited in [CODE_BLOB_SCHEMA, CODE_COMMIT_OBJECT_SCHEMA] {
+        schemas.push(SchemaInfo {
+            schema_id: SchemaId::new(cited.into()),
+            schema_version: SchemaVersion::new(1),
+            kind: PayloadKind::CitedObject,
+            filter_keys: vec![],
+            sidecar_table: None,
+            natural_key_columns: vec![],
+        });
+    }
+
+    // CitationMapping schemas — typed per fact-type.
+    for mapping in [
+        CODE_BLOB_WHOLE_SCHEMA,
+        CODE_BLOB_BYTE_RANGE_SCHEMA,
+        CODE_COMMIT_WHOLE_SCHEMA,
+    ] {
+        schemas.push(SchemaInfo {
+            schema_id: SchemaId::new(mapping.into()),
+            schema_version: SchemaVersion::new(1),
+            kind: PayloadKind::CitationMapping,
+            filter_keys: vec![],
+            sidecar_table: None,
+            natural_key_columns: vec![],
+        });
+    }
 
     Engine::new(SchemaRegistry::with_schemas(schemas), MemoryStore::new(), auth)
         .with_storage(Arc::new(storage))

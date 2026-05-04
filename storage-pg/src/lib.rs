@@ -11,11 +11,14 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use proxima_core::verbs::close_batch::CloseBatchOutcome;
 use proxima_core::verbs::event_ingest::{EventDraft, EventIngestOutcome};
 use proxima_core::verbs::goal_write::{GoalDraft, GoalWriteOutcome};
 use proxima_core::verbs::query::{QueryRequest, QueryResponse};
 use proxima_core::verbs::subscribe::ChangeEventStream;
-use proxima_core::{ChangeEvent, GoalId, Owner, Storage, StorageError, StorageHandle};
+use proxima_core::{
+    ChangeEvent, GoalId, Owner, SourceBatchId, Storage, StorageError, StorageHandle,
+};
 use sqlx::PgPool;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use tokio::sync::broadcast;
@@ -168,5 +171,13 @@ impl Storage for PgStorage {
         req: &QueryRequest,
     ) -> Result<QueryResponse, StorageError> {
         verbs::query::query_memories(&self.pool, req).await
+    }
+
+    async fn close_batch(
+        &self,
+        owner: &Owner,
+        source_batch_id: SourceBatchId,
+    ) -> Result<CloseBatchOutcome, StorageError> {
+        verbs::close_batch::close_batch(&self.pool, owner, source_batch_id).await
     }
 }

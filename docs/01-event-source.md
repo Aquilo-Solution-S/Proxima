@@ -64,16 +64,24 @@ across other sources.
 
 ```
 trait EventSource {
-    type Event;                                  // typed payload, source-specific
-
     fn source_id(&self) -> SourceId;             // stable identifier
-    fn schema_version(&self) -> Version;         // payload schema version
 
     // Pull mode: engine asks for events since cursor.
     // Push mode: source emits to a queue the engine subscribes to.
     // A given source implements one or the other, not both.
 }
 ```
+
+A source emits a **heterogeneous stream**: each event carries its own
+`(schema_id, schema_version)` (see "Properties of an Event" below), and a
+single source typically spans multiple schemas. A git source emits commits,
+file-revisions, and chunks on three independent schemas; a chat source emits
+messages, edits, and reactions; a Forgejo source emits push, PR, issue, and
+comment events. There is no per-source `Event` associated type and no
+per-source `schema_version()` accessor — both would falsely encode "source
+= one schema". Schema declaration for registration happens per-flavor (see
+[03 §Scoping](docs/03-schema-registry.md#scoping-one-namespace-per-binary)),
+not via a runtime accessor on the source.
 
 Each event the source produces becomes one Fact. The 1:1 mapping is mandatory
 *at the engine boundary*: no Event Source filters, deduplicates, or

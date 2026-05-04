@@ -60,7 +60,7 @@ here.
 - **Done when**: a hand-crafted Fact insert under a Code schema is
   retrievable via `Query(entity_kind=Fact, schema_id=code/...)`.
 
-### M4 — Self-ingestion
+### M4 — Self-ingestion — closed 2026-05-04
 
 - **Compiles**: git EventSource per [01](docs/01-event-source.md)
   walking this repo's commits, registered against the Code flavor.
@@ -103,6 +103,27 @@ here.
 No commitment, ordering loose. Each is a candidate next milestone
 once `code-demo` is live.
 
+- Reintroduce `EventSource` trait once a uniform source-coordination
+  surface is actually needed (multi-source scheduler, central cursor
+  persistence, runtime source discovery). Corrected shape per
+  [01 §The contract](docs/01-event-source.md#the-contract): just
+  `source_id()` plus push/pull mode; no `type Event`, no
+  `schema_version()` — sources emit heterogeneous streams and each
+  event carries its own `(schema_id, schema_version)`. The M4-era
+  trait was deleted as speculative and unimplementable as written.
+- Persist source cursors. M4 keeps the cursor in-memory at the call
+  site (`core/src/cursor.rs`); restart re-walks from empty, made
+  safe by `event_id` idempotency. Add a `source_cursors` table once
+  restart-recovery cost or multi-process coordination warrants it
+  — the natural co-arrival with the `EventSource` trait above.
+- Retire `run_poll`'s last sidecar read (`present_chunk_indexes` on
+  `code_chunk_v1`, used to compute chunk tombstones when a file
+  shrinks). The per-commit walk processes commits in order, so the
+  query returns "chunks at parent's head" — semantically equivalent
+  to running tree-sitter on the parent commit's blob. The pure-git
+  version (re-chunk the parent blob, diff index sets) decouples the
+  source from flavor sidecar shape, paying off once sources move
+  out of `flavors/<name>/` into their own crates.
 - A→P operator (intra-flavor) for Code; first Perspective UI.
 - `GoalWrite` UI in `proxima-shell`; agent-discovered goals via A→Goal.
 - `OIDC` resolver + multi-Owner UI; first hosted dogfood deployment.

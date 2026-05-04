@@ -1,14 +1,18 @@
-use proxima_core::{FactPayload, MemoryId, proxima_schema_id};
+use proxima_core::{FactPayload, proxima_schema_id};
 use serde::{Deserialize, Serialize};
 
 use crate::payloads::file_revision::FileState;
 
+/// Code chunk Fact. The "which blob this chunk belongs to" relation is
+/// carried by the substrate citation (shared `cited_object_id` with the
+/// parent `file-revision-v1` Fact, keyed by blob content hash) — no
+/// embedded `MemoryId` parent FK in the payload. See docs/11
+/// §"Three-layer model".
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CodeChunkV1 {
     pub repo_id: uuid::Uuid,
     pub file_path: String,
     pub chunk_index: u32,
-    pub parent_file_revision_id: MemoryId,
     pub text: String,
     pub language: Option<String>,
     pub chunk_type: String,

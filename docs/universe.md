@@ -92,13 +92,16 @@ can tell what is claimed and what isn't.
 
 ### Perspectivist constructivism about causation
 
-**There is no causal chain without an observer's perspective.** Facts alone
-yield events correlated in time; the *why* requires an interpretive frame.
-The lineage runs through Hume (causation as inferred, not observed), Peirce
-(abductive inference), van Fraassen (constructive empiricism), Pearl (causal
-DAGs are always *someone's* model), and Cartwright (causal pluralism). The
-neuroscience version is predictive processing / active inference (Friston,
-Clark, Hohwy): the brain does not observe causes, it infers them under priors.
+**Causal claims are perspective-relative.** Facts alone yield events correlated
+in time; the *why* requires an interpretive frame, and any system that asserts a
+causal chain thereby commits to one. The position is epistemological, not
+ontological: we make no claim that causation does not exist outside observers,
+only that any *attribution* of causation is observer-relative. The lineage runs
+through Hume (causation as inferred, not observed), Peirce (abductive inference),
+van Fraassen (constructive empiricism), Pearl (causal DAGs are always *someone's*
+model), and Cartwright (causal pluralism). The neuroscience version is predictive
+processing / active inference (Friston, Clark, Hohwy): the brain does not observe
+causes, it infers them under priors.
 
 The load-bearing architectural consequence: **Perspective is the locus of
 causal claims**, never Facts. Edges encoding causation must be P-authored
@@ -130,39 +133,45 @@ that can finally serve as F→A and A→P operators.
 
 ## What do we actually want to achieve?
 
-The core question is - what drives our learning? What makes a human mind a human mind?
-The above principle describes a word view which is memory centric. The abstraction holds.
-Lets map some cases against it:
+The core question: what drives learning? What makes a mind a mind? The model
+above describes a memory-centric world view, and the abstraction holds across
+domains. Three mappings:
 
 ### Code World
 
-Reality: The reality are the registered sources - for example repositories from different providers.
-Memories: State of the Code at time point t and the connecting edges between them which follow the causa proxima principle
-Perspective: Extraction out of the code - meta principles accross repositories, shared architectures,
-shared code segments - meta level of the concepts which are recognizable. Here the drift inside multiple repositories is detected
-Goals: Matched with the goals of the repository, reduce drift, increase output
+- **Reality:** registered sources — repositories from different providers.
+- **Memories:** state of the code at time point t, with edges between states that follow the causa proxima principle.
+- **Perspective:** extraction across repositories — meta principles, shared architectures, shared code segments. Drift across multiple repositories is detected at this layer.
+- **Goals:** aligned with repository goals — reduce drift, increase output.
 
 ### Learning World
 
-Reality: The reality are proviced documents - scripts from university, books, research papers,
-conversations with the user about the topics, created exams, interaction events
-Memories: State of the documents at time point t and connecting edges between the memorable events
-like conversations, tests, exams and so on.
-Perspectie: Extraction out of the user sessions with a user centric observation, what does the user
-need to understand about topic X to be prepared for the challanges of the exam
-Goals: Understand X
+- **Reality:** provided documents — university scripts, books, research papers, conversations with the user about the topics, generated exams, interaction events.
+- **Memories:** state of the documents at time point t, with edges between memorable events such as conversations, tests, exams.
+- **Perspective:** extraction from user sessions with user-centric observation — what does the user need to understand about topic X to be prepared for the exam's challenges.
+- **Goals:** understand X.
 
-### Juristication World
+### Legal World
 
-Reality: Documents of cases, Mandates and Mandanten, notes, emails and so on.
-Memories: Extraction and facts of documents, interactions, applied laws and interconnections between them
-Perspective: Extraction of patterns accross cases to reduce friction from case to case. Meta insights into all data.
-Goals: Improve output per time while reducing cognitive load and errors
+- **Reality:** documents of cases, mandates, clients, notes, emails.
+- **Memories:** extracted facts from documents, interactions, applied laws, and the interconnections between them.
+- **Perspective:** patterns across cases that reduce friction from case to case; meta-insights across all data.
+- **Goals:** improve output per time while reducing cognitive load and errors.
 
 ## Conclusions
 
-As we see we need different kind of memories - fact baseds are extracted from real documents which
-are exactly existing at a time point t and can be retrieved and associated. One Document can
-produce a meaningfull amount of factual memories. Abstracted memories are such which are coming from
-non factual things like aggregations from factual memories. Perspective creating memories are then
-memories above them all which create a reasoning.
+The three domain mappings show that the same three-layer memory shape supports
+distinct working contexts:
+
+- **Factual memories** are extracted from real artefacts that exist at a definite
+  time point t. They are retrievable, associable, and one source document can
+  yield many of them.
+- **Abstracted memories** aggregate over factual memories without themselves
+  referring to a single source — they hold patterns, not records.
+- **Perspective memories** sit above both layers and carry the system's
+  reasoning. They are the only legal author of cross-Fact causal edges.
+
+The architectural commitment is that this layering is *strict and irreversible*:
+no operator may produce a lower-layer memory from a higher-layer one. That is
+what keeps Facts immutable under Perspective change — and what makes a
+Perspective revision a clean operation rather than a rewrite of history.
