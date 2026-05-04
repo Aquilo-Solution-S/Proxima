@@ -1,18 +1,15 @@
-//! End-to-end outbox publisher test against a transient PG database.
+//! End-to-end `Query` against a transient PG database.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use proxima_core::auth::{Credentials, NoAuth};
 use proxima_core::engine::Engine;
 use proxima_core::storage::Storage;
 use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
-use proxima_core::verbs::goal_write::{GoalAuthorship, GoalDraft, GoalState};
-use proxima_core::verbs::query::MemoryStore;
+use proxima_core::verbs::query::{EntityKind, MemoryStore, QueryRequest, SupersessionStatus};
 use proxima_core::verbs::schema::{PayloadKind, SchemaInfo, SchemaRegistry};
 use proxima_core::{
-    ChangeEventKind, EntityKind, EntityRef, OrgId, Owner, Principal, SchemaId, SchemaVersion,
-    SourceBatchId, SourceId, UserId,
+    OrgId, Owner, Principal, SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId,
 };
 use proxima_storage_pg::PgStorage;
 use sqlx::{Connection, Executor, PgConnection};
@@ -56,16 +53,10 @@ fn schemas_for_test() -> Vec<SchemaInfo> {
             kind: PayloadKind::CitationMapping,
             filter_keys: vec![],
         },
-        SchemaInfo {
-            schema_id: SchemaId::new("test/goal_blob".into()),
-            schema_version: SchemaVersion::new(1),
-            kind: PayloadKind::Goal,
-            filter_keys: vec![],
-        },
     ]
 }
 
-fn fresh_event_draft(owner: Owner) -> EventDraft {
+fn fresh_draft(owner: Owner) -> EventDraft {
     let now = time::OffsetDateTime::now_utc();
     EventDraft {
         source_id: SourceId::new("test/source"),
@@ -88,21 +79,8 @@ fn fresh_event_draft(owner: Owner) -> EventDraft {
     }
 }
 
-fn fresh_goal_draft(owner: &Owner, request_id: String) -> GoalDraft {
-    GoalDraft {
-        owner: owner.clone(),
-        schema_id: SchemaId::new("test/goal_blob".into()),
-        schema_version: SchemaVersion::new(1),
-        text: "Test goal text".to_string(),
-        state: GoalState::Active,
-        parent_goal_ids: vec![],
-        authorship: GoalAuthorship::User,
-        request_id,
-    }
-}
-
 #[tokio::test]
-async fn outbox_publishes_entity_append_for_fact() {
+async fn query_returns_fact_rows() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if create_db(&db_name).await.is_err() {
         eprintln!("skipping (no admin PG)");
@@ -113,8 +91,6 @@ async fn outbox_publishes_entity_append_for_fact() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
         pg.run_migrations().await?;
-        pg.start_outbox()?;
-
         let storage: Arc<dyn Storage> = Arc::new(pg.clone());
 
         let user = UserId::new(Uuid::now_v7());
@@ -131,49 +107,48 @@ async fn outbox_publishes_entity_append_for_fact() {
         )
         .with_storage(storage);
 
-        let mut rx = pg.changes();
+        // Ingest two distinct Facts.
+        let draft1 = fresh_draft(owner.clone());
+        let draft2 = {
+            let mut d = fresh_draft(owner.clone());
+            d.payload = b"another fact".to_vec();
+            d.source_batch_id = SourceBatchId::new(Uuid::now_v7());
+            d
+        };
 
-        // Ingest an event — should produce a ChangeEvent.
-        let draft = fresh_event_draft(owner.clone());
-        let outcome = engine
-            .event_ingest(&Credentials::None, draft.clone())
+        let outcome1 = engine
+            .event_ingest(&Credentials::None, draft1.clone())
             .await?;
-        assert!(!outcome.idempotent_replay);
+        let outcome2 = engine
+            .event_ingest(&Credentials::None, draft2.clone())
+            .await?;
 
-        // Wait for the ChangeEvent to arrive.
-        let ce = tokio::time::timeout(Duration::from_secs(10), rx.recv()).await??;
+        // Query for all memories for this owner.
+        let req = QueryRequest::for_owner(owner.clone());
+        let resp = engine.query(&Credentials::None, &req).await?;
 
-        // Verify the ChangeEvent.
-        assert_eq!(ce.seq, outcome.change_event_seq);
-        assert_eq!(ce.owner.principal, owner.principal);
-        assert_eq!(ce.owner.org_id, owner.org_id);
-
-        match &ce.kind {
-            ChangeEventKind::EntityAppend {
-                entity_kind,
-                entity,
-                schema_id,
-                schema_version,
-                supersedes,
-            } => {
-                assert_eq!(*entity_kind, EntityKind::Fact);
-                assert_eq!(*entity, EntityRef::Memory(outcome.memory_id));
-                assert_eq!(*schema_id, draft.schema_id);
-                assert_eq!(*schema_version, draft.schema_version);
-                assert!(supersedes.is_none());
-            }
+        assert_eq!(resp.memories.len(), 2);
+        for m in &resp.memories {
+            assert_eq!(m.kind, EntityKind::Fact);
+            assert_eq!(m.schema_id, SchemaId::new("test/fact_blob".into()));
+            assert_eq!(m.owner, owner);
         }
+
+        // seq_high_water should be Some and equal to the greater of the two seqs.
+        assert!(resp.seq_high_water.is_some());
+        let expected_max = std::cmp::max(outcome1.change_event_seq, outcome2.change_event_seq);
+        assert_eq!(resp.seq_high_water, Some(expected_max));
 
         Ok(())
     }
     .await;
 
     let _ = drop_db(&db_name).await;
-    result.expect("outbox_publishes_entity_append_for_fact test failed");
+    result.expect("query_returns_fact_rows test failed");
 }
 
 #[tokio::test]
-async fn outbox_publishes_entity_append_for_goal() {
+async fn query_filter_abstraction_returns_empty() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if create_db(&db_name).await.is_err() {
         eprintln!("skipping (no admin PG)");
@@ -184,8 +159,6 @@ async fn outbox_publishes_entity_append_for_goal() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
         pg.run_migrations().await?;
-        pg.start_outbox()?;
-
         let storage: Arc<dyn Storage> = Arc::new(pg.clone());
 
         let user = UserId::new(Uuid::now_v7());
@@ -202,47 +175,32 @@ async fn outbox_publishes_entity_append_for_goal() {
         )
         .with_storage(storage);
 
-        let mut rx = pg.changes();
+        // Ingest a Fact.
+        let draft = fresh_draft(owner.clone());
+        engine.event_ingest(&Credentials::None, draft).await?;
 
-        // Write a goal — should produce a ChangeEvent.
-        let draft = fresh_goal_draft(&owner, "req-1".to_string());
-        let outcome = engine.write_goal(&Credentials::None, draft.clone()).await?;
-        assert!(!outcome.idempotent_replay);
+        // Query with entity_kind = Abstraction filter.
+        let req = QueryRequest {
+            owner: owner.clone(),
+            entity_kind: Some(EntityKind::Abstraction),
+            schema_id: None,
+            supersession: SupersessionStatus::HeadsOnly,
+            limit: 100,
+        };
+        let resp = engine.query(&Credentials::None, &req).await?;
 
-        // Wait for the ChangeEvent to arrive.
-        let ce = tokio::time::timeout(Duration::from_secs(10), rx.recv()).await??;
-
-        // Verify the ChangeEvent.
-        assert_eq!(ce.seq, outcome.change_event_seq);
-        assert_eq!(ce.owner.principal, owner.principal);
-        assert_eq!(ce.owner.org_id, owner.org_id);
-
-        match &ce.kind {
-            ChangeEventKind::EntityAppend {
-                entity_kind,
-                entity,
-                schema_id,
-                schema_version,
-                supersedes,
-            } => {
-                assert_eq!(*entity_kind, EntityKind::Goal);
-                assert_eq!(*entity, EntityRef::Goal(outcome.goal_id));
-                assert_eq!(*schema_id, draft.schema_id);
-                assert_eq!(*schema_version, draft.schema_version);
-                assert!(supersedes.is_none());
-            }
-        }
+        assert!(resp.memories.is_empty());
 
         Ok(())
     }
     .await;
 
     let _ = drop_db(&db_name).await;
-    result.expect("outbox_publishes_entity_append_for_goal test failed");
+    result.expect("query_filter_abstraction_returns_empty test failed");
 }
 
 #[tokio::test]
-async fn outbox_publishes_fact_then_goal() {
+async fn query_filter_nonexistent_schema_returns_empty() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if create_db(&db_name).await.is_err() {
         eprintln!("skipping (no admin PG)");
@@ -253,8 +211,6 @@ async fn outbox_publishes_fact_then_goal() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
         pg.run_migrations().await?;
-        pg.start_outbox()?;
-
         let storage: Arc<dyn Storage> = Arc::new(pg.clone());
 
         let user = UserId::new(Uuid::now_v7());
@@ -271,42 +227,26 @@ async fn outbox_publishes_fact_then_goal() {
         )
         .with_storage(storage);
 
-        let mut rx = pg.changes();
+        // Ingest a Fact.
+        let draft = fresh_draft(owner.clone());
+        engine.event_ingest(&Credentials::None, draft).await?;
 
-        // Ingest an event.
-        let event_draft = fresh_event_draft(owner.clone());
-        let event_outcome = engine
-            .event_ingest(&Credentials::None, event_draft.clone())
-            .await?;
+        // Query with non-existent schema_id filter.
+        let req = QueryRequest {
+            owner,
+            entity_kind: None,
+            schema_id: Some(SchemaId::new("test/non_existent".into())),
+            supersession: SupersessionStatus::HeadsOnly,
+            limit: 100,
+        };
+        let resp = engine.query(&Credentials::None, &req).await?;
 
-        // Receive first ChangeEvent (Fact).
-        let fact_ce = tokio::time::timeout(Duration::from_secs(10), rx.recv()).await??;
-        assert_eq!(fact_ce.seq, event_outcome.change_event_seq);
-        match &fact_ce.kind {
-            ChangeEventKind::EntityAppend { entity_kind, .. } => {
-                assert_eq!(*entity_kind, EntityKind::Fact);
-            }
-        }
-
-        // Write a goal.
-        let goal_draft = fresh_goal_draft(&owner, "req-1".to_string());
-        let goal_outcome = engine
-            .write_goal(&Credentials::None, goal_draft.clone())
-            .await?;
-
-        // Receive second ChangeEvent (Goal).
-        let goal_ce = tokio::time::timeout(Duration::from_secs(10), rx.recv()).await??;
-        assert_eq!(goal_ce.seq, goal_outcome.change_event_seq);
-        match &goal_ce.kind {
-            ChangeEventKind::EntityAppend { entity_kind, .. } => {
-                assert_eq!(*entity_kind, EntityKind::Goal);
-            }
-        }
+        assert!(resp.memories.is_empty());
 
         Ok(())
     }
     .await;
 
     let _ = drop_db(&db_name).await;
-    result.expect("outbox_publishes_fact_then_goal test failed");
+    result.expect("query_filter_nonexistent_schema_returns_empty test failed");
 }

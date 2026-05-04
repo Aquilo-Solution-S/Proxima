@@ -10,7 +10,8 @@ use proxima_core::verbs::query::QueryRequest;
 use proxima_core::verbs::schema::{SchemaRegistry, SchemaRequest};
 use uuid::Uuid;
 
-fn main() {
+#[tokio::main(flavor = "current_thread")]
+async fn main() {
     let user = UserId::new(Uuid::now_v7());
     let org = OrgId::new(Uuid::now_v7());
     let owner = Owner {
@@ -28,6 +29,7 @@ fn main() {
     let schema_resp = engine.schema(&SchemaRequest);
     let query_resp = engine
         .query(&Credentials::None, &QueryRequest::for_owner(owner))
+        .await
         .expect("NoAuth single-Owner query must succeed");
 
     println!(

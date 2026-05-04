@@ -16,6 +16,7 @@ use crate::verbs::subscribe::{ChangeEventStream, SubscribeRequest};
 
 pub struct Engine {
     registry: SchemaRegistry,
+    // TODO(M3.B): remove MemoryStore
     memories: MemoryStore,
     auth: Box<dyn AuthResolver>,
     storage: StorageHandle,
@@ -61,7 +62,7 @@ impl Engine {
     /// docs/14 §"Query" — Owner-scoped. Caller passes the
     /// transport-extracted credentials; engine resolves and
     /// gates `req.owner ∈ resolved.accessible_owners`.
-    pub fn query(
+    pub async fn query(
         &self,
         creds: &Credentials,
         req: &QueryRequest,
@@ -75,7 +76,10 @@ impl Engine {
                 "principal cannot access requested owner",
             ));
         }
-        Ok(self.memories.query(req))
+        self.storage
+            .query_memories(req)
+            .await
+            .map_err(|e| ProtocolError::internal(e.to_string()))
     }
 
     /// docs/14 §"EventIngest" — Owner-scoped write. Validates
