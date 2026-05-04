@@ -77,7 +77,7 @@ enum ChangeKind {
         entity_id:      EntityId,          // 02 §Edges
         schema_id:      SchemaId,
         schema_version: SchemaVersion,
-        supersedes:     Option<EntityId>,  // present iff this row supersedes a prior head
+        supersedes:     Option<EntityId>,  // present iff this row supersedes a prior head; A/P/Goal only — never set for Facts (02 §Re-derivation and supersession)
     },
     EdgeAppend {
         edge_id:  EdgeId,
@@ -91,7 +91,16 @@ enum ChangeKind {
 **Append-only world, two event types.** No `EntityRemoved`, no
 `EntityMutated`. Supersession is itself an `EntityAppend` carrying
 `supersedes`, so the client learns "this is the new head" through
-the same event shape as a fresh write.
+the same event shape as a fresh write. **Supersession is A/P/Goal
+only**: `EventIngest` never produces a `supersedes`-carrying
+`EntityAppend` (Facts are immutable per [02 §Re-derivation and
+supersession](02-memory.md#re-derivation-and-supersession)). The
+supersedes-carrying paths are `GoalWrite::supersede_goal` (client →
+engine) and the internal A/P-emit pipeline (operator → engine, not a
+public verb). Stateful Fact projections ("current revision of file X")
+arrive on the stream as repeated `EntityAppend`s under the same
+schema and natural key; clients fold to heads on the read side
+(`Query` heads-only filter).
 
 **Filters** mirror `Query`'s core-generic + flavor-typed split.
 Filtering happens in the engine; the client only sees events

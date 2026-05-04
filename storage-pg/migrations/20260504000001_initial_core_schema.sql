@@ -121,11 +121,16 @@ CREATE TABLE proxima_core.memories (
         CHECK (operator_kind IS NULL OR operator_kind IN ('FtoA', 'AtoP')),
     CONSTRAINT memories_variant_chk CHECK (
         (
-            -- Fact:
+            -- Fact: immutable per the trauma test (02 §Re-derivation
+            -- and supersession). `supersedes IS NULL` enforces that
+            -- "current state" projections route through head-by-natural-key
+            -- queries on the schema sidecar (03 §Stateful Fact schemas),
+            -- never via lineage replacement.
             event_id IS NOT NULL AND citation_mapping_id IS NOT NULL
             AND kind IS NULL AND text IS NULL AND operator_kind IS NULL
             AND model_id IS NULL AND prompt_version IS NULL
             AND personality_id IS NULL AND personality_state_hash IS NULL
+            AND supersedes IS NULL
         ) OR (
             -- Derived:
             kind IS NOT NULL AND text IS NOT NULL AND operator_kind IS NOT NULL

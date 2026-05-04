@@ -126,6 +126,13 @@ No mutation. State transitions write a new Goal with `supersedes`
 pointing back. Pause / resume / achieve / abandon are all
 supersessions with the appropriate `state`.
 
+Goal supersession sits alongside A/P supersession (02 §Re-derivation
+and supersession) as one of the three supersedable kinds; **Facts are
+not supersedable** — that asymmetry is intentional, not an oversight.
+Stateful Fact projections express "current X" via head-by-natural-key
+queries on the schema sidecar (03 §Stateful Fact schemas), not via
+`supersedes`. The Goal lifecycle below is its own story.
+
 Active set query:
 
 ```

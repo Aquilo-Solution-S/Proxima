@@ -190,6 +190,47 @@ Naming convention by kind:
 - `abstraction_<schema>_v<n>`
 - `perspective_<schema>_v<n>`
 
+## Stateful Fact schemas — head-by-natural-key
+
+Some Fact schemas track the **state of an external reality** rather
+than one-shot observations: file revisions in a repo, build statuses
+on a CI pipeline, sensor snapshots, the current state of an external
+record. Each indexing pass or webhook tick produces a fresh Fact
+under a stable **natural key** declared by the schema:
+
+| Schema example | Natural key |
+|---|---|
+| `code/file-revision-v1` | `(repo_id, file_path)` |
+| `code/code-chunk-v1`    | `(repo_id, file_path, chunk_index)` |
+| `ci/build-status-v1`    | `(pipeline_id, ref)` |
+
+The schema's sidecar SQL declares an index over the natural-key
+columns plus `observed_at` (or `created_at`); the **head query** is
+`latest by natural key, ordered by observed_at desc, limit 1` per
+key. The engine's query planner expresses heads-only filters via that
+index; older Facts under the same key remain readable as historical
+observations.
+
+**No `supersedes` link is involved.** The trauma test (02) holds: each
+Fact is a frozen observation. "Current state" is a *computed*
+projection over the observation stream, not a lineage edge — exactly
+parallel to how Self is a query over `(P_active, G_active)` and not a
+stored row.
+
+**Deletions are observations, not retractions.** When the source sees
+the underlying reality vanish (a file deleted, a build cancelled), it
+emits a fresh Fact under the same natural key with a discriminating
+`state: Tombstone` enum field on the sidecar. Same schema, different
+sidecar row shape — still under the natural key, still answerable by
+the same head query. Authors keep the immutability rule by *not*
+introducing a separate "tombstone schema": one schema per stateful
+projection, the state field carries presence-vs-absence.
+
+Stateless Fact schemas (commit events, chat messages, page extracts)
+do not need a natural key — each Fact stands alone. The pattern above
+applies only when "what is the latest X" is a meaningful question for
+that schema.
+
 ## Registration
 
 See [08 §Registration mechanism](08-core-and-flavors.md#registration-mechanism). The macro form is the user-facing surface; from this doc's perspective, schemas are activated at link time and frozen there.
@@ -387,6 +428,7 @@ The points below are typing-layer-specific.)
 - `abstractionpayload-and-perspectivepayload`
 - `selective-extraction-design-intent`
 - `sidecar-tables`
+- `stateful-fact-schemas--head-by-natural-key`
 - `registration`
 - `how-memories-reference-schemas`
 - `schema-evolution-code-migration`
@@ -396,5 +438,3 @@ The points below are typing-layer-specific.)
 - `renderer-facts-only`
 - `what-this-gives-us`
 - `what-this-does-not-do`
--not-do`
--not-do`

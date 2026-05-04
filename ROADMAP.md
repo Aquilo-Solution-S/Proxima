@@ -36,7 +36,7 @@ here.
 - **Done when**: `cargo run` brings up the engine and a request to
   `Schema` returns the (empty) registry.
 
-### M2 — Postgres + outbox
+### M2 — Postgres + outbox — closed 2026-05-04
 
 - **Compiles**: storage adapter for Postgres per
   [07](docs/07-storage.md); `change_event` outbox publisher;
