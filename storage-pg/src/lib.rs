@@ -63,6 +63,24 @@ impl PgStorage {
     pub fn into_handle(self) -> StorageHandle {
         Arc::new(self)
     }
+
+    /// Apply all pending migrations under
+    /// `storage-pg/migrations/`. Idempotent — sqlx tracks
+    /// applied migrations in `_sqlx_migrations`. Call once
+    /// at process start before any verb dispatch.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StorageError::Internal` on any sqlx
+    /// migration failure (broken file, conflict with the
+    /// recorded checksum, etc.).
+    pub async fn run_migrations(&self) -> Result<(), StorageError> {
+        sqlx::migrate!("./migrations")
+            .run(&self.pool)
+            .await
+            .map_err(|e| StorageError::Internal(e.to_string()))?;
+        Ok(())
+    }
 }
 
 impl Storage for PgStorage {}
