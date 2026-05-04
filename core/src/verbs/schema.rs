@@ -41,8 +41,25 @@ impl SchemaRegistry {
         Self::default()
     }
 
+    /// Build-time / test-time constructor. The struct stays
+    /// immutable on the public surface (no `register` method)
+    /// per AGENTS.md invariant 7.
+    #[must_use]
+    pub fn with_schemas(schemas: Vec<SchemaInfo>) -> Self {
+        Self { schemas }
+    }
+
     pub fn list(&self) -> Vec<SchemaInfo> {
         self.schemas.clone()
+    }
+
+    /// Lookup by `(schema_id, schema_version)`. Used by
+    /// EventIngest / GoalWrite to validate incoming payloads.
+    #[must_use]
+    pub fn lookup(&self, schema_id: &SchemaId, version: SchemaVersion) -> Option<&SchemaInfo> {
+        self.schemas
+            .iter()
+            .find(|s| s.schema_id == *schema_id && s.schema_version == version)
     }
 
     pub fn handle(&self, _req: &SchemaRequest) -> SchemaResponse {
