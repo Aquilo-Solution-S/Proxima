@@ -9,8 +9,9 @@ pub mod migrations;
 pub mod payloads;
 
 pub use ingest::{
+    CODE_BLOB_BYTE_RANGE_SCHEMA, CODE_BLOB_SCHEMA, CODE_BLOB_WHOLE_SCHEMA,
+    CODE_COMMIT_OBJECT_SCHEMA, CODE_COMMIT_WHOLE_SCHEMA, IngestError, LOCAL_GIT_SOURCE_ID,
     build_engine, ingest_code_chunk, ingest_commit, ingest_file_revision,
-    CITATION_MAPPING_SCHEMA, CITED_OBJECT_SCHEMA, IngestError, LOCAL_GIT_SOURCE_ID,
 };
 pub use local_git_source::{IndexError, IndexReport, LocalGitSource};
 pub use migrations::migrator;

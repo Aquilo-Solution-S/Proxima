@@ -1,5 +1,6 @@
 //! Proxima engine core.
 pub mod auth;
+pub mod cursor;
 pub mod engine;
 pub mod error;
 pub mod flavor;
@@ -11,6 +12,7 @@ pub mod storage;
 pub mod verbs;
 
 pub use auth::*;
+pub use cursor::*;
 pub use engine::*;
 pub use error::*;
 pub use flavor::*;

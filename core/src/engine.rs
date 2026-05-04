@@ -5,9 +5,11 @@
 use std::sync::Arc;
 
 use crate::GoalId;
+use crate::SourceBatchId;
 use crate::auth::{AuthResolver, Credentials};
 use crate::error::ProtocolError;
 use crate::storage::{NoopStorage, StorageError, StorageHandle};
+use crate::verbs::close_batch::CloseBatchOutcome;
 use crate::verbs::event_ingest::{EventDraft, EventIngestOutcome};
 use crate::verbs::goal_write::{GoalDraft, GoalWriteOutcome};
 use crate::verbs::query::{MemoryStore, QueryRequest, QueryResponse, SupersessionStatus};
@@ -202,6 +204,40 @@ impl Engine {
             .supersede_goal_atomic(prior, &draft)
             .await
             .map_err(map_storage_err_for_goal_write(&draft.request_id))
+    }
+
+    /// docs/01 §"The contract" — Owner-scoped, idempotent batch close.
+    /// Sources call this after a successful poll once they consider the
+    /// batch complete. F→A consolidation (M5+) gates on
+    /// `closed_at IS NOT NULL`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `NotFound` when the batch doesn't exist or belongs to a
+    /// different owner; `Forbidden` when the principal cannot access
+    /// `owner`; `AuthRequired` on resolver failure.
+    pub async fn close_batch(
+        &self,
+        creds: &Credentials,
+        owner: crate::Owner,
+        source_batch_id: SourceBatchId,
+    ) -> Result<CloseBatchOutcome, ProtocolError> {
+        let resolved = self
+            .auth
+            .resolve(creds)
+            .map_err(|_| ProtocolError::auth_required())?;
+        if !resolved.accessible_owners.contains(&owner) {
+            return Err(ProtocolError::forbidden(
+                "principal cannot access requested owner",
+            ));
+        }
+        self.storage
+            .close_batch(&owner, source_batch_id)
+            .await
+            .map_err(|e| match e {
+                StorageError::NotFound => ProtocolError::not_found("source batch not found"),
+                other => ProtocolError::internal(other.to_string()),
+            })
     }
 
     /// docs/14 §"Subscribe" — Owner-scoped stream with optional

@@ -51,8 +51,11 @@ CREATE INDEX idx_file_revision_v1_nk
 ----------------------------------------------------------
 -- code_chunk_v1 — stateful Fact sidecar.
 -- NK = (repo_id, file_path, chunk_index).
--- parent_file_revision_id is the FK to a file-revision-v1 Fact
--- emitted in the SAME indexing pass (D4 in M3-PLAN).
+-- Linkage to the parent file_revision Fact is carried by the
+-- substrate citation: chunks and their parent share a
+-- `cited_object_id` (blob content_sha256) on
+-- `proxima_core.cited_objects`. Querying "chunks of revision X"
+-- joins through `proxima_core.citation_mappings.cited_object_id`.
 ----------------------------------------------------------
 CREATE TABLE proxima_code.code_chunk_v1 (
     memory_id                  uuid PRIMARY KEY
@@ -60,8 +63,6 @@ CREATE TABLE proxima_code.code_chunk_v1 (
     repo_id                    uuid NOT NULL,
     file_path                  text NOT NULL,
     chunk_index                int NOT NULL,
-    parent_file_revision_id    uuid NOT NULL
-                                 REFERENCES proxima_core.memories(memory_id),
     text                       text NOT NULL,
     language                   text,
     chunk_type                 text NOT NULL,
@@ -76,5 +77,3 @@ CREATE TABLE proxima_code.code_chunk_v1 (
 );
 CREATE INDEX idx_code_chunk_v1_nk
     ON proxima_code.code_chunk_v1 (repo_id, file_path, chunk_index);
-CREATE INDEX idx_code_chunk_v1_parent
-    ON proxima_code.code_chunk_v1 (parent_file_revision_id);

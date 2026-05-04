@@ -7,6 +7,8 @@ use std::sync::Arc;
 
 use crate::GoalId;
 use crate::Owner;
+use crate::SourceBatchId;
+use crate::verbs::close_batch::CloseBatchOutcome;
 use crate::verbs::event_ingest::{EventDraft, EventIngestOutcome};
 use crate::verbs::goal_write::{GoalDraft, GoalWriteOutcome};
 use crate::verbs::subscribe::ChangeEventStream;
@@ -89,6 +91,22 @@ pub trait Storage: Send + Sync {
         &self,
         req: &crate::verbs::query::QueryRequest,
     ) -> Result<crate::verbs::query::QueryResponse, StorageError>;
+
+    /// Owner-scoped, idempotent batch close. See docs/01 §"The contract"
+    /// and docs/04 §"Source-batch lifecycle". Flips
+    /// `source_batches.closed_at` from NULL to `now()`. Re-close is a
+    /// no-op returning the existing `closed_at` with `already_closed = true`.
+    /// A batch belonging to a different owner returns `NotFound`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `NotFound` when the batch doesn't exist or belongs to a
+    /// different owner. sqlx failures map to `Internal`.
+    async fn close_batch(
+        &self,
+        owner: &Owner,
+        source_batch_id: SourceBatchId,
+    ) -> Result<CloseBatchOutcome, StorageError>;
 }
 
 pub type StorageHandle = Arc<dyn Storage>;
@@ -138,5 +156,13 @@ impl Storage for NoopStorage {
             memories: Vec::new(),
             seq_high_water: None,
         })
+    }
+
+    async fn close_batch(
+        &self,
+        _owner: &Owner,
+        _source_batch_id: SourceBatchId,
+    ) -> Result<CloseBatchOutcome, StorageError> {
+        Err(StorageError::Internal("NoopStorage rejects writes".into()))
     }
 }
