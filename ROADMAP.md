@@ -143,6 +143,26 @@ once `code-demo` is live.
   version (re-chunk the parent blob, diff index sets) decouples the
   source from flavor sidecar shape, paying off once sources move
   out of `flavors/<name>/` into their own crates.
+- `EdgePayload` trait — typed sidecars for edges, mirror of
+  `FactPayload` / `AbstractionPayload` for the edge layer. Substrate
+  pieces are already in place (`proxima_core.edges.edge_id uuidv7
+  PRIMARY KEY`, closed `RelationClass` enum, `relation: text`
+  flavor discriminator). Open work: extend `RelationDescriptor` with
+  `payload_schema: Option<SchemaRef>`, generalize the atomic ingest
+  verb to write `(edge row, optional EdgePayload sidecar)` in one
+  transaction, formalize the trait per
+  [03 §EdgePayload](docs/03-schema-registry.md#edgepayload).
+  Forcing function: the first flavor relation that needs structured
+  per-edge state — `proxima-code/calls` with callsite byte ranges or
+  `proxima-jurisdiction/cites` with precedent weight. Until then,
+  flavors with edge needs route through the existing untyped edges
+  table.
+- Stateful edges (head-by-natural-key on the edge layer) — promote
+  edges from immutable to rebindable when a flavor demands it
+  (e.g. `calls` rebinds when the callee chunk is rewritten under
+  the same natural key). Until then, edges stay immutable and
+  supersession lives entirely at the memory layer per
+  [02 §Typed edge payloads](docs/02-memory.md#typed-edge-payloads).
 - A→P operator (intra-flavor) for Code; first Perspective UI.
 - `GoalWrite` UI in `proxima-shell`; agent-discovered goals via A→Goal.
 - `OIDC` resolver + multi-Owner UI; first hosted dogfood deployment.

@@ -3,7 +3,7 @@
 //! See docs/14-protocol-surface.md §"Schema" and
 //! docs/03-schema-registry.md.
 
-use crate::{SchemaId, SchemaVersion};
+use crate::{RelationDescriptor, SchemaId, SchemaVersion};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum PayloadKind {
@@ -11,6 +11,10 @@ pub enum PayloadKind {
     Abstraction,
     Perspective,
     Goal,
+    /// Typed sidecar for an edge row, keyed on `edge_id`. See
+    /// `EdgePayload` (docs/03 §EdgePayload) and the relation registry
+    /// (docs/02 §"Relation registry").
+    Edge,
     CitedObject,
     CitationMapping,
 }
@@ -43,6 +47,7 @@ pub struct SchemaResponse {
 #[derive(Debug, Default)]
 pub struct SchemaRegistry {
     schemas: Vec<SchemaInfo>,
+    relations: Vec<RelationDescriptor>,
 }
 
 impl SchemaRegistry {
@@ -55,11 +60,39 @@ impl SchemaRegistry {
     /// per AGENTS.md invariant 7.
     #[must_use]
     pub fn with_schemas(schemas: Vec<SchemaInfo>) -> Self {
-        Self { schemas }
+        Self {
+            schemas,
+            relations: Vec::new(),
+        }
+    }
+
+    /// Build-time / test-time constructor that also seeds the
+    /// relation registry. Used by `FlavorRegistry::freeze` once
+    /// flavors have published their `RelationDescriptor`s.
+    #[must_use]
+    pub fn with_schemas_and_relations(
+        schemas: Vec<SchemaInfo>,
+        relations: Vec<RelationDescriptor>,
+    ) -> Self {
+        Self { schemas, relations }
     }
 
     pub fn list(&self) -> Vec<SchemaInfo> {
         self.schemas.clone()
+    }
+
+    /// All registered relations. Order matches the order flavors
+    /// pushed them in.
+    #[must_use]
+    pub fn list_relations(&self) -> &[RelationDescriptor] {
+        &self.relations
+    }
+
+    /// Lookup a `RelationDescriptor` by its flavor-qualified
+    /// relation id (`"proxima-code/calls"`, etc.).
+    #[must_use]
+    pub fn lookup_relation(&self, relation: &str) -> Option<&RelationDescriptor> {
+        self.relations.iter().find(|r| r.relation == relation)
     }
 
     /// Lookup by `(schema_id, schema_version)`. Used by

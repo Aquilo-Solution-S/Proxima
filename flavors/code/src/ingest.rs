@@ -77,6 +77,18 @@ pub enum IngestError {
     Protocol(#[from] ProtocolError),
 }
 
+impl From<sqlx::Error> for IngestError {
+    fn from(e: sqlx::Error) -> Self {
+        Self::Storage(e.to_string())
+    }
+}
+
+impl From<proxima_core::StorageError> for IngestError {
+    fn from(e: proxima_core::StorageError) -> Self {
+        Self::Storage(e.to_string())
+    }
+}
+
 /// Per-fact-type citation triple: which artefact schema, which content
 /// hash deduplicates the artefact within Owner, and which annotation
 /// schema labels the linkage. v1 holds schema-version at 1 across the
@@ -129,7 +141,7 @@ pub async fn close_local_git_batch(
 ) -> Result<(), IngestError> {
     match proxima_storage_pg::verbs::close_batch::close_batch(pool, owner, source_batch_id).await {
         Ok(_) | Err(proxima_core::StorageError::NotFound) => Ok(()),
-        Err(e) => Err(IngestError::Storage(e.to_string())),
+        Err(e) => Err(e.into()),
     }
 }
 
@@ -156,13 +168,8 @@ pub async fn ingest_commit(
         observed_at,
     )?;
 
-    let mut tx = pool
-        .begin()
-        .await
-        .map_err(|e| IngestError::Storage(e.to_string()))?;
-    let outcome = ingest_event_in_tx(&mut tx, &draft)
-        .await
-        .map_err(|e| IngestError::Storage(e.to_string()))?;
+    let mut tx = pool.begin().await?;
+    let outcome = ingest_event_in_tx(&mut tx, &draft).await?;
     if !outcome.idempotent_replay {
         sqlx::query(
             "INSERT INTO proxima_code.commit_v1 \
@@ -183,12 +190,9 @@ pub async fn ingest_commit(
         .bind(payload.committer_time)
         .bind(&payload.message)
         .execute(&mut *tx)
-        .await
-        .map_err(|e| IngestError::Storage(e.to_string()))?;
+        .await?;
     }
-    tx.commit()
-        .await
-        .map_err(|e| IngestError::Storage(e.to_string()))?;
+    tx.commit().await?;
     Ok(outcome)
 }
 
@@ -215,13 +219,8 @@ pub async fn ingest_file_revision(
         observed_at,
     )?;
 
-    let mut tx = pool
-        .begin()
-        .await
-        .map_err(|e| IngestError::Storage(e.to_string()))?;
-    let outcome = ingest_event_in_tx(&mut tx, &draft)
-        .await
-        .map_err(|e| IngestError::Storage(e.to_string()))?;
+    let mut tx = pool.begin().await?;
+    let outcome = ingest_event_in_tx(&mut tx, &draft).await?;
     if !outcome.idempotent_replay {
         let state_text = match payload.state {
             FileState::Present => "Present",
@@ -242,12 +241,9 @@ pub async fn ingest_file_revision(
         .bind(&payload.indexed_commit_sha)
         .bind(state_text)
         .execute(&mut *tx)
-        .await
-        .map_err(|e| IngestError::Storage(e.to_string()))?;
+        .await?;
     }
-    tx.commit()
-        .await
-        .map_err(|e| IngestError::Storage(e.to_string()))?;
+    tx.commit().await?;
     Ok(outcome)
 }
 
@@ -281,13 +277,8 @@ pub async fn ingest_code_chunk(
         observed_at,
     )?;
 
-    let mut tx = pool
-        .begin()
-        .await
-        .map_err(|e| IngestError::Storage(e.to_string()))?;
-    let outcome = ingest_event_in_tx(&mut tx, &draft)
-        .await
-        .map_err(|e| IngestError::Storage(e.to_string()))?;
+    let mut tx = pool.begin().await?;
+    let outcome = ingest_event_in_tx(&mut tx, &draft).await?;
     if !outcome.idempotent_replay {
         let state_text = match payload.state {
             FileState::Present => "Present",
@@ -313,12 +304,9 @@ pub async fn ingest_code_chunk(
         .bind(i64::from(payload.line_range_end))
         .bind(state_text)
         .execute(&mut *tx)
-        .await
-        .map_err(|e| IngestError::Storage(e.to_string()))?;
+        .await?;
     }
-    tx.commit()
-        .await
-        .map_err(|e| IngestError::Storage(e.to_string()))?;
+    tx.commit().await?;
     Ok(outcome)
 }
 
@@ -371,8 +359,7 @@ pub async fn file_revision_heads(
     .bind(org_id)
     .bind(repo_id)
     .fetch_all(pool)
-    .await
-    .map_err(|e| IngestError::Storage(e.to_string()))?;
+    .await?;
 
     Ok(rows
         .into_iter()
@@ -438,13 +425,72 @@ pub async fn present_chunk_indexes(
     .bind(repo_id)
     .bind(file_path)
     .fetch_all(pool)
-    .await
-    .map_err(|e| IngestError::Storage(e.to_string()))?;
+    .await?;
 
     Ok(rows
         .into_iter()
         .map(|(i,)| u32::try_from(i).unwrap_or(0))
         .collect())
+}
+
+/// Typed payload for one `code/calls` edge: caller + callee chunk
+/// memories, callsite byte range, and callee identifier metadata.
+/// Bundles every per-edge field so callers don't pass 6 positional
+/// args.
+#[derive(Debug, Clone)]
+pub struct CallEdgeDraft {
+    pub source_memory_id: uuid::Uuid,
+    pub target_memory_id: uuid::Uuid,
+    pub callsite_byte_start: u32,
+    pub callsite_byte_end: u32,
+    pub callee_name: String,
+    pub is_dynamic: bool,
+}
+
+/// Atomic edge + typed sidecar write for `code/calls` edges.
+/// Wraps `proxima_storage_pg::verbs::edge_append::append_edge_in_tx`.
+pub async fn ingest_calls_edge(
+    pool: &PgPool,
+    owner: &Owner,
+    edge: &CallEdgeDraft,
+) -> Result<(), IngestError> {
+    use proxima_core::RelationClass;
+    use proxima_storage_pg::verbs::edge_append::{EdgeDraft, append_edge_in_tx};
+
+    let edge_id = uuid::Uuid::now_v7();
+    let payload = serde_json::json!({
+        "callsite_byte_start": edge.callsite_byte_start,
+        "callsite_byte_end": edge.callsite_byte_end,
+        "callee_name": edge.callee_name,
+        "is_dynamic": edge.is_dynamic,
+    });
+
+    let draft = EdgeDraft {
+        edge_id,
+        relation: "proxima-code/calls",
+        class: RelationClass::Structural,
+        source_kind: "Fact",
+        source_memory_id: Some(edge.source_memory_id),
+        source_goal_id: None,
+        target_kind: "Fact",
+        target_memory_id: Some(edge.target_memory_id),
+        target_goal_id: None,
+        authorship_kind: "EventSource",
+        authorship_owner_memory_id: Some(edge.source_memory_id),
+        owner,
+    };
+
+    let mut tx = pool.begin().await?;
+    append_edge_in_tx(
+        &mut tx,
+        &draft,
+        Some(&payload),
+        Some("proxima_code.code_calls_v1"),
+    )
+    .await?;
+    tx.commit().await?;
+
+    Ok(())
 }
 
 /// Convenience: build a fully-wired `Engine` over a `PgStorage` and the

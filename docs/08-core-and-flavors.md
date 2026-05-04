@@ -195,8 +195,9 @@ Reasons:
 - Storage primitives (07): events / memories / edges / goals /
   source_batch_f2a / read_scope_matrix / embeddings tables; sidecar discipline.
 - `EventSource` trait, `ToolCallable` trait, `FactPayload` /
-  `AbstractionPayload` / `PerspectivePayload` / `CitedObjectPayload`
-  / `CitationMappingPayload` / `PersonalityFlavor` traits, registration interface.
+  `AbstractionPayload` / `PerspectivePayload` / `EdgePayload` /
+  `CitedObjectPayload` / `CitationMappingPayload` /
+  `PersonalityFlavor` traits, registration interface.
 - `system` source — every flavor that emits actions reuses it ([05](docs/05-actions.md)).
 - `MotivationV1` `AbstractionPayload` — uniform shape for
   motivation Abstractions citing Action-Facts; flavors extend with
@@ -216,6 +217,13 @@ Reasons:
   per [10 §Model tiers](docs/10-configuration.md#model-tiers). Tier
   expansion is a substrate PR, not a flavor PR.
 - Citation, supersession, append-only, time partitioning.
+- **Compliance vocabulary and operations** ([15](15-compliance.md)).
+  `proxima_core::compliance` ships `LawfulBasis`, `RetentionPolicy`,
+  `Region`, `RecipientId` (the type vocabulary used by 01, 03, 12
+  registration surfaces) plus the substrate operations
+  `delete_owner`, `pause_owner`, `resume_owner`, `export_owner`,
+  the `compliance.*` audit schema, and the suppression-list
+  mechanic. `cascade_delete` is deferred per 15 §Operations.
 
 ## What a flavor supplies
 
@@ -237,13 +245,27 @@ Reasons:
 - `RelationDescriptor` registrations — one per relation id the
   flavor's EventSources author and per causal/interpretive relation
   its Perspectives may author via `link`. See 02 §Relation registry.
+- `EdgePayload` impls — **optional**, one per relation whose
+  descriptor declares a `payload_schema`. Substrate / core relations
+  (`core/derived-from`, `core/supersedes`, `core/parent`,
+  `core/motivated-by`) carry no payload and skip this. Required only
+  when an edge needs flavor-specific structured state (e.g.
+  `proxima-code/calls` with callsite byte ranges,
+  `proxima-jurisdiction/cites` with precedent weight). Sidecar keyed
+  on `edge_id`. See 03 §EdgePayload.
 - `CitedObjectPayload` impls — one per kind of artefact the flavor's
   sources cite (PDF, image, video, chat session, …). Sidecar SQL
   migration; idempotency key for re-ingest dedup. See 11.
 - `CitationMappingPayload` impls — one per typed annotation the
   flavor uses to point a Fact at a cited object (page+paragraph,
   bbox, message id, …). Sidecar SQL migration. See [11](docs/11-citations.md).
-- `Tool` registrations — name, schema_id, callable, availability.
+- `Tool` registrations — name, schema_id, callable, availability,
+  plus the required `[tool.compliance]` block
+  (`data_residency`, `recipients`, `legal_consequence`). The
+  install-time validator rejects manifests omitting the block, and
+  refuses non-AYU wiring for `legal_consequence = true` absent the
+  deployment override. See
+  [12 §Compliance metadata](12-tool-manifest.md#compliance-metadata).
 - **Deciders** — **optional, plural.** Loops that pick which tool to
   call given Goal / Perspective / Action context. A flavor registers
   zero (fully manual or observation-only), one, or many — each scoped
@@ -304,6 +326,29 @@ private `code` against a public crates.io `code`). Realistically
 rare; the v2 marketplace work in 13 names signed-publisher
 prefixing as the future fix. v1 ships the simpler model and the
 reserved-namespace check.
+
+### Compliance-metadata enforcement
+
+The macro and registration paths enforce the compliance metadata
+declared elsewhere — substrate startup fails when:
+
+- Any `EventSource` instance configured in `proxima.config.yaml`
+  omits the `compliance` block (lawful_basis / collection_purpose /
+  retention_policy / data_residency — 01 §Compliance metadata).
+- Any installed `Tool` manifest omits the `[tool.compliance]`
+  block (12 §Compliance metadata) or wires a
+  `legal_consequence = true` tool to a non-AYU decider without
+  the deployment override (05 §Deciders).
+
+The values may be trivial (`lawful_basis = NotApplicable`,
+`data_residency = Unrestricted`, `legal_consequence = false`) —
+substrate enforces *presence*, not specific values. `SPECIAL_CATEGORY`
+follows the same posture but with a `false` default in the trait
+itself, since the bare-core and most flavor impls don't carry
+special-category data — controllers handling Art. 9-class data
+must explicitly override (03 §Special-category declaration). The
+controller chooses what to declare under which regime; substrate
+guarantees the declarations exist and are typed.
 
 A flavor's surface is **partial** — it brings any subset of:
 schemas (Fact / Abstraction / Perspective / Goal / cited / citation),
@@ -484,7 +529,7 @@ before linking.
 
 ## Payload traits
 
-The bare core ships six payload traits (definitions in 03 / 06 / 11):
+The bare core ships seven payload traits (definitions in 03 / 06 / 11):
 
 | Trait | Required | Renderer | Sidecar |
 |---|---|---|---|
@@ -492,6 +537,7 @@ The bare core ships six payload traits (definitions in 03 / 06 / 11):
 | `AbstractionPayload`    | every Abstraction   | no — `Memory.text` is the view | `abstraction_<schema>_v<n>` |
 | `PerspectivePayload`    | every Perspective   | no — `Memory.text` is the view | `perspective_<schema>_v<n>` |
 | `GoalPayload`           | every Goal          | no — `Goal.text` is the view | `goal_<schema>_v<n>` |
+| `EdgePayload`           | edges whose `RelationDescriptor` declares a `payload_schema` (substrate / core relations carry no payload) | no — substrate edge row carries the discriminators | `edge_<schema>_v<n>` (keyed on `edge_id`) |
 | `CitedObjectPayload`    | per artefact kind   | no — sidecar carries S3 path / handle to the artefact | `cited_<schema>_v<n>` |
 | `CitationMappingPayload`| per annotation kind | no — typed annotation only | `citation_<schema>_v<n>` |
 

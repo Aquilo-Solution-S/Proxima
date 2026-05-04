@@ -37,6 +37,12 @@ emit_facts     = ["forgejo-comment-posted"]   # registered FactPayload SCHEMA_ID
 emit_relations = ["code/comment-on-issue"]    # registered RelationDescriptor ids
 owner_scope    = "invocation"                 # "invocation" | "user" | "group:<id>"
 
+# Engine-enforced. See §Compliance metadata.
+[tool.compliance]
+data_residency     = "eu"                     # Region — where the tool's external endpoint executes
+recipients         = ["forgejo:aquilo-cloud"] # Vec<RecipientId> — third parties data is shared with
+legal_consequence  = false                    # bool — true forces human-in-the-loop wiring
+
 [tool.body]
 kind = "wasm"                                 # "wasm" | "mcp" | "http"
 module = "sha256:abcd...ef01"
@@ -71,8 +77,16 @@ pub struct Tool {
     pub description:  String,
     pub function:     OpenAIFunction,
     pub capabilities: Capabilities,
+    pub compliance:   Compliance,        // see §Compliance metadata
     pub body:         Body,
     pub signature:    Signature,
+}
+
+#[derive(Deserialize)]
+pub struct Compliance {
+    pub data_residency:    Region,             // 15 §Compliance vocabulary
+    pub recipients:        Vec<RecipientId>,   // 15 §Compliance vocabulary
+    pub legal_consequence: bool,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -98,6 +112,58 @@ pub enum Body {
 }
 ```
 
+## Compliance metadata
+
+Three required fields on every tool manifest. Substrate startup
+fails for any tool whose manifest omits one. Vocabulary
+(`Region`, `RecipientId`) lives in
+[15 §Compliance vocabulary](15-compliance.md#compliance-vocabulary).
+
+- **`data_residency: Region`** — where the tool's body executes
+  and where its external endpoint receives data. For `Wasm`
+  bodies this is typically `Unrestricted` (the wasm runs in the
+  same process as the engine). For `Mcp` and `Http` bodies it
+  is the geographic location of the called endpoint. Engine
+  consults `compliance.owner_policy.allowed_residencies` at
+  invocation time and refuses calls when the tool's residency
+  is not in the Owner's allowlist. A US-only Owner attempting
+  to invoke an EU-only tool gets a structured rejection
+  (`InvocationError::ResidencyDenied`); the decider observes
+  the rejection like any other tool-call failure.
+- **`recipients: Vec<RecipientId>`** — opaque identifiers of
+  the third parties that receive data through this tool's
+  invocation (the SaaS API, the analytics processor, the
+  external court system). Substrate does not interpret the ids;
+  it stores them on `tool_invocations` so that
+  `export_owner` ([15](15-compliance.md)) can return a
+  per-Owner list of "where your data went," supporting Art. 19
+  notification obligations. A tool with no third-party
+  recipients (e.g. a pure local-state tool) declares
+  `recipients = []`.
+- **`legal_consequence: bool`** — `true` declares that
+  successful invocation produces a *legally significant
+  external effect on a natural or legal person*: sending a
+  legal notice, transferring funds, modifying public records,
+  contacting third parties on the subject's behalf, filing a
+  regulatory submission. The flag triggers Art. 22 protections:
+  engine refuses to wire a `legal_consequence = true` tool
+  under a fully-automatic decider. Such tools must be wired
+  under the human-in-the-loop pattern documented in
+  [05 §Deciders](05-actions.md#deciders--flavor-supplied) — a
+  decider emits the proposal Fact, a separate `Core(User)`-
+  authored approval Fact triggers the actual external call. An
+  explicit override (`config.allow_unmediated_legal_consequence
+  = true`) is available for deployments that have completed an
+  Art. 22 DPIA and obtained explicit consent or other valid
+  legal basis; absent that override, the engine refuses.
+
+The three fields together are *substrate primitives*, not
+compliance certifications. Setting `data_residency = unrestricted`
+and `recipients = []` does not certify a tool as
+GDPR-compliant; it declares the substrate-relevant facts about
+what the tool does. Compliance certification is a controller
+concern.
+
 ## Registry surface
 
 ```rust
@@ -115,10 +181,15 @@ enum InstallError {
     UntrustedSigner,
     DuplicateToolId,
     BodyUnreachable,
+    MissingComplianceField(&'static str),    // declared at install, not runtime
+    LegalConsequenceUnmediated,              // tool wired to non-AYU decider
+                                             // without explicit override
 }
 ```
 
 `install` validates `capabilities.emit_facts` and `capabilities.emit_relations` against the registered (build-time) set. Unknown id ⇒ reject. T1 cannot widen what T2 has frozen.
+
+`install` also validates the `compliance` block: all three fields must be present, and if `legal_consequence = true` the tool's wiring (which decider invokes it) is checked against the AYU pattern; non-AYU wiring without the explicit deployment override yields `LegalConsequenceUnmediated`.
 
 `available_for` returns the exact OpenAI function set the decider sees; nothing more.
 
@@ -128,14 +199,15 @@ For how tools integrate with the SYSTEM EventSource, see [05-actions.md](docs/05
 
 1. Decider receives `available_for(ctx)`; selects a tool with arguments.
 2. Engine validates args against `manifest.function.parameters` (jsonschema crate).
-3. Engine dispatches `body`:
+3. Engine validates `manifest.compliance.data_residency ∈ owner_policy.allowed_residencies`. Mismatch ⇒ `InvocationError::ResidencyDenied`, no dispatch.
+4. Engine dispatches `body`:
    - `Wasm`: wasmtime; host imports = read-only context.
    - `Mcp`:  JSON-RPC `tools/call` to server; parse `CallToolResult`.
    - `Http`: POST args; parse JSON.
-4. Body returns `ToolResult { fact: FactPayloadJson, relations: Vec<EdgeRef> }`.
-5. Engine validates `fact.schema_id ∈ capabilities.emit_facts` and every `relation.id ∈ capabilities.emit_relations`.
-6. Engine emits `SYSTEM` event → Fact + structural edges in one transaction ([05](docs/05-actions.md)).
-7. Engine returns `memory_id` to the decider.
+5. Body returns `ToolResult { fact: FactPayloadJson, relations: Vec<EdgeRef> }`.
+6. Engine validates `fact.schema_id ∈ capabilities.emit_facts` and every `relation.id ∈ capabilities.emit_relations`.
+7. Engine emits `SYSTEM` event → Fact + structural edges in one transaction ([05](docs/05-actions.md)). The Fact row carries `manifest.compliance.recipients` for later `export_owner` recall ([15](15-compliance.md)).
+8. Engine returns `memory_id` to the decider.
 
 A failed validation aborts; nothing is persisted; the failure is recorded on `tool_invocations.error`.
 
@@ -195,6 +267,7 @@ Append-only in the audit sense: revoke sets `revoked_at`; never `DELETE`.
 - `openai-compatible-function-definition`
 - `engine-enforced-not-llm-visible`
 - `rust-types`
+- `compliance-metadata`
 - `registry-surface`
 - `invocation-flow`
 - `storage`
@@ -205,4 +278,3 @@ Append-only in the audit sense: revoke sets `revoked_at`; never `DELETE`.
 - `non-goals-for-v1`
 - `why-formalize-now`
 - `cross-references`
-erences`

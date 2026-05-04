@@ -1,7 +1,7 @@
 #![allow(
     clippy::missing_errors_doc,
     clippy::doc_markdown,
-    clippy::too_many_lines
+    clippy::similar_names
 )]
 //! `LocalGitSource` — pull-mode git ingest over a local repository.
 //!
@@ -34,17 +34,21 @@
 //! `git` on PATH. This trade-off keeps the dep surface minimal —
 //! `gix` would more than double our build time.
 
-use std::collections::HashSet;
-use std::path::{Path, PathBuf};
-use std::process::Command;
+mod git;
 
-use proxima_core::{Cursor, Owner, SourceBatchId};
+use std::collections::HashSet;
+use std::path::PathBuf;
+
+use proxima_core::{Cursor, MemoryId, Owner, SourceBatchId};
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use self::git::{CommitInfo, WalkPlan};
+use crate::calls::extract_blob_callgraph;
 use crate::chunker::chunk_blob;
 use crate::ingest::{
-    IngestError, ingest_code_chunk, ingest_commit, ingest_file_revision, present_chunk_indexes,
+    CallEdgeDraft, IngestError, ingest_calls_edge, ingest_code_chunk, ingest_commit,
+    ingest_file_revision, present_chunk_indexes,
 };
 use crate::payloads::{CodeChunkV1, CommitV1, FileRevisionV1, FileState};
 
@@ -97,13 +101,13 @@ impl LocalGitSource {
     /// to ingest plus head shas for cursor advance. Per-commit tree
     /// diffs are computed inside `run_poll` (one diff per commit).
     fn walk_git(&self, cursor: &CodeCursor) -> Result<WalkPlan, IndexError> {
-        let head_sha = git_head_sha(&self.repo_path)?;
-        let head_tree_sha = git_tree_sha(&self.repo_path, "HEAD")?;
+        let head_sha = git::head_sha(&self.repo_path)?;
+        let head_tree_sha = git::tree_sha(&self.repo_path, "HEAD")?;
 
         let commits = match cursor.last_commit_sha.as_deref() {
             Some(prev) if prev == head_sha => Vec::new(),
-            Some(prev) => git_log_range(&self.repo_path, prev, "HEAD")?,
-            None => git_log(&self.repo_path)?,
+            Some(prev) => git::log_range(&self.repo_path, prev, "HEAD")?,
+            None => git::log(&self.repo_path)?,
         };
 
         Ok(WalkPlan {
@@ -168,12 +172,12 @@ impl LocalGitSource {
         // Diff this commit against its first parent (or against the
         // empty tree for a root commit, where `ls-tree` of the commit
         // itself enumerates every blob as "added").
-        let commit_tree = git_tree_sha(&self.repo_path, &commit_info.sha)?;
+        let commit_tree = git::tree_sha(&self.repo_path, &commit_info.sha)?;
         let (changed, deleted) = if let Some(parent_sha) = commit_info.parents.first() {
-            let parent_tree = git_tree_sha(&self.repo_path, parent_sha)?;
-            git_diff_paths(&self.repo_path, &parent_tree, &commit_tree)?
+            let parent_tree = git::tree_sha(&self.repo_path, parent_sha)?;
+            git::diff_paths(&self.repo_path, &parent_tree, &commit_tree)?
         } else {
-            let added: Vec<String> = git_ls_files(&self.repo_path, &commit_info.sha)?
+            let added: Vec<String> = git::ls_files(&self.repo_path, &commit_info.sha)?
                 .into_iter()
                 .map(|(p, _)| p)
                 .collect();
@@ -202,117 +206,222 @@ impl LocalGitSource {
 
         // Phase 2 — file revisions + chunks for this commit's changes.
         for path in &changed {
-            let blob = git_cat_blob(&self.repo_path, &commit_info.sha, path)?;
-            let content_sha256: [u8; 32] = blake3::hash(&blob).into();
-
-            let language = crate::chunker::detect_language(path)
-                .map(str::to_string)
-                .or_else(|| crate::chunker::fallback_language(path).map(str::to_string));
-            let rev_payload = FileRevisionV1 {
-                repo_id: self.repo_id,
-                file_path: path.clone(),
-                language: language.clone(),
-                content_sha256,
-                size_bytes: blob.len() as u64,
-                indexed_commit_sha: commit_info.sha.clone(),
-                state: FileState::Present,
-            };
-            ingest_file_revision(pool, &self.owner, batch_id, &rev_payload, now).await?;
-            report.files_present_emitted += 1;
-
-            // Skip re-chunking blobs we've already chunked this poll
-            // (perf only; the chunk Facts are content-keyed via event_id
-            // so repeated calls would just be no-ops at the substrate).
-            if !chunked_this_poll.insert(content_sha256) {
-                continue;
-            }
-
-            // Re-chunk and tombstone any prior indexes that don't
-            // appear in the new chunk batch (file content shrunk).
-            let chunks = chunk_blob(path, &blob);
-            let new_indexes: HashSet<u32> = (0..chunks.len())
-                .map(|i| u32::try_from(i).unwrap_or(u32::MAX))
-                .collect();
-            let prior_indexes =
-                present_chunk_indexes(pool, &self.owner, self.repo_id, path).await?;
-            for prior in prior_indexes {
-                if !new_indexes.contains(&prior) {
-                    let tomb = CodeChunkV1 {
-                        repo_id: self.repo_id,
-                        file_path: path.clone(),
-                        chunk_index: prior,
-                        text: String::new(),
-                        language: language.clone(),
-                        chunk_type: "block".into(),
-                        byte_range_start: 0,
-                        byte_range_end: 0,
-                        line_range_start: 0,
-                        line_range_end: 0,
-                        state: FileState::Tombstone,
-                    };
-                    ingest_code_chunk(pool, &self.owner, batch_id, &tomb, [0u8; 32], now).await?;
-                    report.chunks_tombstoned += 1;
-                }
-            }
-
-            for (idx, chunk) in chunks.into_iter().enumerate() {
-                let payload = CodeChunkV1 {
-                    repo_id: self.repo_id,
-                    file_path: path.clone(),
-                    chunk_index: u32::try_from(idx).unwrap_or(u32::MAX),
-                    text: chunk.text,
-                    language: chunk.language.map(str::to_string),
-                    chunk_type: chunk.chunk_type.to_string(),
-                    byte_range_start: chunk.byte_range_start,
-                    byte_range_end: chunk.byte_range_end,
-                    line_range_start: chunk.line_range_start,
-                    line_range_end: chunk.line_range_end,
-                    state: FileState::Present,
-                };
-                ingest_code_chunk(pool, &self.owner, batch_id, &payload, content_sha256, now)
-                    .await?;
-                report.chunks_emitted += 1;
-            }
+            self.ingest_changed_path(
+                pool,
+                commit_info,
+                batch_id,
+                now,
+                path,
+                report,
+                chunked_this_poll,
+            )
+            .await?;
         }
 
         // Phase 3 — deletions reported by this commit's diff.
         for path in &deleted {
-            let rev_payload = FileRevisionV1 {
-                repo_id: self.repo_id,
-                file_path: path.clone(),
-                language: None,
-                content_sha256: [0u8; 32],
-                size_bytes: 0,
-                indexed_commit_sha: commit_info.sha.clone(),
-                state: FileState::Tombstone,
-            };
-            ingest_file_revision(pool, &self.owner, batch_id, &rev_payload, now).await?;
-            report.files_tombstoned += 1;
-
-            let prior_indexes =
-                present_chunk_indexes(pool, &self.owner, self.repo_id, path).await?;
-            for prior in prior_indexes {
-                let tomb = CodeChunkV1 {
-                    repo_id: self.repo_id,
-                    file_path: path.clone(),
-                    chunk_index: prior,
-                    text: String::new(),
-                    language: None,
-                    chunk_type: "block".into(),
-                    byte_range_start: 0,
-                    byte_range_end: 0,
-                    line_range_start: 0,
-                    line_range_end: 0,
-                    state: FileState::Tombstone,
-                };
-                ingest_code_chunk(pool, &self.owner, batch_id, &tomb, [0u8; 32], now).await?;
-                report.chunks_tombstoned += 1;
-            }
+            self.tombstone_deleted_path(pool, &commit_info.sha, batch_id, now, path, report)
+                .await?;
         }
 
         // Close this commit's batch.
         crate::ingest::close_local_git_batch(pool, &self.owner, batch_id).await?;
         Ok(())
+    }
+
+    /// Phase-2 inner loop: emit one file's `file-revision-v1` Fact, the
+    /// chunk batch (or a tombstone burst if the chunk count shrank), and
+    /// resolve intra-file calls into typed `code/calls` edges.
+    #[allow(clippy::too_many_arguments)]
+    async fn ingest_changed_path(
+        &self,
+        pool: &PgPool,
+        commit_info: &CommitInfo,
+        batch_id: SourceBatchId,
+        now: time::OffsetDateTime,
+        path: &str,
+        report: &mut IndexReport,
+        chunked_this_poll: &mut HashSet<[u8; 32]>,
+    ) -> Result<(), IndexError> {
+        let blob = git::cat_blob(&self.repo_path, &commit_info.sha, path)?;
+        let content_sha256: [u8; 32] = blake3::hash(&blob).into();
+
+        let language = crate::chunker::detect_language(path)
+            .map(str::to_string)
+            .or_else(|| crate::chunker::fallback_language(path).map(str::to_string));
+        let rev_payload = FileRevisionV1 {
+            repo_id: self.repo_id,
+            file_path: path.to_string(),
+            language: language.clone(),
+            content_sha256,
+            size_bytes: blob.len() as u64,
+            indexed_commit_sha: commit_info.sha.clone(),
+            state: FileState::Present,
+        };
+        ingest_file_revision(pool, &self.owner, batch_id, &rev_payload, now).await?;
+        report.files_present_emitted += 1;
+
+        // Skip re-chunking blobs we've already chunked this poll
+        // (perf only; the chunk Facts are content-keyed via event_id
+        // so repeated calls would just be no-ops at the substrate).
+        if !chunked_this_poll.insert(content_sha256) {
+            return Ok(());
+        }
+
+        // Re-chunk and tombstone any prior indexes that don't appear
+        // in the new chunk batch (file content shrunk).
+        let chunks = chunk_blob(path, &blob);
+        let new_indexes: HashSet<u32> = (0..chunks.len())
+            .map(|i| u32::try_from(i).unwrap_or(u32::MAX))
+            .collect();
+        let prior_indexes = present_chunk_indexes(pool, &self.owner, self.repo_id, path).await?;
+        for prior in prior_indexes {
+            if !new_indexes.contains(&prior) {
+                let tomb = tombstone_chunk(self.repo_id, path, prior, language.clone());
+                ingest_code_chunk(pool, &self.owner, batch_id, &tomb, [0u8; 32], now).await?;
+                report.chunks_tombstoned += 1;
+            }
+        }
+
+        // Single tree-sitter parse of the blob: defs + calls come from
+        // the same Tree, mapped through cached Query patterns (see
+        // `calls.rs`). Each definition's byte range is then assigned
+        // to whichever chunk contains it.
+        let lang_static = crate::chunker::detect_language(path);
+        let (definitions, calls) = extract_blob_callgraph(lang_static, &blob);
+
+        let mut file_chunks: Vec<ChunkInfo> = Vec::new();
+        for (idx, chunk) in chunks.into_iter().enumerate() {
+            let payload = CodeChunkV1 {
+                repo_id: self.repo_id,
+                file_path: path.to_string(),
+                chunk_index: u32::try_from(idx).unwrap_or(u32::MAX),
+                text: chunk.text.clone(),
+                language: chunk.language.map(str::to_string),
+                chunk_type: chunk.chunk_type.to_string(),
+                byte_range_start: chunk.byte_range_start,
+                byte_range_end: chunk.byte_range_end,
+                line_range_start: chunk.line_range_start,
+                line_range_end: chunk.line_range_end,
+                state: FileState::Present,
+            };
+            let outcome =
+                ingest_code_chunk(pool, &self.owner, batch_id, &payload, content_sha256, now)
+                    .await?;
+            report.chunks_emitted += 1;
+
+            let item_names: Vec<String> = definitions
+                .iter()
+                .filter(|d| {
+                    d.byte_start >= chunk.byte_range_start && d.byte_end <= chunk.byte_range_end
+                })
+                .map(|d| d.name.clone())
+                .collect();
+
+            file_chunks.push(ChunkInfo {
+                memory_id: outcome.memory_id,
+                byte_range_start: chunk.byte_range_start,
+                byte_range_end: chunk.byte_range_end,
+                item_names,
+            });
+        }
+
+        // After all chunks for this file, resolve calls into the
+        // caller/callee chunk pair and emit one typed edge each.
+        // Resolution is purely intra-file v1; cross-file calls wait
+        // for an indexed name table (M6).
+        for call in calls {
+            let caller_chunk = file_chunks
+                .iter()
+                .filter(|c| {
+                    c.byte_range_start <= call.byte_start && c.byte_range_end >= call.byte_end
+                })
+                .max_by_key(|c| c.byte_range_start);
+            let Some(caller) = caller_chunk else { continue };
+
+            let callee_chunk = file_chunks
+                .iter()
+                .find(|c| c.item_names.iter().any(|n| n == &call.callee_name));
+            let Some(callee) = callee_chunk else { continue };
+
+            if caller.memory_id == callee.memory_id {
+                continue;
+            }
+
+            ingest_calls_edge(
+                pool,
+                &self.owner,
+                &CallEdgeDraft {
+                    source_memory_id: caller.memory_id.into_inner(),
+                    target_memory_id: callee.memory_id.into_inner(),
+                    callsite_byte_start: call.byte_start,
+                    callsite_byte_end: call.byte_end,
+                    callee_name: call.callee_name,
+                    is_dynamic: call.is_dynamic,
+                },
+            )
+            .await?;
+        }
+
+        Ok(())
+    }
+
+    /// Phase-3 inner loop: emit a `file-revision-v1` tombstone Fact
+    /// for the deleted path and burst-tombstone every chunk index
+    /// whose head was still `Present`.
+    async fn tombstone_deleted_path(
+        &self,
+        pool: &PgPool,
+        commit_sha: &str,
+        batch_id: SourceBatchId,
+        now: time::OffsetDateTime,
+        path: &str,
+        report: &mut IndexReport,
+    ) -> Result<(), IndexError> {
+        let rev_payload = FileRevisionV1 {
+            repo_id: self.repo_id,
+            file_path: path.to_string(),
+            language: None,
+            content_sha256: [0u8; 32],
+            size_bytes: 0,
+            indexed_commit_sha: commit_sha.to_string(),
+            state: FileState::Tombstone,
+        };
+        ingest_file_revision(pool, &self.owner, batch_id, &rev_payload, now).await?;
+        report.files_tombstoned += 1;
+
+        let prior_indexes = present_chunk_indexes(pool, &self.owner, self.repo_id, path).await?;
+        for prior in prior_indexes {
+            let tomb = tombstone_chunk(self.repo_id, path, prior, None);
+            ingest_code_chunk(pool, &self.owner, batch_id, &tomb, [0u8; 32], now).await?;
+            report.chunks_tombstoned += 1;
+        }
+        Ok(())
+    }
+}
+
+/// Build a tombstone `CodeChunkV1` payload for a `(repo, path, idx)`.
+/// `language` is `None` when the file itself was deleted; for shrink
+/// tombstones the file's current language is preserved so the head
+/// view stays self-consistent.
+fn tombstone_chunk(
+    repo_id: Uuid,
+    path: &str,
+    chunk_index: u32,
+    language: Option<String>,
+) -> CodeChunkV1 {
+    CodeChunkV1 {
+        repo_id,
+        file_path: path.to_string(),
+        chunk_index,
+        text: String::new(),
+        language,
+        chunk_type: "block".into(),
+        byte_range_start: 0,
+        byte_range_end: 0,
+        line_range_start: 0,
+        line_range_end: 0,
+        state: FileState::Tombstone,
     }
 }
 
@@ -338,174 +447,11 @@ fn encode_cursor(c: &CodeCursor) -> Result<Cursor, IndexError> {
     Ok(Cursor::from_bytes(bytes))
 }
 
-// ---------------------------------------------------------------------
-// Walk plan + git helpers.
-// ---------------------------------------------------------------------
-
-#[derive(Debug)]
-struct WalkPlan {
-    head_sha: String,
-    head_tree_sha: String,
-    commits: Vec<CommitInfo>,
-}
-
+/// Chunk info for call resolution.
 #[derive(Debug, Clone)]
-struct CommitInfo {
-    sha: String,
-    parents: Vec<String>,
-    author_name: String,
-    author_email: String,
-    author_time: time::OffsetDateTime,
-    committer_name: String,
-    committer_email: String,
-    committer_time: time::OffsetDateTime,
-    message: String,
-}
-
-fn run_git(repo: &Path, args: &[&str]) -> Result<Vec<u8>, IndexError> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(repo)
-        .args(args)
-        .output()?;
-    if !out.status.success() {
-        return Err(IndexError::Git(format!(
-            "git {args:?}: {}",
-            String::from_utf8_lossy(&out.stderr)
-        )));
-    }
-    Ok(out.stdout)
-}
-
-fn git_head_sha(repo: &Path) -> Result<String, IndexError> {
-    let bytes = run_git(repo, &["rev-parse", "HEAD"])?;
-    String::from_utf8(bytes)
-        .map(|s| s.trim().to_string())
-        .map_err(|_| IndexError::Utf8)
-}
-
-fn git_tree_sha(repo: &Path, rev: &str) -> Result<String, IndexError> {
-    let bytes = run_git(repo, &["rev-parse", &format!("{rev}^{{tree}}")])?;
-    String::from_utf8(bytes)
-        .map(|s| s.trim().to_string())
-        .map_err(|_| IndexError::Utf8)
-}
-
-fn git_log(repo: &Path) -> Result<Vec<CommitInfo>, IndexError> {
-    git_log_args(repo, &["log", "--first-parent"])
-}
-
-fn git_log_range(repo: &Path, from: &str, to: &str) -> Result<Vec<CommitInfo>, IndexError> {
-    git_log_args(repo, &["log", "--first-parent", &format!("{from}..{to}")])
-}
-
-fn git_log_args(repo: &Path, base_args: &[&str]) -> Result<Vec<CommitInfo>, IndexError> {
-    let fmt = "%H%x1f%P%x1f%an%x1f%ae%x1f%aI%x1f%cn%x1f%ce%x1f%cI%x1f%B%x1e";
-    let fmt_arg = format!("--format={fmt}");
-    let mut args: Vec<&str> = base_args.to_vec();
-    args.push(&fmt_arg);
-    let bytes = run_git(repo, &args)?;
-    let text = String::from_utf8(bytes).map_err(|_| IndexError::Utf8)?;
-    let mut out = Vec::new();
-    for record in text.split('\x1e') {
-        let r = record.trim_start_matches('\n');
-        if r.is_empty() {
-            continue;
-        }
-        let parts: Vec<&str> = r.splitn(9, '\x1f').collect();
-        if parts.len() != 9 {
-            return Err(IndexError::Git(format!("malformed log record: {r:?}")));
-        }
-        let parents: Vec<String> = parts[1].split_whitespace().map(str::to_string).collect();
-        let author_time = time::OffsetDateTime::parse(
-            parts[4],
-            &time::format_description::well_known::Iso8601::DEFAULT,
-        )
-        .map_err(|e| IndexError::Git(format!("author_time {:?}: {e}", parts[4])))?;
-        let committer_time = time::OffsetDateTime::parse(
-            parts[7],
-            &time::format_description::well_known::Iso8601::DEFAULT,
-        )
-        .map_err(|e| IndexError::Git(format!("committer_time {:?}: {e}", parts[7])))?;
-        out.push(CommitInfo {
-            sha: parts[0].to_string(),
-            parents,
-            author_name: parts[2].to_string(),
-            author_email: parts[3].to_string(),
-            author_time,
-            committer_name: parts[5].to_string(),
-            committer_email: parts[6].to_string(),
-            committer_time,
-            message: parts[8].to_string(),
-        });
-    }
-    Ok(out)
-}
-
-fn git_ls_files(repo: &Path, rev: &str) -> Result<Vec<(String, Vec<u8>)>, IndexError> {
-    let listing = run_git(repo, &["ls-tree", "-r", "-z", rev])?;
-    let listing_str = String::from_utf8(listing).map_err(|_| IndexError::Utf8)?;
-
-    let mut paths = Vec::new();
-    for entry in listing_str.split('\0') {
-        if entry.is_empty() {
-            continue;
-        }
-        let (header, path) = entry
-            .split_once('\t')
-            .ok_or_else(|| IndexError::Git(format!("malformed ls-tree entry: {entry:?}")))?;
-        let cols: Vec<&str> = header.split_whitespace().collect();
-        if cols.len() != 3 || cols[1] != "blob" {
-            continue;
-        }
-        paths.push((path.to_string(), cols[2].to_string()));
-    }
-
-    let mut out = Vec::with_capacity(paths.len());
-    for (path, oid) in paths {
-        let bytes = run_git(repo, &["cat-file", "blob", &oid])?;
-        out.push((path, bytes));
-    }
-    Ok(out)
-}
-
-fn git_cat_blob(repo: &Path, rev: &str, path: &str) -> Result<Vec<u8>, IndexError> {
-    run_git(repo, &["show", &format!("{rev}:{path}")])
-}
-
-/// Returns `(changed_or_added_paths, deleted_paths)` between two
-/// tree shas. Uses `--name-status -z`. Renames are reported as
-/// delete + add.
-fn git_diff_paths(
-    repo: &Path,
-    from: &str,
-    to: &str,
-) -> Result<(Vec<String>, Vec<String>), IndexError> {
-    let bytes = run_git(repo, &["diff", "--name-status", "-z", from, to])?;
-    let text = String::from_utf8(bytes).map_err(|_| IndexError::Utf8)?;
-    // -z emits: "<status>\0<path>\0[<path2>\0 if rename/copy]"
-    // Status codes: A/M/D for add/modify/delete; R<num>/C<num> for
-    // rename/copy with two paths.
-    let mut tokens = text.split('\0').filter(|s| !s.is_empty());
-    let mut changed = Vec::new();
-    let mut deleted = Vec::new();
-    while let Some(status) = tokens.next() {
-        let primary = tokens
-            .next()
-            .ok_or_else(|| IndexError::Git(format!("diff missing path after status {status:?}")))?;
-        let first_char = status.chars().next().unwrap_or(' ');
-        match first_char {
-            'A' | 'M' | 'T' => changed.push(primary.to_string()),
-            'D' => deleted.push(primary.to_string()),
-            'R' | 'C' => {
-                let dest = tokens.next().ok_or_else(|| {
-                    IndexError::Git(format!("rename {status:?} missing dest path"))
-                })?;
-                deleted.push(primary.to_string());
-                changed.push(dest.to_string());
-            }
-            _ => {}
-        }
-    }
-    Ok((changed, deleted))
+struct ChunkInfo {
+    memory_id: MemoryId,
+    byte_range_start: u32,
+    byte_range_end: u32,
+    item_names: Vec<String>,
 }

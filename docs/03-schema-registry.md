@@ -12,6 +12,7 @@ the trait shapes, sidecar tables, and migration discipline.
 | `FactPayload`        | every Fact          | sidecar; `Memory.text` is NULL |
 | `AbstractionPayload` | every Abstraction   | sidecar **alongside** `Memory.text` |
 | `PerspectivePayload` | every Perspective   | sidecar **alongside** `Memory.text` |
+| `EdgePayload`        | edges whose `relation` is registered with one (substrate / core relations carry no payload) | sidecar keyed on `edge_id` |
 
 A registered schema declares the typed shape of a payload. At startup,
 each flavor's `register` call adds its compile-time impls to the
@@ -65,10 +66,11 @@ One struct per `(schema_id, schema_version)`.
 
 ```rust
 trait FactPayload: Serialize + Deserialize + 'static {
-    const SCHEMA_ID:      SchemaId;        // stable across versions
-    const SCHEMA_VERSION: SchemaVersion;   // monotonic per id
-    fn render(&self) -> String;            // on-demand text view
-    fn sidecar_table() -> &'static str;    // SQL table name
+    const SCHEMA_ID:        SchemaId;        // stable across versions
+    const SCHEMA_VERSION:   SchemaVersion;   // monotonic per id
+    const SPECIAL_CATEGORY: bool;            // see §Special-category declaration
+    fn render(&self) -> String;              // on-demand text view
+    fn sidecar_table() -> &'static str;      // SQL table name
 }
 ```
 
@@ -90,6 +92,7 @@ impl FactPayload for MemophantLessonV1 {
     // the short id ("lesson") via the registration macro.
     const SCHEMA_ID: SchemaId = proxima_schema_id!("lesson");
     const SCHEMA_VERSION: SchemaVersion = 1;
+    const SPECIAL_CATEGORY: bool = false;
     fn render(&self) -> String {
         format!("Lesson {} — {}: {}", self.lesson_no, self.subject, self.title)
     }
@@ -101,14 +104,16 @@ impl FactPayload for MemophantLessonV1 {
 
 ```rust
 trait AbstractionPayload: Serialize + Deserialize + 'static {
-    const SCHEMA_ID:      SchemaId;
-    const SCHEMA_VERSION: SchemaVersion;
+    const SCHEMA_ID:        SchemaId;
+    const SCHEMA_VERSION:   SchemaVersion;
+    const SPECIAL_CATEGORY: bool;          // see §Special-category declaration
     fn sidecar_table() -> &'static str;    // "abstraction_<schema>_v<n>"
 }
 
 trait PerspectivePayload: Serialize + Deserialize + 'static {
-    const SCHEMA_ID:      SchemaId;
-    const SCHEMA_VERSION: SchemaVersion;
+    const SCHEMA_ID:        SchemaId;
+    const SCHEMA_VERSION:   SchemaVersion;
+    const SPECIAL_CATEGORY: bool;          // see §Special-category declaration
     fn sidecar_table() -> &'static str;    // "perspective_<schema>_v<n>"
 }
 ```
@@ -132,9 +137,70 @@ impl AbstractionPayload for BugFixClusterV1 {
     // In a `proxima-code` crate this expands to "proxima-code/bug-fix-cluster".
     const SCHEMA_ID: SchemaId = proxima_schema_id!("bug-fix-cluster");
     const SCHEMA_VERSION: SchemaVersion = 1;
+    const SPECIAL_CATEGORY: bool = false;
     fn sidecar_table() -> &'static str { "abstraction_code_bug_fix_cluster_v1" }
 }
 ```
+
+### `EdgePayload`
+
+```rust
+trait EdgePayload: Serialize + Deserialize + 'static {
+    const SCHEMA_ID:        SchemaId;
+    const SCHEMA_VERSION:   SchemaVersion;
+    const RELATION_CLASS:   RelationClass;   // closed enum, see 02 §Edges
+    const SPECIAL_CATEGORY: bool;            // see §Special-category declaration
+    fn sidecar_table() -> &'static str;      // "edge_<schema>_v<n>"
+}
+```
+
+`EdgePayload` is the same shape as `FactPayload`/`AbstractionPayload`
+applied to edges. The substrate's `proxima_core.edges` row carries the
+relation discriminator (`relation: text` for the flavor-level name,
+`relation_class: RelationClass` for the closed substrate-level traversal
+contract — see [02 §Relation registry](02-memory.md#relation-registry));
+the typed payload lives in a flavor-owned sidecar table keyed on
+`edge_id`.
+
+Not every edge needs a payload. Substrate / core relations
+(`core/derived-from`, `core/supersedes`, `core/parent`,
+`core/motivated-by`) carry zero flavor-specific state and skip the
+sidecar entirely. A flavor opts in by registering a
+`RelationDescriptor` whose `relation` string maps to an `EdgePayload`
+impl; the engine writes the substrate edge row and the typed sidecar
+in the same atomic verb (07).
+
+`RELATION_CLASS` on the trait is a *choice among the existing
+substrate enum*, not an extension point. The traversal contract
+(A/P chain queries, scope filtering) is closed by design — flavors
+pick the class their relation logically falls under, then use the
+`relation` string for the per-flavor specifics.
+
+Example:
+
+```rust
+#[derive(Serialize, Deserialize)]
+struct EdgeCallsV1 {
+    callsite_byte_range: (u32, u32),
+    is_dynamic:          bool,
+}
+
+impl EdgePayload for EdgeCallsV1 {
+    // In a `proxima-code` crate this expands to "proxima-code/calls".
+    const SCHEMA_ID: SchemaId = proxima_schema_id!("calls");
+    const SCHEMA_VERSION: SchemaVersion = 1;
+    const RELATION_CLASS: RelationClass = RelationClass::Structural;
+    const SPECIAL_CATEGORY: bool = false;
+    fn sidecar_table() -> &'static str { "edge_code_calls_v1" }
+}
+```
+
+**Edges are immutable in v1.** When a callee chunk is rewritten, the
+new chunk Fact authors fresh edges; old edges remain valid for the old
+chunk and are reachable via the memory layer's supersession chain. No
+edge-level head-by-natural-key query path ships in v1 — promoting
+stateful edges is a focused future milestone, only when a flavor
+actually demands it.
 
 ### Selective extraction — design intent
 
@@ -159,6 +225,74 @@ Two rules follow:
 
 Embeddings live in the independent vector store ([07](docs/07-storage.md)), keyed by
 `(entity_kind, entity_id)`. They are not columns on any sidecar.
+
+## Special-category declaration
+
+Every payload schema carries `const SPECIAL_CATEGORY: bool`. The
+trait declares `false` as the default, so impls that don't carry
+special-category data don't need to mention it. Controllers
+handling data falling under GDPR Art. 9 (special-category personal
+data: health, racial/ethnic origin, political opinions, religious
+or philosophical beliefs, trade-union membership, genetic data,
+biometric data, sex life or sexual orientation) or analogous
+heightened-protection categories under other regimes **must
+explicitly override to `true`** — the substrate trusts the
+declared value and applies stricter handling on its basis. The
+default exists for v1 ergonomics across the existing impl base;
+the deployment-controller's responsibility to override correctly
+is documented as the controller's compliance obligation under
+each applicable regime.
+
+The flag is *substrate-level metadata*, not a regulatory
+self-certification:
+
+- **`true`** flips engine behavior: the schema's sidecar is
+  marked in the schema registry; the storage layer can apply
+  stricter access logging; `delete_owner` ([15](15-compliance.md))
+  refusal-with-reason validates against `compliance.owner_policy`
+  more strictly; admin protocol surfaces special-category
+  distribution in subject-access exports.
+- **`false`** is the default for all bare-core and most flavor
+  schemas — code, lessons, build statuses, structural edges.
+  Substrate operates without special-category overhead.
+
+The flag is per-schema, not per-row. A schema either *can*
+contain Art. 9-class data or *cannot*. If a schema sometimes
+carries health information and sometimes does not, split it into
+two schemas with different flag values rather than mixing.
+
+Worked example — a Memophant variant carrying mood logs would
+register a separate, special-category-flagged schema:
+
+```rust
+#[derive(Serialize, Deserialize)]
+struct MoodEntryV1 {
+    timestamp:  DateTime<Utc>,
+    mood:       MoodScore,             // 1..10
+    notes:      String,                // free-form, may include health detail
+}
+
+impl FactPayload for MoodEntryV1 {
+    const SCHEMA_ID: SchemaId = proxima_schema_id!("mood-entry");
+    const SCHEMA_VERSION: SchemaVersion = 1;
+    const SPECIAL_CATEGORY: bool = true;       // Art. 9 — health data
+    fn render(&self) -> String {
+        format!("Mood {} at {}: {}", self.mood, self.timestamp, self.notes)
+    }
+    fn sidecar_table() -> &'static str { "fact_memophant_mood_entry_v1" }
+}
+```
+
+A non-EU deployer who has no equivalent regulation may set
+`SPECIAL_CATEGORY = false` even on schemas that would qualify
+under GDPR; the substrate enforces *the declared value*, not a
+regime-specific classification. The declaration is a controller
+decision, not a substrate inference.
+
+Trait families with their own homes — `GoalPayload`
+([06](06-goals-and-self.md)), `CitedObjectPayload` /
+`CitationMappingPayload` ([11](11-citations.md)) — carry the same
+const with the same semantics.
 
 ## Sidecar tables
 
@@ -189,6 +323,7 @@ Naming convention by kind:
 - `fact_<schema>_v<n>`
 - `abstraction_<schema>_v<n>`
 - `perspective_<schema>_v<n>`
+- `edge_<schema>_v<n>` — keyed on `edge_id` instead of `memory_id`
 
 ## Stateful Fact schemas — head-by-natural-key
 
@@ -427,6 +562,7 @@ The points below are typing-layer-specific.)
 - `factpayload`
 - `abstractionpayload-and-perspectivepayload`
 - `selective-extraction-design-intent`
+- `special-category-declaration`
 - `sidecar-tables`
 - `stateful-fact-schemas--head-by-natural-key`
 - `registration`

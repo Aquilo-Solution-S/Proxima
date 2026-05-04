@@ -5,11 +5,15 @@
 //! See docs/08 §Registration mechanism.
 
 use crate::verbs::schema::{PayloadKind, SchemaInfo, SchemaRegistry};
-use crate::{AbstractionPayload, FactPayload, PerspectivePayload, SchemaVersion};
+use crate::{
+    AbstractionPayload, EdgePayload, FactPayload, PerspectivePayload, RelationDescriptor,
+    SchemaVersion,
+};
 
 #[derive(Debug, Default)]
 pub struct FlavorRegistry {
     schemas: Vec<SchemaInfo>,
+    relations: Vec<RelationDescriptor>,
 }
 
 impl FlavorRegistry {
@@ -54,8 +58,55 @@ impl FlavorRegistry {
         });
     }
 
+    /// Register a typed `EdgePayload` schema. The descriptor that
+    /// references this schema must be registered separately via
+    /// `add_relation`; the substrate cross-checks the linkage at
+    /// `freeze()` time.
+    pub fn add_edge_schema<E: EdgePayload>(&mut self) {
+        self.schemas.push(SchemaInfo {
+            schema_id: E::schema_id(),
+            schema_version: SchemaVersion::new(E::SCHEMA_VERSION),
+            kind: PayloadKind::Edge,
+            filter_keys: vec![],
+            sidecar_table: Some(E::sidecar_table().to_string()),
+            natural_key_columns: vec![],
+        });
+    }
+
+    /// Register a relation. Substrate-only relations carry no
+    /// `payload_schema`; typed relations point at a registered
+    /// `EdgePayload` schema.
+    pub fn add_relation(&mut self, descriptor: RelationDescriptor) {
+        self.relations.push(descriptor);
+    }
+
     #[must_use]
     pub fn freeze(self) -> SchemaRegistry {
-        SchemaRegistry::with_schemas(self.schemas)
+        // Cross-check: every typed relation's payload_schema must
+        // point at a registered Edge schema with the matching
+        // RelationClass. Catches authoring drift at startup, not
+        // at first edge-write.
+        for rel in &self.relations {
+            if let Some(payload_schema) = &rel.payload_schema {
+                let info = self
+                    .schemas
+                    .iter()
+                    .find(|s| {
+                        s.kind == PayloadKind::Edge
+                            && s.schema_id == payload_schema.schema_id
+                            && s.schema_version == payload_schema.schema_version
+                    })
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "RelationDescriptor {:?} references unregistered EdgePayload schema {:?} v{:?}",
+                            rel.relation,
+                            payload_schema.schema_id.as_str(),
+                            payload_schema.schema_version.into_inner(),
+                        )
+                    });
+                let _ = info;
+            }
+        }
+        SchemaRegistry::with_schemas_and_relations(self.schemas, self.relations)
     }
 }

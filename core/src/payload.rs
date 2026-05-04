@@ -8,11 +8,17 @@
 //! `const SCHEMA_ID: SchemaId = ...` shape: that requires
 //! const-construction of `String`, which Rust does not allow.
 
-use crate::SchemaId;
+use crate::{RelationClass, SchemaId};
 
 pub trait FactPayload: serde::Serialize + serde::de::DeserializeOwned + 'static {
     const SCHEMA_ID: &'static str;
     const SCHEMA_VERSION: u32;
+    /// GDPR Art. 9 (and analogous regimes') special-category flag.
+    /// Defaults to `false`; controllers handling health, biometric,
+    /// political, or other heightened-protection categories must
+    /// override to `true`. See docs/03 §Special-category declaration
+    /// and docs/15 §Compliance vocabulary.
+    const SPECIAL_CATEGORY: bool = false;
     fn render(&self) -> String;
     fn sidecar_table() -> &'static str;
     /// Natural-key columns on the sidecar table for stateful Fact
@@ -30,6 +36,8 @@ pub trait FactPayload: serde::Serialize + serde::de::DeserializeOwned + 'static 
 pub trait AbstractionPayload: serde::Serialize + serde::de::DeserializeOwned + 'static {
     const SCHEMA_ID: &'static str;
     const SCHEMA_VERSION: u32;
+    /// See `FactPayload::SPECIAL_CATEGORY`.
+    const SPECIAL_CATEGORY: bool = false;
     fn sidecar_table() -> &'static str;
     fn schema_id() -> SchemaId {
         SchemaId::new(Self::SCHEMA_ID.to_string())
@@ -39,6 +47,33 @@ pub trait AbstractionPayload: serde::Serialize + serde::de::DeserializeOwned + '
 pub trait PerspectivePayload: serde::Serialize + serde::de::DeserializeOwned + 'static {
     const SCHEMA_ID: &'static str;
     const SCHEMA_VERSION: u32;
+    /// See `FactPayload::SPECIAL_CATEGORY`.
+    const SPECIAL_CATEGORY: bool = false;
+    fn sidecar_table() -> &'static str;
+    fn schema_id() -> SchemaId {
+        SchemaId::new(Self::SCHEMA_ID.to_string())
+    }
+}
+
+/// Typed payload for an edge row in `proxima_core.edges`. Mirrors
+/// `FactPayload` / `AbstractionPayload` for the edge layer; opt-in
+/// per relation via `RelationDescriptor::payload_schema`.
+///
+/// `RELATION_CLASS` pins the substrate class that edges carrying this
+/// payload must declare. The atomic edge-write verb cross-checks the
+/// descriptor's class against this constant at registration time so
+/// a payload cannot be misfiled across classes.
+///
+/// See docs/03 §EdgePayload and docs/02 §"Typed edge payloads".
+pub trait EdgePayload: serde::Serialize + serde::de::DeserializeOwned + 'static {
+    const SCHEMA_ID: &'static str;
+    const SCHEMA_VERSION: u32;
+    const RELATION_CLASS: RelationClass;
+    /// See `FactPayload::SPECIAL_CATEGORY`.
+    const SPECIAL_CATEGORY: bool = false;
+    /// Sidecar table identifier (qualified, e.g.
+    /// `"proxima_code.code_calls_v1"`). The table's primary key is
+    /// `edge_id uuid` referencing `proxima_core.edges(edge_id)`.
     fn sidecar_table() -> &'static str;
     fn schema_id() -> SchemaId {
         SchemaId::new(Self::SCHEMA_ID.to_string())

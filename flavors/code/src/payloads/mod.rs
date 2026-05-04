@@ -1,6 +1,7 @@
 pub mod code_chunk;
 pub mod commit;
 pub mod commit_summary;
+pub mod edge_calls;
 pub mod file_revision;
 
 /// Serde adapter for 32-byte content hashes that round-trips through
@@ -77,4 +78,5 @@ pub(crate) mod content_hash_serde {
 pub use code_chunk::CodeChunkV1;
 pub use commit::CommitV1;
 pub use commit_summary::CommitSummaryV1;
+pub use edge_calls::EdgeCallsV1;
 pub use file_revision::{FileRevisionV1, FileState};

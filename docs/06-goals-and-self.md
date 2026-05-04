@@ -86,6 +86,7 @@ via `proxima_flavor!` ([08](docs/08-core-and-flavors.md)).
 trait GoalPayload {
     const SCHEMA_ID: &'static str;       // e.g. "code/needs-implementation"
     const SCHEMA_VERSION: u32;           // const on impl; version implicit in sidecar table name
+    const SPECIAL_CATEGORY: bool;        // see [03 §Special-category declaration](03-schema-registry.md#special-category-declaration)
 }
 ```
 

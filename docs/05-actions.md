@@ -101,6 +101,26 @@ Implementation styles compose freely:
   EventSource (UI, chat) emits the approval, which triggers the tool.
   Falls out of existing primitives — no new substrate machinery.
 
+**Substrate-enforced wiring constraint.** The decider style is a
+flavor choice for *most* tools. For tools whose manifest declares
+`compliance.legal_consequence = true` ([12 §Compliance metadata](12-tool-manifest.md#compliance-metadata)),
+the engine refuses to wire them under a fully-automatic decider
+(programmed-rule or tool-calling-LLM). Such tools must be wired
+under the human-in-the-loop pattern above — proposal Fact from
+the decider, approval Fact from a `Core(User)`-authored EventSource,
+the engine treats only the approval as the firing event. This is
+the substrate's GDPR Art. 22 enforcement (no automated decision
+with legal effect on a natural person without human intervention)
+and analogous protections under other regimes. An explicit
+deployment override (`config.allow_unmediated_legal_consequence
+= true`) is available for controllers who have an Art. 22-valid
+basis (explicit consent, contract performance, or law) and have
+documented it in their DPIA; absent the override, install fails
+with `InstallError::LegalConsequenceUnmediated` (12 §Registry
+surface). See [15 §External side effects](15-compliance.md#external-side-effects)
+for the broader posture on tool-call effects that the substrate
+cannot roll back.
+
 ### Gradual scaling
 
 Decider sophistication is use-case dependent and grown over time.
