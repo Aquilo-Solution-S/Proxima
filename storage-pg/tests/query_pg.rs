@@ -40,18 +40,24 @@ fn schemas_for_test() -> Vec<SchemaInfo> {
             schema_version: SchemaVersion::new(1),
             kind: PayloadKind::Fact,
             filter_keys: vec![],
+            sidecar_table: None,
+            natural_key_columns: vec![],
         },
         SchemaInfo {
             schema_id: SchemaId::new("test/cited_blob".into()),
             schema_version: SchemaVersion::new(1),
             kind: PayloadKind::CitedObject,
             filter_keys: vec![],
+            sidecar_table: None,
+            natural_key_columns: vec![],
         },
         SchemaInfo {
             schema_id: SchemaId::new("test/citation_blob".into()),
             schema_version: SchemaVersion::new(1),
             kind: PayloadKind::CitationMapping,
             filter_keys: vec![],
+            sidecar_table: None,
+            natural_key_columns: vec![],
         },
     ]
 }
@@ -186,6 +192,7 @@ async fn query_filter_abstraction_returns_empty() {
             schema_id: None,
             supersession: SupersessionStatus::HeadsOnly,
             limit: 100,
+            stateful_heads: None,
         };
         let resp = engine.query(&Credentials::None, &req).await?;
 
@@ -238,6 +245,7 @@ async fn query_filter_nonexistent_schema_returns_empty() {
             schema_id: Some(SchemaId::new("test/non_existent".into())),
             supersession: SupersessionStatus::HeadsOnly,
             limit: 100,
+            stateful_heads: None,
         };
         let resp = engine.query(&Credentials::None, &req).await?;
 

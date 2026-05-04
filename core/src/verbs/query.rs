@@ -29,6 +29,17 @@ pub enum SupersessionStatus {
     IncludeSuperseded,
 }
 
+/// Engine-resolved head-by-natural-key filter for stateful Fact
+/// schemas (docs/03 §Stateful Fact schemas). Populated from the
+/// schema registry when `Engine::query` sees a heads-only request
+/// against a stateful Fact schema; storage uses it to emit the
+/// per-NK head SQL. Internal — clients do not set this directly.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StatefulHeadsFilter {
+    pub sidecar_table: String,
+    pub natural_key_columns: Vec<String>,
+}
+
 /// One core-generic Query request. Flavor-typed filters
 /// per docs/14 §"Query" land when the first flavor crate
 /// registers a sidecar (M3+).
@@ -39,6 +50,11 @@ pub struct QueryRequest {
     pub schema_id: Option<SchemaId>,
     pub supersession: SupersessionStatus,
     pub limit: u32,
+    /// Engine-resolved metadata for stateful-Fact heads-only queries.
+    /// Skipped over the wire — clients don't set this; the engine
+    /// populates it from the schema registry before dispatch.
+    #[serde(skip)]
+    pub stateful_heads: Option<StatefulHeadsFilter>,
 }
 
 impl QueryRequest {
@@ -52,6 +68,7 @@ impl QueryRequest {
             schema_id: None,
             supersession: SupersessionStatus::HeadsOnly,
             limit: 100,
+            stateful_heads: None,
         }
     }
 }

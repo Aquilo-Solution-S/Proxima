@@ -21,6 +21,15 @@ pub struct SchemaInfo {
     pub schema_version: SchemaVersion,
     pub kind: PayloadKind,
     pub filter_keys: Vec<String>,
+    /// Sidecar table identifier (qualified, e.g. `proxima_code.code_chunk_v1`)
+    /// when the payload trait declares one; `None` for `Goal`, `CitedObject`,
+    /// and `CitationMapping` payloads which don't participate in F/A/P
+    /// queries.
+    pub sidecar_table: Option<String>,
+    /// Natural-key columns for stateful Fact schemas (docs/03 §Stateful
+    /// Fact schemas). Empty for stateless / non-Fact schemas. Drives the
+    /// head-by-natural-key SQL emission in `Query` heads-only mode.
+    pub natural_key_columns: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -60,6 +69,31 @@ impl SchemaRegistry {
         self.schemas
             .iter()
             .find(|s| s.schema_id == *schema_id && s.schema_version == version)
+    }
+
+    /// Resolve the head-by-natural-key filter for a stateful Fact
+    /// schema. Returns `None` when the schema is unknown, is not a
+    /// Fact, or has no natural-key columns (stateless Fact). Used by
+    /// the engine to populate `QueryRequest::stateful_heads` for
+    /// heads-only queries (docs/14 §Query, docs/03 §Stateful Fact
+    /// schemas).
+    #[must_use]
+    pub fn stateful_filter_for(
+        &self,
+        schema_id: &SchemaId,
+    ) -> Option<crate::verbs::query::StatefulHeadsFilter> {
+        let info = self
+            .schemas
+            .iter()
+            .find(|s| s.schema_id == *schema_id && s.kind == PayloadKind::Fact)?;
+        if info.natural_key_columns.is_empty() {
+            return None;
+        }
+        let sidecar_table = info.sidecar_table.clone()?;
+        Some(crate::verbs::query::StatefulHeadsFilter {
+            sidecar_table,
+            natural_key_columns: info.natural_key_columns.clone(),
+        })
     }
 
     pub fn handle(&self, _req: &SchemaRequest) -> SchemaResponse {
