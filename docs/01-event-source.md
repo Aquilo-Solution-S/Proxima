@@ -109,6 +109,47 @@ see [11](docs/11-citations.md)). They often coincide — one PDF ingestion → o
 Document — but for streams (one ChatSession lasting months → many
 batches over time) they don't. Coincidence isn't identity.
 
+## Compliance metadata
+
+Every source declares four compliance-vocabulary fields at
+registration. Substrate startup fails if any is absent. The
+vocabulary, default-trivial values, and the why-each-field
+rationale live in
+[15 §Compliance vocabulary](15-compliance.md#compliance-vocabulary);
+01 specifies what a *source* must declare.
+
+```rust
+struct SourceComplianceMetadata {
+    lawful_basis:        LawfulBasis,        // 15 §Compliance vocabulary
+    collection_purpose:  String,             // free-form, controller-authored
+    retention_policy:    RetentionPolicy,    // source-default; per-Owner overrides
+                                             // live in compliance.owner_policy (15)
+    data_residency:      Region,             // where the source's payloads land
+}
+```
+
+Inheritance: every Fact a source emits inherits these four values
+into its row at insert time. `delete_owner` and the suppression-list
+mechanic ([15](15-compliance.md)) operate on the inherited values;
+operators and deciders never see them (compliance metadata is not
+part of the cognitive surface).
+
+Per-Owner overrides — a source emitting under multiple Owners may
+have different retention obligations per Owner — are expressed via
+`compliance.owner_policy` rows, not by emitting Owner-divergent
+events from the same source. The source declares its *default*;
+the controller refines per Owner.
+
+**Idempotency-key constraint.** Every event's `event_id` (see
+§Properties of an Event) is the deterministic hash of
+`(source_id, owner, payload)`. The hash is content-derived and
+opaque by construction — it must remain so. Sources must not
+substitute a verbatim natural-person identifier (email address,
+national ID, phone number) for the hash, because the suppression
+list ([15 §Suppression list](15-compliance.md#suppression-list--re-ingest-rejection))
+retains `event_id` indefinitely as a re-ingest guard, and a
+non-opaque key would itself become PII surviving deletion.
+
 ## Properties of an Event
 
 Every event carries:
@@ -226,7 +267,30 @@ proxima.config.yaml
       default_owner:
         principal: { group: org_AQS_everyone }
         org_id: org_AQS
+      compliance:                                   # see §Compliance metadata
+        lawful_basis: { legitimate_interest:
+            "internal engineering knowledge graph for AQS staff" }
+        collection_purpose:
+            "Index AQS source repositories for code-flavor consolidation"
+        retention_policy: { retain_for: "7y" }      # AO §147 alignment
+        data_residency: eu
 ```
+
+A US-only deployment with no GDPR-equivalent state regulation
+declares trivial values across the board:
+
+```yaml
+      compliance:
+        lawful_basis: not_applicable
+        collection_purpose: "internal use"
+        retention_policy: { indefinite:
+            { reason: "no applicable retention regime" } }
+        data_residency: unrestricted
+```
+
+Both forms are valid; the substrate enforcement mechanics
+(residency allowlist, retention-driven cleanup, refusal-with-reason
+on `delete_owner`) act only on non-trivial values.
 
 ## What this gives us
 
@@ -239,6 +303,7 @@ boundary, and the cost of supporting a new Reality is exactly one
 
 - `owner-scoping-primitive`
 - `the-contract`
+- `compliance-metadata`
 - `properties-of-an-event`
 - `what-the-event-source-must-not-do`
 - `domain-examples`

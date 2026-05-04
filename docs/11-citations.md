@@ -43,9 +43,10 @@ all other payload traits (see invariant 7).
 
 ```rust
 trait CitedObjectPayload: Serialize + Deserialize + 'static {
-    const SCHEMA_ID:      SchemaId;        // "doc-pdf", "media-image", "chat-telegram-session", ...
-    const SCHEMA_VERSION: SchemaVersion;
-    fn sidecar_table() -> &'static str;    // "cited_<schema>_v<n>"
+    const SCHEMA_ID:        SchemaId;        // "doc-pdf", "media-image", "chat-telegram-session", ...
+    const SCHEMA_VERSION:   SchemaVersion;
+    const SPECIAL_CATEGORY: bool;            // see [03 §Special-category declaration](03-schema-registry.md#special-category-declaration)
+    fn sidecar_table() -> &'static str;      // "cited_<schema>_v<n>"
 
     /// Stable hash of the artefact content. Re-ingesting the same
     /// PDF / image / session produces the same key, deduplicating
@@ -54,9 +55,10 @@ trait CitedObjectPayload: Serialize + Deserialize + 'static {
 }
 
 trait CitationMappingPayload: Serialize + Deserialize + 'static {
-    const SCHEMA_ID:      SchemaId;        // "doc-pdf-page-paragraph", "media-image-bbox", ...
-    const SCHEMA_VERSION: SchemaVersion;
-    fn sidecar_table() -> &'static str;    // "citation_<schema>_v<n>"
+    const SCHEMA_ID:        SchemaId;        // "doc-pdf-page-paragraph", "media-image-bbox", ...
+    const SCHEMA_VERSION:   SchemaVersion;
+    const SPECIAL_CATEGORY: bool;            // see [03 §Special-category declaration](03-schema-registry.md#special-category-declaration)
+    fn sidecar_table() -> &'static str;      // "citation_<schema>_v<n>"
 
     /// Which CitedObjectPayload schema this mapping annotates.
     /// Engine validates that the linked cited_object_id resolves to

@@ -15,10 +15,13 @@
 use proxima_core::operators::{
     ConsolidateBatchF2AOutcome, ConsolidateBatchF2ARequest, FactRow, SidecarSpec,
 };
-use proxima_core::{MemoryId, Owner, Principal, SchemaVersion, SourceBatchId, StorageError};
+use proxima_core::{
+    MemoryId, Owner, Principal, RelationClass, SchemaVersion, SourceBatchId, StorageError,
+};
 use sqlx::PgPool;
 
 use crate::error::map_err;
+use crate::verbs::edge_append::{EdgeDraft, append_edge_in_tx};
 
 /// SQL fragment listing batches that are closed and have no
 /// `source_batch_f2a` row for `operator_id`. Used by the engine's
@@ -281,46 +284,21 @@ pub async fn consolidate_batch_f2a(
         // 4. provenance edges A→F (one per source Fact).
         for prov_id in &abs.provenance {
             let edge_id = uuid::Uuid::now_v7();
-            sqlx::query(
-                "INSERT INTO proxima_core.edges \
-                    (edge_id, relation, relation_class, source_kind, source_memory_id, \
-                     target_kind, target_memory_id, authorship_kind, authorship_owner_memory_id, \
-                     owner_principal_kind, owner_principal_id, owner_org_id) \
-                 VALUES ($1, 'core/derived-from', 'Provenance', \
-                         'Abstraction', $2, 'Fact', $3, 'OperatorFtoA', $2, \
-                         $4, $5, $6)",
-            )
-            .bind(edge_id)
-            .bind(memory_id)
-            .bind(prov_id.into_inner())
-            .bind(owner_kind)
-            .bind(owner_principal_id)
-            .bind(owner_org_id)
-            .execute(&mut *tx)
-            .await
-            .map_err(map_err)?;
-
-            // 6b. EdgeAppend change_event.
-            let edge_seq = uuid::Uuid::now_v7();
-            sqlx::query(
-                "INSERT INTO proxima_core.change_event \
-                    (seq, owner_principal_kind, owner_principal_id, owner_org_id, kind, \
-                     edge_id, edge_relation, \
-                     edge_source_kind, edge_source_memory_id, \
-                     edge_target_kind, edge_target_memory_id) \
-                 VALUES ($1, $2, $3, $4, 'EdgeAppend', $5, 'core/derived-from', \
-                         'Abstraction', $6, 'Fact', $7)",
-            )
-            .bind(edge_seq)
-            .bind(owner_kind)
-            .bind(owner_principal_id)
-            .bind(owner_org_id)
-            .bind(edge_id)
-            .bind(memory_id)
-            .bind(prov_id.into_inner())
-            .execute(&mut *tx)
-            .await
-            .map_err(map_err)?;
+            let draft = EdgeDraft {
+                edge_id,
+                relation: "core/derived-from",
+                class: RelationClass::Provenance,
+                source_kind: "Abstraction",
+                source_memory_id: Some(memory_id),
+                source_goal_id: None,
+                target_kind: "Fact",
+                target_memory_id: Some(prov_id.into_inner()),
+                target_goal_id: None,
+                authorship_kind: "OperatorFtoA",
+                authorship_owner_memory_id: Some(memory_id),
+                owner: &req.owner,
+            };
+            append_edge_in_tx(&mut tx, &draft, None, None).await?;
         }
 
         // 5. embedding row.

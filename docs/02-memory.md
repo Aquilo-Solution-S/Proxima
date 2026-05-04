@@ -302,6 +302,8 @@ struct RelationDescriptor {
     source_kind_mask:  EntityKindMask,     // which EntityKind values may be source (incl. Goal)
     target_kind_mask:  EntityKindMask,     // which EntityKind values may be target (incl. Goal)
     authorship_mask:   AuthorshipMask,     // which Authorship variants may author it
+    payload_schema:    Option<SchemaRef>,  // some(EdgePayload (id, version)) iff edges of this relation
+                                           // carry a typed sidecar; None for substrate-only relations
 }
 
 enum RelationClass {
@@ -313,9 +315,45 @@ enum RelationClass {
 }
 ```
 
+`RelationClass` is **closed by design**. The A/P-traversal contract
+(causal-chain queries, scope filtering, supersession) needs a fixed
+substrate vocabulary; flavors pick the class their relation logically
+falls under, then differentiate via the `relation` string. New
+flavor-specific edges add `RelationDescriptor` entries, never new
+`RelationClass` variants.
+
 Registered via `reg.add_relation(descriptor)` in the flavor's `register`
 call (see [08](docs/08-core-and-flavors.md)). The descriptor is the source of truth for what edges are
 legal; the directionality rule below is the *minimum* additional check.
+
+### Typed edge payloads
+
+Every edge has a substrate row in `proxima_core.edges` keyed by
+`edge_id: uuidv7`, carrying the discriminators (`relation`,
+`relation_class`), endpoints, authorship, owner, and timestamps.
+A relation registered with `payload_schema = Some(...)` additionally
+writes a typed sidecar row in the flavor-owned table named by the
+`EdgePayload` impl ([03 §EdgePayload](docs/03-schema-registry.md#edgepayload));
+the sidecar is keyed on `edge_id` and joined identically to memory
+sidecars.
+
+The atomic write verb that ingests Facts (and the F→A consolidation
+verb) extends to typed edges: substrate edge row plus zero-or-one
+`EdgePayload` sidecar in the same transaction. Substrate-only
+relations (`core/derived-from`, `core/supersedes`, `core/parent`,
+`core/motivated-by`) leave `payload_schema = None` and skip the
+sidecar insert — same row in `proxima_core.edges`, no flavor table
+involved.
+
+**Edges are immutable in v1.** When a Fact endpoint is superseded
+(stateful Fact head moves to a new memory under the same natural
+key — see [03 §Stateful Fact schemas](docs/03-schema-registry.md#stateful-fact-schemas--head-by-natural-key)),
+the producing operator authors fresh edges against the new memory;
+old edges remain valid for the old memory. Edge-level
+head-by-natural-key — "rebind the `calls` edge when the callee
+chunk is rewritten" — is a focused future milestone, only when a
+flavor demands it. Until then, supersession lives entirely at the
+memory layer.
 
 ### The directionality rule
 
@@ -501,6 +539,20 @@ them via user-API write. See §Read-scope matrix for how parallel
 lineages are addressable at query time.
 
 This mirrors the supersession pattern already in hippocampus.
+
+**Hard delete is an out-of-band invariant break.** The
+"memories are never destroyed" rule above is the *cognitive*
+contract — agents do not forget; the substrate revises only via
+supersession. Subject-rights regimes (GDPR, UK GDPR, CCPA, LGPD,
+…) require operations that *do* destroy memory, scoped to a
+specific Owner and audited separately from the cognitive graph.
+The substrate ships those operations as a deliberate, auditable
+break of the invariant; cognitive readers (operators, deciders)
+observe the diminished graph as if the deleted entries had never
+existed. See [15](15-compliance.md) for the operations
+(`delete_owner`, `pause_owner`, `export_owner`, …), the
+suppression-list mechanic that makes erasure re-ingest-safe, and
+the `compliance.*` audit schema that proves erasure happened.
 
 ## Personality
 
