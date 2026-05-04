@@ -6,8 +6,10 @@
 use std::sync::Arc;
 
 use crate::GoalId;
+use crate::Owner;
 use crate::verbs::event_ingest::{EventDraft, EventIngestOutcome};
 use crate::verbs::goal_write::{GoalDraft, GoalWriteOutcome};
+use crate::verbs::subscribe::ChangeEventStream;
 
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum StorageError {
@@ -65,6 +67,20 @@ pub trait Storage: Send + Sync {
         prior: GoalId,
         draft: &GoalDraft,
     ) -> Result<GoalWriteOutcome, StorageError>;
+
+    /// Returns an owner-filtered stream of ChangeEvents. If
+    /// `since` is `Some(seq)`, the stream begins by replaying
+    /// rows whose `seq > since` and then attaches to live events.
+    /// If `None`, the live stream begins immediately (no
+    /// backfill).
+    ///
+    /// Per docs/14 §Cursor: at-least-once delivery; clients
+    /// dedupe by `seq`. The server does NOT dedupe.
+    async fn subscribe_changes(
+        &self,
+        owner: &crate::Owner,
+        since: Option<uuid::Uuid>,
+    ) -> Result<ChangeEventStream, StorageError>;
 }
 
 pub type StorageHandle = Arc<dyn Storage>;
@@ -96,5 +112,13 @@ impl Storage for NoopStorage {
         _draft: &GoalDraft,
     ) -> Result<GoalWriteOutcome, StorageError> {
         Err(StorageError::Internal("NoopStorage rejects writes".into()))
+    }
+
+    async fn subscribe_changes(
+        &self,
+        _owner: &Owner,
+        _since: Option<uuid::Uuid>,
+    ) -> Result<ChangeEventStream, StorageError> {
+        Ok(Box::pin(futures_util::stream::empty()))
     }
 }

@@ -12,6 +12,7 @@ use crate::verbs::event_ingest::{EventDraft, EventIngestOutcome};
 use crate::verbs::goal_write::{GoalDraft, GoalWriteOutcome};
 use crate::verbs::query::{MemoryStore, QueryRequest, QueryResponse};
 use crate::verbs::schema::{PayloadKind, SchemaRegistry, SchemaRequest, SchemaResponse};
+use crate::verbs::subscribe::{ChangeEventStream, SubscribeRequest};
 
 pub struct Engine {
     registry: SchemaRegistry,
@@ -183,6 +184,28 @@ impl Engine {
             .supersede_goal_atomic(prior, &draft)
             .await
             .map_err(map_storage_err_for_goal_write(&draft.request_id))
+    }
+
+    /// docs/14 §"Subscribe" — Owner-scoped stream with optional
+    /// `since` cursor for resume.
+    pub async fn subscribe(
+        &self,
+        creds: &Credentials,
+        req: SubscribeRequest,
+    ) -> Result<ChangeEventStream, ProtocolError> {
+        let resolved = self
+            .auth
+            .resolve(creds)
+            .map_err(|_| ProtocolError::auth_required())?;
+        if !resolved.accessible_owners.contains(&req.owner) {
+            return Err(ProtocolError::forbidden(
+                "principal cannot access requested owner",
+            ));
+        }
+        self.storage
+            .subscribe_changes(&req.owner, req.since)
+            .await
+            .map_err(|e| ProtocolError::internal(e.to_string()))
     }
 }
 
