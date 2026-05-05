@@ -122,9 +122,21 @@ pub enum ConfigError {
         source: std::io::Error,
     },
 
+    /// Config file could not be written.
+    #[error("config save failed at {path}: {source}")]
+    IoSave {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+
     /// Config TOML parse failed.
     #[error("config TOML parse failed: {0}")]
     Parse(#[from] toml::de::Error),
+
+    /// TOML serialization failed (writeback path).
+    #[error("config TOML serialize failed: {0}")]
+    Serialize(#[from] toml::ser::Error),
 
     /// A `[tiers]` binding references a `(vendor, model_id)` not present
     /// in `[[llm.models]]`.
@@ -251,6 +263,161 @@ pub fn validate_config(config: &AppConfig, engine: &Engine) -> Result<(), Config
     }
 
     Ok(())
+}
+
+/// Serialize `cfg` to TOML and write to `path` atomically.
+///
+/// Writes to `<path>.tmp` first then renames over `<path>` so a
+/// crash mid-write cannot leave a half-written config on disk.
+/// Caller is responsible for ensuring the parent directory exists.
+///
+/// # Errors
+///
+/// - `ConfigError::Serialize` if TOML serialization fails (should
+///   not happen for shapes accepted by `validate_config`, but the
+///   error path is preserved for completeness).
+/// - `ConfigError::IoSave` for any filesystem error (write,
+///   rename, sync).
+pub fn save_config(path: &Path, cfg: &AppConfig) -> Result<(), ConfigError> {
+    use std::io::Write;
+    let body = toml::to_string_pretty(cfg)?;
+    let tmp = path.with_extension("toml.tmp");
+    {
+        let mut f = std::fs::File::create(&tmp).map_err(|e| ConfigError::IoSave {
+            path: tmp.display().to_string(),
+            source: e,
+        })?;
+        f.write_all(body.as_bytes()).map_err(|e| ConfigError::IoSave {
+            path: tmp.display().to_string(),
+            source: e,
+        })?;
+        f.sync_all().map_err(|e| ConfigError::IoSave {
+            path: tmp.display().to_string(),
+            source: e,
+        })?;
+    }
+    std::fs::rename(&tmp, path).map_err(|e| ConfigError::IoSave {
+        path: path.display().to_string(),
+        source: e,
+    })?;
+    Ok(())
+}
+
+/// Append `record` to `[[llm.models]]`. Rejects duplicates on
+/// `(vendor, model_id)` to mirror `validate_config`'s rule —
+/// failing fast at registration is friendlier than failing at
+/// the next validate.
+///
+/// # Errors
+///
+/// `ConfigError::DuplicateLlmModel` if a model with the same
+/// `(vendor, model_id)` is already registered.
+pub fn register_llm_model(
+    cfg: &mut AppConfig,
+    record: LlmModelRecord,
+) -> Result<(), ConfigError> {
+    let exists = cfg.llm.models.iter().any(|m| {
+        m.vendor == record.vendor && m.model_id == record.model_id
+    });
+    if exists {
+        return Err(ConfigError::DuplicateLlmModel(ModelRef {
+            vendor: record.vendor,
+            model_id: record.model_id,
+        }));
+    }
+    cfg.llm.models.push(record);
+    Ok(())
+}
+
+/// Append `record` to `[[embedding.models]]`. Rejects duplicates on
+/// `(vendor, model_id)` to mirror `validate_config`'s rule.
+///
+/// # Errors
+///
+/// `ConfigError::DuplicateEmbeddingModel` if a model with the same
+/// `(vendor, model_id)` is already registered.
+pub fn register_embedding_model(
+    cfg: &mut AppConfig,
+    record: EmbeddingModelRecord,
+) -> Result<(), ConfigError> {
+    let exists = cfg.embedding.models.iter().any(|m| {
+        m.vendor == record.vendor && m.model_id == record.model_id
+    });
+    if exists {
+        return Err(ConfigError::DuplicateEmbeddingModel(ModelRef {
+            vendor: record.vendor,
+            model_id: record.model_id,
+        }));
+    }
+    cfg.embedding.models.push(record);
+    Ok(())
+}
+
+/// Set the binding for `tier` to `model_ref`. The referenced model
+/// must already be registered in `[[llm.models]]`.
+///
+/// Caps validation runs at `validate_config` time, not here — this
+/// function only checks model-ref *reachability* within the config,
+/// not whether the bound model is sufficient for the tier's
+/// operator-union.
+///
+/// # Errors
+///
+/// `ConfigError::UnknownTierModel` if `model_ref` is not present
+/// in `[[llm.models]]`.
+pub fn bind_tier(
+    cfg: &mut AppConfig,
+    tier: ModelTier,
+    model_ref: ModelRef,
+) -> Result<(), ConfigError> {
+    let known = cfg.llm.models.iter().any(|m| {
+        m.vendor == model_ref.vendor && m.model_id == model_ref.model_id
+    });
+    if !known {
+        return Err(ConfigError::UnknownTierModel { tier, model_ref });
+    }
+    match tier {
+        ModelTier::Fast => cfg.tiers.fast = Some(model_ref),
+        ModelTier::Standard => cfg.tiers.standard = Some(model_ref),
+        ModelTier::Deep => cfg.tiers.deep = Some(model_ref),
+    }
+    Ok(())
+}
+
+/// Clear the binding for `tier` (sets it to `None`). No-op if
+/// already unbound.
+pub fn unbind_tier(cfg: &mut AppConfig, tier: ModelTier) {
+    match tier {
+        ModelTier::Fast => cfg.tiers.fast = None,
+        ModelTier::Standard => cfg.tiers.standard = None,
+        ModelTier::Deep => cfg.tiers.deep = None,
+    }
+}
+
+/// Set the globally-active embedding model. The referenced model
+/// must already be registered in `[[embedding.models]]`.
+///
+/// # Errors
+///
+/// `ConfigError::UnknownEmbeddingActive` if `model_ref` is not
+/// present in `[[embedding.models]]`.
+pub fn set_embedding_active(
+    cfg: &mut AppConfig,
+    model_ref: ModelRef,
+) -> Result<(), ConfigError> {
+    let known = cfg.embedding.models.iter().any(|m| {
+        m.vendor == model_ref.vendor && m.model_id == model_ref.model_id
+    });
+    if !known {
+        return Err(ConfigError::UnknownEmbeddingActive(model_ref));
+    }
+    cfg.embedding.active = Some(model_ref);
+    Ok(())
+}
+
+/// Clear the globally-active embedding model.
+pub fn clear_embedding_active(cfg: &mut AppConfig) {
+    cfg.embedding.active = None;
 }
 
 #[cfg(test)]
@@ -585,5 +752,210 @@ mod tests {
             })
         );
         assert_eq!(bindings.get(ModelTier::Deep), None);
+    }
+
+    // --- save_config tests ---
+
+    #[test]
+    fn save_config_roundtrip() {
+        let cfg = AppConfig {
+            llm: LlmConfig {
+                models: vec![sample_llm_model("openai", "gpt-4o-mini", LlmCaps::none())],
+            },
+            embedding: EmbeddingConfig {
+                models: vec![sample_embedding_model("openai", "text-embedding-3-small", 1536)],
+                active: Some(ModelRef {
+                    vendor: "openai".to_string(),
+                    model_id: "text-embedding-3-small".to_string(),
+                }),
+            },
+            tiers: TierBindings {
+                fast: Some(ModelRef {
+                    vendor: "openai".to_string(),
+                    model_id: "gpt-4o-mini".to_string(),
+                }),
+                standard: None,
+                deep: None,
+            },
+        };
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("proxima-test-{}.toml", uuid::Uuid::now_v7()));
+        save_config(&path, &cfg).expect("save_config");
+        let loaded = load_config(&path).expect("load_config");
+        assert_eq!(cfg, loaded);
+        // Cleanup
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn save_config_no_stale_tmp() {
+        let cfg = AppConfig::default();
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("proxima-test-{}.toml", uuid::Uuid::now_v7()));
+        save_config(&path, &cfg).expect("save_config");
+        let tmp_path = path.with_extension("toml.tmp");
+        assert!(!tmp_path.exists(), "stale .tmp file should not exist");
+        // Cleanup
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // --- register_llm_model tests ---
+
+    #[test]
+    fn register_llm_model_happy_path() {
+        let mut cfg = AppConfig::default();
+        let record = sample_llm_model("openai", "gpt-4o-mini", LlmCaps::none());
+        register_llm_model(&mut cfg, record).expect("register");
+        assert_eq!(cfg.llm.models.len(), 1);
+        assert_eq!(cfg.llm.models[0].vendor, "openai");
+        assert_eq!(cfg.llm.models[0].model_id, "gpt-4o-mini");
+    }
+
+    #[test]
+    fn register_llm_model_rejects_duplicate() {
+        let mut cfg = AppConfig::default();
+        let record = sample_llm_model("openai", "gpt-4o-mini", LlmCaps::none());
+        register_llm_model(&mut cfg, record.clone()).expect("first register");
+        let err = register_llm_model(&mut cfg, record).unwrap_err();
+        assert!(matches!(err, ConfigError::DuplicateLlmModel(_)));
+    }
+
+    // --- register_embedding_model tests ---
+
+    #[test]
+    fn register_embedding_model_happy_path() {
+        let mut cfg = AppConfig::default();
+        let record = sample_embedding_model("openai", "text-embedding-3-small", 1536);
+        register_embedding_model(&mut cfg, record).expect("register");
+        assert_eq!(cfg.embedding.models.len(), 1);
+        assert_eq!(cfg.embedding.models[0].vendor, "openai");
+        assert_eq!(cfg.embedding.models[0].model_id, "text-embedding-3-small");
+    }
+
+    #[test]
+    fn register_embedding_model_rejects_duplicate() {
+        let mut cfg = AppConfig::default();
+        let record = sample_embedding_model("openai", "text-embedding-3-small", 1536);
+        register_embedding_model(&mut cfg, record.clone()).expect("first register");
+        let err = register_embedding_model(&mut cfg, record).unwrap_err();
+        assert!(matches!(err, ConfigError::DuplicateEmbeddingModel(_)));
+    }
+
+    // --- bind_tier tests ---
+
+    #[test]
+    fn bind_tier_happy_path() {
+        let mut cfg = AppConfig::default();
+        cfg.llm.models.push(sample_llm_model("openai", "gpt-4o-mini", LlmCaps::none()));
+        let model_ref = ModelRef {
+            vendor: "openai".to_string(),
+            model_id: "gpt-4o-mini".to_string(),
+        };
+        bind_tier(&mut cfg, ModelTier::Fast, model_ref.clone()).expect("bind");
+        assert_eq!(cfg.tiers.fast, Some(model_ref));
+    }
+
+    #[test]
+    fn bind_tier_rejects_unknown_model() {
+        let mut cfg = AppConfig::default();
+        let model_ref = ModelRef {
+            vendor: "openai".to_string(),
+            model_id: "gpt-4o-mini".to_string(),
+        };
+        let err = bind_tier(&mut cfg, ModelTier::Fast, model_ref).unwrap_err();
+        assert!(matches!(err, ConfigError::UnknownTierModel { .. }));
+    }
+
+    #[test]
+    fn bind_tier_overwrites_existing() {
+        let mut cfg = AppConfig::default();
+        cfg.llm.models.push(sample_llm_model("openai", "gpt-4o-mini", LlmCaps::none()));
+        cfg.llm.models.push(sample_llm_model("anthropic", "claude-3-haiku", LlmCaps::none()));
+        let first = ModelRef {
+            vendor: "openai".to_string(),
+            model_id: "gpt-4o-mini".to_string(),
+        };
+        let second = ModelRef {
+            vendor: "anthropic".to_string(),
+            model_id: "claude-3-haiku".to_string(),
+        };
+        bind_tier(&mut cfg, ModelTier::Fast, first.clone()).expect("first bind");
+        assert_eq!(cfg.tiers.fast, Some(first));
+        bind_tier(&mut cfg, ModelTier::Fast, second.clone()).expect("second bind");
+        assert_eq!(cfg.tiers.fast, Some(second));
+    }
+
+    // --- unbind_tier tests ---
+
+    #[test]
+    fn unbind_tier_clears() {
+        let mut cfg = AppConfig {
+            tiers: TierBindings {
+                fast: Some(ModelRef {
+                    vendor: "openai".to_string(),
+                    model_id: "gpt-4o-mini".to_string(),
+                }),
+                standard: None,
+                deep: None,
+            },
+            ..AppConfig::default()
+        };
+        unbind_tier(&mut cfg, ModelTier::Fast);
+        assert_eq!(cfg.tiers.fast, None);
+    }
+
+    #[test]
+    fn unbind_tier_noop_if_already_none() {
+        let mut cfg = AppConfig::default();
+        assert_eq!(cfg.tiers.fast, None);
+        unbind_tier(&mut cfg, ModelTier::Fast);
+        assert_eq!(cfg.tiers.fast, None);
+    }
+
+    // --- set_embedding_active tests ---
+
+    #[test]
+    fn set_embedding_active_happy_path() {
+        let mut cfg = AppConfig::default();
+        cfg.embedding.models.push(sample_embedding_model(
+            "openai",
+            "text-embedding-3-small",
+            1536,
+        ));
+        let model_ref = ModelRef {
+            vendor: "openai".to_string(),
+            model_id: "text-embedding-3-small".to_string(),
+        };
+        set_embedding_active(&mut cfg, model_ref.clone()).expect("set active");
+        assert_eq!(cfg.embedding.active, Some(model_ref));
+    }
+
+    #[test]
+    fn set_embedding_active_rejects_unknown() {
+        let mut cfg = AppConfig::default();
+        let model_ref = ModelRef {
+            vendor: "openai".to_string(),
+            model_id: "text-embedding-3-small".to_string(),
+        };
+        let err = set_embedding_active(&mut cfg, model_ref).unwrap_err();
+        assert!(matches!(err, ConfigError::UnknownEmbeddingActive(_)));
+    }
+
+    // --- clear_embedding_active tests ---
+
+    #[test]
+    fn clear_embedding_active_clears() {
+        let mut cfg = AppConfig {
+            embedding: EmbeddingConfig {
+                models: vec![],
+                active: Some(ModelRef {
+                    vendor: "openai".to_string(),
+                    model_id: "text-embedding-3-small".to_string(),
+                }),
+            },
+            ..AppConfig::default()
+        };
+        clear_embedding_active(&mut cfg);
+        assert_eq!(cfg.embedding.active, None);
     }
 }
