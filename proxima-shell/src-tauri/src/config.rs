@@ -20,8 +20,105 @@ use std::path::Path;
 
 use proxima_core::engine::Engine;
 use proxima_core::models::{Dialect, EmbedCaps, LlmCaps, ModelTier};
+use proxima_core::Owner;
+use proxima_storage_pg::{PgStorage, settings};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+// ---------------------------------------------------------------
+// Boundary mapping — settings::* (storage-pg row types) ↔
+// AppConfig DTO types. Tauri commands at the IPC boundary use
+// these From impls to expose the DTO shape to the frontend
+// without leaking storage-pg's internal types.
+// ---------------------------------------------------------------
+
+impl From<settings::LlmModel> for LlmModelRecord {
+    fn from(m: settings::LlmModel) -> Self {
+        LlmModelRecord {
+            vendor: m.vendor,
+            model_id: m.model_id,
+            dialect: m.dialect,
+            base_url: m.base_url,
+            caps: m.caps,
+            secret_ref: m.secret_ref,
+        }
+    }
+}
+
+impl From<LlmModelRecord> for settings::LlmModel {
+    fn from(r: LlmModelRecord) -> Self {
+        settings::LlmModel {
+            vendor: r.vendor,
+            model_id: r.model_id,
+            dialect: r.dialect,
+            base_url: r.base_url,
+            caps: r.caps,
+            secret_ref: r.secret_ref,
+        }
+    }
+}
+
+impl From<settings::EmbeddingModel> for EmbeddingModelRecord {
+    fn from(m: settings::EmbeddingModel) -> Self {
+        EmbeddingModelRecord {
+            vendor: m.vendor,
+            model_id: m.model_id,
+            base_url: m.base_url,
+            caps: m.caps,
+            secret_ref: m.secret_ref,
+        }
+    }
+}
+
+impl From<EmbeddingModelRecord> for settings::EmbeddingModel {
+    fn from(r: EmbeddingModelRecord) -> Self {
+        settings::EmbeddingModel {
+            vendor: r.vendor,
+            model_id: r.model_id,
+            base_url: r.base_url,
+            caps: r.caps,
+            secret_ref: r.secret_ref,
+        }
+    }
+}
+
+/// Read all four settings tables and assemble an `AppConfig`.
+/// Used at engine boot for `validate_config`, and (later) by
+/// Tauri commands that want a single snapshot.
+///
+/// # Errors
+///
+/// Returns `SettingsError` from any of the underlying PG calls.
+pub async fn load_app_config(
+    pg: &PgStorage,
+    owner: &Owner,
+) -> Result<AppConfig, settings::SettingsError> {
+    let llm = pg.list_llm_models(owner).await?;
+    let embedding = pg.list_embedding_models(owner).await?;
+    let bindings = pg.list_tier_bindings(owner).await?;
+    let active = pg.get_embedding_active(owner).await?;
+
+    let mut tiers = TierBindings::default();
+    for (tier, vendor, model_id) in bindings {
+        let r = ModelRef { vendor, model_id };
+        match tier {
+            ModelTier::Fast => tiers.fast = Some(r),
+            ModelTier::Standard => tiers.standard = Some(r),
+            ModelTier::Deep => tiers.deep = Some(r),
+        }
+    }
+
+    Ok(AppConfig {
+        llm: LlmConfig {
+            models: llm.into_iter().map(LlmModelRecord::from).collect(),
+        },
+        embedding: EmbeddingConfig {
+            models: embedding.into_iter().map(EmbeddingModelRecord::from).collect(),
+            active: active.map(|(vendor, model_id)| ModelRef { vendor, model_id }),
+        },
+        tiers,
+    })
+}
 
 /// Top-level config parsed from `proxima.config.toml`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
