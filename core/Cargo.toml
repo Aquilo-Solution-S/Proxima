@@ -20,6 +20,7 @@ blake3 = { workspace = true }
 time = { workspace = true }
 tracing = { workspace = true }
 futures-util = { workspace = true }
+specta = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt"] }

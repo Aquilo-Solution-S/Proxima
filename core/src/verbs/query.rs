@@ -7,21 +7,13 @@ use uuid::Uuid;
 
 use crate::{MemoryId, Owner, SchemaId, SchemaVersion};
 
-/// Per docs/14 §"Subscribe" `ChangeKind::EntityAppend.entity_kind`
-/// and docs/02 §"Edges". Goal is included here as an entity-kind
-/// tag (Goal is a distinct entity per AGENTS.md invariant 11);
-/// goal payload retrieval is its own verb (`GoalWrite` for the
-/// write side, future `Query(entity_kind=Goal, …)` for reads).
-/// For M1 the store has no goals.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-pub enum EntityKind {
-    Fact,
-    Abstraction,
-    Perspective,
-    Goal,
-}
+/// Re-export the canonical `EntityKind` from `outbox` so query
+/// callers don't need a second import path. The duplicate
+/// definition that lived here pre-M6.5 produced two identical
+/// types; specta's type-name uniqueness check caught it.
+pub use crate::outbox::EntityKind;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
 pub enum SupersessionStatus {
     /// Heads only — exclude rows that are superseded.
     HeadsOnly,
@@ -43,7 +35,7 @@ pub struct StatefulHeadsFilter {
 /// One core-generic Query request. Flavor-typed filters
 /// per docs/14 §"Query" land when the first flavor crate
 /// registers a sidecar (M3+).
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct QueryRequest {
     pub owner: Owner,
     pub entity_kind: Option<EntityKind>,
@@ -75,7 +67,7 @@ impl QueryRequest {
 
 /// Snapshot of a memory row. Goal rows have their own shape
 /// (M2+); not modelled here.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct MemoryRow {
     pub id: MemoryId,
     pub kind: EntityKind,
@@ -89,7 +81,7 @@ pub struct MemoryRow {
     pub payload: Vec<u8>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct QueryResponse {
     pub memories: Vec<MemoryRow>,
     /// docs/14 §"Cursor & resume" — None when the store has

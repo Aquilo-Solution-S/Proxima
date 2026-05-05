@@ -1,6 +1,15 @@
 //! Engine-wide error envelope per docs/14 §"Error envelope".
 
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    thiserror::Error,
+    serde::Serialize,
+    serde::Deserialize,
+    specta::Type,
+)]
 #[error("{code:?}: {message}")]
 pub struct ProtocolError {
     pub code: ErrorCode,
@@ -10,7 +19,7 @@ pub struct ProtocolError {
 
 /// Subset of docs/14's `ErrorCode` exercised in M1. Additional
 /// variants land with the verbs that raise them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
 pub enum ErrorCode {
     AuthRequired,
     Forbidden,
