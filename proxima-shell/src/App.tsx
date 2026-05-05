@@ -1,5 +1,6 @@
 import "@proxima/core/styles.css";
 import {
+  FullSurface,
   MarketplaceView,
   PlaceholderView,
   SchemasView,
@@ -13,7 +14,7 @@ const hub = createHub([
   {
     id: "surface",
     label: "Surface",
-    component: () => <PlaceholderView label="FullSurface" />,
+    component: () => <FullSurface hub={hub} />,
     flavor: null,
   },
   {
