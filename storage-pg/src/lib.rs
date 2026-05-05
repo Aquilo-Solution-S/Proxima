@@ -188,8 +188,12 @@ impl Storage for PgStorage {
         verbs::subscribe::subscribe_changes(&self.pool, &self.tx, owner, since).await
     }
 
-    async fn query_memories(&self, req: &QueryRequest) -> Result<QueryResponse, StorageError> {
-        verbs::query::query_memories(&self.pool, req).await
+    async fn query_memories(
+        &self,
+        req: &QueryRequest,
+        schemas: &[proxima_core::verbs::schema::SchemaInfo],
+    ) -> Result<QueryResponse, StorageError> {
+        verbs::query::query_memories(&self.pool, req, schemas).await
     }
 
     async fn close_batch(

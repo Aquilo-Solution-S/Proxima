@@ -88,11 +88,13 @@ pub trait Storage: Send + Sync {
     ) -> Result<ChangeEventStream, StorageError>;
 
     /// Owner-scoped snapshot read of memories per docs/14 §"Query".
-    /// Returns MemoryRow substrate shape; sidecar joins for typed
-    /// payload retrieval land in M3.B+.
+    /// Returns MemoryRow substrate shape with payload bytes projected
+    /// from sidecar tables. `schemas` is the list of registered schemas
+    /// with sidecar tables for dynamic JOIN construction.
     async fn query_memories(
         &self,
         req: &crate::verbs::query::QueryRequest,
+        schemas: &[crate::verbs::schema::SchemaInfo],
     ) -> Result<crate::verbs::query::QueryResponse, StorageError>;
 
     /// Owner-scoped, idempotent batch close. See docs/01 §"The contract"
@@ -214,6 +216,7 @@ impl Storage for NoopStorage {
     async fn query_memories(
         &self,
         _req: &crate::verbs::query::QueryRequest,
+        _schemas: &[crate::verbs::schema::SchemaInfo],
     ) -> Result<crate::verbs::query::QueryResponse, StorageError> {
         Ok(crate::verbs::query::QueryResponse {
             memories: Vec::new(),

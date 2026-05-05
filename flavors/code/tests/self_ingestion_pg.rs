@@ -184,6 +184,94 @@ async fn self_ingestion_streams_proxima_main() {
              main_count={main_count_before}, facts={facts_after_initial}"
         );
 
+        // Phase 1.5 — payload round-trip check. Query for commit-v1 facts
+        // and verify payload bytes deserialize back to CommitV1.
+        let commit_schema = proxima_core::SchemaId::new("proxima-code/commit-v1".into());
+        let query_resp = engine
+            .query(
+                &Credentials::None,
+                &proxima_core::verbs::query::QueryRequest {
+                    owner: owner.clone(),
+                    entity_kind: Some(proxima_core::verbs::query::EntityKind::Fact),
+                    schema_id: Some(commit_schema.clone()),
+                    supersession: proxima_core::verbs::query::SupersessionStatus::IncludeSuperseded,
+                    limit: 100,
+                    stateful_heads: None,
+                },
+            )
+            .await?;
+        // At least one commit-v1 fact should have a non-empty payload
+        let non_empty_payloads: Vec<_> = query_resp
+            .memories
+            .iter()
+            .filter(|m| m.schema_id == commit_schema && !m.payload.is_empty())
+            .collect();
+        assert!(
+            !non_empty_payloads.is_empty(),
+            "expected at least one commit-v1 Fact with non-empty payload"
+        );
+        // Decode the first one and verify it has a non-empty SHA
+        let first = &non_empty_payloads[0];
+        let commit: proxima_code::payloads::CommitV1 = serde_json::from_slice(&first.payload)
+            .map_err(|e| {
+                format!(
+                    "failed to deserialize commit-v1 payload for memory {:?}: {e}",
+                    first.id
+                )
+            })?;
+        assert!(
+            !commit.sha.is_empty(),
+            "expected non-empty SHA in decoded commit-v1 payload"
+        );
+
+        // Phase 1.6 — multi-schema payload dispatch. Query without a
+        // schema_id filter so the SQL exercises the CASE-per-schema
+        // dispatch end-to-end. Every commit-v1 row in the unfiltered
+        // result must still decode to CommitV1; mis-dispatched rows
+        // would either be empty or fail to deserialize.
+        //
+        // High limit so commit-v1 rows aren't drowned out by the much
+        // more numerous file-revision-v1 / code-chunk-v1 facts emitted
+        // per commit.
+        let unfiltered = engine
+            .query(
+                &Credentials::None,
+                &proxima_core::verbs::query::QueryRequest {
+                    owner: owner.clone(),
+                    entity_kind: Some(proxima_core::verbs::query::EntityKind::Fact),
+                    schema_id: None,
+                    supersession: proxima_core::verbs::query::SupersessionStatus::IncludeSuperseded,
+                    limit: 100_000,
+                    stateful_heads: None,
+                },
+            )
+            .await?;
+        let unfiltered_commits: Vec<_> = unfiltered
+            .memories
+            .iter()
+            .filter(|m| m.schema_id == commit_schema)
+            .collect();
+        assert!(
+            !unfiltered_commits.is_empty(),
+            "expected at least one commit-v1 Fact in unfiltered query"
+        );
+        for m in &unfiltered_commits {
+            assert!(
+                !m.payload.is_empty(),
+                "unfiltered query: commit-v1 row {:?} had empty payload — \
+                 likely a CASE-dispatch bug",
+                m.id
+            );
+            let _: proxima_code::payloads::CommitV1 =
+                serde_json::from_slice(&m.payload).map_err(|e| {
+                    format!(
+                        "unfiltered query: commit-v1 payload for {:?} \
+                         did not deserialize as CommitV1: {e}",
+                        m.id
+                    )
+                })?;
+        }
+
         // Phase 2 — live streaming. Open Subscribe BEFORE the new commit.
         let sub_req = SubscribeRequest {
             owner: owner.clone(),

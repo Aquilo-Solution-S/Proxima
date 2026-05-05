@@ -62,6 +62,12 @@ impl Engine {
         }
     }
 
+    /// Get a reference to the schema registry.
+    #[must_use]
+    pub fn registry(&self) -> &SchemaRegistry {
+        &self.registry
+    }
+
     #[must_use]
     pub fn with_storage(mut self, storage: StorageHandle) -> Self {
         self.storage = storage;
@@ -129,7 +135,7 @@ impl Engine {
             effective.stateful_heads = self.registry.stateful_filter_for(sid);
         }
         self.storage
-            .query_memories(&effective)
+            .query_memories(&effective, self.registry.list().as_slice())
             .await
             .map_err(|e| ProtocolError::internal(e.to_string()))
     }

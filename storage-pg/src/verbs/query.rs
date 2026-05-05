@@ -9,12 +9,17 @@
 //! `stateful_heads` is set by the engine from the schema registry
 //! before dispatch when the request is heads-only and `schema_id`
 //! resolves to a stateful Fact schema.
+//!
+//! Payload projection: for each schema with a sidecar table, we
+//! LEFT JOIN the sidecar and project `row_to_json(s_*)::text` via
+//! a CASE expression. The result is mapped to `MemoryRow.payload`.
 
 use std::fmt::Write as _;
 
 use proxima_core::verbs::query::{
     EntityKind, MemoryRow, QueryRequest, QueryResponse, StatefulHeadsFilter, SupersessionStatus,
 };
+use proxima_core::verbs::schema::{PayloadKind, SchemaInfo};
 use proxima_core::{
     GroupId, MemoryId, OrgId, Owner, Principal, SchemaId, SchemaVersion, StorageError, UserId,
 };
@@ -24,6 +29,7 @@ use sqlx::PgPool;
 pub(crate) async fn query_memories(
     pool: &PgPool,
     req: &QueryRequest,
+    schemas: &[SchemaInfo],
 ) -> Result<QueryResponse, StorageError> {
     let owner_kind: &str = match &req.owner.principal {
         Principal::User(_) => "User",
@@ -52,16 +58,84 @@ pub(crate) async fn query_memories(
 
     let schema_id_filter = req.schema_id.as_ref().map(|s| s.as_str().to_string());
 
+    // Build payload projection: for each F/A/P schema with a sidecar
+    // table, LEFT JOIN the sidecar and emit a CASE expression that
+    // picks the matching `row_to_json(s_*)::text`.
+    //
+    // Edge sidecars are keyed on `edge_id`, not `memory_id` — they
+    // don't participate in memory queries. Goal sidecars don't either:
+    // Goals are a distinct entity (AGENTS.md invariant 11), and goal
+    // queries short-circuit above.
+    let schemas_with_sidecar: Vec<&SchemaInfo> = schemas
+        .iter()
+        .filter(|s| {
+            s.sidecar_table.is_some()
+                && matches!(
+                    s.kind,
+                    PayloadKind::Fact | PayloadKind::Abstraction | PayloadKind::Perspective
+                )
+        })
+        .collect();
+
     let mut sql = String::from(
         "SELECT m.memory_id, m.owner_principal_kind, m.owner_principal_id, \
-                m.owner_org_id, m.schema_id, m.kind, m.event_id \
-         FROM proxima_core.memories m",
+                m.owner_org_id, m.schema_id, m.kind, m.event_id,",
     );
 
+    // Bindings: $1=owner_kind, $2=owner_principal_id, $3=owner_org_id.
+    // $4 is reserved for `schema_id_filter` when set. Schema-id literals
+    // for the payload-projection CASE always come AFTER the optional
+    // filter binding, so their parameter index depends on whether the
+    // filter is present.
+    let case_param_base = if schema_id_filter.is_some() { 5 } else { 4 };
+
+    // If there are schemas with sidecars, add the payload_json CASE expression.
+    // Otherwise, just add NULL as payload_json.
+    if schemas_with_sidecar.is_empty() {
+        sql.push_str(" NULL AS payload_json");
+    } else {
+        sql.push_str(" CASE");
+        for (idx, schema) in schemas_with_sidecar.iter().enumerate() {
+            let sidecar_table = schema.sidecar_table.as_ref().unwrap();
+            // Validate the sidecar table identifier
+            validate_sidecar_identifier(sidecar_table)?;
+            let alias = format!("s_{idx}");
+            write!(
+                sql,
+                " WHEN m.schema_id = ${} THEN row_to_json({alias})::text",
+                case_param_base + idx,
+                alias = alias
+            )
+            .expect("write to String is infallible");
+        }
+        sql.push_str(" ELSE NULL END AS payload_json");
+    }
+
+    sql.push_str(" \
+         FROM proxima_core.memories m");
+
+    // Add LEFT JOINs for each schema with a sidecar table
+    for (idx, schema) in schemas_with_sidecar.iter().enumerate() {
+        let sidecar_table = schema.sidecar_table.as_ref().unwrap();
+        let alias = format!("s_{idx}");
+        write!(
+            sql,
+            " LEFT JOIN {sidecar_table} {alias} ON {alias}.memory_id = m.memory_id",
+        )
+        .expect("write to String is infallible");
+    }
+
+    // The stateful JOIN (for head-by-natural-key filtering) uses a
+    // separate alias to avoid colliding with the payload JOINs. We
+    // use explicit `ON sf.memory_id = m.memory_id` rather than
+    // `USING (memory_id)` because the payload LEFT JOINs above each
+    // contribute their own `memory_id` to the left side, and
+    // `USING` would barf with "common column name appears more than
+    // once".
     if let Some(sf) = &stateful {
         write!(
             sql,
-            " JOIN {sidecar} s USING (memory_id)",
+            " LEFT JOIN {sidecar} sf ON sf.memory_id = m.memory_id",
             sidecar = sf.sidecar_table
         )
         .expect("write to String is infallible");
@@ -93,7 +167,7 @@ pub(crate) async fn query_memories(
             let nk_pairs = sf
                 .natural_key_columns
                 .iter()
-                .map(|c| format!("s2.{c} = s.{c}"))
+                .map(|c| format!("s2.{c} = sf.{c}"))
                 .collect::<Vec<_>>()
                 .join(" AND ");
             write!(
@@ -130,6 +204,10 @@ pub(crate) async fn query_memories(
     if let Some(sid) = &schema_id_filter {
         q = q.bind(sid.clone());
     }
+    // Bind schema_id values for the CASE expression in payload projection
+    for schema in &schemas_with_sidecar {
+        q = q.bind(schema.schema_id.as_str().to_string());
+    }
 
     let rows: Vec<MemoryRowDb> = q
         .fetch_all(pool)
@@ -154,6 +232,7 @@ pub(crate) async fn query_memories(
                 },
                 org_id: OrgId::new(r.owner_org_id),
             },
+            payload: r.payload_json.map(String::into_bytes).unwrap_or_default(),
         })
         .collect();
 
@@ -176,6 +255,7 @@ struct MemoryRowDb {
     schema_id: String,
     kind: Option<String>,
     event_id: Option<Vec<u8>>,
+    payload_json: Option<String>,
 }
 
 async fn read_seq_high_water(
@@ -246,4 +326,16 @@ fn is_column_ident(s: &str) -> bool {
             .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
         && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
         && s.len() <= 63
+}
+
+/// Validate a sidecar table identifier before splicing it into SQL.
+/// Same rules as `is_qualified_table_ident` — author-controlled
+/// `&'static str` constants, defense-in-depth.
+fn validate_sidecar_identifier(s: &str) -> Result<(), StorageError> {
+    if !is_qualified_table_ident(s) {
+        return Err(StorageError::Internal(format!(
+            "invalid sidecar_table identifier: {s:?}"
+        )));
+    }
+    Ok(())
 }

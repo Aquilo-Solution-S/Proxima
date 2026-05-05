@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["core", "bin/proxima-engine", "bin/proxima-code", "flavors/code", "llm-ollama", "storage-pg"]
+members = ["core", "bin/proxima-engine", "bin/proxima-code", "flavors/code", "llm-ollama", "storage-pg", "wire-grpc"]
 
 [workspace.package]
 edition = "2024"
@@ -37,3 +37,8 @@ tokio-stream = { version = "0.1", default-features = false, features = ["sync"] 
 tree-sitter = "0.25"
 tree-sitter-rust = "0.24"
 tree-sitter-typescript = "0.23"
+
+# gRPC wire layer
+tonic = { version = "0.14", default-features = false, features = ["codegen", "router", "server", "transport"] }
+prost = "0.14"
+prost-types = "0.14"

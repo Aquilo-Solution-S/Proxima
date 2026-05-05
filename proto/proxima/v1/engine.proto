@@ -1,0 +1,193 @@
+// Proxima — engine service surface.
+//
+// The five verbs of docs/14, mapped to gRPC methods over Connect-RPC
+// (docs/09 §Transport). Auth credentials ride in HTTP headers
+// (`Authorization: Bearer ...` for OIDC, source-specific headers for
+// webhook EventSources); the message bodies below carry no
+// credentials per docs/14 §"Auth model".
+//
+// Errors fly as `ProtocolError` details on the gRPC trailer
+// (messages.proto §ProtocolError); on `Subscribe` an error arrives as
+// the gRPC error trailer that terminates the stream — there is no
+// in-band `ChangeEvent` error variant.
+
+syntax = "proto3";
+
+package proxima.v1;
+
+import "google/protobuf/timestamp.proto";
+import "proxima/v1/messages.proto";
+
+service Engine {
+  // Owner-scoped snapshot read of memories, goals, and edges.
+  // Idempotent. Clients use `seq_high_water` from the response as the
+  // `since` cursor for a follow-up Subscribe (docs/14 §"Cold-start
+  // stitching").
+  rpc Query (QueryRequest) returns (QueryResponse);
+
+  // Owner-scoped server-push stream of ChangeEvents. One stream per
+  // Owner. Identity-only on hot path — payload is fetched via a
+  // follow-up Query (docs/14 §Subscribe).
+  rpc Subscribe (SubscribeRequest) returns (stream ChangeEvent);
+
+  // Goal write (create or supersede). Idempotent by `request_id`.
+  rpc GoalWrite (GoalWriteRequest) returns (GoalWriteResponse);
+
+  // EventSource ingest. Idempotent by `event_id` (canonical content
+  // hash, computed by the server per docs/01). Synchronous through to
+  // Fact materialization.
+  rpc EventIngest (EventIngestRequest) returns (EventIngestResponse);
+
+  // Registry introspection. Lists schemas, versions, declared filter
+  // keys, and registered relations for the running binary.
+  rpc Schema (SchemaRequest) returns (SchemaResponse);
+}
+
+// ---------------------------------------------------------------------------
+// Read envelopes (shared by Query + Subscribe)
+// ---------------------------------------------------------------------------
+//
+// docs/14 §Subscribe: "Filters mirror Query's core-generic +
+// flavor-typed split." One message describes the filter axes for
+// both verbs; new filter dimensions (time range, owner-set
+// restrictions, ...) land here without a request-shape churn.
+
+message ReadFilter {
+  // Absent = no constraint on that axis.
+  optional EntityKind entity_kind   = 1;
+  optional string schema_id         = 2;
+  SupersessionFilter supersession   = 3;
+  // Flavor-typed filter expressions, opaque to core. Encoded as JSON;
+  // each entry's key is a filter_key advertised by `Schema`
+  // (docs/14 §Query — flavor-typed filters).
+  bytes flavor_filters              = 4;
+}
+
+enum SupersessionFilter {
+  SUPERSESSION_FILTER_UNSPECIFIED        = 0;  // = HEADS_ONLY (default)
+  SUPERSESSION_FILTER_HEADS_ONLY         = 1;
+  SUPERSESSION_FILTER_INCLUDE_SUPERSEDED = 2;
+}
+
+// Pagination knobs for synchronous reads. v1 ships `limit` only —
+// docs/14 §Backpressure keeps cursoring client-side. The wrapper
+// reserves a slot so a server-issued cursor can land without a
+// request-shape break.
+message ReadPagination {
+  // 0 = engine default (100); explicit values must be > 0.
+  uint32 limit                      = 1;
+}
+
+// ---------------------------------------------------------------------------
+// Query
+// ---------------------------------------------------------------------------
+
+message QueryRequest {
+  Owner owner                       = 1;
+  ReadFilter filter                 = 2;
+  ReadPagination pagination         = 3;
+}
+
+message QueryResponse {
+  repeated TypedMemory memories     = 1;
+  repeated TypedGoal goals          = 2;
+  // docs/14 §"Cursor & resume". Absent when the store has not yet
+  // recorded any change events.
+  optional string seq_high_water    = 3;  // Uuid7 textual
+}
+
+// ---------------------------------------------------------------------------
+// Subscribe
+// ---------------------------------------------------------------------------
+
+message SubscribeRequest {
+  Owner owner                       = 1;
+  // Resume cursor — server returns events with `seq > since`.
+  // Absent = "from the beginning of the change log".
+  // Distinct from `ReadPagination`: this is a per-stream resume
+  // watermark (docs/14 §"Cursor & resume"), not a paging offset.
+  optional string since             = 2;
+  ReadFilter filter                 = 3;
+}
+
+// (Stream element type is `ChangeEvent` from messages.proto.)
+
+// ---------------------------------------------------------------------------
+// GoalWrite
+// ---------------------------------------------------------------------------
+
+message GoalWriteRequest {
+  Owner owner                       = 1;
+  SchemaRef schema                  = 2;
+  string text                       = 3;
+  GoalState state                   = 4;
+  repeated string parent_goal_ids   = 5;
+  GoalAuthorship authorship         = 6;
+  // Client-supplied idempotency key. Replay with same key + body
+  // returns same goal_id; replay with different body returns
+  // `IdempotencyConflict`.
+  string request_id                 = 7;
+  // serde_json of the typed payload — validated against the registered
+  // GoalPayload schema at the boundary.
+  bytes payload                     = 8;
+  // Set when superseding a prior head. Returns `Superseded` if the
+  // prior is itself already superseded.
+  optional string supersedes_goal_id = 9;
+}
+
+message GoalWriteResponse {
+  string goal_id                    = 1;
+  string change_event_seq           = 2;  // Uuid7 textual
+  // True iff `(owner, request_id)` already existed and the body
+  // matched (docs/14 §GoalWrite).
+  bool idempotent_replay            = 3;
+}
+
+// ---------------------------------------------------------------------------
+// EventIngest
+// ---------------------------------------------------------------------------
+
+message EventIngestRequest {
+  string source_id                  = 1;
+  string source_batch_id            = 2;  // Uuid7 textual, declared by source
+  Owner owner                       = 3;
+  SchemaRef schema                  = 4;
+  bytes payload                     = 5;
+  // Per docs/01. JSON wire shape is RFC3339 (proto3 canonical mapping
+  // for Timestamp); binary is dense seconds+nanos.
+  google.protobuf.Timestamp observed_at = 6;
+  google.protobuf.Timestamp occurred_at = 7;
+  CitedObjectHint cited_object      = 8;
+  CitationMappingHint citation_mapping = 9;
+}
+
+message CitedObjectHint {
+  SchemaRef schema   = 1;
+  bytes content_hash = 2;  // BLAKE3-32 raw bytes
+}
+
+message CitationMappingHint {
+  SchemaRef schema = 1;
+}
+
+message EventIngestResponse {
+  // BLAKE3-32 of (source_id, owner, payload) — server-computed per
+  // docs/01.
+  bytes event_id                    = 1;
+  string memory_id                  = 2;
+  string change_event_seq           = 3;  // Uuid7 textual
+  // True iff the same `event_id` was already ingested (docs/14 §"replay
+  // is silently a no-op").
+  bool idempotent_replay            = 4;
+}
+
+// ---------------------------------------------------------------------------
+// Schema
+// ---------------------------------------------------------------------------
+
+message SchemaRequest {}
+
+message SchemaResponse {
+  repeated SchemaInfo schemas             = 1;
+  repeated RelationDescriptor relations   = 2;
+}
