@@ -1,7 +1,6 @@
-import { For, Show, createResource, type Component } from "solid-js";
-import { commands, type QueryRequest } from "../bindings";
+import { Show, type Component } from "solid-js";
 import { useQuery } from "../queries";
-import { SchemaTag } from "../primitives";
+import type { QueryRequest } from "../bindings";
 
 const NIL_UUID = "00000000-0000-0000-0000-000000000000";
 
@@ -18,12 +17,6 @@ const NOOP_QUERY: QueryRequest = {
 
 export const SettingsView: Component = () => {
   const queryResp = useQuery(() => NOOP_QUERY);
-
-  const [schemaResp] = createResource(async () => {
-    const r = await commands.schema();
-    if (r.status === "error") throw r.error;
-    return r.data;
-  });
 
   return (
     <section class="proxima-view proxima-view-settings">
@@ -47,22 +40,18 @@ export const SettingsView: Component = () => {
         )}
       </Show>
 
-      <h2>Registered schemas</h2>
-      <Show
-        when={schemaResp()}
-        fallback={<p class="proxima-dim">Loading…</p>}
-      >
-        <ul class="proxima-schema-list">
-          <For each={schemaResp()!.schemas}>
-            {(s) => (
-              <li>
-                <SchemaTag id={s.schema_id} version={s.schema_version} />{" "}
-                <span class="proxima-dim">({s.kind})</span>
-              </li>
-            )}
-          </For>
-        </ul>
-      </Show>
+      <h2>Owner</h2>
+      <p class="proxima-dim">
+        principal: User({NIL_UUID})
+        <br />
+        org_id: {NIL_UUID}
+      </p>
+      <p class="proxima-dim">
+        Editable owner config lands when a dedicated configuration verb does.
+      </p>
+
+      <h2>Theme</h2>
+      <p class="proxima-dim">dark (only theme in v1)</p>
     </section>
   );
 };

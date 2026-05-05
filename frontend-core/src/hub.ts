@@ -19,6 +19,12 @@ export interface RegisteredView {
   flavor: string | null;
 }
 
+export interface RegisteredRenderer {
+  schemaId: string;
+  schemaVersion: number;
+  flavor: string;
+}
+
 export interface FlavorScope {
   registerRenderer<T>(
     schemaId: string,
@@ -45,6 +51,7 @@ export interface Hub {
   currentView: Accessor<string>;
   setCurrentView: Setter<string>;
   registeredFlavors: Accessor<string[]>;
+  registeredRenderers: Accessor<RegisteredRenderer[]>;
 }
 
 const rendererKey = (id: string, v: number): string => `${id}@${v}`;
@@ -53,6 +60,9 @@ export function createHub(substrateViews: RegisteredView[]): Hub {
   const renderers = new Map<string, Renderer<unknown>>();
   const [views, setViews] = createSignal<RegisteredView[]>(substrateViews);
   const [flavors, setFlavors] = createSignal<string[]>([]);
+  const [renderersList, setRenderersList] = createSignal<RegisteredRenderer[]>(
+    [],
+  );
   const [currentView, setCurrentView] = createSignal<string>(
     substrateViews[0]?.id ?? "",
   );
@@ -63,6 +73,10 @@ export function createHub(substrateViews: RegisteredView[]): Hub {
       register({
         registerRenderer: (sid, sver, r) => {
           renderers.set(rendererKey(sid, sver), r as Renderer<unknown>);
+          setRenderersList((prev) => [
+            ...prev,
+            { schemaId: sid, schemaVersion: sver, flavor: name },
+          ]);
         },
         registerView: (view) => {
           setViews((prev) => [...prev, { ...view, flavor: name }]);
@@ -75,5 +89,6 @@ export function createHub(substrateViews: RegisteredView[]): Hub {
     currentView,
     setCurrentView,
     registeredFlavors: flavors,
+    registeredRenderers: renderersList,
   };
 }

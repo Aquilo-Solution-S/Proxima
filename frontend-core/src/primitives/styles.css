@@ -1195,3 +1195,47 @@ html, body, #root { height: 100%; margin: 0; }
   gap: 8px;
   font-size: 12px;
 }
+
+.proxima-flavor-list {
+  list-style: none;
+  padding: 0;
+  margin: 18px 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.proxima-flavor-card {
+  border: 1px solid var(--rule);
+  background: var(--bg-card);
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.proxima-flavor-card h2 {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 500;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--accent-commit);
+}
+.proxima-flavor-card h3 {
+  margin: 0 0 6px;
+  font-family: var(--sans);
+  font-size: 9px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink-50);
+  font-weight: 500;
+}
+.proxima-flavor-views {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+}
