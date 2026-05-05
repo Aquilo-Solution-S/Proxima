@@ -21,7 +21,7 @@ use crate::verbs::goal_write::{GoalDraft, GoalWriteOutcome};
 use crate::verbs::query::{MemoryStore, QueryRequest, QueryResponse, SupersessionStatus};
 use crate::verbs::schema::{PayloadKind, SchemaRegistry, SchemaRequest, SchemaResponse};
 use crate::verbs::subscribe::{ChangeEventStream, SubscribeRequest};
-use crate::{CORE_DERIVED_FROM_RELATION, LlmCaps, MemoryId, ModelTier};
+use crate::{CORE_DERIVED_FROM_RELATION, LlmCaps, MemoryId, ModelTier, SchemaId, SchemaVersion};
 
 pub struct Engine {
     registry: SchemaRegistry,
@@ -456,7 +456,57 @@ impl Engine {
             return Ok(false);
         }
 
+        let output_schema_id = SchemaId::new(op.output_schema_id().to_string());
+        let output_schema_version = SchemaVersion::new(op.output_schema_version());
+        let output_info = self
+            .registry
+            .lookup(&output_schema_id, output_schema_version)
+            .filter(|s| s.kind == PayloadKind::Abstraction)
+            .ok_or_else(|| {
+                ProtocolError::internal(format!(
+                    "operator {} output schema {} v{} is not a registered Abstraction",
+                    op.operator_id(),
+                    op.output_schema_id(),
+                    op.output_schema_version()
+                ))
+            })?;
+        let output_sidecar = output_info.sidecar_table.clone().ok_or_else(|| {
+            ProtocolError::internal(format!(
+                "operator {} output schema {} v{} has no registered Abstraction sidecar",
+                op.operator_id(),
+                op.output_schema_id(),
+                op.output_schema_version()
+            ))
+        })?;
+
         for abs in &abstractions {
+            if abs.schema_id != output_schema_id || abs.schema_version != output_schema_version {
+                return Err(ProtocolError::internal(format!(
+                    "operator {} returned schema {} v{} but declares {} v{}",
+                    op.operator_id(),
+                    abs.schema_id.as_str(),
+                    abs.schema_version.into_inner(),
+                    op.output_schema_id(),
+                    op.output_schema_version()
+                )));
+            }
+
+            self.registry
+                .validate_payload(
+                    &abs.schema_id,
+                    abs.schema_version,
+                    PayloadKind::Abstraction,
+                    &abs.typed_payload,
+                )
+                .map_err(|e| {
+                    ProtocolError::internal(format!(
+                        "operator {} returned invalid {} v{} payload: {e}",
+                        op.operator_id(),
+                        abs.schema_id.as_str(),
+                        abs.schema_version.into_inner()
+                    ))
+                })?;
+
             for prov in &abs.provenance {
                 if !batch_memory_ids.contains(prov) {
                     return Err(ProtocolError::internal(format!(
@@ -468,21 +518,6 @@ impl Engine {
             }
         }
 
-        let output_sidecar = self
-            .registry
-            .list()
-            .into_iter()
-            .find(|s| {
-                s.schema_id.as_str() == op.output_schema_id() && s.kind == PayloadKind::Abstraction
-            })
-            .and_then(|s| s.sidecar_table)
-            .ok_or_else(|| {
-                ProtocolError::internal(format!(
-                    "operator {} output schema {} has no registered Abstraction sidecar",
-                    op.operator_id(),
-                    op.output_schema_id()
-                ))
-            })?;
         let provenance_relation = self
             .registry
             .resolve_relation(CORE_DERIVED_FROM_RELATION)
