@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["core", "bin/proxima-engine", "bin/proxima-code", "flavors/code", "llm-ollama", "storage-pg", "wire-grpc"]
+members = ["core", "bin/proxima-engine", "bin/proxima-code", "flavors/code", "llm-ollama", "proxima-shell/src-tauri", "storage-pg", "wire-grpc"]
 
 [workspace.package]
 edition = "2024"
@@ -43,3 +43,8 @@ tree-sitter-typescript = "0.23"
 tonic = { version = "0.14", default-features = false, features = ["codegen", "router", "server", "transport"] }
 prost = "0.14"
 prost-types = "0.14"
+
+# tauri 2 desktop shell
+tauri = { version = "2", features = [] }
+tauri-build = { version = "2", features = [] }
+tauri-plugin-opener = "2"
