@@ -1,5 +1,6 @@
 export { PlaceholderView } from "./placeholder";
 export { SettingsView } from "./settings";
+export { SettingsGeneralPanel } from "./settings-general";
 export { SchemasView } from "./schemas";
 export { MarketplaceView } from "./marketplace";
 export { FullSurface } from "./surface";

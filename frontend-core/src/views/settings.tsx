@@ -1,57 +1,58 @@
-import { Show, type Component } from "solid-js";
-import { useQuery } from "../queries";
-import type { QueryRequest } from "../bindings";
+import { For, Show, type Component } from "solid-js";
+import { Dynamic } from "solid-js/web";
+import type { Hub, RegisteredSettingsPanel } from "../hub";
 
-const NIL_UUID = "00000000-0000-0000-0000-000000000000";
-
-const NOOP_QUERY: QueryRequest = {
-  owner: {
-    principal: { User: NIL_UUID },
-    org_id: NIL_UUID,
-  },
-  entity_kind: null,
-  schema_id: null,
-  supersession: "HeadsOnly",
-  limit: 0,
-};
-
-export const SettingsView: Component = () => {
-  const queryResp = useQuery(() => NOOP_QUERY);
+export const SettingsView: Component<{ hub: Hub }> = (props) => {
+  const activePanel = (): RegisteredSettingsPanel | undefined =>
+    props.hub.settingsPanels().find(
+      (p) => p.id === props.hub.currentSettingsPanel(),
+    );
 
   return (
     <section class="proxima-view proxima-view-settings">
       <h1>Settings</h1>
 
-      <h2>Engine</h2>
-      <Show when={queryResp.error}>
-        <p class="proxima-error">
-          Engine error: {String(queryResp.error)}
-        </p>
+      <Show
+        when={props.hub.settingsPanels().length > 0}
+        fallback={
+          <p class="proxima-dim">No settings panels registered.</p>
+        }
+      >
+        <div class="proxima-settings-host">
+          <nav class="proxima-settings-rail">
+            <For each={props.hub.settingsPanels()}>
+              {(panel) => (
+                <button
+                  type="button"
+                  classList={{
+                    "proxima-settings-tab": true,
+                    active: panel.id === props.hub.currentSettingsPanel(),
+                  }}
+                  onClick={() => props.hub.setCurrentSettingsPanel(panel.id)}
+                >
+                  {panel.label}
+                  <Show when={panel.flavor}>
+                    <span class="proxima-dim proxima-mono">
+                      {" "}
+                      ({panel.flavor})
+                    </span>
+                  </Show>
+                </button>
+              )}
+            </For>
+          </nav>
+          <div class="proxima-settings-pane">
+            <Show
+              when={activePanel()}
+              fallback={
+                <p class="proxima-dim">No panel selected.</p>
+              }
+            >
+              {(p) => <Dynamic component={p().component} />}
+            </Show>
+          </div>
+        </div>
       </Show>
-      <Show when={queryResp.loading}>
-        <p class="proxima-dim">Loading…</p>
-      </Show>
-      <Show when={queryResp()}>
-        {(resp) => (
-          <p class="proxima-dim">
-            seq high-water:{" "}
-            {resp().seq_high_water ?? "(no events yet)"}
-          </p>
-        )}
-      </Show>
-
-      <h2>Owner</h2>
-      <p class="proxima-dim">
-        principal: User({NIL_UUID})
-        <br />
-        org_id: {NIL_UUID}
-      </p>
-      <p class="proxima-dim">
-        Editable owner config lands when a dedicated configuration verb does.
-      </p>
-
-      <h2>Theme</h2>
-      <p class="proxima-dim">dark (only theme in v1)</p>
     </section>
   );
 };

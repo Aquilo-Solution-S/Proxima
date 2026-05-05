@@ -1,4 +1,5 @@
 import {
+  createEffect,
   createSignal,
   type Accessor,
   type Component,
@@ -19,6 +20,14 @@ export interface RegisteredView {
   flavor: string | null;
 }
 
+export interface RegisteredSettingsPanel {
+  id: string;
+  label: string;
+  component: Component;
+  /** `null` for substrate-owned; flavor name for flavor-registered. */
+  flavor: string | null;
+}
+
 export interface RegisteredRenderer {
   schemaId: string;
   schemaVersion: number;
@@ -32,6 +41,11 @@ export interface FlavorScope {
     renderer: Renderer<T>,
   ): void;
   registerView(view: {
+    id: string;
+    label: string;
+    component: Component;
+  }): void;
+  registerSettingsPanel(panel: {
     id: string;
     label: string;
     component: Component;
@@ -52,11 +66,17 @@ export interface Hub {
   setCurrentView: Setter<string>;
   registeredFlavors: Accessor<string[]>;
   registeredRenderers: Accessor<RegisteredRenderer[]>;
+  settingsPanels: Accessor<RegisteredSettingsPanel[]>;
+  currentSettingsPanel: Accessor<string>;
+  setCurrentSettingsPanel: Setter<string>;
 }
 
 const rendererKey = (id: string, v: number): string => `${id}@${v}`;
 
-export function createHub(substrateViews: RegisteredView[]): Hub {
+export function createHub(
+  substrateViews: RegisteredView[],
+  substrateSettingsPanels: RegisteredSettingsPanel[] = [],
+): Hub {
   const renderers = new Map<string, Renderer<unknown>>();
   const [views, setViews] = createSignal<RegisteredView[]>(substrateViews);
   const [flavors, setFlavors] = createSignal<string[]>([]);
@@ -66,6 +86,20 @@ export function createHub(substrateViews: RegisteredView[]): Hub {
   const [currentView, setCurrentView] = createSignal<string>(
     substrateViews[0]?.id ?? "",
   );
+  const [settingsPanels, setSettingsPanels] = createSignal<
+    RegisteredSettingsPanel[]
+  >(substrateSettingsPanels);
+  const [currentSettingsPanel, setCurrentSettingsPanel] = createSignal<string>(
+    substrateSettingsPanels[0]?.id ?? "",
+  );
+
+  createEffect(() => {
+    const panels = settingsPanels();
+    const current = currentSettingsPanel();
+    if (panels.find((p) => p.id === current) === undefined && panels.length > 0) {
+      setCurrentSettingsPanel(panels[0].id);
+    }
+  });
 
   return {
     registerFlavor(name, register) {
@@ -81,6 +115,9 @@ export function createHub(substrateViews: RegisteredView[]): Hub {
         registerView: (view) => {
           setViews((prev) => [...prev, { ...view, flavor: name }]);
         },
+        registerSettingsPanel: (panel) => {
+          setSettingsPanels((prev) => [...prev, { ...panel, flavor: name }]);
+        },
       });
     },
     rendererFor: (sid, sver) =>
@@ -90,5 +127,8 @@ export function createHub(substrateViews: RegisteredView[]): Hub {
     setCurrentView,
     registeredFlavors: flavors,
     registeredRenderers: renderersList,
+    settingsPanels,
+    currentSettingsPanel,
+    setCurrentSettingsPanel,
   };
 }
