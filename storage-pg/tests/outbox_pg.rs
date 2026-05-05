@@ -121,7 +121,7 @@ async fn outbox_publishes_entity_append_for_fact() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
         pg.run_migrations().await?;
-        pg.start_outbox()?;
+        pg.start_outbox().await?;
 
         let storage: Arc<dyn Storage> = Arc::new(pg.clone());
 
@@ -192,7 +192,7 @@ async fn outbox_publishes_entity_append_for_goal() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
         pg.run_migrations().await?;
-        pg.start_outbox()?;
+        pg.start_outbox().await?;
 
         let storage: Arc<dyn Storage> = Arc::new(pg.clone());
 
@@ -261,7 +261,7 @@ async fn outbox_publishes_fact_then_goal() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
         pg.run_migrations().await?;
-        pg.start_outbox()?;
+        pg.start_outbox().await?;
 
         let storage: Arc<dyn Storage> = Arc::new(pg.clone());
 

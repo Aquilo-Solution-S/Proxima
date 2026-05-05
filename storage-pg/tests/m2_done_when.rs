@@ -139,7 +139,7 @@ async fn m2_done_when_resume_with_last_seq() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
         pg.run_migrations().await?;
-        pg.start_outbox()?;
+        pg.start_outbox().await?;
 
         let storage: Arc<dyn Storage> = Arc::new(pg.clone());
 
