@@ -1,5 +1,10 @@
-import { For, Show, type Component } from "solid-js";
+import { For, type Component } from "solid-js";
+import { Dynamic } from "solid-js/web";
 import type { Hub, RegisteredView } from "./hub";
+
+const EmptyView: Component = () => (
+  <div class="shell-empty">No view selected</div>
+);
 
 export const Shell: Component<{ hub: Hub }> = (props) => {
   const activeView = (): RegisteredView | undefined =>
@@ -26,15 +31,7 @@ export const Shell: Component<{ hub: Hub }> = (props) => {
         </nav>
       </header>
       <main class="shell-main">
-        <Show
-          when={activeView()}
-          fallback={<div class="shell-empty">No view selected</div>}
-        >
-          {(view) => {
-            const C = view().component;
-            return <C />;
-          }}
-        </Show>
+        <Dynamic component={activeView()?.component ?? EmptyView} />
       </main>
       <footer class="status-foot">
         <span class="rail-title">
