@@ -3,8 +3,14 @@ import { commands, type SchemaInfo } from "../bindings";
 import { LoadingSurface, SchemaTag } from "../primitives";
 import type { Hub } from "../hub";
 
+const hasTauriRuntime = (): boolean =>
+  typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+
 export const SchemasView: Component<{ hub: Hub }> = (props) => {
   const [schemaResp] = createResource(async () => {
+    if (!hasTauriRuntime()) {
+      return { schemas: [] };
+    }
     const r = await commands.schema();
     if (r.status === "error") throw r.error;
     return r.data;
@@ -29,11 +35,20 @@ export const SchemasView: Component<{ hub: Hub }> = (props) => {
       </Show>
       <Show when={schemaResp()}>
         {(resp) => (
-          <ul class="proxima-schema-list">
-            <For each={resp().schemas}>
-              {(s) => <SchemaRow info={s} hub={props.hub} />}
-            </For>
-          </ul>
+          <Show
+            when={resp().schemas.length > 0}
+            fallback={
+              <p class="proxima-dim">
+                Schema registry is available in the Tauri shell runtime.
+              </p>
+            }
+          >
+            <ul class="proxima-schema-list">
+              <For each={resp().schemas}>
+                {(s) => <SchemaRow info={s} hub={props.hub} />}
+              </For>
+            </ul>
+          </Show>
         )}
       </Show>
     </section>

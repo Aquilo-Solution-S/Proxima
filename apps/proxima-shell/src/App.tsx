@@ -1,8 +1,10 @@
+import "./browser-tauri-fallback";
 import "@proxima/core/styles.css";
 import { Show, createSignal, lazy, type Component } from "solid-js";
 import {
   createHub,
   type FlavorScope,
+  type Hub,
   type RegisteredSettingsPanel,
   type RegisteredView,
 } from "@proxima/core/hub";
@@ -53,8 +55,10 @@ const substrateSettingsPanels: RegisteredSettingsPanel[] = [
   },
 ];
 
-const hub = createHub(
-  [
+function createAppHub(): Hub {
+  let hub!: Hub;
+  hub = createHub(
+    [
     {
       id: "surface",
       label: "Surface",
@@ -102,12 +106,15 @@ const hub = createHub(
       }),
       flavor: null,
     },
-  ] satisfies RegisteredView[],
-  substrateSettingsPanels,
-);
-hub.registerFlavor("code", registerCodeFlavor);
+    ] satisfies RegisteredView[],
+    substrateSettingsPanels,
+  );
+  hub.registerFlavor("code", registerCodeFlavor);
+  return hub;
+}
 
 function App() {
+  const hub = createAppHub();
   const [startupComplete, setStartupComplete] = createSignal(false);
 
   return (

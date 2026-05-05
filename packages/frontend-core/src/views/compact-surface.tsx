@@ -1,3 +1,4 @@
+import "./surface.css";
 /*
  * PLACEHOLDER DATA STATE
  * This component renders the compact (768px) responsive variant with
