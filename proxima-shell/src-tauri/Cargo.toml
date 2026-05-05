@@ -24,6 +24,8 @@ proxima-core = { path = "../../core" }
 proxima-storage-pg = { path = "../../storage-pg" }
 proxima-code = { path = "../../flavors/code" }
 keyring = { workspace = true }
+toml = { workspace = true }
+thiserror = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync"] }
 tokio-stream = { workspace = true }
 futures-util = { workspace = true }
@@ -33,6 +35,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 specta = { workspace = true }
 specta-typescript = { workspace = true }
 tauri-specta = { workspace = true }
+
+[dev-dependencies]
+async-trait = { workspace = true }
 
 [lints]
 workspace = true

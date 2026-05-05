@@ -10,6 +10,7 @@
 //! registry — Query returns empty, Subscribe returns an empty stream,
 //! writes are rejected. Real backends land behind feature gates.
 
+pub mod config;
 pub mod secrets;
 
 use std::sync::Arc;

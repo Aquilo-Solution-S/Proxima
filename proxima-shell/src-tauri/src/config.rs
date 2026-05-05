@@ -1,10 +1,16 @@
 //! Runtime model registration — `proxima.config.toml` schema.
 //!
 //! Build-time owns the capability vocabulary and operator `requires`
-//! (see `models.rs` + `F2AOperator::tier()`/`requires()`); runtime owns
-//! `(vendor, model_id)` records, the tier→model bindings, and the
-//! `secret_ref` strings used to fetch credentials from the
-//! `ResolverRegistry` (see `secrets.rs`).
+//! (see `proxima_core::models` + `F2AOperator::tier()`/`requires()`);
+//! runtime owns `(vendor, model_id)` records, the tier→model bindings,
+//! and the `secret_ref` strings used to fetch credentials from the
+//! `ResolverRegistry` (see `proxima_core::secrets`).
+//!
+//! Lives in the desktop shell rather than `core` because TOML-on-disk
+//! is a single-user-deployment detail. Multi-tenant deployments
+//! (v1.1+) replace this loader with per-`Owner` storage-backed
+//! resolution; the engine surface (`tier_requires_union` etc.) stays
+//! storage-agnostic in core.
 //!
 //! Validation (caps, embedding-dim, secret-ref reachability) runs
 //! against the loaded config; mismatches are fatal at boot.
@@ -12,11 +18,10 @@
 use std::collections::HashSet;
 use std::path::Path;
 
+use proxima_core::engine::Engine;
+use proxima_core::models::{Dialect, EmbedCaps, LlmCaps, ModelTier};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-
-use crate::engine::Engine;
-use crate::models::{Dialect, EmbedCaps, LlmCaps, ModelTier};
 
 /// Top-level config parsed from `proxima.config.toml`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -157,6 +162,13 @@ pub enum ConfigError {
 /// validate — call `validate_config` separately so callers can choose
 /// whether validation requires an `Engine` or runs in a config-only
 /// mode (e.g. `proxima config check`).
+///
+/// # Errors
+///
+/// - `ConfigError::Io` if the file cannot be read.
+/// - `ConfigError::Parse` if the TOML payload is malformed or contains
+///   unknown fields (top-level and section structs are
+///   `deny_unknown_fields`).
 pub fn load_config(path: &Path) -> Result<AppConfig, ConfigError> {
     let raw = std::fs::read_to_string(path).map_err(|e| ConfigError::Io {
         path: path.display().to_string(),
@@ -176,6 +188,12 @@ pub fn load_config(path: &Path) -> Result<AppConfig, ConfigError> {
 /// 3. Every populated `[tiers]` binding refers to a known LLM model.
 /// 4. Bound model's caps satisfy `engine.tier_requires_union(tier)`.
 /// 5. `[embedding.active]` (if set) refers to a known embedding model.
+///
+/// # Errors
+///
+/// Returns the first violated invariant — see `ConfigError` variants
+/// for the full set (duplicate model, unknown tier model, insufficient
+/// caps, unknown active embedding).
 pub fn validate_config(config: &AppConfig, engine: &Engine) -> Result<(), ConfigError> {
     // 1. + 2. uniqueness
     let mut llm_seen: HashSet<ModelRef> = HashSet::new();
@@ -238,13 +256,13 @@ pub fn validate_config(config: &AppConfig, engine: &Engine) -> Result<(), Config
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::auth::NoAuth;
-    use crate::ids::{OrgId, UserId};
-    use crate::operators::{F2AContext, F2AOperator, OperatorError, OperatorRegistry};
-    use crate::verbs::query::MemoryStore;
-    use crate::verbs::schema::SchemaRegistry;
-    use crate::{Owner, Principal};
     use async_trait::async_trait;
+    use proxima_core::auth::NoAuth;
+    use proxima_core::ids::{OrgId, UserId};
+    use proxima_core::operators::{F2AContext, F2AOperator, NewAbstraction, OperatorError, OperatorRegistry};
+    use proxima_core::verbs::query::MemoryStore;
+    use proxima_core::verbs::schema::SchemaRegistry;
+    use proxima_core::{Owner, Principal, SchemaId};
     use uuid::Uuid;
 
     #[derive(Debug)]
@@ -271,11 +289,11 @@ mod tests {
             "v1"
         }
 
-        fn consumes(&self, _: &crate::SchemaId) -> bool {
+        fn consumes(&self, _: &SchemaId) -> bool {
             true
         }
 
-        async fn run(&self, _: F2AContext<'_>) -> Result<Vec<crate::operators::NewAbstraction>, OperatorError> {
+        async fn run(&self, _: F2AContext<'_>) -> Result<Vec<NewAbstraction>, OperatorError> {
             Ok(Vec::new())
         }
 
@@ -463,7 +481,6 @@ mod tests {
             },
             ..AppConfig::default()
         };
-        // Register an operator that requires tool_use at Standard tier
         let eng = engine_with_ops(vec![TestOp {
             tier: ModelTier::Standard,
             requires: LlmCaps {
@@ -497,7 +514,6 @@ mod tests {
             },
             ..AppConfig::default()
         };
-        // Register an operator that requires tool_use at Standard tier
         let eng = engine_with_ops(vec![TestOp {
             tier: ModelTier::Standard,
             requires: LlmCaps {
@@ -530,7 +546,6 @@ mod tests {
             },
             ..AppConfig::default()
         };
-        // No operators registered — tier_requires_union returns LlmCaps::none()
         let eng = engine_with_ops(vec![]);
         assert!(validate_config(&cfg, &eng).is_ok());
     }
