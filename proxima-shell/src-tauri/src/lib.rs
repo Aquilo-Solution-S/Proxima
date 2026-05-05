@@ -6,9 +6,9 @@
 //! `../src/lib/bindings.ts` on debug builds — Rust traits remain the
 //! source of truth (docs/09 §Generation pipeline).
 //!
-//! v1 bring-up uses `NoopStorage` + `NoAuth` with an empty schema
-//! registry — Query returns empty, Subscribe returns an empty stream,
-//! writes are rejected. Real backends land behind feature gates.
+//! v1 uses Postgres-backed storage (mandatory via `DATABASE_URL`)
+//! with the proxima-code flavor. `NoopStorage` was removed once
+//! settings persistence became required.
 
 pub mod config;
 pub mod secrets;
@@ -20,8 +20,8 @@ use proxima_core::auth::{Credentials, NoAuth};
 use proxima_core::error::ProtocolError;
 use proxima_core::verbs::event_ingest::{EventDraft, EventIngestOutcome};
 use proxima_core::verbs::goal_write::{GoalDraft, GoalWriteOutcome};
-use proxima_core::verbs::query::{MemoryStore, QueryRequest, QueryResponse};
-use proxima_core::verbs::schema::{SchemaRegistry, SchemaRequest, SchemaResponse};
+use proxima_core::verbs::query::{QueryRequest, QueryResponse};
+use proxima_core::verbs::schema::{SchemaRequest, SchemaResponse};
 use proxima_core::verbs::subscribe::SubscribeRequest;
 use proxima_core::{ChangeEvent, Engine, OrgId, Owner, Principal, UserId};
 use proxima_storage_pg::PgStorage;
@@ -32,39 +32,68 @@ use uuid::Uuid;
 
 /// Build the embedded engine for v1 desktop.
 ///
-/// When `DATABASE_URL` is set, connects to Postgres, runs migrations,
+/// Connects to Postgres (mandatory via `DATABASE_URL`), runs migrations,
 /// starts the outbox listener, and wires the proxima-code flavor's
-/// schemas via `proxima_code::build_engine`. Falls back to the
-/// original `NoopStorage` + empty registry when DB is absent,
-/// logging a warning for dev convenience.
-fn build_engine() -> Arc<Engine> {
+/// schemas via `proxima_code::build_engine`. Returns both the
+/// `Arc<Engine>` (for verb handlers) and an `Arc<PgStorage>` clone
+/// (for settings commands) so the Tauri command layer can hold both
+/// independently.
+///
+/// # Panics
+///
+/// Panics if `DATABASE_URL` is not set — settings persistence is
+/// required for the desktop shell.
+fn build_engine() -> (Arc<Engine>, Arc<PgStorage>) {
     let owner = Owner {
         principal: Principal::User(UserId::new(Uuid::nil())),
         org_id: OrgId::new(Uuid::nil()),
     };
 
-    if let Ok(url) = std::env::var("DATABASE_URL") {
-        tauri::async_runtime::block_on(async {
-            let pg = PgStorage::connect(&url)
-                .await
-                .expect("failed to connect to Postgres; check DATABASE_URL");
-            pg.run_migrations()
-                .await
-                .expect("failed to run migrations");
-            pg.start_outbox()
-                .await
-                .expect("failed to start outbox listener");
-            let auth = NoAuth::new(owner.principal.clone(), owner.clone());
-            Arc::new(proxima_code::build_engine(pg, Box::new(auth)))
-        })
-    } else {
+    let url = std::env::var("DATABASE_URL")
+        .expect("DATABASE_URL must be set for the desktop shell — settings persistence is required");
+
+    tauri::async_runtime::block_on(async {
+        let pg = PgStorage::connect(&url)
+            .await
+            .expect("failed to connect to Postgres; check DATABASE_URL");
+        pg.run_migrations()
+            .await
+            .expect("failed to run migrations");
+        pg.start_outbox()
+            .await
+            .expect("failed to start outbox listener");
+
+        let pg_for_settings = Arc::new(pg.clone());
+        let auth = NoAuth::new(owner.principal.clone(), owner.clone());
+        let engine = Arc::new(proxima_code::build_engine(pg, Box::new(auth)));
+
+        // Validation step — non-fatal. See validate_at_boot.
+        validate_at_boot(&pg_for_settings, &owner, &engine).await;
+
+        (engine, pg_for_settings)
+    })
+}
+
+/// Validate the loaded `AppConfig` at engine boot.
+/// Loads settings from PG, assembles an `AppConfig`, and runs
+/// `validate_config` against the engine. Failures are logged as
+/// warnings only — the settings UI exists to fix broken config;
+/// panicking would brick the app.
+async fn validate_at_boot(pg: &Arc<PgStorage>, owner: &Owner, engine: &Engine) {
+    let cfg = match crate::config::load_app_config(pg, owner).await {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            tracing::warn!("could not load AppConfig at boot: {e}");
+            return;
+        }
+    };
+    if let Err(e) = crate::config::validate_config(&cfg, engine) {
         tracing::warn!(
-            "DATABASE_URL not set — using NoopStorage; query/subscribe will return empty"
+            "AppConfig validation failed at boot — running with degraded \
+             config; user must fix via settings UI: {e}"
         );
-        let auth = NoAuth::new(owner.principal.clone(), owner);
-        let registry = SchemaRegistry::new();
-        let memories = MemoryStore::new();
-        Arc::new(Engine::new(registry, memories, Box::new(auth)))
+    } else {
+        tracing::info!("AppConfig validated successfully at boot");
     }
 }
 
@@ -151,10 +180,11 @@ pub fn run() {
         .try_init()
         .ok();
 
-    let engine = build_engine();
+    let (engine, pg) = build_engine();
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(engine)
+        .manage(pg)
         .invoke_handler(specta_builder().invoke_handler())
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
