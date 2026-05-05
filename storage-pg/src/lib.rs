@@ -98,24 +98,37 @@ impl PgStorage {
         self.tx.subscribe()
     }
 
-    /// Spawn the outbox publisher task.
+    /// Spawn the outbox publisher task and await its first
+    /// successful LISTEN bind + backfill drain.
     ///
     /// Opens a `PgListener` on the same pool, LISTENs on
-    /// `outbox::NOTIFY_CHANNEL`, and publishes typed `ChangeEvent`s to
-    /// the broadcast channel. On error, logs and reconnects with
-    /// exponential backoff.
+    /// `outbox::NOTIFY_CHANNEL`, drains anything currently in
+    /// `change_event` to the broadcast channel, and only then
+    /// returns. Subsequent reconnects (on listener error) carry the
+    /// `last_seen_seq` watermark forward and do not re-signal.
+    ///
+    /// Awaiting readiness closes the boot race where a write
+    /// committing before `LISTEN` bound would have its `pg_notify`
+    /// silently dropped (`PostgreSQL` discards notifications for
+    /// sessions not `LISTEN`ing at `COMMIT` time).
     ///
     /// # Errors
     ///
-    /// This function always returns `Ok(())`; the listener task runs
-    /// in the background and handles its own errors with backoff.
-    pub fn start_outbox(&self) -> Result<(), StorageError> {
+    /// `StorageError::Internal` if the publisher exits before
+    /// signaling ready, or if the initial LISTEN / backfill fails.
+    pub async fn start_outbox(&self) -> Result<(), StorageError> {
         let pool = self.pool.clone();
         let tx = self.tx.clone();
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
         tokio::spawn(async move {
-            outbox::outbox_publisher(pool, tx).await;
+            outbox::outbox_publisher(pool, tx, Some(ready_tx)).await;
         });
-        Ok(())
+        match ready_rx.await {
+            Ok(result) => result,
+            Err(_) => Err(StorageError::Internal(
+                "outbox publisher exited before signaling ready".into(),
+            )),
+        }
     }
 
     /// Apply all pending migrations under

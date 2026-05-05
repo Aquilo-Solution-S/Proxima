@@ -143,7 +143,7 @@ async fn self_ingestion_streams_proxima_main() {
         let pg = PgStorage::connect(&url).await?;
         pg.run_migrations().await?;
         migrator().run(pg.pool()).await?;
-        pg.start_outbox()?;
+        pg.start_outbox().await?;
 
         let user = UserId::new(Uuid::now_v7());
         let owner = Owner {

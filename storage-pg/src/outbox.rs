@@ -9,12 +9,15 @@ use proxima_core::{
     Principal, SchemaId, SchemaVersion, StorageError, UserId,
 };
 use sqlx::postgres::PgListener;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, oneshot};
 use tracing::{error, warn};
 use uuid::Uuid;
 
 pub const NOTIFY_CHANNEL: &str = "proxima_change_event";
 pub const BROADCAST_CAPACITY: usize = 1024;
+const MAX_BACKOFF: Duration = Duration::from_secs(30);
+
+pub(crate) type ReadySignal = oneshot::Sender<Result<(), StorageError>>;
 
 /// Hydrate a single `change_event` row into a typed `ChangeEvent`.
 ///
@@ -152,20 +155,31 @@ pub(crate) async fn hydrate_change_event(
     }))
 }
 
-/// Background task that LISTENs on `NOTIFY_CHANNEL` and
-/// publishes typed `ChangeEvents` to the broadcast channel.
-pub async fn outbox_publisher(pool: sqlx::PgPool, tx: broadcast::Sender<ChangeEvent>) {
+/// Background task that LISTENs on `NOTIFY_CHANNEL` and publishes
+/// typed `ChangeEvent`s to the broadcast channel.
+///
+/// `ready_tx` is consumed on the first successful LISTEN+backfill
+/// pass; subsequent reconnects do not re-signal. The publisher
+/// tracks `last_seen_seq` across reconnects so backfill on a
+/// reconnect catches only what was missed during the disconnected
+/// window.
+pub async fn outbox_publisher(
+    pool: sqlx::PgPool,
+    tx: broadcast::Sender<ChangeEvent>,
+    mut ready_tx: Option<ReadySignal>,
+) {
+    let mut last_seen_seq: Option<Uuid> = None;
     let mut backoff = Duration::from_secs(1);
     loop {
-        match run_listener(&pool, tx.clone()).await {
+        match run_listener(&pool, tx.clone(), &mut last_seen_seq, ready_tx.take()).await {
             Ok(()) => {
-                // Normal exit (shouldn't happen — listener runs forever).
+                // Stream ended cleanly (shouldn't happen — listener runs forever).
                 break;
             }
             Err(e) => {
                 error!("outbox listener error: {e}, reconnecting in {:?}", backoff);
                 tokio::time::sleep(backoff).await;
-                backoff = backoff.saturating_mul(2);
+                backoff = backoff.saturating_mul(2).min(MAX_BACKOFF);
             }
         }
     }
@@ -174,18 +188,51 @@ pub async fn outbox_publisher(pool: sqlx::PgPool, tx: broadcast::Sender<ChangeEv
 async fn run_listener(
     pool: &sqlx::PgPool,
     tx: broadcast::Sender<ChangeEvent>,
+    last_seen_seq: &mut Option<Uuid>,
+    ready_tx: Option<ReadySignal>,
 ) -> Result<(), StorageError> {
+    // Bind LISTEN before reading so any commit that lands during
+    // the backfill SELECT below also queues a notification on this
+    // session — the dedup step at the bottom drops the overlap.
     let mut listener = PgListener::connect_with(pool)
         .await
         .map_err(|e| StorageError::Internal(e.to_string()))?;
-
     listener
         .listen(NOTIFY_CHANNEL)
         .await
         .map_err(|e| StorageError::Internal(e.to_string()))?;
 
-    let mut stream = listener.into_stream();
+    // Backfill: first boot drains everything; reconnect drains
+    // anything missed while the listener session was down.
+    let rows: Vec<(Uuid,)> = match *last_seen_seq {
+        Some(prev) => sqlx::query_as(
+            "SELECT seq FROM proxima_core.change_event WHERE seq > $1 ORDER BY seq",
+        )
+        .bind(prev)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| StorageError::Internal(e.to_string()))?,
+        None => {
+            sqlx::query_as("SELECT seq FROM proxima_core.change_event ORDER BY seq")
+                .fetch_all(pool)
+                .await
+                .map_err(|e| StorageError::Internal(e.to_string()))?
+        }
+    };
+    for (seq,) in rows {
+        if let Some(ce) = hydrate_change_event(pool, seq).await? {
+            let _ = tx.send(ce);
+        }
+        *last_seen_seq = Some(seq);
+    }
 
+    // LISTEN bound + backfill drained — callers awaiting startup
+    // can now safely commit writes and expect their notifications.
+    if let Some(sig) = ready_tx {
+        let _ = sig.send(Ok(()));
+    }
+
+    let mut stream = listener.into_stream();
     while let Some(notification) = stream.next().await {
         let notification = notification.map_err(|e| StorageError::Internal(e.to_string()))?;
 
@@ -194,11 +241,16 @@ async fn run_listener(
             .parse()
             .map_err(|_| StorageError::Internal(format!("invalid seq UUID: {payload}")))?;
 
+        // Dedup against backfill: a row committed between LISTEN
+        // bind and backfill SELECT is delivered through both paths.
+        if last_seen_seq.is_some_and(|s| s >= seq) {
+            continue;
+        }
+
         if let Some(ce) = hydrate_change_event(pool, seq).await? {
-            // Ignore send errors — no live receivers is OK.
             let _ = tx.send(ce);
         }
-        // Row was deleted or EdgeAppend — skip.
+        *last_seen_seq = Some(seq);
     }
 
     Ok(())

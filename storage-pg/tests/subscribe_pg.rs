@@ -133,7 +133,7 @@ async fn subscribe_fresh_no_since_live_ingest() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
         pg.run_migrations().await?;
-        pg.start_outbox()?;
+        pg.start_outbox().await?;
 
         let storage: Arc<dyn Storage> = Arc::new(pg.clone());
 
@@ -204,7 +204,7 @@ async fn subscribe_resume_with_since_mid() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
         pg.run_migrations().await?;
-        pg.start_outbox()?;
+        pg.start_outbox().await?;
 
         let storage: Arc<dyn Storage> = Arc::new(pg.clone());
 
@@ -286,7 +286,7 @@ async fn subscribe_owner_isolation() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
         pg.run_migrations().await?;
-        pg.start_outbox()?;
+        pg.start_outbox().await?;
 
         let storage: Arc<dyn Storage> = Arc::new(pg.clone());
 
