@@ -15,5 +15,8 @@ fn noauth_returns_fixed_owner() {
     let resolved = resolver.resolve(&Credentials::None).unwrap();
 
     assert_eq!(resolved.principal, principal);
-    assert_eq!(resolved.accessible_owners, HashSet::from([owner]));
+    assert_eq!(
+        resolved.accessible_principals,
+        HashSet::from([owner.principal])
+    );
 }

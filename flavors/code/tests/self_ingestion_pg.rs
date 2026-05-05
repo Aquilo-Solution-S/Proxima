@@ -262,8 +262,8 @@ async fn self_ingestion_streams_proxima_main() {
                  likely a CASE-dispatch bug",
                 m.id
             );
-            let _: proxima_code::payloads::CommitV1 =
-                ciborium::de::from_reader(&m.payload[..]).map_err(|e| {
+            let _: proxima_code::payloads::CommitV1 = ciborium::de::from_reader(&m.payload[..])
+                .map_err(|e| {
                     format!(
                         "unfiltered query: commit-v1 payload for {:?} \
                          did not deserialize as CommitV1: {e}",

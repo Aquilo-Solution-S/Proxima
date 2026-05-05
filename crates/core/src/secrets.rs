@@ -106,8 +106,9 @@ impl SecretResolver for EnvResolver {
         }
         match std::env::var(body) {
             Ok(v) => Ok(SecretBytes::new(v.into_bytes())),
-            Err(std::env::VarError::NotPresent) =>
-                Err(SecretError::NotFound(format!("env var {body}"))),
+            Err(std::env::VarError::NotPresent) => {
+                Err(SecretError::NotFound(format!("env var {body}")))
+            }
             Err(std::env::VarError::NotUnicode(_)) => Err(SecretError::ResolverFailed(format!(
                 "env var {body} contains non-UTF8 bytes"
             ))),
@@ -130,7 +131,8 @@ impl ResolverRegistry {
 
     /// Replace any existing resolver for the same scheme.
     pub fn register(&mut self, r: Box<dyn SecretResolver>) {
-        self.resolvers.retain(|existing| existing.scheme() != r.scheme());
+        self.resolvers
+            .retain(|existing| existing.scheme() != r.scheme());
         self.resolvers.push(r);
     }
 
@@ -138,12 +140,16 @@ impl ResolverRegistry {
     /// colon is the scheme/body separator; subsequent colons are
     /// part of `body` and parsed by the resolver.
     pub fn resolve(&self, secret_ref: &str) -> Result<SecretBytes, SecretError> {
-        let (scheme, body) = secret_ref.split_once(':')
+        let (scheme, body) = secret_ref
+            .split_once(':')
             .ok_or_else(|| SecretError::InvalidFormat(secret_ref.to_string()))?;
         if scheme.is_empty() {
             return Err(SecretError::InvalidFormat(secret_ref.to_string()));
         }
-        let r = self.resolvers.iter().find(|r| r.scheme() == scheme)
+        let r = self
+            .resolvers
+            .iter()
+            .find(|r| r.scheme() == scheme)
             .ok_or_else(|| SecretError::UnknownScheme(scheme.to_string()))?;
         r.resolve(body)
     }
@@ -165,17 +171,23 @@ mod tests {
     #[test]
     fn env_resolver_returns_present_var() {
         // SAFETY: distinct test-only var name to avoid race with other tests.
-        unsafe { std::env::set_var("PROXIMA_S1B_TEST_PRESENT", "hello"); }
+        unsafe {
+            std::env::set_var("PROXIMA_S1B_TEST_PRESENT", "hello");
+        }
         let bytes = EnvResolver::new()
             .resolve("PROXIMA_S1B_TEST_PRESENT")
             .expect("present var resolves");
         assert_eq!(bytes.as_str(), Some("hello"));
-        unsafe { std::env::remove_var("PROXIMA_S1B_TEST_PRESENT"); }
+        unsafe {
+            std::env::remove_var("PROXIMA_S1B_TEST_PRESENT");
+        }
     }
 
     #[test]
     fn env_resolver_not_found_when_absent() {
-        unsafe { std::env::remove_var("PROXIMA_S1B_TEST_ABSENT"); }
+        unsafe {
+            std::env::remove_var("PROXIMA_S1B_TEST_ABSENT");
+        }
         let err = EnvResolver::new()
             .resolve("PROXIMA_S1B_TEST_ABSENT")
             .unwrap_err();
@@ -190,11 +202,15 @@ mod tests {
 
     #[test]
     fn registry_routes_by_scheme() {
-        unsafe { std::env::set_var("PROXIMA_S1B_TEST_REG", "via-registry"); }
+        unsafe {
+            std::env::set_var("PROXIMA_S1B_TEST_REG", "via-registry");
+        }
         let reg = ResolverRegistry::default_with_env();
         let bytes = reg.resolve("env:PROXIMA_S1B_TEST_REG").unwrap();
         assert_eq!(bytes.as_str(), Some("via-registry"));
-        unsafe { std::env::remove_var("PROXIMA_S1B_TEST_REG"); }
+        unsafe {
+            std::env::remove_var("PROXIMA_S1B_TEST_REG");
+        }
     }
 
     #[test]

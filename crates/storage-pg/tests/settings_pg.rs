@@ -2,8 +2,8 @@
 
 use proxima_core::models::{Dialect, EmbedCaps, LlmCaps, ModelTier};
 use proxima_core::{OrgId, Owner, Principal, UserId};
-use proxima_storage_pg::settings;
 use proxima_storage_pg::PgStorage;
+use proxima_storage_pg::settings;
 use sqlx::{Connection, Executor, PgConnection};
 use uuid::Uuid;
 
@@ -216,10 +216,7 @@ async fn bind_tier_happy_path() {
             .await
             .expect("bind succeeds");
 
-        let bindings = pg
-            .list_tier_bindings(&owner)
-            .await
-            .expect("list succeeds");
+        let bindings = pg.list_tier_bindings(&owner).await.expect("list succeeds");
         assert_eq!(bindings.len(), 1);
         assert_eq!(bindings[0].0, ModelTier::Fast);
         assert_eq!(bindings[0].1, "openai");
@@ -293,10 +290,7 @@ async fn bind_tier_idempotent_rebind() {
             .await
             .expect("rebind");
 
-        let bindings = pg
-            .list_tier_bindings(&owner)
-            .await
-            .expect("list succeeds");
+        let bindings = pg.list_tier_bindings(&owner).await.expect("list succeeds");
         assert_eq!(bindings.len(), 1);
         assert_eq!(bindings[0].0, ModelTier::Fast);
         assert_eq!(bindings[0].1, "anthropic");
@@ -327,10 +321,7 @@ async fn unbind_tier_returns_true_when_present() {
             .expect("unbind succeeds");
         assert!(existed);
 
-        let bindings = pg
-            .list_tier_bindings(&owner)
-            .await
-            .expect("list succeeds");
+        let bindings = pg.list_tier_bindings(&owner).await.expect("list succeeds");
         assert!(bindings.is_empty());
     })
     .await;
@@ -374,7 +365,10 @@ async fn set_embedding_active_happy_path() {
             .expect("get active succeeds");
         assert_eq!(
             active,
-            Some(("text-embeddings".to_string(), "text-embedding-3-small".to_string()))
+            Some((
+                "text-embeddings".to_string(),
+                "text-embedding-3-small".to_string()
+            ))
         );
     })
     .await;
@@ -413,7 +407,10 @@ async fn set_embedding_active_idempotent_rebind() {
                 vendor: "text-embeddings".to_string(),
                 model_id: "text-embedding-3-small".to_string(),
                 base_url: "https://api.openai.com/v1".to_string(),
-                caps: EmbedCaps { dim: 1536, matryoshka: false },
+                caps: EmbedCaps {
+                    dim: 1536,
+                    matryoshka: false,
+                },
                 secret_ref: None,
             },
         )
@@ -426,7 +423,10 @@ async fn set_embedding_active_idempotent_rebind() {
                 vendor: "text-embeddings".to_string(),
                 model_id: "text-embedding-3-large".to_string(),
                 base_url: "https://api.openai.com/v1".to_string(),
-                caps: EmbedCaps { dim: 3072, matryoshka: false },
+                caps: EmbedCaps {
+                    dim: 3072,
+                    matryoshka: false,
+                },
                 secret_ref: None,
             },
         )
@@ -443,13 +443,13 @@ async fn set_embedding_active_idempotent_rebind() {
             .await
             .expect("rebind active");
 
-        let active = pg
-            .get_embedding_active(&owner)
-            .await
-            .expect("get active");
+        let active = pg.get_embedding_active(&owner).await.expect("get active");
         assert_eq!(
             active,
-            Some(("text-embeddings".to_string(), "text-embedding-3-large".to_string()))
+            Some((
+                "text-embeddings".to_string(),
+                "text-embedding-3-large".to_string()
+            ))
         );
     })
     .await;
@@ -475,10 +475,7 @@ async fn clear_embedding_active() {
             .expect("clear succeeds");
         assert!(existed);
 
-        let active = pg
-            .get_embedding_active(&owner)
-            .await
-            .expect("get active");
+        let active = pg.get_embedding_active(&owner).await.expect("get active");
         assert_eq!(active, None);
 
         // Clear again returns false

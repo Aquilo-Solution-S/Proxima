@@ -14,7 +14,14 @@ pub enum Credentials {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Resolved {
     pub principal: Principal,
-    pub accessible_owners: HashSet<Owner>,
+    pub accessible_principals: HashSet<Principal>,
+}
+
+impl Resolved {
+    #[must_use]
+    pub fn can_access_owner(&self, owner: &Owner) -> bool {
+        self.accessible_principals.contains(&owner.principal)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -32,22 +39,25 @@ pub trait AuthResolver: Send + Sync {
 #[derive(Debug, Clone)]
 pub struct NoAuth {
     principal: Principal,
-    owner: Owner,
+    owner_principal: Principal,
 }
 
 impl NoAuth {
     pub fn new(principal: Principal, owner: Owner) -> Self {
-        Self { principal, owner }
+        Self {
+            principal,
+            owner_principal: owner.principal,
+        }
     }
 }
 
 impl AuthResolver for NoAuth {
     fn resolve(&self, _creds: &Credentials) -> Result<Resolved, AuthError> {
-        let mut owners = HashSet::with_capacity(1);
-        owners.insert(self.owner.clone());
+        let mut principals = HashSet::with_capacity(1);
+        principals.insert(self.owner_principal.clone());
         Ok(Resolved {
             principal: self.principal.clone(),
-            accessible_owners: owners,
+            accessible_principals: principals,
         })
     }
 }

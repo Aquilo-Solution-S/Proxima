@@ -106,7 +106,7 @@ impl MemoryStore {
         let memories: Vec<MemoryRow> = self
             .memories
             .iter()
-            .filter(|m| m.owner == req.owner)
+            .filter(|m| m.owner.principal == req.owner.principal)
             .filter(|m| req.entity_kind.is_none_or(|k| m.kind == k))
             .filter(|m| req.schema_id.as_ref().is_none_or(|s| &m.schema_id == s))
             .take(req.limit as usize)

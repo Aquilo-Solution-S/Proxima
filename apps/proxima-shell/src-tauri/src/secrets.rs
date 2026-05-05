@@ -39,9 +39,8 @@ impl SecretResolver for KeychainResolver {
             )));
         }
 
-        let entry = keyring::Entry::new(service, account).map_err(|e| {
-            SecretError::ResolverFailed(format!("keyring::Entry::new: {e}"))
-        })?;
+        let entry = keyring::Entry::new(service, account)
+            .map_err(|e| SecretError::ResolverFailed(format!("keyring::Entry::new: {e}")))?;
 
         match entry.get_password() {
             Ok(secret) => Ok(SecretBytes::new(secret.into_bytes())),
@@ -90,9 +89,9 @@ mod tests {
         let secret_value = "round-trip-secret-value";
 
         // Write directly via the keyring crate (the resolver is read-only).
-        let entry = keyring::Entry::new(service, &account)
-            .expect("Entry::new");
-        entry.set_password(secret_value)
+        let entry = keyring::Entry::new(service, &account).expect("Entry::new");
+        entry
+            .set_password(secret_value)
             .expect("set_password — does the test host have a keychain?");
 
         // Read via the resolver.
@@ -111,7 +110,9 @@ mod tests {
     fn missing_entry_is_not_found() {
         let body = format!("proxima-test-s1c:absent-{}", uuid::Uuid::now_v7());
         let err = KeychainResolver::new().resolve(&body).unwrap_err();
-        assert!(matches!(err, SecretError::NotFound(_)),
-            "expected NotFound for absent entry, got {err:?}");
+        assert!(
+            matches!(err, SecretError::NotFound(_)),
+            "expected NotFound for absent entry, got {err:?}"
+        );
     }
 }

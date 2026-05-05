@@ -154,6 +154,62 @@ async fn query_returns_fact_rows() {
 }
 
 #[tokio::test]
+async fn query_owner_scope_ignores_org_id() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if create_db(&db_name).await.is_err() {
+        eprintln!("skipping (no admin PG)");
+        return;
+    }
+    let url = format!("postgres://postgres@localhost/{db_name}");
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let storage: Arc<dyn Storage> = Arc::new(pg.clone());
+
+        let user = UserId::new(Uuid::now_v7());
+        let stored_owner = Owner {
+            principal: Principal::User(user),
+            org_id: OrgId::new(Uuid::now_v7()),
+        };
+        let requested_owner = Owner {
+            principal: stored_owner.principal.clone(),
+            org_id: OrgId::new(Uuid::now_v7()),
+        };
+
+        let registry = SchemaRegistry::with_schemas(schemas_for_test());
+        let engine = Engine::new(
+            registry,
+            MemoryStore::new(),
+            Box::new(NoAuth::new(Principal::User(user), stored_owner.clone())),
+        )
+        .with_storage(storage);
+
+        let draft = fresh_draft(stored_owner.clone());
+        let outcome = engine
+            .event_ingest(&Credentials::None, draft.clone())
+            .await?;
+
+        let resp = engine
+            .query(
+                &Credentials::None,
+                &QueryRequest::for_owner(requested_owner),
+            )
+            .await?;
+
+        assert_eq!(resp.memories.len(), 1);
+        assert_eq!(resp.memories[0].owner, stored_owner);
+        assert_eq!(resp.seq_high_water, Some(outcome.change_event_seq));
+
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("query_owner_scope_ignores_org_id test failed");
+}
+
+#[tokio::test]
 async fn query_filter_abstraction_returns_empty() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if create_db(&db_name).await.is_err() {

@@ -205,19 +205,17 @@ async fn run_listener(
     // Backfill: first boot drains everything; reconnect drains
     // anything missed while the listener session was down.
     let rows: Vec<(Uuid,)> = match *last_seen_seq {
-        Some(prev) => sqlx::query_as(
-            "SELECT seq FROM proxima_core.change_event WHERE seq > $1 ORDER BY seq",
-        )
-        .bind(prev)
-        .fetch_all(pool)
-        .await
-        .map_err(|e| StorageError::Internal(e.to_string()))?,
-        None => {
-            sqlx::query_as("SELECT seq FROM proxima_core.change_event ORDER BY seq")
+        Some(prev) => {
+            sqlx::query_as("SELECT seq FROM proxima_core.change_event WHERE seq > $1 ORDER BY seq")
+                .bind(prev)
                 .fetch_all(pool)
                 .await
                 .map_err(|e| StorageError::Internal(e.to_string()))?
         }
+        None => sqlx::query_as("SELECT seq FROM proxima_core.change_event ORDER BY seq")
+            .fetch_all(pool)
+            .await
+            .map_err(|e| StorageError::Internal(e.to_string()))?,
     };
     for (seq,) in rows {
         if let Some(ce) = hydrate_change_event(pool, seq).await? {
