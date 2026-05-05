@@ -29,9 +29,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
 
-use proxima_code::{
-    IndexReport, LocalGitSource, build_engine, f2a_operator_registry, migrator,
-};
+use proxima_code::{IndexReport, LocalGitSource, build_engine, f2a_operator_registry, migrator};
 use proxima_core::auth::NoAuth;
 use proxima_core::{Cursor, OrgId, Owner, Principal, UserId};
 use proxima_llm_ollama::{OllamaEmbeddingClient, OllamaLlmClient};
@@ -141,7 +139,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     if watch {
         watch_loop(&source, &pg, engine.as_ref(), &owner, poll_interval_ms).await
     } else {
-        let (report, _cursor) = source.run_poll(pg.pool(), &Cursor::empty(), &mut |_| {}).await?;
+        let (report, _cursor) = source
+            .run_poll(pg.pool(), &Cursor::empty(), &mut |_| {})
+            .await?;
         print_report(&report);
         if let Some(eng) = engine.as_ref() {
             run_f2a_pass(eng, &owner).await?;
