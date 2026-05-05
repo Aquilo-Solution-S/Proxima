@@ -1463,3 +1463,111 @@ html, body, #root { height: 100%; margin: 0; }
   font-feature-settings: "ss01", "ss02", "cv11";
   letter-spacing: -0.01em;
 }
+
+/* ---------- Code flavor (m6.27) ---------- */
+
+.proxima-code-host {
+  display: grid;
+  grid-template-columns: 160px 1fr;
+  gap: 16px;
+  align-items: start;
+}
+
+.proxima-code-rail {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border-right: 1px solid var(--rule-soft);
+  padding-right: 8px;
+}
+
+.proxima-code-tab {
+  background: transparent;
+  border: 0;
+  color: var(--ink-70);
+  font-family: var(--sans);
+  font-size: 12px;
+  text-align: left;
+  padding: 6px 8px;
+  cursor: pointer;
+  border-radius: 2px;
+}
+.proxima-code-tab:hover {
+  background: var(--bg-elev);
+  color: var(--ink-100);
+}
+.proxima-code-tab.active {
+  background: var(--bg-card);
+  color: var(--ink-100);
+}
+
+.proxima-code-pane {
+  min-width: 0;
+}
+
+.proxima-code-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.proxima-repos-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.proxima-repos-header h2 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--ink-90);
+}
+
+.proxima-repos-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.proxima-repo-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  grid-template-areas:
+    "head    actions"
+    "status  actions";
+  gap: 4px 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--rule-soft);
+  background: var(--bg-card);
+}
+.proxima-repo-head {
+  grid-area: head;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.proxima-repo-name {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ink-100);
+}
+.proxima-repo-head .proxima-mono {
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.proxima-repo-status {
+  grid-area: status;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--ink-60);
+}
+.proxima-repo-actions {
+  grid-area: actions;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}

@@ -8,7 +8,6 @@ import {
 } from "solid-js";
 import {
   commands,
-  type CommandError,
   type Dialect,
   type EmbedCaps,
   type EmbeddingModelRecord,
@@ -17,29 +16,10 @@ import {
   type ModelTier,
   type TierBindings,
 } from "../bindings";
+import { formatCommandError as formatError } from "../format-error";
 
 const TIERS: ModelTier[] = ["fast", "standard", "deep"];
 const DIALECTS: Dialect[] = ["anthropic", "openai"];
-
-// Helper to format CommandError for display
-function formatError(err: CommandError): string {
-  switch (err.kind) {
-    case "storage":
-      return `Storage error: ${err.data.message}`;
-    case "duplicate_llm_model":
-      return `LLM model already registered: ${err.data.model_ref.vendor} / ${err.data.model_ref.model_id}`;
-    case "duplicate_embedding_model":
-      return `Embedding model already registered: ${err.data.model_ref.vendor} / ${err.data.model_ref.model_id}`;
-    case "unknown_llm_model":
-      return `Unknown LLM model: ${err.data.model_ref.vendor} / ${err.data.model_ref.model_id}`;
-    case "unknown_embedding_model":
-      return `Unknown embedding model: ${err.data.model_ref.vendor} / ${err.data.model_ref.model_id}`;
-    case "insufficient_tier_caps":
-      return `Model ${err.data.model_ref.vendor} / ${err.data.model_ref.model_id} doesn't satisfy ${err.data.tier} tier caps`;
-    case "invariant":
-      return `Internal invariant violation: ${err.data.message}`;
-  }
-}
 
 // Caps badge helpers
 const LlmCapsBadges: Component<{ caps: LlmCaps }> = (props) => {
