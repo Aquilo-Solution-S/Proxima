@@ -210,7 +210,7 @@ impl OllamaEmbeddingClient {
 struct EmbedRequest<'a> {
     model: &'a str,
     input: &'a str,
-    /// Matryoshka truncation target. OpenAI `/embeddings` and Ollama's
+    /// Matryoshka truncation target. `OpenAI` `/embeddings` and Ollama's
     /// OpenAI-compatible endpoint honor this for nested-prefix models
     /// (qwen3-embedding, text-embedding-3-*, etc.). Omitted for
     /// non-Matryoshka models — some servers reject the field.
