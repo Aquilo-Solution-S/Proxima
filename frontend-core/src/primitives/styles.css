@@ -1114,3 +1114,84 @@ body { margin: 0; background: var(--bg); color: var(--ink-80); font-family: var(
   font-size: 13px; color: var(--ink-50);
   margin-left: 8px;
 }
+
+/* ── Hub shell — view-switcher chrome + main area ─────────────── */
+html, body, #root { height: 100%; margin: 0; }
+
+.hub-nav {
+  display: flex;
+  gap: 2px;
+  align-items: stretch;
+  height: 100%;
+}
+
+.hub-nav-item {
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid transparent;
+  color: var(--ink-50);
+  font-family: var(--sans);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  padding: 0 12px;
+  cursor: pointer;
+  height: 100%;
+  transition: color 120ms ease, border-color 120ms ease;
+}
+.hub-nav-item:hover { color: var(--ink-80); }
+.hub-nav-item.active {
+  color: var(--ink-100);
+  border-bottom-color: var(--accent-commit);
+}
+
+.shell-main {
+  flex: 1;
+  overflow: auto;
+  min-height: 0;
+}
+
+.shell-empty {
+  padding: 32px;
+  color: var(--ink-50);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.proxima-view {
+  padding: 24px 32px;
+  max-width: 880px;
+}
+.proxima-view h1 {
+  font-family: var(--serif);
+  font-size: 22px;
+  font-weight: 400;
+  color: var(--ink-90);
+  margin: 0 0 18px;
+}
+.proxima-view h2 {
+  font-family: var(--sans);
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink-60);
+  font-weight: 500;
+  margin: 24px 0 10px;
+}
+
+.proxima-dim { color: var(--ink-50); font-size: 12px; }
+.proxima-error { color: var(--accent-fail); font-size: 12px; }
+
+.proxima-schema-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.proxima-schema-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
