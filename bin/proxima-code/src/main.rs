@@ -214,18 +214,20 @@ fn poll_emitted_anything(r: &IndexReport) -> bool {
         + r.files_present_emitted
         + r.files_tombstoned
         + r.chunks_emitted
+        + r.chunks_reused
         + r.chunks_tombstoned
         > 0
 }
 
 fn print_report(r: &IndexReport) {
     println!(
-        "indexed: {} commits ({} replayed), {} files (+{} tombstoned), {} chunks (+{} tombstoned)",
+        "indexed: {} commits ({} replayed), {} files (+{} tombstoned), {} chunks (+{} reused, +{} tombstoned)",
         r.commits_emitted,
         r.commits_replayed,
         r.files_present_emitted,
         r.files_tombstoned,
         r.chunks_emitted,
+        r.chunks_reused,
         r.chunks_tombstoned,
     );
 }
