@@ -23,6 +23,7 @@ serde_json = { workspace = true }
 proxima-core = { path = "../../core" }
 proxima-storage-pg = { path = "../../storage-pg" }
 proxima-code = { path = "../../flavors/code" }
+keyring = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync"] }
 tokio-stream = { workspace = true }
 futures-util = { workspace = true }
