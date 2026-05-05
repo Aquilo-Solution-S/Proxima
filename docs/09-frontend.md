@@ -150,21 +150,26 @@ The Subscribe hot path carries identity only (per 14
 Decoding is bounded to `Query` responses and offline-replica
 refresh.
 
-### Component dispatch
+### Renderer dispatch
 
-A generic component renderer walks payload fields by JSON Schema
-and dispatches by type; per-schema overrides replace the generic
-view when a flavor ships a custom component, looked up by
-`(SCHEMA_ID, SCHEMA_VERSION)`.
+The `(schema_id, schema_version) → Renderer` lookup is the core's
+responsibility, populated by flavor `register()` calls per
+§[Hub architecture](#hub-architecture). Unrecognized pairs fall
+through to the JSON-Schema-driven generic renderer (§Unknown-schema
+fallback). Each flavor's frontend npm package lives next to its
+Rust crate:
 
 ```
-flavors/learning/
-├── backend/                 Rust crate (08)
+flavors/code/
+├── src/                     Rust crate (08)
 ├── frontend/
-│   ├── package.json         npm: "@proxima/flavor-learning"
-│   ├── generated/           emitted by proxima_flavor!: .ts + .schema.json per payload
-│   ├── components/          per-schema overrides keyed by (SCHEMA_ID, SCHEMA_VERSION)
-│   ├── routes/              flavor-specific views
+│   ├── package.json         npm: "@proxima/code"
+│   ├── src/
+│   │   ├── register.ts      register(scope: FlavorScope)
+│   │   ├── bindings.ts      generated: specta TS types + JSON Schema
+│   │   ├── renderers/       per-schema components keyed by (SCHEMA_ID, SCHEMA_VERSION)
+│   │   ├── pages/           optional custom views via scope.registerView
+│   │   └── codec.ts         cbor-x decode for flavor's payload types
 │   └── i18n/
 └── migrations/
 ```
@@ -226,6 +231,113 @@ same binary serves many environments, distinguished only by injected
 config (auth issuer URL, DB DSN, secrets). The repo-tier split that
 keeps substrate, product, and deployment separable is detailed in
 [13 §Composition](docs/13-flavor-marketplace.md#composition).
+
+## Hub architecture
+
+The frontend is a **substrate of views + a registry of flavor
+renderers**. Substrate provides the views (FullSurface, Atlas,
+Schemas, Marketplace, Settings); flavors plug in by registering
+renderers keyed on `(schema_id, schema_version)`. Composition is
+build-time — the JS analogue of
+[08 §Composite discipline](08-core-and-flavors.md#composite-discipline).
+
+A flavor's *primary* contribution is renderers. Custom views
+(extra entries in the top chrome's view-switcher) are an opt-in
+escape hatch for cases where substrate views can't express the
+flavor's data model — most flavors ship zero custom views.
+
+### Hub interface
+
+```ts
+interface Hub {
+  registerFlavor(name: string, register: (scope: FlavorScope) => void): void;
+}
+
+interface FlavorScope {
+  registerRenderer<T>(
+    schemaId: string,
+    schemaVersion: number,
+    renderer: Renderer<T>,
+  ): void;
+
+  // Optional — when substrate views (Surface/Atlas) don't suffice.
+  // Appears in TopChrome's view-switcher.
+  registerView(view: { id: string; label: string; component: Component }): void;
+}
+
+interface Renderer<T> {
+  render: (props: { memory: MemoryRow; payload: T }) => JSX.Element;
+}
+```
+
+`registerFlavor` is the single registration boundary. The hub
+records every registration with its owning flavor name; the
+Marketplace view reads from this metadata to list installed flavors
+and their schemas / views.
+
+### Substrate views
+
+| View | Purpose |
+|---|---|
+| **FullSurface** | F→A→P traversal lanes (center) + Goal DAG rail (left) + Event stream (right). The primary memory browser; renders Facts / Abstractions / Perspectives through `hub.rendererFor(...)`. |
+| **CompactSurface** | 768px responsive variant of FullSurface. Wired alongside FullSurface from day one — responsive discipline baked in, not retrofit. |
+| **Atlas** | 3D embedding-projected memory map. Z-axis locked to layer (F=0, A=1.6, P=3.2, G=4.8); x/y from a UMAP projection over the `embeddings` table (07). Filterable by layer / flavor / personality / goal. |
+| **Schemas** | Registry browser — lists every `SchemaInfo` from the `Schema` verb, links to renderer override (if any) and JSON Schema (if generated). |
+| **Marketplace** | Lists registered flavors with their schemas + views. v1: build-time-registered only. Post-v1: discovery + install when runtime composition arrives ([13](13-flavor-marketplace.md)). |
+| **Settings** | Core-only in v1: DB connection, owner config, theme. Flavor-scoped settings (`registerSettingsPanel`) deferred. |
+
+### View switching
+
+In-app `currentView` signal in the Hub, no URL routing in v1. View
+state stays URL-serializable (string view id + serializable params)
+so Solid Router can be layered on later for deep links without
+restructuring. No deep-link / back-button UX in v1.
+
+### Substrate / flavor split
+
+| Lives in core | Lives in flavor |
+|---|---|
+| TopChrome (view-switcher + status footer) | Renderers per `(schema_id, schema_version)` — primary contract |
+| FullSurface + CompactSurface | Optional custom views (e.g. `proxima-code/calls-graph`) |
+| Atlas | Flavor's `bindings.ts` (paired Rust types via specta) |
+| Schemas / Marketplace / Settings views | Flavor's CBOR codec for its payloads |
+| Shared primitives: `Mono`, `SchemaTag`, `Timecode` | Flavor's `register(scope)` entry point |
+| Design system (`styles.css`) | |
+| SealAssets (identity) | |
+| Fallback renderer (raw JSON for unrecognized schemas) | |
+
+### Repo layout
+
+The frontend forms a pnpm workspace rooted at the repo:
+
+```
+/
+├── pnpm-workspace.yaml
+├── package.json                  workspace root
+├── frontend-core/                @proxima/core (Hub + substrate views)
+├── proxima-shell/                Tauri host — consumes @proxima/core + flavor frontends
+└── flavors/
+    └── code/
+        ├── src/                  Rust crate (existing)
+        └── frontend/             @proxima/code
+```
+
+Adding a new flavor frontend is `flavors/<name>/frontend/` plus one
+import line in `proxima-shell/src/App.tsx` — the JS analogue of
+linking the flavor's Rust crate.
+
+### Implementation order
+
+1. Substrate primitives + design system (`styles.css` ported as-is).
+2. FullSurface — the demonstrator's heart.
+3. Schemas / Marketplace / Settings views.
+4. CompactSurface — responsive variant.
+5. Atlas — final v1 step.
+
+Step ordering mirrors v1's "show the substrate, then add the flavor"
+discipline: a working FullSurface with the substrate's three lanes +
+goal rail + event stream demonstrates the architecture before any
+flavor renderer plugs in.
 
 ## Flavor endpoints (deferred)
 
@@ -349,6 +461,7 @@ commands stay identical; the renderer doesn't notice.
 - `schema-driven-ui-codegen`
 - `local-first-replica-offline-queue`
 - `ui-bundle-composition`
+- `hub-architecture`
 - `flavor-endpoints-deferred`
 - `multi-owner-ui`
 - `mobile`
