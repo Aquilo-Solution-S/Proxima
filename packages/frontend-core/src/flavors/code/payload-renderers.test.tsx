@@ -1,0 +1,54 @@
+import { cleanup, render, screen } from "@solidjs/testing-library";
+import { encode } from "cbor-x";
+import { afterEach, describe, expect, it } from "vitest";
+import type { MemoryRow } from "../../bindings";
+import { createHub } from "../../hub";
+import { registerCode } from "./index";
+
+const owner = {
+  principal: { User: "00000000-0000-0000-0000-000000000000" },
+  org_id: "00000000-0000-0000-0000-000000000000",
+};
+
+const memory = (schemaId: string, payload: number[]): MemoryRow => ({
+  id: "019df9e1-cb61-7031-8e93-6facbe711cb2",
+  kind: "Fact",
+  schema_id: schemaId,
+  schema_version: 1,
+  owner,
+  payload,
+});
+
+describe("code payload renderers", () => {
+  afterEach(() => cleanup());
+
+  it("decodes and renders file-revision-v1 as typed fields", () => {
+    const hub = createHub([]);
+    hub.registerFlavor("code", registerCode);
+    const payload = {
+      repo_id: "018f0000-0000-7000-8000-000000000001",
+      file_path: "src/lib.rs",
+      language: "Rust",
+      content_sha256: new Uint8Array(32).fill(11),
+      size_bytes: 194,
+      indexed_commit_sha: "0123456789abcdef0123456789abcdef01234567",
+      state: "Present",
+    };
+    const row = memory(
+      "proxima-code/file-revision-v1",
+      Array.from(encode(payload)),
+    );
+
+    const decoded = hub
+      .codecFor(row.schema_id, row.schema_version)
+      ?.decode(new Uint8Array(row.payload));
+    const renderer = hub.rendererFor(row.schema_id, row.schema_version);
+
+    render(() => renderer?.render({ memory: row, payload: decoded }));
+
+    expect(screen.getByText("src/lib.rs")).toBeTruthy();
+    expect(screen.getByText("194 bytes")).toBeTruthy();
+    expect(screen.getByText("Present")).toBeTruthy();
+    expect(screen.queryByText(/CBOR bytes/)).toBeNull();
+  });
+});

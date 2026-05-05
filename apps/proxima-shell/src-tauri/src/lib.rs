@@ -14,6 +14,7 @@ mod boot;
 pub mod command_error;
 mod commands;
 pub mod config;
+mod repo_ingest_hub;
 pub mod secrets;
 
 /// Entry point for the Tauri application.
@@ -44,6 +45,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(engine)
         .manage(pg)
+        .manage(repo_ingest_hub::RepoIngestHub::new())
         .invoke_handler(commands::specta_builder().invoke_handler())
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

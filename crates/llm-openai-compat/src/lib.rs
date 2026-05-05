@@ -19,6 +19,7 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
+use proxima_core::models::EmbedCaps;
 use proxima_core::operators::{EmbeddingClient, LlmClient, OperatorError};
 use serde::{Deserialize, Serialize};
 
@@ -243,6 +244,12 @@ impl OllamaEmbeddingClient {
 struct EmbedRequest<'a> {
     model: &'a str,
     input: &'a str,
+    /// Matryoshka truncation target. OpenAI `/embeddings` and Ollama's
+    /// OpenAI-compatible endpoint honor this for nested-prefix models
+    /// (qwen3-embedding, text-embedding-3-*, etc.). Omitted for
+    /// non-Matryoshka models — some servers reject the field.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dimensions: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -257,6 +264,7 @@ impl EmbeddingClient for OllamaEmbeddingClient {
         let body = EmbedRequest {
             model: &self.model_id,
             input: text,
+            dimensions: None,
         };
 
         let resp = self
@@ -325,7 +333,7 @@ impl OpenAiCompatConfig {
     pub fn new(base_url: impl Into<String>, bearer_token: Option<String>) -> Self {
         Self {
             base_url: base_url.into(),
-            timeout: Duration::from_mins(2),
+            timeout: Duration::from_mins(10),
             bearer_token,
         }
     }
@@ -458,17 +466,20 @@ pub struct OpenAiCompatEmbeddingClient {
     config: OpenAiCompatConfig,
     client: reqwest::Client,
     model_id: String,
-    dim: usize,
+    caps: EmbedCaps,
 }
 
 impl OpenAiCompatEmbeddingClient {
-    /// Construct an OpenAI-compatible embedding client.
+    /// Construct an OpenAI-compatible embedding client. Matryoshka caps
+    /// drive a `dimensions` parameter on the request so nested-prefix
+    /// models (qwen3-embedding, text-embedding-3-*) return vectors at
+    /// `caps.dim` rather than the model's native size.
     ///
     /// # Errors
     /// Returns `OperatorError::Internal` if the HTTP client cannot be built.
     pub fn new(
         model_id: impl Into<String>,
-        dim: usize,
+        caps: EmbedCaps,
         config: OpenAiCompatConfig,
     ) -> Result<Self, OperatorError> {
         let client = build_client(config.timeout)?;
@@ -476,7 +487,7 @@ impl OpenAiCompatEmbeddingClient {
             config,
             client,
             model_id: model_id.into(),
-            dim,
+            caps,
         })
     }
 }
@@ -498,6 +509,7 @@ impl EmbeddingClient for OpenAiCompatEmbeddingClient {
         let body = EmbedRequest {
             model: &self.model_id,
             input: text,
+            dimensions: self.caps.matryoshka.then_some(self.caps.dim),
         };
 
         let mut req = self.client.post(&url).json(&body);
@@ -535,10 +547,12 @@ impl EmbeddingClient for OpenAiCompatEmbeddingClient {
             })?
             .embedding;
 
-        if vec.len() != self.dim {
+        let expected = self.dim();
+        if vec.len() != expected {
             return Err(OperatorError::Embed(format!(
-                "expected dim {}, got {}",
-                self.dim,
+                "expected dim {} (matryoshka={}), got {}",
+                expected,
+                self.caps.matryoshka,
                 vec.len()
             )));
         }
@@ -551,6 +565,15 @@ impl EmbeddingClient for OpenAiCompatEmbeddingClient {
     }
 
     fn dim(&self) -> usize {
-        self.dim
+        self.caps.dim as usize
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn openai_compat_timeout_allows_slow_local_models() {
+        let cfg = super::OpenAiCompatConfig::new("http://localhost:11434/v1", None);
+        assert_eq!(cfg.timeout, std::time::Duration::from_mins(10));
     }
 }

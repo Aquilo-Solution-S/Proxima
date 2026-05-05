@@ -1,0 +1,171 @@
+.proxima-view-schemas {
+  max-width: 1040px;
+}
+
+.schema-view-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 22px;
+}
+
+.schema-view-head h1,
+.schema-view-head p {
+  margin-left: 0;
+}
+
+.schema-flavor-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.schema-flavor-group {
+  border-top: 1px solid var(--rule-strong);
+  padding-top: 14px;
+}
+
+.schema-flavor-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 12px;
+}
+
+.schema-flavor-head h2 {
+  margin: 0 0 4px;
+  color: var(--ink-90);
+}
+
+.schema-kind-summary {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.schema-kind-chip {
+  border: 1px solid var(--rule);
+  color: var(--ink-50);
+  font-family: var(--mono);
+  font-size: 10px;
+  padding: 2px 6px;
+}
+
+.schema-kind-chip b {
+  color: var(--ink-80);
+  font-weight: 600;
+}
+
+.schema-table {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.schema-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px 18px;
+  border: 1px solid var(--rule);
+  background: rgba(20, 23, 28, 0.52);
+  padding: 10px 12px;
+}
+
+.schema-row-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.schema-row-id {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.schema-kind {
+  color: var(--ink-60);
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+.schema-row-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  color: var(--ink-50);
+  font-family: var(--mono);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.schema-runtime {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.schema-runtime span {
+  border: 1px solid var(--rule);
+  color: var(--ink-40);
+  font-family: var(--mono);
+  font-size: 10px;
+  padding: 2px 6px;
+}
+
+.schema-runtime span.active {
+  border-color: rgba(201, 168, 106, 0.52);
+  color: var(--accent-chain);
+  background: rgba(201, 168, 106, 0.06);
+}
+
+.schema-code {
+  grid-column: 1 / -1;
+  border-top: 1px dashed var(--rule);
+  padding-top: 8px;
+}
+
+.schema-code summary {
+  width: fit-content;
+  color: var(--ink-50);
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+.schema-code summary:hover {
+  color: var(--ink-80);
+}
+
+.schema-code pre {
+  margin: 8px 0 0;
+  border: 1px solid var(--rule);
+  background: #0A0C10;
+  color: var(--ink-70);
+  overflow-x: auto;
+  padding: 10px 12px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  line-height: 1.55;
+}
+
+@media (max-width: 760px) {
+  .schema-view-head,
+  .schema-flavor-head {
+    flex-direction: column;
+  }
+
+  .schema-kind-summary {
+    justify-content: flex-start;
+  }
+
+  .schema-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

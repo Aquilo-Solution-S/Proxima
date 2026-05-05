@@ -131,6 +131,14 @@ impl From<proxima_code::RepoRegistryError> for CommandError {
             proxima_code::RepoRegistryError::NotFound { repo_id } => Self::UnknownRepo {
                 repo_id: repo_id.to_string(),
             },
+            proxima_code::RepoRegistryError::RunNotFound { run_id } => Self::Storage {
+                message: format!("ingestion run not found: {run_id}"),
+            },
+            proxima_code::RepoRegistryError::RunAlreadyTerminal { run_id, status } => {
+                Self::Storage {
+                    message: format!("ingestion run already terminal: {run_id} ({status:?})"),
+                }
+            }
             proxima_code::RepoRegistryError::Database(e) => Self::Storage {
                 message: e.to_string(),
             },

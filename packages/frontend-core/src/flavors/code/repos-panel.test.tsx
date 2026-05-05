@@ -6,6 +6,7 @@ import {
   waitFor,
 } from "@solidjs/testing-library";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ingestStore } from "./ingest-store";
 import { ReposPanel } from "./repos-panel";
 import type {
   CommandError,
@@ -17,7 +18,9 @@ const mocks = vi.hoisted(() => ({
   reposList: vi.fn(),
   reposErase: vi.fn(),
   reposRegister: vi.fn(),
-  repoIngest: vi.fn(),
+  repoIngestStart: vi.fn(),
+  repoIngestStatus: vi.fn(),
+  repoIngestSubscribe: vi.fn(),
   openDialog: vi.fn(),
 }));
 
@@ -26,7 +29,9 @@ vi.mock("../../bindings", () => ({
     reposList: mocks.reposList,
     reposErase: mocks.reposErase,
     reposRegister: mocks.reposRegister,
-    repoIngest: mocks.repoIngest,
+    repoIngestStart: mocks.repoIngestStart,
+    repoIngestStatus: mocks.repoIngestStatus,
+    repoIngestSubscribe: mocks.repoIngestSubscribe,
   },
 }));
 
@@ -44,6 +49,7 @@ vi.mock("../../primitives", () => ({
   LoadingSurface: (props: { label?: string }) => (
     <div data-testid="loading">{props.label ?? "Loading"}</div>
   ),
+  ProximaLoader: () => <div data-testid="proxima-loader" />,
 }));
 
 const ok = <T,>(data: T) => Promise.resolve({ status: "ok" as const, data });
@@ -78,17 +84,41 @@ const receipt = (
   ...overrides,
 });
 
+const run = () => ({
+  run_id: "018f0000-0000-7000-8000-000000000101",
+  repo_id: "018f0000-0000-7000-8000-000000000001",
+  status: "running" as const,
+  stage: "facts" as const,
+  commits_emitted: 0,
+  files_emitted: 0,
+  chunks_emitted: 0,
+  chunks_reused: 0,
+  chunks_tombstoned: 0,
+  ast_edges_emitted: 0,
+  abstractions_emitted: 0,
+  embeddings_landed: 0,
+  citations_emitted: 0,
+  error_message: null,
+  started_at: "2026-05-05T12:00:00Z",
+  updated_at: "2026-05-05T12:00:01Z",
+  finished_at: null,
+});
+
 describe("ReposPanel", () => {
   beforeEach(() => {
+    ingestStore.resetForTests();
     mocks.reposList.mockResolvedValue(ok([repo()]));
     mocks.reposErase.mockResolvedValue(ok(receipt()));
     mocks.reposRegister.mockResolvedValue(ok(repo()));
-    mocks.repoIngest.mockResolvedValue(ok(null));
+    mocks.repoIngestStart.mockResolvedValue(ok(run()));
+    mocks.repoIngestStatus.mockResolvedValue(ok(null));
+    mocks.repoIngestSubscribe.mockResolvedValue(ok(null));
     mocks.openDialog.mockResolvedValue(null);
   });
 
   afterEach(() => {
     cleanup();
+    ingestStore.resetForTests();
     vi.clearAllMocks();
   });
 
@@ -161,5 +191,32 @@ describe("ReposPanel", () => {
         "Unknown repo: 018f0000-0000-7000-8000-000000000001",
       ),
     ).toBeTruthy();
+  });
+
+  it("keeps ingest state across unmount and remount", async () => {
+    const { unmount } = render(() => <ReposPanel />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Ingest" }));
+
+    await waitFor(() => {
+      expect(mocks.repoIngestStart).toHaveBeenCalledWith(
+        "018f0000-0000-7000-8000-000000000001",
+      );
+      expect(screen.getByText("Running facts")).toBeTruthy();
+      expect(
+        (screen.getByRole("button", { name: "Ingest" }) as HTMLButtonElement)
+          .disabled,
+      ).toBe(true);
+    });
+
+    unmount();
+    render(() => <ReposPanel />);
+
+    expect(await screen.findByText("Running facts")).toBeTruthy();
+    expect(
+      (screen.getByRole("button", { name: "Ingest" }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+    expect(mocks.repoIngestSubscribe).toHaveBeenCalledTimes(1);
   });
 });

@@ -113,14 +113,45 @@ export const commands = {
 	 */
 	reposErase: (repoId: string) => typedError<RepoEraseReceiptTs, CommandError>(__TAURI_INVOKE("repos_erase", { repoId })),
 	/**
-	 *  Spawns a detached background task. Returns immediately. Progress,
-	 *  done, and background errors flow on one flavor-owned job stream.
+	 *  Persist or return the active ingestion run, then kick the driver.
 	 * 
 	 *  # Errors
-	 *  `UnknownRepo` if the `repo_id` isn't registered, `InvalidUuid` if the
-	 *  id doesn't parse, `Storage` on lookup failures.
+	 *  `UnknownRepo` if the repo is not registered; `InvalidUuid` if the id
+	 *  does not parse; `Storage` on database failures.
 	 */
-	repoIngest: (repoId: string, onEvent: Channel<RepoIngestEventTs>) => typedError<null, CommandError>(__TAURI_INVOKE("repo_ingest", { repoId, onEvent })),
+	repoIngestStart: (repoId: string) => typedError<RepoIngestionRunTs, CommandError>(__TAURI_INVOKE("repo_ingest_start", { repoId })),
+	/**
+	 *  Return the active ingestion run for a repo, if any.
+	 * 
+	 *  # Errors
+	 *  `InvalidUuid` if the id does not parse; `Storage` on database failures.
+	 */
+	repoIngestStatus: (repoId: string) => typedError<{
+	run_id: string,
+	repo_id: string,
+	status: RunStatus,
+	stage: RunStage,
+	commits_emitted: number,
+	files_emitted: number,
+	chunks_emitted: number,
+	chunks_reused: number,
+	chunks_tombstoned: number,
+	ast_edges_emitted: number,
+	abstractions_emitted: number,
+	embeddings_landed: number,
+	citations_emitted: number,
+	error_message: string | null,
+	started_at: string,
+	updated_at: string,
+	finished_at: string | null,
+} | null, CommandError>(__TAURI_INVOKE("repo_ingest_status", { repoId })),
+	/**
+	 *  Subscribe to current run snapshot plus live events for a repo.
+	 * 
+	 *  # Errors
+	 *  `InvalidUuid` if the id does not parse; `Storage` on database failures.
+	 */
+	repoIngestSubscribe: (repoId: string, onEvent: Channel<RepoIngestEventTs>) => typedError<null, CommandError>(__TAURI_INVOKE("repo_ingest_subscribe", { repoId, onEvent })),
 };
 
 /* Types */
@@ -485,9 +516,29 @@ export type RepoEraseReceiptTs = {
 	repo_record_deleted: boolean,
 };
 
-export type RepoIngestEventTs = { kind: "progress"; data: IngestProgressTs } | { kind: "done"; data: IndexReportTs } | { kind: "error"; data: {
+export type RepoIngestEventTs = { kind: "progress"; data: IngestProgressTs } | { kind: "snapshot"; data: RepoIngestionRunTs } | { kind: "done"; data: IndexReportTs } | { kind: "error"; data: {
 	message: string,
 } };
+
+export type RepoIngestionRunTs = {
+	run_id: string,
+	repo_id: string,
+	status: RunStatus,
+	stage: RunStage,
+	commits_emitted: number,
+	files_emitted: number,
+	chunks_emitted: number,
+	chunks_reused: number,
+	chunks_tombstoned: number,
+	ast_edges_emitted: number,
+	abstractions_emitted: number,
+	embeddings_landed: number,
+	citations_emitted: number,
+	error_message: string | null,
+	started_at: string,
+	updated_at: string,
+	finished_at: string | null,
+};
 
 export type RepoRecordTs = {
 	repo_id: string,
@@ -497,6 +548,10 @@ export type RepoRecordTs = {
 	last_polled_at: string | null,
 	created_at: string,
 };
+
+export type RunStage = "starting" | "facts" | "ast_edges" | "f2a" | "embeddings" | "done";
+
+export type RunStatus = "queued" | "running" | "succeeded" | "failed";
 
 export type SchemaId = string;
 
