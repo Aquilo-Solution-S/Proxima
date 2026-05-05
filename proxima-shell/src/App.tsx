@@ -9,6 +9,7 @@ import {
   SettingsModelsPanel,
   Shell,
   createHub,
+  registerCode,
   type RegisteredSettingsPanel,
   type RegisteredView,
 } from "@proxima/core";
@@ -63,7 +64,7 @@ const hub = createHub(
   ] satisfies RegisteredView[],
   substrateSettingsPanels,
 );
-// Future: registerCode(hub.registerFlavor.bind(hub));
+hub.registerFlavor("code", registerCode);
 
 function App() {
   return <Shell hub={hub} />;

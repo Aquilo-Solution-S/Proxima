@@ -64,6 +64,10 @@ fn build_engine() -> (Arc<Engine>, Arc<PgStorage>) {
         pg.run_migrations()
             .await
             .expect("failed to run migrations");
+        proxima_code::migrator()
+            .run(pg.pool())
+            .await
+            .expect("failed to run proxima-code flavor migrations");
         pg.start_outbox()
             .await
             .expect("failed to start outbox listener");
