@@ -1285,3 +1285,181 @@ html, body, #root { height: 100%; margin: 0; }
 .proxima-settings-panel h2:first-child {
   margin-top: 0;
 }
+
+/* ── Settings: Models panel ──────────────────────────────────── */
+.proxima-models-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 8px 0 16px;
+  font-size: 12px;
+}
+.proxima-models-table th {
+  text-align: left;
+  font-family: var(--sans);
+  font-size: 9px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink-50);
+  font-weight: 500;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--rule);
+}
+.proxima-models-table td {
+  padding: 8px;
+  border-bottom: 1px solid var(--rule);
+  vertical-align: top;
+  color: var(--ink-80);
+}
+.proxima-models-table tr:hover td {
+  background: var(--bg-card);
+}
+
+.proxima-caps-badges {
+  display: inline-flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.proxima-caps-badge {
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  padding: 1px 6px;
+  border: 1px solid var(--rule-strong);
+  color: var(--ink-70);
+  background: var(--bg-card-2);
+  text-transform: lowercase;
+}
+
+.proxima-models-form {
+  margin: 8px 0 16px;
+  padding: 12px 14px;
+  background: var(--bg-card);
+  border: 1px solid var(--rule);
+}
+.proxima-models-form summary {
+  cursor: pointer;
+  color: var(--ink-70);
+  font-family: var(--sans);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+}
+.proxima-models-form-grid {
+  display: grid;
+  grid-template-columns: 140px 1fr;
+  gap: 8px 12px;
+  margin-top: 12px;
+  align-items: center;
+}
+.proxima-models-form-grid label {
+  font-size: 11px;
+  color: var(--ink-60);
+}
+.proxima-models-form-grid input[type="text"],
+.proxima-models-form-grid input[type="number"],
+.proxima-models-form-grid select {
+  background: var(--bg);
+  border: 1px solid var(--rule-strong);
+  color: var(--ink-90);
+  padding: 6px 8px;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.proxima-models-form-grid .checkbox-row {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.proxima-models-form-grid .checkbox-row label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+.proxima-models-form-actions {
+  margin-top: 10px;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.proxima-btn {
+  background: var(--bg-elev);
+  border: 1px solid var(--rule-strong);
+  color: var(--ink-80);
+  padding: 6px 12px;
+  font-family: var(--sans);
+  font-size: 11px;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+.proxima-btn:hover:not(:disabled) {
+  background: var(--bg-card);
+  color: var(--ink-100);
+}
+.proxima-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.proxima-btn-danger {
+  border-color: rgba(184, 106, 106, 0.4);
+  color: var(--accent-del);
+}
+.proxima-btn-danger:hover:not(:disabled) {
+  background: rgba(184, 106, 106, 0.08);
+}
+
+.proxima-embedding-active-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 16px;
+}
+.proxima-embedding-active-row select {
+  background: var(--bg);
+  border: 1px solid var(--rule-strong);
+  color: var(--ink-90);
+  padding: 6px 8px;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.proxima-tier-row {
+  display: grid;
+  grid-template-columns: 90px 1fr auto;
+  gap: 12px;
+  align-items: center;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--rule);
+}
+.proxima-tier-row select {
+  background: var(--bg);
+  border: 1px solid var(--rule-strong);
+  color: var(--ink-90);
+  padding: 6px 8px;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.proxima-tier-row:last-of-type {
+  border-bottom: none;
+}
+.proxima-tier-label {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink-90);
+  text-transform: lowercase;
+}
+.proxima-tier-requires {
+  grid-column: 1 / -1;
+  font-family: var(--mono);
+  font-size: 9px;
+  color: var(--ink-50);
+  letter-spacing: 0.06em;
+}
+
+.proxima-mono {
+  font-family: var(--mono);
+  font-feature-settings: "ss01", "ss02", "cv11";
+  letter-spacing: -0.01em;
+}
