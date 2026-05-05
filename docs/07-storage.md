@@ -293,17 +293,26 @@ source_batches(
 -- belongs on a CitedObject the batch's Facts cite (11).
 
 source_batch_f2a(
-    batch_id              FK source_batches.id,
-    operator_id           OperatorId,           -- the F→A operator that ran
-    personality_id        PersonalityId,         -- the personality flavor under which it ran (08)
-    run_at                NOT NULL,
-    PRIMARY KEY (batch_id, operator_id, personality_id)
+    batch_id                FK source_batches.id,
+    operator_id             OperatorId,
+    prompt_version          PromptVersion,
+    model_id                ModelId,
+    personality_id          PersonalityId,
+    personality_state_hash  Hash32,
+    head_memory_id          nullable FK memories.memory_id,
+    run_at                  NOT NULL,
+    PRIMARY KEY (
+        batch_id,
+        operator_id,
+        prompt_version,
+        model_id,
+        personality_id,
+        personality_state_hash
+    )
 )
--- Per-(batch, operator, personality) tracking — replaces the single
--- `f2a_run_at` column. Each registered F→A operator runs once per
--- (batch, active-personality) pair; resumption / dedup is per row.
--- Append-only. Empty for a batch's (op, p) means F→A under that
--- (operator, personality) hasn't run; a row means it has.
+-- Per full invocation key. Empty means that exact prompt/model/
+-- personality snapshot has not run for that batch/operator; a row
+-- means it has.
 
 read_scope_matrix(
     owner_*,

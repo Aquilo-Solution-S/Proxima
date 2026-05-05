@@ -220,14 +220,24 @@ pub struct ConsolidateBatchF2ARequest<'a> {
     pub output_sidecar_table: &'a str,
 }
 
+/// Idempotency key for one F→A invocation over a source batch. The
+/// batch id is supplied separately by storage queries; this struct is
+/// the operator/runtime half of the key.
+#[derive(Debug, Clone, Copy)]
+pub struct F2AInvocationKey<'a> {
+    pub operator_id: &'a str,
+    pub prompt_version: &'a str,
+    pub model_id: &'a str,
+    pub personality_id: &'a str,
+    pub personality_state_hash: &'a [u8],
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConsolidateBatchF2AOutcome {
     pub abstraction_ids: Vec<MemoryId>,
-    /// True iff `(batch_id, operator_id)` was already in
+    /// True iff the full F→A invocation key was already in
     /// `source_batch_f2a` — no work was done. The caller treats this
-    /// as success; F→A re-run with a different prompt_version is a
-    /// distinct operator invocation and would not be idempotent on
-    /// this key alone.
+    /// as success.
     pub already_consolidated: bool,
 }
 

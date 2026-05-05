@@ -25,6 +25,8 @@ use proxima_core::{
 };
 use sqlx::PgPool;
 
+use crate::pg_ident::PgIdent;
+
 #[allow(clippy::too_many_lines)]
 pub(crate) async fn query_memories(
     pool: &PgPool,
@@ -94,8 +96,7 @@ pub(crate) async fn query_memories(
         sql.push_str(" CASE");
         for (idx, schema) in schemas_with_sidecar.iter().enumerate() {
             let sidecar_table = schema.sidecar_table.as_ref().unwrap();
-            // Validate the sidecar table identifier
-            validate_sidecar_identifier(sidecar_table)?;
+            PgIdent::table(sidecar_table)?;
             let alias = format!("s_{idx}");
             write!(
                 sql,
@@ -117,11 +118,12 @@ pub(crate) async fn query_memories(
 
     // Add LEFT JOINs for each schema with a sidecar table
     for (idx, schema) in schemas_with_sidecar.iter().enumerate() {
-        let sidecar_table = schema.sidecar_table.as_ref().unwrap();
+        let sidecar_table = PgIdent::table(schema.sidecar_table.as_ref().unwrap())?;
         let alias = format!("s_{idx}");
         write!(
             sql,
             " LEFT JOIN {sidecar_table} {alias} ON {alias}.memory_id = m.memory_id",
+            sidecar_table = sidecar_table.as_str(),
         )
         .expect("write to String is infallible");
     }
@@ -296,53 +298,14 @@ async fn read_seq_high_water(
 fn validate_stateful_filter(
     sf: &StatefulHeadsFilter,
 ) -> Result<&StatefulHeadsFilter, StorageError> {
-    if !is_qualified_table_ident(&sf.sidecar_table) {
-        return Err(StorageError::Internal(format!(
-            "invalid sidecar_table identifier: {:?}",
-            sf.sidecar_table
-        )));
-    }
+    PgIdent::table(&sf.sidecar_table)?;
     if sf.natural_key_columns.is_empty() {
         return Err(StorageError::Internal(
             "stateful_heads with empty natural_key_columns".into(),
         ));
     }
     for col in &sf.natural_key_columns {
-        if !is_column_ident(col) {
-            return Err(StorageError::Internal(format!(
-                "invalid natural_key column identifier: {col:?}"
-            )));
-        }
+        PgIdent::column(col)?;
     }
     Ok(sf)
-}
-
-fn is_qualified_table_ident(s: &str) -> bool {
-    // Allow `schema.table` (single dot) or `table`.
-    let parts: Vec<&str> = s.split('.').collect();
-    if parts.len() > 2 || parts.is_empty() {
-        return false;
-    }
-    parts.iter().all(|p| is_column_ident(p))
-}
-
-fn is_column_ident(s: &str) -> bool {
-    !s.is_empty()
-        && s.chars()
-            .next()
-            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
-        && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-        && s.len() <= 63
-}
-
-/// Validate a sidecar table identifier before splicing it into SQL.
-/// Same rules as `is_qualified_table_ident` — author-controlled
-/// `&'static str` constants, defense-in-depth.
-fn validate_sidecar_identifier(s: &str) -> Result<(), StorageError> {
-    if !is_qualified_table_ident(s) {
-        return Err(StorageError::Internal(format!(
-            "invalid sidecar_table identifier: {s:?}"
-        )));
-    }
-    Ok(())
 }

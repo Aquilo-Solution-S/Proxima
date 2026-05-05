@@ -133,10 +133,22 @@ source_batches(
 )
 
 source_batch_f2a(
-    batch_id    pk UUIDv7,             -- FK source_batches.id
-    operator_id pk OperatorId,          -- the F→A operator that ran
-    run_at      NOT NULL,               -- when this operator consolidated this batch
-    PRIMARY KEY (batch_id, operator_id)
+    batch_id               pk UUIDv7,       -- FK source_batches.id
+    operator_id            pk OperatorId,    -- the F→A operator that ran
+    prompt_version         pk PromptVersion,
+    model_id               pk ModelId,
+    personality_id         pk PersonalityId,
+    personality_state_hash pk Hash32,
+    head_memory_id         nullable,         -- latest output row for this invocation
+    run_at                 NOT NULL,
+    PRIMARY KEY (
+        batch_id,
+        operator_id,
+        prompt_version,
+        model_id,
+        personality_id,
+        personality_state_hash
+    )
 )
 ```
 
@@ -150,7 +162,8 @@ Rules:
 - **F→A trigger.** Engine enqueues each registered F→A operator
   independently for batches with `closed_at IS NOT NULL` and no
   matching row in `source_batch_f2a`. On run completion, a row is
-  inserted into `source_batch_f2a`. Resumption / dedup is per-operator.
+  inserted into `source_batch_f2a`. Resumption / dedup is per full
+  invocation key, not just per operator.
 - **Aggregates derived, not stored.** Batch start / end / count /
   cited-object linkage are derived from the constituent events and
   facts on demand. The row carries lifecycle only.
