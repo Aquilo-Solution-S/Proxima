@@ -107,6 +107,12 @@ export const commands = {
 	 */
 	reposDelete: (repoId: string) => typedError<boolean, CommandError>(__TAURI_INVOKE("repos_delete", { repoId })),
 	/**
+	 *  # Errors
+	 *  `InvalidUuid` if `repo_id` doesn't parse, `UnknownRepo` if the repo
+	 *  is not registered for the sentinel owner, `Storage` otherwise.
+	 */
+	reposErase: (repoId: string) => typedError<RepoEraseReceiptTs, CommandError>(__TAURI_INVOKE("repos_erase", { repoId })),
+	/**
 	 *  Spawns a detached background task. Returns immediately. Per-commit
 	 *  progress flows on `on_progress`; the final report flows on `on_done`.
 	 *  Errors during the background ingest are logged via `tracing::warn` —
@@ -431,6 +437,21 @@ export type QueryResponse = {
 	 *  not yet recorded any change events.
 	 */
 	seq_high_water: string | null,
+};
+
+export type RepoEraseReceiptTs = {
+	repo_id: string,
+	completed_at: string,
+	facts_deleted: number,
+	abstractions_deleted: number,
+	edges_deleted: number,
+	embeddings_deleted: number,
+	events_deleted: number,
+	citation_mappings_deleted: number,
+	cited_objects_deleted: number,
+	source_batches_deleted: number,
+	f2a_rows_deleted: number,
+	repo_record_deleted: boolean,
 };
 
 export type RepoRecordTs = {

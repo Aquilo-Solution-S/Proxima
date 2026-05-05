@@ -7,13 +7,22 @@
 use crate::verbs::schema::{PayloadKind, SchemaInfo, SchemaRegistry};
 use crate::{
     AbstractionPayload, EdgePayload, FactPayload, PerspectivePayload, RelationDescriptor,
-    SchemaVersion,
+    SchemaVersion, core_relation_descriptors,
 };
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct FlavorRegistry {
     schemas: Vec<SchemaInfo>,
     relations: Vec<RelationDescriptor>,
+}
+
+impl Default for FlavorRegistry {
+    fn default() -> Self {
+        Self {
+            schemas: Vec::new(),
+            relations: core_relation_descriptors(),
+        }
+    }
 }
 
 impl FlavorRegistry {

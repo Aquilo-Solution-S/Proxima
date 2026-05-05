@@ -15,9 +15,7 @@
 use proxima_core::operators::{
     ConsolidateBatchF2AOutcome, ConsolidateBatchF2ARequest, FactRow, SidecarSpec,
 };
-use proxima_core::{
-    MemoryId, Owner, Principal, RelationClass, SchemaVersion, SourceBatchId, StorageError,
-};
+use proxima_core::{MemoryId, Owner, Principal, SchemaVersion, SourceBatchId, StorageError};
 use sqlx::PgPool;
 
 use crate::error::map_err;
@@ -286,8 +284,7 @@ pub async fn consolidate_batch_f2a(
             let edge_id = uuid::Uuid::now_v7();
             let draft = EdgeDraft {
                 edge_id,
-                relation: "core/derived-from",
-                class: RelationClass::Provenance,
+                relation: req.provenance_relation,
                 source_kind: "Abstraction",
                 source_memory_id: Some(memory_id),
                 source_goal_id: None,
@@ -298,7 +295,7 @@ pub async fn consolidate_batch_f2a(
                 authorship_owner_memory_id: Some(memory_id),
                 owner: &req.owner,
             };
-            append_edge_in_tx(&mut tx, &draft, None, None).await?;
+            append_edge_in_tx(&mut tx, &draft, None).await?;
         }
 
         // 5. embedding row.

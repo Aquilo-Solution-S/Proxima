@@ -6,7 +6,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::GoalId;
-use crate::{LlmCaps, MemoryId, ModelTier};
+use crate::{CORE_DERIVED_FROM_RELATION, LlmCaps, MemoryId, ModelTier};
 use crate::Owner;
 use crate::SourceBatchId;
 use crate::auth::{AuthResolver, Credentials};
@@ -483,11 +483,20 @@ impl Engine {
                     op.output_schema_id()
                 ))
             })?;
+        let provenance_relation = self
+            .registry
+            .resolve_relation(CORE_DERIVED_FROM_RELATION)
+            .ok_or_else(|| {
+                ProtocolError::internal(format!(
+                    "missing registered relation {CORE_DERIVED_FROM_RELATION}"
+                ))
+            })?;
 
         let req = ConsolidateBatchF2ARequest {
             batch_id,
             owner: owner.clone(),
             operator_id: op.operator_id(),
+            provenance_relation,
             model_id: llm.model_id(),
             prompt_version: op.prompt_version(),
             personality: &personality,

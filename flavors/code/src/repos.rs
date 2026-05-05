@@ -16,6 +16,22 @@ pub struct RepoRecord {
     pub created_at: time::OffsetDateTime,
 }
 
+#[derive(Debug, Clone)]
+pub struct RepoEraseReceipt {
+    pub repo_id: Uuid,
+    pub completed_at: time::OffsetDateTime,
+    pub facts_deleted: u64,
+    pub abstractions_deleted: u64,
+    pub edges_deleted: u64,
+    pub embeddings_deleted: u64,
+    pub events_deleted: u64,
+    pub citation_mappings_deleted: u64,
+    pub cited_objects_deleted: u64,
+    pub source_batches_deleted: u64,
+    pub f2a_rows_deleted: u64,
+    pub repo_record_deleted: bool,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum RepoRegistryError {
     #[error("database error: {0}")]
@@ -151,6 +167,372 @@ pub async fn delete_repo(
     .await?;
 
     Ok(result.rows_affected() > 0)
+}
+
+/// Hard-delete one repo's code-flavor data for a clear reingestion.
+///
+/// This is intentionally explicit rather than FK-cascade based: cited
+/// objects and source batches are substrate rows and are deleted only
+/// when no remaining rows reference them after the repo-scoped data is
+/// removed.
+///
+/// # Errors
+/// Returns `RepoRegistryError::NotFound` if the repo is not registered
+/// for `owner`; `RepoRegistryError::Database` on database failures.
+#[allow(clippy::too_many_lines)]
+pub async fn erase_repo(
+    pool: &PgPool,
+    owner: &Owner,
+    repo_id: Uuid,
+) -> Result<RepoEraseReceipt, RepoRegistryError> {
+    let (kind, principal_id, org_id) = owner_columns(owner);
+    let mut tx = pool.begin().await?;
+
+    let exists: Option<(Uuid,)> = sqlx::query_as(
+        "SELECT repo_id \
+         FROM proxima_code.repos \
+         WHERE owner_principal_kind = $1 \
+           AND owner_principal_id = $2 \
+           AND owner_org_id = $3 \
+           AND repo_id = $4 \
+         FOR UPDATE",
+    )
+    .bind(kind)
+    .bind(principal_id)
+    .bind(org_id)
+    .bind(repo_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if exists.is_none() {
+        tx.rollback().await?;
+        return Err(RepoRegistryError::NotFound { repo_id });
+    }
+
+    sqlx::query("SET CONSTRAINTS ALL DEFERRED")
+        .execute(&mut *tx)
+        .await?;
+
+    sqlx::query(
+        "CREATE TEMP TABLE tmp_proxima_repo_facts \
+            (memory_id uuid PRIMARY KEY) ON COMMIT DROP",
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO tmp_proxima_repo_facts (memory_id) \
+         SELECT m.memory_id \
+         FROM proxima_core.memories m \
+         JOIN proxima_code.commit_v1 s USING (memory_id) \
+         WHERE m.owner_principal_kind = $1 \
+           AND m.owner_principal_id = $2 \
+           AND m.owner_org_id = $3 \
+           AND s.repo_id = $4 \
+         UNION \
+         SELECT m.memory_id \
+         FROM proxima_core.memories m \
+         JOIN proxima_code.file_revision_v1 s USING (memory_id) \
+         WHERE m.owner_principal_kind = $1 \
+           AND m.owner_principal_id = $2 \
+           AND m.owner_org_id = $3 \
+           AND s.repo_id = $4 \
+         UNION \
+         SELECT m.memory_id \
+         FROM proxima_core.memories m \
+         JOIN proxima_code.code_chunk_v1 s USING (memory_id) \
+         WHERE m.owner_principal_kind = $1 \
+           AND m.owner_principal_id = $2 \
+           AND m.owner_org_id = $3 \
+           AND s.repo_id = $4",
+    )
+    .bind(kind)
+    .bind(principal_id)
+    .bind(org_id)
+    .bind(repo_id)
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query(
+        "CREATE TEMP TABLE tmp_proxima_repo_abstractions \
+            (memory_id uuid PRIMARY KEY) ON COMMIT DROP",
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO tmp_proxima_repo_abstractions (memory_id) \
+         SELECT m.memory_id \
+         FROM proxima_core.memories m \
+         JOIN proxima_code.commit_summary_v1 s USING (memory_id) \
+         WHERE m.owner_principal_kind = $1 \
+           AND m.owner_principal_id = $2 \
+           AND m.owner_org_id = $3 \
+           AND s.repo_id = $4",
+    )
+    .bind(kind)
+    .bind(principal_id)
+    .bind(org_id)
+    .bind(repo_id)
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query(
+        "CREATE TEMP TABLE tmp_proxima_repo_memories \
+            (memory_id uuid PRIMARY KEY) ON COMMIT DROP",
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO tmp_proxima_repo_memories (memory_id) \
+         SELECT memory_id FROM tmp_proxima_repo_facts \
+         UNION \
+         SELECT memory_id FROM tmp_proxima_repo_abstractions",
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query(
+        "CREATE TEMP TABLE tmp_proxima_repo_events \
+            (event_id bytea PRIMARY KEY, source_batch_id uuid NOT NULL) ON COMMIT DROP",
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO tmp_proxima_repo_events (event_id, source_batch_id) \
+         SELECT e.event_id, e.source_batch_id \
+         FROM proxima_core.events e \
+         JOIN proxima_core.memories m ON m.event_id = e.event_id \
+         JOIN tmp_proxima_repo_facts f ON f.memory_id = m.memory_id",
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query(
+        "CREATE TEMP TABLE tmp_proxima_repo_batches \
+            (batch_id uuid PRIMARY KEY) ON COMMIT DROP",
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO tmp_proxima_repo_batches (batch_id) \
+         SELECT DISTINCT source_batch_id FROM tmp_proxima_repo_events",
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query(
+        "CREATE TEMP TABLE tmp_proxima_repo_citation_mappings \
+            (citation_mapping_id uuid PRIMARY KEY, cited_object_id uuid NOT NULL) ON COMMIT DROP",
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO tmp_proxima_repo_citation_mappings \
+            (citation_mapping_id, cited_object_id) \
+         SELECT cm.citation_mapping_id, cm.cited_object_id \
+         FROM proxima_core.citation_mappings cm \
+         JOIN tmp_proxima_repo_facts f ON f.memory_id = cm.memory_id",
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query(
+        "CREATE TEMP TABLE tmp_proxima_repo_cited_objects \
+            (cited_object_id uuid PRIMARY KEY) ON COMMIT DROP",
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO tmp_proxima_repo_cited_objects (cited_object_id) \
+         SELECT DISTINCT cited_object_id FROM tmp_proxima_repo_citation_mappings",
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query(
+        "CREATE TEMP TABLE tmp_proxima_repo_edges \
+            (edge_id uuid PRIMARY KEY) ON COMMIT DROP",
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO tmp_proxima_repo_edges (edge_id) \
+         SELECT e.edge_id \
+         FROM proxima_core.edges e \
+         WHERE e.owner_principal_kind = $1 \
+           AND e.owner_principal_id = $2 \
+           AND e.owner_org_id = $3 \
+           AND ( \
+                e.source_memory_id IN (SELECT memory_id FROM tmp_proxima_repo_memories) \
+             OR e.target_memory_id IN (SELECT memory_id FROM tmp_proxima_repo_memories) \
+             OR e.authorship_owner_memory_id IN (SELECT memory_id FROM tmp_proxima_repo_memories) \
+           )",
+    )
+    .bind(kind)
+    .bind(principal_id)
+    .bind(org_id)
+    .execute(&mut *tx)
+    .await?;
+
+    let mut receipt = RepoEraseReceipt {
+        repo_id,
+        completed_at: time::OffsetDateTime::now_utc(),
+        facts_deleted: 0,
+        abstractions_deleted: 0,
+        edges_deleted: 0,
+        embeddings_deleted: 0,
+        events_deleted: 0,
+        citation_mappings_deleted: 0,
+        cited_objects_deleted: 0,
+        source_batches_deleted: 0,
+        f2a_rows_deleted: 0,
+        repo_record_deleted: false,
+    };
+
+    receipt.facts_deleted = count_temp_rows(&mut tx, "tmp_proxima_repo_facts").await?;
+    receipt.abstractions_deleted =
+        count_temp_rows(&mut tx, "tmp_proxima_repo_abstractions").await?;
+
+    sqlx::query(
+        "DELETE FROM proxima_core.change_event \
+         WHERE entity_memory_id IN (SELECT memory_id FROM tmp_proxima_repo_memories) \
+            OR edge_id IN (SELECT edge_id FROM tmp_proxima_repo_edges)",
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    receipt.embeddings_deleted = sqlx::query(
+        "DELETE FROM proxima_core.embeddings \
+         WHERE entity_id IN (SELECT memory_id FROM tmp_proxima_repo_memories)",
+    )
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+
+    sqlx::query(
+        "DELETE FROM proxima_code.code_calls_v1 \
+         WHERE edge_id IN (SELECT edge_id FROM tmp_proxima_repo_edges)",
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    receipt.f2a_rows_deleted = sqlx::query(
+        "DELETE FROM proxima_core.source_batch_f2a \
+         WHERE batch_id IN (SELECT batch_id FROM tmp_proxima_repo_batches) \
+            OR head_memory_id IN (SELECT memory_id FROM tmp_proxima_repo_memories)",
+    )
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+
+    receipt.edges_deleted = sqlx::query(
+        "DELETE FROM proxima_core.edges \
+         WHERE edge_id IN (SELECT edge_id FROM tmp_proxima_repo_edges)",
+    )
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+
+    sqlx::query(
+        "DELETE FROM proxima_code.commit_summary_v1 \
+         WHERE memory_id IN (SELECT memory_id FROM tmp_proxima_repo_abstractions)",
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "DELETE FROM proxima_code.code_chunk_v1 \
+         WHERE memory_id IN (SELECT memory_id FROM tmp_proxima_repo_facts)",
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "DELETE FROM proxima_code.file_revision_v1 \
+         WHERE memory_id IN (SELECT memory_id FROM tmp_proxima_repo_facts)",
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "DELETE FROM proxima_code.commit_v1 \
+         WHERE memory_id IN (SELECT memory_id FROM tmp_proxima_repo_facts)",
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    receipt.citation_mappings_deleted = sqlx::query(
+        "DELETE FROM proxima_core.citation_mappings \
+         WHERE citation_mapping_id IN ( \
+             SELECT citation_mapping_id FROM tmp_proxima_repo_citation_mappings \
+         )",
+    )
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+
+    sqlx::query(
+        "DELETE FROM proxima_core.memories \
+         WHERE memory_id IN (SELECT memory_id FROM tmp_proxima_repo_memories)",
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    receipt.events_deleted = sqlx::query(
+        "DELETE FROM proxima_core.events \
+         WHERE event_id IN (SELECT event_id FROM tmp_proxima_repo_events)",
+    )
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+
+    receipt.source_batches_deleted = sqlx::query(
+        "DELETE FROM proxima_core.source_batches sb \
+         WHERE sb.id IN (SELECT batch_id FROM tmp_proxima_repo_batches) \
+           AND NOT EXISTS ( \
+               SELECT 1 FROM proxima_core.events e WHERE e.source_batch_id = sb.id \
+           )",
+    )
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+
+    receipt.cited_objects_deleted = sqlx::query(
+        "DELETE FROM proxima_core.cited_objects co \
+         WHERE co.cited_object_id IN ( \
+             SELECT cited_object_id FROM tmp_proxima_repo_cited_objects \
+         ) \
+           AND NOT EXISTS ( \
+               SELECT 1 FROM proxima_core.citation_mappings cm \
+               WHERE cm.cited_object_id = co.cited_object_id \
+           )",
+    )
+    .execute(&mut *tx)
+    .await?
+    .rows_affected();
+
+    receipt.repo_record_deleted = sqlx::query(
+        "DELETE FROM proxima_code.repos \
+         WHERE owner_principal_kind = $1 \
+           AND owner_principal_id = $2 \
+           AND owner_org_id = $3 \
+           AND repo_id = $4",
+    )
+    .bind(kind)
+    .bind(principal_id)
+    .bind(org_id)
+    .bind(repo_id)
+    .execute(&mut *tx)
+    .await?
+    .rows_affected()
+        > 0;
+
+    tx.commit().await?;
+    Ok(receipt)
+}
+
+async fn count_temp_rows(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    table: &str,
+) -> Result<u64, sqlx::Error> {
+    let sql = format!("SELECT COUNT(*)::bigint FROM {table}");
+    let count: i64 = sqlx::query_scalar(&sql).fetch_one(&mut **tx).await?;
+    Ok(u64::try_from(count).unwrap_or(0))
 }
 
 /// Look up a single repo record by `(owner, repo_id)`.

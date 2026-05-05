@@ -589,8 +589,14 @@ pub async fn ingest_calls_edge(
     owner: &Owner,
     edge: &CallEdgeDraft,
 ) -> Result<(), IngestError> {
-    use proxima_core::RelationClass;
     use proxima_storage_pg::verbs::edge_append::{EdgeDraft, append_edge_in_tx};
+
+    let registry = schema_registry();
+    let relation = registry
+        .resolve_relation("proxima-code/calls")
+        .ok_or_else(|| {
+            IngestError::Storage("missing registered relation proxima-code/calls".into())
+        })?;
 
     let key = calls_edge_natural_key(
         owner,
@@ -609,8 +615,7 @@ pub async fn ingest_calls_edge(
 
     let draft = EdgeDraft {
         edge_id,
-        relation: "proxima-code/calls",
-        class: RelationClass::Structural,
+        relation,
         source_kind: "Fact",
         source_memory_id: Some(edge.source_memory_id),
         source_goal_id: None,
@@ -623,30 +628,22 @@ pub async fn ingest_calls_edge(
     };
 
     let mut tx = pool.begin().await?;
-    append_edge_in_tx(
-        &mut tx,
-        &draft,
-        Some(&payload),
-        Some("proxima_code.code_calls_v1"),
-    )
-    .await?;
+    append_edge_in_tx(&mut tx, &draft, Some(&payload)).await?;
     tx.commit().await?;
 
     Ok(())
 }
 
-/// Convenience: build a fully-wired `Engine` over a `PgStorage` and the
-/// proxima-code flavor's schemas plus the helper-required cited /
-/// citation schemas. Used by tests and the composite binary.
 #[must_use]
-pub fn build_engine(storage: PgStorage, auth: Box<dyn proxima_core::auth::AuthResolver>) -> Engine {
-    use proxima_core::verbs::query::MemoryStore;
+pub fn schema_registry() -> proxima_core::verbs::schema::SchemaRegistry {
     use proxima_core::verbs::schema::{PayloadKind, SchemaInfo, SchemaRegistry};
     use proxima_core::{FlavorRegistry, SchemaId, SchemaVersion};
 
     let mut flavor = FlavorRegistry::new();
     crate::register(&mut flavor);
-    let mut schemas = flavor.freeze().list();
+    let flavor = flavor.freeze();
+    let mut schemas = flavor.list();
+    let relations = flavor.list_relations().to_vec();
 
     // CitedObject schemas — file blob (shared by file_revision + chunk)
     // and commit object.
@@ -677,12 +674,17 @@ pub fn build_engine(storage: PgStorage, auth: Box<dyn proxima_core::auth::AuthRe
         });
     }
 
-    Engine::new(
-        SchemaRegistry::with_schemas(schemas),
-        MemoryStore::new(),
-        auth,
-    )
-    .with_storage(Arc::new(storage))
+    SchemaRegistry::with_schemas_and_relations(schemas, relations)
+}
+
+/// Convenience: build a fully-wired `Engine` over a `PgStorage` and the
+/// proxima-code flavor's schemas plus the helper-required cited /
+/// citation schemas. Used by tests and the composite binary.
+#[must_use]
+pub fn build_engine(storage: PgStorage, auth: Box<dyn proxima_core::auth::AuthResolver>) -> Engine {
+    use proxima_core::verbs::query::MemoryStore;
+
+    Engine::new(schema_registry(), MemoryStore::new(), auth).with_storage(Arc::new(storage))
 }
 
 // Suppress dead-code from the convenience exports until the composite

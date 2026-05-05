@@ -23,7 +23,8 @@ pub use payloads::{
     CodeChunkV1, CommitSummaryV1, CommitV1, EdgeCallsV1, FileRevisionV1, FileState,
 };
 pub use repos::{
-    RepoRecord, RepoRegistryError, delete_repo, get_repo, list_repos, register_repo, update_cursor,
+    RepoEraseReceipt, RepoRecord, RepoRegistryError, delete_repo, erase_repo, get_repo, list_repos,
+    register_repo, update_cursor,
 };
 
 use proxima_core::{RelationClass, RelationDescriptor, SchemaId, SchemaRef, SchemaVersion};
@@ -55,7 +56,7 @@ proxima_core::proxima_flavor! {
 
 #[cfg(test)]
 mod tests {
-    use proxima_core::FlavorRegistry;
+    use proxima_core::{CORE_DERIVED_FROM_RELATION, FlavorRegistry};
     use std::collections::HashSet;
 
     #[test]
@@ -80,5 +81,19 @@ mod tests {
         let relations = frozen.list_relations();
         let relation_ids: HashSet<_> = relations.iter().map(|r| r.relation.as_str()).collect();
         assert!(relation_ids.contains("proxima-code/calls"));
+        assert!(relation_ids.contains(CORE_DERIVED_FROM_RELATION));
+
+        let calls = frozen
+            .resolve_relation("proxima-code/calls")
+            .expect("typed calls relation resolves");
+        assert_eq!(
+            calls.payload_sidecar_table,
+            Some("proxima_code.code_calls_v1")
+        );
+
+        let derived_from = frozen
+            .resolve_relation(CORE_DERIVED_FROM_RELATION)
+            .expect("core provenance relation resolves");
+        assert_eq!(derived_from.payload_sidecar_table, None);
     }
 }

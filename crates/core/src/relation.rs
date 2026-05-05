@@ -23,6 +23,8 @@
 
 use crate::{SchemaId, SchemaVersion};
 
+pub const CORE_DERIVED_FROM_RELATION: &str = "core/derived-from";
+
 /// Closed substrate vocabulary for the abstract role an edge plays
 /// in A/P traversal. The five variants below are the only edge
 /// classes the substrate understands; flavors pick a class and
@@ -129,4 +131,21 @@ impl RelationDescriptor {
             payload_schema: Some(payload_schema),
         }
     }
+}
+
+#[must_use]
+pub fn core_relation_descriptors() -> Vec<RelationDescriptor> {
+    vec![RelationDescriptor::substrate(
+        CORE_DERIVED_FROM_RELATION,
+        RelationClass::Provenance,
+    )]
+}
+
+/// Relation resolved from the immutable `SchemaRegistry` for an
+/// edge write. Carries the descriptor plus the typed edge sidecar
+/// table when the descriptor references an `EdgePayload` schema.
+#[derive(Clone, Copy, Debug)]
+pub struct RegisteredRelation<'a> {
+    pub descriptor: &'a RelationDescriptor,
+    pub payload_sidecar_table: Option<&'a str>,
 }

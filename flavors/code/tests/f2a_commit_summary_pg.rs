@@ -17,7 +17,9 @@ use std::process::Command;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use proxima_code::{CommitSummaryOperator, LocalGitSource, build_engine, migrator};
+use proxima_code::{
+    CommitSummaryOperator, LocalGitSource, build_engine, erase_repo, migrator, register_repo,
+};
 use proxima_core::auth::NoAuth;
 use proxima_core::operators::{EmbeddingClient, LlmClient, OperatorError, OperatorRegistry};
 use proxima_core::{Cursor, OrgId, Owner, Principal, UserId};
@@ -249,6 +251,68 @@ async fn list_summaries(pool: &sqlx::PgPool) -> Vec<(String, String, String)> {
     rows
 }
 
+async fn count_repo_sidecars(pool: &sqlx::PgPool, repo_id: Uuid) -> i64 {
+    let row: (i64,) = sqlx::query_as(
+        "SELECT \
+            (SELECT COUNT(*)::bigint FROM proxima_code.commit_v1 WHERE repo_id = $1) + \
+            (SELECT COUNT(*)::bigint FROM proxima_code.file_revision_v1 WHERE repo_id = $1) + \
+            (SELECT COUNT(*)::bigint FROM proxima_code.code_chunk_v1 WHERE repo_id = $1) + \
+            (SELECT COUNT(*)::bigint FROM proxima_code.commit_summary_v1 WHERE repo_id = $1)",
+    )
+    .bind(repo_id)
+    .fetch_one(pool)
+    .await
+    .expect("count repo sidecars");
+    row.0
+}
+
+async fn count_repo_registry_rows(pool: &sqlx::PgPool, owner: &Owner, repo_id: Uuid) -> i64 {
+    let (kind, pid, oid) = owner_cols(owner);
+    let row: (i64,) = sqlx::query_as(
+        "SELECT COUNT(*)::bigint \
+         FROM proxima_code.repos \
+         WHERE owner_principal_kind = $1 \
+           AND owner_principal_id = $2 \
+           AND owner_org_id = $3 \
+           AND repo_id = $4",
+    )
+    .bind(kind)
+    .bind(pid)
+    .bind(oid)
+    .bind(repo_id)
+    .fetch_one(pool)
+    .await
+    .expect("count repo registry rows");
+    row.0
+}
+
+async fn count_dangling_repo_references(pool: &sqlx::PgPool) -> i64 {
+    let row: (i64,) = sqlx::query_as(
+        "SELECT \
+            (SELECT COUNT(*)::bigint \
+             FROM proxima_core.edges e \
+             LEFT JOIN proxima_core.memories sm ON sm.memory_id = e.source_memory_id \
+             LEFT JOIN proxima_core.memories tm ON tm.memory_id = e.target_memory_id \
+             LEFT JOIN proxima_core.memories am ON am.memory_id = e.authorship_owner_memory_id \
+             WHERE (e.source_memory_id IS NOT NULL AND sm.memory_id IS NULL) \
+                OR (e.target_memory_id IS NOT NULL AND tm.memory_id IS NULL) \
+                OR (e.authorship_owner_memory_id IS NOT NULL AND am.memory_id IS NULL)) + \
+            (SELECT COUNT(*)::bigint \
+             FROM proxima_core.embeddings em \
+             LEFT JOIN proxima_core.memories m ON m.memory_id = em.entity_id \
+             WHERE em.entity_kind IN ('Fact','Abstraction','Perspective') \
+               AND m.memory_id IS NULL) + \
+            (SELECT COUNT(*)::bigint \
+             FROM proxima_core.source_batch_f2a f \
+             LEFT JOIN proxima_core.source_batches sb ON sb.id = f.batch_id \
+             WHERE sb.id IS NULL)",
+    )
+    .fetch_one(pool)
+    .await
+    .expect("count dangling repo references");
+    row.0
+}
+
 #[tokio::test]
 async fn f2a_commit_summary_full_cycle() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
@@ -289,8 +353,12 @@ async fn f2a_commit_summary_full_cycle() {
         // Ingest. LocalGitSource talks to the pool directly and closes
         // its own batches; F→A is run via run_pending_f2a after the poll.
         let repo_id = Uuid::now_v7();
+        let repo_path_str = repo_path.to_string_lossy().into_owned();
+        register_repo(pg.pool(), &owner, repo_id, &repo_path_str, "repo").await?;
         let source = LocalGitSource::new(repo_id, repo_path.clone(), owner.clone());
-        let (report, _cursor) = source.run_poll(pg.pool(), &Cursor::empty(), &mut |_| {}).await?;
+        let (report, _cursor) = source
+            .run_poll(pg.pool(), &Cursor::empty(), &mut |_| {})
+            .await?;
         assert_eq!(report.commits_emitted, 2, "expected 2 commits");
 
         // Run F→A pass — should consolidate both batches.
@@ -310,6 +378,7 @@ async fn f2a_commit_summary_full_cycle() {
         assert_eq!(count_abstractions(pg.pool(), &owner).await, 2);
         assert_eq!(count_f2a_rows(pg.pool()).await, 2);
         assert_eq!(count_embeddings(pg.pool(), &owner).await, 2);
+        assert!(count_repo_sidecars(pg.pool(), repo_id).await > 0);
         let edges = count_provenance_edges(pg.pool(), &owner).await;
         assert!(edges >= 2, "expected ≥ 2 provenance edges, got {edges}");
 
@@ -332,6 +401,24 @@ async fn f2a_commit_summary_full_cycle() {
         );
         assert_eq!(count_abstractions(pg.pool(), &owner).await, 2);
         assert_eq!(count_f2a_rows(pg.pool()).await, 2);
+
+        let receipt = erase_repo(pg.pool(), &owner, repo_id).await?;
+        assert!(receipt.repo_record_deleted);
+        assert!(receipt.facts_deleted > 0);
+        assert_eq!(receipt.abstractions_deleted, 2);
+        assert!(receipt.edges_deleted >= 2);
+        assert_eq!(receipt.embeddings_deleted, 2);
+        assert_eq!(receipt.f2a_rows_deleted, 2);
+        assert_eq!(
+            count_repo_registry_rows(pg.pool(), &owner, repo_id).await,
+            0
+        );
+        assert_eq!(count_repo_sidecars(pg.pool(), repo_id).await, 0);
+        assert_eq!(count_abstractions(pg.pool(), &owner).await, 0);
+        assert_eq!(count_f2a_rows(pg.pool()).await, 0);
+        assert_eq!(count_embeddings(pg.pool(), &owner).await, 0);
+        assert_eq!(count_provenance_edges(pg.pool(), &owner).await, 0);
+        assert_eq!(count_dangling_repo_references(pg.pool()).await, 0);
 
         Ok(())
     }
