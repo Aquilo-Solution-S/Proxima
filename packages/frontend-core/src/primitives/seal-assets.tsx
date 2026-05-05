@@ -1,3 +1,4 @@
+import "./seal-assets.css";
 import { Component } from "solid-js";
 
 const SEAL_PALETTE = {

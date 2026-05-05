@@ -1,3 +1,4 @@
+import "./styles.css";
 import { For, Show, createSignal, type Component } from "solid-js";
 import { Dynamic } from "solid-js/web";
 import { ReposPanel } from "./repos-panel";
