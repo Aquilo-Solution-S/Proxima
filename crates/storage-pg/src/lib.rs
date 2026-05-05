@@ -133,7 +133,7 @@ impl PgStorage {
     }
 
     /// Apply all pending migrations under
-    /// `storage-pg/migrations/`. Idempotent — sqlx tracks
+    /// `crates/storage-pg/migrations/`. Idempotent — sqlx tracks
     /// applied migrations in `_sqlx_migrations`. Call once
     /// at process start before any verb dispatch.
     ///

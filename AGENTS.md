@@ -40,18 +40,20 @@ explicit request.
 
 ```
 proxima/
-├── core/                    Rust lib crate `proxima-core`
-├── bin/
+├── apps/
 │   ├── proxima-engine/      Rust engine binary
-│   └── proxima-code/        Rust code-flavor binary
+│   ├── proxima-code/        Rust code-flavor binary
+│   └── proxima-shell/       Solid + Vite + Tauri 2 shell
+│       └── src-tauri/       Tauri Rust crate
+├── crates/
+│   ├── core/                Rust lib crate `proxima-core`
+│   ├── storage-pg/          Rust Postgres storage crate
+│   ├── wire-grpc/           Rust gRPC wire crate
+│   └── llm-openai-compat/   Rust OpenAI-compatible model client crate
+├── packages/
+│   └── frontend-core/       npm package `@proxima/core`
 ├── flavors/
 │   └── code/                Rust code flavor crate
-├── storage-pg/              Rust Postgres storage crate
-├── wire-grpc/               Rust gRPC wire crate
-├── llm-openai-compat/       Rust OpenAI-compatible model client crate
-├── frontend-core/           npm package `@proxima/core`
-├── proxima-shell/           Solid + Vite + Tauri 2 shell
-│   └── src-tauri/           Tauri Rust crate
 ├── docs/                    design source of truth
 ├── Cargo.toml               Rust workspace
 └── pnpm-workspace.yaml      frontend workspace

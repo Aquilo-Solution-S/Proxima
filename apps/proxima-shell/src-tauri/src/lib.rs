@@ -758,8 +758,8 @@ fn specta_builder() -> Builder<tauri::Wry> {
 /// plugin init, or context generation).
 pub fn run() {
     // Load `.env` from the working directory if present. The shell's
-    // working dir under `pnpm tauri:dev` is `proxima-shell/`, so a
-    // `proxima-shell/.env` (gitignored) is the standard location for
+    // working dir under `pnpm tauri:dev` is `apps/proxima-shell/`, so
+    // `apps/proxima-shell/.env` (gitignored) is the standard location for
     // local DATABASE_URL etc. Production builds set env at the OS
     // layer; missing .env is silently fine.
     dotenvy::dotenv().ok();
@@ -793,7 +793,7 @@ mod tests {
     use proxima_core::models::{Dialect, EmbedCaps, LlmCaps};
     use proxima_core::operators::{EmbeddingClient, LlmClient};
 
-    /// Regenerate `proxima-shell/src/lib/bindings.ts` from the
+    /// Regenerate `packages/frontend-core/src/bindings.ts` from the
     /// command surface. Run via `cargo test -p proxima-shell`. The
     /// emitted file is git-tracked so JS-only contributors see the
     /// types without compiling Rust; CI compares the regen against
@@ -803,7 +803,7 @@ mod tests {
         specta_builder()
             .export(
                 specta_typescript::Typescript::default(),
-                "../../frontend-core/src/bindings.ts",
+                "../../../packages/frontend-core/src/bindings.ts",
             )
             .expect("failed to export TS bindings");
     }

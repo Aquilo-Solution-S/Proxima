@@ -22,12 +22,14 @@ embedding model, credential resolution) is specified in
 
 ```
 proxima/
-├── core/                       library (proxima-core)
+├── crates/
+│   └── core/                   library (proxima-core)
+├── apps/                       runnable binaries and shells
 └── flavors/
-    ├── code/                   binary: proxima-code
-    ├── learning/               binary: proxima-learning
-    ├── jurisdiction/           binary: proxima-jurisdiction
-    └── <X>/                    binary: proxima-<X>
+    ├── code/                   flavor crate: proxima-code
+    ├── learning/               flavor crate: proxima-learning
+    ├── jurisdiction/           flavor crate: proxima-jurisdiction
+    └── <X>/                    flavor crate: proxima-<X>
 ```
 
 Each flavor directory is a Cargo crate that depends on

@@ -11,6 +11,6 @@ name = "proxima-engine"
 path = "src/main.rs"
 
 [dependencies]
-proxima-core = { path = "../../core" }
+proxima-core = { path = "../../crates/core" }
 uuid = { workspace = true }
 tokio = { workspace = true, features = ["macros"] }

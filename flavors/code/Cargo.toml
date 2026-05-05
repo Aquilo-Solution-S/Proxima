@@ -10,8 +10,8 @@ repository.workspace = true
 name = "proxima_code"
 
 [dependencies]
-proxima-core = { path = "../../core" }
-proxima-storage-pg = { path = "../../storage-pg" }
+proxima-core = { path = "../../crates/core" }
+proxima-storage-pg = { path = "../../crates/storage-pg" }
 async-trait = { workspace = true }
 ciborium = { workspace = true }
 serde = { workspace = true }

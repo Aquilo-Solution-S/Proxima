@@ -11,10 +11,10 @@ name = "proxima-code"
 path = "src/main.rs"
 
 [dependencies]
-proxima-core = { path = "../../core" }
-proxima-storage-pg = { path = "../../storage-pg" }
+proxima-core = { path = "../../crates/core" }
+proxima-storage-pg = { path = "../../crates/storage-pg" }
 proxima-code = { path = "../../flavors/code" }
-proxima-llm-openai-compat = { path = "../../llm-openai-compat" }
+proxima-llm-openai-compat = { path = "../../crates/llm-openai-compat" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "time"] }
 uuid = { workspace = true }
 

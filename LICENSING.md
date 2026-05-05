@@ -7,9 +7,9 @@ Proxima is licensed under **Apache License, Version 2.0**.
 The entire project — core engine, flavors, shell, and documentation —
 uses Apache-2.0. This includes:
 
-- `core/` (`proxima-core`)
+- `crates/core/` (`proxima-core`)
 - `flavors/<name>/`
-- `shell/proxima-shell/`
+- `apps/proxima-shell/`
 - `docs/`
 
 ## What This Means
