@@ -9,7 +9,7 @@ use crate::GoalId;
 use crate::Owner;
 use crate::SourceBatchId;
 use crate::operators::{
-    ConsolidateBatchF2AOutcome, ConsolidateBatchF2ARequest, FactRow, SidecarSpec,
+    ConsolidateBatchF2AOutcome, ConsolidateBatchF2ARequest, F2AInvocationKey, FactRow, SidecarSpec,
 };
 use crate::verbs::close_batch::CloseBatchOutcome;
 use crate::verbs::event_ingest::{EventDraft, EventIngestOutcome};
@@ -137,15 +137,12 @@ pub trait Storage: Send + Sync {
     /// (Abstractions) + N typed sidecar rows + M provenance edges +
     /// N embedding rows + outbox change_events + the
     /// `source_batch_f2a` dedup row, all in a single transaction.
-    /// Idempotent on `(batch_id, operator_id)` — a re-call with the
-    /// row already present returns `already_consolidated = true`
-    /// without writing.
-    ///
-    /// Re-running with a different `prompt_version` is a *new*
-    /// invocation and produces fresh Abstractions superseding the
-    /// prior ones; the dedup is keyed on operator_id alone, so
-    /// callers are responsible for staging supersession via the
-    /// dispatcher (M6 enrichment — M5 surfaces idempotent runs only).
+    /// Idempotent on `(batch_id, operator_id, prompt_version,
+    /// model_id, personality_id, personality_state_hash)` — a re-call
+    /// with the row already present returns
+    /// `already_consolidated = true` without writing. Re-running with
+    /// a different prompt, model, or personality snapshot is a new
+    /// invocation.
     ///
     /// # Errors
     ///
@@ -158,11 +155,11 @@ pub trait Storage: Send + Sync {
 
     /// List `source_batches` for `owner` that are closed
     /// (`closed_at IS NOT NULL`) and have no `source_batch_f2a` row
-    /// for `operator_id`. The Engine's dispatcher uses this to
-    /// "catch up" — running F→A against any batch that the source
-    /// closed without going through the auth-gated
-    /// `Engine::close_batch` surface (M4-era `LocalGitSource` is
-    /// such a caller).
+    /// for this exact invocation key. The Engine's dispatcher uses
+    /// this to "catch up" — running F→A against any batch that the
+    /// source closed without going through the auth-gated
+    /// `Engine::close_batch` surface (M4-era `LocalGitSource` is such
+    /// a caller).
     ///
     /// # Errors
     ///
@@ -170,7 +167,7 @@ pub trait Storage: Send + Sync {
     async fn list_unconsolidated_batches(
         &self,
         owner: &Owner,
-        operator_id: &str,
+        key: &F2AInvocationKey<'_>,
     ) -> Result<Vec<SourceBatchId>, StorageError>;
 }
 
@@ -251,7 +248,7 @@ impl Storage for NoopStorage {
     async fn list_unconsolidated_batches(
         &self,
         _owner: &Owner,
-        _operator_id: &str,
+        _key: &F2AInvocationKey<'_>,
     ) -> Result<Vec<SourceBatchId>, StorageError> {
         Ok(Vec::new())
     }

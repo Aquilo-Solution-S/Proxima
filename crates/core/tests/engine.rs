@@ -8,7 +8,8 @@ use proxima_core::error::ErrorCode;
 use proxima_core::ids::{OrgId, UserId};
 use proxima_core::operators::{
     ConsolidateBatchF2AOutcome, ConsolidateBatchF2ARequest, EmbeddingClient, F2AContext,
-    F2AOperator, FactRow, LlmClient, NewAbstraction, OperatorError, OperatorRegistry,
+    F2AInvocationKey, F2AOperator, FactRow, LlmClient, NewAbstraction, OperatorError,
+    OperatorRegistry,
 };
 use proxima_core::owner::{Owner, Principal};
 use proxima_core::storage::{Storage, StorageError};
@@ -233,7 +234,7 @@ impl Storage for FakeStorage {
     async fn list_unconsolidated_batches(
         &self,
         _owner: &Owner,
-        _operator_id: &str,
+        _key: &F2AInvocationKey<'_>,
     ) -> Result<Vec<SourceBatchId>, StorageError> {
         Ok(Vec::new())
     }

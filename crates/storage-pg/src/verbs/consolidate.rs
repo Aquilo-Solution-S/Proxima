@@ -13,17 +13,18 @@
 //!   `source_batch_f2a` dedup row.
 
 use proxima_core::operators::{
-    ConsolidateBatchF2AOutcome, ConsolidateBatchF2ARequest, FactRow, SidecarSpec,
+    ConsolidateBatchF2AOutcome, ConsolidateBatchF2ARequest, F2AInvocationKey, FactRow, SidecarSpec,
 };
 use proxima_core::{MemoryId, Owner, Principal, SchemaVersion, SourceBatchId, StorageError};
 use sqlx::PgPool;
 
 use crate::error::map_err;
+use crate::pg_ident::PgIdent;
 use crate::verbs::edge_append::{EdgeDraft, append_edge_in_tx};
 
 /// SQL fragment listing batches that are closed and have no
-/// `source_batch_f2a` row for `operator_id`. Used by the engine's
-/// catch-up dispatcher.
+/// `source_batch_f2a` row for this exact invocation key. Used by the
+/// engine's catch-up dispatcher.
 ///
 /// # Errors
 ///
@@ -31,7 +32,7 @@ use crate::verbs::edge_append::{EdgeDraft, append_edge_in_tx};
 pub async fn list_unconsolidated_batches(
     pool: &PgPool,
     owner: &Owner,
-    operator_id: &str,
+    key: &F2AInvocationKey<'_>,
 ) -> Result<Vec<SourceBatchId>, StorageError> {
     let (owner_kind, owner_principal_id) = owner_principal_columns(owner);
 
@@ -43,13 +44,22 @@ pub async fn list_unconsolidated_batches(
            AND sb.closed_at IS NOT NULL \
            AND NOT EXISTS ( \
                 SELECT 1 FROM proxima_core.source_batch_f2a f2a \
-                WHERE f2a.batch_id = sb.id AND f2a.operator_id = $3 \
+                WHERE f2a.batch_id = sb.id \
+                  AND f2a.operator_id = $3 \
+                  AND f2a.prompt_version = $4 \
+                  AND f2a.model_id = $5 \
+                  AND f2a.personality_id = $6 \
+                  AND f2a.personality_state_hash = $7 \
            ) \
          ORDER BY sb.opened_at ASC",
     )
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(operator_id)
+    .bind(key.operator_id)
+    .bind(key.prompt_version)
+    .bind(key.model_id)
+    .bind(key.personality_id)
+    .bind(key.personality_state_hash)
     .fetch_all(pool)
     .await
     .map_err(map_err)?;
@@ -58,26 +68,6 @@ pub async fn list_unconsolidated_batches(
         .into_iter()
         .map(|(id,)| SourceBatchId::new(id))
         .collect())
-}
-
-/// Reject identifiers that aren't a sane `schema.table` literal.
-/// Sidecar tables come from the build-time schema registry, but the
-/// dispatcher composes the fully qualified identifier into the SQL
-/// string directly (sqlx doesn't bind table names). This guard keeps
-/// the surface tight in case a future caller passes user-influenced
-/// data.
-fn validate_table_ident(ident: &str) -> Result<(), StorageError> {
-    let ok = !ident.is_empty()
-        && ident
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.');
-    if ok {
-        Ok(())
-    } else {
-        Err(StorageError::ConstraintViolation(format!(
-            "invalid sidecar table identifier: {ident}"
-        )))
-    }
 }
 
 fn owner_columns(owner: &Owner) -> (&'static str, uuid::Uuid, uuid::Uuid) {
@@ -116,7 +106,7 @@ pub async fn load_batch_facts(
 
     let mut out = Vec::new();
     for spec in sidecars {
-        validate_table_ident(&spec.sidecar_table)?;
+        let sidecar = PgIdent::table(&spec.sidecar_table)?;
 
         let sql = format!(
             "SELECT m.memory_id, e.schema_version, row_to_json(s.*) AS payload \
@@ -127,7 +117,7 @@ pub async fn load_batch_facts(
                AND m.owner_principal_kind = $2 \
                AND m.owner_principal_id = $3 \
                AND m.schema_id = $4",
-            sidecar = spec.sidecar_table,
+            sidecar = sidecar.as_str(),
         );
 
         let rows: Vec<(uuid::Uuid, i32, serde_json::Value)> = sqlx::query_as(&sql)
@@ -156,8 +146,10 @@ pub async fn load_batch_facts(
 ///
 /// Layout per tx:
 ///
-/// 1. Pre-check `source_batch_f2a` for `(batch_id, operator_id)` —
-///    short-circuit to `already_consolidated = true` on hit.
+/// 1. Pre-check `source_batch_f2a` for the full invocation key —
+///    `(batch_id, operator_id, prompt_version, model_id,
+///    personality_id, personality_state_hash)` — and short-circuit
+///    to `already_consolidated = true` on hit.
 /// 2. Insert N substrate `memories` rows (Abstraction kind).
 /// 3. Insert N typed sidecar rows via `jsonb_populate_record`.
 /// 4. Insert M provenance edges (one per (Abstraction, Fact) pair).
@@ -179,7 +171,7 @@ pub async fn consolidate_batch_f2a(
     pool: &PgPool,
     req: &ConsolidateBatchF2ARequest<'_>,
 ) -> Result<ConsolidateBatchF2AOutcome, StorageError> {
-    validate_table_ident(req.output_sidecar_table)?;
+    let output_sidecar_table = PgIdent::table(req.output_sidecar_table)?;
 
     let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(&req.owner);
     let batch_uuid = req.batch_id.into_inner();
@@ -191,10 +183,19 @@ pub async fn consolidate_batch_f2a(
     // 1. dedup pre-check.
     let existing: Option<(uuid::Uuid,)> = sqlx::query_as(
         "SELECT batch_id FROM proxima_core.source_batch_f2a \
-         WHERE batch_id = $1 AND operator_id = $2",
+         WHERE batch_id = $1 \
+           AND operator_id = $2 \
+           AND prompt_version = $3 \
+           AND model_id = $4 \
+           AND personality_id = $5 \
+           AND personality_state_hash = $6",
     )
     .bind(batch_uuid)
     .bind(req.operator_id)
+    .bind(req.prompt_version)
+    .bind(req.model_id)
+    .bind(&personality_id)
+    .bind(&personality_state_hash[..])
     .fetch_optional(&mut *tx)
     .await
     .map_err(map_err)?;
@@ -251,7 +252,7 @@ pub async fn consolidate_batch_f2a(
                  NULL::{sidecar}, \
                  ($1::jsonb || jsonb_build_object('memory_id', $2::uuid)) \
              )",
-            sidecar = req.output_sidecar_table,
+            sidecar = output_sidecar_table.as_str(),
         );
         sqlx::query(&sidecar_sql)
             .bind(&abs.typed_payload)
@@ -325,12 +326,16 @@ pub async fn consolidate_batch_f2a(
     let head_memory_id = abstraction_ids.last().map(|m| m.into_inner());
     sqlx::query(
         "INSERT INTO proxima_core.source_batch_f2a \
-            (batch_id, operator_id, prompt_version, head_memory_id) \
-         VALUES ($1, $2, $3, $4)",
+            (batch_id, operator_id, prompt_version, model_id, \
+             personality_id, personality_state_hash, head_memory_id) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7)",
     )
     .bind(batch_uuid)
     .bind(req.operator_id)
     .bind(req.prompt_version)
+    .bind(req.model_id)
+    .bind(&personality_id)
+    .bind(&personality_state_hash[..])
     .bind(head_memory_id)
     .execute(&mut *tx)
     .await

@@ -11,8 +11,8 @@ use crate::SourceBatchId;
 use crate::auth::{AuthResolver, Credentials};
 use crate::error::ProtocolError;
 use crate::operators::{
-    ConsolidateBatchF2ARequest, EmbeddingClient, F2AContext, FactRow, LlmClient, OperatorError,
-    OperatorRegistry, PersonalitySnapshot, SidecarSpec,
+    ConsolidateBatchF2ARequest, EmbeddingClient, F2AContext, F2AInvocationKey, FactRow, LlmClient,
+    OperatorError, OperatorRegistry, PersonalitySnapshot, SidecarSpec,
 };
 use crate::storage::{NoopStorage, StorageError, StorageHandle};
 use crate::verbs::close_batch::CloseBatchOutcome;
@@ -340,15 +340,25 @@ impl Engine {
         if self.operators.f2a_operators().is_empty() || self.llm.is_none() || self.embed.is_none() {
             return Ok(consolidated);
         }
+        let llm = self.llm.as_ref().expect("guarded by caller");
+        let personality = PersonalitySnapshot::default_snapshot();
+        let personality_state_hash = personality.state_hash.into_inner();
 
         // Snapshot the per-operator pending list — we don't mutate
         // mid-iteration.
         let mut pending: Vec<(&'static str, Vec<SourceBatchId>)> =
             Vec::with_capacity(self.operators.f2a_operators().len());
         for op in self.operators.f2a_operators() {
+            let key = F2AInvocationKey {
+                operator_id: op.operator_id(),
+                prompt_version: op.prompt_version(),
+                model_id: llm.model_id(),
+                personality_id: personality.personality_id.as_str(),
+                personality_state_hash: &personality_state_hash,
+            };
             let batches = self
                 .storage
-                .list_unconsolidated_batches(owner, op.operator_id())
+                .list_unconsolidated_batches(owner, &key)
                 .await
                 .map_err(|e| {
                     ProtocolError::internal(format!("list_unconsolidated_batches: {e}"))

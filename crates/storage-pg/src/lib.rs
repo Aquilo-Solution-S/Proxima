@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use proxima_core::operators::{
-    ConsolidateBatchF2AOutcome, ConsolidateBatchF2ARequest, FactRow, SidecarSpec,
+    ConsolidateBatchF2AOutcome, ConsolidateBatchF2ARequest, F2AInvocationKey, FactRow, SidecarSpec,
 };
 use proxima_core::verbs::close_batch::CloseBatchOutcome;
 use proxima_core::verbs::event_ingest::{EventDraft, EventIngestOutcome};
@@ -29,6 +29,7 @@ use tokio::sync::broadcast;
 mod authorship;
 mod error;
 pub mod outbox;
+mod pg_ident;
 pub mod settings;
 pub mod verbs;
 
@@ -224,9 +225,9 @@ impl Storage for PgStorage {
     async fn list_unconsolidated_batches(
         &self,
         owner: &Owner,
-        operator_id: &str,
+        key: &F2AInvocationKey<'_>,
     ) -> Result<Vec<SourceBatchId>, StorageError> {
-        verbs::consolidate::list_unconsolidated_batches(&self.pool, owner, operator_id).await
+        verbs::consolidate::list_unconsolidated_batches(&self.pool, owner, key).await
     }
 }
 

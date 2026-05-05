@@ -10,6 +10,7 @@
 use proxima_core::{Owner, RegisteredRelation, StorageError};
 
 use crate::error::map_err;
+use crate::pg_ident::PgIdent;
 
 /// Draft of an edge to be written. All fields map directly to
 /// `proxima_core.edges` columns except `edge_id`, which is generated
@@ -117,15 +118,15 @@ pub async fn append_edge_in_tx(
 
     // 2. Insert typed sidecar if provided.
     if let (Some(payload_json), Some(table)) = (payload, sidecar_table) {
-        // Validate table identifier (same guard as in consolidate.rs).
-        validate_table_ident(table)?;
+        let table = PgIdent::table(table)?;
 
         let sidecar_sql = format!(
             "INSERT INTO {table} \
              SELECT * FROM jsonb_populate_record( \
                  NULL::{table}, \
                  ($1::jsonb || jsonb_build_object('edge_id', $2::uuid)) \
-             )"
+             )",
+            table = table.as_str(),
         );
         sqlx::query(&sidecar_sql)
             .bind(payload_json)
@@ -163,21 +164,6 @@ pub async fn append_edge_in_tx(
     .map_err(map_err)?;
 
     Ok(())
-}
-
-/// Reject identifiers that aren't a sane `schema.table` literal.
-fn validate_table_ident(ident: &str) -> Result<(), StorageError> {
-    let ok = !ident.is_empty()
-        && ident
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.');
-    if ok {
-        Ok(())
-    } else {
-        Err(StorageError::ConstraintViolation(format!(
-            "invalid sidecar table identifier: {ident}"
-        )))
-    }
 }
 
 fn owner_columns(owner: &Owner) -> (&'static str, uuid::Uuid, uuid::Uuid) {
