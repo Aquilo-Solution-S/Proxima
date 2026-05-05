@@ -1,5 +1,10 @@
-//! Ollama-backed implementations of `proxima_core::operators::LlmClient`
-//! and `EmbeddingClient` for fully-local M5 deployments.
+//! OpenAI-compatible HTTP implementations of
+//! `proxima_core::operators::LlmClient` and `EmbeddingClient`.
+//!
+//! The generic clients use `/chat/completions` and `/embeddings`;
+//! registered runtime rows provide `base_url`, `model_id`, and
+//! optional bearer credentials. Native Ollama helpers remain for the
+//! CLI's local-development path.
 //!
 //! HTTP surface: `/api/chat` (LLM, JSON-mode) and `/api/embed`
 //! (embeddings). Default base URL `http://localhost:11434`. Both

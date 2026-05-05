@@ -28,7 +28,9 @@ use proxima_core::verbs::query::{QueryRequest, QueryResponse};
 use proxima_core::verbs::schema::{SchemaRequest, SchemaResponse};
 use proxima_core::verbs::subscribe::SubscribeRequest;
 use proxima_core::{ChangeEvent, Engine, OrgId, Owner, Principal, UserId};
-use proxima_llm_ollama::{OpenAiCompatConfig, OpenAiCompatEmbeddingClient, OpenAiCompatLlmClient};
+use proxima_llm_openai_compat::{
+    OpenAiCompatConfig, OpenAiCompatEmbeddingClient, OpenAiCompatLlmClient,
+};
 use proxima_storage_pg::PgStorage;
 use tauri::State;
 use tauri::ipc::Channel;

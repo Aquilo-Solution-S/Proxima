@@ -1,5 +1,5 @@
 [package]
-name = "proxima-llm-ollama"
+name = "proxima-llm-openai-compat"
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [lib]
-name = "proxima_llm_ollama"
+name = "proxima_llm_openai_compat"
 
 [dependencies]
 proxima-core = { path = "../core" }

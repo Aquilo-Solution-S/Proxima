@@ -48,7 +48,7 @@ proxima/
 │   └── code/                Rust code flavor crate
 ├── storage-pg/              Rust Postgres storage crate
 ├── wire-grpc/               Rust gRPC wire crate
-├── llm-ollama/              Rust Ollama provider crate
+├── llm-openai-compat/       Rust OpenAI-compatible model client crate
 ├── frontend-core/           npm package `@proxima/core`
 ├── proxima-shell/           Solid + Vite + Tauri 2 shell
 │   └── src-tauri/           Tauri Rust crate
@@ -187,7 +187,7 @@ breaks if these slip.
 - Code subject: `feat(<component>): <summary>` /
   `fix(<component>): <summary>` / `chore(<component>): <summary>`.
   Components include `core`, `frontend-core`, `proxima-shell`,
-  `storage-pg`, `wire-grpc`, `llm-ollama`, `flavors-code`.
+  `storage-pg`, `wire-grpc`, `llm-openai-compat`, `flavors-code`.
 - Body: bulleted list of concrete changes; preserve the *why* when
   the change is a decision, not a fix.
 - Co-authorship trailer for AI commits matches the parent CLAUDE.md

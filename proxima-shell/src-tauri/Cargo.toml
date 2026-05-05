@@ -24,7 +24,7 @@ serde_json = { workspace = true }
 proxima-core = { path = "../../core" }
 proxima-storage-pg = { path = "../../storage-pg" }
 proxima-code = { path = "../../flavors/code" }
-proxima-llm-ollama = { path = "../../llm-ollama" }
+proxima-llm-openai-compat = { path = "../../llm-openai-compat" }
 keyring = { workspace = true }
 toml = { workspace = true }
 thiserror = { workspace = true }
