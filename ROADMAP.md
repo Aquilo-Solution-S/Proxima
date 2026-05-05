@@ -131,7 +131,7 @@ once `code-demo` is live.
   event carries its own `(schema_id, schema_version)`. The M4-era
   trait was deleted as speculative and unimplementable as written.
 - Persist source cursors. M4 keeps the cursor in-memory at the call
-  site (`core/src/cursor.rs`); restart re-walks from empty, made
+  site (`crates/core/src/cursor.rs`); restart re-walks from empty, made
   safe by `event_id` idempotency. Add a `source_cursors` table once
   restart-recovery cost or multi-process coordination warrants it
   — the natural co-arrival with the `EventSource` trait above.

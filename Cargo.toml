@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["core", "bin/proxima-engine", "bin/proxima-code", "flavors/code", "llm-openai-compat", "proxima-shell/src-tauri", "storage-pg", "wire-grpc"]
+members = ["crates/core", "apps/proxima-engine", "apps/proxima-code", "flavors/code", "crates/llm-openai-compat", "apps/proxima-shell/src-tauri", "crates/storage-pg", "crates/wire-grpc"]
 
 [workspace.package]
 edition = "2024"

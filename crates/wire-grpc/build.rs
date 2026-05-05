@@ -1,12 +1,12 @@
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let proto_root = "../proto";
+    let proto_root = "../../proto";
     tonic_prost_build::configure()
         .build_client(false)
         .build_server(true)
         .compile_protos(
             &[
-                "../proto/proxima/v1/messages.proto",
-                "../proto/proxima/v1/engine.proto",
+                "../../proto/proxima/v1/messages.proto",
+                "../../proto/proxima/v1/engine.proto",
             ],
             &[proto_root],
         )?;
