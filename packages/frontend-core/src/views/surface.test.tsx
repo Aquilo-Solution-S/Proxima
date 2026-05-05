@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen } from "@solidjs/testing-library";
 import { encode } from "cbor-x";
 import { afterEach, describe, expect, it } from "vitest";
-import type { MemoryRow } from "../bindings";
+import type { EntityKind, MemoryRow } from "../bindings";
 import {
   GraphProvider,
   sentinelOwner,
@@ -18,9 +18,10 @@ const row = (
   id: string,
   schemaId: string,
   payload: Record<string, unknown>,
+  kind: EntityKind = "Fact",
 ): MemoryRow => ({
   id,
-  kind: "Fact",
+  kind,
   schema_id: schemaId,
   schema_version: 1,
   owner,
@@ -101,5 +102,52 @@ describe("FullSurface fact explorer", () => {
     expect(await screen.findByText("src/chunker.rs:7-9")).toBeTruthy();
     expect(screen.getByText("fn selected_chunk() {}")).toBeTruthy();
     expect(screen.queryByText("src/lib.rs")).toBeNull();
+  });
+
+  it("updates decoded payload content when selecting another abstraction", async () => {
+    const hub = createHubWithCode();
+    const abstractionA = row(
+      "019df9e1-cb61-7031-8e93-6facbe711cb4",
+      "proxima-code/commit-summary-v1",
+      {
+        repo_id: "018f0000-0000-7000-8000-000000000001",
+        commit_sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        summary: "First abstraction summary",
+        change_kind: "feature",
+        key_files: ["src/a.rs"],
+      },
+      "Abstraction",
+    );
+    const abstractionB = row(
+      "019df9e1-cb61-7031-8e93-6facbe711cb5",
+      "proxima-code/commit-summary-v1",
+      {
+        repo_id: "018f0000-0000-7000-8000-000000000001",
+        commit_sha: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        summary: "Selected abstraction summary",
+        change_kind: "fix",
+        key_files: ["src/b.rs"],
+      },
+      "Abstraction",
+    );
+    const store: GraphStore = {
+      state: () => snapshot([abstractionA, abstractionB]),
+      refresh: () => Promise.resolve(),
+    };
+
+    render(() => (
+      <GraphProvider store={store}>
+        <FullSurface hub={hub} />
+      </GraphProvider>
+    ));
+
+    expect(screen.getByText("First abstraction summary")).toBeTruthy();
+
+    fireEvent.click(
+      screen.getAllByTitle("proxima-code/commit-summary-v1")[1]!,
+    );
+
+    expect(await screen.findByText("Selected abstraction summary")).toBeTruthy();
+    expect(screen.queryByText("First abstraction summary")).toBeNull();
   });
 });
