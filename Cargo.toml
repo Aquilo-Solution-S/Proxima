@@ -48,3 +48,10 @@ prost-types = "0.14"
 tauri = { version = "2", features = [] }
 tauri-build = { version = "2", features = [] }
 tauri-plugin-opener = "2"
+
+# specta — Rust→TS type bridge for tauri-specta. Source-of-truth
+# stays Rust traits; TS bindings are codegen artefacts. See
+# docs/09 §Generation pipeline.
+specta = { version = "=2.0.0-rc.24", features = ["derive", "uuid", "time"] }
+specta-typescript = "=0.0.11"
+tauri-specta = { version = "=2.0.0-rc.24", features = ["derive", "typescript"] }

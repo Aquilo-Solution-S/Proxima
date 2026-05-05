@@ -10,20 +10,20 @@ use crate::{
     EventId, MemoryId, Owner, Principal, SchemaId, SchemaVersion, SourceBatchId, SourceId,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct CitedObjectHint {
     pub schema_id: SchemaId,
     pub schema_version: SchemaVersion,
     pub content_hash: [u8; 32],
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct CitationMappingHint {
     pub schema_id: SchemaId,
     pub schema_version: SchemaVersion,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct EventDraft {
     pub source_id: SourceId,
     pub source_batch_id: SourceBatchId,
@@ -62,7 +62,7 @@ impl EventDraft {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct EventIngestOutcome {
     pub event_id: EventId,
     pub memory_id: MemoryId,

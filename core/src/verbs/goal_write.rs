@@ -9,7 +9,7 @@ use crate::{
     SchemaId, SchemaVersion, ToolId,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
 pub enum GoalState {
     Active,
     Paused,
@@ -17,12 +17,12 @@ pub enum GoalState {
     Abandoned,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
 pub enum OperatorKind {
     AtoGoal,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
 pub enum SystemOrigin {
     Operator {
         operator_id: OperatorId,
@@ -37,14 +37,14 @@ pub enum SystemOrigin {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
 pub enum GoalAuthorship {
     User,
     System(SystemOrigin),
     External,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct GoalDraft {
     pub owner: Owner,
     pub schema_id: SchemaId,
@@ -56,7 +56,7 @@ pub struct GoalDraft {
     pub request_id: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct GoalWriteOutcome {
     pub goal_id: GoalId,
     pub change_event_seq: uuid::Uuid,

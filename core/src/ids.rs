@@ -4,7 +4,7 @@
 
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct UserId(Uuid);
 
 impl UserId {
@@ -17,7 +17,7 @@ impl UserId {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct GroupId(Uuid);
 
 impl GroupId {
@@ -30,7 +30,7 @@ impl GroupId {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct OrgId(Uuid);
 
 impl OrgId {
@@ -43,7 +43,7 @@ impl OrgId {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct MemoryId(Uuid);
 
 impl MemoryId {
@@ -56,7 +56,7 @@ impl MemoryId {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct GoalId(Uuid);
 
 impl GoalId {
@@ -69,7 +69,7 @@ impl GoalId {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct SchemaId(String);
 
 impl SchemaId {
@@ -86,7 +86,7 @@ impl SchemaId {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct SchemaVersion(u32);
 
 impl SchemaVersion {
@@ -102,7 +102,7 @@ impl SchemaVersion {
 /// BLAKE3-32 ContentHash of (source_id, owner, payload).
 /// Per docs/07 §"ID types" — events use ContentHash for
 /// re-receipt dedup, not UUIDv7.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct EventId([u8; 32]);
 
 impl EventId {
@@ -121,7 +121,7 @@ impl EventId {
 
 /// UUIDv7, declared by the source at emit time.
 /// See docs/01 §"The contract".
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct SourceBatchId(uuid::Uuid);
 
 impl SourceBatchId {
@@ -135,7 +135,7 @@ impl SourceBatchId {
 }
 
 /// Stable identifier of an Event Source. docs/07 §"ID types".
-#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct SourceId(String);
 
 impl SourceId {
@@ -154,7 +154,7 @@ impl SourceId {
 
 // M2.5 — GoalWrite verb newtypes.
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct OperatorId(uuid::Uuid);
 
 impl OperatorId {
@@ -167,7 +167,7 @@ impl OperatorId {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct ToolId(String);
 
 impl ToolId {
@@ -184,7 +184,7 @@ impl ToolId {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct ModelId(String);
 
 impl ModelId {
@@ -201,7 +201,7 @@ impl ModelId {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct PromptVersion(String);
 
 impl PromptVersion {
@@ -218,7 +218,7 @@ impl PromptVersion {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct PersonalityId(String);
 
 impl PersonalityId {
@@ -237,7 +237,7 @@ impl PersonalityId {
 
 /// BLAKE3-32 hash of personality state for reproducibility.
 /// Same shape as EventId (docs/07 §"ID types").
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct PersonalityStateHash([u8; 32]);
 
 impl PersonalityStateHash {

@@ -5,7 +5,7 @@
 
 use crate::{RelationDescriptor, SchemaId, SchemaVersion};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, specta::Type)]
 pub enum PayloadKind {
     Fact,
     Abstraction,
@@ -19,7 +19,7 @@ pub enum PayloadKind {
     CitationMapping,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct SchemaInfo {
     pub schema_id: SchemaId,
     pub schema_version: SchemaVersion,
@@ -36,10 +36,10 @@ pub struct SchemaInfo {
     pub natural_key_columns: Vec<String>,
 }
 
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct SchemaRequest;
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct SchemaResponse {
     pub schemas: Vec<SchemaInfo>,
 }

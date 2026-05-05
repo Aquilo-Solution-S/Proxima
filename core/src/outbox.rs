@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use crate::{GoalId, MemoryId, Owner, SchemaId, SchemaVersion};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, specta::Type)]
 pub enum EntityKind {
     Fact,
     Abstraction,
@@ -16,13 +16,13 @@ pub enum EntityKind {
 
 /// Endpoint of an Edge or supersedes target. Sum type matching
 /// `change_event` columns: a memory or a goal.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, specta::Type)]
 pub enum EntityRef {
     Memory(MemoryId),
     Goal(GoalId),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
 pub enum ChangeEventKind {
     EntityAppend {
         entity_kind: EntityKind,
@@ -35,7 +35,7 @@ pub enum ChangeEventKind {
     // but no edges are emitted in M2).
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct ChangeEvent {
     pub seq: Uuid,
     pub owner: Owner,
