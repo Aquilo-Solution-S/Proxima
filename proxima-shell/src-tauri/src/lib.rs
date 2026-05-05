@@ -171,7 +171,7 @@ mod tests {
         specta_builder()
             .export(
                 specta_typescript::Typescript::default(),
-                "../src/lib/bindings.ts",
+                "../../frontend-core/src/bindings.ts",
             )
             .expect("failed to export TS bindings");
     }
