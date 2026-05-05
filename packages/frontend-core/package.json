@@ -6,8 +6,20 @@
   "types": "src/index.ts",
   "exports": {
     ".": "./src/index.ts",
+    "./flavors/code": "./src/flavors/code/index.ts",
+    "./hub": "./src/hub.ts",
+    "./primitives": "./src/primitives/index.ts",
+    "./primitives/startup-simulation": "./src/primitives/startup-simulation.tsx",
+    "./shell": "./src/shell.tsx",
     "./styles.css": "./src/primitives/styles.css",
-    "./proxima-loader.js": "./src/primitives/proxima-loader.js"
+    "./proxima-loader.js": "./src/primitives/proxima-loader.js",
+    "./views/atlas": "./src/views/atlas.tsx",
+    "./views/marketplace": "./src/views/marketplace.tsx",
+    "./views/schemas": "./src/views/schemas.tsx",
+    "./views/settings": "./src/views/settings.tsx",
+    "./views/settings-general": "./src/views/settings-general.tsx",
+    "./views/settings-models": "./src/views/settings-models.tsx",
+    "./views/surface": "./src/views/surface.tsx"
   },
   "scripts": {
     "test": "vitest run",

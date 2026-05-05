@@ -100,6 +100,51 @@ body { margin: 0; background: var(--bg); color: var(--ink-80); font-family: var(
   pointer-events: auto;
 }
 
+/* ── Startup simulation ────────────────────────────────────────── */
+.startup-simulation {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background:
+    radial-gradient(circle at 50% 48%, rgba(28, 32, 39, 0.92) 0%, rgba(14, 16, 19, 0.98) 44%, var(--bg) 72%),
+    var(--bg);
+  opacity: 1;
+  transform: scale(1);
+  transition:
+    opacity 180ms ease,
+    transform 180ms ease;
+}
+
+.startup-simulation.is-exiting {
+  opacity: 0;
+  transform: scale(1.012);
+  pointer-events: none;
+}
+
+.startup-simulation-loader {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transform: translateY(-1vh);
+}
+
+.startup-simulation proxima-loader::part(label) {
+  display: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .startup-simulation {
+    transition: opacity 140ms ease;
+  }
+
+  .startup-simulation.is-exiting {
+    transform: none;
+  }
+}
+
 /* ── Shell layout ──────────────────────────────────────────────── */
 .proxima-shell {
   width: 100%;
