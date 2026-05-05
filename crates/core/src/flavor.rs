@@ -4,7 +4,7 @@
 //!
 //! See docs/08 §Registration mechanism.
 
-use crate::verbs::schema::{PayloadKind, SchemaInfo, SchemaRegistry};
+use crate::verbs::schema::{PayloadKind, PayloadValidatorEntry, SchemaInfo, SchemaRegistry};
 use crate::{
     AbstractionPayload, EdgePayload, FactPayload, PerspectivePayload, RelationDescriptor,
     SchemaVersion, core_relation_descriptors,
@@ -14,6 +14,7 @@ use crate::{
 pub struct FlavorRegistry {
     schemas: Vec<SchemaInfo>,
     relations: Vec<RelationDescriptor>,
+    validators: Vec<PayloadValidatorEntry>,
 }
 
 impl Default for FlavorRegistry {
@@ -21,6 +22,7 @@ impl Default for FlavorRegistry {
         Self {
             schemas: Vec::new(),
             relations: core_relation_descriptors(),
+            validators: Vec::new(),
         }
     }
 }
@@ -43,6 +45,12 @@ impl FlavorRegistry {
                 .map(|s| (*s).to_string())
                 .collect(),
         });
+        self.validators.push(PayloadValidatorEntry {
+            schema_id: F::schema_id(),
+            schema_version: SchemaVersion::new(F::SCHEMA_VERSION),
+            kind: PayloadKind::Fact,
+            validate: validate_payload_type::<F>,
+        });
     }
 
     pub fn add_abstraction_schema<A: AbstractionPayload>(&mut self) {
@@ -54,6 +62,12 @@ impl FlavorRegistry {
             sidecar_table: Some(A::sidecar_table().to_string()),
             natural_key_columns: vec![],
         });
+        self.validators.push(PayloadValidatorEntry {
+            schema_id: A::schema_id(),
+            schema_version: SchemaVersion::new(A::SCHEMA_VERSION),
+            kind: PayloadKind::Abstraction,
+            validate: validate_payload_type::<A>,
+        });
     }
 
     pub fn add_perspective_schema<P: PerspectivePayload>(&mut self) {
@@ -64,6 +78,12 @@ impl FlavorRegistry {
             filter_keys: vec![],
             sidecar_table: Some(P::sidecar_table().to_string()),
             natural_key_columns: vec![],
+        });
+        self.validators.push(PayloadValidatorEntry {
+            schema_id: P::schema_id(),
+            schema_version: SchemaVersion::new(P::SCHEMA_VERSION),
+            kind: PayloadKind::Perspective,
+            validate: validate_payload_type::<P>,
         });
     }
 
@@ -79,6 +99,12 @@ impl FlavorRegistry {
             filter_keys: vec![],
             sidecar_table: Some(E::sidecar_table().to_string()),
             natural_key_columns: vec![],
+        });
+        self.validators.push(PayloadValidatorEntry {
+            schema_id: E::schema_id(),
+            schema_version: SchemaVersion::new(E::SCHEMA_VERSION),
+            kind: PayloadKind::Edge,
+            validate: validate_payload_type::<E>,
         });
     }
 
@@ -116,6 +142,19 @@ impl FlavorRegistry {
                 let _ = info;
             }
         }
-        SchemaRegistry::with_schemas_and_relations(self.schemas, self.relations)
+        SchemaRegistry::with_schemas_relations_validators(
+            self.schemas,
+            self.relations,
+            self.validators,
+        )
     }
+}
+
+fn validate_payload_type<T>(value: &serde_json::Value) -> Result<(), String>
+where
+    T: serde::de::DeserializeOwned,
+{
+    serde_json::from_value::<T>(value.clone())
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }

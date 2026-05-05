@@ -5,6 +5,16 @@
 
 use crate::{RegisteredRelation, RelationDescriptor, SchemaId, SchemaVersion};
 
+pub type PayloadValidator = fn(&serde_json::Value) -> Result<(), String>;
+
+#[derive(Debug, Clone)]
+pub(crate) struct PayloadValidatorEntry {
+    pub schema_id: SchemaId,
+    pub schema_version: SchemaVersion,
+    pub kind: PayloadKind,
+    pub validate: PayloadValidator,
+}
+
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, specta::Type,
 )]
@@ -50,6 +60,7 @@ pub struct SchemaResponse {
 pub struct SchemaRegistry {
     schemas: Vec<SchemaInfo>,
     relations: Vec<RelationDescriptor>,
+    validators: Vec<PayloadValidatorEntry>,
 }
 
 impl SchemaRegistry {
@@ -65,6 +76,7 @@ impl SchemaRegistry {
         Self {
             schemas,
             relations: Vec::new(),
+            validators: Vec::new(),
         }
     }
 
@@ -76,7 +88,32 @@ impl SchemaRegistry {
         schemas: Vec<SchemaInfo>,
         relations: Vec<RelationDescriptor>,
     ) -> Self {
-        Self { schemas, relations }
+        Self {
+            schemas,
+            relations,
+            validators: Vec::new(),
+        }
+    }
+
+    pub(crate) fn with_schemas_relations_validators(
+        schemas: Vec<SchemaInfo>,
+        relations: Vec<RelationDescriptor>,
+        validators: Vec<PayloadValidatorEntry>,
+    ) -> Self {
+        Self {
+            schemas,
+            relations,
+            validators,
+        }
+    }
+
+    #[must_use]
+    pub fn with_additional_schemas(
+        mut self,
+        schemas: impl IntoIterator<Item = SchemaInfo>,
+    ) -> Self {
+        self.schemas.extend(schemas);
+        self
     }
 
     pub fn list(&self) -> Vec<SchemaInfo> {
@@ -130,6 +167,33 @@ impl SchemaRegistry {
         self.schemas
             .iter()
             .find(|s| s.schema_id == *schema_id && s.schema_version == version)
+    }
+
+    /// Validate a JSON payload against the build-time registered Rust
+    /// payload type when the registry was produced by `FlavorRegistry`.
+    /// Ad-hoc test registries may not carry validators; those still
+    /// enforce the minimum F/A/P sidecar contract that payloads are
+    /// JSON objects before storage casts them into sidecar rows.
+    pub fn validate_payload(
+        &self,
+        schema_id: &SchemaId,
+        version: SchemaVersion,
+        kind: PayloadKind,
+        payload: &serde_json::Value,
+    ) -> Result<(), String> {
+        if !payload.is_object() {
+            return Err("typed payload must be a JSON object".into());
+        }
+
+        if let Some(validator) = self
+            .validators
+            .iter()
+            .find(|v| v.schema_id == *schema_id && v.schema_version == version && v.kind == kind)
+        {
+            (validator.validate)(payload)?;
+        }
+
+        Ok(())
     }
 
     /// Resolve the head-by-natural-key filter for a stateful Fact

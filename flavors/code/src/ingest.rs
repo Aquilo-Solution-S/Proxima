@@ -636,19 +636,18 @@ pub async fn ingest_calls_edge(
 
 #[must_use]
 pub fn schema_registry() -> proxima_core::verbs::schema::SchemaRegistry {
-    use proxima_core::verbs::schema::{PayloadKind, SchemaInfo, SchemaRegistry};
+    use proxima_core::verbs::schema::{PayloadKind, SchemaInfo};
     use proxima_core::{FlavorRegistry, SchemaId, SchemaVersion};
 
     let mut flavor = FlavorRegistry::new();
     crate::register(&mut flavor);
     let flavor = flavor.freeze();
-    let mut schemas = flavor.list();
-    let relations = flavor.list_relations().to_vec();
+    let mut extra_schemas = Vec::new();
 
     // CitedObject schemas — file blob (shared by file_revision + chunk)
     // and commit object.
     for cited in [CODE_BLOB_SCHEMA, CODE_COMMIT_OBJECT_SCHEMA] {
-        schemas.push(SchemaInfo {
+        extra_schemas.push(SchemaInfo {
             schema_id: SchemaId::new(cited.into()),
             schema_version: SchemaVersion::new(1),
             kind: PayloadKind::CitedObject,
@@ -664,7 +663,7 @@ pub fn schema_registry() -> proxima_core::verbs::schema::SchemaRegistry {
         CODE_BLOB_BYTE_RANGE_SCHEMA,
         CODE_COMMIT_WHOLE_SCHEMA,
     ] {
-        schemas.push(SchemaInfo {
+        extra_schemas.push(SchemaInfo {
             schema_id: SchemaId::new(mapping.into()),
             schema_version: SchemaVersion::new(1),
             kind: PayloadKind::CitationMapping,
@@ -674,7 +673,7 @@ pub fn schema_registry() -> proxima_core::verbs::schema::SchemaRegistry {
         });
     }
 
-    SchemaRegistry::with_schemas_and_relations(schemas, relations)
+    flavor.with_additional_schemas(extra_schemas)
 }
 
 /// Convenience: build a fully-wired `Engine` over a `PgStorage` and the
