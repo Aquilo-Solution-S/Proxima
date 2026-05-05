@@ -8,6 +8,9 @@
     ".": "./src/index.ts",
     "./styles.css": "./src/primitives/styles.css"
   },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
   "dependencies": {
     "solid-js": "^1.9.3",
     "@tauri-apps/api": "^2",
