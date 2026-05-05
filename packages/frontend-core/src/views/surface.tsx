@@ -1,3 +1,4 @@
+import "./surface.css";
 /*
  * PLACEHOLDER DATA STATE
  * This component renders the three-lane F→A→P traversal chrome with
@@ -5,38 +6,108 @@
  * deferred to the next milestone.
  */
 
-import { type Component } from "solid-js";
+import { Show, createSignal, type Component } from "solid-js";
 import { Mono } from "../primitives";
 import type { Hub } from "../hub";
 
 // ── Goal rail ───────────────────────────────────────────────────────────
-const GoalRail: Component = () => (
-  <div class="goal-rail">
-    <div class="rail-head">
-      <span class="rail-title">Goal DAG</span>
-      <Mono style={{ "font-size": "9px", color: "var(--ink-40)" }}>
-        supersession-only
-      </Mono>
-    </div>
-    <div class="goal-list">
-      <p class="proxima-dim">No goals</p>
-    </div>
-  </div>
+const GoalRail: Component<{
+  collapsed: boolean;
+  onToggle: () => void;
+}> = (props) => (
+  <aside
+    classList={{
+      "goal-rail": true,
+      "is-collapsed": props.collapsed,
+    }}
+  >
+    <Show
+      when={!props.collapsed}
+      fallback={
+        <button
+          type="button"
+          class="rail-collapsed-trigger"
+          aria-label="Expand Goal DAG"
+          aria-expanded="false"
+          onClick={props.onToggle}
+        >
+          <span class="rail-collapse-icon is-closed" aria-hidden="true" />
+          <span class="rail-collapsed-title">Goal DAG</span>
+        </button>
+      }
+    >
+      <div class="rail-head">
+        <div class="rail-head-copy">
+          <span class="rail-title">Goal DAG</span>
+          <Mono style={{ "font-size": "9px", color: "var(--ink-50)" }}>
+            supersession-only
+          </Mono>
+        </div>
+        <button
+          type="button"
+          class="rail-toggle"
+          aria-label="Collapse Goal DAG"
+          aria-expanded="true"
+          onClick={props.onToggle}
+        >
+          <span class="rail-collapse-icon is-left" aria-hidden="true" />
+        </button>
+      </div>
+      <div class="goal-list">
+        <p class="proxima-dim">No goals</p>
+      </div>
+    </Show>
+  </aside>
 );
 
 // ── Event stream ───────────────────────────────────────────────────────
-const EventStream: Component = () => (
-  <div class="event-stream">
-    <div class="stream-head">
-      <span class="rail-title">Event stream</span>
-      <Mono style={{ "font-size": "9px", color: "var(--ink-40)" }}>
-        append-only
-      </Mono>
-    </div>
-    <div class="stream-list">
-      <p class="proxima-dim">No events</p>
-    </div>
-  </div>
+const EventStream: Component<{
+  collapsed: boolean;
+  onToggle: () => void;
+}> = (props) => (
+  <aside
+    classList={{
+      "event-stream": true,
+      "is-collapsed": props.collapsed,
+    }}
+  >
+    <Show
+      when={!props.collapsed}
+      fallback={
+        <button
+          type="button"
+          class="rail-collapsed-trigger"
+          aria-label="Expand Event stream"
+          aria-expanded="false"
+          onClick={props.onToggle}
+        >
+          <span class="rail-collapse-icon is-open" aria-hidden="true" />
+          <span class="rail-collapsed-title">Event stream</span>
+        </button>
+      }
+    >
+      <div class="stream-head">
+        <div class="rail-head-copy">
+          <span class="rail-title">Event stream</span>
+          <Mono style={{ "font-size": "9px", color: "var(--ink-50)" }}>
+            append-only
+          </Mono>
+        </div>
+        <button
+          type="button"
+          class="rail-toggle"
+          aria-label="Collapse Event stream"
+          aria-expanded="true"
+          onClick={props.onToggle}
+        >
+          <span class="rail-collapse-icon is-right" aria-hidden="true" />
+        </button>
+      </div>
+      <div class="stream-list">
+        <p class="proxima-dim">No events</p>
+      </div>
+    </Show>
+  </aside>
 );
 
 // ── Traversal lanes (F→A→P) ───────────────────────────────────────────
@@ -128,12 +199,29 @@ const TraversalLanes: Component = () => (
 );
 
 // ── FullSurface ─────────────────────────────────────────────────────────
-export const FullSurface: Component<{ hub: Hub }> = () => (
-  <div class="proxima-shell">
-    <div class="surface-body">
-      <GoalRail />
-      <TraversalLanes />
-      <EventStream />
+export const FullSurface: Component<{ hub: Hub }> = () => {
+  const [goalsCollapsed, setGoalsCollapsed] = createSignal(false);
+  const [eventsCollapsed, setEventsCollapsed] = createSignal(false);
+
+  return (
+    <div class="proxima-shell">
+      <div
+        classList={{
+          "surface-body": true,
+          "is-goals-collapsed": goalsCollapsed(),
+          "is-events-collapsed": eventsCollapsed(),
+        }}
+      >
+        <GoalRail
+          collapsed={goalsCollapsed()}
+          onToggle={() => setGoalsCollapsed((v) => !v)}
+        />
+        <TraversalLanes />
+        <EventStream
+          collapsed={eventsCollapsed()}
+          onToggle={() => setEventsCollapsed((v) => !v)}
+        />
+      </div>
     </div>
-  </div>
-);
+  );
+};

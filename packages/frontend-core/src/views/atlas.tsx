@@ -1,3 +1,4 @@
+import "./atlas.css";
 /*
  * PLACEHOLDER DATA STATE
  * This component renders the substrate Atlas — three.js scene with locked
@@ -325,18 +326,21 @@ const Inspector: Component<{
 // ── Sprite labels for layers ───────────────────────────────────────────
 function makeLayerLabel(text: string, color: string): THREE.Sprite {
   const c = document.createElement("canvas");
-  c.width = 256;
-  c.height = 64;
+  c.width = 320;
+  c.height = 76;
   const ctx = c.getContext("2d")!;
-  ctx.font = "600 28px 'JetBrains Mono', monospace";
-  ctx.fillStyle = color;
+  ctx.font = "700 30px 'JetBrains Mono', monospace";
   ctx.textBaseline = "middle";
-  ctx.fillText(text, 8, 32);
+  ctx.lineWidth = 5;
+  ctx.strokeStyle = "rgba(14, 16, 19, 0.86)";
+  ctx.strokeText(text, 10, 38);
+  ctx.fillStyle = color;
+  ctx.fillText(text, 10, 38);
   const tex = new THREE.CanvasTexture(c);
   tex.minFilter = THREE.LinearFilter;
-  const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, opacity: 0.7 });
+  const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, opacity: 0.96 });
   const sp = new THREE.Sprite(mat);
-  sp.scale.set(2.8, 0.7, 1);
+  sp.scale.set(3.5, 0.84, 1);
   return sp;
 }
 
@@ -425,8 +429,8 @@ export const Atlas: Component<{
   });
 
   onMount(() => {
-    scene.background = new THREE.Color(0x0e1013);
-    scene.fog = new THREE.Fog(0x0e1013, 14, 32);
+    scene.background = new THREE.Color(0x101319);
+    scene.fog = new THREE.Fog(0x101319, 18, 42);
 
     const W = mountRef.clientWidth;
     const H = mountRef.clientHeight;
@@ -441,11 +445,11 @@ export const Atlas: Component<{
 
     // Layer planes (faint horizontal grids at each z)
     for (const z of [0, 1.6, 3.2, 4.8]) {
-      const grid = new THREE.GridHelper(20, 20, 0x1f232b, 0x14171c);
+      const grid = new THREE.GridHelper(20, 20, 0x3b4350, 0x242a33);
       grid.position.y = z;
       const mat = grid.material as THREE.Material;
       mat.transparent = true;
-      mat.opacity = 0.35;
+      mat.opacity = 0.55;
       scene.add(grid);
     }
 
