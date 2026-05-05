@@ -3,7 +3,8 @@
 //!
 //! Re-close is a no-op returning the existing `closed_at` with
 //! `already_closed = true`. A batch belonging to a different owner
-//! returns `StorageError::NotFound` to avoid information leak.
+//! principal returns `StorageError::NotFound` to avoid information
+//! leak.
 //!
 //! v1 emits no `change_event` for batch-closed; M5's F→A operator
 //! reads `closed_at` directly off `source_batches`. We add an outbox
@@ -28,7 +29,6 @@ pub async fn close_batch(
         Principal::User(u) => ("User", u.into_inner()),
         Principal::Group(g) => ("Group", g.into_inner()),
     };
-    let owner_org_id = owner.org_id.into_inner();
     let batch_id = source_batch_id.into_inner();
 
     // Read current closed_at under owner scope.
@@ -36,13 +36,11 @@ pub async fn close_batch(
         "SELECT closed_at FROM proxima_core.source_batches \
          WHERE id = $1 \
            AND owner_principal_kind = $2 \
-           AND owner_principal_id = $3 \
-           AND owner_org_id = $4",
+           AND owner_principal_id = $3",
     )
     .bind(batch_id)
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner_org_id)
     .fetch_optional(pool)
     .await
     .map_err(map_err)?;
@@ -68,14 +66,12 @@ pub async fn close_batch(
          WHERE id = $1 \
            AND owner_principal_kind = $2 \
            AND owner_principal_id = $3 \
-           AND owner_org_id = $4 \
            AND closed_at IS NULL \
          RETURNING closed_at",
     )
     .bind(batch_id)
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner_org_id)
     .fetch_optional(pool)
     .await
     .map_err(map_err)?;
@@ -94,13 +90,11 @@ pub async fn close_batch(
          WHERE id = $1 \
            AND owner_principal_kind = $2 \
            AND owner_principal_id = $3 \
-           AND owner_org_id = $4 \
            AND closed_at IS NOT NULL",
     )
     .bind(batch_id)
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner_org_id)
     .fetch_one(pool)
     .await
     .map_err(map_err)?;

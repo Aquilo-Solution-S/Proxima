@@ -56,6 +56,26 @@ async fn query_verb_returns_empty_for_configured_owner() {
 }
 
 #[tokio::test]
+async fn query_verb_allows_same_principal_with_different_org() {
+    let (principal, configured) = fresh_owner();
+    let engine = boot_engine(principal, configured.clone());
+    let same_principal_different_org = Owner {
+        principal: configured.principal,
+        org_id: OrgId::new(Uuid::now_v7()),
+    };
+
+    let resp = engine
+        .query(
+            &Credentials::None,
+            &QueryRequest::for_owner(same_principal_different_org),
+        )
+        .await
+        .expect("access is scoped by principal, not org_id");
+
+    assert!(resp.memories.is_empty(), "M1 store must be empty");
+}
+
+#[tokio::test]
 async fn query_verb_rejects_foreign_owner_with_forbidden() {
     let (principal, configured) = fresh_owner();
     let engine = boot_engine(principal, configured);

@@ -33,24 +33,22 @@ pub async fn list_unconsolidated_batches(
     owner: &Owner,
     operator_id: &str,
 ) -> Result<Vec<SourceBatchId>, StorageError> {
-    let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(owner);
+    let (owner_kind, owner_principal_id) = owner_principal_columns(owner);
 
     let rows: Vec<(uuid::Uuid,)> = sqlx::query_as(
         "SELECT sb.id \
          FROM proxima_core.source_batches sb \
          WHERE sb.owner_principal_kind = $1 \
            AND sb.owner_principal_id = $2 \
-           AND sb.owner_org_id = $3 \
            AND sb.closed_at IS NOT NULL \
            AND NOT EXISTS ( \
                 SELECT 1 FROM proxima_core.source_batch_f2a f2a \
-                WHERE f2a.batch_id = sb.id AND f2a.operator_id = $4 \
+                WHERE f2a.batch_id = sb.id AND f2a.operator_id = $3 \
            ) \
          ORDER BY sb.opened_at ASC",
     )
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner_org_id)
     .bind(operator_id)
     .fetch_all(pool)
     .await
@@ -83,11 +81,16 @@ fn validate_table_ident(ident: &str) -> Result<(), StorageError> {
 }
 
 fn owner_columns(owner: &Owner) -> (&'static str, uuid::Uuid, uuid::Uuid) {
+    let (kind, principal_id) = owner_principal_columns(owner);
+    (kind, principal_id, owner.org_id.into_inner())
+}
+
+fn owner_principal_columns(owner: &Owner) -> (&'static str, uuid::Uuid) {
     let (kind, principal_id) = match &owner.principal {
         Principal::User(u) => ("User", u.into_inner()),
         Principal::Group(g) => ("Group", g.into_inner()),
     };
-    (kind, principal_id, owner.org_id.into_inner())
+    (kind, principal_id)
 }
 
 /// Load all Facts in a closed source-batch with their typed sidecar
@@ -108,7 +111,7 @@ pub async fn load_batch_facts(
     batch_id: SourceBatchId,
     sidecars: &[SidecarSpec],
 ) -> Result<Vec<FactRow>, StorageError> {
-    let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(owner);
+    let (owner_kind, owner_principal_id) = owner_principal_columns(owner);
     let batch_uuid = batch_id.into_inner();
 
     let mut out = Vec::new();
@@ -123,8 +126,7 @@ pub async fn load_batch_facts(
              WHERE e.source_batch_id = $1 \
                AND m.owner_principal_kind = $2 \
                AND m.owner_principal_id = $3 \
-               AND m.owner_org_id = $4 \
-               AND m.schema_id = $5",
+               AND m.schema_id = $4",
             sidecar = spec.sidecar_table,
         );
 
@@ -132,7 +134,6 @@ pub async fn load_batch_facts(
             .bind(batch_uuid)
             .bind(owner_kind)
             .bind(owner_principal_id)
-            .bind(owner_org_id)
             .bind(spec.schema_id.as_str())
             .fetch_all(pool)
             .await

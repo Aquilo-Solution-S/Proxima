@@ -9,19 +9,19 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 
-use proxima_core::auth::Credentials;
 use proxima_core::Engine;
+use proxima_core::auth::Credentials;
 
-use crate::pb::{
-    engine_server::Engine as EngineTrait, ChangeEvent, EventIngestRequest, EventIngestResponse,
-    GoalWriteRequest, GoalWriteResponse, QueryRequest, QueryResponse, SchemaRequest, SchemaResponse,
-    SubscribeRequest,
-};
 use crate::convert::{
-    event_ingest_request_from_proto, event_ingest_response_to_proto, goal_write_request_from_proto,
-    goal_write_response_to_proto, protocol_error_to_status, query_request_from_proto,
-    query_response_to_proto, schema_request_from_proto, schema_response_to_proto,
-    subscribe_request_from_proto, change_event_to_proto,
+    change_event_to_proto, event_ingest_request_from_proto, event_ingest_response_to_proto,
+    goal_write_request_from_proto, goal_write_response_to_proto, protocol_error_to_status,
+    query_request_from_proto, query_response_to_proto, schema_request_from_proto,
+    schema_response_to_proto, subscribe_request_from_proto,
+};
+use crate::pb::{
+    ChangeEvent, EventIngestRequest, EventIngestResponse, GoalWriteRequest, GoalWriteResponse,
+    QueryRequest, QueryResponse, SchemaRequest, SchemaResponse, SubscribeRequest,
+    engine_server::Engine as EngineTrait,
 };
 
 /// gRPC server wrapper for the Engine.
@@ -87,9 +87,7 @@ impl EngineTrait for EngineGrpcServer {
         });
 
         let stream = ReceiverStream::new(rx);
-        Ok(Response::new(
-            Box::pin(stream) as Self::SubscribeStream
-        ))
+        Ok(Response::new(Box::pin(stream) as Self::SubscribeStream))
     }
 
     async fn goal_write(
@@ -127,6 +125,8 @@ impl EngineTrait for EngineGrpcServer {
         // The proto SchemaResponse includes relations, but the core SchemaResponse doesn't.
         // We need to get relations from the engine's registry.
         let relations = self.engine.registry().list_relations().to_vec();
-        Ok(Response::new(schema_response_to_proto(&response, &relations)))
+        Ok(Response::new(schema_response_to_proto(
+            &response, &relations,
+        )))
     }
 }

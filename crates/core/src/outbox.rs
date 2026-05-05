@@ -6,7 +6,9 @@ use uuid::Uuid;
 
 use crate::{GoalId, MemoryId, Owner, SchemaId, SchemaVersion};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, specta::Type)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, specta::Type,
+)]
 pub enum EntityKind {
     Fact,
     Abstraction,
@@ -16,7 +18,9 @@ pub enum EntityKind {
 
 /// Endpoint of an Edge or supersedes target. Sum type matching
 /// `change_event` columns: a memory or a goal.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, specta::Type)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, specta::Type,
+)]
 pub enum EntityRef {
     Memory(MemoryId),
     Goal(GoalId),

@@ -16,7 +16,7 @@
     clippy::missing_panics_doc,
     clippy::too_many_lines,
     clippy::similar_names,
-    missing_debug_implementations,
+    missing_debug_implementations
 )]
 pub mod proto {
     pub mod proxima {
@@ -29,5 +29,5 @@ pub mod proto {
 mod convert;
 mod service;
 
-pub use service::EngineGrpcServer;
 pub use proto::proxima::v1 as pb;
+pub use service::EngineGrpcServer;

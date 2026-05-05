@@ -7,11 +7,11 @@ pub mod flavor;
 pub mod ids;
 pub mod models;
 pub mod operators;
-pub mod secrets;
 pub mod outbox;
 pub mod owner;
 pub mod payload;
 pub mod relation;
+pub mod secrets;
 pub mod storage;
 pub mod verbs;
 
@@ -23,11 +23,11 @@ pub use flavor::*;
 pub use ids::*;
 pub use models::*;
 pub use operators::*;
-pub use secrets::*;
 pub use outbox::*;
 pub use owner::*;
 pub use payload::*;
 pub use relation::*;
+pub use secrets::*;
 pub use storage::*;
 
 // Re-export verb modules for convenience.

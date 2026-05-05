@@ -54,9 +54,7 @@ fn str_to_tier(s: &str) -> Result<ModelTier, SettingsError> {
         "fast" => Ok(ModelTier::Fast),
         "standard" => Ok(ModelTier::Standard),
         "deep" => Ok(ModelTier::Deep),
-        _ => Err(SettingsError::Invariant(format!(
-            "unknown tier '{s}'"
-        ))),
+        _ => Err(SettingsError::Invariant(format!("unknown tier '{s}'"))),
     }
 }
 
@@ -74,9 +72,7 @@ fn str_to_dialect(s: &str) -> Result<Dialect, SettingsError> {
     match s {
         "anthropic" => Ok(Dialect::Anthropic),
         "openai" => Ok(Dialect::OpenAI),
-        _ => Err(SettingsError::Invariant(format!(
-            "unknown dialect '{s}'"
-        ))),
+        _ => Err(SettingsError::Invariant(format!("unknown dialect '{s}'"))),
     }
 }
 
@@ -90,23 +86,25 @@ fn owner_triple(owner: &Owner) -> (&'static str, Uuid, Uuid) {
 }
 
 /// Helper: map `sqlx::Error` to `SettingsError` with context.
-fn map_sqlx_err(
-    e: sqlx::Error,
-    vendor: Option<String>,
-    model_id: Option<String>,
-) -> SettingsError {
+fn map_sqlx_err(e: sqlx::Error, vendor: Option<String>, model_id: Option<String>) -> SettingsError {
     use sqlx::Error;
     match &e {
         Error::Database(db) if db.is_unique_violation() => {
             if let (Some(v), Some(m)) = (vendor, model_id) {
-                SettingsError::DuplicateLlmModel { vendor: v, model_id: m }
+                SettingsError::DuplicateLlmModel {
+                    vendor: v,
+                    model_id: m,
+                }
             } else {
                 SettingsError::Database(e)
             }
         }
         Error::Database(db) if db.is_foreign_key_violation() => {
             if let (Some(v), Some(m)) = (vendor, model_id) {
-                SettingsError::UnknownLlmModel { vendor: v, model_id: m }
+                SettingsError::UnknownLlmModel {
+                    vendor: v,
+                    model_id: m,
+                }
             } else {
                 SettingsError::Database(e)
             }
@@ -128,14 +126,20 @@ fn map_sqlx_err_embedding(
     match &e {
         Error::Database(db) if db.is_unique_violation() => {
             if let (Some(v), Some(m)) = (vendor, model_id) {
-                SettingsError::DuplicateEmbeddingModel { vendor: v, model_id: m }
+                SettingsError::DuplicateEmbeddingModel {
+                    vendor: v,
+                    model_id: m,
+                }
             } else {
                 SettingsError::Database(e)
             }
         }
         Error::Database(db) if db.is_foreign_key_violation() => {
             if let (Some(v), Some(m)) = (vendor, model_id) {
-                SettingsError::UnknownEmbeddingModel { vendor: v, model_id: m }
+                SettingsError::UnknownEmbeddingModel {
+                    vendor: v,
+                    model_id: m,
+                }
             } else {
                 SettingsError::Database(e)
             }
@@ -387,9 +391,7 @@ pub async fn register_embedding_model(
     .bind(m.secret_ref)
     .execute(pool)
     .await
-    .map_err(|e| {
-        map_sqlx_err_embedding(e, Some(m.vendor.clone()), Some(m.model_id.clone()))
-    })?;
+    .map_err(|e| map_sqlx_err_embedding(e, Some(m.vendor.clone()), Some(m.model_id.clone())))?;
 
     Ok(())
 }
@@ -548,9 +550,7 @@ pub async fn set_embedding_active(
     .bind(model_id)
     .execute(pool)
     .await
-    .map_err(|e| {
-        map_sqlx_err_embedding(e, Some(vendor.to_string()), Some(model_id.to_string()))
-    })?;
+    .map_err(|e| map_sqlx_err_embedding(e, Some(vendor.to_string()), Some(model_id.to_string())))?;
 
     Ok(())
 }

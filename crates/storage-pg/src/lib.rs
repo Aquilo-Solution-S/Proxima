@@ -256,7 +256,8 @@ impl PgStorage {
     pub async fn list_tier_bindings(
         &self,
         owner: &Owner,
-    ) -> Result<Vec<(proxima_core::models::ModelTier, String, String)>, settings::SettingsError> {
+    ) -> Result<Vec<(proxima_core::models::ModelTier, String, String)>, settings::SettingsError>
+    {
         settings::list_tier_bindings(&self.pool, owner).await
     }
 

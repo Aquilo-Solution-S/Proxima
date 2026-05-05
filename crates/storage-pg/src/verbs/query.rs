@@ -39,13 +39,10 @@ pub(crate) async fn query_memories(
         Principal::User(u) => u.into_inner(),
         Principal::Group(g) => g.into_inner(),
     };
-    let owner_org_id = req.owner.org_id.into_inner();
-
     if matches!(req.entity_kind, Some(EntityKind::Goal)) {
         return Ok(QueryResponse {
             memories: Vec::new(),
-            seq_high_water: read_seq_high_water(pool, owner_kind, owner_principal_id, owner_org_id)
-                .await?,
+            seq_high_water: read_seq_high_water(pool, owner_kind, owner_principal_id).await?,
         });
     }
 
@@ -82,12 +79,12 @@ pub(crate) async fn query_memories(
                 m.owner_org_id, m.schema_id, m.kind, m.event_id,",
     );
 
-    // Bindings: $1=owner_kind, $2=owner_principal_id, $3=owner_org_id.
-    // $4 is reserved for `schema_id_filter` when set. Schema-id literals
+    // Bindings: $1=owner_kind, $2=owner_principal_id. $3 is reserved
+    // for `schema_id_filter` when set. Schema-id literals
     // for the payload-projection CASE always come AFTER the optional
     // filter binding, so their parameter index depends on whether the
     // filter is present.
-    let case_param_base = if schema_id_filter.is_some() { 5 } else { 4 };
+    let case_param_base = if schema_id_filter.is_some() { 4 } else { 3 };
 
     // If there are schemas with sidecars, add the payload_json CASE expression.
     // Otherwise, just add NULL as payload_json.
@@ -111,8 +108,10 @@ pub(crate) async fn query_memories(
         sql.push_str(" ELSE NULL END AS payload_json");
     }
 
-    sql.push_str(" \
-         FROM proxima_core.memories m");
+    sql.push_str(
+        " \
+         FROM proxima_core.memories m",
+    );
 
     // Add LEFT JOINs for each schema with a sidecar table
     for (idx, schema) in schemas_with_sidecar.iter().enumerate() {
@@ -141,10 +140,7 @@ pub(crate) async fn query_memories(
         .expect("write to String is infallible");
     }
 
-    sql.push_str(
-        " WHERE m.owner_principal_kind = $1 AND m.owner_principal_id = $2 \
-           AND m.owner_org_id = $3",
-    );
+    sql.push_str(" WHERE m.owner_principal_kind = $1 AND m.owner_principal_id = $2");
 
     match req.entity_kind {
         None => {}
@@ -157,7 +153,7 @@ pub(crate) async fn query_memories(
     }
 
     if schema_id_filter.is_some() {
-        sql.push_str(" AND m.schema_id = $4");
+        sql.push_str(" AND m.schema_id = $3");
     }
 
     if matches!(req.supersession, SupersessionStatus::HeadsOnly) {
@@ -178,7 +174,6 @@ pub(crate) async fn query_memories(
                      WHERE m2.schema_id = m.schema_id \
                        AND m2.owner_principal_kind = m.owner_principal_kind \
                        AND m2.owner_principal_id = m.owner_principal_id \
-                       AND m2.owner_org_id = m.owner_org_id \
                        AND {nk_pairs} \
                        AND m2.created_at > m.created_at \
                   )",
@@ -199,8 +194,7 @@ pub(crate) async fn query_memories(
 
     let mut q = sqlx::query_as::<_, MemoryRowDb>(&sql)
         .bind(owner_kind)
-        .bind(owner_principal_id)
-        .bind(owner_org_id);
+        .bind(owner_principal_id);
     if let Some(sid) = &schema_id_filter {
         q = q.bind(sid.clone());
     }
@@ -236,8 +230,7 @@ pub(crate) async fn query_memories(
         })
         .collect();
 
-    let seq_high_water =
-        read_seq_high_water(pool, owner_kind, owner_principal_id, owner_org_id).await?;
+    let seq_high_water = read_seq_high_water(pool, owner_kind, owner_principal_id).await?;
 
     Ok(QueryResponse {
         memories,
@@ -262,17 +255,14 @@ async fn read_seq_high_water(
     pool: &PgPool,
     owner_kind: &str,
     owner_principal_id: uuid::Uuid,
-    owner_org_id: uuid::Uuid,
 ) -> Result<Option<uuid::Uuid>, StorageError> {
     let row: Option<(uuid::Uuid,)> = sqlx::query_as(
         "SELECT seq FROM proxima_core.change_event \
          WHERE owner_principal_kind = $1 AND owner_principal_id = $2 \
-           AND owner_org_id = $3 \
          ORDER BY seq DESC LIMIT 1",
     )
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(owner_org_id)
     .fetch_optional(pool)
     .await
     .map_err(|e| StorageError::Internal(e.to_string()))?;

@@ -12,7 +12,7 @@
     clippy::unnecessary_wraps,
     clippy::missing_errors_doc,
     clippy::missing_panics_doc,
-    clippy::too_many_lines,
+    clippy::too_many_lines
 )]
 
 use std::str::FromStr;
@@ -21,30 +21,31 @@ use prost_types::Timestamp;
 use tonic::Status;
 use uuid::Uuid;
 
-use proxima_core::{
-    ChangeEvent, ChangeEventKind, EntityKind as CoreEntityKind, ErrorCode as CoreErrorCode,
-    GoalId, GroupId, MemoryId, OrgId, OperatorId, Owner, ProtocolError, SchemaId, SchemaVersion,
-    SourceBatchId, SourceId, ToolId, UserId,
-};
-use proxima_core::relation::{RelationClass as CoreRelationClass, RelationDescriptor as CoreRelationDescriptor, SchemaRef as CoreSchemaRef};
 use proxima_core::outbox::{EntityKind as OutboxEntityKind, EntityRef as CoreEntityRef};
 use proxima_core::owner::Principal as CorePrincipal;
+use proxima_core::relation::{
+    RelationClass as CoreRelationClass, RelationDescriptor as CoreRelationDescriptor,
+    SchemaRef as CoreSchemaRef,
+};
+use proxima_core::{
+    ChangeEvent, ChangeEventKind, EntityKind as CoreEntityKind, ErrorCode as CoreErrorCode, GoalId,
+    GroupId, MemoryId, OperatorId, OrgId, Owner, ProtocolError, SchemaId, SchemaVersion,
+    SourceBatchId, SourceId, ToolId, UserId,
+};
 
 use proxima_core::verbs::goal_write::{
-    GoalAuthorship as CoreGoalAuthorship, GoalDraft, GoalState as CoreGoalState,
-    GoalWriteOutcome, OperatorKind as CoreOperatorKind, SystemOrigin as CoreSystemOrigin,
+    GoalAuthorship as CoreGoalAuthorship, GoalDraft, GoalState as CoreGoalState, GoalWriteOutcome,
+    OperatorKind as CoreOperatorKind, SystemOrigin as CoreSystemOrigin,
 };
 use proxima_core::verbs::query::{EntityKind as QueryEntityKind, MemoryRow};
-use proxima_core::verbs::schema::{
-    PayloadKind as CorePayloadKind, SchemaInfo as CoreSchemaInfo,
-};
+use proxima_core::verbs::schema::{PayloadKind as CorePayloadKind, SchemaInfo as CoreSchemaInfo};
 
 use crate::pb::{
     self, ChangeEvent as PbChangeEvent, EntityAppend, EntityKind as PbEntityKind,
-    EntityRef as PbEntityRef, ErrorCode as PbErrorCode, GoalAppend, GoalAuthorship as PbGoalAuthorship,
-    GoalState as PbGoalState, GoalWriteRequest, GoalWriteResponse, Memory as PbMemory,
-    MemoryAppend, MemoryKind as PbMemoryKind, OperatorKind as PbOperatorKind, OperatorOrigin,
-    Owner as PbOwner, Principal as PbPrincipal,
+    EntityRef as PbEntityRef, ErrorCode as PbErrorCode, GoalAppend,
+    GoalAuthorship as PbGoalAuthorship, GoalState as PbGoalState, GoalWriteRequest,
+    GoalWriteResponse, Memory as PbMemory, MemoryAppend, MemoryKind as PbMemoryKind,
+    OperatorKind as PbOperatorKind, OperatorOrigin, Owner as PbOwner, Principal as PbPrincipal,
     QueryRequest as PbQueryRequest, QueryResponse as PbQueryResponse,
     RelationClass as PbRelationClass, RelationDescriptor as PbRelationDescriptor,
     SchemaInfo as PbSchemaInfo, SchemaRef as PbSchemaRef, SchemaRequest as PbSchemaRequest,
@@ -83,15 +84,18 @@ pub fn schema_ref_to_proto(core: &CoreSchemaRef) -> PbSchemaRef {
 // ---------------------------------------------------------------------------
 
 pub fn owner_from_proto(pb: PbOwner) -> Result<Owner, Status> {
-    let principal = match pb.principal.ok_or_else(|| Status::invalid_argument("missing principal"))? {
-        PbPrincipal { kind: Some(pb::principal::Kind::UserId(s)) } => {
-            CorePrincipal::User(UserId::new(uuid_from_proto(&s)?))
-        }
-        PbPrincipal { kind: Some(pb::principal::Kind::GroupId(s)) } => {
-            CorePrincipal::Group(GroupId::new(uuid_from_proto(&s)?))
-        }
+    let principal = match pb
+        .principal
+        .ok_or_else(|| Status::invalid_argument("missing principal"))?
+    {
+        PbPrincipal {
+            kind: Some(pb::principal::Kind::UserId(s)),
+        } => CorePrincipal::User(UserId::new(uuid_from_proto(&s)?)),
+        PbPrincipal {
+            kind: Some(pb::principal::Kind::GroupId(s)),
+        } => CorePrincipal::Group(GroupId::new(uuid_from_proto(&s)?)),
         PbPrincipal { kind: None } => {
-            return Err(Status::invalid_argument("principal kind is none"))
+            return Err(Status::invalid_argument("principal kind is none"));
         }
     };
     Ok(Owner {
@@ -116,7 +120,10 @@ pub fn owner_to_proto(core: &Owner) -> PbOwner {
 }
 
 pub fn entity_ref_from_proto(pb: PbEntityRef) -> Result<CoreEntityRef, Status> {
-    match pb.r#ref.ok_or_else(|| Status::invalid_argument("missing entity ref"))? {
+    match pb
+        .r#ref
+        .ok_or_else(|| Status::invalid_argument("missing entity ref"))?
+    {
         pb::entity_ref::Ref::MemoryId(s) => {
             Ok(CoreEntityRef::Memory(MemoryId::new(uuid_from_proto(&s)?)))
         }
@@ -183,7 +190,9 @@ pub fn outbox_entity_kind_to_memory_kind(core: OutboxEntityKind) -> PbMemoryKind
         OutboxEntityKind::Fact => PbMemoryKind::Fact,
         OutboxEntityKind::Abstraction => PbMemoryKind::Abstraction,
         OutboxEntityKind::Perspective => PbMemoryKind::Perspective,
-        OutboxEntityKind::Goal => unreachable!("Goal cannot appear in a MemoryAppend — invariant 11"),
+        OutboxEntityKind::Goal => {
+            unreachable!("Goal cannot appear in a MemoryAppend — invariant 11")
+        }
     }
 }
 
@@ -318,7 +327,9 @@ pub fn memory_to_proto(core: &MemoryRow) -> TypedMemory {
 // ---------------------------------------------------------------------------
 
 pub fn goal_authorship_from_proto(pb: PbGoalAuthorship) -> Result<CoreGoalAuthorship, Status> {
-    let kind = pb.kind.ok_or_else(|| Status::invalid_argument("missing goal authorship kind"))?;
+    let kind = pb
+        .kind
+        .ok_or_else(|| Status::invalid_argument("missing goal authorship kind"))?;
     match kind {
         pb::goal_authorship::Kind::User(_) => Ok(CoreGoalAuthorship::User),
         pb::goal_authorship::Kind::System(s) => {
@@ -330,9 +341,9 @@ pub fn goal_authorship_from_proto(pb: PbGoalAuthorship) -> Result<CoreGoalAuthor
                     Ok(CoreGoalAuthorship::System(CoreSystemOrigin::Operator {
                         operator_id: OperatorId::new(uuid_from_proto(&o.operator_id)?),
                         operator_kind: operator_kind_from_proto(
-                        PbOperatorKind::try_from(o.operator_kind)
-                            .unwrap_or(PbOperatorKind::Unspecified),
-                    )?,
+                            PbOperatorKind::try_from(o.operator_kind)
+                                .unwrap_or(PbOperatorKind::Unspecified),
+                        )?,
                         model_id: proxima_core::ModelId::new(o.model_id.clone()),
                         prompt_version: proxima_core::PromptVersion::new(o.prompt_version.clone()),
                         personality_id: proxima_core::PersonalityId::new(o.personality_id.clone()),
@@ -389,7 +400,9 @@ pub fn goal_authorship_to_proto(core: &CoreGoalAuthorship) -> PbGoalAuthorship {
             }
         }
         CoreGoalAuthorship::External => PbGoalAuthorship {
-            kind: Some(pb::goal_authorship::Kind::External(pb::ExternalAuthorship {})),
+            kind: Some(pb::goal_authorship::Kind::External(
+                pb::ExternalAuthorship {},
+            )),
         },
     }
 }
@@ -415,11 +428,10 @@ pub fn change_event_to_proto(core: &ChangeEvent) -> Result<PbChangeEvent, Status
                         schema_id.clone(),
                         *schema_version,
                     ))),
-                    supersedes_memory_id: supersedes
-                        .and_then(|e| match e {
-                            CoreEntityRef::Memory(m) => Some(uuid_to_proto(m.into_inner())),
-                            CoreEntityRef::Goal(_) => None,
-                        }),
+                    supersedes_memory_id: supersedes.and_then(|e| match e {
+                        CoreEntityRef::Memory(m) => Some(uuid_to_proto(m.into_inner())),
+                        CoreEntityRef::Goal(_) => None,
+                    }),
                 }),
                 CoreEntityRef::Goal(g) => pb::entity_append::Body::Goal(GoalAppend {
                     goal_id: uuid_to_proto(g.into_inner()),
@@ -427,11 +439,10 @@ pub fn change_event_to_proto(core: &ChangeEvent) -> Result<PbChangeEvent, Status
                         schema_id.clone(),
                         *schema_version,
                     ))),
-                    supersedes_goal_id: supersedes
-                        .and_then(|e| match e {
-                            CoreEntityRef::Goal(g) => Some(uuid_to_proto(g.into_inner())),
-                            CoreEntityRef::Memory(_) => None,
-                        }),
+                    supersedes_goal_id: supersedes.and_then(|e| match e {
+                        CoreEntityRef::Goal(g) => Some(uuid_to_proto(g.into_inner())),
+                        CoreEntityRef::Memory(_) => None,
+                    }),
                 }),
             };
             pb::change_event::Kind::EntityAppend(EntityAppend { body: Some(body) })
@@ -469,15 +480,16 @@ pub fn timestamp_to_proto(ts: time::OffsetDateTime) -> Timestamp {
 // Request/Response for Query
 // ---------------------------------------------------------------------------
 
-pub fn query_request_from_proto(pb: PbQueryRequest) -> Result<proxima_core::verbs::query::QueryRequest, Status> {
+pub fn query_request_from_proto(
+    pb: PbQueryRequest,
+) -> Result<proxima_core::verbs::query::QueryRequest, Status> {
     let filter = pb.filter.unwrap_or_default();
     let pagination = pb.pagination.unwrap_or_default();
-    
+
     let entity_kind = filter
         .entity_kind
         .and_then(|k| {
-            let pb_kind =
-                PbEntityKind::try_from(k).unwrap_or(PbEntityKind::Unspecified);
+            let pb_kind = PbEntityKind::try_from(k).unwrap_or(PbEntityKind::Unspecified);
             if pb_kind == PbEntityKind::Unspecified {
                 None
             } else {
@@ -485,7 +497,7 @@ pub fn query_request_from_proto(pb: PbQueryRequest) -> Result<proxima_core::verb
             }
         })
         .transpose()?;
-    
+
     // Convert from CoreEntityKind to QueryEntityKind
     let entity_kind: Option<QueryEntityKind> = entity_kind.map(|k| match k {
         CoreEntityKind::Fact => QueryEntityKind::Fact,
@@ -493,9 +505,9 @@ pub fn query_request_from_proto(pb: PbQueryRequest) -> Result<proxima_core::verb
         CoreEntityKind::Perspective => QueryEntityKind::Perspective,
         CoreEntityKind::Goal => QueryEntityKind::Goal,
     });
-    
+
     let schema_id = filter.schema_id.clone().map(SchemaId::new);
-    
+
     let supersession = match filter.supersession() {
         pb::SupersessionFilter::Unspecified | pb::SupersessionFilter::HeadsOnly => {
             proxima_core::verbs::query::SupersessionStatus::HeadsOnly
@@ -504,11 +516,18 @@ pub fn query_request_from_proto(pb: PbQueryRequest) -> Result<proxima_core::verb
             proxima_core::verbs::query::SupersessionStatus::IncludeSuperseded
         }
     };
-    
-    let limit = if pagination.limit == 0 { 100 } else { pagination.limit };
-    
+
+    let limit = if pagination.limit == 0 {
+        100
+    } else {
+        pagination.limit
+    };
+
     Ok(proxima_core::verbs::query::QueryRequest {
-        owner: owner_from_proto(pb.owner.ok_or_else(|| Status::invalid_argument("missing owner"))?)?,
+        owner: owner_from_proto(
+            pb.owner
+                .ok_or_else(|| Status::invalid_argument("missing owner"))?,
+        )?,
         entity_kind,
         schema_id,
         supersession,
@@ -517,7 +536,9 @@ pub fn query_request_from_proto(pb: PbQueryRequest) -> Result<proxima_core::verb
     })
 }
 
-pub fn query_response_to_proto(core: &proxima_core::verbs::query::QueryResponse) -> PbQueryResponse {
+pub fn query_response_to_proto(
+    core: &proxima_core::verbs::query::QueryResponse,
+) -> PbQueryResponse {
     PbQueryResponse {
         memories: core.memories.iter().map(memory_to_proto).collect(),
         goals: Vec::new(), // Goal rows not yet implemented in core
@@ -529,14 +550,19 @@ pub fn query_response_to_proto(core: &proxima_core::verbs::query::QueryResponse)
 // Request/Response for Subscribe
 // ---------------------------------------------------------------------------
 
-pub fn subscribe_request_from_proto(pb: PbSubscribeRequest) -> Result<proxima_core::verbs::subscribe::SubscribeRequest, Status> {
+pub fn subscribe_request_from_proto(
+    pb: PbSubscribeRequest,
+) -> Result<proxima_core::verbs::subscribe::SubscribeRequest, Status> {
     let since = pb.since.map(|s| uuid_from_proto(&s)).transpose()?;
-    
+
     // Filter is not used in the current SubscribeRequest, but we parse it for completeness
     let _filter = pb.filter.unwrap_or_default();
-    
+
     Ok(proxima_core::verbs::subscribe::SubscribeRequest {
-        owner: owner_from_proto(pb.owner.ok_or_else(|| Status::invalid_argument("missing owner"))?)?,
+        owner: owner_from_proto(
+            pb.owner
+                .ok_or_else(|| Status::invalid_argument("missing owner"))?,
+        )?,
         since,
     })
 }
@@ -550,18 +576,19 @@ pub fn goal_write_request_from_proto(pb: GoalWriteRequest) -> Result<GoalDraft, 
         .schema
         .clone()
         .ok_or_else(|| Status::invalid_argument("missing schema"))?;
-    
+
     let authorship = goal_authorship_from_proto(
         pb.authorship
             .clone()
             .ok_or_else(|| Status::invalid_argument("missing authorship"))?,
     )?;
-    
-    let parent_goal_ids: Result<Vec<GoalId>, Status> = pb.parent_goal_ids
+
+    let parent_goal_ids: Result<Vec<GoalId>, Status> = pb
+        .parent_goal_ids
         .iter()
         .map(|s| uuid_from_proto(s).map(GoalId::new))
         .collect();
-    
+
     Ok(GoalDraft {
         owner: owner_from_proto(
             pb.owner
@@ -590,35 +617,52 @@ pub fn goal_write_response_to_proto(core: &GoalWriteOutcome) -> GoalWriteRespons
 // Request/Response for EventIngest
 // ---------------------------------------------------------------------------
 
-pub fn event_ingest_request_from_proto(pb: pb::EventIngestRequest) -> Result<proxima_core::verbs::event_ingest::EventDraft, Status> {
+pub fn event_ingest_request_from_proto(
+    pb: pb::EventIngestRequest,
+) -> Result<proxima_core::verbs::event_ingest::EventDraft, Status> {
     let schema_ref = pb
         .schema
         .ok_or_else(|| Status::invalid_argument("missing schema"))?;
-    
-    let cited_object = pb.cited_object.map(|c| {
-        let schema = c.schema.ok_or_else(|| Status::invalid_argument("missing cited_object schema"))?;
-        Result::<_, Status>::Ok(proxima_core::verbs::event_ingest::CitedObjectHint {
-            schema_id: SchemaId::new(schema.schema_id.clone()),
-            schema_version: SchemaVersion::new(schema.schema_version),
-            content_hash: c.content_hash.try_into().map_err(|_| Status::invalid_argument("invalid content_hash length"))?,
+
+    let cited_object = pb
+        .cited_object
+        .map(|c| {
+            let schema = c
+                .schema
+                .ok_or_else(|| Status::invalid_argument("missing cited_object schema"))?;
+            Result::<_, Status>::Ok(proxima_core::verbs::event_ingest::CitedObjectHint {
+                schema_id: SchemaId::new(schema.schema_id.clone()),
+                schema_version: SchemaVersion::new(schema.schema_version),
+                content_hash: c
+                    .content_hash
+                    .try_into()
+                    .map_err(|_| Status::invalid_argument("invalid content_hash length"))?,
+            })
         })
-    }).transpose()?.unwrap_or_else(|| proxima_core::verbs::event_ingest::CitedObjectHint {
-        schema_id: SchemaId::new(String::new()),
-        schema_version: SchemaVersion::new(0),
-        content_hash: [0; 32],
-    });
-    
-    let citation_mapping = pb.citation_mapping.map(|c| {
-        let schema = c.schema.ok_or_else(|| Status::invalid_argument("missing citation_mapping schema"))?;
-        Result::<_, Status>::Ok(proxima_core::verbs::event_ingest::CitationMappingHint {
-            schema_id: SchemaId::new(schema.schema_id.clone()),
-            schema_version: SchemaVersion::new(schema.schema_version),
+        .transpose()?
+        .unwrap_or_else(|| proxima_core::verbs::event_ingest::CitedObjectHint {
+            schema_id: SchemaId::new(String::new()),
+            schema_version: SchemaVersion::new(0),
+            content_hash: [0; 32],
+        });
+
+    let citation_mapping = pb
+        .citation_mapping
+        .map(|c| {
+            let schema = c
+                .schema
+                .ok_or_else(|| Status::invalid_argument("missing citation_mapping schema"))?;
+            Result::<_, Status>::Ok(proxima_core::verbs::event_ingest::CitationMappingHint {
+                schema_id: SchemaId::new(schema.schema_id.clone()),
+                schema_version: SchemaVersion::new(schema.schema_version),
+            })
         })
-    }).transpose()?.unwrap_or_else(|| proxima_core::verbs::event_ingest::CitationMappingHint {
-        schema_id: SchemaId::new(String::new()),
-        schema_version: SchemaVersion::new(0),
-    });
-    
+        .transpose()?
+        .unwrap_or_else(|| proxima_core::verbs::event_ingest::CitationMappingHint {
+            schema_id: SchemaId::new(String::new()),
+            schema_version: SchemaVersion::new(0),
+        });
+
     Ok(proxima_core::verbs::event_ingest::EventDraft {
         source_id: SourceId::new(pb.source_id.clone()),
         source_batch_id: SourceBatchId::new(uuid_from_proto(&pb.source_batch_id)?),
@@ -636,7 +680,9 @@ pub fn event_ingest_request_from_proto(pb: pb::EventIngestRequest) -> Result<pro
     })
 }
 
-pub fn event_ingest_response_to_proto(core: &proxima_core::verbs::event_ingest::EventIngestOutcome) -> pb::EventIngestResponse {
+pub fn event_ingest_response_to_proto(
+    core: &proxima_core::verbs::event_ingest::EventIngestOutcome,
+) -> pb::EventIngestResponse {
     pb::EventIngestResponse {
         event_id: core.event_id.into_inner().to_vec(),
         memory_id: uuid_to_proto(core.memory_id.into_inner()),
@@ -649,7 +695,9 @@ pub fn event_ingest_response_to_proto(core: &proxima_core::verbs::event_ingest::
 // Request/Response for Schema
 // ---------------------------------------------------------------------------
 
-pub fn schema_request_from_proto(_pb: PbSchemaRequest) -> proxima_core::verbs::schema::SchemaRequest {
+pub fn schema_request_from_proto(
+    _pb: PbSchemaRequest,
+) -> proxima_core::verbs::schema::SchemaRequest {
     proxima_core::verbs::schema::SchemaRequest
 }
 

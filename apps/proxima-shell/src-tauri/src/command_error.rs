@@ -41,7 +41,10 @@ pub enum CommandError {
         "tier {tier:?} model {model_ref:?} has insufficient caps; \
          required by registered operators"
     )]
-    InsufficientTierCaps { tier: ModelTier, model_ref: ModelRef },
+    InsufficientTierCaps {
+        tier: ModelTier,
+        model_ref: ModelRef,
+    },
 
     /// CHECK constraint violation in PG — signals Rust↔SQL drift.
     /// User can't fix; logs to console and reports as bug.

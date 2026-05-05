@@ -18,9 +18,9 @@
 use std::collections::HashSet;
 use std::path::Path;
 
+use proxima_core::Owner;
 use proxima_core::engine::Engine;
 use proxima_core::models::{Dialect, EmbedCaps, LlmCaps, ModelTier};
-use proxima_core::Owner;
 use proxima_storage_pg::{PgStorage, settings};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -113,7 +113,10 @@ pub async fn load_app_config(
             models: llm.into_iter().map(LlmModelRecord::from).collect(),
         },
         embedding: EmbeddingConfig {
-            models: embedding.into_iter().map(EmbeddingModelRecord::from).collect(),
+            models: embedding
+                .into_iter()
+                .map(EmbeddingModelRecord::from)
+                .collect(),
             active: active.map(|(vendor, model_id)| ModelRef { vendor, model_id }),
         },
         tiers,
@@ -250,7 +253,9 @@ pub enum ConfigError {
 
     /// Bound model's claimed caps do not satisfy the union of operator
     /// `requires` at this tier.
-    #[error("tier {tier:?} model {model_ref:?} caps {have:?} fail to satisfy operator-union {required:?}")]
+    #[error(
+        "tier {tier:?} model {model_ref:?} caps {have:?} fail to satisfy operator-union {required:?}"
+    )]
     InsufficientTierCaps {
         tier: ModelTier,
         model_ref: ModelRef,
@@ -328,10 +333,14 @@ pub fn validate_config(config: &AppConfig, engine: &Engine) -> Result<(), Config
 
     // 3. + 4. tier bindings
     for tier in [ModelTier::Fast, ModelTier::Standard, ModelTier::Deep] {
-        let Some(model_ref) = config.tiers.get(tier) else { continue };
-        let bound = config.llm.models.iter().find(|m| {
-            m.vendor == model_ref.vendor && m.model_id == model_ref.model_id
-        });
+        let Some(model_ref) = config.tiers.get(tier) else {
+            continue;
+        };
+        let bound = config
+            .llm
+            .models
+            .iter()
+            .find(|m| m.vendor == model_ref.vendor && m.model_id == model_ref.model_id);
         let Some(bound) = bound else {
             return Err(ConfigError::UnknownTierModel {
                 tier,
@@ -351,9 +360,11 @@ pub fn validate_config(config: &AppConfig, engine: &Engine) -> Result<(), Config
 
     // 5. embedding active
     if let Some(active) = &config.embedding.active {
-        let known = config.embedding.models.iter().any(|m| {
-            m.vendor == active.vendor && m.model_id == active.model_id
-        });
+        let known = config
+            .embedding
+            .models
+            .iter()
+            .any(|m| m.vendor == active.vendor && m.model_id == active.model_id);
         if !known {
             return Err(ConfigError::UnknownEmbeddingActive(active.clone()));
         }
@@ -384,10 +395,11 @@ pub fn save_config(path: &Path, cfg: &AppConfig) -> Result<(), ConfigError> {
             path: tmp.display().to_string(),
             source: e,
         })?;
-        f.write_all(body.as_bytes()).map_err(|e| ConfigError::IoSave {
-            path: tmp.display().to_string(),
-            source: e,
-        })?;
+        f.write_all(body.as_bytes())
+            .map_err(|e| ConfigError::IoSave {
+                path: tmp.display().to_string(),
+                source: e,
+            })?;
         f.sync_all().map_err(|e| ConfigError::IoSave {
             path: tmp.display().to_string(),
             source: e,
@@ -409,13 +421,12 @@ pub fn save_config(path: &Path, cfg: &AppConfig) -> Result<(), ConfigError> {
 ///
 /// `ConfigError::DuplicateLlmModel` if a model with the same
 /// `(vendor, model_id)` is already registered.
-pub fn register_llm_model(
-    cfg: &mut AppConfig,
-    record: LlmModelRecord,
-) -> Result<(), ConfigError> {
-    let exists = cfg.llm.models.iter().any(|m| {
-        m.vendor == record.vendor && m.model_id == record.model_id
-    });
+pub fn register_llm_model(cfg: &mut AppConfig, record: LlmModelRecord) -> Result<(), ConfigError> {
+    let exists = cfg
+        .llm
+        .models
+        .iter()
+        .any(|m| m.vendor == record.vendor && m.model_id == record.model_id);
     if exists {
         return Err(ConfigError::DuplicateLlmModel(ModelRef {
             vendor: record.vendor,
@@ -437,9 +448,11 @@ pub fn register_embedding_model(
     cfg: &mut AppConfig,
     record: EmbeddingModelRecord,
 ) -> Result<(), ConfigError> {
-    let exists = cfg.embedding.models.iter().any(|m| {
-        m.vendor == record.vendor && m.model_id == record.model_id
-    });
+    let exists = cfg
+        .embedding
+        .models
+        .iter()
+        .any(|m| m.vendor == record.vendor && m.model_id == record.model_id);
     if exists {
         return Err(ConfigError::DuplicateEmbeddingModel(ModelRef {
             vendor: record.vendor,
@@ -467,9 +480,11 @@ pub fn bind_tier(
     tier: ModelTier,
     model_ref: ModelRef,
 ) -> Result<(), ConfigError> {
-    let known = cfg.llm.models.iter().any(|m| {
-        m.vendor == model_ref.vendor && m.model_id == model_ref.model_id
-    });
+    let known = cfg
+        .llm
+        .models
+        .iter()
+        .any(|m| m.vendor == model_ref.vendor && m.model_id == model_ref.model_id);
     if !known {
         return Err(ConfigError::UnknownTierModel { tier, model_ref });
     }
@@ -498,13 +513,12 @@ pub fn unbind_tier(cfg: &mut AppConfig, tier: ModelTier) {
 ///
 /// `ConfigError::UnknownEmbeddingActive` if `model_ref` is not
 /// present in `[[embedding.models]]`.
-pub fn set_embedding_active(
-    cfg: &mut AppConfig,
-    model_ref: ModelRef,
-) -> Result<(), ConfigError> {
-    let known = cfg.embedding.models.iter().any(|m| {
-        m.vendor == model_ref.vendor && m.model_id == model_ref.model_id
-    });
+pub fn set_embedding_active(cfg: &mut AppConfig, model_ref: ModelRef) -> Result<(), ConfigError> {
+    let known = cfg
+        .embedding
+        .models
+        .iter()
+        .any(|m| m.vendor == model_ref.vendor && m.model_id == model_ref.model_id);
     if !known {
         return Err(ConfigError::UnknownEmbeddingActive(model_ref));
     }
@@ -523,7 +537,9 @@ mod tests {
     use async_trait::async_trait;
     use proxima_core::auth::NoAuth;
     use proxima_core::ids::{OrgId, UserId};
-    use proxima_core::operators::{F2AContext, F2AOperator, NewAbstraction, OperatorError, OperatorRegistry};
+    use proxima_core::operators::{
+        F2AContext, F2AOperator, NewAbstraction, OperatorError, OperatorRegistry,
+    };
     use proxima_core::verbs::query::MemoryStore;
     use proxima_core::verbs::schema::SchemaRegistry;
     use proxima_core::{Owner, Principal, SchemaId};
@@ -619,7 +635,11 @@ mod tests {
                 models: vec![sample_llm_model("openai", "gpt-4o-mini", LlmCaps::none())],
             },
             embedding: EmbeddingConfig {
-                models: vec![sample_embedding_model("openai", "text-embedding-3-small", 1536)],
+                models: vec![sample_embedding_model(
+                    "openai",
+                    "text-embedding-3-small",
+                    1536,
+                )],
                 active: Some(ModelRef {
                     vendor: "openai".to_string(),
                     model_id: "text-embedding-3-small".to_string(),
@@ -710,7 +730,11 @@ mod tests {
     fn unknown_embedding_active() {
         let cfg = AppConfig {
             embedding: EmbeddingConfig {
-                models: vec![sample_embedding_model("openai", "text-embedding-3-small", 1536)],
+                models: vec![sample_embedding_model(
+                    "openai",
+                    "text-embedding-3-small",
+                    1536,
+                )],
                 active: Some(ModelRef {
                     vendor: "anthropic".to_string(),
                     model_id: "claude-3-haiku".to_string(),
@@ -860,7 +884,11 @@ mod tests {
                 models: vec![sample_llm_model("openai", "gpt-4o-mini", LlmCaps::none())],
             },
             embedding: EmbeddingConfig {
-                models: vec![sample_embedding_model("openai", "text-embedding-3-small", 1536)],
+                models: vec![sample_embedding_model(
+                    "openai",
+                    "text-embedding-3-small",
+                    1536,
+                )],
                 active: Some(ModelRef {
                     vendor: "openai".to_string(),
                     model_id: "text-embedding-3-small".to_string(),
@@ -943,7 +971,9 @@ mod tests {
     #[test]
     fn bind_tier_happy_path() {
         let mut cfg = AppConfig::default();
-        cfg.llm.models.push(sample_llm_model("openai", "gpt-4o-mini", LlmCaps::none()));
+        cfg.llm
+            .models
+            .push(sample_llm_model("openai", "gpt-4o-mini", LlmCaps::none()));
         let model_ref = ModelRef {
             vendor: "openai".to_string(),
             model_id: "gpt-4o-mini".to_string(),
@@ -966,8 +996,14 @@ mod tests {
     #[test]
     fn bind_tier_overwrites_existing() {
         let mut cfg = AppConfig::default();
-        cfg.llm.models.push(sample_llm_model("openai", "gpt-4o-mini", LlmCaps::none()));
-        cfg.llm.models.push(sample_llm_model("anthropic", "claude-3-haiku", LlmCaps::none()));
+        cfg.llm
+            .models
+            .push(sample_llm_model("openai", "gpt-4o-mini", LlmCaps::none()));
+        cfg.llm.models.push(sample_llm_model(
+            "anthropic",
+            "claude-3-haiku",
+            LlmCaps::none(),
+        ));
         let first = ModelRef {
             vendor: "openai".to_string(),
             model_id: "gpt-4o-mini".to_string(),

@@ -204,9 +204,9 @@ pub(crate) async fn supersede_goal_atomic(
         )));
     }
 
-    // Validate prior exists and belongs to the same owner.
-    let prior_row: Option<(String, uuid::Uuid, uuid::Uuid)> = sqlx::query_as(
-        "SELECT owner_principal_kind, owner_principal_id, owner_org_id \
+    // Validate prior exists and belongs to the same owner principal.
+    let prior_row: Option<(String, uuid::Uuid)> = sqlx::query_as(
+        "SELECT owner_principal_kind, owner_principal_id \
          FROM proxima_core.goals WHERE goal_id = $1",
     )
     .bind(prior.into_inner())
@@ -216,11 +216,8 @@ pub(crate) async fn supersede_goal_atomic(
 
     match prior_row {
         None => return Err(StorageError::NotFound),
-        Some((p_kind, p_principal_id, p_org_id)) => {
-            if p_kind != owner_kind
-                || p_principal_id != owner_principal_id
-                || p_org_id != owner_org_id
-            {
+        Some((p_kind, p_principal_id)) => {
+            if p_kind != owner_kind || p_principal_id != owner_principal_id {
                 return Err(StorageError::ConstraintViolation(
                     "supersede crosses Owner boundary".to_string(),
                 ));

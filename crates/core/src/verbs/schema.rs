@@ -5,7 +5,9 @@
 
 use crate::{RegisteredRelation, RelationDescriptor, SchemaId, SchemaVersion};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, specta::Type)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, specta::Type,
+)]
 pub enum PayloadKind {
     Fact,
     Abstraction,

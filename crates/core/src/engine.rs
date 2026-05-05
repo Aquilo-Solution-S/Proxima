@@ -6,7 +6,6 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::GoalId;
-use crate::{CORE_DERIVED_FROM_RELATION, LlmCaps, MemoryId, ModelTier};
 use crate::Owner;
 use crate::SourceBatchId;
 use crate::auth::{AuthResolver, Credentials};
@@ -22,6 +21,7 @@ use crate::verbs::goal_write::{GoalDraft, GoalWriteOutcome};
 use crate::verbs::query::{MemoryStore, QueryRequest, QueryResponse, SupersessionStatus};
 use crate::verbs::schema::{PayloadKind, SchemaRegistry, SchemaRequest, SchemaResponse};
 use crate::verbs::subscribe::{ChangeEventStream, SubscribeRequest};
+use crate::{CORE_DERIVED_FROM_RELATION, LlmCaps, MemoryId, ModelTier};
 
 pub struct Engine {
     registry: SchemaRegistry,
@@ -128,7 +128,7 @@ impl Engine {
 
     /// docs/14 §"Query" — Owner-scoped. Caller passes the
     /// transport-extracted credentials; engine resolves and
-    /// gates `req.owner ∈ resolved.accessible_owners`.
+    /// gates `req.owner.principal ∈ resolved.accessible_principals`.
     ///
     /// For heads-only requests targeting a stateful Fact schema (one
     /// whose `FactPayload::natural_key_columns()` is non-empty), the
@@ -145,7 +145,7 @@ impl Engine {
             .auth
             .resolve(creds)
             .map_err(|_| ProtocolError::auth_required())?;
-        if !resolved.accessible_owners.contains(&req.owner) {
+        if !resolved.can_access_owner(&req.owner) {
             return Err(ProtocolError::forbidden(
                 "principal cannot access requested owner",
             ));
@@ -174,7 +174,7 @@ impl Engine {
             .auth
             .resolve(creds)
             .map_err(|_| ProtocolError::auth_required())?;
-        if !resolved.accessible_owners.contains(&draft.owner) {
+        if !resolved.can_access_owner(&draft.owner) {
             return Err(ProtocolError::forbidden(
                 "principal cannot access requested owner",
             ));
@@ -216,7 +216,7 @@ impl Engine {
             .auth
             .resolve(creds)
             .map_err(|_| ProtocolError::auth_required())?;
-        if !resolved.accessible_owners.contains(&draft.owner) {
+        if !resolved.can_access_owner(&draft.owner) {
             return Err(ProtocolError::forbidden(
                 "principal cannot access requested owner",
             ));
@@ -250,7 +250,7 @@ impl Engine {
             .auth
             .resolve(creds)
             .map_err(|_| ProtocolError::auth_required())?;
-        if !resolved.accessible_owners.contains(&draft.owner) {
+        if !resolved.can_access_owner(&draft.owner) {
             return Err(ProtocolError::forbidden(
                 "principal cannot access requested owner",
             ));
@@ -291,7 +291,7 @@ impl Engine {
             .auth
             .resolve(creds)
             .map_err(|_| ProtocolError::auth_required())?;
-        if !resolved.accessible_owners.contains(&owner) {
+        if !resolved.can_access_owner(&owner) {
             return Err(ProtocolError::forbidden(
                 "principal cannot access requested owner",
             ));
@@ -522,7 +522,7 @@ impl Engine {
             .auth
             .resolve(creds)
             .map_err(|_| ProtocolError::auth_required())?;
-        if !resolved.accessible_owners.contains(&req.owner) {
+        if !resolved.can_access_owner(&req.owner) {
             return Err(ProtocolError::forbidden(
                 "principal cannot access requested owner",
             ));
@@ -617,16 +617,17 @@ mod tier_union_tests {
 
     #[test]
     fn union_empty_when_no_ops_at_tier() {
-        let eng = engine_with_ops(vec![
-            OpAt {
-                tier: ModelTier::Fast,
-                requires: LlmCaps {
-                    tool_use: true,
-                    ..LlmCaps::none()
-                },
+        let eng = engine_with_ops(vec![OpAt {
+            tier: ModelTier::Fast,
+            requires: LlmCaps {
+                tool_use: true,
+                ..LlmCaps::none()
             },
-        ]);
-        assert_eq!(eng.tier_requires_union(ModelTier::Standard), LlmCaps::none());
+        }]);
+        assert_eq!(
+            eng.tier_requires_union(ModelTier::Standard),
+            LlmCaps::none()
+        );
     }
 
     #[test]
