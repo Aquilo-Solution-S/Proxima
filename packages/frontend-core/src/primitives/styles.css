@@ -1627,3 +1627,12 @@ html, body, #root { height: 100%; margin: 0; }
   gap: 6px;
   align-items: center;
 }
+.proxima-repo-delete-confirm {
+  width: 160px;
+  background: var(--bg);
+  border: 1px solid var(--rule-strong);
+  color: var(--ink-90);
+  padding: 6px 8px;
+  font-family: var(--mono);
+  font-size: 11px;
+}

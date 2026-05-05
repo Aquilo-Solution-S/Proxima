@@ -570,6 +570,41 @@ impl From<proxima_code::IndexReport> for IndexReportTs {
     }
 }
 
+#[derive(Debug, Clone, serde::Serialize, specta::Type)]
+pub struct RepoEraseReceiptTs {
+    pub repo_id: String,
+    pub completed_at: String,
+    pub facts_deleted: u64,
+    pub abstractions_deleted: u64,
+    pub edges_deleted: u64,
+    pub embeddings_deleted: u64,
+    pub events_deleted: u64,
+    pub citation_mappings_deleted: u64,
+    pub cited_objects_deleted: u64,
+    pub source_batches_deleted: u64,
+    pub f2a_rows_deleted: u64,
+    pub repo_record_deleted: bool,
+}
+
+impl From<proxima_code::RepoEraseReceipt> for RepoEraseReceiptTs {
+    fn from(r: proxima_code::RepoEraseReceipt) -> Self {
+        Self {
+            repo_id: r.repo_id.to_string(),
+            completed_at: r.completed_at.to_string(),
+            facts_deleted: r.facts_deleted,
+            abstractions_deleted: r.abstractions_deleted,
+            edges_deleted: r.edges_deleted,
+            embeddings_deleted: r.embeddings_deleted,
+            events_deleted: r.events_deleted,
+            citation_mappings_deleted: r.citation_mappings_deleted,
+            cited_objects_deleted: r.cited_objects_deleted,
+            source_batches_deleted: r.source_batches_deleted,
+            f2a_rows_deleted: r.f2a_rows_deleted,
+            repo_record_deleted: r.repo_record_deleted,
+        }
+    }
+}
+
 /// # Errors
 /// Returns `CommandError::Storage` on database failures.
 #[tauri::command]
@@ -637,6 +672,22 @@ async fn repos_delete(
     proxima_code::delete_repo(pg.pool(), &owner, uuid)
         .await
         .map_err(CommandError::from)
+}
+
+/// # Errors
+/// `InvalidUuid` if `repo_id` doesn't parse, `UnknownRepo` if the repo
+/// is not registered for the sentinel owner, `Storage` otherwise.
+#[tauri::command]
+#[specta::specta]
+async fn repos_erase(
+    pg: State<'_, Arc<PgStorage>>,
+    repo_id: String,
+) -> Result<RepoEraseReceiptTs, CommandError> {
+    let owner = sentinel_owner();
+    let uuid =
+        Uuid::parse_str(&repo_id).map_err(|_| CommandError::InvalidUuid { value: repo_id })?;
+    let receipt = proxima_code::erase_repo(pg.pool(), &owner, uuid).await?;
+    Ok(receipt.into())
 }
 
 /// Spawns a detached background task. Returns immediately. Per-commit
@@ -746,6 +797,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
         repos_list,
         repos_register,
         repos_delete,
+        repos_erase,
         repo_ingest,
     ])
 }

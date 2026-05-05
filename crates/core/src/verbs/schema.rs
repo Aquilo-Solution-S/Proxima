@@ -3,7 +3,7 @@
 //! See docs/14-protocol-surface.md §"Schema" and
 //! docs/03-schema-registry.md.
 
-use crate::{RelationDescriptor, SchemaId, SchemaVersion};
+use crate::{RegisteredRelation, RelationDescriptor, SchemaId, SchemaVersion};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, specta::Type)]
 pub enum PayloadKind {
@@ -93,6 +93,32 @@ impl SchemaRegistry {
     #[must_use]
     pub fn lookup_relation(&self, relation: &str) -> Option<&RelationDescriptor> {
         self.relations.iter().find(|r| r.relation == relation)
+    }
+
+    /// Resolve a relation for an edge write. Typed relations also
+    /// resolve their registered EdgePayload sidecar table; substrate
+    /// relations return `payload_sidecar_table = None`.
+    #[must_use]
+    pub fn resolve_relation(&self, relation: &str) -> Option<RegisteredRelation<'_>> {
+        let descriptor = self.lookup_relation(relation)?;
+        let payload_sidecar_table = match &descriptor.payload_schema {
+            Some(payload_schema) => Some(
+                self.schemas
+                    .iter()
+                    .find(|s| {
+                        s.kind == PayloadKind::Edge
+                            && s.schema_id == payload_schema.schema_id
+                            && s.schema_version == payload_schema.schema_version
+                    })?
+                    .sidecar_table
+                    .as_deref()?,
+            ),
+            None => None,
+        };
+        Some(RegisteredRelation {
+            descriptor,
+            payload_sidecar_table,
+        })
     }
 
     /// Lookup by `(schema_id, schema_version)`. Used by

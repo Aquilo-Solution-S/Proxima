@@ -11,6 +11,7 @@ import {
   commands,
   type IndexReportTs,
   type IngestProgressTs,
+  type RepoEraseReceiptTs,
   type RepoRecordTs,
 } from "../../bindings";
 import { formatCommandError } from "../../format-error";
@@ -22,6 +23,12 @@ type IngestState =
   | { kind: "done"; repoId: string; report: IndexReportTs }
   | { kind: "error"; repoId: string; message: string };
 
+type EraseState =
+  | { kind: "idle" }
+  | { kind: "running"; repoId: string; displayName: string }
+  | { kind: "done"; receipt: RepoEraseReceiptTs }
+  | { kind: "error"; repoId: string; message: string };
+
 async function loadRepos(): Promise<RepoRecordTs[]> {
   const r = await commands.reposList();
   if (r.status === "error") throw r.error;
@@ -29,18 +36,29 @@ async function loadRepos(): Promise<RepoRecordTs[]> {
 }
 
 export const ReposPanel: Component = () => {
-  const [repos, { refetch }] = createResource(loadRepos);
+  const [repos, { mutate, refetch }] = createResource(loadRepos);
   const [globalError, setGlobalError] = createSignal<string | null>(null);
   const [ingest, setIngest] = createSignal<IngestState>({ kind: "idle" });
+  const [erase, setErase] = createSignal<EraseState>({ kind: "idle" });
 
   const isRunning = (repoId: string): boolean => {
     const s = ingest();
     return s.kind === "running" && s.repoId === repoId;
   };
-  const anyRunning = (): boolean => ingest().kind === "running";
+  const isErasing = (repoId: string): boolean => {
+    const s = erase();
+    return s.kind === "running" && s.repoId === repoId;
+  };
+  const eraseDoneReceipt = (): RepoEraseReceiptTs | null => {
+    const s = erase();
+    return s.kind === "done" ? s.receipt : null;
+  };
+  const anyBusy = (): boolean =>
+    ingest().kind === "running" || erase().kind === "running";
 
   const handleAdd = async (): Promise<void> => {
     setGlobalError(null);
+    setErase({ kind: "idle" });
     const selected = await openDialog({
       directory: true,
       multiple: false,
@@ -58,20 +76,31 @@ export const ReposPanel: Component = () => {
 
   const handleDelete = async (repo: RepoRecordTs): Promise<void> => {
     setGlobalError(null);
-    const ok = window.confirm(
-      `Remove "${repo.display_name}" from the registry? Ingested data is kept.`,
-    );
-    if (!ok) return;
-    const r = await commands.reposDelete(repo.repo_id);
+    setErase({ kind: "idle" });
+    setErase({
+      kind: "running",
+      repoId: repo.repo_id,
+      displayName: repo.display_name,
+    });
+    const r = await commands.reposErase(repo.repo_id);
     if (r.status === "error") {
-      setGlobalError(formatCommandError(r.error));
+      const message = formatCommandError(r.error);
+      setErase({ kind: "error", repoId: repo.repo_id, message });
+      setGlobalError(message);
       return;
     }
-    refetch();
+    mutate((current) => current?.filter((r) => r.repo_id !== repo.repo_id));
+    const ingestState = ingest();
+    if ("repoId" in ingestState && ingestState.repoId === repo.repo_id) {
+      setIngest({ kind: "idle" });
+    }
+    setErase({ kind: "done", receipt: r.data });
+    void refetch();
   };
 
   const handleIngest = async (repo: RepoRecordTs): Promise<void> => {
     setGlobalError(null);
+    setErase({ kind: "idle" });
     setIngest({ kind: "running", repoId: repo.repo_id, latest: null });
 
     const onProgress = new Channel<IngestProgressTs>();
@@ -102,7 +131,7 @@ export const ReposPanel: Component = () => {
         <button
           type="button"
           class="proxima-btn"
-          disabled={anyRunning()}
+          disabled={anyBusy()}
           onClick={handleAdd}
         >
           Add Repo
@@ -111,6 +140,19 @@ export const ReposPanel: Component = () => {
 
       <Show when={globalError()}>
         {(msg) => <p class="proxima-error">{msg()}</p>}
+      </Show>
+      <Show when={erase().kind === "running"}>
+        <LoadingSurface mode="inline" label="Deleting" size={36} />
+      </Show>
+      <Show when={eraseDoneReceipt()}>
+        {(r) => (
+          <p class="proxima-dim proxima-mono">
+            deleted {r().facts_deleted.toString()} facts,{" "}
+            {r().abstractions_deleted.toString()} abstractions,{" "}
+            {r().edges_deleted.toString()} edges,{" "}
+            {r().embeddings_deleted.toString()} embeddings
+          </p>
+        )}
       </Show>
 
       <Show
@@ -132,8 +174,10 @@ export const ReposPanel: Component = () => {
                 <RepoRow
                   repo={repo}
                   isRunning={isRunning(repo.repo_id)}
-                  anyRunning={anyRunning()}
+                  isErasing={isErasing(repo.repo_id)}
+                  anyBusy={anyBusy()}
                   ingest={ingest()}
+                  erase={erase()}
                   onIngest={() => handleIngest(repo)}
                   onDelete={() => handleDelete(repo)}
                 />
@@ -149,12 +193,19 @@ export const ReposPanel: Component = () => {
 const RepoRow: Component<{
   repo: RepoRecordTs;
   isRunning: boolean;
-  anyRunning: boolean;
+  isErasing: boolean;
+  anyBusy: boolean;
   ingest: IngestState;
+  erase: EraseState;
   onIngest: () => void;
   onDelete: () => void;
 }> = (props) => {
+  const [confirmingDelete, setConfirmingDelete] = createSignal(false);
+  const [confirmText, setConfirmText] = createSignal("");
+
   const status = (): string => {
+    if (props.isErasing) return "deleting repo data...";
+    if (confirmingDelete()) return "type repo name to confirm deletion";
     if (props.isRunning) {
       const s = props.ingest;
       if (s.kind !== "running") return "starting…";
@@ -170,10 +221,28 @@ const RepoRow: Component<{
     if (s.kind === "error" && s.repoId === props.repo.repo_id) {
       return `error: ${s.message}`;
     }
+    const e = props.erase;
+    if (e.kind === "error" && e.repoId === props.repo.repo_id) {
+      return `error: ${e.message}`;
+    }
     if (props.repo.has_been_polled && props.repo.last_polled_at) {
       return `last polled ${new Date(props.repo.last_polled_at).toLocaleString()}`;
     }
     return "never polled";
+  };
+  const canConfirmDelete = (): boolean =>
+    confirmText() === props.repo.display_name && !props.anyBusy;
+  const openDeleteConfirm = (): void => {
+    setConfirmText("");
+    setConfirmingDelete(true);
+  };
+  const cancelDeleteConfirm = (): void => {
+    setConfirmText("");
+    setConfirmingDelete(false);
+  };
+  const confirmDelete = (): void => {
+    if (!canConfirmDelete()) return;
+    props.onDelete();
   };
 
   return (
@@ -184,22 +253,54 @@ const RepoRow: Component<{
       </div>
       <div class="proxima-repo-status">{status()}</div>
       <div class="proxima-repo-actions">
-        <button
-          type="button"
-          class="proxima-btn"
-          disabled={props.anyRunning}
-          onClick={props.onIngest}
+        <Show
+          when={confirmingDelete()}
+          fallback={
+            <>
+              <button
+                type="button"
+                class="proxima-btn"
+                disabled={props.anyBusy}
+                onClick={props.onIngest}
+              >
+                {props.isRunning ? "Ingesting…" : "Ingest"}
+              </button>
+              <button
+                type="button"
+                class="proxima-btn proxima-btn-danger"
+                disabled={props.anyBusy}
+                onClick={openDeleteConfirm}
+              >
+                {props.isErasing ? "Deleting..." : "Delete"}
+              </button>
+            </>
+          }
         >
-          {props.isRunning ? "Ingesting…" : "Ingest"}
-        </button>
-        <button
-          type="button"
-          class="proxima-btn proxima-btn-danger"
-          disabled={props.anyRunning}
-          onClick={props.onDelete}
-        >
-          Remove
-        </button>
+          <input
+            type="text"
+            class="proxima-repo-delete-confirm"
+            value={confirmText()}
+            placeholder={props.repo.display_name}
+            disabled={props.anyBusy}
+            onInput={(e) => setConfirmText(e.currentTarget.value)}
+          />
+          <button
+            type="button"
+            class="proxima-btn proxima-btn-danger"
+            disabled={!canConfirmDelete()}
+            onClick={confirmDelete}
+          >
+            Confirm
+          </button>
+          <button
+            type="button"
+            class="proxima-btn"
+            disabled={props.anyBusy}
+            onClick={cancelDeleteConfirm}
+          >
+            Cancel
+          </button>
+        </Show>
       </div>
     </article>
   );

@@ -19,8 +19,8 @@ use async_trait::async_trait;
 use time::OffsetDateTime;
 
 use crate::{
-    LlmCaps, MemoryId, ModelTier, Owner, PersonalityId, PersonalityStateHash, SchemaId, SchemaVersion,
-    SourceBatchId,
+    LlmCaps, MemoryId, ModelTier, Owner, PersonalityId, PersonalityStateHash, RegisteredRelation,
+    SchemaId, SchemaVersion, SourceBatchId,
 };
 
 /// Personality state captured at operator-invocation start (docs/04
@@ -208,6 +208,7 @@ pub struct ConsolidateBatchF2ARequest<'a> {
     pub batch_id: SourceBatchId,
     pub owner: Owner,
     pub operator_id: &'a str,
+    pub provenance_relation: RegisteredRelation<'a>,
     pub model_id: &'a str,
     pub prompt_version: &'a str,
     pub personality: &'a PersonalitySnapshot,

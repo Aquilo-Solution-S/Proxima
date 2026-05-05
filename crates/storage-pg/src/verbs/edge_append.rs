@@ -7,18 +7,18 @@
 //!
 //! Used by M5.5 typed F-layer edges (e.g. `proxima-code/calls`).
 
-use proxima_core::{Owner, RelationClass, StorageError};
+use proxima_core::{Owner, RegisteredRelation, StorageError};
 
 use crate::error::map_err;
 
 /// Draft of an edge to be written. All fields map directly to
 /// `proxima_core.edges` columns except `edge_id`, which is generated
-/// by the caller (UUIDv7 per AGENTS.md invariant 17).
+/// by the caller (UUIDv7 per AGENTS.md invariant 17), and
+/// `relation`, which must be resolved from `SchemaRegistry`.
 #[derive(Debug, Clone)]
 pub struct EdgeDraft<'a> {
     pub edge_id: uuid::Uuid,
-    pub relation: &'a str,
-    pub class: RelationClass,
+    pub relation: RegisteredRelation<'a>,
     pub source_kind: &'a str,
     pub source_memory_id: Option<uuid::Uuid>,
     pub source_goal_id: Option<uuid::Uuid>,
@@ -31,12 +31,10 @@ pub struct EdgeDraft<'a> {
 }
 
 /// Write an edge row + (optional) typed sidecar + the EdgeAppend
-/// change_event in one transaction. The sidecar is written iff
-/// `payload` is `Some` and `sidecar_table` is `Some`.
-///
-/// If `sidecar_table` is `None`, `payload` MUST be `None` (debug
-/// assert). This mirrors the `RelationDescriptor.payload_schema =
-/// None` substrate-only path.
+/// change_event in one transaction. The relation must be resolved
+/// from the immutable `SchemaRegistry`, so the writer never accepts
+/// ad-hoc relation strings. Typed relations require a payload;
+/// substrate relations reject one.
 ///
 /// Idempotency: the edge insert uses `ON CONFLICT (edge_id) DO
 /// NOTHING`. When a caller derives `edge_id` from a stable natural
@@ -56,15 +54,25 @@ pub async fn append_edge_in_tx(
     tx: &mut sqlx::PgConnection,
     draft: &EdgeDraft<'_>,
     payload: Option<&serde_json::Value>,
-    sidecar_table: Option<&str>,
 ) -> Result<(), StorageError> {
     let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(draft.owner);
-
-    // Debug-assert: sidecar_table None implies payload None.
-    debug_assert!(
-        sidecar_table.is_some() || payload.is_none(),
-        "sidecar_table is None but payload is Some"
-    );
+    let descriptor = draft.relation.descriptor;
+    let sidecar_table = draft.relation.payload_sidecar_table;
+    match (sidecar_table, payload) {
+        (Some(_), Some(_)) | (None, None) => {}
+        (Some(_), None) => {
+            return Err(StorageError::ConstraintViolation(format!(
+                "missing EdgePayload for typed relation {}",
+                descriptor.relation
+            )));
+        }
+        (None, Some(_)) => {
+            return Err(StorageError::ConstraintViolation(format!(
+                "payload supplied for substrate relation {}",
+                descriptor.relation
+            )));
+        }
+    }
 
     // 1. Insert the edge row. ON CONFLICT (edge_id) DO NOTHING +
     //    RETURNING gives us a sentinel that distinguishes a fresh
@@ -81,8 +89,8 @@ pub async fn append_edge_in_tx(
          RETURNING edge_id",
     )
     .bind(draft.edge_id)
-    .bind(draft.relation)
-    .bind(draft.class.as_str())
+    .bind(descriptor.relation.as_str())
+    .bind(descriptor.class.as_str())
     .bind(draft.source_kind)
     .bind(draft.source_memory_id)
     .bind(draft.source_goal_id)
@@ -143,7 +151,7 @@ pub async fn append_edge_in_tx(
     .bind(owner_principal_id)
     .bind(owner_org_id)
     .bind(draft.edge_id)
-    .bind(draft.relation)
+    .bind(descriptor.relation.as_str())
     .bind(draft.source_kind)
     .bind(draft.source_memory_id)
     .bind(draft.source_goal_id)
