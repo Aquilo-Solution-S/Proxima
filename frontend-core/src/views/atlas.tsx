@@ -8,7 +8,10 @@
  */
 
 import {
+  For,
+  Show,
   type Component,
+  type JSX,
   createEffect,
   createMemo,
   createSignal,
@@ -54,27 +57,51 @@ const TINT: Record<AtlasNodeKind, number> = {
   Goal: 0xd9c28a,
 };
 
+const TINT_HEX: Record<AtlasNodeKind, string> = {
+  Fact: "#A8AEBA",
+  Abstraction: "#C9A86A",
+  Perspective: "#E8E4D6",
+  Goal: "#D9C28A",
+};
+
+const KIND_GLYPH: Record<AtlasNodeKind, string> = {
+  Fact: "◆",
+  Abstraction: "△",
+  Perspective: "▽",
+  Goal: "◇",
+};
+
 const LAYER_LABELS: Array<{ z: number; t: string; c: string }> = [
-  { z: 0, t: "F · Facts", c: "#A8AEBA" },
-  { z: 1.6, t: "A · Abstractions", c: "#C9A86A" },
-  { z: 3.2, t: "P · Perspectives", c: "#E8E4D6" },
-  { z: 4.8, t: "G · Goals", c: "#D9C28A" },
+  { z: 0, t: "F · Facts", c: TINT_HEX.Fact },
+  { z: 1.6, t: "A · Abstractions", c: TINT_HEX.Abstraction },
+  { z: 3.2, t: "P · Perspectives", c: TINT_HEX.Perspective },
+  { z: 4.8, t: "G · Goals", c: TINT_HEX.Goal },
 ];
 
 // ── Adjacency + chain traversal ────────────────────────────────────────
+interface OutEntry {
+  tgt: string;
+  id: string;
+  kind: string;
+}
+interface InEntry {
+  src: string;
+  id: string;
+  kind: string;
+}
 interface Adjacency {
-  out: Map<string, Array<{ tgt: string; id: string }>>;
-  inn: Map<string, Array<{ src: string; id: string }>>;
+  out: Map<string, OutEntry[]>;
+  inn: Map<string, InEntry[]>;
 }
 
 function buildAdjacency(edges: AtlasEdge[]): Adjacency {
-  const out = new Map<string, Array<{ tgt: string; id: string }>>();
-  const inn = new Map<string, Array<{ src: string; id: string }>>();
+  const out = new Map<string, OutEntry[]>();
+  const inn = new Map<string, InEntry[]>();
   for (const e of edges) {
     if (!out.has(e.src)) out.set(e.src, []);
     if (!inn.has(e.tgt)) inn.set(e.tgt, []);
-    out.get(e.src)!.push({ tgt: e.tgt, id: e.id });
-    inn.get(e.tgt)!.push({ src: e.src, id: e.id });
+    out.get(e.src)!.push({ tgt: e.tgt, id: e.id, kind: e.kind });
+    inn.get(e.tgt)!.push({ src: e.src, id: e.id, kind: e.kind });
   }
   return { out, inn };
 }
@@ -128,6 +155,173 @@ function geometryFor(kind: AtlasNodeKind): THREE.BufferGeometry {
   }
 }
 
+// ── Filter Pill primitive ──────────────────────────────────────────────
+const Pill: Component<{
+  active: boolean;
+  onClick: () => void;
+  color: string;
+  count?: number;
+  children: JSX.Element;
+}> = (props) => (
+  <button
+    type="button"
+    class={`atlas-pill ${props.active ? "on" : "off"}`}
+    style={{ "--pill-color": props.color }}
+    onClick={props.onClick}
+  >
+    <span class="dot" />
+    <span class="lbl">{props.children}</span>
+    <Show when={props.count != null}>
+      <span class="ct">{props.count}</span>
+    </Show>
+  </button>
+);
+
+// ── Inspector (right panel) ────────────────────────────────────────────
+const Inspector: Component<{
+  hub: Hub;
+  node: AtlasNode | null;
+  adj: Adjacency;
+  byId: Map<string, AtlasNode>;
+  onPickNode: (id: string) => void;
+}> = (props) => (
+  <Show
+    when={props.node}
+    fallback={
+      <div class="atlas-inspector empty">
+        <div class="inspector-empty-head">Atlas inspector</div>
+        <div class="inspector-empty-body">
+          Click a node to open. Hover to preview. Click an outgoing or
+          incoming edge to walk the chain.
+        </div>
+        <div class="inspector-legend">
+          <div class="leg-row">
+            <span style={{ color: TINT_HEX.Fact }}>{KIND_GLYPH.Fact}</span>{" "}
+            Fact <em>z=0</em>
+          </div>
+          <div class="leg-row">
+            <span style={{ color: TINT_HEX.Abstraction }}>
+              {KIND_GLYPH.Abstraction}
+            </span>{" "}
+            Abstraction <em>z=1.6</em>
+          </div>
+          <div class="leg-row">
+            <span style={{ color: TINT_HEX.Perspective }}>
+              {KIND_GLYPH.Perspective}
+            </span>{" "}
+            Perspective <em>z=3.2</em>
+          </div>
+          <div class="leg-row">
+            <span style={{ color: TINT_HEX.Goal }}>{KIND_GLYPH.Goal}</span>{" "}
+            Goal <em>z=4.8</em>
+          </div>
+          <div class="leg-rule" />
+          <div class="leg-row faint">edges uniform · click to walk chain</div>
+        </div>
+      </div>
+    }
+  >
+    {(node) => {
+      const out = () => props.adj.out.get(node().id) ?? [];
+      const inn = () => props.adj.inn.get(node().id) ?? [];
+      const renderer = () =>
+        props.hub.rendererFor(node().schemaId, node().schemaVersion);
+      const rendererFlavor = () => {
+        const r = props.hub.registeredRenderers().find(
+          (rr) =>
+            rr.schemaId === node().schemaId &&
+            rr.schemaVersion === node().schemaVersion,
+        );
+        return r?.flavor ?? null;
+      };
+      return (
+        <div class="atlas-inspector">
+          <div class="i-head">
+            <span class="i-glyph" style={{ color: TINT_HEX[node().kind] }}>
+              {KIND_GLYPH[node().kind]}
+            </span>
+            <span class="i-kind">{node().kind}</span>
+            <Show when={node().flavor}>
+              <span class="i-flavor">ƒ:{node().flavor}</span>
+            </Show>
+          </div>
+          <div class="i-id">{node().id}</div>
+          <div class="i-schema">
+            {node().schemaId} @ v{node().schemaVersion}
+          </div>
+          <Show when={node().title}>
+            <div class="i-title">{node().title}</div>
+          </Show>
+
+          <div class="i-meta">
+            <div class="i-row">
+              <span class="k">renderer</span>
+              <span class="v">
+                <Show
+                  when={renderer()}
+                  fallback={<em>(none registered — substrate default)</em>}
+                >
+                  via ƒ:{rendererFlavor()} (payload pending data wiring)
+                </Show>
+              </span>
+            </div>
+            <div class="i-row">
+              <span class="k">x, y</span>
+              <span class="v mono">
+                {node().x.toFixed(2)}, {node().y.toFixed(2)}
+              </span>
+            </div>
+            <div class="i-row">
+              <span class="k">layer z</span>
+              <span class="v mono">{LAYER_Z[node().kind]}</span>
+            </div>
+          </div>
+
+          <Show when={out().length > 0}>
+            <div class="i-edges">
+              <div class="i-edges-head">→ outgoing ({out().length})</div>
+              <For each={out().slice(0, 10)}>
+                {(e) => {
+                  const t = props.byId.get(e.tgt);
+                  return (
+                    <div
+                      class="i-edge"
+                      onClick={() => props.onPickNode(e.tgt)}
+                    >
+                      <span class="i-edge-cls">{e.kind}</span>
+                      <span class="i-edge-tgt">{t?.title ?? e.tgt}</span>
+                    </div>
+                  );
+                }}
+              </For>
+            </div>
+          </Show>
+
+          <Show when={inn().length > 0}>
+            <div class="i-edges">
+              <div class="i-edges-head">← incoming ({inn().length})</div>
+              <For each={inn().slice(0, 10)}>
+                {(e) => {
+                  const s = props.byId.get(e.src);
+                  return (
+                    <div
+                      class="i-edge"
+                      onClick={() => props.onPickNode(e.src)}
+                    >
+                      <span class="i-edge-cls">{e.kind}</span>
+                      <span class="i-edge-tgt">{s?.title ?? e.src}</span>
+                    </div>
+                  );
+                }}
+              </For>
+            </div>
+          </Show>
+        </div>
+      );
+    }}
+  </Show>
+);
+
 // ── Sprite labels for layers ───────────────────────────────────────────
 function makeLayerLabel(text: string, color: string): THREE.Sprite {
   const c = document.createElement("canvas");
@@ -157,6 +351,57 @@ export const Atlas: Component<{
 
   const [hoverId, setHoverId] = createSignal<string | null>(null);
   const [pickedId, setPickedId] = createSignal<string | null>(null);
+
+  // Filters
+  const [showFact, setShowFact] = createSignal(true);
+  const [showAbs, setShowAbs] = createSignal(true);
+  const [showPersp, setShowPersp] = createSignal(true);
+  const [showGoal, setShowGoal] = createSignal(true);
+  const [hiddenFlavors, setHiddenFlavors] = createSignal<Set<string>>(new Set());
+
+  function toggleFlavor(f: string) {
+    setHiddenFlavors((prev) => {
+      const next = new Set(prev);
+      if (next.has(f)) next.delete(f);
+      else next.add(f);
+      return next;
+    });
+  }
+
+  const passKind = (k: AtlasNodeKind) =>
+    (k === "Fact" && showFact()) ||
+    (k === "Abstraction" && showAbs()) ||
+    (k === "Perspective" && showPersp()) ||
+    (k === "Goal" && showGoal());
+
+  const passFlavor = (f: string | null) =>
+    f === null || !hiddenFlavors().has(f);
+
+  const byId = createMemo(() => new Map(nodes().map((n) => [n.id, n] as const)));
+  const pickedNode = () => {
+    const id = pickedId();
+    return id ? byId().get(id) ?? null : null;
+  };
+  const hoverNode = () => {
+    const id = hoverId();
+    return id ? byId().get(id) ?? null : null;
+  };
+  const focusNode = () => hoverNode() ?? pickedNode();
+
+  const counts = createMemo(() => {
+    const kind: Record<AtlasNodeKind, number> = {
+      Fact: 0,
+      Abstraction: 0,
+      Perspective: 0,
+      Goal: 0,
+    };
+    const flavor: Record<string, number> = {};
+    for (const n of nodes()) {
+      kind[n.kind]++;
+      if (n.flavor) flavor[n.flavor] = (flavor[n.flavor] ?? 0) + 1;
+    }
+    return { kind, flavor };
+  });
 
   let mountRef!: HTMLDivElement;
 
@@ -422,18 +667,23 @@ export const Atlas: Component<{
     }
   });
 
-  // ── Focus highlighting (chain lit, rest ghosted) ─────────────────────
+  // ── Focus highlighting + filter visibility (chain lit, rest ghosted) ─
   createEffect(() => {
     const focus = focusId();
     const c = chain();
     const hasFocus = c.nodes.size > 1;
+    const ids = byId();
 
     for (const n of nodes()) {
       const m = nodeMeshes.get(n.id);
       const halo = haloMeshes.get(n.id);
       if (!m) continue;
       const mat = m.material as THREE.MeshBasicMaterial;
-      const opacity = hasFocus ? (c.nodes.has(n.id) ? 0.98 : 0.1) : 0.92;
+      const visible = passKind(n.kind) && passFlavor(n.flavor);
+      let opacity: number;
+      if (!visible) opacity = 0.04;
+      else if (hasFocus) opacity = c.nodes.has(n.id) ? 0.98 : 0.1;
+      else opacity = 0.92;
       mat.opacity = opacity;
       if (halo) {
         const haloMat = halo.material as THREE.MeshBasicMaterial;
@@ -445,8 +695,17 @@ export const Atlas: Component<{
     for (const e of edges()) {
       const line = edgeLines.get(e.id);
       if (!line) continue;
+      const a = ids.get(e.src);
+      const b = ids.get(e.tgt);
+      if (!a || !b) continue;
+      const aV = passKind(a.kind) && passFlavor(a.flavor);
+      const bV = passKind(b.kind) && passFlavor(b.flavor);
       const mat = line.material as THREE.LineBasicMaterial;
-      mat.opacity = hasFocus ? (c.edges.has(e.id) ? 0.85 : 0.04) : 0.22;
+      let opacity: number;
+      if (!aV || !bV) opacity = 0.02;
+      else if (hasFocus) opacity = c.edges.has(e.id) ? 0.85 : 0.04;
+      else opacity = 0.22;
+      mat.opacity = opacity;
     }
   });
 
@@ -475,8 +734,68 @@ export const Atlas: Component<{
       </div>
 
       <div class="atlas-body">
-        {/* Filter rail — 2e.3 wires kind / flavor pills here */}
-        <div class="atlas-filters" />
+        <div class="atlas-filters">
+          <div class="filter-section">
+            <div class="filter-head">layer</div>
+            <Pill
+              active={showFact()}
+              onClick={() => setShowFact((v) => !v)}
+              color={TINT_HEX.Fact}
+              count={counts().kind.Fact}
+            >
+              F · Facts
+            </Pill>
+            <Pill
+              active={showAbs()}
+              onClick={() => setShowAbs((v) => !v)}
+              color={TINT_HEX.Abstraction}
+              count={counts().kind.Abstraction}
+            >
+              A · Abstractions
+            </Pill>
+            <Pill
+              active={showPersp()}
+              onClick={() => setShowPersp((v) => !v)}
+              color={TINT_HEX.Perspective}
+              count={counts().kind.Perspective}
+            >
+              P · Perspectives
+            </Pill>
+            <Pill
+              active={showGoal()}
+              onClick={() => setShowGoal((v) => !v)}
+              color={TINT_HEX.Goal}
+              count={counts().kind.Goal}
+            >
+              G · Goals
+            </Pill>
+          </div>
+
+          <div class="filter-section">
+            <div class="filter-head">flavor</div>
+            <Show
+              when={props.hub.registeredFlavors().length > 0}
+              fallback={
+                <div class="filter-note">
+                  No flavors registered. Bare substrate.
+                </div>
+              }
+            >
+              <For each={props.hub.registeredFlavors()}>
+                {(f) => (
+                  <Pill
+                    active={!hiddenFlavors().has(f)}
+                    onClick={() => toggleFlavor(f)}
+                    color={TINT_HEX.Abstraction}
+                    count={counts().flavor[f] ?? 0}
+                  >
+                    ƒ:{f}
+                  </Pill>
+                )}
+              </For>
+            </Show>
+          </div>
+        </div>
 
         <div class="atlas-canvas-wrap">
           <div class="atlas-canvas" ref={mountRef} />
@@ -490,8 +809,13 @@ export const Atlas: Component<{
           </div>
         </div>
 
-        {/* Inspector — 2e.3 dispatches via hub.rendererFor for selected node */}
-        <div class="atlas-inspector empty" />
+        <Inspector
+          hub={props.hub}
+          node={focusNode()}
+          adj={adj()}
+          byId={byId()}
+          onPickNode={setPickedId}
+        />
       </div>
     </div>
   );
