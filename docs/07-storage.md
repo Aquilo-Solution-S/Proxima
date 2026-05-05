@@ -123,6 +123,7 @@ events(
     source_batch_id,
     owner_*,
     schema_id,
+    schema_version,
     observed_at,  occurred_at,
     payload_ref           -- into schema sidecar (per 03)
 )
@@ -131,6 +132,7 @@ memories(
     memory_id             pk,             -- UUIDv7
     owner_*,
     schema_id             NOT NULL,        -- every memory carries a registered schema ([03](docs/03-schema-registry.md))
+    schema_version        NOT NULL,        -- writer-known payload version returned by Query / Subscribe
     created_at,
     -- kind-discriminated columns (exactly one variant present per row):
     -- Fact variant:
@@ -365,10 +367,10 @@ change_event(
 ```
 
 `payload_ref` on `events` resolves to the sidecar table for
-`(schema_id, schema_version)` per [03](docs/03-schema-registry.md). Version
-lives in the sidecar table name, not on the parent row. Fact,
-Abstraction, Perspective, Goal, CitedObject, and CitationMapping
-sidecars are all insert-only; lifetime is tied to the parent row.
+`(schema_id, schema_version)` per [03](docs/03-schema-registry.md).
+Fact, Abstraction, Perspective, Goal, CitedObject, and
+CitationMapping sidecars are all insert-only; lifetime is tied to
+the parent row.
 
 ## Append-only
 

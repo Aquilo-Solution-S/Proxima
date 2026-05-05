@@ -76,7 +76,7 @@ pub(crate) async fn query_memories(
 
     let mut sql = String::from(
         "SELECT m.memory_id, m.owner_principal_kind, m.owner_principal_id, \
-                m.owner_org_id, m.schema_id, m.kind, m.event_id,",
+                m.owner_org_id, m.schema_id, m.schema_version, m.kind, m.event_id,",
     );
 
     // Bindings: $1=owner_kind, $2=owner_principal_id. $3 is reserved
@@ -99,8 +99,10 @@ pub(crate) async fn query_memories(
             let alias = format!("s_{idx}");
             write!(
                 sql,
-                " WHEN m.schema_id = ${} THEN row_to_json({alias})::text",
-                case_param_base + idx,
+                " WHEN m.schema_id = ${} AND m.schema_version = ${} \
+                  THEN row_to_json({alias})::text",
+                case_param_base + (idx * 2),
+                case_param_base + (idx * 2) + 1,
                 alias = alias
             )
             .expect("write to String is infallible");
@@ -198,9 +200,12 @@ pub(crate) async fn query_memories(
     if let Some(sid) = &schema_id_filter {
         q = q.bind(sid.clone());
     }
-    // Bind schema_id values for the CASE expression in payload projection
+    // Bind (schema_id, schema_version) values for the CASE expression
+    // in payload projection. Multiple schema versions can share the
+    // same schema_id while living in different sidecar tables.
     for schema in &schemas_with_sidecar {
         q = q.bind(schema.schema_id.as_str().to_string());
+        q = q.bind(schema.schema_version.into_inner().cast_signed());
     }
 
     let rows: Vec<MemoryRowDb> = q
@@ -210,31 +215,42 @@ pub(crate) async fn query_memories(
 
     let memories: Vec<MemoryRow> = rows
         .into_iter()
-        .map(|r| MemoryRow {
-            id: MemoryId::new(r.memory_id),
-            kind: match r.kind.as_deref() {
-                Some("Abstraction") => EntityKind::Abstraction,
-                Some("Perspective") => EntityKind::Perspective,
-                _ => EntityKind::Fact,
-            },
-            schema_id: SchemaId::new(r.schema_id),
-            schema_version: SchemaVersion::new(1),
-            owner: Owner {
-                principal: match r.owner_principal_kind.as_str() {
-                    "User" => Principal::User(UserId::new(r.owner_principal_id)),
-                    _ => Principal::Group(GroupId::new(r.owner_principal_id)),
-                },
-                org_id: OrgId::new(r.owner_org_id),
-            },
-            payload: r.payload_json.map(String::into_bytes).unwrap_or_default(),
-        })
-        .collect();
+        .map(memory_row_from_db)
+        .collect::<Result<Vec<_>, _>>()?;
 
     let seq_high_water = read_seq_high_water(pool, owner_kind, owner_principal_id).await?;
 
     Ok(QueryResponse {
         memories,
         seq_high_water,
+    })
+}
+
+fn memory_row_from_db(r: MemoryRowDb) -> Result<MemoryRow, StorageError> {
+    let schema_version = u32::try_from(r.schema_version).map_err(|_| {
+        StorageError::Internal(format!(
+            "invalid memory schema_version {} for memory {}",
+            r.schema_version, r.memory_id
+        ))
+    })?;
+
+    Ok(MemoryRow {
+        id: MemoryId::new(r.memory_id),
+        kind: match r.kind.as_deref() {
+            Some("Abstraction") => EntityKind::Abstraction,
+            Some("Perspective") => EntityKind::Perspective,
+            _ => EntityKind::Fact,
+        },
+        schema_id: SchemaId::new(r.schema_id),
+        schema_version: SchemaVersion::new(schema_version),
+        owner: Owner {
+            principal: match r.owner_principal_kind.as_str() {
+                "User" => Principal::User(UserId::new(r.owner_principal_id)),
+                _ => Principal::Group(GroupId::new(r.owner_principal_id)),
+            },
+            org_id: OrgId::new(r.owner_org_id),
+        },
+        payload: r.payload_json.map(String::into_bytes).unwrap_or_default(),
     })
 }
 
@@ -246,6 +262,7 @@ struct MemoryRowDb {
     owner_principal_id: uuid::Uuid,
     owner_org_id: uuid::Uuid,
     schema_id: String,
+    schema_version: i32,
     kind: Option<String>,
     event_id: Option<Vec<u8>>,
     payload_json: Option<String>,

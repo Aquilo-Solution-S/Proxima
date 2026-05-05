@@ -223,15 +223,16 @@ pub async fn consolidate_batch_f2a(
         sqlx::query(
             "INSERT INTO proxima_core.memories \
                 (memory_id, owner_principal_kind, owner_principal_id, owner_org_id, \
-                 schema_id, kind, text, operator_kind, model_id, prompt_version, \
+                 schema_id, schema_version, kind, text, operator_kind, model_id, prompt_version, \
                  personality_id, personality_state_hash) \
-             VALUES ($1, $2, $3, $4, $5, 'Abstraction', $6, 'FtoA', $7, $8, $9, $10)",
+             VALUES ($1, $2, $3, $4, $5, $6, 'Abstraction', $7, 'FtoA', $8, $9, $10, $11)",
         )
         .bind(memory_id)
         .bind(owner_kind)
         .bind(owner_principal_id)
         .bind(owner_org_id)
         .bind(abs.schema_id.as_str())
+        .bind(i32::try_from(abs.schema_version.into_inner()).unwrap_or(1))
         .bind(&abs.text)
         .bind(req.model_id)
         .bind(req.prompt_version)

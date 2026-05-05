@@ -1,6 +1,7 @@
-import { For, type Component } from "solid-js";
+import { For, Suspense, type Component } from "solid-js";
 import { Dynamic } from "solid-js/web";
 import type { Hub, RegisteredView } from "./hub";
+import { LoadingSurface } from "./primitives";
 
 const EmptyView: Component = () => (
   <div class="shell-empty">No view selected</div>
@@ -31,7 +32,13 @@ export const Shell: Component<{ hub: Hub }> = (props) => {
         </nav>
       </header>
       <main class="shell-main">
-        <Dynamic component={activeView()?.component ?? EmptyView} />
+        <Suspense
+          fallback={
+            <LoadingSurface mode="panel" label="Loading view" stars="on" />
+          }
+        >
+          <Dynamic component={activeView()?.component ?? EmptyView} />
+        </Suspense>
       </main>
       <footer class="status-foot">
         <span class="rail-title">

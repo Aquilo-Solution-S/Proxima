@@ -372,20 +372,19 @@ See [08 §Registration mechanism](08-core-and-flavors.md#registration-mechanism)
 
 ## How memories reference schemas
 
-Every memory carries `schema_id` on its `Memory` row — Facts,
-Abstractions, and Perspectives alike. Version is implicit in sidecar
-table membership: a row in `fact_forgejo_commit_v3` is by definition
-at version 3. The sidecar table is determined by `(kind, schema_id)`
-plus the version encoded in the table name. An Abstraction under
-`code-bug-fix-cluster v1` lives in `abstraction_code_bug_fix_cluster_v1`.
+Every memory carries `(schema_id, schema_version)` on its `Memory`
+row — Facts, Abstractions, and Perspectives alike. The sidecar table
+is determined by `(kind, schema_id, schema_version)`. An Abstraction
+under `code-bug-fix-cluster v1` lives in
+`abstraction_code_bug_fix_cluster_v1`.
 
 When a schema is migrated to a new version, memories stay in place
 in the old sidecar until backfill moves them. Memory identity (id,
 citation, observed_at, event_id) stays untouched — only the typed
 payload's storage shape changes. For A/P, the operator-authored `text`
-also stays untouched across schema migrations. The version pointer
-lives on the wire via `change_event.entity_schema_version`, not on
-the parent row.
+also stays untouched across schema migrations. The version pointer is
+stored on the parent row and repeated on the wire via
+`change_event.entity_schema_version`.
 
 Cross-schema queries go through the engine's query planner, which knows
 which tables to union when a query spans schemas. Within a single

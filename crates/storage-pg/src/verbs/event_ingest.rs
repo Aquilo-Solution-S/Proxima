@@ -159,14 +159,15 @@ pub async fn ingest_event_in_tx(
     sqlx::query(
         "INSERT INTO proxima_core.memories \
             (memory_id, owner_principal_kind, owner_principal_id, \
-             owner_org_id, schema_id, event_id, citation_mapping_id) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7)",
+             owner_org_id, schema_id, schema_version, event_id, citation_mapping_id) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
     )
     .bind(memory_id)
     .bind(owner_kind)
     .bind(owner_principal_id)
     .bind(owner_org_id)
     .bind(draft.schema_id.as_str())
+    .bind(draft.schema_version.into_inner().cast_signed())
     .bind(&event_id_bytes[..])
     .bind(citation_mapping_id)
     .execute(&mut **tx)
