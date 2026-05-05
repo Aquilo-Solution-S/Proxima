@@ -6,6 +6,7 @@ import {
   SchemasView,
   SettingsView,
   SettingsGeneralPanel,
+  SettingsModelsPanel,
   Shell,
   createHub,
   type RegisteredSettingsPanel,
@@ -17,6 +18,12 @@ const substrateSettingsPanels: RegisteredSettingsPanel[] = [
     id: "general",
     label: "General",
     component: SettingsGeneralPanel,
+    flavor: null,
+  },
+  {
+    id: "models",
+    label: "Models",
+    component: SettingsModelsPanel,
     flavor: null,
   },
 ];
