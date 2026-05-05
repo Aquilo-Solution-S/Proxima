@@ -14,6 +14,7 @@ import {
   type RepoRecordTs,
 } from "../../bindings";
 import { formatCommandError } from "../../format-error";
+import { LoadingSurface } from "../../primitives";
 
 type IngestState =
   | { kind: "idle" }
@@ -112,7 +113,10 @@ export const ReposPanel: Component = () => {
         {(msg) => <p class="proxima-error">{msg()}</p>}
       </Show>
 
-      <Show when={!repos.loading} fallback={<p class="proxima-dim">Loading…</p>}>
+      <Show
+        when={!repos.loading}
+        fallback={<LoadingSurface label="Loading repos" />}
+      >
         <Show
           when={(repos() ?? []).length > 0}
           fallback={

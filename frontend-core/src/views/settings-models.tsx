@@ -17,6 +17,7 @@ import {
   type TierBindings,
 } from "../bindings";
 import { formatCommandError as formatError } from "../format-error";
+import { LoadingSurface } from "../primitives";
 
 const TIERS: ModelTier[] = ["fast", "standard", "deep"];
 const DIALECTS: Dialect[] = ["anthropic", "openai"];
@@ -150,7 +151,7 @@ const LlmSection: Component<{
         <p class="proxima-error">Error: {formatError(props.llmModels.error!)}</p>
       </Show>
       <Show when={props.llmModels.loading}>
-        <p class="proxima-dim">Loading…</p>
+        <LoadingSurface mode="inline" label="Loading" size={36} />
       </Show>
       <Show when={props.llmModels()}>
         {(models) => (
@@ -413,7 +414,7 @@ const EmbeddingSection: Component<{
         <p class="proxima-error">Error: {formatError(props.active.error!)}</p>
       </Show>
       <Show when={props.active.loading}>
-        <p class="proxima-dim">Loading…</p>
+        <LoadingSurface mode="inline" label="Loading" size={36} />
       </Show>
       <Show when={props.active()}>
         {(active) => (
@@ -467,7 +468,7 @@ const EmbeddingSection: Component<{
         <p class="proxima-error">Error: {formatError(props.embeddingModels.error!)}</p>
       </Show>
       <Show when={props.embeddingModels.loading}>
-        <p class="proxima-dim">Loading…</p>
+        <LoadingSurface mode="inline" label="Loading" size={36} />
       </Show>
       <Show when={props.embeddingModels()}>
         {(models) => (

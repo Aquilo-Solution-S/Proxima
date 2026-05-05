@@ -6,7 +6,8 @@
   "types": "src/index.ts",
   "exports": {
     ".": "./src/index.ts",
-    "./styles.css": "./src/primitives/styles.css"
+    "./styles.css": "./src/primitives/styles.css",
+    "./proxima-loader.js": "./src/primitives/proxima-loader.js"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"

@@ -29,9 +29,10 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
 
-use proxima_code::{CommitSummaryOperator, IndexReport, LocalGitSource, build_engine, migrator};
+use proxima_code::{
+    IndexReport, LocalGitSource, build_engine, f2a_operator_registry, migrator,
+};
 use proxima_core::auth::NoAuth;
-use proxima_core::operators::OperatorRegistry;
 use proxima_core::{Cursor, OrgId, Owner, Principal, UserId};
 use proxima_llm_ollama::{OllamaEmbeddingClient, OllamaLlmClient};
 use proxima_storage_pg::PgStorage;
@@ -126,13 +127,11 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         let llm = OllamaLlmClient::from_env(&llm_model)?;
         let embed = OllamaEmbeddingClient::from_env(&embed_model, embed_dim)?;
-        let mut ops = OperatorRegistry::new();
-        ops.register_f2a(CommitSummaryOperator::new());
         let engine = build_engine(
             pg.clone(),
             Box::new(NoAuth::new(owner.principal.clone(), owner.clone())),
         )
-        .with_operators(ops)
+        .with_operators(f2a_operator_registry())
         .with_llm(Arc::new(llm))
         .with_embed(Arc::new(embed));
         eprintln!("F→A enabled — llm={llm_model} embed={embed_model} (dim={embed_dim})");

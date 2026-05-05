@@ -3397,6 +3397,7 @@ dependencies = [
  "keyring",
  "proxima-code",
  "proxima-core",
+ "proxima-llm-ollama",
  "proxima-storage-pg",
  "serde",
  "serde_json",
