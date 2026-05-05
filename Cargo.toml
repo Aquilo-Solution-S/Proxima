@@ -9,12 +9,12 @@ license = "Apache-2.0"
 repository = "https://github.com/Aquilo-Solution-S/Proxima"
 
 [workspace.lints.rust]
+warnings = "deny"
 unsafe_code = "deny"
-missing_debug_implementations = "warn"
-unused_must_use = "warn"
+missing_debug_implementations = "deny"
 
 [workspace.lints.clippy]
-pedantic = { level = "warn", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
 module_name_repetitions = "allow"
 
 [workspace.dependencies]
