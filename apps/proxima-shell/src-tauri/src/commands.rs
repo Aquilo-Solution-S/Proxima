@@ -9,7 +9,7 @@ use proxima_core::verbs::goal_write::{GoalDraft, GoalWriteOutcome};
 use proxima_core::verbs::query::{QueryRequest, QueryResponse};
 use proxima_core::verbs::schema::{SchemaRequest, SchemaResponse};
 use proxima_core::verbs::subscribe::SubscribeRequest;
-use proxima_core::{ChangeEvent, Engine};
+use proxima_core::{ChangeEvent, Engine, Owner};
 use proxima_storage_pg::PgStorage;
 use tauri::State;
 use tauri::ipc::Channel;
@@ -313,13 +313,20 @@ pub struct RepoRecordTs {
 
 impl From<proxima_code::RepoRecord> for RepoRecordTs {
     fn from(r: proxima_code::RepoRecord) -> Self {
+        use time::format_description::well_known::Rfc3339;
         Self {
             repo_id: r.repo_id.to_string(),
             canonical_path: r.canonical_path,
             display_name: r.display_name,
             has_been_polled: r.last_polled_at.is_some(),
-            last_polled_at: r.last_polled_at.map(|t| t.to_string()),
-            created_at: r.created_at.to_string(),
+            last_polled_at: r.last_polled_at.map(|t| {
+                t.format(&Rfc3339)
+                    .expect("OffsetDateTime always formats as RFC3339")
+            }),
+            created_at: r
+                .created_at
+                .format(&Rfc3339)
+                .expect("OffsetDateTime always formats as RFC3339"),
         }
     }
 }
@@ -378,6 +385,7 @@ impl From<proxima_code::IndexReport> for IndexReportTs {
 #[serde(tag = "kind", content = "data", rename_all = "camelCase")]
 pub enum RepoIngestEventTs {
     Progress(IngestProgressTs),
+    Snapshot(RepoIngestionRunTs),
     Done(IndexReportTs),
     Error { message: String },
 }
@@ -400,9 +408,13 @@ pub struct RepoEraseReceiptTs {
 
 impl From<proxima_code::RepoEraseReceipt> for RepoEraseReceiptTs {
     fn from(r: proxima_code::RepoEraseReceipt) -> Self {
+        use time::format_description::well_known::Rfc3339;
         Self {
             repo_id: r.repo_id.to_string(),
-            completed_at: r.completed_at.to_string(),
+            completed_at: r
+                .completed_at
+                .format(&Rfc3339)
+                .expect("OffsetDateTime always formats as RFC3339"),
             facts_deleted: r.facts_deleted,
             abstractions_deleted: r.abstractions_deleted,
             edges_deleted: r.edges_deleted,
@@ -413,6 +425,61 @@ impl From<proxima_code::RepoEraseReceipt> for RepoEraseReceiptTs {
             source_batches_deleted: r.source_batches_deleted,
             f2a_rows_deleted: r.f2a_rows_deleted,
             repo_record_deleted: r.repo_record_deleted,
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, specta::Type)]
+pub struct RepoIngestionRunTs {
+    pub run_id: String,
+    pub repo_id: String,
+    pub status: proxima_code::RunStatus,
+    pub stage: proxima_code::RunStage,
+    pub commits_emitted: u32,
+    pub files_emitted: u32,
+    pub chunks_emitted: u32,
+    pub chunks_reused: u32,
+    pub chunks_tombstoned: u32,
+    pub ast_edges_emitted: u32,
+    pub abstractions_emitted: u32,
+    pub embeddings_landed: u32,
+    pub citations_emitted: u32,
+    pub error_message: Option<String>,
+    pub started_at: String,
+    pub updated_at: String,
+    pub finished_at: Option<String>,
+}
+
+impl From<proxima_code::RepoIngestionRun> for RepoIngestionRunTs {
+    fn from(r: proxima_code::RepoIngestionRun) -> Self {
+        use time::format_description::well_known::Rfc3339;
+        Self {
+            run_id: r.run_id.to_string(),
+            repo_id: r.repo_id.to_string(),
+            status: r.status,
+            stage: r.stage,
+            commits_emitted: r.commits_emitted,
+            files_emitted: r.files_emitted,
+            chunks_emitted: r.chunks_emitted,
+            chunks_reused: r.chunks_reused,
+            chunks_tombstoned: r.chunks_tombstoned,
+            ast_edges_emitted: r.ast_edges_emitted,
+            abstractions_emitted: r.abstractions_emitted,
+            embeddings_landed: r.embeddings_landed,
+            citations_emitted: r.citations_emitted,
+            error_message: r.error_message,
+            started_at: r
+                .started_at
+                .format(&Rfc3339)
+                .expect("OffsetDateTime always formats as RFC3339"),
+            updated_at: r
+                .updated_at
+                .format(&Rfc3339)
+                .expect("OffsetDateTime always formats as RFC3339"),
+            finished_at: r.finished_at.map(|t| {
+                t.format(&Rfc3339)
+                    .expect("OffsetDateTime always formats as RFC3339")
+            }),
         }
     }
 }
@@ -502,86 +569,389 @@ async fn repos_erase(
     Ok(receipt.into())
 }
 
-/// Spawns a detached background task. Returns immediately. Progress,
-/// done, and background errors flow on one flavor-owned job stream.
+/// Persist or return the active ingestion run, then kick the driver.
 ///
 /// # Errors
-/// `UnknownRepo` if the `repo_id` isn't registered, `InvalidUuid` if the
-/// id doesn't parse, `Storage` on lookup failures.
+/// `UnknownRepo` if the repo is not registered; `InvalidUuid` if the id
+/// does not parse; `Storage` on database failures.
 #[tauri::command]
 #[specta::specta]
-async fn repo_ingest(
+async fn repo_ingest_start(
     engine: State<'_, Arc<Engine>>,
     pg: State<'_, Arc<PgStorage>>,
+    hub: State<'_, crate::repo_ingest_hub::RepoIngestHub>,
     repo_id: String,
-    on_event: Channel<RepoIngestEventTs>,
-) -> Result<(), CommandError> {
-    use proxima_core::Cursor;
-
+) -> Result<RepoIngestionRunTs, CommandError> {
     let owner = sentinel_owner();
-
-    // 1. Parse uuid
     let uuid = Uuid::parse_str(&repo_id).map_err(|_| CommandError::InvalidUuid {
         value: repo_id.clone(),
     })?;
-
-    // 2. Get repo record
     let record = proxima_code::get_repo(pg.pool(), &owner, uuid)
         .await?
         .ok_or(CommandError::UnknownRepo { repo_id })?;
 
-    // 3. Build cursor from stored bytes
-    let cursor = match record.last_cursor {
-        Some(bytes) => Cursor::from_bytes(bytes),
-        None => Cursor::from_bytes(Vec::new()),
+    let (run, created) = proxima_code::start_run_with_created(pg.pool(), &owner, uuid).await?;
+    let cached = hub.snapshot(&owner, uuid).await.is_some();
+    let should_spawn = (created || !cached)
+        && run.status == proxima_code::RunStatus::Queued
+        && run.stage == proxima_code::RunStage::Starting;
+    hub.publish_snapshot(owner.clone(), run.clone()).await;
+
+    if should_spawn {
+        spawn_run_driver(
+            engine.inner().clone(),
+            pg.inner().clone(),
+            hub.inner().clone(),
+            owner,
+            record,
+            run.run_id,
+        );
+    }
+
+    Ok(run.into())
+}
+
+/// Return the active ingestion run for a repo, if any.
+///
+/// # Errors
+/// `InvalidUuid` if the id does not parse; `Storage` on database failures.
+#[tauri::command]
+#[specta::specta]
+async fn repo_ingest_status(
+    pg: State<'_, Arc<PgStorage>>,
+    repo_id: String,
+) -> Result<Option<RepoIngestionRunTs>, CommandError> {
+    let owner = sentinel_owner();
+    let uuid = Uuid::parse_str(&repo_id).map_err(|_| CommandError::InvalidUuid {
+        value: repo_id.clone(),
+    })?;
+    let active = proxima_code::get_active_run(pg.pool(), &owner, uuid).await?;
+    Ok(active.map(Into::into))
+}
+
+/// Subscribe to current run snapshot plus live events for a repo.
+///
+/// # Errors
+/// `InvalidUuid` if the id does not parse; `Storage` on database failures.
+#[tauri::command]
+#[specta::specta]
+async fn repo_ingest_subscribe(
+    pg: State<'_, Arc<PgStorage>>,
+    hub: State<'_, crate::repo_ingest_hub::RepoIngestHub>,
+    repo_id: String,
+    on_event: Channel<RepoIngestEventTs>,
+) -> Result<(), CommandError> {
+    let owner = sentinel_owner();
+    let uuid = Uuid::parse_str(&repo_id).map_err(|_| CommandError::InvalidUuid {
+        value: repo_id.clone(),
+    })?;
+
+    // Register the receiver before publishing the initial snapshot so a
+    // terminal event from a short-lived run cannot fire in the gap
+    // between snapshot read and subscribe — the prior split call shape
+    // could leave the frontend stuck in `running` indefinitely.
+    let (hub_snap, mut rx) = hub.subscribe(owner.clone(), uuid).await;
+    let snap = match hub_snap {
+        Some(s) => Some(s),
+        None => proxima_code::get_active_run(pg.pool(), &owner, uuid).await?,
     };
-
-    // 4. Create source
-    let source = proxima_code::LocalGitSource::new(
-        uuid,
-        std::path::PathBuf::from(record.canonical_path.clone()),
-        owner.clone(),
-    );
-
-    // 5. Clone pg for the background task
-    let pg_clone = pg.inner().clone();
-    let engine_clone = engine.inner().clone();
-
-    // 6. Spawn background task
+    if let Some(run) = snap {
+        let _ = on_event.send(RepoIngestEventTs::Snapshot(run.into()));
+    }
     tokio::spawn(async move {
-        let mut sink = |p: proxima_code::IngestProgress| {
-            let _ = on_event.send(RepoIngestEventTs::Progress(p.into()));
-        };
-        match source.run_poll(pg_clone.pool(), &cursor, &mut sink).await {
-            Ok((report, new_cursor)) => {
-                let cursor_updated = if let Err(e) = proxima_code::update_cursor(
-                    pg_clone.pool(),
-                    &owner,
-                    uuid,
-                    new_cursor.as_bytes(),
-                    time::OffsetDateTime::now_utc(),
-                )
-                .await
-                {
-                    tracing::warn!("update_cursor failed: {e}");
-                    false
-                } else {
-                    true
-                };
-                if cursor_updated && let Err(e) = engine_clone.run_pending_f2a(&owner).await {
-                    tracing::warn!("repo_ingest F→A consolidation failed: {e}");
+        loop {
+            match rx.recv().await {
+                Ok(ev) => {
+                    if on_event.send(ev).is_err() {
+                        break;
+                    }
                 }
-                let _ = on_event.send(RepoIngestEventTs::Done(report.into()));
-            }
-            Err(e) => {
-                let message = e.to_string();
-                tracing::warn!("ingest run_poll failed: {message}");
-                let _ = on_event.send(RepoIngestEventTs::Error { message });
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
         }
     });
-
     Ok(())
+}
+
+#[allow(clippy::too_many_lines)]
+fn spawn_run_driver(
+    engine: Arc<Engine>,
+    pg: Arc<PgStorage>,
+    hub: crate::repo_ingest_hub::RepoIngestHub,
+    owner: Owner,
+    record: proxima_code::RepoRecord,
+    run_id: Uuid,
+) {
+    tokio::spawn(async move {
+        let drive = async {
+            let Some(run) = proxima_code::begin_run(pg.pool(), run_id)
+                .await
+                .map_err(|e| e.to_string())?
+            else {
+                return Ok::<(), String>(());
+            };
+            hub.publish_snapshot(owner.clone(), run).await;
+
+            let cursor = match record.last_cursor.clone() {
+                Some(b) => proxima_core::Cursor::from_bytes(b),
+                None => proxima_core::Cursor::empty(),
+            };
+            let source = proxima_code::LocalGitSource::new(
+                record.repo_id,
+                std::path::PathBuf::from(record.canonical_path.clone()),
+                owner.clone(),
+            );
+
+            let owner_for_progress = owner.clone();
+            let hub_for_progress = hub.clone();
+            let repo_id = record.repo_id;
+            let mut sink = move |p: proxima_code::IngestProgress| {
+                let owner = owner_for_progress.clone();
+                let hub = hub_for_progress.clone();
+                tokio::spawn(async move {
+                    hub.publish_progress(owner, repo_id, IngestProgressTs::from(p))
+                        .await;
+                });
+            };
+
+            let (report, new_cursor) = source
+                .run_poll(pg.pool(), &cursor, &mut sink)
+                .await
+                .map_err(|e| e.to_string())?;
+
+            let mut counters = proxima_code::StageCounters::zeroed();
+            counters.commits_emitted = u32::try_from(report.commits_emitted).unwrap_or(u32::MAX);
+            counters.files_emitted =
+                u32::try_from(report.files_present_emitted).unwrap_or(u32::MAX);
+            counters.chunks_emitted = u32::try_from(report.chunks_emitted).unwrap_or(u32::MAX);
+            counters.chunks_reused = u32::try_from(report.chunks_reused).unwrap_or(u32::MAX);
+            counters.chunks_tombstoned =
+                u32::try_from(report.chunks_tombstoned).unwrap_or(u32::MAX);
+
+            let run = proxima_code::advance_stage(
+                pg.pool(),
+                run_id,
+                proxima_code::RunStage::AstEdges,
+                &counters,
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+            hub.publish_snapshot(owner.clone(), run).await;
+
+            counters.ast_edges_emitted = count_ast_edges_for_run(pg.pool(), &owner, record.repo_id)
+                .await
+                .map_err(|e| e.to_string())?;
+            let run = proxima_code::advance_stage(
+                pg.pool(),
+                run_id,
+                proxima_code::RunStage::F2a,
+                &counters,
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+            hub.publish_snapshot(owner.clone(), run).await;
+
+            engine
+                .run_pending_f2a(&owner)
+                .await
+                .map_err(|e| explain_driver_error("f2a", &e.to_string()))?;
+            counters.abstractions_emitted =
+                count_abstractions_for_run(pg.pool(), &owner, record.repo_id)
+                    .await
+                    .map_err(|e| e.to_string())?;
+            let run = proxima_code::advance_stage(
+                pg.pool(),
+                run_id,
+                proxima_code::RunStage::Embeddings,
+                &counters,
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+            hub.publish_snapshot(owner.clone(), run).await;
+
+            counters.embeddings_landed = wait_for_embeddings(
+                pg.pool(),
+                &owner,
+                record.repo_id,
+                counters.abstractions_emitted,
+                std::time::Duration::from_mins(1),
+            )
+            .await?;
+            counters.citations_emitted = count_citations_for_run(pg.pool(), &owner, record.repo_id)
+                .await
+                .map_err(|e| e.to_string())?;
+
+            proxima_code::update_cursor(
+                pg.pool(),
+                &owner,
+                record.repo_id,
+                new_cursor.as_bytes(),
+                time::OffsetDateTime::now_utc(),
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+            let run = proxima_code::mark_succeeded(pg.pool(), run_id, &counters)
+                .await
+                .map_err(|e| e.to_string())?;
+            hub.publish_snapshot(owner.clone(), run).await;
+            hub.publish_done(owner.clone(), record.repo_id, IndexReportTs::from(report))
+                .await;
+            Ok::<(), String>(())
+        };
+
+        if let Err(message) = drive.await {
+            tracing::warn!("repo_ingest run {run_id} failed: {message}");
+            if let Ok(run) = proxima_code::mark_failed(pg.pool(), run_id, &message).await {
+                hub.publish_snapshot(owner.clone(), run).await;
+            }
+            hub.publish_error(owner, record.repo_id, message).await;
+        }
+    });
+}
+
+fn explain_driver_error(stage: &str, message: &str) -> String {
+    if message.contains("HTTP send") && message.contains("timed out") {
+        return format!(
+            "{stage}: model request timed out. The model endpoint is reachable, \
+             but the selected model did not respond before Proxima's timeout. \
+             Use a faster model in Settings -> Models or retry after the model \
+             is warm."
+        );
+    }
+    if message.contains("localhost:11434") && message.contains("HTTP send") {
+        return format!(
+            "{stage}: Ollama is not reachable at http://localhost:11434. \
+             Start Ollama or update Settings -> Models to a reachable \
+             OpenAI-compatible endpoint, then run ingest again."
+        );
+    }
+    if message.contains("chat/completions") && message.contains("HTTP send") {
+        return format!(
+            "{stage}: LLM endpoint is not reachable. Check Settings -> Models \
+             base URL and network access, then run ingest again."
+        );
+    }
+    if message.contains("/embeddings") && message.contains("HTTP send") {
+        return format!(
+            "{stage}: embedding endpoint is not reachable. Check Settings -> \
+             Models embedding configuration, then run ingest again."
+        );
+    }
+    format!("{stage}: {message}")
+}
+
+async fn count_ast_edges_for_run(
+    pool: &sqlx::PgPool,
+    owner: &Owner,
+    repo_id: Uuid,
+) -> Result<u32, sqlx::Error> {
+    let (kind, principal_id, org_id) = proxima_code::repos::owner_columns_pub(owner);
+    let n: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)::bigint \
+         FROM proxima_core.edges e \
+         JOIN proxima_code.code_calls_v1 s ON s.edge_id = e.edge_id \
+         JOIN proxima_code.code_chunk_v1 src ON src.memory_id = e.source_memory_id \
+         JOIN proxima_code.code_chunk_v1 tgt ON tgt.memory_id = e.target_memory_id \
+         WHERE e.owner_principal_kind = $1 AND e.owner_principal_id = $2 \
+           AND e.owner_org_id = $3 AND src.repo_id = $4 AND tgt.repo_id = $4",
+    )
+    .bind(kind)
+    .bind(principal_id)
+    .bind(org_id)
+    .bind(repo_id)
+    .fetch_one(pool)
+    .await?;
+    Ok(u32::try_from(n).unwrap_or(u32::MAX))
+}
+
+async fn count_abstractions_for_run(
+    pool: &sqlx::PgPool,
+    owner: &Owner,
+    repo_id: Uuid,
+) -> Result<u32, sqlx::Error> {
+    let (kind, principal_id, org_id) = proxima_code::repos::owner_columns_pub(owner);
+    let n: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)::bigint \
+         FROM proxima_code.commit_summary_v1 cs \
+         JOIN proxima_core.memories m ON m.memory_id = cs.memory_id \
+         WHERE m.owner_principal_kind = $1 AND m.owner_principal_id = $2 \
+           AND m.owner_org_id = $3 AND cs.repo_id = $4",
+    )
+    .bind(kind)
+    .bind(principal_id)
+    .bind(org_id)
+    .bind(repo_id)
+    .fetch_one(pool)
+    .await?;
+    Ok(u32::try_from(n).unwrap_or(u32::MAX))
+}
+
+async fn count_citations_for_run(
+    pool: &sqlx::PgPool,
+    owner: &Owner,
+    repo_id: Uuid,
+) -> Result<u32, sqlx::Error> {
+    let (kind, principal_id, org_id) = proxima_code::repos::owner_columns_pub(owner);
+    let n: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)::bigint \
+         FROM proxima_core.citation_mappings cm \
+         JOIN proxima_core.memories m ON m.memory_id = cm.memory_id \
+         WHERE m.owner_principal_kind = $1 AND m.owner_principal_id = $2 \
+           AND m.owner_org_id = $3 AND ( \
+             cm.memory_id IN (SELECT memory_id FROM proxima_code.commit_v1 WHERE repo_id = $4) OR \
+             cm.memory_id IN (SELECT memory_id FROM proxima_code.file_revision_v1 WHERE repo_id = $4) OR \
+             cm.memory_id IN (SELECT memory_id FROM proxima_code.code_chunk_v1 WHERE repo_id = $4))",
+    )
+    .bind(kind)
+    .bind(principal_id)
+    .bind(org_id)
+    .bind(repo_id)
+    .fetch_one(pool)
+    .await?;
+    Ok(u32::try_from(n).unwrap_or(u32::MAX))
+}
+
+async fn wait_for_embeddings(
+    pool: &sqlx::PgPool,
+    owner: &Owner,
+    repo_id: Uuid,
+    expected: u32,
+    timeout: std::time::Duration,
+) -> Result<u32, String> {
+    if expected == 0 {
+        return Ok(0);
+    }
+    let (kind, principal_id, org_id) = proxima_code::repos::owner_columns_pub(owner);
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let n: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*)::bigint \
+             FROM proxima_core.embeddings e \
+             JOIN proxima_code.commit_summary_v1 cs ON cs.memory_id = e.entity_id \
+             JOIN proxima_core.memories m ON m.memory_id = cs.memory_id \
+             WHERE m.owner_principal_kind = $1 AND m.owner_principal_id = $2 \
+               AND m.owner_org_id = $3 AND cs.repo_id = $4",
+        )
+        .bind(kind)
+        .bind(principal_id)
+        .bind(org_id)
+        .bind(repo_id)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+        let landed = u32::try_from(n).unwrap_or(u32::MAX);
+        if landed >= expected {
+            return Ok(landed);
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(format!(
+                "embeddings_timeout: expected={expected} got={landed}"
+            ));
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    }
 }
 
 pub(crate) fn specta_builder() -> Builder<tauri::Wry> {
@@ -611,6 +981,28 @@ pub(crate) fn specta_builder() -> Builder<tauri::Wry> {
         repos_register,
         repos_delete,
         repos_erase,
-        repo_ingest,
+        repo_ingest_start,
+        repo_ingest_status,
+        repo_ingest_subscribe,
     ])
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn explain_driver_error_names_unreachable_ollama() {
+        let raw = "Internal: operator: LLM call failed: HTTP send: error sending request \
+                   for url (http://localhost:11434/v1/chat/completions)";
+        let msg = super::explain_driver_error("f2a", raw);
+        assert!(msg.contains("Ollama is not reachable"));
+        assert!(msg.contains("run ingest again"));
+    }
+
+    #[test]
+    fn explain_driver_error_names_model_timeout() {
+        let raw = "Internal: operator: LLM call failed: HTTP send: operation timed out";
+        let msg = super::explain_driver_error("f2a", raw);
+        assert!(msg.contains("model request timed out"));
+        assert!(!msg.contains("not reachable"));
+    }
 }

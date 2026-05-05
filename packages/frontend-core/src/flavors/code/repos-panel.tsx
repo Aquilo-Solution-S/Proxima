@@ -1,28 +1,22 @@
 import {
+  createEffect,
   For,
   Show,
   createResource,
   createSignal,
   type Component,
+  type JSX,
 } from "solid-js";
-import { Channel } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
   commands,
-  type IndexReportTs,
-  type IngestProgressTs,
-  type RepoIngestEventTs,
   type RepoEraseReceiptTs,
   type RepoRecordTs,
 } from "../../bindings";
+import { formatPolledAt } from "../../format-date";
 import { formatCommandError } from "../../format-error";
-import { LoadingSurface } from "../../primitives";
-
-type IngestState =
-  | { kind: "idle" }
-  | { kind: "running"; repoId: string; latest: IngestProgressTs | null }
-  | { kind: "done"; repoId: string; report: IndexReportTs }
-  | { kind: "error"; repoId: string; message: string };
+import { LoadingSurface, ProximaLoader } from "../../primitives";
+import { ingestStore, type RunRecord } from "./ingest-store";
 
 type EraseState =
   | { kind: "idle" }
@@ -39,13 +33,12 @@ async function loadRepos(): Promise<RepoRecordTs[]> {
 export const ReposPanel: Component = () => {
   const [repos, { mutate, refetch }] = createResource(loadRepos);
   const [globalError, setGlobalError] = createSignal<string | null>(null);
-  const [ingest, setIngest] = createSignal<IngestState>({ kind: "idle" });
   const [erase, setErase] = createSignal<EraseState>({ kind: "idle" });
 
-  const isRunning = (repoId: string): boolean => {
-    const s = ingest();
-    return s.kind === "running" && s.repoId === repoId;
-  };
+  createEffect(() => {
+    for (const repo of repos() ?? []) void ingestStore.rehydrate(repo.repo_id);
+  });
+
   const isErasing = (repoId: string): boolean => {
     const s = erase();
     return s.kind === "running" && s.repoId === repoId;
@@ -55,7 +48,8 @@ export const ReposPanel: Component = () => {
     return s.kind === "done" ? s.receipt : null;
   };
   const anyBusy = (): boolean =>
-    ingest().kind === "running" || erase().kind === "running";
+    erase().kind === "running" ||
+    (repos() ?? []).some((repo) => ingestStore.isRunning(repo.repo_id));
 
   const handleAdd = async (): Promise<void> => {
     setGlobalError(null);
@@ -91,10 +85,6 @@ export const ReposPanel: Component = () => {
       return;
     }
     mutate((current) => current?.filter((r) => r.repo_id !== repo.repo_id));
-    const ingestState = ingest();
-    if ("repoId" in ingestState && ingestState.repoId === repo.repo_id) {
-      setIngest({ kind: "idle" });
-    }
     setErase({ kind: "done", receipt: r.data });
     void refetch();
   };
@@ -102,38 +92,7 @@ export const ReposPanel: Component = () => {
   const handleIngest = async (repo: RepoRecordTs): Promise<void> => {
     setGlobalError(null);
     setErase({ kind: "idle" });
-    setIngest({ kind: "running", repoId: repo.repo_id, latest: null });
-
-    const onEvent = new Channel<RepoIngestEventTs>();
-    onEvent.onmessage = (event) => {
-      if (event.kind === "progress") {
-        setIngest({
-          kind: "running",
-          repoId: repo.repo_id,
-          latest: event.data,
-        });
-        return;
-      }
-      if (event.kind === "done") {
-        setIngest({ kind: "done", repoId: repo.repo_id, report: event.data });
-        refetch();
-        return;
-      }
-      setIngest({
-        kind: "error",
-        repoId: repo.repo_id,
-        message: event.data.message,
-      });
-    };
-
-    const r = await commands.repoIngest(repo.repo_id, onEvent);
-    if (r.status === "error") {
-      setIngest({
-        kind: "error",
-        repoId: repo.repo_id,
-        message: formatCommandError(r.error),
-      });
-    }
+    await ingestStore.start(repo.repo_id);
   };
 
   return (
@@ -185,10 +144,9 @@ export const ReposPanel: Component = () => {
               {(repo) => (
                 <RepoRow
                   repo={repo}
-                  isRunning={isRunning(repo.repo_id)}
                   isErasing={isErasing(repo.repo_id)}
                   anyBusy={anyBusy()}
-                  ingest={ingest()}
+                  ingest={ingestStore.state[repo.repo_id]}
                   erase={erase()}
                   onIngest={() => handleIngest(repo)}
                   onDelete={() => handleDelete(repo)}
@@ -204,10 +162,9 @@ export const ReposPanel: Component = () => {
 
 const RepoRow: Component<{
   repo: RepoRecordTs;
-  isRunning: boolean;
   isErasing: boolean;
   anyBusy: boolean;
-  ingest: IngestState;
+  ingest: RunRecord | undefined;
   erase: EraseState;
   onIngest: () => void;
   onDelete: () => void;
@@ -215,35 +172,22 @@ const RepoRow: Component<{
   const [confirmingDelete, setConfirmingDelete] = createSignal(false);
   const [confirmText, setConfirmText] = createSignal("");
 
-  const status = (): string => {
+  const status = (): JSX.Element => {
     if (props.isErasing) return "deleting repo data...";
     if (confirmingDelete()) return "type repo name to confirm deletion";
-    if (props.isRunning) {
-      const s = props.ingest;
-      if (s.kind !== "running") return "starting…";
-      if (s.latest === null) return "starting…";
-      const { commit_index, total_commits, commit_sha } = s.latest;
-      return `commit ${commit_index + 1}/${total_commits} · ${commit_sha.slice(0, 7)}`;
-    }
-    const s = props.ingest;
-    if (s.kind === "done" && s.repoId === props.repo.repo_id) {
-      const r = s.report;
-      return `done — +${r.commits_emitted} commits, +${r.chunks_emitted} chunks (${r.chunks_reused} reused, ${r.chunks_tombstoned} tombstoned)`;
-    }
-    if (s.kind === "error" && s.repoId === props.repo.repo_id) {
-      return `error: ${s.message}`;
-    }
+    const ingestStatus = statusFromRecord(props.ingest, props.repo);
+    if (ingestStatus !== null) return ingestStatus;
     const e = props.erase;
     if (e.kind === "error" && e.repoId === props.repo.repo_id) {
       return `error: ${e.message}`;
     }
-    if (props.repo.has_been_polled && props.repo.last_polled_at) {
-      return `last polled ${new Date(props.repo.last_polled_at).toLocaleString()}`;
-    }
-    return "never polled";
+    return formatPolledAt(props.repo.last_polled_at);
   };
+  const running = (): boolean => ingestStore.isRunning(props.repo.repo_id);
+  const ingestBtnDisabled = (): boolean => props.anyBusy || running();
+  const deleteBtnDisabled = (): boolean => props.anyBusy || running();
   const canConfirmDelete = (): boolean =>
-    confirmText() === props.repo.display_name && !props.anyBusy;
+    confirmText() === props.repo.display_name && !deleteBtnDisabled();
   const openDeleteConfirm = (): void => {
     setConfirmText("");
     setConfirmingDelete(true);
@@ -272,15 +216,15 @@ const RepoRow: Component<{
               <button
                 type="button"
                 class="proxima-btn"
-                disabled={props.anyBusy}
+                disabled={ingestBtnDisabled()}
                 onClick={props.onIngest}
               >
-                {props.isRunning ? "Ingesting…" : "Ingest"}
+                Ingest
               </button>
               <button
                 type="button"
                 class="proxima-btn proxima-btn-danger"
-                disabled={props.anyBusy}
+                disabled={deleteBtnDisabled()}
                 onClick={openDeleteConfirm}
               >
                 {props.isErasing ? "Deleting..." : "Delete"}
@@ -293,7 +237,7 @@ const RepoRow: Component<{
             class="proxima-repo-delete-confirm"
             value={confirmText()}
             placeholder={props.repo.display_name}
-            disabled={props.anyBusy}
+            disabled={deleteBtnDisabled()}
             onInput={(e) => setConfirmText(e.currentTarget.value)}
           />
           <button
@@ -307,7 +251,7 @@ const RepoRow: Component<{
           <button
             type="button"
             class="proxima-btn"
-            disabled={props.anyBusy}
+            disabled={deleteBtnDisabled()}
             onClick={cancelDeleteConfirm}
           >
             Cancel
@@ -317,3 +261,33 @@ const RepoRow: Component<{
     </article>
   );
 };
+
+function statusFromRecord(
+  rec: RunRecord | undefined,
+  repo: RepoRecordTs,
+): JSX.Element | null {
+  if (!rec?.run) return null;
+  const r = rec.run;
+  if (r.status === "succeeded") {
+    return (
+      `done - +${r.commits_emitted} commits, +${r.chunks_emitted} chunks, ` +
+      `+${r.ast_edges_emitted} edges, +${r.abstractions_emitted} abstractions, ` +
+      `+${r.embeddings_landed} embeddings, +${r.citations_emitted} citations`
+    );
+  }
+  if (r.status === "failed") {
+    return `failed ${r.stage}: ${r.error_message ?? rec.terminalError ?? "(no message)"}`;
+  }
+  if (r.stage === "facts" && rec.liveProgress) {
+    const p = rec.liveProgress;
+    return `running facts: commit ${p.commit_index + 1}/${p.total_commits}`;
+  }
+  if (rec.terminalError) return `error: ${rec.terminalError}`;
+  if (repo.repo_id !== r.repo_id) return null;
+  return (
+    <span class="proxima-repo-running-status">
+      <span>Running {r.stage}</span>
+      <ProximaLoader size={28} class="proxima-repo-status-loader" />
+    </span>
+  );
+}

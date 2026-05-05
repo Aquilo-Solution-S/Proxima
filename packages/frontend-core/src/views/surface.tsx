@@ -151,17 +151,23 @@ const EventStream: Component<{
 );
 
 // ── Traversal lanes (F→A→P) ───────────────────────────────────────────
+const renderMemoryPayload = (
+  memory: DecodedMemory,
+  hub: Hub,
+): JSX.Element | null => {
+  const renderer = hub.rendererFor(
+    memory.row.schema_id,
+    memory.row.schema_version,
+  );
+  return renderer?.render({
+    memory: memory.row,
+    payload: memory.payload,
+  }) ?? null;
+};
+
 const MemoryCard: Component<{ memory: DecodedMemory; hub: Hub }> = (props) => {
-  const rendered = (): JSX.Element | null => {
-    const renderer = props.hub.rendererFor(
-      props.memory.row.schema_id,
-      props.memory.row.schema_version,
-    );
-    return renderer?.render({
-      memory: props.memory.row,
-      payload: props.memory.payload,
-    }) ?? null;
-  };
+  const rendered = (): JSX.Element | null =>
+    renderMemoryPayload(props.memory, props.hub);
   return (
     <article class={props.memory.row.kind === "Perspective" ? "p-card" : "a-card"}>
       <div class="card-head">
@@ -171,6 +177,7 @@ const MemoryCard: Component<{ memory: DecodedMemory; hub: Hub }> = (props) => {
         />
       </div>
       <Show
+        keyed
         when={rendered()}
         fallback={
           <p class="prose prose-small">
@@ -179,7 +186,7 @@ const MemoryCard: Component<{ memory: DecodedMemory; hub: Hub }> = (props) => {
           </p>
         }
       >
-        {(node) => node()}
+        {(node) => node}
       </Show>
       <div class="card-foot">
         <Mono style={{ "font-size": "9px", color: "var(--ink-40)" }}>
@@ -200,20 +207,6 @@ const FactExplorer: Component<{ hub: Hub; facts: DecodedMemory[] }> = (props) =>
       props.facts[0] ??
       null,
   );
-  const rendered = createMemo((): JSX.Element | null => {
-    const fact = selectedFact();
-    if (fact === null) {
-      return null;
-    }
-    const renderer = props.hub.rendererFor(
-      fact.row.schema_id,
-      fact.row.schema_version,
-    );
-    return renderer?.render({
-      memory: fact.row,
-      payload: fact.payload,
-    }) ?? null;
-  });
 
   return (
     <div class="fact-explorer">
@@ -243,38 +236,43 @@ const FactExplorer: Component<{ hub: Hub; facts: DecodedMemory[] }> = (props) =>
         </For>
       </div>
 
-      <Show when={selectedFact()}>
-        {(fact) => (
+      <Show keyed when={selectedFact()}>
+        {(fact) => {
+          const rendered = (): JSX.Element | null =>
+            renderMemoryPayload(fact, props.hub);
+          return (
           <article class="fact-detail">
             <div class="fact-detail-head">
               <SchemaTag
-                id={fact().row.schema_id}
-                version={fact().row.schema_version}
+                id={fact.row.schema_id}
+                version={fact.row.schema_version}
               />
               <Mono style={{ "font-size": "9px", color: "var(--ink-40)" }}>
-                {shortId(fact().row.id)}
+                {shortId(fact.row.id)}
               </Mono>
             </div>
             <div class="fact-detail-body">
               <Show
+                keyed
                 when={rendered()}
                 fallback={
                   <p class="prose prose-small">
-                    {fact().decodeError?.message ??
-                      `${fact().row.payload.length} payload bytes`}
+                    {fact.decodeError?.message ??
+                      `${fact.row.payload.length} payload bytes`}
                   </p>
                 }
               >
-                {(node) => node()}
+                {(node) => node}
               </Show>
             </div>
             <div class="card-foot">
               <Mono style={{ "font-size": "9px", color: "var(--ink-40)" }}>
-                {fact().row.id}
+                {fact.row.id}
               </Mono>
             </div>
           </article>
-        )}
+          );
+        }}
       </Show>
     </div>
   );

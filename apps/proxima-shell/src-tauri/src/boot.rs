@@ -34,6 +34,17 @@ pub(crate) fn build_engine() -> (Arc<Engine>, Arc<PgStorage>) {
             .run(pg.pool())
             .await
             .expect("failed to run proxima-code flavor migrations");
+
+        // Single-writer invariant (docs/09 §Embedded engine mode): any
+        // queued/running run at boot is a prior-process orphan whose
+        // in-memory driver is gone. Retire them so the partial unique
+        // index doesn't block fresh `repo_ingest_start` calls.
+        match proxima_code::sweep_orphaned_runs(pg.pool()).await {
+            Ok(0) => {}
+            Ok(swept) => tracing::info!(swept, "retired orphaned ingestion runs at boot"),
+            Err(e) => tracing::warn!("orphan-run sweep failed at boot: {e}"),
+        }
+
         pg.start_outbox()
             .await
             .expect("failed to start outbox listener");
@@ -148,11 +159,9 @@ pub(crate) fn resolve_consolidation_clients(
     .map_err(|e| {
         format!("could not construct OpenAI-compatible LLM client for {model_ref:?}: {e}")
     })?;
-    let embed_dim = usize::try_from(embed.caps.dim)
-        .map_err(|_| format!("embedding dim out of range: {}", embed.caps.dim))?;
     let embed_client = OpenAiCompatEmbeddingClient::new(
         embed.model_id.clone(),
-        embed_dim,
+        embed.caps,
         OpenAiCompatConfig::new(embed_base_url, embed_secret),
     )
     .map_err(|e| {

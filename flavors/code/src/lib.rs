@@ -23,8 +23,10 @@ pub use payloads::{
     CodeChunkV1, CommitSummaryV1, CommitV1, EdgeCallsV1, FileRevisionV1, FileState,
 };
 pub use repos::{
-    RepoEraseReceipt, RepoRecord, RepoRegistryError, delete_repo, erase_repo, get_repo, list_repos,
-    register_repo, update_cursor,
+    RepoEraseReceipt, RepoIngestionRun, RepoRecord, RepoRegistryError, RunStage, RunStatus,
+    StageCounters, advance_stage, begin_run, delete_repo, erase_repo, get_active_run, get_repo,
+    get_run, list_repos, mark_failed, mark_succeeded, register_repo, start_run,
+    start_run_with_created, sweep_orphaned_runs, update_cursor,
 };
 
 use proxima_core::{RelationClass, RelationDescriptor, SchemaId, SchemaRef, SchemaVersion};

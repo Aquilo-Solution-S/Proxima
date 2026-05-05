@@ -98,6 +98,19 @@
   font-family: var(--mono);
   font-size: 10px;
   color: var(--ink-60);
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+}
+.proxima-repo-status-loader {
+  justify-content: flex-start;
+}
+.proxima-repo-running-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
 }
 .proxima-repo-actions {
   grid-area: actions;
