@@ -108,7 +108,9 @@ fn make_draft<P: serde::Serialize>(
     citation: Citation,
     observed_at: time::OffsetDateTime,
 ) -> Result<EventDraft, IngestError> {
-    let bytes = serde_json::to_vec(payload).map_err(|e| IngestError::Serialize(e.to_string()))?;
+    let mut bytes = Vec::new();
+    ciborium::ser::into_writer(payload, &mut bytes)
+        .map_err(|e| IngestError::Serialize(e.to_string()))?;
     Ok(EventDraft {
         source_id: SourceId::new(LOCAL_GIT_SOURCE_ID),
         source_batch_id,

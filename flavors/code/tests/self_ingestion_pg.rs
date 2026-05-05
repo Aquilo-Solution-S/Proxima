@@ -212,8 +212,8 @@ async fn self_ingestion_streams_proxima_main() {
         );
         // Decode the first one and verify it has a non-empty SHA
         let first = &non_empty_payloads[0];
-        let commit: proxima_code::payloads::CommitV1 = serde_json::from_slice(&first.payload)
-            .map_err(|e| {
+        let commit: proxima_code::payloads::CommitV1 =
+            ciborium::de::from_reader(&first.payload[..]).map_err(|e| {
                 format!(
                     "failed to deserialize commit-v1 payload for memory {:?}: {e}",
                     first.id
@@ -263,7 +263,7 @@ async fn self_ingestion_streams_proxima_main() {
                 m.id
             );
             let _: proxima_code::payloads::CommitV1 =
-                serde_json::from_slice(&m.payload).map_err(|e| {
+                ciborium::de::from_reader(&m.payload[..]).map_err(|e| {
                     format!(
                         "unfiltered query: commit-v1 payload for {:?} \
                          did not deserialize as CommitV1: {e}",
