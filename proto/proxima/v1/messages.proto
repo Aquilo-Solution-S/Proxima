@@ -1,0 +1,328 @@
+// Proxima — wire envelope.
+//
+// Source-of-truth split (docs/09 §Transport, docs/03 §"What a schema is"):
+// the *envelope* below is protobuf-authoritative. Payload bytes are
+// `serde_json` of the flavor's payload struct (Rust trait impls per
+// docs/03, registered via `proxima_flavor!` per docs/08); this file
+// declares the carrier, never the payload schema.
+//
+// UUIDs are textual (RFC 4122 hyphenated). Saves 20B per id over raw
+// bytes but keeps Connect's JSON codec readable for debugging
+// (docs/09 §Transport).
+//
+// Content hashes (`event_id`, `content_hash`, `personality_state_hash`)
+// stay as raw `bytes`. They have no canonical text form (hex is one
+// encoding of many), are never read by humans on the wire — only used
+// for dedup and DB lookups — and binary saves 50% over hex.
+
+syntax = "proto3";
+
+package proxima.v1;
+
+// ---------------------------------------------------------------------------
+// IDs and primitives
+// ---------------------------------------------------------------------------
+
+// Stable string id of a registered schema, e.g. "proxima-code/commit-v1".
+// Authored by the flavor crate (docs/03 §Naming and namespacing).
+message SchemaRef {
+  string schema_id = 1;
+  uint32 schema_version = 2;
+}
+
+// docs/01 §"Owner — scoping primitive". `org_id` is the billing unit
+// only, NOT part of the access predicate (AGENTS.md invariant 4).
+message Owner {
+  Principal principal = 1;
+  string org_id = 2;  // OrgId UUID
+}
+
+message Principal {
+  oneof kind {
+    string user_id  = 1;  // UserId UUID
+    string group_id = 2;  // GroupId UUID
+  }
+}
+
+// Endpoint of an Edge or supersedes target. Mirrors Rust `EntityRef`
+// (core/src/outbox.rs).
+message EntityRef {
+  oneof ref {
+    string memory_id = 1;  // MemoryId UUID
+    string goal_id   = 2;  // GoalId   UUID
+  }
+}
+
+// docs/02 §"Edges" — broad entity kind tag, including Goal. Used on
+// the wire wherever any of the four kinds is permissible (e.g.
+// `QueryRequest.entity_kind` filter).
+enum EntityKind {
+  ENTITY_KIND_UNSPECIFIED  = 0;
+  ENTITY_KIND_FACT         = 1;
+  ENTITY_KIND_ABSTRACTION  = 2;
+  ENTITY_KIND_PERSPECTIVE  = 3;
+  ENTITY_KIND_GOAL         = 4;
+}
+
+// Narrowed kind for `Memory` rows — Goals are a distinct entity per
+// AGENTS.md invariant 11 and ride on a separate `Goal` / `TypedGoal`
+// message. Keeping this enum disjoint from `EntityKind` makes a
+// `Memory{kind: GOAL}` server bug impossible to encode.
+enum MemoryKind {
+  MEMORY_KIND_UNSPECIFIED  = 0;
+  MEMORY_KIND_FACT         = 1;
+  MEMORY_KIND_ABSTRACTION  = 2;
+  MEMORY_KIND_PERSPECTIVE  = 3;
+}
+
+// docs/03/06/11 — payload trait variants surfaced by Schema introspection.
+enum PayloadKind {
+  PAYLOAD_KIND_UNSPECIFIED        = 0;
+  PAYLOAD_KIND_FACT               = 1;
+  PAYLOAD_KIND_ABSTRACTION        = 2;
+  PAYLOAD_KIND_PERSPECTIVE        = 3;
+  PAYLOAD_KIND_GOAL               = 4;
+  PAYLOAD_KIND_EDGE               = 5;
+  PAYLOAD_KIND_CITED_OBJECT       = 6;
+  PAYLOAD_KIND_CITATION_MAPPING   = 7;
+}
+
+// docs/02 §"Relation registry" — closed substrate vocabulary.
+enum RelationClass {
+  RELATION_CLASS_UNSPECIFIED   = 0;
+  RELATION_CLASS_STRUCTURAL    = 1;
+  RELATION_CLASS_PROVENANCE    = 2;
+  RELATION_CLASS_SUPERSESSION  = 3;
+  RELATION_CLASS_CAUSAL        = 4;
+  RELATION_CLASS_INTERPRETIVE  = 5;
+}
+
+// ---------------------------------------------------------------------------
+// Entities
+// ---------------------------------------------------------------------------
+
+// Identity tuple for a Memory row — Fact / Abstraction / Perspective.
+// Mirrors the `proxima_core.memories` umbrella row shape (docs/07);
+// the typed payload is NOT here — it lives in the flavor sidecar
+// table (`proxima_<flavor>.<sidecar>`, docs/03 §"What a schema is").
+//
+// Goals are a distinct entity per AGENTS.md invariant 11 — see `Goal`
+// below.
+message Memory {
+  string memory_id           = 1;  // MemoryId UUID
+  MemoryKind kind            = 2;
+  SchemaRef schema           = 3;
+  Owner owner                = 4;
+}
+
+// `Memory` + materialized payload, projected from the registered
+// sidecar at read time. Returned by `Query` so the client can dispatch
+// to a typed renderer without a second roundtrip; `Subscribe` stays
+// identity-only via `ChangeEvent` (docs/14 §Subscribe).
+//
+// `payload` is `serde_json::to_vec` of the payload struct registered
+// for `memory.schema`; decoders live client-side per docs/09 §Encoding
+// (PAYLOAD_DECODERS keyed on `(schema_id, schema_version)`).
+message TypedMemory {
+  Memory memory              = 1;
+  bytes payload              = 2;
+}
+
+// Identity + core fields for a Goal row (docs/06 §"Goal entity").
+// Like `Memory`, the typed payload lives in the GoalPayload sidecar
+// and rides on `TypedGoal` rather than here.
+message Goal {
+  string goal_id             = 1;
+  Owner owner                = 2;
+  SchemaRef schema           = 3;
+  string text                = 4;
+  GoalState state            = 5;
+  repeated string parent_goal_ids = 6;
+  GoalAuthorship authorship  = 7;
+}
+
+// `Goal` + materialized payload from the registered GoalPayload
+// sidecar. Same projection / decoder discipline as `TypedMemory`.
+message TypedGoal {
+  Goal goal                  = 1;
+  bytes payload              = 2;
+}
+
+enum GoalState {
+  GOAL_STATE_UNSPECIFIED  = 0;
+  GOAL_STATE_ACTIVE       = 1;
+  GOAL_STATE_PAUSED       = 2;
+  GOAL_STATE_ACHIEVED     = 3;
+  GOAL_STATE_ABANDONED    = 4;
+}
+
+// docs/06 §"GoalAuthorship". `system` carries operator/tool provenance;
+// `external` is reserved for user-imported goals from another system.
+message GoalAuthorship {
+  oneof kind {
+    UserAuthorship   user     = 1;
+    SystemAuthorship system   = 2;
+    ExternalAuthorship external = 3;
+  }
+}
+message UserAuthorship {}
+message ExternalAuthorship {}
+
+message SystemAuthorship {
+  oneof origin {
+    OperatorOrigin operator = 1;
+    ToolOrigin     tool     = 2;
+  }
+}
+message OperatorOrigin {
+  string operator_id              = 1;  // OperatorId UUID
+  OperatorKind operator_kind      = 2;
+  string model_id                 = 3;
+  string prompt_version           = 4;
+  string personality_id           = 5;
+  bytes  personality_state_hash   = 6;  // BLAKE3-32
+}
+message ToolOrigin {
+  string tool_id = 1;
+}
+enum OperatorKind {
+  OPERATOR_KIND_UNSPECIFIED = 0;
+  OPERATOR_KIND_A_TO_GOAL   = 1;
+}
+
+// docs/02 §"Edges" — typed edge row. Reserved for M-N+ wire emission.
+// Shape locked here so future emission needs no proto change.
+message Edge {
+  string edge_id               = 1;
+  string relation              = 2;  // flavor-qualified, e.g. "proxima-code/calls"
+  RelationClass relation_class = 3;
+  EntityRef source             = 4;
+  EntityRef target             = 5;
+  // Present iff this relation declares an EdgePayload schema
+  // (docs/03 §EdgePayload). Wrapping schema + bytes in one optional
+  // makes "both present or neither" wire-enforced — substrate-only
+  // relations (e.g. `core/derived-from`) carry no typed sidecar.
+  optional TypedEdgePayload typed_payload = 6;
+}
+
+message TypedEdgePayload {
+  SchemaRef schema = 1;
+  bytes payload    = 2;  // serde_json bytes
+}
+
+// ---------------------------------------------------------------------------
+// Schema introspection
+// ---------------------------------------------------------------------------
+
+message SchemaInfo {
+  SchemaRef schema                  = 1;
+  PayloadKind kind                  = 2;
+  // Filter keys advertised per docs/14 §Query — declared by the flavor
+  // sidecar so clients render typed filter UI generically.
+  repeated string filter_keys       = 3;
+  // Sidecar table identifier (qualified, e.g. `proxima_code.code_chunk_v1`)
+  // when the payload trait declares one; absent for Goal / CitedObject /
+  // CitationMapping. Surfaced for debugging / introspection only.
+  optional string sidecar_table     = 4;
+  // Natural-key columns for stateful Fact schemas (docs/03).
+  repeated string natural_key_columns = 5;
+}
+
+// docs/02 §"Relation registry" — surfaced by `Schema` so clients know
+// which edge classes/relations are live in this binary.
+message RelationDescriptor {
+  string relation                   = 1;
+  RelationClass class               = 2;
+  optional SchemaRef payload_schema = 3;
+}
+
+// ---------------------------------------------------------------------------
+// ChangeEvent (Subscribe stream payload)
+// ---------------------------------------------------------------------------
+//
+// docs/14 §Subscribe — identity + reference, NOT the payload. Clients
+// fetch payload via a follow-up Query keyed on the entity id. Keeps the
+// hot path cheap and matches the Subscribe-is-identity-only invariant.
+//
+// `seq` is Uuid7 — monotonic by time, server-generated. Clients
+// persist `last_seq` and resume with `since = last_seq`.
+
+message ChangeEvent {
+  string seq                = 1;  // Uuid7 textual
+  Owner owner               = 2;
+  oneof kind {
+    EntityAppend entity_append = 3;
+    EdgeAppend   edge_append   = 4;  // reserved per docs/14; not yet emitted
+  }
+}
+
+// Wire enforces:
+//   - `entity_kind == GOAL` ⟺ goal-shaped body (oneof)
+//   - Memory supersedes only memory; Goal supersedes only goal
+//
+// Runtime-validated by the server (not type-enforced):
+//   - Facts have no `supersedes` — docs/02 §"Re-derivation and
+//     supersession". Splitting `MemoryAppend` into Fact/Abstraction/
+//     Perspective variants to encode that one bit isn't worth the
+//     fan-out at the small-contract scale.
+message EntityAppend {
+  oneof body {
+    MemoryAppend memory = 1;
+    GoalAppend   goal   = 2;
+  }
+}
+
+message MemoryAppend {
+  string memory_id                    = 1;
+  MemoryKind kind                     = 2;
+  SchemaRef  schema                   = 3;
+  // A/P only — never set for Facts.
+  optional string supersedes_memory_id = 4;
+}
+
+message GoalAppend {
+  string goal_id                      = 1;
+  SchemaRef schema                    = 2;
+  optional string supersedes_goal_id  = 3;
+}
+
+message EdgeAppend {
+  string edge_id        = 1;
+  string relation       = 2;
+  EntityRef source      = 3;
+  EntityRef target      = 4;
+}
+
+// ---------------------------------------------------------------------------
+// Error envelope
+// ---------------------------------------------------------------------------
+//
+// docs/14 §"Error envelope — one shape across all verbs". Carried as a
+// typed detail on the gRPC error trailer; clients branch on `code`.
+// `details` holds structured per-code payloads (e.g. version mismatch
+// info) as opaque JSON bytes — keeping the proto stable while letting
+// per-code shapes evolve.
+
+message ProtocolError {
+  ErrorCode code         = 1;
+  string message         = 2;
+  bytes  details         = 3;  // JSON, optional, per-code shape
+  optional string request_id = 4;
+}
+
+enum ErrorCode {
+  ERROR_CODE_UNSPECIFIED            = 0;
+  ERROR_CODE_UNKNOWN_SCHEMA         = 1;
+  ERROR_CODE_SCHEMA_VERSION_MISMATCH = 2;
+  ERROR_CODE_INVALID_PAYLOAD        = 3;
+  ERROR_CODE_INVALID_RELATION       = 4;
+  ERROR_CODE_AUTH_REQUIRED          = 5;
+  ERROR_CODE_FORBIDDEN              = 6;
+  ERROR_CODE_OWNER_NOT_FOUND        = 7;
+  ERROR_CODE_IDEMPOTENCY_CONFLICT   = 8;
+  ERROR_CODE_SUPERSEDED             = 9;
+  ERROR_CODE_NOT_FOUND              = 10;
+  ERROR_CODE_ENGINE_UNAVAILABLE     = 11;
+  ERROR_CODE_TRANSACTION_CONFLICT   = 12;  // retry-safe
+  ERROR_CODE_INTERNAL               = 13;  // catch-all, no detail leak
+}

@@ -1,0 +1,21 @@
+version: v2
+modules:
+  - path: .
+lint:
+  use:
+    - STANDARD
+  except:
+    # File layout: one-message-set-per-file (messages.proto /
+    # engine.proto) under package `proxima.v1`, not file-per-package.
+    - PACKAGE_DIRECTORY_MATCH
+    # `service Engine` (not `EngineService`) — matches the Rust
+    # `Engine` type and docs/09's flavor-endpoint example
+    # (`service CodeFlavor`, mounted as `CodeFlavorServer`).
+    - SERVICE_SUFFIX
+    # docs/09 §Stream framing: "each `ChangeEvent` is one
+    # length-prefixed protobuf frame." Direct frame, not a
+    # wrapper response message.
+    - RPC_RESPONSE_STANDARD_NAME
+breaking:
+  use:
+    - FILE

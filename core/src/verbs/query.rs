@@ -82,6 +82,11 @@ pub struct MemoryRow {
     pub schema_id: SchemaId,
     pub schema_version: SchemaVersion,
     pub owner: Owner,
+    /// `serde_json` projection of the sidecar row, populated by storage
+    /// at read time. Empty when the schema has no sidecar (M1 in-memory
+    /// store) or when a future identity-only query mode is added.
+    /// Wire-only field — never persisted (docs/07).
+    pub payload: Vec<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -113,7 +118,14 @@ impl MemoryStore {
             .filter(|m| req.entity_kind.is_none_or(|k| m.kind == k))
             .filter(|m| req.schema_id.as_ref().is_none_or(|s| &m.schema_id == s))
             .take(req.limit as usize)
-            .cloned()
+            .map(|m| MemoryRow {
+                id: m.id,
+                kind: m.kind,
+                schema_id: m.schema_id.clone(),
+                schema_version: m.schema_version,
+                owner: m.owner.clone(),
+                payload: Vec::new(),
+            })
             .collect();
         // SupersessionStatus is unused for M1 (no superseded
         // rows exist yet); honoured properly when storage lands.
