@@ -3360,7 +3360,6 @@ dependencies = [
  "thiserror 2.0.18",
  "time",
  "tokio",
- "toml 0.8.2",
  "tracing",
  "uuid",
 ]
@@ -3391,6 +3390,7 @@ dependencies = [
 name = "proxima-shell"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "futures-util",
  "keyring",
  "proxima-code",
@@ -3404,8 +3404,10 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-opener",
  "tauri-specta",
+ "thiserror 2.0.18",
  "tokio",
  "tokio-stream",
+ "toml 0.8.2",
  "tracing",
  "tracing-subscriber",
  "uuid",
