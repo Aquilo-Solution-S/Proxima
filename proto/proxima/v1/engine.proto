@@ -94,6 +94,7 @@ message QueryResponse {
   // docs/14 §"Cursor & resume". Absent when the store has not yet
   // recorded any change events.
   optional string seq_high_water    = 3;  // Uuid7 textual
+  repeated Edge edges               = 4;
 }
 
 // ---------------------------------------------------------------------------
@@ -127,7 +128,7 @@ message GoalWriteRequest {
   // returns same goal_id; replay with different body returns
   // `IdempotencyConflict`.
   string request_id                 = 7;
-  // serde_json of the typed payload — validated against the registered
+  // CBOR of the typed payload — validated against the registered
   // GoalPayload schema at the boundary.
   bytes payload                     = 8;
   // Set when superseding a prior head. Returns `Superseded` if the

@@ -6,14 +6,24 @@ import "./surface.css";
  * deferred to the next milestone.
  */
 
-import { Show, createSignal, type Component } from "solid-js";
-import { Mono } from "../primitives";
+import {
+  For,
+  Show,
+  createMemo,
+  createSignal,
+  type Component,
+  type JSX,
+} from "solid-js";
+import type { ChangeEvent } from "../bindings";
+import { SchemaTag, Mono } from "../primitives";
+import { useGraph, type DecodedMemory } from "../graph-store";
 import type { Hub } from "../hub";
 
 // ── Goal rail ───────────────────────────────────────────────────────────
 const GoalRail: Component<{
   collapsed: boolean;
   onToggle: () => void;
+  goalCount: number;
 }> = (props) => (
   <aside
     classList={{
@@ -54,7 +64,11 @@ const GoalRail: Component<{
         </button>
       </div>
       <div class="goal-list">
-        <p class="proxima-dim">No goals</p>
+        <p class="proxima-dim">
+          {props.goalCount === 0
+            ? "No goals"
+            : `${props.goalCount} goal identities pending payload projection`}
+        </p>
       </div>
     </Show>
   </aside>
@@ -64,6 +78,7 @@ const GoalRail: Component<{
 const EventStream: Component<{
   collapsed: boolean;
   onToggle: () => void;
+  events: readonly ChangeEvent[];
 }> = (props) => (
   <aside
     classList={{
@@ -104,14 +119,177 @@ const EventStream: Component<{
         </button>
       </div>
       <div class="stream-list">
-        <p class="proxima-dim">No events</p>
+        <Show
+          when={props.events.length > 0}
+          fallback={<p class="proxima-dim surface-empty">No events</p>}
+        >
+          <For each={props.events}>
+            {(event) => (
+              <div class="fact-row">
+                <div class="fact-gutter">
+                  <span class="fact-glyph">CE</span>
+                </div>
+                <div class="fact-body">
+                  <div class="fact-row-head">
+                    <Mono style={{ "font-size": "10px" }}>
+                      {event.seq.slice(0, 8)}
+                    </Mono>
+                    <span class="proxima-dim">
+                      {event.kind.EntityAppend !== undefined
+                        ? event.kind.EntityAppend.entity_kind
+                        : "Edge"}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            )}
+          </For>
+        </Show>
       </div>
     </Show>
   </aside>
 );
 
 // ── Traversal lanes (F→A→P) ───────────────────────────────────────────
-const TraversalLanes: Component = () => (
+const MemoryCard: Component<{ memory: DecodedMemory; hub: Hub }> = (props) => {
+  const rendered = (): JSX.Element | null => {
+    const renderer = props.hub.rendererFor(
+      props.memory.row.schema_id,
+      props.memory.row.schema_version,
+    );
+    return renderer?.render({
+      memory: props.memory.row,
+      payload: props.memory.payload,
+    }) ?? null;
+  };
+  return (
+    <article class={props.memory.row.kind === "Perspective" ? "p-card" : "a-card"}>
+      <div class="card-head">
+        <SchemaTag
+          id={props.memory.row.schema_id}
+          version={props.memory.row.schema_version}
+        />
+      </div>
+      <Show
+        when={rendered()}
+        fallback={
+          <p class="prose prose-small">
+            {props.memory.decodeError?.message ??
+              `${props.memory.row.payload.length} payload bytes`}
+          </p>
+        }
+      >
+        {(node) => node()}
+      </Show>
+      <div class="card-foot">
+        <Mono style={{ "font-size": "9px", color: "var(--ink-40)" }}>
+          {props.memory.row.id}
+        </Mono>
+      </div>
+    </article>
+  );
+};
+
+const shortId = (id: string): string => id.slice(0, 8);
+
+const FactExplorer: Component<{ hub: Hub; facts: DecodedMemory[] }> = (props) => {
+  const [selectedId, setSelectedId] = createSignal<string | null>(null);
+  const selectedFact = createMemo(
+    () =>
+      props.facts.find((memory) => memory.row.id === selectedId()) ??
+      props.facts[0] ??
+      null,
+  );
+  const rendered = createMemo((): JSX.Element | null => {
+    const fact = selectedFact();
+    if (fact === null) {
+      return null;
+    }
+    const renderer = props.hub.rendererFor(
+      fact.row.schema_id,
+      fact.row.schema_version,
+    );
+    return renderer?.render({
+      memory: fact.row,
+      payload: fact.payload,
+    }) ?? null;
+  });
+
+  return (
+    <div class="fact-explorer">
+      <div class="fact-list" role="listbox" aria-label="Facts">
+        <For each={props.facts}>
+          {(memory) => (
+            <button
+              type="button"
+              classList={{
+                "fact-list-item": true,
+                "is-selected": selectedFact()?.row.id === memory.row.id,
+              }}
+              role="option"
+              aria-selected={selectedFact()?.row.id === memory.row.id}
+              title={memory.row.schema_id}
+              onClick={() => setSelectedId(memory.row.id)}
+            >
+              <span class="fact-list-glyph" aria-hidden="true">F</span>
+              <span class="fact-list-copy">
+                <span class="fact-list-schema">{memory.row.schema_id}</span>
+                <span class="fact-list-meta">
+                  {shortId(memory.row.id)} · {memory.row.payload.length} bytes
+                </span>
+              </span>
+            </button>
+          )}
+        </For>
+      </div>
+
+      <Show when={selectedFact()}>
+        {(fact) => (
+          <article class="fact-detail">
+            <div class="fact-detail-head">
+              <SchemaTag
+                id={fact().row.schema_id}
+                version={fact().row.schema_version}
+              />
+              <Mono style={{ "font-size": "9px", color: "var(--ink-40)" }}>
+                {shortId(fact().row.id)}
+              </Mono>
+            </div>
+            <div class="fact-detail-body">
+              <Show
+                when={rendered()}
+                fallback={
+                  <p class="prose prose-small">
+                    {fact().decodeError?.message ??
+                      `${fact().row.payload.length} payload bytes`}
+                  </p>
+                }
+              >
+                {(node) => node()}
+              </Show>
+            </div>
+            <div class="card-foot">
+              <Mono style={{ "font-size": "9px", color: "var(--ink-40)" }}>
+                {fact().row.id}
+              </Mono>
+            </div>
+          </article>
+        )}
+      </Show>
+    </div>
+  );
+};
+
+const TraversalLanes: Component<{ hub: Hub; memories: DecodedMemory[] }> = (
+  props,
+) => {
+  const facts = () => props.memories.filter((m) => m.row.kind === "Fact");
+  const abstractions = () =>
+    props.memories.filter((m) => m.row.kind === "Abstraction");
+  const perspectives = () =>
+    props.memories.filter((m) => m.row.kind === "Perspective");
+
+  return (
   <div class="traversal">
     <div class="traversal-head">
       <span class="rail-title">F → A → P traversal</span>
@@ -132,7 +310,14 @@ const TraversalLanes: Component = () => (
         </div>
       </div>
       <div class="lane-content">
-        <p class="proxima-dim">No perspectives</p>
+        <Show
+          when={perspectives().length > 0}
+          fallback={<p class="proxima-dim">No perspectives</p>}
+        >
+          <For each={perspectives()}>
+            {(memory) => <MemoryCard memory={memory} hub={props.hub} />}
+          </For>
+        </Show>
       </div>
     </div>
 
@@ -162,7 +347,14 @@ const TraversalLanes: Component = () => (
         </div>
       </div>
       <div class="lane-content lane-content-row">
-        <p class="proxima-dim">No abstractions</p>
+        <Show
+          when={abstractions().length > 0}
+          fallback={<p class="proxima-dim">No abstractions</p>}
+        >
+          <For each={abstractions()}>
+            {(memory) => <MemoryCard memory={memory} hub={props.hub} />}
+          </For>
+        </Show>
       </div>
     </div>
 
@@ -192,16 +384,29 @@ const TraversalLanes: Component = () => (
         </div>
       </div>
       <div class="lane-content lane-content-row">
-        <p class="proxima-dim">No facts</p>
+        <Show
+          when={facts().length > 0}
+          fallback={<p class="proxima-dim">No facts</p>}
+        >
+          <FactExplorer hub={props.hub} facts={facts()} />
+        </Show>
       </div>
     </div>
   </div>
-);
+  );
+};
 
 // ── FullSurface ─────────────────────────────────────────────────────────
-export const FullSurface: Component<{ hub: Hub }> = () => {
-  const [goalsCollapsed, setGoalsCollapsed] = createSignal(false);
-  const [eventsCollapsed, setEventsCollapsed] = createSignal(false);
+export const FullSurface: Component<{ hub: Hub }> = (props) => {
+  const graph = useGraph();
+  const [goalsCollapsed, setGoalsCollapsed] = createSignal(true);
+  const [eventsCollapsed, setEventsCollapsed] = createSignal(true);
+  const memories = () => Array.from(graph.state().memoriesById.values());
+  const events = () =>
+    Array.from(graph.state().eventsBySeq.values()).sort((a, b) =>
+      a.seq < b.seq ? 1 : -1,
+    );
+  const goalCount = () => graph.state().goalsById.size;
 
   return (
     <div class="proxima-shell">
@@ -214,11 +419,13 @@ export const FullSurface: Component<{ hub: Hub }> = () => {
       >
         <GoalRail
           collapsed={goalsCollapsed()}
+          goalCount={goalCount()}
           onToggle={() => setGoalsCollapsed((v) => !v)}
         />
-        <TraversalLanes />
+        <TraversalLanes hub={props.hub} memories={memories()} />
         <EventStream
           collapsed={eventsCollapsed()}
+          events={events()}
           onToggle={() => setEventsCollapsed((v) => !v)}
         />
       </div>

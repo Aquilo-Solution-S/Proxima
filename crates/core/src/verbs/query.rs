@@ -5,7 +5,9 @@
 
 use uuid::Uuid;
 
-use crate::{MemoryId, Owner, SchemaId, SchemaVersion};
+use crate::outbox::EntityRef;
+use crate::verbs::goal_write::GoalState;
+use crate::{GoalId, MemoryId, Owner, SchemaId, SchemaVersion};
 
 /// Re-export the canonical `EntityKind` from `outbox` so query
 /// callers don't need a second import path. The duplicate
@@ -42,6 +44,13 @@ pub struct QueryRequest {
     pub schema_id: Option<SchemaId>,
     pub supersession: SupersessionStatus,
     pub limit: u32,
+    /// Identity-keyed hydration for Subscribe-driven row fetches.
+    #[serde(default)]
+    pub memory_ids: Vec<MemoryId>,
+    #[serde(default)]
+    pub goal_ids: Vec<GoalId>,
+    #[serde(default)]
+    pub edge_ids: Vec<uuid::Uuid>,
     /// Engine-resolved metadata for stateful-Fact heads-only queries.
     /// Skipped over the wire — clients don't set this; the engine
     /// populates it from the schema registry before dispatch.
@@ -60,6 +69,9 @@ impl QueryRequest {
             schema_id: None,
             supersession: SupersessionStatus::HeadsOnly,
             limit: 100,
+            memory_ids: Vec::new(),
+            goal_ids: Vec::new(),
+            edge_ids: Vec::new(),
             stateful_heads: None,
         }
     }
@@ -74,16 +86,42 @@ pub struct MemoryRow {
     pub schema_id: SchemaId,
     pub schema_version: SchemaVersion,
     pub owner: Owner,
-    /// `serde_json` projection of the sidecar row, populated by storage
-    /// at read time. Empty when the schema has no sidecar (M1 in-memory
-    /// store) or when a future identity-only query mode is added.
+    /// CBOR projection of the sidecar row, populated by storage at read
+    /// time. Empty when the schema has no sidecar or when an
+    /// identity-only query mode is added.
     /// Wire-only field — never persisted (docs/07).
+    pub payload: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
+pub struct GoalRow {
+    pub id: GoalId,
+    pub schema_id: SchemaId,
+    pub schema_version: SchemaVersion,
+    pub owner: Owner,
+    pub text: String,
+    pub state: GoalState,
+    pub parent_goal_ids: Vec<GoalId>,
+    pub supersedes: Option<GoalId>,
+    pub payload: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
+pub struct EdgeRow {
+    pub id: uuid::Uuid,
+    pub relation: String,
+    pub relation_class: String,
+    pub source: EntityRef,
+    pub target: EntityRef,
+    pub owner: Owner,
     pub payload: Vec<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct QueryResponse {
     pub memories: Vec<MemoryRow>,
+    pub goals: Vec<GoalRow>,
+    pub edges: Vec<EdgeRow>,
     /// docs/14 §"Cursor & resume" — None when the store has
     /// not yet recorded any change events.
     pub seq_high_water: Option<Uuid>,
@@ -124,6 +162,8 @@ impl MemoryStore {
         let _ = req.supersession;
         QueryResponse {
             memories,
+            goals: Vec::new(),
+            edges: Vec::new(),
             seq_high_water: self.seq_high_water,
         }
     }

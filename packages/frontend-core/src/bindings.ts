@@ -113,16 +113,14 @@ export const commands = {
 	 */
 	reposErase: (repoId: string) => typedError<RepoEraseReceiptTs, CommandError>(__TAURI_INVOKE("repos_erase", { repoId })),
 	/**
-	 *  Spawns a detached background task. Returns immediately. Per-commit
-	 *  progress flows on `on_progress`; the final report flows on `on_done`.
-	 *  Errors during the background ingest are logged via `tracing::warn` —
-	 *  surface to UI is deferred (v1.1 adds an `on_error` channel).
+	 *  Spawns a detached background task. Returns immediately. Progress,
+	 *  done, and background errors flow on one flavor-owned job stream.
 	 * 
 	 *  # Errors
 	 *  `UnknownRepo` if the `repo_id` isn't registered, `InvalidUuid` if the
 	 *  id doesn't parse, `Storage` on lookup failures.
 	 */
-	repoIngest: (repoId: string, onProgress: Channel<IngestProgressTs>, onDone: Channel<IndexReportTs>) => typedError<null, CommandError>(__TAURI_INVOKE("repo_ingest", { repoId, onProgress, onDone })),
+	repoIngest: (repoId: string, onEvent: Channel<RepoIngestEventTs>) => typedError<null, CommandError>(__TAURI_INVOKE("repo_ingest", { repoId, onEvent })),
 };
 
 /* Types */
@@ -132,13 +130,18 @@ export type ChangeEvent = {
 	kind: ChangeEventKind,
 };
 
-export type ChangeEventKind = { EntityAppend: {
+export type ChangeEventKind = ({ EntityAppend: {
 	entity_kind: EntityKind,
 	entity: EntityRef,
 	schema_id: SchemaId,
 	schema_version: SchemaVersion,
 	supersedes: EntityRef | null,
-} };
+} }) & { EdgeAppend?: never } | ({ EdgeAppend: {
+	edge_id: string,
+	relation: string,
+	source: EntityRef,
+	target: EntityRef,
+} }) & { EntityAppend?: never };
 
 export type CitationMappingHint = {
 	schema_id: SchemaId,
@@ -203,6 +206,16 @@ export type CommandError = { kind: "storage"; data: {
  *  is normal.
  */
 export type Dialect = "anthropic" | "openai";
+
+export type EdgeRow = {
+	id: string,
+	relation: string,
+	relation_class: string,
+	source: EntityRef,
+	target: EntityRef,
+	owner: Owner,
+	payload: number[],
+};
 
 /**
  *  Embedding capability axes. `dim` is the vector size — boot-time
@@ -284,6 +297,18 @@ export type GoalDraft = {
 
 export type GoalId = string;
 
+export type GoalRow = {
+	id: GoalId,
+	schema_id: SchemaId,
+	schema_version: SchemaVersion,
+	owner: Owner,
+	text: string,
+	state: GoalState,
+	parent_goal_ids: GoalId[],
+	supersedes: GoalId | null,
+	payload: number[],
+};
+
 export type GoalState = "Active" | "Paused" | "Achieved" | "Abandoned";
 
 export type GoalWriteOutcome = {
@@ -354,9 +379,9 @@ export type MemoryRow = {
 	schema_version: SchemaVersion,
 	owner: Owner,
 	/**
-	 *  `serde_json` projection of the sidecar row, populated by storage
-	 *  at read time. Empty when the schema has no sidecar (M1 in-memory
-	 *  store) or when a future identity-only query mode is added.
+	 *  CBOR projection of the sidecar row, populated by storage at read
+	 *  time. Empty when the schema has no sidecar or when an
+	 *  identity-only query mode is added.
 	 *  Wire-only field — never persisted (docs/07).
 	 */
 	payload: number[],
@@ -428,10 +453,16 @@ export type QueryRequest = {
 	schema_id: SchemaId | null,
 	supersession: SupersessionStatus,
 	limit: number,
+	// Identity-keyed hydration for Subscribe-driven row fetches.
+	memory_ids?: MemoryId[],
+	goal_ids?: GoalId[],
+	edge_ids?: string[],
 };
 
 export type QueryResponse = {
 	memories: MemoryRow[],
+	goals: GoalRow[],
+	edges: EdgeRow[],
 	/**
 	 *  docs/14 §"Cursor & resume" — None when the store has
 	 *  not yet recorded any change events.
@@ -453,6 +484,10 @@ export type RepoEraseReceiptTs = {
 	f2a_rows_deleted: number,
 	repo_record_deleted: boolean,
 };
+
+export type RepoIngestEventTs = { kind: "progress"; data: IngestProgressTs } | { kind: "done"; data: IndexReportTs } | { kind: "error"; data: {
+	message: string,
+} };
 
 export type RepoRecordTs = {
 	repo_id: string,

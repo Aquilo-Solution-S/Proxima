@@ -35,8 +35,12 @@ pub enum ChangeEventKind {
         schema_version: SchemaVersion,
         supersedes: Option<EntityRef>,
     },
-    // EdgeAppend reserved for M3+ (the column shape is locked,
-    // but no edges are emitted in M2).
+    EdgeAppend {
+        edge_id: Uuid,
+        relation: String,
+        source: EntityRef,
+        target: EntityRef,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]

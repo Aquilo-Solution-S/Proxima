@@ -195,6 +195,8 @@ impl Storage for FakeStorage {
     ) -> Result<proxima_core::verbs::query::QueryResponse, StorageError> {
         Ok(proxima_core::verbs::query::QueryResponse {
             memories: Vec::new(),
+            goals: Vec::new(),
+            edges: Vec::new(),
             seq_high_water: None,
         })
     }

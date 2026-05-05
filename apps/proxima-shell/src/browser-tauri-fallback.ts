@@ -55,7 +55,7 @@ const invokeFallback = async (
     case "schema":
       return { schemas: [] };
     case "query":
-      return { memories: [], seq_high_water: null };
+      return { memories: [], goals: [], edges: [], seq_high_water: null };
     case "subscribe":
     case "models_register_llm":
     case "models_register_embedding":

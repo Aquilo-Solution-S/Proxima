@@ -6,6 +6,7 @@
 use crate::{RegisteredRelation, RelationDescriptor, SchemaId, SchemaVersion};
 
 pub type PayloadValidator = fn(&serde_json::Value) -> Result<(), String>;
+pub type PayloadCborEncoder = fn(&serde_json::Value) -> Result<Vec<u8>, String>;
 
 #[derive(Debug, Clone)]
 pub(crate) struct PayloadValidatorEntry {
@@ -31,7 +32,7 @@ pub enum PayloadKind {
     CitationMapping,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct SchemaInfo {
     pub schema_id: SchemaId,
     pub schema_version: SchemaVersion,
@@ -46,12 +47,18 @@ pub struct SchemaInfo {
     /// Fact schemas). Empty for stateless / non-Fact schemas. Drives the
     /// head-by-natural-key SQL emission in `Query` heads-only mode.
     pub natural_key_columns: Vec<String>,
+    /// Build-time typed encoder for read-path CBOR projection.
+    /// Function pointer is process-local only; not serialized on
+    /// Schema responses.
+    #[serde(skip)]
+    #[specta(skip)]
+    pub cbor_encoder: Option<PayloadCborEncoder>,
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct SchemaRequest;
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct SchemaResponse {
     pub schemas: Vec<SchemaInfo>,
 }

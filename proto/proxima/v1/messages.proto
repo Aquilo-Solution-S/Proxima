@@ -120,9 +120,8 @@ message Memory {
 // to a typed renderer without a second roundtrip; `Subscribe` stays
 // identity-only via `ChangeEvent` (docs/14 §Subscribe).
 //
-// `payload` is `serde_json::to_vec` of the payload struct registered
-// for `memory.schema`; decoders live client-side per docs/09 §Encoding
-// (PAYLOAD_DECODERS keyed on `(schema_id, schema_version)`).
+// `payload` is CBOR for the payload struct registered for
+// `memory.schema`; codecs live client-side per docs/09 §Encoding.
 message TypedMemory {
   Memory memory              = 1;
   bytes payload              = 2;
@@ -207,7 +206,7 @@ message Edge {
 
 message TypedEdgePayload {
   SchemaRef schema = 1;
-  bytes payload    = 2;  // serde_json bytes
+  bytes payload    = 2;  // CBOR bytes
 }
 
 // ---------------------------------------------------------------------------
@@ -252,7 +251,7 @@ message ChangeEvent {
   Owner owner               = 2;
   oneof kind {
     EntityAppend entity_append = 3;
-    EdgeAppend   edge_append   = 4;  // reserved per docs/14; not yet emitted
+    EdgeAppend   edge_append   = 4;
   }
 }
 

@@ -37,7 +37,7 @@ use proxima_core::verbs::goal_write::{
     GoalAuthorship as CoreGoalAuthorship, GoalDraft, GoalState as CoreGoalState, GoalWriteOutcome,
     OperatorKind as CoreOperatorKind, SystemOrigin as CoreSystemOrigin,
 };
-use proxima_core::verbs::query::{EntityKind as QueryEntityKind, MemoryRow};
+use proxima_core::verbs::query::{EdgeRow, EntityKind as QueryEntityKind, GoalRow, MemoryRow};
 use proxima_core::verbs::schema::{PayloadKind as CorePayloadKind, SchemaInfo as CoreSchemaInfo};
 
 use crate::pb::{
@@ -50,7 +50,7 @@ use crate::pb::{
     RelationClass as PbRelationClass, RelationDescriptor as PbRelationDescriptor,
     SchemaInfo as PbSchemaInfo, SchemaRef as PbSchemaRef, SchemaRequest as PbSchemaRequest,
     SchemaResponse as PbSchemaResponse, SubscribeRequest as PbSubscribeRequest, SystemAuthorship,
-    ToolOrigin, TypedMemory, UserAuthorship,
+    ToolOrigin, TypedGoal, TypedMemory, UserAuthorship,
 };
 
 // ---------------------------------------------------------------------------
@@ -326,6 +326,47 @@ pub fn memory_to_proto(core: &MemoryRow) -> TypedMemory {
 // Goal / TypedGoal
 // ---------------------------------------------------------------------------
 
+pub fn goal_to_proto(core: &GoalRow) -> TypedGoal {
+    TypedGoal {
+        goal: Some(pb::Goal {
+            goal_id: uuid_to_proto(core.id.into_inner()),
+            owner: Some(owner_to_proto(&core.owner)),
+            schema: Some(schema_ref_to_proto(&CoreSchemaRef::new(
+                core.schema_id.clone(),
+                core.schema_version,
+            ))),
+            text: core.text.clone(),
+            state: goal_state_to_proto(core.state) as i32,
+            parent_goal_ids: core
+                .parent_goal_ids
+                .iter()
+                .map(|id| uuid_to_proto(id.into_inner()))
+                .collect(),
+            authorship: None,
+        }),
+        payload: core.payload.clone(),
+    }
+}
+
+pub fn edge_to_proto(core: &EdgeRow) -> pb::Edge {
+    let relation_class = match core.relation_class.as_str() {
+        "Provenance" => PbRelationClass::Provenance,
+        "Structural" => PbRelationClass::Structural,
+        "Causal" => PbRelationClass::Causal,
+        "Interpretive" => PbRelationClass::Interpretive,
+        "Supersession" => PbRelationClass::Supersession,
+        _ => PbRelationClass::Unspecified,
+    };
+    pb::Edge {
+        edge_id: uuid_to_proto(core.id),
+        relation: core.relation.clone(),
+        relation_class: relation_class as i32,
+        source: Some(entity_ref_to_proto(core.source)),
+        target: Some(entity_ref_to_proto(core.target)),
+        typed_payload: None,
+    }
+}
+
 pub fn goal_authorship_from_proto(pb: PbGoalAuthorship) -> Result<CoreGoalAuthorship, Status> {
     let kind = pb
         .kind
@@ -447,6 +488,17 @@ pub fn change_event_to_proto(core: &ChangeEvent) -> Result<PbChangeEvent, Status
             };
             pb::change_event::Kind::EntityAppend(EntityAppend { body: Some(body) })
         }
+        ChangeEventKind::EdgeAppend {
+            edge_id,
+            relation,
+            source,
+            target,
+        } => pb::change_event::Kind::EdgeAppend(pb::EdgeAppend {
+            edge_id: uuid_to_proto(*edge_id),
+            relation: relation.clone(),
+            source: Some(entity_ref_to_proto(*source)),
+            target: Some(entity_ref_to_proto(*target)),
+        }),
     };
     Ok(PbChangeEvent {
         seq: uuid_to_proto(core.seq),
@@ -532,6 +584,9 @@ pub fn query_request_from_proto(
         schema_id,
         supersession,
         limit,
+        memory_ids: Vec::new(),
+        goal_ids: Vec::new(),
+        edge_ids: Vec::new(),
         stateful_heads: None,
     })
 }
@@ -541,8 +596,9 @@ pub fn query_response_to_proto(
 ) -> PbQueryResponse {
     PbQueryResponse {
         memories: core.memories.iter().map(memory_to_proto).collect(),
-        goals: Vec::new(), // Goal rows not yet implemented in core
+        goals: core.goals.iter().map(goal_to_proto).collect(),
         seq_high_water: core.seq_high_water.map(uuid_to_proto),
+        edges: core.edges.iter().map(edge_to_proto).collect(),
     }
 }
 

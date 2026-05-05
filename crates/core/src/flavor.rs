@@ -44,6 +44,7 @@ impl FlavorRegistry {
                 .iter()
                 .map(|s| (*s).to_string())
                 .collect(),
+            cbor_encoder: Some(encode_payload_cbor::<F>),
         });
         self.validators.push(PayloadValidatorEntry {
             schema_id: F::schema_id(),
@@ -61,6 +62,7 @@ impl FlavorRegistry {
             filter_keys: vec![],
             sidecar_table: Some(A::sidecar_table().to_string()),
             natural_key_columns: vec![],
+            cbor_encoder: Some(encode_payload_cbor::<A>),
         });
         self.validators.push(PayloadValidatorEntry {
             schema_id: A::schema_id(),
@@ -78,6 +80,7 @@ impl FlavorRegistry {
             filter_keys: vec![],
             sidecar_table: Some(P::sidecar_table().to_string()),
             natural_key_columns: vec![],
+            cbor_encoder: Some(encode_payload_cbor::<P>),
         });
         self.validators.push(PayloadValidatorEntry {
             schema_id: P::schema_id(),
@@ -99,6 +102,7 @@ impl FlavorRegistry {
             filter_keys: vec![],
             sidecar_table: Some(E::sidecar_table().to_string()),
             natural_key_columns: vec![],
+            cbor_encoder: Some(encode_payload_cbor::<E>),
         });
         self.validators.push(PayloadValidatorEntry {
             schema_id: E::schema_id(),
@@ -157,4 +161,14 @@ where
     serde_json::from_value::<T>(value.clone())
         .map(|_| ())
         .map_err(|e| e.to_string())
+}
+
+fn encode_payload_cbor<T>(value: &serde_json::Value) -> Result<Vec<u8>, String>
+where
+    T: serde::Serialize + serde::de::DeserializeOwned,
+{
+    let typed = serde_json::from_value::<T>(value.clone()).map_err(|e| e.to_string())?;
+    let mut bytes = Vec::new();
+    ciborium::ser::into_writer(&typed, &mut bytes).map_err(|e| e.to_string())?;
+    Ok(bytes)
 }
