@@ -121,7 +121,7 @@ pub async fn load_app_config(
 }
 
 /// Top-level config parsed from `proxima.config.toml`.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub struct AppConfig {
     #[serde(default)]
@@ -133,7 +133,7 @@ pub struct AppConfig {
 }
 
 /// LLM model configuration section.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub struct LlmConfig {
     #[serde(default)]
@@ -141,7 +141,7 @@ pub struct LlmConfig {
 }
 
 /// A single LLM model entry.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub struct LlmModelRecord {
     pub vendor: String,
@@ -154,7 +154,7 @@ pub struct LlmModelRecord {
 }
 
 /// Embedding model configuration section.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub struct EmbeddingConfig {
     #[serde(default)]
@@ -166,7 +166,7 @@ pub struct EmbeddingConfig {
 }
 
 /// A single embedding model entry.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub struct EmbeddingModelRecord {
     pub vendor: String,
@@ -178,7 +178,7 @@ pub struct EmbeddingModelRecord {
 }
 
 /// Tier-to-model bindings. Each tier may be unbound (None).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub struct TierBindings {
     #[serde(default)]
@@ -201,7 +201,7 @@ impl TierBindings {
 }
 
 /// Reference to a model by `(vendor, model_id)`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub struct ModelRef {
     pub vendor: String,

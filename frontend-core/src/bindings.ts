@@ -17,6 +17,79 @@ export const commands = {
 	 *  side drops the channel, surfaced as a send error).
 	 */
 	subscribe: (req: SubscribeRequest, onEvent: Channel<ChangeEvent>) => typedError<null, ProtocolError>(__TAURI_INVOKE("subscribe", { req, onEvent })),
+	/**
+	 *  # Errors
+	 *  Returns `CommandError::Storage` on database failures.
+	 */
+	modelsListLlm: () => typedError<LlmModelRecord[], CommandError>(__TAURI_INVOKE("models_list_llm")),
+	/**
+	 *  # Errors
+	 *  Returns `CommandError::Storage` on database failures.
+	 */
+	modelsListEmbedding: () => typedError<EmbeddingModelRecord[], CommandError>(__TAURI_INVOKE("models_list_embedding")),
+	/**
+	 *  # Errors
+	 *  Returns `CommandError::DuplicateLlmModel` if the model already exists,
+	 *  `CommandError::Storage` on database failures.
+	 */
+	modelsRegisterLlm: (record: LlmModelRecord) => typedError<null, CommandError>(__TAURI_INVOKE("models_register_llm", { record })),
+	/**
+	 *  # Errors
+	 *  Returns `CommandError::DuplicateEmbeddingModel` if the model already exists,
+	 *  `CommandError::Storage` on database failures.
+	 */
+	modelsRegisterEmbedding: (record: EmbeddingModelRecord) => typedError<null, CommandError>(__TAURI_INVOKE("models_register_embedding", { record })),
+	/**
+	 *  # Errors
+	 *  Returns `CommandError::Storage` on database failures.
+	 */
+	modelsDeleteLlm: (vendor: string, modelId: string) => typedError<boolean, CommandError>(__TAURI_INVOKE("models_delete_llm", { vendor, modelId })),
+	/**
+	 *  # Errors
+	 *  Returns `CommandError::Storage` on database failures.
+	 */
+	modelsDeleteEmbedding: (vendor: string, modelId: string) => typedError<boolean, CommandError>(__TAURI_INVOKE("models_delete_embedding", { vendor, modelId })),
+	/**
+	 *  # Errors
+	 *  Returns `CommandError::Storage` on database failures.
+	 */
+	tierBindingsGet: () => typedError<TierBindings, CommandError>(__TAURI_INVOKE("tier_bindings_get")),
+	/**
+	 *  # Errors
+	 *  Returns `CommandError::InsufficientTierCaps` if the model's caps don't satisfy
+	 *  the tier's operator-union requirements, `CommandError::UnknownLlmModel` if the
+	 *  model is not registered, or `CommandError::Storage` on database failures.
+	 */
+	tierBind: (tier: ModelTier, vendor: string, modelId: string) => typedError<null, CommandError>(__TAURI_INVOKE("tier_bind", { tier, vendor, modelId })),
+	/**
+	 *  # Errors
+	 *  Returns `CommandError::Storage` on database failures.
+	 */
+	tierUnbind: (tier: ModelTier) => typedError<boolean, CommandError>(__TAURI_INVOKE("tier_unbind", { tier })),
+	/**
+	 *  # Errors
+	 *  Returns `CommandError::Storage` on database failures.
+	 */
+	tierRequires: (tier: ModelTier) => typedError<LlmCaps, CommandError>(__TAURI_INVOKE("tier_requires", { tier })),
+	/**
+	 *  # Errors
+	 *  Returns `CommandError::Storage` on database failures.
+	 */
+	embeddingActiveGet: () => typedError<{
+	vendor: string,
+	model_id: string,
+} | null, CommandError>(__TAURI_INVOKE("embedding_active_get")),
+	/**
+	 *  # Errors
+	 *  Returns `CommandError::UnknownEmbeddingModel` if the model is not registered,
+	 *  `CommandError::Storage` on database failures.
+	 */
+	embeddingActiveSet: (vendor: string, modelId: string) => typedError<null, CommandError>(__TAURI_INVOKE("embedding_active_set", { vendor, modelId })),
+	/**
+	 *  # Errors
+	 *  Returns `CommandError::Storage` on database failures.
+	 */
+	embeddingActiveClear: () => typedError<boolean, CommandError>(__TAURI_INVOKE("embedding_active_clear")),
 };
 
 /* Types */
@@ -43,6 +116,68 @@ export type CitedObjectHint = {
 	schema_id: SchemaId,
 	schema_version: SchemaVersion,
 	content_hash: [number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number],
+};
+
+/**
+ *  Errors returned from settings Tauri commands. Variants flatten
+ *  the underlying `SettingsError` / `ConfigError` shapes into
+ *  frontend-friendly typed payloads.
+ */
+export type CommandError = { kind: "storage"; data: {
+	message: string,
+} } | { kind: "duplicate_llm_model"; data: {
+	model_ref: ModelRef,
+} } | { kind: "duplicate_embedding_model"; data: {
+	model_ref: ModelRef,
+} } | { kind: "unknown_llm_model"; data: {
+	model_ref: ModelRef,
+} } | { kind: "unknown_embedding_model"; data: {
+	model_ref: ModelRef,
+} } | 
+/**
+ *  Tier binding's model fails operator-union caps satisfaction.
+ *  Returned by `tier_bind` when the engine's required caps for
+ *  the tier exceed the bound model's claimed caps.
+ */
+{ kind: "insufficient_tier_caps"; data: {
+	tier: ModelTier,
+	model_ref: ModelRef,
+} } | 
+/**
+ *  CHECK constraint violation in PG — signals Rust↔SQL drift.
+ *  User can't fix; logs to console and reports as bug.
+ */
+{ kind: "invariant"; data: {
+	message: string,
+} };
+
+/**
+ *  Which HTTP API shape a runtime model client speaks. Independent
+ *  of vendor: most non-Anthropic vendors expose the OpenAI dialect,
+ *  so a runtime entry like
+ *  `{vendor: "openrouter", dialect: OpenAI, model_id: "anthropic/..."}`
+ *  is normal.
+ */
+export type Dialect = "anthropic" | "openai";
+
+/**
+ *  Embedding capability axes. `dim` is the vector size — boot-time
+ *  mismatch against the storage migration's vector column is fatal.
+ *  `matryoshka` indicates whether the model produces nested-prefix
+ *  embeddings (caller may truncate without re-embedding).
+ */
+export type EmbedCaps = {
+	dim: number,
+	matryoshka: boolean,
+};
+
+// A single embedding model entry.
+export type EmbeddingModelRecord = {
+	vendor: string,
+	model_id: string,
+	base_url: string,
+	caps: EmbedCaps,
+	secret_ref?: string | null,
 };
 
 export type EntityKind = "Fact" | "Abstraction" | "Perspective" | "Goal";
@@ -119,6 +254,29 @@ export type GoalWriteOutcome = {
 
 export type GroupId = string;
 
+/**
+ *  LLM capability axes. Operators declare a `requires: LlmCaps` at
+ *  registration; runtime config binds a `(vendor, model_id)` to a
+ *  tier and validates that the bound model's claimed caps satisfy
+ *  the union of operator `requires` for that tier.
+ */
+export type LlmCaps = {
+	tool_use: boolean,
+	json_mode: boolean,
+	long_context: boolean,
+	vision: boolean,
+};
+
+// A single LLM model entry.
+export type LlmModelRecord = {
+	vendor: string,
+	model_id: string,
+	dialect: Dialect,
+	base_url: string,
+	caps: LlmCaps,
+	secret_ref?: string | null,
+};
+
 export type MemoryId = string;
 
 /**
@@ -141,6 +299,18 @@ export type MemoryRow = {
 };
 
 export type ModelId = string;
+
+// Reference to a model by `(vendor, model_id)`.
+export type ModelRef = {
+	vendor: string,
+	model_id: string,
+};
+
+/**
+ *  Coarse routing class for operator declarations. Substrate-fixed —
+ *  expansion is a substrate PR per docs/10 §Model tiers.
+ */
+export type ModelTier = "fast" | "standard" | "deep";
 
 export type OperatorId = string;
 
@@ -267,6 +437,13 @@ export type SystemOrigin = ({ Operator: {
 } }) & { Tool?: never } | ({ Tool: {
 	tool_id: ToolId,
 } }) & { Operator?: never };
+
+// Tier-to-model bindings. Each tier may be unbound (None).
+export type TierBindings = {
+	fast?: ModelRef | null,
+	standard?: ModelRef | null,
+	deep?: ModelRef | null,
+};
 
 export type ToolId = string;
 
