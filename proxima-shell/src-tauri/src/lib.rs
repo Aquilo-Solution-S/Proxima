@@ -19,25 +19,24 @@ use std::sync::Arc;
 use futures_util::StreamExt;
 use proxima_core::auth::{Credentials, NoAuth};
 use proxima_core::error::ProtocolError;
-use proxima_core::models::{LlmCaps, ModelTier};
-use proxima_core::operators::F2AOperator;
+use proxima_core::models::{Dialect, LlmCaps, ModelTier};
+use proxima_core::operators::{EmbeddingClient, F2AOperator, LlmClient};
+use proxima_core::secrets::ResolverRegistry;
 use proxima_core::verbs::event_ingest::{EventDraft, EventIngestOutcome};
 use proxima_core::verbs::goal_write::{GoalDraft, GoalWriteOutcome};
 use proxima_core::verbs::query::{QueryRequest, QueryResponse};
 use proxima_core::verbs::schema::{SchemaRequest, SchemaResponse};
 use proxima_core::verbs::subscribe::SubscribeRequest;
 use proxima_core::{ChangeEvent, Engine, OrgId, Owner, Principal, UserId};
-use proxima_llm_ollama::{OllamaConfig, OllamaEmbeddingClient, OllamaLlmClient};
+use proxima_llm_ollama::{OpenAiCompatConfig, OpenAiCompatEmbeddingClient, OpenAiCompatLlmClient};
 use proxima_storage_pg::PgStorage;
-use tauri::ipc::Channel;
 use tauri::State;
+use tauri::ipc::Channel;
 use tauri_specta::{Builder, collect_commands};
 use uuid::Uuid;
 
 use crate::command_error::CommandError;
-use crate::config::{
-    AppConfig, EmbeddingModelRecord, LlmModelRecord, ModelRef, TierBindings,
-};
+use crate::config::{AppConfig, EmbeddingModelRecord, LlmModelRecord, ModelRef, TierBindings};
 
 /// Build the embedded engine for v1 desktop.
 ///
@@ -58,16 +57,15 @@ fn build_engine() -> (Arc<Engine>, Arc<PgStorage>) {
         org_id: OrgId::new(Uuid::nil()),
     };
 
-    let url = std::env::var("DATABASE_URL")
-        .expect("DATABASE_URL must be set for the desktop shell — settings persistence is required");
+    let url = std::env::var("DATABASE_URL").expect(
+        "DATABASE_URL must be set for the desktop shell — settings persistence is required",
+    );
 
     tauri::async_runtime::block_on(async {
         let pg = PgStorage::connect(&url)
             .await
             .expect("failed to connect to Postgres; check DATABASE_URL");
-        pg.run_migrations()
-            .await
-            .expect("failed to run migrations");
+        pg.run_migrations().await.expect("failed to run migrations");
         proxima_code::migrator()
             .run(pg.pool())
             .await
@@ -99,16 +97,12 @@ fn sentinel_owner() -> Owner {
 }
 
 /// Validate the loaded `AppConfig` at engine boot and attach local
-/// Ollama clients when the registered rows are complete.
+/// OpenAI-compatible clients when the registered rows are complete.
 /// Loads settings from PG, assembles an `AppConfig`, and runs
 /// `validate_config` against the engine. Failures are logged as
 /// warnings only — the settings UI exists to fix broken config;
 /// panicking would brick the app.
-async fn wire_consolidation_clients(
-    engine: Engine,
-    pg: &Arc<PgStorage>,
-    owner: &Owner,
-) -> Engine {
+async fn wire_consolidation_clients(engine: Engine, pg: &Arc<PgStorage>, owner: &Owner) -> Engine {
     let cfg = match crate::config::load_app_config(pg, owner).await {
         Ok(cfg) => cfg,
         Err(e) => {
@@ -116,7 +110,7 @@ async fn wire_consolidation_clients(
             return engine;
         }
     };
-    if let Err(e) = crate::config::validate_config(&cfg, engine) {
+    if let Err(e) = crate::config::validate_config(&cfg, &engine) {
         tracing::warn!(
             "AppConfig validation failed at boot — running with degraded \
              config; user must fix via settings UI: {e}"
@@ -143,7 +137,7 @@ async fn wire_consolidation_clients(
 
 fn resolve_consolidation_clients(
     cfg: &AppConfig,
-) -> Result<(OllamaLlmClient, OllamaEmbeddingClient), String> {
+) -> Result<(OpenAiCompatLlmClient, OpenAiCompatEmbeddingClient), String> {
     let tier = proxima_code::CommitSummaryOperator::new().tier();
     let model_ref = cfg
         .tiers
@@ -155,9 +149,10 @@ fn resolve_consolidation_clients(
         .iter()
         .find(|m| m.vendor == model_ref.vendor && m.model_id == model_ref.model_id)
         .ok_or_else(|| format!("tier {tier:?} bound to unknown model {model_ref:?}"))?;
-    if !looks_like_ollama_base_url(&llm.base_url) {
+    if llm.dialect != Dialect::OpenAI {
         return Err(format!(
-            "unsupported LLM provider shape for {model_ref:?}: base_url must point at an Ollama-compatible endpoint"
+            "unsupported LLM dialect for {model_ref:?}: {:?}",
+            llm.dialect
         ));
     }
 
@@ -172,43 +167,51 @@ fn resolve_consolidation_clients(
         .iter()
         .find(|m| m.vendor == active_ref.vendor && m.model_id == active_ref.model_id)
         .ok_or_else(|| format!("active embedding points at unknown model {active_ref:?}"))?;
-    if !looks_like_ollama_base_url(&embed.base_url) {
-        return Err(format!(
-            "unsupported embedding provider shape for {active_ref:?}: base_url must point at an Ollama-compatible endpoint"
-        ));
-    }
 
-    let llm_client = OllamaLlmClient::new(
+    let resolver = shell_secret_resolver();
+    let llm_secret = resolve_optional_secret(&resolver, llm.secret_ref.as_deref())
+        .map_err(|e| format!("could not resolve LLM secret_ref for {model_ref:?}: {e}"))?;
+    let embed_secret = resolve_optional_secret(&resolver, embed.secret_ref.as_deref())
+        .map_err(|e| format!("could not resolve embedding secret_ref for {active_ref:?}: {e}"))?;
+
+    let llm_client = OpenAiCompatLlmClient::new(
         llm.model_id.clone(),
-        OllamaConfig {
-            base_url: llm.base_url.clone(),
-            ..OllamaConfig::default()
-        },
-    )
-    .map_err(|e| format!("could not construct Ollama LLM client for {model_ref:?}: {e}"))?;
-    let embed_dim = usize::try_from(embed.caps.dim)
-        .map_err(|_| format!("embedding dim out of range: {}", embed.caps.dim))?;
-    let embed_client = OllamaEmbeddingClient::new(
-        embed.model_id.clone(),
-        embed_dim,
-        OllamaConfig {
-            base_url: embed.base_url.clone(),
-            ..OllamaConfig::default()
-        },
+        OpenAiCompatConfig::new(llm.base_url.clone(), llm_secret),
     )
     .map_err(|e| {
-        format!("could not construct Ollama embedding client for {active_ref:?}: {e}")
+        format!("could not construct OpenAI-compatible LLM client for {model_ref:?}: {e}")
+    })?;
+    let embed_dim = usize::try_from(embed.caps.dim)
+        .map_err(|_| format!("embedding dim out of range: {}", embed.caps.dim))?;
+    let embed_client = OpenAiCompatEmbeddingClient::new(
+        embed.model_id.clone(),
+        embed_dim,
+        OpenAiCompatConfig::new(embed.base_url.clone(), embed_secret),
+    )
+    .map_err(|e| {
+        format!("could not construct OpenAI-compatible embedding client for {active_ref:?}: {e}")
     })?;
     Ok((llm_client, embed_client))
 }
 
-fn looks_like_ollama_base_url(base_url: &str) -> bool {
-    let lower = base_url.trim().to_ascii_lowercase();
-    (lower.starts_with("http://") || lower.starts_with("https://"))
-        && (lower.contains(":11434")
-            || lower.contains("localhost")
-            || lower.contains("127.0.0.1")
-            || lower.contains("ollama"))
+fn shell_secret_resolver() -> ResolverRegistry {
+    let mut resolver = ResolverRegistry::default_with_env();
+    resolver.register(Box::new(crate::secrets::KeychainResolver::new()));
+    resolver
+}
+
+fn resolve_optional_secret(
+    resolver: &ResolverRegistry,
+    secret_ref: Option<&str>,
+) -> Result<Option<String>, String> {
+    let Some(secret_ref) = secret_ref.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(None);
+    };
+    let bytes = resolver.resolve(secret_ref).map_err(|e| e.to_string())?;
+    let value = bytes
+        .as_str()
+        .ok_or_else(|| format!("secret_ref {secret_ref:?} resolved to non-UTF8 bytes"))?;
+    Ok(Some(value.to_string()))
 }
 
 #[tauri::command]
@@ -309,9 +312,7 @@ async fn models_list_embedding(
 /// Returns `CommandError::Storage` on database failures.
 #[tauri::command]
 #[specta::specta]
-async fn tier_bindings_get(
-    pg: State<'_, Arc<PgStorage>>,
-) -> Result<TierBindings, CommandError> {
+async fn tier_bindings_get(pg: State<'_, Arc<PgStorage>>) -> Result<TierBindings, CommandError> {
     let owner = sentinel_owner();
     let raw = pg.list_tier_bindings(&owner).await?;
     let mut tb = TierBindings::default();
@@ -426,7 +427,8 @@ async fn tier_bind(
     // Caps pre-check — refuse to bind if the model can't satisfy
     // the engine's operator-union for this tier.
     let llm_models = pg.list_llm_models(&owner).await?;
-    let bound = llm_models.iter()
+    let bound = llm_models
+        .iter()
         .find(|m| m.vendor == vendor && m.model_id == model_id)
         .ok_or(CommandError::UnknownLlmModel {
             model_ref: ModelRef {
@@ -453,10 +455,7 @@ async fn tier_bind(
 /// Returns `CommandError::Storage` on database failures.
 #[tauri::command]
 #[specta::specta]
-async fn tier_unbind(
-    pg: State<'_, Arc<PgStorage>>,
-    tier: ModelTier,
-) -> Result<bool, CommandError> {
+async fn tier_unbind(pg: State<'_, Arc<PgStorage>>, tier: ModelTier) -> Result<bool, CommandError> {
     let owner = sentinel_owner();
     pg.unbind_tier(&owner, tier)
         .await
@@ -483,9 +482,7 @@ async fn embedding_active_set(
 /// Returns `CommandError::Storage` on database failures.
 #[tauri::command]
 #[specta::specta]
-async fn embedding_active_clear(
-    pg: State<'_, Arc<PgStorage>>,
-) -> Result<bool, CommandError> {
+async fn embedding_active_clear(pg: State<'_, Arc<PgStorage>>) -> Result<bool, CommandError> {
     let owner = sentinel_owner();
     pg.clear_embedding_active(&owner)
         .await
@@ -592,10 +589,11 @@ async fn repos_register(
     display_name: Option<String>,
 ) -> Result<RepoRecordTs, CommandError> {
     // 1. canonicalize
-    let canonical = std::fs::canonicalize(&path).map_err(|io_err| CommandError::InvalidRepoPath {
-        path: path.clone(),
-        reason: io_err.to_string(),
-    })?;
+    let canonical =
+        std::fs::canonicalize(&path).map_err(|io_err| CommandError::InvalidRepoPath {
+            path: path.clone(),
+            reason: io_err.to_string(),
+        })?;
 
     // 2. Verify .git exists (directory or file for worktrees)
     let git_path = canonical.join(".git");
@@ -617,14 +615,8 @@ async fn repos_register(
     // 4. Register
     let owner = sentinel_owner();
     let repo_id = Uuid::now_v7();
-    let record = proxima_code::register_repo(
-        pg.pool(),
-        &owner,
-        repo_id,
-        &canonical_str,
-        &display,
-    )
-    .await?;
+    let record =
+        proxima_code::register_repo(pg.pool(), &owner, repo_id, &canonical_str, &display).await?;
 
     Ok(record.into())
 }
@@ -638,7 +630,8 @@ async fn repos_delete(
     repo_id: String,
 ) -> Result<bool, CommandError> {
     let owner = sentinel_owner();
-    let uuid = Uuid::parse_str(&repo_id).map_err(|_| CommandError::InvalidUuid { value: repo_id })?;
+    let uuid =
+        Uuid::parse_str(&repo_id).map_err(|_| CommandError::InvalidUuid { value: repo_id })?;
     proxima_code::delete_repo(pg.pool(), &owner, uuid)
         .await
         .map_err(CommandError::from)
@@ -655,6 +648,7 @@ async fn repos_delete(
 #[tauri::command]
 #[specta::specta]
 async fn repo_ingest(
+    engine: State<'_, Arc<Engine>>,
     pg: State<'_, Arc<PgStorage>>,
     repo_id: String,
     on_progress: Channel<IngestProgressTs>,
@@ -665,8 +659,9 @@ async fn repo_ingest(
     let owner = sentinel_owner();
 
     // 1. Parse uuid
-    let uuid = Uuid::parse_str(&repo_id)
-        .map_err(|_| CommandError::InvalidUuid { value: repo_id.clone() })?;
+    let uuid = Uuid::parse_str(&repo_id).map_err(|_| CommandError::InvalidUuid {
+        value: repo_id.clone(),
+    })?;
 
     // 2. Get repo record
     let record = proxima_code::get_repo(pg.pool(), &owner, uuid)
@@ -688,6 +683,7 @@ async fn repo_ingest(
 
     // 5. Clone pg for the background task
     let pg_clone = pg.inner().clone();
+    let engine_clone = engine.inner().clone();
 
     // 6. Spawn background task
     tokio::spawn(async move {
@@ -696,7 +692,7 @@ async fn repo_ingest(
         };
         match source.run_poll(pg_clone.pool(), &cursor, &mut sink).await {
             Ok((report, new_cursor)) => {
-                if let Err(e) = proxima_code::update_cursor(
+                let cursor_updated = if let Err(e) = proxima_code::update_cursor(
                     pg_clone.pool(),
                     &owner,
                     uuid,
@@ -706,6 +702,12 @@ async fn repo_ingest(
                 .await
                 {
                     tracing::warn!("update_cursor failed: {e}");
+                    false
+                } else {
+                    true
+                };
+                if cursor_updated && let Err(e) = engine_clone.run_pending_f2a(&owner).await {
+                    tracing::warn!("repo_ingest F→A consolidation failed: {e}");
                 }
                 let _ = on_done.send(report.into());
             }
@@ -781,7 +783,13 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::specta_builder;
+    use super::{resolve_consolidation_clients, specta_builder};
+    use crate::config::{
+        AppConfig, EmbeddingConfig, EmbeddingModelRecord, LlmConfig, LlmModelRecord, ModelRef,
+        TierBindings,
+    };
+    use proxima_core::models::{Dialect, EmbedCaps, LlmCaps};
+    use proxima_core::operators::{EmbeddingClient, LlmClient};
 
     /// Regenerate `proxima-shell/src/lib/bindings.ts` from the
     /// command surface. Run via `cargo test -p proxima-shell`. The
@@ -796,5 +804,91 @@ mod tests {
                 "../../frontend-core/src/bindings.ts",
             )
             .expect("failed to export TS bindings");
+    }
+
+    fn llm_record(vendor: &str, model_id: &str) -> LlmModelRecord {
+        LlmModelRecord {
+            vendor: vendor.to_string(),
+            model_id: model_id.to_string(),
+            dialect: Dialect::OpenAI,
+            base_url: "http://localhost:11434/v1".to_string(),
+            caps: LlmCaps::none(),
+            secret_ref: None,
+        }
+    }
+
+    fn embed_record(vendor: &str, model_id: &str, dim: u32) -> EmbeddingModelRecord {
+        EmbeddingModelRecord {
+            vendor: vendor.to_string(),
+            model_id: model_id.to_string(),
+            base_url: "http://localhost:11434/v1".to_string(),
+            caps: EmbedCaps {
+                dim,
+                matryoshka: false,
+            },
+            secret_ref: None,
+        }
+    }
+
+    fn config_with_models(embed_dim: u32) -> AppConfig {
+        AppConfig {
+            llm: LlmConfig {
+                models: vec![llm_record("ollama", "qwen3-coder")],
+            },
+            embedding: EmbeddingConfig {
+                models: vec![embed_record("ollama", "nomic-embed-text", embed_dim)],
+                active: Some(ModelRef {
+                    vendor: "ollama".to_string(),
+                    model_id: "nomic-embed-text".to_string(),
+                }),
+            },
+            tiers: TierBindings {
+                standard: Some(ModelRef {
+                    vendor: "ollama".to_string(),
+                    model_id: "qwen3-coder".to_string(),
+                }),
+                ..TierBindings::default()
+            },
+        }
+    }
+
+    #[test]
+    fn model_resolution_builds_openai_compatible_clients() {
+        let cfg = config_with_models(768);
+        let (llm, embed) = resolve_consolidation_clients(&cfg).expect("clients");
+        assert_eq!(llm.model_id(), "qwen3-coder");
+        assert_eq!(embed.model_id(), "nomic-embed-text");
+        assert_eq!(embed.dim(), 768);
+    }
+
+    #[test]
+    fn model_resolution_missing_active_embedding_degrades() {
+        let mut cfg = config_with_models(768);
+        cfg.embedding.active = None;
+        let err = resolve_consolidation_clients(&cfg).unwrap_err();
+        assert!(err.contains("missing active embedding model"));
+    }
+
+    #[test]
+    fn model_resolution_missing_standard_binding_degrades() {
+        let mut cfg = config_with_models(768);
+        cfg.tiers.standard = None;
+        let err = resolve_consolidation_clients(&cfg).unwrap_err();
+        assert!(err.contains("missing tier binding"));
+    }
+
+    #[test]
+    fn model_resolution_uses_embedding_caps_dim() {
+        let cfg = config_with_models(1_536);
+        let (_, embed) = resolve_consolidation_clients(&cfg).expect("clients");
+        assert_eq!(embed.dim(), 1_536);
+    }
+
+    #[test]
+    fn model_resolution_unsupported_llm_dialect_degrades() {
+        let mut cfg = config_with_models(768);
+        cfg.llm.models[0].dialect = Dialect::Anthropic;
+        let err = resolve_consolidation_clients(&cfg).unwrap_err();
+        assert!(err.contains("unsupported LLM dialect"));
     }
 }

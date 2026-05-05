@@ -17,11 +17,13 @@ pub use ingest::{
     build_engine, ingest_code_chunk, ingest_commit, ingest_file_revision,
 };
 pub use local_git_source::{IndexError, IndexReport, IngestProgress, LocalGitSource};
-pub use repos::{RepoRecord, RepoRegistryError, delete_repo, get_repo, list_repos, register_repo, update_cursor};
 pub use migrations::migrator;
 pub use operators::{CommitSummaryOperator, f2a_operator_registry};
 pub use payloads::{
     CodeChunkV1, CommitSummaryV1, CommitV1, EdgeCallsV1, FileRevisionV1, FileState,
+};
+pub use repos::{
+    RepoRecord, RepoRegistryError, delete_repo, get_repo, list_repos, register_repo, update_cursor,
 };
 
 use proxima_core::{RelationClass, RelationDescriptor, SchemaId, SchemaRef, SchemaVersion};
