@@ -29,6 +29,7 @@ use tokio::sync::broadcast;
 mod authorship;
 mod error;
 pub mod outbox;
+pub mod settings;
 pub mod verbs;
 
 use outbox::BROADCAST_CAPACITY;
@@ -226,5 +227,135 @@ impl Storage for PgStorage {
         operator_id: &str,
     ) -> Result<Vec<SourceBatchId>, StorageError> {
         verbs::consolidate::list_unconsolidated_batches(&self.pool, owner, operator_id).await
+    }
+}
+
+/// Settings registration — see [`mod@settings`] for shape.
+impl PgStorage {
+    /// # Errors
+    /// `SettingsError::Database` for connectivity failures.
+    pub async fn list_llm_models(
+        &self,
+        owner: &Owner,
+    ) -> Result<Vec<settings::LlmModel>, settings::SettingsError> {
+        settings::list_llm_models(&self.pool, owner).await
+    }
+
+    /// # Errors
+    /// `SettingsError::Database` for connectivity failures.
+    pub async fn list_embedding_models(
+        &self,
+        owner: &Owner,
+    ) -> Result<Vec<settings::EmbeddingModel>, settings::SettingsError> {
+        settings::list_embedding_models(&self.pool, owner).await
+    }
+
+    /// # Errors
+    /// `SettingsError::Database` for connectivity failures.
+    /// `SettingsError::Invariant` if a row has an unrecognized tier.
+    pub async fn list_tier_bindings(
+        &self,
+        owner: &Owner,
+    ) -> Result<Vec<(proxima_core::models::ModelTier, String, String)>, settings::SettingsError> {
+        settings::list_tier_bindings(&self.pool, owner).await
+    }
+
+    /// # Errors
+    /// `SettingsError::Database` for connectivity failures.
+    pub async fn get_embedding_active(
+        &self,
+        owner: &Owner,
+    ) -> Result<Option<(String, String)>, settings::SettingsError> {
+        settings::get_embedding_active(&self.pool, owner).await
+    }
+
+    /// # Errors
+    /// `SettingsError::Database` for connectivity failures.
+    /// `SettingsError::DuplicateLlmModel` if (vendor, `model_id`) already exists.
+    /// `SettingsError::Invariant` for CHECK violations (should not happen).
+    pub async fn register_llm_model(
+        &self,
+        owner: &Owner,
+        m: settings::LlmModel,
+    ) -> Result<(), settings::SettingsError> {
+        settings::register_llm_model(&self.pool, owner, m).await
+    }
+
+    /// # Errors
+    /// `SettingsError::Database` for connectivity failures.
+    /// `SettingsError::DuplicateEmbeddingModel` if (vendor, `model_id`) already exists.
+    pub async fn register_embedding_model(
+        &self,
+        owner: &Owner,
+        m: settings::EmbeddingModel,
+    ) -> Result<(), settings::SettingsError> {
+        settings::register_embedding_model(&self.pool, owner, m).await
+    }
+
+    /// # Errors
+    /// `SettingsError::Database` for connectivity failures.
+    pub async fn delete_llm_model(
+        &self,
+        owner: &Owner,
+        vendor: &str,
+        model_id: &str,
+    ) -> Result<bool, settings::SettingsError> {
+        settings::delete_llm_model(&self.pool, owner, vendor, model_id).await
+    }
+
+    /// # Errors
+    /// `SettingsError::Database` for connectivity failures.
+    pub async fn delete_embedding_model(
+        &self,
+        owner: &Owner,
+        vendor: &str,
+        model_id: &str,
+    ) -> Result<bool, settings::SettingsError> {
+        settings::delete_embedding_model(&self.pool, owner, vendor, model_id).await
+    }
+
+    /// # Errors
+    /// `SettingsError::Database` for connectivity failures.
+    /// `SettingsError::UnknownLlmModel` if (vendor, `model_id`) is not registered.
+    /// `SettingsError::Invariant` for CHECK violations (should not happen).
+    pub async fn bind_tier(
+        &self,
+        owner: &Owner,
+        tier: proxima_core::models::ModelTier,
+        vendor: &str,
+        model_id: &str,
+    ) -> Result<(), settings::SettingsError> {
+        settings::bind_tier(&self.pool, owner, tier, vendor, model_id).await
+    }
+
+    /// # Errors
+    /// `SettingsError::Database` for connectivity failures.
+    pub async fn unbind_tier(
+        &self,
+        owner: &Owner,
+        tier: proxima_core::models::ModelTier,
+    ) -> Result<bool, settings::SettingsError> {
+        settings::unbind_tier(&self.pool, owner, tier).await
+    }
+
+    /// # Errors
+    /// `SettingsError::Database` for connectivity failures.
+    /// `SettingsError::UnknownEmbeddingModel` if (vendor, `model_id`) is not registered.
+    pub async fn set_embedding_active(
+        &self,
+        owner: &Owner,
+        vendor: &str,
+        model_id: &str,
+    ) -> Result<(), settings::SettingsError> {
+        settings::set_embedding_active(&self.pool, owner, vendor, model_id).await
+    }
+
+    /// # Errors
+    /// `SettingsError::Database` for connectivity failures.
+    pub async fn clear_embedding_active(
+        &self,
+        owner: &Owner,
+    ) -> Result<bool, settings::SettingsError> {
+        settings::clear_embedding_active(&self.pool, owner).await
     }
 }
