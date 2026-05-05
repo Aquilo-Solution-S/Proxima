@@ -38,6 +38,16 @@ pub struct EdgeDraft<'a> {
 /// assert). This mirrors the `RelationDescriptor.payload_schema =
 /// None` substrate-only path.
 ///
+/// Idempotency: the edge insert uses `ON CONFLICT (edge_id) DO
+/// NOTHING`. When a caller derives `edge_id` from a stable natural
+/// key (e.g. `Uuid::new_v5` over the relation tuple), re-ingesting
+/// the same logical edge collapses to a single row — and crucially,
+/// the sidecar `INSERT` and the `EdgeAppend` change_event are gated
+/// on the edge insert actually returning a row, so a conflict
+/// short-circuits without writing duplicate sidecar rows or firing a
+/// duplicate change_event. v1 edges are immutable, so dropping the
+/// duplicate is correct semantics, not lossy.
+///
 /// # Errors
 ///
 /// Returns `ConstraintViolation` on FK / check failures; `Internal`
@@ -56,15 +66,19 @@ pub async fn append_edge_in_tx(
         "sidecar_table is None but payload is Some"
     );
 
-    // 1. Insert the edge row.
-    sqlx::query(
+    // 1. Insert the edge row. ON CONFLICT (edge_id) DO NOTHING +
+    //    RETURNING gives us a sentinel that distinguishes a fresh
+    //    insert (`Some`) from a deduplicated re-ingest (`None`).
+    let inserted: Option<(uuid::Uuid,)> = sqlx::query_as(
         "INSERT INTO proxima_core.edges \
             (edge_id, relation, relation_class, \
              source_kind, source_memory_id, source_goal_id, \
              target_kind, target_memory_id, target_goal_id, \
              authorship_kind, authorship_owner_memory_id, \
              owner_principal_kind, owner_principal_id, owner_org_id) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) \
+         ON CONFLICT (edge_id) DO NOTHING \
+         RETURNING edge_id",
     )
     .bind(draft.edge_id)
     .bind(draft.relation)
@@ -80,9 +94,18 @@ pub async fn append_edge_in_tx(
     .bind(owner_kind)
     .bind(owner_principal_id)
     .bind(owner_org_id)
-    .execute(&mut *tx)
+    .fetch_optional(&mut *tx)
     .await
     .map_err(map_err)?;
+
+    // Re-ingest of an existing edge: nothing further to do. The
+    // sidecar row is already present from the first ingest; emitting
+    // a second change_event would (a) violate the
+    // one-event-per-observation invariant and (b) noisily fan out
+    // outbox subscribers for no semantic change.
+    if inserted.is_none() {
+        return Ok(());
+    }
 
     // 2. Insert typed sidecar if provided.
     if let (Some(payload_json), Some(table)) = (payload, sidecar_table) {

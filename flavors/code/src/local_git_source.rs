@@ -48,7 +48,7 @@ use crate::calls::extract_blob_callgraph;
 use crate::chunker::chunk_blob;
 use crate::ingest::{
     CallEdgeDraft, IngestError, ingest_calls_edge, ingest_code_chunk, ingest_commit,
-    ingest_file_revision, present_chunk_indexes,
+    ingest_file_revision, lookup_present_chunk_memory_id_by_text, present_chunk_indexes,
 };
 use crate::payloads::{CodeChunkV1, CommitV1, FileRevisionV1, FileState};
 
@@ -68,6 +68,12 @@ pub enum IndexError {
 
 /// Counters returned by [`LocalGitSource::run_poll`]. Sums across
 /// every commit-batch the poll opened.
+///
+/// `chunks_reused` counts chunks where Layer-A dedup found a Present
+/// head with matching text at the same NK and skipped re-emission of
+/// a fresh Fact. It's a separate counter from `chunks_emitted` so
+/// callers can observe how much commit-replay churn the dedup
+/// actually absorbs (one of the M5.5 done-when criteria).
 #[derive(Debug, Default, Clone)]
 pub struct IndexReport {
     pub commits_emitted: usize,
@@ -75,6 +81,7 @@ pub struct IndexReport {
     pub files_present_emitted: usize,
     pub files_tombstoned: usize,
     pub chunks_emitted: usize,
+    pub chunks_reused: usize,
     pub chunks_tombstoned: usize,
 }
 
@@ -232,7 +239,7 @@ impl LocalGitSource {
     /// Phase-2 inner loop: emit one file's `file-revision-v1` Fact, the
     /// chunk batch (or a tombstone burst if the chunk count shrank), and
     /// resolve intra-file calls into typed `code/calls` edges.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     async fn ingest_changed_path(
         &self,
         pool: &PgPool,
@@ -292,23 +299,47 @@ impl LocalGitSource {
 
         let mut file_chunks: Vec<ChunkInfo> = Vec::new();
         for (idx, chunk) in chunks.into_iter().enumerate() {
-            let payload = CodeChunkV1 {
-                repo_id: self.repo_id,
-                file_path: path.to_string(),
-                chunk_index: u32::try_from(idx).unwrap_or(u32::MAX),
-                text: chunk.text.clone(),
-                language: chunk.language.map(str::to_string),
-                chunk_type: chunk.chunk_type.to_string(),
-                byte_range_start: chunk.byte_range_start,
-                byte_range_end: chunk.byte_range_end,
-                line_range_start: chunk.line_range_start,
-                line_range_end: chunk.line_range_end,
-                state: FileState::Present,
+            let chunk_index = u32::try_from(idx).unwrap_or(u32::MAX);
+
+            // Layer-A dedup: if the Present head at this NK already
+            // has identical text, reuse its memory_id. Skipping the
+            // ingest_code_chunk call here means no fresh memory_id,
+            // no duplicate substrate event, and — combined with
+            // Layer B's deterministic edge_id — typed call edges
+            // collapse to one row per logical call site across
+            // arbitrary commit replay.
+            let memory_id = if let Some(existing) = lookup_present_chunk_memory_id_by_text(
+                pool,
+                &self.owner,
+                self.repo_id,
+                path,
+                chunk_index,
+                &chunk.text,
+            )
+            .await?
+            {
+                report.chunks_reused += 1;
+                existing
+            } else {
+                let payload = CodeChunkV1 {
+                    repo_id: self.repo_id,
+                    file_path: path.to_string(),
+                    chunk_index,
+                    text: chunk.text.clone(),
+                    language: chunk.language.map(str::to_string),
+                    chunk_type: chunk.chunk_type.to_string(),
+                    byte_range_start: chunk.byte_range_start,
+                    byte_range_end: chunk.byte_range_end,
+                    line_range_start: chunk.line_range_start,
+                    line_range_end: chunk.line_range_end,
+                    state: FileState::Present,
+                };
+                let outcome =
+                    ingest_code_chunk(pool, &self.owner, batch_id, &payload, content_sha256, now)
+                        .await?;
+                report.chunks_emitted += 1;
+                outcome.memory_id
             };
-            let outcome =
-                ingest_code_chunk(pool, &self.owner, batch_id, &payload, content_sha256, now)
-                    .await?;
-            report.chunks_emitted += 1;
 
             let item_names: Vec<String> = definitions
                 .iter()
@@ -319,7 +350,7 @@ impl LocalGitSource {
                 .collect();
 
             file_chunks.push(ChunkInfo {
-                memory_id: outcome.memory_id,
+                memory_id,
                 byte_range_start: chunk.byte_range_start,
                 byte_range_end: chunk.byte_range_end,
                 item_names,
@@ -348,6 +379,18 @@ impl LocalGitSource {
                 continue;
             }
 
+            // Chunk-relative offset is the dedup-stable component of
+            // the deterministic edge_id (Layer B). When the source
+            // chunk's text is unchanged but its position in the file
+            // has shifted, file-level `call.byte_start` shifts but
+            // `call.byte_start - caller.byte_range_start` does not.
+            // saturating_sub keeps the cast well-defined even on a
+            // pathological mismatch (caller resolved by `max_by_key`,
+            // so call.byte_start should always be >= byte_range_start
+            // in practice).
+            let callsite_byte_start_in_source_chunk =
+                call.byte_start.saturating_sub(caller.byte_range_start);
+
             ingest_calls_edge(
                 pool,
                 &self.owner,
@@ -356,6 +399,7 @@ impl LocalGitSource {
                     target_memory_id: callee.memory_id.into_inner(),
                     callsite_byte_start: call.byte_start,
                     callsite_byte_end: call.byte_end,
+                    callsite_byte_start_in_source_chunk,
                     callee_name: call.callee_name,
                     is_dynamic: call.is_dynamic,
                 },

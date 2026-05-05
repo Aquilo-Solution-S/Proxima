@@ -433,22 +433,155 @@ pub async fn present_chunk_indexes(
         .collect())
 }
 
+/// Look up the current Present `code-chunk-v1` head at
+/// `(owner, repo_id, file_path, chunk_index)` and return its
+/// `memory_id` iff its stored `text` matches `text_to_match`.
+///
+/// Used by `LocalGitSource` to skip re-emission of a chunk Fact when
+/// the same logical chunk re-appears at a later commit with the same
+/// content but at a shifted file byte range. The substrate's
+/// content-derived `event_id` would otherwise mint a fresh
+/// `memory_id` (the chunk Fact payload includes byte/line ranges,
+/// which shift even when the text is identical), causing typed
+/// `code/calls` edges to fan out one-per-commit instead of
+/// one-per-call-site. Reusing the existing memory_id keeps both the
+/// chunk-Fact set and the edge set stable across commits.
+///
+/// Position-drift trade-off: when a chunk's text is unchanged but
+/// it's now at a different `chunk_index` (something added above),
+/// the lookup at the new index misses → a fresh Fact is emitted.
+/// That's correct: chunk_index is part of the NK and `index drift`
+/// is a real change to the chunk's identity within the file.
+pub async fn lookup_present_chunk_memory_id_by_text(
+    pool: &PgPool,
+    owner: &Owner,
+    repo_id: uuid::Uuid,
+    file_path: &str,
+    chunk_index: u32,
+    text_to_match: &str,
+) -> Result<Option<MemoryId>, IngestError> {
+    use proxima_core::Principal;
+    let (kind, principal_id) = match &owner.principal {
+        Principal::User(u) => ("User", u.into_inner()),
+        Principal::Group(g) => ("Group", g.into_inner()),
+    };
+    let org_id = owner.org_id.into_inner();
+
+    let row: Option<(uuid::Uuid,)> = sqlx::query_as(
+        "SELECT m.memory_id \
+         FROM proxima_core.memories m \
+         JOIN proxima_code.code_chunk_v1 s USING (memory_id) \
+         WHERE m.owner_principal_kind = $1 \
+           AND m.owner_principal_id = $2 \
+           AND m.owner_org_id = $3 \
+           AND s.repo_id = $4 \
+           AND s.file_path = $5 \
+           AND s.chunk_index = $6 \
+           AND s.state = 'Present' \
+           AND s.text = $7 \
+           AND NOT EXISTS ( \
+                 SELECT 1 FROM proxima_core.memories m2 \
+                 JOIN proxima_code.code_chunk_v1 s2 USING (memory_id) \
+                 WHERE m2.schema_id = m.schema_id \
+                   AND m2.owner_principal_kind = m.owner_principal_kind \
+                   AND m2.owner_principal_id = m.owner_principal_id \
+                   AND m2.owner_org_id = m.owner_org_id \
+                   AND s2.repo_id = s.repo_id \
+                   AND s2.file_path = s.file_path \
+                   AND s2.chunk_index = s.chunk_index \
+                   AND m2.created_at > m.created_at \
+           ) \
+         LIMIT 1",
+    )
+    .bind(kind)
+    .bind(principal_id)
+    .bind(org_id)
+    .bind(repo_id)
+    .bind(file_path)
+    .bind(i32::try_from(chunk_index).unwrap_or(i32::MAX))
+    .bind(text_to_match)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(|(mid,)| MemoryId::new(mid)))
+}
+
 /// Typed payload for one `code/calls` edge: caller + callee chunk
 /// memories, callsite byte range, and callee identifier metadata.
-/// Bundles every per-edge field so callers don't pass 6 positional
-/// args.
+///
+/// `callsite_byte_start_in_source_chunk` is the offset of the call
+/// expression *within the source chunk's text* (not file-level). It
+/// participates in the deterministic `edge_id` derivation so the same
+/// caller→callee call site collapses to a single edge across commits
+/// where the chunk's content is unchanged but its file-level byte
+/// position has shifted (a sibling above changed). The file-level
+/// `callsite_byte_start` / `callsite_byte_end` are stored in the
+/// sidecar for first-observation context but do not contribute to
+/// edge identity.
 #[derive(Debug, Clone)]
 pub struct CallEdgeDraft {
     pub source_memory_id: uuid::Uuid,
     pub target_memory_id: uuid::Uuid,
     pub callsite_byte_start: u32,
     pub callsite_byte_end: u32,
+    pub callsite_byte_start_in_source_chunk: u32,
     pub callee_name: String,
     pub is_dynamic: bool,
 }
 
+/// Stable namespace UUID for deterministic `proxima-code` edge_ids.
+/// Combined with the natural-key bytes via `Uuid::new_v5`, this
+/// produces an `edge_id` that's identical across re-ingests of the
+/// same call site — the substrate's `ON CONFLICT (edge_id) DO
+/// NOTHING` then drops the duplicate without firing a duplicate
+/// `EdgeAppend` change_event.
+const PROXIMA_CODE_EDGE_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
+    0xb8, 0xe7, 0xf8, 0xd2, 0x7c, 0x4f, 0x4f, 0x5a, 0x9e, 0x3a, 0x4d, 0x2b, 0x1e, 0x9f, 0x0a, 0x3c,
+]);
+
+/// Derive the natural-key bytes for a `proxima-code/calls` edge.
+/// Components: owner principal kind / id / org-id, the relation
+/// string, both endpoint memory ids, and the **chunk-relative**
+/// callsite byte start. File-level offsets are deliberately omitted
+/// so the key is stable when chunk content is stable but the chunk
+/// has shifted in the file.
+fn calls_edge_natural_key(
+    owner: &Owner,
+    source_memory_id: uuid::Uuid,
+    target_memory_id: uuid::Uuid,
+    callsite_byte_start_in_source_chunk: u32,
+) -> Vec<u8> {
+    use proxima_core::Principal;
+    let mut k = Vec::with_capacity(128);
+    let (kind, principal_id) = match &owner.principal {
+        Principal::User(u) => ("User", u.into_inner()),
+        Principal::Group(g) => ("Group", g.into_inner()),
+    };
+    k.extend_from_slice(kind.as_bytes());
+    k.push(0);
+    k.extend_from_slice(principal_id.as_bytes());
+    k.push(0);
+    k.extend_from_slice(owner.org_id.into_inner().as_bytes());
+    k.push(0);
+    k.extend_from_slice(b"proxima-code/calls");
+    k.push(0);
+    k.extend_from_slice(source_memory_id.as_bytes());
+    k.push(0);
+    k.extend_from_slice(target_memory_id.as_bytes());
+    k.push(0);
+    k.extend_from_slice(&callsite_byte_start_in_source_chunk.to_be_bytes());
+    k
+}
+
 /// Atomic edge + typed sidecar write for `code/calls` edges.
 /// Wraps `proxima_storage_pg::verbs::edge_append::append_edge_in_tx`.
+///
+/// `edge_id` is derived deterministically from the natural key
+/// (owner ‖ relation ‖ source_memory_id ‖ target_memory_id ‖
+/// chunk-relative callsite offset). Re-ingests of the same call site
+/// produce the same `edge_id` and are dropped by the `ON CONFLICT`
+/// guard inside `append_edge_in_tx` — sidecar + change_event are
+/// gated on the edge insert actually returning a row.
 pub async fn ingest_calls_edge(
     pool: &PgPool,
     owner: &Owner,
@@ -457,7 +590,14 @@ pub async fn ingest_calls_edge(
     use proxima_core::RelationClass;
     use proxima_storage_pg::verbs::edge_append::{EdgeDraft, append_edge_in_tx};
 
-    let edge_id = uuid::Uuid::now_v7();
+    let key = calls_edge_natural_key(
+        owner,
+        edge.source_memory_id,
+        edge.target_memory_id,
+        edge.callsite_byte_start_in_source_chunk,
+    );
+    let edge_id = uuid::Uuid::new_v5(&PROXIMA_CODE_EDGE_NAMESPACE, &key);
+
     let payload = serde_json::json!({
         "callsite_byte_start": edge.callsite_byte_start,
         "callsite_byte_end": edge.callsite_byte_end,
