@@ -1,13 +1,15 @@
 import "@proxima/core/styles.css";
 import {
+  MarketplaceView,
   PlaceholderView,
+  SchemasView,
   SettingsView,
   Shell,
   createHub,
   type RegisteredView,
 } from "@proxima/core";
 
-const SUBSTRATE_VIEWS: RegisteredView[] = [
+const hub = createHub([
   {
     id: "surface",
     label: "Surface",
@@ -23,13 +25,13 @@ const SUBSTRATE_VIEWS: RegisteredView[] = [
   {
     id: "schemas",
     label: "Schemas",
-    component: () => <PlaceholderView label="Schemas" />,
+    component: () => <SchemasView hub={hub} />,
     flavor: null,
   },
   {
     id: "marketplace",
     label: "Marketplace",
-    component: () => <PlaceholderView label="Marketplace" />,
+    component: () => <MarketplaceView hub={hub} />,
     flavor: null,
   },
   {
@@ -38,9 +40,7 @@ const SUBSTRATE_VIEWS: RegisteredView[] = [
     component: SettingsView,
     flavor: null,
   },
-];
-
-const hub = createHub(SUBSTRATE_VIEWS);
+] satisfies RegisteredView[]);
 // Future: registerCode(hub.registerFlavor.bind(hub));
 
 function App() {
