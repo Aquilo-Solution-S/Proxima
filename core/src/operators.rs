@@ -19,7 +19,8 @@ use async_trait::async_trait;
 use time::OffsetDateTime;
 
 use crate::{
-    MemoryId, Owner, PersonalityId, PersonalityStateHash, SchemaId, SchemaVersion, SourceBatchId,
+    LlmCaps, MemoryId, ModelTier, Owner, PersonalityId, PersonalityStateHash, SchemaId, SchemaVersion,
+    SourceBatchId,
 };
 
 /// Personality state captured at operator-invocation start (docs/04
@@ -147,6 +148,31 @@ pub trait F2AOperator: Send + Sync + std::fmt::Debug {
     /// empty vec — not every batch yields a defensible Abstraction
     /// (docs/04: "the operator does not force it").
     async fn run(&self, ctx: F2AContext<'_>) -> Result<Vec<NewAbstraction>, OperatorError>;
+
+    /// Routing class for the LLM backing this operator. Default
+    /// `Standard`. Operators that legitimately need a deeper model
+    /// (e.g. multi-step plan synthesis) override to `Deep`; small
+    /// classification-style ops may override to `Fast`.
+    ///
+    /// Runtime config binds each tier to a `(vendor, model_id)`; the
+    /// dispatcher resolves `op.tier()` to the bound model when wiring
+    /// the `LlmClient` into `F2AContext`.
+    fn tier(&self) -> ModelTier {
+        ModelTier::Standard
+    }
+
+    /// LLM capabilities this operator demands from whatever model the
+    /// runtime binds to its `tier()`. Default `LlmCaps::none()` — no
+    /// caps required, any registered model satisfies. Override when the
+    /// operator's prompt strategy actually needs `tool_use`,
+    /// `json_mode`, `long_context`, or `vision`.
+    ///
+    /// Validated at credential-write time: a model's claimed caps must
+    /// satisfy the union of `requires()` over operators using that
+    /// tier (see `Engine::tier_requires_union`).
+    fn requires(&self) -> LlmCaps {
+        LlmCaps::none()
+    }
 }
 
 /// Operator registry. M5 ships F→A only; A→P / A→Goal / Edge slots
@@ -212,4 +238,41 @@ pub struct ConsolidateBatchF2AOutcome {
 pub struct SidecarSpec {
     pub schema_id: SchemaId,
     pub sidecar_table: String,
+}
+
+#[cfg(test)]
+mod tier_requires_tests {
+    use super::*;
+    use async_trait::async_trait;
+
+    #[test]
+    fn defaults_are_standard_and_none() {
+        // Bare operator with neither tier() nor requires() overridden.
+        #[derive(Debug)]
+        struct Bare;
+        #[async_trait]
+        impl F2AOperator for Bare {
+            fn operator_id(&self) -> &'static str {
+                "test/bare"
+            }
+            fn output_schema_id(&self) -> &'static str {
+                "test/out"
+            }
+            fn output_schema_version(&self) -> u32 {
+                1
+            }
+            fn prompt_version(&self) -> &'static str {
+                "v1"
+            }
+            fn consumes(&self, _: &SchemaId) -> bool {
+                true
+            }
+            async fn run(&self, _: F2AContext<'_>) -> Result<Vec<NewAbstraction>, OperatorError> {
+                Ok(Vec::new())
+            }
+        }
+        let bare = Bare;
+        assert_eq!(bare.tier(), ModelTier::Standard);
+        assert_eq!(bare.requires(), LlmCaps::none());
+    }
 }
