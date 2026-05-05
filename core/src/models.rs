@@ -27,7 +27,7 @@
 /// so a runtime entry like
 /// `{vendor: "openrouter", dialect: OpenAI, model_id: "anthropic/..."}`
 /// is normal.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, specta::Type)]
 #[serde(rename_all = "snake_case")]
 pub enum Dialect {
     Anthropic,
@@ -37,7 +37,7 @@ pub enum Dialect {
 
 /// Coarse routing class for operator declarations. Substrate-fixed —
 /// expansion is a substrate PR per docs/10 §Model tiers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, specta::Type)]
 #[serde(rename_all = "snake_case")]
 pub enum ModelTier {
     Fast,
@@ -49,7 +49,7 @@ pub enum ModelTier {
 /// registration; runtime config binds a `(vendor, model_id)` to a
 /// tier and validates that the bound model's claimed caps satisfy
 /// the union of operator `requires` for that tier.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct LlmCaps {
     pub tool_use: bool,
     pub json_mode: bool,
@@ -88,7 +88,7 @@ impl LlmCaps {
 /// mismatch against the storage migration's vector column is fatal.
 /// `matryoshka` indicates whether the model produces nested-prefix
 /// embeddings (caller may truncate without re-embedding).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct EmbedCaps {
     pub dim: u32,
     pub matryoshka: bool,
