@@ -5,6 +5,7 @@ pub mod engine;
 pub mod error;
 pub mod flavor;
 pub mod ids;
+pub mod models;
 pub mod operators;
 pub mod outbox;
 pub mod owner;
@@ -19,6 +20,7 @@ pub use engine::*;
 pub use error::*;
 pub use flavor::*;
 pub use ids::*;
+pub use models::*;
 pub use operators::*;
 pub use outbox::*;
 pub use owner::*;
@@ -54,6 +56,11 @@ macro_rules! proxima_schema_id {
 /// registers `RelationDescriptor` literals — typed relations
 /// must reference an edge schema also listed in `edge_schemas`,
 /// cross-checked at `FlavorRegistry::freeze`.
+///
+/// Build-time owns the *capability vocabulary* (`LlmCaps`,
+/// `EmbedCaps`) and operator `requires` declarations; specific
+/// `(vendor, model_id)` bindings are runtime configuration, not
+/// flavor authorship. New models plug in at runtime.
 ///
 /// Future verbs (sources, tools, operators, personalities,
 /// goal_schemas) land in M6+ as the underlying systems
