@@ -654,6 +654,7 @@ pub fn schema_registry() -> proxima_core::verbs::schema::SchemaRegistry {
             filter_keys: vec![],
             sidecar_table: None,
             natural_key_columns: vec![],
+            cbor_encoder: None,
         });
     }
 
@@ -670,6 +671,7 @@ pub fn schema_registry() -> proxima_core::verbs::schema::SchemaRegistry {
             filter_keys: vec![],
             sidecar_table: None,
             natural_key_columns: vec![],
+            cbor_encoder: None,
         });
     }
 

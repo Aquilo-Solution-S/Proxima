@@ -3,13 +3,15 @@ import "@proxima/core/styles.css";
 import { Show, createSignal, lazy, type Component } from "solid-js";
 import {
   createHub,
-  type FlavorScope,
   type Hub,
   type RegisteredSettingsPanel,
   type RegisteredView,
 } from "@proxima/core/hub";
+import { createGraphStore, GraphProvider } from "@proxima/core/graph-store";
 import { StartupSimulation } from "@proxima/core/primitives/startup-simulation";
 import { Shell } from "@proxima/core/shell";
+import { createTauriEngineClient } from "@proxima/core/tauri-client";
+import { registerCode } from "@proxima/core/flavors/code";
 
 const SettingsGeneralPanel = lazy(async () => {
   const { SettingsGeneralPanel } = await import(
@@ -24,17 +26,6 @@ const SettingsModelsPanel = lazy(async () => {
   );
   return { default: SettingsModelsPanel };
 });
-
-function registerCodeFlavor(scope: FlavorScope): void {
-  scope.registerView({
-    id: "code",
-    label: "Code",
-    component: lazy(async () => {
-      const { CodeView } = await import("@proxima/core/flavors/code");
-      return { default: CodeView };
-    }),
-  });
-}
 
 const viewWithHub = (
   load: () => Promise<{ default: Component }>,
@@ -109,17 +100,20 @@ function createAppHub(): Hub {
     ] satisfies RegisteredView[],
     substrateSettingsPanels,
   );
-  hub.registerFlavor("code", registerCodeFlavor);
+  hub.registerFlavor("code", registerCode);
   return hub;
 }
 
 function App() {
   const hub = createAppHub();
+  const graph = createGraphStore(createTauriEngineClient(), hub);
   const [startupComplete, setStartupComplete] = createSignal(false);
 
   return (
     <>
-      <Shell hub={hub} />
+      <GraphProvider store={graph}>
+        <Shell hub={hub} />
+      </GraphProvider>
       <Show when={!startupComplete()}>
         <StartupSimulation onComplete={() => setStartupComplete(true)} />
       </Show>

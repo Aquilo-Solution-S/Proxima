@@ -255,6 +255,9 @@ async fn local_git_source_full_cycle() {
             schema_id: Some(SchemaId::new(CodeChunkV1::SCHEMA_ID.into())),
             supersession: SupersessionStatus::HeadsOnly,
             limit: 1000,
+            memory_ids: Vec::new(),
+            goal_ids: Vec::new(),
+            edge_ids: Vec::new(),
             stateful_heads: None,
         };
         let resp = engine.query(&Credentials::None, &q).await?;
@@ -316,6 +319,9 @@ async fn local_git_source_full_cycle() {
             schema_id: Some(SchemaId::new(FileRevisionV1::SCHEMA_ID.into())),
             supersession: SupersessionStatus::IncludeSuperseded,
             limit: 1000,
+            memory_ids: Vec::new(),
+            goal_ids: Vec::new(),
+            edge_ids: Vec::new(),
             stateful_heads: None,
         };
         let resp_all = engine.query(&Credentials::None, &q_all).await?;

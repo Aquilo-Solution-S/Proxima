@@ -12,6 +12,11 @@ export interface Renderer<T = unknown> {
   render: (props: { memory: MemoryRow; payload: T }) => JSX.Element;
 }
 
+export interface PayloadCodec<T = unknown> {
+  decode: (bytes: Uint8Array) => T;
+  encode: (value: T) => Uint8Array;
+}
+
 export interface RegisteredView {
   id: string;
   label: string;
@@ -34,7 +39,18 @@ export interface RegisteredRenderer {
   flavor: string;
 }
 
+export interface RegisteredCodec {
+  schemaId: string;
+  schemaVersion: number;
+  flavor: string;
+}
+
 export interface FlavorScope {
+  registerCodec<T>(
+    schemaId: string,
+    schemaVersion: number,
+    codec: PayloadCodec<T>,
+  ): void;
   registerRenderer<T>(
     schemaId: string,
     schemaVersion: number,
@@ -61,11 +77,16 @@ export interface Hub {
     schemaId: string,
     schemaVersion: number,
   ): Renderer<unknown> | null;
+  codecFor(
+    schemaId: string,
+    schemaVersion: number,
+  ): PayloadCodec<unknown> | null;
   views: Accessor<RegisteredView[]>;
   currentView: Accessor<string>;
   setCurrentView: Setter<string>;
   registeredFlavors: Accessor<string[]>;
   registeredRenderers: Accessor<RegisteredRenderer[]>;
+  registeredCodecs: Accessor<RegisteredCodec[]>;
   settingsPanels: Accessor<RegisteredSettingsPanel[]>;
   currentSettingsPanel: Accessor<string>;
   setCurrentSettingsPanel: Setter<string>;
@@ -78,11 +99,13 @@ export function createHub(
   substrateSettingsPanels: RegisteredSettingsPanel[] = [],
 ): Hub {
   const renderers = new Map<string, Renderer<unknown>>();
+  const codecs = new Map<string, PayloadCodec<unknown>>();
   const [views, setViews] = createSignal<RegisteredView[]>(substrateViews);
   const [flavors, setFlavors] = createSignal<string[]>([]);
   const [renderersList, setRenderersList] = createSignal<RegisteredRenderer[]>(
     [],
   );
+  const [codecsList, setCodecsList] = createSignal<RegisteredCodec[]>([]);
   const [currentView, setCurrentView] = createSignal<string>(
     substrateViews[0]?.id ?? "",
   );
@@ -105,6 +128,13 @@ export function createHub(
     registerFlavor(name, register) {
       setFlavors((prev) => [...prev, name]);
       register({
+        registerCodec: (sid, sver, c) => {
+          codecs.set(rendererKey(sid, sver), c as PayloadCodec<unknown>);
+          setCodecsList((prev) => [
+            ...prev,
+            { schemaId: sid, schemaVersion: sver, flavor: name },
+          ]);
+        },
         registerRenderer: (sid, sver, r) => {
           renderers.set(rendererKey(sid, sver), r as Renderer<unknown>);
           setRenderersList((prev) => [
@@ -122,11 +152,13 @@ export function createHub(
     },
     rendererFor: (sid, sver) =>
       renderers.get(rendererKey(sid, sver)) ?? null,
+    codecFor: (sid, sver) => codecs.get(rendererKey(sid, sver)) ?? null,
     views,
     currentView,
     setCurrentView,
     registeredFlavors: flavors,
     registeredRenderers: renderersList,
+    registeredCodecs: codecsList,
     settingsPanels,
     currentSettingsPanel,
     setCurrentSettingsPanel,

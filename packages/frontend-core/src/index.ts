@@ -1,6 +1,9 @@
 export * from "./bindings";
+export * from "./client";
+export * from "./graph-store";
 export * from "./hub";
 export * from "./queries";
+export * from "./tauri-client";
 export * from "./views";
 export { Shell } from "./shell";
 export * from "./primitives";

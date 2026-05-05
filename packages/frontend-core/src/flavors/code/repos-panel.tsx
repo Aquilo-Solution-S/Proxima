@@ -11,6 +11,7 @@ import {
   commands,
   type IndexReportTs,
   type IngestProgressTs,
+  type RepoIngestEventTs,
   type RepoEraseReceiptTs,
   type RepoRecordTs,
 } from "../../bindings";
@@ -103,18 +104,29 @@ export const ReposPanel: Component = () => {
     setErase({ kind: "idle" });
     setIngest({ kind: "running", repoId: repo.repo_id, latest: null });
 
-    const onProgress = new Channel<IngestProgressTs>();
-    onProgress.onmessage = (p) => {
-      setIngest({ kind: "running", repoId: repo.repo_id, latest: p });
+    const onEvent = new Channel<RepoIngestEventTs>();
+    onEvent.onmessage = (event) => {
+      if (event.kind === "progress") {
+        setIngest({
+          kind: "running",
+          repoId: repo.repo_id,
+          latest: event.data,
+        });
+        return;
+      }
+      if (event.kind === "done") {
+        setIngest({ kind: "done", repoId: repo.repo_id, report: event.data });
+        refetch();
+        return;
+      }
+      setIngest({
+        kind: "error",
+        repoId: repo.repo_id,
+        message: event.data.message,
+      });
     };
 
-    const onDone = new Channel<IndexReportTs>();
-    onDone.onmessage = (report) => {
-      setIngest({ kind: "done", repoId: repo.repo_id, report });
-      refetch();
-    };
-
-    const r = await commands.repoIngest(repo.repo_id, onProgress, onDone);
+    const r = await commands.repoIngest(repo.repo_id, onEvent);
     if (r.status === "error") {
       setIngest({
         kind: "error",

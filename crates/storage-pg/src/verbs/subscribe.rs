@@ -33,7 +33,6 @@ pub(crate) async fn subscribe_changes(
         Principal::User(u) => u.into_inner(),
         Principal::Group(g) => g.into_inner(),
     };
-
     let rows: Vec<(uuid::Uuid,)> = match since {
         Some(since_seq) => sqlx::query_as(
             "SELECT seq FROM proxima_core.change_event \

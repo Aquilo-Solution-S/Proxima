@@ -51,7 +51,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use crate::boot::resolve_consolidation_clients;
+    use crate::boot::{normalize_openai_compat_base_url, resolve_consolidation_clients};
     use crate::commands::specta_builder;
     use crate::config::{
         AppConfig, EmbeddingConfig, EmbeddingModelRecord, LlmConfig, LlmModelRecord, ModelRef,
@@ -151,5 +151,29 @@ mod tests {
         let cfg = config_with_models(1_536);
         let (_, embed) = resolve_consolidation_clients(&cfg).expect("clients");
         assert_eq!(embed.dim(), 1_536);
+    }
+
+    #[test]
+    fn ollama_openai_base_url_gets_v1_suffix() {
+        assert_eq!(
+            normalize_openai_compat_base_url("ollama", "http://localhost:11434"),
+            "http://localhost:11434/v1"
+        );
+        assert_eq!(
+            normalize_openai_compat_base_url("Google OLLAMA", "http://localhost:11434"),
+            "http://localhost:11434/v1"
+        );
+        assert_eq!(
+            normalize_openai_compat_base_url("QWEN Ollama", "http://localhost:11434"),
+            "http://localhost:11434/v1"
+        );
+        assert_eq!(
+            normalize_openai_compat_base_url("ollama", "http://localhost:11434/v1/"),
+            "http://localhost:11434/v1"
+        );
+        assert_eq!(
+            normalize_openai_compat_base_url("openai", "https://api.openai.com/v1/"),
+            "https://api.openai.com/v1"
+        );
     }
 }

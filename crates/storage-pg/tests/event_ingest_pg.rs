@@ -43,6 +43,7 @@ fn schemas_for_test() -> Vec<SchemaInfo> {
             filter_keys: vec![],
             sidecar_table: None,
             natural_key_columns: vec![],
+            cbor_encoder: None,
         },
         SchemaInfo {
             schema_id: SchemaId::new("test/cited_blob".into()),
@@ -51,6 +52,7 @@ fn schemas_for_test() -> Vec<SchemaInfo> {
             filter_keys: vec![],
             sidecar_table: None,
             natural_key_columns: vec![],
+            cbor_encoder: None,
         },
         SchemaInfo {
             schema_id: SchemaId::new("test/citation_blob".into()),
@@ -59,6 +61,7 @@ fn schemas_for_test() -> Vec<SchemaInfo> {
             filter_keys: vec![],
             sidecar_table: None,
             natural_key_columns: vec![],
+            cbor_encoder: None,
         },
     ]
 }

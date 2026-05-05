@@ -196,6 +196,9 @@ async fn self_ingestion_streams_proxima_main() {
                     schema_id: Some(commit_schema.clone()),
                     supersession: proxima_core::verbs::query::SupersessionStatus::IncludeSuperseded,
                     limit: 100,
+                    memory_ids: Vec::new(),
+                    goal_ids: Vec::new(),
+                    edge_ids: Vec::new(),
                     stateful_heads: None,
                 },
             )
@@ -242,6 +245,9 @@ async fn self_ingestion_streams_proxima_main() {
                     schema_id: None,
                     supersession: proxima_core::verbs::query::SupersessionStatus::IncludeSuperseded,
                     limit: 100_000,
+                    memory_ids: Vec::new(),
+                    goal_ids: Vec::new(),
+                    edge_ids: Vec::new(),
                     stateful_heads: None,
                 },
             )

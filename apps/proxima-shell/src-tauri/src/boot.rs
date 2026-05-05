@@ -138,9 +138,12 @@ pub(crate) fn resolve_consolidation_clients(
     let embed_secret = resolve_optional_secret(&resolver, embed.secret_ref.as_deref())
         .map_err(|e| format!("could not resolve embedding secret_ref for {active_ref:?}: {e}"))?;
 
+    let llm_base_url = normalize_openai_compat_base_url(&llm.vendor, &llm.base_url);
+    let embed_base_url = normalize_openai_compat_base_url(&embed.vendor, &embed.base_url);
+
     let llm_client = OpenAiCompatLlmClient::new(
         llm.model_id.clone(),
-        OpenAiCompatConfig::new(llm.base_url.clone(), llm_secret),
+        OpenAiCompatConfig::new(llm_base_url, llm_secret),
     )
     .map_err(|e| {
         format!("could not construct OpenAI-compatible LLM client for {model_ref:?}: {e}")
@@ -150,12 +153,22 @@ pub(crate) fn resolve_consolidation_clients(
     let embed_client = OpenAiCompatEmbeddingClient::new(
         embed.model_id.clone(),
         embed_dim,
-        OpenAiCompatConfig::new(embed.base_url.clone(), embed_secret),
+        OpenAiCompatConfig::new(embed_base_url, embed_secret),
     )
     .map_err(|e| {
         format!("could not construct OpenAI-compatible embedding client for {active_ref:?}: {e}")
     })?;
     Ok((llm_client, embed_client))
+}
+
+pub(crate) fn normalize_openai_compat_base_url(vendor: &str, base_url: &str) -> String {
+    let trimmed = base_url.trim().trim_end_matches('/').to_string();
+    let vendor = vendor.to_ascii_lowercase();
+    if vendor.contains("ollama") && !trimmed.ends_with("/v1") {
+        format!("{trimmed}/v1")
+    } else {
+        trimmed
+    }
 }
 
 fn shell_secret_resolver() -> ResolverRegistry {

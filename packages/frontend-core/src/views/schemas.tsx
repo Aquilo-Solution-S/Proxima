@@ -1,20 +1,12 @@
-import { For, Show, createResource, type Component } from "solid-js";
-import { commands, type SchemaInfo } from "../bindings";
+import { For, Show, type Component } from "solid-js";
+import type { SchemaInfo } from "../bindings";
+import { useGraph } from "../graph-store";
 import { LoadingSurface, SchemaTag } from "../primitives";
 import type { Hub } from "../hub";
 
-const hasTauriRuntime = (): boolean =>
-  typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
-
 export const SchemasView: Component<{ hub: Hub }> = (props) => {
-  const [schemaResp] = createResource(async () => {
-    if (!hasTauriRuntime()) {
-      return { schemas: [] };
-    }
-    const r = await commands.schema();
-    if (r.status === "error") throw r.error;
-    return r.data;
-  });
+  const graph = useGraph();
+  const schemas = () => graph.state().schemas;
 
   return (
     <section class="proxima-view proxima-view-schemas">
@@ -25,31 +17,22 @@ export const SchemasView: Component<{ hub: Hub }> = (props) => {
         exists).
       </p>
 
-      <Show when={schemaResp.error}>
-        <p class="proxima-error">
-          Engine error: {String(schemaResp.error)}
-        </p>
-      </Show>
-      <Show when={schemaResp.loading}>
+      <Show when={graph.state().streamStatus === "connecting"}>
         <LoadingSurface label="Loading schemas" />
       </Show>
-      <Show when={schemaResp()}>
-        {(resp) => (
-          <Show
-            when={resp().schemas.length > 0}
-            fallback={
-              <p class="proxima-dim">
-                Schema registry is available in the Tauri shell runtime.
-              </p>
-            }
-          >
-            <ul class="proxima-schema-list">
-              <For each={resp().schemas}>
-                {(s) => <SchemaRow info={s} hub={props.hub} />}
-              </For>
-            </ul>
-          </Show>
-        )}
+      <Show
+        when={schemas().length > 0}
+        fallback={
+          <p class="proxima-dim">
+            Schema registry is available in the Tauri shell runtime.
+          </p>
+        }
+      >
+        <ul class="proxima-schema-list">
+          <For each={schemas()}>
+            {(s) => <SchemaRow info={s} hub={props.hub} />}
+          </For>
+        </ul>
       </Show>
     </section>
   );
@@ -59,6 +42,11 @@ const SchemaRow: Component<{ info: SchemaInfo; hub: Hub }> = (props) => {
   const renderer = () =>
     props.hub.rendererFor(props.info.schema_id, props.info.schema_version);
   const owningFlavor = () =>
+    props.hub.registeredCodecs().find(
+      (r) =>
+        r.schemaId === props.info.schema_id &&
+        r.schemaVersion === props.info.schema_version,
+    )?.flavor ??
     props.hub.registeredRenderers().find(
       (r) =>
         r.schemaId === props.info.schema_id &&

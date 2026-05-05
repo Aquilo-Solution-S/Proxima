@@ -10,7 +10,7 @@ use proxima_core::{
 };
 use sqlx::postgres::PgListener;
 use tokio::sync::{broadcast, oneshot};
-use tracing::{error, warn};
+use tracing::error;
 use uuid::Uuid;
 
 pub const NOTIFY_CHANNEL: &str = "proxima_change_event";
@@ -43,13 +43,22 @@ pub(crate) async fn hydrate_change_event(
         entity_schema_version: Option<i32>,
         supersedes_memory_id: Option<Uuid>,
         supersedes_goal_id: Option<Uuid>,
+        edge_id: Option<Uuid>,
+        edge_relation: Option<String>,
+        edge_source_memory_id: Option<Uuid>,
+        edge_source_goal_id: Option<Uuid>,
+        edge_target_memory_id: Option<Uuid>,
+        edge_target_goal_id: Option<Uuid>,
     }
 
     let row: Option<Row> = sqlx::query_as(
         "SELECT seq, owner_principal_kind, owner_principal_id, owner_org_id, kind,
                 entity_kind, entity_memory_id, entity_goal_id,
                 entity_schema_id, entity_schema_version,
-                supersedes_memory_id, supersedes_goal_id
+                supersedes_memory_id, supersedes_goal_id,
+                edge_id, edge_relation,
+                edge_source_memory_id, edge_source_goal_id,
+                edge_target_memory_id, edge_target_goal_id
          FROM proxima_core.change_event WHERE seq = $1",
     )
     .bind(seq)
@@ -76,6 +85,27 @@ pub(crate) async fn hydrate_change_event(
         org_id: OrgId::new(row.owner_org_id),
     };
 
+    if row.kind == "EdgeAppend" {
+        let edge_id = row
+            .edge_id
+            .ok_or_else(|| StorageError::Internal("missing edge_id".into()))?;
+        let relation = row
+            .edge_relation
+            .ok_or_else(|| StorageError::Internal("missing edge_relation".into()))?;
+        let source = decode_entity_ref(row.edge_source_memory_id, row.edge_source_goal_id)?;
+        let target = decode_entity_ref(row.edge_target_memory_id, row.edge_target_goal_id)?;
+        return Ok(Some(ChangeEvent {
+            seq: row.seq,
+            owner,
+            kind: ChangeEventKind::EdgeAppend {
+                edge_id,
+                relation,
+                source,
+                target,
+            },
+        }));
+    }
+
     // Decode entity_kind.
     let entity_kind = match row.entity_kind.as_deref() {
         Some("Fact") => EntityKind::Fact,
@@ -87,10 +117,7 @@ pub(crate) async fn hydrate_change_event(
                 "unknown entity_kind: {other}"
             )));
         }
-        None => {
-            // EdgeAppend path — skip for M2.
-            return Ok(None);
-        }
+        None => return Err(StorageError::Internal("missing entity_kind".into())),
     };
 
     // Decode entity ref — exactly one of memory/goal is non-NULL.
@@ -136,11 +163,6 @@ pub(crate) async fn hydrate_change_event(
             schema_version,
             supersedes,
         },
-        "EdgeAppend" => {
-            // M3+ — skip for now.
-            warn!("EdgeAppend change_event received but not yet handled");
-            return Ok(None);
-        }
         other => {
             return Err(StorageError::Internal(format!(
                 "unknown change_event kind: {other}"
@@ -153,6 +175,19 @@ pub(crate) async fn hydrate_change_event(
         owner,
         kind,
     }))
+}
+
+fn decode_entity_ref(
+    memory_id: Option<Uuid>,
+    goal_id: Option<Uuid>,
+) -> Result<EntityRef, StorageError> {
+    match (memory_id, goal_id) {
+        (Some(m), None) => Ok(EntityRef::Memory(MemoryId::new(m))),
+        (None, Some(g)) => Ok(EntityRef::Goal(GoalId::new(g))),
+        (Some(_), Some(_)) | (None, None) => Err(StorageError::Internal(
+            "change_event endpoint columns violate CHECK constraint".into(),
+        )),
+    }
 }
 
 /// Background task that LISTENs on `NOTIFY_CHANNEL` and publishes

@@ -1,37 +1,32 @@
 import { createResource, createSignal, type Accessor, type Resource } from "solid-js";
-import { Channel } from "@tauri-apps/api/core";
 import {
-  commands,
   type ChangeEvent,
   type QueryRequest,
   type QueryResponse,
   type SubscribeRequest,
 } from "./bindings";
+import type { EngineClient } from "./client";
+import { createTauriEngineClient } from "./tauri-client";
 
 export function useQuery(
   req: Accessor<QueryRequest>,
+  client: EngineClient = createTauriEngineClient(),
 ): Resource<QueryResponse> {
   const [data] = createResource(req, async (r) => {
-    const result = await commands.query(r);
-    if (result.status === "error") {
-      throw result.error;
-    }
-    return result.data;
+    return client.query(r);
   });
   return data;
 }
 
-export function useSubscribe(req: SubscribeRequest): Accessor<ChangeEvent[]> {
+export function useSubscribe(
+  req: SubscribeRequest,
+  client: EngineClient = createTauriEngineClient(),
+): Accessor<ChangeEvent[]> {
   const [events, setEvents] = createSignal<ChangeEvent[]>([]);
-  const channel = new Channel<ChangeEvent>();
-  channel.onmessage = (event) => {
+  void client.subscribe(req, (event) => {
     setEvents((prev) => [...prev, event]);
-  };
-
-  void commands.subscribe(req, channel).then((result) => {
-    if (result.status === "error") {
-      console.error("subscribe failed:", result.error);
-    }
+  }).catch((error: unknown) => {
+    console.error("subscribe failed:", error);
   });
 
   return events;

@@ -375,6 +375,14 @@ impl From<proxima_code::IndexReport> for IndexReportTs {
 }
 
 #[derive(Debug, Clone, serde::Serialize, specta::Type)]
+#[serde(tag = "kind", content = "data", rename_all = "camelCase")]
+pub enum RepoIngestEventTs {
+    Progress(IngestProgressTs),
+    Done(IndexReportTs),
+    Error { message: String },
+}
+
+#[derive(Debug, Clone, serde::Serialize, specta::Type)]
 pub struct RepoEraseReceiptTs {
     pub repo_id: String,
     pub completed_at: String,
@@ -494,10 +502,8 @@ async fn repos_erase(
     Ok(receipt.into())
 }
 
-/// Spawns a detached background task. Returns immediately. Per-commit
-/// progress flows on `on_progress`; the final report flows on `on_done`.
-/// Errors during the background ingest are logged via `tracing::warn` —
-/// surface to UI is deferred (v1.1 adds an `on_error` channel).
+/// Spawns a detached background task. Returns immediately. Progress,
+/// done, and background errors flow on one flavor-owned job stream.
 ///
 /// # Errors
 /// `UnknownRepo` if the `repo_id` isn't registered, `InvalidUuid` if the
@@ -508,8 +514,7 @@ async fn repo_ingest(
     engine: State<'_, Arc<Engine>>,
     pg: State<'_, Arc<PgStorage>>,
     repo_id: String,
-    on_progress: Channel<IngestProgressTs>,
-    on_done: Channel<IndexReportTs>,
+    on_event: Channel<RepoIngestEventTs>,
 ) -> Result<(), CommandError> {
     use proxima_core::Cursor;
 
@@ -545,7 +550,7 @@ async fn repo_ingest(
     // 6. Spawn background task
     tokio::spawn(async move {
         let mut sink = |p: proxima_code::IngestProgress| {
-            let _ = on_progress.send(p.into());
+            let _ = on_event.send(RepoIngestEventTs::Progress(p.into()));
         };
         match source.run_poll(pg_clone.pool(), &cursor, &mut sink).await {
             Ok((report, new_cursor)) => {
@@ -566,9 +571,13 @@ async fn repo_ingest(
                 if cursor_updated && let Err(e) = engine_clone.run_pending_f2a(&owner).await {
                     tracing::warn!("repo_ingest F→A consolidation failed: {e}");
                 }
-                let _ = on_done.send(report.into());
+                let _ = on_event.send(RepoIngestEventTs::Done(report.into()));
             }
-            Err(e) => tracing::warn!("ingest run_poll failed: {e}"),
+            Err(e) => {
+                let message = e.to_string();
+                tracing::warn!("ingest run_poll failed: {message}");
+                let _ = on_event.send(RepoIngestEventTs::Error { message });
+            }
         }
     });
 

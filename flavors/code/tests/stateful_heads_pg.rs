@@ -66,6 +66,7 @@ fn registry_for_test() -> SchemaRegistry {
         filter_keys: vec![],
         sidecar_table: None,
         natural_key_columns: vec![],
+        cbor_encoder: None,
     });
     frozen.push(SchemaInfo {
         schema_id: SchemaId::new("test/citation_blob".into()),
@@ -74,6 +75,7 @@ fn registry_for_test() -> SchemaRegistry {
         filter_keys: vec![],
         sidecar_table: None,
         natural_key_columns: vec![],
+        cbor_encoder: None,
     });
     SchemaRegistry::with_schemas(frozen)
 }
@@ -135,6 +137,7 @@ async fn seed_file_revision(
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn heads_only_returns_latest_per_natural_key() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if create_db(&db_name).await.is_err() {
@@ -211,6 +214,9 @@ async fn heads_only_returns_latest_per_natural_key() {
             schema_id: Some(SchemaId::new(FileRevisionV1::SCHEMA_ID.into())),
             supersession: SupersessionStatus::HeadsOnly,
             limit: 100,
+            memory_ids: Vec::new(),
+            goal_ids: Vec::new(),
+            edge_ids: Vec::new(),
             stateful_heads: None,
         };
         let resp = engine.query(&Credentials::None, &req).await?;
@@ -237,6 +243,9 @@ async fn heads_only_returns_latest_per_natural_key() {
             schema_id: Some(SchemaId::new(FileRevisionV1::SCHEMA_ID.into())),
             supersession: SupersessionStatus::IncludeSuperseded,
             limit: 100,
+            memory_ids: Vec::new(),
+            goal_ids: Vec::new(),
+            edge_ids: Vec::new(),
             stateful_heads: None,
         };
         let resp_all = engine.query(&Credentials::None, &req_all).await?;
@@ -293,6 +302,9 @@ async fn heads_only_no_op_for_stateless_fact_schema() {
             schema_id: Some(SchemaId::new(CommitV1::SCHEMA_ID.into())),
             supersession: SupersessionStatus::HeadsOnly,
             limit: 100,
+            memory_ids: Vec::new(),
+            goal_ids: Vec::new(),
+            edge_ids: Vec::new(),
             stateful_heads: None,
         };
         let resp = engine.query(&Credentials::None, &req).await?;

@@ -217,6 +217,8 @@ impl Storage for NoopStorage {
     ) -> Result<crate::verbs::query::QueryResponse, StorageError> {
         Ok(crate::verbs::query::QueryResponse {
             memories: Vec::new(),
+            goals: Vec::new(),
+            edges: Vec::new(),
             seq_high_water: None,
         })
     }
