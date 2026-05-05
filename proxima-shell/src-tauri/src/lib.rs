@@ -425,6 +425,13 @@ fn specta_builder() -> Builder<tauri::Wry> {
 /// Panics if the Tauri application fails to start (window creation,
 /// plugin init, or context generation).
 pub fn run() {
+    // Load `.env` from the working directory if present. The shell's
+    // working dir under `pnpm tauri:dev` is `proxima-shell/`, so a
+    // `proxima-shell/.env` (gitignored) is the standard location for
+    // local DATABASE_URL etc. Production builds set env at the OS
+    // layer; missing .env is silently fine.
+    dotenvy::dotenv().ok();
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
