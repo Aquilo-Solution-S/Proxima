@@ -49,6 +49,9 @@ tauri = { version = "2", features = [] }
 tauri-build = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 
+# OS-native keychain access for secret_ref resolution (S1.c)
+keyring = { version = "3", default-features = false, features = ["apple-native", "windows-native", "linux-native-sync-persistent"] }
+
 # specta — Rust→TS type bridge for tauri-specta. Source-of-truth
 # stays Rust traits; TS bindings are codegen artefacts. See
 # docs/09 §Generation pipeline.
