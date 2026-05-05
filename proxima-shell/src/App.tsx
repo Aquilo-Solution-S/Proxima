@@ -1,8 +1,8 @@
 import "@proxima/core/styles.css";
 import {
+  Atlas,
   FullSurface,
   MarketplaceView,
-  PlaceholderView,
   SchemasView,
   SettingsView,
   Shell,
@@ -20,7 +20,7 @@ const hub = createHub([
   {
     id: "atlas",
     label: "Atlas",
-    component: () => <PlaceholderView label="Atlas" />,
+    component: () => <Atlas hub={hub} />,
     flavor: null,
   },
   {
