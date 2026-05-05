@@ -165,11 +165,16 @@ const renderMemoryPayload = (
   }) ?? null;
 };
 
+const shortId = (id: string): string => id.slice(0, 8);
+
 const MemoryCard: Component<{ memory: DecodedMemory; hub: Hub }> = (props) => {
   const rendered = (): JSX.Element | null =>
     renderMemoryPayload(props.memory, props.hub);
   return (
-    <article class={props.memory.row.kind === "Perspective" ? "p-card" : "a-card"}>
+    <article
+      class={props.memory.row.kind === "Perspective" ? "p-card" : "a-card"}
+      title={props.memory.row.id}
+    >
       <div class="card-head">
         <SchemaTag
           id={props.memory.row.schema_id}
@@ -190,41 +195,46 @@ const MemoryCard: Component<{ memory: DecodedMemory; hub: Hub }> = (props) => {
       </Show>
       <div class="card-foot">
         <Mono style={{ "font-size": "9px", color: "var(--ink-40)" }}>
-          {props.memory.row.id}
+          {shortId(props.memory.row.id)}
         </Mono>
       </div>
     </article>
   );
 };
 
-const shortId = (id: string): string => id.slice(0, 8);
-
-const FactExplorer: Component<{ hub: Hub; facts: DecodedMemory[] }> = (props) => {
+const MemoryExplorer: Component<{
+  hub: Hub;
+  memories: DecodedMemory[];
+  label: string;
+  glyph: string;
+}> = (props) => {
   const [selectedId, setSelectedId] = createSignal<string | null>(null);
-  const selectedFact = createMemo(
+  const selectedMemory = createMemo(
     () =>
-      props.facts.find((memory) => memory.row.id === selectedId()) ??
-      props.facts[0] ??
+      props.memories.find((memory) => memory.row.id === selectedId()) ??
+      props.memories[0] ??
       null,
   );
 
   return (
-    <div class="fact-explorer">
-      <div class="fact-list" role="listbox" aria-label="Facts">
-        <For each={props.facts}>
+    <div class="memory-explorer">
+      <div class="fact-list" role="listbox" aria-label={props.label}>
+        <For each={props.memories}>
           {(memory) => (
             <button
               type="button"
               classList={{
                 "fact-list-item": true,
-                "is-selected": selectedFact()?.row.id === memory.row.id,
+                "is-selected": selectedMemory()?.row.id === memory.row.id,
               }}
               role="option"
-              aria-selected={selectedFact()?.row.id === memory.row.id}
+              aria-selected={selectedMemory()?.row.id === memory.row.id}
               title={memory.row.schema_id}
               onClick={() => setSelectedId(memory.row.id)}
             >
-              <span class="fact-list-glyph" aria-hidden="true">F</span>
+              <span class="fact-list-glyph" aria-hidden="true">
+                {props.glyph}
+              </span>
               <span class="fact-list-copy">
                 <span class="fact-list-schema">{memory.row.schema_id}</span>
                 <span class="fact-list-meta">
@@ -236,41 +246,41 @@ const FactExplorer: Component<{ hub: Hub; facts: DecodedMemory[] }> = (props) =>
         </For>
       </div>
 
-      <Show keyed when={selectedFact()}>
-        {(fact) => {
+      <Show keyed when={selectedMemory()}>
+        {(memory) => {
           const rendered = (): JSX.Element | null =>
-            renderMemoryPayload(fact, props.hub);
+            renderMemoryPayload(memory, props.hub);
           return (
-          <article class="fact-detail">
-            <div class="fact-detail-head">
-              <SchemaTag
-                id={fact.row.schema_id}
-                version={fact.row.schema_version}
-              />
-              <Mono style={{ "font-size": "9px", color: "var(--ink-40)" }}>
-                {shortId(fact.row.id)}
-              </Mono>
-            </div>
-            <div class="fact-detail-body">
-              <Show
-                keyed
-                when={rendered()}
-                fallback={
-                  <p class="prose prose-small">
-                    {fact.decodeError?.message ??
-                      `${fact.row.payload.length} payload bytes`}
-                  </p>
-                }
-              >
-                {(node) => node}
-              </Show>
-            </div>
-            <div class="card-foot">
-              <Mono style={{ "font-size": "9px", color: "var(--ink-40)" }}>
-                {fact.row.id}
-              </Mono>
-            </div>
-          </article>
+            <article class="fact-detail">
+              <div class="fact-detail-head">
+                <SchemaTag
+                  id={memory.row.schema_id}
+                  version={memory.row.schema_version}
+                />
+                <Mono style={{ "font-size": "9px", color: "var(--ink-40)" }}>
+                  {shortId(memory.row.id)}
+                </Mono>
+              </div>
+              <div class="fact-detail-body">
+                <Show
+                  keyed
+                  when={rendered()}
+                  fallback={
+                    <p class="prose prose-small">
+                      {memory.decodeError?.message ??
+                        `${memory.row.payload.length} payload bytes`}
+                    </p>
+                  }
+                >
+                  {(node) => node}
+                </Show>
+              </div>
+              <div class="card-foot">
+                <Mono style={{ "font-size": "9px", color: "var(--ink-40)" }}>
+                  {memory.row.id}
+                </Mono>
+              </div>
+            </article>
           );
         }}
       </Show>
@@ -302,6 +312,7 @@ const TraversalLanes: Component<{ hub: Hub; memories: DecodedMemory[] }> = (
         <span class="lane-letter">P</span>
         <div class="lane-meta">
           <span class="lane-name">Perspective</span>
+          <span class="lane-count">{perspectives().length}</span>
           <Mono style={{ "font-size": "9px", color: "var(--ink-40)" }}>
             causal claim carrier
           </Mono>
@@ -339,6 +350,7 @@ const TraversalLanes: Component<{ hub: Hub; memories: DecodedMemory[] }> = (
         <span class="lane-letter">A</span>
         <div class="lane-meta">
           <span class="lane-name">Abstractions</span>
+          <span class="lane-count">{abstractions().length}</span>
           <Mono style={{ "font-size": "9px", color: "var(--ink-40)" }}>
             authored prose + typed scaffolding
           </Mono>
@@ -349,9 +361,12 @@ const TraversalLanes: Component<{ hub: Hub; memories: DecodedMemory[] }> = (
           when={abstractions().length > 0}
           fallback={<p class="proxima-dim">No abstractions</p>}
         >
-          <For each={abstractions()}>
-            {(memory) => <MemoryCard memory={memory} hub={props.hub} />}
-          </For>
+          <MemoryExplorer
+            hub={props.hub}
+            memories={abstractions()}
+            label="Abstractions"
+            glyph="A"
+          />
         </Show>
       </div>
     </div>
@@ -376,6 +391,7 @@ const TraversalLanes: Component<{ hub: Hub; memories: DecodedMemory[] }> = (
         <span class="lane-letter">F</span>
         <div class="lane-meta">
           <span class="lane-name">Facts</span>
+          <span class="lane-count">{facts().length}</span>
           <Mono style={{ "font-size": "9px", color: "var(--ink-40)" }}>
             source_batch — F→A is intra-batch
           </Mono>
@@ -386,7 +402,12 @@ const TraversalLanes: Component<{ hub: Hub; memories: DecodedMemory[] }> = (
           when={facts().length > 0}
           fallback={<p class="proxima-dim">No facts</p>}
         >
-          <FactExplorer hub={props.hub} facts={facts()} />
+          <MemoryExplorer
+            hub={props.hub}
+            memories={facts()}
+            label="Facts"
+            glyph="F"
+          />
         </Show>
       </div>
     </div>
