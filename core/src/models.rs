@@ -27,15 +27,18 @@
 /// so a runtime entry like
 /// `{vendor: "openrouter", dialect: OpenAI, model_id: "anthropic/..."}`
 /// is normal.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Dialect {
     Anthropic,
+    #[serde(rename = "openai")]
     OpenAI,
 }
 
 /// Coarse routing class for operator declarations. Substrate-fixed —
 /// expansion is a substrate PR per docs/10 §Model tiers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ModelTier {
     Fast,
     Standard,
@@ -46,7 +49,7 @@ pub enum ModelTier {
 /// registration; runtime config binds a `(vendor, model_id)` to a
 /// tier and validates that the bound model's claimed caps satisfy
 /// the union of operator `requires` for that tier.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct LlmCaps {
     pub tool_use: bool,
     pub json_mode: bool,
@@ -85,7 +88,7 @@ impl LlmCaps {
 /// mismatch against the storage migration's vector column is fatal.
 /// `matryoshka` indicates whether the model produces nested-prefix
 /// embeddings (caller may truncate without re-embedding).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct EmbedCaps {
     pub dim: u32,
     pub matryoshka: bool,
@@ -94,6 +97,24 @@ pub struct EmbedCaps {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dialect_serde_lowercase() {
+        let s = serde_json::to_string(&Dialect::OpenAI).unwrap();
+        assert_eq!(s, "\"openai\"");
+        let back: Dialect = serde_json::from_str(&s).unwrap();
+        assert_eq!(back, Dialect::OpenAI);
+
+        let s = serde_json::to_string(&Dialect::Anthropic).unwrap();
+        assert_eq!(s, "\"anthropic\"");
+    }
+
+    #[test]
+    fn model_tier_serde_lowercase() {
+        assert_eq!(serde_json::to_string(&ModelTier::Fast).unwrap(), "\"fast\"");
+        assert_eq!(serde_json::to_string(&ModelTier::Standard).unwrap(), "\"standard\"");
+        assert_eq!(serde_json::to_string(&ModelTier::Deep).unwrap(), "\"deep\"");
+    }
 
     #[test]
     fn caps_satisfies_when_all_required_present() {
