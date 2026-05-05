@@ -85,6 +85,21 @@ pub struct IndexReport {
     pub chunks_tombstoned: usize,
 }
 
+/// Per-commit progress event emitted between commit boundaries
+/// during a poll. `commit_index` is 0-based; `total_commits` is the
+/// pre-walked total for this poll.
+#[derive(Debug, Clone)]
+pub struct IngestProgress {
+    pub commit_index: usize,
+    pub total_commits: usize,
+    pub commit_sha: String,
+    // running totals from the IndexReport so far (post this commit)
+    pub commits_emitted: usize,
+    pub commits_replayed: usize,
+    pub chunks_emitted: usize,
+    pub chunks_reused: usize,
+}
+
 /// Pull-mode source. One instance per repo; `repo_id` is stable
 /// across runs (provided by the caller, typically a CLI flag).
 #[derive(Debug, Clone)]
@@ -134,6 +149,7 @@ impl LocalGitSource {
         &self,
         pool: &PgPool,
         cursor: &Cursor,
+        progress: &mut impl FnMut(IngestProgress),
     ) -> Result<(IndexReport, Cursor), IndexError> {
         let parsed = decode_cursor(cursor)?;
         let plan = self.walk_git(&parsed)?;
@@ -150,9 +166,18 @@ impl LocalGitSource {
         // git_log returns newest-first; process oldest-first so each
         // commit's tree diff against its first parent reflects the
         // historical order, and the NK head advances monotonically.
-        for commit_info in plan.commits.iter().rev() {
+        for (i, commit_info) in plan.commits.iter().rev().enumerate() {
             self.ingest_one_commit(pool, commit_info, &mut report, &mut chunked_this_poll)
                 .await?;
+            progress(IngestProgress {
+                commit_index: i,
+                total_commits: plan.commits.len(),
+                commit_sha: commit_info.sha.clone(),
+                commits_emitted: report.commits_emitted,
+                commits_replayed: report.commits_replayed,
+                chunks_emitted: report.chunks_emitted,
+                chunks_reused: report.chunks_reused,
+            });
         }
 
         let next = CodeCursor {

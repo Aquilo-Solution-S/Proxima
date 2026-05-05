@@ -168,7 +168,7 @@ async fn self_ingestion_streams_proxima_main() {
         let repo_id = Uuid::now_v7();
         let source = LocalGitSource::new(repo_id, clone_path.clone(), owner.clone());
         let cursor = Cursor::empty();
-        let (r1, cursor) = source.run_poll(pg.pool(), &cursor).await?;
+        let (r1, cursor) = source.run_poll(pg.pool(), &cursor, &mut |_| {}).await?;
         assert!(
             r1.commits_emitted >= main_count_before,
             "expected ≥{main_count_before} commits emitted, got {}",
@@ -290,7 +290,7 @@ async fn self_ingestion_streams_proxima_main() {
         let main_count_after = count_main_commits(&clone_path);
         assert_eq!(main_count_after, main_count_before + 1);
 
-        let (r2, cursor) = source.run_poll(pg.pool(), &cursor).await?;
+        let (r2, cursor) = source.run_poll(pg.pool(), &cursor, &mut |_| {}).await?;
         assert_eq!(
             r2.commits_emitted, 1,
             "second poll should emit exactly the one new commit"
@@ -329,7 +329,7 @@ async fn self_ingestion_streams_proxima_main() {
         );
 
         // Phase 3 — idempotency. Third poll, no new commits.
-        let (r3, _cursor) = source.run_poll(pg.pool(), &cursor).await?;
+        let (r3, _cursor) = source.run_poll(pg.pool(), &cursor, &mut |_| {}).await?;
         assert_eq!(r3.commits_emitted, 0);
         assert_eq!(r3.files_present_emitted, 0);
         assert_eq!(r3.files_tombstoned, 0);

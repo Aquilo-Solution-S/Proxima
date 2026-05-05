@@ -90,6 +90,33 @@ export const commands = {
 	 *  Returns `CommandError::Storage` on database failures.
 	 */
 	embeddingActiveClear: () => typedError<boolean, CommandError>(__TAURI_INVOKE("embedding_active_clear")),
+	/**
+	 *  # Errors
+	 *  Returns `CommandError::Storage` on database failures.
+	 */
+	reposList: () => typedError<RepoRecordTs[], CommandError>(__TAURI_INVOKE("repos_list")),
+	/**
+	 *  # Errors
+	 *  `InvalidRepoPath` if canonicalize fails, `NotAGitRepo` if `<path>/.git`
+	 *  doesn't exist, `DuplicateRepo` on UNIQUE violation, `Storage` otherwise.
+	 */
+	reposRegister: (path: string, displayName: string | null) => typedError<RepoRecordTs, CommandError>(__TAURI_INVOKE("repos_register", { path, displayName })),
+	/**
+	 *  # Errors
+	 *  `InvalidUuid` if `repo_id` doesn't parse, `Storage` otherwise.
+	 */
+	reposDelete: (repoId: string) => typedError<boolean, CommandError>(__TAURI_INVOKE("repos_delete", { repoId })),
+	/**
+	 *  Spawns a detached background task. Returns immediately. Per-commit
+	 *  progress flows on `on_progress`; the final report flows on `on_done`.
+	 *  Errors during the background ingest are logged via `tracing::warn` —
+	 *  surface to UI is deferred (v1.1 adds an `on_error` channel).
+	 * 
+	 *  # Errors
+	 *  `UnknownRepo` if the `repo_id` isn't registered, `InvalidUuid` if the
+	 *  id doesn't parse, `Storage` on lookup failures.
+	 */
+	repoIngest: (repoId: string, onProgress: Channel<IngestProgressTs>, onDone: Channel<IndexReportTs>) => typedError<null, CommandError>(__TAURI_INVOKE("repo_ingest", { repoId, onProgress, onDone })),
 };
 
 /* Types */
@@ -149,6 +176,17 @@ export type CommandError = { kind: "storage"; data: {
  */
 { kind: "invariant"; data: {
 	message: string,
+} } | { kind: "invalid_repo_path"; data: {
+	path: string,
+	reason: string,
+} } | { kind: "not_a_git_repo"; data: {
+	path: string,
+} } | { kind: "duplicate_repo"; data: {
+	canonical_path: string,
+} } | { kind: "unknown_repo"; data: {
+	repo_id: string,
+} } | { kind: "invalid_uuid"; data: {
+	value: string,
 } };
 
 /**
@@ -253,6 +291,26 @@ export type GoalWriteOutcome = {
 };
 
 export type GroupId = string;
+
+export type IndexReportTs = {
+	commits_emitted: number,
+	commits_replayed: number,
+	files_present_emitted: number,
+	files_tombstoned: number,
+	chunks_emitted: number,
+	chunks_reused: number,
+	chunks_tombstoned: number,
+};
+
+export type IngestProgressTs = {
+	commit_index: number,
+	total_commits: number,
+	commit_sha: string,
+	commits_emitted: number,
+	commits_replayed: number,
+	chunks_emitted: number,
+	chunks_reused: number,
+};
 
 /**
  *  LLM capability axes. Operators declare a `requires: LlmCaps` at
@@ -373,6 +431,15 @@ export type QueryResponse = {
 	 *  not yet recorded any change events.
 	 */
 	seq_high_water: string | null,
+};
+
+export type RepoRecordTs = {
+	repo_id: string,
+	canonical_path: string,
+	display_name: string,
+	has_been_polled: boolean,
+	last_polled_at: string | null,
+	created_at: string,
 };
 
 export type SchemaId = string;

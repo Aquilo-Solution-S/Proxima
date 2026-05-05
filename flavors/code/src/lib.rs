@@ -9,13 +9,15 @@ pub mod local_git_source;
 pub mod migrations;
 pub mod operators;
 pub mod payloads;
+pub mod repos;
 
 pub use ingest::{
     CODE_BLOB_BYTE_RANGE_SCHEMA, CODE_BLOB_SCHEMA, CODE_BLOB_WHOLE_SCHEMA,
     CODE_COMMIT_OBJECT_SCHEMA, CODE_COMMIT_WHOLE_SCHEMA, IngestError, LOCAL_GIT_SOURCE_ID,
     build_engine, ingest_code_chunk, ingest_commit, ingest_file_revision,
 };
-pub use local_git_source::{IndexError, IndexReport, LocalGitSource};
+pub use local_git_source::{IndexError, IndexReport, IngestProgress, LocalGitSource};
+pub use repos::{RepoRecord, RepoRegistryError, delete_repo, get_repo, list_repos, register_repo, update_cursor};
 pub use migrations::migrator;
 pub use operators::CommitSummaryOperator;
 pub use payloads::{

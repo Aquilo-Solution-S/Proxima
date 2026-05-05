@@ -47,6 +47,21 @@ pub enum CommandError {
     /// User can't fix; logs to console and reports as bug.
     #[error("settings invariant violation: {message}")]
     Invariant { message: String },
+
+    #[error("invalid repo path {path}: {reason}")]
+    InvalidRepoPath { path: String, reason: String },
+
+    #[error("not a git repository: {path}")]
+    NotAGitRepo { path: String },
+
+    #[error("repo already registered at canonical path: {canonical_path}")]
+    DuplicateRepo { canonical_path: String },
+
+    #[error("unknown repo: {repo_id}")]
+    UnknownRepo { repo_id: String },
+
+    #[error("invalid uuid: {value}")]
+    InvalidUuid { value: String },
 }
 
 impl From<SettingsError> for CommandError {
@@ -99,6 +114,22 @@ impl From<ConfigError> for CommandError {
             // they show up, surface as Storage to keep the union closed.
             other => Self::Storage {
                 message: other.to_string(),
+            },
+        }
+    }
+}
+
+impl From<proxima_code::RepoRegistryError> for CommandError {
+    fn from(e: proxima_code::RepoRegistryError) -> Self {
+        match e {
+            proxima_code::RepoRegistryError::DuplicatePath { canonical_path } => {
+                Self::DuplicateRepo { canonical_path }
+            }
+            proxima_code::RepoRegistryError::NotFound { repo_id } => Self::UnknownRepo {
+                repo_id: repo_id.to_string(),
+            },
+            proxima_code::RepoRegistryError::Database(e) => Self::Storage {
+                message: e.to_string(),
             },
         }
     }
