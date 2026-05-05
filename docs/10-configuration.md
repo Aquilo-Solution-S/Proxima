@@ -23,47 +23,76 @@ behavior means a different binary.
 
 ## Config file
 
-`proxima.config.yaml` extends the source-instance shape from
+`proxima.config.toml` extends the source-instance shape from
 [01 §Bootstrap](docs/01-event-source.md#bootstrap) with two new
-top-level blocks:
+top-level blocks. v1 ships TOML; the format is private to the
+binary and Settings UI — never on the wire.
 
-```yaml
-llm:
-  default:                                 # one entry per tier; missing tiers fall back per policy below
-    fast:                                  # see §Model tiers
-      vendor:     anthropic
-      dialect:    anthropic
-      base_url:   https://api.anthropic.com
-      model_id:   claude-haiku-4-5
-      secret_ref: env:ANTHROPIC_API_KEY
-    standard:
-      vendor:     anthropic
-      dialect:    anthropic
-      base_url:   https://api.anthropic.com
-      model_id:   claude-sonnet-4-6
-      secret_ref: env:ANTHROPIC_API_KEY
-    deep:
-      vendor:     anthropic
-      dialect:    anthropic
-      base_url:   https://api.anthropic.com
-      model_id:   claude-opus-4-7
-      secret_ref: env:ANTHROPIC_API_KEY
-  # presence enables per-Owner overrides; empty in single-tenant
-  per_owner_table: enabled                 # | disabled
-  fallback_policy: strict                  # strict | upgrade | downgrade — see §Model tiers
+The `[[llm.models]]` and `[[embedding.models]]` arrays carry the
+runtime model registrations (§Model registration). The
+`[llm.default]` table picks one record per tier:
 
-embedding:
-  vendor:     openai
-  dialect:    openai
-  base_url:   https://api.openai.com/v1
-  model_id:   text-embedding-3-large
-  secret_ref: env:OPENAI_API_KEY
-  # vector dim is derived from model_id, not declared here
+```toml
+# Registered models — one [[llm.models]] entry per (vendor, model_id).
+[[llm.models]]
+vendor      = "anthropic"
+dialect     = "anthropic"
+base_url    = "https://api.anthropic.com"
+model_id    = "claude-haiku-4-5"
+secret_ref  = "env:ANTHROPIC_API_KEY"
+caps        = { tool_use = true, json_mode = true, long_context = false, vision = false }
 
-sources:
-  # unchanged from 01
-  - id: forgejo-aquilo
-    ...
+[[llm.models]]
+vendor      = "anthropic"
+dialect     = "anthropic"
+base_url    = "https://api.anthropic.com"
+model_id    = "claude-sonnet-4-6"
+secret_ref  = "env:ANTHROPIC_API_KEY"
+caps        = { tool_use = true, json_mode = true, long_context = true, vision = false }
+
+[[llm.models]]
+vendor      = "anthropic"
+dialect     = "anthropic"
+base_url    = "https://api.anthropic.com"
+model_id    = "claude-opus-4-7"
+secret_ref  = "env:ANTHROPIC_API_KEY"
+caps        = { tool_use = true, json_mode = true, long_context = true, vision = true }
+
+# Tier bindings — pick one (vendor, model_id) per tier.
+# Missing tiers fall back per policy below.
+[llm.default.fast]
+vendor   = "anthropic"
+model_id = "claude-haiku-4-5"
+
+[llm.default.standard]
+vendor   = "anthropic"
+model_id = "claude-sonnet-4-6"
+
+[llm.default.deep]
+vendor   = "anthropic"
+model_id = "claude-opus-4-7"
+
+[llm]
+per_owner_table = "enabled"          # | "disabled"
+fallback_policy = "strict"           # strict | upgrade | downgrade — see §Model tiers
+
+# Single global embedding (§Embedding model: one per binary).
+[[embedding.models]]
+vendor      = "openai"
+dialect     = "openai"
+base_url    = "https://api.openai.com/v1"
+model_id    = "text-embedding-3-large"
+secret_ref  = "env:OPENAI_API_KEY"
+caps        = { dim = 3072, matryoshka = true }
+
+[embedding.default]
+vendor   = "openai"
+model_id = "text-embedding-3-large"
+
+# Source instances — unchanged from 01.
+[[sources]]
+id = "forgejo-aquilo"
+# ...
 ```
 
 `vendor` and `dialect` are independent axes. `vendor` is who runs
@@ -74,7 +103,8 @@ OpenAI dialect, so `vendor: openrouter, dialect: openai` with
 `model_id: anthropic/claude-opus-4-7` is a normal entry. The
 split matters because rate limits, tool-call quirks, model
 catalogs, and pricing belong to the vendor — not the dialect —
-and validation (§Build-time model registry) is keyed by vendor.
+and the runtime model record (§Model registration) is keyed by
+`(vendor, model_id)`.
 
 `secret_ref` is always indirect — never the literal key. Resolved
 schemes (the resolver is a build-time-registered trait, deployments
@@ -87,54 +117,102 @@ add schemes by linking a resolver crate):
 | `aws-sm:<arn>` / `gcp-sm:<name>` | Hosted deployments |
 | `file:<path>` | On-prem with a sealed mount |
 
-Literal keys never enter `proxima.config.yaml` and never enter
+Literal keys never enter `proxima.config.toml` and never enter
 the change-event stream. The resolver returns `SecretBytes` only
 to the call site that needs it.
 
-## Build-time model registry
+## Capability vocabulary
 
-A flavor (or core) declares which `(vendor, model_id)` entries
-the binary has been validated against, via fields on the existing
-`proxima_flavor!` macro ([08 §Registration mechanism](docs/08-core-and-flavors.md#registration-mechanism)):
+Build-time owns *what* model capabilities exist and *which* an
+operator requires. It does **not** own which `(vendor, model_id)`
+pairs the binary will use — those are runtime configuration.
+Plugging in a new model never requires a flavor-crate PR.
+
+Two types live in `proxima_core::models`:
 
 ```rust
-proxima_flavor! {
-    name = "code",
-    // ...schemas, sources, operators, prompts unchanged...
+pub struct LlmCaps {
+    pub tool_use:     bool,
+    pub json_mode:    bool,
+    pub long_context: bool,
+    pub vision:       bool,
+}
 
-    llm_models = [
-        LlmEntry { vendor: "anthropic",  dialect: Anthropic, model_id: "claude-opus-4-7",            caps: LlmCaps { tool_use: true,  json_mode: true  } },
-        LlmEntry { vendor: "anthropic",  dialect: Anthropic, model_id: "claude-sonnet-4-6",          caps: LlmCaps { tool_use: true,  json_mode: true  } },
-        LlmEntry { vendor: "openrouter", dialect: OpenAI,    model_id: "anthropic/claude-opus-4-7",  caps: LlmCaps { tool_use: true,  json_mode: true  } },
-        LlmEntry { vendor: "groq",       dialect: OpenAI,    model_id: "llama-3.3-70b-versatile",    caps: LlmCaps { tool_use: true,  json_mode: true  } },
-        LlmEntry { vendor: "ollama",     dialect: OpenAI,    model_id: "qwen3-coder-30b-a3b",        caps: LlmCaps { tool_use: true,  json_mode: false } },
-    ],
-
-    embedding_models = [
-        EmbedEntry { vendor: "openai", dialect: OpenAI, model_id: "text-embedding-3-large", caps: EmbedCaps { dim: 3072, matryoshka: true  } },
-        EmbedEntry { vendor: "openai", dialect: OpenAI, model_id: "text-embedding-3-small", caps: EmbedCaps { dim: 1536, matryoshka: true  } },
-        EmbedEntry { vendor: "ollama", dialect: OpenAI, model_id: "nomic-embed-text",       caps: EmbedCaps { dim: 768,  matryoshka: false } },
-    ],
+pub struct EmbedCaps {
+    pub dim:        u32,
+    pub matryoshka: bool,
 }
 ```
 
-`(vendor, model_id)` identifies an entry; `dialect` and `caps` are
-properties of that entry. Anthropic served direct vs. via
-OpenRouter are **separate entries with separate validation** —
-different rate limits, different tool-call shapes, different
-reliability, different pricing.
+`LlmCaps` enumerates the LLM capability axes any operator can
+demand; `EmbedCaps` does the same for embeddings. Expanding
+either set (e.g. adding `streaming_tool_use`) is a substrate PR —
+flavors cannot extend the vocabulary, only consume it.
 
-A composite binary's allow-set is the union over its flavors,
-de-duplicated by `(vendor, model_id)`. Boot fails if the
-configured `(vendor, model_id)` is not in the union, or if the
-configured embedding's `dim` does not match the column type that
-storage migrations created. The mismatch is fatal at startup, not
-lazy at first call.
+Operators declare a tier and a `requires: LlmCaps` at registration
+(§Operator declaration). The runtime model record (§Model
+registration) carries the *claimed* `LlmCaps` for that
+`(vendor, model_id)`; caps validation at credential-write
+(§Caps validation at credential write) checks the claim
+satisfies the union of `requires` over operators in that tier.
 
-The registry is the contract between *"models we have JSON-mode /
-tool-use / prompt discipline tested against"* and *"what users
-may configure."* Adding an unsupported model is a flavor-crate PR
-— same discipline as schemas. No runtime "trust the user" path.
+The contract is: *operators say what they need; users (or a probe
+step) say what their model offers; the substrate refuses
+mismatches at write, not at first call.* No allowlist. No
+flavor-author gating. New models plug in.
+
+## Model registration
+
+A registered model record carries:
+
+```toml
+[[llm.models]]
+vendor      = "ollama"
+dialect     = "openai"             # which HTTP API the client speaks
+model_id    = "qwen3-coder-30b-a3b"
+base_url    = "http://localhost:11434/v1"
+secret_ref  = ""                   # empty for local; "keychain:..." for remote
+caps        = { tool_use = true, json_mode = false, long_context = false, vision = false }
+
+[[llm.models]]
+vendor      = "openrouter"
+dialect     = "openai"
+model_id    = "anthropic/claude-opus-4-7"
+base_url    = "https://openrouter.ai/api/v1"
+secret_ref  = "keychain:proxima:openrouter-key"
+caps        = { tool_use = true, json_mode = true, long_context = true, vision = false }
+
+[[embedding.models]]
+vendor      = "ollama"
+dialect     = "openai"
+model_id    = "nomic-embed-text"
+base_url    = "http://localhost:11434/v1"
+secret_ref  = ""
+caps        = { dim = 768, matryoshka = false }
+```
+
+Records are persisted in `proxima.config.toml` (the embedded
+desktop binary's app-data dir; hosted deployments lay it down at
+deploy time). The Settings UI provides a registration panel that
+writes these records and offers a best-effort "Probe" button that
+hits the endpoint to auto-fill `model_id` and detect caps where
+the provider exposes them.
+
+`caps` is the user's (or the probe's) claim about the model. The
+substrate trusts the claim for routing decisions but enforces
+**caps satisfaction at credential write** — see below — so a
+miss-declared model can't satisfy an operator that needs more
+than the model can deliver.
+
+`(vendor, model_id)` identifies a record uniquely. Anthropic-
+direct vs. via OpenRouter are **separate records with separate
+caps and separate `secret_ref`** — different rate limits,
+different tool-call shapes, different reliability, different
+pricing.
+
+The embedding `dim` is checked against the storage migration's
+vector column at boot. Mismatch is fatal at startup, not lazy at
+first embed call.
 
 ## Model tiers
 
@@ -208,12 +286,12 @@ gate (the resolved model **must** satisfy it or the call fails);
 
 ### Caps validation at credential write
 
-When a `(vendor, model_id)` lands in `default[tier]` or in an
-`llm_credential` row, the binary checks that the entry's
-`LlmCaps` (from §Build-time model registry) satisfies the union
-of `requires` over every operator with that `tier`. Mismatches are
-rejected at write — boot for `default`, INSERT for the per-Owner
-table — never silently at first call.
+When a `(vendor, model_id)` is bound to `default[tier]` or
+written into an `llm_credential` row, the binary checks that the
+record's *claimed* `LlmCaps` (§Model registration) satisfies the
+union of `requires` over every operator with that `tier`.
+Mismatches are rejected at write — boot for `default`, INSERT for
+the per-Owner table — never silently at first call.
 
 This is the BYOK contract: an Owner whose `Standard` model lacks
 `tool_use` cannot run a binary whose decider needs tool-calling.
@@ -259,35 +337,25 @@ coexist during the sweep.
 
 ## Composite embedding selection
 
-Within a flavor, `embedding_models = [...]` declares the set the
-flavor's content has been validated against. The composite binary
-picks **one** entry, and that entry must appear in **every**
-constituent flavor's set:
+A composite binary still has a single binary-wide embedding —
+that constraint is unchanged (§Embedding model: one per binary).
+What changed: there is no per-flavor `embedding_models` set to
+intersect. The deployment registers exactly one embedding model
+record (§Model registration) at runtime, and boot validates two
+things:
 
-```rust
-proxima_composite! {
-    name      = "aquilo-suite",
-    flavors   = [ code, learning ],
-    embedding = ("openai", "text-embedding-3-large"),  // must be in every flavor's set
-}
-```
+1. The record's claimed `dim` matches the storage migration's
+   vector column type. Mismatch is fatal.
+2. The configured embedding `secret_ref` resolves (where
+   non-empty). Unresolvable references fail boot.
 
-The macro expansion checks the intersection at compile time. If
-`code` ships `[3-large, 3-small]` and `learning` ships only
-`[nomic-768]`, the composite refuses to build — the author either
-picks a flavor combination whose tested sets intersect, or lands
-a PR validating one flavor against the other's embedding model.
-
-This is the same authoring-cost discipline 08 names for
-cross-flavor A→P ([08 §Composite discipline](docs/08-core-and-flavors.md#composite-discipline)):
-composition surfaces real costs at build time — here, embedding-set
-intersections; there, *some* operator (cognition flavor or composite)
-must supply cross-flavor inputs. Surface the conflict at build
-time, where it can be acted on, not at first query.
-
-Single-flavor binaries inherit the flavor's only entry if its set
-is a singleton; otherwise `proxima.config.yaml` names the choice
-and the binary validates against the flavor's set at boot.
+Cross-flavor authoring concerns about embedding compatibility
+(does flavor A's content embed sensibly under the model flavor B
+needs?) are real but live outside the substrate — they're
+deployment / quality concerns, not compile-time invariants. If a
+deployment switches embedding models, the storage layer's
+re-embed sweep ([07](docs/07-storage.md)) handles the migration;
+the substrate refuses to run cross-version queries silently.
 
 The vector-store key `(entity_kind, entity_id, embedding_version,
 model_id)` ([07](docs/07-storage.md)) admits multiple `model_id`
@@ -304,31 +372,33 @@ bounded queues and per-(Owner, `personality_id`) fairness within
 each queue. Build-time registration fixes the operator graph;
 runtime config tunes the concurrency knobs.
 
-```yaml
-operators:
-  defaults:
-    workers:        1            # per-operator concurrency cap
-    queue_depth:    1024         # bounded MPSC capacity
-    timeout_s:      300          # per-invocation hard cap
-    fairness:       deficit       # round-robin | deficit
-  per_operator:
-    - id:           "code/forgejo-commit→bug-fix-cluster"
-      workers:      2
-      timeout_s:    180
-    - id:           "general-reasoning/self-model"
-      workers:      1
-      queue_depth:  256
+```toml
+[operators.defaults]
+workers     = 1            # per-operator concurrency cap
+queue_depth = 1024         # bounded MPSC capacity
+timeout_s   = 300          # per-invocation hard cap
+fairness    = "deficit"    # round-robin | deficit
 
-cost_cap:
-  llm_concurrency:        8       # global semaphore across all operators
-  llm_tokens_per_minute:  200000  # rolling-window guard
+[[operators.per_operator]]
+id        = "code/forgejo-commit→bug-fix-cluster"
+workers   = 2
+timeout_s = 180
 
-sources:
-  defaults:
-    rate_limit_per_minute: 600
-  per_source:
-    - id:                  "forgejo-aquilo"
-      rate_limit_per_minute: 1200
+[[operators.per_operator]]
+id          = "general-reasoning/self-model"
+workers     = 1
+queue_depth = 256
+
+[cost_cap]
+llm_concurrency       = 8        # global semaphore across all operators
+llm_tokens_per_minute = 200000   # rolling-window guard
+
+[sources.defaults]
+rate_limit_per_minute = 600
+
+[[sources.per_source]]
+id                    = "forgejo-aquilo"
+rate_limit_per_minute = 1200
 ```
 
 What each axis controls:
@@ -441,13 +511,12 @@ llm_credential(
 Append-only by `created_at`; rotation is supersession ([07](docs/07-storage.md)),
 not silent overwrite — credential history is the same auditable
 shape as everything else. An Owner may populate any subset of
-tiers; missing tiers resolve via §Fallback policy. INSERT validates:
-
-1. `(vendor, model_id)` is in the build-time registry — an Owner
-   cannot pick a model the binary was not built to support.
-2. The entry's `LlmCaps` satisfies the union of `requires` over
-   every operator registered with that `tier` (§Caps validation
-   at credential write).
+tiers; missing tiers resolve via §Fallback policy. INSERT
+validates that the record's claimed `LlmCaps` satisfies the
+union of `requires` over every operator registered with that
+`tier` (§Caps validation at credential write). The
+`(vendor, model_id)` itself is not gated against any allowlist —
+new models plug in at runtime; the caps claim is the contract.
 
 The `secret_ref` column stores the *reference*, not the secret.
 The same resolver schemes from §Config file apply; for BYOK on a
@@ -462,44 +531,68 @@ from a runtime price book keyed by `(vendor, model_id)`. The book
 is runtime config — vendors change prices, new models appear — but
 populated identically across deployment shapes.
 
-```yaml
-prices:
-  defaults:
-    llm:
-      - { vendor: "anthropic",  model_id: "claude-opus-4-7",
-          prompt_per_mtok_usd:       15.00,
-          cache_read_per_mtok_usd:    1.50,
-          cache_write_per_mtok_usd:  18.75,    # 5-min cache; rotate for 1-hr
-          completion_per_mtok_usd:   75.00 }
-      - { vendor: "anthropic",  model_id: "claude-sonnet-4-6",
-          prompt_per_mtok_usd:        3.00,
-          cache_read_per_mtok_usd:    0.30,
-          cache_write_per_mtok_usd:   3.75,
-          completion_per_mtok_usd:   15.00 }
-      - { vendor: "openrouter", model_id: "anthropic/claude-opus-4-7",
-          prompt_per_mtok_usd:       15.30,    # OpenRouter passthrough +2%
-          completion_per_mtok_usd:   76.50 }
-      - { vendor: "groq",       model_id: "llama-3.3-70b-versatile",
-          prompt_per_mtok_usd:        0.59,
-          completion_per_mtok_usd:    0.79 }
-      - { vendor: "ollama",     model_id: "qwen3-coder-30b-a3b",
-          prompt_per_mtok_usd:        0.0,
-          completion_per_mtok_usd:    0.0 }
-    embedding:
-      - { vendor: "openai", model_id: "text-embedding-3-large",
-          per_mtok_usd: 0.13 }
-      - { vendor: "openai", model_id: "text-embedding-3-small",
-          per_mtok_usd: 0.02 }
-      - { vendor: "ollama", model_id: "nomic-embed-text",
-          per_mtok_usd: 0.0 }
+```toml
+[[prices.defaults.llm]]
+vendor                   = "anthropic"
+model_id                 = "claude-opus-4-7"
+prompt_per_mtok_usd      = 15.00
+cache_read_per_mtok_usd  = 1.50
+cache_write_per_mtok_usd = 18.75    # 5-min cache; rotate for 1-hr
+completion_per_mtok_usd  = 75.00
+
+[[prices.defaults.llm]]
+vendor                   = "anthropic"
+model_id                 = "claude-sonnet-4-6"
+prompt_per_mtok_usd      = 3.00
+cache_read_per_mtok_usd  = 0.30
+cache_write_per_mtok_usd = 3.75
+completion_per_mtok_usd  = 15.00
+
+[[prices.defaults.llm]]
+vendor                  = "openrouter"
+model_id                = "anthropic/claude-opus-4-7"
+prompt_per_mtok_usd     = 15.30    # OpenRouter passthrough +2%
+completion_per_mtok_usd = 76.50
+
+[[prices.defaults.llm]]
+vendor                  = "groq"
+model_id                = "llama-3.3-70b-versatile"
+prompt_per_mtok_usd     = 0.59
+completion_per_mtok_usd = 0.79
+
+[[prices.defaults.llm]]
+vendor                  = "ollama"
+model_id                = "qwen3-coder-30b-a3b"
+prompt_per_mtok_usd     = 0.0
+completion_per_mtok_usd = 0.0
+
+[[prices.defaults.embedding]]
+vendor       = "openai"
+model_id     = "text-embedding-3-large"
+per_mtok_usd = 0.13
+
+[[prices.defaults.embedding]]
+vendor       = "openai"
+model_id     = "text-embedding-3-small"
+per_mtok_usd = 0.02
+
+[[prices.defaults.embedding]]
+vendor       = "ollama"
+model_id     = "nomic-embed-text"
+per_mtok_usd = 0.0
 ```
 
-Substrate ships the `defaults` block populated for every entry in
-§Build-time model registry, sourced from publicly published
-per-million-token list prices. Defaults are indicative — customers
-with negotiated rates override per `(vendor, model_id)` in the
-runtime DB tables below. Local-inference rows price at zero so
-the same calculation runs for every deployment shape.
+Substrate ships the `defaults` block populated for the common
+hosted vendors (Anthropic, OpenAI, OpenRouter, Groq, Together,
+Ollama-local) sourced from publicly published per-million-token
+list prices. Defaults are indicative — customers with negotiated
+rates override per `(vendor, model_id)` in the runtime DB tables
+below. Local-inference rows price at zero so the same
+calculation runs for every deployment shape. Entries for
+`(vendor, model_id)` pairs not in `defaults` produce a
+once-per-pair WARN log and a `cost_micro_usd = None` on the
+resulting Fact (§Cost resolution); pricing is descriptive, not
+gating.
 
 Cache pricing covers Anthropic's 5-minute tier by default; the
 1-hour tier is a runtime override on the same row, not a separate
@@ -535,9 +628,11 @@ embedding_price_book(
 ```
 
 Active row per `(vendor, model_id)` is the head where
-`effective_at <= now()`. INSERT validates that `(vendor, model_id)`
-is in the build-time registry — pricing entries for unregistered
-models are rejected at write time, same shape as credentials.
+`effective_at <= now()`. Pricing entries are descriptive — no
+INSERT-time gate against any allowlist. Entries for
+`(vendor, model_id)` pairs that no credential references are
+inert; entries for missing pairs simply don't price calls (per
+§Cost resolution).
 
 Per-Owner price overrides (negotiated rates routed per tenant) are
 **out of scope for v1**. The hosted cost model is "engine pays the
@@ -658,7 +753,8 @@ flag.
 
 - `scope`
 - `config-file`
-- `build-time-model-registry`
+- `capability-vocabulary`
+- `model-registration`
 - `model-tiers`
 - `operator-declaration`
 - `caps-validation-at-credential-write`

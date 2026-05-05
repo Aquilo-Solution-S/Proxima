@@ -332,7 +332,7 @@ reserved-namespace check.
 The macro and registration paths enforce the compliance metadata
 declared elsewhere — substrate startup fails when:
 
-- Any `EventSource` instance configured in `proxima.config.yaml`
+- Any `EventSource` instance configured in `proxima.config.toml`
   omits the `compliance` block (lawful_basis / collection_purpose /
   retention_policy / data_residency — 01 §Compliance metadata).
 - Any installed `Tool` manifest omits the `[tool.compliance]`

@@ -248,7 +248,7 @@ under that user's `Owner`.
 Engine-level config registers source *instances* with their default
 owner. Source-instance shape lives here; the broader runtime config
 surface (LLM endpoint, embedding model, credential resolution)
-extends the same `proxima.config.yaml` and is specified in
+extends the same `proxima.config.toml` and is specified in
 [10](docs/10-configuration.md).
 
 For example, a shared Forgejo crawler for org-AQS emits with
@@ -257,35 +257,35 @@ Telegram source emits with `principal = User(u)`, `org_id =
 u.personal_org`. Sources may also override owner per-event when the
 observation context demands it.
 
-```yaml
-proxima.config.yaml
-  sources:
-    - id: forgejo-aquilo
-      type: forgejo-webhook
-      uri: https://git.aquilo-cloud.com/AQS/aquilo
-      auth_secret: ...
-      default_owner:
-        principal: { group: org_AQS_everyone }
-        org_id: org_AQS
-      compliance:                                   # see §Compliance metadata
-        lawful_basis: { legitimate_interest:
-            "internal engineering knowledge graph for AQS staff" }
-        collection_purpose:
-            "Index AQS source repositories for code-flavor consolidation"
-        retention_policy: { retain_for: "7y" }      # AO §147 alignment
-        data_residency: eu
+```toml
+# proxima.config.toml
+[[sources]]
+id          = "forgejo-aquilo"
+type        = "forgejo-webhook"
+uri         = "https://git.aquilo-cloud.com/AQS/aquilo"
+auth_secret = "..."
+
+[sources.default_owner]
+principal = { group = "org_AQS_everyone" }
+org_id    = "org_AQS"
+
+# see §Compliance metadata
+[sources.compliance]
+lawful_basis       = { legitimate_interest = "internal engineering knowledge graph for AQS staff" }
+collection_purpose = "Index AQS source repositories for code-flavor consolidation"
+retention_policy   = { retain_for = "7y" }      # AO §147 alignment
+data_residency     = "eu"
 ```
 
 A US-only deployment with no GDPR-equivalent state regulation
 declares trivial values across the board:
 
-```yaml
-      compliance:
-        lawful_basis: not_applicable
-        collection_purpose: "internal use"
-        retention_policy: { indefinite:
-            { reason: "no applicable retention regime" } }
-        data_residency: unrestricted
+```toml
+[sources.compliance]
+lawful_basis       = "not_applicable"
+collection_purpose = "internal use"
+retention_policy   = { indefinite = { reason = "no applicable retention regime" } }
+data_residency     = "unrestricted"
 ```
 
 Both forms are valid; the substrate enforcement mechanics
