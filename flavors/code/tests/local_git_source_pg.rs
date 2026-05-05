@@ -203,7 +203,7 @@ async fn local_git_source_full_cycle() {
         let repo_id = Uuid::now_v7();
         let source = LocalGitSource::new(repo_id, repo.path().to_path_buf(), owner.clone());
         let cursor = proxima_core::Cursor::empty();
-        let (r1, cursor) = source.run_poll(pg.pool(), &cursor).await?;
+        let (r1, cursor) = source.run_poll(pg.pool(), &cursor, &mut |_| {}).await?;
         assert!(r1.commits_emitted >= 1, "expected at least one commit");
         assert!(r1.files_present_emitted >= 3, "expected ≥3 file-revisions");
         assert!(r1.chunks_emitted >= 3, "expected ≥3 chunks");
@@ -275,7 +275,7 @@ async fn local_git_source_full_cycle() {
         git(repo.path(), &["add", "src/lib.rs"]);
         git(repo.path(), &["commit", "-q", "-m", "expand lib"]);
 
-        let (r2, cursor) = source.run_poll(pg.pool(), &cursor).await?;
+        let (r2, cursor) = source.run_poll(pg.pool(), &cursor, &mut |_| {}).await?;
         // One new commit ("expand lib") → one batch with one
         // file-revision Fact (src/lib.rs) and its chunks. README.md
         // and main.ts aren't in this commit's diff, so they aren't
@@ -332,7 +332,7 @@ async fn local_git_source_full_cycle() {
         git(repo.path(), &["add", "-A"]);
         git(repo.path(), &["commit", "-q", "-m", "drop main.ts"]);
 
-        let (r3, cursor) = source.run_poll(pg.pool(), &cursor).await?;
+        let (r3, cursor) = source.run_poll(pg.pool(), &cursor, &mut |_| {}).await?;
         assert!(r3.files_tombstoned >= 1, "expected tombstone for main.ts");
         let main_state = fetch_file_revision_state(pg.pool(), &owner, repo_id, "src/main.ts").await;
         assert_eq!(main_state.as_deref(), Some("Tombstone"));
@@ -347,7 +347,7 @@ async fn local_git_source_full_cycle() {
         git(repo.path(), &["add", "-A"]);
         git(repo.path(), &["commit", "-q", "-m", "rename README"]);
 
-        let (_r4, cursor) = source.run_poll(pg.pool(), &cursor).await?;
+        let (_r4, cursor) = source.run_poll(pg.pool(), &cursor, &mut |_| {}).await?;
         let old_state = fetch_file_revision_state(pg.pool(), &owner, repo_id, "README.md").await;
         let new_state =
             fetch_file_revision_state(pg.pool(), &owner, repo_id, "docs/README.md").await;
@@ -374,7 +374,7 @@ async fn local_git_source_full_cycle() {
         // ----------------------------------------------------------------
         // Re-running index without changes must be idempotent (no new
         // emissions, all unchanged).
-        let (r_idem, _cursor) = source.run_poll(pg.pool(), &cursor).await?;
+        let (r_idem, _cursor) = source.run_poll(pg.pool(), &cursor, &mut |_| {}).await?;
         assert_eq!(
             r_idem.files_present_emitted, 0,
             "idempotent reindex emitted files"
@@ -440,7 +440,7 @@ async fn polyglot_markdown_emits_file_revision_and_fallback_chunks() {
         let repo_id = Uuid::now_v7();
         let source = LocalGitSource::new(repo_id, dir.path().to_path_buf(), owner.clone());
         let cursor = proxima_core::Cursor::empty();
-        let (report, _cursor) = source.run_poll(pg.pool(), &cursor).await?;
+        let (report, _cursor) = source.run_poll(pg.pool(), &cursor, &mut |_| {}).await?;
         assert!(report.files_present_emitted >= 1);
 
         let state = fetch_file_revision_state(pg.pool(), &owner, repo_id, "doc.md").await;

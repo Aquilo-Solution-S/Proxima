@@ -142,7 +142,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     if watch {
         watch_loop(&source, &pg, engine.as_ref(), &owner, poll_interval_ms).await
     } else {
-        let (report, _cursor) = source.run_poll(pg.pool(), &Cursor::empty()).await?;
+        let (report, _cursor) = source.run_poll(pg.pool(), &Cursor::empty(), &mut |_| {}).await?;
         print_report(&report);
         if let Some(eng) = engine.as_ref() {
             run_f2a_pass(eng, &owner).await?;
@@ -167,13 +167,14 @@ async fn watch_loop(
     );
 
     loop {
+        let mut noop_progress = |_| {};
         tokio::select! {
             biased;
             _ = tokio::signal::ctrl_c() => {
                 eprintln!("\nstopping (Ctrl-C)");
                 return Ok(());
             }
-            res = source.run_poll(pg.pool(), &cursor) => {
+            res = source.run_poll(pg.pool(), &cursor, &mut noop_progress) => {
                 let (report, next) = res?;
                 cursor = next;
                 if poll_emitted_anything(&report) {

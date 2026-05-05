@@ -290,7 +290,7 @@ async fn f2a_commit_summary_full_cycle() {
         // its own batches; F→A is run via run_pending_f2a after the poll.
         let repo_id = Uuid::now_v7();
         let source = LocalGitSource::new(repo_id, repo_path.clone(), owner.clone());
-        let (report, _cursor) = source.run_poll(pg.pool(), &Cursor::empty()).await?;
+        let (report, _cursor) = source.run_poll(pg.pool(), &Cursor::empty(), &mut |_| {}).await?;
         assert_eq!(report.commits_emitted, 2, "expected 2 commits");
 
         // Run F→A pass — should consolidate both batches.
