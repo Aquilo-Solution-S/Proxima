@@ -31,15 +31,38 @@ For what must not slip, see [`AGENTS.md`](AGENTS.md).
 - Not a memory store retrofitted with a graph. It is the wheel
   (`docs/universe.md §2`) implemented cold-start.
 - Not a port of hippocampus. Hippocampus becomes one consumer of Proxima.
-- Not a research project. It is a buildable system. The hardest research
-  question (memory entity structure under the strict
-  Facts → Abstraction → Perspective layering) is being worked through here
-  before any code lands.
+- Not a research project. It is a buildable system. The core crates,
+  Postgres storage, gRPC wire layer, Code flavor, and Solid/Tauri shell
+  are in-tree.
 
 ## Status
 
-Design phase. No code yet. Build path to a locally-runnable Code demo
-is tracked in [`ROADMAP.md`](ROADMAP.md). The current artefacts are:
+Implementation phase. Build path to a locally-runnable Code demo is
+tracked in [`ROADMAP.md`](ROADMAP.md). Current surfaces:
+
+```
+proxima/
+├── apps/
+│   ├── proxima-engine/      Rust engine binary
+│   ├── proxima-code/        Rust Code-flavor binary
+│   └── proxima-shell/       Solid + Vite + Tauri 2 shell
+│       └── src-tauri/       Tauri Rust crate
+├── crates/
+│   ├── core/                Rust lib crate `proxima-core`
+│   ├── storage-pg/          Postgres storage adapter + migrations
+│   ├── wire-grpc/           gRPC wire crate
+│   └── llm-openai-compat/   OpenAI-compatible model client
+├── packages/
+│   └── frontend-core/       npm package `@proxima/core`
+├── flavors/
+│   └── code/                Rust Code flavor crate
+├── proto/                   Proxima v1 protobuf surface
+├── docs/                    design source of truth
+├── Cargo.toml               Rust workspace
+└── pnpm-workspace.yaml      frontend workspace
+```
+
+Design source of truth:
 
 - [`docs/universe.md`](docs/universe.md) — origin doc. Ontology, the Spinning
   Wheel, philosophical commitments (perspectivist constructivism, abductive
@@ -104,9 +127,26 @@ is tracked in [`ROADMAP.md`](ROADMAP.md). The current artefacts are:
   the engine's contract to clients. Five verbs (Query / Subscribe /
   GoalWrite / EventIngest / Schema), owner-scoped, transport-agnostic;
   decider, operators, and tool registry stay inside the binary.
+- [`docs/15-compliance.md`](docs/15-compliance.md) — compliance
+  primitives: owner deletion, pause/resume, export, suppression, audit.
 
-Subsequent components (actuator, self-and-goals, per-domain
-materializations) follow.
+## Verification
+
+Use the smallest relevant check.
+
+| Surface | Command |
+|---|---|
+| Rust workspace | `cargo check --workspace` |
+| Rust lint | `cargo clippy --workspace --all-targets` |
+| Core frontend | `pnpm --filter @proxima/core typecheck` |
+| Shell frontend | `pnpm --filter proxima-shell typecheck` |
+| Shell build | `pnpm --filter proxima-shell build` |
+
+Frontend dev server:
+
+```sh
+pnpm --filter proxima-shell dev --host 127.0.0.1
+```
 
 ## Implementation commitment
 
