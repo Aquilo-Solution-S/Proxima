@@ -14,7 +14,7 @@ path = "src/main.rs"
 proxima-core = { path = "../../core" }
 proxima-storage-pg = { path = "../../storage-pg" }
 proxima-code = { path = "../../flavors/code" }
-proxima-llm-ollama = { path = "../../llm-ollama" }
+proxima-llm-openai-compat = { path = "../../llm-openai-compat" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "signal", "time"] }
 uuid = { workspace = true }
 

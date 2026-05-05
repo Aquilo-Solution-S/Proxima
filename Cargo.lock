@@ -3342,7 +3342,7 @@ version = "0.1.0"
 dependencies = [
  "proxima-code",
  "proxima-core",
- "proxima-llm-ollama",
+ "proxima-llm-openai-compat",
  "proxima-storage-pg",
  "tokio",
  "uuid",
@@ -3375,7 +3375,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "proxima-llm-ollama"
+name = "proxima-llm-openai-compat"
 version = "0.1.0"
 dependencies = [
  "async-trait",
@@ -3397,7 +3397,7 @@ dependencies = [
  "keyring",
  "proxima-code",
  "proxima-core",
- "proxima-llm-ollama",
+ "proxima-llm-openai-compat",
  "proxima-storage-pg",
  "serde",
  "serde_json",

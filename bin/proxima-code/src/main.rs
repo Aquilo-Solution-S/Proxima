@@ -32,7 +32,7 @@ use std::time::Duration;
 use proxima_code::{IndexReport, LocalGitSource, build_engine, f2a_operator_registry, migrator};
 use proxima_core::auth::NoAuth;
 use proxima_core::{Cursor, OrgId, Owner, Principal, UserId};
-use proxima_llm_ollama::{OllamaEmbeddingClient, OllamaLlmClient};
+use proxima_llm_openai_compat::{OllamaEmbeddingClient, OllamaLlmClient};
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
 
