@@ -21,6 +21,7 @@ use proxima_core::verbs::query::{MemoryStore, QueryRequest, QueryResponse};
 use proxima_core::verbs::schema::{SchemaRegistry, SchemaRequest, SchemaResponse};
 use proxima_core::verbs::subscribe::SubscribeRequest;
 use proxima_core::{ChangeEvent, Engine, OrgId, Owner, Principal, UserId};
+use proxima_storage_pg::PgStorage;
 use tauri::ipc::Channel;
 use tauri::State;
 use tauri_specta::{Builder, collect_commands};
@@ -28,17 +29,40 @@ use uuid::Uuid;
 
 /// Build the embedded engine for v1 desktop.
 ///
-/// Empty registry + `NoopStorage` + `NoAuth` — the wiring works,
-/// the data plane is empty until storage and flavors land.
+/// When `DATABASE_URL` is set, connects to Postgres, runs migrations,
+/// starts the outbox listener, and wires the proxima-code flavor's
+/// schemas via `proxima_code::build_engine`. Falls back to the
+/// original `NoopStorage` + empty registry when DB is absent,
+/// logging a warning for dev convenience.
 fn build_engine() -> Arc<Engine> {
     let owner = Owner {
         principal: Principal::User(UserId::new(Uuid::nil())),
         org_id: OrgId::new(Uuid::nil()),
     };
-    let auth = NoAuth::new(owner.principal.clone(), owner);
-    let registry = SchemaRegistry::new();
-    let memories = MemoryStore::new();
-    Arc::new(Engine::new(registry, memories, Box::new(auth)))
+
+    if let Ok(url) = std::env::var("DATABASE_URL") {
+        tauri::async_runtime::block_on(async {
+            let pg = PgStorage::connect(&url)
+                .await
+                .expect("failed to connect to Postgres; check DATABASE_URL");
+            pg.run_migrations()
+                .await
+                .expect("failed to run migrations");
+            pg.start_outbox()
+                .await
+                .expect("failed to start outbox listener");
+            let auth = NoAuth::new(owner.principal.clone(), owner.clone());
+            Arc::new(proxima_code::build_engine(pg, Box::new(auth)))
+        })
+    } else {
+        tracing::warn!(
+            "DATABASE_URL not set — using NoopStorage; query/subscribe will return empty"
+        );
+        let auth = NoAuth::new(owner.principal.clone(), owner);
+        let registry = SchemaRegistry::new();
+        let memories = MemoryStore::new();
+        Arc::new(Engine::new(registry, memories, Box::new(auth)))
+    }
 }
 
 #[tauri::command]
@@ -116,6 +140,14 @@ fn specta_builder() -> Builder<tauri::Wry> {
 /// Panics if the Tauri application fails to start (window creation,
 /// plugin init, or context generation).
 pub fn run() {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .try_init()
+        .ok();
+
     let engine = build_engine();
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
