@@ -6,10 +6,14 @@ easy to break.
 
 ## State of the repo
 
-**Design phase. No code yet.** All artefacts are in `docs/`.
-Do not scaffold Cargo crates, Tauri shells, or migrations
-unprompted. If a code task is intended, the prompt will say so
-explicitly.
+**Implementation phase.** The design lives in `docs/`; Rust crates and
+the Solid/Tauri frontend have landed. Do not treat README's old
+"no code yet" wording as authoritative.
+
+Code work is expected when the prompt asks for it. Keep edits scoped to
+the existing crates/packages; do not add new binaries, crates, services,
+migrations, protocol surfaces, or runtime registration paths without an
+explicit request.
 
 ## Where the design lives
 
@@ -30,20 +34,43 @@ explicitly.
 | `docs/12-tool-manifest.md` | T1 (runtime, schema-consuming) vs T2 (build-time flavors) tool tiers |
 | `docs/13-flavor-marketplace.md` | Substrate + reference flavors; independent authorship; composite discipline |
 | `docs/14-protocol-surface.md` | Engine's contract to clients: five verbs (Query / Subscribe / GoalWrite / EventIngest / Schema), owner-scoped, transport-agnostic |
+| `docs/15-compliance.md` | Compliance primitives: owner deletion, pause/resume, export, suppression, audit |
 
-## Workspace layout (when code lands)
+## Workspace layout
 
 ```
 proxima/
-├── core/                lib crate "proxima-core"
-├── flavors/<X>/         bin crate "proxima-flavor-<X>"
-│   ├── proto/
-│   ├── migrations/
-│   ├── src/
-│   └── frontend/        npm package, composed into shell at build
-├── shell/proxima-shell/ Tauri + Solid base app
-└── compose.yaml
+├── core/                    Rust lib crate `proxima-core`
+├── bin/
+│   ├── proxima-engine/      Rust engine binary
+│   └── proxima-code/        Rust code-flavor binary
+├── flavors/
+│   └── code/                Rust code flavor crate
+├── storage-pg/              Rust Postgres storage crate
+├── wire-grpc/               Rust gRPC wire crate
+├── llm-ollama/              Rust Ollama provider crate
+├── frontend-core/           npm package `@proxima/core`
+├── proxima-shell/           Solid + Vite + Tauri 2 shell
+│   └── src-tauri/           Tauri Rust crate
+├── docs/                    design source of truth
+├── Cargo.toml               Rust workspace
+└── pnpm-workspace.yaml      frontend workspace
 ```
+
+## Verification
+
+Use the smallest relevant check:
+
+| Surface | Command |
+|---|---|
+| Rust workspace | `cargo check --workspace` |
+| Rust lint | `cargo clippy --workspace --all-targets` |
+| Core frontend | `pnpm --filter @proxima/core typecheck` |
+| Shell frontend | `pnpm --filter proxima-shell typecheck` |
+| Shell build | `pnpm --filter proxima-shell build` |
+
+Frontend dev server: `pnpm --filter proxima-shell dev --host 127.0.0.1`.
+If port `1420` is occupied, Vite will choose another port.
 
 ## Invariants — must not violate
 
@@ -155,8 +182,12 @@ breaks if these slip.
 
 ## Commit conventions
 
-- Subject: `docs(<scope>): <summary>` — e.g. `docs(02): close Q3
-  strict layering`. `<scope>` is the doc number or component name.
+- Docs subject: `docs(<scope>): <summary>` — e.g.
+  `docs(02): close Q3 strict layering`.
+- Code subject: `feat(<component>): <summary>` /
+  `fix(<component>): <summary>` / `chore(<component>): <summary>`.
+  Components include `core`, `frontend-core`, `proxima-shell`,
+  `storage-pg`, `wire-grpc`, `llm-ollama`, `flavors-code`.
 - Body: bulleted list of concrete changes; preserve the *why* when
   the change is a decision, not a fix.
 - Co-authorship trailer for AI commits matches the parent CLAUDE.md
@@ -200,7 +231,7 @@ One-liner each; invariant carries the rule, doc carries the detail.
 
 ## When unsure
 
-- Ambiguity in spec → ask before deciding. Design-phase choices
+- Ambiguity in spec → ask before deciding. Architectural choices
   compound.
 - Tension between two docs → flag it explicitly; don't paper over
   it with a third interpretation.

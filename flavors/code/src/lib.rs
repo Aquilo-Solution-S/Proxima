@@ -19,7 +19,7 @@ pub use ingest::{
 pub use local_git_source::{IndexError, IndexReport, IngestProgress, LocalGitSource};
 pub use repos::{RepoRecord, RepoRegistryError, delete_repo, get_repo, list_repos, register_repo, update_cursor};
 pub use migrations::migrator;
-pub use operators::CommitSummaryOperator;
+pub use operators::{CommitSummaryOperator, f2a_operator_registry};
 pub use payloads::{
     CodeChunkV1, CommitSummaryV1, CommitV1, EdgeCallsV1, FileRevisionV1, FileState,
 };

@@ -3,4 +3,13 @@
 
 pub mod commit_summary;
 
+use proxima_core::operators::OperatorRegistry;
+
 pub use commit_summary::CommitSummaryOperator;
+
+#[must_use]
+pub fn f2a_operator_registry() -> OperatorRegistry {
+    let mut registry = OperatorRegistry::new();
+    registry.register_f2a(CommitSummaryOperator::new());
+    registry
+}

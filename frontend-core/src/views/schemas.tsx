@@ -1,6 +1,6 @@
 import { For, Show, createResource, type Component } from "solid-js";
 import { commands, type SchemaInfo } from "../bindings";
-import { SchemaTag } from "../primitives";
+import { LoadingSurface, SchemaTag } from "../primitives";
 import type { Hub } from "../hub";
 
 export const SchemasView: Component<{ hub: Hub }> = (props) => {
@@ -25,7 +25,7 @@ export const SchemasView: Component<{ hub: Hub }> = (props) => {
         </p>
       </Show>
       <Show when={schemaResp.loading}>
-        <p class="proxima-dim">Loading…</p>
+        <LoadingSurface label="Loading schemas" />
       </Show>
       <Show when={schemaResp()}>
         {(resp) => (

@@ -1,6 +1,7 @@
 import { Show, type Component } from "solid-js";
 import { useQuery } from "../queries";
 import type { QueryRequest } from "../bindings";
+import { LoadingSurface } from "../primitives";
 
 const NIL_UUID = "00000000-0000-0000-0000-000000000000";
 
@@ -22,7 +23,7 @@ export const SettingsGeneralPanel: Component = () => {
         <p class="proxima-error">Engine error: {String(queryResp.error)}</p>
       </Show>
       <Show when={queryResp.loading}>
-        <p class="proxima-dim">Loading…</p>
+        <LoadingSurface mode="inline" label="Loading" size={36} />
       </Show>
       <Show when={queryResp()}>
         {(resp) => (

@@ -44,6 +44,62 @@
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--ink-80); font-family: var(--sans); -webkit-font-smoothing: antialiased; }
 
+/* ── Branded loading state ────────────────────────────────────── */
+.proxima-loader-mount {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 0;
+}
+
+.proxima-loading-surface {
+  position: relative;
+  min-height: 0;
+}
+
+.proxima-loading-surface.is-inline {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  min-height: 32px;
+}
+
+.proxima-loading-surface.is-panel {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 180px;
+}
+
+.proxima-loading-surface.is-overlay {
+  width: 100%;
+  height: 100%;
+}
+
+.proxima-loading-layer {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.proxima-loading-surface.is-panel > .proxima-loading-layer {
+  padding: 24px;
+}
+
+.proxima-loading-surface.is-overlay > .proxima-loading-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  background: rgba(14, 16, 19, 0.82);
+  backdrop-filter: blur(2px);
+}
+
+.proxima-loading-surface.is-blocking > .proxima-loading-layer {
+  pointer-events: auto;
+}
+
 /* ── Shell layout ──────────────────────────────────────────────── */
 .proxima-shell {
   width: 100%;

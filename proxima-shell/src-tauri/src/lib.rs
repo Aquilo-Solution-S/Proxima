@@ -19,13 +19,15 @@ use std::sync::Arc;
 use futures_util::StreamExt;
 use proxima_core::auth::{Credentials, NoAuth};
 use proxima_core::error::ProtocolError;
+use proxima_core::models::{LlmCaps, ModelTier};
+use proxima_core::operators::F2AOperator;
 use proxima_core::verbs::event_ingest::{EventDraft, EventIngestOutcome};
 use proxima_core::verbs::goal_write::{GoalDraft, GoalWriteOutcome};
 use proxima_core::verbs::query::{QueryRequest, QueryResponse};
-use proxima_core::models::{LlmCaps, ModelTier};
 use proxima_core::verbs::schema::{SchemaRequest, SchemaResponse};
 use proxima_core::verbs::subscribe::SubscribeRequest;
 use proxima_core::{ChangeEvent, Engine, OrgId, Owner, Principal, UserId};
+use proxima_llm_ollama::{OllamaConfig, OllamaEmbeddingClient, OllamaLlmClient};
 use proxima_storage_pg::PgStorage;
 use tauri::ipc::Channel;
 use tauri::State;
@@ -33,7 +35,9 @@ use tauri_specta::{Builder, collect_commands};
 use uuid::Uuid;
 
 use crate::command_error::CommandError;
-use crate::config::{EmbeddingModelRecord, LlmModelRecord, ModelRef, TierBindings};
+use crate::config::{
+    AppConfig, EmbeddingModelRecord, LlmModelRecord, ModelRef, TierBindings,
+};
 
 /// Build the embedded engine for v1 desktop.
 ///
@@ -74,10 +78,11 @@ fn build_engine() -> (Arc<Engine>, Arc<PgStorage>) {
 
         let pg_for_settings = Arc::new(pg.clone());
         let auth = NoAuth::new(owner.principal.clone(), owner.clone());
-        let engine = Arc::new(proxima_code::build_engine(pg, Box::new(auth)));
+        let engine = proxima_code::build_engine(pg, Box::new(auth))
+            .with_operators(proxima_code::f2a_operator_registry());
 
-        // Validation step — non-fatal. See validate_at_boot.
-        validate_at_boot(&pg_for_settings, &owner, &engine).await;
+        let engine = wire_consolidation_clients(engine, &pg_for_settings, &owner).await;
+        let engine = Arc::new(engine);
 
         (engine, pg_for_settings)
     })
@@ -93,17 +98,22 @@ fn sentinel_owner() -> Owner {
     }
 }
 
-/// Validate the loaded `AppConfig` at engine boot.
+/// Validate the loaded `AppConfig` at engine boot and attach local
+/// Ollama clients when the registered rows are complete.
 /// Loads settings from PG, assembles an `AppConfig`, and runs
 /// `validate_config` against the engine. Failures are logged as
 /// warnings only — the settings UI exists to fix broken config;
 /// panicking would brick the app.
-async fn validate_at_boot(pg: &Arc<PgStorage>, owner: &Owner, engine: &Engine) {
+async fn wire_consolidation_clients(
+    engine: Engine,
+    pg: &Arc<PgStorage>,
+    owner: &Owner,
+) -> Engine {
     let cfg = match crate::config::load_app_config(pg, owner).await {
         Ok(cfg) => cfg,
         Err(e) => {
             tracing::warn!("could not load AppConfig at boot: {e}");
-            return;
+            return engine;
         }
     };
     if let Err(e) = crate::config::validate_config(&cfg, engine) {
@@ -111,9 +121,94 @@ async fn validate_at_boot(pg: &Arc<PgStorage>, owner: &Owner, engine: &Engine) {
             "AppConfig validation failed at boot — running with degraded \
              config; user must fix via settings UI: {e}"
         );
-    } else {
-        tracing::info!("AppConfig validated successfully at boot");
+        return engine;
     }
+
+    match resolve_consolidation_clients(&cfg) {
+        Ok((llm, embed)) => {
+            tracing::info!(
+                llm_model = llm.model_id(),
+                embed_model = embed.model_id(),
+                embed_dim = embed.dim(),
+                "F→A consolidation clients attached"
+            );
+            engine.with_llm(Arc::new(llm)).with_embed(Arc::new(embed))
+        }
+        Err(e) => {
+            tracing::warn!("F→A consolidation disabled at boot: {e}");
+            engine
+        }
+    }
+}
+
+fn resolve_consolidation_clients(
+    cfg: &AppConfig,
+) -> Result<(OllamaLlmClient, OllamaEmbeddingClient), String> {
+    let tier = proxima_code::CommitSummaryOperator::new().tier();
+    let model_ref = cfg
+        .tiers
+        .get(tier)
+        .ok_or_else(|| format!("missing tier binding for {tier:?}"))?;
+    let llm = cfg
+        .llm
+        .models
+        .iter()
+        .find(|m| m.vendor == model_ref.vendor && m.model_id == model_ref.model_id)
+        .ok_or_else(|| format!("tier {tier:?} bound to unknown model {model_ref:?}"))?;
+    if !looks_like_ollama_base_url(&llm.base_url) {
+        return Err(format!(
+            "unsupported LLM provider shape for {model_ref:?}: base_url must point at an Ollama-compatible endpoint"
+        ));
+    }
+
+    let active_ref = cfg
+        .embedding
+        .active
+        .as_ref()
+        .ok_or_else(|| "missing active embedding model".to_string())?;
+    let embed = cfg
+        .embedding
+        .models
+        .iter()
+        .find(|m| m.vendor == active_ref.vendor && m.model_id == active_ref.model_id)
+        .ok_or_else(|| format!("active embedding points at unknown model {active_ref:?}"))?;
+    if !looks_like_ollama_base_url(&embed.base_url) {
+        return Err(format!(
+            "unsupported embedding provider shape for {active_ref:?}: base_url must point at an Ollama-compatible endpoint"
+        ));
+    }
+
+    let llm_client = OllamaLlmClient::new(
+        llm.model_id.clone(),
+        OllamaConfig {
+            base_url: llm.base_url.clone(),
+            ..OllamaConfig::default()
+        },
+    )
+    .map_err(|e| format!("could not construct Ollama LLM client for {model_ref:?}: {e}"))?;
+    let embed_dim = usize::try_from(embed.caps.dim)
+        .map_err(|_| format!("embedding dim out of range: {}", embed.caps.dim))?;
+    let embed_client = OllamaEmbeddingClient::new(
+        embed.model_id.clone(),
+        embed_dim,
+        OllamaConfig {
+            base_url: embed.base_url.clone(),
+            ..OllamaConfig::default()
+        },
+    )
+    .map_err(|e| {
+        format!("could not construct Ollama embedding client for {active_ref:?}: {e}")
+    })?;
+    Ok((llm_client, embed_client))
+}
+
+fn looks_like_ollama_base_url(base_url: &str) -> bool {
+    let lower = base_url.trim().to_ascii_lowercase();
+    (lower.starts_with("http://") || lower.starts_with("https://"))
+        && (lower.contains(":11434")
+            || lower.contains("localhost")
+            || lower.contains("127.0.0.1")
+            || lower.contains("ollama"))
 }
 
 #[tauri::command]
