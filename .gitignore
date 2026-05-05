@@ -6,8 +6,16 @@ vibe-home/
 .exactor.yml
 target/
 CLAUDE.md
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.log
 node_modules/
+.pnpm-store/
 dist/
 .vite/
+coverage/
+.turbo/
 .playwright-mcp/
 .plans/
