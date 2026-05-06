@@ -61,7 +61,7 @@ fn fresh_draft(owner: &Owner, request_id: String) -> GoalDraft {
         schema_id: SchemaId::new("test/goal_blob".into()),
         schema_version: SchemaVersion::new(1),
         text: "Test goal text".to_string(),
-        payload: Vec::new(),
+        payload: b"test goal payload".to_vec(),
         state: GoalState::Active,
         parent_goal_ids: vec![],
         supersedes_goal_id: None,
@@ -76,7 +76,7 @@ fn draft_with_parent(owner: &Owner, request_id: String, parent: GoalId) -> GoalD
         schema_id: SchemaId::new("test/goal_blob".into()),
         schema_version: SchemaVersion::new(1),
         text: "Test goal with parent".to_string(),
-        payload: Vec::new(),
+        payload: b"test child goal payload".to_vec(),
         state: GoalState::Active,
         parent_goal_ids: vec![parent],
         supersedes_goal_id: None,
@@ -119,6 +119,13 @@ async fn goal_write_writes_goal_and_change_event() {
         let outcome = engine.write_goal(&Credentials::None, draft.clone()).await?;
         assert!(!outcome.idempotent_replay);
 
+        let payload: Vec<u8> =
+            sqlx::query_scalar("SELECT payload FROM proxima_core.goals WHERE goal_id = $1")
+                .bind(outcome.goal_id.into_inner())
+                .fetch_one(pg.pool())
+                .await?;
+        assert_eq!(payload, draft.payload);
+
         // Idempotent replay with same request_id and body.
         let replay = engine.write_goal(&Credentials::None, draft.clone()).await?;
         assert!(replay.idempotent_replay);
@@ -129,6 +136,15 @@ async fn goal_write_writes_goal_and_change_event() {
         mutated.text = "Different text".to_string();
         let err = engine
             .write_goal(&Credentials::None, mutated)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, ErrorCode::IdempotencyConflict);
+
+        // Idempotency conflict: same request_id but different payload.
+        let mut mutated_payload = draft.clone();
+        mutated_payload.payload = b"different payload".to_vec();
+        let err = engine
+            .write_goal(&Credentials::None, mutated_payload)
             .await
             .unwrap_err();
         assert_eq!(err.code, ErrorCode::IdempotencyConflict);
@@ -201,7 +217,7 @@ async fn goal_supersede_writes_new_goal() {
             schema_id: SchemaId::new("test/goal_blob".into()),
             schema_version: SchemaVersion::new(1),
             text: "Updated goal text".to_string(),
-            payload: Vec::new(),
+            payload: b"updated goal payload".to_vec(),
             state: GoalState::Paused,
             parent_goal_ids: vec![],
             supersedes_goal_id: None,
@@ -223,6 +239,13 @@ async fn goal_supersede_writes_new_goal() {
                 .await?;
         assert_eq!(supersedes, Some(prior_goal_id.into_inner()));
 
+        let payload: Vec<u8> =
+            sqlx::query_scalar("SELECT payload FROM proxima_core.goals WHERE goal_id = $1")
+                .bind(supersede_outcome.goal_id.into_inner())
+                .fetch_one(pg.pool())
+                .await?;
+        assert_eq!(payload, supersede_draft.payload);
+
         // Idempotent replay of supersede.
         let replay = engine
             .supersede_goal(&Credentials::None, prior_goal_id, supersede_draft.clone())
@@ -230,17 +253,36 @@ async fn goal_supersede_writes_new_goal() {
         assert!(replay.idempotent_replay);
         assert_eq!(replay.goal_id, supersede_outcome.goal_id);
 
-        // Counts: 2 goals, 2 change_event rows.
+        let direct_prior = engine
+            .write_goal(
+                &Credentials::None,
+                fresh_draft(&owner, "req-direct-prior".to_string()),
+            )
+            .await?;
+        let mut direct_draft = fresh_draft(&owner, "req-direct-supersede".to_string());
+        direct_draft.text = "Direct supersede".to_string();
+        direct_draft.supersedes_goal_id = Some(direct_prior.goal_id);
+        let direct = engine
+            .write_goal(&Credentials::None, direct_draft.clone())
+            .await?;
+        let direct_supersedes: Option<Uuid> =
+            sqlx::query_scalar("SELECT supersedes FROM proxima_core.goals WHERE goal_id = $1")
+                .bind(direct.goal_id.into_inner())
+                .fetch_one(pg.pool())
+                .await?;
+        assert_eq!(direct_supersedes, Some(direct_prior.goal_id.into_inner()));
+
+        // Counts: explicit supersede path + direct draft.supersedes_goal_id path.
         let goals: (i64,) = sqlx::query_as("SELECT count(*)::bigint FROM proxima_core.goals")
             .fetch_one(pg.pool())
             .await?;
-        assert_eq!(goals.0, 2);
+        assert_eq!(goals.0, 4);
 
         let change: (i64,) =
             sqlx::query_as("SELECT count(*)::bigint FROM proxima_core.change_event")
                 .fetch_one(pg.pool())
                 .await?;
-        assert_eq!(change.0, 2);
+        assert_eq!(change.0, 4);
 
         Ok(())
     }
