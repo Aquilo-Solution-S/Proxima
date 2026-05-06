@@ -22,10 +22,14 @@ import {
 } from "../bindings";
 import { EventStream } from "./surface-events";
 import { GoalDialog } from "./goal-dialog";
+import { VirtualList } from "./virtual-list";
 
 const GOAL_RAIL_DEFAULT_WIDTH = 280;
 const GOAL_RAIL_MIN_WIDTH = 220;
 const GOAL_RAIL_MAX_WIDTH = 560;
+const EVENT_RAIL_DEFAULT_WIDTH = 360;
+const EVENT_RAIL_MIN_WIDTH = 220;
+const EVENT_RAIL_MAX_WIDTH = 560;
 const SURFACE_CENTER_MIN_WIDTH = 300;
 const RAIL_COLLAPSED_WIDTH = 48;
 
@@ -363,33 +367,42 @@ const MemoryExplorer: Component<{
 
   return (
     <div class="memory-explorer">
-      <div class="fact-list" role="listbox" aria-label={props.label}>
-        <For each={props.memories}>
-          {(memory) => (
-            <button
-              type="button"
-              classList={{
-                "fact-list-item": true,
-                "is-selected": selectedMemory()?.row.id === memory.row.id,
-              }}
-              role="option"
-              aria-selected={selectedMemory()?.row.id === memory.row.id}
-              title={memory.row.schema_id}
-              onClick={() => setSelectedId(memory.row.id)}
-            >
-              <span class="fact-list-glyph" aria-hidden="true">
-                {props.glyph}
+      <VirtualList
+        class="fact-list"
+        role="listbox"
+        ariaLabel={props.label}
+        items={props.memories}
+        itemKey={(memory) => memory.row.id}
+        estimateSize={66}
+        gap={6}
+      >
+        {(memory) => (
+          <button
+            type="button"
+            classList={{
+              "fact-list-item": true,
+              "is-selected": selectedMemory()?.row.id === memory.row.id,
+            }}
+            role="option"
+            aria-selected={selectedMemory()?.row.id === memory.row.id}
+            title={memory.row.schema_id}
+            onPointerDown={(event) => {
+              if (event.button === 0) setSelectedId(memory.row.id);
+            }}
+            onClick={() => setSelectedId(memory.row.id)}
+          >
+            <span class="fact-list-glyph" aria-hidden="true">
+              {props.glyph}
+            </span>
+            <span class="fact-list-copy">
+              <span class="fact-list-schema">{memory.row.schema_id}</span>
+              <span class="fact-list-meta">
+                {shortId(memory.row.id)} · {memory.row.payload.length} bytes
               </span>
-              <span class="fact-list-copy">
-                <span class="fact-list-schema">{memory.row.schema_id}</span>
-                <span class="fact-list-meta">
-                  {shortId(memory.row.id)} · {memory.row.payload.length} bytes
-                </span>
-              </span>
-            </button>
-          )}
-        </For>
-      </div>
+            </span>
+          </button>
+        )}
+      </VirtualList>
 
       <Show keyed when={selectedMemory()}>
         {(memory) => {
@@ -506,14 +519,23 @@ const TraversalLanes: Component<{ hub: Hub; memories: DecodedMemory[] }> = (
           onToggle={() => setPerspectivesCollapsed((v) => !v)}
         />
         <Show when={!perspectivesCollapsed()}>
-          <div id="surface-perspectives-content" class="lane-content">
+          <div
+            id="surface-perspectives-content"
+            class="lane-content lane-content-virtual"
+          >
             <Show
               when={perspectives().length > 0}
               fallback={<p class="proxima-dim">No perspectives</p>}
             >
-              <For each={perspectives()}>
+              <VirtualList
+                class="lane-card-list"
+                items={perspectives()}
+                itemKey={(memory) => memory.row.id}
+                estimateSize={180}
+                gap={14}
+              >
                 {(memory) => <MemoryCard memory={memory} hub={props.hub} />}
-              </For>
+              </VirtualList>
             </Show>
           </div>
         </Show>
@@ -631,7 +653,9 @@ export const FullSurface: Component<{ hub: Hub }> = (props) => {
   const [goalsCollapsed, setGoalsCollapsed] = createSignal(true);
   const [eventsCollapsed, setEventsCollapsed] = createSignal(true);
   const [goalRailWidth, setGoalRailWidth] = createSignal(GOAL_RAIL_DEFAULT_WIDTH);
+  const [eventRailWidth, setEventRailWidth] = createSignal(EVENT_RAIL_DEFAULT_WIDTH);
   const [resizingGoals, setResizingGoals] = createSignal(false);
+  const [resizingEvents, setResizingEvents] = createSignal(false);
   const filtered = createMemo(() =>
     filterGraphSnapshot(graph.state(), filters.state(), props.hub),
   );
@@ -646,26 +670,38 @@ export const FullSurface: Component<{ hub: Hub }> = (props) => {
   >(null);
   let surfaceRef!: HTMLDivElement;
   let stopGoalResize: (() => void) | null = null;
+  let stopEventResize: (() => void) | null = null;
 
   const surfaceBodyWidth = (): number =>
     surfaceRef === undefined || surfaceRef.clientWidth <= 0
       ? 1180
       : surfaceRef.clientWidth;
 
-  const eventRailWidth = (): number => {
-    if (eventsCollapsed()) return RAIL_COLLAPSED_WIDTH;
-    const bodyWidth = surfaceBodyWidth();
-    return Math.min(Math.max(bodyWidth * 0.32, 220), 380);
-  };
+  const activeGoalRailWidth = (): number =>
+    goalsCollapsed() ? RAIL_COLLAPSED_WIDTH : goalRailWidth();
+
+  const activeEventRailWidth = (): number =>
+    eventsCollapsed() ? RAIL_COLLAPSED_WIDTH : eventRailWidth();
 
   const clampGoalRailWidth = (width: number): number => {
     const maxByBody = Math.max(
       GOAL_RAIL_MIN_WIDTH,
-      surfaceBodyWidth() - eventRailWidth() - SURFACE_CENTER_MIN_WIDTH - 2,
+      surfaceBodyWidth() - activeEventRailWidth() - SURFACE_CENTER_MIN_WIDTH - 2,
     );
     return Math.max(
       GOAL_RAIL_MIN_WIDTH,
       Math.min(width, GOAL_RAIL_MAX_WIDTH, maxByBody),
+    );
+  };
+
+  const clampEventRailWidth = (width: number): number => {
+    const maxByBody = Math.max(
+      EVENT_RAIL_MIN_WIDTH,
+      surfaceBodyWidth() - activeGoalRailWidth() - SURFACE_CENTER_MIN_WIDTH - 2,
+    );
+    return Math.max(
+      EVENT_RAIL_MIN_WIDTH,
+      Math.min(width, EVENT_RAIL_MAX_WIDTH, maxByBody),
     );
   };
 
@@ -709,6 +745,46 @@ export const FullSurface: Component<{ hub: Hub }> = (props) => {
     window.addEventListener("pointerup", onPointerUp);
   };
 
+  const startEventResize = (event: PointerEvent) => {
+    if (event.button !== 0 || eventsCollapsed()) return;
+    event.preventDefault();
+    stopEventResize?.();
+
+    const startX = event.clientX;
+    const rail = (event.currentTarget as HTMLElement).closest(".event-stream");
+    const measuredWidth = rail instanceof HTMLElement
+      ? rail.getBoundingClientRect().width
+      : 0;
+    const startWidth = measuredWidth > 0 ? measuredWidth : eventRailWidth();
+    const previousCursor = document.body.style.cursor;
+    const previousUserSelect = document.body.style.userSelect;
+
+    setResizingEvents(true);
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+
+    const onPointerMove = (moveEvent: PointerEvent) => {
+      setEventRailWidth(
+        clampEventRailWidth(startWidth - (moveEvent.clientX - startX)),
+      );
+    };
+    const onPointerUp = () => {
+      stopEventResize?.();
+    };
+
+    stopEventResize = () => {
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+      document.body.style.cursor = previousCursor;
+      document.body.style.userSelect = previousUserSelect;
+      setResizingEvents(false);
+      stopEventResize = null;
+    };
+
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp);
+  };
+
   const resizeGoalRailByKey = (event: KeyboardEvent) => {
     if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
     event.preventDefault();
@@ -719,20 +795,32 @@ export const FullSurface: Component<{ hub: Hub }> = (props) => {
     );
   };
 
+  const resizeEventRailByKey = (event: KeyboardEvent) => {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    event.preventDefault();
+    const direction = event.key === "ArrowLeft" ? 1 : -1;
+    const step = event.shiftKey ? 40 : 16;
+    setEventRailWidth((width) =>
+      clampEventRailWidth(width + direction * step)
+    );
+  };
+
   onCleanup(() => {
     stopGoalResize?.();
+    stopEventResize?.();
   });
 
   return (
     <div class="proxima-shell">
       <div
         ref={surfaceRef}
-        style={`--surface-goal-width: ${goalRailWidth()}px`}
+        style={`--surface-goal-width: ${goalRailWidth()}px; --surface-event-width: ${eventRailWidth()}px`}
         classList={{
           "surface-body": true,
           "is-goals-collapsed": goalsCollapsed(),
           "is-events-collapsed": eventsCollapsed(),
           "is-resizing-goals": resizingGoals(),
+          "is-resizing-events": resizingEvents(),
         }}
       >
         <GoalRail
@@ -752,6 +840,9 @@ export const FullSurface: Component<{ hub: Hub }> = (props) => {
         <TraversalLanes hub={props.hub} memories={memories()} />
         <EventStream
           collapsed={eventsCollapsed()}
+          width={eventRailWidth()}
+          onResizeStart={startEventResize}
+          onResizeKeyDown={resizeEventRailByKey}
           events={events()}
           hub={props.hub}
           onToggle={() => setEventsCollapsed((v) => !v)}

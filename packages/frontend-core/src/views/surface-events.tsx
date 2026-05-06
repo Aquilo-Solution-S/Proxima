@@ -1,8 +1,9 @@
-import { For, Show, createSignal, type Component, type JSX } from "solid-js";
+import { Show, createSignal, type Component, type JSX } from "solid-js";
 import type { ChangeEvent, EdgeRow, EntityRef, GoalRow } from "../bindings";
 import { useGraph, type DecodedMemory } from "../graph-store";
 import type { Hub } from "../hub";
 import { Mono, SchemaTag } from "../primitives";
+import { VirtualList } from "./virtual-list";
 
 const shortId = (id: string): string => id.slice(0, 8);
 
@@ -243,6 +244,9 @@ const EventRow: Component<{
 export const EventStream: Component<{
   collapsed: boolean;
   onToggle: () => void;
+  width: number;
+  onResizeStart: JSX.EventHandlerUnion<HTMLDivElement, PointerEvent>;
+  onResizeKeyDown: JSX.EventHandlerUnion<HTMLDivElement, KeyboardEvent>;
   events: readonly ChangeEvent[];
   hub: Hub;
 }> = (props) => {
@@ -271,6 +275,18 @@ export const EventStream: Component<{
           </button>
         }
       >
+        <div
+          class="event-stream-resize-handle"
+          role="separator"
+          aria-label="Resize Event stream"
+          aria-orientation="vertical"
+          aria-valuemin={220}
+          aria-valuemax={560}
+          aria-valuenow={props.width}
+          tabIndex={0}
+          onPointerDown={props.onResizeStart}
+          onKeyDown={props.onResizeKeyDown}
+        />
         <div class="stream-head">
           <div class="rail-head-copy">
             <span class="rail-title">Event stream</span>
@@ -288,30 +304,34 @@ export const EventStream: Component<{
             <span class="rail-collapse-icon is-right" aria-hidden="true" />
           </button>
         </div>
-        <div class="stream-list">
-          <Show
-            when={props.events.length > 0}
-            fallback={<p class="proxima-dim surface-empty">No events</p>}
+        <Show
+          when={props.events.length > 0}
+          fallback={<p class="proxima-dim surface-empty">No events</p>}
+        >
+          <VirtualList
+            class="stream-list"
+            items={props.events}
+            itemKey={(event) => event.seq}
+            estimateSize={56}
+            overscan={14}
           >
-            <For each={props.events}>
-              {(event) => (
-                <EventRow
-                  event={event}
-                  expanded={expandedSeq() === event.seq}
-                  onToggle={() =>
-                    setExpandedSeq((current) =>
-                      current === event.seq ? null : event.seq,
-                    )
-                  }
-                  hub={props.hub}
-                  memoriesById={graph.state().memoriesById}
-                  goalsById={graph.state().goalsById}
-                  edgesById={graph.state().edgesById}
-                />
-              )}
-            </For>
-          </Show>
-        </div>
+            {(event) => (
+              <EventRow
+                event={event}
+                expanded={expandedSeq() === event.seq}
+                onToggle={() =>
+                  setExpandedSeq((current) =>
+                    current === event.seq ? null : event.seq,
+                  )
+                }
+                hub={props.hub}
+                memoriesById={graph.state().memoriesById}
+                goalsById={graph.state().goalsById}
+                edgesById={graph.state().edgesById}
+              />
+            )}
+          </VirtualList>
+        </Show>
       </Show>
     </aside>
   );

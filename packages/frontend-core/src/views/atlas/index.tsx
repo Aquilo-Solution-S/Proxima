@@ -70,7 +70,7 @@ export const Atlas: Component<{
     const id = hoverId();
     return id ? byId().get(id) ?? null : null;
   };
-  const focusNode = () => hoverNode() ?? pickedNode();
+  const focusNode = () => pickedNode() ?? hoverNode();
   const canGoBack = () => pickHistoryIndex() > 0;
   const canGoForward = () => {
     const index = pickHistoryIndex();
@@ -85,6 +85,13 @@ export const Atlas: Component<{
     setPickHistory(next);
     setPickHistoryIndex(next.length - 1);
     setPickedId(id);
+    setHoverId(null);
+  }
+
+  function clearPick() {
+    if (pickedId() === null) return;
+    setPickedId(null);
+    setHoverId(null);
   }
 
   function goPickHistory(delta: -1 | 1) {
@@ -232,7 +239,7 @@ export const Atlas: Component<{
   const edgeLines = new Map<string, THREE.Line>();
 
   const adj = createMemo(() => buildAdjacency(edges()));
-  const focusId = () => hoverId() ?? pickedId();
+  const focusId = () => pickedId() ?? hoverId();
   const chain = createMemo<Chain>(() => {
     const id = focusId();
     if (!id) return { nodes: new Set(), edges: new Set() };
@@ -290,6 +297,14 @@ export const Atlas: Component<{
     }
 
     function onPointerMove(ev: PointerEvent) {
+      if (pickedId() !== null) {
+        if (lastHover !== null) {
+          lastHover = null;
+          setHoverId(null);
+        }
+        idleSince = performance.now();
+        return;
+      }
       const id = pickFrom(ev);
       if (id !== lastHover) {
         lastHover = id;
@@ -300,6 +315,7 @@ export const Atlas: Component<{
     function onClick(ev: MouseEvent) {
       const id = pickFrom(ev as unknown as PointerEvent);
       if (id) pickNode(id);
+      else clearPick();
     }
     renderer.domElement.addEventListener("pointermove", onPointerMove);
     renderer.domElement.addEventListener("click", onClick);
@@ -436,6 +452,9 @@ export const Atlas: Component<{
       } else if (wantsForward && canGoForward()) {
         event.preventDefault();
         goPickHistory(1);
+      } else if (event.key === "Escape" && pickedId() !== null) {
+        event.preventDefault();
+        clearPick();
       }
     }
     window.addEventListener("keydown", onKeyDown);

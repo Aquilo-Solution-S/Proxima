@@ -240,6 +240,53 @@ describe("FullSurface fact explorer", () => {
     expect(screen.queryByText("src/lib.rs")).toBeNull();
   });
 
+  it("selects virtualized fact rows on pointer down before click", async () => {
+    const hub = createHubWithCode();
+    const factA = row("019df9e1-cb61-7031-8e93-6facbe711cb8", "proxima-code/file-revision-v1", {
+      repo_id: "018f0000-0000-7000-8000-000000000001",
+      file_path: "src/initial.rs",
+      language: "Rust",
+      content_sha256: new Uint8Array(32).fill(1),
+      size_bytes: 194,
+      indexed_commit_sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      state: "Present",
+    });
+    const factB = row("019df9e1-cb61-7031-8e93-6facbe711cb9", "proxima-code/code-chunk-v1", {
+      repo_id: "018f0000-0000-7000-8000-000000000001",
+      file_path: "src/pointer.rs",
+      chunk_index: 3,
+      text: "fn pointer_selected() {}",
+      language: "Rust",
+      chunk_type: "function",
+      byte_range_start: 10,
+      byte_range_end: 32,
+      line_range_start: 11,
+      line_range_end: 12,
+      state: "Present",
+    });
+    const store: GraphStore = {
+      state: () => snapshot([factA, factB]),
+      refresh: () => Promise.resolve(),
+    };
+
+    render(() => (
+      <GraphProvider store={store}>
+        <GraphFilterProvider store={createGraphFilterStore()}>
+          <FullSurface hub={hub} />
+        </GraphFilterProvider>
+      </GraphProvider>
+    ));
+
+    expect(screen.getByText("src/initial.rs")).toBeTruthy();
+
+    fireEvent.pointerDown(screen.getByTitle("proxima-code/code-chunk-v1"), {
+      button: 0,
+    });
+
+    expect(await screen.findByText("src/pointer.rs:11-12")).toBeTruthy();
+    expect(screen.queryByText("src/initial.rs")).toBeNull();
+  });
+
   it("updates decoded payload content when selecting another abstraction", async () => {
     const hub = createHubWithCode();
     const abstractionA = row(
@@ -441,6 +488,110 @@ describe("FullSurface fact explorer", () => {
     ).toBeGreaterThan(1);
     expect(screen.getAllByText(fact.id).length).toBeGreaterThan(1);
     expect(screen.getAllByText("src/event.rs:4-5").length).toBeGreaterThan(1);
+  });
+
+  it("virtualizes long fact lists in the Surface lanes", () => {
+    const hub = createHubWithCode();
+    const facts = Array.from({ length: 5000 }, (_, index) => {
+      const suffix = index.toString().padStart(12, "0");
+      return row(`019dfa37-0000-7000-8000-${suffix}`, "proxima-code/code-chunk-v1", {
+        repo_id: "018f0000-0000-7000-8000-000000000001",
+        file_path: `src/file-${index.toString().padStart(4, "0")}.rs`,
+        chunk_index: index,
+        text: `fn chunk_${index}() {}`,
+        language: "Rust",
+        chunk_type: "function",
+        byte_range_start: index,
+        byte_range_end: index + 1,
+        line_range_start: 1,
+        line_range_end: 1,
+        state: "Present",
+      });
+    });
+    const memoriesById = new Map(
+      facts.map((memory, index) => [
+        memory.id,
+        {
+          row: memory,
+          payload: {
+            file_path: `src/file-${index.toString().padStart(4, "0")}.rs`,
+            line_range_start: 1,
+            line_range_end: 1,
+            text: `fn chunk_${index}() {}`,
+          },
+        },
+      ]),
+    );
+    const store: GraphStore = {
+      state: () => ({
+        ...snapshot([]),
+        memoriesById,
+      }),
+      refresh: () => Promise.resolve(),
+    };
+
+    render(() => (
+      <GraphProvider store={store}>
+        <GraphFilterProvider store={createGraphFilterStore()}>
+          <FullSurface hub={hub} />
+        </GraphFilterProvider>
+      </GraphProvider>
+    ));
+
+    expect(document.querySelectorAll(".fact-list-item").length).toBeGreaterThan(0);
+    expect(document.querySelectorAll(".fact-list-item").length).toBeLessThan(100);
+    expect(screen.getByText("src/file-0000.rs:1-1")).toBeTruthy();
+  });
+
+  it("virtualizes long Event stream lists", () => {
+    const hub = createHub([]);
+    const events = Array.from({ length: 5000 }, (_, index) =>
+      event(`019dfa38-0000-7000-8000-${index.toString().padStart(12, "0")}`),
+    );
+    const store: GraphStore = {
+      state: () => snapshot([], events),
+      refresh: () => Promise.resolve(),
+    };
+
+    render(() => (
+      <GraphProvider store={store}>
+        <GraphFilterProvider store={createGraphFilterStore()}>
+          <FullSurface hub={hub} />
+        </GraphFilterProvider>
+      </GraphProvider>
+    ));
+
+    fireEvent.click(screen.getByRole("button", { name: "Expand Event stream" }));
+
+    expect(eventRows().length).toBeGreaterThan(0);
+    expect(eventRows().length).toBeLessThan(100);
+    expect(eventRows()[0]?.textContent).toContain("019dfa38");
+  });
+
+  it("resizes the Event stream rail from the left-edge separator", () => {
+    const hub = createHub([]);
+    const store: GraphStore = {
+      state: () => snapshot([]),
+      refresh: () => Promise.resolve(),
+    };
+
+    render(() => (
+      <GraphProvider store={store}>
+        <GraphFilterProvider store={createGraphFilterStore()}>
+          <FullSurface hub={hub} />
+        </GraphFilterProvider>
+      </GraphProvider>
+    ));
+
+    fireEvent.click(screen.getByRole("button", { name: "Expand Event stream" }));
+    const surface = document.querySelector(".surface-body") as HTMLElement;
+    const separator = screen.getByRole("separator", { name: "Resize Event stream" });
+
+    fireEvent.pointerDown(separator, { button: 0, clientX: 900 });
+    fireEvent.pointerMove(window, { clientX: 820 });
+    fireEvent.pointerUp(window);
+
+    expect(surface.getAttribute("style")).toContain("--surface-event-width: 440px");
   });
 
   it("renders historical events before any live append", async () => {
