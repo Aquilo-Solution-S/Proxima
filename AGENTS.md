@@ -74,6 +74,27 @@ Use the smallest relevant check:
 Frontend dev server: `pnpm --filter proxima-shell dev --host 127.0.0.1`.
 If port `1420` is occupied, Vite will choose another port.
 
+## MCP — engine query surface for agents
+
+While `proxima-shell` runs, the engine exposes a Streamable HTTP MCP
+server (default `http://localhost:31415/mcp`). Headless:
+`cargo run -p proxima-mcp`. Client config and port override:
+[README §Connecting Your Coding Agent To Proxima](README.md#connecting-your-coding-agent-to-proxima).
+
+Tools available to attached agents:
+
+| Tier | Tools |
+|---|---|
+| Substrate (always) | `proxima_search_graph`, `proxima_open`, `proxima_remember`, `proxima_derive`, `proxima_link` |
+| Code flavor | `code_search_chunks`, `code_search_commits`, `code_open_file_revision` |
+
+Proxima self-ingests its own commits and chunks, so the graph holds
+this repo's causal chain. Prefer MCP queries over re-greppping when
+investigating commit or chunk history; use `proxima_remember` /
+`proxima_derive` / `proxima_link` to write findings back as
+agent-authored Facts / Abstractions / edges (subject to invariants
+below). Composite-binary tool sets are flavor-registered per 13.
+
 ## Invariants — must not violate
 
 Each rule is a one-liner pointer to its source-of-truth section.
