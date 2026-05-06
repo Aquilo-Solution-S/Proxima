@@ -8,6 +8,7 @@ pub mod close_batch;
 pub mod consolidate;
 pub mod derive_append;
 pub mod edge_append;
+pub(crate) mod event_history;
 pub mod event_ingest;
 pub(crate) mod goal_write;
 pub(crate) mod query;

@@ -15,6 +15,7 @@ use proxima_core::operators::{
     ConsolidateBatchF2AOutcome, ConsolidateBatchF2ARequest, F2AInvocationKey, FactRow, SidecarSpec,
 };
 use proxima_core::verbs::close_batch::CloseBatchOutcome;
+use proxima_core::verbs::event_history::{EventHistoryRequest, EventHistoryResponse};
 use proxima_core::verbs::event_ingest::{EventDraft, EventIngestOutcome};
 use proxima_core::verbs::goal_write::{GoalDraft, GoalWriteOutcome};
 use proxima_core::verbs::query::{QueryRequest, QueryResponse};
@@ -191,6 +192,13 @@ impl Storage for PgStorage {
         since: Option<uuid::Uuid>,
     ) -> Result<ChangeEventStream, StorageError> {
         verbs::subscribe::subscribe_changes(&self.pool, &self.tx, owner, since).await
+    }
+
+    async fn event_history(
+        &self,
+        req: &EventHistoryRequest,
+    ) -> Result<EventHistoryResponse, StorageError> {
+        verbs::event_history::event_history(&self.pool, req).await
     }
 
     async fn query_memories(
