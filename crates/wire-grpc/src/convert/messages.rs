@@ -268,6 +268,37 @@ pub fn subscribe_request_from_proto(
 }
 
 // ---------------------------------------------------------------------------
+// Request/Response for EventHistory
+// ---------------------------------------------------------------------------
+
+pub fn event_history_request_from_proto(
+    pb: pb::EventHistoryRequest,
+) -> Result<proxima_core::verbs::event_history::EventHistoryRequest, Status> {
+    Ok(proxima_core::verbs::event_history::EventHistoryRequest {
+        owner: owner_from_proto(
+            pb.owner
+                .ok_or_else(|| Status::invalid_argument("missing owner"))?,
+        )?,
+        limit: pb.limit,
+        before: pb.before.map(|s| uuid_from_proto(&s)).transpose()?,
+    })
+}
+
+pub fn event_history_response_to_proto(
+    resp: &proxima_core::verbs::event_history::EventHistoryResponse,
+) -> Result<pb::EventHistoryResponse, Status> {
+    let events = resp
+        .events
+        .iter()
+        .map(change_event_to_proto)
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(pb::EventHistoryResponse {
+        events,
+        seq_high_water: resp.seq_high_water.map(uuid_to_proto),
+    })
+}
+
+// ---------------------------------------------------------------------------
 // Request/Response for GoalWrite
 // ---------------------------------------------------------------------------
 

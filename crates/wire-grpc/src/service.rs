@@ -13,14 +13,16 @@ use proxima_core::Engine;
 use proxima_core::auth::Credentials;
 
 use crate::convert::{
-    change_event_to_proto, event_ingest_request_from_proto, event_ingest_response_to_proto,
-    goal_write_request_from_proto, goal_write_response_to_proto, protocol_error_to_status,
-    query_request_from_proto, query_response_to_proto, schema_request_from_proto,
-    schema_response_to_proto, subscribe_request_from_proto,
+    change_event_to_proto, event_history_request_from_proto, event_history_response_to_proto,
+    event_ingest_request_from_proto, event_ingest_response_to_proto, goal_write_request_from_proto,
+    goal_write_response_to_proto, protocol_error_to_status, query_request_from_proto,
+    query_response_to_proto, schema_request_from_proto, schema_response_to_proto,
+    subscribe_request_from_proto,
 };
 use crate::pb::{
-    ChangeEvent, EventIngestRequest, EventIngestResponse, GoalWriteRequest, GoalWriteResponse,
-    QueryRequest, QueryResponse, SchemaRequest, SchemaResponse, SubscribeRequest,
+    ChangeEvent, EventHistoryRequest, EventHistoryResponse, EventIngestRequest,
+    EventIngestResponse, GoalWriteRequest, GoalWriteResponse, QueryRequest, QueryResponse,
+    SchemaRequest, SchemaResponse, SubscribeRequest,
     engine_server::Engine as EngineTrait,
 };
 
@@ -101,6 +103,19 @@ impl EngineTrait for EngineGrpcServer {
             .await
             .map_err(protocol_error_to_status)?;
         Ok(Response::new(goal_write_response_to_proto(&response)))
+    }
+
+    async fn event_history(
+        &self,
+        request: Request<EventHistoryRequest>,
+    ) -> Result<Response<EventHistoryResponse>, Status> {
+        let req = event_history_request_from_proto(request.into_inner())?;
+        let response = self
+            .engine
+            .event_history(&Credentials::None, &req)
+            .await
+            .map_err(protocol_error_to_status)?;
+        event_history_response_to_proto(&response).map(Response::new)
     }
 
     async fn event_ingest(

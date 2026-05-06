@@ -1,6 +1,6 @@
 // Proxima — engine service surface.
 //
-// The five verbs of docs/14, mapped to gRPC methods over Connect-RPC
+// The six verbs of docs/14, mapped to gRPC methods over Connect-RPC
 // (docs/09 §Transport). Auth credentials ride in HTTP headers
 // (`Authorization: Bearer ...` for OIDC, source-specific headers for
 // webhook EventSources); the message bodies below carry no
@@ -29,6 +29,12 @@ service Engine {
   // Owner. Identity-only on hot path — payload is fetched via a
   // follow-up Query (docs/14 §Subscribe).
   rpc Subscribe (SubscribeRequest) returns (stream ChangeEvent);
+
+  // Owner-scoped bounded read of the change-event log, newest-first.
+  // Idempotent. Clients use `seq_high_water` from the response (or
+  // from a parallel `Query`) as the `since` cursor for a follow-up
+  // Subscribe (docs/14 §"Cold-start stitching with history seed").
+  rpc EventHistory (EventHistoryRequest) returns (EventHistoryResponse);
 
   // Goal write (create or supersede). Idempotent by `request_id`.
   rpc GoalWrite (GoalWriteRequest) returns (GoalWriteResponse);
@@ -112,6 +118,26 @@ message SubscribeRequest {
 }
 
 // (Stream element type is `ChangeEvent` from messages.proto.)
+
+// ---------------------------------------------------------------------------
+// EventHistory
+// ---------------------------------------------------------------------------
+
+message EventHistoryRequest {
+  Owner owner                       = 1;
+  // 1..=1000. Server clamps; 0 is rejected as INVALID.
+  uint32 limit                      = 2;
+  // Cursor: server returns events with `seq < before`. Absent =
+  // "from the latest event backwards".
+  optional string before            = 3;  // Uuid7 textual
+}
+
+message EventHistoryResponse {
+  // Newest-first.
+  repeated ChangeEvent events       = 1;
+  // Latest seq in the owner's change_event log at read time.
+  optional string seq_high_water    = 2;  // Uuid7 textual
+}
 
 // ---------------------------------------------------------------------------
 // GoalWrite
