@@ -28,5 +28,6 @@ pub fn build_engine_with(
 ) -> Engine {
     use proxima_core::verbs::query::MemoryStore;
 
-    Engine::new(schema_registry_with(extra), MemoryStore::new(), auth).with_storage(Arc::new(storage))
+    Engine::new(schema_registry_with(extra), MemoryStore::new(), auth)
+        .with_storage(Arc::new(storage))
 }

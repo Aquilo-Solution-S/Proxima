@@ -19,30 +19,26 @@ use async_trait::async_trait;
 use time::OffsetDateTime;
 
 use crate::{
-    LlmCaps, MemoryId, ModelTier, Owner, PersonalityId, PersonalityStateHash, RegisteredRelation,
-    SchemaId, SchemaVersion, SourceBatchId,
+    LlmCaps, MemoryId, ModelTier, Owner, PersonalityId, RegisteredRelation, SchemaId,
+    SchemaVersion, SourceBatchId,
 };
 
-/// Personality state captured at operator-invocation start (docs/04
-/// §"Personality state"). M5 pins a constant default snapshot since
-/// the Personality flavor is post-M7; the schema columns
-/// (`personality_id`, `personality_state_hash` on `proxima_core.memories`)
-/// are populated with these values.
+/// Personality identity captured at operator-invocation start (docs/04
+/// §"Personality identity"). Personality evolution is represented by
+/// registering a new `personality_id`.
 #[derive(Debug, Clone)]
 pub struct PersonalitySnapshot {
     pub personality_id: PersonalityId,
-    pub state_hash: PersonalityStateHash,
     pub captured_at: OffsetDateTime,
 }
 
 impl PersonalitySnapshot {
     /// Default snapshot used until Personality flavor lands.
-    /// `personality_id = "default"`, `state_hash = [0; 32]`.
+    /// `personality_id = "default"`.
     #[must_use]
     pub fn default_snapshot() -> Self {
         Self {
             personality_id: PersonalityId::new("default"),
-            state_hash: PersonalityStateHash::new([0; 32]),
             captured_at: OffsetDateTime::now_utc(),
         }
     }
@@ -323,7 +319,6 @@ pub struct F2AInvocationKey<'a> {
     pub prompt_version: &'a str,
     pub model_id: &'a str,
     pub personality_id: &'a str,
-    pub personality_state_hash: &'a [u8],
 }
 
 /// Full idempotency key for one A→P invocation.
@@ -333,7 +328,6 @@ pub struct A2PInvocationKey<'a> {
     pub prompt_version: &'a str,
     pub model_id: &'a str,
     pub personality_id: &'a str,
-    pub personality_state_hash: &'a [u8],
     pub context_hash: &'a [u8],
     pub input_hash: &'a [u8],
 }
@@ -346,7 +340,6 @@ pub struct A2PLineageKey<'a> {
     pub prompt_version: &'a str,
     pub model_id: &'a str,
     pub personality_id: &'a str,
-    pub personality_state_hash: &'a [u8],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

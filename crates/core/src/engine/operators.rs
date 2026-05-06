@@ -37,7 +37,6 @@ impl Engine {
             return Ok(consolidated);
         }
         let personality = PersonalitySnapshot::default_snapshot();
-        let personality_state_hash = personality.state_hash.into_inner();
 
         // Snapshot the per-operator pending list — we don't mutate
         // mid-iteration.
@@ -57,7 +56,6 @@ impl Engine {
                 prompt_version: op.prompt_version(),
                 model_id: llm.model_id(),
                 personality_id: personality.personality_id.as_str(),
-                personality_state_hash: &personality_state_hash,
             };
             let batches = self
                 .storage
@@ -364,14 +362,12 @@ impl Engine {
         let context_hash = *blake3::hash(context_json.as_bytes()).as_bytes();
         let input_ids: Vec<MemoryId> = filtered.iter().map(|a| a.memory_id).collect();
         let input_hash = a2p_input_hash(&input_ids);
-        let personality_state_hash = personality.state_hash.into_inner();
 
         let key = A2PInvocationKey {
             operator_id: op.operator_id(),
             prompt_version: op.prompt_version(),
             model_id: llm.model_id(),
             personality_id: personality.personality_id.as_str(),
-            personality_state_hash: &personality_state_hash,
             context_hash: &context_hash,
             input_hash: &input_hash,
         };
@@ -389,7 +385,6 @@ impl Engine {
             prompt_version: op.prompt_version(),
             model_id: llm.model_id(),
             personality_id: personality.personality_id.as_str(),
-            personality_state_hash: &personality_state_hash,
         };
         let prior_head = self
             .storage

@@ -16,10 +16,10 @@ async fn external_agent_operator_kind_is_admitted() -> Result<(), Box<dyn std::e
             "INSERT INTO proxima_core.memories
                 (memory_id, owner_principal_kind, owner_principal_id, owner_org_id,
                  schema_id, schema_version, kind, text, operator_kind, model_id,
-                 prompt_version, personality_id, personality_state_hash)
+                 prompt_version, personality_id)
              VALUES ($1, 'User', $2, $3, 'proxima-mcp/agent-derivation-v1', 1,
                      'Abstraction', 'body', 'ExternalAgent', 'claude-opus-4.7',
-                     'mcp-agent-v1', 'external/mcp-agent', $4)",
+                     'mcp-agent-v1', 'external/mcp-agent')",
         )
         .bind(memory_id)
         .bind(match owner.principal {
@@ -27,7 +27,6 @@ async fn external_agent_operator_kind_is_admitted() -> Result<(), Box<dyn std::e
             proxima_core::Principal::Group(g) => g.into_inner(),
         })
         .bind(owner.org_id.into_inner())
-        .bind(&[0u8; 32][..])
         .execute(pg.pool())
         .await?;
         Ok(())

@@ -25,7 +25,7 @@ use proxima_core::verbs::schema::{SchemaRegistry, SchemaRequest};
 use proxima_core::verbs::subscribe::ChangeEventStream;
 use proxima_core::{
     AbstractionPayload, FactPayload, FlavorRegistry, GoalId, MemoryId, ModelTier, PersonalityId,
-    PersonalityStateHash, PerspectivePayload, SchemaId, SchemaVersion, SourceBatchId,
+    PerspectivePayload, SchemaId, SchemaVersion, SourceBatchId,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -469,7 +469,6 @@ impl PersonalityFlavor for TestPersonality {
     ) -> Result<PersonalitySnapshot, proxima_core::error::ProtocolError> {
         Ok(PersonalitySnapshot {
             personality_id: PersonalityId::new("test/personality"),
-            state_hash: PersonalityStateHash::new([7u8; 32]),
             captured_at: OffsetDateTime::now_utc(),
         })
     }

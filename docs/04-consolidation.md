@@ -138,7 +138,6 @@ source_batch_f2a(
     prompt_version         pk PromptVersion,
     model_id               pk ModelId,
     personality_id         pk PersonalityId,
-    personality_state_hash pk Hash32,
     head_memory_id         nullable,         -- latest output row for this invocation
     run_at                 NOT NULL,
     PRIMARY KEY (
@@ -146,8 +145,7 @@ source_batch_f2a(
         operator_id,
         prompt_version,
         model_id,
-        personality_id,
-        personality_state_hash
+        personality_id
     )
 )
 ```
@@ -433,27 +431,29 @@ struct PersonalitySnapshot {
     personality_id:  PersonalityId,           // which flavor produced this
     perspective_ids: Vec<MemoryId>,            // P_active per this flavor's rules
     goal_ids:        Vec<GoalId>,              // G_active per this flavor's rules
-    state_hash:      Hash,                      // deterministic; persisted on memory.personality_state_hash
     captured_at:     Timestamp,
 }
 ```
 
-`personality_id` and `state_hash` are both persisted inline on the
-resulting A/P / Goal memory ([02](docs/02-memory.md)). Re-running an
-operator with the same inputs and the same `(personality_id, state_hash)`
-produces the same output (modulo LLM noise). Different personality
-states under the **same** `personality_id` produce supersedes-linked
-outputs in that personality's lineage; different `personality_id`s
-produce parallel lineages, never colliding on supersession.
+`personality_id` is persisted inline on the resulting A/P / Goal memory
+([02](docs/02-memory.md)). Re-running an operator with the same inputs
+and the same `personality_id` produces the same output (modulo LLM
+noise). Different `personality_id`s produce parallel lineages, never
+colliding on supersession.
+
+Different prompt-rule semantics for an existing personality require a
+new `personality_id`. The substrate does not provide an in-place
+state-evolution mechanism; the append-only memories log itself records
+the lineage.
 
 Selection of `perspective_ids` / `goal_ids` is **flavor-defined**.
 Common primitives (recency, topical similarity, goal-relevant filter,
 identity-Perspective inclusion) are the building blocks each
 `PersonalityFlavor` composes; the substrate does not legislate one
 canonical mix. The matrix row `M[personality_id][*]` (per
-[02 §Read-scope matrix](docs/02-memory.md#read-scope-matrix)) is
-hashed into `state_hash` at snapshot time so a matrix toggle producing
-new admissible sources is a different invocation key.
+[02 §Read-scope matrix](docs/02-memory.md#read-scope-matrix)) affects
+future retrieval scope. Disjoint lineage for a load-bearing matrix
+change is represented by a new `personality_id`.
 
 ### Execution model and isolation
 
@@ -683,7 +683,7 @@ Post-conditions:
   shared `goal` row (06 §Typed payloads).
 - For every g ∈ G_new: `g.authorship = System { Operator { operator_id } }`
   and operator-invocation columns (`operator_kind`, `model_id`,
-  `prompt_version`, `personality_id`, `personality_state_hash`) are NOT NULL.
+  `prompt_version`, `personality_id`) are NOT NULL.
 - For every e ∈ E_new: `e.authorship = OperatorAtoGoal(g)` for some
   g ∈ G_new — i.e. owned by the produced Goal (top-down).
 - For every e ∈ E_new: `e.source` is the Goal `g`, `e.target` is an
@@ -696,8 +696,8 @@ yields a defensible new goal; the operator does not force one.
 
 Determinism: given fixed (ω, A_ctx, Π, c, model_id, prompt_version),
 A→Goal returns the same output (modulo LLM nondeterminism). Π carries
-both `personality_id` and `state_hash`, so two personalities producing
-identical text by coincidence still hold disjoint invocation keys.
+`personality_id`, so two personalities producing identical text by
+coincidence still hold disjoint invocation keys.
 
 User-confirmation pattern: agent-discovered Goals land with
 `authorship = System { Operator … }`. UI may surface them for user
@@ -719,18 +719,15 @@ parallel, never superseded by operator action.
 Idempotence is a property of the **invocation key** (scoped to Owner):
 
 ```
-key(F→A,    ω, B,    personality_id, state_hash, model, prompt_v)        = hash(...)
-key(A→P,    ω, c, A_ctx, personality_id, state_hash, model, prompt_v)    = hash(...)
-key(A→Goal, ω, c, A_ctx, personality_id, state_hash, model, prompt_v)    = hash(...)
+key(F→A,    ω, B,    personality_id, model, prompt_v)        = hash(...)
+key(A→P,    ω, c, A_ctx, personality_id, model, prompt_v)    = hash(...)
+key(A→Goal, ω, c, A_ctx, personality_id, model, prompt_v)    = hash(...)
 ```
 
 `personality_id` is part of every key — parallel personalities never
 collide on dedup. Two invocations with identical keys are coalesced;
-only the first runs. A re-run with a different `state_hash`
-(personality drift within the same flavor) is a different key, produces
-fresh output, and supersedes within that personality's lineage. A
-re-run under a different `personality_id` is a different key and
-produces a parallel output, not a supersession.
+only the first runs. A re-run under a different `personality_id` is a
+different key and produces a parallel output, not a supersession.
 
 ### Why this notation matters
 
@@ -833,8 +830,8 @@ The supersession edge is the audit trail for "we updated our view here."
 A run is identified by a deterministic key:
 
 ```
-F→A:  hash(operator=F→A, batch_id, personality_state_hash, model_id, prompt_version)
-A→P:  hash(operator=A→P, context_hash, personality_state_hash, model_id, prompt_version)
+F→A:  hash(operator=F→A, batch_id, personality_id, model_id, prompt_version)
+A→P:  hash(operator=A→P, context_hash, input_hash, personality_id, model_id, prompt_version)
 ```
 
 Two runs with the same key are coalesced — re-invocation returns the
@@ -843,11 +840,23 @@ infrastructure failure.
 
 LLM nondeterminism is acknowledged: same key may produce different text.
 
-The four inputs to the F→A / A→P key — `operator_kind`, `model_id`,
-`prompt_version`, `personality_state_hash` — are the inline
+The identity inputs to the F→A / A→P key — `operator_kind`, `model_id`,
+`prompt_version`, `personality_id` — are the inline
 operator-invocation columns on the memory row ([02](docs/02-memory.md)). They are
 reproducibility metadata, not citations; the bibliographic concept of
 citation applies only to Facts ([11](docs/11-citations.md)).
+
+### Cadence vs. consolidation
+
+A→P consolidation is **state-driven**, not event-driven. The trigger is
+event-shaped — F→A finishing wakes the dispatcher — but the dispatcher
+computes Perspectives as a function of the current Abstraction head set,
+not from a delivered event stream. This preserves replay: a Perspective
+is re-derivable from current substrate state at any time. Idempotence is
+mechanical because `(operator, prompt, model, personality_id,
+context_hash, input_hash)` is the only key that matters. "Event triggers
+flavor" describes when the engine wakes; the engine itself sweeps state
+once awake.
 
 ## What this does not include
 

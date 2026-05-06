@@ -10,8 +10,8 @@
 // bytes but keeps Connect's JSON codec readable for debugging
 // (docs/09 §Transport).
 //
-// Content hashes (`event_id`, `content_hash`, `personality_state_hash`)
-// stay as raw `bytes`. They have no canonical text form (hex is one
+// Content hashes (`event_id`, `content_hash`) stay as raw `bytes`.
+// They have no canonical text form (hex is one
 // encoding of many), are never read by humans on the wire — only used
 // for dedup and DB lookups — and binary saves 50% over hex.
 
@@ -177,12 +177,14 @@ message SystemAuthorship {
   }
 }
 message OperatorOrigin {
+  reserved 6;
+  reserved "personality_state_hash";
+
   string operator_id              = 1;  // OperatorId UUID
   OperatorKind operator_kind      = 2;
   string model_id                 = 3;
   string prompt_version           = 4;
   string personality_id           = 5;
-  bytes  personality_state_hash   = 6;  // BLAKE3-32
 }
 message ToolOrigin {
   string tool_id = 1;

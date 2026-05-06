@@ -1,7 +1,6 @@
 use async_trait::async_trait;
 use proxima_core::{
-    PersonalityContext, PersonalityFlavor, PersonalityId, PersonalitySnapshot,
-    PersonalityStateHash, error::ProtocolError,
+    PersonalityContext, PersonalityFlavor, PersonalityId, PersonalitySnapshot, error::ProtocolError,
 };
 use time::OffsetDateTime;
 
@@ -20,9 +19,6 @@ impl PersonalityFlavor for CodeEngineerPersonality {
     ) -> Result<PersonalitySnapshot, ProtocolError> {
         Ok(PersonalitySnapshot {
             personality_id: PersonalityId::new(self.personality_id()),
-            state_hash: PersonalityStateHash::new(
-                blake3::hash(b"proxima-code/engineer/v1-empty").into(),
-            ),
             captured_at: OffsetDateTime::now_utc(),
         })
     }

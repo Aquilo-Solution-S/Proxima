@@ -38,7 +38,6 @@ async fn a2p_invocation_lookups_are_principal_scoped_not_org_scoped() {
         proxima_core::Principal::User(u) => u.into_inner(),
         proxima_core::Principal::Group(g) => g.into_inner(),
     };
-    let personality_state_hash = [0u8; 32];
     let context_hash = [1u8; 32];
     let input_hash = [2u8; 32];
 
@@ -46,14 +45,13 @@ async fn a2p_invocation_lookups_are_principal_scoped_not_org_scoped() {
         "INSERT INTO proxima_core.memories \
             (memory_id, owner_principal_kind, owner_principal_id, owner_org_id, \
              schema_id, schema_version, kind, text, operator_kind, model_id, \
-             prompt_version, personality_id, personality_state_hash) \
+             prompt_version, personality_id) \
          VALUES ($1, 'User', $2, $3, 'test/persp', 1, 'Perspective', '', 'AtoP', \
-                 'test-model', 'v1', 'default', $4)",
+                 'test-model', 'v1', 'default')",
     )
     .bind(head_memory_id)
     .bind(principal_id)
     .bind(head_owner_org_id)
-    .bind(&personality_state_hash[..])
     .execute(pg.pool())
     .await
     .expect("insert seed memory");
@@ -61,12 +59,11 @@ async fn a2p_invocation_lookups_are_principal_scoped_not_org_scoped() {
     sqlx::query(
         "INSERT INTO proxima_core.a2p_invocations \
             (owner_principal_kind, owner_principal_id, \
-             operator_id, prompt_version, model_id, personality_id, personality_state_hash, \
+             operator_id, prompt_version, model_id, personality_id, \
              context_hash, input_hash, head_memory_id) \
-         VALUES ('User', $1, 'test/op', 'v1', 'test-model', 'default', $2, $3, $4, $5)",
+         VALUES ('User', $1, 'test/op', 'v1', 'test-model', 'default', $2, $3, $4)",
     )
     .bind(principal_id)
-    .bind(&personality_state_hash[..])
     .bind(&context_hash[..])
     .bind(&input_hash[..])
     .bind(head_memory_id)
@@ -79,7 +76,6 @@ async fn a2p_invocation_lookups_are_principal_scoped_not_org_scoped() {
         prompt_version: "v1",
         model_id: "test-model",
         personality_id: "default",
-        personality_state_hash: &personality_state_hash,
         context_hash: &context_hash,
         input_hash: &input_hash,
     };
@@ -88,7 +84,6 @@ async fn a2p_invocation_lookups_are_principal_scoped_not_org_scoped() {
         prompt_version: inv_key.prompt_version,
         model_id: inv_key.model_id,
         personality_id: inv_key.personality_id,
-        personality_state_hash: inv_key.personality_state_hash,
     };
 
     // Same org as the seed: row visible.

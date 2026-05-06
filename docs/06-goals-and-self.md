@@ -56,7 +56,6 @@ enum SystemOrigin {
         model_id:               ModelId,
         prompt_version:         PromptVersion,
         personality_id:         PersonalityId,  // which personality flavor produced this (08)
-        personality_state_hash: Hash,           // that flavor's snapshot at run time
     },
     Tool { tool_id: ToolId },                 // tool-emitted (e.g. conversation extractor, 05)
 }

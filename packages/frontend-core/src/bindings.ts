@@ -487,12 +487,6 @@ export type PerfEntry = {
 
 export type PersonalityId = string;
 
-/**
- *  BLAKE3-32 hash of personality state for reproducibility.
- *  Same shape as EventId (docs/07 §"ID types").
- */
-export type PersonalityStateHash = [number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number];
-
 export type Principal = ({ User: UserId }) & { Group?: never } | ({ Group: GroupId }) & { User?: never };
 
 export type PromptVersion = string;
@@ -640,7 +634,6 @@ export type SystemOrigin = ({ Operator: {
 	model_id: ModelId,
 	prompt_version: PromptVersion,
 	personality_id: PersonalityId,
-	personality_state_hash: PersonalityStateHash,
 } }) & { Tool?: never } | ({ Tool: {
 	tool_id: ToolId,
 } }) & { Operator?: never };

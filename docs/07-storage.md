@@ -145,7 +145,6 @@ memories(
     model_id              nullable,         -- Derived: NOT NULL; Fact: NULL
     prompt_version        nullable,         -- Derived: NOT NULL; Fact: NULL
     personality_id         nullable,         -- Derived: NOT NULL — which personality flavor produced this (08); Fact: NULL
-    personality_state_hash nullable,         -- Derived: NOT NULL; Fact: NULL
     supersedes            nullable          -- Derived only: UUIDv7 of prior memory in same personality_id lineage; Fact: NULL
 )
 -- Entity definition in [02-memory.md](docs/02-memory.md#the-core-entity).
@@ -153,11 +152,11 @@ memories(
 --   Fact:      event_id NOT NULL AND citation_mapping_id NOT NULL
 --              AND kind IS NULL AND text IS NULL AND operator_kind IS NULL
 --              AND model_id IS NULL AND prompt_version IS NULL
---              AND personality_id IS NULL AND personality_state_hash IS NULL
+--              AND personality_id IS NULL
 --              AND supersedes IS NULL
 --   Derived:   kind NOT NULL AND text NOT NULL AND operator_kind NOT NULL
 --              AND model_id NOT NULL AND prompt_version NOT NULL
---              AND personality_id NOT NULL AND personality_state_hash NOT NULL
+--              AND personality_id NOT NULL
 --              AND event_id IS NULL AND citation_mapping_id IS NULL
 -- Fact immutability: the Fact branch's `supersedes IS NULL` is the
 -- storage-level enforcement of the trauma-test invariant
@@ -208,7 +207,6 @@ goals(
     model_id               nullable,         -- NOT NULL when authorship_origin = Operator
     prompt_version         nullable,         -- NOT NULL when authorship_origin = Operator
     personality_id         nullable,         -- NOT NULL when authorship_origin = Operator — producing personality flavor (08)
-    personality_state_hash nullable,         -- NOT NULL when authorship_origin = Operator
     created_at
 )
 -- Entity definition in [06-goals-and-self.md](docs/06-goals-and-self.md#goal-entity).
@@ -218,17 +216,17 @@ goals(
 --   authorship_kind=User      => authorship_origin IS NULL AND authorship_operator_id IS NULL
 --                                AND authorship_tool_id IS NULL AND operator_kind IS NULL
 --                                AND model_id IS NULL AND prompt_version IS NULL
---                                AND personality_id IS NULL AND personality_state_hash IS NULL
+--                                AND personality_id IS NULL
 --   authorship_kind=System    => authorship_origin NOT NULL
 --                                AND (authorship_origin = Operator => operator_kind NOT NULL
 --                                     AND model_id NOT NULL AND prompt_version NOT NULL
---                                     AND personality_id NOT NULL AND personality_state_hash NOT NULL
+--                                     AND personality_id NOT NULL
 --                                     AND authorship_operator_id NOT NULL)
 --                                AND (authorship_origin = Tool => authorship_tool_id NOT NULL)
 --   authorship_kind=External  => authorship_origin IS NULL AND authorship_operator_id IS NULL
 --                                AND authorship_tool_id IS NULL AND operator_kind IS NULL
 --                                AND model_id IS NULL AND prompt_version IS NULL
---                                AND personality_id IS NULL AND personality_state_hash IS NULL
+--                                AND personality_id IS NULL
 -- Supersession constraint: when supersedes IS NOT NULL and both rows'
 -- authorship is Operator-origin, their personality_id must match.
 -- Cross-personality goal supersession is rejected at this layer; only
@@ -299,7 +297,6 @@ source_batch_f2a(
     prompt_version          PromptVersion,
     model_id                ModelId,
     personality_id          PersonalityId,
-    personality_state_hash  Hash32,
     head_memory_id          nullable FK memories.memory_id,
     run_at                  NOT NULL,
     PRIMARY KEY (
@@ -307,12 +304,11 @@ source_batch_f2a(
         operator_id,
         prompt_version,
         model_id,
-        personality_id,
-        personality_state_hash
+        personality_id
     )
 )
 -- Per full invocation key. Empty means that exact prompt/model/
--- personality snapshot has not run for that batch/operator; a row
+-- personality id has not run for that batch/operator; a row
 -- means it has.
 
 read_scope_matrix(
@@ -328,9 +324,7 @@ read_scope_matrix(
 -- of A/P/Goals (see 02 §Read-scope matrix). Identity diagonal
 -- (self_personality == other_personality) is always allowed = true
 -- and enforced as a CHECK; F is below the matrix and always shared.
--- Hashed into personality_state_hash at snapshot time so a matrix
--- toggle producing new admissible sources is a different invocation
--- key (04 §Personality state).
+-- Load-bearing matrix evolution requires a new personality_id.
 
 change_event(
     seq                   pk,                  -- UUIDv7, server-generated at write

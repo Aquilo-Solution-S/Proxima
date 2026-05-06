@@ -267,24 +267,3 @@ impl PersonalityId {
         &self.0
     }
 }
-
-/// BLAKE3-32 hash of personality state for reproducibility.
-/// Same shape as EventId (docs/07 §"ID types").
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, specta::Type,
-)]
-pub struct PersonalityStateHash([u8; 32]);
-
-impl PersonalityStateHash {
-    pub const fn new(inner: [u8; 32]) -> Self {
-        Self(inner)
-    }
-
-    pub const fn into_inner(self) -> [u8; 32] {
-        self.0
-    }
-
-    pub const fn as_bytes(&self) -> &[u8; 32] {
-        &self.0
-    }
-}

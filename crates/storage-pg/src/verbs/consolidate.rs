@@ -50,7 +50,6 @@ pub async fn list_unconsolidated_batches(
                   AND f2a.prompt_version = $4 \
                   AND f2a.model_id = $5 \
                   AND f2a.personality_id = $6 \
-                  AND f2a.personality_state_hash = $7 \
            ) \
          ORDER BY sb.opened_at ASC",
     )
@@ -60,7 +59,6 @@ pub async fn list_unconsolidated_batches(
     .bind(key.prompt_version)
     .bind(key.model_id)
     .bind(key.personality_id)
-    .bind(key.personality_state_hash)
     .fetch_all(pool)
     .await
     .map_err(map_err)?;
@@ -236,9 +234,8 @@ pub async fn has_a2p_invocation(
            AND prompt_version = $4 \
            AND model_id = $5 \
            AND personality_id = $6 \
-           AND personality_state_hash = $7 \
-           AND context_hash = $8 \
-           AND input_hash = $9",
+           AND context_hash = $7 \
+           AND input_hash = $8",
     )
     .bind(owner_kind)
     .bind(owner_principal_id)
@@ -246,7 +243,6 @@ pub async fn has_a2p_invocation(
     .bind(key.prompt_version)
     .bind(key.model_id)
     .bind(key.personality_id)
-    .bind(key.personality_state_hash)
     .bind(key.context_hash)
     .bind(key.input_hash)
     .fetch_optional(pool)
@@ -275,7 +271,6 @@ pub async fn lookup_prior_a2p_head(
            AND prompt_version = $4 \
            AND model_id = $5 \
            AND personality_id = $6 \
-           AND personality_state_hash = $7 \
            AND head_memory_id IS NOT NULL \
          ORDER BY run_at DESC \
          LIMIT 1",
@@ -286,7 +281,6 @@ pub async fn lookup_prior_a2p_head(
     .bind(key.prompt_version)
     .bind(key.model_id)
     .bind(key.personality_id)
-    .bind(key.personality_state_hash)
     .fetch_optional(pool)
     .await
     .map_err(map_err)?;
@@ -299,7 +293,7 @@ pub async fn lookup_prior_a2p_head(
 ///
 /// 1. Pre-check `source_batch_f2a` for the full invocation key —
 ///    `(batch_id, operator_id, prompt_version, model_id,
-///    personality_id, personality_state_hash)` — and short-circuit
+///    personality_id)` — and short-circuit
 ///    to `already_consolidated = true` on hit.
 /// 2. Insert N substrate `memories` rows (Abstraction kind).
 /// 3. Insert N typed sidecar rows via `jsonb_populate_record`.
@@ -327,7 +321,6 @@ pub async fn consolidate_batch_f2a(
     let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(&req.owner);
     let batch_uuid = req.batch_id.into_inner();
     let personality_id = req.personality.personality_id.as_str().to_string();
-    let personality_state_hash = req.personality.state_hash.into_inner();
 
     let mut tx = pool.begin().await.map_err(map_err)?;
 
@@ -338,15 +331,13 @@ pub async fn consolidate_batch_f2a(
            AND operator_id = $2 \
            AND prompt_version = $3 \
            AND model_id = $4 \
-           AND personality_id = $5 \
-           AND personality_state_hash = $6",
+           AND personality_id = $5",
     )
     .bind(batch_uuid)
     .bind(req.operator_id)
     .bind(req.prompt_version)
     .bind(req.model_id)
     .bind(&personality_id)
-    .bind(&personality_state_hash[..])
     .fetch_optional(&mut *tx)
     .await
     .map_err(map_err)?;
@@ -376,8 +367,8 @@ pub async fn consolidate_batch_f2a(
             "INSERT INTO proxima_core.memories \
                 (memory_id, owner_principal_kind, owner_principal_id, owner_org_id, \
                  schema_id, schema_version, kind, text, operator_kind, model_id, prompt_version, \
-                 personality_id, personality_state_hash) \
-             VALUES ($1, $2, $3, $4, $5, $6, 'Abstraction', $7, 'FtoA', $8, $9, $10, $11)",
+                 personality_id) \
+             VALUES ($1, $2, $3, $4, $5, $6, 'Abstraction', $7, 'FtoA', $8, $9, $10)",
         )
         .bind(memory_id)
         .bind(owner_kind)
@@ -389,7 +380,6 @@ pub async fn consolidate_batch_f2a(
         .bind(req.model_id)
         .bind(req.prompt_version)
         .bind(&personality_id)
-        .bind(&personality_state_hash[..])
         .execute(&mut *tx)
         .await
         .map_err(map_err)?;
@@ -478,15 +468,14 @@ pub async fn consolidate_batch_f2a(
     sqlx::query(
         "INSERT INTO proxima_core.source_batch_f2a \
             (batch_id, operator_id, prompt_version, model_id, \
-             personality_id, personality_state_hash, head_memory_id) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7)",
+             personality_id, head_memory_id) \
+         VALUES ($1, $2, $3, $4, $5, $6)",
     )
     .bind(batch_uuid)
     .bind(req.operator_id)
     .bind(req.prompt_version)
     .bind(req.model_id)
     .bind(&personality_id)
-    .bind(&personality_state_hash[..])
     .bind(head_memory_id)
     .execute(&mut *tx)
     .await
@@ -515,7 +504,6 @@ pub async fn consolidate_a2p(
     let output_sidecar_table = PgIdent::table(req.output_sidecar_table)?;
     let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(&req.owner);
     let personality_id = req.personality.personality_id.as_str().to_string();
-    let personality_state_hash = req.personality.state_hash.into_inner();
 
     let mut tx = pool.begin().await.map_err(map_err)?;
 
@@ -529,9 +517,8 @@ pub async fn consolidate_a2p(
            AND prompt_version = $4 \
            AND model_id = $5 \
            AND personality_id = $6 \
-           AND personality_state_hash = $7 \
-           AND context_hash = $8 \
-           AND input_hash = $9",
+           AND context_hash = $7 \
+           AND input_hash = $8",
     )
     .bind(owner_kind)
     .bind(owner_principal_id)
@@ -539,7 +526,6 @@ pub async fn consolidate_a2p(
     .bind(req.prompt_version)
     .bind(req.model_id)
     .bind(&personality_id)
-    .bind(&personality_state_hash[..])
     .bind(&req.context_hash[..])
     .bind(&req.input_hash[..])
     .fetch_optional(&mut *tx)
@@ -564,8 +550,8 @@ pub async fn consolidate_a2p(
             "INSERT INTO proxima_core.memories \
                 (memory_id, owner_principal_kind, owner_principal_id, owner_org_id, \
                  schema_id, schema_version, kind, text, operator_kind, model_id, prompt_version, \
-                 personality_id, personality_state_hash, supersedes) \
-             VALUES ($1, $2, $3, $4, $5, $6, 'Perspective', $7, 'AtoP', $8, $9, $10, $11, $12)",
+                 personality_id, supersedes) \
+             VALUES ($1, $2, $3, $4, $5, $6, 'Perspective', $7, 'AtoP', $8, $9, $10, $11)",
         )
         .bind(memory_id)
         .bind(owner_kind)
@@ -577,7 +563,6 @@ pub async fn consolidate_a2p(
         .bind(req.model_id)
         .bind(req.prompt_version)
         .bind(&personality_id)
-        .bind(&personality_state_hash[..])
         .bind(prior_head)
         .execute(&mut *tx)
         .await
@@ -677,9 +662,9 @@ pub async fn consolidate_a2p(
     sqlx::query(
         "INSERT INTO proxima_core.a2p_invocations \
             (owner_principal_kind, owner_principal_id, \
-             operator_id, prompt_version, model_id, personality_id, personality_state_hash, \
+             operator_id, prompt_version, model_id, personality_id, \
              context_hash, input_hash, head_memory_id) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
     )
     .bind(owner_kind)
     .bind(owner_principal_id)
@@ -687,7 +672,6 @@ pub async fn consolidate_a2p(
     .bind(req.prompt_version)
     .bind(req.model_id)
     .bind(&personality_id)
-    .bind(&personality_state_hash[..])
     .bind(&req.context_hash[..])
     .bind(&req.input_hash[..])
     .bind(head_memory_id)

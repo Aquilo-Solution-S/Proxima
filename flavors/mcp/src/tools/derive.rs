@@ -137,8 +137,7 @@ impl McpTool for DeriveTool {
                 operator_kind: "ExternalAgent",
                 model_id: &args.model_id,
                 prompt_version: "mcp-agent-v1",
-                personality_id: "external/mcp-agent",
-                personality_state_hash: ctx.author.personality_state_hash(),
+                personality_id: ctx.author.personality_id(),
                 sidecar_table: Some("proxima_mcp.agent_derivation_v1"),
                 sidecar_payload: Some(sidecar),
             };
