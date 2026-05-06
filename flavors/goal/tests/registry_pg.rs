@@ -27,4 +27,14 @@ fn goal_schemas_and_relations_register() {
         .resolve_relation("proxima-goal/motivated-by")
         .expect("relation resolves");
     assert_eq!(resolved.payload_sidecar_table, None);
+
+    let tool_names: HashSet<_> = frozen
+        .list_mcp_tools()
+        .iter()
+        .map(|tool| tool.name)
+        .collect();
+    assert!(tool_names.contains("proxima-goal/goal_propose"));
+    assert!(tool_names.contains("proxima-goal/goal_accept"));
+    assert!(tool_names.contains("proxima-goal/goal_modify"));
+    assert!(tool_names.contains("proxima-goal/goal_decline"));
 }

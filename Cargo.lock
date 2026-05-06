@@ -3421,6 +3421,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "proxima-flavor-goal"
+version = "0.1.0"
+dependencies = [
+ "ciborium",
+ "futures",
+ "proxima-core",
+ "proxima-storage-pg",
+ "schemars 1.2.1",
+ "serde",
+ "serde_json",
+ "specta",
+ "sqlx",
+ "time",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "proxima-llm-openai-compat"
 version = "0.1.0"
 dependencies = [

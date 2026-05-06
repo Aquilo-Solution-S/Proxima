@@ -22,5 +22,10 @@ proxima_core::proxima_flavor! {
     relations = [
         relations::descriptor(),
     ],
-    mcp_tools = [],
+    mcp_tools = [
+        tools::ProposeTool,
+        tools::AcceptTool,
+        tools::ModifyTool,
+        tools::DeclineTool,
+    ],
 }
