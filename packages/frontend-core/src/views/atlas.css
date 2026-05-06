@@ -308,10 +308,6 @@
   color: var(--ink-40);
   margin-left: auto;
 }
-.i-id {
-  font-family: var(--mono); font-size: 11px;
-  color: var(--ink-90);
-}
 .i-schema {
   font-family: var(--mono); font-size: 10px;
   color: var(--accent-commit);
@@ -364,17 +360,27 @@
   margin-bottom: 6px;
 }
 .i-edge {
-  display: flex; align-items: baseline; gap: 8px;
-  padding: 4px 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 2px;
+  padding: 7px 0;
   border-bottom: 1px dashed var(--rule);
   cursor: pointer;
   font-size: 10.5px;
 }
 .i-edge:hover { background: var(--bg-card); padding-left: 4px; }
+.i-edge-meta {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+  font-family: var(--mono);
+}
 .i-edge-cls {
   font-family: var(--mono); font-size: 9px;
   letter-spacing: 0.1em; text-transform: uppercase;
-  width: 78px; flex-shrink: 0;
+  color: var(--accent-commit);
+  flex-shrink: 0;
 }
 .i-edge-cls.provenance  { color: #6B7280; }
 .i-edge-cls.causal      { color: #C9A86A; }
@@ -382,9 +388,18 @@
 .i-edge-cls.supersedes  { color: #B86A6A; }
 .i-edge-cls.interpretive{ color: #9C8AB0; }
 .i-edge-tgt {
-  flex: 1;
+  min-width: 0;
   font-family: var(--serif); font-style: italic;
-  color: var(--ink-70);
-  font-size: 11px;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--ink-90);
+  font-size: 12px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+.i-edge-node {
+  min-width: 0;
+  color: var(--ink-50);
+  font-size: 9.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }

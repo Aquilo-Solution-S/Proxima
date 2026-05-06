@@ -3,6 +3,23 @@ import type { Hub } from "../../hub";
 import type { Adjacency, AtlasNode } from "./types";
 import { KIND_GLYPH, LAYER_Z, TINT_HEX } from "./three-helpers";
 
+const relationLabel = (kind: string): string => {
+  const relationParts = kind.split("--");
+  const relationTail = relationParts[relationParts.length - 1] ?? kind;
+  const pathParts = relationTail.split("/");
+  const tail = pathParts[pathParts.length - 1] ?? relationTail;
+  return tail.replace(/[_-]+/g, " ").trim() || kind;
+};
+
+const nodeLabel = (node: AtlasNode | undefined): string =>
+  node?.title?.trim() || nodeSchemaLabel(node);
+
+const nodeSchemaLabel = (node: AtlasNode | undefined): string =>
+  node ? `${node.schemaId} @ v${node.schemaVersion}` : "filtered node";
+
+const nodeKindLabel = (node: AtlasNode | undefined): string =>
+  node ? `${node.kind}${node.flavor ? ` · ƒ:${node.flavor}` : ""}` : "not visible";
+
 // ── Filter Pill primitive ──────────────────────────────────────────────
 export const Pill: Component<{
   active: boolean;
@@ -93,13 +110,12 @@ export const Inspector: Component<{
               <span class="i-flavor">ƒ:{node().flavor}</span>
             </Show>
           </div>
-          <div class="i-id">{node().id}</div>
-          <div class="i-schema">
-            {node().schemaId} @ v{node().schemaVersion}
-          </div>
           <Show when={node().title}>
             <div class="i-title">{node().title}</div>
           </Show>
+          <div class="i-schema">
+            {node().schemaId} @ v{node().schemaVersion}
+          </div>
 
           <div class="i-meta">
             <div class="i-row">
@@ -135,9 +151,13 @@ export const Inspector: Component<{
                     <div
                       class="i-edge"
                       onClick={() => props.onPickNode(e.tgt)}
+                      title={`${e.kind} -> ${nodeLabel(t)}`}
                     >
-                      <span class="i-edge-cls">{e.kind}</span>
-                      <span class="i-edge-tgt">{t?.title ?? e.tgt}</span>
+                      <span class="i-edge-tgt">{nodeLabel(t)}</span>
+                      <span class="i-edge-meta">
+                        <span class="i-edge-cls">{relationLabel(e.kind)}</span>
+                        <span class="i-edge-node">{nodeKindLabel(t)}</span>
+                      </span>
                     </div>
                   );
                 }}
@@ -155,9 +175,13 @@ export const Inspector: Component<{
                     <div
                       class="i-edge"
                       onClick={() => props.onPickNode(e.src)}
+                      title={`${e.kind} <- ${nodeLabel(s)}`}
                     >
-                      <span class="i-edge-cls">{e.kind}</span>
-                      <span class="i-edge-tgt">{s?.title ?? e.src}</span>
+                      <span class="i-edge-tgt">{nodeLabel(s)}</span>
+                      <span class="i-edge-meta">
+                        <span class="i-edge-cls">{relationLabel(e.kind)}</span>
+                        <span class="i-edge-node">{nodeKindLabel(s)}</span>
+                      </span>
                     </div>
                   );
                 }}
