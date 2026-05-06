@@ -28,6 +28,7 @@ time = { workspace = true }
 workspace = true
 
 [dev-dependencies]
+proxima-mcp-substrate = { path = "../../flavors/mcp" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 time = { workspace = true }
 tokio-stream = { workspace = true }

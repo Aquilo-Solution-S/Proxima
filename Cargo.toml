@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/core", "apps/proxima-engine", "apps/proxima-code", "flavors/code", "crates/llm-openai-compat", "apps/proxima-shell/src-tauri", "crates/storage-pg", "crates/wire-grpc"]
+members = ["crates/core", "crates/mcp-server", "apps/proxima-engine", "apps/proxima-code", "apps/proxima-mcp", "flavors/code", "flavors/mcp", "crates/llm-openai-compat", "apps/proxima-shell/src-tauri", "crates/storage-pg", "crates/wire-grpc"]
 
 [workspace.package]
 edition = "2024"
@@ -26,12 +26,19 @@ thiserror = "2"
 tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "macros", "sync"] }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "postgres", "uuid", "time", "macros", "migrate"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
+futures = { version = "0.3", default-features = false, features = ["std"] }
 async-trait = "0.1"
 blake3 = "1"
 ciborium = "0.2"
 time = { version = "0.3", default-features = false, features = ["serde", "serde-human-readable", "serde-well-known", "std"] }
 tracing = { version = "0.1", default-features = false, features = ["std"] }
 tokio-stream = { version = "0.1", default-features = false, features = ["sync"] }
+rmcp = { version = "1.6", default-features = false, features = ["server", "transport-streamable-http-server"] }
+schemars = { version = "1", features = ["uuid1", "preserve_order"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
+http = "1"
+tokio-util = "0.7"
 
 # tree-sitter deps for code flavor (Rust + TypeScript).
 # Version trio verified to build together on rust 1.95 + edition 2024:

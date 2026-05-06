@@ -12,6 +12,7 @@ name = "proxima_core"
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
+sqlx = { workspace = true }
 uuid = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
@@ -21,6 +22,8 @@ ciborium = { workspace = true }
 time = { workspace = true }
 tracing = { workspace = true }
 futures-util = { workspace = true }
+futures = { workspace = true }
+schemars = { workspace = true }
 specta = { workspace = true }
 
 [dev-dependencies]

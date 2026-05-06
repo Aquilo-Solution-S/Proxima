@@ -14,6 +14,7 @@ mod boot;
 pub mod command_error;
 mod commands;
 pub mod config;
+mod mcp;
 mod repo_ingest_hub;
 pub mod secrets;
 
@@ -40,12 +41,29 @@ pub fn run() {
         .ok();
 
     let (engine, pg) = boot::build_engine();
+    let mcp_handle = tauri::async_runtime::block_on(async {
+        boot::spawn_mcp_listener(pg.pool().clone(), boot::sentinel_owner()).await
+    });
+    let mcp_handle = match mcp_handle {
+        Ok((handle, addr)) => {
+            tracing::info!(addr = %addr, "Shell MCP listener up; connect via http://{addr}/mcp");
+            Some(mcp::McpListenerHandle::new(handle))
+        }
+        Err(err) => {
+            tracing::warn!(
+                "MCP listener failed to start; coding agents will not connect: {err}. \
+                 Set PROXIMA_MCP_BIND=127.0.0.1:<free-port> to use a different port."
+            );
+            None
+        }
+    };
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(engine)
         .manage(pg)
         .manage(repo_ingest_hub::RepoIngestHub::new())
+        .manage(mcp_handle)
         .invoke_handler(commands::specta_builder().invoke_handler())
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

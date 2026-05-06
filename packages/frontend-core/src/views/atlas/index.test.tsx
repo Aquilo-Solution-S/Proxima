@@ -1,5 +1,6 @@
 import { cleanup, fireEvent, render, screen } from "@solidjs/testing-library";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import * as THREE from "three";
 import type { EdgeRow, MemoryRow, Owner } from "../../bindings";
 import { GraphFilterProvider, createGraphFilterStore } from "../../graph-filter-store";
 import {
@@ -10,6 +11,7 @@ import {
 } from "../../graph-store";
 import { createHub } from "../../hub";
 import { Atlas } from "./index";
+import type { AtlasEdge, AtlasNode } from "./types";
 
 beforeAll(() => {
   vi.stubGlobal(
@@ -60,6 +62,29 @@ const edge = (id: string, source: string, target: string): EdgeRow => ({
   target: { Memory: target },
   owner,
   payload: [],
+});
+
+const atlasNode = (
+  id: string,
+  kind: AtlasNode["kind"],
+  title: string,
+  x: number,
+): AtlasNode => ({
+  id,
+  kind,
+  schemaId: "proxima-code/code-chunk-v1",
+  schemaVersion: 1,
+  title,
+  flavor: "code",
+  x,
+  y: 0,
+});
+
+const atlasEdge = (id: string, src: string, tgt: string): AtlasEdge => ({
+  id,
+  src,
+  tgt,
+  kind: "code/calls",
 });
 
 const snapshot = (
@@ -272,5 +297,49 @@ describe("Atlas graph wiring", () => {
       </GraphProvider>
     ));
     expect(screen.getByText(new RegExp(`edges truncated at ${MAX_SNAPSHOT_EDGES}`))).toBeTruthy();
+  });
+
+  it("tracks node selection history through edge clicks and keyboard navigation", () => {
+    const fact = atlasNode("019dfa50-0000-7000-8000-000000000001", "Fact", "engine.rs", 0);
+    const abs = atlasNode("019dfa50-0000-7000-8000-000000000002", "Abstraction", "call graph", 1);
+    const perspective = atlasNode("019dfa50-0000-7000-8000-000000000003", "Perspective", "review", 2);
+    const raycast = vi
+      .spyOn(THREE.Raycaster.prototype, "intersectObjects")
+      .mockImplementation((objects) => [{ object: objects[0] }] as THREE.Intersection[]);
+
+    const { container } = render(() => (
+      <GraphFilterProvider store={createGraphFilterStore()}>
+        <Atlas
+          hub={createHub([])}
+          nodes={[fact, abs, perspective]}
+          edges={[
+            atlasEdge("019dfa50-0000-7000-8000-000000000011", fact.id, abs.id),
+            atlasEdge("019dfa50-0000-7000-8000-000000000012", abs.id, perspective.id),
+          ]}
+        />
+      </GraphFilterProvider>
+    ));
+    const inspectorTitle = () => container.querySelector(".i-title")?.textContent;
+
+    fireEvent.click(document.querySelector(".atlas-canvas canvas")!);
+    expect(inspectorTitle()).toBe("engine.rs");
+    fireEvent.click(screen.getByText("call graph"));
+    fireEvent.click(screen.getByText("review"));
+
+    const back = screen.getByRole("button", { name: "Back" });
+    const forward = screen.getByRole("button", { name: "Forward" });
+    expect(back.hasAttribute("disabled")).toBe(false);
+    expect(forward.hasAttribute("disabled")).toBe(true);
+
+    fireEvent.click(back);
+    expect(inspectorTitle()).toBe("call graph");
+    expect(forward.hasAttribute("disabled")).toBe(false);
+
+    fireEvent.keyDown(window, { key: "ArrowLeft", altKey: true });
+    expect(inspectorTitle()).toBe("engine.rs");
+    fireEvent.keyDown(window, { key: "ArrowRight", altKey: true });
+    expect(inspectorTitle()).toBe("call graph");
+
+    raycast.mockRestore();
   });
 });

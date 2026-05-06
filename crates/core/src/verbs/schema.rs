@@ -3,7 +3,7 @@
 //! See docs/14-protocol-surface.md §"Schema" and
 //! docs/03-schema-registry.md.
 
-use crate::{RegisteredRelation, RelationDescriptor, SchemaId, SchemaVersion};
+use crate::{McpToolDescriptor, RegisteredRelation, RelationDescriptor, SchemaId, SchemaVersion};
 
 pub type PayloadValidator = fn(&serde_json::Value) -> Result<(), String>;
 pub type PayloadCborEncoder = fn(&serde_json::Value) -> Result<Vec<u8>, String>;
@@ -68,6 +68,7 @@ pub struct SchemaRegistry {
     schemas: Vec<SchemaInfo>,
     relations: Vec<RelationDescriptor>,
     validators: Vec<PayloadValidatorEntry>,
+    mcp_tools: Vec<McpToolDescriptor>,
 }
 
 impl SchemaRegistry {
@@ -84,6 +85,7 @@ impl SchemaRegistry {
             schemas,
             relations: Vec::new(),
             validators: Vec::new(),
+            mcp_tools: Vec::new(),
         }
     }
 
@@ -99,6 +101,7 @@ impl SchemaRegistry {
             schemas,
             relations,
             validators: Vec::new(),
+            mcp_tools: Vec::new(),
         }
     }
 
@@ -106,11 +109,13 @@ impl SchemaRegistry {
         schemas: Vec<SchemaInfo>,
         relations: Vec<RelationDescriptor>,
         validators: Vec<PayloadValidatorEntry>,
+        mcp_tools: Vec<McpToolDescriptor>,
     ) -> Self {
         Self {
             schemas,
             relations,
             validators,
+            mcp_tools,
         }
     }
 
@@ -121,6 +126,11 @@ impl SchemaRegistry {
     ) -> Self {
         self.schemas.extend(schemas);
         self
+    }
+
+    #[must_use]
+    pub fn list_mcp_tools(&self) -> &[McpToolDescriptor] {
+        &self.mcp_tools
     }
 
     pub fn list(&self) -> Vec<SchemaInfo> {

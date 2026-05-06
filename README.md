@@ -148,6 +148,57 @@ Frontend dev server:
 pnpm --filter proxima-shell dev --host 127.0.0.1
 ```
 
+### Connecting Your Coding Agent To Proxima
+
+Proxima Shell auto-starts a Streamable HTTP MCP server when the
+desktop app is running:
+
+```text
+http://localhost:31415/mcp
+```
+
+Claude Code:
+
+```jsonc
+{
+  "mcpServers": {
+    "proxima": { "type": "http", "url": "http://localhost:31415/mcp" }
+  }
+}
+```
+
+Codex CLI:
+
+```toml
+[mcp_servers.proxima]
+type = "http"
+url = "http://localhost:31415/mcp"
+```
+
+Port override:
+
+```sh
+PROXIMA_MCP_BIND=127.0.0.1:31419 pnpm --filter proxima-shell tauri:dev
+```
+
+The listener binds loopback only and rejects missing or disallowed
+`Origin` headers.
+
+Headless:
+
+```sh
+cargo run -p proxima-mcp -- \
+  --owner-user 00000000-0000-0000-0000-000000000000 \
+  --owner-org  00000000-0000-0000-0000-000000000000 \
+  --bind 127.0.0.1:31415
+```
+
+MCP server exposing five substrate tools:
+`proxima-mcp/proxima_search_graph`, `proxima-mcp/proxima_open`,
+`proxima-mcp/proxima_remember`, `proxima-mcp/proxima_derive`,
+`proxima-mcp/proxima_link`. Composite binaries extend the tool list
+at link time; see `docs/13-flavor-marketplace.md`.
+
 ## Implementation commitment
 
 Rust. Frontend is the only non-Rust component.

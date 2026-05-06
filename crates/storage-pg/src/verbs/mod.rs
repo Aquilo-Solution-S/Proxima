@@ -6,6 +6,7 @@
 
 pub mod close_batch;
 pub mod consolidate;
+pub mod derive_append;
 pub mod edge_append;
 pub mod event_ingest;
 pub(crate) mod goal_write;
