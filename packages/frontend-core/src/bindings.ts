@@ -6,6 +6,7 @@ import { invoke as __TAURI_INVOKE, Channel } from "@tauri-apps/api/core";
 export const commands = {
 	schema: () => typedError<SchemaResponse, ProtocolError>(__TAURI_INVOKE("schema")),
 	query: (req: QueryRequest) => typedError<QueryResponse, ProtocolError>(__TAURI_INVOKE("query", { req })),
+	eventHistory: (req: EventHistoryRequest) => typedError<EventHistoryResponse, ProtocolError>(__TAURI_INVOKE("event_history", { req })),
 	eventIngest: (draft: EventDraft) => typedError<EventIngestOutcome, ProtocolError>(__TAURI_INVOKE("event_ingest", { draft })),
 	goalWrite: (draft: GoalDraft) => typedError<GoalWriteOutcome, ProtocolError>(__TAURI_INVOKE("goal_write", { draft })),
 	/**
@@ -293,6 +294,17 @@ export type EventDraft = {
 	occurred_at: string,
 	cited_object: CitedObjectHint,
 	citation_mapping: CitationMappingHint,
+};
+
+export type EventHistoryRequest = {
+	owner: Owner,
+	limit: number,
+	before: string | null,
+};
+
+export type EventHistoryResponse = {
+	events: ChangeEvent[],
+	seq_high_water: string | null,
 };
 
 /**
