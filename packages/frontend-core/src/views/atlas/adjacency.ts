@@ -6,8 +6,22 @@ export function buildAdjacency(edges: AtlasEdge[]): Adjacency {
   for (const e of edges) {
     if (!out.has(e.src)) out.set(e.src, []);
     if (!inn.has(e.tgt)) inn.set(e.tgt, []);
-    out.get(e.src)!.push({ tgt: e.tgt, id: e.id, kind: e.kind });
-    inn.get(e.tgt)!.push({ src: e.src, id: e.id, kind: e.kind });
+    out
+      .get(e.src)!
+      .push({
+        tgt: e.tgt,
+        id: e.id,
+        kind: e.kind,
+        relationClass: e.relationClass,
+      });
+    inn
+      .get(e.tgt)!
+      .push({
+        src: e.src,
+        id: e.id,
+        kind: e.kind,
+        relationClass: e.relationClass,
+      });
   }
   return { out, inn };
 }

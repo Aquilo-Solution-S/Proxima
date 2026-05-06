@@ -106,7 +106,9 @@ describe("FullSurface fact explorer", () => {
     fireEvent.click(screen.getByTitle("proxima-code/code-chunk-v1"));
 
     expect(await screen.findByText("src/chunker.rs:7-9")).toBeTruthy();
-    expect(screen.getByText("fn selected_chunk() {}")).toBeTruthy();
+    expect(
+      document.querySelector(".code-payload-snippet code")?.textContent,
+    ).toBe("fn selected_chunk() {}");
     expect(screen.queryByText("src/lib.rs")).toBeNull();
   });
 
