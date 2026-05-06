@@ -73,15 +73,6 @@ function createAppHub(): Hub {
       flavor: null,
     },
     {
-      id: "schemas",
-      label: "Schemas",
-      component: viewWithHub(async () => {
-        const { SchemasView } = await import("@proxima/core/views/schemas");
-        return { default: () => <SchemasView hub={hub} /> };
-      }),
-      flavor: null,
-    },
-    {
       id: "marketplace",
       label: "Marketplace",
       component: viewWithHub(async () => {
@@ -102,7 +93,18 @@ function createAppHub(): Hub {
       flavor: null,
     },
     ] satisfies RegisteredView[],
-    substrateSettingsPanels,
+    [
+      ...substrateSettingsPanels,
+      {
+        id: "schemas",
+        label: "Schemas",
+        component: viewWithHub(async () => {
+          const { SchemasView } = await import("@proxima/core/views/schemas");
+          return { default: () => <SchemasView hub={hub} /> };
+        }),
+        flavor: null,
+      },
+    ],
   );
   hub.registerFlavor("code", registerCode);
   return hub;
