@@ -3,7 +3,7 @@ import { Dynamic } from "solid-js/web";
 import { FilterDialog } from "./filter-dialog";
 import { useGraph } from "./graph-store";
 import type { Hub, RegisteredView } from "./hub";
-import { LoadingSurface } from "./primitives";
+import { LoadingSurface, ProximaSeal } from "./primitives";
 
 const EmptyView: Component = () => (
   <div class="shell-empty">No view selected</div>
@@ -18,22 +18,30 @@ export const Shell: Component<{ hub: Hub }> = (props) => {
   return (
     <div class="proxima-shell">
       <header class="chrome-top">
-        <nav class="hub-nav">
-          <For each={props.hub.views()}>
-            {(view) => (
-              <button
-                type="button"
-                classList={{
-                  "hub-nav-item": true,
-                  active: view.id === props.hub.currentView(),
-                }}
-                onClick={() => props.hub.setCurrentView(view.id)}
-              >
-                {view.label}
-              </button>
-            )}
-          </For>
-        </nav>
+        <div class="chrome-left">
+          <div class="shell-brand" aria-label="Proxima Shell">
+            <ProximaSeal size={22} theme="dark" mode="favicon" />
+            <span class="shell-brand-wordmark">Proxima</span>
+            <span class="shell-brand-divider" aria-hidden="true" />
+            <span class="shell-brand-product">Shell</span>
+          </div>
+          <nav class="hub-nav">
+            <For each={props.hub.views()}>
+              {(view) => (
+                <button
+                  type="button"
+                  classList={{
+                    "hub-nav-item": true,
+                    active: view.id === props.hub.currentView(),
+                  }}
+                  onClick={() => props.hub.setCurrentView(view.id)}
+                >
+                  {view.label}
+                </button>
+              )}
+            </For>
+          </nav>
+        </div>
         <button
           type="button"
           class="hub-nav-item"
