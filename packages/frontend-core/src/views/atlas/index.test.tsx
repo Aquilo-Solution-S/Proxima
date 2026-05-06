@@ -343,6 +343,51 @@ describe("Atlas graph wiring", () => {
     raycast.mockRestore();
   });
 
+  it("pins selected node focus against hover changes until deselected", () => {
+    const fact = atlasNode("019dfa50-0000-7000-8000-000000000001", "Fact", "engine.rs", 0);
+    const abs = atlasNode("019dfa50-0000-7000-8000-000000000002", "Abstraction", "call graph", 1);
+    let hitIndex: number | null = 1;
+    const raycast = vi.spyOn(THREE.Raycaster.prototype, "intersectObjects").mockImplementation(
+      (objects) =>
+        hitIndex === null
+          ? []
+          : ([{ object: objects[hitIndex] }] as THREE.Intersection[]),
+    );
+
+    const { container } = render(() => (
+      <GraphFilterProvider store={createGraphFilterStore()}>
+        <Atlas
+          hub={createHub([])}
+          nodes={[fact, abs]}
+          edges={[atlasEdge("019dfa50-0000-7000-8000-000000000011", fact.id, abs.id)]}
+        />
+      </GraphFilterProvider>
+    ));
+    const canvas = document.querySelector(".atlas-canvas canvas")!;
+    const inspectorTitle = () => container.querySelector(".i-title")?.textContent;
+
+    fireEvent.pointerMove(canvas);
+    expect(inspectorTitle()).toBe("call graph");
+
+    hitIndex = 0;
+    fireEvent.click(canvas);
+    expect(inspectorTitle()).toBe("engine.rs");
+
+    hitIndex = 1;
+    fireEvent.pointerMove(canvas);
+    expect(inspectorTitle()).toBe("engine.rs");
+
+    hitIndex = null;
+    fireEvent.click(canvas);
+    expect(inspectorTitle()).toBeUndefined();
+
+    hitIndex = 1;
+    fireEvent.pointerMove(canvas);
+    expect(inspectorTitle()).toBe("call graph");
+
+    raycast.mockRestore();
+  });
+
   it("resizes the inspector column by dragging its handle", () => {
     const { container } = render(() => (
       <GraphFilterProvider store={createGraphFilterStore()}>
