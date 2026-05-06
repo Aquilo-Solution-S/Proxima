@@ -55,6 +55,21 @@ pub trait PerspectivePayload: serde::Serialize + serde::de::DeserializeOwned + '
     }
 }
 
+/// Typed payload for a Goal row in `proxima_core.goals`.
+/// Mirrors `FactPayload` / `AbstractionPayload` for the Goal layer.
+///
+/// See docs/06 §Goal entity and docs/03 §Sidecar tables.
+pub trait GoalPayload: serde::Serialize + serde::de::DeserializeOwned + 'static {
+    const SCHEMA_ID: &'static str;
+    const SCHEMA_VERSION: u32;
+    /// See `FactPayload::SPECIAL_CATEGORY`.
+    const SPECIAL_CATEGORY: bool = false;
+    fn sidecar_table() -> &'static str;
+    fn schema_id() -> SchemaId {
+        SchemaId::new(Self::SCHEMA_ID.to_string())
+    }
+}
+
 /// Typed payload for an edge row in `proxima_core.edges`. Mirrors
 /// `FactPayload` / `AbstractionPayload` for the edge layer; opt-in
 /// per relation via `RelationDescriptor::payload_schema`.
