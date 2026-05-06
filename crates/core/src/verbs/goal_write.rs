@@ -11,10 +11,12 @@ use crate::{
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
 pub enum GoalState {
+    Proposed,
     Active,
     Paused,
     Achieved,
     Abandoned,
+    Rejected,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]

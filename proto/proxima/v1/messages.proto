@@ -149,10 +149,12 @@ message TypedGoal {
 
 enum GoalState {
   GOAL_STATE_UNSPECIFIED  = 0;
-  GOAL_STATE_ACTIVE       = 1;
-  GOAL_STATE_PAUSED       = 2;
-  GOAL_STATE_ACHIEVED     = 3;
-  GOAL_STATE_ABANDONED    = 4;
+  GOAL_STATE_PROPOSED     = 1;
+  GOAL_STATE_ACTIVE       = 2;
+  GOAL_STATE_PAUSED       = 3;
+  GOAL_STATE_ACHIEVED     = 4;
+  GOAL_STATE_ABANDONED    = 5;
+  GOAL_STATE_REJECTED     = 6;
 }
 
 // docs/06 §"GoalAuthorship". `system` carries operator/tool provenance;

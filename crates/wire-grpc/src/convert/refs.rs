@@ -201,19 +201,23 @@ pub fn relation_class_to_proto(core: CoreRelationClass) -> PbRelationClass {
 pub fn goal_state_from_proto(pb: PbGoalState) -> Result<CoreGoalState, Status> {
     match pb {
         PbGoalState::Unspecified => Err(Status::invalid_argument("unspecified goal state")),
+        PbGoalState::Proposed => Ok(CoreGoalState::Proposed),
         PbGoalState::Active => Ok(CoreGoalState::Active),
         PbGoalState::Paused => Ok(CoreGoalState::Paused),
         PbGoalState::Achieved => Ok(CoreGoalState::Achieved),
         PbGoalState::Abandoned => Ok(CoreGoalState::Abandoned),
+        PbGoalState::Rejected => Ok(CoreGoalState::Rejected),
     }
 }
 
 pub fn goal_state_to_proto(core: CoreGoalState) -> PbGoalState {
     match core {
+        CoreGoalState::Proposed => PbGoalState::Proposed,
         CoreGoalState::Active => PbGoalState::Active,
         CoreGoalState::Paused => PbGoalState::Paused,
         CoreGoalState::Achieved => PbGoalState::Achieved,
         CoreGoalState::Abandoned => PbGoalState::Abandoned,
+        CoreGoalState::Rejected => PbGoalState::Rejected,
     }
 }
 
