@@ -111,8 +111,10 @@ fn fresh_goal_draft(owner: &Owner, request_id: &str, text: &str) -> GoalDraft {
         schema_id: SchemaId::new("test/goal_blob".into()),
         schema_version: SchemaVersion::new(1),
         text: text.to_string(),
+        payload: Vec::new(),
         state: GoalState::Active,
         parent_goal_ids: vec![],
+        supersedes_goal_id: None,
         authorship: GoalAuthorship::User,
         request_id: request_id.to_string(),
     }

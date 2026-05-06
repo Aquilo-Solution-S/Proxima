@@ -329,8 +329,15 @@ pub fn goal_write_request_from_proto(pb: GoalWriteRequest) -> Result<GoalDraft, 
         schema_id: SchemaId::new(schema_ref.schema_id.clone()),
         schema_version: SchemaVersion::new(schema_ref.schema_version),
         text: pb.text.clone(),
+        payload: pb.payload.clone(),
         state: goal_state_from_proto(pb.state())?,
         parent_goal_ids: parent_goal_ids?,
+        supersedes_goal_id: pb
+            .supersedes_goal_id
+            .as_deref()
+            .map(uuid_from_proto)
+            .transpose()?
+            .map(GoalId::new),
         authorship,
         request_id: pb.request_id.clone(),
     })
