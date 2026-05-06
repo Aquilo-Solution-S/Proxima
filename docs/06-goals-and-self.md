@@ -27,7 +27,8 @@ struct Goal {
     id:              GoalId,                  // UUIDv7
     owner:           Owner,                    // scope (see [01](docs/01-event-source.md))
     schema_id:       SchemaId,                 // NOT NULL — every Goal carries a typed payload
-    text:            String,                    // human-authored or operator-authored prose; the playing space
+    title:           String,                    // compact label
+    text:            String,                    // human/operator-authored body; the playing space
     state:           GoalState,
     parent_goal_ids: Vec<GoalId>,             // DAG
     supersedes:      Option<GoalId>,           // prior version
@@ -292,7 +293,7 @@ operators (agent-discovered).
 
 ## Retrieval
 
-`goal.text` is embedded. Vector index alongside structural columns
+`goal.title || "\n" || goal.text` is embedded. Vector index alongside structural columns
 (`owner`, `state`, `schema_id`, `parent_goal_ids`, supersession
 chain). Used for extractor dedup ("is there already a goal like
 this?"), for A→P / A→Goal / decider context lookup, and for

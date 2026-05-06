@@ -107,6 +107,7 @@ fn fresh_goal_draft(owner: &Owner, request_id: String) -> GoalDraft {
         owner: owner.clone(),
         schema_id: SchemaId::new("test/goal_blob".into()),
         schema_version: SchemaVersion::new(1),
+        title: "Test goal".to_string(),
         text: "Test goal text".to_string(),
         payload: Vec::new(),
         state: GoalState::Active,

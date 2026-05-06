@@ -99,6 +99,7 @@ pub struct GoalRow {
     pub schema_id: SchemaId,
     pub schema_version: SchemaVersion,
     pub owner: Owner,
+    pub title: String,
     pub text: String,
     pub state: GoalState,
     pub parent_goal_ids: Vec<GoalId>,

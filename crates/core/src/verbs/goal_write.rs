@@ -51,6 +51,7 @@ pub struct GoalDraft {
     pub owner: Owner,
     pub schema_id: SchemaId,
     pub schema_version: SchemaVersion,
+    pub title: String,
     pub text: String,
     pub payload: Vec<u8>,
     pub state: GoalState,

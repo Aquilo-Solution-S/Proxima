@@ -160,6 +160,7 @@ message GoalWriteRequest {
   // Set when superseding a prior head. Returns `Superseded` if the
   // prior is itself already superseded.
   optional string supersedes_goal_id = 9;
+  string title                      = 10;
 }
 
 message GoalWriteResponse {

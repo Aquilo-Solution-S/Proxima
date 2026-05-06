@@ -76,6 +76,7 @@ pub fn goal_to_proto(core: &GoalRow) -> TypedGoal {
                 core.schema_id.clone(),
                 core.schema_version,
             ))),
+            title: core.title.clone(),
             text: core.text.clone(),
             state: goal_state_to_proto(core.state) as i32,
             parent_goal_ids: core

@@ -227,6 +227,8 @@
 .goal-card-body,
 .goal-proposed-body {
   min-width: 0;
+  display: grid;
+  gap: 5px;
 }
 .goal-node.is-active .goal-card {
   border-color: var(--accent-active);
@@ -309,6 +311,23 @@
   line-height: 1.5;
   color: var(--ink-90);
 }
+.goal-title {
+  display: block;
+  min-width: 0;
+  color: var(--ink-90);
+  font-family: var(--serif);
+  font-size: 13px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+.goal-text {
+  margin: 0;
+  color: var(--ink-70);
+  font-family: var(--sans);
+  font-size: 12px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
 .goal-card-body :is(.proxima-goal-text, .goal-typed-text),
 .goal-proposed-body :is(.proxima-goal-text, .goal-typed-text),
 .goal-card-body .prose,
@@ -321,16 +340,6 @@
   display: grid;
   gap: 5px;
   min-width: 0;
-}
-.goal-card-body .proxima-goal-task strong,
-.goal-proposed-body .proxima-goal-task strong {
-  display: block;
-  min-width: 0;
-  color: var(--ink-90);
-  font-family: var(--serif);
-  font-size: 13px;
-  line-height: 1.35;
-  overflow-wrap: anywhere;
 }
 .goal-card-body .proxima-goal-task span,
 .goal-card-body .proxima-goal-task time,

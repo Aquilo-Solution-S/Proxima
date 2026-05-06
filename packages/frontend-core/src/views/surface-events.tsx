@@ -104,6 +104,7 @@ const EventEntityPreview: Component<{
         {(row) => (
           <div class="event-hydrated">
             <EventDetailField label="Goal state">{row.state}</EventDetailField>
+            <p class="prose prose-small"><strong>{row.title}</strong></p>
             <p class="prose prose-small">{row.text}</p>
           </div>
         )}

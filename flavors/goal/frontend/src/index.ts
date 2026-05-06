@@ -7,12 +7,10 @@ import { goalPayloadCodec, goalRenderers } from "./renderers/payload-renderers";
 import {
   SimpleTextGoalEditor,
   simpleTextGoalDefaults,
-  simpleTextGoalToText,
 } from "./editors/simple-text-editor";
 import {
   TaskGoalEditor,
   taskGoalDefaults,
-  taskGoalToText,
 } from "./editors/task-editor";
 
 export { SimpleTextGoalRenderer } from "./renderers/simple-text-goal";
@@ -44,7 +42,6 @@ export function init(): void {
     flavor: "proxima-goal",
     label: "Simple text",
     defaults: simpleTextGoalDefaults,
-    toText: simpleTextGoalToText,
     component: SimpleTextGoalEditor,
   });
   registerGoalPayloadEditor({
@@ -53,7 +50,6 @@ export function init(): void {
     flavor: "proxima-goal",
     label: "Task",
     defaults: taskGoalDefaults,
-    toText: taskGoalToText,
     component: TaskGoalEditor,
   });
 }

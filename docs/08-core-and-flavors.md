@@ -538,7 +538,7 @@ The bare core ships seven payload traits (definitions in 03 / 06 / 11):
 | `FactPayload`           | every Fact          | yes (deterministic, cheap) | `fact_<schema>_v<n>` |
 | `AbstractionPayload`    | every Abstraction   | no — `Memory.text` is the view | `abstraction_<schema>_v<n>` |
 | `PerspectivePayload`    | every Perspective   | no — `Memory.text` is the view | `perspective_<schema>_v<n>` |
-| `GoalPayload`           | every Goal          | no — `Goal.text` is the view | `goal_<schema>_v<n>` |
+| `GoalPayload`           | every Goal          | no — `Goal.title` / `Goal.text` are the view | `goal_<schema>_v<n>` |
 | `EdgePayload`           | edges whose `RelationDescriptor` declares a `payload_schema` (substrate / core relations carry no payload) | no — substrate edge row carries the discriminators | `edge_<schema>_v<n>` (keyed on `edge_id`) |
 | `CitedObjectPayload`    | per artefact kind   | no — sidecar carries S3 path / handle to the artefact | `cited_<schema>_v<n>` |
 | `CitationMappingPayload`| per annotation kind | no — typed annotation only | `citation_<schema>_v<n>` |

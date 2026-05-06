@@ -495,6 +495,13 @@
   min-width: 0;
   white-space: inherit;
 }
+.i-goal-title {
+  font-family: var(--serif);
+  font-size: 15px;
+  line-height: 1.35;
+  color: var(--ink-100);
+  font-weight: 700;
+}
 .i-goal-text {
   font-family: var(--serif);
   font-size: 14px;

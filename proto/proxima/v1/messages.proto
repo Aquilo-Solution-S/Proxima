@@ -138,6 +138,7 @@ message Goal {
   GoalState state            = 5;
   repeated string parent_goal_ids = 6;
   GoalAuthorship authorship  = 7;
+  string title               = 8;
 }
 
 // `Goal` + materialized payload from the registered GoalPayload

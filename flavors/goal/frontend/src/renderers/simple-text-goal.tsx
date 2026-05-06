@@ -1,7 +1,6 @@
-export interface SimpleTextGoalPayload {
-  text: string;
-}
+export interface SimpleTextGoalPayload {}
 
 export function SimpleTextGoalRenderer(props: { payload: SimpleTextGoalPayload }) {
-  return <p class="proxima-goal-text">{props.payload.text}</p>;
+  void props.payload;
+  return null;
 }

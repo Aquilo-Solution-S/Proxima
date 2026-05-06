@@ -9,7 +9,6 @@ pub enum TaskPriority {
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct TaskGoalV1 {
-    pub title: String,
     pub due_at: Option<time::OffsetDateTime>,
     pub priority: Option<TaskPriority>,
 }

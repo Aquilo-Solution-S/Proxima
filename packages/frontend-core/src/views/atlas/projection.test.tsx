@@ -25,6 +25,7 @@ const goal = (id: string): GoalRow => ({
   schema_id: "core/goal-v1",
   schema_version: 1,
   owner,
+  title: "Ship atlas",
   text: "Ship atlas",
   state: "Active",
   parent_goal_ids: [],
