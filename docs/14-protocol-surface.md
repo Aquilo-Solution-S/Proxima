@@ -15,12 +15,13 @@ operators (04), the tool registry (05), and any flavor-registered
 behavior all run **inside** the binary; clients never see them on the
 wire.
 
-## The five verbs
+## The six verbs
 
 | Verb | Direction | Idempotent | Scope |
 |---|---|---|---|
 | `Query` | client → engine, sync | yes | Owner |
 | `Subscribe` | engine → client, stream | n/a | Owner |
+| `EventHistory` | client → engine, sync | yes | Owner |
 | `GoalWrite` | client → engine, sync | by `request_id` | Owner |
 | `EventIngest` | source → engine, sync | by `event_id` | Owner |
 | `Schema` | client → engine, sync | yes | global (binary-scoped) |
@@ -111,6 +112,25 @@ fetch is a follow-up `Query` keyed on the `entity_id` /
 `edge_id`. This keeps the stream cheap on bandwidth and lets clients
 render typed payloads through the registered schema.
 
+### EventHistory
+
+Owner-scoped bounded read of the change-event log, newest-first.
+
+- **Filters** — owner only in v1. The same core-generic + flavor-typed
+  axes that `Subscribe` and `Query` carry land here together when
+  any of them gain new axes.
+- **Pagination** — `limit` is required (1..=1000, server-clamped).
+  `before: Option<Uuid7>` returns rows with `seq < before` for
+  older pages. No `after` cursor; resume into newer events is
+  `Subscribe`'s job.
+- **Returns** events newest-first plus a `seq_high_water` watermark
+  with the same semantics as `Query` — the latest seq in the
+  owner's `change_event` log at read time. Clients seed local
+  caches from `events` and start `Subscribe(since = seq_high_water)`
+  to pick up live appends.
+- **Idempotent.** `EventHistory` reads only; no commit, no side
+  effect.
+
 ### GoalWrite
 
 ```rust
@@ -192,6 +212,26 @@ duplicating events:
 `Query`'s `seq_high_water` is the watermark of the engine's outbox at
 read time. Any event committed after that watermark is delivered via
 `Subscribe`; any event before is in the snapshot. No race window.
+
+### With history seed
+
+A client that wants to render the recent change-log (e.g. an "Event
+stream" UI rail) seeds it with `EventHistory` in parallel with the
+snapshot:
+
+```
+1. (snapshot, hwm_q), (events, hwm_e) = parallel(
+       Query(owner, filters),
+       EventHistory(owner, limit = N, before = None))
+2. apply snapshot to local cache
+3. seed local event log with events
+4. Subscribe(owner, since = max(hwm_q, hwm_e), filters = same)
+```
+
+`max(hwm_q, hwm_e)` is defensive — the two reads observe the same
+log; in steady state they agree. Clients dedup live events by
+`seq` membership against the seeded log (`Subscribe` is at-least-once
+per the cursor section).
 
 ## Multi-Owner stance
 
