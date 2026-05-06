@@ -15,6 +15,7 @@ pub mod command_error;
 mod commands;
 pub mod config;
 mod mcp;
+mod perf;
 mod repo_ingest_hub;
 pub mod secrets;
 
@@ -47,6 +48,10 @@ pub fn run() {
         )
         .try_init()
         .ok();
+
+    if let Some(dir) = perf::session::dir() {
+        tracing::info!(perf_session_dir = %dir.display(), "perf capture active");
+    }
 
     let (engine, pg) = boot::build_engine();
     let mcp_handle = tauri::async_runtime::block_on(async {
