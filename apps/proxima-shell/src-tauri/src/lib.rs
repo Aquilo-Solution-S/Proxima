@@ -37,15 +37,28 @@ pub fn run() {
     // session-cleanup race at ERROR; both are clean lifecycle events
     // (`quit_reason=Closed`). Pin those targets to `warn` until rmcp
     // upstream lowers them.
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-                tracing_subscriber::EnvFilter::new(
-                    "info,rmcp::transport::worker=warn,\
-                     rmcp::transport::streamable_http_server::tower=warn",
-                )
-            }),
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        tracing_subscriber::EnvFilter::new(
+            "info,rmcp::transport::worker=warn,\
+             rmcp::transport::streamable_http_server::tower=warn",
         )
+    });
+
+    let (chrome_layer, _chrome_guard) = match perf::session::dir() {
+        Some(dir) => {
+            let (layer, guard) = perf::chrome::layer(dir);
+            (Some(layer), Some(guard))
+        }
+        None => (None, None),
+    };
+
+    tracing_subscriber::registry()
+        .with(chrome_layer)
+        .with(env_filter)
+        .with(tracing_subscriber::fmt::layer())
         .try_init()
         .ok();
 
