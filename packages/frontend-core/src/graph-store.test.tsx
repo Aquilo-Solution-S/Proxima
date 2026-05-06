@@ -18,6 +18,7 @@ describe("GraphStore snapshot loading", () => {
         queries.push(req);
         return { memories: [], goals: [], edges: [], seq_high_water: null };
       },
+      eventHistory: async () => ({ events: [], seq_high_water: null }),
       subscribe: async (): Promise<Subscription> => ({ unsubscribe() {} }),
       goalWrite: async (_draft: GoalDraft) => {
         throw new Error("goalWrite not used");

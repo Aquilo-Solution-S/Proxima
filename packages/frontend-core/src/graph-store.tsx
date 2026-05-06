@@ -10,6 +10,7 @@ import type {
   EntityKind,
   EntityRef,
   EdgeRow,
+  EventHistoryResponse,
   GoalRow,
   MemoryRow,
   Owner,
@@ -59,6 +60,7 @@ const DECODE_ERROR_CAP = 256;
 const HYDRATION_WINDOW_MS = 50;
 const MAX_BATCH = 500;
 const BURST_THRESHOLD = 5_000;
+const HISTORY_SEED_LIMIT = 200;
 // Node window for owner snapshots. Snapshot edges are loaded by the
 // backend as closure over returned nodes and capped separately.
 export const GRAPH_SNAPSHOT_LIMIT = 5_000;
@@ -92,6 +94,25 @@ const isSeqGap = (prev: string | null, next: string): boolean => {
   const a = seqValue(prev);
   const b = seqValue(next);
   return a !== null && b !== null && b <= a;
+};
+
+const seedEventsBySeq = (
+  resp: EventHistoryResponse,
+): ReadonlyMap<string, ChangeEvent> => {
+  const map = new Map<string, ChangeEvent>();
+  for (const event of resp.events) {
+    map.set(event.seq, event);
+  }
+  return map;
+};
+
+const maxSeq = (a: string | null, b: string | null): string | null => {
+  if (a === null) return b;
+  if (b === null) return a;
+  const av = seqValue(a);
+  const bv = seqValue(b);
+  if (av === null || bv === null) return a;
+  return bv > av ? b : a;
 };
 
 export const entityRefId = (ref: EntityRef): string =>
@@ -193,16 +214,17 @@ export function createGraphStore(
         edgesById: edges,
         pendingHydration: pending,
         decodeErrorsByEntity: errors,
-        seqHighWater: resp.seq_high_water,
+        seqHighWater: maxSeq(prev.seqHighWater, resp.seq_high_water),
       };
     });
   };
 
   const refresh = async (): Promise<void> => {
     setState((prev) => ({ ...prev, streamStatus: "connecting" }));
-    const [schemaResp, queryResp] = await Promise.all([
+    const [schemaResp, queryResp, historyResp] = await Promise.all([
       client.schema(),
       client.query(snapshotReq(owner)),
+      client.eventHistory({ owner, limit: HISTORY_SEED_LIMIT, before: null }),
     ]);
     setState((prev) => ({
       ...prev,
@@ -210,14 +232,15 @@ export function createGraphStore(
       memoriesById: new Map(),
       goalsById: new Map(),
       edgesById: new Map(),
+      eventsBySeq: seedEventsBySeq(historyResp),
       pendingHydration: new Map(),
       decodeErrorsByEntity: new Map(),
-      seqHighWater: queryResp.seq_high_water,
+      seqHighWater: maxSeq(queryResp.seq_high_water, historyResp.seq_high_water),
     }));
     applyResponse(queryResp);
     subscription?.unsubscribe();
     subscription = await client.subscribe(
-      { owner, since: queryResp.seq_high_water },
+      { owner, since: state().seqHighWater },
       handleEvent,
     );
     setState((prev) => ({ ...prev, streamStatus: "live" }));
@@ -254,8 +277,8 @@ export function createGraphStore(
   };
 
   const handleEvent = (event: ChangeEvent): void => {
+    if (state().eventsBySeq.has(event.seq)) return;
     setState((prev) => {
-      if (prev.eventsBySeq.has(event.seq)) return prev;
       const events = new Map(prev.eventsBySeq);
       events.set(event.seq, event);
       return {
