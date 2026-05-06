@@ -5,6 +5,7 @@ import {
   Show,
   createMemo,
   createSignal,
+  onCleanup,
   type Component,
   type JSX,
 } from "solid-js";
@@ -21,6 +22,12 @@ import {
 } from "../bindings";
 import { EventStream } from "./surface-events";
 import { GoalDialog } from "./goal-dialog";
+
+const GOAL_RAIL_DEFAULT_WIDTH = 280;
+const GOAL_RAIL_MIN_WIDTH = 220;
+const GOAL_RAIL_MAX_WIDTH = 560;
+const SURFACE_CENTER_MIN_WIDTH = 300;
+const RAIL_COLLAPSED_WIDTH = 48;
 
 // ── Goal rail ───────────────────────────────────────────────────────────
 const renderGoalPayload = (goal: GoalRow, hub: Hub): JSX.Element | null => {
@@ -49,6 +56,22 @@ const renderGoalPayload = (goal: GoalRow, hub: Hub): JSX.Element | null => {
     payload: goal.payload,
   };
   return renderer.render({ memory: synthetic, payload });
+};
+
+const stateClass = (state: GoalRow["state"]): string =>
+  `state-${state.toLowerCase()}`;
+
+const GoalPayloadBody: Component<{
+  goal: GoalRow;
+  hub: Hub;
+}> = (props) => {
+  const rendered = (): JSX.Element | null =>
+    renderGoalPayload(props.goal, props.hub);
+  return (
+    <Show keyed when={rendered()} fallback={<p class="prose prose-small">{props.goal.text}</p>}>
+      {(node) => node}
+    </Show>
+  );
 };
 
 const ProposedGoalCard: Component<{
@@ -80,7 +103,6 @@ const ProposedGoalCard: Component<{
       setBusy(false);
     }
   };
-  const rendered = (): JSX.Element | null => renderGoalPayload(props.goal, props.hub);
   return (
     <article class="goal-proposed-card" title={props.goal.id}>
       <div class="goal-proposed-head">
@@ -91,9 +113,7 @@ const ProposedGoalCard: Component<{
         <span class="state-pill is-proposed">Proposed</span>
       </div>
       <div class="goal-proposed-body">
-        <Show keyed when={rendered()} fallback={<p class="prose prose-small">{props.goal.text}</p>}>
-          {(node) => node}
-        </Show>
+        <GoalPayloadBody goal={props.goal} hub={props.hub} />
       </div>
       <div class="goal-proposed-actions">
         <button
@@ -131,9 +151,32 @@ const ProposedGoalCard: Component<{
   );
 };
 
+const GoalCard: Component<{
+  goal: GoalRow;
+  hub: Hub;
+}> = (props) => (
+  <article class="goal-card" title={props.goal.id}>
+    <div class="goal-meta">
+      <span class={`state-pill ${stateClass(props.goal.state)}`}>
+        {props.goal.state}
+      </span>
+      <SchemaTag
+        id={props.goal.schema_id}
+        version={props.goal.schema_version}
+      />
+    </div>
+    <div class="goal-card-body">
+      <GoalPayloadBody goal={props.goal} hub={props.hub} />
+    </div>
+  </article>
+);
+
 const GoalRail: Component<{
   collapsed: boolean;
   onToggle: () => void;
+  width: number;
+  onResizeStart: JSX.EventHandlerUnion<HTMLDivElement, PointerEvent>;
+  onResizeKeyDown: JSX.EventHandlerUnion<HTMLDivElement, KeyboardEvent>;
   goals: GoalRow[];
   hub: Hub;
   onAfterWrite: () => void;
@@ -142,7 +185,10 @@ const GoalRail: Component<{
 }> = (props) => {
   const proposed = (): GoalRow[] =>
     props.goals.filter((goal) => goal.state === "Proposed");
-  const remaining = (): number => props.goals.length - proposed().length;
+  const accepted = (): GoalRow[] =>
+    props.goals.filter((goal) =>
+      goal.state !== "Proposed" && goal.state !== "Rejected"
+    );
   return (
     <aside
       classList={{
@@ -193,7 +239,26 @@ const GoalRail: Component<{
             </button>
           </div>
         </div>
+        <div
+          class="goal-rail-resize-handle"
+          role="separator"
+          aria-label="Resize Goal DAG"
+          aria-orientation="vertical"
+          aria-valuemin={GOAL_RAIL_MIN_WIDTH}
+          aria-valuemax={GOAL_RAIL_MAX_WIDTH}
+          aria-valuenow={props.width}
+          tabIndex={0}
+          onPointerDown={props.onResizeStart}
+          onKeyDown={props.onResizeKeyDown}
+        />
         <div class="goal-list">
+          <Show when={accepted().length > 0}>
+            <section class="goal-accepted-section" aria-label="Accepted goals">
+              <For each={accepted()}>
+                {(goal) => <GoalCard goal={goal} hub={props.hub} />}
+              </For>
+            </section>
+          </Show>
           <Show when={proposed().length > 0}>
             <section class="goal-proposed-section" aria-label="Proposed goals">
               <header class="goal-proposed-section-head">
@@ -213,13 +278,11 @@ const GoalRail: Component<{
               </For>
             </section>
           </Show>
-          <p class="proxima-dim">
-            {remaining() === 0
-              ? proposed().length === 0
-                ? "No goals"
-                : "No accepted goals yet"
-              : `${remaining()} goal identities pending payload projection`}
-          </p>
+          <Show when={accepted().length === 0}>
+            <p class="proxima-dim">
+              {proposed().length === 0 ? "No goals" : "No accepted goals yet"}
+            </p>
+          </Show>
         </div>
       </Show>
     </aside>
@@ -562,6 +625,8 @@ export const FullSurface: Component<{ hub: Hub }> = (props) => {
   const filters = useGraphFilter();
   const [goalsCollapsed, setGoalsCollapsed] = createSignal(true);
   const [eventsCollapsed, setEventsCollapsed] = createSignal(true);
+  const [goalRailWidth, setGoalRailWidth] = createSignal(GOAL_RAIL_DEFAULT_WIDTH);
+  const [resizingGoals, setResizingGoals] = createSignal(false);
   const filtered = createMemo(() =>
     filterGraphSnapshot(graph.state(), filters.state(), props.hub),
   );
@@ -574,18 +639,102 @@ export const FullSurface: Component<{ hub: Hub }> = (props) => {
   const [dialogState, setDialogState] = createSignal<
     { mode: "create" } | { mode: "modify"; goal: GoalRow } | null
   >(null);
+  let surfaceRef!: HTMLDivElement;
+  let stopGoalResize: (() => void) | null = null;
+
+  const surfaceBodyWidth = (): number =>
+    surfaceRef === undefined || surfaceRef.clientWidth <= 0
+      ? 1180
+      : surfaceRef.clientWidth;
+
+  const eventRailWidth = (): number => {
+    if (eventsCollapsed()) return RAIL_COLLAPSED_WIDTH;
+    const bodyWidth = surfaceBodyWidth();
+    return Math.min(Math.max(bodyWidth * 0.32, 220), 380);
+  };
+
+  const clampGoalRailWidth = (width: number): number => {
+    const maxByBody = Math.max(
+      GOAL_RAIL_MIN_WIDTH,
+      surfaceBodyWidth() - eventRailWidth() - SURFACE_CENTER_MIN_WIDTH - 2,
+    );
+    return Math.max(
+      GOAL_RAIL_MIN_WIDTH,
+      Math.min(width, GOAL_RAIL_MAX_WIDTH, maxByBody),
+    );
+  };
+
+  const startGoalResize = (event: PointerEvent) => {
+    if (event.button !== 0 || goalsCollapsed()) return;
+    event.preventDefault();
+    stopGoalResize?.();
+
+    const startX = event.clientX;
+    const rail = (event.currentTarget as HTMLElement).closest(".goal-rail");
+    const measuredWidth = rail instanceof HTMLElement
+      ? rail.getBoundingClientRect().width
+      : 0;
+    const startWidth = measuredWidth > 0 ? measuredWidth : goalRailWidth();
+    const previousCursor = document.body.style.cursor;
+    const previousUserSelect = document.body.style.userSelect;
+
+    setResizingGoals(true);
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+
+    const onPointerMove = (moveEvent: PointerEvent) => {
+      setGoalRailWidth(
+        clampGoalRailWidth(startWidth + (moveEvent.clientX - startX)),
+      );
+    };
+    const onPointerUp = () => {
+      stopGoalResize?.();
+    };
+
+    stopGoalResize = () => {
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+      document.body.style.cursor = previousCursor;
+      document.body.style.userSelect = previousUserSelect;
+      setResizingGoals(false);
+      stopGoalResize = null;
+    };
+
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp);
+  };
+
+  const resizeGoalRailByKey = (event: KeyboardEvent) => {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    event.preventDefault();
+    const direction = event.key === "ArrowRight" ? 1 : -1;
+    const step = event.shiftKey ? 40 : 16;
+    setGoalRailWidth((width) =>
+      clampGoalRailWidth(width + direction * step)
+    );
+  };
+
+  onCleanup(() => {
+    stopGoalResize?.();
+  });
 
   return (
     <div class="proxima-shell">
       <div
+        ref={surfaceRef}
+        style={`--surface-goal-width: ${goalRailWidth()}px`}
         classList={{
           "surface-body": true,
           "is-goals-collapsed": goalsCollapsed(),
           "is-events-collapsed": eventsCollapsed(),
+          "is-resizing-goals": resizingGoals(),
         }}
       >
         <GoalRail
           collapsed={goalsCollapsed()}
+          width={goalRailWidth()}
+          onResizeStart={startGoalResize}
+          onResizeKeyDown={resizeGoalRailByKey}
           goals={goals()}
           hub={props.hub}
           onAfterWrite={() => void graph.refresh()}

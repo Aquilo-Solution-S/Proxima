@@ -144,4 +144,30 @@ describe("Goal rail proposed section", () => {
     expect(screen.queryByRole("button", { name: "Decline proposal" })).toBeNull();
     expect(screen.getByText("No goals")).toBeTruthy();
   });
+
+  it("renders accepted goals in the rail instead of only a count", () => {
+    renderWithGoals([
+      proposedGoal({
+        text: "Keep the rail readable",
+        state: "Active",
+        payload: Array.from(encode({ text: "Keep the rail readable" })),
+      }),
+    ]);
+
+    expect(screen.getByText("Keep the rail readable")).toBeTruthy();
+    expect(screen.getByText("Active")).toBeTruthy();
+    expect(screen.queryByText("No accepted goals yet")).toBeNull();
+  });
+
+  it("resizes the Goal DAG rail from the right-edge separator", () => {
+    renderWithGoals([]);
+    const surface = document.querySelector(".surface-body") as HTMLElement;
+    const separator = screen.getByRole("separator", { name: "Resize Goal DAG" });
+
+    fireEvent.pointerDown(separator, { button: 0, clientX: 280 });
+    fireEvent.pointerMove(window, { clientX: 360 });
+    fireEvent.pointerUp(window);
+
+    expect(surface.getAttribute("style")).toContain("--surface-goal-width: 360px");
+  });
 });
