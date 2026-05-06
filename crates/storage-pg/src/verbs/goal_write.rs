@@ -9,11 +9,24 @@
 use std::collections::HashSet;
 
 use proxima_core::verbs::goal_write::{GoalDraft, GoalState, GoalWriteOutcome};
-use proxima_core::{Principal, StorageError};
+use proxima_core::{GoalId, Principal, StorageError};
 use sqlx::PgPool;
 
 use crate::authorship::{authorship_columns, check_authorship_match};
 use crate::error::map_err;
+
+/// Replay-check tuple read from `proxima_core.goals`:
+/// `(schema_id, schema_version, title, text, state, parent_goal_ids, supersedes, payload)`.
+type GoalBodyRow = (
+    String,
+    i32,
+    String,
+    String,
+    String,
+    Vec<uuid::Uuid>,
+    Option<uuid::Uuid>,
+    Vec<u8>,
+);
 
 #[allow(clippy::too_many_lines)]
 pub(crate) async fn write_goal_atomic(
@@ -51,16 +64,7 @@ pub(crate) async fn write_goal_atomic(
 
     if let Some((existing_goal_id, existing_seq)) = existing {
         // Compare the existing body with the draft.
-        let existing_row: (
-            String,
-            i32,
-            String,
-            String,
-            String,
-            Vec<uuid::Uuid>,
-            Option<uuid::Uuid>,
-            Vec<u8>,
-        ) = sqlx::query_as(
+        let existing_row: GoalBodyRow = sqlx::query_as(
             "SELECT schema_id, schema_version, title, text, state, \
                      COALESCE((SELECT array_agg(parent_goal_id) FROM proxima_core.goal_parents WHERE goal_id = $1), '{}'::uuid[]), \
                      supersedes, payload \
@@ -88,7 +92,7 @@ pub(crate) async fn write_goal_atomic(
         let text_match = existing_row.3 == draft.text;
         let state_match = existing_row.4 == state_str;
         let parents_match = existing_parents == draft_parents;
-        let expected_supersedes = draft.supersedes_goal_id.map(|id| id.into_inner());
+        let expected_supersedes = draft.supersedes_goal_id.map(GoalId::into_inner);
         let supersedes_match = existing_row.6 == expected_supersedes;
         let payload_match = existing_row.7 == draft.payload;
 
@@ -118,7 +122,7 @@ pub(crate) async fn write_goal_atomic(
         )));
     }
 
-    let supersedes = draft.supersedes_goal_id.map(|id| id.into_inner());
+    let supersedes = draft.supersedes_goal_id.map(GoalId::into_inner);
     if let Some(prior_id) = supersedes {
         validate_prior_goal_owner(&mut tx, prior_id, owner_kind, owner_principal_id).await?;
     }
@@ -146,12 +150,12 @@ pub(crate) async fn supersede_goal_atomic(
     prior: proxima_core::GoalId,
     draft: &GoalDraft,
 ) -> Result<GoalWriteOutcome, StorageError> {
-    if let Some(draft_prior) = draft.supersedes_goal_id {
-        if draft_prior != prior {
-            return Err(StorageError::ConstraintViolation(
-                "draft supersedes_goal_id does not match prior".to_string(),
-            ));
-        }
+    if let Some(draft_prior) = draft.supersedes_goal_id
+        && draft_prior != prior
+    {
+        return Err(StorageError::ConstraintViolation(
+            "draft supersedes_goal_id does not match prior".to_string(),
+        ));
     }
 
     let (owner_kind, owner_principal_id) = match &draft.owner.principal {
@@ -184,16 +188,7 @@ pub(crate) async fn supersede_goal_atomic(
 
     if let Some((existing_goal_id, existing_seq)) = existing {
         // Compare the existing body with the draft (including supersedes = prior).
-        let existing_row: (
-            String,
-            i32,
-            String,
-            String,
-            String,
-            Vec<uuid::Uuid>,
-            Option<uuid::Uuid>,
-            Vec<u8>,
-        ) = sqlx::query_as(
+        let existing_row: GoalBodyRow = sqlx::query_as(
             "SELECT schema_id, schema_version, title, text, state, \
                      COALESCE((SELECT array_agg(parent_goal_id) FROM proxima_core.goal_parents WHERE goal_id = $1), '{}'::uuid[]), \
                      supersedes, payload \

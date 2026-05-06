@@ -16,7 +16,12 @@ use tauri::ipc::Channel;
 #[tauri::command]
 #[specta::specta]
 pub async fn schema(engine: State<'_, Arc<Engine>>) -> Result<SchemaResponse, ProtocolError> {
-    crate::perf::ipc::record("schema", 0, async move { Ok(engine.schema(&SchemaRequest)) }).await
+    crate::perf::ipc::record(
+        "schema",
+        0,
+        async move { Ok(engine.schema(&SchemaRequest)) },
+    )
+    .await
 }
 
 #[tauri::command]

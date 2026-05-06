@@ -24,6 +24,7 @@
 use crate::{SchemaId, SchemaVersion};
 
 pub const CORE_DERIVED_FROM_RELATION: &str = "core/derived-from";
+pub const CORE_SUPERSEDES_RELATION: &str = "core/supersedes";
 
 /// Closed substrate vocabulary for the abstract role an edge plays
 /// in A/P traversal. The five variants below are the only edge
@@ -135,10 +136,10 @@ impl RelationDescriptor {
 
 #[must_use]
 pub fn core_relation_descriptors() -> Vec<RelationDescriptor> {
-    vec![RelationDescriptor::substrate(
-        CORE_DERIVED_FROM_RELATION,
-        RelationClass::Provenance,
-    )]
+    vec![
+        RelationDescriptor::substrate(CORE_DERIVED_FROM_RELATION, RelationClass::Provenance),
+        RelationDescriptor::substrate(CORE_SUPERSEDES_RELATION, RelationClass::Supersession),
+    ]
 }
 
 /// Relation resolved from the immutable `SchemaRegistry` for an

@@ -103,7 +103,7 @@ mod tests {
         AppConfig, EmbeddingConfig, EmbeddingModelRecord, LlmConfig, LlmModelRecord, ModelRef,
         TierBindings,
     };
-    use proxima_core::models::{Dialect, EmbedCaps, LlmCaps};
+    use proxima_core::models::{Dialect, EmbedCaps, LlmCaps, ModelTier};
     use proxima_core::operators::{EmbeddingClient, LlmClient};
 
     /// Regenerate `packages/frontend-core/src/bindings.ts` from the
@@ -170,8 +170,10 @@ mod tests {
     #[test]
     fn model_resolution_builds_openai_compatible_clients() {
         let cfg = config_with_models(768);
-        let (llm, embed) = resolve_consolidation_clients(&cfg).expect("clients");
-        assert_eq!(llm.model_id(), "qwen3-coder");
+        let (llms, embed) = resolve_consolidation_clients(&cfg).expect("clients");
+        assert_eq!(llms.len(), 1);
+        assert_eq!(llms[0].0, ModelTier::Standard);
+        assert_eq!(llms[0].1.model_id(), "qwen3-coder");
         assert_eq!(embed.model_id(), "nomic-embed-text");
         assert_eq!(embed.dim(), 768);
     }
@@ -185,11 +187,14 @@ mod tests {
     }
 
     #[test]
-    fn model_resolution_missing_standard_binding_degrades() {
+    fn model_resolution_unknown_tier_model_degrades() {
         let mut cfg = config_with_models(768);
-        cfg.tiers.standard = None;
+        cfg.tiers.standard = Some(ModelRef {
+            vendor: "ollama".to_string(),
+            model_id: "missing".to_string(),
+        });
         let err = resolve_consolidation_clients(&cfg).unwrap_err();
-        assert!(err.contains("missing tier binding"));
+        assert!(err.contains("bound to unknown model"));
     }
 
     #[test]

@@ -7,9 +7,11 @@
 use crate::verbs::schema::{PayloadKind, PayloadValidatorEntry, SchemaInfo, SchemaRegistry};
 use crate::{
     AbstractionPayload, EdgePayload, FactPayload, GoalPayload, McpCallFn, McpTool,
-    McpToolDescriptor, McpToolError, PerspectivePayload, RelationDescriptor, SchemaVersion,
-    core_relation_descriptors,
+    McpToolDescriptor, McpToolError, PersonalityFlavor, PerspectivePayload, RelationDescriptor,
+    SchemaVersion, core_relation_descriptors,
 };
+
+use std::sync::Arc;
 
 pub type FlavorRegistryFrozen = SchemaRegistry;
 
@@ -19,6 +21,7 @@ pub struct FlavorRegistry {
     relations: Vec<RelationDescriptor>,
     validators: Vec<PayloadValidatorEntry>,
     mcp_tools: Vec<McpToolDescriptor>,
+    personalities: Vec<Arc<dyn PersonalityFlavor>>,
 }
 
 impl Default for FlavorRegistry {
@@ -28,6 +31,7 @@ impl Default for FlavorRegistry {
             relations: core_relation_descriptors(),
             validators: Vec::new(),
             mcp_tools: Vec::new(),
+            personalities: Vec::new(),
         }
     }
 }
@@ -142,6 +146,15 @@ impl FlavorRegistry {
         self.relations.push(descriptor);
     }
 
+    pub fn add_personality<P: PersonalityFlavor + 'static>(&mut self, personality: P) {
+        self.personalities.push(Arc::new(personality));
+    }
+
+    #[must_use]
+    pub fn list_personalities(&self) -> &[Arc<dyn PersonalityFlavor>] {
+        &self.personalities
+    }
+
     pub fn add_mcp_tool<T: McpTool>(&mut self, expected_prefix: &str) {
         let prefix = format!("{expected_prefix}/");
         assert!(
@@ -208,6 +221,7 @@ impl FlavorRegistry {
             self.relations,
             self.validators,
             self.mcp_tools,
+            self.personalities,
         )
     }
 }
@@ -266,7 +280,7 @@ mod mcp_tool_registry_tests {
         let mut registry = FlavorRegistry::new();
         registry.add_mcp_tool::<Demo>("proxima-test");
         registry.add_mcp_tool::<Demo>("proxima-test");
-        let result = std::panic::catch_unwind(|| registry.freeze());
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| registry.freeze()));
         assert!(result.is_err(), "freeze must panic on duplicate tool names");
     }
 

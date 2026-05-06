@@ -3,6 +3,9 @@
 //! Covers: open-then-close, idempotent re-close, cross-owner reject,
 //! `NotFound` for unknown batches.
 
+mod common;
+
+use common::{create_db, db_url, drop_db};
 use proxima_core::auth::{Credentials, NoAuth};
 use proxima_core::engine::Engine;
 use proxima_core::error::ErrorCode;
@@ -14,27 +17,8 @@ use proxima_core::{
     OrgId, Owner, Principal, SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId,
 };
 use proxima_storage_pg::PgStorage;
-use sqlx::{Connection, Executor, PgConnection};
 use std::sync::Arc;
 use uuid::Uuid;
-
-const ADMIN_URL: &str = "postgres://postgres@localhost/postgres";
-
-async fn create_db(name: &str) -> Result<(), sqlx::Error> {
-    let mut conn = PgConnection::connect(ADMIN_URL).await?;
-    conn.execute(format!("CREATE DATABASE \"{name}\"").as_str())
-        .await?;
-    conn.close().await?;
-    Ok(())
-}
-
-async fn drop_db(name: &str) -> Result<(), sqlx::Error> {
-    let mut conn = PgConnection::connect(ADMIN_URL).await?;
-    conn.execute(format!("DROP DATABASE IF EXISTS \"{name}\"").as_str())
-        .await?;
-    conn.close().await?;
-    Ok(())
-}
 
 fn schemas_for_test() -> Vec<SchemaInfo> {
     vec![
@@ -98,7 +82,7 @@ async fn close_batch_idempotent_and_owner_scoped() {
         eprintln!("skipping (no admin PG)");
         return;
     }
-    let url = format!("postgres://postgres@localhost/{db_name}");
+    let url = db_url(&db_name);
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;

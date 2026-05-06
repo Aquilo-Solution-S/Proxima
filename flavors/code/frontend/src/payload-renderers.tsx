@@ -82,6 +82,11 @@ const stateText = (value: unknown): string => asString(value) ?? "unknown";
 
 const optional = (value: unknown): string => asString(value) ?? "none";
 
+const percent = (value: unknown): string => {
+  const n = asNumber(value);
+  return n === null ? "unknown" : `${Math.round(Math.max(0, Math.min(1, n)) * 100)}%`;
+};
+
 const range = (start: unknown, end: unknown): string => {
   const a = asNumber(start);
   const b = asNumber(end);
@@ -246,6 +251,21 @@ const renderCommitSummary = (payload: unknown): JSX.Element => {
   );
 };
 
+const renderDevelopmentPerspective = (payload: unknown): JSX.Element => {
+  const p = asRecord(payload);
+  return (
+    <PayloadShell title={asString(p.summary) ?? "Development perspective"}>
+      <p class="code-payload-summary">{asString(p.pattern) ?? "No pattern"}</p>
+      <PayloadGrid>
+        <Field label="risk">{asString(p.risk) ?? "unknown"}</Field>
+        <Field label="posture">{asString(p.recommended_posture) ?? "unknown"}</Field>
+        <Field label="confidence">{percent(p.confidence)}</Field>
+        <Field label="repo">{p.repo_id === null || p.repo_id === undefined ? "mixed" : uuid(p.repo_id)}</Field>
+      </PayloadGrid>
+    </PayloadShell>
+  );
+};
+
 const renderCalls = (payload: unknown): JSX.Element => {
   const p = asRecord(payload);
   return (
@@ -269,5 +289,6 @@ export const codeRenderers: Record<string, Renderer<unknown>> = {
   "proxima-code/file-revision-v1": renderer(renderFileRevision),
   "proxima-code/code-chunk-v1": renderer(renderCodeChunk),
   "proxima-code/commit-summary-v1": renderer(renderCommitSummary),
+  "proxima-code/development-perspective-v1": renderer(renderDevelopmentPerspective),
   "proxima-code/calls": renderer(renderCalls),
 };

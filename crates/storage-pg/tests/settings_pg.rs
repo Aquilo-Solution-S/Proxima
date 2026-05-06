@@ -1,29 +1,13 @@
 //! End-to-end settings registration against a transient PG database.
 
+mod common;
+
+use common::{create_db, db_url, drop_db};
 use proxima_core::models::{Dialect, EmbedCaps, LlmCaps, ModelTier};
 use proxima_core::{OrgId, Owner, Principal, UserId};
 use proxima_storage_pg::PgStorage;
 use proxima_storage_pg::settings;
-use sqlx::{Connection, Executor, PgConnection};
 use uuid::Uuid;
-
-const ADMIN_URL: &str = "postgres://postgres@localhost/postgres";
-
-async fn create_db(name: &str) -> Result<(), sqlx::Error> {
-    let mut conn = PgConnection::connect(ADMIN_URL).await?;
-    conn.execute(format!("CREATE DATABASE \"{name}\"").as_str())
-        .await?;
-    conn.close().await?;
-    Ok(())
-}
-
-async fn drop_db(name: &str) -> Result<(), sqlx::Error> {
-    let mut conn = PgConnection::connect(ADMIN_URL).await?;
-    conn.execute(format!("DROP DATABASE IF EXISTS \"{name}\"").as_str())
-        .await?;
-    conn.close().await?;
-    Ok(())
-}
 
 fn fresh_owner() -> Owner {
     Owner {
@@ -71,7 +55,7 @@ where
         eprintln!("skipping (no admin PG)");
         panic!("skipping (no admin PG)");
     }
-    let url = format!("postgres://postgres@localhost/{db_name}");
+    let url = db_url(&db_name);
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;

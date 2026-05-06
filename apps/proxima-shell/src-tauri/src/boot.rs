@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use proxima_core::auth::NoAuth;
-use proxima_core::models::Dialect;
-use proxima_core::operators::{EmbeddingClient, F2AOperator, LlmClient};
+use proxima_core::models::{Dialect, ModelTier};
+use proxima_core::operators::{EmbeddingClient, LlmClient};
 use proxima_core::secrets::ResolverRegistry;
 use proxima_core::{Engine, FlavorRegistry, FlavorRegistryFrozen, OrgId, Owner, Principal, UserId};
 use proxima_llm_openai_compat::{
@@ -74,7 +74,7 @@ pub(crate) fn build_engine() -> (Arc<Engine>, Arc<PgStorage>) {
             proxima_mcp_substrate::register(registry);
             proxima_flavor_goal::register(registry);
         })
-        .with_operators(proxima_code::f2a_operator_registry());
+        .with_operators(proxima_code::operator_registry());
 
         let engine = wire_consolidation_clients(engine, &pg_for_settings, &owner).await;
         let engine = Arc::new(engine);
@@ -116,17 +116,24 @@ async fn wire_consolidation_clients(engine: Engine, pg: &Arc<PgStorage>, owner: 
     }
 
     match resolve_consolidation_clients(&cfg) {
-        Ok((llm, embed)) => {
+        Ok((llms, embed)) => {
             tracing::info!(
-                llm_model = llm.model_id(),
+                llm_models = ?llms
+                    .iter()
+                    .map(|(tier, llm)| (*tier, llm.model_id().to_string()))
+                    .collect::<Vec<_>>(),
                 embed_model = embed.model_id(),
                 embed_dim = embed.dim(),
-                "F→A consolidation clients attached"
+                "consolidation clients attached"
             );
-            engine.with_llm(Arc::new(llm)).with_embed(Arc::new(embed))
+            let mut engine = engine.with_embed(Arc::new(embed));
+            for (tier, llm) in llms {
+                engine = engine.with_llm_for_tier(tier, Arc::new(llm));
+            }
+            engine
         }
         Err(e) => {
-            tracing::warn!("F→A consolidation disabled at boot: {e}");
+            tracing::warn!("consolidation disabled at boot: {e}");
             engine
         }
     }
@@ -134,25 +141,13 @@ async fn wire_consolidation_clients(engine: Engine, pg: &Arc<PgStorage>, owner: 
 
 pub(crate) fn resolve_consolidation_clients(
     cfg: &AppConfig,
-) -> Result<(OpenAiCompatLlmClient, OpenAiCompatEmbeddingClient), String> {
-    let tier = proxima_code::CommitSummaryOperator::new().tier();
-    let model_ref = cfg
-        .tiers
-        .get(tier)
-        .ok_or_else(|| format!("missing tier binding for {tier:?}"))?;
-    let llm = cfg
-        .llm
-        .models
-        .iter()
-        .find(|m| m.vendor == model_ref.vendor && m.model_id == model_ref.model_id)
-        .ok_or_else(|| format!("tier {tier:?} bound to unknown model {model_ref:?}"))?;
-    if llm.dialect != Dialect::OpenAI {
-        return Err(format!(
-            "unsupported LLM dialect for {model_ref:?}: {:?}",
-            llm.dialect
-        ));
-    }
-
+) -> Result<
+    (
+        Vec<(ModelTier, OpenAiCompatLlmClient)>,
+        OpenAiCompatEmbeddingClient,
+    ),
+    String,
+> {
     let active_ref = cfg
         .embedding
         .active
@@ -166,21 +161,41 @@ pub(crate) fn resolve_consolidation_clients(
         .ok_or_else(|| format!("active embedding points at unknown model {active_ref:?}"))?;
 
     let resolver = shell_secret_resolver();
-    let llm_secret = resolve_optional_secret(&resolver, llm.secret_ref.as_deref())
-        .map_err(|e| format!("could not resolve LLM secret_ref for {model_ref:?}: {e}"))?;
     let embed_secret = resolve_optional_secret(&resolver, embed.secret_ref.as_deref())
         .map_err(|e| format!("could not resolve embedding secret_ref for {active_ref:?}: {e}"))?;
 
-    let llm_base_url = normalize_openai_compat_base_url(&llm.vendor, &llm.base_url);
     let embed_base_url = normalize_openai_compat_base_url(&embed.vendor, &embed.base_url);
 
-    let llm_client = OpenAiCompatLlmClient::new(
-        llm.model_id.clone(),
-        OpenAiCompatConfig::new(llm_base_url, llm_secret),
-    )
-    .map_err(|e| {
-        format!("could not construct OpenAI-compatible LLM client for {model_ref:?}: {e}")
-    })?;
+    let mut llm_clients = Vec::new();
+    for tier in [ModelTier::Fast, ModelTier::Standard, ModelTier::Deep] {
+        let Some(model_ref) = cfg.tiers.get(tier) else {
+            continue;
+        };
+        let llm = cfg
+            .llm
+            .models
+            .iter()
+            .find(|m| m.vendor == model_ref.vendor && m.model_id == model_ref.model_id)
+            .ok_or_else(|| format!("tier {tier:?} bound to unknown model {model_ref:?}"))?;
+        if llm.dialect != Dialect::OpenAI {
+            return Err(format!(
+                "unsupported LLM dialect for {model_ref:?}: {:?}",
+                llm.dialect
+            ));
+        }
+        let llm_secret = resolve_optional_secret(&resolver, llm.secret_ref.as_deref())
+            .map_err(|e| format!("could not resolve LLM secret_ref for {model_ref:?}: {e}"))?;
+        let llm_base_url = normalize_openai_compat_base_url(&llm.vendor, &llm.base_url);
+        let llm_client = OpenAiCompatLlmClient::new(
+            llm.model_id.clone(),
+            OpenAiCompatConfig::new(llm_base_url, llm_secret),
+        )
+        .map_err(|e| {
+            format!("could not construct OpenAI-compatible LLM client for {model_ref:?}: {e}")
+        })?;
+        llm_clients.push((tier, llm_client));
+    }
+
     let embed_client = OpenAiCompatEmbeddingClient::new(
         embed.model_id.clone(),
         embed.caps,
@@ -189,7 +204,7 @@ pub(crate) fn resolve_consolidation_clients(
     .map_err(|e| {
         format!("could not construct OpenAI-compatible embedding client for {active_ref:?}: {e}")
     })?;
-    Ok((llm_client, embed_client))
+    Ok((llm_clients, embed_client))
 }
 
 pub(crate) fn normalize_openai_compat_base_url(vendor: &str, base_url: &str) -> String {

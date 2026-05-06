@@ -8,8 +8,10 @@ mod ingest;
 mod operators;
 mod query;
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::ModelTier;
 use crate::auth::AuthResolver;
 use crate::error::ProtocolError;
 use crate::operators::{EmbeddingClient, LlmClient, OperatorError, OperatorRegistry};
@@ -24,7 +26,7 @@ pub struct Engine {
     auth: Box<dyn AuthResolver>,
     storage: StorageHandle,
     operators: OperatorRegistry,
-    llm: Option<Arc<dyn LlmClient>>,
+    llms: HashMap<ModelTier, Arc<dyn LlmClient>>,
     embed: Option<Arc<dyn EmbeddingClient>>,
 }
 

@@ -20,7 +20,7 @@ impl Engine {
             auth,
             storage: Arc::new(NoopStorage),
             operators: OperatorRegistry::new(),
-            llm: None,
+            llms: std::collections::HashMap::new(),
             embed: None,
         }
     }
@@ -68,13 +68,47 @@ impl Engine {
                 acc.vision |= r.vision;
             }
         }
+        for op in self.operators.a2p_operators() {
+            if op.tier() == tier {
+                let r = op.requires();
+                acc.tool_use |= r.tool_use;
+                acc.json_mode |= r.json_mode;
+                acc.long_context |= r.long_context;
+                acc.vision |= r.vision;
+            }
+        }
         acc
     }
 
     #[must_use]
+    pub fn uses_llm_tier(&self, tier: ModelTier) -> bool {
+        self.operators
+            .f2a_operators()
+            .iter()
+            .any(|op| op.tier() == tier)
+            || self
+                .operators
+                .a2p_operators()
+                .iter()
+                .any(|op| op.tier() == tier)
+    }
+
+    #[must_use]
     pub fn with_llm(mut self, llm: Arc<dyn LlmClient>) -> Self {
-        self.llm = Some(llm);
+        for tier in [ModelTier::Fast, ModelTier::Standard, ModelTier::Deep] {
+            self.llms.insert(tier, llm.clone());
+        }
         self
+    }
+
+    #[must_use]
+    pub fn with_llm_for_tier(mut self, tier: ModelTier, llm: Arc<dyn LlmClient>) -> Self {
+        self.llms.insert(tier, llm);
+        self
+    }
+
+    pub(crate) fn llm_for_tier(&self, tier: ModelTier) -> Option<&Arc<dyn LlmClient>> {
+        self.llms.get(&tier)
     }
 
     #[must_use]

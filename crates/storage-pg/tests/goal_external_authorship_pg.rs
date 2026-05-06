@@ -3,6 +3,9 @@
 //! Mirrors the trigger matrix encoded in
 //! `migrations/20260506000050_goal_proposed_rejected.sql`.
 
+mod common;
+
+use common::{create_db, db_url, drop_db};
 use std::sync::Arc;
 
 use proxima_core::auth::{Credentials, NoAuth};
@@ -13,26 +16,7 @@ use proxima_core::verbs::query::MemoryStore;
 use proxima_core::verbs::schema::{PayloadKind, SchemaInfo, SchemaRegistry};
 use proxima_core::{OrgId, Owner, Principal, SchemaId, SchemaVersion, UserId};
 use proxima_storage_pg::PgStorage;
-use sqlx::{Connection, Executor, PgConnection};
 use uuid::Uuid;
-
-const ADMIN_URL: &str = "postgres://postgres@localhost/postgres";
-
-async fn create_db(name: &str) -> Result<(), sqlx::Error> {
-    let mut conn = PgConnection::connect(ADMIN_URL).await?;
-    conn.execute(format!("CREATE DATABASE \"{name}\"").as_str())
-        .await?;
-    conn.close().await?;
-    Ok(())
-}
-
-async fn drop_db(name: &str) -> Result<(), sqlx::Error> {
-    let mut conn = PgConnection::connect(ADMIN_URL).await?;
-    conn.execute(format!("DROP DATABASE IF EXISTS \"{name}\"").as_str())
-        .await?;
-    conn.close().await?;
-    Ok(())
-}
 
 fn schemas_for_test() -> Vec<SchemaInfo> {
     vec![SchemaInfo {
@@ -69,7 +53,7 @@ async fn external_authorship_admitted_at_proposed_seed_only() {
         eprintln!("skipping (no admin PG)");
         return;
     }
-    let url = format!("postgres://postgres@localhost/{db_name}");
+    let url = db_url(&db_name);
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;

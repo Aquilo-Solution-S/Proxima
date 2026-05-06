@@ -88,7 +88,7 @@ impl Engine {
         // step anyway, but skipping here avoids redundant LLM calls.
         if !outcome.already_closed
             && !self.operators.f2a_operators().is_empty()
-            && self.llm.is_some()
+            && !self.llms.is_empty()
             && self.embed.is_some()
         {
             self.run_f2a_for_batch(&owner, source_batch_id).await?;

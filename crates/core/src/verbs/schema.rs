@@ -3,6 +3,9 @@
 //! See docs/14-protocol-surface.md §"Schema" and
 //! docs/03-schema-registry.md.
 
+use std::sync::Arc;
+
+use crate::personality::PersonalityFlavor;
 use crate::{McpToolDescriptor, RegisteredRelation, RelationDescriptor, SchemaId, SchemaVersion};
 
 pub type PayloadValidator = fn(&serde_json::Value) -> Result<(), String>;
@@ -68,6 +71,7 @@ pub struct SchemaRegistry {
     relations: Vec<RelationDescriptor>,
     validators: Vec<PayloadValidatorEntry>,
     mcp_tools: Vec<McpToolDescriptor>,
+    personalities: Vec<Arc<dyn PersonalityFlavor>>,
 }
 
 impl SchemaRegistry {
@@ -85,6 +89,7 @@ impl SchemaRegistry {
             relations: Vec::new(),
             validators: Vec::new(),
             mcp_tools: Vec::new(),
+            personalities: Vec::new(),
         }
     }
 
@@ -101,6 +106,7 @@ impl SchemaRegistry {
             relations,
             validators: Vec::new(),
             mcp_tools: Vec::new(),
+            personalities: Vec::new(),
         }
     }
 
@@ -109,12 +115,14 @@ impl SchemaRegistry {
         relations: Vec<RelationDescriptor>,
         validators: Vec<PayloadValidatorEntry>,
         mcp_tools: Vec<McpToolDescriptor>,
+        personalities: Vec<Arc<dyn PersonalityFlavor>>,
     ) -> Self {
         Self {
             schemas,
             relations,
             validators,
             mcp_tools,
+            personalities,
         }
     }
 
@@ -130,6 +138,14 @@ impl SchemaRegistry {
     #[must_use]
     pub fn list_mcp_tools(&self) -> &[McpToolDescriptor] {
         &self.mcp_tools
+    }
+
+    /// Personalities registered by linked flavors via `proxima_flavor!`.
+    /// The A→P dispatcher fans out per entry; order matches flavor
+    /// registration order.
+    #[must_use]
+    pub fn list_personalities(&self) -> &[Arc<dyn PersonalityFlavor>] {
+        &self.personalities
     }
 
     pub fn list(&self) -> Vec<SchemaInfo> {

@@ -1,8 +1,11 @@
 //! End-to-end subscribe verb test against a transient PG database.
 
+mod common;
+
 use std::sync::Arc;
 use std::time::Duration;
 
+use common::{create_db, db_url, drop_db};
 use proxima_core::auth::{Credentials, NoAuth};
 use proxima_core::engine::Engine;
 use proxima_core::storage::Storage;
@@ -16,27 +19,8 @@ use proxima_core::{
     SourceBatchId, SourceId, UserId,
 };
 use proxima_storage_pg::PgStorage;
-use sqlx::{Connection, Executor, PgConnection};
 use tokio_stream::StreamExt;
 use uuid::Uuid;
-
-const ADMIN_URL: &str = "postgres://postgres@localhost/postgres";
-
-async fn create_db(name: &str) -> Result<(), sqlx::Error> {
-    let mut conn = PgConnection::connect(ADMIN_URL).await?;
-    conn.execute(format!("CREATE DATABASE \"{name}\"").as_str())
-        .await?;
-    conn.close().await?;
-    Ok(())
-}
-
-async fn drop_db(name: &str) -> Result<(), sqlx::Error> {
-    let mut conn = PgConnection::connect(ADMIN_URL).await?;
-    conn.execute(format!("DROP DATABASE IF EXISTS \"{name}\"").as_str())
-        .await?;
-    conn.close().await?;
-    Ok(())
-}
 
 fn schemas_for_test() -> Vec<SchemaInfo> {
     vec![
@@ -135,7 +119,7 @@ async fn subscribe_fresh_no_since_live_ingest() {
         eprintln!("skipping (no admin PG)");
         return;
     }
-    let url = format!("postgres://postgres@localhost/{db_name}");
+    let url = db_url(&db_name);
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
@@ -207,7 +191,7 @@ async fn subscribe_resume_with_since_mid() {
         eprintln!("skipping (no admin PG)");
         return;
     }
-    let url = format!("postgres://postgres@localhost/{db_name}");
+    let url = db_url(&db_name);
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
@@ -291,7 +275,7 @@ async fn subscribe_owner_isolation() {
         eprintln!("skipping (no admin PG)");
         return;
     }
-    let url = format!("postgres://postgres@localhost/{db_name}");
+    let url = db_url(&db_name);
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
