@@ -14,6 +14,7 @@ use proxima_core::operators::{
 use proxima_core::owner::{Owner, Principal};
 use proxima_core::storage::{Storage, StorageError};
 use proxima_core::verbs::close_batch::CloseBatchOutcome;
+use proxima_core::verbs::event_history::{EventHistoryRequest, EventHistoryResponse};
 use proxima_core::verbs::event_ingest::{EventDraft, EventIngestOutcome};
 use proxima_core::verbs::goal_write::{GoalDraft, GoalWriteOutcome};
 use proxima_core::verbs::query::{MemoryStore, QueryRequest};
@@ -186,6 +187,16 @@ impl Storage for FakeStorage {
         _since: Option<Uuid>,
     ) -> Result<ChangeEventStream, StorageError> {
         Ok(Box::pin(futures_util::stream::empty()))
+    }
+
+    async fn event_history(
+        &self,
+        _req: &EventHistoryRequest,
+    ) -> Result<EventHistoryResponse, StorageError> {
+        Ok(EventHistoryResponse {
+            events: Vec::new(),
+            seq_high_water: None,
+        })
     }
 
     async fn query_memories(
