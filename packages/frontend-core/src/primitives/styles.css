@@ -42,6 +42,25 @@
 }
 
 * { box-sizing: border-box; }
+* {
+  scrollbar-color: var(--accent-system) var(--bg-card);
+  scrollbar-width: thin;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-track {
+  background: var(--bg-card);
+}
+*::-webkit-scrollbar-thumb {
+  background: var(--accent-system);
+  border: 2px solid var(--bg-card);
+  border-radius: 999px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--ink-50);
+}
 body { margin: 0; background: var(--bg); color: var(--ink-80); font-family: var(--sans); -webkit-font-smoothing: antialiased; }
 
 /* ── Branded loading state ────────────────────────────────────── */

@@ -16,6 +16,11 @@ export type { AtlasEdge, AtlasNode, AtlasNodeKind } from "./types";
 export type { AtlasProjection } from "./projection";
 
 const BRIGHT_TINT = new THREE.Color(0xffffff);
+const INSPECTOR_DEFAULT_WIDTH = 340;
+const INSPECTOR_MIN_WIDTH = 300;
+const INSPECTOR_MAX_WIDTH = 720;
+const FILTER_RAIL_WIDTH = 260;
+const CANVAS_MIN_WIDTH = 420;
 
 export const Atlas: Component<{
   hub: Hub;
@@ -42,6 +47,8 @@ export const Atlas: Component<{
   const [pickedId, setPickedId] = createSignal<string | null>(null);
   const [pickHistory, setPickHistory] = createSignal<string[]>([]);
   const [pickHistoryIndex, setPickHistoryIndex] = createSignal(-1);
+  const [inspectorWidth, setInspectorWidth] = createSignal(INSPECTOR_DEFAULT_WIDTH);
+  const [resizingInspector, setResizingInspector] = createSignal(false);
 
   const passKind = (k: AtlasNodeKind) => filters.state().layers.has(k);
   const passFlavor = (f: string | null) =>
@@ -154,7 +161,57 @@ export const Atlas: Component<{
     return pills;
   });
 
+  let bodyRef!: HTMLDivElement;
   let mountRef!: HTMLDivElement;
+  let stopInspectorResize: (() => void) | null = null;
+
+  function clampInspectorWidth(width: number): number {
+    const maxByBody =
+      bodyRef === undefined
+        ? INSPECTOR_MAX_WIDTH
+        : Math.max(
+            INSPECTOR_MIN_WIDTH,
+            bodyRef.clientWidth - FILTER_RAIL_WIDTH - CANVAS_MIN_WIDTH - 2,
+          );
+    return Math.max(
+      INSPECTOR_MIN_WIDTH,
+      Math.min(width, INSPECTOR_MAX_WIDTH, maxByBody),
+    );
+  }
+
+  function startInspectorResize(event: PointerEvent) {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    stopInspectorResize?.();
+
+    const startX = event.clientX;
+    const startWidth = inspectorWidth();
+    const previousCursor = document.body.style.cursor;
+    const previousUserSelect = document.body.style.userSelect;
+
+    setResizingInspector(true);
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+
+    const onPointerMove = (moveEvent: PointerEvent) => {
+      setInspectorWidth(clampInspectorWidth(startWidth - (moveEvent.clientX - startX)));
+    };
+    const onPointerUp = () => {
+      stopInspectorResize?.();
+    };
+
+    stopInspectorResize = () => {
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+      document.body.style.cursor = previousCursor;
+      document.body.style.userSelect = previousUserSelect;
+      setResizingInspector(false);
+      stopInspectorResize = null;
+    };
+
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp);
+  }
 
   // Scene-level mutable handles, populated in onMount.
   const scene = new THREE.Scene();
@@ -378,6 +435,17 @@ export const Atlas: Component<{
     onCleanup(() => window.removeEventListener("keydown", onKeyDown));
   });
 
+  onMount(() => {
+    const ro = new ResizeObserver(() => {
+      setInspectorWidth((width) => clampInspectorWidth(width));
+    });
+    ro.observe(bodyRef);
+    onCleanup(() => {
+      ro.disconnect();
+      stopInspectorResize?.();
+    });
+  });
+
   // ── Rebuild node/edge meshes when props change ───────────────────────
   createEffect(() => {
     // Drop old meshes
@@ -555,7 +623,12 @@ export const Atlas: Component<{
         </div>
       </div>
 
-      <div class="atlas-body">
+      <div
+        class="atlas-body"
+        classList={{ "is-resizing-inspector": resizingInspector() }}
+        ref={bodyRef}
+        style={`--atlas-inspector-width: ${inspectorWidth()}px`}
+      >
         <div class="atlas-filters">
           <div class="filter-section">
             <div class="filter-head">layer</div>
@@ -647,13 +720,22 @@ export const Atlas: Component<{
           </Show>
         </div>
 
-        <Inspector
-          hub={props.hub}
-          node={focusNode()}
-          adj={adj()}
-          byId={byId()}
-          onPickNode={pickNode}
-        />
+        <div class="atlas-inspector-shell">
+          <button
+            type="button"
+            class="atlas-inspector-resize"
+            aria-label="Resize Atlas inspector"
+            title="Drag to resize inspector"
+            onPointerDown={startInspectorResize}
+          />
+          <Inspector
+            hub={props.hub}
+            node={focusNode()}
+            adj={adj()}
+            byId={byId()}
+            onPickNode={pickNode}
+          />
+        </div>
       </div>
     </div>
   );

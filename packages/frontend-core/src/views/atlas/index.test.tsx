@@ -342,4 +342,24 @@ describe("Atlas graph wiring", () => {
 
     raycast.mockRestore();
   });
+
+  it("resizes the inspector column by dragging its handle", () => {
+    const { container } = render(() => (
+      <GraphFilterProvider store={createGraphFilterStore()}>
+        <Atlas hub={createHub([])} nodes={[]} edges={[]} />
+      </GraphFilterProvider>
+    ));
+    const body = container.querySelector(".atlas-body") as HTMLElement;
+    Object.defineProperty(body, "clientWidth", { configurable: true, value: 1400 });
+
+    fireEvent.pointerDown(screen.getByRole("button", { name: "Resize Atlas inspector" }), {
+      button: 0,
+      clientX: 1000,
+    });
+    fireEvent.pointerMove(window, { clientX: 900 });
+
+    expect(body.getAttribute("style")).toContain("--atlas-inspector-width: 440px");
+
+    fireEvent.pointerUp(window);
+  });
 });
