@@ -15,6 +15,8 @@ import { geometryFor, LAYER_LABELS, LAYER_Z, makeLayerLabel, TINT, TINT_HEX } fr
 export type { AtlasEdge, AtlasNode, AtlasNodeKind } from "./types";
 export type { AtlasProjection } from "./projection";
 
+const BRIGHT_TINT = new THREE.Color(0xffffff);
+
 export const Atlas: Component<{
   hub: Hub;
   nodes?: AtlasNode[];
@@ -38,6 +40,8 @@ export const Atlas: Component<{
 
   const [hoverId, setHoverId] = createSignal<string | null>(null);
   const [pickedId, setPickedId] = createSignal<string | null>(null);
+  const [pickHistory, setPickHistory] = createSignal<string[]>([]);
+  const [pickHistoryIndex, setPickHistoryIndex] = createSignal(-1);
 
   const passKind = (k: AtlasNodeKind) => filters.state().layers.has(k);
   const passFlavor = (f: string | null) =>
@@ -53,6 +57,36 @@ export const Atlas: Component<{
     return id ? byId().get(id) ?? null : null;
   };
   const focusNode = () => hoverNode() ?? pickedNode();
+  const canGoBack = () => pickHistoryIndex() > 0;
+  const canGoForward = () => {
+    const index = pickHistoryIndex();
+    return index >= 0 && index < pickHistory().length - 1;
+  };
+
+  function pickNode(id: string) {
+    const current = pickedId();
+    if (current === id) return;
+    const index = pickHistoryIndex();
+    const next = [...pickHistory().slice(0, index + 1), id];
+    setPickHistory(next);
+    setPickHistoryIndex(next.length - 1);
+    setPickedId(id);
+  }
+
+  function goPickHistory(delta: -1 | 1) {
+    const nextIndex = pickHistoryIndex() + delta;
+    const nextId = pickHistory()[nextIndex];
+    if (nextId === undefined) return;
+    setPickHistoryIndex(nextIndex);
+    setPickedId(nextId);
+    setHoverId(null);
+  }
+
+  function keyIsEditableTarget(target: EventTarget | null) {
+    if (!(target instanceof HTMLElement)) return false;
+    const tag = target.tagName;
+    return target.isContentEditable || tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
+  }
 
   const counts = createMemo(() => {
     const kind: Record<AtlasNodeKind, number> = {
@@ -201,7 +235,7 @@ export const Atlas: Component<{
     }
     function onClick(ev: MouseEvent) {
       const id = pickFrom(ev as unknown as PointerEvent);
-      if (id) setPickedId(id);
+      if (id) pickNode(id);
     }
     renderer.domElement.addEventListener("pointermove", onPointerMove);
     renderer.domElement.addEventListener("click", onClick);
@@ -307,6 +341,43 @@ export const Atlas: Component<{
     });
   });
 
+  createEffect(() => {
+    const liveIds = byId();
+    const id = pickedId();
+    if (id !== null && !liveIds.has(id)) {
+      setPickedId(null);
+      setHoverId(null);
+      setPickHistory((history) => {
+        const next = history.filter((entry) => liveIds.has(entry));
+        setPickHistoryIndex(Math.min(pickHistoryIndex(), next.length - 1));
+        return next;
+      });
+    }
+  });
+
+  onMount(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (keyIsEditableTarget(event.target)) return;
+      const wantsBack =
+        event.key === "BrowserBack" ||
+        (event.key === "ArrowLeft" && (event.altKey || event.metaKey)) ||
+        (event.key === "[" && event.metaKey);
+      const wantsForward =
+        event.key === "BrowserForward" ||
+        (event.key === "ArrowRight" && (event.altKey || event.metaKey)) ||
+        (event.key === "]" && event.metaKey);
+      if (wantsBack && canGoBack()) {
+        event.preventDefault();
+        goPickHistory(-1);
+      } else if (wantsForward && canGoForward()) {
+        event.preventDefault();
+        goPickHistory(1);
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    onCleanup(() => window.removeEventListener("keydown", onKeyDown));
+  });
+
   // ── Rebuild node/edge meshes when props change ───────────────────────
   createEffect(() => {
     // Drop old meshes
@@ -388,7 +459,7 @@ export const Atlas: Component<{
   createEffect(() => {
     const focus = focusId();
     const c = chain();
-    const hasFocus = c.nodes.size > 1;
+    const hasFocus = focus !== null;
     const ids = byId();
 
     for (const n of nodes()) {
@@ -397,16 +468,26 @@ export const Atlas: Component<{
       if (!m) continue;
       const mat = m.material as THREE.MeshBasicMaterial;
       const visible = passKind(n.kind) && passFlavor(n.flavor);
+      const inChain = c.nodes.has(n.id);
+      const isFocus = focus === n.id;
       let opacity: number;
       if (!visible) opacity = 0.04;
-      else if (hasFocus) opacity = c.nodes.has(n.id) ? 0.98 : 0.1;
-      else opacity = 0.92;
+      else if (hasFocus) opacity = inChain ? 1 : 0.1;
+      else opacity = 0.96;
       mat.opacity = opacity;
+      mat.color.set(TINT[n.kind]);
+      if (visible && inChain) {
+        mat.color.lerp(BRIGHT_TINT, isFocus ? 0.58 : 0.3);
+      }
       if (halo) {
         const haloMat = halo.material as THREE.MeshBasicMaterial;
-        haloMat.opacity = opacity * 0.22;
+        haloMat.opacity = visible && isFocus ? 0.72 : opacity * 0.28;
+        haloMat.color.set(TINT[n.kind]);
+        if (visible && inChain) {
+          haloMat.color.lerp(BRIGHT_TINT, isFocus ? 0.62 : 0.34);
+        }
       }
-      m.scale.setScalar(focus === n.id ? 1.6 : 1.0);
+      m.scale.setScalar(isFocus ? 1.85 : inChain && hasFocus ? 1.18 : 1.0);
     }
 
     for (const e of edges()) {
@@ -418,11 +499,13 @@ export const Atlas: Component<{
       const aV = passKind(a.kind) && passFlavor(a.flavor);
       const bV = passKind(b.kind) && passFlavor(b.flavor);
       const mat = line.material as THREE.LineBasicMaterial;
+      const inChain = c.edges.has(e.id);
       let opacity: number;
       if (!aV || !bV) opacity = 0.02;
-      else if (hasFocus) opacity = c.edges.has(e.id) ? 0.85 : 0.04;
-      else opacity = 0.22;
+      else if (hasFocus) opacity = inChain ? 0.96 : 0.04;
+      else opacity = 0.3;
       mat.opacity = opacity;
+      mat.color.set(inChain && aV && bV ? 0xe8e4d6 : 0x8794b0);
     }
   });
 
@@ -435,6 +518,28 @@ export const Atlas: Component<{
           <span class="atlas-sub">deterministic memory map</span>
         </div>
         <div class="atlas-chrome-r">
+          <div class="atlas-nav" aria-label="Atlas node history">
+            <button
+              type="button"
+              class="atlas-nav-btn"
+              title="Back (Alt+Left, Cmd+Left, or Cmd+[)"
+              aria-label="Back"
+              disabled={!canGoBack()}
+              onClick={() => goPickHistory(-1)}
+            >
+              ‹
+            </button>
+            <button
+              type="button"
+              class="atlas-nav-btn"
+              title="Forward (Alt+Right, Cmd+Right, or Cmd+])"
+              aria-label="Forward"
+              disabled={!canGoForward()}
+              onClick={() => goPickHistory(1)}
+            >
+              ›
+            </button>
+          </div>
           <span class="atlas-stat">
             <span class="k">nodes</span>{" "}
             <span class="v">{nodes().length}</span>
@@ -547,7 +652,7 @@ export const Atlas: Component<{
           node={focusNode()}
           adj={adj()}
           byId={byId()}
-          onPickNode={setPickedId}
+          onPickNode={pickNode}
         />
       </div>
     </div>

@@ -6,15 +6,18 @@
 
 use crate::verbs::schema::{PayloadKind, PayloadValidatorEntry, SchemaInfo, SchemaRegistry};
 use crate::{
-    AbstractionPayload, EdgePayload, FactPayload, PerspectivePayload, RelationDescriptor,
-    SchemaVersion, core_relation_descriptors,
+    AbstractionPayload, EdgePayload, FactPayload, McpCallFn, McpTool, McpToolDescriptor,
+    McpToolError, PerspectivePayload, RelationDescriptor, SchemaVersion, core_relation_descriptors,
 };
+
+pub type FlavorRegistryFrozen = SchemaRegistry;
 
 #[derive(Debug)]
 pub struct FlavorRegistry {
     schemas: Vec<SchemaInfo>,
     relations: Vec<RelationDescriptor>,
     validators: Vec<PayloadValidatorEntry>,
+    mcp_tools: Vec<McpToolDescriptor>,
 }
 
 impl Default for FlavorRegistry {
@@ -23,6 +26,7 @@ impl Default for FlavorRegistry {
             schemas: Vec::new(),
             relations: core_relation_descriptors(),
             validators: Vec::new(),
+            mcp_tools: Vec::new(),
         }
     }
 }
@@ -119,6 +123,32 @@ impl FlavorRegistry {
         self.relations.push(descriptor);
     }
 
+    pub fn add_mcp_tool<T: McpTool>(&mut self, expected_prefix: &str) {
+        let prefix = format!("{expected_prefix}/");
+        assert!(
+            T::NAME.starts_with(&prefix),
+            "McpTool::NAME {:?} must start with flavor prefix {:?}",
+            T::NAME,
+            prefix,
+        );
+        let schema = schemars::schema_for!(T::Args);
+        let args_schema = serde_json::to_value(schema).expect("JsonSchema must serialize");
+        let call: McpCallFn = |ctx, args| {
+            Box::pin(async move {
+                let typed: T::Args = serde_json::from_value(args)
+                    .map_err(|e| McpToolError::InvalidInput(e.to_string()))?;
+                let output = T::call(ctx, typed).await?;
+                serde_json::to_value(output).map_err(|e| McpToolError::InvalidInput(e.to_string()))
+            })
+        };
+        self.mcp_tools.push(McpToolDescriptor {
+            name: T::NAME,
+            description: T::DESCRIPTION,
+            args_schema,
+            call,
+        });
+    }
+
     #[must_use]
     pub fn freeze(self) -> SchemaRegistry {
         // Cross-check: every typed relation's payload_schema must
@@ -146,10 +176,19 @@ impl FlavorRegistry {
                 let _ = info;
             }
         }
+        let mut seen_tools = std::collections::HashSet::new();
+        for tool in &self.mcp_tools {
+            assert!(
+                seen_tools.insert(tool.name),
+                "duplicate McpTool name registered: {}",
+                tool.name,
+            );
+        }
         SchemaRegistry::with_schemas_relations_validators(
             self.schemas,
             self.relations,
             self.validators,
+            self.mcp_tools,
         )
     }
 }
@@ -171,4 +210,69 @@ where
     let mut bytes = Vec::new();
     ciborium::ser::into_writer(&typed, &mut bytes).map_err(|e| e.to_string())?;
     Ok(bytes)
+}
+
+#[cfg(test)]
+mod mcp_tool_registry_tests {
+    use super::*;
+    use crate::mcp::{McpToolCtx, McpToolError};
+
+    struct Demo;
+
+    impl McpTool for Demo {
+        const NAME: &'static str = "proxima-test/demo";
+        const DESCRIPTION: &'static str = "test";
+        type Args = ();
+        type Output = ();
+
+        fn call(
+            _ctx: McpToolCtx,
+            _args: (),
+        ) -> futures::future::BoxFuture<'static, Result<(), McpToolError>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    #[test]
+    fn add_mcp_tool_lists_descriptor() {
+        let mut registry = FlavorRegistry::new();
+        registry.add_mcp_tool::<Demo>("proxima-test");
+        let frozen = registry.freeze();
+        let names: Vec<_> = frozen.list_mcp_tools().iter().map(|d| d.name).collect();
+        assert!(names.contains(&"proxima-test/demo"));
+    }
+
+    #[test]
+    fn freeze_rejects_duplicate_tool_names() {
+        let mut registry = FlavorRegistry::new();
+        registry.add_mcp_tool::<Demo>("proxima-test");
+        registry.add_mcp_tool::<Demo>("proxima-test");
+        let result = std::panic::catch_unwind(|| registry.freeze());
+        assert!(result.is_err(), "freeze must panic on duplicate tool names");
+    }
+
+    #[test]
+    fn add_mcp_tool_rejects_unprefixed_tool_name() {
+        struct Bad;
+
+        impl McpTool for Bad {
+            const NAME: &'static str = "wrong/demo";
+            const DESCRIPTION: &'static str = "x";
+            type Args = ();
+            type Output = ();
+
+            fn call(
+                _ctx: McpToolCtx,
+                _args: (),
+            ) -> futures::future::BoxFuture<'static, Result<(), McpToolError>> {
+                Box::pin(async { Ok(()) })
+            }
+        }
+
+        let mut registry = FlavorRegistry::new();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            registry.add_mcp_tool::<Bad>("proxima-test");
+        }));
+        assert!(result.is_err(), "must panic on prefix mismatch");
+    }
 }

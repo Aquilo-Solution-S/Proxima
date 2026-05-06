@@ -4,14 +4,18 @@ use proxima_core::auth::NoAuth;
 use proxima_core::models::Dialect;
 use proxima_core::operators::{EmbeddingClient, F2AOperator, LlmClient};
 use proxima_core::secrets::ResolverRegistry;
-use proxima_core::{Engine, OrgId, Owner, Principal, UserId};
+use proxima_core::{Engine, FlavorRegistry, FlavorRegistryFrozen, OrgId, Owner, Principal, UserId};
 use proxima_llm_openai_compat::{
     OpenAiCompatConfig, OpenAiCompatEmbeddingClient, OpenAiCompatLlmClient,
 };
+use proxima_mcp_server::{DevMcpServer, default_allowlist, serve_streamable_http};
 use proxima_storage_pg::PgStorage;
+use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 use crate::config::AppConfig;
+
+const DEFAULT_MCP_BIND: &str = "127.0.0.1:31415";
 
 /// Panics if `DATABASE_URL` is not set — settings persistence is
 /// required for the desktop shell.
@@ -198,4 +202,37 @@ fn resolve_optional_secret(
         .as_str()
         .ok_or_else(|| format!("secret_ref {secret_ref:?} resolved to non-UTF8 bytes"))?;
     Ok(Some(value.to_string()))
+}
+
+/// # Errors
+///
+/// Returns bind, migration, or transport setup failures. Shell callers
+/// log and continue without MCP.
+pub(crate) async fn spawn_mcp_listener(
+    pool: sqlx::PgPool,
+    owner: Owner,
+) -> Result<
+    (
+        JoinHandle<Result<(), proxima_mcp_server::McpServerError>>,
+        std::net::SocketAddr,
+    ),
+    proxima_mcp_server::McpServerError,
+> {
+    let bind_raw =
+        std::env::var("PROXIMA_MCP_BIND").unwrap_or_else(|_| DEFAULT_MCP_BIND.to_string());
+    let bind = bind_raw.parse().map_err(|err| {
+        proxima_mcp_server::McpServerError::Bind(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("PROXIMA_MCP_BIND={bind_raw}: {err}"),
+        ))
+    })?;
+
+    proxima_mcp_substrate::migrator().run(&pool).await?;
+
+    let mut registry = FlavorRegistry::new();
+    proxima_mcp_substrate::register(&mut registry);
+    proxima_code::register(&mut registry);
+    let frozen: Arc<FlavorRegistryFrozen> = Arc::new(registry.freeze());
+    let server = DevMcpServer::from_pool(pool, owner, frozen);
+    serve_streamable_http(bind, server, default_allowlist()).await
 }
