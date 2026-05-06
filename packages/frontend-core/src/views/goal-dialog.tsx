@@ -5,6 +5,7 @@ import {
   createSignal,
   type Component,
 } from "solid-js";
+import { Portal } from "solid-js/web";
 import {
   registeredGoalPayloadEditors,
   type RegisteredGoalPayloadEditor,
@@ -119,12 +120,13 @@ export const GoalDialog: Component<GoalDialogProps> = (props) => {
   };
 
   return (
-    <div
-      class="goal-dialog-overlay"
-      role="dialog"
-      aria-modal="true"
-      aria-label="Goal editor"
-    >
+    <Portal>
+      <div
+        class="goal-dialog-overlay"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Goal editor"
+      >
       <form class="goal-dialog" onSubmit={submit}>
         <header class="goal-dialog-head">
           <h2>{props.proposal === undefined ? "New goal" : "Modify proposal"}</h2>
@@ -180,6 +182,7 @@ export const GoalDialog: Component<GoalDialogProps> = (props) => {
           </button>
         </footer>
       </form>
-    </div>
+      </div>
+    </Portal>
   );
 };
