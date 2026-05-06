@@ -332,8 +332,10 @@ export type GoalDraft = {
 	schema_id: SchemaId,
 	schema_version: SchemaVersion,
 	text: string,
+	payload: number[],
 	state: GoalState,
 	parent_goal_ids: GoalId[],
+	supersedes_goal_id: GoalId | null,
 	authorship: GoalAuthorship,
 	request_id: string,
 };

@@ -738,8 +738,10 @@ async fn query_goals_filter_by_schema_id() {
             schema_id: SchemaId::new("test/goal_blob".into()),
             schema_version: SchemaVersion::new(1),
             text: "v1 goal".to_string(),
+            payload: Vec::new(),
             state: GoalState::Active,
             parent_goal_ids: vec![],
+            supersedes_goal_id: None,
             authorship: GoalAuthorship::User,
             request_id: "req-v1".to_string(),
         };
@@ -836,8 +838,10 @@ async fn query_returns_stored_goal_schema_version() {
             schema_id: SchemaId::new("test/goal_blob_v2".into()),
             schema_version: SchemaVersion::new(2),
             text: "v2 goal".to_string(),
+            payload: Vec::new(),
             state: GoalState::Active,
             parent_goal_ids: vec![],
+            supersedes_goal_id: None,
             authorship: GoalAuthorship::User,
             request_id: "req-v2".to_string(),
         };

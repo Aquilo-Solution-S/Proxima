@@ -61,8 +61,10 @@ fn fresh_draft(owner: &Owner, request_id: String) -> GoalDraft {
         schema_id: SchemaId::new("test/goal_blob".into()),
         schema_version: SchemaVersion::new(1),
         text: "Test goal text".to_string(),
+        payload: Vec::new(),
         state: GoalState::Active,
         parent_goal_ids: vec![],
+        supersedes_goal_id: None,
         authorship: GoalAuthorship::User,
         request_id,
     }
@@ -74,8 +76,10 @@ fn draft_with_parent(owner: &Owner, request_id: String, parent: GoalId) -> GoalD
         schema_id: SchemaId::new("test/goal_blob".into()),
         schema_version: SchemaVersion::new(1),
         text: "Test goal with parent".to_string(),
+        payload: Vec::new(),
         state: GoalState::Active,
         parent_goal_ids: vec![parent],
+        supersedes_goal_id: None,
         authorship: GoalAuthorship::User,
         request_id,
     }
@@ -197,8 +201,10 @@ async fn goal_supersede_writes_new_goal() {
             schema_id: SchemaId::new("test/goal_blob".into()),
             schema_version: SchemaVersion::new(1),
             text: "Updated goal text".to_string(),
+            payload: Vec::new(),
             state: GoalState::Paused,
             parent_goal_ids: vec![],
+            supersedes_goal_id: None,
             authorship: GoalAuthorship::User,
             request_id: "req-2".to_string(),
         };

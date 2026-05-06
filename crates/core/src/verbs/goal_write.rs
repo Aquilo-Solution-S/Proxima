@@ -52,8 +52,10 @@ pub struct GoalDraft {
     pub schema_id: SchemaId,
     pub schema_version: SchemaVersion,
     pub text: String,
+    pub payload: Vec<u8>,
     pub state: GoalState,
     pub parent_goal_ids: Vec<GoalId>,
+    pub supersedes_goal_id: Option<GoalId>,
     pub authorship: GoalAuthorship,
     pub request_id: String,
 }
