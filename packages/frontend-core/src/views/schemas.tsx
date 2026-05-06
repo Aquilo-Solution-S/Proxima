@@ -92,6 +92,13 @@ const schemaFlavor = (schema: SchemaInfo, hub: Hub): string => {
   return "substrate";
 };
 
+/// Display name for a flavor key. Production flavor keys mirror the
+/// schema-id namespace (`proxima-code`, `proxima-mcp`); the
+/// `proxima-` prefix is signal-free at the UI layer, so strip it for
+/// headings while keeping the canonical key everywhere else.
+const formatFlavorLabel = (flavor: string): string =>
+  flavor.startsWith("proxima-") ? flavor.slice("proxima-".length) : flavor;
+
 const registrationFor = (schema: SchemaInfo, hub: Hub) =>
   hub.registeredCodecs().find(
     (r) =>
@@ -145,7 +152,7 @@ const SchemaFlavorGroup: Component<{
               aria-hidden="true"
             />
             <span>
-              <h2>{props.group.flavor}</h2>
+              <h2>{formatFlavorLabel(props.group.flavor)}</h2>
               <Mono style={{ "font-size": "10px", color: "var(--ink-60)" }}>
                 {visibleSchemas().length} / {props.group.schemas.length} schemas
               </Mono>

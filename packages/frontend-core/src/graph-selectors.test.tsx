@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { EdgeRow, GoalRow, MemoryRow, Owner, SchemaInfo } from "./bindings";
-import { defaultGraphFilterState } from "./graph-filter-store";
+import { CORE_FLAVOR_ID, defaultGraphFilterState } from "./graph-filter-store";
 import { filterGraphSnapshot, schemaFlavor, visibleEntityIds } from "./graph-selectors";
 import type { GraphSnapshot } from "./graph-store";
 import { createHub } from "./hub";
@@ -129,5 +129,23 @@ describe("graph selectors", () => {
     expect(() =>
       filterGraphSnapshot(graph, { ...defaultGraphFilterState(), search: "safe" }, createHub([])),
     ).not.toThrow();
+  });
+
+  it("filters rows without a flavor through the core origin", () => {
+    const fact = memory(
+      "019dfa10-0000-7000-8000-000000000040",
+      "Fact",
+      "core/fact-v1",
+    );
+    const graph = snapshot({
+      memoriesById: new Map([[fact.id, { row: fact, payload: null }]]),
+    });
+    const out = filterGraphSnapshot(
+      graph,
+      { ...defaultGraphFilterState(), hiddenFlavorIds: new Set([CORE_FLAVOR_ID]) },
+      createHub([]),
+    );
+    expect(out.memories).toHaveLength(0);
+    expect(out.filteredOutEntityCount).toBe(1);
   });
 });

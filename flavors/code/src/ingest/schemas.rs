@@ -36,10 +36,22 @@ pub const CODE_COMMIT_WHOLE_SCHEMA: &str = "proxima-code/code-commit-whole-v1";
 
 #[must_use]
 pub fn schema_registry() -> proxima_core::verbs::schema::SchemaRegistry {
+    schema_registry_with(|_| {})
+}
+
+/// Build the code-flavor `SchemaRegistry` with extra flavor
+/// registrations layered in (e.g. substrate). Used by Tauri Shell to
+/// compose substrate + code into the engine's registry without forcing
+/// a substrate dep on this crate's headless callers.
+#[must_use]
+pub fn schema_registry_with(
+    extra: impl FnOnce(&mut proxima_core::FlavorRegistry),
+) -> proxima_core::verbs::schema::SchemaRegistry {
     use proxima_core::verbs::schema::{PayloadKind, SchemaInfo};
     use proxima_core::{FlavorRegistry, SchemaId, SchemaVersion};
 
     let mut flavor = FlavorRegistry::new();
+    extra(&mut flavor);
     crate::register(&mut flavor);
     let flavor = flavor.freeze();
     let mut extra_schemas = Vec::new();

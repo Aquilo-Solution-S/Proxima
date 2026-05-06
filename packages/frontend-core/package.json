@@ -7,6 +7,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./flavors/code": "./src/flavors/code/index.ts",
+    "./flavors/mcp": "./src/flavors/mcp/index.ts",
     "./graph-store": "./src/graph-store.tsx",
     "./hub": "./src/hub.ts",
     "./tauri-client": "./src/tauri-client.ts",

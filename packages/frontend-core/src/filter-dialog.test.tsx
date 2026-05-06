@@ -2,7 +2,11 @@ import { cleanup, fireEvent, render, screen } from "@solidjs/testing-library";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SchemaInfo } from "./bindings";
 import { FilterDialog } from "./filter-dialog";
-import { GraphFilterProvider, createGraphFilterStore } from "./graph-filter-store";
+import {
+  CORE_FLAVOR_ID,
+  GraphFilterProvider,
+  createGraphFilterStore,
+} from "./graph-filter-store";
 
 const schemas: SchemaInfo[] = [
   {
@@ -60,5 +64,21 @@ describe("FilterDialog", () => {
     fireEvent.click(screen.getByRole("button", { name: "Reset" }));
     vi.advanceTimersByTime(200);
     expect(store.state().search).toBe("");
+  });
+
+  it("renders and toggles the core origin option", () => {
+    const store = createGraphFilterStore();
+    render(() => (
+      <GraphFilterProvider store={store}>
+        <FilterDialog
+          open={true}
+          schemas={schemas}
+          flavors={[CORE_FLAVOR_ID, "code"]}
+          onClose={() => undefined}
+        />
+      </GraphFilterProvider>
+    ));
+    fireEvent.click(screen.getByRole("checkbox", { name: "core" }));
+    expect(store.state().hiddenFlavorIds.has(CORE_FLAVOR_ID)).toBe(true);
   });
 });

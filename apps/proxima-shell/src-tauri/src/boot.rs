@@ -38,6 +38,14 @@ pub(crate) fn build_engine() -> (Arc<Engine>, Arc<PgStorage>) {
             .run(pg.pool())
             .await
             .expect("failed to run proxima-code flavor migrations");
+        // Substrate migrations run before the engine is built so the
+        // engine's snapshot path can LEFT-JOIN agent-note sidecars when
+        // the Atlas inspects MCP-authored memories. The MCP listener's
+        // own migrator() call is now redundant but harmless (idempotent).
+        proxima_mcp_substrate::migrator()
+            .run(pg.pool())
+            .await
+            .expect("failed to run proxima-mcp-substrate flavor migrations");
 
         // Single-writer invariant (docs/09 §Embedded engine mode): any
         // queued/running run at boot is a prior-process orphan whose
@@ -55,8 +63,12 @@ pub(crate) fn build_engine() -> (Arc<Engine>, Arc<PgStorage>) {
 
         let pg_for_settings = Arc::new(pg.clone());
         let auth = NoAuth::new(owner.principal.clone(), owner.clone());
-        let engine = proxima_code::build_engine(pg, Box::new(auth))
-            .with_operators(proxima_code::f2a_operator_registry());
+        // Compose substrate + code into the engine's schema registry so
+        // Settings → Schemas surfaces both flavors and the Atlas
+        // inspector can decode agent-note sidecars.
+        let engine =
+            proxima_code::build_engine_with(pg, Box::new(auth), proxima_mcp_substrate::register)
+                .with_operators(proxima_code::f2a_operator_registry());
 
         let engine = wire_consolidation_clients(engine, &pg_for_settings, &owner).await;
         let engine = Arc::new(engine);

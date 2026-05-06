@@ -2,6 +2,8 @@ import { For, Suspense, createSignal, type Component } from "solid-js";
 import { Dynamic } from "solid-js/web";
 import { FilterDialog } from "./filter-dialog";
 import { useGraph } from "./graph-store";
+import { flavorFilterId } from "./graph-filter-store";
+import { schemaFlavor } from "./graph-selectors";
 import type { Hub, RegisteredView } from "./hub";
 import { LoadingSurface, ProximaSeal } from "./primitives";
 
@@ -14,6 +16,40 @@ export const Shell: Component<{ hub: Hub }> = (props) => {
   const [filterOpen, setFilterOpen] = createSignal(false);
   const activeView = (): RegisteredView | undefined =>
     props.hub.views().find((v) => v.id === props.hub.currentView());
+  const schemaKey = (schemaId: string, schemaVersion: number): string =>
+    `${schemaId}@${schemaVersion}`;
+  const filterOrigins = (): string[] => {
+    const snapshot = graph.state();
+    const origins = new Set(props.hub.registeredFlavors());
+    const schemasByKey = new Map(
+      snapshot.schemas.map((schema) => [
+        schemaKey(schema.schema_id, schema.schema_version),
+        schema,
+      ]),
+    );
+    for (const schema of snapshot.schemas) {
+      origins.add(flavorFilterId(schemaFlavor(schema, props.hub)));
+    }
+    for (const memory of snapshot.memoriesById.values()) {
+      const schema = schemasByKey.get(
+        schemaKey(memory.row.schema_id, memory.row.schema_version),
+      );
+      const flavor =
+        schema === undefined
+          ? props.hub.flavorFor(memory.row.schema_id, memory.row.schema_version)
+          : schemaFlavor(schema, props.hub);
+      origins.add(flavorFilterId(flavor));
+    }
+    for (const goal of snapshot.goalsById.values()) {
+      const schema = schemasByKey.get(schemaKey(goal.schema_id, goal.schema_version));
+      const flavor =
+        schema === undefined
+          ? props.hub.flavorFor(goal.schema_id, goal.schema_version)
+          : schemaFlavor(schema, props.hub);
+      origins.add(flavorFilterId(flavor));
+    }
+    return [...origins];
+  };
 
   return (
     <div class="proxima-shell">
@@ -55,7 +91,7 @@ export const Shell: Component<{ hub: Hub }> = (props) => {
       <FilterDialog
         open={filterOpen()}
         schemas={graph.state().schemas}
-        flavors={props.hub.registeredFlavors()}
+        flavors={filterOrigins()}
         onClose={() => setFilterOpen(false)}
       />
       <main class="shell-main">
