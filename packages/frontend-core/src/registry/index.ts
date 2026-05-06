@@ -2,6 +2,39 @@ import type { Component } from "solid-js";
 import type { EntityKind, MemoryRow } from "../bindings";
 import type { PayloadCodec, Renderer, RegisteredView } from "../hub";
 
+export interface GoalPayloadEditorProps<T = unknown> {
+  payload: T;
+  onChange: (next: T) => void;
+}
+
+export type GoalPayloadEditorComponent<T = unknown> = Component<
+  GoalPayloadEditorProps<T>
+>;
+
+export interface GoalPayloadEditorRegistration<T = unknown> {
+  schemaId: string;
+  schemaVersion?: number;
+  flavor: string;
+  /** Human-readable label for the schema picker (e.g. "Simple text", "Task"). */
+  label: string;
+  /** Returns a fresh empty payload for the create-fresh path. */
+  defaults: () => T;
+  /** Projects the payload to the GoalRow.text display field. */
+  toText: (payload: T) => string;
+  component: GoalPayloadEditorComponent<T>;
+}
+
+export interface RegisteredGoalPayloadEditor {
+  schemaId: string;
+  schemaVersion: number;
+  flavor: string;
+  label: string;
+  defaults: () => unknown;
+  toText: (payload: unknown) => string;
+  component: GoalPayloadEditorComponent<unknown>;
+  registeredAt: number;
+}
+
 export interface PayloadRendererComponentProps<T = unknown> {
   memory: MemoryRow;
   payload: T;
@@ -52,6 +85,8 @@ export interface RegisteredPayloadRenderer {
 const payloadRenderers = new Map<string, RegisteredPayloadRenderer>();
 const edgeStyles = new Map<string, EdgeStyle>();
 const shellViews = new Map<string, ShellViewRegistration>();
+const goalPayloadEditors = new Map<string, RegisteredGoalPayloadEditor>();
+let goalEditorCounter = 0;
 
 const payloadKey = (
   kind: EntityKind | null,
@@ -136,8 +171,42 @@ export function registeredFlavorNames(): string[] {
   return [...flavors];
 }
 
+export function registerGoalPayloadEditor<T>(
+  registration: GoalPayloadEditorRegistration<T>,
+): void {
+  const schemaVersion = registration.schemaVersion ?? 1;
+  const key = `${registration.schemaId}@${schemaVersion}`;
+  goalEditorCounter += 1;
+  goalPayloadEditors.set(key, {
+    schemaId: registration.schemaId,
+    schemaVersion,
+    flavor: registration.flavor,
+    label: registration.label,
+    defaults: registration.defaults as () => unknown,
+    toText: registration.toText as (payload: unknown) => string,
+    component: registration.component as GoalPayloadEditorComponent<unknown>,
+    registeredAt: goalEditorCounter,
+  });
+}
+
+export function getGoalPayloadEditor(
+  schemaId: string,
+  schemaVersion: number,
+): RegisteredGoalPayloadEditor | null {
+  return goalPayloadEditors.get(`${schemaId}@${schemaVersion}`) ?? null;
+}
+
+/** Returns editors in registration order (first-registered is "default"). */
+export function registeredGoalPayloadEditors(): RegisteredGoalPayloadEditor[] {
+  return [...goalPayloadEditors.values()].sort(
+    (a, b) => a.registeredAt - b.registeredAt,
+  );
+}
+
 export function clearRegistriesForTests(): void {
   payloadRenderers.clear();
   edgeStyles.clear();
   shellViews.clear();
+  goalPayloadEditors.clear();
+  goalEditorCounter = 0;
 }
