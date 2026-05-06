@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen } from "@solidjs/testing-library";
 import { encode } from "cbor-x";
 import { afterEach, describe, expect, it } from "vitest";
-import type { EntityKind, MemoryRow } from "../bindings";
+import type { ChangeEvent, EntityKind, MemoryRow } from "../bindings";
 import {
   GraphFilterProvider,
   createGraphFilterStore,
@@ -32,7 +32,10 @@ const row = (
   payload: Array.from(encode(payload)),
 });
 
-const snapshot = (memories: MemoryRow[]): GraphSnapshot => ({
+const snapshot = (
+  memories: MemoryRow[],
+  events: ChangeEvent[] = [],
+): GraphSnapshot => ({
   owner,
   schemas: [],
   memoriesById: new Map(
@@ -48,7 +51,7 @@ const snapshot = (memories: MemoryRow[]): GraphSnapshot => ({
   ),
   goalsById: new Map(),
   edgesById: new Map(),
-  eventsBySeq: new Map(),
+  eventsBySeq: new Map(events.map((event) => [event.seq, event])),
   pendingHydration: new Map(),
   decodeErrorsByEntity: new Map(),
   streamStatus: "live",
@@ -256,5 +259,62 @@ describe("FullSurface fact explorer", () => {
 
     expect(screen.getByText("src/collapsible.rs:1-1")).toBeTruthy();
     expect(screen.queryByText("No perspectives")).toBeNull();
+  });
+
+  it("expands event rows with protocol and hydrated entity details", () => {
+    const hub = createHubWithCode();
+    const fact = row("019dfa32-0000-7000-8000-000000000001", "proxima-code/code-chunk-v1", {
+      repo_id: "018f0000-0000-7000-8000-000000000001",
+      file_path: "src/event.rs",
+      chunk_index: 2,
+      text: "fn from_event() {}",
+      language: "Rust",
+      chunk_type: "function",
+      byte_range_start: 30,
+      byte_range_end: 48,
+      line_range_start: 4,
+      line_range_end: 5,
+      state: "Present",
+    });
+    const eventSeq = "019dfa32-0000-7000-8000-000000000002";
+    const event: ChangeEvent = {
+      seq: eventSeq,
+      owner,
+      kind: {
+        EntityAppend: {
+          entity_kind: "Fact",
+          entity: { Memory: fact.id },
+          schema_id: fact.schema_id,
+          schema_version: fact.schema_version,
+          supersedes: null,
+        },
+      },
+    };
+    const store: GraphStore = {
+      state: () => snapshot([fact], [event]),
+      refresh: () => Promise.resolve(),
+    };
+
+    render(() => (
+      <GraphProvider store={store}>
+        <GraphFilterProvider store={createGraphFilterStore()}>
+          <FullSurface hub={hub} />
+        </GraphFilterProvider>
+      </GraphProvider>
+    ));
+
+    expect(screen.queryByText(eventSeq)).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Expand Event stream" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Expand event 019dfa32 Fact" }),
+    );
+
+    expect(screen.getByText(eventSeq)).toBeTruthy();
+    expect(
+      screen.getAllByText("proxima-code/code-chunk-v1 v1").length,
+    ).toBeGreaterThan(1);
+    expect(screen.getAllByText(fact.id).length).toBeGreaterThan(1);
+    expect(screen.getAllByText("src/event.rs:4-5").length).toBeGreaterThan(1);
   });
 });

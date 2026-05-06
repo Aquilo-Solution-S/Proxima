@@ -8,12 +8,12 @@ import {
   type Component,
   type JSX,
 } from "solid-js";
-import type { ChangeEvent } from "../bindings";
 import { SchemaTag, Mono } from "../primitives";
 import { useGraph, type DecodedMemory } from "../graph-store";
 import { useGraphFilter } from "../graph-filter-store";
 import { filterGraphSnapshot } from "../graph-selectors";
 import type { Hub } from "../hub";
+import { EventStream } from "./surface-events";
 
 // ── Goal rail ───────────────────────────────────────────────────────────
 const GoalRail: Component<{
@@ -65,82 +65,6 @@ const GoalRail: Component<{
             ? "No goals"
             : `${props.goalCount} goal identities pending payload projection`}
         </p>
-      </div>
-    </Show>
-  </aside>
-);
-
-// ── Event stream ───────────────────────────────────────────────────────
-const EventStream: Component<{
-  collapsed: boolean;
-  onToggle: () => void;
-  events: readonly ChangeEvent[];
-}> = (props) => (
-  <aside
-    classList={{
-      "event-stream": true,
-      "is-collapsed": props.collapsed,
-    }}
-  >
-    <Show
-      when={!props.collapsed}
-      fallback={
-        <button
-          type="button"
-          class="rail-collapsed-trigger"
-          aria-label="Expand Event stream"
-          aria-expanded="false"
-          onClick={props.onToggle}
-        >
-          <span class="rail-collapse-icon is-open" aria-hidden="true" />
-          <span class="rail-collapsed-title">Event stream</span>
-        </button>
-      }
-    >
-      <div class="stream-head">
-        <div class="rail-head-copy">
-          <span class="rail-title">Event stream</span>
-          <Mono style={{ "font-size": "9px", color: "var(--ink-50)" }}>
-            append-only
-          </Mono>
-        </div>
-        <button
-          type="button"
-          class="rail-toggle"
-          aria-label="Collapse Event stream"
-          aria-expanded="true"
-          onClick={props.onToggle}
-        >
-          <span class="rail-collapse-icon is-right" aria-hidden="true" />
-        </button>
-      </div>
-      <div class="stream-list">
-        <Show
-          when={props.events.length > 0}
-          fallback={<p class="proxima-dim surface-empty">No events</p>}
-        >
-          <For each={props.events}>
-            {(event) => (
-              <div class="fact-row">
-                <div class="fact-gutter">
-                  <span class="fact-glyph">CE</span>
-                </div>
-                <div class="fact-body">
-                  <div class="fact-row-head">
-                    <Mono style={{ "font-size": "10px" }}>
-                      {event.seq.slice(0, 8)}
-                    </Mono>
-                    <span class="proxima-dim">
-                      {event.kind.EntityAppend !== undefined
-                        ? event.kind.EntityAppend.entity_kind
-                        : "Edge"}
-                    </span>
-                  </div>
-                </div>
-              </div>
-            )}
-          </For>
-        </Show>
       </div>
     </Show>
   </aside>
@@ -516,6 +440,7 @@ export const FullSurface: Component<{ hub: Hub }> = (props) => {
         <EventStream
           collapsed={eventsCollapsed()}
           events={events()}
+          hub={props.hub}
           onToggle={() => setEventsCollapsed((v) => !v)}
         />
       </div>
