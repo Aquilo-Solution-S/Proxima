@@ -58,10 +58,11 @@ pub(crate) async fn write_goal_atomic(
             String,
             Vec<uuid::Uuid>,
             Option<uuid::Uuid>,
+            Vec<u8>,
         ) = sqlx::query_as(
             "SELECT schema_id, schema_version, text, state, \
                      COALESCE((SELECT array_agg(parent_goal_id) FROM proxima_core.goal_parents WHERE goal_id = $1), '{}'::uuid[]), \
-                     supersedes \
+                     supersedes, payload \
              FROM proxima_core.goals WHERE goal_id = $1",
         )
         .bind(existing_goal_id)
@@ -85,7 +86,9 @@ pub(crate) async fn write_goal_atomic(
         let text_match = existing_row.2 == draft.text;
         let state_match = existing_row.3 == state_str;
         let parents_match = existing_parents == draft_parents;
-        let supersedes_match = existing_row.5.is_none(); // supersedes must be NULL for write_goal
+        let expected_supersedes = draft.supersedes_goal_id.map(|id| id.into_inner());
+        let supersedes_match = existing_row.5 == expected_supersedes;
+        let payload_match = existing_row.6 == draft.payload;
 
         // Also need to check authorship fields.
         let authorship_matches = check_authorship_match(&mut tx, existing_goal_id, draft).await?;
@@ -95,7 +98,8 @@ pub(crate) async fn write_goal_atomic(
             && text_match
             && state_match
             && parents_match
-            && supersedes_match;
+            && supersedes_match
+            && payload_match;
 
         if body_matches && authorship_matches {
             tx.commit().await.map_err(map_err)?;
@@ -111,13 +115,18 @@ pub(crate) async fn write_goal_atomic(
         )));
     }
 
+    let supersedes = draft.supersedes_goal_id.map(|id| id.into_inner());
+    if let Some(prior_id) = supersedes {
+        validate_prior_goal_owner(&mut tx, prior_id, owner_kind, owner_principal_id).await?;
+    }
+
     // Generate ids inside the tx.
     let goal_id = uuid::Uuid::now_v7();
     let change_seq = uuid::Uuid::now_v7();
 
-    insert_goal_row(&mut tx, draft, goal_id, None).await?;
+    insert_goal_row(&mut tx, draft, goal_id, supersedes).await?;
     insert_goal_parents(&mut tx, draft, goal_id).await?;
-    insert_goal_change_event(&mut tx, draft, goal_id, change_seq, None).await?;
+    insert_goal_change_event(&mut tx, draft, goal_id, change_seq, supersedes).await?;
 
     tx.commit().await.map_err(map_err)?;
 
@@ -134,6 +143,14 @@ pub(crate) async fn supersede_goal_atomic(
     prior: proxima_core::GoalId,
     draft: &GoalDraft,
 ) -> Result<GoalWriteOutcome, StorageError> {
+    if let Some(draft_prior) = draft.supersedes_goal_id {
+        if draft_prior != prior {
+            return Err(StorageError::ConstraintViolation(
+                "draft supersedes_goal_id does not match prior".to_string(),
+            ));
+        }
+    }
+
     let (owner_kind, owner_principal_id) = match &draft.owner.principal {
         Principal::User(u) => ("User", u.into_inner()),
         Principal::Group(g) => ("Group", g.into_inner()),
@@ -171,10 +188,11 @@ pub(crate) async fn supersede_goal_atomic(
             String,
             Vec<uuid::Uuid>,
             Option<uuid::Uuid>,
+            Vec<u8>,
         ) = sqlx::query_as(
             "SELECT schema_id, schema_version, text, state, \
                      COALESCE((SELECT array_agg(parent_goal_id) FROM proxima_core.goal_parents WHERE goal_id = $1), '{}'::uuid[]), \
-                     supersedes \
+                     supersedes, payload \
              FROM proxima_core.goals WHERE goal_id = $1",
         )
         .bind(existing_goal_id)
@@ -199,6 +217,7 @@ pub(crate) async fn supersede_goal_atomic(
         let state_match = existing_row.3 == state_str;
         let parents_match = existing_parents == draft_parents;
         let supersedes_match = existing_row.5 == Some(prior.into_inner());
+        let payload_match = existing_row.6 == draft.payload;
 
         // Also need to check authorship fields.
         let authorship_matches = check_authorship_match(&mut tx, existing_goal_id, draft).await?;
@@ -208,7 +227,8 @@ pub(crate) async fn supersede_goal_atomic(
             && text_match
             && state_match
             && parents_match
-            && supersedes_match;
+            && supersedes_match
+            && payload_match;
 
         if body_matches && authorship_matches {
             tx.commit().await.map_err(map_err)?;
@@ -224,26 +244,7 @@ pub(crate) async fn supersede_goal_atomic(
         )));
     }
 
-    // Validate prior exists and belongs to the same owner principal.
-    let prior_row: Option<(String, uuid::Uuid)> = sqlx::query_as(
-        "SELECT owner_principal_kind, owner_principal_id \
-         FROM proxima_core.goals WHERE goal_id = $1",
-    )
-    .bind(prior.into_inner())
-    .fetch_optional(&mut *tx)
-    .await
-    .map_err(map_err)?;
-
-    match prior_row {
-        None => return Err(StorageError::NotFound),
-        Some((p_kind, p_principal_id)) => {
-            if p_kind != owner_kind || p_principal_id != owner_principal_id {
-                return Err(StorageError::ConstraintViolation(
-                    "supersede crosses Owner boundary".to_string(),
-                ));
-            }
-        }
-    }
+    validate_prior_goal_owner(&mut tx, prior.into_inner(), owner_kind, owner_principal_id).await?;
 
     // Generate ids inside the tx.
     let goal_id = uuid::Uuid::now_v7();
@@ -309,11 +310,11 @@ async fn insert_goal_row(
     sqlx::query(
         "INSERT INTO proxima_core.goals \
             (goal_id, schema_id, schema_version, owner_principal_kind, \
-             owner_principal_id, owner_org_id, text, state, supersedes, \
+             owner_principal_id, owner_org_id, text, payload, state, supersedes, \
              authorship_kind, authorship_origin, authorship_operator_id, \
              authorship_tool_id, operator_kind, model_id, prompt_version, \
              personality_id, personality_state_hash, request_id) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)",
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)",
     )
     .bind(goal_id)
     .bind(draft.schema_id.as_str())
@@ -322,6 +323,7 @@ async fn insert_goal_row(
     .bind(owner_principal_id)
     .bind(owner_org_id)
     .bind(&draft.text)
+    .bind(&draft.payload)
     .bind(state_str)
     .bind(supersedes)
     .bind(authorship_kind)
@@ -339,6 +341,35 @@ async fn insert_goal_row(
     .map_err(map_err)?;
 
     Ok(())
+}
+
+async fn validate_prior_goal_owner(
+    tx: &mut sqlx::PgConnection,
+    prior_goal_id: uuid::Uuid,
+    owner_kind: &str,
+    owner_principal_id: uuid::Uuid,
+) -> Result<(), StorageError> {
+    let prior_row: Option<(String, uuid::Uuid)> = sqlx::query_as(
+        "SELECT owner_principal_kind, owner_principal_id \
+         FROM proxima_core.goals WHERE goal_id = $1",
+    )
+    .bind(prior_goal_id)
+    .fetch_optional(tx)
+    .await
+    .map_err(map_err)?;
+
+    match prior_row {
+        None => Err(StorageError::NotFound),
+        Some((p_kind, p_principal_id)) => {
+            if p_kind != owner_kind || p_principal_id != owner_principal_id {
+                Err(StorageError::ConstraintViolation(
+                    "supersede crosses Owner boundary".to_string(),
+                ))
+            } else {
+                Ok(())
+            }
+        }
+    }
 }
 
 async fn insert_goal_parents(
