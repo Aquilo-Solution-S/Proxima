@@ -4,6 +4,7 @@
 .DS_Store
 vibe-home/
 .exactor.yml
+.mcp.json
 target/
 CLAUDE.md
 .env

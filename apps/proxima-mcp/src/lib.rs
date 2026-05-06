@@ -12,10 +12,18 @@ use proxima_core::FlavorRegistry;
 /// Returns argument, storage, migration, or MCP transport failures.
 pub async fn run<I: IntoIterator<Item = String>>(args: I) -> Result<(), CliError> {
     let config = parse_args(args)?;
+    // rmcp 1.6 logs idle-session keep-alive expiry and the resulting
+    // session-cleanup race at ERROR; both are clean lifecycle events
+    // (`quit_reason=Closed`). Pin those targets to `warn` until rmcp
+    // upstream lowers them.
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                tracing_subscriber::EnvFilter::new(
+                    "info,rmcp::transport::worker=warn,\
+                     rmcp::transport::streamable_http_server::tower=warn",
+                )
+            }),
         )
         .try_init()
         .ok();
