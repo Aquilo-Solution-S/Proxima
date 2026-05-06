@@ -7,7 +7,9 @@
 //! Origin headers when `allowed_origins` is set.
 
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::path::PathBuf;
+use std::sync::{Arc, OnceLock};
+use std::time::Instant;
 
 use axum::body::Body;
 use axum::extract::{Request, State};
@@ -51,6 +53,7 @@ pub async fn serve_streamable_http(
         );
     let app = axum::Router::new()
         .nest_service("/mcp", service)
+        .layer(middleware::from_fn(perf_recorder))
         .layer(middleware::from_fn_with_state(allowlist, origin_guard));
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -67,6 +70,67 @@ pub async fn serve_streamable_http(
     });
 
     Ok((handle, bound_addr))
+}
+
+/// Dev-time per-request recorder. Active when `PROXIMA_PERF_SESSION_DIR`
+/// names an existing directory; appends one NDJSON row per request to
+/// `<dir>/mcp.json`. No-op otherwise. SSE responses report 0 resp_bytes
+/// (no Content-Length); a streaming-aware counter is a future v2.
+async fn perf_recorder(request: Request<Body>, next: Next) -> Response {
+    let Some(dir) = perf_session_dir() else {
+        return next.run(request).await;
+    };
+    let started = Instant::now();
+    let method = request.method().clone();
+    let route = request.uri().path().to_string();
+    let req_bytes = request
+        .headers()
+        .get(http::header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(0);
+
+    let resp = next.run(request).await;
+    let status = resp.status().as_u16();
+    let resp_bytes = resp
+        .headers()
+        .get(http::header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(0);
+
+    let line = serde_json::json!({
+        "ts_ms": std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0),
+        "method": method.as_str(),
+        "route": route,
+        "status": status,
+        "req_bytes": req_bytes,
+        "resp_bytes": resp_bytes,
+        "dur_ms": started.elapsed().as_millis() as u64,
+    });
+    let path = dir.join("mcp.json");
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        use std::io::Write;
+        let _ = writeln!(f, "{}", line);
+    }
+    resp
+}
+
+fn perf_session_dir() -> Option<&'static PathBuf> {
+    static DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
+    DIR.get_or_init(|| {
+        std::env::var_os("PROXIMA_PERF_SESSION_DIR")
+            .map(PathBuf::from)
+            .filter(|p| p.exists())
+    })
+    .as_ref()
 }
 
 async fn origin_guard(
