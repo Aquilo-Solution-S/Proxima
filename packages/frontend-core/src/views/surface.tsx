@@ -284,9 +284,53 @@ const MemoryExplorer: Component<{
   );
 };
 
+const LayerHeader: Component<{
+  contentId: string;
+  glyph: string;
+  name: string;
+  count: number;
+  detail: string;
+  collapsed: boolean;
+  onToggle: () => void;
+}> = (props) => (
+  <button
+    type="button"
+    class="lane-toggle"
+    aria-label={`${props.collapsed ? "Expand" : "Collapse"} ${
+      props.name
+    } section`}
+    aria-expanded={!props.collapsed}
+    aria-controls={props.contentId}
+    onClick={props.onToggle}
+  >
+    <span class="lane-label">
+      <span class="lane-letter">{props.glyph}</span>
+      <span class="lane-meta">
+        <span class="lane-name">{props.name}</span>
+        <span class="lane-count">{props.count}</span>
+        <Mono style={{ "font-size": "9px", color: "var(--ink-40)" }}>
+          {props.detail}
+        </Mono>
+      </span>
+    </span>
+    <span
+      classList={{
+        "lane-collapse-icon": true,
+        "is-collapsed": props.collapsed,
+      }}
+      aria-hidden="true"
+    />
+  </button>
+);
+
 const TraversalLanes: Component<{ hub: Hub; memories: DecodedMemory[] }> = (
   props,
 ) => {
+  const [perspectivesCollapsed, setPerspectivesCollapsed] =
+    createSignal(false);
+  const [abstractionsCollapsed, setAbstractionsCollapsed] =
+    createSignal(false);
+  const [factsCollapsed, setFactsCollapsed] = createSignal(false);
   const facts = () => props.memories.filter((m) => m.row.kind === "Fact");
   const abstractions = () =>
     props.memories.filter((m) => m.row.kind === "Abstraction");
@@ -294,120 +338,147 @@ const TraversalLanes: Component<{ hub: Hub; memories: DecodedMemory[] }> = (
     props.memories.filter((m) => m.row.kind === "Perspective");
 
   return (
-  <div class="traversal">
-    <div class="traversal-head">
-      <span class="rail-title">F → A → P traversal</span>
-      <Mono style={{ "font-size": "9px", color: "var(--ink-40)" }}>
-        chain(f, P_active)
-      </Mono>
-    </div>
-
-    {/* PERSPECTIVE LANE */}
-    <div class="lane lane-p">
-      <div class="lane-label">
-        <span class="lane-letter">P</span>
-        <div class="lane-meta">
-          <span class="lane-name">Perspective</span>
-          <span class="lane-count">{perspectives().length}</span>
-          <Mono style={{ "font-size": "9px", color: "var(--ink-40)" }}>
-            causal claim carrier
-          </Mono>
-        </div>
+    <div class="traversal">
+      <div class="traversal-head">
+        <span class="rail-title">F → A → P traversal</span>
+        <Mono style={{ "font-size": "9px", color: "var(--ink-40)" }}>
+          chain(f, P_active)
+        </Mono>
       </div>
-      <div class="lane-content">
-        <Show
-          when={perspectives().length > 0}
-          fallback={<p class="proxima-dim">No perspectives</p>}
-        >
-          <For each={perspectives()}>
-            {(memory) => <MemoryCard memory={memory} hub={props.hub} />}
-          </For>
-        </Show>
-      </div>
-    </div>
 
-    {/* P → A connector */}
-    <div class="lane-connector">
-      <Mono
-        style={{
-          "font-size": "9px",
-          color: "var(--ink-40)",
-          "line-height": "32px",
-          "text-align": "center",
+      {/* PERSPECTIVE LANE */}
+      <section
+        classList={{
+          lane: true,
+          "lane-p": true,
+          "is-collapsed": perspectivesCollapsed(),
         }}
       >
-        A → P (provenance)
-      </Mono>
-    </div>
-
-    {/* ABSTRACTION LANE */}
-    <div class="lane lane-a">
-      <div class="lane-label">
-        <span class="lane-letter">A</span>
-        <div class="lane-meta">
-          <span class="lane-name">Abstractions</span>
-          <span class="lane-count">{abstractions().length}</span>
-          <Mono style={{ "font-size": "9px", color: "var(--ink-40)" }}>
-            authored prose + typed scaffolding
-          </Mono>
-        </div>
-      </div>
-      <div class="lane-content lane-content-row">
-        <Show
-          when={abstractions().length > 0}
-          fallback={<p class="proxima-dim">No abstractions</p>}
-        >
-          <MemoryExplorer
-            hub={props.hub}
-            memories={abstractions()}
-            label="Abstractions"
-            glyph="A"
-          />
+        <LayerHeader
+          contentId="surface-perspectives-content"
+          glyph="P"
+          name="Perspective"
+          count={perspectives().length}
+          detail="causal claim carrier"
+          collapsed={perspectivesCollapsed()}
+          onToggle={() => setPerspectivesCollapsed((v) => !v)}
+        />
+        <Show when={!perspectivesCollapsed()}>
+          <div id="surface-perspectives-content" class="lane-content">
+            <Show
+              when={perspectives().length > 0}
+              fallback={<p class="proxima-dim">No perspectives</p>}
+            >
+              <For each={perspectives()}>
+                {(memory) => <MemoryCard memory={memory} hub={props.hub} />}
+              </For>
+            </Show>
+          </div>
         </Show>
-      </div>
-    </div>
+      </section>
 
-    {/* A → F connector */}
-    <div class="lane-connector">
-      <Mono
-        style={{
-          "font-size": "9px",
-          color: "var(--ink-40)",
-          "line-height": "32px",
-          "text-align": "center",
+      {/* P → A connector */}
+      <div class="lane-connector">
+        <Mono
+          style={{
+            "font-size": "9px",
+            color: "var(--ink-40)",
+            "line-height": "32px",
+            "text-align": "center",
+          }}
+        >
+          A → P (provenance)
+        </Mono>
+      </div>
+
+      {/* ABSTRACTION LANE */}
+      <section
+        classList={{
+          lane: true,
+          "lane-a": true,
+          "is-collapsed": abstractionsCollapsed(),
         }}
       >
-        F → A (provenance)
-      </Mono>
-    </div>
-
-    {/* FACTS LANE */}
-    <div class="lane lane-f">
-      <div class="lane-label">
-        <span class="lane-letter">F</span>
-        <div class="lane-meta">
-          <span class="lane-name">Facts</span>
-          <span class="lane-count">{facts().length}</span>
-          <Mono style={{ "font-size": "9px", color: "var(--ink-40)" }}>
-            source_batch — F→A is intra-batch
-          </Mono>
-        </div>
-      </div>
-      <div class="lane-content lane-content-row">
-        <Show
-          when={facts().length > 0}
-          fallback={<p class="proxima-dim">No facts</p>}
-        >
-          <MemoryExplorer
-            hub={props.hub}
-            memories={facts()}
-            label="Facts"
-            glyph="F"
-          />
+        <LayerHeader
+          contentId="surface-abstractions-content"
+          glyph="A"
+          name="Abstractions"
+          count={abstractions().length}
+          detail="authored prose + typed scaffolding"
+          collapsed={abstractionsCollapsed()}
+          onToggle={() => setAbstractionsCollapsed((v) => !v)}
+        />
+        <Show when={!abstractionsCollapsed()}>
+          <div
+            id="surface-abstractions-content"
+            class="lane-content lane-content-row"
+          >
+            <Show
+              when={abstractions().length > 0}
+              fallback={<p class="proxima-dim">No abstractions</p>}
+            >
+              <MemoryExplorer
+                hub={props.hub}
+                memories={abstractions()}
+                label="Abstractions"
+                glyph="A"
+              />
+            </Show>
+          </div>
         </Show>
+      </section>
+
+      {/* A → F connector */}
+      <div class="lane-connector">
+        <Mono
+          style={{
+            "font-size": "9px",
+            color: "var(--ink-40)",
+            "line-height": "32px",
+            "text-align": "center",
+          }}
+        >
+          F → A (provenance)
+        </Mono>
       </div>
+
+      {/* FACTS LANE */}
+      <section
+        classList={{
+          lane: true,
+          "lane-f": true,
+          "is-collapsed": factsCollapsed(),
+        }}
+      >
+        <LayerHeader
+          contentId="surface-facts-content"
+          glyph="F"
+          name="Facts"
+          count={facts().length}
+          detail="source_batch - F→A is intra-batch"
+          collapsed={factsCollapsed()}
+          onToggle={() => setFactsCollapsed((v) => !v)}
+        />
+        <Show when={!factsCollapsed()}>
+          <div
+            id="surface-facts-content"
+            class="lane-content lane-content-row"
+          >
+            <Show
+              when={facts().length > 0}
+              fallback={<p class="proxima-dim">No facts</p>}
+            >
+              <MemoryExplorer
+                hub={props.hub}
+                memories={facts()}
+                label="Facts"
+                glyph="F"
+              />
+            </Show>
+          </div>
+        </Show>
+      </section>
     </div>
-  </div>
   );
 };
 

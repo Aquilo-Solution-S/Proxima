@@ -1,8 +1,83 @@
-import { For, Show, createResource, createSignal, type Component, type Resource } from "solid-js";
-import { commands, type LlmCaps, type LlmModelRecord, type ModelTier, type TierBindings } from "../../bindings";
+import {
+  For,
+  Show,
+  createEffect,
+  createResource,
+  createSignal,
+  type Accessor,
+  type Component,
+  type Resource,
+} from "solid-js";
+import {
+  commands,
+  type LlmCaps,
+  type LlmModelRecord,
+  type ModelTier,
+  type TierBindings,
+} from "../../bindings";
 import { formatCommandError as formatError } from "../../format-error";
 import { TIERS } from "./constants";
 import { loadTierRequires } from "./loaders";
+
+const modelValue = (model: { vendor: string; model_id: string }): string =>
+  `${model.vendor}|${model.model_id}`;
+
+const TierBindingRow: Component<{
+  tier: ModelTier;
+  binding: Accessor<TierBindings[ModelTier]>;
+  models: Accessor<LlmModelRecord[]>;
+  onBind: (tier: ModelTier, vendor: string, modelId: string) => void;
+  onUnbind: (tier: ModelTier) => void;
+}> = (props) => {
+  let select: HTMLSelectElement | undefined;
+  const selectedValue = () => {
+    const binding = props.binding();
+    return binding ? modelValue(binding) : "";
+  };
+
+  createEffect(() => {
+    const value = selectedValue();
+    props.models();
+    queueMicrotask(() => {
+      if (select) select.value = value;
+    });
+  });
+
+  return (
+    <div class="proxima-tier-row">
+      <span class="proxima-tier-label">{props.tier}</span>
+      <select
+        ref={select}
+        value={selectedValue()}
+        onChange={(e) => {
+          if (e.target.value) {
+            const [vendor, modelId] = e.target.value.split("|");
+            props.onBind(props.tier, vendor, modelId);
+          }
+        }}
+      >
+        <option value="">— Select model —</option>
+        <For each={props.models()}>
+          {(model) => (
+            <option
+              value={modelValue(model)}
+              selected={selectedValue() === modelValue(model)}
+            >
+              {model.vendor} / {model.model_id}
+            </option>
+          )}
+        </For>
+      </select>
+      <button
+        class="proxima-btn proxima-btn-danger"
+        onClick={() => props.onUnbind(props.tier)}
+        disabled={!props.binding()}
+      >
+        Unbind
+      </button>
+    </div>
+  );
+};
 
 // Tier Bindings Section
 export const TierBindingsSection: Component<{
@@ -72,34 +147,15 @@ export const TierBindingsSection: Component<{
                       </p>
                     )}
                   </Show>
-                  <div class="proxima-tier-row">
-                    <span class="proxima-tier-label">{tier}</span>
-                    <select
-                      value={binding() ? `${binding()!.vendor}|${binding()!.model_id}` : ""}
-                      onChange={(e) => {
-                        if (e.target.value) {
-                          const [vendor, modelId] = e.target.value.split("|");
-                          void handleBind(tier, vendor, modelId);
-                        }
-                      }}
-                    >
-                      <option value="">— Select model —</option>
-                      <For each={models()}>
-                        {(m) => (
-                          <option value={`${m.vendor}|${m.model_id}`}>
-                            {m.vendor} / {m.model_id}
-                          </option>
-                        )}
-                      </For>
-                    </select>
-                    <button
-                      class="proxima-btn proxima-btn-danger"
-                      onClick={() => void handleUnbind(tier)}
-                      disabled={!binding()}
-                    >
-                      Unbind
-                    </button>
-                  </div>
+                  <TierBindingRow
+                    tier={tier}
+                    binding={binding}
+                    models={models}
+                    onBind={(selectedTier, vendor, modelId) =>
+                      void handleBind(selectedTier, vendor, modelId)
+                    }
+                    onUnbind={(selectedTier) => void handleUnbind(selectedTier)}
+                  />
                 </div>
               );
             }}
