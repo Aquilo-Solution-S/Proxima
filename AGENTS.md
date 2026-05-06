@@ -35,6 +35,7 @@ explicit request.
 | `docs/13-flavor-marketplace.md` | Substrate + reference flavors; independent authorship; composite discipline |
 | `docs/14-protocol-surface.md` | Engine's contract to clients: five verbs (Query / Subscribe / GoalWrite / EventIngest / Schema), owner-scoped, transport-agnostic |
 | `docs/15-compliance.md` | Compliance primitives: owner deletion, pause/resume, export, suppression, audit |
+| `docs/dev-perf.md` | Dev-time perf instrumentation: per-session artifact layout under `apps/proxima-shell/perf-logs/` |
 
 ## Workspace layout
 
@@ -43,17 +44,22 @@ proxima/
 ├── apps/
 │   ├── proxima-engine/      Rust engine binary
 │   ├── proxima-code/        Rust code-flavor binary
+│   ├── proxima-mcp/         Rust headless MCP host binary (substrate + goal)
 │   └── proxima-shell/       Solid + Vite + Tauri 2 shell
 │       └── src-tauri/       Tauri Rust crate
 ├── crates/
 │   ├── core/                Rust lib crate `proxima-core`
+│   ├── mcp-server/          Rust MCP HTTP listener crate (`proxima_mcp_server`)
 │   ├── storage-pg/          Rust Postgres storage crate
 │   ├── wire-grpc/           Rust gRPC wire crate
 │   └── llm-openai-compat/   Rust OpenAI-compatible model client crate
 ├── packages/
 │   └── frontend-core/       npm package `@proxima/core`
 ├── flavors/
-│   └── code/                Rust code flavor crate
+│   ├── code/                Rust code flavor crate
+│   ├── goal/                Rust goal flavor crate
+│   └── mcp/                 Rust MCP substrate flavor crate
+├── proto/                   Proxima v1 protobuf surface
 ├── docs/                    design source of truth
 ├── Cargo.toml               Rust workspace
 └── pnpm-workspace.yaml      frontend workspace
@@ -87,6 +93,7 @@ Tools available to attached agents:
 |---|---|
 | Substrate (always) | `proxima_search_graph`, `proxima_open`, `proxima_remember`, `proxima_derive`, `proxima_link` |
 | Code flavor | `code_search_chunks`, `code_search_commits`, `code_open_file_revision` |
+| Goal flavor | `goal_propose`, `goal_accept`, `goal_decline`, `goal_modify` |
 
 Proxima self-ingests its own commits and chunks, so the graph holds
 this repo's causal chain. Prefer MCP queries over re-greppping when
@@ -210,7 +217,9 @@ breaks if these slip.
 - Code subject: `feat(<component>): <summary>` /
   `fix(<component>): <summary>` / `chore(<component>): <summary>`.
   Components include `core`, `frontend-core`, `proxima-shell`,
-  `storage-pg`, `wire-grpc`, `llm-openai-compat`, `flavors-code`.
+  `proxima-engine`, `proxima-code`, `proxima-mcp`, `storage-pg`,
+  `wire-grpc`, `mcp-server`, `llm-openai-compat`, `flavors-code`,
+  `flavors-goal`, `flavors-mcp`.
 - Body: bulleted list of concrete changes; preserve the *why* when
   the change is a decision, not a fix.
 - Co-authorship trailer for AI commits matches the parent CLAUDE.md

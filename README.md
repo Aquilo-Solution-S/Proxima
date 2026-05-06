@@ -44,17 +44,21 @@ proxima/
 ├── apps/
 │   ├── proxima-engine/      Rust engine binary
 │   ├── proxima-code/        Rust Code-flavor binary
+│   ├── proxima-mcp/         Rust headless MCP host binary (substrate + goal)
 │   └── proxima-shell/       Solid + Vite + Tauri 2 shell
 │       └── src-tauri/       Tauri Rust crate
 ├── crates/
 │   ├── core/                Rust lib crate `proxima-core`
+│   ├── mcp-server/          MCP HTTP listener (`proxima_mcp_server`)
 │   ├── storage-pg/          Postgres storage adapter + migrations
 │   ├── wire-grpc/           gRPC wire crate
 │   └── llm-openai-compat/   OpenAI-compatible model client
 ├── packages/
 │   └── frontend-core/       npm package `@proxima/core`
 ├── flavors/
-│   └── code/                Rust Code flavor crate
+│   ├── code/                Rust Code flavor crate
+│   ├── goal/                Rust Goal flavor crate
+│   └── mcp/                 Rust MCP substrate flavor crate
 ├── proto/                   Proxima v1 protobuf surface
 ├── docs/                    design source of truth
 ├── Cargo.toml               Rust workspace
@@ -128,6 +132,9 @@ Design source of truth:
   decider, operators, and tool registry stay inside the binary.
 - [`docs/15-compliance.md`](docs/15-compliance.md) — compliance
   primitives: owner deletion, pause/resume, export, suppression, audit.
+- [`docs/dev-perf.md`](docs/dev-perf.md) — dev-time perf instrumentation:
+  per-session artifact layout under `apps/proxima-shell/perf-logs/`,
+  IPC / MCP / engine / Postgres capture, opt-out via `PROXIMA_PERF=0`.
 
 ## Verification
 
@@ -192,11 +199,14 @@ cargo run -p proxima-mcp -- \
   --bind 127.0.0.1:31415
 ```
 
-MCP server exposing five substrate tools:
+MCP server. Substrate tools (always):
 `proxima-mcp/proxima_search_graph`, `proxima-mcp/proxima_open`,
 `proxima-mcp/proxima_remember`, `proxima-mcp/proxima_derive`,
-`proxima-mcp/proxima_link`. Composite binaries extend the tool list
-at link time; see `docs/13-flavor-marketplace.md`.
+`proxima-mcp/proxima_link`. Goal flavor (composited into
+`apps/proxima-mcp`): `proxima-goal/goal_propose`,
+`proxima-goal/goal_accept`, `proxima-goal/goal_decline`,
+`proxima-goal/goal_modify`. Other composite binaries extend the
+tool list at link time; see `docs/13-flavor-marketplace.md`.
 
 ## Implementation commitment
 
