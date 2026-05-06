@@ -19,4 +19,5 @@ mod goals;
 mod memories;
 mod rows;
 
+pub use edges::MAX_SNAPSHOT_EDGES;
 pub(crate) use memories::query_memories;

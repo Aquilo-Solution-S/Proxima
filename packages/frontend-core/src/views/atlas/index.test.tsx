@@ -2,7 +2,12 @@ import { cleanup, fireEvent, render, screen } from "@solidjs/testing-library";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { EdgeRow, MemoryRow, Owner } from "../../bindings";
 import { GraphFilterProvider, createGraphFilterStore } from "../../graph-filter-store";
-import { GraphProvider, type GraphSnapshot, type GraphStore } from "../../graph-store";
+import {
+  GraphProvider,
+  MAX_SNAPSHOT_EDGES,
+  type GraphSnapshot,
+  type GraphStore,
+} from "../../graph-store";
 import { createHub } from "../../hub";
 import { Atlas } from "./index";
 
@@ -57,18 +62,35 @@ const edge = (id: string, source: string, target: string): EdgeRow => ({
   payload: [],
 });
 
-const snapshot = (memories: MemoryRow[], edges: EdgeRow[]): GraphSnapshot => ({
-  owner,
-  schemas: [],
-  memoriesById: new Map(memories.map((row) => [row.id, { row, payload: null }])),
-  goalsById: new Map(),
-  edgesById: new Map(edges.map((row) => [row.id, row])),
-  eventsBySeq: new Map(),
-  pendingHydration: new Map(),
-  decodeErrorsByEntity: new Map(),
-  streamStatus: "live",
-  seqHighWater: null,
-});
+const snapshot = (
+  memories: MemoryRow[],
+  edges: EdgeRow[],
+  edgeSizeOverride?: number,
+): GraphSnapshot => {
+  const edgesById = new Map(edges.map((row) => [row.id, row]));
+  const sizedEdges =
+    edgeSizeOverride === undefined
+      ? edgesById
+      : (new Proxy(edgesById, {
+          get(target, prop, receiver) {
+            if (prop === "size") return edgeSizeOverride;
+            const value = Reflect.get(target, prop, receiver);
+            return typeof value === "function" ? value.bind(target) : value;
+          },
+        }) as ReadonlyMap<string, EdgeRow>);
+  return {
+    owner,
+    schemas: [],
+    memoriesById: new Map(memories.map((row) => [row.id, { row, payload: null }])),
+    goalsById: new Map(),
+    edgesById: sizedEdges,
+    eventsBySeq: new Map(),
+    pendingHydration: new Map(),
+    decodeErrorsByEntity: new Map(),
+    streamStatus: "live",
+    seqHighWater: null,
+  };
+};
 
 describe("Atlas graph wiring", () => {
   afterEach(() => cleanup());
@@ -190,8 +212,8 @@ describe("Atlas graph wiring", () => {
     expect(codePill.className).toMatch(/\bon\b/);
   });
 
-  it("surfaces the snapshot-truncated status pill at GRAPH_SNAPSHOT_LIMIT", () => {
-    const memories = Array.from({ length: 1_000 }, (_, i) =>
+  it("surfaces the snapshot-truncated status pill at the node window", () => {
+    const memories = Array.from({ length: 5_000 }, (_, i) =>
       memory(`019dfa40-0000-7000-8000-${i.toString(16).padStart(12, "0")}`, "Fact"),
     );
     const store: GraphStore = {
@@ -205,6 +227,50 @@ describe("Atlas graph wiring", () => {
         </GraphFilterProvider>
       </GraphProvider>
     ));
-    expect(screen.getByText(/snapshot truncated at 1000/)).toBeTruthy();
+    expect(screen.getByText(/snapshot truncated at 5000 nodes/)).toBeTruthy();
+  });
+
+  it("does not count edges toward node-window truncation", () => {
+    const fact = memory("019dfa40-0000-7000-8000-000000000001", "Fact");
+    const abs = memory("019dfa40-0000-7000-8000-000000000002", "Abstraction");
+    const store: GraphStore = {
+      state: () =>
+        snapshot(
+          [fact, abs],
+          [edge("019dfa41-0000-7000-8000-000000000001", abs.id, fact.id)],
+          5_000,
+        ),
+      refresh: () => Promise.resolve(),
+    };
+    render(() => (
+      <GraphProvider store={store}>
+        <GraphFilterProvider store={createGraphFilterStore()}>
+          <Atlas hub={createHub([])} />
+        </GraphFilterProvider>
+      </GraphProvider>
+    ));
+    expect(screen.queryByText(/snapshot truncated at 5000 nodes/)).toBeNull();
+  });
+
+  it("surfaces a separate edges-truncated pill at MAX_SNAPSHOT_EDGES", () => {
+    const fact = memory("019dfa40-0000-7000-8000-000000000001", "Fact");
+    const abs = memory("019dfa40-0000-7000-8000-000000000002", "Abstraction");
+    const store: GraphStore = {
+      state: () =>
+        snapshot(
+          [fact, abs],
+          [edge("019dfa41-0000-7000-8000-000000000001", abs.id, fact.id)],
+          MAX_SNAPSHOT_EDGES,
+        ),
+      refresh: () => Promise.resolve(),
+    };
+    render(() => (
+      <GraphProvider store={store}>
+        <GraphFilterProvider store={createGraphFilterStore()}>
+          <Atlas hub={createHub([])} />
+        </GraphFilterProvider>
+      </GraphProvider>
+    ));
+    expect(screen.getByText(new RegExp(`edges truncated at ${MAX_SNAPSHOT_EDGES}`))).toBeTruthy();
   });
 });
