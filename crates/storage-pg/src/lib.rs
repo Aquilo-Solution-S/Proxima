@@ -30,6 +30,9 @@ mod authorship;
 mod error;
 pub mod outbox;
 mod pg_ident;
+pub mod query {
+    pub use crate::verbs::query::MAX_SNAPSHOT_EDGES;
+}
 pub mod settings;
 pub mod verbs;
 

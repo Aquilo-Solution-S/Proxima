@@ -2,7 +2,7 @@ import "../atlas.css";
 
 import { For, Show, type Component, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import * as THREE from "three";
-import { GRAPH_SNAPSHOT_LIMIT, useGraph } from "../../graph-store";
+import { GRAPH_SNAPSHOT_LIMIT, MAX_SNAPSHOT_EDGES, useGraph } from "../../graph-store";
 import { useGraphFilter } from "../../graph-filter-store";
 import { filterGraphSnapshot } from "../../graph-selectors";
 import type { Hub } from "../../hub";
@@ -75,6 +75,20 @@ export const Atlas: Component<{
     return snapshot.memoriesById.size + snapshot.goalsById.size + snapshot.edgesById.size;
   };
 
+  const nodeWindowIsTruncated = () => {
+    if (graph === null) return false;
+    const snapshot = graph.state();
+    return (
+      snapshot.memoriesById.size >= GRAPH_SNAPSHOT_LIMIT ||
+      snapshot.goalsById.size >= GRAPH_SNAPSHOT_LIMIT
+    );
+  };
+
+  const edgeCapIsHit = () => {
+    if (graph === null) return false;
+    return graph.state().edgesById.size >= MAX_SNAPSHOT_EDGES;
+  };
+
   const canvasMessage = () => {
     if (graph !== null && graph.state().streamStatus === "connecting") {
       return "Loading graph";
@@ -97,11 +111,11 @@ export const Atlas: Component<{
     if (snapshot.decodeErrorsByEntity.size > 0) {
       pills.push(`${snapshot.decodeErrorsByEntity.size} payload decode errors`);
     }
-    if (
-      snapshot.memoriesById.size + snapshot.goalsById.size + snapshot.edgesById.size ===
-      GRAPH_SNAPSHOT_LIMIT
-    ) {
-      pills.push(`snapshot truncated at ${GRAPH_SNAPSHOT_LIMIT}`);
+    if (nodeWindowIsTruncated()) {
+      pills.push(`snapshot truncated at ${GRAPH_SNAPSHOT_LIMIT} nodes`);
+    }
+    if (edgeCapIsHit()) {
+      pills.push(`edges truncated at ${MAX_SNAPSHOT_EDGES}`);
     }
     return pills;
   });

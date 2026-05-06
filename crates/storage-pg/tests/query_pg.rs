@@ -116,6 +116,98 @@ fn fresh_draft(owner: Owner) -> EventDraft {
     }
 }
 
+async fn insert_test_edge(
+    pg: &PgStorage,
+    owner: &Owner,
+    source: Uuid,
+    target: Uuid,
+    created_offset_seconds: i64,
+) -> Result<Uuid, Box<dyn std::error::Error>> {
+    let edge_id = Uuid::now_v7();
+    let (owner_kind, owner_principal_id) = match &owner.principal {
+        Principal::User(user) => ("User", user.into_inner()),
+        Principal::Group(group) => ("Group", group.into_inner()),
+    };
+    sqlx::query(
+        "INSERT INTO proxima_core.edges
+           (edge_id, relation, relation_class,
+            source_kind, source_memory_id, source_goal_id,
+            target_kind, target_memory_id, target_goal_id,
+            authorship_kind, authorship_owner_memory_id,
+            owner_principal_kind, owner_principal_id, owner_org_id, created_at)
+         VALUES
+           ($1, 'test/structural', 'Structural',
+            'Fact', $2, NULL,
+            'Fact', $3, NULL,
+            'EventSource', NULL,
+            $4, $5, $6, now() + ($7 * interval '1 second'))",
+    )
+    .bind(edge_id)
+    .bind(source)
+    .bind(target)
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(owner.org_id.into_inner())
+    .bind(created_offset_seconds)
+    .execute(pg.pool())
+    .await?;
+    Ok(edge_id)
+}
+
+async fn insert_n_test_edges_bulk(
+    pg: &PgStorage,
+    owner: &Owner,
+    source: Uuid,
+    target: Uuid,
+    count: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (owner_kind, owner_principal_id) = match &owner.principal {
+        Principal::User(user) => ("User", user.into_inner()),
+        Principal::Group(group) => ("Group", group.into_inner()),
+    };
+    let edge_ids: Vec<Uuid> = (0..count).map(|_| Uuid::now_v7()).collect();
+    sqlx::query(
+        "INSERT INTO proxima_core.edges
+           (edge_id, relation, relation_class,
+            source_kind, source_memory_id, source_goal_id,
+            target_kind, target_memory_id, target_goal_id,
+            authorship_kind, authorship_owner_memory_id,
+            owner_principal_kind, owner_principal_id, owner_org_id, created_at)
+         SELECT ids.edge_id, 'test/structural', 'Structural',
+                'Fact', $1, NULL,
+                'Fact', $2, NULL,
+                'EventSource', NULL,
+                $3, $4, $5, now() + (ids.ord * interval '1 microsecond')
+         FROM unnest($6::uuid[]) WITH ORDINALITY AS ids(edge_id, ord)",
+    )
+    .bind(source)
+    .bind(target)
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(owner.org_id.into_inner())
+    .bind(edge_ids)
+    .execute(pg.pool())
+    .await?;
+    Ok(())
+}
+
+async fn set_memory_created_offset(
+    pg: &PgStorage,
+    memory_id: Uuid,
+    created_offset_seconds: i64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    sqlx::query(
+        "UPDATE proxima_core.memories
+         SET created_at = now() + ($2 * interval '1 second')
+         WHERE memory_id = $1",
+    )
+    .bind(memory_id)
+    .bind(created_offset_seconds)
+    .execute(pg.pool())
+    .await?;
+    Ok(())
+}
+
 #[tokio::test]
 async fn query_returns_stored_schema_version() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
@@ -234,6 +326,270 @@ async fn query_returns_fact_rows() {
 
     let _ = drop_db(&db_name).await;
     result.expect("query_returns_fact_rows test failed");
+}
+
+#[tokio::test]
+async fn query_returns_all_edges_between_returned_nodes_even_when_edge_count_exceeds_limit() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if create_db(&db_name).await.is_err() {
+        eprintln!("skipping (no admin PG)");
+        return;
+    }
+    let url = format!("postgres://postgres@localhost/{db_name}");
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let storage: Arc<dyn Storage> = Arc::new(pg.clone());
+
+        let user = UserId::new(Uuid::now_v7());
+        let owner = Owner {
+            principal: Principal::User(user),
+            org_id: OrgId::new(Uuid::now_v7()),
+        };
+        let registry = SchemaRegistry::with_schemas(schemas_for_test());
+        let engine = Engine::new(
+            registry,
+            MemoryStore::new(),
+            Box::new(NoAuth::new(Principal::User(user), owner.clone())),
+        )
+        .with_storage(storage);
+
+        let first = engine
+            .event_ingest(&Credentials::None, fresh_draft(owner.clone()))
+            .await?
+            .memory_id;
+        let second = engine
+            .event_ingest(&Credentials::None, {
+                let mut draft = fresh_draft(owner.clone());
+                draft.payload = b"second".to_vec();
+                draft.source_batch_id = SourceBatchId::new(Uuid::now_v7());
+                draft
+            })
+            .await?
+            .memory_id;
+
+        let e1 = insert_test_edge(&pg, &owner, first.into_inner(), second.into_inner(), 1).await?;
+        let e2 = insert_test_edge(&pg, &owner, first.into_inner(), second.into_inner(), 2).await?;
+        let e3 = insert_test_edge(&pg, &owner, first.into_inner(), second.into_inner(), 3).await?;
+
+        let mut req = QueryRequest::for_owner(owner);
+        req.limit = 2;
+        let resp = engine.query(&Credentials::None, &req).await?;
+
+        assert_eq!(resp.memories.len(), 2);
+        let edge_ids = resp
+            .edges
+            .iter()
+            .map(|edge| edge.id)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(edge_ids, std::collections::BTreeSet::from([e1, e2, e3]));
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect(
+        "query_returns_all_edges_between_returned_nodes_even_when_edge_count_exceeds_limit failed",
+    );
+}
+
+#[tokio::test]
+async fn query_excludes_edges_with_endpoint_outside_returned_node_window() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if create_db(&db_name).await.is_err() {
+        eprintln!("skipping (no admin PG)");
+        return;
+    }
+    let url = format!("postgres://postgres@localhost/{db_name}");
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let storage: Arc<dyn Storage> = Arc::new(pg.clone());
+
+        let user = UserId::new(Uuid::now_v7());
+        let owner = Owner {
+            principal: Principal::User(user),
+            org_id: OrgId::new(Uuid::now_v7()),
+        };
+        let registry = SchemaRegistry::with_schemas(schemas_for_test());
+        let engine = Engine::new(
+            registry,
+            MemoryStore::new(),
+            Box::new(NoAuth::new(Principal::User(user), owner.clone())),
+        )
+        .with_storage(storage);
+
+        let outside = engine
+            .event_ingest(&Credentials::None, fresh_draft(owner.clone()))
+            .await?
+            .memory_id;
+        let inside_a = engine
+            .event_ingest(&Credentials::None, {
+                let mut draft = fresh_draft(owner.clone());
+                draft.payload = b"inside-a".to_vec();
+                draft.source_batch_id = SourceBatchId::new(Uuid::now_v7());
+                draft
+            })
+            .await?
+            .memory_id;
+        let inside_b = engine
+            .event_ingest(&Credentials::None, {
+                let mut draft = fresh_draft(owner.clone());
+                draft.payload = b"inside-b".to_vec();
+                draft.source_batch_id = SourceBatchId::new(Uuid::now_v7());
+                draft
+            })
+            .await?
+            .memory_id;
+
+        set_memory_created_offset(&pg, outside.into_inner(), 1).await?;
+        set_memory_created_offset(&pg, inside_a.into_inner(), 2).await?;
+        set_memory_created_offset(&pg, inside_b.into_inner(), 3).await?;
+
+        let visible_edge =
+            insert_test_edge(&pg, &owner, inside_a.into_inner(), inside_b.into_inner(), 1).await?;
+        let hidden_edge =
+            insert_test_edge(&pg, &owner, outside.into_inner(), inside_b.into_inner(), 2).await?;
+
+        let mut req = QueryRequest::for_owner(owner);
+        req.limit = 2;
+        let resp = engine.query(&Credentials::None, &req).await?;
+
+        assert_eq!(resp.memories.len(), 2);
+        let edge_ids = resp
+            .edges
+            .iter()
+            .map(|edge| edge.id)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(edge_ids, std::collections::BTreeSet::from([visible_edge]));
+        assert!(!edge_ids.contains(&hidden_edge));
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("query_excludes_edges_with_endpoint_outside_returned_node_window failed");
+}
+
+#[tokio::test]
+async fn query_edge_id_hydration_returns_requested_edge_without_visible_nodes() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if create_db(&db_name).await.is_err() {
+        eprintln!("skipping (no admin PG)");
+        return;
+    }
+    let url = format!("postgres://postgres@localhost/{db_name}");
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let storage: Arc<dyn Storage> = Arc::new(pg.clone());
+
+        let user = UserId::new(Uuid::now_v7());
+        let owner = Owner {
+            principal: Principal::User(user),
+            org_id: OrgId::new(Uuid::now_v7()),
+        };
+        let registry = SchemaRegistry::with_schemas(schemas_for_test());
+        let engine = Engine::new(
+            registry,
+            MemoryStore::new(),
+            Box::new(NoAuth::new(Principal::User(user), owner.clone())),
+        )
+        .with_storage(storage);
+
+        let a = engine
+            .event_ingest(&Credentials::None, fresh_draft(owner.clone()))
+            .await?
+            .memory_id;
+        let b = engine
+            .event_ingest(&Credentials::None, {
+                let mut draft = fresh_draft(owner.clone());
+                draft.payload = b"target".to_vec();
+                draft.source_batch_id = SourceBatchId::new(Uuid::now_v7());
+                draft
+            })
+            .await?
+            .memory_id;
+        let edge_id = insert_test_edge(&pg, &owner, a.into_inner(), b.into_inner(), 1).await?;
+
+        let mut req = QueryRequest::for_owner(owner);
+        req.limit = 1;
+        req.edge_ids = vec![edge_id];
+        let resp = engine.query(&Credentials::None, &req).await?;
+
+        assert!(resp.memories.is_empty());
+        assert_eq!(resp.edges.len(), 1);
+        assert_eq!(resp.edges[0].id, edge_id);
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("query_edge_id_hydration_returns_requested_edge_without_visible_nodes failed");
+}
+
+#[tokio::test]
+async fn query_caps_snapshot_edges_at_max_snapshot_edges() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if create_db(&db_name).await.is_err() {
+        eprintln!("skipping (no admin PG)");
+        return;
+    }
+    let url = format!("postgres://postgres@localhost/{db_name}");
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let storage: Arc<dyn Storage> = Arc::new(pg.clone());
+
+        let user = UserId::new(Uuid::now_v7());
+        let owner = Owner {
+            principal: Principal::User(user),
+            org_id: OrgId::new(Uuid::now_v7()),
+        };
+        let registry = SchemaRegistry::with_schemas(schemas_for_test());
+        let engine = Engine::new(
+            registry,
+            MemoryStore::new(),
+            Box::new(NoAuth::new(Principal::User(user), owner.clone())),
+        )
+        .with_storage(storage);
+
+        let a = engine
+            .event_ingest(&Credentials::None, fresh_draft(owner.clone()))
+            .await?
+            .memory_id;
+        let b = engine
+            .event_ingest(&Credentials::None, {
+                let mut draft = fresh_draft(owner.clone());
+                draft.payload = b"second".to_vec();
+                draft.source_batch_id = SourceBatchId::new(Uuid::now_v7());
+                draft
+            })
+            .await?
+            .memory_id;
+
+        let total = proxima_storage_pg::query::MAX_SNAPSHOT_EDGES + 1;
+        insert_n_test_edges_bulk(&pg, &owner, a.into_inner(), b.into_inner(), total).await?;
+
+        let mut req = QueryRequest::for_owner(owner);
+        req.limit = 2;
+        let resp = engine.query(&Credentials::None, &req).await?;
+
+        assert_eq!(resp.memories.len(), 2);
+        assert_eq!(
+            resp.edges.len(),
+            proxima_storage_pg::query::MAX_SNAPSHOT_EDGES
+        );
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("query_caps_snapshot_edges_at_max_snapshot_edges failed");
 }
 
 #[tokio::test]

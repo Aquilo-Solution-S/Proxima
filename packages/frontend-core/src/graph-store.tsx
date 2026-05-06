@@ -59,7 +59,12 @@ const DECODE_ERROR_CAP = 256;
 const HYDRATION_WINDOW_MS = 50;
 const MAX_BATCH = 500;
 const BURST_THRESHOLD = 5_000;
-export const GRAPH_SNAPSHOT_LIMIT = 1_000;
+// Node window for owner snapshots. Snapshot edges are loaded by the
+// backend as closure over returned nodes and capped separately.
+export const GRAPH_SNAPSHOT_LIMIT = 5_000;
+// Mirrors `MAX_SNAPSHOT_EDGES` in storage-pg. Used only for the Atlas
+// status pill; there is no wire field for the cap in v1.
+export const MAX_SNAPSHOT_EDGES = 50_000;
 
 const GraphContext = createContext<GraphStore>();
 

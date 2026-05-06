@@ -248,7 +248,18 @@ pub(crate) async fn query_memories(
     } else {
         Vec::new()
     };
-    let edges = query_edges(pool, req, owner_kind, owner_principal_id).await?;
+    let visible_memory_ids: Vec<uuid::Uuid> =
+        memories.iter().map(|row| row.id.into_inner()).collect();
+    let visible_goal_ids: Vec<uuid::Uuid> = goals.iter().map(|row| row.id.into_inner()).collect();
+    let edges = query_edges(
+        pool,
+        req,
+        owner_kind,
+        owner_principal_id,
+        &visible_memory_ids,
+        &visible_goal_ids,
+    )
+    .await?;
     let seq_high_water = read_seq_high_water(pool, owner_kind, owner_principal_id).await?;
 
     Ok(QueryResponse {
