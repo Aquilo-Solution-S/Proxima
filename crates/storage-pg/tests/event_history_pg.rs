@@ -1,4 +1,4 @@
-//! End-to-end EventHistory verb test against a transient PG database.
+//! End-to-end `EventHistory` verb test against a transient PG database.
 
 use std::sync::Arc;
 
