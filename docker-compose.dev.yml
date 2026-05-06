@@ -1,0 +1,33 @@
+services:
+  postgres:
+    image: postgres:17
+    container_name: proxima_dev_pg
+    environment:
+      POSTGRES_USER: proxima
+      POSTGRES_PASSWORD: proxima
+      POSTGRES_DB: proxima
+    ports:
+      - "5432:5432"
+    volumes:
+      - proxima_dev_pgdata:/var/lib/postgresql/data
+      - ./scripts/pg-init.sql:/docker-entrypoint-initdb.d/00-pg-stat-statements.sql:ro
+    command:
+      - "postgres"
+      - "-c"
+      - "shared_preload_libraries=pg_stat_statements,auto_explain"
+      - "-c"
+      - "pg_stat_statements.track=all"
+      - "-c"
+      - "auto_explain.log_min_duration=50ms"
+      - "-c"
+      - "auto_explain.log_analyze=on"
+      - "-c"
+      - "log_destination=stderr"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U proxima -d proxima"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+volumes:
+  proxima_dev_pgdata:
