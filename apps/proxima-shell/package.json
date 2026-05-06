@@ -21,6 +21,7 @@
     "@tauri-apps/plugin-opener": "^2",
     "@proxima/core": "workspace:*",
     "@proxima/flavor-code": "workspace:*",
+    "@proxima/flavor-goal": "workspace:*",
     "@proxima/flavor-mcp": "workspace:*"
   },
   "devDependencies": {

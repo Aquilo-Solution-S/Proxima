@@ -3456,8 +3456,10 @@ name = "proxima-mcp"
 version = "0.1.0"
 dependencies = [
  "proxima-core",
+ "proxima-flavor-goal",
  "proxima-mcp-server",
  "proxima-mcp-substrate",
+ "proxima-storage-pg",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -3518,6 +3520,7 @@ dependencies = [
  "keyring",
  "proxima-code",
  "proxima-core",
+ "proxima-flavor-goal",
  "proxima-llm-openai-compat",
  "proxima-mcp-server",
  "proxima-mcp-substrate",

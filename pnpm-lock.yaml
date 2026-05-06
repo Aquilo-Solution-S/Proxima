@@ -16,6 +16,9 @@ importers:
       '@proxima/flavor-code':
         specifier: workspace:*
         version: link:../../flavors/code/frontend
+      '@proxima/flavor-goal':
+        specifier: workspace:*
+        version: link:../../flavors/goal/frontend
       '@proxima/flavor-mcp':
         specifier: workspace:*
         version: link:../../flavors/mcp/frontend
@@ -62,6 +65,34 @@ importers:
       highlight.js:
         specifier: ^11.11.1
         version: 11.11.1
+      solid-js:
+        specifier: ^1.9.3
+        version: 1.9.12
+    devDependencies:
+      '@solidjs/testing-library':
+        specifier: ^0.8.10
+        version: 0.8.10(solid-js@1.9.12)
+      jsdom:
+        specifier: ^29.1.1
+        version: 29.1.1
+      typescript:
+        specifier: ~5.6.2
+        version: 5.6.3
+      vite-plugin-solid:
+        specifier: ^2.11.12
+        version: 2.11.12(solid-js@1.9.12)(vite@6.4.2)
+      vitest:
+        specifier: ^4.1.5
+        version: 4.1.5(jsdom@29.1.1)(vite@6.4.2)
+
+  flavors/goal/frontend:
+    dependencies:
+      '@proxima/core':
+        specifier: workspace:*
+        version: link:../../../packages/frontend-core
+      cbor-x:
+        specifier: ^1.6.4
+        version: 1.6.4
       solid-js:
         specifier: ^1.9.3
         version: 1.9.12
