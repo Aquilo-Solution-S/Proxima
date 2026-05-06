@@ -13,6 +13,7 @@ pub(crate) fn specta_builder() -> Builder<tauri::Wry> {
         // existing wire-protocol commands
         engine::schema,
         engine::query,
+        engine::event_history,
         engine::event_ingest,
         engine::goal_write,
         engine::subscribe,

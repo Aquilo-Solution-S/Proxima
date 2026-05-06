@@ -3,6 +3,7 @@ use std::sync::Arc;
 use futures_util::StreamExt;
 use proxima_core::auth::Credentials;
 use proxima_core::error::ProtocolError;
+use proxima_core::verbs::event_history::{EventHistoryRequest, EventHistoryResponse};
 use proxima_core::verbs::event_ingest::{EventDraft, EventIngestOutcome};
 use proxima_core::verbs::goal_write::{GoalDraft, GoalWriteOutcome};
 use proxima_core::verbs::query::{QueryRequest, QueryResponse};
@@ -25,6 +26,15 @@ pub async fn query(
     req: QueryRequest,
 ) -> Result<QueryResponse, ProtocolError> {
     engine.query(&Credentials::None, &req).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn event_history(
+    engine: State<'_, Arc<Engine>>,
+    req: EventHistoryRequest,
+) -> Result<EventHistoryResponse, ProtocolError> {
+    engine.event_history(&Credentials::None, &req).await
 }
 
 #[tauri::command]
