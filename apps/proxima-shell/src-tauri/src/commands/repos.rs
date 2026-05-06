@@ -16,9 +16,12 @@ use crate::command_error::CommandError;
 #[tauri::command]
 #[specta::specta]
 pub async fn repos_list(pg: State<'_, Arc<PgStorage>>) -> Result<Vec<RepoRecordTs>, CommandError> {
-    let owner = sentinel_owner();
-    let repos = proxima_code::list_repos(pg.pool(), &owner).await?;
-    Ok(repos.into_iter().map(Into::into).collect())
+    crate::perf::ipc::record("repos_list", 0, async move {
+        let owner = sentinel_owner();
+        let repos = proxima_code::list_repos(pg.pool(), &owner).await?;
+        Ok(repos.into_iter().map(Into::into).collect())
+    })
+    .await
 }
 
 /// # Errors
@@ -31,6 +34,8 @@ pub async fn repos_register(
     path: String,
     display_name: Option<String>,
 ) -> Result<RepoRecordTs, CommandError> {
+    let req_bytes = crate::perf::ipc::req_size(&(&path, &display_name));
+    crate::perf::ipc::record("repos_register", req_bytes, async move {
     // 1. canonicalize
     let canonical =
         std::fs::canonicalize(&path).map_err(|io_err| CommandError::InvalidRepoPath {
@@ -62,6 +67,8 @@ pub async fn repos_register(
         proxima_code::register_repo(pg.pool(), &owner, repo_id, &canonical_str, &display).await?;
 
     Ok(record.into())
+    })
+    .await
 }
 
 /// # Errors
@@ -72,12 +79,16 @@ pub async fn repos_delete(
     pg: State<'_, Arc<PgStorage>>,
     repo_id: String,
 ) -> Result<bool, CommandError> {
-    let owner = sentinel_owner();
-    let uuid =
-        Uuid::parse_str(&repo_id).map_err(|_| CommandError::InvalidUuid { value: repo_id })?;
-    proxima_code::delete_repo(pg.pool(), &owner, uuid)
-        .await
-        .map_err(CommandError::from)
+    let req_bytes = crate::perf::ipc::req_size(&repo_id);
+    crate::perf::ipc::record("repos_delete", req_bytes, async move {
+        let owner = sentinel_owner();
+        let uuid =
+            Uuid::parse_str(&repo_id).map_err(|_| CommandError::InvalidUuid { value: repo_id })?;
+        proxima_code::delete_repo(pg.pool(), &owner, uuid)
+            .await
+            .map_err(CommandError::from)
+    })
+    .await
 }
 
 /// # Errors
@@ -89,11 +100,15 @@ pub async fn repos_erase(
     pg: State<'_, Arc<PgStorage>>,
     repo_id: String,
 ) -> Result<RepoEraseReceiptTs, CommandError> {
-    let owner = sentinel_owner();
-    let uuid =
-        Uuid::parse_str(&repo_id).map_err(|_| CommandError::InvalidUuid { value: repo_id })?;
-    let receipt = proxima_code::erase_repo(pg.pool(), &owner, uuid).await?;
-    Ok(receipt.into())
+    let req_bytes = crate::perf::ipc::req_size(&repo_id);
+    crate::perf::ipc::record("repos_erase", req_bytes, async move {
+        let owner = sentinel_owner();
+        let uuid = Uuid::parse_str(&repo_id)
+            .map_err(|_| CommandError::InvalidUuid { value: repo_id })?;
+        let receipt = proxima_code::erase_repo(pg.pool(), &owner, uuid).await?;
+        Ok(receipt.into())
+    })
+    .await
 }
 
 /// Persist or return the active ingestion run, then kick the driver.
@@ -148,12 +163,16 @@ pub async fn repo_ingest_status(
     pg: State<'_, Arc<PgStorage>>,
     repo_id: String,
 ) -> Result<Option<RepoIngestionRunTs>, CommandError> {
-    let owner = sentinel_owner();
-    let uuid = Uuid::parse_str(&repo_id).map_err(|_| CommandError::InvalidUuid {
-        value: repo_id.clone(),
-    })?;
-    let active = proxima_code::get_active_run(pg.pool(), &owner, uuid).await?;
-    Ok(active.map(Into::into))
+    let req_bytes = crate::perf::ipc::req_size(&repo_id);
+    crate::perf::ipc::record("repo_ingest_status", req_bytes, async move {
+        let owner = sentinel_owner();
+        let uuid = Uuid::parse_str(&repo_id).map_err(|_| CommandError::InvalidUuid {
+            value: repo_id.clone(),
+        })?;
+        let active = proxima_code::get_active_run(pg.pool(), &owner, uuid).await?;
+        Ok(active.map(Into::into))
+    })
+    .await
 }
 
 /// Subscribe to current run snapshot plus live events for a repo.

@@ -88,6 +88,10 @@ pub(super) fn spawn_run_driver(
                 .run_pending_f2a(&owner)
                 .await
                 .map_err(|e| explain_driver_error("f2a", &e.to_string()))?;
+            engine
+                .run_pending_a2p(&owner)
+                .await
+                .map_err(|e| explain_driver_error("a2p", &e.to_string()))?;
             counters.abstractions_emitted =
                 count_abstractions_for_run(pg.pool(), &owner, record.repo_id)
                     .await

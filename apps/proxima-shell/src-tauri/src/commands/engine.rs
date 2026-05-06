@@ -16,7 +16,7 @@ use tauri::ipc::Channel;
 #[tauri::command]
 #[specta::specta]
 pub async fn schema(engine: State<'_, Arc<Engine>>) -> Result<SchemaResponse, ProtocolError> {
-    Ok(engine.schema(&SchemaRequest))
+    crate::perf::ipc::record("schema", 0, async move { Ok(engine.schema(&SchemaRequest)) }).await
 }
 
 #[tauri::command]
@@ -25,7 +25,11 @@ pub async fn query(
     engine: State<'_, Arc<Engine>>,
     req: QueryRequest,
 ) -> Result<QueryResponse, ProtocolError> {
-    engine.query(&Credentials::None, &req).await
+    let req_bytes = crate::perf::ipc::req_size(&req);
+    crate::perf::ipc::record("query", req_bytes, async move {
+        engine.query(&Credentials::None, &req).await
+    })
+    .await
 }
 
 #[tauri::command]
@@ -34,7 +38,11 @@ pub async fn event_history(
     engine: State<'_, Arc<Engine>>,
     req: EventHistoryRequest,
 ) -> Result<EventHistoryResponse, ProtocolError> {
-    engine.event_history(&Credentials::None, &req).await
+    let req_bytes = crate::perf::ipc::req_size(&req);
+    crate::perf::ipc::record("event_history", req_bytes, async move {
+        engine.event_history(&Credentials::None, &req).await
+    })
+    .await
 }
 
 #[tauri::command]
@@ -43,7 +51,11 @@ pub async fn event_ingest(
     engine: State<'_, Arc<Engine>>,
     draft: EventDraft,
 ) -> Result<EventIngestOutcome, ProtocolError> {
-    engine.event_ingest(&Credentials::None, draft).await
+    let req_bytes = crate::perf::ipc::req_size(&draft);
+    crate::perf::ipc::record("event_ingest", req_bytes, async move {
+        engine.event_ingest(&Credentials::None, draft).await
+    })
+    .await
 }
 
 #[tauri::command]
@@ -52,7 +64,11 @@ pub async fn goal_write(
     engine: State<'_, Arc<Engine>>,
     draft: GoalDraft,
 ) -> Result<GoalWriteOutcome, ProtocolError> {
-    engine.write_goal(&Credentials::None, draft).await
+    let req_bytes = crate::perf::ipc::req_size(&draft);
+    crate::perf::ipc::record("goal_write", req_bytes, async move {
+        engine.write_goal(&Credentials::None, draft).await
+    })
+    .await
 }
 
 /// Subscribe — engine returns a `Stream<Item = ChangeEvent>`; we
