@@ -39,9 +39,8 @@ pub struct SchemaInfo {
     pub kind: PayloadKind,
     pub filter_keys: Vec<String>,
     /// Sidecar table identifier (qualified, e.g. `proxima_code.code_chunk_v1`)
-    /// when the payload trait declares one; `None` for `Goal`, `CitedObject`,
-    /// and `CitationMapping` payloads which don't participate in F/A/P
-    /// queries.
+    /// when the payload trait declares one; `None` for `CitedObject` and
+    /// `CitationMapping` payloads which don't participate in F/A/P queries.
     pub sidecar_table: Option<String>,
     /// Natural-key columns for stateful Fact schemas (docs/03 §Stateful
     /// Fact schemas). Empty for stateless / non-Fact schemas. Drives the

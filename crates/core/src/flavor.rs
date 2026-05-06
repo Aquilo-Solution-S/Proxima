@@ -6,8 +6,9 @@
 
 use crate::verbs::schema::{PayloadKind, PayloadValidatorEntry, SchemaInfo, SchemaRegistry};
 use crate::{
-    AbstractionPayload, EdgePayload, FactPayload, McpCallFn, McpTool, McpToolDescriptor,
-    McpToolError, PerspectivePayload, RelationDescriptor, SchemaVersion, core_relation_descriptors,
+    AbstractionPayload, EdgePayload, FactPayload, GoalPayload, McpCallFn, McpTool,
+    McpToolDescriptor, McpToolError, PerspectivePayload, RelationDescriptor, SchemaVersion,
+    core_relation_descriptors,
 };
 
 pub type FlavorRegistryFrozen = SchemaRegistry;
@@ -91,6 +92,24 @@ impl FlavorRegistry {
             schema_version: SchemaVersion::new(P::SCHEMA_VERSION),
             kind: PayloadKind::Perspective,
             validate: validate_payload_type::<P>,
+        });
+    }
+
+    pub fn add_goal_schema<G: GoalPayload>(&mut self) {
+        self.schemas.push(SchemaInfo {
+            schema_id: G::schema_id(),
+            schema_version: SchemaVersion::new(G::SCHEMA_VERSION),
+            kind: PayloadKind::Goal,
+            filter_keys: vec![],
+            sidecar_table: Some(G::sidecar_table().to_string()),
+            natural_key_columns: vec![],
+            cbor_encoder: Some(encode_payload_cbor::<G>),
+        });
+        self.validators.push(PayloadValidatorEntry {
+            schema_id: G::schema_id(),
+            schema_version: SchemaVersion::new(G::SCHEMA_VERSION),
+            kind: PayloadKind::Goal,
+            validate: validate_payload_type::<G>,
         });
     }
 
