@@ -9,15 +9,19 @@
 
 At ~5k Atlas nodes (the size of this repo when ingested), the desktop shell is
 visibly slow. The bottleneck could live in any of three layers — Postgres,
-the Rust engine, or the frontend — plus the Tauri IPC boundary between
-engine and frontend. Optimizing without measurement risks fixing the wrong
-layer. We want every dev session to produce evidence by default, so the next
-optimization is informed by data, not intuition.
+the Rust engine, or the frontend — plus two API surfaces: the Tauri IPC
+boundary (engine ⇄ frontend) and the MCP HTTP listener (engine ⇄ external
+agents). Optimizing without measurement risks fixing the wrong layer, and
+"the payload is too large" is invisible until you compare what's serialized
+to what's actually read. We want every dev session to produce evidence by
+default, so the next optimization is informed by data, not intuition.
 
 ## Goals
 
 1. Every `tauri:dev` session produces a per-session artifact directory with
-   measurements from PG, Rust engine, IPC boundary, and frontend.
+   measurements from PG, Rust engine, IPC boundary, MCP HTTP surface, and
+   frontend — including which response fields were actually read by the
+   frontend per IPC command.
 2. Setup is reproducible across contributor machines via Docker — no manual
    `postgresql.conf` edits.
 3. Artifacts include a generated `summary.md` so the common question
@@ -41,13 +45,15 @@ docker-compose.dev.yml         # PG 17 with extensions preloaded
 scripts/dev-with-perf.mjs      # session driver (spawned by tauri:dev)
 apps/proxima-shell/
   src-tauri/
-    src/perf.rs                # tracing-chrome layer + IPC counter
-  src/perf.ts                  # FE timing capture + Tauri perf_log cmd
+    src/perf.rs                # tracing-chrome layer + IPC counter + MCP middleware
+  src/perf.ts                  # FE timing capture + Proxy field-access recorder
   perf-logs/<session>/         # gitignored output, one dir per session
     pg.log                     # tailed Postgres container log
     pg-stats.json              # pg_stat_statements snapshot at exit
     engine.json                # chrome:// tracing format
     ipc.json                   # one row per Tauri command call
+    ipc-fields.json            # accessed fields per IPC response
+    mcp.json                   # one row per MCP HTTP request
     frontend.json              # one row per FE measurement
     summary.md                 # generated reducer output
 ```
@@ -107,7 +113,7 @@ unset.
 
 ### 4. Frontend `perf.ts`
 
-Captures three classes of measurement:
+Captures four classes of measurement:
 - **Snapshot fetch**: ms from invoke to resolve, already on the IPC boundary;
   cross-correlates with `ipc.json` via a request ID.
 - **Selector recompute**: instrument the memoized accessors in
@@ -117,9 +123,41 @@ Captures three classes of measurement:
 - **Render**: `performance.now()` around Atlas mount + commit, captured via
   Solid's `onMount` and a `MutationObserver`-free wrapper around the
   surface root.
+- **Field access**: a recording `Proxy` wraps every response from the
+  high-traffic Tauri commands (`query_*`, `subscribe_*`, snapshot
+  loaders). The proxy traps `get` on objects and arrays-of-objects,
+  recording `(cmd_name, field_path)` the first time each path is
+  accessed in a session. Proxies wrap reads only — they do not intercept
+  writes — and the wrapping is opt-in per response shape so deeply
+  nested or hot-path-only data can skip the trap cost. Records flush
+  on the same 1s cadence as other FE measurements but to a separate
+  Tauri command `perf_log_field` → `<dir>/ipc-fields.json`.
 
 Measurements buffer in-memory and flush every 1s (or on `beforeunload`) via
-a `perf_log` Tauri command that appends NDJSON to `<dir>/frontend.json`.
+`perf_log` / `perf_log_field` Tauri commands that append NDJSON to
+`<dir>/frontend.json` and `<dir>/ipc-fields.json` respectively.
+
+### 4b. MCP HTTP middleware
+
+The MCP listener at `127.0.0.1:31415` is a real API surface in dev (external
+agents like Claude Code or Cursor hit it). A Tower middleware layer wraps
+every request and records:
+- `method: &'static str`
+- `route: String` (matched route, not raw URI, so we can group across IDs)
+- `status: u16`
+- `req_bytes: u64`
+- `resp_bytes: u64`
+- `dur_ms: u64`
+
+One NDJSON row per request appended to `<dir>/mcp.json`. Same env-var gate
+as the engine layer (`PROXIMA_PERF_SESSION_DIR` set ⇒ middleware active).
+Response body size is captured via a wrapping body type that counts bytes
+as they stream — no double-buffering of large SSE responses.
+
+Field utilization on MCP responses is **not** captured: the clients are
+external processes, so we have no visibility into which fields they read.
+Knowing route-level latency + bandwidth covers the dominant question
+("which MCP route is expensive") without that visibility.
 
 ### 5. Session driver (`scripts/dev-with-perf.mjs`)
 
@@ -152,7 +190,16 @@ and produces `summary.md` with:
 - **Top 10 slowest PG statements**: by total time, with calls + mean.
 - **Top 10 slowest engine spans**: by self-time, from `engine.json`.
 - **IPC summary**: per-command count, p50/p95 ms, p50/p95 req/resp bytes.
+- **MCP summary**: per-route count, p50/p95 ms, p50/p95 req/resp bytes,
+  status-code distribution.
 - **Frontend summary**: per-measurement-class p50/p95 ms.
+- **Wasted IPC fields**: per command, the set of fields serialized in
+  responses but never read by the FE. Computed by joining
+  `ipc-fields.json` (accessed paths) against the field set inferred
+  from `bindings.ts` for that command's return type. Output is a list
+  like `query_atlas_snapshot: 31/42 fields unused (74%); unread:
+  [authorship_operator_id, prompt_version, ...]`. The reducer flags
+  any command above a 30% unused-field threshold for attention.
 
 Reducer is pure (file-in, file-out); a contributor can re-run it manually
 against a saved session dir.
@@ -167,13 +214,16 @@ against a saved session dir.
                         │
    #[perf_command]  ────┼──► ipc.json (NDJSON, append-only)
                         │
-   perf.ts buffer ──┐   │
-                    ├──► perf_log Tauri cmd ──► frontend.json (NDJSON)
-                    │   │
-                    │   ▼
-                    │   reducer ──► summary.md
-                    │
-                    └─ correlated to ipc.json via request_id
+   MCP Tower layer ─────┼──► mcp.json (NDJSON, append-only)
+                        │
+   perf.ts timings  ────┼──► perf_log cmd ──► frontend.json (NDJSON)
+                        │
+   perf.ts Proxy   ─────┼──► perf_log_field cmd ──► ipc-fields.json (NDJSON)
+                        │
+                        ▼
+                     reducer ──► summary.md
+                     (joins ipc-fields.json with bindings.ts to
+                      compute wasted-field set per command)
 ```
 
 ## Defaults and opt-out
