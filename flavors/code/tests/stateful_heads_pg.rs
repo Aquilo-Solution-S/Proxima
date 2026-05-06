@@ -17,7 +17,7 @@ use proxima_core::engine::Engine;
 use proxima_core::storage::Storage;
 use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
 use proxima_core::verbs::query::{MemoryStore, QueryRequest, SupersessionStatus};
-use proxima_core::verbs::schema::{PayloadKind, SchemaInfo, SchemaRegistry};
+use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaInfo};
 use proxima_core::{
     FactPayload, FlavorRegistry, OrgId, Owner, Principal, SchemaId, SchemaVersion, SourceBatchId,
     SourceId, UserId,
@@ -53,7 +53,7 @@ fn make_owner() -> (UserId, Owner) {
     (user, owner)
 }
 
-fn registry_for_test() -> SchemaRegistry {
+fn registry_for_test() -> FlavorRegistryFrozen {
     // Register the proxima-code schemas plus stub CitedObject / CitationMapping
     // schemas that EventIngest needs.
     let mut flavor = FlavorRegistry::new();
@@ -77,7 +77,7 @@ fn registry_for_test() -> SchemaRegistry {
         natural_key_columns: vec![],
         cbor_encoder: None,
     });
-    SchemaRegistry::with_schemas(frozen)
+    FlavorRegistryFrozen::with_schemas(frozen)
 }
 
 fn fresh_draft(owner: Owner, schema: &str, payload: &[u8]) -> EventDraft {

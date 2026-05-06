@@ -17,11 +17,9 @@ use std::process::Command;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use proxima_code::{
-    CommitSummaryOperator, LocalGitSource, build_engine, erase_repo, migrator, register_repo,
-};
+use proxima_code::{LocalGitSource, build_engine, erase_repo, migrator, register_repo};
 use proxima_core::auth::NoAuth;
-use proxima_core::operators::{EmbeddingClient, LlmClient, OperatorError, OperatorRegistry};
+use proxima_core::operators::{EmbeddingClient, LlmClient, OperatorError};
 use proxima_core::{Cursor, OrgId, Owner, Principal, UserId};
 use proxima_storage_pg::PgStorage;
 use sqlx::{Connection, Executor, PgConnection};
@@ -333,14 +331,11 @@ async fn f2a_commit_summary_full_cycle() {
             org_id: OrgId::new(Uuid::now_v7()),
         };
 
-        // Engine wired with operator + stub clients.
-        let mut ops = OperatorRegistry::new();
-        ops.register_f2a(CommitSummaryOperator::new());
+        // Engine wired with flavor-registered operators + stub clients.
         let engine = build_engine(
             pg.clone(),
             Box::new(NoAuth::new(Principal::User(user), owner.clone())),
         )
-        .with_operators(ops)
         .with_llm(Arc::new(StubLlm))
         .with_embed(Arc::new(StubEmbed));
 

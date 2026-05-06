@@ -11,7 +11,7 @@ use proxima_core::storage::Storage;
 use proxima_core::verbs::event_history::EventHistoryRequest;
 use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
 use proxima_core::verbs::query::MemoryStore;
-use proxima_core::verbs::schema::{PayloadKind, SchemaInfo, SchemaRegistry};
+use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaInfo};
 use proxima_core::{
     OrgId, Owner, Principal, SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId,
 };
@@ -74,7 +74,7 @@ fn fresh_event_draft(owner: Owner, payload: Vec<u8>) -> EventDraft {
 }
 
 fn build_engine(storage: Arc<dyn Storage>, owner: Owner, principal: Principal) -> Engine {
-    let registry = SchemaRegistry::with_schemas(schemas_for_test());
+    let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
     Engine::new(
         registry,
         MemoryStore::new(),

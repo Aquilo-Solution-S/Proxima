@@ -201,12 +201,9 @@ mod tests {
     use proxima_core::auth::NoAuth;
     use proxima_core::ids::{OrgId, UserId};
     use proxima_core::models::{Dialect, EmbedCaps, LlmCaps};
-    use proxima_core::operators::{
-        F2AContext, F2AOperator, NewAbstraction, OperatorError, OperatorRegistry,
-    };
+    use proxima_core::operators::{F2AContext, F2AOperator, NewAbstraction, OperatorError};
     use proxima_core::verbs::query::MemoryStore;
-    use proxima_core::verbs::schema::SchemaRegistry;
-    use proxima_core::{Owner, Principal, SchemaId};
+    use proxima_core::{FlavorRegistry, Owner, Principal, SchemaId};
     use uuid::Uuid;
 
     #[derive(Debug)]
@@ -251,21 +248,21 @@ mod tests {
     }
 
     fn engine_with_ops(ops: Vec<TestOp>) -> Engine {
-        let mut reg = OperatorRegistry::new();
+        let mut reg = FlavorRegistry::new();
         for op in ops {
-            reg.register_f2a(op);
+            reg.add_f2a_operator(op);
         }
+        let reg = reg.freeze();
         let principal = Principal::User(UserId::new(Uuid::now_v7()));
         let owner = Owner {
             principal: principal.clone(),
             org_id: OrgId::new(Uuid::now_v7()),
         };
         Engine::new(
-            SchemaRegistry::new(),
+            reg,
             MemoryStore::new(),
             Box::new(NoAuth::new(principal, owner)),
         )
-        .with_operators(reg)
     }
 
     fn sample_llm_model(vendor: &str, model_id: &str, caps: LlmCaps) -> LlmModelRecord {

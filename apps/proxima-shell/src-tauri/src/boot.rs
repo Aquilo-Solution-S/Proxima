@@ -73,8 +73,7 @@ pub(crate) fn build_engine() -> (Arc<Engine>, Arc<PgStorage>) {
         let engine = proxima_code::build_engine_with(pg, Box::new(auth), |registry| {
             proxima_mcp_substrate::register(registry);
             proxima_flavor_goal::register(registry);
-        })
-        .with_operators(proxima_code::operator_registry());
+        });
 
         let engine = wire_consolidation_clients(engine, &pg_for_settings, &owner).await;
         let engine = Arc::new(engine);

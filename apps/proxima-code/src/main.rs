@@ -29,7 +29,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
 
-use proxima_code::{IndexReport, LocalGitSource, build_engine, migrator, operator_registry};
+use proxima_code::{IndexReport, LocalGitSource, build_engine, migrator};
 use proxima_core::auth::NoAuth;
 use proxima_core::{Cursor, OrgId, Owner, Principal, UserId};
 use proxima_llm_openai_compat::{OllamaEmbeddingClient, OllamaLlmClient};
@@ -129,7 +129,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             pg.clone(),
             Box::new(NoAuth::new(owner.principal.clone(), owner.clone())),
         )
-        .with_operators(operator_registry())
         .with_llm(Arc::new(llm))
         .with_embed(Arc::new(embed));
         eprintln!("F→A enabled — llm={llm_model} embed={embed_model} (dim={embed_dim})");

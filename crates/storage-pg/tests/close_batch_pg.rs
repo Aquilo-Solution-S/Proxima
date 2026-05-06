@@ -12,7 +12,7 @@ use proxima_core::error::ErrorCode;
 use proxima_core::storage::Storage;
 use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
 use proxima_core::verbs::query::MemoryStore;
-use proxima_core::verbs::schema::{PayloadKind, SchemaInfo, SchemaRegistry};
+use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaInfo};
 use proxima_core::{
     OrgId, Owner, Principal, SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId,
 };
@@ -101,13 +101,13 @@ async fn close_batch_idempotent_and_owner_scoped() {
         };
 
         let engine_a = Engine::new(
-            SchemaRegistry::with_schemas(schemas_for_test()),
+            FlavorRegistryFrozen::with_schemas(schemas_for_test()),
             MemoryStore::new(),
             Box::new(NoAuth::new(Principal::User(user_a), owner_a.clone())),
         )
         .with_storage(storage.clone());
         let engine_b = Engine::new(
-            SchemaRegistry::with_schemas(schemas_for_test()),
+            FlavorRegistryFrozen::with_schemas(schemas_for_test()),
             MemoryStore::new(),
             Box::new(NoAuth::new(Principal::User(user_b), owner_b.clone())),
         )

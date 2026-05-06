@@ -87,7 +87,7 @@ impl Engine {
         // dedup at the storage layer would short-circuit the persist
         // step anyway, but skipping here avoids redundant LLM calls.
         if !outcome.already_closed
-            && !self.operators.f2a_operators().is_empty()
+            && !self.registry.list_f2a_operators().is_empty()
             && !self.llms.is_empty()
             && self.embed.is_some()
         {

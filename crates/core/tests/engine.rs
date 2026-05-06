@@ -10,8 +10,7 @@ use proxima_core::operators::{
     A2PContext, A2PContextSpec, A2PInvocationKey, A2PLineageKey, A2POperator, AbstractionRow,
     ConsolidateA2POutcome, ConsolidateA2PRequest, ConsolidateBatchF2AOutcome,
     ConsolidateBatchF2ARequest, EmbeddingClient, F2AContext, F2AInvocationKey, F2AOperator,
-    FactRow, LlmClient, NewAbstraction, NewPerspective, OperatorError, OperatorRegistry,
-    PersonalitySnapshot,
+    FactRow, LlmClient, NewAbstraction, NewPerspective, OperatorError, PersonalitySnapshot,
 };
 use proxima_core::owner::{Owner, Principal};
 use proxima_core::personality::{PersonalityContext, PersonalityFlavor};
@@ -21,7 +20,7 @@ use proxima_core::verbs::event_history::{EventHistoryRequest, EventHistoryRespon
 use proxima_core::verbs::event_ingest::{EventDraft, EventIngestOutcome};
 use proxima_core::verbs::goal_write::{GoalDraft, GoalWriteOutcome};
 use proxima_core::verbs::query::{MemoryStore, QueryRequest};
-use proxima_core::verbs::schema::{SchemaRegistry, SchemaRequest};
+use proxima_core::verbs::schema::{FlavorRegistryFrozen, SchemaRequest};
 use proxima_core::verbs::subscribe::ChangeEventStream;
 use proxima_core::{
     AbstractionPayload, FactPayload, FlavorRegistry, GoalId, MemoryId, ModelTier, PersonalityId,
@@ -46,7 +45,7 @@ fn fresh_owner() -> (Principal, Owner) {
 fn boot_engine(principal: Principal, owner: Owner) -> Engine {
     let resolver = NoAuth::new(principal, owner);
     Engine::new(
-        SchemaRegistry::new(),
+        FlavorRegistryFrozen::new(),
         MemoryStore::new(),
         Box::new(resolver),
     )
@@ -537,6 +536,9 @@ fn f2a_engine_with_output(
     let mut registry = FlavorRegistry::new();
     registry.add_fact_schema::<TestFact>();
     registry.add_abstraction_schema::<TestAbs>();
+    registry.add_f2a_operator(StaticOutputOp {
+        outputs: vec![output],
+    });
 
     let storage = Arc::new(FakeStorage::new(vec![FactRow {
         memory_id: fact_id,
@@ -545,11 +547,6 @@ fn f2a_engine_with_output(
         payload_json: serde_json::json!({ "text": "source fact" }),
     }]));
 
-    let mut ops = OperatorRegistry::new();
-    ops.register_f2a(StaticOutputOp {
-        outputs: vec![output],
-    });
-
     let batch_id = SourceBatchId::new(Uuid::now_v7());
     let engine = Engine::new(
         registry.freeze(),
@@ -557,7 +554,6 @@ fn f2a_engine_with_output(
         Box::new(NoAuth::new(principal, owner)),
     )
     .with_storage(storage.clone())
-    .with_operators(ops)
     .with_llm(Arc::new(FakeLlm))
     .with_embed(Arc::new(FakeEmbed));
 
@@ -590,6 +586,9 @@ fn a2p_engine_with_output(
     registry.add_abstraction_schema::<TestAbs>();
     registry.add_perspective_schema::<TestPerspective>();
     registry.add_personality(TestPersonality);
+    registry.add_a2p_operator(StaticPerspectiveOp {
+        outputs: vec![output],
+    });
 
     let storage = Arc::new(FakeStorage::with_abstractions(vec![AbstractionRow {
         memory_id: source_abs,
@@ -599,18 +598,12 @@ fn a2p_engine_with_output(
         payload_json: serde_json::json!({ "summary": "source" }),
     }]));
 
-    let mut ops = OperatorRegistry::new();
-    ops.register_a2p(StaticPerspectiveOp {
-        outputs: vec![output],
-    });
-
     let engine = Engine::new(
         registry.freeze(),
         MemoryStore::new(),
         Box::new(NoAuth::new(principal, owner)),
     )
     .with_storage(storage.clone())
-    .with_operators(ops)
     .with_llm(Arc::new(FakeLlm))
     .with_embed(Arc::new(FakeEmbed));
 
@@ -777,15 +770,7 @@ async fn a2p_uses_llm_bound_to_operator_tier() {
     registry.add_abstraction_schema::<TestAbs>();
     registry.add_perspective_schema::<TestPerspective>();
     registry.add_personality(TestPersonality);
-    let storage = Arc::new(FakeStorage::with_abstractions(vec![AbstractionRow {
-        memory_id: source_abs,
-        schema_id: TestAbs::schema_id(),
-        schema_version: SchemaVersion::new(TestAbs::SCHEMA_VERSION),
-        text: "source abstraction".into(),
-        payload_json: serde_json::json!({ "summary": "source" }),
-    }]));
-    let mut ops = OperatorRegistry::new();
-    ops.register_a2p(DeepPerspectiveOp {
+    registry.add_a2p_operator(DeepPerspectiveOp {
         outputs: vec![valid_perspective_with(
             TestPerspective::schema_id(),
             SchemaVersion::new(TestPerspective::SCHEMA_VERSION),
@@ -793,13 +778,19 @@ async fn a2p_uses_llm_bound_to_operator_tier() {
             vec![source_abs],
         )],
     });
+    let storage = Arc::new(FakeStorage::with_abstractions(vec![AbstractionRow {
+        memory_id: source_abs,
+        schema_id: TestAbs::schema_id(),
+        schema_version: SchemaVersion::new(TestAbs::SCHEMA_VERSION),
+        text: "source abstraction".into(),
+        payload_json: serde_json::json!({ "summary": "source" }),
+    }]));
     let engine = Engine::new(
         registry.freeze(),
         MemoryStore::new(),
         Box::new(NoAuth::new(principal, owner.clone())),
     )
     .with_storage(storage.clone())
-    .with_operators(ops)
     .with_llm_for_tier(ModelTier::Standard, Arc::new(NamedLlm("standard-model")))
     .with_llm_for_tier(ModelTier::Deep, Arc::new(NamedLlm("deep-model")))
     .with_embed(Arc::new(FakeEmbed));
@@ -828,6 +819,14 @@ async fn a2p_skips_existing_invocation_before_operator_run() {
     registry.add_abstraction_schema::<TestAbs>();
     registry.add_perspective_schema::<TestPerspective>();
     registry.add_personality(TestPersonality);
+    registry.add_a2p_operator(StaticPerspectiveOp {
+        outputs: vec![valid_perspective_with(
+            TestPerspective::schema_id(),
+            SchemaVersion::new(TestPerspective::SCHEMA_VERSION),
+            serde_json::json!({ "summary": "ok" }),
+            vec![source_abs],
+        )],
+    });
     let storage = Arc::new(
         FakeStorage::with_abstractions(vec![AbstractionRow {
             memory_id: source_abs,
@@ -838,22 +837,12 @@ async fn a2p_skips_existing_invocation_before_operator_run() {
         }])
         .with_existing_a2p_invocation(),
     );
-    let mut ops = OperatorRegistry::new();
-    ops.register_a2p(StaticPerspectiveOp {
-        outputs: vec![valid_perspective_with(
-            TestPerspective::schema_id(),
-            SchemaVersion::new(TestPerspective::SCHEMA_VERSION),
-            serde_json::json!({ "summary": "ok" }),
-            vec![source_abs],
-        )],
-    });
     let engine = Engine::new(
         registry.freeze(),
         MemoryStore::new(),
         Box::new(NoAuth::new(principal, owner.clone())),
     )
     .with_storage(storage.clone())
-    .with_operators(ops)
     .with_llm(Arc::new(FakeLlm))
     .with_embed(Arc::new(FakeEmbed));
 
@@ -867,11 +856,13 @@ async fn a2p_skips_existing_invocation_before_operator_run() {
 }
 
 #[test]
-fn operator_registry_tracks_a2p_operators() {
-    let mut registry = OperatorRegistry::new();
-    registry.register_a2p(StaticPerspectiveOp {
+fn flavor_registry_tracks_a2p_operators() {
+    let mut registry = FlavorRegistry::new();
+    registry.add_personality(TestPersonality);
+    registry.add_a2p_operator(StaticPerspectiveOp {
         outputs: Vec::new(),
     });
-    assert_eq!(registry.a2p_operators().len(), 1);
-    assert!(registry.f2a_operators().is_empty());
+    let frozen = registry.freeze();
+    assert_eq!(frozen.list_a2p_operators().len(), 1);
+    assert!(frozen.list_f2a_operators().is_empty());
 }

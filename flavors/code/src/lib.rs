@@ -20,10 +20,7 @@ pub use ingest::{
 };
 pub use local_git_source::{IndexError, IndexReport, IngestProgress, LocalGitSource};
 pub use migrations::migrator;
-pub use operators::{
-    CodeDevelopmentPerspectiveOperator, CommitSummaryOperator, f2a_operator_registry,
-    operator_registry,
-};
+pub use operators::{CodeDevelopmentPerspectiveOperator, CommitSummaryOperator};
 pub use payloads::{
     CodeChunkV1, CodeDevelopmentPerspectiveV1, CommitSummaryV1, CommitV1, EdgeCallsV1,
     FileRevisionV1, FileState,
@@ -68,6 +65,12 @@ proxima_core::proxima_flavor! {
     personalities = [
         personality::CodeEngineerPersonality,
     ],
+    f2a_operators = [
+        operators::CommitSummaryOperator,
+    ],
+    a2p_operators = [
+        operators::CodeDevelopmentPerspectiveOperator,
+    ],
     mcp_tools = [
         mcp::CodeSearchChunksTool,
         mcp::CodeOpenFileRevisionTool,
@@ -91,6 +94,16 @@ mod tests {
                 .any(|p| p.personality_id() == "proxima-code/engineer")
         );
         let frozen = registry.freeze();
+        assert_eq!(frozen.list_f2a_operators().len(), 1);
+        assert_eq!(frozen.list_a2p_operators().len(), 1);
+        assert_eq!(
+            frozen.list_f2a_operators()[0].operator_id(),
+            "proxima-code/commit-summary",
+        );
+        assert_eq!(
+            frozen.list_a2p_operators()[0].operator_id(),
+            "proxima-code/development-perspective",
+        );
 
         let schemas = frozen.list();
         let schema_ids: HashSet<_> = schemas.iter().map(|s| s.schema_id.as_str()).collect();

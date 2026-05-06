@@ -15,7 +15,7 @@ use crate::pg_ident::PgIdent;
 /// Draft of an edge to be written. All fields map directly to
 /// `proxima_core.edges` columns except `edge_id`, which is generated
 /// by the caller (UUIDv7 per AGENTS.md invariant 17), and
-/// `relation`, which must be resolved from `SchemaRegistry`.
+/// `relation`, which must be resolved from `FlavorRegistryFrozen`.
 #[derive(Debug, Clone)]
 pub struct EdgeDraft<'a> {
     pub edge_id: uuid::Uuid,
@@ -33,7 +33,7 @@ pub struct EdgeDraft<'a> {
 
 /// Write an edge row + (optional) typed sidecar + the EdgeAppend
 /// change_event in one transaction. The relation must be resolved
-/// from the immutable `SchemaRegistry`, so the writer never accepts
+/// from the immutable `FlavorRegistryFrozen`, so the writer never accepts
 /// ad-hoc relation strings. Typed relations require a payload;
 /// substrate relations reject one.
 ///

@@ -2,15 +2,15 @@ use std::sync::Arc;
 
 use super::Engine;
 use crate::auth::AuthResolver;
-use crate::operators::{EmbeddingClient, LlmClient, OperatorRegistry};
+use crate::operators::{EmbeddingClient, LlmClient};
 use crate::storage::{NoopStorage, StorageHandle};
 use crate::verbs::query::MemoryStore;
-use crate::verbs::schema::SchemaRegistry;
+use crate::verbs::schema::FlavorRegistryFrozen;
 use crate::{LlmCaps, ModelTier};
 
 impl Engine {
     pub fn new(
-        registry: SchemaRegistry,
+        registry: FlavorRegistryFrozen,
         memories: MemoryStore,
         auth: Box<dyn AuthResolver>,
     ) -> Self {
@@ -19,7 +19,6 @@ impl Engine {
             memories,
             auth,
             storage: Arc::new(NoopStorage),
-            operators: OperatorRegistry::new(),
             llms: std::collections::HashMap::new(),
             embed: None,
         }
@@ -27,7 +26,7 @@ impl Engine {
 
     /// Get a reference to the schema registry.
     #[must_use]
-    pub fn registry(&self) -> &SchemaRegistry {
+    pub fn registry(&self) -> &FlavorRegistryFrozen {
         &self.registry
     }
 
@@ -37,29 +36,15 @@ impl Engine {
         self
     }
 
-    /// Register operators (M5: F→A only). Bare-Engine without
-    /// operators behaves identically to M4 — `close_batch` flips
-    /// `closed_at` and returns. With operators registered AND an
-    /// LLM + embed client wired in, `close_batch` also runs F→A
-    /// consolidation inline (docs/04 §"F→A").
-    #[must_use]
-    pub fn with_operators(mut self, registry: OperatorRegistry) -> Self {
-        self.operators = registry;
-        self
-    }
-
-    /// Union of `requires()` over all F→A operators bound to `tier`.
+    /// Union of `requires()` over all operators bound to `tier`.
     /// Returns `LlmCaps::none()` if no operator uses that tier — the
     /// caller (runtime credential-write validation) treats that as
     /// "any model satisfies".
     ///
-    /// Walks `self.operators.f2a_operators()`. As A→P / A→Goal /
-    /// Edge operator slots land, this method extends to walk those
-    /// too — for now, F→A is the only populated slot.
     #[must_use]
     pub fn tier_requires_union(&self, tier: ModelTier) -> LlmCaps {
         let mut acc = LlmCaps::none();
-        for op in self.operators.f2a_operators() {
+        for op in self.registry.list_f2a_operators() {
             if op.tier() == tier {
                 let r = op.requires();
                 acc.tool_use |= r.tool_use;
@@ -68,7 +53,7 @@ impl Engine {
                 acc.vision |= r.vision;
             }
         }
-        for op in self.operators.a2p_operators() {
+        for op in self.registry.list_a2p_operators() {
             if op.tier() == tier {
                 let r = op.requires();
                 acc.tool_use |= r.tool_use;
@@ -82,13 +67,13 @@ impl Engine {
 
     #[must_use]
     pub fn uses_llm_tier(&self, tier: ModelTier) -> bool {
-        self.operators
-            .f2a_operators()
+        self.registry
+            .list_f2a_operators()
             .iter()
             .any(|op| op.tier() == tier)
             || self
-                .operators
-                .a2p_operators()
+                .registry
+                .list_a2p_operators()
                 .iter()
                 .any(|op| op.tier() == tier)
     }

@@ -11,7 +11,7 @@ use proxima_core::error::ErrorCode;
 use proxima_core::storage::Storage;
 use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
 use proxima_core::verbs::query::MemoryStore;
-use proxima_core::verbs::schema::{PayloadKind, SchemaInfo, SchemaRegistry};
+use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaInfo};
 use proxima_core::{
     OrgId, Owner, Principal, SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId,
 };
@@ -93,7 +93,7 @@ async fn event_ingest_writes_fact_and_change_event() {
             org_id: OrgId::new(Uuid::now_v7()),
         };
 
-        let registry = SchemaRegistry::with_schemas(schemas_for_test());
+        let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
         let engine = Engine::new(
             registry,
             MemoryStore::new(),

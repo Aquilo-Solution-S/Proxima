@@ -9,7 +9,7 @@ use proxima_core::mcp::{HandleTable, McpAuthorContext, McpTool, McpToolCtx};
 use proxima_core::storage::Storage;
 use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
 use proxima_core::verbs::query::MemoryStore;
-use proxima_core::verbs::schema::{PayloadKind, SchemaInfo, SchemaRegistry};
+use proxima_core::verbs::schema::{PayloadKind, SchemaInfo};
 use proxima_core::{
     AbstractionPayload, FactPayload, FlavorRegistry, FlavorRegistryFrozen, OrgId, Owner, Principal,
     SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId,
@@ -430,7 +430,7 @@ fn registry_for_mcp() -> Arc<FlavorRegistryFrozen> {
     Arc::new(registry.freeze())
 }
 
-fn registry_for_engine() -> SchemaRegistry {
+fn registry_for_engine() -> FlavorRegistryFrozen {
     let mut flavor = FlavorRegistry::new();
     proxima_code::register(&mut flavor);
     let mut schemas = flavor.freeze().list();
@@ -452,7 +452,7 @@ fn registry_for_engine() -> SchemaRegistry {
         natural_key_columns: vec![],
         cbor_encoder: None,
     });
-    SchemaRegistry::with_schemas(schemas)
+    FlavorRegistryFrozen::with_schemas(schemas)
 }
 
 fn engine_for_test(pg: PgStorage, owner: Owner) -> Engine {

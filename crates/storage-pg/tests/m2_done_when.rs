@@ -15,7 +15,7 @@ use proxima_core::storage::Storage;
 use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
 use proxima_core::verbs::goal_write::{GoalAuthorship, GoalDraft, GoalState};
 use proxima_core::verbs::query::MemoryStore;
-use proxima_core::verbs::schema::{PayloadKind, SchemaInfo, SchemaRegistry};
+use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaInfo};
 use proxima_core::verbs::subscribe::SubscribeRequest;
 use proxima_core::{
     OrgId, Owner, Principal, SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId,
@@ -105,7 +105,7 @@ fn fresh_goal_draft(owner: &Owner, request_id: &str, text: &str) -> GoalDraft {
 
 fn build_engine(storage: Arc<dyn Storage>, owner: Owner, principal: Principal) -> Engine {
     Engine::new(
-        SchemaRegistry::with_schemas(schemas_for_test()),
+        FlavorRegistryFrozen::with_schemas(schemas_for_test()),
         MemoryStore::new(),
         Box::new(NoAuth::new(principal, owner)),
     )

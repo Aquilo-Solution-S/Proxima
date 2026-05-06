@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use futures::future::BoxFuture;
 
-use crate::{Owner, verbs::schema::SchemaRegistry};
+use crate::{Owner, verbs::schema::FlavorRegistryFrozen};
 
 #[derive(Debug, Clone)]
 pub struct McpAuthorContext {
@@ -32,7 +32,7 @@ pub struct McpToolCtx {
     pub pool: sqlx::PgPool,
     pub owner: Owner,
     pub handles: Arc<HandleTable>,
-    pub registry: Arc<SchemaRegistry>,
+    pub registry: Arc<FlavorRegistryFrozen>,
     pub author: McpAuthorContext,
 }
 
