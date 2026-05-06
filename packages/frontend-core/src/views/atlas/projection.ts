@@ -56,7 +56,7 @@ const memoryTitle = (
   return `${schemaId} ${id.slice(0, 8)}`;
 };
 
-const goalTitle = (goal: GoalRow): string => goal.text.slice(0, 96);
+const goalTitle = (goal: GoalRow): string => goal.title.slice(0, 96);
 
 const nodeFor = (
   id: string,

@@ -51,6 +51,7 @@ fn external_draft(owner: &Owner, state: GoalState, request_id: &str) -> GoalDraf
         owner: owner.clone(),
         schema_id: SchemaId::new("test/goal_blob".into()),
         schema_version: SchemaVersion::new(1),
+        title: "Test goal".to_string(),
         text: "external-authored goal".to_string(),
         payload: b"external payload".to_vec(),
         state,

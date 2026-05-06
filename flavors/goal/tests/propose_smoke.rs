@@ -26,6 +26,7 @@ async fn propose_writes_goal_and_motivated_by_atomically() -> Result<(), Box<dyn
             ctx.clone(),
             ProposeArgs {
                 payload: GoalPayloadInput::SimpleText(SimpleTextGoalBody {
+                    title: "ship goal flavor".into(),
                     text: "ship goal flavor".into(),
                 }),
                 evidence: vec![evidence_handle.as_str().to_string()],
@@ -34,8 +35,8 @@ async fn propose_writes_goal_and_motivated_by_atomically() -> Result<(), Box<dyn
         )
         .await?;
 
-        let goal: (String, String, Vec<u8>) = sqlx::query_as(
-            "SELECT state, authorship_kind, payload
+        let goal: (String, String, String, String, Vec<u8>) = sqlx::query_as(
+            "SELECT state, authorship_kind, title, text, payload
              FROM proxima_core.goals
              WHERE goal_id = $1",
         )
@@ -44,9 +45,9 @@ async fn propose_writes_goal_and_motivated_by_atomically() -> Result<(), Box<dyn
         .await?;
         assert_eq!(goal.0, "Proposed");
         assert_eq!(goal.1, "External");
-        let decoded: proxima_flavor_goal::SimpleTextGoalV1 =
-            ciborium::de::from_reader(&goal.2[..])?;
-        assert_eq!(decoded.text, "ship goal flavor");
+        assert_eq!(goal.2, "ship goal flavor");
+        assert_eq!(goal.3, "ship goal flavor");
+        let _: proxima_flavor_goal::SimpleTextGoalV1 = ciborium::de::from_reader(&goal.4[..])?;
 
         let edge_count: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM proxima_core.edges
@@ -85,7 +86,10 @@ async fn propose_rejects_evidence_in_other_owner() -> Result<(), Box<dyn std::er
         let err = ProposeTool::call(
             ctx,
             ProposeArgs {
-                payload: GoalPayloadInput::SimpleText(SimpleTextGoalBody { text: "x".into() }),
+                payload: GoalPayloadInput::SimpleText(SimpleTextGoalBody {
+                    title: "x".into(),
+                    text: "x".into(),
+                }),
                 evidence: vec![evidence_handle.as_str().to_string()],
                 idempotency_key: None,
             },

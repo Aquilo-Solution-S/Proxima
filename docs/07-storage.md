@@ -194,6 +194,7 @@ goals(
     goal_id                pk,             -- UUIDv7
     schema_id              NOT NULL,        -- every goal carries a registered GoalPayload (06)
     owner_*,
+    title                  NOT NULL,
     text                   NOT NULL,
     state                  {Active, Paused, Achieved, Abandoned},
     supersedes             nullable,

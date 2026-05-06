@@ -21,6 +21,7 @@ async fn propose_with_evidence(
         ctx.clone(),
         ProposeArgs {
             payload: GoalPayloadInput::SimpleText(SimpleTextGoalBody {
+                title: "proposal".into(),
                 text: "proposal".into(),
             }),
             evidence: vec![evidence_handle.as_str().to_string()],
@@ -101,6 +102,7 @@ async fn modify_uses_supplied_payload() -> Result<(), Box<dyn std::error::Error>
             ModifyArgs {
                 proposal: proposal_handle.as_str().to_string(),
                 payload: GoalPayloadInput::SimpleText(SimpleTextGoalBody {
+                    title: "rewritten".into(),
                     text: "rewritten".into(),
                 }),
                 evidence: None,
@@ -109,14 +111,15 @@ async fn modify_uses_supplied_payload() -> Result<(), Box<dyn std::error::Error>
         )
         .await?;
 
-        let row: (String, Vec<u8>) =
-            sqlx::query_as("SELECT text, payload FROM proxima_core.goals WHERE goal_id = $1")
-                .bind(modified.uuid)
-                .fetch_one(pg.pool())
-                .await?;
+        let row: (String, String, Vec<u8>) = sqlx::query_as(
+            "SELECT title, text, payload FROM proxima_core.goals WHERE goal_id = $1",
+        )
+        .bind(modified.uuid)
+        .fetch_one(pg.pool())
+        .await?;
         assert_eq!(row.0, "rewritten");
-        let decoded: proxima_flavor_goal::SimpleTextGoalV1 = ciborium::de::from_reader(&row.1[..])?;
-        assert_eq!(decoded.text, "rewritten");
+        assert_eq!(row.1, "rewritten");
+        let _: proxima_flavor_goal::SimpleTextGoalV1 = ciborium::de::from_reader(&row.2[..])?;
         Ok::<(), Box<dyn std::error::Error>>(())
     }
     .await;
@@ -158,6 +161,7 @@ async fn decline_makes_goal_terminal() -> Result<(), Box<dyn std::error::Error>>
             ModifyArgs {
                 proposal: declined_handle.as_str().to_string(),
                 payload: GoalPayloadInput::SimpleText(SimpleTextGoalBody {
+                    title: "retry".into(),
                     text: "retry".into(),
                 }),
                 evidence: None,

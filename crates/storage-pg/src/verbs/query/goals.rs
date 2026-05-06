@@ -21,7 +21,7 @@ pub(super) async fn query_goals(
     }
     let mut sql = String::from(
         "SELECT g.goal_id, g.schema_id, g.schema_version, g.owner_principal_kind, \
-                g.owner_principal_id, g.owner_org_id, g.text, g.state, \
+                g.owner_principal_id, g.owner_org_id, g.title, g.text, g.state, \
                 g.supersedes, g.payload, \
                 COALESCE(array_agg(gp.parent_goal_id) FILTER \
                     (WHERE gp.parent_goal_id IS NOT NULL), '{}'::uuid[]) AS parent_goal_ids \

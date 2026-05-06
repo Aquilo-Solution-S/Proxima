@@ -100,6 +100,7 @@ const searchMatchesGoal = (goal: GoalRow, search: string): boolean => {
   return (
     goal.id.toLowerCase().includes(search) ||
     goal.schema_id.toLowerCase().includes(search) ||
+    goal.title.toLowerCase().includes(search) ||
     goal.text.toLowerCase().includes(search)
   );
 };

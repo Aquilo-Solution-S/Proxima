@@ -68,7 +68,7 @@ const GoalPayloadBody: Component<{
   const rendered = (): JSX.Element | null =>
     renderGoalPayload(props.goal, props.hub);
   return (
-    <Show keyed when={rendered()} fallback={<p class="prose prose-small">{props.goal.text}</p>}>
+    <Show keyed when={rendered()}>
       {(node) => node}
     </Show>
   );
@@ -88,6 +88,7 @@ const ProposedGoalCard: Component<{
         owner: props.goal.owner,
         schema_id: props.goal.schema_id,
         schema_version: props.goal.schema_version,
+        title: props.goal.title,
         text: props.goal.text,
         payload: props.goal.payload,
         state,
@@ -113,6 +114,8 @@ const ProposedGoalCard: Component<{
         <span class="state-pill is-proposed">Proposed</span>
       </div>
       <div class="goal-proposed-body">
+        <strong class="goal-title">{props.goal.title}</strong>
+        <p class="goal-text">{props.goal.text}</p>
         <GoalPayloadBody goal={props.goal} hub={props.hub} />
       </div>
       <div class="goal-proposed-actions">
@@ -166,6 +169,8 @@ const GoalCard: Component<{
       />
     </div>
     <div class="goal-card-body">
+      <strong class="goal-title">{props.goal.title}</strong>
+      <p class="goal-text">{props.goal.text}</p>
       <GoalPayloadBody goal={props.goal} hub={props.hub} />
     </div>
   </article>

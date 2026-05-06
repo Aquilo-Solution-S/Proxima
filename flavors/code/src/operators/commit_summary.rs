@@ -246,7 +246,11 @@ fn render_user_prompt(
                 chunk.file_path, chunk.line_range_start, chunk.line_range_end, chunk.chunk_type,
             );
             if chunk.text.len() > MAX_CHUNK_EXCERPT_BYTES {
-                out.push_str(&chunk.text[..MAX_CHUNK_EXCERPT_BYTES.min(chunk.text.len())]);
+                let mut end = MAX_CHUNK_EXCERPT_BYTES;
+                while end > 0 && !chunk.text.is_char_boundary(end) {
+                    end -= 1;
+                }
+                out.push_str(&chunk.text[..end]);
                 out.push_str("…(truncated)");
             } else {
                 out.push_str(&chunk.text);

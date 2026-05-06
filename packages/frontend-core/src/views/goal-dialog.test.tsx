@@ -68,31 +68,16 @@ const registerSimpleTextSchema = () => {
       encode: (value) => encode(value),
     },
     renderer: {
-      render: (props) => {
-        const p = props.payload as { text: string };
-        return <span>{p.text}</span>;
-      },
+      render: () => null,
     },
   });
-  registerGoalPayloadEditor<{ text: string }>({
+  registerGoalPayloadEditor<Record<string, never>>({
     schemaId: "proxima-goal/simple-text-v1",
     schemaVersion: 1,
     flavor: "proxima-goal",
     label: "Simple text",
-    defaults: () => ({ text: "" }),
-    toText: (p) => p.text,
-    component: (props) => (
-      <label>
-        Goal
-        <input
-          aria-label="goal-text"
-          value={props.payload.text}
-          onInput={(event) =>
-            props.onChange({ ...props.payload, text: event.currentTarget.value })
-          }
-        />
-      </label>
-    ),
+    defaults: () => ({}),
+    component: () => null,
   });
 };
 
@@ -133,8 +118,11 @@ describe("GoalDialog", () => {
     const onAfterWrite = vi.fn();
     renderDialog(undefined, onClose, onAfterWrite);
 
-    fireEvent.input(screen.getByLabelText("goal-text"), {
+    fireEvent.input(screen.getByLabelText("Title"), {
       target: { value: "Ship goal dialog" },
+    });
+    fireEvent.input(screen.getByLabelText("Text"), {
+      target: { value: "Detailed goal body" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Create" }));
 
@@ -143,11 +131,10 @@ describe("GoalDialog", () => {
     expect(draft.state).toBe("Active");
     expect(draft.supersedes_goal_id).toBeNull();
     expect(draft.authorship).toBe("User");
-    expect(draft.text).toBe("Ship goal dialog");
+    expect(draft.title).toBe("Ship goal dialog");
+    expect(draft.text).toBe("Detailed goal body");
     expect(draft.schema_id).toBe("proxima-goal/simple-text-v1");
-    expect(decode(new Uint8Array(draft.payload))).toEqual({
-      text: "Ship goal dialog",
-    });
+    expect(decode(new Uint8Array(draft.payload))).toEqual({});
     expect(onAfterWrite).toHaveBeenCalledOnce();
     expect(onClose).toHaveBeenCalledOnce();
   });
@@ -160,18 +147,22 @@ describe("GoalDialog", () => {
       schema_id: "proxima-goal/simple-text-v1",
       schema_version: 1,
       owner,
+      title: "Original title",
       text: "Original",
       state: "Proposed",
       parent_goal_ids: [],
       supersedes: null,
-      payload: Array.from(encode({ text: "Original" })),
+      payload: Array.from(encode({})),
     };
     renderDialog(proposal);
 
-    expect((screen.getByLabelText("goal-text") as HTMLInputElement).value).toBe(
-      "Original",
+    expect((screen.getByLabelText("Title") as HTMLInputElement).value).toBe(
+      "Original title",
     );
-    fireEvent.input(screen.getByLabelText("goal-text"), {
+    fireEvent.input(screen.getByLabelText("Title"), {
+      target: { value: "Edited title" },
+    });
+    fireEvent.input(screen.getByLabelText("Text"), {
       target: { value: "Edited then accepted" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Accept" }));
@@ -180,6 +171,7 @@ describe("GoalDialog", () => {
     const draft = mocks.goalWrite.mock.calls[0]![0] as GoalDraft;
     expect(draft.state).toBe("Active");
     expect(draft.supersedes_goal_id).toBe(proposal.id);
+    expect(draft.title).toBe("Edited title");
     expect(draft.text).toBe("Edited then accepted");
   });
 

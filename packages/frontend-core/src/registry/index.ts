@@ -19,8 +19,6 @@ export interface GoalPayloadEditorRegistration<T = unknown> {
   label: string;
   /** Returns a fresh empty payload for the create-fresh path. */
   defaults: () => T;
-  /** Projects the payload to the GoalRow.text display field. */
-  toText: (payload: T) => string;
   component: GoalPayloadEditorComponent<T>;
 }
 
@@ -30,7 +28,6 @@ export interface RegisteredGoalPayloadEditor {
   flavor: string;
   label: string;
   defaults: () => unknown;
-  toText: (payload: unknown) => string;
   component: GoalPayloadEditorComponent<unknown>;
   registeredAt: number;
 }
@@ -183,7 +180,6 @@ export function registerGoalPayloadEditor<T>(
     flavor: registration.flavor,
     label: registration.label,
     defaults: registration.defaults as () => unknown,
-    toText: registration.toText as (payload: unknown) => string,
     component: registration.component as GoalPayloadEditorComponent<unknown>,
     registeredAt: goalEditorCounter,
   });

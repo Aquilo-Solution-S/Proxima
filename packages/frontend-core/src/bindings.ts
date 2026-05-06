@@ -331,6 +331,7 @@ export type GoalDraft = {
 	owner: Owner,
 	schema_id: SchemaId,
 	schema_version: SchemaVersion,
+	title: string,
 	text: string,
 	payload: number[],
 	state: GoalState,
@@ -347,6 +348,7 @@ export type GoalRow = {
 	schema_id: SchemaId,
 	schema_version: SchemaVersion,
 	owner: Owner,
+	title: string,
 	text: string,
 	state: GoalState,
 	parent_goal_ids: GoalId[],
@@ -650,4 +652,3 @@ async function typedError<T, E>(result: Promise<T>): Promise<{ status: "ok"; dat
         return { status: "error", error: e as any };
     }
 }
-

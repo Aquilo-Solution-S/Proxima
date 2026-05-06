@@ -76,9 +76,9 @@ Gaps the spec must close:
 - **`GoalDraft` lacks `supersedes_goal_id`** (read shape has it, write
   shape doesn't expose it). Required for the supersession-via-write
   pattern that Accept/Modify/Decline use.
-- **`GoalDraft.text: String`** is the only payload-bearing field on the
-  write side. Needs a `payload: Vec<u8>` (or typed equivalent) for
-  typed-payload goals.
+- **`GoalDraft.title/text` are core fields.** `payload: Vec<u8>` carries
+  schema-specific fields only; do not duplicate universal title/body in
+  `GoalPayload`.
 
 ## Architecture
 
@@ -172,7 +172,8 @@ pub struct GoalDraft {
     pub owner:               Owner,
     pub schema_id:           SchemaId,
     pub schema_version:      SchemaVersion,
-    pub text:                String,                // existing
+    pub title:               String,                // core label
+    pub text:                String,                // core body
     pub payload:             Vec<u8>,               // NEW — CBOR sidecar bytes
     pub state:               GoalState,
     pub parent_goal_ids:     Vec<GoalId>,
@@ -268,8 +269,8 @@ flavors/goal/
 │   ├── lib.rs                                    # registers payloads, relations, tools
 │   ├── payloads/
 │   │   ├── mod.rs
-│   │   ├── simple_text_goal.rs                   # GoalPayload — { text: String }
-│   │   └── task_goal.rs                          # GoalPayload — { title, due_at?, priority? }
+│   │   ├── simple_text_goal.rs                   # GoalPayload — {}
+│   │   └── task_goal.rs                          # GoalPayload — { due_at?, priority? }
 │   ├── relations/
 │   │   ├── mod.rs
 │   │   └── motivated_by.rs                       # RelationDescriptor
@@ -509,7 +510,5 @@ Order matters: prerequisites land first.
 3. Should the `MotivatedBy` re-emit on Accept also create a
    `derived-from-proposal` edge from the Active Goal back to the
    Proposed Goal id? *Default: no — supersession link is sufficient.*
-4. Does `text: String` on `GoalDraft` survive alongside the new
-   `payload: Vec<u8>`, or is `text` derived from a renderer over
-   `payload` going forward? *Default: keep both for now; deprecate
-   `text` once all goal writes go through typed payloads.*
+4. Universal goal title/body live on the core row; typed payloads carry
+   schema-specific fields only.

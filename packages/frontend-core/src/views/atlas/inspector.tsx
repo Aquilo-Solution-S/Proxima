@@ -129,6 +129,7 @@ const PayloadPanel: Component<{
     <Show when={props.node.goal}>
       {(goal) => (
         <div class="i-goal-payload">
+          <div class="i-goal-title">{goal().title}</div>
           <div class="i-goal-text">{goal().text}</div>
           <div class="i-meta compact">
             <Field label="state">{goal().state}</Field>

@@ -18,12 +18,14 @@ pub enum GoalPayloadInput {
 
 #[derive(Debug, Clone, serde::Deserialize, schemars::JsonSchema)]
 pub struct SimpleTextGoalBody {
+    pub title: String,
     pub text: String,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, schemars::JsonSchema)]
 pub struct TaskGoalBody {
     pub title: String,
+    pub text: String,
     pub due_at: Option<String>,
     pub priority: Option<TaskPriorityInput>,
 }
@@ -39,6 +41,7 @@ pub enum TaskPriorityInput {
 pub struct EncodedGoalPayload {
     pub schema_id: SchemaId,
     pub schema_version: SchemaVersion,
+    pub title: String,
     pub text: String,
     pub bytes: Vec<u8>,
     pub sidecar: GoalSidecar,
@@ -46,11 +49,8 @@ pub struct EncodedGoalPayload {
 
 #[derive(Debug)]
 pub enum GoalSidecar {
-    SimpleText {
-        text: String,
-    },
+    SimpleText,
     Task {
-        title: String,
         due_at: Option<time::OffsetDateTime>,
         priority: Option<&'static str>,
     },
@@ -63,15 +63,19 @@ impl GoalPayloadInput {
     ) -> Result<EncodedGoalPayload, McpToolError> {
         match self {
             Self::SimpleText(body) => {
+                let title = body.title.trim();
+                if title.is_empty() || title.chars().count() > 240 {
+                    return Err(McpToolError::InvalidInput(
+                        "simple text goal title must be 1..=240 chars".into(),
+                    ));
+                }
                 let text = body.text.trim();
                 if text.is_empty() || text.chars().count() > 20_000 {
                     return Err(McpToolError::InvalidInput(
                         "simple text goal text must be 1..=20000 chars".into(),
                     ));
                 }
-                let payload = SimpleTextGoalV1 {
-                    text: text.to_string(),
-                };
+                let payload = SimpleTextGoalV1 {};
                 let value = serde_json::to_value(&payload)
                     .map_err(|err| McpToolError::InvalidInput(err.to_string()))?;
                 validate_payload(
@@ -86,11 +90,10 @@ impl GoalPayloadInput {
                 Ok(EncodedGoalPayload {
                     schema_id: SchemaId::new(SimpleTextGoalV1::SCHEMA_ID.into()),
                     schema_version: SchemaVersion::new(SimpleTextGoalV1::SCHEMA_VERSION),
+                    title: title.to_string(),
                     text: text.to_string(),
                     bytes,
-                    sidecar: GoalSidecar::SimpleText {
-                        text: text.to_string(),
-                    },
+                    sidecar: GoalSidecar::SimpleText,
                 })
             }
             Self::Task(body) => {
@@ -98,6 +101,12 @@ impl GoalPayloadInput {
                 if title.is_empty() || title.chars().count() > 240 {
                     return Err(McpToolError::InvalidInput(
                         "task goal title must be 1..=240 chars".into(),
+                    ));
+                }
+                let text = body.text.trim();
+                if text.is_empty() || text.chars().count() > 20_000 {
+                    return Err(McpToolError::InvalidInput(
+                        "task goal text must be 1..=20000 chars".into(),
                     ));
                 }
                 let due_at = body
@@ -112,11 +121,7 @@ impl GoalPayloadInput {
                     .transpose()
                     .map_err(|err| McpToolError::InvalidInput(format!("invalid due_at: {err}")))?;
                 let priority = body.priority.map(Into::into);
-                let payload = TaskGoalV1 {
-                    title: title.to_string(),
-                    due_at,
-                    priority,
-                };
+                let payload = TaskGoalV1 { due_at, priority };
                 let value = serde_json::to_value(&payload)
                     .map_err(|err| McpToolError::InvalidInput(err.to_string()))?;
                 validate_payload(
@@ -131,10 +136,10 @@ impl GoalPayloadInput {
                 Ok(EncodedGoalPayload {
                     schema_id: SchemaId::new(TaskGoalV1::SCHEMA_ID.into()),
                     schema_version: SchemaVersion::new(TaskGoalV1::SCHEMA_VERSION),
-                    text: title.to_string(),
+                    title: title.to_string(),
+                    text: text.to_string(),
                     bytes,
                     sidecar: GoalSidecar::Task {
-                        title: title.to_string(),
                         due_at,
                         priority: priority.map(task_priority_str),
                     },
@@ -257,9 +262,9 @@ pub async fn insert_goal_in_tx(
     sqlx::query(
         "INSERT INTO proxima_core.goals
             (goal_id, schema_id, schema_version, owner_principal_kind,
-             owner_principal_id, owner_org_id, text, payload, state, supersedes,
+             owner_principal_id, owner_org_id, title, text, payload, state, supersedes,
              authorship_kind, authorship_origin, authorship_tool_id, request_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)",
     )
     .bind(goal_id)
     .bind(draft.schema_id.as_str())
@@ -267,6 +272,7 @@ pub async fn insert_goal_in_tx(
     .bind(owner_kind)
     .bind(owner_principal_id)
     .bind(owner_org_id)
+    .bind(&draft.title)
     .bind(&draft.text)
     .bind(&draft.payload)
     .bind(state)
@@ -393,25 +399,28 @@ pub async fn load_goal_payload(
     tx: &mut sqlx::PgConnection,
     goal_id: GoalId,
 ) -> Result<GoalPayloadInput, McpToolError> {
-    let row: (String, Vec<u8>) =
-        sqlx::query_as("SELECT schema_id, payload FROM proxima_core.goals WHERE goal_id = $1")
-            .bind(goal_id.into_inner())
-            .fetch_one(tx)
-            .await
-            .map_err(map_storage)?;
+    let row: (String, String, String, Vec<u8>) = sqlx::query_as(
+        "SELECT schema_id, title, text, payload FROM proxima_core.goals WHERE goal_id = $1",
+    )
+    .bind(goal_id.into_inner())
+    .fetch_one(tx)
+    .await
+    .map_err(map_storage)?;
     match row.0.as_str() {
         SimpleTextGoalV1::SCHEMA_ID => {
-            let payload: SimpleTextGoalV1 = ciborium::de::from_reader(&row.1[..])
+            let _: SimpleTextGoalV1 = ciborium::de::from_reader(&row.3[..])
                 .map_err(|err| McpToolError::InvalidInput(err.to_string()))?;
             Ok(GoalPayloadInput::SimpleText(SimpleTextGoalBody {
-                text: payload.text,
+                title: row.1,
+                text: row.2,
             }))
         }
         TaskGoalV1::SCHEMA_ID => {
-            let payload: TaskGoalV1 = ciborium::de::from_reader(&row.1[..])
+            let payload: TaskGoalV1 = ciborium::de::from_reader(&row.3[..])
                 .map_err(|err| McpToolError::InvalidInput(err.to_string()))?;
             Ok(GoalPayloadInput::Task(TaskGoalBody {
-                title: payload.title,
+                title: row.1,
+                text: row.2,
                 due_at: payload.due_at.map(|dt| {
                     dt.format(&time::format_description::well_known::Rfc3339)
                         .expect("Rfc3339 formatting succeeds for OffsetDateTime")
@@ -471,28 +480,22 @@ async fn insert_goal_sidecar(
     sidecar: &GoalSidecar,
 ) -> Result<(), McpToolError> {
     match sidecar {
-        GoalSidecar::SimpleText { text } => {
+        GoalSidecar::SimpleText => {
             sqlx::query(
-                "INSERT INTO proxima_goal.simple_text_goal_v1 (goal_id, text)
-                 VALUES ($1, $2)",
+                "INSERT INTO proxima_goal.simple_text_goal_v1 (goal_id)
+                 VALUES ($1)",
             )
             .bind(goal_id)
-            .bind(text)
             .execute(tx)
             .await
             .map_err(map_storage)?;
         }
-        GoalSidecar::Task {
-            title,
-            due_at,
-            priority,
-        } => {
+        GoalSidecar::Task { due_at, priority } => {
             sqlx::query(
-                "INSERT INTO proxima_goal.task_goal_v1 (goal_id, title, due_at, priority)
-                 VALUES ($1, $2, $3, $4)",
+                "INSERT INTO proxima_goal.task_goal_v1 (goal_id, due_at, priority)
+                 VALUES ($1, $2, $3)",
             )
             .bind(goal_id)
-            .bind(title)
             .bind(due_at)
             .bind(priority)
             .execute(tx)

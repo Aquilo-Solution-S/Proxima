@@ -36,11 +36,12 @@ const proposedGoal = (overrides: Partial<GoalRow> = {}): GoalRow => ({
   schema_id: "proxima-goal/simple-text-v1",
   schema_version: 1,
   owner,
-  text: "Refactor the chunker",
+  title: "Refactor the chunker",
+  text: "Refactor the repository chunking flow",
   state: "Proposed",
   parent_goal_ids: [],
   supersedes: null,
-  payload: Array.from(encode({ text: "Refactor the chunker" })),
+  payload: Array.from(encode({})),
   ...overrides,
 });
 
@@ -78,10 +79,7 @@ const renderWithGoals = (goals: GoalRow[]) => {
       encode: (value) => encode(value),
     },
     renderer: {
-      render: (props) => {
-        const payload = props.payload as { text: string };
-        return <p class="goal-typed-text">{payload.text}</p>;
-      },
+      render: () => null,
     },
   });
   const hub = createHub([]);
@@ -148,9 +146,10 @@ describe("Goal rail proposed section", () => {
   it("renders accepted goals in the rail instead of only a count", () => {
     renderWithGoals([
       proposedGoal({
-        text: "Keep the rail readable",
+        text: "Keep the rail readable after layout changes",
+        title: "Keep the rail readable",
         state: "Active",
-        payload: Array.from(encode({ text: "Keep the rail readable" })),
+        payload: Array.from(encode({})),
       }),
     ]);
 

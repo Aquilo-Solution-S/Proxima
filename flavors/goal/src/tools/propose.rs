@@ -46,6 +46,7 @@ impl McpTool for ProposeTool {
                 owner: ctx.owner.clone(),
                 schema_id: encoded.schema_id.clone(),
                 schema_version: encoded.schema_version,
+                title: encoded.title.clone(),
                 text: encoded.text.clone(),
                 payload: encoded.bytes.clone(),
                 state: GoalState::Proposed,

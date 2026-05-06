@@ -8,16 +8,6 @@ export const TaskGoalEditor: GoalPayloadEditorComponent<TaskGoalPayload> = (
 ) => (
   <>
     <label class="goal-editor-row">
-      <span>Title</span>
-      <input
-        type="text"
-        value={props.payload.title}
-        onInput={(event) =>
-          props.onChange({ ...props.payload, title: event.currentTarget.value })
-        }
-      />
-    </label>
-    <label class="goal-editor-row">
       <span>Priority</span>
       <select
         value={props.payload.priority ?? "Medium"}
@@ -53,10 +43,6 @@ export const TaskGoalEditor: GoalPayloadEditorComponent<TaskGoalPayload> = (
 );
 
 export const taskGoalDefaults = (): TaskGoalPayload => ({
-  title: "",
   priority: "Medium",
   due_at: null,
 });
-
-export const taskGoalToText = (payload: TaskGoalPayload): string =>
-  payload.title;

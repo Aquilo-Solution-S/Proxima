@@ -1,9 +1,7 @@
 use proxima_core::GoalPayload;
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
-pub struct SimpleTextGoalV1 {
-    pub text: String,
-}
+pub struct SimpleTextGoalV1 {}
 
 impl GoalPayload for SimpleTextGoalV1 {
     const SCHEMA_ID: &'static str = "proxima-goal/simple-text-v1";

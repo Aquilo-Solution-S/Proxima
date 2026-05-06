@@ -74,6 +74,8 @@ export const GoalDialog: Component<GoalDialogProps> = (props) => {
   };
 
   const [payload, setPayload] = createSignal<unknown>(initialPayload());
+  const [title, setTitle] = createSignal(props.proposal?.title ?? "");
+  const [text, setText] = createSignal(props.proposal?.text ?? "");
   const [busy, setBusy] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
 
@@ -99,7 +101,8 @@ export const GoalDialog: Component<GoalDialogProps> = (props) => {
         owner: props.proposal?.owner ?? graph.state().owner,
         schema_id: editor.schemaId,
         schema_version: editor.schemaVersion,
-        text: editor.toText(payload()),
+        title: title(),
+        text: text(),
         payload: Array.from(codec.encode(payload())),
         state: "Active",
         parent_goal_ids: props.proposal?.parent_goal_ids ?? [],
@@ -158,6 +161,22 @@ export const GoalDialog: Component<GoalDialogProps> = (props) => {
                 )}
               </For>
             </select>
+          </label>
+          <label class="goal-editor-row">
+            <span>Title</span>
+            <input
+              type="text"
+              value={title()}
+              onInput={(event) => setTitle(event.currentTarget.value)}
+            />
+          </label>
+          <label class="goal-editor-row">
+            <span>Text</span>
+            <textarea
+              rows={4}
+              value={text()}
+              onInput={(event) => setText(event.currentTarget.value)}
+            />
           </label>
           <Show when={selected()} keyed>
             {(editor) => {

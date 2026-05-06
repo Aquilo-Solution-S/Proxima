@@ -1,5 +1,3 @@
-//! M2 done-when integration test (per ROADMAP §M2):
-//!
 //! > writes Facts and Goals, opens a `Subscribe`, drops the
 //! > connection, reconnects with `last_seq`, and observes no
 //! > missed or duplicated events.
@@ -110,6 +108,7 @@ fn fresh_goal_draft(owner: &Owner, request_id: &str, text: &str) -> GoalDraft {
         owner: owner.clone(),
         schema_id: SchemaId::new("test/goal_blob".into()),
         schema_version: SchemaVersion::new(1),
+        title: "Test goal".to_string(),
         text: text.to_string(),
         payload: Vec::new(),
         state: GoalState::Active,
@@ -243,8 +242,7 @@ async fn m2_done_when_resume_with_last_seq() {
 
         // Phase 6: read until we have collected the post-drop set.
         // Apply client-side dedup by `seq` — at-least-once delivery may
-        // produce duplicates from the live broadcast layer; ROADMAP
-        // forbids missed events, not duplicates.
+        // produce duplicates from the live broadcast layer;
         let mut seen: std::collections::HashSet<Uuid> = std::collections::HashSet::new();
         let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         while !post_drop_set.is_subset(&seen) && tokio::time::Instant::now() < deadline {

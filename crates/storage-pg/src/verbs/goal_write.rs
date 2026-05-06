@@ -56,11 +56,12 @@ pub(crate) async fn write_goal_atomic(
             i32,
             String,
             String,
+            String,
             Vec<uuid::Uuid>,
             Option<uuid::Uuid>,
             Vec<u8>,
         ) = sqlx::query_as(
-            "SELECT schema_id, schema_version, text, state, \
+            "SELECT schema_id, schema_version, title, text, state, \
                      COALESCE((SELECT array_agg(parent_goal_id) FROM proxima_core.goal_parents WHERE goal_id = $1), '{}'::uuid[]), \
                      supersedes, payload \
              FROM proxima_core.goals WHERE goal_id = $1",
@@ -70,7 +71,7 @@ pub(crate) async fn write_goal_atomic(
         .await
         .map_err(map_err)?;
 
-        let existing_parents: HashSet<uuid::Uuid> = existing_row.4.into_iter().collect();
+        let existing_parents: HashSet<uuid::Uuid> = existing_row.5.into_iter().collect();
         let draft_parents: HashSet<uuid::Uuid> = draft
             .parent_goal_ids
             .iter()
@@ -83,18 +84,20 @@ pub(crate) async fn write_goal_atomic(
         let schema_id_match = existing_row.0 == draft.schema_id.as_str();
         let schema_version_match =
             existing_row.1 == draft.schema_version.into_inner().cast_signed();
-        let text_match = existing_row.2 == draft.text;
-        let state_match = existing_row.3 == state_str;
+        let title_match = existing_row.2 == draft.title;
+        let text_match = existing_row.3 == draft.text;
+        let state_match = existing_row.4 == state_str;
         let parents_match = existing_parents == draft_parents;
         let expected_supersedes = draft.supersedes_goal_id.map(|id| id.into_inner());
-        let supersedes_match = existing_row.5 == expected_supersedes;
-        let payload_match = existing_row.6 == draft.payload;
+        let supersedes_match = existing_row.6 == expected_supersedes;
+        let payload_match = existing_row.7 == draft.payload;
 
         // Also need to check authorship fields.
         let authorship_matches = check_authorship_match(&mut tx, existing_goal_id, draft).await?;
 
         let body_matches = schema_id_match
             && schema_version_match
+            && title_match
             && text_match
             && state_match
             && parents_match
@@ -186,11 +189,12 @@ pub(crate) async fn supersede_goal_atomic(
             i32,
             String,
             String,
+            String,
             Vec<uuid::Uuid>,
             Option<uuid::Uuid>,
             Vec<u8>,
         ) = sqlx::query_as(
-            "SELECT schema_id, schema_version, text, state, \
+            "SELECT schema_id, schema_version, title, text, state, \
                      COALESCE((SELECT array_agg(parent_goal_id) FROM proxima_core.goal_parents WHERE goal_id = $1), '{}'::uuid[]), \
                      supersedes, payload \
              FROM proxima_core.goals WHERE goal_id = $1",
@@ -200,7 +204,7 @@ pub(crate) async fn supersede_goal_atomic(
         .await
         .map_err(map_err)?;
 
-        let existing_parents: HashSet<uuid::Uuid> = existing_row.4.into_iter().collect();
+        let existing_parents: HashSet<uuid::Uuid> = existing_row.5.into_iter().collect();
         let draft_parents: HashSet<uuid::Uuid> = draft
             .parent_goal_ids
             .iter()
@@ -213,17 +217,19 @@ pub(crate) async fn supersede_goal_atomic(
         let schema_id_match = existing_row.0 == draft.schema_id.as_str();
         let schema_version_match =
             existing_row.1 == draft.schema_version.into_inner().cast_signed();
-        let text_match = existing_row.2 == draft.text;
-        let state_match = existing_row.3 == state_str;
+        let title_match = existing_row.2 == draft.title;
+        let text_match = existing_row.3 == draft.text;
+        let state_match = existing_row.4 == state_str;
         let parents_match = existing_parents == draft_parents;
-        let supersedes_match = existing_row.5 == Some(prior.into_inner());
-        let payload_match = existing_row.6 == draft.payload;
+        let supersedes_match = existing_row.6 == Some(prior.into_inner());
+        let payload_match = existing_row.7 == draft.payload;
 
         // Also need to check authorship fields.
         let authorship_matches = check_authorship_match(&mut tx, existing_goal_id, draft).await?;
 
         let body_matches = schema_id_match
             && schema_version_match
+            && title_match
             && text_match
             && state_match
             && parents_match
@@ -310,11 +316,11 @@ async fn insert_goal_row(
     sqlx::query(
         "INSERT INTO proxima_core.goals \
             (goal_id, schema_id, schema_version, owner_principal_kind, \
-             owner_principal_id, owner_org_id, text, payload, state, supersedes, \
+             owner_principal_id, owner_org_id, title, text, payload, state, supersedes, \
              authorship_kind, authorship_origin, authorship_operator_id, \
              authorship_tool_id, operator_kind, model_id, prompt_version, \
              personality_id, personality_state_hash, request_id) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)",
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)",
     )
     .bind(goal_id)
     .bind(draft.schema_id.as_str())
@@ -322,6 +328,7 @@ async fn insert_goal_row(
     .bind(owner_kind)
     .bind(owner_principal_id)
     .bind(owner_org_id)
+    .bind(&draft.title)
     .bind(&draft.text)
     .bind(&draft.payload)
     .bind(state_str)
