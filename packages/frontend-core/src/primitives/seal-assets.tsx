@@ -30,7 +30,7 @@ const SEAL_PALETTE = {
   },
 } as const;
 
-const ProximaSeal: Component<{
+export const ProximaSeal: Component<{
   size?: number;
   theme?: "dark" | "light";
   mode?: "full" | "mark" | "favicon";
