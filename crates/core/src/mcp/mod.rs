@@ -22,15 +22,8 @@ pub struct McpAuthorContext {
 
 impl McpAuthorContext {
     #[must_use]
-    pub fn personality_state_hash(&self) -> [u8; 32] {
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(b"external/mcp-agent\x00");
-        hasher.update(self.model_id.as_bytes());
-        hasher.update(b"\x00");
-        hasher.update(self.client_name.as_bytes());
-        hasher.update(b"\x00");
-        hasher.update(self.client_version.as_bytes());
-        *hasher.finalize().as_bytes()
+    pub fn personality_id(&self) -> &'static str {
+        "external/mcp-agent"
     }
 }
 

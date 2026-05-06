@@ -101,15 +101,14 @@ pub async fn insert_abstraction(
         "INSERT INTO proxima_core.memories
             (memory_id, owner_principal_kind, owner_principal_id, owner_org_id,
              schema_id, schema_version, kind, text, operator_kind, model_id,
-             prompt_version, personality_id, personality_state_hash)
+             prompt_version, personality_id)
          VALUES ($1, $2, $3, $4, 'test/abstraction', 1, 'Abstraction',
-                 'evidence', 'FtoA', 'test-model', 'v1', 'test/personality', $5)",
+                 'evidence', 'FtoA', 'test-model', 'v1', 'test/personality')",
     )
     .bind(memory_id)
     .bind(owner_kind)
     .bind(owner_principal_id)
     .bind(owner.org_id.into_inner())
-    .bind([1_u8; 32])
     .execute(pg.pool())
     .await?;
     Ok(memory_id)

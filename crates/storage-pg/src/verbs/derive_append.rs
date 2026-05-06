@@ -18,7 +18,6 @@ pub struct DerivedDraft<'a> {
     pub model_id: &'a str,
     pub prompt_version: &'a str,
     pub personality_id: &'a str,
-    pub personality_state_hash: [u8; 32],
     pub sidecar_table: Option<&'a str>,
     pub sidecar_payload: Option<serde_json::Value>,
 }
@@ -44,8 +43,8 @@ pub async fn append_derived_in_tx(
         "INSERT INTO proxima_core.memories
             (memory_id, owner_principal_kind, owner_principal_id, owner_org_id,
              schema_id, schema_version, kind, text, operator_kind, model_id,
-             prompt_version, personality_id, personality_state_hash)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+             prompt_version, personality_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
          ON CONFLICT (memory_id) DO NOTHING
          RETURNING memory_id",
     )
@@ -61,7 +60,6 @@ pub async fn append_derived_in_tx(
     .bind(draft.model_id)
     .bind(draft.prompt_version)
     .bind(draft.personality_id)
-    .bind(&draft.personality_state_hash[..])
     .fetch_optional(&mut **tx)
     .await
     .map_err(map_err)?;

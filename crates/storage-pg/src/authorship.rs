@@ -14,7 +14,7 @@ use crate::error::map_err;
 /// Order matches the `goals` table columns:
 /// `(authorship_kind, authorship_origin, authorship_operator_id,
 ///   authorship_tool_id, operator_kind, model_id, prompt_version,
-///   personality_id, personality_state_hash)`.
+///   personality_id)`.
 #[allow(clippy::type_complexity)]
 pub(crate) type AuthorshipColumns = (
     String,
@@ -25,30 +25,18 @@ pub(crate) type AuthorshipColumns = (
     Option<String>,
     Option<String>,
     Option<String>,
-    Option<[u8; 32]>,
 );
 
 /// Project a `GoalAuthorship` into the flat column tuple.
 pub(crate) fn authorship_columns(authorship: &GoalAuthorship) -> AuthorshipColumns {
     match authorship {
-        GoalAuthorship::User => (
-            "User".to_string(),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        ),
+        GoalAuthorship::User => ("User".to_string(), None, None, None, None, None, None, None),
         GoalAuthorship::System(SystemOrigin::Operator {
             operator_id,
             operator_kind,
             model_id,
             prompt_version,
             personality_id,
-            personality_state_hash,
         }) => (
             "System".to_string(),
             Some("Operator".to_string()),
@@ -60,7 +48,6 @@ pub(crate) fn authorship_columns(authorship: &GoalAuthorship) -> AuthorshipColum
             Some(model_id.as_str().to_string()),
             Some(prompt_version.as_str().to_string()),
             Some(personality_id.as_str().to_string()),
-            Some(personality_state_hash.into_inner()),
         ),
         GoalAuthorship::System(SystemOrigin::Tool { tool_id }) => (
             "System".to_string(),
@@ -71,11 +58,9 @@ pub(crate) fn authorship_columns(authorship: &GoalAuthorship) -> AuthorshipColum
             None,
             None,
             None,
-            None,
         ),
         GoalAuthorship::External => (
             "External".to_string(),
-            None,
             None,
             None,
             None,
@@ -104,12 +89,11 @@ pub(crate) async fn check_authorship_match(
         Option<String>,
         Option<String>,
         Option<String>,
-        Option<Vec<u8>>,
         Option<String>,
     ) = sqlx::query_as(
         "SELECT authorship_kind, authorship_origin, authorship_operator_id, \
                      authorship_tool_id, operator_kind, model_id, \
-                     prompt_version, personality_id, personality_state_hash \
+                     prompt_version, personality_id \
              FROM proxima_core.goals WHERE goal_id = $1",
     )
     .bind(existing_goal_id)
@@ -126,7 +110,6 @@ pub(crate) async fn check_authorship_match(
         draft_model,
         draft_prompt,
         draft_personality,
-        draft_hash,
     ) = authorship_columns(&draft.authorship);
 
     let kind_match = existing_auth.0 == draft_kind;
@@ -136,8 +119,7 @@ pub(crate) async fn check_authorship_match(
     let op_kind_match = existing_auth.4 == draft_op_kind;
     let model_match = existing_auth.5 == draft_model;
     let prompt_match = existing_auth.6 == draft_prompt;
-    let personality_match = existing_auth.8 == draft_personality;
-    let hash_match = existing_auth.7.as_deref() == draft_hash.as_ref().map(|h| &h[..]);
+    let personality_match = existing_auth.7 == draft_personality;
 
     Ok(kind_match
         && origin_match
@@ -146,6 +128,5 @@ pub(crate) async fn check_authorship_match(
         && op_kind_match
         && model_match
         && prompt_match
-        && personality_match
-        && hash_match)
+        && personality_match)
 }

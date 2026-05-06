@@ -5,8 +5,8 @@
 //! storage-side body lives in proxima-storage-pg.
 
 use crate::{
-    GoalId, ModelId, OperatorId, Owner, PersonalityId, PersonalityStateHash, PromptVersion,
-    SchemaId, SchemaVersion, ToolId,
+    GoalId, ModelId, OperatorId, Owner, PersonalityId, PromptVersion, SchemaId, SchemaVersion,
+    ToolId,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
@@ -32,7 +32,6 @@ pub enum SystemOrigin {
         model_id: ModelId,
         prompt_version: PromptVersion,
         personality_id: PersonalityId,
-        personality_state_hash: PersonalityStateHash,
     },
     Tool {
         tool_id: ToolId,

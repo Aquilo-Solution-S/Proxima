@@ -663,9 +663,9 @@ async fn ingest_commit_summary(
         "INSERT INTO proxima_core.memories
             (memory_id, owner_principal_kind, owner_principal_id, owner_org_id,
              schema_id, schema_version, kind, text, operator_kind, model_id, prompt_version,
-             personality_id, personality_state_hash)
+             personality_id)
          VALUES ($1, $2, $3, $4, $5, 1, 'Abstraction', $6,
-             'FtoA', 'test/0', 'test', 'test/personality', $7)",
+             'FtoA', 'test/0', 'test', 'test/personality')",
     )
     .bind(memory_id)
     .bind(owner_kind)
@@ -673,7 +673,6 @@ async fn ingest_commit_summary(
     .bind(owner.org_id.into_inner())
     .bind(proxima_code::CommitSummaryV1::schema_id().into_inner())
     .bind(summary)
-    .bind(blake3::hash(summary.as_bytes()).as_bytes().to_vec())
     .execute(pool)
     .await?;
 

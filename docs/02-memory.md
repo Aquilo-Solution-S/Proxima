@@ -42,7 +42,7 @@ Layer function `ℓ : Memory → {0, 1, 2}` with `ℓ(F)=0, ℓ(A)=1, ℓ(P)=2`.
 
 Personality `Π = PersonalityFlavor::snapshot(owner)` — an opaque
 flavor-produced value with structure `(personality_id, P_active,
-G_active, state_hash)`. `P_active ⊆ P` and `G_active ⊆ Goal` are
+G_active)`. `P_active ⊆ P` and `G_active ⊆ Goal` are
 selected by the flavor under its own rules (identity, goal-relevant,
 topical, recency — flavor's choice; see §Personality and [08](docs/08-core-and-flavors.md)).
 The substrate does not legislate selection.
@@ -115,7 +115,6 @@ enum MemoryBody {
         model_id:               ModelId,
         prompt_version:         PromptVersion,
         personality_id:         PersonalityId,    // which personality flavor produced this (08)
-        personality_state_hash: Hash,             // that flavor's snapshot at run time (04 §Personality state)
     },
 }
 
@@ -136,12 +135,12 @@ citation; their bibliographic provenance accumulates by walking
 provenance edges down to Facts.
 
 Operator-invocation columns (`operator_kind`, `model_id`,
-`prompt_version`, `personality_id`, `personality_state_hash`) are inline
+`prompt_version`, `personality_id`) are inline
 reproducibility metadata for A/P — inputs to the F→A / A→P invocation
 key (see [04 §Idempotence](docs/04-consolidation.md#idempotence-and-reproducibility)).
 `personality_id` keeps parallel personalities' outputs on disjoint
-invocation keys: the same `(model, prompt, hash)` under two different
-personality flavors never collides on dedup.
+invocation keys: the same `(model, prompt)` under two different
+personality ids never collides on dedup.
 
 A Fact's `owner` equals its source Event's `owner`. Abstractions and
 Perspectives inherit `owner` from their input memories — operators run
@@ -457,8 +456,7 @@ personality; the operator decides granularity (e.g. chunks → chapters →
 themes → top-level Abstraction for a book).
 
 Reproducibility: not pure (LLM nondeterminism), but reproducible given
-`(source_batch, facts, personality_id, personality_state_hash, model,
-prompt)`.
+`(source_batch, facts, personality_id, model, prompt)`.
 
 ### A→P: Abstraction-to-Perspective (intra-flavor or cross-flavor)
 
@@ -509,14 +507,13 @@ chain. Deletion observations are themselves Facts under a
 state. The pattern and its sidecar contract live in
 [03 §Stateful Fact schemas](docs/03-schema-registry.md#stateful-fact-schemas--head-by-natural-key).
 
-Memories are **never destroyed**. When personality state drifts and a new
-Abstraction is derived from the same Facts under the **same**
-personality flavor:
+Memories are **never destroyed**. When a new Abstraction is derived from
+the same Facts under the **same** `personality_id`:
 
 1. The old Abstraction stays. Its provenance edges point to the same Facts
-   under the older `personality_state_hash`.
+   under the older invocation.
 2. The new Abstraction is added. Its provenance edges also point to those
-   Facts, but under the newer `personality_state_hash`.
+   Facts, but under the newer invocation.
 3. The two are linked by a `supersedes` edge: `new_abstraction →
    old_abstraction`, authored by `Core(Engine)`.
 
@@ -575,15 +572,14 @@ struct PersonalitySnapshot {
     personality_id:  PersonalityId,                  // which flavor produced this
     perspective_ids: Vec<MemoryId>,                  // P_active per this flavor's rules
     goal_ids:        Vec<GoalId>,                    // G_active per this flavor's rules
-    state_hash:      Hash,                           // canonical hash for invocation key
     captured_at:     Timestamp,
 }
 ```
 
-The substrate guarantees the snapshot has a stable hash (so re-runs
-under the same state coalesce on the invocation key) and that the
-hash is recorded inline on every produced A/P / Goal row. It does not
-legislate *what* the snapshot contains beyond that.
+The substrate records `personality_id` inline on every produced A/P /
+Goal row. It does not legislate *what* the snapshot contains beyond
+that. Load-bearing personality evolution is expressed by registering
+a new `personality_id`.
 
 **Selection primitives** a `PersonalityFlavor` typically composes:
 
@@ -594,9 +590,8 @@ legislate *what* the snapshot contains beyond that.
 | Topical (similarity)     | embedding pass at snapshot  | retrospect — what the agent already thinks here |
 | Goal-relevant            | filter by Goal-edge citations | intent — what supports the agent's current ambitions |
 
-These are *primitives*. A flavor decides which to combine, with what
-top-K caps, and how to fuse them into a deterministic `state_hash`.
-The substrate does not pick a canonical combination because there is
+These are *primitives*. A flavor decides which to combine and with what
+top-K caps. The substrate does not pick a canonical combination because there is
 no canonical answer — different personality flavors are *exactly* the
 business of having different combinations.
 
@@ -644,10 +639,10 @@ The matrix is per-Owner config; storage lives in
 Default for newly-linked personalities is the identity row + identity
 column only (each new personality starts isolated; cross-reads opt in).
 
-The matrix is hashed into `personality_state_hash` at snapshot time so
-that a matrix toggle which admits new sources is a different invocation
-key — re-running under the new matrix produces a fresh A/P rather than
-coalescing with a prior run that didn't see those sources.
+The matrix affects future retrieval scope. If a matrix change is
+load-bearing enough to require disjoint operator lineage, register a
+new `personality_id`; the substrate has no in-place personality-state
+key.
 
 ## Sub-questions — all resolved
 
@@ -692,7 +687,7 @@ triggering re-derivation, personality flavor swap, future Hint mechanism
 
 What "full personality" *includes* is the flavor's call. The substrate
 guarantees only that whatever the flavor put in the snapshot is what
-biases the operator and what hashes into the invocation key.
+biases the operator; `personality_id` is the invocation lineage key.
 
 ### Q5. Self as flavor projection — see [06](docs/06-goals-and-self.md)
 
@@ -724,14 +719,15 @@ it can present. Full treatment in
   coexist and run in parallel. Both biased by full personality (Q4).
 - **Personality is a flavor.** `PersonalityFlavor` produces a
   `PersonalitySnapshot` (`personality_id, P_active, G_active,
-  state_hash`) per Owner per invocation. The substrate hosts plural
+  captured_at`) per Owner per invocation. The substrate hosts plural
   personalities per Owner; A/P/Goal rows tag with `personality_id`;
   parallel personalities yield parallel lineages, never collide on
   supersession. Cross-personality supersession requires user-API
   authorship.
 - **Read-scope matrix.** Per-Owner boolean adjacency over personalities
   governs cross-personality retrieval. Identity diagonal = 1; F always
-  shared; A/P/Goals gated. Hashed into the invocation key.
+  shared; A/P/Goals gated. Load-bearing matrix evolution requires a new
+  `personality_id`.
 - Memories immutable in Facts and additive elsewhere; supersession links
   new derivations to old, scoped within personality.
 - Self is a flavor projection (Q5 → 06).

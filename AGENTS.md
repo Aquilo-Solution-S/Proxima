@@ -187,8 +187,8 @@ breaks if these slip.
     [08 §Composite discipline](docs/08-core-and-flavors.md#composite-discipline).
 21. **Read-scope matrix governs cross-personality reads.** Per-Owner
     boolean adjacency; identity diagonal hardcoded; F is below the
-    matrix. Hashed into `personality_state_hash` so toggles produce
-    different invocation keys.
+    matrix. Load-bearing matrix evolution requires a new
+    `personality_id`.
     See [02 §Read-scope matrix](docs/02-memory.md#read-scope-matrix),
     [07 §Core tables — abstract](docs/07-storage.md#core-tables--abstract).
 

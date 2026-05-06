@@ -53,11 +53,6 @@ pub fn goal_authorship_from_proto(pb: PbGoalAuthorship) -> Result<CoreGoalAuthor
                         model_id: proxima_core::ModelId::new(o.model_id.clone()),
                         prompt_version: proxima_core::PromptVersion::new(o.prompt_version.clone()),
                         personality_id: proxima_core::PersonalityId::new(o.personality_id.clone()),
-                        personality_state_hash: proxima_core::PersonalityStateHash::new(
-                            o.personality_state_hash.try_into().map_err(|_| {
-                                Status::invalid_argument("invalid personality_state_hash length")
-                            })?,
-                        ),
                     }))
                 }
                 pb::system_authorship::Origin::Tool(t) => {
@@ -84,14 +79,12 @@ pub fn goal_authorship_to_proto(core: &CoreGoalAuthorship) -> PbGoalAuthorship {
                     model_id,
                     prompt_version,
                     personality_id,
-                    personality_state_hash,
                 } => pb::system_authorship::Origin::Operator(OperatorOrigin {
                     operator_id: uuid_to_proto(operator_id.into_inner()),
                     operator_kind: operator_kind_to_proto(*operator_kind) as i32,
                     model_id: model_id.as_str().to_string(),
                     prompt_version: prompt_version.as_str().to_string(),
                     personality_id: personality_id.as_str().to_string(),
-                    personality_state_hash: personality_state_hash.into_inner().to_vec(),
                 }),
                 CoreSystemOrigin::Tool { tool_id } => {
                     pb::system_authorship::Origin::Tool(ToolOrigin {

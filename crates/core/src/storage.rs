@@ -150,10 +150,9 @@ pub trait Storage: Send + Sync {
     /// N embedding rows + outbox change_events + the
     /// `source_batch_f2a` dedup row, all in a single transaction.
     /// Idempotent on `(batch_id, operator_id, prompt_version,
-    /// model_id, personality_id, personality_state_hash)` — a re-call
-    /// with the row already present returns
+    /// model_id, personality_id)` — a re-call with the row already present returns
     /// `already_consolidated = true` without writing. Re-running with
-    /// a different prompt, model, or personality snapshot is a new
+    /// a different prompt, model, or personality id is a new
     /// invocation.
     ///
     /// # Errors

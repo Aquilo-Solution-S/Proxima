@@ -27,7 +27,6 @@ async fn external_agent_abstraction_persists_with_replay() -> Result<(), Box<dyn
             model_id: "claude-opus-4.7",
             prompt_version: "mcp-agent-v1",
             personality_id: "external/mcp-agent",
-            personality_state_hash: [7u8; 32],
             sidecar_table: Some("proxima_mcp.agent_derivation_v1"),
             sidecar_payload: Some(serde_json::json!({
                 "title": "x",
@@ -88,7 +87,6 @@ async fn external_agent_perspective_persists() -> Result<(), Box<dyn std::error:
             model_id: "claude-opus-4.7",
             prompt_version: "mcp-agent-v1",
             personality_id: "external/mcp-agent",
-            personality_state_hash: [8u8; 32],
             sidecar_table: Some("proxima_mcp.agent_derivation_v1"),
             sidecar_payload: Some(serde_json::json!({
                 "title": "p",
