@@ -153,6 +153,8 @@ export const commands = {
 	 *  `InvalidUuid` if the id does not parse; `Storage` on database failures.
 	 */
 	repoIngestSubscribe: (repoId: string, onEvent: Channel<RepoIngestEventTs>) => typedError<null, CommandError>(__TAURI_INVOKE("repo_ingest_subscribe", { repoId, onEvent })),
+	perfLog: (entries: PerfEntry[]) => __TAURI_INVOKE<void>("perf_log", { entries }),
+	perfLogField: (entries: FieldEntry[]) => __TAURI_INVOKE<void>("perf_log_field", { entries }),
 };
 
 /* Types */
@@ -325,6 +327,11 @@ export type EventIngestOutcome = {
 	idempotent_replay: boolean,
 };
 
+export type FieldEntry = {
+	cmd: string,
+	field_path: string,
+};
+
 export type GoalAuthorship = "User" | { System: SystemOrigin } | "External";
 
 export type GoalDraft = {
@@ -471,6 +478,13 @@ export type PayloadKind = "Fact" | "Abstraction" | "Perspective" | "Goal" |
  */
 "Edge" | "CitedObject" | "CitationMapping";
 
+export type PerfEntry = {
+	kind: string,
+	name: string,
+	dur_ms: number,
+	bytes: number | null,
+};
+
 export type PersonalityId = string;
 
 /**
@@ -578,9 +592,8 @@ export type SchemaInfo = {
 	filter_keys: string[],
 	/**
 	 *  Sidecar table identifier (qualified, e.g. `proxima_code.code_chunk_v1`)
-	 *  when the payload trait declares one; `None` for `Goal`, `CitedObject`,
-	 *  and `CitationMapping` payloads which don't participate in F/A/P
-	 *  queries.
+	 *  when the payload trait declares one; `None` for `CitedObject` and
+	 *  `CitationMapping` payloads which don't participate in F/A/P queries.
 	 */
 	sidecar_table: string | null,
 	/**
@@ -652,3 +665,4 @@ async function typedError<T, E>(result: Promise<T>): Promise<{ status: "ok"; dat
         return { status: "error", error: e as any };
     }
 }
+
