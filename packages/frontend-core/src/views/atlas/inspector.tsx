@@ -366,7 +366,11 @@ export const Inspector: Component<{
         );
       });
       const renderer = createMemo(() =>
-        props.hub.rendererFor(node().schemaId, node().schemaVersion),
+        props.hub.rendererFor(
+          node().schemaId,
+          node().schemaVersion,
+          node().kind,
+        ),
       );
       const rendererFlavor = createMemo(() => {
         const r = props.hub.registeredRenderers().find(

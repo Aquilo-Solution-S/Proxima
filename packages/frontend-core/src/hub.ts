@@ -7,6 +7,12 @@ import {
   type Setter,
 } from "solid-js";
 import type { MemoryRow } from "./bindings";
+import {
+  getPayloadRenderer,
+  registeredFlavorNames,
+  registeredPayloadRenderers,
+  registeredShellViews,
+} from "./registry";
 
 export interface Renderer<T = unknown> {
   render: (props: { memory: MemoryRow; payload: T }) => JSX.Element;
@@ -76,6 +82,7 @@ export interface Hub {
   rendererFor(
     schemaId: string,
     schemaVersion: number,
+    kind?: MemoryRow["kind"],
   ): Renderer<unknown> | null;
   codecFor(
     schemaId: string,
@@ -101,12 +108,39 @@ export function createHub(
 ): Hub {
   const renderers = new Map<string, Renderer<unknown>>();
   const codecs = new Map<string, PayloadCodec<unknown>>();
-  const [views, setViews] = createSignal<RegisteredView[]>(substrateViews);
-  const [flavors, setFlavors] = createSignal<string[]>([]);
+  for (const registration of registeredPayloadRenderers()) {
+    renderers.set(
+      rendererKey(registration.schemaId, registration.schemaVersion),
+      registration.renderer,
+    );
+    if (registration.codec !== null) {
+      codecs.set(
+        rendererKey(registration.schemaId, registration.schemaVersion),
+        registration.codec,
+      );
+    }
+  }
+  const [views, setViews] = createSignal<RegisteredView[]>([
+    ...substrateViews,
+    ...registeredShellViews(),
+  ]);
+  const [flavors, setFlavors] = createSignal<string[]>(registeredFlavorNames());
   const [renderersList, setRenderersList] = createSignal<RegisteredRenderer[]>(
-    [],
+    registeredPayloadRenderers().map((registration) => ({
+      schemaId: registration.schemaId,
+      schemaVersion: registration.schemaVersion,
+      flavor: registration.flavor,
+    })),
   );
-  const [codecsList, setCodecsList] = createSignal<RegisteredCodec[]>([]);
+  const [codecsList, setCodecsList] = createSignal<RegisteredCodec[]>(
+    registeredPayloadRenderers()
+      .filter((registration) => registration.codec !== null)
+      .map((registration) => ({
+        schemaId: registration.schemaId,
+        schemaVersion: registration.schemaVersion,
+        flavor: registration.flavor,
+      })),
+  );
   const [currentView, setCurrentView] = createSignal<string>(
     substrateViews[0]?.id ?? "",
   );
@@ -127,19 +161,25 @@ export function createHub(
 
   return {
     registerFlavor(name, register) {
-      setFlavors((prev) => [...prev, name]);
+      setFlavors((prev) => (prev.includes(name) ? prev : [...prev, name]));
       register({
         registerCodec: (sid, sver, c) => {
           codecs.set(rendererKey(sid, sver), c as PayloadCodec<unknown>);
           setCodecsList((prev) => [
-            ...prev,
+            ...prev.filter(
+              (entry) =>
+                entry.schemaId !== sid || entry.schemaVersion !== sver,
+            ),
             { schemaId: sid, schemaVersion: sver, flavor: name },
           ]);
         },
         registerRenderer: (sid, sver, r) => {
           renderers.set(rendererKey(sid, sver), r as Renderer<unknown>);
           setRenderersList((prev) => [
-            ...prev,
+            ...prev.filter(
+              (entry) =>
+                entry.schemaId !== sid || entry.schemaVersion !== sver,
+            ),
             { schemaId: sid, schemaVersion: sver, flavor: name },
           ]);
         },
@@ -151,8 +191,10 @@ export function createHub(
         },
       });
     },
-    rendererFor: (sid, sver) =>
-      renderers.get(rendererKey(sid, sver)) ?? null,
+    rendererFor: (sid, sver, kind) =>
+      getPayloadRenderer(sid, sver, kind)?.renderer ??
+      renderers.get(rendererKey(sid, sver)) ??
+      null,
     codecFor: (sid, sver) => codecs.get(rendererKey(sid, sver)) ?? null,
     flavorFor: (sid, sver) => {
       const codec = codecsList().find(

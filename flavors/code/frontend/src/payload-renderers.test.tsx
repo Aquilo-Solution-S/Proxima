@@ -1,9 +1,10 @@
 import { cleanup, render, screen } from "@solidjs/testing-library";
 import { encode } from "cbor-x";
 import { afterEach, describe, expect, it } from "vitest";
-import type { MemoryRow } from "../../bindings";
-import { createHub } from "../../hub";
-import { registerCode } from "./index";
+import type { MemoryRow } from "@proxima/core";
+import { clearRegistriesForTests } from "@proxima/core/registry";
+import { createHub } from "@proxima/core/hub";
+import { init } from "./index";
 
 const owner = {
   principal: { User: "00000000-0000-0000-0000-000000000000" },
@@ -20,11 +21,14 @@ const memory = (schemaId: string, payload: number[]): MemoryRow => ({
 });
 
 describe("code payload renderers", () => {
-  afterEach(() => cleanup());
+  afterEach(() => {
+    cleanup();
+    clearRegistriesForTests();
+  });
 
   it("decodes and renders file-revision-v1 as typed fields", () => {
+    init();
     const hub = createHub([]);
-    hub.registerFlavor("code", registerCode);
     const payload = {
       repo_id: "018f0000-0000-7000-8000-000000000001",
       file_path: "src/lib.rs",
@@ -53,8 +57,8 @@ describe("code payload renderers", () => {
   });
 
   it("highlights code chunks using the payload language", () => {
+    init();
     const hub = createHub([]);
-    hub.registerFlavor("code", registerCode);
     const payload = {
       repo_id: "018f0000-0000-7000-8000-000000000001",
       file_path: "src/main.rs",

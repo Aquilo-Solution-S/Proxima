@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ingestStore } from "./ingest-store";
-import type { RepoIngestionRunTs } from "../../bindings";
+import type { RepoIngestionRunTs } from "@proxima/core";
 
 const mocks = vi.hoisted(() => ({
   repoIngestStart: vi.fn(),
@@ -8,7 +8,7 @@ const mocks = vi.hoisted(() => ({
   repoIngestSubscribe: vi.fn(),
 }));
 
-vi.mock("../../bindings", () => ({
+vi.mock("@proxima/core", () => ({
   commands: {
     repoIngestStart: mocks.repoIngestStart,
     repoIngestStatus: mocks.repoIngestStatus,

@@ -7,7 +7,7 @@ import {
   type IngestProgressTs,
   type RepoIngestEventTs,
   type RepoIngestionRunTs,
-} from "../../bindings";
+} from "@proxima/core";
 
 export type RunRecord = {
   run: RepoIngestionRunTs | null;
