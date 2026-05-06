@@ -110,15 +110,16 @@ describe("Goal rail proposed section", () => {
     renderWithGoals([proposedGoal()]);
     expect(screen.getByText("Refactor the chunker")).toBeTruthy();
     expect(screen.getByText("Proposed")).toBeTruthy();
-    expect(screen.getByText("Accept")).toBeTruthy();
-    expect(screen.getByText("Decline")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Accept proposal" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Modify proposal" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Decline proposal" })).toBeTruthy();
   });
 
   it("Accept supersedes the proposal with state=Active", async () => {
     mocks.goalWrite.mockImplementation(okWrite);
     const goal = proposedGoal();
     renderWithGoals([goal]);
-    fireEvent.click(screen.getByText("Accept"));
+    fireEvent.click(screen.getByRole("button", { name: "Accept proposal" }));
     await waitFor(() => expect(mocks.goalWrite).toHaveBeenCalledOnce());
     const draft = mocks.goalWrite.mock.calls[0]![0] as GoalDraft;
     expect(draft.state).toBe("Active");
@@ -130,7 +131,7 @@ describe("Goal rail proposed section", () => {
     mocks.goalWrite.mockImplementation(okWrite);
     const goal = proposedGoal();
     renderWithGoals([goal]);
-    fireEvent.click(screen.getByText("Decline"));
+    fireEvent.click(screen.getByRole("button", { name: "Decline proposal" }));
     await waitFor(() => expect(mocks.goalWrite).toHaveBeenCalledOnce());
     expect((mocks.goalWrite.mock.calls[0]![0] as GoalDraft).state).toBe(
       "Rejected",
@@ -139,8 +140,8 @@ describe("Goal rail proposed section", () => {
 
   it("hides the Proposed section when there are no proposals", () => {
     renderWithGoals([]);
-    expect(screen.queryByText("Accept")).toBeNull();
-    expect(screen.queryByText("Decline")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Accept proposal" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Decline proposal" })).toBeNull();
     expect(screen.getByText("No goals")).toBeTruthy();
   });
 });

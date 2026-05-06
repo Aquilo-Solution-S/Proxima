@@ -258,22 +258,195 @@
   display: flex;
   gap: 8px;
 }
-.goal-proposed-actions button {
+.goal-action-icon {
+  font-family: var(--mono);
+  font-size: 14px;
+  line-height: 1;
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--surface-rule-strong);
+  background: transparent;
+  color: var(--ink-90);
+  cursor: pointer;
+  padding: 0;
+}
+.goal-action-icon:hover:not(:disabled) {
+  border-color: var(--accent-active);
+  color: var(--accent-active);
+}
+.goal-action-icon.is-accept:hover:not(:disabled) {
+  border-color: var(--accent-pass);
+  color: var(--accent-pass);
+}
+.goal-action-icon.is-decline:hover:not(:disabled) {
+  border-color: var(--ink-50);
+  color: var(--ink-50);
+}
+.goal-action-icon:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.rail-head-actions {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+.rail-add {
+  font-family: var(--mono);
+  font-size: 14px;
+  line-height: 1;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--surface-rule-strong);
+  background: transparent;
+  color: var(--ink-90);
+  cursor: pointer;
+  padding: 0;
+}
+.rail-add:hover {
+  border-color: var(--accent-active);
+  color: var(--accent-active);
+}
+
+.goal-dialog-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+}
+.goal-dialog {
+  background: var(--surface-bg-card);
+  border: 1px solid var(--surface-rule-strong);
+  width: min(520px, 90vw);
+  max-height: 80vh;
+  overflow-y: auto;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.goal-dialog-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--surface-rule-strong);
+  padding-bottom: 10px;
+}
+.goal-dialog-head h2 {
+  font-family: var(--serif);
+  font-size: 16px;
+  margin: 0;
+  color: var(--ink-90);
+}
+.goal-dialog-close {
+  background: transparent;
+  border: none;
+  color: var(--ink-50);
+  font-size: 18px;
+  cursor: pointer;
+  width: 22px;
+  height: 22px;
+  line-height: 1;
+}
+.goal-dialog-close:hover {
+  color: var(--ink-90);
+}
+.goal-dialog-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
   font-family: var(--mono);
   font-size: 10px;
   letter-spacing: 0.12em;
   text-transform: uppercase;
-  padding: 4px 10px;
+  color: var(--ink-50);
+}
+.goal-dialog-row select {
+  font-family: var(--sans);
+  font-size: 12px;
+  text-transform: none;
+  letter-spacing: normal;
+  padding: 6px 8px;
+  background: transparent;
+  border: 1px solid var(--surface-rule-strong);
+  color: var(--ink-90);
+}
+.goal-dialog-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.goal-editor-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-50);
+}
+.goal-editor-row input,
+.goal-editor-row textarea,
+.goal-editor-row select {
+  font-family: var(--sans);
+  font-size: 13px;
+  text-transform: none;
+  letter-spacing: normal;
+  padding: 6px 8px;
+  background: transparent;
+  border: 1px solid var(--surface-rule-strong);
+  color: var(--ink-90);
+  resize: vertical;
+}
+.goal-editor-row input:focus,
+.goal-editor-row textarea:focus,
+.goal-editor-row select:focus {
+  border-color: var(--accent-active);
+  outline: none;
+}
+.goal-dialog-error {
+  color: var(--accent-warn, #d77);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.goal-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  border-top: 1px solid var(--surface-rule-strong);
+  padding-top: 10px;
+}
+.goal-dialog-actions button {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 6px 14px;
   border: 1px solid var(--surface-rule-strong);
   background: transparent;
   color: var(--ink-90);
   cursor: pointer;
 }
-.goal-proposed-actions button:hover:not(:disabled) {
+.goal-dialog-actions button:hover:not(:disabled) {
   border-color: var(--accent-active);
   color: var(--accent-active);
 }
-.goal-proposed-actions button:disabled {
+.goal-dialog-actions button[type="submit"] {
+  border-color: var(--accent-active);
+  color: var(--accent-active);
+}
+.goal-dialog-actions button:disabled {
   opacity: 0.45;
   cursor: not-allowed;
 }

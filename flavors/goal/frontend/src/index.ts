@@ -1,5 +1,19 @@
-import { registerEdgeStyle, registerPayloadRenderer } from "@proxima/core/registry";
+import {
+  registerEdgeStyle,
+  registerGoalPayloadEditor,
+  registerPayloadRenderer,
+} from "@proxima/core/registry";
 import { goalPayloadCodec, goalRenderers } from "./renderers/payload-renderers";
+import {
+  SimpleTextGoalEditor,
+  simpleTextGoalDefaults,
+  simpleTextGoalToText,
+} from "./editors/simple-text-editor";
+import {
+  TaskGoalEditor,
+  taskGoalDefaults,
+  taskGoalToText,
+} from "./editors/task-editor";
 
 export { SimpleTextGoalRenderer } from "./renderers/simple-text-goal";
 export { TaskGoalRenderer } from "./renderers/task-goal";
@@ -23,5 +37,23 @@ export function init(): void {
       highlightColor: 0xd9d1ff,
       opacity: 0.38,
     },
+  });
+  registerGoalPayloadEditor({
+    schemaId: "proxima-goal/simple-text-v1",
+    schemaVersion: 1,
+    flavor: "proxima-goal",
+    label: "Simple text",
+    defaults: simpleTextGoalDefaults,
+    toText: simpleTextGoalToText,
+    component: SimpleTextGoalEditor,
+  });
+  registerGoalPayloadEditor({
+    schemaId: "proxima-goal/task-v1",
+    schemaVersion: 1,
+    flavor: "proxima-goal",
+    label: "Task",
+    defaults: taskGoalDefaults,
+    toText: taskGoalToText,
+    component: TaskGoalEditor,
   });
 }

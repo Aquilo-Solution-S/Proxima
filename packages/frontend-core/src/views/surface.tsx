@@ -20,6 +20,7 @@ import {
   type MemoryRow,
 } from "../bindings";
 import { EventStream } from "./surface-events";
+import { GoalDialog } from "./goal-dialog";
 
 // ── Goal rail ───────────────────────────────────────────────────────────
 const renderGoalPayload = (goal: GoalRow, hub: Hub): JSX.Element | null => {
@@ -54,6 +55,7 @@ const ProposedGoalCard: Component<{
   goal: GoalRow;
   hub: Hub;
   onAfterWrite: () => void;
+  onModify: (goal: GoalRow) => void;
 }> = (props) => {
   const [busy, setBusy] = createSignal(false);
   const writeWithState = async (state: "Active" | "Rejected") => {
@@ -96,17 +98,33 @@ const ProposedGoalCard: Component<{
       <div class="goal-proposed-actions">
         <button
           type="button"
+          class="goal-action-icon is-accept"
+          aria-label="Accept proposal"
+          title="Accept"
           disabled={busy()}
           onClick={() => void writeWithState("Active")}
         >
-          Accept
+          ✓
         </button>
         <button
           type="button"
+          class="goal-action-icon is-modify"
+          aria-label="Modify proposal"
+          title="Modify"
+          disabled={busy()}
+          onClick={() => props.onModify(props.goal)}
+        >
+          ✎
+        </button>
+        <button
+          type="button"
+          class="goal-action-icon is-decline"
+          aria-label="Decline proposal"
+          title="Decline"
           disabled={busy()}
           onClick={() => void writeWithState("Rejected")}
         >
-          Decline
+          ✗
         </button>
       </div>
     </article>
@@ -119,6 +137,8 @@ const GoalRail: Component<{
   goals: GoalRow[];
   hub: Hub;
   onAfterWrite: () => void;
+  onAddGoal: () => void;
+  onModifyProposal: (goal: GoalRow) => void;
 }> = (props) => {
   const proposed = (): GoalRow[] =>
     props.goals.filter((goal) => goal.state === "Proposed");
@@ -152,15 +172,26 @@ const GoalRail: Component<{
               supersession-only
             </Mono>
           </div>
-          <button
-            type="button"
-            class="rail-toggle"
-            aria-label="Collapse Goal DAG"
-            aria-expanded="true"
-            onClick={props.onToggle}
-          >
-            <span class="rail-collapse-icon is-left" aria-hidden="true" />
-          </button>
+          <div class="rail-head-actions">
+            <button
+              type="button"
+              class="rail-add"
+              aria-label="Add goal"
+              title="Add goal"
+              onClick={props.onAddGoal}
+            >
+              +
+            </button>
+            <button
+              type="button"
+              class="rail-toggle"
+              aria-label="Collapse Goal DAG"
+              aria-expanded="true"
+              onClick={props.onToggle}
+            >
+              <span class="rail-collapse-icon is-left" aria-hidden="true" />
+            </button>
+          </div>
         </div>
         <div class="goal-list">
           <Show when={proposed().length > 0}>
@@ -176,6 +207,7 @@ const GoalRail: Component<{
                     goal={goal}
                     hub={props.hub}
                     onAfterWrite={props.onAfterWrite}
+                    onModify={props.onModifyProposal}
                   />
                 )}
               </For>
@@ -539,6 +571,9 @@ export const FullSurface: Component<{ hub: Hub }> = (props) => {
       a.seq < b.seq ? 1 : -1,
     );
   const goals = () => filtered().goals;
+  const [dialogState, setDialogState] = createSignal<
+    { mode: "create" } | { mode: "modify"; goal: GoalRow } | null
+  >(null);
 
   return (
     <div class="proxima-shell">
@@ -555,6 +590,10 @@ export const FullSurface: Component<{ hub: Hub }> = (props) => {
           hub={props.hub}
           onAfterWrite={() => void graph.refresh()}
           onToggle={() => setGoalsCollapsed((v) => !v)}
+          onAddGoal={() => setDialogState({ mode: "create" })}
+          onModifyProposal={(goal) =>
+            setDialogState({ mode: "modify", goal })
+          }
         />
         <TraversalLanes hub={props.hub} memories={memories()} />
         <EventStream
@@ -564,6 +603,16 @@ export const FullSurface: Component<{ hub: Hub }> = (props) => {
           onToggle={() => setEventsCollapsed((v) => !v)}
         />
       </div>
+      <Show when={dialogState()} keyed>
+        {(state) => (
+          <GoalDialog
+            hub={props.hub}
+            proposal={state.mode === "modify" ? state.goal : undefined}
+            onClose={() => setDialogState(null)}
+            onAfterWrite={() => void graph.refresh()}
+          />
+        )}
+      </Show>
     </div>
   );
 };
