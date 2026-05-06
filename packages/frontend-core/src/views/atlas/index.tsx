@@ -2,49 +2,46 @@ import "../atlas.css";
 
 import { For, Show, type Component, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import * as THREE from "three";
+import { GRAPH_SNAPSHOT_LIMIT, useGraph } from "../../graph-store";
+import { useGraphFilter } from "../../graph-filter-store";
+import { filterGraphSnapshot } from "../../graph-selectors";
 import type { Hub } from "../../hub";
 import { buildAdjacency, chainOf } from "./adjacency";
 import { Inspector, Pill } from "./inspector";
+import { atlasProjectionFromGraph } from "./projection";
 import type { AtlasEdge, AtlasNode, AtlasNodeKind, Chain } from "./types";
 import { geometryFor, LAYER_LABELS, LAYER_Z, makeLayerLabel, TINT, TINT_HEX } from "./three-helpers";
 
 export type { AtlasEdge, AtlasNode, AtlasNodeKind } from "./types";
+export type { AtlasProjection } from "./projection";
 
 export const Atlas: Component<{
   hub: Hub;
   nodes?: AtlasNode[];
   edges?: AtlasEdge[];
 }> = (props) => {
-  const nodes = () => props.nodes ?? [];
-  const edges = () => props.edges ?? [];
+  const propOverride = () => props.nodes !== undefined || props.edges !== undefined;
+  const graph = propOverride() ? null : useGraph();
+  const filters = useGraphFilter();
+  const filtered = createMemo(() =>
+    graph === null
+      ? null
+      : filterGraphSnapshot(graph.state(), filters.state(), props.hub),
+  );
+  const projected = createMemo(() =>
+    propOverride()
+      ? { nodes: props.nodes ?? [], edges: props.edges ?? [], omittedEdgeCount: 0 }
+      : atlasProjectionFromGraph(filtered()!, props.hub),
+  );
+  const nodes = () => projected().nodes;
+  const edges = () => projected().edges;
 
   const [hoverId, setHoverId] = createSignal<string | null>(null);
   const [pickedId, setPickedId] = createSignal<string | null>(null);
 
-  // Filters
-  const [showFact, setShowFact] = createSignal(true);
-  const [showAbs, setShowAbs] = createSignal(true);
-  const [showPersp, setShowPersp] = createSignal(true);
-  const [showGoal, setShowGoal] = createSignal(true);
-  const [hiddenFlavors, setHiddenFlavors] = createSignal<Set<string>>(new Set());
-
-  function toggleFlavor(f: string) {
-    setHiddenFlavors((prev) => {
-      const next = new Set(prev);
-      if (next.has(f)) next.delete(f);
-      else next.add(f);
-      return next;
-    });
-  }
-
-  const passKind = (k: AtlasNodeKind) =>
-    (k === "Fact" && showFact()) ||
-    (k === "Abstraction" && showAbs()) ||
-    (k === "Perspective" && showPersp()) ||
-    (k === "Goal" && showGoal());
-
+  const passKind = (k: AtlasNodeKind) => filters.state().layers.has(k);
   const passFlavor = (f: string | null) =>
-    f === null || !hiddenFlavors().has(f);
+    f === null || !filters.state().hiddenFlavorIds.has(f);
 
   const byId = createMemo(() => new Map(nodes().map((n) => [n.id, n] as const)));
   const pickedNode = () => {
@@ -70,6 +67,43 @@ export const Atlas: Component<{
       if (n.flavor) flavor[n.flavor] = (flavor[n.flavor] ?? 0) + 1;
     }
     return { kind, flavor };
+  });
+
+  const rawGraphCount = () => {
+    if (graph === null) return (props.nodes?.length ?? 0) + (props.edges?.length ?? 0);
+    const snapshot = graph.state();
+    return snapshot.memoriesById.size + snapshot.goalsById.size + snapshot.edgesById.size;
+  };
+
+  const canvasMessage = () => {
+    if (graph !== null && graph.state().streamStatus === "connecting") {
+      return "Loading graph";
+    }
+    if (graph !== null && graph.state().streamStatus === "degraded") {
+      return "Graph stream degraded";
+    }
+    if (rawGraphCount() === 0) return "No graph rows";
+    if (nodes().length === 0) return "No rows match filters";
+    return null;
+  };
+
+  const statusPills = createMemo(() => {
+    if (graph === null) return [];
+    const snapshot = graph.state();
+    const pills: string[] = [];
+    if (projected().omittedEdgeCount > 0) {
+      pills.push(`${projected().omittedEdgeCount} edge endpoints unavailable`);
+    }
+    if (snapshot.decodeErrorsByEntity.size > 0) {
+      pills.push(`${snapshot.decodeErrorsByEntity.size} payload decode errors`);
+    }
+    if (
+      snapshot.memoriesById.size + snapshot.goalsById.size + snapshot.edgesById.size ===
+      GRAPH_SNAPSHOT_LIMIT
+    ) {
+      pills.push(`snapshot truncated at ${GRAPH_SNAPSHOT_LIMIT}`);
+    }
+    return pills;
   });
 
   let mountRef!: HTMLDivElement;
@@ -384,7 +418,7 @@ export const Atlas: Component<{
         <div class="atlas-chrome-l">
           <span class="atlas-mark">⌬</span>
           <span class="atlas-name">Proxima · Atlas</span>
-          <span class="atlas-sub">embedding-projected memory map</span>
+          <span class="atlas-sub">deterministic memory map</span>
         </div>
         <div class="atlas-chrome-r">
           <span class="atlas-stat">
@@ -407,32 +441,36 @@ export const Atlas: Component<{
           <div class="filter-section">
             <div class="filter-head">layer</div>
             <Pill
-              active={showFact()}
-              onClick={() => setShowFact((v) => !v)}
+              active={filters.state().layers.has("Fact")}
+              onClick={() => filters.setLayer("Fact", !filters.state().layers.has("Fact"))}
               color={TINT_HEX.Fact}
               count={counts().kind.Fact}
             >
               F · Facts
             </Pill>
             <Pill
-              active={showAbs()}
-              onClick={() => setShowAbs((v) => !v)}
+              active={filters.state().layers.has("Abstraction")}
+              onClick={() =>
+                filters.setLayer("Abstraction", !filters.state().layers.has("Abstraction"))
+              }
               color={TINT_HEX.Abstraction}
               count={counts().kind.Abstraction}
             >
               A · Abstractions
             </Pill>
             <Pill
-              active={showPersp()}
-              onClick={() => setShowPersp((v) => !v)}
+              active={filters.state().layers.has("Perspective")}
+              onClick={() =>
+                filters.setLayer("Perspective", !filters.state().layers.has("Perspective"))
+              }
               color={TINT_HEX.Perspective}
               count={counts().kind.Perspective}
             >
               P · Perspectives
             </Pill>
             <Pill
-              active={showGoal()}
-              onClick={() => setShowGoal((v) => !v)}
+              active={filters.state().layers.has("Goal")}
+              onClick={() => filters.setLayer("Goal", !filters.state().layers.has("Goal"))}
               color={TINT_HEX.Goal}
               count={counts().kind.Goal}
             >
@@ -453,8 +491,10 @@ export const Atlas: Component<{
               <For each={props.hub.registeredFlavors()}>
                 {(f) => (
                   <Pill
-                    active={!hiddenFlavors().has(f)}
-                    onClick={() => toggleFlavor(f)}
+                    active={!filters.state().hiddenFlavorIds.has(f)}
+                    onClick={() =>
+                      filters.setFlavor(f, filters.state().hiddenFlavorIds.has(f))
+                    }
                     color={TINT_HEX.Abstraction}
                     count={counts().flavor[f] ?? 0}
                   >
@@ -468,14 +508,24 @@ export const Atlas: Component<{
 
         <div class="atlas-canvas-wrap">
           <div class="atlas-canvas" ref={mountRef} />
+          <Show when={canvasMessage()}>
+            {(message) => <div class="atlas-loading">{message()}</div>}
+          </Show>
           <div class="atlas-overlay-tl">
             <div class="ov-row">
               z = layer (locked) — F=0, A=1.6, P=3.2, G=4.8
             </div>
             <div class="ov-row faint">
-              x,y = shared embedding projection · sticky · re-seed nightly
+              x,y = deterministic projection
             </div>
           </div>
+          <Show when={statusPills().length > 0}>
+            <div class="atlas-status-pills">
+              <For each={statusPills()}>
+                {(pill) => <span class="atlas-status-pill">{pill}</span>}
+              </For>
+            </div>
+          </Show>
         </div>
 
         <Inspector

@@ -3,6 +3,10 @@ import { encode } from "cbor-x";
 import { afterEach, describe, expect, it } from "vitest";
 import type { EntityKind, MemoryRow } from "../bindings";
 import {
+  GraphFilterProvider,
+  createGraphFilterStore,
+} from "../graph-filter-store";
+import {
   GraphProvider,
   sentinelOwner,
   type GraphSnapshot,
@@ -91,7 +95,9 @@ describe("FullSurface fact explorer", () => {
 
     render(() => (
       <GraphProvider store={store}>
-        <FullSurface hub={hub} />
+        <GraphFilterProvider store={createGraphFilterStore()}>
+          <FullSurface hub={hub} />
+        </GraphFilterProvider>
       </GraphProvider>
     ));
 
@@ -137,7 +143,9 @@ describe("FullSurface fact explorer", () => {
 
     render(() => (
       <GraphProvider store={store}>
-        <FullSurface hub={hub} />
+        <GraphFilterProvider store={createGraphFilterStore()}>
+          <FullSurface hub={hub} />
+        </GraphFilterProvider>
       </GraphProvider>
     ));
 
@@ -149,5 +157,49 @@ describe("FullSurface fact explorer", () => {
 
     expect(await screen.findByText("Selected abstraction summary")).toBeTruthy();
     expect(screen.queryByText("First abstraction summary")).toBeNull();
+  });
+
+  it("applies the global layer filter to Surface", () => {
+    const hub = createHubWithCode();
+    const fact = row("019dfa30-0000-7000-8000-000000000001", "proxima-code/code-chunk-v1", {
+      repo_id: "018f0000-0000-7000-8000-000000000001",
+      file_path: "src/visible.rs",
+      chunk_index: 0,
+      text: "fn visible() {}",
+      language: "Rust",
+      chunk_type: "function",
+      byte_range_start: 0,
+      byte_range_end: 16,
+      line_range_start: 1,
+      line_range_end: 1,
+      state: "Present",
+    });
+    const abstraction = row(
+      "019dfa30-0000-7000-8000-000000000002",
+      "proxima-code/commit-summary-v1",
+      {
+        repo_id: "018f0000-0000-7000-8000-000000000001",
+        commit_sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        summary: "hidden abstraction",
+        change_kind: "feature",
+        key_files: [],
+      },
+      "Abstraction",
+    );
+    const store: GraphStore = {
+      state: () => snapshot([fact, abstraction]),
+      refresh: () => Promise.resolve(),
+    };
+    const filters = createGraphFilterStore();
+    filters.setLayer("Abstraction", false);
+    render(() => (
+      <GraphProvider store={store}>
+        <GraphFilterProvider store={filters}>
+          <FullSurface hub={hub} />
+        </GraphFilterProvider>
+      </GraphProvider>
+    ));
+    expect(screen.getByText("src/visible.rs:1-1")).toBeTruthy();
+    expect(screen.queryByText("hidden abstraction")).toBeNull();
   });
 });

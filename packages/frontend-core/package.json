@@ -15,12 +15,12 @@
     "./shell": "./src/shell.tsx",
     "./styles.css": "./src/primitives/styles.css",
     "./proxima-loader.js": "./src/primitives/proxima-loader.js",
-    "./views/atlas": "./src/views/atlas.tsx",
+    "./views/atlas": "./src/views/atlas/index.tsx",
     "./views/marketplace": "./src/views/marketplace.tsx",
     "./views/schemas": "./src/views/schemas.tsx",
     "./views/settings": "./src/views/settings.tsx",
     "./views/settings-general": "./src/views/settings-general.tsx",
-    "./views/settings-models": "./src/views/settings-models.tsx",
+    "./views/settings-models": "./src/views/settings-models/index.tsx",
     "./views/surface": "./src/views/surface.tsx"
   },
   "scripts": {
