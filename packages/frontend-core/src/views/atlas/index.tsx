@@ -6,6 +6,7 @@ import { GRAPH_SNAPSHOT_LIMIT, MAX_SNAPSHOT_EDGES, useGraph } from "../../graph-
 import { flavorFilterId, useGraphFilter } from "../../graph-filter-store";
 import { filterGraphSnapshot } from "../../graph-selectors";
 import type { Hub } from "../../hub";
+import { getEdgeStyle } from "../../registry";
 import { buildAdjacency, chainOf } from "./adjacency";
 import { Inspector, Pill } from "./inspector";
 import { atlasProjectionFromGraph } from "./projection";
@@ -16,6 +17,9 @@ export type { AtlasEdge, AtlasNode, AtlasNodeKind } from "./types";
 export type { AtlasProjection } from "./projection";
 
 const BRIGHT_TINT = new THREE.Color(0xffffff);
+const DEFAULT_EDGE_COLOR = 0x8794b0;
+const DEFAULT_EDGE_DIM_COLOR = 0x6b7280;
+const DEFAULT_EDGE_HIGHLIGHT_COLOR = 0xe8e4d6;
 const INSPECTOR_DEFAULT_WIDTH = 340;
 const INSPECTOR_MIN_WIDTH = 300;
 const INSPECTOR_MAX_WIDTH = 720;
@@ -49,6 +53,9 @@ export const Atlas: Component<{
   const [pickHistoryIndex, setPickHistoryIndex] = createSignal(-1);
   const [inspectorWidth, setInspectorWidth] = createSignal(INSPECTOR_DEFAULT_WIDTH);
   const [resizingInspector, setResizingInspector] = createSignal(false);
+
+  const colorFor = (value: number | string | undefined, fallback: number) =>
+    value === undefined ? fallback : new THREE.Color(value);
 
   const passKind = (k: AtlasNodeKind) => filters.state().layers.has(k);
   const passFlavor = (f: string | null) =>
@@ -512,9 +519,9 @@ export const Atlas: Component<{
         new THREE.Vector3(b.x, LAYER_Z[b.kind], b.y),
       ]);
       const mat = new THREE.LineBasicMaterial({
-        color: 0x6b7280,
+        color: colorFor(getEdgeStyle(e.kind)?.color, DEFAULT_EDGE_DIM_COLOR),
         transparent: true,
-        opacity: 0.22,
+        opacity: getEdgeStyle(e.kind)?.opacity ?? 0.22,
       });
       const line = new THREE.Line(geom, mat);
       line.userData.id = e.id;
@@ -571,9 +578,14 @@ export const Atlas: Component<{
       let opacity: number;
       if (!aV || !bV) opacity = 0.02;
       else if (hasFocus) opacity = inChain ? 0.96 : 0.04;
-      else opacity = 0.3;
+      else opacity = getEdgeStyle(e.kind)?.opacity ?? 0.3;
       mat.opacity = opacity;
-      mat.color.set(inChain && aV && bV ? 0xe8e4d6 : 0x8794b0);
+      const style = getEdgeStyle(e.kind);
+      mat.color.set(
+        inChain && aV && bV
+          ? colorFor(style?.highlightColor, DEFAULT_EDGE_HIGHLIGHT_COLOR)
+          : colorFor(style?.color, DEFAULT_EDGE_COLOR),
+      );
     }
   });
 

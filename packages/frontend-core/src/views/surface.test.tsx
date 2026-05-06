@@ -5,7 +5,7 @@ import {
   screen,
   waitFor,
 } from "@solidjs/testing-library";
-import { encode } from "cbor-x";
+import { decode, encode } from "cbor-x";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ChangeEvent, EntityKind, MemoryRow } from "../bindings";
 import type { EngineClient } from "../client";
@@ -21,7 +21,10 @@ import {
   type GraphStore,
 } from "../graph-store";
 import { createHub } from "../hub";
-import { registerCode } from "../flavors/code";
+import {
+  clearRegistriesForTests,
+  registerPayloadRenderer,
+} from "../registry";
 import { FullSurface } from "./surface";
 
 const owner = sentinelOwner();
@@ -67,8 +70,62 @@ const snapshot = (
 });
 
 const createHubWithCode = () => {
+  registerPayloadRenderer({
+    schemaId: "proxima-code/file-revision-v1",
+    schemaVersion: 1,
+    flavor: "proxima-code",
+    codec: {
+      decode: (bytes) => decode(bytes),
+      encode: (value) => encode(value),
+    },
+    renderer: {
+      render: (props) => {
+        const payload = props.payload as Record<string, unknown>;
+        return <div>{String(payload.file_path ?? "")}</div>;
+      },
+    },
+  });
+  registerPayloadRenderer({
+    schemaId: "proxima-code/code-chunk-v1",
+    schemaVersion: 1,
+    flavor: "proxima-code",
+    codec: {
+      decode: (bytes) => decode(bytes),
+      encode: (value) => encode(value),
+    },
+    renderer: {
+      render: (props) => {
+        const payload = props.payload as Record<string, unknown>;
+        return (
+          <div>
+            <span>
+              {String(payload.file_path ?? "")}:{String(payload.line_range_start)}
+              -{String(payload.line_range_end)}
+            </span>
+            <pre class="code-payload-snippet">
+              <code>{String(payload.text ?? "")}</code>
+            </pre>
+          </div>
+        );
+      },
+    },
+  });
+  registerPayloadRenderer({
+    schemaId: "proxima-code/commit-summary-v1",
+    schemaVersion: 1,
+    flavor: "proxima-code",
+    codec: {
+      decode: (bytes) => decode(bytes),
+      encode: (value) => encode(value),
+    },
+    renderer: {
+      render: (props) => {
+        const payload = props.payload as Record<string, unknown>;
+        return <div>{String(payload.summary ?? "")}</div>;
+      },
+    },
+  });
   const hub = createHub([]);
-  hub.registerFlavor("code", registerCode);
   return hub;
 };
 
@@ -130,7 +187,10 @@ const eventRows = (): NodeListOf<Element> =>
   document.querySelectorAll(".event-row");
 
 describe("FullSurface fact explorer", () => {
-  afterEach(() => cleanup());
+  afterEach(() => {
+    cleanup();
+    clearRegistriesForTests();
+  });
 
   it("updates decoded payload content when selecting another fact", async () => {
     const hub = createHubWithCode();

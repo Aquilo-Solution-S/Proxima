@@ -19,7 +19,9 @@
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-dialog": "^2",
     "@tauri-apps/plugin-opener": "^2",
-    "@proxima/core": "workspace:*"
+    "@proxima/core": "workspace:*",
+    "@proxima/flavor-code": "workspace:*",
+    "@proxima/flavor-mcp": "workspace:*"
   },
   "devDependencies": {
     "typescript": "~5.6.2",

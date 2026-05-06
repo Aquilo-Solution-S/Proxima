@@ -19,8 +19,8 @@ import typescript from "highlight.js/lib/languages/typescript";
 import xml from "highlight.js/lib/languages/xml";
 import yaml from "highlight.js/lib/languages/yaml";
 import type { Component, JSX } from "solid-js";
-import type { MemoryRow } from "../../bindings";
-import type { PayloadCodec, Renderer } from "../../hub";
+import type { MemoryRow } from "@proxima/core";
+import type { PayloadCodec, Renderer } from "@proxima/core/hub";
 
 type PayloadRecord = Record<string, unknown>;
 

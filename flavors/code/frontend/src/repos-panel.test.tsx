@@ -12,7 +12,7 @@ import type {
   CommandError,
   RepoEraseReceiptTs,
   RepoRecordTs,
-} from "../../bindings";
+} from "@proxima/core";
 
 const mocks = vi.hoisted(() => ({
   reposList: vi.fn(),
@@ -24,7 +24,7 @@ const mocks = vi.hoisted(() => ({
   openDialog: vi.fn(),
 }));
 
-vi.mock("../../bindings", () => ({
+vi.mock("@proxima/core", () => ({
   commands: {
     reposList: mocks.reposList,
     reposErase: mocks.reposErase,
@@ -33,6 +33,11 @@ vi.mock("../../bindings", () => ({
     repoIngestStatus: mocks.repoIngestStatus,
     repoIngestSubscribe: mocks.repoIngestSubscribe,
   },
+  formatCommandError: (error: CommandError) => {
+    if (error.kind === "unknown_repo") return `Unknown repo: ${error.data.repo_id}`;
+    return String(error.kind);
+  },
+  formatPolledAt: () => "never",
 }));
 
 vi.mock("@tauri-apps/plugin-dialog", () => ({
@@ -45,7 +50,7 @@ vi.mock("@tauri-apps/api/core", () => ({
   },
 }));
 
-vi.mock("../../primitives", () => ({
+vi.mock("@proxima/core/primitives", () => ({
   LoadingSurface: (props: { label?: string }) => (
     <div data-testid="loading">{props.label ?? "Loading"}</div>
   ),

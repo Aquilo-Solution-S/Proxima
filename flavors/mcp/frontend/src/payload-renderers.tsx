@@ -3,8 +3,8 @@ import "./payload-renderers.css";
 import { decode, encode } from "cbor-x";
 import type { Component, JSX } from "solid-js";
 import { For, Show } from "solid-js";
-import type { MemoryRow } from "../../bindings";
-import type { PayloadCodec, Renderer } from "../../hub";
+import type { MemoryRow } from "@proxima/core";
+import type { PayloadCodec, Renderer } from "@proxima/core/hub";
 
 type PayloadRecord = Record<string, unknown>;
 

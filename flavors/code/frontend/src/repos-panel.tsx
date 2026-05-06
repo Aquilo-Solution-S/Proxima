@@ -12,10 +12,10 @@ import {
   commands,
   type RepoEraseReceiptTs,
   type RepoRecordTs,
-} from "../../bindings";
-import { formatPolledAt } from "../../format-date";
-import { formatCommandError } from "../../format-error";
-import { LoadingSurface, ProximaLoader } from "../../primitives";
+} from "@proxima/core";
+import { formatPolledAt } from "@proxima/core";
+import { formatCommandError } from "@proxima/core";
+import { LoadingSurface, ProximaLoader } from "@proxima/core/primitives";
 import { ingestStore, type RunRecord } from "./ingest-store";
 
 type EraseState =

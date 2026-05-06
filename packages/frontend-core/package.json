@@ -6,10 +6,9 @@
   "types": "src/index.ts",
   "exports": {
     ".": "./src/index.ts",
-    "./flavors/code": "./src/flavors/code/index.ts",
-    "./flavors/mcp": "./src/flavors/mcp/index.ts",
     "./graph-store": "./src/graph-store.tsx",
     "./hub": "./src/hub.ts",
+    "./registry": "./src/registry/index.ts",
     "./tauri-client": "./src/tauri-client.ts",
     "./primitives": "./src/primitives/index.ts",
     "./primitives/startup-simulation": "./src/primitives/startup-simulation.tsx",

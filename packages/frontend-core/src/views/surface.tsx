@@ -78,6 +78,7 @@ const renderMemoryPayload = (
   const renderer = hub.rendererFor(
     memory.row.schema_id,
     memory.row.schema_version,
+    memory.row.kind,
   );
   return renderer?.render({
     memory: memory.row,

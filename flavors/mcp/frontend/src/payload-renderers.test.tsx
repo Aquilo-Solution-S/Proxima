@@ -1,9 +1,10 @@
 import { cleanup, render, screen } from "@solidjs/testing-library";
 import { encode } from "cbor-x";
 import { afterEach, describe, expect, it } from "vitest";
-import type { MemoryRow } from "../../bindings";
-import { createHub } from "../../hub";
-import { registerMcp } from "./index";
+import type { MemoryRow } from "@proxima/core";
+import { clearRegistriesForTests } from "@proxima/core/registry";
+import { createHub } from "@proxima/core/hub";
+import { init } from "./index";
 
 const owner = {
   principal: { User: "00000000-0000-0000-0000-000000000000" },
@@ -24,11 +25,14 @@ const memory = (
 });
 
 describe("mcp payload renderers", () => {
-  afterEach(() => cleanup());
+  afterEach(() => {
+    cleanup();
+    clearRegistriesForTests();
+  });
 
   it("renders agent-note title, body, and tags", () => {
+    init();
     const hub = createHub([]);
-    hub.registerFlavor("proxima-mcp", registerMcp);
     const payload = {
       note_id: "019dfceb-03e2-7912-8f0f-ef97bb36bb58",
       title: "mcp-bringup-test: streamable http listener",
@@ -57,8 +61,8 @@ describe("mcp payload renderers", () => {
   });
 
   it("renders agent-derivation with sources count and model metadata", () => {
+    init();
     const hub = createHub([]);
-    hub.registerFlavor("proxima-mcp", registerMcp);
     const payload = {
       title: "MCP bringup status",
       body: "Listener verified end-to-end.",
@@ -90,8 +94,8 @@ describe("mcp payload renderers", () => {
   });
 
   it("renders agent-link confidence and reason", () => {
+    init();
     const hub = createHub([]);
-    hub.registerFlavor("proxima-mcp", registerMcp);
     const payload = { reason: "Same MCP bringup session.", confidence: 90 };
     const row = memory(
       "proxima-mcp/agent-link-v1",

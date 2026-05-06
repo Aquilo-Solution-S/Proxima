@@ -15,8 +15,10 @@ import { createGraphStore, GraphProvider } from "@proxima/core/graph-store";
 import { StartupSimulation } from "@proxima/core/primitives/startup-simulation";
 import { Shell } from "@proxima/core/shell";
 import { createTauriEngineClient } from "@proxima/core/tauri-client";
-import { registerCode } from "@proxima/core/flavors/code";
-import { registerMcp } from "@proxima/core/flavors/mcp";
+import "@proxima/flavor-code/styles.css";
+import { initFlavors } from "./flavors";
+
+initFlavors();
 
 const SettingsGeneralPanel = lazy(async () => {
   const { SettingsGeneralPanel } = await import(
@@ -107,12 +109,6 @@ function createAppHub(): Hub {
       },
     ],
   );
-  // Flavor keys match the schema-id namespace (`proxima-code/...`,
-  // `proxima-mcp/...`) and the Rust `proxima_flavor! { name = ... }`
-  // — one canonical name across the boundary. Display-side
-  // formatting strips the `proxima-` prefix in `views/schemas.tsx`.
-  hub.registerFlavor("proxima-code", registerCode);
-  hub.registerFlavor("proxima-mcp", registerMcp);
   return hub;
 }
 
