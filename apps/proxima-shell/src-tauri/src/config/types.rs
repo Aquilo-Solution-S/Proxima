@@ -125,6 +125,11 @@ pub enum ConfigError {
         model_ref: ModelRef,
     },
 
+    /// A registered operator uses this tier, but no runtime binding
+    /// exists for it.
+    #[error("tier {tier:?} is required by registered operators but has no model binding")]
+    MissingTierBinding { tier: ModelTier },
+
     /// `[embedding.active]` references a `(vendor, model_id)` not in
     /// `[[embedding.models]]`.
     #[error("active embedding {0:?} not in registered embedding models")]

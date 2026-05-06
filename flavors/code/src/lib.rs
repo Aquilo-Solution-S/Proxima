@@ -10,6 +10,7 @@ pub mod mcp;
 pub mod migrations;
 pub mod operators;
 pub mod payloads;
+pub mod personality;
 pub mod repos;
 
 pub use ingest::{
@@ -19,10 +20,16 @@ pub use ingest::{
 };
 pub use local_git_source::{IndexError, IndexReport, IngestProgress, LocalGitSource};
 pub use migrations::migrator;
-pub use operators::{CommitSummaryOperator, f2a_operator_registry};
-pub use payloads::{
-    CodeChunkV1, CommitSummaryV1, CommitV1, EdgeCallsV1, FileRevisionV1, FileState,
+pub use operators::{
+    CodeDevelopmentPerspectiveOperator, CommitSummaryOperator, f2a_operator_registry,
+    operator_registry,
 };
+pub use payloads::{
+    CodeChunkV1, CodeDevelopmentPerspectiveV1, CommitSummaryV1, CommitV1, EdgeCallsV1,
+    FileRevisionV1, FileState,
+};
+pub use personality::CodeEngineerPersonality;
+
 pub use repos::{
     RepoEraseReceipt, RepoIngestionRun, RepoRecord, RepoRegistryError, RunStage, RunStatus,
     StageCounters, advance_stage, begin_run, delete_repo, erase_repo, get_active_run, get_repo,
@@ -42,6 +49,9 @@ proxima_core::proxima_flavor! {
     abstraction_schemas = [
         payloads::CommitSummaryV1,
     ],
+    perspective_schemas = [
+        payloads::CodeDevelopmentPerspectiveV1,
+    ],
     edge_schemas = [
         payloads::EdgeCallsV1,
     ],
@@ -54,6 +64,9 @@ proxima_core::proxima_flavor! {
                 SchemaVersion::new(1),
             ),
         ),
+    ],
+    personalities = [
+        personality::CodeEngineerPersonality,
     ],
     mcp_tools = [
         mcp::CodeSearchChunksTool,
@@ -71,6 +84,12 @@ mod tests {
     fn registry_contains_all_schemas_and_relations() {
         let mut registry = FlavorRegistry::new();
         super::register(&mut registry);
+        assert!(
+            registry
+                .list_personalities()
+                .iter()
+                .any(|p| p.personality_id() == "proxima-code/engineer")
+        );
         let frozen = registry.freeze();
 
         let schemas = frozen.list();
@@ -82,6 +101,8 @@ mod tests {
         assert!(schema_ids.contains("proxima-code/code-chunk-v1"));
         // Abstraction schemas
         assert!(schema_ids.contains("proxima-code/commit-summary-v1"));
+        // Perspective schemas
+        assert!(schema_ids.contains("proxima-code/development-perspective-v1"));
         // Edge schemas
         assert!(schema_ids.contains("proxima-code/calls"));
 

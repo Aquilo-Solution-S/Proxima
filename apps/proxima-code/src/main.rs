@@ -29,7 +29,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
 
-use proxima_code::{IndexReport, LocalGitSource, build_engine, f2a_operator_registry, migrator};
+use proxima_code::{IndexReport, LocalGitSource, build_engine, migrator, operator_registry};
 use proxima_core::auth::NoAuth;
 use proxima_core::{Cursor, OrgId, Owner, Principal, UserId};
 use proxima_llm_openai_compat::{OllamaEmbeddingClient, OllamaLlmClient};
@@ -129,7 +129,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             pg.clone(),
             Box::new(NoAuth::new(owner.principal.clone(), owner.clone())),
         )
-        .with_operators(f2a_operator_registry())
+        .with_operators(operator_registry())
         .with_llm(Arc::new(llm))
         .with_embed(Arc::new(embed));
         eprintln!("F→A enabled — llm={llm_model} embed={embed_model} (dim={embed_dim})");
@@ -205,6 +205,10 @@ async fn run_f2a_pass(
     let consolidated = engine.run_pending_f2a(owner).await?;
     if !consolidated.is_empty() {
         eprintln!("F→A consolidated {} batch(es)", consolidated.len());
+    }
+    let perspectives = engine.run_pending_a2p(owner).await?;
+    if !perspectives.is_empty() {
+        eprintln!("A→P consolidated {} operator pass(es)", perspectives.len());
     }
     Ok(())
 }

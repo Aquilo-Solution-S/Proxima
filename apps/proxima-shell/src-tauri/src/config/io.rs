@@ -77,9 +77,10 @@ pub fn load_config(path: &Path) -> Result<AppConfig, ConfigError> {
 /// Checks (in order):
 /// 1. `[[llm.models]]` is unique on `(vendor, model_id)`.
 /// 2. `[[embedding.models]]` is unique on `(vendor, model_id)`.
-/// 3. Every populated `[tiers]` binding refers to a known LLM model.
-/// 4. Bound model's caps satisfy `engine.tier_requires_union(tier)`.
-/// 5. `[embedding.active]` (if set) refers to a known embedding model.
+/// 3. Every operator-used tier has a binding.
+/// 4. Every populated `[tiers]` binding refers to a known LLM model.
+/// 5. Bound model's caps satisfy `engine.tier_requires_union(tier)`.
+/// 6. `[embedding.active]` (if set) refers to a known embedding model.
 ///
 /// # Errors
 ///
@@ -111,7 +112,11 @@ pub fn validate_config(config: &AppConfig, engine: &Engine) -> Result<(), Config
 
     // 3. + 4. tier bindings
     for tier in [ModelTier::Fast, ModelTier::Standard, ModelTier::Deep] {
+        let required = engine.tier_requires_union(tier);
         let Some(model_ref) = config.tiers.get(tier) else {
+            if engine.uses_llm_tier(tier) {
+                return Err(ConfigError::MissingTierBinding { tier });
+            }
             continue;
         };
         let bound = config
@@ -125,7 +130,6 @@ pub fn validate_config(config: &AppConfig, engine: &Engine) -> Result<(), Config
                 model_ref: model_ref.clone(),
             });
         };
-        let required = engine.tier_requires_union(tier);
         if !bound.caps.satisfies(&required) {
             return Err(ConfigError::InsufficientTierCaps {
                 tier,
@@ -393,6 +397,27 @@ mod tests {
         }]);
         let err = validate_config(&cfg, &eng).unwrap_err();
         assert!(matches!(err, ConfigError::InsufficientTierCaps { .. }));
+    }
+
+    #[test]
+    fn missing_tier_binding_for_used_operator_tier() {
+        let cfg = AppConfig {
+            llm: LlmConfig {
+                models: vec![sample_llm_model("openai", "gpt-4o-mini", LlmCaps::none())],
+            },
+            ..AppConfig::default()
+        };
+        let eng = engine_with_ops(vec![TestOp {
+            tier: ModelTier::Deep,
+            requires: LlmCaps::none(),
+        }]);
+        let err = validate_config(&cfg, &eng).unwrap_err();
+        assert!(matches!(
+            err,
+            ConfigError::MissingTierBinding {
+                tier: ModelTier::Deep
+            }
+        ));
     }
 
     #[test]

@@ -89,4 +89,32 @@ describe("code payload renderers", () => {
     expect(container.querySelector("code.language-rust")).toBeTruthy();
     expect(container.querySelector(".hljs-keyword")?.textContent).toBe("fn");
   });
+
+  it("renders development perspectives as posture fields", () => {
+    init();
+    const hub = createHub([]);
+    const payload = {
+      repo_id: "018f0000-0000-7000-8000-000000000001",
+      summary: "The repo is closing the local wheel.",
+      pattern: "Core substrate first, flavor behavior second.",
+      risk: "Persistence can drift from the operator contract.",
+      recommended_posture: "Keep verification on the local ingest path.",
+      confidence: 0.82,
+    };
+    const row = memory(
+      "proxima-code/development-perspective-v1",
+      Array.from(encode(payload)),
+    );
+
+    const decoded = hub
+      .codecFor(row.schema_id, row.schema_version)
+      ?.decode(new Uint8Array(row.payload));
+    const renderer = hub.rendererFor(row.schema_id, row.schema_version);
+
+    render(() => renderer?.render({ memory: row, payload: decoded }));
+
+    expect(screen.getByText("The repo is closing the local wheel.")).toBeTruthy();
+    expect(screen.getByText("Core substrate first, flavor behavior second.")).toBeTruthy();
+    expect(screen.getByText("82%")).toBeTruthy();
+  });
 });

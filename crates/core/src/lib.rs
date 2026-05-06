@@ -1,5 +1,6 @@
 //! Proxima engine core.
 pub mod auth;
+pub mod canonical_json;
 pub mod cursor;
 pub mod engine;
 pub mod error;
@@ -11,12 +12,14 @@ pub mod operators;
 pub mod outbox;
 pub mod owner;
 pub mod payload;
+pub mod personality;
 pub mod relation;
 pub mod secrets;
 pub mod storage;
 pub mod verbs;
 
 pub use auth::*;
+pub use canonical_json::canonical_json;
 pub use cursor::*;
 pub use engine::*;
 pub use error::*;
@@ -31,6 +34,7 @@ pub use operators::*;
 pub use outbox::*;
 pub use owner::*;
 pub use payload::*;
+pub use personality::*;
 pub use relation::*;
 pub use secrets::*;
 pub use storage::*;
@@ -55,7 +59,8 @@ macro_rules! proxima_schema_id {
 
 /// Build-time registration macro. v1 subset — supports
 /// `fact_schemas`, `abstraction_schemas`, `perspective_schemas`,
-/// `goal_schemas`, `edge_schemas`, `relations`, `mcp_tools`. Expands to a
+/// `goal_schemas`, `edge_schemas`, `relations`, `personalities`,
+/// `mcp_tools`. Expands to a
 /// `pub fn register(registry: &mut FlavorRegistry)` that performs
 /// runtime prefix checks and adds each schema / relation.
 ///
@@ -96,6 +101,7 @@ macro_rules! proxima_flavor {
         $(, goal_schemas = [ $($goal:ty),* $(,)? ])?
         $(, edge_schemas = [ $($edge:ty),* $(,)? ])?
         $(, relations = [ $($rel:expr),* $(,)? ])?
+        $(, personalities = [ $($personality:ty),* $(,)? ])?
         $(, mcp_tools = [ $($tool:ty),* $(,)? ])?
         $(,)?
     ) => {
@@ -172,6 +178,18 @@ macro_rules! proxima_flavor {
                         descriptor.relation, expected_prefix,
                     );
                     registry.add_relation(descriptor);
+                }
+            )*)?
+            $($(
+                {
+                    let personality = <$personality>::default();
+                    let id = <$personality as $crate::PersonalityFlavor>::personality_id(&personality);
+                    assert!(
+                        id.starts_with(expected_prefix),
+                        "PersonalityFlavor::personality_id {:?} does not start with crate prefix {:?}",
+                        id, expected_prefix,
+                    );
+                    registry.add_personality(personality);
                 }
             )*)?
             $($(

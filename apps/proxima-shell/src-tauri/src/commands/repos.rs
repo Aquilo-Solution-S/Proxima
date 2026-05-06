@@ -36,37 +36,38 @@ pub async fn repos_register(
 ) -> Result<RepoRecordTs, CommandError> {
     let req_bytes = crate::perf::ipc::req_size(&(&path, &display_name));
     crate::perf::ipc::record("repos_register", req_bytes, async move {
-    // 1. canonicalize
-    let canonical =
-        std::fs::canonicalize(&path).map_err(|io_err| CommandError::InvalidRepoPath {
-            path: path.clone(),
-            reason: io_err.to_string(),
-        })?;
+        // 1. canonicalize
+        let canonical =
+            std::fs::canonicalize(&path).map_err(|io_err| CommandError::InvalidRepoPath {
+                path: path.clone(),
+                reason: io_err.to_string(),
+            })?;
 
-    // 2. Verify .git exists (directory or file for worktrees)
-    let git_path = canonical.join(".git");
-    if !git_path.exists() {
-        return Err(CommandError::NotAGitRepo {
-            path: canonical.to_string_lossy().into_owned(),
+        // 2. Verify .git exists (directory or file for worktrees)
+        let git_path = canonical.join(".git");
+        if !git_path.exists() {
+            return Err(CommandError::NotAGitRepo {
+                path: canonical.to_string_lossy().into_owned(),
+            });
+        }
+
+        // 3. Build display name
+        let canonical_str = canonical.to_string_lossy().into_owned();
+        let display = display_name.unwrap_or_else(|| {
+            canonical.file_name().map_or_else(
+                || canonical_str.clone(),
+                |s| s.to_string_lossy().into_owned(),
+            )
         });
-    }
 
-    // 3. Build display name
-    let canonical_str = canonical.to_string_lossy().into_owned();
-    let display = display_name.unwrap_or_else(|| {
-        canonical.file_name().map_or_else(
-            || canonical_str.clone(),
-            |s| s.to_string_lossy().into_owned(),
-        )
-    });
+        // 4. Register
+        let owner = sentinel_owner();
+        let repo_id = Uuid::now_v7();
+        let record =
+            proxima_code::register_repo(pg.pool(), &owner, repo_id, &canonical_str, &display)
+                .await?;
 
-    // 4. Register
-    let owner = sentinel_owner();
-    let repo_id = Uuid::now_v7();
-    let record =
-        proxima_code::register_repo(pg.pool(), &owner, repo_id, &canonical_str, &display).await?;
-
-    Ok(record.into())
+        Ok(record.into())
     })
     .await
 }
@@ -103,8 +104,8 @@ pub async fn repos_erase(
     let req_bytes = crate::perf::ipc::req_size(&repo_id);
     crate::perf::ipc::record("repos_erase", req_bytes, async move {
         let owner = sentinel_owner();
-        let uuid = Uuid::parse_str(&repo_id)
-            .map_err(|_| CommandError::InvalidUuid { value: repo_id })?;
+        let uuid =
+            Uuid::parse_str(&repo_id).map_err(|_| CommandError::InvalidUuid { value: repo_id })?;
         let receipt = proxima_code::erase_repo(pg.pool(), &owner, uuid).await?;
         Ok(receipt.into())
     })

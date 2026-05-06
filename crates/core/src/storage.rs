@@ -9,6 +9,7 @@ use crate::GoalId;
 use crate::Owner;
 use crate::SourceBatchId;
 use crate::operators::{
+    A2PInvocationKey, A2PLineageKey, AbstractionRow, ConsolidateA2POutcome, ConsolidateA2PRequest,
     ConsolidateBatchF2AOutcome, ConsolidateBatchF2ARequest, F2AInvocationKey, FactRow, SidecarSpec,
 };
 use crate::verbs::close_batch::CloseBatchOutcome;
@@ -180,6 +181,36 @@ pub trait Storage: Send + Sync {
         owner: &Owner,
         key: &F2AInvocationKey<'_>,
     ) -> Result<Vec<SourceBatchId>, StorageError>;
+
+    /// Load current Abstraction heads for A→P operator input.
+    async fn load_a2p_abstractions(
+        &self,
+        owner: &Owner,
+        sidecars: &[SidecarSpec],
+        limit: usize,
+    ) -> Result<Vec<AbstractionRow>, StorageError>;
+
+    /// Atomic A→P consolidation persistence. Writes zero or more
+    /// Perspective rows and always records the invocation key.
+    async fn consolidate_a2p(
+        &self,
+        req: &ConsolidateA2PRequest<'_>,
+    ) -> Result<ConsolidateA2POutcome, StorageError>;
+
+    /// Checks full A→P invocation idempotence.
+    async fn has_a2p_invocation(
+        &self,
+        owner: &Owner,
+        key: &A2PInvocationKey<'_>,
+    ) -> Result<bool, StorageError>;
+
+    /// Most recent Perspective head for this operator/model/personality
+    /// lineage, ignoring context/input shifts.
+    async fn lookup_prior_a2p_head(
+        &self,
+        owner: &Owner,
+        key: &A2PLineageKey<'_>,
+    ) -> Result<Option<crate::MemoryId>, StorageError>;
 }
 
 pub type StorageHandle = Arc<dyn Storage>;
@@ -274,5 +305,37 @@ impl Storage for NoopStorage {
         _key: &F2AInvocationKey<'_>,
     ) -> Result<Vec<SourceBatchId>, StorageError> {
         Ok(Vec::new())
+    }
+
+    async fn load_a2p_abstractions(
+        &self,
+        _owner: &Owner,
+        _sidecars: &[SidecarSpec],
+        _limit: usize,
+    ) -> Result<Vec<AbstractionRow>, StorageError> {
+        Ok(Vec::new())
+    }
+
+    async fn consolidate_a2p(
+        &self,
+        _req: &ConsolidateA2PRequest<'_>,
+    ) -> Result<ConsolidateA2POutcome, StorageError> {
+        Err(StorageError::Internal("NoopStorage rejects writes".into()))
+    }
+
+    async fn has_a2p_invocation(
+        &self,
+        _owner: &Owner,
+        _key: &A2PInvocationKey<'_>,
+    ) -> Result<bool, StorageError> {
+        Ok(false)
+    }
+
+    async fn lookup_prior_a2p_head(
+        &self,
+        _owner: &Owner,
+        _key: &A2PLineageKey<'_>,
+    ) -> Result<Option<crate::MemoryId>, StorageError> {
+        Ok(None)
     }
 }

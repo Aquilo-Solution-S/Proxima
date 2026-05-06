@@ -2,27 +2,11 @@
 //! tables exist, drop the DB. Requires admin access to a
 //! local PG cluster (<postgres://postgres@localhost>).
 
+mod common;
+
+use common::{create_db, db_url, drop_db};
 use proxima_storage_pg::PgStorage;
-use sqlx::{Connection, Executor, PgConnection};
 use uuid::Uuid;
-
-const ADMIN_URL: &str = "postgres://postgres@localhost/postgres";
-
-async fn create_db(name: &str) -> Result<(), sqlx::Error> {
-    let mut conn = PgConnection::connect(ADMIN_URL).await?;
-    conn.execute(format!("CREATE DATABASE \"{name}\"").as_str())
-        .await?;
-    conn.close().await?;
-    Ok(())
-}
-
-async fn drop_db(name: &str) -> Result<(), sqlx::Error> {
-    let mut conn = PgConnection::connect(ADMIN_URL).await?;
-    conn.execute(format!("DROP DATABASE IF EXISTS \"{name}\"").as_str())
-        .await?;
-    conn.close().await?;
-    Ok(())
-}
 
 #[tokio::test]
 async fn migrations_apply_to_fresh_db() {
@@ -33,7 +17,7 @@ async fn migrations_apply_to_fresh_db() {
         return;
     }
 
-    let url = format!("postgres://postgres@localhost/{db_name}");
+    let url = db_url(&db_name);
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
         pg.run_migrations().await?;

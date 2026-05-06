@@ -1,5 +1,8 @@
 //! End-to-end `Query` against a transient PG database.
 
+mod common;
+
+use common::{create_db, db_url, drop_db};
 use std::sync::Arc;
 
 use proxima_core::auth::{Credentials, NoAuth};
@@ -13,26 +16,7 @@ use proxima_core::{
     OrgId, Owner, Principal, SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId,
 };
 use proxima_storage_pg::PgStorage;
-use sqlx::{Connection, Executor, PgConnection};
 use uuid::Uuid;
-
-const ADMIN_URL: &str = "postgres://postgres@localhost/postgres";
-
-async fn create_db(name: &str) -> Result<(), sqlx::Error> {
-    let mut conn = PgConnection::connect(ADMIN_URL).await?;
-    conn.execute(format!("CREATE DATABASE \"{name}\"").as_str())
-        .await?;
-    conn.close().await?;
-    Ok(())
-}
-
-async fn drop_db(name: &str) -> Result<(), sqlx::Error> {
-    let mut conn = PgConnection::connect(ADMIN_URL).await?;
-    conn.execute(format!("DROP DATABASE IF EXISTS \"{name}\"").as_str())
-        .await?;
-    conn.close().await?;
-    Ok(())
-}
 
 fn schemas_for_test() -> Vec<SchemaInfo> {
     vec![
@@ -215,7 +199,7 @@ async fn query_returns_stored_schema_version() {
         eprintln!("skipping (no admin PG)");
         return;
     }
-    let url = format!("postgres://postgres@localhost/{db_name}");
+    let url = db_url(&db_name);
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
@@ -267,7 +251,7 @@ async fn query_returns_fact_rows() {
         eprintln!("skipping (no admin PG)");
         return;
     }
-    let url = format!("postgres://postgres@localhost/{db_name}");
+    let url = db_url(&db_name);
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
@@ -335,7 +319,7 @@ async fn query_returns_all_edges_between_returned_nodes_even_when_edge_count_exc
         eprintln!("skipping (no admin PG)");
         return;
     }
-    let url = format!("postgres://postgres@localhost/{db_name}");
+    let url = db_url(&db_name);
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
@@ -401,7 +385,7 @@ async fn query_excludes_edges_with_endpoint_outside_returned_node_window() {
         eprintln!("skipping (no admin PG)");
         return;
     }
-    let url = format!("postgres://postgres@localhost/{db_name}");
+    let url = db_url(&db_name);
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
@@ -480,7 +464,7 @@ async fn query_edge_id_hydration_returns_requested_edge_without_visible_nodes() 
         eprintln!("skipping (no admin PG)");
         return;
     }
-    let url = format!("postgres://postgres@localhost/{db_name}");
+    let url = db_url(&db_name);
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
@@ -538,7 +522,7 @@ async fn query_caps_snapshot_edges_at_max_snapshot_edges() {
         eprintln!("skipping (no admin PG)");
         return;
     }
-    let url = format!("postgres://postgres@localhost/{db_name}");
+    let url = db_url(&db_name);
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
@@ -599,7 +583,7 @@ async fn query_owner_scope_ignores_org_id() {
         eprintln!("skipping (no admin PG)");
         return;
     }
-    let url = format!("postgres://postgres@localhost/{db_name}");
+    let url = db_url(&db_name);
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
@@ -655,7 +639,7 @@ async fn query_filter_abstraction_returns_empty() {
         eprintln!("skipping (no admin PG)");
         return;
     }
-    let url = format!("postgres://postgres@localhost/{db_name}");
+    let url = db_url(&db_name);
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
@@ -711,7 +695,7 @@ async fn query_goals_filter_by_schema_id() {
         eprintln!("skipping (no admin PG)");
         return;
     }
-    let url = format!("postgres://postgres@localhost/{db_name}");
+    let url = db_url(&db_name);
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
@@ -812,7 +796,7 @@ async fn query_returns_stored_goal_schema_version() {
         eprintln!("skipping (no admin PG)");
         return;
     }
-    let url = format!("postgres://postgres@localhost/{db_name}");
+    let url = db_url(&db_name);
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
@@ -874,7 +858,7 @@ async fn query_filter_nonexistent_schema_returns_empty() {
         eprintln!("skipping (no admin PG)");
         return;
     }
-    let url = format!("postgres://postgres@localhost/{db_name}");
+    let url = db_url(&db_name);
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
