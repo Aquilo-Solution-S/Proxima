@@ -1,6 +1,6 @@
 import "./schemas.css";
 
-import { For, Show, createMemo, type Component } from "solid-js";
+import { For, Show, createMemo, createSignal, type Component } from "solid-js";
 import type { SchemaInfo } from "../bindings";
 import { useGraph } from "../graph-store";
 import { LoadingSurface, Mono, SchemaTag } from "../primitives";
@@ -108,39 +108,93 @@ const SchemaFlavorGroup: Component<{
   group: SchemaFlavorGroupModel;
   hub: Hub;
 }> = (props) => {
+  const [collapsed, setCollapsed] = createSignal(
+    props.group.flavor === "substrate",
+  );
+  const [kindFilter, setKindFilter] =
+    createSignal<SchemaInfo["kind"] | null>(null);
   const counts = () => countByKind(props.group.schemas);
+  const visibleSchemas = () => {
+    const filter = kindFilter();
+    return filter === null
+      ? props.group.schemas
+      : props.group.schemas.filter((schema) => schema.kind === filter);
+  };
 
   return (
-    <section class="schema-flavor-group">
+    <section
+      classList={{
+        "schema-flavor-group": true,
+        "is-collapsed": collapsed(),
+      }}
+    >
       <header class="schema-flavor-head">
-        <div>
-          <h2>{props.group.flavor}</h2>
-          <Mono style={{ "font-size": "10px", color: "var(--ink-50)" }}>
-            {props.group.schemas.length} schemas
-          </Mono>
-        </div>
+        <button
+          type="button"
+          class="schema-flavor-toggle"
+          aria-expanded={!collapsed()}
+          aria-controls={`schema-flavor-${props.group.flavor}`}
+          onClick={() => setCollapsed((value) => !value)}
+        >
+          <span class="schema-flavor-title">
+            <span
+              classList={{
+                "schema-flavor-chevron": true,
+                "is-collapsed": collapsed(),
+              }}
+              aria-hidden="true"
+            />
+            <span>
+              <h2>{props.group.flavor}</h2>
+              <Mono style={{ "font-size": "10px", color: "var(--ink-60)" }}>
+                {visibleSchemas().length} / {props.group.schemas.length} schemas
+              </Mono>
+            </span>
+          </span>
+        </button>
         <div class="schema-kind-summary">
+          <button
+            type="button"
+            classList={{
+              "schema-kind-chip": true,
+              "is-active": kindFilter() === null,
+            }}
+            onClick={() => setKindFilter(null)}
+          >
+            All <b>{props.group.schemas.length}</b>
+          </button>
           <For each={counts()}>
             {(count) => (
-              <span class="schema-kind-chip">
+              <button
+                type="button"
+                classList={{
+                  "schema-kind-chip": true,
+                  "is-active": kindFilter() === count.kind,
+                }}
+                onClick={() => setKindFilter(count.kind)}
+              >
                 {count.kind} <b>{count.count}</b>
-              </span>
+              </button>
             )}
           </For>
         </div>
       </header>
-      <div class="schema-table">
-        <For each={props.group.schemas}>
-          {(s) => <SchemaRow info={s} hub={props.hub} />}
-        </For>
-      </div>
+      <Show when={!collapsed()}>
+        <div id={`schema-flavor-${props.group.flavor}`} class="schema-table">
+          <For each={visibleSchemas()}>
+            {(schema) => <SchemaRow info={schema} hub={props.hub} />}
+          </For>
+        </div>
+      </Show>
     </section>
   );
 };
 
 const countByKind = (schemas: SchemaInfo[]) => {
   const counts = new Map<SchemaInfo["kind"], number>();
-  for (const schema of schemas) counts.set(schema.kind, (counts.get(schema.kind) ?? 0) + 1);
+  for (const schema of schemas) {
+    counts.set(schema.kind, (counts.get(schema.kind) ?? 0) + 1);
+  }
   return [...counts.entries()]
     .map(([kind, count]) => ({ kind, count }))
     .sort((a, b) => kindRank(a.kind) - kindRank(b.kind));
@@ -154,12 +208,16 @@ const SchemaRow: Component<{ info: SchemaInfo; hub: Hub }> = (props) => {
   const registryCode = () => schemaRegistryCode(props.info);
 
   return (
-    <article class="schema-row">
+    <article class={`schema-row schema-row-${schemaKindClass(props.info.kind)}`}>
+      <div class="schema-kind-marker" aria-hidden="true">
+        {schemaKindGlyph(props.info.kind)}
+      </div>
       <div class="schema-row-main">
         <div class="schema-row-id">
           <SchemaTag
             id={props.info.schema_id}
             version={props.info.schema_version}
+            color="var(--ink-70)"
           />
           <span class="schema-kind">{props.info.kind}</span>
         </div>
@@ -184,6 +242,20 @@ const SchemaRow: Component<{ info: SchemaInfo; hub: Hub }> = (props) => {
     </article>
   );
 };
+
+const schemaKindClass = (kind: SchemaInfo["kind"]): string =>
+  kind.replace(/([a-z])([A-Z])/g, "$1-$2").toLowerCase();
+
+const schemaKindGlyph = (kind: SchemaInfo["kind"]): string =>
+  ({
+    Fact: "F",
+    Abstraction: "A",
+    Perspective: "P",
+    Goal: "G",
+    Edge: "E",
+    CitedObject: "C",
+    CitationMapping: "M",
+  })[kind];
 
 const schemaRegistryCode = (schema: SchemaInfo): string =>
   JSON.stringify(

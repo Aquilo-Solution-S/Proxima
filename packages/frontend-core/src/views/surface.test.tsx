@@ -202,4 +202,57 @@ describe("FullSurface fact explorer", () => {
     expect(screen.getByText("src/visible.rs:1-1")).toBeTruthy();
     expect(screen.queryByText("hidden abstraction")).toBeNull();
   });
+
+  it("collapses and expands traversal sections independently", () => {
+    const hub = createHubWithCode();
+    const fact = row(
+      "019dfa31-0000-7000-8000-000000000001",
+      "proxima-code/code-chunk-v1",
+      {
+        repo_id: "018f0000-0000-7000-8000-000000000001",
+        file_path: "src/collapsible.rs",
+        chunk_index: 0,
+        text: "fn collapsible() {}",
+        language: "Rust",
+        chunk_type: "function",
+        byte_range_start: 0,
+        byte_range_end: 21,
+        line_range_start: 1,
+        line_range_end: 1,
+        state: "Present",
+      },
+    );
+    const store: GraphStore = {
+      state: () => snapshot([fact]),
+      refresh: () => Promise.resolve(),
+    };
+
+    render(() => (
+      <GraphProvider store={store}>
+        <GraphFilterProvider store={createGraphFilterStore()}>
+          <FullSurface hub={hub} />
+        </GraphFilterProvider>
+      </GraphProvider>
+    ));
+
+    expect(screen.getByText("src/collapsible.rs:1-1")).toBeTruthy();
+    expect(screen.getByText("No perspectives")).toBeTruthy();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Collapse Facts section" }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Collapse Perspective section" }),
+    );
+
+    expect(screen.queryByText("src/collapsible.rs:1-1")).toBeNull();
+    expect(screen.queryByText("No perspectives")).toBeNull();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Expand Facts section" }),
+    );
+
+    expect(screen.getByText("src/collapsible.rs:1-1")).toBeTruthy();
+    expect(screen.queryByText("No perspectives")).toBeNull();
+  });
 });
