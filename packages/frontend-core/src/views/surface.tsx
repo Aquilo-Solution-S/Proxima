@@ -264,13 +264,6 @@ const TraversalLanes: Component<{ hub: Hub; memories: DecodedMemory[] }> = (
 
   return (
     <div class="traversal">
-      <div class="traversal-head">
-        <span class="rail-title">F → A → P traversal</span>
-        <Mono style={{ "font-size": "9px", color: "var(--ink-40)" }}>
-          chain(f, P_active)
-        </Mono>
-      </div>
-
       {/* PERSPECTIVE LANE */}
       <section
         classList={{
