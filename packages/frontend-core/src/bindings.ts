@@ -352,7 +352,7 @@ export type GoalRow = {
 	payload: number[],
 };
 
-export type GoalState = "Active" | "Paused" | "Achieved" | "Abandoned";
+export type GoalState = "Proposed" | "Active" | "Paused" | "Achieved" | "Abandoned" | "Rejected";
 
 export type GoalWriteOutcome = {
 	goal_id: GoalId,

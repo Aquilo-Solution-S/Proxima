@@ -70,10 +70,12 @@ fn json_text_to_cbor(
 
 pub(super) fn goal_row_from_db(r: GoalRowDb) -> Result<GoalRow, StorageError> {
     let state = match r.state.as_str() {
+        "Proposed" => GoalState::Proposed,
         "Active" => GoalState::Active,
         "Paused" => GoalState::Paused,
         "Achieved" => GoalState::Achieved,
         "Abandoned" => GoalState::Abandoned,
+        "Rejected" => GoalState::Rejected,
         other => {
             return Err(StorageError::Internal(format!(
                 "unknown goal state: {other}"

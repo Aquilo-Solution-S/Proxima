@@ -271,10 +271,12 @@ pub(crate) async fn supersede_goal_atomic(
 
 fn goal_state_str(state: GoalState) -> &'static str {
     match state {
+        GoalState::Proposed => "Proposed",
         GoalState::Active => "Active",
         GoalState::Paused => "Paused",
         GoalState::Achieved => "Achieved",
         GoalState::Abandoned => "Abandoned",
+        GoalState::Rejected => "Rejected",
     }
 }
 
