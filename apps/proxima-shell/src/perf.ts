@@ -38,6 +38,10 @@ export function installPerf(): void {
   installed = true;
   setInterval(flush, 1000);
   window.addEventListener("beforeunload", flush);
+  // Expose recordFields to frontend-core's tauri-client via a global
+  // hook so query responses get Proxy-wrapped automatically.
+  (globalThis as unknown as { __proximaRecordFields: typeof recordFields }).__proximaRecordFields =
+    recordFields;
 }
 
 export function record(kind: Kind, name: string, dur_ms: number, bytes: number | null = null): void {

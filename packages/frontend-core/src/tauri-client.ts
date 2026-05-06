@@ -23,17 +23,25 @@ const unwrap = async <T, E>(
   return r.data;
 };
 
+// Optional dev-only hook installed by proxima-shell's perf module.
+// When set, query/eventHistory responses are wrapped in a Proxy that
+// records which fields the FE actually reads. No-op in production.
+type FieldsHook = <T>(cmd: string, value: T) => T;
+const fieldsHook = (): FieldsHook =>
+  (globalThis as unknown as { __proximaRecordFields?: FieldsHook })
+    .__proximaRecordFields ?? ((_, v) => v);
+
 export class TauriEngineClient implements EngineClient {
   async schema(): Promise<SchemaResponse> {
     return unwrap(commands.schema());
   }
 
   async query(req: QueryRequest): Promise<QueryResponse> {
-    return unwrap(commands.query(req));
+    return fieldsHook()("query", await unwrap(commands.query(req)));
   }
 
   async eventHistory(req: EventHistoryRequest): Promise<EventHistoryResponse> {
-    return unwrap(commands.eventHistory(req));
+    return fieldsHook()("event_history", await unwrap(commands.eventHistory(req)));
   }
 
   async subscribe(
