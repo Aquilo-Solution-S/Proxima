@@ -22,8 +22,7 @@ use crate::convert::{
 use crate::pb::{
     ChangeEvent, EventHistoryRequest, EventHistoryResponse, EventIngestRequest,
     EventIngestResponse, GoalWriteRequest, GoalWriteResponse, QueryRequest, QueryResponse,
-    SchemaRequest, SchemaResponse, SubscribeRequest,
-    engine_server::Engine as EngineTrait,
+    SchemaRequest, SchemaResponse, SubscribeRequest, engine_server::Engine as EngineTrait,
 };
 
 /// gRPC server wrapper for the Engine.
