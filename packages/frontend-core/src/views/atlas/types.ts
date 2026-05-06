@@ -7,8 +7,8 @@ export interface AtlasNode {
   schemaId: string;
   schemaVersion: number;
   flavor: string | null;
-  x: number; // embedding x (sticky)
-  y: number; // embedding y (sticky)
+  x: number; // deterministic projection x
+  y: number; // deterministic projection y
   title?: string;
 }
 

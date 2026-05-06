@@ -1,5 +1,7 @@
-import { For, Suspense, type Component } from "solid-js";
+import { For, Suspense, createSignal, type Component } from "solid-js";
 import { Dynamic } from "solid-js/web";
+import { FilterDialog } from "./filter-dialog";
+import { useGraph } from "./graph-store";
 import type { Hub, RegisteredView } from "./hub";
 import { LoadingSurface } from "./primitives";
 
@@ -8,6 +10,8 @@ const EmptyView: Component = () => (
 );
 
 export const Shell: Component<{ hub: Hub }> = (props) => {
+  const graph = useGraph();
+  const [filterOpen, setFilterOpen] = createSignal(false);
   const activeView = (): RegisteredView | undefined =>
     props.hub.views().find((v) => v.id === props.hub.currentView());
 
@@ -30,7 +34,22 @@ export const Shell: Component<{ hub: Hub }> = (props) => {
             )}
           </For>
         </nav>
+        <button
+          type="button"
+          class="hub-nav-item"
+          aria-haspopup="dialog"
+          aria-expanded={filterOpen()}
+          onClick={() => setFilterOpen((v) => !v)}
+        >
+          Filters
+        </button>
       </header>
+      <FilterDialog
+        open={filterOpen()}
+        schemas={graph.state().schemas}
+        flavors={props.hub.registeredFlavors()}
+        onClose={() => setFilterOpen(false)}
+      />
       <main class="shell-main">
         <Suspense
           fallback={

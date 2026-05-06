@@ -59,6 +59,7 @@ const DECODE_ERROR_CAP = 256;
 const HYDRATION_WINDOW_MS = 50;
 const MAX_BATCH = 500;
 const BURST_THRESHOLD = 5_000;
+export const GRAPH_SNAPSHOT_LIMIT = 1_000;
 
 const GraphContext = createContext<GraphStore>();
 
@@ -72,7 +73,7 @@ const snapshotReq = (owner: Owner): QueryRequest => ({
   entity_kind: null,
   schema_id: null,
   supersession: "HeadsOnly",
-  limit: 1_000,
+  limit: GRAPH_SNAPSHOT_LIMIT,
 });
 
 const seqValue = (seq: string): bigint | null => {
@@ -88,7 +89,7 @@ const isSeqGap = (prev: string | null, next: string): boolean => {
   return a !== null && b !== null && b <= a;
 };
 
-const entityRefId = (ref: EntityRef): string =>
+export const entityRefId = (ref: EntityRef): string =>
   ref.Memory !== undefined ? ref.Memory : ref.Goal!;
 
 const trimErrors = (

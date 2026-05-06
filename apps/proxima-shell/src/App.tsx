@@ -7,6 +7,10 @@ import {
   type RegisteredSettingsPanel,
   type RegisteredView,
 } from "@proxima/core/hub";
+import {
+  GraphFilterProvider,
+  createGraphFilterStore,
+} from "@proxima/core";
 import { createGraphStore, GraphProvider } from "@proxima/core/graph-store";
 import { StartupSimulation } from "@proxima/core/primitives/startup-simulation";
 import { Shell } from "@proxima/core/shell";
@@ -107,12 +111,15 @@ function createAppHub(): Hub {
 function App() {
   const hub = createAppHub();
   const graph = createGraphStore(createTauriEngineClient(), hub);
+  const filters = createGraphFilterStore();
   const [startupComplete, setStartupComplete] = createSignal(false);
 
   return (
     <>
       <GraphProvider store={graph}>
-        <Shell hub={hub} />
+        <GraphFilterProvider store={filters}>
+          <Shell hub={hub} />
+        </GraphFilterProvider>
       </GraphProvider>
       <Show when={!startupComplete()}>
         <StartupSimulation onComplete={() => setStartupComplete(true)} />

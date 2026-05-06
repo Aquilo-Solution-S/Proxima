@@ -179,6 +179,27 @@
   position: absolute; inset: 0;
   display: flex; align-items: center; justify-content: center;
   font-family: var(--mono); font-size: 11px; color: var(--ink-50);
+  pointer-events: none;
+}
+
+.atlas-status-pills {
+  position: absolute;
+  left: 16px;
+  bottom: 14px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-width: min(560px, calc(100% - 32px));
+  pointer-events: none;
+}
+
+.atlas-status-pill {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--ink-70);
+  background: rgba(14, 16, 19, 0.82);
+  border: 1px solid var(--rule-strong);
+  padding: 5px 8px;
 }
 
 .atlas-overlay-tl {

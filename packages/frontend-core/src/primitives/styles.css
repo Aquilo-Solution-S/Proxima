@@ -255,6 +255,120 @@ html, body, #root { height: 100%; margin: 0; }
   font-size: 11px;
 }
 
+.filter-dialog-backdrop {
+  position: absolute;
+  inset: 38px 0 32px 0;
+  z-index: 30;
+  display: flex;
+  justify-content: flex-end;
+  background: rgba(14, 16, 19, 0.38);
+}
+
+.filter-dialog {
+  width: min(360px, 100%);
+  height: 100%;
+  overflow-y: auto;
+  background: var(--bg-card);
+  border-left: 1px solid var(--rule-strong);
+  color: var(--ink-80);
+  padding: 16px;
+  box-shadow: -18px 0 40px rgba(0, 0, 0, 0.24);
+}
+
+.filter-dialog-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.filter-dialog-head h2 {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink-100);
+  letter-spacing: 0;
+}
+
+.filter-dialog-close,
+.filter-dialog-actions button {
+  background: transparent;
+  border: 1px solid var(--rule-strong);
+  color: var(--ink-70);
+  font-family: var(--sans);
+  font-size: 11px;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+.filter-dialog-close:hover,
+.filter-dialog-actions button:hover {
+  color: var(--ink-100);
+  border-color: var(--ink-40);
+}
+
+.filter-field {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 16px;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--ink-60);
+}
+
+.filter-field input {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--rule-strong);
+  color: var(--ink-90);
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 8px 9px;
+}
+
+.filter-dialog-section {
+  border-top: 1px solid var(--rule);
+  padding-top: 12px;
+  margin-top: 12px;
+}
+
+.filter-dialog-section-title {
+  font-family: var(--mono);
+  font-size: 9.5px;
+  color: var(--ink-60);
+  margin-bottom: 8px;
+}
+
+.filter-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 26px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--ink-80);
+}
+
+.filter-check input {
+  accent-color: var(--accent-commit);
+}
+
+.filter-check span {
+  overflow-wrap: anywhere;
+}
+
+.filter-dialog-empty {
+  margin: 0;
+  color: var(--ink-50);
+  font-family: var(--mono);
+  font-size: 10.5px;
+}
+
+.filter-dialog-actions {
+  margin-top: 16px;
+}
+
 .proxima-view {
   padding: 24px 32px;
   max-width: 880px;

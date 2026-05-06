@@ -1,10 +1,4 @@
 import "./surface.css";
-/*
- * PLACEHOLDER DATA STATE
- * This component renders the three-lane F→A→P traversal chrome with
- * empty-state placeholders. Data wiring (Query/Subscribe via hub) is
- * deferred to the next milestone.
- */
 
 import {
   For,
@@ -17,6 +11,8 @@ import {
 import type { ChangeEvent } from "../bindings";
 import { SchemaTag, Mono } from "../primitives";
 import { useGraph, type DecodedMemory } from "../graph-store";
+import { useGraphFilter } from "../graph-filter-store";
+import { filterGraphSnapshot } from "../graph-selectors";
 import type { Hub } from "../hub";
 
 // ── Goal rail ───────────────────────────────────────────────────────────
@@ -418,14 +414,18 @@ const TraversalLanes: Component<{ hub: Hub; memories: DecodedMemory[] }> = (
 // ── FullSurface ─────────────────────────────────────────────────────────
 export const FullSurface: Component<{ hub: Hub }> = (props) => {
   const graph = useGraph();
+  const filters = useGraphFilter();
   const [goalsCollapsed, setGoalsCollapsed] = createSignal(true);
   const [eventsCollapsed, setEventsCollapsed] = createSignal(true);
-  const memories = () => Array.from(graph.state().memoriesById.values());
+  const filtered = createMemo(() =>
+    filterGraphSnapshot(graph.state(), filters.state(), props.hub),
+  );
+  const memories = () => filtered().memories;
   const events = () =>
     Array.from(graph.state().eventsBySeq.values()).sort((a, b) =>
       a.seq < b.seq ? 1 : -1,
     );
-  const goalCount = () => graph.state().goalsById.size;
+  const goalCount = () => filtered().goals.length;
 
   return (
     <div class="proxima-shell">

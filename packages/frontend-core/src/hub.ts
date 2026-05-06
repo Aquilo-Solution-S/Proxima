@@ -81,6 +81,7 @@ export interface Hub {
     schemaId: string,
     schemaVersion: number,
   ): PayloadCodec<unknown> | null;
+  flavorFor(schemaId: string, schemaVersion: number): string | null;
   views: Accessor<RegisteredView[]>;
   currentView: Accessor<string>;
   setCurrentView: Setter<string>;
@@ -153,6 +154,15 @@ export function createHub(
     rendererFor: (sid, sver) =>
       renderers.get(rendererKey(sid, sver)) ?? null,
     codecFor: (sid, sver) => codecs.get(rendererKey(sid, sver)) ?? null,
+    flavorFor: (sid, sver) => {
+      const codec = codecsList().find(
+        (c) => c.schemaId === sid && c.schemaVersion === sver,
+      );
+      if (codec !== undefined) return codec.flavor;
+      return renderersList().find(
+        (r) => r.schemaId === sid && r.schemaVersion === sver,
+      )?.flavor ?? null;
+    },
     views,
     currentView,
     setCurrentView,
