@@ -20,3 +20,5 @@ coverage/
 .turbo/
 .playwright-mcp/
 .plans/
+apps/proxima-shell/perf-logs/*
+!apps/proxima-shell/perf-logs/.gitkeep
