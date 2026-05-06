@@ -13,62 +13,186 @@ import { useGraph, type DecodedMemory } from "../graph-store";
 import { useGraphFilter } from "../graph-filter-store";
 import { filterGraphSnapshot } from "../graph-selectors";
 import type { Hub } from "../hub";
+import {
+  commands,
+  type GoalDraft,
+  type GoalRow,
+  type MemoryRow,
+} from "../bindings";
 import { EventStream } from "./surface-events";
 
 // ── Goal rail ───────────────────────────────────────────────────────────
+const renderGoalPayload = (goal: GoalRow, hub: Hub): JSX.Element | null => {
+  const renderer = hub.rendererFor(
+    goal.schema_id,
+    goal.schema_version,
+    "Goal",
+  );
+  if (renderer === null) return null;
+  const codec = hub.codecFor(goal.schema_id, goal.schema_version);
+  let payload: unknown;
+  try {
+    payload = codec === null
+      ? null
+      : codec.decode(new Uint8Array(goal.payload));
+  } catch {
+    return null;
+  }
+  if (payload === null) return null;
+  const synthetic: MemoryRow = {
+    id: goal.id,
+    kind: "Goal",
+    schema_id: goal.schema_id,
+    schema_version: goal.schema_version,
+    owner: goal.owner,
+    payload: goal.payload,
+  };
+  return renderer.render({ memory: synthetic, payload });
+};
+
+const ProposedGoalCard: Component<{
+  goal: GoalRow;
+  hub: Hub;
+  onAfterWrite: () => void;
+}> = (props) => {
+  const [busy, setBusy] = createSignal(false);
+  const writeWithState = async (state: "Active" | "Rejected") => {
+    setBusy(true);
+    try {
+      const draft: GoalDraft = {
+        owner: props.goal.owner,
+        schema_id: props.goal.schema_id,
+        schema_version: props.goal.schema_version,
+        text: props.goal.text,
+        payload: props.goal.payload,
+        state,
+        parent_goal_ids: props.goal.parent_goal_ids,
+        supersedes_goal_id: props.goal.id,
+        authorship: "User",
+        request_id: `goal-rail:${state}:${props.goal.id}:${Date.now()}`,
+      };
+      const result = await commands.goalWrite(draft);
+      if (result.status === "error") throw result.error;
+      props.onAfterWrite();
+    } finally {
+      setBusy(false);
+    }
+  };
+  const rendered = (): JSX.Element | null => renderGoalPayload(props.goal, props.hub);
+  return (
+    <article class="goal-proposed-card" title={props.goal.id}>
+      <div class="goal-proposed-head">
+        <SchemaTag
+          id={props.goal.schema_id}
+          version={props.goal.schema_version}
+        />
+        <span class="state-pill is-proposed">Proposed</span>
+      </div>
+      <div class="goal-proposed-body">
+        <Show keyed when={rendered()} fallback={<p class="prose prose-small">{props.goal.text}</p>}>
+          {(node) => node}
+        </Show>
+      </div>
+      <div class="goal-proposed-actions">
+        <button
+          type="button"
+          disabled={busy()}
+          onClick={() => void writeWithState("Active")}
+        >
+          Accept
+        </button>
+        <button
+          type="button"
+          disabled={busy()}
+          onClick={() => void writeWithState("Rejected")}
+        >
+          Decline
+        </button>
+      </div>
+    </article>
+  );
+};
+
 const GoalRail: Component<{
   collapsed: boolean;
   onToggle: () => void;
-  goalCount: number;
-}> = (props) => (
-  <aside
-    classList={{
-      "goal-rail": true,
-      "is-collapsed": props.collapsed,
-    }}
-  >
-    <Show
-      when={!props.collapsed}
-      fallback={
-        <button
-          type="button"
-          class="rail-collapsed-trigger"
-          aria-label="Expand Goal DAG"
-          aria-expanded="false"
-          onClick={props.onToggle}
-        >
-          <span class="rail-collapse-icon is-closed" aria-hidden="true" />
-          <span class="rail-collapsed-title">Goal DAG</span>
-        </button>
-      }
+  goals: GoalRow[];
+  hub: Hub;
+  onAfterWrite: () => void;
+}> = (props) => {
+  const proposed = (): GoalRow[] =>
+    props.goals.filter((goal) => goal.state === "Proposed");
+  const remaining = (): number => props.goals.length - proposed().length;
+  return (
+    <aside
+      classList={{
+        "goal-rail": true,
+        "is-collapsed": props.collapsed,
+      }}
     >
-      <div class="rail-head">
-        <div class="rail-head-copy">
-          <span class="rail-title">Goal DAG</span>
-          <Mono style={{ "font-size": "9px", color: "var(--ink-50)" }}>
-            supersession-only
-          </Mono>
+      <Show
+        when={!props.collapsed}
+        fallback={
+          <button
+            type="button"
+            class="rail-collapsed-trigger"
+            aria-label="Expand Goal DAG"
+            aria-expanded="false"
+            onClick={props.onToggle}
+          >
+            <span class="rail-collapse-icon is-closed" aria-hidden="true" />
+            <span class="rail-collapsed-title">Goal DAG</span>
+          </button>
+        }
+      >
+        <div class="rail-head">
+          <div class="rail-head-copy">
+            <span class="rail-title">Goal DAG</span>
+            <Mono style={{ "font-size": "9px", color: "var(--ink-50)" }}>
+              supersession-only
+            </Mono>
+          </div>
+          <button
+            type="button"
+            class="rail-toggle"
+            aria-label="Collapse Goal DAG"
+            aria-expanded="true"
+            onClick={props.onToggle}
+          >
+            <span class="rail-collapse-icon is-left" aria-hidden="true" />
+          </button>
         </div>
-        <button
-          type="button"
-          class="rail-toggle"
-          aria-label="Collapse Goal DAG"
-          aria-expanded="true"
-          onClick={props.onToggle}
-        >
-          <span class="rail-collapse-icon is-left" aria-hidden="true" />
-        </button>
-      </div>
-      <div class="goal-list">
-        <p class="proxima-dim">
-          {props.goalCount === 0
-            ? "No goals"
-            : `${props.goalCount} goal identities pending payload projection`}
-        </p>
-      </div>
-    </Show>
-  </aside>
-);
+        <div class="goal-list">
+          <Show when={proposed().length > 0}>
+            <section class="goal-proposed-section" aria-label="Proposed goals">
+              <header class="goal-proposed-section-head">
+                <Mono style={{ "font-size": "9px", color: "var(--ink-50)" }}>
+                  Proposed · {proposed().length}
+                </Mono>
+              </header>
+              <For each={proposed()}>
+                {(goal) => (
+                  <ProposedGoalCard
+                    goal={goal}
+                    hub={props.hub}
+                    onAfterWrite={props.onAfterWrite}
+                  />
+                )}
+              </For>
+            </section>
+          </Show>
+          <p class="proxima-dim">
+            {remaining() === 0
+              ? proposed().length === 0
+                ? "No goals"
+                : "No accepted goals yet"
+              : `${remaining()} goal identities pending payload projection`}
+          </p>
+        </div>
+      </Show>
+    </aside>
+  );
+};
 
 // ── Traversal lanes (F→A→P) ───────────────────────────────────────────
 const renderMemoryPayload = (
@@ -414,7 +538,7 @@ export const FullSurface: Component<{ hub: Hub }> = (props) => {
     Array.from(graph.state().eventsBySeq.values()).sort((a, b) =>
       a.seq < b.seq ? 1 : -1,
     );
-  const goalCount = () => filtered().goals.length;
+  const goals = () => filtered().goals;
 
   return (
     <div class="proxima-shell">
@@ -427,7 +551,9 @@ export const FullSurface: Component<{ hub: Hub }> = (props) => {
       >
         <GoalRail
           collapsed={goalsCollapsed()}
-          goalCount={goalCount()}
+          goals={goals()}
+          hub={props.hub}
+          onAfterWrite={() => void graph.refresh()}
           onToggle={() => setGoalsCollapsed((v) => !v)}
         />
         <TraversalLanes hub={props.hub} memories={memories()} />

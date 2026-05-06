@@ -220,6 +220,63 @@
 .state-achieved { color: var(--accent-pass); }
 .state-paused   { color: var(--ink-50); }
 .state-abandoned{ color: var(--ink-40); }
+.state-pill.is-proposed {
+  color: var(--accent-active);
+  border-color: var(--accent-active);
+}
+
+.goal-proposed-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+.goal-proposed-section-head {
+  padding-bottom: 4px;
+}
+.goal-proposed-card {
+  border: 1px dashed var(--accent-active);
+  background: var(--surface-bg-card);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.goal-proposed-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.goal-proposed-body {
+  font-family: var(--serif);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--ink-90);
+}
+.goal-proposed-actions {
+  display: flex;
+  gap: 8px;
+}
+.goal-proposed-actions button {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 4px 10px;
+  border: 1px solid var(--surface-rule-strong);
+  background: transparent;
+  color: var(--ink-90);
+  cursor: pointer;
+}
+.goal-proposed-actions button:hover:not(:disabled) {
+  border-color: var(--accent-active);
+  color: var(--accent-active);
+}
+.goal-proposed-actions button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
 
 .head-marker {
   font-family: var(--mono);
