@@ -53,6 +53,7 @@ async function main() {
   const sessionDir = join(PERF_LOGS, session);
   mkdirSync(sessionDir, { recursive: true });
   console.log(`[perf-driver] session dir: ${sessionDir}`);
+  const startedAt = Date.now();
 
   console.log("[perf-driver] bringing up Postgres…");
   runOrDie("docker", ["compose", "-f", COMPOSE, "up", "-d", "--wait"]);
@@ -89,14 +90,76 @@ async function main() {
     },
   });
 
-  const cleanup = (code) => {
+  const cleanup = async (code) => {
+    console.log("[perf-driver] capturing pg_stat_statements…");
+    const pgStatsPath = join(sessionDir, "pg-stats.json");
+    try {
+      const sql =
+        "SELECT COALESCE(json_agg(row_to_json(t)), '[]'::json) FROM (" +
+        "  SELECT query, total_exec_time, calls, mean_exec_time" +
+        "  FROM pg_stat_statements ORDER BY total_exec_time DESC LIMIT 100" +
+        ") t;";
+      const out = spawnSync(
+        "docker",
+        [
+          "compose", "-f", COMPOSE, "exec", "-T", "postgres",
+          "psql", "-U", "proxima", "-d", "proxima",
+          "-At", "-c", sql,
+        ],
+        { encoding: "utf8" },
+      );
+      if (out.status === 0 && out.stdout) {
+        fs.writeFileSync(pgStatsPath, out.stdout.trim());
+      }
+    } catch (e) {
+      console.warn(`[perf-driver] pg_stat_statements snapshot failed: ${e.message}`);
+    }
+
     try { tail.kill("SIGTERM"); } catch {}
     try { logStream.end(); } catch {}
+
+    console.log("[perf-driver] generating summary.md…");
+    try {
+      const { buildSummary } = await import(join(REPO, "scripts/perf-summary.mjs"));
+      const readNdjson = (p) =>
+        fs.existsSync(p)
+          ? fs.readFileSync(p, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l))
+          : [];
+      const readJson = (p) => {
+        if (!fs.existsSync(p)) return [];
+        const raw = fs.readFileSync(p, "utf8").trim();
+        if (!raw) return [];
+        try {
+          return JSON.parse(raw);
+        } catch {
+          return [];
+        }
+      };
+
+      const md = buildSummary({
+        sessionId: session,
+        durationMs: Date.now() - startedAt,
+        ipc: readNdjson(join(sessionDir, "ipc.json")),
+        mcp: readNdjson(join(sessionDir, "mcp.json")),
+        frontend: readNdjson(join(sessionDir, "frontend.json")),
+        fields: readNdjson(join(sessionDir, "ipc-fields.json")),
+        pgStats: readJson(pgStatsPath),
+        engineTrace: readJson(join(sessionDir, "engine.json")),
+      });
+      fs.writeFileSync(join(sessionDir, "summary.md"), md);
+      console.log(`[perf-driver] summary: ${join(sessionDir, "summary.md")}`);
+    } catch (e) {
+      console.warn(`[perf-driver] reducer failed: ${e.message}`);
+    }
     process.exit(code ?? 0);
   };
 
-  process.on("SIGINT", () => cleanup(0));
-  child.on("exit", (code) => cleanup(code ?? 0));
+  process.on("SIGINT", () => {
+    cleanup(0);
+  });
+  child.on("exit", (code) => {
+    cleanup(code ?? 0);
+  });
 }
 
 await main();
