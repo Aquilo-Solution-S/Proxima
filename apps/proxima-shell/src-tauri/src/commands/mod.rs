@@ -39,5 +39,8 @@ pub(crate) fn specta_builder() -> Builder<tauri::Wry> {
         repos::repo_ingest_start,
         repos::repo_ingest_status,
         repos::repo_ingest_subscribe,
+        // dev-only perf capture (no-op when PROXIMA_PERF_SESSION_DIR unset)
+        crate::perf::fe::perf_log,
+        crate::perf::fe::perf_log_field,
     ])
 }
