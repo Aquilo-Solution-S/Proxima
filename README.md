@@ -37,8 +37,7 @@ For what must not slip, see [`AGENTS.md`](AGENTS.md).
 
 ## Status
 
-Implementation phase. Build path to a locally-runnable Code demo is
-tracked in [`ROADMAP.md`](ROADMAP.md). Current surfaces:
+Implementation phase. Build path to a locally-runnable Code demo.
 
 ```
 proxima/
