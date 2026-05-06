@@ -43,6 +43,7 @@ pub use storage::*;
 pub use verbs::*;
 
 // Re-export subscribe types explicitly for external use.
+pub use verbs::schema::FlavorRegistryFrozen;
 pub use verbs::subscribe::{ChangeEventStream, SubscribeRequest};
 
 /// Expands to `&'static str` with the calling crate's name
@@ -60,7 +61,7 @@ macro_rules! proxima_schema_id {
 /// Build-time registration macro. v1 subset — supports
 /// `fact_schemas`, `abstraction_schemas`, `perspective_schemas`,
 /// `goal_schemas`, `edge_schemas`, `relations`, `personalities`,
-/// `mcp_tools`. Expands to a
+/// `f2a_operators`, `a2p_operators`, `mcp_tools`. Expands to a
 /// `pub fn register(registry: &mut FlavorRegistry)` that performs
 /// runtime prefix checks and adds each schema / relation.
 ///
@@ -102,6 +103,8 @@ macro_rules! proxima_flavor {
         $(, edge_schemas = [ $($edge:ty),* $(,)? ])?
         $(, relations = [ $($rel:expr),* $(,)? ])?
         $(, personalities = [ $($personality:ty),* $(,)? ])?
+        $(, f2a_operators = [ $($f2a_op:ty),* $(,)? ])?
+        $(, a2p_operators = [ $($a2p_op:ty),* $(,)? ])?
         $(, mcp_tools = [ $($tool:ty),* $(,)? ])?
         $(,)?
     ) => {
@@ -190,6 +193,30 @@ macro_rules! proxima_flavor {
                         id, expected_prefix,
                     );
                     registry.add_personality(personality);
+                }
+            )*)?
+            $($(
+                {
+                    let op = <$f2a_op>::default();
+                    let id = <$f2a_op as $crate::operators::F2AOperator>::operator_id(&op);
+                    assert!(
+                        id.starts_with(expected_prefix),
+                        "F2AOperator::operator_id {:?} does not start with crate prefix {:?}",
+                        id, expected_prefix,
+                    );
+                    registry.add_f2a_operator(op);
+                }
+            )*)?
+            $($(
+                {
+                    let op = <$a2p_op>::default();
+                    let id = <$a2p_op as $crate::operators::A2POperator>::operator_id(&op);
+                    assert!(
+                        id.starts_with(expected_prefix),
+                        "A2POperator::operator_id {:?} does not start with crate prefix {:?}",
+                        id, expected_prefix,
+                    );
+                    registry.add_a2p_operator(op);
                 }
             )*)?
             $($(

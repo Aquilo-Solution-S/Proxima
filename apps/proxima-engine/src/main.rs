@@ -7,7 +7,7 @@ use proxima_core::ids::{OrgId, UserId};
 use proxima_core::owner::{Owner, Principal};
 use proxima_core::verbs::query::MemoryStore;
 use proxima_core::verbs::query::QueryRequest;
-use proxima_core::verbs::schema::{SchemaRegistry, SchemaRequest};
+use proxima_core::verbs::schema::{FlavorRegistryFrozen, SchemaRequest};
 use uuid::Uuid;
 
 #[tokio::main(flavor = "current_thread")]
@@ -21,7 +21,7 @@ async fn main() {
 
     let resolver = NoAuth::new(Principal::User(user), owner.clone());
     let engine = Engine::new(
-        SchemaRegistry::new(),
+        FlavorRegistryFrozen::new(),
         MemoryStore::new(),
         Box::new(resolver),
     );

@@ -33,7 +33,7 @@ impl Engine {
         owner: &Owner,
     ) -> Result<Vec<(&'static str, SourceBatchId)>, ProtocolError> {
         let mut consolidated = Vec::new();
-        if self.operators.f2a_operators().is_empty() || self.embed.is_none() {
+        if self.registry.list_f2a_operators().is_empty() || self.embed.is_none() {
             return Ok(consolidated);
         }
         let personality = PersonalitySnapshot::default_snapshot();
@@ -41,8 +41,8 @@ impl Engine {
         // Snapshot the per-operator pending list — we don't mutate
         // mid-iteration.
         let mut pending: Vec<(&'static str, Vec<SourceBatchId>)> =
-            Vec::with_capacity(self.operators.f2a_operators().len());
-        for op in self.operators.f2a_operators() {
+            Vec::with_capacity(self.registry.list_f2a_operators().len());
+        for op in self.registry.list_f2a_operators() {
             let Some(llm) = self.llm_for_tier(op.tier()) else {
                 tracing::warn!(
                     operator = op.operator_id(),
@@ -68,7 +68,7 @@ impl Engine {
         }
 
         // Walk operator-by-operator, batch-by-batch.
-        for op in self.operators.f2a_operators() {
+        for op in self.registry.list_f2a_operators() {
             let Some((_, batches)) = pending.iter().find(|(id, _)| *id == op.operator_id()) else {
                 continue;
             };
@@ -93,7 +93,7 @@ impl Engine {
     ) -> Result<Vec<(&'static str, Vec<MemoryId>)>, ProtocolError> {
         let mut consolidated = Vec::new();
         let personalities = self.registry.list_personalities();
-        if self.operators.a2p_operators().is_empty()
+        if self.registry.list_a2p_operators().is_empty()
             || personalities.is_empty()
             || self.embed.is_none()
         {
@@ -111,7 +111,7 @@ impl Engine {
                         e.message
                     ))
                 })?;
-            for op in self.operators.a2p_operators() {
+            for op in self.registry.list_a2p_operators() {
                 let ids = self.run_a2p_op(owner, op.as_ref(), &snapshot).await?;
                 if !ids.is_empty() {
                     consolidated.push((op.operator_id(), ids));
@@ -129,7 +129,7 @@ impl Engine {
         owner: &Owner,
         batch_id: SourceBatchId,
     ) -> Result<(), ProtocolError> {
-        for op in self.operators.f2a_operators() {
+        for op in self.registry.list_f2a_operators() {
             self.run_f2a_op_on_batch(owner, op.as_ref(), batch_id)
                 .await?;
         }

@@ -35,18 +35,18 @@ pub const CODE_BLOB_BYTE_RANGE_SCHEMA: &str = "proxima-code/code-blob-byte-range
 pub const CODE_COMMIT_WHOLE_SCHEMA: &str = "proxima-code/code-commit-whole-v1";
 
 #[must_use]
-pub fn schema_registry() -> proxima_core::verbs::schema::SchemaRegistry {
+pub fn schema_registry() -> proxima_core::verbs::schema::FlavorRegistryFrozen {
     schema_registry_with(|_| {})
 }
 
-/// Build the code-flavor `SchemaRegistry` with extra flavor
+/// Build the code-flavor `FlavorRegistryFrozen` with extra flavor
 /// registrations layered in (e.g. substrate). Used by Tauri Shell to
 /// compose substrate + code into the engine's registry without forcing
 /// a substrate dep on this crate's headless callers.
 #[must_use]
 pub fn schema_registry_with(
     extra: impl FnOnce(&mut proxima_core::FlavorRegistry),
-) -> proxima_core::verbs::schema::SchemaRegistry {
+) -> proxima_core::verbs::schema::FlavorRegistryFrozen {
     use proxima_core::verbs::schema::{PayloadKind, SchemaInfo};
     use proxima_core::{FlavorRegistry, SchemaId, SchemaVersion};
 

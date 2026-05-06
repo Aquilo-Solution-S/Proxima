@@ -13,8 +13,6 @@
 //! LLM/embed clients, and persisting outputs atomically through
 //! `Storage::consolidate_batch_f2a`.
 
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use time::OffsetDateTime;
 
@@ -238,40 +236,6 @@ pub trait A2POperator: Send + Sync + std::fmt::Debug {
     }
 }
 
-/// Operator registry. M5 ships F→A only; A→P / A→Goal / Edge slots
-/// land as the operators do. Cloned by the engine; `Arc<dyn _>`
-/// keeps registration cheap.
-#[derive(Debug, Default, Clone)]
-pub struct OperatorRegistry {
-    f2a: Vec<Arc<dyn F2AOperator>>,
-    a2p: Vec<Arc<dyn A2POperator>>,
-}
-
-impl OperatorRegistry {
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn register_f2a<O: F2AOperator + 'static>(&mut self, op: O) {
-        self.f2a.push(Arc::new(op));
-    }
-
-    pub fn register_a2p<O: A2POperator + 'static>(&mut self, op: O) {
-        self.a2p.push(Arc::new(op));
-    }
-
-    #[must_use]
-    pub fn f2a_operators(&self) -> &[Arc<dyn F2AOperator>] {
-        &self.f2a
-    }
-
-    #[must_use]
-    pub fn a2p_operators(&self) -> &[Arc<dyn A2POperator>] {
-        &self.a2p
-    }
-}
-
 /// Storage-side request for `Storage::consolidate_batch_f2a`. Carries
 /// the operator's invocation metadata, the validated abstractions to
 /// persist, and the sidecar-table identifier the engine resolved from
@@ -358,7 +322,7 @@ pub struct ConsolidateA2POutcome {
 }
 
 /// Sidecar resolution hint for `Storage::load_batch_facts`. The
-/// engine builds this from its `SchemaRegistry` (Fact schemas with a
+/// engine builds this from its `FlavorRegistryFrozen` (Fact schemas with a
 /// declared `sidecar_table`) and hands it to storage so the verb can
 /// emit per-schema `row_to_json(s.*)` joins.
 #[derive(Debug, Clone)]

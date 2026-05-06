@@ -13,7 +13,7 @@ use proxima_core::engine::Engine;
 use proxima_core::storage::Storage;
 use proxima_core::verbs::goal_write::{GoalAuthorship, GoalDraft, GoalState};
 use proxima_core::verbs::query::MemoryStore;
-use proxima_core::verbs::schema::{PayloadKind, SchemaInfo, SchemaRegistry};
+use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaInfo};
 use proxima_core::{OrgId, Owner, Principal, SchemaId, SchemaVersion, UserId};
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
@@ -66,7 +66,7 @@ async fn external_authorship_admitted_at_proposed_seed_only() {
             org_id: OrgId::new(Uuid::now_v7()),
         };
 
-        let registry = SchemaRegistry::with_schemas(schemas_for_test());
+        let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
         let engine = Engine::new(
             registry,
             MemoryStore::new(),

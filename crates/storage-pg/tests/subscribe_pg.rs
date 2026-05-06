@@ -12,7 +12,7 @@ use proxima_core::storage::Storage;
 use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
 use proxima_core::verbs::goal_write::{GoalAuthorship, GoalDraft, GoalState};
 use proxima_core::verbs::query::MemoryStore;
-use proxima_core::verbs::schema::{PayloadKind, SchemaInfo, SchemaRegistry};
+use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaInfo};
 use proxima_core::verbs::subscribe::SubscribeRequest;
 use proxima_core::{
     ChangeEventKind, EntityKind, EntityRef, OrgId, Owner, Principal, SchemaId, SchemaVersion,
@@ -103,7 +103,7 @@ fn fresh_goal_draft(owner: &Owner, request_id: String) -> GoalDraft {
 }
 
 fn build_engine(storage: Arc<dyn Storage>, owner: Owner, principal: Principal) -> Engine {
-    let registry = SchemaRegistry::with_schemas(schemas_for_test());
+    let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
     Engine::new(
         registry,
         MemoryStore::new(),

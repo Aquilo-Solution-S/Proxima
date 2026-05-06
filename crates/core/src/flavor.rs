@@ -1,10 +1,11 @@
 //! Build-time registry that flavors push into during their
-//! `register()` call. Frozen into a `SchemaRegistry` once all
+//! `register()` call. Frozen into a `FlavorRegistryFrozen` once all
 //! flavors have run.
 //!
 //! See docs/08 §Registration mechanism.
 
-use crate::verbs::schema::{PayloadKind, PayloadValidatorEntry, SchemaInfo, SchemaRegistry};
+use crate::operators::{A2POperator, F2AOperator};
+use crate::verbs::schema::{FlavorRegistryFrozen, PayloadKind, PayloadValidatorEntry, SchemaInfo};
 use crate::{
     AbstractionPayload, EdgePayload, FactPayload, GoalPayload, McpCallFn, McpTool,
     McpToolDescriptor, McpToolError, PersonalityFlavor, PerspectivePayload, RelationDescriptor,
@@ -13,8 +14,6 @@ use crate::{
 
 use std::sync::Arc;
 
-pub type FlavorRegistryFrozen = SchemaRegistry;
-
 #[derive(Debug)]
 pub struct FlavorRegistry {
     schemas: Vec<SchemaInfo>,
@@ -22,6 +21,8 @@ pub struct FlavorRegistry {
     validators: Vec<PayloadValidatorEntry>,
     mcp_tools: Vec<McpToolDescriptor>,
     personalities: Vec<Arc<dyn PersonalityFlavor>>,
+    f2a_operators: Vec<Arc<dyn F2AOperator>>,
+    a2p_operators: Vec<Arc<dyn A2POperator>>,
 }
 
 impl Default for FlavorRegistry {
@@ -32,6 +33,8 @@ impl Default for FlavorRegistry {
             validators: Vec::new(),
             mcp_tools: Vec::new(),
             personalities: Vec::new(),
+            f2a_operators: Vec::new(),
+            a2p_operators: Vec::new(),
         }
     }
 }
@@ -150,6 +153,14 @@ impl FlavorRegistry {
         self.personalities.push(Arc::new(personality));
     }
 
+    pub fn add_f2a_operator<O: F2AOperator + 'static>(&mut self, op: O) {
+        self.f2a_operators.push(Arc::new(op));
+    }
+
+    pub fn add_a2p_operator<O: A2POperator + 'static>(&mut self, op: O) {
+        self.a2p_operators.push(Arc::new(op));
+    }
+
     #[must_use]
     pub fn list_personalities(&self) -> &[Arc<dyn PersonalityFlavor>] {
         &self.personalities
@@ -182,7 +193,7 @@ impl FlavorRegistry {
     }
 
     #[must_use]
-    pub fn freeze(self) -> SchemaRegistry {
+    pub fn freeze(self) -> FlavorRegistryFrozen {
         // Cross-check: every typed relation's payload_schema must
         // point at a registered Edge schema with the matching
         // RelationClass. Catches authoring drift at startup, not
@@ -208,6 +219,19 @@ impl FlavorRegistry {
                 let _ = info;
             }
         }
+        if !self.a2p_operators.is_empty() && self.personalities.is_empty() {
+            let names: Vec<&str> = self
+                .a2p_operators
+                .iter()
+                .map(|op| op.operator_id())
+                .collect();
+            panic!(
+                "A2POperator(s) {names:?} registered but no PersonalityFlavor; \
+                 every A2P operator requires at least one PersonalityFlavor in \
+                 the same FlavorRegistry. Add a `personalities = [...]` entry \
+                 in proxima_flavor!"
+            );
+        }
         let mut seen_tools = std::collections::HashSet::new();
         for tool in &self.mcp_tools {
             assert!(
@@ -216,12 +240,14 @@ impl FlavorRegistry {
                 tool.name,
             );
         }
-        SchemaRegistry::with_schemas_relations_validators(
+        FlavorRegistryFrozen::with_schemas_relations_validators(
             self.schemas,
             self.relations,
             self.validators,
             self.mcp_tools,
             self.personalities,
+            self.f2a_operators,
+            self.a2p_operators,
         )
     }
 }
@@ -307,5 +333,183 @@ mod mcp_tool_registry_tests {
             registry.add_mcp_tool::<Bad>("proxima-test");
         }));
         assert!(result.is_err(), "must panic on prefix mismatch");
+    }
+
+    #[test]
+    fn registers_and_lists_f2a_and_a2p_operators() {
+        use crate::operators::{
+            A2PContext, A2PContextSpec, A2POperator, F2AContext, F2AOperator, NewAbstraction,
+            NewPerspective, OperatorError, PersonalitySnapshot,
+        };
+        use crate::personality::PersonalityContext;
+        use crate::{PersonalityId, SchemaId};
+        use async_trait::async_trait;
+        use time::OffsetDateTime;
+
+        #[derive(Debug)]
+        struct DemoF2A;
+
+        #[async_trait]
+        impl F2AOperator for DemoF2A {
+            fn operator_id(&self) -> &'static str {
+                "proxima-test/f2a"
+            }
+
+            fn output_schema_id(&self) -> &'static str {
+                "proxima-test/out"
+            }
+
+            fn output_schema_version(&self) -> u32 {
+                1
+            }
+
+            fn prompt_version(&self) -> &'static str {
+                "v1"
+            }
+
+            fn consumes(&self, _: &SchemaId) -> bool {
+                true
+            }
+
+            async fn run(&self, _: F2AContext<'_>) -> Result<Vec<NewAbstraction>, OperatorError> {
+                Ok(Vec::new())
+            }
+        }
+
+        #[derive(Debug)]
+        struct DemoA2P;
+
+        #[async_trait]
+        impl A2POperator for DemoA2P {
+            fn operator_id(&self) -> &'static str {
+                "proxima-test/a2p"
+            }
+
+            fn output_schema_id(&self) -> &'static str {
+                "proxima-test/out"
+            }
+
+            fn output_schema_version(&self) -> u32 {
+                1
+            }
+
+            fn prompt_version(&self) -> &'static str {
+                "v1"
+            }
+
+            fn consumes(&self, _: &SchemaId) -> bool {
+                true
+            }
+
+            fn context(&self) -> A2PContextSpec {
+                A2PContextSpec {
+                    kind: "on_ingest".into(),
+                    key: "k".into(),
+                    label: "l".into(),
+                }
+            }
+
+            async fn run(&self, _: A2PContext<'_>) -> Result<Vec<NewPerspective>, OperatorError> {
+                Ok(Vec::new())
+            }
+        }
+
+        #[derive(Debug)]
+        struct DemoPersonality;
+
+        #[async_trait]
+        impl PersonalityFlavor for DemoPersonality {
+            fn personality_id(&self) -> &'static str {
+                "proxima-test/personality"
+            }
+
+            async fn snapshot(
+                &self,
+                _: &PersonalityContext<'_>,
+            ) -> Result<PersonalitySnapshot, crate::ProtocolError> {
+                Ok(PersonalitySnapshot {
+                    personality_id: PersonalityId::new("proxima-test/personality"),
+                    captured_at: OffsetDateTime::now_utc(),
+                })
+            }
+        }
+
+        let mut registry = FlavorRegistry::new();
+        registry.add_f2a_operator(DemoF2A);
+        registry.add_a2p_operator(DemoA2P);
+        registry.add_personality(DemoPersonality);
+        let frozen = registry.freeze();
+        assert_eq!(frozen.list_f2a_operators().len(), 1);
+        assert_eq!(frozen.list_a2p_operators().len(), 1);
+        assert_eq!(
+            frozen.list_f2a_operators()[0].operator_id(),
+            "proxima-test/f2a"
+        );
+        assert_eq!(
+            frozen.list_a2p_operators()[0].operator_id(),
+            "proxima-test/a2p"
+        );
+    }
+
+    #[test]
+    fn freeze_rejects_a2p_operator_without_personality() {
+        use crate::SchemaId;
+        use crate::operators::{
+            A2PContext, A2PContextSpec, A2POperator, NewPerspective, OperatorError,
+        };
+        use async_trait::async_trait;
+
+        #[derive(Debug)]
+        struct DemoA2P;
+
+        #[async_trait]
+        impl A2POperator for DemoA2P {
+            fn operator_id(&self) -> &'static str {
+                "proxima-test/a2p"
+            }
+
+            fn output_schema_id(&self) -> &'static str {
+                "proxima-test/out"
+            }
+
+            fn output_schema_version(&self) -> u32 {
+                1
+            }
+
+            fn prompt_version(&self) -> &'static str {
+                "v1"
+            }
+
+            fn consumes(&self, _: &SchemaId) -> bool {
+                true
+            }
+
+            fn context(&self) -> A2PContextSpec {
+                A2PContextSpec {
+                    kind: "on_ingest".into(),
+                    key: "k".into(),
+                    label: "l".into(),
+                }
+            }
+
+            async fn run(&self, _: A2PContext<'_>) -> Result<Vec<NewPerspective>, OperatorError> {
+                Ok(Vec::new())
+            }
+        }
+
+        let mut registry = FlavorRegistry::new();
+        registry.add_a2p_operator(DemoA2P);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| registry.freeze()));
+        let err = result.expect_err("freeze must panic when an A2P operator has no personality");
+        let msg = err
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| err.downcast_ref::<&'static str>().copied())
+            .unwrap_or("");
+        assert!(
+            msg.contains("proxima-test/a2p")
+                && msg.contains("requires at least one PersonalityFlavor"),
+            "panic message must name the offending operator and missing requirement: {msg}"
+        );
     }
 }

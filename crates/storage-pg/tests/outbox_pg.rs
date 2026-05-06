@@ -12,7 +12,7 @@ use proxima_core::storage::Storage;
 use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
 use proxima_core::verbs::goal_write::{GoalAuthorship, GoalDraft, GoalState};
 use proxima_core::verbs::query::MemoryStore;
-use proxima_core::verbs::schema::{PayloadKind, SchemaInfo, SchemaRegistry};
+use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaInfo};
 use proxima_core::{
     ChangeEventKind, EntityKind, EntityRef, OrgId, Owner, Principal, SchemaId, SchemaVersion,
     SourceBatchId, SourceId, UserId,
@@ -122,7 +122,7 @@ async fn outbox_publishes_entity_append_for_fact() {
             org_id: OrgId::new(Uuid::now_v7()),
         };
 
-        let registry = SchemaRegistry::with_schemas(schemas_for_test());
+        let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
         let engine = Engine::new(
             registry,
             MemoryStore::new(),
@@ -194,7 +194,7 @@ async fn outbox_publishes_entity_append_for_goal() {
             org_id: OrgId::new(Uuid::now_v7()),
         };
 
-        let registry = SchemaRegistry::with_schemas(schemas_for_test());
+        let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
         let engine = Engine::new(
             registry,
             MemoryStore::new(),
@@ -264,7 +264,7 @@ async fn outbox_publishes_fact_then_goal() {
             org_id: OrgId::new(Uuid::now_v7()),
         };
 
-        let registry = SchemaRegistry::with_schemas(schemas_for_test());
+        let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
         let engine = Engine::new(
             registry,
             MemoryStore::new(),

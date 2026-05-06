@@ -1,4 +1,4 @@
-//! Engine composite — wires SchemaRegistry, MemoryStore, and
+//! Engine composite — wires FlavorRegistryFrozen, MemoryStore, and
 //! an AuthResolver behind the typed verb surfaces of
 //! docs/14-protocol-surface.md.
 
@@ -14,18 +14,17 @@ use std::sync::Arc;
 use crate::ModelTier;
 use crate::auth::AuthResolver;
 use crate::error::ProtocolError;
-use crate::operators::{EmbeddingClient, LlmClient, OperatorError, OperatorRegistry};
+use crate::operators::{EmbeddingClient, LlmClient, OperatorError};
 use crate::storage::{StorageError, StorageHandle};
 use crate::verbs::query::MemoryStore;
-use crate::verbs::schema::SchemaRegistry;
+use crate::verbs::schema::FlavorRegistryFrozen;
 
 pub struct Engine {
-    registry: SchemaRegistry,
+    registry: FlavorRegistryFrozen,
     // TODO(M3.B): remove MemoryStore
     memories: MemoryStore,
     auth: Box<dyn AuthResolver>,
     storage: StorageHandle,
-    operators: OperatorRegistry,
     llms: HashMap<ModelTier, Arc<dyn LlmClient>>,
     embed: Option<Arc<dyn EmbeddingClient>>,
 }
@@ -62,12 +61,9 @@ mod tier_union_tests {
     use super::*;
     use crate::auth::NoAuth;
     use crate::ids::{OrgId, UserId};
-    use crate::operators::{
-        F2AContext, F2AOperator, NewAbstraction, OperatorError, OperatorRegistry,
-    };
+    use crate::operators::{F2AContext, F2AOperator, NewAbstraction, OperatorError};
     use crate::verbs::query::MemoryStore;
-    use crate::verbs::schema::SchemaRegistry;
-    use crate::{LlmCaps, ModelTier, Owner, Principal, SchemaId};
+    use crate::{FlavorRegistry, LlmCaps, ModelTier, Owner, Principal, SchemaId};
     use async_trait::async_trait;
     use uuid::Uuid;
 
@@ -105,21 +101,21 @@ mod tier_union_tests {
     }
 
     fn engine_with_ops(ops: Vec<OpAt>) -> Engine {
-        let mut reg = OperatorRegistry::new();
+        let mut reg = FlavorRegistry::new();
         for op in ops {
-            reg.register_f2a(op);
+            reg.add_f2a_operator(op);
         }
+        let reg = reg.freeze();
         let principal = Principal::User(UserId::new(Uuid::now_v7()));
         let owner = Owner {
             principal: principal.clone(),
             org_id: OrgId::new(Uuid::now_v7()),
         };
         Engine::new(
-            SchemaRegistry::new(),
+            reg,
             MemoryStore::new(),
             Box::new(NoAuth::new(principal, owner)),
         )
-        .with_operators(reg)
     }
 
     #[test]

@@ -127,7 +127,7 @@ pub trait Storage: Send + Sync {
 
     /// Load all Facts in a closed source-batch with their typed
     /// sidecar payloads serialized to JSON. The engine builds
-    /// `sidecars` from its `SchemaRegistry` (Fact schemas with a
+    /// `sidecars` from its `FlavorRegistryFrozen` (Fact schemas with a
     /// declared `sidecar_table`); storage emits one
     /// `row_to_json(s.*)` join per spec and unions the rows.
     ///

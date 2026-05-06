@@ -507,6 +507,21 @@ pub async fn consolidate_a2p(
 
     let mut tx = pool.begin().await.map_err(map_err)?;
 
+    let lock_key = format!(
+        "a2p:{owner_kind}:{owner_principal_id}:{op}:{prompt}:{model}:{pid}",
+        owner_kind = owner_kind,
+        owner_principal_id = owner_principal_id,
+        op = req.operator_id,
+        prompt = req.prompt_version,
+        model = req.model_id,
+        pid = personality_id,
+    );
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1)::bigint)")
+        .bind(&lock_key)
+        .execute(&mut *tx)
+        .await
+        .map_err(map_err)?;
+
     // a2p_invocations is principal-scoped (see migration comment) — skip
     // owner_org_id here so same-principal/different-org runs share the row.
     let existing: Option<(i32,)> = sqlx::query_as(
@@ -539,12 +554,36 @@ pub async fn consolidate_a2p(
         });
     }
 
+    let current_prior_head: Option<uuid::Uuid> = sqlx::query_scalar(
+        "SELECT head_memory_id FROM proxima_core.a2p_invocations \
+         WHERE owner_principal_kind = $1 \
+           AND owner_principal_id = $2 \
+           AND operator_id = $3 \
+           AND prompt_version = $4 \
+           AND model_id = $5 \
+           AND personality_id = $6 \
+           AND head_memory_id IS NOT NULL \
+         ORDER BY run_at DESC \
+         LIMIT 1",
+    )
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(req.operator_id)
+    .bind(req.prompt_version)
+    .bind(req.model_id)
+    .bind(&personality_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(map_err)?;
+    let effective_prior_head =
+        current_prior_head.or_else(|| req.prior_head.map(MemoryId::into_inner));
+
     let mut perspective_ids: Vec<MemoryId> = Vec::with_capacity(req.perspectives.len());
 
     for perspective in req.perspectives {
         let memory_id = uuid::Uuid::now_v7();
         perspective_ids.push(MemoryId::new(memory_id));
-        let prior_head = req.prior_head.map(MemoryId::into_inner);
+        let prior_head = effective_prior_head;
 
         sqlx::query(
             "INSERT INTO proxima_core.memories \

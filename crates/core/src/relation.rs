@@ -142,7 +142,7 @@ pub fn core_relation_descriptors() -> Vec<RelationDescriptor> {
     ]
 }
 
-/// Relation resolved from the immutable `SchemaRegistry` for an
+/// Relation resolved from the immutable `FlavorRegistryFrozen` for an
 /// edge write. Carries the descriptor plus the typed edge sidecar
 /// table when the descriptor references an `EdgePayload` schema.
 #[derive(Clone, Copy, Debug)]

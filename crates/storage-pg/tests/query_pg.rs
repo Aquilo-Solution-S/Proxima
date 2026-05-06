@@ -11,7 +11,7 @@ use proxima_core::storage::Storage;
 use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
 use proxima_core::verbs::goal_write::{GoalAuthorship, GoalDraft, GoalState};
 use proxima_core::verbs::query::{EntityKind, MemoryStore, QueryRequest, SupersessionStatus};
-use proxima_core::verbs::schema::{PayloadKind, SchemaInfo, SchemaRegistry};
+use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaInfo};
 use proxima_core::{
     OrgId, Owner, Principal, SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId,
 };
@@ -212,7 +212,7 @@ async fn query_returns_stored_schema_version() {
             org_id: OrgId::new(Uuid::now_v7()),
         };
 
-        let registry = SchemaRegistry::with_schemas(schemas_for_test());
+        let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
         let engine = Engine::new(
             registry,
             MemoryStore::new(),
@@ -264,7 +264,7 @@ async fn query_returns_fact_rows() {
             org_id: OrgId::new(Uuid::now_v7()),
         };
 
-        let registry = SchemaRegistry::with_schemas(schemas_for_test());
+        let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
         let engine = Engine::new(
             registry,
             MemoryStore::new(),
@@ -331,7 +331,7 @@ async fn query_returns_all_edges_between_returned_nodes_even_when_edge_count_exc
             principal: Principal::User(user),
             org_id: OrgId::new(Uuid::now_v7()),
         };
-        let registry = SchemaRegistry::with_schemas(schemas_for_test());
+        let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
         let engine = Engine::new(
             registry,
             MemoryStore::new(),
@@ -397,7 +397,7 @@ async fn query_excludes_edges_with_endpoint_outside_returned_node_window() {
             principal: Principal::User(user),
             org_id: OrgId::new(Uuid::now_v7()),
         };
-        let registry = SchemaRegistry::with_schemas(schemas_for_test());
+        let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
         let engine = Engine::new(
             registry,
             MemoryStore::new(),
@@ -476,7 +476,7 @@ async fn query_edge_id_hydration_returns_requested_edge_without_visible_nodes() 
             principal: Principal::User(user),
             org_id: OrgId::new(Uuid::now_v7()),
         };
-        let registry = SchemaRegistry::with_schemas(schemas_for_test());
+        let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
         let engine = Engine::new(
             registry,
             MemoryStore::new(),
@@ -534,7 +534,7 @@ async fn query_caps_snapshot_edges_at_max_snapshot_edges() {
             principal: Principal::User(user),
             org_id: OrgId::new(Uuid::now_v7()),
         };
-        let registry = SchemaRegistry::with_schemas(schemas_for_test());
+        let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
         let engine = Engine::new(
             registry,
             MemoryStore::new(),
@@ -600,7 +600,7 @@ async fn query_owner_scope_ignores_org_id() {
             org_id: OrgId::new(Uuid::now_v7()),
         };
 
-        let registry = SchemaRegistry::with_schemas(schemas_for_test());
+        let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
         let engine = Engine::new(
             registry,
             MemoryStore::new(),
@@ -652,7 +652,7 @@ async fn query_filter_abstraction_returns_empty() {
             org_id: OrgId::new(Uuid::now_v7()),
         };
 
-        let registry = SchemaRegistry::with_schemas(schemas_for_test());
+        let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
         let engine = Engine::new(
             registry,
             MemoryStore::new(),
@@ -708,7 +708,7 @@ async fn query_goals_filter_by_schema_id() {
             org_id: OrgId::new(Uuid::now_v7()),
         };
 
-        let registry = SchemaRegistry::with_schemas(schemas_for_test());
+        let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
         let engine = Engine::new(
             registry,
             MemoryStore::new(),
@@ -809,7 +809,7 @@ async fn query_returns_stored_goal_schema_version() {
             org_id: OrgId::new(Uuid::now_v7()),
         };
 
-        let registry = SchemaRegistry::with_schemas(schemas_for_test());
+        let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
         let engine = Engine::new(
             registry,
             MemoryStore::new(),
@@ -871,7 +871,7 @@ async fn query_filter_nonexistent_schema_returns_empty() {
             org_id: OrgId::new(Uuid::now_v7()),
         };
 
-        let registry = SchemaRegistry::with_schemas(schemas_for_test());
+        let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
         let engine = Engine::new(
             registry,
             MemoryStore::new(),

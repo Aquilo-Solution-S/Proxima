@@ -11,7 +11,7 @@ use proxima_core::error::ErrorCode;
 use proxima_core::storage::Storage;
 use proxima_core::verbs::goal_write::{GoalAuthorship, GoalDraft, GoalState};
 use proxima_core::verbs::query::MemoryStore;
-use proxima_core::verbs::schema::{PayloadKind, SchemaInfo, SchemaRegistry};
+use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaInfo};
 use proxima_core::{GoalId, OrgId, Owner, Principal, SchemaId, SchemaVersion, UserId};
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
@@ -91,7 +91,7 @@ async fn goal_write_writes_goal_and_change_event() {
             org_id: OrgId::new(Uuid::now_v7()),
         };
 
-        let registry = SchemaRegistry::with_schemas(schemas_for_test());
+        let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
         let engine = Engine::new(
             registry,
             MemoryStore::new(),
@@ -184,7 +184,7 @@ async fn goal_supersede_writes_new_goal() {
             org_id: OrgId::new(Uuid::now_v7()),
         };
 
-        let registry = SchemaRegistry::with_schemas(schemas_for_test());
+        let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
         let engine = Engine::new(
             registry,
             MemoryStore::new(),
@@ -299,7 +299,7 @@ async fn goal_write_with_parent() {
             org_id: OrgId::new(Uuid::now_v7()),
         };
 
-        let registry = SchemaRegistry::with_schemas(schemas_for_test());
+        let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
         let engine = Engine::new(
             registry,
             MemoryStore::new(),

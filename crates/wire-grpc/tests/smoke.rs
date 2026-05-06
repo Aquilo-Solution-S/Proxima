@@ -8,7 +8,7 @@ use proxima_core::auth::NoAuth;
 use proxima_core::engine::Engine;
 use proxima_core::owner::Principal;
 use proxima_core::verbs::query::MemoryStore;
-use proxima_core::verbs::schema::SchemaRegistry;
+use proxima_core::verbs::schema::FlavorRegistryFrozen;
 use proxima_core::{OrgId, Owner, UserId};
 use tonic::Request;
 use uuid::Uuid;
@@ -28,7 +28,7 @@ fn fresh_owner() -> Owner {
 
 fn build_engine(owner: Owner) -> Engine {
     Engine::new(
-        SchemaRegistry::new(),
+        FlavorRegistryFrozen::new(),
         MemoryStore::new(),
         Box::new(NoAuth::new(owner.principal.clone(), owner)),
     )
