@@ -1,6 +1,7 @@
 import type { GoalRow } from "../../bindings";
 import {
   entityRefId,
+  type DecodedMemory,
 } from "../../graph-store";
 import {
   schemaFlavorForGoal,
@@ -64,6 +65,7 @@ const nodeFor = (
   schemaVersion: number,
   flavor: string | null,
   title: string,
+  details: Pick<AtlasNode, "memory" | "goal" | "payload" | "decodeError"> = {},
 ): AtlasNode => ({
   id,
   kind,
@@ -73,33 +75,53 @@ const nodeFor = (
   x: coordinateFor(id, "x"),
   y: coordinateFor(id, "y"),
   title,
+  ...details,
 });
+
+const nodeForMemory = (
+  memory: DecodedMemory,
+  graph: FilteredGraph,
+  hub: Hub,
+): AtlasNode =>
+  nodeFor(
+    memory.row.id,
+    memory.row.kind,
+    memory.row.schema_id,
+    memory.row.schema_version,
+    schemaFlavorForMemory(memory.row, graph, hub),
+    memoryTitle(memory.row.schema_id, memory.row.id, memory.payload),
+    {
+      memory: memory.row,
+      payload: memory.payload,
+      decodeError: memory.decodeError,
+    },
+  );
+
+const nodeForGoal = (
+  goal: GoalRow,
+  graph: FilteredGraph,
+  hub: Hub,
+): AtlasNode =>
+  nodeFor(
+    goal.id,
+    "Goal",
+    goal.schema_id,
+    goal.schema_version,
+    schemaFlavorForGoal(goal, graph, hub),
+    goalTitle(goal),
+    {
+      goal,
+      payload: goal.payload,
+    },
+  );
 
 export function atlasProjectionFromGraph(
   graph: FilteredGraph,
   hub: Hub,
 ): AtlasProjection {
   const nodes: AtlasNode[] = [
-    ...graph.memories.map((memory) =>
-      nodeFor(
-        memory.row.id,
-        memory.row.kind,
-        memory.row.schema_id,
-        memory.row.schema_version,
-        schemaFlavorForMemory(memory.row, graph, hub),
-        memoryTitle(memory.row.schema_id, memory.row.id, memory.payload),
-      ),
-    ),
-    ...graph.goals.map((goal) =>
-      nodeFor(
-        goal.id,
-        "Goal",
-        goal.schema_id,
-        goal.schema_version,
-        schemaFlavorForGoal(goal, graph, hub),
-        goalTitle(goal),
-      ),
-    ),
+    ...graph.memories.map((memory) => nodeForMemory(memory, graph, hub)),
+    ...graph.goals.map((goal) => nodeForGoal(goal, graph, hub)),
   ];
   const visibleNodeIds = new Set(nodes.map((node) => node.id));
   const edges: AtlasEdge[] = [];
@@ -116,6 +138,7 @@ export function atlasProjectionFromGraph(
       src,
       tgt,
       kind: edge.relation,
+      relationClass: edge.relation_class,
     });
   }
   return { nodes, edges, omittedEdgeCount };

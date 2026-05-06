@@ -46,8 +46,6 @@
 
 .code-payload-snippet {
   margin: 0;
-  max-height: 240px;
-  overflow: auto;
   padding: 10px 11px;
   border: 1px solid var(--rule);
   background: rgba(9, 11, 14, 0.48);
@@ -55,6 +53,61 @@
   font-size: 10px;
   line-height: 1.5;
   color: var(--ink-80);
-  white-space: pre-wrap;
-  word-break: break-word;
+  overflow-x: auto;
+  overflow-y: visible;
+  white-space: pre;
+}
+
+.code-payload-snippet code {
+  display: block;
+  min-width: max-content;
+}
+
+.code-payload-snippet .hljs-keyword,
+.code-payload-snippet .hljs-selector-tag,
+.code-payload-snippet .hljs-literal,
+.code-payload-snippet .hljs-section {
+  color: #D7B46A;
+}
+
+.code-payload-snippet .hljs-string,
+.code-payload-snippet .hljs-regexp,
+.code-payload-snippet .hljs-addition,
+.code-payload-snippet .hljs-attribute {
+  color: #9BC2A6;
+}
+
+.code-payload-snippet .hljs-number,
+.code-payload-snippet .hljs-symbol,
+.code-payload-snippet .hljs-bullet {
+  color: #D49A74;
+}
+
+.code-payload-snippet .hljs-title,
+.code-payload-snippet .hljs-title.function_,
+.code-payload-snippet .hljs-title.class_,
+.code-payload-snippet .hljs-built_in {
+  color: #A9C7E8;
+}
+
+.code-payload-snippet .hljs-type,
+.code-payload-snippet .hljs-class,
+.code-payload-snippet .hljs-variable,
+.code-payload-snippet .hljs-template-variable {
+  color: #C8B6E2;
+}
+
+.code-payload-snippet .hljs-comment,
+.code-payload-snippet .hljs-quote,
+.code-payload-snippet .hljs-deletion,
+.code-payload-snippet .hljs-meta {
+  color: var(--ink-50);
+}
+
+.code-payload-snippet .hljs-emphasis {
+  font-style: italic;
+}
+
+.code-payload-snippet .hljs-strong {
+  font-weight: 600;
 }

@@ -254,6 +254,7 @@
   flex-direction: column;
   overflow: hidden;
   min-height: 0;
+  background: var(--surface-bg-deep);
 }
 .traversal-head {
   padding: 15px 24px 11px;
@@ -294,6 +295,11 @@
 .lane.is-collapsed {
   flex: 0 0 auto;
   gap: 0;
+}
+.lane-f.is-collapsed {
+  flex: 0 0 auto;
+  min-height: auto;
+  border-bottom: 1px solid var(--surface-rule);
 }
 
 .lane-toggle {

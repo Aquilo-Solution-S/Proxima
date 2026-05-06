@@ -51,4 +51,38 @@ describe("code payload renderers", () => {
     expect(screen.getByText("Present")).toBeTruthy();
     expect(screen.queryByText(/CBOR bytes/)).toBeNull();
   });
+
+  it("highlights code chunks using the payload language", () => {
+    const hub = createHub([]);
+    hub.registerFlavor("code", registerCode);
+    const payload = {
+      repo_id: "018f0000-0000-7000-8000-000000000001",
+      file_path: "src/main.rs",
+      language: "Rust",
+      text: "fn main() {\n    let answer = 42;\n}\n",
+      line_range_start: 1,
+      line_range_end: 3,
+      byte_range_start: 0,
+      byte_range_end: 35,
+      chunk_index: 0,
+      chunk_type: "function",
+      state: "Present",
+    };
+    const row = memory(
+      "proxima-code/code-chunk-v1",
+      Array.from(encode(payload)),
+    );
+
+    const decoded = hub
+      .codecFor(row.schema_id, row.schema_version)
+      ?.decode(new Uint8Array(row.payload));
+    const renderer = hub.rendererFor(row.schema_id, row.schema_version);
+
+    const { container } = render(() =>
+      renderer?.render({ memory: row, payload: decoded }),
+    );
+
+    expect(container.querySelector("code.language-rust")).toBeTruthy();
+    expect(container.querySelector(".hljs-keyword")?.textContent).toBe("fn");
+  });
 });
