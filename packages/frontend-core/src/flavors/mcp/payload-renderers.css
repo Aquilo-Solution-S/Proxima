@@ -1,0 +1,85 @@
+.mcp-payload {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  min-width: 0;
+}
+
+.mcp-payload-title {
+  font-family: var(--sans);
+  font-size: 13px;
+  line-height: 1.35;
+  color: var(--ink-90);
+  overflow-wrap: anywhere;
+}
+
+.mcp-payload-body {
+  margin: 0;
+  font-family: var(--serif);
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--ink-80);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.mcp-payload-grid {
+  border-top: 1px dashed var(--rule);
+  padding-top: 8px;
+}
+
+.mcp-payload-grid dt {
+  font-family: var(--mono);
+  font-size: 9px;
+  color: var(--ink-40);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.mcp-payload-grid dd {
+  margin: 0;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 10px;
+  line-height: 1.45;
+  color: var(--ink-70);
+  overflow-wrap: anywhere;
+}
+
+.mcp-payload-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.mcp-payload-tag {
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  color: var(--ink-60);
+  padding: 1px 6px;
+  border: 1px solid var(--rule);
+  border-radius: 9px;
+}
+
+.mcp-payload-confidence {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--ink-70);
+}
+
+.mcp-payload-confidence-bar {
+  flex: 1;
+  height: 4px;
+  background: var(--rule);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.mcp-payload-confidence-fill {
+  height: 100%;
+  background: var(--ink-60);
+}

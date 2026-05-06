@@ -3,7 +3,7 @@ import "../atlas.css";
 import { For, Show, type Component, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import * as THREE from "three";
 import { GRAPH_SNAPSHOT_LIMIT, MAX_SNAPSHOT_EDGES, useGraph } from "../../graph-store";
-import { useGraphFilter } from "../../graph-filter-store";
+import { flavorFilterId, useGraphFilter } from "../../graph-filter-store";
 import { filterGraphSnapshot } from "../../graph-selectors";
 import type { Hub } from "../../hub";
 import { buildAdjacency, chainOf } from "./adjacency";
@@ -45,7 +45,7 @@ export const Atlas: Component<{
 
   const passKind = (k: AtlasNodeKind) => filters.state().layers.has(k);
   const passFlavor = (f: string | null) =>
-    f === null || !filters.state().hiddenFlavorIds.has(f);
+    !filters.state().hiddenFlavorIds.has(flavorFilterId(f));
 
   const byId = createMemo(() => new Map(nodes().map((n) => [n.id, n] as const)));
   const pickedNode = () => {

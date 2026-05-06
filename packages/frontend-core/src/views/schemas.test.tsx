@@ -82,4 +82,42 @@ describe("SchemasView", () => {
 
     expect(screen.getByText("substrate/cited-v1 v1")).toBeTruthy();
   });
+
+  it("groups namespace-aligned schemas (incl. codec-less CitedObjects) into the owning flavor", () => {
+    // Production registers flavors under their full schema-id
+    // namespace ("proxima-code"), so the namespace-fallback path
+    // catches CitedObject / CitationMapping schemas that never carry
+    // their own codec. Heading strips the `proxima-` prefix.
+    const hub = createHub([]);
+    hub.registerFlavor("proxima-code", (scope) => {
+      const codec = {
+        decode: () => null,
+        encode: () => new Uint8Array(),
+      };
+      scope.registerCodec("proxima-code/code-chunk-v1", 1, codec);
+    });
+
+    render(() => (
+      <GraphProvider
+        store={store([
+          schema("proxima-code/code-chunk-v1", "Fact", "proxima_code.code_chunk_v1"),
+          schema("proxima-code/code-blob-v1", "CitedObject"),
+          schema("proxima-code/code-blob-whole-v1", "CitationMapping"),
+        ])}
+      >
+        <SchemasView hub={hub} />
+      </GraphProvider>
+    ));
+
+    // All three render in the same flavor group (open by default).
+    expect(screen.getByText("proxima-code/code-chunk-v1 v1")).toBeTruthy();
+    expect(screen.getByText("proxima-code/code-blob-v1 v1")).toBeTruthy();
+    expect(screen.getByText("proxima-code/code-blob-whole-v1 v1")).toBeTruthy();
+
+    // Display label strips the `proxima-` prefix on the heading.
+    expect(screen.getByRole("heading", { level: 2, name: "code" })).toBeTruthy();
+
+    // No substrate group materialises when no schemas fell through.
+    expect(screen.queryByRole("button", { name: /substrate/i })).toBeNull();
+  });
 });

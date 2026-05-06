@@ -1,5 +1,5 @@
 import type { EdgeRow, GoalRow, MemoryRow, SchemaInfo } from "./bindings";
-import type { GraphFilterState } from "./graph-filter-store";
+import { flavorFilterId, type GraphFilterState } from "./graph-filter-store";
 import { entityRefId, type DecodedMemory, type GraphSnapshot } from "./graph-store";
 import type { Hub } from "./hub";
 
@@ -80,7 +80,7 @@ const schemaAllowed = (
 const flavorAllowed = (
   flavor: string | null,
   filter: GraphFilterState,
-): boolean => flavor === null || !filter.hiddenFlavorIds.has(flavor);
+): boolean => !filter.hiddenFlavorIds.has(flavorFilterId(flavor));
 
 const searchMatchesMemory = (
   memory: DecodedMemory,

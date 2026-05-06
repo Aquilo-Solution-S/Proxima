@@ -9,6 +9,7 @@ import {
 import type { SchemaInfo } from "./bindings";
 import {
   GRAPH_LAYERS,
+  flavorFilterLabel,
   useGraphFilter,
   type GraphLayer,
 } from "./graph-filter-store";
@@ -129,7 +130,7 @@ export const FilterDialog: Component<{
           </div>
 
           <div class="filter-dialog-section">
-            <div class="filter-dialog-section-title">Flavor</div>
+            <div class="filter-dialog-section-title">Origin</div>
             <Show
               when={sortedFlavors().length > 0}
               fallback={<p class="filter-dialog-empty">No flavors</p>}
@@ -147,7 +148,7 @@ export const FilterDialog: Component<{
                         )
                       }
                     />
-                    <span>{flavor}</span>
+                    <span>{flavorFilterLabel(flavor)}</span>
                   </label>
                 )}
               </For>

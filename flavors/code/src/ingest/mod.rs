@@ -21,7 +21,7 @@ pub mod schemas;
 
 pub use blobs::{close_local_git_batch, ingest_code_chunk, ingest_commit, ingest_file_revision};
 pub use calls::{CallEdgeDraft, ingest_calls_edge};
-pub use engine::build_engine;
+pub use engine::{build_engine, build_engine_with};
 pub use heads::{
     FileRevisionHead, file_revision_heads, lookup_present_chunk_memory_id_by_text,
     present_chunk_indexes,
@@ -29,6 +29,7 @@ pub use heads::{
 pub use schemas::{
     CODE_BLOB_BYTE_RANGE_SCHEMA, CODE_BLOB_SCHEMA, CODE_BLOB_WHOLE_SCHEMA,
     CODE_COMMIT_OBJECT_SCHEMA, CODE_COMMIT_WHOLE_SCHEMA, LOCAL_GIT_SOURCE_ID, schema_registry,
+    schema_registry_with,
 };
 
 use proxima_core::error::ProtocolError;

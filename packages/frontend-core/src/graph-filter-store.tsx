@@ -7,6 +7,7 @@ import {
 } from "solid-js";
 
 export type GraphLayer = "Fact" | "Abstraction" | "Perspective" | "Goal";
+export const CORE_FLAVOR_ID = "__core__";
 
 export interface GraphFilterState {
   layers: ReadonlySet<GraphLayer>;
@@ -30,6 +31,12 @@ export const GRAPH_LAYERS: readonly GraphLayer[] = [
   "Perspective",
   "Goal",
 ];
+
+export const flavorFilterId = (flavor: string | null): string =>
+  flavor ?? CORE_FLAVOR_ID;
+
+export const flavorFilterLabel = (flavorId: string): string =>
+  flavorId === CORE_FLAVOR_ID ? "core" : flavorId;
 
 export const defaultGraphFilterState = (): GraphFilterState => ({
   layers: new Set(GRAPH_LAYERS),

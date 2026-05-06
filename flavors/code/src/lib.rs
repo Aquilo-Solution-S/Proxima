@@ -6,6 +6,7 @@ pub mod calls;
 pub mod chunker;
 pub mod ingest;
 pub mod local_git_source;
+pub mod mcp;
 pub mod migrations;
 pub mod operators;
 pub mod payloads;
@@ -14,7 +15,7 @@ pub mod repos;
 pub use ingest::{
     CODE_BLOB_BYTE_RANGE_SCHEMA, CODE_BLOB_SCHEMA, CODE_BLOB_WHOLE_SCHEMA,
     CODE_COMMIT_OBJECT_SCHEMA, CODE_COMMIT_WHOLE_SCHEMA, IngestError, LOCAL_GIT_SOURCE_ID,
-    build_engine, ingest_code_chunk, ingest_commit, ingest_file_revision,
+    build_engine, build_engine_with, ingest_code_chunk, ingest_commit, ingest_file_revision,
 };
 pub use local_git_source::{IndexError, IndexReport, IngestProgress, LocalGitSource};
 pub use migrations::migrator;
@@ -53,6 +54,11 @@ proxima_core::proxima_flavor! {
                 SchemaVersion::new(1),
             ),
         ),
+    ],
+    mcp_tools = [
+        mcp::CodeSearchChunksTool,
+        mcp::CodeOpenFileRevisionTool,
+        mcp::CodeSearchCommitsTool,
     ],
 }
 
@@ -97,5 +103,21 @@ mod tests {
             .resolve_relation(CORE_DERIVED_FROM_RELATION)
             .expect("core provenance relation resolves");
         assert_eq!(derived_from.payload_sidecar_table, None);
+    }
+
+    #[test]
+    fn registry_lists_all_mcp_tools() {
+        let mut registry = FlavorRegistry::new();
+        super::register(&mut registry);
+        let frozen = registry.freeze();
+
+        let names: HashSet<_> = frozen
+            .list_mcp_tools()
+            .iter()
+            .map(|tool| tool.name)
+            .collect();
+        assert!(names.contains("proxima-code/code_search_chunks"));
+        assert!(names.contains("proxima-code/code_open_file_revision"));
+        assert!(names.contains("proxima-code/code_search_commits"));
     }
 }
