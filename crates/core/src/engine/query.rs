@@ -1,6 +1,9 @@
 use super::Engine;
 use crate::auth::Credentials;
 use crate::error::ProtocolError;
+use crate::verbs::event_history::{
+    EventHistoryRequest, EventHistoryResponse, MAX_EVENT_HISTORY_LIMIT,
+};
 use crate::verbs::query::{QueryRequest, QueryResponse, SupersessionStatus};
 use crate::verbs::schema::{SchemaRequest, SchemaResponse};
 use crate::verbs::subscribe::{ChangeEventStream, SubscribeRequest};
@@ -67,6 +70,36 @@ impl Engine {
         }
         self.storage
             .subscribe_changes(&req.owner, req.since)
+            .await
+            .map_err(|e| ProtocolError::internal(e.to_string()))
+    }
+
+    /// docs/14 §"EventHistory" — Owner-scoped bounded change-event
+    /// read. Same auth shape as `Query` / `Subscribe`. Server clamps
+    /// `limit` to `MAX_EVENT_HISTORY_LIMIT`.
+    pub async fn event_history(
+        &self,
+        creds: &Credentials,
+        req: &EventHistoryRequest,
+    ) -> Result<EventHistoryResponse, ProtocolError> {
+        let resolved = self
+            .auth
+            .resolve(creds)
+            .map_err(|_| ProtocolError::auth_required())?;
+        if !resolved.can_access_owner(&req.owner) {
+            return Err(ProtocolError::forbidden(
+                "principal cannot access requested owner",
+            ));
+        }
+        if req.limit == 0 {
+            return Err(ProtocolError::internal("EventHistory.limit must be > 0"));
+        }
+        let mut effective = req.clone();
+        if effective.limit > MAX_EVENT_HISTORY_LIMIT {
+            effective.limit = MAX_EVENT_HISTORY_LIMIT;
+        }
+        self.storage
+            .event_history(&effective)
             .await
             .map_err(|e| ProtocolError::internal(e.to_string()))
     }

@@ -12,6 +12,7 @@ use crate::operators::{
     ConsolidateBatchF2AOutcome, ConsolidateBatchF2ARequest, F2AInvocationKey, FactRow, SidecarSpec,
 };
 use crate::verbs::close_batch::CloseBatchOutcome;
+use crate::verbs::event_history::{EventHistoryRequest, EventHistoryResponse};
 use crate::verbs::event_ingest::{EventDraft, EventIngestOutcome};
 use crate::verbs::goal_write::{GoalDraft, GoalWriteOutcome};
 use crate::verbs::subscribe::ChangeEventStream;
@@ -86,6 +87,16 @@ pub trait Storage: Send + Sync {
         owner: &crate::Owner,
         since: Option<uuid::Uuid>,
     ) -> Result<ChangeEventStream, StorageError>;
+
+    /// Owner-scoped bounded read of `change_event` rows, newest-first.
+    /// Server clamps `limit` to `MAX_EVENT_HISTORY_LIMIT`. When
+    /// `before` is `Some(seq)`, returns rows with `seq < before`.
+    /// `seq_high_water` is the latest seq in the owner's change_event
+    /// log at read time (cursor for a follow-up Subscribe).
+    async fn event_history(
+        &self,
+        req: &EventHistoryRequest,
+    ) -> Result<EventHistoryResponse, StorageError>;
 
     /// Owner-scoped snapshot read of memories per docs/14 §"Query".
     /// Returns MemoryRow substrate shape with payload bytes projected
@@ -208,6 +219,16 @@ impl Storage for NoopStorage {
         _since: Option<uuid::Uuid>,
     ) -> Result<ChangeEventStream, StorageError> {
         Ok(Box::pin(futures_util::stream::empty()))
+    }
+
+    async fn event_history(
+        &self,
+        _req: &EventHistoryRequest,
+    ) -> Result<EventHistoryResponse, StorageError> {
+        Ok(EventHistoryResponse {
+            events: Vec::new(),
+            seq_high_water: None,
+        })
     }
 
     async fn query_memories(
