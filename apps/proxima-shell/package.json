@@ -10,7 +10,8 @@
     "serve": "vite preview",
     "typecheck": "tsc --noEmit",
     "tauri": "tauri",
-    "tauri:dev": "tauri dev",
+    "tauri:dev": "node ../../scripts/dev-with-perf.mjs",
+    "tauri:dev:raw": "tauri dev",
     "tauri:build": "tauri build"
   },
   "license": "Apache-2.0",
