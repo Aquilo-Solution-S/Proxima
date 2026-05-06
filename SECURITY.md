@@ -20,7 +20,7 @@ timeline within 7 days.
 
 Proxima is in **design phase**. No code has been released, so there are
 no supported versions yet. Once the first tagged release ships
-(`v0.1.0`, see [`ROADMAP.md`](ROADMAP.md)), this section will be
+, this section will be
 updated with the supported-version matrix.
 
 ## Disclosure
