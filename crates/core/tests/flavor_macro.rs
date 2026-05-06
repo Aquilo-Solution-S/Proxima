@@ -2,7 +2,7 @@
 //! macros in M3.A.1.
 
 use proxima_core::verbs::schema::PayloadKind;
-use proxima_core::{FactPayload, FlavorRegistry, proxima_flavor, proxima_schema_id};
+use proxima_core::{FactPayload, FlavorRegistry, GoalPayload, proxima_flavor, proxima_schema_id};
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct TestFactV1 {
@@ -23,9 +23,24 @@ impl FactPayload for TestFactV1 {
     }
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+struct TestGoalV1 {
+    text: String,
+}
+
+impl GoalPayload for TestGoalV1 {
+    const SCHEMA_ID: &'static str = proxima_schema_id!("test-goal");
+    const SCHEMA_VERSION: u32 = 1;
+
+    fn sidecar_table() -> &'static str {
+        "goal_test_goal_v1"
+    }
+}
+
 proxima_flavor! {
     name = "proxima-core",
     fact_schemas = [ TestFactV1 ],
+    goal_schemas = [ TestGoalV1 ],
 }
 
 #[test]
@@ -34,10 +49,30 @@ fn flavor_macro_registers_fact_schema() {
     register(&mut registry);
     let frozen = registry.freeze();
     let schemas = frozen.list();
-    assert_eq!(schemas.len(), 1);
+    assert_eq!(schemas.len(), 2);
     assert_eq!(schemas[0].schema_id.as_str(), "proxima-core/test-fact");
     assert_eq!(schemas[0].schema_version.into_inner(), 1);
     assert_eq!(schemas[0].kind, PayloadKind::Fact);
+    assert_eq!(schemas[1].schema_id.as_str(), "proxima-core/test-goal");
+    assert_eq!(schemas[1].schema_version.into_inner(), 1);
+    assert_eq!(schemas[1].kind, PayloadKind::Goal);
+}
+
+mod empty_goal_schemas {
+    use proxima_core::proxima_flavor;
+
+    proxima_flavor! {
+        name = "proxima-core",
+        goal_schemas = [],
+    }
+}
+
+#[test]
+fn flavor_macro_accepts_empty_goal_schemas() {
+    let mut registry = FlavorRegistry::new();
+    empty_goal_schemas::register(&mut registry);
+    let frozen = registry.freeze();
+    assert!(frozen.list().is_empty());
 }
 
 // A FactPayload whose SCHEMA_ID is hard-coded (no proxima_schema_id!)

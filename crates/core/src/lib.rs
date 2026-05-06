@@ -55,7 +55,7 @@ macro_rules! proxima_schema_id {
 
 /// Build-time registration macro. v1 subset — supports
 /// `fact_schemas`, `abstraction_schemas`, `perspective_schemas`,
-/// `edge_schemas`, `relations`, `mcp_tools`. Expands to a
+/// `goal_schemas`, `edge_schemas`, `relations`, `mcp_tools`. Expands to a
 /// `pub fn register(registry: &mut FlavorRegistry)` that performs
 /// runtime prefix checks and adds each schema / relation.
 ///
@@ -69,10 +69,9 @@ macro_rules! proxima_schema_id {
 /// `(vendor, model_id)` bindings are runtime configuration, not
 /// flavor authorship. New models plug in at runtime.
 ///
-/// Future verbs (sources, tools, operators, personalities,
-/// goal_schemas) land in M6+ as the underlying systems
-/// materialize. Reject unknown keys at expansion time to keep
-/// authors honest.
+/// Future verbs (sources, operators, personalities) land as the
+/// underlying systems materialize. Reject unknown keys at expansion
+/// time to keep authors honest.
 ///
 /// ```ignore
 /// proxima_flavor! {
@@ -94,6 +93,7 @@ macro_rules! proxima_flavor {
         $(, fact_schemas = [ $($fact:ty),* $(,)? ])?
         $(, abstraction_schemas = [ $($abs:ty),* $(,)? ])?
         $(, perspective_schemas = [ $($persp:ty),* $(,)? ])?
+        $(, goal_schemas = [ $($goal:ty),* $(,)? ])?
         $(, edge_schemas = [ $($edge:ty),* $(,)? ])?
         $(, relations = [ $($rel:expr),* $(,)? ])?
         $(, mcp_tools = [ $($tool:ty),* $(,)? ])?
@@ -137,6 +137,18 @@ macro_rules! proxima_flavor {
                         id, expected_prefix,
                     );
                     registry.add_perspective_schema::<$persp>();
+                }
+            )*)?
+            $($(
+                {
+                    use $crate::GoalPayload;
+                    let id = <$goal as GoalPayload>::SCHEMA_ID;
+                    assert!(
+                        id.starts_with(expected_prefix),
+                        "GoalPayload SCHEMA_ID {:?} does not start with crate prefix {:?}",
+                        id, expected_prefix,
+                    );
+                    registry.add_goal_schema::<$goal>();
                 }
             )*)?
             $($(
