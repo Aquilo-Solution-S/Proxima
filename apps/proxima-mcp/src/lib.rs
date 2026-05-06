@@ -48,10 +48,27 @@ pub async fn run_with_handle(
     ),
     CliError,
 > {
+    let pg = proxima_storage_pg::PgStorage::connect(&config.database_url)
+        .await
+        .map_err(McpServerError::from)?;
+    pg.run_migrations().await.map_err(McpServerError::from)?;
+    proxima_mcp_substrate::migrator()
+        .run(pg.pool())
+        .await
+        .map_err(McpServerError::from)?;
+    proxima_flavor_goal::migrator()
+        .run(pg.pool())
+        .await
+        .map_err(McpServerError::from)?;
+
     let mut registry = FlavorRegistry::new();
     proxima_mcp_substrate::register(&mut registry);
-    let server =
-        DevMcpServer::from_database_url(&config.database_url, config.owner, registry).await?;
+    proxima_flavor_goal::register(&mut registry);
+    let server = DevMcpServer::from_pool(
+        pg.pool().clone(),
+        config.owner,
+        std::sync::Arc::new(registry.freeze()),
+    );
     Ok(serve_streamable_http(config.bind, server, default_allowlist()).await?)
 }
 

@@ -8,8 +8,10 @@ repository.workspace = true
 
 [dependencies]
 proxima-core = { path = "../../crates/core" }
+proxima-flavor-goal = { path = "../../flavors/goal" }
 proxima-mcp-server = { path = "../../crates/mcp-server" }
 proxima-mcp-substrate = { path = "../../flavors/mcp" }
+proxima-storage-pg = { path = "../../crates/storage-pg" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
