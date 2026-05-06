@@ -30,7 +30,7 @@ futures = { version = "0.3", default-features = false, features = ["std"] }
 async-trait = "0.1"
 blake3 = "1"
 ciborium = "0.2"
-time = { version = "0.3", default-features = false, features = ["serde", "serde-human-readable", "serde-well-known", "std"] }
+time = { version = "0.3", default-features = false, features = ["formatting", "parsing", "serde", "serde-human-readable", "serde-well-known", "std"] }
 tracing = { version = "0.1", default-features = false, features = ["std"] }
 tokio-stream = { version = "0.1", default-features = false, features = ["sync"] }
 rmcp = { version = "1.6", default-features = false, features = ["server", "transport-streamable-http-server"] }
