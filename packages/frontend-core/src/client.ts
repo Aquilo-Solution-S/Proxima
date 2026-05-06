@@ -1,6 +1,8 @@
 import type {
   ChangeEvent,
   EventDraft,
+  EventHistoryRequest,
+  EventHistoryResponse,
   EventIngestOutcome,
   GoalDraft,
   GoalWriteOutcome,
@@ -17,6 +19,7 @@ export interface Subscription {
 export interface EngineClient {
   schema(): Promise<SchemaResponse>;
   query(req: QueryRequest): Promise<QueryResponse>;
+  eventHistory(req: EventHistoryRequest): Promise<EventHistoryResponse>;
   subscribe(
     req: SubscribeRequest,
     onEvent: (event: ChangeEvent) => void,

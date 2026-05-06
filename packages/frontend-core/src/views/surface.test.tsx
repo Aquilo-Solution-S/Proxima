@@ -1,13 +1,21 @@
-import { cleanup, fireEvent, render, screen } from "@solidjs/testing-library";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@solidjs/testing-library";
 import { encode } from "cbor-x";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ChangeEvent, EntityKind, MemoryRow } from "../bindings";
+import type { EngineClient } from "../client";
 import {
   GraphFilterProvider,
   createGraphFilterStore,
 } from "../graph-filter-store";
 import {
   GraphProvider,
+  createGraphStore,
   sentinelOwner,
   type GraphSnapshot,
   type GraphStore,
@@ -63,6 +71,63 @@ const createHubWithCode = () => {
   hub.registerFlavor("code", registerCode);
   return hub;
 };
+
+const event = (seq: string): ChangeEvent => ({
+  seq,
+  owner,
+  kind: {
+    EntityAppend: {
+      entity_kind: "Fact",
+      entity: { Memory: `019dfa35-0000-7000-8000-${seq.slice(-12)}` },
+      schema_id: "test/fact_blob",
+      schema_version: 1,
+      supersedes: null,
+    },
+  },
+});
+
+const clientWithHistory = (
+  seedEvents: ChangeEvent[],
+  onSubscribe?: (handler: (event: ChangeEvent) => void) => void,
+): EngineClient => ({
+  schema: async () => ({ schemas: [] }),
+  query: async () => ({
+    memories: [],
+    goals: [],
+    edges: [],
+    seq_high_water: seedEvents[0]?.seq ?? null,
+  }),
+  eventHistory: async () => ({
+    events: seedEvents,
+    seq_high_water: seedEvents[0]?.seq ?? null,
+  }),
+  subscribe: async (_req, handler) => {
+    onSubscribe?.(handler);
+    return { unsubscribe: vi.fn() };
+  },
+  goalWrite: async () => {
+    throw new Error("not used");
+  },
+  eventIngest: async () => {
+    throw new Error("not used");
+  },
+});
+
+const renderSurfaceWithClient = (client: EngineClient) => {
+  const hub = createHubWithCode();
+  const store = createGraphStore(client, hub, owner);
+  render(() => (
+    <GraphProvider store={store}>
+      <GraphFilterProvider store={createGraphFilterStore()}>
+        <FullSurface hub={hub} />
+      </GraphFilterProvider>
+    </GraphProvider>
+  ));
+  fireEvent.click(screen.getByRole("button", { name: "Expand Event stream" }));
+};
+
+const eventRows = (): NodeListOf<Element> =>
+  document.querySelectorAll(".event-row");
 
 describe("FullSurface fact explorer", () => {
   afterEach(() => cleanup());
@@ -316,5 +381,34 @@ describe("FullSurface fact explorer", () => {
     ).toBeGreaterThan(1);
     expect(screen.getAllByText(fact.id).length).toBeGreaterThan(1);
     expect(screen.getAllByText("src/event.rs:4-5").length).toBeGreaterThan(1);
+  });
+
+  it("renders historical events before any live append", async () => {
+    const seedEvents = [
+      event("019dfa34-0000-7000-8000-000000000002"),
+      event("019dfa33-0000-7000-8000-000000000001"),
+    ];
+    renderSurfaceWithClient(clientWithHistory(seedEvents));
+
+    await waitFor(() => expect(eventRows()).toHaveLength(2));
+    const rows = Array.from(eventRows());
+    expect(rows[0]?.textContent).toContain("019dfa34");
+    expect(rows[1]?.textContent).toContain("019dfa33");
+  });
+
+  it("dedupes a live event whose seq is already in the seed", async () => {
+    const seed = event("019dfa36-0000-7000-8000-000000000005");
+    const live = { emit: undefined as ((event: ChangeEvent) => void) | undefined };
+    renderSurfaceWithClient(
+      clientWithHistory([seed], (handler) => {
+        live.emit = handler;
+      }),
+    );
+
+    await waitFor(() => expect(eventRows()).toHaveLength(1));
+    if (live.emit === undefined) throw new Error("subscription callback not captured");
+    live.emit(seed);
+
+    await waitFor(() => expect(eventRows()).toHaveLength(1));
   });
 });

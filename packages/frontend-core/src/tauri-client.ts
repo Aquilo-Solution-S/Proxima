@@ -3,6 +3,8 @@ import {
   commands,
   type ChangeEvent,
   type EventDraft,
+  type EventHistoryRequest,
+  type EventHistoryResponse,
   type EventIngestOutcome,
   type GoalDraft,
   type GoalWriteOutcome,
@@ -28,6 +30,10 @@ export class TauriEngineClient implements EngineClient {
 
   async query(req: QueryRequest): Promise<QueryResponse> {
     return unwrap(commands.query(req));
+  }
+
+  async eventHistory(req: EventHistoryRequest): Promise<EventHistoryResponse> {
+    return unwrap(commands.eventHistory(req));
   }
 
   async subscribe(
