@@ -12,7 +12,9 @@
     "tauri": "tauri",
     "tauri:dev": "node ../../scripts/dev-with-perf.mjs",
     "tauri:dev:raw": "tauri dev",
-    "tauri:build": "tauri build"
+    "tauri:build": "tauri build",
+    "perf:clean": "node ../../scripts/perf-clean.mjs",
+    "perf:down": "docker compose -f ../../docker-compose.dev.yml down"
   },
   "license": "Apache-2.0",
   "dependencies": {
