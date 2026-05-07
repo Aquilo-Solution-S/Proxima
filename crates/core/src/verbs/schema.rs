@@ -5,8 +5,7 @@
 
 use std::sync::Arc;
 
-use crate::operators::{A2POperator, F2AOperator};
-use crate::personality::PersonalityFlavor;
+use crate::personality::{PersonalityFlavor, WakeFilterKind};
 use crate::{McpToolDescriptor, RegisteredRelation, RelationDescriptor, SchemaId, SchemaVersion};
 
 pub type PayloadValidator = fn(&serde_json::Value) -> Result<(), String>;
@@ -73,8 +72,7 @@ pub struct FlavorRegistryFrozen {
     validators: Vec<PayloadValidatorEntry>,
     mcp_tools: Vec<McpToolDescriptor>,
     personalities: Vec<Arc<dyn PersonalityFlavor>>,
-    f2a_operators: Vec<Arc<dyn F2AOperator>>,
-    a2p_operators: Vec<Arc<dyn A2POperator>>,
+    wake_filter_kinds: Vec<Arc<dyn WakeFilterKind>>,
 }
 
 impl FlavorRegistryFrozen {
@@ -93,8 +91,7 @@ impl FlavorRegistryFrozen {
             validators: Vec::new(),
             mcp_tools: Vec::new(),
             personalities: Vec::new(),
-            f2a_operators: Vec::new(),
-            a2p_operators: Vec::new(),
+            wake_filter_kinds: Vec::new(),
         }
     }
 
@@ -112,8 +109,7 @@ impl FlavorRegistryFrozen {
             validators: Vec::new(),
             mcp_tools: Vec::new(),
             personalities: Vec::new(),
-            f2a_operators: Vec::new(),
-            a2p_operators: Vec::new(),
+            wake_filter_kinds: Vec::new(),
         }
     }
 
@@ -123,8 +119,7 @@ impl FlavorRegistryFrozen {
         validators: Vec<PayloadValidatorEntry>,
         mcp_tools: Vec<McpToolDescriptor>,
         personalities: Vec<Arc<dyn PersonalityFlavor>>,
-        f2a_operators: Vec<Arc<dyn F2AOperator>>,
-        a2p_operators: Vec<Arc<dyn A2POperator>>,
+        wake_filter_kinds: Vec<Arc<dyn WakeFilterKind>>,
     ) -> Self {
         Self {
             schemas,
@@ -132,8 +127,7 @@ impl FlavorRegistryFrozen {
             validators,
             mcp_tools,
             personalities,
-            f2a_operators,
-            a2p_operators,
+            wake_filter_kinds,
         }
     }
 
@@ -160,13 +154,8 @@ impl FlavorRegistryFrozen {
     }
 
     #[must_use]
-    pub fn list_f2a_operators(&self) -> &[Arc<dyn F2AOperator>] {
-        &self.f2a_operators
-    }
-
-    #[must_use]
-    pub fn list_a2p_operators(&self) -> &[Arc<dyn A2POperator>] {
-        &self.a2p_operators
+    pub fn list_wake_filter_kinds(&self) -> &[Arc<dyn WakeFilterKind>] {
+        &self.wake_filter_kinds
     }
 
     pub fn list(&self) -> Vec<SchemaInfo> {

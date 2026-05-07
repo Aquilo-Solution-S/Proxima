@@ -49,6 +49,9 @@ pub(crate) async fn hydrate_change_event(
         edge_source_goal_id: Option<Uuid>,
         edge_target_memory_id: Option<Uuid>,
         edge_target_goal_id: Option<Uuid>,
+        entity_personality_type_id: Option<String>,
+        entity_personality_instance_id: Option<Uuid>,
+        wake_chain_depth: i16,
     }
 
     let row: Option<Row> = sqlx::query_as(
@@ -58,7 +61,9 @@ pub(crate) async fn hydrate_change_event(
                 supersedes_memory_id, supersedes_goal_id,
                 edge_id, edge_relation,
                 edge_source_memory_id, edge_source_goal_id,
-                edge_target_memory_id, edge_target_goal_id
+                edge_target_memory_id, edge_target_goal_id,
+                entity_personality_type_id, entity_personality_instance_id,
+                wake_chain_depth
          FROM proxima_core.change_event WHERE seq = $1",
     )
     .bind(seq)
@@ -85,6 +90,12 @@ pub(crate) async fn hydrate_change_event(
         org_id: OrgId::new(row.owner_org_id),
     };
 
+    let (authoring_type, authoring_instance) = decode_personality(
+        row.entity_personality_type_id.as_deref(),
+        row.entity_personality_instance_id,
+    );
+    let wake_chain_depth = u16::try_from(row.wake_chain_depth).unwrap_or(0);
+
     if row.kind == "EdgeAppend" {
         let edge_id = row
             .edge_id
@@ -103,6 +114,9 @@ pub(crate) async fn hydrate_change_event(
                 source,
                 target,
             },
+            authoring_personality_type_id: authoring_type.clone(),
+            authoring_personality_instance_id: authoring_instance,
+            wake_chain_depth,
         }));
     }
 
@@ -174,7 +188,25 @@ pub(crate) async fn hydrate_change_event(
         seq: row.seq,
         owner,
         kind,
+        authoring_personality_type_id: authoring_type,
+        authoring_personality_instance_id: authoring_instance,
+        wake_chain_depth,
     }))
+}
+
+/// Map the row's `entity_personality_type_id` / `_instance_id` columns
+/// (always populated post-migration; sentinel `'external/event-source'`
+/// + nil-uuid for external ingestions) to the public `Option<...>`
+/// shape on `ChangeEvent`.
+fn decode_personality(
+    type_id: Option<&str>,
+    instance_id: Option<Uuid>,
+) -> (Option<String>, Option<Uuid>) {
+    const EXTERNAL_SENTINEL: &str = "external/event-source";
+    match (type_id, instance_id) {
+        (Some(t), Some(i)) if t != EXTERNAL_SENTINEL => (Some(t.to_string()), Some(i)),
+        _ => (None, None),
+    }
 }
 
 fn decode_entity_ref(

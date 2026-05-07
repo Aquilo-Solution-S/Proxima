@@ -156,11 +156,18 @@ pub async fn ingest_event_in_tx(
     .map_err(map_err)?;
 
     // 4. memory (Fact) — citation_mapping_id FK is deferred.
+    //    External-fact authorship: personality_type_id is the sentinel
+    //    `external/event-source` and personality_instance_id is nil. The
+    //    columns are NOT NULL since the substrate migration; the
+    //    sentinel keeps Fact rows uniformly typed without instantiating
+    //    a real personality instance per source.
     sqlx::query(
         "INSERT INTO proxima_core.memories \
             (memory_id, owner_principal_kind, owner_principal_id, \
-             owner_org_id, schema_id, schema_version, event_id, citation_mapping_id) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+             owner_org_id, schema_id, schema_version, event_id, citation_mapping_id, \
+             personality_type_id, personality_instance_id) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'external/event-source', \
+                 '00000000-0000-0000-0000-000000000000'::uuid)",
     )
     .bind(memory_id)
     .bind(owner_kind)

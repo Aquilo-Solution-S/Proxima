@@ -62,7 +62,7 @@ impl Engine {
         &self,
         creds: &Credentials,
         owner: crate::Owner,
-        source_batch_id: SourceBatchId,
+        _source_batch_id: SourceBatchId,
     ) -> Result<CloseBatchOutcome, ProtocolError> {
         let resolved = self
             .auth
@@ -75,23 +75,17 @@ impl Engine {
         }
         let outcome = self
             .storage
-            .close_batch(&owner, source_batch_id)
+            .close_batch(&owner, _source_batch_id)
             .await
             .map_err(|e| match e {
                 StorageError::NotFound => ProtocolError::not_found("source batch not found"),
                 other => ProtocolError::internal(other.to_string()),
             })?;
 
-        // Run registered F→A operators against the just-closed batch.
-        // Skipped for already-closed batches (idempotent re-close) —
-        // dedup at the storage layer would short-circuit the persist
-        // step anyway, but skipping here avoids redundant LLM calls.
-        if !outcome.already_closed
-            && !self.registry.list_f2a_operators().is_empty()
-            && !self.llms.is_empty()
-            && self.embed.is_some()
-        {
-            self.run_f2a_for_batch(&owner, source_batch_id).await?;
+        // Wake personalities after a new batch closes. Dispatcher
+        // cursors and invocation rows provide idempotency.
+        if !outcome.already_closed && !self.registry.list_personalities().is_empty() {
+            let _ = self.run_dispatcher_tick().await?;
         }
         Ok(outcome)
     }

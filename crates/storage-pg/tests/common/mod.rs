@@ -3,6 +3,8 @@
 // `dead_code` even though another binary uses them.
 #![allow(dead_code)]
 
+pub mod personality;
+
 use proxima_core::{OrgId, Owner, Principal, UserId};
 use proxima_storage_pg::PgStorage;
 use sqlx::{Connection, Executor, PgConnection};

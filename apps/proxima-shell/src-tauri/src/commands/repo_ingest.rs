@@ -85,13 +85,9 @@ pub(super) fn spawn_run_driver(
             hub.publish_snapshot(owner.clone(), run).await;
 
             engine
-                .run_pending_f2a(&owner)
+                .run_dispatcher_tick()
                 .await
-                .map_err(|e| explain_driver_error("f2a", &e.to_string()))?;
-            engine
-                .run_pending_a2p(&owner)
-                .await
-                .map_err(|e| explain_driver_error("a2p", &e.to_string()))?;
+                .map_err(|e| explain_driver_error("dispatcher", &e.to_string()))?;
             counters.abstractions_emitted =
                 count_abstractions_for_run(pg.pool(), &owner, record.repo_id)
                     .await

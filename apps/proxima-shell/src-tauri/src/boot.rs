@@ -1,13 +1,12 @@
 use std::sync::Arc;
 
 use proxima_core::auth::NoAuth;
-use proxima_core::models::{Dialect, ModelTier};
-use proxima_core::operators::{EmbeddingClient, LlmClient};
+use proxima_core::llm::anthropic_http::AnthropicHttpClient;
+use proxima_core::llm::{AnthropicClient, EmbeddingClient};
+use proxima_core::models::ModelTier;
 use proxima_core::secrets::ResolverRegistry;
 use proxima_core::{Engine, FlavorRegistry, FlavorRegistryFrozen, OrgId, Owner, Principal, UserId};
-use proxima_llm_openai_compat::{
-    OpenAiCompatConfig, OpenAiCompatEmbeddingClient, OpenAiCompatLlmClient,
-};
+use proxima_llm_openai_compat::{OpenAiCompatConfig, OpenAiCompatEmbeddingClient};
 use proxima_mcp_server::{DevMcpServer, default_allowlist, serve_streamable_http};
 use proxima_storage_pg::PgStorage;
 use tokio::task::JoinHandle;
@@ -114,39 +113,96 @@ async fn wire_consolidation_clients(engine: Engine, pg: &Arc<PgStorage>, owner: 
         return engine;
     }
 
-    match resolve_consolidation_clients(&cfg) {
-        Ok((llms, embed)) => {
+    let engine = match resolve_consolidation_clients(&cfg) {
+        Ok(embed) => {
             tracing::info!(
-                llm_models = ?llms
-                    .iter()
-                    .map(|(tier, llm)| (*tier, llm.model_id().to_string()))
-                    .collect::<Vec<_>>(),
                 embed_model = embed.model_id(),
                 embed_dim = embed.dim(),
-                "consolidation clients attached"
+                "embedding client attached"
             );
-            let mut engine = engine.with_embed(Arc::new(embed));
-            for (tier, llm) in llms {
-                engine = engine.with_llm_for_tier(tier, Arc::new(llm));
-            }
+            engine.with_embed(Arc::new(embed))
+        }
+        Err(e) => {
+            tracing::warn!("embedding disabled at boot: {e}");
+            engine
+        }
+    };
+
+    match resolve_anthropic_client(&cfg) {
+        Ok(Some(anthropic)) => {
+            tracing::info!(
+                fast = anthropic.model_id_for(ModelTier::Fast),
+                standard = anthropic.model_id_for(ModelTier::Standard),
+                deep = anthropic.model_id_for(ModelTier::Deep),
+                "Anthropic client attached; personality wakes enabled"
+            );
+            engine.with_anthropic(Arc::new(anthropic))
+        }
+        Ok(None) => {
+            tracing::info!(
+                "no Anthropic tier bindings found; personality wakes will defer \
+                 until tiers are bound to an Anthropic model in settings"
+            );
             engine
         }
         Err(e) => {
-            tracing::warn!("consolidation disabled at boot: {e}");
+            tracing::warn!("Anthropic client disabled at boot: {e}");
             engine
         }
     }
 }
 
+/// Build an `AnthropicHttpClient` from the validated `AppConfig` if the
+/// user has bound any tier to a `vendor = "anthropic"` model.
+///
+/// `validate_config` has already enforced that every tier required by
+/// registered personalities is bound to a model with sufficient caps,
+/// so a missing or non-Anthropic binding here just means the user
+/// hasn't configured Anthropic for that tier — wakes at that tier will
+/// defer rather than fail loudly.
+pub(crate) fn resolve_anthropic_client(
+    cfg: &AppConfig,
+) -> Result<Option<AnthropicHttpClient>, String> {
+    let anthropic_rows: Vec<&_> = cfg
+        .llm
+        .models
+        .iter()
+        .filter(|m| m.vendor.eq_ignore_ascii_case("anthropic"))
+        .collect();
+    if anthropic_rows.is_empty() {
+        return Ok(None);
+    }
+    let key_source = anthropic_rows[0];
+    let resolver = shell_secret_resolver();
+    let api_key = resolve_optional_secret(&resolver, key_source.secret_ref.as_deref())
+        .map_err(|e| format!("could not resolve anthropic secret_ref: {e}"))?
+        .ok_or_else(|| {
+            "anthropic model has no secret_ref or it resolved to empty".to_string()
+        })?;
+    let base_url = key_source.base_url.trim_end_matches('/').to_string();
+
+    let resolve_tier = |tier: ModelTier| -> String {
+        cfg.tiers
+            .get(tier)
+            .filter(|r| r.vendor.eq_ignore_ascii_case("anthropic"))
+            .map(|r| r.model_id.clone())
+            .unwrap_or_default()
+    };
+    let fast = resolve_tier(ModelTier::Fast);
+    let standard = resolve_tier(ModelTier::Standard);
+    let deep = resolve_tier(ModelTier::Deep);
+    if fast.is_empty() && standard.is_empty() && deep.is_empty() {
+        return Ok(None);
+    }
+
+    AnthropicHttpClient::with_base_url(base_url, api_key, fast, standard, deep)
+        .map(Some)
+        .map_err(|e| format!("could not construct AnthropicHttpClient: {e}"))
+}
+
 pub(crate) fn resolve_consolidation_clients(
     cfg: &AppConfig,
-) -> Result<
-    (
-        Vec<(ModelTier, OpenAiCompatLlmClient)>,
-        OpenAiCompatEmbeddingClient,
-    ),
-    String,
-> {
+) -> Result<OpenAiCompatEmbeddingClient, String> {
     let active_ref = cfg
         .embedding
         .active
@@ -162,38 +218,7 @@ pub(crate) fn resolve_consolidation_clients(
     let resolver = shell_secret_resolver();
     let embed_secret = resolve_optional_secret(&resolver, embed.secret_ref.as_deref())
         .map_err(|e| format!("could not resolve embedding secret_ref for {active_ref:?}: {e}"))?;
-
     let embed_base_url = normalize_openai_compat_base_url(&embed.vendor, &embed.base_url);
-
-    let mut llm_clients = Vec::new();
-    for tier in [ModelTier::Fast, ModelTier::Standard, ModelTier::Deep] {
-        let Some(model_ref) = cfg.tiers.get(tier) else {
-            continue;
-        };
-        let llm = cfg
-            .llm
-            .models
-            .iter()
-            .find(|m| m.vendor == model_ref.vendor && m.model_id == model_ref.model_id)
-            .ok_or_else(|| format!("tier {tier:?} bound to unknown model {model_ref:?}"))?;
-        if llm.dialect != Dialect::OpenAI {
-            return Err(format!(
-                "unsupported LLM dialect for {model_ref:?}: {:?}",
-                llm.dialect
-            ));
-        }
-        let llm_secret = resolve_optional_secret(&resolver, llm.secret_ref.as_deref())
-            .map_err(|e| format!("could not resolve LLM secret_ref for {model_ref:?}: {e}"))?;
-        let llm_base_url = normalize_openai_compat_base_url(&llm.vendor, &llm.base_url);
-        let llm_client = OpenAiCompatLlmClient::new(
-            llm.model_id.clone(),
-            OpenAiCompatConfig::new(llm_base_url, llm_secret),
-        )
-        .map_err(|e| {
-            format!("could not construct OpenAI-compatible LLM client for {model_ref:?}: {e}")
-        })?;
-        llm_clients.push((tier, llm_client));
-    }
 
     let embed_client = OpenAiCompatEmbeddingClient::new(
         embed.model_id.clone(),
@@ -203,7 +228,7 @@ pub(crate) fn resolve_consolidation_clients(
     .map_err(|e| {
         format!("could not construct OpenAI-compatible embedding client for {active_ref:?}: {e}")
     })?;
-    Ok((llm_clients, embed_client))
+    Ok(embed_client)
 }
 
 pub(crate) fn normalize_openai_compat_base_url(vendor: &str, base_url: &str) -> String {
@@ -269,4 +294,115 @@ pub(crate) async fn spawn_mcp_listener(
     let frozen: Arc<FlavorRegistryFrozen> = Arc::new(registry.freeze());
     let server = DevMcpServer::from_pool(pool, owner, frozen);
     serve_streamable_http(bind, server, default_allowlist()).await
+}
+
+#[cfg(test)]
+#[allow(unsafe_code)]
+mod resolve_anthropic_client_tests {
+    use super::*;
+    use crate::config::{
+        AppConfig, EmbeddingConfig, LlmConfig, LlmModelRecord, ModelRef, TierBindings,
+    };
+    use proxima_core::models::{Dialect, LlmCaps};
+
+    fn anthropic_row(secret_ref: Option<&str>) -> LlmModelRecord {
+        LlmModelRecord {
+            vendor: "anthropic".into(),
+            model_id: "claude-haiku-4-5".into(),
+            dialect: Dialect::Anthropic,
+            base_url: "https://api.anthropic.com".into(),
+            caps: LlmCaps {
+                tool_use: true,
+                ..LlmCaps::none()
+            },
+            secret_ref: secret_ref.map(str::to_string),
+        }
+    }
+
+    fn openai_row() -> LlmModelRecord {
+        LlmModelRecord {
+            vendor: "openai".into(),
+            model_id: "gpt-4o-mini".into(),
+            dialect: Dialect::OpenAI,
+            base_url: "https://api.openai.com".into(),
+            caps: LlmCaps::none(),
+            secret_ref: Some("env:OPENAI_API_KEY".into()),
+        }
+    }
+
+    #[test]
+    fn empty_config_returns_none() {
+        let cfg = AppConfig::default();
+        assert!(matches!(resolve_anthropic_client(&cfg), Ok(None)));
+    }
+
+    #[test]
+    fn only_openai_vendor_returns_none() {
+        let cfg = AppConfig {
+            llm: LlmConfig {
+                models: vec![openai_row()],
+            },
+            ..AppConfig::default()
+        };
+        assert!(matches!(resolve_anthropic_client(&cfg), Ok(None)));
+    }
+
+    #[test]
+    fn anthropic_present_but_no_anthropic_tier_returns_none() {
+        let env_var = "PROXIMA_TEST_ANTH_KEY_NOTIER";
+        unsafe { std::env::set_var(env_var, "sk-test") };
+        let cfg = AppConfig {
+            llm: LlmConfig {
+                models: vec![anthropic_row(Some(&format!("env:{env_var}")))],
+            },
+            tiers: TierBindings::default(),
+            embedding: EmbeddingConfig::default(),
+        };
+        let result = resolve_anthropic_client(&cfg);
+        unsafe { std::env::remove_var(env_var) };
+        assert!(matches!(result, Ok(None)));
+    }
+
+    #[test]
+    fn anthropic_with_tier_and_secret_returns_some() {
+        let env_var = "PROXIMA_TEST_ANTH_KEY_OK";
+        unsafe { std::env::set_var(env_var, "sk-test") };
+        let cfg = AppConfig {
+            llm: LlmConfig {
+                models: vec![anthropic_row(Some(&format!("env:{env_var}")))],
+            },
+            tiers: TierBindings {
+                fast: Some(ModelRef {
+                    vendor: "anthropic".into(),
+                    model_id: "claude-haiku-4-5".into(),
+                }),
+                ..TierBindings::default()
+            },
+            embedding: EmbeddingConfig::default(),
+        };
+        let result = resolve_anthropic_client(&cfg);
+        unsafe { std::env::remove_var(env_var) };
+        let client = result.expect("ok").expect("some");
+        assert_eq!(client.model_id_for(ModelTier::Fast), "claude-haiku-4-5");
+        assert_eq!(client.model_id_for(ModelTier::Standard), "");
+        assert_eq!(client.model_id_for(ModelTier::Deep), "");
+    }
+
+    #[test]
+    fn anthropic_with_tier_but_missing_env_returns_err() {
+        let cfg = AppConfig {
+            llm: LlmConfig {
+                models: vec![anthropic_row(Some("env:PROXIMA_TEST_ANTH_KEY_ABSENT"))],
+            },
+            tiers: TierBindings {
+                fast: Some(ModelRef {
+                    vendor: "anthropic".into(),
+                    model_id: "claude-haiku-4-5".into(),
+                }),
+                ..TierBindings::default()
+            },
+            embedding: EmbeddingConfig::default(),
+        };
+        assert!(resolve_anthropic_client(&cfg).is_err());
+    }
 }

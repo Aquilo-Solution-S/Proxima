@@ -9,6 +9,10 @@ export const commands = {
 	eventHistory: (req: EventHistoryRequest) => typedError<EventHistoryResponse, ProtocolError>(__TAURI_INVOKE("event_history", { req })),
 	eventIngest: (draft: EventDraft) => typedError<EventIngestOutcome, ProtocolError>(__TAURI_INVOKE("event_ingest", { draft })),
 	goalWrite: (draft: GoalDraft) => typedError<GoalWriteOutcome, ProtocolError>(__TAURI_INVOKE("goal_write", { draft })),
+	provisionOwner: (owner: Owner) => typedError<null, ProtocolError>(__TAURI_INVOKE("provision_owner", { owner })),
+	listPersonalityInstances: (req: ListPersonalityInstancesTs) => typedError<PersonalityInstanceTs[], ProtocolError>(__TAURI_INVOKE("list_personality_instances", { req })),
+	instantiatePersonality: (req: InstantiatePersonalityTs) => typedError<InstantiatePersonalityOutcomeTs, ProtocolError>(__TAURI_INVOKE("instantiate_personality", { req })),
+	setWakeConfig: (req: SetWakeConfigTs) => typedError<SetWakeConfigOutcomeTs, ProtocolError>(__TAURI_INVOKE("set_wake_config", { req })),
 	/**
 	 *  Subscribe — engine returns a `Stream<Item = ChangeEvent>`; we
 	 *  spawn a forwarder onto the caller-supplied `Channel<ChangeEvent>`
@@ -158,10 +162,29 @@ export const commands = {
 };
 
 /* Types */
+export type AuthorFilterTs = { kind: "any" } | { kind: "external" } | { kind: "personality"; personality_type_id: string; personality_instance_id: string | null };
+
 export type ChangeEvent = {
 	seq: string,
 	owner: Owner,
 	kind: ChangeEventKind,
+	/**
+	 *  `Some(...)` when an in-process personality authored this event;
+	 *  `None` for external/event-source ingestions (rendered from the
+	 *  `'external/event-source'` sentinel on the row).
+	 */
+	authoring_personality_type_id?: string | null,
+	/**
+	 *  Companion to `authoring_personality_type_id`. Both are `Some`
+	 *  or both are `None` for any well-formed personality-authored row.
+	 */
+	authoring_personality_instance_id?: string | null,
+	/**
+	 *  Wake-chain depth at the time the row was authored. `0` for
+	 *  external events; `max(provenance.depth) + 1` for personality
+	 *  authoring (capped per `MAX_WAKE_CHAIN_DEPTH`).
+	 */
+	wake_chain_depth?: number,
 };
 
 export type ChangeEventKind = ({ EntityAppend: {
@@ -397,6 +420,21 @@ export type IngestProgressTs = {
 	chunks_reused: number,
 };
 
+export type InstantiatePersonalityOutcomeTs = {
+	instance_id: string,
+};
+
+export type InstantiatePersonalityTs = {
+	owner: Owner,
+	personality_type_id: string,
+	payload_overrides: string | null,
+};
+
+export type ListPersonalityInstancesTs = {
+	owner: Owner,
+	personality_type_id: string | null,
+};
+
 /**
  *  LLM capability axes. Operators declare a `requires: LlmCaps` at
  *  registration; runtime config binds a `(vendor, model_id)` to a
@@ -485,7 +523,17 @@ export type PerfEntry = {
 	bytes: number | null,
 };
 
-export type PersonalityId = string;
+export type PersonalityInstanceId = string;
+
+export type PersonalityInstanceTs = {
+	owner: Owner,
+	personality_type_id: string,
+	personality_instance_id: string,
+	current_self_perspective_memory_id: string,
+	display_name: string,
+	status: string,
+	wake_filters: WakeFilterTs[],
+};
 
 export type Principal = ({ User: UserId }) & { Group?: never } | ({ Group: GroupId }) & { User?: never };
 
@@ -604,6 +652,17 @@ export type SchemaResponse = {
 
 export type SchemaVersion = number;
 
+export type SetWakeConfigOutcomeTs = {
+	status: string,
+};
+
+export type SetWakeConfigTs = {
+	owner: Owner,
+	personality_type_id: string,
+	personality_instance_id: string,
+	wake_filters: WakeFilterTs[],
+};
+
 /**
  *  UUIDv7, declared by the source at emit time.
  *  See docs/01 §"The contract".
@@ -633,7 +692,8 @@ export type SystemOrigin = ({ Operator: {
 	operator_kind: OperatorKind,
 	model_id: ModelId,
 	prompt_version: PromptVersion,
-	personality_id: PersonalityId,
+	personality_type_id: string,
+	personality_instance_id: PersonalityInstanceId,
 } }) & { Tool?: never } | ({ Tool: {
 	tool_id: ToolId,
 } }) & { Operator?: never };
@@ -648,6 +708,10 @@ export type TierBindings = {
 export type ToolId = string;
 
 export type UserId = string;
+
+export type WakeFilterTs = { kind: "on_memory"; version: number; schema_id: string; authored_by: AuthorFilterTs; probability: number } | { kind: "on_edge"; version: number; relation_id: string; source: WakeTargetTs; target: WakeTargetTs; probability: number } | { kind: "custom"; version: number; kind_id: string; params_json: string; probability: number };
+
+export type WakeTargetTs = { kind: "any" } | { kind: "self_perspective" } | { kind: "memory"; memory_id: string } | { kind: "goal"; goal_id: string };
 
 /* Tauri Specta runtime */
 async function typedError<T, E>(result: Promise<T>): Promise<{ status: "ok"; data: T } | { status: "error"; error: E }> {

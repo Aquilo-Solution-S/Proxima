@@ -1,7 +1,7 @@
 //! Runtime model registration — `proxima.config.toml` schema.
 //!
-//! Build-time owns the capability vocabulary and operator `requires`
-//! (see `proxima_core::models` + `F2AOperator::tier()`/`requires()`);
+//! Build-time owns the capability vocabulary and personality `requires`
+//! (see `proxima_core::models` + `PersonalityFlavor::tier()`/`requires()`);
 //! runtime owns `(vendor, model_id)` records, the tier→model bindings,
 //! and the `secret_ref` strings used to fetch credentials from the
 //! `ResolverRegistry` (see `proxima_core::secrets`).

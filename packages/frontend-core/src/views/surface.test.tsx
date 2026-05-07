@@ -168,6 +168,18 @@ const clientWithHistory = (
   eventIngest: async () => {
     throw new Error("not used");
   },
+  provisionOwner: async () => {
+    throw new Error("not used");
+  },
+  listPersonalityInstances: async () => {
+    throw new Error("not used");
+  },
+  instantiatePersonality: async () => {
+    throw new Error("not used");
+  },
+  setWakeConfig: async () => {
+    throw new Error("not used");
+  },
 });
 
 const renderSurfaceWithClient = (client: EngineClient) => {
@@ -592,6 +604,13 @@ describe("FullSurface fact explorer", () => {
     fireEvent.pointerUp(window);
 
     expect(surface.getAttribute("style")).toContain("--surface-event-width: 440px");
+    expect(separator.getAttribute("aria-valuemin")).toBe("320");
+
+    fireEvent.pointerDown(separator, { button: 0, clientX: 900 });
+    fireEvent.pointerMove(window, { clientX: 1040 });
+    fireEvent.pointerUp(window);
+
+    expect(surface.getAttribute("style")).toContain("--surface-event-width: 320px");
   });
 
   it("renders historical events before any live append", async () => {

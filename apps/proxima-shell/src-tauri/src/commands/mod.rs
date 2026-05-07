@@ -16,6 +16,10 @@ pub(crate) fn specta_builder() -> Builder<tauri::Wry> {
         engine::event_history,
         engine::event_ingest,
         engine::goal_write,
+        engine::provision_owner,
+        engine::list_personality_instances,
+        engine::instantiate_personality,
+        engine::set_wake_config,
         engine::subscribe,
         // settings commands (m6.23)
         models::models_list_llm,

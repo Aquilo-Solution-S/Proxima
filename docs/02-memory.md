@@ -6,8 +6,8 @@ All memories are one of three kinds, with a **strict, irreversible
 production order**:
 
 ```
-                personality (= Perspective + Goals)
-                       │ biases (F→A and A→P)
+                personality instance
+                       │ wakes / decides / writes
                        ▼
    Facts ────────► Abstraction ────────► Perspective
                                                  │
@@ -17,7 +17,7 @@ production order**:
    └────── Perspective can link Facts ───────────┘
 ```
 
-Operators (the arrows) produce higher-layer memories from lower:
+Personality wakes (the arrows) produce higher-layer memories from lower:
 
 - **F→A** — Facts → Abstraction. Biased by personality (Perspective + Goals).
 - **A→P** — Abstractions → Perspective. Biased by full personality (Q4).
@@ -26,7 +26,7 @@ Perspective may additionally **link existing Facts** with interpretive
 edges. The Facts are unchanged; the edge is authored by the Perspective —
 the only legal cross-Fact edge channel besides Event-Source authorship.
 
-Forbidden: any operator that lowers layer (A→F, P→A, P→F); any edge that
+Forbidden: any wake that lowers layer (A→F, P→A, P→F); any edge that
 references a higher layer (F→A-edge, F→P-edge, A→P-edge). Full edge
 directionality table under §Edges.
 
@@ -40,30 +40,27 @@ Sets:
 
 Layer function `ℓ : Memory → {0, 1, 2}` with `ℓ(F)=0, ℓ(A)=1, ℓ(P)=2`.
 
-Personality `Π = PersonalityFlavor::snapshot(owner)` — an opaque
-flavor-produced value with structure `(personality_id, P_active,
-G_active)`. `P_active ⊆ P` and `G_active ⊆ Goal` are
-selected by the flavor under its own rules (identity, goal-relevant,
-topical, recency — flavor's choice; see §Personality and [08](docs/08-core-and-flavors.md)).
-The substrate does not legislate selection.
+Personality `Π = (personality_type_id, personality_instance_id)`.
+Each instance has a self-Perspective and wake config; see §Personality
+and [08](docs/08-core-and-flavors.md).
 
-Multiple personality flavors may be active per Owner. Each operator
-invocation runs under one personality at a time; parallel personalities
-produce parallel A/P lineages tagged by `personality_id`.
+Multiple personality instances may be active per Owner. Each wake runs
+under one instance at a time; parallel personalities produce parallel
+A/P lineages tagged by the split personality identity.
 
-Operators are families indexed by Π:
+Wake/write paths are indexed by Π:
 
 | Operator | Signature | Restriction |
 |---|---|---|
-| F→A   | `2^F × Π → A`      | `S ⊆ F` sharing `source_batch_id` (intra-source); at most one F→A per (Fact schema, Abstraction schema); multiple F→A operators may coexist over the same Fact schema, each producing a distinct typed Abstraction. Mirrors A→P. |
-| A→P   | `2^A × Π → P`      | `S ⊆ A` retrieved per operator scope (intra-flavor or cross-flavor); plural A→P operators allowed |
+| F→A   | `2^F × Π → A`      | `S ⊆ F` sharing `source_batch_id` (intra-source); multiple personalities may produce distinct typed Abstractions over the same Facts. |
+| A→P   | `2^A × Π → P`      | `S ⊆ A` visible to the personality instance; plural personalities allowed |
 | link  | `P × F × F → Edge` | only legal cross-Fact edge channel besides Event-Source authorship |
 
 Edge constraint: for every edge `e : m_s → m_t`, `ℓ(m_s) ≥ ℓ(m_t)`.
 
-**Stepping between layers.** Π biases operators *downward*: a P or G
-change reshapes future F→A / A→P outputs and authorises new `link` edges
-over existing F. Operator outputs propagate *upward* via new memories
+**Stepping between layers.** Π biases wakes *downward*: a self-Perspective
+or Goal change reshapes future F→A / A→P outputs and authorises new `link`
+edges over existing F. Personality outputs propagate *upward* via new memories
 and supersession edges; never by mutation.
 
 **Causa proxima.** A "why" answer for `f ∈ F` is a path through
@@ -83,7 +80,7 @@ Consequences (load-bearing on the entity shape):
    a new Abstraction. Both coexist; older has older provenance.
 3. **Perspectives evolve.** A Perspective is superseded by a new
    Perspective derived from a richer A-set or under a different Π.
-4. **Healing = re-run F→A under updated Π.** A "traumatic" Abstraction is
+4. **Healing = re-run wake under updated Π.** A "traumatic" Abstraction is
    one produced under a Π that didn't fit the Facts. Update Π, re-run.
 
 ## The core entity
@@ -111,15 +108,17 @@ enum MemoryBody {
     Derived {
         kind:                   DerivedKind,      // Abstraction | Perspective
         text:                   String,
-        operator_kind:          OperatorKind,     // FtoA | AtoP
+        operator_kind:          OperatorKind,     // Wake
         model_id:               ModelId,
         prompt_version:         PromptVersion,
-        personality_id:         PersonalityId,    // which personality flavor produced this (08)
+        personality_type_id:    PersonalityTypeId,
+        personality_instance_id: PersonalityInstanceId,
+        wake_chain_depth:       WakeChainDepth,
     },
 }
 
 enum DerivedKind { Abstraction, Perspective }
-enum OperatorKind { FtoA, AtoP }
+enum OperatorKind { Wake }
 ```
 
 Storage layout for this entity is defined in [07-storage.md](docs/07-storage.md).
@@ -134,17 +133,17 @@ event is.
 citation; their bibliographic provenance accumulates by walking
 provenance edges down to Facts.
 
-Operator-invocation columns (`operator_kind`, `model_id`,
-`prompt_version`, `personality_id`) are inline
-reproducibility metadata for A/P — inputs to the F→A / A→P invocation
-key (see [04 §Idempotence](docs/04-consolidation.md#idempotence-and-reproducibility)).
-`personality_id` keeps parallel personalities' outputs on disjoint
-invocation keys: the same `(model, prompt)` under two different
-personality ids never collides on dedup.
+Invocation columns (`operator_kind`, `model_id`, `prompt_version`,
+`personality_type_id`, `personality_instance_id`, `wake_chain_depth`)
+are inline reproducibility metadata for A/P (see
+[04 §Idempotence](docs/04-consolidation.md#idempotence-and-reproducibility)).
+The split personality identity keeps parallel personalities' outputs on
+disjoint invocation keys: the same `(model, prompt)` under two different
+instances never collides on dedup.
 
 A Fact's `owner` equals its source Event's `owner`. Abstractions and
-Perspectives inherit `owner` from their input memories — operators run
-within one owner; outputs share that owner.
+Perspectives inherit `owner` from their input memories — personality
+wakes run within one owner; outputs share that owner.
 
 The enum design eliminates field duplication: `id`, `owner`, `schema_id`,
 `created_at` exist once with direct field access (`m.id`, `m.owner`).
@@ -430,63 +429,36 @@ restricted to `RelationClass::Structural` for the EventSource-only
 backbone (no interpretation), or to `RelationClass::Causal` for the
 Perspective-mediated explanations (no plain succession).
 
-## The operators
+## Wake / decide / write
 
-### F→A: Fact-to-Abstraction (intra-source)
-
-```rust
-fn fact_to_abstraction(
-    source_batch: SourceBatchId,            // the batch this F→A operates on
-    facts:        Vec<MemoryRef<Fact>>,     // Facts with this source_batch_id
-    personality:  &PersonalitySnapshot,     // produced by a PersonalityFlavor (08)
-) -> (
-    Memory,                                 // the new Abstraction tagged with personality_id
-    Vec<Edge>,                              // provenance edges Abstraction→Facts
-);
-```
-
-Same Facts under different Π → different Abstractions. This is how Self
-shapes interpretation while leaving Facts untouched. Same Facts under
-different *personalities* produce parallel Abstraction lineages; each
-output carries its producing `personality_id`, and the lineages do not
-collide on supersession.
-
-Cardinality: a source batch may produce one or many Abstractions per
-personality; the operator decides granularity (e.g. chunks → chapters →
-themes → top-level Abstraction for a book).
-
-Reproducibility: not pure (LLM nondeterminism), but reproducible given
-`(source_batch, facts, personality_id, model, prompt)`.
-
-### A→P: Abstraction-to-Perspective (intra-flavor or cross-flavor)
+`PersonalityFlavor` is the decider unit (08). Each runtime instance is
+addressed by `(personality_type_id, personality_instance_id)`, owns a
+self-Perspective, and stores wake filters in `personality_wake_config`.
 
 ```rust
-fn abstraction_to_perspective(
-    abstractions: Vec<MemoryRef<Abstraction>>,  // retrieved per operator scope + personality scope
-    personality:  &PersonalitySnapshot,          // produced by a PersonalityFlavor (08); see Q4 below
-) -> (
-    Memory,                                      // the new Perspective tagged with personality_id
-    Vec<Edge>,                                   // provenance edges Perspective→Abstractions
-);
+change_event
+  -> wake filter match
+  -> PersonalityFlavor::decide(ctx)
+  -> typed Abstraction / Perspective writes
+  -> Provenance / Supersedes edges
 ```
 
-Scope is operator-declared along two orthogonal axes:
+Layer targets remain strict:
 
-- **Flavor scope** — intra-flavor (only the operator's own A schemas)
-  vs cross-flavor (union over all linked flavors).
-- **Personality scope** — own-personality-only (default) vs
-  all-personalities (opt-in, gated by the per-Owner read-scope matrix
-  below). A "Synthesist" personality whose job is to integrate other
-  personalities' outputs declares all-personalities; default operators
-  stay own-personality.
+| Write kind | Input set | Output |
+|---|---|---|
+| Fact-triggered wake | Facts sharing one source batch | Abstraction |
+| Abstraction-triggered wake | Abstractions visible to the instance | Perspective |
+| Goal / edge-triggered wake | Goal or `core/inspires` edge to self-Perspective | Perspective / Goal response |
 
-Multiple A→P operators may coexist and run in parallel against the
-same A pool — each produces its own typed `PerspectivePayload` (04 §Phase 2).
-Multiple personalities applied to the same A→P operator produce
-parallel Perspective lineages tagged by `personality_id`.
+Same Facts or Abstractions under different personality instances produce
+parallel lineages. Each output carries the split personality identity;
+supersession is scoped to the same `(type_id, instance_id)` unless a
+user/API-authored editorial action explicitly crosses instances.
 
-Personalization: same A-set under different Π yields different P. Bias is
-full personality (Q4).
+Reproducibility columns on A/P rows are `(model_id, prompt_version,
+personality_type_id, personality_instance_id, wake_chain_depth)`. The
+trigger and read provenance are recorded as edges.
 
 ## Re-derivation and supersession
 
@@ -553,33 +525,33 @@ the `compliance.*` audit schema that proves erasure happened.
 
 ## Personality
 
-**Personality is a flavor**, not a fixed core concept. The substrate
-ships only the trait shape and the runtime contract; selection of
-`P_active`, `G_active`, identity-vs-context weighting, and the Self
-projection all live in registered `PersonalityFlavor` impls (see
-[08 §Registration mechanism](docs/08-core-and-flavors.md#registration-mechanism)
+**Personality is a flavor-declared decider type plus runtime instances.**
+The substrate ships the trait shape, wake storage, and dispatcher; prompts,
+self-schema, tool palette, writeable schemas/relations, wake filters, tier,
+and capability requirements live in registered `PersonalityFlavor` impls
+(see [08 §Registration mechanism](docs/08-core-and-flavors.md#registration-mechanism)
 and [13 §Authoring contract](13-flavor-marketplace.md#authoring-contract)).
 
 ```rust
 trait PersonalityFlavor {
-    const PERSONALITY_ID: PersonalityId;            // flavor-prefixed, e.g. "stoic-self/v1"
-
-    fn snapshot(&self, owner: Owner, ctx: SnapshotCtx) -> PersonalitySnapshot;
-    fn project_self(&self, owner: Owner) -> SelfView;   // see [06 §Self](06-goals-and-self.md)
-}
-
-struct PersonalitySnapshot {
-    personality_id:  PersonalityId,                  // which flavor produced this
-    perspective_ids: Vec<MemoryId>,                  // P_active per this flavor's rules
-    goal_ids:        Vec<GoalId>,                    // G_active per this flavor's rules
-    captured_at:     Timestamp,
+    fn personality_type_id(&self) -> &'static str;
+    fn self_schema(&self) -> SchemaId;
+    fn default_self_payload(...) -> PersonalitySelfDraft;
+    fn system_prompt(&self) -> &'static str;
+    fn tools(&self) -> Vec<Arc<dyn PersonalityTool>>;
+    fn writeable_schemas(&self) -> &'static [&'static str];
+    fn writeable_relations(&self) -> &'static [&'static str];
+    fn default_wake_filters(&self) -> Vec<WakeFilter>;
+    fn tier(&self) -> ModelTier;
+    fn requires(&self) -> LlmCaps;
+    async fn decide(&self, ctx: PersonalityDecisionContext<'_>) -> PersonalityDecision;
 }
 ```
 
-The substrate records `personality_id` inline on every produced A/P /
-Goal row. It does not legislate *what* the snapshot contains beyond
-that. Load-bearing personality evolution is expressed by registering
-a new `personality_id`.
+The substrate records `(personality_type_id, personality_instance_id)`
+inline on every produced A/P row. Load-bearing type evolution is a new
+`personality_type_id`; runtime branching is a new `personality_instance_id`
+with its own self-Perspective and wake config.
 
 **Selection primitives** a `PersonalityFlavor` typically composes:
 
@@ -595,12 +567,12 @@ top-K caps. The substrate does not pick a canonical combination because there is
 no canonical answer — different personality flavors are *exactly* the
 business of having different combinations.
 
-**Multiple personality flavors per Owner.** v1 minimum: many
-personality flavors may be linked into one binary; each Owner has at
-least one active. Operators run per (Owner, active personality) pair;
-a single Event produces *N* parallel A/P sets where *N* is the number
-of active personalities. The substrate hosts plural selves; the agent
-*runs* a topology over its own memory. Identity is configurable.
+**Multiple personality instances per Owner.** Many personality types may
+be linked into one binary, and each Owner may instantiate multiple
+instances of a type. The dispatcher runs per active wake-config row; a
+single event may produce parallel A/P sets across instances. The
+substrate hosts plural selves; the agent runs a topology over its own
+memory. Identity is configurable.
 
 ## Read-scope matrix
 
@@ -675,27 +647,27 @@ as a check constraint joining `edge.source.kind` and `edge.target.kind`.
 
 ### Q4. A→P biased by full personality
 
-Resolved: **full personality** — Π is the `PersonalitySnapshot` produced
-by the active `PersonalityFlavor`, carrying its own selection of
-`P_active` and `G_active`. Both bias A→P identically to F→A. Reason:
-perspective evolution needs continuity with the prior perspective set
-or each new A→P run is computed from scratch, breaking the human
-"perspectives shift slowly under personality drift" pattern. Stuck-loop
-risk is mitigated by the existing handles (Goal updates, new Facts
-triggering re-derivation, personality flavor swap, future Hint mechanism
-— see trauma-findings).
+Resolved: **full personality instance** — Π is the runtime
+`(personality_type_id, personality_instance_id)` plus its current
+self-Perspective, wake config, readable memory scope, and active Goals.
+Both F→A-like and A→P-like writes are produced by the same
+`PersonalityFlavor::decide` path. Reason: perspective evolution needs
+continuity with prior Perspective state or each run is computed from
+scratch, breaking the "perspectives shift slowly under personality
+drift" pattern. Stuck-loop risk is mitigated by self-exclusion,
+`wake_chain_depth`, Goal updates, new Facts, and new personality
+instances.
 
 What "full personality" *includes* is the flavor's call. The substrate
-guarantees only that whatever the flavor put in the snapshot is what
-biases the operator; `personality_id` is the invocation lineage key.
+guarantees only the instance identity, self-Perspective anchor, wake
+filters, read/write authorization, and lineage fields.
 
 ### Q5. Self as flavor projection — see [06](docs/06-goals-and-self.md)
 
-Resolved: **flavor-projected query** via
-`PersonalityFlavor::project_self(owner)`. No Self entity, no cache, no
-operator. Different personality flavors project different Selves over
-the same memory graph; a binary's composition determines which Selves
-it can present. Full treatment in
+Resolved: **self-Perspective anchored query**. No Self entity, no cache.
+Different personality instances project different Selves over the same
+memory graph; a binary's composition determines which Selves it can
+present. Full treatment in
 [`docs/06-goals-and-self.md`](06-goals-and-self.md).
 
 ## What's settled
@@ -712,22 +684,20 @@ it can present. Full treatment in
   `citation_id`; `authored_by` carries the reasoning concept.
 - Edge directionality: outbound only to same or lower layer; same-Owner
   invariant.
-- F→A intra-source-batch (always intra); A→P intra-flavor or
-  cross-flavor. Multiple F→A operators may coexist over the same Fact
-  schema, each producing a distinct typed Abstraction (at most one per
-  (Fact schema, Abstraction schema) pair). Multiple A→P operators may
-  coexist and run in parallel. Both biased by full personality (Q4).
-- **Personality is a flavor.** `PersonalityFlavor` produces a
-  `PersonalitySnapshot` (`personality_id, P_active, G_active,
-  captured_at`) per Owner per invocation. The substrate hosts plural
-  personalities per Owner; A/P/Goal rows tag with `personality_id`;
-  parallel personalities yield parallel lineages, never collide on
-  supersession. Cross-personality supersession requires user-API
-  authorship.
+- Wake/decide/write is the production path. A personality may write
+  typed Abstractions or Perspectives within its declared writeable
+  surface. Both are biased by full personality instance (Q4).
+- **Personality is a flavor-declared type plus runtime instances.**
+  `PersonalityFlavor` declares type id, self-schema, prompt, tools,
+  writeable surface, wake filters, tier, and `decide`. The substrate
+  hosts plural personalities per Owner; A/P rows tag with
+  `(personality_type_id, personality_instance_id)`; parallel
+  personalities yield parallel lineages, never collide on supersession.
+  Cross-personality supersession requires user-API authorship.
 - **Read-scope matrix.** Per-Owner boolean adjacency over personalities
   governs cross-personality retrieval. Identity diagonal = 1; F always
   shared; A/P/Goals gated. Load-bearing matrix evolution requires a new
-  `personality_id`.
+  `personality_type_id`.
 - Memories immutable in Facts and additive elsewhere; supersession links
   new derivations to old, scoped within personality.
 - Self is a flavor projection (Q5 → 06).

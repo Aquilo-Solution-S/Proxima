@@ -8,9 +8,16 @@ import {
   type EventIngestOutcome,
   type GoalDraft,
   type GoalWriteOutcome,
+  type InstantiatePersonalityOutcomeTs,
+  type InstantiatePersonalityTs,
+  type ListPersonalityInstancesTs,
+  type Owner,
+  type PersonalityInstanceTs,
   type QueryRequest,
   type QueryResponse,
   type SchemaResponse,
+  type SetWakeConfigOutcomeTs,
+  type SetWakeConfigTs,
   type SubscribeRequest,
 } from "./bindings";
 import type { EngineClient, Subscription } from "./client";
@@ -67,6 +74,26 @@ export class TauriEngineClient implements EngineClient {
 
   async eventIngest(draft: EventDraft): Promise<EventIngestOutcome> {
     return unwrap(commands.eventIngest(draft));
+  }
+
+  async provisionOwner(owner: Owner): Promise<void> {
+    await unwrap(commands.provisionOwner(owner));
+  }
+
+  async listPersonalityInstances(
+    req: ListPersonalityInstancesTs,
+  ): Promise<PersonalityInstanceTs[]> {
+    return unwrap(commands.listPersonalityInstances(req));
+  }
+
+  async instantiatePersonality(
+    req: InstantiatePersonalityTs,
+  ): Promise<InstantiatePersonalityOutcomeTs> {
+    return unwrap(commands.instantiatePersonality(req));
+  }
+
+  async setWakeConfig(req: SetWakeConfigTs): Promise<SetWakeConfigOutcomeTs> {
+    return unwrap(commands.setWakeConfig(req));
   }
 }
 

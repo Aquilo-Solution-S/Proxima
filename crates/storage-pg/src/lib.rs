@@ -11,10 +11,13 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use proxima_core::operators::{
-    A2PInvocationKey, A2PLineageKey, AbstractionRow, ConsolidateA2POutcome, ConsolidateA2PRequest,
-    ConsolidateBatchF2AOutcome, ConsolidateBatchF2ARequest, F2AInvocationKey, FactRow, SidecarSpec,
+use proxima_core::personality::{
+    AbstractionRow, ChangeEventForWake, InstantiatePersonalityRequest,
+    InstantiatePersonalityResponse, MemorySnapshot, PersonalityInstanceRow, PersonalityRef,
+    PersonalityWriteOutcome, PersonalityWriteRequest, SetWakeConfigRequest, SetWakeConfigResponse,
+    SidecarSpec, WakeConfigRow, WakeInvocationStatus,
 };
+use proxima_core::storage::WakeLockGuard;
 use proxima_core::verbs::close_batch::CloseBatchOutcome;
 use proxima_core::verbs::event_history::{EventHistoryRequest, EventHistoryResponse};
 use proxima_core::verbs::event_ingest::{EventDraft, EventIngestOutcome};
@@ -31,6 +34,7 @@ use tokio::sync::broadcast;
 mod authorship;
 mod error;
 pub mod outbox;
+mod personality_locks;
 mod pg_ident;
 pub mod query {
     pub use crate::verbs::query::MAX_SNAPSHOT_EDGES;
@@ -218,60 +222,150 @@ impl Storage for PgStorage {
         verbs::close_batch::close_batch(&self.pool, owner, source_batch_id).await
     }
 
-    async fn load_batch_facts(
+    async fn list_personality_instances(
         &self,
         owner: &Owner,
-        batch_id: SourceBatchId,
+        personality_type_id: Option<&str>,
+    ) -> Result<Vec<PersonalityInstanceRow>, StorageError> {
+        verbs::consolidate::list_personality_instances(&self.pool, owner, personality_type_id).await
+    }
+
+    async fn instantiate_personality(
+        &self,
+        req: &InstantiatePersonalityRequest,
+        self_draft: &proxima_core::PersonalitySelfDraft,
+        self_sidecar_table: &str,
+        default_wake_filters: &[proxima_core::WakeFilter],
+    ) -> Result<InstantiatePersonalityResponse, StorageError> {
+        verbs::consolidate::instantiate_personality(
+            &self.pool,
+            req,
+            self_draft,
+            self_sidecar_table,
+            default_wake_filters,
+        )
+        .await
+    }
+
+    async fn set_wake_config(
+        &self,
+        req: &SetWakeConfigRequest,
+    ) -> Result<SetWakeConfigResponse, StorageError> {
+        verbs::consolidate::set_wake_config(&self.pool, req).await
+    }
+
+    async fn list_active_wake_configs(&self) -> Result<Vec<WakeConfigRow>, StorageError> {
+        verbs::consolidate::list_active_wake_configs(&self.pool).await
+    }
+
+    async fn mark_wake_config_needs_repair(
+        &self,
+        owner: &Owner,
+        instance: &PersonalityRef,
+    ) -> Result<(), StorageError> {
+        verbs::consolidate::mark_wake_config_needs_repair(&self.pool, owner, instance).await
+    }
+
+    async fn list_change_events_after(
+        &self,
+        owner: &Owner,
+        after: uuid::Uuid,
+        limit: usize,
+    ) -> Result<Vec<ChangeEventForWake>, StorageError> {
+        verbs::consolidate::list_change_events_after(&self.pool, owner, after, limit).await
+    }
+
+    async fn advance_wake_cursor(
+        &self,
+        owner: &Owner,
+        instance: &PersonalityRef,
+        last_considered_seq: uuid::Uuid,
+    ) -> Result<(), StorageError> {
+        verbs::consolidate::advance_wake_cursor(&self.pool, owner, instance, last_considered_seq)
+            .await
+    }
+
+    async fn try_begin_wake_invocation(
+        &self,
+        owner: &Owner,
+        instance: &PersonalityRef,
+        change_event_seq: uuid::Uuid,
+    ) -> Result<bool, StorageError> {
+        verbs::consolidate::try_begin_wake_invocation(&self.pool, owner, instance, change_event_seq)
+            .await
+    }
+
+    async fn finish_wake_invocation(
+        &self,
+        owner: &Owner,
+        instance: &PersonalityRef,
+        change_event_seq: uuid::Uuid,
+        status: WakeInvocationStatus,
+        turn_count: u16,
+        cost_usd: f64,
+    ) -> Result<(), StorageError> {
+        verbs::consolidate::finish_wake_invocation(
+            &self.pool,
+            owner,
+            instance,
+            change_event_seq,
+            status,
+            turn_count,
+            cost_usd,
+        )
+        .await
+    }
+
+    async fn load_memory_batch_facts(
+        &self,
+        owner: &Owner,
+        memory_id: proxima_core::MemoryId,
         sidecars: &[SidecarSpec],
-    ) -> Result<Vec<FactRow>, StorageError> {
-        verbs::consolidate::load_batch_facts(&self.pool, owner, batch_id, sidecars).await
+    ) -> Result<Vec<proxima_core::FactRow>, StorageError> {
+        verbs::consolidate::load_memory_batch_facts(&self.pool, owner, memory_id, sidecars).await
     }
 
-    async fn consolidate_batch_f2a(
-        &self,
-        req: &ConsolidateBatchF2ARequest<'_>,
-    ) -> Result<ConsolidateBatchF2AOutcome, StorageError> {
-        verbs::consolidate::consolidate_batch_f2a(&self.pool, req).await
-    }
-
-    async fn list_unconsolidated_batches(
-        &self,
-        owner: &Owner,
-        key: &F2AInvocationKey<'_>,
-    ) -> Result<Vec<SourceBatchId>, StorageError> {
-        verbs::consolidate::list_unconsolidated_batches(&self.pool, owner, key).await
-    }
-
-    async fn load_a2p_abstractions(
+    async fn load_abstraction_heads(
         &self,
         owner: &Owner,
         sidecars: &[SidecarSpec],
         limit: usize,
     ) -> Result<Vec<AbstractionRow>, StorageError> {
-        verbs::consolidate::load_a2p_abstractions(&self.pool, owner, sidecars, limit).await
+        verbs::consolidate::load_abstraction_heads(&self.pool, owner, sidecars, limit).await
     }
 
-    async fn consolidate_a2p(
-        &self,
-        req: &ConsolidateA2PRequest<'_>,
-    ) -> Result<ConsolidateA2POutcome, StorageError> {
-        verbs::consolidate::consolidate_a2p(&self.pool, req).await
-    }
-
-    async fn has_a2p_invocation(
+    async fn lookup_prior_personality_head(
         &self,
         owner: &Owner,
-        key: &A2PInvocationKey<'_>,
-    ) -> Result<bool, StorageError> {
-        verbs::consolidate::has_a2p_invocation(&self.pool, owner, key).await
-    }
-
-    async fn lookup_prior_a2p_head(
-        &self,
-        owner: &Owner,
-        key: &A2PLineageKey<'_>,
+        instance: &PersonalityRef,
+        schema_id: &proxima_core::SchemaId,
     ) -> Result<Option<proxima_core::MemoryId>, StorageError> {
-        verbs::consolidate::lookup_prior_a2p_head(&self.pool, owner, key).await
+        verbs::consolidate::lookup_prior_personality_head(&self.pool, owner, instance, schema_id)
+            .await
+    }
+
+    async fn append_personality_memories(
+        &self,
+        req: &PersonalityWriteRequest<'_>,
+    ) -> Result<PersonalityWriteOutcome, StorageError> {
+        verbs::consolidate::append_personality_memories(&self.pool, req).await
+    }
+
+    async fn load_memory_by_id(
+        &self,
+        owner: &Owner,
+        memory_id: proxima_core::MemoryId,
+        sidecars: &[SidecarSpec],
+    ) -> Result<Option<MemorySnapshot>, StorageError> {
+        verbs::consolidate::load_memory_by_id(&self.pool, owner, memory_id, sidecars).await
+    }
+
+    async fn acquire_wake_lock(
+        &self,
+        owner: &Owner,
+        instance: &PersonalityRef,
+    ) -> Result<WakeLockGuard, StorageError> {
+        personality_locks::acquire_wake_lock(&self.pool, owner, instance).await
     }
 }
 

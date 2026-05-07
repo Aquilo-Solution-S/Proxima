@@ -6,9 +6,9 @@ pub mod engine;
 pub mod error;
 pub mod flavor;
 pub mod ids;
+pub mod llm;
 pub mod mcp;
 pub mod models;
-pub mod operators;
 pub mod outbox;
 pub mod owner;
 pub mod payload;
@@ -25,12 +25,12 @@ pub use engine::*;
 pub use error::*;
 pub use flavor::*;
 pub use ids::*;
+pub use llm::*;
 pub use mcp::{
     Handle, HandleTable, McpAuthorContext, McpCallFn, McpTool, McpToolCtx, McpToolDescriptor,
     McpToolError,
 };
 pub use models::*;
-pub use operators::*;
 pub use outbox::*;
 pub use owner::*;
 pub use payload::*;
@@ -61,7 +61,7 @@ macro_rules! proxima_schema_id {
 /// Build-time registration macro. v1 subset — supports
 /// `fact_schemas`, `abstraction_schemas`, `perspective_schemas`,
 /// `goal_schemas`, `edge_schemas`, `relations`, `personalities`,
-/// `f2a_operators`, `a2p_operators`, `mcp_tools`. Expands to a
+/// `wake_filter_kinds`, `mcp_tools`. Expands to a
 /// `pub fn register(registry: &mut FlavorRegistry)` that performs
 /// runtime prefix checks and adds each schema / relation.
 ///
@@ -103,8 +103,7 @@ macro_rules! proxima_flavor {
         $(, edge_schemas = [ $($edge:ty),* $(,)? ])?
         $(, relations = [ $($rel:expr),* $(,)? ])?
         $(, personalities = [ $($personality:ty),* $(,)? ])?
-        $(, f2a_operators = [ $($f2a_op:ty),* $(,)? ])?
-        $(, a2p_operators = [ $($a2p_op:ty),* $(,)? ])?
+        $(, wake_filter_kinds = [ $($wake_filter_kind:ty),* $(,)? ])?
         $(, mcp_tools = [ $($tool:ty),* $(,)? ])?
         $(,)?
     ) => {
@@ -186,10 +185,10 @@ macro_rules! proxima_flavor {
             $($(
                 {
                     let personality = <$personality>::default();
-                    let id = <$personality as $crate::PersonalityFlavor>::personality_id(&personality);
+                    let id = <$personality as $crate::PersonalityFlavor>::personality_type_id(&personality);
                     assert!(
                         id.starts_with(expected_prefix),
-                        "PersonalityFlavor::personality_id {:?} does not start with crate prefix {:?}",
+                        "PersonalityFlavor::personality_type_id {:?} does not start with crate prefix {:?}",
                         id, expected_prefix,
                     );
                     registry.add_personality(personality);
@@ -197,26 +196,14 @@ macro_rules! proxima_flavor {
             )*)?
             $($(
                 {
-                    let op = <$f2a_op>::default();
-                    let id = <$f2a_op as $crate::operators::F2AOperator>::operator_id(&op);
+                    let kind = <$wake_filter_kind>::default();
+                    let id = <$wake_filter_kind as $crate::WakeFilterKind>::kind_id(&kind);
                     assert!(
                         id.starts_with(expected_prefix),
-                        "F2AOperator::operator_id {:?} does not start with crate prefix {:?}",
+                        "WakeFilterKind::kind_id {:?} does not start with crate prefix {:?}",
                         id, expected_prefix,
                     );
-                    registry.add_f2a_operator(op);
-                }
-            )*)?
-            $($(
-                {
-                    let op = <$a2p_op>::default();
-                    let id = <$a2p_op as $crate::operators::A2POperator>::operator_id(&op);
-                    assert!(
-                        id.starts_with(expected_prefix),
-                        "A2POperator::operator_id {:?} does not start with crate prefix {:?}",
-                        id, expected_prefix,
-                    );
-                    registry.add_a2p_operator(op);
+                    registry.add_wake_filter_kind(kind);
                 }
             )*)?
             $($(
