@@ -67,8 +67,14 @@ pub fn run() {
     }
 
     let (engine, pg) = boot::build_engine();
+    let wake_token_store = engine.wake_token_store();
     let mcp_handle = tauri::async_runtime::block_on(async {
-        boot::spawn_mcp_listener(pg.pool().clone(), boot::sentinel_owner()).await
+        boot::spawn_mcp_listener(
+            pg.pool().clone(),
+            boot::sentinel_owner(),
+            wake_token_store,
+        )
+        .await
     });
     let mcp_handle = match mcp_handle {
         Ok((handle, addr)) => {

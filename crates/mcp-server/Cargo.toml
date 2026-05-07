@@ -13,6 +13,7 @@ name = "proxima_mcp_server"
 proxima-core = { path = "../core" }
 proxima-storage-pg = { path = "../storage-pg" }
 proxima-mcp-substrate = { path = "../../flavors/mcp" }
+async-trait = { workspace = true }
 rmcp = { workspace = true }
 schemars = { workspace = true }
 serde = { workspace = true }

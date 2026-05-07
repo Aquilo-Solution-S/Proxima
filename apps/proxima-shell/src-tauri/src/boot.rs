@@ -3,6 +3,7 @@ use std::sync::Arc;
 use proxima_core::auth::NoAuth;
 use proxima_core::llm::EmbeddingClient;
 use proxima_core::secrets::ResolverRegistry;
+use proxima_core::wake::token_store::WakeTokenStore;
 use proxima_core::{Engine, FlavorRegistry, FlavorRegistryFrozen, OrgId, Owner, Principal, UserId};
 use proxima_llm_openai_compat::{OpenAiCompatConfig, OpenAiCompatEmbeddingClient};
 use proxima_mcp_server::{DevMcpServer, default_allowlist, serve_streamable_http};
@@ -189,9 +190,16 @@ fn resolve_optional_secret(
 ///
 /// Returns bind, migration, or transport setup failures. Shell callers
 /// log and continue without MCP.
+///
+/// `wake_token_store` must be the same `Arc` the engine's dispatcher
+/// mints tokens into ([`Engine::wake_token_store`]) — without that
+/// shared store every MCP request would 401 because the bearer token
+/// the dispatcher hands the wake'd subprocess wouldn't resolve in
+/// the listener's auth layer.
 pub(crate) async fn spawn_mcp_listener(
     pool: sqlx::PgPool,
     owner: Owner,
+    wake_token_store: Arc<WakeTokenStore>,
 ) -> Result<
     (
         JoinHandle<Result<(), proxima_mcp_server::McpServerError>>,
@@ -217,13 +225,6 @@ pub(crate) async fn spawn_mcp_listener(
     proxima_code::register(&mut registry);
     let frozen: Arc<FlavorRegistryFrozen> = Arc::new(registry.freeze());
     let server = DevMcpServer::from_pool(pool, owner, frozen);
-    // TODO(Task 5): replace this placeholder with the same Arc the
-    // engine's wake dispatcher uses to mint per-invocation tokens. Until
-    // dispatcher wiring lands, all requests will be rejected with 401 —
-    // intentional, since no dev caller mints tokens yet.
-    let wake_token_store = Arc::new(proxima_core::wake::token_store::WakeTokenStore::new(
-        std::time::Duration::from_secs(300),
-    ));
     serve_streamable_http(bind, server, default_allowlist(), wake_token_store).await
 }
 
