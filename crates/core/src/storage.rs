@@ -10,10 +10,10 @@ use crate::Owner;
 use crate::SourceBatchId;
 use crate::personality::{
     AbstractionRow, ActiveGoalSummary, ChangeEventForWake, InstantiatePersonalityRequest,
-    InstantiatePersonalityResponse, MemorySnapshot, PersonalityInstanceRow, PersonalityRef,
-    PersonalityWriteOutcome, PersonalityWriteRequest, SetWakeConfigRequest, SetWakeConfigResponse,
-    SidecarSpec, TombstonePersonalityRequest, TombstonePersonalityResponse, WakeConfigRow,
-    WakeInvocationStatus,
+    InstantiatePersonalityResponse, MemorySnapshot, PersonalityInstanceId, PersonalityInstanceRow,
+    PersonalityRef, PersonalityWriteOutcome, PersonalityWriteRequest, SetWakeEntriesRequest,
+    SetWakeEntriesResponse, SidecarSpec, TombstonePersonalityRequest,
+    TombstonePersonalityResponse, WakeDispatchEntryRow, WakeInvocationStatus,
 };
 use crate::verbs::close_batch::CloseBatchOutcome;
 use crate::verbs::event_history::{EventHistoryRequest, EventHistoryResponse};
@@ -151,38 +151,31 @@ pub trait Storage: Send + Sync {
     ) -> Result<Vec<PersonalityInstanceRow>, StorageError>;
 
     /// Mark a personality instance tombstoned. Subsequent dispatcher
-    /// ticks must skip it; `set_wake_config` against the same key must
-    /// return `NotFound`. Idempotent on the natural key: repeats return
-    /// `idempotent_replay = true` without rewriting `tombstoned_at`.
+    /// ticks must skip it. Idempotent on the natural key: repeats
+    /// return `idempotent_replay = true` without rewriting
+    /// `tombstoned_at`.
     async fn tombstone_personality(
         &self,
         req: &TombstonePersonalityRequest,
     ) -> Result<TombstonePersonalityResponse, StorageError>;
 
-    /// Instantiate one personality instance with its self-Perspective,
-    /// wake_config, and cursor rows.
+    /// Instantiate one inert personality instance with its Root
+    /// Perspective and cursor rows.
     async fn instantiate_personality(
         &self,
         req: &InstantiatePersonalityRequest,
         self_draft: &crate::PersonalitySelfDraft,
         self_sidecar_table: &str,
-        default_wake_filters: &[crate::WakeFilter],
     ) -> Result<InstantiatePersonalityResponse, StorageError>;
 
-    /// Rewrite wake filters and mark the row active.
-    async fn set_wake_config(
+    /// Replace active WakeEntry rows for one personality instance.
+    async fn set_wake_entries(
         &self,
-        req: &SetWakeConfigRequest,
-    ) -> Result<SetWakeConfigResponse, StorageError>;
+        req: &SetWakeEntriesRequest,
+    ) -> Result<SetWakeEntriesResponse, StorageError>;
 
-    /// Active wake configs plus their cursor positions.
-    async fn list_active_wake_configs(&self) -> Result<Vec<WakeConfigRow>, StorageError>;
-
-    async fn mark_wake_config_needs_repair(
-        &self,
-        owner: &Owner,
-        instance: &PersonalityRef,
-    ) -> Result<(), StorageError>;
+    /// Active WakeEntry rows plus their cursor positions.
+    async fn list_active_wake_entries(&self) -> Result<Vec<WakeDispatchEntryRow>, StorageError>;
 
     async fn list_change_events_after(
         &self,
@@ -194,21 +187,23 @@ pub trait Storage: Send + Sync {
     async fn advance_wake_cursor(
         &self,
         owner: &Owner,
-        instance: &PersonalityRef,
+        instance: PersonalityInstanceId,
         last_considered_seq: uuid::Uuid,
     ) -> Result<(), StorageError>;
 
     async fn try_begin_wake_invocation(
         &self,
         owner: &Owner,
-        instance: &PersonalityRef,
+        instance: PersonalityInstanceId,
+        wake_entry_id: uuid::Uuid,
         change_event_seq: uuid::Uuid,
     ) -> Result<bool, StorageError>;
 
     async fn finish_wake_invocation(
         &self,
         owner: &Owner,
-        instance: &PersonalityRef,
+        instance: PersonalityInstanceId,
+        wake_entry_id: uuid::Uuid,
         change_event_seq: uuid::Uuid,
         status: WakeInvocationStatus,
         turn_count: u16,
@@ -391,28 +386,19 @@ impl Storage for NoopStorage {
         _req: &InstantiatePersonalityRequest,
         _self_draft: &crate::PersonalitySelfDraft,
         _self_sidecar_table: &str,
-        _default_wake_filters: &[crate::WakeFilter],
     ) -> Result<InstantiatePersonalityResponse, StorageError> {
         Err(StorageError::Internal("NoopStorage rejects writes".into()))
     }
 
-    async fn set_wake_config(
+    async fn set_wake_entries(
         &self,
-        _req: &SetWakeConfigRequest,
-    ) -> Result<SetWakeConfigResponse, StorageError> {
+        _req: &SetWakeEntriesRequest,
+    ) -> Result<SetWakeEntriesResponse, StorageError> {
         Err(StorageError::Internal("NoopStorage rejects writes".into()))
     }
 
-    async fn list_active_wake_configs(&self) -> Result<Vec<WakeConfigRow>, StorageError> {
+    async fn list_active_wake_entries(&self) -> Result<Vec<WakeDispatchEntryRow>, StorageError> {
         Ok(Vec::new())
-    }
-
-    async fn mark_wake_config_needs_repair(
-        &self,
-        _owner: &Owner,
-        _instance: &PersonalityRef,
-    ) -> Result<(), StorageError> {
-        Ok(())
     }
 
     async fn list_change_events_after(
@@ -427,7 +413,7 @@ impl Storage for NoopStorage {
     async fn advance_wake_cursor(
         &self,
         _owner: &Owner,
-        _instance: &PersonalityRef,
+        _instance: PersonalityInstanceId,
         _last_considered_seq: uuid::Uuid,
     ) -> Result<(), StorageError> {
         Ok(())
@@ -436,7 +422,8 @@ impl Storage for NoopStorage {
     async fn try_begin_wake_invocation(
         &self,
         _owner: &Owner,
-        _instance: &PersonalityRef,
+        _instance: PersonalityInstanceId,
+        _wake_entry_id: uuid::Uuid,
         _change_event_seq: uuid::Uuid,
     ) -> Result<bool, StorageError> {
         Ok(false)
@@ -445,7 +432,8 @@ impl Storage for NoopStorage {
     async fn finish_wake_invocation(
         &self,
         _owner: &Owner,
-        _instance: &PersonalityRef,
+        _instance: PersonalityInstanceId,
+        _wake_entry_id: uuid::Uuid,
         _change_event_seq: uuid::Uuid,
         _status: WakeInvocationStatus,
         _turn_count: u16,

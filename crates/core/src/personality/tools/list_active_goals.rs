@@ -65,7 +65,7 @@ impl PersonalityTool for ListActiveGoalsTool {
         let goals = ctx
             .engine
             .storage()
-            .list_active_goals(ctx.owner, ctx.current_self_perspective_memory_id, 100)
+            .list_active_goals(ctx.owner, ctx.current_root_perspective_memory_id, 100)
             .await
             .map_err(|e| ProtocolError::internal(e.to_string()))?;
         Ok(PersonalityToolResult::ok(serde_json::json!({

@@ -13,10 +13,10 @@ use std::time::Duration;
 
 use proxima_core::personality::{
     AbstractionRow, ActiveGoalSummary, ChangeEventForWake, InstantiatePersonalityRequest,
-    InstantiatePersonalityResponse, MemorySnapshot, PersonalityInstanceRow, PersonalityRef,
-    PersonalityWriteOutcome, PersonalityWriteRequest, SetWakeConfigRequest, SetWakeConfigResponse,
-    SidecarSpec, TombstonePersonalityRequest, TombstonePersonalityResponse, WakeConfigRow,
-    WakeInvocationStatus,
+    InstantiatePersonalityResponse, MemorySnapshot, PersonalityInstanceId, PersonalityInstanceRow,
+    PersonalityRef, PersonalityWriteOutcome, PersonalityWriteRequest, SetWakeEntriesRequest,
+    SetWakeEntriesResponse, SidecarSpec, TombstonePersonalityRequest,
+    TombstonePersonalityResponse, WakeDispatchEntryRow, WakeInvocationStatus,
 };
 use proxima_core::storage::WakeLockGuard;
 use proxima_core::verbs::close_batch::CloseBatchOutcome;
@@ -260,35 +260,25 @@ impl Storage for PgStorage {
         req: &InstantiatePersonalityRequest,
         self_draft: &proxima_core::PersonalitySelfDraft,
         self_sidecar_table: &str,
-        default_wake_filters: &[proxima_core::WakeFilter],
     ) -> Result<InstantiatePersonalityResponse, StorageError> {
         verbs::consolidate::instantiate_personality(
             &self.pool,
             req,
             self_draft,
             self_sidecar_table,
-            default_wake_filters,
         )
         .await
     }
 
-    async fn set_wake_config(
+    async fn set_wake_entries(
         &self,
-        req: &SetWakeConfigRequest,
-    ) -> Result<SetWakeConfigResponse, StorageError> {
-        verbs::consolidate::set_wake_config(&self.pool, req).await
+        req: &SetWakeEntriesRequest,
+    ) -> Result<SetWakeEntriesResponse, StorageError> {
+        verbs::consolidate::set_wake_entries(&self.pool, req).await
     }
 
-    async fn list_active_wake_configs(&self) -> Result<Vec<WakeConfigRow>, StorageError> {
-        verbs::consolidate::list_active_wake_configs(&self.pool).await
-    }
-
-    async fn mark_wake_config_needs_repair(
-        &self,
-        owner: &Owner,
-        instance: &PersonalityRef,
-    ) -> Result<(), StorageError> {
-        verbs::consolidate::mark_wake_config_needs_repair(&self.pool, owner, instance).await
+    async fn list_active_wake_entries(&self) -> Result<Vec<WakeDispatchEntryRow>, StorageError> {
+        verbs::consolidate::list_active_wake_entries(&self.pool).await
     }
 
     async fn list_change_events_after(
@@ -303,7 +293,7 @@ impl Storage for PgStorage {
     async fn advance_wake_cursor(
         &self,
         owner: &Owner,
-        instance: &PersonalityRef,
+        instance: PersonalityInstanceId,
         last_considered_seq: uuid::Uuid,
     ) -> Result<(), StorageError> {
         verbs::consolidate::advance_wake_cursor(&self.pool, owner, instance, last_considered_seq)
@@ -313,17 +303,25 @@ impl Storage for PgStorage {
     async fn try_begin_wake_invocation(
         &self,
         owner: &Owner,
-        instance: &PersonalityRef,
+        instance: PersonalityInstanceId,
+        wake_entry_id: uuid::Uuid,
         change_event_seq: uuid::Uuid,
     ) -> Result<bool, StorageError> {
-        verbs::consolidate::try_begin_wake_invocation(&self.pool, owner, instance, change_event_seq)
-            .await
+        verbs::consolidate::try_begin_wake_invocation(
+            &self.pool,
+            owner,
+            instance,
+            wake_entry_id,
+            change_event_seq,
+        )
+        .await
     }
 
     async fn finish_wake_invocation(
         &self,
         owner: &Owner,
-        instance: &PersonalityRef,
+        instance: PersonalityInstanceId,
+        wake_entry_id: uuid::Uuid,
         change_event_seq: uuid::Uuid,
         status: WakeInvocationStatus,
         turn_count: u16,
@@ -333,6 +331,7 @@ impl Storage for PgStorage {
             &self.pool,
             owner,
             instance,
+            wake_entry_id,
             change_event_seq,
             status,
             turn_count,

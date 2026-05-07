@@ -142,10 +142,9 @@ async fn self_perspective_for(
     instance_id: PersonalityInstanceId,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
     let id: Uuid = sqlx::query_scalar(
-        "SELECT current_self_perspective_memory_id
-         FROM proxima_core.personality_wake_config
-         WHERE personality_type_id = 'proxima-code/engineer-v1'
-           AND personality_instance_id = $1",
+        "SELECT current_root_perspective_memory_id
+         FROM proxima_core.personality
+         WHERE personality_instance_id = $1",
     )
     .bind(instance_id.into_inner())
     .fetch_one(pg.pool())
@@ -167,7 +166,7 @@ async fn inspires_edge_targets_only_intended_engineer_instance() {
         // Build an engine WITHOUT auto-instantiating other personalities
         // — we only want engineers under test. The commit-summary
         // personality is also registered (proxima_flavor!), so we
-        // accept its wake_config but won't author commit-fact events
+        // accept its inert personality row but won't author commit-fact events
         // until needed.
         let scripted = Arc::new(ScriptedAnthropicClient::new(vec![ScriptedTurn::end_turn()]));
         let engine = build_engine_with(

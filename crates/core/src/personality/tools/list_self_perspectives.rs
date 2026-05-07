@@ -58,8 +58,8 @@ impl PersonalityTool for ListSelfPerspectivesTool {
                 serde_json::json!({
                     "personality_type_id": row.personality_type_id,
                     "personality_instance_id": row.personality_instance_id.into_inner(),
-                    "current_self_perspective_memory_id":
-                        row.current_self_perspective_memory_id.into_inner(),
+                    "current_root_perspective_memory_id":
+                        row.current_root_perspective_memory_id.into_inner(),
                     "display_name": row.display_name,
                     "status": row.status,
                 })
@@ -67,7 +67,7 @@ impl PersonalityTool for ListSelfPerspectivesTool {
             .collect();
         ctx.record_read(
             rows.iter()
-                .map(|row| (row.current_self_perspective_memory_id, WakeChainDepth::zero())),
+                .map(|row| (row.current_root_perspective_memory_id, WakeChainDepth::zero())),
         )
         .await;
         Ok(PersonalityToolResult::ok(serde_json::json!({

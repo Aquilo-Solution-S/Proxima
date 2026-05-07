@@ -1,12 +1,11 @@
 use async_trait::async_trait;
 use proxima_core::{
-    AbstractionPayload, FactPayload, LlmCaps, ModelTier, Owner, PersonalityFlavor,
-    PersonalitySelfDraft, PerspectivePayload, SchemaId, SchemaVersion, WakeFilter,
+    AbstractionPayload, LlmCaps, ModelTier, Owner, PersonalityFlavor, PersonalitySelfDraft,
+    PerspectivePayload, SchemaId, SchemaVersion,
 };
 
 use crate::payloads::{
     CodeCommitSummarizerSelfV1, CodeDevelopmentPerspectiveV1, CodeEngineerSelfV1, CommitSummaryV1,
-    CommitV1,
 };
 
 const COMMIT_SUMMARY_SYSTEM_PROMPT: &str = "You are a precise code-change summarizer running \
@@ -90,12 +89,6 @@ impl PersonalityFlavor for CommitSummaryPersonality {
         &[]
     }
 
-    fn default_wake_filters(&self) -> Vec<WakeFilter> {
-        vec![WakeFilter::on_memory(SchemaId::new(
-            CommitV1::SCHEMA_ID.to_string(),
-        ))]
-    }
-
     fn tier(&self) -> ModelTier {
         ModelTier::Fast
     }
@@ -156,12 +149,6 @@ impl PersonalityFlavor for CodeEngineerPersonality {
 
     fn writeable_relations(&self) -> &'static [&'static str] {
         &[]
-    }
-
-    fn default_wake_filters(&self) -> Vec<WakeFilter> {
-        vec![WakeFilter::on_memory(SchemaId::new(
-            CommitSummaryV1::SCHEMA_ID.to_string(),
-        ))]
     }
 
     fn tier(&self) -> ModelTier {

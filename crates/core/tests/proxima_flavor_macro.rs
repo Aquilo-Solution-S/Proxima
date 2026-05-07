@@ -1,9 +1,8 @@
 use async_trait::async_trait;
 use proxima_core::{
     ModelTier, Owner, PersonalityFlavor, PersonalitySelfDraft, PerspectivePayload, ProtocolError,
-    SchemaId, SchemaVersion, WakeFilter, WakeFilterCtx, WakeFilterKind,
+    SchemaId, SchemaVersion,
 };
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -72,44 +71,8 @@ impl PersonalityFlavor for DemoPersonality {
         &[]
     }
 
-    fn default_wake_filters(&self) -> Vec<WakeFilter> {
-        Vec::new()
-    }
-
     fn tier(&self) -> ModelTier {
         ModelTier::Standard
-    }
-}
-
-#[derive(Debug, Default)]
-struct DemoWakeFilterKind;
-
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-struct DemoWakeParams {
-    tag: String,
-}
-
-#[async_trait]
-impl WakeFilterKind for DemoWakeFilterKind {
-    fn kind_id(&self) -> &'static str {
-        "proxima-test/demo-filter"
-    }
-
-    fn version(&self) -> u16 {
-        1
-    }
-
-    fn params_schema(&self) -> serde_json::Value {
-        serde_json::to_value(schemars::schema_for!(DemoWakeParams)).unwrap()
-    }
-
-    async fn matches(
-        &self,
-        _ctx: &mut dyn WakeFilterCtx,
-        _params: &serde_json::Value,
-        _event: &proxima_core::ChangeEvent,
-    ) -> Result<bool, ProtocolError> {
-        Ok(false)
     }
 }
 
@@ -122,13 +85,10 @@ proxima_core::proxima_flavor! {
     personalities = [
         DemoPersonality,
     ],
-    wake_filter_kinds = [
-        DemoWakeFilterKind,
-    ],
 }
 
 #[test]
-fn macro_registers_personalities_and_wake_filter_kinds() {
+fn macro_registers_personalities() {
     let mut registry = proxima_core::FlavorRegistry::new();
     register(&mut registry);
     let frozen = registry.freeze();
@@ -138,12 +98,4 @@ fn macro_registers_personalities_and_wake_filter_kinds() {
         frozen.list_personalities()[0].personality_type_id(),
         "proxima-test/personality-v1"
     );
-    let kind_ids: std::collections::HashSet<_> = frozen
-        .list_wake_filter_kinds()
-        .iter()
-        .map(|kind| kind.kind_id())
-        .collect();
-    assert!(kind_ids.contains("core/on-memory"));
-    assert!(kind_ids.contains("core/on-edge"));
-    assert!(kind_ids.contains("proxima-test/demo-filter"));
 }

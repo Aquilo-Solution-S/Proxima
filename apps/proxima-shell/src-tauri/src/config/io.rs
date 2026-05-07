@@ -201,7 +201,7 @@ mod tests {
     use proxima_core::auth::NoAuth;
     use proxima_core::ids::{OrgId, UserId};
     use proxima_core::models::{Dialect, EmbedCaps, LlmCaps};
-    use proxima_core::personality::{PersonalityFlavor, PersonalitySelfDraft, WakeFilter};
+    use proxima_core::personality::{PersonalityFlavor, PersonalitySelfDraft};
     use proxima_core::verbs::query::MemoryStore;
     use proxima_core::{FlavorRegistry, Owner, Principal, SchemaId, SchemaVersion};
     use uuid::Uuid;
@@ -245,10 +245,6 @@ mod tests {
 
         fn writeable_relations(&self) -> &'static [&'static str] {
             &[]
-        }
-
-        fn default_wake_filters(&self) -> Vec<WakeFilter> {
-            Vec::new()
         }
 
         fn tier(&self) -> ModelTier {

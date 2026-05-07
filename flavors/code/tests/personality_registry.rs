@@ -1,10 +1,10 @@
 use proxima_code::{
     CodeCommitSummarizerSelfV1, CodeEngineerPersonality, CodeEngineerSelfV1,
-    CommitSummaryPersonality, CommitSummaryV1, CommitV1,
+    CommitSummaryPersonality, CommitSummaryV1,
 };
 use proxima_core::{
-    AbstractionPayload, CORE_INSPIRES_RELATION, FactPayload, FlavorRegistry, ModelTier, OrgId,
-    Owner, PersonalityFlavor, PerspectivePayload, Principal, SchemaId, UserId, WakeFilter,
+    AbstractionPayload, FlavorRegistry, ModelTier, OrgId, Owner, PersonalityFlavor,
+    PerspectivePayload, Principal, SchemaId, UserId,
 };
 use uuid::Uuid;
 
@@ -49,13 +49,6 @@ fn commit_summary_personality_preserves_operator_surface() {
     );
     assert_eq!(personality.writeable_relations(), &[] as &[&str]);
     assert_eq!(personality.tier(), ModelTier::Fast);
-    assert_eq!(
-        personality.default_wake_filters(),
-        vec![WakeFilter::on_memory(SchemaId::new(
-            CommitV1::SCHEMA_ID.into()
-        ))]
-    );
-
     let draft = personality
         .default_self_payload(&owner_fixture(), None)
         .expect("default self payload");
@@ -67,7 +60,7 @@ fn commit_summary_personality_preserves_operator_surface() {
 }
 
 #[test]
-fn engineer_personality_wakes_on_commit_summaries_and_self_inspires_is_core_added() {
+fn engineer_personality_preserves_operator_surface() {
     let personality = CodeEngineerPersonality;
     assert_eq!(
         personality.writeable_schemas(),
@@ -75,23 +68,6 @@ fn engineer_personality_wakes_on_commit_summaries_and_self_inspires_is_core_adde
     );
     assert_eq!(personality.writeable_relations(), &[] as &[&str]);
     assert_eq!(personality.tier(), ModelTier::Standard);
-    assert_eq!(
-        personality.default_wake_filters(),
-        vec![WakeFilter::on_memory(SchemaId::new(
-            CommitSummaryV1::SCHEMA_ID.into(),
-        ))]
-    );
-    assert!(
-        !personality
-            .default_wake_filters()
-            .iter()
-            .any(|filter| matches!(
-                filter,
-                WakeFilter::OnEdge { relation_id, .. } if relation_id == CORE_INSPIRES_RELATION
-            )),
-        "core/inspires self-edge wake is injected by instantiate_personality"
-    );
-
     let draft = personality
         .default_self_payload(
             &owner_fixture(),
