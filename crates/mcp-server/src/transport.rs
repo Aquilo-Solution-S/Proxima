@@ -16,6 +16,7 @@ use axum::extract::{Request, State};
 use axum::middleware::{self, Next};
 use axum::response::Response;
 use http::{HeaderMap, StatusCode};
+use proxima_core::wake::token_store::WakeTokenStore;
 use rmcp::transport::streamable_http_server::{
     StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
 };
@@ -24,16 +25,23 @@ use tokio_util::sync::CancellationToken;
 
 use crate::McpServerError;
 use crate::handler::DynamicHandler;
-use crate::security::{OriginAllowlist, assert_loopback};
+use crate::security::{OriginAllowlist, assert_loopback, wake_token_auth_layer};
 use crate::server::DevMcpServer;
 
 /// # Errors
 ///
 /// Returns loopback validation, TCP bind, or HTTP server failures.
+///
+/// `wake_token_store` is required so each MCP request can be matched
+/// against an in-flight wake invocation; the bearer-auth layer rejects
+/// requests without a valid `Authorization: Bearer <token>` header. The
+/// engine constructs the store at startup (Task 5) and passes the same
+/// `Arc` here and into the dispatcher that mints tokens.
 pub async fn serve_streamable_http(
     addr: SocketAddr,
     server: DevMcpServer,
     allowlist: OriginAllowlist,
+    wake_token_store: Arc<WakeTokenStore>,
 ) -> Result<(JoinHandle<Result<(), McpServerError>>, SocketAddr), McpServerError> {
     assert_loopback(&addr)?;
 
@@ -51,9 +59,14 @@ pub async fn serve_streamable_http(
             Arc::default(),
             config,
         );
+    // Layer order is bottom-up: origin_guard runs first (cheapest reject),
+    // then wake-token auth, then perf recording, then the rmcp service.
+    // Putting auth after origin_guard means a forbidden origin is rejected
+    // before we ever touch the token store.
     let app = axum::Router::new()
         .nest_service("/mcp", service)
         .layer(middleware::from_fn(perf_recorder))
+        .layer(wake_token_auth_layer(wake_token_store))
         .layer(middleware::from_fn_with_state(allowlist, origin_guard));
 
     let listener = tokio::net::TcpListener::bind(addr).await?;

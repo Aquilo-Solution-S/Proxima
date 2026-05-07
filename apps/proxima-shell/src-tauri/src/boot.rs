@@ -217,7 +217,14 @@ pub(crate) async fn spawn_mcp_listener(
     proxima_code::register(&mut registry);
     let frozen: Arc<FlavorRegistryFrozen> = Arc::new(registry.freeze());
     let server = DevMcpServer::from_pool(pool, owner, frozen);
-    serve_streamable_http(bind, server, default_allowlist()).await
+    // TODO(Task 5): replace this placeholder with the same Arc the
+    // engine's wake dispatcher uses to mint per-invocation tokens. Until
+    // dispatcher wiring lands, all requests will be rejected with 401 —
+    // intentional, since no dev caller mints tokens yet.
+    let wake_token_store = Arc::new(proxima_core::wake::token_store::WakeTokenStore::new(
+        std::time::Duration::from_secs(300),
+    ));
+    serve_streamable_http(bind, server, default_allowlist(), wake_token_store).await
 }
 
 #[cfg(test)]

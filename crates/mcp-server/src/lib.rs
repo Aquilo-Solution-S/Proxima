@@ -11,6 +11,6 @@ mod transport;
 
 pub use error::McpServerError;
 pub use handler::DynamicHandler;
-pub use security::{OriginAllowlist, assert_loopback, default_allowlist};
+pub use security::{OriginAllowlist, assert_loopback, default_allowlist, wake_token_auth_layer};
 pub use server::{DevMcpServer, ToolInvocationError};
 pub use transport::serve_streamable_http;

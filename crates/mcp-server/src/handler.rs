@@ -8,6 +8,7 @@
 use std::borrow::Cow;
 use std::sync::Arc;
 
+use proxima_core::wake::token_store::WakeTokenContext;
 use proxima_core::{McpAuthorContext, MemoryId};
 use rmcp::ServerHandler;
 use rmcp::model::{
@@ -34,13 +35,15 @@ impl ServerHandler for DynamicHandler {
     fn list_tools(
         &self,
         _request: Option<PaginatedRequestParams>,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> impl Future<Output = Result<ListToolsResult, ErrorData>> + MaybeSendFuture + '_ {
+        let palette = wake_palette(&context);
         let tools = self
             .server
             .registry()
             .list_mcp_tools()
             .iter()
+            .filter(|descriptor| palette_allows(palette.as_ref(), descriptor.name))
             .map(|descriptor| {
                 Tool::new(
                     Cow::Borrowed(descriptor.name),
@@ -73,10 +76,17 @@ impl ServerHandler for DynamicHandler {
     fn call_tool(
         &self,
         request: CallToolRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> impl Future<Output = Result<CallToolResult, ErrorData>> + MaybeSendFuture + '_ {
         let server = self.server.clone();
+        let palette = wake_palette(&context);
         async move {
+            if !palette_allows(palette.as_ref(), request.name.as_ref()) {
+                return Err(ErrorData::invalid_request(
+                    format!("tool {} not in wake palette", request.name),
+                    None,
+                ));
+            }
             let mut args = request
                 .arguments
                 .map_or_else(|| serde_json::json!({}), serde_json::Value::Object);
@@ -90,6 +100,32 @@ impl ServerHandler for DynamicHandler {
                 .map_err(|err| ErrorData::internal_error(err.to_string(), None))?;
             Ok(CallToolResult::success(vec![Content::text(text)]))
         }
+    }
+}
+
+/// Resolve the per-invocation tool palette from the request's wake-token
+/// context. Returns `None` when no token-bearing layer ran ahead of rmcp
+/// (open path, e.g. unauthenticated dev tooling). When a wake token is
+/// present, the palette restricts both `tools/list` and `tools/call`.
+///
+/// rmcp's `StreamableHttpService` injects [`http::request::Parts`] into
+/// the rmcp request extensions, and our `wake_token_auth_layer`
+/// (Phase 1d) inserts a `WakeTokenContext` into the axum request
+/// extensions before nesting the rmcp service. The two extension stores
+/// are different — we follow the documented bridge.
+fn wake_palette(context: &RequestContext<RoleServer>) -> Option<Vec<String>> {
+    let parts = context.extensions.get::<http::request::Parts>()?;
+    let ctx = parts.extensions.get::<WakeTokenContext>()?;
+    Some(ctx.palette.clone())
+}
+
+fn palette_allows(palette: Option<&Vec<String>>, name: &str) -> bool {
+    match palette {
+        Some(allowed) => allowed.iter().any(|t| t == name),
+        // No wake token bound to the request — preserve legacy MCP-only
+        // behavior. Token-required posture is enforced one layer up by
+        // `wake_token_auth_layer` whenever the engine wires it in.
+        None => true,
     }
 }
 
