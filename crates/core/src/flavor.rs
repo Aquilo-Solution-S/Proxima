@@ -14,6 +14,50 @@ use crate::{
 
 use std::sync::Arc;
 
+/// Structured per-flavor metadata. Populated by `proxima_flavor!` at
+/// macro-expansion time so the `package_version` and `author` fields
+/// reflect the calling crate's `Cargo.toml`.
+///
+/// One descriptor per `proxima_flavor!` invocation; the registry
+/// cross-checks at `freeze()` time that every registered personality's
+/// `personality_type_id` prefix matches a registered `flavor_id`.
+#[derive(
+    Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type,
+)]
+pub struct FlavorDescriptor {
+    /// Crate prefix used by `proxima_flavor! { name = ... }` —
+    /// e.g. `"proxima-code"`. Schemas, relations, personalities, and
+    /// MCP tools registered through the macro all start with this
+    /// prefix followed by `/`.
+    pub flavor_id: String,
+    /// Human-friendly name shown in the UI. Defaults to `flavor_id`
+    /// when the macro caller omits `display_name`.
+    pub display_name: String,
+    /// `CARGO_PKG_VERSION` of the flavor crate at build time.
+    pub package_version: String,
+    /// First author from `CARGO_PKG_AUTHORS` (split on `:` per Cargo
+    /// convention, trimmed). `None` when the crate's `authors` field
+    /// is empty.
+    pub author: Option<String>,
+    /// How this flavor was loaded into the binary. v1 is always
+    /// `Builtin`; marketplace and local-dev variants are reserved for
+    /// when out-of-process loading lands.
+    pub provenance: FlavorProvenance,
+}
+
+/// Where the flavor came from. Reserved cases are out-of-scope for
+/// v1 but kept on the wire so post-v1 flavors don't need a contract
+/// change.
+#[derive(
+    Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type,
+)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum FlavorProvenance {
+    Builtin,
+    Marketplace { source_url: String },
+    Local { workspace_path: String },
+}
+
 #[derive(Debug)]
 pub struct FlavorRegistry {
     schemas: Vec<SchemaInfo>,
@@ -22,6 +66,7 @@ pub struct FlavorRegistry {
     mcp_tools: Vec<McpToolDescriptor>,
     personalities: Vec<Arc<dyn PersonalityFlavor>>,
     wake_filter_kinds: Vec<Arc<dyn WakeFilterKind>>,
+    flavors: Vec<FlavorDescriptor>,
 }
 
 impl Default for FlavorRegistry {
@@ -36,6 +81,7 @@ impl Default for FlavorRegistry {
                 Arc::new(OnMemoryWakeFilterKind),
                 Arc::new(OnEdgeWakeFilterKind),
             ],
+            flavors: Vec::new(),
         }
     }
 }
@@ -158,6 +204,18 @@ impl FlavorRegistry {
         self.wake_filter_kinds.push(Arc::new(kind));
     }
 
+    /// Register a `FlavorDescriptor`. Called once per
+    /// `proxima_flavor!` invocation; freeze panics if the same
+    /// `flavor_id` is added twice.
+    pub fn add_flavor(&mut self, descriptor: FlavorDescriptor) {
+        self.flavors.push(descriptor);
+    }
+
+    #[must_use]
+    pub fn list_flavors(&self) -> &[FlavorDescriptor] {
+        &self.flavors
+    }
+
     #[must_use]
     pub fn list_personalities(&self) -> &[Arc<dyn PersonalityFlavor>] {
         &self.personalities
@@ -217,6 +275,7 @@ impl FlavorRegistry {
             }
         }
         self.assert_personality_guards();
+        self.assert_flavor_descriptors();
         let mut seen_tools = std::collections::HashSet::new();
         for tool in &self.mcp_tools {
             assert!(
@@ -232,7 +291,37 @@ impl FlavorRegistry {
             self.mcp_tools,
             self.personalities,
             self.wake_filter_kinds,
+            self.flavors,
         )
+    }
+
+    /// Cross-check: every `FlavorDescriptor::flavor_id` is unique, and
+    /// every registered personality's `personality_type_id` prefix
+    /// matches a registered flavor. Promotes the implicit prefix
+    /// invariant from `proxima_flavor!`'s expansion-time asserts to a
+    /// runtime registry guard so freestanding `add_personality` calls
+    /// (test fixtures, etc.) cannot bypass it.
+    fn assert_flavor_descriptors(&self) {
+        let mut seen_ids = std::collections::HashSet::new();
+        for flavor in &self.flavors {
+            assert!(
+                seen_ids.insert(flavor.flavor_id.as_str()),
+                "duplicate FlavorDescriptor flavor_id registered: {}",
+                flavor.flavor_id,
+            );
+        }
+        for personality in &self.personalities {
+            let type_id = personality.personality_type_id();
+            let matched = self.flavors.iter().any(|f| {
+                let prefix = format!("{}/", f.flavor_id);
+                type_id.starts_with(&prefix)
+            });
+            assert!(
+                matched,
+                "PersonalityFlavor {type_id} has no matching FlavorDescriptor — \
+                 register the flavor via `proxima_flavor!` or `FlavorRegistry::add_flavor`",
+            );
+        }
     }
 
     fn assert_personality_guards(&self) {
@@ -436,6 +525,13 @@ mod mcp_tool_registry_tests {
         write_relations: &'static [&'static str],
     ) -> FlavorRegistry {
         let mut registry = FlavorRegistry::new();
+        registry.add_flavor(FlavorDescriptor {
+            flavor_id: "proxima-test".to_string(),
+            display_name: "Proxima Test".to_string(),
+            package_version: "0.0.0".to_string(),
+            author: None,
+            provenance: FlavorProvenance::Builtin,
+        });
         registry.add_perspective_schema::<SelfPayload>();
         registry.add_perspective_schema::<OutPayload>();
         registry.add_personality(DemoPersonality {

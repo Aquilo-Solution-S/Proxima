@@ -96,6 +96,7 @@ macro_rules! proxima_schema_id {
 macro_rules! proxima_flavor {
     (
         name = $name:literal
+        $(, display_name = $display_name:literal)?
         $(, fact_schemas = [ $($fact:ty),* $(,)? ])?
         $(, abstraction_schemas = [ $($abs:ty),* $(,)? ])?
         $(, perspective_schemas = [ $($persp:ty),* $(,)? ])?
@@ -111,6 +112,24 @@ macro_rules! proxima_flavor {
         /// call this once per linked flavor at startup.
         pub fn register(registry: &mut $crate::FlavorRegistry) {
             let expected_prefix: &str = ::std::concat!($name, "/");
+            {
+                #[allow(unused_assignments, unused_mut)]
+                let mut display_name: &str = $name;
+                $(display_name = $display_name;)?
+                let author: ::std::option::Option<::std::string::String> =
+                    ::std::option_env!("CARGO_PKG_AUTHORS")
+                        .filter(|s: &&str| !s.is_empty())
+                        .map(|s: &str| {
+                            s.split(':').next().unwrap_or(s).trim().to_string()
+                        });
+                registry.add_flavor($crate::FlavorDescriptor {
+                    flavor_id: $name.to_string(),
+                    display_name: display_name.to_string(),
+                    package_version: ::std::env!("CARGO_PKG_VERSION").to_string(),
+                    author,
+                    provenance: $crate::FlavorProvenance::Builtin,
+                });
+            }
             $($(
                 {
                     use $crate::FactPayload;

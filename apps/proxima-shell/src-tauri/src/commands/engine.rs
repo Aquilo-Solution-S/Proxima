@@ -10,8 +10,8 @@ use proxima_core::verbs::query::{QueryRequest, QueryResponse};
 use proxima_core::verbs::schema::{SchemaRequest, SchemaResponse};
 use proxima_core::verbs::subscribe::SubscribeRequest;
 use proxima_core::{
-    AuthorFilter, ChangeEvent, Engine, MemoryId, Owner, PersonalityInstanceId,
-    PersonalityInstanceRow, WakeFilter, WakeTarget,
+    AuthorFilter, ChangeEvent, Engine, FlavorDescriptor, FlavorProvenance, MemoryId, Owner,
+    PersonalityInstanceId, PersonalityInstanceRow, WakeFilter, WakeTarget,
 };
 use tauri::State;
 use tauri::ipc::Channel;
@@ -56,6 +56,24 @@ pub struct PersonalityInstanceTs {
     pub display_name: String,
     pub status: String,
     pub wake_filters: Vec<WakeFilterTs>,
+    pub flavor: FlavorDescriptorTs,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
+pub struct FlavorDescriptorTs {
+    pub flavor_id: String,
+    pub display_name: String,
+    pub package_version: String,
+    pub author: Option<String>,
+    pub provenance: FlavorProvenanceTs,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum FlavorProvenanceTs {
+    Builtin,
+    Marketplace { source_url: String },
+    Local { workspace_path: String },
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
@@ -189,8 +207,19 @@ pub async fn list_personality_instances(
         let rows = engine
             .list_personality_instances(&req.owner, req.personality_type_id.as_deref())
             .await?;
+        let registry = engine.registry();
         rows.into_iter()
-            .map(PersonalityInstanceTs::try_from)
+            .map(|row| {
+                let flavor = registry
+                    .flavor_for_personality_type(&row.personality_type_id)
+                    .ok_or_else(|| {
+                        ProtocolError::internal(format!(
+                            "no FlavorDescriptor for personality_type_id {}",
+                            row.personality_type_id,
+                        ))
+                    })?;
+                PersonalityInstanceTs::from_row(row, flavor)
+            })
             .collect()
     })
     .await
@@ -277,10 +306,11 @@ pub async fn subscribe(
     Ok(())
 }
 
-impl TryFrom<PersonalityInstanceRow> for PersonalityInstanceTs {
-    type Error = ProtocolError;
-
-    fn try_from(row: PersonalityInstanceRow) -> Result<Self, Self::Error> {
+impl PersonalityInstanceTs {
+    fn from_row(
+        row: PersonalityInstanceRow,
+        flavor: &FlavorDescriptor,
+    ) -> Result<Self, ProtocolError> {
         let wake_filters = row
             .wake_filters
             .into_iter()
@@ -297,7 +327,34 @@ impl TryFrom<PersonalityInstanceRow> for PersonalityInstanceTs {
             display_name: row.display_name,
             status: row.status,
             wake_filters,
+            flavor: FlavorDescriptorTs::from(flavor),
         })
+    }
+}
+
+impl From<&FlavorDescriptor> for FlavorDescriptorTs {
+    fn from(d: &FlavorDescriptor) -> Self {
+        Self {
+            flavor_id: d.flavor_id.clone(),
+            display_name: d.display_name.clone(),
+            package_version: d.package_version.clone(),
+            author: d.author.clone(),
+            provenance: FlavorProvenanceTs::from(&d.provenance),
+        }
+    }
+}
+
+impl From<&FlavorProvenance> for FlavorProvenanceTs {
+    fn from(p: &FlavorProvenance) -> Self {
+        match p {
+            FlavorProvenance::Builtin => Self::Builtin,
+            FlavorProvenance::Marketplace { source_url } => Self::Marketplace {
+                source_url: source_url.clone(),
+            },
+            FlavorProvenance::Local { workspace_path } => Self::Local {
+                workspace_path: workspace_path.clone(),
+            },
+        }
     }
 }
 

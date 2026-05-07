@@ -18,8 +18,9 @@ use proxima_core::personality::{
 use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
 use proxima_core::verbs::query::MemoryStore;
 use proxima_core::{
-    AbstractionPayload, FlavorRegistry, InstantiatePersonalityRequest, LlmCaps, ModelTier, Owner,
-    PerspectivePayload, ProtocolError, SchemaId, SchemaVersion, SourceBatchId, SourceId,
+    AbstractionPayload, FlavorDescriptor, FlavorProvenance, FlavorRegistry,
+    InstantiatePersonalityRequest, LlmCaps, ModelTier, Owner, PerspectivePayload, ProtocolError,
+    SchemaId, SchemaVersion, SourceBatchId, SourceId,
 };
 use proxima_core::{FactPayload, MemoryId};
 use proxima_storage_pg::PgStorage;
@@ -267,6 +268,20 @@ impl EmbeddingClient for FakeEmbedding {
 
 /// Build an `Engine` over the given storage pool wired with all test
 /// schemas + the supplied test personality + an injected scripted
+/// `FlavorDescriptor` for the `proxima-test` prefix that all test
+/// personalities/payloads use. Required by the freeze-time
+/// prefix-cross-check guard.
+#[must_use]
+pub fn test_flavor_descriptor() -> FlavorDescriptor {
+    FlavorDescriptor {
+        flavor_id: "proxima-test".to_string(),
+        display_name: "Proxima Test".to_string(),
+        package_version: "0.0.0".to_string(),
+        author: None,
+        provenance: FlavorProvenance::Builtin,
+    }
+}
+
 /// Anthropic client and a fake embedding client.
 #[must_use]
 pub fn build_test_engine(
@@ -278,6 +293,7 @@ pub fn build_test_engine(
 
     let owner = super::owner_fixture();
     let mut registry = FlavorRegistry::new();
+    registry.add_flavor(test_flavor_descriptor());
     registry.add_fact_schema::<TestFactV1>();
     registry.add_fact_schema::<TestOtherFactV1>();
     registry.add_perspective_schema::<TestPerspectiveV1>();

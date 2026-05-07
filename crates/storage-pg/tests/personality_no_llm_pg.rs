@@ -14,9 +14,9 @@ use proxima_core::verbs::query::MemoryStore;
 use proxima_core::{FlavorRegistry, Principal};
 
 use common::personality::{
-    apply_test_schemas, ingest_test_fact, instantiate_test_personality, FakeEmbedding,
-    TestAbstractionV1, TestFactV1, TestOtherFactV1, TestPersonality, TestPersonalitySelfV1,
-    TestPerspectiveV1, TEST_PERSONALITY_TYPE_ID,
+    apply_test_schemas, ingest_test_fact, instantiate_test_personality, test_flavor_descriptor,
+    FakeEmbedding, TestAbstractionV1, TestFactV1, TestOtherFactV1, TestPersonality,
+    TestPersonalitySelfV1, TestPerspectiveV1, TEST_PERSONALITY_TYPE_ID,
 };
 
 #[tokio::test(flavor = "multi_thread")]
@@ -34,6 +34,7 @@ async fn no_llm_defers_wakes_then_fires_when_llm_is_added() {
         //    skip the helper's mandatory `.with_anthropic(...)`.
         let personality = TestPersonality::new();
         let mut registry = FlavorRegistry::new();
+        registry.add_flavor(test_flavor_descriptor());
         registry.add_fact_schema::<TestFactV1>();
         registry.add_fact_schema::<TestOtherFactV1>();
         registry.add_perspective_schema::<TestPerspectiveV1>();
@@ -99,6 +100,7 @@ async fn no_llm_defers_wakes_then_fires_when_llm_is_added() {
         // 4) Now wire an LLM and tick again. The deferred wake must fire.
         let scripted = Arc::new(ScriptedAnthropicClient::new(vec![ScriptedTurn::end_turn()]));
         let mut registry = FlavorRegistry::new();
+        registry.add_flavor(test_flavor_descriptor());
         registry.add_fact_schema::<TestFactV1>();
         registry.add_fact_schema::<TestOtherFactV1>();
         registry.add_perspective_schema::<TestPerspectiveV1>();

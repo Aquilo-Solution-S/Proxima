@@ -36,6 +36,7 @@ use proxima_core::{RelationClass, RelationDescriptor, SchemaId, SchemaRef, Schem
 
 proxima_core::proxima_flavor! {
     name = "proxima-code",
+    display_name = "Code",
     fact_schemas = [
         payloads::CommitV1,
         payloads::FileRevisionV1,

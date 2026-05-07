@@ -16,9 +16,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use common::personality::{
-    apply_test_schemas, ingest_test_fact, instantiate_test_personality, FakeEmbedding,
-    TestAbstractionV1, TestFactV1, TestOtherFactV1, TestPersonality, TestPersonalitySelfV1,
-    TestPerspectiveV1, TEST_PERSONALITY_TYPE_ID, TEST_PERSPECTIVE_SCHEMA,
+    apply_test_schemas, ingest_test_fact, instantiate_test_personality, test_flavor_descriptor,
+    FakeEmbedding, TestAbstractionV1, TestFactV1, TestOtherFactV1, TestPersonality,
+    TestPersonalitySelfV1, TestPerspectiveV1, TEST_PERSONALITY_TYPE_ID, TEST_PERSPECTIVE_SCHEMA,
 };
 use proxima_core::auth::{Credentials, NoAuth};
 use proxima_core::engine::Engine;
@@ -55,6 +55,7 @@ async fn subscribe_carries_personality_metadata() {
             ScriptedTurn::end_turn(),
         ]));
         let mut registry = FlavorRegistry::new();
+        registry.add_flavor(test_flavor_descriptor());
         registry.add_fact_schema::<TestFactV1>();
         registry.add_fact_schema::<TestOtherFactV1>();
         registry.add_perspective_schema::<TestPerspectiveV1>();

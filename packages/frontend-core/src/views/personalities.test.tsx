@@ -36,6 +36,13 @@ const instance = (
   display_name: "Engineer",
   status: "active",
   wake_filters: [onMemory()],
+  flavor: {
+    flavor_id: "proxima-code",
+    display_name: "Code",
+    package_version: "0.1.0",
+    author: null,
+    provenance: { kind: "builtin" },
+  },
   ...overrides,
 });
 
@@ -91,6 +98,25 @@ describe("EngineerInstancesPanel", () => {
     expect(await screen.findAllByTestId("personality-card")).toHaveLength(2);
     expect(screen.getByText("Engineer A")).toBeTruthy();
     expect(screen.getByText("Engineer B")).toBeTruthy();
+  });
+
+  it("renders the flavor chip from the typed FlavorDescriptor", async () => {
+    const { client } = mockClient([
+      instance({
+        flavor: {
+          flavor_id: "proxima-code",
+          display_name: "Code",
+          package_version: "0.1.0",
+          author: null,
+          provenance: { kind: "builtin" },
+        },
+      }),
+    ]);
+
+    render(() => <EngineerInstancesPanel client={client} owner={owner} />);
+
+    const chip = await screen.findByTestId("personality-flavor-chip");
+    expect(chip.textContent).toContain("Flavor Code");
   });
 
   it("posts the create-engineer request and adds the new instance", async () => {

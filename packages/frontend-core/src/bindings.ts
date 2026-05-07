@@ -355,6 +355,16 @@ export type FieldEntry = {
 	field_path: string,
 };
 
+export type FlavorDescriptorTs = {
+	flavor_id: string,
+	display_name: string,
+	package_version: string,
+	author: string | null,
+	provenance: FlavorProvenanceTs,
+};
+
+export type FlavorProvenanceTs = { kind: "builtin" } | { kind: "marketplace"; source_url: string } | { kind: "local"; workspace_path: string };
+
 export type GoalAuthorship = "User" | { System: SystemOrigin } | "External";
 
 export type GoalDraft = {
@@ -533,6 +543,7 @@ export type PersonalityInstanceTs = {
 	display_name: string,
 	status: string,
 	wake_filters: WakeFilterTs[],
+	flavor: FlavorDescriptorTs,
 };
 
 export type Principal = ({ User: UserId }) & { Group?: never } | ({ Group: GroupId }) & { User?: never };

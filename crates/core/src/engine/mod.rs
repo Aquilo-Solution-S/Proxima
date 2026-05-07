@@ -150,6 +150,13 @@ mod tier_union_tests {
 
     fn engine_with_ops(ops: Vec<OpAt>) -> Engine {
         let mut reg = FlavorRegistry::new();
+        reg.add_flavor(crate::FlavorDescriptor {
+            flavor_id: "test".to_string(),
+            display_name: "Test".to_string(),
+            package_version: "0.0.0".to_string(),
+            author: None,
+            provenance: crate::FlavorProvenance::Builtin,
+        });
         for op in ops {
             reg.add_personality(op);
         }
