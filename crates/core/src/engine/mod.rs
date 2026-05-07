@@ -24,6 +24,7 @@ use crate::llm::{AnthropicClient, EmbeddingClient};
 use crate::storage::{StorageError, StorageHandle};
 use crate::verbs::query::MemoryStore;
 use crate::verbs::schema::FlavorRegistryFrozen;
+use crate::wake::target_adapter::TargetAdapter;
 use crate::wake::token_store::WakeTokenStore;
 use crate::{
     BindInferenceTierRequest, BindInferenceTierResponse, InferenceTargetRow,
@@ -50,6 +51,7 @@ pub struct Engine {
     pub(crate) mcp_listener: Option<Arc<dyn EngineMcpListener>>,
     pub(crate) mcp_url: Arc<RwLock<Option<String>>>,
     pub(crate) wake_token_store: Arc<WakeTokenStore>,
+    pub(crate) target_adapter: Arc<RwLock<Option<Arc<dyn TargetAdapter>>>>,
 }
 
 /// Owns the background tasks spawned by [`Engine::start`]. The engine
@@ -199,6 +201,23 @@ impl Engine {
         self.wake_token_store.clone()
     }
 
+    /// Currently-installed [`TargetAdapter`]. Returns `None` until either
+    /// [`Engine::start`] resolves the goose binary and installs a
+    /// `LocalCliGooseAdapter`, or a test wires a mock via
+    /// [`Engine::with_target_adapter`].
+    #[must_use]
+    pub fn target_adapter(&self) -> Option<Arc<dyn TargetAdapter>> {
+        self.target_adapter.try_read().ok().and_then(|g| g.clone())
+    }
+
+    /// Override the installed [`TargetAdapter`]. Test seam: dispatch
+    /// tests inject a mock that returns `Succeeded` without spawning a
+    /// real goose subprocess. Production callers go through
+    /// [`Engine::start`] which installs `LocalCliGooseAdapter`.
+    pub async fn set_target_adapter(&self, adapter: Arc<dyn TargetAdapter>) {
+        *self.target_adapter.write().await = Some(adapter);
+    }
+
     /// Resolve the goose binary, run the boot self-check, spawn the
     /// MCP listener (if attached), and start the dispatcher tick loop.
     ///
@@ -233,6 +252,22 @@ impl Engine {
                 message: format!("goose self-check failed: {e}"),
                 request_id: None,
             })?;
+
+        // Install the production adapter unless a test seam already
+        // populated one via `set_target_adapter`. The dispatcher reads
+        // `target_adapter()` lazily on each fire, so tests can replace
+        // it before `start` and we'll still see the mock.
+        {
+            let mut slot = self.target_adapter.write().await;
+            if slot.is_none() {
+                let adapter: Arc<dyn TargetAdapter> = Arc::new(
+                    crate::wake::target_adapter::local_cli_goose::LocalCliGooseAdapter::new(
+                        goose_bin.clone(),
+                    ),
+                );
+                *slot = Some(adapter);
+            }
+        }
 
         // 2. Spawn MCP listener if a host attached one. Tests and
         // headless callers that don't need MCP can skip
