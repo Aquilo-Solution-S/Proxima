@@ -453,7 +453,8 @@ pub struct TombstonePersonalityResponse {
     pub idempotent_replay: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum WakeInvocationStatus {
     Running,
     Succeeded,
@@ -471,6 +472,29 @@ impl WakeInvocationStatus {
             Self::Failed => "failed",
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct WakeInvocationStart {
+    pub owner: Owner,
+    pub personality_instance_id: PersonalityInstanceId,
+    pub wake_entry_id: Uuid,
+    pub change_event_seq: Uuid,
+    pub wake_token: Uuid,
+    pub recipe_sha256: String,
+    pub resolved_inference_target_ref: String,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct WakeInvocationFinalize {
+    pub owner: Owner,
+    pub personality_instance_id: PersonalityInstanceId,
+    pub wake_entry_id: Uuid,
+    pub change_event_seq: Uuid,
+    pub status: WakeInvocationStatus,
+    pub turn_count: Option<u16>,
+    pub cost_usd: Option<f64>,
+    pub failure_reason: Option<String>,
 }
 
 #[derive(Debug)]

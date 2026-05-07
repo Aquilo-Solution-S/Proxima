@@ -18,7 +18,7 @@ use crate::personality::{
     InstantiatePersonalityResponse, MemorySnapshot, PersonalityInstanceId, PersonalityInstanceRow,
     PersonalityRef, PersonalityWriteOutcome, PersonalityWriteRequest, SetWakeEntriesRequest,
     SetWakeEntriesResponse, SidecarSpec, TombstonePersonalityRequest, TombstonePersonalityResponse,
-    WakeDispatchEntryRow, WakeInvocationStatus,
+    WakeDispatchEntryRow, WakeInvocationFinalize, WakeInvocationStart, WakeInvocationStatus,
 };
 use crate::verbs::close_batch::CloseBatchOutcome;
 use crate::verbs::event_history::{EventHistoryRequest, EventHistoryResponse};
@@ -246,6 +246,11 @@ pub trait Storage: Send + Sync {
         change_event_seq: uuid::Uuid,
     ) -> Result<bool, StorageError>;
 
+    async fn start_wake_invocation(
+        &self,
+        start: &WakeInvocationStart,
+    ) -> Result<bool, StorageError>;
+
     #[allow(clippy::too_many_arguments)]
     async fn finish_wake_invocation(
         &self,
@@ -256,6 +261,11 @@ pub trait Storage: Send + Sync {
         status: WakeInvocationStatus,
         turn_count: u16,
         cost_usd: f64,
+    ) -> Result<(), StorageError>;
+
+    async fn finalize_wake_invocation(
+        &self,
+        finalize: &WakeInvocationFinalize,
     ) -> Result<(), StorageError>;
 
     async fn load_memory_batch_facts(
@@ -520,6 +530,13 @@ impl Storage for NoopStorage {
         Ok(false)
     }
 
+    async fn start_wake_invocation(
+        &self,
+        _start: &WakeInvocationStart,
+    ) -> Result<bool, StorageError> {
+        Ok(false)
+    }
+
     async fn finish_wake_invocation(
         &self,
         _owner: &Owner,
@@ -529,6 +546,13 @@ impl Storage for NoopStorage {
         _status: WakeInvocationStatus,
         _turn_count: u16,
         _cost_usd: f64,
+    ) -> Result<(), StorageError> {
+        Ok(())
+    }
+
+    async fn finalize_wake_invocation(
+        &self,
+        _finalize: &WakeInvocationFinalize,
     ) -> Result<(), StorageError> {
         Ok(())
     }

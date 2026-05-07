@@ -23,7 +23,7 @@ use proxima_core::{
     SetWakeEntriesRequest, SetWakeEntriesResponse, SidecarSpec, SourceBatchId,
     TombstonePersonalityRequest, TombstonePersonalityResponse, UserId, WakeDispatchEntryRow,
     WakeEntryAuthoredBy, WakeEntryDraft, WakeEntryTriggerKind, WakeExecutionMode,
-    WakeInvocationStatus,
+    WakeInvocationFinalize, WakeInvocationStart, WakeInvocationStatus,
 };
 use uuid::Uuid;
 
@@ -206,6 +206,13 @@ impl Storage for FixtureStorage {
         Ok(false)
     }
 
+    async fn start_wake_invocation(
+        &self,
+        _start: &WakeInvocationStart,
+    ) -> Result<bool, StorageError> {
+        Ok(false)
+    }
+
     async fn finish_wake_invocation(
         &self,
         _owner: &Owner,
@@ -215,6 +222,13 @@ impl Storage for FixtureStorage {
         _status: WakeInvocationStatus,
         _turn_count: u16,
         _cost_usd: f64,
+    ) -> Result<(), StorageError> {
+        Ok(())
+    }
+
+    async fn finalize_wake_invocation(
+        &self,
+        _finalize: &WakeInvocationFinalize,
     ) -> Result<(), StorageError> {
         Ok(())
     }

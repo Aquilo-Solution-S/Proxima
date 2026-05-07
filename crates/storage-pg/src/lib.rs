@@ -16,7 +16,7 @@ use proxima_core::personality::{
     InstantiatePersonalityResponse, MemorySnapshot, PersonalityInstanceId, PersonalityInstanceRow,
     PersonalityRef, PersonalityWriteOutcome, PersonalityWriteRequest, SetWakeEntriesRequest,
     SetWakeEntriesResponse, SidecarSpec, TombstonePersonalityRequest, TombstonePersonalityResponse,
-    WakeDispatchEntryRow, WakeInvocationStatus,
+    WakeDispatchEntryRow, WakeInvocationFinalize, WakeInvocationStart, WakeInvocationStatus,
 };
 use proxima_core::storage::WakeLockGuard;
 use proxima_core::verbs::close_batch::CloseBatchOutcome;
@@ -370,6 +370,13 @@ impl Storage for PgStorage {
         .await
     }
 
+    async fn start_wake_invocation(
+        &self,
+        start: &WakeInvocationStart,
+    ) -> Result<bool, StorageError> {
+        verbs::consolidate::start_wake_invocation(&self.pool, start).await
+    }
+
     async fn finish_wake_invocation(
         &self,
         owner: &Owner,
@@ -391,6 +398,13 @@ impl Storage for PgStorage {
             cost_usd,
         )
         .await
+    }
+
+    async fn finalize_wake_invocation(
+        &self,
+        finalize: &WakeInvocationFinalize,
+    ) -> Result<(), StorageError> {
+        verbs::consolidate::finalize_wake_invocation(&self.pool, finalize).await
     }
 
     async fn load_memory_batch_facts(

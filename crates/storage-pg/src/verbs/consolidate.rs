@@ -12,7 +12,7 @@ use proxima_core::personality::{
     PersonalityRef, PersonalityWriteOutcome, PersonalityWriteRequest, SetWakeEntriesRequest,
     SetWakeEntriesResponse, SidecarSpec, WakeChainDepth, WakeDispatchEntryRow, WakeEntryAuthoredBy,
     WakeEntryDraft, WakeEntryExecutionMode, WakeEntryRow, WakeEntryTriggerKind, WakeExecutionMode,
-    WakeInvocationStatus,
+    WakeInvocationFinalize, WakeInvocationStart, WakeInvocationStatus,
 };
 use proxima_core::{MemoryId, ModelTier, Owner, Principal, SchemaId, SchemaVersion, StorageError};
 use sqlx::{PgPool, Row};
@@ -554,13 +554,34 @@ pub async fn try_begin_wake_invocation(
     wake_entry_id: uuid::Uuid,
     change_event_seq: uuid::Uuid,
 ) -> Result<bool, StorageError> {
+    start_wake_invocation(
+        pool,
+        &WakeInvocationStart {
+            owner: owner.clone(),
+            personality_instance_id: instance,
+            wake_entry_id,
+            change_event_seq,
+            wake_token: uuid::Uuid::nil(),
+            recipe_sha256: String::new(),
+            resolved_inference_target_ref: String::new(),
+        },
+    )
+    .await
+}
+
+pub async fn start_wake_invocation(
+    pool: &PgPool,
+    start: &WakeInvocationStart,
+) -> Result<bool, StorageError> {
+    let owner = &start.owner;
     let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(owner);
     let inserted: Option<(uuid::Uuid,)> = sqlx::query_as(
         "INSERT INTO proxima_core.personality_wake_invocations
             (owner_principal_kind, owner_principal_id, owner_org_id,
              personality_instance_id, wake_entry_id, change_event_seq,
-             status, started_at)
-         VALUES ($1, $2, $3, $4, $5, $6, 'running', now())
+             status, started_at, wake_token, recipe_sha256,
+             resolved_inference_target_ref)
+         VALUES ($1, $2, $3, $4, $5, $6, 'running', now(), $7, $8, $9)
          ON CONFLICT (owner_principal_kind, owner_principal_id, owner_org_id,
                       personality_instance_id, wake_entry_id, change_event_seq)
          DO NOTHING
@@ -569,9 +590,12 @@ pub async fn try_begin_wake_invocation(
     .bind(owner_kind)
     .bind(owner_principal_id)
     .bind(owner_org_id)
-    .bind(instance.into_inner())
-    .bind(wake_entry_id)
-    .bind(change_event_seq)
+    .bind(start.personality_instance_id.into_inner())
+    .bind(start.wake_entry_id)
+    .bind(start.change_event_seq)
+    .bind(start.wake_token)
+    .bind(&start.recipe_sha256)
+    .bind(&start.resolved_inference_target_ref)
     .fetch_optional(pool)
     .await
     .map_err(map_err)?;
@@ -589,26 +613,52 @@ pub async fn finish_wake_invocation(
     turn_count: u16,
     cost_usd: f64,
 ) -> Result<(), StorageError> {
+    finalize_wake_invocation(
+        pool,
+        &WakeInvocationFinalize {
+            owner: owner.clone(),
+            personality_instance_id: instance,
+            wake_entry_id,
+            change_event_seq,
+            status,
+            turn_count: Some(turn_count),
+            cost_usd: Some(cost_usd),
+            failure_reason: None,
+        },
+    )
+    .await
+}
+
+pub async fn finalize_wake_invocation(
+    pool: &PgPool,
+    finalize: &WakeInvocationFinalize,
+) -> Result<(), StorageError> {
+    let owner = &finalize.owner;
     let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(owner);
     sqlx::query(
         "UPDATE proxima_core.personality_wake_invocations
-         SET status = $1, finished_at = now(), turn_count = $2, cost_usd = $3
-         WHERE owner_principal_kind = $4
-           AND owner_principal_id = $5
-           AND owner_org_id = $6
-           AND personality_instance_id = $7
-           AND wake_entry_id = $8
-           AND change_event_seq = $9",
+         SET status = $1,
+             finished_at = now(),
+             turn_count = COALESCE($2, turn_count),
+             cost_usd = COALESCE($3, cost_usd),
+             failure_reason = $4
+         WHERE owner_principal_kind = $5
+           AND owner_principal_id = $6
+           AND owner_org_id = $7
+           AND personality_instance_id = $8
+           AND wake_entry_id = $9
+           AND change_event_seq = $10",
     )
-    .bind(status.as_str())
-    .bind(i16::try_from(turn_count).unwrap_or(i16::MAX))
-    .bind(cost_usd)
+    .bind(finalize.status.as_str())
+    .bind(finalize.turn_count.map(|v| i32::from(v)))
+    .bind(finalize.cost_usd)
+    .bind(&finalize.failure_reason)
     .bind(owner_kind)
     .bind(owner_principal_id)
     .bind(owner_org_id)
-    .bind(instance.into_inner())
-    .bind(wake_entry_id)
-    .bind(change_event_seq)
+    .bind(finalize.personality_instance_id.into_inner())
+    .bind(finalize.wake_entry_id)
+    .bind(finalize.change_event_seq)
     .execute(pool)
     .await
     .map_err(map_err)?;
