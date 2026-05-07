@@ -31,6 +31,7 @@ schemars = { workspace = true }
 specta = { workspace = true }
 reqwest = { workspace = true }
 which = "6"
+regex = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }

@@ -39,6 +39,7 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
 http = "1"
 tokio-util = "0.7"
+regex = "1"
 
 # tree-sitter deps for code flavor (Rust + TypeScript).
 # Version trio verified to build together on rust 1.95 + edition 2024:
