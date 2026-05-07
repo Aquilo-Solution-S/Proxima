@@ -21,6 +21,9 @@ mod search_by_embedding;
 mod shared;
 mod walk_lineage;
 
+#[doc(hidden)]
+pub use shared::model_id_from_wake_invocation as __test_only_model_id_from_wake_invocation;
+
 pub use create_edge::CreateEdgeTool;
 pub use emit_abstraction::EmitAbstractionTool;
 pub use emit_goal::EmitGoalTool;
