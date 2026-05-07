@@ -182,6 +182,14 @@ impl Engine {
         self.mcp_url.try_read().ok().and_then(|g| g.clone())
     }
 
+    /// Override the bound MCP URL. Test + headless-wiring seam: the
+    /// dispatcher's fire path injects `PROXIMA_MCP_URL` from this slot
+    /// without requiring [`Engine::start`] to have spawned the
+    /// listener task. Production callers go through `start` instead.
+    pub async fn set_mcp_url(&self, url: String) {
+        *self.mcp_url.write().await = Some(url);
+    }
+
     /// Shared [`WakeTokenStore`] used by the dispatcher (mints) and the
     /// MCP listener's auth layer (resolves). Hosts pass this same `Arc`
     /// to `serve_streamable_http` so requests minted by a wake match

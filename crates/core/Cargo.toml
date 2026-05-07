@@ -32,6 +32,8 @@ specta = { workspace = true }
 reqwest = { workspace = true }
 which = "6"
 regex = { workspace = true }
+hex = { workspace = true }
+sha2 = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
