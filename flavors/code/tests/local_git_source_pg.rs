@@ -254,11 +254,12 @@ async fn local_git_source_full_cycle() {
             entity_kind: None,
             schema_id: Some(SchemaId::new(CodeChunkV1::SCHEMA_ID.into())),
             supersession: SupersessionStatus::HeadsOnly,
+            tombstones: proxima_core::verbs::query::TombstoneFilter::PresentOnly,
             limit: 1000,
             memory_ids: Vec::new(),
             goal_ids: Vec::new(),
             edge_ids: Vec::new(),
-            stateful_heads: None,
+            stateful_heads: Vec::new(),
         };
         let resp = engine.query(&Credentials::None, &q).await?;
         assert_eq!(
@@ -318,11 +319,12 @@ async fn local_git_source_full_cycle() {
             entity_kind: None,
             schema_id: Some(SchemaId::new(FileRevisionV1::SCHEMA_ID.into())),
             supersession: SupersessionStatus::IncludeSuperseded,
+            tombstones: proxima_core::verbs::query::TombstoneFilter::PresentOnly,
             limit: 1000,
             memory_ids: Vec::new(),
             goal_ids: Vec::new(),
             edge_ids: Vec::new(),
-            stateful_heads: None,
+            stateful_heads: Vec::new(),
         };
         let resp_all = engine.query(&Credentials::None, &q_all).await?;
         // 3 initial revisions + 1 mutation = 4

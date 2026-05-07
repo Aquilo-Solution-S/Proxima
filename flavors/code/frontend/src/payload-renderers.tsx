@@ -1,6 +1,5 @@
 import "./payload-renderers.css";
 
-import { decode, encode } from "cbor-x";
 import hljs from "highlight.js/lib/core";
 import bash from "highlight.js/lib/languages/bash";
 import cpp from "highlight.js/lib/languages/cpp";
@@ -20,18 +19,9 @@ import xml from "highlight.js/lib/languages/xml";
 import yaml from "highlight.js/lib/languages/yaml";
 import type { Component, JSX } from "solid-js";
 import type { MemoryRow } from "@proxima/core";
-import type { PayloadCodec, Renderer } from "@proxima/core/hub";
+import type { Renderer } from "@proxima/core/hub";
 
 type PayloadRecord = Record<string, unknown>;
-
-export const codePayloadCodec: PayloadCodec<unknown> = {
-  decode(bytes: Uint8Array): unknown {
-    return decode(bytes);
-  },
-  encode(value: unknown): Uint8Array {
-    return encode(value);
-  },
-};
 
 const isRecord = (value: unknown): value is PayloadRecord =>
   typeof value === "object" && value !== null && !Array.isArray(value);

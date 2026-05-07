@@ -158,6 +158,7 @@ export const commands = {
 	 *  `InvalidUuid` if the id does not parse; `Storage` on database failures.
 	 */
 	repoIngestSubscribe: (repoId: string, onEvent: Channel<RepoIngestEventTs>) => typedError<null, CommandError>(__TAURI_INVOKE("repo_ingest_subscribe", { repoId, onEvent })),
+	payloadTypesAnchor: () => __TAURI_INVOKE<PayloadTypesAnchor_Serialize>("payload_types_anchor"),
 	perfLog: (entries: PerfEntry[]) => __TAURI_INVOKE<void>("perf_log", { entries }),
 	perfLogField: (entries: FieldEntry[]) => __TAURI_INVOKE<void>("perf_log_field", { entries }),
 };
@@ -210,6 +211,27 @@ export type CitedObjectHint = {
 	schema_id: SchemaId,
 	schema_version: SchemaVersion,
 	content_hash: [number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number],
+};
+
+/**
+ *  Code chunk Fact. The "which blob this chunk belongs to" relation is
+ *  carried by the substrate citation (shared `cited_object_id` with the
+ *  parent `file-revision-v1` Fact, keyed by blob content hash) — no
+ *  embedded `MemoryId` parent FK in the payload. See docs/11
+ *  §"Three-layer model".
+ */
+export type CodeChunkV1 = {
+	repo_id: string,
+	file_path: string,
+	chunk_index: number,
+	text: string,
+	language: string | null,
+	chunk_type: string,
+	byte_range_start: number,
+	byte_range_end: number,
+	line_range_start: number,
+	line_range_end: number,
+	state: FileState,
 };
 
 /**
@@ -355,6 +377,30 @@ export type FieldEntry = {
 	cmd: string,
 	field_path: string,
 };
+
+export type FileRevisionV1 = FileRevisionV1_Serialize | FileRevisionV1_Deserialize;
+
+export type FileRevisionV1_Deserialize = {
+	repo_id: string,
+	file_path: string,
+	language: string | null,
+	content_sha256: string,
+	size_bytes: number,
+	indexed_commit_sha: string,
+	state: FileState,
+};
+
+export type FileRevisionV1_Serialize = {
+	repo_id: string,
+	file_path: string,
+	language: string | null,
+	content_sha256: string,
+	size_bytes: number,
+	indexed_commit_sha: string,
+	state: FileState,
+};
+
+export type FileState = "Present" | "Tombstone";
 
 export type FlavorDescriptorTs = {
 	flavor_id: string,
@@ -528,6 +574,33 @@ export type PayloadKind = "Fact" | "Abstraction" | "Perspective" | "Goal" |
  */
 "Edge" | "CitedObject" | "CitationMapping";
 
+/**
+ *  Anchors flavor payload types in generated TypeScript bindings.
+ *  The command is never used by the UI; Specta exports types through
+ *  command signatures, so optional fields keep this cheap if invoked.
+ */
+export type PayloadTypesAnchor = PayloadTypesAnchor_Serialize | PayloadTypesAnchor_Deserialize;
+
+/**
+ *  Anchors flavor payload types in generated TypeScript bindings.
+ *  The command is never used by the UI; Specta exports types through
+ *  command signatures, so optional fields keep this cheap if invoked.
+ */
+export type PayloadTypesAnchor_Deserialize = {
+	file_revision_v1: FileRevisionV1_Deserialize | null,
+	code_chunk_v1: CodeChunkV1 | null,
+};
+
+/**
+ *  Anchors flavor payload types in generated TypeScript bindings.
+ *  The command is never used by the UI; Specta exports types through
+ *  command signatures, so optional fields keep this cheap if invoked.
+ */
+export type PayloadTypesAnchor_Serialize = {
+	file_revision_v1: FileRevisionV1_Serialize | null,
+	code_chunk_v1: CodeChunkV1 | null,
+};
+
 export type PerfEntry = {
 	kind: string,
 	name: string,
@@ -568,6 +641,7 @@ export type QueryRequest = {
 	entity_kind: EntityKind | null,
 	schema_id: SchemaId | null,
 	supersession: SupersessionStatus,
+	tombstones?: TombstoneFilter,
 	limit: number,
 	// Identity-keyed hydration for Subscribe-driven row fetches.
 	memory_ids?: MemoryId[],
@@ -657,10 +731,17 @@ export type SchemaInfo = {
 	 *  head-by-natural-key SQL emission in `Query` heads-only mode.
 	 */
 	natural_key_columns: string[],
+	// Build-time tombstone discriminator for stateful Fact schemas.
+	tombstone: SchemaTombstone | null,
 };
 
 export type SchemaResponse = {
 	schemas: SchemaInfo[],
+};
+
+export type SchemaTombstone = {
+	column: string,
+	value: string,
 };
 
 export type SchemaVersion = number;
@@ -717,6 +798,8 @@ export type TierBindings = {
 	standard?: ModelRef | null,
 	deep?: ModelRef | null,
 };
+
+export type TombstoneFilter = "PresentOnly" | "IncludeTombstoned";
 
 export type TombstonePersonalityOutcomeTs = {
 	status: string,

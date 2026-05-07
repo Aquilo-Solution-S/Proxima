@@ -66,6 +66,7 @@ pub fn schema_registry_with(
             filter_keys: vec![],
             sidecar_table: None,
             natural_key_columns: vec![],
+            tombstone: None,
             cbor_encoder: None,
         });
     }
@@ -83,6 +84,7 @@ pub fn schema_registry_with(
             filter_keys: vec![],
             sidecar_table: None,
             natural_key_columns: vec![],
+            tombstone: None,
             cbor_encoder: None,
         });
     }

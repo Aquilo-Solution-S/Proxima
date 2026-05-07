@@ -16,11 +16,15 @@ use proxima_core::auth::{Credentials, NoAuth};
 use proxima_core::engine::Engine;
 use proxima_core::storage::Storage;
 use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
-use proxima_core::verbs::query::{MemoryStore, QueryRequest, SupersessionStatus};
-use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaInfo};
+use proxima_core::verbs::query::{
+    MemoryStore, QueryRequest, SupersessionStatus, TombstoneFilter,
+};
+use proxima_core::verbs::schema::{
+    FlavorRegistryFrozen, PayloadKind, SchemaInfo, SchemaTombstone,
+};
 use proxima_core::{
     FactPayload, FlavorRegistry, OrgId, Owner, Principal, SchemaId, SchemaVersion, SourceBatchId,
-    SourceId, UserId,
+    SourceId, UserId, CORE_DERIVED_FROM_RELATION,
 };
 use proxima_storage_pg::PgStorage;
 use sqlx::{Connection, Executor, PgConnection, PgPool};
@@ -66,6 +70,7 @@ fn registry_for_test() -> FlavorRegistryFrozen {
         filter_keys: vec![],
         sidecar_table: None,
         natural_key_columns: vec![],
+        tombstone: None,
         cbor_encoder: None,
     });
     frozen.push(SchemaInfo {
@@ -75,6 +80,7 @@ fn registry_for_test() -> FlavorRegistryFrozen {
         filter_keys: vec![],
         sidecar_table: None,
         natural_key_columns: vec![],
+        tombstone: None,
         cbor_encoder: None,
     });
     FlavorRegistryFrozen::with_schemas(frozen)
@@ -111,6 +117,18 @@ async fn seed_file_revision(
     file_path: &str,
     seed: &[u8],
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
+    seed_file_revision_state(pool, engine, owner, repo_id, file_path, seed, "Present").await
+}
+
+async fn seed_file_revision_state(
+    pool: &PgPool,
+    engine: &Engine,
+    owner: Owner,
+    repo_id: Uuid,
+    file_path: &str,
+    seed: &[u8],
+    state: &str,
+) -> Result<Uuid, Box<dyn std::error::Error>> {
     // 1. EventIngest creates the memories row + supporting plumbing.
     let draft = fresh_draft(owner, FileRevisionV1::SCHEMA_ID, seed);
     let outcome = engine.event_ingest(&Credentials::None, draft).await?;
@@ -121,7 +139,7 @@ async fn seed_file_revision(
         "INSERT INTO proxima_code.file_revision_v1 \
             (memory_id, repo_id, file_path, language, content_sha256, \
              size_bytes, indexed_commit_sha, state) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, 'Present')",
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
     )
     .bind(memory_id)
     .bind(repo_id)
@@ -130,10 +148,77 @@ async fn seed_file_revision(
     .bind(blake3::hash(seed).as_bytes().to_vec())
     .bind(i64::try_from(seed.len()).unwrap_or(i64::MAX))
     .bind("0000000000000000000000000000000000000000")
+    .bind(state)
     .execute(pool)
     .await?;
 
     Ok(memory_id)
+}
+
+async fn seed_code_chunk_state(
+    pool: &PgPool,
+    engine: &Engine,
+    owner: Owner,
+    repo_id: Uuid,
+    file_path: &str,
+    chunk_index: i32,
+    seed: &[u8],
+    state: &str,
+) -> Result<Uuid, Box<dyn std::error::Error>> {
+    let draft = fresh_draft(owner, CodeChunkV1::SCHEMA_ID, seed);
+    let outcome = engine.event_ingest(&Credentials::None, draft).await?;
+    let memory_id = outcome.memory_id.into_inner();
+    sqlx::query(
+        "INSERT INTO proxima_code.code_chunk_v1 \
+            (memory_id, repo_id, file_path, chunk_index, text, language, chunk_type, \
+             byte_range_start, byte_range_end, line_range_start, line_range_end, state) \
+         VALUES ($1, $2, $3, $4, $5, $6, 'function', 0, $7, 1, 1, $8)",
+    )
+    .bind(memory_id)
+    .bind(repo_id)
+    .bind(file_path)
+    .bind(chunk_index)
+    .bind(String::from_utf8_lossy(seed).to_string())
+    .bind(Some("rust"))
+    .bind(i32::try_from(seed.len()).unwrap_or(i32::MAX))
+    .bind(state)
+    .execute(pool)
+    .await?;
+    Ok(memory_id)
+}
+
+async fn insert_memory_edge(
+    pool: &PgPool,
+    owner: &Owner,
+    source_memory_id: Uuid,
+    target_memory_id: Uuid,
+) -> Result<Uuid, Box<dyn std::error::Error>> {
+    let edge_id = Uuid::now_v7();
+    let owner_kind = match &owner.principal {
+        Principal::User(_) => "User",
+        Principal::Group(_) => "Group",
+    };
+    let owner_principal_id = match &owner.principal {
+        Principal::User(u) => u.into_inner(),
+        Principal::Group(g) => g.into_inner(),
+    };
+    sqlx::query(
+        "INSERT INTO proxima_core.edges \
+            (edge_id, relation, relation_class, source_kind, source_memory_id, \
+             target_kind, target_memory_id, authorship_kind, owner_principal_kind, \
+             owner_principal_id, owner_org_id) \
+         VALUES ($1, $2, 'Provenance', 'Fact', $3, 'Fact', $4, 'Engine', $5, $6, $7)",
+    )
+    .bind(edge_id)
+    .bind(CORE_DERIVED_FROM_RELATION)
+    .bind(source_memory_id)
+    .bind(target_memory_id)
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(owner.org_id.into_inner())
+    .execute(pool)
+    .await?;
+    Ok(edge_id)
 }
 
 #[tokio::test]
@@ -213,11 +298,12 @@ async fn heads_only_returns_latest_per_natural_key() {
             entity_kind: None,
             schema_id: Some(SchemaId::new(FileRevisionV1::SCHEMA_ID.into())),
             supersession: SupersessionStatus::HeadsOnly,
+            tombstones: proxima_core::verbs::query::TombstoneFilter::PresentOnly,
             limit: 100,
             memory_ids: Vec::new(),
             goal_ids: Vec::new(),
             edge_ids: Vec::new(),
-            stateful_heads: None,
+            stateful_heads: Vec::new(),
         };
         let resp = engine.query(&Credentials::None, &req).await?;
 
@@ -242,11 +328,12 @@ async fn heads_only_returns_latest_per_natural_key() {
             entity_kind: None,
             schema_id: Some(SchemaId::new(FileRevisionV1::SCHEMA_ID.into())),
             supersession: SupersessionStatus::IncludeSuperseded,
+            tombstones: proxima_core::verbs::query::TombstoneFilter::PresentOnly,
             limit: 100,
             memory_ids: Vec::new(),
             goal_ids: Vec::new(),
             edge_ids: Vec::new(),
-            stateful_heads: None,
+            stateful_heads: Vec::new(),
         };
         let resp_all = engine.query(&Credentials::None, &req_all).await?;
         assert_eq!(
@@ -301,11 +388,12 @@ async fn heads_only_no_op_for_stateless_fact_schema() {
             entity_kind: None,
             schema_id: Some(SchemaId::new(CommitV1::SCHEMA_ID.into())),
             supersession: SupersessionStatus::HeadsOnly,
+            tombstones: proxima_core::verbs::query::TombstoneFilter::PresentOnly,
             limit: 100,
             memory_ids: Vec::new(),
             goal_ids: Vec::new(),
             edge_ids: Vec::new(),
-            stateful_heads: None,
+            stateful_heads: Vec::new(),
         };
         let resp = engine.query(&Credentials::None, &req).await?;
         assert_eq!(
@@ -320,6 +408,324 @@ async fn heads_only_no_op_for_stateless_fact_schema() {
 
     let _ = drop_db(&db_name).await;
     result.expect("heads_only_no_op_for_stateless_fact_schema failed");
+}
+
+#[tokio::test]
+async fn owner_snapshot_heads_only_folds_all_stateful_fact_schemas() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if create_db(&db_name).await.is_err() {
+        eprintln!("skipping (no admin PG)");
+        return;
+    }
+    let url = format!("postgres://postgres@localhost/{db_name}");
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        proxima_code::migrator().run(pg.pool()).await?;
+        let storage: Arc<dyn Storage> = Arc::new(pg.clone());
+        let (user, owner) = make_owner();
+        let engine = Engine::new(
+            registry_for_test(),
+            MemoryStore::new(),
+            Box::new(NoAuth::new(Principal::User(user), owner.clone())),
+        )
+        .with_storage(storage);
+        let repo_id = Uuid::now_v7();
+
+        let a_v1 = seed_file_revision_state(
+            pg.pool(),
+            &engine,
+            owner.clone(),
+            repo_id,
+            "src/a.rs",
+            b"a1",
+            "Present",
+        )
+        .await?;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let a_v2 = seed_file_revision_state(
+            pg.pool(),
+            &engine,
+            owner.clone(),
+            repo_id,
+            "src/a.rs",
+            b"a2",
+            "Present",
+        )
+        .await?;
+        let c_v1 = seed_code_chunk_state(
+            pg.pool(),
+            &engine,
+            owner.clone(),
+            repo_id,
+            "src/a.rs",
+            0,
+            b"c1",
+            "Present",
+        )
+        .await?;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let c_v2 = seed_code_chunk_state(
+            pg.pool(),
+            &engine,
+            owner.clone(),
+            repo_id,
+            "src/a.rs",
+            0,
+            b"c2",
+            "Present",
+        )
+        .await?;
+
+        let mut req = QueryRequest::for_owner(owner.clone());
+        req.limit = 100;
+        let resp = engine.query(&Credentials::None, &req).await?;
+        let ids = resp
+            .memories
+            .iter()
+            .map(|m| m.id.into_inner())
+            .collect::<Vec<_>>();
+        assert!(!ids.contains(&a_v1));
+        assert!(ids.contains(&a_v2));
+        assert!(!ids.contains(&c_v1));
+        assert!(ids.contains(&c_v2));
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("owner_snapshot_heads_only_folds_all_stateful_fact_schemas failed");
+}
+
+#[tokio::test]
+async fn present_only_excludes_tombstone_head_without_reviving_previous_present() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if create_db(&db_name).await.is_err() {
+        eprintln!("skipping (no admin PG)");
+        return;
+    }
+    let url = format!("postgres://postgres@localhost/{db_name}");
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        proxima_code::migrator().run(pg.pool()).await?;
+        let storage: Arc<dyn Storage> = Arc::new(pg.clone());
+        let (user, owner) = make_owner();
+        let engine = Engine::new(
+            registry_for_test(),
+            MemoryStore::new(),
+            Box::new(NoAuth::new(Principal::User(user), owner.clone())),
+        )
+        .with_storage(storage);
+        let repo_id = Uuid::now_v7();
+
+        let present = seed_file_revision_state(
+            pg.pool(),
+            &engine,
+            owner.clone(),
+            repo_id,
+            "src/deleted.rs",
+            b"v1",
+            "Present",
+        )
+        .await?;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let tombstone = seed_file_revision_state(
+            pg.pool(),
+            &engine,
+            owner.clone(),
+            repo_id,
+            "src/deleted.rs",
+            b"v2",
+            "Tombstone",
+        )
+        .await?;
+
+        let mut req = QueryRequest::for_owner(owner.clone());
+        req.schema_id = Some(SchemaId::new(FileRevisionV1::SCHEMA_ID.into()));
+        req.limit = 100;
+        let resp = engine.query(&Credentials::None, &req).await?;
+        let ids = resp
+            .memories
+            .iter()
+            .map(|m| m.id.into_inner())
+            .collect::<Vec<_>>();
+        assert!(
+            !ids.contains(&present),
+            "older present row must not be revived"
+        );
+        assert!(
+            !ids.contains(&tombstone),
+            "default query hides tombstone head"
+        );
+
+        req.tombstones = TombstoneFilter::IncludeTombstoned;
+        let resp = engine.query(&Credentials::None, &req).await?;
+        assert_eq!(
+            resp.memories
+                .iter()
+                .map(|m| m.id.into_inner())
+                .collect::<Vec<_>>(),
+            vec![tombstone],
+        );
+
+        req.supersession = SupersessionStatus::IncludeSuperseded;
+        let resp = engine.query(&Credentials::None, &req).await?;
+        let ids = resp
+            .memories
+            .iter()
+            .map(|m| m.id.into_inner())
+            .collect::<Vec<_>>();
+        assert!(ids.contains(&present));
+        assert!(ids.contains(&tombstone));
+
+        req.tombstones = TombstoneFilter::PresentOnly;
+        let resp = engine.query(&Credentials::None, &req).await?;
+        let ids = resp
+            .memories
+            .iter()
+            .map(|m| m.id.into_inner())
+            .collect::<Vec<_>>();
+        assert!(
+            ids.contains(&present),
+            "older Present row visible under IncludeSuperseded"
+        );
+        assert!(
+            !ids.contains(&tombstone),
+            "tombstone stays hidden under PresentOnly"
+        );
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("present_only_excludes_tombstone_head_without_reviving_previous_present failed");
+}
+
+#[tokio::test]
+async fn present_only_snapshot_excludes_edges_to_tombstoned_heads() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if create_db(&db_name).await.is_err() {
+        eprintln!("skipping (no admin PG)");
+        return;
+    }
+    let url = format!("postgres://postgres@localhost/{db_name}");
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        proxima_code::migrator().run(pg.pool()).await?;
+        let storage: Arc<dyn Storage> = Arc::new(pg.clone());
+        let (user, owner) = make_owner();
+        let engine = Engine::new(
+            registry_for_test(),
+            MemoryStore::new(),
+            Box::new(NoAuth::new(Principal::User(user), owner.clone())),
+        )
+        .with_storage(storage);
+        let repo_id = Uuid::now_v7();
+        let active = seed_file_revision_state(
+            pg.pool(),
+            &engine,
+            owner.clone(),
+            repo_id,
+            "src/live.rs",
+            b"live",
+            "Present",
+        )
+        .await?;
+        let deleted = seed_file_revision_state(
+            pg.pool(),
+            &engine,
+            owner.clone(),
+            repo_id,
+            "src/deleted.rs",
+            b"gone",
+            "Tombstone",
+        )
+        .await?;
+        let edge_id = insert_memory_edge(pg.pool(), &owner, active, deleted).await?;
+
+        let mut req = QueryRequest::for_owner(owner.clone());
+        req.limit = 100;
+        let resp = engine.query(&Credentials::None, &req).await?;
+        assert!(resp.memories.iter().any(|m| m.id.into_inner() == active));
+        assert!(!resp.memories.iter().any(|m| m.id.into_inner() == deleted));
+        assert!(!resp.edges.iter().any(|e| e.id == edge_id));
+
+        req.tombstones = TombstoneFilter::IncludeTombstoned;
+        let resp = engine.query(&Credentials::None, &req).await?;
+        assert!(resp.memories.iter().any(|m| m.id.into_inner() == deleted));
+        assert!(resp.edges.iter().any(|e| e.id == edge_id));
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("present_only_snapshot_excludes_edges_to_tombstoned_heads failed");
+}
+
+#[tokio::test]
+async fn present_only_edge_id_hydration_excludes_edges_with_hidden_endpoint() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if create_db(&db_name).await.is_err() {
+        eprintln!("skipping (no admin PG)");
+        return;
+    }
+    let url = format!("postgres://postgres@localhost/{db_name}");
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        proxima_code::migrator().run(pg.pool()).await?;
+        let storage: Arc<dyn Storage> = Arc::new(pg.clone());
+        let (user, owner) = make_owner();
+        let engine = Engine::new(
+            registry_for_test(),
+            MemoryStore::new(),
+            Box::new(NoAuth::new(Principal::User(user), owner.clone())),
+        )
+        .with_storage(storage);
+        let repo_id = Uuid::now_v7();
+        let active = seed_file_revision_state(
+            pg.pool(),
+            &engine,
+            owner.clone(),
+            repo_id,
+            "src/live.rs",
+            b"live",
+            "Present",
+        )
+        .await?;
+        let deleted = seed_file_revision_state(
+            pg.pool(),
+            &engine,
+            owner.clone(),
+            repo_id,
+            "src/deleted.rs",
+            b"gone",
+            "Tombstone",
+        )
+        .await?;
+        let edge_id = insert_memory_edge(pg.pool(), &owner, active, deleted).await?;
+
+        let mut req = QueryRequest::for_owner(owner.clone());
+        req.edge_ids = vec![edge_id];
+        req.limit = 1;
+        let resp = engine.query(&Credentials::None, &req).await?;
+        assert!(resp.edges.is_empty());
+
+        req.tombstones = TombstoneFilter::IncludeTombstoned;
+        let resp = engine.query(&Credentials::None, &req).await?;
+        assert_eq!(resp.edges.len(), 1);
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("present_only_edge_id_hydration_excludes_edges_with_hidden_endpoint failed");
 }
 
 // Smoke check the registry-side wiring: code-chunk-v1 also registers NK
@@ -352,4 +758,31 @@ fn flavor_registers_natural_keys() {
             "chunk_index".to_string(),
         ])
     );
+}
+
+#[test]
+fn flavor_registers_tombstone_discriminators() {
+    let mut r = FlavorRegistry::new();
+    proxima_code::register(&mut r);
+    let registry = r.freeze();
+    let tombstone_for = |sid: &str| {
+        registry
+            .lookup(&SchemaId::new(sid.into()), SchemaVersion::new(1))
+            .and_then(|s| s.tombstone.clone())
+    };
+    assert_eq!(
+        tombstone_for(FileRevisionV1::SCHEMA_ID),
+        Some(SchemaTombstone {
+            column: "state".into(),
+            value: "Tombstone".into(),
+        })
+    );
+    assert_eq!(
+        tombstone_for(CodeChunkV1::SCHEMA_ID),
+        Some(SchemaTombstone {
+            column: "state".into(),
+            value: "Tombstone".into(),
+        })
+    );
+    assert_eq!(tombstone_for(CommitV1::SCHEMA_ID), None);
 }

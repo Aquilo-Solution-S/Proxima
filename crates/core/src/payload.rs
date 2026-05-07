@@ -10,6 +10,12 @@
 
 use crate::{RelationClass, SchemaId};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FactTombstone {
+    pub column: &'static str,
+    pub value: &'static str,
+}
+
 pub trait FactPayload: serde::Serialize + serde::de::DeserializeOwned + 'static {
     const SCHEMA_ID: &'static str;
     const SCHEMA_VERSION: u32;
@@ -27,6 +33,11 @@ pub trait FactPayload: serde::Serialize + serde::de::DeserializeOwned + 'static 
     /// head-by-natural-key queries (docs/03 §Stateful Fact schemas).
     fn natural_key_columns() -> &'static [&'static str] {
         &[]
+    }
+    /// Optional discriminator for stateful Fact deletion observations.
+    /// Storage uses this build-time metadata for `PresentOnly` queries.
+    fn tombstone() -> Option<FactTombstone> {
+        None
     }
     fn schema_id() -> SchemaId {
         SchemaId::new(Self::SCHEMA_ID.to_string())

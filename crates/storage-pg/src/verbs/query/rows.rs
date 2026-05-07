@@ -165,16 +165,16 @@ pub(super) struct GoalRowDb {
 
 #[derive(Debug, sqlx::FromRow)]
 pub(super) struct EdgeRowDb {
-    edge_id: uuid::Uuid,
-    relation: String,
-    relation_class: String,
-    source_memory_id: Option<uuid::Uuid>,
-    source_goal_id: Option<uuid::Uuid>,
-    target_memory_id: Option<uuid::Uuid>,
-    target_goal_id: Option<uuid::Uuid>,
-    owner_principal_kind: String,
-    owner_principal_id: uuid::Uuid,
-    owner_org_id: uuid::Uuid,
+    pub(super) edge_id: uuid::Uuid,
+    pub(super) relation: String,
+    pub(super) relation_class: String,
+    pub(super) source_memory_id: Option<uuid::Uuid>,
+    pub(super) source_goal_id: Option<uuid::Uuid>,
+    pub(super) target_memory_id: Option<uuid::Uuid>,
+    pub(super) target_goal_id: Option<uuid::Uuid>,
+    pub(super) owner_principal_kind: String,
+    pub(super) owner_principal_id: uuid::Uuid,
+    pub(super) owner_org_id: uuid::Uuid,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -227,6 +227,9 @@ pub(super) fn validate_stateful_filter(
     }
     for col in &sf.natural_key_columns {
         PgIdent::column(col)?;
+    }
+    if let Some(tombstone) = &sf.tombstone {
+        PgIdent::column(&tombstone.column)?;
     }
     Ok(sf)
 }

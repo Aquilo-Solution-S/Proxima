@@ -32,6 +32,7 @@ fn schemas_for_test() -> Vec<SchemaInfo> {
             filter_keys: vec![],
             sidecar_table: None,
             natural_key_columns: vec![],
+            tombstone: None,
             cbor_encoder: None,
         },
         SchemaInfo {
@@ -41,6 +42,7 @@ fn schemas_for_test() -> Vec<SchemaInfo> {
             filter_keys: vec![],
             sidecar_table: None,
             natural_key_columns: vec![],
+            tombstone: None,
             cbor_encoder: None,
         },
         SchemaInfo {
@@ -50,6 +52,7 @@ fn schemas_for_test() -> Vec<SchemaInfo> {
             filter_keys: vec![],
             sidecar_table: None,
             natural_key_columns: vec![],
+            tombstone: None,
             cbor_encoder: None,
         },
         SchemaInfo {
@@ -59,6 +62,7 @@ fn schemas_for_test() -> Vec<SchemaInfo> {
             filter_keys: vec![],
             sidecar_table: None,
             natural_key_columns: vec![],
+            tombstone: None,
             cbor_encoder: None,
         },
     ]

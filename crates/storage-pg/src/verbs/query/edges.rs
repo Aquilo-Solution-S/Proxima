@@ -2,6 +2,7 @@ use proxima_core::StorageError;
 use proxima_core::verbs::query::{EdgeRow, QueryRequest};
 use sqlx::PgPool;
 
+use super::memories::visible_ids_for;
 use super::rows::{EdgeRowDb, edge_row_from_db};
 
 /// Hard upper bound on edges returned by snapshot-edge mode.
@@ -66,7 +67,54 @@ async fn query_edges_by_id(
     .fetch_all(pool)
     .await
     .map_err(|e| StorageError::Internal(e.to_string()))?;
-    rows.into_iter().map(edge_row_from_db).collect()
+    let endpoint_memory_ids = rows
+        .iter()
+        .flat_map(|row| [row.source_memory_id, row.target_memory_id])
+        .flatten()
+        .collect::<Vec<_>>();
+    let endpoint_goal_ids = rows
+        .iter()
+        .flat_map(|row| [row.source_goal_id, row.target_goal_id])
+        .flatten()
+        .collect::<Vec<_>>();
+    let (visible_memory_ids, visible_goal_ids) = visible_ids_for(
+        pool,
+        req,
+        owner_kind,
+        owner_principal_id,
+        &endpoint_memory_ids,
+        &endpoint_goal_ids,
+    )
+    .await?;
+    rows.into_iter()
+        .filter(|row| {
+            endpoint_visible(
+                row.source_memory_id,
+                row.source_goal_id,
+                &visible_memory_ids,
+                &visible_goal_ids,
+            ) && endpoint_visible(
+                row.target_memory_id,
+                row.target_goal_id,
+                &visible_memory_ids,
+                &visible_goal_ids,
+            )
+        })
+        .map(edge_row_from_db)
+        .collect()
+}
+
+fn endpoint_visible(
+    memory_id: Option<uuid::Uuid>,
+    goal_id: Option<uuid::Uuid>,
+    visible_memory_ids: &std::collections::HashSet<uuid::Uuid>,
+    visible_goal_ids: &std::collections::HashSet<uuid::Uuid>,
+) -> bool {
+    match (memory_id, goal_id) {
+        (Some(id), None) => visible_memory_ids.contains(&id),
+        (None, Some(id)) => visible_goal_ids.contains(&id),
+        _ => false,
+    }
 }
 
 async fn query_edges_between_visible_nodes(

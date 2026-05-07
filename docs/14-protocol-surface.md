@@ -49,8 +49,9 @@ Owner-scoped snapshot read of memories, goals, and edges.
 - **Filters** split into two layers:
   - **Core-generic** — entity_kind (per 02 `EntityKind`), schema_id,
     owner, time range, supersession status (head only / include
-    superseded), edge traversal (follow N relations from a seed),
-    pagination cursor + limit.
+    superseded), tombstone visibility (`PresentOnly` /
+    `IncludeTombstoned`), edge traversal (follow N relations from a
+    seed), pagination cursor + limit.
   - **Flavor-typed** — registered per sidecar by flavors ([08](docs/08-core-and-flavors.md)). A Code
     flavor that wants `severity >= P1` filtering on a `BugReportV1`
     sidecar registers it the same way it registers the schema. The
@@ -59,6 +60,12 @@ Owner-scoped snapshot read of memories, goals, and edges.
 - **Returns** data + a `seq_high_water` watermark. The client uses
   this watermark to start a `Subscribe` without missing or
   duplicating events (see *Cold-start stitching* below).
+- **Tombstones** — default `PresentOnly`. For stateful Fact schemas,
+  `HeadsOnly + PresentOnly` first computes the latest row per natural
+  key, then drops rows whose registered tombstone discriminator
+  matches. Older present rows under a tombstoned natural key are not
+  revived. `IncludeTombstoned` exposes tombstone heads for history
+  views.
 
 ### Subscribe
 
@@ -106,6 +113,13 @@ schema and natural key; clients fold to heads on the read side
 **Filters** mirror `Query`'s core-generic + flavor-typed split.
 Filtering happens in the engine; the client only sees events
 matching its subscription.
+
+**`ReadFilter.tombstones` is ignored on Subscribe.** Tombstone
+`EntityAppend`s reach subscribers regardless of the filter so clients
+that maintain a current-head cache can evict prior natural-key heads.
+Identity-only payload fetch still runs through `Query`; clients that
+want the tombstone payload pass `IncludeTombstoned` on the hydration
+query.
 
 **`ChangeEvent` is identity + reference, not payload.** Payload
 fetch is a follow-up `Query` keyed on the `entity_id` /

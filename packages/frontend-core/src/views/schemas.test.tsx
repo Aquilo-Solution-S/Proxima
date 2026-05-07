@@ -20,6 +20,7 @@ const schema = (
   kind,
   sidecar_table: sidecarTable,
   natural_key_columns: [],
+  tombstone: null,
   filter_keys: [],
 });
 

@@ -103,6 +103,10 @@ impl FlavorRegistry {
                 .iter()
                 .map(|s| (*s).to_string())
                 .collect(),
+            tombstone: F::tombstone().map(|t| crate::verbs::schema::SchemaTombstone {
+                column: t.column.to_string(),
+                value: t.value.to_string(),
+            }),
             cbor_encoder: Some(encode_payload_cbor::<F>),
         });
         self.validators.push(PayloadValidatorEntry {
@@ -121,6 +125,7 @@ impl FlavorRegistry {
             filter_keys: vec![],
             sidecar_table: Some(A::sidecar_table().to_string()),
             natural_key_columns: vec![],
+            tombstone: None,
             cbor_encoder: Some(encode_payload_cbor::<A>),
         });
         self.validators.push(PayloadValidatorEntry {
@@ -139,6 +144,7 @@ impl FlavorRegistry {
             filter_keys: vec![],
             sidecar_table: Some(P::sidecar_table().to_string()),
             natural_key_columns: vec![],
+            tombstone: None,
             cbor_encoder: Some(encode_payload_cbor::<P>),
         });
         self.validators.push(PayloadValidatorEntry {
@@ -157,6 +163,7 @@ impl FlavorRegistry {
             filter_keys: vec![],
             sidecar_table: Some(G::sidecar_table().to_string()),
             natural_key_columns: vec![],
+            tombstone: None,
             cbor_encoder: Some(encode_payload_cbor::<G>),
         });
         self.validators.push(PayloadValidatorEntry {
@@ -179,6 +186,7 @@ impl FlavorRegistry {
             filter_keys: vec![],
             sidecar_table: Some(E::sidecar_table().to_string()),
             natural_key_columns: vec![],
+            tombstone: None,
             cbor_encoder: Some(encode_payload_cbor::<E>),
         });
         self.validators.push(PayloadValidatorEntry {

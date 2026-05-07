@@ -7,6 +7,7 @@ use uuid::Uuid;
 
 use crate::outbox::EntityRef;
 use crate::verbs::goal_write::GoalState;
+use crate::verbs::schema::SchemaTombstone;
 use crate::{GoalId, MemoryId, Owner, SchemaId, SchemaVersion};
 
 /// Re-export the canonical `EntityKind` from `outbox` so query
@@ -23,6 +24,16 @@ pub enum SupersessionStatus {
     IncludeSuperseded,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
+pub enum TombstoneFilter {
+    PresentOnly,
+    IncludeTombstoned,
+}
+
+fn default_tombstone_filter() -> TombstoneFilter {
+    TombstoneFilter::PresentOnly
+}
+
 /// Engine-resolved head-by-natural-key filter for stateful Fact
 /// schemas (docs/03 §Stateful Fact schemas). Populated from the
 /// schema registry when `Engine::query` sees a heads-only request
@@ -30,8 +41,11 @@ pub enum SupersessionStatus {
 /// per-NK head SQL. Internal — clients do not set this directly.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StatefulHeadsFilter {
+    pub schema_id: SchemaId,
+    pub schema_version: SchemaVersion,
     pub sidecar_table: String,
     pub natural_key_columns: Vec<String>,
+    pub tombstone: Option<SchemaTombstone>,
 }
 
 /// One core-generic Query request. Flavor-typed filters
@@ -43,6 +57,8 @@ pub struct QueryRequest {
     pub entity_kind: Option<EntityKind>,
     pub schema_id: Option<SchemaId>,
     pub supersession: SupersessionStatus,
+    #[serde(default = "default_tombstone_filter")]
+    pub tombstones: TombstoneFilter,
     pub limit: u32,
     /// Identity-keyed hydration for Subscribe-driven row fetches.
     #[serde(default)]
@@ -55,7 +71,7 @@ pub struct QueryRequest {
     /// Skipped over the wire — clients don't set this; the engine
     /// populates it from the schema registry before dispatch.
     #[serde(skip)]
-    pub stateful_heads: Option<StatefulHeadsFilter>,
+    pub stateful_heads: Vec<StatefulHeadsFilter>,
 }
 
 impl QueryRequest {
@@ -68,11 +84,12 @@ impl QueryRequest {
             entity_kind: None,
             schema_id: None,
             supersession: SupersessionStatus::HeadsOnly,
+            tombstones: TombstoneFilter::PresentOnly,
             limit: 100,
             memory_ids: Vec::new(),
             goal_ids: Vec::new(),
             edge_ids: Vec::new(),
-            stateful_heads: None,
+            stateful_heads: Vec::new(),
         }
     }
 }
