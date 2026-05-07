@@ -1,98 +1,91 @@
-import { cleanup, render, screen, waitFor } from "@solidjs/testing-library";
-import { createResource, type Component } from "solid-js";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { LlmCaps, LlmModelRecord, TierBindings } from "../../bindings";
+import { cleanup, fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { sentinelOwner } from "../../graph-store";
+import type { InferenceTargetTs, InferenceTierBindingTs } from "../../bindings";
 import { TierBindingsSection } from "./tier-bindings-section";
 
-const mocks = vi.hoisted(() => ({
-  tierBind: vi.fn(),
-  tierUnbind: vi.fn(),
-  tierRequires: vi.fn(),
-}));
+const owner = sentinelOwner();
 
-vi.mock("../../bindings", () => ({
-  commands: {
-    tierBind: mocks.tierBind,
-    tierUnbind: mocks.tierUnbind,
-    tierRequires: mocks.tierRequires,
+const target = (
+  targetRef: string,
+  command = targetRef,
+): InferenceTargetTs => ({
+  target_ref: targetRef,
+  config: {
+    kind: "local_cli",
+    command,
+    profile: null,
+    env_overrides: [],
   },
-}));
-
-const ok = <T,>(data: T) => Promise.resolve({ status: "ok" as const, data });
-
-const emptyCaps: LlmCaps = {
-  tool_use: false,
-  json_mode: false,
-  long_context: false,
-  vision: false,
-};
-
-const model = (
-  overrides: Partial<LlmModelRecord> = {},
-): LlmModelRecord => ({
-  vendor: "ollama",
-  model_id: "granite4.1:8b",
-  dialect: "openai",
-  base_url: "http://localhost:11434",
-  caps: {
-    tool_use: true,
-    json_mode: true,
-    long_context: false,
-    vision: false,
-  },
-  secret_ref: null,
-  ...overrides,
+  created_at: "2026-05-07T00:00:00Z",
+  updated_at: "2026-05-07T00:00:00Z",
 });
 
-const deferred = <T,>() => {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((res) => {
-    resolve = res;
-  });
-  return { promise, resolve };
-};
-
 describe("TierBindingsSection", () => {
-  beforeEach(() => {
-    mocks.tierBind.mockResolvedValue(ok(null));
-    mocks.tierUnbind.mockResolvedValue(ok(false));
-    mocks.tierRequires.mockResolvedValue(ok(emptyCaps));
-  });
-
   afterEach(() => {
     cleanup();
     vi.clearAllMocks();
   });
 
-  it("selects the bound tier model when options load after bindings", async () => {
-    const models = deferred<LlmModelRecord[]>();
-    const bindingsData: TierBindings = {
-      fast: { vendor: "ollama", model_id: "granite4.1:8b" },
-    };
-    const Harness: Component = () => {
-      const [bindings] = createResource(async () => bindingsData);
-      const [llmModels] = createResource(async () => models.promise);
-      return (
-        <TierBindingsSection
-          bindings={bindings}
-          llmModels={llmModels}
-          onChange={() => undefined}
-        />
-      );
+  it("binds a tier to a selected inference target", async () => {
+    const bindings: InferenceTierBindingTs[] = [
+      { tier: "fast", target_ref: "local-goose" },
+    ];
+    const client = {
+      listInferenceTargets: vi.fn(async () => [
+        target("local-goose", "goose"),
+        target("remote-claude", "claude"),
+      ]),
+      listInferenceTierBindings: vi.fn(async () => bindings),
+      bindInferenceTier: vi.fn(async () => undefined),
     };
 
-    render(() => <Harness />);
+    render(() => <TierBindingsSection client={client} owner={owner} />);
 
     await waitFor(() =>
       expect(screen.getAllByRole("combobox")).toHaveLength(3),
     );
     const fastSelect = screen.getAllByRole("combobox")[0] as HTMLSelectElement;
-    expect(fastSelect.value).toBe("");
+    await waitFor(() => expect(fastSelect.value).toBe("local-goose"));
 
-    models.resolve([model()]);
+    fireEvent.change(fastSelect, {
+      target: { value: "remote-claude" },
+    });
 
-    await waitFor(() =>
-      expect(fastSelect.value).toBe("ollama|granite4.1:8b"),
-    );
+    await waitFor(() => {
+      expect(client.bindInferenceTier).toHaveBeenCalledWith({
+        owner,
+        tier: "fast",
+        target_ref: "remote-claude",
+      });
+    });
+  });
+
+  it("shows server-side typed errors verbatim on bind", async () => {
+    const client = {
+      listInferenceTargets: vi.fn(async () => [
+        target("local-goose", "goose"),
+        target("missing-target", "missing"),
+      ]),
+      listInferenceTierBindings: vi.fn(async () => [
+        { tier: "fast" as const, target_ref: "local-goose" },
+      ]),
+      bindInferenceTier: vi.fn(async () => {
+        throw { code: "InferenceTargetMissing", message: "missing target" };
+      }),
+    };
+
+    render(() => <TierBindingsSection client={client} owner={owner} />);
+
+    const fastSelect = (await screen.findAllByRole("combobox"))[0] as HTMLSelectElement;
+    await waitFor(() => expect(fastSelect.value).toBe("local-goose"));
+    fireEvent.change(fastSelect, {
+      target: { value: "missing-target" },
+    });
+
+    await waitFor(() => expect(client.bindInferenceTier).toHaveBeenCalled());
+    expect(
+      await screen.findByText("InferenceTargetMissing: missing target"),
+    ).toBeTruthy();
   });
 });

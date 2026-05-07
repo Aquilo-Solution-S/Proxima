@@ -16,18 +16,22 @@ use crate::convert::refs::{owner_from_proto, owner_to_proto};
 use crate::convert::{
     change_event_to_proto, event_history_request_from_proto, event_history_response_to_proto,
     event_ingest_request_from_proto, event_ingest_response_to_proto, goal_write_request_from_proto,
-    goal_write_response_to_proto, protocol_error_to_status, query_request_from_proto,
-    query_response_to_proto, schema_request_from_proto, schema_response_to_proto,
-    subscribe_request_from_proto,
+    goal_write_response_to_proto, inference_config_from_proto, inference_target_to_proto,
+    protocol_error_to_status, query_request_from_proto, query_response_to_proto,
+    schema_request_from_proto, schema_response_to_proto, subscribe_request_from_proto,
+    tier_binding_to_proto, tier_from_proto, wake_entry_draft_from_proto, wake_entry_to_proto,
 };
 use crate::pb::{
-    self, ChangeEvent, EventHistoryRequest, EventHistoryResponse, EventIngestRequest,
-    EventIngestResponse, GoalWriteRequest, GoalWriteResponse,
-    InstantiatePersonalityRequest, InstantiatePersonalityResponse, ListPersonalityInstancesRequest,
+    self, BindInferenceTierRequest, BindInferenceTierResponse, ChangeEvent, EventHistoryRequest,
+    EventHistoryResponse, EventIngestRequest, EventIngestResponse, GoalWriteRequest,
+    GoalWriteResponse, InstantiatePersonalityRequest, InstantiatePersonalityResponse,
+    ListInferenceTargetsRequest, ListInferenceTargetsResponse, ListInferenceTierBindingsRequest,
+    ListInferenceTierBindingsResponse, ListPersonalityInstancesRequest,
     ListPersonalityInstancesResponse, PersonalityInstance, ProvisionOwnerRequest,
-    ProvisionOwnerResponse, QueryRequest,
-    QueryResponse, SchemaRequest, SchemaResponse, SetWakeConfigRequest, SetWakeConfigResponse,
-    SubscribeRequest, TombstonePersonalityRequest, TombstonePersonalityResponse,
+    ProvisionOwnerResponse, QueryRequest, QueryResponse, RegisterInferenceTargetRequest,
+    RegisterInferenceTargetResponse, RemoveInferenceTargetRequest, RemoveInferenceTargetResponse,
+    SchemaRequest, SchemaResponse, SetWakeEntriesRequest, SetWakeEntriesResponse, SubscribeRequest,
+    TombstonePersonalityRequest, TombstonePersonalityResponse,
     engine_server::Engine as EngineTrait,
 };
 
@@ -196,14 +200,154 @@ impl EngineTrait for EngineGrpcServer {
         }))
     }
 
-    async fn set_wake_config(
+    async fn set_wake_entries(
         &self,
-        request: Request<SetWakeConfigRequest>,
-    ) -> Result<Response<SetWakeConfigResponse>, Status> {
-        let _ = request.into_inner();
-        Err(Status::unimplemented(
-            "SetWakeConfig was removed by the Phase 1a WakeEntry migration",
-        ))
+        request: Request<SetWakeEntriesRequest>,
+    ) -> Result<Response<SetWakeEntriesResponse>, Status> {
+        let pb = request.into_inner();
+        let owner = owner_from_proto(
+            pb.owner
+                .ok_or_else(|| Status::invalid_argument("missing owner"))?,
+        )?;
+        let personality_instance_id =
+            proxima_core::PersonalityInstanceId::new(uuid_from_str(&pb.personality_instance_id)?);
+        let entries = pb
+            .entries
+            .into_iter()
+            .map(|entry| wake_entry_draft_from_proto(entry, personality_instance_id))
+            .collect::<Result<Vec<_>, _>>()?;
+        let out = self
+            .engine
+            .set_wake_entries(
+                &Credentials::None,
+                &proxima_core::SetWakeEntriesRequest {
+                    owner,
+                    personality_instance_id,
+                    entries,
+                },
+            )
+            .await
+            .map_err(protocol_error_to_status)?;
+        Ok(Response::new(SetWakeEntriesResponse {
+            active_entries: out.active_entries,
+        }))
+    }
+
+    async fn register_inference_target(
+        &self,
+        request: Request<RegisterInferenceTargetRequest>,
+    ) -> Result<Response<RegisterInferenceTargetResponse>, Status> {
+        let pb = request.into_inner();
+        let owner = owner_from_proto(
+            pb.owner
+                .ok_or_else(|| Status::invalid_argument("missing owner"))?,
+        )?;
+        let config = inference_config_from_proto(
+            pb.config
+                .ok_or_else(|| Status::invalid_argument("missing config"))?,
+        )?;
+        let out = self
+            .engine
+            .register_inference_target(
+                &Credentials::None,
+                &proxima_core::RegisterInferenceTargetRequest {
+                    owner,
+                    target_ref: pb.target_ref,
+                    config,
+                },
+            )
+            .await
+            .map_err(protocol_error_to_status)?;
+        Ok(Response::new(RegisterInferenceTargetResponse {
+            target_ref: out.target_ref,
+            idempotent_replay: out.idempotent_replay,
+        }))
+    }
+
+    async fn list_inference_targets(
+        &self,
+        request: Request<ListInferenceTargetsRequest>,
+    ) -> Result<Response<ListInferenceTargetsResponse>, Status> {
+        let pb = request.into_inner();
+        let owner = owner_from_proto(
+            pb.owner
+                .ok_or_else(|| Status::invalid_argument("missing owner"))?,
+        )?;
+        let rows = self
+            .engine
+            .list_inference_targets(&Credentials::None, &owner)
+            .await
+            .map_err(protocol_error_to_status)?;
+        Ok(Response::new(ListInferenceTargetsResponse {
+            targets: rows.iter().map(inference_target_to_proto).collect(),
+        }))
+    }
+
+    async fn remove_inference_target(
+        &self,
+        request: Request<RemoveInferenceTargetRequest>,
+    ) -> Result<Response<RemoveInferenceTargetResponse>, Status> {
+        let pb = request.into_inner();
+        let owner = owner_from_proto(
+            pb.owner
+                .ok_or_else(|| Status::invalid_argument("missing owner"))?,
+        )?;
+        let out = self
+            .engine
+            .remove_inference_target(
+                &Credentials::None,
+                &proxima_core::RemoveInferenceTargetRequest {
+                    owner,
+                    target_ref: pb.target_ref,
+                },
+            )
+            .await
+            .map_err(protocol_error_to_status)?;
+        Ok(Response::new(RemoveInferenceTargetResponse {
+            idempotent_replay: out.idempotent_replay,
+        }))
+    }
+
+    async fn bind_inference_tier(
+        &self,
+        request: Request<BindInferenceTierRequest>,
+    ) -> Result<Response<BindInferenceTierResponse>, Status> {
+        let pb = request.into_inner();
+        let owner = owner_from_proto(
+            pb.owner
+                .ok_or_else(|| Status::invalid_argument("missing owner"))?,
+        )?;
+        self.engine
+            .bind_inference_tier(
+                &Credentials::None,
+                &proxima_core::BindInferenceTierRequest {
+                    owner,
+                    tier: tier_from_proto(pb.tier)?,
+                    target_ref: pb.target_ref,
+                },
+            )
+            .await
+            .map_err(protocol_error_to_status)?;
+        Ok(Response::new(BindInferenceTierResponse {}))
+    }
+
+    async fn list_inference_tier_bindings(
+        &self,
+        request: Request<ListInferenceTierBindingsRequest>,
+    ) -> Result<Response<ListInferenceTierBindingsResponse>, Status> {
+        let pb = request.into_inner();
+        let owner = owner_from_proto(
+            pb.owner
+                .ok_or_else(|| Status::invalid_argument("missing owner"))?,
+        )?;
+        let rows = self
+            .engine
+            .list_inference_tier_bindings(&Credentials::None, &owner)
+            .await
+            .map_err(protocol_error_to_status)?;
+        Ok(Response::new(ListInferenceTierBindingsResponse {
+            bindings: rows.iter().map(tier_binding_to_proto).collect(),
+        }))
     }
 
     async fn list_personality_instances(
@@ -217,7 +361,11 @@ impl EngineTrait for EngineGrpcServer {
         )?;
         let rows = self
             .engine
-            .list_personality_instances(&owner, pb.personality_type_id.as_deref(), pb.include_tombstoned)
+            .list_personality_instances(
+                &owner,
+                pb.personality_type_id.as_deref(),
+                pb.include_tombstoned,
+            )
             .await
             .map_err(protocol_error_to_status)?;
         let registry = self.engine.registry();
@@ -232,7 +380,7 @@ impl EngineTrait for EngineGrpcServer {
                             row.personality_type_id,
                         ))
                     })?;
-                personality_instance_to_proto(row, flavor)
+                Ok::<_, Status>(personality_instance_to_proto(row, flavor))
             })
             .collect::<Result<Vec<_>, _>>()?;
         Ok(Response::new(ListPersonalityInstancesResponse {
@@ -273,25 +421,23 @@ fn uuid_from_str(value: &str) -> Result<uuid::Uuid, Status> {
 fn personality_instance_to_proto(
     row: proxima_core::PersonalityInstanceRow,
     flavor: &proxima_core::FlavorDescriptor,
-) -> Result<PersonalityInstance, Status> {
-    Ok(PersonalityInstance {
+) -> PersonalityInstance {
+    PersonalityInstance {
         owner: Some(owner_to_proto(&row.owner)),
         personality_type_id: row.personality_type_id,
         personality_instance_id: row.personality_instance_id.into_inner().to_string(),
-        current_self_perspective_memory_id: row
+        current_root_perspective_memory_id: row
             .current_root_perspective_memory_id
             .into_inner()
             .to_string(),
         display_name: row.display_name,
         status: row.status,
-        wake_filters: Vec::new(),
         flavor: Some(flavor_descriptor_to_proto(flavor)),
-    })
+        wake_entries: row.wake_entries.iter().map(wake_entry_to_proto).collect(),
+    }
 }
 
-fn flavor_descriptor_to_proto(
-    descriptor: &proxima_core::FlavorDescriptor,
-) -> pb::FlavorDescriptor {
+fn flavor_descriptor_to_proto(descriptor: &proxima_core::FlavorDescriptor) -> pb::FlavorDescriptor {
     pb::FlavorDescriptor {
         flavor_id: descriptor.flavor_id.clone(),
         display_name: descriptor.display_name.clone(),
@@ -301,9 +447,7 @@ fn flavor_descriptor_to_proto(
     }
 }
 
-fn flavor_provenance_to_proto(
-    provenance: &proxima_core::FlavorProvenance,
-) -> pb::FlavorProvenance {
+fn flavor_provenance_to_proto(provenance: &proxima_core::FlavorProvenance) -> pb::FlavorProvenance {
     use pb::flavor_provenance::{Builtin, Kind, Local, Marketplace};
     let kind = match provenance {
         proxima_core::FlavorProvenance::Builtin => Kind::Builtin(Builtin {}),

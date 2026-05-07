@@ -1,6 +1,6 @@
-//! Per-(owner, type_id, instance_id) advisory locking for wakes.
+//! Per-(owner, `type_id`, `instance_id`) advisory locking for wakes.
 //!
-//! Sessions in PostgreSQL hold session-level advisory locks; the lock is
+//! Sessions in `PostgreSQL` hold session-level advisory locks; the lock is
 //! bound to the connection that took it. Sqlx's pool may hand the same
 //! connection to a follow-up wake (which would re-take its own lock,
 //! since `pg_advisory_lock` is reentrant within a session) OR a
@@ -57,11 +57,7 @@ pub async fn acquire_wake_lock(
     // task uses the same session that took the lock.
     let conn_slot: Mutex<Option<PoolConnection<Postgres>>> = Mutex::new(Some(conn));
     let release: Box<dyn FnOnce() + Send + Sync> = Box::new(move || {
-        let Some(mut conn) = conn_slot
-            .lock()
-            .ok()
-            .and_then(|mut slot| slot.take())
-        else {
+        let Some(mut conn) = conn_slot.lock().ok().and_then(|mut slot| slot.take()) else {
             return;
         };
         tokio::spawn(async move {

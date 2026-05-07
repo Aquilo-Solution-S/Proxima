@@ -54,8 +54,15 @@ service Engine {
   // Mint one runtime personality instance and its self-Perspective.
   rpc InstantiatePersonality (InstantiatePersonalityRequest) returns (InstantiatePersonalityResponse);
 
-  // Replace one instance's wake filters.
-  rpc SetWakeConfig (SetWakeConfigRequest) returns (SetWakeConfigResponse);
+  // Replace the active WakeEntry rows for one personality instance.
+  // Idempotent on the per-(instance, trigger) UNIQUE key.
+  rpc SetWakeEntries (SetWakeEntriesRequest) returns (SetWakeEntriesResponse);
+
+  rpc RegisterInferenceTarget (RegisterInferenceTargetRequest) returns (RegisterInferenceTargetResponse);
+  rpc ListInferenceTargets (ListInferenceTargetsRequest) returns (ListInferenceTargetsResponse);
+  rpc RemoveInferenceTarget (RemoveInferenceTargetRequest) returns (RemoveInferenceTargetResponse);
+  rpc BindInferenceTier (BindInferenceTierRequest) returns (BindInferenceTierResponse);
+  rpc ListInferenceTierBindings (ListInferenceTierBindingsRequest) returns (ListInferenceTierBindingsResponse);
 
   // List runtime personality instances for an owner.
   rpc ListPersonalityInstances (ListPersonalityInstancesRequest) returns (ListPersonalityInstancesResponse);
@@ -266,15 +273,59 @@ message InstantiatePersonalityResponse {
   string personality_instance_id = 1;  // UUID
 }
 
-message SetWakeConfigRequest {
+message SetWakeEntriesRequest {
   Owner owner = 1;
   string personality_type_id = 2;
   string personality_instance_id = 3;  // UUID
-  repeated WakeFilter wake_filters = 4;
+  repeated WakeEntryDraft entries = 4;
 }
 
-message SetWakeConfigResponse {
-  string status = 1;
+message SetWakeEntriesResponse {
+  uint32 active_entries = 1;
+}
+
+message RegisterInferenceTargetRequest {
+  Owner owner = 1;
+  string target_ref = 2;
+  InferenceTargetConfig config = 3;
+}
+
+message RegisterInferenceTargetResponse {
+  string target_ref = 1;
+  bool idempotent_replay = 2;
+}
+
+message ListInferenceTargetsRequest {
+  Owner owner = 1;
+}
+
+message ListInferenceTargetsResponse {
+  repeated InferenceTarget targets = 1;
+}
+
+message RemoveInferenceTargetRequest {
+  Owner owner = 1;
+  string target_ref = 2;
+}
+
+message RemoveInferenceTargetResponse {
+  bool idempotent_replay = 1;
+}
+
+message BindInferenceTierRequest {
+  Owner owner = 1;
+  ModelTierProto tier = 2;
+  string target_ref = 3;
+}
+
+message BindInferenceTierResponse {}
+
+message ListInferenceTierBindingsRequest {
+  Owner owner = 1;
+}
+
+message ListInferenceTierBindingsResponse {
+  repeated InferenceTierBinding bindings = 1;
 }
 
 message ListPersonalityInstancesRequest {
@@ -294,15 +345,15 @@ message PersonalityInstance {
   Owner owner = 1;
   string personality_type_id = 2;
   string personality_instance_id = 3;  // UUID
-  string current_self_perspective_memory_id = 4;  // MemoryId UUID
+  string current_root_perspective_memory_id = 4;  // MemoryId UUID
   string display_name = 5;
   string status = 6;  // active | needs_repair | tombstoned
-  repeated WakeFilter wake_filters = 7;
   // Structured flavor metadata for the prefix of `personality_type_id`.
   // Always populated; the engine looks the descriptor up in its frozen
   // registry and the freeze-time prefix cross-check guarantees it
   // resolves for any registered personality.
   FlavorDescriptor flavor = 8;
+  repeated WakeEntry wake_entries = 7;
 }
 
 message TombstonePersonalityRequest {
@@ -315,54 +366,4 @@ message TombstonePersonalityResponse {
   string status = 1;  // always "tombstoned"
   // True iff the row was already tombstoned before this call.
   bool idempotent_replay = 2;
-}
-
-message WakeFilter {
-  oneof kind {
-    OnMemoryFilter on_memory = 1;
-    OnEdgeFilter on_edge = 2;
-    CustomFilter custom = 3;
-  }
-  uint32 version = 100;
-}
-
-message OnMemoryFilter {
-  string schema_id = 1;
-  AuthorFilter authored_by = 2;
-  float probability = 3;
-}
-
-message OnEdgeFilter {
-  string relation_id = 1;
-  WakeTarget source = 2;
-  WakeTarget target = 3;
-  float probability = 4;
-}
-
-message CustomFilter {
-  string kind_id = 1;
-  bytes params_json = 2;
-  float probability = 3;
-}
-
-message AuthorFilter {
-  oneof kind {
-    bool any = 1;
-    bool external = 2;
-    PersonalityAuthor personality = 3;
-  }
-}
-
-message PersonalityAuthor {
-  string personality_type_id = 1;
-  optional string personality_instance_id = 2;
-}
-
-message WakeTarget {
-  oneof kind {
-    bool any = 1;
-    bool self_perspective = 2;
-    string memory_id = 3;
-    string goal_id = 4;
-  }
 }

@@ -1,3 +1,5 @@
+#![allow(clippy::missing_errors_doc)]
+
 use proxima_core::GoalId;
 use proxima_core::mcp::{EntityRef, McpTool, McpToolCtx, McpToolError};
 use proxima_core::verbs::goal_write::{GoalAuthorship, GoalDraft, GoalState};

@@ -95,7 +95,9 @@ impl PersonalityRef {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, specta::Type,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum WakeEntryTriggerKind {
     OnMemory,
@@ -129,26 +131,6 @@ impl WakeExecutionMode {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum WakeAuthorFilter {
-    Any,
-    #[serde(rename = "self")]
-    SelfAuthored,
-    Other,
-}
-
-impl WakeAuthorFilter {
-    #[must_use]
-    pub const fn as_str(&self) -> &'static str {
-        match self {
-            Self::Any => "any",
-            Self::SelfAuthored => "self",
-            Self::Other => "other",
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct WakeEntryDraft {
     pub wake_entry_id: Uuid,
@@ -158,7 +140,7 @@ pub struct WakeEntryDraft {
     pub label: String,
     pub enabled: bool,
     pub execution_mode: WakeExecutionMode,
-    pub authored_by: WakeAuthorFilter,
+    pub authored_by: WakeEntryAuthoredBy,
     pub probability_promille: u16,
     pub recipe_ref: String,
     pub model_tier: ModelTier,
@@ -176,7 +158,7 @@ impl WakeEntryDraft {
         trigger_kind: WakeEntryTriggerKind,
         trigger_id: impl Into<String>,
         label: impl Into<String>,
-        authored_by: WakeAuthorFilter,
+        authored_by: WakeEntryAuthoredBy,
         probability_promille: u16,
         recipe_ref: impl Into<String>,
         model_tier: ModelTier,
@@ -370,6 +352,52 @@ pub struct PersonalityInstanceRow {
     pub current_root_perspective_memory_id: MemoryId,
     pub display_name: String,
     pub status: String,
+    pub wake_entries: Vec<WakeEntryRow>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
+pub struct WakeEntryRow {
+    pub wake_entry_id: Uuid,
+    pub trigger_kind: WakeEntryTriggerKind,
+    pub trigger_id: String,
+    pub label: String,
+    pub enabled: bool,
+    pub execution_mode: WakeEntryExecutionMode,
+    pub authored_by: WakeEntryAuthoredBy,
+    pub probability_promille: u16,
+    pub recipe_ref: String,
+    pub model_tier: ModelTier,
+    pub inference_target_ref: Option<String>,
+    pub substrate_tool_palette: Vec<String>,
+    pub workspace_tool_palette: Vec<String>,
+    pub max_rounds: u16,
+    pub disabled_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
+#[serde(rename_all = "snake_case")]
+pub enum WakeEntryExecutionMode {
+    SubstrateOnly,
+    Workspace,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
+#[serde(rename_all = "snake_case")]
+pub enum WakeEntryAuthoredBy {
+    Any,
+    SelfAuthor,
+    Other,
+}
+
+impl WakeEntryAuthoredBy {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Any => "any",
+            Self::SelfAuthor => "self",
+            Self::Other => "other",
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -541,7 +569,7 @@ mod tests {
             WakeEntryTriggerKind::OnMemory,
             "proxima-test/fact-v1",
             "on_test_fact",
-            WakeAuthorFilter::Any,
+            WakeEntryAuthoredBy::Any,
             250,
             "recipe:proxima-test/personality-v1",
             ModelTier::Fast,
@@ -568,7 +596,7 @@ mod tests {
             WakeEntryTriggerKind::OnMemory,
             "proxima-test/fact-v1",
             "on_test_fact",
-            WakeAuthorFilter::Any,
+            WakeEntryAuthoredBy::Any,
             1001,
             "recipe:proxima-test/personality-v1",
             ModelTier::Standard,

@@ -1,6 +1,4 @@
-use proxima_core::verbs::query::{
-    MemoryStore, QueryRequest, SupersessionStatus, TombstoneFilter,
-};
+use proxima_core::verbs::query::{MemoryStore, QueryRequest, SupersessionStatus, TombstoneFilter};
 use proxima_core::{OrgId, Owner, Principal, UserId};
 use uuid::Uuid;
 

@@ -1,19 +1,25 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@solidjs/testing-library";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type {
+  InstantiatePersonalityOutcomeTs,
+  Owner,
+  PersonalityInstanceTs,
+  SetWakeEntriesOutcomeTs,
+  TombstonePersonalityOutcomeTs,
+  WakeEntryTs,
+} from "../bindings";
 import { sentinelOwner } from "../graph-store";
 import {
   clearRegistriesForTests,
   registerPayloadRenderer,
   registerPersonalityType,
 } from "../registry";
-import type {
-  InstantiatePersonalityOutcomeTs,
-  Owner,
-  PersonalityInstanceTs,
-  SetWakeConfigOutcomeTs,
-  TombstonePersonalityOutcomeTs,
-  WakeFilterTs,
-} from "../bindings";
 import {
   PersonalitiesView,
   type PersonalityCommandClient,
@@ -21,23 +27,25 @@ import {
 
 const owner = sentinelOwner();
 
-const ok = <T,>(data: T) =>
-  Promise.resolve({ status: "ok" as const, data });
+const ok = <T,>(data: T) => Promise.resolve({ status: "ok" as const, data });
 
-const onMemory = (probability = 1): WakeFilterTs => ({
-  kind: "on_memory",
-  version: 1,
-  schema_id: "proxima-code/commit-summary-v1",
-  authored_by: { kind: "any" },
-  probability,
-});
-
-const onMemorySchema = (schemaId: string): WakeFilterTs => ({
-  kind: "on_memory",
-  version: 1,
-  schema_id: schemaId,
-  authored_by: { kind: "any" },
-  probability: 1,
+const wakeEntry = (overrides: Partial<WakeEntryTs> = {}): WakeEntryTs => ({
+  wake_entry_id: "11111111-1111-7111-8111-111111111111",
+  trigger_kind: "on_memory",
+  trigger_id: "proxima-code/commit-summary-v1",
+  label: "react-to-commit",
+  enabled: true,
+  execution_mode: "substrate_only",
+  authored_by: "any",
+  probability_promille: 1000,
+  recipe_ref: "user:default.yaml",
+  model_tier: "standard",
+  inference_target_ref: null,
+  substrate_tool_palette: [],
+  workspace_tool_palette: [],
+  max_rounds: 4,
+  disabled_reason: null,
+  ...overrides,
 });
 
 const instance = (
@@ -46,10 +54,10 @@ const instance = (
   owner,
   personality_type_id: "proxima-code/engineer-v1",
   personality_instance_id: "018f0000-0000-7000-8000-000000000001",
-  current_self_perspective_memory_id: "018f0000-0000-7000-8000-000000000101",
+  current_root_perspective_memory_id: "018f0000-0000-7000-8000-000000000101",
   display_name: "Engineer",
   status: "active",
-  wake_filters: [onMemory()],
+  wake_entries: [wakeEntry()],
   flavor: {
     flavor_id: "proxima-code",
     display_name: "Code",
@@ -74,8 +82,8 @@ const mockClient = (
       instance_id: "018f0000-0000-7000-8000-000000000099",
     }),
   );
-  const setWakeConfig = vi.fn((_) =>
-    ok<SetWakeConfigOutcomeTs>({ status: "active" }),
+  const setWakeEntries = vi.fn((_) =>
+    ok<SetWakeEntriesOutcomeTs>({ active_entries: 1 }),
   );
   const tombstonePersonality = vi.fn((_) =>
     ok<TombstonePersonalityOutcomeTs>({
@@ -89,13 +97,13 @@ const mockClient = (
       provisionOwner,
       listPersonalityInstances,
       instantiatePersonality,
-      setWakeConfig,
+      setWakeEntries,
       tombstonePersonality,
     } satisfies PersonalityCommandClient,
     provisionOwner,
     listPersonalityInstances,
     instantiatePersonality,
-    setWakeConfig,
+    setWakeEntries,
     tombstonePersonality,
   };
 };
@@ -147,17 +155,7 @@ describe("PersonalitiesView", () => {
   });
 
   it("renders the flavor chip from the typed FlavorDescriptor", async () => {
-    const { client } = mockClient([
-      instance({
-        flavor: {
-          flavor_id: "proxima-code",
-          display_name: "Code",
-          package_version: "0.1.0",
-          author: null,
-          provenance: { kind: "builtin" },
-        },
-      }),
-    ]);
+    const { client } = mockClient([instance()]);
 
     render(() => <PersonalitiesView client={client} owner={owner} />);
 
@@ -206,61 +204,116 @@ describe("PersonalitiesView", () => {
     expect(await screen.findByText("Alice")).toBeTruthy();
   });
 
-  it("round-trips wake-config edits through SetWakeConfig", async () => {
-    const row = instance();
-    const updated = instance({ wake_filters: [onMemory(0.5)] });
-    const { client, setWakeConfig } = mockClient([row], [updated]);
+  it("renders an existing WakeEntry's fields", async () => {
+    const { client } = mockClient([instance()]);
 
     render(() => <PersonalitiesView client={client} owner={owner} />);
 
     await screen.findByText("Engineer");
-    fireEvent.click(screen.getByRole("button", { name: "Edit wake config" }));
-    const probability = screen.getByLabelText("Probability (promille)");
-    expect(probability.getAttribute("min")).toBe("0");
-    expect(probability.getAttribute("max")).toBe("1000");
-    expect(probability.getAttribute("step")).toBe("1");
-    fireEvent.input(probability, {
-      target: { value: "500" },
+    fireEvent.click(screen.getByRole("button", { name: "Edit wake entries" }));
+
+    expect(screen.getByDisplayValue("react-to-commit")).toBeTruthy();
+    expect(screen.getByDisplayValue("user:default.yaml")).toBeTruthy();
+    expect(screen.getByLabelText("Trigger id")).toHaveProperty(
+      "value",
+      "proxima-code/commit-summary-v1",
+    );
+  });
+
+  it("calls setWakeEntries with the full edited list on save", async () => {
+    const row = instance();
+    const updated = instance({
+      wake_entries: [wakeEntry({ label: "react-to-commit-edited" })],
+    });
+    const { client, setWakeEntries } = mockClient([row], [updated]);
+
+    render(() => <PersonalitiesView client={client} owner={owner} />);
+
+    await screen.findByText("Engineer");
+    fireEvent.click(screen.getByRole("button", { name: "Edit wake entries" }));
+    fireEvent.input(screen.getByDisplayValue("react-to-commit"), {
+      target: { value: "react-to-commit-edited" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() => {
-      expect(setWakeConfig).toHaveBeenCalledWith({
+      expect(setWakeEntries).toHaveBeenCalledWith({
         owner,
         personality_type_id: row.personality_type_id,
         personality_instance_id: row.personality_instance_id,
-        wake_filters: [onMemory(0.5)],
+        entries: [
+          {
+            trigger_kind: "on_memory",
+            trigger_id: "proxima-code/commit-summary-v1",
+            label: "react-to-commit-edited",
+            enabled: true,
+            execution_mode: "substrate_only",
+            authored_by: "any",
+            probability_promille: 1000,
+            recipe_ref: "user:default.yaml",
+            model_tier: "standard",
+            inference_target_ref: null,
+            substrate_tool_palette: [],
+            workspace_tool_palette: [],
+            max_rounds: 4,
+          },
+        ],
       });
     });
   });
 
-  it("edits OnMemory schema through a registry-backed select", async () => {
+  it("renders registry-backed trigger options for OnMemory entries", async () => {
     const row = instance();
     const updated = instance({
-      wake_filters: [onMemorySchema("proxima-code/code-chunk-v1")],
+      wake_entries: [
+        wakeEntry({
+          trigger_id: "proxima-code/code-chunk-v1",
+        }),
+      ],
     });
-    const { client, setWakeConfig } = mockClient([row], [updated]);
+    const { client, setWakeEntries } = mockClient([row], [updated]);
 
     render(() => <PersonalitiesView client={client} owner={owner} />);
 
     await screen.findByText("Engineer");
-    fireEvent.click(screen.getByRole("button", { name: "Edit wake config" }));
+    fireEvent.click(screen.getByRole("button", { name: "Edit wake entries" }));
 
-    const schema = screen.getByLabelText("Schema");
-    expect(schema.tagName).toBe("SELECT");
-    fireEvent.change(schema, {
+    const trigger = screen.getByLabelText("Trigger id");
+    expect(trigger.tagName).toBe("SELECT");
+    fireEvent.change(trigger, {
       target: { value: "proxima-code/code-chunk-v1" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() => {
-      expect(setWakeConfig).toHaveBeenCalledWith({
-        owner,
-        personality_type_id: row.personality_type_id,
-        personality_instance_id: row.personality_instance_id,
-        wake_filters: [onMemorySchema("proxima-code/code-chunk-v1")],
-      });
+      expect(setWakeEntries).toHaveBeenCalled();
+      expect(setWakeEntries.mock.calls[0][0].entries[0].trigger_id).toBe(
+        "proxima-code/code-chunk-v1",
+      );
     });
+  });
+
+  it("displays server-side typed errors verbatim", async () => {
+    const row = instance();
+    const { client, setWakeEntries } = mockClient([row]);
+    setWakeEntries.mockResolvedValueOnce({
+      status: "error",
+      error: {
+        code: "RecipeInvalid",
+        message: "parse error at line 3",
+        request_id: "req-1",
+      },
+    } as never);
+
+    render(() => <PersonalitiesView client={client} owner={owner} />);
+
+    await screen.findByText("Engineer");
+    fireEvent.click(screen.getByRole("button", { name: "Edit wake entries" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(
+      await screen.findByText("RecipeInvalid: parse error at line 3"),
+    ).toBeTruthy();
   });
 
   it("tombstones an engineer after inline confirmation and removes it locally", async () => {
@@ -305,7 +358,7 @@ describe("PersonalitiesView", () => {
     const { client, tombstonePersonality } = mockClient([row]);
     tombstonePersonality.mockResolvedValueOnce({
       status: "error",
-      error: { code: "internal", message: "db unavailable" },
+      error: { code: "internal", message: "db unavailable", request_id: null },
     } as never);
 
     render(() => <PersonalitiesView client={client} owner={owner} />);
@@ -314,23 +367,23 @@ describe("PersonalitiesView", () => {
     fireEvent.click(screen.getByRole("button", { name: "Tombstone" }));
     fireEvent.click(screen.getByRole("button", { name: "Confirm tombstone" }));
 
-    expect(await screen.findByText(/db unavailable/)).toBeTruthy();
+    expect(await screen.findByText("internal: db unavailable")).toBeTruthy();
     expect(screen.getByText("Alice")).toBeTruthy();
   });
 
-  it("renders needs_repair banner and opens re-edit with empty filters", async () => {
+  it("renders needs_repair banner and opens re-edit with empty entries", async () => {
     const { client } = mockClient([
       instance({
         status: "needs_repair",
-        wake_filters: [onMemory()],
+        wake_entries: [wakeEntry()],
       }),
     ]);
 
     render(() => <PersonalitiesView client={client} owner={owner} />);
 
-    expect(await screen.findByText(/Wake config needs repair/)).toBeTruthy();
+    expect(await screen.findByText(/Wake entries need repair/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Re-edit" }));
 
-    expect(screen.getByTestId("wake-filters-list").children).toHaveLength(0);
+    expect(screen.getByTestId("wake-entries-list").children).toHaveLength(0);
   });
 });

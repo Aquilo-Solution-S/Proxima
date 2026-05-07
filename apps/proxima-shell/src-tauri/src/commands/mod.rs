@@ -1,4 +1,5 @@
 mod engine;
+mod inference_targets;
 mod models;
 mod repo_ingest;
 mod repos;
@@ -19,20 +20,19 @@ pub(crate) fn specta_builder() -> Builder<tauri::Wry> {
         engine::provision_owner,
         engine::list_personality_instances,
         engine::instantiate_personality,
-        engine::set_wake_config,
+        engine::set_wake_entries,
         engine::tombstone_personality,
         engine::subscribe,
-        // settings commands (m6.23)
-        models::models_list_llm,
+        // InferenceTarget settings
+        inference_targets::register_inference_target,
+        inference_targets::list_inference_targets,
+        inference_targets::remove_inference_target,
+        inference_targets::bind_inference_tier,
+        inference_targets::list_inference_tier_bindings,
+        // Embedding settings
         models::models_list_embedding,
-        models::models_register_llm,
         models::models_register_embedding,
-        models::models_delete_llm,
         models::models_delete_embedding,
-        models::tier_bindings_get,
-        models::tier_bind,
-        models::tier_unbind,
-        models::tier_requires,
         models::embedding_active_get,
         models::embedding_active_set,
         models::embedding_active_clear,

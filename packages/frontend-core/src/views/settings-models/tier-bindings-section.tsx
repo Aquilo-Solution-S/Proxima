@@ -6,162 +6,143 @@ import {
   createSignal,
   type Accessor,
   type Component,
-  type Resource,
 } from "solid-js";
-import {
-  commands,
-  type LlmCaps,
-  type LlmModelRecord,
-  type ModelTier,
-  type TierBindings,
+import type {
+  InferenceTargetTs,
+  InferenceTierBindingTs,
+  ModelTierTs,
+  Owner,
 } from "../../bindings";
-import { formatCommandError as formatError } from "../../format-error";
+import type { EngineClient } from "../../client";
+import { sentinelOwner } from "../../graph-store";
 import { TIERS } from "./constants";
-import { loadTierRequires } from "./loaders";
 
-const modelValue = (model: { vendor: string; model_id: string }): string =>
-  `${model.vendor}|${model.model_id}`;
+interface Props {
+  client: Pick<
+    EngineClient,
+    "listInferenceTargets" | "listInferenceTierBindings" | "bindInferenceTier"
+  >;
+  owner?: Owner;
+}
+
+const errorMessage = (err: unknown): string => {
+  if (err && typeof err === "object") {
+    if ("code" in err && "message" in err) {
+      const code = (err as { code: unknown }).code;
+      const message = (err as { message: unknown }).message;
+      return `${String(code)}: ${String(message)}`;
+    }
+    if ("message" in err) {
+      const message = (err as { message: unknown }).message;
+      if (typeof message === "string") return message;
+    }
+  }
+  return String(err);
+};
+
+const bindingFor = (
+  bindings: InferenceTierBindingTs[] | undefined,
+  tier: ModelTierTs,
+): string | undefined =>
+  bindings?.find((binding) => binding.tier === tier)?.target_ref;
 
 const TierBindingRow: Component<{
-  tier: ModelTier;
-  binding: Accessor<TierBindings[ModelTier]>;
-  models: Accessor<LlmModelRecord[]>;
-  onBind: (tier: ModelTier, vendor: string, modelId: string) => void;
-  onUnbind: (tier: ModelTier) => void;
+  tier: ModelTierTs;
+  targets: Accessor<InferenceTargetTs[]>;
+  targetRef: Accessor<string | undefined>;
+  onBind: (tier: ModelTierTs, targetRef: string) => void;
 }> = (props) => {
   let select: HTMLSelectElement | undefined;
-  const selectedValue = () => {
-    const binding = props.binding();
-    return binding ? modelValue(binding) : "";
-  };
 
   createEffect(() => {
-    const value = selectedValue();
-    props.models();
+    const value = props.targetRef() ?? "";
+    props.targets();
     queueMicrotask(() => {
       if (select) select.value = value;
     });
   });
 
   return (
-    <div class="proxima-tier-row">
-      <span class="proxima-tier-label">{props.tier}</span>
-      <select
-        ref={select}
-        value={selectedValue()}
-        onChange={(e) => {
-          if (e.target.value) {
-            const [vendor, modelId] = e.target.value.split("|");
-            props.onBind(props.tier, vendor, modelId);
-          }
-        }}
-      >
-        <option value="">— Select model —</option>
-        <For each={props.models()}>
-          {(model) => (
-            <option
-              value={modelValue(model)}
-              selected={selectedValue() === modelValue(model)}
-            >
-              {model.vendor} / {model.model_id}
-            </option>
-          )}
-        </For>
-      </select>
-      <button
-        class="proxima-btn proxima-btn-danger"
-        onClick={() => props.onUnbind(props.tier)}
-        disabled={!props.binding()}
-      >
-        Unbind
-      </button>
-    </div>
+    <tr>
+      <td>{props.tier}</td>
+      <td>
+        <select
+          ref={select}
+          value={props.targetRef() ?? ""}
+          onChange={(event) => {
+            const targetRef = event.currentTarget.value;
+            if (targetRef) props.onBind(props.tier, targetRef);
+          }}
+        >
+          <option value="">(none)</option>
+          <For each={props.targets()}>
+            {(target) => (
+              <option
+                value={target.target_ref}
+                selected={props.targetRef() === target.target_ref}
+              >
+                {target.target_ref}
+              </option>
+            )}
+          </For>
+        </select>
+      </td>
+    </tr>
   );
 };
 
-// Tier Bindings Section
-export const TierBindingsSection: Component<{
-  bindings: Resource<TierBindings>;
-  llmModels: Resource<LlmModelRecord[]>;
-  onChange: () => void;
-}> = (props) => {
+export const TierBindingsSection: Component<Props> = (props) => {
+  const owner = () => props.owner ?? sentinelOwner();
+  const [targets] = createResource(async () =>
+    props.client.listInferenceTargets({ owner: owner() }),
+  );
+  const [bindings, { refetch }] = createResource(async () =>
+    props.client.listInferenceTierBindings({ owner: owner() }),
+  );
   const [error, setError] = createSignal<string | null>(null);
 
-  // Create resources for tier requirements
-  const [fastReq] = createResource(() => loadTierRequires("fast"));
-  const [standardReq] = createResource(() => loadTierRequires("standard"));
-  const [deepReq] = createResource(() => loadTierRequires("deep"));
-
-  const handleBind = async (tier: ModelTier, vendor: string, modelId: string) => {
-    const r = await commands.tierBind(tier, vendor, modelId);
-    if (r.status === "error") {
-      setError(formatError(r.error));
-    } else {
-      props.onChange();
+  const handleBind = async (tier: ModelTierTs, targetRef: string) => {
+    setError(null);
+    try {
+      await props.client.bindInferenceTier({
+        owner: owner(),
+        tier,
+        target_ref: targetRef,
+      });
+      refetch();
+    } catch (err) {
+      setError(errorMessage(err));
     }
-  };
-
-  const handleUnbind = async (tier: ModelTier) => {
-    const r = await commands.tierUnbind(tier);
-    if (r.status === "error") {
-      setError(formatError(r.error));
-    } else {
-      props.onChange();
-    }
-  };
-
-  const formatCaps = (caps: LlmCaps): string => {
-    const parts: string[] = [];
-    if (caps.tool_use) parts.push("tool_use");
-    if (caps.json_mode) parts.push("json_mode");
-    if (caps.long_context) parts.push("long_context");
-    if (caps.vision) parts.push("vision");
-    return parts.join(", ");
   };
 
   return (
     <section>
       <h2>Tier bindings</h2>
       <Show when={error()}>
-        <p class="proxima-error">{error()}</p>
+        {(message) => <p class="proxima-error" role="alert">{message()}</p>}
       </Show>
-      <Show when={props.bindings()}>
-        {(bindings) => (
+      <table class="proxima-models-table">
+        <thead>
+          <tr>
+            <th>tier</th>
+            <th>target_ref</th>
+          </tr>
+        </thead>
+        <tbody>
           <For each={TIERS}>
-            {(tier) => {
-              const binding = () => bindings()?.[tier];
-              const models = () => props.llmModels() ?? [];
-              const reqResource =
-                tier === "fast"
-                  ? fastReq
-                  : tier === "standard"
-                    ? standardReq
-                    : deepReq;
-
-              return (
-                <div>
-                  <Show when={reqResource()}>
-                    {(reqCaps) => (
-                      <p class="proxima-tier-requires">
-                        requires: {formatCaps(reqCaps())}
-                      </p>
-                    )}
-                  </Show>
-                  <TierBindingRow
-                    tier={tier}
-                    binding={binding}
-                    models={models}
-                    onBind={(selectedTier, vendor, modelId) =>
-                      void handleBind(selectedTier, vendor, modelId)
-                    }
-                    onUnbind={(selectedTier) => void handleUnbind(selectedTier)}
-                  />
-                </div>
-              );
-            }}
+            {(tier) => (
+              <TierBindingRow
+                tier={tier}
+                targets={() => targets() ?? []}
+                targetRef={() => bindingFor(bindings(), tier)}
+                onBind={(selectedTier, targetRef) =>
+                  void handleBind(selectedTier, targetRef)
+                }
+              />
+            )}
           </For>
-        )}
-      </Show>
+        </tbody>
+      </table>
     </section>
   );
 };

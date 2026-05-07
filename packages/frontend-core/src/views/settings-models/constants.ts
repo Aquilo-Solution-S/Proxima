@@ -1,4 +1,3 @@
-import type { Dialect, ModelTier } from "../../bindings";
+import type { ModelTierTs } from "../../bindings";
 
-export const TIERS: ModelTier[] = ["fast", "standard", "deep"];
-export const DIALECTS: Dialect[] = ["anthropic", "openai"];
+export const TIERS: ModelTierTs[] = ["fast", "standard", "deep"];

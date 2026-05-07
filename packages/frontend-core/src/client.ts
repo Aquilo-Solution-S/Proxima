@@ -8,13 +8,22 @@ import type {
   GoalWriteOutcome,
   InstantiatePersonalityOutcomeTs,
   InstantiatePersonalityTs,
+  BindInferenceTierTs,
+  InferenceTargetTs,
+  InferenceTierBindingTs,
+  ListInferenceTargetsTs,
+  ListInferenceTierBindingsTs,
   ListPersonalityInstancesTs,
   PersonalityInstanceTs,
   QueryRequest,
   QueryResponse,
+  RegisterInferenceTargetOutcomeTs,
+  RegisterInferenceTargetTs,
+  RemoveInferenceTargetOutcomeTs,
+  RemoveInferenceTargetTs,
   SchemaResponse,
-  SetWakeConfigOutcomeTs,
-  SetWakeConfigTs,
+  SetWakeEntriesOutcomeTs,
+  SetWakeEntriesTs,
   SubscribeRequest,
 } from "./bindings";
 
@@ -39,5 +48,18 @@ export interface EngineClient {
   instantiatePersonality(
     req: InstantiatePersonalityTs,
   ): Promise<InstantiatePersonalityOutcomeTs>;
-  setWakeConfig(req: SetWakeConfigTs): Promise<SetWakeConfigOutcomeTs>;
+  setWakeEntries(req: SetWakeEntriesTs): Promise<SetWakeEntriesOutcomeTs>;
+  registerInferenceTarget(
+    req: RegisterInferenceTargetTs,
+  ): Promise<RegisterInferenceTargetOutcomeTs>;
+  listInferenceTargets(
+    req: ListInferenceTargetsTs,
+  ): Promise<InferenceTargetTs[]>;
+  removeInferenceTarget(
+    req: RemoveInferenceTargetTs,
+  ): Promise<RemoveInferenceTargetOutcomeTs>;
+  bindInferenceTier(req: BindInferenceTierTs): Promise<void>;
+  listInferenceTierBindings(
+    req: ListInferenceTierBindingsTs,
+  ): Promise<InferenceTierBindingTs[]>;
 }

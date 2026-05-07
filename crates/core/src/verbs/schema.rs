@@ -156,6 +156,19 @@ impl FlavorRegistryFrozen {
         &self.mcp_tools
     }
 
+    #[must_use]
+    pub fn mcp_tool_ids(&self) -> std::collections::HashSet<String> {
+        self.mcp_tools
+            .iter()
+            .map(|tool| tool.name.to_string())
+            .collect()
+    }
+
+    #[must_use]
+    pub fn bundled_recipe_path(&self, _slug: &str) -> Option<std::path::PathBuf> {
+        None
+    }
+
     /// Personalities registered by linked flavors via `proxima_flavor!`.
     /// The A→P dispatcher fans out per entry; order matches flavor
     /// registration order.

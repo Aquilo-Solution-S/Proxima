@@ -1,14 +1,21 @@
 //! Personality wake/decide/write storage helpers.
 
+#![allow(
+    clippy::missing_errors_doc,
+    clippy::too_many_lines,
+    clippy::type_complexity
+)]
+
 use proxima_core::personality::{
     AbstractionRow, ChangeEventForWake, FactRow, InstantiatePersonalityRequest,
     InstantiatePersonalityResponse, MemorySnapshot, PersonalityInstanceId, PersonalityInstanceRow,
     PersonalityRef, PersonalityWriteOutcome, PersonalityWriteRequest, SetWakeEntriesRequest,
-    SetWakeEntriesResponse, SidecarSpec, WakeAuthorFilter, WakeChainDepth, WakeDispatchEntryRow,
-    WakeEntryDraft, WakeEntryTriggerKind, WakeExecutionMode, WakeInvocationStatus,
+    SetWakeEntriesResponse, SidecarSpec, WakeChainDepth, WakeDispatchEntryRow, WakeEntryAuthoredBy,
+    WakeEntryDraft, WakeEntryExecutionMode, WakeEntryRow, WakeEntryTriggerKind, WakeExecutionMode,
+    WakeInvocationStatus,
 };
 use proxima_core::{MemoryId, ModelTier, Owner, Principal, SchemaId, SchemaVersion, StorageError};
-use sqlx::PgPool;
+use sqlx::{PgPool, Row};
 
 use crate::error::map_err;
 use crate::outbox::hydrate_change_event;
@@ -80,19 +87,63 @@ pub async fn list_personality_instances(
     .await
     .map_err(map_err)?;
 
-    Ok(rows
-        .into_iter()
-        .map(
-            |(instance_id, root_memory_id, display_name, status)| PersonalityInstanceRow {
-                owner: owner.clone(),
-                personality_type_id: String::new(),
-                personality_instance_id: PersonalityInstanceId::new(instance_id),
-                current_root_perspective_memory_id: MemoryId::new(root_memory_id),
-                display_name,
-                status,
-            },
+    let mut out = Vec::with_capacity(rows.len());
+    for (instance_id, root_memory_id, display_name, status) in rows {
+        let wake_rows = sqlx::query(
+            "SELECT wake_entry_id, trigger_kind, trigger_id, label, enabled,
+                    execution_mode, authored_by, probability_promille, recipe_ref,
+                    model_tier, inference_target_ref, substrate_tool_palette,
+                    workspace_tool_palette, max_rounds, disabled_reason
+             FROM proxima_core.personality_wake_entries
+             WHERE owner_principal_kind = $1
+               AND owner_principal_id = $2
+               AND owner_org_id = $3
+               AND personality_instance_id = $4
+               AND tombstoned_at IS NULL
+             ORDER BY label, wake_entry_id",
         )
-        .collect())
+        .bind(owner_kind)
+        .bind(owner_principal_id)
+        .bind(owner_org_id)
+        .bind(instance_id)
+        .fetch_all(pool)
+        .await
+        .map_err(map_err)?;
+
+        let wake_entries = wake_rows
+            .into_iter()
+            .map(|row| WakeEntryRow {
+                wake_entry_id: row.get("wake_entry_id"),
+                trigger_kind: parse_trigger_kind(&row.get::<String, _>("trigger_kind")),
+                trigger_id: row.get("trigger_id"),
+                label: row.get("label"),
+                enabled: row.get("enabled"),
+                execution_mode: parse_row_execution_mode(&row.get::<String, _>("execution_mode")),
+                authored_by: parse_row_authored_by(&row.get::<String, _>("authored_by")),
+                probability_promille: u16::try_from(row.get::<i32, _>("probability_promille"))
+                    .unwrap_or(0),
+                recipe_ref: row.get("recipe_ref"),
+                model_tier: parse_model_tier(&row.get::<String, _>("model_tier")),
+                inference_target_ref: row.get("inference_target_ref"),
+                substrate_tool_palette: row.get("substrate_tool_palette"),
+                workspace_tool_palette: row.get("workspace_tool_palette"),
+                max_rounds: u16::try_from(row.get::<i32, _>("max_rounds")).unwrap_or(1),
+                disabled_reason: row.get("disabled_reason"),
+            })
+            .collect();
+
+        out.push(PersonalityInstanceRow {
+            owner: owner.clone(),
+            personality_type_id: String::new(),
+            personality_instance_id: PersonalityInstanceId::new(instance_id),
+            current_root_perspective_memory_id: MemoryId::new(root_memory_id),
+            display_name,
+            status,
+            wake_entries,
+        });
+    }
+
+    Ok(out)
 }
 
 pub async fn instantiate_personality(
@@ -339,11 +390,15 @@ pub async fn tombstone_personality(
     tx.commit().await.map_err(map_err)?;
 
     match existing {
-        Some((status,)) if status == "tombstoned" => Ok(proxima_core::TombstonePersonalityResponse {
-            status: "tombstoned".into(),
-            idempotent_replay: true,
-        }),
-        Some(_) => unreachable!("UPDATE excluded only tombstoned rows; non-tombstoned must have hit"),
+        Some((status,)) if status == "tombstoned" => {
+            Ok(proxima_core::TombstonePersonalityResponse {
+                status: "tombstoned".into(),
+                idempotent_replay: true,
+            })
+        }
+        Some(_) => {
+            unreachable!("UPDATE excluded only tombstoned rows; non-tombstoned must have hit")
+        }
         None => Err(StorageError::NotFound),
     }
 }
@@ -396,37 +451,35 @@ pub async fn list_active_wake_entries(
     Ok(rows
         .into_iter()
         .map(|row| WakeDispatchEntryRow {
-                owner: owner_from_parts(
-                    &row.owner_principal_kind,
-                    row.owner_principal_id,
-                    row.owner_org_id,
-                ),
+            owner: owner_from_parts(
+                &row.owner_principal_kind,
+                row.owner_principal_id,
+                row.owner_org_id,
+            ),
+            personality_instance_id: PersonalityInstanceId::new(row.personality_instance_id),
+            current_root_perspective_memory_id: MemoryId::new(
+                row.current_root_perspective_memory_id,
+            ),
+            max_wake_chain_depth: u16::try_from(row.max_wake_chain_depth).unwrap_or(0),
+            last_considered_seq: row.last_considered_seq,
+            wake_entry: WakeEntryDraft {
+                wake_entry_id: row.wake_entry_id,
                 personality_instance_id: PersonalityInstanceId::new(row.personality_instance_id),
-                current_root_perspective_memory_id: MemoryId::new(
-                    row.current_root_perspective_memory_id,
-                ),
-                max_wake_chain_depth: u16::try_from(row.max_wake_chain_depth).unwrap_or(0),
-                last_considered_seq: row.last_considered_seq,
-                wake_entry: WakeEntryDraft {
-                    wake_entry_id: row.wake_entry_id,
-                    personality_instance_id: PersonalityInstanceId::new(
-                        row.personality_instance_id,
-                    ),
-                    trigger_kind: parse_trigger_kind(&row.trigger_kind),
-                    trigger_id: row.trigger_id,
-                    label: row.label,
-                    enabled: row.enabled,
-                    execution_mode: parse_execution_mode(&row.execution_mode),
-                    authored_by: parse_author_filter(&row.authored_by),
-                    probability_promille: u16::try_from(row.probability_promille).unwrap_or(0),
-                    recipe_ref: row.recipe_ref,
-                    model_tier: parse_model_tier(&row.model_tier),
-                    inference_target_ref: row.inference_target_ref,
-                    substrate_tool_palette: row.substrate_tool_palette,
-                    workspace_tool_palette: row.workspace_tool_palette,
-                    max_rounds: u16::try_from(row.max_rounds).unwrap_or(1),
-                },
-            })
+                trigger_kind: parse_trigger_kind(&row.trigger_kind),
+                trigger_id: row.trigger_id,
+                label: row.label,
+                enabled: row.enabled,
+                execution_mode: parse_execution_mode(&row.execution_mode),
+                authored_by: parse_row_authored_by(&row.authored_by),
+                probability_promille: u16::try_from(row.probability_promille).unwrap_or(0),
+                recipe_ref: row.recipe_ref,
+                model_tier: parse_model_tier(&row.model_tier),
+                inference_target_ref: row.inference_target_ref,
+                substrate_tool_palette: row.substrate_tool_palette,
+                workspace_tool_palette: row.workspace_tool_palette,
+                max_rounds: u16::try_from(row.max_rounds).unwrap_or(1),
+            },
+        })
         .collect())
 }
 
@@ -527,6 +580,7 @@ pub async fn try_begin_wake_invocation(
     Ok(inserted.is_some())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn finish_wake_invocation(
     pool: &PgPool,
     owner: &Owner,
@@ -717,23 +771,22 @@ pub async fn load_memory_by_id(
         return Ok(None);
     };
     let kind_str = kind.unwrap_or_else(|| "Fact".to_string());
-    let payload_json = if let Some(spec) =
-        sidecars.iter().find(|s| s.schema_id.as_str() == schema_id)
-    {
-        let sidecar = PgIdent::table(&spec.sidecar_table)?;
-        let sql = format!(
-            "SELECT row_to_json(s.*) AS payload FROM {sidecar} s WHERE s.memory_id = $1",
-            sidecar = sidecar.as_str(),
-        );
-        let row: Option<(serde_json::Value,)> = sqlx::query_as(&sql)
-            .bind(memory_id.into_inner())
-            .fetch_optional(pool)
-            .await
-            .map_err(map_err)?;
-        row.map(|(p,)| p).unwrap_or(serde_json::Value::Null)
-    } else {
-        serde_json::Value::Null
-    };
+    let payload_json =
+        if let Some(spec) = sidecars.iter().find(|s| s.schema_id.as_str() == schema_id) {
+            let sidecar = PgIdent::table(&spec.sidecar_table)?;
+            let sql = format!(
+                "SELECT row_to_json(s.*) AS payload FROM {sidecar} s WHERE s.memory_id = $1",
+                sidecar = sidecar.as_str(),
+            );
+            let row: Option<(serde_json::Value,)> = sqlx::query_as(&sql)
+                .bind(memory_id.into_inner())
+                .fetch_optional(pool)
+                .await
+                .map_err(map_err)?;
+            row.map_or(serde_json::Value::Null, |(p,)| p)
+        } else {
+            serde_json::Value::Null
+        };
     Ok(Some(MemorySnapshot {
         memory_id,
         kind: kind_str,
@@ -1022,11 +1075,18 @@ fn parse_execution_mode(value: &str) -> WakeExecutionMode {
     }
 }
 
-fn parse_author_filter(value: &str) -> WakeAuthorFilter {
+fn parse_row_execution_mode(value: &str) -> WakeEntryExecutionMode {
     match value {
-        "self" => WakeAuthorFilter::SelfAuthored,
-        "other" => WakeAuthorFilter::Other,
-        _ => WakeAuthorFilter::Any,
+        "workspace" => WakeEntryExecutionMode::Workspace,
+        _ => WakeEntryExecutionMode::SubstrateOnly,
+    }
+}
+
+fn parse_row_authored_by(value: &str) -> WakeEntryAuthoredBy {
+    match value {
+        "self" => WakeEntryAuthoredBy::SelfAuthor,
+        "other" => WakeEntryAuthoredBy::Other,
+        _ => WakeEntryAuthoredBy::Any,
     }
 }
 

@@ -74,7 +74,7 @@ pub async fn serve_streamable_http(
 
 /// Dev-time per-request recorder. Active when `PROXIMA_PERF_SESSION_DIR`
 /// names an existing directory; appends one NDJSON row per request to
-/// `<dir>/mcp.json`. No-op otherwise. SSE responses report 0 resp_bytes
+/// `<dir>/mcp.json`. No-op otherwise. SSE responses report 0 `resp_bytes`
 /// (no Content-Length); a streaming-aware counter is a future v2.
 async fn perf_recorder(request: Request<Body>, next: Next) -> Response {
     let Some(dir) = perf_session_dir() else {
@@ -102,14 +102,13 @@ async fn perf_recorder(request: Request<Body>, next: Next) -> Response {
     let line = serde_json::json!({
         "ts_ms": std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0),
+            .map_or(0, |d| millis_u64(d.as_millis())),
         "method": method.as_str(),
         "route": route,
         "status": status,
         "req_bytes": req_bytes,
         "resp_bytes": resp_bytes,
-        "dur_ms": started.elapsed().as_millis() as u64,
+        "dur_ms": millis_u64(started.elapsed().as_millis()),
     });
     let path = dir.join("mcp.json");
     if let Ok(mut f) = std::fs::OpenOptions::new()
@@ -118,9 +117,13 @@ async fn perf_recorder(request: Request<Body>, next: Next) -> Response {
         .open(&path)
     {
         use std::io::Write;
-        let _ = writeln!(f, "{}", line);
+        let _ = writeln!(f, "{line}");
     }
     resp
+}
+
+fn millis_u64(value: u128) -> u64 {
+    u64::try_from(value).unwrap_or(u64::MAX)
 }
 
 fn perf_session_dir() -> Option<&'static PathBuf> {

@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use super::Engine;
@@ -19,6 +20,7 @@ impl Engine {
             memories,
             auth,
             storage: Arc::new(NoopStorage),
+            recipes_root: default_recipes_root(),
             anthropic: None,
             embed: None,
         }
@@ -33,6 +35,12 @@ impl Engine {
     #[must_use]
     pub fn with_storage(mut self, storage: StorageHandle) -> Self {
         self.storage = storage;
+        self
+    }
+
+    #[must_use]
+    pub fn with_recipes_root(mut self, recipes_root: PathBuf) -> Self {
+        self.recipes_root = recipes_root;
         self
     }
 
@@ -75,4 +83,11 @@ impl Engine {
         self.anthropic = Some(anthropic);
         self
     }
+}
+
+fn default_recipes_root() -> PathBuf {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_default()
+        .join(".proxima/recipes")
 }

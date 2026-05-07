@@ -19,6 +19,9 @@ mod perf;
 mod repo_ingest_hub;
 pub mod secrets;
 
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+
 /// Entry point for the Tauri application.
 ///
 /// # Panics
@@ -37,9 +40,6 @@ pub fn run() {
     // session-cleanup race at ERROR; both are clean lifecycle events
     // (`quit_reason=Closed`). Pin those targets to `warn` until rmcp
     // upstream lowers them.
-    use tracing_subscriber::layer::SubscriberExt;
-    use tracing_subscriber::util::SubscriberInitExt;
-
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
         tracing_subscriber::EnvFilter::new(
             "info,rmcp::transport::worker=warn,\
@@ -99,12 +99,9 @@ pub fn run() {
 mod tests {
     use crate::boot::{normalize_openai_compat_base_url, resolve_consolidation_clients};
     use crate::commands::specta_builder;
-    use crate::config::{
-        AppConfig, EmbeddingConfig, EmbeddingModelRecord, LlmConfig, LlmModelRecord, ModelRef,
-        TierBindings,
-    };
+    use crate::config::{AppConfig, EmbeddingConfig, EmbeddingModelRecord, EmbeddingModelRef};
     use proxima_core::llm::EmbeddingClient;
-    use proxima_core::models::{Dialect, EmbedCaps, LlmCaps};
+    use proxima_core::models::EmbedCaps;
 
     /// Regenerate `packages/frontend-core/src/bindings.ts` from the
     /// command surface. Run via `cargo test -p proxima-shell`. The
@@ -119,17 +116,6 @@ mod tests {
                 "../../../packages/frontend-core/src/bindings.ts",
             )
             .expect("failed to export TS bindings");
-    }
-
-    fn llm_record(vendor: &str, model_id: &str) -> LlmModelRecord {
-        LlmModelRecord {
-            vendor: vendor.to_string(),
-            model_id: model_id.to_string(),
-            dialect: Dialect::OpenAI,
-            base_url: "http://localhost:11434/v1".to_string(),
-            caps: LlmCaps::none(),
-            secret_ref: None,
-        }
     }
 
     fn embed_record(vendor: &str, model_id: &str, dim: u32) -> EmbeddingModelRecord {
@@ -147,23 +133,14 @@ mod tests {
 
     fn config_with_models(embed_dim: u32) -> AppConfig {
         AppConfig {
-            llm: LlmConfig {
-                models: vec![llm_record("ollama", "qwen3-coder")],
-            },
             embedding: EmbeddingConfig {
                 models: vec![embed_record("ollama", "nomic-embed-text", embed_dim)],
-                active: Some(ModelRef {
+                active: Some(EmbeddingModelRef {
                     vendor: "ollama".to_string(),
                     model_id: "nomic-embed-text".to_string(),
                 }),
             },
-            tiers: TierBindings {
-                standard: Some(ModelRef {
-                    vendor: "ollama".to_string(),
-                    model_id: "qwen3-coder".to_string(),
-                }),
-                ..TierBindings::default()
-            },
+            ..AppConfig::default()
         }
     }
 

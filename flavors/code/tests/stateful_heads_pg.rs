@@ -8,6 +8,8 @@
 //!
 //! Heads-only must return 2 rows: the most recent of `NK_a` + `NK_b`.
 
+#![allow(clippy::too_many_arguments)]
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -16,15 +18,11 @@ use proxima_core::auth::{Credentials, NoAuth};
 use proxima_core::engine::Engine;
 use proxima_core::storage::Storage;
 use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
-use proxima_core::verbs::query::{
-    MemoryStore, QueryRequest, SupersessionStatus, TombstoneFilter,
-};
-use proxima_core::verbs::schema::{
-    FlavorRegistryFrozen, PayloadKind, SchemaInfo, SchemaTombstone,
-};
+use proxima_core::verbs::query::{MemoryStore, QueryRequest, SupersessionStatus, TombstoneFilter};
+use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaInfo, SchemaTombstone};
 use proxima_core::{
-    FactPayload, FlavorRegistry, OrgId, Owner, Principal, SchemaId, SchemaVersion, SourceBatchId,
-    SourceId, UserId, CORE_DERIVED_FROM_RELATION,
+    CORE_DERIVED_FROM_RELATION, FactPayload, FlavorRegistry, OrgId, Owner, Principal, SchemaId,
+    SchemaVersion, SourceBatchId, SourceId, UserId,
 };
 use proxima_storage_pg::PgStorage;
 use sqlx::{Connection, Executor, PgConnection, PgPool};

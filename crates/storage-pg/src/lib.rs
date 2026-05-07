@@ -15,8 +15,8 @@ use proxima_core::personality::{
     AbstractionRow, ActiveGoalSummary, ChangeEventForWake, InstantiatePersonalityRequest,
     InstantiatePersonalityResponse, MemorySnapshot, PersonalityInstanceId, PersonalityInstanceRow,
     PersonalityRef, PersonalityWriteOutcome, PersonalityWriteRequest, SetWakeEntriesRequest,
-    SetWakeEntriesResponse, SidecarSpec, TombstonePersonalityRequest,
-    TombstonePersonalityResponse, WakeDispatchEntryRow, WakeInvocationStatus,
+    SetWakeEntriesResponse, SidecarSpec, TombstonePersonalityRequest, TombstonePersonalityResponse,
+    WakeDispatchEntryRow, WakeInvocationStatus,
 };
 use proxima_core::storage::WakeLockGuard;
 use proxima_core::verbs::close_batch::CloseBatchOutcome;
@@ -26,7 +26,10 @@ use proxima_core::verbs::goal_write::{GoalDraft, GoalWriteOutcome};
 use proxima_core::verbs::query::{QueryRequest, QueryResponse};
 use proxima_core::verbs::subscribe::ChangeEventStream;
 use proxima_core::{
-    ChangeEvent, GoalId, MemoryId, Owner, SourceBatchId, Storage, StorageError, StorageHandle,
+    BindInferenceTierRequest, BindInferenceTierResponse, ChangeEvent, GoalId, InferenceTargetRow,
+    InferenceTierBindingRow, MemoryId, ModelTier, Owner, RegisterInferenceTargetRequest,
+    RegisterInferenceTargetResponse, RemoveInferenceTargetRequest, RemoveInferenceTargetResponse,
+    SourceBatchId, Storage, StorageError, StorageHandle,
 };
 use sqlx::PgPool;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
@@ -233,6 +236,61 @@ impl Storage for PgStorage {
         verbs::close_batch::close_batch(&self.pool, owner, source_batch_id).await
     }
 
+    async fn register_inference_target(
+        &self,
+        req: &RegisterInferenceTargetRequest,
+    ) -> Result<RegisterInferenceTargetResponse, StorageError> {
+        settings::register_inference_target(&self.pool, req)
+            .await
+            .map_err(settings_error_to_storage)
+    }
+
+    async fn list_inference_targets(
+        &self,
+        owner: &Owner,
+    ) -> Result<Vec<InferenceTargetRow>, StorageError> {
+        settings::list_inference_targets(&self.pool, owner)
+            .await
+            .map_err(settings_error_to_storage)
+    }
+
+    async fn remove_inference_target(
+        &self,
+        req: &RemoveInferenceTargetRequest,
+    ) -> Result<RemoveInferenceTargetResponse, StorageError> {
+        settings::remove_inference_target(&self.pool, req)
+            .await
+            .map_err(settings_error_to_storage)
+    }
+
+    async fn bind_inference_tier(
+        &self,
+        req: &BindInferenceTierRequest,
+    ) -> Result<BindInferenceTierResponse, StorageError> {
+        settings::bind_inference_tier(&self.pool, req)
+            .await
+            .map_err(settings_error_to_storage)
+    }
+
+    async fn unbind_inference_tier(
+        &self,
+        owner: &Owner,
+        tier: ModelTier,
+    ) -> Result<(), StorageError> {
+        settings::unbind_inference_tier(&self.pool, owner, tier)
+            .await
+            .map_err(settings_error_to_storage)
+    }
+
+    async fn list_inference_tier_bindings(
+        &self,
+        owner: &Owner,
+    ) -> Result<Vec<InferenceTierBindingRow>, StorageError> {
+        settings::list_inference_tier_bindings(&self.pool, owner)
+            .await
+            .map_err(settings_error_to_storage)
+    }
+
     async fn list_personality_instances(
         &self,
         owner: &Owner,
@@ -261,13 +319,8 @@ impl Storage for PgStorage {
         self_draft: &proxima_core::PersonalitySelfDraft,
         self_sidecar_table: &str,
     ) -> Result<InstantiatePersonalityResponse, StorageError> {
-        verbs::consolidate::instantiate_personality(
-            &self.pool,
-            req,
-            self_draft,
-            self_sidecar_table,
-        )
-        .await
+        verbs::consolidate::instantiate_personality(&self.pool, req, self_draft, self_sidecar_table)
+            .await
     }
 
     async fn set_wake_entries(
@@ -393,17 +446,29 @@ impl Storage for PgStorage {
     }
 }
 
+fn settings_error_to_storage(err: settings::SettingsError) -> StorageError {
+    match err {
+        settings::SettingsError::Conflict(msg) | settings::SettingsError::InUse(msg) => {
+            StorageError::ConstraintViolation(msg)
+        }
+        settings::SettingsError::Invariant(msg) => StorageError::ConstraintViolation(msg),
+        settings::SettingsError::Database(err) => crate::error::map_err(err),
+        settings::SettingsError::Json(err) => StorageError::Internal(err.to_string()),
+        settings::SettingsError::DuplicateEmbeddingModel { vendor, model_id } => {
+            StorageError::ConstraintViolation(format!(
+                "duplicate embedding model {vendor:?}/{model_id:?}"
+            ))
+        }
+        settings::SettingsError::UnknownEmbeddingModel { vendor, model_id } => {
+            StorageError::ConstraintViolation(format!(
+                "unknown embedding model {vendor:?}/{model_id:?}"
+            ))
+        }
+    }
+}
+
 /// Settings registration — see [`mod@settings`] for shape.
 impl PgStorage {
-    /// # Errors
-    /// `SettingsError::Database` for connectivity failures.
-    pub async fn list_llm_models(
-        &self,
-        owner: &Owner,
-    ) -> Result<Vec<settings::LlmModel>, settings::SettingsError> {
-        settings::list_llm_models(&self.pool, owner).await
-    }
-
     /// # Errors
     /// `SettingsError::Database` for connectivity failures.
     pub async fn list_embedding_models(
@@ -415,34 +480,11 @@ impl PgStorage {
 
     /// # Errors
     /// `SettingsError::Database` for connectivity failures.
-    /// `SettingsError::Invariant` if a row has an unrecognized tier.
-    pub async fn list_tier_bindings(
-        &self,
-        owner: &Owner,
-    ) -> Result<Vec<(proxima_core::models::ModelTier, String, String)>, settings::SettingsError>
-    {
-        settings::list_tier_bindings(&self.pool, owner).await
-    }
-
-    /// # Errors
-    /// `SettingsError::Database` for connectivity failures.
     pub async fn get_embedding_active(
         &self,
         owner: &Owner,
     ) -> Result<Option<(String, String)>, settings::SettingsError> {
         settings::get_embedding_active(&self.pool, owner).await
-    }
-
-    /// # Errors
-    /// `SettingsError::Database` for connectivity failures.
-    /// `SettingsError::DuplicateLlmModel` if (vendor, `model_id`) already exists.
-    /// `SettingsError::Invariant` for CHECK violations (should not happen).
-    pub async fn register_llm_model(
-        &self,
-        owner: &Owner,
-        m: settings::LlmModel,
-    ) -> Result<(), settings::SettingsError> {
-        settings::register_llm_model(&self.pool, owner, m).await
     }
 
     /// # Errors
@@ -458,17 +500,6 @@ impl PgStorage {
 
     /// # Errors
     /// `SettingsError::Database` for connectivity failures.
-    pub async fn delete_llm_model(
-        &self,
-        owner: &Owner,
-        vendor: &str,
-        model_id: &str,
-    ) -> Result<bool, settings::SettingsError> {
-        settings::delete_llm_model(&self.pool, owner, vendor, model_id).await
-    }
-
-    /// # Errors
-    /// `SettingsError::Database` for connectivity failures.
     pub async fn delete_embedding_model(
         &self,
         owner: &Owner,
@@ -476,30 +507,6 @@ impl PgStorage {
         model_id: &str,
     ) -> Result<bool, settings::SettingsError> {
         settings::delete_embedding_model(&self.pool, owner, vendor, model_id).await
-    }
-
-    /// # Errors
-    /// `SettingsError::Database` for connectivity failures.
-    /// `SettingsError::UnknownLlmModel` if (vendor, `model_id`) is not registered.
-    /// `SettingsError::Invariant` for CHECK violations (should not happen).
-    pub async fn bind_tier(
-        &self,
-        owner: &Owner,
-        tier: proxima_core::models::ModelTier,
-        vendor: &str,
-        model_id: &str,
-    ) -> Result<(), settings::SettingsError> {
-        settings::bind_tier(&self.pool, owner, tier, vendor, model_id).await
-    }
-
-    /// # Errors
-    /// `SettingsError::Database` for connectivity failures.
-    pub async fn unbind_tier(
-        &self,
-        owner: &Owner,
-        tier: proxima_core::models::ModelTier,
-    ) -> Result<bool, settings::SettingsError> {
-        settings::unbind_tier(&self.pool, owner, tier).await
     }
 
     /// # Errors

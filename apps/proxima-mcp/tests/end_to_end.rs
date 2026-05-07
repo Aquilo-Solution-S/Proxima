@@ -5,9 +5,12 @@ use serde_json::json;
 
 #[tokio::test]
 async fn run_with_handle_serves_tools_list() -> Result<(), Box<dyn std::error::Error>> {
+    let Ok(database_url) = std::env::var("DATABASE_URL") else {
+        eprintln!("skipping (DATABASE_URL unset)");
+        return Ok(());
+    };
     let cfg = proxima_mcp::McpConfig {
-        database_url: std::env::var("DATABASE_URL")
-            .unwrap_or_else(|_| "postgres://postgres@localhost/proxima_dev".to_string()),
+        database_url,
         owner: Owner {
             principal: Principal::User(UserId::new(uuid::Uuid::nil())),
             org_id: OrgId::new(uuid::Uuid::nil()),

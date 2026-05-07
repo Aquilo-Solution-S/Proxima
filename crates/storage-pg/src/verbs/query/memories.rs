@@ -336,9 +336,7 @@ async fn query_visible_memory_ids(
     let stateful = validated_stateful_filters(req)?;
     let schema_id_filter = req.schema_id.as_ref().map(|s| s.as_str().to_string());
 
-    let mut sql = String::from(
-        "SELECT m.memory_id FROM proxima_core.memories m",
-    );
+    let mut sql = String::from("SELECT m.memory_id FROM proxima_core.memories m");
     for (idx, sf) in stateful.iter().enumerate() {
         let alias = stateful_alias(idx);
         write!(

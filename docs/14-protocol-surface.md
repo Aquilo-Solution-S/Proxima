@@ -421,16 +421,17 @@ recoverable on reconnect. Revisit when a real deployment hurts.
 ## Personality lifecycle RPCs — operational, not cognitive
 
 Personality management RPCs are operational config: `ProvisionOwner`,
-`InstantiatePersonality`, `SetWakeConfig`, `ListPersonalityInstances`,
-`TombstonePersonality`. They mutate `personality_wake_config` (and its
-self-Perspective on instantiation), not the cognitive append-only log.
+`InstantiatePersonality`, `SetWakeEntries`, `ListPersonalityInstances`,
+`TombstonePersonality`. They mutate `personality` / `personality_wake_entries`
+(and the root self-Perspective on instantiation), not the cognitive
+append-only log.
 They **do not emit cognitive `ChangeEvent`s**: clients refresh
 personality lists by re-calling `ListPersonalityInstances`, not by
 folding events. `TombstonePersonality` is idempotent on
 `(owner, personality_type_id, personality_instance_id)`; tombstoned
 rows are excluded from the dispatcher's active set and from the
 default `ListPersonalityInstances` listing
-(`include_tombstoned = false`). Both `SetWakeConfig` against a
+(`include_tombstoned = false`). Both `SetWakeEntries` against a
 tombstoned row and `TombstonePersonality` against a missing row return
 `NotFound` (not `Internal`), so UI can distinguish stale state from a
 backend failure.

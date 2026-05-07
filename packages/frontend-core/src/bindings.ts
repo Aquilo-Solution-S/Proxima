@@ -12,7 +12,7 @@ export const commands = {
 	provisionOwner: (owner: Owner) => typedError<null, ProtocolError>(__TAURI_INVOKE("provision_owner", { owner })),
 	listPersonalityInstances: (req: ListPersonalityInstancesTs) => typedError<PersonalityInstanceTs[], ProtocolError>(__TAURI_INVOKE("list_personality_instances", { req })),
 	instantiatePersonality: (req: InstantiatePersonalityTs) => typedError<InstantiatePersonalityOutcomeTs, ProtocolError>(__TAURI_INVOKE("instantiate_personality", { req })),
-	setWakeConfig: (req: SetWakeConfigTs) => typedError<SetWakeConfigOutcomeTs, ProtocolError>(__TAURI_INVOKE("set_wake_config", { req })),
+	setWakeEntries: (req: SetWakeEntriesTs) => typedError<SetWakeEntriesOutcomeTs, ProtocolError>(__TAURI_INVOKE("set_wake_entries", { req })),
 	tombstonePersonality: (req: TombstonePersonalityTs) => typedError<TombstonePersonalityOutcomeTs, ProtocolError>(__TAURI_INVOKE("tombstone_personality", { req })),
 	/**
 	 *  Subscribe — engine returns a `Stream<Item = ChangeEvent>`; we
@@ -23,22 +23,16 @@ export const commands = {
 	 *  side drops the channel, surfaced as a send error).
 	 */
 	subscribe: (req: SubscribeRequest, onEvent: Channel<ChangeEvent>) => typedError<null, ProtocolError>(__TAURI_INVOKE("subscribe", { req, onEvent })),
-	/**
-	 *  # Errors
-	 *  Returns `CommandError::Storage` on database failures.
-	 */
-	modelsListLlm: () => typedError<LlmModelRecord[], CommandError>(__TAURI_INVOKE("models_list_llm")),
+	registerInferenceTarget: (req: RegisterInferenceTargetTs) => typedError<RegisterInferenceTargetOutcomeTs, ProtocolError>(__TAURI_INVOKE("register_inference_target", { req })),
+	listInferenceTargets: (req: ListInferenceTargetsTs) => typedError<InferenceTargetTs[], ProtocolError>(__TAURI_INVOKE("list_inference_targets", { req })),
+	removeInferenceTarget: (req: RemoveInferenceTargetTs) => typedError<RemoveInferenceTargetOutcomeTs, ProtocolError>(__TAURI_INVOKE("remove_inference_target", { req })),
+	bindInferenceTier: (req: BindInferenceTierTs) => typedError<null, ProtocolError>(__TAURI_INVOKE("bind_inference_tier", { req })),
+	listInferenceTierBindings: (req: ListInferenceTierBindingsTs) => typedError<InferenceTierBindingTs[], ProtocolError>(__TAURI_INVOKE("list_inference_tier_bindings", { req })),
 	/**
 	 *  # Errors
 	 *  Returns `CommandError::Storage` on database failures.
 	 */
 	modelsListEmbedding: () => typedError<EmbeddingModelRecord[], CommandError>(__TAURI_INVOKE("models_list_embedding")),
-	/**
-	 *  # Errors
-	 *  Returns `CommandError::DuplicateLlmModel` if the model already exists,
-	 *  `CommandError::Storage` on database failures.
-	 */
-	modelsRegisterLlm: (record: LlmModelRecord) => typedError<null, CommandError>(__TAURI_INVOKE("models_register_llm", { record })),
 	/**
 	 *  # Errors
 	 *  Returns `CommandError::DuplicateEmbeddingModel` if the model already exists,
@@ -49,34 +43,7 @@ export const commands = {
 	 *  # Errors
 	 *  Returns `CommandError::Storage` on database failures.
 	 */
-	modelsDeleteLlm: (vendor: string, modelId: string) => typedError<boolean, CommandError>(__TAURI_INVOKE("models_delete_llm", { vendor, modelId })),
-	/**
-	 *  # Errors
-	 *  Returns `CommandError::Storage` on database failures.
-	 */
 	modelsDeleteEmbedding: (vendor: string, modelId: string) => typedError<boolean, CommandError>(__TAURI_INVOKE("models_delete_embedding", { vendor, modelId })),
-	/**
-	 *  # Errors
-	 *  Returns `CommandError::Storage` on database failures.
-	 */
-	tierBindingsGet: () => typedError<TierBindings, CommandError>(__TAURI_INVOKE("tier_bindings_get")),
-	/**
-	 *  # Errors
-	 *  Returns `CommandError::InsufficientTierCaps` if the model's caps don't satisfy
-	 *  the tier's operator-union requirements, `CommandError::UnknownLlmModel` if the
-	 *  model is not registered, or `CommandError::Storage` on database failures.
-	 */
-	tierBind: (tier: ModelTier, vendor: string, modelId: string) => typedError<null, CommandError>(__TAURI_INVOKE("tier_bind", { tier, vendor, modelId })),
-	/**
-	 *  # Errors
-	 *  Returns `CommandError::Storage` on database failures.
-	 */
-	tierUnbind: (tier: ModelTier) => typedError<boolean, CommandError>(__TAURI_INVOKE("tier_unbind", { tier })),
-	/**
-	 *  # Errors
-	 *  Returns `CommandError::Storage` on database failures.
-	 */
-	tierRequires: (tier: ModelTier) => typedError<LlmCaps, CommandError>(__TAURI_INVOKE("tier_requires", { tier })),
 	/**
 	 *  # Errors
 	 *  Returns `CommandError::Storage` on database failures.
@@ -164,7 +131,13 @@ export const commands = {
 };
 
 /* Types */
-export type AuthorFilterTs = { kind: "any" } | { kind: "external" } | { kind: "personality"; personality_type_id: string; personality_instance_id: string | null };
+export type AuthoredByTs = "any" | "self_author" | "other";
+
+export type BindInferenceTierTs = {
+	owner: Owner,
+	tier: ModelTierTs,
+	target_ref: string,
+};
 
 export type ChangeEvent = {
 	seq: string,
@@ -241,23 +214,10 @@ export type CodeChunkV1 = {
  */
 export type CommandError = { kind: "storage"; data: {
 	message: string,
-} } | { kind: "duplicate_llm_model"; data: {
-	model_ref: ModelRef,
 } } | { kind: "duplicate_embedding_model"; data: {
-	model_ref: ModelRef,
-} } | { kind: "unknown_llm_model"; data: {
-	model_ref: ModelRef,
+	model_ref: EmbeddingModelRef,
 } } | { kind: "unknown_embedding_model"; data: {
-	model_ref: ModelRef,
-} } | 
-/**
- *  Tier binding's model fails operator-union caps satisfaction.
- *  Returned by `tier_bind` when the engine's required caps for
- *  the tier exceed the bound model's claimed caps.
- */
-{ kind: "insufficient_tier_caps"; data: {
-	tier: ModelTier,
-	model_ref: ModelRef,
+	model_ref: EmbeddingModelRef,
 } } | 
 /**
  *  CHECK constraint violation in PG — signals Rust↔SQL drift.
@@ -277,15 +237,6 @@ export type CommandError = { kind: "storage"; data: {
 } } | { kind: "invalid_uuid"; data: {
 	value: string,
 } };
-
-/**
- *  Which HTTP API shape a runtime model client speaks. Independent
- *  of vendor: most non-Anthropic vendors expose the OpenAI dialect,
- *  so a runtime entry like
- *  `{vendor: "openrouter", dialect: OpenAI, model_id: "anthropic/..."}`
- *  is normal.
- */
-export type Dialect = "anthropic" | "openai";
 
 export type EdgeRow = {
 	id: string,
@@ -317,6 +268,12 @@ export type EmbeddingModelRecord = {
 	secret_ref?: string | null,
 };
 
+// Reference to an embedding model by `(vendor, model_id)`.
+export type EmbeddingModelRef = {
+	vendor: string,
+	model_id: string,
+};
+
 export type EntityKind = "Fact" | "Abstraction" | "Perspective" | "Goal";
 
 /**
@@ -329,7 +286,7 @@ export type EntityRef = ({ Memory: MemoryId }) & { Goal?: never } | ({ Goal: Goa
  *  Subset of docs/14's `ErrorCode` exercised in M1. Additional
  *  variants land with the verbs that raise them.
  */
-export type ErrorCode = "AuthRequired" | "Forbidden" | "UnknownSchema" | "AlreadyIngested" | "IdempotencyConflict" | "NotFound" | "Internal";
+export type ErrorCode = "AuthRequired" | "Forbidden" | "UnknownSchema" | "AlreadyIngested" | "IdempotencyConflict" | "NotFound" | "InvalidArgument" | "RecipeInvalid" | "RecipeNotFound" | "ToolNotRegistered" | "InferenceTargetMissing" | "TierUnbound" | "TargetRefConflict" | "TargetInUse" | "TriggerConflict" | "DuplicateTriggerInRequest" | "GooseCliUnavailable" | "Internal";
 
 export type EventDraft = {
 	source_id: SourceId,
@@ -372,6 +329,8 @@ export type EventIngestOutcome = {
 	 */
 	idempotent_replay: boolean,
 };
+
+export type ExecutionModeTs = "substrate_only" | "workspace";
 
 export type FieldEntry = {
 	cmd: string,
@@ -467,6 +426,20 @@ export type IndexReportTs = {
 	chunks_tombstoned: number,
 };
 
+export type InferenceTargetConfigTs = { kind: "local_cli" } & (LocalCliConfigTs) | { kind: "remote_model" } & (RemoteModelConfigTs);
+
+export type InferenceTargetTs = {
+	target_ref: string,
+	config: InferenceTargetConfigTs,
+	created_at: string,
+	updated_at: string,
+};
+
+export type InferenceTierBindingTs = {
+	tier: ModelTierTs,
+	target_ref: string,
+};
+
 export type IngestProgressTs = {
 	commit_index: number,
 	total_commits: number,
@@ -487,33 +460,24 @@ export type InstantiatePersonalityTs = {
 	payload_overrides: string | null,
 };
 
+export type ListInferenceTargetsTs = {
+	owner: Owner,
+};
+
+export type ListInferenceTierBindingsTs = {
+	owner: Owner,
+};
+
 export type ListPersonalityInstancesTs = {
 	owner: Owner,
 	personality_type_id: string | null,
 	include_tombstoned?: boolean,
 };
 
-/**
- *  LLM capability axes. Operators declare a `requires: LlmCaps` at
- *  registration; runtime config binds a `(vendor, model_id)` to a
- *  tier and validates that the bound model's claimed caps satisfy
- *  the union of operator `requires` for that tier.
- */
-export type LlmCaps = {
-	tool_use: boolean,
-	json_mode: boolean,
-	long_context: boolean,
-	vision: boolean,
-};
-
-// A single LLM model entry.
-export type LlmModelRecord = {
-	vendor: string,
-	model_id: string,
-	dialect: Dialect,
-	base_url: string,
-	caps: LlmCaps,
-	secret_ref?: string | null,
+export type LocalCliConfigTs = {
+	command: string,
+	profile: string | null,
+	env_overrides: ([string, string])[],
 };
 
 export type MemoryId = string;
@@ -539,17 +503,7 @@ export type MemoryRow = {
 
 export type ModelId = string;
 
-// Reference to a model by `(vendor, model_id)`.
-export type ModelRef = {
-	vendor: string,
-	model_id: string,
-};
-
-/**
- *  Coarse routing class for operator declarations. Substrate-fixed —
- *  expansion is a substrate PR per docs/10 §Model tiers.
- */
-export type ModelTier = "fast" | "standard" | "deep";
+export type ModelTierTs = "fast" | "standard" | "deep";
 
 export type OperatorId = string;
 
@@ -614,10 +568,10 @@ export type PersonalityInstanceTs = {
 	owner: Owner,
 	personality_type_id: string,
 	personality_instance_id: string,
-	current_self_perspective_memory_id: string,
+	current_root_perspective_memory_id: string,
 	display_name: string,
 	status: string,
-	wake_filters: WakeFilterTs[],
+	wake_entries: WakeEntryTs[],
 	flavor: FlavorDescriptorTs,
 };
 
@@ -658,6 +612,33 @@ export type QueryResponse = {
 	 *  not yet recorded any change events.
 	 */
 	seq_high_water: string | null,
+};
+
+export type RegisterInferenceTargetOutcomeTs = {
+	target_ref: string,
+	idempotent_replay: boolean,
+};
+
+export type RegisterInferenceTargetTs = {
+	owner: Owner,
+	target_ref: string,
+	config: InferenceTargetConfigTs,
+};
+
+export type RemoteModelConfigTs = {
+	vendor: string,
+	dialect: string,
+	model_id: string,
+	credentials_ref: string | null,
+};
+
+export type RemoveInferenceTargetOutcomeTs = {
+	idempotent_replay: boolean,
+};
+
+export type RemoveInferenceTargetTs = {
+	owner: Owner,
+	target_ref: string,
 };
 
 export type RepoEraseReceiptTs = {
@@ -746,15 +727,15 @@ export type SchemaTombstone = {
 
 export type SchemaVersion = number;
 
-export type SetWakeConfigOutcomeTs = {
-	status: string,
+export type SetWakeEntriesOutcomeTs = {
+	active_entries: number,
 };
 
-export type SetWakeConfigTs = {
+export type SetWakeEntriesTs = {
 	owner: Owner,
 	personality_type_id: string,
 	personality_instance_id: string,
-	wake_filters: WakeFilterTs[],
+	entries: WakeEntryDraftTs[],
 };
 
 /**
@@ -792,13 +773,6 @@ export type SystemOrigin = ({ Operator: {
 	tool_id: ToolId,
 } }) & { Operator?: never };
 
-// Tier-to-model bindings. Each tier may be unbound (None).
-export type TierBindings = {
-	fast?: ModelRef | null,
-	standard?: ModelRef | null,
-	deep?: ModelRef | null,
-};
-
 export type TombstoneFilter = "PresentOnly" | "IncludeTombstoned";
 
 export type TombstonePersonalityOutcomeTs = {
@@ -814,11 +788,43 @@ export type TombstonePersonalityTs = {
 
 export type ToolId = string;
 
+export type TriggerKindTs = "on_memory" | "on_edge";
+
 export type UserId = string;
 
-export type WakeFilterTs = { kind: "on_memory"; version: number; schema_id: string; authored_by: AuthorFilterTs; probability: number } | { kind: "on_edge"; version: number; relation_id: string; source: WakeTargetTs; target: WakeTargetTs; probability: number } | { kind: "custom"; version: number; kind_id: string; params_json: string; probability: number };
+export type WakeEntryDraftTs = {
+	trigger_kind: TriggerKindTs,
+	trigger_id: string,
+	label: string,
+	enabled: boolean,
+	execution_mode: ExecutionModeTs,
+	authored_by: AuthoredByTs,
+	probability_promille: number,
+	recipe_ref: string,
+	model_tier: ModelTierTs,
+	inference_target_ref: string | null,
+	substrate_tool_palette: string[],
+	workspace_tool_palette: string[],
+	max_rounds: number,
+};
 
-export type WakeTargetTs = { kind: "any" } | { kind: "self_perspective" } | { kind: "memory"; memory_id: string } | { kind: "goal"; goal_id: string };
+export type WakeEntryTs = {
+	wake_entry_id: string,
+	trigger_kind: TriggerKindTs,
+	trigger_id: string,
+	label: string,
+	enabled: boolean,
+	execution_mode: ExecutionModeTs,
+	authored_by: AuthoredByTs,
+	probability_promille: number,
+	recipe_ref: string,
+	model_tier: ModelTierTs,
+	inference_target_ref: string | null,
+	substrate_tool_palette: string[],
+	workspace_tool_palette: string[],
+	max_rounds: number,
+	disabled_reason: string | null,
+};
 
 /* Tauri Specta runtime */
 async function typedError<T, E>(result: Promise<T>): Promise<{ status: "ok"; data: T } | { status: "error"; error: E }> {

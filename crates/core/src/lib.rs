@@ -6,6 +6,7 @@ pub mod engine;
 pub mod error;
 pub mod flavor;
 pub mod ids;
+pub mod inference;
 pub mod llm;
 pub mod mcp;
 pub mod models;
@@ -25,6 +26,12 @@ pub use engine::*;
 pub use error::*;
 pub use flavor::*;
 pub use ids::*;
+pub use inference::{
+    BindInferenceTierRequest, BindInferenceTierResponse, InferenceTargetConfig, InferenceTargetRow,
+    InferenceTierBindingRow, ListInferenceTargetsRequest, ListInferenceTierBindingsRequest,
+    LocalCliConfig, RegisterInferenceTargetRequest, RegisterInferenceTargetResponse,
+    RemoteModelConfig, RemoveInferenceTargetRequest, RemoveInferenceTargetResponse,
+};
 pub use llm::*;
 pub use mcp::{
     Handle, HandleTable, McpAuthorContext, McpCallFn, McpTool, McpToolCtx, McpToolDescriptor,

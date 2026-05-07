@@ -114,7 +114,7 @@ fn caller_self_perspective_from_args(
     let Some(raw) = args
         .get("_proxima_caller_self_perspective")
         .or_else(|| args.get("caller_self_perspective"))
-        .or_else(|| args.get("current_self_perspective_memory_id"))
+        .or_else(|| args.get("current_root_perspective_memory_id"))
     else {
         return Ok(None);
     };
@@ -136,7 +136,7 @@ fn strip_call_context_args(args: &mut serde_json::Value) {
     };
     obj.remove("_proxima_caller_self_perspective");
     obj.remove("caller_self_perspective");
-    obj.remove("current_self_perspective_memory_id");
+    obj.remove("current_root_perspective_memory_id");
 }
 
 #[cfg(test)]
@@ -166,7 +166,7 @@ mod tests {
             "payload": {},
             "_proxima_caller_self_perspective": uuid::Uuid::now_v7().to_string(),
             "caller_self_perspective": uuid::Uuid::now_v7().to_string(),
-            "current_self_perspective_memory_id": uuid::Uuid::now_v7().to_string(),
+            "current_root_perspective_memory_id": uuid::Uuid::now_v7().to_string(),
         });
 
         strip_call_context_args(&mut args);
@@ -174,6 +174,6 @@ mod tests {
         assert!(args.get("payload").is_some());
         assert!(args.get("_proxima_caller_self_perspective").is_none());
         assert!(args.get("caller_self_perspective").is_none());
-        assert!(args.get("current_self_perspective_memory_id").is_none());
+        assert!(args.get("current_root_perspective_memory_id").is_none());
     }
 }

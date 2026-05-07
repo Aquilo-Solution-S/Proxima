@@ -29,19 +29,6 @@ pub struct InstantiatePersonalityOutcomeTs {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
-pub struct SetWakeConfigTs {
-    pub owner: Owner,
-    pub personality_type_id: String,
-    pub personality_instance_id: String,
-    pub wake_filters: Vec<WakeFilterTs>,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
-pub struct SetWakeConfigOutcomeTs {
-    pub status: String,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct ListPersonalityInstancesTs {
     pub owner: Owner,
     pub personality_type_id: Option<String>,
@@ -67,10 +54,10 @@ pub struct PersonalityInstanceTs {
     pub owner: Owner,
     pub personality_type_id: String,
     pub personality_instance_id: String,
-    pub current_self_perspective_memory_id: String,
+    pub current_root_perspective_memory_id: String,
     pub display_name: String,
     pub status: String,
-    pub wake_filters: Vec<WakeFilterTs>,
+    pub wake_entries: Vec<WakeEntryTs>,
     pub flavor: FlavorDescriptorTs,
 }
 
@@ -92,47 +79,82 @@ pub enum FlavorProvenanceTs {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum AuthorFilterTs {
-    Any,
-    External,
-    Personality {
-        personality_type_id: String,
-        personality_instance_id: Option<String>,
-    },
+#[serde(rename_all = "snake_case")]
+pub enum TriggerKindTs {
+    OnMemory,
+    OnEdge,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum WakeTargetTs {
+#[serde(rename_all = "snake_case")]
+pub enum AuthoredByTs {
     Any,
-    SelfPerspective,
-    Memory { memory_id: String },
-    Goal { goal_id: String },
+    SelfAuthor,
+    Other,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum WakeFilterTs {
-    OnMemory {
-        version: u16,
-        schema_id: String,
-        authored_by: AuthorFilterTs,
-        probability: f32,
-    },
-    OnEdge {
-        version: u16,
-        relation_id: String,
-        source: WakeTargetTs,
-        target: WakeTargetTs,
-        probability: f32,
-    },
-    Custom {
-        version: u16,
-        kind_id: String,
-        params_json: String,
-        probability: f32,
-    },
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionModeTs {
+    SubstrateOnly,
+    Workspace,
+}
+
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, specta::Type)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelTierTs {
+    Fast,
+    Standard,
+    Deep,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
+pub struct WakeEntryTs {
+    pub wake_entry_id: String,
+    pub trigger_kind: TriggerKindTs,
+    pub trigger_id: String,
+    pub label: String,
+    pub enabled: bool,
+    pub execution_mode: ExecutionModeTs,
+    pub authored_by: AuthoredByTs,
+    pub probability_promille: u16,
+    pub recipe_ref: String,
+    pub model_tier: ModelTierTs,
+    pub inference_target_ref: Option<String>,
+    pub substrate_tool_palette: Vec<String>,
+    pub workspace_tool_palette: Vec<String>,
+    pub max_rounds: u16,
+    pub disabled_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
+pub struct WakeEntryDraftTs {
+    pub trigger_kind: TriggerKindTs,
+    pub trigger_id: String,
+    pub label: String,
+    pub enabled: bool,
+    pub execution_mode: ExecutionModeTs,
+    pub authored_by: AuthoredByTs,
+    pub probability_promille: u16,
+    pub recipe_ref: String,
+    pub model_tier: ModelTierTs,
+    pub inference_target_ref: Option<String>,
+    pub substrate_tool_palette: Vec<String>,
+    pub workspace_tool_palette: Vec<String>,
+    pub max_rounds: u16,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
+pub struct SetWakeEntriesTs {
+    pub owner: Owner,
+    pub personality_type_id: String,
+    pub personality_instance_id: String,
+    pub entries: Vec<WakeEntryDraftTs>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
+pub struct SetWakeEntriesOutcomeTs {
+    pub active_entries: u32,
 }
 
 #[tauri::command]
@@ -237,7 +259,7 @@ pub async fn list_personality_instances(
                             row.personality_type_id,
                         ))
                     })?;
-                PersonalityInstanceTs::from_row(row, flavor)
+                Ok::<_, ProtocolError>(PersonalityInstanceTs::from_row(row, flavor))
             })
             .collect()
     })
@@ -274,16 +296,30 @@ pub async fn instantiate_personality(
 
 #[tauri::command]
 #[specta::specta]
-pub async fn set_wake_config(
-    _engine: State<'_, Arc<Engine>>,
-    req: SetWakeConfigTs,
-) -> Result<SetWakeConfigOutcomeTs, ProtocolError> {
+pub async fn set_wake_entries(
+    engine: State<'_, Arc<Engine>>,
+    req: SetWakeEntriesTs,
+) -> Result<SetWakeEntriesOutcomeTs, ProtocolError> {
     let req_bytes = crate::perf::ipc::req_size(&req);
-    crate::perf::ipc::record("set_wake_config", req_bytes, async move {
-        let _ = req;
-        Err(ProtocolError::internal(
-            "SetWakeConfig was removed by the Phase 1a WakeEntry migration",
-        ))
+    crate::perf::ipc::record("set_wake_entries", req_bytes, async move {
+        let instance_id = uuid::Uuid::parse_str(&req.personality_instance_id)
+            .map_err(|e| ProtocolError::internal(format!("personality_instance_id: {e}")))?;
+        let personality_instance_id = PersonalityInstanceId::new(instance_id);
+        let core_req = proxima_core::SetWakeEntriesRequest {
+            owner: req.owner,
+            personality_instance_id,
+            entries: req
+                .entries
+                .into_iter()
+                .map(|draft| draft_to_core(draft, personality_instance_id))
+                .collect(),
+        };
+        let out = engine
+            .set_wake_entries(&Credentials::None, &core_req)
+            .await?;
+        Ok(SetWakeEntriesOutcomeTs {
+            active_entries: out.active_entries,
+        })
     })
     .await
 }
@@ -339,23 +375,104 @@ pub async fn subscribe(
 }
 
 impl PersonalityInstanceTs {
-    fn from_row(
-        row: PersonalityInstanceRow,
-        flavor: &FlavorDescriptor,
-    ) -> Result<Self, ProtocolError> {
-        Ok(Self {
+    fn from_row(row: PersonalityInstanceRow, flavor: &FlavorDescriptor) -> Self {
+        let wake_entries = row.wake_entries.iter().map(WakeEntryTs::from_row).collect();
+        Self {
             owner: row.owner,
             personality_type_id: row.personality_type_id,
             personality_instance_id: row.personality_instance_id.into_inner().to_string(),
-            current_self_perspective_memory_id: row
+            current_root_perspective_memory_id: row
                 .current_root_perspective_memory_id
                 .into_inner()
                 .to_string(),
             display_name: row.display_name,
             status: row.status,
-            wake_filters: Vec::new(),
+            wake_entries,
             flavor: FlavorDescriptorTs::from(flavor),
-        })
+        }
+    }
+}
+
+impl WakeEntryTs {
+    fn from_row(row: &proxima_core::WakeEntryRow) -> Self {
+        Self {
+            wake_entry_id: row.wake_entry_id.to_string(),
+            trigger_kind: match row.trigger_kind {
+                proxima_core::WakeEntryTriggerKind::OnMemory => TriggerKindTs::OnMemory,
+                proxima_core::WakeEntryTriggerKind::OnEdge => TriggerKindTs::OnEdge,
+            },
+            trigger_id: row.trigger_id.clone(),
+            label: row.label.clone(),
+            enabled: row.enabled,
+            execution_mode: match row.execution_mode {
+                proxima_core::WakeEntryExecutionMode::SubstrateOnly => {
+                    ExecutionModeTs::SubstrateOnly
+                }
+                proxima_core::WakeEntryExecutionMode::Workspace => ExecutionModeTs::Workspace,
+            },
+            authored_by: match row.authored_by {
+                proxima_core::WakeEntryAuthoredBy::Any => AuthoredByTs::Any,
+                proxima_core::WakeEntryAuthoredBy::SelfAuthor => AuthoredByTs::SelfAuthor,
+                proxima_core::WakeEntryAuthoredBy::Other => AuthoredByTs::Other,
+            },
+            probability_promille: row.probability_promille,
+            recipe_ref: row.recipe_ref.clone(),
+            model_tier: tier_to_ts(row.model_tier),
+            inference_target_ref: row.inference_target_ref.clone(),
+            substrate_tool_palette: row.substrate_tool_palette.clone(),
+            workspace_tool_palette: row.workspace_tool_palette.clone(),
+            max_rounds: row.max_rounds,
+            disabled_reason: row.disabled_reason.clone(),
+        }
+    }
+}
+
+pub(crate) fn tier_from_ts(tier: ModelTierTs) -> proxima_core::ModelTier {
+    match tier {
+        ModelTierTs::Fast => proxima_core::ModelTier::Fast,
+        ModelTierTs::Standard => proxima_core::ModelTier::Standard,
+        ModelTierTs::Deep => proxima_core::ModelTier::Deep,
+    }
+}
+
+pub(crate) fn tier_to_ts(tier: proxima_core::ModelTier) -> ModelTierTs {
+    match tier {
+        proxima_core::ModelTier::Fast => ModelTierTs::Fast,
+        proxima_core::ModelTier::Standard => ModelTierTs::Standard,
+        proxima_core::ModelTier::Deep => ModelTierTs::Deep,
+    }
+}
+
+fn draft_to_core(
+    draft: WakeEntryDraftTs,
+    personality_instance_id: PersonalityInstanceId,
+) -> proxima_core::WakeEntryDraft {
+    proxima_core::WakeEntryDraft {
+        wake_entry_id: uuid::Uuid::now_v7(),
+        personality_instance_id,
+        trigger_kind: match draft.trigger_kind {
+            TriggerKindTs::OnMemory => proxima_core::WakeEntryTriggerKind::OnMemory,
+            TriggerKindTs::OnEdge => proxima_core::WakeEntryTriggerKind::OnEdge,
+        },
+        trigger_id: draft.trigger_id,
+        label: draft.label,
+        enabled: draft.enabled,
+        execution_mode: match draft.execution_mode {
+            ExecutionModeTs::SubstrateOnly => proxima_core::WakeExecutionMode::SubstrateOnly,
+            ExecutionModeTs::Workspace => proxima_core::WakeExecutionMode::Workspace,
+        },
+        authored_by: match draft.authored_by {
+            AuthoredByTs::Any => proxima_core::WakeEntryAuthoredBy::Any,
+            AuthoredByTs::SelfAuthor => proxima_core::WakeEntryAuthoredBy::SelfAuthor,
+            AuthoredByTs::Other => proxima_core::WakeEntryAuthoredBy::Other,
+        },
+        probability_promille: draft.probability_promille,
+        recipe_ref: draft.recipe_ref,
+        model_tier: tier_from_ts(draft.model_tier),
+        inference_target_ref: draft.inference_target_ref,
+        substrate_tool_palette: draft.substrate_tool_palette,
+        workspace_tool_palette: draft.workspace_tool_palette,
+        max_rounds: draft.max_rounds,
     }
 }
 

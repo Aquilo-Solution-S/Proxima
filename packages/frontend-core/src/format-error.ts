@@ -4,16 +4,10 @@ export function formatCommandError(err: CommandError): string {
   switch (err.kind) {
     case "storage":
       return `Storage error: ${err.data.message}`;
-    case "duplicate_llm_model":
-      return `LLM model already registered: ${err.data.model_ref.vendor} / ${err.data.model_ref.model_id}`;
     case "duplicate_embedding_model":
       return `Embedding model already registered: ${err.data.model_ref.vendor} / ${err.data.model_ref.model_id}`;
-    case "unknown_llm_model":
-      return `Unknown LLM model: ${err.data.model_ref.vendor} / ${err.data.model_ref.model_id}`;
     case "unknown_embedding_model":
       return `Unknown embedding model: ${err.data.model_ref.vendor} / ${err.data.model_ref.model_id}`;
-    case "insufficient_tier_caps":
-      return `Model ${err.data.model_ref.vendor} / ${err.data.model_ref.model_id} doesn't satisfy ${err.data.tier} tier caps`;
     case "invariant":
       return `Internal invariant violation: ${err.data.message}`;
     case "invalid_repo_path":

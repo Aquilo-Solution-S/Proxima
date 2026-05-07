@@ -1,4 +1,4 @@
-//! Goal flavor — typed goal payloads, MotivatedBy edge, and MCP goal tools.
+//! Goal flavor — typed goal payloads, `MotivatedBy` edge, and MCP goal tools.
 
 pub mod migrations;
 pub mod payloads;

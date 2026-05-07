@@ -18,13 +18,6 @@ type BrowserRepo = {
   created_at: string;
 };
 
-const emptyCaps = {
-  tool_use: false,
-  json_mode: false,
-  long_context: false,
-  vision: false,
-};
-
 const browserRepos: BrowserRepo[] = [];
 
 const repoNameFromPath = (path: string): string => {
@@ -57,13 +50,14 @@ const invokeFallback = async (
     case "query":
       return { memories: [], goals: [], edges: [], seq_high_water: null };
     case "subscribe":
-    case "models_register_llm":
+    case "register_inference_target":
     case "models_register_embedding":
-    case "tier_bind":
+    case "bind_inference_tier":
     case "embedding_active_set":
     case "repo_ingest":
       return null;
-    case "models_list_llm":
+    case "list_inference_targets":
+    case "list_inference_tier_bindings":
     case "models_list_embedding":
       return [];
     case "repos_list":
@@ -89,9 +83,8 @@ const invokeFallback = async (
       browserRepos.push(repo);
       return repo;
     }
-    case "models_delete_llm":
+    case "remove_inference_target":
     case "models_delete_embedding":
-    case "tier_unbind":
     case "embedding_active_clear":
     case "repos_delete":
       return false;
@@ -115,10 +108,6 @@ const invokeFallback = async (
         repo_record_deleted: index >= 0,
       };
     }
-    case "tier_bindings_get":
-      return {};
-    case "tier_requires":
-      return emptyCaps;
     case "embedding_active_get":
       return null;
     default:

@@ -45,8 +45,21 @@ const graphClient = (overrides: Partial<EngineClient>): EngineClient => ({
   instantiatePersonality: async () => {
     throw new Error("instantiatePersonality not used");
   },
-  setWakeConfig: async () => {
-    throw new Error("setWakeConfig not used");
+  setWakeEntries: async () => {
+    throw new Error("setWakeEntries not used");
+  },
+  registerInferenceTarget: async () => {
+    throw new Error("registerInferenceTarget not used");
+  },
+  listInferenceTargets: async () => [],
+  removeInferenceTarget: async () => {
+    throw new Error("removeInferenceTarget not used");
+  },
+  bindInferenceTier: async () => {
+    throw new Error("bindInferenceTier not used");
+  },
+  listInferenceTierBindings: async () => {
+    return [];
   },
   ...overrides,
 });
