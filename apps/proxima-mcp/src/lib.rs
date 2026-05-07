@@ -69,10 +69,13 @@ pub async fn run_with_handle(
         config.owner,
         std::sync::Arc::new(registry.freeze()),
     );
-    // TODO(Task 5): replace this placeholder with the engine's
-    // dispatcher store. The headless `proxima-mcp` binary doesn't yet
-    // run a wake dispatcher, so the resulting service will reject every
-    // request with 401 until that wiring lands.
+    // The headless `proxima-mcp` binary is a standalone dev/test
+    // server with no embedded Engine — there's no dispatcher to share
+    // a `WakeTokenStore` with. Every request will 401 until a wake
+    // mints a matching token, which is correct: this binary exists to
+    // exercise the transport, not to serve real wakes. When/if a
+    // headless mode boots an `Engine` directly, swap this for
+    // `engine.wake_token_store()` (Phase 1d.5).
     let wake_token_store = std::sync::Arc::new(
         proxima_core::wake::token_store::WakeTokenStore::new(std::time::Duration::from_secs(300)),
     );

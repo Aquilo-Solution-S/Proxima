@@ -30,8 +30,8 @@ futures = { workspace = true }
 schemars = { workspace = true }
 specta = { workspace = true }
 reqwest = { workspace = true }
+which = "6"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt"] }
 tempfile = "3"
-which = "6"

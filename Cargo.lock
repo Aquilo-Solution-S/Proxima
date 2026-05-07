@@ -3483,6 +3483,7 @@ dependencies = [
 name = "proxima-mcp-server"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "axum",
  "http",
  "proxima-core",

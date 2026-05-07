@@ -6,10 +6,16 @@ mod builder;
 mod dispatcher;
 mod goals;
 mod ingest;
+pub mod mcp_listener;
 mod query;
 
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
+
+use tokio::sync::{RwLock, watch};
+use tokio::task::JoinHandle;
 
 use crate::auth::AuthResolver;
 use crate::auth::Credentials;
@@ -18,12 +24,16 @@ use crate::llm::{AnthropicClient, EmbeddingClient};
 use crate::storage::{StorageError, StorageHandle};
 use crate::verbs::query::MemoryStore;
 use crate::verbs::schema::FlavorRegistryFrozen;
+use crate::wake::token_store::WakeTokenStore;
 use crate::{
     BindInferenceTierRequest, BindInferenceTierResponse, InferenceTargetRow,
     InferenceTierBindingRow, Owner, Principal, RegisterInferenceTargetRequest,
     RegisterInferenceTargetResponse, RemoveInferenceTargetRequest, RemoveInferenceTargetResponse,
     SetWakeEntriesRequest, SetWakeEntriesResponse,
 };
+
+pub use mcp_listener::{EngineMcpListener, RunningMcpListener};
+
 pub struct Engine {
     registry: FlavorRegistryFrozen,
     // TODO(M3.B): remove MemoryStore
@@ -33,6 +43,22 @@ pub struct Engine {
     recipes_root: PathBuf,
     anthropic: Option<Arc<dyn AnthropicClient>>,
     embed: Option<Arc<dyn EmbeddingClient>>,
+    pub(crate) dispatch_interval: Duration,
+    pub(crate) wake_token_ttl: Duration,
+    pub(crate) mcp_listen_addr: SocketAddr,
+    pub(crate) goose_bin: Option<PathBuf>,
+    pub(crate) mcp_listener: Option<Arc<dyn EngineMcpListener>>,
+    pub(crate) mcp_url: Arc<RwLock<Option<String>>>,
+    pub(crate) wake_token_store: Arc<WakeTokenStore>,
+}
+
+/// Owns the background tasks spawned by [`Engine::start`]. The engine
+/// keeps no copy — `start` returns the only handle so the caller is
+/// the single owner that can `stop()` it.
+pub struct EngineHandle {
+    pub mcp_join: Option<JoinHandle<()>>,
+    pub dispatch_join: JoinHandle<()>,
+    pub stop_tx: watch::Sender<bool>,
 }
 
 impl Engine {
@@ -147,6 +173,115 @@ impl Engine {
             Principal::Group(group) => group.into_inner(),
         };
         self.recipes_root.join(principal_id.to_string())
+    }
+
+    /// Bound MCP URL after [`Engine::start`] succeeds. `None` before
+    /// start, or after start if no [`EngineMcpListener`] was attached.
+    #[must_use]
+    pub fn mcp_url(&self) -> Option<String> {
+        self.mcp_url.try_read().ok().and_then(|g| g.clone())
+    }
+
+    /// Shared [`WakeTokenStore`] used by the dispatcher (mints) and the
+    /// MCP listener's auth layer (resolves). Hosts pass this same `Arc`
+    /// to `serve_streamable_http` so requests minted by a wake match
+    /// the same store the dispatcher writes into.
+    #[must_use]
+    pub fn wake_token_store(&self) -> Arc<WakeTokenStore> {
+        self.wake_token_store.clone()
+    }
+
+    /// Resolve the goose binary, run the boot self-check, spawn the
+    /// MCP listener (if attached), and start the dispatcher tick loop.
+    ///
+    /// Returns an [`EngineHandle`] the caller passes to
+    /// [`Engine::stop`] to shut both tasks down cleanly. The engine
+    /// itself does not keep a copy of the handle — single-owner
+    /// shutdown is intentional so two callers can't race a stop.
+    ///
+    /// # Errors
+    ///
+    /// - `goose` not on PATH and no `with_goose_bin(...)` set
+    /// - `goose --version` exited non-zero or could not be spawned
+    /// - the attached [`EngineMcpListener`] failed to bind/serve
+    pub async fn start(self: Arc<Self>) -> Result<EngineHandle, ProtocolError> {
+        // 1. Resolve + self-check goose. The dispatcher (Task 9) shells
+        // out to this binary per wake, so a missing/broken goose is a
+        // boot-time failure rather than a per-wake surprise.
+        let goose_bin = match &self.goose_bin {
+            Some(p) => p.clone(),
+            None => which::which("goose").map_err(|e| {
+                ProtocolError {
+                    code: crate::error::ErrorCode::GooseCliUnavailable,
+                    message: format!("goose not on PATH: {e}"),
+                    request_id: None,
+                }
+            })?,
+        };
+        let _info = crate::wake::boot_check::verify_goose_on_path(&goose_bin)
+            .await
+            .map_err(|e| ProtocolError {
+                code: crate::error::ErrorCode::GooseCliUnavailable,
+                message: format!("goose self-check failed: {e}"),
+                request_id: None,
+            })?;
+
+        // 2. Spawn MCP listener if a host attached one. Tests and
+        // headless callers that don't need MCP can skip
+        // `with_mcp_listener` and `mcp_url()` will stay `None`.
+        let mcp_join = if let Some(listener) = self.mcp_listener.clone() {
+            let running = listener
+                .start(self.mcp_listen_addr, self.wake_token_store.clone())
+                .await?;
+            let url = format!("http://{}/mcp", running.bound_addr);
+            *self.mcp_url.write().await = Some(url);
+            Some(running.join)
+        } else {
+            None
+        };
+
+        // 3. Spawn dispatcher tick loop. Body is currently a Phase 1a
+        // stub returning Ok(0); Task 9 replaces it with the real
+        // dispatch logic.
+        let (stop_tx, mut stop_rx) = watch::channel(false);
+        let engine_for_dispatch = self.clone();
+        let interval = self.dispatch_interval;
+        let dispatch_join = tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(interval);
+            // Skip the immediate first tick so callers that start +
+            // stop quickly don't observe a tick they didn't intend.
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tokio::select! {
+                    changed = stop_rx.changed() => {
+                        if changed.is_err() || *stop_rx.borrow() {
+                            return;
+                        }
+                    }
+                    _ = ticker.tick() => {
+                        if let Err(e) = engine_for_dispatch.run_dispatcher_tick().await {
+                            tracing::warn!(error = %e, "dispatcher tick failed");
+                        }
+                    }
+                }
+            }
+        });
+
+        Ok(EngineHandle {
+            mcp_join,
+            dispatch_join,
+            stop_tx,
+        })
+    }
+
+    /// Flip the dispatcher stop channel, await its join, and abort the
+    /// MCP listener (if any). Safe to call once per [`EngineHandle`].
+    pub async fn stop(&self, handle: EngineHandle) {
+        let _ = handle.stop_tx.send(true);
+        let _ = handle.dispatch_join.await;
+        if let Some(mcp_join) = handle.mcp_join {
+            mcp_join.abort();
+        }
     }
 }
 
