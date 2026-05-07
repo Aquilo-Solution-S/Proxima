@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use proxima_core::personality::{
-    AbstractionRow, ChangeEventForWake, InstantiatePersonalityRequest,
+    AbstractionRow, ActiveGoalSummary, ChangeEventForWake, InstantiatePersonalityRequest,
     InstantiatePersonalityResponse, MemorySnapshot, PersonalityInstanceRow, PersonalityRef,
     PersonalityWriteOutcome, PersonalityWriteRequest, SetWakeConfigRequest, SetWakeConfigResponse,
     SidecarSpec, TombstonePersonalityRequest, TombstonePersonalityResponse, WakeConfigRow,
@@ -26,7 +26,7 @@ use proxima_core::verbs::goal_write::{GoalDraft, GoalWriteOutcome};
 use proxima_core::verbs::query::{QueryRequest, QueryResponse};
 use proxima_core::verbs::subscribe::ChangeEventStream;
 use proxima_core::{
-    ChangeEvent, GoalId, Owner, SourceBatchId, Storage, StorageError, StorageHandle,
+    ChangeEvent, GoalId, MemoryId, Owner, SourceBatchId, Storage, StorageError, StorageHandle,
 };
 use sqlx::PgPool;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
@@ -213,6 +213,16 @@ impl Storage for PgStorage {
         schemas: &[proxima_core::verbs::schema::SchemaInfo],
     ) -> Result<QueryResponse, StorageError> {
         verbs::query::query_memories(&self.pool, req, schemas).await
+    }
+
+    async fn list_active_goals(
+        &self,
+        owner: &Owner,
+        self_perspective_memory_id: MemoryId,
+        limit: usize,
+    ) -> Result<Vec<ActiveGoalSummary>, StorageError> {
+        verbs::active_goals::list_active_goals(&self.pool, owner, self_perspective_memory_id, limit)
+            .await
     }
 
     async fn close_batch(

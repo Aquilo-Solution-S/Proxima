@@ -53,6 +53,7 @@ Flavor authors may define:
 | Surface | Rule |
 |---|---|
 | Schemas | typed payload traits only |
+| Goal payloads | schemas registered against core `GoalPayload` |
 | Relations | registered `RelationDescriptor` ids |
 | Tools | build-time tool types |
 | Personalities | `PersonalityFlavor` impls |
@@ -61,6 +62,10 @@ Flavor authors may define:
 
 Flavor authors may not define runtime registration endpoints, feature flags,
 or similarity-authored edges.
+
+Goal is a core entity. A flavor may ship GoalPayload schemas, sidecars,
+renderers, and schema-aware tools; it does not redefine Goal lifecycle or
+approval state (see 06 §Goal Connection).
 
 ## Composite Discipline
 

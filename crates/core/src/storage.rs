@@ -9,7 +9,7 @@ use crate::GoalId;
 use crate::Owner;
 use crate::SourceBatchId;
 use crate::personality::{
-    AbstractionRow, ChangeEventForWake, InstantiatePersonalityRequest,
+    AbstractionRow, ActiveGoalSummary, ChangeEventForWake, InstantiatePersonalityRequest,
     InstantiatePersonalityResponse, MemorySnapshot, PersonalityInstanceRow, PersonalityRef,
     PersonalityWriteOutcome, PersonalityWriteRequest, SetWakeConfigRequest, SetWakeConfigResponse,
     SidecarSpec, TombstonePersonalityRequest, TombstonePersonalityResponse, WakeConfigRow,
@@ -111,6 +111,17 @@ pub trait Storage: Send + Sync {
         req: &crate::verbs::query::QueryRequest,
         schemas: &[crate::verbs::schema::SchemaInfo],
     ) -> Result<crate::verbs::query::QueryResponse, StorageError>;
+
+    /// Owner-scoped active Goal query for one personality Self-Perspective.
+    /// Traverses `core/inspires` edges authored at proposal/attachment time,
+    /// follows Goal supersession forward, and returns only current Active
+    /// heads. No GoalConnection sidecar is modeled.
+    async fn list_active_goals(
+        &self,
+        owner: &Owner,
+        self_perspective_memory_id: crate::MemoryId,
+        limit: usize,
+    ) -> Result<Vec<ActiveGoalSummary>, StorageError>;
 
     /// Owner-scoped, idempotent batch close. See docs/01 §"The contract"
     /// and docs/04 §"Source-batch lifecycle". Flips
@@ -340,6 +351,15 @@ impl Storage for NoopStorage {
             edges: Vec::new(),
             seq_high_water: None,
         })
+    }
+
+    async fn list_active_goals(
+        &self,
+        _owner: &Owner,
+        _self_perspective_memory_id: crate::MemoryId,
+        _limit: usize,
+    ) -> Result<Vec<ActiveGoalSummary>, StorageError> {
+        Ok(Vec::new())
     }
 
     async fn close_batch(

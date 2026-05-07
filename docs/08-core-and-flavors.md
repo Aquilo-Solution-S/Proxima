@@ -8,6 +8,7 @@ Binding ADR:
 ```
 core
   ids, Owner, Memory/Goal/Edge contracts
+  Goal lifecycle + active-goal query semantics
   storage traits
   frozen registry
   dispatcher
@@ -15,6 +16,7 @@ core
 
 flavor
   payload schemas
+  GoalPayload registrations
   relation descriptors
   event sources
   MCP tools
@@ -117,6 +119,10 @@ Default tools available to every personality:
 
 Flavor tools extend the palette. Write tools enforce declared schemas and
 relations.
+
+`Goal` is a core entity. `proxima-goal` is the reference flavor for
+GoalPayload schemas, proposal/accept/decline MCP tools, sidecars, and
+renderers; it does not own the entity contract (see 06 §Goal Entity).
 
 ## Freeze Guards
 

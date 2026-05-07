@@ -352,7 +352,9 @@ fn ctx(pool: PgPool, owner: Owner, registry: Arc<FlavorRegistryFrozen>) -> McpTo
             model_id: "test/0".into(),
             client_name: "test".into(),
             client_version: "0".into(),
+            caller_self_perspective: None,
         },
+        caller_self_perspective: None,
     }
 }
 

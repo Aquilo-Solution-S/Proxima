@@ -3,6 +3,11 @@
 Binding ADR:
 `docs/superpowers/specs/2026-05-06-personality-wake-decide-write-design.md`.
 
+Core owns `Goal`, `GoalState`, `GoalAuthorship`, the `GoalPayload`
+trait, `GoalWrite`, `core/inspires`, and active-goal query semantics.
+Flavors ship concrete payload schemas, proposal/accept/decline tools,
+sidecars, and renderers.
+
 ## Goal Entity
 
 `Goal` is distinct from `Memory`.
@@ -15,12 +20,15 @@ Goal {
   schema_version: u32,
   title: text,
   text: text,
-  state: Proposed | Active | Paused | Achieved | Abandoned | Rejected,
+  state: GoalState,
   supersedes: GoalId?,
   parent_goal_ids: GoalId[],
   authorship: User | System | External,
 }
 ```
+
+`GoalState` lives in `crates/core/src/verbs/goal_write.rs`.
+`Proposed` and `Rejected` are the propose/accept/decline lifecycle.
 
 Lifecycle:
 
@@ -74,7 +82,7 @@ mutation; the instance's cognitive history stays queryable.
 Goal-to-personality assignment is an edge:
 
 ```
-Goal memory or Goal entity
+Goal
   --core/inspires-->
 self-Perspective memory
 ```
@@ -85,6 +93,28 @@ self-Perspective memory
 Assignment does not imply obligation. The personality may read, ignore,
 accept, counter, or write a different perspective.
 
+### Goal Connection
+
+No `GoalConnection` sidecar.
+
+Lifecycle:
+
+```
+propose -> Goal(state = Proposed) + core/inspires(Goal -> Self-Perspective)
+accept  -> new Goal(state = Active, supersedes = Proposed); edge unchanged
+decline -> new Goal(state = Rejected, supersedes = Proposed); edge unchanged
+```
+
+`active_goals(instance)`:
+
+```
+traverse core/inspires to current_self_perspective_memory_id
+follow Goal supersession to head rows
+filter state = Active
+```
+
+The Goal head's `state` column is the approval state.
+
 ## Separation
 
 | Surface | Holds |
@@ -93,6 +123,7 @@ accept, counter, or write a different perspective.
 | Wake config | operational policy, filters, probabilities |
 | Self-Perspective | identity anchor for one instance |
 | PersonalityFlavor | prompt, tools, write allow-lists |
+| Goal flavor | reference payload schemas, tools, sidecars, renderers |
 
 Goals do not carry wake policy.
 

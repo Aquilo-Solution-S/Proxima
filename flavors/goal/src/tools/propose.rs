@@ -1,6 +1,8 @@
 use proxima_core::GoalId;
 use proxima_core::mcp::{McpTool, McpToolCtx, McpToolError};
+use proxima_core::relation::CORE_INSPIRES_RELATION;
 use proxima_core::verbs::goal_write::{GoalAuthorship, GoalDraft, GoalState};
+use proxima_storage_pg::verbs::edge_append::{EdgeDraft, append_edge_in_tx};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -22,6 +24,7 @@ pub struct ProposeOutput {
     pub handle: String,
     pub uuid: uuid::Uuid,
     pub edge_uuids: Vec<uuid::Uuid>,
+    pub inspires_edge_id: Option<uuid::Uuid>,
 }
 
 #[derive(Debug)]
@@ -56,6 +59,38 @@ impl McpTool for ProposeTool {
                 request_id: request_id("goal_propose", args.idempotency_key),
             };
             let goal_id = insert_goal_in_tx(&mut tx, &ctx, &draft, &encoded).await?;
+            let inspires_edge_id = match ctx.caller_self_perspective {
+                Some(self_memory_id) => {
+                    let edge_id = uuid::Uuid::now_v7();
+                    let relation = ctx
+                        .registry
+                        .resolve_relation(CORE_INSPIRES_RELATION)
+                        .ok_or_else(|| {
+                            McpToolError::Other(format!(
+                                "relation {CORE_INSPIRES_RELATION} not registered"
+                            ))
+                        })?;
+                    let self_memory_uuid = self_memory_id.into_inner();
+                    let draft = EdgeDraft {
+                        edge_id,
+                        relation,
+                        source_kind: "Goal",
+                        source_memory_id: None,
+                        source_goal_id: Some(goal_id),
+                        target_kind: "Perspective",
+                        target_memory_id: Some(self_memory_uuid),
+                        target_goal_id: None,
+                        authorship_kind: "ExternalAgent",
+                        authorship_owner_memory_id: Some(self_memory_uuid),
+                        owner: &ctx.owner,
+                    };
+                    append_edge_in_tx(&mut tx, &draft, None)
+                        .await
+                        .map_err(McpToolError::Storage)?;
+                    Some(edge_id)
+                }
+                None => None,
+            };
             let edge_uuids =
                 insert_motivated_by_edges(&mut tx, &ctx, goal_id, &evidence, "ExternalAgent")
                     .await?;
@@ -66,6 +101,7 @@ impl McpTool for ProposeTool {
                 handle: handle.as_str().to_string(),
                 uuid: goal_id,
                 edge_uuids,
+                inspires_edge_id,
             })
         })
     }

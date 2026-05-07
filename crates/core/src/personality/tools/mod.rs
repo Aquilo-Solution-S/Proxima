@@ -26,7 +26,7 @@ pub use emit_abstraction::EmitAbstractionTool;
 pub use emit_goal::EmitGoalTool;
 pub use emit_perspective::EmitPerspectiveTool;
 pub use fetch_memory::FetchMemoryTool;
-pub use list_active_goals::ListActiveGoalsTool;
+pub use list_active_goals::{ActiveGoalSummary, ListActiveGoalsTool};
 pub use list_self_perspectives::ListSelfPerspectivesTool;
 pub use search_by_embedding::SearchByEmbeddingTool;
 pub use walk_lineage::WalkLineageTool;

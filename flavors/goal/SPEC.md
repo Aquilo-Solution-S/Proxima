@@ -5,6 +5,9 @@ flavor for the intentional layer; ship a Goal **proposal/accept/decline
 pipeline** with `External` authorship via MCP; ship typed `MotivatedBy`
 edges that ground proposed Goals on cross-flavor Abstractions/Facts.
 
+Binding ADR for connection-via-lifecycle:
+[`docs/superpowers/specs/2026-05-07-personality-as-composed-behaviors.md`](../../docs/superpowers/specs/2026-05-07-personality-as-composed-behaviors.md).
+
 ## Why now
 
 - Decider has nothing intentional to optimise without Goals
@@ -14,11 +17,11 @@ edges that ground proposed Goals on cross-flavor Abstractions/Facts.
   `crates/core/src/verbs/goal_write.rs`). The agent-driven proposal
   pipeline is the MCP mirror of that operator family; both write the
   same shape.
-- Goal-related typed payloads + relations + tools naturally cluster into
-  a reference flavor. Putting them in `flavors/mcp/` would conflate
+- Reference GoalPayload schemas + relations + tools naturally cluster
+  into a flavor. Putting them in `flavors/mcp/` would conflate
   "substrate primitives" with "intentional-layer primitives." Putting
-  them in core would re-open invariant 8 ("flavor crate is the unit of
-  inclusion").
+  schema-aware tools in core would re-open invariant 8 ("flavor crate is
+  the unit of inclusion").
 
 ## Non-goals
 
@@ -59,23 +62,18 @@ These already exist and are reused as-is:
 
 | Symbol | Location | Notes |
 |---|---|---|
-| `GoalState { Active, Paused, Achieved, Abandoned }` | `crates/core/src/verbs/goal_write.rs:13` | Spec **extends** with `Proposed` and `Rejected`; existing values keep their meanings |
+| `GoalState { Proposed, Active, Paused, Achieved, Abandoned, Rejected }` | `crates/core/src/verbs/goal_write.rs:13` | Current lifecycle; existing values keep their meanings |
 | `GoalAuthorship { User, System(SystemOrigin), External }` | `crates/core/src/verbs/goal_write.rs:41` | `External` variant already wired; no new authorship type needed |
 | `OperatorKind::AtoGoal` | same file:21 | Confirms A→Goal as an existing operator-kind reservation |
-| `GoalDraft { …, parent_goal_ids, authorship, request_id, … }` | same file:48 | Existing write shape; **add** `supersedes_goal_id` and `payload` (see Prerequisites) |
+| `GoalDraft { …, payload, supersedes_goal_id, parent_goal_ids, authorship, request_id, … }` | same file:48 | Write shape supports proposal supersession and typed payload bytes |
 | `GoalRow { …, state, supersedes, payload: Vec<u8>, … }` | `crates/core/src/verbs/query.rs:97` | Read shape already carries `supersedes` and `payload` (CBOR sidecar bytes) |
 | `goals.state` text column + `goals.supersedes` uuid column | `crates/storage-pg/src/verbs/query/rows.rs:156` | DB columns already present; migration only needs to extend the `state` CHECK + add transition trigger |
 | `external_agent_authorship` migration | `crates/storage-pg/migrations/20260506000030_external_agent_authorship.sql` | Already wires External authorship for memory writes; extend to Goal writes |
 
-Gaps the spec must close:
+Closed gaps:
 
-- **`GoalPayload` trait is documented but not implemented**
-  (`docs/06-goals-and-self.md:86`; absent from `crates/core/src/payload.rs`
-  alongside the existing `FactPayload`, `AbstractionPayload`,
-  `PerspectivePayload`, `EdgePayload` traits).
-- **`GoalDraft` lacks `supersedes_goal_id`** (read shape has it, write
-  shape doesn't expose it). Required for the supersession-via-write
-  pattern that Accept/Modify/Decline use.
+- `GoalPayload` trait lives in `crates/core/src/payload.rs`.
+- `GoalDraft` carries `payload` and `supersedes_goal_id`.
 - **`GoalDraft.title/text` are core fields.** `payload: Vec<u8>` carries
   schema-specific fields only; do not duplicate universal title/body in
   `GoalPayload`.
@@ -86,7 +84,7 @@ Gaps the spec must close:
 
 | Layer | Crate | Owns |
 |---|---|---|
-| Core | `crates/core/`, `crates/storage-pg/` | Goal entity, `GoalState` enum (extended), `GoalAuthorship`, `GoalPayload` trait (NEW), `GoalWrite` verb (extended) |
+| Core | `crates/core/`, `crates/storage-pg/` | Goal entity, `GoalState`, `GoalAuthorship`, `GoalPayload` trait, `GoalWrite` verb |
 | Substrate flavor | `flavors/mcp/` | Substrate primitives only — `proxima_remember` / `_derive` / `_link` / `_search_graph` / `_open`. **No Goal-specific tools.** |
 | Goal flavor | `flavors/goal/` *(new)* | `MotivatedBy` (+ future `Blocks`, `Refines`) RelationDescriptors; reference GoalPayload schemas; MCP tools `goal_propose` and (optional) `goal_accept` / `goal_modify` / `goal_decline`; flavor migrations |
 | Code flavor | `flavors/code/` | Unchanged in v1; can register `code_refactor_goal` payload later |

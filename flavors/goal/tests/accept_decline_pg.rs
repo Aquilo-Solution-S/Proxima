@@ -1,6 +1,6 @@
 mod common;
 
-use common::{ctx, drop_db, insert_abstraction, migrated, owner_fixture};
+use common::{ctx, drop_db, insert_abstraction, insert_self_perspective, migrated, owner_fixture};
 use proxima_core::GoalId;
 use proxima_core::mcp::McpTool;
 use proxima_flavor_goal::tools::accept::{AcceptArgs, AcceptTool};
@@ -30,6 +30,51 @@ async fn propose_with_evidence(
     )
     .await?;
     Ok(outcome.uuid)
+}
+
+async fn propose_for_self(
+    pg: &proxima_storage_pg::PgStorage,
+    owner: proxima_core::Owner,
+) -> Result<(proxima_core::McpToolCtx, uuid::Uuid, uuid::Uuid), Box<dyn std::error::Error>> {
+    let mut ctx = ctx(pg, owner.clone());
+    let self_id = insert_self_perspective(pg, &owner).await?;
+    ctx.caller_self_perspective = Some(self_id);
+    let outcome = ProposeTool::call(
+        ctx.clone(),
+        ProposeArgs {
+            payload: GoalPayloadInput::SimpleText(SimpleTextGoalBody {
+                title: "proposal".into(),
+                text: "proposal".into(),
+            }),
+            evidence: Vec::new(),
+            idempotency_key: Some(format!("proposal-for-self-{self_id:?}")),
+        },
+    )
+    .await?;
+    Ok((
+        ctx,
+        outcome.uuid,
+        outcome
+            .inspires_edge_id
+            .expect("personality proposal writes core/inspires"),
+    ))
+}
+
+async fn assert_inspires_edge_unchanged(
+    pg: &proxima_storage_pg::PgStorage,
+    edge_id: uuid::Uuid,
+    proposal_id: uuid::Uuid,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let rows: Vec<(uuid::Uuid, uuid::Uuid)> = sqlx::query_as(
+        "SELECT edge_id, source_goal_id
+           FROM proxima_core.edges
+          WHERE relation = 'core/inspires'
+          ORDER BY created_at ASC",
+    )
+    .fetch_all(pg.pool())
+    .await?;
+    assert_eq!(rows, vec![(edge_id, proposal_id)]);
+    Ok(())
 }
 
 #[tokio::test]
@@ -171,6 +216,62 @@ async fn decline_makes_goal_terminal() -> Result<(), Box<dyn std::error::Error>>
         .await
         .expect_err("rejected goal is terminal");
         assert!(err.to_string().contains("goal: state=Rejected is terminal"));
+        Ok::<(), Box<dyn std::error::Error>>(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result
+}
+
+#[tokio::test]
+async fn accept_and_decline_preserve_inspires_edge() -> Result<(), Box<dyn std::error::Error>> {
+    let Some((pg, db_name)) = migrated().await else {
+        return Ok(());
+    };
+
+    let result = async {
+        let owner = owner_fixture();
+        let (ctx, proposal, edge_id) = propose_for_self(&pg, owner.clone()).await?;
+        let proposal_handle = ctx.handles.assign_goal(GoalId::new(proposal));
+
+        let accepted = AcceptTool::call(
+            ctx.clone(),
+            AcceptArgs {
+                proposal: proposal_handle.as_str().to_string(),
+                payload: None,
+                evidence: None,
+                idempotency_key: Some("accept-preserve-inspires".into()),
+            },
+        )
+        .await?;
+        assert_ne!(accepted.uuid, proposal);
+        assert_inspires_edge_unchanged(&pg, edge_id, proposal).await?;
+
+        let (ctx, declined_proposal, declined_edge_id) = propose_for_self(&pg, owner).await?;
+        let declined_handle = ctx.handles.assign_goal(GoalId::new(declined_proposal));
+        let declined = DeclineTool::call(
+            ctx,
+            DeclineArgs {
+                proposal: declined_handle.as_str().to_string(),
+                idempotency_key: Some("decline-preserve-inspires".into()),
+            },
+        )
+        .await?;
+        assert_ne!(declined.uuid, declined_proposal);
+
+        let rows: Vec<(uuid::Uuid, uuid::Uuid)> = sqlx::query_as(
+            "SELECT edge_id, source_goal_id
+               FROM proxima_core.edges
+              WHERE relation = 'core/inspires'
+              ORDER BY created_at ASC",
+        )
+        .fetch_all(pg.pool())
+        .await?;
+        assert_eq!(
+            rows,
+            vec![(edge_id, proposal), (declined_edge_id, declined_proposal)]
+        );
         Ok::<(), Box<dyn std::error::Error>>(())
     }
     .await;
