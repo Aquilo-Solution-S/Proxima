@@ -14,3 +14,4 @@ pub mod event_ingest;
 pub(crate) mod goal_write;
 pub(crate) mod query;
 pub(crate) mod subscribe;
+pub(crate) mod wake_context;

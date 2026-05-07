@@ -14,9 +14,10 @@ use std::time::Duration;
 use proxima_core::personality::{
     AbstractionRow, ActiveGoalSummary, ChangeEventForWake, InstantiatePersonalityRequest,
     InstantiatePersonalityResponse, MemorySnapshot, PersonalityInstanceId, PersonalityInstanceRow,
-    PersonalityRef, PersonalityWriteOutcome, PersonalityWriteRequest, SetWakeEntriesRequest,
-    SetWakeEntriesResponse, SidecarSpec, TombstonePersonalityRequest, TombstonePersonalityResponse,
-    WakeDispatchEntryRow, WakeInvocationFinalize, WakeInvocationStart, WakeInvocationStatus,
+    PersonalityRef, PersonalityRuntimeRow, PersonalityWriteOutcome, PersonalityWriteRequest,
+    RootPersonalityPerspectiveRow, SetWakeEntriesRequest, SetWakeEntriesResponse, SidecarSpec,
+    TombstonePersonalityRequest, TombstonePersonalityResponse, WakeDispatchEntryRow,
+    WakeInvocationFinalize, WakeInvocationStart, WakeInvocationStatus,
 };
 use proxima_core::storage::WakeLockGuard;
 use proxima_core::verbs::close_batch::CloseBatchOutcome;
@@ -449,6 +450,30 @@ impl Storage for PgStorage {
         sidecars: &[SidecarSpec],
     ) -> Result<Option<MemorySnapshot>, StorageError> {
         verbs::consolidate::load_memory_by_id(&self.pool, owner, memory_id, sidecars).await
+    }
+
+    async fn fetch_personality_runtime(
+        &self,
+        owner: &Owner,
+        instance_id: PersonalityInstanceId,
+    ) -> Result<Option<PersonalityRuntimeRow>, StorageError> {
+        verbs::wake_context::fetch_personality_runtime(&self.pool, owner, instance_id).await
+    }
+
+    async fn fetch_root_personality_perspective(
+        &self,
+        owner: &Owner,
+        memory_id: proxima_core::MemoryId,
+    ) -> Result<Option<RootPersonalityPerspectiveRow>, StorageError> {
+        verbs::wake_context::fetch_root_personality_perspective(&self.pool, owner, memory_id).await
+    }
+
+    async fn fetch_change_event_for_wake(
+        &self,
+        owner: &Owner,
+        seq: uuid::Uuid,
+    ) -> Result<Option<ChangeEventForWake>, StorageError> {
+        verbs::wake_context::fetch_change_event_for_wake(&self.pool, owner, seq).await
     }
 
     async fn acquire_wake_lock(

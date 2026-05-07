@@ -3405,6 +3405,7 @@ dependencies = [
  "ciborium",
  "futures",
  "futures-util",
+ "proxima-storage-pg",
  "reqwest 0.12.28",
  "schemars 1.2.1",
  "serde",
