@@ -16,9 +16,10 @@ use crate::inference::{
 use crate::personality::{
     AbstractionRow, ActiveGoalSummary, ChangeEventForWake, InstantiatePersonalityRequest,
     InstantiatePersonalityResponse, MemorySnapshot, PersonalityInstanceId, PersonalityInstanceRow,
-    PersonalityRef, PersonalityWriteOutcome, PersonalityWriteRequest, SetWakeEntriesRequest,
-    SetWakeEntriesResponse, SidecarSpec, TombstonePersonalityRequest, TombstonePersonalityResponse,
-    WakeDispatchEntryRow, WakeInvocationFinalize, WakeInvocationStart, WakeInvocationStatus,
+    PersonalityRef, PersonalityRuntimeRow, PersonalityWriteOutcome, PersonalityWriteRequest,
+    RootPersonalityPerspectiveRow, SetWakeEntriesRequest, SetWakeEntriesResponse, SidecarSpec,
+    TombstonePersonalityRequest, TombstonePersonalityResponse, WakeDispatchEntryRow,
+    WakeInvocationFinalize, WakeInvocationStart, WakeInvocationStatus,
 };
 use crate::verbs::close_batch::CloseBatchOutcome;
 use crate::verbs::event_history::{EventHistoryRequest, EventHistoryResponse};
@@ -304,6 +305,34 @@ pub trait Storage: Send + Sync {
         memory_id: crate::MemoryId,
         sidecars: &[SidecarSpec],
     ) -> Result<Option<MemorySnapshot>, StorageError>;
+
+    /// Owner-scoped fetch of one personality runtime row by instance id.
+    /// Returns the personality row plus its current root-perspective memory
+    /// id and display name. Used by the wake-context assembler so the
+    /// engine reads the freshest root perspective per wake.
+    async fn fetch_personality_runtime(
+        &self,
+        owner: &Owner,
+        instance_id: PersonalityInstanceId,
+    ) -> Result<Option<PersonalityRuntimeRow>, StorageError>;
+
+    /// Owner-scoped fetch of the root-perspective sidecar (display_name,
+    /// purpose) for a given memory_id. Used to populate the
+    /// `root_perspective` parameter passed to recipes.
+    async fn fetch_root_personality_perspective(
+        &self,
+        owner: &Owner,
+        memory_id: crate::MemoryId,
+    ) -> Result<Option<RootPersonalityPerspectiveRow>, StorageError>;
+
+    /// Owner-scoped fetch of one change event by `seq` plus the personality
+    /// authorship and wake-chain depth columns the wake-context assembler
+    /// needs. Returns `None` when no row matches.
+    async fn fetch_change_event_for_wake(
+        &self,
+        owner: &Owner,
+        seq: uuid::Uuid,
+    ) -> Result<Option<ChangeEventForWake>, StorageError>;
 
     /// Per-(owner, type_id, instance_id) advisory lock spanning a wake
     /// run. Acquires `pg_advisory_xact_lock` on a stable bigint hash;
@@ -597,6 +626,30 @@ impl Storage for NoopStorage {
         _memory_id: crate::MemoryId,
         _sidecars: &[SidecarSpec],
     ) -> Result<Option<MemorySnapshot>, StorageError> {
+        Ok(None)
+    }
+
+    async fn fetch_personality_runtime(
+        &self,
+        _owner: &Owner,
+        _instance_id: PersonalityInstanceId,
+    ) -> Result<Option<PersonalityRuntimeRow>, StorageError> {
+        Ok(None)
+    }
+
+    async fn fetch_root_personality_perspective(
+        &self,
+        _owner: &Owner,
+        _memory_id: crate::MemoryId,
+    ) -> Result<Option<RootPersonalityPerspectiveRow>, StorageError> {
+        Ok(None)
+    }
+
+    async fn fetch_change_event_for_wake(
+        &self,
+        _owner: &Owner,
+        _seq: uuid::Uuid,
+    ) -> Result<Option<ChangeEventForWake>, StorageError> {
         Ok(None)
     }
 

@@ -17,13 +17,13 @@ use proxima_core::{
     ChangeEventForWake, ErrorCode, FactRow, FlavorRegistry, InferenceTargetRow,
     InferenceTierBindingRow, InstantiatePersonalityRequest, InstantiatePersonalityResponse,
     LocalCliConfig, MemoryId, MemorySnapshot, ModelTier, OrgId, Owner, PersonalityInstanceId,
-    PersonalityInstanceRow, PersonalityRef, PersonalitySelfDraft, PersonalityWriteOutcome,
-    PersonalityWriteRequest, Principal, RegisterInferenceTargetRequest,
+    PersonalityInstanceRow, PersonalityRef, PersonalityRuntimeRow, PersonalitySelfDraft,
+    PersonalityWriteOutcome, PersonalityWriteRequest, Principal, RegisterInferenceTargetRequest,
     RegisterInferenceTargetResponse, RemoveInferenceTargetRequest, RemoveInferenceTargetResponse,
-    SetWakeEntriesRequest, SetWakeEntriesResponse, SidecarSpec, SourceBatchId,
-    TombstonePersonalityRequest, TombstonePersonalityResponse, UserId, WakeDispatchEntryRow,
-    WakeEntryAuthoredBy, WakeEntryDraft, WakeEntryTriggerKind, WakeExecutionMode,
-    WakeInvocationFinalize, WakeInvocationStart, WakeInvocationStatus,
+    RootPersonalityPerspectiveRow, SetWakeEntriesRequest, SetWakeEntriesResponse, SidecarSpec,
+    SourceBatchId, TombstonePersonalityRequest, TombstonePersonalityResponse, UserId,
+    WakeDispatchEntryRow, WakeEntryAuthoredBy, WakeEntryDraft, WakeEntryTriggerKind,
+    WakeExecutionMode, WakeInvocationFinalize, WakeInvocationStart, WakeInvocationStatus,
 };
 use uuid::Uuid;
 
@@ -273,6 +273,30 @@ impl Storage for FixtureStorage {
         _memory_id: MemoryId,
         _sidecars: &[SidecarSpec],
     ) -> Result<Option<MemorySnapshot>, StorageError> {
+        Ok(None)
+    }
+
+    async fn fetch_personality_runtime(
+        &self,
+        _owner: &Owner,
+        _instance_id: PersonalityInstanceId,
+    ) -> Result<Option<PersonalityRuntimeRow>, StorageError> {
+        Ok(None)
+    }
+
+    async fn fetch_root_personality_perspective(
+        &self,
+        _owner: &Owner,
+        _memory_id: MemoryId,
+    ) -> Result<Option<RootPersonalityPerspectiveRow>, StorageError> {
+        Ok(None)
+    }
+
+    async fn fetch_change_event_for_wake(
+        &self,
+        _owner: &Owner,
+        _seq: Uuid,
+    ) -> Result<Option<ChangeEventForWake>, StorageError> {
         Ok(None)
     }
 
