@@ -20,7 +20,7 @@ use crate::{
 pub mod authorization;
 pub mod tools;
 
-pub use tools::substrate_pack;
+pub use tools::{ActiveGoalSummary, substrate_pack};
 
 pub const MAX_WAKE_CHAIN_DEPTH: u16 = 10;
 

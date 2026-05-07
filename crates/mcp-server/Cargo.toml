@@ -24,11 +24,11 @@ axum = { workspace = true }
 http = { workspace = true }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
+uuid = { workspace = true }
 
 [dev-dependencies]
 reqwest = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
-uuid = { workspace = true }
 
 [lints]
 workspace = true

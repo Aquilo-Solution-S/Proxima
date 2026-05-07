@@ -11,13 +11,14 @@ use std::sync::Arc;
 
 use futures::future::BoxFuture;
 
-use crate::{Owner, verbs::schema::FlavorRegistryFrozen};
+use crate::{MemoryId, Owner, verbs::schema::FlavorRegistryFrozen};
 
 #[derive(Debug, Clone)]
 pub struct McpAuthorContext {
     pub model_id: String,
     pub client_name: String,
     pub client_version: String,
+    pub caller_self_perspective: Option<MemoryId>,
 }
 
 impl McpAuthorContext {
@@ -34,6 +35,7 @@ pub struct McpToolCtx {
     pub handles: Arc<HandleTable>,
     pub registry: Arc<FlavorRegistryFrozen>,
     pub author: McpAuthorContext,
+    pub caller_self_perspective: Option<MemoryId>,
 }
 
 impl std::fmt::Debug for McpToolCtx {

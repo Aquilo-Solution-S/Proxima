@@ -8,7 +8,7 @@
 use std::borrow::Cow;
 use std::sync::Arc;
 
-use proxima_core::McpAuthorContext;
+use proxima_core::{McpAuthorContext, MemoryId};
 use rmcp::ServerHandler;
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, Content, ErrorData, Implementation, ListToolsResult,
@@ -77,10 +77,11 @@ impl ServerHandler for DynamicHandler {
     ) -> impl Future<Output = Result<CallToolResult, ErrorData>> + MaybeSendFuture + '_ {
         let server = self.server.clone();
         async move {
-            let args = request
+            let mut args = request
                 .arguments
                 .map_or_else(|| serde_json::json!({}), serde_json::Value::Object);
-            let author = author_from_args(&args);
+            let author = author_from_args(&args)?;
+            strip_call_context_args(&mut args);
             let output = server
                 .call_tool(request.name.as_ref(), args, author)
                 .await
@@ -92,15 +93,87 @@ impl ServerHandler for DynamicHandler {
     }
 }
 
-fn author_from_args(args: &serde_json::Value) -> McpAuthorContext {
+fn author_from_args(args: &serde_json::Value) -> Result<McpAuthorContext, ErrorData> {
     let model_id = args
         .get("model_id")
         .and_then(serde_json::Value::as_str)
         .unwrap_or("unknown")
         .to_string();
-    McpAuthorContext {
+    let caller_self_perspective = caller_self_perspective_from_args(args)?;
+    Ok(McpAuthorContext {
         model_id,
         client_name: "unknown".into(),
         client_version: "0".into(),
+        caller_self_perspective,
+    })
+}
+
+fn caller_self_perspective_from_args(
+    args: &serde_json::Value,
+) -> Result<Option<MemoryId>, ErrorData> {
+    let Some(raw) = args
+        .get("_proxima_caller_self_perspective")
+        .or_else(|| args.get("caller_self_perspective"))
+        .or_else(|| args.get("current_self_perspective_memory_id"))
+    else {
+        return Ok(None);
+    };
+    let Some(raw) = raw.as_str() else {
+        return Err(ErrorData::internal_error(
+            "caller self perspective metadata must be a UUID string",
+            None,
+        ));
+    };
+    let id = uuid::Uuid::parse_str(raw).map_err(|err| {
+        ErrorData::internal_error(format!("invalid caller self perspective UUID: {err}"), None)
+    })?;
+    Ok(Some(MemoryId::new(id)))
+}
+
+fn strip_call_context_args(args: &mut serde_json::Value) {
+    let Some(obj) = args.as_object_mut() else {
+        return;
+    };
+    obj.remove("_proxima_caller_self_perspective");
+    obj.remove("caller_self_perspective");
+    obj.remove("current_self_perspective_memory_id");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn author_from_args_extracts_caller_self_perspective() {
+        let self_id = uuid::Uuid::now_v7();
+        let args = serde_json::json!({
+            "model_id": "test-model",
+            "_proxima_caller_self_perspective": self_id.to_string(),
+        });
+
+        let author = author_from_args(&args).expect("author context");
+
+        assert_eq!(author.model_id, "test-model");
+        assert_eq!(
+            author.caller_self_perspective.map(MemoryId::into_inner),
+            Some(self_id)
+        );
+    }
+
+    #[test]
+    fn strip_call_context_args_removes_reserved_metadata() {
+        let mut args = serde_json::json!({
+            "payload": {},
+            "_proxima_caller_self_perspective": uuid::Uuid::now_v7().to_string(),
+            "caller_self_perspective": uuid::Uuid::now_v7().to_string(),
+            "current_self_perspective_memory_id": uuid::Uuid::now_v7().to_string(),
+        });
+
+        strip_call_context_args(&mut args);
+
+        assert!(args.get("payload").is_some());
+        assert!(args.get("_proxima_caller_self_perspective").is_none());
+        assert!(args.get("caller_self_perspective").is_none());
+        assert!(args.get("current_self_perspective_memory_id").is_none());
     }
 }

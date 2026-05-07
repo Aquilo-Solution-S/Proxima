@@ -251,6 +251,7 @@ async fn call_tool(
             handles: handles.clone(),
             registry: registry.clone(),
             author,
+            caller_self_perspective: None,
         },
         args,
     )
@@ -269,6 +270,7 @@ fn author_ctx() -> McpAuthorContext {
         model_id: "codex-test".into(),
         client_name: "codex".into(),
         client_version: "1".into(),
+        caller_self_perspective: None,
     }
 }
 

@@ -84,7 +84,9 @@ pub fn ctx(pg: &PgStorage, owner: Owner) -> McpToolCtx {
             model_id: "test-model".into(),
             client_name: "test".into(),
             client_version: "1".into(),
+            caller_self_perspective: None,
         },
+        caller_self_perspective: None,
     }
 }
 
@@ -112,4 +114,30 @@ pub async fn insert_abstraction(
     .execute(pg.pool())
     .await?;
     Ok(memory_id)
+}
+
+pub async fn insert_self_perspective(
+    pg: &PgStorage,
+    owner: &Owner,
+) -> Result<proxima_core::MemoryId, Box<dyn std::error::Error>> {
+    let (owner_kind, owner_principal_id) = match owner.principal {
+        Principal::User(u) => ("User", u.into_inner()),
+        Principal::Group(g) => ("Group", g.into_inner()),
+    };
+    let memory_id = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO proxima_core.memories
+            (memory_id, owner_principal_kind, owner_principal_id, owner_org_id,
+             schema_id, schema_version, kind, text, operator_kind, model_id,
+             prompt_version, personality_id)
+         VALUES ($1, $2, $3, $4, 'test/self-perspective', 1, 'Perspective',
+                 'self', 'AtoP', 'test-model', 'v1', 'test/personality')",
+    )
+    .bind(memory_id)
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(owner.org_id.into_inner())
+    .execute(pg.pool())
+    .await?;
+    Ok(proxima_core::MemoryId::new(memory_id))
 }
