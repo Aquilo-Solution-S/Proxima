@@ -11,9 +11,7 @@ use uuid::Uuid;
 
 use crate::error::ProtocolError;
 use crate::outbox::{ChangeEvent, EntityKind};
-use crate::{
-    Engine, LlmCaps, MemoryId, ModelTier, Owner, RegisteredRelation, SchemaId, SchemaVersion,
-};
+use crate::{Engine, MemoryId, ModelTier, Owner, RegisteredRelation, SchemaId, SchemaVersion};
 
 pub mod authorization;
 pub mod tools;
@@ -531,7 +529,6 @@ pub trait PersonalityTool: Send + Sync + std::fmt::Debug {
 }
 
 /// Build-time personality declaration contributed by a flavor.
-#[async_trait]
 pub trait PersonalityFlavor: Send + Sync + std::fmt::Debug {
     fn personality_type_id(&self) -> &'static str;
     fn self_schema(&self) -> SchemaId;
@@ -540,21 +537,6 @@ pub trait PersonalityFlavor: Send + Sync + std::fmt::Debug {
         owner: &Owner,
         payload_overrides: Option<&serde_json::Value>,
     ) -> Result<PersonalitySelfDraft, ProtocolError>;
-    fn system_prompt(&self) -> &'static str;
-    fn tools(&self) -> Vec<Arc<dyn PersonalityTool>> {
-        Vec::new()
-    }
-    fn writeable_schemas(&self) -> &'static [&'static str];
-    fn writeable_relations(&self) -> &'static [&'static str];
-    fn tier(&self) -> ModelTier {
-        ModelTier::Standard
-    }
-    fn max_wake_chain_depth(&self) -> u16 {
-        MAX_WAKE_CHAIN_DEPTH
-    }
-    fn requires(&self) -> LlmCaps {
-        LlmCaps::none()
-    }
 }
 
 #[cfg(test)]

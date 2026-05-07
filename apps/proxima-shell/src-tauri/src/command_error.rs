@@ -18,32 +18,56 @@ use crate::config::{ConfigError, EmbeddingModelRef};
 #[derive(Debug, Clone, Serialize, Type, thiserror::Error)]
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
 pub enum CommandError {
+    /// Settings storage failed.
     #[error("storage error: {message}")]
     Storage { message: String },
 
+    /// Two `[[embedding.models]]` rows share the same `(vendor, model_id)`.
     #[error("duplicate embedding model {model_ref:?}")]
     DuplicateEmbeddingModel { model_ref: EmbeddingModelRef },
 
+    /// The active embedding model is not registered in `[[embedding.models]]`.
     #[error("unknown embedding model {model_ref:?}")]
     UnknownEmbeddingModel { model_ref: EmbeddingModelRef },
 
-    /// CHECK constraint violation in PG — signals Rust↔SQL drift.
-    /// User can't fix; logs to console and reports as bug.
+    /// Config file could not be read.
+    #[error("config IO failed at {path}: {message}")]
+    ConfigIo { path: String, message: String },
+
+    /// Config file could not be written.
+    #[error("config save failed at {path}: {message}")]
+    ConfigSaveIo { path: String, message: String },
+
+    /// Config TOML did not parse or contains unknown fields.
+    #[error("config TOML parse failed: {message}")]
+    ConfigParse { message: String },
+
+    /// Config TOML could not be serialized.
+    #[error("config TOML serialize failed: {message}")]
+    ConfigSerialize { message: String },
+
+    /// CHECK constraint violation in PG signals Rust-to-SQL drift.
+    /// User cannot fix this from settings UI; report as a bug.
     #[error("settings invariant violation: {message}")]
     Invariant { message: String },
 
+    /// Repo path does not exist or cannot be canonicalized.
     #[error("invalid repo path {path}: {reason}")]
     InvalidRepoPath { path: String, reason: String },
 
+    /// Repo path is not a Git worktree.
     #[error("not a git repository: {path}")]
     NotAGitRepo { path: String },
 
+    /// Repo canonical path is already registered.
     #[error("repo already registered at canonical path: {canonical_path}")]
     DuplicateRepo { canonical_path: String },
 
+    /// Repo id does not belong to a registered repo.
     #[error("unknown repo: {repo_id}")]
     UnknownRepo { repo_id: String },
 
+    /// UUID string did not parse.
     #[error("invalid uuid: {value}")]
     InvalidUuid { value: String },
 }
@@ -84,11 +108,19 @@ impl From<ConfigError> for CommandError {
             ConfigError::DuplicateEmbeddingModel(model_ref) => {
                 Self::DuplicateEmbeddingModel { model_ref }
             }
-            // I/O and TOML errors are not reachable from the command
-            // path — config writeback isn't on this code path. If
-            // they show up, surface as Storage to keep the union closed.
-            other => Self::Storage {
-                message: other.to_string(),
+            ConfigError::Io { path, source } => Self::ConfigIo {
+                path,
+                message: source.to_string(),
+            },
+            ConfigError::IoSave { path, source } => Self::ConfigSaveIo {
+                path,
+                message: source.to_string(),
+            },
+            ConfigError::Parse(err) => Self::ConfigParse {
+                message: err.to_string(),
+            },
+            ConfigError::Serialize(err) => Self::ConfigSerialize {
+                message: err.to_string(),
             },
         }
     }

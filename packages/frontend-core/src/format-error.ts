@@ -8,6 +8,14 @@ export function formatCommandError(err: CommandError): string {
       return `Embedding model already registered: ${err.data.model_ref.vendor} / ${err.data.model_ref.model_id}`;
     case "unknown_embedding_model":
       return `Unknown embedding model: ${err.data.model_ref.vendor} / ${err.data.model_ref.model_id}`;
+    case "config_io":
+      return `Config read failed at ${err.data.path}: ${err.data.message}`;
+    case "config_save_io":
+      return `Config save failed at ${err.data.path}: ${err.data.message}`;
+    case "config_parse":
+      return `Config parse failed: ${err.data.message}`;
+    case "config_serialize":
+      return `Config serialize failed: ${err.data.message}`;
     case "invariant":
       return `Internal invariant violation: ${err.data.message}`;
     case "invalid_repo_path":

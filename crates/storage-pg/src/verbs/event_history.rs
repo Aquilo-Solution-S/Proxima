@@ -8,7 +8,7 @@ use proxima_core::{ChangeEvent, Principal, StorageError};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::outbox::hydrate_change_event;
+use crate::outbox::hydrate_change_events_batch;
 
 pub(crate) async fn event_history(
     pool: &PgPool,
@@ -51,12 +51,8 @@ pub(crate) async fn event_history(
         .map_err(|e| StorageError::Internal(e.to_string()))?,
     };
 
-    let mut events: Vec<ChangeEvent> = Vec::with_capacity(rows.len());
-    for (seq,) in rows {
-        if let Some(event) = hydrate_change_event(pool, seq).await? {
-            events.push(event);
-        }
-    }
+    let seqs: Vec<Uuid> = rows.into_iter().map(|(s,)| s).collect();
+    let events: Vec<ChangeEvent> = hydrate_change_events_batch(pool, &seqs).await?;
 
     let high_water: Option<(Uuid,)> = sqlx::query_as(
         "SELECT seq FROM proxima_core.change_event \

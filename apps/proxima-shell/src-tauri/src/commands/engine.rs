@@ -10,8 +10,7 @@ use proxima_core::verbs::query::{QueryRequest, QueryResponse};
 use proxima_core::verbs::schema::{SchemaRequest, SchemaResponse};
 use proxima_core::verbs::subscribe::SubscribeRequest;
 use proxima_core::{
-    ChangeEvent, Engine, FlavorDescriptor, FlavorProvenance, Owner, PersonalityInstanceId,
-    PersonalityInstanceRow,
+    ChangeEvent, Engine, FlavorProvenance, Owner, PersonalityInstanceId, PersonalityInstanceRow,
 };
 use tauri::State;
 use tauri::ipc::Channel;
@@ -52,13 +51,15 @@ pub struct TombstonePersonalityOutcomeTs {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct PersonalityInstanceTs {
     pub owner: Owner,
+    /// Transitional field kept for request compatibility while
+    /// personality identity moves to `personality_instance_id`.
     pub personality_type_id: String,
     pub personality_instance_id: String,
     pub current_root_perspective_memory_id: String,
     pub display_name: String,
     pub status: String,
     pub wake_entries: Vec<WakeEntryTs>,
-    pub flavor: FlavorDescriptorTs,
+    pub flavor: Option<FlavorDescriptorTs>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
@@ -248,19 +249,8 @@ pub async fn list_personality_instances(
                 req.include_tombstoned,
             )
             .await?;
-        let registry = engine.registry();
         rows.into_iter()
-            .map(|row| {
-                let flavor = registry
-                    .flavor_for_personality_type(&row.personality_type_id)
-                    .ok_or_else(|| {
-                        ProtocolError::internal(format!(
-                            "no FlavorDescriptor for personality_type_id {}",
-                            row.personality_type_id,
-                        ))
-                    })?;
-                Ok::<_, ProtocolError>(PersonalityInstanceTs::from_row(row, flavor))
-            })
+            .map(|row| Ok::<_, ProtocolError>(PersonalityInstanceTs::from_row(row)))
             .collect()
     })
     .await
@@ -375,7 +365,7 @@ pub async fn subscribe(
 }
 
 impl PersonalityInstanceTs {
-    fn from_row(row: PersonalityInstanceRow, flavor: &FlavorDescriptor) -> Self {
+    fn from_row(row: PersonalityInstanceRow) -> Self {
         let wake_entries = row.wake_entries.iter().map(WakeEntryTs::from_row).collect();
         Self {
             owner: row.owner,
@@ -388,7 +378,7 @@ impl PersonalityInstanceTs {
             display_name: row.display_name,
             status: row.status,
             wake_entries,
-            flavor: FlavorDescriptorTs::from(flavor),
+            flavor: None,
         }
     }
 }
@@ -476,8 +466,8 @@ fn draft_to_core(
     }
 }
 
-impl From<&FlavorDescriptor> for FlavorDescriptorTs {
-    fn from(d: &FlavorDescriptor) -> Self {
+impl From<&proxima_core::FlavorDescriptor> for FlavorDescriptorTs {
+    fn from(d: &proxima_core::FlavorDescriptor) -> Self {
         Self {
             flavor_id: d.flavor_id.clone(),
             display_name: d.display_name.clone(),

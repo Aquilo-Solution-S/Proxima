@@ -72,6 +72,11 @@ proxima_core::proxima_flavor! {
         mcp::CodeOpenFileRevisionTool,
         mcp::CodeSearchCommitsTool,
     ],
+    recipes_root = env!("CARGO_MANIFEST_DIR"),
+    recipes = [
+        "commit_summary",
+        "engineer",
+    ],
 }
 
 #[cfg(test)]

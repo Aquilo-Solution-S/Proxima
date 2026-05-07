@@ -3,6 +3,7 @@
 //! See docs/14-protocol-surface.md §"Schema" and
 //! docs/03-schema-registry.md.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::personality::PersonalityFlavor;
@@ -84,6 +85,7 @@ pub struct FlavorRegistryFrozen {
     mcp_tools: Vec<McpToolDescriptor>,
     personalities: Vec<Arc<dyn PersonalityFlavor>>,
     flavors: Vec<FlavorDescriptor>,
+    bundled_recipes: Vec<(String, PathBuf)>,
 }
 
 impl FlavorRegistryFrozen {
@@ -103,6 +105,7 @@ impl FlavorRegistryFrozen {
             mcp_tools: Vec::new(),
             personalities: Vec::new(),
             flavors: Vec::new(),
+            bundled_recipes: Vec::new(),
         }
     }
 
@@ -121,6 +124,7 @@ impl FlavorRegistryFrozen {
             mcp_tools: Vec::new(),
             personalities: Vec::new(),
             flavors: Vec::new(),
+            bundled_recipes: Vec::new(),
         }
     }
 
@@ -131,6 +135,7 @@ impl FlavorRegistryFrozen {
         mcp_tools: Vec<McpToolDescriptor>,
         personalities: Vec<Arc<dyn PersonalityFlavor>>,
         flavors: Vec<FlavorDescriptor>,
+        bundled_recipes: Vec<(String, PathBuf)>,
     ) -> Self {
         Self {
             schemas,
@@ -139,6 +144,7 @@ impl FlavorRegistryFrozen {
             mcp_tools,
             personalities,
             flavors,
+            bundled_recipes,
         }
     }
 
@@ -165,8 +171,22 @@ impl FlavorRegistryFrozen {
     }
 
     #[must_use]
-    pub fn bundled_recipe_path(&self, _slug: &str) -> Option<std::path::PathBuf> {
-        None
+    pub fn bundled_recipe_path(&self, slug: &str) -> Option<PathBuf> {
+        self.bundled_recipes
+            .iter()
+            .find(|(s, _)| s == slug)
+            .map(|(_, path)| path.clone())
+    }
+
+    /// All bundled recipe slugs registered for a given flavor. Order
+    /// matches registration order. Used by tests.
+    #[must_use]
+    pub fn bundled_recipes_for(&self, flavor_id: &str) -> Vec<&str> {
+        let prefix = format!("{flavor_id}/");
+        self.bundled_recipes
+            .iter()
+            .filter_map(|(slug, _)| slug.strip_prefix(&prefix).map(|_| slug.as_str()))
+            .collect()
     }
 
     /// Personalities registered by linked flavors via `proxima_flavor!`.

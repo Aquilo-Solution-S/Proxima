@@ -16,66 +16,88 @@ use uuid::Uuid;
 pub const NOTIFY_CHANNEL: &str = "proxima_change_event";
 pub const BROADCAST_CAPACITY: usize = 1024;
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
+const BACKFILL_BATCH: i64 = 1000;
 
 pub(crate) type ReadySignal = oneshot::Sender<Result<(), StorageError>>;
+
+#[derive(Debug, sqlx::FromRow)]
+struct ChangeEventRow {
+    seq: Uuid,
+    owner_principal_kind: String,
+    owner_principal_id: Uuid,
+    owner_org_id: Uuid,
+    kind: String,
+    entity_kind: Option<String>,
+    entity_memory_id: Option<Uuid>,
+    entity_goal_id: Option<Uuid>,
+    entity_schema_id: Option<String>,
+    entity_schema_version: Option<i32>,
+    supersedes_memory_id: Option<Uuid>,
+    supersedes_goal_id: Option<Uuid>,
+    edge_id: Option<Uuid>,
+    edge_relation: Option<String>,
+    edge_source_memory_id: Option<Uuid>,
+    edge_source_goal_id: Option<Uuid>,
+    edge_target_memory_id: Option<Uuid>,
+    edge_target_goal_id: Option<Uuid>,
+    entity_personality_type_id: Option<String>,
+    entity_personality_instance_id: Option<Uuid>,
+    wake_chain_depth: i16,
+}
+
+const CHANGE_EVENT_COLUMNS: &str = "seq, owner_principal_kind, owner_principal_id, owner_org_id, kind, \
+    entity_kind, entity_memory_id, entity_goal_id, \
+    entity_schema_id, entity_schema_version, \
+    supersedes_memory_id, supersedes_goal_id, \
+    edge_id, edge_relation, \
+    edge_source_memory_id, edge_source_goal_id, \
+    edge_target_memory_id, edge_target_goal_id, \
+    entity_personality_type_id, entity_personality_instance_id, \
+    wake_chain_depth";
 
 /// Hydrate a single `change_event` row into a typed `ChangeEvent`.
 ///
 /// The migration guarantees exactly one of `(entity_memory_id,
 /// entity_goal_id)` is non-NULL for `EntityAppend`, and same for
 /// supersedes columns.
-#[allow(clippy::too_many_lines)]
 pub(crate) async fn hydrate_change_event(
     pool: &sqlx::PgPool,
     seq: Uuid,
 ) -> Result<Option<ChangeEvent>, StorageError> {
-    #[derive(Debug, sqlx::FromRow)]
-    struct Row {
-        seq: Uuid,
-        owner_principal_kind: String,
-        owner_principal_id: Uuid,
-        owner_org_id: Uuid,
-        kind: String,
-        entity_kind: Option<String>,
-        entity_memory_id: Option<Uuid>,
-        entity_goal_id: Option<Uuid>,
-        entity_schema_id: Option<String>,
-        entity_schema_version: Option<i32>,
-        supersedes_memory_id: Option<Uuid>,
-        supersedes_goal_id: Option<Uuid>,
-        edge_id: Option<Uuid>,
-        edge_relation: Option<String>,
-        edge_source_memory_id: Option<Uuid>,
-        edge_source_goal_id: Option<Uuid>,
-        edge_target_memory_id: Option<Uuid>,
-        edge_target_goal_id: Option<Uuid>,
-        entity_personality_type_id: Option<String>,
-        entity_personality_instance_id: Option<Uuid>,
-        wake_chain_depth: i16,
+    let sql = format!("SELECT {CHANGE_EVENT_COLUMNS} FROM proxima_core.change_event WHERE seq = $1");
+    let row: Option<ChangeEventRow> = sqlx::query_as(&sql)
+        .bind(seq)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| StorageError::Internal(e.to_string()))?;
+
+    row.map(decode_change_event_row).transpose()
+}
+
+/// Batched hydrate. Returns events ordered by `seq DESC`; the caller
+/// is responsible for any further reordering.
+pub(crate) async fn hydrate_change_events_batch(
+    pool: &sqlx::PgPool,
+    seqs: &[Uuid],
+) -> Result<Vec<ChangeEvent>, StorageError> {
+    if seqs.is_empty() {
+        return Ok(Vec::new());
     }
+    let sql = format!(
+        "SELECT {CHANGE_EVENT_COLUMNS} FROM proxima_core.change_event \
+         WHERE seq = ANY($1::uuid[]) ORDER BY seq DESC"
+    );
+    let rows: Vec<ChangeEventRow> = sqlx::query_as(&sql)
+        .bind(seqs)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| StorageError::Internal(e.to_string()))?;
 
-    let row: Option<Row> = sqlx::query_as(
-        "SELECT seq, owner_principal_kind, owner_principal_id, owner_org_id, kind,
-                entity_kind, entity_memory_id, entity_goal_id,
-                entity_schema_id, entity_schema_version,
-                supersedes_memory_id, supersedes_goal_id,
-                edge_id, edge_relation,
-                edge_source_memory_id, edge_source_goal_id,
-                edge_target_memory_id, edge_target_goal_id,
-                entity_personality_type_id, entity_personality_instance_id,
-                wake_chain_depth
-         FROM proxima_core.change_event WHERE seq = $1",
-    )
-    .bind(seq)
-    .fetch_optional(pool)
-    .await
-    .map_err(|e| StorageError::Internal(e.to_string()))?;
+    rows.into_iter().map(decode_change_event_row).collect()
+}
 
-    let Some(row) = row else {
-        return Ok(None);
-    };
-
-    // Decode owner.
+#[allow(clippy::too_many_lines)]
+fn decode_change_event_row(row: ChangeEventRow) -> Result<ChangeEvent, StorageError> {
     let principal = match row.owner_principal_kind.as_str() {
         "User" => Principal::User(UserId::new(row.owner_principal_id)),
         "Group" => Principal::Group(GroupId::new(row.owner_principal_id)),
@@ -105,7 +127,7 @@ pub(crate) async fn hydrate_change_event(
             .ok_or_else(|| StorageError::Internal("missing edge_relation".into()))?;
         let source = decode_entity_ref(row.edge_source_memory_id, row.edge_source_goal_id)?;
         let target = decode_entity_ref(row.edge_target_memory_id, row.edge_target_goal_id)?;
-        return Ok(Some(ChangeEvent {
+        return Ok(ChangeEvent {
             seq: row.seq,
             owner,
             kind: ChangeEventKind::EdgeAppend {
@@ -114,13 +136,12 @@ pub(crate) async fn hydrate_change_event(
                 source,
                 target,
             },
-            authoring_personality_type_id: authoring_type.clone(),
+            authoring_personality_type_id: authoring_type,
             authoring_personality_instance_id: authoring_instance,
             wake_chain_depth,
-        }));
+        });
     }
 
-    // Decode entity_kind.
     let entity_kind = match row.entity_kind.as_deref() {
         Some("Fact") => EntityKind::Fact,
         Some("Abstraction") => EntityKind::Abstraction,
@@ -134,7 +155,6 @@ pub(crate) async fn hydrate_change_event(
         None => return Err(StorageError::Internal("missing entity_kind".into())),
     };
 
-    // Decode entity ref — exactly one of memory/goal is non-NULL.
     let entity = match (row.entity_memory_id, row.entity_goal_id) {
         (Some(m), None) => EntityRef::Memory(MemoryId::new(m)),
         (None, Some(g)) => EntityRef::Goal(GoalId::new(g)),
@@ -145,7 +165,6 @@ pub(crate) async fn hydrate_change_event(
         }
     };
 
-    // Decode schema.
     let schema_id = SchemaId::new(
         row.entity_schema_id
             .ok_or_else(|| StorageError::Internal("missing entity_schema_id".into()))?,
@@ -156,7 +175,6 @@ pub(crate) async fn hydrate_change_event(
             .cast_unsigned(),
     );
 
-    // Decode supersedes.
     let supersedes = match (row.supersedes_memory_id, row.supersedes_goal_id) {
         (Some(m), None) => Some(EntityRef::Memory(MemoryId::new(m))),
         (None, Some(g)) => Some(EntityRef::Goal(GoalId::new(g))),
@@ -168,7 +186,6 @@ pub(crate) async fn hydrate_change_event(
         }
     };
 
-    // Build ChangeEventKind.
     let kind = match row.kind.as_str() {
         "EntityAppend" => ChangeEventKind::EntityAppend {
             entity_kind,
@@ -184,14 +201,14 @@ pub(crate) async fn hydrate_change_event(
         }
     };
 
-    Ok(Some(ChangeEvent {
+    Ok(ChangeEvent {
         seq: row.seq,
         owner,
         kind,
         authoring_personality_type_id: authoring_type,
         authoring_personality_instance_id: authoring_instance,
         wake_chain_depth,
-    }))
+    })
 }
 
 /// Map the row's `entity_personality_type_id` / `_instance_id` columns
@@ -269,26 +286,31 @@ async fn run_listener(
         .await
         .map_err(|e| StorageError::Internal(e.to_string()))?;
 
-    // Backfill: first boot drains everything; reconnect drains
-    // anything missed while the listener session was down.
-    let rows: Vec<(Uuid,)> = match *last_seen_seq {
-        Some(prev) => {
-            sqlx::query_as("SELECT seq FROM proxima_core.change_event WHERE seq > $1 ORDER BY seq")
-                .bind(prev)
-                .fetch_all(pool)
-                .await
-                .map_err(|e| StorageError::Internal(e.to_string()))?
+    // Backfill: first boot drains everything from nil; reconnect drains
+    // anything missed while the listener session was down. Chunked so
+    // a long downtime doesn't pull millions of rows into memory at once.
+    loop {
+        let prev = last_seen_seq.unwrap_or_else(Uuid::nil);
+        let rows: Vec<(Uuid,)> = sqlx::query_as(
+            "SELECT seq FROM proxima_core.change_event \
+             WHERE seq > $1 ORDER BY seq LIMIT $2",
+        )
+        .bind(prev)
+        .bind(BACKFILL_BATCH)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| StorageError::Internal(e.to_string()))?;
+
+        if rows.is_empty() {
+            break;
         }
-        None => sqlx::query_as("SELECT seq FROM proxima_core.change_event ORDER BY seq")
-            .fetch_all(pool)
-            .await
-            .map_err(|e| StorageError::Internal(e.to_string()))?,
-    };
-    for (seq,) in rows {
-        if let Some(ce) = hydrate_change_event(pool, seq).await? {
-            let _ = tx.send(ce);
+
+        for (seq,) in rows {
+            if let Some(ce) = hydrate_change_event(pool, seq).await? {
+                let _ = tx.send(ce);
+            }
+            *last_seen_seq = Some(seq);
         }
-        *last_seen_seq = Some(seq);
     }
 
     // LISTEN bound + backfill drained — callers awaiting startup

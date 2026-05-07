@@ -13,21 +13,19 @@ use crate::pb;
 use super::primitives::timestamp_to_proto;
 
 pub fn tier_from_proto(tier: i32) -> Result<ModelTier, Status> {
-    match pb::ModelTierProto::try_from(tier).unwrap_or(pb::ModelTierProto::ModelTierUnspecified) {
-        pb::ModelTierProto::ModelTierFast => Ok(ModelTier::Fast),
-        pb::ModelTierProto::ModelTierStandard => Ok(ModelTier::Standard),
-        pb::ModelTierProto::ModelTierDeep => Ok(ModelTier::Deep),
-        pb::ModelTierProto::ModelTierUnspecified => {
-            Err(Status::invalid_argument("model_tier must be set"))
-        }
+    match pb::ModelTierProto::try_from(tier).unwrap_or(pb::ModelTierProto::Unspecified) {
+        pb::ModelTierProto::Fast => Ok(ModelTier::Fast),
+        pb::ModelTierProto::Standard => Ok(ModelTier::Standard),
+        pb::ModelTierProto::Deep => Ok(ModelTier::Deep),
+        pb::ModelTierProto::Unspecified => Err(Status::invalid_argument("model_tier must be set")),
     }
 }
 
 pub fn tier_to_proto(tier: ModelTier) -> i32 {
     match tier {
-        ModelTier::Fast => pb::ModelTierProto::ModelTierFast as i32,
-        ModelTier::Standard => pb::ModelTierProto::ModelTierStandard as i32,
-        ModelTier::Deep => pb::ModelTierProto::ModelTierDeep as i32,
+        ModelTier::Fast => pb::ModelTierProto::Fast as i32,
+        ModelTier::Standard => pb::ModelTierProto::Standard as i32,
+        ModelTier::Deep => pb::ModelTierProto::Deep as i32,
     }
 }
 

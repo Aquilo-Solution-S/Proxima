@@ -87,51 +87,56 @@ pub async fn list_personality_instances(
     .await
     .map_err(map_err)?;
 
+    let instance_ids: Vec<uuid::Uuid> = rows.iter().map(|(id, _, _, _)| *id).collect();
+
+    let wake_rows = sqlx::query(
+        "SELECT personality_instance_id,
+                wake_entry_id, trigger_kind, trigger_id, label, enabled,
+                execution_mode, authored_by, probability_promille, recipe_ref,
+                model_tier, inference_target_ref, substrate_tool_palette,
+                workspace_tool_palette, max_rounds, disabled_reason
+         FROM proxima_core.personality_wake_entries
+         WHERE owner_principal_kind = $1
+           AND owner_principal_id = $2
+           AND owner_org_id = $3
+           AND personality_instance_id = ANY($4::uuid[])
+           AND tombstoned_at IS NULL
+         ORDER BY label, wake_entry_id",
+    )
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(owner_org_id)
+    .bind(&instance_ids)
+    .fetch_all(pool)
+    .await
+    .map_err(map_err)?;
+
+    let mut wake_by_instance: std::collections::HashMap<uuid::Uuid, Vec<WakeEntryRow>> =
+        std::collections::HashMap::with_capacity(instance_ids.len());
+    for row in wake_rows {
+        let pid: uuid::Uuid = row.get("personality_instance_id");
+        wake_by_instance.entry(pid).or_default().push(WakeEntryRow {
+            wake_entry_id: row.get("wake_entry_id"),
+            trigger_kind: parse_trigger_kind(&row.get::<String, _>("trigger_kind")),
+            trigger_id: row.get("trigger_id"),
+            label: row.get("label"),
+            enabled: row.get("enabled"),
+            execution_mode: parse_row_execution_mode(&row.get::<String, _>("execution_mode")),
+            authored_by: parse_row_authored_by(&row.get::<String, _>("authored_by")),
+            probability_promille: u16::try_from(row.get::<i32, _>("probability_promille"))
+                .unwrap_or(0),
+            recipe_ref: row.get("recipe_ref"),
+            model_tier: parse_model_tier(&row.get::<String, _>("model_tier")),
+            inference_target_ref: row.get("inference_target_ref"),
+            substrate_tool_palette: row.get("substrate_tool_palette"),
+            workspace_tool_palette: row.get("workspace_tool_palette"),
+            max_rounds: u16::try_from(row.get::<i32, _>("max_rounds")).unwrap_or(1),
+            disabled_reason: row.get("disabled_reason"),
+        });
+    }
+
     let mut out = Vec::with_capacity(rows.len());
     for (instance_id, root_memory_id, display_name, status) in rows {
-        let wake_rows = sqlx::query(
-            "SELECT wake_entry_id, trigger_kind, trigger_id, label, enabled,
-                    execution_mode, authored_by, probability_promille, recipe_ref,
-                    model_tier, inference_target_ref, substrate_tool_palette,
-                    workspace_tool_palette, max_rounds, disabled_reason
-             FROM proxima_core.personality_wake_entries
-             WHERE owner_principal_kind = $1
-               AND owner_principal_id = $2
-               AND owner_org_id = $3
-               AND personality_instance_id = $4
-               AND tombstoned_at IS NULL
-             ORDER BY label, wake_entry_id",
-        )
-        .bind(owner_kind)
-        .bind(owner_principal_id)
-        .bind(owner_org_id)
-        .bind(instance_id)
-        .fetch_all(pool)
-        .await
-        .map_err(map_err)?;
-
-        let wake_entries = wake_rows
-            .into_iter()
-            .map(|row| WakeEntryRow {
-                wake_entry_id: row.get("wake_entry_id"),
-                trigger_kind: parse_trigger_kind(&row.get::<String, _>("trigger_kind")),
-                trigger_id: row.get("trigger_id"),
-                label: row.get("label"),
-                enabled: row.get("enabled"),
-                execution_mode: parse_row_execution_mode(&row.get::<String, _>("execution_mode")),
-                authored_by: parse_row_authored_by(&row.get::<String, _>("authored_by")),
-                probability_promille: u16::try_from(row.get::<i32, _>("probability_promille"))
-                    .unwrap_or(0),
-                recipe_ref: row.get("recipe_ref"),
-                model_tier: parse_model_tier(&row.get::<String, _>("model_tier")),
-                inference_target_ref: row.get("inference_target_ref"),
-                substrate_tool_palette: row.get("substrate_tool_palette"),
-                workspace_tool_palette: row.get("workspace_tool_palette"),
-                max_rounds: u16::try_from(row.get::<i32, _>("max_rounds")).unwrap_or(1),
-                disabled_reason: row.get("disabled_reason"),
-            })
-            .collect();
-
         out.push(PersonalityInstanceRow {
             owner: owner.clone(),
             personality_type_id: String::new(),
@@ -139,7 +144,7 @@ pub async fn list_personality_instances(
             current_root_perspective_memory_id: MemoryId::new(root_memory_id),
             display_name,
             status,
-            wake_entries,
+            wake_entries: wake_by_instance.remove(&instance_id).unwrap_or_default(),
         });
     }
 
@@ -196,8 +201,8 @@ pub async fn instantiate_personality(
 
     sqlx::query(
         "INSERT INTO proxima_core.root_personality_perspective_v1
-            (memory_id, display_name, purpose, system_prompt)
-         VALUES ($1, $2, $3, $4)",
+            (memory_id, display_name, purpose)
+         VALUES ($1, $2, $3)",
     )
     .bind(memory_id)
     .bind(
@@ -213,13 +218,6 @@ pub async fn instantiate_personality(
             .get("purpose")
             .and_then(serde_json::Value::as_str)
             .unwrap_or("Personality root perspective"),
-    )
-    .bind(
-        self_draft
-            .typed_payload
-            .get("system_prompt")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("Inert Phase 1a personality"),
     )
     .execute(&mut *tx)
     .await

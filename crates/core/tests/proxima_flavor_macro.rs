@@ -1,7 +1,6 @@
-use async_trait::async_trait;
 use proxima_core::{
-    ModelTier, Owner, PersonalityFlavor, PersonalitySelfDraft, PerspectivePayload, ProtocolError,
-    SchemaId, SchemaVersion,
+    Owner, PersonalityFlavor, PersonalitySelfDraft, PerspectivePayload, ProtocolError, SchemaId,
+    SchemaVersion,
 };
 use serde::{Deserialize, Serialize};
 
@@ -36,7 +35,6 @@ impl PerspectivePayload for DemoOutputPayload {
 #[derive(Debug, Default)]
 struct DemoPersonality;
 
-#[async_trait]
 impl PersonalityFlavor for DemoPersonality {
     fn personality_type_id(&self) -> &'static str {
         "proxima-test/personality-v1"
@@ -57,22 +55,6 @@ impl PersonalityFlavor for DemoPersonality {
             text: "Demo".into(),
             typed_payload: serde_json::json!({ "display_name": "Demo" }),
         })
-    }
-
-    fn system_prompt(&self) -> &'static str {
-        "demo"
-    }
-
-    fn writeable_schemas(&self) -> &'static [&'static str] {
-        &[DemoOutputPayload::SCHEMA_ID]
-    }
-
-    fn writeable_relations(&self) -> &'static [&'static str] {
-        &[]
-    }
-
-    fn tier(&self) -> ModelTier {
-        ModelTier::Standard
     }
 }
 
@@ -97,5 +79,35 @@ fn macro_registers_personalities() {
     assert_eq!(
         frozen.list_personalities()[0].personality_type_id(),
         "proxima-test/personality-v1"
+    );
+}
+
+#[test]
+fn macro_registers_bundled_recipes_under_flavor_prefix() {
+    use proxima_core::FlavorRegistry;
+    use std::path::PathBuf;
+
+    proxima_core::proxima_flavor! {
+        name = "macro-test-recipes",
+        recipes_root = env!("CARGO_MANIFEST_DIR"),
+        recipes = ["alpha", "beta"],
+    }
+
+    let mut registry = FlavorRegistry::new();
+    register(&mut registry);
+    let frozen = registry.freeze();
+
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    assert_eq!(
+        frozen.bundled_recipe_path("macro-test-recipes/alpha"),
+        Some(manifest_dir.join("recipes/alpha.yaml")),
+    );
+    assert_eq!(
+        frozen.bundled_recipe_path("macro-test-recipes/beta"),
+        Some(manifest_dir.join("recipes/beta.yaml")),
+    );
+    assert_eq!(
+        frozen.bundled_recipes_for("macro-test-recipes"),
+        vec!["macro-test-recipes/alpha", "macro-test-recipes/beta"],
     );
 }

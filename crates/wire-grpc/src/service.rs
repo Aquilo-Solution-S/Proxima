@@ -22,7 +22,7 @@ use crate::convert::{
     tier_binding_to_proto, tier_from_proto, wake_entry_draft_from_proto, wake_entry_to_proto,
 };
 use crate::pb::{
-    self, BindInferenceTierRequest, BindInferenceTierResponse, ChangeEvent, EventHistoryRequest,
+    BindInferenceTierRequest, BindInferenceTierResponse, ChangeEvent, EventHistoryRequest,
     EventHistoryResponse, EventIngestRequest, EventIngestResponse, GoalWriteRequest,
     GoalWriteResponse, InstantiatePersonalityRequest, InstantiatePersonalityResponse,
     ListInferenceTargetsRequest, ListInferenceTargetsResponse, ListInferenceTierBindingsRequest,
@@ -368,20 +368,9 @@ impl EngineTrait for EngineGrpcServer {
             )
             .await
             .map_err(protocol_error_to_status)?;
-        let registry = self.engine.registry();
         let instances = rows
             .into_iter()
-            .map(|row| {
-                let flavor = registry
-                    .flavor_for_personality_type(&row.personality_type_id)
-                    .ok_or_else(|| {
-                        Status::internal(format!(
-                            "no FlavorDescriptor for personality_type_id {}",
-                            row.personality_type_id,
-                        ))
-                    })?;
-                Ok::<_, Status>(personality_instance_to_proto(row, flavor))
-            })
+            .map(|row| Ok::<_, Status>(personality_instance_to_proto(row)))
             .collect::<Result<Vec<_>, _>>()?;
         Ok(Response::new(ListPersonalityInstancesResponse {
             instances,
@@ -418,10 +407,7 @@ fn uuid_from_str(value: &str) -> Result<uuid::Uuid, Status> {
     uuid::Uuid::parse_str(value).map_err(|e| Status::invalid_argument(e.to_string()))
 }
 
-fn personality_instance_to_proto(
-    row: proxima_core::PersonalityInstanceRow,
-    flavor: &proxima_core::FlavorDescriptor,
-) -> PersonalityInstance {
+fn personality_instance_to_proto(row: proxima_core::PersonalityInstanceRow) -> PersonalityInstance {
     PersonalityInstance {
         owner: Some(owner_to_proto(&row.owner)),
         personality_type_id: row.personality_type_id,
@@ -432,33 +418,7 @@ fn personality_instance_to_proto(
             .to_string(),
         display_name: row.display_name,
         status: row.status,
-        flavor: Some(flavor_descriptor_to_proto(flavor)),
+        flavor: None,
         wake_entries: row.wake_entries.iter().map(wake_entry_to_proto).collect(),
     }
-}
-
-fn flavor_descriptor_to_proto(descriptor: &proxima_core::FlavorDescriptor) -> pb::FlavorDescriptor {
-    pb::FlavorDescriptor {
-        flavor_id: descriptor.flavor_id.clone(),
-        display_name: descriptor.display_name.clone(),
-        package_version: descriptor.package_version.clone(),
-        author: descriptor.author.clone(),
-        provenance: Some(flavor_provenance_to_proto(&descriptor.provenance)),
-    }
-}
-
-fn flavor_provenance_to_proto(provenance: &proxima_core::FlavorProvenance) -> pb::FlavorProvenance {
-    use pb::flavor_provenance::{Builtin, Kind, Local, Marketplace};
-    let kind = match provenance {
-        proxima_core::FlavorProvenance::Builtin => Kind::Builtin(Builtin {}),
-        proxima_core::FlavorProvenance::Marketplace { source_url } => {
-            Kind::Marketplace(Marketplace {
-                source_url: source_url.clone(),
-            })
-        }
-        proxima_core::FlavorProvenance::Local { workspace_path } => Kind::Local(Local {
-            workspace_path: workspace_path.clone(),
-        }),
-    };
-    pb::FlavorProvenance { kind: Some(kind) }
 }
