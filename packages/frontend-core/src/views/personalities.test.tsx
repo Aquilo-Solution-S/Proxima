@@ -58,13 +58,7 @@ const instance = (
   display_name: "Engineer",
   status: "active",
   wake_entries: [wakeEntry()],
-  flavor: {
-    flavor_id: "proxima-code",
-    display_name: "Code",
-    package_version: "0.1.0",
-    author: null,
-    provenance: { kind: "builtin" },
-  },
+  flavor: null,
   ...overrides,
 });
 
@@ -154,13 +148,13 @@ describe("PersonalitiesView", () => {
     expect(screen.getByText("Engineer B")).toBeTruthy();
   });
 
-  it("renders the flavor chip from the typed FlavorDescriptor", async () => {
+  it("renders instance metadata without a FlavorDescriptor lookup", async () => {
     const { client } = mockClient([instance()]);
 
     render(() => <PersonalitiesView client={client} owner={owner} />);
 
     const chip = await screen.findByTestId("personality-flavor-chip");
-    expect(chip.textContent).toContain("Flavor Code");
+    expect(chip.textContent).toContain("Instance");
   });
 
   it("creates a personality through the flavor-type dialog", async () => {

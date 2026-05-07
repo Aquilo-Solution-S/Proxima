@@ -212,29 +212,63 @@ export type CodeChunkV1 = {
  *  the underlying `SettingsError` / `ConfigError` shapes into
  *  frontend-friendly typed payloads.
  */
-export type CommandError = { kind: "storage"; data: {
+export type CommandError = 
+// Settings storage failed.
+{ kind: "storage"; data: {
 	message: string,
-} } | { kind: "duplicate_embedding_model"; data: {
-	model_ref: EmbeddingModelRef,
-} } | { kind: "unknown_embedding_model"; data: {
+} } | 
+// Two `[[embedding.models]]` rows share the same `(vendor, model_id)`.
+{ kind: "duplicate_embedding_model"; data: {
 	model_ref: EmbeddingModelRef,
 } } | 
+// The active embedding model is not registered in `[[embedding.models]]`.
+{ kind: "unknown_embedding_model"; data: {
+	model_ref: EmbeddingModelRef,
+} } | 
+// Config file could not be read.
+{ kind: "config_io"; data: {
+	path: string,
+	message: string,
+} } | 
+// Config file could not be written.
+{ kind: "config_save_io"; data: {
+	path: string,
+	message: string,
+} } | 
+// Config TOML did not parse or contains unknown fields.
+{ kind: "config_parse"; data: {
+	message: string,
+} } | 
+// Config TOML could not be serialized.
+{ kind: "config_serialize"; data: {
+	message: string,
+} } | 
 /**
- *  CHECK constraint violation in PG — signals Rust↔SQL drift.
- *  User can't fix; logs to console and reports as bug.
+ *  CHECK constraint violation in PG signals Rust-to-SQL drift.
+ *  User cannot fix this from settings UI; report as a bug.
  */
 { kind: "invariant"; data: {
 	message: string,
-} } | { kind: "invalid_repo_path"; data: {
+} } | 
+// Repo path does not exist or cannot be canonicalized.
+{ kind: "invalid_repo_path"; data: {
 	path: string,
 	reason: string,
-} } | { kind: "not_a_git_repo"; data: {
+} } | 
+// Repo path is not a Git worktree.
+{ kind: "not_a_git_repo"; data: {
 	path: string,
-} } | { kind: "duplicate_repo"; data: {
+} } | 
+// Repo canonical path is already registered.
+{ kind: "duplicate_repo"; data: {
 	canonical_path: string,
-} } | { kind: "unknown_repo"; data: {
+} } | 
+// Repo id does not belong to a registered repo.
+{ kind: "unknown_repo"; data: {
 	repo_id: string,
-} } | { kind: "invalid_uuid"; data: {
+} } | 
+// UUID string did not parse.
+{ kind: "invalid_uuid"; data: {
 	value: string,
 } };
 
@@ -566,13 +600,17 @@ export type PersonalityInstanceId = string;
 
 export type PersonalityInstanceTs = {
 	owner: Owner,
+	/**
+	 *  Transitional field kept for request compatibility while
+	 *  personality identity moves to `personality_instance_id`.
+	 */
 	personality_type_id: string,
 	personality_instance_id: string,
 	current_root_perspective_memory_id: string,
 	display_name: string,
 	status: string,
 	wake_entries: WakeEntryTs[],
-	flavor: FlavorDescriptorTs,
+	flavor: FlavorDescriptorTs | null,
 };
 
 export type Principal = ({ User: UserId }) & { Group?: never } | ({ Group: GroupId }) & { User?: never };

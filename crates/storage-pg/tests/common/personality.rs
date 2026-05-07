@@ -12,14 +12,14 @@ use proxima_core::auth::NoAuth;
 use proxima_core::engine::Engine;
 use proxima_core::llm::{AnthropicClient, EmbeddingClient, LlmError};
 use proxima_core::personality::{
-    InstantiatePersonalityResponse, MAX_WAKE_CHAIN_DEPTH, PersonalityFlavor, PersonalitySelfDraft,
+    InstantiatePersonalityResponse, PersonalityFlavor, PersonalitySelfDraft,
 };
 use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
 use proxima_core::verbs::query::MemoryStore;
 use proxima_core::{
     AbstractionPayload, FlavorDescriptor, FlavorProvenance, FlavorRegistry,
-    InstantiatePersonalityRequest, LlmCaps, ModelTier, Owner, PerspectivePayload, ProtocolError,
-    SchemaId, SchemaVersion, SourceBatchId, SourceId,
+    InstantiatePersonalityRequest, Owner, PerspectivePayload, ProtocolError, SchemaId,
+    SchemaVersion, SourceBatchId, SourceId,
 };
 use proxima_core::{FactPayload, MemoryId};
 use proxima_storage_pg::PgStorage;
@@ -149,21 +149,14 @@ pub async fn apply_test_schemas(pool: &sqlx::PgPool) -> sqlx::Result<()> {
 /// `TEST_PERSPECTIVE_SCHEMA` Perspectives.
 #[derive(Debug, Clone)]
 pub struct TestPersonality {
-    pub max_depth: u16,
     pub fact_schema: &'static str,
 }
 
 impl TestPersonality {
     pub const fn new() -> Self {
         Self {
-            max_depth: MAX_WAKE_CHAIN_DEPTH,
             fact_schema: TEST_FACT_SCHEMA,
         }
-    }
-
-    pub const fn with_max_depth(mut self, depth: u16) -> Self {
-        self.max_depth = depth;
-        self
     }
 
     pub const fn with_fact_schema(mut self, fact_schema: &'static str) -> Self {
@@ -172,7 +165,6 @@ impl TestPersonality {
     }
 }
 
-#[async_trait]
 impl PersonalityFlavor for TestPersonality {
     fn personality_type_id(&self) -> &'static str {
         TEST_PERSONALITY_TYPE_ID
@@ -206,33 +198,6 @@ impl PersonalityFlavor for TestPersonality {
                 "purpose": purpose,
             }),
         })
-    }
-
-    fn system_prompt(&self) -> &'static str {
-        "test personality system prompt"
-    }
-
-    fn writeable_schemas(&self) -> &'static [&'static str] {
-        &[TEST_PERSPECTIVE_SCHEMA, TEST_ABSTRACTION_SCHEMA]
-    }
-
-    fn writeable_relations(&self) -> &'static [&'static str] {
-        &[]
-    }
-
-    fn tier(&self) -> ModelTier {
-        ModelTier::Fast
-    }
-
-    fn requires(&self) -> LlmCaps {
-        LlmCaps {
-            tool_use: true,
-            ..LlmCaps::none()
-        }
-    }
-
-    fn max_wake_chain_depth(&self) -> u16 {
-        self.max_depth
     }
 }
 

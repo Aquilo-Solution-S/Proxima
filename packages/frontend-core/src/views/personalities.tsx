@@ -160,8 +160,8 @@ export const PersonalitiesView: Component<{
 
   const visibleInstances = createMemo(() =>
     [...instances()].sort((a, b) =>
-      `${a.flavor.display_name}:${a.display_name}`.localeCompare(
-        `${b.flavor.display_name}:${b.display_name}`,
+      `${a.flavor?.display_name ?? ""}:${a.display_name}`.localeCompare(
+        `${b.flavor?.display_name ?? ""}:${b.display_name}`,
       ),
     ),
   );
@@ -411,9 +411,8 @@ const PersonalityCard: Component<{
           <strong>{props.instance.display_name}</strong>
           <div class="personality-meta">
             <span class="personality-flavor-chip" data-testid="personality-flavor-chip">
-              Flavor {props.instance.flavor.display_name}
+              {props.instance.flavor?.display_name ?? "Instance"}
             </span>
-            <span>{props.instance.personality_type_id}</span>
             <Mono>{shortId(props.instance.personality_instance_id)}</Mono>
           </div>
         </div>

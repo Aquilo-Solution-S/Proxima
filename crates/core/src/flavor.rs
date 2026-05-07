@@ -11,6 +11,7 @@ use crate::{
     SchemaVersion, core_relation_descriptors,
 };
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 /// Structured per-flavor metadata. Populated by `proxima_flavor!` at
@@ -61,6 +62,9 @@ pub struct FlavorRegistry {
     mcp_tools: Vec<McpToolDescriptor>,
     personalities: Vec<Arc<dyn PersonalityFlavor>>,
     flavors: Vec<FlavorDescriptor>,
+    /// Bundled recipe paths registered by `proxima_flavor! { recipes = [ ... ] }`.
+    /// Slug shape is `<flavor_id>/<filename_without_ext>`.
+    bundled_recipes: Vec<(String, PathBuf)>,
 }
 
 impl Default for FlavorRegistry {
@@ -72,6 +76,7 @@ impl Default for FlavorRegistry {
             mcp_tools: Vec::new(),
             personalities: Vec::new(),
             flavors: Vec::new(),
+            bundled_recipes: Vec::new(),
         }
     }
 }
@@ -198,6 +203,20 @@ impl FlavorRegistry {
         self.personalities.push(Arc::new(personality));
     }
 
+    /// Record a bundled recipe under a unique slug. Slug shape is
+    /// `<flavor_id>/<filename_without_ext>`. Panics on duplicate slug
+    /// to catch flavor-author mistakes at registration time.
+    pub fn add_bundled_recipe(&mut self, slug: String, path: PathBuf) {
+        assert!(
+            !self
+                .bundled_recipes
+                .iter()
+                .any(|(existing, _)| existing == &slug),
+            "duplicate bundled recipe slug {slug:?}"
+        );
+        self.bundled_recipes.push((slug, path));
+    }
+
     /// Register a `FlavorDescriptor`. Called once per
     /// `proxima_flavor!` invocation; freeze panics if the same
     /// `flavor_id` is added twice.
@@ -268,7 +287,6 @@ impl FlavorRegistry {
                 let _ = info;
             }
         }
-        self.assert_personality_guards();
         self.assert_flavor_descriptors();
         let mut seen_tools = std::collections::HashSet::new();
         for tool in &self.mcp_tools {
@@ -285,6 +303,7 @@ impl FlavorRegistry {
             self.mcp_tools,
             self.personalities,
             self.flavors,
+            self.bundled_recipes,
         )
     }
 
@@ -314,43 +333,6 @@ impl FlavorRegistry {
                 "PersonalityFlavor {type_id} has no matching FlavorDescriptor — \
                  register the flavor via `proxima_flavor!` or `FlavorRegistry::add_flavor`",
             );
-        }
-    }
-
-    fn assert_personality_guards(&self) {
-        let schema_ids: std::collections::HashSet<&str> =
-            self.schemas.iter().map(|s| s.schema_id.as_str()).collect();
-        let relation_ids: std::collections::HashSet<&str> =
-            self.relations.iter().map(|r| r.relation.as_str()).collect();
-
-        for personality in &self.personalities {
-            let type_id = personality.personality_type_id();
-            let self_schema = personality.self_schema();
-            assert!(
-                !personality
-                    .writeable_schemas()
-                    .iter()
-                    .any(|s| *s == self_schema.as_str()),
-                "PersonalityFlavor {type_id} lists self_schema {} in writeable_schemas",
-                self_schema.as_str()
-            );
-            for schema in personality.writeable_schemas() {
-                assert!(
-                    schema_ids.contains(schema),
-                    "PersonalityFlavor {type_id} references unregistered writeable schema {schema}"
-                );
-            }
-            for relation in personality.writeable_relations() {
-                assert!(
-                    *relation != crate::CORE_DERIVED_FROM_RELATION
-                        && *relation != crate::CORE_SUPERSEDES_RELATION,
-                    "PersonalityFlavor {type_id} cannot author substrate relation {relation}"
-                );
-                assert!(
-                    relation_ids.contains(relation),
-                    "PersonalityFlavor {type_id} references unregistered writeable relation {relation}"
-                );
-            }
         }
     }
 }
@@ -439,6 +421,23 @@ mod mcp_tool_registry_tests {
         assert!(result.is_err(), "must panic on prefix mismatch");
     }
 
+    #[test]
+    fn bundled_recipe_round_trip_through_freeze() {
+        let mut registry = FlavorRegistry::new();
+        registry.add_flavor(FlavorDescriptor {
+            flavor_id: "test-flavor".to_string(),
+            display_name: "Test".to_string(),
+            package_version: "0.0.0".to_string(),
+            author: None,
+            provenance: FlavorProvenance::Builtin,
+        });
+        let path = PathBuf::from("/tmp/test-flavor/recipes/foo.yaml");
+        registry.add_bundled_recipe("test-flavor/foo".to_string(), path.clone());
+        let frozen = registry.freeze();
+        assert_eq!(frozen.bundled_recipe_path("test-flavor/foo"), Some(path));
+        assert_eq!(frozen.bundled_recipe_path("test-flavor/missing"), None);
+    }
+
     #[derive(Debug, serde::Serialize, serde::Deserialize)]
     struct SelfPayload {
         display_name: String,
@@ -468,12 +467,8 @@ mod mcp_tool_registry_tests {
     }
 
     #[derive(Debug)]
-    struct DemoPersonality {
-        write_schemas: &'static [&'static str],
-        write_relations: &'static [&'static str],
-    }
+    struct DemoPersonality;
 
-    #[async_trait::async_trait]
     impl PersonalityFlavor for DemoPersonality {
         fn personality_type_id(&self) -> &'static str {
             "proxima-test/personality"
@@ -495,24 +490,9 @@ mod mcp_tool_registry_tests {
                 typed_payload: serde_json::json!({ "display_name": "Demo" }),
             })
         }
-
-        fn system_prompt(&self) -> &'static str {
-            "demo"
-        }
-
-        fn writeable_schemas(&self) -> &'static [&'static str] {
-            self.write_schemas
-        }
-
-        fn writeable_relations(&self) -> &'static [&'static str] {
-            self.write_relations
-        }
     }
 
-    fn registry_with_personality(
-        write_schemas: &'static [&'static str],
-        write_relations: &'static [&'static str],
-    ) -> FlavorRegistry {
+    fn registry_with_personality() -> FlavorRegistry {
         let mut registry = FlavorRegistry::new();
         registry.add_flavor(FlavorDescriptor {
             flavor_id: "proxima-test".to_string(),
@@ -523,77 +503,17 @@ mod mcp_tool_registry_tests {
         });
         registry.add_perspective_schema::<SelfPayload>();
         registry.add_perspective_schema::<OutPayload>();
-        registry.add_personality(DemoPersonality {
-            write_schemas,
-            write_relations,
-        });
+        registry.add_personality(DemoPersonality);
         registry
     }
 
     #[test]
     fn registers_and_lists_personalities() {
-        let frozen = registry_with_personality(&["proxima-test/out"], &[]).freeze();
+        let frozen = registry_with_personality().freeze();
         assert_eq!(frozen.list_personalities().len(), 1);
         assert_eq!(
             frozen.list_personalities()[0].personality_type_id(),
             "proxima-test/personality"
         );
-    }
-
-    #[test]
-    fn freeze_rejects_self_schema_as_writeable_schema() {
-        let registry = registry_with_personality(&["proxima-test/self"], &[]);
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| registry.freeze()));
-        let err = result.expect_err("freeze must panic on self-schema writes");
-        let msg = panic_msg(&err);
-        assert!(
-            msg.contains("self_schema") && msg.contains("proxima-test/self"),
-            "panic must name self-schema guard: {msg}"
-        );
-    }
-
-    #[test]
-    fn freeze_rejects_unregistered_writeable_schema() {
-        let registry = registry_with_personality(&["proxima-test/missing"], &[]);
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| registry.freeze()));
-        let err = result.expect_err("freeze must panic on missing schema");
-        let msg = panic_msg(&err);
-        assert!(
-            msg.contains("unregistered writeable schema") && msg.contains("proxima-test/missing"),
-            "panic must name missing schema: {msg}"
-        );
-    }
-
-    #[test]
-    fn freeze_rejects_substrate_writeable_relation() {
-        let registry =
-            registry_with_personality(&["proxima-test/out"], &[crate::CORE_DERIVED_FROM_RELATION]);
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| registry.freeze()));
-        let err = result.expect_err("freeze must panic on substrate relation");
-        let msg = panic_msg(&err);
-        assert!(
-            msg.contains("cannot author substrate relation")
-                && msg.contains(crate::CORE_DERIVED_FROM_RELATION),
-            "panic must name substrate relation: {msg}"
-        );
-    }
-
-    #[test]
-    fn freeze_rejects_unregistered_writeable_relation() {
-        let registry = registry_with_personality(&["proxima-test/out"], &["proxima-test/missing"]);
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| registry.freeze()));
-        let err = result.expect_err("freeze must panic on missing relation");
-        let msg = panic_msg(&err);
-        assert!(
-            msg.contains("unregistered writeable relation") && msg.contains("proxima-test/missing"),
-            "panic must name missing relation: {msg}"
-        );
-    }
-
-    fn panic_msg(err: &Box<dyn std::any::Any + Send>) -> &str {
-        err.downcast_ref::<String>()
-            .map(String::as_str)
-            .or_else(|| err.downcast_ref::<&'static str>().copied())
-            .unwrap_or("")
     }
 }

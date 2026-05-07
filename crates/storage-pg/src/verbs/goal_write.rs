@@ -296,17 +296,7 @@ async fn insert_goal_row(
 
     let state_str = goal_state_str(draft.state);
 
-    let (
-        authorship_kind,
-        authorship_origin,
-        authorship_operator_id,
-        authorship_tool_id,
-        operator_kind,
-        model_id,
-        prompt_version,
-        personality_type_id,
-        personality_instance_id,
-    ) = authorship_columns(&draft.authorship);
+    let authorship = authorship_columns(&draft.authorship);
 
     sqlx::query(
         "INSERT INTO proxima_core.goals \
@@ -328,15 +318,15 @@ async fn insert_goal_row(
     .bind(&draft.payload)
     .bind(state_str)
     .bind(supersedes)
-    .bind(authorship_kind)
-    .bind(authorship_origin)
-    .bind(authorship_operator_id)
-    .bind(authorship_tool_id)
-    .bind(operator_kind)
-    .bind(model_id)
-    .bind(prompt_version)
-    .bind(personality_type_id)
-    .bind(personality_instance_id)
+    .bind(authorship.authorship_kind)
+    .bind(authorship.authorship_origin)
+    .bind(authorship.authorship_operator_id)
+    .bind(authorship.authorship_tool_id)
+    .bind(authorship.operator_kind)
+    .bind(authorship.model_id)
+    .bind(authorship.prompt_version)
+    .bind(authorship.personality_type_id)
+    .bind(authorship.personality_instance_id)
     .bind(&draft.request_id)
     .execute(tx)
     .await

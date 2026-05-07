@@ -75,15 +75,11 @@ pub(super) async fn emit_personality_memory(
         .ok_or_else(|| ProtocolError::internal("append_personality_memories returned no id"))
 }
 
-/// Resolve the model tier the personality is running at by looking it
-/// up in the registry. Substrate tools don't carry the personality
-/// reference directly, so we walk the type_id once.
-fn model_tier_from_palette(ctx: &PersonalityToolContext<'_>) -> crate::ModelTier {
-    ctx.engine
-        .registry()
-        .list_personalities()
-        .iter()
-        .find(|p| p.personality_type_id() == ctx.type_id)
-        .map(|p| p.tier())
-        .unwrap_or(crate::ModelTier::Standard)
+/// Resolve the model tier for stamping provenance on memories emitted
+/// from a substrate tool. v1 returns `Standard` unconditionally because
+/// no wakes fire yet. Phase 1d sources this from the live invocation
+/// context so the stamp matches the model that executed the recipe.
+fn model_tier_from_palette(_ctx: &PersonalityToolContext<'_>) -> crate::ModelTier {
+    // TODO(phase-1d): read tier from the active WakeInvocation context.
+    crate::ModelTier::Standard
 }

@@ -54,7 +54,6 @@ fn self_draft(display_name: &str) -> PersonalitySelfDraft {
         typed_payload: serde_json::json!({
             "display_name": display_name,
             "purpose": "exercise wake storage",
-            "system_prompt": "test system prompt",
         }),
     }
 }
@@ -182,10 +181,7 @@ async fn personality_wake_schema_enforces_root_sidecar_and_promille() {
         )
         .fetch_all(pg.pool())
         .await?;
-        assert_eq!(
-            columns,
-            vec!["memory_id", "display_name", "purpose", "system_prompt"]
-        );
+        assert_eq!(columns, vec!["memory_id", "display_name", "purpose"]);
 
         let entry = sample_entry(response.instance_id, "proxima-test/fact-v1");
         let err = sqlx::query(

@@ -348,10 +348,8 @@ message PersonalityInstance {
   string current_root_perspective_memory_id = 4;  // MemoryId UUID
   string display_name = 5;
   string status = 6;  // active | needs_repair | tombstoned
-  // Structured flavor metadata for the prefix of `personality_type_id`.
-  // Always populated; the engine looks the descriptor up in its frozen
-  // registry and the freeze-time prefix cross-check guarantees it
-  // resolves for any registered personality.
+  // Deprecated transitional metadata. Instance-keyed personalities do
+  // not require a flavor/type lookup and servers may omit this field.
   FlavorDescriptor flavor = 8;
   repeated WakeEntry wake_entries = 7;
 }

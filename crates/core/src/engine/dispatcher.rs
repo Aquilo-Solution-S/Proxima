@@ -91,7 +91,7 @@ impl Engine {
                 self_schema.as_str()
             ))
         })?;
-        let mut self_draft = personality
+        let self_draft = personality
             .default_self_payload(&req.owner, req.payload_overrides.as_ref())
             .map_err(|e| ProtocolError::internal(format!("default_self_payload: {}", e.message)))?;
         self.registry
@@ -102,10 +102,6 @@ impl Engine {
                 &self_draft.typed_payload,
             )
             .map_err(|e| ProtocolError::internal(format!("invalid self payload: {e}")))?;
-        if let Some(obj) = self_draft.typed_payload.as_object_mut() {
-            obj.entry("system_prompt".to_string())
-                .or_insert_with(|| serde_json::Value::String(personality.system_prompt().into()));
-        }
 
         self.storage
             .instantiate_personality(&req, &self_draft, self_sidecar)
