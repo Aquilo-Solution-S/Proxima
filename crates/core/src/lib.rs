@@ -18,6 +18,7 @@ pub mod relation;
 pub mod secrets;
 pub mod storage;
 pub mod verbs;
+pub mod wake;
 
 pub use auth::*;
 pub use canonical_json::canonical_json;
