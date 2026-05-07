@@ -1,7 +1,14 @@
 use std::net::SocketAddr;
+use std::sync::Arc;
 
+use axum::extract::{Request, State};
+use axum::http::StatusCode;
+use axum::middleware::{self, FromFnLayer, Next};
+use axum::response::{IntoResponse, Response};
 use http::HeaderMap;
-use http::header::ORIGIN;
+use http::header::{AUTHORIZATION, ORIGIN};
+use proxima_core::wake::token_store::WakeTokenStore;
+use uuid::Uuid;
 
 use crate::McpServerError;
 
@@ -84,6 +91,60 @@ pub fn assert_loopback(addr: &SocketAddr) -> Result<(), McpServerError> {
         return Err(McpServerError::NonLoopbackBind(addr.ip()));
     }
     Ok(())
+}
+
+/// Concrete return type for [`wake_token_auth_layer`]. The extractor
+/// tuple `(State, Request)` is locked here so the public signature
+/// stays a single-line `WakeTokenAuthLayer` instead of a six-line
+/// `FromFnLayer<...>` (per `clippy::type_complexity`).
+pub type WakeTokenAuthLayer = FromFnLayer<
+    fn(
+        State<Arc<WakeTokenStore>>,
+        Request,
+        Next,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Response> + Send>>,
+    Arc<WakeTokenStore>,
+    (State<Arc<WakeTokenStore>>, Request),
+>;
+
+/// Bearer-token middleware that resolves `Authorization: Bearer <uuid>`
+/// against the `WakeTokenStore` and injects the resolved
+/// `WakeTokenContext` into request extensions. Missing or unknown tokens
+/// short-circuit with HTTP 401.
+///
+/// Returns a [`WakeTokenAuthLayer`] (alias of [`FromFnLayer`]) so
+/// callers apply it directly with [`axum::Router::layer`].
+pub fn wake_token_auth_layer(store: Arc<WakeTokenStore>) -> WakeTokenAuthLayer {
+    fn dispatch(
+        state: State<Arc<WakeTokenStore>>,
+        request: Request,
+        next: Next,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Response> + Send>> {
+        Box::pin(wake_token_auth(state, request, next))
+    }
+    middleware::from_fn_with_state(store, dispatch as fn(_, _, _) -> _)
+}
+
+async fn wake_token_auth(
+    State(store): State<Arc<WakeTokenStore>>,
+    mut request: Request,
+    next: Next,
+) -> Response {
+    let Some(token) = extract_bearer(&request) else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    let Some(ctx) = store.resolve(token).await else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    request.extensions_mut().insert(ctx);
+    next.run(request).await
+}
+
+fn extract_bearer(request: &Request) -> Option<Uuid> {
+    let header_value = request.headers().get(AUTHORIZATION)?;
+    let raw = header_value.to_str().ok()?;
+    let token = raw.strip_prefix("Bearer ")?.trim();
+    Uuid::parse_str(token).ok()
 }
 
 fn parse_pattern(value: &'static str) -> OriginPattern {

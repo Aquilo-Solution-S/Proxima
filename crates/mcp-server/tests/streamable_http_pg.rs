@@ -1,5 +1,8 @@
 use std::net::{Ipv4Addr, SocketAddr};
+use std::sync::Arc;
+use std::time::Duration;
 
+use proxima_core::wake::token_store::{WakeTokenContext, WakeTokenStore};
 use proxima_core::{FlavorRegistry, OrgId, Owner, Principal, UserId};
 use proxima_mcp_server::{DevMcpServer, default_allowlist, serve_streamable_http};
 use serde_json::json;
@@ -16,22 +19,29 @@ async fn streamable_http_initialize_list_and_remember() -> Result<(), Box<dyn st
     let mut registry = FlavorRegistry::new();
     proxima_mcp_substrate::register(&mut registry);
     let server = DevMcpServer::from_database_url(&database_url, nil_owner(), registry).await?;
+    let store = Arc::new(WakeTokenStore::new(Duration::from_mins(1)));
+    let token = store
+        .mint(make_token_ctx(vec!["proxima-mcp/proxima_remember".into()]))
+        .await;
     let (handle, addr) = serve_streamable_http(
         SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0),
         server,
         default_allowlist(),
+        store,
     )
     .await?;
 
     let client = reqwest::Client::new();
     let url = format!("http://{addr}/mcp");
-    let session_id = initialize(&client, &url).await?;
-    initialized(&client, &url, &session_id).await?;
+    let bearer = format!("Bearer {token}");
+    let session_id = initialize(&client, &url, &bearer).await?;
+    initialized(&client, &url, &session_id, &bearer).await?;
 
     let list = post_rpc(
         &client,
         &url,
         Some(&session_id),
+        &bearer,
         json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}),
     )
     .await?;
@@ -50,6 +60,7 @@ async fn streamable_http_initialize_list_and_remember() -> Result<(), Box<dyn st
         &client,
         &url,
         Some(&session_id),
+        &bearer,
         json!({
             "jsonrpc": "2.0",
             "id": 3,
@@ -86,10 +97,12 @@ async fn missing_origin_returns_403() -> Result<(), Box<dyn std::error::Error>> 
     let mut registry = FlavorRegistry::new();
     proxima_mcp_substrate::register(&mut registry);
     let server = DevMcpServer::from_database_url(&database_url, nil_owner(), registry).await?;
+    let store = Arc::new(WakeTokenStore::new(Duration::from_mins(1)));
     let (handle, addr) = serve_streamable_http(
         SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0),
         server,
         default_allowlist(),
+        store,
     )
     .await?;
 
@@ -118,7 +131,8 @@ async fn non_loopback_bind_refused_immediately() -> Result<(), Box<dyn std::erro
     proxima_mcp_substrate::register(&mut registry);
     let server = DevMcpServer::from_database_url(&database_url, nil_owner(), registry).await?;
     let bind: SocketAddr = "0.0.0.0:0".parse()?;
-    let err = serve_streamable_http(bind, server, default_allowlist())
+    let store = Arc::new(WakeTokenStore::new(Duration::from_mins(1)));
+    let err = serve_streamable_http(bind, server, default_allowlist(), store)
         .await
         .expect_err("must refuse non-loopback");
     assert!(matches!(
@@ -136,13 +150,27 @@ fn nil_owner() -> Owner {
     }
 }
 
+fn make_token_ctx(palette: Vec<String>) -> WakeTokenContext {
+    WakeTokenContext {
+        invocation_id: uuid::Uuid::new_v4(),
+        personality_instance_id: uuid::Uuid::new_v4(),
+        wake_entry_id: uuid::Uuid::new_v4(),
+        owner: nil_owner(),
+        palette,
+        model_id: "anthropic/claude-3-5-sonnet".into(),
+        max_rounds: 4,
+    }
+}
+
 async fn initialize(
     client: &reqwest::Client,
     url: &str,
+    bearer: &str,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let response = client
         .post(url)
         .header("Origin", "http://localhost")
+        .header("Authorization", bearer)
         .header("MCP-Protocol-Version", "2025-03-26")
         .header("Content-Type", "application/json")
         .header("Accept", "application/json, text/event-stream")
@@ -173,10 +201,12 @@ async fn initialized(
     client: &reqwest::Client,
     url: &str,
     session_id: &str,
+    bearer: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let response = client
         .post(url)
         .header("Origin", "http://localhost")
+        .header("Authorization", bearer)
         .header("MCP-Protocol-Version", "2025-03-26")
         .header("Mcp-Session-Id", session_id)
         .header("Content-Type", "application/json")
@@ -192,11 +222,13 @@ async fn post_rpc(
     client: &reqwest::Client,
     url: &str,
     session_id: Option<&str>,
+    bearer: &str,
     body: serde_json::Value,
 ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
     let mut request = client
         .post(url)
         .header("Origin", "http://localhost")
+        .header("Authorization", bearer)
         .header("MCP-Protocol-Version", "2025-03-26")
         .header("Content-Type", "application/json")
         .header("Accept", "application/json, text/event-stream")

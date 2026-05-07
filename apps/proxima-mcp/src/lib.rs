@@ -69,7 +69,14 @@ pub async fn run_with_handle(
         config.owner,
         std::sync::Arc::new(registry.freeze()),
     );
-    Ok(serve_streamable_http(config.bind, server, default_allowlist()).await?)
+    // TODO(Task 5): replace this placeholder with the engine's
+    // dispatcher store. The headless `proxima-mcp` binary doesn't yet
+    // run a wake dispatcher, so the resulting service will reject every
+    // request with 401 until that wiring lands.
+    let wake_token_store = std::sync::Arc::new(
+        proxima_core::wake::token_store::WakeTokenStore::new(std::time::Duration::from_secs(300)),
+    );
+    Ok(serve_streamable_http(config.bind, server, default_allowlist(), wake_token_store).await?)
 }
 
 #[derive(Debug, thiserror::Error)]
