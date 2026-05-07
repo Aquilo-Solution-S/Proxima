@@ -59,6 +59,11 @@ service Engine {
 
   // List runtime personality instances for an owner.
   rpc ListPersonalityInstances (ListPersonalityInstancesRequest) returns (ListPersonalityInstancesResponse);
+
+  // Tombstone one runtime personality instance: remove it from default
+  // listings and dispatcher selection without deleting authored memories
+  // or self-Perspective rows. Idempotent on natural key.
+  rpc TombstonePersonality (TombstonePersonalityRequest) returns (TombstonePersonalityResponse);
 }
 
 // ---------------------------------------------------------------------------
@@ -268,6 +273,10 @@ message SetWakeConfigResponse {
 message ListPersonalityInstancesRequest {
   Owner owner = 1;
   optional string personality_type_id = 2;
+  // When false (default), tombstoned instances are filtered out.
+  // Provisioning passes `true` so a previously tombstoned default
+  // personality is not silently recreated.
+  bool include_tombstoned = 3;
 }
 
 message ListPersonalityInstancesResponse {
@@ -280,13 +289,25 @@ message PersonalityInstance {
   string personality_instance_id = 3;  // UUID
   string current_self_perspective_memory_id = 4;  // MemoryId UUID
   string display_name = 5;
-  string status = 6;  // active | needs_repair
+  string status = 6;  // active | needs_repair | tombstoned
   repeated WakeFilter wake_filters = 7;
   // Structured flavor metadata for the prefix of `personality_type_id`.
   // Always populated; the engine looks the descriptor up in its frozen
   // registry and the freeze-time prefix cross-check guarantees it
   // resolves for any registered personality.
   FlavorDescriptor flavor = 8;
+}
+
+message TombstonePersonalityRequest {
+  Owner owner = 1;
+  string personality_type_id = 2;
+  string personality_instance_id = 3;  // UUID
+}
+
+message TombstonePersonalityResponse {
+  string status = 1;  // always "tombstoned"
+  // True iff the row was already tombstoned before this call.
+  bool idempotent_replay = 2;
 }
 
 message WakeFilter {

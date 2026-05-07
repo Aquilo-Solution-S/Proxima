@@ -13,6 +13,7 @@ export const commands = {
 	listPersonalityInstances: (req: ListPersonalityInstancesTs) => typedError<PersonalityInstanceTs[], ProtocolError>(__TAURI_INVOKE("list_personality_instances", { req })),
 	instantiatePersonality: (req: InstantiatePersonalityTs) => typedError<InstantiatePersonalityOutcomeTs, ProtocolError>(__TAURI_INVOKE("instantiate_personality", { req })),
 	setWakeConfig: (req: SetWakeConfigTs) => typedError<SetWakeConfigOutcomeTs, ProtocolError>(__TAURI_INVOKE("set_wake_config", { req })),
+	tombstonePersonality: (req: TombstonePersonalityTs) => typedError<TombstonePersonalityOutcomeTs, ProtocolError>(__TAURI_INVOKE("tombstone_personality", { req })),
 	/**
 	 *  Subscribe — engine returns a `Stream<Item = ChangeEvent>`; we
 	 *  spawn a forwarder onto the caller-supplied `Channel<ChangeEvent>`
@@ -443,6 +444,7 @@ export type InstantiatePersonalityTs = {
 export type ListPersonalityInstancesTs = {
 	owner: Owner,
 	personality_type_id: string | null,
+	include_tombstoned?: boolean,
 };
 
 /**
@@ -714,6 +716,17 @@ export type TierBindings = {
 	fast?: ModelRef | null,
 	standard?: ModelRef | null,
 	deep?: ModelRef | null,
+};
+
+export type TombstonePersonalityOutcomeTs = {
+	status: string,
+	idempotent_replay: boolean,
+};
+
+export type TombstonePersonalityTs = {
+	owner: Owner,
+	personality_type_id: string,
+	personality_instance_id: string,
 };
 
 export type ToolId = string;

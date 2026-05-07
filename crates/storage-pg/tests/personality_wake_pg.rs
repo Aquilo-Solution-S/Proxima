@@ -127,7 +127,7 @@ async fn personality_instance_config_cursor_and_invocation_round_trip() {
         let instance = PersonalityRef::new(req.personality_type_id.clone(), response.instance_id);
 
         let listed = pg
-            .list_personality_instances(&owner, Some("proxima-test/personality-v1"))
+            .list_personality_instances(&owner, Some("proxima-test/personality-v1"), false)
             .await?;
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].display_name, "Engineer A");
@@ -158,13 +158,13 @@ async fn personality_instance_config_cursor_and_invocation_round_trip() {
             .await?;
         assert_eq!(set.status, "active");
         let listed = pg
-            .list_personality_instances(&owner, Some("proxima-test/personality-v1"))
+            .list_personality_instances(&owner, Some("proxima-test/personality-v1"), false)
             .await?;
         assert_eq!(listed[0].wake_filters, updated_filters);
 
         pg.mark_wake_config_needs_repair(&owner, &instance).await?;
         let listed = pg
-            .list_personality_instances(&owner, Some("proxima-test/personality-v1"))
+            .list_personality_instances(&owner, Some("proxima-test/personality-v1"), false)
             .await?;
         assert_eq!(listed[0].status, "needs_repair");
 

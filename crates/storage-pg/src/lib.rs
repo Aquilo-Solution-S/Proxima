@@ -15,7 +15,8 @@ use proxima_core::personality::{
     AbstractionRow, ChangeEventForWake, InstantiatePersonalityRequest,
     InstantiatePersonalityResponse, MemorySnapshot, PersonalityInstanceRow, PersonalityRef,
     PersonalityWriteOutcome, PersonalityWriteRequest, SetWakeConfigRequest, SetWakeConfigResponse,
-    SidecarSpec, WakeConfigRow, WakeInvocationStatus,
+    SidecarSpec, TombstonePersonalityRequest, TombstonePersonalityResponse, WakeConfigRow,
+    WakeInvocationStatus,
 };
 use proxima_core::storage::WakeLockGuard;
 use proxima_core::verbs::close_batch::CloseBatchOutcome;
@@ -226,8 +227,22 @@ impl Storage for PgStorage {
         &self,
         owner: &Owner,
         personality_type_id: Option<&str>,
+        include_tombstoned: bool,
     ) -> Result<Vec<PersonalityInstanceRow>, StorageError> {
-        verbs::consolidate::list_personality_instances(&self.pool, owner, personality_type_id).await
+        verbs::consolidate::list_personality_instances(
+            &self.pool,
+            owner,
+            personality_type_id,
+            include_tombstoned,
+        )
+        .await
+    }
+
+    async fn tombstone_personality(
+        &self,
+        req: &TombstonePersonalityRequest,
+    ) -> Result<TombstonePersonalityResponse, StorageError> {
+        verbs::consolidate::tombstone_personality(&self.pool, req).await
     }
 
     async fn instantiate_personality(

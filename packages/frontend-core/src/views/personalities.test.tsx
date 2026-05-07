@@ -1,15 +1,21 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@solidjs/testing-library";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { sentinelOwner } from "../graph-store";
+import {
+  clearRegistriesForTests,
+  registerPayloadRenderer,
+  registerPersonalityType,
+} from "../registry";
 import type {
   InstantiatePersonalityOutcomeTs,
   Owner,
   PersonalityInstanceTs,
   SetWakeConfigOutcomeTs,
+  TombstonePersonalityOutcomeTs,
   WakeFilterTs,
 } from "../bindings";
 import {
-  EngineerInstancesPanel,
+  PersonalitiesView,
   type PersonalityCommandClient,
 } from "./personalities";
 
@@ -24,6 +30,14 @@ const onMemory = (probability = 1): WakeFilterTs => ({
   schema_id: "proxima-code/commit-summary-v1",
   authored_by: { kind: "any" },
   probability,
+});
+
+const onMemorySchema = (schemaId: string): WakeFilterTs => ({
+  kind: "on_memory",
+  version: 1,
+  schema_id: schemaId,
+  authored_by: { kind: "any" },
+  probability: 1,
 });
 
 const instance = (
@@ -63,6 +77,12 @@ const mockClient = (
   const setWakeConfig = vi.fn((_) =>
     ok<SetWakeConfigOutcomeTs>({ status: "active" }),
   );
+  const tombstonePersonality = vi.fn((_) =>
+    ok<TombstonePersonalityOutcomeTs>({
+      status: "tombstoned",
+      idempotent_replay: false,
+    }),
+  );
 
   return {
     client: {
@@ -70,17 +90,43 @@ const mockClient = (
       listPersonalityInstances,
       instantiatePersonality,
       setWakeConfig,
+      tombstonePersonality,
     } satisfies PersonalityCommandClient,
     provisionOwner,
     listPersonalityInstances,
     instantiatePersonality,
     setWakeConfig,
+    tombstonePersonality,
   };
 };
 
-describe("EngineerInstancesPanel", () => {
+describe("PersonalitiesView", () => {
+  beforeEach(() => {
+    registerPayloadRenderer({
+      schemaId: "proxima-code/commit-summary-v1",
+      schemaVersion: 1,
+      flavor: "proxima-code",
+      renderer: { render: () => null },
+    });
+    registerPayloadRenderer({
+      schemaId: "proxima-code/code-chunk-v1",
+      schemaVersion: 1,
+      flavor: "proxima-code",
+      renderer: { render: () => null },
+    });
+    registerPersonalityType({
+      typeId: "proxima-code/engineer-v1",
+      flavor: "proxima-code",
+      label: "Engineer",
+      purpose: "Develop perspectives on code changes.",
+      defaultDisplayName: "Engineer",
+      defaultPurpose: "Develop perspectives on code changes",
+    });
+  });
+
   afterEach(() => {
     cleanup();
+    clearRegistriesForTests();
     vi.restoreAllMocks();
   });
 
@@ -93,7 +139,7 @@ describe("EngineerInstancesPanel", () => {
       }),
     ]);
 
-    render(() => <EngineerInstancesPanel client={client} owner={owner} />);
+    render(() => <PersonalitiesView client={client} owner={owner} />);
 
     expect(await screen.findAllByTestId("personality-card")).toHaveLength(2);
     expect(screen.getByText("Engineer A")).toBeTruthy();
@@ -113,34 +159,39 @@ describe("EngineerInstancesPanel", () => {
       }),
     ]);
 
-    render(() => <EngineerInstancesPanel client={client} owner={owner} />);
+    render(() => <PersonalitiesView client={client} owner={owner} />);
 
     const chip = await screen.findByTestId("personality-flavor-chip");
     expect(chip.textContent).toContain("Flavor Code");
   });
 
-  it("posts the create-engineer request and adds the new instance", async () => {
+  it("creates a personality through the flavor-type dialog", async () => {
     const alice = instance({
       display_name: "Alice",
       personality_instance_id: "018f0000-0000-7000-8000-000000000003",
     });
     const { client, instantiatePersonality } = mockClient([], [alice]);
 
-    render(() => <EngineerInstancesPanel client={client} owner={owner} />);
+    render(() => <PersonalitiesView client={client} owner={owner} />);
 
-    const createButton = await screen.findByRole("button", {
-      name: "Create another Engineer",
+    const openButton = await screen.findByRole("button", {
+      name: "Create new Personality",
     });
     await waitFor(() => {
-      expect(createButton.hasAttribute("disabled")).toBe(false);
+      expect(openButton.hasAttribute("disabled")).toBe(false);
     });
+    fireEvent.click(openButton);
+
+    expect(await screen.findByRole("dialog")).toBeTruthy();
+    expect(screen.getByText("Engineer")).toBeTruthy();
+    expect(screen.getByText("proxima-code")).toBeTruthy();
     fireEvent.input(screen.getByLabelText("Display name"), {
       target: { value: "Alice" },
     });
     fireEvent.input(screen.getByLabelText("Purpose"), {
       target: { value: "Test" },
     });
-    fireEvent.click(createButton);
+    fireEvent.click(screen.getByRole("button", { name: "Create" }));
 
     await waitFor(() => {
       expect(instantiatePersonality).toHaveBeenCalledWith({
@@ -160,12 +211,16 @@ describe("EngineerInstancesPanel", () => {
     const updated = instance({ wake_filters: [onMemory(0.5)] });
     const { client, setWakeConfig } = mockClient([row], [updated]);
 
-    render(() => <EngineerInstancesPanel client={client} owner={owner} />);
+    render(() => <PersonalitiesView client={client} owner={owner} />);
 
     await screen.findByText("Engineer");
     fireEvent.click(screen.getByRole("button", { name: "Edit wake config" }));
-    fireEvent.input(screen.getByLabelText("Probability"), {
-      target: { value: "0.5" },
+    const probability = screen.getByLabelText("Probability (promille)");
+    expect(probability.getAttribute("min")).toBe("0");
+    expect(probability.getAttribute("max")).toBe("1000");
+    expect(probability.getAttribute("step")).toBe("1");
+    fireEvent.input(probability, {
+      target: { value: "500" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
@@ -179,6 +234,90 @@ describe("EngineerInstancesPanel", () => {
     });
   });
 
+  it("edits OnMemory schema through a registry-backed select", async () => {
+    const row = instance();
+    const updated = instance({
+      wake_filters: [onMemorySchema("proxima-code/code-chunk-v1")],
+    });
+    const { client, setWakeConfig } = mockClient([row], [updated]);
+
+    render(() => <PersonalitiesView client={client} owner={owner} />);
+
+    await screen.findByText("Engineer");
+    fireEvent.click(screen.getByRole("button", { name: "Edit wake config" }));
+
+    const schema = screen.getByLabelText("Schema");
+    expect(schema.tagName).toBe("SELECT");
+    fireEvent.change(schema, {
+      target: { value: "proxima-code/code-chunk-v1" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => {
+      expect(setWakeConfig).toHaveBeenCalledWith({
+        owner,
+        personality_type_id: row.personality_type_id,
+        personality_instance_id: row.personality_instance_id,
+        wake_filters: [onMemorySchema("proxima-code/code-chunk-v1")],
+      });
+    });
+  });
+
+  it("tombstones an engineer after inline confirmation and removes it locally", async () => {
+    const row = instance({ display_name: "Alice" });
+    const { client, tombstonePersonality } = mockClient([row], []);
+
+    render(() => <PersonalitiesView client={client} owner={owner} />);
+
+    await screen.findByText("Alice");
+    fireEvent.click(screen.getByRole("button", { name: "Tombstone" }));
+    expect(
+      screen.getByText("Tombstone Alice? Wakes stop; memories remain."),
+    ).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Confirm tombstone" }));
+
+    await waitFor(() => {
+      expect(tombstonePersonality).toHaveBeenCalledWith({
+        owner,
+        personality_type_id: row.personality_type_id,
+        personality_instance_id: row.personality_instance_id,
+      });
+    });
+    await waitFor(() => expect(screen.queryByText("Alice")).toBeNull());
+  });
+
+  it("cancels tombstone confirmation without calling the command", async () => {
+    const row = instance({ display_name: "Alice" });
+    const { client, tombstonePersonality } = mockClient([row]);
+
+    render(() => <PersonalitiesView client={client} owner={owner} />);
+
+    await screen.findByText("Alice");
+    fireEvent.click(screen.getByRole("button", { name: "Tombstone" }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(tombstonePersonality).not.toHaveBeenCalled();
+    expect(screen.getByText("Alice")).toBeTruthy();
+  });
+
+  it("keeps the row and shows an error when tombstone fails", async () => {
+    const row = instance({ display_name: "Alice" });
+    const { client, tombstonePersonality } = mockClient([row]);
+    tombstonePersonality.mockResolvedValueOnce({
+      status: "error",
+      error: { code: "internal", message: "db unavailable" },
+    } as never);
+
+    render(() => <PersonalitiesView client={client} owner={owner} />);
+
+    await screen.findByText("Alice");
+    fireEvent.click(screen.getByRole("button", { name: "Tombstone" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm tombstone" }));
+
+    expect(await screen.findByText(/db unavailable/)).toBeTruthy();
+    expect(screen.getByText("Alice")).toBeTruthy();
+  });
+
   it("renders needs_repair banner and opens re-edit with empty filters", async () => {
     const { client } = mockClient([
       instance({
@@ -187,7 +326,7 @@ describe("EngineerInstancesPanel", () => {
       }),
     ]);
 
-    render(() => <EngineerInstancesPanel client={client} owner={owner} />);
+    render(() => <PersonalitiesView client={client} owner={owner} />);
 
     expect(await screen.findByText(/Wake config needs repair/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Re-edit" }));

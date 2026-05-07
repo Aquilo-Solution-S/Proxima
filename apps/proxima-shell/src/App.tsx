@@ -79,10 +79,10 @@ function createAppHub(): Hub {
       id: "personalities",
       label: "Personalities",
       component: viewWithHub(async () => {
-        const { EngineerInstancesPanel } = await import(
+        const { PersonalitiesView } = await import(
           "@proxima/core/views/personalities"
         );
-        return { default: EngineerInstancesPanel };
+        return { default: PersonalitiesView };
       }),
       flavor: null,
     },

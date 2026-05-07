@@ -49,7 +49,7 @@ impl PersonalityTool for ListSelfPerspectivesTool {
         let rows = ctx
             .engine
             .storage()
-            .list_personality_instances(ctx.owner, None)
+            .list_personality_instances(ctx.owner, None, false)
             .await
             .map_err(|e| ProtocolError::internal(format!("list_personality_instances: {e}")))?;
         let entries: Vec<serde_json::Value> = rows
