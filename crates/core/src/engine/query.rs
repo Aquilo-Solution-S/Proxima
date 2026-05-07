@@ -4,7 +4,7 @@ use crate::error::ProtocolError;
 use crate::verbs::event_history::{
     EventHistoryRequest, EventHistoryResponse, MAX_EVENT_HISTORY_LIMIT,
 };
-use crate::verbs::query::{QueryRequest, QueryResponse, SupersessionStatus};
+use crate::verbs::query::{QueryRequest, QueryResponse};
 use crate::verbs::schema::{SchemaRequest, SchemaResponse};
 use crate::verbs::subscribe::{ChangeEventStream, SubscribeRequest};
 
@@ -40,11 +40,11 @@ impl Engine {
             ));
         }
         let mut effective = req.clone();
-        if matches!(effective.supersession, SupersessionStatus::HeadsOnly)
-            && effective.stateful_heads.is_none()
-            && let Some(sid) = effective.schema_id.as_ref()
-        {
-            effective.stateful_heads = self.registry.stateful_filter_for(sid);
+        if effective.stateful_heads.is_empty() {
+            effective.stateful_heads = match effective.schema_id.as_ref() {
+                Some(sid) => self.registry.stateful_filters_for_schema(sid),
+                None => self.registry.stateful_filters(),
+            };
         }
         self.storage
             .query_memories(&effective, self.registry.list().as_slice())

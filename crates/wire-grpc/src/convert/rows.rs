@@ -29,6 +29,10 @@ pub fn schema_info_to_proto(core: &CoreSchemaInfo) -> PbSchemaInfo {
         filter_keys: core.filter_keys.clone(),
         sidecar_table: core.sidecar_table.clone(),
         natural_key_columns: core.natural_key_columns.clone(),
+        tombstone: core.tombstone.as_ref().map(|t| pb::SchemaTombstone {
+            column: t.column.clone(),
+            value: t.value.clone(),
+        }),
     }
 }
 

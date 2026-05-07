@@ -1,4 +1,4 @@
-use proxima_core::{FactPayload, proxima_schema_id};
+use proxima_core::{FactPayload, FactTombstone, proxima_schema_id};
 use serde::{Deserialize, Serialize};
 
 use crate::payloads::file_revision::FileState;
@@ -8,7 +8,7 @@ use crate::payloads::file_revision::FileState;
 /// parent `file-revision-v1` Fact, keyed by blob content hash) — no
 /// embedded `MemoryId` parent FK in the payload. See docs/11
 /// §"Three-layer model".
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 pub struct CodeChunkV1 {
     pub repo_id: uuid::Uuid,
     pub file_path: String,
@@ -31,6 +31,12 @@ impl FactPayload for CodeChunkV1 {
     }
     fn natural_key_columns() -> &'static [&'static str] {
         &["repo_id", "file_path", "chunk_index"]
+    }
+    fn tombstone() -> Option<FactTombstone> {
+        Some(FactTombstone {
+            column: "state",
+            value: "Tombstone",
+        })
     }
     fn render(&self) -> String {
         format!(

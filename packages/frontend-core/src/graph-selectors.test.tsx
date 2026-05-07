@@ -93,6 +93,7 @@ describe("graph selectors", () => {
       filter_keys: [],
       sidecar_table: "proxima_code.code_chunk_v1",
       natural_key_columns: [],
+      tombstone: null,
     };
     expect(schemaFlavor(schema, hub)).toBe("code");
   });

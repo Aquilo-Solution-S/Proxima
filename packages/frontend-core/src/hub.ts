@@ -18,9 +18,12 @@ export interface Renderer<T = unknown> {
   render: (props: { memory: MemoryRow; payload: T }) => JSX.Element;
 }
 
+export type NaturalKey = ReadonlyArray<string | number>;
+
 export interface PayloadCodec<T = unknown> {
   decode: (bytes: Uint8Array) => T;
   encode: (value: T) => Uint8Array;
+  naturalKey?: (value: T) => NaturalKey | null;
 }
 
 export interface RegisteredView {

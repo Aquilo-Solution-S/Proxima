@@ -18,7 +18,7 @@ use crate::pb::{
     OperatorKind as PbOperatorKind, OperatorOrigin, QueryRequest as PbQueryRequest,
     QueryResponse as PbQueryResponse, SchemaRequest as PbSchemaRequest,
     SchemaResponse as PbSchemaResponse, SubscribeRequest as PbSubscribeRequest, SystemAuthorship,
-    ToolOrigin, UserAuthorship,
+    TombstoneFilter as PbTombstoneFilter, ToolOrigin, UserAuthorship,
 };
 
 use super::primitives::{timestamp_from_proto, uuid_from_proto, uuid_to_proto};
@@ -216,6 +216,15 @@ pub fn query_request_from_proto(
         }
     };
 
+    let tombstones = match filter.tombstones() {
+        PbTombstoneFilter::Unspecified | PbTombstoneFilter::PresentOnly => {
+            proxima_core::verbs::query::TombstoneFilter::PresentOnly
+        }
+        PbTombstoneFilter::IncludeTombstoned => {
+            proxima_core::verbs::query::TombstoneFilter::IncludeTombstoned
+        }
+    };
+
     let limit = if pagination.limit == 0 {
         100
     } else {
@@ -230,11 +239,12 @@ pub fn query_request_from_proto(
         entity_kind,
         schema_id,
         supersession,
+        tombstones,
         limit,
         memory_ids: Vec::new(),
         goal_ids: Vec::new(),
         edge_ids: Vec::new(),
-        stateful_heads: None,
+        stateful_heads: Vec::new(),
     })
 }
 
@@ -450,5 +460,39 @@ pub fn schema_response_to_proto(
     PbSchemaResponse {
         schemas: core.schemas.iter().map(schema_info_to_proto).collect(),
         relations: relations.iter().map(relation_descriptor_to_proto).collect(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use proxima_core::verbs::query::TombstoneFilter;
+    use proxima_core::{OrgId, Owner, Principal, UserId};
+    use uuid::Uuid;
+
+    use super::*;
+
+    fn owner_proto() -> pb::Owner {
+        let owner = Owner {
+            principal: Principal::User(UserId::new(Uuid::now_v7())),
+            org_id: OrgId::new(Uuid::now_v7()),
+        };
+        owner_to_proto(&owner)
+    }
+
+    #[test]
+    fn query_unspecified_tombstones_defaults_to_present_only() {
+        let core = query_request_from_proto(pb::QueryRequest {
+            owner: Some(owner_proto()),
+            filter: Some(pb::ReadFilter {
+                entity_kind: None,
+                schema_id: None,
+                supersession: pb::SupersessionFilter::Unspecified as i32,
+                flavor_filters: Vec::new(),
+                tombstones: pb::TombstoneFilter::Unspecified as i32,
+            }),
+            pagination: Some(pb::ReadPagination { limit: 10 }),
+        })
+        .expect("conversion");
+        assert_eq!(core.tombstones, TombstoneFilter::PresentOnly);
     }
 }

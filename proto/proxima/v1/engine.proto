@@ -84,12 +84,19 @@ message ReadFilter {
   // each entry's key is a filter_key advertised by `Schema`
   // (docs/14 §Query — flavor-typed filters).
   bytes flavor_filters              = 4;
+  TombstoneFilter tombstones        = 5;
 }
 
 enum SupersessionFilter {
   SUPERSESSION_FILTER_UNSPECIFIED        = 0;  // = HEADS_ONLY (default)
   SUPERSESSION_FILTER_HEADS_ONLY         = 1;
   SUPERSESSION_FILTER_INCLUDE_SUPERSEDED = 2;
+}
+
+enum TombstoneFilter {
+  TOMBSTONE_FILTER_UNSPECIFIED        = 0;  // = PRESENT_ONLY (default)
+  TOMBSTONE_FILTER_PRESENT_ONLY       = 1;
+  TOMBSTONE_FILTER_INCLUDE_TOMBSTONED = 2;
 }
 
 // Pagination knobs for synchronous reads. v1 ships `limit` only —

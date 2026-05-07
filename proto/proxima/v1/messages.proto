@@ -233,6 +233,12 @@ message SchemaInfo {
   optional string sidecar_table     = 4;
   // Natural-key columns for stateful Fact schemas (docs/03).
   repeated string natural_key_columns = 5;
+  optional SchemaTombstone tombstone = 6;
+}
+
+message SchemaTombstone {
+  string column = 1;
+  string value = 2;
 }
 
 // docs/02 §"Relation registry" — surfaced by `Schema` so clients know

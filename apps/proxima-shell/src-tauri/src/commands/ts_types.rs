@@ -93,6 +93,21 @@ pub enum RepoIngestEventTs {
     Error { message: String },
 }
 
+/// Anchors flavor payload types in generated TypeScript bindings.
+/// The command is never used by the UI; Specta exports types through
+/// command signatures, so optional fields keep this cheap if invoked.
+#[derive(Debug, Default, serde::Serialize, specta::Type)]
+pub struct PayloadTypesAnchor {
+    pub file_revision_v1: Option<proxima_code::FileRevisionV1>,
+    pub code_chunk_v1: Option<proxima_code::CodeChunkV1>,
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn payload_types_anchor() -> PayloadTypesAnchor {
+    PayloadTypesAnchor::default()
+}
+
 #[derive(Debug, Clone, serde::Serialize, specta::Type)]
 pub struct RepoEraseReceiptTs {
     pub repo_id: String,

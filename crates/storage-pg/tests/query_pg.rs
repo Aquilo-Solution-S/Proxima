@@ -27,6 +27,7 @@ fn schemas_for_test() -> Vec<SchemaInfo> {
             filter_keys: vec![],
             sidecar_table: None,
             natural_key_columns: vec![],
+            tombstone: None,
             cbor_encoder: None,
         },
         SchemaInfo {
@@ -36,6 +37,7 @@ fn schemas_for_test() -> Vec<SchemaInfo> {
             filter_keys: vec![],
             sidecar_table: None,
             natural_key_columns: vec![],
+            tombstone: None,
             cbor_encoder: None,
         },
         SchemaInfo {
@@ -45,6 +47,7 @@ fn schemas_for_test() -> Vec<SchemaInfo> {
             filter_keys: vec![],
             sidecar_table: None,
             natural_key_columns: vec![],
+            tombstone: None,
             cbor_encoder: None,
         },
         SchemaInfo {
@@ -54,6 +57,7 @@ fn schemas_for_test() -> Vec<SchemaInfo> {
             filter_keys: vec![],
             sidecar_table: None,
             natural_key_columns: vec![],
+            tombstone: None,
             cbor_encoder: None,
         },
         SchemaInfo {
@@ -63,6 +67,7 @@ fn schemas_for_test() -> Vec<SchemaInfo> {
             filter_keys: vec![],
             sidecar_table: None,
             natural_key_columns: vec![],
+            tombstone: None,
             cbor_encoder: None,
         },
         SchemaInfo {
@@ -72,6 +77,7 @@ fn schemas_for_test() -> Vec<SchemaInfo> {
             filter_keys: vec![],
             sidecar_table: None,
             natural_key_columns: vec![],
+            tombstone: None,
             cbor_encoder: None,
         },
     ]
@@ -670,11 +676,12 @@ async fn query_filter_abstraction_returns_empty() {
             entity_kind: Some(EntityKind::Abstraction),
             schema_id: None,
             supersession: SupersessionStatus::HeadsOnly,
+            tombstones: proxima_core::verbs::query::TombstoneFilter::PresentOnly,
             limit: 100,
             memory_ids: Vec::new(),
             goal_ids: Vec::new(),
             edge_ids: Vec::new(),
-            stateful_heads: None,
+            stateful_heads: Vec::new(),
         };
         let resp = engine.query(&Credentials::None, &req).await?;
 
@@ -738,11 +745,12 @@ async fn query_goals_filter_by_schema_id() {
             entity_kind: Some(EntityKind::Goal),
             schema_id: Some(SchemaId::new("test/fact_blob".into())),
             supersession: SupersessionStatus::HeadsOnly,
+            tombstones: proxima_core::verbs::query::TombstoneFilter::PresentOnly,
             limit: 100,
             memory_ids: Vec::new(),
             goal_ids: Vec::new(),
             edge_ids: Vec::new(),
-            stateful_heads: None,
+            stateful_heads: Vec::new(),
         };
         let resp = engine.query(&Credentials::None, &req_fact_filter).await?;
         assert!(
@@ -757,11 +765,12 @@ async fn query_goals_filter_by_schema_id() {
             entity_kind: Some(EntityKind::Goal),
             schema_id: Some(SchemaId::new("test/goal_blob".into())),
             supersession: SupersessionStatus::HeadsOnly,
+            tombstones: proxima_core::verbs::query::TombstoneFilter::PresentOnly,
             limit: 100,
             memory_ids: Vec::new(),
             goal_ids: Vec::new(),
             edge_ids: Vec::new(),
-            stateful_heads: None,
+            stateful_heads: Vec::new(),
         };
         let resp = engine.query(&Credentials::None, &req_goal_filter).await?;
         assert_eq!(resp.goals.len(), 1);
@@ -772,11 +781,12 @@ async fn query_goals_filter_by_schema_id() {
             entity_kind: None,
             schema_id: Some(SchemaId::new("test/never_registered".into())),
             supersession: SupersessionStatus::HeadsOnly,
+            tombstones: proxima_core::verbs::query::TombstoneFilter::PresentOnly,
             limit: 100,
             memory_ids: Vec::new(),
             goal_ids: Vec::new(),
             edge_ids: Vec::new(),
-            stateful_heads: None,
+            stateful_heads: Vec::new(),
         };
         let resp = engine.query(&Credentials::None, &req_unknown).await?;
         assert!(resp.goals.is_empty());
@@ -889,11 +899,12 @@ async fn query_filter_nonexistent_schema_returns_empty() {
             entity_kind: None,
             schema_id: Some(SchemaId::new("test/non_existent".into())),
             supersession: SupersessionStatus::HeadsOnly,
+            tombstones: proxima_core::verbs::query::TombstoneFilter::PresentOnly,
             limit: 100,
             memory_ids: Vec::new(),
             goal_ids: Vec::new(),
             edge_ids: Vec::new(),
-            stateful_heads: None,
+            stateful_heads: Vec::new(),
         };
         let resp = engine.query(&Credentials::None, &req).await?;
 

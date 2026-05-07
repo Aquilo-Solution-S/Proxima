@@ -10,6 +10,7 @@ const NOOP_QUERY: QueryRequest = {
   entity_kind: null,
   schema_id: null,
   supersession: "HeadsOnly",
+  tombstones: "PresentOnly",
   limit: 0,
 };
 
