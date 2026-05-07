@@ -110,6 +110,6 @@ impl Engine {
     }
 
     pub async fn run_dispatcher_tick(&self) -> Result<usize, ProtocolError> {
-        Ok(0)
+        crate::wake::dispatch::dispatch_tick(self).await
     }
 }
