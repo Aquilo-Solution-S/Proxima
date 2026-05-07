@@ -47,9 +47,7 @@ pub(super) async fn emit_personality_memory(
         .engine
         .anthropic()
         .ok_or_else(|| ProtocolError::internal("anthropic client not wired into engine"))?;
-    let model_id = anthropic
-        .model_id_for(model_tier_from_palette(ctx))
-        .to_string();
+    let model_id = model_id_from_wake_invocation(ctx, anthropic.as_ref());
     let instance = PersonalityRef::new(ctx.type_id.to_string(), ctx.instance_id);
     let req = PersonalityWriteRequest {
         owner: ctx.owner.clone(),
@@ -75,11 +73,21 @@ pub(super) async fn emit_personality_memory(
         .ok_or_else(|| ProtocolError::internal("append_personality_memories returned no id"))
 }
 
-/// Resolve the model tier for stamping provenance on memories emitted
-/// from a substrate tool. v1 returns `Standard` unconditionally because
-/// no wakes fire yet. Phase 1d sources this from the live invocation
-/// context so the stamp matches the model that executed the recipe.
-fn model_tier_from_palette(_ctx: &PersonalityToolContext<'_>) -> crate::ModelTier {
-    // TODO(phase-1d): read tier from the active WakeInvocation context.
-    crate::ModelTier::Standard
+/// Resolve the `model_id` for stamping provenance on memories emitted
+/// from a substrate tool. When a wake invocation is bound to the tool
+/// context, we use the resolved `InferenceTarget.model_id` that drove
+/// the wake — that is the canonical record of which model authored the
+/// memory. The legacy admin-tool path (no wake context bound) falls
+/// back to the engine's Standard-tier Anthropic model so the row's
+/// `model_id` column is never null.
+pub fn model_id_from_wake_invocation(
+    ctx: &PersonalityToolContext<'_>,
+    anthropic: &dyn crate::llm::AnthropicClient,
+) -> String {
+    if let Some(w) = ctx.wake_invocation {
+        return w.model_id.clone();
+    }
+    anthropic
+        .model_id_for(crate::ModelTier::Standard)
+        .to_string()
 }

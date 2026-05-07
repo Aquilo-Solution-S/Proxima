@@ -17,6 +17,8 @@ pub mod authorization;
 pub mod tools;
 
 pub use tools::{ActiveGoalSummary, substrate_pack};
+#[doc(hidden)]
+pub use tools::__test_only_model_id_from_wake_invocation;
 
 pub const MAX_WAKE_CHAIN_DEPTH: u16 = 10;
 
@@ -286,6 +288,13 @@ pub struct PersonalityToolContext<'a> {
     pub writeable_schemas: &'a [&'static str],
     pub writeable_relations: &'a [&'static str],
     pub palette: &'a [Arc<dyn PersonalityTool>],
+    /// Active wake invocation, when this tool call is dispatched as part
+    /// of a goose-driven wake. `None` for the legacy admin-tool path
+    /// (no wake context bound to the request). Substrate tools that
+    /// stamp memory provenance read `model_id` from here so the row
+    /// reflects the actual InferenceTarget that drove the wake instead
+    /// of a static `Standard`-tier guess.
+    pub wake_invocation: Option<&'a crate::wake::token_store::WakeTokenContext>,
     read_log: tokio::sync::Mutex<Vec<(MemoryId, WakeChainDepth)>>,
 }
 
@@ -315,8 +324,21 @@ impl<'a> PersonalityToolContext<'a> {
             writeable_schemas,
             writeable_relations,
             palette,
+            wake_invocation: None,
             read_log: tokio::sync::Mutex::new(Vec::new()),
         }
+    }
+
+    /// Bind the active `WakeTokenContext` for the duration of this tool
+    /// dispatch. The MCP handler calls this after extracting the wake
+    /// token from request extensions.
+    #[must_use]
+    pub fn with_wake_invocation(
+        mut self,
+        wake_invocation: &'a crate::wake::token_store::WakeTokenContext,
+    ) -> Self {
+        self.wake_invocation = Some(wake_invocation);
+        self
     }
 
     pub(crate) async fn record_read(
