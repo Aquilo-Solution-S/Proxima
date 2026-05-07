@@ -20,6 +20,15 @@ Flavor crate {
 }
 ```
 
+Each crate publishes a single `FlavorDescriptor` (docs/08 §Flavor
+Metadata) — the structured form of "Flavor crate" carrying
+`flavor_id`, `display_name`, `package_version`, `author`, and a
+`FlavorProvenance` discriminator. The substrate threads it through
+every `PersonalityInstance` so the hub renders the flavor label
+authoritatively. `FlavorProvenance::Marketplace { source_url }` is
+the marketplace hook reserved for post-v1 out-of-process loading; v1
+flavors all ship as `Builtin`.
+
 Personality shipment unit inside a flavor:
 
 ```

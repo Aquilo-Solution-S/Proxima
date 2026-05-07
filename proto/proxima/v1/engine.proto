@@ -282,6 +282,11 @@ message PersonalityInstance {
   string display_name = 5;
   string status = 6;  // active | needs_repair
   repeated WakeFilter wake_filters = 7;
+  // Structured flavor metadata for the prefix of `personality_type_id`.
+  // Always populated; the engine looks the descriptor up in its frozen
+  // registry and the freeze-time prefix cross-check guarantees it
+  // resolves for any registered personality.
+  FlavorDescriptor flavor = 8;
 }
 
 message WakeFilter {

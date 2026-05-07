@@ -6,7 +6,10 @@
 use std::sync::Arc;
 
 use crate::personality::{PersonalityFlavor, WakeFilterKind};
-use crate::{McpToolDescriptor, RegisteredRelation, RelationDescriptor, SchemaId, SchemaVersion};
+use crate::{
+    FlavorDescriptor, McpToolDescriptor, RegisteredRelation, RelationDescriptor, SchemaId,
+    SchemaVersion,
+};
 
 pub type PayloadValidator = fn(&serde_json::Value) -> Result<(), String>;
 pub type PayloadCborEncoder = fn(&serde_json::Value) -> Result<Vec<u8>, String>;
@@ -73,6 +76,7 @@ pub struct FlavorRegistryFrozen {
     mcp_tools: Vec<McpToolDescriptor>,
     personalities: Vec<Arc<dyn PersonalityFlavor>>,
     wake_filter_kinds: Vec<Arc<dyn WakeFilterKind>>,
+    flavors: Vec<FlavorDescriptor>,
 }
 
 impl FlavorRegistryFrozen {
@@ -92,6 +96,7 @@ impl FlavorRegistryFrozen {
             mcp_tools: Vec::new(),
             personalities: Vec::new(),
             wake_filter_kinds: Vec::new(),
+            flavors: Vec::new(),
         }
     }
 
@@ -110,6 +115,7 @@ impl FlavorRegistryFrozen {
             mcp_tools: Vec::new(),
             personalities: Vec::new(),
             wake_filter_kinds: Vec::new(),
+            flavors: Vec::new(),
         }
     }
 
@@ -120,6 +126,7 @@ impl FlavorRegistryFrozen {
         mcp_tools: Vec<McpToolDescriptor>,
         personalities: Vec<Arc<dyn PersonalityFlavor>>,
         wake_filter_kinds: Vec<Arc<dyn WakeFilterKind>>,
+        flavors: Vec<FlavorDescriptor>,
     ) -> Self {
         Self {
             schemas,
@@ -128,6 +135,7 @@ impl FlavorRegistryFrozen {
             mcp_tools,
             personalities,
             wake_filter_kinds,
+            flavors,
         }
     }
 
@@ -151,6 +159,34 @@ impl FlavorRegistryFrozen {
     #[must_use]
     pub fn list_personalities(&self) -> &[Arc<dyn PersonalityFlavor>] {
         &self.personalities
+    }
+
+    /// All `FlavorDescriptor`s registered through `proxima_flavor!`.
+    /// Order matches macro invocation order.
+    #[must_use]
+    pub fn list_flavors(&self) -> &[FlavorDescriptor] {
+        &self.flavors
+    }
+
+    /// Lookup a flavor descriptor by its `flavor_id`
+    /// (e.g. `"proxima-code"`).
+    #[must_use]
+    pub fn flavor(&self, flavor_id: &str) -> Option<&FlavorDescriptor> {
+        self.flavors.iter().find(|f| f.flavor_id == flavor_id)
+    }
+
+    /// Lookup the flavor descriptor for a personality by deriving the
+    /// prefix (`<flavor_id>/<rest>`). Returns `None` if the type id
+    /// has no `/`; freeze-time guards make this impossible at runtime
+    /// for personalities created via `proxima_flavor!`.
+    #[must_use]
+    pub fn flavor_for_personality_type(
+        &self,
+        personality_type_id: &str,
+    ) -> Option<&FlavorDescriptor> {
+        let slash = personality_type_id.find('/')?;
+        let prefix = &personality_type_id[..slash];
+        self.flavor(prefix)
     }
 
     #[must_use]

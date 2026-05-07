@@ -1,10 +1,14 @@
 .personality-view {
   display: grid;
-  grid-template-rows: auto 1fr;
-  gap: 18px;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  gap: 14px;
   height: 100%;
   padding: 24px;
   color: var(--ink-80);
+}
+
+.personality-toolbar h1 {
+  margin: 0;
 }
 
 .personality-toolbar {
@@ -18,6 +22,21 @@
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.personality-actions .hub-nav-item,
+.personality-form .hub-nav-item {
+  height: 30px;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  padding: 0 10px;
+  background: var(--bg-elev);
+  line-height: 28px;
+}
+
+.personality-actions .hub-nav-item:hover,
+.personality-form .hub-nav-item:hover {
+  border-color: var(--rule-strong);
 }
 
 .personality-grid {
@@ -70,6 +89,17 @@
   padding: 2px 8px;
   font-size: 12px;
   line-height: 18px;
+}
+
+.personality-flavor-chip {
+  display: inline-block;
+  width: fit-content;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  padding: 1px 8px;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--ink-50);
 }
 
 .personality-status.needs_repair {
@@ -127,9 +157,10 @@
 
 .personality-form {
   display: grid;
-  grid-template-columns: 1fr 1fr auto;
+  grid-template-columns: minmax(220px, 424px) minmax(280px, 424px) max-content;
   gap: 8px;
   align-items: end;
+  justify-content: start;
 }
 
 .personality-form label,

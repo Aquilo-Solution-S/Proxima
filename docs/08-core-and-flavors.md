@@ -34,6 +34,7 @@ No runtime registration path.
 ```rust
 proxima_flavor! {
     name = "proxima-code",
+    display_name = "Code",
     fact_schemas = [schema::CommitV1],
     abstraction_schemas = [schema::CommitSummaryV1],
     perspective_schemas = [
@@ -51,7 +52,35 @@ proxima_flavor! {
 }
 ```
 
-Unknown keys are compile errors.
+Unknown keys are compile errors. `display_name` is optional and
+defaults to `name`.
+
+## Flavor Metadata
+
+Every `proxima_flavor!` invocation emits one `FlavorDescriptor` into
+the registry, populated at macro-expansion time from the calling
+crate's `Cargo.toml`:
+
+```rust
+struct FlavorDescriptor {
+    flavor_id: String,         // = name
+    display_name: String,      // = display_name (or name)
+    package_version: String,   // = CARGO_PKG_VERSION
+    author: Option<String>,    // first entry of CARGO_PKG_AUTHORS
+    provenance: FlavorProvenance,
+}
+
+enum FlavorProvenance {
+    Builtin,                            // v1: always this
+    Marketplace { source_url: String }, // reserved
+    Local { workspace_path: String },   // reserved
+}
+```
+
+The frozen registry exposes `flavor(flavor_id)` and
+`flavor_for_personality_type(type_id)` — the latter derives the
+flavor prefix from the type id and is used by the wire layer to attach
+the descriptor to every `PersonalityInstance` over the protocol.
 
 ## PersonalityFlavor
 
@@ -99,6 +128,10 @@ relations.
 4. Unregistered relation ids in `writeable_relations`.
 5. Duplicate MCP tool names.
 6. Typed relations whose payload schema is not registered.
+7. Duplicate `FlavorDescriptor::flavor_id`.
+8. Personalities whose `personality_type_id` prefix has no matching
+   `FlavorDescriptor` (catches freestanding `add_personality` calls
+   that bypass `proxima_flavor!`).
 
 Freeze-time failure is startup failure.
 

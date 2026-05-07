@@ -13,6 +13,7 @@ pub const AGENT_LINK_RELATION: &str = "proxima-mcp/agent-link-refers-to";
 
 proxima_core::proxima_flavor! {
     name = "proxima-mcp",
+    display_name = "MCP",
     fact_schemas = [
         payloads::AgentNoteV1,
     ],

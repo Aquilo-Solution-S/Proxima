@@ -11,6 +11,7 @@ pub use relations::{MOTIVATED_BY_RELATION, descriptor as motivated_by_descriptor
 
 proxima_core::proxima_flavor! {
     name = "proxima-goal",
+    display_name = "Goal",
     fact_schemas = [],
     abstraction_schemas = [],
     perspective_schemas = [],

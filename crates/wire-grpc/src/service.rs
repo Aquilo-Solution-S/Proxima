@@ -237,9 +237,20 @@ impl EngineTrait for EngineGrpcServer {
             .list_personality_instances(&owner, pb.personality_type_id.as_deref())
             .await
             .map_err(protocol_error_to_status)?;
+        let registry = self.engine.registry();
         let instances = rows
             .into_iter()
-            .map(personality_instance_to_proto)
+            .map(|row| {
+                let flavor = registry
+                    .flavor_for_personality_type(&row.personality_type_id)
+                    .ok_or_else(|| {
+                        Status::internal(format!(
+                            "no FlavorDescriptor for personality_type_id {}",
+                            row.personality_type_id,
+                        ))
+                    })?;
+                personality_instance_to_proto(row, flavor)
+            })
             .collect::<Result<Vec<_>, _>>()?;
         Ok(Response::new(ListPersonalityInstancesResponse {
             instances,
@@ -253,6 +264,7 @@ fn uuid_from_str(value: &str) -> Result<uuid::Uuid, Status> {
 
 fn personality_instance_to_proto(
     row: proxima_core::PersonalityInstanceRow,
+    flavor: &proxima_core::FlavorDescriptor,
 ) -> Result<PersonalityInstance, Status> {
     let wake_filters = row
         .wake_filters
@@ -270,7 +282,38 @@ fn personality_instance_to_proto(
         display_name: row.display_name,
         status: row.status,
         wake_filters,
+        flavor: Some(flavor_descriptor_to_proto(flavor)),
     })
+}
+
+fn flavor_descriptor_to_proto(
+    descriptor: &proxima_core::FlavorDescriptor,
+) -> pb::FlavorDescriptor {
+    pb::FlavorDescriptor {
+        flavor_id: descriptor.flavor_id.clone(),
+        display_name: descriptor.display_name.clone(),
+        package_version: descriptor.package_version.clone(),
+        author: descriptor.author.clone(),
+        provenance: Some(flavor_provenance_to_proto(&descriptor.provenance)),
+    }
+}
+
+fn flavor_provenance_to_proto(
+    provenance: &proxima_core::FlavorProvenance,
+) -> pb::FlavorProvenance {
+    use pb::flavor_provenance::{Builtin, Kind, Local, Marketplace};
+    let kind = match provenance {
+        proxima_core::FlavorProvenance::Builtin => Kind::Builtin(Builtin {}),
+        proxima_core::FlavorProvenance::Marketplace { source_url } => {
+            Kind::Marketplace(Marketplace {
+                source_url: source_url.clone(),
+            })
+        }
+        proxima_core::FlavorProvenance::Local { workspace_path } => Kind::Local(Local {
+            workspace_path: workspace_path.clone(),
+        }),
+    };
+    pb::FlavorProvenance { kind: Some(kind) }
 }
 
 fn wake_filter_from_proto(pb: WakeFilter) -> Result<proxima_core::WakeFilter, Status> {
