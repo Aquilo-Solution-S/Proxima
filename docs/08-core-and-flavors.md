@@ -96,7 +96,6 @@ trait PersonalityFlavor {
     fn tools(&self) -> Vec<Arc<dyn PersonalityTool>>;
     fn writeable_schemas(&self) -> &'static [&'static str];
     fn writeable_relations(&self) -> &'static [&'static str];
-    fn default_wake_filters(&self) -> Vec<WakeFilter>;
     fn tier(&self) -> ModelTier;
     fn max_wake_chain_depth(&self) -> u16;
 }

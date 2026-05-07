@@ -80,15 +80,11 @@ impl PersonalityTool for EmitAbstractionTool {
             .ok_or_else(|| {
                 ProtocolError::internal(format!(
                     "schema {} v{} not registered as Abstraction",
-                    parsed.schema_id,
-                    parsed.schema_version,
+                    parsed.schema_id, parsed.schema_version,
                 ))
             })?;
         let sidecar_table = info.sidecar_table.as_deref().ok_or_else(|| {
-            ProtocolError::internal(format!(
-                "schema {} has no sidecar",
-                parsed.schema_id,
-            ))
+            ProtocolError::internal(format!("schema {} has no sidecar", parsed.schema_id,))
         })?;
         ctx.engine
             .registry()
@@ -103,9 +99,10 @@ impl PersonalityTool for EmitAbstractionTool {
             .text
             .clone()
             .unwrap_or_else(|| derive_text(&parsed.payload));
-        let embed = ctx.engine.embed_client().ok_or_else(|| {
-            ProtocolError::internal("embedding client not wired into engine")
-        })?;
+        let embed = ctx
+            .engine
+            .embed_client()
+            .ok_or_else(|| ProtocolError::internal("embedding client not wired into engine"))?;
         let embedding = embed
             .embed(&text)
             .await
@@ -121,14 +118,8 @@ impl PersonalityTool for EmitAbstractionTool {
             embedding,
             embedding_model_id: embed.model_id().to_string(),
         };
-        let memory_id = emit_personality_memory(
-            ctx,
-            sidecar_table,
-            depth,
-            PROMPT_VERSION,
-            &draft,
-        )
-        .await?;
+        let memory_id =
+            emit_personality_memory(ctx, sidecar_table, depth, PROMPT_VERSION, &draft).await?;
         Ok(PersonalityToolResult::ok(serde_json::json!({
             "memory_id": memory_id.into_inner(),
             "wake_chain_depth": depth.into_inner(),

@@ -3,7 +3,7 @@
 //! Each integration-test binary that exercises the substrate dispatcher
 //! `mod common; use common::personality::*;` to pick these up.
 
-#![allow(dead_code)]
+#![allow(dead_code, clippy::doc_markdown, clippy::unnecessary_literal_bound)]
 
 use std::sync::Arc;
 
@@ -392,7 +392,13 @@ pub async fn ingest_other_fact(pg: &PgStorage, owner: &Owner, label: &str) -> Me
 
 fn rand_content_hash() -> [u8; 32] {
     let mut out = [0u8; 32];
-    for (i, byte) in Uuid::now_v7().as_bytes().iter().chain(Uuid::now_v7().as_bytes().iter()).take(32).enumerate() {
+    for (i, byte) in Uuid::now_v7()
+        .as_bytes()
+        .iter()
+        .chain(Uuid::now_v7().as_bytes().iter())
+        .take(32)
+        .enumerate()
+    {
         out[i] = *byte;
     }
     out

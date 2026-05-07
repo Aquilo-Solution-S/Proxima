@@ -6,7 +6,7 @@ use common::{drop_db, fresh_pg, owner_fixture};
 use proxima_core::personality::{
     InstantiatePersonalityRequest, PersonalityInstanceId, PersonalityMemoryDraft,
     PersonalityMemoryKind, PersonalityRef, PersonalitySelfDraft, PersonalityWriteRequest,
-    SetWakeEntriesRequest, TombstonePersonalityRequest, WakeAuthorFilter, WakeChainDepth,
+    SetWakeEntriesRequest, TombstonePersonalityRequest, WakeChainDepth, WakeEntryAuthoredBy,
     WakeEntryDraft, WakeEntryTriggerKind,
 };
 use proxima_core::relation::{
@@ -92,7 +92,7 @@ fn sample_entry(instance: PersonalityInstanceId, trigger_id: &str) -> WakeEntryD
         WakeEntryTriggerKind::OnMemory,
         trigger_id,
         "on_test_fact",
-        WakeAuthorFilter::Any,
+        WakeEntryAuthoredBy::Any,
         250,
         "recipe:proxima-test/personality-v1",
         ModelTier::Fast,
@@ -203,7 +203,10 @@ async fn personality_wake_schema_enforces_root_sidecar_and_promille() {
         .execute(pg.pool())
         .await
         .expect_err("probability_promille > 1000 must fail");
-        assert!(err.to_string().contains("personality_wake_entries_probability_chk"));
+        assert!(
+            err.to_string()
+                .contains("personality_wake_entries_probability_chk")
+        );
         Ok(())
     }
     .await;
@@ -313,6 +316,38 @@ async fn personality_wake_storage_round_trip() {
     drop(pg);
     let _ = drop_db(&db).await;
     result.expect("personality wake storage round trip failed");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn list_personality_instances_populates_wake_entries() {
+    let Some((pg, db)) = fresh_pg().await else {
+        return;
+    };
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        pg.run_migrations().await?;
+        let owner = owner_fixture();
+        let response = seed_test_personality(&pg, &owner).await?;
+        let entry = sample_entry(response.instance_id, "proxima-test/fact-v1");
+
+        pg.set_wake_entries(&SetWakeEntriesRequest {
+            owner: owner.clone(),
+            personality_instance_id: response.instance_id,
+            entries: vec![entry],
+        })
+        .await?;
+
+        let rows = pg.list_personality_instances(&owner, None, false).await?;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].wake_entries.len(), 1);
+        assert_eq!(rows[0].wake_entries[0].label, "on_test_fact");
+        Ok(())
+    }
+    .await;
+
+    drop(pg);
+    let _ = drop_db(&db).await;
+    result.expect("list_personality_instances must populate wake_entries");
 }
 
 fn fact_draft(owner: Owner) -> EventDraft {

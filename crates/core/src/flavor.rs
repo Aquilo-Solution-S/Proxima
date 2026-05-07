@@ -20,9 +20,7 @@ use std::sync::Arc;
 /// One descriptor per `proxima_flavor!` invocation; the registry
 /// cross-checks at `freeze()` time that every registered personality's
 /// `personality_type_id` prefix matches a registered `flavor_id`.
-#[derive(
-    Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type,
-)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct FlavorDescriptor {
     /// Crate prefix used by `proxima_flavor! { name = ... }` —
     /// e.g. `"proxima-code"`. Schemas, relations, personalities, and
@@ -47,9 +45,7 @@ pub struct FlavorDescriptor {
 /// Where the flavor came from. Reserved cases are out-of-scope for
 /// v1 but kept on the wire so post-v1 flavors don't need a contract
 /// change.
-#[derive(
-    Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type,
-)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum FlavorProvenance {
     Builtin,
@@ -511,7 +507,6 @@ mod mcp_tool_registry_tests {
         fn writeable_relations(&self) -> &'static [&'static str] {
             self.write_relations
         }
-
     }
 
     fn registry_with_personality(
@@ -595,7 +590,7 @@ mod mcp_tool_registry_tests {
         );
     }
 
-    fn panic_msg<'a>(err: &'a Box<dyn std::any::Any + Send>) -> &'a str {
+    fn panic_msg(err: &Box<dyn std::any::Any + Send>) -> &str {
         err.downcast_ref::<String>()
             .map(String::as_str)
             .or_else(|| err.downcast_ref::<&'static str>().copied())

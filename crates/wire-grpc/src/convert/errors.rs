@@ -14,10 +14,21 @@ pub fn protocol_error_to_status(err: ProtocolError) -> Status {
         CoreErrorCode::AuthRequired => tonic::Code::Unauthenticated,
         CoreErrorCode::Forbidden => tonic::Code::PermissionDenied,
         CoreErrorCode::UnknownSchema => tonic::Code::InvalidArgument,
-        CoreErrorCode::AlreadyIngested | CoreErrorCode::IdempotencyConflict => {
-            tonic::Code::AlreadyExists
-        }
+        CoreErrorCode::AlreadyIngested
+        | CoreErrorCode::IdempotencyConflict
+        | CoreErrorCode::TargetRefConflict
+        | CoreErrorCode::TriggerConflict => tonic::Code::AlreadyExists,
         CoreErrorCode::NotFound => tonic::Code::NotFound,
+        CoreErrorCode::InvalidArgument | CoreErrorCode::DuplicateTriggerInRequest => {
+            tonic::Code::InvalidArgument
+        }
+        CoreErrorCode::RecipeInvalid
+        | CoreErrorCode::RecipeNotFound
+        | CoreErrorCode::ToolNotRegistered
+        | CoreErrorCode::InferenceTargetMissing
+        | CoreErrorCode::TierUnbound
+        | CoreErrorCode::TargetInUse
+        | CoreErrorCode::GooseCliUnavailable => tonic::Code::FailedPrecondition,
         CoreErrorCode::Internal => tonic::Code::Internal,
     };
 
@@ -45,6 +56,17 @@ fn pb_error_code_from_core(code: CoreErrorCode) -> PbErrorCode {
             PbErrorCode::IdempotencyConflict
         }
         CoreErrorCode::NotFound => PbErrorCode::NotFound,
+        CoreErrorCode::InvalidArgument => PbErrorCode::InvalidArgument,
+        CoreErrorCode::RecipeInvalid => PbErrorCode::RecipeInvalid,
+        CoreErrorCode::RecipeNotFound => PbErrorCode::RecipeNotFound,
+        CoreErrorCode::ToolNotRegistered => PbErrorCode::ToolNotRegistered,
+        CoreErrorCode::InferenceTargetMissing => PbErrorCode::InferenceTargetMissing,
+        CoreErrorCode::TierUnbound => PbErrorCode::TierUnbound,
+        CoreErrorCode::TargetRefConflict => PbErrorCode::TargetRefConflict,
+        CoreErrorCode::TargetInUse => PbErrorCode::TargetInUse,
+        CoreErrorCode::TriggerConflict => PbErrorCode::TriggerConflict,
+        CoreErrorCode::DuplicateTriggerInRequest => PbErrorCode::DuplicateTriggerInRequest,
+        CoreErrorCode::GooseCliUnavailable => PbErrorCode::GooseCliUnavailable,
         CoreErrorCode::Internal => PbErrorCode::Internal,
     }
 }

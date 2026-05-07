@@ -1,38 +1,51 @@
-use proxima_core::models::{Dialect, EmbedCaps, LlmCaps, ModelTier};
+use proxima_core::models::EmbedCaps;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-/// Top-level config parsed from `proxima.config.toml`.
+/// Top-level config parsed from `proxima.config.toml` or loaded from settings tables.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub struct AppConfig {
     #[serde(default)]
-    pub llm: LlmConfig,
+    pub inference: InferenceConfig,
     #[serde(default)]
     pub embedding: EmbeddingConfig,
-    #[serde(default)]
-    pub tiers: TierBindings,
 }
 
-/// LLM model configuration section.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 #[serde(deny_unknown_fields)]
-pub struct LlmConfig {
+pub struct InferenceConfig {
     #[serde(default)]
-    pub models: Vec<LlmModelRecord>,
+    pub targets: Vec<InferenceTargetRecord>,
+    #[serde(default)]
+    pub inference_tier_bindings: InferenceTierBindings,
 }
 
-/// A single LLM model entry.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[serde(deny_unknown_fields)]
+pub struct InferenceTierBindings {
+    #[serde(default)]
+    pub fast: Option<String>,
+    #[serde(default)]
+    pub standard: Option<String>,
+    #[serde(default)]
+    pub deep: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
 #[serde(deny_unknown_fields)]
-pub struct LlmModelRecord {
-    pub vendor: String,
-    pub model_id: String,
-    pub dialect: Dialect,
-    pub base_url: String,
-    pub caps: LlmCaps,
-    #[serde(default)]
-    pub secret_ref: Option<String>,
+pub struct InferenceTargetRecord {
+    pub target_ref: String,
+    pub config: proxima_core::InferenceTargetConfig,
+}
+
+impl From<proxima_core::InferenceTargetRow> for InferenceTargetRecord {
+    fn from(row: proxima_core::InferenceTargetRow) -> Self {
+        Self {
+            target_ref: row.target_ref,
+            config: row.config,
+        }
+    }
 }
 
 /// Embedding model configuration section.
@@ -44,7 +57,7 @@ pub struct EmbeddingConfig {
     /// Globally-active embedding model. v1 is single-global per
     /// docs/10 §Composite embedding selection.
     #[serde(default)]
-    pub active: Option<ModelRef>,
+    pub active: Option<EmbeddingModelRef>,
 }
 
 /// A single embedding model entry.
@@ -59,33 +72,10 @@ pub struct EmbeddingModelRecord {
     pub secret_ref: Option<String>,
 }
 
-/// Tier-to-model bindings. Each tier may be unbound (None).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
-#[serde(deny_unknown_fields)]
-pub struct TierBindings {
-    #[serde(default)]
-    pub fast: Option<ModelRef>,
-    #[serde(default)]
-    pub standard: Option<ModelRef>,
-    #[serde(default)]
-    pub deep: Option<ModelRef>,
-}
-
-impl TierBindings {
-    #[must_use]
-    pub fn get(&self, tier: ModelTier) -> Option<&ModelRef> {
-        match tier {
-            ModelTier::Fast => self.fast.as_ref(),
-            ModelTier::Standard => self.standard.as_ref(),
-            ModelTier::Deep => self.deep.as_ref(),
-        }
-    }
-}
-
-/// Reference to a model by `(vendor, model_id)`.
+/// Reference to an embedding model by `(vendor, model_id)`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash, specta::Type)]
 #[serde(deny_unknown_fields)]
-pub struct ModelRef {
+pub struct EmbeddingModelRef {
     pub vendor: String,
     pub model_id: String,
 }
@@ -117,60 +107,20 @@ pub enum ConfigError {
     #[error("config TOML serialize failed: {0}")]
     Serialize(#[from] toml::ser::Error),
 
-    /// A `[tiers]` binding references a `(vendor, model_id)` not present
-    /// in `[[llm.models]]`.
-    #[error("tier {tier:?} bound to unknown model {model_ref:?}")]
-    UnknownTierModel {
-        tier: ModelTier,
-        model_ref: ModelRef,
-    },
-
-    /// A registered operator uses this tier, but no runtime binding
-    /// exists for it.
-    #[error("tier {tier:?} is required by registered operators but has no model binding")]
-    MissingTierBinding { tier: ModelTier },
-
     /// `[embedding.active]` references a `(vendor, model_id)` not in
     /// `[[embedding.models]]`.
     #[error("active embedding {0:?} not in registered embedding models")]
-    UnknownEmbeddingActive(ModelRef),
-
-    /// Bound model's claimed caps do not satisfy the union of operator
-    /// `requires` at this tier.
-    #[error(
-        "tier {tier:?} model {model_ref:?} caps {have:?} fail to satisfy operator-union {required:?}"
-    )]
-    InsufficientTierCaps {
-        tier: ModelTier,
-        model_ref: ModelRef,
-        have: LlmCaps,
-        required: LlmCaps,
-    },
-
-    /// Two `[[llm.models]]` rows share the same `(vendor, model_id)`.
-    #[error("duplicate llm model {0:?}")]
-    DuplicateLlmModel(ModelRef),
+    UnknownEmbeddingActive(EmbeddingModelRef),
 
     /// Two `[[embedding.models]]` rows share the same `(vendor, model_id)`.
     #[error("duplicate embedding model {0:?}")]
-    DuplicateEmbeddingModel(ModelRef),
+    DuplicateEmbeddingModel(EmbeddingModelRef),
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use proxima_core::models::{Dialect, EmbedCaps, LlmCaps, ModelTier};
-
-    fn sample_llm_model(vendor: &str, model_id: &str, caps: LlmCaps) -> LlmModelRecord {
-        LlmModelRecord {
-            vendor: vendor.to_string(),
-            model_id: model_id.to_string(),
-            dialect: Dialect::OpenAI,
-            base_url: "https://api.example.com".to_string(),
-            caps,
-            secret_ref: None,
-        }
-    }
+    use proxima_core::models::EmbedCaps;
 
     fn sample_embedding_model(vendor: &str, model_id: &str, dim: u32) -> EmbeddingModelRecord {
         EmbeddingModelRecord {
@@ -188,8 +138,22 @@ mod tests {
     #[test]
     fn roundtrip_full_config() {
         let cfg = AppConfig {
-            llm: LlmConfig {
-                models: vec![sample_llm_model("openai", "gpt-4o-mini", LlmCaps::none())],
+            inference: InferenceConfig {
+                targets: vec![InferenceTargetRecord {
+                    target_ref: "local-goose".to_string(),
+                    config: proxima_core::InferenceTargetConfig::LocalCli(
+                        proxima_core::LocalCliConfig {
+                            command: "goose".to_string(),
+                            profile: Some("work".to_string()),
+                            env_overrides: vec![("GOOSE_MODE".to_string(), "auto".to_string())],
+                        },
+                    ),
+                }],
+                inference_tier_bindings: InferenceTierBindings {
+                    fast: Some("local-goose".to_string()),
+                    standard: None,
+                    deep: None,
+                },
             },
             embedding: EmbeddingConfig {
                 models: vec![sample_embedding_model(
@@ -197,18 +161,10 @@ mod tests {
                     "text-embedding-3-small",
                     1536,
                 )],
-                active: Some(ModelRef {
+                active: Some(EmbeddingModelRef {
                     vendor: "openai".to_string(),
                     model_id: "text-embedding-3-small".to_string(),
                 }),
-            },
-            tiers: TierBindings {
-                fast: Some(ModelRef {
-                    vendor: "openai".to_string(),
-                    model_id: "gpt-4o-mini".to_string(),
-                }),
-                standard: None,
-                deep: None,
             },
         };
         let s = toml::to_string(&cfg).expect("to_string");
@@ -218,45 +174,13 @@ mod tests {
 
     #[test]
     fn empty_file_parses_to_default() {
-        let s = "";
-        let cfg: AppConfig = toml::from_str(s).expect("empty parses");
+        let cfg: AppConfig = toml::from_str("").expect("empty parses");
         assert_eq!(cfg, AppConfig::default());
     }
 
     #[test]
     fn deny_unknown_fields() {
-        let s = r#"unknown_key = "bad""#;
-        let result: Result<AppConfig, _> = toml::from_str(s);
+        let result: Result<AppConfig, _> = toml::from_str(r#"unknown_key = "bad""#);
         assert!(result.is_err());
-    }
-
-    #[test]
-    fn tier_bindings_get() {
-        let bindings = TierBindings {
-            fast: Some(ModelRef {
-                vendor: "a".to_string(),
-                model_id: "1".to_string(),
-            }),
-            standard: Some(ModelRef {
-                vendor: "b".to_string(),
-                model_id: "2".to_string(),
-            }),
-            deep: None,
-        };
-        assert_eq!(
-            bindings.get(ModelTier::Fast),
-            Some(&ModelRef {
-                vendor: "a".to_string(),
-                model_id: "1".to_string()
-            })
-        );
-        assert_eq!(
-            bindings.get(ModelTier::Standard),
-            Some(&ModelRef {
-                vendor: "b".to_string(),
-                model_id: "2".to_string()
-            })
-        );
-        assert_eq!(bindings.get(ModelTier::Deep), None);
     }
 }

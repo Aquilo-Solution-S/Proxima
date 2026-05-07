@@ -16,6 +16,7 @@
 )]
 
 pub mod errors;
+pub mod inference;
 pub mod messages;
 pub mod primitives;
 pub mod refs;
@@ -23,6 +24,8 @@ pub mod rows;
 
 #[allow(unused_imports)]
 pub use errors::*;
+#[allow(unused_imports)]
+pub use inference::*;
 #[allow(unused_imports)]
 pub use messages::*;
 #[allow(unused_imports)]

@@ -11,7 +11,7 @@ use serde::Deserialize;
 use crate::error::ProtocolError;
 use crate::personality::{
     PersonalityTool, PersonalityToolContext, PersonalityToolResult,
-    authorization::{authorize_create_edge, AuthorizationError},
+    authorization::{AuthorizationError, authorize_create_edge},
 };
 
 #[derive(Debug, Default)]

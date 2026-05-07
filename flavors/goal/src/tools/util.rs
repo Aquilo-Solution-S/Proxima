@@ -1,3 +1,10 @@
+#![allow(
+    clippy::missing_errors_doc,
+    clippy::missing_panics_doc,
+    clippy::must_use_candidate,
+    clippy::needless_pass_by_value
+)]
+
 use proxima_core::mcp::{EntityRef, McpToolCtx, McpToolError};
 use proxima_core::verbs::goal_write::{GoalAuthorship, GoalDraft, GoalState};
 use proxima_core::verbs::schema::PayloadKind;
@@ -276,7 +283,7 @@ pub async fn insert_goal_in_tx(
     .bind(&draft.text)
     .bind(&draft.payload)
     .bind(state)
-    .bind(draft.supersedes_goal_id.map(|id| id.into_inner()))
+    .bind(draft.supersedes_goal_id.map(GoalId::into_inner))
     .bind(authorship_kind)
     .bind(authorship_origin)
     .bind(authorship_tool_id)
@@ -301,7 +308,7 @@ pub async fn insert_goal_in_tx(
     .bind(goal_id)
     .bind(draft.schema_id.as_str())
     .bind(draft.schema_version.into_inner().cast_signed())
-    .bind(draft.supersedes_goal_id.map(|id| id.into_inner()))
+    .bind(draft.supersedes_goal_id.map(GoalId::into_inner))
     .execute(&mut *tx)
     .await
     .map_err(map_storage)?;

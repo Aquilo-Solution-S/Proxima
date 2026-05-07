@@ -1,28 +1,24 @@
 import { createResource, type Component } from "solid-js";
+import { createTauriEngineClient } from "../../tauri-client";
 import { EmbeddingSection } from "./embedding-section";
-import { LlmSection } from "./llm-section";
+import { InferenceTargetsSection } from "./inference-targets-section";
 import { TierBindingsSection } from "./tier-bindings-section";
-import { loadActive, loadBindings, loadEmb, loadLlm } from "./loaders";
+import { loadActive, loadEmb } from "./loaders";
 
 export const SettingsModelsPanel: Component = () => {
-  const [llmModels, { refetch: refetchLlm }] = createResource(loadLlm);
+  const client = createTauriEngineClient();
   const [embeddingModels, { refetch: refetchEmb }] = createResource(loadEmb);
-  const [bindings, { refetch: refetchBindings }] = createResource(loadBindings);
   const [active, { refetch: refetchActive }] = createResource(loadActive);
 
   return (
     <div class="proxima-settings-panel">
-      <LlmSection llmModels={llmModels} onChange={refetchLlm} />
+      <InferenceTargetsSection client={client} />
+      <TierBindingsSection client={client} />
       <EmbeddingSection
         embeddingModels={embeddingModels}
         active={active}
         onModelsChange={refetchEmb}
         onActiveChange={refetchActive}
-      />
-      <TierBindingsSection
-        bindings={bindings}
-        llmModels={llmModels}
-        onChange={refetchBindings}
       />
     </div>
   );

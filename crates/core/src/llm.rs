@@ -105,10 +105,8 @@ pub struct Usage {
 
 #[async_trait]
 pub trait AnthropicClient: Send + Sync + std::fmt::Debug {
-    async fn messages_create(
-        &self,
-        request: MessagesRequest,
-    ) -> Result<MessagesResponse, LlmError>;
+    async fn messages_create(&self, request: MessagesRequest)
+    -> Result<MessagesResponse, LlmError>;
 
     fn model_id_for(&self, tier: ModelTier) -> &str;
 }

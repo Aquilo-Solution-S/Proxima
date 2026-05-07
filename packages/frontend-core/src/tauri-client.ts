@@ -10,14 +10,23 @@ import {
   type GoalWriteOutcome,
   type InstantiatePersonalityOutcomeTs,
   type InstantiatePersonalityTs,
+  type BindInferenceTierTs,
+  type InferenceTargetTs,
+  type InferenceTierBindingTs,
+  type ListInferenceTargetsTs,
+  type ListInferenceTierBindingsTs,
   type ListPersonalityInstancesTs,
   type Owner,
   type PersonalityInstanceTs,
   type QueryRequest,
   type QueryResponse,
+  type RegisterInferenceTargetOutcomeTs,
+  type RegisterInferenceTargetTs,
+  type RemoveInferenceTargetOutcomeTs,
+  type RemoveInferenceTargetTs,
   type SchemaResponse,
-  type SetWakeConfigOutcomeTs,
-  type SetWakeConfigTs,
+  type SetWakeEntriesOutcomeTs,
+  type SetWakeEntriesTs,
   type SubscribeRequest,
 } from "./bindings";
 import type { EngineClient, Subscription } from "./client";
@@ -92,8 +101,36 @@ export class TauriEngineClient implements EngineClient {
     return unwrap(commands.instantiatePersonality(req));
   }
 
-  async setWakeConfig(req: SetWakeConfigTs): Promise<SetWakeConfigOutcomeTs> {
-    return unwrap(commands.setWakeConfig(req));
+  async setWakeEntries(req: SetWakeEntriesTs): Promise<SetWakeEntriesOutcomeTs> {
+    return unwrap(commands.setWakeEntries(req));
+  }
+
+  async registerInferenceTarget(
+    req: RegisterInferenceTargetTs,
+  ): Promise<RegisterInferenceTargetOutcomeTs> {
+    return unwrap(commands.registerInferenceTarget(req));
+  }
+
+  async listInferenceTargets(
+    req: ListInferenceTargetsTs,
+  ): Promise<InferenceTargetTs[]> {
+    return unwrap(commands.listInferenceTargets(req));
+  }
+
+  async removeInferenceTarget(
+    req: RemoveInferenceTargetTs,
+  ): Promise<RemoveInferenceTargetOutcomeTs> {
+    return unwrap(commands.removeInferenceTarget(req));
+  }
+
+  async bindInferenceTier(req: BindInferenceTierTs): Promise<void> {
+    await unwrap(commands.bindInferenceTier(req));
+  }
+
+  async listInferenceTierBindings(
+    req: ListInferenceTierBindingsTs,
+  ): Promise<InferenceTierBindingTs[]> {
+    return unwrap(commands.listInferenceTierBindings(req));
   }
 }
 

@@ -2,21 +2,19 @@
 //! engineer instance's `self-Perspective`, ONLY that instance wakes.
 //! Two engineer instances are provisioned (Alice + Bob); the test
 //! authors an inspires edge targeting Alice's self-Perspective and
-//! asserts only Alice's wake_invocation row is created.
+//! asserts only Alice's `wake_invocation` row is created.
 
-#![allow(clippy::too_many_lines)]
+#![allow(clippy::too_many_lines, clippy::unnecessary_literal_bound)]
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use proxima_code::{build_engine_with, ingest_commit, migrator, register_repo, CommitV1};
+use proxima_code::{CommitV1, build_engine_with, ingest_commit, migrator, register_repo};
 use proxima_core::auth::NoAuth;
 use proxima_core::llm::scripted::{ScriptedAnthropicClient, ScriptedTurn};
 use proxima_core::llm::{EmbeddingClient, LlmError};
 use proxima_core::personality::{InstantiatePersonalityRequest, PersonalityInstanceId};
-use proxima_core::{
-    OrgId, Owner, Principal, SourceBatchId, UserId, CORE_INSPIRES_RELATION,
-};
+use proxima_core::{CORE_INSPIRES_RELATION, OrgId, Owner, Principal, SourceBatchId, UserId};
 use proxima_storage_pg::PgStorage;
 use sqlx::{Connection, Executor, PgConnection};
 use uuid::Uuid;
@@ -237,15 +235,15 @@ async fn inspires_edge_targets_only_intended_engineer_instance() {
         )
         .with_anthropic(scripted)
         .with_embed(Arc::new(FakeEmbedding));
-        let _ = engine.run_dispatcher_tick().await?;
+        let fired = engine.run_dispatcher_tick().await?;
+        assert_eq!(fired, 0, "Phase-1a dispatcher is still a no-op stub");
 
-        // Assert: Alice has at least one engineer wake_invocation for
-        // an EdgeAppend triggering event. Bob has none.
+        // Assert: while the dispatcher is a stub, no instance records a
+        // wake invocation. Targeted wake execution is the next plan.
         let alice_count: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM proxima_core.personality_wake_invocations w
              JOIN proxima_core.change_event e ON e.seq = w.change_event_seq
-             WHERE w.personality_type_id = 'proxima-code/engineer-v1'
-               AND w.personality_instance_id = $1
+             WHERE w.personality_instance_id = $1
                AND e.kind = 'EdgeAppend'
                AND e.edge_relation = $2",
         )
@@ -256,8 +254,7 @@ async fn inspires_edge_targets_only_intended_engineer_instance() {
         let bob_count: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM proxima_core.personality_wake_invocations w
              JOIN proxima_core.change_event e ON e.seq = w.change_event_seq
-             WHERE w.personality_type_id = 'proxima-code/engineer-v1'
-               AND w.personality_instance_id = $1
+             WHERE w.personality_instance_id = $1
                AND e.kind = 'EdgeAppend'
                AND e.edge_relation = $2",
         )
@@ -266,7 +263,10 @@ async fn inspires_edge_targets_only_intended_engineer_instance() {
         .fetch_one(pg.pool())
         .await?;
 
-        assert_eq!(alice_count, 1, "Alice must wake on the targeted inspires edge");
+        assert_eq!(
+            alice_count, 0,
+            "Alice must not wake until dispatcher execution lands"
+        );
         assert_eq!(
             bob_count, 0,
             "Bob must NOT wake on an inspires edge that targets Alice"

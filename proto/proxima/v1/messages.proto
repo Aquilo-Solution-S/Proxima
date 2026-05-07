@@ -19,6 +19,8 @@ syntax = "proto3";
 
 package proxima.v1;
 
+import "google/protobuf/timestamp.proto";
+
 // ---------------------------------------------------------------------------
 // IDs and primitives
 // ---------------------------------------------------------------------------
@@ -159,7 +161,7 @@ enum GoalState {
 }
 
 // docs/06 §"GoalAuthorship". `system` carries operator/tool provenance;
-// `external` is reserved for user-imported goals from another system.
+// `external` is available for user-imported goals from another system.
 message GoalAuthorship {
   oneof kind {
     UserAuthorship   user     = 1;
@@ -177,17 +179,12 @@ message SystemAuthorship {
   }
 }
 message OperatorOrigin {
-  reserved 6;
-  reserved "personality_state_hash";
-  reserved 5;
-  reserved "personality_id";
-
   string operator_id              = 1;  // OperatorId UUID
   OperatorKind operator_kind      = 2;
   string model_id                 = 3;
   string prompt_version           = 4;
-  string personality_type_id      = 7;
-  string personality_instance_id  = 8;  // UUID
+  string personality_type_id      = 5;
+  string personality_instance_id  = 6;  // UUID
 }
 message ToolOrigin {
   string tool_id = 1;
@@ -263,7 +260,7 @@ message FlavorDescriptor {
 }
 
 // Where a flavor came from. v1 ships only `Builtin`; the other
-// variants are reserved for marketplace / out-of-process loading.
+// variants are available for marketplace / out-of-process loading.
 message FlavorProvenance {
   oneof kind {
     Builtin builtin             = 1;
@@ -273,6 +270,107 @@ message FlavorProvenance {
   message Builtin {}
   message Marketplace { string source_url = 1; }
   message Local       { string workspace_path = 1; }
+}
+
+// ---------------------------------------------------------------------------
+// WakeEntry + inference settings
+// ---------------------------------------------------------------------------
+
+enum TriggerKind {
+  TRIGGER_KIND_UNSPECIFIED = 0;
+  TRIGGER_KIND_ON_MEMORY = 1;
+  TRIGGER_KIND_ON_EDGE = 2;
+}
+
+enum AuthoredBy {
+  AUTHORED_BY_UNSPECIFIED = 0;
+  AUTHORED_BY_ANY = 1;
+  AUTHORED_BY_SELF = 2;
+  AUTHORED_BY_OTHER = 3;
+}
+
+enum ExecutionMode {
+  EXECUTION_MODE_UNSPECIFIED = 0;
+  EXECUTION_MODE_SUBSTRATE_ONLY = 1;
+  EXECUTION_MODE_WORKSPACE = 2;
+}
+
+enum ModelTierProto {
+  MODEL_TIER_UNSPECIFIED = 0;
+  MODEL_TIER_FAST = 1;
+  MODEL_TIER_STANDARD = 2;
+  MODEL_TIER_DEEP = 3;
+}
+
+message WakeEntry {
+  string wake_entry_id = 1;
+  TriggerKind trigger_kind = 2;
+  string trigger_id = 3;
+  string label = 4;
+  bool enabled = 5;
+  ExecutionMode execution_mode = 6;
+  AuthoredBy authored_by = 7;
+  uint32 probability_promille = 8;
+  string recipe_ref = 9;
+  ModelTierProto model_tier = 10;
+  optional string inference_target_ref = 11;
+  repeated string substrate_tool_palette = 12;
+  repeated string workspace_tool_palette = 13;
+  uint32 max_rounds = 14;
+  optional string disabled_reason = 15;
+}
+
+message WakeEntryDraft {
+  TriggerKind trigger_kind = 1;
+  string trigger_id = 2;
+  string label = 3;
+  bool enabled = 4;
+  ExecutionMode execution_mode = 5;
+  AuthoredBy authored_by = 6;
+  uint32 probability_promille = 7;
+  string recipe_ref = 8;
+  ModelTierProto model_tier = 9;
+  optional string inference_target_ref = 10;
+  repeated string substrate_tool_palette = 11;
+  repeated string workspace_tool_palette = 12;
+  uint32 max_rounds = 13;
+}
+
+message InferenceTarget {
+  string target_ref = 1;
+  InferenceTargetConfig config = 2;
+  google.protobuf.Timestamp created_at = 3;
+  google.protobuf.Timestamp updated_at = 4;
+}
+
+message InferenceTargetConfig {
+  oneof kind {
+    LocalCliConfig local_cli = 1;
+    RemoteModelConfig remote_model = 2;
+  }
+}
+
+message LocalCliConfig {
+  string command = 1;
+  optional string profile = 2;
+  repeated EnvOverride env_overrides = 3;
+}
+
+message EnvOverride {
+  string key = 1;
+  string value = 2;
+}
+
+message RemoteModelConfig {
+  string vendor = 1;
+  string dialect = 2;
+  string model_id = 3;
+  optional string credentials_ref = 4;
+}
+
+message InferenceTierBinding {
+  ModelTierProto tier = 1;
+  string target_ref = 2;
 }
 
 // ---------------------------------------------------------------------------
@@ -367,4 +465,15 @@ enum ErrorCode {
   ERROR_CODE_ENGINE_UNAVAILABLE     = 11;
   ERROR_CODE_TRANSACTION_CONFLICT   = 12;  // retry-safe
   ERROR_CODE_INTERNAL               = 13;  // catch-all, no detail leak
+  ERROR_CODE_INVALID_ARGUMENT       = 14;
+  ERROR_CODE_RECIPE_INVALID         = 15;
+  ERROR_CODE_RECIPE_NOT_FOUND       = 16;
+  ERROR_CODE_TOOL_NOT_REGISTERED    = 17;
+  ERROR_CODE_INFERENCE_TARGET_MISSING = 18;
+  ERROR_CODE_TIER_UNBOUND           = 19;
+  ERROR_CODE_TARGET_REF_CONFLICT    = 20;
+  ERROR_CODE_TARGET_IN_USE          = 21;
+  ERROR_CODE_TRIGGER_CONFLICT       = 22;
+  ERROR_CODE_DUPLICATE_TRIGGER_IN_REQUEST = 23;
+  ERROR_CODE_GOOSE_CLI_UNAVAILABLE  = 24;
 }

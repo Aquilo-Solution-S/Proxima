@@ -57,7 +57,7 @@ Flavor authors may define:
 | Relations | registered `RelationDescriptor` ids |
 | Tools | build-time tool types |
 | Personalities | `PersonalityFlavor` impls |
-| Wake filters | `WakeFilterKind` impls |
+| Wake entries | recipe refs, model tiers, execution modes, tool palettes |
 | Frontend | views, settings panels, renderers, codecs |
 
 Flavor authors may not define runtime registration endpoints, feature flags,

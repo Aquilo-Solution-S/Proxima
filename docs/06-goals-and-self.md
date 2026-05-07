@@ -49,7 +49,7 @@ Runtime self for one personality instance:
 
 ```
 Self(instance) =
-  personality_wake_config.current_self_perspective_memory_id
+  personality.current_root_perspective_memory_id
   + active owner Goals addressable to that self-Perspective
 ```
 
@@ -60,7 +60,7 @@ The self anchor is a Perspective row whose schema is declared by
 PersonalityInstance {
   personality_type_id: text,
   personality_instance_id: UUID,
-  current_self_perspective_memory_id: MemoryId,
+  current_root_perspective_memory_id: MemoryId,
 }
 ```
 
@@ -68,13 +68,13 @@ Self evolution:
 
 ```
 self_Perspective_vN+1 --core/supersedes--> self_Perspective_vN
-personality_wake_config.current_self_perspective_memory_id = vN+1
+personality.current_root_perspective_memory_id = vN+1
 ```
 
 `personality_wake_config.status = tombstoned` removes the runtime
 instance from dispatch and default listings. It does not delete the
-self-Perspective, wake cursor, invocations, or authored A/P rows.
-Tombstone is operational config (like wake-filter edits), not Memory
+self-Perspective, wake entries, wake cursor, invocations, or authored A/P
+rows. Tombstone is operational config (like wake-entry edits), not Memory
 mutation; the instance's cognitive history stays queryable.
 
 ## Goal Assignment
@@ -88,7 +88,7 @@ self-Perspective memory
 ```
 
 `core/inspires` wakes the addressed personality through the auto-added
-`OnEdge(core/inspires -> SelfPerspective)` filter.
+`WakeEntry(trigger_kind = on_edge, trigger_id = core/inspires)`.
 
 Assignment does not imply obligation. The personality may read, ignore,
 accept, counter, or write a different perspective.
@@ -108,7 +108,7 @@ decline -> new Goal(state = Rejected, supersedes = Proposed); edge unchanged
 `active_goals(instance)`:
 
 ```
-traverse core/inspires to current_self_perspective_memory_id
+traverse core/inspires to current_root_perspective_memory_id
 follow Goal supersession to head rows
 filter state = Active
 ```

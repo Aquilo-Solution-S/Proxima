@@ -10,17 +10,22 @@ import {
 } from "solid-js";
 import {
   commands,
+  type AuthoredByTs,
+  type ExecutionModeTs,
   type InstantiatePersonalityOutcomeTs,
   type InstantiatePersonalityTs,
   type ListPersonalityInstancesTs,
+  type ModelTierTs,
   type Owner,
   type PersonalityInstanceTs,
   type ProtocolError,
-  type SetWakeConfigOutcomeTs,
-  type SetWakeConfigTs,
+  type SetWakeEntriesOutcomeTs,
+  type SetWakeEntriesTs,
   type TombstonePersonalityOutcomeTs,
   type TombstonePersonalityTs,
-  type WakeFilterTs,
+  type TriggerKindTs,
+  type WakeEntryDraftTs,
+  type WakeEntryTs,
 } from "../bindings";
 import { sentinelOwner } from "../graph-store";
 import { Mono } from "../primitives";
@@ -42,28 +47,18 @@ export type PersonalityCommandClient = {
   instantiatePersonality: (
     req: InstantiatePersonalityTs,
   ) => CommandResult<InstantiatePersonalityOutcomeTs>;
-  setWakeConfig: (req: SetWakeConfigTs) => CommandResult<SetWakeConfigOutcomeTs>;
+  setWakeEntries: (
+    req: SetWakeEntriesTs,
+  ) => CommandResult<SetWakeEntriesOutcomeTs>;
   tombstonePersonality: (
     req: TombstonePersonalityTs,
   ) => CommandResult<TombstonePersonalityOutcomeTs>;
 };
 
-const emptyOnMemory = (): WakeFilterTs => ({
-  kind: "on_memory",
-  version: 1,
-  schema_id: "proxima-code/commit-summary-v1",
-  authored_by: { kind: "any" },
-  probability: 1,
-});
-
-const emptyOnEdge = (): WakeFilterTs => ({
-  kind: "on_edge",
-  version: 1,
-  relation_id: "core/inspires",
-  source: { kind: "any" },
-  target: { kind: "self_perspective" },
-  probability: 1,
-});
+const TRIGGER_KINDS: TriggerKindTs[] = ["on_memory", "on_edge"];
+const AUTHORED_BY: AuthoredByTs[] = ["any", "self_author", "other"];
+const EXECUTION_MODES: ExecutionModeTs[] = ["substrate_only", "workspace"];
+const MODEL_TIERS: ModelTierTs[] = ["fast", "standard", "deep"];
 
 const registeredSchemaOptions = () => {
   const seen = new Set<string>();
@@ -85,8 +80,41 @@ const registeredSchemaOptions = () => {
 const schemaOptionsFor = (schemaId: string) => {
   const options = registeredSchemaOptions();
   if (options.some((option) => option.schemaId === schemaId)) return options;
+  if (schemaId.trim() === "") return options;
   return [{ schemaId, flavor: "stored config" }, ...options];
 };
+
+const emptyDraft = (): WakeEntryDraftTs => ({
+  trigger_kind: "on_memory",
+  trigger_id: registeredSchemaOptions()[0]?.schemaId ?? "",
+  label: "",
+  enabled: true,
+  execution_mode: "substrate_only",
+  authored_by: "any",
+  probability_promille: 1000,
+  recipe_ref: "",
+  model_tier: "standard",
+  inference_target_ref: null,
+  substrate_tool_palette: [],
+  workspace_tool_palette: [],
+  max_rounds: 4,
+});
+
+const entryToDraft = (entry: WakeEntryTs): WakeEntryDraftTs => ({
+  trigger_kind: entry.trigger_kind,
+  trigger_id: entry.trigger_id,
+  label: entry.label,
+  enabled: entry.enabled,
+  execution_mode: entry.execution_mode,
+  authored_by: entry.authored_by,
+  probability_promille: entry.probability_promille,
+  recipe_ref: entry.recipe_ref,
+  model_tier: entry.model_tier,
+  inference_target_ref: entry.inference_target_ref,
+  substrate_tool_palette: [...entry.substrate_tool_palette],
+  workspace_tool_palette: [...entry.workspace_tool_palette],
+  max_rounds: entry.max_rounds,
+});
 
 export const PersonalitiesView: Component<{
   client?: PersonalityCommandClient;
@@ -394,20 +422,22 @@ const PersonalityCard: Component<{
         </span>
       </div>
       <div class="self-perspective-ref">
-        <span>Self</span>
+        <span>Root</span>
         <button
           type="button"
           class="self-perspective-button"
-          title={props.instance.current_self_perspective_memory_id}
-          onClick={() => void copyText(props.instance.current_self_perspective_memory_id)}
+          title={props.instance.current_root_perspective_memory_id}
+          onClick={() =>
+            void copyText(props.instance.current_root_perspective_memory_id)
+          }
         >
-          <Mono>{shortId(props.instance.current_self_perspective_memory_id)}</Mono>
+          <Mono>{shortId(props.instance.current_root_perspective_memory_id)}</Mono>
         </button>
       </div>
       <Show when={props.instance.status === "needs_repair"}>
         <div class="repair-banner">
           <span>
-            Wake config needs repair - saved filters could not be loaded after a
+            Wake entries need repair - saved entries could not be loaded after a
             recent update.
           </span>
           <button type="button" class="hub-nav-item" onClick={props.onEdit}>
@@ -416,13 +446,13 @@ const PersonalityCard: Component<{
         </div>
       </Show>
       <ul class="wake-list">
-        <For each={props.instance.wake_filters}>
-          {(filter) => <li class="wake-item">{wakeSummary(filter)}</li>}
+        <For each={props.instance.wake_entries}>
+          {(entry) => <li class="wake-item">{wakeSummary(entry)}</li>}
         </For>
       </ul>
       <div class="personality-card-actions">
         <button type="button" class="hub-nav-item" onClick={props.onEdit}>
-          Edit wake config
+          Edit wake entries
         </button>
         <button
           type="button"
@@ -458,25 +488,29 @@ const PersonalityCard: Component<{
   );
 };
 
-const truncateName = (name: string): string =>
-  name.length > 48 ? `${name.slice(0, 45)}...` : name;
-
 const WakeEditor: Component<{
   instance: PersonalityInstanceTs;
   onClose: () => void;
   onSaved: () => void;
   client: PersonalityCommandClient;
 }> = (props) => {
-  const [filters, setFilters] = createSignal<WakeFilterTs[]>(
+  const [drafts, setDrafts] = createSignal<WakeEntryDraftTs[]>(
     props.instance.status === "needs_repair"
       ? []
-      : props.instance.wake_filters.map(cloneFilter),
+      : props.instance.wake_entries.map(entryToDraft),
   );
   const [error, setError] = createSignal<string | null>(null);
   const [saving, setSaving] = createSignal(false);
 
-  const updateFilter = (index: number, next: WakeFilterTs) => {
-    setFilters((prev) => prev.map((filter, i) => (i === index ? next : filter)));
+  const updateDraft = (index: number, mutate: (draft: WakeEntryDraftTs) => void) => {
+    setDrafts((prev) =>
+      prev.map((draft, i) => {
+        if (i !== index) return draft;
+        const copy = cloneDraft(draft);
+        mutate(copy);
+        return copy;
+      }),
+    );
   };
 
   const save = async () => {
@@ -484,11 +518,11 @@ const WakeEditor: Component<{
     setError(null);
     try {
       await unwrap(
-        props.client.setWakeConfig({
+        props.client.setWakeEntries({
           owner: props.instance.owner,
           personality_type_id: props.instance.personality_type_id,
           personality_instance_id: props.instance.personality_instance_id,
-          wake_filters: filters(),
+          entries: drafts(),
         }),
       );
       props.onSaved();
@@ -507,7 +541,7 @@ const WakeEditor: Component<{
             <h2>{props.instance.display_name}</h2>
             <Mono>{props.instance.personality_instance_id}</Mono>
             <Show when={props.instance.status === "needs_repair"}>
-              <p class="proxima-error">wake config needs repair</p>
+              <p class="proxima-error">wake entries need repair</p>
             </Show>
             <Show when={error()}>
               {(message) => <p class="proxima-error">{message()}</p>}
@@ -518,14 +552,14 @@ const WakeEditor: Component<{
           </button>
         </div>
 
-        <div class="wake-editor-list" data-testid="wake-filters-list">
-          <For each={filters()}>
-            {(filter, index) => (
-              <WakeFilterEditor
-                filter={filter}
-                onChange={(next) => updateFilter(index(), next)}
+        <div class="wake-editor-list" data-testid="wake-entries-list">
+          <For each={drafts()}>
+            {(draft, index) => (
+              <WakeEntryRow
+                draft={draft}
+                onUpdate={(mutate) => updateDraft(index(), mutate)}
                 onRemove={() =>
-                  setFilters((prev) => prev.filter((_, i) => i !== index()))
+                  setDrafts((prev) => prev.filter((_, i) => i !== index()))
                 }
               />
             )}
@@ -537,16 +571,9 @@ const WakeEditor: Component<{
             <button
               type="button"
               class="hub-nav-item"
-              onClick={() => setFilters((prev) => [...prev, emptyOnMemory()])}
+              onClick={() => setDrafts((prev) => [...prev, emptyDraft()])}
             >
-              Add OnMemory
-            </button>
-            <button
-              type="button"
-              class="hub-nav-item"
-              onClick={() => setFilters((prev) => [...prev, emptyOnEdge()])}
-            >
-              Add OnEdge
+              Add WakeEntry
             </button>
           </div>
           <button
@@ -563,45 +590,117 @@ const WakeEditor: Component<{
   );
 };
 
-const WakeFilterEditor: Component<{
-  filter: WakeFilterTs;
-  onChange: (next: WakeFilterTs) => void;
+const WakeEntryRow: Component<{
+  draft: WakeEntryDraftTs;
+  onUpdate: (mutate: (draft: WakeEntryDraftTs) => void) => void;
   onRemove: () => void;
 }> = (props) => {
-  const probabilityPromille = () =>
-    String(Math.round(props.filter.probability * 1000));
-  const changeProbabilityPromille = (value: string) => {
-    const promille = Number(value);
-    if (Number.isFinite(promille)) {
-      const probability = Math.max(0, Math.min(1000, promille)) / 1000;
-      props.onChange({ ...props.filter, probability });
-    }
-  };
+  const triggerKind = () => props.draft.trigger_kind;
 
   return (
     <div class="wake-editor-row">
       <label>
-        Kind
-        <select
-          value={props.filter.kind}
+        Label
+        <input
+          value={props.draft.label}
+          onInput={(event) =>
+            props.onUpdate((draft) => {
+              draft.label = event.currentTarget.value;
+            })
+          }
+        />
+      </label>
+      <label>
+        Enabled
+        <input
+          type="checkbox"
+          checked={props.draft.enabled}
           onChange={(event) =>
-            props.onChange(
-              event.currentTarget.value === "on_edge"
-                ? emptyOnEdge()
-                : emptyOnMemory(),
-            )
+            props.onUpdate((draft) => {
+              draft.enabled = event.currentTarget.checked;
+            })
+          }
+        />
+      </label>
+      <label>
+        Trigger kind
+        <select
+          value={props.draft.trigger_kind}
+          onChange={(event) =>
+            props.onUpdate((draft) => {
+              draft.trigger_kind = event.currentTarget.value as TriggerKindTs;
+            })
           }
         >
-          <option value="on_memory">OnMemory</option>
-          <option value="on_edge">OnEdge</option>
+          <For each={TRIGGER_KINDS}>
+            {(kind) => <option value={kind}>{kind}</option>}
+          </For>
         </select>
       </label>
-      <Show
-        when={props.filter.kind === "on_memory"}
-        fallback={<OnEdgeFields filter={props.filter} onChange={props.onChange} />}
-      >
-        <OnMemoryFields filter={props.filter} onChange={props.onChange} />
-      </Show>
+      <label>
+        Trigger id
+        <Show
+          when={triggerKind() === "on_memory"}
+          fallback={
+            <input
+              value={props.draft.trigger_id}
+              onInput={(event) =>
+                props.onUpdate((draft) => {
+                  draft.trigger_id = event.currentTarget.value;
+                })
+              }
+            />
+          }
+        >
+          <select
+            value={props.draft.trigger_id}
+            onChange={(event) =>
+              props.onUpdate((draft) => {
+                draft.trigger_id = event.currentTarget.value;
+              })
+            }
+          >
+            <For each={schemaOptionsFor(props.draft.trigger_id)}>
+              {(option) => (
+                <option value={option.schemaId}>
+                  {option.schemaId} ({option.flavor})
+                </option>
+              )}
+            </For>
+          </select>
+        </Show>
+      </label>
+      <label>
+        Execution mode
+        <select
+          value={props.draft.execution_mode}
+          onChange={(event) =>
+            props.onUpdate((draft) => {
+              draft.execution_mode = event.currentTarget
+                .value as ExecutionModeTs;
+            })
+          }
+        >
+          <For each={EXECUTION_MODES}>
+            {(mode) => <option value={mode}>{mode}</option>}
+          </For>
+        </select>
+      </label>
+      <label>
+        Authored by
+        <select
+          value={props.draft.authored_by}
+          onChange={(event) =>
+            props.onUpdate((draft) => {
+              draft.authored_by = event.currentTarget.value as AuthoredByTs;
+            })
+          }
+        >
+          <For each={AUTHORED_BY}>
+            {(author) => <option value={author}>{author}</option>}
+          </For>
+        </select>
+      </label>
       <label>
         Probability (promille)
         <input
@@ -609,9 +708,85 @@ const WakeFilterEditor: Component<{
           min="0"
           max="1000"
           step="1"
-          value={probabilityPromille()}
+          value={String(props.draft.probability_promille)}
           onInput={(event) =>
-            changeProbabilityPromille(event.currentTarget.value)
+            props.onUpdate((draft) => {
+              draft.probability_promille = clampInt(event.currentTarget.value, 0, 1000);
+            })
+          }
+        />
+      </label>
+      <label>
+        Recipe ref
+        <input
+          value={props.draft.recipe_ref}
+          onInput={(event) =>
+            props.onUpdate((draft) => {
+              draft.recipe_ref = event.currentTarget.value;
+            })
+          }
+        />
+      </label>
+      <label>
+        Model tier
+        <select
+          value={props.draft.model_tier}
+          onChange={(event) =>
+            props.onUpdate((draft) => {
+              draft.model_tier = event.currentTarget.value as ModelTierTs;
+            })
+          }
+        >
+          <For each={MODEL_TIERS}>
+            {(tier) => <option value={tier}>{tier}</option>}
+          </For>
+        </select>
+      </label>
+      <label>
+        Inference target ref
+        <input
+          value={props.draft.inference_target_ref ?? ""}
+          onInput={(event) =>
+            props.onUpdate((draft) => {
+              const value = event.currentTarget.value.trim();
+              draft.inference_target_ref = value === "" ? null : value;
+            })
+          }
+        />
+      </label>
+      <label>
+        Substrate tool palette
+        <input
+          value={props.draft.substrate_tool_palette.join(",")}
+          onInput={(event) =>
+            props.onUpdate((draft) => {
+              draft.substrate_tool_palette = splitPalette(event.currentTarget.value);
+            })
+          }
+        />
+      </label>
+      <label>
+        Workspace tool palette
+        <input
+          value={props.draft.workspace_tool_palette.join(",")}
+          onInput={(event) =>
+            props.onUpdate((draft) => {
+              draft.workspace_tool_palette = splitPalette(event.currentTarget.value);
+            })
+          }
+        />
+      </label>
+      <label>
+        Max rounds
+        <input
+          type="number"
+          min="0"
+          step="1"
+          value={String(props.draft.max_rounds)}
+          onInput={(event) =>
+            props.onUpdate((draft) => {
+              draft.max_rounds = clampInt(event.currentTarget.value, 0, 1_000);
+            })
           }
         />
       </label>
@@ -622,97 +797,26 @@ const WakeFilterEditor: Component<{
   );
 };
 
-const OnMemoryFields: Component<{
-  filter: WakeFilterTs;
-  onChange: (next: WakeFilterTs) => void;
-}> = (props) => {
-  const filter = props.filter;
-  if (filter.kind !== "on_memory") return null;
-  return (
-    <>
-      <label>
-        Schema
-        <select
-          value={filter.schema_id}
-          onChange={(event) =>
-            props.onChange({ ...filter, schema_id: event.currentTarget.value })
-          }
-        >
-          <For each={schemaOptionsFor(filter.schema_id)}>
-            {(option) => (
-              <option value={option.schemaId}>
-                {option.schemaId} ({option.flavor})
-              </option>
-            )}
-          </For>
-        </select>
-      </label>
-      <label>
-        Author
-        <select
-          value={filter.authored_by.kind}
-          onChange={(event) =>
-            props.onChange({
-              ...filter,
-              authored_by:
-                event.currentTarget.value === "external"
-                  ? { kind: "external" }
-                  : { kind: "any" },
-            })
-          }
-        >
-          <option value="any">Any</option>
-          <option value="external">External</option>
-        </select>
-      </label>
-    </>
-  );
-};
+const truncateName = (name: string): string =>
+  name.length > 48 ? `${name.slice(0, 45)}...` : name;
 
-const OnEdgeFields: Component<{
-  filter: WakeFilterTs;
-  onChange: (next: WakeFilterTs) => void;
-}> = (props) => {
-  const filter = props.filter;
-  if (filter.kind !== "on_edge") return null;
-  return (
-    <>
-      <label>
-        Relation
-        <input
-          value={filter.relation_id}
-          onInput={(event) =>
-            props.onChange({
-              ...filter,
-              relation_id: event.currentTarget.value,
-            })
-          }
-        />
-      </label>
-      <label>
-        Target
-        <select
-          value={filter.target.kind}
-          onChange={(event) =>
-            props.onChange({
-              ...filter,
-              target:
-                event.currentTarget.value === "self_perspective"
-                  ? { kind: "self_perspective" }
-                  : { kind: "any" },
-            })
-          }
-        >
-          <option value="self_perspective">Self</option>
-          <option value="any">Any</option>
-        </select>
-      </label>
-    </>
-  );
-};
+const cloneDraft = (draft: WakeEntryDraftTs): WakeEntryDraftTs => ({
+  ...draft,
+  substrate_tool_palette: [...draft.substrate_tool_palette],
+  workspace_tool_palette: [...draft.workspace_tool_palette],
+});
 
-const cloneFilter = (filter: WakeFilterTs): WakeFilterTs =>
-  JSON.parse(JSON.stringify(filter)) as WakeFilterTs;
+const splitPalette = (value: string): string[] =>
+  value
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+const clampInt = (value: string, min: number, max: number): number => {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed)) return min;
+  return Math.max(min, Math.min(max, parsed));
+};
 
 const shortId = (value: string): string => value.slice(0, 8);
 
@@ -720,31 +824,12 @@ const copyText = async (value: string): Promise<void> => {
   await navigator.clipboard?.writeText(value);
 };
 
-const wakeSummary = (filter: WakeFilterTs) => {
-  switch (filter.kind) {
-    case "on_memory":
-      return (
-        <>
-          <span>OnMemory</span>
-          <Mono>{filter.schema_id}</Mono>
-        </>
-      );
-    case "on_edge":
-      return (
-        <>
-          <span>OnEdge</span>
-          <Mono>{filter.relation_id}</Mono>
-        </>
-      );
-    case "custom":
-      return (
-        <>
-          <span>Custom</span>
-          <Mono>{filter.kind_id}</Mono>
-        </>
-      );
-  }
-};
+const wakeSummary = (entry: WakeEntryTs) => (
+  <>
+    <span>{entry.label || entry.trigger_kind}</span>
+    <Mono>{entry.trigger_id}</Mono>
+  </>
+);
 
 const unwrap = async <T, E>(
   result: Promise<{ status: "ok"; data: T } | { status: "error"; error: E }>,
@@ -755,9 +840,18 @@ const unwrap = async <T, E>(
 };
 
 const errorMessage = (err: unknown): string => {
-  if (err && typeof err === "object" && "message" in err) {
-    const message = (err as { message: unknown }).message;
-    if (typeof message === "string") return message;
+  if (err && typeof err === "object") {
+    if ("code" in err && "message" in err) {
+      const code = (err as { code: unknown }).code;
+      const message = (err as { message: unknown }).message;
+      if (typeof code === "string" && typeof message === "string") {
+        return `${code}: ${message}`;
+      }
+    }
+    if ("message" in err) {
+      const message = (err as { message: unknown }).message;
+      if (typeof message === "string") return message;
+    }
   }
   return String(err);
 };

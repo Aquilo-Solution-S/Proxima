@@ -8,12 +8,17 @@ use std::sync::Arc;
 use crate::GoalId;
 use crate::Owner;
 use crate::SourceBatchId;
+use crate::inference::{
+    BindInferenceTierRequest, BindInferenceTierResponse, InferenceTargetRow,
+    InferenceTierBindingRow, RegisterInferenceTargetRequest, RegisterInferenceTargetResponse,
+    RemoveInferenceTargetRequest, RemoveInferenceTargetResponse,
+};
 use crate::personality::{
     AbstractionRow, ActiveGoalSummary, ChangeEventForWake, InstantiatePersonalityRequest,
     InstantiatePersonalityResponse, MemorySnapshot, PersonalityInstanceId, PersonalityInstanceRow,
     PersonalityRef, PersonalityWriteOutcome, PersonalityWriteRequest, SetWakeEntriesRequest,
-    SetWakeEntriesResponse, SidecarSpec, TombstonePersonalityRequest,
-    TombstonePersonalityResponse, WakeDispatchEntryRow, WakeInvocationStatus,
+    SetWakeEntriesResponse, SidecarSpec, TombstonePersonalityRequest, TombstonePersonalityResponse,
+    WakeDispatchEntryRow, WakeInvocationStatus,
 };
 use crate::verbs::close_batch::CloseBatchOutcome;
 use crate::verbs::event_history::{EventHistoryRequest, EventHistoryResponse};
@@ -139,10 +144,52 @@ pub trait Storage: Send + Sync {
         source_batch_id: SourceBatchId,
     ) -> Result<CloseBatchOutcome, StorageError>;
 
+    /// Register or replace an InferenceTarget. Idempotent on
+    /// `(owner, target_ref)` when the body matches; returns
+    /// `target_ref_conflict` (mapped at the verb layer) if the body
+    /// differs from the existing row.
+    async fn register_inference_target(
+        &self,
+        req: &RegisterInferenceTargetRequest,
+    ) -> Result<RegisterInferenceTargetResponse, StorageError>;
+
+    async fn list_inference_targets(
+        &self,
+        owner: &Owner,
+    ) -> Result<Vec<InferenceTargetRow>, StorageError>;
+
+    /// Remove an InferenceTarget. Returns `idempotent_replay = true` if
+    /// the row was already absent. Returns `target_in_use` (mapped at
+    /// the verb layer) if a tier binding or wake entry still references
+    /// `target_ref`.
+    async fn remove_inference_target(
+        &self,
+        req: &RemoveInferenceTargetRequest,
+    ) -> Result<RemoveInferenceTargetResponse, StorageError>;
+
+    /// Upsert a tier binding.
+    async fn bind_inference_tier(
+        &self,
+        req: &BindInferenceTierRequest,
+    ) -> Result<BindInferenceTierResponse, StorageError>;
+
+    /// Remove a tier binding. Idempotent.
+    async fn unbind_inference_tier(
+        &self,
+        owner: &Owner,
+        tier: crate::ModelTier,
+    ) -> Result<(), StorageError>;
+
+    async fn list_inference_tier_bindings(
+        &self,
+        owner: &Owner,
+    ) -> Result<Vec<InferenceTierBindingRow>, StorageError>;
+
     /// List configured personality instances for an owner. When
     /// `include_tombstoned` is `false` (the default for UI listings),
     /// rows whose status is `tombstoned` are filtered out. Provisioning
     /// passes `true` so a previously tombstoned default isn't recreated.
+    /// Implementations populate each row's active `wake_entries`.
     async fn list_personality_instances(
         &self,
         owner: &Owner,
@@ -199,6 +246,7 @@ pub trait Storage: Send + Sync {
         change_event_seq: uuid::Uuid,
     ) -> Result<bool, StorageError>;
 
+    #[allow(clippy::too_many_arguments)]
     async fn finish_wake_invocation(
         &self,
         owner: &Owner,
@@ -363,6 +411,49 @@ impl Storage for NoopStorage {
         _source_batch_id: SourceBatchId,
     ) -> Result<CloseBatchOutcome, StorageError> {
         Err(StorageError::Internal("NoopStorage rejects writes".into()))
+    }
+
+    async fn register_inference_target(
+        &self,
+        _req: &RegisterInferenceTargetRequest,
+    ) -> Result<RegisterInferenceTargetResponse, StorageError> {
+        unimplemented!("noop storage")
+    }
+
+    async fn list_inference_targets(
+        &self,
+        _owner: &Owner,
+    ) -> Result<Vec<InferenceTargetRow>, StorageError> {
+        unimplemented!("noop storage")
+    }
+
+    async fn remove_inference_target(
+        &self,
+        _req: &RemoveInferenceTargetRequest,
+    ) -> Result<RemoveInferenceTargetResponse, StorageError> {
+        unimplemented!("noop storage")
+    }
+
+    async fn bind_inference_tier(
+        &self,
+        _req: &BindInferenceTierRequest,
+    ) -> Result<BindInferenceTierResponse, StorageError> {
+        unimplemented!("noop storage")
+    }
+
+    async fn unbind_inference_tier(
+        &self,
+        _owner: &Owner,
+        _tier: crate::ModelTier,
+    ) -> Result<(), StorageError> {
+        unimplemented!("noop storage")
+    }
+
+    async fn list_inference_tier_bindings(
+        &self,
+        _owner: &Owner,
+    ) -> Result<Vec<InferenceTierBindingRow>, StorageError> {
+        unimplemented!("noop storage")
     }
 
     async fn list_personality_instances(

@@ -19,7 +19,7 @@ serde_json = { workspace = true }
 sqlx = { workspace = true }
 uuid = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["process", "time"] }
 async-trait = { workspace = true }
 blake3 = { workspace = true }
 ciborium = { workspace = true }
@@ -33,3 +33,5 @@ reqwest = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt"] }
+tempfile = "3"
+which = "6"

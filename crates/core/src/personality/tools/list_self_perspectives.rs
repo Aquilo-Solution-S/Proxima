@@ -65,10 +65,12 @@ impl PersonalityTool for ListSelfPerspectivesTool {
                 })
             })
             .collect();
-        ctx.record_read(
-            rows.iter()
-                .map(|row| (row.current_root_perspective_memory_id, WakeChainDepth::zero())),
-        )
+        ctx.record_read(rows.iter().map(|row| {
+            (
+                row.current_root_perspective_memory_id,
+                WakeChainDepth::zero(),
+            )
+        }))
         .await;
         Ok(PersonalityToolResult::ok(serde_json::json!({
             "instances": entries,

@@ -177,8 +177,21 @@ const clientWithHistory = (
   instantiatePersonality: async () => {
     throw new Error("not used");
   },
-  setWakeConfig: async () => {
+  setWakeEntries: async () => {
     throw new Error("not used");
+  },
+  registerInferenceTarget: async () => {
+    throw new Error("not used");
+  },
+  listInferenceTargets: async () => [],
+  removeInferenceTarget: async () => {
+    throw new Error("not used");
+  },
+  bindInferenceTier: async () => {
+    throw new Error("not used");
+  },
+  listInferenceTierBindings: async () => {
+    return [];
   },
 });
 

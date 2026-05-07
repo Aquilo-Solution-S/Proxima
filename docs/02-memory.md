@@ -527,7 +527,7 @@ the `compliance.*` audit schema that proves erasure happened.
 
 **Personality is a flavor-declared decider type plus runtime instances.**
 The substrate ships the trait shape, wake storage, and dispatcher; prompts,
-self-schema, tool palette, writeable schemas/relations, wake filters, tier,
+self-schema, tool palette, writeable schemas/relations, wake entries, tier,
 and capability requirements live in registered `PersonalityFlavor` impls
 (see [08 §Registration mechanism](docs/08-core-and-flavors.md#registration-mechanism)
 and [13 §Authoring contract](13-flavor-marketplace.md#authoring-contract)).
@@ -541,8 +541,8 @@ trait PersonalityFlavor {
     fn tools(&self) -> Vec<Arc<dyn PersonalityTool>>;
     fn writeable_schemas(&self) -> &'static [&'static str];
     fn writeable_relations(&self) -> &'static [&'static str];
-    fn default_wake_filters(&self) -> Vec<WakeFilter>;
     fn tier(&self) -> ModelTier;
+    fn max_wake_chain_depth(&self) -> u16;
     fn requires(&self) -> LlmCaps;
     async fn decide(&self, ctx: PersonalityDecisionContext<'_>) -> PersonalityDecision;
 }
@@ -551,7 +551,7 @@ trait PersonalityFlavor {
 The substrate records `(personality_type_id, personality_instance_id)`
 inline on every produced A/P row. Load-bearing type evolution is a new
 `personality_type_id`; runtime branching is a new `personality_instance_id`
-with its own self-Perspective and wake config.
+with its own self-Perspective and wake entries.
 
 **Selection primitives** a `PersonalityFlavor` typically composes:
 

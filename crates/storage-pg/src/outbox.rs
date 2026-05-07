@@ -197,7 +197,7 @@ pub(crate) async fn hydrate_change_event(
 /// Map the row's `entity_personality_type_id` / `_instance_id` columns
 /// (always populated post-migration; sentinel `'external/event-source'`
 /// + nil-uuid for external ingestions) to the public `Option<...>`
-/// shape on `ChangeEvent`.
+///   shape on `ChangeEvent`.
 fn decode_personality(
     type_id: Option<&str>,
     instance_id: Option<Uuid>,

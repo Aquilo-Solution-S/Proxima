@@ -24,33 +24,34 @@ pub struct FieldEntry {
     pub field_path: String,
 }
 
-fn append(file: &str, line: serde_json::Value) {
+fn append(file: &str, line: &serde_json::Value) {
     let Some(dir) = session::dir() else {
         return;
     };
     let path = dir.join(file);
     if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&path) {
-        let _ = writeln!(f, "{}", line);
+        let _ = writeln!(f, "{line}");
     }
+}
+
+fn millis_u64(value: u128) -> u64 {
+    u64::try_from(value).unwrap_or(u64::MAX)
 }
 
 #[tauri::command]
 #[specta::specta]
 pub fn perf_log(entries: Vec<PerfEntry>) {
     for e in entries {
-        append(
-            "frontend.json",
-            serde_json::json!({
+        let line = serde_json::json!({
                 "ts_ms": std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() as u64)
-                    .unwrap_or(0),
+                    .map_or(0, |d| millis_u64(d.as_millis())),
                 "kind": e.kind,
                 "name": e.name,
                 "dur_ms": e.dur_ms,
                 "bytes": e.bytes,
-            }),
-        );
+        });
+        append("frontend.json", &line);
     }
 }
 
@@ -58,12 +59,10 @@ pub fn perf_log(entries: Vec<PerfEntry>) {
 #[specta::specta]
 pub fn perf_log_field(entries: Vec<FieldEntry>) {
     for e in entries {
-        append(
-            "ipc-fields.json",
-            serde_json::json!({
+        let line = serde_json::json!({
                 "cmd": e.cmd,
                 "field_path": e.field_path,
-            }),
-        );
+        });
+        append("ipc-fields.json", &line);
     }
 }
