@@ -3,10 +3,11 @@
 use proxima_core::personality::{
     AbstractionRow, ChangeEventForWake, FactRow, InstantiatePersonalityRequest,
     InstantiatePersonalityResponse, MemorySnapshot, PersonalityInstanceId, PersonalityInstanceRow,
-    PersonalityRef, PersonalityWriteOutcome, PersonalityWriteRequest, SetWakeConfigRequest,
-    SetWakeConfigResponse, SidecarSpec, WakeChainDepth, WakeConfigRow, WakeInvocationStatus,
+    PersonalityRef, PersonalityWriteOutcome, PersonalityWriteRequest, SetWakeEntriesRequest,
+    SetWakeEntriesResponse, SidecarSpec, WakeAuthorFilter, WakeChainDepth, WakeDispatchEntryRow,
+    WakeEntryDraft, WakeEntryTriggerKind, WakeExecutionMode, WakeInvocationStatus,
 };
-use proxima_core::{MemoryId, Owner, Principal, SchemaId, SchemaVersion, StorageError};
+use proxima_core::{MemoryId, ModelTier, Owner, Principal, SchemaId, SchemaVersion, StorageError};
 use sqlx::PgPool;
 
 use crate::error::map_err;
@@ -25,70 +26,73 @@ fn owner_columns(owner: &Owner) -> (&'static str, uuid::Uuid, uuid::Uuid) {
     (kind, principal_id, owner.org_id.into_inner())
 }
 
+#[derive(sqlx::FromRow)]
+struct WakeEntryJoinRow {
+    owner_principal_kind: String,
+    owner_principal_id: uuid::Uuid,
+    owner_org_id: uuid::Uuid,
+    personality_instance_id: uuid::Uuid,
+    current_root_perspective_memory_id: uuid::Uuid,
+    max_wake_chain_depth: i32,
+    last_considered_seq: uuid::Uuid,
+    wake_entry_id: uuid::Uuid,
+    trigger_kind: String,
+    trigger_id: String,
+    label: String,
+    enabled: bool,
+    execution_mode: String,
+    authored_by: String,
+    probability_promille: i32,
+    recipe_ref: String,
+    model_tier: String,
+    inference_target_ref: Option<String>,
+    substrate_tool_palette: Vec<String>,
+    workspace_tool_palette: Vec<String>,
+    max_rounds: i32,
+}
+
 pub async fn list_personality_instances(
     pool: &PgPool,
     owner: &Owner,
-    personality_type_id: Option<&str>,
+    _personality_type_id: Option<&str>,
     include_tombstoned: bool,
 ) -> Result<Vec<PersonalityInstanceRow>, StorageError> {
     let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(owner);
-    let rows: Vec<(
-        String,
-        uuid::Uuid,
-        uuid::Uuid,
-        String,
-        serde_json::Value,
-        String,
-    )> = sqlx::query_as(
-        "SELECT c.personality_type_id,
-                c.personality_instance_id,
-                c.current_self_perspective_memory_id,
+    let rows: Vec<(uuid::Uuid, uuid::Uuid, String, String)> = sqlx::query_as(
+        "SELECT p.personality_instance_id,
+                p.current_root_perspective_memory_id,
                 m.text AS display_name,
-                c.wake_filters,
-                c.status
-         FROM proxima_core.personality_wake_config c
+                p.status
+         FROM proxima_core.personality p
          JOIN proxima_core.memories m
-           ON m.memory_id = c.current_self_perspective_memory_id
-         WHERE c.owner_principal_kind = $1
-           AND c.owner_principal_id = $2
-           AND c.owner_org_id = $3
-           AND ($4::text IS NULL OR c.personality_type_id = $4)
-           AND ($5::bool OR c.status <> 'tombstoned')
-         ORDER BY c.personality_type_id, c.created_at, c.personality_instance_id",
+           ON m.memory_id = p.current_root_perspective_memory_id
+         WHERE p.owner_principal_kind = $1
+           AND p.owner_principal_id = $2
+           AND p.owner_org_id = $3
+           AND ($4::bool OR p.status <> 'tombstoned')
+         ORDER BY p.created_at, p.personality_instance_id",
     )
     .bind(owner_kind)
     .bind(owner_principal_id)
     .bind(owner_org_id)
-    .bind(personality_type_id)
     .bind(include_tombstoned)
     .fetch_all(pool)
     .await
     .map_err(map_err)?;
 
-    rows.into_iter()
+    Ok(rows
+        .into_iter()
         .map(
-            |(
-                personality_type_id,
-                instance_id,
-                self_memory_id,
+            |(instance_id, root_memory_id, display_name, status)| PersonalityInstanceRow {
+                owner: owner.clone(),
+                personality_type_id: String::new(),
+                personality_instance_id: PersonalityInstanceId::new(instance_id),
+                current_root_perspective_memory_id: MemoryId::new(root_memory_id),
                 display_name,
-                filters_json,
                 status,
-            )| {
-                let wake_filters = serde_json::from_value(filters_json)
-                    .map_err(|e| StorageError::Internal(format!("wake_filters decode: {e}")))?;
-                Ok(PersonalityInstanceRow {
-                    owner: owner.clone(),
-                    personality_type_id,
-                    personality_instance_id: PersonalityInstanceId::new(instance_id),
-                    current_self_perspective_memory_id: MemoryId::new(self_memory_id),
-                    display_name,
-                    status,
-                    wake_filters,
-                })
             },
         )
-        .collect()
+        .collect())
 }
 
 pub async fn instantiate_personality(
@@ -96,14 +100,11 @@ pub async fn instantiate_personality(
     req: &InstantiatePersonalityRequest,
     self_draft: &proxima_core::PersonalitySelfDraft,
     self_sidecar_table: &str,
-    default_wake_filters: &[proxima_core::WakeFilter],
 ) -> Result<InstantiatePersonalityResponse, StorageError> {
     let self_sidecar = PgIdent::table(self_sidecar_table)?;
     let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(&req.owner);
     let instance_id = uuid::Uuid::now_v7();
     let memory_id = uuid::Uuid::now_v7();
-    let filters_json = serde_json::to_value(default_wake_filters)
-        .map_err(|e| StorageError::Internal(format!("wake_filters encode: {e}")))?;
     let mut tx = pool.begin().await.map_err(map_err)?;
 
     sqlx::query(
@@ -142,6 +143,37 @@ pub async fn instantiate_personality(
         .await
         .map_err(map_err)?;
 
+    sqlx::query(
+        "INSERT INTO proxima_core.root_personality_perspective_v1
+            (memory_id, display_name, purpose, system_prompt)
+         VALUES ($1, $2, $3, $4)",
+    )
+    .bind(memory_id)
+    .bind(
+        self_draft
+            .typed_payload
+            .get("display_name")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or(self_draft.text.as_str()),
+    )
+    .bind(
+        self_draft
+            .typed_payload
+            .get("purpose")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("Personality root perspective"),
+    )
+    .bind(
+        self_draft
+            .typed_payload
+            .get("system_prompt")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("Inert Phase 1a personality"),
+    )
+    .execute(&mut *tx)
+    .await
+    .map_err(map_err)?;
+
     let change_seq = uuid::Uuid::now_v7();
     sqlx::query(
         "INSERT INTO proxima_core.change_event
@@ -164,53 +196,33 @@ pub async fn instantiate_personality(
     .map_err(map_err)?;
 
     sqlx::query(
-        "INSERT INTO proxima_core.personality_wake_config
+        "INSERT INTO proxima_core.personality
             (owner_principal_kind, owner_principal_id, owner_org_id,
-             personality_type_id, personality_instance_id,
-             current_self_perspective_memory_id, wake_filters, status)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, 'active')",
+             personality_instance_id, current_root_perspective_memory_id,
+             max_wake_chain_depth, status)
+         VALUES ($1, $2, $3, $4, $5, $6, 'active')",
     )
     .bind(owner_kind)
     .bind(owner_principal_id)
     .bind(owner_org_id)
-    .bind(&req.personality_type_id)
     .bind(instance_id)
     .bind(memory_id)
-    .bind(filters_json)
+    .bind(i32::from(proxima_core::personality::MAX_WAKE_CHAIN_DEPTH))
     .execute(&mut *tx)
-    .await
-    .map_err(map_err)?;
-
-    // PostgreSQL has no built-in `max(uuid)` aggregate (verified PG 17),
-    // so use ORDER BY ... LIMIT 1 — UUIDv7 is monotonic per source so
-    // binary ordering matches insertion order.
-    let max_seq: Option<uuid::Uuid> = sqlx::query_scalar::<_, uuid::Uuid>(
-        "SELECT seq FROM proxima_core.change_event
-         WHERE owner_principal_kind = $1
-           AND owner_principal_id = $2
-           AND owner_org_id = $3
-         ORDER BY seq DESC
-         LIMIT 1",
-    )
-    .bind(owner_kind)
-    .bind(owner_principal_id)
-    .bind(owner_org_id)
-    .fetch_optional(&mut *tx)
     .await
     .map_err(map_err)?;
 
     sqlx::query(
         "INSERT INTO proxima_core.personality_wake_cursor
             (owner_principal_kind, owner_principal_id, owner_org_id,
-             personality_type_id, personality_instance_id, last_considered_seq)
-         VALUES ($1, $2, $3, $4, $5, $6)",
+             personality_instance_id, last_considered_seq)
+         VALUES ($1, $2, $3, $4, $5)",
     )
     .bind(owner_kind)
     .bind(owner_principal_id)
     .bind(owner_org_id)
-    .bind(&req.personality_type_id)
     .bind(instance_id)
-    .bind(max_seq.unwrap_or(uuid::Uuid::nil()))
+    .bind(uuid::Uuid::nil())
     .execute(&mut *tx)
     .await
     .map_err(map_err)?;
@@ -221,37 +233,56 @@ pub async fn instantiate_personality(
     })
 }
 
-pub async fn set_wake_config(
+pub async fn set_wake_entries(
     pool: &PgPool,
-    req: &SetWakeConfigRequest,
-) -> Result<SetWakeConfigResponse, StorageError> {
+    req: &SetWakeEntriesRequest,
+) -> Result<SetWakeEntriesResponse, StorageError> {
     let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(&req.owner);
-    let filters_json = serde_json::to_value(&req.wake_filters)
-        .map_err(|e| StorageError::Internal(format!("wake_filters encode: {e}")))?;
+    let mut tx = pool.begin().await.map_err(map_err)?;
     let result = sqlx::query(
-        "UPDATE proxima_core.personality_wake_config
-         SET wake_filters = $1, status = 'active', updated_at = now()
-         WHERE owner_principal_kind = $2
-           AND owner_principal_id = $3
-           AND owner_org_id = $4
-           AND personality_type_id = $5
-           AND personality_instance_id = $6
-           AND status <> 'tombstoned'",
+        "UPDATE proxima_core.personality_wake_entries
+         SET tombstoned_at = now(), updated_at = now()
+         WHERE owner_principal_kind = $1
+           AND owner_principal_id = $2
+           AND owner_org_id = $3
+           AND personality_instance_id = $4
+           AND tombstoned_at IS NULL",
     )
-    .bind(filters_json)
     .bind(owner_kind)
     .bind(owner_principal_id)
     .bind(owner_org_id)
-    .bind(&req.personality_type_id)
     .bind(req.personality_instance_id.into_inner())
-    .execute(pool)
+    .execute(&mut *tx)
     .await
     .map_err(map_err)?;
-    if result.rows_affected() == 0 {
+    let _ = result;
+
+    let active_parent = sqlx::query(
+        "UPDATE proxima_core.personality
+         SET updated_at = now()
+         WHERE owner_principal_kind = $1
+           AND owner_principal_id = $2
+           AND owner_org_id = $3
+           AND personality_instance_id = $4
+           AND status <> 'tombstoned'",
+    )
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(owner_org_id)
+    .bind(req.personality_instance_id.into_inner())
+    .execute(&mut *tx)
+    .await
+    .map_err(map_err)?;
+    if active_parent.rows_affected() == 0 {
         return Err(StorageError::NotFound);
     }
-    Ok(SetWakeConfigResponse {
-        status: "active".into(),
+
+    for entry in &req.entries {
+        insert_wake_entry(&mut tx, &req.owner, entry).await?;
+    }
+    tx.commit().await.map_err(map_err)?;
+    Ok(SetWakeEntriesResponse {
+        active_entries: u32::try_from(req.entries.len()).unwrap_or(u32::MAX),
     })
 }
 
@@ -263,21 +294,19 @@ pub async fn tombstone_personality(
     let mut tx = pool.begin().await.map_err(map_err)?;
 
     let result = sqlx::query(
-        "UPDATE proxima_core.personality_wake_config
+        "UPDATE proxima_core.personality
          SET status = 'tombstoned',
              tombstoned_at = now(),
              updated_at = now()
          WHERE owner_principal_kind = $1
            AND owner_principal_id = $2
            AND owner_org_id = $3
-           AND personality_type_id = $4
-           AND personality_instance_id = $5
+           AND personality_instance_id = $4
            AND status <> 'tombstoned'",
     )
     .bind(owner_kind)
     .bind(owner_principal_id)
     .bind(owner_org_id)
-    .bind(&req.personality_type_id)
     .bind(req.personality_instance_id.into_inner())
     .execute(&mut *tx)
     .await
@@ -293,17 +322,15 @@ pub async fn tombstone_personality(
 
     let existing: Option<(String,)> = sqlx::query_as(
         "SELECT status
-         FROM proxima_core.personality_wake_config
+         FROM proxima_core.personality
          WHERE owner_principal_kind = $1
            AND owner_principal_id = $2
            AND owner_org_id = $3
-           AND personality_type_id = $4
-           AND personality_instance_id = $5",
+           AND personality_instance_id = $4",
     )
     .bind(owner_kind)
     .bind(owner_principal_id)
     .bind(owner_org_id)
-    .bind(&req.personality_type_id)
     .bind(req.personality_instance_id.into_inner())
     .fetch_optional(&mut *tx)
     .await
@@ -321,36 +348,46 @@ pub async fn tombstone_personality(
     }
 }
 
-pub async fn list_active_wake_configs(pool: &PgPool) -> Result<Vec<WakeConfigRow>, StorageError> {
-    let rows: Vec<(
-        String,
-        uuid::Uuid,
-        uuid::Uuid,
-        String,
-        uuid::Uuid,
-        uuid::Uuid,
-        serde_json::Value,
-        String,
-        uuid::Uuid,
-    )> = sqlx::query_as(
-        "SELECT c.owner_principal_kind,
-                c.owner_principal_id,
-                c.owner_org_id,
-                c.personality_type_id,
-                c.personality_instance_id,
-                c.current_self_perspective_memory_id,
-                c.wake_filters,
-                c.status,
-                cur.last_considered_seq
-         FROM proxima_core.personality_wake_config c
+pub async fn list_active_wake_entries(
+    pool: &PgPool,
+) -> Result<Vec<WakeDispatchEntryRow>, StorageError> {
+    let rows: Vec<WakeEntryJoinRow> = sqlx::query_as(
+        "SELECT p.owner_principal_kind,
+                p.owner_principal_id,
+                p.owner_org_id,
+                p.personality_instance_id,
+                p.current_root_perspective_memory_id,
+                p.max_wake_chain_depth,
+                cur.last_considered_seq,
+                e.wake_entry_id,
+                e.trigger_kind,
+                e.trigger_id,
+                e.label,
+                e.enabled,
+                e.execution_mode,
+                e.authored_by,
+                e.probability_promille,
+                e.recipe_ref,
+                e.model_tier,
+                e.inference_target_ref,
+                e.substrate_tool_palette,
+                e.workspace_tool_palette,
+                e.max_rounds
+         FROM proxima_core.personality p
          JOIN proxima_core.personality_wake_cursor cur
-           ON cur.owner_principal_kind = c.owner_principal_kind
-          AND cur.owner_principal_id = c.owner_principal_id
-          AND cur.owner_org_id = c.owner_org_id
-          AND cur.personality_type_id = c.personality_type_id
-          AND cur.personality_instance_id = c.personality_instance_id
-         WHERE c.status = 'active'
-         ORDER BY c.owner_principal_kind, c.owner_principal_id, c.personality_type_id, c.personality_instance_id",
+           ON cur.owner_principal_kind = p.owner_principal_kind
+          AND cur.owner_principal_id = p.owner_principal_id
+          AND cur.owner_org_id = p.owner_org_id
+          AND cur.personality_instance_id = p.personality_instance_id
+         JOIN proxima_core.personality_wake_entries e
+           ON e.owner_principal_kind = p.owner_principal_kind
+          AND e.owner_principal_id = p.owner_principal_id
+          AND e.owner_org_id = p.owner_org_id
+          AND e.personality_instance_id = p.personality_instance_id
+         WHERE p.status = 'active'
+           AND e.enabled
+           AND e.tombstoned_at IS NULL
+         ORDER BY p.owner_principal_kind, p.owner_principal_id, p.personality_instance_id, e.created_at",
     )
     .fetch_all(pool)
     .await
@@ -358,55 +395,39 @@ pub async fn list_active_wake_configs(pool: &PgPool) -> Result<Vec<WakeConfigRow
 
     Ok(rows
         .into_iter()
-        .map(
-            |(
-                owner_kind,
-                owner_principal_id,
-                owner_org_id,
-                personality_type_id,
-                personality_instance_id,
-                self_memory_id,
-                wake_filters_json,
-                status,
-                last_considered_seq,
-            )| WakeConfigRow {
-                owner: owner_from_parts(&owner_kind, owner_principal_id, owner_org_id),
-                personality_type_id,
-                personality_instance_id: PersonalityInstanceId::new(personality_instance_id),
-                current_self_perspective_memory_id: MemoryId::new(self_memory_id),
-                wake_filters_json,
-                status,
-                last_considered_seq,
-            },
-        )
+        .map(|row| WakeDispatchEntryRow {
+                owner: owner_from_parts(
+                    &row.owner_principal_kind,
+                    row.owner_principal_id,
+                    row.owner_org_id,
+                ),
+                personality_instance_id: PersonalityInstanceId::new(row.personality_instance_id),
+                current_root_perspective_memory_id: MemoryId::new(
+                    row.current_root_perspective_memory_id,
+                ),
+                max_wake_chain_depth: u16::try_from(row.max_wake_chain_depth).unwrap_or(0),
+                last_considered_seq: row.last_considered_seq,
+                wake_entry: WakeEntryDraft {
+                    wake_entry_id: row.wake_entry_id,
+                    personality_instance_id: PersonalityInstanceId::new(
+                        row.personality_instance_id,
+                    ),
+                    trigger_kind: parse_trigger_kind(&row.trigger_kind),
+                    trigger_id: row.trigger_id,
+                    label: row.label,
+                    enabled: row.enabled,
+                    execution_mode: parse_execution_mode(&row.execution_mode),
+                    authored_by: parse_author_filter(&row.authored_by),
+                    probability_promille: u16::try_from(row.probability_promille).unwrap_or(0),
+                    recipe_ref: row.recipe_ref,
+                    model_tier: parse_model_tier(&row.model_tier),
+                    inference_target_ref: row.inference_target_ref,
+                    substrate_tool_palette: row.substrate_tool_palette,
+                    workspace_tool_palette: row.workspace_tool_palette,
+                    max_rounds: u16::try_from(row.max_rounds).unwrap_or(1),
+                },
+            })
         .collect())
-}
-
-pub async fn mark_wake_config_needs_repair(
-    pool: &PgPool,
-    owner: &Owner,
-    instance: &PersonalityRef,
-) -> Result<(), StorageError> {
-    let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(owner);
-    sqlx::query(
-        "UPDATE proxima_core.personality_wake_config
-         SET status = 'needs_repair', updated_at = now()
-         WHERE owner_principal_kind = $1
-           AND owner_principal_id = $2
-           AND owner_org_id = $3
-           AND personality_type_id = $4
-           AND personality_instance_id = $5
-           AND status <> 'tombstoned'",
-    )
-    .bind(owner_kind)
-    .bind(owner_principal_id)
-    .bind(owner_org_id)
-    .bind(&instance.personality_type_id)
-    .bind(instance.personality_instance_id.into_inner())
-    .execute(pool)
-    .await
-    .map_err(map_err)?;
-    Ok(())
 }
 
 pub async fn list_change_events_after(
@@ -452,7 +473,7 @@ pub async fn list_change_events_after(
 pub async fn advance_wake_cursor(
     pool: &PgPool,
     owner: &Owner,
-    instance: &PersonalityRef,
+    instance: PersonalityInstanceId,
     last_considered_seq: uuid::Uuid,
 ) -> Result<(), StorageError> {
     let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(owner);
@@ -462,15 +483,13 @@ pub async fn advance_wake_cursor(
          WHERE owner_principal_kind = $2
            AND owner_principal_id = $3
            AND owner_org_id = $4
-           AND personality_type_id = $5
-           AND personality_instance_id = $6",
+           AND personality_instance_id = $5",
     )
     .bind(last_considered_seq)
     .bind(owner_kind)
     .bind(owner_principal_id)
     .bind(owner_org_id)
-    .bind(&instance.personality_type_id)
-    .bind(instance.personality_instance_id.into_inner())
+    .bind(instance.into_inner())
     .execute(pool)
     .await
     .map_err(map_err)?;
@@ -480,26 +499,27 @@ pub async fn advance_wake_cursor(
 pub async fn try_begin_wake_invocation(
     pool: &PgPool,
     owner: &Owner,
-    instance: &PersonalityRef,
+    instance: PersonalityInstanceId,
+    wake_entry_id: uuid::Uuid,
     change_event_seq: uuid::Uuid,
 ) -> Result<bool, StorageError> {
     let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(owner);
     let inserted: Option<(uuid::Uuid,)> = sqlx::query_as(
         "INSERT INTO proxima_core.personality_wake_invocations
             (owner_principal_kind, owner_principal_id, owner_org_id,
-             personality_type_id, personality_instance_id, change_event_seq,
+             personality_instance_id, wake_entry_id, change_event_seq,
              status, started_at)
          VALUES ($1, $2, $3, $4, $5, $6, 'running', now())
          ON CONFLICT (owner_principal_kind, owner_principal_id, owner_org_id,
-                      personality_type_id, personality_instance_id, change_event_seq)
+                      personality_instance_id, wake_entry_id, change_event_seq)
          DO NOTHING
          RETURNING change_event_seq",
     )
     .bind(owner_kind)
     .bind(owner_principal_id)
     .bind(owner_org_id)
-    .bind(&instance.personality_type_id)
-    .bind(instance.personality_instance_id.into_inner())
+    .bind(instance.into_inner())
+    .bind(wake_entry_id)
     .bind(change_event_seq)
     .fetch_optional(pool)
     .await
@@ -510,7 +530,8 @@ pub async fn try_begin_wake_invocation(
 pub async fn finish_wake_invocation(
     pool: &PgPool,
     owner: &Owner,
-    instance: &PersonalityRef,
+    instance: PersonalityInstanceId,
+    wake_entry_id: uuid::Uuid,
     change_event_seq: uuid::Uuid,
     status: WakeInvocationStatus,
     turn_count: u16,
@@ -523,8 +544,8 @@ pub async fn finish_wake_invocation(
          WHERE owner_principal_kind = $4
            AND owner_principal_id = $5
            AND owner_org_id = $6
-           AND personality_type_id = $7
-           AND personality_instance_id = $8
+           AND personality_instance_id = $7
+           AND wake_entry_id = $8
            AND change_event_seq = $9",
     )
     .bind(status.as_str())
@@ -533,8 +554,8 @@ pub async fn finish_wake_invocation(
     .bind(owner_kind)
     .bind(owner_principal_id)
     .bind(owner_org_id)
-    .bind(&instance.personality_type_id)
-    .bind(instance.personality_instance_id.into_inner())
+    .bind(instance.into_inner())
+    .bind(wake_entry_id)
     .bind(change_event_seq)
     .execute(pool)
     .await
@@ -944,6 +965,84 @@ fn owner_from_parts(kind: &str, principal_id: uuid::Uuid, org_id: uuid::Uuid) ->
             _ => Principal::Group(proxima_core::GroupId::new(principal_id)),
         },
         org_id: proxima_core::OrgId::new(org_id),
+    }
+}
+
+async fn insert_wake_entry(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    owner: &Owner,
+    entry: &WakeEntryDraft,
+) -> Result<(), StorageError> {
+    let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(owner);
+    sqlx::query(
+        "INSERT INTO proxima_core.personality_wake_entries
+            (owner_principal_kind, owner_principal_id, owner_org_id,
+             personality_instance_id, wake_entry_id, trigger_kind, trigger_id,
+             label, enabled, execution_mode, authored_by, probability_promille,
+             recipe_ref, model_tier, inference_target_ref, substrate_tool_palette,
+             workspace_tool_palette, max_rounds)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+                 $12, $13, $14, $15, $16, $17, $18)",
+    )
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(owner_org_id)
+    .bind(entry.personality_instance_id.into_inner())
+    .bind(entry.wake_entry_id)
+    .bind(entry.trigger_kind.as_str())
+    .bind(&entry.trigger_id)
+    .bind(&entry.label)
+    .bind(entry.enabled)
+    .bind(entry.execution_mode.as_str())
+    .bind(entry.authored_by.as_str())
+    .bind(i32::from(entry.probability_promille))
+    .bind(&entry.recipe_ref)
+    .bind(model_tier_str(entry.model_tier))
+    .bind(&entry.inference_target_ref)
+    .bind(&entry.substrate_tool_palette)
+    .bind(&entry.workspace_tool_palette)
+    .bind(i32::from(entry.max_rounds))
+    .execute(&mut **tx)
+    .await
+    .map_err(map_err)?;
+    Ok(())
+}
+
+fn parse_trigger_kind(value: &str) -> WakeEntryTriggerKind {
+    match value {
+        "on_edge" => WakeEntryTriggerKind::OnEdge,
+        _ => WakeEntryTriggerKind::OnMemory,
+    }
+}
+
+fn parse_execution_mode(value: &str) -> WakeExecutionMode {
+    match value {
+        "workspace" => WakeExecutionMode::Workspace,
+        _ => WakeExecutionMode::SubstrateOnly,
+    }
+}
+
+fn parse_author_filter(value: &str) -> WakeAuthorFilter {
+    match value {
+        "self" => WakeAuthorFilter::SelfAuthored,
+        "other" => WakeAuthorFilter::Other,
+        _ => WakeAuthorFilter::Any,
+    }
+}
+
+fn parse_model_tier(value: &str) -> ModelTier {
+    match value {
+        "fast" => ModelTier::Fast,
+        "deep" => ModelTier::Deep,
+        _ => ModelTier::Standard,
+    }
+}
+
+fn model_tier_str(tier: ModelTier) -> &'static str {
+    match tier {
+        ModelTier::Fast => "fast",
+        ModelTier::Standard => "standard",
+        ModelTier::Deep => "deep",
     }
 }
 

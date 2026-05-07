@@ -7,9 +7,8 @@
 use crate::verbs::schema::{FlavorRegistryFrozen, PayloadKind, PayloadValidatorEntry, SchemaInfo};
 use crate::{
     AbstractionPayload, EdgePayload, FactPayload, GoalPayload, McpCallFn, McpTool,
-    McpToolDescriptor, McpToolError, OnEdgeWakeFilterKind, OnMemoryWakeFilterKind,
-    PersonalityFlavor, PerspectivePayload, RelationDescriptor, SchemaVersion, WakeFilterKind,
-    core_relation_descriptors,
+    McpToolDescriptor, McpToolError, PersonalityFlavor, PerspectivePayload, RelationDescriptor,
+    SchemaVersion, core_relation_descriptors,
 };
 
 use std::sync::Arc;
@@ -65,7 +64,6 @@ pub struct FlavorRegistry {
     validators: Vec<PayloadValidatorEntry>,
     mcp_tools: Vec<McpToolDescriptor>,
     personalities: Vec<Arc<dyn PersonalityFlavor>>,
-    wake_filter_kinds: Vec<Arc<dyn WakeFilterKind>>,
     flavors: Vec<FlavorDescriptor>,
 }
 
@@ -77,10 +75,6 @@ impl Default for FlavorRegistry {
             validators: Vec::new(),
             mcp_tools: Vec::new(),
             personalities: Vec::new(),
-            wake_filter_kinds: vec![
-                Arc::new(OnMemoryWakeFilterKind),
-                Arc::new(OnEdgeWakeFilterKind),
-            ],
             flavors: Vec::new(),
         }
     }
@@ -208,10 +202,6 @@ impl FlavorRegistry {
         self.personalities.push(Arc::new(personality));
     }
 
-    pub fn add_wake_filter_kind<K: WakeFilterKind + 'static>(&mut self, kind: K) {
-        self.wake_filter_kinds.push(Arc::new(kind));
-    }
-
     /// Register a `FlavorDescriptor`. Called once per
     /// `proxima_flavor!` invocation; freeze panics if the same
     /// `flavor_id` is added twice.
@@ -298,7 +288,6 @@ impl FlavorRegistry {
             self.validators,
             self.mcp_tools,
             self.personalities,
-            self.wake_filter_kinds,
             self.flavors,
         )
     }
@@ -523,9 +512,6 @@ mod mcp_tool_registry_tests {
             self.write_relations
         }
 
-        fn default_wake_filters(&self) -> Vec<crate::WakeFilter> {
-            Vec::new()
-        }
     }
 
     fn registry_with_personality(

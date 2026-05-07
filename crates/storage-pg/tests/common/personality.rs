@@ -13,7 +13,6 @@ use proxima_core::engine::Engine;
 use proxima_core::llm::{AnthropicClient, EmbeddingClient, LlmError};
 use proxima_core::personality::{
     InstantiatePersonalityResponse, MAX_WAKE_CHAIN_DEPTH, PersonalityFlavor, PersonalitySelfDraft,
-    WakeFilter,
 };
 use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
 use proxima_core::verbs::query::MemoryStore;
@@ -219,12 +218,6 @@ impl PersonalityFlavor for TestPersonality {
 
     fn writeable_relations(&self) -> &'static [&'static str] {
         &[]
-    }
-
-    fn default_wake_filters(&self) -> Vec<WakeFilter> {
-        vec![WakeFilter::on_memory(SchemaId::new(
-            self.fact_schema.to_string(),
-        ))]
     }
 
     fn tier(&self) -> ModelTier {

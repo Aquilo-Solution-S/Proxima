@@ -67,7 +67,6 @@ proxima_core::proxima_flavor! {
         personality::CommitSummaryPersonality,
         personality::CodeEngineerPersonality,
     ],
-    wake_filter_kinds = [],
     mcp_tools = [
         mcp::CodeSearchChunksTool,
         mcp::CodeOpenFileRevisionTool,

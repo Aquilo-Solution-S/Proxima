@@ -2,7 +2,6 @@
 //! an AuthResolver behind the typed verb surfaces of
 //! docs/14-protocol-surface.md.
 
-pub mod agent_loop;
 mod builder;
 mod dispatcher;
 mod goals;
@@ -17,8 +16,6 @@ use crate::llm::{AnthropicClient, EmbeddingClient};
 use crate::storage::{StorageError, StorageHandle};
 use crate::verbs::query::MemoryStore;
 use crate::verbs::schema::FlavorRegistryFrozen;
-use crate::{ModelTier, Owner};
-
 pub struct Engine {
     registry: FlavorRegistryFrozen,
     // TODO(M3.B): remove MemoryStore
@@ -45,20 +42,6 @@ impl Engine {
         self.anthropic.as_ref()
     }
 
-    /// Whether a wake for `(owner, tier)` has an executable LLM right
-    /// now. The dispatcher gates on this *before* beginning a wake
-    /// invocation so a missing client defers the wake instead of
-    /// consuming it.
-    ///
-    /// v1 only has a single engine-wide Anthropic client, so the answer
-    /// reduces to "is one wired". Once per-Principal model settings
-    /// land (api keys, tier→provider routing), this resolves against
-    /// the owner's configured providers and short-circuits per tier.
-    #[must_use]
-    pub(crate) fn llm_available_for_wake(&self, owner: &Owner, tier: ModelTier) -> bool {
-        let _ = (owner, tier);
-        self.anthropic.is_some()
-    }
 }
 
 impl std::fmt::Debug for Engine {
@@ -89,7 +72,7 @@ mod tier_union_tests {
     use super::*;
     use crate::auth::NoAuth;
     use crate::ids::{OrgId, UserId};
-    use crate::personality::{PersonalityFlavor, PersonalitySelfDraft, WakeFilter};
+    use crate::personality::{PersonalityFlavor, PersonalitySelfDraft};
     use crate::verbs::query::MemoryStore;
     use crate::{FlavorRegistry, LlmCaps, ModelTier, Owner, Principal, SchemaId, SchemaVersion};
     use async_trait::async_trait;
@@ -133,10 +116,6 @@ mod tier_union_tests {
 
         fn writeable_relations(&self) -> &'static [&'static str] {
             &[]
-        }
-
-        fn default_wake_filters(&self) -> Vec<WakeFilter> {
-            Vec::new()
         }
 
         fn tier(&self) -> ModelTier {

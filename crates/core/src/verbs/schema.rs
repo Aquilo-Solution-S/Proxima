@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use crate::personality::{PersonalityFlavor, WakeFilterKind};
+use crate::personality::PersonalityFlavor;
 use crate::{
     FlavorDescriptor, McpToolDescriptor, RegisteredRelation, RelationDescriptor, SchemaId,
     SchemaVersion,
@@ -83,7 +83,6 @@ pub struct FlavorRegistryFrozen {
     validators: Vec<PayloadValidatorEntry>,
     mcp_tools: Vec<McpToolDescriptor>,
     personalities: Vec<Arc<dyn PersonalityFlavor>>,
-    wake_filter_kinds: Vec<Arc<dyn WakeFilterKind>>,
     flavors: Vec<FlavorDescriptor>,
 }
 
@@ -103,7 +102,6 @@ impl FlavorRegistryFrozen {
             validators: Vec::new(),
             mcp_tools: Vec::new(),
             personalities: Vec::new(),
-            wake_filter_kinds: Vec::new(),
             flavors: Vec::new(),
         }
     }
@@ -122,7 +120,6 @@ impl FlavorRegistryFrozen {
             validators: Vec::new(),
             mcp_tools: Vec::new(),
             personalities: Vec::new(),
-            wake_filter_kinds: Vec::new(),
             flavors: Vec::new(),
         }
     }
@@ -133,7 +130,6 @@ impl FlavorRegistryFrozen {
         validators: Vec<PayloadValidatorEntry>,
         mcp_tools: Vec<McpToolDescriptor>,
         personalities: Vec<Arc<dyn PersonalityFlavor>>,
-        wake_filter_kinds: Vec<Arc<dyn WakeFilterKind>>,
         flavors: Vec<FlavorDescriptor>,
     ) -> Self {
         Self {
@@ -142,7 +138,6 @@ impl FlavorRegistryFrozen {
             validators,
             mcp_tools,
             personalities,
-            wake_filter_kinds,
             flavors,
         }
     }
@@ -195,11 +190,6 @@ impl FlavorRegistryFrozen {
         let slash = personality_type_id.find('/')?;
         let prefix = &personality_type_id[..slash];
         self.flavor(prefix)
-    }
-
-    #[must_use]
-    pub fn list_wake_filter_kinds(&self) -> &[Arc<dyn WakeFilterKind>] {
-        &self.wake_filter_kinds
     }
 
     pub fn list(&self) -> Vec<SchemaInfo> {

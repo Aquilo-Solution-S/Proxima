@@ -10,8 +10,8 @@ use proxima_core::verbs::query::{QueryRequest, QueryResponse};
 use proxima_core::verbs::schema::{SchemaRequest, SchemaResponse};
 use proxima_core::verbs::subscribe::SubscribeRequest;
 use proxima_core::{
-    AuthorFilter, ChangeEvent, Engine, FlavorDescriptor, FlavorProvenance, MemoryId, Owner,
-    PersonalityInstanceId, PersonalityInstanceRow, WakeFilter, WakeTarget,
+    ChangeEvent, Engine, FlavorDescriptor, FlavorProvenance, Owner, PersonalityInstanceId,
+    PersonalityInstanceRow,
 };
 use tauri::State;
 use tauri::ipc::Channel;
@@ -275,27 +275,15 @@ pub async fn instantiate_personality(
 #[tauri::command]
 #[specta::specta]
 pub async fn set_wake_config(
-    engine: State<'_, Arc<Engine>>,
+    _engine: State<'_, Arc<Engine>>,
     req: SetWakeConfigTs,
 ) -> Result<SetWakeConfigOutcomeTs, ProtocolError> {
     let req_bytes = crate::perf::ipc::req_size(&req);
     crate::perf::ipc::record("set_wake_config", req_bytes, async move {
-        let instance_id = uuid::Uuid::parse_str(&req.personality_instance_id)
-            .map_err(|e| ProtocolError::internal(format!("personality_instance_id: {e}")))?;
-        let wake_filters = req
-            .wake_filters
-            .into_iter()
-            .map(WakeFilter::try_from)
-            .collect::<Result<Vec<_>, _>>()?;
-        let out = engine
-            .set_wake_config(proxima_core::SetWakeConfigRequest {
-                owner: req.owner,
-                personality_type_id: req.personality_type_id,
-                personality_instance_id: PersonalityInstanceId::new(instance_id),
-                wake_filters,
-            })
-            .await?;
-        Ok(SetWakeConfigOutcomeTs { status: out.status })
+        let _ = req;
+        Err(ProtocolError::internal(
+            "SetWakeConfig was removed by the Phase 1a WakeEntry migration",
+        ))
     })
     .await
 }
@@ -355,22 +343,17 @@ impl PersonalityInstanceTs {
         row: PersonalityInstanceRow,
         flavor: &FlavorDescriptor,
     ) -> Result<Self, ProtocolError> {
-        let wake_filters = row
-            .wake_filters
-            .into_iter()
-            .map(WakeFilterTs::try_from)
-            .collect::<Result<Vec<_>, _>>()?;
         Ok(Self {
             owner: row.owner,
             personality_type_id: row.personality_type_id,
             personality_instance_id: row.personality_instance_id.into_inner().to_string(),
             current_self_perspective_memory_id: row
-                .current_self_perspective_memory_id
+                .current_root_perspective_memory_id
                 .into_inner()
                 .to_string(),
             display_name: row.display_name,
             status: row.status,
-            wake_filters,
+            wake_filters: Vec::new(),
             flavor: FlavorDescriptorTs::from(flavor),
         })
     }
@@ -399,171 +382,5 @@ impl From<&FlavorProvenance> for FlavorProvenanceTs {
                 workspace_path: workspace_path.clone(),
             },
         }
-    }
-}
-
-impl TryFrom<WakeFilter> for WakeFilterTs {
-    type Error = ProtocolError;
-
-    fn try_from(filter: WakeFilter) -> Result<Self, Self::Error> {
-        Ok(match filter {
-            WakeFilter::OnMemory {
-                version,
-                schema_id,
-                authored_by,
-                probability,
-            } => Self::OnMemory {
-                version,
-                schema_id: schema_id.into_inner(),
-                authored_by: authored_by.into(),
-                probability,
-            },
-            WakeFilter::OnEdge {
-                version,
-                relation_id,
-                source,
-                target,
-                probability,
-            } => Self::OnEdge {
-                version,
-                relation_id,
-                source: source.into(),
-                target: target.into(),
-                probability,
-            },
-            WakeFilter::Custom {
-                version,
-                kind_id,
-                params,
-                probability,
-            } => Self::Custom {
-                version,
-                kind_id,
-                params_json: params.to_string(),
-                probability,
-            },
-        })
-    }
-}
-
-impl TryFrom<WakeFilterTs> for WakeFilter {
-    type Error = ProtocolError;
-
-    fn try_from(filter: WakeFilterTs) -> Result<Self, Self::Error> {
-        Ok(match filter {
-            WakeFilterTs::OnMemory {
-                version,
-                schema_id,
-                authored_by,
-                probability,
-            } => Self::OnMemory {
-                version,
-                schema_id: proxima_core::SchemaId::new(schema_id),
-                authored_by: authored_by.try_into()?,
-                probability,
-            },
-            WakeFilterTs::OnEdge {
-                version,
-                relation_id,
-                source,
-                target,
-                probability,
-            } => Self::OnEdge {
-                version,
-                relation_id,
-                source: source.try_into()?,
-                target: target.try_into()?,
-                probability,
-            },
-            WakeFilterTs::Custom {
-                version,
-                kind_id,
-                params_json,
-                probability,
-            } => Self::Custom {
-                version,
-                kind_id,
-                params: serde_json::from_str(&params_json)
-                    .map_err(|e| ProtocolError::internal(format!("custom params_json: {e}")))?,
-                probability,
-            },
-        })
-    }
-}
-
-impl From<AuthorFilter> for AuthorFilterTs {
-    fn from(value: AuthorFilter) -> Self {
-        match value {
-            AuthorFilter::Any => Self::Any,
-            AuthorFilter::External => Self::External,
-            AuthorFilter::Personality {
-                personality_type_id,
-                personality_instance_id,
-            } => Self::Personality {
-                personality_type_id,
-                personality_instance_id: personality_instance_id
-                    .map(|id| id.into_inner().to_string()),
-            },
-        }
-    }
-}
-
-impl TryFrom<AuthorFilterTs> for AuthorFilter {
-    type Error = ProtocolError;
-
-    fn try_from(value: AuthorFilterTs) -> Result<Self, Self::Error> {
-        Ok(match value {
-            AuthorFilterTs::Any => Self::Any,
-            AuthorFilterTs::External => Self::External,
-            AuthorFilterTs::Personality {
-                personality_type_id,
-                personality_instance_id,
-            } => Self::Personality {
-                personality_type_id,
-                personality_instance_id: personality_instance_id
-                    .map(|id| uuid::Uuid::parse_str(&id))
-                    .transpose()
-                    .map_err(|e| ProtocolError::internal(format!("author instance id: {e}")))?
-                    .map(PersonalityInstanceId::new),
-            },
-        })
-    }
-}
-
-impl From<WakeTarget> for WakeTargetTs {
-    fn from(value: WakeTarget) -> Self {
-        match value {
-            WakeTarget::Any => Self::Any,
-            WakeTarget::SelfPerspective => Self::SelfPerspective,
-            WakeTarget::Memory { memory_id } => Self::Memory {
-                memory_id: memory_id.into_inner().to_string(),
-            },
-            WakeTarget::Goal { goal_id } => Self::Goal {
-                goal_id: goal_id.into_inner().to_string(),
-            },
-        }
-    }
-}
-
-impl TryFrom<WakeTargetTs> for WakeTarget {
-    type Error = ProtocolError;
-
-    fn try_from(value: WakeTargetTs) -> Result<Self, Self::Error> {
-        Ok(match value {
-            WakeTargetTs::Any => Self::Any,
-            WakeTargetTs::SelfPerspective => Self::SelfPerspective,
-            WakeTargetTs::Memory { memory_id } => Self::Memory {
-                memory_id: MemoryId::new(
-                    uuid::Uuid::parse_str(&memory_id)
-                        .map_err(|e| ProtocolError::internal(format!("memory_id: {e}")))?,
-                ),
-            },
-            WakeTargetTs::Goal { goal_id } => Self::Goal {
-                goal_id: proxima_core::GoalId::new(
-                    uuid::Uuid::parse_str(&goal_id)
-                        .map_err(|e| ProtocolError::internal(format!("goal_id: {e}")))?,
-                ),
-            },
-        })
     }
 }

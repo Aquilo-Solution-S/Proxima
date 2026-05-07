@@ -21,14 +21,14 @@ use crate::convert::{
     subscribe_request_from_proto,
 };
 use crate::pb::{
-    self, AuthorFilter, ChangeEvent, CustomFilter, EventHistoryRequest, EventHistoryResponse,
-    EventIngestRequest, EventIngestResponse, GoalWriteRequest, GoalWriteResponse,
+    self, ChangeEvent, EventHistoryRequest, EventHistoryResponse, EventIngestRequest,
+    EventIngestResponse, GoalWriteRequest, GoalWriteResponse,
     InstantiatePersonalityRequest, InstantiatePersonalityResponse, ListPersonalityInstancesRequest,
-    ListPersonalityInstancesResponse, OnEdgeFilter, OnMemoryFilter, PersonalityAuthor,
-    PersonalityInstance, ProvisionOwnerRequest, ProvisionOwnerResponse, QueryRequest,
+    ListPersonalityInstancesResponse, PersonalityInstance, ProvisionOwnerRequest,
+    ProvisionOwnerResponse, QueryRequest,
     QueryResponse, SchemaRequest, SchemaResponse, SetWakeConfigRequest, SetWakeConfigResponse,
-    SubscribeRequest, TombstonePersonalityRequest, TombstonePersonalityResponse, WakeFilter,
-    WakeTarget, engine_server::Engine as EngineTrait,
+    SubscribeRequest, TombstonePersonalityRequest, TombstonePersonalityResponse,
+    engine_server::Engine as EngineTrait,
 };
 
 /// gRPC server wrapper for the Engine.
@@ -200,28 +200,10 @@ impl EngineTrait for EngineGrpcServer {
         &self,
         request: Request<SetWakeConfigRequest>,
     ) -> Result<Response<SetWakeConfigResponse>, Status> {
-        let pb = request.into_inner();
-        let owner = owner_from_proto(
-            pb.owner
-                .ok_or_else(|| Status::invalid_argument("missing owner"))?,
-        )?;
-        let instance_id = uuid_from_str(&pb.personality_instance_id)?;
-        let filters = pb
-            .wake_filters
-            .into_iter()
-            .map(wake_filter_from_proto)
-            .collect::<Result<Vec<_>, _>>()?;
-        let out = self
-            .engine
-            .set_wake_config(proxima_core::SetWakeConfigRequest {
-                owner,
-                personality_type_id: pb.personality_type_id,
-                personality_instance_id: proxima_core::PersonalityInstanceId::new(instance_id),
-                wake_filters: filters,
-            })
-            .await
-            .map_err(protocol_error_to_status)?;
-        Ok(Response::new(SetWakeConfigResponse { status: out.status }))
+        let _ = request.into_inner();
+        Err(Status::unimplemented(
+            "SetWakeConfig was removed by the Phase 1a WakeEntry migration",
+        ))
     }
 
     async fn list_personality_instances(
@@ -292,22 +274,17 @@ fn personality_instance_to_proto(
     row: proxima_core::PersonalityInstanceRow,
     flavor: &proxima_core::FlavorDescriptor,
 ) -> Result<PersonalityInstance, Status> {
-    let wake_filters = row
-        .wake_filters
-        .into_iter()
-        .map(wake_filter_to_proto)
-        .collect::<Result<Vec<_>, _>>()?;
     Ok(PersonalityInstance {
         owner: Some(owner_to_proto(&row.owner)),
         personality_type_id: row.personality_type_id,
         personality_instance_id: row.personality_instance_id.into_inner().to_string(),
         current_self_perspective_memory_id: row
-            .current_self_perspective_memory_id
+            .current_root_perspective_memory_id
             .into_inner()
             .to_string(),
         display_name: row.display_name,
         status: row.status,
-        wake_filters,
+        wake_filters: Vec::new(),
         flavor: Some(flavor_descriptor_to_proto(flavor)),
     })
 }
@@ -340,173 +317,4 @@ fn flavor_provenance_to_proto(
         }),
     };
     pb::FlavorProvenance { kind: Some(kind) }
-}
-
-fn wake_filter_from_proto(pb: WakeFilter) -> Result<proxima_core::WakeFilter, Status> {
-    let version = u16::try_from(pb.version)
-        .map_err(|_| Status::invalid_argument("wake filter version too large"))?;
-    let kind = pb
-        .kind
-        .ok_or_else(|| Status::invalid_argument("missing wake filter kind"))?;
-    Ok(match kind {
-        pb::wake_filter::Kind::OnMemory(OnMemoryFilter {
-            schema_id,
-            authored_by,
-            probability,
-        }) => proxima_core::WakeFilter::OnMemory {
-            version,
-            schema_id: proxima_core::SchemaId::new(schema_id),
-            authored_by: authored_by
-                .map(author_filter_from_proto)
-                .transpose()?
-                .unwrap_or(proxima_core::AuthorFilter::Any),
-            probability,
-        },
-        pb::wake_filter::Kind::OnEdge(OnEdgeFilter {
-            relation_id,
-            source,
-            target,
-            probability,
-        }) => proxima_core::WakeFilter::OnEdge {
-            version,
-            relation_id,
-            source: source
-                .map(wake_target_from_proto)
-                .transpose()?
-                .unwrap_or(proxima_core::WakeTarget::Any),
-            target: target
-                .map(wake_target_from_proto)
-                .transpose()?
-                .unwrap_or(proxima_core::WakeTarget::Any),
-            probability,
-        },
-        pb::wake_filter::Kind::Custom(CustomFilter {
-            kind_id,
-            params_json,
-            probability,
-        }) => proxima_core::WakeFilter::Custom {
-            version,
-            kind_id,
-            params: serde_json::from_slice(&params_json)
-                .map_err(|e| Status::invalid_argument(format!("params_json: {e}")))?,
-            probability,
-        },
-    })
-}
-
-fn wake_filter_to_proto(core: proxima_core::WakeFilter) -> Result<WakeFilter, Status> {
-    let (version, kind) = match core {
-        proxima_core::WakeFilter::OnMemory {
-            version,
-            schema_id,
-            authored_by,
-            probability,
-        } => (
-            version,
-            pb::wake_filter::Kind::OnMemory(OnMemoryFilter {
-                schema_id: schema_id.into_inner(),
-                authored_by: Some(author_filter_to_proto(authored_by)),
-                probability,
-            }),
-        ),
-        proxima_core::WakeFilter::OnEdge {
-            version,
-            relation_id,
-            source,
-            target,
-            probability,
-        } => (
-            version,
-            pb::wake_filter::Kind::OnEdge(OnEdgeFilter {
-                relation_id,
-                source: Some(wake_target_to_proto(source)),
-                target: Some(wake_target_to_proto(target)),
-                probability,
-            }),
-        ),
-        proxima_core::WakeFilter::Custom {
-            version,
-            kind_id,
-            params,
-            probability,
-        } => (
-            version,
-            pb::wake_filter::Kind::Custom(CustomFilter {
-                kind_id,
-                params_json: serde_json::to_vec(&params)
-                    .map_err(|e| Status::internal(e.to_string()))?,
-                probability,
-            }),
-        ),
-    };
-    Ok(WakeFilter {
-        version: u32::from(version),
-        kind: Some(kind),
-    })
-}
-
-fn author_filter_from_proto(pb: AuthorFilter) -> Result<proxima_core::AuthorFilter, Status> {
-    let kind = pb
-        .kind
-        .ok_or_else(|| Status::invalid_argument("missing author filter kind"))?;
-    Ok(match kind {
-        pb::author_filter::Kind::Any(_) => proxima_core::AuthorFilter::Any,
-        pb::author_filter::Kind::External(_) => proxima_core::AuthorFilter::External,
-        pb::author_filter::Kind::Personality(PersonalityAuthor {
-            personality_type_id,
-            personality_instance_id,
-        }) => proxima_core::AuthorFilter::Personality {
-            personality_type_id,
-            personality_instance_id: personality_instance_id
-                .as_deref()
-                .map(uuid_from_str)
-                .transpose()?
-                .map(proxima_core::PersonalityInstanceId::new),
-        },
-    })
-}
-
-fn author_filter_to_proto(core: proxima_core::AuthorFilter) -> AuthorFilter {
-    let kind = match core {
-        proxima_core::AuthorFilter::Any => pb::author_filter::Kind::Any(true),
-        proxima_core::AuthorFilter::External => pb::author_filter::Kind::External(true),
-        proxima_core::AuthorFilter::Personality {
-            personality_type_id,
-            personality_instance_id,
-        } => pb::author_filter::Kind::Personality(PersonalityAuthor {
-            personality_type_id,
-            personality_instance_id: personality_instance_id.map(|id| id.into_inner().to_string()),
-        }),
-    };
-    AuthorFilter { kind: Some(kind) }
-}
-
-fn wake_target_from_proto(pb: WakeTarget) -> Result<proxima_core::WakeTarget, Status> {
-    let kind = pb
-        .kind
-        .ok_or_else(|| Status::invalid_argument("missing wake target kind"))?;
-    Ok(match kind {
-        pb::wake_target::Kind::Any(_) => proxima_core::WakeTarget::Any,
-        pb::wake_target::Kind::SelfPerspective(_) => proxima_core::WakeTarget::SelfPerspective,
-        pb::wake_target::Kind::MemoryId(id) => proxima_core::WakeTarget::Memory {
-            memory_id: proxima_core::MemoryId::new(uuid_from_str(&id)?),
-        },
-        pb::wake_target::Kind::GoalId(id) => proxima_core::WakeTarget::Goal {
-            goal_id: proxima_core::GoalId::new(uuid_from_str(&id)?),
-        },
-    })
-}
-
-fn wake_target_to_proto(core: proxima_core::WakeTarget) -> WakeTarget {
-    let kind = match core {
-        proxima_core::WakeTarget::Any => pb::wake_target::Kind::Any(true),
-        proxima_core::WakeTarget::SelfPerspective => pb::wake_target::Kind::SelfPerspective(true),
-        proxima_core::WakeTarget::Memory { memory_id } => {
-            pb::wake_target::Kind::MemoryId(memory_id.into_inner().to_string())
-        }
-        proxima_core::WakeTarget::Goal { goal_id } => {
-            pb::wake_target::Kind::GoalId(goal_id.into_inner().to_string())
-        }
-    };
-    WakeTarget { kind: Some(kind) }
 }

@@ -1,20 +1,18 @@
 //! Personality wake/decide/write substrate.
 //!
 //! Personalities are build-time flavor declarations. Runtime instances
-//! are addressed by `(personality_type_id, personality_instance_id)` and
-//! carry a self-Perspective plus wake filters in storage.
+//! are addressed by `personality_instance_id` and point at a Root
+//! Perspective plus WakeEntry rows in storage.
 
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use schemars::JsonSchema;
 use uuid::Uuid;
 
 use crate::error::ProtocolError;
 use crate::outbox::{ChangeEvent, EntityKind};
 use crate::{
-    Engine, GoalId, LlmCaps, MemoryId, ModelTier, Owner, RegisteredRelation, SchemaId,
-    SchemaVersion,
+    Engine, LlmCaps, MemoryId, ModelTier, Owner, RegisteredRelation, SchemaId, SchemaVersion,
 };
 
 pub mod authorization;
@@ -97,88 +95,122 @@ impl PersonalityRef {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, specta::Type)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum AuthorFilter {
-    Any,
-    External,
-    Personality {
-        personality_type_id: String,
-        personality_instance_id: Option<PersonalityInstanceId>,
-    },
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WakeEntryTriggerKind {
+    OnMemory,
+    OnEdge,
 }
 
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, specta::Type)]
+impl WakeEntryTriggerKind {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::OnMemory => "on_memory",
+            Self::OnEdge => "on_edge",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WakeExecutionMode {
+    SubstrateOnly,
+    Workspace,
+}
+
+impl WakeExecutionMode {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::SubstrateOnly => "substrate_only",
+            Self::Workspace => "workspace",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub enum WakeTarget {
+pub enum WakeAuthorFilter {
     Any,
-    SelfPerspective,
-    Memory { memory_id: MemoryId },
-    Goal { goal_id: GoalId },
+    #[serde(rename = "self")]
+    SelfAuthored,
+    Other,
+}
+
+impl WakeAuthorFilter {
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Any => "any",
+            Self::SelfAuthored => "self",
+            Self::Other => "other",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum WakeFilter {
-    OnMemory {
-        version: u16,
-        schema_id: SchemaId,
-        authored_by: AuthorFilter,
-        probability: f32,
-    },
-    OnEdge {
-        version: u16,
-        relation_id: String,
-        source: WakeTarget,
-        target: WakeTarget,
-        probability: f32,
-    },
-    Custom {
-        version: u16,
-        kind_id: String,
-        params: serde_json::Value,
-        probability: f32,
-    },
+pub struct WakeEntryDraft {
+    pub wake_entry_id: Uuid,
+    pub personality_instance_id: PersonalityInstanceId,
+    pub trigger_kind: WakeEntryTriggerKind,
+    pub trigger_id: String,
+    pub label: String,
+    pub enabled: bool,
+    pub execution_mode: WakeExecutionMode,
+    pub authored_by: WakeAuthorFilter,
+    pub probability_promille: u16,
+    pub recipe_ref: String,
+    pub model_tier: ModelTier,
+    pub inference_target_ref: Option<String>,
+    pub substrate_tool_palette: Vec<String>,
+    pub workspace_tool_palette: Vec<String>,
+    pub max_rounds: u16,
 }
 
-impl WakeFilter {
-    #[must_use]
-    pub fn on_memory(schema_id: SchemaId) -> Self {
-        Self::OnMemory {
-            version: 1,
-            schema_id,
-            authored_by: AuthorFilter::Any,
-            probability: 1.0,
+impl WakeEntryDraft {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        wake_entry_id: Uuid,
+        personality_instance_id: PersonalityInstanceId,
+        trigger_kind: WakeEntryTriggerKind,
+        trigger_id: impl Into<String>,
+        label: impl Into<String>,
+        authored_by: WakeAuthorFilter,
+        probability_promille: u16,
+        recipe_ref: impl Into<String>,
+        model_tier: ModelTier,
+        inference_target_ref: Option<String>,
+        substrate_tool_palette: Vec<String>,
+        max_rounds: u16,
+    ) -> Result<Self, ProtocolError> {
+        if probability_promille > 1000 {
+            return Err(ProtocolError::internal(
+                "wake entry probability_promille must be between 0 and 1000",
+            ));
         }
-    }
-
-    #[must_use]
-    pub fn on_self_inspires() -> Self {
-        Self::OnEdge {
-            version: 1,
-            relation_id: crate::CORE_INSPIRES_RELATION.to_string(),
-            source: WakeTarget::Any,
-            target: WakeTarget::SelfPerspective,
-            probability: 1.0,
+        if max_rounds == 0 {
+            return Err(ProtocolError::internal(
+                "wake entry max_rounds must be greater than 0",
+            ));
         }
-    }
-
-    #[must_use]
-    pub fn probability(&self) -> f32 {
-        match self {
-            Self::OnMemory { probability, .. }
-            | Self::OnEdge { probability, .. }
-            | Self::Custom { probability, .. } => *probability,
-        }
-    }
-
-    #[must_use]
-    pub fn version(&self) -> u16 {
-        match self {
-            Self::OnMemory { version, .. }
-            | Self::OnEdge { version, .. }
-            | Self::Custom { version, .. } => *version,
-        }
+        Ok(Self {
+            wake_entry_id,
+            personality_instance_id,
+            trigger_kind,
+            trigger_id: trigger_id.into(),
+            label: label.into(),
+            enabled: true,
+            execution_mode: WakeExecutionMode::SubstrateOnly,
+            authored_by,
+            probability_promille,
+            recipe_ref: recipe_ref.into(),
+            model_tier,
+            inference_target_ref,
+            substrate_tool_palette,
+            workspace_tool_palette: Vec::new(),
+            max_rounds,
+        })
     }
 }
 
@@ -268,7 +300,7 @@ pub struct PersonalityToolContext<'a> {
     pub owner: &'a Owner,
     pub type_id: &'a str,
     pub instance_id: PersonalityInstanceId,
-    pub current_self_perspective_memory_id: MemoryId,
+    pub current_root_perspective_memory_id: MemoryId,
     pub triggering_event_memory_id: MemoryId,
     pub triggering_event_depth: WakeChainDepth,
     pub writeable_schemas: &'a [&'static str],
@@ -285,7 +317,7 @@ impl<'a> PersonalityToolContext<'a> {
         owner: &'a Owner,
         type_id: &'a str,
         instance_id: PersonalityInstanceId,
-        current_self_perspective_memory_id: MemoryId,
+        current_root_perspective_memory_id: MemoryId,
         triggering_event_memory_id: MemoryId,
         triggering_event_depth: WakeChainDepth,
         writeable_schemas: &'a [&'static str],
@@ -297,7 +329,7 @@ impl<'a> PersonalityToolContext<'a> {
             owner,
             type_id,
             instance_id,
-            current_self_perspective_memory_id,
+            current_root_perspective_memory_id,
             triggering_event_memory_id,
             triggering_event_depth,
             writeable_schemas,
@@ -335,21 +367,19 @@ pub struct PersonalityInstanceRow {
     pub owner: Owner,
     pub personality_type_id: String,
     pub personality_instance_id: PersonalityInstanceId,
-    pub current_self_perspective_memory_id: MemoryId,
+    pub current_root_perspective_memory_id: MemoryId,
     pub display_name: String,
     pub status: String,
-    pub wake_filters: Vec<WakeFilter>,
 }
 
 #[derive(Debug, Clone)]
-pub struct WakeConfigRow {
+pub struct WakeDispatchEntryRow {
     pub owner: Owner,
-    pub personality_type_id: String,
     pub personality_instance_id: PersonalityInstanceId,
-    pub current_self_perspective_memory_id: MemoryId,
-    pub wake_filters_json: serde_json::Value,
-    pub status: String,
+    pub current_root_perspective_memory_id: MemoryId,
+    pub max_wake_chain_depth: u16,
     pub last_considered_seq: Uuid,
+    pub wake_entry: WakeEntryDraft,
 }
 
 #[derive(Debug, Clone)]
@@ -373,16 +403,15 @@ pub struct InstantiatePersonalityResponse {
 }
 
 #[derive(Debug, Clone)]
-pub struct SetWakeConfigRequest {
+pub struct SetWakeEntriesRequest {
     pub owner: Owner,
-    pub personality_type_id: String,
     pub personality_instance_id: PersonalityInstanceId,
-    pub wake_filters: Vec<WakeFilter>,
+    pub entries: Vec<WakeEntryDraft>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
-pub struct SetWakeConfigResponse {
-    pub status: String,
+pub struct SetWakeEntriesResponse {
+    pub active_entries: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -473,95 +502,6 @@ pub trait PersonalityTool: Send + Sync + std::fmt::Debug {
     ) -> Result<PersonalityToolResult, ProtocolError>;
 }
 
-#[async_trait]
-pub trait WakeFilterCtx: Send {
-    async fn fetch_memory(
-        &mut self,
-        memory_id: MemoryId,
-    ) -> Result<Option<serde_json::Value>, ProtocolError>;
-    async fn current_self_perspective(&mut self) -> Result<MemoryId, ProtocolError>;
-}
-
-#[async_trait]
-pub trait WakeFilterKind: Send + Sync + std::fmt::Debug {
-    fn kind_id(&self) -> &'static str;
-    fn version(&self) -> u16;
-    fn params_schema(&self) -> serde_json::Value;
-
-    async fn matches(
-        &self,
-        ctx: &mut dyn WakeFilterCtx,
-        params: &serde_json::Value,
-        event: &ChangeEvent,
-    ) -> Result<bool, ProtocolError>;
-}
-
-#[derive(Debug)]
-pub struct OnMemoryWakeFilterKind;
-
-#[async_trait]
-impl WakeFilterKind for OnMemoryWakeFilterKind {
-    fn kind_id(&self) -> &'static str {
-        "core/on-memory"
-    }
-
-    fn version(&self) -> u16 {
-        1
-    }
-
-    fn params_schema(&self) -> serde_json::Value {
-        serde_json::to_value(schemars::schema_for!(OnMemoryWakeFilterParams))
-            .expect("schema serializes")
-    }
-
-    async fn matches(
-        &self,
-        _ctx: &mut dyn WakeFilterCtx,
-        _params: &serde_json::Value,
-        _event: &ChangeEvent,
-    ) -> Result<bool, ProtocolError> {
-        Ok(false)
-    }
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize, JsonSchema)]
-struct OnMemoryWakeFilterParams {
-    schema_id: String,
-}
-
-#[derive(Debug)]
-pub struct OnEdgeWakeFilterKind;
-
-#[async_trait]
-impl WakeFilterKind for OnEdgeWakeFilterKind {
-    fn kind_id(&self) -> &'static str {
-        "core/on-edge"
-    }
-
-    fn version(&self) -> u16 {
-        1
-    }
-
-    fn params_schema(&self) -> serde_json::Value {
-        serde_json::to_value(schemars::schema_for!(OnEdgeWakeFilterParams))
-            .expect("schema serializes")
-    }
-
-    async fn matches(
-        &self,
-        _ctx: &mut dyn WakeFilterCtx,
-        _params: &serde_json::Value,
-        _event: &ChangeEvent,
-    ) -> Result<bool, ProtocolError> {
-        Ok(false)
-    }
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize, JsonSchema)]
-struct OnEdgeWakeFilterParams {
-    relation_id: String,
-}
-
 /// Build-time personality declaration contributed by a flavor.
 #[async_trait]
 pub trait PersonalityFlavor: Send + Sync + std::fmt::Debug {
@@ -578,7 +518,6 @@ pub trait PersonalityFlavor: Send + Sync + std::fmt::Debug {
     }
     fn writeable_schemas(&self) -> &'static [&'static str];
     fn writeable_relations(&self) -> &'static [&'static str];
-    fn default_wake_filters(&self) -> Vec<WakeFilter>;
     fn tier(&self) -> ModelTier {
         ModelTier::Standard
     }
@@ -591,93 +530,53 @@ pub trait PersonalityFlavor: Send + Sync + std::fmt::Debug {
 }
 
 #[cfg(test)]
-mod wake_filter_envelope_tests {
+mod tests {
     use super::*;
 
     #[test]
-    fn on_memory_round_trips_through_serde() {
-        let original = WakeFilter::OnMemory {
-            version: 1,
-            schema_id: SchemaId::new("proxima-code/commit-v1".into()),
-            authored_by: AuthorFilter::External,
-            probability: 0.5,
-        };
-        let json = serde_json::to_value(&original).expect("serializes");
-        assert_eq!(json["kind"], "on_memory");
-        assert_eq!(json["version"], 1);
-        let decoded: WakeFilter = serde_json::from_value(json).expect("deserializes");
-        assert_eq!(decoded, original);
-    }
-
-    #[test]
-    fn on_edge_round_trips_through_serde() {
-        let original = WakeFilter::on_self_inspires();
-        let json = serde_json::to_value(&original).expect("serializes");
-        assert_eq!(json["kind"], "on_edge");
-        let decoded: WakeFilter = serde_json::from_value(json).expect("deserializes");
-        assert_eq!(decoded, original);
-    }
-
-    #[test]
-    fn rejects_missing_version() {
-        let no_version = serde_json::json!({
-            "kind": "on_memory",
-            "schema_id": "proxima-code/commit-v1",
-            "authored_by": { "kind": "any" },
-            "probability": 1.0
-        });
-        let err = serde_json::from_value::<WakeFilter>(no_version).unwrap_err();
-        assert!(
-            err.to_string().contains("missing field `version`"),
-            "got: {err}",
+    fn wake_entry_accepts_promille_probability() {
+        let entry = WakeEntryDraft::new(
+            Uuid::from_u128(10),
+            PersonalityInstanceId::new(Uuid::from_u128(1)),
+            WakeEntryTriggerKind::OnMemory,
+            "proxima-test/fact-v1",
+            "on_test_fact",
+            WakeAuthorFilter::Any,
+            250,
+            "recipe:proxima-test/personality-v1",
+            ModelTier::Fast,
+            Some("local-cli:codex-spark".to_string()),
+            vec!["core/query".to_string()],
+            4,
+        )
+        .unwrap();
+        assert_eq!(entry.trigger_kind, WakeEntryTriggerKind::OnMemory);
+        assert_eq!(entry.trigger_id, "proxima-test/fact-v1");
+        assert_eq!(entry.probability_promille, 250);
+        assert_eq!(entry.model_tier, ModelTier::Fast);
+        assert_eq!(
+            entry.inference_target_ref.as_deref(),
+            Some("local-cli:codex-spark")
         );
     }
 
     #[test]
-    fn rejects_unknown_kind() {
-        let unknown = serde_json::json!({
-            "kind": "on_galaxy",
-            "version": 1,
-            "probability": 1.0
-        });
-        let err = serde_json::from_value::<WakeFilter>(unknown).unwrap_err();
-        assert!(
-            err.to_string().contains("unknown variant"),
-            "got: {err}",
-        );
-    }
-
-    #[test]
-    fn rejects_schema_invalid_params() {
-        let bad_probability_type = serde_json::json!({
-            "kind": "on_memory",
-            "version": 1,
-            "schema_id": "proxima-code/commit-v1",
-            "authored_by": { "kind": "any" },
-            "probability": "high"
-        });
-        assert!(serde_json::from_value::<WakeFilter>(bad_probability_type).is_err());
-
-        let missing_relation = serde_json::json!({
-            "kind": "on_edge",
-            "version": 1,
-            "source": { "kind": "any" },
-            "target": { "kind": "any" },
-            "probability": 1.0
-        });
-        assert!(serde_json::from_value::<WakeFilter>(missing_relation).is_err());
-    }
-
-    #[test]
-    fn custom_envelope_round_trips() {
-        let original = WakeFilter::Custom {
-            version: 2,
-            kind_id: "proxima-code/recent-pr-touch".into(),
-            params: serde_json::json!({"max_age_days": 14}),
-            probability: 0.75,
-        };
-        let json = serde_json::to_value(&original).expect("serializes");
-        let decoded: WakeFilter = serde_json::from_value(json).expect("deserializes");
-        assert_eq!(decoded, original);
+    fn wake_entry_rejects_probability_above_promille_ceiling() {
+        let err = WakeEntryDraft::new(
+            Uuid::from_u128(11),
+            PersonalityInstanceId::new(Uuid::from_u128(2)),
+            WakeEntryTriggerKind::OnMemory,
+            "proxima-test/fact-v1",
+            "on_test_fact",
+            WakeAuthorFilter::Any,
+            1001,
+            "recipe:proxima-test/personality-v1",
+            ModelTier::Standard,
+            None,
+            Vec::new(),
+            4,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("probability_promille"));
     }
 }

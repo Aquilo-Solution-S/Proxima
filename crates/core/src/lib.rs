@@ -61,7 +61,7 @@ macro_rules! proxima_schema_id {
 /// Build-time registration macro. v1 subset — supports
 /// `fact_schemas`, `abstraction_schemas`, `perspective_schemas`,
 /// `goal_schemas`, `edge_schemas`, `relations`, `personalities`,
-/// `wake_filter_kinds`, `mcp_tools`. Expands to a
+/// `mcp_tools`. Expands to a
 /// `pub fn register(registry: &mut FlavorRegistry)` that performs
 /// runtime prefix checks and adds each schema / relation.
 ///
@@ -104,7 +104,6 @@ macro_rules! proxima_flavor {
         $(, edge_schemas = [ $($edge:ty),* $(,)? ])?
         $(, relations = [ $($rel:expr),* $(,)? ])?
         $(, personalities = [ $($personality:ty),* $(,)? ])?
-        $(, wake_filter_kinds = [ $($wake_filter_kind:ty),* $(,)? ])?
         $(, mcp_tools = [ $($tool:ty),* $(,)? ])?
         $(,)?
     ) => {
@@ -211,18 +210,6 @@ macro_rules! proxima_flavor {
                         id, expected_prefix,
                     );
                     registry.add_personality(personality);
-                }
-            )*)?
-            $($(
-                {
-                    let kind = <$wake_filter_kind>::default();
-                    let id = <$wake_filter_kind as $crate::WakeFilterKind>::kind_id(&kind);
-                    assert!(
-                        id.starts_with(expected_prefix),
-                        "WakeFilterKind::kind_id {:?} does not start with crate prefix {:?}",
-                        id, expected_prefix,
-                    );
-                    registry.add_wake_filter_kind(kind);
                 }
             )*)?
             $($(
