@@ -20,6 +20,7 @@ pub(crate) fn specta_builder() -> Builder<tauri::Wry> {
         engine::list_personality_instances,
         engine::instantiate_personality,
         engine::set_wake_config,
+        engine::tombstone_personality,
         engine::subscribe,
         // settings commands (m6.23)
         models::models_list_llm,

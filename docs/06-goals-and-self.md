@@ -63,6 +63,12 @@ self_Perspective_vN+1 --core/supersedes--> self_Perspective_vN
 personality_wake_config.current_self_perspective_memory_id = vN+1
 ```
 
+`personality_wake_config.status = tombstoned` removes the runtime
+instance from dispatch and default listings. It does not delete the
+self-Perspective, wake cursor, invocations, or authored A/P rows.
+Tombstone is operational config (like wake-filter edits), not Memory
+mutation; the instance's cognitive history stays queryable.
+
 ## Goal Assignment
 
 Goal-to-personality assignment is an edge:

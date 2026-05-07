@@ -12,7 +12,8 @@ use crate::personality::{
     AbstractionRow, ChangeEventForWake, InstantiatePersonalityRequest,
     InstantiatePersonalityResponse, MemorySnapshot, PersonalityInstanceRow, PersonalityRef,
     PersonalityWriteOutcome, PersonalityWriteRequest, SetWakeConfigRequest, SetWakeConfigResponse,
-    SidecarSpec, WakeConfigRow, WakeInvocationStatus,
+    SidecarSpec, TombstonePersonalityRequest, TombstonePersonalityResponse, WakeConfigRow,
+    WakeInvocationStatus,
 };
 use crate::verbs::close_batch::CloseBatchOutcome;
 use crate::verbs::event_history::{EventHistoryRequest, EventHistoryResponse};
@@ -127,12 +128,25 @@ pub trait Storage: Send + Sync {
         source_batch_id: SourceBatchId,
     ) -> Result<CloseBatchOutcome, StorageError>;
 
-    /// List configured personality instances for an owner.
+    /// List configured personality instances for an owner. When
+    /// `include_tombstoned` is `false` (the default for UI listings),
+    /// rows whose status is `tombstoned` are filtered out. Provisioning
+    /// passes `true` so a previously tombstoned default isn't recreated.
     async fn list_personality_instances(
         &self,
         owner: &Owner,
         personality_type_id: Option<&str>,
+        include_tombstoned: bool,
     ) -> Result<Vec<PersonalityInstanceRow>, StorageError>;
+
+    /// Mark a personality instance tombstoned. Subsequent dispatcher
+    /// ticks must skip it; `set_wake_config` against the same key must
+    /// return `NotFound`. Idempotent on the natural key: repeats return
+    /// `idempotent_replay = true` without rewriting `tombstoned_at`.
+    async fn tombstone_personality(
+        &self,
+        req: &TombstonePersonalityRequest,
+    ) -> Result<TombstonePersonalityResponse, StorageError>;
 
     /// Instantiate one personality instance with its self-Perspective,
     /// wake_config, and cursor rows.
@@ -340,8 +354,16 @@ impl Storage for NoopStorage {
         &self,
         _owner: &Owner,
         _personality_type_id: Option<&str>,
+        _include_tombstoned: bool,
     ) -> Result<Vec<PersonalityInstanceRow>, StorageError> {
         Ok(Vec::new())
+    }
+
+    async fn tombstone_personality(
+        &self,
+        _req: &TombstonePersonalityRequest,
+    ) -> Result<TombstonePersonalityResponse, StorageError> {
+        Err(StorageError::Internal("NoopStorage rejects writes".into()))
     }
 
     async fn instantiate_personality(

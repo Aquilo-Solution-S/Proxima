@@ -70,6 +70,19 @@ export interface ShellViewRegistration {
   flavor: string;
 }
 
+export interface PersonalityTypeRegistration {
+  typeId: string;
+  flavor: string;
+  label: string;
+  purpose: string;
+  defaultDisplayName: string;
+  defaultPurpose: string;
+}
+
+export interface RegisteredPersonalityType extends PersonalityTypeRegistration {
+  registeredAt: number;
+}
+
 export interface RegisteredPayloadRenderer {
   schemaId: string;
   schemaVersion: number;
@@ -83,7 +96,9 @@ const payloadRenderers = new Map<string, RegisteredPayloadRenderer>();
 const edgeStyles = new Map<string, EdgeStyle>();
 const shellViews = new Map<string, ShellViewRegistration>();
 const goalPayloadEditors = new Map<string, RegisteredGoalPayloadEditor>();
+const personalityTypes = new Map<string, RegisteredPersonalityType>();
 let goalEditorCounter = 0;
+let personalityTypeCounter = 0;
 
 const payloadKey = (
   kind: EntityKind | null,
@@ -165,7 +180,27 @@ export function registeredFlavorNames(): string[] {
   const flavors = new Set<string>();
   for (const renderer of payloadRenderers.values()) flavors.add(renderer.flavor);
   for (const view of shellViews.values()) flavors.add(view.flavor);
+  for (const personalityType of personalityTypes.values()) {
+    flavors.add(personalityType.flavor);
+  }
   return [...flavors];
+}
+
+export function registerPersonalityType(
+  registration: PersonalityTypeRegistration,
+): void {
+  personalityTypeCounter += 1;
+  personalityTypes.set(registration.typeId, {
+    ...registration,
+    registeredAt: personalityTypeCounter,
+  });
+}
+
+/** Returns personality types in registration order. */
+export function registeredPersonalityTypes(): RegisteredPersonalityType[] {
+  return [...personalityTypes.values()].sort(
+    (a, b) => a.registeredAt - b.registeredAt,
+  );
 }
 
 export function registerGoalPayloadEditor<T>(
@@ -204,5 +239,7 @@ export function clearRegistriesForTests(): void {
   edgeStyles.clear();
   shellViews.clear();
   goalPayloadEditors.clear();
+  personalityTypes.clear();
   goalEditorCounter = 0;
+  personalityTypeCounter = 0;
 }

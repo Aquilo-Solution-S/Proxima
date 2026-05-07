@@ -9,8 +9,10 @@ use crate::personality::{
     AuthorFilter, ChangeEventForWake, InstantiatePersonalityRequest,
     InstantiatePersonalityResponse, PersonalityInstanceRow, PersonalityRef, PersonalityTool,
     PersonalityToolContext, SetWakeConfigRequest, SetWakeConfigResponse, SidecarSpec,
-    WakeConfigRow, WakeFilter, WakeInvocationStatus, WakeTarget, substrate_pack,
+    TombstonePersonalityRequest, TombstonePersonalityResponse, WakeConfigRow, WakeFilter,
+    WakeInvocationStatus, WakeTarget, substrate_pack,
 };
+use crate::storage::StorageError;
 use crate::verbs::schema::PayloadKind;
 use crate::{MemoryId, Owner, SchemaId, SchemaVersion};
 
@@ -22,18 +24,36 @@ impl Engine {
         &self,
         owner: &Owner,
         personality_type_id: Option<&str>,
+        include_tombstoned: bool,
     ) -> Result<Vec<PersonalityInstanceRow>, ProtocolError> {
         self.storage
-            .list_personality_instances(owner, personality_type_id)
+            .list_personality_instances(owner, personality_type_id, include_tombstoned)
             .await
             .map_err(|e| ProtocolError::internal(format!("list_personality_instances: {e}")))
+    }
+
+    pub async fn tombstone_personality(
+        &self,
+        req: TombstonePersonalityRequest,
+    ) -> Result<TombstonePersonalityResponse, ProtocolError> {
+        self.storage
+            .tombstone_personality(&req)
+            .await
+            .map_err(|e| match e {
+                StorageError::NotFound => ProtocolError::not_found(format!(
+                    "personality instance not found: {}/{}",
+                    req.personality_type_id,
+                    req.personality_instance_id.into_inner()
+                )),
+                other => ProtocolError::internal(format!("tombstone_personality: {other}")),
+            })
     }
 
     pub async fn provision_owner(&self, owner: &Owner) -> Result<(), ProtocolError> {
         for personality in self.registry.list_personalities() {
             let existing = self
                 .storage
-                .list_personality_instances(owner, Some(personality.personality_type_id()))
+                .list_personality_instances(owner, Some(personality.personality_type_id()), true)
                 .await
                 .map_err(|e| ProtocolError::internal(format!("list_personality_instances: {e}")))?;
             if existing.is_empty() {
@@ -110,7 +130,14 @@ impl Engine {
         self.storage
             .set_wake_config(&req)
             .await
-            .map_err(|e| ProtocolError::internal(format!("set_wake_config: {e}")))
+            .map_err(|e| match e {
+                StorageError::NotFound => ProtocolError::not_found(format!(
+                    "personality instance not found or tombstoned: {}/{}",
+                    req.personality_type_id,
+                    req.personality_instance_id.into_inner()
+                )),
+                other => ProtocolError::internal(format!("set_wake_config: {other}")),
+            })
     }
 
     pub async fn run_dispatcher_tick(&self) -> Result<usize, ProtocolError> {

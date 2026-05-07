@@ -385,6 +385,19 @@ pub struct SetWakeConfigResponse {
     pub status: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TombstonePersonalityRequest {
+    pub owner: Owner,
+    pub personality_type_id: String,
+    pub personality_instance_id: PersonalityInstanceId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
+pub struct TombstonePersonalityResponse {
+    pub status: String,
+    pub idempotent_replay: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WakeInvocationStatus {
     Running,

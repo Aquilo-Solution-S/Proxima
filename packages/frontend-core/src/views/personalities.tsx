@@ -18,12 +18,17 @@ import {
   type ProtocolError,
   type SetWakeConfigOutcomeTs,
   type SetWakeConfigTs,
+  type TombstonePersonalityOutcomeTs,
+  type TombstonePersonalityTs,
   type WakeFilterTs,
 } from "../bindings";
 import { sentinelOwner } from "../graph-store";
 import { Mono } from "../primitives";
-
-const ENGINEER_TYPE = "proxima-code/engineer-v1";
+import {
+  registeredPayloadRenderers,
+  registeredPersonalityTypes,
+  type RegisteredPersonalityType,
+} from "../registry";
 
 type CommandResult<T> = Promise<
   { status: "ok"; data: T } | { status: "error"; error: ProtocolError }
@@ -38,6 +43,9 @@ export type PersonalityCommandClient = {
     req: InstantiatePersonalityTs,
   ) => CommandResult<InstantiatePersonalityOutcomeTs>;
   setWakeConfig: (req: SetWakeConfigTs) => CommandResult<SetWakeConfigOutcomeTs>;
+  tombstonePersonality: (
+    req: TombstonePersonalityTs,
+  ) => CommandResult<TombstonePersonalityOutcomeTs>;
 };
 
 const emptyOnMemory = (): WakeFilterTs => ({
@@ -57,7 +65,30 @@ const emptyOnEdge = (): WakeFilterTs => ({
   probability: 1,
 });
 
-export const EngineerInstancesPanel: Component<{
+const registeredSchemaOptions = () => {
+  const seen = new Set<string>();
+  return registeredPayloadRenderers()
+    .map((registration) => ({
+      schemaId: registration.schemaId,
+      flavor: registration.flavor,
+    }))
+    .filter((option) => {
+      if (seen.has(option.schemaId)) return false;
+      seen.add(option.schemaId);
+      return true;
+    })
+    .sort((a, b) =>
+      `${a.flavor}:${a.schemaId}`.localeCompare(`${b.flavor}:${b.schemaId}`),
+    );
+};
+
+const schemaOptionsFor = (schemaId: string) => {
+  const options = registeredSchemaOptions();
+  if (options.some((option) => option.schemaId === schemaId)) return options;
+  return [{ schemaId, flavor: "stored config" }, ...options];
+};
+
+export const PersonalitiesView: Component<{
   client?: PersonalityCommandClient;
   owner?: Owner;
 }> = (props) => {
@@ -66,15 +97,45 @@ export const EngineerInstancesPanel: Component<{
   const [instances, setInstances] = createSignal<PersonalityInstanceTs[]>([]);
   const [loading, setLoading] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
-  const [displayName, setDisplayName] = createSignal("Engineer");
-  const [purpose, setPurpose] = createSignal("Develop perspectives on code changes");
   const [editing, setEditing] = createSignal<PersonalityInstanceTs | null>(null);
-
-  const engineers = createMemo(() =>
-    instances().filter((row) => row.personality_type_id === ENGINEER_TYPE),
+  const [creating, setCreating] = createSignal(false);
+  const [confirmingTombstone, setConfirmingTombstone] = createSignal<string | null>(
+    null,
   );
-  const others = createMemo(() =>
-    instances().filter((row) => row.personality_type_id !== ENGINEER_TYPE),
+  const [tombstoning, setTombstoning] = createSignal<string | null>(null);
+  const personalityTypes = registeredPersonalityTypes();
+
+  const tombstoneInstance = async (instance: PersonalityInstanceTs) => {
+    setTombstoning(instance.personality_instance_id);
+    setError(null);
+    try {
+      await unwrap(
+        client.tombstonePersonality({
+          owner: instance.owner,
+          personality_type_id: instance.personality_type_id,
+          personality_instance_id: instance.personality_instance_id,
+        }),
+      );
+      setInstances((prev) =>
+        prev.filter(
+          (row) => row.personality_instance_id !== instance.personality_instance_id,
+        ),
+      );
+      setConfirmingTombstone(null);
+      void refresh();
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setTombstoning(null);
+    }
+  };
+
+  const visibleInstances = createMemo(() =>
+    [...instances()].sort((a, b) =>
+      `${a.flavor.display_name}:${a.display_name}`.localeCompare(
+        `${b.flavor.display_name}:${b.display_name}`,
+      ),
+    ),
   );
 
   const refresh = async () => {
@@ -86,11 +147,12 @@ export const EngineerInstancesPanel: Component<{
         client.listPersonalityInstances({
           owner,
           personality_type_id: null,
+          include_tombstoned: false,
         }),
       );
       setInstances(rows);
     } catch (err) {
-      setError(String(err));
+      setError(errorMessage(err));
     } finally {
       setLoading(false);
     }
@@ -100,23 +162,28 @@ export const EngineerInstancesPanel: Component<{
     void refresh();
   });
 
-  const createEngineer = async () => {
+  const createPersonality = async (
+    type: RegisteredPersonalityType,
+    displayName: string,
+    purpose: string,
+  ) => {
     setLoading(true);
     setError(null);
     try {
       await unwrap(
         client.instantiatePersonality({
           owner,
-          personality_type_id: ENGINEER_TYPE,
+          personality_type_id: type.typeId,
           payload_overrides: JSON.stringify({
-            display_name: displayName(),
-            purpose: purpose(),
+            display_name: displayName,
+            purpose,
           }),
         }),
       );
+      setCreating(false);
       await refresh();
     } catch (err) {
-      setError(String(err));
+      setError(errorMessage(err));
       setLoading(false);
     }
   };
@@ -131,44 +198,53 @@ export const EngineerInstancesPanel: Component<{
           </Show>
         </div>
         <div class="personality-actions">
+          <button
+            type="button"
+            class="hub-nav-item"
+            disabled={loading() || personalityTypes.length === 0}
+            onClick={() => setCreating(true)}
+          >
+            Create new Personality
+          </button>
           <button type="button" class="hub-nav-item" onClick={() => void refresh()}>
             Refresh
           </button>
         </div>
       </div>
 
-      <div class="personality-form">
-        <label>
-          Display name
-          <input
-            value={displayName()}
-            onInput={(event) => setDisplayName(event.currentTarget.value)}
-          />
-        </label>
-        <label>
-          Purpose
-          <input
-            value={purpose()}
-            onInput={(event) => setPurpose(event.currentTarget.value)}
-          />
-        </label>
-        <button
-          type="button"
-          class="hub-nav-item"
-          disabled={loading()}
-          onClick={() => void createEngineer()}
-        >
-          Create another Engineer
-        </button>
-      </div>
-
       <div class="personality-grid" aria-busy={loading()}>
-        <For each={[...engineers(), ...others()]}>
+        <For each={visibleInstances()}>
           {(instance) => (
-            <PersonalityCard instance={instance} onEdit={() => setEditing(instance)} />
+            <PersonalityCard
+              instance={instance}
+              onEdit={() => setEditing(instance)}
+              confirming={
+                confirmingTombstone() === instance.personality_instance_id
+              }
+              busy={tombstoning() === instance.personality_instance_id}
+              onTombstone={() =>
+                setConfirmingTombstone(instance.personality_instance_id)
+              }
+              onCancelTombstone={() => setConfirmingTombstone(null)}
+              onConfirmTombstone={() => void tombstoneInstance(instance)}
+            />
           )}
         </For>
+        <Show when={visibleInstances().length === 0}>
+          <p class="personality-empty">No personalities configured.</p>
+        </Show>
       </div>
+
+      <Show when={creating()}>
+        <CreatePersonalityDialog
+          types={personalityTypes}
+          busy={loading()}
+          onClose={() => setCreating(false)}
+          onCreate={(type, displayName, purpose) =>
+            void createPersonality(type, displayName, purpose)
+          }
+        />
+      </Show>
 
       <Show when={editing()}>
         {(instance) => (
@@ -187,11 +263,119 @@ export const EngineerInstancesPanel: Component<{
   );
 };
 
+export const EngineerInstancesPanel = PersonalitiesView;
+
+const CreatePersonalityDialog: Component<{
+  types: RegisteredPersonalityType[];
+  busy: boolean;
+  onClose: () => void;
+  onCreate: (
+    type: RegisteredPersonalityType,
+    displayName: string,
+    purpose: string,
+  ) => void;
+}> = (props) => {
+  const [selectedTypeId, setSelectedTypeId] = createSignal(
+    props.types[0]?.typeId ?? "",
+  );
+  const selectedType = createMemo(
+    () => props.types.find((type) => type.typeId === selectedTypeId()) ?? null,
+  );
+  const [displayName, setDisplayName] = createSignal(
+    props.types[0]?.defaultDisplayName ?? "",
+  );
+  const [purpose, setPurpose] = createSignal(props.types[0]?.defaultPurpose ?? "");
+
+  const chooseType = (type: RegisteredPersonalityType) => {
+    setSelectedTypeId(type.typeId);
+    setDisplayName(type.defaultDisplayName);
+    setPurpose(type.defaultPurpose);
+  };
+
+  const create = () => {
+    const type = selectedType();
+    if (type === null) return;
+    props.onCreate(type, displayName().trim(), purpose().trim());
+  };
+
+  return (
+    <div class="personality-dialog-backdrop" role="dialog" aria-modal="true">
+      <div class="personality-dialog">
+        <div class="personality-dialog-head">
+          <div>
+            <h2>Create new Personality</h2>
+            <p>Choose a flavor-provided type, then set its instance details.</p>
+          </div>
+          <button type="button" class="hub-nav-item" onClick={props.onClose}>
+            Close
+          </button>
+        </div>
+
+        <div class="personality-dialog-body">
+          <section class="personality-type-picker" aria-label="Personality type">
+            <For each={props.types}>
+              {(type) => (
+                <button
+                  type="button"
+                  classList={{
+                    "personality-type-option": true,
+                    selected: selectedTypeId() === type.typeId,
+                  }}
+                  onClick={() => chooseType(type)}
+                >
+                  <span>{type.label}</span>
+                  <small>{type.flavor}</small>
+                  <em>{type.purpose}</em>
+                </button>
+              )}
+            </For>
+          </section>
+
+          <section class="personality-detail-form">
+            <label>
+              Display name
+              <input
+                value={displayName()}
+                onInput={(event) => setDisplayName(event.currentTarget.value)}
+              />
+            </label>
+            <label>
+              Purpose
+              <textarea
+                rows="4"
+                value={purpose()}
+                onInput={(event) => setPurpose(event.currentTarget.value)}
+              />
+            </label>
+          </section>
+        </div>
+
+        <div class="personality-dialog-actions">
+          <button
+            type="button"
+            class="hub-nav-item"
+            disabled={props.busy || displayName().trim() === ""}
+            onClick={create}
+          >
+            Create
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const PersonalityCard: Component<{
   instance: PersonalityInstanceTs;
   onEdit: () => void;
+  confirming: boolean;
+  busy: boolean;
+  onTombstone: () => void;
+  onCancelTombstone: () => void;
+  onConfirmTombstone: () => void;
 }> = (props) => {
   const statusClass = () => props.instance.status.replace(/-/g, "_");
+  const truncatedName = () => truncateName(props.instance.display_name);
   return (
     <article class="personality-row" data-testid="personality-card">
       <div class="personality-row-head">
@@ -236,12 +420,46 @@ const PersonalityCard: Component<{
           {(filter) => <li class="wake-item">{wakeSummary(filter)}</li>}
         </For>
       </ul>
-      <button type="button" class="hub-nav-item" onClick={props.onEdit}>
-        Edit wake config
-      </button>
+      <div class="personality-card-actions">
+        <button type="button" class="hub-nav-item" onClick={props.onEdit}>
+          Edit wake config
+        </button>
+        <button
+          type="button"
+          class="hub-nav-item danger"
+          disabled={props.confirming || props.busy}
+          onClick={props.onTombstone}
+        >
+          Tombstone
+        </button>
+      </div>
+      <Show when={props.confirming}>
+        <div class="tombstone-confirm" data-testid="tombstone-confirm">
+          <span>{`Tombstone ${truncatedName()}? Wakes stop; memories remain.`}</span>
+          <button
+            type="button"
+            class="hub-nav-item danger"
+            disabled={props.busy}
+            onClick={props.onConfirmTombstone}
+          >
+            Confirm tombstone
+          </button>
+          <button
+            type="button"
+            class="hub-nav-item"
+            disabled={props.busy}
+            onClick={props.onCancelTombstone}
+          >
+            Cancel
+          </button>
+        </div>
+      </Show>
     </article>
   );
 };
+
+const truncateName = (name: string): string =>
+  name.length > 48 ? `${name.slice(0, 45)}...` : name;
 
 const WakeEditor: Component<{
   instance: PersonalityInstanceTs;
@@ -275,7 +493,7 @@ const WakeEditor: Component<{
       );
       props.onSaved();
     } catch (err) {
-      setError(String(err));
+      setError(errorMessage(err));
     } finally {
       setSaving(false);
     }
@@ -350,10 +568,12 @@ const WakeFilterEditor: Component<{
   onChange: (next: WakeFilterTs) => void;
   onRemove: () => void;
 }> = (props) => {
-  const probability = () => String(props.filter.probability);
-  const changeProbability = (value: string) => {
-    const probability = Number(value);
-    if (Number.isFinite(probability)) {
+  const probabilityPromille = () =>
+    String(Math.round(props.filter.probability * 1000));
+  const changeProbabilityPromille = (value: string) => {
+    const promille = Number(value);
+    if (Number.isFinite(promille)) {
+      const probability = Math.max(0, Math.min(1000, promille)) / 1000;
       props.onChange({ ...props.filter, probability });
     }
   };
@@ -383,14 +603,16 @@ const WakeFilterEditor: Component<{
         <OnMemoryFields filter={props.filter} onChange={props.onChange} />
       </Show>
       <label>
-        Probability
+        Probability (promille)
         <input
           type="number"
           min="0"
-          max="1"
-          step="0.001"
-          value={probability()}
-          onInput={(event) => changeProbability(event.currentTarget.value)}
+          max="1000"
+          step="1"
+          value={probabilityPromille()}
+          onInput={(event) =>
+            changeProbabilityPromille(event.currentTarget.value)
+          }
         />
       </label>
       <button type="button" class="hub-nav-item" onClick={props.onRemove}>
@@ -410,12 +632,20 @@ const OnMemoryFields: Component<{
     <>
       <label>
         Schema
-        <input
+        <select
           value={filter.schema_id}
-          onInput={(event) =>
+          onChange={(event) =>
             props.onChange({ ...filter, schema_id: event.currentTarget.value })
           }
-        />
+        >
+          <For each={schemaOptionsFor(filter.schema_id)}>
+            {(option) => (
+              <option value={option.schemaId}>
+                {option.schemaId} ({option.flavor})
+              </option>
+            )}
+          </For>
+        </select>
       </label>
       <label>
         Author
@@ -522,4 +752,12 @@ const unwrap = async <T, E>(
   const value = await result;
   if (value.status === "error") throw value.error;
   return value.data;
+};
+
+const errorMessage = (err: unknown): string => {
+  if (err && typeof err === "object" && "message" in err) {
+    const message = (err as { message: unknown }).message;
+    if (typeof message === "string") return message;
+  }
+  return String(err);
 };

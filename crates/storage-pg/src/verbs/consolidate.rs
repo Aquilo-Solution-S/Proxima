@@ -29,6 +29,7 @@ pub async fn list_personality_instances(
     pool: &PgPool,
     owner: &Owner,
     personality_type_id: Option<&str>,
+    include_tombstoned: bool,
 ) -> Result<Vec<PersonalityInstanceRow>, StorageError> {
     let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(owner);
     let rows: Vec<(
@@ -52,12 +53,14 @@ pub async fn list_personality_instances(
            AND c.owner_principal_id = $2
            AND c.owner_org_id = $3
            AND ($4::text IS NULL OR c.personality_type_id = $4)
+           AND ($5::bool OR c.status <> 'tombstoned')
          ORDER BY c.personality_type_id, c.created_at, c.personality_instance_id",
     )
     .bind(owner_kind)
     .bind(owner_principal_id)
     .bind(owner_org_id)
     .bind(personality_type_id)
+    .bind(include_tombstoned)
     .fetch_all(pool)
     .await
     .map_err(map_err)?;
@@ -232,7 +235,8 @@ pub async fn set_wake_config(
            AND owner_principal_id = $3
            AND owner_org_id = $4
            AND personality_type_id = $5
-           AND personality_instance_id = $6",
+           AND personality_instance_id = $6
+           AND status <> 'tombstoned'",
     )
     .bind(filters_json)
     .bind(owner_kind)
@@ -249,6 +253,72 @@ pub async fn set_wake_config(
     Ok(SetWakeConfigResponse {
         status: "active".into(),
     })
+}
+
+pub async fn tombstone_personality(
+    pool: &PgPool,
+    req: &proxima_core::TombstonePersonalityRequest,
+) -> Result<proxima_core::TombstonePersonalityResponse, StorageError> {
+    let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(&req.owner);
+    let mut tx = pool.begin().await.map_err(map_err)?;
+
+    let result = sqlx::query(
+        "UPDATE proxima_core.personality_wake_config
+         SET status = 'tombstoned',
+             tombstoned_at = now(),
+             updated_at = now()
+         WHERE owner_principal_kind = $1
+           AND owner_principal_id = $2
+           AND owner_org_id = $3
+           AND personality_type_id = $4
+           AND personality_instance_id = $5
+           AND status <> 'tombstoned'",
+    )
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(owner_org_id)
+    .bind(&req.personality_type_id)
+    .bind(req.personality_instance_id.into_inner())
+    .execute(&mut *tx)
+    .await
+    .map_err(map_err)?;
+
+    if result.rows_affected() == 1 {
+        tx.commit().await.map_err(map_err)?;
+        return Ok(proxima_core::TombstonePersonalityResponse {
+            status: "tombstoned".into(),
+            idempotent_replay: false,
+        });
+    }
+
+    let existing: Option<(String,)> = sqlx::query_as(
+        "SELECT status
+         FROM proxima_core.personality_wake_config
+         WHERE owner_principal_kind = $1
+           AND owner_principal_id = $2
+           AND owner_org_id = $3
+           AND personality_type_id = $4
+           AND personality_instance_id = $5",
+    )
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(owner_org_id)
+    .bind(&req.personality_type_id)
+    .bind(req.personality_instance_id.into_inner())
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(map_err)?;
+
+    tx.commit().await.map_err(map_err)?;
+
+    match existing {
+        Some((status,)) if status == "tombstoned" => Ok(proxima_core::TombstonePersonalityResponse {
+            status: "tombstoned".into(),
+            idempotent_replay: true,
+        }),
+        Some(_) => unreachable!("UPDATE excluded only tombstoned rows; non-tombstoned must have hit"),
+        None => Err(StorageError::NotFound),
+    }
 }
 
 pub async fn list_active_wake_configs(pool: &PgPool) -> Result<Vec<WakeConfigRow>, StorageError> {
@@ -325,7 +395,8 @@ pub async fn mark_wake_config_needs_repair(
            AND owner_principal_id = $2
            AND owner_org_id = $3
            AND personality_type_id = $4
-           AND personality_instance_id = $5",
+           AND personality_instance_id = $5
+           AND status <> 'tombstoned'",
     )
     .bind(owner_kind)
     .bind(owner_principal_id)

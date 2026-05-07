@@ -1,6 +1,11 @@
 import { CodeView } from "./code-view";
 import { codePayloadCodec, codeRenderers } from "./payload-renderers";
-import { registerEdgeStyle, registerPayloadRenderer, registerShellView } from "@proxima/core/registry";
+import {
+  registerEdgeStyle,
+  registerPayloadRenderer,
+  registerPersonalityType,
+  registerShellView,
+} from "@proxima/core/registry";
 
 export { CodeView };
 export { ReposPanel } from "./repos-panel";
@@ -29,5 +34,13 @@ export function init(): void {
     label: "Code",
     flavor: "proxima-code",
     component: CodeView,
+  });
+  registerPersonalityType({
+    typeId: "proxima-code/engineer-v1",
+    flavor: "proxima-code",
+    label: "Engineer",
+    purpose: "Develop perspectives on code changes.",
+    defaultDisplayName: "Engineer",
+    defaultPurpose: "Develop perspectives on code changes",
   });
 }

@@ -45,6 +45,21 @@ pub struct SetWakeConfigOutcomeTs {
 pub struct ListPersonalityInstancesTs {
     pub owner: Owner,
     pub personality_type_id: Option<String>,
+    #[serde(default)]
+    pub include_tombstoned: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
+pub struct TombstonePersonalityTs {
+    pub owner: Owner,
+    pub personality_type_id: String,
+    pub personality_instance_id: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
+pub struct TombstonePersonalityOutcomeTs {
+    pub status: String,
+    pub idempotent_replay: bool,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
@@ -205,7 +220,11 @@ pub async fn list_personality_instances(
     let req_bytes = crate::perf::ipc::req_size(&req);
     crate::perf::ipc::record("list_personality_instances", req_bytes, async move {
         let rows = engine
-            .list_personality_instances(&req.owner, req.personality_type_id.as_deref())
+            .list_personality_instances(
+                &req.owner,
+                req.personality_type_id.as_deref(),
+                req.include_tombstoned,
+            )
             .await?;
         let registry = engine.registry();
         rows.into_iter()
@@ -277,6 +296,31 @@ pub async fn set_wake_config(
             })
             .await?;
         Ok(SetWakeConfigOutcomeTs { status: out.status })
+    })
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn tombstone_personality(
+    engine: State<'_, Arc<Engine>>,
+    req: TombstonePersonalityTs,
+) -> Result<TombstonePersonalityOutcomeTs, ProtocolError> {
+    let req_bytes = crate::perf::ipc::req_size(&req);
+    crate::perf::ipc::record("tombstone_personality", req_bytes, async move {
+        let instance_id = uuid::Uuid::parse_str(&req.personality_instance_id)
+            .map_err(|e| ProtocolError::internal(format!("personality_instance_id: {e}")))?;
+        let out = engine
+            .tombstone_personality(proxima_core::TombstonePersonalityRequest {
+                owner: req.owner,
+                personality_type_id: req.personality_type_id,
+                personality_instance_id: PersonalityInstanceId::new(instance_id),
+            })
+            .await?;
+        Ok(TombstonePersonalityOutcomeTs {
+            status: out.status,
+            idempotent_replay: out.idempotent_replay,
+        })
     })
     .await
 }

@@ -27,7 +27,8 @@ use crate::pb::{
     ListPersonalityInstancesResponse, OnEdgeFilter, OnMemoryFilter, PersonalityAuthor,
     PersonalityInstance, ProvisionOwnerRequest, ProvisionOwnerResponse, QueryRequest,
     QueryResponse, SchemaRequest, SchemaResponse, SetWakeConfigRequest, SetWakeConfigResponse,
-    SubscribeRequest, WakeFilter, WakeTarget, engine_server::Engine as EngineTrait,
+    SubscribeRequest, TombstonePersonalityRequest, TombstonePersonalityResponse, WakeFilter,
+    WakeTarget, engine_server::Engine as EngineTrait,
 };
 
 /// gRPC server wrapper for the Engine.
@@ -234,7 +235,7 @@ impl EngineTrait for EngineGrpcServer {
         )?;
         let rows = self
             .engine
-            .list_personality_instances(&owner, pb.personality_type_id.as_deref())
+            .list_personality_instances(&owner, pb.personality_type_id.as_deref(), pb.include_tombstoned)
             .await
             .map_err(protocol_error_to_status)?;
         let registry = self.engine.registry();
@@ -254,6 +255,31 @@ impl EngineTrait for EngineGrpcServer {
             .collect::<Result<Vec<_>, _>>()?;
         Ok(Response::new(ListPersonalityInstancesResponse {
             instances,
+        }))
+    }
+
+    async fn tombstone_personality(
+        &self,
+        request: Request<TombstonePersonalityRequest>,
+    ) -> Result<Response<TombstonePersonalityResponse>, Status> {
+        let pb = request.into_inner();
+        let owner = owner_from_proto(
+            pb.owner
+                .ok_or_else(|| Status::invalid_argument("missing owner"))?,
+        )?;
+        let instance_id = uuid_from_str(&pb.personality_instance_id)?;
+        let out = self
+            .engine
+            .tombstone_personality(proxima_core::TombstonePersonalityRequest {
+                owner,
+                personality_type_id: pb.personality_type_id,
+                personality_instance_id: proxima_core::PersonalityInstanceId::new(instance_id),
+            })
+            .await
+            .map_err(protocol_error_to_status)?;
+        Ok(Response::new(TombstonePersonalityResponse {
+            status: out.status,
+            idempotent_replay: out.idempotent_replay,
         }))
     }
 }
