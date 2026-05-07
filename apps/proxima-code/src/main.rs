@@ -7,7 +7,7 @@
 //!         [--database-url postgres://...] \
 //!         [--watch] [--poll-interval-ms 2000] \
 //!         [--llm-model gemma4:31b] [--embed-model qwen3-embedding:8b] \
-//!         [--embed-dim 4096] [--no-f2a]
+//!         [--embed-dim 4096] [--no-dispatcher]
 //!
 //! The CLI is intentionally minimal — no `clap`, no subcommand
 //! dispatch framework. Args are positional/keyworded by hand. v1
@@ -19,10 +19,9 @@
 //! kept in memory only — restarts begin from an empty cursor.
 //! Idempotency on `event_id` makes that safe.
 //!
-//! After each successful poll, registered F→A operators run against
-//! every closed-but-unconsolidated batch. Pass `--no-f2a` to skip
-//! consolidation (e.g. when iterating on the source path without an
-//! Ollama running).
+//! After each successful poll, the personality dispatcher walks new
+//! change events. Pass `--no-dispatcher` to skip wake processing
+//! (e.g. when iterating on the source path without an Ollama running).
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -32,7 +31,7 @@ use std::time::Duration;
 use proxima_code::{IndexReport, LocalGitSource, build_engine, migrator};
 use proxima_core::auth::NoAuth;
 use proxima_core::{Cursor, OrgId, Owner, Principal, UserId};
-use proxima_llm_openai_compat::{OllamaEmbeddingClient, OllamaLlmClient};
+use proxima_llm_openai_compat::OllamaEmbeddingClient;
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
 
@@ -58,7 +57,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     match args.next().as_deref() {
         Some("index") => {}
         Some(other) => return Err(format!("unknown subcommand: {other}").into()),
-        None => return Err("usage: proxima-code index --repo-path <p> --repo-id <id> --owner-user <id> --owner-org <id> [--database-url <url>] [--watch] [--poll-interval-ms <n>] [--llm-model <m>] [--embed-model <m>] [--embed-dim <n>] [--no-f2a]".into()),
+        None => return Err("usage: proxima-code index --repo-path <p> --repo-id <id> --owner-user <id> --owner-org <id> [--database-url <url>] [--watch] [--poll-interval-ms <n>] [--llm-model <m>] [--embed-model <m>] [--embed-dim <n>] [--no-dispatcher]".into()),
     }
 
     let mut repo_path: Option<PathBuf> = None;
@@ -71,15 +70,15 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut llm_model: String = DEFAULT_LLM_MODEL.into();
     let mut embed_model: String = DEFAULT_EMBED_MODEL.into();
     let mut embed_dim: usize = DEFAULT_EMBED_DIM;
-    let mut no_f2a = false;
+    let mut no_dispatcher = false;
 
     while let Some(flag) = args.next() {
         if flag == "--watch" {
             watch = true;
             continue;
         }
-        if flag == "--no-f2a" {
-            no_f2a = true;
+        if flag == "--no-dispatcher" || flag == "--no-f2a" {
+            no_dispatcher = true;
             continue;
         }
         let value = args
@@ -116,34 +115,35 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let source = LocalGitSource::new(repo_id, repo_path, owner.clone());
 
-    // F→A engine: optional. Without --no-f2a we wire Ollama for both
-    // LLM and embeddings. The engine isn't needed for ingest itself
-    // (LocalGitSource talks to the pool directly per M4); we only
-    // build it to invoke run_pending_f2a after each poll.
-    let engine = if no_f2a {
+    // Dispatcher engine: optional. Without --no-dispatcher we wire Ollama
+    // embeddings; the substrate's wake/decide/write loop now talks to
+    // Anthropic, which the CLI does not configure yet — the dispatcher
+    // skips wakes when the Anthropic client is unwired.
+    let _ = llm_model;
+    let engine = if no_dispatcher {
         None
     } else {
-        let llm = OllamaLlmClient::from_env(&llm_model)?;
         let embed = OllamaEmbeddingClient::from_env(&embed_model, embed_dim)?;
         let engine = build_engine(
             pg.clone(),
             Box::new(NoAuth::new(owner.principal.clone(), owner.clone())),
         )
-        .with_llm(Arc::new(llm))
         .with_embed(Arc::new(embed));
-        eprintln!("F→A enabled — llm={llm_model} embed={embed_model} (dim={embed_dim})");
+        eprintln!(
+            "dispatcher enabled - embed={embed_model} (dim={embed_dim}); anthropic unwired (wakes will skip)"
+        );
         Some(engine)
     };
 
     if watch {
-        watch_loop(&source, &pg, engine.as_ref(), &owner, poll_interval_ms).await
+        watch_loop(&source, &pg, engine.as_ref(), poll_interval_ms).await
     } else {
         let (report, _cursor) = source
             .run_poll(pg.pool(), &Cursor::empty(), &mut |_| {})
             .await?;
         print_report(&report);
         if let Some(eng) = engine.as_ref() {
-            run_f2a_pass(eng, &owner).await?;
+            run_dispatcher_pass(eng).await?;
         }
         Ok(())
     }
@@ -153,7 +153,6 @@ async fn watch_loop(
     source: &LocalGitSource,
     pg: &PgStorage,
     engine: Option<&proxima_core::Engine>,
-    owner: &Owner,
     poll_interval_ms: u64,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut cursor = Cursor::empty();
@@ -179,11 +178,8 @@ async fn watch_loop(
                     print_report(&report);
                 }
                 if let Some(eng) = engine
-                    && let Err(e) = run_f2a_pass(eng, owner).await {
-                        // F→A failure shouldn't drop the watch loop —
-                        // log and continue. The unconsolidated batch
-                        // stays pending and the next pass will pick it up.
-                        eprintln!("F→A pass failed: {e}");
+                    && let Err(e) = run_dispatcher_pass(eng).await {
+                        eprintln!("dispatcher pass failed: {e}");
                     }
             }
         }
@@ -197,17 +193,12 @@ async fn watch_loop(
     }
 }
 
-async fn run_f2a_pass(
+async fn run_dispatcher_pass(
     engine: &proxima_core::Engine,
-    owner: &Owner,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let consolidated = engine.run_pending_f2a(owner).await?;
-    if !consolidated.is_empty() {
-        eprintln!("F→A consolidated {} batch(es)", consolidated.len());
-    }
-    let perspectives = engine.run_pending_a2p(owner).await?;
-    if !perspectives.is_empty() {
-        eprintln!("A→P consolidated {} operator pass(es)", perspectives.len());
+    let fired = engine.run_dispatcher_tick().await?;
+    if fired > 0 {
+        eprintln!("dispatcher fired {fired} wake(s)");
     }
     Ok(())
 }

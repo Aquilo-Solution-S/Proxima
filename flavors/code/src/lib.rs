@@ -8,7 +8,6 @@ pub mod ingest;
 pub mod local_git_source;
 pub mod mcp;
 pub mod migrations;
-pub mod operators;
 pub mod payloads;
 pub mod personality;
 pub mod repos;
@@ -20,12 +19,11 @@ pub use ingest::{
 };
 pub use local_git_source::{IndexError, IndexReport, IngestProgress, LocalGitSource};
 pub use migrations::migrator;
-pub use operators::{CodeDevelopmentPerspectiveOperator, CommitSummaryOperator};
 pub use payloads::{
-    CodeChunkV1, CodeDevelopmentPerspectiveV1, CommitSummaryV1, CommitV1, EdgeCallsV1,
-    FileRevisionV1, FileState,
+    CodeChunkV1, CodeCommitSummarizerSelfV1, CodeDevelopmentPerspectiveV1, CodeEngineerSelfV1,
+    CommitSummaryV1, CommitV1, EdgeCallsV1, FileRevisionV1, FileState,
 };
-pub use personality::CodeEngineerPersonality;
+pub use personality::{CodeEngineerPersonality, CommitSummaryPersonality};
 
 pub use repos::{
     RepoEraseReceipt, RepoIngestionRun, RepoRecord, RepoRegistryError, RunStage, RunStatus,
@@ -48,6 +46,8 @@ proxima_core::proxima_flavor! {
     ],
     perspective_schemas = [
         payloads::CodeDevelopmentPerspectiveV1,
+        payloads::CodeCommitSummarizerSelfV1,
+        payloads::CodeEngineerSelfV1,
     ],
     edge_schemas = [
         payloads::EdgeCallsV1,
@@ -63,14 +63,10 @@ proxima_core::proxima_flavor! {
         ),
     ],
     personalities = [
+        personality::CommitSummaryPersonality,
         personality::CodeEngineerPersonality,
     ],
-    f2a_operators = [
-        operators::CommitSummaryOperator,
-    ],
-    a2p_operators = [
-        operators::CodeDevelopmentPerspectiveOperator,
-    ],
+    wake_filter_kinds = [],
     mcp_tools = [
         mcp::CodeSearchChunksTool,
         mcp::CodeOpenFileRevisionTool,
@@ -91,19 +87,10 @@ mod tests {
             registry
                 .list_personalities()
                 .iter()
-                .any(|p| p.personality_id() == "proxima-code/engineer")
+                .any(|p| p.personality_type_id() == "proxima-code/engineer-v1")
         );
         let frozen = registry.freeze();
-        assert_eq!(frozen.list_f2a_operators().len(), 1);
-        assert_eq!(frozen.list_a2p_operators().len(), 1);
-        assert_eq!(
-            frozen.list_f2a_operators()[0].operator_id(),
-            "proxima-code/commit-summary",
-        );
-        assert_eq!(
-            frozen.list_a2p_operators()[0].operator_id(),
-            "proxima-code/development-perspective",
-        );
+        assert_eq!(frozen.list_personalities().len(), 2);
 
         let schemas = frozen.list();
         let schema_ids: HashSet<_> = schemas.iter().map(|s| s.schema_id.as_str()).collect();
@@ -116,6 +103,8 @@ mod tests {
         assert!(schema_ids.contains("proxima-code/commit-summary-v1"));
         // Perspective schemas
         assert!(schema_ids.contains("proxima-code/development-perspective-v1"));
+        assert!(schema_ids.contains("proxima-code/commit-summarizer-self-v1"));
+        assert!(schema_ids.contains("proxima-code/engineer-self-v1"));
         // Edge schemas
         assert!(schema_ids.contains("proxima-code/calls"));
 

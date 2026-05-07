@@ -8,9 +8,11 @@ use std::sync::Arc;
 use crate::GoalId;
 use crate::Owner;
 use crate::SourceBatchId;
-use crate::operators::{
-    A2PInvocationKey, A2PLineageKey, AbstractionRow, ConsolidateA2POutcome, ConsolidateA2PRequest,
-    ConsolidateBatchF2AOutcome, ConsolidateBatchF2ARequest, F2AInvocationKey, FactRow, SidecarSpec,
+use crate::personality::{
+    AbstractionRow, ChangeEventForWake, InstantiatePersonalityRequest,
+    InstantiatePersonalityResponse, MemorySnapshot, PersonalityInstanceRow, PersonalityRef,
+    PersonalityWriteOutcome, PersonalityWriteRequest, SetWakeConfigRequest, SetWakeConfigResponse,
+    SidecarSpec, WakeConfigRow, WakeInvocationStatus,
 };
 use crate::verbs::close_batch::CloseBatchOutcome;
 use crate::verbs::event_history::{EventHistoryRequest, EventHistoryResponse};
@@ -125,91 +127,143 @@ pub trait Storage: Send + Sync {
         source_batch_id: SourceBatchId,
     ) -> Result<CloseBatchOutcome, StorageError>;
 
-    /// Load all Facts in a closed source-batch with their typed
-    /// sidecar payloads serialized to JSON. The engine builds
-    /// `sidecars` from its `FlavorRegistryFrozen` (Fact schemas with a
-    /// declared `sidecar_table`); storage emits one
-    /// `row_to_json(s.*)` join per spec and unions the rows.
-    ///
-    /// Used by the F→A dispatcher (M5+) — the operator's `run()`
-    /// receives these rows pre-loaded.
-    ///
-    /// # Errors
-    ///
-    /// Returns `NotFound` when the batch doesn't exist for `owner`;
-    /// `Internal` on sqlx failure.
-    async fn load_batch_facts(
+    /// List configured personality instances for an owner.
+    async fn list_personality_instances(
         &self,
         owner: &Owner,
-        batch_id: SourceBatchId,
+        personality_type_id: Option<&str>,
+    ) -> Result<Vec<PersonalityInstanceRow>, StorageError>;
+
+    /// Instantiate one personality instance with its self-Perspective,
+    /// wake_config, and cursor rows.
+    async fn instantiate_personality(
+        &self,
+        req: &InstantiatePersonalityRequest,
+        self_draft: &crate::PersonalitySelfDraft,
+        self_sidecar_table: &str,
+        default_wake_filters: &[crate::WakeFilter],
+    ) -> Result<InstantiatePersonalityResponse, StorageError>;
+
+    /// Rewrite wake filters and mark the row active.
+    async fn set_wake_config(
+        &self,
+        req: &SetWakeConfigRequest,
+    ) -> Result<SetWakeConfigResponse, StorageError>;
+
+    /// Active wake configs plus their cursor positions.
+    async fn list_active_wake_configs(&self) -> Result<Vec<WakeConfigRow>, StorageError>;
+
+    async fn mark_wake_config_needs_repair(
+        &self,
+        owner: &Owner,
+        instance: &PersonalityRef,
+    ) -> Result<(), StorageError>;
+
+    async fn list_change_events_after(
+        &self,
+        owner: &Owner,
+        after: uuid::Uuid,
+        limit: usize,
+    ) -> Result<Vec<ChangeEventForWake>, StorageError>;
+
+    async fn advance_wake_cursor(
+        &self,
+        owner: &Owner,
+        instance: &PersonalityRef,
+        last_considered_seq: uuid::Uuid,
+    ) -> Result<(), StorageError>;
+
+    async fn try_begin_wake_invocation(
+        &self,
+        owner: &Owner,
+        instance: &PersonalityRef,
+        change_event_seq: uuid::Uuid,
+    ) -> Result<bool, StorageError>;
+
+    async fn finish_wake_invocation(
+        &self,
+        owner: &Owner,
+        instance: &PersonalityRef,
+        change_event_seq: uuid::Uuid,
+        status: WakeInvocationStatus,
+        turn_count: u16,
+        cost_usd: f64,
+    ) -> Result<(), StorageError>;
+
+    async fn load_memory_batch_facts(
+        &self,
+        owner: &Owner,
+        memory_id: crate::MemoryId,
         sidecars: &[SidecarSpec],
-    ) -> Result<Vec<FactRow>, StorageError>;
+    ) -> Result<Vec<crate::FactRow>, StorageError>;
 
-    /// Atomic F→A consolidation persistence. Inserts N memory rows
-    /// (Abstractions) + N typed sidecar rows + M provenance edges +
-    /// N embedding rows + outbox change_events + the
-    /// `source_batch_f2a` dedup row, all in a single transaction.
-    /// Idempotent on `(batch_id, operator_id, prompt_version,
-    /// model_id, personality_id)` — a re-call with the row already present returns
-    /// `already_consolidated = true` without writing. Re-running with
-    /// a different prompt, model, or personality id is a new
-    /// invocation.
-    ///
-    /// # Errors
-    ///
-    /// Returns `ConstraintViolation` for schema/owner-mismatch
-    /// violations; `Internal` on sqlx failure.
-    async fn consolidate_batch_f2a(
-        &self,
-        req: &ConsolidateBatchF2ARequest<'_>,
-    ) -> Result<ConsolidateBatchF2AOutcome, StorageError>;
-
-    /// List `source_batches` for `owner` that are closed
-    /// (`closed_at IS NOT NULL`) and have no `source_batch_f2a` row
-    /// for this exact invocation key. The Engine's dispatcher uses
-    /// this to "catch up" — running F→A against any batch that the
-    /// source closed without going through the auth-gated
-    /// `Engine::close_batch` surface (M4-era `LocalGitSource` is such
-    /// a caller).
-    ///
-    /// # Errors
-    ///
-    /// `Internal` on sqlx failure.
-    async fn list_unconsolidated_batches(
-        &self,
-        owner: &Owner,
-        key: &F2AInvocationKey<'_>,
-    ) -> Result<Vec<SourceBatchId>, StorageError>;
-
-    /// Load current Abstraction heads for A→P operator input.
-    async fn load_a2p_abstractions(
+    async fn load_abstraction_heads(
         &self,
         owner: &Owner,
         sidecars: &[SidecarSpec],
         limit: usize,
     ) -> Result<Vec<AbstractionRow>, StorageError>;
 
-    /// Atomic A→P consolidation persistence. Writes zero or more
-    /// Perspective rows and always records the invocation key.
-    async fn consolidate_a2p(
-        &self,
-        req: &ConsolidateA2PRequest<'_>,
-    ) -> Result<ConsolidateA2POutcome, StorageError>;
-
-    /// Checks full A→P invocation idempotence.
-    async fn has_a2p_invocation(
+    async fn lookup_prior_personality_head(
         &self,
         owner: &Owner,
-        key: &A2PInvocationKey<'_>,
-    ) -> Result<bool, StorageError>;
-
-    /// Most recent Perspective head for this operator/model/personality
-    /// lineage, ignoring context/input shifts.
-    async fn lookup_prior_a2p_head(
-        &self,
-        owner: &Owner,
-        key: &A2PLineageKey<'_>,
+        instance: &PersonalityRef,
+        schema_id: &crate::SchemaId,
     ) -> Result<Option<crate::MemoryId>, StorageError>;
+
+    async fn append_personality_memories(
+        &self,
+        req: &PersonalityWriteRequest<'_>,
+    ) -> Result<PersonalityWriteOutcome, StorageError>;
+
+    /// Owner-scoped fetch of a single memory by id, joined with whichever
+    /// sidecar table holds its typed payload (matched by `schema_id`).
+    /// Returns `None` when the memory does not exist or belongs to a
+    /// different owner.
+    async fn load_memory_by_id(
+        &self,
+        owner: &Owner,
+        memory_id: crate::MemoryId,
+        sidecars: &[SidecarSpec],
+    ) -> Result<Option<MemorySnapshot>, StorageError>;
+
+    /// Per-(owner, type_id, instance_id) advisory lock spanning a wake
+    /// run. Acquires `pg_advisory_xact_lock` on a stable bigint hash;
+    /// the returned guard releases the lock when dropped.
+    async fn acquire_wake_lock(
+        &self,
+        owner: &Owner,
+        instance: &PersonalityRef,
+    ) -> Result<WakeLockGuard, StorageError>;
+}
+
+/// RAII guard for the advisory lock held during a wake run. Storage
+/// backends that don't model real locking return a no-op guard.
+pub struct WakeLockGuard {
+    pub release: Option<Box<dyn FnOnce() + Send + Sync>>,
+}
+
+impl std::fmt::Debug for WakeLockGuard {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WakeLockGuard")
+            .field("released", &self.release.is_none())
+            .finish()
+    }
+}
+
+impl WakeLockGuard {
+    #[must_use]
+    pub fn noop() -> Self {
+        Self { release: None }
+    }
+}
+
+impl Drop for WakeLockGuard {
+    fn drop(&mut self) {
+        if let Some(release) = self.release.take() {
+            release();
+        }
+    }
 }
 
 pub type StorageHandle = Arc<dyn Storage>;
@@ -282,31 +336,92 @@ impl Storage for NoopStorage {
         Err(StorageError::Internal("NoopStorage rejects writes".into()))
     }
 
-    async fn load_batch_facts(
+    async fn list_personality_instances(
         &self,
         _owner: &Owner,
-        _batch_id: SourceBatchId,
-        _sidecars: &[SidecarSpec],
-    ) -> Result<Vec<FactRow>, StorageError> {
+        _personality_type_id: Option<&str>,
+    ) -> Result<Vec<PersonalityInstanceRow>, StorageError> {
         Ok(Vec::new())
     }
 
-    async fn consolidate_batch_f2a(
+    async fn instantiate_personality(
         &self,
-        _req: &ConsolidateBatchF2ARequest<'_>,
-    ) -> Result<ConsolidateBatchF2AOutcome, StorageError> {
+        _req: &InstantiatePersonalityRequest,
+        _self_draft: &crate::PersonalitySelfDraft,
+        _self_sidecar_table: &str,
+        _default_wake_filters: &[crate::WakeFilter],
+    ) -> Result<InstantiatePersonalityResponse, StorageError> {
         Err(StorageError::Internal("NoopStorage rejects writes".into()))
     }
 
-    async fn list_unconsolidated_batches(
+    async fn set_wake_config(
         &self,
-        _owner: &Owner,
-        _key: &F2AInvocationKey<'_>,
-    ) -> Result<Vec<SourceBatchId>, StorageError> {
+        _req: &SetWakeConfigRequest,
+    ) -> Result<SetWakeConfigResponse, StorageError> {
+        Err(StorageError::Internal("NoopStorage rejects writes".into()))
+    }
+
+    async fn list_active_wake_configs(&self) -> Result<Vec<WakeConfigRow>, StorageError> {
         Ok(Vec::new())
     }
 
-    async fn load_a2p_abstractions(
+    async fn mark_wake_config_needs_repair(
+        &self,
+        _owner: &Owner,
+        _instance: &PersonalityRef,
+    ) -> Result<(), StorageError> {
+        Ok(())
+    }
+
+    async fn list_change_events_after(
+        &self,
+        _owner: &Owner,
+        _after: uuid::Uuid,
+        _limit: usize,
+    ) -> Result<Vec<ChangeEventForWake>, StorageError> {
+        Ok(Vec::new())
+    }
+
+    async fn advance_wake_cursor(
+        &self,
+        _owner: &Owner,
+        _instance: &PersonalityRef,
+        _last_considered_seq: uuid::Uuid,
+    ) -> Result<(), StorageError> {
+        Ok(())
+    }
+
+    async fn try_begin_wake_invocation(
+        &self,
+        _owner: &Owner,
+        _instance: &PersonalityRef,
+        _change_event_seq: uuid::Uuid,
+    ) -> Result<bool, StorageError> {
+        Ok(false)
+    }
+
+    async fn finish_wake_invocation(
+        &self,
+        _owner: &Owner,
+        _instance: &PersonalityRef,
+        _change_event_seq: uuid::Uuid,
+        _status: WakeInvocationStatus,
+        _turn_count: u16,
+        _cost_usd: f64,
+    ) -> Result<(), StorageError> {
+        Ok(())
+    }
+
+    async fn load_memory_batch_facts(
+        &self,
+        _owner: &Owner,
+        _memory_id: crate::MemoryId,
+        _sidecars: &[SidecarSpec],
+    ) -> Result<Vec<crate::FactRow>, StorageError> {
+        Ok(Vec::new())
+    }
+
+    async fn load_abstraction_heads(
         &self,
         _owner: &Owner,
         _sidecars: &[SidecarSpec],
@@ -315,26 +430,36 @@ impl Storage for NoopStorage {
         Ok(Vec::new())
     }
 
-    async fn consolidate_a2p(
+    async fn lookup_prior_personality_head(
         &self,
-        _req: &ConsolidateA2PRequest<'_>,
-    ) -> Result<ConsolidateA2POutcome, StorageError> {
+        _owner: &Owner,
+        _instance: &PersonalityRef,
+        _schema_id: &crate::SchemaId,
+    ) -> Result<Option<crate::MemoryId>, StorageError> {
+        Ok(None)
+    }
+
+    async fn append_personality_memories(
+        &self,
+        _req: &PersonalityWriteRequest<'_>,
+    ) -> Result<PersonalityWriteOutcome, StorageError> {
         Err(StorageError::Internal("NoopStorage rejects writes".into()))
     }
 
-    async fn has_a2p_invocation(
+    async fn load_memory_by_id(
         &self,
         _owner: &Owner,
-        _key: &A2PInvocationKey<'_>,
-    ) -> Result<bool, StorageError> {
-        Ok(false)
+        _memory_id: crate::MemoryId,
+        _sidecars: &[SidecarSpec],
+    ) -> Result<Option<MemorySnapshot>, StorageError> {
+        Ok(None)
     }
 
-    async fn lookup_prior_a2p_head(
+    async fn acquire_wake_lock(
         &self,
         _owner: &Owner,
-        _key: &A2PLineageKey<'_>,
-    ) -> Result<Option<crate::MemoryId>, StorageError> {
-        Ok(None)
+        _instance: &PersonalityRef,
+    ) -> Result<WakeLockGuard, StorageError> {
+        Ok(WakeLockGuard::noop())
     }
 }

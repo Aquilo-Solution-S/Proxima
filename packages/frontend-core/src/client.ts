@@ -6,9 +6,15 @@ import type {
   EventIngestOutcome,
   GoalDraft,
   GoalWriteOutcome,
+  InstantiatePersonalityOutcomeTs,
+  InstantiatePersonalityTs,
+  ListPersonalityInstancesTs,
+  PersonalityInstanceTs,
   QueryRequest,
   QueryResponse,
   SchemaResponse,
+  SetWakeConfigOutcomeTs,
+  SetWakeConfigTs,
   SubscribeRequest,
 } from "./bindings";
 
@@ -26,4 +32,12 @@ export interface EngineClient {
   ): Promise<Subscription>;
   goalWrite(draft: GoalDraft): Promise<GoalWriteOutcome>;
   eventIngest(draft: EventDraft): Promise<EventIngestOutcome>;
+  provisionOwner(owner: QueryRequest["owner"]): Promise<void>;
+  listPersonalityInstances(
+    req: ListPersonalityInstancesTs,
+  ): Promise<PersonalityInstanceTs[]>;
+  instantiatePersonality(
+    req: InstantiatePersonalityTs,
+  ): Promise<InstantiatePersonalityOutcomeTs>;
+  setWakeConfig(req: SetWakeConfigTs): Promise<SetWakeConfigOutcomeTs>;
 }

@@ -4,12 +4,12 @@
 //!
 //! See docs/08 §Registration mechanism.
 
-use crate::operators::{A2POperator, F2AOperator};
 use crate::verbs::schema::{FlavorRegistryFrozen, PayloadKind, PayloadValidatorEntry, SchemaInfo};
 use crate::{
     AbstractionPayload, EdgePayload, FactPayload, GoalPayload, McpCallFn, McpTool,
-    McpToolDescriptor, McpToolError, PersonalityFlavor, PerspectivePayload, RelationDescriptor,
-    SchemaVersion, core_relation_descriptors,
+    McpToolDescriptor, McpToolError, OnEdgeWakeFilterKind, OnMemoryWakeFilterKind,
+    PersonalityFlavor, PerspectivePayload, RelationDescriptor, SchemaVersion, WakeFilterKind,
+    core_relation_descriptors,
 };
 
 use std::sync::Arc;
@@ -21,8 +21,7 @@ pub struct FlavorRegistry {
     validators: Vec<PayloadValidatorEntry>,
     mcp_tools: Vec<McpToolDescriptor>,
     personalities: Vec<Arc<dyn PersonalityFlavor>>,
-    f2a_operators: Vec<Arc<dyn F2AOperator>>,
-    a2p_operators: Vec<Arc<dyn A2POperator>>,
+    wake_filter_kinds: Vec<Arc<dyn WakeFilterKind>>,
 }
 
 impl Default for FlavorRegistry {
@@ -33,8 +32,10 @@ impl Default for FlavorRegistry {
             validators: Vec::new(),
             mcp_tools: Vec::new(),
             personalities: Vec::new(),
-            f2a_operators: Vec::new(),
-            a2p_operators: Vec::new(),
+            wake_filter_kinds: vec![
+                Arc::new(OnMemoryWakeFilterKind),
+                Arc::new(OnEdgeWakeFilterKind),
+            ],
         }
     }
 }
@@ -153,12 +154,8 @@ impl FlavorRegistry {
         self.personalities.push(Arc::new(personality));
     }
 
-    pub fn add_f2a_operator<O: F2AOperator + 'static>(&mut self, op: O) {
-        self.f2a_operators.push(Arc::new(op));
-    }
-
-    pub fn add_a2p_operator<O: A2POperator + 'static>(&mut self, op: O) {
-        self.a2p_operators.push(Arc::new(op));
+    pub fn add_wake_filter_kind<K: WakeFilterKind + 'static>(&mut self, kind: K) {
+        self.wake_filter_kinds.push(Arc::new(kind));
     }
 
     #[must_use]
@@ -219,19 +216,7 @@ impl FlavorRegistry {
                 let _ = info;
             }
         }
-        if !self.a2p_operators.is_empty() && self.personalities.is_empty() {
-            let names: Vec<&str> = self
-                .a2p_operators
-                .iter()
-                .map(|op| op.operator_id())
-                .collect();
-            panic!(
-                "A2POperator(s) {names:?} registered but no PersonalityFlavor; \
-                 every A2P operator requires at least one PersonalityFlavor in \
-                 the same FlavorRegistry. Add a `personalities = [...]` entry \
-                 in proxima_flavor!"
-            );
-        }
+        self.assert_personality_guards();
         let mut seen_tools = std::collections::HashSet::new();
         for tool in &self.mcp_tools {
             assert!(
@@ -246,9 +231,45 @@ impl FlavorRegistry {
             self.validators,
             self.mcp_tools,
             self.personalities,
-            self.f2a_operators,
-            self.a2p_operators,
+            self.wake_filter_kinds,
         )
+    }
+
+    fn assert_personality_guards(&self) {
+        let schema_ids: std::collections::HashSet<&str> =
+            self.schemas.iter().map(|s| s.schema_id.as_str()).collect();
+        let relation_ids: std::collections::HashSet<&str> =
+            self.relations.iter().map(|r| r.relation.as_str()).collect();
+
+        for personality in &self.personalities {
+            let type_id = personality.personality_type_id();
+            let self_schema = personality.self_schema();
+            assert!(
+                !personality
+                    .writeable_schemas()
+                    .iter()
+                    .any(|s| *s == self_schema.as_str()),
+                "PersonalityFlavor {type_id} lists self_schema {} in writeable_schemas",
+                self_schema.as_str()
+            );
+            for schema in personality.writeable_schemas() {
+                assert!(
+                    schema_ids.contains(schema),
+                    "PersonalityFlavor {type_id} references unregistered writeable schema {schema}"
+                );
+            }
+            for relation in personality.writeable_relations() {
+                assert!(
+                    *relation != crate::CORE_DERIVED_FROM_RELATION
+                        && *relation != crate::CORE_SUPERSEDES_RELATION,
+                    "PersonalityFlavor {type_id} cannot author substrate relation {relation}"
+                );
+                assert!(
+                    relation_ids.contains(relation),
+                    "PersonalityFlavor {type_id} references unregistered writeable relation {relation}"
+                );
+            }
+        }
     }
 }
 
@@ -275,6 +296,7 @@ where
 mod mcp_tool_registry_tests {
     use super::*;
     use crate::mcp::{McpToolCtx, McpToolError};
+    use crate::{Owner, SchemaId};
 
     struct Demo;
 
@@ -335,181 +357,158 @@ mod mcp_tool_registry_tests {
         assert!(result.is_err(), "must panic on prefix mismatch");
     }
 
-    #[test]
-    fn registers_and_lists_f2a_and_a2p_operators() {
-        use crate::operators::{
-            A2PContext, A2PContextSpec, A2POperator, F2AContext, F2AOperator, NewAbstraction,
-            NewPerspective, OperatorError, PersonalitySnapshot,
-        };
-        use crate::personality::PersonalityContext;
-        use crate::{PersonalityId, SchemaId};
-        use async_trait::async_trait;
-        use time::OffsetDateTime;
+    #[derive(Debug, serde::Serialize, serde::Deserialize)]
+    struct SelfPayload {
+        display_name: String,
+    }
 
-        #[derive(Debug)]
-        struct DemoF2A;
+    impl PerspectivePayload for SelfPayload {
+        const SCHEMA_ID: &'static str = "proxima-test/self";
+        const SCHEMA_VERSION: u32 = 1;
 
-        #[async_trait]
-        impl F2AOperator for DemoF2A {
-            fn operator_id(&self) -> &'static str {
-                "proxima-test/f2a"
-            }
+        fn sidecar_table() -> &'static str {
+            "proxima_test.self_v1"
+        }
+    }
 
-            fn output_schema_id(&self) -> &'static str {
-                "proxima-test/out"
-            }
+    #[derive(Debug, serde::Serialize, serde::Deserialize)]
+    struct OutPayload {
+        summary: String,
+    }
 
-            fn output_schema_version(&self) -> u32 {
-                1
-            }
+    impl PerspectivePayload for OutPayload {
+        const SCHEMA_ID: &'static str = "proxima-test/out";
+        const SCHEMA_VERSION: u32 = 1;
 
-            fn prompt_version(&self) -> &'static str {
-                "v1"
-            }
+        fn sidecar_table() -> &'static str {
+            "proxima_test.out_v1"
+        }
+    }
 
-            fn consumes(&self, _: &SchemaId) -> bool {
-                true
-            }
+    #[derive(Debug)]
+    struct DemoPersonality {
+        write_schemas: &'static [&'static str],
+        write_relations: &'static [&'static str],
+    }
 
-            async fn run(&self, _: F2AContext<'_>) -> Result<Vec<NewAbstraction>, OperatorError> {
-                Ok(Vec::new())
-            }
+    #[async_trait::async_trait]
+    impl PersonalityFlavor for DemoPersonality {
+        fn personality_type_id(&self) -> &'static str {
+            "proxima-test/personality"
         }
 
-        #[derive(Debug)]
-        struct DemoA2P;
-
-        #[async_trait]
-        impl A2POperator for DemoA2P {
-            fn operator_id(&self) -> &'static str {
-                "proxima-test/a2p"
-            }
-
-            fn output_schema_id(&self) -> &'static str {
-                "proxima-test/out"
-            }
-
-            fn output_schema_version(&self) -> u32 {
-                1
-            }
-
-            fn prompt_version(&self) -> &'static str {
-                "v1"
-            }
-
-            fn consumes(&self, _: &SchemaId) -> bool {
-                true
-            }
-
-            fn context(&self) -> A2PContextSpec {
-                A2PContextSpec {
-                    kind: "on_ingest".into(),
-                    key: "k".into(),
-                    label: "l".into(),
-                }
-            }
-
-            async fn run(&self, _: A2PContext<'_>) -> Result<Vec<NewPerspective>, OperatorError> {
-                Ok(Vec::new())
-            }
+        fn self_schema(&self) -> SchemaId {
+            SchemaId::new(SelfPayload::SCHEMA_ID.to_string())
         }
 
-        #[derive(Debug)]
-        struct DemoPersonality;
-
-        #[async_trait]
-        impl PersonalityFlavor for DemoPersonality {
-            fn personality_id(&self) -> &'static str {
-                "proxima-test/personality"
-            }
-
-            async fn snapshot(
-                &self,
-                _: &PersonalityContext<'_>,
-            ) -> Result<PersonalitySnapshot, crate::ProtocolError> {
-                Ok(PersonalitySnapshot {
-                    personality_id: PersonalityId::new("proxima-test/personality"),
-                    captured_at: OffsetDateTime::now_utc(),
-                })
-            }
+        fn default_self_payload(
+            &self,
+            _owner: &Owner,
+            _payload_overrides: Option<&serde_json::Value>,
+        ) -> Result<crate::PersonalitySelfDraft, crate::ProtocolError> {
+            Ok(crate::PersonalitySelfDraft {
+                schema_id: self.self_schema(),
+                schema_version: SchemaVersion::new(1),
+                text: "Demo".into(),
+                typed_payload: serde_json::json!({ "display_name": "Demo" }),
+            })
         }
 
+        fn system_prompt(&self) -> &'static str {
+            "demo"
+        }
+
+        fn writeable_schemas(&self) -> &'static [&'static str] {
+            self.write_schemas
+        }
+
+        fn writeable_relations(&self) -> &'static [&'static str] {
+            self.write_relations
+        }
+
+        fn default_wake_filters(&self) -> Vec<crate::WakeFilter> {
+            Vec::new()
+        }
+    }
+
+    fn registry_with_personality(
+        write_schemas: &'static [&'static str],
+        write_relations: &'static [&'static str],
+    ) -> FlavorRegistry {
         let mut registry = FlavorRegistry::new();
-        registry.add_f2a_operator(DemoF2A);
-        registry.add_a2p_operator(DemoA2P);
-        registry.add_personality(DemoPersonality);
-        let frozen = registry.freeze();
-        assert_eq!(frozen.list_f2a_operators().len(), 1);
-        assert_eq!(frozen.list_a2p_operators().len(), 1);
+        registry.add_perspective_schema::<SelfPayload>();
+        registry.add_perspective_schema::<OutPayload>();
+        registry.add_personality(DemoPersonality {
+            write_schemas,
+            write_relations,
+        });
+        registry
+    }
+
+    #[test]
+    fn registers_and_lists_personalities() {
+        let frozen = registry_with_personality(&["proxima-test/out"], &[]).freeze();
+        assert_eq!(frozen.list_personalities().len(), 1);
         assert_eq!(
-            frozen.list_f2a_operators()[0].operator_id(),
-            "proxima-test/f2a"
-        );
-        assert_eq!(
-            frozen.list_a2p_operators()[0].operator_id(),
-            "proxima-test/a2p"
+            frozen.list_personalities()[0].personality_type_id(),
+            "proxima-test/personality"
         );
     }
 
     #[test]
-    fn freeze_rejects_a2p_operator_without_personality() {
-        use crate::SchemaId;
-        use crate::operators::{
-            A2PContext, A2PContextSpec, A2POperator, NewPerspective, OperatorError,
-        };
-        use async_trait::async_trait;
-
-        #[derive(Debug)]
-        struct DemoA2P;
-
-        #[async_trait]
-        impl A2POperator for DemoA2P {
-            fn operator_id(&self) -> &'static str {
-                "proxima-test/a2p"
-            }
-
-            fn output_schema_id(&self) -> &'static str {
-                "proxima-test/out"
-            }
-
-            fn output_schema_version(&self) -> u32 {
-                1
-            }
-
-            fn prompt_version(&self) -> &'static str {
-                "v1"
-            }
-
-            fn consumes(&self, _: &SchemaId) -> bool {
-                true
-            }
-
-            fn context(&self) -> A2PContextSpec {
-                A2PContextSpec {
-                    kind: "on_ingest".into(),
-                    key: "k".into(),
-                    label: "l".into(),
-                }
-            }
-
-            async fn run(&self, _: A2PContext<'_>) -> Result<Vec<NewPerspective>, OperatorError> {
-                Ok(Vec::new())
-            }
-        }
-
-        let mut registry = FlavorRegistry::new();
-        registry.add_a2p_operator(DemoA2P);
+    fn freeze_rejects_self_schema_as_writeable_schema() {
+        let registry = registry_with_personality(&["proxima-test/self"], &[]);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| registry.freeze()));
-        let err = result.expect_err("freeze must panic when an A2P operator has no personality");
-        let msg = err
-            .downcast_ref::<String>()
+        let err = result.expect_err("freeze must panic on self-schema writes");
+        let msg = panic_msg(&err);
+        assert!(
+            msg.contains("self_schema") && msg.contains("proxima-test/self"),
+            "panic must name self-schema guard: {msg}"
+        );
+    }
+
+    #[test]
+    fn freeze_rejects_unregistered_writeable_schema() {
+        let registry = registry_with_personality(&["proxima-test/missing"], &[]);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| registry.freeze()));
+        let err = result.expect_err("freeze must panic on missing schema");
+        let msg = panic_msg(&err);
+        assert!(
+            msg.contains("unregistered writeable schema") && msg.contains("proxima-test/missing"),
+            "panic must name missing schema: {msg}"
+        );
+    }
+
+    #[test]
+    fn freeze_rejects_substrate_writeable_relation() {
+        let registry =
+            registry_with_personality(&["proxima-test/out"], &[crate::CORE_DERIVED_FROM_RELATION]);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| registry.freeze()));
+        let err = result.expect_err("freeze must panic on substrate relation");
+        let msg = panic_msg(&err);
+        assert!(
+            msg.contains("cannot author substrate relation")
+                && msg.contains(crate::CORE_DERIVED_FROM_RELATION),
+            "panic must name substrate relation: {msg}"
+        );
+    }
+
+    #[test]
+    fn freeze_rejects_unregistered_writeable_relation() {
+        let registry = registry_with_personality(&["proxima-test/out"], &["proxima-test/missing"]);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| registry.freeze()));
+        let err = result.expect_err("freeze must panic on missing relation");
+        let msg = panic_msg(&err);
+        assert!(
+            msg.contains("unregistered writeable relation") && msg.contains("proxima-test/missing"),
+            "panic must name missing relation: {msg}"
+        );
+    }
+
+    fn panic_msg<'a>(err: &'a Box<dyn std::any::Any + Send>) -> &'a str {
+        err.downcast_ref::<String>()
             .map(String::as_str)
             .or_else(|| err.downcast_ref::<&'static str>().copied())
-            .unwrap_or("");
-        assert!(
-            msg.contains("proxima-test/a2p")
-                && msg.contains("requires at least one PersonalityFlavor"),
-            "panic message must name the offending operator and missing requirement: {msg}"
-        );
+            .unwrap_or("")
     }
 }

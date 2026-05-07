@@ -23,11 +23,13 @@ tracing = { workspace = true }
 futures-util = { workspace = true }
 tokio-stream = { workspace = true }
 time = { workspace = true }
+blake3 = { workspace = true }
 
 [lints]
 workspace = true
 
 [dev-dependencies]
+proxima-core = { path = "../core", features = ["test-fixtures"] }
 proxima-mcp-substrate = { path = "../../flavors/mcp" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 time = { workspace = true }

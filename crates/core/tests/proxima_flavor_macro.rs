@@ -1,98 +1,36 @@
 use async_trait::async_trait;
-use proxima_core::operators::{
-    A2PContext, A2PContextSpec, A2POperator, F2AContext, F2AOperator, NewAbstraction,
-    NewPerspective, OperatorError, PersonalitySnapshot,
-};
-use proxima_core::personality::PersonalityContext;
 use proxima_core::{
-    FactPayload, FlavorRegistry, PersonalityFlavor, PersonalityId, SchemaId, proxima_schema_id,
+    ModelTier, Owner, PersonalityFlavor, PersonalitySelfDraft, PerspectivePayload, ProtocolError,
+    SchemaId, SchemaVersion, WakeFilter, WakeFilterCtx, WakeFilterKind,
 };
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use time::OffsetDateTime;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct DummyFact {
-    v: u32,
+#[derive(Debug, Serialize, Deserialize)]
+struct DemoSelfPayload {
+    display_name: String,
 }
 
-impl FactPayload for DummyFact {
-    const SCHEMA_ID: &'static str = proxima_schema_id!("dummy-fact-v1");
+impl PerspectivePayload for DemoSelfPayload {
+    const SCHEMA_ID: &'static str = "proxima-test/self-v1";
     const SCHEMA_VERSION: u32 = 1;
 
     fn sidecar_table() -> &'static str {
-        "proxima_test.dummy_fact_v1"
-    }
-
-    fn render(&self) -> String {
-        self.v.to_string()
+        "proxima_test.self_v1"
     }
 }
 
-#[derive(Debug, Default)]
-struct DemoF2A;
-
-#[async_trait]
-impl F2AOperator for DemoF2A {
-    fn operator_id(&self) -> &'static str {
-        "proxima-core/f2a-demo"
-    }
-
-    fn output_schema_id(&self) -> &'static str {
-        "proxima-core/dummy-fact-v1"
-    }
-
-    fn output_schema_version(&self) -> u32 {
-        1
-    }
-
-    fn prompt_version(&self) -> &'static str {
-        "v1"
-    }
-
-    fn consumes(&self, _: &SchemaId) -> bool {
-        true
-    }
-
-    async fn run(&self, _: F2AContext<'_>) -> Result<Vec<NewAbstraction>, OperatorError> {
-        Ok(Vec::new())
-    }
+#[derive(Debug, Serialize, Deserialize)]
+struct DemoOutputPayload {
+    summary: String,
 }
 
-#[derive(Debug, Default)]
-struct DemoA2P;
+impl PerspectivePayload for DemoOutputPayload {
+    const SCHEMA_ID: &'static str = "proxima-test/out-v1";
+    const SCHEMA_VERSION: u32 = 1;
 
-#[async_trait]
-impl A2POperator for DemoA2P {
-    fn operator_id(&self) -> &'static str {
-        "proxima-core/a2p-demo"
-    }
-
-    fn output_schema_id(&self) -> &'static str {
-        "proxima-core/dummy-fact-v1"
-    }
-
-    fn output_schema_version(&self) -> u32 {
-        1
-    }
-
-    fn prompt_version(&self) -> &'static str {
-        "v1"
-    }
-
-    fn consumes(&self, _: &SchemaId) -> bool {
-        true
-    }
-
-    fn context(&self) -> A2PContextSpec {
-        A2PContextSpec {
-            kind: "on_ingest".into(),
-            key: "k".into(),
-            label: "l".into(),
-        }
-    }
-
-    async fn run(&self, _: A2PContext<'_>) -> Result<Vec<NewPerspective>, OperatorError> {
-        Ok(Vec::new())
+    fn sidecar_table() -> &'static str {
+        "proxima_test.out_v1"
     }
 }
 
@@ -101,34 +39,111 @@ struct DemoPersonality;
 
 #[async_trait]
 impl PersonalityFlavor for DemoPersonality {
-    fn personality_id(&self) -> &'static str {
-        "proxima-core/personality-demo"
+    fn personality_type_id(&self) -> &'static str {
+        "proxima-test/personality-v1"
     }
 
-    async fn snapshot(
+    fn self_schema(&self) -> SchemaId {
+        SchemaId::new(DemoSelfPayload::SCHEMA_ID.to_string())
+    }
+
+    fn default_self_payload(
         &self,
-        _: &PersonalityContext<'_>,
-    ) -> Result<PersonalitySnapshot, proxima_core::ProtocolError> {
-        Ok(PersonalitySnapshot {
-            personality_id: PersonalityId::new("proxima-core/personality-demo"),
-            captured_at: OffsetDateTime::now_utc(),
+        _owner: &Owner,
+        _payload_overrides: Option<&serde_json::Value>,
+    ) -> Result<PersonalitySelfDraft, ProtocolError> {
+        Ok(PersonalitySelfDraft {
+            schema_id: self.self_schema(),
+            schema_version: SchemaVersion::new(1),
+            text: "Demo".into(),
+            typed_payload: serde_json::json!({ "display_name": "Demo" }),
         })
+    }
+
+    fn system_prompt(&self) -> &'static str {
+        "demo"
+    }
+
+    fn writeable_schemas(&self) -> &'static [&'static str] {
+        &[DemoOutputPayload::SCHEMA_ID]
+    }
+
+    fn writeable_relations(&self) -> &'static [&'static str] {
+        &[]
+    }
+
+    fn default_wake_filters(&self) -> Vec<WakeFilter> {
+        Vec::new()
+    }
+
+    fn tier(&self) -> ModelTier {
+        ModelTier::Standard
+    }
+}
+
+#[derive(Debug, Default)]
+struct DemoWakeFilterKind;
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct DemoWakeParams {
+    tag: String,
+}
+
+#[async_trait]
+impl WakeFilterKind for DemoWakeFilterKind {
+    fn kind_id(&self) -> &'static str {
+        "proxima-test/demo-filter"
+    }
+
+    fn version(&self) -> u16 {
+        1
+    }
+
+    fn params_schema(&self) -> serde_json::Value {
+        serde_json::to_value(schemars::schema_for!(DemoWakeParams)).unwrap()
+    }
+
+    async fn matches(
+        &self,
+        _ctx: &mut dyn WakeFilterCtx,
+        _params: &serde_json::Value,
+        _event: &proxima_core::ChangeEvent,
+    ) -> Result<bool, ProtocolError> {
+        Ok(false)
     }
 }
 
 proxima_core::proxima_flavor! {
-    name = "proxima-core",
-    fact_schemas = [DummyFact],
-    personalities = [DemoPersonality],
-    f2a_operators = [DemoF2A],
-    a2p_operators = [DemoA2P],
+    name = "proxima-test",
+    perspective_schemas = [
+        DemoSelfPayload,
+        DemoOutputPayload,
+    ],
+    personalities = [
+        DemoPersonality,
+    ],
+    wake_filter_kinds = [
+        DemoWakeFilterKind,
+    ],
 }
 
 #[test]
-fn macro_registers_operators_via_proxima_flavor() {
-    let mut registry = FlavorRegistry::new();
+fn macro_registers_personalities_and_wake_filter_kinds() {
+    let mut registry = proxima_core::FlavorRegistry::new();
     register(&mut registry);
     let frozen = registry.freeze();
-    assert_eq!(frozen.list_f2a_operators().len(), 1);
-    assert_eq!(frozen.list_a2p_operators().len(), 1);
+
+    assert_eq!(frozen.list_personalities().len(), 1);
+    assert_eq!(
+        frozen.list_personalities()[0].personality_type_id(),
+        "proxima-test/personality-v1"
+    );
+    let kind_ids: std::collections::HashSet<_> = frozen
+        .list_wake_filter_kinds()
+        .iter()
+        .map(|kind| kind.kind_id())
+        .collect();
+    assert!(kind_ids.contains("core/on-memory"));
+    assert!(kind_ids.contains("core/on-edge"));
+    assert!(kind_ids.contains("proxima-test/demo-filter"));
 }

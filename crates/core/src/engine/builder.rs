@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use super::Engine;
 use crate::auth::AuthResolver;
-use crate::operators::{EmbeddingClient, LlmClient};
+use crate::llm::{AnthropicClient, EmbeddingClient};
 use crate::storage::{NoopStorage, StorageHandle};
 use crate::verbs::query::MemoryStore;
 use crate::verbs::schema::FlavorRegistryFrozen;
@@ -19,7 +19,7 @@ impl Engine {
             memories,
             auth,
             storage: Arc::new(NoopStorage),
-            llms: std::collections::HashMap::new(),
+            anthropic: None,
             embed: None,
         }
     }
@@ -36,7 +36,7 @@ impl Engine {
         self
     }
 
-    /// Union of `requires()` over all operators bound to `tier`.
+    /// Union of `requires()` over all personalities bound to `tier`.
     /// Returns `LlmCaps::none()` if no operator uses that tier — the
     /// caller (runtime credential-write validation) treats that as
     /// "any model satisfies".
@@ -44,18 +44,9 @@ impl Engine {
     #[must_use]
     pub fn tier_requires_union(&self, tier: ModelTier) -> LlmCaps {
         let mut acc = LlmCaps::none();
-        for op in self.registry.list_f2a_operators() {
-            if op.tier() == tier {
-                let r = op.requires();
-                acc.tool_use |= r.tool_use;
-                acc.json_mode |= r.json_mode;
-                acc.long_context |= r.long_context;
-                acc.vision |= r.vision;
-            }
-        }
-        for op in self.registry.list_a2p_operators() {
-            if op.tier() == tier {
-                let r = op.requires();
+        for personality in self.registry.list_personalities() {
+            if personality.tier() == tier {
+                let r = personality.requires();
                 acc.tool_use |= r.tool_use;
                 acc.json_mode |= r.json_mode;
                 acc.long_context |= r.long_context;
@@ -68,37 +59,20 @@ impl Engine {
     #[must_use]
     pub fn uses_llm_tier(&self, tier: ModelTier) -> bool {
         self.registry
-            .list_f2a_operators()
+            .list_personalities()
             .iter()
-            .any(|op| op.tier() == tier)
-            || self
-                .registry
-                .list_a2p_operators()
-                .iter()
-                .any(|op| op.tier() == tier)
-    }
-
-    #[must_use]
-    pub fn with_llm(mut self, llm: Arc<dyn LlmClient>) -> Self {
-        for tier in [ModelTier::Fast, ModelTier::Standard, ModelTier::Deep] {
-            self.llms.insert(tier, llm.clone());
-        }
-        self
-    }
-
-    #[must_use]
-    pub fn with_llm_for_tier(mut self, tier: ModelTier, llm: Arc<dyn LlmClient>) -> Self {
-        self.llms.insert(tier, llm);
-        self
-    }
-
-    pub(crate) fn llm_for_tier(&self, tier: ModelTier) -> Option<&Arc<dyn LlmClient>> {
-        self.llms.get(&tier)
+            .any(|personality| personality.tier() == tier)
     }
 
     #[must_use]
     pub fn with_embed(mut self, embed: Arc<dyn EmbeddingClient>) -> Self {
         self.embed = Some(embed);
+        self
+    }
+
+    #[must_use]
+    pub fn with_anthropic(mut self, anthropic: Arc<dyn AnthropicClient>) -> Self {
+        self.anthropic = Some(anthropic);
         self
     }
 }

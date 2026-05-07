@@ -179,12 +179,15 @@ message SystemAuthorship {
 message OperatorOrigin {
   reserved 6;
   reserved "personality_state_hash";
+  reserved 5;
+  reserved "personality_id";
 
   string operator_id              = 1;  // OperatorId UUID
   OperatorKind operator_kind      = 2;
   string model_id                 = 3;
   string prompt_version           = 4;
-  string personality_id           = 5;
+  string personality_type_id      = 7;
+  string personality_instance_id  = 8;  // UUID
 }
 message ToolOrigin {
   string tool_id = 1;
@@ -282,6 +285,9 @@ message MemoryAppend {
   SchemaRef  schema                   = 3;
   // A/P only — never set for Facts.
   optional string supersedes_memory_id = 4;
+  optional string personality_type_id = 5;
+  optional string personality_instance_id = 6;  // UUID
+  uint32 wake_chain_depth = 7;
 }
 
 message GoalAppend {

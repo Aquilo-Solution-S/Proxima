@@ -3399,6 +3399,7 @@ dependencies = [
  "ciborium",
  "futures",
  "futures-util",
+ "reqwest 0.12.28",
  "schemars 1.2.1",
  "serde",
  "serde_json",
@@ -3551,6 +3552,7 @@ name = "proxima-storage-pg"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "blake3",
  "ciborium",
  "futures-util",
  "proxima-core",

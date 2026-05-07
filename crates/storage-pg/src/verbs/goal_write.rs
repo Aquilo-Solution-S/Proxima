@@ -304,7 +304,8 @@ async fn insert_goal_row(
         operator_kind,
         model_id,
         prompt_version,
-        personality_id,
+        personality_type_id,
+        personality_instance_id,
     ) = authorship_columns(&draft.authorship);
 
     sqlx::query(
@@ -313,8 +314,8 @@ async fn insert_goal_row(
              owner_principal_id, owner_org_id, title, text, payload, state, supersedes, \
              authorship_kind, authorship_origin, authorship_operator_id, \
              authorship_tool_id, operator_kind, model_id, prompt_version, \
-             personality_id, request_id) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)",
+             personality_type_id, personality_instance_id, request_id) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)",
     )
     .bind(goal_id)
     .bind(draft.schema_id.as_str())
@@ -334,7 +335,8 @@ async fn insert_goal_row(
     .bind(operator_kind)
     .bind(model_id)
     .bind(prompt_version)
-    .bind(personality_id)
+    .bind(personality_type_id)
+    .bind(personality_instance_id)
     .bind(&draft.request_id)
     .execute(tx)
     .await

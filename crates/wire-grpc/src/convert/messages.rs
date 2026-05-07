@@ -52,7 +52,10 @@ pub fn goal_authorship_from_proto(pb: PbGoalAuthorship) -> Result<CoreGoalAuthor
                         )?,
                         model_id: proxima_core::ModelId::new(o.model_id.clone()),
                         prompt_version: proxima_core::PromptVersion::new(o.prompt_version.clone()),
-                        personality_id: proxima_core::PersonalityId::new(o.personality_id.clone()),
+                        personality_type_id: o.personality_type_id.clone(),
+                        personality_instance_id: proxima_core::PersonalityInstanceId::new(
+                            uuid_from_proto(&o.personality_instance_id)?,
+                        ),
                     }))
                 }
                 pb::system_authorship::Origin::Tool(t) => {
@@ -78,13 +81,15 @@ pub fn goal_authorship_to_proto(core: &CoreGoalAuthorship) -> PbGoalAuthorship {
                     operator_kind,
                     model_id,
                     prompt_version,
-                    personality_id,
+                    personality_type_id,
+                    personality_instance_id,
                 } => pb::system_authorship::Origin::Operator(OperatorOrigin {
                     operator_id: uuid_to_proto(operator_id.into_inner()),
                     operator_kind: operator_kind_to_proto(*operator_kind) as i32,
                     model_id: model_id.as_str().to_string(),
                     prompt_version: prompt_version.as_str().to_string(),
-                    personality_id: personality_id.as_str().to_string(),
+                    personality_type_id: personality_type_id.clone(),
+                    personality_instance_id: uuid_to_proto(personality_instance_id.into_inner()),
                 }),
                 CoreSystemOrigin::Tool { tool_id } => {
                     pb::system_authorship::Origin::Tool(ToolOrigin {
@@ -131,6 +136,11 @@ pub fn change_event_to_proto(core: &ChangeEvent) -> Result<PbChangeEvent, Status
                         CoreEntityRef::Memory(m) => Some(uuid_to_proto(m.into_inner())),
                         CoreEntityRef::Goal(_) => None,
                     }),
+                    personality_type_id: core.authoring_personality_type_id.clone(),
+                    personality_instance_id: core
+                        .authoring_personality_instance_id
+                        .map(uuid_to_proto),
+                    wake_chain_depth: u32::from(core.wake_chain_depth),
                 }),
                 CoreEntityRef::Goal(g) => pb::entity_append::Body::Goal(GoalAppend {
                     goal_id: uuid_to_proto(g.into_inner()),

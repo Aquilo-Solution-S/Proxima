@@ -16,8 +16,9 @@ Three axes are runtime-configurable per binary:
 | Embedding endpoint + model | binary-wide | **no** | dim assertion at boot |
 | EventSource credentials (Forgejo PAT, Telegram bot, …) | per source instance | already per-source ([01 §Bootstrap](docs/01-event-source.md#bootstrap)) | n/a |
 
-What is **not** runtime-configurable: schemas, relations, F→A and
-A→P prompts, registered tools, source *types*. Those are flavor
+What is **not** runtime-configurable: schemas, relations,
+personality prompts, registered tools, wake-filter kinds, source *types*.
+Those are flavor
 crates ([08](docs/08-core-and-flavors.md)). Picking different
 behavior means a different binary.
 
@@ -123,8 +124,8 @@ to the call site that needs it.
 
 ## Capability vocabulary
 
-Build-time owns *what* model capabilities exist and *which* an
-operator requires. It does **not** own which `(vendor, model_id)`
+Build-time owns *what* model capabilities exist and *which* a
+personality requires. It does **not** own which `(vendor, model_id)`
 pairs the binary will use — those are runtime configuration.
 Plugging in a new model never requires a flavor-crate PR.
 
@@ -144,19 +145,19 @@ pub struct EmbedCaps {
 }
 ```
 
-`LlmCaps` enumerates the LLM capability axes any operator can
+`LlmCaps` enumerates the LLM capability axes any personality can
 demand; `EmbedCaps` does the same for embeddings. Expanding
 either set (e.g. adding `streaming_tool_use`) is a substrate PR —
 flavors cannot extend the vocabulary, only consume it.
 
-Operators declare a tier and a `requires: LlmCaps` at registration
-(§Operator declaration). The runtime model record (§Model
+Personalities declare a tier and a `requires: LlmCaps` at registration
+(§Personality declaration). The runtime model record (§Model
 registration) carries the *claimed* `LlmCaps` for that
 `(vendor, model_id)`; caps validation at credential-write
 (§Caps validation at credential write) checks the claim
-satisfies the union of `requires` over operators in that tier.
+satisfies the union of `requires` over personalities in that tier.
 
-The contract is: *operators say what they need; users (or a probe
+The contract is: *personalities say what they need; users (or a probe
 step) say what their model offers; the substrate refuses
 mismatches at write, not at first call.* No allowlist. No
 flavor-author gating. New models plug in.
@@ -201,7 +202,7 @@ the provider exposes them.
 `caps` is the user's (or the probe's) claim about the model. The
 substrate trusts the claim for routing decisions but enforces
 **caps satisfaction at credential write** — see below — so a
-miss-declared model can't satisfy an operator that needs more
+miss-declared model can't satisfy a personality that needs more
 than the model can deliver.
 
 `(vendor, model_id)` identifies a record uniquely. Anthropic-
@@ -216,20 +217,20 @@ first embed call.
 
 ## Model tiers
 
-Operators don't name a model. They name a **tier** — a coarse
+Personalities don't name a model. They name a **tier** — a coarse
 quality/cost class that the deployment maps to a concrete
 `(vendor, model_id)`. One model per Owner is too coarse: edge
 wiring and cheap classification want a small fast model; deep
-self-model A→P and identity-relevant Perspective synthesis want a
+self-relevant Perspective synthesis wants a
 frontier model. Tiers split that knob.
 
 v1 ships three core tiers:
 
 | Tier | Intent | Typical use |
 |---|---|---|
-| `Fast` | Cheap, low-latency, small. High-frequency mechanical work. | Edge-wiring operators, structural F→A extractors, simple classification |
-| `Standard` | General-purpose workhorse. The default if a flavor doesn't choose. | Most F→A, tool-calling decider |
-| `Deep` | Frontier-quality, expensive. Reasoning that compounds. | Self-model A→P, identity Perspectives, motivation analysis, cross-flavor synthesis |
+| `Fast` | Cheap, low-latency, small. High-frequency mechanical work. | Edge-wiring, structural extractors, simple classification |
+| `Standard` | General-purpose workhorse. The default if a flavor doesn't choose. | Most personality wake decisions |
+| `Deep` | Frontier-quality, expensive. Reasoning that compounds. | Identity Perspectives, motivation analysis, cross-flavor synthesis |
 
 The tier enum is **core**, not flavor-extensible. Cross-flavor
 cognition flavors (`general-reasoning` etc.) must be able to
@@ -237,47 +238,23 @@ compose without a tier-namespace problem; expansion is a
 substrate PR, not a flavor PR. If three is wrong it's wrong for
 everyone at once.
 
-### Operator declaration
+### Personality declaration
 
-Each operator declares two LLM-routing fields at registration
+Each personality declares two LLM-routing fields at registration
 ([08 §Registration mechanism](docs/08-core-and-flavors.md#registration-mechanism)):
 
-- `tier: ModelTier` — which tier this operator belongs in. Default
+- `tier: ModelTier` — which tier this personality belongs in. Default
   `Standard` if omitted.
 - `requires: LlmCaps` — hard capability requirements (`tool_use`,
   `json_mode`, `long_context`, `vision`, …). Default empty.
 
 ```rust
-f2a_operators = [
-    (ForgejoCommitV3, BugFixClusterV1) => F2A {
-        prompt:   prompts::COMMIT_F2A_BUGFIX,
-        cadence:  BatchClose,
-        requires: LlmCaps { json_mode: true, ..LlmCaps::none() },
-        tier:     Standard,
-    },
-],
-
-a2p_operators = [
-    Cross("general/self-model") => A2P {
-        inputs:   AnyAbstraction,
-        output:   SelfModelV1,
-        prompt:   prompts::SELF_MODEL_A2P,
-        cadence:  Scheduled("nightly"),
-        requires: LlmCaps { json_mode: true, long_context: true, ..LlmCaps::none() },
-        tier:     Deep,
-    },
-],
-
-edge_operators = [
-    Cross("general/interpretive-link") => Edge {
-        scope:    AbstractionAndPerspective,
-        relation: "general/related-tension",
-        prompt:   prompts::INTERPRETIVE_LINK,
-        cadence:  AbstractionThreshold(50),
-        requires: LlmCaps::none(),
-        tier:     Fast,
-    },
-],
+impl PersonalityFlavor for CodeEngineerPersonality {
+    fn tier(&self) -> ModelTier { ModelTier::Deep }
+    fn requires(&self) -> LlmCaps {
+        LlmCaps { json_mode: true, ..LlmCaps::none() }
+    }
+}
 ```
 
 `requires` and `tier` are independent axes. `requires` is a hard
@@ -289,14 +266,14 @@ gate (the resolved model **must** satisfy it or the call fails);
 When a `(vendor, model_id)` is bound to `default[tier]` or
 written into an `llm_credential` row, the binary checks that the
 record's *claimed* `LlmCaps` (§Model registration) satisfies the
-union of `requires` over every operator with that `tier`.
+union of `requires` over every personality with that `tier`.
 Mismatches are rejected at write — boot for `default`, INSERT for
 the per-Owner table — never silently at first call.
 
 This is the BYOK contract: an Owner whose `Standard` model lacks
-`tool_use` cannot run a binary whose decider needs tool-calling.
-The failure is visible at credential entry, not three F→A runs
-later.
+`tool_use` cannot run a binary whose personality requires tool
+calling. The failure is visible at credential entry, not at first
+wake.
 
 ### Fallback policy
 
@@ -304,13 +281,13 @@ When no row exists for `(owner, tier)`:
 
 | Policy | Effect |
 |---|---|
-| `strict` (default) | Fail-closed. Operator emits `ConfigUnavailable` Action-Fact; UI surfaces the gap. |
-| `upgrade` | Walk `Fast → Standard → Deep`. Operator gets a more capable (more expensive) model than declared. |
-| `downgrade` | Walk `Deep → Standard → Fast`. Caps-check still applies — a `Deep` operator that needs `long_context` won't silently fall to a `Fast` model that lacks it. |
+| `strict` (default) | Fail-closed. Personality wake emits `ConfigUnavailable` Action-Fact; UI surfaces the gap. |
+| `upgrade` | Walk `Fast → Standard → Deep`. Personality gets a more capable (more expensive) model than declared. |
+| `downgrade` | Walk `Deep → Standard → Fast`. Caps-check still applies — a `Deep` personality that needs `long_context` won't silently fall to a `Fast` model that lacks it. |
 
 `strict` is the default because silent quality drift on
-identity-relevant work — a `Deep` self-model A→P falling back to
-`Fast` — corrupts the agent's projection of itself invisibly.
+identity-relevant work — a `Deep` self-perspective wake falling
+back to `Fast` — corrupts the agent's projection of itself invisibly.
 Most deployments should pin all three tiers explicitly. Fallback
 is the escape hatch (local dev, single-tier free tier), not the
 norm.
@@ -364,33 +341,34 @@ embeddings (specialized retrievers using a different model
 alongside the primary). This is **not v1**; the rule above
 governs the primary similarity surface only.
 
-## Operator concurrency
+## Dispatcher concurrency
 
 Per [04 §Execution model and isolation](docs/04-consolidation.md#execution-model-and-isolation):
-operators run inside the substrate's dispatcher, with per-operator
-bounded queues and per-(Owner, `personality_id`) fairness within
-each queue. Build-time registration fixes the operator graph;
+personalities run inside the substrate's dispatcher, with
+per-personality bounded queues and per-(Owner, personality instance)
+fairness within each queue. Build-time registration fixes the
+personality graph;
 runtime config tunes the concurrency knobs.
 
 ```toml
-[operators.defaults]
-workers     = 1            # per-operator concurrency cap
+[personalities.defaults]
+workers     = 1            # per-personality concurrency cap
 queue_depth = 1024         # bounded MPSC capacity
 timeout_s   = 300          # per-invocation hard cap
 fairness    = "deficit"    # round-robin | deficit
 
-[[operators.per_operator]]
-id        = "code/forgejo-commit→bug-fix-cluster"
+[[personalities.per_personality]]
+id        = "proxima-code/commit-summary-v1"
 workers   = 2
 timeout_s = 180
 
-[[operators.per_operator]]
-id          = "general-reasoning/self-model"
+[[personalities.per_personality]]
+id          = "proxima-code/engineer-v1"
 workers     = 1
 queue_depth = 256
 
 [cost_cap]
-llm_concurrency       = 8        # global semaphore across all operators
+llm_concurrency       = 8        # global semaphore across all personality wakes
 llm_tokens_per_minute = 200000   # rolling-window guard
 
 [sources.defaults]
@@ -403,53 +381,48 @@ rate_limit_per_minute = 1200
 
 What each axis controls:
 
-- `operators.defaults.workers` — concurrent invocations of any
-  one operator. Default `1` (sequential per operator) is the safe
-  starting point; bump for operators with high LLM throughput
+- `personalities.defaults.workers` — concurrent invocations of any
+  one personality type. Default `1` (sequential per personality) is the safe
+  starting point; bump for personalities with high LLM throughput
   budget and short prompts.
-- `operators.defaults.queue_depth` — how many invocations stack
+- `personalities.defaults.queue_depth` — how many invocations stack
   before the dispatcher applies backpressure to the enqueueing
-  side (typically the change_event tail or the batch-close
-  trigger). Reaching the cap produces a logged event, not a
+  side (the `change_event` tail). Reaching the cap produces a logged event, not a
   silent drop.
-- `operators.defaults.timeout_s` — hard cap on a single
+- `personalities.defaults.timeout_s` — hard cap on a single
   invocation; the LLM call is cancelled and the run is recorded
   as failed (no partial persistence — see
   [04 §Output protocol](docs/04-consolidation.md#output-protocol)).
-- `operators.defaults.fairness` — how the per-operator queue
-  schedules across (Owner, `personality_id`) keys. `deficit` gives
+- `personalities.defaults.fairness` — how the per-personality queue
+  schedules across (Owner, personality instance) keys. `deficit` gives
   weighted fairness under uneven load; `round-robin` is simpler
   and fine when load is even.
 - `cost_cap.llm_concurrency` — binary-wide semaphore gating any
-  operator's LLM call. Caps total in-flight LLM requests
-  regardless of per-operator workers; the protective ceiling for
+  personality LLM call. Caps total in-flight LLM requests
+  regardless of per-personality workers; the protective ceiling for
   token spend.
 - `cost_cap.llm_tokens_per_minute` — rolling-window enforcement;
   the dispatcher refuses to admit a new invocation if it would
   exceed the cap.
 - `sources.defaults.rate_limit_per_minute` — Phase-1 rate limit
-  per `EventSource` instance. Independent of the operator
+  per `EventSource` instance. Independent of the personality
   dispatcher; Phase 1 doesn't go through it
   ([04 §Execution model and isolation](docs/04-consolidation.md#execution-model-and-isolation)).
 
-`per_operator` overrides match by operator id —
-`<flavor>/<input-schema>→<output-schema>` for F→A;
-`<flavor>/<operator-name>` for A→P / A→Goal / Edge. Unmatched
-operators inherit `defaults`. The dispatcher logs the effective
-config per operator at boot.
+`per_personality` overrides match by `personality_type_id`.
+Unmatched personalities inherit `defaults`. The dispatcher logs
+the effective config per personality at boot.
 
 What this **doesn't** configure:
 
-- **Operator identity or output schemas.** Build-time facts;
+- **Personality identity or output schemas.** Build-time facts;
   `proxima_flavor!` declares them.
 - **Disjoint-output invariants.** Compile-time fact from composite
   discipline (08); the dispatcher relies on them, does not enforce
   them at runtime.
-- **Cross-operator priority.** No global priority between operators
-  beyond the cost cap; operators are independent by construction.
-  If F→A throughput matters more than A→P latency in a deployment,
-  give F→A more workers — don't try to encode "F→A is more
-  important" globally.
+- **Cross-personality priority.** No global priority between
+  personalities beyond the cost cap; personalities are independent
+  by construction.
 
 ## LLM credential resolution
 
@@ -457,7 +430,7 @@ Per-call resolution path:
 
 ```
 1. owner = call.owner
-2. tier  = operator.tier                          // declared at registration; default Standard
+2. tier  = personality.tier                       // declared at registration; default Standard
 3. cred  = llm_credential.lookup(owner, tier)     // optional table
 4. if cred is None:
        cred = llm_credential.lookup(owner, fallback_tier(tier))   // per fallback_policy
@@ -467,10 +440,10 @@ Per-call resolution path:
        cred = config.llm.default[fallback_tier(tier)]             // last-resort fallback
 7. if cred is None or cred.secret_ref unresolvable:
        fail-closed:
-         - operator does not run
+         - personality wake does not run
          - emit ConfigUnavailable Action-Fact ([05](docs/05-actions.md))
          - UI surfaces the Action-Fact; user reconfigures
-8. caps-check: assert entry.caps satisfies operator.requires
+8. caps-check: assert entry.caps satisfies personality.requires
    (already enforced at write time per §Caps validation; this is
    a defence-in-depth assert, not a routing decision)
 ```
@@ -488,7 +461,7 @@ covering the four modes (per tier):
 | set | empty | Single-tenant or shared-key hosted |
 | unset | populated | Pure BYOK (every Owner brings their own) |
 | set | populated | Mixed: default for free tier, per-Owner for BYOK tier |
-| unset | empty | Misconfigured for that tier — boot fails if any operator targets it and `fallback_policy = strict` |
+| unset | empty | Misconfigured for that tier — boot fails if any personality targets it and `fallback_policy = strict` |
 
 ## Per-Owner credential table
 
@@ -513,7 +486,7 @@ not silent overwrite — credential history is the same auditable
 shape as everything else. An Owner may populate any subset of
 tiers; missing tiers resolve via §Fallback policy. INSERT
 validates that the record's claimed `LlmCaps` satisfies the
-union of `requires` over every operator registered with that
+union of `requires` over every personality registered with that
 `tier` (§Caps validation at credential write). The
 `(vendor, model_id)` itself is not gated against any allowlist —
 new models plug in at runtime; the caps claim is the contract.
@@ -695,9 +668,9 @@ top:
 - **BYOK deployments** (memophant BYOK tier, on-prem with
   per-user keys): onboarding elicits one credential per tier the
   user wants populated and writes the corresponding `llm_credential`
-  rows under that user's `Owner` *before* the first F→A or A→P run.
+  rows under that user's `Owner` *before* the first personality wake.
   Tiers the user skips fall back per `fallback_policy`; under the
-  default `strict` policy any operator targeting an unpopulated
+  default `strict` policy any personality targeting an unpopulated
   tier raises `ConfigUnavailable` at first call.
 - **Shared-key deployments** (memophant free tier, Aquilo-hosted
   Code): onboarding skips the credential step; the `default[tier]`
@@ -711,11 +684,11 @@ tier.
 
 | Shape | LLM credential source | Tier population | Embedding source |
 |---|---|---|---|
-| Local dev | `default[*]`: `base_url: http://localhost:11434`, no key | one tier wired (typically `Standard`); `fallback_policy: upgrade` so `Fast` and `Deep` operators land here too | local Ollama, small dim |
+| Local dev | `default[*]`: `base_url: http://localhost:11434`, no key | one tier wired (typically `Standard`); `fallback_policy: upgrade` so `Fast` and `Deep` personalities land here too | local Ollama, small dim |
 | Embedded desktop ([09](docs/09-frontend.md)) | per-Owner, `keychain:` refs per tier | user fills any subset; common: `Fast`→local Ollama, `Standard`/`Deep`→hosted | local Ollama or hosted |
 | BYOK on-prem | per-Owner table, populated by org admin | typically all three tiers populated explicitly | binary-wide, hosted or local |
-| Aquilo-hosted (memophant free tier) | `default[*]` block, Aquilo's keys | one or more tiers; users on a single-tier free plan get `fallback_policy: upgrade` (or `strict` with degraded operators surfaced in UI) | Aquilo's embedding model |
-| Aquilo-hosted (memophant BYOK tier) | per-Owner table, populated at signup | user picks per-tier model; signup UI shows which tiers each operator targets | Aquilo's embedding model |
+| Aquilo-hosted (memophant free tier) | `default[*]` block, Aquilo's keys | one or more tiers; users on a single-tier free plan get `fallback_policy: upgrade` (or `strict` with degraded personalities surfaced in UI) | Aquilo's embedding model |
+| Aquilo-hosted (memophant BYOK tier) | per-Owner table, populated at signup | user picks per-tier model; signup UI shows which tiers each personality targets | Aquilo's embedding model |
 
 Same binary, same config schema, same resolution path. The
 deployment shape is a populate-the-rows decision, not a build
@@ -741,8 +714,8 @@ flag.
   is what makes `cost_cap` and per-Owner BYOK accounting
   trustworthy — direct vendor-SDK calls bypass both, so the
   invariant in 05 forbids them.
-- **Not a model-selection-per-prompt knob.** F→A, A→P, edge, and
-  decider operators name a *tier* (§Model tiers), not a model id.
+- **Not a model-selection-per-prompt knob.** Personalities name a
+  *tier* (§Model tiers), not a model id.
   Tiers are deployment-mapped via `llm_credential` (per-Owner) or
   `default[tier]` (per-binary). A flavor that genuinely needs a
   *specific* model for a specific prompt is mistaken — the right
@@ -756,12 +729,12 @@ flag.
 - `capability-vocabulary`
 - `model-registration`
 - `model-tiers`
-- `operator-declaration`
+- `personality-declaration`
 - `caps-validation-at-credential-write`
 - `fallback-policy`
 - `embedding-model-one-per-binary`
 - `composite-embedding-selection`
-- `operator-concurrency`
+- `dispatcher-concurrency`
 - `llm-credential-resolution`
 - `per-owner-credential-table`
 - `price-book`

@@ -1,0 +1,390 @@
+//! Test fixtures for personality wake / dispatcher behavior tests.
+//!
+//! Each integration-test binary that exercises the substrate dispatcher
+//! `mod common; use common::personality::*;` to pick these up.
+
+#![allow(dead_code)]
+
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use proxima_core::auth::NoAuth;
+use proxima_core::engine::Engine;
+use proxima_core::llm::{AnthropicClient, EmbeddingClient, LlmError};
+use proxima_core::personality::{
+    InstantiatePersonalityResponse, MAX_WAKE_CHAIN_DEPTH, PersonalityFlavor, PersonalitySelfDraft,
+    WakeFilter,
+};
+use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
+use proxima_core::verbs::query::MemoryStore;
+use proxima_core::{
+    AbstractionPayload, FlavorRegistry, InstantiatePersonalityRequest, LlmCaps, ModelTier, Owner,
+    PerspectivePayload, ProtocolError, SchemaId, SchemaVersion, SourceBatchId, SourceId,
+};
+use proxima_core::{FactPayload, MemoryId};
+use proxima_storage_pg::PgStorage;
+use serde::{Deserialize, Serialize};
+use sqlx::Executor;
+use uuid::Uuid;
+
+pub const TEST_SOURCE_ID: &str = "proxima-test/source";
+pub const TEST_FACT_SCHEMA: &str = "proxima-test/test-fact-v1";
+pub const TEST_OTHER_FACT_SCHEMA: &str = "proxima-test/test-other-fact-v1";
+pub const TEST_PERSPECTIVE_SCHEMA: &str = "proxima-test/test-perspective-v1";
+pub const TEST_ABSTRACTION_SCHEMA: &str = "proxima-test/test-abstraction-v1";
+pub const TEST_PERSONALITY_SELF_SCHEMA: &str = "proxima-test/test-personality-self-v1";
+pub const TEST_PERSONALITY_TYPE_ID: &str = "proxima-test/test-personality-v1";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TestFactV1 {
+    pub label: String,
+}
+
+impl FactPayload for TestFactV1 {
+    const SCHEMA_ID: &'static str = TEST_FACT_SCHEMA;
+    const SCHEMA_VERSION: u32 = 1;
+
+    fn render(&self) -> String {
+        self.label.clone()
+    }
+
+    fn sidecar_table() -> &'static str {
+        "proxima_test.test_fact_v1"
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TestOtherFactV1 {
+    pub label: String,
+}
+
+impl FactPayload for TestOtherFactV1 {
+    const SCHEMA_ID: &'static str = TEST_OTHER_FACT_SCHEMA;
+    const SCHEMA_VERSION: u32 = 1;
+
+    fn render(&self) -> String {
+        self.label.clone()
+    }
+
+    fn sidecar_table() -> &'static str {
+        "proxima_test.test_other_fact_v1"
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TestAbstractionV1 {
+    pub label: String,
+}
+
+impl AbstractionPayload for TestAbstractionV1 {
+    const SCHEMA_ID: &'static str = TEST_ABSTRACTION_SCHEMA;
+    const SCHEMA_VERSION: u32 = 1;
+
+    fn sidecar_table() -> &'static str {
+        "proxima_test.test_abstraction_v1"
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TestPerspectiveV1 {
+    pub label: String,
+}
+
+impl PerspectivePayload for TestPerspectiveV1 {
+    const SCHEMA_ID: &'static str = TEST_PERSPECTIVE_SCHEMA;
+    const SCHEMA_VERSION: u32 = 1;
+
+    fn sidecar_table() -> &'static str {
+        "proxima_test.test_perspective_v1"
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TestPersonalitySelfV1 {
+    pub display_name: String,
+    pub purpose: String,
+}
+
+impl PerspectivePayload for TestPersonalitySelfV1 {
+    const SCHEMA_ID: &'static str = TEST_PERSONALITY_SELF_SCHEMA;
+    const SCHEMA_VERSION: u32 = 1;
+
+    fn sidecar_table() -> &'static str {
+        "proxima_test.test_personality_self_v1"
+    }
+}
+
+/// Apply the `proxima_test` schema and sidecar tables required by the
+/// test fixture payloads above. Idempotent — uses `IF NOT EXISTS`.
+pub async fn apply_test_schemas(pool: &sqlx::PgPool) -> sqlx::Result<()> {
+    pool.execute(
+        "CREATE SCHEMA IF NOT EXISTS proxima_test; \
+         CREATE TABLE IF NOT EXISTS proxima_test.test_fact_v1 ( \
+             memory_id uuid PRIMARY KEY REFERENCES proxima_core.memories(memory_id), \
+             label text NOT NULL \
+         ); \
+         CREATE TABLE IF NOT EXISTS proxima_test.test_other_fact_v1 ( \
+             memory_id uuid PRIMARY KEY REFERENCES proxima_core.memories(memory_id), \
+             label text NOT NULL \
+         ); \
+         CREATE TABLE IF NOT EXISTS proxima_test.test_abstraction_v1 ( \
+             memory_id uuid PRIMARY KEY REFERENCES proxima_core.memories(memory_id), \
+             label text NOT NULL \
+         ); \
+         CREATE TABLE IF NOT EXISTS proxima_test.test_perspective_v1 ( \
+             memory_id uuid PRIMARY KEY REFERENCES proxima_core.memories(memory_id), \
+             label text NOT NULL \
+         ); \
+         CREATE TABLE IF NOT EXISTS proxima_test.test_personality_self_v1 ( \
+             memory_id uuid PRIMARY KEY REFERENCES proxima_core.memories(memory_id), \
+             display_name text NOT NULL, \
+             purpose text NOT NULL \
+         );",
+    )
+    .await
+    .map(|_| ())
+}
+
+/// Test personality that wakes on `TEST_FACT_SCHEMA` Facts and writes
+/// `TEST_PERSPECTIVE_SCHEMA` Perspectives.
+#[derive(Debug, Clone)]
+pub struct TestPersonality {
+    pub max_depth: u16,
+    pub fact_schema: &'static str,
+}
+
+impl TestPersonality {
+    pub const fn new() -> Self {
+        Self {
+            max_depth: MAX_WAKE_CHAIN_DEPTH,
+            fact_schema: TEST_FACT_SCHEMA,
+        }
+    }
+
+    pub const fn with_max_depth(mut self, depth: u16) -> Self {
+        self.max_depth = depth;
+        self
+    }
+
+    pub const fn with_fact_schema(mut self, fact_schema: &'static str) -> Self {
+        self.fact_schema = fact_schema;
+        self
+    }
+}
+
+#[async_trait]
+impl PersonalityFlavor for TestPersonality {
+    fn personality_type_id(&self) -> &'static str {
+        TEST_PERSONALITY_TYPE_ID
+    }
+
+    fn self_schema(&self) -> SchemaId {
+        SchemaId::new(TEST_PERSONALITY_SELF_SCHEMA.to_string())
+    }
+
+    fn default_self_payload(
+        &self,
+        _owner: &Owner,
+        payload_overrides: Option<&serde_json::Value>,
+    ) -> Result<PersonalitySelfDraft, ProtocolError> {
+        let display_name = payload_overrides
+            .and_then(|v| v.get("display_name"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("Test Personality")
+            .to_string();
+        let purpose = payload_overrides
+            .and_then(|v| v.get("purpose"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("test")
+            .to_string();
+        Ok(PersonalitySelfDraft {
+            schema_id: self.self_schema(),
+            schema_version: SchemaVersion::new(1),
+            text: display_name.clone(),
+            typed_payload: serde_json::json!({
+                "display_name": display_name,
+                "purpose": purpose,
+            }),
+        })
+    }
+
+    fn system_prompt(&self) -> &'static str {
+        "test personality system prompt"
+    }
+
+    fn writeable_schemas(&self) -> &'static [&'static str] {
+        &[TEST_PERSPECTIVE_SCHEMA, TEST_ABSTRACTION_SCHEMA]
+    }
+
+    fn writeable_relations(&self) -> &'static [&'static str] {
+        &[]
+    }
+
+    fn default_wake_filters(&self) -> Vec<WakeFilter> {
+        vec![WakeFilter::on_memory(SchemaId::new(
+            self.fact_schema.to_string(),
+        ))]
+    }
+
+    fn tier(&self) -> ModelTier {
+        ModelTier::Fast
+    }
+
+    fn requires(&self) -> LlmCaps {
+        LlmCaps {
+            tool_use: true,
+            ..LlmCaps::none()
+        }
+    }
+
+    fn max_wake_chain_depth(&self) -> u16 {
+        self.max_depth
+    }
+}
+
+/// Trivial embedding client that returns a fixed-length zero vector.
+/// Tests that exercise emit_abstraction / emit_perspective need an
+/// embedding client wired but don't care about real vectors.
+#[derive(Debug)]
+pub struct FakeEmbedding {
+    pub dim: usize,
+}
+
+#[async_trait]
+impl EmbeddingClient for FakeEmbedding {
+    async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
+        Ok(vec![0.0; self.dim])
+    }
+
+    fn model_id(&self) -> &str {
+        "fake-embed"
+    }
+
+    fn dim(&self) -> usize {
+        self.dim
+    }
+}
+
+/// Build an `Engine` over the given storage pool wired with all test
+/// schemas + the supplied test personality + an injected scripted
+/// Anthropic client and a fake embedding client.
+#[must_use]
+pub fn build_test_engine(
+    pg: PgStorage,
+    personality: TestPersonality,
+    anthropic: Arc<dyn AnthropicClient>,
+) -> Engine {
+    use proxima_core::Principal;
+
+    let owner = super::owner_fixture();
+    let mut registry = FlavorRegistry::new();
+    registry.add_fact_schema::<TestFactV1>();
+    registry.add_fact_schema::<TestOtherFactV1>();
+    registry.add_perspective_schema::<TestPerspectiveV1>();
+    registry.add_perspective_schema::<TestPersonalitySelfV1>();
+    registry.add_abstraction_schema::<TestAbstractionV1>();
+    registry.add_personality(personality);
+    let frozen = registry.freeze();
+    let principal: Principal = owner.principal.clone();
+    Engine::new(
+        frozen,
+        MemoryStore::new(),
+        Box::new(NoAuth::new(principal, owner)),
+    )
+    .with_storage(Arc::new(pg))
+    .with_anthropic(anthropic)
+    .with_embed(Arc::new(FakeEmbedding { dim: 8 }))
+}
+
+/// Instantiate the test personality + return its instance id.
+pub async fn instantiate_test_personality(
+    engine: &Engine,
+    owner: &Owner,
+) -> Result<InstantiatePersonalityResponse, ProtocolError> {
+    engine
+        .instantiate_personality(InstantiatePersonalityRequest {
+            owner: owner.clone(),
+            personality_type_id: TEST_PERSONALITY_TYPE_ID.into(),
+            payload_overrides: None,
+        })
+        .await
+}
+
+/// Ingest one matching fact via the standard event-ingest verb. Returns
+/// the resulting memory_id.
+pub async fn ingest_test_fact(pg: &PgStorage, owner: &Owner, label: &str) -> MemoryId {
+    use proxima_core::Storage;
+    let now = time::OffsetDateTime::now_utc();
+    let payload = serde_json::to_vec(&TestFactV1 {
+        label: label.into(),
+    })
+    .expect("serializes");
+    let draft = EventDraft {
+        source_id: SourceId::new(TEST_SOURCE_ID),
+        source_batch_id: SourceBatchId::new(Uuid::now_v7()),
+        owner: owner.clone(),
+        schema_id: SchemaId::new(TEST_FACT_SCHEMA.into()),
+        schema_version: SchemaVersion::new(1),
+        payload,
+        observed_at: now,
+        occurred_at: now,
+        cited_object: CitedObjectHint {
+            schema_id: SchemaId::new("proxima-test/cited-v1".into()),
+            schema_version: SchemaVersion::new(1),
+            content_hash: rand_content_hash(),
+        },
+        citation_mapping: CitationMappingHint {
+            schema_id: SchemaId::new("proxima-test/citation-v1".into()),
+            schema_version: SchemaVersion::new(1),
+        },
+    };
+    let outcome = pg
+        .ingest_event_atomic(&draft)
+        .await
+        .expect("ingest_event_atomic");
+    outcome.memory_id
+}
+
+/// Same as `ingest_test_fact` but for the `TEST_OTHER_FACT_SCHEMA` —
+/// useful when you want events that don't match the test personality's
+/// wake filter.
+pub async fn ingest_other_fact(pg: &PgStorage, owner: &Owner, label: &str) -> MemoryId {
+    use proxima_core::Storage;
+    let now = time::OffsetDateTime::now_utc();
+    let payload = serde_json::to_vec(&TestOtherFactV1 {
+        label: label.into(),
+    })
+    .expect("serializes");
+    let draft = EventDraft {
+        source_id: SourceId::new(TEST_SOURCE_ID),
+        source_batch_id: SourceBatchId::new(Uuid::now_v7()),
+        owner: owner.clone(),
+        schema_id: SchemaId::new(TEST_OTHER_FACT_SCHEMA.into()),
+        schema_version: SchemaVersion::new(1),
+        payload,
+        observed_at: now,
+        occurred_at: now,
+        cited_object: CitedObjectHint {
+            schema_id: SchemaId::new("proxima-test/cited-v1".into()),
+            schema_version: SchemaVersion::new(1),
+            content_hash: rand_content_hash(),
+        },
+        citation_mapping: CitationMappingHint {
+            schema_id: SchemaId::new("proxima-test/citation-v1".into()),
+            schema_version: SchemaVersion::new(1),
+        },
+    };
+    let outcome = pg
+        .ingest_event_atomic(&draft)
+        .await
+        .expect("ingest_event_atomic");
+    outcome.memory_id
+}
+
+fn rand_content_hash() -> [u8; 32] {
+    let mut out = [0u8; 32];
+    for (i, byte) in Uuid::now_v7().as_bytes().iter().chain(Uuid::now_v7().as_bytes().iter()).take(32).enumerate() {
+        out[i] = *byte;
+    }
+    out
+}

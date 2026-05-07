@@ -280,7 +280,7 @@ export const EventStream: Component<{
           role="separator"
           aria-label="Resize Event stream"
           aria-orientation="vertical"
-          aria-valuemin={220}
+          aria-valuemin={320}
           aria-valuemax={560}
           aria-valuenow={props.width}
           tabIndex={0}

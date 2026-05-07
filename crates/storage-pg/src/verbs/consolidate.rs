@@ -1,178 +1,565 @@
-//! M5 — F→A consolidation storage verbs.
-//!
-//! Two functions:
-//!
-//! * [`load_batch_facts`] — fetch every Fact in a closed source-batch
-//!   joined against its typed sidecar payload. Used by the engine's
-//!   F→A dispatcher to build the operator's `F2AContext.facts`.
-//!
-//! * [`consolidate_batch_f2a`] — atomic single-tx persist of the
-//!   operator's outputs: substrate `memories` (Abstractions), the
-//!   typed sidecar via `jsonb_populate_record`, provenance edges,
-//!   embeddings, `change_event` outbox rows, and the
-//!   `source_batch_f2a` dedup row.
+//! Personality wake/decide/write storage helpers.
 
-use proxima_core::operators::{
-    A2PInvocationKey, A2PLineageKey, AbstractionRow, ConsolidateA2POutcome, ConsolidateA2PRequest,
-    ConsolidateBatchF2AOutcome, ConsolidateBatchF2ARequest, F2AInvocationKey, FactRow, SidecarSpec,
+use proxima_core::personality::{
+    AbstractionRow, ChangeEventForWake, FactRow, InstantiatePersonalityRequest,
+    InstantiatePersonalityResponse, MemorySnapshot, PersonalityInstanceId, PersonalityInstanceRow,
+    PersonalityRef, PersonalityWriteOutcome, PersonalityWriteRequest, SetWakeConfigRequest,
+    SetWakeConfigResponse, SidecarSpec, WakeChainDepth, WakeConfigRow, WakeInvocationStatus,
 };
-use proxima_core::{MemoryId, Owner, Principal, SchemaVersion, SourceBatchId, StorageError};
+use proxima_core::{MemoryId, Owner, Principal, SchemaId, SchemaVersion, StorageError};
 use sqlx::PgPool;
 
 use crate::error::map_err;
+use crate::outbox::hydrate_change_event;
 use crate::pg_ident::PgIdent;
 use crate::verbs::edge_append::{EdgeDraft, append_edge_in_tx};
 
-/// SQL fragment listing batches that are closed and have no
-/// `source_batch_f2a` row for this exact invocation key. Used by the
-/// engine's catch-up dispatcher.
-///
-/// # Errors
-///
-/// `Internal` on sqlx failure.
-pub async fn list_unconsolidated_batches(
+const EXTERNAL_PERSONALITY_TYPE_ID: &str = "external/event-source";
+const EXTERNAL_PERSONALITY_INSTANCE_ID: uuid::Uuid = uuid::Uuid::nil();
+
+fn owner_columns(owner: &Owner) -> (&'static str, uuid::Uuid, uuid::Uuid) {
+    let (kind, principal_id) = match &owner.principal {
+        Principal::User(u) => ("User", u.into_inner()),
+        Principal::Group(g) => ("Group", g.into_inner()),
+    };
+    (kind, principal_id, owner.org_id.into_inner())
+}
+
+pub async fn list_personality_instances(
     pool: &PgPool,
     owner: &Owner,
-    key: &F2AInvocationKey<'_>,
-) -> Result<Vec<SourceBatchId>, StorageError> {
-    let (owner_kind, owner_principal_id) = owner_principal_columns(owner);
-
-    let rows: Vec<(uuid::Uuid,)> = sqlx::query_as(
-        "SELECT sb.id \
-         FROM proxima_core.source_batches sb \
-         WHERE sb.owner_principal_kind = $1 \
-           AND sb.owner_principal_id = $2 \
-           AND sb.closed_at IS NOT NULL \
-           AND NOT EXISTS ( \
-                SELECT 1 FROM proxima_core.source_batch_f2a f2a \
-                WHERE f2a.batch_id = sb.id \
-                  AND f2a.operator_id = $3 \
-                  AND f2a.prompt_version = $4 \
-                  AND f2a.model_id = $5 \
-                  AND f2a.personality_id = $6 \
-           ) \
-         ORDER BY sb.opened_at ASC",
+    personality_type_id: Option<&str>,
+) -> Result<Vec<PersonalityInstanceRow>, StorageError> {
+    let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(owner);
+    let rows: Vec<(
+        String,
+        uuid::Uuid,
+        uuid::Uuid,
+        String,
+        serde_json::Value,
+        String,
+    )> = sqlx::query_as(
+        "SELECT c.personality_type_id,
+                c.personality_instance_id,
+                c.current_self_perspective_memory_id,
+                m.text AS display_name,
+                c.wake_filters,
+                c.status
+         FROM proxima_core.personality_wake_config c
+         JOIN proxima_core.memories m
+           ON m.memory_id = c.current_self_perspective_memory_id
+         WHERE c.owner_principal_kind = $1
+           AND c.owner_principal_id = $2
+           AND c.owner_org_id = $3
+           AND ($4::text IS NULL OR c.personality_type_id = $4)
+         ORDER BY c.personality_type_id, c.created_at, c.personality_instance_id",
     )
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(key.operator_id)
-    .bind(key.prompt_version)
-    .bind(key.model_id)
-    .bind(key.personality_id)
+    .bind(owner_org_id)
+    .bind(personality_type_id)
+    .fetch_all(pool)
+    .await
+    .map_err(map_err)?;
+
+    rows.into_iter()
+        .map(
+            |(
+                personality_type_id,
+                instance_id,
+                self_memory_id,
+                display_name,
+                filters_json,
+                status,
+            )| {
+                let wake_filters = serde_json::from_value(filters_json)
+                    .map_err(|e| StorageError::Internal(format!("wake_filters decode: {e}")))?;
+                Ok(PersonalityInstanceRow {
+                    owner: owner.clone(),
+                    personality_type_id,
+                    personality_instance_id: PersonalityInstanceId::new(instance_id),
+                    current_self_perspective_memory_id: MemoryId::new(self_memory_id),
+                    display_name,
+                    status,
+                    wake_filters,
+                })
+            },
+        )
+        .collect()
+}
+
+pub async fn instantiate_personality(
+    pool: &PgPool,
+    req: &InstantiatePersonalityRequest,
+    self_draft: &proxima_core::PersonalitySelfDraft,
+    self_sidecar_table: &str,
+    default_wake_filters: &[proxima_core::WakeFilter],
+) -> Result<InstantiatePersonalityResponse, StorageError> {
+    let self_sidecar = PgIdent::table(self_sidecar_table)?;
+    let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(&req.owner);
+    let instance_id = uuid::Uuid::now_v7();
+    let memory_id = uuid::Uuid::now_v7();
+    let filters_json = serde_json::to_value(default_wake_filters)
+        .map_err(|e| StorageError::Internal(format!("wake_filters encode: {e}")))?;
+    let mut tx = pool.begin().await.map_err(map_err)?;
+
+    sqlx::query(
+        "INSERT INTO proxima_core.memories
+            (memory_id, owner_principal_kind, owner_principal_id, owner_org_id,
+             schema_id, schema_version, kind, text, operator_kind, model_id,
+             prompt_version, personality_type_id, personality_instance_id, wake_chain_depth)
+         VALUES ($1, $2, $3, $4, $5, $6, 'Perspective', $7, 'Wake', 'substrate',
+                 'self-v1', $8, $9, 0)",
+    )
+    .bind(memory_id)
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(owner_org_id)
+    .bind(self_draft.schema_id.as_str())
+    .bind(i32::try_from(self_draft.schema_version.into_inner()).unwrap_or(1))
+    .bind(&self_draft.text)
+    .bind(&req.personality_type_id)
+    .bind(instance_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(map_err)?;
+
+    let sidecar_sql = format!(
+        "INSERT INTO {sidecar}
+         SELECT * FROM jsonb_populate_record(
+             NULL::{sidecar},
+             ($1::jsonb || jsonb_build_object('memory_id', $2::uuid))
+         )",
+        sidecar = self_sidecar.as_str(),
+    );
+    sqlx::query(&sidecar_sql)
+        .bind(&self_draft.typed_payload)
+        .bind(memory_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(map_err)?;
+
+    let change_seq = uuid::Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO proxima_core.change_event
+            (seq, owner_principal_kind, owner_principal_id, owner_org_id, kind,
+             entity_kind, entity_memory_id, entity_schema_id, entity_schema_version,
+             entity_personality_type_id, entity_personality_instance_id, wake_chain_depth)
+         VALUES ($1, $2, $3, $4, 'EntityAppend', 'Perspective', $5, $6, $7, $8, $9, 0)",
+    )
+    .bind(change_seq)
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(owner_org_id)
+    .bind(memory_id)
+    .bind(self_draft.schema_id.as_str())
+    .bind(i32::try_from(self_draft.schema_version.into_inner()).unwrap_or(1))
+    .bind(&req.personality_type_id)
+    .bind(instance_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(map_err)?;
+
+    sqlx::query(
+        "INSERT INTO proxima_core.personality_wake_config
+            (owner_principal_kind, owner_principal_id, owner_org_id,
+             personality_type_id, personality_instance_id,
+             current_self_perspective_memory_id, wake_filters, status)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, 'active')",
+    )
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(owner_org_id)
+    .bind(&req.personality_type_id)
+    .bind(instance_id)
+    .bind(memory_id)
+    .bind(filters_json)
+    .execute(&mut *tx)
+    .await
+    .map_err(map_err)?;
+
+    // PostgreSQL has no built-in `max(uuid)` aggregate (verified PG 17),
+    // so use ORDER BY ... LIMIT 1 — UUIDv7 is monotonic per source so
+    // binary ordering matches insertion order.
+    let max_seq: Option<uuid::Uuid> = sqlx::query_scalar::<_, uuid::Uuid>(
+        "SELECT seq FROM proxima_core.change_event
+         WHERE owner_principal_kind = $1
+           AND owner_principal_id = $2
+           AND owner_org_id = $3
+         ORDER BY seq DESC
+         LIMIT 1",
+    )
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(owner_org_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(map_err)?;
+
+    sqlx::query(
+        "INSERT INTO proxima_core.personality_wake_cursor
+            (owner_principal_kind, owner_principal_id, owner_org_id,
+             personality_type_id, personality_instance_id, last_considered_seq)
+         VALUES ($1, $2, $3, $4, $5, $6)",
+    )
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(owner_org_id)
+    .bind(&req.personality_type_id)
+    .bind(instance_id)
+    .bind(max_seq.unwrap_or(uuid::Uuid::nil()))
+    .execute(&mut *tx)
+    .await
+    .map_err(map_err)?;
+
+    tx.commit().await.map_err(map_err)?;
+    Ok(InstantiatePersonalityResponse {
+        instance_id: PersonalityInstanceId::new(instance_id),
+    })
+}
+
+pub async fn set_wake_config(
+    pool: &PgPool,
+    req: &SetWakeConfigRequest,
+) -> Result<SetWakeConfigResponse, StorageError> {
+    let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(&req.owner);
+    let filters_json = serde_json::to_value(&req.wake_filters)
+        .map_err(|e| StorageError::Internal(format!("wake_filters encode: {e}")))?;
+    let result = sqlx::query(
+        "UPDATE proxima_core.personality_wake_config
+         SET wake_filters = $1, status = 'active', updated_at = now()
+         WHERE owner_principal_kind = $2
+           AND owner_principal_id = $3
+           AND owner_org_id = $4
+           AND personality_type_id = $5
+           AND personality_instance_id = $6",
+    )
+    .bind(filters_json)
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(owner_org_id)
+    .bind(&req.personality_type_id)
+    .bind(req.personality_instance_id.into_inner())
+    .execute(pool)
+    .await
+    .map_err(map_err)?;
+    if result.rows_affected() == 0 {
+        return Err(StorageError::NotFound);
+    }
+    Ok(SetWakeConfigResponse {
+        status: "active".into(),
+    })
+}
+
+pub async fn list_active_wake_configs(pool: &PgPool) -> Result<Vec<WakeConfigRow>, StorageError> {
+    let rows: Vec<(
+        String,
+        uuid::Uuid,
+        uuid::Uuid,
+        String,
+        uuid::Uuid,
+        uuid::Uuid,
+        serde_json::Value,
+        String,
+        uuid::Uuid,
+    )> = sqlx::query_as(
+        "SELECT c.owner_principal_kind,
+                c.owner_principal_id,
+                c.owner_org_id,
+                c.personality_type_id,
+                c.personality_instance_id,
+                c.current_self_perspective_memory_id,
+                c.wake_filters,
+                c.status,
+                cur.last_considered_seq
+         FROM proxima_core.personality_wake_config c
+         JOIN proxima_core.personality_wake_cursor cur
+           ON cur.owner_principal_kind = c.owner_principal_kind
+          AND cur.owner_principal_id = c.owner_principal_id
+          AND cur.owner_org_id = c.owner_org_id
+          AND cur.personality_type_id = c.personality_type_id
+          AND cur.personality_instance_id = c.personality_instance_id
+         WHERE c.status = 'active'
+         ORDER BY c.owner_principal_kind, c.owner_principal_id, c.personality_type_id, c.personality_instance_id",
+    )
     .fetch_all(pool)
     .await
     .map_err(map_err)?;
 
     Ok(rows
         .into_iter()
-        .map(|(id,)| SourceBatchId::new(id))
+        .map(
+            |(
+                owner_kind,
+                owner_principal_id,
+                owner_org_id,
+                personality_type_id,
+                personality_instance_id,
+                self_memory_id,
+                wake_filters_json,
+                status,
+                last_considered_seq,
+            )| WakeConfigRow {
+                owner: owner_from_parts(&owner_kind, owner_principal_id, owner_org_id),
+                personality_type_id,
+                personality_instance_id: PersonalityInstanceId::new(personality_instance_id),
+                current_self_perspective_memory_id: MemoryId::new(self_memory_id),
+                wake_filters_json,
+                status,
+                last_considered_seq,
+            },
+        )
         .collect())
 }
 
-fn owner_columns(owner: &Owner) -> (&'static str, uuid::Uuid, uuid::Uuid) {
-    let (kind, principal_id) = owner_principal_columns(owner);
-    (kind, principal_id, owner.org_id.into_inner())
-}
-
-fn owner_principal_columns(owner: &Owner) -> (&'static str, uuid::Uuid) {
-    let (kind, principal_id) = match &owner.principal {
-        Principal::User(u) => ("User", u.into_inner()),
-        Principal::Group(g) => ("Group", g.into_inner()),
-    };
-    (kind, principal_id)
-}
-
-/// Load all Facts in a closed source-batch with their typed sidecar
-/// payloads serialised to JSON via `row_to_json(s.*)`.
-///
-/// One SELECT per spec, results concatenated. The substrate
-/// `proxima_core.events` table carries `source_batch_id`; we JOIN
-/// memories ↔ events to land at the right batch and then LEFT JOIN
-/// the sidecar to pick up typed payload columns.
-///
-/// # Errors
-///
-/// Returns `Internal` on sqlx failure or a malformed sidecar
-/// identifier.
-pub async fn load_batch_facts(
+pub async fn mark_wake_config_needs_repair(
     pool: &PgPool,
     owner: &Owner,
-    batch_id: SourceBatchId,
+    instance: &PersonalityRef,
+) -> Result<(), StorageError> {
+    let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(owner);
+    sqlx::query(
+        "UPDATE proxima_core.personality_wake_config
+         SET status = 'needs_repair', updated_at = now()
+         WHERE owner_principal_kind = $1
+           AND owner_principal_id = $2
+           AND owner_org_id = $3
+           AND personality_type_id = $4
+           AND personality_instance_id = $5",
+    )
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(owner_org_id)
+    .bind(&instance.personality_type_id)
+    .bind(instance.personality_instance_id.into_inner())
+    .execute(pool)
+    .await
+    .map_err(map_err)?;
+    Ok(())
+}
+
+pub async fn list_change_events_after(
+    pool: &PgPool,
+    owner: &Owner,
+    after: uuid::Uuid,
+    limit: usize,
+) -> Result<Vec<ChangeEventForWake>, StorageError> {
+    let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(owner);
+    let rows: Vec<(uuid::Uuid, Option<String>, Option<uuid::Uuid>, i16)> = sqlx::query_as(
+        "SELECT seq, entity_personality_type_id, entity_personality_instance_id, wake_chain_depth
+         FROM proxima_core.change_event
+         WHERE owner_principal_kind = $1
+           AND owner_principal_id = $2
+           AND owner_org_id = $3
+           AND seq > $4
+         ORDER BY seq ASC
+         LIMIT $5",
+    )
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(owner_org_id)
+    .bind(after)
+    .bind(i64::try_from(limit).unwrap_or(i64::MAX))
+    .fetch_all(pool)
+    .await
+    .map_err(map_err)?;
+
+    let mut out = Vec::with_capacity(rows.len());
+    for (seq, type_id, instance_id, depth) in rows {
+        if let Some(event) = hydrate_change_event(pool, seq).await? {
+            out.push(ChangeEventForWake {
+                event,
+                authoring_personality_type_id: type_id,
+                authoring_personality_instance_id: instance_id.map(PersonalityInstanceId::new),
+                wake_chain_depth: WakeChainDepth::new(u16::try_from(depth).unwrap_or(0)),
+            });
+        }
+    }
+    Ok(out)
+}
+
+pub async fn advance_wake_cursor(
+    pool: &PgPool,
+    owner: &Owner,
+    instance: &PersonalityRef,
+    last_considered_seq: uuid::Uuid,
+) -> Result<(), StorageError> {
+    let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(owner);
+    sqlx::query(
+        "UPDATE proxima_core.personality_wake_cursor
+         SET last_considered_seq = GREATEST(last_considered_seq, $1), updated_at = now()
+         WHERE owner_principal_kind = $2
+           AND owner_principal_id = $3
+           AND owner_org_id = $4
+           AND personality_type_id = $5
+           AND personality_instance_id = $6",
+    )
+    .bind(last_considered_seq)
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(owner_org_id)
+    .bind(&instance.personality_type_id)
+    .bind(instance.personality_instance_id.into_inner())
+    .execute(pool)
+    .await
+    .map_err(map_err)?;
+    Ok(())
+}
+
+pub async fn try_begin_wake_invocation(
+    pool: &PgPool,
+    owner: &Owner,
+    instance: &PersonalityRef,
+    change_event_seq: uuid::Uuid,
+) -> Result<bool, StorageError> {
+    let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(owner);
+    let inserted: Option<(uuid::Uuid,)> = sqlx::query_as(
+        "INSERT INTO proxima_core.personality_wake_invocations
+            (owner_principal_kind, owner_principal_id, owner_org_id,
+             personality_type_id, personality_instance_id, change_event_seq,
+             status, started_at)
+         VALUES ($1, $2, $3, $4, $5, $6, 'running', now())
+         ON CONFLICT (owner_principal_kind, owner_principal_id, owner_org_id,
+                      personality_type_id, personality_instance_id, change_event_seq)
+         DO NOTHING
+         RETURNING change_event_seq",
+    )
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(owner_org_id)
+    .bind(&instance.personality_type_id)
+    .bind(instance.personality_instance_id.into_inner())
+    .bind(change_event_seq)
+    .fetch_optional(pool)
+    .await
+    .map_err(map_err)?;
+    Ok(inserted.is_some())
+}
+
+pub async fn finish_wake_invocation(
+    pool: &PgPool,
+    owner: &Owner,
+    instance: &PersonalityRef,
+    change_event_seq: uuid::Uuid,
+    status: WakeInvocationStatus,
+    turn_count: u16,
+    cost_usd: f64,
+) -> Result<(), StorageError> {
+    let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(owner);
+    sqlx::query(
+        "UPDATE proxima_core.personality_wake_invocations
+         SET status = $1, finished_at = now(), turn_count = $2, cost_usd = $3
+         WHERE owner_principal_kind = $4
+           AND owner_principal_id = $5
+           AND owner_org_id = $6
+           AND personality_type_id = $7
+           AND personality_instance_id = $8
+           AND change_event_seq = $9",
+    )
+    .bind(status.as_str())
+    .bind(i16::try_from(turn_count).unwrap_or(i16::MAX))
+    .bind(cost_usd)
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(owner_org_id)
+    .bind(&instance.personality_type_id)
+    .bind(instance.personality_instance_id.into_inner())
+    .bind(change_event_seq)
+    .execute(pool)
+    .await
+    .map_err(map_err)?;
+    Ok(())
+}
+
+pub async fn load_memory_batch_facts(
+    pool: &PgPool,
+    owner: &Owner,
+    memory_id: MemoryId,
     sidecars: &[SidecarSpec],
 ) -> Result<Vec<FactRow>, StorageError> {
-    let (owner_kind, owner_principal_id) = owner_principal_columns(owner);
-    let batch_uuid = batch_id.into_inner();
+    let batch_id: Option<uuid::Uuid> = sqlx::query_scalar(
+        "SELECT e.source_batch_id
+         FROM proxima_core.memories m
+         JOIN proxima_core.events e ON e.event_id = m.event_id
+         WHERE m.memory_id = $1",
+    )
+    .bind(memory_id.into_inner())
+    .fetch_optional(pool)
+    .await
+    .map_err(map_err)?;
+    let Some(batch_id) = batch_id else {
+        return Ok(Vec::new());
+    };
+    load_batch_facts_by_id(pool, owner, batch_id, sidecars).await
+}
 
+async fn load_batch_facts_by_id(
+    pool: &PgPool,
+    owner: &Owner,
+    batch_id: uuid::Uuid,
+    sidecars: &[SidecarSpec],
+) -> Result<Vec<FactRow>, StorageError> {
+    let (owner_kind, owner_principal_id, _owner_org_id) = owner_columns(owner);
     let mut out = Vec::new();
     for spec in sidecars {
         let sidecar = PgIdent::table(&spec.sidecar_table)?;
-
         let sql = format!(
-            "SELECT m.memory_id, e.schema_version, row_to_json(s.*) AS payload \
-             FROM proxima_core.memories m \
-             JOIN proxima_core.events e ON m.event_id = e.event_id \
-             JOIN {sidecar} s ON s.memory_id = m.memory_id \
-             WHERE e.source_batch_id = $1 \
-               AND m.owner_principal_kind = $2 \
-               AND m.owner_principal_id = $3 \
+            "SELECT m.memory_id, e.schema_version, row_to_json(s.*) AS payload, m.wake_chain_depth
+             FROM proxima_core.memories m
+             JOIN proxima_core.events e ON m.event_id = e.event_id
+             JOIN {sidecar} s ON s.memory_id = m.memory_id
+             WHERE e.source_batch_id = $1
+               AND m.owner_principal_kind = $2
+               AND m.owner_principal_id = $3
                AND m.schema_id = $4",
             sidecar = sidecar.as_str(),
         );
-
-        let rows: Vec<(uuid::Uuid, i32, serde_json::Value)> = sqlx::query_as(&sql)
-            .bind(batch_uuid)
+        let rows: Vec<(uuid::Uuid, i32, serde_json::Value, i16)> = sqlx::query_as(&sql)
+            .bind(batch_id)
             .bind(owner_kind)
             .bind(owner_principal_id)
             .bind(spec.schema_id.as_str())
             .fetch_all(pool)
             .await
             .map_err(map_err)?;
-
-        for (memory_id, schema_version, payload) in rows {
-            out.push(FactRow {
-                memory_id: MemoryId::new(memory_id),
-                schema_id: spec.schema_id.clone(),
-                schema_version: SchemaVersion::new(u32::try_from(schema_version).unwrap_or(0)),
-                payload_json: payload,
-            });
-        }
+        out.extend(
+            rows.into_iter()
+                .map(|(memory_id, schema_version, payload_json, depth)| FactRow {
+                    memory_id: MemoryId::new(memory_id),
+                    schema_id: spec.schema_id.clone(),
+                    schema_version: SchemaVersion::new(u32::try_from(schema_version).unwrap_or(1)),
+                    payload_json,
+                    wake_chain_depth: WakeChainDepth::new(u16::try_from(depth).unwrap_or(0)),
+                }),
+        );
     }
-
     Ok(out)
 }
 
-/// Load current Abstraction heads for A→P input, newest first.
-///
-/// The storage trait receives concrete sidecar tables from the
-/// build-time schema registry; this function never accepts ad-hoc
-/// schema tables from outside the engine.
-///
-/// # Errors
-///
-/// Returns `Internal` on sqlx failure or a malformed sidecar identifier.
-pub async fn load_a2p_abstractions(
+pub async fn load_abstraction_heads(
     pool: &PgPool,
     owner: &Owner,
     sidecars: &[SidecarSpec],
     limit: usize,
 ) -> Result<Vec<AbstractionRow>, StorageError> {
-    let (owner_kind, owner_principal_id) = owner_principal_columns(owner);
+    let (owner_kind, owner_principal_id, _owner_org_id) = owner_columns(owner);
     let mut rows_all = Vec::new();
     for spec in sidecars {
         let sidecar = PgIdent::table(&spec.sidecar_table)?;
         let sql = format!(
-            "SELECT m.memory_id, m.schema_version, m.text, row_to_json(s.*) AS payload, m.created_at \
-             FROM proxima_core.memories m \
-             JOIN {sidecar} s ON s.memory_id = m.memory_id \
-             WHERE m.owner_principal_kind = $1 \
-               AND m.owner_principal_id = $2 \
-               AND m.kind = 'Abstraction' \
-               AND m.schema_id = $3 \
-               AND NOT EXISTS ( \
-                    SELECT 1 FROM proxima_core.memories newer \
-                    WHERE newer.supersedes = m.memory_id \
-               ) \
-             ORDER BY m.created_at DESC, m.memory_id DESC \
+            "SELECT m.memory_id, m.schema_version, m.text, row_to_json(s.*) AS payload,
+                    m.created_at, m.wake_chain_depth
+             FROM proxima_core.memories m
+             JOIN {sidecar} s ON s.memory_id = m.memory_id
+             WHERE m.owner_principal_kind = $1
+               AND m.owner_principal_id = $2
+               AND m.kind = 'Abstraction'
+               AND m.schema_id = $3
+               AND NOT EXISTS (
+                    SELECT 1 FROM proxima_core.memories newer
+                    WHERE newer.supersedes = m.memory_id
+               )
+             ORDER BY m.created_at DESC, m.memory_id DESC
              LIMIT $4",
             sidecar = sidecar.as_str(),
         );
@@ -182,6 +569,7 @@ pub async fn load_a2p_abstractions(
             String,
             serde_json::Value,
             time::OffsetDateTime,
+            i16,
         )> = sqlx::query_as(&sql)
             .bind(owner_kind)
             .bind(owner_principal_id)
@@ -190,16 +578,17 @@ pub async fn load_a2p_abstractions(
             .fetch_all(pool)
             .await
             .map_err(map_err)?;
-        for (memory_id, schema_version, text, payload, created_at) in rows {
+        for (memory_id, schema_version, text, payload_json, created_at, depth) in rows {
             rows_all.push((
                 created_at,
                 memory_id,
                 AbstractionRow {
                     memory_id: MemoryId::new(memory_id),
                     schema_id: spec.schema_id.clone(),
-                    schema_version: SchemaVersion::new(u32::try_from(schema_version).unwrap_or(0)),
+                    schema_version: SchemaVersion::new(u32::try_from(schema_version).unwrap_or(1)),
                     text,
-                    payload_json: payload,
+                    payload_json,
+                    wake_chain_depth: WakeChainDepth::new(u16::try_from(depth).unwrap_or(0)),
                 },
             ));
         }
@@ -212,411 +601,153 @@ pub async fn load_a2p_abstractions(
         .collect())
 }
 
-/// Probe `proxima_core.a2p_invocations` for the full A→P invocation key.
-///
-/// Owner scope is principal-only — matches `load_a2p_abstractions`, so
-/// same-principal/different-org runs hit the same idempotency row.
-///
-/// # Errors
-///
-/// Returns `Internal` on sqlx failure.
-pub async fn has_a2p_invocation(
+pub async fn load_memory_by_id(
     pool: &PgPool,
     owner: &Owner,
-    key: &A2PInvocationKey<'_>,
-) -> Result<bool, StorageError> {
-    let (owner_kind, owner_principal_id) = owner_principal_columns(owner);
-    let exists: Option<(i32,)> = sqlx::query_as(
-        "SELECT 1 FROM proxima_core.a2p_invocations \
-         WHERE owner_principal_kind = $1 \
-           AND owner_principal_id = $2 \
-           AND operator_id = $3 \
-           AND prompt_version = $4 \
-           AND model_id = $5 \
-           AND personality_id = $6 \
-           AND context_hash = $7 \
-           AND input_hash = $8",
+    memory_id: MemoryId,
+    sidecars: &[SidecarSpec],
+) -> Result<Option<MemorySnapshot>, StorageError> {
+    let (owner_kind, owner_principal_id, _owner_org_id) = owner_columns(owner);
+    let head: Option<(Option<String>, String, i32, Option<String>, i16)> = sqlx::query_as(
+        "SELECT kind, schema_id, schema_version, text, wake_chain_depth
+         FROM proxima_core.memories
+         WHERE memory_id = $1
+           AND owner_principal_kind = $2
+           AND owner_principal_id = $3",
     )
+    .bind(memory_id.into_inner())
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(key.operator_id)
-    .bind(key.prompt_version)
-    .bind(key.model_id)
-    .bind(key.personality_id)
-    .bind(key.context_hash)
-    .bind(key.input_hash)
     .fetch_optional(pool)
     .await
     .map_err(map_err)?;
-    Ok(exists.is_some())
+    let Some((kind, schema_id, schema_version, text, depth)) = head else {
+        return Ok(None);
+    };
+    let kind_str = kind.unwrap_or_else(|| "Fact".to_string());
+    let payload_json = if let Some(spec) =
+        sidecars.iter().find(|s| s.schema_id.as_str() == schema_id)
+    {
+        let sidecar = PgIdent::table(&spec.sidecar_table)?;
+        let sql = format!(
+            "SELECT row_to_json(s.*) AS payload FROM {sidecar} s WHERE s.memory_id = $1",
+            sidecar = sidecar.as_str(),
+        );
+        let row: Option<(serde_json::Value,)> = sqlx::query_as(&sql)
+            .bind(memory_id.into_inner())
+            .fetch_optional(pool)
+            .await
+            .map_err(map_err)?;
+        row.map(|(p,)| p).unwrap_or(serde_json::Value::Null)
+    } else {
+        serde_json::Value::Null
+    };
+    Ok(Some(MemorySnapshot {
+        memory_id,
+        kind: kind_str,
+        schema_id: SchemaId::new(schema_id),
+        schema_version: SchemaVersion::new(u32::try_from(schema_version).unwrap_or(1)),
+        text,
+        wake_chain_depth: WakeChainDepth::new(u16::try_from(depth).unwrap_or(0)),
+        payload_json,
+    }))
 }
 
-/// Most recent Perspective head for this operator/model/personality
-/// lineage, ignoring context/input shifts. Owner scope is principal-only.
-///
-/// # Errors
-///
-/// Returns `Internal` on sqlx failure.
-pub async fn lookup_prior_a2p_head(
+pub async fn lookup_prior_personality_head(
     pool: &PgPool,
     owner: &Owner,
-    key: &A2PLineageKey<'_>,
+    instance: &PersonalityRef,
+    schema_id: &SchemaId,
 ) -> Result<Option<MemoryId>, StorageError> {
-    let (owner_kind, owner_principal_id) = owner_principal_columns(owner);
+    let (owner_kind, owner_principal_id, _owner_org_id) = owner_columns(owner);
     let row: Option<(uuid::Uuid,)> = sqlx::query_as(
-        "SELECT head_memory_id FROM proxima_core.a2p_invocations \
-         WHERE owner_principal_kind = $1 \
-           AND owner_principal_id = $2 \
-           AND operator_id = $3 \
-           AND prompt_version = $4 \
-           AND model_id = $5 \
-           AND personality_id = $6 \
-           AND head_memory_id IS NOT NULL \
-         ORDER BY run_at DESC \
+        "SELECT memory_id
+         FROM proxima_core.memories
+         WHERE owner_principal_kind = $1
+           AND owner_principal_id = $2
+           AND schema_id = $3
+           AND personality_type_id = $4
+           AND personality_instance_id = $5
+           AND kind = 'Perspective'
+           AND NOT EXISTS (
+                SELECT 1 FROM proxima_core.memories newer
+                WHERE newer.supersedes = memories.memory_id
+           )
+         ORDER BY created_at DESC
          LIMIT 1",
     )
     .bind(owner_kind)
     .bind(owner_principal_id)
-    .bind(key.operator_id)
-    .bind(key.prompt_version)
-    .bind(key.model_id)
-    .bind(key.personality_id)
+    .bind(schema_id.as_str())
+    .bind(&instance.personality_type_id)
+    .bind(instance.personality_instance_id.into_inner())
     .fetch_optional(pool)
     .await
     .map_err(map_err)?;
     Ok(row.map(|(id,)| MemoryId::new(id)))
 }
 
-/// Atomic F→A persistence. See `Storage::consolidate_batch_f2a`.
-///
-/// Layout per tx:
-///
-/// 1. Pre-check `source_batch_f2a` for the full invocation key —
-///    `(batch_id, operator_id, prompt_version, model_id,
-///    personality_id)` — and short-circuit
-///    to `already_consolidated = true` on hit.
-/// 2. Insert N substrate `memories` rows (Abstraction kind).
-/// 3. Insert N typed sidecar rows via `jsonb_populate_record`.
-/// 4. Insert M provenance edges (one per (Abstraction, Fact) pair).
-///    Validated `provenance ⊆ batch facts` upstream of this verb;
-///    the storage layer trusts the dispatcher's check.
-/// 5. Insert N embedding rows (`float4[]` in M5; pgvector swap is
-///    M6+).
-/// 6. Insert N + M `change_event` rows (`EntityAppend` × N,
-///    `EdgeAppend` × M).
-/// 7. Insert the `source_batch_f2a` dedup row.
-///
-/// # Errors
-///
-/// Returns `ConstraintViolation` for shape / FK / check-constraint
-/// failures (typically a malformed payload or an out-of-scope
-/// provenance `memory_id`); `Internal` on sqlx failure.
 #[allow(clippy::too_many_lines)]
-pub async fn consolidate_batch_f2a(
+pub async fn append_personality_memories(
     pool: &PgPool,
-    req: &ConsolidateBatchF2ARequest<'_>,
-) -> Result<ConsolidateBatchF2AOutcome, StorageError> {
-    let output_sidecar_table = PgIdent::table(req.output_sidecar_table)?;
-
-    let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(&req.owner);
-    let batch_uuid = req.batch_id.into_inner();
-    let personality_id = req.personality.personality_id.as_str().to_string();
-
-    let mut tx = pool.begin().await.map_err(map_err)?;
-
-    // 1. dedup pre-check.
-    let existing: Option<(uuid::Uuid,)> = sqlx::query_as(
-        "SELECT batch_id FROM proxima_core.source_batch_f2a \
-         WHERE batch_id = $1 \
-           AND operator_id = $2 \
-           AND prompt_version = $3 \
-           AND model_id = $4 \
-           AND personality_id = $5",
-    )
-    .bind(batch_uuid)
-    .bind(req.operator_id)
-    .bind(req.prompt_version)
-    .bind(req.model_id)
-    .bind(&personality_id)
-    .fetch_optional(&mut *tx)
-    .await
-    .map_err(map_err)?;
-
-    if existing.is_some() {
-        return Ok(ConsolidateBatchF2AOutcome {
-            abstraction_ids: Vec::new(),
-            already_consolidated: true,
+    req: &PersonalityWriteRequest<'_>,
+) -> Result<PersonalityWriteOutcome, StorageError> {
+    if req.memories.is_empty() {
+        return Ok(PersonalityWriteOutcome {
+            memory_ids: Vec::new(),
         });
     }
-
-    let mut abstraction_ids: Vec<MemoryId> = Vec::with_capacity(req.abstractions.len());
-
-    for abs in req.abstractions {
-        let memory_id = uuid::Uuid::now_v7();
-        abstraction_ids.push(MemoryId::new(memory_id));
-
-        // 2. substrate memory row (Abstraction).
-        //
-        // operator_kind is the substrate-fixed enum (`'FtoA'` |
-        // `'AtoP'`), not the operator's stable id. Per doc 04
-        // §"Idempotence", the operator's lineage is keyed on
-        // `(operator_kind, schema_id, prompt_version, model_id)` —
-        // the operator_id (`proxima-code/commit-summary`) lives on
-        // `source_batch_f2a` instead.
-        sqlx::query(
-            "INSERT INTO proxima_core.memories \
-                (memory_id, owner_principal_kind, owner_principal_id, owner_org_id, \
-                 schema_id, schema_version, kind, text, operator_kind, model_id, prompt_version, \
-                 personality_id) \
-             VALUES ($1, $2, $3, $4, $5, $6, 'Abstraction', $7, 'FtoA', $8, $9, $10)",
-        )
-        .bind(memory_id)
-        .bind(owner_kind)
-        .bind(owner_principal_id)
-        .bind(owner_org_id)
-        .bind(abs.schema_id.as_str())
-        .bind(i32::try_from(abs.schema_version.into_inner()).unwrap_or(1))
-        .bind(&abs.text)
-        .bind(req.model_id)
-        .bind(req.prompt_version)
-        .bind(&personality_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(map_err)?;
-
-        // 3. typed sidecar via jsonb_populate_record. The payload's
-        //    JSON object plus `memory_id` is cast into the sidecar's
-        //    row type and INSERTed.
-        let sidecar_sql = format!(
-            "INSERT INTO {sidecar} \
-             SELECT * FROM jsonb_populate_record( \
-                 NULL::{sidecar}, \
-                 ($1::jsonb || jsonb_build_object('memory_id', $2::uuid)) \
-             )",
-            sidecar = output_sidecar_table.as_str(),
-        );
-        sqlx::query(&sidecar_sql)
-            .bind(&abs.typed_payload)
-            .bind(memory_id)
-            .execute(&mut *tx)
-            .await
-            .map_err(map_err)?;
-
-        // 6a. EntityAppend change_event for the new Abstraction.
-        let change_seq = uuid::Uuid::now_v7();
-        sqlx::query(
-            "INSERT INTO proxima_core.change_event \
-                (seq, owner_principal_kind, owner_principal_id, owner_org_id, kind, \
-                 entity_kind, entity_memory_id, entity_schema_id, entity_schema_version, \
-                 entity_personality_id) \
-             VALUES ($1, $2, $3, $4, 'EntityAppend', 'Abstraction', $5, $6, $7, $8)",
-        )
-        .bind(change_seq)
-        .bind(owner_kind)
-        .bind(owner_principal_id)
-        .bind(owner_org_id)
-        .bind(memory_id)
-        .bind(abs.schema_id.as_str())
-        .bind(i32::try_from(abs.schema_version.into_inner()).unwrap_or(1))
-        .bind(&personality_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(map_err)?;
-
-        // 4. provenance edges A→F (one per source Fact).
-        for prov_id in &abs.provenance {
-            let edge_id = uuid::Uuid::now_v7();
-            let draft = EdgeDraft {
-                edge_id,
-                relation: req.provenance_relation,
-                source_kind: "Abstraction",
-                source_memory_id: Some(memory_id),
-                source_goal_id: None,
-                target_kind: "Fact",
-                target_memory_id: Some(prov_id.into_inner()),
-                target_goal_id: None,
-                authorship_kind: "OperatorFtoA",
-                authorship_owner_memory_id: Some(memory_id),
-                owner: &req.owner,
-            };
-            append_edge_in_tx(&mut tx, &draft, None).await?;
-        }
-
-        // 5. embedding row.
-        let dim = i32::try_from(abs.embedding.len())
-            .map_err(|_| StorageError::ConstraintViolation("embedding dim too large".into()))?;
-        sqlx::query(
-            "INSERT INTO proxima_core.embeddings \
-                (entity_kind, entity_id, embedding_version, model_id, vec, dim, \
-                 owner_principal_kind, owner_principal_id, owner_org_id) \
-             VALUES ('Abstraction', $1, 1, $2, $3, $4, $5, $6, $7)",
-        )
-        .bind(memory_id)
-        .bind(&abs.embedding_model_id)
-        .bind(&abs.embedding)
-        .bind(dim)
-        .bind(owner_kind)
-        .bind(owner_principal_id)
-        .bind(owner_org_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(map_err)?;
-    }
-
-    // 7. dedup row.
-    let head_memory_id = abstraction_ids.last().map(|m| m.into_inner());
-    sqlx::query(
-        "INSERT INTO proxima_core.source_batch_f2a \
-            (batch_id, operator_id, prompt_version, model_id, \
-             personality_id, head_memory_id) \
-         VALUES ($1, $2, $3, $4, $5, $6)",
-    )
-    .bind(batch_uuid)
-    .bind(req.operator_id)
-    .bind(req.prompt_version)
-    .bind(req.model_id)
-    .bind(&personality_id)
-    .bind(head_memory_id)
-    .execute(&mut *tx)
-    .await
-    .map_err(map_err)?;
-
-    tx.commit().await.map_err(map_err)?;
-
-    Ok(ConsolidateBatchF2AOutcome {
-        abstraction_ids,
-        already_consolidated: false,
-    })
-}
-
-/// Atomic A→P persistence. See `Storage::consolidate_a2p`.
-///
-/// # Errors
-///
-/// Returns `ConstraintViolation` for shape / FK / check-constraint failures
-/// (typically a malformed payload or an out-of-scope provenance `memory_id`);
-/// `Internal` on sqlx failure.
-#[allow(clippy::too_many_lines)]
-pub async fn consolidate_a2p(
-    pool: &PgPool,
-    req: &ConsolidateA2PRequest<'_>,
-) -> Result<ConsolidateA2POutcome, StorageError> {
-    let output_sidecar_table = PgIdent::table(req.output_sidecar_table)?;
+    let output_sidecar_table = PgIdent::table(req.sidecar_table)?;
     let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(&req.owner);
-    let personality_id = req.personality.personality_id.as_str().to_string();
-
     let mut tx = pool.begin().await.map_err(map_err)?;
+    let mut memory_ids = Vec::with_capacity(req.memories.len());
 
-    let lock_key = format!(
-        "a2p:{owner_kind}:{owner_principal_id}:{op}:{prompt}:{model}:{pid}",
-        owner_kind = owner_kind,
-        owner_principal_id = owner_principal_id,
-        op = req.operator_id,
-        prompt = req.prompt_version,
-        model = req.model_id,
-        pid = personality_id,
-    );
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1)::bigint)")
-        .bind(&lock_key)
-        .execute(&mut *tx)
-        .await
-        .map_err(map_err)?;
-
-    // a2p_invocations is principal-scoped (see migration comment) — skip
-    // owner_org_id here so same-principal/different-org runs share the row.
-    let existing: Option<(i32,)> = sqlx::query_as(
-        "SELECT 1 FROM proxima_core.a2p_invocations \
-         WHERE owner_principal_kind = $1 \
-           AND owner_principal_id = $2 \
-           AND operator_id = $3 \
-           AND prompt_version = $4 \
-           AND model_id = $5 \
-           AND personality_id = $6 \
-           AND context_hash = $7 \
-           AND input_hash = $8",
-    )
-    .bind(owner_kind)
-    .bind(owner_principal_id)
-    .bind(req.operator_id)
-    .bind(req.prompt_version)
-    .bind(req.model_id)
-    .bind(&personality_id)
-    .bind(&req.context_hash[..])
-    .bind(&req.input_hash[..])
-    .fetch_optional(&mut *tx)
-    .await
-    .map_err(map_err)?;
-
-    if existing.is_some() {
-        return Ok(ConsolidateA2POutcome {
-            perspective_ids: Vec::new(),
-            already_consolidated: true,
-        });
-    }
-
-    let current_prior_head: Option<uuid::Uuid> = sqlx::query_scalar(
-        "SELECT head_memory_id FROM proxima_core.a2p_invocations \
-         WHERE owner_principal_kind = $1 \
-           AND owner_principal_id = $2 \
-           AND operator_id = $3 \
-           AND prompt_version = $4 \
-           AND model_id = $5 \
-           AND personality_id = $6 \
-           AND head_memory_id IS NOT NULL \
-         ORDER BY run_at DESC \
-         LIMIT 1",
-    )
-    .bind(owner_kind)
-    .bind(owner_principal_id)
-    .bind(req.operator_id)
-    .bind(req.prompt_version)
-    .bind(req.model_id)
-    .bind(&personality_id)
-    .fetch_optional(&mut *tx)
-    .await
-    .map_err(map_err)?;
-    let effective_prior_head =
-        current_prior_head.or_else(|| req.prior_head.map(MemoryId::into_inner));
-
-    let mut perspective_ids: Vec<MemoryId> = Vec::with_capacity(req.perspectives.len());
-
-    for perspective in req.perspectives {
+    for memory in req.memories {
         let memory_id = uuid::Uuid::now_v7();
-        perspective_ids.push(MemoryId::new(memory_id));
-        let prior_head = effective_prior_head;
-
+        let prior_head = if memory.kind == proxima_core::PersonalityMemoryKind::Perspective {
+            lookup_prior_personality_head(pool, &req.owner, &req.instance, &memory.schema_id)
+                .await?
+                .map(MemoryId::into_inner)
+        } else {
+            None
+        };
+        memory_ids.push(MemoryId::new(memory_id));
         sqlx::query(
-            "INSERT INTO proxima_core.memories \
-                (memory_id, owner_principal_kind, owner_principal_id, owner_org_id, \
-                 schema_id, schema_version, kind, text, operator_kind, model_id, prompt_version, \
-                 personality_id, supersedes) \
-             VALUES ($1, $2, $3, $4, $5, $6, 'Perspective', $7, 'AtoP', $8, $9, $10, $11)",
+            "INSERT INTO proxima_core.memories
+                (memory_id, owner_principal_kind, owner_principal_id, owner_org_id,
+                 schema_id, schema_version, kind, text, operator_kind, model_id,
+                 prompt_version, personality_type_id, personality_instance_id,
+                 wake_chain_depth, supersedes)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'Wake', $9, $10, $11, $12, $13, $14)",
         )
         .bind(memory_id)
         .bind(owner_kind)
         .bind(owner_principal_id)
         .bind(owner_org_id)
-        .bind(perspective.schema_id.as_str())
-        .bind(i32::try_from(perspective.schema_version.into_inner()).unwrap_or(1))
-        .bind(&perspective.text)
+        .bind(memory.schema_id.as_str())
+        .bind(i32::try_from(memory.schema_version.into_inner()).unwrap_or(1))
+        .bind(memory.kind.as_str())
+        .bind(&memory.text)
         .bind(req.model_id)
         .bind(req.prompt_version)
-        .bind(&personality_id)
+        .bind(&req.instance.personality_type_id)
+        .bind(req.instance.personality_instance_id.into_inner())
+        .bind(i16::try_from(req.wake_chain_depth.into_inner()).unwrap_or(i16::MAX))
         .bind(prior_head)
         .execute(&mut *tx)
         .await
         .map_err(map_err)?;
 
         let sidecar_sql = format!(
-            "INSERT INTO {sidecar} \
-             SELECT * FROM jsonb_populate_record( \
-                 NULL::{sidecar}, \
-                 ($1::jsonb || jsonb_build_object('memory_id', $2::uuid)) \
+            "INSERT INTO {sidecar}
+             SELECT * FROM jsonb_populate_record(
+                 NULL::{sidecar},
+                 ($1::jsonb || jsonb_build_object('memory_id', $2::uuid))
              )",
             sidecar = output_sidecar_table.as_str(),
         );
         sqlx::query(&sidecar_sql)
-            .bind(&perspective.typed_payload)
+            .bind(&memory.typed_payload)
             .bind(memory_id)
             .execute(&mut *tx)
             .await
@@ -624,36 +755,42 @@ pub async fn consolidate_a2p(
 
         let change_seq = uuid::Uuid::now_v7();
         sqlx::query(
-            "INSERT INTO proxima_core.change_event \
-                (seq, owner_principal_kind, owner_principal_id, owner_org_id, kind, \
-                 entity_kind, entity_memory_id, entity_schema_id, entity_schema_version, \
-                 entity_personality_id, supersedes_memory_id) \
-             VALUES ($1, $2, $3, $4, 'EntityAppend', 'Perspective', $5, $6, $7, $8, $9)",
+            "INSERT INTO proxima_core.change_event
+                (seq, owner_principal_kind, owner_principal_id, owner_org_id, kind,
+                 entity_kind, entity_memory_id, entity_schema_id, entity_schema_version,
+                 entity_personality_type_id, entity_personality_instance_id,
+                 wake_chain_depth, supersedes_memory_id)
+             VALUES ($1, $2, $3, $4, 'EntityAppend', $5, $6, $7, $8, $9, $10, $11, $12)",
         )
         .bind(change_seq)
         .bind(owner_kind)
         .bind(owner_principal_id)
         .bind(owner_org_id)
+        .bind(memory.kind.as_str())
         .bind(memory_id)
-        .bind(perspective.schema_id.as_str())
-        .bind(i32::try_from(perspective.schema_version.into_inner()).unwrap_or(1))
-        .bind(&personality_id)
+        .bind(memory.schema_id.as_str())
+        .bind(i32::try_from(memory.schema_version.into_inner()).unwrap_or(1))
+        .bind(&req.instance.personality_type_id)
+        .bind(req.instance.personality_instance_id.into_inner())
+        .bind(i16::try_from(req.wake_chain_depth.into_inner()).unwrap_or(i16::MAX))
         .bind(prior_head)
         .execute(&mut *tx)
         .await
         .map_err(map_err)?;
 
-        for prov_id in &perspective.provenance {
+        for prov_id in &memory.provenance {
+            let target_kind = memory_kind_for_provenance(&mut tx, *prov_id).await?;
+            let authorship_kind = provenance_edge_authorship_kind(memory.kind);
             let draft = EdgeDraft {
                 edge_id: uuid::Uuid::now_v7(),
                 relation: req.provenance_relation,
-                source_kind: "Perspective",
+                source_kind: memory.kind.as_str(),
                 source_memory_id: Some(memory_id),
                 source_goal_id: None,
-                target_kind: "Abstraction",
+                target_kind,
                 target_memory_id: Some(prov_id.into_inner()),
                 target_goal_id: None,
-                authorship_kind: "OperatorAtoP",
+                authorship_kind,
                 authorship_owner_memory_id: Some(memory_id),
                 owner: &req.owner,
             };
@@ -664,10 +801,10 @@ pub async fn consolidate_a2p(
             let draft = EdgeDraft {
                 edge_id: uuid::Uuid::now_v7(),
                 relation: req.supersedes_relation,
-                source_kind: "Perspective",
+                source_kind: memory.kind.as_str(),
                 source_memory_id: Some(memory_id),
                 source_goal_id: None,
-                target_kind: "Perspective",
+                target_kind: memory.kind.as_str(),
                 target_memory_id: Some(prior_head),
                 target_goal_id: None,
                 authorship_kind: "Engine",
@@ -677,17 +814,18 @@ pub async fn consolidate_a2p(
             append_edge_in_tx(&mut tx, &draft, None).await?;
         }
 
-        let dim = i32::try_from(perspective.embedding.len())
+        let dim = i32::try_from(memory.embedding.len())
             .map_err(|_| StorageError::ConstraintViolation("embedding dim too large".into()))?;
         sqlx::query(
-            "INSERT INTO proxima_core.embeddings \
-                (entity_kind, entity_id, embedding_version, model_id, vec, dim, \
-                 owner_principal_kind, owner_principal_id, owner_org_id) \
-             VALUES ('Perspective', $1, 1, $2, $3, $4, $5, $6, $7)",
+            "INSERT INTO proxima_core.embeddings
+                (entity_kind, entity_id, embedding_version, model_id, vec, dim,
+                 owner_principal_kind, owner_principal_id, owner_org_id)
+             VALUES ($1, $2, 1, $3, $4, $5, $6, $7, $8)",
         )
+        .bind(memory.kind.as_str())
         .bind(memory_id)
-        .bind(&perspective.embedding_model_id)
-        .bind(&perspective.embedding)
+        .bind(&memory.embedding_model_id)
+        .bind(&memory.embedding)
         .bind(dim)
         .bind(owner_kind)
         .bind(owner_principal_id)
@@ -697,31 +835,51 @@ pub async fn consolidate_a2p(
         .map_err(map_err)?;
     }
 
-    let head_memory_id = perspective_ids.last().map(|m| m.into_inner());
-    sqlx::query(
-        "INSERT INTO proxima_core.a2p_invocations \
-            (owner_principal_kind, owner_principal_id, \
-             operator_id, prompt_version, model_id, personality_id, \
-             context_hash, input_hash, head_memory_id) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
-    )
-    .bind(owner_kind)
-    .bind(owner_principal_id)
-    .bind(req.operator_id)
-    .bind(req.prompt_version)
-    .bind(req.model_id)
-    .bind(&personality_id)
-    .bind(&req.context_hash[..])
-    .bind(&req.input_hash[..])
-    .bind(head_memory_id)
-    .execute(&mut *tx)
-    .await
-    .map_err(map_err)?;
-
     tx.commit().await.map_err(map_err)?;
+    Ok(PersonalityWriteOutcome { memory_ids })
+}
 
-    Ok(ConsolidateA2POutcome {
-        perspective_ids,
-        already_consolidated: false,
-    })
+fn provenance_edge_authorship_kind(kind: proxima_core::PersonalityMemoryKind) -> &'static str {
+    match kind {
+        proxima_core::PersonalityMemoryKind::Abstraction => "OperatorFtoA",
+        proxima_core::PersonalityMemoryKind::Perspective => "OperatorAtoP",
+    }
+}
+
+async fn memory_kind_for_provenance(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    memory_id: MemoryId,
+) -> Result<&'static str, StorageError> {
+    let row: Option<(Option<String>,)> =
+        sqlx::query_as("SELECT kind FROM proxima_core.memories WHERE memory_id = $1")
+            .bind(memory_id.into_inner())
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(map_err)?;
+    match row.and_then(|(kind,)| kind) {
+        Some(kind) if kind == "Abstraction" => Ok("Abstraction"),
+        Some(kind) if kind == "Perspective" => Ok("Perspective"),
+        Some(other) => Err(StorageError::Internal(format!(
+            "unsupported provenance memory kind: {other}"
+        ))),
+        None => Ok("Fact"),
+    }
+}
+
+fn owner_from_parts(kind: &str, principal_id: uuid::Uuid, org_id: uuid::Uuid) -> Owner {
+    Owner {
+        principal: match kind {
+            "User" => Principal::User(proxima_core::UserId::new(principal_id)),
+            _ => Principal::Group(proxima_core::GroupId::new(principal_id)),
+        },
+        org_id: proxima_core::OrgId::new(org_id),
+    }
+}
+
+#[allow(dead_code)]
+fn external_personality() -> (&'static str, uuid::Uuid) {
+    (
+        EXTERNAL_PERSONALITY_TYPE_ID,
+        EXTERNAL_PERSONALITY_INSTANCE_ID,
+    )
 }

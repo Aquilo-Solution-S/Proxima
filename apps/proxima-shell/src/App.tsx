@@ -76,6 +76,17 @@ function createAppHub(): Hub {
       flavor: null,
     },
     {
+      id: "personalities",
+      label: "Personalities",
+      component: viewWithHub(async () => {
+        const { EngineerInstancesPanel } = await import(
+          "@proxima/core/views/personalities"
+        );
+        return { default: EngineerInstancesPanel };
+      }),
+      flavor: null,
+    },
+    {
       id: "marketplace",
       label: "Marketplace",
       component: viewWithHub(async () => {

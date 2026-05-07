@@ -2,22 +2,22 @@
 //! an AuthResolver behind the typed verb surfaces of
 //! docs/14-protocol-surface.md.
 
+pub mod agent_loop;
 mod builder;
+mod dispatcher;
 mod goals;
 mod ingest;
-mod operators;
 mod query;
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::ModelTier;
 use crate::auth::AuthResolver;
 use crate::error::ProtocolError;
-use crate::operators::{EmbeddingClient, LlmClient, OperatorError};
+use crate::llm::{AnthropicClient, EmbeddingClient};
 use crate::storage::{StorageError, StorageHandle};
 use crate::verbs::query::MemoryStore;
 use crate::verbs::schema::FlavorRegistryFrozen;
+use crate::{ModelTier, Owner};
 
 pub struct Engine {
     registry: FlavorRegistryFrozen,
@@ -25,8 +25,40 @@ pub struct Engine {
     memories: MemoryStore,
     auth: Box<dyn AuthResolver>,
     storage: StorageHandle,
-    llms: HashMap<ModelTier, Arc<dyn LlmClient>>,
+    anthropic: Option<Arc<dyn AnthropicClient>>,
     embed: Option<Arc<dyn EmbeddingClient>>,
+}
+
+impl Engine {
+    #[must_use]
+    pub(crate) fn storage(&self) -> &StorageHandle {
+        &self.storage
+    }
+
+    #[must_use]
+    pub(crate) fn embed_client(&self) -> Option<&Arc<dyn EmbeddingClient>> {
+        self.embed.as_ref()
+    }
+
+    #[must_use]
+    pub(crate) fn anthropic(&self) -> Option<&Arc<dyn AnthropicClient>> {
+        self.anthropic.as_ref()
+    }
+
+    /// Whether a wake for `(owner, tier)` has an executable LLM right
+    /// now. The dispatcher gates on this *before* beginning a wake
+    /// invocation so a missing client defers the wake instead of
+    /// consuming it.
+    ///
+    /// v1 only has a single engine-wide Anthropic client, so the answer
+    /// reduces to "is one wired". Once per-Principal model settings
+    /// land (api keys, tier→provider routing), this resolves against
+    /// the owner's configured providers and short-circuits per tier.
+    #[must_use]
+    pub(crate) fn llm_available_for_wake(&self, owner: &Owner, tier: ModelTier) -> bool {
+        let _ = (owner, tier);
+        self.anthropic.is_some()
+    }
 }
 
 impl std::fmt::Debug for Engine {
@@ -52,18 +84,14 @@ pub(super) fn map_storage_err_for_goal_write(
     }
 }
 
-pub(super) fn map_operator_err(e: OperatorError) -> ProtocolError {
-    ProtocolError::internal(format!("operator: {e}"))
-}
-
 #[cfg(test)]
 mod tier_union_tests {
     use super::*;
     use crate::auth::NoAuth;
     use crate::ids::{OrgId, UserId};
-    use crate::operators::{F2AContext, F2AOperator, NewAbstraction, OperatorError};
+    use crate::personality::{PersonalityFlavor, PersonalitySelfDraft, WakeFilter};
     use crate::verbs::query::MemoryStore;
-    use crate::{FlavorRegistry, LlmCaps, ModelTier, Owner, Principal, SchemaId};
+    use crate::{FlavorRegistry, LlmCaps, ModelTier, Owner, Principal, SchemaId, SchemaVersion};
     use async_trait::async_trait;
     use uuid::Uuid;
 
@@ -73,28 +101,48 @@ mod tier_union_tests {
         requires: LlmCaps,
     }
     #[async_trait]
-    impl F2AOperator for OpAt {
-        fn operator_id(&self) -> &'static str {
-            "test/op"
+    impl PersonalityFlavor for OpAt {
+        fn personality_type_id(&self) -> &'static str {
+            "test/personality"
         }
-        fn output_schema_id(&self) -> &'static str {
-            "test/out"
+
+        fn self_schema(&self) -> SchemaId {
+            SchemaId::new("test/self".into())
         }
-        fn output_schema_version(&self) -> u32 {
-            1
+
+        fn default_self_payload(
+            &self,
+            _owner: &Owner,
+            _payload_overrides: Option<&serde_json::Value>,
+        ) -> Result<PersonalitySelfDraft, crate::ProtocolError> {
+            Ok(PersonalitySelfDraft {
+                schema_id: self.self_schema(),
+                schema_version: SchemaVersion::new(1),
+                text: "test".into(),
+                typed_payload: serde_json::json!({}),
+            })
         }
-        fn prompt_version(&self) -> &'static str {
-            "v1"
+
+        fn system_prompt(&self) -> &'static str {
+            "test"
         }
-        fn consumes(&self, _: &SchemaId) -> bool {
-            true
+
+        fn writeable_schemas(&self) -> &'static [&'static str] {
+            &[]
         }
-        async fn run(&self, _: F2AContext<'_>) -> Result<Vec<NewAbstraction>, OperatorError> {
-            Ok(Vec::new())
+
+        fn writeable_relations(&self) -> &'static [&'static str] {
+            &[]
         }
+
+        fn default_wake_filters(&self) -> Vec<WakeFilter> {
+            Vec::new()
+        }
+
         fn tier(&self) -> ModelTier {
             self.tier
         }
+
         fn requires(&self) -> LlmCaps {
             self.requires
         }
@@ -103,7 +151,7 @@ mod tier_union_tests {
     fn engine_with_ops(ops: Vec<OpAt>) -> Engine {
         let mut reg = FlavorRegistry::new();
         for op in ops {
-            reg.add_f2a_operator(op);
+            reg.add_personality(op);
         }
         let reg = reg.freeze();
         let principal = Principal::User(UserId::new(Uuid::now_v7()));

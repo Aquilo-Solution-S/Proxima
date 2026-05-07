@@ -201,9 +201,9 @@ mod tests {
     use proxima_core::auth::NoAuth;
     use proxima_core::ids::{OrgId, UserId};
     use proxima_core::models::{Dialect, EmbedCaps, LlmCaps};
-    use proxima_core::operators::{F2AContext, F2AOperator, NewAbstraction, OperatorError};
+    use proxima_core::personality::{PersonalityFlavor, PersonalitySelfDraft, WakeFilter};
     use proxima_core::verbs::query::MemoryStore;
-    use proxima_core::{FlavorRegistry, Owner, Principal, SchemaId};
+    use proxima_core::{FlavorRegistry, Owner, Principal, SchemaId, SchemaVersion};
     use uuid::Uuid;
 
     #[derive(Debug)]
@@ -213,29 +213,42 @@ mod tests {
     }
 
     #[async_trait]
-    impl F2AOperator for TestOp {
-        fn operator_id(&self) -> &'static str {
-            "test/op"
+    impl PersonalityFlavor for TestOp {
+        fn personality_type_id(&self) -> &'static str {
+            "test/personality"
         }
 
-        fn output_schema_id(&self) -> &'static str {
-            "test/out"
+        fn self_schema(&self) -> SchemaId {
+            SchemaId::new("test/self".into())
         }
 
-        fn output_schema_version(&self) -> u32 {
-            1
+        fn default_self_payload(
+            &self,
+            _owner: &Owner,
+            _payload_overrides: Option<&serde_json::Value>,
+        ) -> Result<PersonalitySelfDraft, proxima_core::ProtocolError> {
+            Ok(PersonalitySelfDraft {
+                schema_id: self.self_schema(),
+                schema_version: SchemaVersion::new(1),
+                text: "test".into(),
+                typed_payload: serde_json::json!({}),
+            })
         }
 
-        fn prompt_version(&self) -> &'static str {
-            "v1"
+        fn system_prompt(&self) -> &'static str {
+            "test"
         }
 
-        fn consumes(&self, _: &SchemaId) -> bool {
-            true
+        fn writeable_schemas(&self) -> &'static [&'static str] {
+            &[]
         }
 
-        async fn run(&self, _: F2AContext<'_>) -> Result<Vec<NewAbstraction>, OperatorError> {
-            Ok(Vec::new())
+        fn writeable_relations(&self) -> &'static [&'static str] {
+            &[]
+        }
+
+        fn default_wake_filters(&self) -> Vec<WakeFilter> {
+            Vec::new()
         }
 
         fn tier(&self) -> ModelTier {
@@ -250,7 +263,7 @@ mod tests {
     fn engine_with_ops(ops: Vec<TestOp>) -> Engine {
         let mut reg = FlavorRegistry::new();
         for op in ops {
-            reg.add_f2a_operator(op);
+            reg.add_personality(op);
         }
         let reg = reg.freeze();
         let principal = Principal::User(UserId::new(Uuid::now_v7()));

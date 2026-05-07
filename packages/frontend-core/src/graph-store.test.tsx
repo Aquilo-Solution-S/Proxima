@@ -26,6 +26,18 @@ describe("GraphStore snapshot loading", () => {
       eventIngest: async (_draft: EventDraft) => {
         throw new Error("eventIngest not used");
       },
+      provisionOwner: async () => {
+        throw new Error("provisionOwner not used");
+      },
+      listPersonalityInstances: async () => {
+        throw new Error("listPersonalityInstances not used");
+      },
+      instantiatePersonality: async () => {
+        throw new Error("instantiatePersonality not used");
+      },
+      setWakeConfig: async () => {
+        throw new Error("setWakeConfig not used");
+      },
     };
 
     await new Promise<void>((resolve) => {

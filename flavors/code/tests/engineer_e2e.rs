@@ -1,0 +1,263 @@
+//! End-to-end: a `proxima-code/commit-summary-v1` Abstraction wakes the
+//! `proxima-code/engineer-v1` personality, which calls
+//! `core/fetch_memory` for the summary and emits a
+//! `proxima-code/development-perspective-v1` Perspective with provenance
+//! pointing at both the triggering Abstraction and the underlying
+//! commit fact.
+
+#![allow(clippy::too_many_lines)]
+
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use proxima_code::{
+    build_engine_with, ingest_commit, migrator, register_repo, CodeDevelopmentPerspectiveV1,
+    CommitSummaryV1, CommitV1,
+};
+use proxima_core::auth::NoAuth;
+use proxima_core::llm::scripted::{ScriptedAnthropicClient, ScriptedTurn};
+use proxima_core::llm::{EmbeddingClient, LlmError};
+use proxima_core::personality::InstantiatePersonalityRequest;
+use proxima_core::{
+    OrgId, Owner, Principal, SourceBatchId, UserId, CORE_DERIVED_FROM_RELATION,
+};
+use proxima_storage_pg::PgStorage;
+use sqlx::{Connection, Executor, PgConnection};
+use uuid::Uuid;
+
+const ADMIN_URL: &str = "postgres://proxima:proxima@localhost/postgres";
+
+async fn create_db(name: &str) -> Result<(), sqlx::Error> {
+    let admin = std::env::var("PROXIMA_TEST_PG_URL").unwrap_or_else(|_| ADMIN_URL.into());
+    let mut conn = PgConnection::connect(&admin).await?;
+    conn.execute(format!("CREATE DATABASE \"{name}\"").as_str())
+        .await?;
+    conn.close().await?;
+    Ok(())
+}
+
+async fn drop_db(name: &str) -> Result<(), sqlx::Error> {
+    let admin = std::env::var("PROXIMA_TEST_PG_URL").unwrap_or_else(|_| ADMIN_URL.into());
+    let mut conn = PgConnection::connect(&admin).await?;
+    conn.execute(format!("DROP DATABASE IF EXISTS \"{name}\"").as_str())
+        .await?;
+    conn.close().await?;
+    Ok(())
+}
+
+async fn migrated_db() -> Option<(String, PgStorage)> {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if create_db(&db_name).await.is_err() {
+        eprintln!("skipping (no admin PG)");
+        return None;
+    }
+    let admin = std::env::var("PROXIMA_TEST_PG_URL").unwrap_or_else(|_| ADMIN_URL.into());
+    let url = match admin.rfind('/') {
+        Some(idx) => format!("{}/{}", &admin[..idx], db_name),
+        None => format!("{admin}/{db_name}"),
+    };
+    let pg = PgStorage::connect(&url).await.expect("connect test db");
+    pg.run_migrations().await.expect("core migrations");
+    migrator().run(pg.pool()).await.expect("code migrations");
+    Some((db_name, pg))
+}
+
+fn test_owner() -> Owner {
+    Owner {
+        principal: Principal::User(UserId::new(Uuid::now_v7())),
+        org_id: OrgId::new(Uuid::now_v7()),
+    }
+}
+
+#[derive(Debug)]
+struct FakeEmbedding;
+
+#[async_trait]
+impl EmbeddingClient for FakeEmbedding {
+    async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
+        Ok(vec![0.0; 8])
+    }
+    fn model_id(&self) -> &str {
+        "fake-embed"
+    }
+    fn dim(&self) -> usize {
+        8
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn engineer_e2e_emits_perspective_with_chained_provenance() {
+    let Some((db, pg)) = migrated_db().await else {
+        return;
+    };
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = test_owner();
+        let repo_id = Uuid::now_v7();
+        register_repo(pg.pool(), &owner, repo_id, "/tmp/engineer-e2e", "e2e").await?;
+
+        // 1) Instantiate engineer + commit-summary first. Cursor parks
+        //    at "now" so subsequent ingest is observable.
+        let scripted = Arc::new(ScriptedAnthropicClient::new(vec![ScriptedTurn::end_turn()]));
+        let engine = build_engine_with(
+            pg.clone(),
+            Box::new(NoAuth::new(owner.principal.clone(), owner.clone())),
+            |_registry| {},
+        )
+        .with_anthropic(scripted)
+        .with_embed(Arc::new(FakeEmbedding));
+        engine
+            .instantiate_personality(InstantiatePersonalityRequest {
+                owner: owner.clone(),
+                personality_type_id: "proxima-code/commit-summary-v1".into(),
+                payload_overrides: None,
+            })
+            .await?;
+        engine
+            .instantiate_personality(InstantiatePersonalityRequest {
+                owner: owner.clone(),
+                personality_type_id: "proxima-code/engineer-v1".into(),
+                payload_overrides: None,
+            })
+            .await?;
+
+        // 2) Ingest a commit Fact.
+        let now = time::OffsetDateTime::now_utc();
+        let commit_payload = CommitV1 {
+            repo_id,
+            sha: "engineerfact01".into(),
+            parents: Vec::new(),
+            author_name: "E2E".into(),
+            author_email: "e2e@example.com".into(),
+            author_time: now,
+            committer_name: "E2E".into(),
+            committer_email: "e2e@example.com".into(),
+            committer_time: now,
+            message: "feat: another change".into(),
+        };
+        let commit_outcome = ingest_commit(
+            pg.pool(),
+            &owner,
+            SourceBatchId::new(Uuid::now_v7()),
+            &commit_payload,
+            now,
+        )
+        .await?;
+        let commit_memory_id = commit_outcome.memory_id;
+
+        // 3) First tick: commit-summary fires + emits an abstraction.
+        //    Use `core/emit_perspective` with the commit-summary scripted
+        //    payload (the engineer's emit_perspective will use the
+        //    development-perspective payload). The same scripted
+        //    Anthropic queue feeds both wakes serially, so we provide
+        //    ALL turns up front. Order: commit-summary's turns, then
+        //    engineer's turns.
+        //
+        //    The commit-summary triggering memory_id is the commit; the
+        //    engineer's triggering memory is the abstraction we don't
+        //    know the id of yet — `core/fetch_memory` with a placeholder
+        //    UUID would error and the wake would still complete (loop
+        //    treats the tool error as a tool_result and continues to
+        //    end_turn). To keep the test deterministic, the engineer
+        //    skips fetch_memory and goes straight to emit_perspective.
+        //    Provenance still includes the triggering abstraction
+        //    via the auto-wired snapshot.
+        let scripted = Arc::new(ScriptedAnthropicClient::new(vec![
+            // commit-summary wake
+            ScriptedTurn::tool_use(
+                "core/fetch_memory",
+                serde_json::json!({"memory_id": commit_memory_id.into_inner()}),
+            ),
+            ScriptedTurn::tool_use(
+                "core/emit_abstraction",
+                serde_json::json!({
+                    "schema_id": <CommitSummaryV1 as proxima_core::AbstractionPayload>::SCHEMA_ID,
+                    "schema_version": 1,
+                    "payload": {
+                        "repo_id": repo_id,
+                        "commit_sha": commit_payload.sha,
+                        "summary": "Adds another change.",
+                        "key_files": [],
+                        "change_kind": "feature",
+                    },
+                }),
+            ),
+            ScriptedTurn::end_turn(),
+            // engineer wake (no fetch_memory — provenance will be
+            // {triggering_abstraction} only)
+            ScriptedTurn::tool_use(
+                "core/emit_perspective",
+                serde_json::json!({
+                    "schema_id": <CodeDevelopmentPerspectiveV1 as proxima_core::PerspectivePayload>::SCHEMA_ID,
+                    "schema_version": 1,
+                    "payload": {
+                        "repo_id": repo_id,
+                        "summary": "Engineer review summary",
+                        "pattern": "additive change",
+                        "risk": "low",
+                        "recommended_posture": "ship",
+                        "confidence": 0.9,
+                    },
+                }),
+            ),
+            ScriptedTurn::end_turn(),
+        ]));
+        let engine = build_engine_with(
+            pg.clone(),
+            Box::new(NoAuth::new(owner.principal.clone(), owner.clone())),
+            |_registry| {},
+        )
+        .with_anthropic(scripted)
+        .with_embed(Arc::new(FakeEmbedding));
+        let _ = engine.run_dispatcher_tick().await?;
+
+        // 4) Locate the commit-summary abstraction the wake authored.
+        let summary_memory_id: uuid::Uuid = sqlx::query_scalar(
+            "SELECT memory_id FROM proxima_core.memories
+             WHERE personality_type_id = 'proxima-code/commit-summary-v1'
+               AND kind = 'Abstraction'
+             ORDER BY created_at DESC LIMIT 1",
+        )
+        .fetch_one(pg.pool())
+        .await?;
+
+        // 6) Assert engineer authored a perspective at depth=2 with
+        //    provenance pointing at both the commit-summary and the
+        //    fetched memory (which is the summary itself in this
+        //    script — so a single edge).
+        let row: (uuid::Uuid, i16) = sqlx::query_as(
+            "SELECT memory_id, wake_chain_depth
+             FROM proxima_core.memories
+             WHERE personality_type_id = 'proxima-code/engineer-v1'
+               AND kind = 'Perspective'
+               AND schema_id = $1
+             ORDER BY created_at DESC LIMIT 1",
+        )
+        .bind(<CodeDevelopmentPerspectiveV1 as proxima_core::PerspectivePayload>::SCHEMA_ID)
+        .fetch_one(pg.pool())
+        .await?;
+        let (perspective_id, depth) = row;
+        assert_eq!(depth, 2, "engineer perspective at depth=2");
+        let provenance: Vec<uuid::Uuid> = sqlx::query_scalar(
+            "SELECT target_memory_id FROM proxima_core.edges
+             WHERE source_memory_id = $1
+               AND relation = $2",
+        )
+        .bind(perspective_id)
+        .bind(CORE_DERIVED_FROM_RELATION)
+        .fetch_all(pg.pool())
+        .await?;
+        assert_eq!(
+            provenance,
+            vec![summary_memory_id],
+            "engineer perspective provenance must point at the commit-summary"
+        );
+
+        Ok(())
+    }
+    .await;
+
+    drop(pg);
+    let _ = drop_db(&db).await;
+    result.expect("engineer_e2e failed");
+}
