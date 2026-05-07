@@ -16,13 +16,21 @@ pub(super) fn spawn_run_driver(
     run_id: Uuid,
 ) {
     tokio::spawn(async move {
+        tracing::info!(
+            %run_id,
+            repo_id = %record.repo_id,
+            repo_path = %record.canonical_path,
+            "ingest run starting"
+        );
         let drive = async {
             let Some(run) = proxima_code::begin_run(pg.pool(), run_id)
                 .await
                 .map_err(|e| e.to_string())?
             else {
+                tracing::info!(%run_id, "ingest run dropped: begin_run returned None");
                 return Ok::<(), String>(());
             };
+            tracing::info!(%run_id, "ingest stage: facts");
             hub.publish_snapshot(owner.clone(), run).await;
 
             let cursor = match record.last_cursor.clone() {
@@ -61,6 +69,15 @@ pub(super) fn spawn_run_driver(
             counters.chunks_tombstoned =
                 u32::try_from(report.chunks_tombstoned).unwrap_or(u32::MAX);
 
+            tracing::info!(
+                %run_id,
+                commits = counters.commits_emitted,
+                files = counters.files_emitted,
+                chunks = counters.chunks_emitted,
+                chunks_reused = counters.chunks_reused,
+                chunks_tombstoned = counters.chunks_tombstoned,
+                "ingest stage: ast_edges"
+            );
             let run = proxima_code::advance_stage(
                 pg.pool(),
                 run_id,
@@ -74,6 +91,11 @@ pub(super) fn spawn_run_driver(
             counters.ast_edges_emitted = count_ast_edges_for_run(pg.pool(), &owner, record.repo_id)
                 .await
                 .map_err(|e| e.to_string())?;
+            tracing::info!(
+                %run_id,
+                ast_edges = counters.ast_edges_emitted,
+                "ingest stage: f2a (dispatcher tick)"
+            );
             let run = proxima_code::advance_stage(
                 pg.pool(),
                 run_id,
@@ -84,14 +106,20 @@ pub(super) fn spawn_run_driver(
             .map_err(|e| e.to_string())?;
             hub.publish_snapshot(owner.clone(), run).await;
 
-            engine
+            let fired = engine
                 .run_dispatcher_tick()
                 .await
                 .map_err(|e| explain_driver_error("dispatcher", &e.to_string()))?;
+            tracing::info!(%run_id, wakes_fired = fired, "dispatcher tick complete");
             counters.abstractions_emitted =
                 count_abstractions_for_run(pg.pool(), &owner, record.repo_id)
                     .await
                     .map_err(|e| e.to_string())?;
+            tracing::info!(
+                %run_id,
+                abstractions = counters.abstractions_emitted,
+                "ingest stage: embeddings"
+            );
             let run = proxima_code::advance_stage(
                 pg.pool(),
                 run_id,
@@ -113,6 +141,16 @@ pub(super) fn spawn_run_driver(
             counters.citations_emitted = count_citations_for_run(pg.pool(), &owner, record.repo_id)
                 .await
                 .map_err(|e| e.to_string())?;
+            tracing::info!(
+                %run_id,
+                commits = counters.commits_emitted,
+                chunks = counters.chunks_emitted,
+                ast_edges = counters.ast_edges_emitted,
+                abstractions = counters.abstractions_emitted,
+                embeddings = counters.embeddings_landed,
+                citations = counters.citations_emitted,
+                "ingest run succeeded"
+            );
 
             proxima_code::update_cursor(
                 pg.pool(),
