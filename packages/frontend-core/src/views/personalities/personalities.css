@@ -1,0 +1,676 @@
+/* ── Personalities · graph view ───────────────────────────────── */
+
+.personality-view {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 14px;
+  height: 100%;
+  padding: 24px;
+  color: var(--ink-80);
+}
+
+.personality-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.personality-toolbar h1 {
+  margin: 0;
+}
+
+.personality-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.personality-actions .hub-nav-item,
+.personality-dialog .hub-nav-item,
+.personality-graph-shell .hub-nav-item {
+  height: 30px;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  padding: 0 10px;
+  background: var(--bg-elev);
+  line-height: 28px;
+}
+
+.personality-actions .hub-nav-item:hover,
+.personality-dialog .hub-nav-item:hover,
+.personality-graph-shell .hub-nav-item:hover {
+  border-color: var(--rule-strong);
+}
+
+.personality-graph-shell .hub-nav-item.danger,
+.tombstone-confirm .hub-nav-item.danger {
+  color: #e07a5f;
+  border-color: #6e3a2c;
+}
+
+.personality-graph-shell .hub-nav-item.danger:hover,
+.tombstone-confirm .hub-nav-item.danger:hover {
+  border-color: #e07a5f;
+}
+
+.personality-empty {
+  margin: 0;
+  color: var(--ink-50);
+}
+
+/* ── Graph shell: canvas + inspector ──────────────────────────── */
+
+.personality-graph-shell {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(390px, 30%);
+  gap: 14px;
+  min-height: 0;
+  align-items: stretch;
+}
+
+@media (max-width: 1080px) {
+  .personality-graph-shell {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(360px, 1fr) auto;
+  }
+}
+
+/* ── Canvas ───────────────────────────────────────────────────── */
+
+.personality-canvas {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  background:
+    radial-gradient(circle at 1px 1px, rgba(255, 255, 255, 0.04) 1px, transparent 0)
+      0 0 / 24px 24px,
+    var(--bg);
+  cursor: grab;
+  touch-action: none;
+}
+
+.personality-canvas:active {
+  cursor: grabbing;
+}
+
+.personality-canvas-stage {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: 0 0;
+}
+
+.personality-canvas-edges {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+  overflow: visible;
+}
+
+.personality-canvas-empty {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--ink-50);
+}
+
+.personality-canvas-overlay {
+  position: absolute;
+  bottom: 12px;
+  right: 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  background: var(--bg-elev);
+}
+
+.personality-canvas-overlay .hub-nav-item {
+  height: 24px;
+  line-height: 22px;
+  padding: 0 8px;
+  font-size: 12px;
+}
+
+.personality-canvas-zoom-readout {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-50);
+  min-width: 40px;
+  text-align: right;
+}
+
+/* ── Personality node card (canvas) ───────────────────────────── */
+
+.personality-canvas-node {
+  position: absolute;
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  padding: 12px 14px;
+  background: var(--bg-card);
+  cursor: pointer;
+  transition: border-color 100ms ease, box-shadow 100ms ease;
+  pointer-events: auto;
+}
+
+.personality-canvas-node:hover {
+  border-color: var(--rule-strong);
+}
+
+.personality-canvas-node.is-selected {
+  border-color: var(--accent-commit);
+  box-shadow: 0 0 0 1px var(--accent-commit);
+}
+
+.personality-canvas-node-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.personality-canvas-node-head strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.personality-canvas-node-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--ink-50);
+}
+
+.personality-status {
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 11px;
+  line-height: 16px;
+  white-space: nowrap;
+}
+
+.personality-status.needs_repair {
+  border-color: #ad7b2f;
+  color: #e2b75f;
+}
+
+.personality-flavor-chip {
+  display: inline-block;
+  width: fit-content;
+  border: 1px solid var(--rule);
+  border-radius: 999px;
+  padding: 1px 8px;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--ink-50);
+}
+
+.personality-canvas-entries {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.personality-canvas-entry {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 5px 8px;
+  background: transparent;
+  color: var(--ink-80);
+  cursor: pointer;
+  font-size: 12px;
+  text-align: left;
+}
+
+.personality-canvas-entry:hover {
+  background: var(--bg-elev);
+  border-color: var(--rule);
+}
+
+.personality-canvas-entry.is-selected {
+  border-color: var(--accent-commit);
+  color: var(--ink-100);
+}
+
+.personality-canvas-entry.is-disabled {
+  opacity: 0.55;
+}
+
+.personality-canvas-entry-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.personality-canvas-entries-empty {
+  font-size: 11px;
+  color: var(--ink-50);
+  padding: 4px 8px;
+}
+
+/* ── Schema (upstream) chip on the canvas ─────────────────────── */
+
+.personality-canvas-schema {
+  position: absolute;
+  display: grid;
+  align-items: center;
+  border: 1px dashed var(--rule-strong);
+  border-radius: 999px;
+  padding: 6px 12px;
+  background: var(--bg-elev);
+  pointer-events: auto;
+  font-size: 11px;
+}
+
+/* ── Edges ────────────────────────────────────────────────────── */
+
+.personality-edge {
+  pointer-events: visiblePainted;
+  cursor: pointer;
+  color: var(--rule-strong);
+}
+
+.personality-edge-line {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+}
+
+.personality-edge-hit {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 12;
+  pointer-events: stroke;
+}
+
+.personality-edge:hover {
+  color: var(--ink-70);
+}
+
+.personality-edge.is-selected {
+  color: var(--accent-commit);
+}
+
+/* ── Inspector ────────────────────────────────────────────────── */
+
+.personality-inspector {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  background: var(--bg-card);
+  overflow: hidden;
+}
+
+.personality-inspector-empty {
+  padding: 20px;
+  color: var(--ink-50);
+  font-size: 12px;
+}
+
+.personality-inspector-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 18px;
+  overflow-y: auto;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+.personality-inspector-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.personality-inspector-head h3 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.personality-inspector-eyebrow {
+  display: block;
+  font-family: var(--sans);
+  font-size: 9px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink-50);
+  margin-bottom: 4px;
+}
+
+.personality-inspector-meta {
+  font-size: 11px;
+  color: var(--ink-50);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.personality-inspector-subhead {
+  margin: 8px 0 0;
+  font-family: var(--sans);
+  font-size: 9px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink-50);
+  font-weight: 500;
+}
+
+.personality-inspector-entries {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.personality-inspector-entry {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  padding: 7px 10px;
+  background: var(--bg-elev);
+  color: var(--ink-80);
+  cursor: pointer;
+  font-size: 12px;
+  text-align: left;
+}
+
+.personality-inspector-entry:hover {
+  border-color: var(--rule-strong);
+}
+
+.personality-inspector-entry-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.personality-inspector-tag {
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  padding: 1px 6px;
+  border: 1px solid var(--rule-strong);
+  color: var(--ink-60);
+  background: var(--bg);
+  text-transform: lowercase;
+}
+
+.personality-inspector-entries-empty {
+  font-size: 11px;
+  color: var(--ink-50);
+}
+
+.personality-inspector-danger {
+  margin-top: 8px;
+}
+
+.personality-inspector-error {
+  margin: 12px 18px 0;
+  padding: 8px 10px;
+  border: 1px solid #6e3a2c;
+  border-radius: 6px;
+  background: rgba(224, 122, 95, 0.1);
+  font-size: 12px;
+}
+
+.personality-inspector-savebar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--rule);
+  background: var(--bg-elev);
+}
+
+.personality-inspector-savebar-hint {
+  margin-right: auto;
+  font-size: 11px;
+  color: var(--ink-50);
+}
+
+.personality-inspector-save {
+  border-color: var(--accent-commit);
+  color: var(--accent-commit);
+}
+
+.personality-inspector-save:hover:not(:disabled) {
+  background: rgba(201, 168, 106, 0.08);
+}
+
+/* ── Sectioned wake-entry editor ──────────────────────────────── */
+
+.personality-section {
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  background: var(--bg);
+}
+
+.personality-section[open] {
+  background: var(--bg-elev);
+}
+
+.personality-section summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 8px 12px;
+  font-family: var(--sans);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  color: var(--ink-80);
+  text-transform: uppercase;
+  user-select: none;
+}
+
+.personality-section summary::-webkit-details-marker {
+  display: none;
+}
+
+.personality-section summary::before {
+  content: "▸";
+  display: inline-block;
+  width: 12px;
+  color: var(--ink-50);
+  margin-right: 4px;
+  transition: transform 120ms ease;
+}
+
+.personality-section[open] summary::before {
+  transform: rotate(90deg);
+}
+
+.personality-section-hint {
+  margin: 0 12px 8px;
+  font-size: 11px;
+  color: var(--ink-50);
+  font-style: italic;
+}
+
+.personality-section-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 12px;
+  padding: 4px 12px 12px;
+}
+
+.personality-section-grid label {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--ink-50);
+}
+
+.personality-section-grid input,
+.personality-section-grid select,
+.personality-section-grid textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  padding: 6px 8px;
+  color: var(--ink-80);
+  background: var(--bg);
+  font-size: 12px;
+}
+
+.personality-section-grid-full {
+  grid-column: 1 / -1;
+}
+
+.personality-section-checkbox {
+  display: inline-flex !important;
+  align-items: center;
+  gap: 8px;
+  flex-direction: row !important;
+  padding-top: 18px;
+}
+
+.personality-section-checkbox input[type="checkbox"] {
+  width: auto;
+  margin: 0;
+}
+
+/* ── Tombstone confirm (re-used) ─────────────────────────────── */
+
+.tombstone-confirm {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  border: 1px solid #6e3a2c;
+  border-radius: 8px;
+  padding: 9px 10px;
+  color: #e07a5f;
+  background: rgba(224, 122, 95, 0.1);
+  font-size: 12px;
+}
+
+.tombstone-confirm .hub-nav-item {
+  height: 26px;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  padding: 0 10px;
+  background: var(--bg-elev);
+  line-height: 24px;
+}
+
+/* ── Create dialog (unchanged) ────────────────────────────────── */
+
+.personality-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(0, 0, 0, 0.45);
+  z-index: 30;
+}
+
+.personality-dialog {
+  width: min(720px, calc(100vw - 32px));
+  max-height: min(680px, calc(100vh - 32px));
+  overflow: auto;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+  padding: 18px;
+  background: var(--bg);
+}
+
+.personality-dialog-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.personality-dialog-head h2 {
+  margin: 0;
+}
+
+.personality-dialog-head p {
+  margin: 6px 0 0;
+  color: var(--ink-50);
+}
+
+.personality-dialog-error {
+  margin: 0 0 12px;
+  padding: 8px 10px;
+  border: 1px solid #6e3a2c;
+  border-radius: 6px;
+  background: rgba(224, 122, 95, 0.1);
+  font-size: 12px;
+}
+
+.personality-dialog-body {
+  display: grid;
+  gap: 12px;
+}
+
+.personality-detail-form {
+  display: grid;
+  gap: 10px;
+}
+
+.personality-detail-form label {
+  display: grid;
+  gap: 4px;
+  color: var(--ink-50);
+}
+
+.personality-detail-form input,
+.personality-detail-form textarea {
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  padding: 7px 8px;
+  color: var(--ink-80);
+  background: var(--bg-elev);
+}
+
+.personality-field-group {
+  display: grid;
+  gap: 4px;
+}
+
+.personality-field-hint {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--ink-50);
+}
+
+.personality-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 14px;
+}

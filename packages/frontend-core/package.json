@@ -17,7 +17,7 @@
     "./proxima-loader.js": "./src/primitives/proxima-loader.js",
     "./views/atlas": "./src/views/atlas/index.tsx",
     "./views/marketplace": "./src/views/marketplace.tsx",
-    "./views/personalities": "./src/views/personalities.tsx",
+    "./views/personalities": "./src/views/personalities/index.tsx",
     "./views/schemas": "./src/views/schemas.tsx",
     "./views/settings": "./src/views/settings.tsx",
     "./views/settings-general": "./src/views/settings-general.tsx",
@@ -33,6 +33,7 @@
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-dialog": "^2",
     "cbor-x": "^1.6.4",
+    "elkjs": "^0.11.1",
     "highlight.js": "^11.11.1",
     "solid-js": "^1.9.3",
     "three": "^0.160.1"
