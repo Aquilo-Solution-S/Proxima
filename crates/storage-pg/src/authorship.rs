@@ -42,7 +42,6 @@ pub(crate) fn authorship_columns(authorship: &GoalAuthorship) -> AuthorshipColum
             operator_kind,
             model_id,
             prompt_version,
-            personality_type_id,
             personality_instance_id,
         }) => AuthorshipColumns {
             authorship_kind: "System".to_string(),
@@ -54,7 +53,7 @@ pub(crate) fn authorship_columns(authorship: &GoalAuthorship) -> AuthorshipColum
             }),
             model_id: Some(model_id.as_str().to_string()),
             prompt_version: Some(prompt_version.as_str().to_string()),
-            personality_type_id: Some(personality_type_id.clone()),
+            personality_type_id: None,
             personality_instance_id: Some(personality_instance_id.into_inner()),
         },
         GoalAuthorship::System(SystemOrigin::Tool { tool_id }) => AuthorshipColumns {

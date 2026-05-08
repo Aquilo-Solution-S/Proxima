@@ -399,7 +399,6 @@ fn uuid_from_str(value: &str) -> Result<uuid::Uuid, Status> {
 fn personality_instance_to_proto(row: proxima_core::PersonalityInstanceRow) -> PersonalityInstance {
     PersonalityInstance {
         owner: Some(owner_to_proto(&row.owner)),
-        personality_type_id: row.personality_type_id,
         personality_instance_id: row.personality_instance_id.into_inner().to_string(),
         current_root_perspective_memory_id: row
             .current_root_perspective_memory_id

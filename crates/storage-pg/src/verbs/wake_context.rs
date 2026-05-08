@@ -26,12 +26,10 @@ pub(crate) async fn fetch_personality_runtime(
     instance_id: PersonalityInstanceId,
 ) -> Result<Option<PersonalityRuntimeRow>, StorageError> {
     let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(owner);
-    // `personality.personality_type_id` does not exist; type id lives on
-    // the Root-Perspective memory row, which carries the personality
-    // identity by columns `personality_type_id` + `personality_instance_id`.
-    let row: Option<(uuid::Uuid, Option<String>, Option<String>, String)> = sqlx::query_as(
+    // The Root-Perspective memory row carries the wake display text;
+    // the instance id lives on `proxima_core.personality`.
+    let row: Option<(uuid::Uuid, Option<String>, String)> = sqlx::query_as(
         "SELECT p.current_root_perspective_memory_id,
-                m.personality_type_id,
                 m.text AS display_name,
                 p.status
          FROM proxima_core.personality p
@@ -51,9 +49,8 @@ pub(crate) async fn fetch_personality_runtime(
     .map_err(|e| StorageError::Internal(e.to_string()))?;
 
     Ok(row.map(
-        |(root_memory_id, personality_type_id, display_name, status)| PersonalityRuntimeRow {
+        |(root_memory_id, display_name, status)| PersonalityRuntimeRow {
             owner: owner.clone(),
-            personality_type_id: personality_type_id.unwrap_or_default(),
             personality_instance_id: instance_id,
             current_root_perspective_memory_id: MemoryId::new(root_memory_id),
             display_name: display_name.unwrap_or_default(),
@@ -117,7 +114,7 @@ pub(crate) async fn fetch_change_event_for_wake(
     .await
     .map_err(|e| StorageError::Internal(e.to_string()))?;
 
-    let Some((authoring_type, authoring_instance, depth)) = row else {
+    let Some((_authoring_type, authoring_instance, depth)) = row else {
         return Ok(None);
     };
     let Some(event) = hydrate_change_event(pool, seq).await? else {
@@ -125,7 +122,6 @@ pub(crate) async fn fetch_change_event_for_wake(
     };
     Ok(Some(ChangeEventForWake {
         event,
-        authoring_personality_type_id: authoring_type,
         authoring_personality_instance_id: authoring_instance.map(PersonalityInstanceId::new),
         wake_chain_depth: WakeChainDepth::new(u16::try_from(depth).unwrap_or(0)),
     }))

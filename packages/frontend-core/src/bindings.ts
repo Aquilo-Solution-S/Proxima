@@ -145,13 +145,7 @@ export type ChangeEvent = {
 	kind: ChangeEventKind,
 	/**
 	 *  `Some(...)` when an in-process personality authored this event;
-	 *  `None` for external/event-source ingestions (rendered from the
-	 *  `'external/event-source'` sentinel on the row).
-	 */
-	authoring_personality_type_id?: string | null,
-	/**
-	 *  Companion to `authoring_personality_type_id`. Both are `Some`
-	 *  or both are `None` for any well-formed personality-authored row.
+	 *  `None` for external/event-source ingestions.
 	 */
 	authoring_personality_instance_id?: string | null,
 	/**
@@ -599,11 +593,6 @@ export type PersonalityInstanceId = string;
 
 export type PersonalityInstanceTs = {
 	owner: Owner,
-	/**
-	 *  Transitional field kept for request compatibility while
-	 *  personality identity moves to `personality_instance_id`.
-	 */
-	personality_type_id: string,
 	personality_instance_id: string,
 	current_root_perspective_memory_id: string,
 	display_name: string,
@@ -803,7 +792,6 @@ export type SystemOrigin = ({ Operator: {
 	operator_kind: OperatorKind,
 	model_id: ModelId,
 	prompt_version: PromptVersion,
-	personality_type_id: string,
 	personality_instance_id: PersonalityInstanceId,
 } }) & { Tool?: never } | ({ Tool: {
 	tool_id: ToolId,

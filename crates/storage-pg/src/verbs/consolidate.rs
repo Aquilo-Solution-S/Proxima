@@ -143,7 +143,6 @@ pub async fn list_personality_instances(
     for (instance_id, root_memory_id, display_name, status) in rows {
         out.push(PersonalityInstanceRow {
             owner: owner.clone(),
-            personality_type_id: String::new(),
             personality_instance_id: PersonalityInstanceId::new(instance_id),
             current_root_perspective_memory_id: MemoryId::new(root_memory_id),
             display_name,
@@ -460,8 +459,8 @@ pub async fn list_change_events_after(
     limit: usize,
 ) -> Result<Vec<ChangeEventForWake>, StorageError> {
     let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(owner);
-    let rows: Vec<(uuid::Uuid, Option<String>, Option<uuid::Uuid>, i16)> = sqlx::query_as(
-        "SELECT seq, entity_personality_type_id, entity_personality_instance_id, wake_chain_depth
+    let rows: Vec<(uuid::Uuid, Option<uuid::Uuid>, i16)> = sqlx::query_as(
+        "SELECT seq, entity_personality_instance_id, wake_chain_depth
          FROM proxima_core.change_event
          WHERE owner_principal_kind = $1
            AND owner_principal_id = $2
@@ -480,11 +479,10 @@ pub async fn list_change_events_after(
     .map_err(map_err)?;
 
     let mut out = Vec::with_capacity(rows.len());
-    for (seq, type_id, instance_id, depth) in rows {
+    for (seq, instance_id, depth) in rows {
         if let Some(event) = hydrate_change_event(pool, seq).await? {
             out.push(ChangeEventForWake {
                 event,
-                authoring_personality_type_id: type_id,
                 authoring_personality_instance_id: instance_id.map(PersonalityInstanceId::new),
                 wake_chain_depth: WakeChainDepth::new(u16::try_from(depth).unwrap_or(0)),
             });
@@ -831,8 +829,7 @@ pub async fn lookup_prior_personality_head(
          WHERE owner_principal_kind = $1
            AND owner_principal_id = $2
            AND schema_id = $3
-           AND personality_type_id = $4
-           AND personality_instance_id = $5
+           AND personality_instance_id = $4
            AND kind = 'Perspective'
            AND NOT EXISTS (
                 SELECT 1 FROM proxima_core.memories newer
@@ -844,7 +841,6 @@ pub async fn lookup_prior_personality_head(
     .bind(owner_kind)
     .bind(owner_principal_id)
     .bind(schema_id.as_str())
-    .bind(&instance.personality_type_id)
     .bind(instance.personality_instance_id.into_inner())
     .fetch_optional(pool)
     .await
@@ -895,7 +891,7 @@ pub async fn append_personality_memories(
         .bind(&memory.text)
         .bind(req.model_id)
         .bind(req.prompt_version)
-        .bind(&req.instance.personality_type_id)
+        .bind(CORE_PERSONALITY_TYPE_PLACEHOLDER)
         .bind(req.instance.personality_instance_id.into_inner())
         .bind(i16::try_from(req.wake_chain_depth.into_inner()).unwrap_or(i16::MAX))
         .bind(prior_head)
@@ -935,7 +931,7 @@ pub async fn append_personality_memories(
         .bind(memory_id)
         .bind(memory.schema_id.as_str())
         .bind(i32::try_from(memory.schema_version.into_inner()).unwrap_or(1))
-        .bind(&req.instance.personality_type_id)
+        .bind(CORE_PERSONALITY_TYPE_PLACEHOLDER)
         .bind(req.instance.personality_instance_id.into_inner())
         .bind(i16::try_from(req.wake_chain_depth.into_inner()).unwrap_or(i16::MAX))
         .bind(prior_head)

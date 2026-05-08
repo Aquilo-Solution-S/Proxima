@@ -31,7 +31,6 @@ pub enum SystemOrigin {
         operator_kind: OperatorKind,
         model_id: ModelId,
         prompt_version: PromptVersion,
-        personality_type_id: String,
         personality_instance_id: PersonalityInstanceId,
     },
     Tool {

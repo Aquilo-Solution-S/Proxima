@@ -112,7 +112,7 @@ fn decode_change_event_row(row: ChangeEventRow) -> Result<ChangeEvent, StorageEr
         org_id: OrgId::new(row.owner_org_id),
     };
 
-    let (authoring_type, authoring_instance) = decode_personality(
+    let authoring_instance = decode_personality(
         row.entity_personality_type_id.as_deref(),
         row.entity_personality_instance_id,
     );
@@ -136,7 +136,6 @@ fn decode_change_event_row(row: ChangeEventRow) -> Result<ChangeEvent, StorageEr
                 source,
                 target,
             },
-            authoring_personality_type_id: authoring_type,
             authoring_personality_instance_id: authoring_instance,
             wake_chain_depth,
         });
@@ -205,7 +204,6 @@ fn decode_change_event_row(row: ChangeEventRow) -> Result<ChangeEvent, StorageEr
         seq: row.seq,
         owner,
         kind,
-        authoring_personality_type_id: authoring_type,
         authoring_personality_instance_id: authoring_instance,
         wake_chain_depth,
     })
@@ -215,14 +213,11 @@ fn decode_change_event_row(row: ChangeEventRow) -> Result<ChangeEvent, StorageEr
 /// (always populated post-migration; sentinel `'external/event-source'`
 /// + nil-uuid for external ingestions) to the public `Option<...>`
 ///   shape on `ChangeEvent`.
-fn decode_personality(
-    type_id: Option<&str>,
-    instance_id: Option<Uuid>,
-) -> (Option<String>, Option<Uuid>) {
+fn decode_personality(type_id: Option<&str>, instance_id: Option<Uuid>) -> Option<Uuid> {
     const EXTERNAL_SENTINEL: &str = "external/event-source";
     match (type_id, instance_id) {
-        (Some(t), Some(i)) if t != EXTERNAL_SENTINEL => (Some(t.to_string()), Some(i)),
-        _ => (None, None),
+        (Some(t), Some(i)) if t != EXTERNAL_SENTINEL => Some(i),
+        _ => None,
     }
 }
 
