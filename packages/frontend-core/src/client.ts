@@ -9,6 +9,7 @@ import type {
   InstantiatePersonalityOutcomeTs,
   InstantiatePersonalityTs,
   BindInferenceTierTs,
+  DetectedHarnessTs,
   InferenceTargetTs,
   InferenceTierBindingTs,
   ListInferenceTargetsTs,
@@ -61,4 +62,5 @@ export interface EngineClient {
   listInferenceTierBindings(
     req: ListInferenceTierBindingsTs,
   ): Promise<InferenceTierBindingTs[]>;
+  detectLocalHarness(name: string): Promise<DetectedHarnessTs | null>;
 }

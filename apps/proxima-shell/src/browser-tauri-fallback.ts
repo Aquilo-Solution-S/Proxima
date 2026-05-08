@@ -43,7 +43,10 @@ const invokeFallback = async (
 ): Promise<unknown> => {
   switch (cmd) {
     case "plugin:dialog|open": {
-      return window.prompt("Repository path");
+      const title = typeof args?.options === "object"
+        ? (args.options as { title?: unknown }).title
+        : undefined;
+      return window.prompt(typeof title === "string" ? title : "Path");
     }
     case "schema":
       return { schemas: [] };

@@ -1,4 +1,5 @@
 mod engine;
+mod harness;
 mod inference_targets;
 mod models;
 mod repo_ingest;
@@ -28,6 +29,7 @@ pub(crate) fn specta_builder() -> Builder<tauri::Wry> {
         inference_targets::remove_inference_target,
         inference_targets::bind_inference_tier,
         inference_targets::list_inference_tier_bindings,
+        harness::detect_local_harness,
         // Embedding settings
         models::models_list_embedding,
         models::models_register_embedding,

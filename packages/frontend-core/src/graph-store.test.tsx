@@ -58,6 +58,7 @@ const graphClient = (overrides: Partial<EngineClient>): EngineClient => ({
   listInferenceTierBindings: async () => {
     return [];
   },
+  detectLocalHarness: async () => null,
   ...overrides,
 });
 

@@ -190,6 +190,7 @@ const clientWithHistory = (
   listInferenceTierBindings: async () => {
     return [];
   },
+  detectLocalHarness: async () => null,
 });
 
 const renderSurfaceWithClient = (client: EngineClient) => {

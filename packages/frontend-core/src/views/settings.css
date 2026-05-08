@@ -114,6 +114,7 @@
 }
 .proxima-models-form-grid input[type="text"],
 .proxima-models-form-grid input[type="number"],
+.proxima-models-form-grid textarea,
 .proxima-models-form-grid select {
   background: var(--bg);
   border: 1px solid var(--rule-strong);
@@ -121,6 +122,19 @@
   padding: 6px 8px;
   font-family: var(--mono);
   font-size: 11px;
+}
+.proxima-models-form-grid textarea {
+  resize: vertical;
+  min-height: 96px;
+  line-height: 1.4;
+}
+.proxima-models-path-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+}
+.proxima-models-path-row input {
+  min-width: 0;
 }
 .proxima-models-form-grid .checkbox-row {
   display: flex;
@@ -189,4 +203,217 @@
   font-size: 9px;
   color: var(--ink-50);
   letter-spacing: 0.06em;
+}
+
+/* ── Settings: Models · Goose tier panel ─────────────────────── */
+.proxima-goose-panel {
+  margin: 8px 0 18px;
+  padding: 14px 16px 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--rule);
+}
+.proxima-goose-panel-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+.proxima-goose-panel-title {
+  margin: 0;
+  font-family: var(--sans);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink-100);
+  letter-spacing: 0.02em;
+}
+.proxima-goose-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 11px;
+}
+.proxima-goose-pill {
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  border: 1px solid var(--rule-strong);
+  background: var(--bg-card-2);
+  color: var(--ink-70);
+}
+.proxima-goose-pill-ok {
+  border-color: var(--accent-commit);
+  color: var(--accent-commit);
+}
+.proxima-goose-pill-warn {
+  border-color: var(--accent-del);
+  color: var(--accent-del);
+}
+.proxima-goose-path {
+  font-size: 10px;
+  max-width: 32ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.proxima-goose-tiers {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border-top: 1px solid var(--rule);
+}
+.proxima-goose-tier {
+  border-bottom: 1px solid var(--rule);
+}
+.proxima-goose-tier:last-child {
+  border-bottom: none;
+}
+.proxima-goose-tier-summary {
+  display: grid;
+  grid-template-columns: 90px 1fr auto;
+  gap: 12px;
+  align-items: center;
+  padding: 12px 4px;
+}
+.proxima-goose-tier-label {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink-100);
+  letter-spacing: 0.04em;
+}
+.proxima-goose-tier-detail {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--ink-80);
+}
+.proxima-goose-tier-model {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.proxima-goose-tier-sep {
+  color: var(--ink-50);
+}
+.proxima-goose-tag {
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  padding: 1px 6px;
+  border: 1px solid var(--rule-strong);
+  color: var(--ink-70);
+  background: var(--bg);
+  text-transform: lowercase;
+}
+.proxima-goose-tag-soft {
+  color: var(--ink-50);
+  border-style: dashed;
+}
+.proxima-goose-tier.is-empty .proxima-goose-tier-label {
+  color: var(--ink-60);
+}
+.proxima-goose-tier-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.proxima-btn-link {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  color: var(--ink-70);
+  font-family: var(--sans);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+  transition: color 100ms ease;
+}
+.proxima-btn-link:hover {
+  color: var(--ink-100);
+}
+.proxima-btn-link-danger {
+  color: var(--accent-del);
+}
+.proxima-btn-link-danger:hover {
+  color: var(--accent-del);
+  filter: brightness(1.15);
+}
+
+.proxima-goose-tier-editor {
+  padding: 4px 4px 14px 4px;
+  border-top: 1px dashed var(--rule);
+  background: var(--bg);
+}
+.proxima-goose-editor-grid {
+  display: grid;
+  grid-template-columns: 120px 1fr;
+  gap: 8px 12px;
+  margin: 12px 0;
+  align-items: center;
+}
+.proxima-goose-editor-grid label {
+  font-size: 11px;
+  color: var(--ink-60);
+}
+.proxima-goose-editor-grid select,
+.proxima-goose-editor-grid textarea {
+  background: var(--bg);
+  border: 1px solid var(--rule-strong);
+  color: var(--ink-90);
+  padding: 6px 8px;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.proxima-goose-editor-grid textarea {
+  resize: vertical;
+  min-height: 80px;
+  line-height: 1.4;
+}
+.proxima-goose-editor-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.proxima-goose-cta {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--rule);
+}
+
+.proxima-btn-primary {
+  border-color: var(--accent-commit);
+  color: var(--accent-commit);
+}
+.proxima-btn-primary:hover:not(:disabled) {
+  background: rgba(201, 168, 106, 0.08);
+  color: var(--accent-commit);
+}
+
+.proxima-models-subhead {
+  margin: 18px 0 6px;
+  font-family: var(--sans);
+  font-size: 9px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink-50);
+  font-weight: 500;
+}
+.proxima-models-subhead:first-child {
+  margin-top: 8px;
+}
+.proxima-models-helper {
+  margin: 0 0 8px;
+  font-size: 11px;
 }
