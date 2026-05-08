@@ -108,6 +108,7 @@ async fn personality_wake_schema_replaces_legacy_tables() {
             assert_eq!(count, 1, "{table} must exist");
         }
 
+        let retired_column = ["personality", "type", "id"].join("_");
         let type_columns: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM information_schema.columns
              WHERE table_schema = 'proxima_core'
@@ -122,8 +123,9 @@ async fn personality_wake_schema_replaces_legacy_tables() {
                    'personality_wake_cursor',
                    'personality_wake_invocations'
                )
-               AND column_name = 'personality_type_id'",
+               AND column_name = $1",
         )
+        .bind(retired_column)
         .fetch_one(pg.pool())
         .await?;
         assert_eq!(type_columns, 0);

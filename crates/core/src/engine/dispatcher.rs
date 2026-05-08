@@ -1,11 +1,11 @@
 use super::Engine;
+use crate::Owner;
 use crate::error::ProtocolError;
 use crate::personality::{
     InstantiatePersonalityRequest, InstantiatePersonalityResponse, PersonalityInstanceRow,
     TombstonePersonalityRequest, TombstonePersonalityResponse,
 };
 use crate::storage::StorageError;
-use crate::Owner;
 
 impl Engine {
     pub async fn list_personality_instances(
@@ -33,12 +33,6 @@ impl Engine {
                 )),
                 other => ProtocolError::internal(format!("tombstone_personality: {other}")),
             })
-    }
-
-    pub async fn provision_owner(&self, _owner: &Owner) -> Result<(), ProtocolError> {
-        // Auto-seeding removed: personalities are user-composed.
-        // Step 5 either deletes this verb or replaces it with a flavor hook.
-        Ok(())
     }
 
     pub async fn instantiate_personality(

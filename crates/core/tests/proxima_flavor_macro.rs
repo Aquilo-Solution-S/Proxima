@@ -1,4 +1,4 @@
-use proxima_core::{PersonalityFlavor, PerspectivePayload};
+use proxima_core::PerspectivePayload;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -29,45 +29,12 @@ impl PerspectivePayload for DemoOutputPayload {
     }
 }
 
-#[derive(Debug, Default)]
-struct DemoPersonality;
-
-impl PersonalityFlavor for DemoPersonality {
-    fn personality_type_id(&self) -> &'static str {
-        "proxima-test/personality-v1"
-    }
-
-    fn default_display_name(&self) -> &'static str {
-        "Demo"
-    }
-
-    fn default_purpose(&self) -> &'static str {
-        "Demo personality used by proxima_flavor! macro tests"
-    }
-}
-
 proxima_core::proxima_flavor! {
     name = "proxima-test",
     perspective_schemas = [
         DemoSelfPayload,
         DemoOutputPayload,
     ],
-    personalities = [
-        DemoPersonality,
-    ],
-}
-
-#[test]
-fn macro_registers_personalities() {
-    let mut registry = proxima_core::FlavorRegistry::new();
-    register(&mut registry);
-    let frozen = registry.freeze();
-
-    assert_eq!(frozen.list_personalities().len(), 1);
-    assert_eq!(
-        frozen.list_personalities()[0].personality_type_id(),
-        "proxima-test/personality-v1"
-    );
 }
 
 #[test]

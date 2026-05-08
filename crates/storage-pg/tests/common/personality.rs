@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use proxima_core::auth::NoAuth;
 use proxima_core::engine::Engine;
 use proxima_core::llm::{AnthropicClient, EmbeddingClient, LlmError};
-use proxima_core::personality::{InstantiatePersonalityResponse, PersonalityFlavor};
+use proxima_core::personality::InstantiatePersonalityResponse;
 use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
 use proxima_core::verbs::query::MemoryStore;
 use proxima_core::{
@@ -31,7 +31,6 @@ pub const TEST_OTHER_FACT_SCHEMA: &str = "proxima-test/test-other-fact-v1";
 pub const TEST_PERSPECTIVE_SCHEMA: &str = "proxima-test/test-perspective-v1";
 pub const TEST_ABSTRACTION_SCHEMA: &str = "proxima-test/test-abstraction-v1";
 pub const TEST_PERSONALITY_SELF_SCHEMA: &str = "proxima-test/test-personality-self-v1";
-pub const TEST_PERSONALITY_TYPE_ID: &str = "proxima-test/test-personality-v1";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TestFactV1 {
@@ -143,40 +142,6 @@ pub async fn apply_test_schemas(pool: &sqlx::PgPool) -> sqlx::Result<()> {
     .map(|_| ())
 }
 
-/// Test personality that wakes on `TEST_FACT_SCHEMA` Facts and writes
-/// `TEST_PERSPECTIVE_SCHEMA` Perspectives.
-#[derive(Debug, Clone)]
-pub struct TestPersonality {
-    pub fact_schema: &'static str,
-}
-
-impl TestPersonality {
-    pub const fn new() -> Self {
-        Self {
-            fact_schema: TEST_FACT_SCHEMA,
-        }
-    }
-
-    pub const fn with_fact_schema(mut self, fact_schema: &'static str) -> Self {
-        self.fact_schema = fact_schema;
-        self
-    }
-}
-
-impl PersonalityFlavor for TestPersonality {
-    fn personality_type_id(&self) -> &'static str {
-        TEST_PERSONALITY_TYPE_ID
-    }
-
-    fn default_display_name(&self) -> &'static str {
-        "Test Personality"
-    }
-
-    fn default_purpose(&self) -> &'static str {
-        "test"
-    }
-}
-
 /// Trivial embedding client that returns a fixed-length zero vector.
 /// Tests that exercise emit_abstraction / emit_perspective need an
 /// embedding client wired but don't care about real vectors.
@@ -201,10 +166,8 @@ impl EmbeddingClient for FakeEmbedding {
 }
 
 /// Build an `Engine` over the given storage pool wired with all test
-/// schemas + the supplied test personality + an injected scripted
-/// `FlavorDescriptor` for the `proxima-test` prefix that all test
-/// personalities/payloads use. Required by the freeze-time
-/// prefix-cross-check guard.
+/// schemas + an injected scripted `FlavorDescriptor` for the
+/// `proxima-test` prefix that all test payloads use.
 #[must_use]
 pub fn test_flavor_descriptor() -> FlavorDescriptor {
     FlavorDescriptor {
@@ -218,11 +181,7 @@ pub fn test_flavor_descriptor() -> FlavorDescriptor {
 
 /// Anthropic client and a fake embedding client.
 #[must_use]
-pub fn build_test_engine(
-    pg: PgStorage,
-    personality: TestPersonality,
-    anthropic: Arc<dyn AnthropicClient>,
-) -> Engine {
+pub fn build_test_engine(pg: PgStorage, anthropic: Arc<dyn AnthropicClient>) -> Engine {
     use proxima_core::Principal;
 
     let owner = super::owner_fixture();
@@ -233,7 +192,6 @@ pub fn build_test_engine(
     registry.add_perspective_schema::<TestPerspectiveV1>();
     registry.add_perspective_schema::<TestPersonalitySelfV1>();
     registry.add_abstraction_schema::<TestAbstractionV1>();
-    registry.add_personality(personality);
     let frozen = registry.freeze();
     let principal: Principal = owner.principal.clone();
     Engine::new(

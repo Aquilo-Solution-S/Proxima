@@ -36,9 +36,6 @@ const graphClient = (overrides: Partial<EngineClient>): EngineClient => ({
   eventIngest: async (_draft: EventDraft) => {
     throw new Error("eventIngest not used");
   },
-  provisionOwner: async () => {
-    throw new Error("provisionOwner not used");
-  },
   listPersonalityInstances: async () => {
     throw new Error("listPersonalityInstances not used");
   },

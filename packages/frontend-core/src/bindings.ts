@@ -9,7 +9,6 @@ export const commands = {
 	eventHistory: (req: EventHistoryRequest) => typedError<EventHistoryResponse, ProtocolError>(__TAURI_INVOKE("event_history", { req })),
 	eventIngest: (draft: EventDraft) => typedError<EventIngestOutcome, ProtocolError>(__TAURI_INVOKE("event_ingest", { draft })),
 	goalWrite: (draft: GoalDraft) => typedError<GoalWriteOutcome, ProtocolError>(__TAURI_INVOKE("goal_write", { draft })),
-	provisionOwner: (owner: Owner) => typedError<null, ProtocolError>(__TAURI_INVOKE("provision_owner", { owner })),
 	listPersonalityInstances: (req: ListPersonalityInstancesTs) => typedError<PersonalityInstanceTs[], ProtocolError>(__TAURI_INVOKE("list_personality_instances", { req })),
 	instantiatePersonality: (req: InstantiatePersonalityTs) => typedError<InstantiatePersonalityOutcomeTs, ProtocolError>(__TAURI_INVOKE("instantiate_personality", { req })),
 	setWakeEntries: (req: SetWakeEntriesTs) => typedError<SetWakeEntriesOutcomeTs, ProtocolError>(__TAURI_INVOKE("set_wake_entries", { req })),
@@ -389,16 +388,6 @@ export type FileRevisionV1_Serialize = {
 
 export type FileState = "Present" | "Tombstone";
 
-export type FlavorDescriptorTs = {
-	flavor_id: string,
-	display_name: string,
-	package_version: string,
-	author: string | null,
-	provenance: FlavorProvenanceTs,
-};
-
-export type FlavorProvenanceTs = { kind: "builtin" } | { kind: "marketplace"; source_url: string } | { kind: "local"; workspace_path: string };
-
 export type GoalAuthorship = "User" | { System: SystemOrigin } | "External";
 
 export type GoalDraft = {
@@ -598,7 +587,6 @@ export type PersonalityInstanceTs = {
 	display_name: string,
 	status: string,
 	wake_entries: WakeEntryTs[],
-	flavor: FlavorDescriptorTs | null,
 };
 
 export type Principal = ({ User: UserId }) & { Group?: never } | ({ Group: GroupId }) & { User?: never };

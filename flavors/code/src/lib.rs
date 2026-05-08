@@ -9,7 +9,6 @@ pub mod local_git_source;
 pub mod mcp;
 pub mod migrations;
 pub mod payloads;
-pub mod personality;
 pub mod repos;
 
 pub use ingest::{
@@ -23,7 +22,6 @@ pub use payloads::{
     CodeChunkV1, CodeCommitSummarizerSelfV1, CodeDevelopmentPerspectiveV1, CodeEngineerSelfV1,
     CommitSummaryV1, CommitV1, EdgeCallsV1, FileRevisionV1, FileState,
 };
-pub use personality::{CodeEngineerPersonality, CommitSummaryPersonality};
 
 pub use repos::{
     RepoEraseReceipt, RepoIngestionRun, RepoRecord, RepoRegistryError, RunStage, RunStatus,
@@ -63,10 +61,6 @@ proxima_core::proxima_flavor! {
             ),
         ),
     ],
-    personalities = [
-        personality::CommitSummaryPersonality,
-        personality::CodeEngineerPersonality,
-    ],
     mcp_tools = [
         mcp::CodeSearchChunksTool,
         mcp::CodeOpenFileRevisionTool,
@@ -88,14 +82,7 @@ mod tests {
     fn registry_contains_all_schemas_and_relations() {
         let mut registry = FlavorRegistry::new();
         super::register(&mut registry);
-        assert!(
-            registry
-                .list_personalities()
-                .iter()
-                .any(|p| p.personality_type_id() == "proxima-code/engineer-v1")
-        );
         let frozen = registry.freeze();
-        assert_eq!(frozen.list_personalities().len(), 2);
 
         let schemas = frozen.list();
         let schema_ids: HashSet<_> = schemas.iter().map(|s| s.schema_id.as_str()).collect();

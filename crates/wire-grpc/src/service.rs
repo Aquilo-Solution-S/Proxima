@@ -27,12 +27,11 @@ use crate::pb::{
     GoalWriteResponse, InstantiatePersonalityRequest, InstantiatePersonalityResponse,
     ListInferenceTargetsRequest, ListInferenceTargetsResponse, ListInferenceTierBindingsRequest,
     ListInferenceTierBindingsResponse, ListPersonalityInstancesRequest,
-    ListPersonalityInstancesResponse, PersonalityInstance, ProvisionOwnerRequest,
-    ProvisionOwnerResponse, QueryRequest, QueryResponse, RegisterInferenceTargetRequest,
-    RegisterInferenceTargetResponse, RemoveInferenceTargetRequest, RemoveInferenceTargetResponse,
-    SchemaRequest, SchemaResponse, SetWakeEntriesRequest, SetWakeEntriesResponse, SubscribeRequest,
-    TombstonePersonalityRequest, TombstonePersonalityResponse,
-    engine_server::Engine as EngineTrait,
+    ListPersonalityInstancesResponse, PersonalityInstance, QueryRequest, QueryResponse,
+    RegisterInferenceTargetRequest, RegisterInferenceTargetResponse, RemoveInferenceTargetRequest,
+    RemoveInferenceTargetResponse, SchemaRequest, SchemaResponse, SetWakeEntriesRequest,
+    SetWakeEntriesResponse, SubscribeRequest, TombstonePersonalityRequest,
+    TombstonePersonalityResponse, engine_server::Engine as EngineTrait,
 };
 
 /// gRPC server wrapper for the Engine.
@@ -152,23 +151,6 @@ impl EngineTrait for EngineGrpcServer {
         Ok(Response::new(schema_response_to_proto(
             &response, &relations,
         )))
-    }
-
-    async fn provision_owner(
-        &self,
-        request: Request<ProvisionOwnerRequest>,
-    ) -> Result<Response<ProvisionOwnerResponse>, Status> {
-        let owner = owner_from_proto(
-            request
-                .into_inner()
-                .owner
-                .ok_or_else(|| Status::invalid_argument("missing owner"))?,
-        )?;
-        self.engine
-            .provision_owner(&owner)
-            .await
-            .map_err(protocol_error_to_status)?;
-        Ok(Response::new(ProvisionOwnerResponse {}))
     }
 
     async fn instantiate_personality(

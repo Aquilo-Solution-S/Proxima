@@ -41,7 +41,6 @@ export interface EngineClient {
   ): Promise<Subscription>;
   goalWrite(draft: GoalDraft): Promise<GoalWriteOutcome>;
   eventIngest(draft: EventDraft): Promise<EventIngestOutcome>;
-  provisionOwner(owner: QueryRequest["owner"]): Promise<void>;
   listPersonalityInstances(
     req: ListPersonalityInstancesTs,
   ): Promise<PersonalityInstanceTs[]>;

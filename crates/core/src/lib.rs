@@ -68,8 +68,8 @@ macro_rules! proxima_schema_id {
 
 /// Build-time registration macro. v1 subset — supports
 /// `fact_schemas`, `abstraction_schemas`, `perspective_schemas`,
-/// `goal_schemas`, `edge_schemas`, `relations`, `personalities`,
-/// `mcp_tools`. Expands to a
+/// `goal_schemas`, `edge_schemas`, `relations`, `mcp_tools`.
+/// Expands to a
 /// `pub fn register(registry: &mut FlavorRegistry)` that performs
 /// runtime prefix checks and adds each schema / relation.
 ///
@@ -83,7 +83,7 @@ macro_rules! proxima_schema_id {
 /// `(vendor, model_id)` bindings are runtime configuration, not
 /// flavor authorship. New models plug in at runtime.
 ///
-/// Future verbs (sources, operators, personalities) land as the
+/// Future verbs (sources, operators) land as the
 /// underlying systems materialize. Reject unknown keys at expansion
 /// time to keep authors honest.
 ///
@@ -106,7 +106,6 @@ macro_rules! proxima_schema_id {
 /// ```ignore
 /// proxima_flavor! {
 ///     name = "proxima-code",
-///     personalities = [ EngineerPersonality ],
 ///     recipes_root = env!("CARGO_MANIFEST_DIR"),
 ///     recipes = ["commit_summary", "engineer"],
 /// }
@@ -126,7 +125,6 @@ macro_rules! proxima_flavor {
         $(, goal_schemas = [ $($goal:ty),* $(,)? ])?
         $(, edge_schemas = [ $($edge:ty),* $(,)? ])?
         $(, relations = [ $($rel:expr),* $(,)? ])?
-        $(, personalities = [ $($personality:ty),* $(,)? ])?
         $(, mcp_tools = [ $($tool:ty),* $(,)? ])?
         $(, recipes_root = $recipes_root:expr, recipes = [ $($recipe_filename:literal),* $(,)? ])?
         $(,)?
@@ -222,18 +220,6 @@ macro_rules! proxima_flavor {
                         descriptor.relation, expected_prefix,
                     );
                     registry.add_relation(descriptor);
-                }
-            )*)?
-            $($(
-                {
-                    let personality = <$personality>::default();
-                    let id = <$personality as $crate::PersonalityFlavor>::personality_type_id(&personality);
-                    assert!(
-                        id.starts_with(expected_prefix),
-                        "PersonalityFlavor::personality_type_id {:?} does not start with crate prefix {:?}",
-                        id, expected_prefix,
-                    );
-                    registry.add_personality(personality);
                 }
             )*)?
             $($(

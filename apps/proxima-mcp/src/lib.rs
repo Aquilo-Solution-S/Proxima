@@ -77,7 +77,7 @@ pub async fn run_with_handle(
     // headless mode boots an `Engine` directly, swap this for
     // `engine.wake_token_store()` (Phase 1d.5).
     let wake_token_store = std::sync::Arc::new(
-        proxima_core::wake::token_store::WakeTokenStore::new(std::time::Duration::from_secs(300)),
+        proxima_core::wake::token_store::WakeTokenStore::new(std::time::Duration::from_mins(5)),
     );
     Ok(serve_streamable_http(config.bind, server, default_allowlist(), wake_token_store).await?)
 }

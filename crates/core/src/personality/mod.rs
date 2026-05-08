@@ -16,9 +16,9 @@ use crate::{Engine, MemoryId, ModelTier, Owner, RegisteredRelation, SchemaId, Sc
 pub mod authorization;
 pub mod tools;
 
-pub use tools::{ActiveGoalSummary, substrate_pack};
 #[doc(hidden)]
 pub use tools::__test_only_model_id_from_wake_invocation;
+pub use tools::{ActiveGoalSummary, substrate_pack};
 
 pub const MAX_WAKE_CHAIN_DEPTH: u16 = 10;
 
@@ -589,15 +589,6 @@ pub trait PersonalityTool: Send + Sync + std::fmt::Debug {
         ctx: &PersonalityToolContext<'_>,
         args: serde_json::Value,
     ) -> Result<PersonalityToolResult, ProtocolError>;
-}
-
-/// Build-time personality declaration contributed by a flavor.
-pub trait PersonalityFlavor: Send + Sync + std::fmt::Debug {
-    fn personality_type_id(&self) -> &'static str;
-    /// Default name shown when `provision_owner` seeds an instance.
-    fn default_display_name(&self) -> &'static str;
-    /// Default purpose shown when `provision_owner` seeds an instance.
-    fn default_purpose(&self) -> &'static str;
 }
 
 #[cfg(test)]

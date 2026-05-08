@@ -84,7 +84,7 @@ impl Engine {
 
         // Wake personalities after a new batch closes. Dispatcher
         // cursors and invocation rows provide idempotency.
-        if !outcome.already_closed && !self.registry.list_personalities().is_empty() {
+        if !outcome.already_closed {
             let _ = self.run_dispatcher_tick().await?;
         }
         Ok(outcome)

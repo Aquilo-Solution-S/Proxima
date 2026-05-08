@@ -8,7 +8,6 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   InstantiatePersonalityOutcomeTs,
-  Owner,
   PersonalityInstanceTs,
   SetWakeEntriesOutcomeTs,
   TombstonePersonalityOutcomeTs,
@@ -57,7 +56,6 @@ const instance = (
   display_name: "Engineer",
   status: "active",
   wake_entries: [wakeEntry()],
-  flavor: null,
   ...overrides,
 });
 
@@ -65,7 +63,6 @@ const mockClient = (
   initial: PersonalityInstanceTs[],
   afterRefresh: PersonalityInstanceTs[] = initial,
 ) => {
-  const provisionOwner = vi.fn((_: Owner) => ok(null));
   const listPersonalityInstances = vi
     .fn()
     .mockResolvedValueOnce({ status: "ok", data: initial })
@@ -87,13 +84,11 @@ const mockClient = (
 
   return {
     client: {
-      provisionOwner,
       listPersonalityInstances,
       instantiatePersonality,
       setWakeEntries,
       tombstonePersonality,
     } satisfies PersonalityCommandClient,
-    provisionOwner,
     listPersonalityInstances,
     instantiatePersonality,
     setWakeEntries,
