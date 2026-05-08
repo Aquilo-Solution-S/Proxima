@@ -124,11 +124,15 @@ pub async fn repo_ingest_start(
     pg: State<'_, Arc<PgStorage>>,
     hub: State<'_, crate::repo_ingest_hub::RepoIngestHub>,
     repo_id: String,
+    max_commits: Option<u32>,
 ) -> Result<RepoIngestionRunTs, CommandError> {
     let owner = sentinel_owner();
     let uuid = Uuid::parse_str(&repo_id).map_err(|_| CommandError::InvalidUuid {
         value: repo_id.clone(),
     })?;
+    let max_commits = max_commits
+        .and_then(|n| usize::try_from(n).ok())
+        .filter(|n| *n > 0);
     let record = proxima_code::get_repo(pg.pool(), &owner, uuid)
         .await?
         .ok_or(CommandError::UnknownRepo { repo_id })?;
@@ -148,6 +152,7 @@ pub async fn repo_ingest_start(
             owner,
             record,
             run.run_id,
+            max_commits,
         );
     }
 

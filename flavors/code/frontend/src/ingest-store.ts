@@ -32,9 +32,12 @@ const root = createRoot(() => {
     if (!state[repoId]) setState(repoId, initial());
   }
 
-  async function start(repoId: string): Promise<void> {
+  async function start(
+    repoId: string,
+    maxCommits: number | null = null,
+  ): Promise<void> {
     ensure(repoId);
-    const r = await commands.repoIngestStart(repoId);
+    const r = await commands.repoIngestStart(repoId, maxCommits);
     if (r.status === "error") {
       setState(repoId, "terminalError", String(r.error));
       return;

@@ -51,11 +51,6 @@ const schemaOptionsFor = (schemaId: string) => {
   return [{ schemaId, flavor: "stored config" }, ...options];
 };
 
-const togglePaletteValue = (palette: string[], value: string): string[] => {
-  if (palette.includes(value)) return palette.filter((id) => id !== value);
-  return [...palette, value];
-};
-
 const triggerKindLabel = (kind: TriggerKindTs): string => {
   switch (kind) {
     case "on_memory":
@@ -141,6 +136,8 @@ const findInstance = (
   instances.find((row) => row.personality_instance_id === id);
 
 export const Inspector: Component<InspectorProps> = (props) => {
+  let inspectorRef: HTMLElement | undefined;
+
   const selectedInstance = createMemo(() => {
     const sel = props.selection;
     if (!sel) return undefined;
@@ -161,8 +158,26 @@ export const Inspector: Component<InspectorProps> = (props) => {
     return draftsFor(sel.instance_id)[sel.entry_index];
   });
 
+  const currentScrollSection = (): HTMLElement | null =>
+    inspectorRef?.querySelector(".personality-inspector-section") ?? null;
+
+  const restoreScrollTop = (scrollTop: number) => {
+    queueMicrotask(() => {
+      const section = currentScrollSection();
+      if (section) section.scrollTop = scrollTop;
+      requestAnimationFrame(() => {
+        const nextSection = currentScrollSection();
+        if (nextSection) nextSection.scrollTop = scrollTop;
+      });
+    });
+  };
+
   return (
-    <aside class="personality-inspector" aria-label="Inspector">
+    <aside
+      ref={inspectorRef}
+      class="personality-inspector"
+      aria-label="Inspector"
+    >
       <Show
         when={props.selection}
         fallback={
@@ -215,7 +230,9 @@ export const Inspector: Component<InspectorProps> = (props) => {
             onUpdate={(mutate) => {
               const sel = props.selection;
               if (sel?.kind !== "wake_entry") return;
+              const scrollTop = currentScrollSection()?.scrollTop ?? 0;
               props.onUpdateEntry(sel.instance_id, sel.entry_index, mutate);
+              restoreScrollTop(scrollTop);
             }}
             onRemove={() => {
               const sel = props.selection;
@@ -552,12 +569,9 @@ const WakeEntryDetail: Component<{
             selected={props.draft.substrate_tool_palette}
             tools={props.mcpTools}
             error={props.toolsError}
-            onToggle={(toolId) =>
+            onChange={(toolIds) =>
               props.onUpdate((draft) => {
-                draft.substrate_tool_palette = togglePaletteValue(
-                  draft.substrate_tool_palette,
-                  toolId,
-                );
+                draft.substrate_tool_palette = toolIds;
               })
             }
           />
@@ -566,12 +580,9 @@ const WakeEntryDetail: Component<{
               selected={props.draft.workspace_tool_palette}
               tools={props.workspaceTools}
               error={props.toolsError}
-              onToggle={(toolId) =>
+              onChange={(toolIds) =>
                 props.onUpdate((draft) => {
-                  draft.workspace_tool_palette = togglePaletteValue(
-                    draft.workspace_tool_palette,
-                    toolId,
-                  );
+                  draft.workspace_tool_palette = toolIds;
                 })
               }
             />
@@ -900,91 +911,37 @@ const SubstrateToolPicker: Component<{
   selected: string[];
   tools: McpToolTs[] | null;
   error: string | null;
-  onToggle: (toolId: string) => void;
+  onChange: (toolIds: string[]) => void;
 }> = (props) => {
-  const orphans = createMemo(() => {
+  const options = createMemo<ToolPaletteOption[] | null>(() => {
+    if (!props.tools) return null;
     const known = new Set((props.tools ?? []).map((t) => t.name));
-    return props.selected.filter((id) => !known.has(id));
+    return [
+      ...props.tools.map((tool) => ({
+        id: tool.name,
+        description: tool.description,
+      })),
+      ...props.selected
+        .filter((id) => !known.has(id))
+        .map((id) => ({
+          id,
+          description: "(unknown)",
+          orphan: true,
+        })),
+    ];
   });
 
   return (
-    <div class="personality-section-grid-full personality-tool-picker">
-      <div class="personality-tool-picker-head">
-        <span class="personality-tool-picker-label">Substrate tool palette</span>
-        <span class="personality-tool-picker-hint">
-          Engine-hosted MCP tools registered at compile time.
-        </span>
-      </div>
-      <Show when={props.error}>
-        {(message) => (
-          <p class="proxima-error" role="alert">
-            {message()}
-          </p>
-        )}
-      </Show>
-      <Show
-        when={props.tools}
-        fallback={
-          <p class="personality-tool-picker-empty">Loading tools…</p>
-        }
-      >
-        {(tools) => (
-          <Show
-            when={tools().length > 0}
-            fallback={
-              <p class="personality-tool-picker-empty">
-                No MCP tools registered in this build.
-              </p>
-            }
-          >
-            <ul class="personality-tool-list" role="list">
-              <For each={tools()}>
-                {(tool) => (
-                  <li>
-                    <label class="personality-tool-row">
-                      <input
-                        type="checkbox"
-                        checked={props.selected.includes(tool.name)}
-                        onChange={() => props.onToggle(tool.name)}
-                      />
-                      <span class="personality-tool-row-id">
-                        <Mono>{tool.name}</Mono>
-                      </span>
-                      <Show when={tool.description}>
-                        <span class="personality-tool-row-desc">
-                          {tool.description}
-                        </span>
-                      </Show>
-                    </label>
-                  </li>
-                )}
-              </For>
-            </ul>
-          </Show>
-        )}
-      </Show>
-      <Show when={orphans().length > 0}>
-        <ul class="personality-tool-list personality-tool-list-orphans" role="list">
-          <For each={orphans()}>
-            {(toolId) => (
-              <li>
-                <label class="personality-tool-row personality-tool-row-orphan">
-                  <input
-                    type="checkbox"
-                    checked
-                    onChange={() => props.onToggle(toolId)}
-                  />
-                  <span class="personality-tool-row-id">
-                    <Mono>{toolId}</Mono>
-                  </span>
-                  <span class="personality-tool-row-desc">(unknown)</span>
-                </label>
-              </li>
-            )}
-          </For>
-        </ul>
-      </Show>
-    </div>
+    <ToolPaletteSelect
+      label="Substrate tool palette"
+      hint="Engine-hosted MCP tools registered at compile time."
+      selected={props.selected}
+      options={options()}
+      error={props.error}
+      loadingLabel="Loading tools..."
+      emptyLabel="No MCP tools registered in this build."
+      onChange={props.onChange}
+    />
   );
 };
 
@@ -992,20 +949,107 @@ const WorkspaceToolPicker: Component<{
   selected: string[];
   tools: WorkspaceToolTs[] | null;
   error: string | null;
-  onToggle: (toolId: string) => void;
+  onChange: (toolIds: string[]) => void;
 }> = (props) => {
-  const orphans = createMemo(() => {
+  const options = createMemo<ToolPaletteOption[] | null>(() => {
+    if (!props.tools) return null;
     const known = new Set((props.tools ?? []).map((t) => t.id));
-    return props.selected.filter((id) => !known.has(id));
+    return [
+      ...props.tools.map((tool) => ({
+        id: tool.id,
+        description: tool.description,
+      })),
+      ...props.selected
+        .filter((id) => !known.has(id))
+        .map((id) => ({
+          id,
+          description: "(unknown)",
+          orphan: true,
+        })),
+    ];
   });
+
+  return (
+    <ToolPaletteSelect
+      label="Workspace tool palette"
+      hint="Filesystem and process tools available when running in workspace mode."
+      selected={props.selected}
+      options={options()}
+      error={props.error}
+      loadingLabel="Loading tools..."
+      emptyLabel="No workspace tools registered in this build."
+      onChange={props.onChange}
+    />
+  );
+};
+
+type ToolPaletteOption = {
+  id: string;
+  description?: string | null;
+  orphan?: boolean;
+};
+
+const toggleToolSelection = (selected: string[], toolId: string): string[] => {
+  if (selected.includes(toolId)) return selected.filter((id) => id !== toolId);
+  return [...selected, toolId];
+};
+
+const toolShortName = (id: string): string => {
+  const parts = id.split("/");
+  return parts[parts.length - 1] ?? id;
+};
+
+const toolGroupName = (id: string): string => id.split("/")[0] ?? "tools";
+
+const ToolPaletteSelect: Component<{
+  label: string;
+  hint: string;
+  selected: string[];
+  options: ToolPaletteOption[] | null;
+  error: string | null;
+  loadingLabel: string;
+  emptyLabel: string;
+  onChange: (toolIds: string[]) => void;
+}> = (props) => {
+  const [open, setOpen] = createSignal(false);
+  const [pending, setPending] = createSignal<string[]>([]);
+  const [query, setQuery] = createSignal("");
+  const summary = createMemo(() => {
+    if (props.selected.length === 0) return "Select tools";
+    if (props.selected.length === 1) return toolShortName(props.selected[0]);
+    return `${props.selected.length} selected`;
+  });
+  const filteredOptions = createMemo(() => {
+    const needle = query().trim().toLowerCase();
+    const options = props.options ?? [];
+    if (!needle) return options;
+    return options.filter((tool) =>
+      `${tool.id} ${tool.description ?? ""}`.toLowerCase().includes(needle),
+    );
+  });
+  const groups = createMemo(() => {
+    const entries = new Map<string, ToolPaletteOption[]>();
+    for (const option of filteredOptions()) {
+      const group = toolGroupName(option.id);
+      entries.set(group, [...(entries.get(group) ?? []), option]);
+    }
+    return Array.from(entries, ([group, tools]) => ({ group, tools }));
+  });
+  const openDialog = () => {
+    setPending([...props.selected]);
+    setQuery("");
+    setOpen(true);
+  };
+  const apply = () => {
+    props.onChange(pending());
+    setOpen(false);
+  };
 
   return (
     <div class="personality-section-grid-full personality-tool-picker">
       <div class="personality-tool-picker-head">
-        <span class="personality-tool-picker-label">Workspace tool palette</span>
-        <span class="personality-tool-picker-hint">
-          Filesystem and process tools available when running in workspace mode.
-        </span>
+        <span class="personality-tool-picker-label">{props.label}</span>
+        <span class="personality-tool-picker-hint">{props.hint}</span>
       </div>
       <Show when={props.error}>
         {(message) => (
@@ -1015,57 +1059,148 @@ const WorkspaceToolPicker: Component<{
         )}
       </Show>
       <Show
-        when={props.tools}
+        when={props.options}
         fallback={
-          <p class="personality-tool-picker-empty">Loading tools…</p>
+          <p class="personality-tool-picker-empty">{props.loadingLabel}</p>
         }
       >
-        {(tools) => (
-          <ul class="personality-tool-list" role="list">
-            <For each={tools()}>
-              {(tool) => (
-                <li>
-                  <label class="personality-tool-row">
+        {(options) => (
+          <Show
+            when={options().length > 0}
+            fallback={
+              <p class="personality-tool-picker-empty">{props.emptyLabel}</p>
+            }
+          >
+            <button
+              type="button"
+              class="personality-tool-configure-trigger"
+              aria-label={`${props.label}: ${summary()}`}
+              onClick={openDialog}
+            >
+              <span class="personality-tool-configure-summary">
+                {summary()}
+              </span>
+              <span class="personality-tool-configure-action">Configure</span>
+            </button>
+            <Show when={open()}>
+              <div class="personality-tool-dialog-backdrop">
+                <div
+                  class="personality-tool-dialog"
+                  role="dialog"
+                  aria-modal="true"
+                  aria-label={props.label}
+                >
+                  <header class="personality-tool-dialog-head">
+                    <div>
+                      <h4>{props.label}</h4>
+                      <p>{props.hint}</p>
+                    </div>
+                    <button
+                      type="button"
+                      class="personality-tool-dialog-close"
+                      aria-label="Close tool palette"
+                      onClick={() => setOpen(false)}
+                    >
+                      x
+                    </button>
+                  </header>
+                  <div class="personality-tool-dialog-toolbar">
                     <input
-                      type="checkbox"
-                      checked={props.selected.includes(tool.id)}
-                      onChange={() => props.onToggle(tool.id)}
+                      value={query()}
+                      placeholder="Search tools"
+                      aria-label="Search tools"
+                      onInput={(event) => setQuery(event.currentTarget.value)}
                     />
-                    <span class="personality-tool-row-id">
-                      <Mono>{tool.id}</Mono>
-                    </span>
-                    <Show when={tool.description}>
-                      <span class="personality-tool-row-desc">
-                        {tool.description}
-                      </span>
+                    <button
+                      type="button"
+                      class="hub-nav-item"
+                      onClick={() => setPending([])}
+                    >
+                      Clear all
+                    </button>
+                  </div>
+                  <div class="personality-tool-dialog-list">
+                    <Show
+                      when={groups().length > 0}
+                      fallback={
+                        <p class="personality-tool-picker-empty">
+                          No tools match the current search.
+                        </p>
+                      }
+                    >
+                      <For each={groups()}>
+                        {(group) => (
+                          <section class="personality-tool-group">
+                            <h5>{group.group}</h5>
+                            <ul class="personality-tool-list" role="list">
+                              <For each={group.tools}>
+                                {(tool) => (
+                                  <li>
+                                    <label
+                                      classList={{
+                                        "personality-tool-row": true,
+                                        "personality-tool-row-orphan": Boolean(
+                                          tool.orphan,
+                                        ),
+                                        "is-selected": pending().includes(
+                                          tool.id,
+                                        ),
+                                      }}
+                                    >
+                                      <input
+                                        type="checkbox"
+                                        checked={pending().includes(tool.id)}
+                                        onChange={() =>
+                                          setPending((current) =>
+                                            toggleToolSelection(current, tool.id),
+                                          )
+                                        }
+                                      />
+                                      <span class="personality-tool-row-main">
+                                        <span class="personality-tool-row-short">
+                                          {toolShortName(tool.id)}
+                                        </span>
+                                        <span class="personality-tool-row-id">
+                                          <Mono>{tool.id}</Mono>
+                                        </span>
+                                      </span>
+                                      <Show when={tool.description}>
+                                        <span class="personality-tool-row-desc">
+                                          {tool.description}
+                                        </span>
+                                      </Show>
+                                    </label>
+                                  </li>
+                                )}
+                              </For>
+                            </ul>
+                          </section>
+                        )}
+                      </For>
                     </Show>
-                  </label>
-                </li>
-              )}
-            </For>
-          </ul>
+                  </div>
+                  <footer class="personality-tool-dialog-actions">
+                    <span>{pending().length} selected</span>
+                    <button
+                      type="button"
+                      class="hub-nav-item"
+                      onClick={() => setOpen(false)}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      class="hub-nav-item personality-inspector-save"
+                      onClick={apply}
+                    >
+                      Apply
+                    </button>
+                  </footer>
+                </div>
+              </div>
+            </Show>
+          </Show>
         )}
-      </Show>
-      <Show when={orphans().length > 0}>
-        <ul class="personality-tool-list personality-tool-list-orphans" role="list">
-          <For each={orphans()}>
-            {(toolId) => (
-              <li>
-                <label class="personality-tool-row personality-tool-row-orphan">
-                  <input
-                    type="checkbox"
-                    checked
-                    onChange={() => props.onToggle(toolId)}
-                  />
-                  <span class="personality-tool-row-id">
-                    <Mono>{toolId}</Mono>
-                  </span>
-                  <span class="personality-tool-row-desc">(unknown)</span>
-                </label>
-              </li>
-            )}
-          </For>
-        </ul>
       </Show>
     </div>
   );

@@ -656,15 +656,21 @@ describe("PersonalitiesView", () => {
     await selectPersonality("Engineer");
     await selectEntry("react-to-commit");
 
+    fireEvent.click(
+      await screen.findByRole("button", { name: /Substrate tool palette/ }),
+    );
     const checkbox = await waitFor(() => {
-      const labels = screen.getAllByText("proxima-code/code_search_chunks");
-      const node = labels[0].closest("label")?.querySelector("input");
+      const node = screen.getByRole("checkbox", {
+        name: /proxima-code\/code_search_chunks/,
+      });
       if (!node) throw new Error("substrate tool checkbox not rendered");
       return node as HTMLInputElement;
     });
 
     expect(checkbox.checked).toBe(false);
     fireEvent.click(checkbox);
+    expect(checkbox.checked).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() => {
@@ -687,7 +693,7 @@ describe("PersonalitiesView", () => {
 
     await waitFor(() => {
       expect(
-        screen.getByText("proxima-code/code_search_chunks"),
+        screen.getByRole("button", { name: /Substrate tool palette/ }),
       ).toBeTruthy();
     });
 
@@ -720,7 +726,38 @@ describe("PersonalitiesView", () => {
 
     await waitFor(() => {
       expect(screen.getByText("Workspace tool palette")).toBeTruthy();
-      expect(screen.getByText("proxima-workspace/shell")).toBeTruthy();
+      expect(
+        screen.getByRole("button", { name: /Workspace tool palette/ }),
+      ).toBeTruthy();
+    });
+  });
+
+  it("preserves inspector scroll position when runtime fields change", async () => {
+    const row = instance();
+    const { client } = mockClient([row]);
+
+    render(() => <PersonalitiesView client={client} owner={owner} />);
+
+    await selectPersonality("Engineer");
+    await selectEntry("react-to-commit");
+
+    const section = await waitFor(() => {
+      const node = document.querySelector(".personality-inspector-section");
+      if (!(node instanceof HTMLElement)) {
+        throw new Error("inspector section not rendered");
+      }
+      return node;
+    });
+    section.scrollTop = 160;
+
+    const runtimeSummary = screen.getByText("Runtime");
+    fireEvent.click(runtimeSummary);
+
+    const modelTierSelect = screen.getByDisplayValue("Standard");
+    fireEvent.change(modelTierSelect, { target: { value: "deep" } });
+
+    await waitFor(() => {
+      expect(section.scrollTop).toBe(160);
     });
   });
 
@@ -756,13 +793,20 @@ describe("PersonalitiesView", () => {
 
     fireEvent.change(executionSelect, { target: { value: "workspace" } });
 
+    fireEvent.click(
+      await screen.findByRole("button", { name: /Workspace tool palette/ }),
+    );
     await waitFor(() => {
-      const labels = screen.getAllByText("proxima-workspace/shell");
-      const checkbox = labels[0].closest("label")?.querySelector("input");
-      expect(checkbox).toBeTruthy();
-      expect((checkbox as HTMLInputElement).checked).toBe(true);
+      expect(
+        (
+          screen.getByRole("checkbox", {
+            name: /proxima-workspace\/shell/,
+          }) as HTMLInputElement
+        ).checked,
+      ).toBe(true);
     });
 
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => {
       expect(setWakeEntries).toHaveBeenCalled();

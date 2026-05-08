@@ -671,6 +671,191 @@
   font-style: italic;
 }
 
+.personality-tool-configure-trigger {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  padding: 6px 8px;
+  color: var(--ink-80);
+  background: var(--bg);
+  font-size: 12px;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.personality-tool-configure-trigger:hover {
+  border-color: var(--rule-strong);
+  background: var(--bg-elev);
+}
+
+.personality-tool-configure-summary {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.personality-tool-configure-action {
+  flex: 0 0 auto;
+  color: var(--accent-commit);
+  font-size: 11px;
+}
+
+.personality-tool-dialog-backdrop {
+  position: fixed;
+  z-index: 50;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 28px;
+  background: rgba(0, 0, 0, 0.42);
+}
+
+.personality-tool-dialog {
+  width: min(760px, calc(100vw - 56px));
+  max-height: min(720px, calc(100vh - 56px));
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  border: 1px solid var(--rule-strong);
+  border-radius: 8px;
+  background: var(--bg-card);
+  box-shadow: 0 18px 54px rgba(0, 0, 0, 0.42);
+}
+
+.personality-tool-dialog-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 16px 18px 12px;
+  border-bottom: 1px solid var(--rule);
+}
+
+.personality-tool-dialog-head h4 {
+  margin: 0;
+  font-size: 13px;
+  color: var(--ink-90);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.personality-tool-dialog-head p {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--ink-50);
+}
+
+.personality-tool-dialog-close {
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  color: var(--ink-70);
+  background: var(--bg-elev);
+  cursor: pointer;
+}
+
+.personality-tool-dialog-close:hover {
+  color: var(--ink-90);
+  border-color: var(--rule-strong);
+}
+
+.personality-tool-dialog-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--rule);
+}
+
+.personality-tool-dialog-toolbar input {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  padding: 7px 9px;
+  color: var(--ink-80);
+  background: var(--bg);
+  font-size: 12px;
+}
+
+.personality-tool-dialog-list {
+  min-height: 0;
+  overflow: auto;
+  padding: 12px 18px;
+}
+
+.personality-tool-group {
+  display: grid;
+  gap: 6px;
+}
+
+.personality-tool-group + .personality-tool-group {
+  margin-top: 14px;
+}
+
+.personality-tool-group h5 {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--ink-50);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.personality-tool-dialog-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 18px;
+  border-top: 1px solid var(--rule);
+}
+
+.personality-tool-dialog-actions span {
+  margin-right: auto;
+  font-size: 11px;
+  color: var(--ink-50);
+}
+
+.personality-tool-dialog-actions .hub-nav-item,
+.personality-tool-dialog-toolbar .hub-nav-item {
+  height: 30px;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  padding: 0 10px;
+  background: var(--bg-elev);
+  line-height: 28px;
+}
+
+.personality-tool-dialog-actions .hub-nav-item:hover,
+.personality-tool-dialog-toolbar .hub-nav-item:hover {
+  border-color: var(--rule-strong);
+}
+
+@media (max-width: 720px) {
+  .personality-tool-dialog-backdrop {
+    padding: 12px;
+  }
+
+  .personality-tool-dialog {
+    width: calc(100vw - 24px);
+    max-height: calc(100vh - 24px);
+  }
+
+  .personality-tool-dialog-toolbar {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 .personality-tool-list {
   list-style: none;
   margin: 0;
@@ -688,29 +873,54 @@
   background: rgba(224, 122, 95, 0.08);
 }
 
-.personality-tool-row {
+.personality-tool-list .personality-tool-row {
   display: grid;
-  grid-template-columns: auto 1fr 2fr;
-  align-items: baseline;
+  grid-template-columns: 14px minmax(0, 1.4fr) minmax(0, 2fr);
+  align-items: center;
   gap: 10px;
+  width: 100%;
   padding: 6px 10px;
   font-size: 12px;
+  color: var(--ink-80);
   cursor: pointer;
   border-radius: 4px;
+  background: transparent;
 }
 
-.personality-tool-row:hover {
+.personality-tool-list .personality-tool-row:hover {
   background: var(--bg-elev);
 }
 
-.personality-tool-row input[type="checkbox"] {
+.personality-tool-list .personality-tool-row.is-selected {
+  background: rgba(211, 166, 74, 0.12);
+}
+
+.personality-section-grid .personality-tool-row input[type="checkbox"] {
+  width: auto;
+  min-width: auto;
   margin: 0;
+  padding: 0;
+  accent-color: var(--accent-commit);
 }
 
 .personality-tool-row-id {
+  display: block;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.personality-tool-row-main {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.personality-tool-row-short {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .personality-tool-row-desc {

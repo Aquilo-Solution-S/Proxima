@@ -104,7 +104,7 @@ export const commands = {
 	 *  `UnknownRepo` if the repo is not registered; `InvalidUuid` if the id
 	 *  does not parse; `Storage` on database failures.
 	 */
-	repoIngestStart: (repoId: string) => typedError<RepoIngestionRunTs, CommandError>(__TAURI_INVOKE("repo_ingest_start", { repoId })),
+	repoIngestStart: (repoId: string, maxCommits: number | null) => typedError<RepoIngestionRunTs, CommandError>(__TAURI_INVOKE("repo_ingest_start", { repoId, maxCommits })),
 	/**
 	 *  Return the active ingestion run for a repo, if any.
 	 * 

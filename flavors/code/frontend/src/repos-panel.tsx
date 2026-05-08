@@ -89,10 +89,16 @@ export const ReposPanel: Component = () => {
     void refetch();
   };
 
-  const handleIngest = async (repo: RepoRecordTs): Promise<void> => {
+  const handleIngestNext = async (repo: RepoRecordTs): Promise<void> => {
     setGlobalError(null);
     setErase({ kind: "idle" });
-    await ingestStore.start(repo.repo_id);
+    await ingestStore.start(repo.repo_id, 1);
+  };
+
+  const handleIngestAll = async (repo: RepoRecordTs): Promise<void> => {
+    setGlobalError(null);
+    setErase({ kind: "idle" });
+    await ingestStore.start(repo.repo_id, null);
   };
 
   return (
@@ -148,7 +154,8 @@ export const ReposPanel: Component = () => {
                   anyBusy={anyBusy()}
                   ingest={ingestStore.state[repo.repo_id]}
                   erase={erase()}
-                  onIngest={() => handleIngest(repo)}
+                  onIngestNext={() => handleIngestNext(repo)}
+                  onIngestAll={() => handleIngestAll(repo)}
                   onDelete={() => handleDelete(repo)}
                 />
               )}
@@ -166,7 +173,8 @@ const RepoRow: Component<{
   anyBusy: boolean;
   ingest: RunRecord | undefined;
   erase: EraseState;
-  onIngest: () => void;
+  onIngestNext: () => void;
+  onIngestAll: () => void;
   onDelete: () => void;
 }> = (props) => {
   const [confirmingDelete, setConfirmingDelete] = createSignal(false);
@@ -217,9 +225,17 @@ const RepoRow: Component<{
                 type="button"
                 class="proxima-btn"
                 disabled={ingestBtnDisabled()}
-                onClick={props.onIngest}
+                onClick={props.onIngestNext}
               >
-                Ingest
+                Ingest Next
+              </button>
+              <button
+                type="button"
+                class="proxima-btn"
+                disabled={ingestBtnDisabled()}
+                onClick={props.onIngestAll}
+              >
+                Ingest All
               </button>
               <button
                 type="button"
