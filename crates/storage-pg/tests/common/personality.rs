@@ -11,9 +11,7 @@ use async_trait::async_trait;
 use proxima_core::auth::NoAuth;
 use proxima_core::engine::Engine;
 use proxima_core::llm::{AnthropicClient, EmbeddingClient, LlmError};
-use proxima_core::personality::{
-    InstantiatePersonalityResponse, PersonalityFlavor, PersonalitySelfDraft,
-};
+use proxima_core::personality::{InstantiatePersonalityResponse, PersonalityFlavor};
 use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
 use proxima_core::verbs::query::MemoryStore;
 use proxima_core::{
@@ -170,34 +168,12 @@ impl PersonalityFlavor for TestPersonality {
         TEST_PERSONALITY_TYPE_ID
     }
 
-    fn self_schema(&self) -> SchemaId {
-        SchemaId::new(TEST_PERSONALITY_SELF_SCHEMA.to_string())
+    fn default_display_name(&self) -> &'static str {
+        "Test Personality"
     }
 
-    fn default_self_payload(
-        &self,
-        _owner: &Owner,
-        payload_overrides: Option<&serde_json::Value>,
-    ) -> Result<PersonalitySelfDraft, ProtocolError> {
-        let display_name = payload_overrides
-            .and_then(|v| v.get("display_name"))
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("Test Personality")
-            .to_string();
-        let purpose = payload_overrides
-            .and_then(|v| v.get("purpose"))
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("test")
-            .to_string();
-        Ok(PersonalitySelfDraft {
-            schema_id: self.self_schema(),
-            schema_version: SchemaVersion::new(1),
-            text: display_name.clone(),
-            typed_payload: serde_json::json!({
-                "display_name": display_name,
-                "purpose": purpose,
-            }),
-        })
+    fn default_purpose(&self) -> &'static str {
+        "test"
     }
 }
 
@@ -278,8 +254,8 @@ pub async fn instantiate_test_personality(
     engine
         .instantiate_personality(InstantiatePersonalityRequest {
             owner: owner.clone(),
-            personality_type_id: TEST_PERSONALITY_TYPE_ID.into(),
-            payload_overrides: None,
+            display_name: "Test Personality".into(),
+            purpose: "test".into(),
         })
         .await
 }

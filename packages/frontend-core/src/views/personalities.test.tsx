@@ -121,8 +121,6 @@ describe("PersonalitiesView", () => {
       flavor: "proxima-code",
       label: "Engineer",
       purpose: "Develop perspectives on code changes.",
-      defaultDisplayName: "Engineer",
-      defaultPurpose: "Develop perspectives on code changes",
     });
   });
 
@@ -175,8 +173,6 @@ describe("PersonalitiesView", () => {
     fireEvent.click(openButton);
 
     expect(await screen.findByRole("dialog")).toBeTruthy();
-    expect(screen.getByText("Engineer")).toBeTruthy();
-    expect(screen.getByText("proxima-code")).toBeTruthy();
     fireEvent.input(screen.getByLabelText("Display name"), {
       target: { value: "Alice" },
     });
@@ -188,11 +184,8 @@ describe("PersonalitiesView", () => {
     await waitFor(() => {
       expect(instantiatePersonality).toHaveBeenCalledWith({
         owner,
-        personality_type_id: "proxima-code/engineer-v1",
-        payload_overrides: JSON.stringify({
-          display_name: "Alice",
-          purpose: "Test",
-        }),
+        display_name: "Alice",
+        purpose: "Test",
       });
     });
     expect(await screen.findByText("Alice")).toBeTruthy();
@@ -233,7 +226,6 @@ describe("PersonalitiesView", () => {
     await waitFor(() => {
       expect(setWakeEntries).toHaveBeenCalledWith({
         owner,
-        personality_type_id: row.personality_type_id,
         personality_instance_id: row.personality_instance_id,
         entries: [
           {
@@ -326,7 +318,6 @@ describe("PersonalitiesView", () => {
     await waitFor(() => {
       expect(tombstonePersonality).toHaveBeenCalledWith({
         owner,
-        personality_type_id: row.personality_type_id,
         personality_instance_id: row.personality_instance_id,
       });
     });

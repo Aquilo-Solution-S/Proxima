@@ -273,41 +273,7 @@
 
 .personality-dialog-body {
   display: grid;
-  grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
   gap: 12px;
-}
-
-.personality-type-picker {
-  display: grid;
-  gap: 8px;
-  align-content: start;
-}
-
-.personality-type-option {
-  display: grid;
-  gap: 4px;
-  width: 100%;
-  border: 1px solid var(--rule);
-  border-radius: 8px;
-  padding: 10px;
-  color: var(--ink-80);
-  background: var(--bg-card);
-  text-align: left;
-  cursor: pointer;
-}
-
-.personality-type-option.selected {
-  border-color: var(--accent-commit);
-}
-
-.personality-type-option span {
-  font-size: 13px;
-}
-
-.personality-type-option small,
-.personality-type-option em {
-  color: var(--ink-50);
-  font-style: normal;
 }
 
 .personality-detail-form {

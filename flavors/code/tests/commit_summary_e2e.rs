@@ -104,8 +104,8 @@ async fn commit_summary_e2e_produces_abstraction_with_correct_provenance() {
         let inst = engine
             .instantiate_personality(InstantiatePersonalityRequest {
                 owner: owner.clone(),
-                personality_type_id: "proxima-code/commit-summary-v1".into(),
-                payload_overrides: None,
+                display_name: "Commit Summarizer".into(),
+                purpose: "Summarize commits as Abstractions".into(),
             })
             .await?;
 

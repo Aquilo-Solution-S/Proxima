@@ -107,15 +107,15 @@ async fn engineer_e2e_emits_perspective_with_chained_provenance() {
         engine
             .instantiate_personality(InstantiatePersonalityRequest {
                 owner: owner.clone(),
-                personality_type_id: "proxima-code/commit-summary-v1".into(),
-                payload_overrides: None,
+                display_name: "Commit Summarizer".into(),
+                purpose: "Summarize commits as Abstractions".into(),
             })
             .await?;
         engine
             .instantiate_personality(InstantiatePersonalityRequest {
                 owner: owner.clone(),
-                personality_type_id: "proxima-code/engineer-v1".into(),
-                payload_overrides: None,
+                display_name: "Engineer".into(),
+                purpose: "Develop perspectives on code changes".into(),
             })
             .await?;
 

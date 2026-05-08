@@ -490,8 +490,8 @@ export type InstantiatePersonalityOutcomeTs = {
 
 export type InstantiatePersonalityTs = {
 	owner: Owner,
-	personality_type_id: string,
-	payload_overrides: string | null,
+	display_name: string,
+	purpose: string,
 };
 
 export type ListInferenceTargetsTs = {
@@ -504,7 +504,6 @@ export type ListInferenceTierBindingsTs = {
 
 export type ListPersonalityInstancesTs = {
 	owner: Owner,
-	personality_type_id: string | null,
 	include_tombstoned?: boolean,
 };
 
@@ -771,7 +770,6 @@ export type SetWakeEntriesOutcomeTs = {
 
 export type SetWakeEntriesTs = {
 	owner: Owner,
-	personality_type_id: string,
 	personality_instance_id: string,
 	entries: WakeEntryDraftTs[],
 };
@@ -820,7 +818,6 @@ export type TombstonePersonalityOutcomeTs = {
 
 export type TombstonePersonalityTs = {
 	owner: Owner,
-	personality_type_id: string,
 	personality_instance_id: string,
 };
 

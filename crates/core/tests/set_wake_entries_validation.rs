@@ -17,7 +17,7 @@ use proxima_core::{
     ChangeEventForWake, ErrorCode, FactRow, FlavorRegistry, InferenceTargetRow,
     InferenceTierBindingRow, InstantiatePersonalityRequest, InstantiatePersonalityResponse,
     LocalCliConfig, MemoryId, MemorySnapshot, ModelTier, OrgId, Owner, PersonalityInstanceId,
-    PersonalityInstanceRow, PersonalityRef, PersonalityRuntimeRow, PersonalitySelfDraft,
+    PersonalityInstanceRow, PersonalityRef, PersonalityRuntimeRow,
     PersonalityWriteOutcome, PersonalityWriteRequest, Principal, RegisterInferenceTargetRequest,
     RegisterInferenceTargetResponse, RemoveInferenceTargetRequest, RemoveInferenceTargetResponse,
     RootPersonalityPerspectiveRow, SetWakeEntriesRequest, SetWakeEntriesResponse, SidecarSpec,
@@ -144,7 +144,6 @@ impl Storage for FixtureStorage {
     async fn list_personality_instances(
         &self,
         _owner: &Owner,
-        _personality_type_id: Option<&str>,
         _include_tombstoned: bool,
     ) -> Result<Vec<PersonalityInstanceRow>, StorageError> {
         Ok(Vec::new())
@@ -160,8 +159,6 @@ impl Storage for FixtureStorage {
     async fn instantiate_personality(
         &self,
         _req: &InstantiatePersonalityRequest,
-        _self_draft: &PersonalitySelfDraft,
-        _self_sidecar_table: &str,
     ) -> Result<InstantiatePersonalityResponse, StorageError> {
         Err(StorageError::Internal("unused".into()))
     }

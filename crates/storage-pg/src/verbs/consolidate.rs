@@ -9,10 +9,11 @@
 use proxima_core::personality::{
     AbstractionRow, ChangeEventForWake, FactRow, InstantiatePersonalityRequest,
     InstantiatePersonalityResponse, MemorySnapshot, PersonalityInstanceId, PersonalityInstanceRow,
-    PersonalityRef, PersonalityWriteOutcome, PersonalityWriteRequest, SetWakeEntriesRequest,
-    SetWakeEntriesResponse, SidecarSpec, WakeChainDepth, WakeDispatchEntryRow, WakeEntryAuthoredBy,
-    WakeEntryDraft, WakeEntryExecutionMode, WakeEntryRow, WakeEntryTriggerKind, WakeExecutionMode,
-    WakeInvocationFinalize, WakeInvocationStart, WakeInvocationStatus,
+    PersonalityRef, PersonalityWriteOutcome, PersonalityWriteRequest, ROOT_PERSONALITY_PERSPECTIVE_SCHEMA_ID,
+    SetWakeEntriesRequest, SetWakeEntriesResponse, SidecarSpec, WakeChainDepth,
+    WakeDispatchEntryRow, WakeEntryAuthoredBy, WakeEntryDraft, WakeEntryExecutionMode, WakeEntryRow,
+    WakeEntryTriggerKind, WakeExecutionMode, WakeInvocationFinalize, WakeInvocationStart,
+    WakeInvocationStatus,
 };
 use proxima_core::{MemoryId, ModelTier, Owner, Principal, SchemaId, SchemaVersion, StorageError};
 use sqlx::{PgPool, Row};
@@ -24,6 +25,10 @@ use crate::verbs::edge_append::{EdgeDraft, append_edge_in_tx};
 
 const EXTERNAL_PERSONALITY_TYPE_ID: &str = "external/event-source";
 const EXTERNAL_PERSONALITY_INSTANCE_ID: uuid::Uuid = uuid::Uuid::nil();
+/// Placeholder stamped on `memories.personality_type_id` and
+/// `change_event.entity_personality_type_id` for personalities created
+/// after Phase 2 Step 1. The column itself is dropped in Phase 2 Step 4.
+const CORE_PERSONALITY_TYPE_PLACEHOLDER: &str = "core/personality";
 
 fn owner_columns(owner: &Owner) -> (&'static str, uuid::Uuid, uuid::Uuid) {
     let (kind, principal_id) = match &owner.principal {
@@ -61,7 +66,6 @@ struct WakeEntryJoinRow {
 pub async fn list_personality_instances(
     pool: &PgPool,
     owner: &Owner,
-    _personality_type_id: Option<&str>,
     include_tombstoned: bool,
 ) -> Result<Vec<PersonalityInstanceRow>, StorageError> {
     let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(owner);
@@ -154,10 +158,7 @@ pub async fn list_personality_instances(
 pub async fn instantiate_personality(
     pool: &PgPool,
     req: &InstantiatePersonalityRequest,
-    self_draft: &proxima_core::PersonalitySelfDraft,
-    self_sidecar_table: &str,
 ) -> Result<InstantiatePersonalityResponse, StorageError> {
-    let self_sidecar = PgIdent::table(self_sidecar_table)?;
     let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(&req.owner);
     let instance_id = uuid::Uuid::now_v7();
     let memory_id = uuid::Uuid::now_v7();
@@ -168,36 +169,20 @@ pub async fn instantiate_personality(
             (memory_id, owner_principal_kind, owner_principal_id, owner_org_id,
              schema_id, schema_version, kind, text, operator_kind, model_id,
              prompt_version, personality_type_id, personality_instance_id, wake_chain_depth)
-         VALUES ($1, $2, $3, $4, $5, $6, 'Perspective', $7, 'Wake', 'substrate',
-                 'self-v1', $8, $9, 0)",
+         VALUES ($1, $2, $3, $4, $5, 1, 'Perspective', $6, 'Wake', 'substrate',
+                 'self-v1', $7, $8, 0)",
     )
     .bind(memory_id)
     .bind(owner_kind)
     .bind(owner_principal_id)
     .bind(owner_org_id)
-    .bind(self_draft.schema_id.as_str())
-    .bind(i32::try_from(self_draft.schema_version.into_inner()).unwrap_or(1))
-    .bind(&self_draft.text)
-    .bind(&req.personality_type_id)
+    .bind(ROOT_PERSONALITY_PERSPECTIVE_SCHEMA_ID)
+    .bind(&req.display_name)
+    .bind(CORE_PERSONALITY_TYPE_PLACEHOLDER)
     .bind(instance_id)
     .execute(&mut *tx)
     .await
     .map_err(map_err)?;
-
-    let sidecar_sql = format!(
-        "INSERT INTO {sidecar}
-         SELECT * FROM jsonb_populate_record(
-             NULL::{sidecar},
-             ($1::jsonb || jsonb_build_object('memory_id', $2::uuid))
-         )",
-        sidecar = self_sidecar.as_str(),
-    );
-    sqlx::query(&sidecar_sql)
-        .bind(&self_draft.typed_payload)
-        .bind(memory_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(map_err)?;
 
     sqlx::query(
         "INSERT INTO proxima_core.root_personality_perspective_v1
@@ -205,20 +190,8 @@ pub async fn instantiate_personality(
          VALUES ($1, $2, $3)",
     )
     .bind(memory_id)
-    .bind(
-        self_draft
-            .typed_payload
-            .get("display_name")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or(self_draft.text.as_str()),
-    )
-    .bind(
-        self_draft
-            .typed_payload
-            .get("purpose")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("Personality root perspective"),
-    )
+    .bind(&req.display_name)
+    .bind(&req.purpose)
     .execute(&mut *tx)
     .await
     .map_err(map_err)?;
@@ -229,16 +202,15 @@ pub async fn instantiate_personality(
             (seq, owner_principal_kind, owner_principal_id, owner_org_id, kind,
              entity_kind, entity_memory_id, entity_schema_id, entity_schema_version,
              entity_personality_type_id, entity_personality_instance_id, wake_chain_depth)
-         VALUES ($1, $2, $3, $4, 'EntityAppend', 'Perspective', $5, $6, $7, $8, $9, 0)",
+         VALUES ($1, $2, $3, $4, 'EntityAppend', 'Perspective', $5, $6, 1, $7, $8, 0)",
     )
     .bind(change_seq)
     .bind(owner_kind)
     .bind(owner_principal_id)
     .bind(owner_org_id)
     .bind(memory_id)
-    .bind(self_draft.schema_id.as_str())
-    .bind(i32::try_from(self_draft.schema_version.into_inner()).unwrap_or(1))
-    .bind(&req.personality_type_id)
+    .bind(ROOT_PERSONALITY_PERSPECTIVE_SCHEMA_ID)
+    .bind(CORE_PERSONALITY_TYPE_PLACEHOLDER)
     .bind(instance_id)
     .execute(&mut *tx)
     .await

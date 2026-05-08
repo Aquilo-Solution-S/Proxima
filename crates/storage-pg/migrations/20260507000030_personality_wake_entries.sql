@@ -8,10 +8,13 @@ CREATE TABLE proxima_core.root_personality_perspective_v1 (
         REFERENCES proxima_core.memories(memory_id),
     display_name text NOT NULL,
     purpose text NOT NULL,
+    system_prompt text NOT NULL,
     CONSTRAINT root_personality_perspective_display_name_chk
         CHECK (length(trim(display_name)) > 0),
     CONSTRAINT root_personality_perspective_purpose_chk
-        CHECK (length(trim(purpose)) > 0)
+        CHECK (length(trim(purpose)) > 0),
+    CONSTRAINT root_personality_perspective_system_prompt_chk
+        CHECK (length(trim(system_prompt)) > 0)
 );
 
 CREATE TABLE proxima_core.personality (

@@ -5,9 +5,9 @@ mod common;
 use common::{drop_db, fresh_pg, owner_fixture};
 use proxima_core::personality::{
     InstantiatePersonalityRequest, PersonalityInstanceId, PersonalityMemoryDraft,
-    PersonalityMemoryKind, PersonalityRef, PersonalitySelfDraft, PersonalityWriteRequest,
-    SetWakeEntriesRequest, TombstonePersonalityRequest, WakeChainDepth, WakeEntryAuthoredBy,
-    WakeEntryDraft, WakeEntryTriggerKind,
+    PersonalityMemoryKind, PersonalityRef, PersonalityWriteRequest, SetWakeEntriesRequest,
+    TombstonePersonalityRequest, WakeChainDepth, WakeEntryAuthoredBy, WakeEntryDraft,
+    WakeEntryTriggerKind,
 };
 use proxima_core::relation::{
     CORE_DERIVED_FROM_RELATION, CORE_SUPERSEDES_RELATION, core_relation_descriptors,
@@ -21,19 +21,6 @@ use proxima_core::{
 use sqlx::Executor;
 use uuid::Uuid;
 
-async fn apply_self_sidecar(pool: &sqlx::PgPool) -> sqlx::Result<()> {
-    pool.execute(
-        "CREATE SCHEMA IF NOT EXISTS proxima_test; \
-         CREATE TABLE IF NOT EXISTS proxima_test.personality_self_v1 ( \
-             memory_id uuid PRIMARY KEY REFERENCES proxima_core.memories(memory_id), \
-             display_name text NOT NULL, \
-             purpose text NOT NULL \
-         );",
-    )
-    .await
-    .map(|_| ())
-}
-
 async fn apply_personality_output_sidecar(pool: &sqlx::PgPool) -> sqlx::Result<()> {
     pool.execute(
         "CREATE SCHEMA IF NOT EXISTS proxima_test; \
@@ -46,33 +33,16 @@ async fn apply_personality_output_sidecar(pool: &sqlx::PgPool) -> sqlx::Result<(
     .map(|_| ())
 }
 
-fn self_draft(display_name: &str) -> PersonalitySelfDraft {
-    PersonalitySelfDraft {
-        schema_id: SchemaId::new("proxima-test/self-v1".into()),
-        schema_version: SchemaVersion::new(1),
-        text: display_name.into(),
-        typed_payload: serde_json::json!({
-            "display_name": display_name,
-            "purpose": "exercise wake storage",
-        }),
-    }
-}
-
 async fn seed_test_personality(
     pg: &proxima_storage_pg::PgStorage,
     owner: &Owner,
 ) -> Result<proxima_core::InstantiatePersonalityResponse, Box<dyn std::error::Error>> {
-    apply_self_sidecar(pg.pool()).await?;
     let response = pg
-        .instantiate_personality(
-            &InstantiatePersonalityRequest {
-                owner: owner.clone(),
-                personality_type_id: "proxima-test/personality-v1".into(),
-                payload_overrides: None,
-            },
-            &self_draft("Engineer A"),
-            "proxima_test.personality_self_v1",
-        )
+        .instantiate_personality(&InstantiatePersonalityRequest {
+            owner: owner.clone(),
+            display_name: "Engineer A".into(),
+            purpose: "exercise wake storage".into(),
+        })
         .await?;
     Ok(response)
 }
@@ -169,7 +139,6 @@ async fn personality_wake_schema_enforces_root_sidecar_and_promille() {
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         pg.run_migrations().await?;
-        apply_self_sidecar(pg.pool()).await?;
         let owner = owner_fixture();
         let response = seed_test_personality(&pg, &owner).await?;
 
@@ -300,7 +269,6 @@ async fn personality_wake_storage_round_trip() {
         let res = pg
             .tombstone_personality(&TombstonePersonalityRequest {
                 owner,
-                personality_type_id: "proxima-test/personality-v1".into(),
                 personality_instance_id: instance,
             })
             .await?;
@@ -333,7 +301,7 @@ async fn list_personality_instances_populates_wake_entries() {
         })
         .await?;
 
-        let rows = pg.list_personality_instances(&owner, None, false).await?;
+        let rows = pg.list_personality_instances(&owner, false).await?;
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].wake_entries.len(), 1);
         assert_eq!(rows[0].wake_entries[0].label, "on_test_fact");

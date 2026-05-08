@@ -5,13 +5,12 @@ mod common;
 
 use common::{drop_db, fresh_pg, owner_fixture};
 use proxima_core::personality::{
-    InstantiatePersonalityRequest, PersonalityInstanceId, PersonalitySelfDraft,
-    SetWakeEntriesRequest, WakeEntryAuthoredBy, WakeEntryDraft, WakeEntryTriggerKind,
-    WakeInvocationFinalize, WakeInvocationStart, WakeInvocationStatus,
+    InstantiatePersonalityRequest, PersonalityInstanceId, SetWakeEntriesRequest,
+    WakeEntryAuthoredBy, WakeEntryDraft, WakeEntryTriggerKind, WakeInvocationFinalize,
+    WakeInvocationStart, WakeInvocationStatus,
 };
 use proxima_core::storage::Storage;
-use proxima_core::{ModelTier, Owner, Principal, SchemaId, SchemaVersion};
-use sqlx::Executor;
+use proxima_core::{ModelTier, Owner, Principal};
 use uuid::Uuid;
 
 #[derive(Debug)]
@@ -23,46 +22,16 @@ struct WakeInvocationDispatchRow {
     status: WakeInvocationStatus,
 }
 
-async fn apply_self_sidecar(pool: &sqlx::PgPool) -> sqlx::Result<()> {
-    pool.execute(
-        "CREATE SCHEMA IF NOT EXISTS proxima_test; \
-         CREATE TABLE IF NOT EXISTS proxima_test.personality_self_v1 ( \
-             memory_id uuid PRIMARY KEY REFERENCES proxima_core.memories(memory_id), \
-             display_name text NOT NULL, \
-             purpose text NOT NULL \
-         );",
-    )
-    .await
-    .map(|_| ())
-}
-
-fn self_draft(display_name: &str) -> PersonalitySelfDraft {
-    PersonalitySelfDraft {
-        schema_id: SchemaId::new("proxima-test/self-v1".into()),
-        schema_version: SchemaVersion::new(1),
-        text: display_name.into(),
-        typed_payload: serde_json::json!({
-            "display_name": display_name,
-            "purpose": "exercise wake invocation dispatch columns",
-        }),
-    }
-}
-
 async fn seed_personality_with_entry(
     pg: &proxima_storage_pg::PgStorage,
     owner: &Owner,
 ) -> Result<(PersonalityInstanceId, Uuid), Box<dyn std::error::Error>> {
-    apply_self_sidecar(pg.pool()).await?;
     let response = pg
-        .instantiate_personality(
-            &InstantiatePersonalityRequest {
-                owner: owner.clone(),
-                personality_type_id: "proxima-test/personality-v1".into(),
-                payload_overrides: None,
-            },
-            &self_draft("Engineer A"),
-            "proxima_test.personality_self_v1",
-        )
+        .instantiate_personality(&InstantiatePersonalityRequest {
+            owner: owner.clone(),
+            display_name: "Engineer A".into(),
+            purpose: "exercise wake invocation dispatch columns".into(),
+        })
         .await?;
     let entry = WakeEntryDraft::new(
         Uuid::now_v7(),

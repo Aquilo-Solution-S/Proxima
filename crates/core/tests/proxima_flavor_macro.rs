@@ -1,7 +1,4 @@
-use proxima_core::{
-    Owner, PersonalityFlavor, PersonalitySelfDraft, PerspectivePayload, ProtocolError, SchemaId,
-    SchemaVersion,
-};
+use proxima_core::{PersonalityFlavor, PerspectivePayload};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -40,21 +37,12 @@ impl PersonalityFlavor for DemoPersonality {
         "proxima-test/personality-v1"
     }
 
-    fn self_schema(&self) -> SchemaId {
-        SchemaId::new(DemoSelfPayload::SCHEMA_ID.to_string())
+    fn default_display_name(&self) -> &'static str {
+        "Demo"
     }
 
-    fn default_self_payload(
-        &self,
-        _owner: &Owner,
-        _payload_overrides: Option<&serde_json::Value>,
-    ) -> Result<PersonalitySelfDraft, ProtocolError> {
-        Ok(PersonalitySelfDraft {
-            schema_id: self.self_schema(),
-            schema_version: SchemaVersion::new(1),
-            text: "Demo".into(),
-            typed_payload: serde_json::json!({ "display_name": "Demo" }),
-        })
+    fn default_purpose(&self) -> &'static str {
+        "Demo personality used by proxima_flavor! macro tests"
     }
 }
 

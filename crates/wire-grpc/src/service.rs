@@ -180,18 +180,12 @@ impl EngineTrait for EngineGrpcServer {
             pb.owner
                 .ok_or_else(|| Status::invalid_argument("missing owner"))?,
         )?;
-        let payload_overrides = pb
-            .payload_overrides_json
-            .as_deref()
-            .map(serde_json::from_str)
-            .transpose()
-            .map_err(|e| Status::invalid_argument(format!("payload_overrides_json: {e}")))?;
         let out = self
             .engine
             .instantiate_personality(proxima_core::InstantiatePersonalityRequest {
                 owner,
-                personality_type_id: pb.personality_type_id,
-                payload_overrides,
+                display_name: pb.display_name,
+                purpose: pb.purpose,
             })
             .await
             .map_err(protocol_error_to_status)?;
@@ -361,11 +355,7 @@ impl EngineTrait for EngineGrpcServer {
         )?;
         let rows = self
             .engine
-            .list_personality_instances(
-                &owner,
-                pb.personality_type_id.as_deref(),
-                pb.include_tombstoned,
-            )
+            .list_personality_instances(&owner, pb.include_tombstoned)
             .await
             .map_err(protocol_error_to_status)?;
         let instances = rows
@@ -391,7 +381,6 @@ impl EngineTrait for EngineGrpcServer {
             .engine
             .tombstone_personality(proxima_core::TombstonePersonalityRequest {
                 owner,
-                personality_type_id: pb.personality_type_id,
                 personality_instance_id: proxima_core::PersonalityInstanceId::new(instance_id),
             })
             .await

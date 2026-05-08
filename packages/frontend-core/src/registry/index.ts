@@ -75,8 +75,6 @@ export interface PersonalityTypeRegistration {
   flavor: string;
   label: string;
   purpose: string;
-  defaultDisplayName: string;
-  defaultPurpose: string;
 }
 
 export interface RegisteredPersonalityType extends PersonalityTypeRegistration {

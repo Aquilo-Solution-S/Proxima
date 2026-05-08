@@ -48,7 +48,5 @@ export function init(): void {
     flavor: "proxima-code",
     label: "Engineer",
     purpose: "Develop perspectives on code changes.",
-    defaultDisplayName: "Engineer",
-    defaultPurpose: "Develop perspectives on code changes",
   });
 }

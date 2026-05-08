@@ -18,8 +18,8 @@ use tauri::ipc::Channel;
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct InstantiatePersonalityTs {
     pub owner: Owner,
-    pub personality_type_id: String,
-    pub payload_overrides: Option<String>,
+    pub display_name: String,
+    pub purpose: String,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
@@ -30,7 +30,6 @@ pub struct InstantiatePersonalityOutcomeTs {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct ListPersonalityInstancesTs {
     pub owner: Owner,
-    pub personality_type_id: Option<String>,
     #[serde(default)]
     pub include_tombstoned: bool,
 }
@@ -38,7 +37,6 @@ pub struct ListPersonalityInstancesTs {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct TombstonePersonalityTs {
     pub owner: Owner,
-    pub personality_type_id: String,
     pub personality_instance_id: String,
 }
 
@@ -148,7 +146,6 @@ pub struct WakeEntryDraftTs {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct SetWakeEntriesTs {
     pub owner: Owner,
-    pub personality_type_id: String,
     pub personality_instance_id: String,
     pub entries: Vec<WakeEntryDraftTs>,
 }
@@ -243,11 +240,7 @@ pub async fn list_personality_instances(
     let req_bytes = crate::perf::ipc::req_size(&req);
     crate::perf::ipc::record("list_personality_instances", req_bytes, async move {
         let rows = engine
-            .list_personality_instances(
-                &req.owner,
-                req.personality_type_id.as_deref(),
-                req.include_tombstoned,
-            )
+            .list_personality_instances(&req.owner, req.include_tombstoned)
             .await?;
         rows.into_iter()
             .map(|row| Ok::<_, ProtocolError>(PersonalityInstanceTs::from_row(row)))
@@ -264,17 +257,11 @@ pub async fn instantiate_personality(
 ) -> Result<InstantiatePersonalityOutcomeTs, ProtocolError> {
     let req_bytes = crate::perf::ipc::req_size(&req);
     crate::perf::ipc::record("instantiate_personality", req_bytes, async move {
-        let payload_overrides = req
-            .payload_overrides
-            .as_deref()
-            .map(serde_json::from_str)
-            .transpose()
-            .map_err(|e| ProtocolError::internal(format!("payload_overrides JSON: {e}")))?;
         let out = engine
             .instantiate_personality(proxima_core::InstantiatePersonalityRequest {
                 owner: req.owner,
-                personality_type_id: req.personality_type_id,
-                payload_overrides,
+                display_name: req.display_name,
+                purpose: req.purpose,
             })
             .await?;
         Ok(InstantiatePersonalityOutcomeTs {
@@ -327,7 +314,6 @@ pub async fn tombstone_personality(
         let out = engine
             .tombstone_personality(proxima_core::TombstonePersonalityRequest {
                 owner: req.owner,
-                personality_type_id: req.personality_type_id,
                 personality_instance_id: PersonalityInstanceId::new(instance_id),
             })
             .await?;

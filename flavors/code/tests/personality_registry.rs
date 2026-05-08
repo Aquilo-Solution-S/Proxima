@@ -2,18 +2,7 @@ use proxima_code::{
     CodeCommitSummarizerSelfV1, CodeEngineerPersonality, CodeEngineerSelfV1,
     CommitSummaryPersonality,
 };
-use proxima_core::{
-    FlavorRegistry, OrgId, Owner, PersonalityFlavor, PerspectivePayload, Principal, SchemaId,
-    UserId,
-};
-use uuid::Uuid;
-
-fn owner_fixture() -> Owner {
-    Owner {
-        principal: Principal::User(UserId::new(Uuid::now_v7())),
-        org_id: OrgId::new(Uuid::now_v7()),
-    }
-}
+use proxima_core::{FlavorRegistry, PersonalityFlavor, PerspectivePayload, SchemaId};
 
 #[test]
 fn code_flavor_registers_personalities_and_self_schemas() {
@@ -41,32 +30,23 @@ fn code_flavor_registers_personalities_and_self_schemas() {
 }
 
 #[test]
-fn commit_summary_personality_preserves_operator_surface() {
+fn commit_summary_personality_exposes_default_metadata() {
     let personality = CommitSummaryPersonality;
-    let draft = personality
-        .default_self_payload(&owner_fixture(), None)
-        .expect("default self payload");
+    assert_eq!(personality.default_display_name(), "Commit Summarizer");
     assert_eq!(
-        draft.schema_id.as_str(),
-        CodeCommitSummarizerSelfV1::SCHEMA_ID
+        personality.default_purpose(),
+        "Summarize commits as Abstractions"
     );
-    assert_eq!(draft.text, "Commit Summarizer");
 }
 
 #[test]
-fn engineer_personality_preserves_operator_surface() {
+fn engineer_personality_exposes_default_metadata() {
     let personality = CodeEngineerPersonality;
-    let draft = personality
-        .default_self_payload(
-            &owner_fixture(),
-            Some(&serde_json::json!({
-                "display_name": "Engineer B",
-                "purpose": "review risky changes",
-            })),
-        )
-        .expect("default self payload");
-    assert_eq!(draft.schema_id.as_str(), CodeEngineerSelfV1::SCHEMA_ID);
-    assert_eq!(draft.text, "Engineer B");
+    assert_eq!(personality.default_display_name(), "Engineer");
+    assert_eq!(
+        personality.default_purpose(),
+        "Develop perspectives on code changes"
+    );
 }
 
 #[test]
