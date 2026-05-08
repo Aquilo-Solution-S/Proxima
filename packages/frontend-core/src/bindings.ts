@@ -36,6 +36,10 @@ export const commands = {
 	path: string,
 	version: string,
 } | null, ProtocolError>(__TAURI_INVOKE("detect_local_harness", { name })),
+	listOwnerRecipes: (req: ListOwnerRecipesTs) => typedError<OwnerRecipesListingTs, ProtocolError>(__TAURI_INVOKE("list_owner_recipes", { req })),
+	listBundledRecipes: () => typedError<BundledRecipeTs[], ProtocolError>(__TAURI_INVOKE("list_bundled_recipes")),
+	listMcpTools: () => typedError<McpToolTs[], ProtocolError>(__TAURI_INVOKE("list_mcp_tools")),
+	listWorkspaceTools: () => typedError<WorkspaceToolTs[], ProtocolError>(__TAURI_INVOKE("list_workspace_tools")),
 	/**
 	 *  # Errors
 	 *  Returns `CommandError::Storage` on database failures.
@@ -145,6 +149,11 @@ export type BindInferenceTierTs = {
 	owner: Owner,
 	tier: ModelTierTs,
 	target_ref: string,
+};
+
+export type BundledRecipeTs = {
+	slug: string,
+	flavor_id: string,
 };
 
 export type ChangeEvent = {
@@ -499,6 +508,10 @@ export type ListInferenceTierBindingsTs = {
 	owner: Owner,
 };
 
+export type ListOwnerRecipesTs = {
+	owner: Owner,
+};
+
 export type ListPersonalityInstancesTs = {
 	owner: Owner,
 	include_tombstoned?: boolean,
@@ -508,6 +521,12 @@ export type LocalCliConfigTs = {
 	command: string,
 	profile: string | null,
 	env_overrides: ([string, string])[],
+};
+
+export type McpToolTs = {
+	name: string,
+	description: string,
+	flavor_id: string,
 };
 
 export type MemoryId = string;
@@ -548,6 +567,16 @@ export type OrgId = string;
 export type Owner = {
 	principal: Principal,
 	org_id: OrgId,
+};
+
+export type OwnerRecipeTs = {
+	filename: string,
+	modified_at: string | null,
+};
+
+export type OwnerRecipesListingTs = {
+	root_path: string,
+	recipes: OwnerRecipeTs[],
 };
 
 export type PayloadKind = "Fact" | "Abstraction" | "Perspective" | "Goal" | 
@@ -849,6 +878,11 @@ export type WakeEntryTs = {
 	workspace_tool_palette: string[],
 	max_rounds: number,
 	disabled_reason: string | null,
+};
+
+export type WorkspaceToolTs = {
+	id: string,
+	description: string,
 };
 
 /* Tauri Specta runtime */

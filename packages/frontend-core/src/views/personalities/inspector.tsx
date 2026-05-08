@@ -2,15 +2,20 @@ import {
   For,
   Show,
   createMemo,
+  createSignal,
   type Component,
 } from "solid-js";
 import type {
   AuthoredByTs,
+  BundledRecipeTs,
   ExecutionModeTs,
+  McpToolTs,
   ModelTierTs,
+  OwnerRecipesListingTs,
   PersonalityInstanceTs,
   TriggerKindTs,
   WakeEntryDraftTs,
+  WorkspaceToolTs,
 } from "../../bindings";
 import { Mono } from "../../primitives";
 import { registeredPayloadRenderers } from "../../registry";
@@ -46,11 +51,50 @@ const schemaOptionsFor = (schemaId: string) => {
   return [{ schemaId, flavor: "stored config" }, ...options];
 };
 
-const splitPalette = (value: string): string[] =>
-  value
-    .split(",")
-    .map((part) => part.trim())
-    .filter(Boolean);
+const togglePaletteValue = (palette: string[], value: string): string[] => {
+  if (palette.includes(value)) return palette.filter((id) => id !== value);
+  return [...palette, value];
+};
+
+const triggerKindLabel = (kind: TriggerKindTs): string => {
+  switch (kind) {
+    case "on_memory":
+      return "On memory";
+    case "on_edge":
+      return "On edge";
+  }
+};
+
+const authoredByLabel = (author: AuthoredByTs): string => {
+  switch (author) {
+    case "any":
+      return "Any";
+    case "self_author":
+      return "Self author";
+    case "other":
+      return "Other";
+  }
+};
+
+const executionModeLabel = (mode: ExecutionModeTs): string => {
+  switch (mode) {
+    case "substrate_only":
+      return "Substrate only";
+    case "workspace":
+      return "Workspace";
+  }
+};
+
+const modelTierLabel = (tier: ModelTierTs): string => {
+  switch (tier) {
+    case "fast":
+      return "Fast";
+    case "standard":
+      return "Standard";
+    case "deep":
+      return "Deep";
+  }
+};
 
 const clampInt = (value: string, min: number, max: number): number => {
   const parsed = Number.parseInt(value, 10);
@@ -65,6 +109,12 @@ interface InspectorProps {
   dirty: boolean;
   saving: boolean;
   error: string | null;
+  recipes: OwnerRecipesListingTs | null;
+  bundledRecipes: BundledRecipeTs[] | null;
+  recipesError: string | null;
+  mcpTools: McpToolTs[] | null;
+  workspaceTools: WorkspaceToolTs[] | null;
+  toolsError: string | null;
   onUpdateEntry: (
     instanceId: string,
     index: number,
@@ -80,6 +130,8 @@ interface InspectorProps {
   confirmingTombstone: string | null;
   onConfirmTombstone: (instanceId: string) => void;
   onCancelTombstone: () => void;
+  onRefreshRecipes: () => void;
+  onRevealRecipesFolder: (path: string) => void;
 }
 
 const findInstance = (
@@ -154,6 +206,12 @@ export const Inspector: Component<InspectorProps> = (props) => {
             entryIndex={
               (props.selection as { entry_index: number }).entry_index
             }
+            recipes={props.recipes}
+            bundledRecipes={props.bundledRecipes}
+            recipesError={props.recipesError}
+            mcpTools={props.mcpTools}
+            workspaceTools={props.workspaceTools}
+            toolsError={props.toolsError}
             onUpdate={(mutate) => {
               const sel = props.selection;
               if (sel?.kind !== "wake_entry") return;
@@ -164,6 +222,8 @@ export const Inspector: Component<InspectorProps> = (props) => {
               if (sel?.kind !== "wake_entry") return;
               props.onRemoveEntry(sel.instance_id, sel.entry_index);
             }}
+            onRefreshRecipes={props.onRefreshRecipes}
+            onRevealRecipesFolder={props.onRevealRecipesFolder}
           />
         </Show>
 
@@ -323,8 +383,16 @@ const WakeEntryDetail: Component<{
   instance: PersonalityInstanceTs;
   draft: WakeEntryDraftTs;
   entryIndex: number;
+  recipes: OwnerRecipesListingTs | null;
+  bundledRecipes: BundledRecipeTs[] | null;
+  recipesError: string | null;
+  mcpTools: McpToolTs[] | null;
+  workspaceTools: WorkspaceToolTs[] | null;
+  toolsError: string | null;
   onUpdate: (mutate: (draft: WakeEntryDraftTs) => void) => void;
   onRemove: () => void;
+  onRefreshRecipes: () => void;
+  onRevealRecipesFolder: (path: string) => void;
 }> = (props) => {
   const triggerOptions = createMemo(() =>
     schemaOptionsFor(props.draft.trigger_id),
@@ -348,7 +416,7 @@ const WakeEntryDetail: Component<{
             Label
             <input
               value={props.draft.label}
-              onInput={(event) =>
+              onChange={(event) =>
                 props.onUpdate((draft) => {
                   draft.label = event.currentTarget.value;
                 })
@@ -385,7 +453,7 @@ const WakeEntryDetail: Component<{
               }
             >
               <For each={TRIGGER_KINDS}>
-                {(kind) => <option value={kind}>{kind}</option>}
+                {(kind) => <option value={kind}>{triggerKindLabel(kind)}</option>}
               </For>
             </select>
           </label>
@@ -396,7 +464,7 @@ const WakeEntryDetail: Component<{
               fallback={
                 <input
                   value={props.draft.trigger_id}
-                  onInput={(event) =>
+                  onChange={(event) =>
                     props.onUpdate((draft) => {
                       draft.trigger_id = event.currentTarget.value;
                     })
@@ -433,7 +501,9 @@ const WakeEntryDetail: Component<{
               }
             >
               <For each={AUTHORED_BY}>
-                {(author) => <option value={author}>{author}</option>}
+                {(author) => (
+                  <option value={author}>{authoredByLabel(author)}</option>
+                )}
               </For>
             </select>
           </label>
@@ -445,7 +515,7 @@ const WakeEntryDetail: Component<{
               max="1000"
               step="1"
               value={String(props.draft.probability_promille)}
-              onInput={(event) =>
+              onChange={(event) =>
                 props.onUpdate((draft) => {
                   draft.probability_promille = clampInt(
                     event.currentTarget.value,
@@ -465,46 +535,47 @@ const WakeEntryDetail: Component<{
           What runs on each wake. Recipe weaves the per-trigger prose.
         </p>
         <div class="personality-section-grid">
-          <label class="personality-section-grid-full">
-            Recipe ref
-            <input
-              value={props.draft.recipe_ref}
-              placeholder="user:default.yaml"
-              onInput={(event) =>
+          <RecipePicker
+            recipeRef={props.draft.recipe_ref}
+            recipes={props.recipes}
+            bundledRecipes={props.bundledRecipes}
+            recipesError={props.recipesError}
+            onChange={(value) =>
+              props.onUpdate((draft) => {
+                draft.recipe_ref = value;
+              })
+            }
+            onRefresh={props.onRefreshRecipes}
+            onReveal={props.onRevealRecipesFolder}
+          />
+          <SubstrateToolPicker
+            selected={props.draft.substrate_tool_palette}
+            tools={props.mcpTools}
+            error={props.toolsError}
+            onToggle={(toolId) =>
+              props.onUpdate((draft) => {
+                draft.substrate_tool_palette = togglePaletteValue(
+                  draft.substrate_tool_palette,
+                  toolId,
+                );
+              })
+            }
+          />
+          <Show when={props.draft.execution_mode === "workspace"}>
+            <WorkspaceToolPicker
+              selected={props.draft.workspace_tool_palette}
+              tools={props.workspaceTools}
+              error={props.toolsError}
+              onToggle={(toolId) =>
                 props.onUpdate((draft) => {
-                  draft.recipe_ref = event.currentTarget.value;
-                })
-              }
-            />
-          </label>
-          <label class="personality-section-grid-full">
-            Substrate tool palette
-            <input
-              value={props.draft.substrate_tool_palette.join(",")}
-              placeholder="comma,separated,tool,ids"
-              onInput={(event) =>
-                props.onUpdate((draft) => {
-                  draft.substrate_tool_palette = splitPalette(
-                    event.currentTarget.value,
+                  draft.workspace_tool_palette = togglePaletteValue(
+                    draft.workspace_tool_palette,
+                    toolId,
                   );
                 })
               }
             />
-          </label>
-          <label class="personality-section-grid-full">
-            Workspace tool palette
-            <input
-              value={props.draft.workspace_tool_palette.join(",")}
-              placeholder="comma,separated,tool,ids"
-              onInput={(event) =>
-                props.onUpdate((draft) => {
-                  draft.workspace_tool_palette = splitPalette(
-                    event.currentTarget.value,
-                  );
-                })
-              }
-            />
-          </label>
+          </Show>
         </div>
       </details>
 
@@ -523,7 +594,9 @@ const WakeEntryDetail: Component<{
               }
             >
               <For each={EXECUTION_MODES}>
-                {(mode) => <option value={mode}>{mode}</option>}
+                {(mode) => (
+                  <option value={mode}>{executionModeLabel(mode)}</option>
+                )}
               </For>
             </select>
           </label>
@@ -538,7 +611,7 @@ const WakeEntryDetail: Component<{
               }
             >
               <For each={MODEL_TIERS}>
-                {(tier) => <option value={tier}>{tier}</option>}
+                {(tier) => <option value={tier}>{modelTierLabel(tier)}</option>}
               </For>
             </select>
           </label>
@@ -547,7 +620,7 @@ const WakeEntryDetail: Component<{
             <input
               value={props.draft.inference_target_ref ?? ""}
               placeholder="(default tier binding)"
-              onInput={(event) =>
+              onChange={(event) =>
                 props.onUpdate((draft) => {
                   const value = event.currentTarget.value.trim();
                   draft.inference_target_ref = value === "" ? null : value;
@@ -562,7 +635,7 @@ const WakeEntryDetail: Component<{
               min="0"
               step="1"
               value={String(props.draft.max_rounds)}
-              onInput={(event) =>
+              onChange={(event) =>
                 props.onUpdate((draft) => {
                   draft.max_rounds = clampInt(
                     event.currentTarget.value,
@@ -585,6 +658,415 @@ const WakeEntryDetail: Component<{
           Remove entry
         </button>
       </div>
+    </div>
+  );
+};
+
+const USER_PREFIX = "user:";
+const BUNDLED_PREFIX = "bundled:";
+
+type RecipeTab = "user" | "bundled";
+
+const tabFromRef = (recipeRef: string): RecipeTab =>
+  recipeRef.startsWith(BUNDLED_PREFIX) ? "bundled" : "user";
+
+const RecipePicker: Component<{
+  recipeRef: string;
+  recipes: OwnerRecipesListingTs | null;
+  bundledRecipes: BundledRecipeTs[] | null;
+  recipesError: string | null;
+  onChange: (value: string) => void;
+  onRefresh: () => void;
+  onReveal: (path: string) => void;
+}> = (props) => {
+  const [activeTab, setActiveTab] = createSignal<RecipeTab>(
+    tabFromRef(props.recipeRef),
+  );
+
+  const userOptions = createMemo<{ value: string; label: string }[]>(() => {
+    const listing = props.recipes;
+    if (!listing) return [];
+    return listing.recipes.map((recipe) => ({
+      value: `${USER_PREFIX}${recipe.filename}`,
+      label: recipe.filename,
+    }));
+  });
+
+  const bundledOptions = createMemo<{ value: string; label: string }[]>(() => {
+    const list = props.bundledRecipes;
+    if (!list) return [];
+    return list.map((recipe) => ({
+      value: `${BUNDLED_PREFIX}${recipe.slug}`,
+      label: recipe.slug,
+    }));
+  });
+
+  const userOrphan = createMemo<{ value: string; label: string } | null>(() => {
+    const ref = props.recipeRef;
+    if (!ref.startsWith(USER_PREFIX)) return null;
+    if (userOptions().some((opt) => opt.value === ref)) return null;
+    return { value: ref, label: `${ref.slice(USER_PREFIX.length)} (missing)` };
+  });
+
+  const bundledOrphan = createMemo<{ value: string; label: string } | null>(
+    () => {
+      const ref = props.recipeRef;
+      if (!ref.startsWith(BUNDLED_PREFIX)) return null;
+      if (bundledOptions().some((opt) => opt.value === ref)) return null;
+      return {
+        value: ref,
+        label: `${ref.slice(BUNDLED_PREFIX.length)} (unknown)`,
+      };
+    },
+  );
+
+  const otherOrphan = createMemo<{ value: string; label: string } | null>(
+    () => {
+      const ref = props.recipeRef;
+      if (!ref) return null;
+      if (ref.startsWith(USER_PREFIX) || ref.startsWith(BUNDLED_PREFIX))
+        return null;
+      return { value: ref, label: `${ref} (unrecognized)` };
+    },
+  );
+
+  const userLoading = createMemo(() => props.recipes === null);
+  const bundledLoading = createMemo(() => props.bundledRecipes === null);
+  const userEmpty = createMemo(
+    () => props.recipes !== null && props.recipes.recipes.length === 0,
+  );
+  const bundledEmpty = createMemo(
+    () => props.bundledRecipes !== null && props.bundledRecipes.length === 0,
+  );
+  const folderPath = createMemo(() => props.recipes?.root_path ?? "");
+
+  const currentValue = createMemo(() => {
+    const tab = activeTab();
+    const ref = props.recipeRef;
+    if (tab === "user") {
+      if (ref.startsWith(USER_PREFIX)) return ref;
+      return "";
+    }
+    if (ref.startsWith(BUNDLED_PREFIX)) return ref;
+    return "";
+  });
+
+  return (
+    <div class="personality-section-grid-full personality-recipe-picker">
+      <div class="personality-recipe-picker-tabs" role="tablist" aria-label="Recipe source">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab() === "user"}
+          class={`personality-recipe-picker-tab${
+            activeTab() === "user" ? " is-active" : ""
+          }`}
+          onClick={() => setActiveTab("user")}
+        >
+          Private
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab() === "bundled"}
+          class={`personality-recipe-picker-tab${
+            activeTab() === "bundled" ? " is-active" : ""
+          }`}
+          onClick={() => setActiveTab("bundled")}
+        >
+          Bundled
+        </button>
+      </div>
+
+      <Show when={activeTab() === "user"}>
+        <label>
+          Recipe
+          <div class="personality-recipe-picker-row">
+            <select
+              value={currentValue()}
+              disabled={userLoading()}
+              aria-label="Recipe"
+              onChange={(event) => props.onChange(event.currentTarget.value)}
+            >
+              <Show when={!currentValue()}>
+                <option value="" disabled>
+                  {userLoading() ? "Loading recipes…" : "Select a recipe"}
+                </option>
+              </Show>
+              <Show when={userOrphan()}>
+                {(orphan) => (
+                  <option value={orphan().value}>{orphan().label}</option>
+                )}
+              </Show>
+              <Show when={activeTab() === "user" ? otherOrphan() : null}>
+                {(orphan) => (
+                  <option value={orphan().value}>{orphan().label}</option>
+                )}
+              </Show>
+              <For each={userOptions()}>
+                {(option) => (
+                  <option value={option.value}>{option.label}</option>
+                )}
+              </For>
+            </select>
+            <button
+              type="button"
+              class="hub-nav-item"
+              onClick={props.onRefresh}
+              aria-label="Refresh recipes"
+              title="Refresh"
+            >
+              ↻
+            </button>
+          </div>
+        </label>
+        <p class="personality-recipe-picker-hint">
+          <Show
+            when={folderPath()}
+            fallback={<span>Loading recipes folder…</span>}
+          >
+            <span>
+              Recipes folder: <Mono>{folderPath()}</Mono>
+            </span>
+            <button
+              type="button"
+              class="personality-recipe-picker-link"
+              onClick={() => props.onReveal(folderPath())}
+            >
+              Reveal
+            </button>
+          </Show>
+        </p>
+        <Show when={userEmpty()}>
+          <p class="personality-recipe-picker-empty">
+            No recipes found. Drop a *.yaml in the folder above, then refresh.
+          </p>
+        </Show>
+      </Show>
+
+      <Show when={activeTab() === "bundled"}>
+        <label>
+          Recipe
+          <div class="personality-recipe-picker-row">
+            <select
+              value={currentValue()}
+              disabled={bundledLoading()}
+              aria-label="Recipe"
+              onChange={(event) => props.onChange(event.currentTarget.value)}
+            >
+              <Show when={!currentValue()}>
+                <option value="" disabled>
+                  {bundledLoading()
+                    ? "Loading bundled recipes…"
+                    : "Select a bundled recipe"}
+                </option>
+              </Show>
+              <Show when={bundledOrphan()}>
+                {(orphan) => (
+                  <option value={orphan().value}>{orphan().label}</option>
+                )}
+              </Show>
+              <For each={bundledOptions()}>
+                {(option) => (
+                  <option value={option.value}>{option.label}</option>
+                )}
+              </For>
+            </select>
+          </div>
+        </label>
+        <p class="personality-recipe-picker-hint">
+          Ships with the app — read-only. Copy a bundled file into the
+          recipes folder to customize.
+        </p>
+        <Show when={bundledEmpty()}>
+          <p class="personality-recipe-picker-empty">
+            No bundled recipes registered.
+          </p>
+        </Show>
+      </Show>
+
+      <Show when={props.recipesError}>
+        {(message) => (
+          <p class="proxima-error" role="alert">
+            {message()}
+          </p>
+        )}
+      </Show>
+    </div>
+  );
+};
+
+const SubstrateToolPicker: Component<{
+  selected: string[];
+  tools: McpToolTs[] | null;
+  error: string | null;
+  onToggle: (toolId: string) => void;
+}> = (props) => {
+  const orphans = createMemo(() => {
+    const known = new Set((props.tools ?? []).map((t) => t.name));
+    return props.selected.filter((id) => !known.has(id));
+  });
+
+  return (
+    <div class="personality-section-grid-full personality-tool-picker">
+      <div class="personality-tool-picker-head">
+        <span class="personality-tool-picker-label">Substrate tool palette</span>
+        <span class="personality-tool-picker-hint">
+          Engine-hosted MCP tools registered at compile time.
+        </span>
+      </div>
+      <Show when={props.error}>
+        {(message) => (
+          <p class="proxima-error" role="alert">
+            {message()}
+          </p>
+        )}
+      </Show>
+      <Show
+        when={props.tools}
+        fallback={
+          <p class="personality-tool-picker-empty">Loading tools…</p>
+        }
+      >
+        {(tools) => (
+          <Show
+            when={tools().length > 0}
+            fallback={
+              <p class="personality-tool-picker-empty">
+                No MCP tools registered in this build.
+              </p>
+            }
+          >
+            <ul class="personality-tool-list" role="list">
+              <For each={tools()}>
+                {(tool) => (
+                  <li>
+                    <label class="personality-tool-row">
+                      <input
+                        type="checkbox"
+                        checked={props.selected.includes(tool.name)}
+                        onChange={() => props.onToggle(tool.name)}
+                      />
+                      <span class="personality-tool-row-id">
+                        <Mono>{tool.name}</Mono>
+                      </span>
+                      <Show when={tool.description}>
+                        <span class="personality-tool-row-desc">
+                          {tool.description}
+                        </span>
+                      </Show>
+                    </label>
+                  </li>
+                )}
+              </For>
+            </ul>
+          </Show>
+        )}
+      </Show>
+      <Show when={orphans().length > 0}>
+        <ul class="personality-tool-list personality-tool-list-orphans" role="list">
+          <For each={orphans()}>
+            {(toolId) => (
+              <li>
+                <label class="personality-tool-row personality-tool-row-orphan">
+                  <input
+                    type="checkbox"
+                    checked
+                    onChange={() => props.onToggle(toolId)}
+                  />
+                  <span class="personality-tool-row-id">
+                    <Mono>{toolId}</Mono>
+                  </span>
+                  <span class="personality-tool-row-desc">(unknown)</span>
+                </label>
+              </li>
+            )}
+          </For>
+        </ul>
+      </Show>
+    </div>
+  );
+};
+
+const WorkspaceToolPicker: Component<{
+  selected: string[];
+  tools: WorkspaceToolTs[] | null;
+  error: string | null;
+  onToggle: (toolId: string) => void;
+}> = (props) => {
+  const orphans = createMemo(() => {
+    const known = new Set((props.tools ?? []).map((t) => t.id));
+    return props.selected.filter((id) => !known.has(id));
+  });
+
+  return (
+    <div class="personality-section-grid-full personality-tool-picker">
+      <div class="personality-tool-picker-head">
+        <span class="personality-tool-picker-label">Workspace tool palette</span>
+        <span class="personality-tool-picker-hint">
+          Filesystem and process tools available when running in workspace mode.
+        </span>
+      </div>
+      <Show when={props.error}>
+        {(message) => (
+          <p class="proxima-error" role="alert">
+            {message()}
+          </p>
+        )}
+      </Show>
+      <Show
+        when={props.tools}
+        fallback={
+          <p class="personality-tool-picker-empty">Loading tools…</p>
+        }
+      >
+        {(tools) => (
+          <ul class="personality-tool-list" role="list">
+            <For each={tools()}>
+              {(tool) => (
+                <li>
+                  <label class="personality-tool-row">
+                    <input
+                      type="checkbox"
+                      checked={props.selected.includes(tool.id)}
+                      onChange={() => props.onToggle(tool.id)}
+                    />
+                    <span class="personality-tool-row-id">
+                      <Mono>{tool.id}</Mono>
+                    </span>
+                    <Show when={tool.description}>
+                      <span class="personality-tool-row-desc">
+                        {tool.description}
+                      </span>
+                    </Show>
+                  </label>
+                </li>
+              )}
+            </For>
+          </ul>
+        )}
+      </Show>
+      <Show when={orphans().length > 0}>
+        <ul class="personality-tool-list personality-tool-list-orphans" role="list">
+          <For each={orphans()}>
+            {(toolId) => (
+              <li>
+                <label class="personality-tool-row personality-tool-row-orphan">
+                  <input
+                    type="checkbox"
+                    checked
+                    onChange={() => props.onToggle(toolId)}
+                  />
+                  <span class="personality-tool-row-id">
+                    <Mono>{toolId}</Mono>
+                  </span>
+                  <span class="personality-tool-row-desc">(unknown)</span>
+                </label>
+              </li>
+            )}
+          </For>
+        </ul>
+      </Show>
     </div>
   );
 };

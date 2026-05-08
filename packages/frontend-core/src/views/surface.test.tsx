@@ -191,6 +191,10 @@ const clientWithHistory = (
     return [];
   },
   detectLocalHarness: async () => null,
+  listOwnerRecipes: async () => ({ root_path: "", recipes: [] }),
+  listBundledRecipes: async () => [],
+  listMcpTools: async () => [],
+  listWorkspaceTools: async () => [],
 });
 
 const renderSurfaceWithClient = (client: EngineClient) => {

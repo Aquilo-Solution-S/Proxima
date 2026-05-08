@@ -7,6 +7,7 @@ use crate::error::ProtocolError;
 use crate::inference::recipe_resolve::resolve_recipe_ref;
 use crate::inference::recipe_validate::{RecipeValidateError, validate_recipe as goose_validate};
 use crate::storage::{Storage, StorageError};
+use crate::personality::workspace_tool_ids;
 use crate::{
     FlavorRegistryFrozen, ModelTier, SetWakeEntriesRequest, SetWakeEntriesResponse, WakeEntryDraft,
     WakeEntryTriggerKind,
@@ -27,9 +28,10 @@ pub async fn set_wake_entries(
         validate_entry_shape(entry)?;
     }
 
-    let registered_tool_ids = ctx.registry.mcp_tool_ids();
+    let substrate_registered = ctx.registry.mcp_tool_ids();
+    let workspace_registered = workspace_tool_ids();
     for entry in &req.entries {
-        validate_palettes(entry, &registered_tool_ids)?;
+        validate_palettes(entry, &substrate_registered, &workspace_registered)?;
     }
 
     let owner_targets = ctx
@@ -111,14 +113,16 @@ fn validate_entry_shape(entry: &WakeEntryDraft) -> Result<(), ProtocolError> {
 
 fn validate_palettes(
     entry: &WakeEntryDraft,
-    registered: &HashSet<String>,
+    substrate_registered: &HashSet<String>,
+    workspace_registered: &HashSet<String>,
 ) -> Result<(), ProtocolError> {
-    for tool_id in entry
-        .substrate_tool_palette
-        .iter()
-        .chain(entry.workspace_tool_palette.iter())
-    {
-        if !registered.contains(tool_id) {
+    for tool_id in &entry.substrate_tool_palette {
+        if !substrate_registered.contains(tool_id) {
+            return Err(ProtocolError::tool_not_registered(tool_id));
+        }
+    }
+    for tool_id in &entry.workspace_tool_palette {
+        if !workspace_registered.contains(tool_id) {
             return Err(ProtocolError::tool_not_registered(tool_id));
         }
     }

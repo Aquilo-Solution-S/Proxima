@@ -420,6 +420,40 @@ async fn unregistered_tool_is_rejected() {
 }
 
 #[tokio::test]
+async fn workspace_tool_outside_catalog_is_rejected() {
+    let storage = FixtureStorage::default();
+    let registry = registry();
+    let recipes_root = tempfile::tempdir().unwrap();
+    let ctx = SetWakeEntriesContext {
+        storage: &storage,
+        registry: &registry,
+        owner_recipes_root: recipes_root.path().to_path_buf(),
+    };
+    let mut draft = entry("schema-a", "user:r.yaml");
+    draft.workspace_tool_palette = vec!["proxima-workspace/not-real".into()];
+    let err = set_wake_entries(&ctx, &req(vec![draft])).await.unwrap_err();
+    assert_eq!(err.code, ErrorCode::ToolNotRegistered);
+}
+
+#[tokio::test]
+async fn substrate_tool_id_in_workspace_palette_is_rejected() {
+    // A registered MCP tool ID belongs in substrate, never workspace.
+    let storage = FixtureStorage::default();
+    let registry = registry();
+    let recipes_root = tempfile::tempdir().unwrap();
+    let ctx = SetWakeEntriesContext {
+        storage: &storage,
+        registry: &registry,
+        owner_recipes_root: recipes_root.path().to_path_buf(),
+    };
+    let mut draft = entry("schema-a", "user:r.yaml");
+    // Cross-tier: an MCP id placed in the workspace slot.
+    draft.workspace_tool_palette = vec!["proxima-core/append-event".into()];
+    let err = set_wake_entries(&ctx, &req(vec![draft])).await.unwrap_err();
+    assert_eq!(err.code, ErrorCode::ToolNotRegistered);
+}
+
+#[tokio::test]
 async fn existing_recipe_reaches_recipe_validate_or_tier_resolution() {
     let storage = FixtureStorage::default();
     let registry = registry();

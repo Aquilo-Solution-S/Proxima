@@ -182,6 +182,13 @@ impl FlavorRegistryFrozen {
             .collect()
     }
 
+    /// All bundled recipes registered, ordered by registration. Each
+    /// slug is `<flavor_id>/<name>`.
+    #[must_use]
+    pub fn list_bundled_recipes(&self) -> impl Iterator<Item = &str> {
+        self.bundled_recipes.iter().map(|(slug, _)| slug.as_str())
+    }
+
     /// All `FlavorDescriptor`s registered through `proxima_flavor!`.
     /// Order matches macro invocation order.
     #[must_use]
