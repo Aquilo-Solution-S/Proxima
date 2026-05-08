@@ -7,6 +7,7 @@ import {
   type EventHistoryResponse,
   type EventIngestOutcome,
   type GoalDraft,
+  type BundledRecipeTs,
   type GoalWriteOutcome,
   type InstantiatePersonalityOutcomeTs,
   type InstantiatePersonalityTs,
@@ -16,7 +17,10 @@ import {
   type InferenceTierBindingTs,
   type ListInferenceTargetsTs,
   type ListInferenceTierBindingsTs,
+  type ListOwnerRecipesTs,
   type ListPersonalityInstancesTs,
+  type McpToolTs,
+  type OwnerRecipesListingTs,
   type PersonalityInstanceTs,
   type QueryRequest,
   type QueryResponse,
@@ -28,6 +32,7 @@ import {
   type SetWakeEntriesOutcomeTs,
   type SetWakeEntriesTs,
   type SubscribeRequest,
+  type WorkspaceToolTs,
 } from "./bindings";
 import type { EngineClient, Subscription } from "./client";
 
@@ -131,6 +136,24 @@ export class TauriEngineClient implements EngineClient {
 
   async detectLocalHarness(name: string): Promise<DetectedHarnessTs | null> {
     return unwrap(commands.detectLocalHarness(name));
+  }
+
+  async listOwnerRecipes(
+    req: ListOwnerRecipesTs,
+  ): Promise<OwnerRecipesListingTs> {
+    return unwrap(commands.listOwnerRecipes(req));
+  }
+
+  async listBundledRecipes(): Promise<BundledRecipeTs[]> {
+    return unwrap(commands.listBundledRecipes());
+  }
+
+  async listMcpTools(): Promise<McpToolTs[]> {
+    return unwrap(commands.listMcpTools());
+  }
+
+  async listWorkspaceTools(): Promise<WorkspaceToolTs[]> {
+    return unwrap(commands.listWorkspaceTools());
   }
 }
 

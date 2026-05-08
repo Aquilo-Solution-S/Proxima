@@ -63,7 +63,7 @@
 
 .personality-graph-shell {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(390px, 30%);
+  grid-template-columns: minmax(0, 1fr) minmax(430px, 34vw);
   gap: 14px;
   min-height: 0;
   align-items: stretch;
@@ -333,6 +333,7 @@
   flex-direction: column;
   gap: 12px;
   padding: 16px 18px;
+  overflow-x: clip;
   overflow-y: auto;
   flex: 1;
   min-width: 0;
@@ -561,6 +562,164 @@
 .personality-section-checkbox input[type="checkbox"] {
   width: auto;
   margin: 0;
+}
+
+/* ── Recipe picker ───────────────────────────────────────────── */
+
+.personality-recipe-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.personality-recipe-picker-tabs {
+  display: inline-flex;
+  align-self: flex-start;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  padding: 2px;
+  background: var(--bg);
+}
+
+.personality-recipe-picker-tab {
+  border: none;
+  background: transparent;
+  color: var(--ink-50);
+  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.personality-recipe-picker-tab.is-active {
+  background: var(--rule);
+  color: var(--ink-80);
+}
+
+.personality-recipe-picker-row {
+  display: flex;
+  gap: 6px;
+  align-items: stretch;
+}
+
+.personality-recipe-picker-row select {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.personality-recipe-picker-row .hub-nav-item {
+  padding: 4px 8px;
+  font-size: 12px;
+}
+
+.personality-recipe-picker-hint {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: baseline;
+  margin: 0;
+  font-size: 11px;
+  color: var(--ink-50);
+}
+
+.personality-recipe-picker-link {
+  border: none;
+  background: none;
+  padding: 0;
+  font: inherit;
+  color: var(--ink-80);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.personality-recipe-picker-empty {
+  margin: 0;
+  font-size: 11px;
+  color: var(--ink-50);
+}
+
+/* ── Tool palette picker ─────────────────────────────────────── */
+
+.personality-tool-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.personality-tool-picker-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.personality-tool-picker-label {
+  font-size: 11px;
+  color: var(--ink-80);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.personality-tool-picker-hint {
+  font-size: 11px;
+  color: var(--ink-50);
+}
+
+.personality-tool-picker-empty {
+  margin: 0;
+  font-size: 11px;
+  color: var(--ink-50);
+  font-style: italic;
+}
+
+.personality-tool-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  background: var(--bg);
+}
+
+.personality-tool-list-orphans {
+  border-color: #6e3a2c;
+  background: rgba(224, 122, 95, 0.08);
+}
+
+.personality-tool-row {
+  display: grid;
+  grid-template-columns: auto 1fr 2fr;
+  align-items: baseline;
+  gap: 10px;
+  padding: 6px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.personality-tool-row:hover {
+  background: var(--bg-elev);
+}
+
+.personality-tool-row input[type="checkbox"] {
+  margin: 0;
+}
+
+.personality-tool-row-id {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.personality-tool-row-desc {
+  color: var(--ink-50);
+  font-size: 11px;
+}
+
+.personality-tool-row-orphan .personality-tool-row-desc {
+  color: #e07a5f;
 }
 
 /* ── Tombstone confirm (re-used) ─────────────────────────────── */

@@ -136,6 +136,34 @@ impl WakeExecutionMode {
     }
 }
 
+/// Canonical workspace tool catalog. These IDs gate filesystem/process
+/// side effects when a wake entry runs in `WakeExecutionMode::Workspace`.
+/// v1 treats the palette as declared intent — Goose's recipe controls
+/// runtime tool availability today; Phase 1e wires enforcement into the
+/// fire path.
+pub const WORKSPACE_TOOL_CATALOG: &[(&str, &str)] = &[
+    (
+        "proxima-workspace/shell",
+        "Run shell commands (build, test, git, package managers)",
+    ),
+    (
+        "proxima-workspace/text_editor",
+        "View and edit files in the workspace",
+    ),
+    (
+        "proxima-workspace/list_files",
+        "List files and directories",
+    ),
+];
+
+#[must_use]
+pub fn workspace_tool_ids() -> std::collections::HashSet<String> {
+    WORKSPACE_TOOL_CATALOG
+        .iter()
+        .map(|(id, _)| (*id).to_string())
+        .collect()
+}
+
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct WakeEntryDraft {
     pub wake_entry_id: Uuid,

@@ -149,6 +149,9 @@ importers:
       '@tauri-apps/plugin-dialog':
         specifier: ^2
         version: 2.7.1
+      '@tauri-apps/plugin-opener':
+        specifier: ^2
+        version: 2.5.4
       cbor-x:
         specifier: ^1.6.4
         version: 1.6.4
