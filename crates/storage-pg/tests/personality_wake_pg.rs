@@ -112,6 +112,11 @@ async fn personality_wake_schema_replaces_legacy_tables() {
             "SELECT COUNT(*) FROM information_schema.columns
              WHERE table_schema = 'proxima_core'
                AND table_name IN (
+                   'memories',
+                   'change_event',
+                   'goals',
+                   'source_batch_f2a',
+                   'a2p_invocations',
                    'personality',
                    'personality_wake_entries',
                    'personality_wake_cursor',

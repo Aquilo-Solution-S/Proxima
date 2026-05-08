@@ -213,8 +213,7 @@ async fn engineer_e2e_emits_perspective_with_chained_provenance() {
         let perspective_count: i64 = sqlx::query_scalar(
             "SELECT count(*)
              FROM proxima_core.memories
-             WHERE personality_type_id = 'proxima-code/engineer-v1'
-               AND kind = 'Perspective'
+             WHERE kind = 'Perspective'
                AND schema_id = $1",
         )
         .bind(<CodeDevelopmentPerspectiveV1 as proxima_core::PerspectivePayload>::SCHEMA_ID)

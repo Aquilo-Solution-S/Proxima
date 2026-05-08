@@ -17,11 +17,6 @@ pub struct DerivedDraft<'a> {
     pub operator_kind: &'a str,
     pub model_id: &'a str,
     pub prompt_version: &'a str,
-    /// Carry the legacy single-string id during the substrate-migration
-    /// transition. Storage projects it onto `personality_type_id`; the
-    /// instance id defaults to nil for external-agent writes that don't
-    /// instantiate a substrate personality.
-    pub personality_id: &'a str,
     pub sidecar_table: Option<&'a str>,
     pub sidecar_payload: Option<serde_json::Value>,
 }
@@ -47,9 +42,9 @@ pub async fn append_derived_in_tx(
         "INSERT INTO proxima_core.memories
             (memory_id, owner_principal_kind, owner_principal_id, owner_org_id,
              schema_id, schema_version, kind, text, operator_kind, model_id,
-             prompt_version, personality_type_id, personality_instance_id,
+             prompt_version, personality_instance_id,
              wake_chain_depth)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 0)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, 0)
          ON CONFLICT (memory_id) DO NOTHING
          RETURNING memory_id",
     )
@@ -64,7 +59,6 @@ pub async fn append_derived_in_tx(
     .bind(draft.operator_kind)
     .bind(draft.model_id)
     .bind(draft.prompt_version)
-    .bind(draft.personality_id)
     .bind(uuid::Uuid::nil())
     .fetch_optional(&mut **tx)
     .await
@@ -100,8 +94,8 @@ pub async fn append_derived_in_tx(
         "INSERT INTO proxima_core.change_event
             (seq, owner_principal_kind, owner_principal_id, owner_org_id,
              kind, entity_kind, entity_memory_id, entity_schema_id, entity_schema_version,
-             entity_personality_type_id, entity_personality_instance_id, wake_chain_depth)
-         VALUES ($1, $2, $3, $4, 'EntityAppend', $5, $6, $7, $8, $9, $10, 0)",
+             entity_personality_instance_id, wake_chain_depth)
+         VALUES ($1, $2, $3, $4, 'EntityAppend', $5, $6, $7, $8, $9, 0)",
     )
     .bind(seq)
     .bind(owner_kind)
@@ -111,7 +105,6 @@ pub async fn append_derived_in_tx(
     .bind(draft.memory_id)
     .bind(draft.schema_id.as_str())
     .bind(i32::try_from(draft.schema_version.into_inner()).unwrap_or(1))
-    .bind(draft.personality_id)
     .bind(uuid::Uuid::nil())
     .execute(&mut **tx)
     .await

@@ -19,7 +19,6 @@ pub(crate) struct AuthorshipColumns {
     pub(crate) operator_kind: Option<String>,
     pub(crate) model_id: Option<String>,
     pub(crate) prompt_version: Option<String>,
-    pub(crate) personality_type_id: Option<String>,
     pub(crate) personality_instance_id: Option<uuid::Uuid>,
 }
 
@@ -34,7 +33,6 @@ pub(crate) fn authorship_columns(authorship: &GoalAuthorship) -> AuthorshipColum
             operator_kind: None,
             model_id: None,
             prompt_version: None,
-            personality_type_id: None,
             personality_instance_id: None,
         },
         GoalAuthorship::System(SystemOrigin::Operator {
@@ -53,7 +51,6 @@ pub(crate) fn authorship_columns(authorship: &GoalAuthorship) -> AuthorshipColum
             }),
             model_id: Some(model_id.as_str().to_string()),
             prompt_version: Some(prompt_version.as_str().to_string()),
-            personality_type_id: None,
             personality_instance_id: Some(personality_instance_id.into_inner()),
         },
         GoalAuthorship::System(SystemOrigin::Tool { tool_id }) => AuthorshipColumns {
@@ -64,7 +61,6 @@ pub(crate) fn authorship_columns(authorship: &GoalAuthorship) -> AuthorshipColum
             operator_kind: None,
             model_id: None,
             prompt_version: None,
-            personality_type_id: None,
             personality_instance_id: None,
         },
         GoalAuthorship::External => AuthorshipColumns {
@@ -75,7 +71,6 @@ pub(crate) fn authorship_columns(authorship: &GoalAuthorship) -> AuthorshipColum
             operator_kind: None,
             model_id: None,
             prompt_version: None,
-            personality_type_id: None,
             personality_instance_id: None,
         },
     }
@@ -92,7 +87,7 @@ pub(crate) async fn check_authorship_match(
     let existing_auth: AuthorshipColumns = sqlx::query_as(
         "SELECT authorship_kind, authorship_origin, authorship_operator_id, \
                      authorship_tool_id, operator_kind, model_id, \
-                     prompt_version, personality_type_id, personality_instance_id \
+                     prompt_version, personality_instance_id \
              FROM proxima_core.goals WHERE goal_id = $1",
     )
     .bind(existing_goal_id)

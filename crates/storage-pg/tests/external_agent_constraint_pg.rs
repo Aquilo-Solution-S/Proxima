@@ -16,10 +16,10 @@ async fn external_agent_operator_kind_is_admitted() -> Result<(), Box<dyn std::e
             "INSERT INTO proxima_core.memories
                 (memory_id, owner_principal_kind, owner_principal_id, owner_org_id,
                  schema_id, schema_version, kind, text, operator_kind, model_id,
-                 prompt_version, personality_type_id, personality_instance_id)
+                 prompt_version, personality_instance_id)
              VALUES ($1, 'User', $2, $3, 'proxima-mcp/agent-derivation-v1', 1,
                      'Abstraction', 'body', 'ExternalAgent', 'claude-opus-4.7',
-                     'mcp-agent-v1', 'external/mcp-agent',
+                     'mcp-agent-v1',
                      '00000000-0000-0000-0000-000000000000'::uuid)",
         )
         .bind(memory_id)

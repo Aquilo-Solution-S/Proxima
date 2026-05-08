@@ -9,11 +9,11 @@
 use proxima_core::personality::{
     AbstractionRow, ChangeEventForWake, FactRow, InstantiatePersonalityRequest,
     InstantiatePersonalityResponse, MemorySnapshot, PersonalityInstanceId, PersonalityInstanceRow,
-    PersonalityRef, PersonalityWriteOutcome, PersonalityWriteRequest, ROOT_PERSONALITY_PERSPECTIVE_SCHEMA_ID,
-    SetWakeEntriesRequest, SetWakeEntriesResponse, SidecarSpec, WakeChainDepth,
-    WakeDispatchEntryRow, WakeEntryAuthoredBy, WakeEntryDraft, WakeEntryExecutionMode, WakeEntryRow,
-    WakeEntryTriggerKind, WakeExecutionMode, WakeInvocationFinalize, WakeInvocationStart,
-    WakeInvocationStatus,
+    PersonalityRef, PersonalityWriteOutcome, PersonalityWriteRequest,
+    ROOT_PERSONALITY_PERSPECTIVE_SCHEMA_ID, SetWakeEntriesRequest, SetWakeEntriesResponse,
+    SidecarSpec, WakeChainDepth, WakeDispatchEntryRow, WakeEntryAuthoredBy, WakeEntryDraft,
+    WakeEntryExecutionMode, WakeEntryRow, WakeEntryTriggerKind, WakeExecutionMode,
+    WakeInvocationFinalize, WakeInvocationStart, WakeInvocationStatus,
 };
 use proxima_core::{MemoryId, ModelTier, Owner, Principal, SchemaId, SchemaVersion, StorageError};
 use sqlx::{PgPool, Row};
@@ -22,13 +22,6 @@ use crate::error::map_err;
 use crate::outbox::hydrate_change_event;
 use crate::pg_ident::PgIdent;
 use crate::verbs::edge_append::{EdgeDraft, append_edge_in_tx};
-
-const EXTERNAL_PERSONALITY_TYPE_ID: &str = "external/event-source";
-const EXTERNAL_PERSONALITY_INSTANCE_ID: uuid::Uuid = uuid::Uuid::nil();
-/// Placeholder stamped on `memories.personality_type_id` and
-/// `change_event.entity_personality_type_id` for personalities created
-/// after Phase 2 Step 1. The column itself is dropped in Phase 2 Step 4.
-const CORE_PERSONALITY_TYPE_PLACEHOLDER: &str = "core/personality";
 
 fn owner_columns(owner: &Owner) -> (&'static str, uuid::Uuid, uuid::Uuid) {
     let (kind, principal_id) = match &owner.principal {
@@ -167,9 +160,9 @@ pub async fn instantiate_personality(
         "INSERT INTO proxima_core.memories
             (memory_id, owner_principal_kind, owner_principal_id, owner_org_id,
              schema_id, schema_version, kind, text, operator_kind, model_id,
-             prompt_version, personality_type_id, personality_instance_id, wake_chain_depth)
+             prompt_version, personality_instance_id, wake_chain_depth)
          VALUES ($1, $2, $3, $4, $5, 1, 'Perspective', $6, 'Wake', 'substrate',
-                 'self-v1', $7, $8, 0)",
+                 'self-v1', $7, 0)",
     )
     .bind(memory_id)
     .bind(owner_kind)
@@ -177,7 +170,6 @@ pub async fn instantiate_personality(
     .bind(owner_org_id)
     .bind(ROOT_PERSONALITY_PERSPECTIVE_SCHEMA_ID)
     .bind(&req.display_name)
-    .bind(CORE_PERSONALITY_TYPE_PLACEHOLDER)
     .bind(instance_id)
     .execute(&mut *tx)
     .await
@@ -200,8 +192,8 @@ pub async fn instantiate_personality(
         "INSERT INTO proxima_core.change_event
             (seq, owner_principal_kind, owner_principal_id, owner_org_id, kind,
              entity_kind, entity_memory_id, entity_schema_id, entity_schema_version,
-             entity_personality_type_id, entity_personality_instance_id, wake_chain_depth)
-         VALUES ($1, $2, $3, $4, 'EntityAppend', 'Perspective', $5, $6, 1, $7, $8, 0)",
+             entity_personality_instance_id, wake_chain_depth)
+         VALUES ($1, $2, $3, $4, 'EntityAppend', 'Perspective', $5, $6, 1, $7, 0)",
     )
     .bind(change_seq)
     .bind(owner_kind)
@@ -209,7 +201,6 @@ pub async fn instantiate_personality(
     .bind(owner_org_id)
     .bind(memory_id)
     .bind(ROOT_PERSONALITY_PERSPECTIVE_SCHEMA_ID)
-    .bind(CORE_PERSONALITY_TYPE_PLACEHOLDER)
     .bind(instance_id)
     .execute(&mut *tx)
     .await
@@ -483,7 +474,9 @@ pub async fn list_change_events_after(
         if let Some(event) = hydrate_change_event(pool, seq).await? {
             out.push(ChangeEventForWake {
                 event,
-                authoring_personality_instance_id: instance_id.map(PersonalityInstanceId::new),
+                authoring_personality_instance_id: instance_id
+                    .filter(|id| !id.is_nil())
+                    .map(PersonalityInstanceId::new),
                 wake_chain_depth: WakeChainDepth::new(u16::try_from(depth).unwrap_or(0)),
             });
         }
@@ -877,9 +870,9 @@ pub async fn append_personality_memories(
             "INSERT INTO proxima_core.memories
                 (memory_id, owner_principal_kind, owner_principal_id, owner_org_id,
                  schema_id, schema_version, kind, text, operator_kind, model_id,
-                 prompt_version, personality_type_id, personality_instance_id,
+                 prompt_version, personality_instance_id,
                  wake_chain_depth, supersedes)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'Wake', $9, $10, $11, $12, $13, $14)",
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'Wake', $9, $10, $11, $12, $13)",
         )
         .bind(memory_id)
         .bind(owner_kind)
@@ -891,7 +884,6 @@ pub async fn append_personality_memories(
         .bind(&memory.text)
         .bind(req.model_id)
         .bind(req.prompt_version)
-        .bind(CORE_PERSONALITY_TYPE_PLACEHOLDER)
         .bind(req.instance.personality_instance_id.into_inner())
         .bind(i16::try_from(req.wake_chain_depth.into_inner()).unwrap_or(i16::MAX))
         .bind(prior_head)
@@ -919,9 +911,9 @@ pub async fn append_personality_memories(
             "INSERT INTO proxima_core.change_event
                 (seq, owner_principal_kind, owner_principal_id, owner_org_id, kind,
                  entity_kind, entity_memory_id, entity_schema_id, entity_schema_version,
-                 entity_personality_type_id, entity_personality_instance_id,
+                 entity_personality_instance_id,
                  wake_chain_depth, supersedes_memory_id)
-             VALUES ($1, $2, $3, $4, 'EntityAppend', $5, $6, $7, $8, $9, $10, $11, $12)",
+             VALUES ($1, $2, $3, $4, 'EntityAppend', $5, $6, $7, $8, $9, $10, $11)",
         )
         .bind(change_seq)
         .bind(owner_kind)
@@ -931,7 +923,6 @@ pub async fn append_personality_memories(
         .bind(memory_id)
         .bind(memory.schema_id.as_str())
         .bind(i32::try_from(memory.schema_version.into_inner()).unwrap_or(1))
-        .bind(CORE_PERSONALITY_TYPE_PLACEHOLDER)
         .bind(req.instance.personality_instance_id.into_inner())
         .bind(i16::try_from(req.wake_chain_depth.into_inner()).unwrap_or(i16::MAX))
         .bind(prior_head)
@@ -1120,12 +1111,4 @@ fn model_tier_str(tier: ModelTier) -> &'static str {
         ModelTier::Standard => "standard",
         ModelTier::Deep => "deep",
     }
-}
-
-#[allow(dead_code)]
-fn external_personality() -> (&'static str, uuid::Uuid) {
-    (
-        EXTERNAL_PERSONALITY_TYPE_ID,
-        EXTERNAL_PERSONALITY_INSTANCE_ID,
-    )
 }

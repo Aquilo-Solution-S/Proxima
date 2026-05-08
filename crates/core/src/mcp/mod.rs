@@ -21,13 +21,6 @@ pub struct McpAuthorContext {
     pub caller_self_perspective: Option<MemoryId>,
 }
 
-impl McpAuthorContext {
-    #[must_use]
-    pub fn personality_id(&self) -> &'static str {
-        "external/mcp-agent"
-    }
-}
-
 #[derive(Clone)]
 pub struct McpToolCtx {
     pub pool: sqlx::PgPool,
