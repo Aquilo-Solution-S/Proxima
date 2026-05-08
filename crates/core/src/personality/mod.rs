@@ -22,6 +22,16 @@ pub use tools::__test_only_model_id_from_wake_invocation;
 
 pub const MAX_WAKE_CHAIN_DEPTH: u16 = 10;
 
+/// Canonical schema id for the Root-Perspective sidecar that backs every
+/// personality after Phase 2 Step 1. Stamped on the memory + change_event
+/// rows minted by `instantiate_personality`.
+pub const ROOT_PERSONALITY_PERSPECTIVE_SCHEMA_ID: &str =
+    "proxima-core/root-personality-perspective-v1";
+
+/// Sidecar table backing [`ROOT_PERSONALITY_PERSPECTIVE_SCHEMA_ID`].
+pub const ROOT_PERSONALITY_PERSPECTIVE_SIDECAR_TABLE: &str =
+    "proxima_core.root_personality_perspective_v1";
+
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, specta::Type,
 )]
@@ -230,14 +240,6 @@ pub struct AbstractionRow {
 pub struct SidecarSpec {
     pub schema_id: SchemaId,
     pub sidecar_table: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct PersonalitySelfDraft {
-    pub schema_id: SchemaId,
-    pub schema_version: SchemaVersion,
-    pub text: String,
-    pub typed_payload: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -465,8 +467,8 @@ pub struct ChangeEventForWake {
 #[derive(Debug, Clone)]
 pub struct InstantiatePersonalityRequest {
     pub owner: Owner,
-    pub personality_type_id: String,
-    pub payload_overrides: Option<serde_json::Value>,
+    pub display_name: String,
+    pub purpose: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
@@ -489,7 +491,6 @@ pub struct SetWakeEntriesResponse {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TombstonePersonalityRequest {
     pub owner: Owner,
-    pub personality_type_id: String,
     pub personality_instance_id: PersonalityInstanceId,
 }
 
@@ -601,12 +602,10 @@ pub trait PersonalityTool: Send + Sync + std::fmt::Debug {
 /// Build-time personality declaration contributed by a flavor.
 pub trait PersonalityFlavor: Send + Sync + std::fmt::Debug {
     fn personality_type_id(&self) -> &'static str;
-    fn self_schema(&self) -> SchemaId;
-    fn default_self_payload(
-        &self,
-        owner: &Owner,
-        payload_overrides: Option<&serde_json::Value>,
-    ) -> Result<PersonalitySelfDraft, ProtocolError>;
+    /// Default name shown when `provision_owner` seeds an instance.
+    fn default_display_name(&self) -> &'static str;
+    /// Default purpose shown when `provision_owner` seeds an instance.
+    fn default_purpose(&self) -> &'static str;
 }
 
 #[cfg(test)]

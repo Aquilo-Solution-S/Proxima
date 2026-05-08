@@ -109,7 +109,6 @@ async fn tombstone_personality_rejects_noop_storage_write() {
     let err = engine
         .tombstone_personality(proxima_core::TombstonePersonalityRequest {
             owner,
-            personality_type_id: "missing/type".into(),
             personality_instance_id: proxima_core::PersonalityInstanceId::new(Uuid::now_v7()),
         })
         .await

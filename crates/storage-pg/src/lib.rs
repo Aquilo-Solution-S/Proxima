@@ -295,16 +295,9 @@ impl Storage for PgStorage {
     async fn list_personality_instances(
         &self,
         owner: &Owner,
-        personality_type_id: Option<&str>,
         include_tombstoned: bool,
     ) -> Result<Vec<PersonalityInstanceRow>, StorageError> {
-        verbs::consolidate::list_personality_instances(
-            &self.pool,
-            owner,
-            personality_type_id,
-            include_tombstoned,
-        )
-        .await
+        verbs::consolidate::list_personality_instances(&self.pool, owner, include_tombstoned).await
     }
 
     async fn tombstone_personality(
@@ -317,11 +310,8 @@ impl Storage for PgStorage {
     async fn instantiate_personality(
         &self,
         req: &InstantiatePersonalityRequest,
-        self_draft: &proxima_core::PersonalitySelfDraft,
-        self_sidecar_table: &str,
     ) -> Result<InstantiatePersonalityResponse, StorageError> {
-        verbs::consolidate::instantiate_personality(&self.pool, req, self_draft, self_sidecar_table)
-            .await
+        verbs::consolidate::instantiate_personality(&self.pool, req).await
     }
 
     async fn set_wake_entries(

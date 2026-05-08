@@ -179,15 +179,15 @@ async fn inspires_edge_targets_only_intended_engineer_instance() {
         let alice = engine
             .instantiate_personality(InstantiatePersonalityRequest {
                 owner: owner.clone(),
-                personality_type_id: "proxima-code/engineer-v1".into(),
-                payload_overrides: Some(serde_json::json!({"display_name": "Alice"})),
+                display_name: "Alice".into(),
+                purpose: "develop perspectives on code changes".into(),
             })
             .await?;
         let bob = engine
             .instantiate_personality(InstantiatePersonalityRequest {
                 owner: owner.clone(),
-                personality_type_id: "proxima-code/engineer-v1".into(),
-                payload_overrides: Some(serde_json::json!({"display_name": "Bob"})),
+                display_name: "Bob".into(),
+                purpose: "develop perspectives on code changes".into(),
             })
             .await?;
         let alice_self = self_perspective_for(&pg, alice.instance_id).await?;

@@ -263,10 +263,9 @@ message ProvisionOwnerResponse {}
 
 message InstantiatePersonalityRequest {
   Owner owner = 1;
-  string personality_type_id = 2;
-  // JSON object encoded as UTF-8. Boundary validates against the
-  // personality's self-Perspective payload type.
-  optional string payload_overrides_json = 3;
+  // Root Perspective fields written by the create-personality form.
+  string display_name = 2;
+  string purpose = 3;
 }
 
 message InstantiatePersonalityResponse {
@@ -275,7 +274,6 @@ message InstantiatePersonalityResponse {
 
 message SetWakeEntriesRequest {
   Owner owner = 1;
-  string personality_type_id = 2;
   string personality_instance_id = 3;  // UUID
   repeated WakeEntryDraft entries = 4;
 }
@@ -330,10 +328,7 @@ message ListInferenceTierBindingsResponse {
 
 message ListPersonalityInstancesRequest {
   Owner owner = 1;
-  optional string personality_type_id = 2;
   // When false (default), tombstoned instances are filtered out.
-  // Provisioning passes `true` so a previously tombstoned default
-  // personality is not silently recreated.
   bool include_tombstoned = 3;
 }
 
@@ -356,7 +351,6 @@ message PersonalityInstance {
 
 message TombstonePersonalityRequest {
   Owner owner = 1;
-  string personality_type_id = 2;
   string personality_instance_id = 3;  // UUID
 }
 

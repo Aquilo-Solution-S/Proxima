@@ -227,7 +227,6 @@ impl Storage for MockStorage {
     async fn list_personality_instances(
         &self,
         _owner: &Owner,
-        _personality_type_id: Option<&str>,
         _include_tombstoned: bool,
     ) -> Result<Vec<proxima_core::PersonalityInstanceRow>, StorageError> {
         Ok(Vec::new())
@@ -243,8 +242,6 @@ impl Storage for MockStorage {
     async fn instantiate_personality(
         &self,
         _req: &InstantiatePersonalityRequest,
-        _self_draft: &proxima_core::PersonalitySelfDraft,
-        _self_sidecar_table: &str,
     ) -> Result<InstantiatePersonalityResponse, StorageError> {
         unimplemented!("mock")
     }

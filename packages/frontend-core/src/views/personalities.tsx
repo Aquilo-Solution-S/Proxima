@@ -29,11 +29,7 @@ import {
 } from "../bindings";
 import { sentinelOwner } from "../graph-store";
 import { Mono } from "../primitives";
-import {
-  registeredPayloadRenderers,
-  registeredPersonalityTypes,
-  type RegisteredPersonalityType,
-} from "../registry";
+import { registeredPayloadRenderers } from "../registry";
 
 type CommandResult<T> = Promise<
   { status: "ok"; data: T } | { status: "error"; error: ProtocolError }
@@ -131,7 +127,6 @@ export const PersonalitiesView: Component<{
     null,
   );
   const [tombstoning, setTombstoning] = createSignal<string | null>(null);
-  const personalityTypes = registeredPersonalityTypes();
 
   const tombstoneInstance = async (instance: PersonalityInstanceTs) => {
     setTombstoning(instance.personality_instance_id);
@@ -140,7 +135,6 @@ export const PersonalitiesView: Component<{
       await unwrap(
         client.tombstonePersonality({
           owner: instance.owner,
-          personality_type_id: instance.personality_type_id,
           personality_instance_id: instance.personality_instance_id,
         }),
       );
@@ -174,7 +168,6 @@ export const PersonalitiesView: Component<{
       const rows = await unwrap(
         client.listPersonalityInstances({
           owner,
-          personality_type_id: null,
           include_tombstoned: false,
         }),
       );
@@ -190,22 +183,15 @@ export const PersonalitiesView: Component<{
     void refresh();
   });
 
-  const createPersonality = async (
-    type: RegisteredPersonalityType,
-    displayName: string,
-    purpose: string,
-  ) => {
+  const createPersonality = async (displayName: string, purpose: string) => {
     setLoading(true);
     setError(null);
     try {
       await unwrap(
         client.instantiatePersonality({
           owner,
-          personality_type_id: type.typeId,
-          payload_overrides: JSON.stringify({
-            display_name: displayName,
-            purpose,
-          }),
+          display_name: displayName,
+          purpose,
         }),
       );
       setCreating(false);
@@ -229,7 +215,7 @@ export const PersonalitiesView: Component<{
           <button
             type="button"
             class="hub-nav-item"
-            disabled={loading() || personalityTypes.length === 0}
+            disabled={loading()}
             onClick={() => setCreating(true)}
           >
             Create new Personality
@@ -265,11 +251,10 @@ export const PersonalitiesView: Component<{
 
       <Show when={creating()}>
         <CreatePersonalityDialog
-          types={personalityTypes}
           busy={loading()}
           onClose={() => setCreating(false)}
-          onCreate={(type, displayName, purpose) =>
-            void createPersonality(type, displayName, purpose)
+          onCreate={(displayName, purpose) =>
+            void createPersonality(displayName, purpose)
           }
         />
       </Show>
@@ -294,36 +279,15 @@ export const PersonalitiesView: Component<{
 export const EngineerInstancesPanel = PersonalitiesView;
 
 const CreatePersonalityDialog: Component<{
-  types: RegisteredPersonalityType[];
   busy: boolean;
   onClose: () => void;
-  onCreate: (
-    type: RegisteredPersonalityType,
-    displayName: string,
-    purpose: string,
-  ) => void;
+  onCreate: (displayName: string, purpose: string) => void;
 }> = (props) => {
-  const [selectedTypeId, setSelectedTypeId] = createSignal(
-    props.types[0]?.typeId ?? "",
-  );
-  const selectedType = createMemo(
-    () => props.types.find((type) => type.typeId === selectedTypeId()) ?? null,
-  );
-  const [displayName, setDisplayName] = createSignal(
-    props.types[0]?.defaultDisplayName ?? "",
-  );
-  const [purpose, setPurpose] = createSignal(props.types[0]?.defaultPurpose ?? "");
-
-  const chooseType = (type: RegisteredPersonalityType) => {
-    setSelectedTypeId(type.typeId);
-    setDisplayName(type.defaultDisplayName);
-    setPurpose(type.defaultPurpose);
-  };
+  const [displayName, setDisplayName] = createSignal("");
+  const [purpose, setPurpose] = createSignal("");
 
   const create = () => {
-    const type = selectedType();
-    if (type === null) return;
-    props.onCreate(type, displayName().trim(), purpose().trim());
+    props.onCreate(displayName().trim(), purpose().trim());
   };
 
   return (
@@ -332,7 +296,7 @@ const CreatePersonalityDialog: Component<{
         <div class="personality-dialog-head">
           <div>
             <h2>Create new Personality</h2>
-            <p>Choose a flavor-provided type, then set its instance details.</p>
+            <p>Name the instance and describe its purpose. Wake behavior is configured per-instance.</p>
           </div>
           <button type="button" class="hub-nav-item" onClick={props.onClose}>
             Close
@@ -340,30 +304,12 @@ const CreatePersonalityDialog: Component<{
         </div>
 
         <div class="personality-dialog-body">
-          <section class="personality-type-picker" aria-label="Personality type">
-            <For each={props.types}>
-              {(type) => (
-                <button
-                  type="button"
-                  classList={{
-                    "personality-type-option": true,
-                    selected: selectedTypeId() === type.typeId,
-                  }}
-                  onClick={() => chooseType(type)}
-                >
-                  <span>{type.label}</span>
-                  <small>{type.flavor}</small>
-                  <em>{type.purpose}</em>
-                </button>
-              )}
-            </For>
-          </section>
-
           <section class="personality-detail-form">
             <label>
               Display name
               <input
                 value={displayName()}
+                placeholder="Name this instance"
                 onInput={(event) => setDisplayName(event.currentTarget.value)}
               />
             </label>
@@ -372,6 +318,7 @@ const CreatePersonalityDialog: Component<{
               <textarea
                 rows="4"
                 value={purpose()}
+                placeholder="What this instance is for"
                 onInput={(event) => setPurpose(event.currentTarget.value)}
               />
             </label>
@@ -519,7 +466,6 @@ const WakeEditor: Component<{
       await unwrap(
         props.client.setWakeEntries({
           owner: props.instance.owner,
-          personality_type_id: props.instance.personality_type_id,
           personality_instance_id: props.instance.personality_instance_id,
           entries: drafts(),
         }),

@@ -188,13 +188,11 @@ pub trait Storage: Send + Sync {
 
     /// List configured personality instances for an owner. When
     /// `include_tombstoned` is `false` (the default for UI listings),
-    /// rows whose status is `tombstoned` are filtered out. Provisioning
-    /// passes `true` so a previously tombstoned default isn't recreated.
+    /// rows whose status is `tombstoned` are filtered out.
     /// Implementations populate each row's active `wake_entries`.
     async fn list_personality_instances(
         &self,
         owner: &Owner,
-        personality_type_id: Option<&str>,
         include_tombstoned: bool,
     ) -> Result<Vec<PersonalityInstanceRow>, StorageError>;
 
@@ -208,12 +206,11 @@ pub trait Storage: Send + Sync {
     ) -> Result<TombstonePersonalityResponse, StorageError>;
 
     /// Instantiate one inert personality instance with its Root
-    /// Perspective and cursor rows.
+    /// Perspective and cursor rows. Writes the canonical
+    /// `proxima_core.root_personality_perspective_v1` sidecar.
     async fn instantiate_personality(
         &self,
         req: &InstantiatePersonalityRequest,
-        self_draft: &crate::PersonalitySelfDraft,
-        self_sidecar_table: &str,
     ) -> Result<InstantiatePersonalityResponse, StorageError>;
 
     /// Replace active WakeEntry rows for one personality instance.
@@ -498,7 +495,6 @@ impl Storage for NoopStorage {
     async fn list_personality_instances(
         &self,
         _owner: &Owner,
-        _personality_type_id: Option<&str>,
         _include_tombstoned: bool,
     ) -> Result<Vec<PersonalityInstanceRow>, StorageError> {
         Ok(Vec::new())
@@ -514,8 +510,6 @@ impl Storage for NoopStorage {
     async fn instantiate_personality(
         &self,
         _req: &InstantiatePersonalityRequest,
-        _self_draft: &crate::PersonalitySelfDraft,
-        _self_sidecar_table: &str,
     ) -> Result<InstantiatePersonalityResponse, StorageError> {
         Err(StorageError::Internal("NoopStorage rejects writes".into()))
     }

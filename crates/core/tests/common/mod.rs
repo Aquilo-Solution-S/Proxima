@@ -10,8 +10,7 @@ use async_trait::async_trait;
 use proxima_core::auth::NoAuth;
 use proxima_core::engine::Engine;
 use proxima_core::personality::{
-    InstantiatePersonalityRequest, PersonalityInstanceId, PersonalitySelfDraft,
-    SetWakeEntriesRequest, WakeEntryDraft,
+    InstantiatePersonalityRequest, PersonalityInstanceId, SetWakeEntriesRequest, WakeEntryDraft,
 };
 use proxima_core::storage::Storage;
 use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
@@ -92,11 +91,6 @@ pub async fn drop_db(name: &str) -> Result<(), sqlx::Error> {
 pub async fn apply_wake_context_sidecars(pool: &sqlx::PgPool) -> sqlx::Result<()> {
     pool.execute(
         "CREATE SCHEMA IF NOT EXISTS proxima_test; \
-         CREATE TABLE IF NOT EXISTS proxima_test.wake_context_self_v1 ( \
-             memory_id uuid PRIMARY KEY REFERENCES proxima_core.memories(memory_id), \
-             display_name text NOT NULL, \
-             purpose text NOT NULL \
-         ); \
          CREATE TABLE IF NOT EXISTS proxima_test.wake_context_fact_v1 ( \
              memory_id uuid PRIMARY KEY REFERENCES proxima_core.memories(memory_id), \
              label text NOT NULL \
@@ -137,52 +131,14 @@ pub async fn seed_wake_context_fixture()
 
     let owner = owner_fixture();
 
-    // Instantiate one personality with the test self-sidecar populated
-    // with a non-empty purpose so `system_prompt` ends up non-empty.
-    let self_draft = PersonalitySelfDraft {
-        schema_id: SchemaId::new("proxima-test/wake-context-self-v1".into()),
-        schema_version: SchemaVersion::new(1),
-        text: "Engineer Test Personality".into(),
-        typed_payload: serde_json::json!({
-            "display_name": "Engineer Test Personality",
-            "purpose": "exercise wake-context assembly with a non-empty system prompt",
-        }),
-    };
+    // After Phase 2 Step 1, `instantiate_personality` writes the canonical
+    // `proxima_core.root_personality_perspective_v1` sidecar directly.
     let response = pg
-        .instantiate_personality(
-            &InstantiatePersonalityRequest {
-                owner: owner.clone(),
-                personality_type_id: "proxima-test/wake-context-personality-v1".into(),
-                payload_overrides: None,
-            },
-            &self_draft,
-            "proxima_test.wake_context_self_v1",
-        )
-        .await
-        .ok()?;
-
-    // Backfill the `root_personality_perspective_v1` sidecar — the
-    // PG verb that stores the typed self payload writes to whatever
-    // sidecar table we supply; the wake-context assembler reads from
-    // the canonical `root_personality_perspective_v1` shape.
-    pg.pool()
-        .execute(
-            sqlx::query(
-                "INSERT INTO proxima_core.root_personality_perspective_v1
-                    (memory_id, display_name, purpose)
-                 SELECT p.current_root_perspective_memory_id,
-                        s.display_name,
-                        s.purpose
-                 FROM proxima_core.personality p
-                 JOIN proxima_test.wake_context_self_v1 s
-                   ON s.memory_id = p.current_root_perspective_memory_id
-                 WHERE p.personality_instance_id = $1
-                 ON CONFLICT (memory_id) DO UPDATE
-                    SET display_name = EXCLUDED.display_name,
-                        purpose = EXCLUDED.purpose",
-            )
-            .bind(response.instance_id.into_inner()),
-        )
+        .instantiate_personality(&InstantiatePersonalityRequest {
+            owner: owner.clone(),
+            display_name: "Engineer Test Personality".into(),
+            purpose: "exercise wake-context assembly with a non-empty system prompt".into(),
+        })
         .await
         .ok()?;
 
