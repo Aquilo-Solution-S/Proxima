@@ -85,11 +85,13 @@ pub(crate) async fn fetch_root_personality_perspective(
     .await
     .map_err(|e| StorageError::Internal(e.to_string()))?;
 
-    Ok(row.map(|(display_name, purpose)| RootPersonalityPerspectiveRow {
-        memory_id,
-        display_name,
-        purpose,
-    }))
+    Ok(
+        row.map(|(display_name, purpose)| RootPersonalityPerspectiveRow {
+            memory_id,
+            display_name,
+            purpose,
+        }),
+    )
 }
 
 pub(crate) async fn fetch_change_event_for_wake(
@@ -98,8 +100,8 @@ pub(crate) async fn fetch_change_event_for_wake(
     seq: Uuid,
 ) -> Result<Option<ChangeEventForWake>, StorageError> {
     let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(owner);
-    let row: Option<(Option<String>, Option<Uuid>, i16)> = sqlx::query_as(
-        "SELECT entity_personality_type_id, entity_personality_instance_id, wake_chain_depth
+    let row: Option<(Option<Uuid>, i16)> = sqlx::query_as(
+        "SELECT entity_personality_instance_id, wake_chain_depth
          FROM proxima_core.change_event
          WHERE owner_principal_kind = $1
            AND owner_principal_id = $2
@@ -114,7 +116,7 @@ pub(crate) async fn fetch_change_event_for_wake(
     .await
     .map_err(|e| StorageError::Internal(e.to_string()))?;
 
-    let Some((_authoring_type, authoring_instance, depth)) = row else {
+    let Some((authoring_instance, depth)) = row else {
         return Ok(None);
     };
     let Some(event) = hydrate_change_event(pool, seq).await? else {
@@ -122,7 +124,9 @@ pub(crate) async fn fetch_change_event_for_wake(
     };
     Ok(Some(ChangeEventForWake {
         event,
-        authoring_personality_instance_id: authoring_instance.map(PersonalityInstanceId::new),
+        authoring_personality_instance_id: authoring_instance
+            .filter(|id| !id.is_nil())
+            .map(PersonalityInstanceId::new),
         wake_chain_depth: WakeChainDepth::new(u16::try_from(depth).unwrap_or(0)),
     }))
 }

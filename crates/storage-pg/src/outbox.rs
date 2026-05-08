@@ -40,7 +40,6 @@ struct ChangeEventRow {
     edge_source_goal_id: Option<Uuid>,
     edge_target_memory_id: Option<Uuid>,
     edge_target_goal_id: Option<Uuid>,
-    entity_personality_type_id: Option<String>,
     entity_personality_instance_id: Option<Uuid>,
     wake_chain_depth: i16,
 }
@@ -52,7 +51,7 @@ const CHANGE_EVENT_COLUMNS: &str = "seq, owner_principal_kind, owner_principal_i
     edge_id, edge_relation, \
     edge_source_memory_id, edge_source_goal_id, \
     edge_target_memory_id, edge_target_goal_id, \
-    entity_personality_type_id, entity_personality_instance_id, \
+    entity_personality_instance_id, \
     wake_chain_depth";
 
 /// Hydrate a single `change_event` row into a typed `ChangeEvent`.
@@ -64,7 +63,8 @@ pub(crate) async fn hydrate_change_event(
     pool: &sqlx::PgPool,
     seq: Uuid,
 ) -> Result<Option<ChangeEvent>, StorageError> {
-    let sql = format!("SELECT {CHANGE_EVENT_COLUMNS} FROM proxima_core.change_event WHERE seq = $1");
+    let sql =
+        format!("SELECT {CHANGE_EVENT_COLUMNS} FROM proxima_core.change_event WHERE seq = $1");
     let row: Option<ChangeEventRow> = sqlx::query_as(&sql)
         .bind(seq)
         .fetch_optional(pool)
@@ -112,10 +112,7 @@ fn decode_change_event_row(row: ChangeEventRow) -> Result<ChangeEvent, StorageEr
         org_id: OrgId::new(row.owner_org_id),
     };
 
-    let authoring_instance = decode_personality(
-        row.entity_personality_type_id.as_deref(),
-        row.entity_personality_instance_id,
-    );
+    let authoring_instance = decode_personality(row.entity_personality_instance_id);
     let wake_chain_depth = u16::try_from(row.wake_chain_depth).unwrap_or(0);
 
     if row.kind == "EdgeAppend" {
@@ -209,16 +206,10 @@ fn decode_change_event_row(row: ChangeEventRow) -> Result<ChangeEvent, StorageEr
     })
 }
 
-/// Map the row's `entity_personality_type_id` / `_instance_id` columns
-/// (always populated post-migration; sentinel `'external/event-source'`
-/// + nil-uuid for external ingestions) to the public `Option<...>`
-///   shape on `ChangeEvent`.
-fn decode_personality(type_id: Option<&str>, instance_id: Option<Uuid>) -> Option<Uuid> {
-    const EXTERNAL_SENTINEL: &str = "external/event-source";
-    match (type_id, instance_id) {
-        (Some(t), Some(i)) if t != EXTERNAL_SENTINEL => Some(i),
-        _ => None,
-    }
+/// Map a row's optional personality instance to the public
+/// `ChangeEvent` shape. Nil uuid marks external authoring.
+fn decode_personality(instance_id: Option<Uuid>) -> Option<Uuid> {
+    instance_id.filter(|id| !id.is_nil())
 }
 
 fn decode_entity_ref(

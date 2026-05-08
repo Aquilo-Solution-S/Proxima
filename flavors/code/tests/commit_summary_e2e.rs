@@ -172,8 +172,9 @@ async fn commit_summary_e2e_produces_abstraction_with_correct_provenance() {
             "SELECT count(*)
              FROM proxima_core.memories m
              JOIN proxima_code.commit_summary_v1 s ON s.memory_id = m.memory_id
-             WHERE m.personality_type_id = 'proxima-code/commit-summary-v1'",
+             WHERE m.schema_id = $1",
         )
+        .bind(<CommitSummaryV1 as proxima_core::AbstractionPayload>::SCHEMA_ID)
         .fetch_one(pg.pool())
         .await?;
         assert_eq!(
