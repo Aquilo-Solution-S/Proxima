@@ -11,6 +11,7 @@ import {
   type InstantiatePersonalityOutcomeTs,
   type InstantiatePersonalityTs,
   type BindInferenceTierTs,
+  type DetectedHarnessTs,
   type InferenceTargetTs,
   type InferenceTierBindingTs,
   type ListInferenceTargetsTs,
@@ -126,6 +127,10 @@ export class TauriEngineClient implements EngineClient {
     req: ListInferenceTierBindingsTs,
   ): Promise<InferenceTierBindingTs[]> {
     return unwrap(commands.listInferenceTierBindings(req));
+  }
+
+  async detectLocalHarness(name: string): Promise<DetectedHarnessTs | null> {
+    return unwrap(commands.detectLocalHarness(name));
   }
 }
 

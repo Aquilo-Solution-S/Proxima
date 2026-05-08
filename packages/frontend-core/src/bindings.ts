@@ -29,6 +29,15 @@ export const commands = {
 	listInferenceTierBindings: (req: ListInferenceTierBindingsTs) => typedError<InferenceTierBindingTs[], ProtocolError>(__TAURI_INVOKE("list_inference_tier_bindings", { req })),
 	/**
 	 *  # Errors
+	 *  Returns `ProtocolError::Internal` when the platform lookup command cannot
+	 *  be executed. Missing harness binaries return `Ok(None)`.
+	 */
+	detectLocalHarness: (name: string) => typedError<{
+	path: string,
+	version: string,
+} | null, ProtocolError>(__TAURI_INVOKE("detect_local_harness", { name })),
+	/**
+	 *  # Errors
 	 *  Returns `CommandError::Storage` on database failures.
 	 */
 	modelsListEmbedding: () => typedError<EmbeddingModelRecord[], CommandError>(__TAURI_INVOKE("models_list_embedding")),
@@ -264,6 +273,11 @@ export type CommandError =
 { kind: "invalid_uuid"; data: {
 	value: string,
 } };
+
+export type DetectedHarnessTs = {
+	path: string,
+	version: string,
+};
 
 export type EdgeRow = {
 	id: string,

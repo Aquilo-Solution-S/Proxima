@@ -32,15 +32,21 @@ describe("TierBindingsSection", () => {
       { tier: "fast", target_ref: "local-goose" },
     ];
     const client = {
-      listInferenceTargets: vi.fn(async () => [
-        target("local-goose", "goose"),
-        target("remote-claude", "claude"),
-      ]),
-      listInferenceTierBindings: vi.fn(async () => bindings),
       bindInferenceTier: vi.fn(async () => undefined),
     };
 
-    render(() => <TierBindingsSection client={client} owner={owner} />);
+    render(() => (
+      <TierBindingsSection
+        client={client}
+        owner={owner}
+        targets={() => [
+          target("local-goose", "goose"),
+          target("remote-claude", "claude"),
+        ]}
+        bindings={() => bindings}
+        refetchBindings={vi.fn()}
+      />
+    ));
 
     await waitFor(() =>
       expect(screen.getAllByRole("combobox")).toHaveLength(3),
@@ -63,19 +69,23 @@ describe("TierBindingsSection", () => {
 
   it("shows server-side typed errors verbatim on bind", async () => {
     const client = {
-      listInferenceTargets: vi.fn(async () => [
-        target("local-goose", "goose"),
-        target("missing-target", "missing"),
-      ]),
-      listInferenceTierBindings: vi.fn(async () => [
-        { tier: "fast" as const, target_ref: "local-goose" },
-      ]),
       bindInferenceTier: vi.fn(async () => {
         throw { code: "InferenceTargetMissing", message: "missing target" };
       }),
     };
 
-    render(() => <TierBindingsSection client={client} owner={owner} />);
+    render(() => (
+      <TierBindingsSection
+        client={client}
+        owner={owner}
+        targets={() => [
+          target("local-goose", "goose"),
+          target("missing-target", "missing"),
+        ]}
+        bindings={() => [{ tier: "fast" as const, target_ref: "local-goose" }]}
+        refetchBindings={vi.fn()}
+      />
+    ));
 
     const fastSelect = (await screen.findAllByRole("combobox"))[0] as HTMLSelectElement;
     await waitFor(() => expect(fastSelect.value).toBe("local-goose"));

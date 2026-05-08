@@ -2,7 +2,6 @@ import {
   For,
   Show,
   createEffect,
-  createResource,
   createSignal,
   type Accessor,
   type Component,
@@ -18,11 +17,12 @@ import { sentinelOwner } from "../../graph-store";
 import { TIERS } from "./constants";
 
 interface Props {
-  client: Pick<
-    EngineClient,
-    "listInferenceTargets" | "listInferenceTierBindings" | "bindInferenceTier"
-  >;
+  client: Pick<EngineClient, "bindInferenceTier">;
+  targets: Accessor<InferenceTargetTs[] | undefined>;
+  bindings: Accessor<InferenceTierBindingTs[] | undefined>;
+  refetchBindings: () => void;
   owner?: Owner;
+  embedded?: boolean;
 }
 
 const errorMessage = (err: unknown): string => {
@@ -93,12 +93,6 @@ const TierBindingRow: Component<{
 
 export const TierBindingsSection: Component<Props> = (props) => {
   const owner = () => props.owner ?? sentinelOwner();
-  const [targets] = createResource(async () =>
-    props.client.listInferenceTargets({ owner: owner() }),
-  );
-  const [bindings, { refetch }] = createResource(async () =>
-    props.client.listInferenceTierBindings({ owner: owner() }),
-  );
   const [error, setError] = createSignal<string | null>(null);
 
   const handleBind = async (tier: ModelTierTs, targetRef: string) => {
@@ -109,23 +103,22 @@ export const TierBindingsSection: Component<Props> = (props) => {
         tier,
         target_ref: targetRef,
       });
-      refetch();
+      props.refetchBindings();
     } catch (err) {
       setError(errorMessage(err));
     }
   };
 
-  return (
-    <section>
-      <h2>Tier bindings</h2>
+  const body = () => (
+    <>
       <Show when={error()}>
         {(message) => <p class="proxima-error" role="alert">{message()}</p>}
       </Show>
       <table class="proxima-models-table">
         <thead>
           <tr>
-            <th>tier</th>
-            <th>target_ref</th>
+            <th>Tier</th>
+            <th>Target</th>
           </tr>
         </thead>
         <tbody>
@@ -133,8 +126,8 @@ export const TierBindingsSection: Component<Props> = (props) => {
             {(tier) => (
               <TierBindingRow
                 tier={tier}
-                targets={() => targets() ?? []}
-                targetRef={() => bindingFor(bindings(), tier)}
+                targets={() => props.targets() ?? []}
+                targetRef={() => bindingFor(props.bindings(), tier)}
                 onBind={(selectedTier, targetRef) =>
                   void handleBind(selectedTier, targetRef)
                 }
@@ -143,6 +136,15 @@ export const TierBindingsSection: Component<Props> = (props) => {
           </For>
         </tbody>
       </table>
-    </section>
+    </>
+  );
+
+  return (
+    <Show when={!props.embedded} fallback={body()}>
+      <section>
+        <h2>Tier bindings</h2>
+        {body()}
+      </section>
+    </Show>
   );
 };
