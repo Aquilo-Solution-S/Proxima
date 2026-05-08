@@ -58,7 +58,30 @@ const invokeFallback = async (
     case "bind_inference_tier":
     case "embedding_active_set":
     case "repo_ingest":
+    case "repo_ingest_subscribe":
       return null;
+    case "repo_ingest_status":
+      return null;
+    case "repo_ingest_start":
+      return {
+        run_id: crypto.randomUUID(),
+        repo_id: String(args?.repoId ?? ""),
+        status: "succeeded",
+        stage: "done",
+        commits_emitted: args?.maxCommits === 1 ? 1 : 0,
+        files_emitted: 0,
+        chunks_emitted: 0,
+        chunks_reused: 0,
+        chunks_tombstoned: 0,
+        ast_edges_emitted: 0,
+        abstractions_emitted: 0,
+        embeddings_landed: 0,
+        citations_emitted: 0,
+        error_message: null,
+        started_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        finished_at: new Date().toISOString(),
+      };
     case "list_inference_targets":
     case "list_inference_tier_bindings":
     case "models_list_embedding":

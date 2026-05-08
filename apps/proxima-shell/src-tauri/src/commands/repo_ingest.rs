@@ -14,12 +14,14 @@ pub(super) fn spawn_run_driver(
     owner: Owner,
     record: proxima_code::RepoRecord,
     run_id: Uuid,
+    max_commits: Option<usize>,
 ) {
     tokio::spawn(async move {
         tracing::info!(
             %run_id,
             repo_id = %record.repo_id,
             repo_path = %record.canonical_path,
+            max_commits = max_commits.map_or("all".to_string(), |n| n.to_string()),
             "ingest run starting"
         );
         let drive = async {
@@ -56,7 +58,7 @@ pub(super) fn spawn_run_driver(
             };
 
             let (report, new_cursor) = source
-                .run_poll(pg.pool(), &cursor, &mut sink)
+                .run_poll_limited(pg.pool(), &cursor, max_commits, &mut sink)
                 .await
                 .map_err(|e| e.to_string())?;
 

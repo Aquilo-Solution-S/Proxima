@@ -151,9 +151,27 @@ impl LocalGitSource {
         cursor: &Cursor,
         progress: &mut impl FnMut(IngestProgress),
     ) -> Result<(IndexReport, Cursor), IndexError> {
+        self.run_poll_limited(pool, cursor, None, progress).await
+    }
+
+    /// DB-aware ingest with an optional commit cap. `None` ingests all
+    /// commits since the cursor; `Some(n)` ingests at most `n` oldest
+    /// pending commits and returns a cursor at the last ingested commit.
+    ///
+    /// # Errors
+    /// Returns git, cursor, or typed ingest errors.
+    pub async fn run_poll_limited(
+        &self,
+        pool: &PgPool,
+        cursor: &Cursor,
+        max_commits: Option<usize>,
+        progress: &mut impl FnMut(IngestProgress),
+    ) -> Result<(IndexReport, Cursor), IndexError> {
         let parsed = decode_cursor(cursor)?;
         let plan = self.walk_git(&parsed)?;
         let mut report = IndexReport::default();
+        let commit_limit = max_commits.unwrap_or(usize::MAX);
+        let selected_total = plan.commits.len().min(commit_limit);
 
         // Per-poll cache: skip re-running tree-sitter on a blob whose
         // content_sha256 we've already chunked this poll. Substrate
@@ -166,12 +184,14 @@ impl LocalGitSource {
         // git_log returns newest-first; process oldest-first so each
         // commit's tree diff against its first parent reflects the
         // historical order, and the NK head advances monotonically.
-        for (i, commit_info) in plan.commits.iter().rev().enumerate() {
+        let mut last_ingested_sha: Option<String> = None;
+        for (i, commit_info) in plan.commits.iter().rev().take(selected_total).enumerate() {
             self.ingest_one_commit(pool, commit_info, &mut report, &mut chunked_this_poll)
                 .await?;
+            last_ingested_sha = Some(commit_info.sha.clone());
             progress(IngestProgress {
                 commit_index: i,
-                total_commits: plan.commits.len(),
+                total_commits: selected_total,
                 commit_sha: commit_info.sha.clone(),
                 commits_emitted: report.commits_emitted,
                 commits_replayed: report.commits_replayed,
@@ -180,9 +200,17 @@ impl LocalGitSource {
             });
         }
 
+        let (last_commit_sha, last_tree_sha) = if selected_total == plan.commits.len() {
+            (Some(plan.head_sha), Some(plan.head_tree_sha))
+        } else if let Some(sha) = last_ingested_sha {
+            let tree_sha = git::tree_sha(&self.repo_path, &sha)?;
+            (Some(sha), Some(tree_sha))
+        } else {
+            (parsed.last_commit_sha, parsed.last_tree_sha)
+        };
         let next = CodeCursor {
-            last_commit_sha: Some(plan.head_sha),
-            last_tree_sha: Some(plan.head_tree_sha),
+            last_commit_sha,
+            last_tree_sha,
         };
         Ok((report, encode_cursor(&next)?))
     }

@@ -363,3 +363,55 @@ async fn local_ingestion_lands_facts_citations_edges_and_replays_idempotently() 
     let _ = drop_db(&db_name).await;
     result.expect("local_ingestion_lands_facts_citations_edges_and_replays_idempotently failed");
 }
+
+#[tokio::test]
+async fn limited_local_ingestion_advances_one_commit_per_poll() {
+    let Some((db_name, pg)) = migrated_db().await else {
+        return;
+    };
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = test_owner();
+        let repo = make_tiny_repo();
+        let repo_id = Uuid::now_v7();
+        let source = LocalGitSource::new(repo_id, repo.path().to_path_buf(), owner);
+
+        let mut seen = Vec::new();
+        let (first, cursor) = source
+            .run_poll_limited(pg.pool(), &Cursor::empty(), Some(1), &mut |p| {
+                seen.push((p.commit_index, p.total_commits));
+            })
+            .await?;
+        assert_eq!(first.commits_emitted, 1);
+        assert_eq!(seen, vec![(0, 1)]);
+
+        let commits_after_first: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*)::bigint FROM proxima_code.commit_v1 WHERE repo_id = $1",
+        )
+        .bind(repo_id)
+        .fetch_one(pg.pool())
+        .await?;
+        assert_eq!(commits_after_first, 1);
+
+        let (second, cursor) = source
+            .run_poll_limited(pg.pool(), &cursor, Some(1), &mut |_| {})
+            .await?;
+        assert_eq!(second.commits_emitted, 1);
+
+        let commits_after_second: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*)::bigint FROM proxima_code.commit_v1 WHERE repo_id = $1",
+        )
+        .bind(repo_id)
+        .fetch_one(pg.pool())
+        .await?;
+        assert_eq!(commits_after_second, 2);
+
+        let (third, _cursor) = source
+            .run_poll_limited(pg.pool(), &cursor, Some(1), &mut |_| {})
+            .await?;
+        assert_eq!(third.commits_emitted, 0);
+        Ok(())
+    }
+    .await;
+    let _ = drop_db(&db_name).await;
+    result.expect("limited_local_ingestion_advances_one_commit_per_poll failed");
+}

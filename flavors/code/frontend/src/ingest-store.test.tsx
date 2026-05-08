@@ -76,4 +76,10 @@ describe("ingestStore.rehydrate", () => {
     expect(mocks.repoIngestStatus).toHaveBeenCalledTimes(1);
     expect(mocks.repoIngestSubscribe).toHaveBeenCalledTimes(1);
   });
+
+  it("passes the requested commit limit to repoIngestStart", async () => {
+    await ingestStore.start("repo-A", 1);
+
+    expect(mocks.repoIngestStart).toHaveBeenCalledWith("repo-A", 1);
+  });
 });

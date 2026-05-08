@@ -201,16 +201,20 @@ describe("ReposPanel", () => {
   it("keeps ingest state across unmount and remount", async () => {
     const { unmount } = render(() => <ReposPanel />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Ingest" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Ingest All" }));
 
     await waitFor(() => {
       expect(mocks.repoIngestStart).toHaveBeenCalledWith(
         "018f0000-0000-7000-8000-000000000001",
+        null,
       );
       expect(screen.getByText("Running facts")).toBeTruthy();
       expect(
-        (screen.getByRole("button", { name: "Ingest" }) as HTMLButtonElement)
-          .disabled,
+        (
+          screen.getByRole("button", {
+            name: "Ingest All",
+          }) as HTMLButtonElement
+        ).disabled,
       ).toBe(true);
     });
 
@@ -219,9 +223,25 @@ describe("ReposPanel", () => {
 
     expect(await screen.findByText("Running facts")).toBeTruthy();
     expect(
-      (screen.getByRole("button", { name: "Ingest" }) as HTMLButtonElement)
-        .disabled,
+      (
+        screen.getByRole("button", {
+          name: "Ingest Next",
+        }) as HTMLButtonElement
+      ).disabled,
     ).toBe(true);
     expect(mocks.repoIngestSubscribe).toHaveBeenCalledTimes(1);
+  });
+
+  it("starts one-commit ingest from Ingest Next", async () => {
+    render(() => <ReposPanel />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Ingest Next" }));
+
+    await waitFor(() => {
+      expect(mocks.repoIngestStart).toHaveBeenCalledWith(
+        "018f0000-0000-7000-8000-000000000001",
+        1,
+      );
+    });
   });
 });
