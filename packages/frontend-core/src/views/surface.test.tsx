@@ -168,9 +168,6 @@ const clientWithHistory = (
   eventIngest: async () => {
     throw new Error("not used");
   },
-  provisionOwner: async () => {
-    throw new Error("not used");
-  },
   listPersonalityInstances: async () => {
     throw new Error("not used");
   },

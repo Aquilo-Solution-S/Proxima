@@ -36,7 +36,6 @@ type CommandResult<T> = Promise<
 >;
 
 export type PersonalityCommandClient = {
-  provisionOwner: (owner: Owner) => CommandResult<null>;
   listPersonalityInstances: (
     req: ListPersonalityInstancesTs,
   ) => CommandResult<PersonalityInstanceTs[]>;
@@ -153,18 +152,13 @@ export const PersonalitiesView: Component<{
   };
 
   const visibleInstances = createMemo(() =>
-    [...instances()].sort((a, b) =>
-      `${a.flavor?.display_name ?? ""}:${a.display_name}`.localeCompare(
-        `${b.flavor?.display_name ?? ""}:${b.display_name}`,
-      ),
-    ),
+    [...instances()].sort((a, b) => a.display_name.localeCompare(b.display_name)),
   );
 
   const refresh = async () => {
     setLoading(true);
     setError(null);
     try {
-      await unwrap(client.provisionOwner(owner));
       const rows = await unwrap(
         client.listPersonalityInstances({
           owner,
@@ -358,7 +352,7 @@ const PersonalityCard: Component<{
           <strong>{props.instance.display_name}</strong>
           <div class="personality-meta">
             <span class="personality-flavor-chip" data-testid="personality-flavor-chip">
-              {props.instance.flavor?.display_name ?? "Instance"}
+              Instance
             </span>
             <Mono>{shortId(props.instance.personality_instance_id)}</Mono>
           </div>

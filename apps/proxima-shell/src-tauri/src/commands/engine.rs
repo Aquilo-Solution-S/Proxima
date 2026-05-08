@@ -9,9 +9,7 @@ use proxima_core::verbs::goal_write::{GoalDraft, GoalWriteOutcome};
 use proxima_core::verbs::query::{QueryRequest, QueryResponse};
 use proxima_core::verbs::schema::{SchemaRequest, SchemaResponse};
 use proxima_core::verbs::subscribe::SubscribeRequest;
-use proxima_core::{
-    ChangeEvent, Engine, FlavorProvenance, Owner, PersonalityInstanceId, PersonalityInstanceRow,
-};
+use proxima_core::{ChangeEvent, Engine, Owner, PersonalityInstanceId, PersonalityInstanceRow};
 use tauri::State;
 use tauri::ipc::Channel;
 
@@ -54,24 +52,6 @@ pub struct PersonalityInstanceTs {
     pub display_name: String,
     pub status: String,
     pub wake_entries: Vec<WakeEntryTs>,
-    pub flavor: Option<FlavorDescriptorTs>,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
-pub struct FlavorDescriptorTs {
-    pub flavor_id: String,
-    pub display_name: String,
-    pub package_version: String,
-    pub author: Option<String>,
-    pub provenance: FlavorProvenanceTs,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum FlavorProvenanceTs {
-    Builtin,
-    Marketplace { source_url: String },
-    Local { workspace_path: String },
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
@@ -217,19 +197,6 @@ pub async fn goal_write(
 
 #[tauri::command]
 #[specta::specta]
-pub async fn provision_owner(
-    engine: State<'_, Arc<Engine>>,
-    owner: Owner,
-) -> Result<(), ProtocolError> {
-    let req_bytes = crate::perf::ipc::req_size(&owner);
-    crate::perf::ipc::record("provision_owner", req_bytes, async move {
-        engine.provision_owner(&owner).await
-    })
-    .await
-}
-
-#[tauri::command]
-#[specta::specta]
 pub async fn list_personality_instances(
     engine: State<'_, Arc<Engine>>,
     req: ListPersonalityInstancesTs,
@@ -360,7 +327,6 @@ impl PersonalityInstanceTs {
             display_name: row.display_name,
             status: row.status,
             wake_entries,
-            flavor: None,
         }
     }
 }
@@ -445,31 +411,5 @@ fn draft_to_core(
         substrate_tool_palette: draft.substrate_tool_palette,
         workspace_tool_palette: draft.workspace_tool_palette,
         max_rounds: draft.max_rounds,
-    }
-}
-
-impl From<&proxima_core::FlavorDescriptor> for FlavorDescriptorTs {
-    fn from(d: &proxima_core::FlavorDescriptor) -> Self {
-        Self {
-            flavor_id: d.flavor_id.clone(),
-            display_name: d.display_name.clone(),
-            package_version: d.package_version.clone(),
-            author: d.author.clone(),
-            provenance: FlavorProvenanceTs::from(&d.provenance),
-        }
-    }
-}
-
-impl From<&FlavorProvenance> for FlavorProvenanceTs {
-    fn from(p: &FlavorProvenance) -> Self {
-        match p {
-            FlavorProvenance::Builtin => Self::Builtin,
-            FlavorProvenance::Marketplace { source_url } => Self::Marketplace {
-                source_url: source_url.clone(),
-            },
-            FlavorProvenance::Local { workspace_path } => Self::Local {
-                workspace_path: workspace_path.clone(),
-            },
-        }
     }
 }

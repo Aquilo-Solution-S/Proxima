@@ -613,7 +613,7 @@ pub async fn finalize_wake_invocation(
            AND change_event_seq = $10",
     )
     .bind(finalize.status.as_str())
-    .bind(finalize.turn_count.map(|v| i32::from(v)))
+    .bind(finalize.turn_count.map(i32::from))
     .bind(finalize.cost_usd)
     .bind(&finalize.failure_reason)
     .bind(owner_kind)

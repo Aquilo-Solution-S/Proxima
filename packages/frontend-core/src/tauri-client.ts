@@ -16,7 +16,6 @@ import {
   type ListInferenceTargetsTs,
   type ListInferenceTierBindingsTs,
   type ListPersonalityInstancesTs,
-  type Owner,
   type PersonalityInstanceTs,
   type QueryRequest,
   type QueryResponse,
@@ -83,10 +82,6 @@ export class TauriEngineClient implements EngineClient {
 
   async eventIngest(draft: EventDraft): Promise<EventIngestOutcome> {
     return unwrap(commands.eventIngest(draft));
-  }
-
-  async provisionOwner(owner: Owner): Promise<void> {
-    await unwrap(commands.provisionOwner(owner));
   }
 
   async listPersonalityInstances(

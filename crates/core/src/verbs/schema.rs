@@ -4,9 +4,7 @@
 //! docs/03-schema-registry.md.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 
-use crate::personality::PersonalityFlavor;
 use crate::{
     FlavorDescriptor, McpToolDescriptor, RegisteredRelation, RelationDescriptor, SchemaId,
     SchemaVersion,
@@ -83,7 +81,6 @@ pub struct FlavorRegistryFrozen {
     relations: Vec<RelationDescriptor>,
     validators: Vec<PayloadValidatorEntry>,
     mcp_tools: Vec<McpToolDescriptor>,
-    personalities: Vec<Arc<dyn PersonalityFlavor>>,
     flavors: Vec<FlavorDescriptor>,
     bundled_recipes: Vec<(String, PathBuf)>,
 }
@@ -103,7 +100,6 @@ impl FlavorRegistryFrozen {
             relations: Vec::new(),
             validators: Vec::new(),
             mcp_tools: Vec::new(),
-            personalities: Vec::new(),
             flavors: Vec::new(),
             bundled_recipes: Vec::new(),
         }
@@ -122,7 +118,6 @@ impl FlavorRegistryFrozen {
             relations,
             validators: Vec::new(),
             mcp_tools: Vec::new(),
-            personalities: Vec::new(),
             flavors: Vec::new(),
             bundled_recipes: Vec::new(),
         }
@@ -133,7 +128,6 @@ impl FlavorRegistryFrozen {
         relations: Vec<RelationDescriptor>,
         validators: Vec<PayloadValidatorEntry>,
         mcp_tools: Vec<McpToolDescriptor>,
-        personalities: Vec<Arc<dyn PersonalityFlavor>>,
         flavors: Vec<FlavorDescriptor>,
         bundled_recipes: Vec<(String, PathBuf)>,
     ) -> Self {
@@ -142,7 +136,6 @@ impl FlavorRegistryFrozen {
             relations,
             validators,
             mcp_tools,
-            personalities,
             flavors,
             bundled_recipes,
         }
@@ -189,14 +182,6 @@ impl FlavorRegistryFrozen {
             .collect()
     }
 
-    /// Personalities registered by linked flavors via `proxima_flavor!`.
-    /// The A→P dispatcher fans out per entry; order matches flavor
-    /// registration order.
-    #[must_use]
-    pub fn list_personalities(&self) -> &[Arc<dyn PersonalityFlavor>] {
-        &self.personalities
-    }
-
     /// All `FlavorDescriptor`s registered through `proxima_flavor!`.
     /// Order matches macro invocation order.
     #[must_use]
@@ -209,20 +194,6 @@ impl FlavorRegistryFrozen {
     #[must_use]
     pub fn flavor(&self, flavor_id: &str) -> Option<&FlavorDescriptor> {
         self.flavors.iter().find(|f| f.flavor_id == flavor_id)
-    }
-
-    /// Lookup the flavor descriptor for a personality by deriving the
-    /// prefix (`<flavor_id>/<rest>`). Returns `None` if the type id
-    /// has no `/`; freeze-time guards make this impossible at runtime
-    /// for personalities created via `proxima_flavor!`.
-    #[must_use]
-    pub fn flavor_for_personality_type(
-        &self,
-        personality_type_id: &str,
-    ) -> Option<&FlavorDescriptor> {
-        let slash = personality_type_id.find('/')?;
-        let prefix = &personality_type_id[..slash];
-        self.flavor(prefix)
     }
 
     pub fn list(&self) -> Vec<SchemaInfo> {
