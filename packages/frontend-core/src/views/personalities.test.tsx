@@ -96,6 +96,22 @@ const mockClient = (
   };
 };
 
+const selectPersonality = async (displayName: string) => {
+  const card = await waitFor(() => {
+    const node = screen.getByText(displayName).closest("article");
+    if (!node) throw new Error(`personality node not rendered: ${displayName}`);
+    return node;
+  });
+  fireEvent.click(card);
+};
+
+const selectEntry = async (label: string) => {
+  await waitFor(() => {
+    const button = screen.getByRole("button", { name: new RegExp(`^Edit ${label}`) });
+    fireEvent.click(button);
+  });
+};
+
 describe("PersonalitiesView", () => {
   beforeEach(() => {
     registerPayloadRenderer({
@@ -124,7 +140,7 @@ describe("PersonalitiesView", () => {
     vi.restoreAllMocks();
   });
 
-  it("renders one card per instance returned by ListPersonalityInstances", async () => {
+  it("renders one node per instance returned by ListPersonalityInstances", async () => {
     const { client } = mockClient([
       instance({ display_name: "Engineer A" }),
       instance({
@@ -149,7 +165,7 @@ describe("PersonalitiesView", () => {
     expect(chip.textContent).toContain("Instance");
   });
 
-  it("creates a personality through the flavor-type dialog", async () => {
+  it("creates a personality through the create dialog", async () => {
     const alice = instance({
       display_name: "Alice",
       personality_instance_id: "018f0000-0000-7000-8000-000000000003",
@@ -185,13 +201,13 @@ describe("PersonalitiesView", () => {
     expect(await screen.findByText("Alice")).toBeTruthy();
   });
 
-  it("renders an existing WakeEntry's fields", async () => {
+  it("renders an existing WakeEntry's fields when its chip is selected", async () => {
     const { client } = mockClient([instance()]);
 
     render(() => <PersonalitiesView client={client} owner={owner} />);
 
-    await screen.findByText("Engineer");
-    fireEvent.click(screen.getByRole("button", { name: "Edit wake entries" }));
+    await selectPersonality("Engineer");
+    await selectEntry("react-to-commit");
 
     expect(screen.getByDisplayValue("react-to-commit")).toBeTruthy();
     expect(screen.getByDisplayValue("user:default.yaml")).toBeTruthy();
@@ -201,7 +217,7 @@ describe("PersonalitiesView", () => {
     );
   });
 
-  it("calls setWakeEntries with the full edited list on save", async () => {
+  it("calls setWakeEntries with the full edited list when Save is clicked", async () => {
     const row = instance();
     const updated = instance({
       wake_entries: [wakeEntry({ label: "react-to-commit-edited" })],
@@ -210,8 +226,9 @@ describe("PersonalitiesView", () => {
 
     render(() => <PersonalitiesView client={client} owner={owner} />);
 
-    await screen.findByText("Engineer");
-    fireEvent.click(screen.getByRole("button", { name: "Edit wake entries" }));
+    await selectPersonality("Engineer");
+    await selectEntry("react-to-commit");
+
     fireEvent.input(screen.getByDisplayValue("react-to-commit"), {
       target: { value: "react-to-commit-edited" },
     });
@@ -255,8 +272,8 @@ describe("PersonalitiesView", () => {
 
     render(() => <PersonalitiesView client={client} owner={owner} />);
 
-    await screen.findByText("Engineer");
-    fireEvent.click(screen.getByRole("button", { name: "Edit wake entries" }));
+    await selectPersonality("Engineer");
+    await selectEntry("react-to-commit");
 
     const trigger = screen.getByLabelText("Trigger id");
     expect(trigger.tagName).toBe("SELECT");
@@ -273,7 +290,7 @@ describe("PersonalitiesView", () => {
     });
   });
 
-  it("displays server-side typed errors verbatim", async () => {
+  it("displays server-side typed errors verbatim on save failure", async () => {
     const row = instance();
     const { client, setWakeEntries } = mockClient([row]);
     setWakeEntries.mockResolvedValueOnce({
@@ -287,8 +304,12 @@ describe("PersonalitiesView", () => {
 
     render(() => <PersonalitiesView client={client} owner={owner} />);
 
-    await screen.findByText("Engineer");
-    fireEvent.click(screen.getByRole("button", { name: "Edit wake entries" }));
+    await selectPersonality("Engineer");
+    await selectEntry("react-to-commit");
+
+    fireEvent.input(screen.getByDisplayValue("react-to-commit"), {
+      target: { value: "react-to-commit-touched" },
+    });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
     expect(
@@ -296,13 +317,13 @@ describe("PersonalitiesView", () => {
     ).toBeTruthy();
   });
 
-  it("tombstones an engineer after inline confirmation and removes it locally", async () => {
+  it("tombstones a personality from the inspector after inline confirmation", async () => {
     const row = instance({ display_name: "Alice" });
     const { client, tombstonePersonality } = mockClient([row], []);
 
     render(() => <PersonalitiesView client={client} owner={owner} />);
 
-    await screen.findByText("Alice");
+    await selectPersonality("Alice");
     fireEvent.click(screen.getByRole("button", { name: "Tombstone" }));
     expect(
       screen.getByText("Tombstone Alice? Wakes stop; memories remain."),
@@ -324,12 +345,12 @@ describe("PersonalitiesView", () => {
 
     render(() => <PersonalitiesView client={client} owner={owner} />);
 
-    await screen.findByText("Alice");
+    await selectPersonality("Alice");
     fireEvent.click(screen.getByRole("button", { name: "Tombstone" }));
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
 
     expect(tombstonePersonality).not.toHaveBeenCalled();
-    expect(screen.getByText("Alice")).toBeTruthy();
+    expect(screen.getAllByText("Alice").length).toBeGreaterThan(0);
   });
 
   it("keeps the row and shows an error when tombstone fails", async () => {
@@ -342,15 +363,15 @@ describe("PersonalitiesView", () => {
 
     render(() => <PersonalitiesView client={client} owner={owner} />);
 
-    await screen.findByText("Alice");
+    await selectPersonality("Alice");
     fireEvent.click(screen.getByRole("button", { name: "Tombstone" }));
     fireEvent.click(screen.getByRole("button", { name: "Confirm tombstone" }));
 
     expect(await screen.findByText("internal: db unavailable")).toBeTruthy();
-    expect(screen.getByText("Alice")).toBeTruthy();
+    expect(screen.getAllByText("Alice").length).toBeGreaterThan(0);
   });
 
-  it("renders needs_repair banner and opens re-edit with empty entries", async () => {
+  it("surfaces needs_repair status and presents an empty entries list", async () => {
     const { client } = mockClient([
       instance({
         status: "needs_repair",
@@ -360,9 +381,8 @@ describe("PersonalitiesView", () => {
 
     render(() => <PersonalitiesView client={client} owner={owner} />);
 
-    expect(await screen.findByText(/Wake entries need repair/)).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Re-edit" }));
-
-    expect(screen.getByTestId("wake-entries-list").children).toHaveLength(0);
+    await selectPersonality("Engineer");
+    expect(await screen.findByText("Wake entries need repair.")).toBeTruthy();
+    expect(screen.getByText("No wake entries yet.")).toBeTruthy();
   });
 });
