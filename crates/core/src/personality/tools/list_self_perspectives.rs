@@ -56,7 +56,6 @@ impl PersonalityTool for ListSelfPerspectivesTool {
             .iter()
             .map(|row| {
                 serde_json::json!({
-                    "personality_type_id": row.personality_type_id,
                     "personality_instance_id": row.personality_instance_id.into_inner(),
                     "current_root_perspective_memory_id":
                         row.current_root_perspective_memory_id.into_inner(),

@@ -383,10 +383,8 @@ async fn personality_provenance_edges_use_operator_authorship() {
             descriptor: supersedes_relation,
             payload_sidecar_table: None,
         };
-        let instance = PersonalityRef::new(
-            "proxima-test/personality-v1",
-            proxima_core::PersonalityInstanceId::new(Uuid::now_v7()),
-        );
+        let instance =
+            PersonalityRef::new(proxima_core::PersonalityInstanceId::new(Uuid::now_v7()));
 
         let abstraction = pg
             .append_personality_memories(&PersonalityWriteRequest {

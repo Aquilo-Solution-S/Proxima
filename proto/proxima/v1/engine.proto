@@ -338,7 +338,6 @@ message ListPersonalityInstancesResponse {
 
 message PersonalityInstance {
   Owner owner = 1;
-  string personality_type_id = 2;
   string personality_instance_id = 3;  // UUID
   string current_root_perspective_memory_id = 4;  // MemoryId UUID
   string display_name = 5;

@@ -183,7 +183,6 @@ message OperatorOrigin {
   OperatorKind operator_kind      = 2;
   string model_id                 = 3;
   string prompt_version           = 4;
-  string personality_type_id      = 5;
   string personality_instance_id  = 6;  // UUID
 }
 message ToolOrigin {
@@ -250,7 +249,7 @@ message RelationDescriptor {
 // `proxima_flavor!` invocation, populated at macro-expansion time
 // from the calling crate's Cargo.toml. Surfaced with every
 // `PersonalityInstance` so the hub can render the flavor label
-// authoritatively (no string-split on `personality_type_id`).
+// authoritatively without deriving it from personality identity.
 message FlavorDescriptor {
   string flavor_id          = 1;  // e.g. "proxima-code"
   string display_name       = 2;  // e.g. "Code"
@@ -415,7 +414,6 @@ message MemoryAppend {
   SchemaRef  schema                   = 3;
   // A/P only — never set for Facts.
   optional string supersedes_memory_id = 4;
-  optional string personality_type_id = 5;
   optional string personality_instance_id = 6;  // UUID
   uint32 wake_chain_depth = 7;
 }

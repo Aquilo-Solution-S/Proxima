@@ -49,9 +49,6 @@ pub struct TombstonePersonalityOutcomeTs {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct PersonalityInstanceTs {
     pub owner: Owner,
-    /// Transitional field kept for request compatibility while
-    /// personality identity moves to `personality_instance_id`.
-    pub personality_type_id: String,
     pub personality_instance_id: String,
     pub current_root_perspective_memory_id: String,
     pub display_name: String,
@@ -355,7 +352,6 @@ impl PersonalityInstanceTs {
         let wake_entries = row.wake_entries.iter().map(WakeEntryTs::from_row).collect();
         Self {
             owner: row.owner,
-            personality_type_id: row.personality_type_id,
             personality_instance_id: row.personality_instance_id.into_inner().to_string(),
             current_root_perspective_memory_id: row
                 .current_root_perspective_memory_id

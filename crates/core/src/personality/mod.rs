@@ -88,18 +88,13 @@ impl WakeChainDepth {
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct PersonalityRef {
-    pub personality_type_id: String,
     pub personality_instance_id: PersonalityInstanceId,
 }
 
 impl PersonalityRef {
     #[must_use]
-    pub fn new(
-        personality_type_id: impl Into<String>,
-        personality_instance_id: PersonalityInstanceId,
-    ) -> Self {
+    pub const fn new(personality_instance_id: PersonalityInstanceId) -> Self {
         Self {
-            personality_type_id: personality_type_id.into(),
             personality_instance_id,
         }
     }
@@ -369,7 +364,6 @@ impl<'a> PersonalityToolContext<'a> {
 #[derive(Debug, Clone)]
 pub struct PersonalityInstanceRow {
     pub owner: Owner,
-    pub personality_type_id: String,
     pub personality_instance_id: PersonalityInstanceId,
     pub current_root_perspective_memory_id: MemoryId,
     pub display_name: String,
@@ -383,7 +377,6 @@ pub struct PersonalityInstanceRow {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PersonalityRuntimeRow {
     pub owner: Owner,
-    pub personality_type_id: String,
     pub personality_instance_id: PersonalityInstanceId,
     pub current_root_perspective_memory_id: MemoryId,
     pub display_name: String,
@@ -459,7 +452,6 @@ pub struct WakeDispatchEntryRow {
 #[derive(Debug, Clone)]
 pub struct ChangeEventForWake {
     pub event: ChangeEvent,
-    pub authoring_personality_type_id: Option<String>,
     pub authoring_personality_instance_id: Option<PersonalityInstanceId>,
     pub wake_chain_depth: WakeChainDepth,
 }

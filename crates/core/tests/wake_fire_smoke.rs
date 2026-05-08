@@ -390,7 +390,6 @@ impl Storage for MockStorage {
         if instance_id == self.instance_id {
             Ok(Some(PersonalityRuntimeRow {
                 owner: self.owner.clone(),
-                personality_type_id: "proxima-test/wake-fire-personality".into(),
                 personality_instance_id: instance_id,
                 current_root_perspective_memory_id: self.root_memory_id,
                 display_name: "Fire Test Engineer".into(),
@@ -437,11 +436,9 @@ impl Storage for MockStorage {
                     schema_version: SchemaVersion::new(1),
                     supersedes: None,
                 },
-                authoring_personality_type_id: None,
                 authoring_personality_instance_id: author,
                 wake_chain_depth: 0,
             },
-            authoring_personality_type_id: None,
             authoring_personality_instance_id: author.map(PersonalityInstanceId::new),
             wake_chain_depth: WakeChainDepth::new(0),
         }))

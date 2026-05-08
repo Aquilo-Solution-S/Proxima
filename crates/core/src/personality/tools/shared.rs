@@ -48,7 +48,7 @@ pub(super) async fn emit_personality_memory(
         .anthropic()
         .ok_or_else(|| ProtocolError::internal("anthropic client not wired into engine"))?;
     let model_id = model_id_from_wake_invocation(ctx, anthropic.as_ref());
-    let instance = PersonalityRef::new(ctx.type_id.to_string(), ctx.instance_id);
+    let instance = PersonalityRef::new(ctx.instance_id);
     let req = PersonalityWriteRequest {
         owner: ctx.owner.clone(),
         instance,

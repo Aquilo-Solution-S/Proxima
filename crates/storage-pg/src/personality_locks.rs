@@ -1,4 +1,4 @@
-//! Per-(owner, `type_id`, `instance_id`) advisory locking for wakes.
+//! Per-(owner, `instance_id`) advisory locking for wakes.
 //!
 //! Sessions in `PostgreSQL` hold session-level advisory locks; the lock is
 //! bound to the connection that took it. Sqlx's pool may hand the same
@@ -33,7 +33,6 @@ fn instance_lock_key(owner: &Owner, instance: &PersonalityRef) -> i64 {
     hasher.update(b"proxima-wake-lock\x00");
     hasher.update(&principal_bytes);
     hasher.update(owner.org_id.into_inner().as_bytes());
-    hasher.update(instance.personality_type_id.as_bytes());
     hasher.update(instance.personality_instance_id.into_inner().as_bytes());
     let digest = hasher.finalize();
     let mut buf = [0u8; 8];

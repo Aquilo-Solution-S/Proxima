@@ -52,7 +52,6 @@ const instance = (
   overrides: Partial<PersonalityInstanceTs> = {},
 ): PersonalityInstanceTs => ({
   owner,
-  personality_type_id: "proxima-code/engineer-v1",
   personality_instance_id: "018f0000-0000-7000-8000-000000000001",
   current_root_perspective_memory_id: "018f0000-0000-7000-8000-000000000101",
   display_name: "Engineer",
