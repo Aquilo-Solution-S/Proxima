@@ -46,6 +46,9 @@ impl TargetAdapter for LocalCliGooseAdapter {
         cmd.arg("--max-turns")
             .arg(invocation.max_rounds.to_string());
         cmd.arg("--no-session");
+        if let Some(cwd) = invocation.cwd.as_ref() {
+            cmd.current_dir(cwd);
+        }
 
         // Clear inherited env, then apply only what the engine specified.
         cmd.env_clear();
@@ -119,4 +122,37 @@ fn parse_turn_count(s: &str) -> Option<i32> {
     let re = regex::Regex::new(r"(?:completed|after|reached)\s+(\d+)\s+turns?").ok()?;
     let caps = re.captures(s)?;
     caps.get(1)?.as_str().parse().ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use std::time::Duration;
+
+    #[test]
+    fn target_invocation_carries_optional_cwd() {
+        let inv_no_cwd = TargetInvocation {
+            recipe_path: PathBuf::from("/tmp/nope"),
+            params: HashMap::new(),
+            max_rounds: 1,
+            env: HashMap::new(),
+            timeout: Duration::from_secs(1),
+            cwd: None,
+        };
+        assert!(inv_no_cwd.cwd.is_none());
+
+        let inv_with_cwd = TargetInvocation {
+            recipe_path: PathBuf::from("/tmp/nope"),
+            params: HashMap::new(),
+            max_rounds: 1,
+            env: HashMap::new(),
+            timeout: Duration::from_secs(1),
+            cwd: Some(PathBuf::from("/tmp/some-worktree")),
+        };
+        assert_eq!(
+            inv_with_cwd.cwd.as_deref(),
+            Some(std::path::Path::new("/tmp/some-worktree")),
+        );
+    }
 }
