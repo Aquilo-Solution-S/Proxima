@@ -83,6 +83,10 @@ pub struct FlavorRegistryFrozen {
     mcp_tools: Vec<McpToolDescriptor>,
     flavors: Vec<FlavorDescriptor>,
     bundled_recipes: Vec<(String, PathBuf)>,
+    workspace_runners: Vec<(
+        String,
+        std::sync::Arc<dyn crate::personality::workspace::WorkspaceRunner>,
+    )>,
 }
 
 impl FlavorRegistryFrozen {
@@ -102,6 +106,7 @@ impl FlavorRegistryFrozen {
             mcp_tools: Vec::new(),
             flavors: Vec::new(),
             bundled_recipes: Vec::new(),
+            workspace_runners: Vec::new(),
         }
     }
 
@@ -120,6 +125,7 @@ impl FlavorRegistryFrozen {
             mcp_tools: Vec::new(),
             flavors: Vec::new(),
             bundled_recipes: Vec::new(),
+            workspace_runners: Vec::new(),
         }
     }
 
@@ -130,6 +136,10 @@ impl FlavorRegistryFrozen {
         mcp_tools: Vec<McpToolDescriptor>,
         flavors: Vec<FlavorDescriptor>,
         bundled_recipes: Vec<(String, PathBuf)>,
+        workspace_runners: Vec<(
+            String,
+            std::sync::Arc<dyn crate::personality::workspace::WorkspaceRunner>,
+        )>,
     ) -> Self {
         Self {
             schemas,
@@ -138,6 +148,7 @@ impl FlavorRegistryFrozen {
             mcp_tools,
             flavors,
             bundled_recipes,
+            workspace_runners,
         }
     }
 
@@ -169,6 +180,20 @@ impl FlavorRegistryFrozen {
             .iter()
             .find(|(s, _)| s == slug)
             .map(|(_, path)| path.clone())
+    }
+
+    /// Lookup the workspace runner registered by the named flavor.
+    /// Returns `None` if the flavor either was not linked into the
+    /// composite binary or did not declare a workspace runner.
+    #[must_use]
+    pub fn workspace_runner(
+        &self,
+        flavor_id: &str,
+    ) -> Option<std::sync::Arc<dyn crate::personality::workspace::WorkspaceRunner>> {
+        self.workspace_runners
+            .iter()
+            .find(|(id, _)| id == flavor_id)
+            .map(|(_, runner)| runner.clone())
     }
 
     /// All bundled recipe slugs registered for a given flavor. Order

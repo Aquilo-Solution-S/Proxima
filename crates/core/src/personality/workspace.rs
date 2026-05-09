@@ -88,7 +88,7 @@ pub struct WorkspaceRunRecord {
 }
 
 #[async_trait::async_trait]
-pub trait WorkspaceRunner: Send + Sync {
+pub trait WorkspaceRunner: Send + Sync + std::fmt::Debug {
     async fn prepare(
         &self,
         input: WorkspacePrepareInput<'_>,
