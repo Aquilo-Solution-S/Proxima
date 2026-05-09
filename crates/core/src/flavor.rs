@@ -475,4 +475,47 @@ mod tests {
             "missing flavor returns None",
         );
     }
+
+    #[test]
+    fn proxima_flavor_macro_registers_workspace_runner() {
+        // Inline macro invocation under a fixture module. No schemas
+        // means no per-schema prefix checks fire -- minimal test
+        // surface that exercises only the workspace_runner arm.
+        mod fixture {
+            use crate::personality::workspace::{
+                WorkspaceOutcome, WorkspacePrepareInput, WorkspacePreparedRun, WorkspaceRunRecord,
+                WorkspaceRunner, WorkspaceRunnerError,
+            };
+
+            #[derive(Debug, Default)]
+            struct StubRunner;
+            #[async_trait::async_trait]
+            impl WorkspaceRunner for StubRunner {
+                async fn prepare(
+                    &self,
+                    _input: WorkspacePrepareInput<'_>,
+                ) -> Result<WorkspacePreparedRun, WorkspaceRunnerError> {
+                    Err(WorkspaceRunnerError::Unimplemented)
+                }
+                async fn finalize(
+                    &self,
+                    _prepared: WorkspacePreparedRun,
+                    _outcome: WorkspaceOutcome,
+                ) -> Result<WorkspaceRunRecord, WorkspaceRunnerError> {
+                    Err(WorkspaceRunnerError::Unimplemented)
+                }
+            }
+
+            crate::proxima_flavor! {
+                name = "macro-test-flavor",
+                workspace_runner = StubRunner,
+            }
+        }
+
+        let mut registry = FlavorRegistry::new();
+        fixture::register(&mut registry);
+        let frozen = registry.freeze();
+
+        assert!(frozen.workspace_runner("macro-test-flavor").is_some());
+    }
 }
