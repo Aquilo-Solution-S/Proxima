@@ -15,6 +15,7 @@ use crate::{Engine, MemoryId, ModelTier, Owner, RegisteredRelation, SchemaId, Sc
 
 pub mod authorization;
 pub mod tools;
+pub mod workspace;
 
 #[doc(hidden)]
 pub use tools::__test_only_model_id_from_wake_invocation;
