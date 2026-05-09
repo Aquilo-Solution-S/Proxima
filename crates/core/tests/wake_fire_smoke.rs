@@ -32,8 +32,13 @@ use proxima_core::verbs::event_ingest::{EventDraft, EventIngestOutcome};
 use proxima_core::verbs::goal_write::{GoalDraft, GoalWriteOutcome};
 use proxima_core::verbs::query::MemoryStore;
 use proxima_core::verbs::query::{QueryRequest, QueryResponse};
+use proxima_core::personality::workspace::{
+    WorkspaceOutcome, WorkspacePrepareInput, WorkspacePreparedRun, WorkspaceRunRecord,
+    WorkspaceRunner, WorkspaceRunnerError,
+};
 use proxima_core::verbs::schema::FlavorRegistryFrozen;
 use proxima_core::verbs::schema::SchemaInfo;
+use proxima_core::FlavorRegistry;
 use proxima_core::wake::fire::{FireWakeEntryInput, fire_wake_entry};
 use proxima_core::wake::target_adapter::{
     TargetAdapter, TargetAdapterError, TargetInvocation, TargetOutcome, TargetOutcomeKind,
@@ -49,6 +54,33 @@ use proxima_core::{
     TombstonePersonalityResponse, UserId, WakeDispatchEntryRow,
 };
 use uuid::Uuid;
+
+// ---------- Stub WorkspaceRunner ----------
+//
+// Returns Unimplemented so workspace-mode wakes finalize with
+// `failure_reason = "workspace_mode_not_yet_implemented"` via the
+// Phase 1 dispatch path in `wake/fire.rs`.
+
+#[derive(Debug, Default)]
+struct StubWorkspaceRunner;
+
+#[async_trait]
+impl WorkspaceRunner for StubWorkspaceRunner {
+    async fn prepare(
+        &self,
+        _input: WorkspacePrepareInput<'_>,
+    ) -> Result<WorkspacePreparedRun, WorkspaceRunnerError> {
+        Err(WorkspaceRunnerError::Unimplemented)
+    }
+
+    async fn finalize(
+        &self,
+        _prepared: WorkspacePreparedRun,
+        _outcome: WorkspaceOutcome,
+    ) -> Result<WorkspaceRunRecord, WorkspaceRunnerError> {
+        Err(WorkspaceRunnerError::Unimplemented)
+    }
+}
 
 // ---------- Mock TargetAdapter ----------
 
@@ -539,9 +571,21 @@ impl FireFixture {
 
         let principal = owner.principal.clone();
         let resolver = NoAuth::new(principal, owner.clone());
+        // Register a stub WorkspaceRunner under the `proxima-test`
+        // flavor so workspace-mode wakes (whose trigger_id starts
+        // with `proxima-test/`) hit the runner-dispatch path in
+        // wake/fire.rs and route to `Unimplemented`. Without this,
+        // the dispatch falls into the `NoRunner` arm with a
+        // different `failure_reason`.
+        let mut registry = FlavorRegistry::new();
+        registry.add_workspace_runner(
+            "proxima-test",
+            Arc::new(StubWorkspaceRunner) as Arc<dyn WorkspaceRunner>,
+        );
+        let frozen_registry = registry.freeze();
         let engine = Arc::new(
             Engine::new(
-                FlavorRegistryFrozen::new(),
+                frozen_registry,
                 MemoryStore::new(),
                 Box::new(resolver),
             )

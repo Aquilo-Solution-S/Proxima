@@ -3,9 +3,11 @@
 //! `fire_wake_entry` mints a wake token, snapshots the resolved
 //! inference target + recipe SHA-256 onto the invocation row, drives
 //! the [`TargetAdapter`], and finalizes status. Workspace mode
-//! short-circuits with `failure_reason = workspace_mode_not_yet_implemented`
-//! until Phase 1e. Self-wake is a defense-in-depth `Ok(false)` (the
-//! dispatcher's `authored_by` filter is the primary guard).
+//! dispatches to the flavor's registered `WorkspaceRunner`; the
+//! Code-flavor Phase-1 stub returns `WorkspaceRunnerError::Unimplemented`
+//! so the legacy `failure_reason = workspace_mode_not_yet_implemented`
+//! string is preserved. Self-wake is a defense-in-depth `Ok(false)`
+//! (the dispatcher's `authored_by` filter is the primary guard).
 //!
 //! The four wake-context envelopes flow through unchanged: every
 //! WakeEntry on every Personality gets the same four fixed params,
@@ -32,6 +34,7 @@ use crate::wake::target_adapter::{
     TargetAdapter, TargetInvocation, TargetOutcome, TargetOutcomeKind,
 };
 use crate::wake::token_store::WakeTokenContext;
+use crate::personality::workspace::{WorkspacePrepareInput, WorkspaceRunnerError};
 
 /// Inputs to one wake fire — assembled by the dispatcher tick from the
 /// `WakeDispatchEntryRow` it just matched.
@@ -42,6 +45,25 @@ pub struct FireWakeEntryInput {
     pub wake_entry: WakeEntryRow,
     pub change_event_seq: Uuid,
     pub triggering_memory_id: Uuid,
+}
+
+/// Phase 1 dispatch outcomes that all map to a "Failed" finalize
+/// state. Each variant feeds a deterministic `failure_reason` string
+/// so observability (and the regression tests) can distinguish the
+/// dispatch decision without parsing arbitrary text.
+enum WorkspaceFinalizeOutcome {
+    /// `flavor_id_for_dispatch` did not resolve to a registered runner.
+    NoRunner,
+    /// Runner returned `WorkspaceRunnerError::Unimplemented` — Phase 1's
+    /// Code-flavor stub takes this path.
+    Unimplemented,
+    /// Runner returned a prepared run, but Phase 1's wake/fire dispatch
+    /// does not yet drive the adapter for workspace mode. Phase 3 lights
+    /// this up; until then it is a sentinel for runners that are ahead
+    /// of the dispatch path.
+    Unsupported(String),
+    /// Runner returned `WorkspaceRunnerError::Internal(..)`.
+    InternalError(String),
 }
 
 /// Drive one matched wake entry end-to-end.
@@ -142,6 +164,9 @@ pub async fn fire_wake_entry(
         ),
         read_log: std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new())),
     };
+    let invocation_id_for_dispatch = token_ctx.invocation_id;
+    let root_perspective_memory_id_for_dispatch = token_ctx.current_root_perspective_memory_id;
+    let triggering_memory_id_for_dispatch = token_ctx.triggering_event_memory_id;
     let wake_token = engine.wake_token_store().mint(token_ctx).await;
 
     // 5. INSERT invocation row (status = running).
@@ -159,15 +184,77 @@ pub async fn fire_wake_entry(
         .await
         .map_err(|e| ProtocolError::internal(format!("start_wake_invocation: {e}")))?;
 
-    // 6. Workspace mode stub: fail with reason, revoke token, exit.
-    // Phase 1e flips this into the real workspace fork; until then we
-    // want the row + reason on disk so dispatcher posture observability
-    // sees the attempt.
+    // 6. Workspace mode dispatch. Look up the flavor's runner; if
+    // missing OR if the runner returns Unimplemented, finalize with
+    // the legacy failure_reason so observability is unchanged. Phase 3
+    // lights up the Code flavor's runner; Phase 2 swaps the trigger-id
+    // prefix shortcut for a proper personality_instance_id ->
+    // flavor_id resolver.
     if matches!(
         input.wake_entry.execution_mode,
         WakeEntryExecutionMode::Workspace
     ) {
+        let flavor_id_for_dispatch = input
+            .wake_entry
+            .trigger_id
+            .split('/')
+            .next()
+            .unwrap_or("");
+
+        let runner_opt = engine.registry().workspace_runner(flavor_id_for_dispatch);
+
+        let mcp_url_opt = engine.mcp_url();
+        let mcp_url_for_runner: &str = mcp_url_opt.as_deref().unwrap_or("");
+
+        let outcome = match runner_opt {
+            None => WorkspaceFinalizeOutcome::NoRunner,
+            Some(runner) => {
+                // Phase 1: the only registered runner is Code's
+                // Unimplemented stub; this branch returns
+                // WorkspaceRunnerError::Unimplemented and we map it
+                // back to the legacy failure_reason. Phase 3 wires the
+                // real flow.
+                let prepare_input = WorkspacePrepareInput {
+                    invocation_id: invocation_id_for_dispatch,
+                    owner: &input.owner,
+                    wake_token,
+                    mcp_url: mcp_url_for_runner,
+                    root_perspective_memory_id: root_perspective_memory_id_for_dispatch,
+                    triggering_memory_id: triggering_memory_id_for_dispatch,
+                    triggering_memory_schema_id: input.wake_entry.trigger_id.as_str(),
+                    workspace_tool_palette: &input.wake_entry.workspace_tool_palette,
+                    recipe_bytes: &recipe_bytes,
+                    recipe_sha256: &recipe_sha256,
+                };
+                match runner.prepare(prepare_input).await {
+                    Ok(_prepared) => WorkspaceFinalizeOutcome::Unsupported(
+                        "workspace_runner_returned_prepared_but_phase1_does_not_drive".into(),
+                    ),
+                    Err(WorkspaceRunnerError::Unimplemented) => {
+                        WorkspaceFinalizeOutcome::Unimplemented
+                    }
+                    Err(WorkspaceRunnerError::Internal(msg)) => {
+                        WorkspaceFinalizeOutcome::InternalError(msg)
+                    }
+                }
+            }
+        };
+
         engine.wake_token_store().revoke(wake_token).await;
+
+        let failure_reason = match outcome {
+            WorkspaceFinalizeOutcome::NoRunner => Some(format!(
+                "workspace_no_runner_for_flavor:{flavor_id_for_dispatch}"
+            )),
+            WorkspaceFinalizeOutcome::Unimplemented => {
+                Some("workspace_mode_not_yet_implemented".to_string())
+            }
+            WorkspaceFinalizeOutcome::InternalError(msg) => {
+                Some(format!("workspace_runner_internal:{msg}"))
+            }
+            WorkspaceFinalizeOutcome::Unsupported(msg) => Some(msg),
+        };
+
         finalize(
             engine,
             &input,
@@ -175,7 +262,7 @@ pub async fn fire_wake_entry(
                 status: WakeInvocationStatus::Failed,
                 turn_count: None,
                 cost_usd: None,
-                failure_reason: Some("workspace_mode_not_yet_implemented".to_string()),
+                failure_reason,
                 exit_code: None,
                 duration_ms: None,
                 stdout_tail: None,
