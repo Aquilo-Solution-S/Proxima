@@ -5,7 +5,9 @@ use crate::personality::{
     PersonalityMemoryDraft, PersonalityRef, PersonalityToolContext, PersonalityWriteRequest,
     WakeChainDepth,
 };
-use crate::{CORE_DERIVED_FROM_RELATION, CORE_SUPERSEDES_RELATION, MemoryId};
+use crate::{
+    CORE_AUTHORED_RELATION, CORE_DERIVED_FROM_RELATION, CORE_SUPERSEDES_RELATION, MemoryId,
+};
 
 pub(super) const PROMPT_VERSION: &str = "v1";
 
@@ -43,6 +45,11 @@ pub(super) async fn emit_personality_memory(
         .registry()
         .resolve_relation(CORE_SUPERSEDES_RELATION)
         .ok_or_else(|| ProtocolError::internal("missing core supersedes relation"))?;
+    let authored_relation = ctx
+        .engine
+        .registry()
+        .resolve_relation(CORE_AUTHORED_RELATION)
+        .ok_or_else(|| ProtocolError::internal("missing core authored relation"))?;
     let model_id = if let Some(wake) = ctx.wake_invocation {
         wake.model_id.clone()
     } else {
@@ -60,6 +67,8 @@ pub(super) async fn emit_personality_memory(
         prompt_version,
         provenance_relation,
         supersedes_relation,
+        authored_relation,
+        current_root_perspective_memory_id: ctx.current_root_perspective_memory_id,
         wake_chain_depth,
         memories: std::slice::from_ref(draft),
         sidecar_table,

@@ -1152,6 +1152,21 @@ pub async fn append_personality_memories(
             append_edge_in_tx(&mut tx, &draft, None).await?;
         }
 
+        let authored = EdgeDraft {
+            edge_id: uuid::Uuid::now_v7(),
+            relation: req.authored_relation,
+            source_kind: "Perspective",
+            source_memory_id: Some(req.current_root_perspective_memory_id.into_inner()),
+            source_goal_id: None,
+            target_kind: memory.kind.as_str(),
+            target_memory_id: Some(memory_id),
+            target_goal_id: None,
+            authorship_kind: "Engine",
+            authorship_owner_memory_id: None,
+            owner: &req.owner,
+        };
+        append_edge_in_tx(&mut tx, &authored, None).await?;
+
         let dim = i32::try_from(memory.embedding.len())
             .map_err(|_| StorageError::ConstraintViolation("embedding dim too large".into()))?;
         sqlx::query(

@@ -167,6 +167,9 @@ pub(crate) fn normalize_openai_compat_base_url(vendor: &str, base_url: &str) -> 
 
 fn shell_secret_resolver() -> ResolverRegistry {
     let mut resolver = ResolverRegistry::default_with_env();
+    #[cfg(debug_assertions)]
+    resolver.register(Box::new(crate::dev_secrets::DevFileSecretResolver::new()));
+    #[cfg(not(debug_assertions))]
     resolver.register(Box::new(crate::secrets::KeychainResolver::new()));
     resolver
 }
