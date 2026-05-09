@@ -318,3 +318,77 @@ For the record (so future-us doesn't relitigate this):
   subsumes the row-column solution for graph queries; the row
   attribution stays as `personality_instance_id` for SQL queries. No
   reason to add a third encoding.
+
+## Addendum (2026-05-09): Fact emits during a wake
+
+Workspace mode (see
+`docs/superpowers/specs/2026-05-09-workspace-mode-design.md`) requires
+the same `core/authored` auto-wire when an **event source** ingests a
+**Fact** within an active wake context. The original spec scoped the
+auto-wire to the substrate tools `core/emit_abstraction` /
+`core/emit_perspective`; this addendum extends it to `EventIngest`.
+
+### Why it stays inside the original contract
+
+The contract becomes:
+
+> Any Memory emitted while a wake_token is in scope receives one
+> `core/authored` edge from that wake's snapshotted
+> `current_root_perspective_memory_id`, regardless of whether the
+> emit path is a substrate tool or `EventIngest`.
+
+The directionality rule allows P → F (m=2, n=0, m ≥ n), so the edge
+shape is unchanged. The Personality is still not the authorship
+principal of the edge (Core(Engine) writes it on the substrate's
+behalf); it is the authorship principal of the row only via the same
+`personality_instance_id`-equivalent attribution that the workspace
+runner records in the Fact's payload.
+
+### Mechanics
+
+`EventIngest`'s storage path
+(`crates/storage-pg/src/verbs/event_ingest.rs` — alongside
+`append_personality_memories` / `append_edge_in_tx`) gains the same
+two parameters the substrate tools already thread:
+
+```rust
+pub authored_relation: Option<RegisteredRelation<'a>>,
+pub current_root_perspective_memory_id: Option<MemoryId>,
+```
+
+Both `Option`-wrapped because non-wake EventIngest calls (e.g., a
+LocalGitSource poll outside any wake) leave them `None` and emit no
+authorship edge. The wake-context check is structural: the engine's
+`EventIngest` request handler reads the active `WakeTokenContext` from
+the same `wake_token_store` the substrate tools use, and threads
+`(CORE_AUTHORED_RELATION, ctx.current_root_perspective_memory_id)`
+through to storage when present.
+
+When both are `Some`, storage writes one extra `core/authored` edge
+per Fact in the same transaction as the Fact insert and its
+provenance edges, identical in shape to the existing
+`append_personality_memories` path.
+
+### Authorship class and self-wake
+
+Unchanged: edge authorship is `Core(Engine)`. The dispatcher's
+self-wake guard (`event.author == personality.instance_id`) does not
+fire because the edge is engine-authored, not
+personality-authored. A WakeEntry registered with `(on_edge,
+core/authored)` and `authored_by: Any` wakes on edges from *other*
+personalities' Fact emits — this is the intended cross-personality
+"watch what other personalities are producing" semantic, now extended
+to Facts.
+
+### Tests
+
+Added to the existing test list:
+
+- `flavors/code/tests/workspace_run_pg.rs` (lives in workspace-mode
+  spec): firing a workspace wake that emits a `workspace-run-v1`
+  Fact via `EventIngest` writes one `core/authored` edge from the
+  Engineer's Root Perspective to the Fact, atomic with the Fact
+  insert.
+- `crates/storage-pg/tests/event_ingest_pg.rs`: Fact emit *outside*
+  any wake context writes no `core/authored` edge (regression guard
+  for the `Option` semantics).
