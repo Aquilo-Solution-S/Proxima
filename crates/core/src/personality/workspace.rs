@@ -40,6 +40,12 @@ pub struct WorkspacePrepareInput<'a> {
     /// to the substrate MCP listener with the same token the goose
     /// subprocess receives via `PROXIMA_WAKE_TOKEN`.
     pub wake_token: Uuid,
+    /// Substrate MCP URL the runner forwards to its inner subprocess
+    /// (typically as `PROXIMA_MCP_URL`). Phase 1's wake/fire dispatch
+    /// passes `""` when `engine.mcp_url()` is `None` because the
+    /// Code-flavor stub returns `Unimplemented` regardless. Phase 3's
+    /// real runners must validate this is non-empty before launching
+    /// any subprocess that will call back into the substrate.
     pub mcp_url: &'a str,
     /// Snapshotted Root Perspective at wake-context assembly time.
     pub root_perspective_memory_id: MemoryId,
