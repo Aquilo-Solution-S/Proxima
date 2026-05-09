@@ -564,6 +564,159 @@
   margin: 0;
 }
 
+/* ── Wake invocation diagnostics ─────────────────────────────── */
+
+.personality-invocations-error,
+.personality-invocations-empty {
+  margin: 0 12px 10px;
+  font-size: 11px;
+}
+
+.personality-invocations-empty {
+  color: var(--ink-50);
+}
+
+.personality-invocation-list {
+  display: grid;
+  gap: 6px;
+  padding: 0 12px 12px;
+}
+
+.personality-invocation {
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  background: var(--bg);
+}
+
+.personality-invocation summary {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 9px;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.personality-invocation summary::before {
+  display: none;
+}
+
+.personality-invocation-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.personality-invocation-status {
+  border: 1px solid var(--rule-strong);
+  border-radius: 999px;
+  padding: 1px 6px;
+  color: var(--ink-60);
+  font-family: var(--mono);
+  font-size: 10px;
+  line-height: 15px;
+}
+
+.personality-invocation-status.succeeded {
+  border-color: rgba(112, 164, 119, 0.65);
+  color: #8fca98;
+}
+
+.personality-invocation-status.failed {
+  border-color: #6e3a2c;
+  color: #e07a5f;
+}
+
+.personality-invocation-body {
+  display: grid;
+  gap: 8px;
+  padding: 0 9px 10px;
+}
+
+.personality-invocation-meta {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px 10px;
+  margin: 0;
+}
+
+.personality-invocation-meta div {
+  min-width: 0;
+}
+
+.personality-invocation-meta dt {
+  color: var(--ink-50);
+  font-size: 10px;
+}
+
+.personality-invocation-meta dd {
+  margin: 1px 0 0;
+  overflow: hidden;
+  color: var(--ink-80);
+  font-family: var(--mono);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.personality-invocation-output-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 3px;
+  color: var(--ink-50);
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+.personality-invocation-output {
+  max-height: 220px;
+  margin: 0;
+  overflow: auto;
+  border: 1px solid var(--rule);
+  border-radius: 6px;
+  padding: 8px;
+  background: #08090b;
+  color: var(--ink-80);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.personality-invocation-tools {
+  display: grid;
+  gap: 6px;
+}
+
+.personality-invocation-tools h5 {
+  margin: 2px 0 0;
+  color: var(--ink-50);
+  font-family: var(--sans);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.personality-invocation-tool {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink-70);
+  font-size: 11px;
+}
+
+.personality-invocation-tool > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* ── Recipe picker ───────────────────────────────────────────── */
 
 .personality-recipe-picker {

@@ -79,3 +79,47 @@ pub trait McpTool: Send + Sync + 'static {
         args: Self::Args,
     ) -> BoxFuture<'static, Result<Self::Output, McpToolError>>;
 }
+
+/// Tool names exposed to LLM-hosted MCP clients must also be valid
+/// provider function names. Internal ids use flavor-style `/`
+/// separators, which some runners pass through unchanged.
+#[must_use]
+pub fn provider_safe_tool_name(canonical: &str) -> String {
+    let mut out = String::with_capacity(canonical.len());
+    let mut previous_dot = false;
+    for ch in canonical.chars() {
+        let safe = ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' || ch == '.';
+        let mapped = if safe { ch } else { '_' };
+        if mapped == '.' {
+            if previous_dot {
+                out.push('_');
+                previous_dot = false;
+            } else {
+                out.push(mapped);
+                previous_dot = true;
+            }
+        } else {
+            out.push(mapped);
+            previous_dot = false;
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::provider_safe_tool_name;
+
+    #[test]
+    fn provider_safe_tool_name_replaces_runner_invalid_separators() {
+        assert_eq!(
+            provider_safe_tool_name("core/emit_abstraction"),
+            "core_emit_abstraction"
+        );
+        assert_eq!(
+            provider_safe_tool_name("proxima-mcp/proxima_remember"),
+            "proxima-mcp_proxima_remember"
+        );
+        assert_eq!(provider_safe_tool_name("a..b"), "a._b");
+    }
+}

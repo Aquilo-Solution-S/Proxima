@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 
 use super::{Engine, EngineMcpListener};
 use crate::auth::AuthResolver;
@@ -16,8 +16,7 @@ use crate::wake::token_store::WakeTokenStore;
 
 const DEFAULT_DISPATCH_INTERVAL: Duration = Duration::from_secs(1);
 const DEFAULT_WAKE_TOKEN_TTL: Duration = Duration::from_secs(300);
-const DEFAULT_MCP_LISTEN_ADDR: SocketAddr =
-    SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
+const DEFAULT_MCP_LISTEN_ADDR: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
 
 impl Engine {
     pub fn new(
@@ -41,6 +40,7 @@ impl Engine {
             mcp_url: Arc::new(RwLock::new(None)),
             wake_token_store: Arc::new(WakeTokenStore::new(DEFAULT_WAKE_TOKEN_TTL)),
             target_adapter: Arc::new(RwLock::new(None)),
+            dispatch_tick_lock: Arc::new(Mutex::new(())),
         }
     }
 

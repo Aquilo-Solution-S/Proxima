@@ -115,9 +115,7 @@ pub async fn assemble_wake_context(
     let root_payload = storage
         .fetch_root_personality_perspective(owner, root_memory_id)
         .await
-        .map_err(|e| {
-            ProtocolError::internal(format!("fetch_root_personality_perspective: {e}"))
-        })?
+        .map_err(|e| ProtocolError::internal(format!("fetch_root_personality_perspective: {e}")))?
         .ok_or_else(|| {
             ProtocolError::not_found(format!(
                 "root personality perspective sidecar missing: memory_id={}",
@@ -162,9 +160,7 @@ pub async fn assemble_wake_context(
                 serde_json::Value::Null
             } else {
                 serde_json::from_slice::<serde_json::Value>(&row.payload).unwrap_or_else(|_| {
-                    serde_json::Value::String(
-                        String::from_utf8_lossy(&row.payload).into_owned(),
-                    )
+                    serde_json::Value::String(String::from_utf8_lossy(&row.payload).into_owned())
                 })
             };
             ActiveGoalEnvelope {
@@ -179,9 +175,7 @@ pub async fn assemble_wake_context(
         .await
         .map_err(|e| ProtocolError::internal(format!("fetch_change_event_for_wake: {e}")))?
         .ok_or_else(|| {
-            ProtocolError::not_found(format!(
-                "change event not found: seq={change_event_seq}"
-            ))
+            ProtocolError::not_found(format!("change event not found: seq={change_event_seq}"))
         })?;
 
     let (kind_str, schema_id_str, triggering_memory_id) =

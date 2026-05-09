@@ -2,7 +2,9 @@ use std::time::Duration;
 use uuid::Uuid;
 
 use proxima_core::wake::token_store::{WakeTokenContext, WakeTokenStore};
-use proxima_core::{OrgId, Owner, Principal, UserId};
+use std::sync::Arc;
+
+use proxima_core::{MemoryId, OrgId, Owner, Principal, UserId, WakeChainDepth};
 
 fn make_owner() -> Owner {
     Owner {
@@ -16,10 +18,15 @@ fn make_ctx(owner: Owner) -> WakeTokenContext {
         invocation_id: Uuid::new_v4(),
         personality_instance_id: Uuid::new_v4(),
         wake_entry_id: Uuid::new_v4(),
+        change_event_seq: Uuid::new_v4(),
         owner,
         palette: vec!["core/emit_abstraction".into()],
         model_id: "anthropic/claude-3-5-sonnet".into(),
         max_rounds: 4,
+        current_root_perspective_memory_id: MemoryId::new(Uuid::now_v7()),
+        triggering_event_memory_id: MemoryId::new(Uuid::now_v7()),
+        triggering_event_depth: WakeChainDepth::new(0),
+        read_log: Arc::new(tokio::sync::Mutex::new(Vec::new())),
     }
 }
 

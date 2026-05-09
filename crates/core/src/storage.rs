@@ -15,11 +15,12 @@ use crate::inference::{
 };
 use crate::personality::{
     AbstractionRow, ActiveGoalSummary, ChangeEventForWake, InstantiatePersonalityRequest,
-    InstantiatePersonalityResponse, MemorySnapshot, PersonalityInstanceId, PersonalityInstanceRow,
-    PersonalityRef, PersonalityRuntimeRow, PersonalityWriteOutcome, PersonalityWriteRequest,
-    RootPersonalityPerspectiveRow, SetWakeEntriesRequest, SetWakeEntriesResponse, SidecarSpec,
-    TombstonePersonalityRequest, TombstonePersonalityResponse, WakeDispatchEntryRow,
-    WakeInvocationFinalize, WakeInvocationStart, WakeInvocationStatus,
+    InstantiatePersonalityResponse, ListWakeInvocationsRequest, MemorySnapshot,
+    PersonalityInstanceId, PersonalityInstanceRow, PersonalityRef, PersonalityRuntimeRow,
+    PersonalityWriteOutcome, PersonalityWriteRequest, RootPersonalityPerspectiveRow,
+    SetWakeEntriesRequest, SetWakeEntriesResponse, SidecarSpec, TombstonePersonalityRequest,
+    TombstonePersonalityResponse, WakeDispatchEntryRow, WakeInvocationFinalize,
+    WakeInvocationLogDraft, WakeInvocationRow, WakeInvocationStart, WakeInvocationStatus,
 };
 use crate::verbs::close_batch::CloseBatchOutcome;
 use crate::verbs::event_history::{EventHistoryRequest, EventHistoryResponse};
@@ -265,6 +266,20 @@ pub trait Storage: Send + Sync {
         &self,
         finalize: &WakeInvocationFinalize,
     ) -> Result<(), StorageError>;
+
+    async fn append_wake_invocation_log(
+        &self,
+        _log: &WakeInvocationLogDraft,
+    ) -> Result<(), StorageError> {
+        Ok(())
+    }
+
+    async fn list_wake_invocations(
+        &self,
+        _req: &ListWakeInvocationsRequest,
+    ) -> Result<Vec<WakeInvocationRow>, StorageError> {
+        Ok(Vec::new())
+    }
 
     async fn load_memory_batch_facts(
         &self,

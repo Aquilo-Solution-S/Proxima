@@ -219,12 +219,20 @@ impl MockAdapter {
 
 #[async_trait]
 impl TargetAdapter for MockAdapter {
-    async fn run(&self, _invocation: TargetInvocation) -> Result<TargetOutcome, TargetAdapterError> {
+    async fn run(
+        &self,
+        _invocation: TargetInvocation,
+    ) -> Result<TargetOutcome, TargetAdapterError> {
         *self.calls.lock().unwrap() += 1;
         Ok(TargetOutcome {
             kind: TargetOutcomeKind::Succeeded,
             turn_count: Some(1),
+            exit_code: Some(0),
+            duration_ms: 1,
+            stdout_tail: String::new(),
             stderr_tail: String::new(),
+            stdout_truncated: false,
+            stderr_truncated: false,
         })
     }
 }
@@ -290,8 +298,7 @@ impl DispatchEngineFixture {
 pub async fn seed_dispatch_fixture_with_match_and_engine(
     dispatch_interval: Duration,
 ) -> Option<DispatchEngineFixture> {
-    let (storage, owner, instance_id, change_event_seq, pg) =
-        seed_wake_context_fixture().await?;
+    let (storage, owner, instance_id, change_event_seq, pg) = seed_wake_context_fixture().await?;
 
     // 1. Inference target + tier binding so set_wake_entries +
     //    dispatcher resolve_target both succeed.

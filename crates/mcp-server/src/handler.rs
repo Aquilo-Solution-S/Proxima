@@ -8,7 +8,7 @@
 use std::borrow::Cow;
 use std::sync::Arc;
 
-use proxima_core::wake::token_store::WakeTokenContext;
+use proxima_core::mcp::provider_safe_tool_name;
 use proxima_core::{McpAuthorContext, MemoryId};
 use rmcp::ServerHandler;
 use rmcp::model::{
@@ -17,6 +17,7 @@ use rmcp::model::{
 };
 use rmcp::service::{MaybeSendFuture, RequestContext, RoleServer};
 
+use crate::auth::{McpAuthContext, McpToolScope};
 use crate::server::DevMcpServer;
 
 #[derive(Clone, Debug)]
@@ -37,21 +38,37 @@ impl ServerHandler for DynamicHandler {
         _request: Option<PaginatedRequestParams>,
         context: RequestContext<RoleServer>,
     ) -> impl Future<Output = Result<ListToolsResult, ErrorData>> + MaybeSendFuture + '_ {
-        let palette = wake_palette(&context);
-        let tools = self
+        let auth = auth_context(&context);
+        let scope = auth.as_ref().map(|ctx| &ctx.scope);
+        let mut tools: Vec<Tool> = self
             .server
             .registry()
             .list_mcp_tools()
             .iter()
-            .filter(|descriptor| palette_allows(palette.as_ref(), descriptor.name))
+            .filter(|descriptor| scope_allows(scope, descriptor.name))
             .map(|descriptor| {
                 Tool::new(
-                    Cow::Borrowed(descriptor.name),
+                    Cow::Owned(provider_safe_tool_name(descriptor.name)),
                     Cow::Borrowed(descriptor.description),
                     Arc::new(rmcp::model::object(descriptor.args_schema.clone())),
                 )
             })
             .collect();
+        if auth.as_ref().and_then(|ctx| ctx.wake.as_ref()).is_some() {
+            tools.extend(
+                self.server
+                    .substrate_tools()
+                    .iter()
+                    .filter(|tool| scope_allows(scope, tool.tool_id()))
+                    .map(|tool| {
+                        Tool::new(
+                            Cow::Owned(provider_safe_tool_name(tool.tool_id())),
+                            Cow::Borrowed(tool.description()),
+                            Arc::new(rmcp::model::object(tool.args_schema())),
+                        )
+                    }),
+            );
+        }
         std::future::ready(Ok(ListToolsResult {
             tools,
             ..Default::default()
@@ -63,10 +80,10 @@ impl ServerHandler for DynamicHandler {
             .registry()
             .list_mcp_tools()
             .iter()
-            .find(|descriptor| descriptor.name == name)
+            .find(|descriptor| tool_name_matches(descriptor.name, name))
             .map(|descriptor| {
                 Tool::new(
-                    Cow::Borrowed(descriptor.name),
+                    Cow::Owned(provider_safe_tool_name(descriptor.name)),
                     Cow::Borrowed(descriptor.description),
                     Arc::new(rmcp::model::object(descriptor.args_schema.clone())),
                 )
@@ -79,21 +96,24 @@ impl ServerHandler for DynamicHandler {
         context: RequestContext<RoleServer>,
     ) -> impl Future<Output = Result<CallToolResult, ErrorData>> + MaybeSendFuture + '_ {
         let server = self.server.clone();
-        let palette = wake_palette(&context);
+        let auth = auth_context(&context);
         async move {
-            if !palette_allows(palette.as_ref(), request.name.as_ref()) {
+            let request_name = request.name.to_string();
+            let canonical_name =
+                canonical_tool_name(&server, &request_name).unwrap_or_else(|| request_name.clone());
+            if !scope_allows(auth.as_ref().map(|ctx| &ctx.scope), &canonical_name) {
                 return Err(ErrorData::invalid_request(
-                    format!("tool {} not in wake palette", request.name),
+                    format!("tool {} not authorized for this MCP token", request.name),
                     None,
                 ));
             }
             let mut args = request
                 .arguments
                 .map_or_else(|| serde_json::json!({}), serde_json::Value::Object);
-            let author = author_from_args(&args)?;
+            let author = author_from_args(&args, auth.as_ref())?;
             strip_call_context_args(&mut args);
             let output = server
-                .call_tool(request.name.as_ref(), args, author)
+                .call_tool(&canonical_name, args, author, auth)
                 .await
                 .map_err(|err| ErrorData::internal_error(err.to_string(), None))?;
             let text = serde_json::to_string(&output)
@@ -103,36 +123,60 @@ impl ServerHandler for DynamicHandler {
     }
 }
 
-/// Resolve the per-invocation tool palette from the request's wake-token
-/// context. Returns `None` when no token-bearing layer ran ahead of rmcp
-/// (open path, e.g. unauthenticated dev tooling). When a wake token is
-/// present, the palette restricts both `tools/list` and `tools/call`.
-///
-/// rmcp's `StreamableHttpService` injects [`http::request::Parts`] into
-/// the rmcp request extensions, and our `wake_token_auth_layer`
-/// (Phase 1d) inserts a `WakeTokenContext` into the axum request
-/// extensions before nesting the rmcp service. The two extension stores
-/// are different — we follow the documented bridge.
-fn wake_palette(context: &RequestContext<RoleServer>) -> Option<Vec<String>> {
-    let parts = context.extensions.get::<http::request::Parts>()?;
-    let ctx = parts.extensions.get::<WakeTokenContext>()?;
-    Some(ctx.palette.clone())
+fn tool_name_matches(canonical: &str, request_name: &str) -> bool {
+    canonical == request_name || provider_safe_tool_name(canonical) == request_name
 }
 
-fn palette_allows(palette: Option<&Vec<String>>, name: &str) -> bool {
-    match palette {
-        Some(allowed) => allowed.iter().any(|t| t == name),
-        // No wake token bound to the request — preserve legacy MCP-only
-        // behavior. Token-required posture is enforced one layer up by
-        // `wake_token_auth_layer` whenever the engine wires it in.
+fn canonical_tool_name(server: &DevMcpServer, request_name: &str) -> Option<String> {
+    server
+        .registry()
+        .list_mcp_tools()
+        .iter()
+        .find(|descriptor| tool_name_matches(descriptor.name, request_name))
+        .map(|descriptor| descriptor.name.to_string())
+        .or_else(|| {
+            server
+                .substrate_tools()
+                .iter()
+                .find(|tool| tool_name_matches(tool.tool_id(), request_name))
+                .map(|tool| tool.tool_id().to_string())
+        })
+}
+
+/// Resolve the token scope from the request auth context. Returns `None`
+/// when no token-bearing layer ran ahead of rmcp (direct handler tests).
+/// Wake tokens carry a palette scope; local master tokens carry all-tools
+/// scope.
+///
+/// rmcp's `StreamableHttpService` injects [`http::request::Parts`] into
+/// the rmcp request extensions, and our `mcp_auth_layer` inserts
+/// `McpAuthContext` into the axum request extensions before nesting the
+/// rmcp service. The two extension stores are different — we follow the
+/// documented bridge.
+fn auth_context(context: &RequestContext<RoleServer>) -> Option<McpAuthContext> {
+    let parts = context.extensions.get::<http::request::Parts>()?;
+    let ctx = parts.extensions.get::<McpAuthContext>()?;
+    Some(ctx.clone())
+}
+
+fn scope_allows(scope: Option<&McpToolScope>, name: &str) -> bool {
+    match scope {
+        Some(scope) => scope.allows(name),
+        // No auth context bound to the request — preserve direct handler
+        // tests. Token-required posture is enforced one layer up by
+        // `mcp_auth_layer` whenever the HTTP transport wires it in.
         None => true,
     }
 }
 
-fn author_from_args(args: &serde_json::Value) -> Result<McpAuthorContext, ErrorData> {
+fn author_from_args(
+    args: &serde_json::Value,
+    auth: Option<&McpAuthContext>,
+) -> Result<McpAuthorContext, ErrorData> {
     let model_id = args
         .get("model_id")
         .and_then(serde_json::Value::as_str)
+        .or_else(|| auth.and_then(|ctx| ctx.model_id.as_deref()))
         .unwrap_or("unknown")
         .to_string();
     let caller_self_perspective = caller_self_perspective_from_args(args)?;
@@ -187,7 +231,7 @@ mod tests {
             "_proxima_caller_self_perspective": self_id.to_string(),
         });
 
-        let author = author_from_args(&args).expect("author context");
+        let author = author_from_args(&args, None).expect("author context");
 
         assert_eq!(author.model_id, "test-model");
         assert_eq!(

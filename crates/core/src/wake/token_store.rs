@@ -5,17 +5,30 @@ use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
-use crate::Owner;
+use crate::personality::{PersonalityInstanceId, WakeChainDepth};
+use crate::{MemoryId, Owner};
 
 #[derive(Debug, Clone)]
 pub struct WakeTokenContext {
     pub invocation_id: Uuid,
     pub personality_instance_id: Uuid,
     pub wake_entry_id: Uuid,
+    pub change_event_seq: Uuid,
     pub owner: Owner,
     pub palette: Vec<String>,
     pub model_id: String,
     pub max_rounds: u32,
+    pub current_root_perspective_memory_id: MemoryId,
+    pub triggering_event_memory_id: MemoryId,
+    pub triggering_event_depth: WakeChainDepth,
+    pub read_log: Arc<tokio::sync::Mutex<Vec<(MemoryId, WakeChainDepth)>>>,
+}
+
+impl WakeTokenContext {
+    #[must_use]
+    pub fn personality_instance_id(&self) -> PersonalityInstanceId {
+        PersonalityInstanceId::new(self.personality_instance_id)
+    }
 }
 
 #[derive(Debug)]

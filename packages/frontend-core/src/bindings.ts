@@ -10,6 +10,7 @@ export const commands = {
 	eventIngest: (draft: EventDraft) => typedError<EventIngestOutcome, ProtocolError>(__TAURI_INVOKE("event_ingest", { draft })),
 	goalWrite: (draft: GoalDraft) => typedError<GoalWriteOutcome, ProtocolError>(__TAURI_INVOKE("goal_write", { draft })),
 	listPersonalityInstances: (req: ListPersonalityInstancesTs) => typedError<PersonalityInstanceTs[], ProtocolError>(__TAURI_INVOKE("list_personality_instances", { req })),
+	listWakeInvocations: (req: ListWakeInvocationsTs) => typedError<WakeInvocationTs[], ProtocolError>(__TAURI_INVOKE("list_wake_invocations", { req })),
 	instantiatePersonality: (req: InstantiatePersonalityTs) => typedError<InstantiatePersonalityOutcomeTs, ProtocolError>(__TAURI_INVOKE("instantiate_personality", { req })),
 	setWakeEntries: (req: SetWakeEntriesTs) => typedError<SetWakeEntriesOutcomeTs, ProtocolError>(__TAURI_INVOKE("set_wake_entries", { req })),
 	tombstonePersonality: (req: TombstonePersonalityTs) => typedError<TombstonePersonalityOutcomeTs, ProtocolError>(__TAURI_INVOKE("tombstone_personality", { req })),
@@ -40,6 +41,16 @@ export const commands = {
 	listBundledRecipes: () => typedError<BundledRecipeTs[], ProtocolError>(__TAURI_INVOKE("list_bundled_recipes")),
 	listMcpTools: () => typedError<McpToolTs[], ProtocolError>(__TAURI_INVOKE("list_mcp_tools")),
 	listWorkspaceTools: () => typedError<WorkspaceToolTs[], ProtocolError>(__TAURI_INVOKE("list_workspace_tools")),
+	/**
+	 *  # Errors
+	 *  Returns `CommandError::SecretStore` when the OS keychain cannot be used.
+	 */
+	mcpConnectionGet: () => typedError<McpConnectionTs, CommandError>(__TAURI_INVOKE("mcp_connection_get")),
+	/**
+	 *  # Errors
+	 *  Returns `CommandError::SecretStore` when the OS keychain cannot be used.
+	 */
+	mcpMasterTokenRotate: () => typedError<McpConnectionTs, CommandError>(__TAURI_INVOKE("mcp_master_token_rotate")),
 	/**
 	 *  # Errors
 	 *  Returns `CommandError::Storage` on database failures.
@@ -281,6 +292,10 @@ export type CommandError =
 // UUID string did not parse.
 { kind: "invalid_uuid"; data: {
 	value: string,
+} } | 
+// Local secret store could not load or save a secret.
+{ kind: "secret_store"; data: {
+	message: string,
 } };
 
 export type DetectedHarnessTs = {
@@ -517,10 +532,24 @@ export type ListPersonalityInstancesTs = {
 	include_tombstoned?: boolean,
 };
 
+export type ListWakeInvocationsTs = {
+	owner: Owner,
+	personality_instance_id: string,
+	wake_entry_id: string | null,
+	limit: number,
+};
+
 export type LocalCliConfigTs = {
 	command: string,
 	profile: string | null,
 	env_overrides: ([string, string])[],
+};
+
+export type McpConnectionTs = {
+	url: string | null,
+	token: string,
+	authorization_header: string,
+	listening: boolean,
 };
 
 export type McpToolTs = {
@@ -878,6 +907,38 @@ export type WakeEntryTs = {
 	workspace_tool_palette: string[],
 	max_rounds: number,
 	disabled_reason: string | null,
+};
+
+export type WakeInvocationLogTs = {
+	log_seq: number,
+	at: string,
+	phase: string,
+	tool_id: string | null,
+	status: string,
+	duration_ms: number | null,
+	message_tail: string | null,
+};
+
+export type WakeInvocationTs = {
+	personality_instance_id: string,
+	wake_entry_id: string,
+	wake_entry_label: string,
+	change_event_seq: string,
+	status: string,
+	started_at: string,
+	finished_at: string | null,
+	turn_count: number,
+	cost_usd: number,
+	recipe_sha256: string | null,
+	resolved_inference_target_ref: string | null,
+	failure_reason: string | null,
+	exit_code: number | null,
+	duration_ms: number | null,
+	stdout_tail: string | null,
+	stderr_tail: string | null,
+	stdout_truncated: boolean,
+	stderr_truncated: boolean,
+	logs: WakeInvocationLogTs[],
 };
 
 export type WorkspaceToolTs = {

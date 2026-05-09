@@ -2,7 +2,8 @@ pub mod args;
 
 pub use args::{ArgsError, McpConfig, USAGE, parse_args};
 pub use proxima_mcp_server::{
-    DevMcpServer, McpServerError, ToolInvocationError, default_allowlist, serve_streamable_http,
+    DevMcpServer, McpAuthStore, McpServerError, ToolInvocationError, default_allowlist,
+    serve_streamable_http,
 };
 
 use proxima_core::FlavorRegistry;
@@ -66,20 +67,19 @@ pub async fn run_with_handle(
     proxima_flavor_goal::register(&mut registry);
     let server = DevMcpServer::from_pool(
         pg.pool().clone(),
-        config.owner,
+        config.owner.clone(),
         std::sync::Arc::new(registry.freeze()),
     );
-    // The headless `proxima-mcp` binary is a standalone dev/test
-    // server with no embedded Engine — there's no dispatcher to share
-    // a `WakeTokenStore` with. Every request will 401 until a wake
-    // mints a matching token, which is correct: this binary exists to
-    // exercise the transport, not to serve real wakes. When/if a
-    // headless mode boots an `Engine` directly, swap this for
-    // `engine.wake_token_store()` (Phase 1d.5).
     let wake_token_store = std::sync::Arc::new(
         proxima_core::wake::token_store::WakeTokenStore::new(std::time::Duration::from_mins(5)),
     );
-    Ok(serve_streamable_http(config.bind, server, default_allowlist(), wake_token_store).await?)
+    let auth_store = std::sync::Arc::new(McpAuthStore::new(wake_token_store));
+    if let Some(token) = config.master_token {
+        auth_store
+            .replace_local_master_token(token, config.owner.clone())
+            .await;
+    }
+    Ok(serve_streamable_http(config.bind, server, default_allowlist(), auth_store).await?)
 }
 
 #[derive(Debug, thiserror::Error)]

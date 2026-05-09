@@ -15,6 +15,7 @@ import type {
   PersonalityInstanceTs,
   TriggerKindTs,
   WakeEntryDraftTs,
+  WakeInvocationTs,
   WorkspaceToolTs,
 } from "../../bindings";
 import { Mono } from "../../primitives";
@@ -110,6 +111,9 @@ interface InspectorProps {
   mcpTools: McpToolTs[] | null;
   workspaceTools: WorkspaceToolTs[] | null;
   toolsError: string | null;
+  wakeInvocations: WakeInvocationTs[] | null;
+  wakeInvocationsLoading: boolean;
+  wakeInvocationsError: string | null;
   onUpdateEntry: (
     instanceId: string,
     index: number,
@@ -204,6 +208,9 @@ export const Inspector: Component<InspectorProps> = (props) => {
                 props.onSelectEntry(instance().personality_instance_id, index)
               }
               onAddEntry={() => props.onAddEntry(instance().personality_instance_id)}
+              wakeInvocations={props.wakeInvocations}
+              wakeInvocationsLoading={props.wakeInvocationsLoading}
+              wakeInvocationsError={props.wakeInvocationsError}
             />
           )}
         </Show>
@@ -227,6 +234,9 @@ export const Inspector: Component<InspectorProps> = (props) => {
             mcpTools={props.mcpTools}
             workspaceTools={props.workspaceTools}
             toolsError={props.toolsError}
+            wakeInvocations={props.wakeInvocations}
+            wakeInvocationsLoading={props.wakeInvocationsLoading}
+            wakeInvocationsError={props.wakeInvocationsError}
             onUpdate={(mutate) => {
               const sel = props.selection;
               if (sel?.kind !== "wake_entry") return;
@@ -306,6 +316,9 @@ const PersonalityDetail: Component<{
   onCancelConfirm: () => void;
   onSelectEntry: (index: number) => void;
   onAddEntry: () => void;
+  wakeInvocations: WakeInvocationTs[] | null;
+  wakeInvocationsLoading: boolean;
+  wakeInvocationsError: string | null;
 }> = (props) => (
   <div class="personality-inspector-section">
     <header class="personality-inspector-head">
@@ -357,6 +370,12 @@ const PersonalityDetail: Component<{
     >
       Add WakeEntry
     </button>
+
+    <WakeInvocationPanel
+      invocations={props.wakeInvocations}
+      loading={props.wakeInvocationsLoading}
+      error={props.wakeInvocationsError}
+    />
 
     <div class="personality-inspector-danger">
       <Show
@@ -410,6 +429,9 @@ const WakeEntryDetail: Component<{
   onRemove: () => void;
   onRefreshRecipes: () => void;
   onRevealRecipesFolder: (path: string) => void;
+  wakeInvocations: WakeInvocationTs[] | null;
+  wakeInvocationsLoading: boolean;
+  wakeInvocationsError: string | null;
 }> = (props) => {
   const triggerOptions = createMemo(() =>
     schemaOptionsFor(props.draft.trigger_id),
@@ -660,6 +682,12 @@ const WakeEntryDetail: Component<{
         </div>
       </details>
 
+      <WakeInvocationPanel
+        invocations={props.wakeInvocations}
+        loading={props.wakeInvocationsLoading}
+        error={props.wakeInvocationsError}
+      />
+
       <div class="personality-inspector-danger">
         <button
           type="button"
@@ -671,6 +699,132 @@ const WakeEntryDetail: Component<{
       </div>
     </div>
   );
+};
+
+const WakeInvocationPanel: Component<{
+  invocations: WakeInvocationTs[] | null;
+  loading: boolean;
+  error: string | null;
+}> = (props) => (
+  <details class="personality-section personality-invocations" open>
+    <summary>Wake invocations</summary>
+    <Show when={props.error}>
+      {(message) => (
+        <p class="proxima-error personality-invocations-error" role="alert">
+          {message()}
+        </p>
+      )}
+    </Show>
+    <Show when={props.loading}>
+      <p class="personality-invocations-empty">Loading invocations.</p>
+    </Show>
+    <Show when={!props.loading && props.invocations?.length === 0}>
+      <p class="personality-invocations-empty">No wake invocations recorded.</p>
+    </Show>
+    <div class="personality-invocation-list">
+      <For each={props.invocations ?? []}>
+        {(invocation) => (
+          <details class="personality-invocation" open={invocation.status === "failed"}>
+            <summary>
+              <span class={`personality-invocation-status ${invocation.status}`}>
+                {invocation.status}
+              </span>
+              <span class="personality-invocation-title">
+                {invocation.wake_entry_label}
+              </span>
+              <Mono>{shortId(invocation.change_event_seq)}</Mono>
+            </summary>
+            <div class="personality-invocation-body">
+              <dl class="personality-invocation-meta">
+                <div>
+                  <dt>Started</dt>
+                  <dd>{invocation.started_at}</dd>
+                </div>
+                <div>
+                  <dt>Duration</dt>
+                  <dd>{formatDuration(invocation.duration_ms)}</dd>
+                </div>
+                <div>
+                  <dt>Exit</dt>
+                  <dd>{invocation.exit_code ?? "-"}</dd>
+                </div>
+                <div>
+                  <dt>Turns</dt>
+                  <dd>{invocation.turn_count}</dd>
+                </div>
+              </dl>
+              <Show when={invocation.failure_reason}>
+                {(message) => (
+                  <pre class="personality-invocation-output">{message()}</pre>
+                )}
+              </Show>
+              <InvocationOutput
+                label="stdout"
+                value={invocation.stdout_tail}
+                truncated={invocation.stdout_truncated}
+              />
+              <InvocationOutput
+                label="stderr"
+                value={invocation.stderr_tail}
+                truncated={invocation.stderr_truncated}
+              />
+              <Show when={invocation.logs.length > 0}>
+                <div class="personality-invocation-tools">
+                  <h5>Tool calls</h5>
+                  <For each={invocation.logs}>
+                    {(log) => (
+                      <div class="personality-invocation-tool">
+                        <span>{log.tool_id ?? log.phase}</span>
+                        <span class={`personality-invocation-status ${log.status}`}>
+                          {log.status}
+                        </span>
+                        <span>{formatDuration(log.duration_ms)}</span>
+                        <Show when={log.message_tail}>
+                          {(message) => (
+                            <pre class="personality-invocation-output">
+                              {message()}
+                            </pre>
+                          )}
+                        </Show>
+                      </div>
+                    )}
+                  </For>
+                </div>
+              </Show>
+            </div>
+          </details>
+        )}
+      </For>
+    </div>
+  </details>
+);
+
+const InvocationOutput: Component<{
+  label: string;
+  value: string | null;
+  truncated: boolean;
+}> = (props) => (
+  <Show when={props.value}>
+    {(value) => (
+      <div>
+        <div class="personality-invocation-output-label">
+          <span>{props.label}</span>
+          <Show when={props.truncated}>
+            <span>truncated</span>
+          </Show>
+        </div>
+        <pre class="personality-invocation-output">{value()}</pre>
+      </div>
+    )}
+  </Show>
+);
+
+const shortId = (value: string): string => value.slice(0, 8);
+
+const formatDuration = (durationMs: number | null): string => {
+  if (durationMs === null) return "-";
+  if (durationMs < 1000) return `${durationMs} ms`;
+  return `${(durationMs / 1000).toFixed(1)} s`;
 };
 
 const USER_PREFIX = "user:";

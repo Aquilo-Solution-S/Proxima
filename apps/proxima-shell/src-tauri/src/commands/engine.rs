@@ -9,7 +9,10 @@ use proxima_core::verbs::goal_write::{GoalDraft, GoalWriteOutcome};
 use proxima_core::verbs::query::{QueryRequest, QueryResponse};
 use proxima_core::verbs::schema::{SchemaRequest, SchemaResponse};
 use proxima_core::verbs::subscribe::SubscribeRequest;
-use proxima_core::{ChangeEvent, Engine, Owner, PersonalityInstanceId, PersonalityInstanceRow};
+use proxima_core::{
+    ChangeEvent, Engine, ListWakeInvocationsRequest, Owner, PersonalityInstanceId,
+    PersonalityInstanceRow, WakeInvocationLogRow, WakeInvocationRow,
+};
 use tauri::State;
 use tauri::ipc::Channel;
 
@@ -132,6 +135,48 @@ pub struct SetWakeEntriesOutcomeTs {
     pub active_entries: u32,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
+pub struct ListWakeInvocationsTs {
+    pub owner: Owner,
+    pub personality_instance_id: String,
+    pub wake_entry_id: Option<String>,
+    pub limit: u16,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
+pub struct WakeInvocationLogTs {
+    pub log_seq: i64,
+    pub at: String,
+    pub phase: String,
+    pub tool_id: Option<String>,
+    pub status: String,
+    pub duration_ms: Option<u64>,
+    pub message_tail: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
+pub struct WakeInvocationTs {
+    pub personality_instance_id: String,
+    pub wake_entry_id: String,
+    pub wake_entry_label: String,
+    pub change_event_seq: String,
+    pub status: String,
+    pub started_at: String,
+    pub finished_at: Option<String>,
+    pub turn_count: u16,
+    pub cost_usd: f64,
+    pub recipe_sha256: Option<String>,
+    pub resolved_inference_target_ref: Option<String>,
+    pub failure_reason: Option<String>,
+    pub exit_code: Option<i32>,
+    pub duration_ms: Option<u64>,
+    pub stdout_tail: Option<String>,
+    pub stderr_tail: Option<String>,
+    pub stdout_truncated: bool,
+    pub stderr_truncated: bool,
+    pub logs: Vec<WakeInvocationLogTs>,
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn schema(engine: State<'_, Arc<Engine>>) -> Result<SchemaResponse, ProtocolError> {
@@ -209,6 +254,35 @@ pub async fn list_personality_instances(
         rows.into_iter()
             .map(|row| Ok::<_, ProtocolError>(PersonalityInstanceTs::from_row(row)))
             .collect()
+    })
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn list_wake_invocations(
+    engine: State<'_, Arc<Engine>>,
+    req: ListWakeInvocationsTs,
+) -> Result<Vec<WakeInvocationTs>, ProtocolError> {
+    let req_bytes = crate::perf::ipc::req_size(&req);
+    crate::perf::ipc::record("list_wake_invocations", req_bytes, async move {
+        let instance_id = uuid::Uuid::parse_str(&req.personality_instance_id)
+            .map_err(|e| ProtocolError::internal(format!("personality_instance_id: {e}")))?;
+        let wake_entry_id = req
+            .wake_entry_id
+            .as_deref()
+            .map(uuid::Uuid::parse_str)
+            .transpose()
+            .map_err(|e| ProtocolError::internal(format!("wake_entry_id: {e}")))?;
+        let rows = engine
+            .list_wake_invocations(ListWakeInvocationsRequest {
+                owner: req.owner,
+                personality_instance_id: PersonalityInstanceId::new(instance_id),
+                wake_entry_id,
+                limit: req.limit,
+            })
+            .await?;
+        Ok(rows.into_iter().map(WakeInvocationTs::from_row).collect())
     })
     .await
 }
@@ -361,6 +435,50 @@ impl WakeEntryTs {
             workspace_tool_palette: row.workspace_tool_palette.clone(),
             max_rounds: row.max_rounds,
             disabled_reason: row.disabled_reason.clone(),
+        }
+    }
+}
+
+impl WakeInvocationTs {
+    fn from_row(row: WakeInvocationRow) -> Self {
+        Self {
+            personality_instance_id: row.personality_instance_id.into_inner().to_string(),
+            wake_entry_id: row.wake_entry_id.to_string(),
+            wake_entry_label: row.wake_entry_label,
+            change_event_seq: row.change_event_seq.to_string(),
+            status: row.status.as_str().to_string(),
+            started_at: row.started_at.to_string(),
+            finished_at: row.finished_at.map(|v| v.to_string()),
+            turn_count: row.turn_count,
+            cost_usd: row.cost_usd,
+            recipe_sha256: row.recipe_sha256,
+            resolved_inference_target_ref: row.resolved_inference_target_ref,
+            failure_reason: row.failure_reason,
+            exit_code: row.exit_code,
+            duration_ms: row.duration_ms,
+            stdout_tail: row.stdout_tail,
+            stderr_tail: row.stderr_tail,
+            stdout_truncated: row.stdout_truncated,
+            stderr_truncated: row.stderr_truncated,
+            logs: row
+                .logs
+                .into_iter()
+                .map(WakeInvocationLogTs::from_row)
+                .collect(),
+        }
+    }
+}
+
+impl WakeInvocationLogTs {
+    fn from_row(row: WakeInvocationLogRow) -> Self {
+        Self {
+            log_seq: row.log_seq,
+            at: row.at.to_string(),
+            phase: row.phase,
+            tool_id: row.tool_id,
+            status: row.status,
+            duration_ms: row.duration_ms,
+            message_tail: row.message_tail,
         }
     }
 }

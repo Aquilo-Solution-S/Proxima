@@ -30,12 +30,17 @@ pub struct TargetInvocation {
 /// Adapter-classified outcome of a single wake.
 ///
 /// `turn_count` is best-effort (parsed from the subprocess output where
-/// available); `stderr_tail` is the last ~40 lines for diagnostics.
+/// available); stdout/stderr tails are bounded diagnostics.
 #[derive(Debug, Clone)]
 pub struct TargetOutcome {
     pub kind: TargetOutcomeKind,
     pub turn_count: Option<i32>,
+    pub exit_code: Option<i32>,
+    pub duration_ms: u64,
+    pub stdout_tail: String,
     pub stderr_tail: String,
+    pub stdout_truncated: bool,
+    pub stderr_truncated: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

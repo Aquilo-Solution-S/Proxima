@@ -29,9 +29,9 @@ pub fn authorize_tool_call(
 
 pub fn authorize_emit(
     schema_id: &str,
-    writeable_schemas: &[&'static str],
+    writeable_schemas: &[String],
 ) -> Result<(), AuthorizationError> {
-    if writeable_schemas.contains(&schema_id) {
+    if writeable_schemas.iter().any(|id| id == schema_id) {
         return Ok(());
     }
     Err(AuthorizationError::OutsideWriteableSchemas {
@@ -41,7 +41,7 @@ pub fn authorize_emit(
 
 pub fn authorize_create_edge(
     relation_id: &str,
-    writeable_relations: &[&'static str],
+    writeable_relations: &[String],
 ) -> Result<(), AuthorizationError> {
     if matches!(
         relation_id,
@@ -51,7 +51,7 @@ pub fn authorize_create_edge(
             relation_id: relation_id.to_string(),
         });
     }
-    if writeable_relations.contains(&relation_id) {
+    if writeable_relations.iter().any(|id| id == relation_id) {
         return Ok(());
     }
     Err(AuthorizationError::OutsideWriteableRelations {
@@ -110,8 +110,9 @@ mod tests {
 
     #[test]
     fn rejects_schema_outside_writeable_set() {
+        let allowed = vec!["test/allowed".to_string()];
         assert_eq!(
-            authorize_emit("test/other", &["test/allowed"]),
+            authorize_emit("test/other", &allowed),
             Err(AuthorizationError::OutsideWriteableSchemas {
                 schema_id: "test/other".to_string()
             })
@@ -120,8 +121,9 @@ mod tests {
 
     #[test]
     fn rejects_relation_outside_writeable_set() {
+        let allowed = vec!["test/allowed".to_string()];
         assert_eq!(
-            authorize_create_edge("test/other", &["test/allowed"]),
+            authorize_create_edge("test/other", &allowed),
             Err(AuthorizationError::OutsideWriteableRelations {
                 relation_id: "test/other".to_string()
             })
@@ -130,8 +132,9 @@ mod tests {
 
     #[test]
     fn rejects_substrate_only_relations() {
+        let allowed = vec![CORE_DERIVED_FROM_RELATION.to_string()];
         assert_eq!(
-            authorize_create_edge(CORE_DERIVED_FROM_RELATION, &[CORE_DERIVED_FROM_RELATION]),
+            authorize_create_edge(CORE_DERIVED_FROM_RELATION, &allowed),
             Err(AuthorizationError::SubstrateOnlyRelation {
                 relation_id: CORE_DERIVED_FROM_RELATION.to_string()
             })

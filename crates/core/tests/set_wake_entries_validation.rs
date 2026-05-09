@@ -17,8 +17,8 @@ use proxima_core::{
     ChangeEventForWake, ErrorCode, FactRow, FlavorRegistry, InferenceTargetRow,
     InferenceTierBindingRow, InstantiatePersonalityRequest, InstantiatePersonalityResponse,
     LocalCliConfig, MemoryId, MemorySnapshot, ModelTier, OrgId, Owner, PersonalityInstanceId,
-    PersonalityInstanceRow, PersonalityRef, PersonalityRuntimeRow,
-    PersonalityWriteOutcome, PersonalityWriteRequest, Principal, RegisterInferenceTargetRequest,
+    PersonalityInstanceRow, PersonalityRef, PersonalityRuntimeRow, PersonalityWriteOutcome,
+    PersonalityWriteRequest, Principal, RegisterInferenceTargetRequest,
     RegisterInferenceTargetResponse, RemoveInferenceTargetRequest, RemoveInferenceTargetResponse,
     RootPersonalityPerspectiveRow, SetWakeEntriesRequest, SetWakeEntriesResponse, SidecarSpec,
     SourceBatchId, TombstonePersonalityRequest, TombstonePersonalityResponse, UserId,
@@ -417,6 +417,22 @@ async fn unregistered_tool_is_rejected() {
     draft.substrate_tool_palette = vec!["proxima-test/missing".into()];
     let err = set_wake_entries(&ctx, &req(vec![draft])).await.unwrap_err();
     assert_eq!(err.code, ErrorCode::ToolNotRegistered);
+}
+
+#[tokio::test]
+async fn substrate_pack_tool_ids_are_registered_for_wake_entries() {
+    let storage = FixtureStorage::default();
+    let registry = registry();
+    let recipes_root = tempfile::tempdir().unwrap();
+    let ctx = SetWakeEntriesContext {
+        storage: &storage,
+        registry: &registry,
+        owner_recipes_root: recipes_root.path().to_path_buf(),
+    };
+    let mut draft = entry("schema-a", "user:nope.yaml");
+    draft.substrate_tool_palette = vec!["core/fetch_memory".into(), "core/emit_abstraction".into()];
+    let err = set_wake_entries(&ctx, &req(vec![draft])).await.unwrap_err();
+    assert_eq!(err.code, ErrorCode::RecipeNotFound);
 }
 
 #[tokio::test]

@@ -28,5 +28,7 @@ export function formatCommandError(err: CommandError): string {
       return `Unknown repo: ${err.data.repo_id}`;
     case "invalid_uuid":
       return `Invalid UUID: ${err.data.value}`;
+    case "secret_store":
+      return `Secret store error: ${err.data.message}`;
   }
 }

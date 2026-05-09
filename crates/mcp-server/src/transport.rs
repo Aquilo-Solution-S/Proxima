@@ -12,11 +12,9 @@ use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
 use axum::body::Body;
-use axum::extract::{Request, State};
+use axum::extract::Request;
 use axum::middleware::{self, Next};
 use axum::response::Response;
-use http::{HeaderMap, StatusCode};
-use proxima_core::wake::token_store::WakeTokenStore;
 use rmcp::transport::streamable_http_server::{
     StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
 };
@@ -24,24 +22,22 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::McpServerError;
+use crate::auth::McpAuthStore;
 use crate::handler::DynamicHandler;
-use crate::security::{OriginAllowlist, assert_loopback, wake_token_auth_layer};
+use crate::security::{OriginAllowlist, assert_loopback, mcp_auth_layer};
 use crate::server::DevMcpServer;
 
 /// # Errors
 ///
 /// Returns loopback validation, TCP bind, or HTTP server failures.
 ///
-/// `wake_token_store` is required so each MCP request can be matched
-/// against an in-flight wake invocation; the bearer-auth layer rejects
-/// requests without a valid `Authorization: Bearer <token>` header. The
-/// engine constructs the store at startup (Task 5) and passes the same
-/// `Arc` here and into the dispatcher that mints tokens.
+/// `auth_store` is required so each MCP request can be matched against
+/// either an in-flight wake invocation or a Shell-local master token.
 pub async fn serve_streamable_http(
     addr: SocketAddr,
     server: DevMcpServer,
     allowlist: OriginAllowlist,
-    wake_token_store: Arc<WakeTokenStore>,
+    auth_store: Arc<McpAuthStore>,
 ) -> Result<(JoinHandle<Result<(), McpServerError>>, SocketAddr), McpServerError> {
     assert_loopback(&addr)?;
 
@@ -59,15 +55,14 @@ pub async fn serve_streamable_http(
             Arc::default(),
             config,
         );
-    // Layer order is bottom-up: origin_guard runs first (cheapest reject),
-    // then wake-token auth, then perf recording, then the rmcp service.
-    // Putting auth after origin_guard means a forbidden origin is rejected
-    // before we ever touch the token store.
+    // Layer order is bottom-up: auth runs first, then perf recording, then
+    // the rmcp service. The auth guard also validates any present Origin;
+    // native CLI clients commonly omit Origin, which is allowed after a
+    // valid bearer token.
     let app = axum::Router::new()
         .nest_service("/mcp", service)
         .layer(middleware::from_fn(perf_recorder))
-        .layer(wake_token_auth_layer(wake_token_store))
-        .layer(middleware::from_fn_with_state(allowlist, origin_guard));
+        .layer(mcp_auth_layer(auth_store, allowlist));
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     let bound_addr = listener.local_addr()?;
@@ -147,19 +142,4 @@ fn perf_session_dir() -> Option<&'static PathBuf> {
             .filter(|p| p.exists())
     })
     .as_ref()
-}
-
-async fn origin_guard(
-    State(allowlist): State<OriginAllowlist>,
-    headers: HeaderMap,
-    request: Request<Body>,
-    next: Next,
-) -> Response {
-    if !allowlist.allows(&headers) {
-        return Response::builder()
-            .status(StatusCode::FORBIDDEN)
-            .body(Body::from("origin not allowed"))
-            .expect("static response");
-    }
-    next.run(request).await
 }

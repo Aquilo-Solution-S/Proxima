@@ -17,6 +17,7 @@ Required:
 Optional:
   --database-url <URL>     Postgres URL (defaults to DATABASE_URL or proxima_dev)
   --bind <ADDR:PORT>       Bind address (default: 127.0.0.1:31415; loopback only)
+  --master-token <UUID>    Long-lived local bearer token (or PROXIMA_MCP_MASTER_TOKEN)
   -h, --help               Print this message
 
 Endpoint:
@@ -35,6 +36,7 @@ pub struct McpConfig {
     pub database_url: String,
     pub owner: Owner,
     pub bind: SocketAddr,
+    pub master_token: Option<Uuid>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -63,6 +65,7 @@ pub fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<McpConfig, 
     let mut owner_org: Option<Uuid> = None;
     let mut database_url: Option<String> = None;
     let mut bind: Option<SocketAddr> = None;
+    let mut master_token: Option<Uuid> = None;
 
     let mut iter = args.into_iter();
     while let Some(flag) = iter.next() {
@@ -76,6 +79,7 @@ pub fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<McpConfig, 
                     "--owner-user" => owner_user = Some(Uuid::parse_str(&value)?),
                     "--owner-org" => owner_org = Some(Uuid::parse_str(&value)?),
                     "--database-url" => database_url = Some(value),
+                    "--master-token" => master_token = Some(Uuid::parse_str(&value)?),
                     "--bind" => {
                         let parsed: SocketAddr = value.parse().map_err(|err| {
                             ArgsError::Invalid(format!("invalid --bind {value:?}: {err}"))
@@ -107,6 +111,13 @@ pub fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<McpConfig, 
             ArgsError::Invalid(format!("invalid default bind {DEFAULT_BIND:?}: {err}"))
         })?,
     };
+    let master_token = match master_token {
+        Some(token) => Some(token),
+        None => std::env::var("PROXIMA_MCP_MASTER_TOKEN")
+            .ok()
+            .map(|raw| Uuid::parse_str(raw.trim()))
+            .transpose()?,
+    };
 
     Ok(McpConfig {
         database_url,
@@ -115,6 +126,7 @@ pub fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<McpConfig, 
             org_id: OrgId::new(owner_org),
         },
         bind,
+        master_token,
     })
 }
 
@@ -144,10 +156,13 @@ mod tests {
             uuid::Uuid::nil().to_string(),
             "--database-url".into(),
             "postgres://x/y".into(),
+            "--master-token".into(),
+            uuid::Uuid::nil().to_string(),
         ])
         .expect("valid args");
         assert_eq!(cfg.database_url, "postgres://x/y");
         assert_eq!(cfg.bind.to_string(), DEFAULT_BIND);
+        assert_eq!(cfg.master_token, Some(uuid::Uuid::nil()));
     }
 
     #[test]

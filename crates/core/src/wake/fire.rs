@@ -22,8 +22,9 @@ use crate::InferenceTargetRow;
 use crate::Owner;
 use crate::engine::Engine;
 use crate::error::ProtocolError;
+use crate::mcp::provider_safe_tool_name;
 use crate::personality::{
-    PersonalityInstanceId, SidecarSpec, WakeEntryExecutionMode, WakeEntryRow,
+    PersonalityInstanceId, SidecarSpec, WakeChainDepth, WakeEntryExecutionMode, WakeEntryRow,
     WakeInvocationFinalize, WakeInvocationStart, WakeInvocationStatus,
 };
 use crate::wake::context::assemble_wake_context;
@@ -127,10 +128,19 @@ pub async fn fire_wake_entry(
         invocation_id: Uuid::new_v4(),
         personality_instance_id: input.personality_instance_id.into_inner(),
         wake_entry_id: input.wake_entry.wake_entry_id,
+        change_event_seq: input.change_event_seq,
         owner: input.owner.clone(),
         palette: input.wake_entry.substrate_tool_palette.clone(),
         model_id: resolved.config_model_id.clone().unwrap_or_default(),
         max_rounds: u32::from(input.wake_entry.max_rounds),
+        current_root_perspective_memory_id: crate::MemoryId::new(
+            wake_context.root_perspective.memory_id,
+        ),
+        triggering_event_memory_id: crate::MemoryId::new(wake_context.triggering_memory.memory_id),
+        triggering_event_depth: WakeChainDepth::new(
+            u16::try_from(wake_context.trigger_event.wake_chain_depth).unwrap_or(0),
+        ),
+        read_log: std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new())),
     };
     let wake_token = engine.wake_token_store().mint(token_ctx).await;
 
@@ -158,12 +168,22 @@ pub async fn fire_wake_entry(
         WakeEntryExecutionMode::Workspace
     ) {
         engine.wake_token_store().revoke(wake_token).await;
-        finalize(engine, &input, WakeInvocationFinalizeOutcome {
-            status: WakeInvocationStatus::Failed,
-            turn_count: None,
-            cost_usd: None,
-            failure_reason: Some("workspace_mode_not_yet_implemented".to_string()),
-        })
+        finalize(
+            engine,
+            &input,
+            WakeInvocationFinalizeOutcome {
+                status: WakeInvocationStatus::Failed,
+                turn_count: None,
+                cost_usd: None,
+                failure_reason: Some("workspace_mode_not_yet_implemented".to_string()),
+                exit_code: None,
+                duration_ms: None,
+                stdout_tail: None,
+                stderr_tail: None,
+                stdout_truncated: false,
+                stderr_truncated: false,
+            },
+        )
         .await?;
         return Ok(true);
     }
@@ -203,22 +223,31 @@ pub async fn fire_wake_entry(
     })?;
     let mut env: HashMap<String, String> = HashMap::new();
     env.insert("PROXIMA_WAKE_TOKEN".to_string(), wake_token.to_string());
-    env.insert("PROXIMA_MCP_URL".to_string(), mcp_url);
+    env.insert("PROXIMA_MCP_URL".to_string(), mcp_url.clone());
     for (k, v) in &resolved.env_overrides {
         env.insert(k.clone(), v.clone());
     }
+
+    let effective_recipe_path = write_effective_recipe(
+        &recipe_bytes,
+        &mcp_url,
+        wake_token,
+        &input.wake_entry.substrate_tool_palette,
+    )
+    .await?;
 
     // 9. Run adapter.
     let max_rounds = u32::from(input.wake_entry.max_rounds);
     let outcome_result = adapter
         .run(TargetInvocation {
-            recipe_path,
+            recipe_path: effective_recipe_path.clone(),
             params,
             max_rounds,
             env,
             timeout: per_invocation_timeout(max_rounds),
         })
         .await;
+    let _ = tokio::fs::remove_file(&effective_recipe_path).await;
 
     // 10. Finalize: revoke token, write outcome.
     engine.wake_token_store().revoke(wake_token).await;
@@ -226,13 +255,24 @@ pub async fn fire_wake_entry(
         Ok(TargetOutcome {
             kind,
             turn_count,
+            exit_code,
+            duration_ms,
+            stdout_tail,
             stderr_tail,
+            stdout_truncated,
+            stderr_truncated,
         }) => match kind {
             TargetOutcomeKind::Succeeded => WakeInvocationFinalizeOutcome {
                 status: WakeInvocationStatus::Succeeded,
                 turn_count: turn_count.and_then(|c| u16::try_from(c.max(0)).ok()),
                 cost_usd: None,
                 failure_reason: None,
+                exit_code,
+                duration_ms: Some(duration_ms),
+                stdout_tail: Some(stdout_tail),
+                stderr_tail: Some(stderr_tail),
+                stdout_truncated,
+                stderr_truncated,
             },
             TargetOutcomeKind::Truncated => WakeInvocationFinalizeOutcome {
                 status: WakeInvocationStatus::Truncated,
@@ -241,12 +281,24 @@ pub async fn fire_wake_entry(
                     .or(Some(input.wake_entry.max_rounds)),
                 cost_usd: None,
                 failure_reason: Some("max_rounds_reached".to_string()),
+                exit_code,
+                duration_ms: Some(duration_ms),
+                stdout_tail: Some(stdout_tail),
+                stderr_tail: Some(stderr_tail),
+                stdout_truncated,
+                stderr_truncated,
             },
             TargetOutcomeKind::Failed => WakeInvocationFinalizeOutcome {
                 status: WakeInvocationStatus::Failed,
                 turn_count: turn_count.and_then(|c| u16::try_from(c.max(0)).ok()),
                 cost_usd: None,
-                failure_reason: Some(stderr_tail),
+                failure_reason: Some(stderr_tail.clone()),
+                exit_code,
+                duration_ms: Some(duration_ms),
+                stdout_tail: Some(stdout_tail),
+                stderr_tail: Some(stderr_tail),
+                stdout_truncated,
+                stderr_truncated,
             },
         },
         Err(e) => WakeInvocationFinalizeOutcome {
@@ -254,8 +306,27 @@ pub async fn fire_wake_entry(
             turn_count: None,
             cost_usd: None,
             failure_reason: Some(format!("adapter_error: {e}")),
+            exit_code: None,
+            duration_ms: None,
+            stdout_tail: None,
+            stderr_tail: None,
+            stdout_truncated: false,
+            stderr_truncated: false,
         },
     };
+    if matches!(
+        outcome.status,
+        WakeInvocationStatus::Failed | WakeInvocationStatus::Truncated
+    ) {
+        tracing::warn!(
+            personality_instance_id = %input.personality_instance_id.into_inner(),
+            wake_entry_id = %input.wake_entry.wake_entry_id,
+            change_event_seq = %input.change_event_seq,
+            status = outcome.status.as_str(),
+            failure_reason = outcome.failure_reason.as_deref().unwrap_or(""),
+            "wake invocation did not complete successfully"
+        );
+    }
     finalize(engine, &input, outcome).await?;
     Ok(true)
 }
@@ -267,6 +338,12 @@ struct WakeInvocationFinalizeOutcome {
     turn_count: Option<u16>,
     cost_usd: Option<f64>,
     failure_reason: Option<String>,
+    exit_code: Option<i32>,
+    duration_ms: Option<u64>,
+    stdout_tail: Option<String>,
+    stderr_tail: Option<String>,
+    stdout_truncated: bool,
+    stderr_truncated: bool,
 }
 
 async fn finalize(
@@ -285,6 +362,12 @@ async fn finalize(
             turn_count: outcome.turn_count,
             cost_usd: outcome.cost_usd,
             failure_reason: outcome.failure_reason,
+            exit_code: outcome.exit_code,
+            duration_ms: outcome.duration_ms,
+            stdout_tail: outcome.stdout_tail,
+            stderr_tail: outcome.stderr_tail,
+            stdout_truncated: outcome.stdout_truncated,
+            stderr_truncated: outcome.stderr_truncated,
         })
         .await
         .map_err(|e| ProtocolError::internal(format!("finalize_wake_invocation: {e}")))
@@ -384,6 +467,75 @@ fn resolve_recipe_path(
     })
 }
 
+async fn write_effective_recipe(
+    source_bytes: &[u8],
+    mcp_url: &str,
+    wake_token: Uuid,
+    available_tools: &[String],
+) -> Result<PathBuf, ProtocolError> {
+    let source = std::str::from_utf8(source_bytes)
+        .map_err(|e| ProtocolError::internal(format!("recipe is not utf8: {e}")))?;
+    let mut rendered = strip_top_level_extensions(source);
+    if !rendered.ends_with('\n') {
+        rendered.push('\n');
+    }
+    rendered.push_str("extensions:\n");
+    rendered.push_str("  - type: streamable_http\n");
+    rendered.push_str("    name: proxima-engine-mcp\n");
+    rendered.push_str(&format!("    uri: \"{}\"\n", yaml_quote(mcp_url)));
+    rendered.push_str("    headers:\n");
+    rendered.push_str(&format!(
+        "      authorization: \"Bearer {}\"\n",
+        yaml_quote(&wake_token.to_string())
+    ));
+    if available_tools.is_empty() {
+        rendered.push_str("    available_tools: []\n");
+    } else {
+        rendered.push_str("    available_tools:\n");
+        for tool in available_tools {
+            rendered.push_str(&format!(
+                "      - \"{}\"\n",
+                yaml_quote(&provider_safe_tool_name(tool))
+            ));
+        }
+    }
+
+    let path =
+        std::env::temp_dir().join(format!("proxima-wake-{}-{wake_token}.yaml", Uuid::new_v4()));
+    tokio::fs::write(&path, rendered)
+        .await
+        .map_err(|e| ProtocolError::internal(format!("write effective recipe: {e}")))?;
+    Ok(path)
+}
+
+fn strip_top_level_extensions(source: &str) -> String {
+    let mut out = String::new();
+    let mut skipping = false;
+    for line in source.lines() {
+        let is_top_level = !line.starts_with(' ') && !line.starts_with('\t');
+        if is_top_level && line.trim_start().starts_with("extensions:") {
+            skipping = true;
+            continue;
+        }
+        if skipping
+            && is_top_level
+            && !line.trim().is_empty()
+            && !line.trim_start().starts_with('#')
+        {
+            skipping = false;
+        }
+        if !skipping {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+fn yaml_quote(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
 fn collect_sidecars(engine: &Engine) -> Vec<SidecarSpec> {
     engine
         .registry()
@@ -396,4 +548,45 @@ fn collect_sidecars(engine: &Engine) -> Vec<SidecarSpec> {
             })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strips_existing_top_level_extensions() {
+        let source =
+            "version: 1.0.0\nextensions:\n  - type: builtin\n    name: developer\nprompt: hi\n";
+
+        let stripped = strip_top_level_extensions(source);
+
+        assert!(!stripped.contains("type: builtin"));
+        assert!(stripped.contains("prompt: hi"));
+    }
+
+    #[tokio::test]
+    async fn effective_recipe_injects_wake_mcp_extension() {
+        let token = Uuid::new_v4();
+        let path = write_effective_recipe(
+            b"version: 1.0.0\ntitle: smoke\nprompt: hi\n",
+            "http://127.0.0.1:31415/mcp",
+            token,
+            &[
+                "core/fetch_memory".to_string(),
+                "core/emit_abstraction".to_string(),
+            ],
+        )
+        .await
+        .expect("write effective recipe");
+
+        let rendered = tokio::fs::read_to_string(&path).await.expect("read recipe");
+        let _ = tokio::fs::remove_file(&path).await;
+
+        assert!(rendered.contains("type: streamable_http"));
+        assert!(rendered.contains("uri: \"http://127.0.0.1:31415/mcp\""));
+        assert!(rendered.contains(&format!("authorization: \"Bearer {token}\"")));
+        assert!(rendered.contains("- \"core_fetch_memory\""));
+        assert!(rendered.contains("- \"core_emit_abstraction\""));
+    }
 }

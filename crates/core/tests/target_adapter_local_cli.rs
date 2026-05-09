@@ -1,9 +1,11 @@
 //! Phase 1d: LocalCliGooseAdapter spawns goose with --recipe / --params /
-//! --max-turns and maps exit code to TargetOutcome. The success-path test
-//! is skipped if goose is missing on PATH; the spawn-failure test always
-//! runs against a bogus path.
+//! --max-turns / --no-session and maps exit code to TargetOutcome. The
+//! success-path test is skipped if goose is missing on PATH; the
+//! spawn-failure test always runs against a bogus path.
 
 use std::collections::HashMap;
+use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -47,6 +49,42 @@ async fn succeeds_for_minimal_recipe_that_just_says_hi() {
         outcome.kind,
         TargetOutcomeKind::Succeeded | TargetOutcomeKind::Truncated | TargetOutcomeKind::Failed
     ));
+}
+
+#[tokio::test]
+async fn passes_current_batch_mode_flag_to_goose() {
+    let dir = tempfile::tempdir().unwrap();
+    let goose = dir.path().join("goose");
+    let args = dir.path().join("args.txt");
+    fs::write(
+        &goose,
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$GOOSE_ARG_CAPTURE\"\n",
+    )
+    .unwrap();
+    let mut perms = fs::metadata(&goose).unwrap().permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(&goose, perms).unwrap();
+
+    let adapter = LocalCliGooseAdapter::new(goose);
+    let invocation = TargetInvocation {
+        recipe_path: PathBuf::from("/tmp/recipe.yaml"),
+        params: HashMap::from([(
+            "triggering_memory_id".to_string(),
+            serde_json::json!("019e0000-0000-7000-8000-000000000001"),
+        )]),
+        max_rounds: 7,
+        env: HashMap::from([("GOOSE_ARG_CAPTURE".to_string(), args.display().to_string())]),
+        timeout: Duration::from_secs(5),
+    };
+
+    let outcome = adapter.run(invocation).await.expect("run ok");
+    assert!(matches!(outcome.kind, TargetOutcomeKind::Succeeded));
+    let captured = fs::read_to_string(args).unwrap();
+    assert!(captured.contains("--no-session\n"));
+    assert!(!captured.contains("--no-interactive"));
+    assert!(!captured.contains("--text\n"));
+    assert!(captured.contains("--params\n"));
+    assert!(captured.contains("triggering_memory_id"));
 }
 
 #[tokio::test]

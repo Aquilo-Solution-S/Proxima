@@ -26,8 +26,14 @@ use proxima_core::personality::{
     WakeInvocationStart, WakeInvocationStatus,
 };
 use proxima_core::storage::{Storage, StorageError, WakeLockGuard};
+use proxima_core::verbs::close_batch::CloseBatchOutcome;
+use proxima_core::verbs::event_history::{EventHistoryRequest, EventHistoryResponse};
+use proxima_core::verbs::event_ingest::{EventDraft, EventIngestOutcome};
+use proxima_core::verbs::goal_write::{GoalDraft, GoalWriteOutcome};
 use proxima_core::verbs::query::MemoryStore;
+use proxima_core::verbs::query::{QueryRequest, QueryResponse};
 use proxima_core::verbs::schema::FlavorRegistryFrozen;
+use proxima_core::verbs::schema::SchemaInfo;
 use proxima_core::wake::fire::{FireWakeEntryInput, fire_wake_entry};
 use proxima_core::wake::target_adapter::{
     TargetAdapter, TargetAdapterError, TargetInvocation, TargetOutcome, TargetOutcomeKind,
@@ -42,12 +48,6 @@ use proxima_core::{
     SetWakeEntriesRequest, SetWakeEntriesResponse, SourceBatchId, TombstonePersonalityRequest,
     TombstonePersonalityResponse, UserId, WakeDispatchEntryRow,
 };
-use proxima_core::verbs::close_batch::CloseBatchOutcome;
-use proxima_core::verbs::event_history::{EventHistoryRequest, EventHistoryResponse};
-use proxima_core::verbs::event_ingest::{EventDraft, EventIngestOutcome};
-use proxima_core::verbs::goal_write::{GoalDraft, GoalWriteOutcome};
-use proxima_core::verbs::query::{QueryRequest, QueryResponse};
-use proxima_core::verbs::schema::SchemaInfo;
 use uuid::Uuid;
 
 // ---------- Mock TargetAdapter ----------
@@ -74,7 +74,12 @@ impl TargetAdapter for MockAdapter {
         Ok(TargetOutcome {
             kind: self.outcome_kind,
             turn_count: Some(2),
+            exit_code: Some(0),
+            duration_ms: 25,
+            stdout_tail: "mock stdout".into(),
             stderr_tail: String::new(),
+            stdout_truncated: false,
+            stderr_truncated: false,
         })
     }
 }
@@ -89,6 +94,10 @@ struct InvocationRowSnapshot {
     resolved_inference_target_ref: String,
     turn_count: Option<u16>,
     failure_reason: Option<String>,
+    exit_code: Option<i32>,
+    duration_ms: Option<u64>,
+    stdout_tail: Option<String>,
+    stderr_tail: Option<String>,
 }
 
 #[derive(Debug)]
@@ -297,6 +306,10 @@ impl Storage for MockStorage {
             resolved_inference_target_ref: start.resolved_inference_target_ref.clone(),
             turn_count: None,
             failure_reason: None,
+            exit_code: None,
+            duration_ms: None,
+            stdout_tail: None,
+            stderr_tail: None,
         });
         Ok(true)
     }
@@ -323,6 +336,10 @@ impl Storage for MockStorage {
             row.status = finalize.status;
             row.turn_count = finalize.turn_count;
             row.failure_reason = finalize.failure_reason.clone();
+            row.exit_code = finalize.exit_code;
+            row.duration_ms = finalize.duration_ms;
+            row.stdout_tail = finalize.stdout_tail.clone();
+            row.stderr_tail = finalize.stderr_tail.clone();
         }
         Ok(())
     }
@@ -612,10 +629,7 @@ async fn fires_single_entry_writes_invocation_row_and_finalizes() {
         invocation.env.get("GOOSE_PROFILE").map(String::as_str),
         Some("test")
     );
-    assert_eq!(
-        invocation.env.get("FOO").map(String::as_str),
-        Some("bar")
-    );
+    assert_eq!(invocation.env.get("FOO").map(String::as_str), Some("bar"));
 }
 
 #[tokio::test(flavor = "multi_thread")]
