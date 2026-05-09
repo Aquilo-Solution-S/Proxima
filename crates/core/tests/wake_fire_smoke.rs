@@ -36,7 +36,6 @@ use proxima_core::personality::workspace::{
     WorkspaceOutcome, WorkspacePrepareInput, WorkspacePreparedRun, WorkspaceRunRecord,
     WorkspaceRunner, WorkspaceRunnerError,
 };
-use proxima_core::verbs::schema::FlavorRegistryFrozen;
 use proxima_core::verbs::schema::SchemaInfo;
 use proxima_core::FlavorRegistry;
 use proxima_core::wake::fire::{FireWakeEntryInput, fire_wake_entry};
