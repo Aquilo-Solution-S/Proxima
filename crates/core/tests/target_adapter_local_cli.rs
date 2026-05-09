@@ -41,6 +41,7 @@ async fn succeeds_for_minimal_recipe_that_just_says_hi() {
             ),
         ]),
         timeout: Duration::from_secs(30),
+        cwd: None,
     };
     let outcome = adapter.run(invocation).await.expect("run ok");
     // We don't pin Succeeded vs Truncated for a minimal recipe under any LLM target;
@@ -75,6 +76,7 @@ async fn passes_current_batch_mode_flag_to_goose() {
         max_rounds: 7,
         env: HashMap::from([("GOOSE_ARG_CAPTURE".to_string(), args.display().to_string())]),
         timeout: Duration::from_secs(5),
+        cwd: None,
     };
 
     let outcome = adapter.run(invocation).await.expect("run ok");
@@ -96,6 +98,7 @@ async fn returns_error_when_binary_missing() {
         max_rounds: 1,
         env: HashMap::new(),
         timeout: Duration::from_secs(5),
+        cwd: None,
     };
     let err = adapter.run(invocation).await.expect_err("must error");
     assert!(matches!(err, TargetAdapterError::SpawnFailed { .. }));
