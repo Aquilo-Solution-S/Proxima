@@ -1,5 +1,7 @@
 //! PG coverage for Phase 1a personality wake-entry storage.
 
+#![allow(clippy::too_many_lines)]
+
 mod common;
 
 use common::{drop_db, fresh_pg, owner_fixture};
@@ -10,7 +12,8 @@ use proxima_core::personality::{
     WakeEntryTriggerKind,
 };
 use proxima_core::relation::{
-    CORE_DERIVED_FROM_RELATION, CORE_SUPERSEDES_RELATION, core_relation_descriptors,
+    CORE_AUTHORED_RELATION, CORE_DERIVED_FROM_RELATION, CORE_SUPERSEDES_RELATION,
+    core_relation_descriptors,
 };
 use proxima_core::storage::Storage;
 use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
@@ -372,26 +375,28 @@ async fn personality_provenance_edges_use_operator_authorship() {
         apply_personality_output_sidecar(pg.pool()).await?;
 
         let owner = owner_fixture();
+        let seed = seed_test_personality(&pg, &owner).await?;
+        let runtime = pg
+            .fetch_personality_runtime(&owner, seed.instance_id)
+            .await?
+            .expect("personality runtime row");
+        let root_id = runtime.current_root_perspective_memory_id;
         let fact = pg.ingest_event_atomic(&fact_draft(owner.clone())).await?;
         let descriptors = core_relation_descriptors();
-        let provenance_relation = descriptors
-            .iter()
-            .find(|descriptor| descriptor.relation == CORE_DERIVED_FROM_RELATION)
-            .expect("core provenance relation");
-        let supersedes_relation = descriptors
-            .iter()
-            .find(|descriptor| descriptor.relation == CORE_SUPERSEDES_RELATION)
-            .expect("core supersedes relation");
-        let provenance_relation = RegisteredRelation {
-            descriptor: provenance_relation,
-            payload_sidecar_table: None,
+        let resolve = |id: &str| {
+            let descriptor = descriptors
+                .iter()
+                .find(|descriptor| descriptor.relation == id)
+                .expect("relation registered");
+            RegisteredRelation {
+                descriptor,
+                payload_sidecar_table: None,
+            }
         };
-        let supersedes_relation = RegisteredRelation {
-            descriptor: supersedes_relation,
-            payload_sidecar_table: None,
-        };
-        let instance =
-            PersonalityRef::new(proxima_core::PersonalityInstanceId::new(Uuid::now_v7()));
+        let provenance_relation = resolve(CORE_DERIVED_FROM_RELATION);
+        let supersedes_relation = resolve(CORE_SUPERSEDES_RELATION);
+        let authored_relation = resolve(CORE_AUTHORED_RELATION);
+        let instance = PersonalityRef::new(seed.instance_id);
 
         let abstraction = pg
             .append_personality_memories(&PersonalityWriteRequest {
@@ -401,6 +406,8 @@ async fn personality_provenance_edges_use_operator_authorship() {
                 prompt_version: "test-v1",
                 provenance_relation,
                 supersedes_relation,
+                authored_relation,
+                current_root_perspective_memory_id: root_id,
                 wake_chain_depth: WakeChainDepth::new(0),
                 memories: &[memory_draft(
                     PersonalityMemoryKind::Abstraction,
@@ -420,6 +427,8 @@ async fn personality_provenance_edges_use_operator_authorship() {
                 prompt_version: "test-v1",
                 provenance_relation,
                 supersedes_relation,
+                authored_relation,
+                current_root_perspective_memory_id: root_id,
                 wake_chain_depth: WakeChainDepth::new(1),
                 memories: &[memory_draft(
                     PersonalityMemoryKind::Perspective,
@@ -464,4 +473,132 @@ async fn personality_provenance_edges_use_operator_authorship() {
     drop(pg);
     let _ = drop_db(&db).await;
     result.expect("personality provenance edge authorship must satisfy DB constraint");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn personality_authored_edge_links_root_to_emitted_memory() {
+    let Some((pg, db)) = fresh_pg().await else {
+        return;
+    };
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        pg.run_migrations().await?;
+        apply_personality_output_sidecar(pg.pool()).await?;
+
+        let owner = owner_fixture();
+        let seed = seed_test_personality(&pg, &owner).await?;
+        let runtime = pg
+            .fetch_personality_runtime(&owner, seed.instance_id)
+            .await?
+            .expect("personality runtime row");
+        let root_id = runtime.current_root_perspective_memory_id;
+        let fact = pg.ingest_event_atomic(&fact_draft(owner.clone())).await?;
+        let descriptors = core_relation_descriptors();
+        let resolve = |id: &str| {
+            let descriptor = descriptors
+                .iter()
+                .find(|descriptor| descriptor.relation == id)
+                .expect("relation registered");
+            RegisteredRelation {
+                descriptor,
+                payload_sidecar_table: None,
+            }
+        };
+        let provenance_relation = resolve(CORE_DERIVED_FROM_RELATION);
+        let supersedes_relation = resolve(CORE_SUPERSEDES_RELATION);
+        let authored_relation = resolve(CORE_AUTHORED_RELATION);
+        let instance = PersonalityRef::new(seed.instance_id);
+
+        let abstraction = pg
+            .append_personality_memories(&PersonalityWriteRequest {
+                owner: owner.clone(),
+                instance: instance.clone(),
+                model_id: "test-model",
+                prompt_version: "test-v1",
+                provenance_relation,
+                supersedes_relation,
+                authored_relation,
+                current_root_perspective_memory_id: root_id,
+                wake_chain_depth: WakeChainDepth::new(0),
+                memories: &[memory_draft(
+                    PersonalityMemoryKind::Abstraction,
+                    "abstraction",
+                    vec![fact.memory_id],
+                )],
+                sidecar_table: "proxima_test.personality_output_v1",
+            })
+            .await?;
+        let abstraction_id = abstraction.memory_ids[0];
+
+        let perspective = pg
+            .append_personality_memories(&PersonalityWriteRequest {
+                owner,
+                instance,
+                model_id: "test-model",
+                prompt_version: "test-v1",
+                provenance_relation,
+                supersedes_relation,
+                authored_relation,
+                current_root_perspective_memory_id: root_id,
+                wake_chain_depth: WakeChainDepth::new(1),
+                memories: &[memory_draft(
+                    PersonalityMemoryKind::Perspective,
+                    "perspective",
+                    vec![abstraction_id],
+                )],
+                sidecar_table: "proxima_test.personality_output_v1",
+            })
+            .await?;
+        let perspective_id = perspective.memory_ids[0];
+
+        let mut authored_rows: Vec<(Uuid, Uuid, String, String, String, String)> =
+            sqlx::query_as(
+                "SELECT source_memory_id, target_memory_id, source_kind, target_kind,
+                        relation_class, authorship_kind
+                 FROM proxima_core.edges
+                 WHERE relation = 'core/authored'
+                   AND target_memory_id = ANY($1)
+                 ORDER BY target_kind",
+            )
+            .bind(&[abstraction_id.into_inner(), perspective_id.into_inner()][..])
+            .fetch_all(pg.pool())
+            .await?;
+        authored_rows.sort_by_key(|row| row.3.clone());
+
+        assert_eq!(
+            authored_rows.len(),
+            2,
+            "exactly one core/authored edge per emitted memory"
+        );
+        for row in &authored_rows {
+            assert_eq!(
+                row.0,
+                root_id.into_inner(),
+                "edge originates at the wake's snapshotted Root Perspective"
+            );
+            assert_eq!(
+                row.2, "Perspective",
+                "source_kind must mark the edge origin as the Root Perspective"
+            );
+            assert_eq!(
+                row.4, "Causal",
+                "core/authored is registered with class Causal, mirroring core/inspires"
+            );
+            assert_eq!(
+                row.5, "Engine",
+                "substrate authors the edge on the personality's behalf"
+            );
+        }
+        assert_eq!(authored_rows[0].1, abstraction_id.into_inner());
+        assert_eq!(authored_rows[0].3, "Abstraction");
+        assert_eq!(authored_rows[1].1, perspective_id.into_inner());
+        assert_eq!(authored_rows[1].3, "Perspective");
+
+        Ok(())
+    }
+    .await;
+
+    drop(pg);
+    let _ = drop_db(&db).await;
+    result.expect("personality authored-edge wiring");
 }

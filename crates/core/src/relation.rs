@@ -26,6 +26,7 @@ use crate::{SchemaId, SchemaVersion};
 pub const CORE_DERIVED_FROM_RELATION: &str = "core/derived-from";
 pub const CORE_SUPERSEDES_RELATION: &str = "core/supersedes";
 pub const CORE_INSPIRES_RELATION: &str = "core/inspires";
+pub const CORE_AUTHORED_RELATION: &str = "core/authored";
 
 /// Closed substrate vocabulary for the abstract role an edge plays
 /// in A/P traversal. The five variants below are the only edge
@@ -141,6 +142,7 @@ pub fn core_relation_descriptors() -> Vec<RelationDescriptor> {
         RelationDescriptor::substrate(CORE_DERIVED_FROM_RELATION, RelationClass::Provenance),
         RelationDescriptor::substrate(CORE_SUPERSEDES_RELATION, RelationClass::Supersession),
         RelationDescriptor::substrate(CORE_INSPIRES_RELATION, RelationClass::Causal),
+        RelationDescriptor::substrate(CORE_AUTHORED_RELATION, RelationClass::Causal),
     ]
 }
 
@@ -151,4 +153,45 @@ pub fn core_relation_descriptors() -> Vec<RelationDescriptor> {
 pub struct RegisteredRelation<'a> {
     pub descriptor: &'a RelationDescriptor,
     pub payload_sidecar_table: Option<&'a str>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        CORE_AUTHORED_RELATION, CORE_DERIVED_FROM_RELATION, CORE_INSPIRES_RELATION,
+        CORE_SUPERSEDES_RELATION, RelationClass, core_relation_descriptors,
+    };
+
+    fn descriptor_for(relation: &str) -> Option<RelationClass> {
+        core_relation_descriptors()
+            .into_iter()
+            .find(|d| d.relation == relation)
+            .map(|d| d.class)
+    }
+
+    #[test]
+    fn core_authored_is_registered_as_causal() {
+        assert_eq!(
+            descriptor_for(CORE_AUTHORED_RELATION),
+            Some(RelationClass::Causal),
+            "core/authored must be registered with class Causal so it shares \
+             the substrate causal-edge vocabulary with core/inspires",
+        );
+    }
+
+    #[test]
+    fn pre_existing_core_relations_unchanged() {
+        assert_eq!(
+            descriptor_for(CORE_DERIVED_FROM_RELATION),
+            Some(RelationClass::Provenance),
+        );
+        assert_eq!(
+            descriptor_for(CORE_SUPERSEDES_RELATION),
+            Some(RelationClass::Supersession),
+        );
+        assert_eq!(
+            descriptor_for(CORE_INSPIRES_RELATION),
+            Some(RelationClass::Causal),
+        );
+    }
 }

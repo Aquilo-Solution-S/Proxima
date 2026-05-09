@@ -640,6 +640,18 @@ pub struct PersonalityWriteRequest<'a> {
     pub prompt_version: &'a str,
     pub provenance_relation: RegisteredRelation<'a>,
     pub supersedes_relation: RegisteredRelation<'a>,
+    /// Substrate-only `core/authored` relation. Storage writes one
+    /// `Root Perspective --core/authored--> emitted memory` edge per
+    /// memory in the same transaction so graph traversal can answer
+    /// "what has this Personality produced?" without falling back to
+    /// the `personality_instance_id` row column.
+    pub authored_relation: RegisteredRelation<'a>,
+    /// Snapshot of the Personality's Root Perspective memory_id taken
+    /// at wake-context assembly time. Used as the `source_memory_id`
+    /// of the auto-wired `core/authored` edge so the edge attributes
+    /// to the perspective that was speaking during this wake, not
+    /// whatever the runtime row points to at edge-write time.
+    pub current_root_perspective_memory_id: MemoryId,
     pub wake_chain_depth: WakeChainDepth,
     pub memories: &'a [PersonalityMemoryDraft],
     pub sidecar_table: &'a str,

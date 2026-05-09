@@ -14,6 +14,8 @@ mod boot;
 pub mod command_error;
 mod commands;
 pub mod config;
+#[cfg(debug_assertions)]
+mod dev_secrets;
 mod mcp;
 mod perf;
 mod repo_ingest_hub;
