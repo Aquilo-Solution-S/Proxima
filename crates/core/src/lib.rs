@@ -43,6 +43,10 @@ pub use outbox::*;
 pub use owner::*;
 pub use payload::*;
 pub use personality::*;
+pub use personality::workspace::{
+    WorkspaceOutcome, WorkspacePrepareInput, WorkspacePreparedRun, WorkspaceRunRecord,
+    WorkspaceRunner, WorkspaceRunnerError,
+};
 pub use relation::*;
 pub use secrets::*;
 pub use storage::*;
