@@ -39,5 +39,6 @@ pub trait EngineMcpListener: Send + Sync {
         &self,
         addr: SocketAddr,
         wake_token_store: Arc<WakeTokenStore>,
+        engine: Arc<crate::Engine>,
     ) -> Result<RunningMcpListener, ProtocolError>;
 }

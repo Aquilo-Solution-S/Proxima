@@ -1,14 +1,13 @@
 use std::sync::Arc;
 
 use proxima_core::auth::NoAuth;
+use proxima_core::engine::EngineMcpListener;
 use proxima_core::llm::EmbeddingClient;
 use proxima_core::secrets::ResolverRegistry;
-use proxima_core::wake::token_store::WakeTokenStore;
 use proxima_core::{Engine, FlavorRegistry, FlavorRegistryFrozen, OrgId, Owner, Principal, UserId};
 use proxima_llm_openai_compat::{OpenAiCompatConfig, OpenAiCompatEmbeddingClient};
-use proxima_mcp_server::{DevMcpServer, default_allowlist, serve_streamable_http};
+use proxima_mcp_server::{DevMcpServer, EngineHostedMcpListener, McpAuthStore, default_allowlist};
 use proxima_storage_pg::PgStorage;
-use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 use crate::config::AppConfig;
@@ -17,7 +16,7 @@ const DEFAULT_MCP_BIND: &str = "127.0.0.1:31415";
 
 /// Panics if `DATABASE_URL` is not set — settings persistence is
 /// required for the desktop shell.
-pub(crate) fn build_engine() -> (Arc<Engine>, Arc<PgStorage>) {
+pub(crate) fn build_engine() -> (Engine, Arc<PgStorage>) {
     let owner = Owner {
         principal: Principal::User(UserId::new(Uuid::nil())),
         org_id: OrgId::new(Uuid::nil()),
@@ -73,10 +72,10 @@ pub(crate) fn build_engine() -> (Arc<Engine>, Arc<PgStorage>) {
             proxima_flavor_goal::register(registry);
         });
 
-        let engine = wire_consolidation_clients(engine, &pg_for_settings, &owner).await;
-        let engine = Arc::new(engine);
-
-        (engine, pg_for_settings)
+        (
+            wire_consolidation_clients(engine, &pg_for_settings, &owner).await,
+            pg_for_settings,
+        )
     })
 }
 
@@ -191,22 +190,15 @@ fn resolve_optional_secret(
 /// Returns bind, migration, or transport setup failures. Shell callers
 /// log and continue without MCP.
 ///
-/// `wake_token_store` must be the same `Arc` the engine's dispatcher
-/// mints tokens into ([`Engine::wake_token_store`]) — without that
-/// shared store every MCP request would 401 because the bearer token
-/// the dispatcher hands the wake'd subprocess wouldn't resolve in
-/// the listener's auth layer.
-pub(crate) async fn spawn_mcp_listener(
+/// `auth_store` must wrap the same wake-token store the engine's
+/// dispatcher mints into ([`Engine::wake_token_store`]) and may also
+/// carry Shell-local master tokens for user-configured MCP clients.
+pub(crate) async fn build_mcp_listener(
     pool: sqlx::PgPool,
     owner: Owner,
-    wake_token_store: Arc<WakeTokenStore>,
-) -> Result<
-    (
-        JoinHandle<Result<(), proxima_mcp_server::McpServerError>>,
-        std::net::SocketAddr,
-    ),
-    proxima_mcp_server::McpServerError,
-> {
+    auth_store: Arc<McpAuthStore>,
+) -> Result<(Arc<dyn EngineMcpListener>, std::net::SocketAddr), proxima_mcp_server::McpServerError>
+{
     let bind_raw =
         std::env::var("PROXIMA_MCP_BIND").unwrap_or_else(|_| DEFAULT_MCP_BIND.to_string());
     let bind = bind_raw.parse().map_err(|err| {
@@ -225,7 +217,14 @@ pub(crate) async fn spawn_mcp_listener(
     proxima_code::register(&mut registry);
     let frozen: Arc<FlavorRegistryFrozen> = Arc::new(registry.freeze());
     let server = DevMcpServer::from_pool(pool, owner, frozen);
-    serve_streamable_http(bind, server, default_allowlist(), wake_token_store).await
+    Ok((
+        Arc::new(EngineHostedMcpListener::with_auth_store(
+            server,
+            default_allowlist(),
+            auth_store,
+        )),
+        bind,
+    ))
 }
 
 #[cfg(test)]

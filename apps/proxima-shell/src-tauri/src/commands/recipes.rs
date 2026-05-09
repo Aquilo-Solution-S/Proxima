@@ -56,7 +56,10 @@ pub async fn list_bundled_recipes(
             .list_bundled_recipes()
             .map(|slug| BundledRecipeTs {
                 slug: slug.to_string(),
-                flavor_id: slug.split_once('/').map(|(f, _)| f.to_string()).unwrap_or_default(),
+                flavor_id: slug
+                    .split_once('/')
+                    .map(|(f, _)| f.to_string())
+                    .unwrap_or_default(),
             })
             .collect())
     })
@@ -69,7 +72,10 @@ async fn read_recipes_at(root: &Path) -> Result<OwnerRecipesListingTs, ProtocolE
     let mut entries = match tokio::fs::read_dir(root).await {
         Ok(rd) => rd,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(OwnerRecipesListingTs { root_path, recipes: Vec::new() });
+            return Ok(OwnerRecipesListingTs {
+                root_path,
+                recipes: Vec::new(),
+            });
         }
         Err(err) => {
             return Err(ProtocolError::internal(format!(

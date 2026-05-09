@@ -61,7 +61,7 @@ impl PersonalityTool for CreateEdgeTool {
                 })));
             }
         };
-        match authorize_create_edge(&parsed.relation_id, ctx.writeable_relations) {
+        match authorize_create_edge(&parsed.relation_id, &ctx.writeable_relations) {
             Ok(()) => {}
             Err(AuthorizationError::SubstrateOnlyRelation { relation_id }) => {
                 return Ok(PersonalityToolResult::error(serde_json::json!({

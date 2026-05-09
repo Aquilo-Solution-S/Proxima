@@ -44,12 +44,20 @@ impl MockAdapter {
 
 #[async_trait]
 impl TargetAdapter for MockAdapter {
-    async fn run(&self, _invocation: TargetInvocation) -> Result<TargetOutcome, TargetAdapterError> {
+    async fn run(
+        &self,
+        _invocation: TargetInvocation,
+    ) -> Result<TargetOutcome, TargetAdapterError> {
         *self.calls.lock().unwrap() += 1;
         Ok(TargetOutcome {
             kind: TargetOutcomeKind::Succeeded,
             turn_count: Some(1),
+            exit_code: Some(0),
+            duration_ms: 1,
+            stdout_tail: String::new(),
             stderr_tail: String::new(),
+            stdout_truncated: false,
+            stderr_truncated: false,
         })
     }
 }
@@ -110,11 +118,11 @@ async fn two_ticks_same_window_one_invocation_per_match() {
         "proxima-test/wake-context-fact-v1",
         "smoke-trigger",
         WakeEntryAuthoredBy::Any,
-        1000,                  // probability_promille — always-fire
+        1000, // probability_promille — always-fire
         "user:smoke.yaml",
         ModelTier::Standard,
-        None,                  // resolve via tier binding above
-        Vec::new(),            // empty palette is fine for this smoke
+        None,       // resolve via tier binding above
+        Vec::new(), // empty palette is fine for this smoke
         4,
     )
     .expect("build wake entry");

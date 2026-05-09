@@ -13,6 +13,7 @@ import {
   type BundledRecipeTs,
   type InstantiatePersonalityOutcomeTs,
   type InstantiatePersonalityTs,
+  type ListWakeInvocationsTs,
   type ListOwnerRecipesTs,
   type ListPersonalityInstancesTs,
   type McpToolTs,
@@ -25,6 +26,7 @@ import {
   type TombstonePersonalityOutcomeTs,
   type TombstonePersonalityTs,
   type WakeEntryDraftTs,
+  type WakeInvocationTs,
   type WorkspaceToolTs,
 } from "../../bindings";
 import { sentinelOwner } from "../../graph-store";
@@ -57,6 +59,9 @@ export type PersonalityCommandClient = {
   listBundledRecipes: () => CommandResult<BundledRecipeTs[]>;
   listMcpTools: () => CommandResult<McpToolTs[]>;
   listWorkspaceTools: () => CommandResult<WorkspaceToolTs[]>;
+  listWakeInvocations: (
+    req: ListWakeInvocationsTs,
+  ) => CommandResult<WakeInvocationTs[]>;
 };
 
 const entryToDraft = (
@@ -117,6 +122,13 @@ export const PersonalitiesView: Component<{
     WorkspaceToolTs[] | null
   >(null);
   const [toolsError, setToolsError] = createSignal<string | null>(null);
+  const [wakeInvocations, setWakeInvocations] = createSignal<
+    WakeInvocationTs[] | null
+  >(null);
+  const [wakeInvocationsLoading, setWakeInvocationsLoading] = createSignal(false);
+  const [wakeInvocationsError, setWakeInvocationsError] =
+    createSignal<string | null>(null);
+  let wakeInvocationRequestSeq = 0;
 
   const refreshRecipes = async () => {
     setRecipesError(null);
@@ -146,6 +158,66 @@ export const PersonalitiesView: Component<{
     }
   };
 
+  const selectedInvocationScope = (sel: PersonalitySelection) => {
+    if (!sel) return null;
+    if (sel.kind === "personality") {
+      return {
+        personalityInstanceId: sel.instance_id,
+        wakeEntryId: null as string | null,
+      };
+    }
+    if (sel.kind === "wake_entry") {
+      const instance = instances().find(
+        (row) => row.personality_instance_id === sel.instance_id,
+      );
+      return {
+        personalityInstanceId: sel.instance_id,
+        wakeEntryId:
+          instance?.wake_entries[sel.entry_index]?.wake_entry_id ?? null,
+      };
+    }
+    if (sel.kind === "edge") {
+      return {
+        personalityInstanceId: sel.tgt_instance_id,
+        wakeEntryId:
+          instances().find(
+            (row) => row.personality_instance_id === sel.tgt_instance_id,
+          )?.wake_entries[sel.tgt_entry_index]?.wake_entry_id ?? null,
+      };
+    }
+    return null;
+  };
+
+  const refreshWakeInvocations = async (scope: ReturnType<typeof selectedInvocationScope>) => {
+    const seq = ++wakeInvocationRequestSeq;
+    if (!scope) {
+      setWakeInvocations(null);
+      setWakeInvocationsError(null);
+      setWakeInvocationsLoading(false);
+      return;
+    }
+    setWakeInvocationsLoading(true);
+    setWakeInvocationsError(null);
+    try {
+      const rows = await unwrap(
+        client.listWakeInvocations({
+          owner,
+          personality_instance_id: scope.personalityInstanceId,
+          wake_entry_id: scope.wakeEntryId,
+          limit: 20,
+        }),
+      );
+      if (seq === wakeInvocationRequestSeq) setWakeInvocations(rows);
+    } catch (err) {
+      if (seq === wakeInvocationRequestSeq) {
+        setWakeInvocations([]);
+        setWakeInvocationsError(errorMessage(err));
+      }
+    } finally {
+      if (seq === wakeInvocationRequestSeq) setWakeInvocationsLoading(false);
+    }
+  };
+
   const refresh = async () => {
     setLoading(true);
     setError(null);
@@ -169,6 +241,10 @@ export const PersonalitiesView: Component<{
     void refresh();
     void refreshRecipes();
     void refreshTools();
+  });
+
+  createEffect(() => {
+    void refreshWakeInvocations(selectedInvocationScope(selection()));
   });
 
   const dirty = createMemo(() => drafts().size > 0);
@@ -392,6 +468,9 @@ export const PersonalitiesView: Component<{
           mcpTools={mcpTools()}
           workspaceTools={workspaceTools()}
           toolsError={toolsError()}
+          wakeInvocations={wakeInvocations()}
+          wakeInvocationsLoading={wakeInvocationsLoading()}
+          wakeInvocationsError={wakeInvocationsError()}
           onUpdateEntry={updateEntry}
           onAddEntry={addEntry}
           onRemoveEntry={removeEntry}
@@ -472,4 +551,3 @@ const errorMessage = (err: unknown): string => {
   }
   return String(err);
 };
-

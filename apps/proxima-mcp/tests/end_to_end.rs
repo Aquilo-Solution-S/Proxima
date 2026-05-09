@@ -16,17 +16,20 @@ async fn run_with_handle_serves_tools_list() -> Result<(), Box<dyn std::error::E
             org_id: OrgId::new(uuid::Uuid::nil()),
         },
         bind: SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0),
+        master_token: Some(uuid::Uuid::nil()),
     };
 
     let (handle, addr) = proxima_mcp::run_with_handle(cfg).await?;
     let client = reqwest::Client::new();
     let url = format!("http://{addr}/mcp");
-    let session_id = initialize(&client, &url).await?;
-    initialized(&client, &url, &session_id).await?;
+    let bearer = format!("Bearer {}", uuid::Uuid::nil());
+    let session_id = initialize(&client, &url, &bearer).await?;
+    initialized(&client, &url, &session_id, &bearer).await?;
     let body = post_rpc(
         &client,
         &url,
         Some(&session_id),
+        &bearer,
         json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}),
     )
     .await?;
@@ -47,10 +50,12 @@ async fn run_with_handle_serves_tools_list() -> Result<(), Box<dyn std::error::E
 async fn initialize(
     client: &reqwest::Client,
     url: &str,
+    bearer: &str,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let response = client
         .post(url)
         .header("Origin", "http://localhost")
+        .header("Authorization", bearer)
         .header("MCP-Protocol-Version", "2025-03-26")
         .header("Content-Type", "application/json")
         .header("Accept", "application/json, text/event-stream")
@@ -81,10 +86,12 @@ async fn initialized(
     client: &reqwest::Client,
     url: &str,
     session_id: &str,
+    bearer: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let response = client
         .post(url)
         .header("Origin", "http://localhost")
+        .header("Authorization", bearer)
         .header("MCP-Protocol-Version", "2025-03-26")
         .header("Mcp-Session-Id", session_id)
         .header("Content-Type", "application/json")
@@ -100,11 +107,13 @@ async fn post_rpc(
     client: &reqwest::Client,
     url: &str,
     session_id: Option<&str>,
+    bearer: &str,
     body: serde_json::Value,
 ) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
     let mut request = client
         .post(url)
         .header("Origin", "http://localhost")
+        .header("Authorization", bearer)
         .header("MCP-Protocol-Version", "2025-03-26")
         .header("Content-Type", "application/json")
         .header("Accept", "application/json, text/event-stream")

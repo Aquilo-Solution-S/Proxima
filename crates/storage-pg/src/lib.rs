@@ -13,11 +13,12 @@ use std::time::Duration;
 
 use proxima_core::personality::{
     AbstractionRow, ActiveGoalSummary, ChangeEventForWake, InstantiatePersonalityRequest,
-    InstantiatePersonalityResponse, MemorySnapshot, PersonalityInstanceId, PersonalityInstanceRow,
-    PersonalityRef, PersonalityRuntimeRow, PersonalityWriteOutcome, PersonalityWriteRequest,
-    RootPersonalityPerspectiveRow, SetWakeEntriesRequest, SetWakeEntriesResponse, SidecarSpec,
-    TombstonePersonalityRequest, TombstonePersonalityResponse, WakeDispatchEntryRow,
-    WakeInvocationFinalize, WakeInvocationStart, WakeInvocationStatus,
+    InstantiatePersonalityResponse, ListWakeInvocationsRequest, MemorySnapshot,
+    PersonalityInstanceId, PersonalityInstanceRow, PersonalityRef, PersonalityRuntimeRow,
+    PersonalityWriteOutcome, PersonalityWriteRequest, RootPersonalityPerspectiveRow,
+    SetWakeEntriesRequest, SetWakeEntriesResponse, SidecarSpec, TombstonePersonalityRequest,
+    TombstonePersonalityResponse, WakeDispatchEntryRow, WakeInvocationFinalize,
+    WakeInvocationLogDraft, WakeInvocationRow, WakeInvocationStart, WakeInvocationStatus,
 };
 use proxima_core::storage::WakeLockGuard;
 use proxima_core::verbs::close_batch::CloseBatchOutcome;
@@ -396,6 +397,20 @@ impl Storage for PgStorage {
         finalize: &WakeInvocationFinalize,
     ) -> Result<(), StorageError> {
         verbs::consolidate::finalize_wake_invocation(&self.pool, finalize).await
+    }
+
+    async fn append_wake_invocation_log(
+        &self,
+        log: &WakeInvocationLogDraft,
+    ) -> Result<(), StorageError> {
+        verbs::consolidate::append_wake_invocation_log(&self.pool, log).await
+    }
+
+    async fn list_wake_invocations(
+        &self,
+        req: &ListWakeInvocationsRequest,
+    ) -> Result<Vec<WakeInvocationRow>, StorageError> {
+        verbs::consolidate::list_wake_invocations(&self.pool, req).await
     }
 
     async fn load_memory_batch_facts(

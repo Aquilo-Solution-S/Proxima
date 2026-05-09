@@ -28,8 +28,8 @@ use crate::error::ProtocolError;
 use crate::outbox::{ChangeEventKind, EntityRef};
 use crate::personality::{
     ChangeEventForWake, MAX_WAKE_CHAIN_DEPTH, PersonalityInstanceId, WakeDispatchEntryRow,
-    WakeEntryAuthoredBy, WakeEntryDraft, WakeEntryExecutionMode, WakeEntryRow, WakeEntryTriggerKind,
-    WakeExecutionMode, WakeInvocationFinalize, WakeInvocationStatus,
+    WakeEntryAuthoredBy, WakeEntryDraft, WakeEntryExecutionMode, WakeEntryRow,
+    WakeEntryTriggerKind, WakeExecutionMode, WakeInvocationFinalize, WakeInvocationStatus,
 };
 use crate::wake::fire::{FireWakeEntryInput, fire_wake_entry};
 
@@ -104,9 +104,7 @@ pub async fn dispatch_tick(engine: &Engine) -> Result<usize, ProtocolError> {
                 // `authored_by != Any`, but `Any` would otherwise let a
                 // self-edit walk back into a wake. fire_wake_entry has
                 // its own guard for the race; we belt-and-brace here.
-                if event.authoring_personality_instance_id
-                    == Some(group.personality_instance_id)
-                {
+                if event.authoring_personality_instance_id == Some(group.personality_instance_id) {
                     continue;
                 }
                 if event.wake_chain_depth.into_inner() >= MAX_WAKE_CHAIN_DEPTH {
@@ -162,11 +160,7 @@ pub async fn dispatch_tick(engine: &Engine) -> Result<usize, ProtocolError> {
         if highest_seq != group.last_considered_seq {
             engine
                 .storage()
-                .advance_wake_cursor(
-                    &group.owner,
-                    group.personality_instance_id,
-                    highest_seq,
-                )
+                .advance_wake_cursor(&group.owner, group.personality_instance_id, highest_seq)
                 .await
                 .map_err(|e| ProtocolError::internal(format!("advance_wake_cursor: {e}")))?;
         }
@@ -214,16 +208,12 @@ fn triggers_match(entry: &WakeEntryDraft, event: &ChangeEventForWake) -> bool {
         return false;
     }
     match (&entry.trigger_kind, &event.event.kind) {
-        (
-            WakeEntryTriggerKind::OnMemory,
-            ChangeEventKind::EntityAppend {
-                schema_id, ..
-            },
-        ) => entry.trigger_id == schema_id.as_str(),
-        (
-            WakeEntryTriggerKind::OnEdge,
-            ChangeEventKind::EdgeAppend { relation, .. },
-        ) => entry.trigger_id == relation.as_str(),
+        (WakeEntryTriggerKind::OnMemory, ChangeEventKind::EntityAppend { schema_id, .. }) => {
+            entry.trigger_id == schema_id.as_str()
+        }
+        (WakeEntryTriggerKind::OnEdge, ChangeEventKind::EdgeAppend { relation, .. }) => {
+            entry.trigger_id == relation.as_str()
+        }
         _ => false,
     }
 }
@@ -237,7 +227,7 @@ fn authored_by_matches(
         WakeEntryAuthoredBy::Any => true,
         WakeEntryAuthoredBy::SelfAuthor => event_author == Some(self_instance),
         WakeEntryAuthoredBy::Other => match event_author {
-            None => true,                             // external/event-source counts as Other
+            None => true, // external/event-source counts as Other
             Some(author) => author != self_instance,
         },
     }
@@ -341,9 +331,14 @@ async fn write_chain_depth_exhausted(
             turn_count: None,
             cost_usd: None,
             failure_reason: Some("wake_chain_depth_exhausted".to_string()),
+            exit_code: None,
+            duration_ms: None,
+            stdout_tail: None,
+            stderr_tail: None,
+            stdout_truncated: false,
+            stderr_truncated: false,
         })
         .await
         .map_err(|e| ProtocolError::internal(format!("finalize_wake_invocation: {e}")))?;
     Ok(())
 }
-

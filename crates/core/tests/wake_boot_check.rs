@@ -1,4 +1,4 @@
-use proxima_core::wake::boot_check::{verify_goose_on_path, BootCheckError};
+use proxima_core::wake::boot_check::{BootCheckError, verify_goose_on_path};
 use std::path::PathBuf;
 
 fn goose_on_path() -> Option<PathBuf> {

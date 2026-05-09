@@ -157,10 +157,12 @@ pnpm --filter proxima-shell dev --host 127.0.0.1
 ### Connecting Your Coding Agent To Proxima
 
 Proxima Shell auto-starts a Streamable HTTP MCP server when the
-desktop app is running:
+desktop app is running. Copy the local bearer token from
+`Settings -> MCP`:
 
 ```text
 http://localhost:31415/mcp
+Authorization: Bearer <token-from-settings>
 ```
 
 Claude Code:
@@ -168,7 +170,11 @@ Claude Code:
 ```jsonc
 {
   "mcpServers": {
-    "proxima": { "type": "http", "url": "http://localhost:31415/mcp" }
+    "proxima": {
+      "type": "http",
+      "url": "http://localhost:31415/mcp",
+      "headers": { "Authorization": "Bearer <token-from-settings>" }
+    }
   }
 }
 ```
@@ -179,6 +185,7 @@ Codex CLI:
 [mcp_servers.proxima]
 type = "http"
 url = "http://localhost:31415/mcp"
+http_headers = { "Authorization" = "Bearer <token-from-settings>" }
 ```
 
 Port override:
@@ -187,8 +194,9 @@ Port override:
 PROXIMA_MCP_BIND=127.0.0.1:31419 pnpm --filter proxima-shell tauri:dev
 ```
 
-The listener binds loopback only and rejects missing or disallowed
-`Origin` headers.
+The listener binds loopback only. Present `Origin` headers must be
+allowed; native CLI clients may omit `Origin` when they send a valid
+bearer token.
 
 Headless:
 
@@ -196,6 +204,7 @@ Headless:
 cargo run -p proxima-mcp -- \
   --owner-user 00000000-0000-0000-0000-000000000000 \
   --owner-org  00000000-0000-0000-0000-000000000000 \
+  --master-token 00000000-0000-0000-0000-000000000000 \
   --bind 127.0.0.1:31415
 ```
 

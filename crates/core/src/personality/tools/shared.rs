@@ -43,11 +43,15 @@ pub(super) async fn emit_personality_memory(
         .registry()
         .resolve_relation(CORE_SUPERSEDES_RELATION)
         .ok_or_else(|| ProtocolError::internal("missing core supersedes relation"))?;
-    let anthropic = ctx
-        .engine
-        .anthropic()
-        .ok_or_else(|| ProtocolError::internal("anthropic client not wired into engine"))?;
-    let model_id = model_id_from_wake_invocation(ctx, anthropic.as_ref());
+    let model_id = if let Some(wake) = ctx.wake_invocation {
+        wake.model_id.clone()
+    } else {
+        let anthropic = ctx
+            .engine
+            .anthropic()
+            .ok_or_else(|| ProtocolError::internal("anthropic client not wired into engine"))?;
+        model_id_from_wake_invocation(ctx, anthropic.as_ref())
+    };
     let instance = PersonalityRef::new(ctx.instance_id);
     let req = PersonalityWriteRequest {
         owner: ctx.owner.clone(),

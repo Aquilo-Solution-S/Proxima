@@ -68,32 +68,39 @@ pub fn run() {
 
     let (engine, pg) = boot::build_engine();
     let wake_token_store = engine.wake_token_store();
-    let mcp_handle = tauri::async_runtime::block_on(async {
-        boot::spawn_mcp_listener(
-            pg.pool().clone(),
-            boot::sentinel_owner(),
-            wake_token_store,
-        )
-        .await
-    });
-    let mcp_handle = match mcp_handle {
-        Ok((handle, addr)) => {
-            tracing::info!(addr = %addr, "Shell MCP listener up; connect via http://{addr}/mcp");
-            Some(mcp::McpListenerHandle::new(handle))
-        }
-        Err(err) => {
-            tracing::warn!(
-                "MCP listener failed to start; coding agents will not connect: {err}. \
-                 Set PROXIMA_MCP_BIND=127.0.0.1:<free-port> to use a different port."
+    let mcp_auth_store =
+        std::sync::Arc::new(proxima_mcp_server::McpAuthStore::new(wake_token_store));
+    let owner = boot::sentinel_owner();
+    match mcp::load_or_create_master_token(&owner) {
+        Ok(token) => {
+            tauri::async_runtime::block_on(
+                mcp_auth_store.replace_local_master_token(token, owner.clone()),
             );
-            None
         }
-    };
+        Err(err) => tracing::warn!("MCP master token unavailable at boot: {err}"),
+    }
+    let (mcp_listener, mcp_addr) = tauri::async_runtime::block_on(async {
+        boot::build_mcp_listener(pg.pool().clone(), owner, mcp_auth_store.clone()).await
+    })
+    .expect("failed to build Shell MCP listener");
+    let engine = std::sync::Arc::new(
+        engine
+            .with_mcp_listener(mcp_listener)
+            .with_mcp_listen_addr(mcp_addr),
+    );
+    let engine_handle =
+        tauri::async_runtime::block_on(engine.clone().start()).expect("failed to start engine");
+    let mcp_url = engine
+        .mcp_url()
+        .expect("engine start with MCP listener must expose mcp_url");
+    tracing::info!(url = %mcp_url, "Shell MCP listener up");
+    let mcp_handle = Some(mcp::McpListenerHandle::new(engine_handle, mcp_addr));
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(engine)
         .manage(pg)
+        .manage(mcp_auth_store)
         .manage(repo_ingest_hub::RepoIngestHub::new())
         .manage(mcp_handle)
         .invoke_handler(commands::specta_builder().invoke_handler())

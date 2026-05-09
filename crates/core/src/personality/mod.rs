@@ -150,10 +150,7 @@ pub const WORKSPACE_TOOL_CATALOG: &[(&str, &str)] = &[
         "proxima-workspace/text_editor",
         "View and edit files in the workspace",
     ),
-    (
-        "proxima-workspace/list_files",
-        "List files and directories",
-    ),
+    ("proxima-workspace/list_files", "List files and directories"),
 ];
 
 #[must_use]
@@ -310,8 +307,8 @@ pub struct PersonalityToolContext<'a> {
     pub current_root_perspective_memory_id: MemoryId,
     pub triggering_event_memory_id: MemoryId,
     pub triggering_event_depth: WakeChainDepth,
-    pub writeable_schemas: &'a [&'static str],
-    pub writeable_relations: &'a [&'static str],
+    pub writeable_schemas: Vec<String>,
+    pub writeable_relations: Vec<String>,
     pub palette: &'a [Arc<dyn PersonalityTool>],
     /// Active wake invocation, when this tool call is dispatched as part
     /// of a goose-driven wake. `None` for the legacy admin-tool path
@@ -320,7 +317,7 @@ pub struct PersonalityToolContext<'a> {
     /// reflects the actual InferenceTarget that drove the wake instead
     /// of a static `Standard`-tier guess.
     pub wake_invocation: Option<&'a crate::wake::token_store::WakeTokenContext>,
-    read_log: tokio::sync::Mutex<Vec<(MemoryId, WakeChainDepth)>>,
+    read_log: Arc<tokio::sync::Mutex<Vec<(MemoryId, WakeChainDepth)>>>,
 }
 
 impl<'a> PersonalityToolContext<'a> {
@@ -334,8 +331,8 @@ impl<'a> PersonalityToolContext<'a> {
         current_root_perspective_memory_id: MemoryId,
         triggering_event_memory_id: MemoryId,
         triggering_event_depth: WakeChainDepth,
-        writeable_schemas: &'a [&'static str],
-        writeable_relations: &'a [&'static str],
+        writeable_schemas: Vec<String>,
+        writeable_relations: Vec<String>,
         palette: &'a [Arc<dyn PersonalityTool>],
     ) -> Self {
         Self {
@@ -350,7 +347,7 @@ impl<'a> PersonalityToolContext<'a> {
             writeable_relations,
             palette,
             wake_invocation: None,
-            read_log: tokio::sync::Mutex::new(Vec::new()),
+            read_log: Arc::new(tokio::sync::Mutex::new(Vec::new())),
         }
     }
 
@@ -363,6 +360,15 @@ impl<'a> PersonalityToolContext<'a> {
         wake_invocation: &'a crate::wake::token_store::WakeTokenContext,
     ) -> Self {
         self.wake_invocation = Some(wake_invocation);
+        self
+    }
+
+    #[must_use]
+    pub fn with_read_log(
+        mut self,
+        read_log: Arc<tokio::sync::Mutex<Vec<(MemoryId, WakeChainDepth)>>>,
+    ) -> Self {
+        self.read_log = read_log;
         self
     }
 
@@ -562,6 +568,68 @@ pub struct WakeInvocationFinalize {
     pub turn_count: Option<u16>,
     pub cost_usd: Option<f64>,
     pub failure_reason: Option<String>,
+    pub exit_code: Option<i32>,
+    pub duration_ms: Option<u64>,
+    pub stdout_tail: Option<String>,
+    pub stderr_tail: Option<String>,
+    pub stdout_truncated: bool,
+    pub stderr_truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WakeInvocationLogDraft {
+    pub owner: Owner,
+    pub personality_instance_id: PersonalityInstanceId,
+    pub wake_entry_id: Uuid,
+    pub change_event_seq: Uuid,
+    pub phase: String,
+    pub tool_id: Option<String>,
+    pub status: String,
+    pub duration_ms: Option<u64>,
+    pub message_tail: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WakeInvocationLogRow {
+    pub log_seq: i64,
+    pub at: time::OffsetDateTime,
+    pub phase: String,
+    pub tool_id: Option<String>,
+    pub status: String,
+    pub duration_ms: Option<u64>,
+    pub message_tail: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct WakeInvocationRow {
+    pub owner: Owner,
+    pub personality_instance_id: PersonalityInstanceId,
+    pub wake_entry_id: Uuid,
+    pub wake_entry_label: String,
+    pub change_event_seq: Uuid,
+    pub status: WakeInvocationStatus,
+    pub started_at: time::OffsetDateTime,
+    pub finished_at: Option<time::OffsetDateTime>,
+    pub turn_count: u16,
+    pub cost_usd: f64,
+    pub recipe_sha256: Option<String>,
+    pub resolved_inference_target_ref: Option<String>,
+    pub failure_reason: Option<String>,
+    pub exit_code: Option<i32>,
+    pub duration_ms: Option<u64>,
+    pub stdout_tail: Option<String>,
+    pub stderr_tail: Option<String>,
+    pub stdout_truncated: bool,
+    pub stderr_truncated: bool,
+    pub logs: Vec<WakeInvocationLogRow>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListWakeInvocationsRequest {
+    pub owner: Owner,
+    pub personality_instance_id: PersonalityInstanceId,
+    pub wake_entry_id: Option<Uuid>,
+    pub limit: u16,
 }
 
 #[derive(Debug)]

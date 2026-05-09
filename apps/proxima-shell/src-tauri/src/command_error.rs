@@ -70,6 +70,16 @@ pub enum CommandError {
     /// UUID string did not parse.
     #[error("invalid uuid: {value}")]
     InvalidUuid { value: String },
+
+    /// Local secret store could not load or save a secret.
+    #[error("secret store error: {message}")]
+    SecretStore { message: String },
+}
+
+impl CommandError {
+    pub(crate) fn secret_store(message: String) -> Self {
+        Self::SecretStore { message }
+    }
 }
 
 impl From<SettingsError> for CommandError {

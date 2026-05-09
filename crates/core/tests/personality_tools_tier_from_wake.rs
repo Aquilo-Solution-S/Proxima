@@ -20,9 +20,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use proxima_core::auth::NoAuth;
-use proxima_core::llm::{
-    AnthropicClient, LlmError, MessagesRequest, MessagesResponse,
-};
+use proxima_core::llm::{AnthropicClient, LlmError, MessagesRequest, MessagesResponse};
 use proxima_core::personality::{PersonalityInstanceId, PersonalityToolContext};
 use proxima_core::verbs::query::MemoryStore;
 use proxima_core::wake::token_store::WakeTokenContext;
@@ -73,10 +71,15 @@ fn wake_ctx(model_id: &str) -> WakeTokenContext {
         invocation_id: uuid::Uuid::new_v4(),
         personality_instance_id: uuid::Uuid::now_v7(),
         wake_entry_id: uuid::Uuid::now_v7(),
+        change_event_seq: uuid::Uuid::now_v7(),
         owner: owner(),
         palette: vec!["core/emit_abstraction".into()],
         model_id: model_id.into(),
         max_rounds: 4,
+        current_root_perspective_memory_id: MemoryId::new(uuid::Uuid::now_v7()),
+        triggering_event_memory_id: MemoryId::new(uuid::Uuid::now_v7()),
+        triggering_event_depth: WakeChainDepth::new(0),
+        read_log: Arc::new(tokio::sync::Mutex::new(Vec::new())),
     }
 }
 
@@ -94,8 +97,8 @@ async fn returns_wake_context_model_id_when_bound() {
         MemoryId::new(uuid::Uuid::now_v7()),
         MemoryId::new(uuid::Uuid::now_v7()),
         WakeChainDepth::new(0),
-        &[],
-        &[],
+        Vec::new(),
+        Vec::new(),
         &palette,
     )
     .with_wake_invocation(&wake);
@@ -120,8 +123,8 @@ async fn falls_back_to_standard_tier_without_wake_context() {
         MemoryId::new(uuid::Uuid::now_v7()),
         MemoryId::new(uuid::Uuid::now_v7()),
         WakeChainDepth::new(0),
-        &[],
-        &[],
+        Vec::new(),
+        Vec::new(),
         &palette,
     );
     let anthropic = StubAnthropic {

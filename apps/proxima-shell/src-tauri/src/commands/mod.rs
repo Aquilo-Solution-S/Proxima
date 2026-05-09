@@ -1,6 +1,7 @@
 mod engine;
 mod harness;
 mod inference_targets;
+mod mcp;
 mod models;
 mod recipes;
 mod repo_ingest;
@@ -21,6 +22,7 @@ pub(crate) fn specta_builder() -> Builder<tauri::Wry> {
         engine::event_ingest,
         engine::goal_write,
         engine::list_personality_instances,
+        engine::list_wake_invocations,
         engine::instantiate_personality,
         engine::set_wake_entries,
         engine::tombstone_personality,
@@ -36,6 +38,8 @@ pub(crate) fn specta_builder() -> Builder<tauri::Wry> {
         recipes::list_bundled_recipes,
         tools::list_mcp_tools,
         tools::list_workspace_tools,
+        mcp::mcp_connection_get,
+        mcp::mcp_master_token_rotate,
         // Embedding settings
         models::models_list_embedding,
         models::models_register_embedding,

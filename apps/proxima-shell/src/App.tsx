@@ -34,6 +34,13 @@ const SettingsModelsPanel = lazy(async () => {
   return { default: SettingsModelsPanel };
 });
 
+const SettingsMcpPanel = lazy(async () => {
+  const { SettingsMcpPanel } = await import(
+    "@proxima/core/views/settings-mcp"
+  );
+  return { default: SettingsMcpPanel };
+});
+
 const viewWithHub = (
   load: () => Promise<{ default: Component }>,
 ): Component => lazy(load);
@@ -49,6 +56,12 @@ const substrateSettingsPanels: RegisteredSettingsPanel[] = [
     id: "models",
     label: "Models",
     component: SettingsModelsPanel,
+    flavor: null,
+  },
+  {
+    id: "mcp",
+    label: "MCP",
+    component: SettingsMcpPanel,
     flavor: null,
   },
 ];

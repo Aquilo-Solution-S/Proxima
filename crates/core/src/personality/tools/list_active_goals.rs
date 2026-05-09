@@ -104,8 +104,8 @@ mod tests {
             MemoryId::new(uuid::Uuid::now_v7()),
             MemoryId::new(uuid::Uuid::now_v7()),
             WakeChainDepth::new(0),
-            &[],
-            &[],
+            Vec::new(),
+            Vec::new(),
             &palette,
         );
 

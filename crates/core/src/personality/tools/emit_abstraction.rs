@@ -65,7 +65,7 @@ impl PersonalityTool for EmitAbstractionTool {
                 })));
             }
         };
-        if let Err(err) = authorize_emit(&parsed.schema_id, ctx.writeable_schemas) {
+        if let Err(err) = authorize_emit(&parsed.schema_id, &ctx.writeable_schemas) {
             return Ok(PersonalityToolResult::error(serde_json::json!({
                 "error": err.to_string(),
             })));

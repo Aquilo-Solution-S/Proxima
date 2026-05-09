@@ -10,10 +10,12 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use proxima_core::Engine;
 use proxima_core::engine::{EngineMcpListener, RunningMcpListener};
 use proxima_core::error::ProtocolError;
 use proxima_core::wake::token_store::WakeTokenStore;
 
+use crate::auth::McpAuthStore;
 use crate::security::OriginAllowlist;
 use crate::server::DevMcpServer;
 use crate::transport::serve_streamable_http;
@@ -25,12 +27,30 @@ use crate::transport::serve_streamable_http;
 pub struct EngineHostedMcpListener {
     server: DevMcpServer,
     allowlist: OriginAllowlist,
+    auth_store: Option<Arc<McpAuthStore>>,
 }
 
 impl EngineHostedMcpListener {
     #[must_use]
     pub fn new(server: DevMcpServer, allowlist: OriginAllowlist) -> Self {
-        Self { server, allowlist }
+        Self {
+            server,
+            allowlist,
+            auth_store: None,
+        }
+    }
+
+    #[must_use]
+    pub fn with_auth_store(
+        server: DevMcpServer,
+        allowlist: OriginAllowlist,
+        auth_store: Arc<McpAuthStore>,
+    ) -> Self {
+        Self {
+            server,
+            allowlist,
+            auth_store: Some(auth_store),
+        }
     }
 }
 
@@ -40,12 +60,17 @@ impl EngineMcpListener for EngineHostedMcpListener {
         &self,
         addr: SocketAddr,
         wake_token_store: Arc<WakeTokenStore>,
+        engine: Arc<Engine>,
     ) -> Result<RunningMcpListener, ProtocolError> {
+        let auth_store = self
+            .auth_store
+            .clone()
+            .unwrap_or_else(|| Arc::new(McpAuthStore::new(wake_token_store)));
         let (join, bound_addr) = serve_streamable_http(
             addr,
-            self.server.clone(),
+            self.server.clone().with_engine(engine),
             self.allowlist.clone(),
-            wake_token_store,
+            auth_store,
         )
         .await
         .map_err(|e| ProtocolError::internal(format!("mcp listener start: {e}")))?;

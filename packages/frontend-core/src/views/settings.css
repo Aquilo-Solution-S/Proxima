@@ -44,6 +44,43 @@
   margin-top: 0;
 }
 
+/* ── Settings: MCP panel ──────────────────────────────────────── */
+.proxima-mcp-fields {
+  display: grid;
+  gap: 10px;
+  max-width: 720px;
+}
+.proxima-mcp-field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--rule);
+}
+.proxima-mcp-label {
+  margin-bottom: 4px;
+  font-family: var(--sans);
+  font-size: 9px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink-50);
+}
+.proxima-mcp-field code {
+  display: block;
+  overflow-wrap: anywhere;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-80);
+}
+.proxima-mcp-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 14px;
+}
+
 /* ── Settings: Models panel ──────────────────────────────────── */
 .proxima-models-table {
   width: 100%;

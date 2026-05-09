@@ -6,8 +6,8 @@ use std::path::PathBuf;
 use crate::error::ProtocolError;
 use crate::inference::recipe_resolve::resolve_recipe_ref;
 use crate::inference::recipe_validate::{RecipeValidateError, validate_recipe as goose_validate};
+use crate::personality::{substrate_pack, workspace_tool_ids};
 use crate::storage::{Storage, StorageError};
-use crate::personality::workspace_tool_ids;
 use crate::{
     FlavorRegistryFrozen, ModelTier, SetWakeEntriesRequest, SetWakeEntriesResponse, WakeEntryDraft,
     WakeEntryTriggerKind,
@@ -28,7 +28,12 @@ pub async fn set_wake_entries(
         validate_entry_shape(entry)?;
     }
 
-    let substrate_registered = ctx.registry.mcp_tool_ids();
+    let mut substrate_registered = ctx.registry.mcp_tool_ids();
+    substrate_registered.extend(
+        substrate_pack()
+            .iter()
+            .map(|tool| tool.tool_id().to_string()),
+    );
     let workspace_registered = workspace_tool_ids();
     for entry in &req.entries {
         validate_palettes(entry, &substrate_registered, &workspace_registered)?;

@@ -8,8 +8,9 @@ use axum::http::{Request, StatusCode, header};
 use axum::routing::get;
 use axum::{Extension, Router};
 use proxima_core::wake::token_store::{WakeTokenContext, WakeTokenStore};
-use proxima_core::{OrgId, Owner, Principal, UserId};
-use proxima_mcp_server::security::wake_token_auth_layer;
+use proxima_core::{MemoryId, OrgId, Owner, Principal, UserId, WakeChainDepth};
+use proxima_mcp_server::security::{default_allowlist, mcp_auth_layer};
+use proxima_mcp_server::{McpAuthContext, McpAuthStore, McpToolScope};
 use tower::util::ServiceExt;
 use uuid::Uuid;
 
@@ -25,23 +26,32 @@ fn make_ctx() -> WakeTokenContext {
         invocation_id: Uuid::new_v4(),
         personality_instance_id: Uuid::new_v4(),
         wake_entry_id: Uuid::new_v4(),
+        change_event_seq: Uuid::new_v4(),
         owner: make_owner(),
         palette: vec!["core/emit_abstraction".into()],
         model_id: "anthropic/claude-3-5-sonnet".into(),
         max_rounds: 4,
+        current_root_perspective_memory_id: MemoryId::new(Uuid::now_v7()),
+        triggering_event_memory_id: MemoryId::new(Uuid::now_v7()),
+        triggering_event_depth: WakeChainDepth::new(0),
+        read_log: Arc::new(tokio::sync::Mutex::new(Vec::new())),
     }
 }
 
-async fn protected(extensions: Extension<WakeTokenContext>) -> String {
-    extensions.0.invocation_id.to_string()
+async fn protected(extensions: Extension<McpAuthContext>) -> String {
+    match &extensions.0.scope {
+        McpToolScope::All => "all".to_string(),
+        McpToolScope::Palette(palette) => palette.join(","),
+    }
 }
 
 #[tokio::test]
 async fn rejects_without_authorization_header() {
     let store = Arc::new(WakeTokenStore::new(Duration::from_mins(1)));
+    let auth_store = Arc::new(McpAuthStore::new(store));
     let app = Router::new()
         .route("/protected", get(protected))
-        .layer(wake_token_auth_layer(store));
+        .layer(mcp_auth_layer(auth_store, default_allowlist()));
     let resp = app
         .oneshot(
             Request::builder()
@@ -57,9 +67,10 @@ async fn rejects_without_authorization_header() {
 #[tokio::test]
 async fn rejects_invalid_bearer_token() {
     let store = Arc::new(WakeTokenStore::new(Duration::from_mins(1)));
+    let auth_store = Arc::new(McpAuthStore::new(store));
     let app = Router::new()
         .route("/protected", get(protected))
-        .layer(wake_token_auth_layer(store));
+        .layer(mcp_auth_layer(auth_store, default_allowlist()));
     let resp = app
         .oneshot(
             Request::builder()
@@ -81,9 +92,10 @@ async fn passes_with_valid_token_and_injects_extension() {
     let store = Arc::new(WakeTokenStore::new(Duration::from_mins(1)));
     let ctx = make_ctx();
     let token = store.mint(ctx.clone()).await;
+    let auth_store = Arc::new(McpAuthStore::new(store));
     let app = Router::new()
         .route("/protected", get(protected))
-        .layer(wake_token_auth_layer(store));
+        .layer(mcp_auth_layer(auth_store, default_allowlist()));
     let resp = app
         .oneshot(
             Request::builder()
@@ -97,5 +109,5 @@ async fn passes_with_valid_token_and_injects_extension() {
     assert_eq!(resp.status(), StatusCode::OK);
     let body = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
     let body_str = std::str::from_utf8(&body).unwrap();
-    assert_eq!(body_str, ctx.invocation_id.to_string());
+    assert_eq!(body_str, ctx.palette.join(","));
 }

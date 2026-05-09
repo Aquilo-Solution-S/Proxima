@@ -5,9 +5,9 @@ mod common;
 
 use common::{drop_db, fresh_pg, owner_fixture};
 use proxima_core::personality::{
-    InstantiatePersonalityRequest, PersonalityInstanceId, SetWakeEntriesRequest,
-    WakeEntryAuthoredBy, WakeEntryDraft, WakeEntryTriggerKind, WakeInvocationFinalize,
-    WakeInvocationStart, WakeInvocationStatus,
+    InstantiatePersonalityRequest, ListWakeInvocationsRequest, PersonalityInstanceId,
+    SetWakeEntriesRequest, WakeEntryAuthoredBy, WakeEntryDraft, WakeEntryTriggerKind,
+    WakeInvocationFinalize, WakeInvocationLogDraft, WakeInvocationStart, WakeInvocationStatus,
 };
 use proxima_core::storage::Storage;
 use proxima_core::{ModelTier, Owner, Principal};
@@ -19,6 +19,12 @@ struct WakeInvocationDispatchRow {
     recipe_sha256: Option<String>,
     resolved_inference_target_ref: Option<String>,
     failure_reason: Option<String>,
+    exit_code: Option<i32>,
+    duration_ms: Option<i64>,
+    stdout_tail: Option<String>,
+    stderr_tail: Option<String>,
+    stdout_truncated: bool,
+    stderr_truncated: bool,
     status: WakeInvocationStatus,
 }
 
@@ -69,15 +75,34 @@ async fn fetch_wake_invocation(
         Principal::User(id) => id.into_inner(),
         Principal::Group(id) => id.into_inner(),
     };
-    let (wake_token, recipe_sha256, resolved_inference_target_ref, failure_reason, status): (
+    let (
+        wake_token,
+        recipe_sha256,
+        resolved_inference_target_ref,
+        failure_reason,
+        exit_code,
+        duration_ms,
+        stdout_tail,
+        stderr_tail,
+        stdout_truncated,
+        stderr_truncated,
+        status,
+    ): (
         Option<Uuid>,
         Option<String>,
         Option<String>,
         Option<String>,
+        Option<i32>,
+        Option<i64>,
+        Option<String>,
+        Option<String>,
+        bool,
+        bool,
         String,
     ) = sqlx::query_as(
         "SELECT wake_token, recipe_sha256, resolved_inference_target_ref,
-                failure_reason, status
+                failure_reason, exit_code, duration_ms, stdout_tail,
+                stderr_tail, stdout_truncated, stderr_truncated, status
          FROM proxima_core.personality_wake_invocations
          WHERE owner_principal_id = $1
            AND owner_org_id = $2
@@ -97,6 +122,12 @@ async fn fetch_wake_invocation(
         recipe_sha256,
         resolved_inference_target_ref,
         failure_reason,
+        exit_code,
+        duration_ms,
+        stdout_tail,
+        stderr_tail,
+        stdout_truncated,
+        stderr_truncated,
         status: match status.as_str() {
             "succeeded" => WakeInvocationStatus::Succeeded,
             "truncated" => WakeInvocationStatus::Truncated,
@@ -142,6 +173,12 @@ async fn wake_invocation_carries_dispatch_columns() {
             turn_count: None,
             cost_usd: None,
             failure_reason: Some("workspace_mode_not_yet_implemented".to_string()),
+            exit_code: Some(2),
+            duration_ms: Some(123),
+            stdout_tail: Some("stdout tail".to_string()),
+            stderr_tail: Some("stderr tail".to_string()),
+            stdout_truncated: false,
+            stderr_truncated: false,
         };
         pg.finalize_wake_invocation(&finalize)
             .await
@@ -159,7 +196,46 @@ async fn wake_invocation_carries_dispatch_columns() {
             row.failure_reason.as_deref(),
             Some("workspace_mode_not_yet_implemented")
         );
+        assert_eq!(row.exit_code, Some(2));
+        assert_eq!(row.duration_ms, Some(123));
+        assert_eq!(row.stdout_tail.as_deref(), Some("stdout tail"));
+        assert_eq!(row.stderr_tail.as_deref(), Some("stderr tail"));
+        assert!(!row.stdout_truncated);
+        assert!(!row.stderr_truncated);
         assert!(matches!(row.status, WakeInvocationStatus::Failed));
+
+        pg.append_wake_invocation_log(&WakeInvocationLogDraft {
+            owner: owner.clone(),
+            personality_instance_id: instance_id,
+            wake_entry_id,
+            change_event_seq,
+            phase: "tool_call".to_string(),
+            tool_id: Some("proxima-mcp/proxima_derive".to_string()),
+            status: "failed".to_string(),
+            duration_ms: Some(77),
+            message_tail: Some("tool failed".to_string()),
+        })
+        .await?;
+        let listed = pg
+            .list_wake_invocations(&ListWakeInvocationsRequest {
+                owner: owner.clone(),
+                personality_instance_id: instance_id,
+                wake_entry_id: Some(wake_entry_id),
+                limit: 10,
+            })
+            .await?;
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].exit_code, Some(2));
+        assert_eq!(listed[0].stdout_tail.as_deref(), Some("stdout tail"));
+        assert_eq!(listed[0].logs.len(), 1);
+        assert_eq!(
+            listed[0].logs[0].tool_id.as_deref(),
+            Some("proxima-mcp/proxima_derive")
+        );
+        assert_eq!(
+            listed[0].logs[0].message_tail.as_deref(),
+            Some("tool failed")
+        );
         Ok(())
     }
     .await;

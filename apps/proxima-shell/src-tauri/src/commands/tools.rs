@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use proxima_core::Engine;
 use proxima_core::error::ProtocolError;
+use proxima_core::personality::substrate_pack;
 use tauri::State;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
@@ -23,11 +24,16 @@ pub async fn list_mcp_tools(
     engine: State<'_, Arc<Engine>>,
 ) -> Result<Vec<McpToolTs>, ProtocolError> {
     crate::perf::ipc::record("list_mcp_tools", 0, async move {
-        Ok(engine
-            .registry()
-            .list_mcp_tools()
+        let mut tools: Vec<McpToolTs> = substrate_pack()
             .iter()
-            .map(|d| McpToolTs {
+            .map(|tool| McpToolTs {
+                name: tool.tool_id().to_string(),
+                description: tool.description().to_string(),
+                flavor_id: "core".to_string(),
+            })
+            .collect();
+        tools.extend(engine.registry().list_mcp_tools().iter().map(|d| {
+            McpToolTs {
                 name: d.name.to_string(),
                 description: d.description.to_string(),
                 flavor_id: d
@@ -35,8 +41,9 @@ pub async fn list_mcp_tools(
                     .split_once('/')
                     .map(|(f, _)| f.to_string())
                     .unwrap_or_default(),
-            })
-            .collect())
+            }
+        }));
+        Ok(tools)
     })
     .await
 }

@@ -7,10 +7,10 @@ use axum::middleware::{self, FromFnLayer, Next};
 use axum::response::{IntoResponse, Response};
 use http::HeaderMap;
 use http::header::{AUTHORIZATION, ORIGIN};
-use proxima_core::wake::token_store::WakeTokenStore;
 use uuid::Uuid;
 
 use crate::McpServerError;
+use crate::auth::McpAuthStore;
 
 #[derive(Clone, Debug)]
 pub struct OriginAllowlist {
@@ -93,49 +93,62 @@ pub fn assert_loopback(addr: &SocketAddr) -> Result<(), McpServerError> {
     Ok(())
 }
 
-/// Concrete return type for [`wake_token_auth_layer`]. The extractor
+/// Concrete return type for [`mcp_auth_layer`]. The extractor
 /// tuple `(State, Request)` is locked here so the public signature
-/// stays a single-line `WakeTokenAuthLayer` instead of a six-line
+/// stays a single-line `McpAuthLayer` instead of a six-line
 /// `FromFnLayer<...>` (per `clippy::type_complexity`).
-pub type WakeTokenAuthLayer = FromFnLayer<
+pub type McpAuthLayer = FromFnLayer<
     fn(
-        State<Arc<WakeTokenStore>>,
+        State<McpAuthLayerState>,
         Request,
         Next,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Response> + Send>>,
-    Arc<WakeTokenStore>,
-    (State<Arc<WakeTokenStore>>, Request),
+    McpAuthLayerState,
+    (State<McpAuthLayerState>, Request),
 >;
 
+#[derive(Clone, Debug)]
+pub struct McpAuthLayerState {
+    store: Arc<McpAuthStore>,
+    allowlist: OriginAllowlist,
+}
+
 /// Bearer-token middleware that resolves `Authorization: Bearer <uuid>`
-/// against the `WakeTokenStore` and injects the resolved
-/// `WakeTokenContext` into request extensions. Missing or unknown tokens
-/// short-circuit with HTTP 401.
+/// against the MCP auth store and injects the resolved context into
+/// request extensions. Missing or unknown tokens short-circuit with
+/// HTTP 401. A present but disallowed `Origin` short-circuits with 403;
+/// missing `Origin` is allowed after bearer auth for native CLI clients.
 ///
-/// Returns a [`WakeTokenAuthLayer`] (alias of [`FromFnLayer`]) so
+/// Returns a [`McpAuthLayer`] (alias of [`FromFnLayer`]) so
 /// callers apply it directly with [`axum::Router::layer`].
-pub fn wake_token_auth_layer(store: Arc<WakeTokenStore>) -> WakeTokenAuthLayer {
+pub fn mcp_auth_layer(store: Arc<McpAuthStore>, allowlist: OriginAllowlist) -> McpAuthLayer {
     fn dispatch(
-        state: State<Arc<WakeTokenStore>>,
+        state: State<McpAuthLayerState>,
         request: Request,
         next: Next,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Response> + Send>> {
-        Box::pin(wake_token_auth(state, request, next))
+        Box::pin(mcp_auth(state, request, next))
     }
-    middleware::from_fn_with_state(store, dispatch as fn(_, _, _) -> _)
+    middleware::from_fn_with_state(
+        McpAuthLayerState { store, allowlist },
+        dispatch as fn(_, _, _) -> _,
+    )
 }
 
-async fn wake_token_auth(
-    State(store): State<Arc<WakeTokenStore>>,
+async fn mcp_auth(
+    State(state): State<McpAuthLayerState>,
     mut request: Request,
     next: Next,
 ) -> Response {
     let Some(token) = extract_bearer(&request) else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
-    let Some(ctx) = store.resolve(token).await else {
+    let Some(ctx) = state.store.resolve(token).await else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
+    if request.headers().contains_key(ORIGIN) && !state.allowlist.allows(request.headers()) {
+        return (StatusCode::FORBIDDEN, "origin not allowed").into_response();
+    }
     request.extensions_mut().insert(ctx);
     next.run(request).await
 }

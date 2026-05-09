@@ -15,6 +15,7 @@ import type {
   SetWakeEntriesOutcomeTs,
   TombstonePersonalityOutcomeTs,
   WakeEntryTs,
+  WakeInvocationTs,
   WorkspaceToolTs,
 } from "../bindings";
 import { sentinelOwner } from "../graph-store";
@@ -63,9 +64,45 @@ const instance = (
   ...overrides,
 });
 
+const wakeInvocation = (
+  overrides: Partial<WakeInvocationTs> = {},
+): WakeInvocationTs => ({
+  personality_instance_id: "018f0000-0000-7000-8000-000000000001",
+  wake_entry_id: "11111111-1111-7111-8111-111111111111",
+  wake_entry_label: "react-to-commit",
+  change_event_seq: "22222222-2222-7222-8222-222222222222",
+  status: "failed",
+  started_at: "2026-05-09 07:38:46 UTC",
+  finished_at: "2026-05-09 07:38:54 UTC",
+  turn_count: 1,
+  cost_usd: 0,
+  recipe_sha256: null,
+  resolved_inference_target_ref: null,
+  failure_reason: "Error: Invalid recipe",
+  exit_code: 1,
+  duration_ms: 8120,
+  stdout_tail: "stdout tail",
+  stderr_tail: "stderr tail",
+  stdout_truncated: false,
+  stderr_truncated: true,
+  logs: [
+    {
+      log_seq: 1,
+      at: "2026-05-09 07:38:47 UTC",
+      phase: "tool_call",
+      tool_id: "proxima-mcp/proxima_derive",
+      status: "failed",
+      duration_ms: 120,
+      message_tail: "tool failed",
+    },
+  ],
+  ...overrides,
+});
+
 const mockClient = (
   initial: PersonalityInstanceTs[],
   afterRefresh: PersonalityInstanceTs[] = initial,
+  invocations: WakeInvocationTs[] = [],
 ) => {
   const listPersonalityInstances = vi
     .fn()
@@ -97,6 +134,16 @@ const mockClient = (
   const listMcpTools = vi.fn(() =>
     ok<McpToolTs[]>([
       {
+        name: "core/fetch_memory",
+        description: "Fetch one memory by id",
+        flavor_id: "core",
+      },
+      {
+        name: "core/emit_abstraction",
+        description: "Emit one Abstraction memory",
+        flavor_id: "core",
+      },
+      {
         name: "proxima-code/code_search_chunks",
         description: "Semantic search over indexed code chunks",
         flavor_id: "proxima-code",
@@ -118,6 +165,7 @@ const mockClient = (
       { id: "proxima-workspace/list_files", description: "List directories" },
     ]),
   );
+  const listWakeInvocations = vi.fn((_) => ok<WakeInvocationTs[]>(invocations));
 
   return {
     client: {
@@ -129,6 +177,7 @@ const mockClient = (
       listBundledRecipes,
       listMcpTools,
       listWorkspaceTools,
+      listWakeInvocations,
     } satisfies PersonalityCommandClient,
     listPersonalityInstances,
     instantiatePersonality,
@@ -138,6 +187,7 @@ const mockClient = (
     listBundledRecipes,
     listMcpTools,
     listWorkspaceTools,
+    listWakeInvocations,
   };
 };
 
@@ -208,6 +258,31 @@ describe("PersonalitiesView", () => {
 
     const chip = await screen.findByTestId("personality-flavor-chip");
     expect(chip.textContent).toContain("Instance");
+  });
+
+  it("renders wake invocation diagnostics for the selected personality", async () => {
+    const { client, listWakeInvocations } = mockClient(
+      [instance()],
+      [instance()],
+      [wakeInvocation()],
+    );
+
+    render(() => <PersonalitiesView client={client} owner={owner} />);
+
+    await selectPersonality("Engineer");
+
+    await waitFor(() => {
+      expect(listWakeInvocations).toHaveBeenCalledWith({
+        owner,
+        personality_instance_id: "018f0000-0000-7000-8000-000000000001",
+        wake_entry_id: null,
+        limit: 20,
+      });
+    });
+    expect(await screen.findByText("Wake invocations")).toBeTruthy();
+    expect(screen.getByText("Error: Invalid recipe")).toBeTruthy();
+    expect(screen.getByText("stderr tail")).toBeTruthy();
+    expect(screen.getByText("proxima-mcp/proxima_derive")).toBeTruthy();
   });
 
   it("creates a personality through the create dialog", async () => {
@@ -661,7 +736,7 @@ describe("PersonalitiesView", () => {
     );
     const checkbox = await waitFor(() => {
       const node = screen.getByRole("checkbox", {
-        name: /proxima-code\/code_search_chunks/,
+        name: /core\/emit_abstraction/,
       });
       if (!node) throw new Error("substrate tool checkbox not rendered");
       return node as HTMLInputElement;
@@ -670,15 +745,14 @@ describe("PersonalitiesView", () => {
     expect(checkbox.checked).toBe(false);
     fireEvent.click(checkbox);
     expect(checkbox.checked).toBe(true);
+    expect(screen.getByText("core")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Apply" }));
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() => {
       expect(setWakeEntries).toHaveBeenCalled();
       const sent = setWakeEntries.mock.calls[0][0].entries[0];
-      expect(sent.substrate_tool_palette).toEqual([
-        "proxima-code/code_search_chunks",
-      ]);
+      expect(sent.substrate_tool_palette).toEqual(["core/emit_abstraction"]);
     });
   });
 

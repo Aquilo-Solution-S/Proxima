@@ -397,7 +397,7 @@ settings:
 extensions:
   - type: streamable_http
     name: proxima-engine-mcp
-    url: ${PROXIMA_MCP_URL}
+    uri: ${PROXIMA_MCP_URL}
     available_tools:
       - core__emit_abstraction
     headers:

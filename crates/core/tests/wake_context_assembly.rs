@@ -3,9 +3,9 @@
 
 mod common;
 
+use proxima_core::SchemaId;
 use proxima_core::personality::SidecarSpec;
 use proxima_core::wake::context::assemble_wake_context;
-use proxima_core::SchemaId;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn assembles_all_four_params() {

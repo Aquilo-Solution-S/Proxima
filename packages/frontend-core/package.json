@@ -21,6 +21,7 @@
     "./views/schemas": "./src/views/schemas.tsx",
     "./views/settings": "./src/views/settings.tsx",
     "./views/settings-general": "./src/views/settings-general.tsx",
+    "./views/settings-mcp": "./src/views/settings-mcp.tsx",
     "./views/settings-models": "./src/views/settings-models/index.tsx",
     "./views/surface": "./src/views/surface.tsx"
   },

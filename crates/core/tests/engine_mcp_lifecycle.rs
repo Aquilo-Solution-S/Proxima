@@ -37,6 +37,7 @@ impl EngineMcpListener for StubListener {
         &self,
         addr: SocketAddr,
         _wake_token_store: Arc<WakeTokenStore>,
+        _engine: Arc<Engine>,
     ) -> Result<RunningMcpListener, ProtocolError> {
         let listener = tokio::net::TcpListener::bind(addr)
             .await

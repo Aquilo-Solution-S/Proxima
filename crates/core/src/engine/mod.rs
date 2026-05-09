@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::{RwLock, watch};
+use tokio::sync::{Mutex, RwLock, watch};
 use tokio::task::JoinHandle;
 
 use crate::auth::AuthResolver;
@@ -52,6 +52,7 @@ pub struct Engine {
     pub(crate) mcp_url: Arc<RwLock<Option<String>>>,
     pub(crate) wake_token_store: Arc<WakeTokenStore>,
     pub(crate) target_adapter: Arc<RwLock<Option<Arc<dyn TargetAdapter>>>>,
+    pub(crate) dispatch_tick_lock: Arc<Mutex<()>>,
 }
 
 /// Owns the background tasks spawned by [`Engine::start`]. The engine
@@ -237,12 +238,10 @@ impl Engine {
         // boot-time failure rather than a per-wake surprise.
         let goose_bin = match &self.goose_bin {
             Some(p) => p.clone(),
-            None => which::which("goose").map_err(|e| {
-                ProtocolError {
-                    code: crate::error::ErrorCode::GooseCliUnavailable,
-                    message: format!("goose not on PATH: {e}"),
-                    request_id: None,
-                }
+            None => which::which("goose").map_err(|e| ProtocolError {
+                code: crate::error::ErrorCode::GooseCliUnavailable,
+                message: format!("goose not on PATH: {e}"),
+                request_id: None,
             })?,
         };
         let _info = crate::wake::boot_check::verify_goose_on_path(&goose_bin)
@@ -274,7 +273,11 @@ impl Engine {
         // `with_mcp_listener` and `mcp_url()` will stay `None`.
         let mcp_join = if let Some(listener) = self.mcp_listener.clone() {
             let running = listener
-                .start(self.mcp_listen_addr, self.wake_token_store.clone())
+                .start(
+                    self.mcp_listen_addr,
+                    self.wake_token_store.clone(),
+                    self.clone(),
+                )
                 .await?;
             let url = format!("http://{}/mcp", running.bound_addr);
             *self.mcp_url.write().await = Some(url);
