@@ -68,11 +68,14 @@ invocation.
 
 ```
 ┌─ Engine (crates/core) ──────────────────────────────────┐
-│  WorkspaceRunner trait + registry slot                  │
+│  WorkspaceRunner trait      + workspace_runners regstry │
+│  WorkspaceScope enum        + workspace_triggers regstry│
+│  set_wake_entries: validate workspace-eligible triggers │
 │  wake/fire.rs                                           │
 │    └─ if execution_mode == Workspace:                   │
-│         runner = registry.workspace_runner(flavor_id)   │
-│         prepared = runner.prepare(...)                  │
+│         scope    = workspace_triggers[trigger_id](mem)  │
+│         runner   = workspace_runners[flavor_id]         │
+│         prepared = runner.prepare(scope, ...)           │
 │         outcome  = adapter.run(cwd = prepared.path)     │
 │         run_fact = runner.finalize(prepared, outcome)   │
 │  substrate/wake_authorship                              │
@@ -126,6 +129,7 @@ pub struct WorkspacePrepareInput<'a> {
     pub mcp_url: &'a str,
     pub root_perspective_memory_id: MemoryId,
     pub triggering_memory: &'a TriggeringMemory,
+    pub workspace_scope: WorkspaceScope,        // resolved at dispatch
     pub workspace_tool_palette: &'a [String],
     pub recipe_bytes: &'a [u8],
     pub recipe_sha256: &'a str,
@@ -151,6 +155,29 @@ pub struct WorkspaceRunRecord {
 }
 ```
 
+### Workspace scope (deterministic, registered, validated)
+
+`workspace_scope` is **not derived ad hoc by the runner** — it is
+resolved by the dispatcher at wake-context assembly time using a
+flavor-registered scope extractor. This guarantees:
+
+- Every workspace wake has a deterministic, queryable scope id.
+- Workspace-eligible triggers are knowable at WakeEntry write time
+  (validation rejects unsuitable triggers before the user can save).
+- Runners never traverse the edge graph to figure out where they run.
+
+```rust
+pub enum WorkspaceScope {
+    Repo { repo_id: Uuid },
+    // future flavors add variants; runners pattern-match their own
+}
+
+/// Function pointer type, registered per-flavor at macro time, that
+/// extracts a typed scope from a typed payload.
+pub type WorkspaceScopeExtractor =
+    fn(memory_id: MemoryId, sidecar_row: &serde_json::Value) -> Result<WorkspaceScope, ScopeError>;
+```
+
 Registered through the macro:
 
 ```rust
@@ -158,12 +185,35 @@ proxima_core::proxima_flavor! {
     name = "proxima-code",
     // ... existing keys ...
     workspace_runner = workspace_runner::CodeWorkspaceRunner,
+    workspace_triggers = [
+        // (schema_id, scope_extractor)
+        ("proxima-code/commit-summary-v1", payloads::commit_summary_repo_scope),
+        ("proxima-code/commit-v1",         payloads::commit_repo_scope),
+        ("proxima-code/file-revision-v1",  payloads::file_revision_repo_scope),
+        ("proxima-code/code-chunk-v1",     payloads::code_chunk_repo_scope),
+    ],
 }
 ```
 
-`FlavorRegistry` gains one slot: `workspace_runners: HashMap<FlavorId,
-Arc<dyn WorkspaceRunner>>`. Frozen at boot, looked up by flavor_id at
-fire time.
+`FlavorRegistry` gains two slots:
+- `workspace_runners: HashMap<FlavorId, Arc<dyn WorkspaceRunner>>`
+- `workspace_triggers: HashMap<SchemaId, WorkspaceScopeExtractor>`
+
+Both frozen at boot. Looked up at fire time and at WakeEntry
+write-validation time.
+
+### Write-time validation
+
+`crates/core/src/inference/set_wake_entries.rs` validates each draft:
+
+> If `execution_mode == Workspace` then
+> `registry.workspace_triggers.contains_key(trigger_id)` must hold,
+> else reject with
+> `WakeEntryError::TriggerNotWorkspaceEligible(trigger_id)`.
+
+UI surfaces the error inline on the WakeEntry editor; the trigger
+picker disables non-eligible schemas when `execution_mode = Workspace`
+is selected.
 
 `crates/core/src/wake/fire.rs`: replace the
 `workspace_mode_not_yet_implemented` short-circuit (lines 158-184) with
@@ -264,19 +314,20 @@ wake/fire.rs (workspace branch):
                               the developer extension when palette
                               non-empty)
 
-  6. prepared = runner.prepare(WorkspacePrepareInput {...})
+  6. (dispatcher, before runner.prepare):
+        scope_extractor = registry.workspace_triggers[trigger_schema_id]
+        workspace_scope = scope_extractor(triggering_memory)
+        // typed sidecar lookup is O(1); no edge traversal.
+
+  7. prepared = runner.prepare(WorkspacePrepareInput {
+                  workspace_scope, ...
+              })
         flavors/code/src/workspace_runner/runner.rs:
-          a. derive repo_id by walking provenance from triggering
-             memory:
-               - if the triggering memory's typed payload exposes
-                 `repo_id` directly, use it
-               - else walk one core/derived-from hop back; if the
-                 source has `repo_id`, use it
-               - else WorkspaceRunnerError::NoRepoForTrigger
-             (commit-summary-v1 has no repo_id; its derived-from
-              source commit-v1 does — covers the v1 trigger.)
-          b. load Repo row;  target_branch = repos.target_branch
-                NULL -> WorkspaceRunnerError::NoTargetBranch
+          a. let WorkspaceScope::Repo { repo_id } = scope
+                else WorkspaceRunnerError::WrongScopeKind
+          b. load Repo row by repo_id
+                target_branch = repos.target_branch
+                  NULL -> WorkspaceRunnerError::NoTargetBranch
           c. parent_sha = git -C <canonical_path> rev-parse <target_branch>
           d. branch_name = format!("proxima/wake/{invocation_id}")
           e. worktree_path = ~/.proxima/worktrees/<owner_id>/<invocation_id>
@@ -284,14 +335,14 @@ wake/fire.rs (workspace branch):
                  <worktree_path> <parent_sha>
           g. return WorkspacePreparedRun { ... }
 
-  7. outcome = adapter.run(TargetInvocation {
+  8. outcome = adapter.run(TargetInvocation {
                  recipe_path: prepared.effective_recipe_path,
                  params, max_rounds, env,
                  timeout: per_invocation_timeout(max_rounds),
                  cwd:    Some(prepared.worktree_path.clone()),
              })
 
-  8. run_record = runner.finalize(prepared, outcome)
+  9. run_record = runner.finalize(prepared, outcome)
         flavors/code/src/workspace_runner/runner.rs:
           a. head_sha = git -C <worktree> rev-parse HEAD
           b. diff_stat = git -C <worktree> diff --numstat \
@@ -306,8 +357,8 @@ wake/fire.rs (workspace branch):
                                   (via existing read-log behavior)
           e. return WorkspaceRunRecord { run_memory_id, head_sha }
 
-  9. wake_invocation outcome row written  (existing)
- 10. wake_token revoked                   (existing)
+ 10. wake_invocation outcome row written  (existing)
+ 11. wake_token revoked                   (existing)
 ```
 
 `exit_code != 0`, `head_sha == parent_sha`, and "rounds exhausted" all
@@ -473,7 +524,9 @@ verb. `pending` = run Fact exists but no decision Fact references it;
 
 | Failure | Behavior |
 |---|---|
-| Trigger memory has no `repo_id` resolver | `WorkspaceRunnerError::NoRepoForTrigger`; wake fails; no Fact |
+| WakeEntry write with workspace mode + non-eligible trigger | Validation error at `set_wake_entries` time; row never persisted; UI surfaces inline |
+| Workspace mode wake fires but `workspace_triggers` registry has no extractor for trigger schema (panic guard — should be unreachable post-validation) | Wake fails fast with `WorkspaceRunnerError::TriggerNotEligible`; no Fact |
+| Scope extractor returns the wrong scope kind for the runner | `WorkspaceRunnerError::WrongScopeKind`; wake fails; no Fact |
 | `proxima-code/repos` has no row for `repo_id` | `NoSuchRepo`; wake fails; no Fact |
 | `repos.target_branch` is NULL | `NoTargetBranch`; wake fails; no Fact |
 | `git rev-parse <target_branch>` fails | `TargetBranchInvalid`; wake fails; no Fact |
@@ -495,6 +548,8 @@ verb. `pending` = run Fact exists but no decision Fact references it;
 | `apps/proxima-shell/src-tauri/src/commands/workspace.rs` | tauri-cmd unit tests modeled on `commands/repo_ingest.rs` |
 | `flavors/code/frontend/src/workspace-runs-panel.test.tsx` | renders pending/reviewed; dispatches the four actions (view/reject/accept/merge); mirrors `repos-panel.test.tsx` |
 | `crates/core/src/personality/workspace.rs` | unit: `FlavorRegistry` returns `NoRunnerForFlavor` when a personality's flavor has no runner registered |
+| `crates/core/src/inference/set_wake_entries.rs` | unit: workspace-mode WakeEntry with non-eligible trigger → `TriggerNotWorkspaceEligible`; eligible trigger → write succeeds; substrate-only mode bypasses the check |
+| `crates/core/src/wake/dispatch.rs` | unit: scope extractor is invoked at context assembly; `WorkspacePrepareInput.workspace_scope` is populated from the typed sidecar; non-workspace wakes don't invoke the extractor |
 
 ## Migration
 
@@ -514,24 +569,37 @@ extension needs (covered in the related authorship-edge addendum).
 
 ## Phasing
 
-Three implementable steps; each lands as its own plan in `.plans/`:
+Four implementable steps; each lands as its own plan in `.plans/`:
 
-1. **Core seam.** Add `WorkspaceRunner` trait + registry slot,
-   `proxima_flavor!` macro key, `TargetInvocation.cwd`,
-   wake-context-aware EventIngest. Workspace branch in `wake/fire.rs`
-   becomes "dispatch to runner", but the Code flavor ships an empty
-   `Unimplemented` runner so the e2e behavior is unchanged. Tests at
-   the trait level only.
+1. **Core seam.** Add `WorkspaceRunner` trait + `workspace_runners`
+   registry slot, `proxima_flavor!` macro key for runner registration,
+   `TargetInvocation.cwd`, wake-context-aware EventIngest. Workspace
+   branch in `wake/fire.rs` becomes "dispatch to runner", but the Code
+   flavor ships an empty `Unimplemented` runner so the e2e behavior is
+   unchanged. Tests at the trait level only.
 
-2. **Code flavor runner.** Implement `CodeWorkspaceRunner`:
-   `worktree.rs`, `recipe.rs`, `runner.rs`, payloads, migrations,
-   `WorkspaceRunnerSource`, the `workspace-run-v1` emit. End-to-end
-   integration test fires a workspace wake with a no-op recipe and
-   asserts the Fact + edges land. No decision UI yet.
+2. **Workspace-trigger registry + scope plumbing + write-time
+   validation.** Add `WorkspaceScope` enum, `WorkspaceScopeExtractor`
+   type, `workspace_triggers` registry slot, `proxima_flavor!` macro
+   key for trigger registration. Code flavor registers extractors for
+   its four `repo_id`-bearing schemas. `set_wake_entries` validates
+   workspace-mode entries against the registry. Dispatcher resolves
+   scope at wake-context assembly time and threads
+   `WorkspacePrepareInput.workspace_scope`. WakeEntry editor frontend
+   filters trigger picker by eligibility. No runtime worktree behavior
+   yet — the `Unimplemented` runner from phase 1 still returns its
+   sentinel; phase 2 lands the determinism guarantees independently.
 
-3. **Decision UX.** `decide.rs` + Tauri commands +
+3. **Code flavor runner.** Implement `CodeWorkspaceRunner`:
+   `worktree.rs`, `recipe.rs`, `runner.rs`, payloads, migrations
+   (target_branch + run + decision tables), `WorkspaceRunnerSource`,
+   the `workspace-run-v1` emit. End-to-end integration test fires a
+   workspace wake with a no-op recipe and asserts the Fact + edges
+   land. No decision UI yet — accepted/rejected/merged not exposed.
+
+4. **Decision UX.** `decide.rs` + Tauri commands +
    `WorkspaceRunsPanel` + frontend tests. Merge-conflict handling and
-   the `target_branch` setter verb close the loop.
+   the `code_set_repo_target_branch` verb close the loop.
 
 Each step is reviewable against the spec independently; merging order
-is 1 → 2 → 3 (no cyclic dependencies between steps).
+is 1 → 2 → 3 → 4 (no cyclic dependencies between steps).
