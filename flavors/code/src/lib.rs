@@ -10,6 +10,7 @@ pub mod mcp;
 pub mod migrations;
 pub mod payloads;
 pub mod repos;
+pub mod workspace_runner;
 
 pub use ingest::{
     CODE_BLOB_BYTE_RANGE_SCHEMA, CODE_BLOB_SCHEMA, CODE_BLOB_WHOLE_SCHEMA,
@@ -66,6 +67,7 @@ proxima_core::proxima_flavor! {
         mcp::CodeOpenFileRevisionTool,
         mcp::CodeSearchCommitsTool,
     ],
+    workspace_runner = workspace_runner::CodeWorkspaceRunner,
     recipes_root = env!("CARGO_MANIFEST_DIR"),
     recipes = [
         "commit_summary",
@@ -118,6 +120,17 @@ mod tests {
             .resolve_relation(CORE_DERIVED_FROM_RELATION)
             .expect("core provenance relation resolves");
         assert_eq!(derived_from.payload_sidecar_table, None);
+    }
+
+    #[test]
+    fn registry_contains_workspace_runner() {
+        let mut registry = proxima_core::FlavorRegistry::new();
+        super::register(&mut registry);
+        let frozen = registry.freeze();
+        assert!(
+            frozen.workspace_runner("proxima-code").is_some(),
+            "Code flavor should register a workspace runner",
+        );
     }
 
     #[test]
