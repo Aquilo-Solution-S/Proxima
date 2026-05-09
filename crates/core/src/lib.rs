@@ -130,6 +130,7 @@ macro_rules! proxima_flavor {
         $(, edge_schemas = [ $($edge:ty),* $(,)? ])?
         $(, relations = [ $($rel:expr),* $(,)? ])?
         $(, mcp_tools = [ $($tool:ty),* $(,)? ])?
+        $(, workspace_runner = $workspace_runner:ty)?
         $(, recipes_root = $recipes_root:expr, recipes = [ $($recipe_filename:literal),* $(,)? ])?
         $(,)?
     ) => {
@@ -238,6 +239,14 @@ macro_rules! proxima_flavor {
                     registry.add_mcp_tool::<$tool>($name);
                 }
             )*)?
+            $(
+                {
+                    use $crate::WorkspaceRunner;
+                    let runner: ::std::sync::Arc<dyn WorkspaceRunner> =
+                        ::std::sync::Arc::new(<$workspace_runner as ::std::default::Default>::default());
+                    registry.add_workspace_runner($name, runner);
+                }
+            )?
             $($(
                 {
                     let recipes_root: ::std::path::PathBuf =
