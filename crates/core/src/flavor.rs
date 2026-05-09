@@ -4,6 +4,7 @@
 //!
 //! See docs/08 §Registration mechanism.
 
+use crate::personality::workspace::WorkspaceRunner;
 use crate::verbs::schema::{FlavorRegistryFrozen, PayloadKind, PayloadValidatorEntry, SchemaInfo};
 use crate::{
     AbstractionPayload, EdgePayload, FactPayload, GoalPayload, McpCallFn, McpTool,
@@ -12,6 +13,7 @@ use crate::{
 };
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 /// Structured per-flavor metadata. Populated by `proxima_flavor!` at
 /// macro-expansion time so the `package_version` and `author` fields
@@ -61,6 +63,11 @@ pub struct FlavorRegistry {
     /// Bundled recipe paths registered by `proxima_flavor! { recipes = [ ... ] }`.
     /// Slug shape is `<flavor_id>/<filename_without_ext>`.
     bundled_recipes: Vec<(String, PathBuf)>,
+    /// Per-flavor workspace runner. Populated by
+    /// `proxima_flavor! { workspace_runner = ... }`. Frozen into
+    /// `FlavorRegistryFrozen.workspace_runners` and looked up by
+    /// `wake/fire.rs` at fire time.
+    workspace_runners: Vec<(String, Arc<dyn WorkspaceRunner>)>,
 }
 
 impl Default for FlavorRegistry {
@@ -72,6 +79,7 @@ impl Default for FlavorRegistry {
             mcp_tools: Vec::new(),
             flavors: Vec::new(),
             bundled_recipes: Vec::new(),
+            workspace_runners: Vec::new(),
         }
     }
 }
@@ -208,6 +216,18 @@ impl FlavorRegistry {
         self.bundled_recipes.push((slug, path));
     }
 
+    /// Register a flavor's workspace runner. Called by
+    /// `proxima_flavor!` once per flavor (at most one runner per
+    /// flavor). Duplicate registration for the same flavor_id
+    /// panics at freeze time.
+    pub fn add_workspace_runner(
+        &mut self,
+        flavor_id: impl Into<String>,
+        runner: Arc<dyn WorkspaceRunner>,
+    ) {
+        self.workspace_runners.push((flavor_id.into(), runner));
+    }
+
     /// Register a `FlavorDescriptor`. Called once per
     /// `proxima_flavor!` invocation; freeze panics if the same
     /// `flavor_id` is added twice.
@@ -282,6 +302,15 @@ impl FlavorRegistry {
                 tool.name,
             );
         }
+        // Phase 1: at most one workspace runner per flavor.
+        let mut seen_runner_flavors: std::collections::HashSet<&str> =
+            std::collections::HashSet::new();
+        for (flavor_id, _) in &self.workspace_runners {
+            assert!(
+                seen_runner_flavors.insert(flavor_id.as_str()),
+                "duplicate workspace_runner registration for flavor {flavor_id:?}",
+            );
+        }
         FlavorRegistryFrozen::with_schemas_relations_validators(
             self.schemas,
             self.relations,
@@ -289,6 +318,7 @@ impl FlavorRegistry {
             self.mcp_tools,
             self.flavors,
             self.bundled_recipes,
+            self.workspace_runners,
         )
     }
 
@@ -325,7 +355,7 @@ where
 }
 
 #[cfg(test)]
-mod mcp_tool_registry_tests {
+mod tests {
     use super::*;
     use crate::mcp::{McpToolCtx, McpToolError};
 
@@ -403,5 +433,46 @@ mod mcp_tool_registry_tests {
         let frozen = registry.freeze();
         assert_eq!(frozen.bundled_recipe_path("test-flavor/foo"), Some(path));
         assert_eq!(frozen.bundled_recipe_path("test-flavor/missing"), None);
+    }
+
+    #[test]
+    fn workspace_runner_round_trips_through_freeze() {
+        use crate::personality::workspace::{
+            WorkspaceOutcome, WorkspacePrepareInput, WorkspacePreparedRun, WorkspaceRunRecord,
+            WorkspaceRunner, WorkspaceRunnerError,
+        };
+        use std::sync::Arc;
+
+        #[derive(Debug, Default)]
+        struct Probe;
+        #[async_trait::async_trait]
+        impl WorkspaceRunner for Probe {
+            async fn prepare(
+                &self,
+                _input: WorkspacePrepareInput<'_>,
+            ) -> Result<WorkspacePreparedRun, WorkspaceRunnerError> {
+                Err(WorkspaceRunnerError::Unimplemented)
+            }
+            async fn finalize(
+                &self,
+                _prepared: WorkspacePreparedRun,
+                _outcome: WorkspaceOutcome,
+            ) -> Result<WorkspaceRunRecord, WorkspaceRunnerError> {
+                Err(WorkspaceRunnerError::Unimplemented)
+            }
+        }
+
+        let mut registry = FlavorRegistry::new();
+        registry.add_workspace_runner("probe-flavor", Arc::new(Probe));
+        let frozen = registry.freeze();
+
+        assert!(
+            frozen.workspace_runner("probe-flavor").is_some(),
+            "freeze should preserve registered runner",
+        );
+        assert!(
+            frozen.workspace_runner("missing-flavor").is_none(),
+            "missing flavor returns None",
+        );
     }
 }
