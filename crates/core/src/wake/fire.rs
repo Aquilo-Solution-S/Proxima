@@ -245,6 +245,7 @@ pub async fn fire_wake_entry(
             max_rounds,
             env,
             timeout: per_invocation_timeout(max_rounds),
+            cwd: None,
         })
         .await;
     let _ = tokio::fs::remove_file(&effective_recipe_path).await;

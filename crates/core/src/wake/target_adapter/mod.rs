@@ -25,6 +25,11 @@ pub struct TargetInvocation {
     pub max_rounds: u32,
     pub env: HashMap<String, String>,
     pub timeout: Duration,
+    /// Working directory for the subprocess. `None` keeps the
+    /// adapter's default (inherited cwd). Workspace-mode wakes set
+    /// this to the disposable worktree path; substrate-only wakes
+    /// leave it `None`.
+    pub cwd: Option<PathBuf>,
 }
 
 /// Adapter-classified outcome of a single wake.
