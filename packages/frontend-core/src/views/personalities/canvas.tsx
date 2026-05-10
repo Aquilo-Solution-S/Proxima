@@ -26,19 +26,23 @@ interface CanvasProps {
 
 const MIN_ZOOM = 0.4;
 const MAX_ZOOM = 1.8;
+const DEFAULT_ZOOM = 0.9;
+const DEFAULT_PAN = { x: 40, y: 40 };
+
+const clampZoom = (value: number): number =>
+  Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, value));
 
 export const PersonalityCanvas: Component<CanvasProps> = (props) => {
-  const [zoom, setZoom] = createSignal(0.9);
-  const [pan, setPan] = createSignal({ x: 40, y: 40 });
+  const [zoom, setZoom] = createSignal(DEFAULT_ZOOM);
+  const [pan, setPan] = createSignal(DEFAULT_PAN);
   let containerRef: HTMLDivElement | undefined;
   let panState: { startX: number; startY: number; origin: { x: number; y: number } } | null = null;
 
   onMount(() => {
     const wheel = (event: WheelEvent) => {
-      if (!event.ctrlKey && !event.metaKey) return;
       event.preventDefault();
       const factor = event.deltaY < 0 ? 1.08 : 1 / 1.08;
-      setZoom((z) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, z * factor)));
+      setZoom((z) => clampZoom(z * factor));
     };
     containerRef?.addEventListener("wheel", wheel, { passive: false });
     onCleanup(() => containerRef?.removeEventListener("wheel", wheel));
@@ -46,7 +50,13 @@ export const PersonalityCanvas: Component<CanvasProps> = (props) => {
 
   const startPan = (event: PointerEvent) => {
     if (event.button !== 0) return;
-    if ((event.target as HTMLElement).closest("[data-canvas-node]")) return;
+    if (
+      (event.target as HTMLElement).closest(
+        "[data-canvas-node], [data-canvas-control]",
+      )
+    ) {
+      return;
+    }
     panState = {
       startX: event.clientX,
       startY: event.clientY,
@@ -92,6 +102,7 @@ export const PersonalityCanvas: Component<CanvasProps> = (props) => {
       >
         <div
           class="personality-canvas-stage"
+          data-testid="personality-canvas-stage"
           style={{ transform: transform() }}
         >
           <svg
@@ -143,8 +154,8 @@ export const PersonalityCanvas: Component<CanvasProps> = (props) => {
         </div>
       </Show>
       <CanvasOverlay zoom={zoom} setZoom={setZoom} resetView={() => {
-        setZoom(0.9);
-        setPan({ x: 40, y: 40 });
+        setZoom(DEFAULT_ZOOM);
+        setPan(DEFAULT_PAN);
       }} />
     </div>
   );
@@ -323,26 +334,29 @@ const CanvasOverlay: Component<{
   setZoom: (z: number) => void;
   resetView: () => void;
 }> = (props) => (
-  <div class="personality-canvas-overlay">
+  <div class="personality-canvas-overlay" data-canvas-control="zoom">
     <button
       type="button"
       class="hub-nav-item"
-      onClick={() =>
-        props.setZoom(Math.min(MAX_ZOOM, props.zoom() * 1.12))
-      }
+      aria-label="Zoom in"
+      onClick={() => props.setZoom(clampZoom(props.zoom() * 1.12))}
     >
       +
     </button>
     <button
       type="button"
       class="hub-nav-item"
-      onClick={() =>
-        props.setZoom(Math.max(MIN_ZOOM, props.zoom() / 1.12))
-      }
+      aria-label="Zoom out"
+      onClick={() => props.setZoom(clampZoom(props.zoom() / 1.12))}
     >
       −
     </button>
-    <button type="button" class="hub-nav-item" onClick={props.resetView}>
+    <button
+      type="button"
+      class="hub-nav-item"
+      aria-label="Reset zoom"
+      onClick={props.resetView}
+    >
       Reset
     </button>
     <span class="personality-canvas-zoom-readout">
@@ -352,4 +366,3 @@ const CanvasOverlay: Component<{
 );
 
 const shortId = (value: string): string => value.slice(0, 8);
-

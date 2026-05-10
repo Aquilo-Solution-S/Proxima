@@ -179,31 +179,43 @@ export function createGraphStore(
   let activeMemoryIdByNaturalKey = new Map<string, string>();
   let naturalKeyByMemoryId = new Map<string, string>();
   const missingNaturalKeyWarnings = new Set<string>();
+  const decodeWarnings = new Set<string>();
+  const hydrationWarnings = new Set<string>();
 
   const decodeMemory = (row: MemoryRow): DecodedMemory => {
     const codec = hub.codecFor(row.schema_id, row.schema_version);
     if (row.payload.length === 0) return { row, payload: null };
+    const schemaKey = `${row.schema_id}@${row.schema_version}`;
     if (codec === null) {
+      if (!decodeWarnings.has(`missing_codec:${schemaKey}`)) {
+        decodeWarnings.add(`missing_codec:${schemaKey}`);
+        console.warn(`payload decode: ${schemaKey} has no codec`);
+      }
       return {
         row,
         payload: null,
         decodeError: {
           id: row.id,
           kind: "missing_codec",
-          message: `${row.schema_id}@${row.schema_version} has no codec`,
+          message: `${schemaKey} has no codec`,
         },
       };
     }
     try {
       return { row, payload: codec.decode(new Uint8Array(row.payload)) };
     } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (!decodeWarnings.has(`decode_failed:${schemaKey}`)) {
+        decodeWarnings.add(`decode_failed:${schemaKey}`);
+        console.warn(`payload decode: ${schemaKey} threw — ${message}`);
+      }
       return {
         row,
         payload: null,
         decodeError: {
           id: row.id,
           kind: "decode_failed",
-          message: err instanceof Error ? err.message : String(err),
+          message,
         },
       };
     }
@@ -461,6 +473,12 @@ export function createGraphStore(
           const attempts = current.attempts + 1;
           if (attempts >= 3) {
             pending.delete(id);
+            if (!hydrationWarnings.has(id)) {
+              hydrationWarnings.add(id);
+              console.warn(
+                `payload decode: hydration_missing for ${current.kind} ${id} (3 attempts)`,
+              );
+            }
             errors.set(id, {
               id,
               kind: "hydration_missing",

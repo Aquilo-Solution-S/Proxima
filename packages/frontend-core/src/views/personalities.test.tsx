@@ -284,6 +284,32 @@ describe("PersonalitiesView", () => {
     expect(chip.textContent).toContain("Instance");
   });
 
+  it("zooms the personality canvas from controls and wheel input", async () => {
+    const { client } = mockClient([instance()]);
+
+    render(() => <PersonalitiesView client={client} owner={owner} />);
+
+    const stage = await screen.findByTestId("personality-canvas-stage");
+    const stageScale = (): number => {
+      const match = /scale\(([0-9.]+)\)/.exec(stage.getAttribute("style") ?? "");
+      return match ? Number(match[1]) : NaN;
+    };
+    expect(stageScale()).toBeCloseTo(0.9, 5);
+
+    const zoomIn = screen.getByRole("button", { name: "Zoom in" });
+    fireEvent.pointerDown(zoomIn, { button: 0, pointerId: 1 });
+    fireEvent.pointerUp(zoomIn, { button: 0, pointerId: 1 });
+    fireEvent.click(zoomIn);
+    await waitFor(() => {
+      expect(stageScale()).toBeCloseTo(0.9 * 1.12, 5);
+    });
+
+    fireEvent.wheel(stage.closest(".personality-canvas")!, { deltaY: -120 });
+    await waitFor(() => {
+      expect(stageScale()).toBeCloseTo(0.9 * 1.12 * 1.08, 5);
+    });
+  });
+
   it("renders wake invocation diagnostics for the selected personality", async () => {
     const { client, listWakeInvocations } = mockClient(
       [instance()],
@@ -303,7 +329,14 @@ describe("PersonalitiesView", () => {
         limit: 20,
       });
     });
-    expect(await screen.findByText("Wake invocations")).toBeTruthy();
+    const invocationsSummary = await screen.findByText("Wake invocations");
+    const invocationsSection = invocationsSummary.closest("details");
+    expect(invocationsSection?.hasAttribute("open")).toBe(false);
+
+    fireEvent.click(invocationsSummary);
+    await waitFor(() => {
+      expect(invocationsSection?.hasAttribute("open")).toBe(true);
+    });
     expect(screen.getByText("Error: Invalid recipe")).toBeTruthy();
     expect(screen.getByText("stderr tail")).toBeTruthy();
     expect(screen.getByText("proxima-mcp/proxima_derive")).toBeTruthy();

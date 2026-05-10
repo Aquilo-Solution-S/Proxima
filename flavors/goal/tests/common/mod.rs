@@ -87,6 +87,7 @@ pub fn ctx(pg: &PgStorage, owner: Owner) -> McpToolCtx {
             caller_self_perspective: None,
         },
         caller_self_perspective: None,
+        engine: None,
     }
 }
 

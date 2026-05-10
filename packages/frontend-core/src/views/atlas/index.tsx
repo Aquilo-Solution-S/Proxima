@@ -384,12 +384,17 @@ export const Atlas: Component<{
     tick();
 
     // ── Resize ───────────────────────────────────────────────────────
+    let resizeFrame: number | null = null;
     const ro = new ResizeObserver(() => {
-      const w = mountRef.clientWidth;
-      const h = mountRef.clientHeight;
-      camera.aspect = w / h;
-      camera.updateProjectionMatrix();
-      renderer.setSize(w, h);
+      if (resizeFrame !== null) return;
+      resizeFrame = requestAnimationFrame(() => {
+        resizeFrame = null;
+        const w = mountRef.clientWidth;
+        const h = mountRef.clientHeight;
+        camera.aspect = w / h;
+        camera.updateProjectionMatrix();
+        renderer.setSize(w, h);
+      });
     });
     ro.observe(mountRef);
 
@@ -462,12 +467,18 @@ export const Atlas: Component<{
   });
 
   onMount(() => {
+    let frame: number | null = null;
     const ro = new ResizeObserver(() => {
-      setInspectorWidth((width) => clampInspectorWidth(width));
+      if (frame !== null) return;
+      frame = requestAnimationFrame(() => {
+        frame = null;
+        setInspectorWidth((width) => clampInspectorWidth(width));
+      });
     });
     ro.observe(bodyRef);
     onCleanup(() => {
       ro.disconnect();
+      if (frame !== null) cancelAnimationFrame(frame);
       stopInspectorResize?.();
     });
   });

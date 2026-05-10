@@ -404,11 +404,18 @@
   margin-bottom: 12px;
 }
 
+.i-tabbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: stretch;
+  gap: 8px;
+  margin: 12px 0 14px;
+}
 .i-tabs {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 1px;
-  margin: 12px 0 14px;
+  margin: 0;
   border: 1px solid var(--rule-strong);
   background: var(--rule-strong);
 }
@@ -432,6 +439,31 @@
 .i-tab.on {
   color: var(--ink-100);
   background: #1A1F26;
+}
+.i-copy-btn {
+  min-width: 62px;
+  height: 32px;
+  border: 1px solid var(--rule-strong);
+  border-radius: 0;
+  background: var(--bg);
+  color: var(--ink-70);
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.i-copy-btn:hover {
+  color: var(--ink-100);
+  background: var(--bg-card);
+}
+.i-copy-btn.copied {
+  color: #9BC89C;
+  border-color: #3D6F42;
+}
+.i-copy-btn.failed {
+  color: #D48C8C;
+  border-color: #7A3E3E;
 }
 
 .i-section {
@@ -534,8 +566,7 @@
 }
 .i-json {
   margin: 0;
-  max-height: 520px;
-  overflow: auto;
+  overflow: visible;
   padding: 10px 11px;
   border: 1px solid var(--rule);
   background: rgba(9, 11, 14, 0.48);

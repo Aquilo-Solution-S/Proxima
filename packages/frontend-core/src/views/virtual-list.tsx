@@ -29,17 +29,25 @@ const VirtualRow = <T,>(props: {
     if (height > 0) props.onMeasure(props.entry.key, height);
   };
 
+  let frame: number | null = null;
   onMount(() => {
     measure();
     if (typeof ResizeObserver === "undefined") return;
     ro = new ResizeObserver((entries) => {
       const height = entries[0]?.contentRect.height ?? 0;
-      if (height > 0) props.onMeasure(props.entry.key, height);
+      if (height <= 0 || frame !== null) return;
+      frame = requestAnimationFrame(() => {
+        frame = null;
+        props.onMeasure(props.entry.key, height);
+      });
     });
     ro.observe(rowRef);
   });
 
-  onCleanup(() => ro?.disconnect());
+  onCleanup(() => {
+    ro?.disconnect();
+    if (frame !== null) cancelAnimationFrame(frame);
+  });
 
   return (
     <div
@@ -134,14 +142,24 @@ export const VirtualList = <T,>(props: {
     return entries;
   });
 
+  let viewportFrame: number | null = null;
   onMount(() => {
     updateViewport();
     if (typeof ResizeObserver === "undefined") return;
-    ro = new ResizeObserver(updateViewport);
+    ro = new ResizeObserver(() => {
+      if (viewportFrame !== null) return;
+      viewportFrame = requestAnimationFrame(() => {
+        viewportFrame = null;
+        updateViewport();
+      });
+    });
     ro.observe(scrollerRef);
   });
 
-  onCleanup(() => ro?.disconnect());
+  onCleanup(() => {
+    ro?.disconnect();
+    if (viewportFrame !== null) cancelAnimationFrame(viewportFrame);
+  });
 
   return (
     <div
