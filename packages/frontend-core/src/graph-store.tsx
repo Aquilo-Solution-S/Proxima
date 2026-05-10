@@ -386,10 +386,14 @@ export function createGraphStore(
     activeMemoryIdByNaturalKey = new Map();
     naturalKeyByMemoryId = new Map();
     const seededProvenance = new Map<string, MemoryProvenance>();
-    for (const event of historyResp.events) {
+    // event_history returns events seq-DESC (newest first); reverse so the
+    // has() guard implements earliest-event-wins.
+    for (let i = historyResp.events.length - 1; i >= 0; i--) {
+      const event = historyResp.events[i];
       const append = event.kind.EntityAppend;
       if (append === undefined) continue;
-      const memoryId = append.entity.Memory !== undefined ? append.entity.Memory : null;
+      const memoryId =
+        append.entity.Memory !== undefined ? append.entity.Memory : null;
       if (memoryId === null || seededProvenance.has(memoryId)) continue;
       const prov = provenanceFromEvent(event, memoryId);
       if (prov !== null) seededProvenance.set(memoryId, prov);

@@ -161,10 +161,14 @@ type TestHarness = {
 /**
  * Creates a minimal GraphStore wired to a mock client that lets tests push
  * ChangeEvents directly via the subscribe callback.
+ *
+ * Pass `historyEvents` to pre-populate the mock `eventHistory` response so
+ * the bootstrap path in `refresh()` sees those events.
  */
-const createTestHarness = (): TestHarness => {
+const createTestHarness = (historyEvents: ChangeEvent[] = []): TestHarness => {
   const eventListeners: ((event: ChangeEvent) => void)[] = [];
   const client = graphClient({
+    eventHistory: async () => ({ events: historyEvents, seq_high_water: null }),
     subscribe: async (_req, onEvent) => {
       eventListeners.push(onEvent);
       return { unsubscribe() {} };
@@ -410,5 +414,57 @@ describe("memoryProvenance", () => {
     });
 
     expect(store.state().memoryProvenance.size).toBe(0);
+  });
+
+  it("bootstrap path applies earliest-wins across DESC-ordered eventHistory", async () => {
+    const memId = "01ARYZ6S41TS5G7QFC0V44N5KH";
+    const earlierSeq = "01ARYZ6S41TS5G7QFC0V44N5KH"; // older
+    const laterSeq = "01BX5ZZKBKACTAV9WEVGEMMVRZ"; // newer
+    const makeAppend = (seq: string, author: string): ChangeEvent => ({
+      seq,
+      owner,
+      authoring_personality_instance_id: author,
+      kind: {
+        EntityAppend: {
+          entity_kind: "Fact",
+          entity: { Memory: memId },
+          schema_id: "schema-a",
+          schema_version: 1,
+          supersedes: null,
+        },
+      },
+    });
+    // Mirror the engine: event_history returns seq DESC (newest first).
+    const historyEvents = [
+      makeAppend(laterSeq, "personality-late"),
+      makeAppend(earlierSeq, "personality-early"),
+    ];
+    const { store } = createTestHarness(historyEvents);
+    await vi.waitFor(() => expect(store.state().streamStatus).toBe("live"));
+    const prov = store.state().memoryProvenance.get(memId);
+    expect(prov?.creating_seq).toBe(earlierSeq);
+    expect(prov?.authoring_personality_instance_id).toBe("personality-early");
+  });
+
+  it("normalises absent authoring_personality_instance_id to null", async () => {
+    const { store, pushEvent } = createTestHarness();
+    await vi.waitFor(() => expect(store.state().streamStatus).toBe("live"));
+    const memId = "01ARYZ6S41TS5G7QFC0V44N5KH";
+    pushEvent({
+      seq: memId,
+      owner,
+      // authoring_personality_instance_id intentionally omitted (external ingestion)
+      kind: {
+        EntityAppend: {
+          entity_kind: "Fact",
+          entity: { Memory: memId },
+          schema_id: "schema-a",
+          schema_version: 1,
+          supersedes: null,
+        },
+      },
+    });
+    const prov = store.state().memoryProvenance.get(memId);
+    expect(prov?.authoring_personality_instance_id).toBe(null);
   });
 });
