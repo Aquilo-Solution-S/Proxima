@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { EdgeRow, EntityRef, GoalRow, MemoryRow, Owner, SchemaInfo } from "./bindings";
 import { CORE_FLAVOR_ID, defaultGraphFilterState } from "./graph-filter-store";
 import { filterGraphSnapshot, oneHopLineage, schemaFlavor, visibleEntityIds } from "./graph-selectors";
-import type { DecodedMemory, GraphSnapshot } from "./graph-store";
+import type { DecodedMemory, GraphSnapshot, MemoryProvenance } from "./graph-store";
 import { createHub } from "./hub";
 
 const owner: Owner = {
@@ -60,6 +60,49 @@ const snapshot = (parts: Partial<GraphSnapshot>): GraphSnapshot => ({
   streamStatus: "live",
   seqHighWater: null,
   ...parts,
+});
+
+const prov = (creating_seq: string, author: string): MemoryProvenance => ({
+  creating_seq,
+  authoring_personality_instance_id: author,
+  written_at_ms: 0,
+});
+
+const provAt = (written_at_ms: number): MemoryProvenance => ({
+  creating_seq: `seq-${written_at_ms}`,
+  authoring_personality_instance_id: null,
+  written_at_ms,
+});
+
+interface SnapshotInputs {
+  memories: [id: string, kind: MemoryRow["kind"], schemaId: string, payload?: Uint8Array][];
+  provenance?: Record<string, MemoryProvenance>;
+}
+
+const snapshotWith = (inputs: SnapshotInputs): GraphSnapshot => ({
+  owner,
+  schemas: [],
+  memoriesById: new Map(
+    inputs.memories.map(([id, kind, schemaId, payload]) => [
+      id,
+      {
+        row: {
+          id, kind, schema_id: schemaId, schema_version: 1,
+          owner,
+          payload: payload ? Array.from(payload) : [],
+        },
+        payload: {},
+      },
+    ]),
+  ),
+  goalsById: new Map(),
+  edgesById: new Map(),
+  eventsBySeq: new Map(),
+  pendingHydration: new Map(),
+  decodeErrorsByEntity: new Map(),
+  memoryProvenance: new Map(Object.entries(inputs.provenance ?? {})),
+  streamStatus: "live",
+  seqHighWater: null,
 });
 
 describe("graph selectors", () => {
@@ -198,5 +241,60 @@ describe("oneHopLineage", () => {
     const result = oneHopLineage("F1", edgesById, memoriesById);
     expect(result.outbound).toEqual([]);
     expect(result.inbound).toEqual([]);
+  });
+});
+
+describe("filterGraphSnapshot — new facets", () => {
+  it("filters by authoredBy via memoryProvenance", () => {
+    const snap = snapshotWith({
+      memories: [
+        ["m1", "Fact", "schema-a"],
+        ["m2", "Fact", "schema-a"],
+      ],
+      provenance: {
+        m1: prov("01ARYZ6S41TS5G7QFC0V44N5KH", "personality-rust"),
+        m2: prov("01ARYZ6S42TS5G7QFC0V44N5KH", "personality-go"),
+      },
+    });
+    const filter = {
+      ...defaultGraphFilterState(),
+      authoredBy: new Set(["personality-rust"]),
+    };
+    const result = filterGraphSnapshot(snap, filter, createHub([]));
+    expect(result.memories.map((m) => m.row.id)).toEqual(["m1"]);
+  });
+
+  it("filters by timeRange (inclusive)", () => {
+    const snap = snapshotWith({
+      memories: [
+        ["m1", "Fact", "schema-a"],
+        ["m2", "Fact", "schema-a"],
+      ],
+      provenance: {
+        m1: provAt(1000),
+        m2: provAt(5000),
+      },
+    });
+    const filter = {
+      ...defaultGraphFilterState(),
+      timeRange: { fromMs: 2000, toMs: 9000 },
+    };
+    expect(filterGraphSnapshot(snap, filter, createHub([])).memories.map((m) => m.row.id))
+      .toEqual(["m2"]);
+  });
+
+  it("filters by sizeRange using payload byte length", () => {
+    const snap = snapshotWith({
+      memories: [
+        ["m1", "Fact", "schema-a", new Uint8Array(100)],
+        ["m2", "Fact", "schema-a", new Uint8Array(2000)],
+      ],
+    });
+    const filter = {
+      ...defaultGraphFilterState(),
+      sizeRange: { minBytes: 1000, maxBytes: 5000 },
+    };
+    expect(filterGraphSnapshot(snap, filter, createHub([])).memories.map((m) => m.row.id))
+      .toEqual(["m2"]);
   });
 });

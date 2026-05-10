@@ -14,6 +14,9 @@ export interface GraphFilterState {
   schemaIds: ReadonlySet<string>;
   hiddenFlavorIds: ReadonlySet<string>;
   search: string;
+  authoredBy: ReadonlySet<string>;
+  timeRange: { fromMs: number; toMs: number } | null;
+  sizeRange: { minBytes: number; maxBytes: number } | null;
 }
 
 export interface GraphFilterStore {
@@ -22,6 +25,9 @@ export interface GraphFilterStore {
   setSchema(schemaId: string, enabled: boolean): void;
   setFlavor(flavorId: string, visible: boolean): void;
   setSearch(value: string): void;
+  setAuthor(personalityId: string, enabled: boolean): void;
+  setTimeRange(range: { fromMs: number; toMs: number } | null): void;
+  setSizeRange(range: { minBytes: number; maxBytes: number } | null): void;
   reset(): void;
 }
 
@@ -43,6 +49,9 @@ export const defaultGraphFilterState = (): GraphFilterState => ({
   schemaIds: new Set(),
   hiddenFlavorIds: new Set(),
   search: "",
+  authoredBy: new Set(),
+  timeRange: null,
+  sizeRange: null,
 });
 
 const GraphFilterContext = createContext<GraphFilterStore>();
@@ -85,6 +94,18 @@ export function createGraphFilterStore(): GraphFilterStore {
     },
     setSearch(value) {
       setState((prev) => ({ ...prev, search: value }));
+    },
+    setAuthor(personalityId, enabled) {
+      setState((prev) => ({
+        ...prev,
+        authoredBy: mutateSet(prev.authoredBy, personalityId, enabled),
+      }));
+    },
+    setTimeRange(range) {
+      setState((prev) => ({ ...prev, timeRange: range }));
+    },
+    setSizeRange(range) {
+      setState((prev) => ({ ...prev, sizeRange: range }));
     },
     reset() {
       setState(defaultGraphFilterState());
