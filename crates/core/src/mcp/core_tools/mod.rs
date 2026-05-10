@@ -7,7 +7,14 @@
 pub mod audit;
 pub mod payload;
 
+pub mod get_personality;
+pub mod list_personalities;
+pub mod list_wake_entries;
+
 pub use audit::{AuditEmit, emit_personality_config_changed};
+pub use get_personality::GetPersonalityTool;
+pub use list_personalities::ListPersonalitiesTool;
+pub use list_wake_entries::ListWakeEntriesTool;
 pub use payload::{
     PersonalityConfigChangedCaller, PersonalityConfigChangedSubject,
     PersonalityConfigChangedV1, PersonalityConfigChangedVerb,
