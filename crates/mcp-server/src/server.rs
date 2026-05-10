@@ -92,6 +92,7 @@ impl DevMcpServer {
             registry: self.registry.clone(),
             caller_self_perspective: author.caller_self_perspective,
             author,
+            engine: self.engine.clone(),
         }
     }
 

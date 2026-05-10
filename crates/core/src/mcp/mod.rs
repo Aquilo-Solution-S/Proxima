@@ -34,6 +34,10 @@ pub struct McpToolCtx {
     pub registry: Arc<FlavorRegistryFrozen>,
     pub author: McpAuthorContext,
     pub caller_self_perspective: Option<MemoryId>,
+    /// `Some` when the MCP server was constructed with `with_engine`.
+    /// Tools that need to call engine verbs (CRUD-via-MCP) require this;
+    /// pure read-only / projection tools can ignore it.
+    pub engine: Option<Arc<crate::Engine>>,
 }
 
 impl std::fmt::Debug for McpToolCtx {
@@ -42,6 +46,22 @@ impl std::fmt::Debug for McpToolCtx {
             .field("owner", &self.owner)
             .field("author", &self.author)
             .finish_non_exhaustive()
+    }
+}
+
+impl McpToolCtx {
+    /// `None` when the MCP server is running without a wired engine
+    /// (early test scaffolds). Real deployments always wire an engine.
+    #[must_use]
+    pub fn engine(&self) -> Option<&crate::Engine> {
+        self.engine.as_deref()
+    }
+
+    /// Convenience: storage handle bound to the engine. Same scope as
+    /// `engine()` — only available when an engine is attached.
+    #[must_use]
+    pub fn storage(&self) -> Option<&dyn crate::Storage> {
+        self.engine.as_ref().map(|e| &**e.storage())
     }
 }
 
@@ -126,5 +146,70 @@ mod tests {
             "proxima-mcp_proxima_remember"
         );
         assert_eq!(provider_safe_tool_name("a..b"), "a._b");
+    }
+}
+
+#[cfg(test)]
+mod ctx_engine_tests {
+    use super::*;
+    use crate::auth::NoAuth;
+    use crate::verbs::query::MemoryStore;
+    use crate::{Engine, FlavorRegistry, OrgId, Owner, Principal, UserId};
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn ctx_storage_returns_none_when_engine_unwired() {
+        let owner = Owner {
+            principal: Principal::User(UserId::new(uuid::Uuid::now_v7())),
+            org_id: OrgId::new(uuid::Uuid::now_v7()),
+        };
+        let pool = sqlx::PgPool::connect_lazy("postgres://x/x").expect("lazy");
+        let ctx = McpToolCtx {
+            pool,
+            owner: owner.clone(),
+            handles: Arc::new(HandleTable::new()),
+            registry: Arc::new(FlavorRegistry::new().freeze()),
+            author: McpAuthorContext {
+                model_id: "t".into(),
+                client_name: "t".into(),
+                client_version: "0".into(),
+                caller_self_perspective: None,
+            },
+            caller_self_perspective: None,
+            engine: None,
+        };
+        assert!(ctx.storage().is_none());
+        assert!(ctx.engine().is_none());
+    }
+
+    #[tokio::test]
+    async fn ctx_storage_returns_some_when_engine_wired() {
+        let owner = Owner {
+            principal: Principal::User(UserId::new(uuid::Uuid::now_v7())),
+            org_id: OrgId::new(uuid::Uuid::now_v7()),
+        };
+        let resolver = NoAuth::new(owner.principal.clone(), owner.clone());
+        let engine = Arc::new(Engine::new(
+            FlavorRegistry::new().freeze(),
+            MemoryStore::new(),
+            Box::new(resolver),
+        ));
+        let pool = sqlx::PgPool::connect_lazy("postgres://x/x").expect("lazy");
+        let ctx = McpToolCtx {
+            pool,
+            owner,
+            handles: Arc::new(HandleTable::new()),
+            registry: Arc::new(FlavorRegistry::new().freeze()),
+            author: McpAuthorContext {
+                model_id: "t".into(),
+                client_name: "t".into(),
+                client_version: "0".into(),
+                caller_self_perspective: None,
+            },
+            caller_self_perspective: None,
+            engine: Some(engine.clone()),
+        };
+        assert!(ctx.engine().is_some());
+        assert!(ctx.storage().is_some());
     }
 }
