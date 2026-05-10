@@ -2,7 +2,9 @@ use std::sync::Arc;
 
 use proxima_core::Engine;
 use proxima_core::error::ProtocolError;
-use proxima_core::personality::{substrate_pack, writeable_relations_for_palette, writeable_schemas_for_palette};
+use proxima_core::personality::{
+    substrate_pack, writeable_relations_for_palette, writeable_schemas_for_palette,
+};
 use tauri::State;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]

@@ -343,6 +343,34 @@ describe("memoryProvenance", () => {
     expect(prov?.written_at_ms).toBe(1469918176385);
   });
 
+  it("uses UUIDv7 change-event seqs for provenance timestamps", async () => {
+    const { store, pushEvent } = createTestHarness();
+    const memId = "019e12c2-2ba6-73c3-83a3-6b75d82e5032";
+    const seq = "019e12c2-2ba6-73c3-83a3-6ba8f0db1d00";
+
+    await vi.waitFor(() => expect(store.state().streamStatus).toBe("live"));
+
+    pushEvent({
+      seq,
+      owner,
+      authoring_personality_instance_id: "personality-rust",
+      kind: {
+        EntityAppend: {
+          entity_kind: "Fact",
+          entity: { Memory: memId },
+          schema_id: "proxima-code/code-chunk-v1",
+          schema_version: 1,
+          supersedes: null,
+        },
+      },
+    });
+
+    const prov = store.state().memoryProvenance.get(memId);
+    expect(prov).toBeDefined();
+    expect(prov?.creating_seq).toBe(seq);
+    expect(prov?.written_at_ms).toBe(1778431175590);
+  });
+
   it("leaves provenance unset when no creating event has been seen", async () => {
     const { store } = createTestHarness();
     await vi.waitFor(() => expect(store.state().streamStatus).toBe("live"));

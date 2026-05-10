@@ -78,9 +78,8 @@ impl SecretResolver for DevFileSecretResolver {
             }
         };
 
-        let map: HashMap<String, String> = serde_json::from_str(&raw).map_err(|e| {
-            SecretError::ResolverFailed(format!("parse {}: {e}", path.display()))
-        })?;
+        let map: HashMap<String, String> = serde_json::from_str(&raw)
+            .map_err(|e| SecretError::ResolverFailed(format!("parse {}: {e}", path.display())))?;
 
         let key = format!("{service}:{account}");
         match map.get(&key) {
@@ -163,13 +162,17 @@ mod tests {
 
     #[test]
     fn rejects_empty_service() {
-        let err = DevFileSecretResolver::new().resolve(":account").unwrap_err();
+        let err = DevFileSecretResolver::new()
+            .resolve(":account")
+            .unwrap_err();
         assert!(matches!(err, SecretError::InvalidFormat(_)));
     }
 
     #[test]
     fn rejects_empty_account() {
-        let err = DevFileSecretResolver::new().resolve("service:").unwrap_err();
+        let err = DevFileSecretResolver::new()
+            .resolve("service:")
+            .unwrap_err();
         assert!(matches!(err, SecretError::InvalidFormat(_)));
     }
 

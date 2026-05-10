@@ -34,6 +34,9 @@ pub(super) fn spawn_run_driver(
             };
             tracing::info!(%run_id, "ingest stage: facts");
             hub.publish_snapshot(owner.clone(), run).await;
+            let baseline = count_repo_ingest_totals(pg.pool(), &owner, record.repo_id)
+                .await
+                .map_err(|e| e.to_string())?;
 
             let cursor = match record.last_cursor.clone() {
                 Some(b) => proxima_core::Cursor::from_bytes(b),
@@ -90,9 +93,10 @@ pub(super) fn spawn_run_driver(
             .map_err(|e| e.to_string())?;
             hub.publish_snapshot(owner.clone(), run).await;
 
-            counters.ast_edges_emitted = count_ast_edges_for_run(pg.pool(), &owner, record.repo_id)
+            let after_facts = count_repo_ingest_totals(pg.pool(), &owner, record.repo_id)
                 .await
                 .map_err(|e| e.to_string())?;
+            counters.ast_edges_emitted = after_facts.delta_since(baseline).ast_edges;
             tracing::info!(
                 %run_id,
                 ast_edges = counters.ast_edges_emitted,
@@ -113,10 +117,10 @@ pub(super) fn spawn_run_driver(
                 .await
                 .map_err(|e| explain_driver_error("dispatcher", &e.to_string()))?;
             tracing::info!(%run_id, wakes_fired = fired, "dispatcher tick complete");
-            counters.abstractions_emitted =
-                count_abstractions_for_run(pg.pool(), &owner, record.repo_id)
-                    .await
-                    .map_err(|e| e.to_string())?;
+            let after_f2a = count_repo_ingest_totals(pg.pool(), &owner, record.repo_id)
+                .await
+                .map_err(|e| e.to_string())?;
+            counters.abstractions_emitted = after_f2a.delta_since(baseline).abstractions;
             tracing::info!(
                 %run_id,
                 abstractions = counters.abstractions_emitted,
@@ -136,13 +140,15 @@ pub(super) fn spawn_run_driver(
                 pg.pool(),
                 &owner,
                 record.repo_id,
+                baseline.embeddings,
                 counters.abstractions_emitted,
                 std::time::Duration::from_mins(1),
             )
             .await?;
-            counters.citations_emitted = count_citations_for_run(pg.pool(), &owner, record.repo_id)
+            let final_totals = count_repo_ingest_totals(pg.pool(), &owner, record.repo_id)
                 .await
                 .map_err(|e| e.to_string())?;
+            counters.citations_emitted = final_totals.delta_since(baseline).citations;
             tracing::info!(
                 %run_id,
                 commits = counters.commits_emitted,
@@ -214,13 +220,32 @@ fn explain_driver_error(stage: &str, message: &str) -> String {
     format!("{stage}: {message}")
 }
 
-async fn count_ast_edges_for_run(
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct RepoIngestTotals {
+    ast_edges: u32,
+    abstractions: u32,
+    embeddings: u32,
+    citations: u32,
+}
+
+impl RepoIngestTotals {
+    fn delta_since(self, baseline: Self) -> Self {
+        Self {
+            ast_edges: self.ast_edges.saturating_sub(baseline.ast_edges),
+            abstractions: self.abstractions.saturating_sub(baseline.abstractions),
+            embeddings: self.embeddings.saturating_sub(baseline.embeddings),
+            citations: self.citations.saturating_sub(baseline.citations),
+        }
+    }
+}
+
+async fn count_repo_ingest_totals(
     pool: &sqlx::PgPool,
     owner: &Owner,
     repo_id: Uuid,
-) -> Result<u32, sqlx::Error> {
+) -> Result<RepoIngestTotals, sqlx::Error> {
     let (kind, principal_id, org_id) = proxima_code::repos::owner_columns_pub(owner);
-    let n: i64 = sqlx::query_scalar(
+    let ast_edges = sqlx::query_scalar::<_, i64>(
         "SELECT COUNT(*)::bigint \
          FROM proxima_core.edges e \
          JOIN proxima_code.code_calls_v1 s ON s.edge_id = e.edge_id \
@@ -235,16 +260,8 @@ async fn count_ast_edges_for_run(
     .bind(repo_id)
     .fetch_one(pool)
     .await?;
-    Ok(u32::try_from(n).unwrap_or(u32::MAX))
-}
 
-async fn count_abstractions_for_run(
-    pool: &sqlx::PgPool,
-    owner: &Owner,
-    repo_id: Uuid,
-) -> Result<u32, sqlx::Error> {
-    let (kind, principal_id, org_id) = proxima_code::repos::owner_columns_pub(owner);
-    let n: i64 = sqlx::query_scalar(
+    let abstractions = sqlx::query_scalar::<_, i64>(
         "SELECT COUNT(*)::bigint \
          FROM proxima_code.commit_summary_v1 cs \
          JOIN proxima_core.memories m ON m.memory_id = cs.memory_id \
@@ -257,16 +274,23 @@ async fn count_abstractions_for_run(
     .bind(repo_id)
     .fetch_one(pool)
     .await?;
-    Ok(u32::try_from(n).unwrap_or(u32::MAX))
-}
 
-async fn count_citations_for_run(
-    pool: &sqlx::PgPool,
-    owner: &Owner,
-    repo_id: Uuid,
-) -> Result<u32, sqlx::Error> {
-    let (kind, principal_id, org_id) = proxima_code::repos::owner_columns_pub(owner);
-    let n: i64 = sqlx::query_scalar(
+    let embeddings = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*)::bigint \
+         FROM proxima_core.embeddings e \
+         JOIN proxima_code.commit_summary_v1 cs ON cs.memory_id = e.entity_id \
+         JOIN proxima_core.memories m ON m.memory_id = cs.memory_id \
+         WHERE m.owner_principal_kind = $1 AND m.owner_principal_id = $2 \
+           AND m.owner_org_id = $3 AND cs.repo_id = $4",
+    )
+    .bind(kind)
+    .bind(principal_id)
+    .bind(org_id)
+    .bind(repo_id)
+    .fetch_one(pool)
+    .await?;
+
+    let citations = sqlx::query_scalar::<_, i64>(
         "SELECT COUNT(*)::bigint \
          FROM proxima_core.citation_mappings cm \
          JOIN proxima_core.memories m ON m.memory_id = cm.memory_id \
@@ -282,13 +306,20 @@ async fn count_citations_for_run(
     .bind(repo_id)
     .fetch_one(pool)
     .await?;
-    Ok(u32::try_from(n).unwrap_or(u32::MAX))
+
+    Ok(RepoIngestTotals {
+        ast_edges: u32::try_from(ast_edges).unwrap_or(u32::MAX),
+        abstractions: u32::try_from(abstractions).unwrap_or(u32::MAX),
+        embeddings: u32::try_from(embeddings).unwrap_or(u32::MAX),
+        citations: u32::try_from(citations).unwrap_or(u32::MAX),
+    })
 }
 
 async fn wait_for_embeddings(
     pool: &sqlx::PgPool,
     owner: &Owner,
     repo_id: Uuid,
+    baseline_embeddings: u32,
     expected: u32,
     timeout: std::time::Duration,
 ) -> Result<u32, String> {
@@ -313,7 +344,8 @@ async fn wait_for_embeddings(
         .fetch_one(pool)
         .await
         .map_err(|e| e.to_string())?;
-        let landed = u32::try_from(n).unwrap_or(u32::MAX);
+        let total_landed = u32::try_from(n).unwrap_or(u32::MAX);
+        let landed = total_landed.saturating_sub(baseline_embeddings);
         if landed >= expected {
             return Ok(landed);
         }
@@ -328,6 +360,52 @@ async fn wait_for_embeddings(
 
 #[cfg(test)]
 mod tests {
+    use super::RepoIngestTotals;
+
+    #[test]
+    fn repo_ingest_totals_delta_reports_current_run_only() {
+        let baseline = RepoIngestTotals {
+            ast_edges: 7_072,
+            abstractions: 118,
+            embeddings: 118,
+            citations: 11_122,
+        };
+        let after = RepoIngestTotals {
+            ast_edges: 7_108,
+            abstractions: 119,
+            embeddings: 119,
+            citations: 11_149,
+        };
+
+        assert_eq!(
+            after.delta_since(baseline),
+            RepoIngestTotals {
+                ast_edges: 36,
+                abstractions: 1,
+                embeddings: 1,
+                citations: 27,
+            },
+        );
+    }
+
+    #[test]
+    fn repo_ingest_totals_delta_saturates_if_totals_drop() {
+        let baseline = RepoIngestTotals {
+            ast_edges: 10,
+            abstractions: 10,
+            embeddings: 10,
+            citations: 10,
+        };
+        let after = RepoIngestTotals {
+            ast_edges: 9,
+            abstractions: 8,
+            embeddings: 7,
+            citations: 6,
+        };
+
+        assert_eq!(after.delta_since(baseline), RepoIngestTotals::default());
+    }
+
     #[test]
     fn explain_driver_error_names_unreachable_ollama() {
         let raw = "Internal: operator: LLM call failed: HTTP send: error sending request                    for url (http://localhost:11434/v1/chat/completions)";
