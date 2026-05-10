@@ -33,7 +33,7 @@ pub enum PersonalityConfigChangedSubject {
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum PersonalityConfigChangedCaller {
     WakePersonality { personality_instance_id: uuid::Uuid },
-    MasterToken { shell_author_personality_instance_id: uuid::Uuid },
+    MasterToken { personality_instance_id: uuid::Uuid },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -72,7 +72,7 @@ mod tests {
             before: None,
             after: Some(serde_json::json!({ "display_name": "Engineer" })),
             caller: PersonalityConfigChangedCaller::MasterToken {
-                shell_author_personality_instance_id: uuid::Uuid::now_v7(),
+                personality_instance_id: uuid::Uuid::now_v7(),
             },
         };
         let value = serde_json::to_value(&payload).expect("serialize");
