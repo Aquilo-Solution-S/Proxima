@@ -119,12 +119,28 @@ export function filterGraphSnapshot(
   const memories = Array.from(graph.memoriesById.values()).filter((memory) => {
     const row = memory.row;
     const flavor = schemaFlavorForRow(row.schema_id, row.schema_version, schemaFlavors, hub);
-    return (
-      filter.layers.has(row.kind) &&
-      schemaAllowed(row.schema_id, filter) &&
-      flavorAllowed(flavor, filter) &&
-      searchMatchesMemory(memory, search)
-    );
+    if (!filter.layers.has(row.kind)) return false;
+    if (!schemaAllowed(row.schema_id, filter)) return false;
+    if (!flavorAllowed(flavor, filter)) return false;
+    if (!searchMatchesMemory(memory, search)) return false;
+
+    // New facets:
+    const prov = graph.memoryProvenance.get(row.id);
+    if (filter.authoredBy.size > 0) {
+      const author = prov?.authoring_personality_instance_id ?? null;
+      if (author === null || !filter.authoredBy.has(author)) return false;
+    }
+    if (filter.timeRange) {
+      if (!prov) return false;
+      if (prov.written_at_ms < filter.timeRange.fromMs) return false;
+      if (prov.written_at_ms > filter.timeRange.toMs) return false;
+    }
+    if (filter.sizeRange) {
+      const bytes = row.payload.length;
+      if (bytes < filter.sizeRange.minBytes) return false;
+      if (bytes > filter.sizeRange.maxBytes) return false;
+    }
+    return true;
   });
 
   const goals = Array.from(graph.goalsById.values()).filter((goal) => {
