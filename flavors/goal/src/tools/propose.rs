@@ -1,5 +1,5 @@
-use proxima_core::GoalId;
 use proxima_core::mcp::{McpTool, McpToolCtx, McpToolError};
+use proxima_core::{EdgeId, GoalId};
 use proxima_core::relation::CORE_INSPIRES_RELATION;
 use proxima_core::verbs::goal_write::{GoalAuthorship, GoalDraft, GoalState};
 use proxima_storage_pg::verbs::edge_append::{EdgeDraft, append_edge_in_tx};
@@ -22,9 +22,8 @@ pub struct ProposeArgs {
 #[derive(Debug, Serialize)]
 pub struct ProposeOutput {
     pub handle: String,
-    pub uuid: uuid::Uuid,
-    pub edge_uuids: Vec<uuid::Uuid>,
-    pub inspires_edge_id: Option<uuid::Uuid>,
+    pub edge_handles: Vec<String>,
+    pub inspires_edge_handle: Option<String>,
 }
 
 #[derive(Debug)]
@@ -97,11 +96,25 @@ impl McpTool for ProposeTool {
             tx.commit().await.map_err(map_storage)?;
 
             let handle = ctx.handles.assign_goal(GoalId::new(goal_id));
+            let edge_handles = edge_uuids
+                .into_iter()
+                .map(|edge_id| {
+                    ctx.handles
+                        .assign_edge(EdgeId::new(edge_id))
+                        .as_str()
+                        .to_string()
+                })
+                .collect();
+            let inspires_edge_handle = inspires_edge_id.map(|edge_id| {
+                ctx.handles
+                    .assign_edge(EdgeId::new(edge_id))
+                    .as_str()
+                    .to_string()
+            });
             Ok(ProposeOutput {
                 handle: handle.as_str().to_string(),
-                uuid: goal_id,
-                edge_uuids,
-                inspires_edge_id,
+                edge_handles,
+                inspires_edge_handle,
             })
         })
     }

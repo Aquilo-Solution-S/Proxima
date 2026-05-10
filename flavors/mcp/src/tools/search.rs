@@ -20,7 +20,6 @@ pub struct SearchGraphOutput {
 #[derive(Debug, Serialize)]
 pub struct GraphMatch {
     pub handle: String,
-    pub uuid: uuid::Uuid,
     pub kind: String,
     pub schema_id: String,
     pub title: String,
@@ -32,7 +31,6 @@ pub struct GraphMatch {
 #[derive(Debug, Serialize)]
 pub struct NeighborEdge {
     pub handle: String,
-    pub uuid: uuid::Uuid,
     pub relation: String,
     pub source: Option<String>,
     pub target: Option<String>,
@@ -77,7 +75,6 @@ impl McpTool for SearchGraphTool {
                 memory_ids.push(row.memory_id);
                 matches.push(GraphMatch {
                     handle: handle.as_str().to_string(),
-                    uuid: row.memory_id,
                     kind: row.kind,
                     schema_id: row.schema_id,
                     title: row.title,
@@ -179,7 +176,6 @@ pub async fn neighbor_edges(
             let edge_handle = handles.assign_edge(EdgeId::new(row.edge_id));
             NeighborEdge {
                 handle: edge_handle.as_str().to_string(),
-                uuid: row.edge_id,
                 relation: row.relation,
                 source: row.source_memory_id.map(|id| {
                     handles
@@ -214,7 +210,6 @@ pub struct OpenArgs {
 #[derive(Debug, Serialize)]
 pub struct OpenOutput {
     pub handle: String,
-    pub uuid: uuid::Uuid,
     pub kind: String,
     pub schema_id: String,
     pub title: Option<String>,
@@ -262,7 +257,6 @@ impl McpTool for OpenTool {
                 neighbor_edges(&ctx.pool, &ctx.owner, &ctx.handles, &[memory_uuid]).await?;
             Ok(OpenOutput {
                 handle: args.handle,
-                uuid: memory_uuid,
                 kind: memory_kind_for_edge(row.kind.as_deref()).to_string(),
                 schema_id: row.schema_id,
                 title: row.title,

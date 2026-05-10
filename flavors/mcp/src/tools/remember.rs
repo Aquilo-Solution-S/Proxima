@@ -28,7 +28,6 @@ pub struct RememberArgs {
 #[derive(Debug, Serialize)]
 pub struct RememberOutput {
     pub handle: String,
-    pub uuid: uuid::Uuid,
     pub idempotent_replay: bool,
 }
 
@@ -122,7 +121,6 @@ impl McpTool for RememberTool {
             let handle = ctx.handles.assign_memory(outcome.memory_id);
             Ok(RememberOutput {
                 handle: handle.as_str().to_string(),
-                uuid: outcome.memory_id.into_inner(),
                 idempotent_replay: outcome.idempotent_replay,
             })
         })

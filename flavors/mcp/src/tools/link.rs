@@ -28,7 +28,6 @@ fn default_confidence() -> u8 {
 #[derive(Debug, Serialize)]
 pub struct LinkOutput {
     pub edge_handle: String,
-    pub edge_uuid: uuid::Uuid,
 }
 
 #[derive(Debug)]
@@ -101,7 +100,6 @@ impl McpTool for LinkTool {
             let handle = ctx.handles.assign_edge(EdgeId::new(edge_id));
             Ok(LinkOutput {
                 edge_handle: handle.as_str().to_string(),
-                edge_uuid: edge_id,
             })
         })
     }

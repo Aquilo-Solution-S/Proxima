@@ -8,6 +8,7 @@ pub enum EntityRef {
     Memory(MemoryId),
     Edge(EdgeId),
     Goal(GoalId),
+    Repo(uuid::Uuid),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -30,6 +31,7 @@ struct HandleTableInner {
     memory_counter: u32,
     edge_counter: u32,
     goal_counter: u32,
+    repo_counter: u32,
     by_entity: HashMap<EntityRef, Handle>,
     by_handle: HashMap<String, EntityRef>,
 }
@@ -52,6 +54,10 @@ impl HandleTable {
 
     pub fn assign_goal(&self, id: GoalId) -> Handle {
         self.assign(EntityRef::Goal(id), 'G', |inner| &mut inner.goal_counter)
+    }
+
+    pub fn assign_repo(&self, id: uuid::Uuid) -> Handle {
+        self.assign(EntityRef::Repo(id), 'R', |inner| &mut inner.repo_counter)
     }
 
     fn assign(
@@ -86,12 +92,44 @@ impl HandleTable {
             .get(raw)
             .copied()
     }
+
+    #[must_use]
+    pub fn resolve_memory(&self, raw: &str) -> Option<MemoryId> {
+        match self.resolve(raw)? {
+            EntityRef::Memory(id) => Some(id),
+            EntityRef::Edge(_) | EntityRef::Goal(_) | EntityRef::Repo(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub fn resolve_edge(&self, raw: &str) -> Option<EdgeId> {
+        match self.resolve(raw)? {
+            EntityRef::Edge(id) => Some(id),
+            EntityRef::Memory(_) | EntityRef::Goal(_) | EntityRef::Repo(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub fn resolve_goal(&self, raw: &str) -> Option<GoalId> {
+        match self.resolve(raw)? {
+            EntityRef::Goal(id) => Some(id),
+            EntityRef::Memory(_) | EntityRef::Edge(_) | EntityRef::Repo(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub fn resolve_repo(&self, raw: &str) -> Option<uuid::Uuid> {
+        match self.resolve(raw)? {
+            EntityRef::Repo(id) => Some(id),
+            EntityRef::Memory(_) | EntityRef::Edge(_) | EntityRef::Goal(_) => None,
+        }
+    }
 }
 
 fn is_valid_handle_shape(raw: &str) -> bool {
     let mut chars = raw.chars();
     match chars.next() {
-        Some('N' | 'E' | 'G') => {}
+        Some('N' | 'E' | 'G' | 'R') => {}
         _ => return false,
     }
     let rest = chars.as_str();

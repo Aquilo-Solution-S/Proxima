@@ -7,7 +7,7 @@ use super::sql::{CHUNK_HEADS_CTE, FILE_REVISION_HEADS_CTE, map_storage, owner_pr
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CodeOpenFileRevisionArgs {
-    pub repo_id: uuid::Uuid,
+    pub repo_handle: String,
     pub file_path: String,
 }
 
@@ -20,8 +20,7 @@ pub struct CodeOpenFileRevisionOutput {
 #[derive(Debug, Serialize)]
 pub struct FileRevisionInfo {
     pub handle: String,
-    pub uuid: uuid::Uuid,
-    pub repo_id: uuid::Uuid,
+    pub repo_handle: String,
     pub file_path: String,
     pub language: Option<String>,
     pub size_bytes: i64,
@@ -32,7 +31,6 @@ pub struct FileRevisionInfo {
 #[derive(Debug, Serialize)]
 pub struct ChunkSummary {
     pub handle: String,
-    pub uuid: uuid::Uuid,
     pub chunk_index: i32,
     pub chunk_type: String,
     pub line_range: (i64, i64),
@@ -45,7 +43,7 @@ pub struct CodeOpenFileRevisionTool;
 impl McpTool for CodeOpenFileRevisionTool {
     const NAME: &'static str = "proxima-code/code_open_file_revision";
     const DESCRIPTION: &'static str =
-        "Return the current head revision and head chunks for one repo_id/file_path pair.";
+        "Return the current head revision and head chunks for one repo_handle/file_path pair.";
 
     type Args = CodeOpenFileRevisionArgs;
     type Output = CodeOpenFileRevisionOutput;
@@ -59,6 +57,10 @@ impl McpTool for CodeOpenFileRevisionTool {
                 return Err(McpToolError::InvalidInput("file_path required".into()));
             }
             let (owner_kind, owner_principal_id) = owner_principal(&ctx.owner);
+            let repo_id = ctx
+                .handles
+                .resolve_repo(&args.repo_handle)
+                .ok_or_else(|| McpToolError::UnknownHandle(args.repo_handle.clone()))?;
 
             let revision_sql = format!(
                 "WITH {FILE_REVISION_HEADS_CTE}
@@ -70,17 +72,17 @@ impl McpTool for CodeOpenFileRevisionTool {
             let revision = sqlx::query_as::<_, RevisionRow>(&revision_sql)
                 .bind(owner_kind)
                 .bind(owner_principal_id)
-                .bind(args.repo_id)
+                .bind(repo_id)
                 .bind(&args.file_path)
                 .fetch_optional(&ctx.pool)
                 .await
                 .map_err(map_storage)?
                 .map(|row| {
                     let handle = ctx.handles.assign_memory(MemoryId::new(row.memory_id));
+                    let repo_handle = ctx.handles.assign_repo(row.repo_id);
                     FileRevisionInfo {
                         handle: handle.as_str().to_string(),
-                        uuid: row.memory_id,
-                        repo_id: row.repo_id,
+                        repo_handle: repo_handle.as_str().to_string(),
                         file_path: row.file_path,
                         language: row.language,
                         size_bytes: row.size_bytes,
@@ -101,7 +103,7 @@ impl McpTool for CodeOpenFileRevisionTool {
             let chunk_rows: Vec<ChunkSummaryRow> = sqlx::query_as(&chunk_sql)
                 .bind(owner_kind)
                 .bind(owner_principal_id)
-                .bind(args.repo_id)
+                .bind(repo_id)
                 .bind(&args.file_path)
                 .fetch_all(&ctx.pool)
                 .await
@@ -113,7 +115,6 @@ impl McpTool for CodeOpenFileRevisionTool {
                     let handle = ctx.handles.assign_memory(MemoryId::new(row.memory_id));
                     ChunkSummary {
                         handle: handle.as_str().to_string(),
-                        uuid: row.memory_id,
                         chunk_index: row.chunk_index,
                         chunk_type: row.chunk_type,
                         line_range: (row.line_range_start, row.line_range_end),
