@@ -2,14 +2,21 @@
 //! successful MCP-CRUD mutation.
 //!
 //! Provenance:
-//! - Wake-token caller: `ctx.caller_self_perspective` points at the
-//!   calling personality's Root Perspective Memory; we look up the
-//!   personality whose `current_root_perspective_memory_id == that id`.
-//! - Master-token caller: branch is a placeholder pending Task 7,
-//!   which dispatches on `ctx.master_token_id` and reuses the
-//!   per-token Self-Perspective populated by the MCP server's
-//!   `call_tool` ensure step. The real per-token identity is minted
-//!   via `Storage::ensure_master_token_personality`.
+//! - Wake-token caller: the MCP wake-context populates
+//!   `ctx.caller_self_perspective` from the firing personality's Root
+//!   Perspective Memory id, and `ctx.master_token_id` is `None`. The
+//!   audit Fact carries the wake personality's instance id.
+//! - Master-token caller: the MCP server's `call_tool` ensure step
+//!   populates `ctx.caller_self_perspective` from the per-token
+//!   shell-author personality minted by
+//!   `Storage::ensure_master_token_personality`, and
+//!   `ctx.master_token_id` is `Some`. The audit Fact carries the
+//!   per-token shell-author instance id.
+//!
+//! The shape of `PersonalityConfigChangedCaller` predates per-token
+//! identity; the `MasterToken.shell_author_personality_instance_id`
+//! field carries the per-token instance id. A future v2 schema may
+//! rename it.
 //!
 //! Emit failures are non-fatal: the verb already succeeded.
 
@@ -62,30 +69,36 @@ async fn resolve_caller(
     let storage = ctx
         .storage()
         .ok_or_else(|| "engine storage unavailable".to_string())?;
-    if let Some(self_id) = ctx.caller_self_perspective {
-        // Wake-token: caller_self_perspective is the calling
-        // personality's Root Perspective Memory id. Find the personality
-        // whose current_root_perspective_memory_id matches.
-        let instances = storage
-            .list_personality_instances(&ctx.owner, false)
-            .await
-            .map_err(|e| e.to_string())?;
-        let id = instances
-            .into_iter()
-            .find(|row| row.current_root_perspective_memory_id == self_id)
-            .map(|row| row.personality_instance_id.into_inner())
-            .ok_or_else(|| {
-                format!("no personality matches caller_self_perspective {self_id:?}")
-            })?;
-        Ok(PersonalityConfigChangedCaller::WakePersonality {
-            personality_instance_id: id,
-        })
+
+    let self_id = ctx
+        .caller_self_perspective
+        .ok_or_else(|| "caller_self_perspective missing for audit emit".to_string())?;
+
+    // Both wake-token and master-token calls now carry a Self-Perspective;
+    // the MCP server's ensure-on-call step populates it for master-token
+    // requests. Find the personality whose current root perspective
+    // matches.
+    let instances = storage
+        .list_personality_instances(&ctx.owner, false)
+        .await
+        .map_err(|e| e.to_string())?;
+    let instance_id = instances
+        .into_iter()
+        .find(|row| row.current_root_perspective_memory_id == self_id)
+        .map(|row| row.personality_instance_id.into_inner())
+        .ok_or_else(|| {
+            format!("no personality matches caller_self_perspective {self_id:?}")
+        })?;
+
+    Ok(if ctx.master_token_id.is_some() {
+        PersonalityConfigChangedCaller::MasterToken {
+            shell_author_personality_instance_id: instance_id,
+        }
     } else {
-        // Master-token caller branch is rewritten in Task 7 to read
-        // from ctx.master_token_id; the placeholder here keeps the
-        // workspace compiling between Task 2 and Task 7.
-        Err("master-token audit caller resolution moved to Task 7".to_string())
-    }
+        PersonalityConfigChangedCaller::WakePersonality {
+            personality_instance_id: instance_id,
+        }
+    })
 }
 
 async fn write_fact(
@@ -175,6 +188,55 @@ mod tests {
                 "got {reason:?}"
             ),
             AuditEmit::Ok => panic!("expected Failed without storage"),
+        }
+    }
+
+    #[tokio::test]
+    async fn resolve_caller_returns_failed_when_self_perspective_missing() {
+        // Build a ctx with engine wired but no caller_self_perspective —
+        // the new resolver fails fast since the MCP server is contract-bound
+        // to populate this field.
+        use crate::auth::NoAuth;
+        use crate::verbs::query::MemoryStore;
+        use crate::Engine;
+
+        let owner = fake_owner();
+        let resolver = NoAuth::new(owner.principal.clone(), owner.clone());
+        let engine = std::sync::Arc::new(Engine::new(
+            FlavorRegistry::new().freeze(),
+            MemoryStore::new(),
+            Box::new(resolver),
+        ));
+        let ctx = McpToolCtx {
+            pool: sqlx::PgPool::connect_lazy("postgres://placeholder/db")
+                .expect("lazy connect"),
+            owner,
+            handles: Arc::new(HandleTable::new()),
+            registry: Arc::new(FlavorRegistry::new().freeze()),
+            author: McpAuthorContext {
+                model_id: "t".into(),
+                client_name: "t".into(),
+                client_version: "0".into(),
+                caller_self_perspective: None,
+            },
+            caller_self_perspective: None,
+            master_token_id: None,
+            engine: Some(engine),
+        };
+        let outcome = emit_personality_config_changed(
+            &ctx,
+            PersonalityConfigChangedVerb::Instantiate,
+            PersonalityConfigChangedSubject::Personality(uuid::Uuid::now_v7()),
+            None,
+            Some(serde_json::json!({})),
+        )
+        .await;
+        match outcome {
+            AuditEmit::Failed { reason } => assert!(
+                reason.contains("caller_self_perspective missing"),
+                "got {reason:?}"
+            ),
+            AuditEmit::Ok => panic!("expected Failed without caller_self_perspective"),
         }
     }
 }
