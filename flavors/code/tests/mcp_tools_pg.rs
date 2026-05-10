@@ -357,6 +357,7 @@ fn ctx(pool: PgPool, owner: Owner, registry: Arc<FlavorRegistryFrozen>) -> McpTo
             caller_self_perspective: None,
         },
         caller_self_perspective: None,
+        master_token_id: None,
         engine: None,
     }
 }

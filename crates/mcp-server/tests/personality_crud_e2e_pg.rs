@@ -64,6 +64,7 @@ async fn wake_token_audit_attributes_caller_personality()
             caller_self_perspective: Some(root_memory_id),
         },
         caller_self_perspective: Some(root_memory_id),
+        master_token_id: None,
         engine: Some(engine.clone()),
     };
 

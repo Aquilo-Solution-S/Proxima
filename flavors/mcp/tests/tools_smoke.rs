@@ -252,6 +252,7 @@ async fn call_tool(
             registry: registry.clone(),
             author,
             caller_self_perspective: None,
+            master_token_id: None,
             engine: None,
         },
         args,

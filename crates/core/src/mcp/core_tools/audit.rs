@@ -158,6 +158,7 @@ mod tests {
                 caller_self_perspective: None,
             },
             caller_self_perspective: None,
+            master_token_id: None,
             engine: None,
         };
         let outcome = emit_personality_config_changed(

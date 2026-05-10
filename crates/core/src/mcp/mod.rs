@@ -34,6 +34,11 @@ pub struct McpToolCtx {
     pub registry: Arc<FlavorRegistryFrozen>,
     pub author: McpAuthorContext,
     pub caller_self_perspective: Option<MemoryId>,
+    /// Set by `DevMcpServer::call_tool` for master-token requests so
+    /// downstream code (notably the audit emit path) can distinguish
+    /// master-token from wake-token callers without inspecting the
+    /// auth context. `None` for wake-token, no-auth, or test calls.
+    pub master_token_id: Option<uuid::Uuid>,
     /// `Some` when the MCP server was constructed with `with_engine`.
     /// Tools that need to call engine verbs (CRUD-via-MCP) require this;
     /// pure read-only / projection tools can ignore it.
@@ -176,6 +181,7 @@ mod ctx_engine_tests {
                 caller_self_perspective: None,
             },
             caller_self_perspective: None,
+            master_token_id: None,
             engine: None,
         };
         assert!(ctx.storage().is_none());
@@ -207,6 +213,7 @@ mod ctx_engine_tests {
                 caller_self_perspective: None,
             },
             caller_self_perspective: None,
+            master_token_id: None,
             engine: Some(engine.clone()),
         };
         assert!(ctx.engine().is_some());
