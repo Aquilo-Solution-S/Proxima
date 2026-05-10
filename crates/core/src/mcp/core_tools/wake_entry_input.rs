@@ -59,7 +59,7 @@ impl WakeEntryDraftInput {
             None => uuid::Uuid::now_v7(),
             Some(handle) => handles
                 .resolve_wake_entry(&handle)
-                .ok_or_else(|| McpToolError::UnknownHandle(handle))?,
+                .ok_or(McpToolError::UnknownHandle(handle))?,
         };
         Ok(WakeEntryDraft {
             wake_entry_id,

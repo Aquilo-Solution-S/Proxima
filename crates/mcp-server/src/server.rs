@@ -118,18 +118,17 @@ impl DevMcpServer {
         // caller_self_perspective; explicit override args still win.
         let mut author = author;
         let master_token_id = auth.as_ref().and_then(|c| c.master_token_id);
-        if author.caller_self_perspective.is_none() {
-            if let (Some(token_id), Some(engine), Some(auth_ctx)) =
+        if author.caller_self_perspective.is_none()
+            && let (Some(token_id), Some(engine), Some(auth_ctx)) =
                 (master_token_id, self.engine.as_ref(), auth.as_ref())
-            {
-                let identity = engine
-                    .ensure_master_token_personality(&auth_ctx.owner, token_id)
-                    .await
-                    .map_err(|err| {
-                        ToolInvocationError::Tool(McpToolError::Other(err.to_string()))
-                    })?;
-                author.caller_self_perspective = Some(identity.self_perspective_memory_id);
-            }
+        {
+            let identity = engine
+                .ensure_master_token_personality(&auth_ctx.owner, token_id)
+                .await
+                .map_err(|err| {
+                    ToolInvocationError::Tool(McpToolError::Other(err.to_string()))
+                })?;
+            author.caller_self_perspective = Some(identity.self_perspective_memory_id);
         }
 
         if let Some(descriptor) = self
@@ -151,7 +150,7 @@ impl DevMcpServer {
                             name,
                             "succeeded",
                             duration_ms,
-                            summarize_tool_content(content),
+                            Some(summarize_tool_content(content)),
                         )
                         .await;
                     }
@@ -212,7 +211,7 @@ impl DevMcpServer {
         match result {
             Ok(result) => {
                 let message_tail = summarize_tool_content(&result.content);
-                append_tool_log(engine, auth, name, "succeeded", duration_ms, message_tail).await;
+                append_tool_log(engine, auth, name, "succeeded", duration_ms, Some(message_tail)).await;
                 Ok(result.content)
             }
             Err(err) => {
@@ -260,17 +259,17 @@ async fn append_tool_log(
     }
 }
 
-fn summarize_tool_content(content: &serde_json::Value) -> Option<String> {
+fn summarize_tool_content(content: &serde_json::Value) -> String {
     if let Some(error) = content.get("error").and_then(serde_json::Value::as_str) {
-        return Some(tail_chars(error, 2_000));
+        return tail_chars(error, 2_000);
     }
     let keys = content
         .as_object()
         .map(|obj| obj.keys().cloned().collect::<Vec<_>>().join(", "));
-    Some(match keys {
+    match keys {
         Some(keys) if !keys.is_empty() => format!("ok: keys [{keys}]"),
         _ => "ok".to_string(),
-    })
+    }
 }
 
 fn tail_chars(value: &str, max_chars: usize) -> String {

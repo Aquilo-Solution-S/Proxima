@@ -1,4 +1,4 @@
-//! PG coverage for set_wake_entries_within R-M-W primitive.
+//! PG coverage for `set_wake_entries_within` R-M-W primitive.
 
 mod common;
 

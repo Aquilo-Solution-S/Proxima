@@ -1,4 +1,4 @@
-//! End-to-end MCP-CRUD over real Postgres. Mirrors streamable_http_pg.rs
+//! End-to-end MCP-CRUD over real Postgres. Mirrors `streamable_http_pg.rs`
 //! shape. Asserts the discovery surface returns the expected catalog
 //! contents and that mutation tools work end-to-end.
 
@@ -16,35 +16,6 @@ use serde_json::{Value, json};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn discovery_to_mutation_smoke() -> Result<(), Box<dyn std::error::Error>> {
-    let Some(db_name) = create_db().await? else { return Ok(()) };
-    let database_url = format!("postgres://postgres@localhost/{db_name}");
-    let owner = Owner {
-        principal: Principal::User(UserId::new(uuid::Uuid::now_v7())),
-        org_id: OrgId::new(uuid::Uuid::now_v7()),
-    };
-    let registry = FlavorRegistry::new();
-    let server = DevMcpServer::from_database_url(&database_url, owner.clone(), registry).await?;
-    let store = Arc::new(WakeTokenStore::new(Duration::from_secs(300)));
-    let auth_store = Arc::new(McpAuthStore::new(store));
-    let master_token = uuid::Uuid::now_v7();
-    auth_store
-        .replace_local_master_token(master_token, owner.clone())
-        .await;
-
-    let (handle, addr) = serve_streamable_http(
-        SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0),
-        server,
-        default_allowlist(),
-        auth_store,
-    )
-    .await?;
-
-    let client = reqwest::Client::new();
-    let url = format!("http://{addr}/mcp");
-    let bearer = format!("Bearer {master_token}");
-    let session = initialize(&client, &url, &bearer).await?;
-    initialized(&client, &url, &session, &bearer).await?;
-
     // Helper to call a tool by name and extract the typed JSON output.
     async fn call_tool(
         client: &reqwest::Client,
@@ -67,6 +38,35 @@ async fn discovery_to_mutation_smoke() -> Result<(), Box<dyn std::error::Error>>
             .expect("content[0].text exists");
         Ok(serde_json::from_str(text)?)
     }
+
+    let Some(db_name) = create_db().await? else { return Ok(()) };
+    let database_url = format!("postgres://postgres@localhost/{db_name}");
+    let owner = Owner {
+        principal: Principal::User(UserId::new(uuid::Uuid::now_v7())),
+        org_id: OrgId::new(uuid::Uuid::now_v7()),
+    };
+    let registry = FlavorRegistry::new();
+    let server = DevMcpServer::from_database_url(&database_url, owner.clone(), registry).await?;
+    let store = Arc::new(WakeTokenStore::new(Duration::from_mins(5)));
+    let auth_store = Arc::new(McpAuthStore::new(store));
+    let master_token = uuid::Uuid::now_v7();
+    auth_store
+        .replace_local_master_token(master_token, owner.clone())
+        .await;
+
+    let (handle, addr) = serve_streamable_http(
+        SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0),
+        server,
+        default_allowlist(),
+        auth_store,
+    )
+    .await?;
+
+    let client = reqwest::Client::new();
+    let url = format!("http://{addr}/mcp");
+    let bearer = format!("Bearer {master_token}");
+    let session = initialize(&client, &url, &bearer).await?;
+    initialized(&client, &url, &session, &bearer).await?;
 
     // 1. Discovery: list_recipes succeeds (likely empty).
     let _recipes = call_tool(&client, &url, &session, &bearer,

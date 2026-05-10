@@ -17,7 +17,7 @@ pub fn nil_owner() -> Owner {
     }
 }
 
-/// Creates a WakeTokenContext with the given palette.
+/// Creates a `WakeTokenContext` with the given palette.
 #[allow(dead_code)]
 pub fn make_token_ctx(palette: Vec<String>) -> WakeTokenContext {
     WakeTokenContext {
@@ -36,7 +36,7 @@ pub fn make_token_ctx(palette: Vec<String>) -> WakeTokenContext {
     }
 }
 
-/// MCP initialize request. Returns the session_id.
+/// MCP initialize request. Returns the `session_id`.
 #[allow(dead_code)]
 pub async fn initialize(
     client: &reqwest::Client,
