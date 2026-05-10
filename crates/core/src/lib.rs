@@ -43,8 +43,8 @@ pub use outbox::*;
 pub use owner::*;
 pub use payload::*;
 pub use personality::workspace::{
-    WorkspaceOutcome, WorkspacePrepareInput, WorkspacePreparedRun, WorkspaceRunRecord,
-    WorkspaceRunner, WorkspaceRunnerError,
+    WorkspaceFinalizeInput, WorkspaceOutcome, WorkspacePrepareInput, WorkspacePreparedRun,
+    WorkspaceRunRecord, WorkspaceRunner, WorkspaceRunnerError,
 };
 pub use personality::*;
 pub use relation::*;
@@ -131,6 +131,7 @@ macro_rules! proxima_flavor {
         $(, relations = [ $($rel:expr),* $(,)? ])?
         $(, mcp_tools = [ $($tool:ty),* $(,)? ])?
         $(, workspace_runner = $workspace_runner:ty)?
+        $(, workspace_triggers = [ $($workspace_trigger_schema:literal),* $(,)? ])?
         $(, recipes_root = $recipes_root:expr, recipes = [ $($recipe_filename:literal),* $(,)? ])?
         $(,)?
     ) => {
@@ -248,6 +249,17 @@ macro_rules! proxima_flavor {
                     registry.add_workspace_runner($name, runner);
                 }
             )?
+            $($(
+                {
+                    let schema_id: &str = $workspace_trigger_schema;
+                    assert!(
+                        schema_id.starts_with(expected_prefix),
+                        "workspace trigger schema {:?} does not start with crate prefix {:?}",
+                        schema_id, expected_prefix,
+                    );
+                    registry.add_workspace_trigger(schema_id);
+                }
+            )*)?
             $($(
                 {
                     let recipes_root: ::std::path::PathBuf =

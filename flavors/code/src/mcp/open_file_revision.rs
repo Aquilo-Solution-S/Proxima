@@ -59,7 +59,7 @@ impl McpTool for CodeOpenFileRevisionTool {
             let (owner_kind, owner_principal_id) = owner_principal(&ctx.owner);
             let repo_id = ctx
                 .handles
-                .resolve_repo(&args.repo_handle)
+                .resolve_flavor_object(&args.repo_handle, super::REPO_HANDLE_KIND)
                 .ok_or_else(|| McpToolError::UnknownHandle(args.repo_handle.clone()))?;
 
             let revision_sql = format!(
@@ -79,7 +79,11 @@ impl McpTool for CodeOpenFileRevisionTool {
                 .map_err(map_storage)?
                 .map(|row| {
                     let handle = ctx.handles.assign_memory(MemoryId::new(row.memory_id));
-                    let repo_handle = ctx.handles.assign_repo(row.repo_id);
+                    let repo_handle = ctx.handles.assign_flavor_object(
+                        super::REPO_HANDLE_KIND,
+                        row.repo_id,
+                        super::REPO_HANDLE_PREFIX,
+                    );
                     FileRevisionInfo {
                         handle: handle.as_str().to_string(),
                         repo_handle: repo_handle.as_str().to_string(),

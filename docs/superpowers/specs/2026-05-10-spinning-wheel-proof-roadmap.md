@@ -374,6 +374,26 @@ Verification:
 
 ### M3 — Code workspace runner (S3, workspace Phase 3)
 
+**Status:** Landed 2026-05-10.
+Acceptance verified:
+[`flavors/code/tests/workspace_run_pg.rs`](../../../flavors/code/tests/workspace_run_pg.rs)
+(workspace wake fires on a Code Fact trigger, the runner creates a
+worktree, the Goose mock commits a diff, and `workspace-run-v1` plus
+`core/authored` / `core/derived-from` edges land).
+Boundary note: core owns only generic workspace trigger eligibility and
+opaque runner handoff; Code owns `repo_id`, `target_branch`, worktrees,
+and workspace-run sidecars.
+Verification:
+`cargo fmt --check`;
+`cargo test -p proxima-core`;
+`cargo test -p proxima-code --test mcp_tools_pg`;
+`cargo test -p proxima-code --test workspace_run_pg`;
+`cargo test -p proxima-code --test goal_activated_wake_pg`;
+`cargo clippy -p proxima-core --all-targets`;
+`cargo clippy -p proxima-code --all-targets`;
+`pnpm --filter @proxima/core typecheck`;
+`cargo check --workspace`.
+
 - Implement `CodeWorkspaceRunner` + `WorkspaceRunnerSource` per
   `2026-05-09-workspace-mode-design.md` Phase 3.
 - E2E integration test: workspace wake fires, goose mock runs, Fact +

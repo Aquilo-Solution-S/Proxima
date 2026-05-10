@@ -3,27 +3,26 @@
 //! See `docs/superpowers/specs/2026-05-09-workspace-mode-design.md` for
 //! the full design. Runners are registered per-flavor via the
 //! `proxima_flavor!` macro and looked up by `flavor_id` in
-//! `wake/fire.rs` when a workspace-mode wake fires. The trait is
-//! intentionally minimal in Phase 1 — `WorkspaceScope` lands in
-//! Phase 2.
+//! `wake/fire.rs` when a workspace-mode wake fires.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::{MemoryId, Owner};
+use crate::{MemoryId, Owner, RegisteredRelation};
 
 /// Errors a runner can return from `prepare` or `finalize`.
-///
-/// `Unimplemented` is the v1-Phase-1 sentinel: the Code flavor's
-/// runner returns it so existing behaviour (failure_reason =
-/// "workspace_mode_not_yet_implemented") is preserved while the seam
-/// lands.
 #[derive(Debug, Error)]
 pub enum WorkspaceRunnerError {
     #[error("workspace runner not implemented for this flavor")]
     Unimplemented,
+    #[error("workspace trigger is not eligible for workspace mode: {0}")]
+    TriggerNotEligible(String),
+    #[error("workspace prepare failed: {0}")]
+    PrepareFailed(String),
+    #[error("workspace finalize failed: {0}")]
+    FinalizeFailed(String),
     #[error("workspace runner internal error: {0}")]
     Internal(String),
 }
@@ -52,13 +51,16 @@ pub struct WorkspacePrepareInput<'a> {
     /// The memory whose insertion triggered this wake.
     pub triggering_memory_id: MemoryId,
     /// Schema id of the triggering memory (e.g.
-    /// `"proxima-code/commit-summary-v1"`). Phase 2 uses this with
-    /// the `workspace_triggers` registry to resolve scope; Phase 1
-    /// passes it through unused.
+    /// `"proxima-code/commit-v1"`). Core treats it as an opaque
+    /// flavor-qualified schema id.
     pub triggering_memory_schema_id: &'a str,
+    /// Typed payload for the triggering memory. Core passes it through
+    /// unchanged; the flavor runner interprets its own fields.
+    pub triggering_memory_payload: &'a serde_json::Value,
     /// Provider-neutral capability allowlist for workspace-side
     /// tools. Phase 3 maps these to goose extension/tool names.
     pub workspace_tool_palette: &'a [String],
+    pub effective_recipe_path: &'a Path,
     /// Bytes of the bundled or user recipe selected by `recipe_ref`.
     pub recipe_bytes: &'a [u8],
     /// Pre-computed sha256 hex of `recipe_bytes`. Stored on the
@@ -69,12 +71,13 @@ pub struct WorkspacePrepareInput<'a> {
 /// Everything the runner produces from `prepare` so the dispatcher
 /// can invoke the adapter against the right cwd.
 pub struct WorkspacePreparedRun {
-    pub worktree_path: PathBuf,
-    pub branch_name: String,
-    pub parent_sha: String,
+    pub work_dir: PathBuf,
     /// On-disk path of the rendered effective recipe with workspace
     /// extensions injected. Distinct from the bundled recipe path.
     pub effective_recipe_path: PathBuf,
+    /// Runner-owned state. Core treats this as opaque and hands it
+    /// back to the same runner during finalize.
+    pub runner_state: serde_json::Value,
 }
 
 /// Adapter-level outcome the dispatcher hands back to `finalize`.
@@ -89,8 +92,18 @@ pub struct WorkspaceOutcome {
 
 /// What `finalize` returns once the run Fact is on disk.
 pub struct WorkspaceRunRecord {
-    pub run_memory_id: MemoryId,
-    pub head_sha: String,
+    pub primary_memory_id: Option<MemoryId>,
+}
+
+pub struct WorkspaceFinalizeInput<'a> {
+    pub owner: &'a Owner,
+    pub invocation_id: Uuid,
+    pub root_perspective_memory_id: MemoryId,
+    pub triggering_memory_id: MemoryId,
+    pub authored_relation: RegisteredRelation<'a>,
+    pub derived_from_relation: RegisteredRelation<'a>,
+    pub prepared: WorkspacePreparedRun,
+    pub outcome: WorkspaceOutcome,
 }
 
 #[async_trait::async_trait]
@@ -102,8 +115,7 @@ pub trait WorkspaceRunner: Send + Sync + std::fmt::Debug {
 
     async fn finalize(
         &self,
-        prepared: WorkspacePreparedRun,
-        outcome: WorkspaceOutcome,
+        input: WorkspaceFinalizeInput<'_>,
     ) -> Result<WorkspaceRunRecord, WorkspaceRunnerError>;
 }
 

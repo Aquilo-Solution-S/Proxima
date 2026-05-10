@@ -68,7 +68,7 @@ impl McpTool for CodeSearchCommitsTool {
             let repo_id = match args.repo_handle.as_deref() {
                 Some(handle) => Some(
                     ctx.handles
-                        .resolve_repo(handle)
+                        .resolve_flavor_object(handle, super::REPO_HANDLE_KIND)
                         .ok_or_else(|| McpToolError::UnknownHandle(handle.to_string()))?,
                 ),
                 None => None,
@@ -87,7 +87,11 @@ impl McpTool for CodeSearchCommitsTool {
                 .into_iter()
                 .map(|row| {
                     let handle = ctx.handles.assign_memory(MemoryId::new(row.memory_id));
-                    let repo_handle = ctx.handles.assign_repo(row.repo_id);
+                    let repo_handle = ctx.handles.assign_flavor_object(
+                        super::REPO_HANDLE_KIND,
+                        row.repo_id,
+                        super::REPO_HANDLE_PREFIX,
+                    );
                     CommitMatch {
                         handle: handle.as_str().to_string(),
                         repo_handle: repo_handle.as_str().to_string(),
@@ -114,7 +118,11 @@ impl McpTool for CodeSearchCommitsTool {
                 .into_iter()
                 .map(|row| {
                     let handle = ctx.handles.assign_memory(MemoryId::new(row.memory_id));
-                    let repo_handle = ctx.handles.assign_repo(row.repo_id);
+                    let repo_handle = ctx.handles.assign_flavor_object(
+                        super::REPO_HANDLE_KIND,
+                        row.repo_id,
+                        super::REPO_HANDLE_PREFIX,
+                    );
                     SummaryMatch {
                         handle: handle.as_str().to_string(),
                         repo_handle: repo_handle.as_str().to_string(),

@@ -16,7 +16,7 @@ pub async fn list_repos(
     let (kind, principal_id, org_id) = owner_columns(owner);
 
     let rows = sqlx::query_as::<_, RepoRow>(
-        "SELECT repo_id, canonical_path, display_name, last_cursor, last_polled_at, created_at \
+        "SELECT repo_id, canonical_path, display_name, target_branch, last_cursor, last_polled_at, created_at \
          FROM proxima_code.repos \
          WHERE owner_principal_kind = $1 \
            AND owner_principal_id = $2 \
@@ -46,15 +46,16 @@ pub async fn register_repo(
     display_name: &str,
 ) -> Result<RepoRecord, RepoRegistryError> {
     let (kind, principal_id, org_id) = owner_columns(owner);
+    let target_branch = detect_target_branch(canonical_path);
 
     let row = sqlx::query_as::<_, RepoRow>(
         "INSERT INTO proxima_code.repos \
             (owner_principal_kind, owner_principal_id, owner_org_id, \
-             repo_id, canonical_path, display_name, created_at) \
-         VALUES ($1, $2, $3, $4, $5, $6, now()) \
+             repo_id, canonical_path, display_name, target_branch, created_at) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, now()) \
          ON CONFLICT (owner_principal_kind, owner_principal_id, owner_org_id, canonical_path) \
          DO NOTHING \
-         RETURNING repo_id, canonical_path, display_name, last_cursor, last_polled_at, created_at",
+         RETURNING repo_id, canonical_path, display_name, target_branch, last_cursor, last_polled_at, created_at",
     )
     .bind(kind)
     .bind(principal_id)
@@ -62,6 +63,7 @@ pub async fn register_repo(
     .bind(repo_id)
     .bind(canonical_path)
     .bind(display_name)
+    .bind(target_branch)
     .fetch_optional(pool)
     .await?;
 
@@ -501,7 +503,7 @@ pub async fn get_repo(
     let (kind, principal_id, org_id) = owner_columns(owner);
 
     let row = sqlx::query_as::<_, RepoRow>(
-        "SELECT repo_id, canonical_path, display_name, last_cursor, last_polled_at, created_at \
+        "SELECT repo_id, canonical_path, display_name, target_branch, last_cursor, last_polled_at, created_at \
          FROM proxima_code.repos \
          WHERE owner_principal_kind = $1 \
            AND owner_principal_id = $2 \
@@ -516,6 +518,22 @@ pub async fn get_repo(
     .await?;
 
     Ok(row.map(Into::into))
+}
+
+fn detect_target_branch(canonical_path: &str) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(canonical_path)
+        .arg("symbolic-ref")
+        .arg("--short")
+        .arg("HEAD")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!branch.is_empty()).then_some(branch)
 }
 
 /// Persist new `cursor` + `polled_at` after a successful `run_poll`.

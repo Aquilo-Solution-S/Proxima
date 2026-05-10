@@ -6,6 +6,7 @@ pub struct RepoRecord {
     pub repo_id: Uuid,
     pub canonical_path: String,
     pub display_name: String,
+    pub target_branch: Option<String>,
     pub last_cursor: Option<Vec<u8>>,
     pub last_polled_at: Option<time::OffsetDateTime>,
     pub created_at: time::OffsetDateTime,

@@ -28,8 +28,9 @@ pub use heads::{
 };
 pub use schemas::{
     CODE_BLOB_BYTE_RANGE_SCHEMA, CODE_BLOB_SCHEMA, CODE_BLOB_WHOLE_SCHEMA,
-    CODE_COMMIT_OBJECT_SCHEMA, CODE_COMMIT_WHOLE_SCHEMA, LOCAL_GIT_SOURCE_ID, schema_registry,
-    schema_registry_with,
+    CODE_COMMIT_OBJECT_SCHEMA, CODE_COMMIT_WHOLE_SCHEMA, LOCAL_GIT_SOURCE_ID,
+    WORKSPACE_RUN_OBJECT_SCHEMA, WORKSPACE_RUN_WHOLE_SCHEMA, WORKSPACE_RUNNER_SOURCE_ID,
+    schema_registry, schema_registry_with,
 };
 
 use proxima_core::error::ProtocolError;

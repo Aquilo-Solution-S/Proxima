@@ -3,7 +3,7 @@ use std::sync::Arc;
 use proxima_core::engine::Engine;
 use proxima_storage_pg::PgStorage;
 
-use super::schemas::{schema_registry, schema_registry_with};
+use super::schemas::schema_registry_with_config;
 
 /// Convenience: build a fully-wired `Engine` over a `PgStorage` and the
 /// proxima-code flavor's schemas plus the helper-required cited /
@@ -12,7 +12,15 @@ use super::schemas::{schema_registry, schema_registry_with};
 pub fn build_engine(storage: PgStorage, auth: Box<dyn proxima_core::auth::AuthResolver>) -> Engine {
     use proxima_core::verbs::query::MemoryStore;
 
-    Engine::new(schema_registry(), MemoryStore::new(), auth).with_storage(Arc::new(storage))
+    let runner = Arc::new(crate::workspace_runner::CodeWorkspaceRunner::new(
+        storage.pool().clone(),
+    ));
+    Engine::new(
+        schema_registry_with_config(|_| {}, Some(runner)),
+        MemoryStore::new(),
+        auth,
+    )
+    .with_storage(Arc::new(storage))
 }
 
 /// Build an `Engine` whose schema registry layers `extra` flavor
@@ -28,6 +36,13 @@ pub fn build_engine_with(
 ) -> Engine {
     use proxima_core::verbs::query::MemoryStore;
 
-    Engine::new(schema_registry_with(extra), MemoryStore::new(), auth)
-        .with_storage(Arc::new(storage))
+    let runner = Arc::new(crate::workspace_runner::CodeWorkspaceRunner::new(
+        storage.pool().clone(),
+    ));
+    Engine::new(
+        schema_registry_with_config(extra, Some(runner)),
+        MemoryStore::new(),
+        auth,
+    )
+    .with_storage(Arc::new(storage))
 }

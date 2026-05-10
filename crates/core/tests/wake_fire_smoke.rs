@@ -21,7 +21,7 @@ use proxima_core::auth::NoAuth;
 use proxima_core::engine::Engine;
 use proxima_core::outbox::{ChangeEvent, ChangeEventKind, EntityKind, EntityRef};
 use proxima_core::personality::workspace::{
-    WorkspaceOutcome, WorkspacePrepareInput, WorkspacePreparedRun, WorkspaceRunRecord,
+    WorkspaceFinalizeInput, WorkspacePrepareInput, WorkspacePreparedRun, WorkspaceRunRecord,
     WorkspaceRunner, WorkspaceRunnerError,
 };
 use proxima_core::personality::{
@@ -74,8 +74,7 @@ impl WorkspaceRunner for StubWorkspaceRunner {
 
     async fn finalize(
         &self,
-        _prepared: WorkspacePreparedRun,
-        _outcome: WorkspaceOutcome,
+        _input: WorkspaceFinalizeInput<'_>,
     ) -> Result<WorkspaceRunRecord, WorkspaceRunnerError> {
         Err(WorkspaceRunnerError::Unimplemented)
     }
@@ -600,6 +599,7 @@ impl FireFixture {
             "proxima-test",
             Arc::new(StubWorkspaceRunner) as Arc<dyn WorkspaceRunner>,
         );
+        registry.add_workspace_trigger("proxima-test/wake-fire-fact-v1");
         let frozen_registry = registry.freeze();
         let engine = Arc::new(
             Engine::new(frozen_registry, MemoryStore::new(), Box::new(resolver))

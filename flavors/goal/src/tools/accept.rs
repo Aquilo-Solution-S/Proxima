@@ -58,7 +58,7 @@ pub async fn accept_goal(
         EntityRef::Goal(id) => id,
         EntityRef::Memory(_)
         | EntityRef::Edge(_)
-        | EntityRef::Repo(_)
+        | EntityRef::FlavorObject { .. }
         | EntityRef::Personality(_)
         | EntityRef::WakeEntry(_) => {
             return Err(McpToolError::InvalidInput(
