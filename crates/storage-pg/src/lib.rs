@@ -29,9 +29,9 @@ use proxima_core::verbs::query::{QueryRequest, QueryResponse};
 use proxima_core::verbs::subscribe::ChangeEventStream;
 use proxima_core::{
     BindInferenceTierRequest, BindInferenceTierResponse, ChangeEvent, GoalId, InferenceTargetRow,
-    InferenceTierBindingRow, MemoryId, ModelTier, Owner, RegisterInferenceTargetRequest,
-    RegisterInferenceTargetResponse, RemoveInferenceTargetRequest, RemoveInferenceTargetResponse,
-    SourceBatchId, Storage, StorageError, StorageHandle,
+    InferenceTierBindingRow, MasterTokenPersonality, MemoryId, ModelTier, Owner,
+    RegisterInferenceTargetRequest, RegisterInferenceTargetResponse, RemoveInferenceTargetRequest,
+    RemoveInferenceTargetResponse, SourceBatchId, Storage, StorageError, StorageHandle,
 };
 use sqlx::PgPool;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
@@ -315,11 +315,14 @@ impl Storage for PgStorage {
         verbs::consolidate::instantiate_personality(&self.pool, req).await
     }
 
-    async fn ensure_shell_author_personality(
+    async fn ensure_master_token_personality(
         &self,
-        owner: &Owner,
-    ) -> Result<PersonalityInstanceId, StorageError> {
-        verbs::shell_author::ensure_shell_author(&self.pool, owner).await
+        _owner: &Owner,
+        _master_token_id: uuid::Uuid,
+    ) -> Result<MasterTokenPersonality, StorageError> {
+        Err(StorageError::Internal(
+            "ensure_master_token_personality stub — implemented in Task 3".into(),
+        ))
     }
 
     async fn set_wake_entries(

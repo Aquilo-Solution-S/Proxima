@@ -79,15 +79,10 @@ async fn resolve_caller(
             personality_instance_id: id,
         })
     } else {
-        // Master-token: ensure shell-author exists for this owner.
-        let id = storage
-            .ensure_shell_author_personality(&ctx.owner)
-            .await
-            .map_err(|e| e.to_string())?
-            .into_inner();
-        Ok(PersonalityConfigChangedCaller::MasterToken {
-            shell_author_personality_instance_id: id,
-        })
+        // Master-token caller branch is rewritten in Task 7 to read
+        // from ctx.master_token_id; the placeholder here keeps the
+        // workspace compiling between Task 2 and Task 7.
+        Err("master-token audit caller resolution moved to Task 7".to_string())
     }
 }
 

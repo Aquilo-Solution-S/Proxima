@@ -46,6 +46,18 @@ pub type WakeEntriesMutator = Box<
     dyn FnOnce(&[WakeEntryDraft]) -> Result<Vec<WakeEntryDraft>, String> + Send + 'static
 >;
 
+/// Identity row for a per-master-token shell-author personality.
+///
+/// Returned by [`Storage::ensure_master_token_personality`].
+/// Carries both the personality instance id and the
+/// `current_root_perspective_memory_id` so callers can populate
+/// `McpToolCtx.caller_self_perspective` without a second round trip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MasterTokenPersonality {
+    pub instance_id: crate::PersonalityInstanceId,
+    pub self_perspective_memory_id: crate::MemoryId,
+}
+
 #[async_trait::async_trait]
 pub trait Storage: Send + Sync {
     /// Atomic Fact materialization per docs/14 §EventIngest.
@@ -220,16 +232,18 @@ pub trait Storage: Send + Sync {
         req: &InstantiatePersonalityRequest,
     ) -> Result<InstantiatePersonalityResponse, StorageError>;
 
-    /// Ensure a substrate-managed `proxima/shell-author` personality exists
-    /// for the given owner. Used as the provenance Root Perspective for
-    /// master-token MCP-CRUD writes. Idempotent: returns the existing
-    /// instance id on replay, or mints a fresh one with `display_name =
-    /// "shell-author"`, `purpose = "Substrate authorship for master-token
-    /// MCP CRUD writes"`, and an empty WakeConfig.
-    async fn ensure_shell_author_personality(
+    /// Ensure a per-master-token shell-author personality exists for
+    /// the `(owner, master_token_id)` pair. Idempotent: returns the
+    /// existing identity on replay, or mints a fresh personality with
+    /// `display_name = "shell-author"`,
+    /// `purpose = "Per-master-token MCP client identity"`, an empty
+    /// `WakeConfig`, and a row in
+    /// `proxima_core.master_token_personality`.
+    async fn ensure_master_token_personality(
         &self,
         owner: &Owner,
-    ) -> Result<PersonalityInstanceId, StorageError>;
+        master_token_id: uuid::Uuid,
+    ) -> Result<MasterTokenPersonality, StorageError>;
 
     /// Replace active WakeEntry rows for one personality instance.
     async fn set_wake_entries(
@@ -558,11 +572,14 @@ impl Storage for NoopStorage {
         Err(StorageError::Internal("NoopStorage rejects writes".into()))
     }
 
-    async fn ensure_shell_author_personality(
+    async fn ensure_master_token_personality(
         &self,
         _owner: &Owner,
-    ) -> Result<PersonalityInstanceId, StorageError> {
-        Ok(PersonalityInstanceId::new(uuid::Uuid::nil()))
+        _master_token_id: uuid::Uuid,
+    ) -> Result<MasterTokenPersonality, StorageError> {
+        Err(StorageError::Internal(
+            "mock: ensure_master_token_personality not stubbed".into(),
+        ))
     }
 
     async fn set_wake_entries(
