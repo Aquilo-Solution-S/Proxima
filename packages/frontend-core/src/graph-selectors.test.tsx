@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import type { EdgeRow, GoalRow, MemoryRow, Owner, SchemaInfo } from "./bindings";
+import type { EdgeRow, EntityRef, GoalRow, MemoryRow, Owner, SchemaInfo } from "./bindings";
 import { CORE_FLAVOR_ID, defaultGraphFilterState } from "./graph-filter-store";
-import { filterGraphSnapshot, schemaFlavor, visibleEntityIds } from "./graph-selectors";
-import type { GraphSnapshot } from "./graph-store";
+import { filterGraphSnapshot, oneHopLineage, schemaFlavor, visibleEntityIds } from "./graph-selectors";
+import type { DecodedMemory, GraphSnapshot } from "./graph-store";
 import { createHub } from "./hub";
 
 const owner: Owner = {
@@ -32,12 +32,17 @@ const goal = (id: string, text: string): GoalRow => ({
   payload: [],
 });
 
-const edge = (id: string, source: string, target: string): EdgeRow => ({
+const makeMemory = (id: string, kind: MemoryRow["kind"], schema_id: string): DecodedMemory => ({
+  row: { id, kind, schema_id, schema_version: 1, owner, payload: [] },
+  payload: null,
+});
+
+const edge = (id: string, relation: string, source: EntityRef, target: EntityRef): EdgeRow => ({
   id,
-  relation: "code/calls",
+  relation,
   relation_class: "Structural",
-  source: { Memory: source },
-  target: { Memory: target },
+  source,
+  target,
   owner,
   payload: [],
 });
@@ -68,7 +73,7 @@ describe("graph selectors", () => {
       ]),
       edgesById: new Map([[
         "019dfa10-0000-7000-8000-000000000003",
-        edge("019dfa10-0000-7000-8000-000000000003", fact.id, abs.id),
+        edge("019dfa10-0000-7000-8000-000000000003", "code/calls", { Memory: fact.id }, { Memory: abs.id }),
       ]]),
     });
     const filter = { ...defaultGraphFilterState(), layers: new Set(["Fact" as const]) };
@@ -150,5 +155,35 @@ describe("graph selectors", () => {
     );
     expect(out.memories).toHaveLength(0);
     expect(out.filteredOutEntityCount).toBe(1);
+  });
+});
+
+describe("oneHopLineage", () => {
+  it("groups outbound and inbound by relation/target_pillar/target_schema_id", () => {
+    const memoryId = "F1";
+    const memoriesById = new Map<string, DecodedMemory>([
+      ["F1", makeMemory("F1", "Fact", "schema-a")],
+      ["A1", makeMemory("A1", "Abstraction", "schema-b")],
+      ["A2", makeMemory("A2", "Abstraction", "schema-b")],
+      ["P1", makeMemory("P1", "Perspective", "schema-c")],
+    ]);
+    const edgesById = new Map<string, EdgeRow>([
+      ["e1", edge("e1", "informs", { Memory: "F1" }, { Memory: "A1" })],
+      ["e2", edge("e2", "informs", { Memory: "F1" }, { Memory: "A2" })],
+      ["e3", edge("e3", "asserts", { Memory: "P1" }, { Memory: "F1" })],
+    ]);
+    const result = oneHopLineage(memoryId, edgesById, memoriesById);
+    expect(result.outbound).toEqual([
+      { relation: "informs", target_kind: "Abstraction", target_schema_id: "schema-b", count: 2 },
+    ]);
+    expect(result.inbound).toEqual([
+      { relation: "asserts", target_kind: "Perspective", target_schema_id: "schema-c", count: 1 },
+    ]);
+  });
+
+  it("returns empty arrays when no edges incident on the memory", () => {
+    const result = oneHopLineage("LONELY", new Map(), new Map());
+    expect(result.outbound).toEqual([]);
+    expect(result.inbound).toEqual([]);
   });
 });
