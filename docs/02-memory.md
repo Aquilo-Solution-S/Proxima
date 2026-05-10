@@ -494,9 +494,14 @@ consumers querying history walk the chain backward.
 
 **Supersession is intra-personality by default.** Re-deriving under a
 different `personality_id` produces a *parallel* lineage, not a
-supersession — Stoic Visionary's Abstraction over Fact `f` does not
-supersede Workhorse Programmer's Abstraction over the same `f`. They
-coexist as parallel interpretations.
+supersession — an Abstraction authored by a personality with one
+self-Perspective (e.g., a hypothetical "Stoic Visionary" personality) over
+Fact `f` does not supersede an Abstraction authored by a personality with a
+different self-Perspective (e.g., "Workhorse Programmer") over the same
+`f`. They coexist as parallel interpretations. (Names like "Stoic
+Visionary" and "Workhorse Programmer" here are user-chosen labels, not
+engine archetypes; see
+[`docs/superpowers/specs/2026-05-10-personality-vocabulary-and-archetype-discipline.md`](superpowers/specs/2026-05-10-personality-vocabulary-and-archetype-discipline.md).)
 
 **Cross-personality supersession is an editorial gesture** — "this
 voice replaces that one across the agent's identity." It is reserved
