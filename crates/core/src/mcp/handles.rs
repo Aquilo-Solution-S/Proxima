@@ -3,12 +3,12 @@ use std::sync::Mutex;
 
 use crate::{EdgeId, GoalId, MemoryId, PersonalityInstanceId};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum EntityRef {
     Memory(MemoryId),
     Edge(EdgeId),
     Goal(GoalId),
-    Repo(uuid::Uuid),
+    FlavorObject { kind: String, id: uuid::Uuid },
     Personality(PersonalityInstanceId),
     WakeEntry(uuid::Uuid),
 }
@@ -33,7 +33,7 @@ struct HandleTableInner {
     memory_counter: u32,
     edge_counter: u32,
     goal_counter: u32,
-    repo_counter: u32,
+    flavor_counters: HashMap<char, u32>,
     personality_counter: u32,
     wake_entry_counter: u32,
     by_entity: HashMap<EntityRef, Handle>,
@@ -60,8 +60,24 @@ impl HandleTable {
         self.assign(EntityRef::Goal(id), 'G', |inner| &mut inner.goal_counter)
     }
 
-    pub fn assign_repo(&self, id: uuid::Uuid) -> Handle {
-        self.assign(EntityRef::Repo(id), 'R', |inner| &mut inner.repo_counter)
+    pub fn assign_flavor_object(
+        &self,
+        kind: impl Into<String>,
+        id: uuid::Uuid,
+        prefix: char,
+    ) -> Handle {
+        assert!(
+            prefix.is_ascii_uppercase(),
+            "flavor object handle prefix must be ASCII uppercase"
+        );
+        self.assign(
+            EntityRef::FlavorObject {
+                kind: kind.into(),
+                id,
+            },
+            prefix,
+            |inner| inner.flavor_counters.entry(prefix).or_insert(0),
+        )
     }
 
     pub fn assign_personality(&self, id: PersonalityInstanceId) -> Handle {
@@ -91,7 +107,7 @@ impl HandleTable {
         *next = next.checked_add(1).expect("handle counter overflow");
         let raw = format!("{prefix}{next}");
         let handle = Handle(raw.clone());
-        inner.by_entity.insert(entity, handle.clone());
+        inner.by_entity.insert(entity.clone(), handle.clone());
         inner.by_handle.insert(raw, entity);
         handle
     }
@@ -106,7 +122,7 @@ impl HandleTable {
             .expect("handle table mutex poisoned")
             .by_handle
             .get(raw)
-            .copied()
+            .cloned()
     }
 
     #[must_use]
@@ -115,7 +131,7 @@ impl HandleTable {
             EntityRef::Memory(id) => Some(id),
             EntityRef::Edge(_)
             | EntityRef::Goal(_)
-            | EntityRef::Repo(_)
+            | EntityRef::FlavorObject { .. }
             | EntityRef::Personality(_)
             | EntityRef::WakeEntry(_) => None,
         }
@@ -127,7 +143,7 @@ impl HandleTable {
             EntityRef::Edge(id) => Some(id),
             EntityRef::Memory(_)
             | EntityRef::Goal(_)
-            | EntityRef::Repo(_)
+            | EntityRef::FlavorObject { .. }
             | EntityRef::Personality(_)
             | EntityRef::WakeEntry(_) => None,
         }
@@ -139,17 +155,21 @@ impl HandleTable {
             EntityRef::Goal(id) => Some(id),
             EntityRef::Memory(_)
             | EntityRef::Edge(_)
-            | EntityRef::Repo(_)
+            | EntityRef::FlavorObject { .. }
             | EntityRef::Personality(_)
             | EntityRef::WakeEntry(_) => None,
         }
     }
 
     #[must_use]
-    pub fn resolve_repo(&self, raw: &str) -> Option<uuid::Uuid> {
+    pub fn resolve_flavor_object(&self, raw: &str, kind: &str) -> Option<uuid::Uuid> {
         match self.resolve(raw)? {
-            EntityRef::Repo(id) => Some(id),
-            EntityRef::Memory(_)
+            EntityRef::FlavorObject {
+                kind: actual_kind,
+                id,
+            } if actual_kind == kind => Some(id),
+            EntityRef::FlavorObject { .. }
+            | EntityRef::Memory(_)
             | EntityRef::Edge(_)
             | EntityRef::Goal(_)
             | EntityRef::Personality(_)
@@ -164,7 +184,7 @@ impl HandleTable {
             EntityRef::Memory(_)
             | EntityRef::Edge(_)
             | EntityRef::Goal(_)
-            | EntityRef::Repo(_)
+            | EntityRef::FlavorObject { .. }
             | EntityRef::WakeEntry(_) => None,
         }
     }
@@ -176,7 +196,7 @@ impl HandleTable {
             EntityRef::Memory(_)
             | EntityRef::Edge(_)
             | EntityRef::Goal(_)
-            | EntityRef::Repo(_)
+            | EntityRef::FlavorObject { .. }
             | EntityRef::Personality(_) => None,
         }
     }
@@ -185,7 +205,7 @@ impl HandleTable {
 fn is_valid_handle_shape(raw: &str) -> bool {
     let mut chars = raw.chars();
     match chars.next() {
-        Some('N' | 'E' | 'G' | 'R' | 'P' | 'W') => {}
+        Some(c) if c.is_ascii_uppercase() => {}
         _ => return false,
     }
     let rest = chars.as_str();

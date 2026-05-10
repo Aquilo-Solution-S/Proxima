@@ -790,6 +790,7 @@ export type RepoRecordTs = {
 	repo_id: string,
 	canonical_path: string,
 	display_name: string,
+	target_branch: string | null,
 	has_been_polled: boolean,
 	last_polled_at: string | null,
 	created_at: string,

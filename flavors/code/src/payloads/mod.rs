@@ -5,6 +5,7 @@ pub mod development_perspective;
 pub mod edge_calls;
 pub mod file_revision;
 pub mod personality_self;
+pub mod workspace;
 
 /// Serde adapter for 32-byte content hashes that round-trips through
 /// Postgres `bytea` (rendered as `"\xDEADBEEF..."` by `row_to_json`)
@@ -84,3 +85,6 @@ pub use development_perspective::CodeDevelopmentPerspectiveV1;
 pub use edge_calls::EdgeCallsV1;
 pub use file_revision::{FileRevisionV1, FileState};
 pub use personality_self::{CodeCommitSummarizerSelfV1, CodeEngineerSelfV1};
+pub use workspace::{
+    WorkspaceDecision, WorkspaceDecisionV1, WorkspaceDiffFile, WorkspaceDiffStat, WorkspaceRunV1,
+};

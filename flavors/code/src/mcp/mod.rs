@@ -1,5 +1,8 @@
 mod sql;
 
+pub(crate) const REPO_HANDLE_KIND: &str = "proxima-code/repo";
+pub(crate) const REPO_HANDLE_PREFIX: char = 'R';
+
 pub mod open_file_revision;
 pub mod search_chunks;
 pub mod search_commits;

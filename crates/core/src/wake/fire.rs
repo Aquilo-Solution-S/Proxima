@@ -25,14 +25,16 @@ use crate::Owner;
 use crate::engine::Engine;
 use crate::error::ProtocolError;
 use crate::mcp::provider_safe_tool_name;
-use crate::personality::workspace::{WorkspacePrepareInput, WorkspaceRunnerError};
+use crate::personality::workspace::{
+    WorkspaceFinalizeInput, WorkspaceOutcome, WorkspacePrepareInput, WorkspaceRunnerError,
+};
 use crate::personality::{
     PersonalityInstanceId, SidecarSpec, WakeChainDepth, WakeEntryExecutionMode, WakeEntryRow,
     WakeInvocationFinalize, WakeInvocationStart, WakeInvocationStatus,
 };
 use crate::wake::context::assemble_wake_context;
 use crate::wake::target_adapter::{
-    TargetAdapter, TargetInvocation, TargetOutcome, TargetOutcomeKind,
+    TargetAdapter, TargetAdapterError, TargetInvocation, TargetOutcome, TargetOutcomeKind,
 };
 use crate::wake::token_store::WakeTokenContext;
 
@@ -45,25 +47,6 @@ pub struct FireWakeEntryInput {
     pub wake_entry: WakeEntryRow,
     pub change_event_seq: Uuid,
     pub triggering_memory_id: Uuid,
-}
-
-/// Phase 1 dispatch outcomes that all map to a "Failed" finalize
-/// state. Each variant feeds a deterministic `failure_reason` string
-/// so observability (and the regression tests) can distinguish the
-/// dispatch decision without parsing arbitrary text.
-enum WorkspaceFinalizeOutcome {
-    /// `flavor_id_for_dispatch` did not resolve to a registered runner.
-    NoRunner,
-    /// Runner returned `WorkspaceRunnerError::Unimplemented` — Phase 1's
-    /// Code-flavor stub takes this path.
-    Unimplemented,
-    /// Runner returned a prepared run, but Phase 1's wake/fire dispatch
-    /// does not yet drive the adapter for workspace mode. Phase 3 lights
-    /// this up; until then it is a sentinel for runners that are ahead
-    /// of the dispatch path.
-    Unsupported(String),
-    /// Runner returned `WorkspaceRunnerError::Internal(..)`.
-    InternalError(String),
 }
 
 /// Drive one matched wake entry end-to-end.
@@ -184,93 +167,7 @@ pub async fn fire_wake_entry(
         .await
         .map_err(|e| ProtocolError::internal(format!("start_wake_invocation: {e}")))?;
 
-    // 6. Workspace mode dispatch. Look up the flavor's runner; if
-    // missing OR if the runner returns Unimplemented, finalize with
-    // the legacy failure_reason so observability is unchanged. Phase 3
-    // lights up the Code flavor's runner; Phase 2 swaps the trigger-id
-    // prefix shortcut for a proper personality_instance_id ->
-    // flavor_id resolver.
-    if matches!(
-        input.wake_entry.execution_mode,
-        WakeEntryExecutionMode::Workspace
-    ) {
-        let flavor_id_for_dispatch = input.wake_entry.trigger_id.split('/').next().unwrap_or("");
-
-        let runner_opt = engine.registry().workspace_runner(flavor_id_for_dispatch);
-
-        let mcp_url_opt = engine.mcp_url();
-        let mcp_url_for_runner: &str = mcp_url_opt.as_deref().unwrap_or("");
-
-        let outcome = match runner_opt {
-            None => WorkspaceFinalizeOutcome::NoRunner,
-            Some(runner) => {
-                // Phase 1: the only registered runner is Code's
-                // Unimplemented stub; this branch returns
-                // WorkspaceRunnerError::Unimplemented and we map it
-                // back to the legacy failure_reason. Phase 3 wires the
-                // real flow.
-                let prepare_input = WorkspacePrepareInput {
-                    invocation_id: invocation_id_for_dispatch,
-                    owner: &input.owner,
-                    wake_token,
-                    mcp_url: mcp_url_for_runner,
-                    root_perspective_memory_id: root_perspective_memory_id_for_dispatch,
-                    triggering_memory_id: triggering_memory_id_for_dispatch,
-                    triggering_memory_schema_id: input.wake_entry.trigger_id.as_str(),
-                    workspace_tool_palette: &input.wake_entry.workspace_tool_palette,
-                    recipe_bytes: &recipe_bytes,
-                    recipe_sha256: &recipe_sha256,
-                };
-                match runner.prepare(prepare_input).await {
-                    Ok(_prepared) => WorkspaceFinalizeOutcome::Unsupported(
-                        "workspace_runner_returned_prepared_but_phase1_does_not_drive".into(),
-                    ),
-                    Err(WorkspaceRunnerError::Unimplemented) => {
-                        WorkspaceFinalizeOutcome::Unimplemented
-                    }
-                    Err(WorkspaceRunnerError::Internal(msg)) => {
-                        WorkspaceFinalizeOutcome::InternalError(msg)
-                    }
-                }
-            }
-        };
-
-        engine.wake_token_store().revoke(wake_token).await;
-
-        let failure_reason = match outcome {
-            WorkspaceFinalizeOutcome::NoRunner => Some(format!(
-                "workspace_no_runner_for_flavor:{flavor_id_for_dispatch}"
-            )),
-            WorkspaceFinalizeOutcome::Unimplemented => {
-                Some("workspace_mode_not_yet_implemented".to_string())
-            }
-            WorkspaceFinalizeOutcome::InternalError(msg) => {
-                Some(format!("workspace_runner_internal:{msg}"))
-            }
-            WorkspaceFinalizeOutcome::Unsupported(msg) => Some(msg),
-        };
-
-        finalize(
-            engine,
-            &input,
-            WakeInvocationFinalizeOutcome {
-                status: WakeInvocationStatus::Failed,
-                turn_count: None,
-                cost_usd: None,
-                failure_reason,
-                exit_code: None,
-                duration_ms: None,
-                stdout_tail: None,
-                stderr_tail: None,
-                stdout_truncated: false,
-                stderr_truncated: false,
-            },
-        )
-        .await?;
-        return Ok(true);
-    }
-
-    // 7. Build the four params as JSON values for goose --params.
+    // 6. Build the four params as JSON values for goose --params.
     // The recipe drops anything it doesn't bind, so passing all four
     // unconditionally is the cheapest contract.
     let mut params: HashMap<String, serde_json::Value> = HashMap::new();
@@ -295,7 +192,7 @@ pub async fn fire_wake_entry(
             .map_err(|e| ProtocolError::internal(format!("serialize triggering_memory: {e}")))?,
     );
 
-    // 8. Build env. PROXIMA_WAKE_TOKEN + PROXIMA_MCP_URL are the
+    // 7. Build env. PROXIMA_WAKE_TOKEN + PROXIMA_MCP_URL are the
     // always-injected pair the substrate authorization layer relies on.
     // Target-resolved overrides (e.g. GOOSE_PROFILE) layer on top.
     let mcp_url = engine.mcp_url().ok_or_else(|| {
@@ -315,8 +212,146 @@ pub async fn fire_wake_entry(
         &mcp_url,
         wake_token,
         &input.wake_entry.substrate_tool_palette,
+        &input.wake_entry.workspace_tool_palette,
     )
     .await?;
+
+    // 8. Workspace mode dispatch. Core resolves only flavor-generic
+    // eligibility; the runner interprets the triggering payload.
+    if matches!(
+        input.wake_entry.execution_mode,
+        WakeEntryExecutionMode::Workspace
+    ) {
+        let flavor_id_for_dispatch = input.wake_entry.trigger_id.split('/').next().unwrap_or("");
+        let runner_opt = engine.registry().workspace_runner(flavor_id_for_dispatch);
+        let Some(runner) = runner_opt else {
+            engine.wake_token_store().revoke(wake_token).await;
+            let _ = tokio::fs::remove_file(&effective_recipe_path).await;
+            finalize(
+                engine,
+                &input,
+                WakeInvocationFinalizeOutcome::failed(format!(
+                    "workspace_no_runner_for_flavor:{flavor_id_for_dispatch}"
+                )),
+            )
+            .await?;
+            return Ok(true);
+        };
+
+        if !engine
+            .registry()
+            .is_workspace_trigger(&input.wake_entry.trigger_id)
+        {
+            engine.wake_token_store().revoke(wake_token).await;
+            let _ = tokio::fs::remove_file(&effective_recipe_path).await;
+            finalize(
+                engine,
+                &input,
+                WakeInvocationFinalizeOutcome::failed(format!(
+                    "workspace_trigger_not_eligible:{}",
+                    input.wake_entry.trigger_id
+                )),
+            )
+            .await?;
+            return Ok(true);
+        }
+
+        let prepare_input = WorkspacePrepareInput {
+            invocation_id: invocation_id_for_dispatch,
+            owner: &input.owner,
+            wake_token,
+            mcp_url: &mcp_url,
+            root_perspective_memory_id: root_perspective_memory_id_for_dispatch,
+            triggering_memory_id: triggering_memory_id_for_dispatch,
+            triggering_memory_schema_id: input.wake_entry.trigger_id.as_str(),
+            triggering_memory_payload: &wake_context.triggering_memory.typed_payload,
+            workspace_tool_palette: &input.wake_entry.workspace_tool_palette,
+            effective_recipe_path: &effective_recipe_path,
+            recipe_bytes: &recipe_bytes,
+            recipe_sha256: &recipe_sha256,
+        };
+        let prepared = match runner.prepare(prepare_input).await {
+            Ok(prepared) => prepared,
+            Err(WorkspaceRunnerError::Unimplemented) => {
+                engine.wake_token_store().revoke(wake_token).await;
+                let _ = tokio::fs::remove_file(&effective_recipe_path).await;
+                finalize(
+                    engine,
+                    &input,
+                    WakeInvocationFinalizeOutcome::failed(
+                        "workspace_mode_not_yet_implemented".to_string(),
+                    ),
+                )
+                .await?;
+                return Ok(true);
+            }
+            Err(err) => {
+                engine.wake_token_store().revoke(wake_token).await;
+                let _ = tokio::fs::remove_file(&effective_recipe_path).await;
+                finalize(
+                    engine,
+                    &input,
+                    WakeInvocationFinalizeOutcome::failed(format!(
+                        "workspace_runner_prepare:{err}"
+                    )),
+                )
+                .await?;
+                return Ok(true);
+            }
+        };
+
+        let max_rounds = u32::from(input.wake_entry.max_rounds);
+        let outcome_result = adapter
+            .run(TargetInvocation {
+                recipe_path: prepared.effective_recipe_path.clone(),
+                params,
+                max_rounds,
+                env,
+                timeout: per_invocation_timeout(max_rounds),
+                cwd: Some(prepared.work_dir.clone()),
+            })
+            .await;
+
+        let finalize_outcome = wake_outcome_from_target_result(&input, outcome_result);
+        let workspace_outcome = WorkspaceOutcome {
+            exit_code: finalize_outcome.exit_code,
+            stdout_tail: finalize_outcome.stdout_tail.clone(),
+            stderr_tail: finalize_outcome.stderr_tail.clone(),
+            duration_ms: finalize_outcome.duration_ms,
+        };
+        let authored_relation = engine
+            .registry()
+            .resolve_relation(crate::CORE_AUTHORED_RELATION)
+            .ok_or_else(|| ProtocolError::internal("missing core authored relation"))?;
+        let derived_from_relation = engine
+            .registry()
+            .resolve_relation(crate::CORE_DERIVED_FROM_RELATION)
+            .ok_or_else(|| ProtocolError::internal("missing core derived-from relation"))?;
+        let finalized = runner
+            .finalize(WorkspaceFinalizeInput {
+                owner: &input.owner,
+                invocation_id: invocation_id_for_dispatch,
+                root_perspective_memory_id: root_perspective_memory_id_for_dispatch,
+                triggering_memory_id: triggering_memory_id_for_dispatch,
+                authored_relation,
+                derived_from_relation,
+                prepared,
+                outcome: workspace_outcome,
+            })
+            .await;
+
+        engine.wake_token_store().revoke(wake_token).await;
+        let _ = tokio::fs::remove_file(&effective_recipe_path).await;
+
+        let outcome = match finalized {
+            Ok(_) => finalize_outcome,
+            Err(err) => {
+                WakeInvocationFinalizeOutcome::failed(format!("workspace_runner_finalize:{err}"))
+            }
+        };
+        finalize(engine, &input, outcome).await?;
+        return Ok(true);
+    }
 
     // 9. Run adapter.
     let max_rounds = u32::from(input.wake_entry.max_rounds);
@@ -427,6 +462,81 @@ struct WakeInvocationFinalizeOutcome {
     stderr_tail: Option<String>,
     stdout_truncated: bool,
     stderr_truncated: bool,
+}
+
+impl WakeInvocationFinalizeOutcome {
+    fn failed(failure_reason: String) -> Self {
+        Self {
+            status: WakeInvocationStatus::Failed,
+            turn_count: None,
+            cost_usd: None,
+            failure_reason: Some(failure_reason),
+            exit_code: None,
+            duration_ms: None,
+            stdout_tail: None,
+            stderr_tail: None,
+            stdout_truncated: false,
+            stderr_truncated: false,
+        }
+    }
+}
+
+fn wake_outcome_from_target_result(
+    input: &FireWakeEntryInput,
+    outcome_result: Result<TargetOutcome, TargetAdapterError>,
+) -> WakeInvocationFinalizeOutcome {
+    match outcome_result {
+        Ok(TargetOutcome {
+            kind,
+            turn_count,
+            exit_code,
+            duration_ms,
+            stdout_tail,
+            stderr_tail,
+            stdout_truncated,
+            stderr_truncated,
+        }) => match kind {
+            TargetOutcomeKind::Succeeded => WakeInvocationFinalizeOutcome {
+                status: WakeInvocationStatus::Succeeded,
+                turn_count: turn_count.and_then(|c| u16::try_from(c.max(0)).ok()),
+                cost_usd: None,
+                failure_reason: None,
+                exit_code,
+                duration_ms: Some(duration_ms),
+                stdout_tail: Some(stdout_tail),
+                stderr_tail: Some(stderr_tail),
+                stdout_truncated,
+                stderr_truncated,
+            },
+            TargetOutcomeKind::Truncated => WakeInvocationFinalizeOutcome {
+                status: WakeInvocationStatus::Truncated,
+                turn_count: turn_count
+                    .and_then(|c| u16::try_from(c.max(0)).ok())
+                    .or(Some(input.wake_entry.max_rounds)),
+                cost_usd: None,
+                failure_reason: Some("max_rounds_reached".to_string()),
+                exit_code,
+                duration_ms: Some(duration_ms),
+                stdout_tail: Some(stdout_tail),
+                stderr_tail: Some(stderr_tail),
+                stdout_truncated,
+                stderr_truncated,
+            },
+            TargetOutcomeKind::Failed => WakeInvocationFinalizeOutcome {
+                status: WakeInvocationStatus::Failed,
+                turn_count: turn_count.and_then(|c| u16::try_from(c.max(0)).ok()),
+                cost_usd: None,
+                failure_reason: Some(stderr_tail.clone()),
+                exit_code,
+                duration_ms: Some(duration_ms),
+                stdout_tail: Some(stdout_tail),
+                stderr_tail: Some(stderr_tail),
+                stdout_truncated,
+                stderr_truncated,
+            },
+        },
+        Err(e) => WakeInvocationFinalizeOutcome::failed(format!("adapter_error: {e}")),
+    }
 }
 
 async fn finalize(
@@ -554,7 +664,8 @@ async fn write_effective_recipe(
     source_bytes: &[u8],
     mcp_url: &str,
     wake_token: Uuid,
-    available_tools: &[String],
+    substrate_tools: &[String],
+    workspace_tools: &[String],
 ) -> Result<PathBuf, ProtocolError> {
     let source = std::str::from_utf8(source_bytes)
         .map_err(|e| ProtocolError::internal(format!("recipe is not utf8: {e}")))?;
@@ -571,15 +682,28 @@ async fn write_effective_recipe(
         "      authorization: \"Bearer {}\"\n",
         yaml_quote(&wake_token.to_string())
     ));
-    if available_tools.is_empty() {
+    if substrate_tools.is_empty() {
         rendered.push_str("    available_tools: []\n");
     } else {
         rendered.push_str("    available_tools:\n");
-        for tool in available_tools {
+        for tool in substrate_tools {
             rendered.push_str(&format!(
                 "      - \"{}\"\n",
                 yaml_quote(&provider_safe_tool_name(tool))
             ));
+        }
+    }
+    if !workspace_tools.is_empty() {
+        rendered.push_str("  - type: builtin\n");
+        rendered.push_str("    name: developer\n");
+        rendered.push_str("    available_tools:\n");
+        for tool in workspace_tools {
+            let provider_tool = workspace_tool_to_goose(tool).ok_or_else(|| {
+                ProtocolError::tool_not_registered(format!(
+                    "workspace tool mapping missing: {tool}"
+                ))
+            })?;
+            rendered.push_str(&format!("      - \"{}\"\n", yaml_quote(provider_tool)));
         }
     }
 
@@ -589,6 +713,15 @@ async fn write_effective_recipe(
         .await
         .map_err(|e| ProtocolError::internal(format!("write effective recipe: {e}")))?;
     Ok(path)
+}
+
+fn workspace_tool_to_goose(tool_id: &str) -> Option<&'static str> {
+    match tool_id {
+        "proxima-workspace/text_editor" => Some("developer__text_editor"),
+        "proxima-workspace/shell" => Some("developer__shell"),
+        "proxima-workspace/list_files" => Some("developer__list_files"),
+        _ => None,
+    }
 }
 
 fn strip_top_level_extensions(source: &str) -> String {
@@ -659,6 +792,7 @@ mod tests {
                 "core/fetch_memory".to_string(),
                 "core/emit_abstraction".to_string(),
             ],
+            &[],
         )
         .await
         .expect("write effective recipe");
@@ -671,5 +805,31 @@ mod tests {
         assert!(rendered.contains(&format!("authorization: \"Bearer {token}\"")));
         assert!(rendered.contains("- \"core_fetch_memory\""));
         assert!(rendered.contains("- \"core_emit_abstraction\""));
+    }
+
+    #[tokio::test]
+    async fn effective_recipe_injects_developer_extension_for_workspace_tools() {
+        let token = Uuid::new_v4();
+        let path = write_effective_recipe(
+            b"version: 1.0.0\ntitle: smoke\nprompt: hi\n",
+            "http://127.0.0.1:31415/mcp",
+            token,
+            &[],
+            &[
+                "proxima-workspace/text_editor".to_string(),
+                "proxima-workspace/shell".to_string(),
+                "proxima-workspace/list_files".to_string(),
+            ],
+        )
+        .await
+        .expect("write effective recipe");
+
+        let rendered = tokio::fs::read_to_string(&path).await.expect("read recipe");
+        let _ = tokio::fs::remove_file(&path).await;
+
+        assert!(rendered.contains("name: developer"));
+        assert!(rendered.contains("- \"developer__text_editor\""));
+        assert!(rendered.contains("- \"developer__shell\""));
+        assert!(rendered.contains("- \"developer__list_files\""));
     }
 }

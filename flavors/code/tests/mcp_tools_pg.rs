@@ -273,7 +273,9 @@ async fn open_file_revision_returns_head_with_chunks() -> Result<(), Box<dyn std
     .await?;
 
     let test_ctx = ctx(fixture.pg.pool().clone(), owner, registry);
-    let repo_handle = test_ctx.handles.assign_repo(repo_id);
+    let repo_handle = test_ctx
+        .handles
+        .assign_flavor_object("proxima-code/repo", repo_id, 'R');
     let result = run_tool::<CodeOpenFileRevisionTool>(
         test_ctx,
         json!({ "repo_handle": repo_handle.as_str(), "file_path": "src/atlas.rs" }),

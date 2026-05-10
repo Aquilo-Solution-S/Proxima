@@ -10,7 +10,7 @@ use crate::personality::{substrate_pack, workspace_tool_ids};
 use crate::storage::{Storage, StorageError};
 use crate::{
     FlavorRegistryFrozen, ModelTier, SetWakeEntriesRequest, SetWakeEntriesResponse, WakeEntryDraft,
-    WakeEntryTriggerKind,
+    WakeEntryTriggerKind, WakeExecutionMode,
 };
 
 pub struct SetWakeEntriesContext<'a> {
@@ -37,6 +37,7 @@ pub async fn set_wake_entries(
     let workspace_registered = workspace_tool_ids();
     for entry in &req.entries {
         validate_palettes(entry, &substrate_registered, &workspace_registered)?;
+        validate_workspace_trigger(ctx.registry, entry)?;
     }
 
     let owner_targets = ctx
@@ -67,6 +68,28 @@ pub async fn set_wake_entries(
         .set_wake_entries(req)
         .await
         .map_err(|err| map_set_wake_entries_storage_err(err, &req.entries))
+}
+
+fn validate_workspace_trigger(
+    registry: &FlavorRegistryFrozen,
+    entry: &WakeEntryDraft,
+) -> Result<(), ProtocolError> {
+    if entry.execution_mode != WakeExecutionMode::Workspace {
+        return Ok(());
+    }
+    if entry.trigger_kind != WakeEntryTriggerKind::OnMemory {
+        return Err(ProtocolError::invalid_argument(
+            "execution_mode",
+            "workspace mode requires an on_memory trigger",
+        ));
+    }
+    if !registry.is_workspace_trigger(&entry.trigger_id) {
+        return Err(ProtocolError::invalid_argument(
+            "trigger_id",
+            format!("not workspace-eligible: {}", entry.trigger_id),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_unique_triggers(entries: &[WakeEntryDraft]) -> Result<(), ProtocolError> {

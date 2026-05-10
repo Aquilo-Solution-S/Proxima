@@ -87,6 +87,7 @@ pub struct FlavorRegistryFrozen {
         String,
         std::sync::Arc<dyn crate::personality::workspace::WorkspaceRunner>,
     )>,
+    workspace_triggers: Vec<String>,
 }
 
 impl FlavorRegistryFrozen {
@@ -107,6 +108,7 @@ impl FlavorRegistryFrozen {
             flavors: Vec::new(),
             bundled_recipes: Vec::new(),
             workspace_runners: Vec::new(),
+            workspace_triggers: Vec::new(),
         }
     }
 
@@ -126,9 +128,11 @@ impl FlavorRegistryFrozen {
             flavors: Vec::new(),
             bundled_recipes: Vec::new(),
             workspace_runners: Vec::new(),
+            workspace_triggers: Vec::new(),
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn with_schemas_relations_validators(
         schemas: Vec<SchemaInfo>,
         relations: Vec<RelationDescriptor>,
@@ -140,6 +144,7 @@ impl FlavorRegistryFrozen {
             String,
             std::sync::Arc<dyn crate::personality::workspace::WorkspaceRunner>,
         )>,
+        workspace_triggers: Vec<String>,
     ) -> Self {
         Self {
             schemas,
@@ -149,6 +154,7 @@ impl FlavorRegistryFrozen {
             flavors,
             bundled_recipes,
             workspace_runners,
+            workspace_triggers,
         }
     }
 
@@ -194,6 +200,11 @@ impl FlavorRegistryFrozen {
             .iter()
             .find(|(id, _)| id == flavor_id)
             .map(|(_, runner)| runner.clone())
+    }
+
+    #[must_use]
+    pub fn is_workspace_trigger(&self, schema_id: &str) -> bool {
+        self.workspace_triggers.iter().any(|id| id == schema_id)
     }
 
     /// All bundled recipe slugs registered for a given flavor. Order

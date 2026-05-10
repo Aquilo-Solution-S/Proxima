@@ -34,6 +34,10 @@ pub const CODE_BLOB_BYTE_RANGE_SCHEMA: &str = "proxima-code/code-blob-byte-range
 /// (used by `commit-v1`).
 pub const CODE_COMMIT_WHOLE_SCHEMA: &str = "proxima-code/code-commit-whole-v1";
 
+pub use crate::workspace_runner::{
+    WORKSPACE_RUN_OBJECT_SCHEMA, WORKSPACE_RUN_WHOLE_SCHEMA, WORKSPACE_RUNNER_SOURCE_ID,
+};
+
 #[must_use]
 pub fn schema_registry() -> proxima_core::verbs::schema::FlavorRegistryFrozen {
     schema_registry_with(|_| {})
@@ -47,18 +51,32 @@ pub fn schema_registry() -> proxima_core::verbs::schema::FlavorRegistryFrozen {
 pub fn schema_registry_with(
     extra: impl FnOnce(&mut proxima_core::FlavorRegistry),
 ) -> proxima_core::verbs::schema::FlavorRegistryFrozen {
+    schema_registry_with_config(extra, None)
+}
+
+pub(crate) fn schema_registry_with_config(
+    extra: impl FnOnce(&mut proxima_core::FlavorRegistry),
+    workspace_runner: Option<std::sync::Arc<dyn proxima_core::WorkspaceRunner>>,
+) -> proxima_core::verbs::schema::FlavorRegistryFrozen {
     use proxima_core::verbs::schema::{PayloadKind, SchemaInfo};
     use proxima_core::{FlavorRegistry, SchemaId, SchemaVersion};
 
     let mut flavor = FlavorRegistry::new();
     extra(&mut flavor);
     crate::register(&mut flavor);
+    if let Some(runner) = workspace_runner {
+        flavor.replace_workspace_runner("proxima-code", runner);
+    }
     let flavor = flavor.freeze();
     let mut extra_schemas = Vec::new();
 
     // CitedObject schemas — file blob (shared by file_revision + chunk)
     // and commit object.
-    for cited in [CODE_BLOB_SCHEMA, CODE_COMMIT_OBJECT_SCHEMA] {
+    for cited in [
+        CODE_BLOB_SCHEMA,
+        CODE_COMMIT_OBJECT_SCHEMA,
+        WORKSPACE_RUN_OBJECT_SCHEMA,
+    ] {
         extra_schemas.push(SchemaInfo {
             schema_id: SchemaId::new(cited.into()),
             schema_version: SchemaVersion::new(1),
@@ -76,6 +94,7 @@ pub fn schema_registry_with(
         CODE_BLOB_WHOLE_SCHEMA,
         CODE_BLOB_BYTE_RANGE_SCHEMA,
         CODE_COMMIT_WHOLE_SCHEMA,
+        WORKSPACE_RUN_WHOLE_SCHEMA,
     ] {
         extra_schemas.push(SchemaInfo {
             schema_id: SchemaId::new(mapping.into()),

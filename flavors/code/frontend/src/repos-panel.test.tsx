@@ -65,6 +65,7 @@ const repo = (overrides: Partial<RepoRecordTs> = {}): RepoRecordTs => ({
   repo_id: "018f0000-0000-7000-8000-000000000001",
   canonical_path: "/repos/proxima",
   display_name: "Proxima",
+  target_branch: "main",
   has_been_polled: false,
   last_polled_at: null,
   created_at: "2026-05-05T12:00:00Z",

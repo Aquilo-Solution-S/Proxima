@@ -68,6 +68,9 @@ pub struct FlavorRegistry {
     /// `FlavorRegistryFrozen.workspace_runners` and looked up by
     /// `wake/fire.rs` at fire time.
     workspace_runners: Vec<(String, Arc<dyn WorkspaceRunner>)>,
+    /// Workspace-eligible trigger schemas. Core treats them as opaque
+    /// flavor-qualified schema ids; flavor runners interpret payloads.
+    workspace_triggers: Vec<String>,
 }
 
 impl Default for FlavorRegistry {
@@ -80,6 +83,7 @@ impl Default for FlavorRegistry {
             flavors: Vec::new(),
             bundled_recipes: Vec::new(),
             workspace_runners: Vec::new(),
+            workspace_triggers: Vec::new(),
         };
         // Substrate-shipped Fact schema for MCP-CRUD audit.
         registry.add_fact_schema::<crate::mcp::core_tools::PersonalityConfigChangedV1>();
@@ -232,6 +236,21 @@ impl FlavorRegistry {
         self.workspace_runners.push((flavor_id.into(), runner));
     }
 
+    pub fn replace_workspace_runner(
+        &mut self,
+        flavor_id: impl Into<String>,
+        runner: Arc<dyn WorkspaceRunner>,
+    ) {
+        let flavor_id = flavor_id.into();
+        self.workspace_runners
+            .retain(|(existing, _)| existing != &flavor_id);
+        self.workspace_runners.push((flavor_id, runner));
+    }
+
+    pub fn add_workspace_trigger(&mut self, schema_id: impl Into<String>) {
+        self.workspace_triggers.push(schema_id.into());
+    }
+
     /// Register a `FlavorDescriptor`. Called once per
     /// `proxima_flavor!` invocation; freeze panics if the same
     /// `flavor_id` is added twice.
@@ -334,13 +353,21 @@ impl FlavorRegistry {
                 tool.name,
             );
         }
-        // Phase 1: at most one workspace runner per flavor.
+        // At most one workspace runner per flavor.
         let mut seen_runner_flavors: std::collections::HashSet<&str> =
             std::collections::HashSet::new();
         for (flavor_id, _) in &self.workspace_runners {
             assert!(
                 seen_runner_flavors.insert(flavor_id.as_str()),
                 "duplicate workspace_runner registration for flavor {flavor_id:?}",
+            );
+        }
+        let mut seen_workspace_triggers: std::collections::HashSet<&str> =
+            std::collections::HashSet::new();
+        for schema_id in &self.workspace_triggers {
+            assert!(
+                seen_workspace_triggers.insert(schema_id.as_str()),
+                "duplicate workspace_trigger registration for schema {schema_id:?}",
             );
         }
         FlavorRegistryFrozen::with_schemas_relations_validators(
@@ -351,6 +378,7 @@ impl FlavorRegistry {
             self.flavors,
             self.bundled_recipes,
             self.workspace_runners,
+            self.workspace_triggers,
         )
     }
 
@@ -470,8 +498,8 @@ mod tests {
     #[test]
     fn workspace_runner_round_trips_through_freeze() {
         use crate::personality::workspace::{
-            WorkspaceOutcome, WorkspacePrepareInput, WorkspacePreparedRun, WorkspaceRunRecord,
-            WorkspaceRunner, WorkspaceRunnerError,
+            WorkspaceFinalizeInput, WorkspacePrepareInput, WorkspacePreparedRun,
+            WorkspaceRunRecord, WorkspaceRunner, WorkspaceRunnerError,
         };
         use std::sync::Arc;
 
@@ -487,8 +515,7 @@ mod tests {
             }
             async fn finalize(
                 &self,
-                _prepared: WorkspacePreparedRun,
-                _outcome: WorkspaceOutcome,
+                _input: WorkspaceFinalizeInput<'_>,
             ) -> Result<WorkspaceRunRecord, WorkspaceRunnerError> {
                 Err(WorkspaceRunnerError::Unimplemented)
             }
@@ -515,8 +542,8 @@ mod tests {
         // surface that exercises only the workspace_runner arm.
         mod fixture {
             use crate::personality::workspace::{
-                WorkspaceOutcome, WorkspacePrepareInput, WorkspacePreparedRun, WorkspaceRunRecord,
-                WorkspaceRunner, WorkspaceRunnerError,
+                WorkspaceFinalizeInput, WorkspacePrepareInput, WorkspacePreparedRun,
+                WorkspaceRunRecord, WorkspaceRunner, WorkspaceRunnerError,
             };
 
             #[derive(Debug, Default)]
@@ -531,8 +558,7 @@ mod tests {
                 }
                 async fn finalize(
                     &self,
-                    _prepared: WorkspacePreparedRun,
-                    _outcome: WorkspaceOutcome,
+                    _input: WorkspaceFinalizeInput<'_>,
                 ) -> Result<WorkspaceRunRecord, WorkspaceRunnerError> {
                     Err(WorkspaceRunnerError::Unimplemented)
                 }

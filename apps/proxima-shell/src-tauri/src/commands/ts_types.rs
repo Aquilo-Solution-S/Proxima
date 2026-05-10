@@ -9,6 +9,7 @@ pub struct RepoRecordTs {
     pub repo_id: String,
     pub canonical_path: String,
     pub display_name: String,
+    pub target_branch: Option<String>,
     pub has_been_polled: bool,
     pub last_polled_at: Option<String>,
     pub created_at: String,
@@ -21,6 +22,7 @@ impl From<proxima_code::RepoRecord> for RepoRecordTs {
             repo_id: r.repo_id.to_string(),
             canonical_path: r.canonical_path,
             display_name: r.display_name,
+            target_branch: r.target_branch,
             has_been_polled: r.last_polled_at.is_some(),
             last_polled_at: r.last_polled_at.map(|t| {
                 t.format(&Rfc3339)

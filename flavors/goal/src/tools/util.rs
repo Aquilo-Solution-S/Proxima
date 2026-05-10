@@ -240,7 +240,7 @@ pub async fn validate_evidence_in_owner(
             }
             EntityRef::Goal(_)
             | EntityRef::Edge(_)
-            | EntityRef::Repo(_)
+            | EntityRef::FlavorObject { .. }
             | EntityRef::Personality(_)
             | EntityRef::WakeEntry(_) => {
                 return Err(McpToolError::LayeringViolation(format!(
