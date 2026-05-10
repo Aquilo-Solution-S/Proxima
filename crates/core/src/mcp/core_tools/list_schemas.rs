@@ -74,7 +74,7 @@ impl McpTool for ListSchemasTool {
                 .registry
                 .list()
                 .into_iter()
-                .filter(|info| filter.map_or(true, |k| info.kind == k))
+                .filter(|info| filter.is_none_or(|k| info.kind == k))
                 .map(|info| SchemaItem {
                     schema_id: info.schema_id.as_str().to_string(),
                     schema_version: info.schema_version.into_inner(),

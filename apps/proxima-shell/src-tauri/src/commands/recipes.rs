@@ -124,8 +124,9 @@ async fn read_recipes_at(root: &Path) -> Result<OwnerRecipesListingTs, ProtocolE
 }
 
 fn is_yaml(filename: &str) -> bool {
-    let lower = filename.to_ascii_lowercase();
-    lower.ends_with(".yaml") || lower.ends_with(".yml")
+    std::path::Path::new(filename)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("yaml") || ext.eq_ignore_ascii_case("yml"))
 }
 
 fn modified_to_iso(modified: SystemTime) -> Result<String, ()> {
