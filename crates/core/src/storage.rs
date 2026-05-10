@@ -13,6 +13,7 @@ use crate::inference::{
     InferenceTierBindingRow, RegisterInferenceTargetRequest, RegisterInferenceTargetResponse,
     RemoveInferenceTargetRequest, RemoveInferenceTargetResponse,
 };
+use crate::personality::WakeEntryDraft;
 use crate::personality::{
     AbstractionRow, ActiveGoalSummary, ChangeEventForWake, InstantiatePersonalityRequest,
     InstantiatePersonalityResponse, ListWakeInvocationsRequest, MemorySnapshot,
@@ -22,7 +23,6 @@ use crate::personality::{
     TombstonePersonalityResponse, WakeDispatchEntryRow, WakeInvocationFinalize,
     WakeInvocationLogDraft, WakeInvocationRow, WakeInvocationStart, WakeInvocationStatus,
 };
-use crate::personality::WakeEntryDraft;
 use crate::verbs::close_batch::CloseBatchOutcome;
 use crate::verbs::event_history::{EventHistoryRequest, EventHistoryResponse};
 use crate::verbs::event_ingest::{EventDraft, EventIngestOutcome};
@@ -42,9 +42,8 @@ pub enum StorageError {
 }
 
 /// Boxed closure for read-modify-write on WakeEntry rows.
-pub type WakeEntriesMutator = Box<
-    dyn FnOnce(&[WakeEntryDraft]) -> Result<Vec<WakeEntryDraft>, String> + Send + 'static
->;
+pub type WakeEntriesMutator =
+    Box<dyn FnOnce(&[WakeEntryDraft]) -> Result<Vec<WakeEntryDraft>, String> + Send + 'static>;
 
 /// Identity row for a per-master-token shell-author personality.
 ///

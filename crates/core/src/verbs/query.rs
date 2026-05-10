@@ -34,6 +34,20 @@ fn default_tombstone_filter() -> TombstoneFilter {
     TombstoneFilter::PresentOnly
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
+pub enum PersonalityRootFilter {
+    /// Include only active root/self Perspective rows. Non-root
+    /// Perspectives are unaffected.
+    ActiveOnly,
+    /// Include inactive, tombstoned, and orphan root/self Perspective
+    /// rows when they otherwise match the query.
+    IncludeInactive,
+}
+
+fn default_personality_root_filter() -> PersonalityRootFilter {
+    PersonalityRootFilter::IncludeInactive
+}
+
 /// Engine-resolved head-by-natural-key filter for stateful Fact
 /// schemas (docs/03 §Stateful Fact schemas). Populated from the
 /// schema registry when `Engine::query` sees a heads-only request
@@ -59,6 +73,8 @@ pub struct QueryRequest {
     pub supersession: SupersessionStatus,
     #[serde(default = "default_tombstone_filter")]
     pub tombstones: TombstoneFilter,
+    #[serde(default = "default_personality_root_filter")]
+    pub personality_roots: PersonalityRootFilter,
     pub limit: u32,
     /// Identity-keyed hydration for Subscribe-driven row fetches.
     #[serde(default)]
@@ -85,6 +101,7 @@ impl QueryRequest {
             schema_id: None,
             supersession: SupersessionStatus::HeadsOnly,
             tombstones: TombstoneFilter::PresentOnly,
+            personality_roots: PersonalityRootFilter::IncludeInactive,
             limit: 100,
             memory_ids: Vec::new(),
             goal_ids: Vec::new(),

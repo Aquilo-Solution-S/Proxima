@@ -31,8 +31,7 @@ pub struct BindInferenceTierOutput {
 
 impl McpTool for BindInferenceTierTool {
     const NAME: &'static str = "core/bind_inference_tier";
-    const DESCRIPTION: &'static str =
-        "Bind a model tier to an inference target_ref.";
+    const DESCRIPTION: &'static str = "Bind a model tier to an inference target_ref.";
     type Args = BindInferenceTierArgs;
     type Output = BindInferenceTierOutput;
 
@@ -48,10 +47,12 @@ impl McpTool for BindInferenceTierTool {
                 "fast" => ModelTier::Fast,
                 "standard" => ModelTier::Standard,
                 "deep" => ModelTier::Deep,
-                _ => return Err(McpToolError::InvalidInput(format!(
-                    "tier must be 'fast', 'standard', or 'deep', got '{}'",
-                    args.tier
-                ))),
+                _ => {
+                    return Err(McpToolError::InvalidInput(format!(
+                        "tier must be 'fast', 'standard', or 'deep', got '{}'",
+                        args.tier
+                    )));
+                }
             };
             let target_ref = args.target_ref.clone();
             let req = BindInferenceTierRequest {

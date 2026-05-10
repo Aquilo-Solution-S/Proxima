@@ -34,8 +34,7 @@ pub struct ListPersonalitiesOutput {
 
 impl McpTool for ListPersonalitiesTool {
     const NAME: &'static str = "core/list_personalities";
-    const DESCRIPTION: &'static str =
-        "List personality instances for the authenticated owner. Returns handles \
+    const DESCRIPTION: &'static str = "List personality instances for the authenticated owner. Returns handles \
          (P-prefixed) usable in subsequent CRUD calls.";
     type Args = ListPersonalitiesArgs;
     type Output = ListPersonalitiesOutput;
@@ -45,9 +44,9 @@ impl McpTool for ListPersonalitiesTool {
         args: ListPersonalitiesArgs,
     ) -> BoxFuture<'static, Result<ListPersonalitiesOutput, McpToolError>> {
         Box::pin(async move {
-            let storage = ctx.storage().ok_or_else(|| {
-                McpToolError::Other("engine storage unavailable".into())
-            })?;
+            let storage = ctx
+                .storage()
+                .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;
             let rows = storage
                 .list_personality_instances(&ctx.owner, args.include_tombstoned)
                 .await
@@ -56,7 +55,9 @@ impl McpTool for ListPersonalitiesTool {
                 .into_iter()
                 .map(|row| {
                     let p_handle = ctx.handles.assign_personality(row.personality_instance_id);
-                    let n_handle = ctx.handles.assign_memory(row.current_root_perspective_memory_id);
+                    let n_handle = ctx
+                        .handles
+                        .assign_memory(row.current_root_perspective_memory_id);
                     let count = u32::try_from(row.wake_entries.len()).unwrap_or(u32::MAX);
                     ListPersonalitiesItem {
                         handle: p_handle.as_str().to_string(),

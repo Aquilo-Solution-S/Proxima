@@ -321,7 +321,9 @@ impl Storage for PgStorage {
         master_token_id: uuid::Uuid,
     ) -> Result<MasterTokenPersonality, StorageError> {
         verbs::master_token_personality::ensure_master_token_personality(
-            &self.pool, owner, master_token_id,
+            &self.pool,
+            owner,
+            master_token_id,
         )
         .await
     }

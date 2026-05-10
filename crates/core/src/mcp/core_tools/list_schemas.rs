@@ -5,8 +5,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::McpTool;
-use crate::verbs::schema::PayloadKind;
 use crate::mcp::{McpToolCtx, McpToolError};
+use crate::verbs::schema::PayloadKind;
 
 #[derive(Debug, Default)]
 pub struct ListSchemasTool;
@@ -58,8 +58,7 @@ fn kind_str(k: PayloadKind) -> &'static str {
 
 impl McpTool for ListSchemasTool {
     const NAME: &'static str = "core/list_schemas";
-    const DESCRIPTION: &'static str =
-        "List registered schemas. Filter by kind for trigger discovery: \
+    const DESCRIPTION: &'static str = "List registered schemas. Filter by kind for trigger discovery: \
          OnMemory triggers point at Fact schema_ids.";
     type Args = ListSchemasArgs;
     type Output = ListSchemasOutput;

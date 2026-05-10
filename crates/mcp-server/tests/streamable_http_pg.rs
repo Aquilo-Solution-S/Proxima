@@ -5,8 +5,8 @@ use std::time::Duration;
 mod common;
 
 use common::{create_db, drop_db, initialize, initialized, post_rpc};
-use proxima_core::wake::token_store::WakeTokenStore;
 use proxima_core::FlavorRegistry;
+use proxima_core::wake::token_store::WakeTokenStore;
 use proxima_mcp_server::{DevMcpServer, McpAuthStore, default_allowlist, serve_streamable_http};
 use serde_json::json;
 

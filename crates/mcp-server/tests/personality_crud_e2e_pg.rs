@@ -13,16 +13,17 @@ use proxima_core::mcp::{HandleTable, McpAuthorContext, McpToolCtx};
 use proxima_core::storage::Storage;
 use proxima_core::verbs::query::MemoryStore;
 use proxima_core::{
-    Engine, FlavorRegistry, InstantiatePersonalityRequest, McpTool, ModelTier, OrgId,
-    Owner, Principal, UserId, WakeEntryAuthoredBy, WakeEntryTriggerKind, WakeExecutionMode,
+    Engine, FlavorRegistry, InstantiatePersonalityRequest, McpTool, ModelTier, OrgId, Owner,
+    Principal, UserId, WakeEntryAuthoredBy, WakeEntryTriggerKind, WakeExecutionMode,
 };
 use proxima_storage_pg::PgStorage;
 
 #[tokio::test(flavor = "multi_thread")]
-async fn wake_token_audit_attributes_caller_personality()
-    -> Result<(), Box<dyn std::error::Error>>
+async fn wake_token_audit_attributes_caller_personality() -> Result<(), Box<dyn std::error::Error>>
 {
-    let Some(db_name) = create_db().await? else { return Ok(()) };
+    let Some(db_name) = create_db().await? else {
+        return Ok(());
+    };
     let database_url = format!("postgres://postgres@localhost/{db_name}");
     let pg = PgStorage::connect(&database_url).await?;
     pg.run_migrations().await?;
@@ -31,23 +32,31 @@ async fn wake_token_audit_attributes_caller_personality()
         principal: Principal::User(UserId::new(uuid::Uuid::now_v7())),
         org_id: OrgId::new(uuid::Uuid::now_v7()),
     };
-    let inst = pg.instantiate_personality(&InstantiatePersonalityRequest {
-        owner: owner.clone(),
-        display_name: "caller".into(),
-        purpose: "self-evolution test".into(),
-    }).await?;
+    let inst = pg
+        .instantiate_personality(&InstantiatePersonalityRequest {
+            owner: owner.clone(),
+            display_name: "caller".into(),
+            purpose: "self-evolution test".into(),
+        })
+        .await?;
 
     // Pull the personality row to find its Root Perspective Memory id.
     let rows = pg.list_personality_instances(&owner, false).await?;
-    let row = rows.into_iter().find(|r| r.personality_instance_id == inst.instance_id)
+    let row = rows
+        .into_iter()
+        .find(|r| r.personality_instance_id == inst.instance_id)
         .expect("just instantiated");
     let root_memory_id = row.current_root_perspective_memory_id;
 
     // Build an Engine wired with the live PG storage so ctx.storage() works.
     let resolver = NoAuth::new(owner.principal.clone(), owner.clone());
     let engine = Arc::new(
-        Engine::new(FlavorRegistry::new().freeze(), MemoryStore::new(), Box::new(resolver))
-            .with_storage(Arc::new(pg.clone())),
+        Engine::new(
+            FlavorRegistry::new().freeze(),
+            MemoryStore::new(),
+            Box::new(resolver),
+        )
+        .with_storage(Arc::new(pg.clone())),
     );
 
     // Construct an McpToolCtx pretending we're a wake invocation on this personality.
@@ -95,7 +104,9 @@ async fn wake_token_audit_attributes_caller_personality()
 
     // Verify the wake entry was actually added to the personality.
     let instances = pg.list_personality_instances(&owner, false).await?;
-    let updated = instances.into_iter().find(|r| r.personality_instance_id == inst.instance_id)
+    let updated = instances
+        .into_iter()
+        .find(|r| r.personality_instance_id == inst.instance_id)
         .expect("personality still exists");
     assert!(!updated.wake_entries.is_empty(), "wake entry was added");
     let entry = &updated.wake_entries[0];

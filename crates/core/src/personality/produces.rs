@@ -48,13 +48,13 @@ pub fn writeable_relations_for_palette(engine: &Engine, palette: &[String]) -> V
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Engine;
     use crate::auth::NoAuth;
     use crate::ids::{OrgId, SchemaId, SchemaVersion, UserId};
     use crate::owner::{Owner, Principal};
     use crate::relation::{RelationClass, RelationDescriptor};
     use crate::verbs::query::MemoryStore;
     use crate::verbs::schema::{FlavorRegistryFrozen, SchemaInfo};
-    use crate::Engine;
 
     /// Build an Engine with one Abstraction schema, one Perspective schema,
     /// and one Relation, sufficient to exercise all four palette shapes.

@@ -11,6 +11,7 @@ const NOOP_QUERY: QueryRequest = {
   schema_id: null,
   supersession: "HeadsOnly",
   tombstones: "PresentOnly",
+  personality_roots: "IncludeInactive",
   limit: 0,
 };
 

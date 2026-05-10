@@ -27,8 +27,7 @@ pub struct RemoveWakeEntryOutput {
 
 impl McpTool for RemoveWakeEntryTool {
     const NAME: &'static str = "core/remove_wake_entry";
-    const DESCRIPTION: &'static str =
-        "Remove one wake entry. Idempotent: returns removed=false if the \
+    const DESCRIPTION: &'static str = "Remove one wake entry. Idempotent: returns removed=false if the \
          entry was already absent.";
     type Args = RemoveWakeEntryArgs;
     type Output = RemoveWakeEntryOutput;

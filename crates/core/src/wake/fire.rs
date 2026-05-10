@@ -25,6 +25,7 @@ use crate::Owner;
 use crate::engine::Engine;
 use crate::error::ProtocolError;
 use crate::mcp::provider_safe_tool_name;
+use crate::personality::workspace::{WorkspacePrepareInput, WorkspaceRunnerError};
 use crate::personality::{
     PersonalityInstanceId, SidecarSpec, WakeChainDepth, WakeEntryExecutionMode, WakeEntryRow,
     WakeInvocationFinalize, WakeInvocationStart, WakeInvocationStatus,
@@ -34,7 +35,6 @@ use crate::wake::target_adapter::{
     TargetAdapter, TargetInvocation, TargetOutcome, TargetOutcomeKind,
 };
 use crate::wake::token_store::WakeTokenContext;
-use crate::personality::workspace::{WorkspacePrepareInput, WorkspaceRunnerError};
 
 /// Inputs to one wake fire — assembled by the dispatcher tick from the
 /// `WakeDispatchEntryRow` it just matched.
@@ -194,12 +194,7 @@ pub async fn fire_wake_entry(
         input.wake_entry.execution_mode,
         WakeEntryExecutionMode::Workspace
     ) {
-        let flavor_id_for_dispatch = input
-            .wake_entry
-            .trigger_id
-            .split('/')
-            .next()
-            .unwrap_or("");
+        let flavor_id_for_dispatch = input.wake_entry.trigger_id.split('/').next().unwrap_or("");
 
         let runner_opt = engine.registry().workspace_runner(flavor_id_for_dispatch);
 

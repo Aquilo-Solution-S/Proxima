@@ -20,8 +20,7 @@ use uuid::Uuid;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn master_token_call_mints_per_token_self_perspective()
-    -> Result<(), Box<dyn std::error::Error>>
-{
+-> Result<(), Box<dyn std::error::Error>> {
     let Some(db_name) = create_db().await? else {
         return Ok(());
     };
@@ -55,10 +54,9 @@ async fn master_token_call_mints_per_token_self_perspective()
     .with_engine(engine.clone());
 
     // Set up McpAuthStore and register the master token.
-    let auth_store =
-        McpAuthStore::new(Arc::new(proxima_core::wake::token_store::WakeTokenStore::new(
-            Duration::from_mins(5),
-        )));
+    let auth_store = McpAuthStore::new(Arc::new(
+        proxima_core::wake::token_store::WakeTokenStore::new(Duration::from_mins(5)),
+    ));
     let token = Uuid::now_v7();
     auth_store
         .replace_local_master_token(token, owner.clone())
@@ -110,17 +108,16 @@ async fn master_token_call_mints_per_token_self_perspective()
     // Verify: storage now has a per-token shell-author personality for this
     // owner. ensure_master_token_personality is idempotent so calling it here
     // is a read-back probe, not a duplicate write.
-    let identity = pg
-        .ensure_master_token_personality(&owner, token)
-        .await?;
+    let identity = pg.ensure_master_token_personality(&owner, token).await?;
     assert_ne!(identity.instance_id.into_inner(), Uuid::nil());
-    assert_ne!(identity.self_perspective_memory_id.into_inner(), Uuid::nil());
+    assert_ne!(
+        identity.self_perspective_memory_id.into_inner(),
+        Uuid::nil()
+    );
 
     // Reconnect: a second ensure under the same token returns the same
     // identity (idempotency contract).
-    let identity_again = pg
-        .ensure_master_token_personality(&owner, token)
-        .await?;
+    let identity_again = pg.ensure_master_token_personality(&owner, token).await?;
     assert_eq!(identity, identity_again);
 
     drop_db(&db_name).await?;
@@ -129,8 +126,7 @@ async fn master_token_call_mints_per_token_self_perspective()
 
 #[tokio::test(flavor = "multi_thread")]
 async fn distinct_master_tokens_resolve_to_distinct_identities()
-    -> Result<(), Box<dyn std::error::Error>>
-{
+-> Result<(), Box<dyn std::error::Error>> {
     let Some(db_name) = create_db().await? else {
         return Ok(());
     };

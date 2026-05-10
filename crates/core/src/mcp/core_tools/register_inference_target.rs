@@ -33,8 +33,7 @@ pub struct RegisterInferenceTargetOutput {
 
 impl McpTool for RegisterInferenceTargetTool {
     const NAME: &'static str = "core/register_inference_target";
-    const DESCRIPTION: &'static str =
-        "Register an inference target. Idempotent on target_ref.";
+    const DESCRIPTION: &'static str = "Register an inference target. Idempotent on target_ref.";
     type Args = RegisterInferenceTargetArgs;
     type Output = RegisterInferenceTargetOutput;
 

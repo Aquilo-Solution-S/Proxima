@@ -36,8 +36,7 @@ pub struct ListWakeEntriesOutput {
 
 impl McpTool for ListWakeEntriesTool {
     const NAME: &'static str = "core/list_wake_entries";
-    const DESCRIPTION: &'static str =
-        "List wake entries on one personality. Returns W-handles for each \
+    const DESCRIPTION: &'static str = "List wake entries on one personality. Returns W-handles for each \
          entry; use core/get_personality for the full payload.";
     type Args = ListWakeEntriesArgs;
     type Output = ListWakeEntriesOutput;
@@ -51,9 +50,9 @@ impl McpTool for ListWakeEntriesTool {
                 .handles
                 .resolve_personality(&args.personality)
                 .ok_or_else(|| McpToolError::UnknownHandle(args.personality.clone()))?;
-            let storage = ctx.storage().ok_or_else(|| {
-                McpToolError::Other("engine storage unavailable".into())
-            })?;
+            let storage = ctx
+                .storage()
+                .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;
             let rows = storage
                 .list_personality_instances(&ctx.owner, true)
                 .await
@@ -61,9 +60,9 @@ impl McpTool for ListWakeEntriesTool {
             let row = rows
                 .into_iter()
                 .find(|r| r.personality_instance_id == pid)
-                .ok_or_else(|| McpToolError::Other(format!(
-                    "personality {} not found", args.personality
-                )))?;
+                .ok_or_else(|| {
+                    McpToolError::Other(format!("personality {} not found", args.personality))
+                })?;
             let wake_entries = row
                 .wake_entries
                 .into_iter()
@@ -124,7 +123,9 @@ mod tests {
         };
         let err = ListWakeEntriesTool::call(
             ctx,
-            ListWakeEntriesArgs { personality: "P99".into() },
+            ListWakeEntriesArgs {
+                personality: "P99".into(),
+            },
         )
         .await
         .unwrap_err();

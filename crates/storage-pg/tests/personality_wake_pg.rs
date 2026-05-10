@@ -551,18 +551,17 @@ async fn personality_authored_edge_links_root_to_emitted_memory() {
             .await?;
         let perspective_id = perspective.memory_ids[0];
 
-        let mut authored_rows: Vec<(Uuid, Uuid, String, String, String, String)> =
-            sqlx::query_as(
-                "SELECT source_memory_id, target_memory_id, source_kind, target_kind,
+        let mut authored_rows: Vec<(Uuid, Uuid, String, String, String, String)> = sqlx::query_as(
+            "SELECT source_memory_id, target_memory_id, source_kind, target_kind,
                         relation_class, authorship_kind
                  FROM proxima_core.edges
                  WHERE relation = 'core/authored'
                    AND target_memory_id = ANY($1)
                  ORDER BY target_kind",
-            )
-            .bind(&[abstraction_id.into_inner(), perspective_id.into_inner()][..])
-            .fetch_all(pg.pool())
-            .await?;
+        )
+        .bind(&[abstraction_id.into_inner(), perspective_id.into_inner()][..])
+        .fetch_all(pg.pool())
+        .await?;
         authored_rows.sort_by_key(|row| row.3.clone());
 
         assert_eq!(

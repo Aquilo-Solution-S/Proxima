@@ -8,10 +8,10 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 #[tokio::test(flavor = "multi_thread")]
-async fn ensure_master_token_personality_is_idempotent()
-    -> Result<(), Box<dyn std::error::Error>>
-{
-    let Some((pg, db)) = fresh_pg().await else { return Ok(()); };
+async fn ensure_master_token_personality_is_idempotent() -> Result<(), Box<dyn std::error::Error>> {
+    let Some((pg, db)) = fresh_pg().await else {
+        return Ok(());
+    };
     pg.run_migrations().await?;
     let owner = Owner {
         principal: Principal::User(UserId::new(Uuid::now_v7())),
@@ -29,17 +29,22 @@ async fn ensure_master_token_personality_is_idempotent()
 
 #[tokio::test(flavor = "multi_thread")]
 async fn distinct_tokens_resolve_to_distinct_personalities()
-    -> Result<(), Box<dyn std::error::Error>>
-{
-    let Some((pg, db)) = fresh_pg().await else { return Ok(()); };
+-> Result<(), Box<dyn std::error::Error>> {
+    let Some((pg, db)) = fresh_pg().await else {
+        return Ok(());
+    };
     pg.run_migrations().await?;
     let owner = Owner {
         principal: Principal::User(UserId::new(Uuid::now_v7())),
         org_id: OrgId::new(Uuid::now_v7()),
     };
 
-    let a = pg.ensure_master_token_personality(&owner, Uuid::now_v7()).await?;
-    let b = pg.ensure_master_token_personality(&owner, Uuid::now_v7()).await?;
+    let a = pg
+        .ensure_master_token_personality(&owner, Uuid::now_v7())
+        .await?;
+    let b = pg
+        .ensure_master_token_personality(&owner, Uuid::now_v7())
+        .await?;
     assert_ne!(a.instance_id, b.instance_id);
     assert_ne!(a.self_perspective_memory_id, b.self_perspective_memory_id);
 
@@ -53,12 +58,13 @@ async fn distinct_tokens_resolve_to_distinct_personalities()
 /// DO NOTHING` would let losing callers walk away with their own
 /// orphan personality id while the mapping points to someone else's.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn concurrent_callers_resolve_to_single_personality()
-    -> Result<(), Box<dyn std::error::Error>>
+async fn concurrent_callers_resolve_to_single_personality() -> Result<(), Box<dyn std::error::Error>>
 {
     const N: usize = 16;
 
-    let Some((pg, db)) = fresh_pg().await else { return Ok(()); };
+    let Some((pg, db)) = fresh_pg().await else {
+        return Ok(());
+    };
     pg.run_migrations().await?;
     let owner = Owner {
         principal: Principal::User(UserId::new(Uuid::now_v7())),

@@ -678,6 +678,8 @@ export type ProtocolError = {
 	request_id: string | null,
 };
 
+export type PersonalityRootFilter = "ActiveOnly" | "IncludeInactive";
+
 /**
  *  One core-generic Query request. Flavor-typed filters
  *  per docs/14 §"Query" land when the first flavor crate
@@ -689,6 +691,7 @@ export type QueryRequest = {
 	schema_id: SchemaId | null,
 	supersession: SupersessionStatus,
 	tombstones?: TombstoneFilter,
+	personality_roots?: PersonalityRootFilter,
 	limit: number,
 	// Identity-keyed hydration for Subscribe-driven row fetches.
 	memory_ids?: MemoryId[],
@@ -969,4 +972,3 @@ async function typedError<T, E>(result: Promise<T>): Promise<{ status: "ok"; dat
         return { status: "error", error: e as any };
     }
 }
-
