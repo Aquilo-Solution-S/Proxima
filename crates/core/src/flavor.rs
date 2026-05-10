@@ -72,7 +72,7 @@ pub struct FlavorRegistry {
 
 impl Default for FlavorRegistry {
     fn default() -> Self {
-        Self {
+        let mut registry = Self {
             schemas: Vec::new(),
             relations: core_relation_descriptors(),
             validators: Vec::new(),
@@ -80,7 +80,10 @@ impl Default for FlavorRegistry {
             flavors: Vec::new(),
             bundled_recipes: Vec::new(),
             workspace_runners: Vec::new(),
-        }
+        };
+        // Substrate-shipped Fact schema for MCP-CRUD audit.
+        registry.add_fact_schema::<crate::mcp::core_tools::PersonalityConfigChangedV1>();
+        registry
     }
 }
 
@@ -517,5 +520,16 @@ mod tests {
         let frozen = registry.freeze();
 
         assert!(frozen.workspace_runner("macro-test-flavor").is_some());
+    }
+
+    #[test]
+    fn default_registry_includes_personality_config_changed_schema() {
+        let frozen = FlavorRegistry::new().freeze();
+        let info = frozen.lookup(
+            &crate::SchemaId::new("core/personality_config_changed_v1".into()),
+            crate::SchemaVersion::new(1),
+        );
+        assert!(info.is_some(), "schema must be registered in default registry");
+        assert_eq!(info.unwrap().kind, PayloadKind::Fact);
     }
 }
