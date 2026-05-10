@@ -55,7 +55,11 @@ pub async fn accept_goal(
         .ok_or_else(|| McpToolError::UnknownHandle(args.proposal.clone()))?
     {
         EntityRef::Goal(id) => id,
-        EntityRef::Memory(_) | EntityRef::Edge(_) | EntityRef::Repo(_) => {
+        EntityRef::Memory(_)
+        | EntityRef::Edge(_)
+        | EntityRef::Repo(_)
+        | EntityRef::Personality(_)
+        | EntityRef::WakeEntry(_) => {
             return Err(McpToolError::InvalidInput(
                 "proposal must resolve to a Goal handle".into(),
             ));
