@@ -3437,9 +3437,11 @@ dependencies = [
 name = "proxima-flavor-goal"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "ciborium",
  "futures",
  "proxima-core",
+ "proxima-mcp-server",
  "proxima-storage-pg",
  "schemars 1.2.1",
  "serde",

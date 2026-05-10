@@ -323,6 +323,20 @@ Acceptance verified end-to-end:
 
 ### M1 — Goal lifecycle Facts (S1)
 
+**Status:** Landed 2026-05-10.
+Acceptance verified end-to-end:
+[`flavors/goal/tests/goal_propose_master_token_pg.rs`](../../../flavors/goal/tests/goal_propose_master_token_pg.rs)
+(master-token MCP `goal_propose` + `goal_accept` emit lifecycle
+Facts with `core/authored` edges to the per-token Self-Perspective)
+and
+[`flavors/goal/tests/accept_decline_pg.rs`](../../../flavors/goal/tests/accept_decline_pg.rs)
+(query returns both lifecycle Facts and authored edges).
+Verification:
+`cargo fmt --check`;
+`cargo clippy -p proxima-flavor-goal --all-targets`;
+`cargo test -p proxima-flavor-goal`;
+`cargo check --workspace`.
+
 - Add `proxima-goal/goal-proposed-v1` and `goal-activated-v1` payload
   modules + sidecar tables in goal flavor.
 - Wire emits into `goal_propose` and `goal_accept` transactions.

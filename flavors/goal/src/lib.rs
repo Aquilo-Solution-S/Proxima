@@ -6,13 +6,16 @@ pub mod relations;
 pub mod tools;
 
 pub use migrations::migrator;
-pub use payloads::{SimpleTextGoalV1, TaskGoalV1};
+pub use payloads::{GoalActivatedV1, GoalProposedV1, SimpleTextGoalV1, TaskGoalV1};
 pub use relations::{MOTIVATED_BY_RELATION, descriptor as motivated_by_descriptor};
 
 proxima_core::proxima_flavor! {
     name = "proxima-goal",
     display_name = "Goal",
-    fact_schemas = [],
+    fact_schemas = [
+        payloads::GoalProposedV1,
+        payloads::GoalActivatedV1,
+    ],
     abstraction_schemas = [],
     perspective_schemas = [],
     goal_schemas = [

@@ -65,6 +65,25 @@ async fn propose_writes_goal_and_motivated_by_atomically() -> Result<(), Box<dyn
         .await?;
         assert_eq!(edge_count, 1);
         assert_eq!(outcome.inspires_edge_handle, None);
+
+        let proposed_fact_count: i64 = sqlx::query_scalar(
+            "SELECT count(*)
+               FROM proxima_goal.goal_proposed_v1
+              WHERE goal_id = $1",
+        )
+        .bind(goal_id)
+        .fetch_one(pg.pool())
+        .await?;
+        assert_eq!(proposed_fact_count, 1);
+
+        let authored_count: i64 = sqlx::query_scalar(
+            "SELECT count(*)
+               FROM proxima_core.edges
+              WHERE relation = 'core/authored'",
+        )
+        .fetch_one(pg.pool())
+        .await?;
+        assert_eq!(authored_count, 0);
         Ok::<(), Box<dyn std::error::Error>>(())
     }
     .await;

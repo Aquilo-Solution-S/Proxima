@@ -12,6 +12,8 @@ fn goal_schemas_and_relations_register() {
         .into_iter()
         .map(|schema| schema.schema_id.as_str().to_string())
         .collect();
+    assert!(schema_ids.contains("proxima-goal/goal-proposed-v1"));
+    assert!(schema_ids.contains("proxima-goal/goal-activated-v1"));
     assert!(schema_ids.contains("proxima-goal/simple-text-v1"));
     assert!(schema_ids.contains("proxima-goal/task-v1"));
 
@@ -27,6 +29,10 @@ fn goal_schemas_and_relations_register() {
         .resolve_relation("proxima-goal/motivated-by")
         .expect("relation resolves");
     assert_eq!(resolved.payload_sidecar_table, None);
+    let authored = frozen
+        .resolve_relation("core/authored")
+        .expect("core authored relation resolves");
+    assert_eq!(authored.payload_sidecar_table, None);
 
     let tool_names: HashSet<_> = frozen
         .list_mcp_tools()
