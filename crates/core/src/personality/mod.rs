@@ -14,8 +14,11 @@ use crate::outbox::{ChangeEvent, EntityKind};
 use crate::{Engine, MemoryId, ModelTier, Owner, RegisteredRelation, SchemaId, SchemaVersion};
 
 pub mod authorization;
+pub mod produces;
 pub mod tools;
 pub mod workspace;
+
+pub use produces::{writeable_relations_for_palette, writeable_schemas_for_palette};
 
 #[doc(hidden)]
 pub use tools::__test_only_model_id_from_wake_invocation;

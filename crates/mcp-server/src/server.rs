@@ -2,8 +2,10 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use proxima_core::mcp::{HandleTable, McpAuthorContext, McpToolCtx, McpToolError};
-use proxima_core::personality::{PersonalityTool, PersonalityToolContext, substrate_pack};
-use proxima_core::verbs::schema::PayloadKind;
+use proxima_core::personality::{
+    PersonalityTool, PersonalityToolContext, substrate_pack, writeable_relations_for_palette,
+    writeable_schemas_for_palette,
+};
 use proxima_core::{Engine, FlavorRegistry, FlavorRegistryFrozen, Owner, WakeInvocationLogDraft};
 
 use crate::auth::McpAuthContext;
@@ -250,32 +252,6 @@ fn tail_chars(value: &str, max_chars: usize) -> String {
     chars[start..].iter().collect()
 }
 
-fn writeable_schemas_for_palette(engine: &Engine, palette: &[String]) -> Vec<String> {
-    let allow_abstraction = palette.iter().any(|id| id == "core/emit_abstraction");
-    let allow_perspective = palette.iter().any(|id| id == "core/emit_perspective");
-    engine
-        .registry()
-        .list()
-        .into_iter()
-        .filter(|schema| {
-            (allow_abstraction && schema.kind == PayloadKind::Abstraction)
-                || (allow_perspective && schema.kind == PayloadKind::Perspective)
-        })
-        .map(|schema| schema.schema_id.into_inner())
-        .collect()
-}
-
-fn writeable_relations_for_palette(engine: &Engine, palette: &[String]) -> Vec<String> {
-    if !palette.iter().any(|id| id == "core/create_edge") {
-        return Vec::new();
-    }
-    engine
-        .registry()
-        .list_relations()
-        .iter()
-        .map(|relation| relation.relation.clone())
-        .collect()
-}
 
 #[derive(Debug, thiserror::Error)]
 pub enum ToolInvocationError {
