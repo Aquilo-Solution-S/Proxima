@@ -90,7 +90,7 @@ mod tests {
     }
 
     fn test_store() -> McpAuthStore {
-        McpAuthStore::new(Arc::new(WakeTokenStore::new(Duration::from_secs(300))))
+        McpAuthStore::new(Arc::new(WakeTokenStore::new(Duration::from_mins(5))))
     }
 
     #[tokio::test]

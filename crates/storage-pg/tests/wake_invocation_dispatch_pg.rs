@@ -71,6 +71,19 @@ async fn fetch_wake_invocation(
     wake_entry_id: Uuid,
     change_event_seq: Uuid,
 ) -> Result<WakeInvocationDispatchRow, Box<dyn std::error::Error>> {
+    type DispatchRow = (
+        Option<Uuid>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<i32>,
+        Option<i64>,
+        Option<String>,
+        Option<String>,
+        bool,
+        bool,
+        String,
+    );
     let principal_id = match owner.principal {
         Principal::User(id) => id.into_inner(),
         Principal::Group(id) => id.into_inner(),
@@ -87,19 +100,7 @@ async fn fetch_wake_invocation(
         stdout_truncated,
         stderr_truncated,
         status,
-    ): (
-        Option<Uuid>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<i32>,
-        Option<i64>,
-        Option<String>,
-        Option<String>,
-        bool,
-        bool,
-        String,
-    ) = sqlx::query_as(
+    ): DispatchRow = sqlx::query_as(
         "SELECT wake_token, recipe_sha256, resolved_inference_target_ref,
                 failure_reason, exit_code, duration_ms, stdout_tail,
                 stderr_tail, stdout_truncated, stderr_truncated, status

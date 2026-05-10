@@ -13,6 +13,13 @@ use super::consolidate;
 const SHELL_AUTHOR_DISPLAY_NAME: &str = "shell-author";
 const SHELL_AUTHOR_PURPOSE: &str = "Per-master-token MCP client identity";
 
+/// Idempotent lookup-or-mint of the per-master-token shell-author
+/// personality. Used as provenance for every master-token MCP call.
+///
+/// # Errors
+///
+/// Returns [`StorageError::Internal`] when the database round-trip fails
+/// or when the upstream `instantiate_personality` slow path itself errors.
 pub async fn ensure_master_token_personality(
     pool: &PgPool,
     owner: &Owner,
