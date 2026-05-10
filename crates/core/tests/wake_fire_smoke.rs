@@ -293,6 +293,22 @@ impl Storage for MockStorage {
         unimplemented!("mock")
     }
 
+    async fn ensure_shell_author_personality(
+        &self,
+        _owner: &Owner,
+    ) -> Result<proxima_core::PersonalityInstanceId, StorageError> {
+        unimplemented!("mock")
+    }
+
+    async fn set_wake_entries_within(
+        &self,
+        _owner: &Owner,
+        _personality_instance_id: proxima_core::PersonalityInstanceId,
+        _mutate: proxima_core::WakeEntriesMutator,
+    ) -> Result<SetWakeEntriesResponse, StorageError> {
+        unimplemented!("mock")
+    }
+
     async fn list_active_wake_entries(&self) -> Result<Vec<WakeDispatchEntryRow>, StorageError> {
         Ok(Vec::new())
     }

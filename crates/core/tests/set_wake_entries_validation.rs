@@ -171,6 +171,22 @@ impl Storage for FixtureStorage {
         Ok(SetWakeEntriesResponse { active_entries: 0 })
     }
 
+    async fn ensure_shell_author_personality(
+        &self,
+        _owner: &Owner,
+    ) -> Result<proxima_core::PersonalityInstanceId, StorageError> {
+        Err(StorageError::Internal("unused".into()))
+    }
+
+    async fn set_wake_entries_within(
+        &self,
+        _owner: &Owner,
+        _personality_instance_id: proxima_core::PersonalityInstanceId,
+        _mutate: proxima_core::WakeEntriesMutator,
+    ) -> Result<SetWakeEntriesResponse, StorageError> {
+        Err(StorageError::Internal("unused".into()))
+    }
+
     async fn list_active_wake_entries(&self) -> Result<Vec<WakeDispatchEntryRow>, StorageError> {
         Ok(Vec::new())
     }
