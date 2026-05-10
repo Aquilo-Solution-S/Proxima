@@ -67,16 +67,20 @@ pub(crate) async fn query_memories(
     // don't participate in memory queries. Goal sidecars don't either:
     // Goals are a distinct entity (AGENTS.md invariant 11), and goal
     // queries short-circuit above.
-    let schemas_with_sidecar: Vec<&SchemaInfo> = schemas
-        .iter()
-        .filter(|s| {
-            s.sidecar_table.is_some()
-                && matches!(
-                    s.kind,
-                    PayloadKind::Fact | PayloadKind::Abstraction | PayloadKind::Perspective
-                )
-        })
-        .collect();
+    let schemas_with_sidecar: Vec<&SchemaInfo> = if req.include_payloads {
+        schemas
+            .iter()
+            .filter(|s| {
+                s.sidecar_table.is_some()
+                    && matches!(
+                        s.kind,
+                        PayloadKind::Fact | PayloadKind::Abstraction | PayloadKind::Perspective
+                    )
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
 
     let mut sql = String::from(
         "SELECT m.memory_id, m.owner_principal_kind, m.owner_principal_id, \

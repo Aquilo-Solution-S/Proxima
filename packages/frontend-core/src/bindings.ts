@@ -693,6 +693,9 @@ export type QueryRequest = {
 	tombstones?: TombstoneFilter,
 	personality_roots?: PersonalityRootFilter,
 	limit: number,
+	// Include typed payload bytes in returned rows. Broad graph snapshots can
+	// set this false and hydrate selected IDs later.
+	include_payloads?: boolean,
 	// Identity-keyed hydration for Subscribe-driven row fetches.
 	memory_ids?: MemoryId[],
 	goal_ids?: GoalId[],

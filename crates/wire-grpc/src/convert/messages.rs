@@ -238,6 +238,7 @@ pub fn query_request_from_proto(
         tombstones,
         personality_roots: proxima_core::verbs::query::PersonalityRootFilter::IncludeInactive,
         limit,
+        include_payloads: true,
         memory_ids: Vec::new(),
         goal_ids: Vec::new(),
         edge_ids: Vec::new(),

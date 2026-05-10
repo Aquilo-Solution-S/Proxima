@@ -18,7 +18,9 @@ use proxima_core::auth::{Credentials, NoAuth};
 use proxima_core::engine::Engine;
 use proxima_core::storage::Storage;
 use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
-use proxima_core::verbs::query::{MemoryStore, QueryRequest, SupersessionStatus, TombstoneFilter};
+use proxima_core::verbs::query::{
+    MemoryStore, PersonalityRootFilter, QueryRequest, SupersessionStatus, TombstoneFilter,
+};
 use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaInfo, SchemaTombstone};
 use proxima_core::{
     CORE_DERIVED_FROM_RELATION, FactPayload, FlavorRegistry, OrgId, Owner, Principal, SchemaId,
@@ -297,7 +299,9 @@ async fn heads_only_returns_latest_per_natural_key() {
             schema_id: Some(SchemaId::new(FileRevisionV1::SCHEMA_ID.into())),
             supersession: SupersessionStatus::HeadsOnly,
             tombstones: proxima_core::verbs::query::TombstoneFilter::PresentOnly,
+            personality_roots: PersonalityRootFilter::IncludeInactive,
             limit: 100,
+            include_payloads: true,
             memory_ids: Vec::new(),
             goal_ids: Vec::new(),
             edge_ids: Vec::new(),
@@ -327,7 +331,9 @@ async fn heads_only_returns_latest_per_natural_key() {
             schema_id: Some(SchemaId::new(FileRevisionV1::SCHEMA_ID.into())),
             supersession: SupersessionStatus::IncludeSuperseded,
             tombstones: proxima_core::verbs::query::TombstoneFilter::PresentOnly,
+            personality_roots: PersonalityRootFilter::IncludeInactive,
             limit: 100,
+            include_payloads: true,
             memory_ids: Vec::new(),
             goal_ids: Vec::new(),
             edge_ids: Vec::new(),
@@ -387,7 +393,9 @@ async fn heads_only_no_op_for_stateless_fact_schema() {
             schema_id: Some(SchemaId::new(CommitV1::SCHEMA_ID.into())),
             supersession: SupersessionStatus::HeadsOnly,
             tombstones: proxima_core::verbs::query::TombstoneFilter::PresentOnly,
+            personality_roots: PersonalityRootFilter::IncludeInactive,
             limit: 100,
+            include_payloads: true,
             memory_ids: Vec::new(),
             goal_ids: Vec::new(),
             edge_ids: Vec::new(),
