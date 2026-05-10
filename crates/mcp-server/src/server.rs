@@ -252,7 +252,6 @@ fn tail_chars(value: &str, max_chars: usize) -> String {
     chars[start..].iter().collect()
 }
 
-
 #[derive(Debug, thiserror::Error)]
 pub enum ToolInvocationError {
     #[error("tool not found: {0}")]

@@ -109,14 +109,7 @@ mod tests {
         let engine = engine_with_test_registry();
         let palette = vec!["core/emit_abstraction".to_string()];
         let schemas = writeable_schemas_for_palette(&engine, &palette);
-        assert!(
-            !schemas.is_empty(),
-            "expected at least one Abstraction schema in test registry"
-        );
-        assert!(
-            schemas.iter().all(|id| id == "test/abstraction-v1"),
-            "only Abstraction schemas should be returned"
-        );
+        assert_eq!(schemas, vec!["test/abstraction-v1".to_string()]);
         // No relations: create_edge not in palette
         assert!(writeable_relations_for_palette(&engine, &palette).is_empty());
     }
@@ -126,11 +119,17 @@ mod tests {
         let engine = engine_with_test_registry();
         let palette = vec!["core/create_edge".to_string()];
         let relations = writeable_relations_for_palette(&engine, &palette);
-        assert!(
-            !relations.is_empty(),
-            "expected at least one relation in test registry"
-        );
+        assert_eq!(relations, vec!["test/related-to".to_string()]);
         assert!(writeable_schemas_for_palette(&engine, &palette).is_empty());
+    }
+
+    #[test]
+    fn emit_perspective_only_returns_perspective_schemas() {
+        let engine = engine_with_test_registry();
+        let palette = vec!["core/emit_perspective".to_string()];
+        let schemas = writeable_schemas_for_palette(&engine, &palette);
+        assert_eq!(schemas, vec!["test/perspective-v1".to_string()]);
+        assert!(writeable_relations_for_palette(&engine, &palette).is_empty());
     }
 
     #[test]
