@@ -196,6 +196,7 @@ const clientWithHistory = (
   listMcpTools: async () => [],
   listWorkspaceTools: async () => [],
   listRelations: async () => [],
+  wakeEntryProduces: async () => ({ schema_ids: [], relation_ids: [] }),
 });
 
 const renderSurfaceWithClient = (client: EngineClient) => {

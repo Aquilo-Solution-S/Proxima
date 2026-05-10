@@ -19,6 +19,7 @@ import type {
   ListPersonalityInstancesTs,
   McpToolTs,
   OwnerRecipesListingTs,
+  ProducesTs,
   PersonalityInstanceTs,
   QueryRequest,
   QueryResponse,
@@ -74,4 +75,5 @@ export interface EngineClient {
   listMcpTools(): Promise<McpToolTs[]>;
   listWorkspaceTools(): Promise<WorkspaceToolTs[]>;
   listRelations(): Promise<RelationTs[]>;
+  wakeEntryProduces(substratePalette: string[]): Promise<ProducesTs>;
 }
