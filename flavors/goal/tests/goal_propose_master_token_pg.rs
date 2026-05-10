@@ -148,6 +148,7 @@ async fn master_token_propose_creates_inspires_edge_to_per_token_self_perspectiv
                     text: "Rename `unwrap` in tauri-client.ts to `unwrapTauri`.".into(),
                 }),
                 evidence: vec![],
+                target_personality: None,
                 idempotency_key: Some("m0-acceptance-1".into()),
             },
         )

@@ -7,6 +7,7 @@ import {
   type EventHistoryResponse,
   type EventIngestOutcome,
   type GoalDraft,
+  type GoalReactivateTs,
   type BundledRecipeTs,
   type GoalWriteOutcome,
   type InstantiatePersonalityOutcomeTs,
@@ -102,6 +103,10 @@ export class TauriEngineClient implements EngineClient {
 
   async goalWrite(draft: GoalDraft): Promise<GoalWriteOutcome> {
     return unwrap(commands.goalWrite(draft), "goal_write");
+  }
+
+  async goalReactivate(req: GoalReactivateTs): Promise<EventIngestOutcome> {
+    return unwrap(commands.goalReactivate(req), "goal_reactivate");
   }
 
   async eventIngest(draft: EventDraft): Promise<EventIngestOutcome> {

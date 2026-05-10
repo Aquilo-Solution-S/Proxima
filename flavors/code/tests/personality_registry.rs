@@ -30,8 +30,24 @@ fn registry_resolves_bundled_recipes() {
         "unexpected engineer recipe path: {engineer_path:?}",
     );
 
+    let planner_path = frozen
+        .bundled_recipe_path("proxima-code/plan_execution_requests")
+        .expect("plan_execution_requests recipe must be registered");
+    assert!(
+        planner_path.exists(),
+        "plan_execution_requests recipe path {planner_path:?} must exist on disk",
+    );
+    assert!(
+        planner_path.ends_with("recipes/plan_execution_requests.yaml"),
+        "unexpected plan_execution_requests recipe path: {planner_path:?}",
+    );
+
     assert_eq!(
         frozen.bundled_recipes_for("proxima-code"),
-        vec!["proxima-code/commit_summary", "proxima-code/engineer"],
+        vec![
+            "proxima-code/commit_summary",
+            "proxima-code/engineer",
+            "proxima-code/plan_execution_requests",
+        ],
     );
 }

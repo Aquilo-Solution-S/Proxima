@@ -14,16 +14,17 @@ pub mod workspace_runner;
 
 pub use ingest::{
     CODE_BLOB_BYTE_RANGE_SCHEMA, CODE_BLOB_SCHEMA, CODE_BLOB_WHOLE_SCHEMA,
-    CODE_COMMIT_OBJECT_SCHEMA, CODE_COMMIT_WHOLE_SCHEMA, IngestError, LOCAL_GIT_SOURCE_ID,
-    WORKSPACE_RUN_OBJECT_SCHEMA, WORKSPACE_RUN_WHOLE_SCHEMA, WORKSPACE_RUNNER_SOURCE_ID,
-    build_engine, build_engine_with, ingest_code_chunk, ingest_commit, ingest_file_revision,
+    CODE_COMMIT_OBJECT_SCHEMA, CODE_COMMIT_WHOLE_SCHEMA, EXECUTION_REQUEST_OBJECT_SCHEMA,
+    EXECUTION_REQUEST_WHOLE_SCHEMA, IngestError, LOCAL_GIT_SOURCE_ID, WORKSPACE_RUN_OBJECT_SCHEMA,
+    WORKSPACE_RUN_WHOLE_SCHEMA, WORKSPACE_RUNNER_SOURCE_ID, build_engine, build_engine_with,
+    ingest_code_chunk, ingest_commit, ingest_file_revision,
 };
 pub use local_git_source::{IndexError, IndexReport, IngestProgress, LocalGitSource};
 pub use migrations::migrator;
 pub use payloads::{
     CodeChunkV1, CodeCommitSummarizerSelfV1, CodeDevelopmentPerspectiveV1, CodeEngineerSelfV1,
-    CommitSummaryV1, CommitV1, EdgeCallsV1, FileRevisionV1, FileState, WorkspaceDecision,
-    WorkspaceDecisionV1, WorkspaceRunV1,
+    CommitSummaryV1, CommitV1, EdgeCallsV1, ExecutionRequestV1, FileRevisionV1, FileState,
+    WorkspaceDecision, WorkspaceDecisionV1, WorkspaceRunV1,
 };
 
 pub use repos::{
@@ -42,6 +43,7 @@ proxima_core::proxima_flavor! {
         payloads::CommitV1,
         payloads::FileRevisionV1,
         payloads::CodeChunkV1,
+        payloads::ExecutionRequestV1,
         payloads::WorkspaceRunV1,
         payloads::WorkspaceDecisionV1,
     ],
@@ -70,17 +72,20 @@ proxima_core::proxima_flavor! {
         mcp::CodeSearchChunksTool,
         mcp::CodeOpenFileRevisionTool,
         mcp::CodeSearchCommitsTool,
+        mcp::CodeEmitExecutionRequestTool,
     ],
     workspace_runner = workspace_runner::CodeWorkspaceRunner,
     workspace_triggers = [
         "proxima-code/commit-v1",
         "proxima-code/file-revision-v1",
         "proxima-code/code-chunk-v1",
+        "proxima-code/execution-request-v1",
     ],
     recipes_root = env!("CARGO_MANIFEST_DIR"),
     recipes = [
         "commit_summary",
         "engineer",
+        "plan_execution_requests",
     ],
 }
 
@@ -102,6 +107,7 @@ mod tests {
         assert!(schema_ids.contains("proxima-code/commit-v1"));
         assert!(schema_ids.contains("proxima-code/file-revision-v1"));
         assert!(schema_ids.contains("proxima-code/code-chunk-v1"));
+        assert!(schema_ids.contains("proxima-code/execution-request-v1"));
         // Abstraction schemas
         assert!(schema_ids.contains("proxima-code/commit-summary-v1"));
         // Perspective schemas
@@ -156,5 +162,6 @@ mod tests {
         assert!(names.contains("proxima-code/code_search_chunks"));
         assert!(names.contains("proxima-code/code_open_file_revision"));
         assert!(names.contains("proxima-code/code_search_commits"));
+        assert!(names.contains("proxima-code/code_emit_execution_request"));
     }
 }

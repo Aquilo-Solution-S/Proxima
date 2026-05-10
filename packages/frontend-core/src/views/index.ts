@@ -4,7 +4,7 @@ export { SettingsGeneralPanel } from "./settings-general";
 export { SettingsModelsPanel } from "./settings-models";
 export { SchemasView } from "./schemas";
 export { MarketplaceView } from "./marketplace";
-export { EngineerInstancesPanel, PersonalitiesView } from "./personalities";
+export { PersonalitiesView } from "./personalities";
 export { FullSurface } from "./surface";
 export { CompactSurface } from "./compact-surface";
 export { Atlas, type AtlasNode, type AtlasEdge, type AtlasNodeKind } from "./atlas";

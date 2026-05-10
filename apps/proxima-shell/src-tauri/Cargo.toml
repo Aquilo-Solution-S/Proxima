@@ -36,6 +36,8 @@ tokio-stream = { workspace = true }
 futures-util = { workspace = true }
 sqlx = { workspace = true }
 uuid = { workspace = true }
+ciborium = { workspace = true }
+blake3 = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-chrome = "0.7"

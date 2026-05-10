@@ -3534,6 +3534,8 @@ name = "proxima-shell"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "blake3",
+ "ciborium",
  "dotenvy",
  "futures-util",
  "keyring",

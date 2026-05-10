@@ -32,6 +32,7 @@ async fn propose_writes_goal_and_motivated_by_atomically() -> Result<(), Box<dyn
                     text: "ship goal flavor".into(),
                 }),
                 evidence: vec![evidence_handle.as_str().to_string()],
+                target_personality: None,
                 idempotency_key: Some("proposal-1".into()),
             },
         )
@@ -113,6 +114,7 @@ async fn propose_writes_inspires_edge_for_personality_caller()
                     text: "connect goal".into(),
                 }),
                 evidence: Vec::new(),
+                target_personality: None,
                 idempotency_key: Some("proposal-with-self".into()),
             },
         )
@@ -177,6 +179,7 @@ async fn propose_rejects_evidence_in_other_owner() -> Result<(), Box<dyn std::er
                     text: "x".into(),
                 }),
                 evidence: vec![evidence_handle.as_str().to_string()],
+                target_personality: None,
                 idempotency_key: None,
             },
         )

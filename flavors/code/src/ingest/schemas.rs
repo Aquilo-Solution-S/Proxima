@@ -38,6 +38,9 @@ pub use crate::workspace_runner::{
     WORKSPACE_RUN_OBJECT_SCHEMA, WORKSPACE_RUN_WHOLE_SCHEMA, WORKSPACE_RUNNER_SOURCE_ID,
 };
 
+pub const EXECUTION_REQUEST_OBJECT_SCHEMA: &str = "proxima-code/execution-request-object-v1";
+pub const EXECUTION_REQUEST_WHOLE_SCHEMA: &str = "proxima-code/execution-request-whole-v1";
+
 #[must_use]
 pub fn schema_registry() -> proxima_core::verbs::schema::FlavorRegistryFrozen {
     schema_registry_with(|_| {})
@@ -75,6 +78,7 @@ pub(crate) fn schema_registry_with_config(
     for cited in [
         CODE_BLOB_SCHEMA,
         CODE_COMMIT_OBJECT_SCHEMA,
+        EXECUTION_REQUEST_OBJECT_SCHEMA,
         WORKSPACE_RUN_OBJECT_SCHEMA,
     ] {
         extra_schemas.push(SchemaInfo {
@@ -94,6 +98,7 @@ pub(crate) fn schema_registry_with_config(
         CODE_BLOB_WHOLE_SCHEMA,
         CODE_BLOB_BYTE_RANGE_SCHEMA,
         CODE_COMMIT_WHOLE_SCHEMA,
+        EXECUTION_REQUEST_WHOLE_SCHEMA,
         WORKSPACE_RUN_WHOLE_SCHEMA,
     ] {
         extra_schemas.push(SchemaInfo {

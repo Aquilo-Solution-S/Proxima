@@ -88,6 +88,7 @@ pub enum McpToolError {
 pub struct McpToolDescriptor {
     pub name: &'static str,
     pub description: &'static str,
+    pub produces_schema_ids: &'static [&'static str],
     pub args_schema: serde_json::Value,
     pub call: McpCallFn,
 }
@@ -100,6 +101,7 @@ pub type McpCallFn = fn(
 pub trait McpTool: Send + Sync + 'static {
     const NAME: &'static str;
     const DESCRIPTION: &'static str;
+    const PRODUCES_SCHEMA_IDS: &'static [&'static str] = &[];
 
     type Args: serde::de::DeserializeOwned + schemars::JsonSchema + Send + 'static;
     type Output: serde::Serialize + Send + 'static;

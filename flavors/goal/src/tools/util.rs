@@ -13,8 +13,8 @@ use proxima_core::verbs::event_ingest::{
 use proxima_core::verbs::goal_write::{GoalAuthorship, GoalDraft, GoalState};
 use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{
-    FactPayload, GoalId, GoalPayload, MemoryId, Owner, Principal, SchemaId, SchemaVersion,
-    SourceBatchId, SourceId, StorageError,
+    FactPayload, GoalId, GoalPayload, MemoryId, Owner, PersonalityInstanceId, Principal, SchemaId,
+    SchemaVersion, SourceBatchId, SourceId, StorageError,
 };
 use proxima_storage_pg::verbs::edge_append::{EdgeDraft, append_edge_in_tx};
 use proxima_storage_pg::verbs::event_ingest::ingest_event_in_tx;
@@ -189,6 +189,79 @@ pub fn owner_columns(owner: &Owner) -> (&'static str, uuid::Uuid, uuid::Uuid) {
         Principal::Group(g) => ("Group", g.into_inner()),
     };
     (kind, principal_id, owner.org_id.into_inner())
+}
+
+pub async fn target_personality_root(
+    tx: &mut sqlx::PgConnection,
+    ctx: &McpToolCtx,
+    handle: &str,
+) -> Result<MemoryId, McpToolError> {
+    let instance_id = ctx
+        .handles
+        .resolve_personality(handle)
+        .ok_or_else(|| McpToolError::UnknownHandle(handle.to_string()))?;
+    personality_root_in_owner(tx, &ctx.owner, instance_id).await
+}
+
+pub async fn personality_root_in_owner(
+    tx: &mut sqlx::PgConnection,
+    owner: &Owner,
+    instance_id: PersonalityInstanceId,
+) -> Result<MemoryId, McpToolError> {
+    let (owner_kind, owner_principal_id, _owner_org_id) = owner_columns(owner);
+    let row: Option<uuid::Uuid> = sqlx::query_scalar(
+        "SELECT current_root_perspective_memory_id
+         FROM proxima_core.personality
+         WHERE owner_principal_kind = $1
+           AND owner_principal_id = $2
+           AND personality_instance_id = $3
+           AND status <> 'tombstoned'",
+    )
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(instance_id.into_inner())
+    .fetch_optional(tx)
+    .await
+    .map_err(map_storage)?;
+    row.map(MemoryId::new)
+        .ok_or_else(|| McpToolError::UnknownHandle(format!("P:{}", instance_id.into_inner())))
+}
+
+pub async fn append_inspires_edge(
+    tx: &mut sqlx::PgConnection,
+    ctx: &McpToolCtx,
+    goal_id: uuid::Uuid,
+    self_memory_id: MemoryId,
+    authorship_kind: &'static str,
+) -> Result<uuid::Uuid, McpToolError> {
+    let edge_id = uuid::Uuid::now_v7();
+    let relation = ctx
+        .registry
+        .resolve_relation(proxima_core::relation::CORE_INSPIRES_RELATION)
+        .ok_or_else(|| {
+            McpToolError::Other(format!(
+                "relation {} not registered",
+                proxima_core::relation::CORE_INSPIRES_RELATION
+            ))
+        })?;
+    let self_memory_uuid = self_memory_id.into_inner();
+    let draft = EdgeDraft {
+        edge_id,
+        relation,
+        source_kind: "Goal",
+        source_memory_id: None,
+        source_goal_id: Some(goal_id),
+        target_kind: "Perspective",
+        target_memory_id: Some(self_memory_uuid),
+        target_goal_id: None,
+        authorship_kind,
+        authorship_owner_memory_id: Some(self_memory_uuid),
+        owner: &ctx.owner,
+    };
+    append_edge_in_tx(tx, &draft, None)
+        .await
+        .map_err(McpToolError::Storage)?;
+    Ok(edge_id)
 }
 
 pub async fn validate_evidence_in_owner(

@@ -1,0 +1,50 @@
+# Planner handoff recipe.
+# Resolved at runtime via `bundled:proxima-code/plan_execution_requests`.
+
+version: 1.0.0
+title: Plan Execution Requests
+description: Turn an assigned Active Goal into repo-scoped Code execution-request Facts.
+parameters:
+  - key: root_perspective
+    description: Root Perspective envelope for the waking planner.
+    input_type: string
+    requirement: required
+  - key: active_goals
+    description: Active goals attached to the Root Perspective.
+    input_type: string
+    requirement: required
+  - key: trigger_event
+    description: ChangeEvent envelope that triggered this wake.
+    input_type: string
+    requirement: required
+  - key: triggering_memory
+    description: Goal activation Fact envelope.
+    input_type: string
+    requirement: required
+prompt: |
+  Root perspective:
+  {{ root_perspective }}
+
+  Active goals:
+  {{ active_goals }}
+
+  Trigger event:
+  {{ trigger_event }}
+
+  Triggering memory:
+  {{ triggering_memory }}
+instructions: |
+  You are a planning personality configured by the user. Code ships this bundled recipe; it does not ship or require your personality instance.
+
+  The triggering memory is a `proxima-goal/goal-activated-v1` Fact for an Active Goal assigned to your Root Perspective through `core/inspires`.
+
+  Inspect the active goal and relevant code graph with Code MCP tools. For each target repository, call `proxima-code_code_emit_execution_request` exactly once with:
+    - `repo_handle`: a repo handle returned by a Code MCP search/open tool.
+    - `title`: a short execution title.
+    - `instructions`: concrete workspace instructions for the worker.
+    - `request_key`: a stable key for this goal and repo.
+    - `idempotency_key`: the same value as `request_key`.
+    - `goal_activated_memory`: the triggering memory id from the rendered context.
+    - `evidence`: selected Fact or Abstraction memory ids that justify the request.
+
+  Emit one execution request per target repo. Do not run workspace tools. End your turn after the request Facts land.

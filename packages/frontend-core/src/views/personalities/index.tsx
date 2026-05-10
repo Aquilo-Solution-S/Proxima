@@ -577,8 +577,6 @@ export const PersonalitiesView: Component<{
   );
 };
 
-export const EngineerInstancesPanel = PersonalitiesView;
-
 const unwrap = async <T, E>(
   result: Promise<{ status: "ok"; data: T } | { status: "error"; error: E }>,
 ): Promise<T> => {

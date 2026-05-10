@@ -117,4 +117,32 @@ describe("code payload renderers", () => {
     expect(screen.getByText("Core substrate first, flavor behavior second.")).toBeTruthy();
     expect(screen.getByText("82%")).toBeTruthy();
   });
+
+  it("renders execution requests as planner output", () => {
+    init();
+    const hub = createHub([]);
+    const payload = {
+      repo_id: "018f0000-0000-7000-8000-000000000001",
+      title: "Implement the planner handoff",
+      instructions: "Emit a request Fact for the target repo.",
+      request_key: "goal-1:repo-1",
+    };
+    const row = memory(
+      "proxima-code/execution-request-v1",
+      Array.from(encode(payload)),
+    );
+
+    const decoded = hub
+      .codecFor(row.schema_id, row.schema_version)
+      ?.decode(new Uint8Array(row.payload));
+    const renderer = hub.rendererFor(row.schema_id, row.schema_version);
+
+    render(() => renderer?.render({ memory: row, payload: decoded }));
+
+    expect(screen.getByText("Implement the planner handoff")).toBeTruthy();
+    expect(
+      screen.getByText("Emit a request Fact for the target repo."),
+    ).toBeTruthy();
+    expect(screen.getByText("goal-1:repo-1")).toBeTruthy();
+  });
 });

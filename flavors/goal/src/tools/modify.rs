@@ -35,6 +35,7 @@ impl McpTool for ModifyTool {
                     proposal: args.proposal,
                     payload: Some(args.payload),
                     evidence: args.evidence,
+                    target_personality: None,
                     idempotency_key: args.idempotency_key,
                 },
                 GoalState::Active,

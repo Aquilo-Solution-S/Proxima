@@ -3,7 +3,12 @@ import {
   registerGoalPayloadEditor,
   registerPayloadRenderer,
 } from "@proxima/core/registry";
-import { goalPayloadCodec, goalRenderers } from "./renderers/payload-renderers";
+import {
+  goalLifecycleCodec,
+  goalLifecycleRenderers,
+  goalPayloadCodec,
+  goalRenderers,
+} from "./renderers/payload-renderers";
 import {
   SimpleTextGoalEditor,
   simpleTextGoalDefaults,
@@ -25,6 +30,16 @@ export function init(): void {
       kind: "Goal",
       flavor: "proxima-goal",
       codec: goalPayloadCodec,
+      renderer,
+    });
+  }
+  for (const [schemaId, renderer] of Object.entries(goalLifecycleRenderers)) {
+    registerPayloadRenderer({
+      schemaId,
+      schemaVersion: 1,
+      kind: "Fact",
+      flavor: "proxima-goal",
+      codec: goalLifecycleCodec,
       renderer,
     });
   }

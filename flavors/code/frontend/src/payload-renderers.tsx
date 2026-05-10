@@ -256,6 +256,21 @@ const renderDevelopmentPerspective = (payload: unknown): JSX.Element => {
   );
 };
 
+const renderExecutionRequest = (payload: unknown): JSX.Element => {
+  const p = asRecord(payload);
+  return (
+    <PayloadShell title={asString(p.title) ?? "Execution request"}>
+      <p class="code-payload-summary">
+        {asString(p.instructions) ?? "No instructions"}
+      </p>
+      <PayloadGrid>
+        <Field label="request">{asString(p.request_key) ?? "unknown"}</Field>
+        <Field label="repo">{uuid(p.repo_id)}</Field>
+      </PayloadGrid>
+    </PayloadShell>
+  );
+};
+
 const renderPersonalitySelf = (payload: unknown): JSX.Element => {
   const p = asRecord(payload);
   return (
@@ -289,6 +304,7 @@ export const codeRenderers: Record<string, Renderer<unknown>> = {
   "proxima-code/code-chunk-v1": renderer(renderCodeChunk),
   "proxima-code/commit-summary-v1": renderer(renderCommitSummary),
   "proxima-code/development-perspective-v1": renderer(renderDevelopmentPerspective),
+  "proxima-code/execution-request-v1": renderer(renderExecutionRequest),
   "proxima-code/calls": renderer(renderCalls),
   "proxima-code/engineer-self-v1": renderer(renderPersonalitySelf),
   "proxima-code/commit-summarizer-self-v1": renderer(renderPersonalitySelf),

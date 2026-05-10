@@ -179,7 +179,13 @@ fn author_from_args(
         .or_else(|| auth.and_then(|ctx| ctx.model_id.as_deref()))
         .unwrap_or("unknown")
         .to_string();
-    let caller_self_perspective = caller_self_perspective_from_args(args)?;
+    let caller_self_perspective = caller_self_perspective_from_args(args)?.or_else(|| {
+        auth.and_then(|ctx| {
+            ctx.wake
+                .as_ref()
+                .map(|wake| wake.current_root_perspective_memory_id)
+        })
+    });
     Ok(McpAuthorContext {
         model_id,
         client_name: "unknown".into(),

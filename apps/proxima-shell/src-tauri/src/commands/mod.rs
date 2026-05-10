@@ -21,6 +21,7 @@ pub(crate) fn specta_builder() -> Builder<tauri::Wry> {
         engine::event_history,
         engine::event_ingest,
         engine::goal_write,
+        engine::goal_reactivate,
         engine::list_personality_instances,
         engine::list_wake_invocations,
         engine::instantiate_personality,

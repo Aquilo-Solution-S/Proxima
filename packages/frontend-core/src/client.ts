@@ -6,6 +6,7 @@ import type {
   EventIngestOutcome,
   BundledRecipeTs,
   GoalDraft,
+  GoalReactivateTs,
   GoalWriteOutcome,
   InstantiatePersonalityOutcomeTs,
   InstantiatePersonalityTs,
@@ -48,6 +49,7 @@ export interface EngineClient {
     onEvent: (event: ChangeEvent) => void,
   ): Promise<Subscription>;
   goalWrite(draft: GoalDraft): Promise<GoalWriteOutcome>;
+  goalReactivate(req: GoalReactivateTs): Promise<EventIngestOutcome>;
   eventIngest(draft: EventDraft): Promise<EventIngestOutcome>;
   listPersonalityInstances(
     req: ListPersonalityInstancesTs,

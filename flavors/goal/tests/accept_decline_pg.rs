@@ -27,6 +27,7 @@ async fn propose_with_evidence(
                 text: "proposal".into(),
             }),
             evidence: vec![evidence_handle.as_str().to_string()],
+            target_personality: None,
             idempotency_key: Some(format!("proposal-{evidence}")),
         },
     )
@@ -54,6 +55,7 @@ async fn propose_for_self(
                 text: "proposal".into(),
             }),
             evidence: Vec::new(),
+            target_personality: None,
             idempotency_key: Some(format!("proposal-for-self-{self_id:?}")),
         },
     )
@@ -174,6 +176,7 @@ async fn accept_supersedes_and_re_emits_motivated_by() -> Result<(), Box<dyn std
                 proposal: proposal_handle.as_str().to_string(),
                 payload: None,
                 evidence: None,
+                target_personality: None,
                 idempotency_key: Some("accept-1".into()),
             },
         )
@@ -241,6 +244,7 @@ async fn propose_and_accept_emit_lifecycle_facts_and_authored_edges()
                     text: "lifecycle proposal".into(),
                 }),
                 evidence: vec![evidence_handle.as_str().to_string()],
+                target_personality: None,
                 idempotency_key: Some("lifecycle-propose".into()),
             },
         )
@@ -258,6 +262,7 @@ async fn propose_and_accept_emit_lifecycle_facts_and_authored_edges()
                 proposal: proposal_handle.as_str().to_string(),
                 payload: None,
                 evidence: None,
+                target_personality: None,
                 idempotency_key: Some("lifecycle-accept".into()),
             },
         )
@@ -428,6 +433,7 @@ async fn accept_and_decline_preserve_inspires_edge() -> Result<(), Box<dyn std::
                 proposal: proposal_handle.as_str().to_string(),
                 payload: None,
                 evidence: None,
+                target_personality: None,
                 idempotency_key: Some("accept-preserve-inspires".into()),
             },
         )
