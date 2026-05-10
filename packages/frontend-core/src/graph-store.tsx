@@ -21,7 +21,7 @@ import type {
 } from "./bindings";
 import type { EngineClient, Subscription } from "./client";
 import type { Hub } from "./hub";
-import { ulidTimestampMs } from "./ulid";
+import { orderedIdTimestampMs } from "./ulid";
 
 const provenanceFromEvent = (
   event: ChangeEvent,
@@ -29,11 +29,11 @@ const provenanceFromEvent = (
 ): MemoryProvenance | null => {
   let written_at_ms: number;
   try {
-    written_at_ms = ulidTimestampMs(event.seq);
+    written_at_ms = orderedIdTimestampMs(event.seq);
   } catch (err) {
     if (typeof console !== "undefined") {
       console.warn(
-        `[graph-store] non-ULID seq ${event.seq} on EntityAppend for ${memoryId}; skipping provenance`,
+        `[graph-store] invalid ordered seq ${event.seq} on EntityAppend for ${memoryId}; skipping provenance`,
         err,
       );
     }

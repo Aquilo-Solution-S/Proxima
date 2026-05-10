@@ -3,10 +3,10 @@
 use std::net::SocketAddr;
 use std::sync::Mutex;
 
-use proxima_core::engine::EngineHandle;
 use proxima_core::Owner;
 #[cfg(not(debug_assertions))]
 use proxima_core::Principal;
+use proxima_core::engine::EngineHandle;
 use uuid::Uuid;
 
 #[cfg(not(debug_assertions))]
