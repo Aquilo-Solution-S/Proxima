@@ -196,7 +196,10 @@ async fn self_ingestion_streams_proxima_main() {
                     schema_id: Some(commit_schema.clone()),
                     supersession: proxima_core::verbs::query::SupersessionStatus::IncludeSuperseded,
                     tombstones: proxima_core::verbs::query::TombstoneFilter::PresentOnly,
+                    personality_roots:
+                        proxima_core::verbs::query::PersonalityRootFilter::IncludeInactive,
                     limit: 100,
+                    include_payloads: true,
                     memory_ids: Vec::new(),
                     goal_ids: Vec::new(),
                     edge_ids: Vec::new(),
@@ -246,7 +249,10 @@ async fn self_ingestion_streams_proxima_main() {
                     schema_id: None,
                     supersession: proxima_core::verbs::query::SupersessionStatus::IncludeSuperseded,
                     tombstones: proxima_core::verbs::query::TombstoneFilter::PresentOnly,
+                    personality_roots:
+                        proxima_core::verbs::query::PersonalityRootFilter::IncludeInactive,
                     limit: 100_000,
+                    include_payloads: true,
                     memory_ids: Vec::new(),
                     goal_ids: Vec::new(),
                     edge_ids: Vec::new(),

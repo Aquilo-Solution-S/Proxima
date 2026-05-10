@@ -87,6 +87,11 @@ export interface GraphSnapshot {
 export interface GraphStore {
   state: Accessor<GraphSnapshot>;
   refresh(): Promise<void>;
+  hydrate?(ids: {
+    memory_ids?: string[];
+    goal_ids?: string[];
+    edge_ids?: string[];
+  }): Promise<void>;
 }
 
 const DECODE_ERROR_CAP = 256;
@@ -119,6 +124,7 @@ const snapshotReq = (
   tombstones,
   personality_roots: "ActiveOnly",
   limit: GRAPH_SNAPSHOT_LIMIT,
+  include_payloads: false,
 });
 
 const seqValue = (seq: string): bigint | null => {
@@ -259,6 +265,7 @@ export function createGraphStore(
     decoded: DecodedMemory,
     schema: SchemaInfo | undefined,
   ): string | null => {
+    if (decoded.row.payload.length === 0) return null;
     if (schema === undefined || schema.natural_key_columns.length === 0) {
       return null;
     }
@@ -285,6 +292,7 @@ export function createGraphStore(
     decoded: DecodedMemory,
     schema: SchemaInfo | undefined,
   ): boolean => {
+    if (decoded.row.payload.length === 0) return false;
     const tombstone = schema?.tombstone;
     if (tombstone === null || tombstone === undefined) return false;
     return (
@@ -420,6 +428,28 @@ export function createGraphStore(
     setState((prev) => ({ ...prev, streamStatus: "live" }));
   };
 
+  const hydrate = async (ids: {
+    memory_ids?: string[];
+    goal_ids?: string[];
+    edge_ids?: string[];
+  }): Promise<void> => {
+    const memoryIds = ids.memory_ids ?? [];
+    const goalIds = ids.goal_ids ?? [];
+    const edgeIds = ids.edge_ids ?? [];
+    const count = memoryIds.length + goalIds.length + edgeIds.length;
+    if (count === 0) return;
+    const resp = await client.query({
+      ...snapshotReq(owner),
+      include_payloads: true,
+      tombstones: memoryIds.length > 0 ? "IncludeTombstoned" : "PresentOnly",
+      limit: Math.max(count, 1),
+      memory_ids: memoryIds,
+      goal_ids: goalIds,
+      edge_ids: edgeIds,
+    });
+    applyResponse(resp);
+  };
+
   const scheduleHydration = (): void => {
     if (hydrationTimer !== null || hydrationInFlight) return;
     hydrationTimer = setTimeout(() => {
@@ -509,6 +539,7 @@ export function createGraphStore(
     try {
       const resp = await client.query({
         ...snapshotReq(owner),
+        include_payloads: true,
         tombstones: memoryIds.length > 0 ? "IncludeTombstoned" : "PresentOnly",
         limit: Math.max(pendingEntries.length, 1),
         memory_ids: memoryIds,
@@ -565,7 +596,7 @@ export function createGraphStore(
     setState((prev) => ({ ...prev, streamStatus: "degraded" }));
   });
 
-  return { state, refresh };
+  return { state, refresh, hydrate };
 }
 
 export const GraphProvider = (props: {

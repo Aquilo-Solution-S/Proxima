@@ -20,7 +20,7 @@ use proxima_code::{
     CodeChunkV1, FileRevisionV1, FileState, LocalGitSource, build_engine, migrator,
 };
 use proxima_core::auth::{Credentials, NoAuth};
-use proxima_core::verbs::query::{QueryRequest, SupersessionStatus};
+use proxima_core::verbs::query::{PersonalityRootFilter, QueryRequest, SupersessionStatus};
 use proxima_core::{FactPayload, OrgId, Owner, Principal, SchemaId, SchemaVersion, UserId};
 use proxima_storage_pg::PgStorage;
 use sqlx::{Connection, Executor, PgConnection, Row};
@@ -255,7 +255,9 @@ async fn local_git_source_full_cycle() {
             schema_id: Some(SchemaId::new(CodeChunkV1::SCHEMA_ID.into())),
             supersession: SupersessionStatus::HeadsOnly,
             tombstones: proxima_core::verbs::query::TombstoneFilter::PresentOnly,
+            personality_roots: PersonalityRootFilter::IncludeInactive,
             limit: 1000,
+            include_payloads: true,
             memory_ids: Vec::new(),
             goal_ids: Vec::new(),
             edge_ids: Vec::new(),
@@ -320,7 +322,9 @@ async fn local_git_source_full_cycle() {
             schema_id: Some(SchemaId::new(FileRevisionV1::SCHEMA_ID.into())),
             supersession: SupersessionStatus::IncludeSuperseded,
             tombstones: proxima_core::verbs::query::TombstoneFilter::PresentOnly,
+            personality_roots: PersonalityRootFilter::IncludeInactive,
             limit: 1000,
+            include_payloads: true,
             memory_ids: Vec::new(),
             goal_ids: Vec::new(),
             edge_ids: Vec::new(),

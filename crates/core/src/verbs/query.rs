@@ -48,6 +48,10 @@ fn default_personality_root_filter() -> PersonalityRootFilter {
     PersonalityRootFilter::IncludeInactive
 }
 
+fn default_include_payloads() -> bool {
+    true
+}
+
 /// Engine-resolved head-by-natural-key filter for stateful Fact
 /// schemas (docs/03 §Stateful Fact schemas). Populated from the
 /// schema registry when `Engine::query` sees a heads-only request
@@ -76,6 +80,10 @@ pub struct QueryRequest {
     #[serde(default = "default_personality_root_filter")]
     pub personality_roots: PersonalityRootFilter,
     pub limit: u32,
+    /// Include typed payload bytes in returned rows. Broad graph snapshots can
+    /// set this false and hydrate selected IDs later.
+    #[serde(default = "default_include_payloads")]
+    pub include_payloads: bool,
     /// Identity-keyed hydration for Subscribe-driven row fetches.
     #[serde(default)]
     pub memory_ids: Vec<MemoryId>,
@@ -103,6 +111,7 @@ impl QueryRequest {
             tombstones: TombstoneFilter::PresentOnly,
             personality_roots: PersonalityRootFilter::IncludeInactive,
             limit: 100,
+            include_payloads: true,
             memory_ids: Vec::new(),
             goal_ids: Vec::new(),
             edge_ids: Vec::new(),

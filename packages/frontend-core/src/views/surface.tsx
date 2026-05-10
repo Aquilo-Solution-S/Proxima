@@ -1,5 +1,5 @@
 import "./surface.css";
-import { Show, createMemo, createSignal, onCleanup, onMount, type Component } from "solid-js";
+import { Show, createEffect, createMemo, createSignal, onCleanup, onMount, type Component } from "solid-js";
 import { useGraph } from "../graph-store";
 import { useGraphFilter } from "../graph-filter-store";
 import { filterGraphSnapshot, oneHopLineage } from "../graph-selectors";
@@ -103,6 +103,19 @@ export const FullSurface: Component<{ hub: Hub }> = (props) => {
     const goal = graph.state().goalsById.get(id);
     if (goal !== undefined) return goalToDecodedMemory(goal);
     return null;
+  });
+  const requestedPayloadIds = new Set<string>();
+
+  createEffect(() => {
+    const selected = selectedMemory();
+    if (selected === null || requestedPayloadIds.has(selected.row.id)) return;
+    if (selected.row.payload.length > 0) return;
+    requestedPayloadIds.add(selected.row.id);
+    if (selected.row.kind === "Goal") {
+      void graph.hydrate?.({ goal_ids: [selected.row.id] });
+    } else {
+      void graph.hydrate?.({ memory_ids: [selected.row.id] });
+    }
   });
 
   const lineage = createMemo(() => {

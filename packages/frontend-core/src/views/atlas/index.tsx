@@ -71,6 +71,7 @@ export const Atlas: Component<{
     return id ? byId().get(id) ?? null : null;
   };
   const focusNode = () => pickedNode() ?? hoverNode();
+  const requestedPayloadIds = new Set<string>();
   const canGoBack = () => pickHistoryIndex() > 0;
   const canGoForward = () => {
     const index = pickHistoryIndex();
@@ -437,6 +438,19 @@ export const Atlas: Component<{
         setPickHistoryIndex(Math.min(pickHistoryIndex(), next.length - 1));
         return next;
       });
+    }
+  });
+
+  createEffect(() => {
+    if (graph === null) return;
+    const node = focusNode();
+    if (node === null || requestedPayloadIds.has(node.id)) return;
+    if (node.memory !== undefined && node.memory.payload.length === 0) {
+      requestedPayloadIds.add(node.id);
+      void graph.hydrate?.({ memory_ids: [node.id] });
+    } else if (node.goal !== undefined && node.goal.payload.length === 0) {
+      requestedPayloadIds.add(node.id);
+      void graph.hydrate?.({ goal_ids: [node.id] });
     }
   });
 
