@@ -182,6 +182,9 @@ const mockClient = (
       },
     ]),
   );
+  const wakeEntryProduces = vi.fn(() =>
+    ok({ schema_ids: [], relation_ids: [] }),
+  );
   const listWakeInvocations = vi.fn((_) => ok<WakeInvocationTs[]>(invocations));
 
   return {
@@ -195,6 +198,7 @@ const mockClient = (
       listMcpTools,
       listWorkspaceTools,
       listRelations,
+      wakeEntryProduces,
       listWakeInvocations,
     } satisfies PersonalityCommandClient,
     listPersonalityInstances,
@@ -206,6 +210,7 @@ const mockClient = (
     listMcpTools,
     listWorkspaceTools,
     listRelations,
+    wakeEntryProduces,
     listWakeInvocations,
   };
 };
