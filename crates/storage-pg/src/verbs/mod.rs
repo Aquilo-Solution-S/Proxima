@@ -12,7 +12,7 @@ pub mod edge_append;
 pub(crate) mod event_history;
 pub mod event_ingest;
 pub(crate) mod goal_write;
+pub mod master_token_personality;
 pub(crate) mod query;
-pub mod shell_author;
 pub(crate) mod subscribe;
 pub(crate) mod wake_context;

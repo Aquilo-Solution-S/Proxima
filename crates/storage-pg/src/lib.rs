@@ -317,12 +317,13 @@ impl Storage for PgStorage {
 
     async fn ensure_master_token_personality(
         &self,
-        _owner: &Owner,
-        _master_token_id: uuid::Uuid,
+        owner: &Owner,
+        master_token_id: uuid::Uuid,
     ) -> Result<MasterTokenPersonality, StorageError> {
-        Err(StorageError::Internal(
-            "ensure_master_token_personality stub — implemented in Task 3".into(),
-        ))
+        verbs::master_token_personality::ensure_master_token_personality(
+            &self.pool, owner, master_token_id,
+        )
+        .await
     }
 
     async fn set_wake_entries(
