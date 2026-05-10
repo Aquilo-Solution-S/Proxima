@@ -357,6 +357,12 @@ queue_depth = 1024         # bounded MPSC capacity
 timeout_s   = 300          # per-invocation hard cap
 fairness    = "deficit"    # round-robin | deficit
 
+# Note: `id` strings here are flavor-shipped personality identifiers (e.g.,
+# `proxima-code/engineer-v1` is a Code-flavor recipe / type identifier), not
+# engine archetypes. The engine's runtime personality identity is
+# `PersonalityInstanceId`. See
+# `docs/superpowers/specs/2026-05-10-personality-vocabulary-and-archetype-discipline.md`.
+
 [[personalities.per_personality]]
 id        = "proxima-code/commit-summary-v1"
 workers   = 2

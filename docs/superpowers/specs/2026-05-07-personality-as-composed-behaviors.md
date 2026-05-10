@@ -1,5 +1,13 @@
 # Personality as Composed Behaviors
 
+> **Framing supersession (2026-05-10):** Names like Engineer, Visionary, Planner,
+> Worker, Tester in this spec are flavor-shipped or illustrative labels, not
+> engine archetypes. The engine knows only `PersonalityInstanceId`. Canonical
+> vocabulary lives in
+> [2026-05-10-personality-vocabulary-and-archetype-discipline.md](./2026-05-10-personality-vocabulary-and-archetype-discipline.md).
+> Decisions and behavior in this spec stand; only the framing is updated.
+> **Phase 2 of the alignment will replace this header with surgical text edits.**
+
 **Status:** Draft
 **Date:** 2026-05-07
 **Owner:** Heinrich
