@@ -36,5 +36,35 @@ pub fn resolve_recipe_ref(
         };
     }
 
+    if let Some(path) = registry.bundled_recipe_path(recipe_ref) {
+        return Ok(path);
+    }
+
     Err(RecipeResolveError::Malformed(recipe_ref.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::FlavorRegistry;
+
+    #[test]
+    fn bare_registered_bundled_slug_resolves_for_legacy_wake_entries() {
+        let mut registry = FlavorRegistry::new();
+        let path = PathBuf::from("/tmp/proxima-code/recipes/plan_execution_requests.yaml");
+        registry.add_bundled_recipe(
+            "proxima-code/plan_execution_requests".to_string(),
+            path.clone(),
+        );
+        let frozen = registry.freeze();
+
+        let resolved = resolve_recipe_ref(
+            "proxima-code/plan_execution_requests",
+            Path::new("/tmp/owner-recipes"),
+            &frozen,
+        )
+        .expect("legacy bare bundled recipe slug resolves");
+
+        assert_eq!(resolved, path);
+    }
 }

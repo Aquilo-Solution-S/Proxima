@@ -3,6 +3,7 @@ pub mod commit;
 pub mod commit_summary;
 pub mod development_perspective;
 pub mod edge_calls;
+pub mod execution_request;
 pub mod file_revision;
 pub mod personality_self;
 pub mod workspace;
@@ -83,6 +84,7 @@ pub use commit::CommitV1;
 pub use commit_summary::CommitSummaryV1;
 pub use development_perspective::CodeDevelopmentPerspectiveV1;
 pub use edge_calls::EdgeCallsV1;
+pub use execution_request::ExecutionRequestV1;
 pub use file_revision::{FileRevisionV1, FileState};
 pub use personality_self::{CodeCommitSummarizerSelfV1, CodeEngineerSelfV1};
 pub use workspace::{

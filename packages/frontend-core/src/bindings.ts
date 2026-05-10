@@ -9,6 +9,7 @@ export const commands = {
 	eventHistory: (req: EventHistoryRequest) => typedError<EventHistoryResponse, ProtocolError>(__TAURI_INVOKE("event_history", { req })),
 	eventIngest: (draft: EventDraft) => typedError<EventIngestOutcome, ProtocolError>(__TAURI_INVOKE("event_ingest", { draft })),
 	goalWrite: (draft: GoalDraft) => typedError<GoalWriteOutcome, ProtocolError>(__TAURI_INVOKE("goal_write", { draft })),
+	goalReactivate: (req: GoalReactivateTs) => typedError<EventIngestOutcome, ProtocolError>(__TAURI_INVOKE("goal_reactivate", { req })),
 	listPersonalityInstances: (req: ListPersonalityInstancesTs) => typedError<PersonalityInstanceTs[], ProtocolError>(__TAURI_INVOKE("list_personality_instances", { req })),
 	listWakeInvocations: (req: ListWakeInvocationsTs) => typedError<WakeInvocationTs[], ProtocolError>(__TAURI_INVOKE("list_wake_invocations", { req })),
 	instantiatePersonality: (req: InstantiatePersonalityTs) => typedError<InstantiatePersonalityOutcomeTs, ProtocolError>(__TAURI_INVOKE("instantiate_personality", { req })),
@@ -446,6 +447,11 @@ export type GoalDraft = {
 
 export type GoalId = string;
 
+export type GoalReactivateTs = {
+	owner: Owner,
+	goal_id: string,
+};
+
 export type GoalRow = {
 	id: GoalId,
 	schema_id: SchemaId,
@@ -663,6 +669,18 @@ export type PersonalityInstanceTs = {
 	wake_entries: WakeEntryTs[],
 };
 
+export type PersonalityRootFilter = 
+/**
+ *  Include only active root/self Perspective rows. Non-root
+ *  Perspectives are unaffected.
+ */
+"ActiveOnly" | 
+/**
+ *  Include inactive, tombstoned, and orphan root/self Perspective
+ *  rows when they otherwise match the query.
+ */
+"IncludeInactive";
+
 export type Principal = ({ User: UserId }) & { Group?: never } | ({ Group: GroupId }) & { User?: never };
 
 export type ProducesTs = {
@@ -678,8 +696,6 @@ export type ProtocolError = {
 	request_id: string | null,
 };
 
-export type PersonalityRootFilter = "ActiveOnly" | "IncludeInactive";
-
 /**
  *  One core-generic Query request. Flavor-typed filters
  *  per docs/14 §"Query" land when the first flavor crate
@@ -693,8 +709,10 @@ export type QueryRequest = {
 	tombstones?: TombstoneFilter,
 	personality_roots?: PersonalityRootFilter,
 	limit: number,
-	// Include typed payload bytes in returned rows. Broad graph snapshots can
-	// set this false and hydrate selected IDs later.
+	/**
+	 *  Include typed payload bytes in returned rows. Broad graph snapshots can
+	 *  set this false and hydrate selected IDs later.
+	 */
 	include_payloads?: boolean,
 	// Identity-keyed hydration for Subscribe-driven row fetches.
 	memory_ids?: MemoryId[],
@@ -976,3 +994,4 @@ async function typedError<T, E>(result: Promise<T>): Promise<{ status: "ok"; dat
         return { status: "error", error: e as any };
     }
 }
+

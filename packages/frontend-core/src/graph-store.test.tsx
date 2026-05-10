@@ -33,6 +33,9 @@ const graphClient = (overrides: Partial<EngineClient>): EngineClient => ({
   goalWrite: async (_draft: GoalDraft) => {
     throw new Error("goalWrite not used");
   },
+  goalReactivate: async () => {
+    throw new Error("goalReactivate not used");
+  },
   eventIngest: async (_draft: EventDraft) => {
     throw new Error("eventIngest not used");
   },

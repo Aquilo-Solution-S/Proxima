@@ -284,6 +284,7 @@ impl FlavorRegistry {
         self.mcp_tools.push(McpToolDescriptor {
             name: T::NAME,
             description: T::DESCRIPTION,
+            produces_schema_ids: T::PRODUCES_SCHEMA_IDS,
             args_schema,
             call,
         });
@@ -312,6 +313,7 @@ impl FlavorRegistry {
         self.mcp_tools.push(McpToolDescriptor {
             name: T::NAME,
             description: T::DESCRIPTION,
+            produces_schema_ids: T::PRODUCES_SCHEMA_IDS,
             args_schema,
             call,
         });

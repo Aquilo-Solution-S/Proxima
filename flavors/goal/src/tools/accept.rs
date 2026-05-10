@@ -7,9 +7,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::util::{
-    GoalPayloadInput, emit_goal_activated_fact, insert_goal_in_tx, insert_motivated_by_edges,
-    load_goal_payload, map_storage, outgoing_motivated_by_evidence, request_id,
-    validate_evidence_in_owner,
+    GoalPayloadInput, append_inspires_edge, emit_goal_activated_fact, insert_goal_in_tx,
+    insert_motivated_by_edges, load_goal_payload, map_storage, outgoing_motivated_by_evidence,
+    request_id, target_personality_root, validate_evidence_in_owner,
 };
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -17,6 +17,7 @@ pub struct AcceptArgs {
     pub proposal: String,
     pub payload: Option<GoalPayloadInput>,
     pub evidence: Option<Vec<String>>,
+    pub target_personality: Option<String>,
     pub idempotency_key: Option<String>,
 }
 
@@ -25,6 +26,7 @@ pub struct AcceptOutput {
     pub handle: String,
     pub supersedes: String,
     pub edge_handles: Vec<String>,
+    pub inspires_edge_handle: Option<String>,
 }
 
 #[derive(Debug)]
@@ -97,6 +99,17 @@ pub async fn accept_goal(
     } else {
         insert_motivated_by_edges(&mut tx, &ctx, goal_id, &evidence, "User").await?
     };
+    let inspires_edge_id = if state == GoalState::Active {
+        match args.target_personality.as_deref() {
+            Some(handle) => {
+                let target_root = target_personality_root(&mut tx, &ctx, handle).await?;
+                Some(append_inspires_edge(&mut tx, &ctx, goal_id, target_root, "User").await?)
+            }
+            None => None,
+        }
+    } else {
+        None
+    };
     if state == GoalState::Active {
         emit_goal_activated_fact(
             &mut tx,
@@ -124,5 +137,11 @@ pub async fn accept_goal(
         handle: handle.as_str().to_string(),
         supersedes: supersedes_handle.as_str().to_string(),
         edge_handles,
+        inspires_edge_handle: inspires_edge_id.map(|edge_id| {
+            ctx.handles
+                .assign_edge(EdgeId::new(edge_id))
+                .as_str()
+                .to_string()
+        }),
     })
 }

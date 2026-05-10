@@ -5,7 +5,6 @@ import type { PayloadCodec } from "@proxima/core/hub";
 import {
   registerEdgeStyle,
   registerPayloadRenderer,
-  registerPersonalityType,
   registerShellView,
 } from "@proxima/core/registry";
 
@@ -42,11 +41,5 @@ export function init(): void {
     label: "Code",
     flavor: "proxima-code",
     component: CodeView,
-  });
-  registerPersonalityType({
-    typeId: "proxima-code/engineer-v1",
-    flavor: "proxima-code",
-    label: "Engineer",
-    purpose: "Develop perspectives on code changes.",
   });
 }

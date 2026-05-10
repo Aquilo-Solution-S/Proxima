@@ -44,10 +44,13 @@ The demo script that gates the merge to `main`:
    `proxima-goal/goal_accept`. The Goal transitions to `Active`. A
    `proxima-goal/goal-activated-v1` Fact lands (substrate gap — see
    §Required substrate work).
-4. A Code-flavor executor personality wakes on
-   `proxima-goal/goal-activated-v1`, runs Goose in workspace mode, and
-   emits `proxima-code/workspace-run-v1` with a non-empty diff.
-5. Heinrich opens the Workspace Runs panel, reviews the diff, clicks
+4. The configured planning personality assigned by `core/inspires`
+   wakes on `proxima-goal/goal-activated-v1` and emits one or more
+   `proxima-code/execution-request-v1` Facts, one per target repo.
+5. The configured workspace worker wakes on each execution-request
+   Fact, runs Goose in workspace mode, and emits
+   `proxima-code/workspace-run-v1` with a non-empty diff.
+6. Heinrich opens the Workspace Runs panel, reviews the diff, clicks
    `Merge → road-to-v1`. The branch fast-forwards. A
    `proxima-code/workspace-decision-v1{decision: merged}` Fact lands.
 
@@ -61,19 +64,18 @@ substrate that isn't already specced.
 - **Open-ended autonomy.** v0.1.0 has two human gates (goal accept,
   workspace decision) and they stay. Removing either is a post-v0.1.0
   conversation.
-- **Multi-step plans, sub-goals, plan trees.** The "Plan" word in the
-  user's mental model collapses into "the executor's Goose recipe
-  decides what to do given the Active goal." No new pillar, no
-  hierarchical planner personality in v0.1.0. If a goal is too big for
-  one workspace run, the user splits it manually before accepting.
+- **Goal-side repo scope.** Planner handoff is a Code Fact. Goals stay
+  core entities; repo targeting belongs to
+  `proxima-code/execution-request-v1`.
 - **Self-mutation in the loop.** The personality CRUD via MCP
   (`2026-05-10-personality-mcp-crud-design.md`) is the substrate that
   makes self-mutation *possible*, but no personality in this roadmap
   rewrites its own WakeConfig during the demo. Self-evolution rides on
   this loop in a later spec.
-- **New personality types or pillars.** All four personalities in the
-  topology below are Code-flavor defaults (display_name'd instances).
-  No engine archetype enums.
+- **Required personality instances.** Planner and worker are
+  user-configured personality instances. Code ships bundled Goose
+  recipes; it does not ship required personality instances. No engine
+  archetype enums.
 - **A "Reviewer" personality in v0.1.0.** Tempting to add Abstraction →
   Perspective → Goal as three personalities, but the loop closes with
   fewer hops. M5 (post-v0.1.0) adds the reviewer if and when we want
@@ -104,9 +106,16 @@ substrate that isn't already specced.
                                        │  {schema_id: proxima-goal/goal-activated-v1}
                                        ▼
                   ┌────────────────────────────────────┐
-                  │ Code's default Executor personality│
-                  │   Workspace mode, recipe = exec    │
-                  │   palette = developer__*           │
+                  │ configured planning personality    │
+                  │   recipe = plan_execution_requests │
+                  │   emits Code execution requests    │
+                  └────────────────┬───────────────────┘
+                                   │ execution-request-v1 F
+                                   ▼
+                  ┌────────────────────────────────────┐
+                  │ configured workspace worker         │
+                  │   Workspace mode, recipe = worker   │
+                  │   palette = developer__*            │
                   └────────────────┬───────────────────┘
                                    │ goose run in worktree
                                    ▼
@@ -123,7 +132,7 @@ substrate that isn't already specced.
                   └────────────────┬───────────────────┘
                                    │ next git ingest tick
                                    ▼
-                       Code's default Engineer personality
+                       configured Engineer-like personality
                           (commit → commit-summary-v1 A
                            → development-perspective-v1 P)
                                    │
@@ -135,24 +144,24 @@ The loop is **seeded by conversation** and **drained by merge**.
 Between gates, every hop is a typed memory write that the next hop
 filters on. Audit by construction across the whole loop.
 
-## The four personalities
+## Configured participants
 
-All four are Code-flavor defaults (eventually shipped via
-`register_owner_defaults`; see vocabulary spec). They are referred to
-by `display_name`; `PersonalityInstanceId` is the only engine
-identity.
+Planner, worker, and Engineer are configured personality instances.
+Labels are user vocabulary; `PersonalityInstanceId` is the only engine
+identity. Code ships bundled recipes only.
 
 | display_name | Wake filter | Tool palette | Output | Status |
 |---|---|---|---|---|
 | Engineer | `OnMemory{schema_id: proxima-code/commit-summary-v1}` | substrate read + `core/emit_perspective` | `development-perspective-v1` Perspective | **Already running.** Substrate-only mode. The upstream `commit-summary-v1` Abstraction is produced from raw commits by Code's git ingest path (separate concern). |
 | (assistant, external) | n/a — runs as MCP client, not a personality | `proxima-goal/goal_propose` | `Goal{state=Proposed}` | **Already running.** Heinrich's Claude Code session is the v0.1.0 stand-in. Becomes a personality post-v0.1.0. |
-| Executor | `OnMemory{schema_id: proxima-goal/goal-activated-v1}` | Workspace mode; `developer__text_editor`, `developer__shell`, `developer__list_files` | `workspace-run-v1` Fact (via WorkspaceRunnerSource) | **Not yet implemented.** Needs M3 (Code workspace runner) + M4 (recipe). |
+| Planner | `OnMemory{schema_id: proxima-goal/goal-activated-v1}` | Code graph/search tools + `proxima-code/code_emit_execution_request` | `execution-request-v1` Fact(s) | **M4.** Configured by user; no default instance. |
+| Worker | `OnMemory{schema_id: proxima-code/execution-request-v1}` | Workspace mode; `developer__text_editor`, `developer__shell`, `developer__list_files` | `workspace-run-v1` Fact (via WorkspaceRunnerSource) | **M5.** Configured by user; no default instance. |
 | (Heinrich) | n/a — human-in-the-loop | `goal_accept` MCP + Workspace Runs panel | `Goal{state=Active}` + `goal-activated-v1` F + `workspace-decision-v1` F | **Partially implemented.** `goal_accept` works; goal-activated Fact emit + decision Fact land in M2 / M3. |
 
 The "(assistant, external)" row is deliberate: in v0.1.0 the goal
 proposer is not yet a personality — it is whoever Heinrich is
 conversing with via MCP (Claude Code, the Shell, future flavors). The
-loop closes without an in-engine proposer. M5 (post-v0.1.0) adds an
+loop closes without an in-engine proposer. M6 adds an
 in-engine Goal Proposer personality that wakes on Perspectives written
 by Engineer and proposes Goals autonomously, removing the conversation
 seed.
@@ -269,21 +278,18 @@ personality), not v0.1.0.
 ### S3 — Workspace runner Phase 3 + 4
 
 `2026-05-09-workspace-mode-design.md` Phasing already covers this:
-Phase 3 = Code workspace runner; Phase 4 = decision UX. Both required
-for v0.1.0. M3 and M4 of this roadmap correspond 1:1 to those phases.
+Phase 3 = Code workspace runner; Phase 4 = decision UX. M3 covers the
+runner. M5 covers the worker recipe + decision UX.
 
-### S4 — Executor recipe + register_owner_defaults entry
+### S4 — Planner recipe + execution-request Facts
 
-The Code flavor must ship an `executor.yaml` Goose recipe alongside
-existing `engineer.yaml` and `commit_summary.yaml`. The
-`register_owner_defaults` hook (named in vocabulary spec, not yet
-implemented) must mint an Executor personality with that recipe and a
-`OnMemory{schema_id: proxima-goal/goal-activated-v1}` WakeEntry on
-owner provisioning.
+The Code flavor must ship `plan_execution_requests.yaml` alongside
+existing `engineer.yaml` and `commit_summary.yaml`.
 
-This is the smallest piece of `register_owner_defaults` work — we don't
-need the full provisioning hook, just enough to seed one new default.
-Lands in M4.
+The recipe wakes on accepted goals assigned to the configured planner
+through `core/inspires`, explores graph/code MCP tools, and emits
+`proxima-code/execution-request-v1` Facts. No default planner instance
+is minted.
 
 ## Milestones
 
@@ -352,21 +358,21 @@ Verification:
 Acceptance verified:
 [`flavors/code/tests/goal_activated_wake_pg.rs`](../../../flavors/code/tests/goal_activated_wake_pg.rs)
 (MCP `goal_propose` + `goal_accept` emits `goal-activated-v1`, the
-SubstrateOnly Executor wake fires, and `core/emit_perspective` lands a
-Perspective with `core/authored` from the Executor Root Perspective).
+SubstrateOnly smoke wake fires, and `core/emit_perspective` lands a
+Perspective with `core/authored` from the smoke Root Perspective).
 Verification:
 `cargo fmt --check`;
 `cargo test -p proxima-code --test goal_activated_wake_pg`;
 `cargo clippy -p proxima-code --all-targets`;
 `cargo check --workspace`.
 
-- Author a temporary Code-flavor Executor personality with
+- Author a temporary Code-flavor smoke personality with
   `execution_mode = SubstrateOnly` (the workspace runner is still the
   `Unimplemented` stub from workspace Phase 1). Recipe: a no-op Goose
   recipe that emits a single Perspective like "I would do X."
 - Wake filter: `OnMemory{schema_id: proxima-goal/goal-activated-v1}`.
-- **Acceptance:** propose + accept a goal → executor wakes →
-  Perspective lands authored by Executor's Root Perspective.
+- **Acceptance:** propose + accept a goal → smoke personality wakes →
+  Perspective lands authored by its Root Perspective.
 - **Dependencies:** M1.
 - **Why substrate-only first:** isolates the wake-trigger plumbing
   from the workspace-runner unknowns. Proves the chain *fires* before
@@ -402,31 +408,45 @@ Verification:
 - **Dependencies:** M2 (so the wake actually arrives) plus workspace
   Phases 1 and 2 (already in flight per workspace spec).
 
-### M4 — Executor recipe + decision UX (S4 + S3-Phase-4)
+### M4 — Planner handoff + Code execution-request Facts
 
-- Author `flavors/code/recipes/executor.yaml`. Minimal Goose recipe
-  with the `developer` extension, instructed to read the Active Goal
-  payload from MCP and produce a small focused diff.
-- Mint the Executor as an owner default (smallest `register_owner_defaults`
-  hook that ships only this default for now; Engineer + CommitSummary
-  remain Rust-side defaults until the broader hook lands).
-- Implement `WorkspaceRunsPanel` + Tauri commands per workspace
-  Phase 4.
-- **Acceptance:** v0.1.0 acceptance test §1–5. Full closed loop.
-- **Dependencies:** M3, plus `register_owner_defaults` minimum
-  scaffold.
+- Add Goal-to-planner assignment through `core/inspires` from Goal to
+  planner Root Perspective.
+- `goal_propose` / `goal_accept` accept optional
+  `target_personality` handles. If omitted, current per-token caller
+  Self behavior remains unchanged.
+- Add Code Fact schema `proxima-code/execution-request-v1`:
+  `{ repo_id, title, instructions, request_key }`.
+- Add Code MCP tool `proxima-code/code_emit_execution_request`.
+  Validates repo handle, Active Goal context, and idempotency key.
+- Author `flavors/code/recipes/plan_execution_requests.yaml` and
+  register `proxima-code/plan_execution_requests`.
+- **Acceptance:** propose + accept a Goal assigned to a configured
+  planner; planner wakes; one or more execution-request Facts land
+  with repo scope and `core/authored` / `core/derived-from`
+  provenance.
+- **Dependencies:** M3.
 
-### M5 (post-v0.1.0) — In-engine Goal Proposer
+### M5 — Workspace worker recipe + decision UX
 
-- Add a fifth Code-flavor default personality `Goal Proposer` that
-  wakes on Engineer's Perspectives, calls `proxima-goal/goal_propose`
-  via the goal-flavor MCP tool from inside its wake.
+- Worker wakes on `proxima-code/execution-request-v1`.
+- Code workspace runner extracts `repo_id` from that Code Fact.
+- Worker emits `workspace-run-v1`.
+- User reviews via Workspace Runs panel and writes
+  `workspace-decision-v1`.
+- **Acceptance:** v0.1.0 acceptance test §1–6. Full closed loop.
+- **Dependencies:** M4.
+
+### M6 — Autonomous goal proposer
+
+- Add an autonomous proposer personality that wakes on Engineer's
+  Perspectives and calls `proxima-goal/goal_propose` via the
+  goal-flavor MCP tool from inside its wake.
 - Implement `core/emit_goal` substrate tool (S2).
 - The chain becomes self-spinning: any commit can flow up to a
   proposed Goal without Heinrich talking to the assistant first.
 - Goal acceptance gate stays.
-- **Not required for v0.1.0** — included here only to anchor the
-  trajectory.
+- **Not required for v0.1.0.**
 
 ## Boundedness & runaway prevention
 
@@ -441,12 +461,12 @@ The loop has four natural circuit-breakers, in increasing severity:
    excludes its own outputs cannot self-trigger. Engineer's wake
    filter (`{schema_id: commit-v1}`) implicitly excludes Engineer's
    own writes since Engineer doesn't emit `commit-v1`. Same for
-   Executor on `goal-activated-v1`.
+   planner on `goal-activated-v1` and worker on `execution-request-v1`.
 4. **Human gates.** Both gates (goal accept, workspace decide) are
    synchronous: the chain *cannot* continue without a human
    acknowledgment. v0.1.0's safety story rests on this.
 
-If a runaway is detected post-v0.1.0 (e.g. M5's Goal Proposer flooding
+If a runaway is detected post-v0.1.0 (e.g. M6's proposer flooding
 proposals), the response is a probability damper on Goal Proposer's
 WakeEntry — a config change, not an architecture change.
 
@@ -475,8 +495,8 @@ Each is a downstream spec.
   MCP tools.
 - `flavors/code/src/payloads/{commit_summary,development_perspective}.rs`
   — current Engineer outputs.
-- `flavors/code/recipes/{engineer,commit_summary}.yaml` — current
-  Code-flavor recipes; `executor.yaml` lands in M4.
+- `flavors/code/recipes/{engineer,commit_summary,plan_execution_requests}.yaml`
+  — current Code-flavor recipes.
 
 ## Rollback
 
@@ -487,11 +507,12 @@ Each milestone is independently revertable:
   working as fallback.
 - M1 — revert the two payload modules + sidecar migrations + the two
   emit-call sites. No code consumes the new Facts yet.
-- M2 — delete the temporary Executor personality (tombstone). No
+- M2 — delete the temporary smoke-test personality (tombstone). No
   schema or migration changes.
 - M3 — workspace Phase 3 rollback (already specced).
-- M4 — workspace Phase 4 rollback + remove the executor recipe and
-  the `register_owner_defaults` Executor entry.
+- M4 — remove the planner recipe, execution-request schema/tool, and
+  Goal target-personality args.
+- M5 — workspace Phase 4 rollback + remove the worker recipe.
 
 The chain can sit at any milestone boundary indefinitely; later
 milestones don't change earlier ones.

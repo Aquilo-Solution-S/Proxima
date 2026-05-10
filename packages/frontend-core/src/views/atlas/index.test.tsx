@@ -8,7 +8,7 @@ import {
 import { createSignal } from "solid-js";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import * as THREE from "three";
-import type { EdgeRow, MemoryRow, Owner } from "../../bindings";
+import type { EdgeRow, GoalRow, MemoryRow, Owner } from "../../bindings";
 import { GraphFilterProvider, createGraphFilterStore } from "../../graph-filter-store";
 import {
   GraphProvider,
@@ -19,6 +19,14 @@ import {
 import { createHub } from "../../hub";
 import { Atlas } from "./index";
 import type { AtlasEdge, AtlasNode } from "./types";
+
+const goalReactivateMock = vi.hoisted(() => vi.fn());
+
+vi.mock("../../bindings", () => ({
+  commands: {
+    goalReactivate: goalReactivateMock,
+  },
+}));
 
 beforeAll(() => {
   vi.stubGlobal(
@@ -87,6 +95,19 @@ const atlasNode = (
   y: 0,
 });
 
+const activeGoal = (id: string): GoalRow => ({
+  id,
+  schema_id: "proxima-goal/simple-text-v1",
+  schema_version: 1,
+  owner,
+  title: "Planner handoff",
+  text: "Emit execution requests.",
+  state: "Active",
+  parent_goal_ids: [],
+  supersedes: null,
+  payload: [],
+});
+
 const atlasEdge = (id: string, src: string, tgt: string): AtlasEdge => ({
   id,
   src,
@@ -126,7 +147,10 @@ const snapshot = (
 };
 
 describe("Atlas graph wiring", () => {
-  afterEach(() => cleanup());
+  afterEach(() => {
+    cleanup();
+    goalReactivateMock.mockReset();
+  });
 
   it("uses GraphStore rows when nodes and edges props are omitted", () => {
     const fact = memory("019dfa40-0000-7000-8000-000000000001", "Fact");
@@ -528,6 +552,55 @@ describe("Atlas graph wiring", () => {
     fireEvent.pointerMove(canvas);
     expect(inspectorTitle()).toBe("call graph");
 
+    raycast.mockRestore();
+  });
+
+  it("reactivates active goals from the inspector", async () => {
+    goalReactivateMock.mockResolvedValue({
+      status: "ok",
+      data: {
+        event_id: "feed000000000000000000000000000000000000000000000000000000000000",
+        memory_id: "019dfa50-0000-7000-8000-000000000101",
+        change_event_seq: "019dfa50-0000-7000-8000-000000000102",
+        idempotent_replay: false,
+      },
+    });
+    const row = activeGoal("019dfa50-0000-7000-8000-000000000100");
+    const node: AtlasNode = {
+      id: row.id,
+      kind: "Goal",
+      schemaId: row.schema_id,
+      schemaVersion: row.schema_version,
+      title: row.title,
+      flavor: "goal",
+      x: 0,
+      y: 0,
+      goal: row,
+    };
+    const raycast = vi
+      .spyOn(THREE.Raycaster.prototype, "intersectObjects")
+      .mockImplementation(
+        (objects) => [{ object: objects[0] }] as THREE.Intersection[],
+      );
+
+    render(() => (
+      <GraphFilterProvider store={createGraphFilterStore()}>
+        <Atlas hub={createHub([])} nodes={[node]} edges={[]} />
+      </GraphFilterProvider>
+    ));
+    const canvas = document.querySelector(".atlas-canvas canvas")!;
+    fireEvent.pointerMove(canvas);
+
+    fireEvent.click(screen.getByRole("button", { name: "Reactivate goal" }));
+
+    await waitFor(() => expect(goalReactivateMock).toHaveBeenCalledTimes(1));
+    expect(goalReactivateMock).toHaveBeenCalledWith({
+      owner,
+      goal_id: row.id,
+    });
+    expect(
+      screen.getByRole("button", { name: "Reactivate goal" }).textContent,
+    ).toContain("Reactivated");
     raycast.mockRestore();
   });
 

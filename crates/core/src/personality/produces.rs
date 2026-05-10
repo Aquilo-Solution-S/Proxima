@@ -4,21 +4,19 @@
 //! `(palette, registry) → {schema_ids, relation_ids}`. The substrate
 //! emit tools (`core/emit_abstraction`, `core/emit_perspective`,
 //! `core/create_edge`) gate runtime authorization on the same lists,
-//! constructed via these helpers in the wake fire path.
+//! constructed via these helpers in the wake fire path. Flavor MCP
+//! tools can additionally advertise produced schemas through their
+//! registered tool descriptor.
 
 use crate::Engine;
 use crate::verbs::schema::PayloadKind;
 
-/// Schemas this palette could emit, given the registry. Returns one
-/// schema_id per registered Abstraction schema if `core/emit_abstraction`
-/// is present, plus one per registered Perspective schema if
-/// `core/emit_perspective` is present. Empty if neither emit tool is
-/// in the palette.
+/// Schemas this palette could emit, given the registry.
 #[must_use]
 pub fn writeable_schemas_for_palette(engine: &Engine, palette: &[String]) -> Vec<String> {
     let allow_abstraction = palette.iter().any(|id| id == "core/emit_abstraction");
     let allow_perspective = palette.iter().any(|id| id == "core/emit_perspective");
-    engine
+    let mut schema_ids: Vec<String> = engine
         .registry()
         .list()
         .into_iter()
@@ -27,7 +25,16 @@ pub fn writeable_schemas_for_palette(engine: &Engine, palette: &[String]) -> Vec
                 || (allow_perspective && schema.kind == PayloadKind::Perspective)
         })
         .map(|schema| schema.schema_id.into_inner())
-        .collect()
+        .collect();
+
+    for tool in engine.registry().list_mcp_tools() {
+        if palette.iter().any(|id| id == tool.name) {
+            schema_ids.extend(tool.produces_schema_ids.iter().map(|id| (*id).to_string()));
+        }
+    }
+    schema_ids.sort();
+    schema_ids.dedup();
+    schema_ids
 }
 
 /// Relations this palette could create. Returns every registered
@@ -48,13 +55,38 @@ pub fn writeable_relations_for_palette(engine: &Engine, palette: &[String]) -> V
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Engine;
     use crate::auth::NoAuth;
     use crate::ids::{OrgId, SchemaId, SchemaVersion, UserId};
     use crate::owner::{Owner, Principal};
     use crate::relation::{RelationClass, RelationDescriptor};
     use crate::verbs::query::MemoryStore;
     use crate::verbs::schema::{FlavorRegistryFrozen, SchemaInfo};
+    use crate::{Engine, McpTool};
+
+    #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+    struct TestArgs;
+
+    #[derive(Debug, serde::Serialize)]
+    struct TestOutput;
+
+    #[derive(Debug)]
+    struct TestFactTool;
+
+    impl McpTool for TestFactTool {
+        const NAME: &'static str = "test/emit_fact";
+        const DESCRIPTION: &'static str = "emit a test fact";
+        const PRODUCES_SCHEMA_IDS: &'static [&'static str] = &["test/fact-v1"];
+        type Args = TestArgs;
+        type Output = TestOutput;
+
+        fn call(
+            _ctx: crate::McpToolCtx,
+            _args: Self::Args,
+        ) -> futures::future::BoxFuture<'static, Result<Self::Output, crate::McpToolError>>
+        {
+            Box::pin(async { Ok(TestOutput) })
+        }
+    }
 
     /// Build an Engine with one Abstraction schema, one Perspective schema,
     /// and one Relation, sufficient to exercise all four palette shapes.
@@ -92,6 +124,20 @@ mod tests {
         };
         Engine::new(
             registry,
+            MemoryStore::new(),
+            Box::new(NoAuth::new(owner.principal.clone(), owner)),
+        )
+    }
+
+    fn engine_with_test_tool_registry() -> Engine {
+        let mut registry = crate::FlavorRegistry::new();
+        registry.add_mcp_tool::<TestFactTool>("test");
+        let owner = Owner {
+            principal: Principal::User(UserId::new(uuid::Uuid::from_u128(1))),
+            org_id: OrgId::new(uuid::Uuid::from_u128(2)),
+        };
+        Engine::new(
+            registry.freeze(),
             MemoryStore::new(),
             Box::new(NoAuth::new(owner.principal.clone(), owner)),
         )
@@ -137,6 +183,17 @@ mod tests {
         let engine = engine_with_test_registry();
         let palette = vec!["does/not/exist".to_string()];
         assert!(writeable_schemas_for_palette(&engine, &palette).is_empty());
+        assert!(writeable_relations_for_palette(&engine, &palette).is_empty());
+    }
+
+    #[test]
+    fn flavor_mcp_tool_descriptor_can_advertise_fact_outputs() {
+        let engine = engine_with_test_tool_registry();
+        let palette = vec!["test/emit_fact".to_string()];
+
+        let schemas = writeable_schemas_for_palette(&engine, &palette);
+
+        assert_eq!(schemas, vec!["test/fact-v1".to_string()]);
         assert!(writeable_relations_for_palette(&engine, &palette).is_empty());
     }
 }

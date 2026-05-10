@@ -4,17 +4,27 @@ use futures_util::StreamExt;
 use proxima_core::auth::Credentials;
 use proxima_core::error::ProtocolError;
 use proxima_core::verbs::event_history::{EventHistoryRequest, EventHistoryResponse};
-use proxima_core::verbs::event_ingest::{EventDraft, EventIngestOutcome};
+use proxima_core::verbs::event_ingest::{
+    CitationMappingHint, CitedObjectHint, EventDraft, EventIngestOutcome,
+};
 use proxima_core::verbs::goal_write::{GoalDraft, GoalWriteOutcome};
 use proxima_core::verbs::query::{QueryRequest, QueryResponse};
 use proxima_core::verbs::schema::{SchemaRequest, SchemaResponse};
 use proxima_core::verbs::subscribe::SubscribeRequest;
 use proxima_core::{
-    ChangeEvent, Engine, ListWakeInvocationsRequest, Owner, PersonalityInstanceId,
-    PersonalityInstanceRow, WakeInvocationLogRow, WakeInvocationRow,
+    ChangeEvent, Engine, FactPayload, GoalId, ListWakeInvocationsRequest, Owner,
+    PersonalityInstanceId, PersonalityInstanceRow, SchemaId, SchemaVersion, SourceBatchId,
+    SourceId, WakeInvocationLogRow, WakeInvocationRow,
 };
+use proxima_flavor_goal::GoalActivatedV1;
+use proxima_storage_pg::PgStorage;
+use proxima_storage_pg::verbs::event_ingest::ingest_event_in_tx;
 use tauri::State;
 use tauri::ipc::Channel;
+
+const GOAL_LIFECYCLE_SOURCE_ID: &str = "proxima-goal/lifecycle";
+const GOAL_LIFECYCLE_OBJECT_SCHEMA: &str = "proxima-goal/lifecycle-object-v1";
+const GOAL_LIFECYCLE_CITATION_MAPPING_SCHEMA: &str = "proxima-goal/lifecycle-whole-v1";
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct InstantiatePersonalityTs {
@@ -144,6 +154,12 @@ pub struct ListWakeInvocationsTs {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
+pub struct GoalReactivateTs {
+    pub owner: Owner,
+    pub goal_id: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct WakeInvocationLogTs {
     pub log_seq: i64,
     pub at: String,
@@ -236,6 +252,40 @@ pub async fn goal_write(
     let req_bytes = crate::perf::ipc::req_size(&draft);
     crate::perf::ipc::record("goal_write", req_bytes, async move {
         engine.write_goal(&Credentials::None, draft).await
+    })
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn goal_reactivate(
+    pg: State<'_, Arc<PgStorage>>,
+    req: GoalReactivateTs,
+) -> Result<EventIngestOutcome, ProtocolError> {
+    let req_bytes = crate::perf::ipc::req_size(&req);
+    crate::perf::ipc::record("goal_reactivate", req_bytes, async move {
+        let goal_id = uuid::Uuid::parse_str(&req.goal_id)
+            .map_err(|e| ProtocolError::invalid_argument("goal_id", e.to_string()))?;
+        let mut tx = pg
+            .pool()
+            .begin()
+            .await
+            .map_err(|e| ProtocolError::internal(e.to_string()))?;
+        let (schema_id, title, evidence_count) =
+            active_goal_activation_input(&mut tx, &req.owner, GoalId::new(goal_id)).await?;
+        let activated_at = time::OffsetDateTime::now_utc();
+        let payload = GoalActivatedV1 {
+            goal_id,
+            schema_id,
+            title,
+            accepted_at: activated_at,
+            evidence_count,
+        };
+        let outcome = ingest_goal_activated_fact(&mut tx, &req.owner, &payload).await?;
+        tx.commit()
+            .await
+            .map_err(|e| ProtocolError::internal(e.to_string()))?;
+        Ok(outcome)
     })
     .await
 }
@@ -386,6 +436,115 @@ pub async fn subscribe(
         }
     });
     Ok(())
+}
+
+async fn active_goal_activation_input(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    owner: &Owner,
+    goal_id: GoalId,
+) -> Result<(String, String, u32), ProtocolError> {
+    let (owner_kind, owner_principal_id, _owner_org_id) = owner_columns(owner);
+    let row: Option<(String, String)> = sqlx::query_as(
+        "SELECT schema_id, title
+         FROM proxima_core.goals
+         WHERE goal_id = $1
+           AND state = 'Active'
+           AND owner_principal_kind = $2
+           AND owner_principal_id = $3",
+    )
+    .bind(goal_id.into_inner())
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|e| ProtocolError::internal(e.to_string()))?;
+    let Some((schema_id, title)) = row else {
+        return Err(ProtocolError::not_found(
+            "active goal not found for requested owner",
+        ));
+    };
+    let evidence_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)
+         FROM proxima_core.edges
+         WHERE relation = $1
+           AND source_goal_id = $2
+           AND owner_principal_kind = $3
+           AND owner_principal_id = $4",
+    )
+    .bind(proxima_flavor_goal::MOTIVATED_BY_RELATION)
+    .bind(goal_id.into_inner())
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(|e| ProtocolError::internal(e.to_string()))?;
+    Ok((
+        schema_id,
+        title,
+        u32::try_from(evidence_count).unwrap_or(u32::MAX),
+    ))
+}
+
+async fn ingest_goal_activated_fact(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    owner: &Owner,
+    payload: &GoalActivatedV1,
+) -> Result<EventIngestOutcome, ProtocolError> {
+    let mut payload_bytes = Vec::new();
+    ciborium::ser::into_writer(payload, &mut payload_bytes)
+        .map_err(|e| ProtocolError::internal(e.to_string()))?;
+    let content_hash = blake3::hash(&payload_bytes);
+    let observed_at = time::OffsetDateTime::now_utc();
+    let draft = EventDraft {
+        source_id: SourceId::new(GOAL_LIFECYCLE_SOURCE_ID),
+        source_batch_id: SourceBatchId::new(uuid::Uuid::now_v7()),
+        owner: owner.clone(),
+        schema_id: SchemaId::new(GoalActivatedV1::SCHEMA_ID.into()),
+        schema_version: SchemaVersion::new(GoalActivatedV1::SCHEMA_VERSION),
+        payload: payload_bytes,
+        observed_at,
+        occurred_at: observed_at,
+        cited_object: CitedObjectHint {
+            schema_id: SchemaId::new(GOAL_LIFECYCLE_OBJECT_SCHEMA.into()),
+            schema_version: SchemaVersion::new(1),
+            content_hash: *content_hash.as_bytes(),
+        },
+        citation_mapping: CitationMappingHint {
+            schema_id: SchemaId::new(GOAL_LIFECYCLE_CITATION_MAPPING_SCHEMA.into()),
+            schema_version: SchemaVersion::new(1),
+        },
+    };
+    let outcome = ingest_event_in_tx(tx, &draft)
+        .await
+        .map_err(|e| ProtocolError::internal(e.to_string()))?;
+    if !outcome.idempotent_replay {
+        sqlx::query(
+            "INSERT INTO proxima_goal.goal_activated_v1
+                (memory_id, goal_id, schema_id, title, accepted_at, evidence_count)
+             VALUES ($1, $2, $3, $4, $5, $6)",
+        )
+        .bind(outcome.memory_id.into_inner())
+        .bind(payload.goal_id)
+        .bind(&payload.schema_id)
+        .bind(&payload.title)
+        .bind(payload.accepted_at)
+        .bind(i32::try_from(payload.evidence_count).unwrap_or(i32::MAX))
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| ProtocolError::internal(e.to_string()))?;
+    }
+    Ok(outcome)
+}
+
+fn owner_columns(owner: &Owner) -> (&'static str, uuid::Uuid, uuid::Uuid) {
+    match &owner.principal {
+        proxima_core::Principal::User(user) => {
+            ("User", user.into_inner(), owner.org_id.into_inner())
+        }
+        proxima_core::Principal::Group(group) => {
+            ("Group", group.into_inner(), owner.org_id.into_inner())
+        }
+    }
 }
 
 impl PersonalityInstanceTs {

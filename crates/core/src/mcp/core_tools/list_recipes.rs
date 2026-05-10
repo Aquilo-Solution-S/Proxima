@@ -41,7 +41,7 @@ impl McpTool for ListRecipesTool {
             for slug in ctx.registry.list_bundled_recipes() {
                 let flavor = slug.split('/').next().unwrap_or("");
                 recipes.push(RecipeItem {
-                    recipe_ref: slug.to_string(),
+                    recipe_ref: format!("bundled:{slug}"),
                     source: format!("flavor:{flavor}"),
                 });
             }
@@ -54,7 +54,7 @@ impl McpTool for ListRecipesTool {
                             && let Some(stem) = p.file_stem().and_then(|s| s.to_str())
                         {
                             recipes.push(RecipeItem {
-                                recipe_ref: stem.to_string(),
+                                recipe_ref: format!("user:{stem}.yaml"),
                                 source: "owner".into(),
                             });
                         }

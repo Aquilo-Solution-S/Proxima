@@ -8,6 +8,7 @@ import {
   type Component,
   type JSX,
 } from "solid-js";
+import { commands } from "../../bindings";
 import type { Hub, Renderer } from "../../hub";
 import type { Adjacency, AtlasNode, InEntry, OutEntry } from "./types";
 import { KIND_GLYPH, LAYER_Z, TINT_HEX } from "./three-helpers";
@@ -175,6 +176,13 @@ const tabCopyText = (
 
 const tabLabel = (tab: InspectorTab): string =>
   tabs.find((entry) => entry.id === tab)?.label ?? tab;
+
+const commandErrorMessage = (raw: unknown): string => {
+  if (typeof raw === "object" && raw !== null && "message" in raw) {
+    return String((raw as { message: unknown }).message);
+  }
+  return typeof raw === "string" ? raw : "command failed";
+};
 
 const Field: Component<{ label: string; children: JSX.Element }> = (props) => (
   <div class="i-row">
@@ -439,6 +447,12 @@ export const Inspector: Component<{
       const [copyState, setCopyState] = createSignal<"idle" | "copied" | "failed">(
         "idle",
       );
+      const [reactivateState, setReactivateState] = createSignal<
+        "idle" | "running" | "done" | "failed"
+      >("idle");
+      const [reactivateError, setReactivateError] = createSignal<string | null>(
+        null,
+      );
       const out = () => props.adj.out.get(node().id) ?? [];
       const inn = () => props.adj.inn.get(node().id) ?? [];
       const hasPayloadDetail = () =>
@@ -458,6 +472,11 @@ export const Inspector: Component<{
         node().id;
         tab();
         setCopyState("idle");
+      });
+      createEffect(() => {
+        node().id;
+        setReactivateState("idle");
+        setReactivateError(null);
       });
       const renderer = createMemo(() =>
         props.hub.rendererFor(
@@ -494,6 +513,22 @@ export const Inspector: Component<{
           setCopyState("failed");
         }
       };
+      const reactivateGoal = async () => {
+        const goal = node().goal;
+        if (goal === undefined || goal.state !== "Active") return;
+        setReactivateState("running");
+        setReactivateError(null);
+        const result = await commands.goalReactivate({
+          owner: goal.owner,
+          goal_id: goal.id,
+        });
+        if (result.status === "error") {
+          setReactivateError(commandErrorMessage(result.error));
+          setReactivateState("failed");
+          return;
+        }
+        setReactivateState("done");
+      };
       return (
         <div class="atlas-inspector">
           <div class="i-head">
@@ -510,6 +545,27 @@ export const Inspector: Component<{
           <div class="i-schema">
             {node().schemaId} @ v{node().schemaVersion}
           </div>
+
+          <Show when={node().goal?.state === "Active"}>
+            <div class="i-actions">
+              <button
+                type="button"
+                class={`i-action-btn ${reactivateState()}`}
+                disabled={reactivateState() === "running"}
+                aria-label="Reactivate goal"
+                onClick={() => void reactivateGoal()}
+              >
+                {reactivateState() === "running"
+                  ? "Reactivating"
+                  : reactivateState() === "done"
+                    ? "Reactivated"
+                    : "Reactivate"}
+              </button>
+              <Show when={reactivateState() === "failed"}>
+                <span class="i-action-error">{reactivateError()}</span>
+              </Show>
+            </div>
+          </Show>
 
           <div class="i-tabbar">
             <div class="i-tabs" role="tablist" aria-label="Inspector sections">

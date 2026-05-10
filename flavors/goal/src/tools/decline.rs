@@ -31,6 +31,7 @@ impl McpTool for DeclineTool {
                     proposal: args.proposal,
                     payload: None,
                     evidence: None,
+                    target_personality: None,
                     idempotency_key: args.idempotency_key,
                 },
                 GoalState::Rejected,
