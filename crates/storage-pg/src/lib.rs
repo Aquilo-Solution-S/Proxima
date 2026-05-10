@@ -315,6 +315,13 @@ impl Storage for PgStorage {
         verbs::consolidate::instantiate_personality(&self.pool, req).await
     }
 
+    async fn ensure_shell_author_personality(
+        &self,
+        owner: &Owner,
+    ) -> Result<PersonalityInstanceId, StorageError> {
+        verbs::shell_author::ensure_shell_author(&self.pool, owner).await
+    }
+
     async fn set_wake_entries(
         &self,
         req: &SetWakeEntriesRequest,
