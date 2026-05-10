@@ -443,7 +443,7 @@ export const Atlas: Component<{
 
   createEffect(() => {
     if (graph === null) return;
-    const node = focusNode();
+    const node = pickedNode();
     if (node === null || requestedPayloadIds.has(node.id)) return;
     if (node.memory !== undefined && node.memory.payload.length === 0) {
       requestedPayloadIds.add(node.id);

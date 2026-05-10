@@ -146,6 +146,37 @@ describe("Atlas graph wiring", () => {
     expect(statValues).toContain("1");
   });
 
+  it("hydrates empty payloads only after node selection", async () => {
+    const fact = memory("019dfa40-0000-7000-8000-000000000004", "Fact");
+    const hydrate = vi.fn().mockResolvedValue(undefined);
+    const raycast = vi
+      .spyOn(THREE.Raycaster.prototype, "intersectObjects")
+      .mockImplementation((objects) => [{ object: objects[0] }] as THREE.Intersection[]);
+    const store: GraphStore = {
+      state: () => snapshot([fact], []),
+      refresh: () => Promise.resolve(),
+      hydrate,
+    };
+    const { container } = render(() => (
+      <GraphProvider store={store}>
+        <GraphFilterProvider store={createGraphFilterStore()}>
+          <Atlas hub={createHub([])} />
+        </GraphFilterProvider>
+      </GraphProvider>
+    ));
+    const canvas = container.querySelector(".atlas-canvas canvas")!;
+
+    fireEvent.pointerMove(canvas);
+    await Promise.resolve();
+    expect(hydrate).not.toHaveBeenCalled();
+
+    fireEvent.click(canvas);
+    await waitFor(() =>
+      expect(hydrate).toHaveBeenCalledWith({ memory_ids: [fact.id] }),
+    );
+    raycast.mockRestore();
+  });
+
   it("displays the deterministic-projection overlay copy and never the embedding copy", () => {
     const store: GraphStore = {
       state: () => snapshot([], []),

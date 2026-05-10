@@ -206,6 +206,42 @@ describe("GraphStore snapshot loading", () => {
             expect(MAX_SNAPSHOT_EDGES).toBe(50_000);
             expect(queries[0]?.tombstones).toBe("PresentOnly");
             expect(queries[0]?.personality_roots).toBe("ActiveOnly");
+            expect(queries[0]?.include_payloads).toBe(false);
+            dispose();
+            resolve();
+          });
+      });
+    });
+  });
+
+  it("hydrates requested ids with payloads enabled", async () => {
+    const queries: QueryRequest[] = [];
+    const client = graphClient({
+      query: async (req) => {
+        queries.push(req);
+        return { memories: [], goals: [], edges: [], seq_high_water: null };
+      },
+    });
+
+    await new Promise<void>((resolve) => {
+      createRoot((dispose) => {
+        const store = createGraphStore(client, createHub([]), owner);
+        void vi
+          .waitFor(() => expect(queries).toHaveLength(1))
+          .then(async () => {
+            await store.hydrate?.({
+              memory_ids: ["019dfa00-0000-7000-8000-000000000001"],
+              goal_ids: ["019dfa00-0000-7000-8000-000000000002"],
+            });
+            expect(queries).toHaveLength(2);
+            expect(queries[1]?.include_payloads).toBe(true);
+            expect(queries[1]?.memory_ids).toEqual([
+              "019dfa00-0000-7000-8000-000000000001",
+            ]);
+            expect(queries[1]?.goal_ids).toEqual([
+              "019dfa00-0000-7000-8000-000000000002",
+            ]);
+            expect(queries[1]?.limit).toBe(2);
             dispose();
             resolve();
           });
