@@ -12,6 +12,7 @@ import type {
   McpToolTs,
   OwnerRecipesListingTs,
   PersonalityInstanceTs,
+  RelationTs,
   SetWakeEntriesOutcomeTs,
   TombstonePersonalityOutcomeTs,
   WakeEntryTs,
@@ -165,6 +166,22 @@ const mockClient = (
       { id: "proxima-workspace/list_files", description: "List directories" },
     ]),
   );
+  const listRelations = vi.fn(() =>
+    ok<RelationTs[]>([
+      {
+        relation_id: "core/inspires",
+        flavor_id: "core",
+        class: "AbductiveOperator",
+        typed: false,
+      },
+      {
+        relation_id: "proxima-code/calls",
+        flavor_id: "proxima-code",
+        class: "Substrate",
+        typed: false,
+      },
+    ]),
+  );
   const listWakeInvocations = vi.fn((_) => ok<WakeInvocationTs[]>(invocations));
 
   return {
@@ -177,6 +194,7 @@ const mockClient = (
       listBundledRecipes,
       listMcpTools,
       listWorkspaceTools,
+      listRelations,
       listWakeInvocations,
     } satisfies PersonalityCommandClient,
     listPersonalityInstances,
@@ -187,6 +205,7 @@ const mockClient = (
     listBundledRecipes,
     listMcpTools,
     listWorkspaceTools,
+    listRelations,
     listWakeInvocations,
   };
 };
@@ -334,10 +353,11 @@ describe("PersonalitiesView", () => {
     await waitFor(() => {
       expect(recipeSelect.value).toBe("user:default.yaml");
     });
-    expect(screen.getByLabelText("Trigger id")).toHaveProperty(
-      "value",
-      "proxima-code/commit-summary-v1",
-    );
+    expect(
+      screen.getByRole("button", {
+        name: /^Trigger id: proxima-code\/commit-summary-v1$/,
+      }),
+    ).toBeTruthy();
     expect(screen.getByRole("option", { name: "On memory" })).toHaveProperty(
       "value",
       "on_memory",
@@ -439,11 +459,26 @@ describe("PersonalitiesView", () => {
     await selectPersonality("Engineer");
     await selectEntry("react-to-commit");
 
-    const trigger = screen.getByLabelText("Trigger id");
-    expect(trigger.tagName).toBe("SELECT");
-    fireEvent.change(trigger, {
-      target: { value: "proxima-code/code-chunk-v1" },
+    const triggerButton = screen.getByRole("button", {
+      name: /^Trigger id: proxima-code\/commit-summary-v1$/,
     });
+    fireEvent.click(triggerButton);
+
+    const radio = await waitFor(() => {
+      const dialog = screen.getByRole("dialog", { name: "Trigger id" });
+      const inputs = dialog.querySelectorAll<HTMLInputElement>(
+        'input[type="radio"]',
+      );
+      const target = Array.from(inputs).find((input) =>
+        input
+          .closest(".personality-tool-row")
+          ?.textContent?.includes("proxima-code/code-chunk-v1"),
+      );
+      if (!target) throw new Error("radio for proxima-code/code-chunk-v1 not found");
+      return target;
+    });
+    fireEvent.click(radio);
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() => {

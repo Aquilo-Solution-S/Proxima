@@ -13,6 +13,7 @@ import type {
   ModelTierTs,
   OwnerRecipesListingTs,
   PersonalityInstanceTs,
+  RelationTs,
   TriggerKindTs,
   WakeEntryDraftTs,
   WakeInvocationTs,
@@ -110,6 +111,7 @@ interface InspectorProps {
   recipesError: string | null;
   mcpTools: McpToolTs[] | null;
   workspaceTools: WorkspaceToolTs[] | null;
+  relations: RelationTs[] | null;
   toolsError: string | null;
   wakeInvocations: WakeInvocationTs[] | null;
   wakeInvocationsLoading: boolean;
@@ -233,6 +235,7 @@ export const Inspector: Component<InspectorProps> = (props) => {
             recipesError={props.recipesError}
             mcpTools={props.mcpTools}
             workspaceTools={props.workspaceTools}
+            relations={props.relations}
             toolsError={props.toolsError}
             wakeInvocations={props.wakeInvocations}
             wakeInvocationsLoading={props.wakeInvocationsLoading}
@@ -424,6 +427,7 @@ const WakeEntryDetail: Component<{
   recipesError: string | null;
   mcpTools: McpToolTs[] | null;
   workspaceTools: WorkspaceToolTs[] | null;
+  relations: RelationTs[] | null;
   toolsError: string | null;
   onUpdate: (mutate: (draft: WakeEntryDraftTs) => void) => void;
   onRemove: () => void;
@@ -433,9 +437,32 @@ const WakeEntryDetail: Component<{
   wakeInvocationsLoading: boolean;
   wakeInvocationsError: string | null;
 }> = (props) => {
-  const triggerOptions = createMemo(() =>
-    schemaOptionsFor(props.draft.trigger_id),
+  const memoryOptions = createMemo<SchemaPickerOption[]>(() =>
+    schemaOptionsFor(props.draft.trigger_id).map((option) => ({
+      id: option.schemaId,
+      group: option.flavor,
+    })),
   );
+  const edgeOptions = createMemo<SchemaPickerOption[] | null>(() => {
+    if (!props.relations) return null;
+    const known = new Set(props.relations.map((r) => r.relation_id));
+    const base: SchemaPickerOption[] = props.relations.map((r) => ({
+      id: r.relation_id,
+      group: r.flavor_id || "core",
+      detail: r.typed ? "typed" : "substrate",
+    }));
+    if (
+      props.draft.trigger_id.trim() !== "" &&
+      !known.has(props.draft.trigger_id)
+    ) {
+      base.unshift({
+        id: props.draft.trigger_id,
+        group: "stored config",
+        orphan: true,
+      });
+    }
+    return base;
+  });
 
   return (
     <div class="personality-inspector-section">
@@ -496,39 +523,40 @@ const WakeEntryDetail: Component<{
               </For>
             </select>
           </label>
-          <label>
-            Trigger id
-            <Show
-              when={props.draft.trigger_kind === "on_memory"}
-              fallback={
-                <input
-                  value={props.draft.trigger_id}
-                  onChange={(event) =>
-                    props.onUpdate((draft) => {
-                      draft.trigger_id = event.currentTarget.value;
-                    })
-                  }
-                />
-              }
-            >
-              <select
-                value={props.draft.trigger_id}
-                onChange={(event) =>
+          <Show
+            when={props.draft.trigger_kind === "on_memory"}
+            fallback={
+              <SchemaPickerSelect
+                label="Trigger id"
+                hint="Pick a relation schema for this edge trigger."
+                selected={props.draft.trigger_id}
+                options={edgeOptions()}
+                error={props.toolsError}
+                loadingLabel="Loading relations..."
+                emptyLabel="No relations registered in this build."
+                onChange={(value) =>
                   props.onUpdate((draft) => {
-                    draft.trigger_id = event.currentTarget.value;
+                    draft.trigger_id = value;
                   })
                 }
-              >
-                <For each={triggerOptions()}>
-                  {(option) => (
-                    <option value={option.schemaId}>
-                      {option.schemaId} ({option.flavor})
-                    </option>
-                  )}
-                </For>
-              </select>
-            </Show>
-          </label>
+              />
+            }
+          >
+            <SchemaPickerSelect
+              label="Trigger id"
+              hint="Pick a memory schema for this trigger."
+              selected={props.draft.trigger_id}
+              options={memoryOptions()}
+              error={null}
+              loadingLabel="Loading schemas..."
+              emptyLabel="No memory schemas registered in this build."
+              onChange={(value) =>
+                props.onUpdate((draft) => {
+                  draft.trigger_id = value;
+                })
+              }
+            />
+          </Show>
           <label>
             Authored by
             <select
@@ -1335,6 +1363,214 @@ const ToolPaletteSelect: Component<{
                   </div>
                   <footer class="personality-tool-dialog-actions">
                     <span>{pending().length} selected</span>
+                    <button
+                      type="button"
+                      class="hub-nav-item"
+                      onClick={() => setOpen(false)}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      class="hub-nav-item personality-inspector-save"
+                      onClick={apply}
+                    >
+                      Apply
+                    </button>
+                  </footer>
+                </div>
+              </div>
+            </Show>
+          </Show>
+        )}
+      </Show>
+    </div>
+  );
+};
+
+type SchemaPickerOption = {
+  id: string;
+  group: string;
+  detail?: string | null;
+  orphan?: boolean;
+};
+
+const SchemaPickerSelect: Component<{
+  label: string;
+  hint: string;
+  selected: string;
+  options: SchemaPickerOption[] | null;
+  error: string | null;
+  loadingLabel: string;
+  emptyLabel: string;
+  onChange: (id: string) => void;
+}> = (props) => {
+  const [open, setOpen] = createSignal(false);
+  const [pending, setPending] = createSignal<string>("");
+  const [query, setQuery] = createSignal("");
+  const summary = createMemo(() =>
+    props.selected.trim() === "" ? "Select schema" : props.selected,
+  );
+  const filteredOptions = createMemo(() => {
+    const needle = query().trim().toLowerCase();
+    const options = props.options ?? [];
+    if (!needle) return options;
+    return options.filter((option) =>
+      `${option.id} ${option.group} ${option.detail ?? ""}`
+        .toLowerCase()
+        .includes(needle),
+    );
+  });
+  const groups = createMemo(() => {
+    const entries = new Map<string, SchemaPickerOption[]>();
+    for (const option of filteredOptions()) {
+      entries.set(option.group, [...(entries.get(option.group) ?? []), option]);
+    }
+    return Array.from(entries, ([group, options]) => ({ group, options }));
+  });
+  const openDialog = () => {
+    setPending(props.selected);
+    setQuery("");
+    setOpen(true);
+  };
+  const apply = () => {
+    props.onChange(pending());
+    setOpen(false);
+  };
+
+  return (
+    <div class="personality-section-grid-full personality-tool-picker">
+      <div class="personality-tool-picker-head">
+        <span class="personality-tool-picker-label">{props.label}</span>
+        <span class="personality-tool-picker-hint">{props.hint}</span>
+      </div>
+      <Show when={props.error}>
+        {(message) => (
+          <p class="proxima-error" role="alert">
+            {message()}
+          </p>
+        )}
+      </Show>
+      <Show
+        when={props.options}
+        fallback={
+          <p class="personality-tool-picker-empty">{props.loadingLabel}</p>
+        }
+      >
+        {(options) => (
+          <Show
+            when={options().length > 0}
+            fallback={
+              <p class="personality-tool-picker-empty">{props.emptyLabel}</p>
+            }
+          >
+            <button
+              type="button"
+              class="personality-tool-configure-trigger"
+              aria-label={`${props.label}: ${summary()}`}
+              onClick={openDialog}
+            >
+              <span class="personality-tool-configure-summary">
+                {summary()}
+              </span>
+              <span class="personality-tool-configure-action">Configure</span>
+            </button>
+            <Show when={open()}>
+              <div class="personality-tool-dialog-backdrop">
+                <div
+                  class="personality-tool-dialog"
+                  role="dialog"
+                  aria-modal="true"
+                  aria-label={props.label}
+                >
+                  <header class="personality-tool-dialog-head">
+                    <div>
+                      <h4>{props.label}</h4>
+                      <p>{props.hint}</p>
+                    </div>
+                    <button
+                      type="button"
+                      class="personality-tool-dialog-close"
+                      aria-label="Close picker"
+                      onClick={() => setOpen(false)}
+                    >
+                      x
+                    </button>
+                  </header>
+                  <div class="personality-tool-dialog-toolbar">
+                    <input
+                      value={query()}
+                      placeholder="Search schemas"
+                      aria-label="Search schemas"
+                      onInput={(event) => setQuery(event.currentTarget.value)}
+                    />
+                    <button
+                      type="button"
+                      class="hub-nav-item"
+                      onClick={() => setPending("")}
+                    >
+                      Clear
+                    </button>
+                  </div>
+                  <div class="personality-tool-dialog-list">
+                    <Show
+                      when={groups().length > 0}
+                      fallback={
+                        <p class="personality-tool-picker-empty">
+                          No schemas match the current search.
+                        </p>
+                      }
+                    >
+                      <For each={groups()}>
+                        {(group) => (
+                          <section class="personality-tool-group">
+                            <h5>{group.group}</h5>
+                            <ul class="personality-tool-list" role="list">
+                              <For each={group.options}>
+                                {(option) => (
+                                  <li>
+                                    <label
+                                      classList={{
+                                        "personality-tool-row": true,
+                                        "personality-tool-row-orphan": Boolean(
+                                          option.orphan,
+                                        ),
+                                        "is-selected": pending() === option.id,
+                                      }}
+                                    >
+                                      <input
+                                        type="radio"
+                                        name={`schema-picker-${props.label}`}
+                                        checked={pending() === option.id}
+                                        onChange={() => setPending(option.id)}
+                                      />
+                                      <span class="personality-tool-row-main">
+                                        <span class="personality-tool-row-short">
+                                          {toolShortName(option.id)}
+                                        </span>
+                                        <span class="personality-tool-row-id">
+                                          <Mono>{option.id}</Mono>
+                                        </span>
+                                      </span>
+                                      <Show when={option.detail}>
+                                        <span class="personality-tool-row-desc">
+                                          {option.detail}
+                                        </span>
+                                      </Show>
+                                    </label>
+                                  </li>
+                                )}
+                              </For>
+                            </ul>
+                          </section>
+                        )}
+                      </For>
+                    </Show>
+                  </div>
+                  <footer class="personality-tool-dialog-actions">
+                    <Show when={pending()} fallback={<span>None selected</span>}>
+                      <span>Selected: <Mono>{pending()}</Mono></span>
+                    </Show>
                     <button
                       type="button"
                       class="hub-nav-item"

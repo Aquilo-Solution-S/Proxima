@@ -63,6 +63,7 @@ const graphClient = (overrides: Partial<EngineClient>): EngineClient => ({
   listBundledRecipes: async () => [],
   listMcpTools: async () => [],
   listWorkspaceTools: async () => [],
+  listRelations: async () => [],
   ...overrides,
 });
 

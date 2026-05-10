@@ -21,6 +21,7 @@ import {
   type OwnerRecipesListingTs,
   type PersonalityInstanceTs,
   type ProtocolError,
+  type RelationTs,
   type SetWakeEntriesOutcomeTs,
   type SetWakeEntriesTs,
   type TombstonePersonalityOutcomeTs,
@@ -59,6 +60,7 @@ export type PersonalityCommandClient = {
   listBundledRecipes: () => CommandResult<BundledRecipeTs[]>;
   listMcpTools: () => CommandResult<McpToolTs[]>;
   listWorkspaceTools: () => CommandResult<WorkspaceToolTs[]>;
+  listRelations: () => CommandResult<RelationTs[]>;
   listWakeInvocations: (
     req: ListWakeInvocationsTs,
   ) => CommandResult<WakeInvocationTs[]>;
@@ -121,6 +123,7 @@ export const PersonalitiesView: Component<{
   const [workspaceTools, setWorkspaceTools] = createSignal<
     WorkspaceToolTs[] | null
   >(null);
+  const [relations, setRelations] = createSignal<RelationTs[] | null>(null);
   const [toolsError, setToolsError] = createSignal<string | null>(null);
   const [wakeInvocations, setWakeInvocations] = createSignal<
     WakeInvocationTs[] | null
@@ -147,12 +150,14 @@ export const PersonalitiesView: Component<{
   const refreshTools = async () => {
     setToolsError(null);
     try {
-      const [substrate, workspace] = await Promise.all([
+      const [substrate, workspace, rels] = await Promise.all([
         unwrap(client.listMcpTools()),
         unwrap(client.listWorkspaceTools()),
+        unwrap(client.listRelations()),
       ]);
       setMcpTools(substrate);
       setWorkspaceTools(workspace);
+      setRelations(rels);
     } catch (err) {
       setToolsError(errorMessage(err));
     }
@@ -467,6 +472,7 @@ export const PersonalitiesView: Component<{
           onRevealRecipesFolder={revealRecipesFolder}
           mcpTools={mcpTools()}
           workspaceTools={workspaceTools()}
+          relations={relations()}
           toolsError={toolsError()}
           wakeInvocations={wakeInvocations()}
           wakeInvocationsLoading={wakeInvocationsLoading()}

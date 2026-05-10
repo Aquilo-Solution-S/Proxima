@@ -18,6 +18,14 @@ pub struct WorkspaceToolTs {
     pub description: String,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
+pub struct RelationTs {
+    pub relation_id: String,
+    pub flavor_id: String,
+    pub class: String,
+    pub typed: bool,
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn list_mcp_tools(
@@ -57,6 +65,31 @@ pub async fn list_workspace_tools() -> Result<Vec<WorkspaceToolTs>, ProtocolErro
             .map(|(id, desc)| WorkspaceToolTs {
                 id: (*id).to_string(),
                 description: (*desc).to_string(),
+            })
+            .collect())
+    })
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn list_relations(
+    engine: State<'_, Arc<Engine>>,
+) -> Result<Vec<RelationTs>, ProtocolError> {
+    crate::perf::ipc::record("list_relations", 0, async move {
+        Ok(engine
+            .registry()
+            .list_relations()
+            .iter()
+            .map(|d| RelationTs {
+                relation_id: d.relation.clone(),
+                flavor_id: d
+                    .relation
+                    .split_once('/')
+                    .map(|(f, _)| f.to_string())
+                    .unwrap_or_default(),
+                class: d.class.as_str().to_string(),
+                typed: d.payload_schema.is_some(),
             })
             .collect())
     })
