@@ -318,6 +318,35 @@ html, body, #root { height: 100%; margin: 0; }
   font-size: 11px;
 }
 
+.shell-error {
+  padding: 32px;
+  color: var(--ink-80);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-items: flex-start;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.shell-error h2 {
+  margin: 0;
+  color: var(--ink-100);
+  font-family: var(--display);
+}
+
+.shell-error-message {
+  margin: 0;
+  padding: 12px;
+  max-width: 100%;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--bg-card);
+  border: 1px solid var(--rule-strong);
+  border-radius: 4px;
+  color: var(--ink-70);
+}
+
 .filter-dialog-backdrop {
   position: absolute;
   inset: 38px 0 32px 0;

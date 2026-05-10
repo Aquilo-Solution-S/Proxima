@@ -1,4 +1,10 @@
-import { For, Suspense, createSignal, type Component } from "solid-js";
+import {
+  ErrorBoundary,
+  For,
+  Suspense,
+  createSignal,
+  type Component,
+} from "solid-js";
 import { Dynamic } from "solid-js/web";
 import { FilterDialog } from "./filter-dialog";
 import { useGraph } from "./graph-store";
@@ -95,13 +101,42 @@ export const Shell: Component<{ hub: Hub }> = (props) => {
         onClose={() => setFilterOpen(false)}
       />
       <main class="shell-main">
-        <Suspense
-          fallback={
-            <LoadingSurface mode="panel" label="Loading view" stars="on" />
-          }
+        <ErrorBoundary
+          fallback={(err, reset) => {
+            const causeOf = (e: unknown): unknown =>
+              e instanceof Error
+                ? (e as Error & { cause?: unknown }).cause
+                : undefined;
+            console.error("shell view crashed:", err, "cause:", causeOf(err));
+            const message = err instanceof Error ? err.message : String(err);
+            const cause = causeOf(err);
+            const causeStr =
+              cause === undefined
+                ? ""
+                : `\ncause: ${
+                    typeof cause === "object"
+                      ? JSON.stringify(cause)
+                      : String(cause)
+                  }`;
+            return (
+              <div class="shell-error">
+                <h2>View crashed</h2>
+                <pre class="shell-error-message">{message}{causeStr}</pre>
+                <button type="button" class="hub-nav-item" onClick={reset}>
+                  Retry
+                </button>
+              </div>
+            );
+          }}
         >
-          <Dynamic component={activeView()?.component ?? EmptyView} />
-        </Suspense>
+          <Suspense
+            fallback={
+              <LoadingSurface mode="panel" label="Loading view" stars="on" />
+            }
+          >
+            <Dynamic component={activeView()?.component ?? EmptyView} />
+          </Suspense>
+        </ErrorBoundary>
       </main>
       <footer class="status-foot">
         <span class="rail-title">
