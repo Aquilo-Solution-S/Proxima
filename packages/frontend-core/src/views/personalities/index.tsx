@@ -431,16 +431,31 @@ export const PersonalitiesView: Component<{
     }),
   );
 
-  const distinctPalettes = createMemo(() => {
-    const seen = new Map<string, string[]>();
-    for (const inst of projectedInstances() ?? []) {
-      for (const entry of inst.wake_entries) {
-        const key = paletteKey(entry.substrate_tool_palette);
-        if (!seen.has(key)) seen.set(key, entry.substrate_tool_palette.slice());
+  const distinctPalettes = createMemo(
+    () => {
+      const seen = new Map<string, string[]>();
+      for (const inst of projectedInstances() ?? []) {
+        for (const entry of inst.wake_entries) {
+          const key = paletteKey(entry.substrate_tool_palette);
+          if (!seen.has(key)) seen.set(key, entry.substrate_tool_palette.slice());
+        }
       }
-    }
-    return seen;
-  });
+      return seen;
+    },
+    new Map<string, string[]>(),
+    {
+      equals: (a, b) => {
+        if (a.size !== b.size) return false;
+        for (const [k, v] of a) {
+          const bv = b.get(k);
+          if (!bv) return false;
+          if (v.length !== bv.length) return false;
+          for (let i = 0; i < v.length; i++) if (v[i] !== bv[i]) return false;
+        }
+        return true;
+      },
+    },
+  );
 
   const [producesResource] = createResource(distinctPalettes, async (map) => {
     const result: ProducesByPaletteKey = new Map();
