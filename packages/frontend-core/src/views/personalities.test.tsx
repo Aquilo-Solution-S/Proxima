@@ -182,8 +182,8 @@ const mockClient = (
       },
     ]),
   );
-  const wakeEntryProduces = vi.fn(() =>
-    ok({ schema_ids: [], relation_ids: [] }),
+  const wakeEntryProduces = vi.fn((_palette: string[]) =>
+    ok({ schema_ids: [] as string[], relation_ids: [] as string[] }),
   );
   const listWakeInvocations = vi.fn((_) => ok<WakeInvocationTs[]>(invocations));
 
