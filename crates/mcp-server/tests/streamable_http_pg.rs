@@ -2,13 +2,13 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
-use proxima_core::wake::token_store::{WakeTokenContext, WakeTokenStore};
-use proxima_core::{FlavorRegistry, OrgId, Owner, Principal, UserId};
+mod common;
+
+use common::{create_db, drop_db, initialize, initialized, post_rpc};
+use proxima_core::wake::token_store::WakeTokenStore;
+use proxima_core::FlavorRegistry;
 use proxima_mcp_server::{DevMcpServer, McpAuthStore, default_allowlist, serve_streamable_http};
 use serde_json::json;
-use sqlx::{Connection, Executor, PgConnection};
-
-const ADMIN_URL: &str = "postgres://postgres@localhost/postgres";
 
 #[tokio::test]
 async fn streamable_http_initialize_list_and_remember() -> Result<(), Box<dyn std::error::Error>> {
@@ -243,64 +243,7 @@ async fn non_loopback_bind_refused_immediately() -> Result<(), Box<dyn std::erro
     Ok(())
 }
 
-fn nil_owner() -> Owner {
-    Owner {
-        principal: Principal::User(UserId::new(uuid::Uuid::nil())),
-        org_id: OrgId::new(uuid::Uuid::nil()),
-    }
-}
-
-fn make_token_ctx(palette: Vec<String>) -> WakeTokenContext {
-    WakeTokenContext {
-        invocation_id: uuid::Uuid::new_v4(),
-        personality_instance_id: uuid::Uuid::new_v4(),
-        wake_entry_id: uuid::Uuid::new_v4(),
-        change_event_seq: uuid::Uuid::new_v4(),
-        owner: nil_owner(),
-        palette,
-        model_id: "anthropic/claude-3-5-sonnet".into(),
-        max_rounds: 4,
-        current_root_perspective_memory_id: proxima_core::MemoryId::new(uuid::Uuid::now_v7()),
-        triggering_event_memory_id: proxima_core::MemoryId::new(uuid::Uuid::now_v7()),
-        triggering_event_depth: proxima_core::WakeChainDepth::new(0),
-        read_log: std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new())),
-    }
-}
-
-async fn initialize(
-    client: &reqwest::Client,
-    url: &str,
-    bearer: &str,
-) -> Result<String, Box<dyn std::error::Error>> {
-    let response = client
-        .post(url)
-        .header("Origin", "http://localhost")
-        .header("Authorization", bearer)
-        .header("MCP-Protocol-Version", "2025-03-26")
-        .header("Content-Type", "application/json")
-        .header("Accept", "application/json, text/event-stream")
-        .json(&json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": {
-                "protocolVersion": "2025-03-26",
-                "capabilities": {},
-                "clientInfo": {"name": "test", "version": "0"}
-            }
-        }))
-        .send()
-        .await?;
-    assert!(response.status().is_success(), "{}", response.status());
-    let session_id = response
-        .headers()
-        .get("Mcp-Session-Id")
-        .ok_or("missing session id")?
-        .to_str()?
-        .to_string();
-    let _ = sse_json(response).await?;
-    Ok(session_id)
-}
+use common::{make_token_ctx, nil_owner};
 
 async fn initialize_without_origin(
     client: &reqwest::Client,
@@ -332,29 +275,8 @@ async fn initialize_without_origin(
         .ok_or("missing session id")?
         .to_str()?
         .to_string();
-    let _ = sse_json(response).await?;
+    let _ = common::sse_json(response).await?;
     Ok(session_id)
-}
-
-async fn initialized(
-    client: &reqwest::Client,
-    url: &str,
-    session_id: &str,
-    bearer: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let response = client
-        .post(url)
-        .header("Origin", "http://localhost")
-        .header("Authorization", bearer)
-        .header("MCP-Protocol-Version", "2025-03-26")
-        .header("Mcp-Session-Id", session_id)
-        .header("Content-Type", "application/json")
-        .header("Accept", "application/json, text/event-stream")
-        .json(&json!({"jsonrpc": "2.0", "method": "notifications/initialized"}))
-        .send()
-        .await?;
-    assert!(response.status().is_success(), "{}", response.status());
-    Ok(())
 }
 
 async fn initialized_without_origin(
@@ -377,29 +299,6 @@ async fn initialized_without_origin(
     Ok(())
 }
 
-async fn post_rpc(
-    client: &reqwest::Client,
-    url: &str,
-    session_id: Option<&str>,
-    bearer: &str,
-    body: serde_json::Value,
-) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
-    let mut request = client
-        .post(url)
-        .header("Origin", "http://localhost")
-        .header("Authorization", bearer)
-        .header("MCP-Protocol-Version", "2025-03-26")
-        .header("Content-Type", "application/json")
-        .header("Accept", "application/json, text/event-stream")
-        .json(&body);
-    if let Some(session_id) = session_id {
-        request = request.header("Mcp-Session-Id", session_id);
-    }
-    let response = request.send().await?;
-    assert!(response.status().is_success(), "{}", response.status());
-    sse_json(response).await
-}
-
 async fn post_rpc_without_origin(
     client: &reqwest::Client,
     url: &str,
@@ -419,41 +318,5 @@ async fn post_rpc_without_origin(
     }
     let response = request.send().await?;
     assert!(response.status().is_success(), "{}", response.status());
-    sse_json(response).await
-}
-
-async fn sse_json(
-    response: reqwest::Response,
-) -> Result<serde_json::Value, Box<dyn std::error::Error>> {
-    let text = response.text().await?;
-    for data in text.lines().filter_map(|line| line.strip_prefix("data:")) {
-        let data = data.trim();
-        if data.is_empty() {
-            continue;
-        }
-        if let Ok(value) = serde_json::from_str(data) {
-            return Ok(value);
-        }
-    }
-    Err(format!("missing JSON SSE data in {text:?}").into())
-}
-
-async fn create_db() -> Result<Option<String>, Box<dyn std::error::Error>> {
-    let db_name = format!("proxima_test_{}", uuid::Uuid::now_v7().simple());
-    let Ok(mut conn) = PgConnection::connect(ADMIN_URL).await else {
-        eprintln!("skipping (no admin PG)");
-        return Ok(None);
-    };
-    conn.execute(format!("CREATE DATABASE \"{db_name}\"").as_str())
-        .await?;
-    conn.close().await?;
-    Ok(Some(db_name))
-}
-
-async fn drop_db(name: &str) -> Result<(), sqlx::Error> {
-    let mut conn = PgConnection::connect(ADMIN_URL).await?;
-    conn.execute(format!("DROP DATABASE IF EXISTS \"{name}\" WITH (FORCE)").as_str())
-        .await?;
-    conn.close().await?;
-    Ok(())
+    common::sse_json(response).await
 }
