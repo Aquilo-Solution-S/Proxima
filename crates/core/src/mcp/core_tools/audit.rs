@@ -5,9 +5,11 @@
 //! - Wake-token caller: `ctx.caller_self_perspective` points at the
 //!   calling personality's Root Perspective Memory; we look up the
 //!   personality whose `current_root_perspective_memory_id == that id`.
-//! - Master-token caller: a substrate-shipped `proxima/shell-author`
-//!   personality, materialised lazily via
-//!   `Storage::ensure_shell_author_personality(owner)`.
+//! - Master-token caller: branch is a placeholder pending Task 7,
+//!   which dispatches on `ctx.master_token_id` and reuses the
+//!   per-token Self-Perspective populated by the MCP server's
+//!   `call_tool` ensure step. The real per-token identity is minted
+//!   via `Storage::ensure_master_token_personality`.
 //!
 //! Emit failures are non-fatal: the verb already succeeded.
 
