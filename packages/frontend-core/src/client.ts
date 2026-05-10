@@ -24,6 +24,7 @@ import type {
   QueryResponse,
   RegisterInferenceTargetOutcomeTs,
   RegisterInferenceTargetTs,
+  RelationTs,
   RemoveInferenceTargetOutcomeTs,
   RemoveInferenceTargetTs,
   SchemaResponse,
@@ -72,4 +73,5 @@ export interface EngineClient {
   listBundledRecipes(): Promise<BundledRecipeTs[]>;
   listMcpTools(): Promise<McpToolTs[]>;
   listWorkspaceTools(): Promise<WorkspaceToolTs[]>;
+  listRelations(): Promise<RelationTs[]>;
 }

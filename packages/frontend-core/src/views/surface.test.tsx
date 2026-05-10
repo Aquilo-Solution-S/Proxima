@@ -195,6 +195,7 @@ const clientWithHistory = (
   listBundledRecipes: async () => [],
   listMcpTools: async () => [],
   listWorkspaceTools: async () => [],
+  listRelations: async () => [],
 });
 
 const renderSurfaceWithClient = (client: EngineClient) => {

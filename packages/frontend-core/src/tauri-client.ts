@@ -26,6 +26,7 @@ import {
   type QueryResponse,
   type RegisterInferenceTargetOutcomeTs,
   type RegisterInferenceTargetTs,
+  type RelationTs,
   type RemoveInferenceTargetOutcomeTs,
   type RemoveInferenceTargetTs,
   type SchemaResponse,
@@ -154,6 +155,10 @@ export class TauriEngineClient implements EngineClient {
 
   async listWorkspaceTools(): Promise<WorkspaceToolTs[]> {
     return unwrap(commands.listWorkspaceTools());
+  }
+
+  async listRelations(): Promise<RelationTs[]> {
+    return unwrap(commands.listRelations());
   }
 }
 

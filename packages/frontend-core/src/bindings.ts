@@ -41,6 +41,7 @@ export const commands = {
 	listBundledRecipes: () => typedError<BundledRecipeTs[], ProtocolError>(__TAURI_INVOKE("list_bundled_recipes")),
 	listMcpTools: () => typedError<McpToolTs[], ProtocolError>(__TAURI_INVOKE("list_mcp_tools")),
 	listWorkspaceTools: () => typedError<WorkspaceToolTs[], ProtocolError>(__TAURI_INVOKE("list_workspace_tools")),
+	listRelations: () => typedError<RelationTs[], ProtocolError>(__TAURI_INVOKE("list_relations")),
 	/**
 	 *  # Errors
 	 *  Returns `CommandError::SecretStore` when the OS keychain cannot be used.
@@ -709,6 +710,13 @@ export type RegisterInferenceTargetTs = {
 	owner: Owner,
 	target_ref: string,
 	config: InferenceTargetConfigTs,
+};
+
+export type RelationTs = {
+	relation_id: string,
+	flavor_id: string,
+	class: string,
+	typed: boolean,
 };
 
 export type RemoteModelConfigTs = {
