@@ -13,11 +13,6 @@
 //!   `ctx.master_token_id` is `Some`. The audit Fact carries the
 //!   per-token shell-author instance id.
 //!
-//! The shape of `PersonalityConfigChangedCaller` predates per-token
-//! identity; the `MasterToken.shell_author_personality_instance_id`
-//! field carries the per-token instance id. A future v2 schema may
-//! rename it.
-//!
 //! Emit failures are non-fatal: the verb already succeeded.
 
 use time::OffsetDateTime;
@@ -92,7 +87,7 @@ async fn resolve_caller(
 
     Ok(if ctx.master_token_id.is_some() {
         PersonalityConfigChangedCaller::MasterToken {
-            shell_author_personality_instance_id: instance_id,
+            personality_instance_id: instance_id,
         }
     } else {
         PersonalityConfigChangedCaller::WakePersonality {
