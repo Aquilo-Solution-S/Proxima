@@ -4,8 +4,13 @@
 //!
 //! See docs/superpowers/specs/2026-05-10-personality-mcp-crud-design.md.
 
+pub mod add_wake_entry;
 pub mod audit;
 pub mod payload;
+pub mod remove_wake_entry;
+pub mod set_wake_entries;
+pub mod update_wake_entry;
+pub mod wake_entry_input;
 
 pub mod bind_inference_tier;
 pub mod get_personality;
@@ -23,6 +28,7 @@ pub mod register_inference_target;
 pub mod remove_inference_target;
 pub mod tombstone_personality;
 
+pub use add_wake_entry::AddWakeEntryTool;
 pub use audit::{AuditEmit, emit_personality_config_changed};
 pub use bind_inference_tier::BindInferenceTierTool;
 pub use get_personality::GetPersonalityTool;
@@ -42,4 +48,8 @@ pub use payload::{
 };
 pub use register_inference_target::RegisterInferenceTargetTool;
 pub use remove_inference_target::RemoveInferenceTargetTool;
+pub use remove_wake_entry::RemoveWakeEntryTool;
+pub use set_wake_entries::SetWakeEntriesTool;
 pub use tombstone_personality::TombstonePersonalityTool;
+pub use update_wake_entry::{UpdateWakeEntryTool, WakeEntryPatch};
+pub use wake_entry_input::WakeEntryDraftInput;
