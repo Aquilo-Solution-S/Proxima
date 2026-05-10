@@ -186,4 +186,17 @@ describe("oneHopLineage", () => {
     expect(result.outbound).toEqual([]);
     expect(result.inbound).toEqual([]);
   });
+
+  it("ignores edges where either endpoint is a Goal", () => {
+    const memoriesById = new Map<string, DecodedMemory>([
+      ["F1", makeMemory("F1", "Fact", "schema-a")],
+    ]);
+    const edgesById = new Map<string, EdgeRow>([
+      ["e1", edge("e1", "motivates", { Goal: "G1" }, { Memory: "F1" })],
+      ["e2", edge("e2", "satisfies", { Memory: "F1" }, { Goal: "G2" })],
+    ]);
+    const result = oneHopLineage("F1", edgesById, memoriesById);
+    expect(result.outbound).toEqual([]);
+    expect(result.inbound).toEqual([]);
+  });
 });
