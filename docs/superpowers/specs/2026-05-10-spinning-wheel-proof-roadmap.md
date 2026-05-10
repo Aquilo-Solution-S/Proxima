@@ -192,6 +192,47 @@ seed.
 These are calls on adjacent specs the roadmap depends on. None
 require new architecture — they're closing concrete gaps.
 
+### S0 — Per-master-token shell-author identity
+
+Today: `Storage::ensure_shell_author_personality(owner)` mints **one**
+shell-author personality per owner (singleton), lazily on the first
+personality-CRUD audit emit. `ctx.caller_self_perspective` stays `None`
+for master-token tool calls unless the caller passes an explicit
+`_proxima_caller_self_perspective` arg, which assistants don't.
+
+Decision: lift the master-token UUID into the identity. The MCP server
+already keys auth by token UUID
+(`crates/mcp-server/src/auth.rs:37`: `master_tokens: HashMap<Uuid,
+Owner>`). We extend this to a stable `(master_token_uuid, owner) →
+personality_instance_id` mapping, eager-minted on first connect, and
+default `ctx.caller_self_perspective` to that personality's
+Self-Perspective for every master-token tool call.
+
+Effect:
+
+- Each MCP client (Heinrich's Claude Code session, future marketplace
+  automation, future hosted shell) gets its own stable Self-Perspective.
+  Audit and provenance attribute to *this client*, not to a generic
+  per-owner shell-author bucket.
+- `goal_propose`'s existing `core/inspires` edge logic
+  (`flavors/goal/src/tools/propose.rs:61-92`) starts working from
+  master-token calls without any tool-side change — the edge points at
+  the calling client's Self-Perspective.
+- Master-token Fact emits (M1's lifecycle Facts among them) carry
+  proper authorship.
+
+Out of scope for S0:
+
+- Goals targeting *specific other personalities* from a master-token
+  call. That's an explicit `target_personality: P` arg on
+  `goal_propose`, separable. The default behavior with S0 is "this
+  goal originated from this client"; addressing other personalities
+  is a separable extension.
+- Per-token scopes, rate limits, or auth tiers beyond what the MCP
+  server already enforces.
+
+Lands in M0 (a small substrate milestone before M1).
+
 ### S1 — Goal lifecycle Facts
 
 Today: `goal_propose` and `goal_accept` insert rows into
@@ -249,6 +290,29 @@ Lands in M4.
 Each milestone is reviewable independently and lands as its own
 implementation plan in `docs/superpowers/plans/`.
 
+### M0 — Per-master-token shell-author identity (S0)
+
+- Promote `ensure_shell_author_personality(owner)` to
+  `ensure_master_token_personality(owner, master_token_uuid)` (or
+  equivalent — the storage trait shape is an implementation detail).
+  Per-token UUID becomes part of the identity key; mapping persists
+  across reconnects.
+- MCP server (`crates/mcp-server/src/handler.rs`) calls the ensure
+  path at the start of every master-token-authenticated tool
+  invocation and threads the resulting Self-Perspective
+  `MemoryId` into `ctx.caller_self_perspective`.
+- Audit Fact `caller` enum gains the per-token instance_id;
+  `PersonalityConfigChangedV1` `MasterToken` variant updates
+  accordingly.
+- **Acceptance:** `goal_propose` from a fresh master-token MCP
+  connection writes a Goal **with** a `core/inspires` edge to the
+  per-token Self-Perspective, with no explicit
+  `_proxima_caller_self_perspective` arg. Reconnecting under the same
+  token resolves to the same Self-Perspective. Two distinct master
+  tokens against the same owner resolve to two distinct
+  Self-Perspectives.
+- **Dependencies:** none. Pure substrate.
+
 ### M1 — Goal lifecycle Facts (S1)
 
 - Add `proxima-goal/goal-proposed-v1` and `goal-activated-v1` payload
@@ -256,8 +320,9 @@ implementation plan in `docs/superpowers/plans/`.
 - Wire emits into `goal_propose` and `goal_accept` transactions.
 - Surface in Atlas/Surface (free — they project the memory graph).
 - **Acceptance:** call `goal_propose` then `goal_accept` via MCP; both
-  Facts appear in `query` results with the right authorship.
-- **Dependencies:** none.
+  Facts appear in `query` results with the right authorship (per-token
+  Self-Perspective from M0 for master-token-driven calls).
+- **Dependencies:** M0 (so authorship attributes correctly).
 
 ### M2 — Wake on goal-activated (substrate-only smoke test)
 
@@ -363,6 +428,9 @@ Each is a downstream spec.
 
 Each milestone is independently revertable:
 
+- M0 — revert the storage trait extension + handler wiring + audit
+  payload variant. The singleton-per-owner shell-author keeps
+  working as fallback.
 - M1 — revert the two payload modules + sidecar migrations + the two
   emit-call sites. No code consumes the new Facts yet.
 - M2 — delete the temporary Executor personality (tombstone). No
