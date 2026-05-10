@@ -105,7 +105,7 @@ impl PersonalityRef {
 }
 
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, specta::Type,
+    Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, specta::Type, schemars::JsonSchema,
 )]
 #[serde(rename_all = "snake_case")]
 pub enum WakeEntryTriggerKind {
@@ -123,7 +123,7 @@ impl WakeEntryTriggerKind {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum WakeExecutionMode {
     SubstrateOnly,
@@ -451,16 +451,17 @@ pub struct WakeEntryRow {
     pub disabled_reason: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum WakeEntryExecutionMode {
     SubstrateOnly,
     Workspace,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type, Default, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum WakeEntryAuthoredBy {
+    #[default]
     Any,
     SelfAuthor,
     Other,
