@@ -26,7 +26,12 @@ type EraseState =
 
 async function loadRepos(): Promise<RepoRecordTs[]> {
   const r = await commands.reposList();
-  if (r.status === "error") throw r.error;
+  if (r.status === "error") {
+    console.error("repos_list error:", r.error);
+    const err = new Error(`repos_list: ${formatCommandError(r.error)}`);
+    (err as Error & { cause?: unknown }).cause = r.error;
+    throw err;
+  }
   return r.data;
 }
 
