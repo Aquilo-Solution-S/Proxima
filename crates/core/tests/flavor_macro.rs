@@ -49,13 +49,17 @@ fn flavor_macro_registers_fact_schema() {
     register(&mut registry);
     let frozen = registry.freeze();
     let schemas = frozen.list();
-    assert_eq!(schemas.len(), 2);
-    assert_eq!(schemas[0].schema_id.as_str(), "proxima-core/test-fact");
-    assert_eq!(schemas[0].schema_version.into_inner(), 1);
-    assert_eq!(schemas[0].kind, PayloadKind::Fact);
-    assert_eq!(schemas[1].schema_id.as_str(), "proxima-core/test-goal");
-    assert_eq!(schemas[1].schema_version.into_inner(), 1);
-    assert_eq!(schemas[1].kind, PayloadKind::Goal);
+    let macro_schemas: Vec<_> = schemas
+        .iter()
+        .filter(|s| s.schema_id.as_str().starts_with("proxima-core/test-"))
+        .collect();
+    assert_eq!(macro_schemas.len(), 2);
+    assert_eq!(macro_schemas[0].schema_id.as_str(), "proxima-core/test-fact");
+    assert_eq!(macro_schemas[0].schema_version.into_inner(), 1);
+    assert_eq!(macro_schemas[0].kind, PayloadKind::Fact);
+    assert_eq!(macro_schemas[1].schema_id.as_str(), "proxima-core/test-goal");
+    assert_eq!(macro_schemas[1].schema_version.into_inner(), 1);
+    assert_eq!(macro_schemas[1].kind, PayloadKind::Goal);
 }
 
 mod empty_goal_schemas {
@@ -72,7 +76,16 @@ fn flavor_macro_accepts_empty_goal_schemas() {
     let mut registry = FlavorRegistry::new();
     empty_goal_schemas::register(&mut registry);
     let frozen = registry.freeze();
-    assert!(frozen.list().is_empty());
+    // The default registry now ships substrate-managed schemas (e.g.
+    // core/personality_config_changed_v1). Asserting absence of the
+    // macro-targeted schemas is what this test cares about.
+    assert!(
+        frozen
+            .list()
+            .iter()
+            .all(|s| !s.schema_id.as_str().starts_with("proxima-core/test-")),
+        "no test-flavor schemas should be registered when goal_schemas = []",
+    );
 }
 
 // A FactPayload whose SCHEMA_ID is hard-coded (no proxima_schema_id!)
