@@ -83,6 +83,7 @@ impl Default for FlavorRegistry {
         };
         // Substrate-shipped Fact schema for MCP-CRUD audit.
         registry.add_fact_schema::<crate::mcp::core_tools::PersonalityConfigChangedV1>();
+        crate::mcp::core_tools::register_all(&mut registry);
         registry
     }
 }
@@ -250,6 +251,34 @@ impl FlavorRegistry {
             "McpTool::NAME {:?} must start with flavor prefix {:?}",
             T::NAME,
             prefix,
+        );
+        let schema = schemars::schema_for!(T::Args);
+        let args_schema = serde_json::to_value(schema).expect("JsonSchema must serialize");
+        let call: McpCallFn = |ctx, args| {
+            Box::pin(async move {
+                let typed: T::Args = serde_json::from_value(args)
+                    .map_err(|e| McpToolError::InvalidInput(e.to_string()))?;
+                let output = T::call(ctx, typed).await?;
+                serde_json::to_value(output).map_err(|e| McpToolError::InvalidInput(e.to_string()))
+            })
+        };
+        self.mcp_tools.push(McpToolDescriptor {
+            name: T::NAME,
+            description: T::DESCRIPTION,
+            args_schema,
+            call,
+        });
+    }
+
+    /// Register a substrate-shipped MCP tool. Asserts the name starts
+    /// with `"core/"` (no flavor prefix). Used in `Default::default()`
+    /// to wire the personality-config-CRUD tools into every composite
+    /// binary.
+    pub(crate) fn add_substrate_mcp_tool<T: McpTool>(&mut self) {
+        assert!(
+            T::NAME.starts_with("core/"),
+            "substrate McpTool::NAME {:?} must start with 'core/'",
+            T::NAME,
         );
         let schema = schemars::schema_for!(T::Args);
         let args_schema = serde_json::to_value(schema).expect("JsonSchema must serialize");
@@ -531,5 +560,37 @@ mod tests {
         );
         assert!(info.is_some(), "schema must be registered in default registry");
         assert_eq!(info.unwrap().kind, PayloadKind::Fact);
+    }
+
+    #[test]
+    fn default_registry_includes_all_19_substrate_mcp_tools() {
+        let frozen = FlavorRegistry::new().freeze();
+        let names: std::collections::HashSet<_> =
+            frozen.list_mcp_tools().iter().map(|d| d.name).collect();
+        let expected = [
+            "core/list_personalities",
+            "core/get_personality",
+            "core/instantiate_personality",
+            "core/tombstone_personality",
+            "core/list_wake_entries",
+            "core/set_wake_entries",
+            "core/add_wake_entry",
+            "core/update_wake_entry",
+            "core/remove_wake_entry",
+            "core/list_inference_targets",
+            "core/list_inference_tier_bindings",
+            "core/register_inference_target",
+            "core/remove_inference_target",
+            "core/bind_inference_tier",
+            "core/list_recipes",
+            "core/list_substrate_tools",
+            "core/list_workspace_tools",
+            "core/list_schemas",
+            "core/list_edge_types",
+        ];
+        for name in expected {
+            assert!(names.contains(name), "missing tool {name}");
+        }
+        assert_eq!(names.len(), 19, "exactly 19 substrate tools registered");
     }
 }

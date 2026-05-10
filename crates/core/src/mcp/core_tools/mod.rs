@@ -53,3 +53,27 @@ pub use set_wake_entries::SetWakeEntriesTool;
 pub use tombstone_personality::TombstonePersonalityTool;
 pub use update_wake_entry::{UpdateWakeEntryTool, WakeEntryPatch};
 pub use wake_entry_input::WakeEntryDraftInput;
+
+/// Register every substrate-shipped MCP tool into the FlavorRegistry.
+/// Called from `FlavorRegistry::default()`.
+pub(crate) fn register_all(registry: &mut crate::FlavorRegistry) {
+    registry.add_substrate_mcp_tool::<ListPersonalitiesTool>();
+    registry.add_substrate_mcp_tool::<GetPersonalityTool>();
+    registry.add_substrate_mcp_tool::<InstantiatePersonalityTool>();
+    registry.add_substrate_mcp_tool::<TombstonePersonalityTool>();
+    registry.add_substrate_mcp_tool::<ListWakeEntriesTool>();
+    registry.add_substrate_mcp_tool::<SetWakeEntriesTool>();
+    registry.add_substrate_mcp_tool::<AddWakeEntryTool>();
+    registry.add_substrate_mcp_tool::<UpdateWakeEntryTool>();
+    registry.add_substrate_mcp_tool::<RemoveWakeEntryTool>();
+    registry.add_substrate_mcp_tool::<ListInferenceTargetsTool>();
+    registry.add_substrate_mcp_tool::<ListInferenceTierBindingsTool>();
+    registry.add_substrate_mcp_tool::<RegisterInferenceTargetTool>();
+    registry.add_substrate_mcp_tool::<RemoveInferenceTargetTool>();
+    registry.add_substrate_mcp_tool::<BindInferenceTierTool>();
+    registry.add_substrate_mcp_tool::<ListRecipesTool>();
+    registry.add_substrate_mcp_tool::<ListSubstrateToolsTool>();
+    registry.add_substrate_mcp_tool::<ListWorkspaceToolsTool>();
+    registry.add_substrate_mcp_tool::<ListSchemasTool>();
+    registry.add_substrate_mcp_tool::<ListEdgeTypesTool>();
+}
