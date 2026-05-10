@@ -734,7 +734,7 @@ const WakeInvocationPanel: Component<{
   loading: boolean;
   error: string | null;
 }> = (props) => (
-  <details class="personality-section personality-invocations" open>
+  <details class="personality-section personality-invocations">
     <summary>Wake invocations</summary>
     <Show when={props.error}>
       {(message) => (

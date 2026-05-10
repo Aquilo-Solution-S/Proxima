@@ -256,6 +256,15 @@ const renderDevelopmentPerspective = (payload: unknown): JSX.Element => {
   );
 };
 
+const renderPersonalitySelf = (payload: unknown): JSX.Element => {
+  const p = asRecord(payload);
+  return (
+    <PayloadShell title={asString(p.display_name) ?? "Personality"}>
+      <p class="code-payload-summary">{asString(p.purpose) ?? "No purpose"}</p>
+    </PayloadShell>
+  );
+};
+
 const renderCalls = (payload: unknown): JSX.Element => {
   const p = asRecord(payload);
   return (
@@ -281,4 +290,6 @@ export const codeRenderers: Record<string, Renderer<unknown>> = {
   "proxima-code/commit-summary-v1": renderer(renderCommitSummary),
   "proxima-code/development-perspective-v1": renderer(renderDevelopmentPerspective),
   "proxima-code/calls": renderer(renderCalls),
+  "proxima-code/engineer-self-v1": renderer(renderPersonalitySelf),
+  "proxima-code/commit-summarizer-self-v1": renderer(renderPersonalitySelf),
 };

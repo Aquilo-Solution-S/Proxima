@@ -91,6 +91,91 @@ const rawNode = (node: AtlasNode): Record<string, unknown> => ({
   decodeError: node.decodeError ?? null,
 });
 
+const payloadCopyValue = (node: AtlasNode): unknown => {
+  if (node.decodeError !== undefined) return { decodeError: node.decodeError };
+  if (node.goal !== undefined) return node.goal;
+  if (node.payload !== undefined && node.payload !== null) return node.payload;
+  if (node.memory !== undefined) {
+    return {
+      message:
+        "Payload unavailable. The row has no decoded sidecar data in the current snapshot.",
+      memory: node.memory,
+    };
+  }
+  return "No backing row is available for this node.";
+};
+
+const metaCopyValue = (
+  node: AtlasNode,
+  rendererFlavor: string | null,
+  hasRenderer: boolean,
+): Record<string, unknown> => ({
+  id: node.id,
+  schema: `${node.schemaId} @ v${node.schemaVersion}`,
+  renderer: hasRenderer ? `via f:${rendererFlavor}` : null,
+  payloadBytes: payloadBytes(node),
+  owner: ownerLabel(node),
+  x: node.x,
+  y: node.y,
+  layerZ: LAYER_Z[node.kind],
+});
+
+const edgePeerValue = (
+  peer: AtlasNode | undefined,
+): Record<string, unknown> | null =>
+  peer
+    ? {
+        id: peer.id,
+        kind: peer.kind,
+        label: nodeLabel(peer),
+        schema: `${peer.schemaId} @ v${peer.schemaVersion}`,
+        flavor: peer.flavor,
+      }
+    : null;
+
+const edgesCopyValue = (
+  out: OutEntry[],
+  inn: InEntry[],
+  byId: Map<string, AtlasNode>,
+): Record<string, unknown> => ({
+  outgoing: out.map((edge) => ({
+    id: edge.id,
+    relation: edge.kind,
+    relationClass: edge.relationClass ?? null,
+    target: edgePeerValue(byId.get(edge.tgt)),
+  })),
+  incoming: inn.map((edge) => ({
+    id: edge.id,
+    relation: edge.kind,
+    relationClass: edge.relationClass ?? null,
+    source: edgePeerValue(byId.get(edge.src)),
+  })),
+});
+
+const tabCopyText = (
+  tab: InspectorTab,
+  node: AtlasNode,
+  out: OutEntry[],
+  inn: InEntry[],
+  byId: Map<string, AtlasNode>,
+  rendererFlavor: string | null,
+  hasRenderer: boolean,
+): string => {
+  switch (tab) {
+    case "payload":
+      return jsonBlock(payloadCopyValue(node));
+    case "edges":
+      return jsonBlock(edgesCopyValue(out, inn, byId));
+    case "meta":
+      return jsonBlock(metaCopyValue(node, rendererFlavor, hasRenderer));
+    case "raw":
+      return jsonBlock(rawNode(node));
+  }
+};
+
+const tabLabel = (tab: InspectorTab): string =>
+  tabs.find((entry) => entry.id === tab)?.label ?? tab;
+
 const Field: Component<{ label: string; children: JSX.Element }> = (props) => (
   <div class="i-row">
     <span class="k">{props.label}</span>
@@ -351,6 +436,9 @@ export const Inspector: Component<{
   >
     {(node: Accessor<AtlasNode>) => {
       const [tab, setTab] = createSignal<InspectorTab>("payload");
+      const [copyState, setCopyState] = createSignal<"idle" | "copied" | "failed">(
+        "idle",
+      );
       const out = () => props.adj.out.get(node().id) ?? [];
       const inn = () => props.adj.inn.get(node().id) ?? [];
       const hasPayloadDetail = () =>
@@ -365,6 +453,11 @@ export const Inspector: Component<{
             ? "payload"
             : "edges",
         );
+      });
+      createEffect(() => {
+        node().id;
+        tab();
+        setCopyState("idle");
       });
       const renderer = createMemo(() =>
         props.hub.rendererFor(
@@ -381,6 +474,26 @@ export const Inspector: Component<{
         );
         return r?.flavor ?? null;
       });
+      const copyCurrentTab = async () => {
+        try {
+          const clipboard = navigator.clipboard;
+          if (!clipboard) throw new Error("clipboard unavailable");
+          await clipboard.writeText(
+            tabCopyText(
+              tab(),
+              node(),
+              out(),
+              inn(),
+              props.byId,
+              rendererFlavor(),
+              renderer() !== null,
+            ),
+          );
+          setCopyState("copied");
+        } catch {
+          setCopyState("failed");
+        }
+      };
       return (
         <div class="atlas-inspector">
           <div class="i-head">
@@ -398,17 +511,31 @@ export const Inspector: Component<{
             {node().schemaId} @ v{node().schemaVersion}
           </div>
 
-          <div class="i-tabs" role="tablist" aria-label="Inspector sections">
-            <For each={tabs}>
-              {(entry) => (
-                <TabButton
-                  active={tab() === entry.id}
-                  onClick={() => setTab(entry.id)}
-                >
-                  {entry.label}
-                </TabButton>
-              )}
-            </For>
+          <div class="i-tabbar">
+            <div class="i-tabs" role="tablist" aria-label="Inspector sections">
+              <For each={tabs}>
+                {(entry) => (
+                  <TabButton
+                    active={tab() === entry.id}
+                    onClick={() => setTab(entry.id)}
+                  >
+                    {entry.label}
+                  </TabButton>
+                )}
+              </For>
+            </div>
+            <button
+              type="button"
+              class={`i-copy-btn ${copyState()}`}
+              aria-label={`Copy ${tabLabel(tab())}`}
+              onClick={() => void copyCurrentTab()}
+            >
+              {copyState() === "copied"
+                ? "Copied"
+                : copyState() === "failed"
+                  ? "Failed"
+                  : "Copy"}
+            </button>
           </div>
 
           <Show when={tab() === "payload"}>

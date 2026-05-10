@@ -1,4 +1,10 @@
-import { cleanup, fireEvent, render, screen } from "@solidjs/testing-library";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@solidjs/testing-library";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import * as THREE from "three";
 import type { EdgeRow, MemoryRow, Owner } from "../../bindings";
@@ -341,6 +347,70 @@ describe("Atlas graph wiring", () => {
     expect(inspectorTitle()).toBe("call graph");
 
     raycast.mockRestore();
+  });
+
+  it("copies the selected inspector tab content", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    const previousClipboard = Object.getOwnPropertyDescriptor(
+      navigator,
+      "clipboard",
+    );
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    try {
+      const fact = {
+        ...atlasNode("019dfa50-0000-7000-8000-000000000001", "Fact", "engine.rs", 0),
+        memory: memory("019dfa50-0000-7000-8000-000000000001", "Fact"),
+        payload: { body: "payload-content" },
+      };
+      const abs = atlasNode(
+        "019dfa50-0000-7000-8000-000000000002",
+        "Abstraction",
+        "call graph",
+        1,
+      );
+      const edge = atlasEdge("019dfa50-0000-7000-8000-000000000011", fact.id, abs.id);
+      const raycast = vi
+        .spyOn(THREE.Raycaster.prototype, "intersectObjects")
+        .mockImplementation((objects) => [{ object: objects[0] }] as THREE.Intersection[]);
+
+      render(() => (
+        <GraphFilterProvider store={createGraphFilterStore()}>
+          <Atlas hub={createHub([])} nodes={[fact, abs]} edges={[edge]} />
+        </GraphFilterProvider>
+      ));
+
+      fireEvent.click(document.querySelector(".atlas-canvas canvas")!);
+
+      fireEvent.click(screen.getByRole("button", { name: "Copy Payload" }));
+      await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+      expect(writeText.mock.calls[0][0]).toContain("payload-content");
+
+      fireEvent.click(screen.getByRole("button", { name: "Edges" }));
+      fireEvent.click(screen.getByRole("button", { name: "Copy Edges" }));
+      await waitFor(() => expect(writeText).toHaveBeenCalledTimes(2));
+      expect(writeText.mock.calls[1][0]).toContain(edge.id);
+
+      fireEvent.click(screen.getByRole("button", { name: "Meta" }));
+      fireEvent.click(screen.getByRole("button", { name: "Copy Meta" }));
+      await waitFor(() => expect(writeText).toHaveBeenCalledTimes(3));
+      expect(writeText.mock.calls[2][0]).toContain("payloadBytes");
+
+      fireEvent.click(screen.getByRole("button", { name: "Raw" }));
+      fireEvent.click(screen.getByRole("button", { name: "Copy Raw" }));
+      await waitFor(() => expect(writeText).toHaveBeenCalledTimes(4));
+      expect(writeText.mock.calls[3][0]).toContain(fact.id);
+
+      raycast.mockRestore();
+    } finally {
+      if (previousClipboard) {
+        Object.defineProperty(navigator, "clipboard", previousClipboard);
+      } else {
+        delete (navigator as { clipboard?: unknown }).clipboard;
+      }
+    }
   });
 
   it("pins selected node focus against hover changes until deselected", () => {
