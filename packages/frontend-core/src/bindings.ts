@@ -42,6 +42,7 @@ export const commands = {
 	listMcpTools: () => typedError<McpToolTs[], ProtocolError>(__TAURI_INVOKE("list_mcp_tools")),
 	listWorkspaceTools: () => typedError<WorkspaceToolTs[], ProtocolError>(__TAURI_INVOKE("list_workspace_tools")),
 	listRelations: () => typedError<RelationTs[], ProtocolError>(__TAURI_INVOKE("list_relations")),
+	wakeEntryProduces: (substratePalette: string[]) => typedError<ProducesTs, ProtocolError>(__TAURI_INVOKE("wake_entry_produces", { substratePalette })),
 	/**
 	 *  # Errors
 	 *  Returns `CommandError::SecretStore` when the OS keychain cannot be used.
@@ -663,6 +664,11 @@ export type PersonalityInstanceTs = {
 };
 
 export type Principal = ({ User: UserId }) & { Group?: never } | ({ Group: GroupId }) & { User?: never };
+
+export type ProducesTs = {
+	schema_ids: string[],
+	relation_ids: string[],
+};
 
 export type PromptVersion = string;
 

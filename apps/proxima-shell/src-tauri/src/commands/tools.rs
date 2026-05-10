@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use proxima_core::Engine;
 use proxima_core::error::ProtocolError;
-use proxima_core::personality::substrate_pack;
+use proxima_core::personality::{substrate_pack, writeable_relations_for_palette, writeable_schemas_for_palette};
 use tauri::State;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
@@ -24,6 +24,12 @@ pub struct RelationTs {
     pub flavor_id: String,
     pub class: String,
     pub typed: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
+pub struct ProducesTs {
+    pub schema_ids: Vec<String>,
+    pub relation_ids: Vec<String>,
 }
 
 #[tauri::command]
@@ -92,6 +98,23 @@ pub async fn list_relations(
                 typed: d.payload_schema.is_some(),
             })
             .collect())
+    })
+    .await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn wake_entry_produces(
+    engine: State<'_, Arc<Engine>>,
+    substrate_palette: Vec<String>,
+) -> Result<ProducesTs, ProtocolError> {
+    crate::perf::ipc::record("wake_entry_produces", 0, async move {
+        let schema_ids = writeable_schemas_for_palette(engine.as_ref(), &substrate_palette);
+        let relation_ids = writeable_relations_for_palette(engine.as_ref(), &substrate_palette);
+        Ok(ProducesTs {
+            schema_ids,
+            relation_ids,
+        })
     })
     .await
 }
