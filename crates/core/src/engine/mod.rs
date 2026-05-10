@@ -202,6 +202,25 @@ impl Engine {
         self.wake_token_store.clone()
     }
 
+    /// Upsert the shell-author personality for `master_token_id` under
+    /// `owner`. Delegates to [`Storage::ensure_master_token_personality`].
+    /// Called by `DevMcpServer::call_tool` (in the `mcp-server` crate)
+    /// before dispatching master-token requests so the per-token identity
+    /// is always minted before `caller_self_perspective` is defaulted.
+    ///
+    /// # Errors
+    ///
+    /// Propagates storage failures unchanged.
+    pub async fn ensure_master_token_personality(
+        &self,
+        owner: &Owner,
+        master_token_id: uuid::Uuid,
+    ) -> Result<crate::storage::MasterTokenPersonality, StorageError> {
+        self.storage
+            .ensure_master_token_personality(owner, master_token_id)
+            .await
+    }
+
     /// Currently-installed [`TargetAdapter`]. Returns `None` until either
     /// [`Engine::start`] resolves the goose binary and installs a
     /// `LocalCliGooseAdapter`, or a test wires a mock via
