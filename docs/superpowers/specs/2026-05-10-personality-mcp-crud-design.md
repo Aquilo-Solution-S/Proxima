@@ -169,6 +169,79 @@ a self-evolving personality that registers a new wake entry pointing at a
 specific `inference_target_ref` needs to be able to register that target
 first; the two surfaces are coupled by validation.
 
+### Discovery (read-only catalog tools)
+
+Listing existing personalities is not enough — an LLM constructing a
+`WakeEntryDraftInput` needs to know what `recipe_ref` strings are
+valid, what tool ids are accepted by the substrate and workspace
+palettes, what schema ids exist for `OnMemory` triggers, and what edge
+types for `OnEdge`. Without this surface, the LLM either guesses (and
+hits validation errors `recipe_not_found`, `tool_not_registered`) or
+relies on the model-prior to know the configured space, which it does
+not actually know in any given owner's deployment.
+
+```
+core/list_recipes
+  args:    {}
+  returns: [{recipe_ref: String, source: "flavor:<name>" | "owner",
+             label: String, description: String}]
+  impl:    enumerate flavors' recipe directories (via FlavorRegistryFrozen)
+           + owner_recipes_root, return the union; do not parse parameter
+           schemas (recipes are self-contained at wake time)
+
+core/list_substrate_tools
+  args:    {}
+  returns: [{tool_id: String, source: "substrate" | "flavor:<name>",
+             description: String}]
+  impl:    substrate_pack() ∪ FlavorRegistryFrozen.mcp_tool_ids()
+
+core/list_workspace_tools
+  args:    {}
+  returns: [{tool_id: String, description: String}]
+  impl:    walk WORKSPACE_TOOL_CATALOG
+
+core/list_schemas
+  args:    {kind: Option<"Fact" | "Edge" | "Abstraction" | "Perspective" | "Goal">}
+  returns: [{schema_id: String, schema_version: u32, kind: String,
+             description: Option<String>}]
+  impl:    project FlavorRegistryFrozen schemas
+
+core/list_edge_types
+  args:    {}
+  returns: [{edge_type: String, description: Option<String>}]
+  impl:    project FlavorRegistryFrozen edge types
+```
+
+All five run under the `personality.read` scope. They are pure
+projections of build-time `FlavorRegistryFrozen` state plus the
+substrate pack and on-disk recipe directories — no postgres reads, so
+they're cheap and cacheable per session.
+
+**Fixed enums are not discovered at runtime.** `WakeEntryTriggerKind`
+(`OnMemory` / `OnEdge`), `ModelTier` (`Fast` / `Standard` / `Deep`),
+`WakeEntryAuthoredBy` (`Any` / `SelfAuthor` / `Other`), and
+`WakeExecutionMode` (`SubstrateOnly` / `Workspace`) are encoded as
+JSON-schema `enum` constraints inside the args_schema of the write
+tools. `list_tools` introspection surfaces them; an LLM reading the
+schema sees the valid values directly without a separate roundtrip.
+The `probability_promille: 0..=1000` bound is encoded the same way
+(JSON-schema `minimum`/`maximum`).
+
+**Recommended workflow for a self-evolving personality** authoring a
+new wake entry from scratch:
+
+1. `core/list_recipes` → pick a recipe_ref.
+2. `core/list_substrate_tools` + `core/list_workspace_tools` → pick the
+   palette.
+3. `core/list_schemas{kind: "Fact"}` (or `core/list_edge_types`) → pick
+   the trigger.
+4. `core/list_inference_targets` (or rely on `model_tier` + tier
+   binding) → pick how the wake will be powered.
+5. `core/add_wake_entry(personality: P, entry: …)`.
+
+The LLM can also call `core/get_personality(P)` first to look at
+existing entries on the same personality as templates.
+
 ## Handle layer extension
 
 `crates/core/src/mcp/handles.rs` extends:
@@ -265,7 +338,10 @@ sees in `list_tools` and is allowed to call. Three new scope buckets:
 - `personality.read` — `core/list_personalities`,
   `core/get_personality`, `core/list_wake_entries`,
   `core/list_inference_targets`,
-  `core/list_inference_tier_bindings`.
+  `core/list_inference_tier_bindings`, plus the discovery catalog
+  tools (`core/list_recipes`, `core/list_substrate_tools`,
+  `core/list_workspace_tools`, `core/list_schemas`,
+  `core/list_edge_types`).
 - `personality.write` — `core/instantiate_personality`,
   `core/tombstone_personality`, all WakeEntry CRUD verbs.
 - `inference.write` — inference target + tier write verbs.
@@ -325,6 +401,17 @@ Existing `ProtocolError` variants surfaced from the engine
     token),
   - `before` and `after` snapshots match the engine state pre/post
     call.
+- **Discovery integration.** Each catalog tool's happy-path test
+  asserts the projection matches the underlying source of truth: e.g.
+  `core/list_substrate_tools` returns the union of `substrate_pack()`
+  ids and `FlavorRegistryFrozen.mcp_tool_ids()`; `core/list_recipes`
+  finds files in a temp owner_recipes_root + flavor recipe dirs.
+- **Discovery → mutation flow.** A test wires the recommended
+  workflow: `list_recipes` → `list_substrate_tools` → `list_schemas` →
+  `add_wake_entry` using only the values returned by the discovery
+  calls. Asserts the resulting entry validates and persists. This is
+  the smoke test that an LLM with no prior knowledge of an owner's
+  configuration can author a working wake entry.
 - **E2E (the actual self-evolution smoke test).** A wake invocation in
   personality A calls `core/add_wake_entry` on its own
   `PersonalityInstanceId`. The MCP layer applies the change. The next
