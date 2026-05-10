@@ -1,8 +1,10 @@
 mod common;
 
 use common::{ctx, drop_db, insert_abstraction, insert_self_perspective, migrated, owner_fixture};
-use proxima_core::GoalId;
 use proxima_core::mcp::McpTool;
+use proxima_core::storage::Storage;
+use proxima_core::verbs::query::QueryRequest;
+use proxima_core::{EntityRef, GoalId, MemoryId};
 use proxima_flavor_goal::tools::accept::{AcceptArgs, AcceptTool};
 use proxima_flavor_goal::tools::decline::{DeclineArgs, DeclineTool};
 use proxima_flavor_goal::tools::modify::{ModifyArgs, ModifyTool};
@@ -90,6 +92,71 @@ async fn assert_inspires_edge_unchanged(
     Ok(())
 }
 
+async fn read_proposed_lifecycle_fact(
+    pg: &proxima_storage_pg::PgStorage,
+    goal_id: uuid::Uuid,
+) -> Result<(uuid::Uuid, String, String), Box<dyn std::error::Error>> {
+    Ok(sqlx::query_as(
+        "SELECT memory_id, schema_id, title
+           FROM proxima_goal.goal_proposed_v1
+          WHERE goal_id = $1",
+    )
+    .bind(goal_id)
+    .fetch_one(pg.pool())
+    .await?)
+}
+
+async fn read_activated_lifecycle_fact(
+    pg: &proxima_storage_pg::PgStorage,
+    goal_id: uuid::Uuid,
+) -> Result<(uuid::Uuid, String, String, i32), Box<dyn std::error::Error>> {
+    Ok(sqlx::query_as(
+        "SELECT memory_id, schema_id, title, evidence_count
+           FROM proxima_goal.goal_activated_v1
+          WHERE goal_id = $1",
+    )
+    .bind(goal_id)
+    .fetch_one(pg.pool())
+    .await?)
+}
+
+async fn assert_query_contains_lifecycle_authorship(
+    pg: &proxima_storage_pg::PgStorage,
+    ctx: &proxima_core::McpToolCtx,
+    owner: proxima_core::Owner,
+    self_id: MemoryId,
+    proposed_fact_id: MemoryId,
+    activated_fact_id: MemoryId,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut req = QueryRequest::for_owner(owner);
+    req.limit = 100;
+    let response = pg
+        .query_memories(&req, ctx.registry.list().as_slice())
+        .await?;
+    let expected_facts = [proposed_fact_id, activated_fact_id]
+        .into_iter()
+        .collect::<std::collections::HashSet<_>>();
+    let queried_facts = response
+        .memories
+        .iter()
+        .filter(|row| expected_facts.contains(&row.id))
+        .collect::<Vec<_>>();
+    assert_eq!(queried_facts.len(), 2);
+    assert!(queried_facts.iter().all(|row| !row.payload.is_empty()));
+
+    let queried_authored_edges = response
+        .edges
+        .iter()
+        .filter(|edge| {
+            edge.relation == "core/authored"
+                && edge.source == EntityRef::Memory(self_id)
+                && matches!(edge.target, EntityRef::Memory(id) if expected_facts.contains(&id))
+        })
+        .count();
+    assert_eq!(queried_authored_edges, 2);
+    Ok(())
+}
+
 #[tokio::test]
 async fn accept_supersedes_and_re_emits_motivated_by() -> Result<(), Box<dyn std::error::Error>> {
     let Some((pg, db_name)) = migrated().await else {
@@ -141,6 +208,99 @@ async fn accept_supersedes_and_re_emits_motivated_by() -> Result<(), Box<dyn std
         .await?;
         assert_eq!(proposal_edges, 1);
         assert_eq!(active_edges, 1);
+        Ok::<(), Box<dyn std::error::Error>>(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result
+}
+
+#[tokio::test]
+async fn propose_and_accept_emit_lifecycle_facts_and_authored_edges()
+-> Result<(), Box<dyn std::error::Error>> {
+    let Some((pg, db_name)) = migrated().await else {
+        return Ok(());
+    };
+
+    let result = async {
+        let owner = owner_fixture();
+        let mut ctx = ctx(&pg, owner.clone());
+        let self_id = insert_self_perspective(&pg, &owner).await?;
+        ctx.caller_self_perspective = Some(self_id);
+        let evidence = insert_abstraction(&pg, &owner).await?;
+        let evidence_handle = ctx
+            .handles
+            .assign_memory(proxima_core::MemoryId::new(evidence));
+
+        let proposed = ProposeTool::call(
+            ctx.clone(),
+            ProposeArgs {
+                payload: GoalPayloadInput::SimpleText(SimpleTextGoalBody {
+                    title: "lifecycle proposal".into(),
+                    text: "lifecycle proposal".into(),
+                }),
+                evidence: vec![evidence_handle.as_str().to_string()],
+                idempotency_key: Some("lifecycle-propose".into()),
+            },
+        )
+        .await?;
+        let proposal_id = ctx
+            .handles
+            .resolve_goal(&proposed.handle)
+            .expect("goal handle resolves")
+            .into_inner();
+        let proposal_handle = ctx.handles.assign_goal(GoalId::new(proposal_id));
+
+        let accepted = AcceptTool::call(
+            ctx.clone(),
+            AcceptArgs {
+                proposal: proposal_handle.as_str().to_string(),
+                payload: None,
+                evidence: None,
+                idempotency_key: Some("lifecycle-accept".into()),
+            },
+        )
+        .await?;
+        let accepted_id = ctx
+            .handles
+            .resolve_goal(&accepted.handle)
+            .expect("accepted goal handle resolves")
+            .into_inner();
+
+        let proposed_fact = read_proposed_lifecycle_fact(&pg, proposal_id).await?;
+        assert_eq!(proposed_fact.1, "proxima-goal/simple-text-v1");
+        assert_eq!(proposed_fact.2, "lifecycle proposal");
+
+        let activated_fact = read_activated_lifecycle_fact(&pg, accepted_id).await?;
+        assert_eq!(activated_fact.1, "proxima-goal/simple-text-v1");
+        assert_eq!(activated_fact.2, "lifecycle proposal");
+        assert_eq!(activated_fact.3, 1);
+
+        let authored_targets: Vec<uuid::Uuid> = sqlx::query_scalar(
+            "SELECT target_memory_id
+               FROM proxima_core.edges
+              WHERE relation = 'core/authored'
+                AND source_memory_id = $1
+              ORDER BY created_at ASC",
+        )
+        .bind(self_id.into_inner())
+        .fetch_all(pg.pool())
+        .await?;
+        assert_eq!(authored_targets.len(), 2);
+        assert!(authored_targets.contains(&proposed_fact.0));
+        assert!(authored_targets.contains(&activated_fact.0));
+
+        assert_query_contains_lifecycle_authorship(
+            &pg,
+            &ctx,
+            owner,
+            self_id,
+            MemoryId::new(proposed_fact.0),
+            MemoryId::new(activated_fact.0),
+        )
+        .await?;
+
         Ok::<(), Box<dyn std::error::Error>>(())
     }
     .await;

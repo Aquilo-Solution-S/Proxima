@@ -7,8 +7,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::util::{
-    GoalPayloadInput, insert_goal_in_tx, insert_motivated_by_edges, load_goal_payload, map_storage,
-    outgoing_motivated_by_evidence, request_id, validate_evidence_in_owner,
+    GoalPayloadInput, emit_goal_activated_fact, insert_goal_in_tx, insert_motivated_by_edges,
+    load_goal_payload, map_storage, outgoing_motivated_by_evidence, request_id,
+    validate_evidence_in_owner,
 };
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -96,6 +97,17 @@ pub async fn accept_goal(
     } else {
         insert_motivated_by_edges(&mut tx, &ctx, goal_id, &evidence, "User").await?
     };
+    if state == GoalState::Active {
+        emit_goal_activated_fact(
+            &mut tx,
+            &ctx,
+            goal_id,
+            &encoded,
+            time::OffsetDateTime::now_utc(),
+            evidence.len(),
+        )
+        .await?;
+    }
     tx.commit().await.map_err(map_storage)?;
 
     let handle = ctx.handles.assign_goal(GoalId::new(goal_id));

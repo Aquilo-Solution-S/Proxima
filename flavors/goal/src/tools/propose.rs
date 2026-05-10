@@ -7,8 +7,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::util::{
-    GoalPayloadInput, insert_goal_in_tx, insert_motivated_by_edges, map_storage, request_id,
-    validate_evidence_in_owner,
+    GoalPayloadInput, emit_goal_proposed_fact, insert_goal_in_tx, insert_motivated_by_edges,
+    map_storage, request_id, validate_evidence_in_owner,
 };
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -58,6 +58,7 @@ impl McpTool for ProposeTool {
                 request_id: request_id("goal_propose", args.idempotency_key),
             };
             let goal_id = insert_goal_in_tx(&mut tx, &ctx, &draft, &encoded).await?;
+            emit_goal_proposed_fact(&mut tx, &ctx, goal_id, &encoded).await?;
             let inspires_edge_id = match ctx.caller_self_perspective {
                 Some(self_memory_id) => {
                     let edge_id = uuid::Uuid::now_v7();

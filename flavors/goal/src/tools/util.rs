@@ -6,13 +6,26 @@
 )]
 
 use proxima_core::mcp::{EntityRef, McpToolCtx, McpToolError};
+use proxima_core::relation::CORE_AUTHORED_RELATION;
+use proxima_core::verbs::event_ingest::{
+    CitationMappingHint, CitedObjectHint, EventDraft, EventIngestOutcome,
+};
 use proxima_core::verbs::goal_write::{GoalAuthorship, GoalDraft, GoalState};
 use proxima_core::verbs::schema::PayloadKind;
-use proxima_core::{GoalId, GoalPayload, Owner, Principal, SchemaId, SchemaVersion, StorageError};
+use proxima_core::{
+    FactPayload, GoalId, GoalPayload, MemoryId, Owner, Principal, SchemaId, SchemaVersion,
+    SourceBatchId, SourceId, StorageError,
+};
 use proxima_storage_pg::verbs::edge_append::{EdgeDraft, append_edge_in_tx};
+use proxima_storage_pg::verbs::event_ingest::ingest_event_in_tx;
+use sqlx::{Postgres, Transaction};
 
-use crate::payloads::{SimpleTextGoalV1, TaskGoalV1};
+use crate::payloads::{GoalActivatedV1, GoalProposedV1, SimpleTextGoalV1, TaskGoalV1};
 use crate::relations::MOTIVATED_BY_RELATION;
+
+const LIFECYCLE_SOURCE_ID: &str = "proxima-goal/lifecycle";
+const LIFECYCLE_OBJECT_SCHEMA: &str = "proxima-goal/lifecycle-object-v1";
+const LIFECYCLE_CITATION_MAPPING_SCHEMA: &str = "proxima-goal/lifecycle-whole-v1";
 
 #[derive(Debug, Clone, serde::Deserialize, schemars::JsonSchema)]
 #[serde(tag = "schema_id", content = "body")]
@@ -357,6 +370,54 @@ pub async fn insert_motivated_by_edges(
     Ok(edge_ids)
 }
 
+pub async fn emit_goal_proposed_fact(
+    tx: &mut Transaction<'_, Postgres>,
+    ctx: &McpToolCtx,
+    goal_id: uuid::Uuid,
+    encoded: &EncodedGoalPayload,
+) -> Result<MemoryId, McpToolError> {
+    let payload = GoalProposedV1 {
+        goal_id,
+        schema_id: encoded.schema_id.as_str().to_string(),
+        title: encoded.title.clone(),
+    };
+    let outcome = ingest_lifecycle_fact(tx, ctx, &payload).await?;
+    if !outcome.idempotent_replay {
+        insert_goal_proposed_sidecar(tx, outcome.memory_id, &payload).await?;
+    }
+    let memory_id = outcome.memory_id;
+    if let Some(self_id) = ctx.caller_self_perspective {
+        insert_lifecycle_authored_edge(tx, ctx, self_id, memory_id).await?;
+    }
+    Ok(memory_id)
+}
+
+pub async fn emit_goal_activated_fact(
+    tx: &mut Transaction<'_, Postgres>,
+    ctx: &McpToolCtx,
+    goal_id: uuid::Uuid,
+    encoded: &EncodedGoalPayload,
+    accepted_at: time::OffsetDateTime,
+    evidence_count: usize,
+) -> Result<MemoryId, McpToolError> {
+    let payload = GoalActivatedV1 {
+        goal_id,
+        schema_id: encoded.schema_id.as_str().to_string(),
+        title: encoded.title.clone(),
+        accepted_at,
+        evidence_count: u32::try_from(evidence_count).unwrap_or(u32::MAX),
+    };
+    let outcome = ingest_lifecycle_fact(tx, ctx, &payload).await?;
+    if !outcome.idempotent_replay {
+        insert_goal_activated_sidecar(tx, outcome.memory_id, &payload).await?;
+    }
+    let memory_id = outcome.memory_id;
+    if let Some(self_id) = ctx.caller_self_perspective {
+        insert_lifecycle_authored_edge(tx, ctx, self_id, memory_id).await?;
+    }
+    Ok(memory_id)
+}
+
 pub async fn outgoing_motivated_by_evidence(
     tx: &mut sqlx::PgConnection,
     ctx: &McpToolCtx,
@@ -472,6 +533,140 @@ fn validate_payload(
     registry
         .validate_payload(&schema_id, schema_version, PayloadKind::Goal, value)
         .map_err(McpToolError::InvalidInput)
+}
+
+async fn ingest_lifecycle_fact<T>(
+    tx: &mut Transaction<'_, Postgres>,
+    ctx: &McpToolCtx,
+    payload: &T,
+) -> Result<EventIngestOutcome, McpToolError>
+where
+    T: FactPayload,
+{
+    let value =
+        serde_json::to_value(payload).map_err(|err| McpToolError::InvalidInput(err.to_string()))?;
+    validate_fact_payload(ctx, T::SCHEMA_ID, T::SCHEMA_VERSION, &value)?;
+    let mut payload_bytes = Vec::new();
+    ciborium::ser::into_writer(payload, &mut payload_bytes)
+        .map_err(|err| McpToolError::InvalidInput(err.to_string()))?;
+    let content_hash = blake3::hash(&payload_bytes);
+    let observed_at = time::OffsetDateTime::now_utc();
+    let draft = EventDraft {
+        source_id: SourceId::new(LIFECYCLE_SOURCE_ID),
+        source_batch_id: SourceBatchId::new(uuid::Uuid::now_v7()),
+        owner: ctx.owner.clone(),
+        schema_id: SchemaId::new(T::SCHEMA_ID.into()),
+        schema_version: SchemaVersion::new(T::SCHEMA_VERSION),
+        payload: payload_bytes,
+        observed_at,
+        occurred_at: observed_at,
+        cited_object: CitedObjectHint {
+            schema_id: SchemaId::new(LIFECYCLE_OBJECT_SCHEMA.into()),
+            schema_version: SchemaVersion::new(1),
+            content_hash: *content_hash.as_bytes(),
+        },
+        citation_mapping: CitationMappingHint {
+            schema_id: SchemaId::new(LIFECYCLE_CITATION_MAPPING_SCHEMA.into()),
+            schema_version: SchemaVersion::new(1),
+        },
+    };
+
+    ingest_event_in_tx(tx, &draft)
+        .await
+        .map_err(McpToolError::Storage)
+}
+
+fn validate_fact_payload(
+    ctx: &McpToolCtx,
+    schema: &str,
+    version: u32,
+    value: &serde_json::Value,
+) -> Result<(), McpToolError> {
+    let schema_id = SchemaId::new(schema.to_string());
+    let schema_version = SchemaVersion::new(version);
+    match ctx.registry.lookup(&schema_id, schema_version) {
+        Some(info) if info.kind == PayloadKind::Fact => {}
+        _ => {
+            return Err(McpToolError::InvalidInput(format!(
+                "unregistered FactPayload schema {schema} v{version}"
+            )));
+        }
+    }
+    ctx.registry
+        .validate_payload(&schema_id, schema_version, PayloadKind::Fact, value)
+        .map_err(McpToolError::InvalidInput)
+}
+
+async fn insert_goal_proposed_sidecar(
+    tx: &mut Transaction<'_, Postgres>,
+    memory_id: MemoryId,
+    payload: &GoalProposedV1,
+) -> Result<(), McpToolError> {
+    sqlx::query(
+        "INSERT INTO proxima_goal.goal_proposed_v1
+            (memory_id, goal_id, schema_id, title)
+         VALUES ($1, $2, $3, $4)",
+    )
+    .bind(memory_id.into_inner())
+    .bind(payload.goal_id)
+    .bind(&payload.schema_id)
+    .bind(&payload.title)
+    .execute(&mut **tx)
+    .await
+    .map_err(map_storage)?;
+    Ok(())
+}
+
+async fn insert_goal_activated_sidecar(
+    tx: &mut Transaction<'_, Postgres>,
+    memory_id: MemoryId,
+    payload: &GoalActivatedV1,
+) -> Result<(), McpToolError> {
+    sqlx::query(
+        "INSERT INTO proxima_goal.goal_activated_v1
+            (memory_id, goal_id, schema_id, title, accepted_at, evidence_count)
+         VALUES ($1, $2, $3, $4, $5, $6)",
+    )
+    .bind(memory_id.into_inner())
+    .bind(payload.goal_id)
+    .bind(&payload.schema_id)
+    .bind(&payload.title)
+    .bind(payload.accepted_at)
+    .bind(i32::try_from(payload.evidence_count).unwrap_or(i32::MAX))
+    .execute(&mut **tx)
+    .await
+    .map_err(map_storage)?;
+    Ok(())
+}
+
+async fn insert_lifecycle_authored_edge(
+    tx: &mut Transaction<'_, Postgres>,
+    ctx: &McpToolCtx,
+    self_id: MemoryId,
+    fact_id: MemoryId,
+) -> Result<(), McpToolError> {
+    let relation = ctx
+        .registry
+        .resolve_relation(CORE_AUTHORED_RELATION)
+        .ok_or_else(|| {
+            McpToolError::Other(format!("relation {CORE_AUTHORED_RELATION} not registered"))
+        })?;
+    let draft = EdgeDraft {
+        edge_id: uuid::Uuid::now_v7(),
+        relation,
+        source_kind: "Perspective",
+        source_memory_id: Some(self_id.into_inner()),
+        source_goal_id: None,
+        target_kind: "Fact",
+        target_memory_id: Some(fact_id.into_inner()),
+        target_goal_id: None,
+        authorship_kind: "Engine",
+        authorship_owner_memory_id: None,
+        owner: &ctx.owner,
+    };
+    append_edge_in_tx(tx, &draft, None)
+        .await
+        .map_err(McpToolError::Storage)
 }
 
 fn goal_state_str(state: GoalState) -> &'static str {

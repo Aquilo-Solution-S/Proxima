@@ -12,6 +12,7 @@ name = "proxima_flavor_goal"
 [dependencies]
 proxima-core = { path = "../../crates/core" }
 proxima-storage-pg = { path = "../../crates/storage-pg" }
+blake3 = { workspace = true }
 ciborium = { workspace = true }
 futures = { workspace = true }
 schemars = { workspace = true }
@@ -23,6 +24,7 @@ time = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
+proxima-mcp-server = { path = "../../crates/mcp-server" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [lints]
