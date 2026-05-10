@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use crate::{EdgeId, GoalId, MemoryId};
+use crate::{EdgeId, GoalId, MemoryId, PersonalityInstanceId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EntityRef {
@@ -9,6 +9,8 @@ pub enum EntityRef {
     Edge(EdgeId),
     Goal(GoalId),
     Repo(uuid::Uuid),
+    Personality(PersonalityInstanceId),
+    WakeEntry(uuid::Uuid),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -32,6 +34,8 @@ struct HandleTableInner {
     edge_counter: u32,
     goal_counter: u32,
     repo_counter: u32,
+    personality_counter: u32,
+    wake_entry_counter: u32,
     by_entity: HashMap<EntityRef, Handle>,
     by_handle: HashMap<String, EntityRef>,
 }
@@ -58,6 +62,18 @@ impl HandleTable {
 
     pub fn assign_repo(&self, id: uuid::Uuid) -> Handle {
         self.assign(EntityRef::Repo(id), 'R', |inner| &mut inner.repo_counter)
+    }
+
+    pub fn assign_personality(&self, id: PersonalityInstanceId) -> Handle {
+        self.assign(EntityRef::Personality(id), 'P', |inner| {
+            &mut inner.personality_counter
+        })
+    }
+
+    pub fn assign_wake_entry(&self, id: uuid::Uuid) -> Handle {
+        self.assign(EntityRef::WakeEntry(id), 'W', |inner| {
+            &mut inner.wake_entry_counter
+        })
     }
 
     fn assign(
@@ -97,7 +113,11 @@ impl HandleTable {
     pub fn resolve_memory(&self, raw: &str) -> Option<MemoryId> {
         match self.resolve(raw)? {
             EntityRef::Memory(id) => Some(id),
-            EntityRef::Edge(_) | EntityRef::Goal(_) | EntityRef::Repo(_) => None,
+            EntityRef::Edge(_)
+            | EntityRef::Goal(_)
+            | EntityRef::Repo(_)
+            | EntityRef::Personality(_)
+            | EntityRef::WakeEntry(_) => None,
         }
     }
 
@@ -105,7 +125,11 @@ impl HandleTable {
     pub fn resolve_edge(&self, raw: &str) -> Option<EdgeId> {
         match self.resolve(raw)? {
             EntityRef::Edge(id) => Some(id),
-            EntityRef::Memory(_) | EntityRef::Goal(_) | EntityRef::Repo(_) => None,
+            EntityRef::Memory(_)
+            | EntityRef::Goal(_)
+            | EntityRef::Repo(_)
+            | EntityRef::Personality(_)
+            | EntityRef::WakeEntry(_) => None,
         }
     }
 
@@ -113,7 +137,11 @@ impl HandleTable {
     pub fn resolve_goal(&self, raw: &str) -> Option<GoalId> {
         match self.resolve(raw)? {
             EntityRef::Goal(id) => Some(id),
-            EntityRef::Memory(_) | EntityRef::Edge(_) | EntityRef::Repo(_) => None,
+            EntityRef::Memory(_)
+            | EntityRef::Edge(_)
+            | EntityRef::Repo(_)
+            | EntityRef::Personality(_)
+            | EntityRef::WakeEntry(_) => None,
         }
     }
 
@@ -121,7 +149,35 @@ impl HandleTable {
     pub fn resolve_repo(&self, raw: &str) -> Option<uuid::Uuid> {
         match self.resolve(raw)? {
             EntityRef::Repo(id) => Some(id),
-            EntityRef::Memory(_) | EntityRef::Edge(_) | EntityRef::Goal(_) => None,
+            EntityRef::Memory(_)
+            | EntityRef::Edge(_)
+            | EntityRef::Goal(_)
+            | EntityRef::Personality(_)
+            | EntityRef::WakeEntry(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub fn resolve_personality(&self, raw: &str) -> Option<PersonalityInstanceId> {
+        match self.resolve(raw)? {
+            EntityRef::Personality(id) => Some(id),
+            EntityRef::Memory(_)
+            | EntityRef::Edge(_)
+            | EntityRef::Goal(_)
+            | EntityRef::Repo(_)
+            | EntityRef::WakeEntry(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub fn resolve_wake_entry(&self, raw: &str) -> Option<uuid::Uuid> {
+        match self.resolve(raw)? {
+            EntityRef::WakeEntry(id) => Some(id),
+            EntityRef::Memory(_)
+            | EntityRef::Edge(_)
+            | EntityRef::Goal(_)
+            | EntityRef::Repo(_)
+            | EntityRef::Personality(_) => None,
         }
     }
 }
@@ -129,7 +185,7 @@ impl HandleTable {
 fn is_valid_handle_shape(raw: &str) -> bool {
     let mut chars = raw.chars();
     match chars.next() {
-        Some('N' | 'E' | 'G' | 'R') => {}
+        Some('N' | 'E' | 'G' | 'R' | 'P' | 'W') => {}
         _ => return false,
     }
     let rest = chars.as_str();
@@ -183,5 +239,44 @@ mod tests {
         assert!(table.resolve("N").is_none());
         assert!(table.resolve("Nfoo").is_none());
         assert!(table.resolve("X1").is_none());
+    }
+
+    #[test]
+    fn personality_handles_use_p_prefix() {
+        let table = HandleTable::new();
+        let p1 = PersonalityInstanceId::new(uuid::Uuid::now_v7());
+        let p2 = PersonalityInstanceId::new(uuid::Uuid::now_v7());
+        assert_eq!(table.assign_personality(p1).as_str(), "P1");
+        assert_eq!(table.assign_personality(p2).as_str(), "P2");
+        assert_eq!(table.assign_personality(p1).as_str(), "P1", "idempotent");
+    }
+
+    #[test]
+    fn wake_entry_handles_use_w_prefix() {
+        let table = HandleTable::new();
+        let w1 = uuid::Uuid::now_v7();
+        let w2 = uuid::Uuid::now_v7();
+        assert_eq!(table.assign_wake_entry(w1).as_str(), "W1");
+        assert_eq!(table.assign_wake_entry(w2).as_str(), "W2");
+        assert_eq!(table.assign_wake_entry(w1).as_str(), "W1", "idempotent");
+    }
+
+    #[test]
+    fn resolve_personality_rejects_non_p_handle() {
+        let table = HandleTable::new();
+        let p = PersonalityInstanceId::new(uuid::Uuid::now_v7());
+        let _ = table.assign_personality(p);
+        let m = MemoryId::new(uuid::Uuid::now_v7());
+        let mh = table.assign_memory(m);
+        assert!(table.resolve_personality(mh.as_str()).is_none(),
+            "memory handle must not resolve as personality");
+    }
+
+    #[test]
+    fn malformed_personality_handle_rejected() {
+        let table = HandleTable::new();
+        assert!(table.resolve_personality("Pfoo").is_none());
+        assert!(table.resolve_personality("P").is_none());
+        assert!(table.resolve_personality("p1").is_none(), "case-sensitive");
     }
 }
