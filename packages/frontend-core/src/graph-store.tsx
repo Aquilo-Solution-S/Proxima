@@ -23,6 +23,29 @@ import type { EngineClient, Subscription } from "./client";
 import type { Hub } from "./hub";
 import { ulidTimestampMs } from "./ulid";
 
+const provenanceFromEvent = (
+  event: ChangeEvent,
+  memoryId: string,
+): MemoryProvenance | null => {
+  let written_at_ms: number;
+  try {
+    written_at_ms = ulidTimestampMs(event.seq);
+  } catch (err) {
+    if (typeof console !== "undefined") {
+      console.warn(
+        `[graph-store] non-ULID seq ${event.seq} on EntityAppend for ${memoryId}; skipping provenance`,
+        err,
+      );
+    }
+    return null;
+  }
+  return {
+    creating_seq: event.seq,
+    authoring_personality_instance_id:
+      event.authoring_personality_instance_id ?? null,
+    written_at_ms,
+  };
+};
 
 export type StreamStatus = "connecting" | "live" | "degraded" | "stopped";
 
@@ -365,17 +388,11 @@ export function createGraphStore(
     const seededProvenance = new Map<string, MemoryProvenance>();
     for (const event of historyResp.events) {
       const append = event.kind.EntityAppend;
-      if (append !== undefined && append.entity.Memory !== undefined) {
-        const memoryId = append.entity.Memory;
-        if (!seededProvenance.has(memoryId)) {
-          seededProvenance.set(memoryId, {
-            creating_seq: event.seq,
-            authoring_personality_instance_id:
-              event.authoring_personality_instance_id ?? null,
-            written_at_ms: ulidTimestampMs(event.seq),
-          });
-        }
-      }
+      if (append === undefined) continue;
+      const memoryId = append.entity.Memory !== undefined ? append.entity.Memory : null;
+      if (memoryId === null || seededProvenance.has(memoryId)) continue;
+      const prov = provenanceFromEvent(event, memoryId);
+      if (prov !== null) seededProvenance.set(memoryId, prov);
     }
     setState((prev) => ({
       ...prev,
@@ -435,15 +452,11 @@ export function createGraphStore(
       events.set(event.seq, event);
       const nextProvenance = new Map(prev.memoryProvenance);
       const append = event.kind.EntityAppend;
-      if (append !== undefined && append.entity.Memory !== undefined) {
-        const memoryId = append.entity.Memory;
-        if (!nextProvenance.has(memoryId)) {
-          nextProvenance.set(memoryId, {
-            creating_seq: event.seq,
-            authoring_personality_instance_id:
-              event.authoring_personality_instance_id ?? null,
-            written_at_ms: ulidTimestampMs(event.seq),
-          });
+      if (append !== undefined) {
+        const memoryId = append.entity.Memory !== undefined ? append.entity.Memory : null;
+        if (memoryId !== null && !nextProvenance.has(memoryId)) {
+          const prov = provenanceFromEvent(event, memoryId);
+          if (prov !== null) nextProvenance.set(memoryId, prov);
         }
       }
       return {
