@@ -3366,6 +3366,8 @@ dependencies = [
  "ciborium",
  "futures",
  "proxima-core",
+ "proxima-flavor-goal",
+ "proxima-mcp-server",
  "proxima-storage-pg",
  "schemars 1.2.1",
  "serde",
