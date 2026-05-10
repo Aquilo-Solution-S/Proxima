@@ -78,7 +78,7 @@ export const computeLayout = async (
   // ── Collect shape sets (deduplicated) ─────────────────────────────
   const triggerSchemas = new Set<string>();
   const producedSchemas = new Set<string>();
-  const producedRelations = new Set<string>();
+  const allRelations = new Set<string>();
 
   for (const instance of input.instances) {
     for (const entry of instance.wake_entries) {
@@ -88,14 +88,14 @@ export const computeLayout = async (
       // on_edge triggers consume relations; render them as relation nodes
       // for symmetry with produced relations (loop closure works the same).
       if (entry.trigger_kind === "on_edge" && entry.trigger_id.trim() !== "") {
-        producedRelations.add(entry.trigger_id);
+        allRelations.add(entry.trigger_id);
       }
       const produces = lookupProduces(
         input.producesByPaletteKey,
         entry.substrate_tool_palette,
       );
       for (const schemaId of produces.schema_ids) producedSchemas.add(schemaId);
-      for (const relationId of produces.relation_ids) producedRelations.add(relationId);
+      for (const relationId of produces.relation_ids) allRelations.add(relationId);
     }
   }
 
@@ -111,7 +111,7 @@ export const computeLayout = async (
       height: SCHEMA_NODE_HEIGHT,
     });
   }
-  for (const relationId of producedRelations) {
+  for (const relationId of allRelations) {
     elkNodes.push({
       id: relationNodeId(relationId),
       width: RELATION_NODE_WIDTH,
@@ -227,7 +227,7 @@ export const computeLayout = async (
       data: { kind: "schema", schema_id: schemaId },
     });
   }
-  for (const relationId of producedRelations) {
+  for (const relationId of allRelations) {
     const node = nodeById.get(relationNodeId(relationId));
     if (!node) continue;
     nodes.push({
