@@ -22,6 +22,7 @@ use crate::personality::{
     TombstonePersonalityResponse, WakeDispatchEntryRow, WakeInvocationFinalize,
     WakeInvocationLogDraft, WakeInvocationRow, WakeInvocationStart, WakeInvocationStatus,
 };
+use crate::personality::WakeEntryDraft;
 use crate::verbs::close_batch::CloseBatchOutcome;
 use crate::verbs::event_history::{EventHistoryRequest, EventHistoryResponse};
 use crate::verbs::event_ingest::{EventDraft, EventIngestOutcome};
@@ -39,6 +40,11 @@ pub enum StorageError {
     #[error("internal storage error: {0}")]
     Internal(String),
 }
+
+/// Boxed closure for read-modify-write on WakeEntry rows.
+pub type WakeEntriesMutator = Box<
+    dyn FnOnce(&[WakeEntryDraft]) -> Result<Vec<WakeEntryDraft>, String> + Send + 'static
+>;
 
 #[async_trait::async_trait]
 pub trait Storage: Send + Sync {
@@ -229,6 +235,18 @@ pub trait Storage: Send + Sync {
     async fn set_wake_entries(
         &self,
         req: &SetWakeEntriesRequest,
+    ) -> Result<SetWakeEntriesResponse, StorageError>;
+
+    /// Transactional read-modify-write over a personality's WakeConfig.
+    /// Locks the personality row (SELECT FOR UPDATE), reads current active
+    /// wake entries, applies the `mutate` closure, then replaces all entries
+    /// atomically. Used by granular add/update/remove ops to serialise
+    /// concurrent mutations on the same personality.
+    async fn set_wake_entries_within(
+        &self,
+        owner: &Owner,
+        personality_instance_id: PersonalityInstanceId,
+        mutate: WakeEntriesMutator,
     ) -> Result<SetWakeEntriesResponse, StorageError>;
 
     /// Active WakeEntry rows plus their cursor positions.
@@ -550,6 +568,15 @@ impl Storage for NoopStorage {
     async fn set_wake_entries(
         &self,
         _req: &SetWakeEntriesRequest,
+    ) -> Result<SetWakeEntriesResponse, StorageError> {
+        Err(StorageError::Internal("NoopStorage rejects writes".into()))
+    }
+
+    async fn set_wake_entries_within(
+        &self,
+        _owner: &Owner,
+        _personality_instance_id: PersonalityInstanceId,
+        _mutate: WakeEntriesMutator,
     ) -> Result<SetWakeEntriesResponse, StorageError> {
         Err(StorageError::Internal("NoopStorage rejects writes".into()))
     }

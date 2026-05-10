@@ -329,6 +329,21 @@ impl Storage for PgStorage {
         verbs::consolidate::set_wake_entries(&self.pool, req).await
     }
 
+    async fn set_wake_entries_within(
+        &self,
+        owner: &Owner,
+        personality_instance_id: PersonalityInstanceId,
+        mutate: proxima_core::WakeEntriesMutator,
+    ) -> Result<SetWakeEntriesResponse, StorageError> {
+        verbs::consolidate::set_wake_entries_within(
+            &self.pool,
+            owner,
+            personality_instance_id,
+            mutate,
+        )
+        .await
+    }
+
     async fn list_active_wake_entries(&self) -> Result<Vec<WakeDispatchEntryRow>, StorageError> {
         verbs::consolidate::list_active_wake_entries(&self.pool).await
     }
