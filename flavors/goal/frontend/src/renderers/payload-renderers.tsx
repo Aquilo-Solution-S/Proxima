@@ -38,23 +38,33 @@ const Field = (props: { label: string; value: string | number }) => (
   </div>
 );
 
-const GoalProposedRenderer = (props: { payload: GoalProposedPayload }) => (
-  <div class="proxima-goal-lifecycle">
-    <strong>{props.payload.title}</strong>
-    <Field label="goal" value={props.payload.goal_id} />
-    <Field label="schema" value={props.payload.schema_id} />
-  </div>
-);
+const GoalProposedRenderer = (props: {
+  payload: GoalProposedPayload | null;
+}) => {
+  const payload = () => props.payload;
+  return (
+    <div class="proxima-goal-lifecycle">
+      <strong>{payload()?.title ?? "Goal proposed"}</strong>
+      <Field label="goal" value={payload()?.goal_id ?? "unknown"} />
+      <Field label="schema" value={payload()?.schema_id ?? "unknown"} />
+    </div>
+  );
+};
 
-const GoalActivatedRenderer = (props: { payload: GoalActivatedPayload }) => (
-  <div class="proxima-goal-lifecycle">
-    <strong>{props.payload.title}</strong>
-    <Field label="goal" value={props.payload.goal_id} />
-    <Field label="schema" value={props.payload.schema_id} />
-    <Field label="accepted" value={props.payload.accepted_at} />
-    <Field label="evidence" value={props.payload.evidence_count} />
-  </div>
-);
+const GoalActivatedRenderer = (props: {
+  payload: GoalActivatedPayload | null;
+}) => {
+  const payload = () => props.payload;
+  return (
+    <div class="proxima-goal-lifecycle">
+      <strong>{payload()?.title ?? "Goal activated"}</strong>
+      <Field label="goal" value={payload()?.goal_id ?? "unknown"} />
+      <Field label="schema" value={payload()?.schema_id ?? "unknown"} />
+      <Field label="accepted" value={payload()?.accepted_at ?? "unknown"} />
+      <Field label="evidence" value={payload()?.evidence_count ?? "unknown"} />
+    </div>
+  );
+};
 
 export const goalRenderers: Record<string, Renderer<GoalPayload>> = {
   "proxima-goal/simple-text-v1": {
@@ -73,12 +83,16 @@ export const goalLifecycleRenderers: Record<
 > = {
   "proxima-goal/goal-proposed-v1": {
     render: (props) => (
-      <GoalProposedRenderer payload={props.payload as GoalProposedPayload} />
+      <GoalProposedRenderer
+        payload={props.payload as GoalProposedPayload | null}
+      />
     ),
   },
   "proxima-goal/goal-activated-v1": {
     render: (props) => (
-      <GoalActivatedRenderer payload={props.payload as GoalActivatedPayload} />
+      <GoalActivatedRenderer
+        payload={props.payload as GoalActivatedPayload | null}
+      />
     ),
   },
 };
