@@ -136,7 +136,7 @@ const entityAppendEvent = (
   memoryId: string,
   schemaId: string,
 ): ChangeEvent => ({
-  seq: "019dfa00-0000-7000-8000-000000000030",
+  seq: "01ARYZ6S41TS5G7QFC0V44N5KH",
   owner,
   kind: {
     EntityAppend: {

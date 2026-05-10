@@ -23,14 +23,6 @@ import type { EngineClient, Subscription } from "./client";
 import type { Hub } from "./hub";
 import { ulidTimestampMs } from "./ulid";
 
-/** Safely decode a ULID timestamp; returns 0 for non-ULID seq strings. */
-const safeUlidTimestampMs = (seq: string): number => {
-  try {
-    return ulidTimestampMs(seq);
-  } catch {
-    return 0;
-  }
-};
 
 export type StreamStatus = "connecting" | "live" | "degraded" | "stopped";
 
@@ -380,7 +372,7 @@ export function createGraphStore(
             creating_seq: event.seq,
             authoring_personality_instance_id:
               event.authoring_personality_instance_id ?? null,
-            written_at_ms: safeUlidTimestampMs(event.seq),
+            written_at_ms: ulidTimestampMs(event.seq),
           });
         }
       }
@@ -450,7 +442,7 @@ export function createGraphStore(
             creating_seq: event.seq,
             authoring_personality_instance_id:
               event.authoring_personality_instance_id ?? null,
-            written_at_ms: safeUlidTimestampMs(event.seq),
+            written_at_ms: ulidTimestampMs(event.seq),
           });
         }
       }
