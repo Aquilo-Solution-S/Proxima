@@ -292,6 +292,14 @@ implementation plan in `docs/superpowers/plans/`.
 
 ### M0 — Per-master-token shell-author identity (S0)
 
+**Status:** Landed 2026-05-10. Plan:
+[`docs/superpowers/plans/2026-05-10-m0-per-token-shell-author.md`](../plans/2026-05-10-m0-per-token-shell-author.md).
+Acceptance verified end-to-end:
+[`flavors/goal/tests/goal_propose_master_token_pg.rs`](../../../flavors/goal/tests/goal_propose_master_token_pg.rs)
+(per-token inspires edge) and
+[`crates/mcp-server/tests/master_token_identity.rs`](../../../crates/mcp-server/tests/master_token_identity.rs)
+(call_tool ensure-on-call wiring).
+
 - Promote `ensure_shell_author_personality(owner)` to
   `ensure_master_token_personality(owner, master_token_uuid)` (or
   equivalent — the storage trait shape is an implementation detail).
