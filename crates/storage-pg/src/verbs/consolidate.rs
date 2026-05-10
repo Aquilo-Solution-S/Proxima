@@ -245,12 +245,11 @@ pub async fn instantiate_personality(
     })
 }
 
-pub async fn set_wake_entries(
-    pool: &PgPool,
+async fn replace_wake_entries_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     req: &SetWakeEntriesRequest,
 ) -> Result<SetWakeEntriesResponse, StorageError> {
     let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(&req.owner);
-    let mut tx = pool.begin().await.map_err(map_err)?;
     let result = sqlx::query(
         "UPDATE proxima_core.personality_wake_entries
          SET tombstoned_at = now(), updated_at = now()
@@ -264,7 +263,7 @@ pub async fn set_wake_entries(
     .bind(owner_principal_id)
     .bind(owner_org_id)
     .bind(req.personality_instance_id.into_inner())
-    .execute(&mut *tx)
+    .execute(&mut **tx)
     .await
     .map_err(map_err)?;
     let _ = result;
@@ -282,7 +281,7 @@ pub async fn set_wake_entries(
     .bind(owner_principal_id)
     .bind(owner_org_id)
     .bind(req.personality_instance_id.into_inner())
-    .execute(&mut *tx)
+    .execute(&mut **tx)
     .await
     .map_err(map_err)?;
     if active_parent.rows_affected() == 0 {
@@ -290,12 +289,117 @@ pub async fn set_wake_entries(
     }
 
     for entry in &req.entries {
-        insert_wake_entry(&mut tx, &req.owner, entry).await?;
+        insert_wake_entry(tx, &req.owner, entry).await?;
     }
-    tx.commit().await.map_err(map_err)?;
     Ok(SetWakeEntriesResponse {
         active_entries: u32::try_from(req.entries.len()).unwrap_or(u32::MAX),
     })
+}
+
+pub async fn set_wake_entries(
+    pool: &PgPool,
+    req: &SetWakeEntriesRequest,
+) -> Result<SetWakeEntriesResponse, StorageError> {
+    let mut tx = pool.begin().await.map_err(map_err)?;
+    let resp = replace_wake_entries_in_tx(&mut tx, req).await?;
+    tx.commit().await.map_err(map_err)?;
+    Ok(resp)
+}
+
+async fn read_wake_entries_in_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    owner: &Owner,
+    pid: PersonalityInstanceId,
+) -> Result<Vec<WakeEntryDraft>, StorageError> {
+    let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(owner);
+    let rows = sqlx::query(
+        "SELECT wake_entry_id, trigger_kind, trigger_id, label, enabled,
+                execution_mode, authored_by, probability_promille, recipe_ref,
+                model_tier, inference_target_ref, substrate_tool_palette,
+                workspace_tool_palette, max_rounds
+         FROM proxima_core.personality_wake_entries
+         WHERE owner_principal_kind = $1
+           AND owner_principal_id = $2
+           AND owner_org_id = $3
+           AND personality_instance_id = $4
+           AND tombstoned_at IS NULL
+         ORDER BY label, wake_entry_id",
+    )
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(owner_org_id)
+    .bind(pid.into_inner())
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(map_err)?;
+
+    let mut out = Vec::with_capacity(rows.len());
+    for row in rows {
+        out.push(WakeEntryDraft {
+            wake_entry_id: row.get("wake_entry_id"),
+            personality_instance_id: pid,
+            trigger_kind: parse_trigger_kind(&row.get::<String, _>("trigger_kind")),
+            trigger_id: row.get("trigger_id"),
+            label: row.get("label"),
+            enabled: row.get("enabled"),
+            execution_mode: parse_execution_mode(&row.get::<String, _>("execution_mode")),
+            authored_by: parse_row_authored_by(&row.get::<String, _>("authored_by")),
+            probability_promille: u16::try_from(row.get::<i32, _>("probability_promille"))
+                .unwrap_or(0),
+            recipe_ref: row.get("recipe_ref"),
+            model_tier: parse_model_tier(&row.get::<String, _>("model_tier")),
+            inference_target_ref: row.get("inference_target_ref"),
+            substrate_tool_palette: row.get("substrate_tool_palette"),
+            workspace_tool_palette: row.get("workspace_tool_palette"),
+            max_rounds: u16::try_from(row.get::<i32, _>("max_rounds")).unwrap_or(1),
+        });
+    }
+    Ok(out)
+}
+
+pub async fn set_wake_entries_within(
+    pool: &PgPool,
+    owner: &Owner,
+    personality_instance_id: PersonalityInstanceId,
+    mutate: proxima_core::WakeEntriesMutator,
+) -> Result<SetWakeEntriesResponse, StorageError> {
+    let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(owner);
+    let mut tx = pool.begin().await.map_err(map_err)?;
+
+    // Lock the personality row to serialise concurrent granular ops.
+    let locked: Option<uuid::Uuid> = sqlx::query_scalar(
+        "SELECT personality_instance_id
+         FROM proxima_core.personality
+         WHERE owner_principal_kind = $1
+           AND owner_principal_id = $2
+           AND owner_org_id = $3
+           AND personality_instance_id = $4
+           AND status <> 'tombstoned'
+         FOR UPDATE",
+    )
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(owner_org_id)
+    .bind(personality_instance_id.into_inner())
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(map_err)?;
+    if locked.is_none() {
+        return Err(StorageError::NotFound);
+    }
+
+    let current = read_wake_entries_in_tx(&mut tx, owner, personality_instance_id).await?;
+
+    let new_entries = mutate(&current).map_err(StorageError::Internal)?;
+
+    let req = SetWakeEntriesRequest {
+        owner: owner.clone(),
+        personality_instance_id,
+        entries: new_entries,
+    };
+    let resp = replace_wake_entries_in_tx(&mut tx, &req).await?;
+    tx.commit().await.map_err(map_err)?;
+    Ok(resp)
 }
 
 pub async fn tombstone_personality(
