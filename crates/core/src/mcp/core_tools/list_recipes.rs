@@ -50,13 +50,13 @@ impl McpTool for ListRecipesTool {
                 if let Ok(entries) = std::fs::read_dir(&root) {
                     for entry in entries.flatten() {
                         let p = entry.path();
-                        if p.extension().and_then(|s| s.to_str()) == Some("yaml") {
-                            if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
-                                recipes.push(RecipeItem {
-                                    recipe_ref: stem.to_string(),
-                                    source: "owner".into(),
-                                });
-                            }
+                        if p.extension().and_then(|s| s.to_str()) == Some("yaml")
+                            && let Some(stem) = p.file_stem().and_then(|s| s.to_str())
+                        {
+                            recipes.push(RecipeItem {
+                                recipe_ref: stem.to_string(),
+                                source: "owner".into(),
+                            });
                         }
                     }
                 }

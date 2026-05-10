@@ -63,7 +63,7 @@ impl std::fmt::Debug for McpListenerHandle {
 pub(crate) fn load_or_create_master_token(owner: &Owner) -> Result<Uuid, String> {
     #[cfg(debug_assertions)]
     {
-        return crate::dev_secrets::load_or_create_master_token(owner);
+        crate::dev_secrets::load_or_create_master_token(owner)
     }
     #[cfg(not(debug_assertions))]
     {
@@ -82,7 +82,7 @@ pub(crate) fn load_or_create_master_token(owner: &Owner) -> Result<Uuid, String>
 pub(crate) fn rotate_master_token(owner: &Owner) -> Result<Uuid, String> {
     #[cfg(debug_assertions)]
     {
-        return crate::dev_secrets::rotate_master_token(owner);
+        crate::dev_secrets::rotate_master_token(owner)
     }
     #[cfg(not(debug_assertions))]
     {

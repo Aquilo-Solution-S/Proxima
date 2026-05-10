@@ -1,7 +1,7 @@
 //! Phase 1 stub for the Code flavor's workspace runner.
 //!
 //! Phase 3 fills this in with worktree creation, recipe rendering,
-//! Fact emission, and the WorkspaceRunnerSource event source. Until
+//! Fact emission, and the `WorkspaceRunnerSource` event source. Until
 //! then, `prepare` returns `WorkspaceRunnerError::Unimplemented` so
 //! `wake/fire.rs` reproduces today's `failure_reason =
 //! "workspace_mode_not_yet_implemented"` finalize state.
@@ -39,10 +39,10 @@ impl WorkspaceRunner for CodeWorkspaceRunner {
 mod tests {
     use super::*;
 
-    /// Structural assertion: CodeWorkspaceRunner satisfies the
+    /// Structural assertion: `CodeWorkspaceRunner` satisfies the
     /// trait bound. Avoids constructing real Owner/WakeToken values
-    /// (WakeToken is minted via the engine's WakeTokenStore, not a
-    /// public constructor - see crates/core/src/wake/token_store.rs).
+    /// (`WakeToken` is minted via the engine's `WakeTokenStore`, not a
+    /// public constructor - see `crates/core/src/wake/token_store.rs`).
     /// Phase 3 lands the behaviour-level tests against a real PG
     /// harness when the runner does meaningful work.
     #[test]

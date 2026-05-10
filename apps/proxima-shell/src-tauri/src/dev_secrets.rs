@@ -6,7 +6,7 @@
 //! dev we sidestep the OS keychain entirely:
 //!
 //! - master token  → `$HOME/.proxima-dev/master-token-<acct>`
-//! - `keychain:` secret_refs → `$HOME/.proxima-dev/secrets.json`
+//! - `keychain:` `secret_refs` → `$HOME/.proxima-dev/secrets.json`
 //!
 //! Plain-text on disk; release builds keep using the real Keychain.
 
