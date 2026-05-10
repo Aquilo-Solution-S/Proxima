@@ -931,4 +931,104 @@ describe("PersonalitiesView", () => {
       expect(sent.execution_mode).toBe("workspace");
     });
   });
+
+  it("renders a relation node when a wake entry's palette includes core/create_edge", async () => {
+    const { client, wakeEntryProduces } = mockClient([
+      instance({
+        wake_entries: [
+          wakeEntry({ substrate_tool_palette: ["core/create_edge"] }),
+        ],
+      }),
+    ]);
+
+    wakeEntryProduces.mockImplementation(async (palette: string[]) => {
+      if (palette.length === 1 && palette[0] === "core/create_edge") {
+        return {
+          status: "ok" as const,
+          data: { schema_ids: [], relation_ids: ["core/derived-from"] },
+        };
+      }
+      return {
+        status: "ok" as const,
+        data: { schema_ids: [], relation_ids: [] },
+      };
+    });
+
+    render(() => <PersonalitiesView client={client} owner={owner} />);
+
+    const relationNode = await waitFor(() => {
+      const node = document.querySelector(
+        '[data-canvas-node="relation"]',
+      );
+      if (!node) throw new Error("relation node not rendered");
+      return node;
+    });
+    expect(relationNode.textContent).toContain("core/derived-from");
+  });
+
+  it("renders a produces edge with the is-produces class for emit_abstraction palettes", async () => {
+    const { client, wakeEntryProduces } = mockClient([
+      instance({
+        wake_entries: [
+          wakeEntry({ substrate_tool_palette: ["core/emit_abstraction"] }),
+        ],
+      }),
+    ]);
+
+    wakeEntryProduces.mockImplementation(async (palette: string[]) => {
+      if (palette.length === 1 && palette[0] === "core/emit_abstraction") {
+        return {
+          status: "ok" as const,
+          data: {
+            schema_ids: ["proxima-code/commit-summary-v1"],
+            relation_ids: [],
+          },
+        };
+      }
+      return {
+        status: "ok" as const,
+        data: { schema_ids: [], relation_ids: [] },
+      };
+    });
+
+    render(() => <PersonalitiesView client={client} owner={owner} />);
+
+    await waitFor(() => {
+      const producesEdges = document.querySelectorAll(
+        ".personality-edge.is-produces",
+      );
+      if (producesEdges.length === 0) {
+        throw new Error("no produces edges rendered");
+      }
+    });
+  });
+
+  it("calls wakeEntryProduces once per distinct substrate palette key", async () => {
+    const { client, wakeEntryProduces } = mockClient([
+      instance({
+        personality_instance_id: "018f0000-0000-7000-8000-000000000001",
+        wake_entries: [
+          wakeEntry({
+            wake_entry_id: "aaaaaaaa-aaaa-7aaa-8aaa-aaaaaaaaaaaa",
+            substrate_tool_palette: ["core/emit_abstraction"],
+          }),
+          wakeEntry({
+            wake_entry_id: "bbbbbbbb-bbbb-7bbb-8bbb-bbbbbbbbbbbb",
+            substrate_tool_palette: ["core/emit_abstraction"], // same palette
+          }),
+          wakeEntry({
+            wake_entry_id: "cccccccc-cccc-7ccc-8ccc-cccccccccccc",
+            substrate_tool_palette: ["core/create_edge"], // different palette
+          }),
+        ],
+      }),
+    ]);
+
+    render(() => <PersonalitiesView client={client} owner={owner} />);
+
+    await waitFor(() => {
+      // Two distinct palette keys: ["core/emit_abstraction"] and ["core/create_edge"]
+      expect(wakeEntryProduces).toHaveBeenCalledTimes(2);
+    });
+  });
 });
