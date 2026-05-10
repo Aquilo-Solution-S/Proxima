@@ -149,6 +149,39 @@ const entityAppendEvent = (
   },
 });
 
+// ---------------------------------------------------------------------------
+// Shared test harness helpers
+// ---------------------------------------------------------------------------
+
+type TestHarness = {
+  store: ReturnType<typeof createGraphStore>;
+  pushEvent: (event: ChangeEvent) => void;
+};
+
+/**
+ * Creates a minimal GraphStore wired to a mock client that lets tests push
+ * ChangeEvents directly via the subscribe callback.
+ */
+const createTestHarness = (): TestHarness => {
+  const eventListeners: ((event: ChangeEvent) => void)[] = [];
+  const client = graphClient({
+    subscribe: async (_req, onEvent) => {
+      eventListeners.push(onEvent);
+      return { unsubscribe() {} };
+    },
+  });
+  let store!: ReturnType<typeof createGraphStore>;
+  createRoot(() => {
+    store = createGraphStore(client, createHub([]), owner);
+  });
+  return {
+    store,
+    pushEvent: (event: ChangeEvent) => {
+      for (const listener of eventListeners) listener(event);
+    },
+  };
+};
+
 describe("GraphStore snapshot loading", () => {
   it("requests the 5000-node snapshot window and exposes the edge cap", async () => {
     const queries: QueryRequest[] = [];
@@ -269,5 +302,113 @@ describe("GraphStore snapshot loading", () => {
           });
       });
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// memoryProvenance tests
+// ---------------------------------------------------------------------------
+
+describe("memoryProvenance", () => {
+  it("is populated on EntityAppend ingest", async () => {
+    const { store, pushEvent } = createTestHarness();
+    const memId = "01ARYZ6S41TS5G7QFC0V44N5KH";
+    const seq = "01ARYZ6S41TS5G7QFC0V44N5KH";
+
+    await vi.waitFor(() => expect(store.state().streamStatus).toBe("live"));
+
+    pushEvent({
+      seq,
+      owner,
+      authoring_personality_instance_id: "personality-rust",
+      kind: {
+        EntityAppend: {
+          entity_kind: "Fact",
+          entity: { Memory: memId },
+          schema_id: "proxima-code/code-chunk-v1",
+          schema_version: 1,
+          supersedes: null,
+        },
+      },
+    });
+
+    const prov = store.state().memoryProvenance.get(memId);
+    expect(prov).toBeDefined();
+    expect(prov?.creating_seq).toBe(seq);
+    expect(prov?.authoring_personality_instance_id).toBe("personality-rust");
+    expect(prov?.written_at_ms).toBe(1469918176385);
+  });
+
+  it("leaves provenance unset when no creating event has been seen", async () => {
+    const { store } = createTestHarness();
+    await vi.waitFor(() => expect(store.state().streamStatus).toBe("live"));
+    expect(store.state().memoryProvenance.size).toBe(0);
+  });
+
+  it("earliest event wins — a second event for the same memory_id does not overwrite", async () => {
+    const { store, pushEvent } = createTestHarness();
+    const memId = "01ARYZ6S41TS5G7QFC0V44N5KH";
+    const seqFirst = "01ARYZ6S41TS5G7QFC0V44N5KH";
+    const seqSecond = "01BX5ZZKBKACTAV9WEVGEMMVS1";
+
+    await vi.waitFor(() => expect(store.state().streamStatus).toBe("live"));
+
+    pushEvent({
+      seq: seqFirst,
+      owner,
+      authoring_personality_instance_id: "first-personality",
+      kind: {
+        EntityAppend: {
+          entity_kind: "Fact",
+          entity: { Memory: memId },
+          schema_id: "proxima-code/code-chunk-v1",
+          schema_version: 1,
+          supersedes: null,
+        },
+      },
+    });
+
+    pushEvent({
+      seq: seqSecond,
+      owner,
+      authoring_personality_instance_id: "second-personality",
+      kind: {
+        EntityAppend: {
+          entity_kind: "Fact",
+          entity: { Memory: memId },
+          schema_id: "proxima-code/code-chunk-v1",
+          schema_version: 1,
+          supersedes: null,
+        },
+      },
+    });
+
+    const prov = store.state().memoryProvenance.get(memId);
+    expect(prov?.creating_seq).toBe(seqFirst);
+    expect(prov?.authoring_personality_instance_id).toBe("first-personality");
+  });
+
+  it("Goal EntityAppend does not create a memory provenance entry", async () => {
+    const { store, pushEvent } = createTestHarness();
+    const goalId = "01ARYZ6S41TS5G7QFC0V44N5KH";
+    const seq = "01ARYZ6S41TS5G7QFC0V44N5KH";
+
+    await vi.waitFor(() => expect(store.state().streamStatus).toBe("live"));
+
+    pushEvent({
+      seq,
+      owner,
+      kind: {
+        EntityAppend: {
+          entity_kind: "Goal",
+          entity: { Goal: goalId },
+          schema_id: "core/goal-v1",
+          schema_version: 1,
+          supersedes: null,
+        },
+      },
+    });
+
+    expect(store.state().memoryProvenance.size).toBe(0);
   });
 });
