@@ -7,7 +7,9 @@
 pub mod audit;
 pub mod payload;
 
+pub mod bind_inference_tier;
 pub mod get_personality;
+pub mod instantiate_personality;
 pub mod list_edge_types;
 pub mod list_inference_targets;
 pub mod list_inference_tier_bindings;
@@ -17,9 +19,14 @@ pub mod list_schemas;
 pub mod list_substrate_tools;
 pub mod list_wake_entries;
 pub mod list_workspace_tools;
+pub mod register_inference_target;
+pub mod remove_inference_target;
+pub mod tombstone_personality;
 
 pub use audit::{AuditEmit, emit_personality_config_changed};
+pub use bind_inference_tier::BindInferenceTierTool;
 pub use get_personality::GetPersonalityTool;
+pub use instantiate_personality::InstantiatePersonalityTool;
 pub use list_edge_types::ListEdgeTypesTool;
 pub use list_inference_targets::ListInferenceTargetsTool;
 pub use list_inference_tier_bindings::ListInferenceTierBindingsTool;
@@ -33,3 +40,6 @@ pub use payload::{
     PersonalityConfigChangedCaller, PersonalityConfigChangedSubject,
     PersonalityConfigChangedV1, PersonalityConfigChangedVerb,
 };
+pub use register_inference_target::RegisterInferenceTargetTool;
+pub use remove_inference_target::RemoveInferenceTargetTool;
+pub use tombstone_personality::TombstonePersonalityTool;
