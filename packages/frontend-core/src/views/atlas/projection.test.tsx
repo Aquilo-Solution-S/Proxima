@@ -42,6 +42,7 @@ const graph = (memories: MemoryRow[], goals: GoalRow[], edges: EdgeRow[]): Graph
   eventsBySeq: new Map(),
   pendingHydration: new Map(),
   decodeErrorsByEntity: new Map(),
+  memoryProvenance: new Map(),
   streamStatus: "live",
   seqHighWater: null,
 });

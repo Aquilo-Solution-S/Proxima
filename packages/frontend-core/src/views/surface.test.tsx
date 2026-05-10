@@ -65,6 +65,7 @@ const snapshot = (
   eventsBySeq: new Map(events.map((event) => [event.seq, event])),
   pendingHydration: new Map(),
   decodeErrorsByEntity: new Map(),
+  memoryProvenance: new Map(),
   streamStatus: "live",
   seqHighWater: null,
 });

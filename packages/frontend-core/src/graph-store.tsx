@@ -21,6 +21,16 @@ import type {
 } from "./bindings";
 import type { EngineClient, Subscription } from "./client";
 import type { Hub } from "./hub";
+import { ulidTimestampMs } from "./ulid";
+
+/** Safely decode a ULID timestamp; returns 0 for non-ULID seq strings. */
+const safeUlidTimestampMs = (seq: string): number => {
+  try {
+    return ulidTimestampMs(seq);
+  } catch {
+    return 0;
+  }
+};
 
 export type StreamStatus = "connecting" | "live" | "degraded" | "stopped";
 
@@ -36,6 +46,12 @@ export interface DecodedMemory {
   decodeError?: DecodeError;
 }
 
+export interface MemoryProvenance {
+  creating_seq: string;
+  authoring_personality_instance_id: string | null;
+  written_at_ms: number;
+}
+
 export interface GraphSnapshot {
   owner: Owner;
   schemas: SchemaInfo[];
@@ -48,6 +64,7 @@ export interface GraphSnapshot {
     { kind: "memory" | "goal" | "edge"; since: string; attempts: number }
   >;
   decodeErrorsByEntity: ReadonlyMap<string, DecodeError>;
+  memoryProvenance: ReadonlyMap<string, MemoryProvenance>;
   streamStatus: StreamStatus;
   seqHighWater: string | null;
 }
@@ -169,6 +186,7 @@ export function createGraphStore(
     eventsBySeq: new Map(),
     pendingHydration: new Map(),
     decodeErrorsByEntity: new Map(),
+    memoryProvenance: new Map(),
     streamStatus: "connecting",
     seqHighWater: null,
   });
@@ -352,6 +370,21 @@ export function createGraphStore(
     ]);
     activeMemoryIdByNaturalKey = new Map();
     naturalKeyByMemoryId = new Map();
+    const seededProvenance = new Map<string, MemoryProvenance>();
+    for (const event of historyResp.events) {
+      const append = event.kind.EntityAppend;
+      if (append !== undefined && append.entity.Memory !== undefined) {
+        const memoryId = append.entity.Memory;
+        if (!seededProvenance.has(memoryId)) {
+          seededProvenance.set(memoryId, {
+            creating_seq: event.seq,
+            authoring_personality_instance_id:
+              event.authoring_personality_instance_id ?? null,
+            written_at_ms: safeUlidTimestampMs(event.seq),
+          });
+        }
+      }
+    }
     setState((prev) => ({
       ...prev,
       schemas: schemaResp.schemas,
@@ -361,6 +394,7 @@ export function createGraphStore(
       eventsBySeq: seedEventsBySeq(historyResp),
       pendingHydration: new Map(),
       decodeErrorsByEntity: new Map(),
+      memoryProvenance: seededProvenance,
       seqHighWater: maxSeq(queryResp.seq_high_water, historyResp.seq_high_water),
     }));
     applyResponse(queryResp);
@@ -407,9 +441,23 @@ export function createGraphStore(
     setState((prev) => {
       const events = new Map(prev.eventsBySeq);
       events.set(event.seq, event);
+      const nextProvenance = new Map(prev.memoryProvenance);
+      const append = event.kind.EntityAppend;
+      if (append !== undefined && append.entity.Memory !== undefined) {
+        const memoryId = append.entity.Memory;
+        if (!nextProvenance.has(memoryId)) {
+          nextProvenance.set(memoryId, {
+            creating_seq: event.seq,
+            authoring_personality_instance_id:
+              event.authoring_personality_instance_id ?? null,
+            written_at_ms: safeUlidTimestampMs(event.seq),
+          });
+        }
+      }
       return {
         ...prev,
         eventsBySeq: events,
+        memoryProvenance: nextProvenance,
         streamStatus: isSeqGap(prev.seqHighWater, event.seq)
           ? "degraded"
           : prev.streamStatus,
