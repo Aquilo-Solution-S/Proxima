@@ -84,15 +84,20 @@ impl DevMcpServer {
     }
 
     #[must_use]
-    pub fn ctx(&self, author: McpAuthorContext, owner: Option<Owner>) -> McpToolCtx {
+    pub fn ctx(
+        &self,
+        author: McpAuthorContext,
+        owner: Option<Owner>,
+        master_token_id: Option<uuid::Uuid>,
+    ) -> McpToolCtx {
         McpToolCtx {
             pool: self.pool.clone(),
             owner: owner.unwrap_or_else(|| self.owner.clone()),
             handles: self.handles.clone(),
             registry: self.registry.clone(),
             caller_self_perspective: author.caller_self_perspective,
+            master_token_id,
             author,
-            master_token_id: None,
             engine: self.engine.clone(),
         }
     }
@@ -107,6 +112,26 @@ impl DevMcpServer {
         author: McpAuthorContext,
         auth: Option<McpAuthContext>,
     ) -> Result<serde_json::Value, ToolInvocationError> {
+        // M0: For master-token calls without an explicit caller_self_perspective,
+        // ensure the per-token shell-author personality and default the field
+        // to its Self-Perspective. Wake-token calls already carry
+        // caller_self_perspective; explicit override args still win.
+        let mut author = author;
+        let master_token_id = auth.as_ref().and_then(|c| c.master_token_id);
+        if author.caller_self_perspective.is_none() {
+            if let (Some(token_id), Some(engine), Some(auth_ctx)) =
+                (master_token_id, self.engine.as_ref(), auth.as_ref())
+            {
+                let identity = engine
+                    .ensure_master_token_personality(&auth_ctx.owner, token_id)
+                    .await
+                    .map_err(|err| {
+                        ToolInvocationError::Tool(McpToolError::Other(err.to_string()))
+                    })?;
+                author.caller_self_perspective = Some(identity.self_perspective_memory_id);
+            }
+        }
+
         if let Some(descriptor) = self
             .registry
             .list_mcp_tools()
@@ -115,7 +140,7 @@ impl DevMcpServer {
         {
             let owner = auth.as_ref().map(|ctx| ctx.owner.clone());
             let started = Instant::now();
-            let result = (descriptor.call)(self.ctx(author, owner), args).await;
+            let result = (descriptor.call)(self.ctx(author, owner, master_token_id), args).await;
             if let (Some(engine), Some(auth)) = (self.engine.as_ref(), auth.as_ref()) {
                 let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
                 match &result {
@@ -260,4 +285,49 @@ pub enum ToolInvocationError {
     ToolNotFound(String),
     #[error("tool error: {0}")]
     Tool(#[from] McpToolError),
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+    use proxima_core::mcp::{HandleTable, McpAuthorContext};
+    use proxima_core::{FlavorRegistry, OrgId, Owner, Principal, UserId};
+
+    fn fake_owner() -> Owner {
+        Owner {
+            principal: Principal::User(UserId::new(uuid::Uuid::now_v7())),
+            org_id: OrgId::new(uuid::Uuid::now_v7()),
+        }
+    }
+
+    fn make_server() -> DevMcpServer {
+        let pool = sqlx::PgPool::connect_lazy("postgres://placeholder/db").expect("lazy pool");
+        DevMcpServer {
+            owner: fake_owner(),
+            handles: Arc::new(HandleTable::new()),
+            registry: Arc::new(FlavorRegistry::new().freeze()),
+            pool,
+            engine: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn ctx_threads_master_token_id() {
+        let server = make_server();
+        let author = McpAuthorContext {
+            model_id: "test-model".into(),
+            client_name: "test-client".into(),
+            client_version: "0.1.0".into(),
+            caller_self_perspective: None,
+        };
+        let token = uuid::Uuid::now_v7();
+
+        let ctx = server.ctx(author.clone(), None, Some(token));
+        assert_eq!(ctx.master_token_id, Some(token));
+
+        let ctx_no_token = server.ctx(author, None, None);
+        assert_eq!(ctx_no_token.master_token_id, None);
+    }
 }
