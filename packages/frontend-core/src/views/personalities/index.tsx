@@ -21,6 +21,7 @@ import {
   type OwnerRecipesListingTs,
   type PersonalityInstanceTs,
   type ProtocolError,
+  type ProducesTs,
   type RelationTs,
   type SetWakeEntriesOutcomeTs,
   type SetWakeEntriesTs,
@@ -35,7 +36,13 @@ import { PersonalityCanvas } from "./canvas";
 import { CreatePersonalityDialog } from "./create-dialog";
 import { Inspector } from "./inspector";
 import { computeLayout } from "./layout";
-import { emptyDraft, type CanvasModel, type PersonalitySelection } from "./types";
+import {
+  emptyDraft,
+  paletteKey,
+  type CanvasModel,
+  type PersonalitySelection,
+  type ProducesByPaletteKey,
+} from "./types";
 
 type CommandResult<T> = Promise<
   { status: "ok"; data: T } | { status: "error"; error: ProtocolError }
@@ -61,6 +68,9 @@ export type PersonalityCommandClient = {
   listMcpTools: () => CommandResult<McpToolTs[]>;
   listWorkspaceTools: () => CommandResult<WorkspaceToolTs[]>;
   listRelations: () => CommandResult<RelationTs[]>;
+  wakeEntryProduces: (
+    substratePalette: string[],
+  ) => CommandResult<ProducesTs>;
   listWakeInvocations: (
     req: ListWakeInvocationsTs,
   ) => CommandResult<WakeInvocationTs[]>;
@@ -421,9 +431,40 @@ export const PersonalitiesView: Component<{
     }),
   );
 
+  const distinctPalettes = createMemo(() => {
+    const seen = new Map<string, string[]>();
+    for (const inst of projectedInstances() ?? []) {
+      for (const entry of inst.wake_entries) {
+        const key = paletteKey(entry.substrate_tool_palette);
+        if (!seen.has(key)) seen.set(key, entry.substrate_tool_palette.slice());
+      }
+    }
+    return seen;
+  });
+
+  const [producesResource] = createResource(distinctPalettes, async (map) => {
+    const result: ProducesByPaletteKey = new Map();
+    await Promise.all(
+      Array.from(map.entries()).map(async ([key, palette]) => {
+        const res = await client.wakeEntryProduces(palette);
+        if (res.status === "ok") result.set(key, res.data);
+        else result.set(key, { schema_ids: [], relation_ids: [] });
+      }),
+    );
+    return result;
+  });
+
   const [layoutResource] = createResource(
-    projectedInstances,
-    async (sourceInstances) => computeLayout({ instances: sourceInstances }),
+    () =>
+      [projectedInstances(), producesResource()] as [
+        PersonalityInstanceTs[],
+        ProducesByPaletteKey | undefined,
+      ],
+    async ([sourceInstances, produces]) =>
+      computeLayout({
+        instances: sourceInstances,
+        producesByPaletteKey: produces ?? new Map(),
+      }),
   );
 
   return (
