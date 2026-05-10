@@ -1,4 +1,4 @@
-import type { EdgeRow, GoalRow, MemoryRow, SchemaInfo } from "./bindings";
+import type { EdgeRow, EntityKind, GoalRow, MemoryRow, SchemaInfo } from "./bindings";
 import { flavorFilterId, type GraphFilterState } from "./graph-filter-store";
 import { entityRefId, type DecodedMemory, type GraphSnapshot } from "./graph-store";
 import type { Hub } from "./hub";
@@ -167,3 +167,57 @@ export const visibleEntityIds = (graph: FilteredGraph): Set<string> =>
     ...graph.memories.map((memory) => memory.row.id),
     ...graph.goals.map((goal) => goal.id),
   ]);
+
+export interface LineageGroup {
+  relation: string;
+  target_kind: EntityKind;
+  target_schema_id: string;
+  count: number;
+}
+
+export interface OneHopLineage {
+  outbound: LineageGroup[];
+  inbound: LineageGroup[];
+}
+
+export function oneHopLineage(
+  memoryId: string,
+  edgesById: ReadonlyMap<string, EdgeRow>,
+  memoriesById: ReadonlyMap<string, DecodedMemory>,
+): OneHopLineage {
+  const outboundCounts = new Map<string, LineageGroup>();
+  const inboundCounts = new Map<string, LineageGroup>();
+  for (const edge of edgesById.values()) {
+    const sourceMem = edge.source.Memory !== undefined ? edge.source.Memory : null;
+    const targetMem = edge.target.Memory !== undefined ? edge.target.Memory : null;
+    if (sourceMem === memoryId && targetMem !== null) {
+      const target = memoriesById.get(targetMem);
+      if (target === undefined) continue;
+      const key = `${edge.relation}|${target.row.kind}|${target.row.schema_id}`;
+      const existing = outboundCounts.get(key);
+      if (existing) existing.count += 1;
+      else outboundCounts.set(key, {
+        relation: edge.relation,
+        target_kind: target.row.kind,
+        target_schema_id: target.row.schema_id,
+        count: 1,
+      });
+    } else if (targetMem === memoryId && sourceMem !== null) {
+      const source = memoriesById.get(sourceMem);
+      if (source === undefined) continue;
+      const key = `${edge.relation}|${source.row.kind}|${source.row.schema_id}`;
+      const existing = inboundCounts.get(key);
+      if (existing) existing.count += 1;
+      else inboundCounts.set(key, {
+        relation: edge.relation,
+        target_kind: source.row.kind,
+        target_schema_id: source.row.schema_id,
+        count: 1,
+      });
+    }
+  }
+  return {
+    outbound: Array.from(outboundCounts.values()),
+    inbound: Array.from(inboundCounts.values()),
+  };
+}
