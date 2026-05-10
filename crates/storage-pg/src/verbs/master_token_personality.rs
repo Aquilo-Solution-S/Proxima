@@ -18,8 +18,8 @@
 //! `(org, token)` only — it does not block the rest of the system.
 
 use proxima_core::{
-    InstantiatePersonalityRequest, MasterTokenPersonality, MemoryId, Owner,
-    PersonalityInstanceId, Principal, StorageError,
+    InstantiatePersonalityRequest, MasterTokenPersonality, MemoryId, Owner, PersonalityInstanceId,
+    Principal, StorageError,
 };
 use sqlx::{PgConnection, PgPool};
 use uuid::Uuid;

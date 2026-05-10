@@ -48,8 +48,7 @@ pub struct GetPersonalityOutput {
 
 impl McpTool for GetPersonalityTool {
     const NAME: &'static str = "core/get_personality";
-    const DESCRIPTION: &'static str =
-        "Read one personality with all wake entries. Returns W-handles \
+    const DESCRIPTION: &'static str = "Read one personality with all wake entries. Returns W-handles \
          for each entry usable in update/remove calls.";
     type Args = GetPersonalityArgs;
     type Output = GetPersonalityOutput;
@@ -63,9 +62,9 @@ impl McpTool for GetPersonalityTool {
                 .handles
                 .resolve_personality(&args.personality)
                 .ok_or_else(|| McpToolError::UnknownHandle(args.personality.clone()))?;
-            let storage = ctx.storage().ok_or_else(|| {
-                McpToolError::Other("engine storage unavailable".into())
-            })?;
+            let storage = ctx
+                .storage()
+                .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;
             let rows = storage
                 .list_personality_instances(&ctx.owner, true)
                 .await
@@ -73,12 +72,16 @@ impl McpTool for GetPersonalityTool {
             let row = rows
                 .into_iter()
                 .find(|r| r.personality_instance_id == target_id)
-                .ok_or_else(|| McpToolError::Other(format!(
-                    "personality {} not found for owner",
-                    args.personality
-                )))?;
+                .ok_or_else(|| {
+                    McpToolError::Other(format!(
+                        "personality {} not found for owner",
+                        args.personality
+                    ))
+                })?;
             let p_handle = ctx.handles.assign_personality(row.personality_instance_id);
-            let n_handle = ctx.handles.assign_memory(row.current_root_perspective_memory_id);
+            let n_handle = ctx
+                .handles
+                .assign_memory(row.current_root_perspective_memory_id);
             let wake_entries = row
                 .wake_entries
                 .into_iter()
@@ -156,8 +159,12 @@ mod tests {
         let ctx = make_ctx();
         let err = GetPersonalityTool::call(
             ctx,
-            GetPersonalityArgs { personality: "P99".into() },
-        ).await.unwrap_err();
+            GetPersonalityArgs {
+                personality: "P99".into(),
+            },
+        )
+        .await
+        .unwrap_err();
         assert!(matches!(err, McpToolError::UnknownHandle(_)));
     }
 
@@ -166,8 +173,12 @@ mod tests {
         let ctx = make_ctx();
         let err = GetPersonalityTool::call(
             ctx,
-            GetPersonalityArgs { personality: "not-a-handle".into() },
-        ).await.unwrap_err();
+            GetPersonalityArgs {
+                personality: "not-a-handle".into(),
+            },
+        )
+        .await
+        .unwrap_err();
         assert!(matches!(err, McpToolError::UnknownHandle(_)));
     }
 }

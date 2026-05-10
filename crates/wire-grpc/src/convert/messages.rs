@@ -236,6 +236,7 @@ pub fn query_request_from_proto(
         schema_id,
         supersession,
         tombstones,
+        personality_roots: proxima_core::verbs::query::PersonalityRootFilter::IncludeInactive,
         limit,
         memory_ids: Vec::new(),
         goal_ids: Vec::new(),

@@ -76,8 +76,7 @@ mod tests {
             },
         };
         let value = serde_json::to_value(&payload).expect("serialize");
-        let back: PersonalityConfigChangedV1 =
-            serde_json::from_value(value).expect("deserialize");
+        let back: PersonalityConfigChangedV1 = serde_json::from_value(value).expect("deserialize");
         assert_eq!(payload, back);
     }
 

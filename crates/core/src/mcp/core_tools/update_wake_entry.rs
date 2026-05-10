@@ -18,23 +18,32 @@ pub struct UpdateWakeEntryTool;
 
 #[derive(Debug, Default, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct WakeEntryPatch {
-    #[serde(default)] pub label: Option<String>,
-    #[serde(default)] pub enabled: Option<bool>,
-    #[serde(default)] pub recipe_ref: Option<String>,
-    #[serde(default)] pub model_tier: Option<ModelTier>,
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    #[serde(default)]
+    pub recipe_ref: Option<String>,
+    #[serde(default)]
+    pub model_tier: Option<ModelTier>,
     /// Outer Option = field present in patch; inner Option = set to None
     /// or to Some(value).
-    #[serde(default)] pub inference_target_ref: Option<Option<String>>,
-    #[serde(default)] pub substrate_tool_palette: Option<Vec<String>>,
-    #[serde(default)] pub workspace_tool_palette: Option<Vec<String>>,
+    #[serde(default)]
+    pub inference_target_ref: Option<Option<String>>,
+    #[serde(default)]
+    pub substrate_tool_palette: Option<Vec<String>>,
+    #[serde(default)]
+    pub workspace_tool_palette: Option<Vec<String>>,
     #[serde(default)]
     #[schemars(range(min = 0, max = 1000))]
     pub probability_promille: Option<u16>,
     #[serde(default)]
     #[schemars(range(min = 1))]
     pub max_rounds: Option<u16>,
-    #[serde(default)] pub execution_mode: Option<WakeExecutionMode>,
-    #[serde(default)] pub authored_by: Option<WakeEntryAuthoredBy>,
+    #[serde(default)]
+    pub execution_mode: Option<WakeExecutionMode>,
+    #[serde(default)]
+    pub authored_by: Option<WakeEntryAuthoredBy>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -51,8 +60,7 @@ pub struct UpdateWakeEntryOutput {
 
 impl McpTool for UpdateWakeEntryTool {
     const NAME: &'static str = "core/update_wake_entry";
-    const DESCRIPTION: &'static str =
-        "Update one wake entry. Only fields present in `patch` change. \
+    const DESCRIPTION: &'static str = "Update one wake entry. Only fields present in `patch` change. \
          To change trigger_kind/trigger_id, use remove_wake_entry + add_wake_entry.";
     type Args = UpdateWakeEntryArgs;
     type Output = UpdateWakeEntryOutput;
@@ -94,21 +102,39 @@ impl McpTool for UpdateWakeEntryTool {
                     .iter_mut()
                     .find(|e| e.wake_entry_id == wid)
                     .ok_or_else(|| format!("wake entry {wid} no longer present"))?;
-                if let Some(v) = patch.label { entry.label = v; }
-                if let Some(v) = patch.enabled { entry.enabled = v; }
-                if let Some(v) = patch.recipe_ref { entry.recipe_ref = v; }
-                if let Some(v) = patch.model_tier { entry.model_tier = v; }
-                if let Some(v) = patch.inference_target_ref { entry.inference_target_ref = v; }
+                if let Some(v) = patch.label {
+                    entry.label = v;
+                }
+                if let Some(v) = patch.enabled {
+                    entry.enabled = v;
+                }
+                if let Some(v) = patch.recipe_ref {
+                    entry.recipe_ref = v;
+                }
+                if let Some(v) = patch.model_tier {
+                    entry.model_tier = v;
+                }
+                if let Some(v) = patch.inference_target_ref {
+                    entry.inference_target_ref = v;
+                }
                 if let Some(v) = patch.substrate_tool_palette {
                     entry.substrate_tool_palette = v;
                 }
                 if let Some(v) = patch.workspace_tool_palette {
                     entry.workspace_tool_palette = v;
                 }
-                if let Some(v) = patch.probability_promille { entry.probability_promille = v; }
-                if let Some(v) = patch.max_rounds { entry.max_rounds = v; }
-                if let Some(v) = patch.execution_mode { entry.execution_mode = v; }
-                if let Some(v) = patch.authored_by { entry.authored_by = v; }
+                if let Some(v) = patch.probability_promille {
+                    entry.probability_promille = v;
+                }
+                if let Some(v) = patch.max_rounds {
+                    entry.max_rounds = v;
+                }
+                if let Some(v) = patch.execution_mode {
+                    entry.execution_mode = v;
+                }
+                if let Some(v) = patch.authored_by {
+                    entry.authored_by = v;
+                }
                 Ok(next)
             });
             storage

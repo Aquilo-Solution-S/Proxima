@@ -7,10 +7,13 @@ use std::sync::Arc;
 
 use proxima_core::auth::{Credentials, NoAuth};
 use proxima_core::engine::Engine;
+use proxima_core::personality::ROOT_PERSONALITY_PERSPECTIVE_SCHEMA_ID;
 use proxima_core::storage::Storage;
 use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
 use proxima_core::verbs::goal_write::{GoalAuthorship, GoalDraft, GoalState};
-use proxima_core::verbs::query::{EntityKind, MemoryStore, QueryRequest, SupersessionStatus};
+use proxima_core::verbs::query::{
+    EntityKind, MemoryStore, PersonalityRootFilter, QueryRequest, SupersessionStatus,
+};
 use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaInfo};
 use proxima_core::{
     OrgId, Owner, Principal, SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId,
@@ -81,6 +84,31 @@ fn schemas_for_test() -> Vec<SchemaInfo> {
             cbor_encoder: None,
         },
     ]
+}
+
+fn schemas_for_personality_root_test() -> Vec<SchemaInfo> {
+    let mut schemas = schemas_for_test();
+    schemas.push(SchemaInfo {
+        schema_id: SchemaId::new("proxima-code/engineer-self-v1".into()),
+        schema_version: SchemaVersion::new(1),
+        kind: PayloadKind::Perspective,
+        filter_keys: vec![],
+        sidecar_table: None,
+        natural_key_columns: vec![],
+        tombstone: None,
+        cbor_encoder: None,
+    });
+    schemas.push(SchemaInfo {
+        schema_id: SchemaId::new("test/development-perspective-v1".into()),
+        schema_version: SchemaVersion::new(1),
+        kind: PayloadKind::Perspective,
+        filter_keys: vec![],
+        sidecar_table: None,
+        natural_key_columns: vec![],
+        tombstone: None,
+        cbor_encoder: None,
+    });
+    schemas
 }
 
 fn fresh_draft(owner: Owner) -> EventDraft {
@@ -198,6 +226,59 @@ async fn set_memory_created_offset(
     Ok(())
 }
 
+async fn insert_perspective_memory(
+    pg: &PgStorage,
+    owner: &Owner,
+    schema_id: &str,
+    text: &str,
+    personality_status: Option<&str>,
+) -> Result<Uuid, Box<dyn std::error::Error>> {
+    let memory_id = Uuid::now_v7();
+    let instance_id = Uuid::now_v7();
+    let (owner_kind, owner_principal_id) = match &owner.principal {
+        Principal::User(user) => ("User", user.into_inner()),
+        Principal::Group(group) => ("Group", group.into_inner()),
+    };
+    sqlx::query(
+        "INSERT INTO proxima_core.memories
+            (memory_id, owner_principal_kind, owner_principal_id, owner_org_id,
+             schema_id, schema_version, kind, text, operator_kind, model_id,
+             prompt_version, personality_instance_id, wake_chain_depth)
+         VALUES ($1, $2, $3, $4, $5, 1, 'Perspective', $6, 'Wake',
+                 'substrate', 'test-v1', $7, 0)",
+    )
+    .bind(memory_id)
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(owner.org_id.into_inner())
+    .bind(schema_id)
+    .bind(text)
+    .bind(instance_id)
+    .execute(pg.pool())
+    .await?;
+
+    if let Some(status) = personality_status {
+        sqlx::query(
+            "INSERT INTO proxima_core.personality
+                (owner_principal_kind, owner_principal_id, owner_org_id,
+                 personality_instance_id, current_root_perspective_memory_id,
+                 status, tombstoned_at)
+             VALUES ($1, $2, $3, $4, $5, $6,
+                     CASE WHEN $6 = 'tombstoned' THEN now() ELSE NULL END)",
+        )
+        .bind(owner_kind)
+        .bind(owner_principal_id)
+        .bind(owner.org_id.into_inner())
+        .bind(instance_id)
+        .bind(memory_id)
+        .bind(status)
+        .execute(pg.pool())
+        .await?;
+    }
+
+    Ok(memory_id)
+}
+
 #[tokio::test]
 async fn query_returns_stored_schema_version() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
@@ -248,6 +329,104 @@ async fn query_returns_stored_schema_version() {
 
     let _ = drop_db(&db_name).await;
     result.expect("query_returns_stored_schema_version test failed");
+}
+
+#[tokio::test]
+async fn query_active_only_filters_inactive_personality_roots() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if create_db(&db_name).await.is_err() {
+        eprintln!("skipping (no admin PG)");
+        return;
+    }
+    let url = db_url(&db_name);
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let storage: Arc<dyn Storage> = Arc::new(pg.clone());
+
+        let user = UserId::new(Uuid::now_v7());
+        let owner = Owner {
+            principal: Principal::User(user),
+            org_id: OrgId::new(Uuid::now_v7()),
+        };
+
+        let registry = FlavorRegistryFrozen::with_schemas(schemas_for_personality_root_test());
+        let engine = Engine::new(
+            registry,
+            MemoryStore::new(),
+            Box::new(NoAuth::new(Principal::User(user), owner.clone())),
+        )
+        .with_storage(storage);
+
+        let active_root = insert_perspective_memory(
+            &pg,
+            &owner,
+            ROOT_PERSONALITY_PERSPECTIVE_SCHEMA_ID,
+            "active root",
+            Some("active"),
+        )
+        .await?;
+        let tombstoned_root = insert_perspective_memory(
+            &pg,
+            &owner,
+            "proxima-code/engineer-self-v1",
+            "tombstoned root",
+            Some("tombstoned"),
+        )
+        .await?;
+        let orphan_root = insert_perspective_memory(
+            &pg,
+            &owner,
+            "proxima-code/engineer-self-v1",
+            "orphan root",
+            None,
+        )
+        .await?;
+        let normal_perspective = insert_perspective_memory(
+            &pg,
+            &owner,
+            "test/development-perspective-v1",
+            "normal perspective",
+            None,
+        )
+        .await?;
+
+        let mut include_inactive = QueryRequest::for_owner(owner.clone());
+        include_inactive.personality_roots = PersonalityRootFilter::IncludeInactive;
+        let resp = engine.query(&Credentials::None, &include_inactive).await?;
+        let all_ids = resp
+            .memories
+            .iter()
+            .map(|row| row.id.into_inner())
+            .collect::<std::collections::HashSet<_>>();
+        assert!(all_ids.contains(&active_root));
+        assert!(all_ids.contains(&tombstoned_root));
+        assert!(all_ids.contains(&orphan_root));
+        assert!(all_ids.contains(&normal_perspective));
+
+        let mut active_only = QueryRequest::for_owner(owner);
+        active_only.personality_roots = PersonalityRootFilter::ActiveOnly;
+        let resp = engine.query(&Credentials::None, &active_only).await?;
+        let active_ids = resp
+            .memories
+            .iter()
+            .map(|row| row.id.into_inner())
+            .collect::<std::collections::HashSet<_>>();
+        assert!(active_ids.contains(&active_root));
+        assert!(active_ids.contains(&normal_perspective));
+        assert!(!active_ids.contains(&tombstoned_root));
+        assert!(!active_ids.contains(&orphan_root));
+
+        Ok(())
+    }
+    .await;
+
+    let drop_result = drop_db(&db_name).await;
+    if let Err(e) = result {
+        panic!("{e}");
+    }
+    drop_result.expect("drop test db");
 }
 
 #[tokio::test]
@@ -677,6 +856,7 @@ async fn query_filter_abstraction_returns_empty() {
             schema_id: None,
             supersession: SupersessionStatus::HeadsOnly,
             tombstones: proxima_core::verbs::query::TombstoneFilter::PresentOnly,
+            personality_roots: PersonalityRootFilter::IncludeInactive,
             limit: 100,
             memory_ids: Vec::new(),
             goal_ids: Vec::new(),
@@ -746,6 +926,7 @@ async fn query_goals_filter_by_schema_id() {
             schema_id: Some(SchemaId::new("test/fact_blob".into())),
             supersession: SupersessionStatus::HeadsOnly,
             tombstones: proxima_core::verbs::query::TombstoneFilter::PresentOnly,
+            personality_roots: PersonalityRootFilter::IncludeInactive,
             limit: 100,
             memory_ids: Vec::new(),
             goal_ids: Vec::new(),
@@ -766,6 +947,7 @@ async fn query_goals_filter_by_schema_id() {
             schema_id: Some(SchemaId::new("test/goal_blob".into())),
             supersession: SupersessionStatus::HeadsOnly,
             tombstones: proxima_core::verbs::query::TombstoneFilter::PresentOnly,
+            personality_roots: PersonalityRootFilter::IncludeInactive,
             limit: 100,
             memory_ids: Vec::new(),
             goal_ids: Vec::new(),
@@ -782,6 +964,7 @@ async fn query_goals_filter_by_schema_id() {
             schema_id: Some(SchemaId::new("test/never_registered".into())),
             supersession: SupersessionStatus::HeadsOnly,
             tombstones: proxima_core::verbs::query::TombstoneFilter::PresentOnly,
+            personality_roots: PersonalityRootFilter::IncludeInactive,
             limit: 100,
             memory_ids: Vec::new(),
             goal_ids: Vec::new(),
@@ -900,6 +1083,7 @@ async fn query_filter_nonexistent_schema_returns_empty() {
             schema_id: Some(SchemaId::new("test/non_existent".into())),
             supersession: SupersessionStatus::HeadsOnly,
             tombstones: proxima_core::verbs::query::TombstoneFilter::PresentOnly,
+            personality_roots: PersonalityRootFilter::IncludeInactive,
             limit: 100,
             memory_ids: Vec::new(),
             goal_ids: Vec::new(),

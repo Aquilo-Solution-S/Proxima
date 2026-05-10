@@ -29,8 +29,7 @@ pub struct ListInferenceTargetsOutput {
 
 impl McpTool for ListInferenceTargetsTool {
     const NAME: &'static str = "core/list_inference_targets";
-    const DESCRIPTION: &'static str =
-        "List inference targets registered for this owner. Use returned \
+    const DESCRIPTION: &'static str = "List inference targets registered for this owner. Use returned \
          target_refs as `inference_target_ref` in WakeEntryDraftInput.";
     type Args = ListInferenceTargetsArgs;
     type Output = ListInferenceTargetsOutput;

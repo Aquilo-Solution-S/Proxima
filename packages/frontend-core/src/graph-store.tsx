@@ -117,6 +117,7 @@ const snapshotReq = (
   schema_id: null,
   supersession: "HeadsOnly",
   tombstones,
+  personality_roots: "ActiveOnly",
   limit: GRAPH_SNAPSHOT_LIMIT,
 });
 

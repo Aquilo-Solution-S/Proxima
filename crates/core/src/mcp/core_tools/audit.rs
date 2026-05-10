@@ -19,8 +19,8 @@ use time::OffsetDateTime;
 
 use crate::mcp::McpToolCtx;
 use crate::mcp::core_tools::payload::{
-    PersonalityConfigChangedCaller, PersonalityConfigChangedSubject,
-    PersonalityConfigChangedV1, PersonalityConfigChangedVerb,
+    PersonalityConfigChangedCaller, PersonalityConfigChangedSubject, PersonalityConfigChangedV1,
+    PersonalityConfigChangedVerb,
 };
 use crate::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
 use crate::{FactPayload, SchemaId, SchemaVersion, SourceBatchId, SourceId};
@@ -58,9 +58,7 @@ pub async fn emit_personality_config_changed(
     }
 }
 
-async fn resolve_caller(
-    ctx: &McpToolCtx,
-) -> Result<PersonalityConfigChangedCaller, String> {
+async fn resolve_caller(ctx: &McpToolCtx) -> Result<PersonalityConfigChangedCaller, String> {
     let storage = ctx
         .storage()
         .ok_or_else(|| "engine storage unavailable".to_string())?;
@@ -81,9 +79,7 @@ async fn resolve_caller(
         .into_iter()
         .find(|row| row.current_root_perspective_memory_id == self_id)
         .map(|row| row.personality_instance_id.into_inner())
-        .ok_or_else(|| {
-            format!("no personality matches caller_self_perspective {self_id:?}")
-        })?;
+        .ok_or_else(|| format!("no personality matches caller_self_perspective {self_id:?}"))?;
 
     Ok(if ctx.master_token_id.is_some() {
         PersonalityConfigChangedCaller::MasterToken {
@@ -96,10 +92,7 @@ async fn resolve_caller(
     })
 }
 
-async fn write_fact(
-    ctx: &McpToolCtx,
-    payload: &PersonalityConfigChangedV1,
-) -> Result<(), String> {
+async fn write_fact(ctx: &McpToolCtx, payload: &PersonalityConfigChangedV1) -> Result<(), String> {
     let storage = ctx
         .storage()
         .ok_or_else(|| "engine storage unavailable".to_string())?;
@@ -139,9 +132,7 @@ async fn write_fact(
 mod tests {
     use super::*;
     use crate::mcp::HandleTable;
-    use crate::{
-        FlavorRegistry, McpAuthorContext, OrgId, Owner, Principal, UserId,
-    };
+    use crate::{FlavorRegistry, McpAuthorContext, OrgId, Owner, Principal, UserId};
     use std::sync::Arc;
 
     fn fake_owner() -> Owner {
@@ -154,8 +145,7 @@ mod tests {
     #[tokio::test]
     async fn resolve_caller_returns_failed_when_no_storage() {
         let ctx = McpToolCtx {
-            pool: sqlx::PgPool::connect_lazy("postgres://placeholder/db")
-                .expect("lazy connect"),
+            pool: sqlx::PgPool::connect_lazy("postgres://placeholder/db").expect("lazy connect"),
             owner: fake_owner(),
             handles: Arc::new(HandleTable::new()),
             registry: Arc::new(FlavorRegistry::new().freeze()),
@@ -178,10 +168,9 @@ mod tests {
         )
         .await;
         match outcome {
-            AuditEmit::Failed { reason } => assert!(
-                reason.contains("storage unavailable"),
-                "got {reason:?}"
-            ),
+            AuditEmit::Failed { reason } => {
+                assert!(reason.contains("storage unavailable"), "got {reason:?}")
+            }
             AuditEmit::Ok => panic!("expected Failed without storage"),
         }
     }
@@ -191,9 +180,9 @@ mod tests {
         // Build a ctx with engine wired but no caller_self_perspective —
         // the new resolver fails fast since the MCP server is contract-bound
         // to populate this field.
+        use crate::Engine;
         use crate::auth::NoAuth;
         use crate::verbs::query::MemoryStore;
-        use crate::Engine;
 
         let owner = fake_owner();
         let resolver = NoAuth::new(owner.principal.clone(), owner.clone());
@@ -203,8 +192,7 @@ mod tests {
             Box::new(resolver),
         ));
         let ctx = McpToolCtx {
-            pool: sqlx::PgPool::connect_lazy("postgres://placeholder/db")
-                .expect("lazy connect"),
+            pool: sqlx::PgPool::connect_lazy("postgres://placeholder/db").expect("lazy connect"),
             owner,
             handles: Arc::new(HandleTable::new()),
             registry: Arc::new(FlavorRegistry::new().freeze()),

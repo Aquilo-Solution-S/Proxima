@@ -5,8 +5,8 @@ use futures::future::BoxFuture;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::McpTool;
 use crate::InstantiatePersonalityRequest;
+use crate::McpTool;
 use crate::mcp::core_tools::audit::{AuditEmit, emit_personality_config_changed};
 use crate::mcp::core_tools::payload::{
     PersonalityConfigChangedSubject, PersonalityConfigChangedVerb,
@@ -30,8 +30,7 @@ pub struct InstantiatePersonalityOutput {
 
 impl McpTool for InstantiatePersonalityTool {
     const NAME: &'static str = "core/instantiate_personality";
-    const DESCRIPTION: &'static str =
-        "Instantiate one inert personality with a Root Perspective and \
+    const DESCRIPTION: &'static str = "Instantiate one inert personality with a Root Perspective and \
          empty WakeConfig. Returns the new P-handle.";
     type Args = InstantiatePersonalityArgs;
     type Output = InstantiatePersonalityOutput;

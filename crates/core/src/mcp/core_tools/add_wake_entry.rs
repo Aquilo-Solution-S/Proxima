@@ -28,8 +28,7 @@ pub struct AddWakeEntryOutput {
 
 impl McpTool for AddWakeEntryTool {
     const NAME: &'static str = "core/add_wake_entry";
-    const DESCRIPTION: &'static str =
-        "Append one wake entry to a personality. Conflicts with an existing \
+    const DESCRIPTION: &'static str = "Append one wake entry to a personality. Conflicts with an existing \
          (trigger_kind, trigger_id) on the personality return an error.";
     type Args = AddWakeEntryArgs;
     type Output = AddWakeEntryOutput;

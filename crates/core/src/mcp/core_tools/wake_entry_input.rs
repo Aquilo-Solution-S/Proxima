@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::mcp::{HandleTable, McpToolError};
 use crate::{
-    ModelTier, PersonalityInstanceId, WakeEntryAuthoredBy, WakeEntryDraft,
-    WakeEntryTriggerKind, WakeExecutionMode,
+    ModelTier, PersonalityInstanceId, WakeEntryAuthoredBy, WakeEntryDraft, WakeEntryTriggerKind,
+    WakeExecutionMode,
 };
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
@@ -42,9 +42,15 @@ pub struct WakeEntryDraftInput {
     pub max_rounds: u16,
 }
 
-fn default_enabled() -> bool { true }
-fn default_execution_mode() -> WakeExecutionMode { WakeExecutionMode::SubstrateOnly }
-fn default_model_tier() -> ModelTier { ModelTier::Standard }
+fn default_enabled() -> bool {
+    true
+}
+fn default_execution_mode() -> WakeExecutionMode {
+    WakeExecutionMode::SubstrateOnly
+}
+fn default_model_tier() -> ModelTier {
+    ModelTier::Standard
+}
 
 impl WakeEntryDraftInput {
     /// Resolve into a `WakeEntryDraft`. Allocates a fresh UUID when

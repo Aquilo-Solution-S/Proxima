@@ -17,8 +17,8 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 #[tokio::test]
-async fn master_token_propose_creates_inspires_edge_to_per_token_self_perspective(
-) -> Result<(), Box<dyn std::error::Error>> {
+async fn master_token_propose_creates_inspires_edge_to_per_token_self_perspective()
+-> Result<(), Box<dyn std::error::Error>> {
     let Some((pg, db_name)) = migrated().await else {
         return Ok(());
     };

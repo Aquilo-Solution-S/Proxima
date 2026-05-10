@@ -40,7 +40,16 @@ pub enum Dialect {
 /// Coarse routing class for operator declarations. Substrate-fixed —
 /// expansion is a substrate PR per docs/10 §Model tiers.
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, specta::Type, schemars::JsonSchema,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    specta::Type,
+    schemars::JsonSchema,
 )]
 #[serde(rename_all = "snake_case")]
 pub enum ModelTier {

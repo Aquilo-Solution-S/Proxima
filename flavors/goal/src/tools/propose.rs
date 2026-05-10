@@ -1,7 +1,7 @@
 use proxima_core::mcp::{McpTool, McpToolCtx, McpToolError};
-use proxima_core::{EdgeId, GoalId};
 use proxima_core::relation::CORE_INSPIRES_RELATION;
 use proxima_core::verbs::goal_write::{GoalAuthorship, GoalDraft, GoalState};
+use proxima_core::{EdgeId, GoalId};
 use proxima_storage_pg::verbs::edge_append::{EdgeDraft, append_edge_in_tx};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

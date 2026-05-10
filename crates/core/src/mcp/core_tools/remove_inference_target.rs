@@ -29,8 +29,7 @@ pub struct RemoveInferenceTargetOutput {
 
 impl McpTool for RemoveInferenceTargetTool {
     const NAME: &'static str = "core/remove_inference_target";
-    const DESCRIPTION: &'static str =
-        "Remove an inference target by ref. Idempotent.";
+    const DESCRIPTION: &'static str = "Remove an inference target by ref. Idempotent.";
     type Args = RemoveInferenceTargetArgs;
     type Output = RemoveInferenceTargetOutput;
 

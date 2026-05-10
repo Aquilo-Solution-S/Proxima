@@ -159,7 +159,8 @@ async fn emit_abstraction_writes_core_authored_edge_from_root_perspective() {
         let commit_memory_id: MemoryId = commit_outcome.memory_id;
 
         let palette: Vec<Arc<dyn PersonalityTool>> = Vec::new();
-        let writeable_schemas = vec![<CommitSummaryV1 as AbstractionPayload>::SCHEMA_ID.to_string()];
+        let writeable_schemas =
+            vec![<CommitSummaryV1 as AbstractionPayload>::SCHEMA_ID.to_string()];
         let wake = WakeTokenContext {
             invocation_id: Uuid::now_v7(),
             personality_instance_id: inst.instance_id.into_inner(),

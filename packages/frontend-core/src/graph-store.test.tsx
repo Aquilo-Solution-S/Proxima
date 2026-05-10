@@ -205,6 +205,7 @@ describe("GraphStore snapshot loading", () => {
             expect(GRAPH_SNAPSHOT_LIMIT).toBe(5_000);
             expect(MAX_SNAPSHOT_EDGES).toBe(50_000);
             expect(queries[0]?.tombstones).toBe("PresentOnly");
+            expect(queries[0]?.personality_roots).toBe("ActiveOnly");
             dispose();
             resolve();
           });

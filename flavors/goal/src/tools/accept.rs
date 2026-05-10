@@ -1,8 +1,8 @@
 #![allow(clippy::missing_errors_doc)]
 
 use proxima_core::mcp::{EntityRef, McpTool, McpToolCtx, McpToolError};
-use proxima_core::{EdgeId, GoalId};
 use proxima_core::verbs::goal_write::{GoalAuthorship, GoalDraft, GoalState};
+use proxima_core::{EdgeId, GoalId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 

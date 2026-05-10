@@ -125,9 +125,7 @@ impl DevMcpServer {
             let identity = engine
                 .ensure_master_token_personality(&auth_ctx.owner, token_id)
                 .await
-                .map_err(|err| {
-                    ToolInvocationError::Tool(McpToolError::Other(err.to_string()))
-                })?;
+                .map_err(|err| ToolInvocationError::Tool(McpToolError::Other(err.to_string())))?;
             author.caller_self_perspective = Some(identity.self_perspective_memory_id);
         }
 
@@ -211,7 +209,15 @@ impl DevMcpServer {
         match result {
             Ok(result) => {
                 let message_tail = summarize_tool_content(&result.content);
-                append_tool_log(engine, auth, name, "succeeded", duration_ms, Some(message_tail)).await;
+                append_tool_log(
+                    engine,
+                    auth,
+                    name,
+                    "succeeded",
+                    duration_ms,
+                    Some(message_tail),
+                )
+                .await;
                 Ok(result.content)
             }
             Err(err) => {

@@ -1,4 +1,6 @@
-use proxima_core::verbs::query::{MemoryStore, QueryRequest, SupersessionStatus, TombstoneFilter};
+use proxima_core::verbs::query::{
+    MemoryStore, PersonalityRootFilter, QueryRequest, SupersessionStatus, TombstoneFilter,
+};
 use proxima_core::{OrgId, Owner, Principal, UserId};
 use uuid::Uuid;
 
@@ -23,4 +25,8 @@ fn query_request_defaults_to_present_only() {
     let req = QueryRequest::for_owner(owner);
     assert_eq!(req.supersession, SupersessionStatus::HeadsOnly);
     assert_eq!(req.tombstones, TombstoneFilter::PresentOnly);
+    assert_eq!(
+        req.personality_roots,
+        PersonalityRootFilter::IncludeInactive
+    );
 }

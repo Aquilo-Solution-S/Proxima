@@ -54,10 +54,16 @@ fn flavor_macro_registers_fact_schema() {
         .filter(|s| s.schema_id.as_str().starts_with("proxima-core/test-"))
         .collect();
     assert_eq!(macro_schemas.len(), 2);
-    assert_eq!(macro_schemas[0].schema_id.as_str(), "proxima-core/test-fact");
+    assert_eq!(
+        macro_schemas[0].schema_id.as_str(),
+        "proxima-core/test-fact"
+    );
     assert_eq!(macro_schemas[0].schema_version.into_inner(), 1);
     assert_eq!(macro_schemas[0].kind, PayloadKind::Fact);
-    assert_eq!(macro_schemas[1].schema_id.as_str(), "proxima-core/test-goal");
+    assert_eq!(
+        macro_schemas[1].schema_id.as_str(),
+        "proxima-core/test-goal"
+    );
     assert_eq!(macro_schemas[1].schema_version.into_inner(), 1);
     assert_eq!(macro_schemas[1].kind, PayloadKind::Goal);
 }

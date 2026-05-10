@@ -43,8 +43,8 @@ pub use list_substrate_tools::ListSubstrateToolsTool;
 pub use list_wake_entries::ListWakeEntriesTool;
 pub use list_workspace_tools::ListWorkspaceToolsTool;
 pub use payload::{
-    PersonalityConfigChangedCaller, PersonalityConfigChangedSubject,
-    PersonalityConfigChangedV1, PersonalityConfigChangedVerb,
+    PersonalityConfigChangedCaller, PersonalityConfigChangedSubject, PersonalityConfigChangedV1,
+    PersonalityConfigChangedVerb,
 };
 pub use register_inference_target::RegisterInferenceTargetTool;
 pub use remove_inference_target::RemoveInferenceTargetTool;

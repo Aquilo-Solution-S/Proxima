@@ -116,7 +116,10 @@ mod tests {
     #[test]
     fn unimplemented_error_renders() {
         let e = WorkspaceRunnerError::Unimplemented;
-        assert_eq!(e.to_string(), "workspace runner not implemented for this flavor");
+        assert_eq!(
+            e.to_string(),
+            "workspace runner not implemented for this flavor"
+        );
     }
 
     #[test]

@@ -199,6 +199,7 @@ describe("graph selectors", () => {
     expect(out.memories).toHaveLength(0);
     expect(out.filteredOutEntityCount).toBe(1);
   });
+
 });
 
 describe("oneHopLineage", () => {

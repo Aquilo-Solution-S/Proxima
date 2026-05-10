@@ -32,8 +32,7 @@ pub struct SetWakeEntriesOutput {
 
 impl McpTool for SetWakeEntriesTool {
     const NAME: &'static str = "core/set_wake_entries";
-    const DESCRIPTION: &'static str =
-        "Replace all wake entries for a personality. Carry-over entries \
+    const DESCRIPTION: &'static str = "Replace all wake entries for a personality. Carry-over entries \
          keep their identity by passing the W-handle from list_wake_entries \
          in wake_entry_id; omit wake_entry_id for new entries.";
     type Args = SetWakeEntriesArgs;
@@ -63,11 +62,13 @@ impl McpTool for SetWakeEntriesTool {
             let before = before_rows
                 .iter()
                 .find(|r| r.personality_instance_id == pid)
-                .map(|r| serde_json::json!({
-                    "wake_entry_count": r.wake_entries.len(),
-                    "wake_entry_ids": r.wake_entries.iter()
-                        .map(|e| e.wake_entry_id).collect::<Vec<_>>(),
-                }));
+                .map(|r| {
+                    serde_json::json!({
+                        "wake_entry_count": r.wake_entries.len(),
+                        "wake_entry_ids": r.wake_entries.iter()
+                            .map(|e| e.wake_entry_id).collect::<Vec<_>>(),
+                    })
+                });
 
             // Resolve inputs into drafts.
             let drafts = args
@@ -88,7 +89,12 @@ impl McpTool for SetWakeEntriesTool {
 
             let entry_handles: Vec<String> = drafts
                 .iter()
-                .map(|d| ctx.handles.assign_wake_entry(d.wake_entry_id).as_str().to_string())
+                .map(|d| {
+                    ctx.handles
+                        .assign_wake_entry(d.wake_entry_id)
+                        .as_str()
+                        .to_string()
+                })
                 .collect();
 
             let after = serde_json::json!({

@@ -1,8 +1,10 @@
 use std::collections::HashSet;
 use std::fmt::Write as _;
 
+use proxima_core::personality::ROOT_PERSONALITY_PERSPECTIVE_SCHEMA_ID;
 use proxima_core::verbs::query::{
-    EntityKind, MemoryRow, QueryRequest, QueryResponse, SupersessionStatus, TombstoneFilter,
+    EntityKind, MemoryRow, PersonalityRootFilter, QueryRequest, QueryResponse, SupersessionStatus,
+    TombstoneFilter,
 };
 use proxima_core::verbs::schema::{PayloadKind, SchemaInfo};
 use proxima_core::{Principal, StorageError};
@@ -55,6 +57,7 @@ pub(crate) async fn query_memories(
     }
 
     let stateful = validated_stateful_filters(req)?;
+    let root_schema_ids = active_root_schema_ids(req, schemas);
 
     // Build payload projection: for each F/A/P schema with a sidecar
     // table, LEFT JOIN the sidecar and emit a CASE expression that
@@ -114,6 +117,11 @@ pub(crate) async fn query_memories(
             }
         })
         .collect();
+    let root_schema_ids_param = (!root_schema_ids.is_empty()).then(|| {
+        let param = next_param;
+        next_param += 1;
+        param
+    });
     let case_param_base = next_param;
 
     // If there are schemas with sidecars, add the payload_json CASE expression.
@@ -221,6 +229,7 @@ pub(crate) async fn query_memories(
         }
     }
 
+    push_active_root_filter(&mut sql, root_schema_ids_param);
     push_tombstone_exclusion(&mut sql, req, &stateful, &stateful_params);
 
     sql.push_str(" ORDER BY m.created_at DESC LIMIT ");
@@ -242,6 +251,9 @@ pub(crate) async fn query_memories(
         if let Some(tombstone) = &sf.tombstone {
             q = q.bind(tombstone.value.clone());
         }
+    }
+    if !root_schema_ids.is_empty() {
+        q = q.bind(root_schema_ids);
     }
     // Bind (schema_id, schema_version) values for the CASE expression
     // in payload projection. Multiple schema versions can share the
@@ -334,6 +346,7 @@ async fn query_visible_memory_ids(
         return Ok(HashSet::new());
     }
     let stateful = validated_stateful_filters(req)?;
+    let root_schema_ids = active_root_schema_ids(req, &[]);
     let schema_id_filter = req.schema_id.as_ref().map(|s| s.as_str().to_string());
 
     let mut sql = String::from("SELECT m.memory_id FROM proxima_core.memories m");
@@ -375,6 +388,11 @@ async fn query_visible_memory_ids(
             }
         })
         .collect();
+    let root_schema_ids_param = (!root_schema_ids.is_empty()).then(|| {
+        let param = next_param;
+        next_param += 1;
+        param
+    });
 
     match req.entity_kind {
         None => {}
@@ -411,6 +429,7 @@ async fn query_visible_memory_ids(
             sql.push(')');
         }
     }
+    push_active_root_filter(&mut sql, root_schema_ids_param);
     push_tombstone_exclusion(&mut sql, req, &stateful, &stateful_params);
 
     let mut q = sqlx::query_as::<_, (uuid::Uuid,)>(&sql)
@@ -426,6 +445,9 @@ async fn query_visible_memory_ids(
         if let Some(tombstone) = &sf.tombstone {
             q = q.bind(tombstone.value.clone());
         }
+    }
+    if !root_schema_ids.is_empty() {
+        q = q.bind(root_schema_ids);
     }
     let rows = q
         .fetch_all(pool)
@@ -486,6 +508,57 @@ fn validated_stateful_filters(
         .iter()
         .map(validate_stateful_filter)
         .collect()
+}
+
+fn active_root_schema_ids(req: &QueryRequest, schemas: &[SchemaInfo]) -> Vec<String> {
+    if !matches!(req.personality_roots, PersonalityRootFilter::ActiveOnly) {
+        return Vec::new();
+    }
+    let mut ids = HashSet::from([ROOT_PERSONALITY_PERSPECTIVE_SCHEMA_ID.to_string()]);
+    for schema in schemas {
+        if matches!(schema.kind, PayloadKind::Perspective)
+            && is_legacy_self_perspective_schema(schema.schema_id.as_str())
+        {
+            ids.insert(schema.schema_id.as_str().to_string());
+        }
+    }
+    if schemas.is_empty() {
+        ids.extend([
+            "proxima-code/commit-summarizer-self-v1".to_string(),
+            "proxima-code/engineer-self-v1".to_string(),
+        ]);
+    }
+    ids.into_iter().collect()
+}
+
+fn is_legacy_self_perspective_schema(schema_id: &str) -> bool {
+    let Some(name) = schema_id.rsplit('/').next() else {
+        return false;
+    };
+    let Some((_, version)) = name.rsplit_once("-self-v") else {
+        return false;
+    };
+    !version.is_empty() && version.chars().all(|c| c.is_ascii_digit())
+}
+
+fn push_active_root_filter(sql: &mut String, root_schema_ids_param: Option<usize>) {
+    let Some(param) = root_schema_ids_param else {
+        return;
+    };
+    write!(
+        sql,
+        " AND (m.kind <> 'Perspective' \
+          OR NOT (m.schema_id = ANY(${param}::text[])) \
+          OR EXISTS ( \
+            SELECT 1 FROM proxima_core.personality p \
+            WHERE p.current_root_perspective_memory_id = m.memory_id \
+              AND p.owner_principal_kind = m.owner_principal_kind \
+              AND p.owner_principal_id = m.owner_principal_id \
+              AND p.owner_org_id = m.owner_org_id \
+              AND p.status = 'active' \
+          ))",
+    )
+    .expect("write to String is infallible");
 }
 
 fn stateful_alias(idx: usize) -> String {

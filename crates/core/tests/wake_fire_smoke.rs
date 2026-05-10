@@ -16,9 +16,14 @@
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
+use proxima_core::FlavorRegistry;
 use proxima_core::auth::NoAuth;
 use proxima_core::engine::Engine;
 use proxima_core::outbox::{ChangeEvent, ChangeEventKind, EntityKind, EntityRef};
+use proxima_core::personality::workspace::{
+    WorkspaceOutcome, WorkspacePrepareInput, WorkspacePreparedRun, WorkspaceRunRecord,
+    WorkspaceRunner, WorkspaceRunnerError,
+};
 use proxima_core::personality::{
     ChangeEventForWake, MemorySnapshot, PersonalityInstanceId, PersonalityRuntimeRow,
     RootPersonalityPerspectiveRow, SidecarSpec, WakeChainDepth, WakeEntryAuthoredBy,
@@ -32,12 +37,7 @@ use proxima_core::verbs::event_ingest::{EventDraft, EventIngestOutcome};
 use proxima_core::verbs::goal_write::{GoalDraft, GoalWriteOutcome};
 use proxima_core::verbs::query::MemoryStore;
 use proxima_core::verbs::query::{QueryRequest, QueryResponse};
-use proxima_core::personality::workspace::{
-    WorkspaceOutcome, WorkspacePrepareInput, WorkspacePreparedRun, WorkspaceRunRecord,
-    WorkspaceRunner, WorkspaceRunnerError,
-};
 use proxima_core::verbs::schema::SchemaInfo;
-use proxima_core::FlavorRegistry;
 use proxima_core::wake::fire::{FireWakeEntryInput, fire_wake_entry};
 use proxima_core::wake::target_adapter::{
     TargetAdapter, TargetAdapterError, TargetInvocation, TargetOutcome, TargetOutcomeKind,
@@ -602,13 +602,9 @@ impl FireFixture {
         );
         let frozen_registry = registry.freeze();
         let engine = Arc::new(
-            Engine::new(
-                frozen_registry,
-                MemoryStore::new(),
-                Box::new(resolver),
-            )
-            .with_storage(mock.clone() as Arc<dyn Storage>)
-            .with_recipes_root(recipes_root),
+            Engine::new(frozen_registry, MemoryStore::new(), Box::new(resolver))
+                .with_storage(mock.clone() as Arc<dyn Storage>)
+                .with_recipes_root(recipes_root),
         );
         engine
             .set_mcp_url("http://127.0.0.1:1/mcp".to_string())

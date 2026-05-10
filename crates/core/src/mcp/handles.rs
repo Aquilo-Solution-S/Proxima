@@ -268,8 +268,10 @@ mod tests {
         let _ = table.assign_personality(p);
         let m = MemoryId::new(uuid::Uuid::now_v7());
         let mh = table.assign_memory(m);
-        assert!(table.resolve_personality(mh.as_str()).is_none(),
-            "memory handle must not resolve as personality");
+        assert!(
+            table.resolve_personality(mh.as_str()).is_none(),
+            "memory handle must not resolve as personality"
+        );
     }
 
     #[test]

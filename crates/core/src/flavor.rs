@@ -558,7 +558,10 @@ mod tests {
             &crate::SchemaId::new("core/personality_config_changed_v1".into()),
             crate::SchemaVersion::new(1),
         );
-        assert!(info.is_some(), "schema must be registered in default registry");
+        assert!(
+            info.is_some(),
+            "schema must be registered in default registry"
+        );
         assert_eq!(info.unwrap().kind, PayloadKind::Fact);
     }
 
