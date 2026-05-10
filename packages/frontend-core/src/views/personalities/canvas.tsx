@@ -117,14 +117,15 @@ export const PersonalityCanvas: Component<CanvasProps> = (props) => {
                 <EdgeShape
                   edge={edge}
                   selected={isEdgeSelected(props.selection, edge)}
-                  onSelect={() =>
+                  onSelect={() => {
+                    if (edge.kind !== "trigger") return;
                     props.onSelect({
                       kind: "edge",
-                      schema_id: edge.schema_id,
+                      schema_id: edge.shape_id,
                       tgt_instance_id: edge.tgt_instance_id,
                       tgt_entry_index: edge.tgt_entry_index,
-                    })
-                  }
+                    });
+                  }}
                 />
               )}
             </For>
@@ -153,8 +154,9 @@ const isEdgeSelected = (
   selection: PersonalitySelection,
   edge: CanvasEdge,
 ): boolean =>
+  edge.kind === "trigger" &&
   selection?.kind === "edge" &&
-  selection.schema_id === edge.schema_id &&
+  selection.schema_id === edge.shape_id &&
   selection.tgt_instance_id === edge.tgt_instance_id &&
   selection.tgt_entry_index === edge.tgt_entry_index;
 
@@ -162,22 +164,28 @@ const EdgeShape: Component<{
   edge: CanvasEdge;
   selected: boolean;
   onSelect: () => void;
-}> = (props) => (
-  <g
-    class={`personality-edge${props.selected ? " is-selected" : ""}`}
-    onClick={(event) => {
-      event.stopPropagation();
-      props.onSelect();
-    }}
-  >
-    <path
-      d={props.edge.path}
-      class="personality-edge-line"
-      marker-end="url(#personality-arrow)"
-    />
-    <path d={props.edge.path} class="personality-edge-hit" />
-  </g>
-);
+}> = (props) => {
+  const isProduces = () => props.edge.kind === "produces";
+  return (
+    <g
+      class={`personality-edge${props.selected ? " is-selected" : ""}${
+        isProduces() ? " is-produces" : ""
+      }`}
+      onClick={(event) => {
+        if (isProduces()) return; // produces edges are non-selectable in v1
+        event.stopPropagation();
+        props.onSelect();
+      }}
+    >
+      <path
+        d={props.edge.path}
+        class="personality-edge-line"
+        marker-end="url(#personality-arrow)"
+      />
+      <path d={props.edge.path} class="personality-edge-hit" />
+    </g>
+  );
+};
 
 const NodeShell: Component<{
   node: CanvasNode;
@@ -192,26 +200,35 @@ const NodeShell: Component<{
     "min-height": `${props.node.height}px`,
   });
 
+  if (props.node.kind === "schema") {
+    return (
+      <div
+        class="personality-canvas-schema"
+        style={style()}
+        data-canvas-node="schema"
+      >
+        <Mono>{(props.node.data as { schema_id: string }).schema_id}</Mono>
+      </div>
+    );
+  }
+  if (props.node.kind === "relation") {
+    return (
+      <div
+        class="personality-canvas-relation"
+        style={style()}
+        data-canvas-node="relation"
+      >
+        <Mono>{(props.node.data as { relation_id: string }).relation_id}</Mono>
+      </div>
+    );
+  }
   return (
-    <Show
-      when={props.node.kind === "personality"}
-      fallback={
-        <div
-          class="personality-canvas-schema"
-          style={style()}
-          data-canvas-node="schema"
-        >
-          <Mono>{(props.node.data as { schema_id: string }).schema_id}</Mono>
-        </div>
-      }
-    >
-      <PersonalityCardNode
-        node={props.node}
-        selection={props.selection}
-        drafts={props.drafts}
-        onSelect={props.onSelect}
-      />
-    </Show>
+    <PersonalityCardNode
+      node={props.node}
+      selection={props.selection}
+      drafts={props.drafts}
+      onSelect={props.onSelect}
+    />
   );
 };
 

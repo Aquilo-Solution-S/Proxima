@@ -280,6 +280,23 @@
   font-size: 11px;
 }
 
+.personality-canvas-relation {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 12px;
+  background: var(--surface-2, #1f2937);
+  color: var(--text-1, #e5e7eb);
+  border: 1px solid var(--border-2, #4b5563);
+  border-radius: 999px;
+  font-size: 11px;
+  pointer-events: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* ── Edges ────────────────────────────────────────────────────── */
 
 .personality-edge {
@@ -307,6 +324,15 @@
 
 .personality-edge.is-selected {
   color: var(--accent-commit);
+}
+
+.personality-edge.is-produces .personality-edge-line {
+  stroke-dasharray: 4 4;
+  opacity: 0.7;
+}
+
+.personality-edge.is-produces .personality-edge-hit {
+  pointer-events: none;
 }
 
 /* ── Inspector ────────────────────────────────────────────────── */
