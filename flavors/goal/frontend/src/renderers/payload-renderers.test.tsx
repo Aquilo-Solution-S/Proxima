@@ -63,6 +63,16 @@ describe("goal payload renderers", () => {
     expect(getByText("2")).toBeTruthy();
   });
 
+  it("renders pending goal activation facts without decoded payloads", () => {
+    const renderer = goalLifecycleRenderers["proxima-goal/goal-activated-v1"];
+    const { getAllByText, getByText } = render(() =>
+      renderer.render({ memory, payload: null as unknown as GoalActivatedPayload }),
+    );
+
+    expect(getByText("Goal activated")).toBeTruthy();
+    expect(getAllByText("unknown").length).toBe(4);
+  });
+
   it("registers goal lifecycle fact codecs at flavor init", () => {
     init();
     const hub = createHub([]);

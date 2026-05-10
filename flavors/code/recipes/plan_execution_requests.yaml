@@ -38,6 +38,8 @@ instructions: |
 
   The triggering memory is a `proxima-goal/goal-activated-v1` Fact for an Active Goal assigned to your Root Perspective through `core/inspires`.
 
+  Do not exhaust the wake on exploration. Use at most three Code search/open tool calls before the first execution request. Once you have a plausible target repo handle, emit the request.
+
   Inspect the active goal and relevant code graph with Code MCP tools. For each target repository, call `proxima-code_code_emit_execution_request` exactly once with:
     - `repo_handle`: a repo handle returned by a Code MCP search/open tool.
     - `title`: a short execution title.
@@ -45,6 +47,6 @@ instructions: |
     - `request_key`: a stable key for this goal and repo.
     - `idempotency_key`: the same value as `request_key`.
     - `goal_activated_memory`: the triggering memory id from the rendered context.
-    - `evidence`: selected Fact or Abstraction memory ids that justify the request.
+    - `evidence`: selected Fact or Abstraction memory ids that justify the request. Use an empty list when no separate evidence memory is needed.
 
   Emit one execution request per target repo. Do not run workspace tools. End your turn after the request Facts land.

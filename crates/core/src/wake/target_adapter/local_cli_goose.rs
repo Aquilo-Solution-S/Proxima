@@ -86,7 +86,7 @@ impl TargetAdapter for LocalCliGooseAdapter {
         let turn_count = parse_turn_count(&stderr_full).or_else(|| parse_turn_count(&stdout_full));
 
         let truncated =
-            stderr_full.contains("turn limit") || stderr_full.contains("--max-turns reached");
+            output_indicates_turn_limit(&stdout_full) || output_indicates_turn_limit(&stderr_full);
         let kind = if output.status.success() {
             if truncated {
                 TargetOutcomeKind::Truncated
@@ -124,6 +124,14 @@ fn parse_turn_count(s: &str) -> Option<i32> {
     caps.get(1)?.as_str().parse().ok()
 }
 
+fn output_indicates_turn_limit(s: &str) -> bool {
+    let lower = s.to_ascii_lowercase();
+    lower.contains("turn limit")
+        || lower.contains("--max-turns reached")
+        || lower.contains("maximum number of actions")
+        || lower.contains("max actions")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -154,5 +162,12 @@ mod tests {
             inv_with_cwd.cwd.as_deref(),
             Some(std::path::Path::new("/tmp/some-worktree")),
         );
+    }
+
+    #[test]
+    fn goose_max_actions_message_counts_as_turn_limit() {
+        assert!(output_indicates_turn_limit(
+            "I've reached the maximum number of actions I can do without user input."
+        ));
     }
 }
