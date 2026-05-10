@@ -7,8 +7,8 @@ pub mod core_tools;
 pub mod handles;
 
 pub use core_tools::{
-    PersonalityConfigChangedCaller, PersonalityConfigChangedSubject,
-    PersonalityConfigChangedV1, PersonalityConfigChangedVerb,
+    AuditEmit, PersonalityConfigChangedCaller, PersonalityConfigChangedSubject,
+    PersonalityConfigChangedV1, PersonalityConfigChangedVerb, emit_personality_config_changed,
 };
 pub use handles::{EntityRef, Handle, HandleTable};
 

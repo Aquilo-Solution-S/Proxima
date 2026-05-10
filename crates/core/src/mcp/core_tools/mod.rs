@@ -4,8 +4,10 @@
 //!
 //! See docs/superpowers/specs/2026-05-10-personality-mcp-crud-design.md.
 
+pub mod audit;
 pub mod payload;
 
+pub use audit::{AuditEmit, emit_personality_config_changed};
 pub use payload::{
     PersonalityConfigChangedCaller, PersonalityConfigChangedSubject,
     PersonalityConfigChangedV1, PersonalityConfigChangedVerb,
