@@ -1,17 +1,35 @@
 //! Idempotent lookup-or-mint of the per-master-token shell-author
 //! personality. Used as provenance for every master-token MCP call.
+//!
+//! # Concurrency
+//!
+//! The slow path (cold start for a `(token, owner)` pair) serializes
+//! concurrent callers using a session-level PG advisory lock keyed on
+//! `(org_id, master_token_id)`. Without it, two callers could both
+//! observe an empty mapping, both mint a personality, and only one of
+//! the two `INSERT ... ON CONFLICT DO NOTHING` rows would land — the
+//! losing caller's personality (plus its memories) becomes an orphan,
+//! and that caller returns a different `instance_id` than the canonical
+//! mapping points to.
+//!
+//! Lock leak window: if the calling future is cancelled mid-section,
+//! the lock is released only when the underlying connection is recycled
+//! by the pool. A leaked lock blocks future calls for the same
+//! `(org, token)` only — it does not block the rest of the system.
 
 use proxima_core::{
     InstantiatePersonalityRequest, MasterTokenPersonality, MemoryId, Owner,
     PersonalityInstanceId, Principal, StorageError,
 };
-use sqlx::PgPool;
+use sqlx::{PgConnection, PgPool};
 use uuid::Uuid;
 
 use super::consolidate;
+use crate::error::map_err;
 
 const SHELL_AUTHOR_DISPLAY_NAME: &str = "shell-author";
 const SHELL_AUTHOR_PURPOSE: &str = "Per-master-token MCP client identity";
+const LOCK_KEY_DOMAIN: &[u8] = b"master_token_personality_lock_v1";
 
 /// Idempotent lookup-or-mint of the per-master-token shell-author
 /// personality. Used as provenance for every master-token MCP call.
@@ -27,35 +45,58 @@ pub async fn ensure_master_token_personality(
 ) -> Result<MasterTokenPersonality, StorageError> {
     let (kind, principal_id, org_id) = owner_columns(owner);
 
-    // Fast path: existing mapping.
-    let row: Option<(Uuid, Uuid)> = sqlx::query_as(
-        "SELECT mtp.personality_instance_id,
-                p.current_root_perspective_memory_id
-         FROM proxima_core.master_token_personality mtp
-         JOIN proxima_core.personality p
-           ON p.personality_instance_id = mtp.personality_instance_id
-         WHERE mtp.master_token_id = $1
-           AND mtp.owner_principal_kind = $2
-           AND mtp.owner_principal_id = $3
-           AND mtp.owner_org_id = $4
-         LIMIT 1",
-    )
-    .bind(master_token_id)
-    .bind(kind)
-    .bind(principal_id)
-    .bind(org_id)
-    .fetch_optional(pool)
-    .await
-    .map_err(|err| StorageError::Internal(err.to_string()))?;
-
-    if let Some((instance_id, root_id)) = row {
-        return Ok(MasterTokenPersonality {
-            instance_id: PersonalityInstanceId::new(instance_id),
-            self_perspective_memory_id: MemoryId::new(root_id),
-        });
+    // Fast path: lock-free read. Hits on every call after the first.
+    if let Some(found) = lookup_pool(pool, master_token_id, kind, principal_id, org_id).await? {
+        return Ok(found);
     }
 
-    // Slow path: instantiate, then map.
+    // Slow path: take a session-level advisory lock on a pinned
+    // connection so concurrent first-connects can't both mint.
+    let mut conn = pool.acquire().await.map_err(map_err)?;
+    let key = lock_key(owner.org_id.into_inner(), master_token_id);
+    sqlx::query("SELECT pg_advisory_lock($1)")
+        .bind(key)
+        .execute(&mut *conn)
+        .await
+        .map_err(map_err)?;
+
+    let result = mint_under_lock(
+        &mut conn,
+        pool,
+        owner,
+        master_token_id,
+        kind,
+        principal_id,
+        org_id,
+    )
+    .await;
+
+    // Always release on the success path. On error or cancellation the
+    // connection drop returns it to the pool with the lock still held;
+    // it releases when the connection is closed (sqlx max_lifetime) or
+    // when a future caller on that same connection invokes unlock.
+    let _ = sqlx::query("SELECT pg_advisory_unlock($1)")
+        .bind(key)
+        .execute(&mut *conn)
+        .await;
+
+    result
+}
+
+async fn mint_under_lock(
+    conn: &mut PgConnection,
+    pool: &PgPool,
+    owner: &Owner,
+    master_token_id: Uuid,
+    kind: &'static str,
+    principal_id: Uuid,
+    org_id: Uuid,
+) -> Result<MasterTokenPersonality, StorageError> {
+    // Re-check inside the lock: a peer may have minted while we waited.
+    if let Some(found) = lookup_conn(conn, master_token_id, kind, principal_id, org_id).await? {
+        return Ok(found);
+    }
+
     let req = InstantiatePersonalityRequest {
         owner: owner.clone(),
         display_name: SHELL_AUTHOR_DISPLAY_NAME.into(),
@@ -68,18 +109,16 @@ pub async fn ensure_master_token_personality(
         "INSERT INTO proxima_core.master_token_personality (
              master_token_id, owner_principal_kind, owner_principal_id,
              owner_org_id, personality_instance_id
-         ) VALUES ($1, $2, $3, $4, $5)
-         ON CONFLICT (master_token_id, owner_principal_kind,
-                      owner_principal_id, owner_org_id) DO NOTHING",
+         ) VALUES ($1, $2, $3, $4, $5)",
     )
     .bind(master_token_id)
     .bind(kind)
     .bind(principal_id)
     .bind(org_id)
     .bind(instance_id.into_inner())
-    .execute(pool)
+    .execute(&mut *conn)
     .await
-    .map_err(|err| StorageError::Internal(err.to_string()))?;
+    .map_err(map_err)?;
 
     let root_id: Uuid = sqlx::query_scalar(
         "SELECT current_root_perspective_memory_id
@@ -87,14 +126,80 @@ pub async fn ensure_master_token_personality(
          WHERE personality_instance_id = $1",
     )
     .bind(instance_id.into_inner())
-    .fetch_one(pool)
+    .fetch_one(&mut *conn)
     .await
-    .map_err(|err| StorageError::Internal(err.to_string()))?;
+    .map_err(map_err)?;
 
     Ok(MasterTokenPersonality {
         instance_id,
         self_perspective_memory_id: MemoryId::new(root_id),
     })
+}
+
+async fn lookup_pool(
+    pool: &PgPool,
+    master_token_id: Uuid,
+    kind: &'static str,
+    principal_id: Uuid,
+    org_id: Uuid,
+) -> Result<Option<MasterTokenPersonality>, StorageError> {
+    let row: Option<(Uuid, Uuid)> = sqlx::query_as(LOOKUP_SQL)
+        .bind(master_token_id)
+        .bind(kind)
+        .bind(principal_id)
+        .bind(org_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(map_err)?;
+    Ok(row.map(into_personality))
+}
+
+async fn lookup_conn(
+    conn: &mut PgConnection,
+    master_token_id: Uuid,
+    kind: &'static str,
+    principal_id: Uuid,
+    org_id: Uuid,
+) -> Result<Option<MasterTokenPersonality>, StorageError> {
+    let row: Option<(Uuid, Uuid)> = sqlx::query_as(LOOKUP_SQL)
+        .bind(master_token_id)
+        .bind(kind)
+        .bind(principal_id)
+        .bind(org_id)
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(map_err)?;
+    Ok(row.map(into_personality))
+}
+
+const LOOKUP_SQL: &str = "SELECT mtp.personality_instance_id,
+            p.current_root_perspective_memory_id
+     FROM proxima_core.master_token_personality mtp
+     JOIN proxima_core.personality p
+       ON p.personality_instance_id = mtp.personality_instance_id
+     WHERE mtp.master_token_id = $1
+       AND mtp.owner_principal_kind = $2
+       AND mtp.owner_principal_id = $3
+       AND mtp.owner_org_id = $4
+     LIMIT 1";
+
+fn into_personality((instance_id, root_id): (Uuid, Uuid)) -> MasterTokenPersonality {
+    MasterTokenPersonality {
+        instance_id: PersonalityInstanceId::new(instance_id),
+        self_perspective_memory_id: MemoryId::new(root_id),
+    }
+}
+
+fn lock_key(org_id: Uuid, master_token_id: Uuid) -> i64 {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(LOCK_KEY_DOMAIN);
+    hasher.update(org_id.as_bytes());
+    hasher.update(master_token_id.as_bytes());
+    let hash = hasher.finalize();
+    let bytes: [u8; 8] = hash.as_bytes()[..8]
+        .try_into()
+        .expect("blake3 hash is 32 bytes");
+    i64::from_le_bytes(bytes)
 }
 
 fn owner_columns(owner: &Owner) -> (&'static str, Uuid, Uuid) {
