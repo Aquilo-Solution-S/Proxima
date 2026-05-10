@@ -348,6 +348,18 @@ Verification:
 
 ### M2 — Wake on goal-activated (substrate-only smoke test)
 
+**Status:** Landed 2026-05-10.
+Acceptance verified:
+[`flavors/code/tests/goal_activated_wake_pg.rs`](../../../flavors/code/tests/goal_activated_wake_pg.rs)
+(MCP `goal_propose` + `goal_accept` emits `goal-activated-v1`, the
+SubstrateOnly Executor wake fires, and `core/emit_perspective` lands a
+Perspective with `core/authored` from the Executor Root Perspective).
+Verification:
+`cargo fmt --check`;
+`cargo test -p proxima-code --test goal_activated_wake_pg`;
+`cargo clippy -p proxima-code --all-targets`;
+`cargo check --workspace`.
+
 - Author a temporary Code-flavor Executor personality with
   `execution_mode = SubstrateOnly` (the workspace runner is still the
   `Unimplemented` stub from workspace Phase 1). Recipe: a no-op Goose
