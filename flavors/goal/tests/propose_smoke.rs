@@ -4,7 +4,6 @@ use common::{
     ctx, drop_db, insert_abstraction, insert_self_perspective, migrated, other_owner_fixture,
     owner_fixture,
 };
-use proxima_core::GoalId;
 use proxima_core::mcp::McpTool;
 use proxima_core::verbs::goal_write::GoalState;
 use proxima_flavor_goal::tools::propose::{ProposeArgs, ProposeTool};
@@ -37,13 +36,18 @@ async fn propose_writes_goal_and_motivated_by_atomically() -> Result<(), Box<dyn
             },
         )
         .await?;
+        let goal_id = ctx
+            .handles
+            .resolve_goal(&outcome.handle)
+            .expect("goal handle resolves")
+            .into_inner();
 
         let goal: (String, String, String, String, Vec<u8>) = sqlx::query_as(
             "SELECT state, authorship_kind, title, text, payload
              FROM proxima_core.goals
              WHERE goal_id = $1",
         )
-        .bind(outcome.uuid)
+        .bind(goal_id)
         .fetch_one(pg.pool())
         .await?;
         assert_eq!(goal.0, "Proposed");
@@ -56,14 +60,11 @@ async fn propose_writes_goal_and_motivated_by_atomically() -> Result<(), Box<dyn
             "SELECT count(*) FROM proxima_core.edges
              WHERE source_goal_id = $1 AND relation = 'proxima-goal/motivated-by'",
         )
-        .bind(outcome.uuid)
+        .bind(goal_id)
         .fetch_one(pg.pool())
         .await?;
         assert_eq!(edge_count, 1);
-        assert_eq!(outcome.inspires_edge_id, None);
-
-        let handle = ctx.handles.assign_goal(GoalId::new(outcome.uuid));
-        assert_eq!(handle.as_str(), outcome.handle);
+        assert_eq!(outcome.inspires_edge_handle, None);
         Ok::<(), Box<dyn std::error::Error>>(())
     }
     .await;
@@ -86,7 +87,7 @@ async fn propose_writes_inspires_edge_for_personality_caller()
         ctx.caller_self_perspective = Some(self_id);
 
         let outcome = ProposeTool::call(
-            ctx,
+            ctx.clone(),
             ProposeArgs {
                 payload: GoalPayloadInput::SimpleText(SimpleTextGoalBody {
                     title: "connect goal".into(),
@@ -97,10 +98,21 @@ async fn propose_writes_inspires_edge_for_personality_caller()
             },
         )
         .await?;
+        let goal_id = ctx
+            .handles
+            .resolve_goal(&outcome.handle)
+            .expect("goal handle resolves")
+            .into_inner();
 
-        let inspires_edge_id = outcome
-            .inspires_edge_id
+        let inspires_edge_handle = outcome
+            .inspires_edge_handle
+            .as_deref()
             .expect("personality caller writes core/inspires edge");
+        let inspires_edge_id = ctx
+            .handles
+            .resolve_edge(inspires_edge_handle)
+            .expect("inspires edge handle resolves")
+            .into_inner();
         let row: (String, uuid::Uuid, uuid::Uuid, String, Option<uuid::Uuid>) = sqlx::query_as(
             "SELECT relation, source_goal_id, target_memory_id, authorship_kind,
                     authorship_owner_memory_id
@@ -111,7 +123,7 @@ async fn propose_writes_inspires_edge_for_personality_caller()
         .fetch_one(pg.pool())
         .await?;
         assert_eq!(row.0, "core/inspires");
-        assert_eq!(row.1, outcome.uuid);
+        assert_eq!(row.1, goal_id);
         assert_eq!(row.2, self_id.into_inner());
         assert_eq!(row.3, "ExternalAgent");
         assert_eq!(row.4, Some(self_id.into_inner()));

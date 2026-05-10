@@ -1,6 +1,6 @@
 use proxima_core::mcp::{EntityRef, McpTool, McpToolCtx, McpToolError};
 use proxima_core::{
-    AbstractionPayload, CORE_DERIVED_FROM_RELATION, MemoryId, SchemaId, SchemaVersion,
+    AbstractionPayload, CORE_DERIVED_FROM_RELATION, EdgeId, MemoryId, SchemaId, SchemaVersion,
 };
 use proxima_storage_pg::verbs::derive_append::{DerivedDraft, append_derived_in_tx};
 use proxima_storage_pg::verbs::edge_append::{EdgeDraft, append_edge_in_tx};
@@ -49,9 +49,8 @@ impl DerivedKind {
 #[derive(Debug, Serialize)]
 pub struct DeriveOutput {
     pub handle: String,
-    pub uuid: uuid::Uuid,
     pub idempotent_replay: bool,
-    pub provenance_edges: Vec<uuid::Uuid>,
+    pub provenance_edge_handles: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -146,7 +145,7 @@ impl McpTool for DeriveTool {
                 .await
                 .map_err(McpToolError::Storage)?;
 
-            let mut provenance_edges = Vec::new();
+            let mut provenance_edge_handles = Vec::new();
             if !outcome.idempotent_replay {
                 let relation = ctx
                     .registry
@@ -174,7 +173,8 @@ impl McpTool for DeriveTool {
                     append_edge_in_tx(&mut tx, &edge_draft, None)
                         .await
                         .map_err(McpToolError::Storage)?;
-                    provenance_edges.push(edge_id);
+                    let handle = ctx.handles.assign_edge(EdgeId::new(edge_id));
+                    provenance_edge_handles.push(handle.as_str().to_string());
                 }
             }
             tx.commit().await.map_err(map_storage)?;
@@ -182,9 +182,8 @@ impl McpTool for DeriveTool {
             let handle = ctx.handles.assign_memory(MemoryId::new(memory_id));
             Ok(DeriveOutput {
                 handle: handle.as_str().to_string(),
-                uuid: memory_id,
                 idempotent_replay: outcome.idempotent_replay,
-                provenance_edges,
+                provenance_edge_handles,
             })
         })
     }

@@ -1,7 +1,7 @@
 #![allow(clippy::missing_errors_doc)]
 
-use proxima_core::GoalId;
 use proxima_core::mcp::{EntityRef, McpTool, McpToolCtx, McpToolError};
+use proxima_core::{EdgeId, GoalId};
 use proxima_core::verbs::goal_write::{GoalAuthorship, GoalDraft, GoalState};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -22,9 +22,8 @@ pub struct AcceptArgs {
 #[derive(Debug, Serialize)]
 pub struct AcceptOutput {
     pub handle: String,
-    pub uuid: uuid::Uuid,
-    pub supersedes: uuid::Uuid,
-    pub edge_uuids: Vec<uuid::Uuid>,
+    pub supersedes: String,
+    pub edge_handles: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -56,12 +55,13 @@ pub async fn accept_goal(
         .ok_or_else(|| McpToolError::UnknownHandle(args.proposal.clone()))?
     {
         EntityRef::Goal(id) => id,
-        EntityRef::Memory(_) | EntityRef::Edge(_) => {
+        EntityRef::Memory(_) | EntityRef::Edge(_) | EntityRef::Repo(_) => {
             return Err(McpToolError::InvalidInput(
                 "proposal must resolve to a Goal handle".into(),
             ));
         }
     };
+    let supersedes_handle = ctx.handles.assign_goal(proposal_id);
 
     let mut tx = ctx.pool.begin().await.map_err(map_storage)?;
     let payload = match args.payload {
@@ -95,10 +95,18 @@ pub async fn accept_goal(
     tx.commit().await.map_err(map_storage)?;
 
     let handle = ctx.handles.assign_goal(GoalId::new(goal_id));
+    let edge_handles = edge_uuids
+        .into_iter()
+        .map(|edge_id| {
+            ctx.handles
+                .assign_edge(EdgeId::new(edge_id))
+                .as_str()
+                .to_string()
+        })
+        .collect();
     Ok(AcceptOutput {
         handle: handle.as_str().to_string(),
-        uuid: goal_id,
-        supersedes: proposal_id.into_inner(),
-        edge_uuids,
+        supersedes: supersedes_handle.as_str().to_string(),
+        edge_handles,
     })
 }

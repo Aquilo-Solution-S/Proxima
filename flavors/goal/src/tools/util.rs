@@ -225,7 +225,7 @@ pub async fn validate_evidence_in_owner(
                     target_goal_id: None,
                 });
             }
-            EntityRef::Goal(_) | EntityRef::Edge(_) => {
+            EntityRef::Goal(_) | EntityRef::Edge(_) | EntityRef::Repo(_) => {
                 return Err(McpToolError::LayeringViolation(format!(
                     "evidence {handle} must resolve to Fact or Abstraction"
                 )));

@@ -9,7 +9,7 @@ use super::sql::{CHUNK_HEADS_CTE, map_storage, owner_principal};
 pub struct CodeSearchChunksArgs {
     pub query: String,
     pub limit: Option<u32>,
-    pub repo_id: Option<uuid::Uuid>,
+    pub repo_handle: Option<String>,
     pub language: Option<String>,
     pub chunk_type: Option<String>,
     #[serde(default = "default_include_calls")]
@@ -29,8 +29,7 @@ pub struct CodeSearchChunksOutput {
 #[derive(Debug, Serialize)]
 pub struct ChunkMatch {
     pub handle: String,
-    pub uuid: uuid::Uuid,
-    pub repo_id: uuid::Uuid,
+    pub repo_handle: String,
     pub file_path: String,
     pub chunk_index: i32,
     pub language: Option<String>,
@@ -44,7 +43,6 @@ pub struct ChunkMatch {
 #[derive(Debug, Serialize)]
 pub struct CallEdge {
     pub edge_handle: String,
-    pub edge_uuid: uuid::Uuid,
     pub source: Option<String>,
     pub target: Option<String>,
     pub callee_name: String,
@@ -75,6 +73,14 @@ impl McpTool for CodeSearchChunksTool {
             let limit = args.limit.unwrap_or(12).min(50);
             let (owner_kind, owner_principal_id) = owner_principal(&ctx.owner);
             let exact_pattern = like_pattern(query);
+            let repo_id = match args.repo_handle.as_deref() {
+                Some(handle) => Some(
+                    ctx.handles
+                        .resolve_repo(handle)
+                        .ok_or_else(|| McpToolError::UnknownHandle(handle.to_string()))?,
+                ),
+                None => None,
+            };
 
             let sql = format!(
                 "WITH {CHUNK_HEADS_CTE}, q AS (SELECT websearch_to_tsquery('pg_catalog.simple'::regconfig, $3) AS tsq)
@@ -104,7 +110,7 @@ impl McpTool for CodeSearchChunksTool {
                 .bind(owner_kind)
                 .bind(owner_principal_id)
                 .bind(query)
-                .bind(args.repo_id)
+                .bind(repo_id)
                 .bind(args.language.as_deref())
                 .bind(exact_pattern)
                 .bind(args.chunk_type.as_deref())
@@ -117,11 +123,11 @@ impl McpTool for CodeSearchChunksTool {
             let mut chunk_ids = Vec::with_capacity(rows.len());
             for row in rows {
                 let handle = ctx.handles.assign_memory(MemoryId::new(row.memory_id));
+                let repo_handle = ctx.handles.assign_repo(row.repo_id);
                 chunk_ids.push(row.memory_id);
                 matches.push(ChunkMatch {
                     handle: handle.as_str().to_string(),
-                    uuid: row.memory_id,
-                    repo_id: row.repo_id,
+                    repo_handle: repo_handle.as_str().to_string(),
                     file_path: row.file_path,
                     chunk_index: row.chunk_index,
                     language: row.language,
@@ -177,7 +183,6 @@ async fn load_call_edges(
             let edge_handle = ctx.handles.assign_edge(EdgeId::new(row.edge_id));
             CallEdge {
                 edge_handle: edge_handle.as_str().to_string(),
-                edge_uuid: row.edge_id,
                 source: row.source_memory_id.map(|id| {
                     ctx.handles
                         .assign_memory(MemoryId::new(id))

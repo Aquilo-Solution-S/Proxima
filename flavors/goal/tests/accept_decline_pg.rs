@@ -29,7 +29,12 @@ async fn propose_with_evidence(
         },
     )
     .await?;
-    Ok(outcome.uuid)
+    let goal_id = ctx
+        .handles
+        .resolve_goal(&outcome.handle)
+        .expect("goal handle resolves")
+        .into_inner();
+    Ok(goal_id)
 }
 
 async fn propose_for_self(
@@ -51,13 +56,21 @@ async fn propose_for_self(
         },
     )
     .await?;
-    Ok((
-        ctx,
-        outcome.uuid,
-        outcome
-            .inspires_edge_id
-            .expect("personality proposal writes core/inspires"),
-    ))
+    let goal_id = ctx
+        .handles
+        .resolve_goal(&outcome.handle)
+        .expect("goal handle resolves")
+        .into_inner();
+    let inspires_edge_handle = outcome
+        .inspires_edge_handle
+        .as_deref()
+        .expect("personality proposal writes core/inspires");
+    let inspires_edge_id = ctx
+        .handles
+        .resolve_edge(inspires_edge_handle)
+        .expect("inspires edge handle resolves")
+        .into_inner();
+    Ok((ctx, goal_id, inspires_edge_id))
 }
 
 async fn assert_inspires_edge_unchanged(
@@ -98,10 +111,15 @@ async fn accept_supersedes_and_re_emits_motivated_by() -> Result<(), Box<dyn std
             },
         )
         .await?;
+        let accepted_id = ctx
+            .handles
+            .resolve_goal(&accepted.handle)
+            .expect("goal handle resolves")
+            .into_inner();
 
         let row: (String, Option<uuid::Uuid>) =
             sqlx::query_as("SELECT state, supersedes FROM proxima_core.goals WHERE goal_id = $1")
-                .bind(accepted.uuid)
+                .bind(accepted_id)
                 .fetch_one(pg.pool())
                 .await?;
         assert_eq!(row.0, "Active");
@@ -118,7 +136,7 @@ async fn accept_supersedes_and_re_emits_motivated_by() -> Result<(), Box<dyn std
             "SELECT count(*) FROM proxima_core.edges
              WHERE source_goal_id = $1 AND relation = 'proxima-goal/motivated-by'",
         )
-        .bind(accepted.uuid)
+        .bind(accepted_id)
         .fetch_one(pg.pool())
         .await?;
         assert_eq!(proposal_edges, 1);
@@ -143,7 +161,7 @@ async fn modify_uses_supplied_payload() -> Result<(), Box<dyn std::error::Error>
         let proposal_handle = ctx.handles.assign_goal(GoalId::new(proposal));
 
         let modified = ModifyTool::call(
-            ctx,
+            ctx.clone(),
             ModifyArgs {
                 proposal: proposal_handle.as_str().to_string(),
                 payload: GoalPayloadInput::SimpleText(SimpleTextGoalBody {
@@ -155,11 +173,16 @@ async fn modify_uses_supplied_payload() -> Result<(), Box<dyn std::error::Error>
             },
         )
         .await?;
+        let modified_id = ctx
+            .handles
+            .resolve_goal(&modified.handle)
+            .expect("goal handle resolves")
+            .into_inner();
 
         let row: (String, String, Vec<u8>) = sqlx::query_as(
             "SELECT title, text, payload FROM proxima_core.goals WHERE goal_id = $1",
         )
-        .bind(modified.uuid)
+        .bind(modified_id)
         .fetch_one(pg.pool())
         .await?;
         assert_eq!(row.0, "rewritten");
@@ -192,19 +215,23 @@ async fn decline_makes_goal_terminal() -> Result<(), Box<dyn std::error::Error>>
             },
         )
         .await?;
+        let declined_id = ctx
+            .handles
+            .resolve_goal(&declined.handle)
+            .expect("goal handle resolves")
+            .into_inner();
 
         let state: String =
             sqlx::query_scalar("SELECT state FROM proxima_core.goals WHERE goal_id = $1")
-                .bind(declined.uuid)
+                .bind(declined_id)
                 .fetch_one(pg.pool())
                 .await?;
         assert_eq!(state, "Rejected");
 
-        let declined_handle = ctx.handles.assign_goal(GoalId::new(declined.uuid));
         let err = ModifyTool::call(
             ctx,
             ModifyArgs {
-                proposal: declined_handle.as_str().to_string(),
+                proposal: declined.handle.clone(),
                 payload: GoalPayloadInput::SimpleText(SimpleTextGoalBody {
                     title: "retry".into(),
                     text: "retry".into(),
@@ -245,20 +272,30 @@ async fn accept_and_decline_preserve_inspires_edge() -> Result<(), Box<dyn std::
             },
         )
         .await?;
-        assert_ne!(accepted.uuid, proposal);
+        let accepted_id = ctx
+            .handles
+            .resolve_goal(&accepted.handle)
+            .expect("goal handle resolves")
+            .into_inner();
+        assert_ne!(accepted_id, proposal);
         assert_inspires_edge_unchanged(&pg, edge_id, proposal).await?;
 
         let (ctx, declined_proposal, declined_edge_id) = propose_for_self(&pg, owner).await?;
         let declined_handle = ctx.handles.assign_goal(GoalId::new(declined_proposal));
         let declined = DeclineTool::call(
-            ctx,
+            ctx.clone(),
             DeclineArgs {
                 proposal: declined_handle.as_str().to_string(),
                 idempotency_key: Some("decline-preserve-inspires".into()),
             },
         )
         .await?;
-        assert_ne!(declined.uuid, declined_proposal);
+        let declined_id = ctx
+            .handles
+            .resolve_goal(&declined.handle)
+            .expect("goal handle resolves")
+            .into_inner();
+        assert_ne!(declined_id, declined_proposal);
 
         let rows: Vec<(uuid::Uuid, uuid::Uuid)> = sqlx::query_as(
             "SELECT edge_id, source_goal_id

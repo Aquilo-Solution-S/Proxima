@@ -9,7 +9,7 @@ use super::sql::{map_storage, owner_principal};
 pub struct CodeSearchCommitsArgs {
     pub query: String,
     pub limit: Option<u32>,
-    pub repo_id: Option<uuid::Uuid>,
+    pub repo_handle: Option<String>,
     pub change_kind: Option<String>,
 }
 
@@ -22,8 +22,7 @@ pub struct CodeSearchCommitsOutput {
 #[derive(Debug, Serialize)]
 pub struct CommitMatch {
     pub handle: String,
-    pub uuid: uuid::Uuid,
-    pub repo_id: uuid::Uuid,
+    pub repo_handle: String,
     pub sha: String,
     pub author_name: String,
     pub committer_time: time::OffsetDateTime,
@@ -34,8 +33,7 @@ pub struct CommitMatch {
 #[derive(Debug, Serialize)]
 pub struct SummaryMatch {
     pub handle: String,
-    pub uuid: uuid::Uuid,
-    pub repo_id: uuid::Uuid,
+    pub repo_handle: String,
     pub commit_sha: String,
     pub change_kind: String,
     pub key_files: Vec<String>,
@@ -67,12 +65,20 @@ impl McpTool for CodeSearchCommitsTool {
             }
             let limit = args.limit.unwrap_or(10).min(50);
             let (owner_kind, owner_principal_id) = owner_principal(&ctx.owner);
+            let repo_id = match args.repo_handle.as_deref() {
+                Some(handle) => Some(
+                    ctx.handles
+                        .resolve_repo(handle)
+                        .ok_or_else(|| McpToolError::UnknownHandle(handle.to_string()))?,
+                ),
+                None => None,
+            };
 
             let commit_rows: Vec<CommitRow> = sqlx::query_as(COMMIT_SEARCH_SQL)
                 .bind(owner_kind)
                 .bind(owner_principal_id)
                 .bind(query)
-                .bind(args.repo_id)
+                .bind(repo_id)
                 .bind(i64::from(limit))
                 .fetch_all(&ctx.pool)
                 .await
@@ -81,10 +87,10 @@ impl McpTool for CodeSearchCommitsTool {
                 .into_iter()
                 .map(|row| {
                     let handle = ctx.handles.assign_memory(MemoryId::new(row.memory_id));
+                    let repo_handle = ctx.handles.assign_repo(row.repo_id);
                     CommitMatch {
                         handle: handle.as_str().to_string(),
-                        uuid: row.memory_id,
-                        repo_id: row.repo_id,
+                        repo_handle: repo_handle.as_str().to_string(),
                         sha: row.sha,
                         author_name: row.author_name,
                         committer_time: row.committer_time,
@@ -98,7 +104,7 @@ impl McpTool for CodeSearchCommitsTool {
                 .bind(owner_kind)
                 .bind(owner_principal_id)
                 .bind(query)
-                .bind(args.repo_id)
+                .bind(repo_id)
                 .bind(args.change_kind.as_deref())
                 .bind(i64::from(limit))
                 .fetch_all(&ctx.pool)
@@ -108,10 +114,10 @@ impl McpTool for CodeSearchCommitsTool {
                 .into_iter()
                 .map(|row| {
                     let handle = ctx.handles.assign_memory(MemoryId::new(row.memory_id));
+                    let repo_handle = ctx.handles.assign_repo(row.repo_id);
                     SummaryMatch {
                         handle: handle.as_str().to_string(),
-                        uuid: row.memory_id,
-                        repo_id: row.repo_id,
+                        repo_handle: repo_handle.as_str().to_string(),
                         commit_sha: row.commit_sha,
                         change_kind: row.change_kind,
                         key_files: row.key_files,
