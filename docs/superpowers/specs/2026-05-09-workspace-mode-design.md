@@ -1,13 +1,5 @@
 # Workspace mode — Phase 1e
 
-> **Framing supersession (2026-05-10):** Names like Engineer, Visionary, Planner,
-> Worker, Tester in this spec are flavor-shipped or illustrative labels, not
-> engine archetypes. The engine knows only `PersonalityInstanceId`. Canonical
-> vocabulary lives in
-> [2026-05-10-personality-vocabulary-and-archetype-discipline.md](./2026-05-10-personality-vocabulary-and-archetype-discipline.md).
-> Decisions and behavior in this spec stand; only the framing is updated.
-> **Phase 2 of the alignment will replace this header with surgical text edits.**
-
 **Status:** design
 **Date:** 2026-05-09
 **Owner:** Heinrich
@@ -24,9 +16,9 @@
 
 ## Problem
 
-Today the Engineer wakes on `proxima-code/commit-summary-v1`
-Abstractions and emits a `development-perspective-v1` Perspective —
-purely substrate. `WakeEntry.execution_mode = Workspace` and
+Today the Code flavor's default Engineer personality wakes on
+`proxima-code/commit-summary-v1` Abstractions and emits a
+`development-perspective-v1` Perspective — purely substrate. `WakeEntry.execution_mode = Workspace` and
 `workspace_tool_palette` are persisted, the Personalities view exposes
 both, but `crates/core/src/wake/fire.rs:158-184` short-circuits any
 workspace-mode wake with
@@ -44,11 +36,11 @@ through a dedicated event source:
 
 | Fact schema | Records |
 |---|---|
-| `proxima-code/workspace-run-v1` | "Engineer instance X produced branch B at HEAD H from parent P, exit Z." |
+| `proxima-code/workspace-run-v1` | "Personality instance X produced branch B at HEAD H from parent P, exit Z." |
 | `proxima-code/workspace-decision-v1` | "User decided D on run R at time T." |
 
-`workspace-run-v1` gets `core/authored` from the Engineer's Root
-Perspective via the wake-context auto-wire (extended; see related
+`workspace-run-v1` gets `core/authored` from the firing personality's
+Root Perspective via the wake-context auto-wire (extended; see related
 spec). `workspace-decision-v1` gets `core/derived-from → run-v1`. The
 two Facts together form the auditable trail of every workspace
 invocation.
@@ -550,7 +542,7 @@ verb. `pending` = run Fact exists but no decision Fact references it;
 |---|---|
 | `flavors/code/src/workspace_runner/worktree.rs` | unit: create + remove against tempdir-init'd repo |
 | `flavors/code/src/workspace_runner/recipe.rs` | unit: developer extension injected with mapped `available_tools`; not injected for empty palette |
-| `flavors/code/tests/workspace_run_pg.rs` (new) | integration with Postgres + tempdir repo: register repo with `target_branch=main` → fire workspace wake using a no-op recipe (`echo`-only goose adapter mock) → assert `workspace-run-v1` Fact + `core/authored` edge from Engineer Root P + `core/derived-from` edge to triggering memory |
+| `flavors/code/tests/workspace_run_pg.rs` (new) | integration with Postgres + tempdir repo: register repo with `target_branch=main` → fire workspace wake using a no-op recipe (`echo`-only goose adapter mock) → assert `workspace-run-v1` Fact + `core/authored` edge from the firing personality's Root P + `core/derived-from` edge to triggering memory |
 | `flavors/code/tests/workspace_decide_pg.rs` (new) | for each decision: assert `workspace-decision-v1` Fact + `core/derived-from` edge to run Fact + on-disk side effects (remove for reject/merge, no-op for accept) |
 | `flavors/code/tests/workspace_merge_conflict.rs` (new) | introduce a conflicting commit on `target_branch` between fire and decide → merge action returns `MergeConflict`; no decision Fact written |
 | `apps/proxima-shell/src-tauri/src/commands/workspace.rs` | tauri-cmd unit tests modeled on `commands/repo_ingest.rs` |
