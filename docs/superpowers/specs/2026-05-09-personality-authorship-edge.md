@@ -1,13 +1,5 @@
 # Personality authorship edge: `core/authored`
 
-> **Framing supersession (2026-05-10):** Names like Engineer, Visionary, Planner,
-> Worker, Tester in this spec are flavor-shipped or illustrative labels, not
-> engine archetypes. The engine knows only `PersonalityInstanceId`. Canonical
-> vocabulary lives in
-> [2026-05-10-personality-vocabulary-and-archetype-discipline.md](./2026-05-10-personality-vocabulary-and-archetype-discipline.md).
-> Decisions and behavior in this spec stand; only the framing is updated.
-> **Phase 2 of the alignment will replace this header with surgical text edits.**
-
 **Status:** design
 **Date:** 2026-05-09
 **Owner:** Heinrich
@@ -39,7 +31,7 @@ a result:
 `Senior Software Engineer` (instance `019e07de-124d-7812-b32e-baa66b164142`)
 emitted its first `proxima-code/commit-summary-v1` Abstraction. The
 provenance edges back to the triggering `code/commit-fact-v1` were
-written, but no edge connected the new Abstraction to the Engineer's
+written, but no edge connected the new Abstraction to the personality's
 Root Perspective.
 
 ## Why row attribution isn't sufficient
@@ -290,8 +282,8 @@ New / updated assertions:
    `proxima-code/commit-summary-v1` path that surfaced the gap.
 
 3. `flavors/code/tests/engineer_e2e.rs`: assert the edge for the
-   Engineer's `emit_perspective` calls (target_kind = Perspective,
-   P → P).
+   Code flavor's Engineer default `emit_perspective` calls
+   (target_kind = Perspective, P → P).
 
 4. `crates/storage-pg/tests/personality_wake_pg.rs`: storage-level
    assertion that `append_personality_memories` writes one
@@ -395,7 +387,7 @@ Added to the existing test list:
 - `flavors/code/tests/workspace_run_pg.rs` (lives in workspace-mode
   spec): firing a workspace wake that emits a `workspace-run-v1`
   Fact via `EventIngest` writes one `core/authored` edge from the
-  Engineer's Root Perspective to the Fact, atomic with the Fact
+  firing personality's Root Perspective to the Fact, atomic with the Fact
   insert.
 - `crates/storage-pg/tests/event_ingest_pg.rs`: Fact emit *outside*
   any wake context writes no `core/authored` edge (regression guard

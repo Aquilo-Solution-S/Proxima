@@ -1,13 +1,5 @@
 # Personality Wake/Decide/Write Architecture
 
-> **Framing supersession (2026-05-10):** Names like Engineer, Visionary, Planner,
-> Worker, Tester in this spec are flavor-shipped or illustrative labels, not
-> engine archetypes. The engine knows only `PersonalityInstanceId`. Canonical
-> vocabulary lives in
-> [2026-05-10-personality-vocabulary-and-archetype-discipline.md](./2026-05-10-personality-vocabulary-and-archetype-discipline.md).
-> Decisions and behavior in this spec stand; only the framing is updated.
-> **Phase 2 of the alignment will replace this header with surgical text edits.**
-
 **Status:** Draft
 **Date:** 2026-05-06
 **Owner:** Heinrich
@@ -15,7 +7,7 @@
 
 ## Goal
 
-Replace the F2A/A2P operator pair with a single unified architectural model in which Reality Events wake Personalities, the personality runs a multi-turn agent tool-loop with an injected typed context, and the loop emits typed memory + edge writes. The personality is the decider (not a separate operator). Tool calling is the only LLM invocation pattern — JSON-mode parsing is rejected. Personalities are first-class with a `(TypeId, InstanceId)` identity so multiple instances of the same type can coexist (parallel Workers, Engineer-Alice ↔ Engineer-Bob conversations, reasoning chains). v1 ships the full architecture with behavior held minimal — both today's CommitSummary and Engineer collapse into Personalities with a single forced tool; richer multi-turn deliberation, mid-loop read tools, and edge authoring land in v1.1.
+Replace the F2A/A2P operator pair with a single unified architectural model in which Reality Events wake Personalities, the personality runs a multi-turn agent tool-loop with an injected typed context, and the loop emits typed memory + edge writes. The personality is the decider (not a separate operator). Tool calling is the only LLM invocation pattern — JSON-mode parsing is rejected. Personalities are first-class with a `(TypeId, InstanceId)` identity so multiple instances of the same type can coexist (parallel multi-instance scale-out, instance A ↔ instance B counter-Perspective chains, reasoning chains). v1 ships the full architecture with behavior held minimal — today's hardcoded CommitSummary and Engineer operators collapse into Personality instances with a single forced tool; richer multi-turn deliberation, mid-loop read tools, and edge authoring land in v1.1.
 
 ## Architecture (summary)
 
@@ -50,7 +42,7 @@ Target outcome:
 - New verbs: `provision_owner`, `instantiate_personality`, `set_wake_config`.
 - Dispatcher walks `change_event` from `personality_wake_cursor.last_considered_seq + 1` → evaluates wake filters with self-exclusion invariant + chain-depth bound → idempotency-checks against `personality_wake_invocations` → runs an agent tool-loop with stop conditions → advances cursor regardless of match.
 - Substrate ships a default tool pack (5 read + 4 write tools as `PersonalityTool` impls); flavors add specialized tools.
-- Code's CommitSummary and Engineer migrate to Personalities. Code frontend lists Engineer instances, supports multi-instance creation, supports per-instance wake-config edit.
+- Code's CommitSummary and Engineer hardcoded operators migrate to Personality instances. Code frontend lists personality instances, supports multi-instance creation, supports per-instance wake-config edit.
 
 ## Architectural Model
 
@@ -80,11 +72,11 @@ Reality Event (change_event row)
 - `personality_instance_id: Uuid` — per-instance UUID, **minted at `instantiate_personality` time, independent of any memory_id**. Stable across self-Perspective evolution: superseding a self-Perspective advances the instance's `current_self_perspective_memory_id` pointer (column on `personality_wake_config`) without changing `instance_id`. Memory rows authored by the instance carry this UUID in their `personality_instance_id` slot — those rows survive lineage transitions intact.
 - Earlier-draft equation `instance_id = self-Perspective memory_id` is rejected — that shape doesn't compose with Supersedes-driven self-Perspective evolution (each successor would mint a new instance_id, orphaning all wake_config rows and historical memory rows). Instance UUID + pointer column resolves the discontinuity.
 - `personality_wake_config` keyed on `(owner, type_id, instance_id)`.
-- Single-instance is the trivial case (one row per type per owner, default-instantiated at owner provisioning). Multi-instance enables parallel Workers, Engineer ↔ Engineer conversations, reasoning chains.
+- Single-instance is the trivial case (one row per type per owner, default-instantiated at owner provisioning). Multi-instance enables parallel scale-out, same-config A ↔ B conversations, reasoning chains.
 
 ### Loop bounding: wake_chain_depth
 
-A↔B ping-pong (Engineer-Alice authoring a Perspective, Engineer-Bob countering, Alice countering back, ...) is structurally bounded — not by per-wake budgets (those cap individual LLM calls but not the chain) but by a `wake_chain_depth: u16` slot on every memory row.
+A↔B ping-pong (instance A authoring a Perspective, instance B countering, A countering back, ...) is structurally bounded — not by per-wake budgets (those cap individual LLM calls but not the chain) but by a `wake_chain_depth: u16` slot on every memory row.
 
 - External Facts ingested from event sources have `wake_chain_depth = 0`.
 - Memories authored during a wake inherit `wake_chain_depth = max(triggering_event.wake_chain_depth, max(memory_id.wake_chain_depth for each memory the personality READ this wake)) + 1`.
@@ -150,7 +142,7 @@ Each instance has exactly one *current* self-Perspective per owner, addressed by
 - Self-schemas are flagged `is_self_schema` in the registry.
 - `instantiate_personality(owner, type_id, payload_overrides?)` mints a new instance UUID, writes a fresh self-Perspective row via `derive_append`, writes a `personality_wake_config` row whose `current_self_perspective_memory_id` points at that new self-Perspective, and writes a `personality_wake_cursor` row at `last_considered_seq = current MAX(change_event.seq) for this owner` (so the new instance starts at "now" rather than walking the entire historical event stream on its first dispatch tick). Returns the InstanceId.
 - Owner provisioning may default-instantiate one instance per registered type for v1 ergonomics. Idempotent (re-running provisioning does not create duplicate instances).
-- `list_self_perspectives(owner)` is a substrate-default read tool — returns each instance's current self-Perspective across all flavors, enabling cross-personality discovery (Visionary picks an Engineer based on self-Perspective payload content).
+- `list_self_perspectives(owner)` is a substrate-default read tool — returns each instance's current self-Perspective across all flavors, enabling cross-personality discovery (a personality with `list_self_perspectives` in its read palette can pick another personality by reading display_name and payload content).
 - Cross-personality discovery resolves "current" not "all historical" — Supersedes-superseded self-Perspectives don't appear in the discovery surface.
 
 ### Goals link to self-Perspectives via `core/inspires`
@@ -311,7 +303,7 @@ If a stop condition trips, wake recorded as `truncated`; partial output stays co
 
 Two tables, two jobs:
 
-- `personality_wake_cursor(owner_…, type_id, instance_id, last_considered_seq, updated_at)` — the dispatcher's resumable position. **Advanced after every dispatch tick regardless of match outcome**, so probabilistic personalities at low rates (Visionary at 0.001) don't re-walk the entire change_event stream every tick. Per `(owner, type_id, instance_id)` row.
+- `personality_wake_cursor(owner_…, type_id, instance_id, last_considered_seq, updated_at)` — the dispatcher's resumable position. **Advanced after every dispatch tick regardless of match outcome**, so probabilistic personalities at low rates (e.g. `probability = 0.001`) don't re-walk the entire change_event stream every tick. Per `(owner, type_id, instance_id)` row.
 - `personality_wake_invocations(owner_…, type_id, instance_id, change_event_seq, status, …)` UNIQUE on the four-tuple — actually-fired wakes only, used for idempotency.
 
 Dispatcher tick per instance:
@@ -328,24 +320,24 @@ Per-instance max-in-flight wake queue depth = 10 (substrate constant). On overfl
 
 ## Probabilistic Wake
 
-`probability: f32` (0.0..=1.0, default 1.0) on each `WakeFilter`. Visionary subscribes to most schemas at 0.001 but pins assigned-Goal triggers at 1.0. Probability source: stable hash of `(change_event.seq, type_id, instance_id, filter_index)` → uniform float, so wake decisions are deterministic per event. No `random()` in the dispatcher.
+`probability: f32` (0.0..=1.0, default 1.0) on each `WakeFilter`. A low-probability subscriber may set `0.001` on broad-schema filters while pinning assigned-Goal triggers at `1.0`. Probability source: stable hash of `(change_event.seq, type_id, instance_id, filter_index)` → uniform float, so wake decisions are deterministic per event. No `random()` in the dispatcher.
 
 **Determinism caveat.** Wake-decision determinism is *conditional on the change_event stream*. The stream itself depends on prior wakes' tool calls, which depend on LLM nondeterminism — so full system replay is NOT deterministic, only "given the same change_event stream, the same wake set fires." Don't use this for replay-based testing strategies that assume identical event streams between runs.
 
 ## Decisions
 
-- **Personality replaces Operator entirely.** F→A and A→P collapse into one shape. F2AOperator and A2POperator traits are deleted; today's CommitSummary and Engineer migrate to Personalities. Justification: closed-loop story, runtime-configurability, agent-loop semantics, marketplace shape — all served by one model.
+- **Personality replaces Operator entirely.** F→A and A→P collapse into one shape. F2AOperator and A2POperator traits are deleted; today's CommitSummary and Engineer hardcoded operators migrate to Personality instances. Justification: closed-loop story, runtime-configurability, agent-loop semantics, marketplace shape — all served by one model.
 - **Tool calling, never JSON parsing.** All LLM agent invocations use Anthropic structured tool calling. Tool schemas codegen'd from typed payloads via schemars. Rejecting JSON parsing aligns with strict-typing principle and avoids parser fragility.
 - **Goals and wake config are separate surfaces.** Goals = direction (four-pillar memory); wake config = operational policy (typed core table). Conflating them stretches the ontology incorrectly. Goals authored by personalities flow through wake filters as Reality Events.
 - **Self-wake forbidden by dispatcher invariant.** Not a freeze-time check. Cleaner with multi-instance (per-instance self-exclusion is structural, not configurable). Self-iteration lives inside one wake's multi-turn loop.
-- **Personality identity is `(TypeId, InstanceId)`.** TypeId resolves compile-time config; InstanceId is a UUID minted at `instantiate_personality` time, decoupled from any memory_id (see the dedicated "Instance UUID separate from self-Perspective memory_id" decision below for the rationale). Multiple instances per type per owner are first-class; enables parallel Workers + cross-Engineer conversations.
+- **Personality identity is `(TypeId, InstanceId)`.** TypeId resolves compile-time config; InstanceId is a UUID minted at `instantiate_personality` time, decoupled from any memory_id (see the dedicated "Instance UUID separate from self-Perspective memory_id" decision below for the rationale). Multiple instances per type per owner are first-class; enables parallel multi-instance scale-out and same-config A↔B conversations.
 - **Self-Perspective is the personality identity anchor.** Goal-to-personality assignment via edge to self-Perspective. No fifth pillar, no new substrate slot. Personality is truly free to interpret linked Goals.
 - **Wake filter is a flavor-extensible enum with typed JSONB at the leaf.** Single column, dispatcher-only reads, validated Rust-side via serde+schemars. Extension via `WakeFilterKind` trait registered through `proxima_flavor!`. Bends strict-typing at one leaf — accepted because the leaf is dispatcher-internal (never queried by internal field, never composed across flavors).
 - **Three-layer substrate authorization.** Tool palette / writeable_schemas / writeable_relations whitelists. Substrate is the bottleneck; LLM cannot author outside its lane regardless of hallucinated tool calls.
 - **Substrate ships a default tool pack.** Cross-flavor read primitives (self-Perspective discovery, lineage walk, embedding search) are universal. Specialized read tools and all write tools are per-personality flavor declarations.
-- **v1 holds Engineer's palette to one forced tool.** `emit_perspective` only — preserves today's effective behavior while landing the architecture. Multi-turn deliberation, mid-loop read tools, edge authoring, speech-act tools (reply firmly, counter-perspective, propose abstraction) are v1.1+.
+- **v1 holds the Code-flavor Engineer default's palette to one forced tool.** `emit_perspective` only — preserves today's effective behavior while landing the architecture. Multi-turn deliberation, mid-loop read tools, edge authoring, speech-act tools (reply firmly, counter-perspective, propose abstraction) are v1.1+.
 - **Cross-personality loops bounded by chain depth, not provenance graph walks.** A↔B ping-pong is structurally bounded by `wake_chain_depth` on memory rows + a per-personality cap (default 10). Local data, no graph traversal at dispatch time. Captures the "two Engineers ping-ponging forever" pathology cleanly without per-(owner, lineage) budgets. Provenance walks for cycle detection were rejected as both more expensive and less reliable (LLMs can't reach Provenance edges anyway since they're auto-wired, but the local-data approach is uniformly faster).
-- **Cursor split from idempotency table.** Wake firing and event consideration are separately tracked. Without this split, low-probability personalities (Visionary @ 0.001) would re-walk the full change_event stream every dispatch tick because their `personality_wake_invocations` table never advances. Two-table design: `personality_wake_cursor` (advances regardless of match), `personality_wake_invocations` (advances only on fired wakes, used for idempotency).
+- **Cursor split from idempotency table.** Wake firing and event consideration are separately tracked. Without this split, low-probability personalities (e.g. `probability = 0.001`) would re-walk the full change_event stream every dispatch tick because their `personality_wake_invocations` table never advances. Two-table design: `personality_wake_cursor` (advances regardless of match), `personality_wake_invocations` (advances only on fired wakes, used for idempotency).
 - **Instance UUID separate from self-Perspective memory_id.** The earlier draft equated them, which doesn't compose with Supersedes-driven self-Perspective evolution (each successor would mint a new instance_id, orphaning historical state). Instance UUID is minted at instantiation and stable; the wake_config row carries a `current_self_perspective_memory_id` pointer that advances on evolution.
 - **Provenance is fully substrate-authored from read-side-effect tracking.** `emit_*` tool signatures do NOT take a `provenance_memory_ids` parameter — the substrate auto-wires Provenance from `{triggering_event} ∪ {memory_ids returned by read-tools called this wake}`. If a personality wants to surface a *specific* causal claim beyond auto-wiring, that's a `core/cites` relation gated by `writeable_relations` (v1.1+, distinct from auto-wired Provenance). **Known limitation:** auto-wiring from *all* read-tool returns is a conservative over-approximation — `search_by_embedding(k=10)` returns 10 memories that are similarity-matched, not necessarily causally consulted, but they all become Provenance. Lineage walks will be wider/noisier than strict causality. v1.1 refinement options (refine in a follow-up spec): (a) embedding-search results route through a separate `core/recalled` relation rather than Provenance, or (b) personalities must explicitly `cite_memory(id)` to escalate a read into Provenance. Tracked as v1.1 follow-up, not blocking v1.
 - **WakeFilterKind matches is async + storage-aware.** `OnEdge { target: SelfPerspective }` and any flavor-defined Custom filter need to read storage to resolve "current self-Perspective for this instance" or similar. Trait takes `&dyn WakeFilterCtx` exposing read primitives. Sync/pure was rejected as too restrictive.
@@ -373,12 +365,12 @@ Per-instance max-in-flight wake queue depth = 10 (substrate constant). On overfl
 
 11. `CommitSummaryOperator` → `CommitSummaryPersonality`. Self-schema `code/commit-summarizer-self-v1`. Tool palette = substrate pack (no flavor-specialized tools). Effective writable surface = `emit_abstraction` restricted to `code/commit-summary-v1` via `writeable_schemas`. System prompt = today's CommitSummary prompt, single-turn instructed. Default wake filter = `OnMemory { schema: code/commit-fact-v1, authored_by: Any, probability: 1.0 }`. Writeable schemas = `["code/commit-summary-v1"]`. Writeable relations = `[]`. Tier = `Cheap`.
 12. `CodeDevelopmentPerspectiveOperator` → `CodeEngineerPersonality`. Self-schema `code/engineer-self-v1` (typed payload: `display_name: String`, `purpose: String`). Tool palette = substrate pack only. Effective writable surface = `emit_perspective` restricted to `code/development-perspective-v1` via `writeable_schemas`. System prompt = today's A2P prompt unchanged, single-turn instructed. Default wake filter = `OnMemory { schema: code/commit-summary-v1, authored_by: Any, probability: 1.0 }` + auto-added `OnEdge { core/inspires → SelfPerspective, probability: 1.0 }`. Writeable schemas = `["code/development-perspective-v1"]`. Writeable relations = `[]`. Tier = `Smart`.
-13. Owner-provisioning default-instantiates one CommitSummarizer + one Engineer per new owner.
+13. Owner-provisioning default-instantiates the Code flavor's two default personalities — one with `display_name: "CommitSummary"` + the commit-summary recipe, one with `display_name: "Engineer"` + the engineer recipe — per new owner.
 
 ### Frontend (`packages/frontend-core`, Tauri shell)
 
-14. Engineer instances list view (display_name from self-payload).
-15. "Create another Engineer" button → `instantiate_personality` verb.
+14. Personality instances list view (display_name from self-payload).
+15. "Create another personality" button → `instantiate_personality` verb.
 16. Per-instance wake-config editor → `set_wake_config` verb.
 
 ### Wire (gRPC, codegen)
@@ -399,8 +391,8 @@ Per-instance max-in-flight wake queue depth = 10 (substrate constant). On overfl
 - `provision_owner(owner)` is idempotent.
 - `instantiate_personality(owner, type_id, ...)` produces distinct instances per call; two Engineers for one owner have distinct instance UUIDs, distinct wake_config rows, and distinct self-Perspectives. Memory rows authored by either instance carry the correct `personality_instance_id` slot.
 - Dispatcher self-exclusion invariant: instance authoring a memory does NOT trigger its own wake. New PG integration test pins this.
-- Dispatcher chain-depth bound: a chain `Fact → Engineer-A Perspective → Engineer-B Counter → Engineer-A Counter → ...` terminates at depth `MAX_WAKE_CHAIN_DEPTH`. New PG integration test pins this with depth=3 to keep test fast.
-- `personality_wake_cursor` advances when no filter matches: a Visionary instance with `probability=0.001` whose filters never fire has `last_considered_seq` equal to the latest change_event seq after one dispatch tick. New PG integration test pins this.
+- Dispatcher chain-depth bound: a chain `Fact → instance-A Perspective → instance-B Counter → instance-A Counter → ...` terminates at depth `MAX_WAKE_CHAIN_DEPTH`. New PG integration test pins this with depth=3 to keep test fast.
+- `personality_wake_cursor` advances when no filter matches: a low-probability instance with `probability = 0.001` whose filters never fire has `last_considered_seq` equal to the latest change_event seq after one dispatch tick. New PG integration test pins this.
 - `personality_wake_cursor` initialization at "now": `instantiate_personality` against an owner with prior change_event history writes a cursor row at `last_considered_seq = MAX(change_event.seq)`; the new instance does NOT wake on historical events on its first dispatch tick. New PG integration test pins this.
 - `FlavorRegistry::freeze()` panics for each of the four guard violations: (a) `writeable_schemas` containing `self_schema`, (b) `writeable_relations` containing `core/provenance` or `core/supersedes`, (c) `writeable_schemas` referencing an unregistered schema, (d) `writeable_relations` referencing an unregistered relation. One unit test per guard, pinning the panic message.
 - Wake-filter version repair round-trip: a wake_config row whose JSONB filters fail strict deserialization has `status = needs_repair` after the next dispatch tick and the dispatcher does not fire wakes for it; after `set_wake_config` rewrites the row with valid filters, `status = active` and wakes resume. New PG integration test pins both halves.
@@ -408,18 +400,18 @@ Per-instance max-in-flight wake queue depth = 10 (substrate constant). On overfl
 - Provenance auto-wiring: `emit_perspective` called within a wake produces a Perspective whose Provenance edges point at `{triggering_event} ∪ {memory_ids returned by every read-tool the personality called this wake}`. New PG integration test pins this.
 - `cargo check --workspace`, `cargo test -p proxima-core`, `-p proxima-storage-pg`, `-p proxima-code` all pass.
 - `pnpm typecheck` (regenerated bindings) passes.
-- Code frontend lists Engineer instances and supports wake-config edit + multi-instance create end-to-end.
+- Code frontend lists personality instances and supports wake-config edit + multi-instance create end-to-end.
 - F2AOperator / A2POperator traits no longer exist in the codebase.
 
 ## Out of Scope (deferred, captured here for v1.1+ planning)
 
-- **Real decider loop for Engineer.** Read tools mid-turn (`code_search_chunks`, `open_file_revision`, `walk_lineage` etc.), multi-turn deliberation, edge authoring (writeable_relations populated), speech-act tools (reply firmly, counter-perspective, propose abstraction, agree, question). v1 ships substrate pack only with Engineer's writeable schemas restricted to one Perspective; v1.1 expands palette and gives Engineer real tool-calling agency. **Conversational richness** (Engineer-Alice ↔ Engineer-Bob debates with multiple speech-act tools per turn) lands here.
+- **Real decider loop for the Code flavor's Engineer default.** Read tools mid-turn (`code_search_chunks`, `open_file_revision`, `walk_lineage` etc.), multi-turn deliberation, edge authoring (writeable_relations populated), speech-act tools (reply firmly, counter-perspective, propose abstraction, agree, question). v1 ships the substrate pack only with the Engineer default's writeable schemas restricted to one Perspective; v1.1 expands the palette and gives it real tool-calling agency. **Conversational richness** (instance A ↔ instance B debates with multiple speech-act tools per turn) lands here.
 - **Per-owner system prompt overrides.** Today's flavor-default `&'static str`; v1.1 adds a `personality_settings` table (separate from wake_config — operational config but distinct concern) with override path.
 - **Listen/Notify-driven dispatch.** v1 uses cursor catch-up. v1.1 adds `LISTEN` on `proxima_change_event` for sub-second wake latency.
 - **Self-Perspective evolution.** Immutable in v1. Successor self-Perspectives via Supersedes lands when "personality state evolves" becomes a real product story.
-- **Additional Code-flavor personalities.** Visionary, Worker, Tester chain — additive, no rework needed (per multi-instance design).
+- **Additional personalities (whatever names users or future flavors give them).** Adding more nodes to a composition chain is additive, no rework needed (per multi-instance design).
 - **Cross-flavor wake-config editing in non-Code frontends.** Code is the demo; other flavors may stay hard-coded.
-- **Per-personality tier override surface.** Engineer gets a tier slot (defaults to `Smart`); user-side override per personality (e.g., "use cheap model for casual wakes") is v1.1.
+- **Per-personality tier override surface.** Each personality gets a tier slot (Code's Engineer default = `Smart`); user-side override per personality (e.g., "use cheap model for casual wakes") is v1.1.
 - **Multi-process / distributed dispatcher.** Far future. Single-engine cursor walk is v1's contract.
 - **LLM provider abstraction.** v1 commits to Anthropic SDK structured tool calling at the contract level. A provider-abstraction `LlmAdapter` seam (so we can swap to other providers, on-prem inference, etc.) is deferred to v1.1+ when multi-provider becomes a real product requirement. v1's tool-call shape, message protocol, and turn structure are Anthropic-specific.
 - **Formal multi-event wake coalescing.** v1 ships a queue safety net (drop-oldest at depth 10). True coalescing — where bursty events for the same instance feed into a single multi-event-aware LLM call rather than serial wakes — is v1.1.
@@ -428,11 +420,11 @@ Per-instance max-in-flight wake queue depth = 10 (substrate constant). On overfl
 
 ## v1.1+ Implications (informational, not in this plan's scope)
 
-- Engineer's full decider palette includes:
+- The Code flavor's Engineer default v1.1+ decider palette includes:
   - Read: `code_search_chunks`, `open_file_revision`, `code_search_commits`, `walk_lineage` (deeper).
   - Write: `reply_firmly(target_perspective, content)`, `counter_perspective(target, alternative)`, `propose_abstraction(observation)`, `agree_with(target)`, `ask_question(target, question)` — composite tools that bundle `emit_perspective` + `create_edge` for specific speech-act relations like `code/replies-to`, `code/counters`, `code/agrees-with`, `code/asks`.
-- Worker scale-out: instantiate 5 Workers, each with its own wake_config keyed to a task-shard; dispatcher already supports it via multi-instance.
-- Visionary as a pluggable flavor that ships its own personality type registering a probabilistic wake filter (e.g., 0.001 on most events) and a `propose_direction` tool that authors Goals + `core/inspires` edges.
+- Multi-instance scale-out: instantiate N personality instances of the same configuration, each with its own wake_config keyed to a task-shard; the dispatcher already supports it via multi-instance.
+- A pluggable goal-proposing flavor (whatever name its author gives it) that registers a probabilistic wake filter (e.g., `probability = 0.001` on most events) and a `propose_direction` tool that authors Goals + `core/inspires` edges.
 
 ## Docs Alignment
 
@@ -447,4 +439,4 @@ Per-instance max-in-flight wake queue depth = 10 (substrate constant). On overfl
 
 - This spec is the binding architectural decision record. Implementation plans that operate against it land in `.plans/` (per `.plans/CONVENTIONS.md`) and may decompose this spec into substrate / Code-flavor / frontend-wire / docs slices.
 - Two prior plans are prerequisites that already landed: `.plans/2026-05-06T18-32-12+0200-flavor-registry-single-source-of-truth.md` and `.plans/2026-05-06T18-47-49+0200-drop-personality-state-hash.md`. This spec assumes their post-state.
-- The "v1 holds Engineer's palette to one forced tool" decision is the load-bearing scoping call. It keeps v1 tractable while landing the full architecture. v1.1's scope is correspondingly larger (real decider + speech-act tools).
+- The "v1 holds the Code-flavor Engineer default's palette to one forced tool" decision is the load-bearing scoping call. It keeps v1 tractable while landing the full architecture. v1.1's scope is correspondingly larger (real decider + speech-act tools).

@@ -1,13 +1,5 @@
 # Personality as Composed Behaviors
 
-> **Framing supersession (2026-05-10):** Names like Engineer, Visionary, Planner,
-> Worker, Tester in this spec are flavor-shipped or illustrative labels, not
-> engine archetypes. The engine knows only `PersonalityInstanceId`. Canonical
-> vocabulary lives in
-> [2026-05-10-personality-vocabulary-and-archetype-discipline.md](./2026-05-10-personality-vocabulary-and-archetype-discipline.md).
-> Decisions and behavior in this spec stand; only the framing is updated.
-> **Phase 2 of the alignment will replace this header with surgical text edits.**
-
 **Status:** Draft
 **Date:** 2026-05-07
 **Owner:** Heinrich
@@ -553,7 +545,7 @@ pub fn register_owner_defaults(owner: &Owner) -> Vec<PersonalityProvisionWrite> 
                     probability_promille: 1000,
                     authored_by: WakeAuthoredBy::Any,
                 },
-                // ... more entries if the default Engineer should react to more triggers
+                // ... more entries if the Code flavor's default Engineer instance should react to more triggers
             ],
         },
     ]
@@ -609,7 +601,7 @@ GoalState ::= Proposed     // self-authored, awaiting user gate
 
 **Approval is silent on the wake stream by default.** The supersession's ChangeEvent is just another memory append — no personality has a WakeEntry on Goal-state transitions by default, so no wake fires. The next time any personality fires for any reason, the engine's `active_goals` query (head-row `state = Active` filter) picks up the now-Active goal as a fixed wake-context param. Behavior changes through context, not through a synthetic wake.
 
-If a flavor wants explicit *reactive* wakes when goals activate (e.g. a "Planner" personality that should immediately re-plan on new Active goals), the flavor can:
+If a flavor wants explicit *reactive* wakes when goals activate (e.g. a personality whose recipe must re-plan immediately on new Active goals), the flavor can:
 
 1. Emit a `proxima-goal/goal-activated-v1` Fact from inside the `goal_accept` verb (goal flavor extension; small change).
 2. Add a WakeEntry on personalities that need it: `(trigger_kind, trigger_id) = (on_memory, proxima-goal/goal-activated-v1)`.
@@ -672,7 +664,7 @@ The last rule is deliberate: making the Personality able to rewrite its own root
 
 ### 1. User tries to add a second WakeEntry on the same schema
 
-**Setup:** Engineer already has a WakeEntry with `(trigger_kind, trigger_id) = (on_memory, proxima-code/commit-summary-v1)`. User opens the editor and adds another row with the same trigger.
+**Setup:** A personality already has a WakeEntry with `(trigger_kind, trigger_id) = (on_memory, proxima-code/commit-summary-v1)`. User opens the editor and adds another row with the same trigger.
 
 **Expected:** Storage rejects the insert via the UNIQUE constraint on `(personality_instance_id, trigger_kind, trigger_id)`. UI surfaces "An entry for `proxima-code/commit-summary-v1` already exists — edit it instead." There is no "merge" semantics, no "first-wins" rule, no race. **One trigger → one entry → one decision** is structural. (If the user genuinely wants two parallel behaviors on the same trigger, they create a *second personality* and give it the alternate behavior. Personality multiplicity, not entry multiplicity, is how parallelism is expressed.)
 
@@ -684,43 +676,43 @@ The last rule is deliberate: making the Personality able to rewrite its own root
 
 ### 3. Personality writes a goal without `proxima-goal/goal_propose` in palette
 
-**Setup:** Engineer's WakeEntry palette has `[core/emit_perspective]` only. The LLM hallucinates a `proxima-goal/goal_propose` call.
+**Setup:** A personality's WakeEntry palette has `[core/emit_perspective]` only. The LLM hallucinates a `proxima-goal/goal_propose` call.
 
 **Expected:** Authorization rejects at the engine's MCP boundary (same boundary native and goose backends share). Tool call returns an error; the LLM sees it and may retry. The wake invocation eventually completes (the LLM gives up or `max_rounds` exhausts). Invocation row is `succeeded` if the LLM finished without writing, `truncated` if `max_rounds` hit. No Goal is written.
 
 ### 4. User edits Root Perspective system_prompt mid-flight
 
-**Setup:** Engineer wake A is in progress (LLM call out). User opens Personalities view, edits system_prompt, saves. New Root Perspective Memory is appended; `current_root_perspective_memory_id` advances. Wake A is still using the old prompt.
+**Setup:** A wake on personality P is in progress (LLM call out). User opens Personalities view, edits P's system_prompt, saves. New Root Perspective Memory is appended; `current_root_perspective_memory_id` advances. The in-flight wake is still using the old prompt.
 
 **Expected:** Wake A finishes with the old prompt. The next wake (B) reads the new `current_root_perspective_memory_id` (the engine's `root_perspective` param assembly is per-wake, fresh from storage) and uses the new prompt. The transition is per-wake, not per-instance. **Subtle:** the old Root Perspective Memory remains in storage forever (append-only) and is visible through Atlas — the audit trail of identity evolution is intact.
 
 ### 5. Personality has zero enabled WakeEntries
 
-**Setup:** User disables every WakeEntry on Engineer (or never adds any).
+**Setup:** User disables every WakeEntry on a personality (or never adds any).
 
-**Expected:** Engineer never wakes. Personalities view marks it "Inert" (vs "Reachable" / "Stranded"). The Root Perspective is unchanged; Goals stay attached; cognitive history is intact. Re-enabling any WakeEntry immediately makes it eligible for the next dispatcher tick. **No special tombstoning** — an inert personality is a deliberate, recoverable state.
+**Expected:** The personality never wakes. Personalities view marks it "Inert" (vs "Reachable" / "Stranded"). The Root Perspective is unchanged; Goals stay attached; cognitive history is intact. Re-enabling any WakeEntry immediately makes it eligible for the next dispatcher tick. **No special tombstoning** — an inert personality is a deliberate, recoverable state.
 
 ### 6. Cross-personality goal flow (silent approval path)
 
-**Setup:** Personality A (Visionary) has a WakeEntry with `proxima-goal/goal_propose` in palette. Personality B (Engineer) has a recipe whose prompt template references `{{ active_goals }}`.
+**Setup:** Personality A has a WakeEntry with `proxima-goal/goal_propose` in palette. Personality B has a recipe whose prompt template references `{{ active_goals }}`.
 
 1. A fires, calls `proxima-goal/goal_propose(payload)`. Goal Memory is appended at `state = Proposed`, authored by `External(A.instance_id)`. `core/inspires` edge created from `Goal → A's current Root Perspective`. ChangeEvent emits (memory append); dispatcher's wake-filter evaluator does not match (no WakeEntry on `proxima-goal/simple-text-v1`-or-similar by default) — B does not wake.
 2. User opens Goals view, sees `Proposed` row, accepts. Substrate verb `goal_accept` supersedes the Goal head to `state = Active`, authored by `User`. The append-only `core/inspires` edge stays as historical addressing — no edge mutation under append-only. The supersession emits a memory-append ChangeEvent, but no personality has a WakeEntry on Goal-state transitions by default — B does not wake.
 3. Some independent ChangeEvent (a new commit, a periodic tick, anything) eventually fires B's WakeEntry. The engine assembles B's wake-context: `active_goals` query traverses `core/inspires` to B's current Root Perspective, filters Goal head rows to `state = Active`, returns the newly-Active Goal. B's recipe prompt sees it via `{{ active_goals }}`. Behavior changes.
 
-**Expected:** This is the *default* path. The user's mental model: approval changes what's in context, not what fires. **For flavors that need explicit reactive wakes on approval** (e.g. Planner: must re-plan immediately on new goals), the proxima-goal flavor extension emits a `proxima-goal/goal-activated-v1` Fact from the `goal_accept` verb; Planner adds a WakeEntry with `(trigger_kind, trigger_id) = (on_memory, proxima-goal/goal-activated-v1)`. Substrate stays out of mutation-driven wakes.
+**Expected:** This is the *default* path. The user's mental model: approval changes what's in context, not what fires. **For flavors that need explicit reactive wakes on approval** (e.g. a personality that must re-plan immediately on new goals), the proxima-goal flavor extension emits a `proxima-goal/goal-activated-v1` Fact from the `goal_accept` verb; such a personality adds a WakeEntry with `(trigger_kind, trigger_id) = (on_memory, proxima-goal/goal-activated-v1)`. Substrate stays out of mutation-driven wakes.
 
 ### 7. Recipe needs richer data than the four fixed params
 
-**Setup:** Engineer's WakeEntry on `proxima-code/commit-summary-v1` fires. The recipe's prompt asks the LLM to compare the new commit summary against the most recent three perspectives the personality has authored.
+**Setup:** A personality's WakeEntry on `proxima-code/commit-summary-v1` fires. The recipe's prompt asks the LLM to compare the new commit summary against the most recent three perspectives the personality has authored.
 
 **Expected:** The four fixed params (`root_perspective`, `active_goals`, `trigger_event`, `triggering_memory`) don't carry the personality's prior working Perspectives. The recipe's prompt instructs the LLM to call `core/query` (or a flavor-shipped equivalent) with `{ author_instance_id: "{{ root_perspective.instance_id }}", schema_id: "proxima-code/development-perspective-v1", limit: 3, order: desc }`. The LLM emits the tool call; engine's MCP server authorizes it (palette-membership check); query result returns; LLM continues. **Cost:** one extra MCP round-trip per wake. **Trade:** no per-WakeEntry context configuration UI, no flavor-extensible source kinds, no parameter-binding validator — substantial substrate simplification for one round-trip we don't think we'll miss in v1.
 
 ### 8. MaxRounds exhaustion
 
-**Setup:** Engineer's WakeEntry has `max_rounds = 3`. The recipe's prompt encourages exploration; the LLM enters a tool-call loop calling `core/search_by_embedding` repeatedly.
+**Setup:** A personality's WakeEntry has `max_rounds = 3`. The recipe's prompt encourages exploration; the LLM enters a tool-call loop calling `core/search_by_embedding` repeatedly.
 
-**Expected:** The selected target adapter enforces `max_rounds = 3` (Goose: `--max-turns 3`) and exits with a turn-limit outcome after the third turn. Any partial writes that happened during turns 1-3 are kept (append-only memory; we don't roll back). The dispatcher marks the invocation as `truncated`. UI surfaces "Engineer's wake on commit X was truncated at the round budget — consider raising max_rounds, refining the prompt, or scoping the tool palette."
+**Expected:** The selected target adapter enforces `max_rounds = 3` (Goose: `--max-turns 3`) and exits with a turn-limit outcome after the third turn. Any partial writes that happened during turns 1-3 are kept (append-only memory; we don't roll back). The dispatcher marks the invocation as `truncated`. UI surfaces "The personality's wake on commit X was truncated at the round budget — consider raising max_rounds, refining the prompt, or scoping the tool palette."
 
 ### 9. Migration: hard greenfield wake tables
 
@@ -759,7 +751,7 @@ On submit: substrate verb `instantiate_personality_from_form(form)` mints `insta
 
 **Setup:** Two Personalities each have a WakeEntry on `proxima-code/commit-v1` whose palette includes `core/emit_commit_summary`. Same commit triggers both.
 
-**Expected:** Both fire (different instance_ids → both pass self-wake check). Two separate `commit-summary-v1` Abstractions written, with different `personality_instance_id` author columns. Downstream Engineer's WakeEntry on `commit-summary-v1` fires twice — once per summary. This is by design: parallel summarizers are a feature, not a bug. If the user wants only one summary per commit, they configure only one summarizer personality.
+**Expected:** Both fire (different instance_ids → both pass self-wake check). Two separate `commit-summary-v1` Abstractions written, with different `personality_instance_id` author columns. Any downstream personality whose WakeEntry fires on `commit-summary-v1` fires twice — once per summary. This is by design: parallel summarizers are a feature, not a bug. If the user wants only one summary per commit, they configure only one summarizer personality.
 
 ### 12. Cycle: A wakes B, B wakes A
 
@@ -769,9 +761,9 @@ On submit: substrate verb `instantiate_personality_from_form(form)` mints `insta
 
 ### 13. Wake token isolation
 
-**Setup:** Two wakes fire concurrently — Engineer-Alice on commit X, Engineer-Bob on commit Y. Two goose subprocesses spawn in parallel, each with its own `PROXIMA_WAKE_TOKEN`.
+**Setup:** Two wakes fire concurrently — instance A on commit X, instance B on commit Y. Two goose subprocesses spawn in parallel, each with its own `PROXIMA_WAKE_TOKEN`.
 
-**Expected:** Each subprocess's MCP calls resolve to its own WakeEntry; tool-palette enforcement is per-token, not per-process. If Alice's recipe somehow extracted Bob's token from a shared file (it can't — tokens are env-only) and tried to call a tool that's only in Bob's palette, our MCP server's token resolution would route the call to Bob's WakeEntry context — which is exactly what an MCP request authenticated with Bob's token *should* do. **The token IS the identity; there's no cross-personality bleed.** Tokens are revoked on invocation finalize and have a TTL fallback for crashed processes.
+**Expected:** Each subprocess's MCP calls resolve to its own WakeEntry; tool-palette enforcement is per-token, not per-process. If A's recipe somehow extracted B's token from a shared file (it can't — tokens are env-only) and tried to call a tool that's only in B's palette, our MCP server's token resolution would route the call to B's WakeEntry context — which is exactly what an MCP request authenticated with B's token *should* do. **The token IS the identity; there's no cross-personality bleed.** Tokens are revoked on invocation finalize and have a TTL fallback for crashed processes.
 
 ### 14. Recipe validation at write time (two checks)
 
@@ -797,7 +789,7 @@ Structural validation repeats at fire time too (defense in depth) — the YAML f
 
 ### 16. Host workspace wake edits code
 
-**Setup:** Engineer has a `workspace` WakeEntry on `proxima-code/development-request-v1`. Its workspace tool palette allows file read/write, shell test execution, git commit, and staging-branch push. Target branch is `main`.
+**Setup:** A personality has a `workspace` WakeEntry on `proxima-code/development-request-v1`. Its workspace tool palette allows file read/write, shell test execution, git commit, and staging-branch push. Target branch is `main`.
 
 **Expected:** Dispatcher creates a worktree from `main`, starts the sandbox, runs goose with cwd at the worktree root, and exposes only the configured host tools plus Proxima MCP tools. Goose edits files, runs tests, commits in the worktree, and pushes only to `proxima/wake/<invocation_id>`. Proxima records an integration artifact with commit SHA, diff summary, test output, invocation id, and recipe SHA. `main` is unchanged. User accepts → merge/PR is created. User rejects → artifact is tombstoned/closed; worktree/branch remains available for audit or cleanup. No wake auto-merges directly into `main`.
 
@@ -839,7 +831,7 @@ Structural validation repeats at fire time too (defense in depth) — the YAML f
 - **Move tool implementations into config too** (templated Bash scripts, WASM blobs). Considered; rejected because tool execution touches storage and the engine's transaction boundaries. Sandboxing user-authored tool code is a separate, much larger problem (think: marketplace permission model). Out of scope.
 - **Personality can edit its own Root Perspective via a `core/edit_root_perspective` tool.** Considered; rejected because identity drift creates feedback loops with no obvious bound. Root edits are user-only via substrate verbs. If a future spec wants this, add a fourth approval state.
 - **Recipes embedded inline as a JSONB column on WakeEntry.** Considered; rejected for v1 because file-based recipes let users edit YAML in their editor, which is a much better authoring UX than an in-app textarea. v1.1+ may add a "snapshot recipe content into the row" path for portability.
-- **Non-LLM "Worker" personalities (cron-style scheduled jobs without a model in the loop).** Considered; rejected because Personality is the substrate for *giving an AI a real brain* — identity, memory, perception, action. A scheduled mechanical task without an LLM is a different primitive: a cron entry triggering a tool call. We don't have that primitive in Proxima today and may never need one — mechanical event sources (the ingest pipeline, the periodic-tick emitter) already cover the "schedule produces a Reality Event" half of the problem. If a future spec wants pure mechanical scheduled side-effects (with no Personality wakeup), it lives in a different concept area, not as a Personality variant.
+- **Non-LLM scheduled-task personalities (cron-style scheduled jobs without a model in the loop).** Considered; rejected because Personality is the substrate for *giving an AI a real brain* — identity, memory, perception, action. A scheduled mechanical task without an LLM is a different primitive: a cron entry triggering a tool call. We don't have that primitive in Proxima today and may never need one — mechanical event sources (the ingest pipeline, the periodic-tick emitter) already cover the "schedule produces a Reality Event" half of the problem. If a future spec wants pure mechanical scheduled side-effects (with no Personality wakeup), it lives in a different concept area, not as a Personality variant.
 
 ## Migration Plan (Phasing)
 
