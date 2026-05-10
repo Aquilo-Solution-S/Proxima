@@ -214,6 +214,17 @@ pub trait Storage: Send + Sync {
         req: &InstantiatePersonalityRequest,
     ) -> Result<InstantiatePersonalityResponse, StorageError>;
 
+    /// Ensure a substrate-managed `proxima/shell-author` personality exists
+    /// for the given owner. Used as the provenance Root Perspective for
+    /// master-token MCP-CRUD writes. Idempotent: returns the existing
+    /// instance id on replay, or mints a fresh one with `display_name =
+    /// "shell-author"`, `purpose = "Substrate authorship for master-token
+    /// MCP CRUD writes"`, and an empty WakeConfig.
+    async fn ensure_shell_author_personality(
+        &self,
+        owner: &Owner,
+    ) -> Result<PersonalityInstanceId, StorageError>;
+
     /// Replace active WakeEntry rows for one personality instance.
     async fn set_wake_entries(
         &self,
@@ -527,6 +538,13 @@ impl Storage for NoopStorage {
         _req: &InstantiatePersonalityRequest,
     ) -> Result<InstantiatePersonalityResponse, StorageError> {
         Err(StorageError::Internal("NoopStorage rejects writes".into()))
+    }
+
+    async fn ensure_shell_author_personality(
+        &self,
+        _owner: &Owner,
+    ) -> Result<PersonalityInstanceId, StorageError> {
+        Ok(PersonalityInstanceId::new(uuid::Uuid::nil()))
     }
 
     async fn set_wake_entries(
