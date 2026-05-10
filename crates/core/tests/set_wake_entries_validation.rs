@@ -171,11 +171,14 @@ impl Storage for FixtureStorage {
         Ok(SetWakeEntriesResponse { active_entries: 0 })
     }
 
-    async fn ensure_shell_author_personality(
+    async fn ensure_master_token_personality(
         &self,
         _owner: &Owner,
-    ) -> Result<proxima_core::PersonalityInstanceId, StorageError> {
-        Err(StorageError::Internal("unused".into()))
+        _master_token_id: uuid::Uuid,
+    ) -> Result<proxima_core::MasterTokenPersonality, proxima_core::StorageError> {
+        Err(proxima_core::StorageError::Internal(
+            "mock: ensure_master_token_personality not stubbed".into(),
+        ))
     }
 
     async fn set_wake_entries_within(
