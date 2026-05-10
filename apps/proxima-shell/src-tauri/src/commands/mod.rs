@@ -39,6 +39,7 @@ pub(crate) fn specta_builder() -> Builder<tauri::Wry> {
         tools::list_mcp_tools,
         tools::list_workspace_tools,
         tools::list_relations,
+        tools::wake_entry_produces,
         mcp::mcp_connection_get,
         mcp::mcp_master_token_rotate,
         // Embedding settings
