@@ -4,6 +4,8 @@ import { useGraph } from "../graph-store";
 import { useGraphFilter } from "../graph-filter-store";
 import { filterGraphSnapshot, oneHopLineage } from "../graph-selectors";
 import type { Hub } from "../hub";
+import type { GoalRow } from "../bindings";
+import type { DecodedMemory } from "../graph-store";
 import { ActivityStrip, type EngineState } from "./surface/activity-strip";
 import { ChipRail } from "./surface/chip-rail";
 import { DetailPane } from "./surface/detail-pane";
@@ -12,6 +14,18 @@ import { RowList, type ActiveTab } from "./surface/row-list";
 import { TabStrip } from "./surface/tab-strip";
 import { installSurfaceKeys } from "./surface/keys";
 import { EventStream } from "./surface-events";
+
+const goalToDecodedMemory = (goal: GoalRow): DecodedMemory => ({
+  row: {
+    id: goal.id,
+    kind: "Goal",
+    schema_id: goal.schema_id,
+    schema_version: goal.schema_version,
+    owner: goal.owner,
+    payload: goal.payload,
+  },
+  payload: {},
+});
 
 const tabLayer = (tab: ActiveTab): "Fact" | "Abstraction" | "Perspective" | "Goal" | null =>
   tab === "All" ? null : tab;
@@ -81,16 +95,28 @@ export const FullSurface: Component<{ hub: Hub }> = (props) => {
     };
   });
 
-  const selectedMemory = createMemo(() => {
+  const selectedMemory = createMemo<DecodedMemory | null>(() => {
     const id = selectedId();
     if (id === null) return null;
-    return graph.state().memoriesById.get(id) ?? null;
+    const fromMemories = graph.state().memoriesById.get(id);
+    if (fromMemories !== undefined) return fromMemories;
+    const goal = graph.state().goalsById.get(id);
+    if (goal !== undefined) return goalToDecodedMemory(goal);
+    return null;
   });
 
   const lineage = createMemo(() => {
     const id = selectedId();
     if (id === null) return { outbound: [], inbound: [] };
     return oneHopLineage(id, graph.state().edgesById, graph.state().memoriesById);
+  });
+
+  const rowsForList = createMemo<DecodedMemory[]>(() => {
+    const f = filtered();
+    return [
+      ...f.memories,
+      ...f.goals.map(goalToDecodedMemory),
+    ];
   });
 
   const events = createMemo(() =>
@@ -120,7 +146,7 @@ export const FullSurface: Component<{ hub: Hub }> = (props) => {
       <ChipRail flavors={facets().flavors} />
       <div class="surface__body">
         <RowList
-          rows={filtered().memories}
+          rows={rowsForList()}
           provenance={graph.state().memoryProvenance}
           activeTab={activeTab()}
           selectedId={selectedId()}
