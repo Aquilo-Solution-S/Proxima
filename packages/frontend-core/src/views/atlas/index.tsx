@@ -62,6 +62,14 @@ export const Atlas: Component<{
     !filters.state().hiddenFlavorIds.has(flavorFilterId(f));
 
   const byId = createMemo(() => new Map(nodes().map((n) => [n.id, n] as const)));
+  const rawEntityIds = createMemo(() => {
+    if (graph === null) return new Set(nodes().map((n) => n.id));
+    const snapshot = graph.state();
+    return new Set([
+      ...snapshot.memoriesById.keys(),
+      ...snapshot.goalsById.keys(),
+    ]);
+  });
   const pickedNode = () => {
     const id = pickedId();
     return id ? byId().get(id) ?? null : null;
@@ -428,7 +436,7 @@ export const Atlas: Component<{
   });
 
   createEffect(() => {
-    const liveIds = byId();
+    const liveIds = rawEntityIds();
     const id = pickedId();
     if (id !== null && !liveIds.has(id)) {
       setPickedId(null);

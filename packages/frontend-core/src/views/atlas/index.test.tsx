@@ -5,6 +5,7 @@ import {
   screen,
   waitFor,
 } from "@solidjs/testing-library";
+import { createSignal } from "solid-js";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import * as THREE from "three";
 import type { EdgeRow, MemoryRow, Owner } from "../../bindings";
@@ -174,6 +175,46 @@ describe("Atlas graph wiring", () => {
     await waitFor(() =>
       expect(hydrate).toHaveBeenCalledWith({ memory_ids: [fact.id] }),
     );
+    raycast.mockRestore();
+  });
+
+  it("keeps the selected id when hydration changes filtered payload size", async () => {
+    const light = memory("019dfa40-0000-7000-8000-000000000005", "Fact");
+    const full: MemoryRow = { ...light, payload: [1, 2, 3] };
+    const filters = createGraphFilterStore();
+    filters.setSizeRange({ minBytes: 0, maxBytes: 0 });
+    let setGraphState: (next: GraphSnapshot) => void = () => {};
+    const hydrate = vi.fn().mockImplementation(async () => {
+      setGraphState(snapshot([full], []));
+    });
+    const raycast = vi
+      .spyOn(THREE.Raycaster.prototype, "intersectObjects")
+      .mockImplementation((objects) => [{ object: objects[0] }] as THREE.Intersection[]);
+    const { container } = render(() => {
+      const [graphState, setState] = createSignal(snapshot([light], []));
+      setGraphState = setState;
+      const store: GraphStore = {
+        state: graphState,
+        refresh: () => Promise.resolve(),
+        hydrate,
+      };
+      return (
+        <GraphProvider store={store}>
+          <GraphFilterProvider store={filters}>
+            <Atlas hub={createHub([])} />
+          </GraphFilterProvider>
+        </GraphProvider>
+      );
+    });
+    const canvas = container.querySelector(".atlas-canvas canvas")!;
+    const inspectorTitle = () => container.querySelector(".i-title")?.textContent;
+
+    fireEvent.click(canvas);
+    await waitFor(() => expect(hydrate).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(inspectorTitle()).toBeUndefined());
+
+    filters.setSizeRange(null);
+    await waitFor(() => expect(inspectorTitle()).toContain(light.schema_id));
     raycast.mockRestore();
   });
 
