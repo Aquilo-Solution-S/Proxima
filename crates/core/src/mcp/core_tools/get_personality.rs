@@ -1,0 +1,172 @@
+//! `core/get_personality` — full read of one personality instance,
+//! including all wake entries projected with W-handles.
+
+use futures::future::BoxFuture;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+use crate::McpTool;
+use crate::mcp::{McpToolCtx, McpToolError};
+
+#[derive(Debug, Default)]
+pub struct GetPersonalityTool;
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct GetPersonalityArgs {
+    /// `P`-prefixed handle previously returned by list_personalities or
+    /// instantiate_personality.
+    pub personality: String,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct GetPersonalityWakeEntry {
+    pub handle: String,
+    pub trigger_kind: String,
+    pub trigger_id: String,
+    pub label: String,
+    pub enabled: bool,
+    pub recipe_ref: String,
+    pub model_tier: String,
+    pub inference_target_ref: Option<String>,
+    pub substrate_tool_palette: Vec<String>,
+    pub workspace_tool_palette: Vec<String>,
+    pub execution_mode: String,
+    pub authored_by: String,
+    pub probability_promille: u16,
+    pub max_rounds: u16,
+    pub disabled_reason: Option<String>,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct GetPersonalityOutput {
+    pub handle: String,
+    pub display_name: String,
+    pub status: String,
+    pub root_perspective: String,
+    pub wake_entries: Vec<GetPersonalityWakeEntry>,
+}
+
+impl McpTool for GetPersonalityTool {
+    const NAME: &'static str = "core/get_personality";
+    const DESCRIPTION: &'static str =
+        "Read one personality with all wake entries. Returns W-handles \
+         for each entry usable in update/remove calls.";
+    type Args = GetPersonalityArgs;
+    type Output = GetPersonalityOutput;
+
+    fn call(
+        ctx: McpToolCtx,
+        args: GetPersonalityArgs,
+    ) -> BoxFuture<'static, Result<GetPersonalityOutput, McpToolError>> {
+        Box::pin(async move {
+            let target_id = ctx
+                .handles
+                .resolve_personality(&args.personality)
+                .ok_or_else(|| McpToolError::UnknownHandle(args.personality.clone()))?;
+            let storage = ctx.storage().ok_or_else(|| {
+                McpToolError::Other("engine storage unavailable".into())
+            })?;
+            let rows = storage
+                .list_personality_instances(&ctx.owner, true)
+                .await
+                .map_err(McpToolError::Storage)?;
+            let row = rows
+                .into_iter()
+                .find(|r| r.personality_instance_id == target_id)
+                .ok_or_else(|| McpToolError::Other(format!(
+                    "personality {} not found for owner",
+                    args.personality
+                )))?;
+            let p_handle = ctx.handles.assign_personality(row.personality_instance_id);
+            let n_handle = ctx.handles.assign_memory(row.current_root_perspective_memory_id);
+            let wake_entries = row
+                .wake_entries
+                .into_iter()
+                .map(|e| {
+                    let w = ctx.handles.assign_wake_entry(e.wake_entry_id);
+                    GetPersonalityWakeEntry {
+                        handle: w.as_str().to_string(),
+                        trigger_kind: format!("{:?}", e.trigger_kind),
+                        trigger_id: e.trigger_id,
+                        label: e.label,
+                        enabled: e.enabled,
+                        recipe_ref: e.recipe_ref,
+                        model_tier: format!("{:?}", e.model_tier),
+                        inference_target_ref: e.inference_target_ref,
+                        substrate_tool_palette: e.substrate_tool_palette,
+                        workspace_tool_palette: e.workspace_tool_palette,
+                        execution_mode: format!("{:?}", e.execution_mode),
+                        authored_by: format!("{:?}", e.authored_by),
+                        probability_promille: e.probability_promille,
+                        max_rounds: e.max_rounds,
+                        disabled_reason: e.disabled_reason,
+                    }
+                })
+                .collect();
+            Ok(GetPersonalityOutput {
+                handle: p_handle.as_str().to_string(),
+                display_name: row.display_name,
+                status: row.status,
+                root_perspective: n_handle.as_str().to_string(),
+                wake_entries,
+            })
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::auth::NoAuth;
+    use crate::mcp::HandleTable;
+    use crate::verbs::query::MemoryStore;
+    use crate::{Engine, FlavorRegistry, McpAuthorContext, OrgId, Owner, Principal, UserId};
+    use std::sync::Arc;
+
+    fn make_ctx() -> McpToolCtx {
+        let owner = Owner {
+            principal: Principal::User(UserId::new(uuid::Uuid::now_v7())),
+            org_id: OrgId::new(uuid::Uuid::now_v7()),
+        };
+        let resolver = NoAuth::new(owner.principal.clone(), owner.clone());
+        let engine = Arc::new(Engine::new(
+            FlavorRegistry::new().freeze(),
+            MemoryStore::new(),
+            Box::new(resolver),
+        ));
+        McpToolCtx {
+            pool: sqlx::PgPool::connect_lazy("postgres://x/x").expect("lazy"),
+            owner,
+            handles: Arc::new(HandleTable::new()),
+            registry: Arc::new(FlavorRegistry::new().freeze()),
+            author: McpAuthorContext {
+                model_id: "t".into(),
+                client_name: "t".into(),
+                client_version: "0".into(),
+                caller_self_perspective: None,
+            },
+            caller_self_perspective: None,
+            engine: Some(engine),
+        }
+    }
+
+    #[tokio::test]
+    async fn get_personality_unknown_handle_returns_unknown_handle_err() {
+        let ctx = make_ctx();
+        let err = GetPersonalityTool::call(
+            ctx,
+            GetPersonalityArgs { personality: "P99".into() },
+        ).await.unwrap_err();
+        assert!(matches!(err, McpToolError::UnknownHandle(_)));
+    }
+
+    #[tokio::test]
+    async fn get_personality_malformed_handle_returns_unknown_handle_err() {
+        let ctx = make_ctx();
+        let err = GetPersonalityTool::call(
+            ctx,
+            GetPersonalityArgs { personality: "not-a-handle".into() },
+        ).await.unwrap_err();
+        assert!(matches!(err, McpToolError::UnknownHandle(_)));
+    }
+}
