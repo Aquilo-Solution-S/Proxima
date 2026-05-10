@@ -64,6 +64,7 @@ const graphClient = (overrides: Partial<EngineClient>): EngineClient => ({
   listMcpTools: async () => [],
   listWorkspaceTools: async () => [],
   listRelations: async () => [],
+  wakeEntryProduces: async () => ({ schema_ids: [], relation_ids: [] }),
   ...overrides,
 });
 

@@ -21,6 +21,7 @@ import {
   type ListPersonalityInstancesTs,
   type McpToolTs,
   type OwnerRecipesListingTs,
+  type ProducesTs,
   type PersonalityInstanceTs,
   type QueryRequest,
   type QueryResponse,
@@ -159,6 +160,10 @@ export class TauriEngineClient implements EngineClient {
 
   async listRelations(): Promise<RelationTs[]> {
     return unwrap(commands.listRelations());
+  }
+
+  async wakeEntryProduces(substratePalette: string[]): Promise<ProducesTs> {
+    return unwrap(commands.wakeEntryProduces(substratePalette));
   }
 }
 
