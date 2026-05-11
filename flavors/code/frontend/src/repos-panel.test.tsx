@@ -18,6 +18,7 @@ const mocks = vi.hoisted(() => ({
   reposList: vi.fn(),
   reposErase: vi.fn(),
   reposRegister: vi.fn(),
+  codeSetRepoTargetBranch: vi.fn(),
   repoIngestStart: vi.fn(),
   repoIngestStatus: vi.fn(),
   repoIngestSubscribe: vi.fn(),
@@ -29,6 +30,7 @@ vi.mock("@proxima/core", () => ({
     reposList: mocks.reposList,
     reposErase: mocks.reposErase,
     reposRegister: mocks.reposRegister,
+    codeSetRepoTargetBranch: mocks.codeSetRepoTargetBranch,
     repoIngestStart: mocks.repoIngestStart,
     repoIngestStatus: mocks.repoIngestStatus,
     repoIngestSubscribe: mocks.repoIngestSubscribe,
@@ -116,6 +118,7 @@ describe("ReposPanel", () => {
     mocks.reposList.mockResolvedValue(ok([repo()]));
     mocks.reposErase.mockResolvedValue(ok(receipt()));
     mocks.reposRegister.mockResolvedValue(ok(repo()));
+    mocks.codeSetRepoTargetBranch.mockResolvedValue(ok(repo()));
     mocks.repoIngestStart.mockResolvedValue(ok(run()));
     mocks.repoIngestStatus.mockResolvedValue(ok(null));
     mocks.repoIngestSubscribe.mockResolvedValue(ok(null));
@@ -243,6 +246,26 @@ describe("ReposPanel", () => {
         "018f0000-0000-7000-8000-000000000001",
         1,
       );
+    });
+  });
+
+  it("updates the repo target branch inline", async () => {
+    mocks.codeSetRepoTargetBranch.mockResolvedValue(
+      ok(repo({ target_branch: "road-to-v1" })),
+    );
+    render(() => <ReposPanel />);
+
+    fireEvent.input(await screen.findByPlaceholderText("target branch"), {
+      target: { value: "road-to-v1" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save Branch" }));
+
+    await waitFor(() => {
+      expect(mocks.codeSetRepoTargetBranch).toHaveBeenCalledWith(
+        "018f0000-0000-7000-8000-000000000001",
+        "road-to-v1",
+      );
+      expect(screen.getByText(/target road-to-v1/)).toBeTruthy();
     });
   });
 });

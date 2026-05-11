@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::mcp::{HandleTable, McpToolError};
 use crate::{
-    ModelTier, PersonalityInstanceId, WakeEntryAuthoredBy, WakeEntryDraft, WakeEntryTriggerKind,
-    WakeExecutionMode,
+    ModelTier, PersonalityInstanceId, WakeEntryAuthoredBy, WakeEntryDraft, WakeEntryGoalScope,
+    WakeEntryTriggerKind, WakeExecutionMode,
 };
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
@@ -29,6 +29,8 @@ pub struct WakeEntryDraftInput {
     pub authored_by: WakeEntryAuthoredBy,
     #[schemars(range(min = 0, max = 1000))]
     pub probability_promille: u16,
+    #[serde(default)]
+    pub goal_scope: WakeEntryGoalScope,
     pub recipe_ref: String,
     #[serde(default = "default_model_tier")]
     pub model_tier: ModelTier,
@@ -77,6 +79,7 @@ impl WakeEntryDraftInput {
             execution_mode: self.execution_mode,
             authored_by: self.authored_by,
             probability_promille: self.probability_promille,
+            goal_scope: self.goal_scope,
             recipe_ref: self.recipe_ref,
             model_tier: self.model_tier,
             inference_target_ref: self.inference_target_ref,

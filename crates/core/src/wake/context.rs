@@ -46,6 +46,9 @@ pub struct RootPerspectiveEnvelope {
 /// perspective memory id.
 #[derive(Debug, Clone, Serialize)]
 pub struct ActiveGoalEnvelope {
+    pub goal_id: Uuid,
+    pub schema_id: String,
+    pub title: String,
     pub goal_payload: serde_json::Value,
     pub motivation_via: Vec<Uuid>,
 }
@@ -164,6 +167,9 @@ pub async fn assemble_wake_context(
                 })
             };
             ActiveGoalEnvelope {
+                goal_id: row.goal_id.into_inner(),
+                schema_id: row.schema_id.into_inner(),
+                title: row.title,
                 goal_payload,
                 motivation_via: vec![root_memory_id.into_inner()],
             }

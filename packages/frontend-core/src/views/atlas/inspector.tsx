@@ -8,7 +8,7 @@ import {
   type Component,
   type JSX,
 } from "solid-js";
-import { commands } from "../../bindings";
+import { commands, type Owner, type PersonalityInstanceTs } from "../../bindings";
 import type { Hub, Renderer } from "../../hub";
 import type { Adjacency, AtlasNode, InEntry, OutEntry } from "./types";
 import { KIND_GLYPH, LAYER_Z, TINT_HEX } from "./three-helpers";
@@ -32,6 +32,40 @@ const relationLabel = (kind: string): string => {
 
 const classToken = (value: string | undefined): string =>
   value?.toLowerCase().replace(/[^a-z0-9_-]+/g, "-") ?? "unknown";
+
+type PlannerCandidate = {
+  id: string;
+  rootId: string;
+  label: string;
+};
+
+const plannerCandidatesForOwner = async (
+  owner: Owner,
+): Promise<PlannerCandidate[]> => {
+  const result = await commands.listPersonalityInstances({
+    owner,
+    include_tombstoned: false,
+  });
+  if (result.status === "error") {
+    throw new Error(commandErrorMessage(result.error));
+  }
+  return result.data
+    .filter((instance: PersonalityInstanceTs) =>
+      instance.status === "active" &&
+      instance.wake_entries.some(
+        (entry) =>
+          entry.enabled &&
+          entry.trigger_kind === "on_memory" &&
+          entry.trigger_id === "proxima-goal/goal-activated-v1" &&
+          entry.goal_scope === "trigger_goal_assigned",
+      ),
+    )
+    .map((instance) => ({
+      id: instance.personality_instance_id,
+      rootId: instance.current_root_perspective_memory_id,
+      label: instance.display_name,
+    }));
+};
 
 const nodeLabel = (node: AtlasNode | undefined): string =>
   node?.title?.trim() || nodeSchemaLabel(node);
@@ -453,6 +487,15 @@ export const Inspector: Component<{
       const [reactivateError, setReactivateError] = createSignal<string | null>(
         null,
       );
+      const [reactivateDialogOpen, setReactivateDialogOpen] =
+        createSignal(false);
+      const [plannerCandidates, setPlannerCandidates] = createSignal<
+        PlannerCandidate[]
+      >([]);
+      const [selectedPlannerId, setSelectedPlannerId] = createSignal<
+        string | null
+      >(null);
+      const [plannerLoading, setPlannerLoading] = createSignal(false);
       const out = () => props.adj.out.get(node().id) ?? [];
       const inn = () => props.adj.inn.get(node().id) ?? [];
       const hasPayloadDetail = () =>
@@ -477,6 +520,10 @@ export const Inspector: Component<{
         node().id;
         setReactivateState("idle");
         setReactivateError(null);
+        setReactivateDialogOpen(false);
+        setPlannerCandidates([]);
+        setSelectedPlannerId(null);
+        setPlannerLoading(false);
       });
       const renderer = createMemo(() =>
         props.hub.rendererFor(
@@ -513,14 +560,33 @@ export const Inspector: Component<{
           setCopyState("failed");
         }
       };
-      const reactivateGoal = async () => {
+      const openReactivateDialog = async () => {
         const goal = node().goal;
         if (goal === undefined || goal.state !== "Active") return;
+        setReactivateDialogOpen(true);
+        setPlannerLoading(true);
+        setReactivateError(null);
+        setSelectedPlannerId(null);
+        try {
+          setPlannerCandidates(await plannerCandidatesForOwner(goal.owner));
+        } catch (error) {
+          setReactivateError(
+            error instanceof Error ? error.message : "Failed to load planners",
+          );
+        } finally {
+          setPlannerLoading(false);
+        }
+      };
+      const reactivateGoal = async () => {
+        const goal = node().goal;
+        const target = selectedPlannerId();
+        if (goal === undefined || goal.state !== "Active" || target === null) return;
         setReactivateState("running");
         setReactivateError(null);
         const result = await commands.goalReactivate({
           owner: goal.owner,
           goal_id: goal.id,
+          target_personality_id: target,
         });
         if (result.status === "error") {
           setReactivateError(commandErrorMessage(result.error));
@@ -528,6 +594,7 @@ export const Inspector: Component<{
           return;
         }
         setReactivateState("done");
+        setReactivateDialogOpen(false);
       };
       return (
         <div class="atlas-inspector">
@@ -553,7 +620,7 @@ export const Inspector: Component<{
                 class={`i-action-btn ${reactivateState()}`}
                 disabled={reactivateState() === "running"}
                 aria-label="Reactivate goal"
-                onClick={() => void reactivateGoal()}
+                onClick={() => void openReactivateDialog()}
               >
                 {reactivateState() === "running"
                   ? "Reactivating"
@@ -563,6 +630,81 @@ export const Inspector: Component<{
               </button>
               <Show when={reactivateState() === "failed"}>
                 <span class="i-action-error">{reactivateError()}</span>
+              </Show>
+              <Show when={reactivateDialogOpen()}>
+                <div class="i-dialog-backdrop" role="presentation">
+                  <div
+                    class="i-reactivate-dialog"
+                    role="dialog"
+                    aria-modal="true"
+                    aria-label="Assign goal"
+                  >
+                    <div class="i-dialog-head">
+                      <span>Assign goal</span>
+                      <button
+                        type="button"
+                        aria-label="Close"
+                        onClick={() => setReactivateDialogOpen(false)}
+                      >
+                        x
+                      </button>
+                    </div>
+                    <Show
+                      when={!plannerLoading()}
+                      fallback={<p class="i-dialog-empty">Loading planners.</p>}
+                    >
+                      <Show
+                        when={plannerCandidates().length > 0}
+                        fallback={
+                          <p class="i-dialog-empty">
+                            No goal-reactive personality is configured.
+                          </p>
+                        }
+                      >
+                        <div class="i-dialog-list" role="radiogroup">
+                          <For each={plannerCandidates()}>
+                            {(candidate) => (
+                              <label class="i-dialog-row">
+                                <input
+                                  type="radio"
+                                  name="goal-reactivate-planner"
+                                  checked={selectedPlannerId() === candidate.id}
+                                  onChange={() => setSelectedPlannerId(candidate.id)}
+                                />
+                                <span>
+                                  <strong>{candidate.label}</strong>
+                                  <em>{candidate.rootId}</em>
+                                </span>
+                              </label>
+                            )}
+                          </For>
+                        </div>
+                      </Show>
+                    </Show>
+                    <Show when={reactivateError()}>
+                      <p class="i-action-error">{reactivateError()}</p>
+                    </Show>
+                    <div class="i-dialog-actions">
+                      <button
+                        type="button"
+                        onClick={() => setReactivateDialogOpen(false)}
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        disabled={
+                          reactivateState() === "running" ||
+                          selectedPlannerId() === null ||
+                          plannerCandidates().length === 0
+                        }
+                        onClick={() => void reactivateGoal()}
+                      >
+                        Confirm
+                      </button>
+                    </div>
+                  </div>
+                </div>
               </Show>
             </div>
           </Show>

@@ -301,6 +301,12 @@ enum ModelTierProto {
   MODEL_TIER_PROTO_DEEP = 3;
 }
 
+enum GoalScope {
+  GOAL_SCOPE_UNSPECIFIED = 0;
+  GOAL_SCOPE_NONE = 1;
+  GOAL_SCOPE_TRIGGER_GOAL_ASSIGNED = 2;
+}
+
 message WakeEntry {
   string wake_entry_id = 1;
   TriggerKind trigger_kind = 2;
@@ -317,6 +323,7 @@ message WakeEntry {
   repeated string workspace_tool_palette = 13;
   uint32 max_rounds = 14;
   optional string disabled_reason = 15;
+  GoalScope goal_scope = 16;
 }
 
 message WakeEntryDraft {
@@ -333,6 +340,7 @@ message WakeEntryDraft {
   repeated string substrate_tool_palette = 11;
   repeated string workspace_tool_palette = 12;
   uint32 max_rounds = 13;
+  GoalScope goal_scope = 14;
 }
 
 message InferenceTarget {

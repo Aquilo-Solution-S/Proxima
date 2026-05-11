@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use proxima_code::mcp::{CodeOpenFileRevisionTool, CodeSearchChunksTool, CodeSearchCommitsTool};
-use proxima_code::{CodeChunkV1, CommitV1, FileRevisionV1};
+use proxima_code::{CodeChunkV1, CommitV1, FileRevisionV1, register_repo};
 use proxima_core::auth::{Credentials, NoAuth};
 use proxima_core::engine::Engine;
 use proxima_core::mcp::{HandleTable, McpAuthorContext, McpTool, McpToolCtx};
@@ -284,6 +284,46 @@ async fn open_file_revision_returns_head_with_chunks() -> Result<(), Box<dyn std
 
     assert_eq!(result["revision"]["indexed_commit_sha"], "v2");
     assert_eq!(result["chunks"].as_array().expect("chunks").len(), 2);
+    Ok(())
+}
+
+#[tokio::test]
+async fn open_file_revision_accepts_unambiguous_repo_display_name()
+-> Result<(), Box<dyn std::error::Error>> {
+    let Some(fixture) = TestDb::fresh().await? else {
+        return Ok(());
+    };
+    let owner = owner_fixture();
+    let engine = engine_for_test(fixture.pg.clone(), owner.clone());
+    let registry = registry_for_mcp();
+    let repo_id = Uuid::now_v7();
+    register_repo(
+        fixture.pg.pool(),
+        &owner,
+        repo_id,
+        "/tmp/proxima-mcp-display",
+        "Proxima",
+    )
+    .await?;
+
+    ingest_file_revision(
+        fixture.pg.pool(),
+        &engine,
+        owner.clone(),
+        repo_id,
+        "src/atlas.rs",
+        "v1",
+    )
+    .await?;
+
+    let result = run_tool::<CodeOpenFileRevisionTool>(
+        ctx(fixture.pg.pool().clone(), owner, registry),
+        json!({ "repo_handle": "proxima", "file_path": "src/atlas.rs" }),
+    )
+    .await?;
+
+    assert_eq!(result["revision"]["indexed_commit_sha"], "v1");
+    assert_eq!(result["revision"]["repo_handle"], "R1");
     Ok(())
 }
 

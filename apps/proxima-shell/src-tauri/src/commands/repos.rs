@@ -73,6 +73,30 @@ pub async fn repos_register(
 }
 
 /// # Errors
+/// `InvalidUuid` if `repo_id` doesn't parse, `UnknownRepo` if the repo
+/// is not registered, `InvalidRepoTargetBranch` if a non-empty branch does
+/// not resolve locally, `Storage` otherwise.
+#[tauri::command]
+#[specta::specta]
+pub async fn code_set_repo_target_branch(
+    pg: State<'_, Arc<PgStorage>>,
+    repo_id: String,
+    target_branch: Option<String>,
+) -> Result<RepoRecordTs, CommandError> {
+    let req_bytes = crate::perf::ipc::req_size(&(&repo_id, &target_branch));
+    crate::perf::ipc::record("code_set_repo_target_branch", req_bytes, async move {
+        let owner = sentinel_owner();
+        let uuid =
+            Uuid::parse_str(&repo_id).map_err(|_| CommandError::InvalidUuid { value: repo_id })?;
+        let record =
+            proxima_code::set_repo_target_branch(pg.pool(), &owner, uuid, target_branch.as_deref())
+                .await?;
+        Ok(record.into())
+    })
+    .await
+}
+
+/// # Errors
 /// `InvalidUuid` if `repo_id` doesn't parse, `Storage` otherwise.
 #[tauri::command]
 #[specta::specta]

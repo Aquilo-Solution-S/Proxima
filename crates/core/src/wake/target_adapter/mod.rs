@@ -30,6 +30,14 @@ pub struct TargetInvocation {
     /// this to the disposable worktree path; substrate-only wakes
     /// leave it `None`.
     pub cwd: Option<PathBuf>,
+    /// Optional local JSONL artifact for the full worker session.
+    /// The adapter treats logging as best-effort: failures to open or
+    /// write this file must not fail the wake invocation.
+    pub session_log_path: Option<PathBuf>,
+    pub invocation_id: Option<uuid::Uuid>,
+    pub personality_instance_id: Option<uuid::Uuid>,
+    pub wake_entry_id: Option<uuid::Uuid>,
+    pub change_event_seq: Option<uuid::Uuid>,
 }
 
 /// Adapter-classified outcome of a single wake.
@@ -46,6 +54,7 @@ pub struct TargetOutcome {
     pub stderr_tail: String,
     pub stdout_truncated: bool,
     pub stderr_truncated: bool,
+    pub session_log_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

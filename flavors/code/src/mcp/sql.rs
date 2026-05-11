@@ -1,6 +1,6 @@
-//! Owner-scoped head-by-natural-key CTEs for code MCP tools.
+//! Owner-scoped head-by-natural-key CTEs and lookup helpers for code MCP tools.
 
-use proxima_core::{McpToolError, Owner, Principal};
+use proxima_core::{McpToolCtx, McpToolError, Owner, Principal};
 
 pub const CHUNK_HEADS_CTE: &str = r"
 chunk_heads AS (
@@ -44,6 +44,59 @@ pub fn owner_principal(owner: &Owner) -> (&'static str, uuid::Uuid) {
         Principal::User(user) => ("User", user.into_inner()),
         Principal::Group(group) => ("Group", group.into_inner()),
     }
+}
+
+pub async fn resolve_repo_identifier(
+    ctx: &McpToolCtx,
+    identifier: &str,
+) -> Result<uuid::Uuid, McpToolError> {
+    let trimmed = identifier.trim();
+    if trimmed.is_empty() {
+        return Err(McpToolError::InvalidInput("repo_handle required".into()));
+    }
+    if let Some(repo_id) = ctx
+        .handles
+        .resolve_flavor_object(trimmed, super::REPO_HANDLE_KIND)
+    {
+        return Ok(repo_id);
+    }
+
+    let (owner_kind, owner_principal_id) = owner_principal(&ctx.owner);
+    let owner_org_id = ctx.owner.org_id.into_inner();
+    let rows: Vec<RepoLookupRow> = sqlx::query_as(
+        "SELECT repo_id
+         FROM proxima_code.repos
+         WHERE owner_principal_kind = $1
+           AND owner_principal_id = $2
+           AND owner_org_id = $3
+           AND (
+               lower(display_name) = lower($4)
+               OR lower(canonical_path) = lower($4)
+               OR lower(regexp_replace(canonical_path, '^.*/', '')) = lower($4)
+           )
+         ORDER BY created_at DESC
+         LIMIT 2",
+    )
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(owner_org_id)
+    .bind(trimmed)
+    .fetch_all(&ctx.pool)
+    .await
+    .map_err(map_storage)?;
+
+    match rows.as_slice() {
+        [row] => Ok(row.repo_id),
+        [] => Err(McpToolError::UnknownHandle(identifier.to_string())),
+        _ => Err(McpToolError::InvalidInput(
+            "repo_handle matched multiple repos; use a returned repo_handle".into(),
+        )),
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct RepoLookupRow {
+    repo_id: uuid::Uuid,
 }
 
 #[allow(clippy::needless_pass_by_value)]

@@ -3,7 +3,7 @@
 use proxima_core::{
     InferenceTargetConfig, InferenceTargetRow, InferenceTierBindingRow,
     LocalCliConfig as CoreLocalCli, ModelTier, RemoteModelConfig as CoreRemoteModel,
-    WakeEntryAuthoredBy, WakeEntryDraft, WakeEntryExecutionMode, WakeEntryRow,
+    WakeEntryAuthoredBy, WakeEntryDraft, WakeEntryExecutionMode, WakeEntryGoalScope, WakeEntryRow,
     WakeEntryTriggerKind, WakeExecutionMode,
 };
 use tonic::Status;
@@ -78,6 +78,21 @@ pub fn execution_mode_to_proto(mode: WakeEntryExecutionMode) -> i32 {
     }
 }
 
+pub fn goal_scope_from_proto(scope: i32) -> Result<WakeEntryGoalScope, Status> {
+    match pb::GoalScope::try_from(scope).unwrap_or(pb::GoalScope::Unspecified) {
+        pb::GoalScope::None => Ok(WakeEntryGoalScope::None),
+        pb::GoalScope::TriggerGoalAssigned => Ok(WakeEntryGoalScope::TriggerGoalAssigned),
+        pb::GoalScope::Unspecified => Ok(WakeEntryGoalScope::None),
+    }
+}
+
+pub fn goal_scope_to_proto(scope: WakeEntryGoalScope) -> i32 {
+    match scope {
+        WakeEntryGoalScope::None => pb::GoalScope::None as i32,
+        WakeEntryGoalScope::TriggerGoalAssigned => pb::GoalScope::TriggerGoalAssigned as i32,
+    }
+}
+
 pub fn wake_entry_to_proto(row: &WakeEntryRow) -> pb::WakeEntry {
     pb::WakeEntry {
         wake_entry_id: row.wake_entry_id.to_string(),
@@ -95,6 +110,7 @@ pub fn wake_entry_to_proto(row: &WakeEntryRow) -> pb::WakeEntry {
         workspace_tool_palette: row.workspace_tool_palette.clone(),
         max_rounds: u32::from(row.max_rounds),
         disabled_reason: row.disabled_reason.clone(),
+        goal_scope: goal_scope_to_proto(row.goal_scope),
     }
 }
 
@@ -113,6 +129,7 @@ pub fn wake_entry_draft_from_proto(
         authored_by: authored_by_from_proto(proto.authored_by)?,
         probability_promille: u16::try_from(proto.probability_promille)
             .map_err(|_| Status::invalid_argument("probability_promille > u16::MAX"))?,
+        goal_scope: goal_scope_from_proto(proto.goal_scope)?,
         recipe_ref: proto.recipe_ref,
         model_tier: tier_from_proto(proto.model_tier)?,
         inference_target_ref: proto.inference_target_ref,

@@ -3,8 +3,9 @@ use crate::Owner;
 use crate::error::ProtocolError;
 use crate::personality::{
     InstantiatePersonalityRequest, InstantiatePersonalityResponse, ListWakeInvocationsRequest,
-    PersonalityInstanceRow, TombstonePersonalityRequest, TombstonePersonalityResponse,
-    WakeInvocationLogDraft, WakeInvocationRow,
+    PersonalityInstanceRow, ReplayWakeEventsOutcome, ReplayWakeEventsRequest,
+    TombstonePersonalityRequest, TombstonePersonalityResponse, WakeInvocationLogDraft,
+    WakeInvocationRow,
 };
 use crate::storage::StorageError;
 
@@ -81,5 +82,13 @@ impl Engine {
     pub async fn run_dispatcher_tick(&self) -> Result<usize, ProtocolError> {
         let _guard = self.dispatch_tick_lock.lock().await;
         crate::wake::dispatch::dispatch_tick(self).await
+    }
+
+    pub async fn replay_missed_wakes(
+        &self,
+        req: ReplayWakeEventsRequest,
+    ) -> Result<ReplayWakeEventsOutcome, ProtocolError> {
+        let _guard = self.dispatch_tick_lock.lock().await;
+        crate::wake::dispatch::replay_missed_wakes(self, req).await
     }
 }

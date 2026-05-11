@@ -30,6 +30,18 @@ fn registry_resolves_bundled_recipes() {
         "unexpected engineer recipe path: {engineer_path:?}",
     );
 
+    let execution_worker_path = frozen
+        .bundled_recipe_path("proxima-code/execution_worker")
+        .expect("execution_worker recipe must be registered");
+    assert!(
+        execution_worker_path.exists(),
+        "execution_worker recipe path {execution_worker_path:?} must exist on disk",
+    );
+    assert!(
+        execution_worker_path.ends_with("recipes/execution_worker.yaml"),
+        "unexpected execution_worker recipe path: {execution_worker_path:?}",
+    );
+
     let planner_path = frozen
         .bundled_recipe_path("proxima-code/plan_execution_requests")
         .expect("plan_execution_requests recipe must be registered");
@@ -47,6 +59,7 @@ fn registry_resolves_bundled_recipes() {
         vec![
             "proxima-code/commit_summary",
             "proxima-code/engineer",
+            "proxima-code/execution_worker",
             "proxima-code/plan_execution_requests",
         ],
     );

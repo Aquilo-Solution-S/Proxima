@@ -166,6 +166,12 @@ pub enum RepoRegistryError {
     DuplicatePath { canonical_path: String },
     #[error("repo not found: {repo_id}")]
     NotFound { repo_id: Uuid },
+    #[error("invalid target branch for repo {repo_id}: {target_branch} ({reason})")]
+    InvalidTargetBranch {
+        repo_id: Uuid,
+        target_branch: String,
+        reason: String,
+    },
     #[error("ingestion run not found: {run_id}")]
     RunNotFound { run_id: Uuid },
     #[error("ingestion run is already in terminal state: {run_id} ({status:?})")]

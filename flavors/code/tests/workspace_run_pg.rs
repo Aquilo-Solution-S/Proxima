@@ -93,6 +93,7 @@ impl TargetAdapter for WorktreeWritingAdapter {
                 stderr_tail: String::new(),
                 stdout_truncated: false,
                 stderr_truncated: false,
+                session_log_error: None,
             }),
             Err(err) => Ok(target_failed(started, &err)),
         }
@@ -109,6 +110,7 @@ fn target_failed(started: Instant, err: &str) -> TargetOutcome {
         stderr_tail: err.to_string(),
         stdout_truncated: false,
         stderr_truncated: false,
+        session_log_error: None,
     }
 }
 
@@ -304,6 +306,10 @@ async fn workspace_wake_emits_run_fact_and_edges() -> Result<(), Box<dyn std::er
         )
         .await?;
         assert_eq!(repo.target_branch.as_deref(), Some("main"));
+        sqlx::query("UPDATE proxima_code.repos SET target_branch = NULL WHERE repo_id = $1")
+            .bind(repo_id)
+            .execute(pg.pool())
+            .await?;
 
         let engine = Arc::new(
             Engine::new(
@@ -409,6 +415,12 @@ async fn workspace_wake_emits_run_fact_and_edges() -> Result<(), Box<dyn std::er
         .fetch_one(pg.pool())
         .await?;
         assert_eq!(invocation_status, "succeeded");
+        let persisted_target: Option<String> =
+            sqlx::query_scalar("SELECT target_branch FROM proxima_code.repos WHERE repo_id = $1")
+                .bind(repo_id)
+                .fetch_one(pg.pool())
+                .await?;
+        assert_eq!(persisted_target.as_deref(), Some("main"));
 
         let run = sqlx::query(
             "SELECT memory_id, repo_id, target_branch, parent_sha, head_sha, diff_stat_json

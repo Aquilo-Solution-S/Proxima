@@ -9,11 +9,13 @@
 mod common;
 
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use proxima_core::auth::NoAuth;
 use proxima_core::engine::Engine;
-use proxima_core::personality::{SetWakeEntriesRequest, WakeEntryDraft};
+use proxima_core::personality::{ReplayWakeEventsRequest, SetWakeEntriesRequest, WakeEntryDraft};
+use proxima_core::storage::Storage;
 use proxima_core::verbs::query::MemoryStore;
 use proxima_core::verbs::schema::FlavorRegistryFrozen;
 use proxima_core::wake::target_adapter::{
@@ -21,7 +23,7 @@ use proxima_core::wake::target_adapter::{
 };
 use proxima_core::{
     InferenceTargetConfig, LocalCliConfig, ModelTier, RegisterInferenceTargetRequest,
-    WakeEntryAuthoredBy, WakeEntryTriggerKind,
+    WakeEntryAuthoredBy, WakeEntryGoalScope, WakeEntryTriggerKind,
 };
 use sqlx::Row;
 use uuid::Uuid;
@@ -29,6 +31,77 @@ use uuid::Uuid;
 #[derive(Debug, Clone)]
 struct MockAdapter {
     calls: Arc<Mutex<usize>>,
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn assignment_scoped_entry_without_goal_id_records_failed_invocation() {
+    let Some((storage, owner, instance_id, change_event_seq, fixture)) =
+        common::seed_wake_context_fixture().await
+    else {
+        eprintln!("skipping: PG unavailable");
+        return;
+    };
+
+    let mut wake_entry = WakeEntryDraft::new(
+        Uuid::now_v7(),
+        instance_id,
+        WakeEntryTriggerKind::OnMemory,
+        "proxima-test/wake-context-fact-v1",
+        "goal-scoped-misconfigured",
+        WakeEntryAuthoredBy::Any,
+        1000,
+        "user:unused.yaml",
+        ModelTier::Standard,
+        None,
+        Vec::new(),
+        4,
+    )
+    .expect("build wake entry");
+    wake_entry.goal_scope = WakeEntryGoalScope::TriggerGoalAssigned;
+    storage
+        .set_wake_entries(&SetWakeEntriesRequest {
+            owner: owner.clone(),
+            personality_instance_id: instance_id,
+            entries: vec![wake_entry.clone()],
+        })
+        .await
+        .expect("set wake entries");
+
+    let resolver = NoAuth::new(owner.principal.clone(), owner.clone());
+    let engine = Arc::new(
+        Engine::new(
+            FlavorRegistryFrozen::new(),
+            MemoryStore::new(),
+            Box::new(resolver),
+        )
+        .with_storage(storage.clone()),
+    );
+
+    let fired = engine.run_dispatcher_tick().await.expect("tick");
+    assert_eq!(fired, 0, "misconfigured scoped entry must not fire");
+
+    let row = sqlx::query(
+        "SELECT status, failure_reason
+         FROM proxima_core.personality_wake_invocations
+         WHERE personality_instance_id = $1
+           AND wake_entry_id = $2
+           AND change_event_seq = $3",
+    )
+    .bind(instance_id.into_inner())
+    .bind(wake_entry.wake_entry_id)
+    .bind(change_event_seq)
+    .fetch_one(fixture.pg.pool())
+    .await
+    .expect("misconfiguration invocation row");
+    let status: String = row.try_get("status").expect("status");
+    let failure_reason: Option<String> = row.try_get("failure_reason").expect("reason");
+    assert_eq!(status, "failed");
+    assert_eq!(
+        failure_reason.as_deref(),
+        Some("wake_goal_scope_missing_goal_id"),
+    );
+
+    fixture.cleanup().await;
 }
 
 impl MockAdapter {
@@ -58,6 +131,7 @@ impl TargetAdapter for MockAdapter {
             stderr_tail: String::new(),
             stdout_truncated: false,
             stderr_truncated: false,
+            session_log_error: None,
         })
     }
 }
@@ -190,6 +264,84 @@ async fn two_ticks_same_window_one_invocation_per_match() {
     .expect("count invocations");
     let n: i64 = row.try_get("n").expect("read count");
     assert_eq!(n, 1, "exactly one invocation row for the match");
+
+    fixture.cleanup().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn replay_missed_wake_fires_event_behind_cursor_without_moving_cursor() {
+    let Some(fixture) =
+        common::seed_dispatch_fixture_with_match_and_engine(Duration::from_secs(60)).await
+    else {
+        eprintln!("skipping: PG unavailable");
+        return;
+    };
+
+    fixture
+        .pg
+        .pg
+        .advance_wake_cursor(
+            &fixture.owner,
+            fixture.instance_id,
+            fixture.change_event_seq,
+        )
+        .await
+        .expect("advance cursor");
+    let normal_tick = fixture.engine.run_dispatcher_tick().await.expect("tick");
+    assert_eq!(normal_tick, 0, "cursor hides the historical event");
+    assert_eq!(fixture.mock.call_count(), 0);
+
+    let replay = fixture
+        .engine
+        .replay_missed_wakes(ReplayWakeEventsRequest {
+            owner: fixture.owner.clone(),
+            personality_instance_id: fixture.instance_id,
+            wake_entry_id: Some(fixture.wake_entry_id),
+            after_seq: Some(Uuid::nil()),
+            until_seq: Some(fixture.change_event_seq),
+            event_limit: 256,
+            max_invocations: 1,
+        })
+        .await
+        .expect("replay");
+    assert_eq!(replay.started_invocations, 1);
+    assert_eq!(replay.already_recorded, 0);
+    assert_eq!(fixture.mock.call_count(), 1);
+
+    let cursor: Uuid = sqlx::query_scalar(
+        "SELECT last_considered_seq
+         FROM proxima_core.personality_wake_cursor
+         WHERE personality_instance_id = $1",
+    )
+    .bind(fixture.instance_id.into_inner())
+    .fetch_one(fixture.pg.pg.pool())
+    .await
+    .expect("cursor");
+    assert_eq!(
+        cursor, fixture.change_event_seq,
+        "replay must not mutate normal wake cursor"
+    );
+
+    let replay_again = fixture
+        .engine
+        .replay_missed_wakes(ReplayWakeEventsRequest {
+            owner: fixture.owner.clone(),
+            personality_instance_id: fixture.instance_id,
+            wake_entry_id: Some(fixture.wake_entry_id),
+            after_seq: Some(Uuid::nil()),
+            until_seq: Some(fixture.change_event_seq),
+            event_limit: 256,
+            max_invocations: 1,
+        })
+        .await
+        .expect("replay again");
+    assert_eq!(replay_again.started_invocations, 0);
+    assert_eq!(replay_again.already_recorded, 1);
+    assert_eq!(
+        fixture.mock.call_count(),
+        1,
+        "replay must not run adapter for existing invocation row"
+    );
 
     fixture.cleanup().await;
 }

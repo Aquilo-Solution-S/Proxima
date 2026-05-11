@@ -13,7 +13,7 @@ use uuid::Uuid;
 
 use crate::payloads::ExecutionRequestV1;
 
-use super::sql::{map_storage, owner_principal};
+use super::sql::{map_storage, owner_principal, resolve_repo_identifier};
 
 const EXECUTION_REQUEST_SOURCE_ID: &str = "proxima-code/execution-request";
 const EXECUTION_REQUEST_OBJECT_SCHEMA: &str = "proxima-code/execution-request-object-v1";
@@ -57,10 +57,7 @@ impl McpTool for CodeEmitExecutionRequestTool {
     ) -> futures::future::BoxFuture<'static, Result<CodeEmitExecutionRequestOutput, McpToolError>>
     {
         Box::pin(async move {
-            let repo_id = ctx
-                .handles
-                .resolve_flavor_object(&args.repo_handle, super::REPO_HANDLE_KIND)
-                .ok_or_else(|| McpToolError::UnknownHandle(args.repo_handle.clone()))?;
+            let repo_id = resolve_repo_identifier(&ctx, &args.repo_handle).await?;
             validate_repo(&ctx, repo_id).await?;
 
             let title = normalize_text("title", &args.title, 1, 240)?;
@@ -238,7 +235,29 @@ async fn validate_active_goal_context(
     planner_root: MemoryId,
 ) -> Result<(), McpToolError> {
     let (owner_kind, owner_principal_id) = owner_principal(&ctx.owner);
-    let linked: bool = sqlx::query_scalar(
+    let active: bool = sqlx::query_scalar(
+        "SELECT EXISTS(
+             SELECT 1
+             FROM proxima_core.goals g
+             WHERE g.goal_id = $3
+               AND g.owner_principal_kind = $1
+               AND g.owner_principal_id = $2
+               AND g.state = 'Active'
+         )",
+    )
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(goal_id)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(map_storage)?;
+    if !active {
+        return Err(McpToolError::InvalidInput(
+            "activated goal is not Active".into(),
+        ));
+    }
+
+    let assigned: bool = sqlx::query_scalar(
         "WITH RECURSIVE lineage(goal_id) AS (
              SELECT $3::uuid
              UNION
@@ -251,22 +270,14 @@ async fn validate_active_goal_context(
          )
          SELECT EXISTS(
              SELECT 1
-             FROM proxima_core.goals active
-             WHERE active.goal_id = $3
-               AND active.owner_principal_kind = $1
-               AND active.owner_principal_id = $2
-               AND active.state = 'Active'
-               AND EXISTS (
-                   SELECT 1
-                   FROM proxima_core.edges e
-                   JOIN lineage l ON l.goal_id = e.source_goal_id
-                   WHERE e.owner_principal_kind = $1
-                     AND e.owner_principal_id = $2
-                     AND e.relation = 'core/inspires'
-                     AND e.source_kind = 'Goal'
-                     AND e.target_kind = 'Perspective'
-                     AND e.target_memory_id = $4
-               )
+             FROM proxima_core.edges e
+             JOIN lineage l ON l.goal_id = e.source_goal_id
+             WHERE e.owner_principal_kind = $1
+               AND e.owner_principal_id = $2
+               AND e.relation = 'core/inspires'
+               AND e.source_kind = 'Goal'
+               AND e.target_kind = 'Perspective'
+               AND e.target_memory_id = $4
          )",
     )
     .bind(owner_kind)
@@ -276,9 +287,9 @@ async fn validate_active_goal_context(
     .fetch_one(&mut **tx)
     .await
     .map_err(map_storage)?;
-    if !linked {
+    if !assigned {
         return Err(McpToolError::InvalidInput(
-            "activated goal is not Active for the caller planner".into(),
+            "activated goal is Active but not assigned to caller Root Perspective".into(),
         ));
     }
     Ok(())

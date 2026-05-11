@@ -86,12 +86,13 @@ export const emptyDraft = (
   execution_mode: "substrate_only",
   authored_by: "any",
   probability_promille: 1000,
+  goal_scope: "none",
   recipe_ref: "",
   model_tier: "standard",
   inference_target_ref: null,
   substrate_tool_palette: [],
   workspace_tool_palette: [],
-  max_rounds: 4,
+  max_rounds: 16,
 });
 
 /** Map key: substrate-palette joined and sorted (`palette.slice().sort().join(',')`). */

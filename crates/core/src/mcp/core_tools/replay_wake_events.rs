@@ -1,0 +1,143 @@
+//! `core/replay_wake_events` — operator-triggered missed-wake replay.
+
+use futures::future::BoxFuture;
+use schemars::JsonSchema;
+use serde::Deserialize;
+use uuid::Uuid;
+
+use crate::ReplayWakeEventsRequest;
+use crate::mcp::{McpTool, McpToolCtx, McpToolError};
+use crate::personality::ReplayWakeEventsOutcome;
+
+#[derive(Debug, Default)]
+pub struct ReplayWakeEventsTool;
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ReplayWakeEventsArgs {
+    /// `P`-handle for the personality whose active wake entries should
+    /// be replayed against historical change events.
+    pub personality: String,
+    /// Optional `W`-handle. When omitted, all active wake entries on the
+    /// personality are considered.
+    pub wake_entry: Option<String>,
+    /// Exclusive lower bound change_event seq.
+    pub after_seq: Option<String>,
+    /// Inclusive upper bound change_event seq.
+    pub until_seq: Option<String>,
+    /// Number of change events to scan. 0 or omitted uses the default.
+    pub event_limit: Option<u16>,
+    /// Maximum new invocations to start. 0 or omitted uses the default.
+    pub max_invocations: Option<u16>,
+}
+
+impl McpTool for ReplayWakeEventsTool {
+    const NAME: &'static str = "core/replay_wake_events";
+    const DESCRIPTION: &'static str = "Replay missed eligible wake events for one personality \
+         without moving its normal wake cursor. Existing invocation rows are not retried.";
+    type Args = ReplayWakeEventsArgs;
+    type Output = ReplayWakeEventsOutcome;
+
+    fn call(
+        ctx: McpToolCtx,
+        args: ReplayWakeEventsArgs,
+    ) -> BoxFuture<'static, Result<ReplayWakeEventsOutcome, McpToolError>> {
+        Box::pin(async move {
+            let personality_instance_id = ctx
+                .handles
+                .resolve_personality(&args.personality)
+                .ok_or_else(|| McpToolError::UnknownHandle(args.personality.clone()))?;
+            let wake_entry_id = args
+                .wake_entry
+                .as_deref()
+                .map(|handle| {
+                    ctx.handles
+                        .resolve_wake_entry(handle)
+                        .ok_or_else(|| McpToolError::UnknownHandle(handle.to_string()))
+                })
+                .transpose()?;
+            let after_seq = parse_optional_uuid("after_seq", args.after_seq)?;
+            let until_seq = parse_optional_uuid("until_seq", args.until_seq)?;
+            let engine = ctx
+                .engine()
+                .ok_or_else(|| McpToolError::Other("engine unavailable".into()))?;
+
+            engine
+                .replay_missed_wakes(ReplayWakeEventsRequest {
+                    owner: ctx.owner.clone(),
+                    personality_instance_id,
+                    wake_entry_id,
+                    after_seq,
+                    until_seq,
+                    event_limit: args.event_limit.unwrap_or(0),
+                    max_invocations: args.max_invocations.unwrap_or(0),
+                })
+                .await
+                .map_err(|e| McpToolError::Other(e.to_string()))
+        })
+    }
+}
+
+fn parse_optional_uuid(field: &str, value: Option<String>) -> Result<Option<Uuid>, McpToolError> {
+    value
+        .as_deref()
+        .map(|s| {
+            Uuid::parse_str(s).map_err(|e| McpToolError::InvalidInput(format!("{field}: {e}")))
+        })
+        .transpose()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::auth::NoAuth;
+    use crate::mcp::HandleTable;
+    use crate::verbs::query::MemoryStore;
+    use crate::{Engine, FlavorRegistry, McpAuthorContext, OrgId, Owner, Principal, UserId};
+    use std::sync::Arc;
+
+    fn make_ctx() -> McpToolCtx {
+        let owner = Owner {
+            principal: Principal::User(UserId::new(uuid::Uuid::now_v7())),
+            org_id: OrgId::new(uuid::Uuid::now_v7()),
+        };
+        let resolver = NoAuth::new(owner.principal.clone(), owner.clone());
+        let engine = Arc::new(Engine::new(
+            FlavorRegistry::new().freeze(),
+            MemoryStore::new(),
+            Box::new(resolver),
+        ));
+        McpToolCtx {
+            pool: sqlx::PgPool::connect_lazy("postgres://x/x").expect("lazy"),
+            owner,
+            handles: Arc::new(HandleTable::new()),
+            registry: Arc::new(FlavorRegistry::new().freeze()),
+            author: McpAuthorContext {
+                model_id: "t".into(),
+                client_name: "t".into(),
+                client_version: "0".into(),
+                caller_self_perspective: None,
+            },
+            caller_self_perspective: None,
+            master_token_id: None,
+            engine: Some(engine),
+        }
+    }
+
+    #[tokio::test]
+    async fn replay_unknown_personality_handle_errs() {
+        let err = ReplayWakeEventsTool::call(
+            make_ctx(),
+            ReplayWakeEventsArgs {
+                personality: "P404".into(),
+                wake_entry: None,
+                after_seq: None,
+                until_seq: None,
+                event_limit: None,
+                max_invocations: None,
+            },
+        )
+        .await
+        .expect_err("unknown handle");
+        assert!(matches!(err, McpToolError::UnknownHandle(_)));
+    }
+}

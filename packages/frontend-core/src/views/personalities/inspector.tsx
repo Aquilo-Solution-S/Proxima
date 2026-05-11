@@ -82,6 +82,10 @@ const executionModeLabel = (mode: ExecutionModeTs): string => {
   }
 };
 
+const isGoalLifecycleTrigger = (draft: WakeEntryDraftTs): boolean =>
+  draft.trigger_kind === "on_memory" &&
+  draft.trigger_id === "proxima-goal/goal-activated-v1";
+
 const modelTierLabel = (tier: ModelTierTs): string => {
   switch (tier) {
     case "fast":
@@ -593,6 +597,22 @@ const WakeEntryDetail: Component<{
               }
             />
           </label>
+          <Show when={isGoalLifecycleTrigger(props.draft)}>
+            <label class="personality-section-checkbox">
+              <input
+                type="checkbox"
+                checked={props.draft.goal_scope === "trigger_goal_assigned"}
+                onChange={(event) =>
+                  props.onUpdate((draft) => {
+                    draft.goal_scope = event.currentTarget.checked
+                      ? "trigger_goal_assigned"
+                      : "none";
+                  })
+                }
+              />
+              Requires assigned goal
+            </label>
+          </Show>
         </div>
       </details>
 
@@ -693,14 +713,14 @@ const WakeEntryDetail: Component<{
             Max rounds
             <input
               type="number"
-              min="0"
+              min="1"
               step="1"
               value={String(props.draft.max_rounds)}
               onChange={(event) =>
                 props.onUpdate((draft) => {
                   draft.max_rounds = clampInt(
                     event.currentTarget.value,
-                    0,
+                    1,
                     1_000,
                   );
                 })

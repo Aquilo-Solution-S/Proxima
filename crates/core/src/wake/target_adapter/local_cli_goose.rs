@@ -9,11 +9,13 @@
 //! - Env is cleared and only the engine-supplied vars + `PATH` flow
 //!   through, so inherited dev-shell creds don't leak into the LLM loop.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::Arc;
 use std::time::Instant;
 
 use async_trait::async_trait;
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::time::timeout;
 
@@ -36,6 +38,34 @@ impl LocalCliGooseAdapter {
 #[async_trait]
 impl TargetAdapter for LocalCliGooseAdapter {
     async fn run(&self, invocation: TargetInvocation) -> Result<TargetOutcome, TargetAdapterError> {
+        let params_json =
+            serde_json::to_string(&invocation.params).unwrap_or_else(|_| "{}".to_string());
+        let (logger, log_open_error) = SessionLogger::open(invocation.session_log_path.as_deref())
+            .await
+            .unwrap_or_else(|err| {
+                (
+                    SessionLogger::disabled(),
+                    Some(format!("open session log: {err}")),
+                )
+            });
+        let logger = Arc::new(logger);
+        logger
+            .write(serde_json::json!({
+                "record": "start",
+                "invocation_id": invocation.invocation_id,
+                "personality_instance_id": invocation.personality_instance_id,
+                "wake_entry_id": invocation.wake_entry_id,
+                "change_event_seq": invocation.change_event_seq,
+                "cwd": invocation.cwd,
+                "recipe_path": invocation.recipe_path,
+                "max_rounds": invocation.max_rounds,
+                "argv": redacted_argv(&invocation),
+                "param_keys": sorted_keys(&invocation.params),
+                "env_keys": sorted_keys(&invocation.env),
+                "session_log_open_error": log_open_error.clone(),
+            }))
+            .await;
+
         let mut cmd = Command::new(&self.binary);
         cmd.arg("run").arg("--recipe").arg(&invocation.recipe_path);
 
@@ -43,9 +73,12 @@ impl TargetAdapter for LocalCliGooseAdapter {
             let serialized = serde_json::to_string(value).unwrap_or_default();
             cmd.arg("--params").arg(format!("{key}={serialized}"));
         }
+        cmd.arg("--text").arg(&params_json);
         cmd.arg("--max-turns")
             .arg(invocation.max_rounds.to_string());
         cmd.arg("--no-session");
+        cmd.arg("--output-format").arg("stream-json");
+        cmd.arg("--debug");
         if let Some(cwd) = invocation.cwd.as_ref() {
             cmd.current_dir(cwd);
         }
@@ -65,29 +98,62 @@ impl TargetAdapter for LocalCliGooseAdapter {
             .stderr(Stdio::piped());
 
         let started = Instant::now();
-        let child = cmd
+        let mut child = cmd
             .spawn()
             .map_err(|e| TargetAdapterError::SpawnFailed { source: e })?;
-        let output = match timeout(invocation.timeout, child.wait_with_output()).await {
-            Ok(Ok(o)) => o,
+        let stdout = child.stdout.take().ok_or_else(|| TargetAdapterError::Io {
+            source: std::io::Error::other("child stdout not piped"),
+        })?;
+        let stderr = child.stderr.take().ok_or_else(|| TargetAdapterError::Io {
+            source: std::io::Error::other("child stderr not piped"),
+        })?;
+        let stdout_task = tokio::spawn(read_stream(
+            "stdout",
+            BufReader::new(stdout),
+            Arc::clone(&logger),
+        ));
+        let stderr_task = tokio::spawn(read_stream(
+            "stderr",
+            BufReader::new(stderr),
+            Arc::clone(&logger),
+        ));
+
+        let status = match timeout(invocation.timeout, child.wait()).await {
+            Ok(Ok(status)) => status,
             Ok(Err(e)) => return Err(TargetAdapterError::Io { source: e }),
             Err(_) => {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+                let _ = stdout_task.await;
+                let _ = stderr_task.await;
+                let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+                logger
+                    .write(serde_json::json!({
+                        "record": "finish",
+                        "outcome": "timeout",
+                        "turn_count": null,
+                        "exit_code": null,
+                        "duration_ms": duration_ms,
+                        "stdout_truncated": false,
+                        "stderr_truncated": false,
+                    }))
+                    .await;
                 return Err(TargetAdapterError::Timeout {
                     timeout: invocation.timeout,
                 });
             }
         };
+        let stdout_full = join_stream_task(stdout_task).await?;
+        let stderr_full = join_stream_task(stderr_task).await?;
 
         let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-        let stdout_full = String::from_utf8_lossy(&output.stdout).into_owned();
-        let stderr_full = String::from_utf8_lossy(&output.stderr).into_owned();
         let (stdout_tail, stdout_truncated) = tail_lines(&stdout_full, 80);
         let (stderr_tail, stderr_truncated) = tail_lines(&stderr_full, 80);
         let turn_count = parse_turn_count(&stderr_full).or_else(|| parse_turn_count(&stdout_full));
 
         let truncated =
             output_indicates_turn_limit(&stdout_full) || output_indicates_turn_limit(&stderr_full);
-        let kind = if output.status.success() {
+        let kind = if status.success() {
             if truncated {
                 TargetOutcomeKind::Truncated
             } else {
@@ -98,17 +164,152 @@ impl TargetAdapter for LocalCliGooseAdapter {
         } else {
             TargetOutcomeKind::Failed
         };
+        logger
+            .write(serde_json::json!({
+                "record": "finish",
+                "outcome": target_outcome_kind_str(kind),
+                "turn_count": turn_count,
+                "exit_code": status.code(),
+                "duration_ms": duration_ms,
+                "stdout_truncated": stdout_truncated,
+                "stderr_truncated": stderr_truncated,
+            }))
+            .await;
 
         Ok(TargetOutcome {
             kind,
             turn_count,
-            exit_code: output.status.code(),
+            exit_code: status.code(),
             duration_ms,
             stdout_tail,
             stderr_tail,
             stdout_truncated,
             stderr_truncated,
+            session_log_error: log_open_error,
         })
+    }
+}
+
+#[derive(Debug)]
+struct SessionLogger {
+    file: tokio::sync::Mutex<Option<tokio::fs::File>>,
+}
+
+impl SessionLogger {
+    async fn open(path: Option<&Path>) -> Result<(Self, Option<String>), std::io::Error> {
+        let Some(path) = path else {
+            return Ok((Self::disabled(), None));
+        };
+        if let Some(parent) = path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        let file = tokio::fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(path)
+            .await?;
+        Ok((
+            Self {
+                file: tokio::sync::Mutex::new(Some(file)),
+            },
+            None,
+        ))
+    }
+
+    fn disabled() -> Self {
+        Self {
+            file: tokio::sync::Mutex::new(None),
+        }
+    }
+
+    async fn write(&self, record: serde_json::Value) {
+        let mut guard = self.file.lock().await;
+        let Some(file) = guard.as_mut() else {
+            return;
+        };
+        let Ok(mut line) = serde_json::to_vec(&record) else {
+            return;
+        };
+        line.push(b'\n');
+        let _ = file.write_all(&line).await;
+        let _ = file.flush().await;
+    }
+}
+
+async fn read_stream<R>(
+    record: &'static str,
+    reader: R,
+    logger: Arc<SessionLogger>,
+) -> Result<String, std::io::Error>
+where
+    R: AsyncBufRead + Unpin,
+{
+    let mut lines = reader.lines();
+    let mut full = String::new();
+    while let Some(line) = lines.next_line().await? {
+        if !full.is_empty() {
+            full.push('\n');
+        }
+        full.push_str(&line);
+        let parsed = serde_json::from_str::<serde_json::Value>(&line).ok();
+        logger
+            .write(serde_json::json!({
+                "record": record,
+                "line": line,
+                "parsed": parsed,
+            }))
+            .await;
+    }
+    Ok(full)
+}
+
+async fn join_stream_task(
+    task: tokio::task::JoinHandle<Result<String, std::io::Error>>,
+) -> Result<String, TargetAdapterError> {
+    match task.await {
+        Ok(Ok(output)) => Ok(output),
+        Ok(Err(source)) => Err(TargetAdapterError::Io { source }),
+        Err(err) => Err(TargetAdapterError::Io {
+            source: std::io::Error::other(format!("stream task join failed: {err}")),
+        }),
+    }
+}
+
+fn redacted_argv(invocation: &TargetInvocation) -> Vec<String> {
+    let mut argv = vec![
+        "run".to_string(),
+        "--recipe".to_string(),
+        invocation.recipe_path.display().to_string(),
+    ];
+    for key in sorted_keys(&invocation.params) {
+        argv.push("--params".to_string());
+        argv.push(format!("{key}=<redacted>"));
+    }
+    argv.extend([
+        "--text".to_string(),
+        "<redacted>".to_string(),
+        "--max-turns".to_string(),
+        invocation.max_rounds.to_string(),
+        "--no-session".to_string(),
+        "--output-format".to_string(),
+        "stream-json".to_string(),
+        "--debug".to_string(),
+    ]);
+    argv
+}
+
+fn sorted_keys<T>(map: &std::collections::HashMap<String, T>) -> Vec<String> {
+    let mut keys: Vec<String> = map.keys().cloned().collect();
+    keys.sort();
+    keys
+}
+
+fn target_outcome_kind_str(kind: TargetOutcomeKind) -> &'static str {
+    match kind {
+        TargetOutcomeKind::Succeeded => "succeeded",
+        TargetOutcomeKind::Truncated => "truncated",
+        TargetOutcomeKind::Failed => "failed",
     }
 }
 
@@ -147,6 +348,11 @@ mod tests {
             env: HashMap::new(),
             timeout: Duration::from_secs(1),
             cwd: None,
+            session_log_path: None,
+            invocation_id: None,
+            personality_instance_id: None,
+            wake_entry_id: None,
+            change_event_seq: None,
         };
         assert!(inv_no_cwd.cwd.is_none());
 
@@ -157,6 +363,11 @@ mod tests {
             env: HashMap::new(),
             timeout: Duration::from_secs(1),
             cwd: Some(PathBuf::from("/tmp/some-worktree")),
+            session_log_path: None,
+            invocation_id: None,
+            personality_instance_id: None,
+            wake_entry_id: None,
+            change_event_seq: None,
         };
         assert_eq!(
             inv_with_cwd.cwd.as_deref(),

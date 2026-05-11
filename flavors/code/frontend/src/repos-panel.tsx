@@ -106,6 +106,26 @@ export const ReposPanel: Component = () => {
     await ingestStore.start(repo.repo_id, null);
   };
 
+  const handleSetTargetBranch = async (
+    repo: RepoRecordTs,
+    targetBranch: string | null,
+  ): Promise<boolean> => {
+    setGlobalError(null);
+    setErase({ kind: "idle" });
+    const r = await commands.codeSetRepoTargetBranch(
+      repo.repo_id,
+      targetBranch,
+    );
+    if (r.status === "error") {
+      setGlobalError(formatCommandError(r.error));
+      return false;
+    }
+    mutate((current) =>
+      current?.map((item) => (item.repo_id === repo.repo_id ? r.data : item)),
+    );
+    return true;
+  };
+
   return (
     <div class="proxima-code-panel">
       <header class="proxima-repos-header">
@@ -161,6 +181,9 @@ export const ReposPanel: Component = () => {
                   erase={erase()}
                   onIngestNext={() => handleIngestNext(repo)}
                   onIngestAll={() => handleIngestAll(repo)}
+                  onSetTargetBranch={(targetBranch) =>
+                    handleSetTargetBranch(repo, targetBranch)
+                  }
                   onDelete={() => handleDelete(repo)}
                 />
               )}
@@ -180,10 +203,16 @@ const RepoRow: Component<{
   erase: EraseState;
   onIngestNext: () => void;
   onIngestAll: () => void;
+  onSetTargetBranch: (targetBranch: string | null) => Promise<boolean>;
   onDelete: () => void;
 }> = (props) => {
   const [confirmingDelete, setConfirmingDelete] = createSignal(false);
   const [confirmText, setConfirmText] = createSignal("");
+  const [branchDraft, setBranchDraft] = createSignal(
+    props.repo.target_branch ?? "",
+  );
+  const [branchSaving, setBranchSaving] = createSignal(false);
+  createEffect(() => setBranchDraft(props.repo.target_branch ?? ""));
 
   const status = (): JSX.Element => {
     if (props.isErasing) return "deleting repo data...";
@@ -194,11 +223,32 @@ const RepoRow: Component<{
     if (e.kind === "error" && e.repoId === props.repo.repo_id) {
       return `error: ${e.message}`;
     }
-    return formatPolledAt(props.repo.last_polled_at);
+    const target = props.repo.target_branch ?? "no target branch";
+    return `${formatPolledAt(props.repo.last_polled_at)} - target ${target}`;
   };
   const running = (): boolean => ingestStore.isRunning(props.repo.repo_id);
   const ingestBtnDisabled = (): boolean => props.anyBusy || running();
   const deleteBtnDisabled = (): boolean => props.anyBusy || running();
+  const branchBtnDisabled = (): boolean =>
+    props.anyBusy || running() || branchSaving();
+  const normalizedBranchDraft = (): string => branchDraft().trim();
+  const branchUnchanged = (): boolean =>
+    normalizedBranchDraft() === (props.repo.target_branch ?? "");
+  const saveBranch = async (): Promise<void> => {
+    if (branchBtnDisabled() || branchUnchanged()) return;
+    setBranchSaving(true);
+    const next = normalizedBranchDraft();
+    const saved = await props.onSetTargetBranch(next === "" ? null : next);
+    setBranchSaving(false);
+    if (saved) setBranchDraft(next);
+  };
+  const clearBranch = async (): Promise<void> => {
+    if (branchBtnDisabled() || props.repo.target_branch === null) return;
+    setBranchSaving(true);
+    const saved = await props.onSetTargetBranch(null);
+    setBranchSaving(false);
+    if (saved) setBranchDraft("");
+  };
   const canConfirmDelete = (): boolean =>
     confirmText() === props.repo.display_name && !deleteBtnDisabled();
   const openDeleteConfirm = (): void => {
@@ -241,6 +291,30 @@ const RepoRow: Component<{
                 onClick={props.onIngestAll}
               >
                 Ingest All
+              </button>
+              <input
+                type="text"
+                class="proxima-repo-branch-input"
+                value={branchDraft()}
+                placeholder="target branch"
+                disabled={branchBtnDisabled()}
+                onInput={(e) => setBranchDraft(e.currentTarget.value)}
+              />
+              <button
+                type="button"
+                class="proxima-btn"
+                disabled={branchBtnDisabled() || branchUnchanged()}
+                onClick={saveBranch}
+              >
+                {branchSaving() ? "Saving..." : "Save Branch"}
+              </button>
+              <button
+                type="button"
+                class="proxima-btn"
+                disabled={branchBtnDisabled() || props.repo.target_branch === null}
+                onClick={clearBranch}
+              >
+                Clear
               </button>
               <button
                 type="button"

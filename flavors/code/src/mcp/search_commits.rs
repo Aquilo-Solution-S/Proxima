@@ -3,7 +3,7 @@ use proxima_core::mcp::{McpTool, McpToolCtx, McpToolError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::sql::{map_storage, owner_principal};
+use super::sql::{map_storage, owner_principal, resolve_repo_identifier};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CodeSearchCommitsArgs {
@@ -66,11 +66,7 @@ impl McpTool for CodeSearchCommitsTool {
             let limit = args.limit.unwrap_or(10).min(50);
             let (owner_kind, owner_principal_id) = owner_principal(&ctx.owner);
             let repo_id = match args.repo_handle.as_deref() {
-                Some(handle) => Some(
-                    ctx.handles
-                        .resolve_flavor_object(handle, super::REPO_HANDLE_KIND)
-                        .ok_or_else(|| McpToolError::UnknownHandle(handle.to_string()))?,
-                ),
+                Some(handle) => Some(resolve_repo_identifier(&ctx, handle).await?),
                 None => None,
             };
 

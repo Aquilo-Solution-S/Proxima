@@ -8,7 +8,13 @@ import {
 import { createSignal } from "solid-js";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import * as THREE from "three";
-import type { EdgeRow, GoalRow, MemoryRow, Owner } from "../../bindings";
+import type {
+  EdgeRow,
+  GoalRow,
+  MemoryRow,
+  Owner,
+  PersonalityInstanceTs,
+} from "../../bindings";
 import { GraphFilterProvider, createGraphFilterStore } from "../../graph-filter-store";
 import {
   GraphProvider,
@@ -21,10 +27,12 @@ import { Atlas } from "./index";
 import type { AtlasEdge, AtlasNode } from "./types";
 
 const goalReactivateMock = vi.hoisted(() => vi.fn());
+const listPersonalityInstancesMock = vi.hoisted(() => vi.fn());
 
 vi.mock("../../bindings", () => ({
   commands: {
     goalReactivate: goalReactivateMock,
+    listPersonalityInstances: listPersonalityInstancesMock,
   },
 }));
 
@@ -150,6 +158,7 @@ describe("Atlas graph wiring", () => {
   afterEach(() => {
     cleanup();
     goalReactivateMock.mockReset();
+    listPersonalityInstancesMock.mockReset();
   });
 
   it("uses GraphStore rows when nodes and edges props are omitted", () => {
@@ -556,6 +565,38 @@ describe("Atlas graph wiring", () => {
   });
 
   it("reactivates active goals from the inspector", async () => {
+    const planner: PersonalityInstanceTs = {
+      owner,
+      personality_instance_id: "019dfa50-0000-7000-8000-000000000201",
+      current_root_perspective_memory_id:
+        "019dfa50-0000-7000-8000-000000000202",
+      display_name: "Planner",
+      status: "active",
+      wake_entries: [
+        {
+          wake_entry_id: "019dfa50-0000-7000-8000-000000000203",
+          trigger_kind: "on_memory",
+          trigger_id: "proxima-goal/goal-activated-v1",
+          label: "plan execution requests",
+          enabled: true,
+          execution_mode: "substrate_only",
+          authored_by: "other",
+          probability_promille: 1000,
+          goal_scope: "trigger_goal_assigned",
+          recipe_ref: "bundled:proxima-code/plan_execution_requests",
+          model_tier: "deep",
+          inference_target_ref: null,
+          substrate_tool_palette: [],
+          workspace_tool_palette: [],
+          max_rounds: 16,
+          disabled_reason: null,
+        },
+      ],
+    };
+    listPersonalityInstancesMock.mockResolvedValue({
+      status: "ok",
+      data: [planner],
+    });
     goalReactivateMock.mockResolvedValue({
       status: "ok",
       data: {
@@ -592,11 +633,16 @@ describe("Atlas graph wiring", () => {
     fireEvent.pointerMove(canvas);
 
     fireEvent.click(screen.getByRole("button", { name: "Reactivate goal" }));
+    await screen.findByRole("dialog", { name: "Assign goal" });
+    await waitFor(() => expect(screen.getByText("Planner")).toBeTruthy());
+    fireEvent.click(screen.getByRole("radio"));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
 
     await waitFor(() => expect(goalReactivateMock).toHaveBeenCalledTimes(1));
     expect(goalReactivateMock).toHaveBeenCalledWith({
       owner,
       goal_id: row.id,
+      target_personality_id: planner.personality_instance_id,
     });
     expect(
       screen.getByRole("button", { name: "Reactivate goal" }).textContent,

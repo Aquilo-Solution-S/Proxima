@@ -233,6 +233,7 @@ impl TargetAdapter for MockAdapter {
             stderr_tail: String::new(),
             stdout_truncated: false,
             stderr_truncated: false,
+            session_log_error: None,
         })
     }
 }

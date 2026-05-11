@@ -102,6 +102,13 @@ export const commands = {
 	reposRegister: (path: string, displayName: string | null) => typedError<RepoRecordTs, CommandError>(__TAURI_INVOKE("repos_register", { path, displayName })),
 	/**
 	 *  # Errors
+	 *  `InvalidUuid` if `repo_id` doesn't parse, `UnknownRepo` if the repo
+	 *  is not registered, `InvalidRepoTargetBranch` if a non-empty branch does
+	 *  not resolve locally, `Storage` otherwise.
+	 */
+	codeSetRepoTargetBranch: (repoId: string, targetBranch: string | null) => typedError<RepoRecordTs, CommandError>(__TAURI_INVOKE("code_set_repo_target_branch", { repoId, targetBranch })),
+	/**
+	 *  # Errors
 	 *  `InvalidUuid` if `repo_id` doesn't parse, `Storage` otherwise.
 	 */
 	reposDelete: (repoId: string) => typedError<boolean, CommandError>(__TAURI_INVOKE("repos_delete", { repoId })),
@@ -292,6 +299,12 @@ export type CommandError =
 { kind: "unknown_repo"; data: {
 	repo_id: string,
 } } | 
+// Repo target branch does not resolve to a local branch.
+{ kind: "invalid_repo_target_branch"; data: {
+	repo_id: string,
+	target_branch: string,
+	reason: string,
+} } | 
 // UUID string did not parse.
 { kind: "invalid_uuid"; data: {
 	value: string,
@@ -450,6 +463,7 @@ export type GoalId = string;
 export type GoalReactivateTs = {
 	owner: Owner,
 	goal_id: string,
+	target_personality_id: string | null,
 };
 
 export type GoalRow = {
@@ -464,6 +478,8 @@ export type GoalRow = {
 	supersedes: GoalId | null,
 	payload: number[],
 };
+
+export type GoalScopeTs = "none" | "trigger_goal_assigned";
 
 export type GoalState = "Proposed" | "Active" | "Paused" | "Achieved" | "Abandoned" | "Rejected";
 
@@ -922,6 +938,7 @@ export type WakeEntryDraftTs = {
 	execution_mode: ExecutionModeTs,
 	authored_by: AuthoredByTs,
 	probability_promille: number,
+	goal_scope: GoalScopeTs,
 	recipe_ref: string,
 	model_tier: ModelTierTs,
 	inference_target_ref: string | null,
@@ -939,6 +956,7 @@ export type WakeEntryTs = {
 	execution_mode: ExecutionModeTs,
 	authored_by: AuthoredByTs,
 	probability_promille: number,
+	goal_scope: GoalScopeTs,
 	recipe_ref: string,
 	model_tier: ModelTierTs,
 	inference_target_ref: string | null,

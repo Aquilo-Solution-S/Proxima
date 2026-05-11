@@ -96,6 +96,58 @@ pub async fn register_repo(
     }
 }
 
+/// Persist the target branch used by workspace-mode runs for a repo.
+///
+/// # Errors
+/// Returns `RepoRegistryError::NotFound` if the repo is not registered,
+/// `RepoRegistryError::InvalidTargetBranch` if a non-empty branch cannot
+/// resolve in the local Git worktree, or `RepoRegistryError::Database` on
+/// database failures.
+pub async fn set_repo_target_branch(
+    pool: &PgPool,
+    owner: &Owner,
+    repo_id: Uuid,
+    target_branch: Option<&str>,
+) -> Result<RepoRecord, RepoRegistryError> {
+    let target_branch = target_branch.and_then(normalize_target_branch);
+    let record = get_repo(pool, owner, repo_id)
+        .await?
+        .ok_or(RepoRegistryError::NotFound { repo_id })?;
+    if let Some(branch) = target_branch {
+        verify_target_branch(repo_id, &record.canonical_path, branch)?;
+    }
+    update_target_branch(pool, owner, repo_id, target_branch).await
+}
+
+/// Fill a legacy `NULL` target branch from the worktree's current branch.
+///
+/// # Errors
+/// Returns `RepoRegistryError::NotFound` if the repo is not registered,
+/// `RepoRegistryError::InvalidTargetBranch` if the worktree is detached or
+/// the inferred branch cannot resolve, or `RepoRegistryError::Database` on
+/// database failures.
+pub async fn infer_missing_target_branch(
+    pool: &PgPool,
+    owner: &Owner,
+    repo_id: Uuid,
+) -> Result<RepoRecord, RepoRegistryError> {
+    let record = get_repo(pool, owner, repo_id)
+        .await?
+        .ok_or(RepoRegistryError::NotFound { repo_id })?;
+    if record.target_branch.is_some() {
+        return Ok(record);
+    }
+    let target_branch = detect_target_branch(&record.canonical_path).ok_or_else(|| {
+        RepoRegistryError::InvalidTargetBranch {
+            repo_id,
+            target_branch: "<current HEAD>".to_string(),
+            reason: "worktree has no symbolic branch".to_string(),
+        }
+    })?;
+    verify_target_branch(repo_id, &record.canonical_path, &target_branch)?;
+    update_target_branch(pool, owner, repo_id, Some(&target_branch)).await
+}
+
 /// Delete the repo record for `(owner, repo_id)`. Returns `true` if a row
 /// was deleted, `false` if no matching row existed.
 ///
@@ -520,6 +572,34 @@ pub async fn get_repo(
     Ok(row.map(Into::into))
 }
 
+async fn update_target_branch(
+    pool: &PgPool,
+    owner: &Owner,
+    repo_id: Uuid,
+    target_branch: Option<&str>,
+) -> Result<RepoRecord, RepoRegistryError> {
+    let (kind, principal_id, org_id) = owner_columns(owner);
+    let row = sqlx::query_as::<_, RepoRow>(
+        "UPDATE proxima_code.repos \
+         SET target_branch = $5 \
+         WHERE owner_principal_kind = $1 \
+           AND owner_principal_id = $2 \
+           AND owner_org_id = $3 \
+           AND repo_id = $4 \
+         RETURNING repo_id, canonical_path, display_name, target_branch, last_cursor, last_polled_at, created_at",
+    )
+    .bind(kind)
+    .bind(principal_id)
+    .bind(org_id)
+    .bind(repo_id)
+    .bind(target_branch)
+    .fetch_optional(pool)
+    .await?;
+
+    row.map(Into::into)
+        .ok_or(RepoRegistryError::NotFound { repo_id })
+}
+
 fn detect_target_branch(canonical_path: &str) -> Option<String> {
     let output = std::process::Command::new("git")
         .arg("-C")
@@ -534,6 +614,38 @@ fn detect_target_branch(canonical_path: &str) -> Option<String> {
     }
     let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
     (!branch.is_empty()).then_some(branch)
+}
+
+fn normalize_target_branch(branch: &str) -> Option<&str> {
+    let branch = branch.trim();
+    (!branch.is_empty()).then_some(branch)
+}
+
+fn verify_target_branch(
+    repo_id: Uuid,
+    canonical_path: &str,
+    target_branch: &str,
+) -> Result<(), RepoRegistryError> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(canonical_path)
+        .arg("rev-parse")
+        .arg("--verify")
+        .arg(format!("refs/heads/{target_branch}^{{commit}}"))
+        .output()
+        .map_err(|err| RepoRegistryError::InvalidTargetBranch {
+            repo_id,
+            target_branch: target_branch.to_string(),
+            reason: err.to_string(),
+        })?;
+    if output.status.success() {
+        return Ok(());
+    }
+    Err(RepoRegistryError::InvalidTargetBranch {
+        repo_id,
+        target_branch: target_branch.to_string(),
+        reason: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+    })
 }
 
 /// Persist new `cursor` + `polled_at` after a successful `run_poll`.

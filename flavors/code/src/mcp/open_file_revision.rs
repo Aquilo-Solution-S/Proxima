@@ -3,7 +3,9 @@ use proxima_core::mcp::{McpTool, McpToolCtx, McpToolError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::sql::{CHUNK_HEADS_CTE, FILE_REVISION_HEADS_CTE, map_storage, owner_principal};
+use super::sql::{
+    CHUNK_HEADS_CTE, FILE_REVISION_HEADS_CTE, map_storage, owner_principal, resolve_repo_identifier,
+};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CodeOpenFileRevisionArgs {
@@ -57,10 +59,7 @@ impl McpTool for CodeOpenFileRevisionTool {
                 return Err(McpToolError::InvalidInput("file_path required".into()));
             }
             let (owner_kind, owner_principal_id) = owner_principal(&ctx.owner);
-            let repo_id = ctx
-                .handles
-                .resolve_flavor_object(&args.repo_handle, super::REPO_HANDLE_KIND)
-                .ok_or_else(|| McpToolError::UnknownHandle(args.repo_handle.clone()))?;
+            let repo_id = resolve_repo_identifier(&ctx, &args.repo_handle).await?;
 
             let revision_sql = format!(
                 "WITH {FILE_REVISION_HEADS_CTE}
