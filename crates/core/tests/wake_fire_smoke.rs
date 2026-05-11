@@ -747,7 +747,7 @@ async fn fires_single_entry_writes_invocation_row_and_finalizes() {
     let logs = fixture.mock.invocation_logs.lock().unwrap();
     assert_eq!(logs.len(), 1);
     assert_eq!(logs[0].phase, "session_artifact");
-    assert_eq!(logs[0].status, "available");
+    assert_eq!(logs[0].status, "started");
     assert_eq!(
         logs[0].message_tail.as_deref(),
         Some(session_log_path_str.as_str())
@@ -831,7 +831,7 @@ async fn session_log_open_error_adds_bounded_invocation_log() {
     let logs = fixture.mock.invocation_logs.lock().unwrap();
     assert_eq!(logs.len(), 2);
     assert_eq!(logs[0].phase, "session_artifact");
-    assert_eq!(logs[0].status, "available");
+    assert_eq!(logs[0].status, "started");
     assert_eq!(logs[1].phase, "session_artifact");
     assert_eq!(logs[1].status, "failed");
     assert_eq!(

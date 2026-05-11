@@ -174,7 +174,7 @@ pub async fn fire_wake_entry(
     append_session_artifact_log(
         engine,
         &input,
-        "available",
+        "started",
         session_log_path.display().to_string(),
     )
     .await;
