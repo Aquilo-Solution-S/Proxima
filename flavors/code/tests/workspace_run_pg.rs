@@ -4,6 +4,8 @@
 
 #![allow(clippy::too_many_lines)]
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
@@ -207,6 +209,24 @@ fn init_repo(root: &TempDir) -> Result<(PathBuf, String), String> {
     Ok((repo, head))
 }
 
+#[cfg(unix)]
+fn fake_pnpm(root: &TempDir) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let path = root.path().join("pnpm");
+    std::fs::write(
+        &path,
+        r#"#!/bin/sh
+printf '%s
+' "$@" > "$PWD/pnpm-args.txt"
+mkdir -p "$PWD/node_modules" "$PWD/packages/frontend-core/node_modules"
+printf hydrated > "$PWD/node_modules/.proxima-pnpm-hydrated"
+"#,
+    )?;
+    let mut permissions = std::fs::metadata(&path)?.permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&path, permissions)?;
+    Ok(path)
+}
+
 fn registry_with_runner(
     pg: &PgStorage,
     worktrees_root: PathBuf,
@@ -360,9 +380,23 @@ async fn code_workspace_prepare_builds_context_with_preloaded_paths()
             context["worktree_path"].as_str().expect("worktree path"),
             prepared.work_dir.to_string_lossy()
         );
+        assert_eq!(context["tooling"]["frontend"]["pnpm"]["status"], "skipped");
+        assert_eq!(
+            context["tooling"]["frontend"]["pnpm"]["reason"],
+            "no_pnpm_lock"
+        );
         let files = context["preloaded_files"]["files"]
             .as_array()
             .expect("preloaded files");
+        assert_eq!(context["preloaded_files"]["limits"]["max_files"], 3);
+        assert_eq!(
+            context["preloaded_files"]["limits"]["max_file_bytes"],
+            24 * 1024
+        );
+        assert_eq!(
+            context["preloaded_files"]["limits"]["max_total_bytes"],
+            48 * 1024
+        );
         assert!(
             files.iter().any(|file| file["path"] == "README.md"
                 && file["content"]
@@ -370,6 +404,12 @@ async fn code_workspace_prepare_builds_context_with_preloaded_paths()
                     .unwrap_or_default()
                     .contains("initial")),
             "README.md should be preloaded"
+        );
+        assert!(
+            files.iter().any(|file| file["path"] == "README.md"
+                && file["line_count"] == 1
+                && file["sha256"].as_str().is_some_and(|hash| hash.len() == 64)),
+            "preloaded files should carry compact metadata"
         );
         assert!(
             files.iter().any(|file| file["path"] == "src/lib.rs"
@@ -388,6 +428,119 @@ async fn code_workspace_prepare_builds_context_with_preloaded_paths()
                 .any(|file| file["path"] == "large.txt" && file["reason"] == "file_too_large"),
             "large mentioned files should be listed as omitted"
         );
+        Ok(())
+    }
+    .await;
+
+    drop(pg);
+    let _ = drop_db(&db_name).await;
+    result
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn code_workspace_runner_hydrates_pnpm_tooling() -> Result<(), Box<dyn std::error::Error>> {
+    let Some((db_name, pg)) = migrated_db().await else {
+        return Ok(());
+    };
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = test_owner();
+        let repo_root = tempfile::tempdir()?;
+        let worktrees_root = tempfile::tempdir()?;
+        let recipe_root = tempfile::tempdir()?;
+        let pnpm_store_root = tempfile::tempdir()?;
+        let fake_pnpm_root = tempfile::tempdir()?;
+        let effective_recipe = recipe_root.path().join("effective.yaml");
+        std::fs::write(&effective_recipe, "version: 1.0.0\n")?;
+        let (repo_path, _) = init_repo(&repo_root).map_err(std::io::Error::other)?;
+        std::fs::write(repo_path.join("pnpm-lock.yaml"), "lockfileVersion: '9.0'\n")?;
+        std::fs::write(repo_path.join("package.json"), "{\"private\":true}\n")?;
+        std::fs::create_dir_all(repo_path.join("packages/frontend-core"))?;
+        std::fs::write(
+            repo_path.join("packages/frontend-core/package.json"),
+            "{\"name\":\"@proxima/core\"}\n",
+        )?;
+        git(
+            &repo_path,
+            &[
+                "add",
+                "pnpm-lock.yaml",
+                "package.json",
+                "packages/frontend-core/package.json",
+            ],
+        )?;
+        git(
+            &repo_path,
+            &[
+                "-c",
+                "user.name=Proxima Test",
+                "-c",
+                "user.email=proxima@example.test",
+                "commit",
+                "-m",
+                "add pnpm workspace",
+            ],
+        )?;
+        let repo_id = Uuid::now_v7();
+        proxima_code::register_repo(
+            pg.pool(),
+            &owner,
+            repo_id,
+            repo_path.to_str().expect("utf8 repo path"),
+            "pnpm-tooling",
+        )
+        .await?;
+
+        let payload = serde_json::to_value(ExecutionRequestV1 {
+            repo_id,
+            title: "Verify frontend".into(),
+            instructions: "Run `pnpm --filter @proxima/core typecheck`.".into(),
+            request_key: "pnpm-tooling-request".into(),
+        })?;
+        let pnpm_executable = fake_pnpm(&fake_pnpm_root)?;
+        let runner = CodeWorkspaceRunner::new(pg.pool().clone())
+            .with_worktrees_root(worktrees_root.path().to_path_buf())
+            .with_pnpm_store_root(pnpm_store_root.path().to_path_buf())
+            .with_pnpm_executable(pnpm_executable);
+        let prepared = runner
+            .prepare(WorkspacePrepareInput {
+                invocation_id: Uuid::now_v7(),
+                owner: &owner,
+                wake_token: Uuid::now_v7(),
+                mcp_url: "http://127.0.0.1:1/mcp",
+                root_perspective_memory_id: proxima_core::MemoryId::new(Uuid::now_v7()),
+                triggering_memory_id: proxima_core::MemoryId::new(Uuid::now_v7()),
+                triggering_memory_schema_id: ExecutionRequestV1::SCHEMA_ID,
+                triggering_memory_payload: &payload,
+                workspace_tool_palette: &[],
+                effective_recipe_path: &effective_recipe,
+                recipe_bytes: b"version: 1.0.0\n",
+                recipe_sha256: "test-sha",
+            })
+            .await?;
+
+        let context = prepared.workspace_context.expect("workspace context");
+        let pnpm = &context["tooling"]["frontend"]["pnpm"];
+        assert_eq!(pnpm["status"], "succeeded");
+        assert_eq!(pnpm["exit_code"], 0);
+        assert_eq!(
+            pnpm["store_dir"].as_str().expect("store dir"),
+            pnpm_store_root.path().to_string_lossy()
+        );
+        assert!(
+            prepared
+                .work_dir
+                .join("node_modules/.proxima-pnpm-hydrated")
+                .exists(),
+            "pnpm hydration should create worktree-local node_modules"
+        );
+        let args = std::fs::read_to_string(prepared.work_dir.join("pnpm-args.txt"))?;
+        assert!(args.contains("install"));
+        assert!(args.contains("--frozen-lockfile"));
+        assert!(args.contains("--prefer-offline"));
+        assert!(args.contains("--store-dir"));
+        assert!(args.contains(&pnpm_store_root.path().to_string_lossy().to_string()));
         Ok(())
     }
     .await;

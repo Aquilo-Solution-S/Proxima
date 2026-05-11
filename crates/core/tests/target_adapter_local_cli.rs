@@ -41,6 +41,7 @@ async fn succeeds_for_minimal_recipe_that_just_says_hi() {
             ),
         ]),
         timeout: Duration::from_secs(30),
+        enable_developer_builtin: false,
         cwd: None,
         session_log_path: None,
         invocation_id: None,
@@ -66,7 +67,7 @@ async fn passes_current_batch_mode_flag_to_goose() {
     let wake_token = uuid::Uuid::new_v4().to_string();
     fs::write(
         &goose,
-        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$GOOSE_ARG_CAPTURE\"\nprintf '%s\\n' '{\"type\":\"message\",\"turn\":1}'\nprintf '%s\\n' 'debug stderr' >&2\n",
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$GOOSE_ARG_CAPTURE\"\nprintf '%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n' \"$GOOSE_MODE\" \"$GOOSE_CONTEXT_STRATEGY\" \"$GOOSE_AUTO_COMPACT_THRESHOLD\" \"$GOOSE_TOOL_CALL_CUTOFF\" \"$GOOSE_CLI_MIN_PRIORITY\" \"$GOOSE_CLI_TOOL_PARAMS_TRUNCATION_MAX_LENGTH\" > \"$GOOSE_ENV_CAPTURE\"\nprintf '%s\\n' '{\"type\":\"message\",\"turn\":1}'\nprintf '%s\\n' 'debug stderr' >&2\n",
     )
     .unwrap();
     let mut perms = fs::metadata(&goose).unwrap().permissions();
@@ -83,9 +84,14 @@ async fn passes_current_batch_mode_flag_to_goose() {
         max_rounds: 7,
         env: HashMap::from([
             ("GOOSE_ARG_CAPTURE".to_string(), args.display().to_string()),
+            (
+                "GOOSE_ENV_CAPTURE".to_string(),
+                dir.path().join("goose-env.txt").display().to_string(),
+            ),
             ("PROXIMA_WAKE_TOKEN".to_string(), wake_token.clone()),
         ]),
         timeout: Duration::from_secs(5),
+        enable_developer_builtin: true,
         cwd: None,
         session_log_path: Some(session_log.clone()),
         invocation_id: Some(uuid::Uuid::new_v4()),
@@ -97,14 +103,21 @@ async fn passes_current_batch_mode_flag_to_goose() {
     let outcome = adapter.run(invocation).await.expect("run ok");
     assert!(matches!(outcome.kind, TargetOutcomeKind::Succeeded));
     let captured = fs::read_to_string(args).unwrap();
+    assert!(captured.contains("--no-profile\n"));
     assert!(captured.contains("--no-session\n"));
+    assert!(captured.contains("--max-tool-repetitions\n3\n"));
     assert!(captured.contains("--output-format\nstream-json\n"));
-    assert!(captured.contains("--debug\n"));
+    assert!(!captured.contains("--debug\n"));
     assert!(captured.contains("--max-turns\n7\n"));
+    assert!(captured.contains("--with-builtin\ndeveloper\n"));
     assert!(!captured.contains("--no-interactive"));
     assert!(!captured.contains("--text\n"));
     assert!(captured.contains("--params\n"));
     assert!(captured.contains("triggering_memory_id"));
+    assert_eq!(
+        fs::read_to_string(dir.path().join("goose-env.txt")).unwrap(),
+        "auto\nsummarize\n0.8\n5\n0.8\n160\n"
+    );
 
     let artifact = fs::read_to_string(session_log).expect("session log");
     assert!(artifact.contains("\"record\":\"start\""));
@@ -115,6 +128,12 @@ async fn passes_current_batch_mode_flag_to_goose() {
     assert!(artifact.contains("\"type\":\"message\""));
     assert!(artifact.contains("\"turn\":1"));
     assert!(artifact.contains("\"env_keys\""));
+    assert!(artifact.contains("GOOSE_AUTO_COMPACT_THRESHOLD"));
+    assert!(artifact.contains("GOOSE_CLI_MIN_PRIORITY"));
+    assert!(artifact.contains("GOOSE_CLI_TOOL_PARAMS_TRUNCATION_MAX_LENGTH"));
+    assert!(artifact.contains("GOOSE_CONTEXT_STRATEGY"));
+    assert!(artifact.contains("GOOSE_MODE"));
+    assert!(artifact.contains("GOOSE_TOOL_CALL_CUTOFF"));
     assert!(artifact.contains("PROXIMA_WAKE_TOKEN"));
     assert!(!artifact.contains(&wake_token));
 }
@@ -140,6 +159,7 @@ async fn omits_max_turns_when_max_rounds_is_zero() {
         max_rounds: 0,
         env: HashMap::from([("GOOSE_ARG_CAPTURE".to_string(), args.display().to_string())]),
         timeout: Duration::from_secs(5),
+        enable_developer_builtin: false,
         cwd: None,
         session_log_path: None,
         invocation_id: None,
@@ -152,6 +172,8 @@ async fn omits_max_turns_when_max_rounds_is_zero() {
     assert!(matches!(outcome.kind, TargetOutcomeKind::Succeeded));
     let captured = fs::read_to_string(args).unwrap();
     assert!(!captured.contains("--max-turns\n"));
+    assert!(!captured.contains("--debug\n"));
+    assert!(captured.contains("--no-profile\n"));
     assert!(captured.contains("--no-session\n"));
 }
 
@@ -164,6 +186,7 @@ async fn returns_error_when_binary_missing() {
         max_rounds: 1,
         env: HashMap::new(),
         timeout: Duration::from_secs(5),
+        enable_developer_builtin: false,
         cwd: None,
         session_log_path: None,
         invocation_id: None,
