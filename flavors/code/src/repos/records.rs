@@ -1,6 +1,10 @@
 use std::str::FromStr;
 use uuid::Uuid;
 
+use crate::payloads::{
+    WorkspaceDecision, WorkspaceDiffStat, WorkspaceReviewFinding, WorkspaceReviewVerdict,
+};
+
 #[derive(Debug, Clone)]
 pub struct RepoRecord {
     pub repo_id: Uuid,
@@ -139,6 +143,76 @@ pub struct StageCounters {
     pub abstractions_emitted: u32,
     pub embeddings_landed: u32,
     pub citations_emitted: u32,
+}
+
+#[derive(Debug, Clone, serde::Serialize, specta::Type)]
+pub struct WorkspaceReviewRecord {
+    pub memory_id: Uuid,
+    pub workspace_run_memory_id: Uuid,
+    pub execution_request_memory_id: Uuid,
+    pub verdict: WorkspaceReviewVerdict,
+    pub round_index: u32,
+    pub summary: String,
+    pub findings: Vec<WorkspaceReviewFinding>,
+    pub correction_instructions: Option<String>,
+    pub verification_summary: Option<String>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub reviewed_at: time::OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: time::OffsetDateTime,
+}
+
+#[derive(Debug, Clone, serde::Serialize, specta::Type)]
+pub struct WorkspaceDecisionRecord {
+    pub memory_id: Uuid,
+    pub workspace_run_memory_id: Uuid,
+    pub decision: WorkspaceDecision,
+    #[serde(with = "time::serde::rfc3339")]
+    pub decided_at: time::OffsetDateTime,
+    pub reason_text: Option<String>,
+    pub decided_by_owner_id: Uuid,
+}
+
+#[derive(Debug, Clone, serde::Serialize, specta::Type)]
+pub struct WorkspaceRunRecord {
+    pub memory_id: Uuid,
+    pub wake_invocation_id: Uuid,
+    pub repo_id: Uuid,
+    pub execution_request_title: Option<String>,
+    pub target_branch: String,
+    pub worktree_path: String,
+    pub branch_name: String,
+    pub parent_sha: String,
+    pub head_sha: String,
+    pub diff_stat_json: WorkspaceDiffStat,
+    pub exit_code: Option<i32>,
+    pub stdout_tail: Option<String>,
+    pub stderr_tail: Option<String>,
+    pub duration_ms: Option<u64>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: time::OffsetDateTime,
+    pub latest_review: Option<WorkspaceReviewRecord>,
+    pub latest_decision: Option<WorkspaceDecisionRecord>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, specta::Type)]
+pub struct WorkspaceRunDiff {
+    pub range: String,
+    pub stat: String,
+    pub files: Vec<String>,
+    pub patch: String,
+    pub patch_truncated: bool,
+    pub max_patch_bytes: usize,
+}
+
+#[derive(Debug, Clone, serde::Serialize, specta::Type)]
+pub struct WorkspaceMergeOutcome {
+    pub run_memory_id: Uuid,
+    pub decision_memory_id: Uuid,
+    pub repo_id: Uuid,
+    pub target_branch: String,
+    pub old_target_sha: String,
+    pub new_target_sha: String,
 }
 
 impl StageCounters {

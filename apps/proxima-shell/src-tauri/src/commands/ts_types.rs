@@ -102,6 +102,8 @@ pub enum RepoIngestEventTs {
 pub struct PayloadTypesAnchor {
     pub file_revision_v1: Option<proxima_code::FileRevisionV1>,
     pub code_chunk_v1: Option<proxima_code::CodeChunkV1>,
+    pub workspace_decision: Option<proxima_code::WorkspaceDecision>,
+    pub workspace_review_verdict: Option<proxima_code::WorkspaceReviewVerdict>,
 }
 
 #[tauri::command]
@@ -200,6 +202,168 @@ impl From<proxima_code::RepoIngestionRun> for RepoIngestionRunTs {
                 t.format(&Rfc3339)
                     .expect("OffsetDateTime always formats as RFC3339")
             }),
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, specta::Type)]
+pub struct WorkspaceReviewRecordTs {
+    pub memory_id: String,
+    pub workspace_run_memory_id: String,
+    pub execution_request_memory_id: String,
+    pub verdict: proxima_code::WorkspaceReviewVerdict,
+    pub round_index: u32,
+    pub summary: String,
+    pub findings: Vec<proxima_code::WorkspaceReviewFinding>,
+    pub correction_instructions: Option<String>,
+    pub verification_summary: Option<String>,
+    pub reviewed_at: String,
+    pub created_at: String,
+}
+
+impl From<proxima_code::WorkspaceReviewRecord> for WorkspaceReviewRecordTs {
+    fn from(r: proxima_code::WorkspaceReviewRecord) -> Self {
+        use time::format_description::well_known::Rfc3339;
+        Self {
+            memory_id: r.memory_id.to_string(),
+            workspace_run_memory_id: r.workspace_run_memory_id.to_string(),
+            execution_request_memory_id: r.execution_request_memory_id.to_string(),
+            verdict: r.verdict,
+            round_index: r.round_index,
+            summary: r.summary,
+            findings: r.findings,
+            correction_instructions: r.correction_instructions,
+            verification_summary: r.verification_summary,
+            reviewed_at: r
+                .reviewed_at
+                .format(&Rfc3339)
+                .expect("OffsetDateTime always formats as RFC3339"),
+            created_at: r
+                .created_at
+                .format(&Rfc3339)
+                .expect("OffsetDateTime always formats as RFC3339"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, specta::Type)]
+pub struct WorkspaceDecisionRecordTs {
+    pub memory_id: String,
+    pub workspace_run_memory_id: String,
+    pub decision: proxima_code::WorkspaceDecision,
+    pub decided_at: String,
+    pub reason_text: Option<String>,
+    pub decided_by_owner_id: String,
+}
+
+impl From<proxima_code::WorkspaceDecisionRecord> for WorkspaceDecisionRecordTs {
+    fn from(r: proxima_code::WorkspaceDecisionRecord) -> Self {
+        use time::format_description::well_known::Rfc3339;
+        Self {
+            memory_id: r.memory_id.to_string(),
+            workspace_run_memory_id: r.workspace_run_memory_id.to_string(),
+            decision: r.decision,
+            decided_at: r
+                .decided_at
+                .format(&Rfc3339)
+                .expect("OffsetDateTime always formats as RFC3339"),
+            reason_text: r.reason_text,
+            decided_by_owner_id: r.decided_by_owner_id.to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, specta::Type)]
+pub struct WorkspaceRunRecordTs {
+    pub memory_id: String,
+    pub wake_invocation_id: String,
+    pub repo_id: String,
+    pub execution_request_title: Option<String>,
+    pub target_branch: String,
+    pub worktree_path: String,
+    pub branch_name: String,
+    pub parent_sha: String,
+    pub head_sha: String,
+    pub diff_stat_json: proxima_code::payloads::WorkspaceDiffStat,
+    pub exit_code: Option<i32>,
+    pub stdout_tail: Option<String>,
+    pub stderr_tail: Option<String>,
+    pub duration_ms: Option<u64>,
+    pub created_at: String,
+    pub latest_review: Option<WorkspaceReviewRecordTs>,
+    pub latest_decision: Option<WorkspaceDecisionRecordTs>,
+}
+
+impl From<proxima_code::WorkspaceRunRecord> for WorkspaceRunRecordTs {
+    fn from(r: proxima_code::WorkspaceRunRecord) -> Self {
+        use time::format_description::well_known::Rfc3339;
+        Self {
+            memory_id: r.memory_id.to_string(),
+            wake_invocation_id: r.wake_invocation_id.to_string(),
+            repo_id: r.repo_id.to_string(),
+            execution_request_title: r.execution_request_title,
+            target_branch: r.target_branch,
+            worktree_path: r.worktree_path,
+            branch_name: r.branch_name,
+            parent_sha: r.parent_sha,
+            head_sha: r.head_sha,
+            diff_stat_json: r.diff_stat_json,
+            exit_code: r.exit_code,
+            stdout_tail: r.stdout_tail,
+            stderr_tail: r.stderr_tail,
+            duration_ms: r.duration_ms,
+            created_at: r
+                .created_at
+                .format(&Rfc3339)
+                .expect("OffsetDateTime always formats as RFC3339"),
+            latest_review: r.latest_review.map(Into::into),
+            latest_decision: r.latest_decision.map(Into::into),
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, specta::Type)]
+pub struct WorkspaceRunDiffTs {
+    pub range: String,
+    pub stat: String,
+    pub files: Vec<String>,
+    pub patch: String,
+    pub patch_truncated: bool,
+    pub max_patch_bytes: usize,
+}
+
+impl From<proxima_code::WorkspaceRunDiff> for WorkspaceRunDiffTs {
+    fn from(r: proxima_code::WorkspaceRunDiff) -> Self {
+        Self {
+            range: r.range,
+            stat: r.stat,
+            files: r.files,
+            patch: r.patch,
+            patch_truncated: r.patch_truncated,
+            max_patch_bytes: r.max_patch_bytes,
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, specta::Type)]
+pub struct WorkspaceMergeOutcomeTs {
+    pub run_memory_id: String,
+    pub decision_memory_id: String,
+    pub repo_id: String,
+    pub target_branch: String,
+    pub old_target_sha: String,
+    pub new_target_sha: String,
+}
+
+impl From<proxima_code::WorkspaceMergeOutcome> for WorkspaceMergeOutcomeTs {
+    fn from(r: proxima_code::WorkspaceMergeOutcome) -> Self {
+        Self {
+            run_memory_id: r.run_memory_id.to_string(),
+            decision_memory_id: r.decision_memory_id.to_string(),
+            repo_id: r.repo_id.to_string(),
+            target_branch: r.target_branch,
+            old_target_sha: r.old_target_sha,
+            new_target_sha: r.new_target_sha,
         }
     }
 }

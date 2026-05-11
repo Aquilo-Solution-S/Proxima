@@ -1,4 +1,5 @@
 use proxima_core::{FactPayload, proxima_schema_id};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, specta::Type)]
@@ -50,6 +51,7 @@ impl FactPayload for WorkspaceRunV1 {
 #[serde(rename_all = "snake_case")]
 pub enum WorkspaceDecision {
     Rejected,
+    RetryRequested,
     Accepted,
     Merged,
 }
@@ -59,6 +61,7 @@ impl WorkspaceDecision {
     pub const fn as_str(&self) -> &'static str {
         match self {
             Self::Rejected => "rejected",
+            Self::RetryRequested => "retry_requested",
             Self::Accepted => "accepted",
             Self::Merged => "merged",
         }
@@ -85,5 +88,63 @@ impl FactPayload for WorkspaceDecisionV1 {
 
     fn render(&self) -> String {
         format!("Workspace decision: {}", self.decision.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, specta::Type)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceReviewVerdict {
+    Approved,
+    Rejected,
+    NeedsUser,
+}
+
+impl WorkspaceReviewVerdict {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Approved => "approved",
+            Self::Rejected => "rejected",
+            Self::NeedsUser => "needs_user",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, specta::Type)]
+pub struct WorkspaceReviewFinding {
+    pub severity: String,
+    pub file_path: Option<String>,
+    pub line: Option<u32>,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, specta::Type)]
+pub struct WorkspaceReviewV1 {
+    pub workspace_run_memory_id: uuid::Uuid,
+    pub execution_request_memory_id: uuid::Uuid,
+    pub verdict: WorkspaceReviewVerdict,
+    pub round_index: u32,
+    pub summary: String,
+    pub findings: Vec<WorkspaceReviewFinding>,
+    pub correction_instructions: Option<String>,
+    pub verification_summary: Option<String>,
+    #[serde(with = "time::serde::rfc3339")]
+    pub reviewed_at: time::OffsetDateTime,
+}
+
+impl FactPayload for WorkspaceReviewV1 {
+    const SCHEMA_ID: &'static str = proxima_schema_id!("workspace-review-v1");
+    const SCHEMA_VERSION: u32 = 1;
+
+    fn sidecar_table() -> &'static str {
+        "proxima_code.workspace_review_v1"
+    }
+
+    fn render(&self) -> String {
+        format!(
+            "Workspace review: {} round {}",
+            self.verdict.as_str(),
+            self.round_index
+        )
     }
 }

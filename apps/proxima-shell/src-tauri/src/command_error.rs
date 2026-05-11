@@ -176,3 +176,51 @@ impl From<proxima_code::RepoRegistryError> for CommandError {
         }
     }
 }
+
+impl From<proxima_code::WorkspaceFlowError> for CommandError {
+    fn from(e: proxima_code::WorkspaceFlowError) -> Self {
+        match e {
+            proxima_code::WorkspaceFlowError::RepoNotFound { repo_id } => Self::UnknownRepo {
+                repo_id: repo_id.to_string(),
+            },
+            proxima_code::WorkspaceFlowError::RunNotFound { memory_id } => Self::Storage {
+                message: format!("workspace run not found: {memory_id}"),
+            },
+            proxima_code::WorkspaceFlowError::ApprovedReviewRequired { memory_id } => {
+                Self::Storage {
+                    message: format!("workspace run requires approved latest review: {memory_id}"),
+                }
+            }
+            proxima_code::WorkspaceFlowError::LaterWorkspaceDecision { memory_id } => {
+                Self::Storage {
+                    message: format!("workspace run has a later workspace decision: {memory_id}"),
+                }
+            }
+            proxima_code::WorkspaceFlowError::MissingTargetBranch { repo_id } => Self::Storage {
+                message: format!("repo has no target branch: {repo_id}"),
+            },
+            proxima_code::WorkspaceFlowError::Git { command, stderr } => Self::Storage {
+                message: format!("{command}: {stderr}"),
+            },
+            proxima_code::WorkspaceFlowError::InvalidReviewVerdict { value } => Self::Invariant {
+                message: format!("invalid workspace review verdict: {value}"),
+            },
+            proxima_code::WorkspaceFlowError::InvalidDecision { value } => Self::Invariant {
+                message: format!("invalid workspace decision: {value}"),
+            },
+            proxima_code::WorkspaceFlowError::InvalidSidecar { message }
+            | proxima_code::WorkspaceFlowError::Storage(proxima_core::StorageError::Internal(
+                message,
+            ))
+            | proxima_code::WorkspaceFlowError::Storage(
+                proxima_core::StorageError::ConstraintViolation(message),
+            ) => Self::Invariant { message },
+            proxima_code::WorkspaceFlowError::Database(err) => Self::Storage {
+                message: err.to_string(),
+            },
+            proxima_code::WorkspaceFlowError::Storage(err) => Self::Storage {
+                message: err.to_string(),
+            },
+        }
+    }
+}
