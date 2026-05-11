@@ -67,12 +67,17 @@ proxima_core::proxima_flavor! {
                 SchemaVersion::new(1),
             ),
         ),
+        RelationDescriptor::substrate(
+            mcp::CODE_TARGETS_EXECUTION_REQUEST_RELATION,
+            RelationClass::Causal,
+        ),
     ],
     mcp_tools = [
         mcp::CodeSearchChunksTool,
         mcp::CodeOpenFileRevisionTool,
         mcp::CodeSearchCommitsTool,
         mcp::CodeEmitExecutionRequestTool,
+        mcp::CodeRetryExecutionRequestTool,
     ],
     workspace_runner = workspace_runner::CodeWorkspaceRunner,
     workspace_triggers = [
@@ -122,6 +127,7 @@ mod tests {
         let relations = frozen.list_relations();
         let relation_ids: HashSet<_> = relations.iter().map(|r| r.relation.as_str()).collect();
         assert!(relation_ids.contains("proxima-code/calls"));
+        assert!(relation_ids.contains("proxima-code/targets-execution-request"));
         assert!(relation_ids.contains(CORE_DERIVED_FROM_RELATION));
 
         let calls = frozen
@@ -164,5 +170,6 @@ mod tests {
         assert!(names.contains("proxima-code/code_open_file_revision"));
         assert!(names.contains("proxima-code/code_search_commits"));
         assert!(names.contains("proxima-code/code_emit_execution_request"));
+        assert!(names.contains("proxima-code/code_retry_execution_request"));
     }
 }

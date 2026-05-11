@@ -1,4 +1,7 @@
+use std::collections::HashSet;
+
 use proxima_core::mcp::{McpTool, McpToolCtx, McpToolError};
+use proxima_core::personality::PersonalityInstanceId;
 use proxima_core::relation::{CORE_AUTHORED_RELATION, CORE_DERIVED_FROM_RELATION};
 use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
 use proxima_core::{
@@ -18,6 +21,7 @@ use super::sql::{map_storage, owner_principal, resolve_repo_identifier};
 const EXECUTION_REQUEST_SOURCE_ID: &str = "proxima-code/execution-request";
 const EXECUTION_REQUEST_OBJECT_SCHEMA: &str = "proxima-code/execution-request-object-v1";
 const EXECUTION_REQUEST_WHOLE_SCHEMA: &str = "proxima-code/execution-request-whole-v1";
+pub const CODE_TARGETS_EXECUTION_REQUEST_RELATION: &str = "proxima-code/targets-execution-request";
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CodeEmitExecutionRequestArgs {
@@ -35,6 +39,29 @@ pub struct CodeEmitExecutionRequestArgs {
 pub struct CodeEmitExecutionRequestOutput {
     pub handle: String,
     pub authored_edge_handle: Option<String>,
+    pub derived_edge_handles: Vec<String>,
+    pub idempotent_replay: bool,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CodeRetryExecutionRequestArgs {
+    pub prior_execution_request: String,
+    pub target_personality: String,
+    pub request_key: String,
+    pub idempotency_key: String,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub instructions_append: Option<String>,
+    #[serde(default)]
+    pub evidence: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CodeRetryExecutionRequestOutput {
+    pub handle: String,
+    pub authored_edge_handle: Option<String>,
+    pub target_edge_handle: Option<String>,
     pub derived_edge_handles: Vec<String>,
     pub idempotent_replay: bool,
 }
@@ -138,6 +165,165 @@ impl McpTool for CodeEmitExecutionRequestTool {
     }
 }
 
+#[derive(Debug)]
+pub struct CodeRetryExecutionRequestTool;
+
+impl McpTool for CodeRetryExecutionRequestTool {
+    const NAME: &'static str = "proxima-code/code_retry_execution_request";
+    const DESCRIPTION: &'static str = "Shell-author override: retry a prior proxima-code/execution-request-v1 Fact for a target worker.";
+    const PRODUCES_SCHEMA_IDS: &'static [&'static str] = &[ExecutionRequestV1::SCHEMA_ID];
+
+    type Args = CodeRetryExecutionRequestArgs;
+    type Output = CodeRetryExecutionRequestOutput;
+
+    fn call(
+        ctx: McpToolCtx,
+        args: CodeRetryExecutionRequestArgs,
+    ) -> futures::future::BoxFuture<'static, Result<CodeRetryExecutionRequestOutput, McpToolError>>
+    {
+        Box::pin(async move {
+            if ctx.master_token_id.is_none() {
+                return Err(McpToolError::InvalidInput(
+                    "code_retry_execution_request requires a master-token shell-author call".into(),
+                ));
+            }
+            let shell_author_root = ctx.caller_self_perspective.ok_or_else(|| {
+                McpToolError::InvalidInput(
+                    "caller_self_perspective is required for shell-author retry provenance".into(),
+                )
+            })?;
+            let prior_memory_id = resolve_memory_id(&ctx, &args.prior_execution_request)?;
+            let target_personality_id = resolve_personality_id(&ctx, &args.target_personality)?;
+            let request_key = normalize_text("request_key", &args.request_key, 1, 240)?;
+            let idempotency_key = normalize_text("idempotency_key", &args.idempotency_key, 1, 240)?;
+            if request_key != idempotency_key {
+                return Err(McpToolError::InvalidInput(
+                    "request_key must match idempotency_key".into(),
+                ));
+            }
+            let explicit_evidence = resolve_evidence(&ctx, &args.evidence)?;
+
+            let mut tx = ctx.pool.begin().await.map_err(map_storage)?;
+            let prior = load_execution_request(&mut tx, &ctx, prior_memory_id).await?;
+            if let Some(existing) =
+                find_execution_request_by_key(&mut tx, &ctx, prior.repo_id, &request_key).await?
+            {
+                tx.commit().await.map_err(map_storage)?;
+                return Ok(CodeRetryExecutionRequestOutput {
+                    handle: ctx.handles.assign_memory(existing).as_str().to_string(),
+                    authored_edge_handle: None,
+                    target_edge_handle: None,
+                    derived_edge_handles: Vec::new(),
+                    idempotent_replay: true,
+                });
+            }
+            let target_root =
+                validate_target_personality(&mut tx, &ctx, target_personality_id).await?;
+            validate_target_execution_wake(&mut tx, &ctx, target_personality_id).await?;
+            validate_evidence_in_owner(&mut tx, &ctx, &explicit_evidence).await?;
+
+            let title = match args.title {
+                Some(value) => normalize_text("title", &value, 1, 240)?,
+                None => prior.title,
+            };
+            let instructions = retry_instructions(
+                &prior.instructions,
+                prior_memory_id,
+                &request_key,
+                args.instructions_append.as_deref(),
+            )?;
+
+            let payload = ExecutionRequestV1 {
+                repo_id: prior.repo_id,
+                title,
+                instructions,
+                request_key,
+            };
+            let outcome = ingest_execution_request(&mut tx, &ctx, &payload).await?;
+            let (authored_edge_id, target_edge_id, derived_edge_ids) = if outcome.idempotent_replay
+            {
+                (None, None, Vec::new())
+            } else {
+                insert_sidecar(&mut tx, outcome.memory_id, &payload).await?;
+                let authored_edge_id =
+                    append_authored_edge(&mut tx, &ctx, shell_author_root, outcome.memory_id)
+                        .await?;
+                let target_edge_id =
+                    append_target_edge(&mut tx, &ctx, target_root, outcome.memory_id).await?;
+                let mut derived_edge_ids = Vec::new();
+                let mut seen = HashSet::new();
+                push_derived_edge(
+                    &mut tx,
+                    &ctx,
+                    outcome.memory_id,
+                    prior_memory_id,
+                    &mut seen,
+                    &mut derived_edge_ids,
+                )
+                .await?;
+                for memory_id in load_prior_derived_targets(&mut tx, &ctx, prior_memory_id).await? {
+                    push_derived_edge(
+                        &mut tx,
+                        &ctx,
+                        outcome.memory_id,
+                        memory_id,
+                        &mut seen,
+                        &mut derived_edge_ids,
+                    )
+                    .await?;
+                }
+                for memory_id in explicit_evidence {
+                    push_derived_edge(
+                        &mut tx,
+                        &ctx,
+                        outcome.memory_id,
+                        memory_id,
+                        &mut seen,
+                        &mut derived_edge_ids,
+                    )
+                    .await?;
+                }
+                (
+                    Some(authored_edge_id),
+                    Some(target_edge_id),
+                    derived_edge_ids,
+                )
+            };
+            tx.commit().await.map_err(map_storage)?;
+
+            Ok(CodeRetryExecutionRequestOutput {
+                handle: ctx
+                    .handles
+                    .assign_memory(outcome.memory_id)
+                    .as_str()
+                    .to_string(),
+                authored_edge_handle: authored_edge_id.map(|edge_id| {
+                    ctx.handles
+                        .assign_edge(EdgeId::new(edge_id))
+                        .as_str()
+                        .to_string()
+                }),
+                target_edge_handle: target_edge_id.map(|edge_id| {
+                    ctx.handles
+                        .assign_edge(EdgeId::new(edge_id))
+                        .as_str()
+                        .to_string()
+                }),
+                derived_edge_handles: derived_edge_ids
+                    .into_iter()
+                    .map(|edge_id| {
+                        ctx.handles
+                            .assign_edge(EdgeId::new(edge_id))
+                            .as_str()
+                            .to_string()
+                    })
+                    .collect(),
+                idempotent_replay: outcome.idempotent_replay,
+            })
+        })
+    }
+}
+
 fn normalize_text(
     field: &str,
     value: &str,
@@ -154,6 +340,26 @@ fn normalize_text(
     Ok(trimmed.to_string())
 }
 
+fn retry_instructions(
+    prior_instructions: &str,
+    prior_memory_id: MemoryId,
+    request_key: &str,
+    instructions_append: Option<&str>,
+) -> Result<String, McpToolError> {
+    let mut instructions = format!(
+        "{}\n\nRetry context:\nprior_execution_request: {}\nretry_key: {}",
+        prior_instructions.trim(),
+        prior_memory_id.into_inner(),
+        request_key
+    );
+    if let Some(extra) = instructions_append {
+        let extra = normalize_text("instructions_append", extra, 1, 20_000)?;
+        instructions.push_str("\n\nRetry instructions:\n");
+        instructions.push_str(&extra);
+    }
+    normalize_text("instructions", &instructions, 1, 20_000)
+}
+
 fn resolve_memory_id(ctx: &McpToolCtx, raw: &str) -> Result<MemoryId, McpToolError> {
     if let Some(memory_id) = ctx.handles.resolve_memory(raw) {
         return Ok(memory_id);
@@ -163,10 +369,217 @@ fn resolve_memory_id(ctx: &McpToolCtx, raw: &str) -> Result<MemoryId, McpToolErr
         .map_err(|_| McpToolError::UnknownHandle(raw.to_string()))
 }
 
+fn resolve_personality_id(
+    ctx: &McpToolCtx,
+    raw: &str,
+) -> Result<PersonalityInstanceId, McpToolError> {
+    if let Some(personality_id) = ctx.handles.resolve_personality(raw) {
+        return Ok(personality_id);
+    }
+    Uuid::parse_str(raw)
+        .map(PersonalityInstanceId::new)
+        .map_err(|_| McpToolError::UnknownHandle(raw.to_string()))
+}
+
 fn resolve_evidence(ctx: &McpToolCtx, raw: &[String]) -> Result<Vec<MemoryId>, McpToolError> {
     raw.iter()
         .map(|value| resolve_memory_id(ctx, value))
         .collect()
+}
+
+#[derive(Debug)]
+struct PriorExecutionRequest {
+    repo_id: Uuid,
+    title: String,
+    instructions: String,
+}
+
+async fn load_execution_request(
+    tx: &mut Transaction<'_, Postgres>,
+    ctx: &McpToolCtx,
+    memory_id: MemoryId,
+) -> Result<PriorExecutionRequest, McpToolError> {
+    let (owner_kind, owner_principal_id) = owner_principal(&ctx.owner);
+    let row: Option<(String, String, Option<Uuid>, Option<String>, Option<String>)> =
+        sqlx::query_as(
+            "SELECT COALESCE(m.kind, 'Fact') AS kind,
+                m.schema_id,
+                r.repo_id,
+                r.title,
+                r.instructions
+         FROM proxima_core.memories m
+         LEFT JOIN proxima_code.execution_request_v1 r USING (memory_id)
+         WHERE m.memory_id = $1
+           AND m.owner_principal_kind = $2
+           AND m.owner_principal_id = $3",
+        )
+        .bind(memory_id.into_inner())
+        .bind(owner_kind)
+        .bind(owner_principal_id)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(map_storage)?;
+    let Some((kind, schema_id, repo_id, title, instructions)) = row else {
+        return Err(McpToolError::InvalidInput(format!(
+            "prior_execution_request is not visible: {}",
+            memory_id.into_inner()
+        )));
+    };
+    if kind != "Fact" || schema_id != ExecutionRequestV1::SCHEMA_ID {
+        return Err(McpToolError::InvalidInput(
+            "prior_execution_request must be a proxima-code/execution-request-v1 Fact".into(),
+        ));
+    }
+    let (Some(repo_id), Some(title), Some(instructions)) = (repo_id, title, instructions) else {
+        return Err(McpToolError::InvalidInput(
+            "prior_execution_request sidecar row is missing".into(),
+        ));
+    };
+    Ok(PriorExecutionRequest {
+        repo_id,
+        title,
+        instructions,
+    })
+}
+
+async fn find_execution_request_by_key(
+    tx: &mut Transaction<'_, Postgres>,
+    ctx: &McpToolCtx,
+    repo_id: Uuid,
+    request_key: &str,
+) -> Result<Option<MemoryId>, McpToolError> {
+    let (owner_kind, owner_principal_id) = owner_principal(&ctx.owner);
+    let existing: Option<Uuid> = sqlx::query_scalar(
+        "SELECT r.memory_id
+         FROM proxima_code.execution_request_v1 r
+         JOIN proxima_core.memories m USING (memory_id)
+         WHERE r.repo_id = $1
+           AND r.request_key = $2
+           AND m.owner_principal_kind = $3
+           AND m.owner_principal_id = $4",
+    )
+    .bind(repo_id)
+    .bind(request_key)
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(map_storage)?;
+    Ok(existing.map(MemoryId::new))
+}
+
+async fn validate_target_personality(
+    tx: &mut Transaction<'_, Postgres>,
+    ctx: &McpToolCtx,
+    target_personality: PersonalityInstanceId,
+) -> Result<MemoryId, McpToolError> {
+    let (owner_kind, owner_principal_id) = owner_principal(&ctx.owner);
+    let row: Option<(Uuid, String)> = sqlx::query_as(
+        "SELECT current_root_perspective_memory_id, status
+         FROM proxima_core.personality
+         WHERE owner_principal_kind = $1
+           AND owner_principal_id = $2
+           AND personality_instance_id = $3",
+    )
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(target_personality.into_inner())
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(map_storage)?;
+    let Some((root, status)) = row else {
+        return Err(McpToolError::InvalidInput(format!(
+            "target_personality not found: {}",
+            target_personality.into_inner()
+        )));
+    };
+    if status != "active" {
+        return Err(McpToolError::InvalidInput(format!(
+            "target_personality is not active: {status}"
+        )));
+    }
+    Ok(MemoryId::new(root))
+}
+
+async fn validate_target_execution_wake(
+    tx: &mut Transaction<'_, Postgres>,
+    ctx: &McpToolCtx,
+    target_personality: PersonalityInstanceId,
+) -> Result<(), McpToolError> {
+    let (owner_kind, owner_principal_id) = owner_principal(&ctx.owner);
+    let exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(
+             SELECT 1
+             FROM proxima_core.personality_wake_entries
+             WHERE owner_principal_kind = $1
+               AND owner_principal_id = $2
+               AND personality_instance_id = $3
+               AND tombstoned_at IS NULL
+               AND enabled
+               AND execution_mode = 'workspace'
+               AND trigger_kind = 'on_memory'
+               AND trigger_id = $4
+         )",
+    )
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(target_personality.into_inner())
+    .bind(ExecutionRequestV1::SCHEMA_ID)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(map_storage)?;
+    if !exists {
+        return Err(McpToolError::InvalidInput(
+            "target_personality has no enabled workspace wake entry for proxima-code/execution-request-v1"
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
+async fn load_prior_derived_targets(
+    tx: &mut Transaction<'_, Postgres>,
+    ctx: &McpToolCtx,
+    prior_memory_id: MemoryId,
+) -> Result<Vec<MemoryId>, McpToolError> {
+    let (owner_kind, owner_principal_id) = owner_principal(&ctx.owner);
+    let rows: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT e.target_memory_id
+         FROM proxima_core.edges e
+         JOIN proxima_core.memories m
+           ON m.memory_id = e.target_memory_id
+          AND m.owner_principal_kind = e.owner_principal_kind
+          AND m.owner_principal_id = e.owner_principal_id
+         WHERE e.owner_principal_kind = $1
+           AND e.owner_principal_id = $2
+           AND e.relation = $3
+           AND e.source_kind = 'Fact'
+           AND e.source_memory_id = $4
+           AND e.target_memory_id IS NOT NULL
+         ORDER BY e.created_at, e.edge_id",
+    )
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(CORE_DERIVED_FROM_RELATION)
+    .bind(prior_memory_id.into_inner())
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(map_storage)?;
+    Ok(rows.into_iter().map(MemoryId::new).collect())
+}
+
+async fn push_derived_edge(
+    tx: &mut Transaction<'_, Postgres>,
+    ctx: &McpToolCtx,
+    request_memory_id: MemoryId,
+    evidence_memory_id: MemoryId,
+    seen: &mut HashSet<MemoryId>,
+    edge_ids: &mut Vec<Uuid>,
+) -> Result<(), McpToolError> {
+    if seen.insert(evidence_memory_id) {
+        edge_ids.push(append_derived_edge(tx, ctx, request_memory_id, evidence_memory_id).await?);
+    }
+    Ok(())
 }
 
 async fn validate_repo(ctx: &McpToolCtx, repo_id: Uuid) -> Result<(), McpToolError> {
@@ -413,6 +826,43 @@ async fn append_authored_edge(
             target_goal_id: None,
             authorship_kind: "ExternalAgent",
             authorship_owner_memory_id: Some(planner_root.into_inner()),
+            owner: &ctx.owner,
+        },
+        None,
+    )
+    .await
+    .map_err(McpToolError::Storage)?;
+    Ok(edge_id)
+}
+
+async fn append_target_edge(
+    tx: &mut Transaction<'_, Postgres>,
+    ctx: &McpToolCtx,
+    target_root: MemoryId,
+    request_memory_id: MemoryId,
+) -> Result<Uuid, McpToolError> {
+    let relation = ctx
+        .registry
+        .resolve_relation(CODE_TARGETS_EXECUTION_REQUEST_RELATION)
+        .ok_or_else(|| {
+            McpToolError::Other(format!(
+                "{CODE_TARGETS_EXECUTION_REQUEST_RELATION} relation not registered"
+            ))
+        })?;
+    let edge_id = Uuid::now_v7();
+    append_edge_in_tx(
+        tx,
+        &EdgeDraft {
+            edge_id,
+            relation,
+            source_kind: "Perspective",
+            source_memory_id: Some(target_root.into_inner()),
+            source_goal_id: None,
+            target_kind: "Fact",
+            target_memory_id: Some(request_memory_id.into_inner()),
+            target_goal_id: None,
+            authorship_kind: "ExternalAgent",
+            authorship_owner_memory_id: ctx.caller_self_perspective.map(MemoryId::into_inner),
             owner: &ctx.owner,
         },
         None,
