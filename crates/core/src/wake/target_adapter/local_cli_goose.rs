@@ -38,8 +38,6 @@ impl LocalCliGooseAdapter {
 #[async_trait]
 impl TargetAdapter for LocalCliGooseAdapter {
     async fn run(&self, invocation: TargetInvocation) -> Result<TargetOutcome, TargetAdapterError> {
-        let params_json =
-            serde_json::to_string(&invocation.params).unwrap_or_else(|_| "{}".to_string());
         let (logger, log_open_error) = SessionLogger::open(invocation.session_log_path.as_deref())
             .await
             .unwrap_or_else(|err| {
@@ -73,7 +71,6 @@ impl TargetAdapter for LocalCliGooseAdapter {
             let serialized = serde_json::to_string(value).unwrap_or_default();
             cmd.arg("--params").arg(format!("{key}={serialized}"));
         }
-        cmd.arg("--text").arg(&params_json);
         cmd.arg("--max-turns")
             .arg(invocation.max_rounds.to_string());
         cmd.arg("--no-session");
@@ -287,8 +284,6 @@ fn redacted_argv(invocation: &TargetInvocation) -> Vec<String> {
         argv.push(format!("{key}=<redacted>"));
     }
     argv.extend([
-        "--text".to_string(),
-        "<redacted>".to_string(),
         "--max-turns".to_string(),
         invocation.max_rounds.to_string(),
         "--no-session".to_string(),

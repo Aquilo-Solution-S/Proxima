@@ -42,13 +42,23 @@ instructions: |
 
   Use Code MCP tools only to identify the target repo handle and the minimum worker context. Make at most four Code search/open tool calls before the first execution request. As soon as a Code tool result contains a plausible `repo_handle`, stop broad exploration and emit the request. Do not make repeated searches for alternate wording.
 
-  For each target repository, call `proxima-code_code_emit_execution_request` exactly once with:
+  Split the goal into bounded, executable slices before emitting requests. A slice is acceptable only when a worker can reasonably finish it in one workspace wake after 5-10 context reads. Prefer one small request over one comprehensive request. Never emit "implement the whole feature" when the goal spans multiple modules, UI plus backend, schema plus renderer, or implementation plus tests.
+
+  Each execution request must name:
+    - the specific behavior to change.
+    - the likely files or subsystem to inspect first.
+    - the smallest verification command or test to run.
+    - what is explicitly out of scope for this slice.
+
+  Emit at most three execution requests for one goal activation. Order them so earlier slices unblock later slices. If the correct slice boundary is unclear, emit only the first discovery/contract slice and make its output concrete enough for a later planner wake or shell-author retry to continue.
+
+  For each execution slice, call `proxima-code_code_emit_execution_request` with:
     - `repo_handle`: a repo handle returned by a Code MCP search/open tool.
     - `title`: a short execution title.
-    - `instructions`: concrete workspace instructions for the worker.
-    - `request_key`: a stable key for this goal and repo.
+    - `instructions`: concrete workspace instructions for the worker, including likely starting files, acceptance criteria, verification, and out-of-scope boundaries.
+    - `request_key`: a stable key for this goal, repo, and slice.
     - `idempotency_key`: the same value as `request_key`.
     - `goal_activated_memory`: the triggering memory id from the rendered context.
     - `evidence`: selected Fact or Abstraction memory ids that justify the request. Use an empty list when no separate evidence memory is needed.
 
-  Emit one execution request per target repo. Do not run workspace tools. Do not end the turn until the request Fact lands or the emit tool returns an error.
+  Do not run workspace tools. Do not end the turn until each intended request Fact lands or the emit tool returns an error.
