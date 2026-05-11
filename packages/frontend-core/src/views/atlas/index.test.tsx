@@ -116,11 +116,11 @@ const activeGoal = (id: string): GoalRow => ({
   payload: [],
 });
 
-const atlasEdge = (id: string, src: string, tgt: string): AtlasEdge => ({
+const atlasEdge = (id: string, src: string, tgt: string, kind = "code/calls"): AtlasEdge => ({
   id,
   src,
   tgt,
-  kind: "code/calls",
+  kind,
 });
 
 const snapshot = (
@@ -451,6 +451,133 @@ describe("Atlas graph wiring", () => {
     expect(inspectorTitle()).toBe("engine.rs");
     fireEvent.keyDown(window, { key: "ArrowRight", altKey: true });
     expect(inspectorTitle()).toBe("call graph");
+
+    raycast.mockRestore();
+  });
+
+  it("shows motivated-by evidence chips for selected goal nodes", () => {
+    const fact = {
+      ...atlasNode(
+        "019dfa60-0000-7000-8000-000000000311",
+        "Fact",
+        "Read goal contract",
+        0,
+      ),
+      schemaId: "proxima-code/commit-summary-v1",
+      schemaVersion: 1,
+      memory: {
+        id: "019dfa60-0000-7000-8000-000000000311",
+        kind: "Fact",
+        schema_id: "proxima-code/commit-summary-v1",
+        schema_version: 1,
+        owner,
+        payload: [],
+      },
+    };
+    const abs = {
+      ...atlasNode(
+        "019dfa60-0000-7000-8000-000000000312",
+        "Abstraction",
+        "Review summary",
+        1,
+      ),
+      schemaId: "proxima-code/commit-summary-v1",
+      schemaVersion: 1,
+      memory: {
+        id: "019dfa60-0000-7000-8000-000000000312",
+        kind: "Abstraction",
+        schema_id: "proxima-code/commit-summary-v1",
+        schema_version: 1,
+        owner,
+        payload: [],
+      },
+    };
+    const goalRow = activeGoal("019dfa60-0000-7000-8000-000000000301");
+    const goalNode: AtlasNode = {
+      ...atlasNode("019dfa60-0000-7000-8000-000000000300", "Goal", "Planner handoff", 2),
+      kind: "Goal",
+      schemaId: goalRow.schema_id,
+      schemaVersion: goalRow.schema_version,
+      title: goalRow.title,
+      flavor: "proxima-goal",
+      goal: goalRow,
+      y: 0,
+    };
+    const raycast = vi
+      .spyOn(THREE.Raycaster.prototype, "intersectObjects")
+      .mockImplementation((objects) => [{ object: objects[0] }] as THREE.Intersection[]);
+
+    render(() => (
+      <GraphFilterProvider store={createGraphFilterStore()}>
+        <Atlas
+          hub={createHub([])}
+          nodes={[goalNode, fact, abs]}
+          edges={[
+            atlasEdge(
+              "019dfa60-0000-7000-8000-000000000401",
+              goalNode.id,
+              fact.id,
+              "proxima-goal/motivated-by",
+            ),
+            atlasEdge(
+              "019dfa60-0000-7000-8000-000000000402",
+              goalNode.id,
+              abs.id,
+              "proxima-goal/motivated-by",
+            ),
+          ]}
+        />
+      </GraphFilterProvider>
+    ));
+    const canvas = document.querySelector(".atlas-canvas canvas")!;
+
+    fireEvent.click(canvas);
+    expect(screen.getByText("Evidence")).toBeTruthy();
+    expect(screen.getByText("Read goal contract")).toBeTruthy();
+    expect(screen.getByText("Review summary")).toBeTruthy();
+    expect(screen.getByText("Fact · ƒ:code")).toBeTruthy();
+    expect(screen.getByText("Abstraction · ƒ:code")).toBeTruthy();
+
+    raycast.mockRestore();
+  });
+
+  it("does not show evidence chips for non-goal selected nodes", () => {
+    const fact = atlasNode(
+      "019dfa60-0000-7000-8000-000000000411",
+      "Fact",
+      "Read goal contract",
+      0,
+    );
+    const abs = atlasNode(
+      "019dfa60-0000-7000-8000-000000000412",
+      "Abstraction",
+      "Review summary",
+      1,
+    );
+    const raycast = vi
+      .spyOn(THREE.Raycaster.prototype, "intersectObjects")
+      .mockImplementation((objects) => [{ object: objects[1] }] as THREE.Intersection[]);
+
+    render(() => (
+      <GraphFilterProvider store={createGraphFilterStore()}>
+        <Atlas
+          hub={createHub([])}
+          nodes={[fact, abs]}
+          edges={[
+            atlasEdge(
+              "019dfa60-0000-7000-8000-000000000501",
+              fact.id,
+              abs.id,
+              "proxima-goal/motivated-by",
+            ),
+          ]}
+        />
+      </GraphFilterProvider>
+    ));
+    const canvas = document.querySelector(".atlas-canvas canvas")!;
+
+    fireEvent.click(canvas);
+    expect(screen.queryByText("Evidence")).toBeNull();
 
     raycast.mockRestore();
   });

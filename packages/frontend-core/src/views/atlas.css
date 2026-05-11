@@ -768,3 +768,50 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+.i-evidence {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--rule);
+}
+
+.i-evidence-head {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ink-60);
+  margin-bottom: 8px;
+}
+
+.i-evidence-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.i-evidence-chip {
+  border: 1px solid var(--rule-strong);
+  background: transparent;
+  color: var(--ink-90);
+  font-family: var(--mono);
+  font-size: 11px;
+  text-align: left;
+  padding: 6px 8px;
+  cursor: pointer;
+}
+
+.i-evidence-chip:hover {
+  border-color: var(--accent-commit);
+  color: var(--ink-100);
+}
+
+.i-evidence-chip-title {
+  display: block;
+  font-style: italic;
+}
+
+.i-evidence-chip-meta {
+  font-size: 10px;
+  color: var(--ink-60);
+}
