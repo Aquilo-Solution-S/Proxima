@@ -8,7 +8,10 @@ pub mod open_file_revision;
 pub mod search_chunks;
 pub mod search_commits;
 
-pub use emit_execution_request::CodeEmitExecutionRequestTool;
+pub use emit_execution_request::{
+    CODE_TARGETS_EXECUTION_REQUEST_RELATION, CodeEmitExecutionRequestTool,
+    CodeRetryExecutionRequestTool,
+};
 pub use open_file_revision::CodeOpenFileRevisionTool;
 pub use search_chunks::CodeSearchChunksTool;
 pub use search_commits::CodeSearchCommitsTool;
