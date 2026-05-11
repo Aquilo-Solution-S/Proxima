@@ -332,6 +332,7 @@ async fn correction_request_derives_from_review_and_targets_worker()
 
     for target in [
         review.into_inner(),
+        run.into_inner(),
         request.into_inner(),
         evidence.into_inner(),
     ] {
@@ -445,7 +446,11 @@ async fn correction_request_can_derive_from_retry_decision_without_rejected_revi
     assert!(instructions.contains("Please try a narrower correction."));
     assert!(instructions.contains("workspace_review: none"));
 
-    for target in [decision.into_inner(), request.into_inner()] {
+    for target in [
+        decision.into_inner(),
+        run.into_inner(),
+        request.into_inner(),
+    ] {
         let derived_edges: i64 = sqlx::query_scalar(
             "SELECT count(*)
              FROM proxima_core.edges
@@ -463,6 +468,66 @@ async fn correction_request_can_derive_from_retry_decision_without_rejected_revi
         assert_eq!(derived_edges, 1, "missing derived edge to {target}");
     }
 
+    Ok(())
+}
+
+#[tokio::test]
+async fn emit_workspace_review_resolves_request_through_run_chain()
+-> Result<(), Box<dyn std::error::Error>> {
+    let Some(fixture) = TestDb::fresh().await? else {
+        return Ok(());
+    };
+    let owner = owner_fixture();
+    let registry = registry_for_mcp();
+    let root = root_perspective(&fixture.pg, &owner).await?;
+    let repo_id = Uuid::now_v7();
+    let request = seed_execution_request(
+        &fixture.pg,
+        &owner,
+        registry.as_ref(),
+        repo_id,
+        "chained-review-request",
+        "Original implementation",
+        "Implement the original change.",
+        &[],
+    )
+    .await?;
+    let first_run =
+        seed_workspace_run(&fixture.pg, &owner, registry.as_ref(), repo_id, request).await?;
+    let chained_run =
+        seed_workspace_run(&fixture.pg, &owner, registry.as_ref(), repo_id, first_run).await?;
+
+    let output = run_tool::<CodeEmitWorkspaceReviewTool>(
+        ctx(
+            fixture.pg.pool().clone(),
+            owner.clone(),
+            registry,
+            Some(root),
+            None,
+        ),
+        json!({
+            "workspace_run_memory": chained_run.into_inner().to_string(),
+            "verdict": "approved",
+            "summary": "Chained run satisfies the request.",
+            "findings": [],
+            "verification_summary": "targeted checks passed",
+            "idempotency_key": "chained-review"
+        }),
+    )
+    .await?;
+
+    assert_eq!(output["verdict"], "approved");
+    let review_request: Uuid = sqlx::query_scalar(
+        "SELECT execution_request_memory_id
+         FROM proxima_code.workspace_review_v1
+         WHERE workspace_run_memory_id = $1
+         ORDER BY created_at DESC
+         LIMIT 1",
+    )
+    .bind(chained_run.into_inner())
+    .fetch_one(fixture.pg.pool())
+    .await?;
+    assert_eq!(review_request, request.into_inner());
     Ok(())
 }
 

@@ -61,6 +61,14 @@ const languageAliases: Record<string, string> = {
 const asString = (value: unknown): string | null =>
   typeof value === "string" ? value : null;
 
+const extensionFromPath = (value: string): string | null => {
+  const clean = value.split(/[?#]/, 1)[0] ?? value;
+  const basename = clean.split("/").pop() ?? clean;
+  const index = basename.lastIndexOf(".");
+  if (index <= 0 || index === basename.length - 1) return null;
+  return basename.slice(index + 1);
+};
+
 export const normalizedLanguage = (value: unknown): string | null => {
   const raw = asString(value)?.trim().toLowerCase();
   if (!raw) return null;
@@ -68,6 +76,9 @@ export const normalizedLanguage = (value: unknown): string | null => {
   const alias = languageAliases[compact] ?? compact;
   return hljs.getLanguage(alias) ? alias : null;
 };
+
+export const languageFromPath = (path: string): string | null =>
+  normalizedLanguage(extensionFromPath(path));
 
 export const highlightedCode = (text: string, language: unknown) => {
   const lang = normalizedLanguage(language);

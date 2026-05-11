@@ -96,6 +96,15 @@ impl CorrectionTrigger {
         }
     }
 
+    fn workspace_run_memory_id(&self) -> MemoryId {
+        match self {
+            Self::RejectedReview(review) => MemoryId::new(review.payload.workspace_run_memory_id),
+            Self::RetryDecision { decision, .. } => {
+                MemoryId::new(decision.payload.workspace_run_memory_id)
+            }
+        }
+    }
+
     fn rejected_review(&self) -> Option<&LoadedWorkspaceReview> {
         match self {
             Self::RejectedReview(review) => Some(review),
@@ -391,6 +400,15 @@ impl McpTool for CodeEmitCorrectionExecutionRequestTool {
                     )
                     .await?;
                 }
+                push_derived_edge(
+                    &mut tx,
+                    &ctx,
+                    outcome.memory_id,
+                    trigger.workspace_run_memory_id(),
+                    &mut seen,
+                    &mut derived_edge_ids,
+                )
+                .await?;
                 push_derived_edge(
                     &mut tx,
                     &ctx,
@@ -840,20 +858,37 @@ async fn find_execution_request_for_run(
 ) -> Result<MemoryId, McpToolError> {
     let (owner_kind, owner_principal_id) = owner_principal(&ctx.owner);
     let request: Option<Uuid> = sqlx::query_scalar(
-        "SELECT e.target_memory_id
-         FROM proxima_core.edges e
+        "WITH RECURSIVE ancestry(memory_id, depth, path) AS (
+             SELECT e.target_memory_id, 1, ARRAY[$4::uuid, e.target_memory_id]
+             FROM proxima_core.edges e
+             WHERE e.owner_principal_kind = $1
+               AND e.owner_principal_id = $2
+               AND e.relation = $3
+               AND e.source_kind = 'Fact'
+               AND e.source_memory_id = $4
+               AND e.target_kind = 'Fact'
+               AND e.target_memory_id IS NOT NULL
+             UNION ALL
+             SELECT e.target_memory_id, a.depth + 1, a.path || e.target_memory_id
+             FROM ancestry a
+             JOIN proxima_core.edges e
+               ON e.owner_principal_kind = $1
+              AND e.owner_principal_id = $2
+              AND e.relation = $3
+              AND e.source_kind = 'Fact'
+              AND e.source_memory_id = a.memory_id
+              AND e.target_kind = 'Fact'
+              AND e.target_memory_id IS NOT NULL
+             WHERE NOT e.target_memory_id = ANY(a.path)
+         )
+         SELECT a.memory_id
+         FROM ancestry a
          JOIN proxima_core.memories m
-           ON m.memory_id = e.target_memory_id
-          AND m.owner_principal_kind = e.owner_principal_kind
-          AND m.owner_principal_id = e.owner_principal_id
-         WHERE e.owner_principal_kind = $1
-           AND e.owner_principal_id = $2
-           AND e.relation = $3
-           AND e.source_kind = 'Fact'
-           AND e.source_memory_id = $4
-           AND e.target_kind = 'Fact'
-           AND m.schema_id = $5
-         ORDER BY e.created_at, e.edge_id
+           ON m.memory_id = a.memory_id
+          AND m.owner_principal_kind = $1
+          AND m.owner_principal_id = $2
+         WHERE m.schema_id = $5
+         ORDER BY a.depth DESC, a.memory_id DESC
          LIMIT 1",
     )
     .bind(owner_kind)

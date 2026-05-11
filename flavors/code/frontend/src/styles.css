@@ -367,16 +367,85 @@
   max-width: 100%;
   overflow-x: auto;
   overflow-y: visible;
-  padding: 8px;
+  padding: 0;
   color: var(--ink-90);
   font-family: var(--mono);
   font-size: 10px;
   line-height: 1.45;
   white-space: pre;
 }
-.proxima-run-diff-patch code {
+.proxima-run-diff-code {
   display: block;
   min-width: max-content;
+}
+.proxima-run-diff-line {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  min-height: 17px;
+}
+.proxima-run-diff-prefix {
+  user-select: none;
+  text-align: center;
+  color: var(--ink-40);
+  border-right: 1px solid rgba(255, 255, 255, 0.04);
+}
+.proxima-run-diff-content {
+  display: block;
+  padding: 0 10px;
+  color: var(--ink-80);
+}
+.proxima-run-diff-line.line-addition {
+  background: rgba(72, 134, 87, 0.12);
+}
+.proxima-run-diff-line.line-addition .proxima-run-diff-prefix {
+  color: #91c99b;
+}
+.proxima-run-diff-line.line-deletion {
+  background: rgba(178, 76, 76, 0.12);
+}
+.proxima-run-diff-line.line-deletion .proxima-run-diff-prefix {
+  color: #ee8f8f;
+}
+.proxima-run-diff-line.line-hunk {
+  background: rgba(128, 144, 168, 0.08);
+}
+.proxima-run-diff-line.line-hunk .proxima-run-diff-content {
+  color: #a9c7e8;
+}
+.proxima-run-diff-line.line-meta .proxima-run-diff-content {
+  color: var(--ink-50);
+}
+.proxima-run-diff-patch .hljs-keyword,
+.proxima-run-diff-patch .hljs-selector-tag,
+.proxima-run-diff-patch .hljs-literal,
+.proxima-run-diff-patch .hljs-section {
+  color: #d7b46a;
+}
+.proxima-run-diff-patch .hljs-string,
+.proxima-run-diff-patch .hljs-regexp,
+.proxima-run-diff-patch .hljs-attribute {
+  color: #9bc2a6;
+}
+.proxima-run-diff-patch .hljs-number,
+.proxima-run-diff-patch .hljs-symbol,
+.proxima-run-diff-patch .hljs-bullet {
+  color: #d49a74;
+}
+.proxima-run-diff-patch .hljs-title,
+.proxima-run-diff-patch .hljs-title.function_,
+.proxima-run-diff-patch .hljs-title.class_,
+.proxima-run-diff-patch .hljs-built_in {
+  color: #a9c7e8;
+}
+.proxima-run-diff-patch .hljs-type,
+.proxima-run-diff-patch .hljs-class,
+.proxima-run-diff-patch .hljs-variable,
+.proxima-run-diff-patch .hljs-template-variable {
+  color: #c8b6e2;
+}
+.proxima-run-diff-patch .hljs-comment,
+.proxima-run-diff-patch .hljs-quote {
+  color: var(--ink-50);
 }
 .proxima-run-diff-patch .hljs-addition {
   color: #91c99b;
@@ -391,14 +460,17 @@
   display: grid;
   grid-template-columns: auto auto auto;
   grid-template-areas:
-    "merge discard retry"
-    "reason reason reason";
+    "reason reason reason"
+    "merge discard retry";
   align-items: center;
   justify-content: flex-end;
-  gap: 8px;
+  gap: 10px;
+  padding-top: 2px;
 }
 .proxima-run-actions .proxima-btn {
-  min-width: 92px;
+  min-width: 108px;
+  padding-left: 14px;
+  padding-right: 14px;
 }
 .proxima-run-actions .proxima-btn:first-child {
   grid-area: merge;
@@ -416,6 +488,7 @@
   min-width: 0;
   resize: vertical;
   line-height: 1.35;
+  margin-bottom: 2px;
 }
 
 @media (max-width: 760px) {
@@ -442,8 +515,8 @@
   .proxima-run-actions {
     grid-template-columns: 1fr 1fr;
     grid-template-areas:
-      "merge merge"
       "reason reason"
+      "merge merge"
       "discard retry";
     justify-content: stretch;
   }
