@@ -1,0 +1,30 @@
+//! Input types for wake fire operations.
+
+use std::time::Duration;
+
+use uuid::Uuid;
+
+use crate::Owner;
+use crate::personality::{PersonalityInstanceId, WakeEntryRow};
+
+/// Inputs to one wake fire — assembled by the dispatcher tick from the
+/// `WakeDispatchEntryRow` it just matched.
+#[derive(Debug, Clone)]
+pub struct FireWakeEntryInput {
+    pub owner: Owner,
+    pub personality_instance_id: PersonalityInstanceId,
+    pub wake_entry: WakeEntryRow,
+    pub change_event_seq: Uuid,
+    pub triggering_memory_id: Uuid,
+}
+
+/// Per-invocation timeout calculation.
+/// Conservative: 60s per round + 30s startup. Adapter-side timeouts
+/// are the floor; the dispatcher's outer cancel signal is the ceiling.
+/// Phase 1e tunes this once Code-flavor recipes have a measured p95.
+pub fn per_invocation_timeout(max_rounds: u32) -> Duration {
+    if max_rounds == 0 {
+        return Duration::from_secs(24 * 60 * 60);
+    }
+    Duration::from_secs(30 + u64::from(max_rounds) * 60)
+}
