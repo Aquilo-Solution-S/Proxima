@@ -17,7 +17,7 @@ import {
   type WorkspaceRunRecordTs,
 } from "@proxima/core";
 import { LoadingSurface } from "@proxima/core/primitives";
-import { highlightedCode } from "./code-highlight";
+import { highlightedCode, languageFromPath } from "./code-highlight";
 
 type ActionState =
   | { kind: "idle" }
@@ -62,6 +62,15 @@ interface DiffFileSection {
   patch: string;
   insertions: number;
   deletions: number;
+}
+
+type DiffLineKind = "addition" | "deletion" | "context" | "hunk" | "meta";
+
+interface DiffLine {
+  key: string;
+  kind: DiffLineKind;
+  prefix: string;
+  content: string;
 }
 
 const stripDiffPathPrefix = (value: string): string =>
@@ -136,6 +145,39 @@ const parseUnifiedDiff = (
     };
   });
 };
+
+const diffLineKind = (line: string): DiffLineKind => {
+  if (line.startsWith("@@")) return "hunk";
+  if (
+    line.startsWith("diff --git ") ||
+    line.startsWith("index ") ||
+    line.startsWith("--- ") ||
+    line.startsWith("+++ ") ||
+    line.startsWith("new file mode ") ||
+    line.startsWith("deleted file mode ") ||
+    line.startsWith("similarity index ") ||
+    line.startsWith("rename from ") ||
+    line.startsWith("rename to ")
+  ) {
+    return "meta";
+  }
+  if (line.startsWith("+")) return "addition";
+  if (line.startsWith("-")) return "deletion";
+  return "context";
+};
+
+const parseDiffLines = (patch: string): DiffLine[] =>
+  patch.split(/\r?\n/).map((line, index) => {
+    const kind = diffLineKind(line);
+    const hasDiffPrefix =
+      kind === "addition" || kind === "deletion" || kind === "context";
+    return {
+      key: `${index}:${line}`,
+      kind,
+      prefix: hasDiffPrefix ? line.slice(0, 1) || " " : "",
+      content: hasDiffPrefix ? line.slice(1) : line,
+    };
+  });
 
 export const RunsPanel: Component = () => {
   const [repos] = createResource(loadRepos);
@@ -501,7 +543,8 @@ const RunDiffMonitor: Component<{ diff: WorkspaceRunDiffTs }> = (props) => {
 };
 
 const RunDiffFileSection: Component<{ section: DiffFileSection }> = (props) => {
-  const highlighted = createMemo(() => highlightedCode(props.section.patch, "diff"));
+  const language = createMemo(() => languageFromPath(props.section.path));
+  const lines = createMemo(() => parseDiffLines(props.section.patch));
 
   return (
     <details class="proxima-run-diff-file" open>
@@ -511,11 +554,45 @@ const RunDiffFileSection: Component<{ section: DiffFileSection }> = (props) => {
         <span class="proxima-run-diff-file-stat">-{props.section.deletions}</span>
       </summary>
       <pre class="proxima-run-diff-patch">
-        <code
-          class={`hljs language-${highlighted().language}`}
-          innerHTML={highlighted().html}
-        />
+        <code class="proxima-run-diff-code">
+          <For each={lines()}>
+            {(line) => <RunDiffLine line={line} language={language()} />}
+          </For>
+        </code>
       </pre>
     </details>
+  );
+};
+
+const RunDiffLine: Component<{ line: DiffLine; language: string | null }> = (
+  props,
+) => {
+  const highlighted = createMemo(() => {
+    if (props.line.kind === "hunk" || props.line.kind === "meta") {
+      return { html: "", language: "diff" };
+    }
+    return highlightedCode(props.line.content, props.language);
+  });
+
+  return (
+    <span
+      classList={{
+        "proxima-run-diff-line": true,
+        [`line-${props.line.kind}`]: true,
+      }}
+    >
+      <span class="proxima-run-diff-prefix">{props.line.prefix}</span>
+      <Show
+        when={props.line.kind !== "hunk" && props.line.kind !== "meta"}
+        fallback={
+          <span class="proxima-run-diff-content">{props.line.content}</span>
+        }
+      >
+        <span
+          class={`proxima-run-diff-content hljs language-${highlighted().language}`}
+          innerHTML={highlighted().html}
+        />
+      </Show>
+    </span>
   );
 };

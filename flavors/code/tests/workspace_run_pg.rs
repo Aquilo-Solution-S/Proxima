@@ -37,6 +37,7 @@ use proxima_core::{
     Principal, RegisterInferenceTargetRequest, SchemaId, SchemaVersion, SourceBatchId, SourceId,
     UserId, WakeEntryAuthoredBy, WakeEntryTriggerKind, WorkspacePrepareInput, WorkspaceRunner,
 };
+use proxima_flavor_goal::GoalActivatedV1;
 use proxima_storage_pg::PgStorage;
 use proxima_storage_pg::verbs::edge_append::{EdgeDraft, append_edge_in_tx};
 use proxima_storage_pg::verbs::event_ingest::ingest_event_in_tx;
@@ -506,6 +507,121 @@ async fn seed_workspace_review_for_runner(
     Ok(outcome.memory_id)
 }
 
+async fn append_derived_edge_for_runner(
+    pg: &PgStorage,
+    owner: &Owner,
+    registry: &proxima_core::FlavorRegistryFrozen,
+    source: proxima_core::MemoryId,
+    target: proxima_core::MemoryId,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut tx = pg.pool().begin().await?;
+    let relation = registry
+        .resolve_relation(CORE_DERIVED_FROM_RELATION)
+        .expect("core/derived-from registered");
+    append_edge_in_tx(
+        &mut tx,
+        &EdgeDraft {
+            edge_id: Uuid::now_v7(),
+            relation,
+            source_kind: "Fact",
+            source_memory_id: Some(source.into_inner()),
+            source_goal_id: None,
+            target_kind: "Fact",
+            target_memory_id: Some(target.into_inner()),
+            target_goal_id: None,
+            authorship_kind: "EventSource",
+            authorship_owner_memory_id: None,
+            owner,
+        },
+        None,
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+async fn seed_goal_context_for_runner(
+    pg: &PgStorage,
+    owner: &Owner,
+    request: proxima_core::MemoryId,
+    registry: &proxima_core::FlavorRegistryFrozen,
+) -> Result<(Uuid, proxima_core::MemoryId), Box<dyn std::error::Error>> {
+    let goal_id = Uuid::now_v7();
+    let (owner_kind, owner_principal_id, owner_org_id) = match &owner.principal {
+        Principal::User(user) => ("User", user.into_inner(), owner.org_id.into_inner()),
+        Principal::Group(group) => ("Group", group.into_inner(), owner.org_id.into_inner()),
+    };
+    sqlx::query(
+        "INSERT INTO proxima_core.goals
+            (goal_id, schema_id, schema_version, owner_principal_kind,
+             owner_principal_id, owner_org_id, title, text, payload, state,
+             authorship_kind, request_id)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)",
+    )
+    .bind(goal_id)
+    .bind("proxima-goal/simple-text-v1")
+    .bind(1_i32)
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(owner_org_id)
+    .bind("Ship closure")
+    .bind("Acceptance criteria: close the verifier loop.")
+    .bind(Vec::<u8>::new())
+    .bind("Active")
+    .bind("User")
+    .bind(format!("goal-{}", Uuid::now_v7()))
+    .execute(pg.pool())
+    .await?;
+
+    let payload = GoalActivatedV1 {
+        goal_id,
+        schema_id: "proxima-goal/simple-text-v1".into(),
+        title: "Ship closure".into(),
+        accepted_at: time::OffsetDateTime::now_utc(),
+        evidence_count: 0,
+    };
+    let mut payload_bytes = Vec::new();
+    ciborium::ser::into_writer(&payload, &mut payload_bytes)?;
+    let content_hash = blake3::hash(&payload_bytes);
+    let draft = EventDraft {
+        source_id: SourceId::new("proxima-goal/goal-activated"),
+        source_batch_id: SourceBatchId::new(Uuid::now_v7()),
+        owner: owner.clone(),
+        schema_id: SchemaId::new(GoalActivatedV1::SCHEMA_ID.into()),
+        schema_version: SchemaVersion::new(GoalActivatedV1::SCHEMA_VERSION),
+        payload: payload_bytes,
+        observed_at: time::OffsetDateTime::now_utc(),
+        occurred_at: payload.accepted_at,
+        cited_object: CitedObjectHint {
+            schema_id: SchemaId::new("proxima-goal/goal-activated-object-v1".into()),
+            schema_version: SchemaVersion::new(1),
+            content_hash: *content_hash.as_bytes(),
+        },
+        citation_mapping: CitationMappingHint {
+            schema_id: SchemaId::new("proxima-goal/goal-activated-whole-v1".into()),
+            schema_version: SchemaVersion::new(1),
+        },
+    };
+    let mut tx = pg.pool().begin().await?;
+    let outcome = ingest_event_in_tx(&mut tx, &draft).await?;
+    sqlx::query(
+        "INSERT INTO proxima_goal.goal_activated_v1
+            (memory_id, goal_id, schema_id, title, accepted_at, evidence_count)
+         VALUES ($1,$2,$3,$4,$5,$6)",
+    )
+    .bind(outcome.memory_id.into_inner())
+    .bind(goal_id)
+    .bind(&payload.schema_id)
+    .bind(&payload.title)
+    .bind(payload.accepted_at)
+    .bind(i32::try_from(payload.evidence_count).unwrap_or(i32::MAX))
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    append_derived_edge_for_runner(pg, owner, registry, request, outcome.memory_id).await?;
+    Ok((goal_id, outcome.memory_id))
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn code_workspace_prepare_builds_context_with_preloaded_paths()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -888,6 +1004,457 @@ async fn workspace_run_trigger_prepares_verifier_context_from_worker_branch()
             git(&prepared.work_dir, &["rev-parse", "HEAD"]).map_err(std::io::Error::other)?,
             head_sha
         );
+        Ok(())
+    }
+    .await;
+
+    drop(pg);
+    let _ = drop_db(&db_name).await;
+    result
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn workspace_run_trigger_resolves_original_request_through_run_chain()
+-> Result<(), Box<dyn std::error::Error>> {
+    let Some((db_name, pg)) = migrated_db().await else {
+        return Ok(());
+    };
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = test_owner();
+        let repo_root = tempfile::tempdir()?;
+        let worktree_root = tempfile::tempdir()?;
+        let recipe_root = tempfile::tempdir()?;
+        let effective_recipe = recipe_root.path().join("verify.yaml");
+        std::fs::write(&effective_recipe, "version: 1.0.0\n")?;
+        let (repo_path, parent_sha) = init_repo(&repo_root).map_err(std::io::Error::other)?;
+        let branch_name = format!("proxima/wake/{}", Uuid::now_v7());
+        let worker_tree = worktree_root.path().join("worker");
+        git(
+            &repo_path,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                &branch_name,
+                worker_tree.to_str().expect("utf8 worktree"),
+                "main",
+            ],
+        )
+        .map_err(std::io::Error::other)?;
+        std::fs::write(worker_tree.join("README.md"), "initial\nchain change\n")?;
+        git(&worker_tree, &["add", "README.md"]).map_err(std::io::Error::other)?;
+        git(
+            &worker_tree,
+            &[
+                "-c",
+                "user.name=Proxima Test",
+                "-c",
+                "user.email=proxima@example.test",
+                "commit",
+                "-m",
+                "chain change",
+            ],
+        )
+        .map_err(std::io::Error::other)?;
+        let head_sha = git(&worker_tree, &["rev-parse", "HEAD"]).map_err(std::io::Error::other)?;
+
+        let repo_id = Uuid::now_v7();
+        proxima_code::register_repo(
+            pg.pool(),
+            &owner,
+            repo_id,
+            repo_path.to_str().expect("utf8 repo path"),
+            "chained-review-context",
+        )
+        .await?;
+        let registry_root = tempfile::tempdir()?;
+        let registry = registry_with_runner(&pg, registry_root.path().to_path_buf());
+        let request = seed_execution_request_for_runner(
+            &pg,
+            &owner,
+            repo_id,
+            "chained-context-request",
+            "Update README",
+            "Update `README.md`.",
+        )
+        .await?;
+        let first_run_payload = WorkspaceRunV1 {
+            wake_invocation_id: Uuid::now_v7(),
+            repo_id,
+            target_branch: "main".into(),
+            worktree_path: worker_tree.to_string_lossy().to_string(),
+            branch_name: branch_name.clone(),
+            parent_sha: parent_sha.clone(),
+            head_sha: head_sha.clone(),
+            diff_stat_json: WorkspaceDiffStat {
+                files_changed: 1,
+                insertions: 1,
+                deletions: 0,
+                files: vec![WorkspaceDiffFile {
+                    path: "README.md".into(),
+                    insertions: 1,
+                    deletions: 0,
+                }],
+            },
+            exit_code: Some(0),
+            stdout_tail: None,
+            stderr_tail: None,
+            duration_ms: Some(100),
+        };
+        let first_run =
+            seed_workspace_run_for_runner(&pg, &owner, &registry, &first_run_payload, request)
+                .await?;
+        let chained_run_payload = WorkspaceRunV1 {
+            wake_invocation_id: Uuid::now_v7(),
+            repo_id,
+            target_branch: "main".into(),
+            worktree_path: worker_tree.to_string_lossy().to_string(),
+            branch_name,
+            parent_sha,
+            head_sha,
+            diff_stat_json: first_run_payload.diff_stat_json.clone(),
+            exit_code: Some(0),
+            stdout_tail: None,
+            stderr_tail: None,
+            duration_ms: Some(101),
+        };
+        let chained_run =
+            seed_workspace_run_for_runner(&pg, &owner, &registry, &chained_run_payload, first_run)
+                .await?;
+
+        let runner = CodeWorkspaceRunner::new(pg.pool().clone());
+        let prepared = runner
+            .prepare(WorkspacePrepareInput {
+                invocation_id: Uuid::now_v7(),
+                owner: &owner,
+                wake_token: Uuid::now_v7(),
+                mcp_url: "http://127.0.0.1:1/mcp",
+                root_perspective_memory_id: proxima_core::MemoryId::new(Uuid::now_v7()),
+                triggering_memory_id: chained_run,
+                triggering_memory_schema_id: WorkspaceRunV1::SCHEMA_ID,
+                triggering_memory_payload: &serde_json::to_value(&chained_run_payload)?,
+                workspace_tool_palette: &[],
+                effective_recipe_path: &effective_recipe,
+                recipe_bytes: b"version: 1.0.0\n",
+                recipe_sha256: "test-sha",
+            })
+            .await?;
+
+        let context = prepared.workspace_context.expect("workspace context");
+        assert_eq!(
+            context["original_request"]["memory_id"],
+            request.into_inner().to_string()
+        );
+        assert_eq!(
+            context["original_request"]["payload"]["request_key"],
+            "chained-context-request"
+        );
+        Ok(())
+    }
+    .await;
+
+    drop(pg);
+    let _ = drop_db(&db_name).await;
+    result
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn workspace_run_trigger_loads_goal_context_from_request_chain()
+-> Result<(), Box<dyn std::error::Error>> {
+    let Some((db_name, pg)) = migrated_db().await else {
+        return Ok(());
+    };
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        proxima_flavor_goal::migrator().run(pg.pool()).await?;
+        let owner = test_owner();
+        let repo_root = tempfile::tempdir()?;
+        let worktree_root = tempfile::tempdir()?;
+        let recipe_root = tempfile::tempdir()?;
+        let effective_recipe = recipe_root.path().join("verify.yaml");
+        std::fs::write(&effective_recipe, "version: 1.0.0\n")?;
+        let (repo_path, parent_sha) = init_repo(&repo_root).map_err(std::io::Error::other)?;
+        let branch_name = format!("proxima/wake/{}", Uuid::now_v7());
+        let worker_tree = worktree_root.path().join("worker");
+        git(
+            &repo_path,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                &branch_name,
+                worker_tree.to_str().expect("utf8 worktree"),
+                "main",
+            ],
+        )
+        .map_err(std::io::Error::other)?;
+        std::fs::write(worker_tree.join("README.md"), "initial\ngoal change\n")?;
+        git(&worker_tree, &["add", "README.md"]).map_err(std::io::Error::other)?;
+        git(
+            &worker_tree,
+            &[
+                "-c",
+                "user.name=Proxima Test",
+                "-c",
+                "user.email=proxima@example.test",
+                "commit",
+                "-m",
+                "goal change",
+            ],
+        )
+        .map_err(std::io::Error::other)?;
+        let head_sha = git(&worker_tree, &["rev-parse", "HEAD"]).map_err(std::io::Error::other)?;
+
+        let repo_id = Uuid::now_v7();
+        proxima_code::register_repo(
+            pg.pool(),
+            &owner,
+            repo_id,
+            repo_path.to_str().expect("utf8 repo path"),
+            "goal-review-context",
+        )
+        .await?;
+        let registry_root = tempfile::tempdir()?;
+        let registry = registry_with_runner(&pg, registry_root.path().to_path_buf());
+        let request = seed_execution_request_for_runner(
+            &pg,
+            &owner,
+            repo_id,
+            "goal-context-request",
+            "Close verifier loop",
+            "Implement the verifier closure slice.",
+        )
+        .await?;
+        let (goal_id, goal_activation) =
+            seed_goal_context_for_runner(&pg, &owner, request, &registry).await?;
+        let correction_request = seed_execution_request_for_runner(
+            &pg,
+            &owner,
+            repo_id,
+            "goal-context-request:correction:0",
+            "Correct verifier loop",
+            "Finish the verifier closure slice.",
+        )
+        .await?;
+        append_derived_edge_for_runner(&pg, &owner, &registry, correction_request, request).await?;
+
+        let run_payload = WorkspaceRunV1 {
+            wake_invocation_id: Uuid::now_v7(),
+            repo_id,
+            target_branch: "main".into(),
+            worktree_path: worker_tree.to_string_lossy().to_string(),
+            branch_name,
+            parent_sha,
+            head_sha,
+            diff_stat_json: WorkspaceDiffStat {
+                files_changed: 1,
+                insertions: 1,
+                deletions: 0,
+                files: vec![WorkspaceDiffFile {
+                    path: "README.md".into(),
+                    insertions: 1,
+                    deletions: 0,
+                }],
+            },
+            exit_code: Some(0),
+            stdout_tail: None,
+            stderr_tail: None,
+            duration_ms: Some(100),
+        };
+        let run =
+            seed_workspace_run_for_runner(&pg, &owner, &registry, &run_payload, correction_request)
+                .await?;
+
+        let runner = CodeWorkspaceRunner::new(pg.pool().clone());
+        let prepared = runner
+            .prepare(WorkspacePrepareInput {
+                invocation_id: Uuid::now_v7(),
+                owner: &owner,
+                wake_token: Uuid::now_v7(),
+                mcp_url: "http://127.0.0.1:1/mcp",
+                root_perspective_memory_id: proxima_core::MemoryId::new(Uuid::now_v7()),
+                triggering_memory_id: run,
+                triggering_memory_schema_id: WorkspaceRunV1::SCHEMA_ID,
+                triggering_memory_payload: &serde_json::to_value(&run_payload)?,
+                workspace_tool_palette: &[],
+                effective_recipe_path: &effective_recipe,
+                recipe_bytes: b"version: 1.0.0\n",
+                recipe_sha256: "test-sha",
+            })
+            .await?;
+
+        let context = prepared.workspace_context.expect("workspace context");
+        assert_eq!(
+            context["original_request"]["memory_id"],
+            request.into_inner().to_string()
+        );
+        assert_eq!(
+            context["active_goal"]["activated_memory_id"],
+            goal_activation.into_inner().to_string()
+        );
+        assert_eq!(
+            context["active_goal"]["head"]["goal_id"],
+            goal_id.to_string()
+        );
+        assert_eq!(context["active_goal"]["head"]["state"], "Active");
+        assert!(
+            context["active_goal"]["head"]["text"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("Acceptance criteria")
+        );
+        Ok(())
+    }
+    .await;
+
+    drop(pg);
+    let _ = drop_db(&db_name).await;
+    result
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn correction_execution_request_reuses_derived_workspace_run_worktree()
+-> Result<(), Box<dyn std::error::Error>> {
+    let Some((db_name, pg)) = migrated_db().await else {
+        return Ok(());
+    };
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = test_owner();
+        let repo_root = tempfile::tempdir()?;
+        let worktree_root = tempfile::tempdir()?;
+        let recipe_root = tempfile::tempdir()?;
+        let effective_recipe = recipe_root.path().join("execute.yaml");
+        std::fs::write(&effective_recipe, "version: 1.0.0\n")?;
+        let (repo_path, parent_sha) = init_repo(&repo_root).map_err(std::io::Error::other)?;
+        let branch_name = format!("proxima/wake/{}", Uuid::now_v7());
+        let worker_tree = worktree_root.path().join("worker");
+        git(
+            &repo_path,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                &branch_name,
+                worker_tree.to_str().expect("utf8 worktree"),
+                "main",
+            ],
+        )
+        .map_err(std::io::Error::other)?;
+        std::fs::write(worker_tree.join("README.md"), "initial\nfirst pass\n")?;
+        git(&worker_tree, &["add", "README.md"]).map_err(std::io::Error::other)?;
+        git(
+            &worker_tree,
+            &[
+                "-c",
+                "user.name=Proxima Test",
+                "-c",
+                "user.email=proxima@example.test",
+                "commit",
+                "-m",
+                "first pass",
+            ],
+        )
+        .map_err(std::io::Error::other)?;
+        let head_sha = git(&worker_tree, &["rev-parse", "HEAD"]).map_err(std::io::Error::other)?;
+
+        let repo_id = Uuid::now_v7();
+        proxima_code::register_repo(
+            pg.pool(),
+            &owner,
+            repo_id,
+            repo_path.to_str().expect("utf8 repo path"),
+            "continuation-context",
+        )
+        .await?;
+        let registry_root = tempfile::tempdir()?;
+        let registry = registry_with_runner(&pg, registry_root.path().to_path_buf());
+        let request = seed_execution_request_for_runner(
+            &pg,
+            &owner,
+            repo_id,
+            "continuation-request",
+            "Update README",
+            "Update `README.md`.",
+        )
+        .await?;
+        let run_payload = WorkspaceRunV1 {
+            wake_invocation_id: Uuid::now_v7(),
+            repo_id,
+            target_branch: "main".into(),
+            worktree_path: worker_tree.to_string_lossy().to_string(),
+            branch_name: branch_name.clone(),
+            parent_sha: parent_sha.clone(),
+            head_sha: head_sha.clone(),
+            diff_stat_json: WorkspaceDiffStat {
+                files_changed: 1,
+                insertions: 1,
+                deletions: 0,
+                files: vec![WorkspaceDiffFile {
+                    path: "README.md".into(),
+                    insertions: 1,
+                    deletions: 0,
+                }],
+            },
+            exit_code: Some(0),
+            stdout_tail: None,
+            stderr_tail: None,
+            duration_ms: Some(100),
+        };
+        let run =
+            seed_workspace_run_for_runner(&pg, &owner, &registry, &run_payload, request).await?;
+        let correction_request = seed_execution_request_for_runner(
+            &pg,
+            &owner,
+            repo_id,
+            "continuation-request:correction:0",
+            "Correct README",
+            "Continue in the existing workspace.",
+        )
+        .await?;
+        append_derived_edge_for_runner(&pg, &owner, &registry, correction_request, run).await?;
+
+        let payload = serde_json::to_value(ExecutionRequestV1 {
+            repo_id,
+            title: "Correct README".into(),
+            instructions: "Continue in the existing workspace.".into(),
+            request_key: "continuation-request:correction:0".into(),
+        })?;
+        let runner = CodeWorkspaceRunner::new(pg.pool().clone())
+            .with_worktrees_root(worktree_root.path().join("new-worktrees"));
+        let prepared = runner
+            .prepare(WorkspacePrepareInput {
+                invocation_id: Uuid::now_v7(),
+                owner: &owner,
+                wake_token: Uuid::now_v7(),
+                mcp_url: "http://127.0.0.1:1/mcp",
+                root_perspective_memory_id: proxima_core::MemoryId::new(Uuid::now_v7()),
+                triggering_memory_id: correction_request,
+                triggering_memory_schema_id: ExecutionRequestV1::SCHEMA_ID,
+                triggering_memory_payload: &payload,
+                workspace_tool_palette: &[],
+                effective_recipe_path: &effective_recipe,
+                recipe_bytes: b"version: 1.0.0\n",
+                recipe_sha256: "test-sha",
+            })
+            .await?;
+
+        assert_eq!(prepared.work_dir, worker_tree);
+        assert_eq!(
+            git(&prepared.work_dir, &["rev-parse", "HEAD"]).map_err(std::io::Error::other)?,
+            head_sha
+        );
+        let context = prepared.workspace_context.expect("workspace context");
+        assert_eq!(context["mode"], "continue_execution_request");
+        assert_eq!(
+            context["continuation_from"]["workspace_run_memory_id"],
+            run.into_inner().to_string()
+        );
+        assert_eq!(context["continuation_from"]["branch_name"], branch_name);
+        assert_eq!(context["continuation_from"]["head_sha"], head_sha);
+        assert_eq!(context["parent_sha"], parent_sha);
+        assert_eq!(context["tooling"]["frontend"]["pnpm"]["status"], "reused");
         Ok(())
     }
     .await;

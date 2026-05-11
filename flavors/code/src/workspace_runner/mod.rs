@@ -188,6 +188,75 @@ impl CodeWorkspaceRunner {
     ) -> Result<WorkspacePreparedRun, WorkspaceRunnerError> {
         let pool = self.pool()?;
         let repo_id = repo_id_from_payload(input.triggering_memory_payload)?;
+        if let Some(prior_run) = load_continuation_workspace_run_for_request(
+            pool,
+            input.owner,
+            input.triggering_memory_id,
+        )
+        .await?
+        {
+            if prior_run.repo_id != repo_id {
+                return Err(WorkspaceRunnerError::PrepareFailed(format!(
+                    "continuation workspace run repo {} does not match execution request repo {repo_id}",
+                    prior_run.repo_id
+                )));
+            }
+            let mut repo = load_repo(pool, input.owner, repo_id).await?;
+            if repo.target_branch.is_none() {
+                repo.target_branch = Some(prior_run.target_branch.clone());
+            }
+            let worktree_path = PathBuf::from(&prior_run.worktree_path);
+            ensure_worktree_head(&worktree_path, &prior_run.branch_name, &prior_run.head_sha)
+                .await?;
+            let tooling = json!({
+                "frontend": {
+                    "pnpm": {
+                        "status": "reused",
+                        "reason": "continuation_worktree",
+                    },
+                },
+            });
+            let mut workspace_context = build_workspace_context(
+                &input,
+                repo_id,
+                &repo,
+                &prior_run.target_branch,
+                &prior_run.parent_sha,
+                &prior_run.branch_name,
+                &worktree_path,
+                tooling,
+            )
+            .await?;
+            if let Some(object) = workspace_context.as_object_mut() {
+                object.insert("mode".into(), json!("continue_execution_request"));
+                object.insert(
+                    "continuation_from".into(),
+                    json!({
+                        "workspace_run_memory_id": prior_run.memory_id.into_inner().to_string(),
+                        "worktree_path": prior_run.worktree_path,
+                        "branch_name": prior_run.branch_name,
+                        "head_sha": prior_run.head_sha,
+                    }),
+                );
+            }
+            let state = PreparedState {
+                repo_id,
+                canonical_path: repo.canonical_path,
+                target_branch: prior_run.target_branch.clone(),
+                branch_name: prior_run.branch_name.clone(),
+                parent_sha: prior_run.parent_sha.clone(),
+                worktree_path: worktree_path.to_string_lossy().to_string(),
+            };
+            let runner_state = serde_json::to_value(&state).map_err(|err| {
+                WorkspaceRunnerError::Internal(format!("serialize runner state: {err}"))
+            })?;
+            return Ok(WorkspacePreparedRun {
+                work_dir: worktree_path,
+                effective_recipe_path: input.effective_recipe_path.to_path_buf(),
+                workspace_context: Some(workspace_context),
+                runner_state,
+            });
+        }
         let mut repo = load_repo(pool, input.owner, repo_id).await?;
         if repo.target_branch.is_none() {
             let inferred = crate::repos::infer_missing_target_branch(pool, input.owner, repo_id)
@@ -289,6 +358,8 @@ impl CodeWorkspaceRunner {
         ensure_worktree_head(&worktree_path, &run.branch_name, &run.head_sha).await?;
         let original_request =
             load_execution_request_for_run(pool, input.owner, input.triggering_memory_id).await?;
+        let active_goal =
+            load_goal_context_for_request(pool, input.owner, original_request.memory_id).await?;
         let veto_count =
             veto_count_for_request(pool, input.owner, original_request.memory_id).await?;
         let diff = build_review_diff_context(&worktree_path, &run).await?;
@@ -303,6 +374,7 @@ impl CodeWorkspaceRunner {
             "head_sha": run.head_sha,
             "workspace_run_memory_id": input.triggering_memory_id.into_inner().to_string(),
             "original_request": original_request.to_json(),
+            "active_goal": active_goal,
             "diff_stat": run.diff_stat_json,
             "diff": diff,
             "log_tails": {
@@ -822,6 +894,20 @@ async fn load_execution_request(
     })
 }
 
+#[derive(Debug, Clone)]
+struct LoadedWorkspaceRun {
+    memory_id: MemoryId,
+    payload: WorkspaceRunV1,
+}
+
+impl std::ops::Deref for LoadedWorkspaceRun {
+    type Target = WorkspaceRunV1;
+
+    fn deref(&self) -> &Self::Target {
+        &self.payload
+    }
+}
+
 async fn load_execution_request_for_run(
     pool: &PgPool,
     owner: &Owner,
@@ -829,20 +915,37 @@ async fn load_execution_request_for_run(
 ) -> Result<LoadedExecutionRequest, WorkspaceRunnerError> {
     let (owner_kind, owner_principal_id, _) = owner_columns_pub(owner);
     let request_id: Option<Uuid> = sqlx::query_scalar(
-        "SELECT e.target_memory_id
-         FROM proxima_core.edges e
+        "WITH RECURSIVE ancestry(memory_id, depth, path) AS (
+             SELECT e.target_memory_id, 1, ARRAY[$4::uuid, e.target_memory_id]
+             FROM proxima_core.edges e
+             WHERE e.owner_principal_kind = $1
+               AND e.owner_principal_id = $2
+               AND e.relation = $3
+               AND e.source_kind = 'Fact'
+               AND e.source_memory_id = $4
+               AND e.target_kind = 'Fact'
+               AND e.target_memory_id IS NOT NULL
+             UNION ALL
+             SELECT e.target_memory_id, a.depth + 1, a.path || e.target_memory_id
+             FROM ancestry a
+             JOIN proxima_core.edges e
+               ON e.owner_principal_kind = $1
+              AND e.owner_principal_id = $2
+              AND e.relation = $3
+              AND e.source_kind = 'Fact'
+              AND e.source_memory_id = a.memory_id
+              AND e.target_kind = 'Fact'
+              AND e.target_memory_id IS NOT NULL
+             WHERE NOT e.target_memory_id = ANY(a.path)
+         )
+         SELECT a.memory_id
+         FROM ancestry a
          JOIN proxima_core.memories m
-           ON m.memory_id = e.target_memory_id
-          AND m.owner_principal_kind = e.owner_principal_kind
-          AND m.owner_principal_id = e.owner_principal_id
-         WHERE e.owner_principal_kind = $1
-           AND e.owner_principal_id = $2
-           AND e.relation = $3
-           AND e.source_kind = 'Fact'
-           AND e.source_memory_id = $4
-           AND e.target_kind = 'Fact'
-           AND m.schema_id = $5
-         ORDER BY e.created_at, e.edge_id
+           ON m.memory_id = a.memory_id
+          AND m.owner_principal_kind = $1
+          AND m.owner_principal_id = $2
+         WHERE m.schema_id = $5
+         ORDER BY a.depth DESC, a.memory_id DESC
          LIMIT 1",
     )
     .bind(owner_kind)
@@ -862,6 +965,215 @@ async fn load_execution_request_for_run(
         )));
     };
     load_execution_request(pool, owner, MemoryId::new(request_id)).await
+}
+
+async fn load_continuation_workspace_run_for_request(
+    pool: &PgPool,
+    owner: &Owner,
+    request_memory_id: MemoryId,
+) -> Result<Option<LoadedWorkspaceRun>, WorkspaceRunnerError> {
+    let (owner_kind, owner_principal_id, _) = owner_columns_pub(owner);
+    let run_id: Option<Uuid> = sqlx::query_scalar(
+        "WITH RECURSIVE ancestry(memory_id, depth, path) AS (
+             SELECT e.target_memory_id, 1, ARRAY[$4::uuid, e.target_memory_id]
+             FROM proxima_core.edges e
+             WHERE e.owner_principal_kind = $1
+               AND e.owner_principal_id = $2
+               AND e.relation = $3
+               AND e.source_kind = 'Fact'
+               AND e.source_memory_id = $4
+               AND e.target_kind = 'Fact'
+               AND e.target_memory_id IS NOT NULL
+             UNION ALL
+             SELECT e.target_memory_id, a.depth + 1, a.path || e.target_memory_id
+             FROM ancestry a
+             JOIN proxima_core.edges e
+               ON e.owner_principal_kind = $1
+              AND e.owner_principal_id = $2
+              AND e.relation = $3
+              AND e.source_kind = 'Fact'
+              AND e.source_memory_id = a.memory_id
+              AND e.target_kind = 'Fact'
+              AND e.target_memory_id IS NOT NULL
+             WHERE NOT e.target_memory_id = ANY(a.path)
+         )
+         SELECT a.memory_id
+         FROM ancestry a
+         JOIN proxima_core.memories m
+           ON m.memory_id = a.memory_id
+          AND m.owner_principal_kind = $1
+          AND m.owner_principal_id = $2
+         WHERE m.schema_id = $5
+         ORDER BY a.depth, a.memory_id DESC
+         LIMIT 1",
+    )
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(CORE_DERIVED_FROM_RELATION)
+    .bind(request_memory_id.into_inner())
+    .bind(WorkspaceRunV1::SCHEMA_ID)
+    .fetch_optional(pool)
+    .await
+    .map_err(|err| {
+        WorkspaceRunnerError::Internal(format!("find continuation workspace run: {err}"))
+    })?;
+    match run_id {
+        Some(run_id) => {
+            let memory_id = MemoryId::new(run_id);
+            let payload = load_workspace_run(pool, owner, memory_id).await?;
+            Ok(Some(LoadedWorkspaceRun { memory_id, payload }))
+        }
+        None => Ok(None),
+    }
+}
+
+async fn load_goal_context_for_request(
+    pool: &PgPool,
+    owner: &Owner,
+    request_memory_id: MemoryId,
+) -> Result<Option<serde_json::Value>, WorkspaceRunnerError> {
+    let goal_tables_exist: bool = sqlx::query_scalar(
+        "SELECT to_regclass('proxima_goal.goal_activated_v1') IS NOT NULL
+             AND to_regclass('proxima_core.goals') IS NOT NULL",
+    )
+    .fetch_one(pool)
+    .await
+    .map_err(|err| WorkspaceRunnerError::Internal(format!("check goal tables: {err}")))?;
+    if !goal_tables_exist {
+        return Ok(None);
+    }
+
+    let (owner_kind, owner_principal_id, _) = owner_columns_pub(owner);
+    let row = sqlx::query(
+        "WITH RECURSIVE ancestry(memory_id, depth, path) AS (
+             SELECT e.target_memory_id, 1, ARRAY[$4::uuid, e.target_memory_id]
+             FROM proxima_core.edges e
+             WHERE e.owner_principal_kind = $1
+               AND e.owner_principal_id = $2
+               AND e.relation = $3
+               AND e.source_kind = 'Fact'
+               AND e.source_memory_id = $4
+               AND e.target_kind = 'Fact'
+               AND e.target_memory_id IS NOT NULL
+             UNION ALL
+             SELECT e.target_memory_id, a.depth + 1, a.path || e.target_memory_id
+             FROM ancestry a
+             JOIN proxima_core.edges e
+               ON e.owner_principal_kind = $1
+              AND e.owner_principal_id = $2
+              AND e.relation = $3
+              AND e.source_kind = 'Fact'
+              AND e.source_memory_id = a.memory_id
+              AND e.target_kind = 'Fact'
+              AND e.target_memory_id IS NOT NULL
+             WHERE NOT e.target_memory_id = ANY(a.path)
+         ),
+         activated AS (
+             SELECT a.memory_id,
+                    g.goal_id,
+                    g.schema_id,
+                    g.title,
+                    g.accepted_at,
+                    g.evidence_count
+             FROM ancestry a
+             JOIN proxima_core.memories m
+               ON m.memory_id = a.memory_id
+              AND m.owner_principal_kind = $1
+              AND m.owner_principal_id = $2
+              AND m.schema_id = 'proxima-goal/goal-activated-v1'
+             JOIN proxima_goal.goal_activated_v1 g
+               ON g.memory_id = a.memory_id
+             ORDER BY a.depth, a.memory_id DESC
+             LIMIT 1
+         ),
+         goal_lineage(goal_id, depth, path) AS (
+             SELECT goal_id, 0, ARRAY[goal_id]
+             FROM activated
+             UNION ALL
+             SELECT child.goal_id, gl.depth + 1, gl.path || child.goal_id
+             FROM goal_lineage gl
+             JOIN proxima_core.goals child
+               ON child.supersedes = gl.goal_id
+              AND child.owner_principal_kind = $1
+              AND child.owner_principal_id = $2
+             WHERE NOT child.goal_id = ANY(gl.path)
+         )
+         SELECT a.memory_id AS activated_memory_id,
+                a.goal_id AS activated_goal_id,
+                a.schema_id AS activated_schema_id,
+                a.title AS activated_title,
+                a.accepted_at,
+                a.evidence_count,
+                gh.goal_id AS head_goal_id,
+                gh.schema_id AS head_schema_id,
+                gh.schema_version AS head_schema_version,
+                gh.title AS head_title,
+                gh.text AS head_text,
+                gh.state AS head_state,
+                gh.supersedes AS head_supersedes,
+                gh.created_at AS head_created_at
+         FROM activated a
+         JOIN goal_lineage gl ON true
+         JOIN proxima_core.goals gh ON gh.goal_id = gl.goal_id
+         ORDER BY gl.depth DESC, gh.created_at DESC
+         LIMIT 1",
+    )
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(CORE_DERIVED_FROM_RELATION)
+    .bind(request_memory_id.into_inner())
+    .fetch_optional(pool)
+    .await
+    .map_err(|err| WorkspaceRunnerError::Internal(format!("load active goal context: {err}")))?;
+
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let activated_memory_id: Uuid = row
+        .try_get("activated_memory_id")
+        .map_err(map_sqlx_internal)?;
+    let activated_goal_id: Uuid = row
+        .try_get("activated_goal_id")
+        .map_err(map_sqlx_internal)?;
+    let activated_schema_id: String = row
+        .try_get("activated_schema_id")
+        .map_err(map_sqlx_internal)?;
+    let activated_title: String = row.try_get("activated_title").map_err(map_sqlx_internal)?;
+    let accepted_at: time::OffsetDateTime =
+        row.try_get("accepted_at").map_err(map_sqlx_internal)?;
+    let evidence_count: i32 = row.try_get("evidence_count").map_err(map_sqlx_internal)?;
+    let head_goal_id: Uuid = row.try_get("head_goal_id").map_err(map_sqlx_internal)?;
+    let head_schema_id: String = row.try_get("head_schema_id").map_err(map_sqlx_internal)?;
+    let head_schema_version: i32 = row
+        .try_get("head_schema_version")
+        .map_err(map_sqlx_internal)?;
+    let head_title: String = row.try_get("head_title").map_err(map_sqlx_internal)?;
+    let head_text: String = row.try_get("head_text").map_err(map_sqlx_internal)?;
+    let head_state: String = row.try_get("head_state").map_err(map_sqlx_internal)?;
+    let head_supersedes: Option<Uuid> =
+        row.try_get("head_supersedes").map_err(map_sqlx_internal)?;
+    let head_created_at: time::OffsetDateTime =
+        row.try_get("head_created_at").map_err(map_sqlx_internal)?;
+    Ok(Some(json!({
+        "activated_memory_id": activated_memory_id.to_string(),
+        "activated": {
+            "goal_id": activated_goal_id.to_string(),
+            "schema_id": activated_schema_id,
+            "title": activated_title,
+            "accepted_at": accepted_at,
+            "evidence_count": evidence_count,
+        },
+        "head": {
+            "goal_id": head_goal_id.to_string(),
+            "schema_id": head_schema_id,
+            "schema_version": head_schema_version,
+            "title": head_title,
+            "text": head_text,
+            "state": head_state,
+            "supersedes": head_supersedes.map(|id| id.to_string()),
+            "created_at": head_created_at,
+        },
+    })))
 }
 
 async fn load_workspace_run(

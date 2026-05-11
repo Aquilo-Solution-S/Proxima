@@ -208,15 +208,50 @@ describe("RunsPanel", () => {
   });
 
   it("loads and renders the workspace diff on demand", async () => {
-    render(() => <RunsPanel />);
+    const { container } = render(() => <RunsPanel />);
 
     fireEvent.click(await screen.findByRole("button", { name: "Show diff" }));
 
     expect(await screen.findByText("src/chips.tsx")).toBeTruthy();
-    expect(screen.getByText(/\+added evidence chip/)).toBeTruthy();
+    expect(
+      container.querySelector(".proxima-run-diff-line.line-addition")?.textContent,
+    ).toContain("added evidence chip");
     expect(mocks.codeGetWorkspaceRunDiff).toHaveBeenCalledWith(
       "018f0000-0000-7000-8000-000000000201",
     );
+  });
+
+  it("syntax-highlights changed code lines while preserving diff line kinds", async () => {
+    mocks.codeGetWorkspaceRunDiff.mockResolvedValue(
+      ok(
+        runDiff({
+          files: ["src/chips.tsx"],
+          patch: [
+            "diff --git a/src/chips.tsx b/src/chips.tsx",
+            "--- a/src/chips.tsx",
+            "+++ b/src/chips.tsx",
+            "@@ -1 +1 @@",
+            "-const oldChip = false;",
+            "+const addedChip = true;",
+            " export const keepChip = addedChip;",
+          ].join("\n"),
+        }),
+      ),
+    );
+    const { container } = render(() => <RunsPanel />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Show diff" }));
+
+    await screen.findByText("src/chips.tsx");
+    expect(container.querySelector(".proxima-run-diff-line.line-addition")).toBeTruthy();
+    expect(container.querySelector(".proxima-run-diff-line.line-deletion")).toBeTruthy();
+    expect(container.querySelector(".proxima-run-diff-line.line-context")).toBeTruthy();
+    expect(container.querySelector(".proxima-run-diff-line.line-hunk")).toBeTruthy();
+    expect(
+      container.querySelector(
+        ".proxima-run-diff-line.line-addition .language-typescript .hljs-keyword",
+      )?.textContent,
+    ).toBe("const");
   });
 
   it("renders unified patches as per-file diff sections with counts", async () => {
