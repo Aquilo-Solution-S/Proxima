@@ -23,6 +23,8 @@ const tabs: Array<{ id: InspectorTab; label: string }> = [
   { id: "raw", label: "Raw" },
 ];
 
+const MOTIVATED_BY_RELATION = "proxima-goal/motivated-by";
+
 const relationLabel = (kind: string): string => {
   const relationParts = kind.split("--");
   const relationTail = relationParts[relationParts.length - 1] ?? kind;
@@ -33,6 +35,22 @@ const relationLabel = (kind: string): string => {
 
 const classToken = (value: string | undefined): string =>
   value?.toLowerCase().replace(/[^a-z0-9_-]+/g, "-") ?? "unknown";
+
+const motivatedByEvidenceTargets = (
+  out: OutEntry[],
+  byId: Map<string, AtlasNode>,
+): AtlasNode[] => {
+  const nodes: AtlasNode[] = [];
+  const seen = new Set<string>();
+  for (const edge of out) {
+    if (edge.kind !== MOTIVATED_BY_RELATION) continue;
+    const target = byId.get(edge.tgt);
+    if (target === undefined || seen.has(target.id)) continue;
+    seen.add(target.id);
+    nodes.push(target);
+  }
+  return nodes;
+};
 
 type PlannerCandidate = {
   id: string;
@@ -218,6 +236,32 @@ const commandErrorMessage = (raw: unknown): string => {
   }
   return typeof raw === "string" ? raw : "command failed";
 };
+
+const EvidenceChip: Component<{
+  target: AtlasNode;
+  onPick: () => void;
+}> = (props) => (
+  <button type="button" class="i-evidence-chip" onClick={props.onPick}>
+    <span class="i-evidence-chip-title">{nodeLabel(props.target)}</span>
+    <span class="i-evidence-chip-meta">{nodeKindLabel(props.target)}</span>
+  </button>
+);
+
+const EvidenceChips: Component<{
+  targets: AtlasNode[];
+  onPickNode: (id: string) => void;
+}> = (props) => (
+  <Show when={props.targets.length > 0}>
+    <div class="i-evidence">
+      <div class="i-evidence-head">Evidence</div>
+      <div class="i-evidence-list">
+        <For each={props.targets}>
+          {(target) => <EvidenceChip target={target} onPick={() => props.onPickNode(target.id)} />}
+        </For>
+      </div>
+    </div>
+  </Show>
+);
 
 const Field: Component<{ label: string; children: JSX.Element }> = (props) => (
   <div class="i-row">
@@ -613,6 +657,13 @@ export const Inspector: Component<{
           <div class="i-schema">
             {node().schemaId} @ v{node().schemaVersion}
           </div>
+
+          <Show when={node().kind === "Goal"}>
+            <EvidenceChips
+              targets={motivatedByEvidenceTargets(out(), props.byId)}
+              onPickNode={props.onPickNode}
+            />
+          </Show>
 
           <Show when={node().goal?.state === "Active"}>
             <div class="i-actions">
