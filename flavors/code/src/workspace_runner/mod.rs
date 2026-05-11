@@ -3,7 +3,8 @@
 //! Core owns only wake dispatch and the runner trait. This module owns
 //! repo, branch, worktree, and workspace-run Fact semantics.
 
-use std::path::{Path, PathBuf};
+use std::collections::BTreeSet;
+use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 
 use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
@@ -15,6 +16,7 @@ use proxima_core::{
 use proxima_storage_pg::verbs::edge_append::{EdgeDraft, append_edge_in_tx};
 use proxima_storage_pg::verbs::event_ingest::ingest_event_in_tx;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use sqlx::PgPool;
 use tokio::process::Command;
 use uuid::Uuid;
@@ -25,6 +27,9 @@ use crate::repos::owner_columns_pub;
 pub const WORKSPACE_RUNNER_SOURCE_ID: &str = "proxima-code/workspace-runner";
 pub const WORKSPACE_RUN_OBJECT_SCHEMA: &str = "proxima-code/workspace-run-object-v1";
 pub const WORKSPACE_RUN_WHOLE_SCHEMA: &str = "proxima-code/workspace-run-whole-v1";
+const MAX_PRELOADED_FILES: usize = 6;
+const MAX_PRELOADED_FILE_BYTES: u64 = 64 * 1024;
+const MAX_PRELOADED_TOTAL_BYTES: u64 = 192 * 1024;
 
 #[derive(Debug, Default, Clone)]
 pub struct CodeWorkspaceRunner {
@@ -98,7 +103,7 @@ impl WorkspaceRunner for CodeWorkspaceRunner {
                 })?;
             repo.target_branch = inferred.target_branch;
         }
-        let target_branch = repo.target_branch.ok_or_else(|| {
+        let target_branch = repo.target_branch.clone().ok_or_else(|| {
             WorkspaceRunnerError::PrepareFailed(format!("repo {repo_id} has no target_branch"))
         })?;
         let parent_sha = git_output(
@@ -137,6 +142,17 @@ impl WorkspaceRunner for CodeWorkspaceRunner {
         .await
         .map_err(|stderr| WorkspaceRunnerError::PrepareFailed(format!("worktree add: {stderr}")))?;
 
+        let workspace_context = build_workspace_context(
+            &input,
+            repo_id,
+            &repo,
+            &target_branch,
+            &parent_sha,
+            &branch_name,
+            &worktree_path,
+        )
+        .await?;
+
         let state = PreparedState {
             repo_id,
             canonical_path: repo.canonical_path,
@@ -151,6 +167,7 @@ impl WorkspaceRunner for CodeWorkspaceRunner {
         Ok(WorkspacePreparedRun {
             work_dir: worktree_path,
             effective_recipe_path: input.effective_recipe_path.to_path_buf(),
+            workspace_context: Some(workspace_context),
             runner_state,
         })
     }
@@ -190,6 +207,158 @@ impl WorkspaceRunner for CodeWorkspaceRunner {
             primary_memory_id: Some(memory_id),
         })
     }
+}
+
+async fn build_workspace_context(
+    input: &WorkspacePrepareInput<'_>,
+    repo_id: Uuid,
+    repo: &RunnerRepoRow,
+    target_branch: &str,
+    parent_sha: &str,
+    branch_name: &str,
+    worktree_path: &Path,
+) -> Result<serde_json::Value, WorkspaceRunnerError> {
+    let instructions = input
+        .triggering_memory_payload
+        .get("instructions")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    let mentioned_paths = extract_mentioned_paths(instructions);
+    let preloaded_files = preload_mentioned_files(worktree_path, &mentioned_paths).await?;
+    Ok(json!({
+        "repo_id": repo_id.to_string(),
+        "canonical_path": repo.canonical_path,
+        "target_branch": target_branch,
+        "worktree_path": worktree_path.to_string_lossy(),
+        "branch_name": branch_name,
+        "parent_sha": parent_sha,
+        "request_memory_id": input.triggering_memory_id.into_inner().to_string(),
+        "request_key": input
+            .triggering_memory_payload
+            .get("request_key")
+            .and_then(serde_json::Value::as_str),
+        "mentioned_paths": mentioned_paths,
+        "preloaded_files": preloaded_files,
+    }))
+}
+
+fn extract_mentioned_paths(instructions: &str) -> Vec<String> {
+    let mut paths = BTreeSet::new();
+    let mut rest = instructions;
+    while let Some(start) = rest.find('`') {
+        let after_start = &rest[start + 1..];
+        let Some(end) = after_start.find('`') else {
+            break;
+        };
+        maybe_insert_path(&mut paths, after_start[..end].trim());
+        rest = &after_start[end + 1..];
+    }
+
+    for token in instructions.split_whitespace() {
+        let candidate = token.trim_matches(|ch: char| {
+            matches!(
+                ch,
+                ',' | '.' | ':' | ';' | '!' | '?' | ')' | '(' | '[' | ']' | '{' | '}' | '"' | '\''
+            )
+        });
+        maybe_insert_path(&mut paths, candidate);
+    }
+
+    paths.into_iter().take(64).collect()
+}
+
+fn maybe_insert_path(paths: &mut BTreeSet<String>, candidate: &str) {
+    if candidate.is_empty()
+        || candidate.starts_with('/')
+        || candidate.starts_with('-')
+        || candidate.contains("://")
+        || candidate.contains('\n')
+        || candidate.len() > 240
+    {
+        return;
+    }
+    let looks_like_path = candidate.contains('/')
+        || Path::new(candidate)
+            .extension()
+            .and_then(std::ffi::OsStr::to_str)
+            .is_some_and(|ext| (1..=8).contains(&ext.len()));
+    if !looks_like_path || !is_safe_relative_path(candidate) {
+        return;
+    }
+    paths.insert(candidate.to_string());
+}
+
+fn is_safe_relative_path(candidate: &str) -> bool {
+    let path = Path::new(candidate);
+    !path.is_absolute()
+        && path
+            .components()
+            .all(|component| matches!(component, Component::Normal(_) | Component::CurDir))
+}
+
+async fn preload_mentioned_files(
+    worktree_path: &Path,
+    mentioned_paths: &[String],
+) -> Result<serde_json::Value, WorkspaceRunnerError> {
+    let mut files = Vec::new();
+    let mut omitted = Vec::new();
+    let mut total_bytes = 0u64;
+
+    for relative in mentioned_paths {
+        let path = Path::new(relative);
+        if !is_safe_relative_path(relative) {
+            continue;
+        }
+        let full_path = worktree_path.join(path);
+        let metadata = match tokio::fs::metadata(&full_path).await {
+            Ok(metadata) if metadata.is_file() => metadata,
+            _ => continue,
+        };
+        let size = metadata.len();
+        if files.len() >= MAX_PRELOADED_FILES {
+            omitted.push(json!({
+                "path": relative,
+                "size_bytes": size,
+                "reason": "file_count_limit",
+            }));
+            continue;
+        }
+        if size > MAX_PRELOADED_FILE_BYTES {
+            omitted.push(json!({
+                "path": relative,
+                "size_bytes": size,
+                "reason": "file_too_large",
+            }));
+            continue;
+        }
+        if total_bytes.saturating_add(size) > MAX_PRELOADED_TOTAL_BYTES {
+            omitted.push(json!({
+                "path": relative,
+                "size_bytes": size,
+                "reason": "total_bytes_limit",
+            }));
+            continue;
+        }
+        let bytes = tokio::fs::read(&full_path).await.map_err(|err| {
+            WorkspaceRunnerError::PrepareFailed(format!("read mentioned file {relative}: {err}"))
+        })?;
+        total_bytes = total_bytes.saturating_add(u64::try_from(bytes.len()).unwrap_or(u64::MAX));
+        files.push(json!({
+            "path": relative,
+            "size_bytes": size,
+            "content": String::from_utf8_lossy(&bytes),
+        }));
+    }
+
+    Ok(json!({
+        "files": files,
+        "omitted": omitted,
+        "limits": {
+            "max_files": MAX_PRELOADED_FILES,
+            "max_file_bytes": MAX_PRELOADED_FILE_BYTES,
+            "max_total_bytes": MAX_PRELOADED_TOTAL_BYTES,
+        },
+    }))
 }
 
 fn repo_id_from_payload(payload: &serde_json::Value) -> Result<Uuid, WorkspaceRunnerError> {

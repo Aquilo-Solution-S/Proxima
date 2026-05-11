@@ -10,7 +10,9 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use proxima_code::workspace_runner::CodeWorkspaceRunner;
-use proxima_code::{CommitV1, WORKSPACE_RUN_OBJECT_SCHEMA, WORKSPACE_RUN_WHOLE_SCHEMA};
+use proxima_code::{
+    CommitV1, ExecutionRequestV1, WORKSPACE_RUN_OBJECT_SCHEMA, WORKSPACE_RUN_WHOLE_SCHEMA,
+};
 use proxima_core::auth::NoAuth;
 use proxima_core::llm::{EmbeddingClient, LlmError};
 use proxima_core::personality::{
@@ -24,9 +26,9 @@ use proxima_core::wake::target_adapter::{
 };
 use proxima_core::{
     BindInferenceTierRequest, CORE_AUTHORED_RELATION, CORE_DERIVED_FROM_RELATION, Engine,
-    FlavorRegistry, InferenceTargetConfig, LocalCliConfig, ModelTier, OrgId, Owner, Principal,
-    RegisterInferenceTargetRequest, SchemaId, SchemaVersion, SourceBatchId, UserId,
-    WakeEntryAuthoredBy, WakeEntryTriggerKind,
+    FactPayload, FlavorRegistry, InferenceTargetConfig, LocalCliConfig, ModelTier, OrgId, Owner,
+    Principal, RegisterInferenceTargetRequest, SchemaId, SchemaVersion, SourceBatchId, UserId,
+    WakeEntryAuthoredBy, WakeEntryTriggerKind, WorkspacePrepareInput, WorkspaceRunner,
 };
 use proxima_storage_pg::PgStorage;
 use sqlx::{Connection, Executor, PgConnection, Row};
@@ -281,6 +283,118 @@ async fn write_recipe(root: &TempDir, owner: &Owner) -> Result<(), std::io::Erro
         b"version: 1.0.0\ntitle: Workspace Smoke\nprompt: no-op\n",
     )
     .await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn code_workspace_prepare_builds_context_with_preloaded_paths()
+-> Result<(), Box<dyn std::error::Error>> {
+    let Some((db_name, pg)) = migrated_db().await else {
+        return Ok(());
+    };
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = test_owner();
+        let repo_root = tempfile::tempdir()?;
+        let worktrees_root = tempfile::tempdir()?;
+        let recipe_root = tempfile::tempdir()?;
+        let effective_recipe = recipe_root.path().join("effective.yaml");
+        std::fs::write(&effective_recipe, "version: 1.0.0\n")?;
+        let (repo_path, _) = init_repo(&repo_root).map_err(std::io::Error::other)?;
+        std::fs::create_dir(repo_path.join("src"))?;
+        std::fs::write(repo_path.join("src/lib.rs"), "pub fn target() {}\n")?;
+        std::fs::write(repo_path.join("large.txt"), "x".repeat(70 * 1024))?;
+        git(&repo_path, &["add", "src/lib.rs", "large.txt"])?;
+        git(
+            &repo_path,
+            &[
+                "-c",
+                "user.name=Proxima Test",
+                "-c",
+                "user.email=proxima@example.test",
+                "commit",
+                "-m",
+                "add target files",
+            ],
+        )?;
+        let parent_sha = git(&repo_path, &["rev-parse", "main"])?;
+        let repo_id = Uuid::now_v7();
+        proxima_code::register_repo(
+            pg.pool(),
+            &owner,
+            repo_id,
+            repo_path.to_str().expect("utf8 repo path"),
+            "workspace-context",
+        )
+        .await?;
+
+        let payload = serde_json::to_value(ExecutionRequestV1 {
+            repo_id,
+            title: "Update target files".into(),
+            instructions: "Touch `README.md`, `src/lib.rs`, and `large.txt`.".into(),
+            request_key: "workspace-context-request".into(),
+        })?;
+        let runner = CodeWorkspaceRunner::new(pg.pool().clone())
+            .with_worktrees_root(worktrees_root.path().to_path_buf());
+        let prepared = runner
+            .prepare(WorkspacePrepareInput {
+                invocation_id: Uuid::now_v7(),
+                owner: &owner,
+                wake_token: Uuid::now_v7(),
+                mcp_url: "http://127.0.0.1:1/mcp",
+                root_perspective_memory_id: proxima_core::MemoryId::new(Uuid::now_v7()),
+                triggering_memory_id: proxima_core::MemoryId::new(Uuid::now_v7()),
+                triggering_memory_schema_id: ExecutionRequestV1::SCHEMA_ID,
+                triggering_memory_payload: &payload,
+                workspace_tool_palette: &[],
+                effective_recipe_path: &effective_recipe,
+                recipe_bytes: b"version: 1.0.0\n",
+                recipe_sha256: "test-sha",
+            })
+            .await?;
+
+        let context = prepared.workspace_context.expect("workspace context");
+        assert_eq!(context["repo_id"], repo_id.to_string());
+        assert_eq!(context["parent_sha"], parent_sha);
+        assert_eq!(context["request_key"], "workspace-context-request");
+        assert_eq!(
+            context["worktree_path"].as_str().expect("worktree path"),
+            prepared.work_dir.to_string_lossy()
+        );
+        let files = context["preloaded_files"]["files"]
+            .as_array()
+            .expect("preloaded files");
+        assert!(
+            files.iter().any(|file| file["path"] == "README.md"
+                && file["content"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("initial")),
+            "README.md should be preloaded"
+        );
+        assert!(
+            files.iter().any(|file| file["path"] == "src/lib.rs"
+                && file["content"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("target")),
+            "src/lib.rs should be preloaded"
+        );
+        let omitted = context["preloaded_files"]["omitted"]
+            .as_array()
+            .expect("omitted files");
+        assert!(
+            omitted
+                .iter()
+                .any(|file| file["path"] == "large.txt" && file["reason"] == "file_too_large"),
+            "large mentioned files should be listed as omitted"
+        );
+        Ok(())
+    }
+    .await;
+
+    drop(pg);
+    let _ = drop_db(&db_name).await;
+    result
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -60,6 +60,9 @@ pub async fn resolve_repo_identifier(
     {
         return Ok(repo_id);
     }
+    if let Ok(repo_id) = uuid::Uuid::parse_str(trimmed) {
+        return Ok(repo_id);
+    }
 
     let (owner_kind, owner_principal_id) = owner_principal(&ctx.owner);
     let owner_org_id = ctx.owner.org_id.into_inner();

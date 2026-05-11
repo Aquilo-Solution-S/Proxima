@@ -130,12 +130,6 @@ fn validate_entry_shape(entry: &WakeEntryDraft) -> Result<(), ProtocolError> {
             "must be between 0 and 1000",
         ));
     }
-    if entry.max_rounds == 0 {
-        return Err(ProtocolError::invalid_argument(
-            "max_rounds",
-            "must be greater than 0",
-        ));
-    }
     Ok(())
 }
 

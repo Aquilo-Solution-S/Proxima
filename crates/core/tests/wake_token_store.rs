@@ -42,6 +42,45 @@ async fn mint_then_resolve_returns_same_context() {
 }
 
 #[tokio::test]
+async fn resolve_before_idle_expiry_renews_idle_lease() {
+    let store = WakeTokenStore::new(Duration::from_millis(80));
+    let token = store
+        .mint_with_max_lifetime(make_ctx(make_owner()), Duration::from_millis(400))
+        .await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(store.resolve(token).await.is_some());
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        store.resolve(token).await.is_some(),
+        "successful resolve should renew the idle lease"
+    );
+}
+
+#[tokio::test]
+async fn unused_token_expires_after_idle_timeout() {
+    let store = WakeTokenStore::new(Duration::from_millis(50));
+    let token = store
+        .mint_with_max_lifetime(make_ctx(make_owner()), Duration::from_secs(1))
+        .await;
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    assert!(store.resolve(token).await.is_none());
+}
+
+#[tokio::test]
+async fn resolve_cannot_renew_past_max_lifetime() {
+    let store = WakeTokenStore::new(Duration::from_millis(80));
+    let token = store
+        .mint_with_max_lifetime(make_ctx(make_owner()), Duration::from_millis(130))
+        .await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(store.resolve(token).await.is_some());
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(store.resolve(token).await.is_some());
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(store.resolve(token).await.is_none());
+}
+
+#[tokio::test]
 async fn revoke_removes_token() {
     let store = WakeTokenStore::new(Duration::from_secs(60));
     let token = store.mint(make_ctx(make_owner())).await;

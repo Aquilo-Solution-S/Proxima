@@ -247,11 +247,6 @@ impl WakeEntryDraft {
                 "wake entry probability_promille must be between 0 and 1000",
             ));
         }
-        if max_rounds == 0 {
-            return Err(ProtocolError::internal(
-                "wake entry max_rounds must be greater than 0",
-            ));
-        }
         Ok(Self {
             wake_entry_id,
             personality_instance_id,
