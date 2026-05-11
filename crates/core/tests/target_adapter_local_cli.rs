@@ -102,7 +102,7 @@ async fn passes_current_batch_mode_flag_to_goose() {
     assert!(captured.contains("--debug\n"));
     assert!(captured.contains("--max-turns\n7\n"));
     assert!(!captured.contains("--no-interactive"));
-    assert!(captured.contains("--text\n"));
+    assert!(!captured.contains("--text\n"));
     assert!(captured.contains("--params\n"));
     assert!(captured.contains("triggering_memory_id"));
 
@@ -147,6 +147,8 @@ fn write_minimal_recipe() -> PathBuf {
 title: smoke
 description: smoke
 instructions: |
+  Just say hi and stop.
+prompt: |
   Just say hi and stop.
 "#,
     )
