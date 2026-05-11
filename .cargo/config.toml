@@ -28,13 +28,24 @@ pipelining = true
 #   - Subsequent builds: ~0.6s (full cache hits)
 #   - Without ccache: ~10-15s for proxima-core, much longer for full workspace
 
+# Artifact size reduction:
+#   - debug=0 for deps: ~70% reduction in debug artifacts
+#   - split-debuginfo="packed": Additional ~20% reduction
+#   - Use `cargo sweep` to clean unused artifacts: https://github.com/hobofan/cargo-sweep
+#   - Use `cargo trim` to remove unused .rlib files: https://github.com/holochain/cargo-trim
+
 [profile.dev]
 # Optimize debug builds slightly for faster compilation
 # opt-level=1 gives ~10-20% faster compiles with minimal runtime impact
 opt-level = 1
 
-# Disable full debug info for dependencies in dev mode (huge speedup)
-split-debuginfo = "unpacked"
+# Disable full debug info for dependencies in dev mode (huge size reduction)
+split-debuginfo = "packed"
+debug = 0
+
+# Disable debug info for ALL dependencies (massive size reduction)
+[profile.dev.package."*"]
+debug = 0
 
 [profile.release]
 # Enable link-time optimization for release builds
