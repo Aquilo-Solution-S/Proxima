@@ -1,12 +1,16 @@
 // Workspace review helper functions
-use proxima_core::mcp::{McpToolError};
+use proxima_core::mcp::McpToolError;
 
-use crate::payloads::WorkspaceReviewFinding;
 use crate::mcp::emit_execution_request::normalize_text;
+use crate::payloads::WorkspaceReviewFinding;
 
 use super::types::{LoadedWorkspaceDecision, LoadedWorkspaceReview};
 
-/// Validate workspace review findings
+/// Validate workspace review findings.
+///
+/// # Errors
+///
+/// Returns an error if any finding field fails normalization.
 pub fn validate_findings(findings: &[WorkspaceReviewFinding]) -> Result<(), McpToolError> {
     for finding in findings {
         normalize_text("finding.severity", &finding.severity, 1, 80)?;
@@ -18,7 +22,11 @@ pub fn validate_findings(findings: &[WorkspaceReviewFinding]) -> Result<(), McpT
     Ok(())
 }
 
-/// Generate correction title from original title
+/// Generate correction title from original title.
+///
+/// # Errors
+///
+/// Returns an error if the generated title fails normalization.
 pub fn correction_title(title: &str) -> Result<String, McpToolError> {
     let prefixed = format!("Correct: {}", title.trim());
     let mut output = String::new();
@@ -28,7 +36,11 @@ pub fn correction_title(title: &str) -> Result<String, McpToolError> {
     normalize_text("title", &output, 1, 240)
 }
 
-/// Generate correction instructions from review/decision context
+/// Generate correction instructions from review/decision context.
+///
+/// # Errors
+///
+/// Returns an error if the generated instructions fail normalization.
 pub fn correction_instructions(
     prior_instructions: &str,
     review: Option<&LoadedWorkspaceReview>,
@@ -58,22 +70,19 @@ pub fn correction_instructions(
         "none".to_string()
     };
     let review_memory = review
-        .map(|review| review.memory_id.into_inner().to_string())
-        .unwrap_or_else(|| "none".into());
+        .map_or_else(|| "none".into(), |review| review.memory_id.into_inner().to_string());
     let workspace_run = review
         .map(|review| review.payload.workspace_run_memory_id.to_string())
         .or_else(|| decision.map(|decision| decision.payload.workspace_run_memory_id.to_string()))
         .unwrap_or_else(|| "unknown".into());
     let review_summary = review
-        .map(|review| review.payload.summary.as_str())
-        .unwrap_or("none");
+        .map_or("none", |review| review.payload.summary.as_str());
     let correction_notes = review
         .and_then(|review| review.payload.correction_instructions.as_deref())
         .or_else(|| decision.and_then(|decision| decision.payload.reason_text.as_deref()))
         .unwrap_or("none");
     let retry_decision = decision
-        .map(|decision| decision.memory_id.into_inner().to_string())
-        .unwrap_or_else(|| "none".into());
+        .map_or_else(|| "none".into(), |decision| decision.memory_id.into_inner().to_string());
     let retry_reason = decision
         .and_then(|decision| decision.payload.reason_text.as_deref())
         .unwrap_or("none");

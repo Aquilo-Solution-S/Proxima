@@ -15,6 +15,7 @@ use proxima_mcp_server::{DevMcpServer, McpAuthStore, default_allowlist, serve_st
 use serde_json::{Value, json};
 
 #[tokio::test(flavor = "multi_thread")]
+#[allow(clippy::too_many_lines)]
 async fn discovery_to_mutation_smoke() -> Result<(), Box<dyn std::error::Error>> {
     // Helper to call a tool by name and extract the typed JSON output.
     async fn call_tool(

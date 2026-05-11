@@ -1699,6 +1699,7 @@ async fn rejected_decision_trigger_is_not_correction_context()
         };
         let payload = serde_json::to_value(&decision_payload)?;
         let runner = CodeWorkspaceRunner::new(pg.pool().clone());
+        #[allow(clippy::manual_let_else)]
         let err = match runner
             .prepare(WorkspacePrepareInput {
                 invocation_id: Uuid::now_v7(),

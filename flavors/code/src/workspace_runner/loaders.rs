@@ -230,6 +230,7 @@ pub(super) async fn load_continuation_workspace_run_for_request(
     }
 }
 
+#[allow(clippy::too_many_lines)]
 pub(super) async fn load_goal_context_for_request(
     pool: &PgPool,
     owner: &Owner,
@@ -437,6 +438,7 @@ pub(super) fn recipe_declares_title(recipe_bytes: &[u8], title: &str) -> bool {
     })
 }
 
+#[allow(clippy::too_many_lines)]
 pub(super) async fn load_workspace_run(
     pool: &PgPool,
     owner: &Owner,
@@ -631,12 +633,12 @@ async fn load_review_rows(
         .await
         .map_err(|err| WorkspaceRunnerError::Internal(format!("load reviews: {err}")))?;
     rows.into_iter()
-        .map(review_row_to_json)
+        .map(|row| review_row_to_json(&row))
         .collect::<Result<Vec<_>, _>>()
 }
 
 fn review_row_to_json(
-    row: sqlx::postgres::PgRow,
+    row: &sqlx::postgres::PgRow,
 ) -> Result<serde_json::Value, WorkspaceRunnerError> {
     let memory_id: Uuid = row.try_get("memory_id").map_err(map_sqlx_internal)?;
     let workspace_run_memory_id: Uuid = row
@@ -708,12 +710,12 @@ pub(super) async fn load_decisions_for_request(
     .await
     .map_err(|err| WorkspaceRunnerError::Internal(format!("load decisions: {err}")))?;
     rows.into_iter()
-        .map(decision_row_to_json)
+        .map(|row| decision_row_to_json(&row))
         .collect::<Result<Vec<_>, _>>()
 }
 
 fn decision_row_to_json(
-    row: sqlx::postgres::PgRow,
+    row: &sqlx::postgres::PgRow,
 ) -> Result<serde_json::Value, WorkspaceRunnerError> {
     let memory_id: Uuid = row.try_get("memory_id").map_err(map_sqlx_internal)?;
     let workspace_run_memory_id: Uuid = row
@@ -810,6 +812,7 @@ pub(super) async fn load_target_worker_personality_for_request(
     .map_err(|err| WorkspaceRunnerError::Internal(format!("load target worker: {err}")))
 }
 
+#[allow(clippy::needless_pass_by_value)]
 fn map_sqlx_internal(err: sqlx::Error) -> WorkspaceRunnerError {
     WorkspaceRunnerError::Internal(err.to_string())
 }

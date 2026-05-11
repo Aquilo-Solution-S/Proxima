@@ -176,6 +176,7 @@ impl McpTool for CodeRetryExecutionRequestTool {
     type Args = CodeRetryExecutionRequestArgs;
     type Output = CodeRetryExecutionRequestOutput;
 
+    #[allow(clippy::too_many_lines)]
     fn call(
         ctx: McpToolCtx,
         args: CodeRetryExecutionRequestArgs,
@@ -400,6 +401,7 @@ pub(super) async fn load_execution_request(
     memory_id: MemoryId,
 ) -> Result<PriorExecutionRequest, McpToolError> {
     let (owner_kind, owner_principal_id) = owner_principal(&ctx.owner);
+    #[allow(clippy::type_complexity)]
     let row: Option<(String, String, Option<Uuid>, Option<String>, Option<String>)> =
         sqlx::query_as(
             "SELECT COALESCE(m.kind, 'Fact') AS kind,

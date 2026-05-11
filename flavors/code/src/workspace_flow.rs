@@ -172,7 +172,7 @@ pub async fn list_workspace_reviews(
     .bind(run_memory_id.into_inner())
     .fetch_all(pool)
     .await?;
-    rows.into_iter().map(review_record_from_row).collect()
+    rows.into_iter().map(|row| review_record_from_row(&row)).collect()
 }
 
 /// Return a bounded unified diff for one workspace run.
@@ -402,7 +402,7 @@ async fn latest_decision(
     .bind(run_memory_id.into_inner())
     .fetch_optional(pool)
     .await?;
-    row.map(decision_record_from_row).transpose()
+    row.map(|row| decision_record_from_row(&row)).transpose()
 }
 
 async fn has_workspace_decision_after(
@@ -433,7 +433,7 @@ async fn has_workspace_decision_after(
 }
 
 fn review_record_from_row(
-    row: sqlx::postgres::PgRow,
+    row: &sqlx::postgres::PgRow,
 ) -> Result<WorkspaceReviewRecord, WorkspaceFlowError> {
     let verdict: String = row.try_get("verdict")?;
     let round_index: i32 = row.try_get("round_index")?;
@@ -462,7 +462,7 @@ fn review_record_from_row(
 }
 
 fn decision_record_from_row(
-    row: sqlx::postgres::PgRow,
+    row: &sqlx::postgres::PgRow,
 ) -> Result<WorkspaceDecisionRecord, WorkspaceFlowError> {
     let decision: String = row.try_get("decision")?;
     Ok(WorkspaceDecisionRecord {

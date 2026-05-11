@@ -16,6 +16,7 @@ const MAX_PRELOADED_FILE_BYTES: u64 = 24 * 1024;
 const MAX_PRELOADED_TOTAL_BYTES: u64 = 48 * 1024;
 const TOOL_OUTPUT_TAIL_BYTES: usize = 4 * 1024;
 
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn build_workspace_context(
     input: &WorkspacePrepareInput<'_>,
     repo_id: Uuid,

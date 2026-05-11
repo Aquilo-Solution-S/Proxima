@@ -732,6 +732,7 @@ async fn seed_commit(
     Ok(outcome.memory_id)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn seed_execution_request(
     pg: &PgStorage,
     owner: &Owner,

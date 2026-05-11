@@ -73,6 +73,7 @@ pub enum CorrectionTrigger {
 }
 
 impl CorrectionTrigger {
+    #[must_use]
     pub fn execution_request_memory_id(&self) -> MemoryId {
         match self {
             Self::RejectedReview(review) => review.execution_request_memory_id,
@@ -83,6 +84,7 @@ impl CorrectionTrigger {
         }
     }
 
+    #[must_use]
     pub fn workspace_run_memory_id(&self) -> MemoryId {
         match self {
             Self::RejectedReview(review) => {
@@ -94,6 +96,7 @@ impl CorrectionTrigger {
         }
     }
 
+    #[must_use]
     pub fn rejected_review(&self) -> Option<&LoadedWorkspaceReview> {
         match self {
             Self::RejectedReview(review) => Some(review),
@@ -104,6 +107,7 @@ impl CorrectionTrigger {
         }
     }
 
+    #[must_use]
     pub fn retry_decision(&self) -> Option<&LoadedWorkspaceDecision> {
         match self {
             Self::RejectedReview(_) => None,

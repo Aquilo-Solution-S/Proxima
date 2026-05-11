@@ -14,7 +14,8 @@ use proxima_core::storage::Storage;
 use proxima_core::verbs::query::MemoryStore;
 use proxima_core::{
     Engine, FlavorRegistry, InstantiatePersonalityRequest, McpTool, ModelTier, OrgId, Owner,
-    Principal, UserId, WakeEntryAuthoredBy, WakeEntryTriggerKind, WakeExecutionMode,
+    Principal, UserId, WakeEntryAuthoredBy, WakeEntryGoalScope, WakeEntryTriggerKind,
+    WakeExecutionMode,
 };
 use proxima_storage_pg::PgStorage;
 
@@ -92,6 +93,7 @@ async fn wake_token_audit_attributes_caller_personality() -> Result<(), Box<dyn 
             execution_mode: WakeExecutionMode::SubstrateOnly,
             authored_by: WakeEntryAuthoredBy::Any,
             probability_promille: 1000,
+            goal_scope: WakeEntryGoalScope::None,
             recipe_ref: "proxima-code/engineer".into(),
             model_tier: ModelTier::Standard,
             inference_target_ref: None,

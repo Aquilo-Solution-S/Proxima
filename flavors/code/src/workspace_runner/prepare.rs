@@ -83,6 +83,7 @@ impl WorkspaceRunner for CodeWorkspaceRunner {
 }
 
 impl CodeWorkspaceRunner {
+    #[allow(clippy::too_many_lines)]
     async fn prepare_execution_request(
         &self,
         input: WorkspacePrepareInput<'_>,
@@ -507,6 +508,7 @@ impl CodeWorkspaceRunner {
         self.prepared_from_existing_run(input, &run, context)
     }
 
+    #[allow(clippy::unused_self, clippy::needless_pass_by_value)]
     fn prepared_from_existing_run(
         &self,
         input: WorkspacePrepareInput<'_>,

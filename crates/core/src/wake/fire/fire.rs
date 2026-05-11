@@ -299,6 +299,7 @@ pub async fn fire_wake_entry(
 }
 
 /// Handle workspace mode dispatch.
+#[allow(clippy::too_many_arguments)]
 async fn handle_workspace_mode(
     engine: &Engine,
     adapter: &dyn TargetAdapter,

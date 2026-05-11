@@ -53,6 +53,11 @@ impl McpTool for MarkAchievedTool {
     }
 }
 
+/// Mark a goal as achieved.
+///
+/// # Errors
+///
+/// Returns an error if goal resolution fails, evidence resolution fails, or storage operations fail.
 pub async fn mark_achieved(
     ctx: McpToolCtx,
     args: MarkAchievedArgs,

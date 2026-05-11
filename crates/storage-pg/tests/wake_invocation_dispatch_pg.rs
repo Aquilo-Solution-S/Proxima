@@ -139,6 +139,7 @@ async fn fetch_wake_invocation(
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[allow(clippy::too_many_lines)]
 async fn wake_invocation_carries_dispatch_columns() {
     let Some((pg, db)) = fresh_pg().await else {
         return;

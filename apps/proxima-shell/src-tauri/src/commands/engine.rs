@@ -538,7 +538,7 @@ async fn ensure_goal_planner_assignment(
             .resolve_relation(CORE_INSPIRES_RELATION)
             .ok_or_else(|| ProtocolError::internal("core/inspires relation not registered"))?;
         append_edge_in_tx(
-            &mut **tx,
+            tx,
             &EdgeDraft {
                 edge_id: uuid::Uuid::now_v7(),
                 relation,

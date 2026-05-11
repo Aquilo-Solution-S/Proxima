@@ -80,9 +80,8 @@ pub fn execution_mode_to_proto(mode: WakeEntryExecutionMode) -> i32 {
 
 pub fn goal_scope_from_proto(scope: i32) -> Result<WakeEntryGoalScope, Status> {
     match pb::GoalScope::try_from(scope).unwrap_or(pb::GoalScope::Unspecified) {
-        pb::GoalScope::None => Ok(WakeEntryGoalScope::None),
+        pb::GoalScope::None | pb::GoalScope::Unspecified => Ok(WakeEntryGoalScope::None),
         pb::GoalScope::TriggerGoalAssigned => Ok(WakeEntryGoalScope::TriggerGoalAssigned),
-        pb::GoalScope::Unspecified => Ok(WakeEntryGoalScope::None),
     }
 }
 

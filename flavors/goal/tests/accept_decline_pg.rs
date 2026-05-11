@@ -332,6 +332,7 @@ async fn propose_and_accept_emit_lifecycle_facts_and_authored_edges()
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn mark_achieved_supersedes_active_goal_with_lifecycle_and_edges()
 -> Result<(), Box<dyn std::error::Error>> {
     let Some((pg, db_name)) = migrated().await else {

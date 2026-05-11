@@ -103,6 +103,7 @@ fn workspace_wake(
 }
 
 #[tokio::test(flavor = "multi_thread")]
+#[allow(clippy::too_many_lines)]
 async fn workspace_review_loop_wake_entries_validate() -> Result<(), Box<dyn std::error::Error>> {
     let Some((db_name, pg)) = migrated_db().await else {
         return Ok(());
