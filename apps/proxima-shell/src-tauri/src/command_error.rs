@@ -209,11 +209,9 @@ impl From<proxima_code::WorkspaceFlowError> for CommandError {
                 message: format!("invalid workspace decision: {value}"),
             },
             proxima_code::WorkspaceFlowError::InvalidSidecar { message }
-            | proxima_code::WorkspaceFlowError::Storage(proxima_core::StorageError::Internal(
-                message,
-            ))
             | proxima_code::WorkspaceFlowError::Storage(
-                proxima_core::StorageError::ConstraintViolation(message),
+                proxima_core::StorageError::Internal(message)
+                | proxima_core::StorageError::ConstraintViolation(message),
             ) => Self::Invariant { message },
             proxima_code::WorkspaceFlowError::Database(err) => Self::Storage {
                 message: err.to_string(),

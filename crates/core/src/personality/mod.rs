@@ -8,7 +8,6 @@ pub mod authorization;
 pub mod context;
 pub mod drafts;
 pub mod invocation;
-pub mod personality;
 pub mod produces;
 pub mod requests;
 pub mod rows;
@@ -16,6 +15,9 @@ pub mod tool;
 pub mod tools;
 pub mod types;
 pub mod workspace;
+
+#[allow(clippy::module_inception)]
+pub mod personality;
 
 // Re-export from personality submodule
 pub use personality::{

@@ -16,7 +16,11 @@ use crate::payloads::WorkspaceReviewV1;
 
 use crate::mcp::sql::map_storage;
 
-/// Ingest a workspace review Fact
+/// Ingest a workspace review Fact.
+///
+/// # Errors
+///
+/// Returns an error if serialization fails or event ingestion fails.
 pub async fn ingest_workspace_review(
     tx: &mut Transaction<'_, Postgres>,
     ctx: &McpToolCtx,
@@ -51,7 +55,11 @@ pub async fn ingest_workspace_review(
         .map_err(McpToolError::Storage)
 }
 
-/// Insert workspace review sidecar row
+/// Insert workspace review sidecar row.
+///
+/// # Errors
+///
+/// Returns an error if serialization or database insertion fails.
 pub async fn insert_workspace_review_sidecar(
     tx: &mut Transaction<'_, Postgres>,
     memory_id: MemoryId,
@@ -83,7 +91,11 @@ pub async fn insert_workspace_review_sidecar(
     Ok(())
 }
 
-/// Append a derived edge from a review to a target
+/// Append a derived edge from a review to a target.
+///
+/// # Errors
+///
+/// Returns an error if the relation is not registered or edge insertion fails.
 pub async fn append_review_derived_edge(
     tx: &mut Transaction<'_, Postgres>,
     ctx: &McpToolCtx,

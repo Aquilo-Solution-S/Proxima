@@ -12,6 +12,7 @@ use crate::payloads::WorkspaceRunV1;
 
 use super::{WORKSPACE_RUN_OBJECT_SCHEMA, WORKSPACE_RUN_WHOLE_SCHEMA, WORKSPACE_RUNNER_SOURCE_ID};
 
+#[allow(clippy::too_many_lines)]
 pub(super) async fn ingest_workspace_run(
     pool: &PgPool,
     payload: &WorkspaceRunV1,

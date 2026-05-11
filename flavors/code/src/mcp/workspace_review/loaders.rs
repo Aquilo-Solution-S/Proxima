@@ -13,7 +13,11 @@ use crate::payloads::{ExecutionRequestV1, WorkspaceDecision, WorkspaceDecisionV1
 use super::types::{LoadedWorkspaceDecision, LoadedWorkspaceReview};
 use crate::mcp::sql::{map_storage, owner_principal};
 
-/// Load and validate a workspace run memory
+/// Load and validate a workspace run memory.
+///
+/// # Errors
+///
+/// Returns an error if the memory is not found, not visible, or not a valid workspace run.
 pub async fn load_workspace_run(
     tx: &mut Transaction<'_, Postgres>,
     ctx: &McpToolCtx,
@@ -53,13 +57,19 @@ pub async fn load_workspace_run(
     Ok(())
 }
 
-/// Load a workspace review from the database
+/// Load a workspace review from the database.
+///
+/// # Errors
+///
+/// Returns an error if the review is not found or database query fails.
+#[allow(clippy::too_many_lines)]
 pub async fn load_workspace_review(
     tx: &mut Transaction<'_, Postgres>,
     ctx: &McpToolCtx,
     memory_id: MemoryId,
 ) -> Result<LoadedWorkspaceReview, McpToolError> {
     let (owner_kind, owner_principal_id) = owner_principal(&ctx.owner);
+    #[allow(clippy::type_complexity)]
     let row: Option<(
         String,
         String,
@@ -174,13 +184,18 @@ pub async fn load_workspace_review(
     })
 }
 
-/// Load a workspace decision from the database
+/// Load a workspace decision from the database.
+///
+/// # Errors
+///
+/// Returns an error if the decision is not found or database query fails.
 pub async fn load_workspace_decision(
     tx: &mut Transaction<'_, Postgres>,
     ctx: &McpToolCtx,
     memory_id: MemoryId,
 ) -> Result<LoadedWorkspaceDecision, McpToolError> {
     let (owner_kind, owner_principal_id) = owner_principal(&ctx.owner);
+    #[allow(clippy::type_complexity)]
     let row: Option<(
         String,
         String,
@@ -268,7 +283,11 @@ pub async fn load_workspace_decision(
     })
 }
 
-/// Load the latest rejected review for a workspace run
+/// Load the latest rejected review for a workspace run.
+///
+/// # Errors
+///
+/// Returns an error if the database query fails.
 pub async fn load_latest_rejected_review_for_run(
     tx: &mut Transaction<'_, Postgres>,
     ctx: &McpToolCtx,
@@ -300,7 +319,11 @@ pub async fn load_latest_rejected_review_for_run(
     }
 }
 
-/// Find the execution request for a workspace run via derived-from edges
+/// Find the execution request for a workspace run via derived-from edges.
+///
+/// # Errors
+///
+/// Returns an error if the database query fails.
 pub async fn find_execution_request_for_run(
     tx: &mut Transaction<'_, Postgres>,
     ctx: &McpToolCtx,
@@ -356,7 +379,11 @@ pub async fn find_execution_request_for_run(
     })
 }
 
-/// Count veto rounds for an execution request
+/// Count veto rounds for an execution request.
+///
+/// # Errors
+///
+/// Returns an error if the database query fails.
 pub async fn veto_count_for_request(
     tx: &mut Transaction<'_, Postgres>,
     ctx: &McpToolCtx,

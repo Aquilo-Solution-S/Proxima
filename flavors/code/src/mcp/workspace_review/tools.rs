@@ -163,6 +163,7 @@ impl McpTool for CodeEmitCorrectionExecutionRequestTool {
     type Args = CodeEmitCorrectionExecutionRequestArgs;
     type Output = CodeEmitCorrectionExecutionRequestOutput;
 
+    #[allow(clippy::too_many_lines)]
     fn call(
         ctx: McpToolCtx,
         args: CodeEmitCorrectionExecutionRequestArgs,

@@ -254,6 +254,7 @@ fn init_repo(root: &TempDir) -> Result<std::path::PathBuf, String> {
     Ok(repo)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn seed_execution_request(
     pg: &PgStorage,
     owner: &Owner,
