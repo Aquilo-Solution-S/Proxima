@@ -11,7 +11,7 @@ use crate::mcp::core_tools::payload::{
     PersonalityConfigChangedSubject, PersonalityConfigChangedVerb,
 };
 use crate::mcp::{McpToolCtx, McpToolError};
-use crate::{ModelTier, WakeEntryAuthoredBy, WakeExecutionMode};
+use crate::{ModelTier, WakeEntryAuthoredBy, WakeEntryGoalScope, WakeExecutionMode};
 
 #[derive(Debug, Default)]
 pub struct UpdateWakeEntryTool;
@@ -44,6 +44,8 @@ pub struct WakeEntryPatch {
     pub execution_mode: Option<WakeExecutionMode>,
     #[serde(default)]
     pub authored_by: Option<WakeEntryAuthoredBy>,
+    #[serde(default)]
+    pub goal_scope: Option<WakeEntryGoalScope>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -134,6 +136,9 @@ impl McpTool for UpdateWakeEntryTool {
                 }
                 if let Some(v) = patch.authored_by {
                     entry.authored_by = v;
+                }
+                if let Some(v) = patch.goal_scope {
+                    entry.goal_scope = v;
                 }
                 Ok(next)
             });

@@ -13,11 +13,9 @@
 //! to the highest seq seen, regardless of how many entries fired. The
 //! next tick starts from that seq + 1.
 //!
-//! The probability roll is best-effort pseudo-random — Phase 1a doesn't
-//! ship the `rand` crate, and the dispatcher's correctness contract only
-//! requires `0` never fires and `1000` always fires. Anything in
-//! between converges over many ticks; we extract pseudo-randomness from
-//! a fresh v4 UUID so the cost is one syscall per check.
+//! Probability is deterministic per `(event, personality, wake_entry)`
+//! so explicit missed-wake replay evaluates the same event the same way
+//! as live dispatch.
 
 use uuid::Uuid;
 
@@ -27,16 +25,22 @@ use crate::engine::Engine;
 use crate::error::ProtocolError;
 use crate::outbox::{ChangeEventKind, EntityRef};
 use crate::personality::{
-    ChangeEventForWake, MAX_WAKE_CHAIN_DEPTH, PersonalityInstanceId, WakeDispatchEntryRow,
-    WakeEntryAuthoredBy, WakeEntryDraft, WakeEntryExecutionMode, WakeEntryRow,
-    WakeEntryTriggerKind, WakeExecutionMode, WakeInvocationFinalize, WakeInvocationStatus,
+    ChangeEventForWake, MAX_WAKE_CHAIN_DEPTH, PersonalityInstanceId, ReplayWakeEventsOutcome,
+    ReplayWakeEventsRequest, SidecarSpec, WakeDispatchEntryRow, WakeEntryAuthoredBy,
+    WakeEntryDraft, WakeEntryExecutionMode, WakeEntryGoalScope, WakeEntryRow, WakeEntryTriggerKind,
+    WakeExecutionMode, WakeInvocationFinalize, WakeInvocationStatus,
 };
+use crate::wake::context::assemble_wake_context;
 use crate::wake::fire::{FireWakeEntryInput, fire_wake_entry};
 
 /// Per-tick scan limit on change events fetched per (owner, personality).
 /// Bounds memory + worst-case round-trip latency; the next tick picks up
 /// where this one left off via the cursor.
 const CHANGE_EVENT_SCAN_LIMIT: usize = 256;
+const REPLAY_EVENT_LIMIT_DEFAULT: u16 = 256;
+const REPLAY_EVENT_LIMIT_MAX: u16 = 1000;
+const REPLAY_MAX_INVOCATIONS_DEFAULT: u16 = 1;
+const REPLAY_MAX_INVOCATIONS_MAX: u16 = 20;
 
 /// Run one dispatcher tick. Returns the count of wake fires that wrote a
 /// fresh invocation row (i.e. `fire_wake_entry` returned `Ok(true)`,
@@ -89,65 +93,17 @@ pub async fn dispatch_tick(engine: &Engine) -> Result<usize, ProtocolError> {
                 highest_seq = event.event.seq;
             }
             for entry in &group.entries {
-                if !triggers_match(entry, event) {
-                    continue;
-                }
-                if !authored_by_matches(
-                    entry.authored_by,
-                    event.authoring_personality_instance_id,
-                    group.personality_instance_id,
-                ) {
-                    continue;
-                }
-                // Defense-in-depth self-wake guard: the authored_by
-                // filter above already drops self-authored events when
-                // `authored_by != Any`, but `Any` would otherwise let a
-                // self-edit walk back into a wake. fire_wake_entry has
-                // its own guard for the race; we belt-and-brace here.
-                if event.authoring_personality_instance_id == Some(group.personality_instance_id) {
-                    continue;
-                }
-                if event.wake_chain_depth.into_inner() >= MAX_WAKE_CHAIN_DEPTH {
-                    write_chain_depth_exhausted(engine, &group, entry, event).await?;
-                    continue;
-                }
-                if !probability_roll(entry.probability_promille) {
-                    continue;
-                }
-
-                // Surface the adapter — late-bound so tests can inject
-                // a mock via `set_target_adapter`. Missing adapter is a
-                // misconfiguration: the dispatcher loop must not have
-                // been started without one.
-                let adapter = engine.target_adapter().ok_or_else(|| {
-                    ProtocolError::internal(
-                        "dispatcher fired before target adapter was installed — \
-                         call Engine::start (or with_target_adapter) first",
-                    )
-                })?;
-
-                let triggering_memory_id = match triggering_memory(event) {
-                    Some(m) => m,
-                    None => continue,
-                };
-
-                let wake_entry_row = wake_entry_draft_to_row(entry);
-                let input = FireWakeEntryInput {
-                    owner: group.owner.clone(),
-                    personality_instance_id: group.personality_instance_id,
-                    wake_entry: wake_entry_row,
-                    change_event_seq: event.event.seq,
-                    triggering_memory_id: triggering_memory_id.into_inner(),
-                };
-
-                match fire_wake_entry(engine, adapter.as_ref(), input).await {
-                    Ok(true) => fired += 1,
-                    Ok(false) => {} // skipped (self-wake race)
-                    Err(e) if is_idempotency_conflict(&e) => {
-                        // Already fired by an earlier tick; PRIMARY KEY
-                        // bounce. Counts as no-op for this tick.
+                match prepare_wake_candidate(engine, &group, entry, event).await? {
+                    WakeCandidate::Fire {
+                        triggering_memory_id,
+                    } => {
+                        if fire_candidate(engine, &group, entry, event, triggering_memory_id)
+                            .await?
+                        {
+                            fired += 1;
+                        }
                     }
-                    Err(e) => return Err(e),
+                    WakeCandidate::Skip => {}
                 }
             }
         }
@@ -167,6 +123,108 @@ pub async fn dispatch_tick(engine: &Engine) -> Result<usize, ProtocolError> {
     }
 
     Ok(fired)
+}
+
+/// Replay eligible events that are already behind normal dispatch
+/// cursors. This is an operator-driven repair path; it intentionally
+/// does not move `personality_wake_cursor`.
+pub async fn replay_missed_wakes(
+    engine: &Engine,
+    req: ReplayWakeEventsRequest,
+) -> Result<ReplayWakeEventsOutcome, ProtocolError> {
+    let event_limit = clamp_limit(
+        req.event_limit,
+        REPLAY_EVENT_LIMIT_DEFAULT,
+        REPLAY_EVENT_LIMIT_MAX,
+    );
+    let max_invocations = clamp_limit(
+        req.max_invocations,
+        REPLAY_MAX_INVOCATIONS_DEFAULT,
+        REPLAY_MAX_INVOCATIONS_MAX,
+    );
+
+    let rows = engine
+        .storage()
+        .list_active_wake_entries()
+        .await
+        .map_err(|e| ProtocolError::internal(format!("list_active_wake_entries: {e}")))?;
+    let entries: Vec<_> = rows
+        .into_iter()
+        .filter(|row| {
+            row.owner == req.owner
+                && row.personality_instance_id == req.personality_instance_id
+                && req
+                    .wake_entry_id
+                    .is_none_or(|wake_entry_id| row.wake_entry.wake_entry_id == wake_entry_id)
+        })
+        .collect();
+
+    if entries.is_empty() {
+        return Ok(ReplayWakeEventsOutcome {
+            considered_events: 0,
+            eligible_events: 0,
+            started_invocations: 0,
+            already_recorded: 0,
+            skipped: 0,
+            complete: true,
+            next_after_seq: req.after_seq,
+        });
+    }
+
+    let mut groups = group_by_personality(entries);
+    let Some(group) = groups.pop() else {
+        unreachable!("entries.is_empty checked above");
+    };
+    let after = req.after_seq.unwrap_or_else(Uuid::nil);
+    let events = engine
+        .storage()
+        .list_change_events_for_replay(&req.owner, after, req.until_seq, usize::from(event_limit))
+        .await
+        .map_err(|e| ProtocolError::internal(format!("list_change_events_for_replay: {e}")))?;
+
+    let mut outcome = ReplayWakeEventsOutcome {
+        considered_events: 0,
+        eligible_events: 0,
+        started_invocations: 0,
+        already_recorded: 0,
+        skipped: 0,
+        complete: true,
+        next_after_seq: req.after_seq,
+    };
+    let mut hit_invocation_cap = false;
+
+    'events: for event in &events {
+        outcome.considered_events += 1;
+        outcome.next_after_seq = Some(event.event.seq);
+        for entry in &group.entries {
+            match prepare_wake_candidate(engine, &group, entry, event).await? {
+                WakeCandidate::Fire {
+                    triggering_memory_id,
+                } => {
+                    outcome.eligible_events += 1;
+                    if fire_candidate(engine, &group, entry, event, triggering_memory_id).await? {
+                        outcome.started_invocations += 1;
+                        if outcome.started_invocations >= u32::from(max_invocations) {
+                            hit_invocation_cap = true;
+                            break 'events;
+                        }
+                    } else {
+                        outcome.already_recorded += 1;
+                    }
+                }
+                WakeCandidate::Skip => {
+                    outcome.skipped += 1;
+                }
+            }
+        }
+    }
+
+    outcome.complete = !hit_invocation_cap && events.len() < usize::from(event_limit);
+    Ok(outcome)
+}
+
+fn clamp_limit(value: u16, default: u16, max: u16) -> u16 {
+    if value == 0 { default } else { value.min(max) }
 }
 
 /// One personality's worth of dispatch state — the cursor row joined
@@ -233,20 +291,123 @@ fn authored_by_matches(
     }
 }
 
-/// Best-effort probability gate. `0` never fires, `1000` always fires;
-/// values in between converge over the long run. UUID v4 reads from
-/// system random so this is safe enough for v1 — Phase 2 swaps in a
-/// proper PRNG when we care about test determinism.
-fn probability_roll(promille: u16) -> bool {
+/// Deterministic probability gate. `0` never fires, `1000` always
+/// fires; values in between are stable for a given event/personality/
+/// entry tuple so missed-wake replay agrees with live dispatch.
+fn probability_roll(
+    promille: u16,
+    event_seq: Uuid,
+    personality_instance_id: PersonalityInstanceId,
+    wake_entry_id: Uuid,
+) -> bool {
     if promille >= 1000 {
         return true;
     }
     if promille == 0 {
         return false;
     }
-    let bytes = Uuid::new_v4().as_u128();
-    let n = u16::try_from(bytes % 1000).unwrap_or(0);
+    let mixed = event_seq.as_u128()
+        ^ personality_instance_id
+            .into_inner()
+            .as_u128()
+            .rotate_left(17)
+        ^ wake_entry_id.as_u128().rotate_left(47);
+    let mut x = (mixed ^ (mixed >> 64)) as u64;
+    x = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    x = (x ^ (x >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    x ^= x >> 31;
+    let n = u16::try_from(x % 1000).unwrap_or(0);
     n < promille
+}
+
+enum WakeCandidate {
+    Fire { triggering_memory_id: MemoryId },
+    Skip,
+}
+
+async fn prepare_wake_candidate(
+    engine: &Engine,
+    group: &PersonalityGroup,
+    entry: &WakeEntryDraft,
+    event: &ChangeEventForWake,
+) -> Result<WakeCandidate, ProtocolError> {
+    if !triggers_match(entry, event) {
+        return Ok(WakeCandidate::Skip);
+    }
+    if !authored_by_matches(
+        entry.authored_by,
+        event.authoring_personality_instance_id,
+        group.personality_instance_id,
+    ) {
+        return Ok(WakeCandidate::Skip);
+    }
+    // Defense-in-depth self-wake guard: the authored_by filter above
+    // already drops self-authored events when `authored_by != Any`, but
+    // `Any` would otherwise let a self-edit walk back into a wake.
+    // fire_wake_entry has its own guard for the race.
+    if event.authoring_personality_instance_id == Some(group.personality_instance_id) {
+        return Ok(WakeCandidate::Skip);
+    }
+    if event.wake_chain_depth.into_inner() >= MAX_WAKE_CHAIN_DEPTH {
+        write_chain_depth_exhausted(engine, group, entry, event).await?;
+        return Ok(WakeCandidate::Skip);
+    }
+    match goal_scope_matches(engine, group, entry, event).await? {
+        GoalScopeDecision::Fire => {}
+        GoalScopeDecision::Skip => return Ok(WakeCandidate::Skip),
+        GoalScopeDecision::Misconfigured(reason) => {
+            write_filter_misconfigured(engine, group, entry, event, reason).await?;
+            return Ok(WakeCandidate::Skip);
+        }
+    }
+    if !probability_roll(
+        entry.probability_promille,
+        event.event.seq,
+        group.personality_instance_id,
+        entry.wake_entry_id,
+    ) {
+        return Ok(WakeCandidate::Skip);
+    }
+
+    let Some(triggering_memory_id) = triggering_memory(event) else {
+        return Ok(WakeCandidate::Skip);
+    };
+    Ok(WakeCandidate::Fire {
+        triggering_memory_id,
+    })
+}
+
+async fn fire_candidate(
+    engine: &Engine,
+    group: &PersonalityGroup,
+    entry: &WakeEntryDraft,
+    event: &ChangeEventForWake,
+    triggering_memory_id: MemoryId,
+) -> Result<bool, ProtocolError> {
+    // Surface the adapter late so filters and repair rows can still be
+    // evaluated without an adapter, but an actual fire fails loudly.
+    let adapter = engine.target_adapter().ok_or_else(|| {
+        ProtocolError::internal(
+            "dispatcher fired before target adapter was installed — \
+             call Engine::start (or with_target_adapter) first",
+        )
+    })?;
+
+    let input = FireWakeEntryInput {
+        owner: group.owner.clone(),
+        personality_instance_id: group.personality_instance_id,
+        wake_entry: wake_entry_draft_to_row(entry),
+        change_event_seq: event.event.seq,
+        triggering_memory_id: triggering_memory_id.into_inner(),
+    };
+
+    match fire_wake_entry(engine, adapter.as_ref(), input).await {
+        Ok(true) => Ok(true),
+        Ok(false) => Ok(false),
+        Err(e) if is_idempotency_conflict(&e) => Ok(false),
+        Err(e) => Err(e),
+    }
 }
 
 /// Pull the triggering memory id off a change event — `EntityAppend`
@@ -282,7 +443,75 @@ fn wake_entry_draft_to_row(draft: &WakeEntryDraft) -> WakeEntryRow {
         workspace_tool_palette: draft.workspace_tool_palette.clone(),
         max_rounds: draft.max_rounds,
         disabled_reason: None,
+        goal_scope: draft.goal_scope,
     }
+}
+
+enum GoalScopeDecision {
+    Fire,
+    Skip,
+    Misconfigured(String),
+}
+
+async fn goal_scope_matches(
+    engine: &Engine,
+    group: &PersonalityGroup,
+    entry: &WakeEntryDraft,
+    event: &ChangeEventForWake,
+) -> Result<GoalScopeDecision, ProtocolError> {
+    match entry.goal_scope {
+        WakeEntryGoalScope::None => return Ok(GoalScopeDecision::Fire),
+        WakeEntryGoalScope::TriggerGoalAssigned => {}
+    }
+
+    let sidecars = collect_sidecars(engine);
+    let wake_context = assemble_wake_context(
+        engine.storage().as_ref(),
+        &group.owner,
+        group.personality_instance_id,
+        event.event.seq,
+        &sidecars,
+    )
+    .await?;
+
+    let Some(goal_id) = wake_context
+        .triggering_memory
+        .typed_payload
+        .get("goal_id")
+        .and_then(serde_json::Value::as_str)
+    else {
+        return Ok(GoalScopeDecision::Misconfigured(
+            "wake_goal_scope_missing_goal_id".to_string(),
+        ));
+    };
+    let Ok(goal_id) = Uuid::parse_str(goal_id) else {
+        return Ok(GoalScopeDecision::Misconfigured(
+            "wake_goal_scope_invalid_goal_id".to_string(),
+        ));
+    };
+    if wake_context
+        .active_goals
+        .iter()
+        .any(|goal| goal.goal_id == goal_id)
+    {
+        Ok(GoalScopeDecision::Fire)
+    } else {
+        Ok(GoalScopeDecision::Skip)
+    }
+}
+
+fn collect_sidecars(engine: &Engine) -> Vec<SidecarSpec> {
+    engine
+        .registry()
+        .list()
+        .into_iter()
+        .filter_map(|s| {
+            s.sidecar_table.map(|table| SidecarSpec {
+                schema_id: s.schema_id,
+                sidecar_table: table,
+            })
+        })
+        .collect()
 }
 
 fn is_idempotency_conflict(err: &ProtocolError) -> bool {
@@ -331,6 +560,55 @@ async fn write_chain_depth_exhausted(
             turn_count: None,
             cost_usd: None,
             failure_reason: Some("wake_chain_depth_exhausted".to_string()),
+            exit_code: None,
+            duration_ms: None,
+            stdout_tail: None,
+            stderr_tail: None,
+            stdout_truncated: false,
+            stderr_truncated: false,
+        })
+        .await
+        .map_err(|e| ProtocolError::internal(format!("finalize_wake_invocation: {e}")))?;
+    Ok(())
+}
+
+async fn write_filter_misconfigured(
+    engine: &Engine,
+    group: &PersonalityGroup,
+    entry: &WakeEntryDraft,
+    event: &ChangeEventForWake,
+    reason: String,
+) -> Result<(), ProtocolError> {
+    use crate::personality::WakeInvocationStart;
+
+    let start = WakeInvocationStart {
+        owner: group.owner.clone(),
+        personality_instance_id: group.personality_instance_id,
+        wake_entry_id: entry.wake_entry_id,
+        change_event_seq: event.event.seq,
+        wake_token: Uuid::nil(),
+        recipe_sha256: String::new(),
+        resolved_inference_target_ref: String::new(),
+    };
+    let inserted = engine
+        .storage()
+        .start_wake_invocation(&start)
+        .await
+        .map_err(|e| ProtocolError::internal(format!("start_wake_invocation: {e}")))?;
+    if !inserted {
+        return Ok(());
+    }
+    engine
+        .storage()
+        .finalize_wake_invocation(&WakeInvocationFinalize {
+            owner: group.owner.clone(),
+            personality_instance_id: group.personality_instance_id,
+            wake_entry_id: entry.wake_entry_id,
+            change_event_seq: event.event.seq,
+            status: WakeInvocationStatus::Failed,
+            turn_count: None,
+            cost_usd: None,
+            failure_reason: Some(reason),
             exit_code: None,
             duration_ms: None,
             stdout_tail: None,

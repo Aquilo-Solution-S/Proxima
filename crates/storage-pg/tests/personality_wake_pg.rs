@@ -19,7 +19,7 @@ use proxima_core::storage::Storage;
 use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
 use proxima_core::{
     MemoryId, ModelTier, Owner, Principal, RegisteredRelation, SchemaId, SchemaVersion,
-    SourceBatchId, SourceId,
+    SourceBatchId, SourceId, WakeEntryGoalScope,
 };
 use sqlx::Executor;
 use uuid::Uuid;
@@ -229,7 +229,9 @@ async fn personality_wake_storage_round_trip() {
             entries: vec![first],
         })
         .await?;
-        let replacement = sample_entry(instance, "proxima-test/fact-v1");
+        let mut replacement = sample_entry(instance, "proxima-goal/goal-activated-v1");
+        replacement.recipe_ref = "bundled:proxima-code/plan_execution_requests".into();
+        replacement.goal_scope = WakeEntryGoalScope::TriggerGoalAssigned;
         pg.set_wake_entries(&SetWakeEntriesRequest {
             owner: owner.clone(),
             personality_instance_id: instance,
@@ -245,6 +247,18 @@ async fn personality_wake_storage_round_trip() {
         .fetch_one(pg.pool())
         .await?;
         assert_eq!(active, 1);
+        let goal_scope: String = sqlx::query_scalar(
+            "SELECT goal_scope
+             FROM proxima_core.personality_wake_entries
+             WHERE personality_instance_id = $1
+               AND wake_entry_id = $2
+               AND tombstoned_at IS NULL",
+        )
+        .bind(instance.into_inner())
+        .bind(replacement.wake_entry_id)
+        .fetch_one(pg.pool())
+        .await?;
+        assert_eq!(goal_scope, "trigger_goal_assigned");
 
         let seq = Uuid::now_v7();
         pg.advance_wake_cursor(&owner, instance, seq).await?;
@@ -315,6 +329,7 @@ async fn list_personality_instances_populates_wake_entries() {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].wake_entries.len(), 1);
         assert_eq!(rows[0].wake_entries[0].label, "on_test_fact");
+        assert_eq!(rows[0].wake_entries[0].goal_scope, WakeEntryGoalScope::None);
         Ok(())
     }
     .await;

@@ -217,6 +217,20 @@ async fn wake_invocation_carries_dispatch_columns() {
             message_tail: Some("tool failed".to_string()),
         })
         .await?;
+        pg.append_wake_invocation_log(&WakeInvocationLogDraft {
+            owner: owner.clone(),
+            personality_instance_id: instance_id,
+            wake_entry_id,
+            change_event_seq,
+            phase: "session_artifact".to_string(),
+            tool_id: None,
+            status: "available".to_string(),
+            duration_ms: None,
+            message_tail: Some(
+                "~/.proxima/wake-runs/user/example/worker-session.jsonl".to_string(),
+            ),
+        })
+        .await?;
         let listed = pg
             .list_wake_invocations(&ListWakeInvocationsRequest {
                 owner: owner.clone(),
@@ -228,7 +242,7 @@ async fn wake_invocation_carries_dispatch_columns() {
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].exit_code, Some(2));
         assert_eq!(listed[0].stdout_tail.as_deref(), Some("stdout tail"));
-        assert_eq!(listed[0].logs.len(), 1);
+        assert_eq!(listed[0].logs.len(), 2);
         assert_eq!(
             listed[0].logs[0].tool_id.as_deref(),
             Some("proxima-mcp/proxima_derive")
@@ -236,6 +250,12 @@ async fn wake_invocation_carries_dispatch_columns() {
         assert_eq!(
             listed[0].logs[0].message_tail.as_deref(),
             Some("tool failed")
+        );
+        assert_eq!(listed[0].logs[1].phase, "session_artifact");
+        assert_eq!(listed[0].logs[1].status, "available");
+        assert_eq!(
+            listed[0].logs[1].message_tail.as_deref(),
+            Some("~/.proxima/wake-runs/user/example/worker-session.jsonl")
         );
         Ok(())
     }

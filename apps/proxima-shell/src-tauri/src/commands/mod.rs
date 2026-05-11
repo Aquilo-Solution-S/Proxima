@@ -53,6 +53,7 @@ pub(crate) fn specta_builder() -> Builder<tauri::Wry> {
         // repo registry commands (M6.S2)
         repos::repos_list,
         repos::repos_register,
+        repos::code_set_repo_target_branch,
         repos::repos_delete,
         repos::repos_erase,
         repos::repo_ingest_start,

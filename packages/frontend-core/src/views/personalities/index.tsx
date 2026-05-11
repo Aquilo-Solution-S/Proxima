@@ -86,6 +86,7 @@ const entryToDraft = (
   execution_mode: entry.execution_mode,
   authored_by: entry.authored_by,
   probability_promille: entry.probability_promille,
+  goal_scope: entry.goal_scope,
   recipe_ref: entry.recipe_ref,
   model_tier: entry.model_tier,
   inference_target_ref: entry.inference_target_ref,

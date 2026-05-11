@@ -145,3 +145,68 @@ async fn event_ingest_writes_fact_and_change_event() {
     let _ = drop_db(&db_name).await;
     result.expect("event_ingest_pg test failed");
 }
+
+#[tokio::test]
+async fn list_change_events_for_replay_respects_bounds_and_owner() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    if create_db(&db_name).await.is_err() {
+        eprintln!("skipping (no admin PG)");
+        return;
+    }
+    let url = db_url(&db_name);
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let storage: Arc<dyn Storage> = Arc::new(pg.clone());
+
+        let user = UserId::new(Uuid::now_v7());
+        let owner = Owner {
+            principal: Principal::User(user),
+            org_id: OrgId::new(Uuid::now_v7()),
+        };
+        let other_owner = Owner {
+            principal: Principal::User(UserId::new(Uuid::now_v7())),
+            org_id: OrgId::new(Uuid::now_v7()),
+        };
+
+        let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
+        let engine = Engine::new(
+            registry,
+            MemoryStore::new(),
+            Box::new(NoAuth::new(Principal::User(user), owner.clone())),
+        )
+        .with_storage(storage);
+
+        let first = engine
+            .event_ingest(&Credentials::None, fresh_draft(owner.clone()))
+            .await?;
+        let second = engine
+            .event_ingest(&Credentials::None, fresh_draft(owner.clone()))
+            .await?;
+        pg.ingest_event_atomic(&fresh_draft(other_owner.clone()))
+            .await?;
+
+        let rows = pg
+            .list_change_events_for_replay(
+                &owner,
+                first.change_event_seq,
+                Some(second.change_event_seq),
+                10,
+            )
+            .await?;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].event.seq, second.change_event_seq);
+        assert_eq!(rows[0].event.owner, owner);
+
+        let rows = pg
+            .list_change_events_for_replay(&owner, Uuid::nil(), None, 1)
+            .await?;
+        assert_eq!(rows.len(), 1, "limit applies to replay scan");
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("replay scan bounds failed");
+}

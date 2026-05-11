@@ -3,7 +3,7 @@ use proxima_core::{EdgeId, MemoryId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::sql::{CHUNK_HEADS_CTE, map_storage, owner_principal};
+use super::sql::{CHUNK_HEADS_CTE, map_storage, owner_principal, resolve_repo_identifier};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CodeSearchChunksArgs {
@@ -74,11 +74,7 @@ impl McpTool for CodeSearchChunksTool {
             let (owner_kind, owner_principal_id) = owner_principal(&ctx.owner);
             let exact_pattern = like_pattern(query);
             let repo_id = match args.repo_handle.as_deref() {
-                Some(handle) => Some(
-                    ctx.handles
-                        .resolve_flavor_object(handle, super::REPO_HANDLE_KIND)
-                        .ok_or_else(|| McpToolError::UnknownHandle(handle.to_string()))?,
-                ),
+                Some(handle) => Some(resolve_repo_identifier(&ctx, handle).await?),
                 None => None,
             };
 

@@ -126,6 +126,7 @@ impl TargetAdapter for ScriptedExecutorAdapter {
             stderr_tail,
             stdout_truncated: false,
             stderr_truncated: false,
+            session_log_error: None,
         })
     }
 }

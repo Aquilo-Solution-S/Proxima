@@ -42,6 +42,11 @@ async fn succeeds_for_minimal_recipe_that_just_says_hi() {
         ]),
         timeout: Duration::from_secs(30),
         cwd: None,
+        session_log_path: None,
+        invocation_id: None,
+        personality_instance_id: None,
+        wake_entry_id: None,
+        change_event_seq: None,
     };
     let outcome = adapter.run(invocation).await.expect("run ok");
     // We don't pin Succeeded vs Truncated for a minimal recipe under any LLM target;
@@ -57,9 +62,11 @@ async fn passes_current_batch_mode_flag_to_goose() {
     let dir = tempfile::tempdir().unwrap();
     let goose = dir.path().join("goose");
     let args = dir.path().join("args.txt");
+    let session_log = dir.path().join("worker-session.jsonl");
+    let wake_token = uuid::Uuid::new_v4().to_string();
     fs::write(
         &goose,
-        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$GOOSE_ARG_CAPTURE\"\n",
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$GOOSE_ARG_CAPTURE\"\nprintf '%s\\n' '{\"type\":\"message\",\"turn\":1}'\nprintf '%s\\n' 'debug stderr' >&2\n",
     )
     .unwrap();
     let mut perms = fs::metadata(&goose).unwrap().permissions();
@@ -74,19 +81,42 @@ async fn passes_current_batch_mode_flag_to_goose() {
             serde_json::json!("019e0000-0000-7000-8000-000000000001"),
         )]),
         max_rounds: 7,
-        env: HashMap::from([("GOOSE_ARG_CAPTURE".to_string(), args.display().to_string())]),
+        env: HashMap::from([
+            ("GOOSE_ARG_CAPTURE".to_string(), args.display().to_string()),
+            ("PROXIMA_WAKE_TOKEN".to_string(), wake_token.clone()),
+        ]),
         timeout: Duration::from_secs(5),
         cwd: None,
+        session_log_path: Some(session_log.clone()),
+        invocation_id: Some(uuid::Uuid::new_v4()),
+        personality_instance_id: Some(uuid::Uuid::new_v4()),
+        wake_entry_id: Some(uuid::Uuid::new_v4()),
+        change_event_seq: Some(uuid::Uuid::new_v4()),
     };
 
     let outcome = adapter.run(invocation).await.expect("run ok");
     assert!(matches!(outcome.kind, TargetOutcomeKind::Succeeded));
     let captured = fs::read_to_string(args).unwrap();
     assert!(captured.contains("--no-session\n"));
+    assert!(captured.contains("--output-format\nstream-json\n"));
+    assert!(captured.contains("--debug\n"));
+    assert!(captured.contains("--max-turns\n7\n"));
     assert!(!captured.contains("--no-interactive"));
-    assert!(!captured.contains("--text\n"));
+    assert!(captured.contains("--text\n"));
     assert!(captured.contains("--params\n"));
     assert!(captured.contains("triggering_memory_id"));
+
+    let artifact = fs::read_to_string(session_log).expect("session log");
+    assert!(artifact.contains("\"record\":\"start\""));
+    assert!(artifact.contains("\"record\":\"stdout\""));
+    assert!(artifact.contains("\"record\":\"stderr\""));
+    assert!(artifact.contains("\"record\":\"finish\""));
+    assert!(artifact.contains("\"parsed\":"));
+    assert!(artifact.contains("\"type\":\"message\""));
+    assert!(artifact.contains("\"turn\":1"));
+    assert!(artifact.contains("\"env_keys\""));
+    assert!(artifact.contains("PROXIMA_WAKE_TOKEN"));
+    assert!(!artifact.contains(&wake_token));
 }
 
 #[tokio::test]
@@ -99,6 +129,11 @@ async fn returns_error_when_binary_missing() {
         env: HashMap::new(),
         timeout: Duration::from_secs(5),
         cwd: None,
+        session_log_path: None,
+        invocation_id: None,
+        personality_instance_id: None,
+        wake_entry_id: None,
+        change_event_seq: None,
     };
     let err = adapter.run(invocation).await.expect_err("must error");
     assert!(matches!(err, TargetAdapterError::SpawnFailed { .. }));

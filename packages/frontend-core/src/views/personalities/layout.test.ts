@@ -24,6 +24,7 @@ const wakeEntry = (
   execution_mode: "substrate_only",
   authored_by: "any",
   probability_promille: 1000,
+  goal_scope: "none",
   recipe_ref: "user:default.yaml",
   model_tier: "standard",
   inference_target_ref: null,

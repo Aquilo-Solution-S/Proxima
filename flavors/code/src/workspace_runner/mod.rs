@@ -87,7 +87,17 @@ impl WorkspaceRunner for CodeWorkspaceRunner {
     ) -> Result<WorkspacePreparedRun, WorkspaceRunnerError> {
         let pool = self.pool()?;
         let repo_id = repo_id_from_payload(input.triggering_memory_payload)?;
-        let repo = load_repo(pool, input.owner, repo_id).await?;
+        let mut repo = load_repo(pool, input.owner, repo_id).await?;
+        if repo.target_branch.is_none() {
+            let inferred = crate::repos::infer_missing_target_branch(pool, input.owner, repo_id)
+                .await
+                .map_err(|err| {
+                    WorkspaceRunnerError::PrepareFailed(format!(
+                        "repo {repo_id} target_branch inference failed: {err}"
+                    ))
+                })?;
+            repo.target_branch = inferred.target_branch;
+        }
         let target_branch = repo.target_branch.ok_or_else(|| {
             WorkspaceRunnerError::PrepareFailed(format!("repo {repo_id} has no target_branch"))
         })?;

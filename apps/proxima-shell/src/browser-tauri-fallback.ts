@@ -111,6 +111,21 @@ const invokeFallback = async (
       browserRepos.push(repo);
       return repo;
     }
+    case "code_set_repo_target_branch": {
+      const repoId = String(args?.repoId ?? "");
+      const repo = browserRepos.find((r) => r.repo_id === repoId);
+      if (!repo) {
+        throw {
+          kind: "unknown_repo",
+          data: { repo_id: repoId },
+        };
+      }
+      repo.target_branch =
+        typeof args?.targetBranch === "string" && args.targetBranch.length > 0
+          ? args.targetBranch
+          : null;
+      return repo;
+    }
     case "remove_inference_target":
     case "models_delete_embedding":
     case "embedding_active_clear":

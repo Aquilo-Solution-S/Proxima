@@ -8,6 +8,7 @@ pub mod add_wake_entry;
 pub mod audit;
 pub mod payload;
 pub mod remove_wake_entry;
+pub mod replay_wake_events;
 pub mod set_wake_entries;
 pub mod update_wake_entry;
 pub mod wake_entry_input;
@@ -49,6 +50,7 @@ pub use payload::{
 pub use register_inference_target::RegisterInferenceTargetTool;
 pub use remove_inference_target::RemoveInferenceTargetTool;
 pub use remove_wake_entry::RemoveWakeEntryTool;
+pub use replay_wake_events::ReplayWakeEventsTool;
 pub use set_wake_entries::SetWakeEntriesTool;
 pub use tombstone_personality::TombstonePersonalityTool;
 pub use update_wake_entry::{UpdateWakeEntryTool, WakeEntryPatch};
@@ -66,6 +68,7 @@ pub(crate) fn register_all(registry: &mut crate::FlavorRegistry) {
     registry.add_substrate_mcp_tool::<AddWakeEntryTool>();
     registry.add_substrate_mcp_tool::<UpdateWakeEntryTool>();
     registry.add_substrate_mcp_tool::<RemoveWakeEntryTool>();
+    registry.add_substrate_mcp_tool::<ReplayWakeEventsTool>();
     registry.add_substrate_mcp_tool::<ListInferenceTargetsTool>();
     registry.add_substrate_mcp_tool::<ListInferenceTierBindingsTool>();
     registry.add_substrate_mcp_tool::<RegisterInferenceTargetTool>();

@@ -272,6 +272,20 @@ pub trait Storage: Send + Sync {
         limit: usize,
     ) -> Result<Vec<ChangeEventForWake>, StorageError>;
 
+    async fn list_change_events_for_replay(
+        &self,
+        owner: &Owner,
+        after: uuid::Uuid,
+        until: Option<uuid::Uuid>,
+        limit: usize,
+    ) -> Result<Vec<ChangeEventForWake>, StorageError> {
+        let rows = self.list_change_events_after(owner, after, limit).await?;
+        Ok(rows
+            .into_iter()
+            .filter(|row| until.is_none_or(|until| row.event.seq <= until))
+            .collect())
+    }
+
     async fn advance_wake_cursor(
         &self,
         owner: &Owner,

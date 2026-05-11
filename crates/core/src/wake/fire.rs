@@ -30,7 +30,7 @@ use crate::personality::workspace::{
 };
 use crate::personality::{
     PersonalityInstanceId, SidecarSpec, WakeChainDepth, WakeEntryExecutionMode, WakeEntryRow,
-    WakeInvocationFinalize, WakeInvocationStart, WakeInvocationStatus,
+    WakeInvocationFinalize, WakeInvocationLogDraft, WakeInvocationStart, WakeInvocationStatus,
 };
 use crate::wake::context::assemble_wake_context;
 use crate::wake::target_adapter::{
@@ -153,7 +153,7 @@ pub async fn fire_wake_entry(
     let wake_token = engine.wake_token_store().mint(token_ctx).await;
 
     // 5. INSERT invocation row (status = running).
-    engine
+    let inserted = engine
         .storage()
         .start_wake_invocation(&WakeInvocationStart {
             owner: input.owner.clone(),
@@ -166,6 +166,18 @@ pub async fn fire_wake_entry(
         })
         .await
         .map_err(|e| ProtocolError::internal(format!("start_wake_invocation: {e}")))?;
+    if !inserted {
+        engine.wake_token_store().revoke(wake_token).await;
+        return Ok(false);
+    }
+    let session_log_path = wake_session_log_path(&input.owner, invocation_id_for_dispatch);
+    append_session_artifact_log(
+        engine,
+        &input,
+        "available",
+        session_log_path.display().to_string(),
+    )
+    .await;
 
     // 6. Build the four params as JSON values for goose --params.
     // The recipe drops anything it doesn't bind, so passing all four
@@ -309,9 +321,15 @@ pub async fn fire_wake_entry(
                 env,
                 timeout: per_invocation_timeout(max_rounds),
                 cwd: Some(prepared.work_dir.clone()),
+                session_log_path: Some(session_log_path.clone()),
+                invocation_id: Some(invocation_id_for_dispatch),
+                personality_instance_id: Some(input.personality_instance_id.into_inner()),
+                wake_entry_id: Some(input.wake_entry.wake_entry_id),
+                change_event_seq: Some(input.change_event_seq),
             })
             .await;
 
+        append_session_log_error_if_present(engine, &input, &outcome_result).await;
         let finalize_outcome = wake_outcome_from_target_result(&input, outcome_result);
         let workspace_outcome = WorkspaceOutcome {
             exit_code: finalize_outcome.exit_code,
@@ -363,12 +381,18 @@ pub async fn fire_wake_entry(
             env,
             timeout: per_invocation_timeout(max_rounds),
             cwd: None,
+            session_log_path: Some(session_log_path),
+            invocation_id: Some(invocation_id_for_dispatch),
+            personality_instance_id: Some(input.personality_instance_id.into_inner()),
+            wake_entry_id: Some(input.wake_entry.wake_entry_id),
+            change_event_seq: Some(input.change_event_seq),
         })
         .await;
     let _ = tokio::fs::remove_file(&effective_recipe_path).await;
 
     // 10. Finalize: revoke token, write outcome.
     engine.wake_token_store().revoke(wake_token).await;
+    append_session_log_error_if_present(engine, &input, &outcome_result).await;
     let outcome = match outcome_result {
         Ok(TargetOutcome {
             kind,
@@ -379,6 +403,7 @@ pub async fn fire_wake_entry(
             stderr_tail,
             stdout_truncated,
             stderr_truncated,
+            session_log_error: _,
         }) => match kind {
             TargetOutcomeKind::Succeeded => WakeInvocationFinalizeOutcome {
                 status: WakeInvocationStatus::Succeeded,
@@ -495,6 +520,7 @@ fn wake_outcome_from_target_result(
             stderr_tail,
             stdout_truncated,
             stderr_truncated,
+            session_log_error: _,
         }) => match kind {
             TargetOutcomeKind::Succeeded => WakeInvocationFinalizeOutcome {
                 status: WakeInvocationStatus::Succeeded,
@@ -564,6 +590,69 @@ async fn finalize(
         })
         .await
         .map_err(|e| ProtocolError::internal(format!("finalize_wake_invocation: {e}")))
+}
+
+async fn append_session_artifact_log(
+    engine: &Engine,
+    input: &FireWakeEntryInput,
+    status: &str,
+    message_tail: String,
+) {
+    if let Err(err) = engine
+        .storage()
+        .append_wake_invocation_log(&WakeInvocationLogDraft {
+            owner: input.owner.clone(),
+            personality_instance_id: input.personality_instance_id,
+            wake_entry_id: input.wake_entry.wake_entry_id,
+            change_event_seq: input.change_event_seq,
+            phase: "session_artifact".to_string(),
+            tool_id: None,
+            status: status.to_string(),
+            duration_ms: None,
+            message_tail: Some(message_tail),
+        })
+        .await
+    {
+        tracing::warn!(
+            personality_instance_id = %input.personality_instance_id.into_inner(),
+            wake_entry_id = %input.wake_entry.wake_entry_id,
+            change_event_seq = %input.change_event_seq,
+            error = %err,
+            "failed to append wake session artifact log"
+        );
+    }
+}
+
+async fn append_session_log_error_if_present(
+    engine: &Engine,
+    input: &FireWakeEntryInput,
+    outcome_result: &Result<TargetOutcome, TargetAdapterError>,
+) {
+    let Some(error) = outcome_result
+        .as_ref()
+        .ok()
+        .and_then(|outcome| outcome.session_log_error.as_ref())
+    else {
+        return;
+    };
+    append_session_artifact_log(engine, input, "failed", error.clone()).await;
+}
+
+fn wake_session_log_path(owner: &Owner, invocation_id: Uuid) -> PathBuf {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_default()
+        .join(".proxima/wake-runs")
+        .join(owner_principal_segment(owner))
+        .join(invocation_id.to_string())
+        .join("worker-session.jsonl")
+}
+
+fn owner_principal_segment(owner: &Owner) -> String {
+    match &owner.principal {
+        crate::Principal::User(user) => format!("user-{}", user.into_inner()),
+        crate::Principal::Group(group) => format!("group-{}", group.into_inner()),
+    }
 }
 
 fn per_invocation_timeout(max_rounds: u32) -> Duration {

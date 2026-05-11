@@ -30,8 +30,8 @@ pub use payloads::{
 pub use repos::{
     RepoEraseReceipt, RepoIngestionRun, RepoRecord, RepoRegistryError, RunStage, RunStatus,
     StageCounters, advance_stage, begin_run, delete_repo, erase_repo, get_active_run, get_repo,
-    get_run, list_repos, mark_failed, mark_succeeded, register_repo, start_run,
-    start_run_with_created, sweep_orphaned_runs, update_cursor,
+    get_run, infer_missing_target_branch, list_repos, mark_failed, mark_succeeded, register_repo,
+    set_repo_target_branch, start_run, start_run_with_created, sweep_orphaned_runs, update_cursor,
 };
 
 use proxima_core::{RelationClass, RelationDescriptor, SchemaId, SchemaRef, SchemaVersion};
@@ -85,6 +85,7 @@ proxima_core::proxima_flavor! {
     recipes = [
         "commit_summary",
         "engineer",
+        "execution_worker",
         "plan_execution_requests",
     ],
 }

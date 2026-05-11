@@ -351,6 +351,7 @@ fn entry(trigger: &str, recipe_ref: &str) -> WakeEntryDraft {
         execution_mode: WakeExecutionMode::SubstrateOnly,
         authored_by: WakeEntryAuthoredBy::Any,
         probability_promille: 1000,
+        goal_scope: proxima_core::WakeEntryGoalScope::None,
         recipe_ref: recipe_ref.into(),
         model_tier: ModelTier::Standard,
         inference_target_ref: None,

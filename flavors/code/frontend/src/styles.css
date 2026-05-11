@@ -115,10 +115,13 @@
 .proxima-repo-actions {
   grid-area: actions;
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
   align-items: center;
+  justify-content: flex-end;
 }
-.proxima-repo-delete-confirm {
+.proxima-repo-delete-confirm,
+.proxima-repo-branch-input {
   width: 160px;
   background: var(--bg);
   border: 1px solid var(--rule-strong);

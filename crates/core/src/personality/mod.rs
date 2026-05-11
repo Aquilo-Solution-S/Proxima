@@ -133,6 +133,36 @@ impl WakeEntryTriggerKind {
 }
 
 #[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    Default,
+    serde::Serialize,
+    serde::Deserialize,
+    specta::Type,
+    schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum WakeEntryGoalScope {
+    #[default]
+    None,
+    TriggerGoalAssigned,
+}
+
+impl WakeEntryGoalScope {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::TriggerGoalAssigned => "trigger_goal_assigned",
+        }
+    }
+}
+
+#[derive(
     Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
 )]
 #[serde(rename_all = "snake_case")]
@@ -187,6 +217,7 @@ pub struct WakeEntryDraft {
     pub execution_mode: WakeExecutionMode,
     pub authored_by: WakeEntryAuthoredBy,
     pub probability_promille: u16,
+    pub goal_scope: WakeEntryGoalScope,
     pub recipe_ref: String,
     pub model_tier: ModelTier,
     pub inference_target_ref: Option<String>,
@@ -231,6 +262,7 @@ impl WakeEntryDraft {
             execution_mode: WakeExecutionMode::SubstrateOnly,
             authored_by,
             probability_promille,
+            goal_scope: WakeEntryGoalScope::None,
             recipe_ref: recipe_ref.into(),
             model_tier,
             inference_target_ref,
@@ -453,6 +485,7 @@ pub struct WakeEntryRow {
     pub execution_mode: WakeEntryExecutionMode,
     pub authored_by: WakeEntryAuthoredBy,
     pub probability_promille: u16,
+    pub goal_scope: WakeEntryGoalScope,
     pub recipe_ref: String,
     pub model_tier: ModelTier,
     pub inference_target_ref: Option<String>,
@@ -667,6 +700,28 @@ pub struct ListWakeInvocationsRequest {
     pub personality_instance_id: PersonalityInstanceId,
     pub wake_entry_id: Option<Uuid>,
     pub limit: u16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplayWakeEventsRequest {
+    pub owner: Owner,
+    pub personality_instance_id: PersonalityInstanceId,
+    pub wake_entry_id: Option<Uuid>,
+    pub after_seq: Option<Uuid>,
+    pub until_seq: Option<Uuid>,
+    pub event_limit: u16,
+    pub max_invocations: u16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
+pub struct ReplayWakeEventsOutcome {
+    pub considered_events: u32,
+    pub eligible_events: u32,
+    pub started_invocations: u32,
+    pub already_recorded: u32,
+    pub skipped: u32,
+    pub complete: bool,
+    pub next_after_seq: Option<Uuid>,
 }
 
 #[derive(Debug)]

@@ -22,7 +22,7 @@ use proxima_core::wake::target_adapter::{
 use proxima_core::{
     BindInferenceTierRequest, CORE_AUTHORED_RELATION, CORE_DERIVED_FROM_RELATION, FactPayload,
     InferenceTargetConfig, LocalCliConfig, ModelTier, OrgId, Owner, Principal,
-    RegisterInferenceTargetRequest, SourceBatchId, UserId, WakeEntryAuthoredBy,
+    RegisterInferenceTargetRequest, SourceBatchId, UserId, WakeEntryAuthoredBy, WakeEntryGoalScope,
     WakeEntryTriggerKind,
 };
 use proxima_mcp_server::{DevMcpServer, McpAuthStore};
@@ -101,10 +101,6 @@ impl ScriptedPlannerAdapter {
             .and_then(serde_json::Value::as_array)
             .and_then(|items| items.first())
             .ok_or_else(|| format!("no commit match: {search}"))?;
-        let repo_handle = first_commit
-            .get("repo_handle")
-            .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| format!("missing repo_handle: {first_commit}"))?;
         let commit_handle = first_commit
             .get("handle")
             .and_then(serde_json::Value::as_str)
@@ -121,7 +117,7 @@ impl ScriptedPlannerAdapter {
             .call_tool(
                 "proxima-code/code_emit_execution_request",
                 serde_json::json!({
-                    "repo_handle": repo_handle,
+                    "repo_handle": "planner-test",
                     "title": REQUEST_TITLE,
                     "instructions": "Make the smallest code change that satisfies the accepted goal.",
                     "request_key": REQUEST_KEY,
@@ -160,6 +156,7 @@ impl TargetAdapter for ScriptedPlannerAdapter {
             stderr_tail,
             stdout_truncated: false,
             stderr_truncated: false,
+            session_log_error: None,
         })
     }
 }
@@ -358,7 +355,7 @@ async fn accepted_goal_wakes_planner_and_emits_execution_request()
                 purpose: "Plan execution requests for accepted goals".into(),
             })
             .await?;
-        let wake_entry = WakeEntryDraft::new(
+        let mut wake_entry = WakeEntryDraft::new(
             Uuid::now_v7(),
             planner.instance_id,
             WakeEntryTriggerKind::OnMemory,
@@ -375,10 +372,42 @@ async fn accepted_goal_wakes_planner_and_emits_execution_request()
             ],
             1,
         )?;
+        wake_entry.goal_scope = WakeEntryGoalScope::TriggerGoalAssigned;
         pg.set_wake_entries(&SetWakeEntriesRequest {
             owner: owner.clone(),
             personality_instance_id: planner.instance_id,
             entries: vec![wake_entry.clone()],
+        })
+        .await?;
+        let unassigned_planner = engine
+            .instantiate_personality(InstantiatePersonalityRequest {
+                owner: owner.clone(),
+                display_name: "Unassigned Planner".into(),
+                purpose: "Must not wake for goals assigned elsewhere".into(),
+            })
+            .await?;
+        let mut unassigned_wake_entry = WakeEntryDraft::new(
+            Uuid::now_v7(),
+            unassigned_planner.instance_id,
+            WakeEntryTriggerKind::OnMemory,
+            "proxima-goal/goal-activated-v1",
+            "plan-execution-requests-unassigned",
+            WakeEntryAuthoredBy::Other,
+            1000,
+            "bundled:proxima-code/plan_execution_requests",
+            ModelTier::Standard,
+            None,
+            vec![
+                "proxima-code/code_search_commits".into(),
+                "proxima-code/code_emit_execution_request".into(),
+            ],
+            1,
+        )?;
+        unassigned_wake_entry.goal_scope = WakeEntryGoalScope::TriggerGoalAssigned;
+        pg.set_wake_entries(&SetWakeEntriesRequest {
+            owner: owner.clone(),
+            personality_instance_id: unassigned_planner.instance_id,
+            entries: vec![unassigned_wake_entry.clone()],
         })
         .await?;
         let runtime = pg
@@ -455,6 +484,20 @@ async fn accepted_goal_wakes_planner_and_emits_execution_request()
 
         let fired = engine.run_dispatcher_tick().await?;
         assert_eq!(fired, 1, "goal activation fires the configured planner");
+        let unassigned_invocations: i64 = sqlx::query_scalar(
+            "SELECT count(*)
+             FROM proxima_core.personality_wake_invocations
+             WHERE personality_instance_id = $1
+               AND wake_entry_id = $2",
+        )
+        .bind(unassigned_planner.instance_id.into_inner())
+        .bind(unassigned_wake_entry.wake_entry_id)
+        .fetch_one(pg.pool())
+        .await?;
+        assert_eq!(
+            unassigned_invocations, 0,
+            "assignment-scoped unassigned planner must not record an invocation",
+        );
 
         let invocation = sqlx::query(
             "SELECT status, failure_reason

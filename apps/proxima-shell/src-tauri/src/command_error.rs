@@ -67,6 +67,14 @@ pub enum CommandError {
     #[error("unknown repo: {repo_id}")]
     UnknownRepo { repo_id: String },
 
+    /// Repo target branch does not resolve to a local branch.
+    #[error("invalid repo target branch for {repo_id}: {target_branch} ({reason})")]
+    InvalidRepoTargetBranch {
+        repo_id: String,
+        target_branch: String,
+        reason: String,
+    },
+
     /// UUID string did not parse.
     #[error("invalid uuid: {value}")]
     InvalidUuid { value: String },
@@ -144,6 +152,15 @@ impl From<proxima_code::RepoRegistryError> for CommandError {
             }
             proxima_code::RepoRegistryError::NotFound { repo_id } => Self::UnknownRepo {
                 repo_id: repo_id.to_string(),
+            },
+            proxima_code::RepoRegistryError::InvalidTargetBranch {
+                repo_id,
+                target_branch,
+                reason,
+            } => Self::InvalidRepoTargetBranch {
+                repo_id: repo_id.to_string(),
+                target_branch,
+                reason,
             },
             proxima_code::RepoRegistryError::RunNotFound { run_id } => Self::Storage {
                 message: format!("ingestion run not found: {run_id}"),

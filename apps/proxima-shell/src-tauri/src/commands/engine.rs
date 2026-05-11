@@ -12,12 +12,13 @@ use proxima_core::verbs::query::{QueryRequest, QueryResponse};
 use proxima_core::verbs::schema::{SchemaRequest, SchemaResponse};
 use proxima_core::verbs::subscribe::SubscribeRequest;
 use proxima_core::{
-    ChangeEvent, Engine, FactPayload, GoalId, ListWakeInvocationsRequest, Owner,
-    PersonalityInstanceId, PersonalityInstanceRow, SchemaId, SchemaVersion, SourceBatchId,
+    CORE_INSPIRES_RELATION, ChangeEvent, Engine, FactPayload, GoalId, ListWakeInvocationsRequest,
+    Owner, PersonalityInstanceId, PersonalityInstanceRow, SchemaId, SchemaVersion, SourceBatchId,
     SourceId, WakeInvocationLogRow, WakeInvocationRow,
 };
 use proxima_flavor_goal::GoalActivatedV1;
 use proxima_storage_pg::PgStorage;
+use proxima_storage_pg::verbs::edge_append::{EdgeDraft, append_edge_in_tx};
 use proxima_storage_pg::verbs::event_ingest::ingest_event_in_tx;
 use tauri::State;
 use tauri::ipc::Channel;
@@ -89,6 +90,13 @@ pub enum ExecutionModeTs {
     Workspace,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
+#[serde(rename_all = "snake_case")]
+pub enum GoalScopeTs {
+    None,
+    TriggerGoalAssigned,
+}
+
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, specta::Type)]
 #[serde(rename_all = "snake_case")]
 pub enum ModelTierTs {
@@ -107,6 +115,7 @@ pub struct WakeEntryTs {
     pub execution_mode: ExecutionModeTs,
     pub authored_by: AuthoredByTs,
     pub probability_promille: u16,
+    pub goal_scope: GoalScopeTs,
     pub recipe_ref: String,
     pub model_tier: ModelTierTs,
     pub inference_target_ref: Option<String>,
@@ -125,6 +134,7 @@ pub struct WakeEntryDraftTs {
     pub execution_mode: ExecutionModeTs,
     pub authored_by: AuthoredByTs,
     pub probability_promille: u16,
+    pub goal_scope: GoalScopeTs,
     pub recipe_ref: String,
     pub model_tier: ModelTierTs,
     pub inference_target_ref: Option<String>,
@@ -157,6 +167,7 @@ pub struct ListWakeInvocationsTs {
 pub struct GoalReactivateTs {
     pub owner: Owner,
     pub goal_id: String,
+    pub target_personality_id: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
@@ -259,6 +270,7 @@ pub async fn goal_write(
 #[tauri::command]
 #[specta::specta]
 pub async fn goal_reactivate(
+    engine: State<'_, Arc<Engine>>,
     pg: State<'_, Arc<PgStorage>>,
     req: GoalReactivateTs,
 ) -> Result<EventIngestOutcome, ProtocolError> {
@@ -273,6 +285,14 @@ pub async fn goal_reactivate(
             .map_err(|e| ProtocolError::internal(e.to_string()))?;
         let (schema_id, title, evidence_count) =
             active_goal_activation_input(&mut tx, &req.owner, GoalId::new(goal_id)).await?;
+        ensure_goal_planner_assignment(
+            &engine,
+            &mut tx,
+            &req.owner,
+            goal_id,
+            req.target_personality_id.as_deref(),
+        )
+        .await?;
         let activated_at = time::OffsetDateTime::now_utc();
         let payload = GoalActivatedV1 {
             goal_id,
@@ -485,6 +505,198 @@ async fn active_goal_activation_input(
     ))
 }
 
+async fn ensure_goal_planner_assignment(
+    engine: &Engine,
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    owner: &Owner,
+    goal_id: uuid::Uuid,
+    target_personality_id: Option<&str>,
+) -> Result<(), ProtocolError> {
+    if let Some(raw_target) = target_personality_id {
+        let instance_uuid = uuid::Uuid::parse_str(raw_target)
+            .map_err(|e| ProtocolError::invalid_argument("target_personality_id", e.to_string()))?;
+        let target_root =
+            personality_root_for_owner(tx, owner, PersonalityInstanceId::new(instance_uuid))
+                .await?;
+        if !personality_has_assignment_scoped_goal_wake(
+            tx,
+            owner,
+            PersonalityInstanceId::new(instance_uuid),
+        )
+        .await?
+        {
+            return Err(ProtocolError::invalid_argument(
+                "target_personality_id",
+                "target personality has no enabled assignment-scoped goal activation wake entry",
+            ));
+        }
+        if goal_inspires_target(tx, owner, goal_id, target_root).await? {
+            return Ok(());
+        }
+        let relation = engine
+            .registry()
+            .resolve_relation(CORE_INSPIRES_RELATION)
+            .ok_or_else(|| ProtocolError::internal("core/inspires relation not registered"))?;
+        append_edge_in_tx(
+            &mut **tx,
+            &EdgeDraft {
+                edge_id: uuid::Uuid::now_v7(),
+                relation,
+                source_kind: "Goal",
+                source_memory_id: None,
+                source_goal_id: Some(goal_id),
+                target_kind: "Perspective",
+                target_memory_id: Some(target_root),
+                target_goal_id: None,
+                authorship_kind: "User",
+                authorship_owner_memory_id: Some(target_root),
+                owner,
+            },
+            None,
+        )
+        .await
+        .map_err(|e| ProtocolError::internal(e.to_string()))?;
+        return Ok(());
+    }
+
+    let assigned: bool = sqlx::query_scalar(
+        "WITH RECURSIVE lineage(goal_id) AS (
+             SELECT $4::uuid
+             UNION
+             SELECT g.supersedes
+               FROM proxima_core.goals g
+               JOIN lineage l ON g.goal_id = l.goal_id
+              WHERE g.supersedes IS NOT NULL
+                AND g.owner_principal_kind = $1
+                AND g.owner_principal_id = $2
+                AND g.owner_org_id = $3
+         )
+         SELECT EXISTS(
+             SELECT 1
+             FROM proxima_core.edges e
+             JOIN lineage l ON l.goal_id = e.source_goal_id
+             WHERE e.owner_principal_kind = $1
+               AND e.owner_principal_id = $2
+               AND e.owner_org_id = $3
+               AND e.relation = 'core/inspires'
+               AND e.source_kind = 'Goal'
+               AND e.target_kind = 'Perspective'
+         )",
+    )
+    .bind(owner_columns(owner).0)
+    .bind(owner_columns(owner).1)
+    .bind(owner_columns(owner).2)
+    .bind(goal_id)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(|e| ProtocolError::internal(e.to_string()))?;
+    if assigned {
+        Ok(())
+    } else {
+        Err(ProtocolError::invalid_argument(
+            "target_personality_id",
+            "reactivating a planner wake requires an assigned planner",
+        ))
+    }
+}
+
+async fn personality_has_assignment_scoped_goal_wake(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    owner: &Owner,
+    personality_instance_id: PersonalityInstanceId,
+) -> Result<bool, ProtocolError> {
+    let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(owner);
+    sqlx::query_scalar(
+        "SELECT EXISTS(
+             SELECT 1
+             FROM proxima_core.personality_wake_entries
+             WHERE owner_principal_kind = $1
+               AND owner_principal_id = $2
+               AND owner_org_id = $3
+               AND personality_instance_id = $4
+               AND tombstoned_at IS NULL
+               AND enabled
+               AND trigger_kind = 'on_memory'
+               AND trigger_id = 'proxima-goal/goal-activated-v1'
+               AND goal_scope = 'trigger_goal_assigned'
+         )",
+    )
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(owner_org_id)
+    .bind(personality_instance_id.into_inner())
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(|e| ProtocolError::internal(e.to_string()))
+}
+
+async fn personality_root_for_owner(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    owner: &Owner,
+    personality_instance_id: PersonalityInstanceId,
+) -> Result<uuid::Uuid, ProtocolError> {
+    let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(owner);
+    let root: Option<uuid::Uuid> = sqlx::query_scalar(
+        "SELECT current_root_perspective_memory_id
+         FROM proxima_core.personality
+         WHERE owner_principal_kind = $1
+           AND owner_principal_id = $2
+           AND owner_org_id = $3
+           AND personality_instance_id = $4
+           AND status = 'active'",
+    )
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(owner_org_id)
+    .bind(personality_instance_id.into_inner())
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|e| ProtocolError::internal(e.to_string()))?;
+    root.ok_or_else(|| ProtocolError::not_found("active target personality not found"))
+}
+
+async fn goal_inspires_target(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    owner: &Owner,
+    goal_id: uuid::Uuid,
+    target_root: uuid::Uuid,
+) -> Result<bool, ProtocolError> {
+    let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(owner);
+    sqlx::query_scalar(
+        "WITH RECURSIVE lineage(goal_id) AS (
+             SELECT $4::uuid
+             UNION
+             SELECT g.supersedes
+               FROM proxima_core.goals g
+               JOIN lineage l ON g.goal_id = l.goal_id
+              WHERE g.supersedes IS NOT NULL
+                AND g.owner_principal_kind = $1
+                AND g.owner_principal_id = $2
+                AND g.owner_org_id = $3
+         )
+         SELECT EXISTS(
+             SELECT 1
+             FROM proxima_core.edges e
+             JOIN lineage l ON l.goal_id = e.source_goal_id
+             WHERE e.owner_principal_kind = $1
+               AND e.owner_principal_id = $2
+               AND e.owner_org_id = $3
+               AND e.relation = 'core/inspires'
+               AND e.source_kind = 'Goal'
+               AND e.target_kind = 'Perspective'
+               AND e.target_memory_id = $5
+         )",
+    )
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(owner_org_id)
+    .bind(goal_id)
+    .bind(target_root)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(|e| ProtocolError::internal(e.to_string()))
+}
+
 async fn ingest_goal_activated_fact(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     owner: &Owner,
@@ -587,6 +799,12 @@ impl WakeEntryTs {
                 proxima_core::WakeEntryAuthoredBy::Other => AuthoredByTs::Other,
             },
             probability_promille: row.probability_promille,
+            goal_scope: match row.goal_scope {
+                proxima_core::WakeEntryGoalScope::None => GoalScopeTs::None,
+                proxima_core::WakeEntryGoalScope::TriggerGoalAssigned => {
+                    GoalScopeTs::TriggerGoalAssigned
+                }
+            },
             recipe_ref: row.recipe_ref.clone(),
             model_tier: tier_to_ts(row.model_tier),
             inference_target_ref: row.inference_target_ref.clone(),
@@ -682,6 +900,12 @@ fn draft_to_core(
             AuthoredByTs::Other => proxima_core::WakeEntryAuthoredBy::Other,
         },
         probability_promille: draft.probability_promille,
+        goal_scope: match draft.goal_scope {
+            GoalScopeTs::None => proxima_core::WakeEntryGoalScope::None,
+            GoalScopeTs::TriggerGoalAssigned => {
+                proxima_core::WakeEntryGoalScope::TriggerGoalAssigned
+            }
+        },
         recipe_ref: draft.recipe_ref,
         model_tier: tier_from_ts(draft.model_tier),
         inference_target_ref: draft.inference_target_ref,

@@ -26,6 +26,8 @@ export function formatCommandError(err: CommandError): string {
       return `Repo already registered at: ${err.data.canonical_path}`;
     case "unknown_repo":
       return `Unknown repo: ${err.data.repo_id}`;
+    case "invalid_repo_target_branch":
+      return `Invalid target branch "${err.data.target_branch}" for repo ${err.data.repo_id}: ${err.data.reason}`;
     case "invalid_uuid":
       return `Invalid UUID: ${err.data.value}`;
     case "secret_store":

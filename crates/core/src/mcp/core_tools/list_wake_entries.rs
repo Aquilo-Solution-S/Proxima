@@ -26,6 +26,7 @@ pub struct ListWakeEntriesItem {
     pub enabled: bool,
     pub recipe_ref: String,
     pub probability_promille: u16,
+    pub goal_scope: String,
     pub max_rounds: u16,
 }
 
@@ -76,6 +77,7 @@ impl McpTool for ListWakeEntriesTool {
                         enabled: e.enabled,
                         recipe_ref: e.recipe_ref,
                         probability_promille: e.probability_promille,
+                        goal_scope: e.goal_scope.as_str().to_string(),
                         max_rounds: e.max_rounds,
                     }
                 })

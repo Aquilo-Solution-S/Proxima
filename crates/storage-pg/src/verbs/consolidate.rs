@@ -12,9 +12,9 @@ use proxima_core::personality::{
     PersonalityInstanceId, PersonalityInstanceRow, PersonalityRef, PersonalityWriteOutcome,
     PersonalityWriteRequest, ROOT_PERSONALITY_PERSPECTIVE_SCHEMA_ID, SetWakeEntriesRequest,
     SetWakeEntriesResponse, SidecarSpec, WakeChainDepth, WakeDispatchEntryRow, WakeEntryAuthoredBy,
-    WakeEntryDraft, WakeEntryExecutionMode, WakeEntryRow, WakeEntryTriggerKind, WakeExecutionMode,
-    WakeInvocationFinalize, WakeInvocationLogDraft, WakeInvocationLogRow, WakeInvocationRow,
-    WakeInvocationStart, WakeInvocationStatus,
+    WakeEntryDraft, WakeEntryExecutionMode, WakeEntryGoalScope, WakeEntryRow, WakeEntryTriggerKind,
+    WakeExecutionMode, WakeInvocationFinalize, WakeInvocationLogDraft, WakeInvocationLogRow,
+    WakeInvocationRow, WakeInvocationStart, WakeInvocationStatus,
 };
 use proxima_core::{MemoryId, ModelTier, Owner, Principal, SchemaId, SchemaVersion, StorageError};
 use sqlx::{PgPool, Row};
@@ -49,6 +49,7 @@ struct WakeEntryJoinRow {
     execution_mode: String,
     authored_by: String,
     probability_promille: i32,
+    goal_scope: String,
     recipe_ref: String,
     model_tier: String,
     inference_target_ref: Option<String>,
@@ -90,7 +91,7 @@ pub async fn list_personality_instances(
     let wake_rows = sqlx::query(
         "SELECT personality_instance_id,
                 wake_entry_id, trigger_kind, trigger_id, label, enabled,
-                execution_mode, authored_by, probability_promille, recipe_ref,
+                execution_mode, authored_by, probability_promille, goal_scope, recipe_ref,
                 model_tier, inference_target_ref, substrate_tool_palette,
                 workspace_tool_palette, max_rounds, disabled_reason
          FROM proxima_core.personality_wake_entries
@@ -123,6 +124,7 @@ pub async fn list_personality_instances(
             authored_by: parse_row_authored_by(&row.get::<String, _>("authored_by")),
             probability_promille: u16::try_from(row.get::<i32, _>("probability_promille"))
                 .unwrap_or(0),
+            goal_scope: parse_goal_scope(&row.get::<String, _>("goal_scope")),
             recipe_ref: row.get("recipe_ref"),
             model_tier: parse_model_tier(&row.get::<String, _>("model_tier")),
             inference_target_ref: row.get("inference_target_ref"),
@@ -289,7 +291,7 @@ async fn replace_wake_entries_in_tx(
     }
 
     for entry in &req.entries {
-        insert_wake_entry(tx, &req.owner, entry).await?;
+        upsert_wake_entry(tx, &req.owner, entry).await?;
     }
     Ok(SetWakeEntriesResponse {
         active_entries: u32::try_from(req.entries.len()).unwrap_or(u32::MAX),
@@ -314,7 +316,7 @@ async fn read_wake_entries_in_tx(
     let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(owner);
     let rows = sqlx::query(
         "SELECT wake_entry_id, trigger_kind, trigger_id, label, enabled,
-                execution_mode, authored_by, probability_promille, recipe_ref,
+                execution_mode, authored_by, probability_promille, goal_scope, recipe_ref,
                 model_tier, inference_target_ref, substrate_tool_palette,
                 workspace_tool_palette, max_rounds
          FROM proxima_core.personality_wake_entries
@@ -346,6 +348,7 @@ async fn read_wake_entries_in_tx(
             authored_by: parse_row_authored_by(&row.get::<String, _>("authored_by")),
             probability_promille: u16::try_from(row.get::<i32, _>("probability_promille"))
                 .unwrap_or(0),
+            goal_scope: parse_goal_scope(&row.get::<String, _>("goal_scope")),
             recipe_ref: row.get("recipe_ref"),
             model_tier: parse_model_tier(&row.get::<String, _>("model_tier")),
             inference_target_ref: row.get("inference_target_ref"),
@@ -487,6 +490,7 @@ pub async fn list_active_wake_entries(
                 e.execution_mode,
                 e.authored_by,
                 e.probability_promille,
+                e.goal_scope,
                 e.recipe_ref,
                 e.model_tier,
                 e.inference_target_ref,
@@ -537,6 +541,7 @@ pub async fn list_active_wake_entries(
                 execution_mode: parse_execution_mode(&row.execution_mode),
                 authored_by: parse_row_authored_by(&row.authored_by),
                 probability_promille: u16::try_from(row.probability_promille).unwrap_or(0),
+                goal_scope: parse_goal_scope(&row.goal_scope),
                 recipe_ref: row.recipe_ref,
                 model_tier: parse_model_tier(&row.model_tier),
                 inference_target_ref: row.inference_target_ref,
@@ -569,6 +574,50 @@ pub async fn list_change_events_after(
     .bind(owner_principal_id)
     .bind(owner_org_id)
     .bind(after)
+    .bind(i64::try_from(limit).unwrap_or(i64::MAX))
+    .fetch_all(pool)
+    .await
+    .map_err(map_err)?;
+
+    let mut out = Vec::with_capacity(rows.len());
+    for (seq, instance_id, depth) in rows {
+        if let Some(event) = hydrate_change_event(pool, seq).await? {
+            out.push(ChangeEventForWake {
+                event,
+                authoring_personality_instance_id: instance_id
+                    .filter(|id| !id.is_nil())
+                    .map(PersonalityInstanceId::new),
+                wake_chain_depth: WakeChainDepth::new(u16::try_from(depth).unwrap_or(0)),
+            });
+        }
+    }
+    Ok(out)
+}
+
+pub async fn list_change_events_for_replay(
+    pool: &PgPool,
+    owner: &Owner,
+    after: uuid::Uuid,
+    until: Option<uuid::Uuid>,
+    limit: usize,
+) -> Result<Vec<ChangeEventForWake>, StorageError> {
+    let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(owner);
+    let rows: Vec<(uuid::Uuid, Option<uuid::Uuid>, i16)> = sqlx::query_as(
+        "SELECT seq, entity_personality_instance_id, wake_chain_depth
+         FROM proxima_core.change_event
+         WHERE owner_principal_kind = $1
+           AND owner_principal_id = $2
+           AND owner_org_id = $3
+           AND seq > $4
+           AND ($5::uuid IS NULL OR seq <= $5)
+         ORDER BY seq ASC
+         LIMIT $6",
+    )
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(owner_org_id)
+    .bind(after)
+    .bind(until)
     .bind(i64::try_from(limit).unwrap_or(i64::MAX))
     .fetch_all(pool)
     .await
@@ -1333,7 +1382,7 @@ fn owner_from_parts(kind: &str, principal_id: uuid::Uuid, org_id: uuid::Uuid) ->
     }
 }
 
-async fn insert_wake_entry(
+async fn upsert_wake_entry(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     owner: &Owner,
     entry: &WakeEntryDraft,
@@ -1344,10 +1393,34 @@ async fn insert_wake_entry(
             (owner_principal_kind, owner_principal_id, owner_org_id,
              personality_instance_id, wake_entry_id, trigger_kind, trigger_id,
              label, enabled, execution_mode, authored_by, probability_promille,
-             recipe_ref, model_tier, inference_target_ref, substrate_tool_palette,
+             goal_scope, recipe_ref, model_tier, inference_target_ref, substrate_tool_palette,
              workspace_tool_palette, max_rounds)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
-                 $12, $13, $14, $15, $16, $17, $18)",
+                 $12, $13, $14, $15, $16, $17, $18, $19)
+         ON CONFLICT (
+             owner_principal_kind,
+             owner_principal_id,
+             owner_org_id,
+             personality_instance_id,
+             wake_entry_id
+         ) DO UPDATE SET
+             trigger_kind = EXCLUDED.trigger_kind,
+             trigger_id = EXCLUDED.trigger_id,
+             label = EXCLUDED.label,
+             enabled = EXCLUDED.enabled,
+             execution_mode = EXCLUDED.execution_mode,
+             authored_by = EXCLUDED.authored_by,
+             probability_promille = EXCLUDED.probability_promille,
+             goal_scope = EXCLUDED.goal_scope,
+             recipe_ref = EXCLUDED.recipe_ref,
+             model_tier = EXCLUDED.model_tier,
+             inference_target_ref = EXCLUDED.inference_target_ref,
+             substrate_tool_palette = EXCLUDED.substrate_tool_palette,
+             workspace_tool_palette = EXCLUDED.workspace_tool_palette,
+             max_rounds = EXCLUDED.max_rounds,
+             disabled_reason = NULL,
+             tombstoned_at = NULL,
+             updated_at = now()",
     )
     .bind(owner_kind)
     .bind(owner_principal_id)
@@ -1361,6 +1434,7 @@ async fn insert_wake_entry(
     .bind(entry.execution_mode.as_str())
     .bind(entry.authored_by.as_str())
     .bind(i32::from(entry.probability_promille))
+    .bind(entry.goal_scope.as_str())
     .bind(&entry.recipe_ref)
     .bind(model_tier_str(entry.model_tier))
     .bind(&entry.inference_target_ref)
@@ -1391,6 +1465,13 @@ fn parse_row_execution_mode(value: &str) -> WakeEntryExecutionMode {
     match value {
         "workspace" => WakeEntryExecutionMode::Workspace,
         _ => WakeEntryExecutionMode::SubstrateOnly,
+    }
+}
+
+fn parse_goal_scope(value: &str) -> WakeEntryGoalScope {
+    match value {
+        "trigger_goal_assigned" => WakeEntryGoalScope::TriggerGoalAssigned,
+        _ => WakeEntryGoalScope::None,
     }
 }
 

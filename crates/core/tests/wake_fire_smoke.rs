@@ -28,7 +28,7 @@ use proxima_core::personality::{
     ChangeEventForWake, MemorySnapshot, PersonalityInstanceId, PersonalityRuntimeRow,
     RootPersonalityPerspectiveRow, SidecarSpec, WakeChainDepth, WakeEntryAuthoredBy,
     WakeEntryExecutionMode, WakeEntryRow, WakeEntryTriggerKind, WakeInvocationFinalize,
-    WakeInvocationStart, WakeInvocationStatus,
+    WakeInvocationLogDraft, WakeInvocationStart, WakeInvocationStatus,
 };
 use proxima_core::storage::{Storage, StorageError, WakeLockGuard};
 use proxima_core::verbs::close_batch::CloseBatchOutcome;
@@ -86,6 +86,7 @@ impl WorkspaceRunner for StubWorkspaceRunner {
 struct MockAdapter {
     calls: Arc<Mutex<Vec<TargetInvocation>>>,
     outcome_kind: TargetOutcomeKind,
+    session_log_error: Option<String>,
 }
 
 impl MockAdapter {
@@ -93,7 +94,13 @@ impl MockAdapter {
         Self {
             calls: Arc::new(Mutex::new(Vec::new())),
             outcome_kind,
+            session_log_error: None,
         }
+    }
+
+    fn with_session_log_error(mut self, error: impl Into<String>) -> Self {
+        self.session_log_error = Some(error.into());
+        self
     }
 }
 
@@ -110,6 +117,7 @@ impl TargetAdapter for MockAdapter {
             stderr_tail: String::new(),
             stdout_truncated: false,
             stderr_truncated: false,
+            session_log_error: self.session_log_error.clone(),
         })
     }
 }
@@ -130,6 +138,13 @@ struct InvocationRowSnapshot {
     stderr_tail: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+struct InvocationLogSnapshot {
+    phase: String,
+    status: String,
+    message_tail: Option<String>,
+}
+
 #[derive(Debug)]
 struct MockStorage {
     owner: Owner,
@@ -141,6 +156,8 @@ struct MockStorage {
     targets: Vec<InferenceTargetRow>,
     bindings: Vec<InferenceTierBindingRow>,
     invocation: Mutex<Option<InvocationRowSnapshot>>,
+    invocation_logs: Mutex<Vec<InvocationLogSnapshot>>,
+    start_inserted: Mutex<bool>,
 }
 
 impl MockStorage {
@@ -347,6 +364,9 @@ impl Storage for MockStorage {
         &self,
         start: &WakeInvocationStart,
     ) -> Result<bool, StorageError> {
+        if !*self.start_inserted.lock().unwrap() {
+            return Ok(false);
+        }
         let mut slot = self.invocation.lock().unwrap();
         *slot = Some(InvocationRowSnapshot {
             status: WakeInvocationStatus::Running,
@@ -390,6 +410,21 @@ impl Storage for MockStorage {
             row.stdout_tail = finalize.stdout_tail.clone();
             row.stderr_tail = finalize.stderr_tail.clone();
         }
+        Ok(())
+    }
+
+    async fn append_wake_invocation_log(
+        &self,
+        log: &WakeInvocationLogDraft,
+    ) -> Result<(), StorageError> {
+        self.invocation_logs
+            .lock()
+            .unwrap()
+            .push(InvocationLogSnapshot {
+                phase: log.phase.clone(),
+                status: log.status.clone(),
+                message_tail: log.message_tail.clone(),
+            });
         Ok(())
     }
 
@@ -571,6 +606,8 @@ impl FireFixture {
             targets,
             bindings,
             invocation: Mutex::new(None),
+            invocation_logs: Mutex::new(Vec::new()),
+            start_inserted: Mutex::new(true),
         });
 
         // Write a recipe under owner_recipes_root so resolve_recipe_ref
@@ -619,6 +656,7 @@ impl FireFixture {
             execution_mode: WakeEntryExecutionMode::SubstrateOnly,
             authored_by: WakeEntryAuthoredBy::Any,
             probability_promille: 1000,
+            goal_scope: proxima_core::WakeEntryGoalScope::None,
             recipe_ref: "user:smoke.yaml".into(),
             model_tier: ModelTier::Standard,
             inference_target_ref: None,
@@ -688,6 +726,32 @@ async fn fires_single_entry_writes_invocation_row_and_finalizes() {
         Some("test")
     );
     assert_eq!(invocation.env.get("FOO").map(String::as_str), Some("bar"));
+    let session_log_path = invocation
+        .session_log_path
+        .as_ref()
+        .expect("session log path");
+    let session_log_path_str = session_log_path.to_string_lossy().to_string();
+    assert!(session_log_path.ends_with("worker-session.jsonl"));
+    assert!(session_log_path_str.contains(".proxima/wake-runs"));
+    assert!(invocation.invocation_id.is_some());
+    assert!(session_log_path_str.contains(&invocation.invocation_id.unwrap().to_string()));
+    assert_eq!(
+        invocation.personality_instance_id,
+        Some(fixture.instance_id.into_inner())
+    );
+    assert_eq!(
+        invocation.wake_entry_id,
+        Some(fixture.wake_entry.wake_entry_id)
+    );
+    assert_eq!(invocation.change_event_seq, Some(fixture.change_event_seq));
+    let logs = fixture.mock.invocation_logs.lock().unwrap();
+    assert_eq!(logs.len(), 1);
+    assert_eq!(logs[0].phase, "session_artifact");
+    assert_eq!(logs[0].status, "available");
+    assert_eq!(
+        logs[0].message_tail.as_deref(),
+        Some(session_log_path_str.as_str())
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -725,6 +789,20 @@ async fn self_wake_is_skipped() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn duplicate_invocation_row_skips_adapter() {
+    let fixture = FireFixture::build().await;
+    *fixture.mock.start_inserted.lock().unwrap() = false;
+    let adapter = MockAdapter::new(TargetOutcomeKind::Succeeded);
+
+    let fired = fire_wake_entry(&fixture.engine, &adapter, fixture.input())
+        .await
+        .expect("fire ok");
+    assert!(!fired, "existing invocation row must be a no-op");
+    assert!(fixture.mock.invocation.lock().unwrap().is_none());
+    assert_eq!(adapter.calls.lock().unwrap().len(), 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn truncated_outcome_records_max_rounds_reason() {
     let fixture = FireFixture::build().await;
     let adapter = MockAdapter::new(TargetOutcomeKind::Truncated);
@@ -737,4 +815,27 @@ async fn truncated_outcome_records_max_rounds_reason() {
     let row = fixture.mock.fetch_invocation();
     assert_eq!(row.status, WakeInvocationStatus::Truncated);
     assert_eq!(row.failure_reason.as_deref(), Some("max_rounds_reached"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn session_log_open_error_adds_bounded_invocation_log() {
+    let fixture = FireFixture::build().await;
+    let adapter = MockAdapter::new(TargetOutcomeKind::Succeeded)
+        .with_session_log_error("open session log: permission denied");
+
+    let fired = fire_wake_entry(&fixture.engine, &adapter, fixture.input())
+        .await
+        .expect("fire ok");
+    assert!(fired);
+
+    let logs = fixture.mock.invocation_logs.lock().unwrap();
+    assert_eq!(logs.len(), 2);
+    assert_eq!(logs[0].phase, "session_artifact");
+    assert_eq!(logs[0].status, "available");
+    assert_eq!(logs[1].phase, "session_artifact");
+    assert_eq!(logs[1].status, "failed");
+    assert_eq!(
+        logs[1].message_tail.as_deref(),
+        Some("open session log: permission denied")
+    );
 }

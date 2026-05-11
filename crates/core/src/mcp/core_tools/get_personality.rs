@@ -33,6 +33,7 @@ pub struct GetPersonalityWakeEntry {
     pub execution_mode: String,
     pub authored_by: String,
     pub probability_promille: u16,
+    pub goal_scope: String,
     pub max_rounds: u16,
     pub disabled_reason: Option<String>,
 }
@@ -101,6 +102,7 @@ impl McpTool for GetPersonalityTool {
                         execution_mode: format!("{:?}", e.execution_mode),
                         authored_by: format!("{:?}", e.authored_by),
                         probability_promille: e.probability_promille,
+                        goal_scope: e.goal_scope.as_str().to_string(),
                         max_rounds: e.max_rounds,
                         disabled_reason: e.disabled_reason,
                     }

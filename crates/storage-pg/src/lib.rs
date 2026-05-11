@@ -363,6 +363,17 @@ impl Storage for PgStorage {
         verbs::consolidate::list_change_events_after(&self.pool, owner, after, limit).await
     }
 
+    async fn list_change_events_for_replay(
+        &self,
+        owner: &Owner,
+        after: uuid::Uuid,
+        until: Option<uuid::Uuid>,
+        limit: usize,
+    ) -> Result<Vec<ChangeEventForWake>, StorageError> {
+        verbs::consolidate::list_change_events_for_replay(&self.pool, owner, after, until, limit)
+            .await
+    }
+
     async fn advance_wake_cursor(
         &self,
         owner: &Owner,
