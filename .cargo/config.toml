@@ -1,0 +1,38 @@
+# Compile-time performance optimizations for Proxima workspace
+# See: https://doc.rust-lang.org/cargo/reference/config.html
+
+[build]
+# Enable incremental compilation - cache compilation artifacts between builds
+# This is the single biggest win for iterative development
+incremental = true
+
+# Number of parallel jobs for compilation
+# Use number of CPU cores (empty = auto-detect)
+jobs = 8
+
+# Use pipelined compilation where possible (Rust 1.70+)
+pipelining = true
+
+[profile.dev]
+# Optimize debug builds slightly for faster compilation
+# opt-level=1 gives ~10-20% faster compiles with minimal runtime impact
+opt-level = 1
+
+# Disable full debug info for dependencies in dev mode (huge speedup)
+split-debuginfo = "unpacked"
+
+[profile.release]
+# Enable link-time optimization for release builds
+lto = "thin"
+
+# Parallel code generation for release builds
+codegen-units = 16
+
+[profile.release.build-override]
+# Optimize build scripts in release mode
+opt-level = 3
+
+[profile.bench]
+# Benchmark profile inherits from release
+inherits = "release"
+debug = true
