@@ -327,6 +327,7 @@ pub async fn fire_wake_entry(
                 max_rounds,
                 env,
                 timeout: invocation_timeout,
+                enable_developer_builtin: !input.wake_entry.workspace_tool_palette.is_empty(),
                 cwd: Some(prepared.work_dir.clone()),
                 session_log_path: Some(session_log_path.clone()),
                 invocation_id: Some(invocation_id_for_dispatch),
@@ -386,6 +387,7 @@ pub async fn fire_wake_entry(
             max_rounds,
             env,
             timeout: invocation_timeout,
+            enable_developer_builtin: false,
             cwd: None,
             session_log_path: Some(session_log_path),
             invocation_id: Some(invocation_id_for_dispatch),
@@ -791,17 +793,11 @@ async fn write_effective_recipe(
             ));
         }
     }
-    if !workspace_tools.is_empty() {
-        rendered.push_str("  - type: builtin\n");
-        rendered.push_str("    name: developer\n");
-        rendered.push_str("    available_tools:\n");
-        for tool in workspace_tools {
-            let provider_tool = workspace_tool_to_goose(tool).ok_or_else(|| {
-                ProtocolError::tool_not_registered(format!(
-                    "workspace tool mapping missing: {tool}"
-                ))
-            })?;
-            rendered.push_str(&format!("      - \"{}\"\n", yaml_quote(provider_tool)));
+    for tool in workspace_tools {
+        if !workspace_tool_supported(tool) {
+            return Err(ProtocolError::tool_not_registered(format!(
+                "workspace tool mapping missing: {tool}"
+            )));
         }
     }
 
@@ -813,13 +809,13 @@ async fn write_effective_recipe(
     Ok(path)
 }
 
-fn workspace_tool_to_goose(tool_id: &str) -> Option<&'static str> {
-    match tool_id {
-        "proxima-workspace/text_editor" => Some("developer__text_editor"),
-        "proxima-workspace/shell" => Some("developer__shell"),
-        "proxima-workspace/list_files" => Some("developer__list_files"),
-        _ => None,
-    }
+fn workspace_tool_supported(tool_id: &str) -> bool {
+    matches!(
+        tool_id,
+        "proxima-workspace/text_editor"
+            | "proxima-workspace/shell"
+            | "proxima-workspace/list_files"
+    )
 }
 
 fn strip_top_level_extensions(source: &str) -> String {
@@ -906,7 +902,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn effective_recipe_injects_developer_extension_for_workspace_tools() {
+    async fn effective_recipe_validates_workspace_tools_without_recipe_developer_extension() {
         let token = Uuid::new_v4();
         let path = write_effective_recipe(
             b"version: 1.0.0\ntitle: smoke\nprompt: hi\n",
@@ -925,9 +921,7 @@ mod tests {
         let rendered = tokio::fs::read_to_string(&path).await.expect("read recipe");
         let _ = tokio::fs::remove_file(&path).await;
 
-        assert!(rendered.contains("name: developer"));
-        assert!(rendered.contains("- \"developer__text_editor\""));
-        assert!(rendered.contains("- \"developer__shell\""));
-        assert!(rendered.contains("- \"developer__list_files\""));
+        assert!(!rendered.contains("name: developer"));
+        assert!(!rendered.contains("developer__text_editor"));
     }
 }

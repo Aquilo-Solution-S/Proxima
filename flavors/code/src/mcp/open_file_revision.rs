@@ -13,6 +13,9 @@ pub struct CodeOpenFileRevisionArgs {
     pub file_path: String,
     #[serde(default)]
     pub include_text: bool,
+    pub line_start: Option<i64>,
+    pub line_limit: Option<i64>,
+    pub max_text_bytes: Option<usize>,
 }
 
 #[derive(Debug, Serialize)]
@@ -41,6 +44,8 @@ pub struct ChunkSummary {
     pub snippet: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text_line_range: Option<(i64, i64)>,
 }
 
 #[derive(Debug)]
@@ -62,6 +67,9 @@ impl McpTool for CodeOpenFileRevisionTool {
             if args.file_path.trim().is_empty() {
                 return Err(McpToolError::InvalidInput("file_path required".into()));
             }
+            let line_window = requested_line_window(args.line_start, args.line_limit)?;
+            let include_text =
+                args.include_text || line_window.is_some() || args.max_text_bytes.is_some();
             let (owner_kind, owner_principal_id) = owner_principal(&ctx.owner);
             let repo_id = resolve_repo_identifier(&ctx, &args.repo_handle).await?;
 
@@ -106,6 +114,10 @@ impl McpTool for CodeOpenFileRevisionTool {
                         CASE WHEN $5::boolean THEN text ELSE NULL END AS text
                  FROM chunk_heads
                  WHERE repo_id = $3 AND file_path = $4
+                   AND (
+                       $6::bigint IS NULL
+                       OR (line_range_end >= $6 AND line_range_start <= $7)
+                   )
                  ORDER BY chunk_index ASC"
             );
             let chunk_rows: Vec<ChunkSummaryRow> = sqlx::query_as(&chunk_sql)
@@ -113,7 +125,9 @@ impl McpTool for CodeOpenFileRevisionTool {
                 .bind(owner_principal_id)
                 .bind(repo_id)
                 .bind(&args.file_path)
-                .bind(args.include_text)
+                .bind(include_text)
+                .bind(line_window.map(|window| window.0))
+                .bind(line_window.map(|window| window.1))
                 .fetch_all(&ctx.pool)
                 .await
                 .map_err(map_storage)?;
@@ -122,13 +136,20 @@ impl McpTool for CodeOpenFileRevisionTool {
                 .into_iter()
                 .map(|row| {
                     let handle = ctx.handles.assign_memory(MemoryId::new(row.memory_id));
+                    let (text, text_line_range) = project_text(
+                        row.text,
+                        row.line_range_start,
+                        line_window,
+                        args.max_text_bytes,
+                    );
                     ChunkSummary {
                         handle: handle.as_str().to_string(),
                         chunk_index: row.chunk_index,
                         chunk_type: row.chunk_type,
                         line_range: (row.line_range_start, row.line_range_end),
                         snippet: row.snippet,
-                        text: row.text,
+                        text,
+                        text_line_range,
                     }
                 })
                 .collect();
@@ -136,6 +157,75 @@ impl McpTool for CodeOpenFileRevisionTool {
             Ok(CodeOpenFileRevisionOutput { revision, chunks })
         })
     }
+}
+
+fn requested_line_window(
+    line_start: Option<i64>,
+    line_limit: Option<i64>,
+) -> Result<Option<(i64, i64)>, McpToolError> {
+    if line_start.is_none() && line_limit.is_none() {
+        return Ok(None);
+    }
+    let start = line_start.unwrap_or(1);
+    let limit = line_limit.unwrap_or(120);
+    if start < 1 {
+        return Err(McpToolError::InvalidInput("line_start must be >= 1".into()));
+    }
+    if !(1..=500).contains(&limit) {
+        return Err(McpToolError::InvalidInput(
+            "line_limit must be 1..=500".into(),
+        ));
+    }
+    Ok(Some((start, start.saturating_add(limit - 1))))
+}
+
+fn project_text(
+    text: Option<String>,
+    chunk_line_start: i64,
+    line_window: Option<(i64, i64)>,
+    max_text_bytes: Option<usize>,
+) -> (Option<String>, Option<(i64, i64)>) {
+    let Some(text) = text else {
+        return (None, None);
+    };
+    let Some((window_start, window_end)) = line_window else {
+        return (Some(truncate_utf8_bytes(text, max_text_bytes)), None);
+    };
+
+    let mut selected = Vec::new();
+    let mut selected_start = None;
+    let mut selected_end = None;
+    for (idx, line) in text.lines().enumerate() {
+        let line_no = chunk_line_start + i64::try_from(idx).unwrap_or(i64::MAX);
+        if line_no < window_start || line_no > window_end {
+            continue;
+        }
+        selected_start.get_or_insert(line_no);
+        selected_end = Some(line_no);
+        selected.push(line);
+    }
+    let Some(start) = selected_start else {
+        return (None, None);
+    };
+    let projected = truncate_utf8_bytes(selected.join("\n"), max_text_bytes);
+    (
+        Some(projected),
+        Some((start, selected_end.unwrap_or(start))),
+    )
+}
+
+fn truncate_utf8_bytes(text: String, max_text_bytes: Option<usize>) -> String {
+    let Some(max) = max_text_bytes else {
+        return text;
+    };
+    if text.len() <= max {
+        return text;
+    }
+    let mut end = max;
+    while !text.is_char_boundary(end) {
+        end = end.saturating_sub(1);
+    }
+    text[..end].to_string()
 }
 
 #[derive(Debug, sqlx::FromRow)]

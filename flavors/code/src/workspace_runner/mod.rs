@@ -6,6 +6,7 @@
 use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
+use std::time::Instant;
 
 use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
 use proxima_core::{
@@ -17,6 +18,7 @@ use proxima_storage_pg::verbs::edge_append::{EdgeDraft, append_edge_in_tx};
 use proxima_storage_pg::verbs::event_ingest::ingest_event_in_tx;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use tokio::process::Command;
 use uuid::Uuid;
@@ -27,14 +29,17 @@ use crate::repos::owner_columns_pub;
 pub const WORKSPACE_RUNNER_SOURCE_ID: &str = "proxima-code/workspace-runner";
 pub const WORKSPACE_RUN_OBJECT_SCHEMA: &str = "proxima-code/workspace-run-object-v1";
 pub const WORKSPACE_RUN_WHOLE_SCHEMA: &str = "proxima-code/workspace-run-whole-v1";
-const MAX_PRELOADED_FILES: usize = 6;
-const MAX_PRELOADED_FILE_BYTES: u64 = 64 * 1024;
-const MAX_PRELOADED_TOTAL_BYTES: u64 = 192 * 1024;
+const MAX_PRELOADED_FILES: usize = 3;
+const MAX_PRELOADED_FILE_BYTES: u64 = 24 * 1024;
+const MAX_PRELOADED_TOTAL_BYTES: u64 = 48 * 1024;
+const TOOL_OUTPUT_TAIL_BYTES: usize = 4 * 1024;
 
 #[derive(Debug, Default, Clone)]
 pub struct CodeWorkspaceRunner {
     pool: Option<PgPool>,
     worktrees_root: Option<PathBuf>,
+    pnpm_store_root: Option<PathBuf>,
+    pnpm_executable: Option<PathBuf>,
 }
 
 impl CodeWorkspaceRunner {
@@ -43,12 +48,26 @@ impl CodeWorkspaceRunner {
         Self {
             pool: Some(pool),
             worktrees_root: None,
+            pnpm_store_root: None,
+            pnpm_executable: None,
         }
     }
 
     #[must_use]
     pub fn with_worktrees_root(mut self, root: PathBuf) -> Self {
         self.worktrees_root = Some(root);
+        self
+    }
+
+    #[must_use]
+    pub fn with_pnpm_store_root(mut self, root: PathBuf) -> Self {
+        self.pnpm_store_root = Some(root);
+        self
+    }
+
+    #[must_use]
+    pub fn with_pnpm_executable(mut self, executable: PathBuf) -> Self {
+        self.pnpm_executable = Some(executable);
         self
     }
 
@@ -65,6 +84,21 @@ impl CodeWorkspaceRunner {
                 .join(".proxima")
                 .join("worktrees")
         })
+    }
+
+    fn pnpm_store_root(&self) -> PathBuf {
+        self.pnpm_store_root.clone().unwrap_or_else(|| {
+            std::env::var_os("HOME")
+                .map_or_else(std::env::temp_dir, PathBuf::from)
+                .join(".proxima")
+                .join("pnpm-store")
+        })
+    }
+
+    fn pnpm_executable(&self) -> PathBuf {
+        self.pnpm_executable
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("pnpm"))
     }
 }
 
@@ -141,6 +175,12 @@ impl WorkspaceRunner for CodeWorkspaceRunner {
         )
         .await
         .map_err(|stderr| WorkspaceRunnerError::PrepareFailed(format!("worktree add: {stderr}")))?;
+        let tooling = hydrate_workspace_tooling(
+            &worktree_path,
+            &self.pnpm_store_root(),
+            &self.pnpm_executable(),
+        )
+        .await;
 
         let workspace_context = build_workspace_context(
             &input,
@@ -150,6 +190,7 @@ impl WorkspaceRunner for CodeWorkspaceRunner {
             &parent_sha,
             &branch_name,
             &worktree_path,
+            tooling,
         )
         .await?;
 
@@ -217,6 +258,7 @@ async fn build_workspace_context(
     parent_sha: &str,
     branch_name: &str,
     worktree_path: &Path,
+    tooling: serde_json::Value,
 ) -> Result<serde_json::Value, WorkspaceRunnerError> {
     let instructions = input
         .triggering_memory_payload
@@ -237,9 +279,109 @@ async fn build_workspace_context(
             .triggering_memory_payload
             .get("request_key")
             .and_then(serde_json::Value::as_str),
+        "tooling": tooling,
         "mentioned_paths": mentioned_paths,
         "preloaded_files": preloaded_files,
     }))
+}
+
+async fn hydrate_workspace_tooling(
+    worktree_path: &Path,
+    pnpm_store_root: &Path,
+    pnpm_executable: &Path,
+) -> serde_json::Value {
+    let pnpm_lock = worktree_path.join("pnpm-lock.yaml");
+    if tokio::fs::metadata(&pnpm_lock).await.is_err() {
+        return json!({
+            "frontend": {
+                "pnpm": {
+                    "status": "skipped",
+                    "reason": "no_pnpm_lock",
+                },
+            },
+        });
+    }
+
+    let started = Instant::now();
+    let store_dir = pnpm_store_root.to_string_lossy().to_string();
+    if let Err(err) = tokio::fs::create_dir_all(pnpm_store_root).await {
+        return json!({
+            "frontend": {
+                "pnpm": {
+                    "status": "failed",
+                    "reason": "create_store_dir_failed",
+                    "store_dir": store_dir,
+                    "duration_ms": duration_ms(started),
+                    "stderr_tail": err.to_string(),
+                },
+            },
+        });
+    }
+
+    let output = Command::new(pnpm_executable)
+        .args([
+            "install",
+            "--frozen-lockfile",
+            "--prefer-offline",
+            "--store-dir",
+            &store_dir,
+        ])
+        .current_dir(worktree_path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await;
+    match output {
+        Ok(output) => json!({
+            "frontend": {
+                "pnpm": {
+                    "status": if output.status.success() { "succeeded" } else { "failed" },
+                    "command": [
+                        "pnpm",
+                        "install",
+                        "--frozen-lockfile",
+                        "--prefer-offline",
+                        "--store-dir",
+                        store_dir,
+                    ],
+                    "store_dir": store_dir,
+                    "exit_code": output.status.code(),
+                    "duration_ms": duration_ms(started),
+                    "stdout_tail": utf8_tail(&output.stdout, TOOL_OUTPUT_TAIL_BYTES),
+                    "stderr_tail": utf8_tail(&output.stderr, TOOL_OUTPUT_TAIL_BYTES),
+                },
+            },
+        }),
+        Err(err) => json!({
+            "frontend": {
+                "pnpm": {
+                    "status": "failed",
+                    "reason": "spawn_failed",
+                    "command": [
+                        "pnpm",
+                        "install",
+                        "--frozen-lockfile",
+                        "--prefer-offline",
+                        "--store-dir",
+                        store_dir,
+                    ],
+                    "store_dir": store_dir,
+                    "duration_ms": duration_ms(started),
+                    "stderr_tail": err.to_string(),
+                },
+            },
+        }),
+    }
+}
+
+fn duration_ms(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
+fn utf8_tail(bytes: &[u8], limit: usize) -> String {
+    let start = bytes.len().saturating_sub(limit);
+    String::from_utf8_lossy(&bytes[start..]).trim().to_string()
 }
 
 fn extract_mentioned_paths(instructions: &str) -> Vec<String> {
@@ -346,6 +488,8 @@ async fn preload_mentioned_files(
         files.push(json!({
             "path": relative,
             "size_bytes": size,
+            "line_count": String::from_utf8_lossy(&bytes).lines().count(),
+            "sha256": hex::encode(Sha256::digest(&bytes)),
             "content": String::from_utf8_lossy(&bytes),
         }));
     }

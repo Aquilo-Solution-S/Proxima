@@ -8,6 +8,9 @@
 //! - `--no-session` keeps wake runs ephemeral/non-resumable.
 //! - Env is cleared and only the engine-supplied vars + `PATH` flow
 //!   through, so inherited dev-shell creds don't leak into the LLM loop.
+//! - Workspace developer runs force `GOOSE_MODE=auto`; headless wakes
+//!   cannot service approval prompts. They also set bounded context/log
+//!   defaults because worker runs are unattended.
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -39,7 +42,36 @@ impl LocalCliGooseAdapter {
 
 #[async_trait]
 impl TargetAdapter for LocalCliGooseAdapter {
-    async fn run(&self, invocation: TargetInvocation) -> Result<TargetOutcome, TargetAdapterError> {
+    async fn run(
+        &self,
+        mut invocation: TargetInvocation,
+    ) -> Result<TargetOutcome, TargetAdapterError> {
+        if invocation.enable_developer_builtin {
+            invocation
+                .env
+                .insert("GOOSE_MODE".to_string(), "auto".to_string());
+            invocation
+                .env
+                .entry("GOOSE_CONTEXT_STRATEGY".to_string())
+                .or_insert_with(|| "summarize".to_string());
+            invocation
+                .env
+                .entry("GOOSE_AUTO_COMPACT_THRESHOLD".to_string())
+                .or_insert_with(|| "0.8".to_string());
+            invocation
+                .env
+                .entry("GOOSE_TOOL_CALL_CUTOFF".to_string())
+                .or_insert_with(|| "5".to_string());
+            invocation
+                .env
+                .entry("GOOSE_CLI_MIN_PRIORITY".to_string())
+                .or_insert_with(|| "0.8".to_string());
+            invocation
+                .env
+                .entry("GOOSE_CLI_TOOL_PARAMS_TRUNCATION_MAX_LENGTH".to_string())
+                .or_insert_with(|| "160".to_string());
+        }
+
         let (logger, log_open_error) = SessionLogger::open(invocation.session_log_path.as_deref())
             .await
             .unwrap_or_else(|err| {
@@ -77,9 +109,13 @@ impl TargetAdapter for LocalCliGooseAdapter {
             cmd.arg("--max-turns")
                 .arg(invocation.max_rounds.to_string());
         }
+        if invocation.enable_developer_builtin {
+            cmd.arg("--with-builtin").arg("developer");
+        }
+        cmd.arg("--no-profile");
         cmd.arg("--no-session");
+        cmd.arg("--max-tool-repetitions").arg("3");
         cmd.arg("--output-format").arg("stream-json");
-        cmd.arg("--debug");
         if let Some(cwd) = invocation.cwd.as_ref() {
             cmd.current_dir(cwd);
         }
@@ -170,8 +206,12 @@ impl TargetAdapter for LocalCliGooseAdapter {
 
         let truncated =
             output_indicates_turn_limit(&stdout_full) || output_indicates_turn_limit(&stderr_full);
+        let model_error = output_indicates_model_error(&stdout_full)
+            || output_indicates_model_error(&stderr_full);
         let kind = if status.success() {
-            if truncated {
+            if model_error {
+                TargetOutcomeKind::Failed
+            } else if truncated {
                 TargetOutcomeKind::Truncated
             } else {
                 TargetOutcomeKind::Succeeded
@@ -341,11 +381,17 @@ fn redacted_argv(invocation: &TargetInvocation) -> Vec<String> {
         argv.push("--max-turns".to_string());
         argv.push(invocation.max_rounds.to_string());
     }
+    if invocation.enable_developer_builtin {
+        argv.push("--with-builtin".to_string());
+        argv.push("developer".to_string());
+    }
     argv.extend([
+        "--no-profile".to_string(),
         "--no-session".to_string(),
+        "--max-tool-repetitions".to_string(),
+        "3".to_string(),
         "--output-format".to_string(),
         "stream-json".to_string(),
-        "--debug".to_string(),
     ]);
     argv
 }
@@ -384,6 +430,13 @@ fn output_indicates_turn_limit(s: &str) -> bool {
         || lower.contains("max actions")
 }
 
+fn output_indicates_model_error(s: &str) -> bool {
+    let lower = s.to_ascii_lowercase();
+    lower.contains("ran into this error: request failed")
+        || lower.contains("responses api error")
+        || lower.contains("context_length_exceeded")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -398,6 +451,7 @@ mod tests {
             max_rounds: 1,
             env: HashMap::new(),
             timeout: Duration::from_secs(1),
+            enable_developer_builtin: false,
             cwd: None,
             session_log_path: None,
             invocation_id: None,
@@ -413,6 +467,7 @@ mod tests {
             max_rounds: 1,
             env: HashMap::new(),
             timeout: Duration::from_secs(1),
+            enable_developer_builtin: true,
             cwd: Some(PathBuf::from("/tmp/some-worktree")),
             session_log_path: None,
             invocation_id: None,
@@ -424,12 +479,23 @@ mod tests {
             inv_with_cwd.cwd.as_deref(),
             Some(std::path::Path::new("/tmp/some-worktree")),
         );
+        assert!(inv_with_cwd.enable_developer_builtin);
     }
 
     #[test]
     fn goose_max_actions_message_counts_as_turn_limit() {
         assert!(output_indicates_turn_limit(
             "I've reached the maximum number of actions I can do without user input."
+        ));
+    }
+
+    #[test]
+    fn responses_api_error_counts_as_model_error() {
+        assert!(output_indicates_model_error(
+            "Ran into this error: Request failed: Stream decode error: Responses API error"
+        ));
+        assert!(output_indicates_model_error(
+            "invalid_request_error: context_length_exceeded"
         ));
     }
 

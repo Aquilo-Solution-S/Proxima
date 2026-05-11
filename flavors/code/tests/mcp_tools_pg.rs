@@ -266,7 +266,7 @@ async fn open_file_revision_returns_head_with_chunks() -> Result<(), Box<dyn std
         repo_id,
         "src/atlas.rs",
         0,
-        "fn a() {}",
+        "fn a() {\n    call();\n}",
     )
     .await?;
     ingest_code_chunk(
@@ -299,7 +299,7 @@ async fn open_file_revision_returns_head_with_chunks() -> Result<(), Box<dyn std
     );
 
     let text_result = run_tool::<CodeOpenFileRevisionTool>(
-        ctx(fixture.pg.pool().clone(), owner, registry_for_mcp()),
+        ctx(fixture.pg.pool().clone(), owner.clone(), registry_for_mcp()),
         json!({
             "repo_handle": repo_id.to_string(),
             "file_path": "src/atlas.rs",
@@ -308,7 +308,29 @@ async fn open_file_revision_returns_head_with_chunks() -> Result<(), Box<dyn std
     )
     .await?;
 
-    assert_eq!(text_result["chunks"][0]["text"], "fn a() {}");
+    assert_eq!(text_result["chunks"][0]["text"], "fn a() {\n    call();\n}");
+    assert!(
+        text_result["chunks"][0].get("text_line_range").is_none(),
+        "full include_text remains unwindowed"
+    );
+
+    let bounded_result = run_tool::<CodeOpenFileRevisionTool>(
+        ctx(fixture.pg.pool().clone(), owner, registry_for_mcp()),
+        json!({
+            "repo_handle": repo_id.to_string(),
+            "file_path": "src/atlas.rs",
+            "line_start": 2,
+            "line_limit": 1,
+            "max_text_bytes": 64
+        }),
+    )
+    .await?;
+
+    let bounded_chunks = bounded_result["chunks"].as_array().expect("chunks");
+    assert_eq!(bounded_chunks.len(), 1);
+    assert_eq!(bounded_chunks[0]["text"], "    call();");
+    assert_eq!(bounded_chunks[0]["text_line_range"][0], 2);
+    assert_eq!(bounded_chunks[0]["text_line_range"][1], 2);
     Ok(())
 }
 

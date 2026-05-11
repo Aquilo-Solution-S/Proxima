@@ -42,15 +42,21 @@ instructions: |
 
   Use Code MCP tools only to identify the target repo handle and the minimum worker context. Make at most four Code search/open tool calls before the first execution request. As soon as a Code tool result contains a plausible `repo_handle`, stop broad exploration and emit the request. Do not make repeated searches for alternate wording.
 
-  Split the goal into bounded, executable slices before emitting requests. A slice is acceptable only when a worker can reasonably finish it in one workspace wake after 5-10 context reads. Prefer one small request over one comprehensive request. Never emit "implement the whole feature" when the goal spans multiple modules, UI plus backend, schema plus renderer, or implementation plus tests.
+  Split the goal into bounded, junior-executable slices before emitting requests. A slice is acceptable only when a worker can reasonably finish it in one workspace wake after 5-10 context reads without making architectural decisions. Prefer one small request over one comprehensive request. Never emit "implement the whole feature" when the goal spans multiple modules, UI plus backend, schema plus renderer, or implementation plus tests.
+
+  Treat every emitted execution request as an independent sibling worktree from the current target branch. Emit multiple requests only when they are disjoint and parallel-safe: no request may depend on another emitted request's branch, commit, generated code, migration, type change, or test fixture. If ordering matters, emit exactly one first blocking request. Put later ordered work in that request's "next slices, not in scope" section instead of emitting it now.
+
+  Write each request for a junior engineer. Do not rely on senior-only instructions such as "find the right place", "wire this through", "make the UI show it", "handle the backend", or "implement the feature" unless the request also names concrete starting files or subsystems, exact behavior, acceptance criteria, and verification.
 
   Each execution request must name:
     - the specific behavior to change.
     - the likely files or subsystem to inspect first.
+    - the exact acceptance criteria for this slice.
     - the smallest verification command or test to run.
     - what is explicitly out of scope for this slice.
+    - the next slices, not in scope, when ordered follow-up work is likely.
 
-  Emit at most three execution requests for one goal activation. Order them so earlier slices unblock later slices. If the correct slice boundary is unclear, emit only the first discovery/contract slice and make its output concrete enough for a later planner wake or shell-author retry to continue.
+  Emit at most three execution requests for one goal activation. If the correct slice boundary is unclear, or if slices are ordered rather than parallel-safe, emit only the first discovery/contract slice and make its output concrete enough for a later planner wake or shell-author retry to continue.
 
   For each execution slice, call `proxima-code_code_emit_execution_request` with:
     - `repo_handle`: a repo handle returned by a Code MCP search/open tool.

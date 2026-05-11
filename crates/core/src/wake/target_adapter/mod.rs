@@ -25,6 +25,12 @@ pub struct TargetInvocation {
     pub max_rounds: u32,
     pub env: HashMap<String, String>,
     pub timeout: Duration,
+    /// Enables Goose's built-in developer extension through the CLI.
+    ///
+    /// Current Goose exposes write-capable workspace tools when the
+    /// builtin is supplied with `--with-builtin developer`; declaring
+    /// the same builtin only inside a rendered recipe is not sufficient.
+    pub enable_developer_builtin: bool,
     /// Working directory for the subprocess. `None` keeps the
     /// adapter's default (inherited cwd). Workspace-mode wakes set
     /// this to the disposable worktree path; substrate-only wakes
