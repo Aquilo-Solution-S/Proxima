@@ -54,12 +54,38 @@ fn registry_resolves_bundled_recipes() {
         "unexpected plan_execution_requests recipe path: {planner_path:?}",
     );
 
+    let verifier_path = frozen
+        .bundled_recipe_path("proxima-code/verify_workspace_run")
+        .expect("verify_workspace_run recipe must be registered");
+    assert!(
+        verifier_path.exists(),
+        "verify_workspace_run recipe path {verifier_path:?} must exist on disk",
+    );
+    assert!(
+        verifier_path.ends_with("recipes/verify_workspace_run.yaml"),
+        "unexpected verify_workspace_run recipe path: {verifier_path:?}",
+    );
+
+    let correction_path = frozen
+        .bundled_recipe_path("proxima-code/plan_workspace_correction")
+        .expect("plan_workspace_correction recipe must be registered");
+    assert!(
+        correction_path.exists(),
+        "plan_workspace_correction recipe path {correction_path:?} must exist on disk",
+    );
+    assert!(
+        correction_path.ends_with("recipes/plan_workspace_correction.yaml"),
+        "unexpected plan_workspace_correction recipe path: {correction_path:?}",
+    );
+
     assert_eq!(
         frozen.bundled_recipes_for("proxima-code"),
         vec![
             "proxima-code/commit_summary",
             "proxima-code/engineer",
             "proxima-code/execution_worker",
+            "proxima-code/verify_workspace_run",
+            "proxima-code/plan_workspace_correction",
             "proxima-code/plan_execution_requests",
         ],
     );

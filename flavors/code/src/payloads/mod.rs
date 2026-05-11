@@ -88,5 +88,6 @@ pub use execution_request::ExecutionRequestV1;
 pub use file_revision::{FileRevisionV1, FileState};
 pub use personality_self::{CodeCommitSummarizerSelfV1, CodeEngineerSelfV1};
 pub use workspace::{
-    WorkspaceDecision, WorkspaceDecisionV1, WorkspaceDiffFile, WorkspaceDiffStat, WorkspaceRunV1,
+    WorkspaceDecision, WorkspaceDecisionV1, WorkspaceDiffFile, WorkspaceDiffStat,
+    WorkspaceReviewFinding, WorkspaceReviewV1, WorkspaceReviewVerdict, WorkspaceRunV1,
 };

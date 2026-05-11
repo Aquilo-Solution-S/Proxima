@@ -324,7 +324,7 @@ impl McpTool for CodeRetryExecutionRequestTool {
     }
 }
 
-fn normalize_text(
+pub(super) fn normalize_text(
     field: &str,
     value: &str,
     min: usize,
@@ -360,7 +360,7 @@ fn retry_instructions(
     normalize_text("instructions", &instructions, 1, 20_000)
 }
 
-fn resolve_memory_id(ctx: &McpToolCtx, raw: &str) -> Result<MemoryId, McpToolError> {
+pub(super) fn resolve_memory_id(ctx: &McpToolCtx, raw: &str) -> Result<MemoryId, McpToolError> {
     if let Some(memory_id) = ctx.handles.resolve_memory(raw) {
         return Ok(memory_id);
     }
@@ -369,7 +369,7 @@ fn resolve_memory_id(ctx: &McpToolCtx, raw: &str) -> Result<MemoryId, McpToolErr
         .map_err(|_| McpToolError::UnknownHandle(raw.to_string()))
 }
 
-fn resolve_personality_id(
+pub(super) fn resolve_personality_id(
     ctx: &McpToolCtx,
     raw: &str,
 ) -> Result<PersonalityInstanceId, McpToolError> {
@@ -388,13 +388,13 @@ fn resolve_evidence(ctx: &McpToolCtx, raw: &[String]) -> Result<Vec<MemoryId>, M
 }
 
 #[derive(Debug)]
-struct PriorExecutionRequest {
-    repo_id: Uuid,
-    title: String,
-    instructions: String,
+pub(super) struct PriorExecutionRequest {
+    pub repo_id: Uuid,
+    pub title: String,
+    pub instructions: String,
 }
 
-async fn load_execution_request(
+pub(super) async fn load_execution_request(
     tx: &mut Transaction<'_, Postgres>,
     ctx: &McpToolCtx,
     memory_id: MemoryId,
@@ -442,7 +442,7 @@ async fn load_execution_request(
     })
 }
 
-async fn find_execution_request_by_key(
+pub(super) async fn find_execution_request_by_key(
     tx: &mut Transaction<'_, Postgres>,
     ctx: &McpToolCtx,
     repo_id: Uuid,
@@ -468,7 +468,7 @@ async fn find_execution_request_by_key(
     Ok(existing.map(MemoryId::new))
 }
 
-async fn validate_target_personality(
+pub(super) async fn validate_target_personality(
     tx: &mut Transaction<'_, Postgres>,
     ctx: &McpToolCtx,
     target_personality: PersonalityInstanceId,
@@ -501,7 +501,7 @@ async fn validate_target_personality(
     Ok(MemoryId::new(root))
 }
 
-async fn validate_target_execution_wake(
+pub(super) async fn validate_target_execution_wake(
     tx: &mut Transaction<'_, Postgres>,
     ctx: &McpToolCtx,
     target_personality: PersonalityInstanceId,
@@ -537,7 +537,7 @@ async fn validate_target_execution_wake(
     Ok(())
 }
 
-async fn load_prior_derived_targets(
+pub(super) async fn load_prior_derived_targets(
     tx: &mut Transaction<'_, Postgres>,
     ctx: &McpToolCtx,
     prior_memory_id: MemoryId,
@@ -568,7 +568,7 @@ async fn load_prior_derived_targets(
     Ok(rows.into_iter().map(MemoryId::new).collect())
 }
 
-async fn push_derived_edge(
+pub(super) async fn push_derived_edge(
     tx: &mut Transaction<'_, Postgres>,
     ctx: &McpToolCtx,
     request_memory_id: MemoryId,
@@ -747,7 +747,7 @@ async fn validate_evidence_in_owner(
     Ok(())
 }
 
-async fn ingest_execution_request(
+pub(super) async fn ingest_execution_request(
     tx: &mut Transaction<'_, Postgres>,
     ctx: &McpToolCtx,
     payload: &ExecutionRequestV1,
@@ -781,7 +781,7 @@ async fn ingest_execution_request(
         .map_err(McpToolError::Storage)
 }
 
-async fn insert_sidecar(
+pub(super) async fn insert_sidecar(
     tx: &mut Transaction<'_, Postgres>,
     memory_id: MemoryId,
     payload: &ExecutionRequestV1,
@@ -802,7 +802,7 @@ async fn insert_sidecar(
     Ok(())
 }
 
-async fn append_authored_edge(
+pub(super) async fn append_authored_edge(
     tx: &mut Transaction<'_, Postgres>,
     ctx: &McpToolCtx,
     planner_root: MemoryId,
@@ -835,7 +835,7 @@ async fn append_authored_edge(
     Ok(edge_id)
 }
 
-async fn append_target_edge(
+pub(super) async fn append_target_edge(
     tx: &mut Transaction<'_, Postgres>,
     ctx: &McpToolCtx,
     target_root: MemoryId,
@@ -872,7 +872,7 @@ async fn append_target_edge(
     Ok(edge_id)
 }
 
-async fn append_derived_edge(
+pub(super) async fn append_derived_edge(
     tx: &mut Transaction<'_, Postgres>,
     ctx: &McpToolCtx,
     request_memory_id: MemoryId,

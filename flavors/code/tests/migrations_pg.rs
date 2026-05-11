@@ -37,12 +37,16 @@ async fn flavor_migrations_apply_to_fresh_db() {
         pg.run_migrations().await?; // core
         proxima_code::migrator().run(pg.pool()).await?; // flavor
 
-        // Verify the four flavor sidecar tables exist (M3 + M5).
+        // Verify the flavor sidecar tables exist.
         for table in [
             "commit_v1",
             "file_revision_v1",
             "code_chunk_v1",
             "commit_summary_v1",
+            "workspace_run_v1",
+            "workspace_decision_v1",
+            "execution_request_v1",
+            "workspace_review_v1",
         ] {
             let row = sqlx::query(
                 "SELECT 1 AS ok FROM information_schema.tables

@@ -111,6 +111,31 @@ export const commands = {
 	 *  # Errors
 	 *  `InvalidUuid` if `repo_id` doesn't parse, `Storage` otherwise.
 	 */
+	codeListWorkspaceRuns: (repoId: string, limit: number | null) => typedError<WorkspaceRunRecordTs[], CommandError>(__TAURI_INVOKE("code_list_workspace_runs", { repoId, limit })),
+	/**
+	 *  # Errors
+	 *  `InvalidUuid` if `run_memory_id` doesn't parse, `Storage` otherwise.
+	 */
+	codeListWorkspaceReviews: (runMemoryId: string) => typedError<WorkspaceReviewRecordTs[], CommandError>(__TAURI_INVOKE("code_list_workspace_reviews", { runMemoryId })),
+	/**
+	 *  # Errors
+	 *  `InvalidUuid` if `run_memory_id` doesn't parse, `Storage` otherwise.
+	 */
+	codeGetWorkspaceRunDiff: (runMemoryId: string) => typedError<WorkspaceRunDiffTs, CommandError>(__TAURI_INVOKE("code_get_workspace_run_diff", { runMemoryId })),
+	/**
+	 *  # Errors
+	 *  `InvalidUuid` if `run_memory_id` doesn't parse, `Storage` otherwise.
+	 */
+	codeDecideWorkspaceRun: (runMemoryId: string, decision: WorkspaceDecision, reason: string | null) => typedError<string, CommandError>(__TAURI_INVOKE("code_decide_workspace_run", { runMemoryId, decision, reason })),
+	/**
+	 *  # Errors
+	 *  `InvalidUuid` if `run_memory_id` doesn't parse, `Storage` otherwise.
+	 */
+	codeMergeWorkspaceRun: (runMemoryId: string) => typedError<WorkspaceMergeOutcomeTs, CommandError>(__TAURI_INVOKE("code_merge_workspace_run", { runMemoryId })),
+	/**
+	 *  # Errors
+	 *  `InvalidUuid` if `repo_id` doesn't parse, `Storage` otherwise.
+	 */
 	reposDelete: (repoId: string) => typedError<boolean, CommandError>(__TAURI_INVOKE("repos_delete", { repoId })),
 	/**
 	 *  # Errors
@@ -655,6 +680,8 @@ export type PayloadTypesAnchor = PayloadTypesAnchor_Serialize | PayloadTypesAnch
 export type PayloadTypesAnchor_Deserialize = {
 	file_revision_v1: FileRevisionV1_Deserialize | null,
 	code_chunk_v1: CodeChunkV1 | null,
+	workspace_decision: WorkspaceDecision | null,
+	workspace_review_verdict: WorkspaceReviewVerdict | null,
 };
 
 /**
@@ -665,6 +692,8 @@ export type PayloadTypesAnchor_Deserialize = {
 export type PayloadTypesAnchor_Serialize = {
 	file_revision_v1: FileRevisionV1_Serialize | null,
 	code_chunk_v1: CodeChunkV1 | null,
+	workspace_decision: WorkspaceDecision | null,
+	workspace_review_verdict: WorkspaceReviewVerdict | null,
 };
 
 export type PerfEntry = {
@@ -996,6 +1025,91 @@ export type WakeInvocationTs = {
 	stdout_truncated: boolean,
 	stderr_truncated: boolean,
 	logs: WakeInvocationLogTs[],
+};
+
+export type WorkspaceDecision = "rejected" | "retry_requested" | "accepted" | "merged";
+
+export type WorkspaceDecisionRecordTs = {
+	memory_id: string,
+	workspace_run_memory_id: string,
+	decision: WorkspaceDecision,
+	decided_at: string,
+	reason_text: string | null,
+	decided_by_owner_id: string,
+};
+
+export type WorkspaceDiffFile = {
+	path: string,
+	insertions: number,
+	deletions: number,
+};
+
+export type WorkspaceDiffStat = {
+	files_changed: number,
+	insertions: number,
+	deletions: number,
+	files: WorkspaceDiffFile[],
+};
+
+export type WorkspaceMergeOutcomeTs = {
+	run_memory_id: string,
+	decision_memory_id: string,
+	repo_id: string,
+	target_branch: string,
+	old_target_sha: string,
+	new_target_sha: string,
+};
+
+export type WorkspaceReviewFinding = {
+	severity: string,
+	file_path: string | null,
+	line: number | null,
+	message: string,
+};
+
+export type WorkspaceReviewRecordTs = {
+	memory_id: string,
+	workspace_run_memory_id: string,
+	execution_request_memory_id: string,
+	verdict: WorkspaceReviewVerdict,
+	round_index: number,
+	summary: string,
+	findings: WorkspaceReviewFinding[],
+	correction_instructions: string | null,
+	verification_summary: string | null,
+	reviewed_at: string,
+	created_at: string,
+};
+
+export type WorkspaceReviewVerdict = "approved" | "rejected" | "needs_user";
+
+export type WorkspaceRunDiffTs = {
+	range: string,
+	stat: string,
+	files: string[],
+	patch: string,
+	patch_truncated: boolean,
+	max_patch_bytes: number,
+};
+
+export type WorkspaceRunRecordTs = {
+	memory_id: string,
+	wake_invocation_id: string,
+	repo_id: string,
+	execution_request_title: string | null,
+	target_branch: string,
+	worktree_path: string,
+	branch_name: string,
+	parent_sha: string,
+	head_sha: string,
+	diff_stat_json: WorkspaceDiffStat,
+	exit_code: number | null,
+	stdout_tail: string | null,
+	stderr_tail: string | null,
+	duration_ms: number | null,
+	created_at: string,
+	latest_review: WorkspaceReviewRecordTs | null,
+	latest_decision: WorkspaceDecisionRecordTs | null,
 };
 
 export type WorkspaceToolTs = {

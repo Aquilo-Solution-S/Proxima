@@ -7,7 +7,8 @@ pub mod runs;
 
 pub use records::{
     RepoEraseReceipt, RepoIngestionRun, RepoRecord, RepoRegistryError, RunStage, RunStatus,
-    StageCounters,
+    StageCounters, WorkspaceDecisionRecord, WorkspaceMergeOutcome, WorkspaceReviewRecord,
+    WorkspaceRunDiff, WorkspaceRunRecord,
 };
 pub use registry::{
     delete_repo, erase_repo, get_repo, infer_missing_target_branch, list_repos, register_repo,

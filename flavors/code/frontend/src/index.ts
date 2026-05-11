@@ -10,6 +10,7 @@ import {
 
 export { CodeView };
 export { ReposPanel } from "./repos-panel";
+export { RunsPanel } from "./runs-panel";
 
 export function init(): void {
   for (const [schemaId, renderer] of Object.entries(codeRenderers)) {

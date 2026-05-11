@@ -10,20 +10,23 @@ use std::time::Instant;
 
 use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
 use proxima_core::{
-    FactPayload, MemoryId, Owner, SchemaId, SchemaVersion, SourceBatchId, SourceId,
-    WorkspaceFinalizeInput, WorkspacePrepareInput, WorkspacePreparedRun, WorkspaceRunRecord,
-    WorkspaceRunner, WorkspaceRunnerError,
+    CORE_DERIVED_FROM_RELATION, FactPayload, MemoryId, Owner, SchemaId, SchemaVersion,
+    SourceBatchId, SourceId, WorkspaceFinalizeInput, WorkspacePrepareInput, WorkspacePreparedRun,
+    WorkspaceRunRecord, WorkspaceRunner, WorkspaceRunnerError,
 };
 use proxima_storage_pg::verbs::edge_append::{EdgeDraft, append_edge_in_tx};
 use proxima_storage_pg::verbs::event_ingest::ingest_event_in_tx;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use sqlx::PgPool;
+use sqlx::{PgPool, Row};
 use tokio::process::Command;
 use uuid::Uuid;
 
-use crate::payloads::{WorkspaceDiffFile, WorkspaceDiffStat, WorkspaceRunV1};
+use crate::payloads::{
+    ExecutionRequestV1, WorkspaceDecision, WorkspaceDecisionV1, WorkspaceDiffFile,
+    WorkspaceDiffStat, WorkspaceReviewV1, WorkspaceReviewVerdict, WorkspaceRunV1,
+};
 use crate::repos::owner_columns_pub;
 
 pub const WORKSPACE_RUNNER_SOURCE_ID: &str = "proxima-code/workspace-runner";
@@ -33,6 +36,7 @@ const MAX_PRELOADED_FILES: usize = 3;
 const MAX_PRELOADED_FILE_BYTES: u64 = 24 * 1024;
 const MAX_PRELOADED_TOTAL_BYTES: u64 = 48 * 1024;
 const TOOL_OUTPUT_TAIL_BYTES: usize = 4 * 1024;
+const REVIEW_DIFF_MAX_BYTES: usize = 96 * 1024;
 
 #[derive(Debug, Default, Clone)]
 pub struct CodeWorkspaceRunner {
@@ -121,6 +125,64 @@ struct RunnerRepoRow {
 #[async_trait::async_trait]
 impl WorkspaceRunner for CodeWorkspaceRunner {
     async fn prepare(
+        &self,
+        input: WorkspacePrepareInput<'_>,
+    ) -> Result<WorkspacePreparedRun, WorkspaceRunnerError> {
+        match input.triggering_memory_schema_id {
+            ExecutionRequestV1::SCHEMA_ID
+            | "proxima-code/commit-v1"
+            | "proxima-code/file-revision-v1"
+            | "proxima-code/code-chunk-v1" => self.prepare_execution_request(input).await,
+            WorkspaceRunV1::SCHEMA_ID => self.prepare_workspace_run_review(input).await,
+            WorkspaceReviewV1::SCHEMA_ID => self.prepare_workspace_review_correction(input).await,
+            WorkspaceDecisionV1::SCHEMA_ID => {
+                self.prepare_workspace_decision_correction(input).await
+            }
+            other => Err(WorkspaceRunnerError::TriggerNotEligible(format!(
+                "unsupported Code workspace trigger: {other}"
+            ))),
+        }
+    }
+
+    async fn finalize(
+        &self,
+        input: WorkspaceFinalizeInput<'_>,
+    ) -> Result<WorkspaceRunRecord, WorkspaceRunnerError> {
+        let pool = self.pool()?;
+        let state: PreparedState = serde_json::from_value(input.prepared.runner_state.clone())
+            .map_err(|err| {
+                WorkspaceRunnerError::FinalizeFailed(format!("decode runner state: {err}"))
+            })?;
+        let worktree = Path::new(&state.worktree_path);
+        let head_sha = git_output(worktree, &["rev-parse", "HEAD"])
+            .await
+            .map_err(|stderr| {
+                WorkspaceRunnerError::FinalizeFailed(format!("rev-parse HEAD: {stderr}"))
+            })?;
+        let diff_stat = diff_stat(worktree, &state.parent_sha, &head_sha).await?;
+        let payload = WorkspaceRunV1 {
+            wake_invocation_id: input.invocation_id,
+            repo_id: state.repo_id,
+            target_branch: state.target_branch,
+            worktree_path: state.worktree_path,
+            branch_name: state.branch_name,
+            parent_sha: state.parent_sha,
+            head_sha: head_sha.clone(),
+            diff_stat_json: diff_stat,
+            exit_code: input.outcome.exit_code,
+            stdout_tail: input.outcome.stdout_tail.clone(),
+            stderr_tail: input.outcome.stderr_tail.clone(),
+            duration_ms: input.outcome.duration_ms,
+        };
+        let memory_id = ingest_workspace_run(pool, &payload, input).await?;
+        Ok(WorkspaceRunRecord {
+            primary_memory_id: Some(memory_id),
+        })
+    }
+}
+
+impl CodeWorkspaceRunner {
+    async fn prepare_execution_request(
         &self,
         input: WorkspacePrepareInput<'_>,
     ) -> Result<WorkspacePreparedRun, WorkspaceRunnerError> {
@@ -213,39 +275,208 @@ impl WorkspaceRunner for CodeWorkspaceRunner {
         })
     }
 
-    async fn finalize(
+    async fn prepare_workspace_run_review(
         &self,
-        input: WorkspaceFinalizeInput<'_>,
-    ) -> Result<WorkspaceRunRecord, WorkspaceRunnerError> {
+        input: WorkspacePrepareInput<'_>,
+    ) -> Result<WorkspacePreparedRun, WorkspaceRunnerError> {
         let pool = self.pool()?;
-        let state: PreparedState = serde_json::from_value(input.prepared.runner_state.clone())
-            .map_err(|err| {
-                WorkspaceRunnerError::FinalizeFailed(format!("decode runner state: {err}"))
-            })?;
-        let worktree = Path::new(&state.worktree_path);
-        let head_sha = git_output(worktree, &["rev-parse", "HEAD"])
-            .await
-            .map_err(|stderr| {
-                WorkspaceRunnerError::FinalizeFailed(format!("rev-parse HEAD: {stderr}"))
-            })?;
-        let diff_stat = diff_stat(worktree, &state.parent_sha, &head_sha).await?;
-        let payload = WorkspaceRunV1 {
-            wake_invocation_id: input.invocation_id,
-            repo_id: state.repo_id,
-            target_branch: state.target_branch,
-            worktree_path: state.worktree_path,
-            branch_name: state.branch_name,
-            parent_sha: state.parent_sha,
-            head_sha: head_sha.clone(),
-            diff_stat_json: diff_stat,
-            exit_code: input.outcome.exit_code,
-            stdout_tail: input.outcome.stdout_tail.clone(),
-            stderr_tail: input.outcome.stderr_tail.clone(),
-            duration_ms: input.outcome.duration_ms,
+        let run = parse_payload::<WorkspaceRunV1>(
+            input.triggering_memory_payload,
+            WorkspaceRunV1::SCHEMA_ID,
+        )?;
+        let repo = load_repo(pool, input.owner, run.repo_id).await?;
+        let worktree_path = PathBuf::from(&run.worktree_path);
+        ensure_worktree_head(&worktree_path, &run.branch_name, &run.head_sha).await?;
+        let original_request =
+            load_execution_request_for_run(pool, input.owner, input.triggering_memory_id).await?;
+        let veto_count =
+            veto_count_for_request(pool, input.owner, original_request.memory_id).await?;
+        let diff = build_review_diff_context(&worktree_path, &run).await?;
+        let context = json!({
+            "mode": "verify_workspace_run",
+            "repo_id": run.repo_id.to_string(),
+            "canonical_path": repo.canonical_path,
+            "target_branch": run.target_branch,
+            "worktree_path": run.worktree_path,
+            "branch_name": run.branch_name,
+            "parent_sha": run.parent_sha,
+            "head_sha": run.head_sha,
+            "workspace_run_memory_id": input.triggering_memory_id.into_inner().to_string(),
+            "original_request": original_request.to_json(),
+            "diff_stat": run.diff_stat_json,
+            "diff": diff,
+            "log_tails": {
+                "stdout_tail": run.stdout_tail,
+                "stderr_tail": run.stderr_tail,
+                "exit_code": run.exit_code,
+                "duration_ms": run.duration_ms,
+            },
+            "veto_count": veto_count,
+            "max_veto_rounds": crate::mcp::MAX_WORKSPACE_VETO_ROUNDS,
+        });
+        self.prepared_from_existing_run(input, &run, context)
+    }
+
+    async fn prepare_workspace_review_correction(
+        &self,
+        input: WorkspacePrepareInput<'_>,
+    ) -> Result<WorkspacePreparedRun, WorkspaceRunnerError> {
+        let pool = self.pool()?;
+        let review = parse_payload::<WorkspaceReviewV1>(
+            input.triggering_memory_payload,
+            WorkspaceReviewV1::SCHEMA_ID,
+        )?;
+        if review.verdict != WorkspaceReviewVerdict::Rejected {
+            return Err(WorkspaceRunnerError::TriggerNotEligible(
+                "workspace review is not rejected".into(),
+            ));
+        }
+        let original_request = load_execution_request(
+            pool,
+            input.owner,
+            MemoryId::new(review.execution_request_memory_id),
+        )
+        .await?;
+        let run = load_workspace_run(
+            pool,
+            input.owner,
+            MemoryId::new(review.workspace_run_memory_id),
+        )
+        .await?;
+        let repo = load_repo(pool, input.owner, run.repo_id).await?;
+        let veto_count =
+            veto_count_for_request(pool, input.owner, original_request.memory_id).await?;
+        let prior_reviews =
+            load_reviews_for_request(pool, input.owner, original_request.memory_id).await?;
+        let prior_decisions =
+            load_decisions_for_request(pool, input.owner, original_request.memory_id).await?;
+        let target_worker = load_target_worker_personality_for_request(
+            pool,
+            input.owner,
+            original_request.memory_id,
+        )
+        .await?;
+        let context = json!({
+            "mode": "plan_workspace_correction",
+            "trigger_kind": "workspace_review",
+            "repo_id": run.repo_id.to_string(),
+            "canonical_path": repo.canonical_path,
+            "target_branch": run.target_branch,
+            "worktree_path": run.worktree_path,
+            "branch_name": run.branch_name,
+            "parent_sha": run.parent_sha,
+            "head_sha": run.head_sha,
+            "workspace_run_memory_id": review.workspace_run_memory_id.to_string(),
+            "workspace_review_memory_id": input.triggering_memory_id.into_inner().to_string(),
+            "original_request": original_request.to_json(),
+            "rejected_review": review,
+            "prior_reviews": prior_reviews,
+            "prior_decisions": prior_decisions,
+            "veto_count": veto_count,
+            "max_veto_rounds": crate::mcp::MAX_WORKSPACE_VETO_ROUNDS,
+            "target_worker_personality": target_worker.map(|id| id.to_string()),
+        });
+        self.prepared_from_existing_run(input, &run, context)
+    }
+
+    async fn prepare_workspace_decision_correction(
+        &self,
+        input: WorkspacePrepareInput<'_>,
+    ) -> Result<WorkspacePreparedRun, WorkspaceRunnerError> {
+        let pool = self.pool()?;
+        let decision = parse_payload::<WorkspaceDecisionV1>(
+            input.triggering_memory_payload,
+            WorkspaceDecisionV1::SCHEMA_ID,
+        )?;
+        if decision.decision != WorkspaceDecision::RetryRequested {
+            return Err(WorkspaceRunnerError::TriggerNotEligible(
+                "workspace decision is not a retry request".into(),
+            ));
+        }
+        let run = load_workspace_run(
+            pool,
+            input.owner,
+            MemoryId::new(decision.workspace_run_memory_id),
+        )
+        .await?;
+        let repo = load_repo(pool, input.owner, run.repo_id).await?;
+        let original_request = load_execution_request_for_run(
+            pool,
+            input.owner,
+            MemoryId::new(decision.workspace_run_memory_id),
+        )
+        .await?;
+        let latest_review = load_latest_review_for_run(
+            pool,
+            input.owner,
+            MemoryId::new(decision.workspace_run_memory_id),
+        )
+        .await?;
+        let latest_rejected_review = load_latest_rejected_review_for_run(
+            pool,
+            input.owner,
+            MemoryId::new(decision.workspace_run_memory_id),
+        )
+        .await?;
+        let veto_count =
+            veto_count_for_request(pool, input.owner, original_request.memory_id).await?;
+        let prior_reviews =
+            load_reviews_for_request(pool, input.owner, original_request.memory_id).await?;
+        let prior_decisions =
+            load_decisions_for_request(pool, input.owner, original_request.memory_id).await?;
+        let target_worker = load_target_worker_personality_for_request(
+            pool,
+            input.owner,
+            original_request.memory_id,
+        )
+        .await?;
+        let context = json!({
+            "mode": "plan_workspace_correction",
+            "trigger_kind": "workspace_decision",
+            "repo_id": run.repo_id.to_string(),
+            "canonical_path": repo.canonical_path,
+            "target_branch": run.target_branch,
+            "worktree_path": run.worktree_path,
+            "branch_name": run.branch_name,
+            "parent_sha": run.parent_sha,
+            "head_sha": run.head_sha,
+            "workspace_run_memory_id": decision.workspace_run_memory_id.to_string(),
+            "workspace_decision_memory_id": input.triggering_memory_id.into_inner().to_string(),
+            "original_request": original_request.to_json(),
+            "retry_requested_decision": decision,
+            "latest_review": latest_review,
+            "latest_rejected_review": latest_rejected_review,
+            "prior_reviews": prior_reviews,
+            "prior_decisions": prior_decisions,
+            "veto_count": veto_count,
+            "max_veto_rounds": crate::mcp::MAX_WORKSPACE_VETO_ROUNDS,
+            "target_worker_personality": target_worker.map(|id| id.to_string()),
+        });
+        self.prepared_from_existing_run(input, &run, context)
+    }
+
+    fn prepared_from_existing_run(
+        &self,
+        input: WorkspacePrepareInput<'_>,
+        run: &WorkspaceRunV1,
+        workspace_context: serde_json::Value,
+    ) -> Result<WorkspacePreparedRun, WorkspaceRunnerError> {
+        let state = PreparedState {
+            repo_id: run.repo_id,
+            canonical_path: String::new(),
+            target_branch: run.target_branch.clone(),
+            branch_name: run.branch_name.clone(),
+            parent_sha: run.parent_sha.clone(),
+            worktree_path: run.worktree_path.clone(),
         };
-        let memory_id = ingest_workspace_run(pool, &payload, input).await?;
-        Ok(WorkspaceRunRecord {
-            primary_memory_id: Some(memory_id),
+        let runner_state = serde_json::to_value(&state).map_err(|err| {
+            WorkspaceRunnerError::Internal(format!("serialize runner state: {err}"))
+        })?;
+        Ok(WorkspacePreparedRun {
+            work_dir: PathBuf::from(&run.worktree_path),
+            effective_recipe_path: input.effective_recipe_path.to_path_buf(),
+            workspace_context: Some(workspace_context),
+            runner_state,
         })
     }
 }
@@ -503,6 +734,583 @@ async fn preload_mentioned_files(
             "max_total_bytes": MAX_PRELOADED_TOTAL_BYTES,
         },
     }))
+}
+
+fn parse_payload<T: DeserializeOwned>(
+    payload: &serde_json::Value,
+    schema_id: &str,
+) -> Result<T, WorkspaceRunnerError> {
+    serde_json::from_value(payload.clone()).map_err(|err| {
+        WorkspaceRunnerError::PrepareFailed(format!("decode {schema_id} payload: {err}"))
+    })
+}
+
+#[derive(Debug, Clone)]
+struct LoadedExecutionRequest {
+    memory_id: MemoryId,
+    payload: ExecutionRequestV1,
+}
+
+impl LoadedExecutionRequest {
+    fn to_json(&self) -> serde_json::Value {
+        json!({
+            "memory_id": self.memory_id.into_inner().to_string(),
+            "payload": self.payload,
+        })
+    }
+}
+
+async fn load_execution_request(
+    pool: &PgPool,
+    owner: &Owner,
+    memory_id: MemoryId,
+) -> Result<LoadedExecutionRequest, WorkspaceRunnerError> {
+    let (owner_kind, owner_principal_id, _) = owner_columns_pub(owner);
+    let row = sqlx::query(
+        "SELECT COALESCE(m.kind, 'Fact') AS kind,
+                m.schema_id,
+                r.repo_id,
+                r.title,
+                r.instructions,
+                r.request_key
+         FROM proxima_core.memories m
+         LEFT JOIN proxima_code.execution_request_v1 r USING (memory_id)
+         WHERE m.memory_id = $1
+           AND m.owner_principal_kind = $2
+           AND m.owner_principal_id = $3",
+    )
+    .bind(memory_id.into_inner())
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|err| WorkspaceRunnerError::Internal(format!("load execution request: {err}")))?;
+    let Some(row) = row else {
+        return Err(WorkspaceRunnerError::PrepareFailed(format!(
+            "execution request not found: {}",
+            memory_id.into_inner()
+        )));
+    };
+    let kind: String = row.try_get("kind").map_err(map_sqlx_internal)?;
+    let schema_id: String = row.try_get("schema_id").map_err(map_sqlx_internal)?;
+    if kind != "Fact" || schema_id != ExecutionRequestV1::SCHEMA_ID {
+        return Err(WorkspaceRunnerError::PrepareFailed(format!(
+            "memory {} is not an execution request",
+            memory_id.into_inner()
+        )));
+    }
+    let repo_id: Option<Uuid> = row.try_get("repo_id").map_err(map_sqlx_internal)?;
+    let title: Option<String> = row.try_get("title").map_err(map_sqlx_internal)?;
+    let instructions: Option<String> = row.try_get("instructions").map_err(map_sqlx_internal)?;
+    let request_key: Option<String> = row.try_get("request_key").map_err(map_sqlx_internal)?;
+    let (Some(repo_id), Some(title), Some(instructions), Some(request_key)) =
+        (repo_id, title, instructions, request_key)
+    else {
+        return Err(WorkspaceRunnerError::PrepareFailed(format!(
+            "execution request sidecar missing: {}",
+            memory_id.into_inner()
+        )));
+    };
+    Ok(LoadedExecutionRequest {
+        memory_id,
+        payload: ExecutionRequestV1 {
+            repo_id,
+            title,
+            instructions,
+            request_key,
+        },
+    })
+}
+
+async fn load_execution_request_for_run(
+    pool: &PgPool,
+    owner: &Owner,
+    run_memory_id: MemoryId,
+) -> Result<LoadedExecutionRequest, WorkspaceRunnerError> {
+    let (owner_kind, owner_principal_id, _) = owner_columns_pub(owner);
+    let request_id: Option<Uuid> = sqlx::query_scalar(
+        "SELECT e.target_memory_id
+         FROM proxima_core.edges e
+         JOIN proxima_core.memories m
+           ON m.memory_id = e.target_memory_id
+          AND m.owner_principal_kind = e.owner_principal_kind
+          AND m.owner_principal_id = e.owner_principal_id
+         WHERE e.owner_principal_kind = $1
+           AND e.owner_principal_id = $2
+           AND e.relation = $3
+           AND e.source_kind = 'Fact'
+           AND e.source_memory_id = $4
+           AND e.target_kind = 'Fact'
+           AND m.schema_id = $5
+         ORDER BY e.created_at, e.edge_id
+         LIMIT 1",
+    )
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(CORE_DERIVED_FROM_RELATION)
+    .bind(run_memory_id.into_inner())
+    .bind(ExecutionRequestV1::SCHEMA_ID)
+    .fetch_optional(pool)
+    .await
+    .map_err(|err| {
+        WorkspaceRunnerError::Internal(format!("find execution request for run: {err}"))
+    })?;
+    let Some(request_id) = request_id else {
+        return Err(WorkspaceRunnerError::PrepareFailed(format!(
+            "workspace run has no derived-from execution request: {}",
+            run_memory_id.into_inner()
+        )));
+    };
+    load_execution_request(pool, owner, MemoryId::new(request_id)).await
+}
+
+async fn load_workspace_run(
+    pool: &PgPool,
+    owner: &Owner,
+    memory_id: MemoryId,
+) -> Result<WorkspaceRunV1, WorkspaceRunnerError> {
+    let (owner_kind, owner_principal_id, _) = owner_columns_pub(owner);
+    let row = sqlx::query(
+        "SELECT COALESCE(m.kind, 'Fact') AS kind,
+                m.schema_id,
+                r.wake_invocation_id,
+                r.repo_id,
+                r.target_branch,
+                r.worktree_path,
+                r.branch_name,
+                r.parent_sha,
+                r.head_sha,
+                r.diff_stat_json,
+                r.exit_code,
+                r.stdout_tail,
+                r.stderr_tail,
+                r.duration_ms
+         FROM proxima_core.memories m
+         LEFT JOIN proxima_code.workspace_run_v1 r USING (memory_id)
+         WHERE m.memory_id = $1
+           AND m.owner_principal_kind = $2
+           AND m.owner_principal_id = $3",
+    )
+    .bind(memory_id.into_inner())
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|err| WorkspaceRunnerError::Internal(format!("load workspace run: {err}")))?;
+    let Some(row) = row else {
+        return Err(WorkspaceRunnerError::PrepareFailed(format!(
+            "workspace run not found: {}",
+            memory_id.into_inner()
+        )));
+    };
+    let kind: String = row.try_get("kind").map_err(map_sqlx_internal)?;
+    let schema_id: String = row.try_get("schema_id").map_err(map_sqlx_internal)?;
+    if kind != "Fact" || schema_id != WorkspaceRunV1::SCHEMA_ID {
+        return Err(WorkspaceRunnerError::PrepareFailed(format!(
+            "memory {} is not a workspace run",
+            memory_id.into_inner()
+        )));
+    }
+    let wake_invocation_id: Option<Uuid> = row
+        .try_get("wake_invocation_id")
+        .map_err(map_sqlx_internal)?;
+    let repo_id: Option<Uuid> = row.try_get("repo_id").map_err(map_sqlx_internal)?;
+    let target_branch: Option<String> = row.try_get("target_branch").map_err(map_sqlx_internal)?;
+    let worktree_path: Option<String> = row.try_get("worktree_path").map_err(map_sqlx_internal)?;
+    let branch_name: Option<String> = row.try_get("branch_name").map_err(map_sqlx_internal)?;
+    let parent_sha: Option<String> = row.try_get("parent_sha").map_err(map_sqlx_internal)?;
+    let head_sha: Option<String> = row.try_get("head_sha").map_err(map_sqlx_internal)?;
+    let diff_stat_json: Option<serde_json::Value> =
+        row.try_get("diff_stat_json").map_err(map_sqlx_internal)?;
+    let exit_code: Option<i32> = row.try_get("exit_code").map_err(map_sqlx_internal)?;
+    let stdout_tail: Option<String> = row.try_get("stdout_tail").map_err(map_sqlx_internal)?;
+    let stderr_tail: Option<String> = row.try_get("stderr_tail").map_err(map_sqlx_internal)?;
+    let duration_ms_raw: Option<i64> = row.try_get("duration_ms").map_err(map_sqlx_internal)?;
+    let (
+        Some(wake_invocation_id),
+        Some(repo_id),
+        Some(target_branch),
+        Some(worktree_path),
+        Some(branch_name),
+        Some(parent_sha),
+        Some(head_sha),
+        Some(diff_stat_json),
+    ) = (
+        wake_invocation_id,
+        repo_id,
+        target_branch,
+        worktree_path,
+        branch_name,
+        parent_sha,
+        head_sha,
+        diff_stat_json,
+    )
+    else {
+        return Err(WorkspaceRunnerError::PrepareFailed(format!(
+            "workspace run sidecar missing: {}",
+            memory_id.into_inner()
+        )));
+    };
+    let diff_stat_json = serde_json::from_value(diff_stat_json).map_err(|err| {
+        WorkspaceRunnerError::PrepareFailed(format!("decode workspace run diff_stat_json: {err}"))
+    })?;
+    let duration_ms = duration_ms_raw.and_then(|value| u64::try_from(value).ok());
+    Ok(WorkspaceRunV1 {
+        wake_invocation_id,
+        repo_id,
+        target_branch,
+        worktree_path,
+        branch_name,
+        parent_sha,
+        head_sha,
+        diff_stat_json,
+        exit_code,
+        stdout_tail,
+        stderr_tail,
+        duration_ms,
+    })
+}
+
+async fn load_latest_review_for_run(
+    pool: &PgPool,
+    owner: &Owner,
+    run_memory_id: MemoryId,
+) -> Result<Option<serde_json::Value>, WorkspaceRunnerError> {
+    let mut reviews = load_reviews_for_run(pool, owner, run_memory_id).await?;
+    Ok(reviews.pop())
+}
+
+async fn load_latest_rejected_review_for_run(
+    pool: &PgPool,
+    owner: &Owner,
+    run_memory_id: MemoryId,
+) -> Result<Option<serde_json::Value>, WorkspaceRunnerError> {
+    let mut reviews = load_review_rows(
+        pool,
+        owner,
+        "r.workspace_run_memory_id = $4 AND r.verdict = 'rejected'",
+        run_memory_id.into_inner(),
+    )
+    .await?;
+    Ok(reviews.pop())
+}
+
+async fn load_reviews_for_request(
+    pool: &PgPool,
+    owner: &Owner,
+    request_memory_id: MemoryId,
+) -> Result<Vec<serde_json::Value>, WorkspaceRunnerError> {
+    load_review_rows(
+        pool,
+        owner,
+        "r.execution_request_memory_id = $4",
+        request_memory_id.into_inner(),
+    )
+    .await
+}
+
+async fn load_reviews_for_run(
+    pool: &PgPool,
+    owner: &Owner,
+    run_memory_id: MemoryId,
+) -> Result<Vec<serde_json::Value>, WorkspaceRunnerError> {
+    load_review_rows(
+        pool,
+        owner,
+        "r.workspace_run_memory_id = $4",
+        run_memory_id.into_inner(),
+    )
+    .await
+}
+
+async fn load_review_rows(
+    pool: &PgPool,
+    owner: &Owner,
+    predicate: &str,
+    predicate_id: Uuid,
+) -> Result<Vec<serde_json::Value>, WorkspaceRunnerError> {
+    let (owner_kind, owner_principal_id, _) = owner_columns_pub(owner);
+    let sql = format!(
+        "SELECT r.memory_id,
+                r.workspace_run_memory_id,
+                r.execution_request_memory_id,
+                r.verdict,
+                r.round_index,
+                r.summary,
+                r.findings_json,
+                r.correction_instructions,
+                r.verification_summary,
+                r.reviewed_at
+         FROM proxima_code.workspace_review_v1 r
+         JOIN proxima_core.memories m USING (memory_id)
+         WHERE m.owner_principal_kind = $1
+           AND m.owner_principal_id = $2
+           AND m.schema_id = $3
+           AND {predicate}
+         ORDER BY r.created_at, r.memory_id"
+    );
+    let rows = sqlx::query(&sql)
+        .bind(owner_kind)
+        .bind(owner_principal_id)
+        .bind(WorkspaceReviewV1::SCHEMA_ID)
+        .bind(predicate_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|err| WorkspaceRunnerError::Internal(format!("load reviews: {err}")))?;
+    rows.into_iter()
+        .map(review_row_to_json)
+        .collect::<Result<Vec<_>, _>>()
+}
+
+fn review_row_to_json(
+    row: sqlx::postgres::PgRow,
+) -> Result<serde_json::Value, WorkspaceRunnerError> {
+    let memory_id: Uuid = row.try_get("memory_id").map_err(map_sqlx_internal)?;
+    let workspace_run_memory_id: Uuid = row
+        .try_get("workspace_run_memory_id")
+        .map_err(map_sqlx_internal)?;
+    let execution_request_memory_id: Uuid = row
+        .try_get("execution_request_memory_id")
+        .map_err(map_sqlx_internal)?;
+    let verdict: String = row.try_get("verdict").map_err(map_sqlx_internal)?;
+    let round_index: i32 = row.try_get("round_index").map_err(map_sqlx_internal)?;
+    let summary: String = row.try_get("summary").map_err(map_sqlx_internal)?;
+    let findings: serde_json::Value = row.try_get("findings_json").map_err(map_sqlx_internal)?;
+    let correction_instructions: Option<String> = row
+        .try_get("correction_instructions")
+        .map_err(map_sqlx_internal)?;
+    let verification_summary: Option<String> = row
+        .try_get("verification_summary")
+        .map_err(map_sqlx_internal)?;
+    let reviewed_at: time::OffsetDateTime =
+        row.try_get("reviewed_at").map_err(map_sqlx_internal)?;
+    Ok(json!({
+        "memory_id": memory_id.to_string(),
+        "workspace_run_memory_id": workspace_run_memory_id.to_string(),
+        "execution_request_memory_id": execution_request_memory_id.to_string(),
+        "verdict": verdict,
+        "round_index": round_index,
+        "summary": summary,
+        "findings": findings,
+        "correction_instructions": correction_instructions,
+        "verification_summary": verification_summary,
+        "reviewed_at": reviewed_at,
+    }))
+}
+
+async fn load_decisions_for_request(
+    pool: &PgPool,
+    owner: &Owner,
+    request_memory_id: MemoryId,
+) -> Result<Vec<serde_json::Value>, WorkspaceRunnerError> {
+    let (owner_kind, owner_principal_id, _) = owner_columns_pub(owner);
+    let rows = sqlx::query(
+        "SELECT d.memory_id,
+                d.workspace_run_memory_id,
+                d.decision,
+                d.decided_at,
+                d.reason_text,
+                d.decided_by_owner_id
+         FROM proxima_code.workspace_decision_v1 d
+         JOIN proxima_core.memories dm USING (memory_id)
+         JOIN proxima_core.edges e
+           ON e.source_kind = 'Fact'
+          AND e.source_memory_id = d.workspace_run_memory_id
+          AND e.target_kind = 'Fact'
+          AND e.target_memory_id = $4
+          AND e.relation = $5
+          AND e.owner_principal_kind = dm.owner_principal_kind
+          AND e.owner_principal_id = dm.owner_principal_id
+         WHERE dm.owner_principal_kind = $1
+           AND dm.owner_principal_id = $2
+           AND dm.schema_id = $3
+         ORDER BY d.decided_at, d.memory_id",
+    )
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(WorkspaceDecisionV1::SCHEMA_ID)
+    .bind(request_memory_id.into_inner())
+    .bind(CORE_DERIVED_FROM_RELATION)
+    .fetch_all(pool)
+    .await
+    .map_err(|err| WorkspaceRunnerError::Internal(format!("load decisions: {err}")))?;
+    rows.into_iter()
+        .map(decision_row_to_json)
+        .collect::<Result<Vec<_>, _>>()
+}
+
+fn decision_row_to_json(
+    row: sqlx::postgres::PgRow,
+) -> Result<serde_json::Value, WorkspaceRunnerError> {
+    let memory_id: Uuid = row.try_get("memory_id").map_err(map_sqlx_internal)?;
+    let workspace_run_memory_id: Uuid = row
+        .try_get("workspace_run_memory_id")
+        .map_err(map_sqlx_internal)?;
+    let decision: String = row.try_get("decision").map_err(map_sqlx_internal)?;
+    let decided_at: time::OffsetDateTime = row.try_get("decided_at").map_err(map_sqlx_internal)?;
+    let reason_text: Option<String> = row.try_get("reason_text").map_err(map_sqlx_internal)?;
+    let decided_by_owner_id: Uuid = row
+        .try_get("decided_by_owner_id")
+        .map_err(map_sqlx_internal)?;
+    Ok(json!({
+        "memory_id": memory_id.to_string(),
+        "workspace_run_memory_id": workspace_run_memory_id.to_string(),
+        "decision": decision,
+        "decided_at": decided_at,
+        "reason_text": reason_text,
+        "decided_by_owner_id": decided_by_owner_id.to_string(),
+    }))
+}
+
+async fn veto_count_for_request(
+    pool: &PgPool,
+    owner: &Owner,
+    execution_request_memory_id: MemoryId,
+) -> Result<i64, WorkspaceRunnerError> {
+    let (owner_kind, owner_principal_id, _) = owner_columns_pub(owner);
+    sqlx::query_scalar(
+        "WITH review_vetoes AS (
+             SELECT r.memory_id
+             FROM proxima_code.workspace_review_v1 r
+             JOIN proxima_core.memories m USING (memory_id)
+             WHERE m.owner_principal_kind = $1
+               AND m.owner_principal_id = $2
+               AND r.execution_request_memory_id = $3
+               AND r.verdict = 'rejected'
+         ),
+         decision_vetoes AS (
+             SELECT d.memory_id
+             FROM proxima_code.workspace_decision_v1 d
+             JOIN proxima_core.memories dm USING (memory_id)
+             JOIN proxima_core.edges e
+               ON e.source_kind = 'Fact'
+              AND e.source_memory_id = d.workspace_run_memory_id
+              AND e.target_kind = 'Fact'
+              AND e.target_memory_id = $3
+              AND e.relation = $4
+              AND e.owner_principal_kind = dm.owner_principal_kind
+              AND e.owner_principal_id = dm.owner_principal_id
+             WHERE dm.owner_principal_kind = $1
+               AND dm.owner_principal_id = $2
+               AND d.decision = 'retry_requested'
+         )
+         SELECT (SELECT count(*) FROM review_vetoes)
+              + (SELECT count(*) FROM decision_vetoes)",
+    )
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(execution_request_memory_id.into_inner())
+    .bind(CORE_DERIVED_FROM_RELATION)
+    .fetch_one(pool)
+    .await
+    .map_err(|err| WorkspaceRunnerError::Internal(format!("count vetoes: {err}")))
+}
+
+async fn load_target_worker_personality_for_request(
+    pool: &PgPool,
+    owner: &Owner,
+    request_memory_id: MemoryId,
+) -> Result<Option<Uuid>, WorkspaceRunnerError> {
+    let (owner_kind, owner_principal_id, _) = owner_columns_pub(owner);
+    sqlx::query_scalar(
+        "SELECT p.personality_instance_id
+         FROM proxima_core.edges e
+         JOIN proxima_core.personality p
+           ON p.current_root_perspective_memory_id = e.source_memory_id
+          AND p.owner_principal_kind = e.owner_principal_kind
+          AND p.owner_principal_id = e.owner_principal_id
+         WHERE e.owner_principal_kind = $1
+           AND e.owner_principal_id = $2
+           AND e.relation = $3
+           AND e.source_kind = 'Perspective'
+           AND e.target_kind = 'Fact'
+           AND e.target_memory_id = $4
+         ORDER BY e.created_at DESC, e.edge_id DESC
+         LIMIT 1",
+    )
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(crate::mcp::CODE_TARGETS_EXECUTION_REQUEST_RELATION)
+    .bind(request_memory_id.into_inner())
+    .fetch_optional(pool)
+    .await
+    .map_err(|err| WorkspaceRunnerError::Internal(format!("load target worker: {err}")))
+}
+
+async fn ensure_worktree_head(
+    worktree_path: &Path,
+    branch_name: &str,
+    head_sha: &str,
+) -> Result<(), WorkspaceRunnerError> {
+    if tokio::fs::metadata(worktree_path).await.is_err() {
+        return Err(WorkspaceRunnerError::PrepareFailed(format!(
+            "workspace worktree missing: {}",
+            worktree_path.display()
+        )));
+    }
+    if let Err(stderr) = git_output(worktree_path, &["checkout", branch_name]).await {
+        git_output(worktree_path, &["checkout", head_sha])
+            .await
+            .map_err(|head_stderr| {
+                WorkspaceRunnerError::PrepareFailed(format!(
+                    "checkout {branch_name} failed: {stderr}; checkout {head_sha} failed: {head_stderr}"
+                ))
+            })?;
+    }
+    git_output(worktree_path, &["reset", "--hard", head_sha])
+        .await
+        .map_err(|stderr| {
+            WorkspaceRunnerError::PrepareFailed(format!("reset worktree: {stderr}"))
+        })?;
+    Ok(())
+}
+
+async fn build_review_diff_context(
+    worktree_path: &Path,
+    run: &WorkspaceRunV1,
+) -> Result<serde_json::Value, WorkspaceRunnerError> {
+    let range = format!("{}..{}", run.parent_sha, run.head_sha);
+    let stat = git_output(worktree_path, &["diff", "--stat", &range])
+        .await
+        .map_err(|stderr| WorkspaceRunnerError::PrepareFailed(format!("diff --stat: {stderr}")))?;
+    let name_only = git_output(worktree_path, &["diff", "--name-only", &range])
+        .await
+        .map_err(|stderr| {
+            WorkspaceRunnerError::PrepareFailed(format!("diff --name-only: {stderr}"))
+        })?;
+    let patch = git_output(worktree_path, &["diff", "--unified=80", &range])
+        .await
+        .map_err(|stderr| {
+            WorkspaceRunnerError::PrepareFailed(format!("diff --unified=80: {stderr}"))
+        })?;
+    let (patch, patch_truncated) = truncate_utf8(patch, REVIEW_DIFF_MAX_BYTES);
+    Ok(json!({
+        "range": range,
+        "stat": stat,
+        "name_only": name_only
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(str::to_string)
+            .collect::<Vec<_>>(),
+        "patch": patch,
+        "patch_truncated": patch_truncated,
+        "max_patch_bytes": REVIEW_DIFF_MAX_BYTES,
+    }))
+}
+
+fn truncate_utf8(value: String, max_bytes: usize) -> (String, bool) {
+    if value.len() <= max_bytes {
+        return (value, false);
+    }
+    let mut end = max_bytes;
+    while end > 0 && !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    (value[..end].to_string(), true)
+}
+
+fn map_sqlx_internal(err: sqlx::Error) -> WorkspaceRunnerError {
+    WorkspaceRunnerError::Internal(err.to_string())
 }
 
 fn repo_id_from_payload(payload: &serde_json::Value) -> Result<Uuid, WorkspaceRunnerError> {
