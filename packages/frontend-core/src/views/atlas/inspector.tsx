@@ -8,6 +8,7 @@ import {
   type Component,
   type JSX,
 } from "solid-js";
+import { Portal } from "solid-js/web";
 import { commands, type Owner, type PersonalityInstanceTs } from "../../bindings";
 import type { Hub, Renderer } from "../../hub";
 import type { Adjacency, AtlasNode, InEntry, OutEntry } from "./types";
@@ -632,79 +633,81 @@ export const Inspector: Component<{
                 <span class="i-action-error">{reactivateError()}</span>
               </Show>
               <Show when={reactivateDialogOpen()}>
-                <div class="i-dialog-backdrop" role="presentation">
-                  <div
-                    class="i-reactivate-dialog"
-                    role="dialog"
-                    aria-modal="true"
-                    aria-label="Assign goal"
-                  >
-                    <div class="i-dialog-head">
-                      <span>Assign goal</span>
-                      <button
-                        type="button"
-                        aria-label="Close"
-                        onClick={() => setReactivateDialogOpen(false)}
-                      >
-                        x
-                      </button>
-                    </div>
-                    <Show
-                      when={!plannerLoading()}
-                      fallback={<p class="i-dialog-empty">Loading planners.</p>}
+                <Portal>
+                  <div class="i-dialog-backdrop" role="presentation">
+                    <div
+                      class="i-reactivate-dialog"
+                      role="dialog"
+                      aria-modal="true"
+                      aria-label="Assign goal"
                     >
+                      <div class="i-dialog-head">
+                        <span>Assign goal</span>
+                        <button
+                          type="button"
+                          aria-label="Close"
+                          onClick={() => setReactivateDialogOpen(false)}
+                        >
+                          x
+                        </button>
+                      </div>
                       <Show
-                        when={plannerCandidates().length > 0}
-                        fallback={
-                          <p class="i-dialog-empty">
-                            No goal-reactive personality is configured.
-                          </p>
-                        }
+                        when={!plannerLoading()}
+                        fallback={<p class="i-dialog-empty">Loading planners.</p>}
                       >
-                        <div class="i-dialog-list" role="radiogroup">
-                          <For each={plannerCandidates()}>
-                            {(candidate) => (
-                              <label class="i-dialog-row">
-                                <input
-                                  type="radio"
-                                  name="goal-reactivate-planner"
-                                  checked={selectedPlannerId() === candidate.id}
-                                  onChange={() => setSelectedPlannerId(candidate.id)}
-                                />
-                                <span>
-                                  <strong>{candidate.label}</strong>
-                                  <em>{candidate.rootId}</em>
-                                </span>
-                              </label>
-                            )}
-                          </For>
-                        </div>
+                        <Show
+                          when={plannerCandidates().length > 0}
+                          fallback={
+                            <p class="i-dialog-empty">
+                              No goal-reactive personality is configured.
+                            </p>
+                          }
+                        >
+                          <div class="i-dialog-list" role="radiogroup">
+                            <For each={plannerCandidates()}>
+                              {(candidate) => (
+                                <label class="i-dialog-row">
+                                  <input
+                                    type="radio"
+                                    name="goal-reactivate-planner"
+                                    checked={selectedPlannerId() === candidate.id}
+                                    onChange={() => setSelectedPlannerId(candidate.id)}
+                                  />
+                                  <span>
+                                    <strong>{candidate.label}</strong>
+                                    <em>{candidate.rootId}</em>
+                                  </span>
+                                </label>
+                              )}
+                            </For>
+                          </div>
+                        </Show>
                       </Show>
-                    </Show>
-                    <Show when={reactivateError()}>
-                      <p class="i-action-error">{reactivateError()}</p>
-                    </Show>
-                    <div class="i-dialog-actions">
-                      <button
-                        type="button"
-                        onClick={() => setReactivateDialogOpen(false)}
-                      >
-                        Cancel
-                      </button>
-                      <button
-                        type="button"
-                        disabled={
-                          reactivateState() === "running" ||
-                          selectedPlannerId() === null ||
-                          plannerCandidates().length === 0
-                        }
-                        onClick={() => void reactivateGoal()}
-                      >
-                        Confirm
-                      </button>
+                      <Show when={reactivateError()}>
+                        <p class="i-action-error">{reactivateError()}</p>
+                      </Show>
+                      <div class="i-dialog-actions">
+                        <button
+                          type="button"
+                          onClick={() => setReactivateDialogOpen(false)}
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          type="button"
+                          disabled={
+                            reactivateState() === "running" ||
+                            selectedPlannerId() === null ||
+                            plannerCandidates().length === 0
+                          }
+                          onClick={() => void reactivateGoal()}
+                        >
+                          Confirm
+                        </button>
+                      </div>
                     </div>
                   </div>
-                </div>
+                </Portal>
               </Show>
             </div>
           </Show>

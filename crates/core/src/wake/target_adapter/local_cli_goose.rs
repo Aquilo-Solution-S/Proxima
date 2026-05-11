@@ -12,7 +12,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -22,6 +22,8 @@ use tokio::time::timeout;
 use super::{
     TargetAdapter, TargetAdapterError, TargetInvocation, TargetOutcome, TargetOutcomeKind,
 };
+
+const STREAM_DRAIN_TIMEOUT: Duration = Duration::from_millis(500);
 
 #[derive(Debug, Clone)]
 pub struct LocalCliGooseAdapter {
@@ -104,15 +106,19 @@ impl TargetAdapter for LocalCliGooseAdapter {
         let stderr = child.stderr.take().ok_or_else(|| TargetAdapterError::Io {
             source: std::io::Error::other("child stderr not piped"),
         })?;
+        let stdout_capture = Arc::new(StreamCapture::default());
+        let stderr_capture = Arc::new(StreamCapture::default());
         let stdout_task = tokio::spawn(read_stream(
             "stdout",
             BufReader::new(stdout),
             Arc::clone(&logger),
+            Arc::clone(&stdout_capture),
         ));
         let stderr_task = tokio::spawn(read_stream(
             "stderr",
             BufReader::new(stderr),
             Arc::clone(&logger),
+            Arc::clone(&stderr_capture),
         ));
 
         let status = match timeout(invocation.timeout, child.wait()).await {
@@ -121,9 +127,15 @@ impl TargetAdapter for LocalCliGooseAdapter {
             Err(_) => {
                 let _ = child.kill().await;
                 let _ = child.wait().await;
-                let _ = stdout_task.await;
-                let _ = stderr_task.await;
                 let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+                let stream_drain_errors = stream_drain_errors([
+                    drain_stream_task("stdout", stdout_task).await,
+                    drain_stream_task("stderr", stderr_task).await,
+                ]);
+                let stdout_full = stdout_capture.snapshot().await;
+                let stderr_full = stderr_capture.snapshot().await;
+                let (_, stdout_truncated) = tail_lines(&stdout_full, 80);
+                let (_, stderr_truncated) = tail_lines(&stderr_full, 80);
                 logger
                     .write(serde_json::json!({
                         "record": "finish",
@@ -131,8 +143,9 @@ impl TargetAdapter for LocalCliGooseAdapter {
                         "turn_count": null,
                         "exit_code": null,
                         "duration_ms": duration_ms,
-                        "stdout_truncated": false,
-                        "stderr_truncated": false,
+                        "stdout_truncated": stdout_truncated,
+                        "stderr_truncated": stderr_truncated,
+                        "stream_drain_errors": stream_drain_errors,
                     }))
                     .await;
                 return Err(TargetAdapterError::Timeout {
@@ -140,8 +153,13 @@ impl TargetAdapter for LocalCliGooseAdapter {
                 });
             }
         };
-        let stdout_full = join_stream_task(stdout_task).await?;
-        let stderr_full = join_stream_task(stderr_task).await?;
+        let stream_drain_errors = stream_drain_errors([
+            drain_stream_task("stdout", stdout_task).await,
+            drain_stream_task("stderr", stderr_task).await,
+        ]);
+        let stdout_full = stdout_capture.snapshot().await;
+        let mut stderr_full = stderr_capture.snapshot().await;
+        append_stream_drain_errors(&mut stderr_full, &stream_drain_errors);
 
         let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         let (stdout_tail, stdout_truncated) = tail_lines(&stdout_full, 80);
@@ -234,21 +252,37 @@ impl SessionLogger {
     }
 }
 
+#[derive(Debug, Default)]
+struct StreamCapture {
+    text: tokio::sync::Mutex<String>,
+}
+
+impl StreamCapture {
+    async fn push_line(&self, line: &str) {
+        let mut text = self.text.lock().await;
+        if !text.is_empty() {
+            text.push('\n');
+        }
+        text.push_str(line);
+    }
+
+    async fn snapshot(&self) -> String {
+        self.text.lock().await.clone()
+    }
+}
+
 async fn read_stream<R>(
     record: &'static str,
     reader: R,
     logger: Arc<SessionLogger>,
-) -> Result<String, std::io::Error>
+    capture: Arc<StreamCapture>,
+) -> Result<(), std::io::Error>
 where
     R: AsyncBufRead + Unpin,
 {
     let mut lines = reader.lines();
-    let mut full = String::new();
     while let Some(line) = lines.next_line().await? {
-        if !full.is_empty() {
-            full.push('\n');
-        }
-        full.push_str(&line);
+        capture.push_line(&line).await;
         let parsed = serde_json::from_str::<serde_json::Value>(&line).ok();
         logger
             .write(serde_json::json!({
@@ -258,18 +292,36 @@ where
             }))
             .await;
     }
-    Ok(full)
+    Ok(())
 }
 
-async fn join_stream_task(
-    task: tokio::task::JoinHandle<Result<String, std::io::Error>>,
-) -> Result<String, TargetAdapterError> {
-    match task.await {
-        Ok(Ok(output)) => Ok(output),
-        Ok(Err(source)) => Err(TargetAdapterError::Io { source }),
-        Err(err) => Err(TargetAdapterError::Io {
-            source: std::io::Error::other(format!("stream task join failed: {err}")),
-        }),
+async fn drain_stream_task(
+    record: &'static str,
+    mut task: tokio::task::JoinHandle<Result<(), std::io::Error>>,
+) -> Option<String> {
+    match timeout(STREAM_DRAIN_TIMEOUT, &mut task).await {
+        Ok(Ok(Ok(()))) => None,
+        Ok(Ok(Err(source))) => Some(format!("{record} stream read failed: {source}")),
+        Ok(Err(err)) => Some(format!("{record} stream task join failed: {err}")),
+        Err(_) => {
+            task.abort();
+            Some(format!(
+                "{record} stream did not close within {STREAM_DRAIN_TIMEOUT:?}"
+            ))
+        }
+    }
+}
+
+fn stream_drain_errors(items: [Option<String>; 2]) -> Vec<String> {
+    items.into_iter().flatten().collect()
+}
+
+fn append_stream_drain_errors(stderr: &mut String, errors: &[String]) {
+    for error in errors {
+        if !stderr.is_empty() {
+            stderr.push('\n');
+        }
+        stderr.push_str(error);
     }
 }
 
@@ -375,5 +427,19 @@ mod tests {
         assert!(output_indicates_turn_limit(
             "I've reached the maximum number of actions I can do without user input."
         ));
+    }
+
+    #[tokio::test]
+    async fn drain_stream_task_times_out_and_aborts_reader() {
+        let task =
+            tokio::spawn(async { std::future::pending::<Result<(), std::io::Error>>().await });
+
+        let started = Instant::now();
+        let error = drain_stream_task("stdout", task)
+            .await
+            .expect("drain timeout");
+
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(error.contains("stdout stream did not close within"));
     }
 }

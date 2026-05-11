@@ -224,7 +224,7 @@ async fn wake_invocation_carries_dispatch_columns() {
             change_event_seq,
             phase: "session_artifact".to_string(),
             tool_id: None,
-            status: "available".to_string(),
+            status: "started".to_string(),
             duration_ms: None,
             message_tail: Some(
                 "~/.proxima/wake-runs/user/example/worker-session.jsonl".to_string(),
@@ -252,7 +252,7 @@ async fn wake_invocation_carries_dispatch_columns() {
             Some("tool failed")
         );
         assert_eq!(listed[0].logs[1].phase, "session_artifact");
-        assert_eq!(listed[0].logs[1].status, "available");
+        assert_eq!(listed[0].logs[1].status, "started");
         assert_eq!(
             listed[0].logs[1].message_tail.as_deref(),
             Some("~/.proxima/wake-runs/user/example/worker-session.jsonl")
