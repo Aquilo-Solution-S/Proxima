@@ -13,6 +13,12 @@ jobs = 8
 # Use pipelined compilation where possible (Rust 1.70+)
 pipelining = true
 
+# Environment variables for faster native code compilation (tree-sitter, etc.)
+# The `cc` crate (used by tree-sitter) caches compiled C objects in target/
+# by default. To use ccache (more effective caching), install it:
+#   brew install ccache
+# and set CC=ccache in your shell before running cargo.
+
 [profile.dev]
 # Optimize debug builds slightly for faster compilation
 # opt-level=1 gives ~10-20% faster compiles with minimal runtime impact
