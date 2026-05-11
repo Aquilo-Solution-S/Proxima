@@ -14,6 +14,7 @@ fn goal_schemas_and_relations_register() {
         .collect();
     assert!(schema_ids.contains("proxima-goal/goal-proposed-v1"));
     assert!(schema_ids.contains("proxima-goal/goal-activated-v1"));
+    assert!(schema_ids.contains("proxima-goal/goal-achieved-v1"));
     assert!(schema_ids.contains("proxima-goal/simple-text-v1"));
     assert!(schema_ids.contains("proxima-goal/task-v1"));
 
@@ -43,4 +44,5 @@ fn goal_schemas_and_relations_register() {
     assert!(tool_names.contains("proxima-goal/goal_accept"));
     assert!(tool_names.contains("proxima-goal/goal_modify"));
     assert!(tool_names.contains("proxima-goal/goal_decline"));
+    assert!(tool_names.contains("proxima-goal/goal_mark_achieved"));
 }

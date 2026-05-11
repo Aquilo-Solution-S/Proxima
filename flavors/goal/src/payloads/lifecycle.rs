@@ -44,3 +44,26 @@ impl FactPayload for GoalActivatedV1 {
         "proxima_goal.goal_activated_v1"
     }
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct GoalAchievedV1 {
+    pub goal_id: uuid::Uuid,
+    pub schema_id: String,
+    pub title: String,
+    #[serde(with = "time::serde::rfc3339")]
+    pub achieved_at: OffsetDateTime,
+    pub evidence_count: u32,
+}
+
+impl FactPayload for GoalAchievedV1 {
+    const SCHEMA_ID: &'static str = "proxima-goal/goal-achieved-v1";
+    const SCHEMA_VERSION: u32 = 1;
+
+    fn render(&self) -> String {
+        format!("Goal achieved: {}", self.title)
+    }
+
+    fn sidecar_table() -> &'static str {
+        "proxima_goal.goal_achieved_v1"
+    }
+}

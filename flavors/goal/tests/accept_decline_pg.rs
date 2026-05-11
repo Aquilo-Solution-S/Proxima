@@ -7,6 +7,9 @@ use proxima_core::verbs::query::QueryRequest;
 use proxima_core::{EntityRef, GoalId, MemoryId};
 use proxima_flavor_goal::tools::accept::{AcceptArgs, AcceptTool};
 use proxima_flavor_goal::tools::decline::{DeclineArgs, DeclineTool};
+use proxima_flavor_goal::tools::mark_achieved::{
+    MarkAchievedArgs, MarkAchievedStatus, MarkAchievedTool,
+};
 use proxima_flavor_goal::tools::modify::{ModifyArgs, ModifyTool};
 use proxima_flavor_goal::tools::propose::{ProposeArgs, ProposeTool};
 use proxima_flavor_goal::tools::util::{GoalPayloadInput, SimpleTextGoalBody};
@@ -115,6 +118,20 @@ async fn read_activated_lifecycle_fact(
     Ok(sqlx::query_as(
         "SELECT memory_id, schema_id, title, evidence_count
            FROM proxima_goal.goal_activated_v1
+          WHERE goal_id = $1",
+    )
+    .bind(goal_id)
+    .fetch_one(pg.pool())
+    .await?)
+}
+
+async fn read_achieved_lifecycle_fact(
+    pg: &proxima_storage_pg::PgStorage,
+    goal_id: uuid::Uuid,
+) -> Result<(uuid::Uuid, String, String, i32), Box<dyn std::error::Error>> {
+    Ok(sqlx::query_as(
+        "SELECT memory_id, schema_id, title, evidence_count
+           FROM proxima_goal.goal_achieved_v1
           WHERE goal_id = $1",
     )
     .bind(goal_id)
@@ -305,6 +322,209 @@ async fn propose_and_accept_emit_lifecycle_facts_and_authored_edges()
             MemoryId::new(activated_fact.0),
         )
         .await?;
+
+        Ok::<(), Box<dyn std::error::Error>>(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result
+}
+
+#[tokio::test]
+async fn mark_achieved_supersedes_active_goal_with_lifecycle_and_edges()
+-> Result<(), Box<dyn std::error::Error>> {
+    let Some((pg, db_name)) = migrated().await else {
+        return Ok(());
+    };
+
+    let result = async {
+        let owner = owner_fixture();
+        let ctx = ctx(&pg, owner);
+        let proposal = propose_with_evidence(&pg, &ctx).await?;
+        let proposal_handle = ctx.handles.assign_goal(GoalId::new(proposal));
+        let active = AcceptTool::call(
+            ctx.clone(),
+            AcceptArgs {
+                proposal: proposal_handle.as_str().to_string(),
+                payload: None,
+                evidence: None,
+                target_personality: None,
+                idempotency_key: Some("achieve-accept".into()),
+            },
+        )
+        .await?;
+        let active_id = ctx
+            .handles
+            .resolve_goal(&active.handle)
+            .expect("active goal handle resolves")
+            .into_inner();
+        let evidence = insert_abstraction(&pg, &ctx.owner).await?;
+
+        let achieved = MarkAchievedTool::call(
+            ctx.clone(),
+            MarkAchievedArgs {
+                goal: active_id.to_string(),
+                evidence: vec![evidence.to_string()],
+                idempotency_key: Some("mark-achieved-1".into()),
+            },
+        )
+        .await?;
+        assert!(matches!(achieved.status, MarkAchievedStatus::Achieved));
+        let achieved_id = ctx
+            .handles
+            .resolve_goal(achieved.handle.as_deref().expect("achieved handle"))
+            .expect("achieved goal handle resolves")
+            .into_inner();
+
+        let row: (
+            String,
+            Option<uuid::Uuid>,
+            String,
+            Option<String>,
+            Option<String>,
+        ) = sqlx::query_as(
+            "SELECT state, supersedes, authorship_kind, authorship_origin, authorship_tool_id
+                   FROM proxima_core.goals
+                  WHERE goal_id = $1",
+        )
+        .bind(achieved_id)
+        .fetch_one(pg.pool())
+        .await?;
+        assert_eq!(row.0, "Achieved");
+        assert_eq!(row.1, Some(active_id));
+        assert_eq!(row.2, "System");
+        assert_eq!(row.3.as_deref(), Some("Tool"));
+        assert_eq!(row.4.as_deref(), Some("proxima-goal/goal_mark_achieved"));
+
+        let lifecycle = read_achieved_lifecycle_fact(&pg, achieved_id).await?;
+        assert_eq!(lifecycle.1, "proxima-goal/simple-text-v1");
+        assert_eq!(lifecycle.2, "proposal");
+        assert_eq!(lifecycle.3, 1);
+
+        let motivated_edges: i64 = sqlx::query_scalar(
+            "SELECT count(*)
+               FROM proxima_core.edges
+              WHERE relation = 'proxima-goal/motivated-by'
+                AND source_goal_id = $1
+                AND target_memory_id = $2",
+        )
+        .bind(achieved_id)
+        .bind(evidence)
+        .fetch_one(pg.pool())
+        .await?;
+        assert_eq!(motivated_edges, 1);
+
+        let derived_edges: i64 = sqlx::query_scalar(
+            "SELECT count(*)
+               FROM proxima_core.edges
+              WHERE relation = 'core/derived-from'
+                AND source_memory_id = $1
+                AND target_memory_id = $2",
+        )
+        .bind(lifecycle.0)
+        .bind(evidence)
+        .fetch_one(pg.pool())
+        .await?;
+        assert_eq!(derived_edges, 1);
+
+        let replay = MarkAchievedTool::call(
+            ctx.clone(),
+            MarkAchievedArgs {
+                goal: active_id.to_string(),
+                evidence: vec![evidence.to_string()],
+                idempotency_key: Some("mark-achieved-1".into()),
+            },
+        )
+        .await?;
+        assert!(matches!(
+            replay.status,
+            MarkAchievedStatus::IdempotentReplay
+        ));
+        assert_eq!(replay.handle, achieved.handle);
+
+        Ok::<(), Box<dyn std::error::Error>>(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result
+}
+
+#[tokio::test]
+async fn mark_achieved_skips_stale_or_terminal_goal_head() -> Result<(), Box<dyn std::error::Error>>
+{
+    let Some((pg, db_name)) = migrated().await else {
+        return Ok(());
+    };
+
+    let result = async {
+        let ctx = ctx(&pg, owner_fixture());
+        let proposal = propose_with_evidence(&pg, &ctx).await?;
+        let proposal_handle = ctx.handles.assign_goal(GoalId::new(proposal));
+        let active = AcceptTool::call(
+            ctx.clone(),
+            AcceptArgs {
+                proposal: proposal_handle.as_str().to_string(),
+                payload: None,
+                evidence: None,
+                target_personality: None,
+                idempotency_key: Some("stale-achieve-accept".into()),
+            },
+        )
+        .await?;
+        let active_id = ctx
+            .handles
+            .resolve_goal(&active.handle)
+            .expect("active goal handle resolves")
+            .into_inner();
+        let evidence = insert_abstraction(&pg, &ctx.owner).await?;
+        let achieved = MarkAchievedTool::call(
+            ctx.clone(),
+            MarkAchievedArgs {
+                goal: active.handle.clone(),
+                evidence: vec![evidence.to_string()],
+                idempotency_key: Some("stale-mark-achieved".into()),
+            },
+        )
+        .await?;
+        assert!(matches!(achieved.status, MarkAchievedStatus::Achieved));
+
+        let stale = MarkAchievedTool::call(
+            ctx.clone(),
+            MarkAchievedArgs {
+                goal: active_id.to_string(),
+                evidence: vec![evidence.to_string()],
+                idempotency_key: Some("stale-mark-achieved-2".into()),
+            },
+        )
+        .await?;
+        assert!(matches!(stale.status, MarkAchievedStatus::Skipped));
+        assert!(
+            stale
+                .reason
+                .as_deref()
+                .unwrap_or_default()
+                .contains("not the current lineage head")
+        );
+
+        let terminal = MarkAchievedTool::call(
+            ctx,
+            MarkAchievedArgs {
+                goal: achieved.handle.expect("achieved handle"),
+                evidence: vec![evidence.to_string()],
+                idempotency_key: Some("terminal-mark-achieved".into()),
+            },
+        )
+        .await?;
+        assert!(matches!(terminal.status, MarkAchievedStatus::Skipped));
+        assert!(
+            terminal
+                .reason
+                .as_deref()
+                .unwrap_or_default()
+                .contains("not Active")
+        );
 
         Ok::<(), Box<dyn std::error::Error>>(())
     }
