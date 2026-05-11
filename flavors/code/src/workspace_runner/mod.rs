@@ -135,9 +135,7 @@ impl WorkspaceRunner for CodeWorkspaceRunner {
             | "proxima-code/code-chunk-v1" => self.prepare_execution_request(input).await,
             WorkspaceRunV1::SCHEMA_ID => self.prepare_workspace_run_review(input).await,
             WorkspaceReviewV1::SCHEMA_ID => self.prepare_workspace_review_correction(input).await,
-            WorkspaceDecisionV1::SCHEMA_ID => {
-                self.prepare_workspace_decision_correction(input).await
-            }
+            WorkspaceDecisionV1::SCHEMA_ID => self.prepare_workspace_decision(input).await,
             other => Err(WorkspaceRunnerError::TriggerNotEligible(format!(
                 "unsupported Code workspace trigger: {other}"
             ))),
@@ -451,20 +449,40 @@ impl CodeWorkspaceRunner {
         self.prepared_from_existing_run(input, &run, context)
     }
 
-    async fn prepare_workspace_decision_correction(
+    async fn prepare_workspace_decision(
         &self,
         input: WorkspacePrepareInput<'_>,
     ) -> Result<WorkspacePreparedRun, WorkspaceRunnerError> {
-        let pool = self.pool()?;
         let decision = parse_payload::<WorkspaceDecisionV1>(
             input.triggering_memory_payload,
             WorkspaceDecisionV1::SCHEMA_ID,
         )?;
-        if decision.decision != WorkspaceDecision::RetryRequested {
-            return Err(WorkspaceRunnerError::TriggerNotEligible(
-                "workspace decision is not a retry request".into(),
-            ));
+        let wants_correction =
+            recipe_declares_title(input.recipe_bytes, "Plan Workspace Correction");
+        let wants_goal_close = recipe_declares_title(input.recipe_bytes, "Close Goal After Merge");
+        match decision.decision {
+            WorkspaceDecision::RetryRequested if wants_correction => {
+                self.prepare_workspace_retry_decision(input, decision).await
+            }
+            WorkspaceDecision::Merged if wants_goal_close => {
+                self.prepare_workspace_merge_goal_close(input, decision)
+                    .await
+            }
+            WorkspaceDecision::RetryRequested
+            | WorkspaceDecision::Merged
+            | WorkspaceDecision::Rejected
+            | WorkspaceDecision::Accepted => Err(WorkspaceRunnerError::TriggerNotEligible(
+                "workspace decision is not eligible for this recipe".into(),
+            )),
         }
+    }
+
+    async fn prepare_workspace_retry_decision(
+        &self,
+        input: WorkspacePrepareInput<'_>,
+        decision: WorkspaceDecisionV1,
+    ) -> Result<WorkspacePreparedRun, WorkspaceRunnerError> {
+        let pool = self.pool()?;
         let run = load_workspace_run(
             pool,
             input.owner,
@@ -523,6 +541,65 @@ impl CodeWorkspaceRunner {
             "veto_count": veto_count,
             "max_veto_rounds": crate::mcp::MAX_WORKSPACE_VETO_ROUNDS,
             "target_worker_personality": target_worker.map(|id| id.to_string()),
+        });
+        self.prepared_from_existing_run(input, &run, context)
+    }
+
+    async fn prepare_workspace_merge_goal_close(
+        &self,
+        input: WorkspacePrepareInput<'_>,
+        decision: WorkspaceDecisionV1,
+    ) -> Result<WorkspacePreparedRun, WorkspaceRunnerError> {
+        let pool = self.pool()?;
+        let run = load_workspace_run(
+            pool,
+            input.owner,
+            MemoryId::new(decision.workspace_run_memory_id),
+        )
+        .await?;
+        let repo = load_repo(pool, input.owner, run.repo_id).await?;
+        let original_request = load_execution_request_for_run(
+            pool,
+            input.owner,
+            MemoryId::new(decision.workspace_run_memory_id),
+        )
+        .await?;
+        let active_goal =
+            load_goal_context_for_request(pool, input.owner, original_request.memory_id).await?;
+        let latest_review = load_latest_review_for_run(
+            pool,
+            input.owner,
+            MemoryId::new(decision.workspace_run_memory_id),
+        )
+        .await?;
+        let prior_reviews =
+            load_reviews_for_request(pool, input.owner, original_request.memory_id).await?;
+        let prior_decisions =
+            load_decisions_for_request(pool, input.owner, original_request.memory_id).await?;
+        let close_candidate = goal_close_candidate(
+            active_goal.as_ref(),
+            latest_review.as_ref(),
+            input.triggering_memory_id,
+        );
+        let context = json!({
+            "mode": "close_goal_after_merge",
+            "trigger_kind": "workspace_decision",
+            "repo_id": run.repo_id.to_string(),
+            "canonical_path": repo.canonical_path,
+            "target_branch": run.target_branch,
+            "worktree_path": run.worktree_path,
+            "branch_name": run.branch_name,
+            "parent_sha": run.parent_sha,
+            "head_sha": run.head_sha,
+            "workspace_run_memory_id": decision.workspace_run_memory_id.to_string(),
+            "workspace_decision_memory_id": input.triggering_memory_id.into_inner().to_string(),
+            "original_request": original_request.to_json(),
+            "merged_decision": decision,
+            "latest_review": latest_review,
+            "prior_reviews": prior_reviews,
+            "prior_decisions": prior_decisions,
+            "active_goal": active_goal,
+            "goal_close": close_candidate,
         });
         self.prepared_from_existing_run(input, &run, context)
     }
@@ -1174,6 +1251,64 @@ async fn load_goal_context_for_request(
             "created_at": head_created_at,
         },
     })))
+}
+
+fn goal_close_candidate(
+    active_goal: Option<&serde_json::Value>,
+    latest_review: Option<&serde_json::Value>,
+    decision_memory_id: MemoryId,
+) -> serde_json::Value {
+    if latest_review
+        .and_then(|review| review.get("verdict"))
+        .and_then(serde_json::Value::as_str)
+        != Some("approved")
+    {
+        return json!({
+            "status": "skipped",
+            "reason": "latest review is not approved",
+        });
+    }
+    let Some(active_goal) = active_goal else {
+        return json!({
+            "status": "skipped",
+            "reason": "no originating Active Goal found",
+        });
+    };
+    let Some(head) = active_goal.get("head") else {
+        return json!({
+            "status": "skipped",
+            "reason": "originating Goal context has no head",
+        });
+    };
+    let state = head
+        .get("state")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    if state != "Active" {
+        return json!({
+            "status": "skipped",
+            "reason": format!("originating Goal head is not Active: {state}"),
+        });
+    }
+    let Some(goal_id) = head.get("goal_id").and_then(serde_json::Value::as_str) else {
+        return json!({
+            "status": "skipped",
+            "reason": "originating Goal head id is missing",
+        });
+    };
+    json!({
+        "status": "ready",
+        "goal_id": goal_id,
+        "evidence_memory_ids": [decision_memory_id.into_inner().to_string()],
+    })
+}
+
+fn recipe_declares_title(recipe_bytes: &[u8], title: &str) -> bool {
+    std::str::from_utf8(recipe_bytes).is_ok_and(|recipe| {
+        recipe
+            .lines()
+            .any(|line| line.trim() == format!("title: {title}"))
+    })
 }
 
 async fn load_workspace_run(

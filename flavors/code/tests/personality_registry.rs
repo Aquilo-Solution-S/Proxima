@@ -78,6 +78,18 @@ fn registry_resolves_bundled_recipes() {
         "unexpected plan_workspace_correction recipe path: {correction_path:?}",
     );
 
+    let close_goal_path = frozen
+        .bundled_recipe_path("proxima-code/close_goal_after_merge")
+        .expect("close_goal_after_merge recipe must be registered");
+    assert!(
+        close_goal_path.exists(),
+        "close_goal_after_merge recipe path {close_goal_path:?} must exist on disk",
+    );
+    assert!(
+        close_goal_path.ends_with("recipes/close_goal_after_merge.yaml"),
+        "unexpected close_goal_after_merge recipe path: {close_goal_path:?}",
+    );
+
     assert_eq!(
         frozen.bundled_recipes_for("proxima-code"),
         vec![
@@ -86,6 +98,7 @@ fn registry_resolves_bundled_recipes() {
             "proxima-code/execution_worker",
             "proxima-code/verify_workspace_run",
             "proxima-code/plan_workspace_correction",
+            "proxima-code/close_goal_after_merge",
             "proxima-code/plan_execution_requests",
         ],
     );

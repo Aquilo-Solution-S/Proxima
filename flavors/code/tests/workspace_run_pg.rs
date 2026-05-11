@@ -21,6 +21,7 @@ use proxima_code::{
 };
 use proxima_core::auth::NoAuth;
 use proxima_core::llm::{EmbeddingClient, LlmError};
+use proxima_core::mcp::{HandleTable, McpAuthorContext, McpTool, McpToolCtx};
 use proxima_core::personality::{
     InstantiatePersonalityRequest, SetWakeEntriesRequest, WakeEntryDraft, WakeExecutionMode,
 };
@@ -37,7 +38,10 @@ use proxima_core::{
     Principal, RegisterInferenceTargetRequest, SchemaId, SchemaVersion, SourceBatchId, SourceId,
     UserId, WakeEntryAuthoredBy, WakeEntryTriggerKind, WorkspacePrepareInput, WorkspaceRunner,
 };
-use proxima_flavor_goal::GoalActivatedV1;
+use proxima_flavor_goal::tools::mark_achieved::{
+    MarkAchievedArgs, MarkAchievedStatus, MarkAchievedTool,
+};
+use proxima_flavor_goal::{GoalActivatedV1, SimpleTextGoalV1};
 use proxima_storage_pg::PgStorage;
 use proxima_storage_pg::verbs::edge_append::{EdgeDraft, append_edge_in_tx};
 use proxima_storage_pg::verbs::event_ingest::ingest_event_in_tx;
@@ -547,6 +551,8 @@ async fn seed_goal_context_for_runner(
     registry: &proxima_core::FlavorRegistryFrozen,
 ) -> Result<(Uuid, proxima_core::MemoryId), Box<dyn std::error::Error>> {
     let goal_id = Uuid::now_v7();
+    let mut goal_payload = Vec::new();
+    ciborium::ser::into_writer(&SimpleTextGoalV1 {}, &mut goal_payload)?;
     let (owner_kind, owner_principal_id, owner_org_id) = match &owner.principal {
         Principal::User(user) => ("User", user.into_inner(), owner.org_id.into_inner()),
         Principal::Group(group) => ("Group", group.into_inner(), owner.org_id.into_inner()),
@@ -566,7 +572,7 @@ async fn seed_goal_context_for_runner(
     .bind(owner_org_id)
     .bind("Ship closure")
     .bind("Acceptance criteria: close the verifier loop.")
-    .bind(Vec::<u8>::new())
+    .bind(goal_payload)
     .bind("Active")
     .bind("User")
     .bind(format!("goal-{}", Uuid::now_v7()))
@@ -684,7 +690,7 @@ async fn code_workspace_prepare_builds_context_with_preloaded_paths()
                 triggering_memory_payload: &payload,
                 workspace_tool_palette: &[],
                 effective_recipe_path: &effective_recipe,
-                recipe_bytes: b"version: 1.0.0\n",
+                recipe_bytes: b"version: 1.0.0\ntitle: Close Goal After Merge\n",
                 recipe_sha256: "test-sha",
             })
             .await?;
@@ -1713,7 +1719,194 @@ async fn rejected_decision_trigger_is_not_correction_context()
             Ok(_) => panic!("discard decisions should not plan corrections"),
             Err(err) => err,
         };
-        assert!(err.to_string().contains("not a retry request"));
+        assert!(err.to_string().contains("not eligible for this recipe"));
+        Ok(())
+    }
+    .await;
+
+    drop(pg);
+    let _ = drop_db(&db_name).await;
+    result
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn merged_decision_trigger_prepares_goal_close_context()
+-> Result<(), Box<dyn std::error::Error>> {
+    let Some((db_name, pg)) = migrated_db().await else {
+        return Ok(());
+    };
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        proxima_flavor_goal::migrator().run(pg.pool()).await?;
+        let owner = test_owner();
+        let repo_root = tempfile::tempdir()?;
+        let worktree_root = tempfile::tempdir()?;
+        let recipe_root = tempfile::tempdir()?;
+        let effective_recipe = recipe_root.path().join("close.yaml");
+        std::fs::write(&effective_recipe, "version: 1.0.0\n")?;
+        let (repo_path, parent_sha) = init_repo(&repo_root).map_err(std::io::Error::other)?;
+
+        let repo_id = Uuid::now_v7();
+        proxima_code::register_repo(
+            pg.pool(),
+            &owner,
+            repo_id,
+            repo_path.to_str().expect("utf8 repo path"),
+            "merge-goal-close-context",
+        )
+        .await?;
+        let registry_root = tempfile::tempdir()?;
+        let registry = registry_with_runner(&pg, registry_root.path().to_path_buf());
+        let request = seed_execution_request_for_runner(
+            &pg,
+            &owner,
+            repo_id,
+            "merge-goal-close-request",
+            "Close Goal after merge",
+            "Implement the full accepted Goal closure.",
+        )
+        .await?;
+        let (goal_id, goal_activation) =
+            seed_goal_context_for_runner(&pg, &owner, request, &registry).await?;
+        let run_payload = WorkspaceRunV1 {
+            wake_invocation_id: Uuid::now_v7(),
+            repo_id,
+            target_branch: "main".into(),
+            worktree_path: worktree_root.path().to_string_lossy().to_string(),
+            branch_name: "proxima/wake/merge-goal-close".into(),
+            parent_sha: parent_sha.clone(),
+            head_sha: parent_sha,
+            diff_stat_json: WorkspaceDiffStat {
+                files_changed: 0,
+                insertions: 0,
+                deletions: 0,
+                files: Vec::new(),
+            },
+            exit_code: Some(0),
+            stdout_tail: None,
+            stderr_tail: None,
+            duration_ms: Some(1),
+        };
+        let run =
+            seed_workspace_run_for_runner(&pg, &owner, &registry, &run_payload, request).await?;
+        let review_payload = WorkspaceReviewV1 {
+            workspace_run_memory_id: run.into_inner(),
+            execution_request_memory_id: request.into_inner(),
+            verdict: WorkspaceReviewVerdict::Approved,
+            round_index: 0,
+            summary: "approved".into(),
+            findings: Vec::<WorkspaceReviewFinding>::new(),
+            correction_instructions: None,
+            verification_summary: Some("checked".into()),
+            reviewed_at: time::OffsetDateTime::now_utc(),
+        };
+        seed_workspace_review_for_runner(&pg, &owner, &review_payload).await?;
+        let decision = proxima_code::emit_workspace_decision(
+            pg.pool(),
+            &owner,
+            run,
+            WorkspaceDecision::Merged,
+            None,
+        )
+        .await?;
+        let decision_payload = WorkspaceDecisionV1 {
+            workspace_run_memory_id: run.into_inner(),
+            decision: WorkspaceDecision::Merged,
+            decided_at: time::OffsetDateTime::now_utc(),
+            reason_text: None,
+            decided_by_owner_id: match &owner.principal {
+                Principal::User(user) => user.into_inner(),
+                Principal::Group(group) => group.into_inner(),
+            },
+        };
+        let runner = CodeWorkspaceRunner::new(pg.pool().clone());
+        let prepared = runner
+            .prepare(WorkspacePrepareInput {
+                invocation_id: Uuid::now_v7(),
+                owner: &owner,
+                wake_token: Uuid::now_v7(),
+                mcp_url: "http://127.0.0.1:1/mcp",
+                root_perspective_memory_id: proxima_core::MemoryId::new(Uuid::now_v7()),
+                triggering_memory_id: decision,
+                triggering_memory_schema_id: WorkspaceDecisionV1::SCHEMA_ID,
+                triggering_memory_payload: &serde_json::to_value(&decision_payload)?,
+                workspace_tool_palette: &[],
+                effective_recipe_path: &effective_recipe,
+                recipe_bytes: b"version: 1.0.0\ntitle: Close Goal After Merge\n",
+                recipe_sha256: "test-sha",
+            })
+            .await?;
+
+        let context = prepared.workspace_context.expect("workspace context");
+        assert_eq!(context["mode"], "close_goal_after_merge");
+        assert_eq!(context["merged_decision"]["decision"], "merged");
+        assert_eq!(
+            context["active_goal"]["activated_memory_id"],
+            goal_activation.into_inner().to_string()
+        );
+        assert_eq!(
+            context["active_goal"]["head"]["goal_id"],
+            goal_id.to_string()
+        );
+        assert_eq!(context["latest_review"]["verdict"], "approved");
+        assert_eq!(context["goal_close"]["status"], "ready");
+        assert_eq!(context["goal_close"]["goal_id"], goal_id.to_string());
+        assert_eq!(
+            context["goal_close"]["evidence_memory_ids"][0],
+            decision.into_inner().to_string()
+        );
+
+        let mut goal_registry = FlavorRegistry::new();
+        proxima_flavor_goal::register(&mut goal_registry);
+        let goal_ctx = McpToolCtx {
+            pool: pg.pool().clone(),
+            owner: owner.clone(),
+            handles: Arc::new(HandleTable::new()),
+            registry: Arc::new(goal_registry.freeze()),
+            author: McpAuthorContext {
+                model_id: "test-model".into(),
+                client_name: "test".into(),
+                client_version: "1".into(),
+                caller_self_perspective: None,
+            },
+            caller_self_perspective: None,
+            master_token_id: None,
+            engine: None,
+        };
+        let close = MarkAchievedTool::call(
+            goal_ctx.clone(),
+            MarkAchievedArgs {
+                goal: context["goal_close"]["goal_id"]
+                    .as_str()
+                    .expect("goal id")
+                    .to_string(),
+                evidence: vec![decision.into_inner().to_string()],
+                idempotency_key: Some(format!("goal-close:{}", decision.into_inner())),
+            },
+        )
+        .await?;
+        assert!(matches!(close.status, MarkAchievedStatus::Achieved));
+        let achieved_id = goal_ctx
+            .handles
+            .resolve_goal(close.handle.as_deref().expect("achieved handle"))
+            .expect("achieved handle resolves")
+            .into_inner();
+        let row: (String, Option<Uuid>) =
+            sqlx::query_as("SELECT state, supersedes FROM proxima_core.goals WHERE goal_id = $1")
+                .bind(achieved_id)
+                .fetch_one(pg.pool())
+                .await?;
+        assert_eq!(row.0, "Achieved");
+        assert_eq!(row.1, Some(goal_id));
+        let achieved_fact_count: i64 = sqlx::query_scalar(
+            "SELECT count(*)
+               FROM proxima_goal.goal_achieved_v1
+              WHERE goal_id = $1",
+        )
+        .bind(achieved_id)
+        .fetch_one(pg.pool())
+        .await?;
+        assert_eq!(achieved_fact_count, 1);
         Ok(())
     }
     .await;
@@ -1812,7 +2005,7 @@ async fn retry_requested_decision_trigger_prepares_correction_context()
                 triggering_memory_payload: &payload,
                 workspace_tool_palette: &[],
                 effective_recipe_path: &effective_recipe,
-                recipe_bytes: b"version: 1.0.0\n",
+                recipe_bytes: b"version: 1.0.0\ntitle: Plan Workspace Correction\n",
                 recipe_sha256: "test-sha",
             })
             .await?;

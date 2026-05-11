@@ -6,11 +6,11 @@
 )]
 
 use proxima_core::mcp::{EntityRef, McpToolCtx, McpToolError};
-use proxima_core::relation::CORE_AUTHORED_RELATION;
+use proxima_core::relation::{CORE_AUTHORED_RELATION, CORE_DERIVED_FROM_RELATION};
 use proxima_core::verbs::event_ingest::{
     CitationMappingHint, CitedObjectHint, EventDraft, EventIngestOutcome,
 };
-use proxima_core::verbs::goal_write::{GoalAuthorship, GoalDraft, GoalState};
+use proxima_core::verbs::goal_write::{GoalAuthorship, GoalDraft, GoalState, SystemOrigin};
 use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{
     FactPayload, GoalId, GoalPayload, MemoryId, Owner, PersonalityInstanceId, Principal, SchemaId,
@@ -20,7 +20,9 @@ use proxima_storage_pg::verbs::edge_append::{EdgeDraft, append_edge_in_tx};
 use proxima_storage_pg::verbs::event_ingest::ingest_event_in_tx;
 use sqlx::{Postgres, Transaction};
 
-use crate::payloads::{GoalActivatedV1, GoalProposedV1, SimpleTextGoalV1, TaskGoalV1};
+use crate::payloads::{
+    GoalAchievedV1, GoalActivatedV1, GoalProposedV1, SimpleTextGoalV1, TaskGoalV1,
+};
 use crate::relations::MOTIVATED_BY_RELATION;
 
 const LIFECYCLE_SOURCE_ID: &str = "proxima-goal/lifecycle";
@@ -345,13 +347,16 @@ pub async fn insert_goal_in_tx(
     let (authorship_kind, authorship_origin, authorship_tool_id): (
         &'static str,
         Option<&'static str>,
-        Option<&'static str>,
+        Option<String>,
     ) = match &draft.authorship {
         GoalAuthorship::User => ("User", None, None),
         GoalAuthorship::External => ("External", None, None),
-        GoalAuthorship::System(_) => {
+        GoalAuthorship::System(SystemOrigin::Tool { tool_id }) => {
+            ("System", Some("Tool"), Some(tool_id.as_str().to_string()))
+        }
+        GoalAuthorship::System(SystemOrigin::Operator { .. }) => {
             return Err(McpToolError::InvalidInput(
-                "goal MCP tools do not write System-authored goals".into(),
+                "goal MCP tools do not write System/Operator-authored goals".into(),
             ));
         }
     };
@@ -489,6 +494,70 @@ pub async fn emit_goal_activated_fact(
         insert_lifecycle_authored_edge(tx, ctx, self_id, memory_id).await?;
     }
     Ok(memory_id)
+}
+
+pub async fn emit_goal_achieved_fact(
+    tx: &mut Transaction<'_, Postgres>,
+    ctx: &McpToolCtx,
+    goal_id: uuid::Uuid,
+    encoded: &EncodedGoalPayload,
+    achieved_at: time::OffsetDateTime,
+    evidence_count: usize,
+) -> Result<MemoryId, McpToolError> {
+    let payload = GoalAchievedV1 {
+        goal_id,
+        schema_id: encoded.schema_id.as_str().to_string(),
+        title: encoded.title.clone(),
+        achieved_at,
+        evidence_count: u32::try_from(evidence_count).unwrap_or(u32::MAX),
+    };
+    let outcome = ingest_lifecycle_fact(tx, ctx, &payload).await?;
+    if !outcome.idempotent_replay {
+        insert_goal_achieved_sidecar(tx, outcome.memory_id, &payload).await?;
+    }
+    let memory_id = outcome.memory_id;
+    if let Some(self_id) = ctx.caller_self_perspective {
+        insert_lifecycle_authored_edge(tx, ctx, self_id, memory_id).await?;
+    }
+    Ok(memory_id)
+}
+
+pub async fn append_lifecycle_derived_from_edges(
+    tx: &mut sqlx::PgConnection,
+    ctx: &McpToolCtx,
+    source_memory_id: MemoryId,
+    evidence: &[EvidenceRef],
+) -> Result<Vec<uuid::Uuid>, McpToolError> {
+    let relation = ctx
+        .registry
+        .resolve_relation(CORE_DERIVED_FROM_RELATION)
+        .ok_or_else(|| {
+            McpToolError::Other(format!(
+                "relation {CORE_DERIVED_FROM_RELATION} not registered"
+            ))
+        })?;
+    let mut edge_ids = Vec::with_capacity(evidence.len());
+    for ev in evidence {
+        let edge_id = uuid::Uuid::now_v7();
+        let draft = EdgeDraft {
+            edge_id,
+            relation,
+            source_kind: "Fact",
+            source_memory_id: Some(source_memory_id.into_inner()),
+            source_goal_id: None,
+            target_kind: ev.target_kind,
+            target_memory_id: ev.target_memory_id,
+            target_goal_id: ev.target_goal_id,
+            authorship_kind: "Engine",
+            authorship_owner_memory_id: None,
+            owner: &ctx.owner,
+        };
+        append_edge_in_tx(tx, &draft, None)
+            .await
+            .map_err(McpToolError::Storage)?;
+        edge_ids.push(edge_id);
+    }
+    Ok(edge_ids)
 }
 
 pub async fn outgoing_motivated_by_evidence(
@@ -705,6 +774,28 @@ async fn insert_goal_activated_sidecar(
     .bind(&payload.schema_id)
     .bind(&payload.title)
     .bind(payload.accepted_at)
+    .bind(i32::try_from(payload.evidence_count).unwrap_or(i32::MAX))
+    .execute(&mut **tx)
+    .await
+    .map_err(map_storage)?;
+    Ok(())
+}
+
+async fn insert_goal_achieved_sidecar(
+    tx: &mut Transaction<'_, Postgres>,
+    memory_id: MemoryId,
+    payload: &GoalAchievedV1,
+) -> Result<(), McpToolError> {
+    sqlx::query(
+        "INSERT INTO proxima_goal.goal_achieved_v1
+            (memory_id, goal_id, schema_id, title, achieved_at, evidence_count)
+         VALUES ($1, $2, $3, $4, $5, $6)",
+    )
+    .bind(memory_id.into_inner())
+    .bind(payload.goal_id)
+    .bind(&payload.schema_id)
+    .bind(&payload.title)
+    .bind(payload.achieved_at)
     .bind(i32::try_from(payload.evidence_count).unwrap_or(i32::MAX))
     .execute(&mut **tx)
     .await

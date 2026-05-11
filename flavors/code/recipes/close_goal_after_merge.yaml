@@ -1,0 +1,62 @@
+# Goal closure recipe.
+# Resolved at runtime via `bundled:proxima-code/close_goal_after_merge`.
+
+version: 1.0.0
+title: Close Goal After Merge
+description: Mark the originating Active Goal achieved after an approved workspace run is merged.
+parameters:
+  - key: root_perspective
+    description: Root Perspective envelope for the waking Goal closer.
+    input_type: string
+    requirement: required
+  - key: active_goals
+    description: Active goals attached to the Root Perspective.
+    input_type: string
+    requirement: required
+  - key: trigger_event
+    description: ChangeEvent envelope that triggered this wake.
+    input_type: string
+    requirement: required
+  - key: triggering_memory
+    description: Merged workspace-decision Fact envelope.
+    input_type: string
+    requirement: required
+  - key: workspace_context
+    description: Original request, merged decision, latest review, and Goal close candidate.
+    input_type: string
+    requirement: required
+prompt: |
+  Root perspective:
+  {{ root_perspective }}
+
+  Active goals:
+  {{ active_goals }}
+
+  Trigger event:
+  {{ trigger_event }}
+
+  Triggering memory:
+  {{ triggering_memory }}
+
+  Workspace context:
+  {{ workspace_context }}
+instructions: |
+  You are an unattended Goal closer for a Code workspace run that was merged after verifier approval. Your output is either one Achieved Goal supersession or no write when the context says closure is unsafe.
+
+  The triggering memory is a `proxima-code/workspace-decision-v1` Fact with `decision = merged`.
+
+  Read `workspace_context` first. It contains the original execution request, merged decision, latest review, originating Active Goal when available, and `goal_close`.
+
+  Closure contract:
+  1. Do not inspect files, edit, run tests, merge, retry, or emit execution requests.
+  2. If `workspace_context.goal_close.status` is not `ready`, do not call tools; end with the skip reason.
+  3. If `workspace_context.latest_review.verdict` is not `approved`, do not call tools.
+  4. If the Goal head in `workspace_context.active_goal.head.state` is not `Active`, do not call tools.
+  5. Otherwise call `proxima-goal_goal_mark_achieved` exactly once.
+
+  Call `proxima-goal_goal_mark_achieved` with:
+    - `goal`: `workspace_context.goal_close.goal_id`.
+    - `evidence`: `workspace_context.goal_close.evidence_memory_ids`.
+    - `idempotency_key`: `goal-close:` plus `workspace_context.workspace_decision_memory_id`.
+
+  Do not close any Goal other than `workspace_context.goal_close.goal_id`. Do not force-close terminal or superseded Goals; the tool will return `skipped` when the head changed.

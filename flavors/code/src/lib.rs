@@ -108,6 +108,7 @@ proxima_core::proxima_flavor! {
         "execution_worker",
         "verify_workspace_run",
         "plan_workspace_correction",
+        "close_goal_after_merge",
         "plan_execution_requests",
     ],
 }
