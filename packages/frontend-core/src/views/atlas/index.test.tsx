@@ -456,7 +456,7 @@ describe("Atlas graph wiring", () => {
   });
 
   it("shows motivated-by evidence chips for selected goal nodes", () => {
-    const fact = {
+    const fact: AtlasNode = {
       ...atlasNode(
         "019dfa60-0000-7000-8000-000000000311",
         "Fact",
@@ -474,7 +474,7 @@ describe("Atlas graph wiring", () => {
         payload: [],
       },
     };
-    const abs = {
+    const abs: AtlasNode = {
       ...atlasNode(
         "019dfa60-0000-7000-8000-000000000312",
         "Abstraction",
