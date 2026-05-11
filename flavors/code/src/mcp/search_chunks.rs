@@ -37,6 +37,9 @@ pub struct ChunkMatch {
     pub line_range: (i64, i64),
     pub byte_range: (i64, i64),
     pub snippet: String,
+    pub match_kind: String,
+    pub matched_line: Option<i64>,
+    pub matched_excerpt: Option<String>,
     pub score: f32,
 }
 
@@ -83,6 +86,7 @@ impl McpTool for CodeSearchChunksTool {
                  SELECT memory_id, repo_id, file_path, chunk_index, language,
                         chunk_type, line_range_start, line_range_end,
                         byte_range_start, byte_range_end,
+                        text,
                         left(text, 480) AS snippet,
                         (
                             ts_rank_cd(to_tsvector('pg_catalog.simple'::regconfig, file_path || ' ' || text), q.tsq)
@@ -125,6 +129,8 @@ impl McpTool for CodeSearchChunksTool {
                     super::REPO_HANDLE_PREFIX,
                 );
                 chunk_ids.push(row.memory_id);
+                let (match_kind, matched_line, matched_excerpt) =
+                    match_metadata(query, &row.file_path, &row.text, row.line_range_start);
                 matches.push(ChunkMatch {
                     handle: handle.as_str().to_string(),
                     repo_handle: repo_handle.as_str().to_string(),
@@ -135,6 +141,9 @@ impl McpTool for CodeSearchChunksTool {
                     line_range: (row.line_range_start, row.line_range_end),
                     byte_range: (row.byte_range_start, row.byte_range_end),
                     snippet: row.snippet,
+                    match_kind,
+                    matched_line,
+                    matched_excerpt,
                     score: row.score,
                 });
             }
@@ -151,6 +160,40 @@ impl McpTool for CodeSearchChunksTool {
             })
         })
     }
+}
+
+fn match_metadata(
+    query: &str,
+    file_path: &str,
+    text: &str,
+    line_range_start: i64,
+) -> (String, Option<i64>, Option<String>) {
+    let query_lower = query.to_ascii_lowercase();
+    let path_lower = file_path.to_ascii_lowercase();
+    if path_lower == query_lower {
+        return ("path_exact".to_string(), None, Some(file_path.to_string()));
+    }
+    if path_lower.contains(&query_lower) {
+        return (
+            "path_contains".to_string(),
+            None,
+            Some(file_path.to_string()),
+        );
+    }
+
+    for (idx, line) in text.lines().enumerate() {
+        if line.to_ascii_lowercase().contains(&query_lower) {
+            return (
+                "text_contains".to_string(),
+                i64::try_from(idx)
+                    .ok()
+                    .map(|offset| line_range_start + offset),
+                Some(line.trim().chars().take(480).collect()),
+            );
+        }
+    }
+
+    ("full_text".to_string(), None, None)
 }
 
 async fn load_call_edges(
@@ -230,6 +273,7 @@ struct ChunkRow {
     line_range_end: i64,
     byte_range_start: i64,
     byte_range_end: i64,
+    text: String,
     snippet: String,
     score: f32,
 }

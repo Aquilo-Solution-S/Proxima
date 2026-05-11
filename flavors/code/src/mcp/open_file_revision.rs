@@ -11,6 +11,8 @@ use super::sql::{
 pub struct CodeOpenFileRevisionArgs {
     pub repo_handle: String,
     pub file_path: String,
+    #[serde(default)]
+    pub include_text: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -37,6 +39,8 @@ pub struct ChunkSummary {
     pub chunk_type: String,
     pub line_range: (i64, i64),
     pub snippet: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
 }
 
 #[derive(Debug)]
@@ -98,7 +102,8 @@ impl McpTool for CodeOpenFileRevisionTool {
                 "WITH {CHUNK_HEADS_CTE}
                  SELECT memory_id, chunk_index, chunk_type,
                         line_range_start, line_range_end,
-                        left(text, 480) AS snippet
+                        left(text, 480) AS snippet,
+                        CASE WHEN $5::boolean THEN text ELSE NULL END AS text
                  FROM chunk_heads
                  WHERE repo_id = $3 AND file_path = $4
                  ORDER BY chunk_index ASC"
@@ -108,6 +113,7 @@ impl McpTool for CodeOpenFileRevisionTool {
                 .bind(owner_principal_id)
                 .bind(repo_id)
                 .bind(&args.file_path)
+                .bind(args.include_text)
                 .fetch_all(&ctx.pool)
                 .await
                 .map_err(map_storage)?;
@@ -122,6 +128,7 @@ impl McpTool for CodeOpenFileRevisionTool {
                         chunk_type: row.chunk_type,
                         line_range: (row.line_range_start, row.line_range_end),
                         snippet: row.snippet,
+                        text: row.text,
                     }
                 })
                 .collect();
@@ -150,4 +157,5 @@ struct ChunkSummaryRow {
     line_range_start: i64,
     line_range_end: i64,
     snippet: String,
+    text: Option<String>,
 }

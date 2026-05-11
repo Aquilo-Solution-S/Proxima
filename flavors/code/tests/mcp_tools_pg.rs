@@ -219,6 +219,14 @@ async fn search_chunks_supports_exact_substring_and_chunk_type_filter()
             .contains("exact_symbol()"),
         "exact punctuation substring must match"
     );
+    assert_eq!(matches[0]["match_kind"], "text_contains");
+    assert_eq!(matches[0]["matched_line"], 1);
+    assert!(
+        matches[0]["matched_excerpt"]
+            .as_str()
+            .expect("matched excerpt")
+            .contains("exact_symbol()")
+    );
     Ok(())
 }
 
@@ -272,7 +280,7 @@ async fn open_file_revision_returns_head_with_chunks() -> Result<(), Box<dyn std
     )
     .await?;
 
-    let test_ctx = ctx(fixture.pg.pool().clone(), owner, registry);
+    let test_ctx = ctx(fixture.pg.pool().clone(), owner.clone(), registry);
     let repo_handle = test_ctx
         .handles
         .assign_flavor_object("proxima-code/repo", repo_id, 'R');
@@ -283,7 +291,54 @@ async fn open_file_revision_returns_head_with_chunks() -> Result<(), Box<dyn std
     .await?;
 
     assert_eq!(result["revision"]["indexed_commit_sha"], "v2");
-    assert_eq!(result["chunks"].as_array().expect("chunks").len(), 2);
+    let chunks = result["chunks"].as_array().expect("chunks");
+    assert_eq!(chunks.len(), 2);
+    assert!(
+        chunks[0].get("text").is_none(),
+        "default output must not include full chunk text"
+    );
+
+    let text_result = run_tool::<CodeOpenFileRevisionTool>(
+        ctx(fixture.pg.pool().clone(), owner, registry_for_mcp()),
+        json!({
+            "repo_handle": repo_id.to_string(),
+            "file_path": "src/atlas.rs",
+            "include_text": true
+        }),
+    )
+    .await?;
+
+    assert_eq!(text_result["chunks"][0]["text"], "fn a() {}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn open_file_revision_accepts_raw_repo_uuid() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(fixture) = TestDb::fresh().await? else {
+        return Ok(());
+    };
+    let owner = owner_fixture();
+    let engine = engine_for_test(fixture.pg.clone(), owner.clone());
+    let registry = registry_for_mcp();
+    let repo_id = Uuid::now_v7();
+
+    ingest_file_revision(
+        fixture.pg.pool(),
+        &engine,
+        owner.clone(),
+        repo_id,
+        "src/raw.rs",
+        "v1",
+    )
+    .await?;
+
+    let result = run_tool::<CodeOpenFileRevisionTool>(
+        ctx(fixture.pg.pool().clone(), owner, registry),
+        json!({ "repo_handle": repo_id.to_string(), "file_path": "src/raw.rs" }),
+    )
+    .await?;
+
+    assert_eq!(result["revision"]["indexed_commit_sha"], "v1");
     Ok(())
 }
 

@@ -1,5 +1,5 @@
 //! Phase 1d: LocalCliGooseAdapter spawns goose with --recipe / --params /
-//! --max-turns / --no-session and maps exit code to TargetOutcome. The
+//! optional --max-turns / --no-session and maps exit code to TargetOutcome. The
 //! success-path test is skipped if goose is missing on PATH; the
 //! spawn-failure test always runs against a bogus path.
 
@@ -117,6 +117,42 @@ async fn passes_current_batch_mode_flag_to_goose() {
     assert!(artifact.contains("\"env_keys\""));
     assert!(artifact.contains("PROXIMA_WAKE_TOKEN"));
     assert!(!artifact.contains(&wake_token));
+}
+
+#[tokio::test]
+async fn omits_max_turns_when_max_rounds_is_zero() {
+    let dir = tempfile::tempdir().unwrap();
+    let goose = dir.path().join("goose");
+    let args = dir.path().join("args.txt");
+    fs::write(
+        &goose,
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$GOOSE_ARG_CAPTURE\"\nprintf '%s\\n' '{\"type\":\"message\",\"turn\":1}'\n",
+    )
+    .unwrap();
+    let mut perms = fs::metadata(&goose).unwrap().permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(&goose, perms).unwrap();
+
+    let adapter = LocalCliGooseAdapter::new(goose);
+    let invocation = TargetInvocation {
+        recipe_path: PathBuf::from("/tmp/recipe.yaml"),
+        params: HashMap::new(),
+        max_rounds: 0,
+        env: HashMap::from([("GOOSE_ARG_CAPTURE".to_string(), args.display().to_string())]),
+        timeout: Duration::from_secs(5),
+        cwd: None,
+        session_log_path: None,
+        invocation_id: None,
+        personality_instance_id: None,
+        wake_entry_id: None,
+        change_event_seq: None,
+    };
+
+    let outcome = adapter.run(invocation).await.expect("run ok");
+    assert!(matches!(outcome.kind, TargetOutcomeKind::Succeeded));
+    let captured = fs::read_to_string(args).unwrap();
+    assert!(!captured.contains("--max-turns\n"));
+    assert!(captured.contains("--no-session\n"));
 }
 
 #[tokio::test]

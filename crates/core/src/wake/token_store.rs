@@ -34,39 +34,54 @@ impl WakeTokenContext {
 #[derive(Debug)]
 struct Entry {
     ctx: WakeTokenContext,
-    expires_at: Instant,
+    idle_expires_at: Instant,
+    max_expires_at: Instant,
 }
 
 #[derive(Debug)]
 pub struct WakeTokenStore {
-    ttl: Duration,
+    idle_ttl: Duration,
     inner: Arc<RwLock<HashMap<Uuid, Entry>>>,
 }
 
 impl WakeTokenStore {
-    pub fn new(ttl: Duration) -> Self {
+    pub fn new(idle_ttl: Duration) -> Self {
         Self {
-            ttl,
+            idle_ttl,
             inner: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
     pub async fn mint(&self, ctx: WakeTokenContext) -> Uuid {
+        self.mint_with_max_lifetime(ctx, self.idle_ttl).await
+    }
+
+    pub async fn mint_with_max_lifetime(
+        &self,
+        ctx: WakeTokenContext,
+        max_lifetime: Duration,
+    ) -> Uuid {
         let token = Uuid::new_v4();
+        let now = Instant::now();
+        let max_expires_at = now + max_lifetime;
         let entry = Entry {
             ctx,
-            expires_at: Instant::now() + self.ttl,
+            idle_expires_at: (now + self.idle_ttl).min(max_expires_at),
+            max_expires_at,
         };
         self.inner.write().await.insert(token, entry);
         token
     }
 
     pub async fn resolve(&self, token: Uuid) -> Option<WakeTokenContext> {
-        let guard = self.inner.read().await;
-        let entry = guard.get(&token)?;
-        if entry.expires_at <= Instant::now() {
+        let mut guard = self.inner.write().await;
+        let entry = guard.get_mut(&token)?;
+        let now = Instant::now();
+        if entry.idle_expires_at <= now || entry.max_expires_at <= now {
+            guard.remove(&token);
             return None;
         }
+        entry.idle_expires_at = (now + self.idle_ttl).min(entry.max_expires_at);
         Some(entry.ctx.clone())
     }
 
@@ -78,7 +93,7 @@ impl WakeTokenStore {
         let now = Instant::now();
         let mut guard = self.inner.write().await;
         let before = guard.len();
-        guard.retain(|_, e| e.expires_at > now);
+        guard.retain(|_, e| e.idle_expires_at > now && e.max_expires_at > now);
         before - guard.len()
     }
 }

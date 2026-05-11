@@ -3,8 +3,8 @@
 //! to [`TargetOutcomeKind`].
 //!
 //! - Recipe params are JSON-serialised and passed as `--params K=V`.
-//! - `--max-turns` is the WakeEntry-level override (spec §"max_rounds is
-//!   the only WakeEntry-level limit override").
+//! - `--max-turns` is the WakeEntry-level override; `max_rounds = 0`
+//!   omits the flag and leaves Goose uncapped by turn count.
 //! - `--no-session` keeps wake runs ephemeral/non-resumable.
 //! - Env is cleared and only the engine-supplied vars + `PATH` flow
 //!   through, so inherited dev-shell creds don't leak into the LLM loop.
@@ -73,8 +73,10 @@ impl TargetAdapter for LocalCliGooseAdapter {
             let serialized = serde_json::to_string(value).unwrap_or_default();
             cmd.arg("--params").arg(format!("{key}={serialized}"));
         }
-        cmd.arg("--max-turns")
-            .arg(invocation.max_rounds.to_string());
+        if invocation.max_rounds > 0 {
+            cmd.arg("--max-turns")
+                .arg(invocation.max_rounds.to_string());
+        }
         cmd.arg("--no-session");
         cmd.arg("--output-format").arg("stream-json");
         cmd.arg("--debug");
@@ -335,9 +337,11 @@ fn redacted_argv(invocation: &TargetInvocation) -> Vec<String> {
         argv.push("--params".to_string());
         argv.push(format!("{key}=<redacted>"));
     }
+    if invocation.max_rounds > 0 {
+        argv.push("--max-turns".to_string());
+        argv.push(invocation.max_rounds.to_string());
+    }
     argv.extend([
-        "--max-turns".to_string(),
-        invocation.max_rounds.to_string(),
         "--no-session".to_string(),
         "--output-format".to_string(),
         "stream-json".to_string(),

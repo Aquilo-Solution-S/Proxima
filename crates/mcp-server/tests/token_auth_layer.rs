@@ -111,3 +111,31 @@ async fn passes_with_valid_token_and_injects_extension() {
     let body_str = std::str::from_utf8(&body).unwrap();
     assert_eq!(body_str, ctx.palette.join(","));
 }
+
+#[tokio::test]
+async fn repeated_valid_wake_token_auth_renews_idle_lease() {
+    let store = Arc::new(WakeTokenStore::new(Duration::from_millis(80)));
+    let token = store
+        .mint_with_max_lifetime(make_ctx(), Duration::from_millis(500))
+        .await;
+    let auth_store = Arc::new(McpAuthStore::new(store));
+    let app = Router::new()
+        .route("/protected", get(protected))
+        .layer(mcp_auth_layer(auth_store, default_allowlist()));
+
+    for _ in 0..5 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/protected")
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+}

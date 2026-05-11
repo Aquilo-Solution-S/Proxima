@@ -150,7 +150,12 @@ pub async fn fire_wake_entry(
     let invocation_id_for_dispatch = token_ctx.invocation_id;
     let root_perspective_memory_id_for_dispatch = token_ctx.current_root_perspective_memory_id;
     let triggering_memory_id_for_dispatch = token_ctx.triggering_event_memory_id;
-    let wake_token = engine.wake_token_store().mint(token_ctx).await;
+    let max_rounds = u32::from(input.wake_entry.max_rounds);
+    let invocation_timeout = per_invocation_timeout(max_rounds);
+    let wake_token = engine
+        .wake_token_store()
+        .mint_with_max_lifetime(token_ctx, invocation_timeout)
+        .await;
 
     // 5. INSERT invocation row (status = running).
     let inserted = engine
@@ -312,14 +317,16 @@ pub async fn fire_wake_entry(
             }
         };
 
-        let max_rounds = u32::from(input.wake_entry.max_rounds);
+        if let Some(workspace_context) = prepared.workspace_context.clone() {
+            params.insert("workspace_context".to_string(), workspace_context);
+        }
         let outcome_result = adapter
             .run(TargetInvocation {
                 recipe_path: prepared.effective_recipe_path.clone(),
                 params,
                 max_rounds,
                 env,
-                timeout: per_invocation_timeout(max_rounds),
+                timeout: invocation_timeout,
                 cwd: Some(prepared.work_dir.clone()),
                 session_log_path: Some(session_log_path.clone()),
                 invocation_id: Some(invocation_id_for_dispatch),
@@ -372,14 +379,13 @@ pub async fn fire_wake_entry(
     }
 
     // 9. Run adapter.
-    let max_rounds = u32::from(input.wake_entry.max_rounds);
     let outcome_result = adapter
         .run(TargetInvocation {
             recipe_path: effective_recipe_path.clone(),
             params,
             max_rounds,
             env,
-            timeout: per_invocation_timeout(max_rounds),
+            timeout: invocation_timeout,
             cwd: None,
             session_log_path: Some(session_log_path),
             invocation_id: Some(invocation_id_for_dispatch),
@@ -656,6 +662,9 @@ fn owner_principal_segment(owner: &Owner) -> String {
 }
 
 fn per_invocation_timeout(max_rounds: u32) -> Duration {
+    if max_rounds == 0 {
+        return Duration::from_secs(24 * 60 * 60);
+    }
     // Conservative: 60s per round + 30s startup. Adapter-side timeouts
     // are the floor; the dispatcher's outer cancel signal is the
     // ceiling. Phase 1e tunes this once Code-flavor recipes have a

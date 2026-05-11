@@ -40,7 +40,7 @@ pub struct WakeEntryDraftInput {
     pub substrate_tool_palette: Vec<String>,
     #[serde(default)]
     pub workspace_tool_palette: Vec<String>,
-    #[schemars(range(min = 1))]
+    #[schemars(range(min = 0))]
     pub max_rounds: u16,
 }
 

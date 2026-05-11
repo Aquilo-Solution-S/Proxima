@@ -75,6 +75,9 @@ pub struct WorkspacePreparedRun {
     /// On-disk path of the rendered effective recipe with workspace
     /// extensions injected. Distinct from the bundled recipe path.
     pub effective_recipe_path: PathBuf,
+    /// Optional flavor-owned execution context merged into recipe
+    /// params after prepare. Core treats it as opaque JSON.
+    pub workspace_context: Option<serde_json::Value>,
     /// Runner-owned state. Core treats this as opaque and hands it
     /// back to the same runner during finalize.
     pub runner_state: serde_json::Value,

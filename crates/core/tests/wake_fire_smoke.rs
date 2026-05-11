@@ -80,6 +80,38 @@ impl WorkspaceRunner for StubWorkspaceRunner {
     }
 }
 
+#[derive(Debug)]
+struct ContextWorkspaceRunner {
+    work_dir: tempfile::TempDir,
+}
+
+#[async_trait]
+impl WorkspaceRunner for ContextWorkspaceRunner {
+    async fn prepare(
+        &self,
+        input: WorkspacePrepareInput<'_>,
+    ) -> Result<WorkspacePreparedRun, WorkspaceRunnerError> {
+        Ok(WorkspacePreparedRun {
+            work_dir: self.work_dir.path().to_path_buf(),
+            effective_recipe_path: input.effective_recipe_path.to_path_buf(),
+            workspace_context: Some(serde_json::json!({
+                "repo_id": "repo-ctx",
+                "request_key": "request-ctx",
+            })),
+            runner_state: serde_json::json!({}),
+        })
+    }
+
+    async fn finalize(
+        &self,
+        _input: WorkspaceFinalizeInput<'_>,
+    ) -> Result<WorkspaceRunRecord, WorkspaceRunnerError> {
+        Ok(WorkspaceRunRecord {
+            primary_memory_id: None,
+        })
+    }
+}
+
 // ---------- Mock TargetAdapter ----------
 
 #[derive(Debug, Clone)]
@@ -569,6 +601,11 @@ struct FireFixture {
 
 impl FireFixture {
     async fn build() -> Self {
+        Self::build_with_workspace_runner(Arc::new(StubWorkspaceRunner) as Arc<dyn WorkspaceRunner>)
+            .await
+    }
+
+    async fn build_with_workspace_runner(runner: Arc<dyn WorkspaceRunner>) -> Self {
         let owner = Owner {
             principal: Principal::User(UserId::new(Uuid::now_v7())),
             org_id: OrgId::new(Uuid::now_v7()),
@@ -625,17 +662,11 @@ impl FireFixture {
 
         let principal = owner.principal.clone();
         let resolver = NoAuth::new(principal, owner.clone());
-        // Register a stub WorkspaceRunner under the `proxima-test`
-        // flavor so workspace-mode wakes (whose trigger_id starts
-        // with `proxima-test/`) hit the runner-dispatch path in
-        // wake/fire.rs and route to `Unimplemented`. Without this,
-        // the dispatch falls into the `NoRunner` arm with a
-        // different `failure_reason`.
+        // Register a WorkspaceRunner under the `proxima-test` flavor
+        // so workspace-mode wakes (whose trigger_id starts with
+        // `proxima-test/`) hit the runner-dispatch path.
         let mut registry = FlavorRegistry::new();
-        registry.add_workspace_runner(
-            "proxima-test",
-            Arc::new(StubWorkspaceRunner) as Arc<dyn WorkspaceRunner>,
-        );
+        registry.add_workspace_runner("proxima-test", runner);
         registry.add_workspace_trigger("proxima-test/wake-fire-fact-v1");
         let frozen_registry = registry.freeze();
         let engine = Arc::new(
@@ -716,6 +747,7 @@ async fn fires_single_entry_writes_invocation_row_and_finalizes() {
     assert!(invocation.params.contains_key("active_goals"));
     assert!(invocation.params.contains_key("trigger_event"));
     assert!(invocation.params.contains_key("triggering_memory"));
+    assert!(!invocation.params.contains_key("workspace_context"));
     assert!(invocation.env.contains_key("PROXIMA_WAKE_TOKEN"));
     assert_eq!(
         invocation.env.get("PROXIMA_MCP_URL").map(String::as_str),
@@ -772,6 +804,28 @@ async fn workspace_mode_fails_with_failure_reason() {
         Some("workspace_mode_not_yet_implemented")
     );
     assert_eq!(adapter.calls.lock().unwrap().len(), 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn workspace_mode_merges_workspace_context_into_adapter_params() {
+    let runner = Arc::new(ContextWorkspaceRunner {
+        work_dir: tempfile::tempdir().expect("tempdir"),
+    }) as Arc<dyn WorkspaceRunner>;
+    let mut fixture = FireFixture::build_with_workspace_runner(runner).await;
+    fixture.wake_entry.execution_mode = WakeEntryExecutionMode::Workspace;
+    let adapter = MockAdapter::new(TargetOutcomeKind::Succeeded);
+
+    let fired = fire_wake_entry(&fixture.engine, &adapter, fixture.input())
+        .await
+        .expect("fire ok");
+    assert!(fired);
+
+    let calls = adapter.calls.lock().unwrap();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(
+        calls[0].params["workspace_context"]["request_key"],
+        "request-ctx"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

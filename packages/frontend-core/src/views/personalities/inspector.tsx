@@ -713,14 +713,14 @@ const WakeEntryDetail: Component<{
             Max rounds
             <input
               type="number"
-              min="1"
+              min="0"
               step="1"
               value={String(props.draft.max_rounds)}
               onChange={(event) =>
                 props.onUpdate((draft) => {
                   draft.max_rounds = clampInt(
                     event.currentTarget.value,
-                    1,
+                    0,
                     1_000,
                   );
                 })
