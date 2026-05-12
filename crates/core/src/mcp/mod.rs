@@ -34,7 +34,7 @@ pub struct McpToolCtx {
     pub registry: Arc<FlavorRegistryFrozen>,
     pub author: McpAuthorContext,
     pub caller_self_perspective: Option<MemoryId>,
-    /// Set by `DevMcpServer::call_tool` for master-token requests so
+    /// Set by `McpToolHost::call_tool` for master-token requests so
     /// downstream code (notably the audit emit path) can distinguish
     /// master-token from wake-token callers without inspecting the
     /// auth context. `None` for wake-token, no-auth, or test calls.

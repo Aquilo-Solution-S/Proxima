@@ -6,7 +6,7 @@ use proxima_core::llm::EmbeddingClient;
 use proxima_core::secrets::ResolverRegistry;
 use proxima_core::{Engine, FlavorRegistry, FlavorRegistryFrozen, OrgId, Owner, Principal, UserId};
 use proxima_llm_openai_compat::{OpenAiCompatConfig, OpenAiCompatEmbeddingClient};
-use proxima_mcp_server::{DevMcpServer, EngineHostedMcpListener, McpAuthStore, default_allowlist};
+use proxima_mcp_server::{McpToolHost, EngineHostedMcpListener, McpAuthStore, default_allowlist};
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
 
@@ -219,7 +219,7 @@ pub(crate) async fn build_mcp_listener(
     proxima_flavor_goal::register(&mut registry);
     proxima_code::register(&mut registry);
     let frozen: Arc<FlavorRegistryFrozen> = Arc::new(registry.freeze());
-    let server = DevMcpServer::from_pool(pool, owner, frozen);
+    let server = McpToolHost::from_pool(pool, owner, frozen);
     Ok((
         Arc::new(EngineHostedMcpListener::with_auth_store(
             server,

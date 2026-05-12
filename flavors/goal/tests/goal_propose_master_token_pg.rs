@@ -15,7 +15,7 @@ use proxima_core::verbs::query::MemoryStore;
 use proxima_core::{Engine, FlavorRegistry, McpTool};
 use proxima_flavor_goal::tools::propose::{ProposeArgs, ProposeTool};
 use proxima_flavor_goal::tools::util::{GoalPayloadInput, SimpleTextGoalBody};
-use proxima_mcp_server::{DevMcpServer, McpAuthContext, McpAuthStore};
+use proxima_mcp_server::{McpToolHost, McpAuthContext, McpAuthStore};
 use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
@@ -23,7 +23,7 @@ use uuid::Uuid;
 async fn mcp_server_for_owner(
     pg: &proxima_storage_pg::PgStorage,
     owner: &proxima_core::Owner,
-) -> Result<(DevMcpServer, McpAuthContext, Uuid), Box<dyn std::error::Error>> {
+) -> Result<(McpToolHost, McpAuthContext, Uuid), Box<dyn std::error::Error>> {
     let mut registry = FlavorRegistry::new();
     proxima_flavor_goal::register(&mut registry);
     let server_registry = Arc::new(registry.freeze());
@@ -35,7 +35,7 @@ async fn mcp_server_for_owner(
         Engine::new(engine_registry.freeze(), MemoryStore::new(), Box::new(auth))
             .with_storage(Arc::new(pg.clone())),
     );
-    let server = DevMcpServer::from_pool(pg.pool().clone(), owner.clone(), server_registry)
+    let server = McpToolHost::from_pool(pg.pool().clone(), owner.clone(), server_registry)
         .with_engine(engine);
     let auth_store = McpAuthStore::new(Arc::new(
         proxima_core::wake::token_store::WakeTokenStore::new(Duration::from_mins(5)),
@@ -49,7 +49,7 @@ async fn mcp_server_for_owner(
 }
 
 async fn propose_accept_via_mcp(
-    server: &DevMcpServer,
+    server: &McpToolHost,
     auth_ctx: &McpAuthContext,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let author = McpAuthorContext {

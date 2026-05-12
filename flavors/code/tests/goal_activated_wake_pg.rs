@@ -24,7 +24,7 @@ use proxima_core::{
     InferenceTargetConfig, LocalCliConfig, ModelTier, OrgId, Owner, PerspectivePayload, Principal,
     RegisterInferenceTargetRequest, UserId, WakeEntryAuthoredBy, WakeEntryTriggerKind,
 };
-use proxima_mcp_server::{DevMcpServer, McpAuthStore};
+use proxima_mcp_server::{McpToolHost, McpAuthStore};
 use proxima_storage_pg::PgStorage;
 use sqlx::{Connection, Executor, PgConnection, Row};
 use tempfile::TempDir;
@@ -54,7 +54,7 @@ impl EmbeddingClient for FakeEmbedding {
 
 #[derive(Debug, Clone)]
 struct ScriptedExecutorAdapter {
-    server: DevMcpServer,
+    server: McpToolHost,
     auth_store: Arc<McpAuthStore>,
 }
 
@@ -235,7 +235,7 @@ async fn goal_activated_fact_wakes_substrate_executor_and_emits_perspective()
         let mut server_registry = proxima_core::FlavorRegistry::new();
         proxima_flavor_goal::register(&mut server_registry);
         proxima_code::register(&mut server_registry);
-        let server = DevMcpServer::from_pool(
+        let server = McpToolHost::from_pool(
             pg.pool().clone(),
             owner.clone(),
             Arc::new(server_registry.freeze()),

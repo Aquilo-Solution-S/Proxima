@@ -14,7 +14,7 @@ use proxima_core::mcp::McpAuthorContext;
 use proxima_core::storage::Storage;
 use proxima_core::verbs::query::MemoryStore;
 use proxima_core::{Engine, FlavorRegistry, OrgId, Owner, Principal, UserId};
-use proxima_mcp_server::{DevMcpServer, McpAuthStore, McpToolScope};
+use proxima_mcp_server::{McpToolHost, McpAuthStore, McpToolScope};
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
 
@@ -45,8 +45,8 @@ async fn master_token_call_mints_per_token_self_perspective()
         .with_storage(Arc::new(pg.clone())),
     );
 
-    // Build DevMcpServer from pool (mirrors personality_crud_e2e_pg.rs pattern).
-    let server = DevMcpServer::from_pool(
+    // Build McpToolHost from pool (mirrors personality_crud_e2e_pg.rs pattern).
+    let server = McpToolHost::from_pool(
         pg.pool().clone(),
         owner.clone(),
         Arc::new(FlavorRegistry::new().freeze()),
@@ -90,7 +90,7 @@ async fn master_token_call_mints_per_token_self_perspective()
 
     // Verify call_tool was the minter — the mapping table starts empty
     // (create_db produces a fresh DB), so finding the row here proves the
-    // ensure-on-call step in DevMcpServer::call_tool inserted it, not a
+    // ensure-on-call step in McpToolHost::call_tool inserted it, not a
     // later probe.
     let pool = pg.pool().clone();
     let mapping_count: i64 = sqlx::query_scalar(

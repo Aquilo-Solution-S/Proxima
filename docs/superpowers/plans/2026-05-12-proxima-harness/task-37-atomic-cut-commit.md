@@ -91,7 +91,7 @@ EOF
 | Changes in fire_wake_entry | Task 8.5 |
 | Provider scope (MistralChat + OpenAIChat + OpenAIResponses) | Phases 2 + 5 |
 | Single-cut Goose removal | Phase 8 |
-| What stays valuable | Tasks 6.1 (WakeEntry shape preserved), 4.2 (DevMcpServer bridge preserves registry MCP + substrate-pack tools), e2e test (WorkspaceRunner.prepare still called) |
+| What stays valuable | Tasks 6.1 (WakeEntry shape preserved), 4.2 (McpToolHost bridge preserves registry MCP + substrate-pack tools), e2e test (WorkspaceRunner.prepare still called) |
 
 **Type consistency:** `HarnessAdapter` / `HarnessProgram` / `HarnessOutcome` / `HarnessContext` / `ProviderTarget` / `SubstrateToolBinding` names are stable across Tasks 1.1, 4.1, 4.3, 8.5. `HarnessSubstrateBridge` is the Task 4.2 dispatch seam; do not replace it with registry-only `McpToolDescriptor` dispatch. `WorkspaceToolName::{Shell,TextEditor,ListFiles}` are stable across Tasks 3.1, 4.1, 4.3. `ToolSpec { canonical, provider_safe, description, input_schema }` consistent in Tasks 2.2, 4.1, 4.4.
 
