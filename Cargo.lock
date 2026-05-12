@@ -3458,6 +3458,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "proxima-harness"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "blake3",
+ "futures",
+ "http",
+ "proxima-core",
+ "reqwest 0.12.28",
+ "schemars 1.2.1",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "time",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "proxima-llm-openai-compat"
 version = "0.1.0"
 dependencies = [
