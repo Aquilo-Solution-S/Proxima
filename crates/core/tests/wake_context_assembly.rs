@@ -38,8 +38,8 @@ async fn assembles_all_four_params() {
     // active_goals may be empty; just assert the type / shape.
     let _: &Vec<_> = &ctx.active_goals;
 
-    // Recipes get the run-time instance id back so they can disambiguate
-    // sibling personalities; sanity-check the round-trip.
+    // Harness programs get the run-time instance id back so they can
+    // disambiguate sibling personalities; sanity-check the round-trip.
     assert_eq!(ctx.root_perspective.instance_id, instance_id.into_inner());
 
     // Triggering memory carries the typed sidecar payload — the

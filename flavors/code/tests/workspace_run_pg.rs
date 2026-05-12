@@ -635,9 +635,6 @@ async fn code_workspace_prepare_builds_context_with_preloaded_paths()
         let owner = test_owner();
         let repo_root = tempfile::tempdir()?;
         let worktrees_root = tempfile::tempdir()?;
-        let recipe_root = tempfile::tempdir()?;
-        let effective_recipe = recipe_root.path().join("effective.yaml");
-        std::fs::write(&effective_recipe, "version: 1.0.0\n")?;
         let (repo_path, _) = init_repo(&repo_root).map_err(std::io::Error::other)?;
         std::fs::create_dir(repo_path.join("src"))?;
         std::fs::write(repo_path.join("src/lib.rs"), "pub fn target() {}\n")?;
@@ -764,11 +761,8 @@ async fn code_workspace_runner_hydrates_pnpm_tooling() -> Result<(), Box<dyn std
         let owner = test_owner();
         let repo_root = tempfile::tempdir()?;
         let worktrees_root = tempfile::tempdir()?;
-        let recipe_root = tempfile::tempdir()?;
         let pnpm_store_root = tempfile::tempdir()?;
         let fake_pnpm_root = tempfile::tempdir()?;
-        let effective_recipe = recipe_root.path().join("effective.yaml");
-        std::fs::write(&effective_recipe, "version: 1.0.0\n")?;
         let (repo_path, _) = init_repo(&repo_root).map_err(std::io::Error::other)?;
         std::fs::write(repo_path.join("pnpm-lock.yaml"), "lockfileVersion: '9.0'\n")?;
         std::fs::write(repo_path.join("package.json"), "{\"private\":true}\n")?;
@@ -874,9 +868,6 @@ async fn workspace_run_trigger_prepares_verifier_context_from_worker_branch()
         let owner = test_owner();
         let repo_root = tempfile::tempdir()?;
         let worktree_root = tempfile::tempdir()?;
-        let recipe_root = tempfile::tempdir()?;
-        let effective_recipe = recipe_root.path().join("verify.yaml");
-        std::fs::write(&effective_recipe, "version: 1.0.0\n")?;
         let (repo_path, parent_sha) = init_repo(&repo_root).map_err(std::io::Error::other)?;
         let branch_name = format!("proxima/wake/{}", Uuid::now_v7());
         let worker_tree = worktree_root.path().join("worker");
@@ -1017,9 +1008,6 @@ async fn workspace_run_trigger_resolves_original_request_through_run_chain()
         let owner = test_owner();
         let repo_root = tempfile::tempdir()?;
         let worktree_root = tempfile::tempdir()?;
-        let recipe_root = tempfile::tempdir()?;
-        let effective_recipe = recipe_root.path().join("verify.yaml");
-        std::fs::write(&effective_recipe, "version: 1.0.0\n")?;
         let (repo_path, parent_sha) = init_repo(&repo_root).map_err(std::io::Error::other)?;
         let branch_name = format!("proxima/wake/{}", Uuid::now_v7());
         let worker_tree = worktree_root.path().join("worker");
@@ -1161,9 +1149,6 @@ async fn workspace_run_trigger_loads_goal_context_from_request_chain()
         let owner = test_owner();
         let repo_root = tempfile::tempdir()?;
         let worktree_root = tempfile::tempdir()?;
-        let recipe_root = tempfile::tempdir()?;
-        let effective_recipe = recipe_root.path().join("verify.yaml");
-        std::fs::write(&effective_recipe, "version: 1.0.0\n")?;
         let (repo_path, parent_sha) = init_repo(&repo_root).map_err(std::io::Error::other)?;
         let branch_name = format!("proxima/wake/{}", Uuid::now_v7());
         let worker_tree = worktree_root.path().join("worker");
@@ -1311,9 +1296,6 @@ async fn correction_execution_request_reuses_derived_workspace_run_worktree()
         let owner = test_owner();
         let repo_root = tempfile::tempdir()?;
         let worktree_root = tempfile::tempdir()?;
-        let recipe_root = tempfile::tempdir()?;
-        let effective_recipe = recipe_root.path().join("execute.yaml");
-        std::fs::write(&effective_recipe, "version: 1.0.0\n")?;
         let (repo_path, parent_sha) = init_repo(&repo_root).map_err(std::io::Error::other)?;
         let branch_name = format!("proxima/wake/{}", Uuid::now_v7());
         let worker_tree = worktree_root.path().join("worker");
@@ -1459,9 +1441,6 @@ async fn rejected_review_trigger_prepares_correction_context()
         let owner = test_owner();
         let repo_root = tempfile::tempdir()?;
         let worktree_root = tempfile::tempdir()?;
-        let recipe_root = tempfile::tempdir()?;
-        let effective_recipe = recipe_root.path().join("correct.yaml");
-        std::fs::write(&effective_recipe, "version: 1.0.0\n")?;
         let (repo_path, parent_sha) = init_repo(&repo_root).map_err(std::io::Error::other)?;
         let worker_tree = worktree_root.path().join("worker");
         let branch_name = format!("proxima/wake/{}", Uuid::now_v7());
@@ -1608,9 +1587,6 @@ async fn rejected_decision_trigger_is_not_correction_context()
         let owner = test_owner();
         let repo_root = tempfile::tempdir()?;
         let worktree_root = tempfile::tempdir()?;
-        let recipe_root = tempfile::tempdir()?;
-        let effective_recipe = recipe_root.path().join("correct.yaml");
-        std::fs::write(&effective_recipe, "version: 1.0.0\n")?;
         let (repo_path, parent_sha) = init_repo(&repo_root).map_err(std::io::Error::other)?;
 
         let repo_id = Uuid::now_v7();
@@ -1714,9 +1690,6 @@ async fn merged_decision_trigger_prepares_goal_close_context()
         let owner = test_owner();
         let repo_root = tempfile::tempdir()?;
         let worktree_root = tempfile::tempdir()?;
-        let recipe_root = tempfile::tempdir()?;
-        let effective_recipe = recipe_root.path().join("close.yaml");
-        std::fs::write(&effective_recipe, "version: 1.0.0\n")?;
         let (repo_path, parent_sha) = init_repo(&repo_root).map_err(std::io::Error::other)?;
 
         let repo_id = Uuid::now_v7();
@@ -1897,9 +1870,6 @@ async fn retry_requested_decision_trigger_prepares_correction_context()
         let owner = test_owner();
         let repo_root = tempfile::tempdir()?;
         let worktree_root = tempfile::tempdir()?;
-        let recipe_root = tempfile::tempdir()?;
-        let effective_recipe = recipe_root.path().join("correct.yaml");
-        std::fs::write(&effective_recipe, "version: 1.0.0\n")?;
         let (repo_path, parent_sha) = init_repo(&repo_root).map_err(std::io::Error::other)?;
 
         let repo_id = Uuid::now_v7();

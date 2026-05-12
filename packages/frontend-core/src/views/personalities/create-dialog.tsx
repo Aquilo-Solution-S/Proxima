@@ -67,8 +67,8 @@ export const CreatePersonalityDialog: Component<Props> = (props) => {
               </label>
               <span class="personality-field-hint">
                 Short intent statement — used verbatim as the system-prompt
-                baseline for every wake. Recipes layer per-trigger prose on
-                top.
+                baseline for every wake. Wake entries layer per-trigger
+                context on top.
               </span>
             </div>
           </section>
