@@ -3,7 +3,7 @@
 **Status:** design
 **Date:** 2026-05-12
 **Owner:** Heinrich
-**Scope:** `crates/core/src/wake/target_adapter/`, new `crates/harness/`, `crates/core/src/inference/`, `crates/mcp-server/`, `flavors/code/recipes/`, the `wake_invocation_log` storage path, and one new core schema pair (`proxima-core/wake-trace-v1` Fact + `proxima-core/wake-trace-citation-v1` CitationMapping).
+**Scope:** `crates/core/src/wake/target_adapter/`, new `crates/harness/`, `crates/core/src/inference/`, `crates/mcp-server/`, `flavors/code/recipes/`, the `wake_invocation_log` storage path, and three new core schemas (`proxima-core/wake-trace-v1` Fact + `proxima-core/wake-trace-jsonl-v1` CitedObject + `proxima-core/wake-trace-citation-v1` CitationMapping).
 **Related:**
 - `docs/superpowers/specs/2026-05-07-personality-as-composed-behaviors.md` — the spinning-wheel loop, four-param wake context, WakeEntry/InferenceTarget split, and `LocalCliGooseAdapter` interface this spec replaces.
 - `docs/superpowers/specs/2026-05-09-workspace-mode-design.md` — `WorkspaceRunner` prepare/finalize trait stays; the part driven by `--with-builtin developer` goes.
@@ -28,10 +28,10 @@ Replace the subprocess with an in-process Rust loop — the **Proxima Harness** 
 
 ### Six principles
 
-1. **Native model tool-calling, every provider.** Each adapter speaks the provider's tool-use protocol directly: Mistral's `/v1/chat/completions` with `tools: [...]`, OpenAI's `/v1/responses` (Codex tier) and `/v1/chat/completions`, Anthropic's `/v1/messages`. We **never** parse model prose to detect control flow. Termination is the provider's `finish_reason` (`stop` | `tool_calls` | `length` | provider-equivalent).
+1. **Native model tool-calling, every v1 provider.** Each adapter speaks the provider's tool-use protocol directly: Mistral's `/v1/chat/completions` with `tools: [...]`, OpenAI's `/v1/responses` (Codex tier), and OpenAI's `/v1/chat/completions`. We **never** parse model prose to detect control flow. Termination is the provider's `finish_reason` (`stop` | `tool_calls` | `length` | provider-equivalent). Additional providers are added in follow-up specs as peer adapters.
 2. **Tools are typed bindings dispatched in-process.** Substrate and flavor tools call `McpToolDescriptor.call` directly with a wake-token-derived `McpToolCtx`. No TCP loopback at wake time, no JSON-RPC envelope, no MCP transport layer in the hot path. Workspace tools implement a Rust `WorkspaceTool` trait. Provider tool-call arguments validate against `args_schema` before dispatch — invalid args produce a structured tool error message; the model self-corrects on the next round.
 3. **Workspace toolkit is three Rust tools, not Goose's `developer` builtin.** `workspace_shell`, `workspace_text_editor`, `workspace_list_files`, each cwd-jailed to the prepared worktree. Their JSON schemas are generated from `schemars` derives. The model sees them as native function-calling tools; the harness dispatches them as Rust functions.
-4. **Credentials are env vars resolved at wake time.** `InferenceTargetConfig` grows variants `Mistral`, `OpenAIResponses`, `OpenAIChat`, `Anthropic`. Each carries `base_url`, `model_id`, and `api_key_env` (the name of the env var to read). The engine reads the env at fire time — not at startup — so users can rotate keys without restart. Missing env → invocation finalizes as `Failed("credentials_missing:MISTRAL_API_KEY")`, precise and structured. **No third-party CLI config file is consulted, ever.**
+4. **Credentials are env vars resolved at wake time.** `InferenceTargetConfig` is rewritten to three variants: `Mistral`, `OpenAIChat`, `OpenAIResponses`. Each carries `base_url`, `model_id`, and `api_key_env` (the name of the env var to read). The engine reads the env at fire time — not at startup — so users can rotate keys without restart. Missing env → invocation finalizes as `Failed("credentials_missing:MISTRAL_API_KEY")`, precise and structured. **No third-party CLI config file is consulted, ever.**
 5. **Outcome derives from explicit signals, never regex.** The outcome classifier sees: HTTP status, provider-reported `finish_reason`, round counter, tool-dispatch results, exception class. The classification table (below) is exhaustive and deterministic.
 6. **Every wake leaves three observability traces: a JSONL transcript, `wake_invocation_log` rows, and a `wake-trace-v1` Fact in the memory graph.** No layer is optional. The Fact is the substrate-native index; the log table is the SQL-queryable cross-cut; the JSONL is the forensic raw. The JSONL persists as a `CitedObject` content-addressed by BLAKE3 and pinned to the Fact via `CitationMapping`.
 
@@ -55,13 +55,16 @@ apps/proxima-shell  depends on both, instantiates the concrete HarnessAdapter
 `fire_wake_entry` already takes `&dyn TargetAdapter` — the v2 path will take `&dyn HarnessAdapter` the same way. Core never names a concrete provider type; the harness crate is the only place that touches `reqwest`, provider HTTP shapes, or `tokio::process::Command` for `workspace_shell`. This keeps `proxima-core` free of network/runtime deps.
 
 ```
-crates/harness/
-  Cargo.toml
+crates/core/src/harness/        # trait + value types only, no runtime deps
+  mod.rs                          # HarnessAdapter trait, HarnessProgram, HarnessOutcome,
+                                  # HarnessContext, HarnessError, FinishReason, ErrorClass
+
+crates/harness/                  # the concrete implementation
+  Cargo.toml                      # depends on proxima-core; pulls reqwest, tokio runtime
   src/
-    lib.rs                         # public surface: HarnessAdapter, HarnessRun, errors
-    program.rs                     # HarnessProgram: 4-param wake context → typed Conversation seed + tool palette
+    lib.rs                         # public surface: HarnessLoop (concrete adapter), prelude re-exports
+    program.rs                     # HarnessProgram builder: 4-param wake context → typed Conversation seed + tool palette
     conversation.rs                # Conversation, Message, ToolCall, ToolResult — provider-neutral types
-    outcome.rs                     # HarnessOutcome, FinishReason, ErrorClass — feeds back to fire.rs
     loop.rs                        # the wake-loop driver: model.tool_round() → dispatch_tools() → repeat
     tools/
       mod.rs                       # ToolBinding enum: Substrate | Flavor | Workspace
@@ -85,7 +88,9 @@ crates/harness/
 ### Core traits
 
 ```rust
-// crates/harness/src/lib.rs
+// crates/core/src/harness/mod.rs
+//
+// Trait + value types only. proxima-core never sees a provider impl.
 
 #[async_trait]
 pub trait HarnessAdapter: Send + Sync {
@@ -93,8 +98,12 @@ pub trait HarnessAdapter: Send + Sync {
         -> Result<HarnessOutcome, HarnessError>;
 }
 
-// One impl: HarnessLoop<P: ProviderClient>. The driver is generic over
-// provider; per-provider differences are contained in ProviderClient.
+// crates/harness/src/lib.rs
+//
+// Concrete adapter only. One impl: HarnessLoop<P: ProviderClient>.
+// The driver is generic over provider; per-provider differences live
+// in ProviderClient. The binary instantiates HarnessLoop<MistralClient>
+// (etc.) and registers &dyn HarnessAdapter on Engine at boot.
 ```
 
 ```rust
@@ -151,12 +160,15 @@ pub struct ToolCall {
     pub arguments: serde_json::Value,
 }
 
-/// Two-way name mapping. Providers (Mistral, OpenAI, Anthropic) reject
-/// tool names containing `/`, `-`, or `.` — the canonical id
-/// `core/emit_abstraction` becomes `core_emit_abstraction` over the wire.
-/// `crates/core/src/mcp/mod.rs::provider_safe_tool_name` already exists
-/// (verified used by `crates/mcp-server/src/handler.rs`); the harness reuses
-/// it.
+/// Two-way name mapping. Providers impose stricter naming rules on
+/// tool/function names than Proxima's canonical schema ids, so
+/// provider-safe normalization is mandatory regardless of which
+/// specific characters each provider rejects. The harness uses the
+/// existing `crates/core/src/mcp/mod.rs::provider_safe_tool_name`
+/// helper (already consumed by `crates/mcp-server/src/handler.rs`)
+/// for the forward map and stores the reverse map per round so the
+/// model's `function.name` reply is resolved back to the canonical id
+/// before palette/auth dispatch.
 pub struct ToolSpec {
     pub canonical: String,                   // e.g. "core/emit_abstraction"
     pub provider_safe: String,               // e.g. "core_emit_abstraction"
@@ -435,7 +447,7 @@ pub trait Flavor {
 }
 ```
 
-The Owner-init provisioning path (`crates/core/src/onboarding/...` — same path that today writes the Engineer and Execution Worker default personalities) copies `instructions` straight into the new `WakeEntry.instructions` column. Flavor authors edit their `instructions: &'static str` constants in Rust source; the value flows through `cargo build` straight into provisioning, just like every other flavor-shipped constant. No runtime templating, no YAML, no on-disk recipe registry.
+The current owner-default-provisioning path — the same path that today seeds the Engineer and Execution Worker personalities on a fresh Owner — copies `instructions` straight into the new `WakeEntry.instructions` column. (The exact module is to be located during implementation; the spec deliberately doesn't pin a path that may move.) Flavor authors edit their `instructions: &'static str` constants in Rust source; the value flows through `cargo build` straight into provisioning, just like every other flavor-shipped constant. No runtime templating, no YAML, no on-disk recipe registry.
 
 This satisfies the build-time-only contract that the flavor system already holds for tool schemas, perspective payloads, and registry entries (see `feature_no_doc_duplication` in repo discipline). The two existing recipes (`flavors/code/recipes/engineer.yaml` and `execution_worker.yaml`) become two `DefaultWakeEntrySeed` constants in `flavors/code/src/personalities.rs` — the `instructions:` field of `execution_worker.yaml` lines 43-75 moves verbatim to a `const EXECUTION_WORKER_INSTRUCTIONS: &str = ...` string.
 - A one-shot migration script (`scripts/migrate-recipes-to-wake-entries.rs`) reads each bundled YAML's `instructions:` field and writes it to the matching WakeEntry rows. The bundled `flavors/code/recipes/*.yaml` files are deleted in the same PR that flips the default flag.
@@ -460,20 +472,7 @@ Every harness run accumulates a JSONL buffer in memory. One record per event:
 
 The buffer enforces a per-invocation byte cap (default 5 MB, configurable per-owner). On cap hit, the harness writes a final `truncated` marker line and stops appending — **the wake itself does not fail**; `wake_invocation_log` still records every round, just without per-message bytes.
 
-At wake finalization, the JSONL bytes are written as a `CitedObject`:
-```rust
-EventDraft {
-    schema_id: "proxima-core/wake-trace-jsonl-v1",
-    schema_version: 1,
-    payload: jsonl_bytes,
-    cited_object: CitedObjectHint {
-        schema_id: "proxima-core/wake-trace-jsonl-v1",
-        schema_version: 1,
-        content_hash: blake3(jsonl_bytes),
-    },
-    // ...
-}
-```
+At wake finalization, the JSONL bytes become the `CitedObject` *body*, content-addressed by `blake3(jsonl_bytes)`. The Fact emission (Layer 3 below) is the place where `EventDraft.cited_object` / `citation_mapping` are populated — the JSONL is the cited artefact, not the Fact payload.
 
 #### Layer 2 — `wake_invocation_log` rows
 
@@ -635,7 +634,7 @@ Net deletion in the cut: ~700 lines of Rust, every recipe YAML, the entire "rege
 
 1. **Tool-call streaming.** Mistral and OpenAI both support streamed tool calls. v1 explicitly **does not** stream — the harness waits for full responses per round, then dispatches. Simpler control, identical wall-time for non-interactive wakes, easier to record into the JSONL deterministically. Streaming is v1.1 if it turns out to matter.
 2. **Codex variant choice.** OpenAI's `/v1/responses` endpoint is the Codex-tier surface; `/v1/chat/completions` works for general models. The spec ships both adapters in v1 to give InferenceTarget rows a choice. If `gpt-5-codex` exclusively requires `/v1/responses`, the OpenAI-Chat adapter just won't be used for Codex models.
-3. **Claude Code parity.** Personalities running Claude as their inference target use the `Anthropic` adapter against `api.anthropic.com` — independent of any local Claude Code installation. The external Claude Code integration via the Shell's master-token MCP surface continues unchanged.
+3. **External Claude Code integration unaffected.** v1 ships no Anthropic provider in the harness — personalities cannot run Claude as their inference target until a follow-up spec lands one. The unrelated external integration where Claude Code connects *to* the Shell's master-token MCP surface (as a client) continues unchanged; it never went through the harness.
 4. **Provider tool-call argument validation.** When a provider's tool call carries arguments that don't validate against the tool's JSON schema, the harness returns a `Turn::ToolResult { status: Error, content: {"error":"schema_violation","details":...} }` and continues. The model gets a structured correction; the harness doesn't try to coerce. Defense-in-depth circuit breaker fires only if the same tool's args fail 5+ times in a row.
 5. **JSONL bytes in the DB.** Per-invocation cap default is 5 MB. Empirical: a 30-round wake with moderate tool args averages 200–500 KB. At 1 MB/wake × 1000 wakes/day that's ~1 GB/day; well within Postgres comfort. If a deployment routinely pushes past 10 MB per trace, chunking the `CitedObject` body into `wake_trace_artifact_chunk(invocation_id, chunk_idx, bytes)` is a storage-layer detail that doesn't touch the Citation API.
 
