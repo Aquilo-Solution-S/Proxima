@@ -1,0 +1,14 @@
+{
+  "id": "chatcmpl_length",
+  "object": "chat.completion",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "partial"
+      },
+      "finish_reason": "length"
+    }
+  ]
+}

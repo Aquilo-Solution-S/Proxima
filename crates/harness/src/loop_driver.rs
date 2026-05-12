@@ -16,6 +16,8 @@ use tokio_util::sync::CancellationToken;
 use crate::conversation::{ToolResultStatus, ToolResultTurn, Turn};
 use crate::program::{ResolvedProgram, resolve};
 use crate::providers::mistral_chat::MistralChatClient;
+use crate::providers::openai_chat::OpenAIChatClient;
+use crate::providers::openai_responses::OpenAIResponsesClient;
 use crate::providers::{ProviderClient, ProviderError, RoundResult};
 use crate::tools::workspace::dispatch as workspace_dispatch;
 use crate::tools::{ToolBinding, WorkspaceCtx};
@@ -61,9 +63,7 @@ impl HarnessAdapter for HarnessLoop {
         let workspace_root = program.workspace_root.clone();
         let provider_target = program.provider.clone();
         let model_id = model_id_for_log(&provider_target);
-        let provider = build_provider(&provider_target).ok_or_else(|| {
-            HarnessError::InvalidProvider("unsupported provider for this phase".into())
-        })?;
+        let provider = build_provider(&provider_target);
 
         let substrate_tools =
             resolve_substrate_tools(&*self.substrate_bridge, &program.substrate_tool_palette)
@@ -91,7 +91,7 @@ fn model_id_for_log(target: &ProviderTarget) -> String {
     }
 }
 
-fn build_provider(target: &ProviderTarget) -> Option<Box<dyn ProviderClient>> {
+fn build_provider(target: &ProviderTarget) -> Box<dyn ProviderClient> {
     match target {
         ProviderTarget::MistralChat {
             base_url,
@@ -99,15 +99,39 @@ fn build_provider(target: &ProviderTarget) -> Option<Box<dyn ProviderClient>> {
             api_key,
             temperature,
             max_completion_tokens,
-        } => Some(Box::new(MistralChatClient {
+        } => Box::new(MistralChatClient {
             http: reqwest::Client::new(),
             base_url: base_url.clone(),
             model_id: model_id.clone(),
             api_key: api_key.clone(),
             temperature: *temperature,
             max_completion_tokens: *max_completion_tokens,
-        })),
-        ProviderTarget::OpenAIChat { .. } | ProviderTarget::OpenAIResponses { .. } => None,
+        }),
+        ProviderTarget::OpenAIChat {
+            base_url,
+            model_id,
+            api_key,
+            temperature,
+            max_completion_tokens,
+        } => Box::new(OpenAIChatClient {
+            http: reqwest::Client::new(),
+            base_url: base_url.clone(),
+            model_id: model_id.clone(),
+            api_key: api_key.clone(),
+            temperature: *temperature,
+            max_completion_tokens: *max_completion_tokens,
+        }),
+        ProviderTarget::OpenAIResponses {
+            base_url,
+            model_id,
+            api_key,
+            reasoning_effort,
+        } => {
+            let mut client =
+                OpenAIResponsesClient::new(base_url.clone(), model_id.clone(), api_key.clone());
+            client.reasoning_effort.clone_from(reasoning_effort);
+            Box::new(client)
+        }
     }
 }
 

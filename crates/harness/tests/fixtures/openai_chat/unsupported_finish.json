@@ -1,0 +1,14 @@
+{
+  "id": "chatcmpl_content_filter",
+  "object": "chat.completion",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "blocked"
+      },
+      "finish_reason": "content_filter"
+    }
+  ]
+}

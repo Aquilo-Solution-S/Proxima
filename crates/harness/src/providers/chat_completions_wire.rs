@@ -13,7 +13,6 @@ use super::{ProviderError, RoundResult};
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum TokenLimitField {
     MaxTokens,
-    #[expect(dead_code, reason = "OpenAIChat uses this in Phase 5")]
     MaxCompletionTokens,
 }
 

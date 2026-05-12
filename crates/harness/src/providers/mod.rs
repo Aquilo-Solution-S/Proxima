@@ -15,7 +15,8 @@ use crate::conversation::{AssistantTurn, Conversation, ToolCall, ToolSpec};
 // `super::chat_completions_wire`. Do NOT change this to `pub mod`.
 mod chat_completions_wire;
 pub mod mistral_chat;
-// openai_chat and openai_responses arrive in Phase 5.
+pub mod openai_chat;
+pub mod openai_responses;
 
 #[doc(hidden)]
 pub async fn classify_chat_completions_fixture(
