@@ -685,9 +685,6 @@ async fn code_workspace_prepare_builds_context_with_preloaded_paths()
                 triggering_memory_schema_id: ExecutionRequestV1::SCHEMA_ID,
                 triggering_memory_payload: &payload,
                 workspace_tool_palette: &[],
-                effective_recipe_path: &effective_recipe,
-                recipe_bytes: b"version: 1.0.0\ntitle: Close Goal After Merge\n",
-                recipe_sha256: "test-sha",
             })
             .await?;
 
@@ -833,9 +830,6 @@ async fn code_workspace_runner_hydrates_pnpm_tooling() -> Result<(), Box<dyn std
                 triggering_memory_schema_id: ExecutionRequestV1::SCHEMA_ID,
                 triggering_memory_payload: &payload,
                 workspace_tool_palette: &[],
-                effective_recipe_path: &effective_recipe,
-                recipe_bytes: b"version: 1.0.0\n",
-                recipe_sha256: "test-sha",
             })
             .await?;
 
@@ -973,9 +967,6 @@ async fn workspace_run_trigger_prepares_verifier_context_from_worker_branch()
                 triggering_memory_schema_id: WorkspaceRunV1::SCHEMA_ID,
                 triggering_memory_payload: &payload,
                 workspace_tool_palette: &[],
-                effective_recipe_path: &effective_recipe,
-                recipe_bytes: b"version: 1.0.0\n",
-                recipe_sha256: "test-sha",
             })
             .await?;
 
@@ -1137,9 +1128,6 @@ async fn workspace_run_trigger_resolves_original_request_through_run_chain()
                 triggering_memory_schema_id: WorkspaceRunV1::SCHEMA_ID,
                 triggering_memory_payload: &serde_json::to_value(&chained_run_payload)?,
                 workspace_tool_palette: &[],
-                effective_recipe_path: &effective_recipe,
-                recipe_bytes: b"version: 1.0.0\n",
-                recipe_sha256: "test-sha",
             })
             .await?;
 
@@ -1280,9 +1268,6 @@ async fn workspace_run_trigger_loads_goal_context_from_request_chain()
                 triggering_memory_schema_id: WorkspaceRunV1::SCHEMA_ID,
                 triggering_memory_payload: &serde_json::to_value(&run_payload)?,
                 workspace_tool_palette: &[],
-                effective_recipe_path: &effective_recipe,
-                recipe_bytes: b"version: 1.0.0\n",
-                recipe_sha256: "test-sha",
             })
             .await?;
 
@@ -1436,9 +1421,6 @@ async fn correction_execution_request_reuses_derived_workspace_run_worktree()
                 triggering_memory_schema_id: ExecutionRequestV1::SCHEMA_ID,
                 triggering_memory_payload: &payload,
                 workspace_tool_palette: &[],
-                effective_recipe_path: &effective_recipe,
-                recipe_bytes: b"version: 1.0.0\n",
-                recipe_sha256: "test-sha",
             })
             .await?;
 
@@ -1587,9 +1569,6 @@ async fn rejected_review_trigger_prepares_correction_context()
                 triggering_memory_schema_id: WorkspaceReviewV1::SCHEMA_ID,
                 triggering_memory_payload: &payload,
                 workspace_tool_palette: &[],
-                effective_recipe_path: &effective_recipe,
-                recipe_bytes: b"version: 1.0.0\n",
-                recipe_sha256: "test-sha",
             })
             .await?;
 
@@ -1707,16 +1686,13 @@ async fn rejected_decision_trigger_is_not_correction_context()
                 triggering_memory_schema_id: WorkspaceDecisionV1::SCHEMA_ID,
                 triggering_memory_payload: &payload,
                 workspace_tool_palette: &[],
-                effective_recipe_path: &effective_recipe,
-                recipe_bytes: b"version: 1.0.0\n",
-                recipe_sha256: "test-sha",
             })
             .await
         {
             Ok(_) => panic!("discard decisions should not plan corrections"),
             Err(err) => err,
         };
-        assert!(err.to_string().contains("not eligible for this recipe"));
+        assert!(err.to_string().contains("no workspace prep"));
         Ok(())
     }
     .await;
@@ -1828,9 +1804,6 @@ async fn merged_decision_trigger_prepares_goal_close_context()
                 triggering_memory_schema_id: WorkspaceDecisionV1::SCHEMA_ID,
                 triggering_memory_payload: &serde_json::to_value(&decision_payload)?,
                 workspace_tool_palette: &[],
-                effective_recipe_path: &effective_recipe,
-                recipe_bytes: b"version: 1.0.0\ntitle: Close Goal After Merge\n",
-                recipe_sha256: "test-sha",
             })
             .await?;
 
@@ -2001,9 +1974,6 @@ async fn retry_requested_decision_trigger_prepares_correction_context()
                 triggering_memory_schema_id: WorkspaceDecisionV1::SCHEMA_ID,
                 triggering_memory_payload: &payload,
                 workspace_tool_palette: &[],
-                effective_recipe_path: &effective_recipe,
-                recipe_bytes: b"version: 1.0.0\ntitle: Plan Workspace Correction\n",
-                recipe_sha256: "test-sha",
             })
             .await?;
 

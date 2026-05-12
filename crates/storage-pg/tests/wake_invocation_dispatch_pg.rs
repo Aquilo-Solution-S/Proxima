@@ -16,7 +16,6 @@ use uuid::Uuid;
 #[derive(Debug)]
 struct WakeInvocationDispatchRow {
     wake_token: Option<Uuid>,
-    recipe_sha256: Option<String>,
     resolved_inference_target_ref: Option<String>,
     failure_reason: Option<String>,
     exit_code: Option<i32>,
@@ -74,7 +73,6 @@ async fn fetch_wake_invocation(
         Option<Uuid>,
         Option<String>,
         Option<String>,
-        Option<String>,
         Option<i32>,
         Option<i64>,
         Option<String>,
@@ -89,7 +87,6 @@ async fn fetch_wake_invocation(
     };
     let (
         wake_token,
-        recipe_sha256,
         resolved_inference_target_ref,
         failure_reason,
         exit_code,
@@ -100,7 +97,7 @@ async fn fetch_wake_invocation(
         stderr_truncated,
         status,
     ): DispatchRow = sqlx::query_as(
-        "SELECT wake_token, recipe_sha256, resolved_inference_target_ref,
+        "SELECT wake_token, resolved_inference_target_ref,
                 failure_reason, exit_code, duration_ms, stdout_tail,
                 stderr_tail, stdout_truncated, stderr_truncated, status
          FROM proxima_core.personality_wake_invocations
@@ -119,7 +116,6 @@ async fn fetch_wake_invocation(
     .await?;
     Ok(WakeInvocationDispatchRow {
         wake_token,
-        recipe_sha256,
         resolved_inference_target_ref,
         failure_reason,
         exit_code,
@@ -151,7 +147,6 @@ async fn wake_invocation_carries_dispatch_columns() {
         let change_event_seq = Uuid::now_v7();
 
         let wake_token = Uuid::new_v4();
-        let recipe_sha256 = "deadbeef".repeat(8);
         let resolved_target = "default-standard";
 
         let start = WakeInvocationStart {
@@ -160,7 +155,6 @@ async fn wake_invocation_carries_dispatch_columns() {
             wake_entry_id,
             change_event_seq,
             wake_token,
-            recipe_sha256: recipe_sha256.clone(),
             resolved_inference_target_ref: resolved_target.to_string(),
         };
         pg.start_wake_invocation(&start).await.expect("start ok");
@@ -188,7 +182,6 @@ async fn wake_invocation_carries_dispatch_columns() {
         let row = fetch_wake_invocation(&pg, &owner, instance_id, wake_entry_id, change_event_seq)
             .await?;
         assert_eq!(row.wake_token, Some(wake_token));
-        assert_eq!(row.recipe_sha256.as_deref(), Some(recipe_sha256.as_str()));
         assert_eq!(
             row.resolved_inference_target_ref.as_deref(),
             Some(resolved_target)

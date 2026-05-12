@@ -990,7 +990,6 @@ export type WakeInvocationTs = {
 	finished_at: string | null,
 	turn_count: number,
 	cost_usd: number,
-	recipe_sha256: string | null,
 	resolved_inference_target_ref: string | null,
 	failure_reason: string | null,
 	exit_code: number | null,

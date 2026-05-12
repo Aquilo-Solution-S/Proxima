@@ -89,7 +89,6 @@ pub async fn fire_wake_entry(
             wake_entry_id: input.wake_entry.wake_entry_id,
             change_event_seq: input.change_event_seq,
             wake_token,
-            recipe_sha256: String::new(),
             resolved_inference_target_ref: resolved.target_ref.clone(),
         })
         .await
@@ -255,7 +254,6 @@ async fn handle_workspace_mode(
         return Ok(true);
     }
 
-    let empty_path = std::path::PathBuf::new();
     let mcp_url = engine.mcp_url().unwrap_or_default();
     let prepare_input = WorkspacePrepareInput {
         invocation_id: invocation_id_for_dispatch,
@@ -267,9 +265,6 @@ async fn handle_workspace_mode(
         triggering_memory_schema_id: input.wake_entry.trigger_id.as_str(),
         triggering_memory_payload: &wake_context.triggering_memory.typed_payload,
         workspace_tool_palette: &input.wake_entry.workspace_tool_palette,
-        effective_recipe_path: &empty_path,
-        recipe_bytes: &[],
-        recipe_sha256: "",
     };
     let prepared = match runner.prepare(prepare_input).await {
         Ok(prepared) => prepared,

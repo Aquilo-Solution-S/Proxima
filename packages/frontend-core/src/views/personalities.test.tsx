@@ -76,7 +76,6 @@ const wakeInvocation = (
   finished_at: "2026-05-09 07:38:54 UTC",
   turn_count: 1,
   cost_usd: 0,
-  recipe_sha256: null,
   resolved_inference_target_ref: null,
   failure_reason: "Error: Invalid recipe",
   exit_code: 1,

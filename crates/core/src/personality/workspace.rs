@@ -5,7 +5,7 @@
 //! `proxima_flavor!` macro and looked up by `flavor_id` in
 //! `wake/fire.rs` when a workspace-mode wake fires.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use thiserror::Error;
 use uuid::Uuid;
@@ -60,23 +60,14 @@ pub struct WorkspacePrepareInput<'a> {
     /// Provider-neutral capability allowlist for workspace-side
     /// tools. The harness exposes only these tool IDs to the provider.
     pub workspace_tool_palette: &'a [String],
-    pub effective_recipe_path: &'a Path,
-    /// Legacy recipe bytes. The harness cut passes an empty slice.
-    pub recipe_bytes: &'a [u8],
-    /// Pre-computed sha256 hex of `recipe_bytes`. Stored on the
-    /// wake_invocation row.
-    pub recipe_sha256: &'a str,
 }
 
 /// Everything the runner produces from `prepare` so the dispatcher
 /// can invoke the adapter against the right cwd.
 pub struct WorkspacePreparedRun {
     pub work_dir: PathBuf,
-    /// On-disk path of the rendered effective recipe with workspace
-    /// extensions injected. Distinct from the bundled recipe path.
-    pub effective_recipe_path: PathBuf,
-    /// Optional flavor-owned execution context merged into recipe
-    /// params after prepare. Core treats it as opaque JSON.
+    /// Optional flavor-owned execution context attached to
+    /// `HarnessProgram::context_params`. Core treats it as opaque JSON.
     pub workspace_context: Option<serde_json::Value>,
     /// Runner-owned state. Core treats this as opaque and hands it
     /// back to the same runner during finalize.

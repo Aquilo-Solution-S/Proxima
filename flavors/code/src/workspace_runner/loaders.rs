@@ -430,14 +430,6 @@ pub(super) fn goal_close_candidate(
     })
 }
 
-pub(super) fn recipe_declares_title(recipe_bytes: &[u8], title: &str) -> bool {
-    std::str::from_utf8(recipe_bytes).is_ok_and(|recipe| {
-        recipe
-            .lines()
-            .any(|line| line.trim() == format!("title: {title}"))
-    })
-}
-
 #[allow(clippy::too_many_lines)]
 pub(super) async fn load_workspace_run(
     pool: &PgPool,
