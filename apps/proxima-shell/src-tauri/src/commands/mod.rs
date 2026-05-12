@@ -1,5 +1,4 @@
 mod engine;
-mod harness;
 mod inference_targets;
 mod mcp;
 mod models;
@@ -33,7 +32,6 @@ pub(crate) fn specta_builder() -> Builder<tauri::Wry> {
         inference_targets::remove_inference_target,
         inference_targets::bind_inference_tier,
         inference_targets::list_inference_tier_bindings,
-        harness::detect_local_harness,
         tools::list_mcp_tools,
         tools::list_workspace_tools,
         tools::list_relations,

@@ -242,14 +242,14 @@
   letter-spacing: 0.06em;
 }
 
-/* ── Settings: Models · Goose tier panel ─────────────────────── */
-.proxima-goose-panel {
+/* Settings: Models target tiers */
+.proxima-tier-panel {
   margin: 8px 0 18px;
   padding: 14px 16px 12px;
   background: var(--bg-card);
   border: 1px solid var(--rule);
 }
-.proxima-goose-panel-head {
+.proxima-tier-panel-head {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
@@ -257,7 +257,7 @@
   flex-wrap: wrap;
   margin-bottom: 10px;
 }
-.proxima-goose-panel-title {
+.proxima-tier-panel-title {
   margin: 0;
   font-family: var(--sans);
   font-size: 13px;
@@ -265,65 +265,41 @@
   color: var(--ink-100);
   letter-spacing: 0.02em;
 }
-.proxima-goose-status {
+.proxima-tier-status {
   display: inline-flex;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
   font-size: 11px;
-}
-.proxima-goose-pill {
   font-family: var(--mono);
-  font-size: 9px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  padding: 2px 6px;
-  border: 1px solid var(--rule-strong);
-  background: var(--bg-card-2);
-  color: var(--ink-70);
-}
-.proxima-goose-pill-ok {
-  border-color: var(--accent-commit);
-  color: var(--accent-commit);
-}
-.proxima-goose-pill-warn {
-  border-color: var(--accent-del);
-  color: var(--accent-del);
-}
-.proxima-goose-path {
-  font-size: 10px;
-  max-width: 32ch;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
-.proxima-goose-tiers {
+.proxima-tier-list {
   list-style: none;
   margin: 0;
   padding: 0;
   border-top: 1px solid var(--rule);
 }
-.proxima-goose-tier {
+.proxima-tier-row {
   border-bottom: 1px solid var(--rule);
 }
-.proxima-goose-tier:last-child {
+.proxima-tier-row:last-child {
   border-bottom: none;
 }
-.proxima-goose-tier-summary {
+.proxima-tier-summary {
   display: grid;
   grid-template-columns: 90px 1fr auto;
   gap: 12px;
   align-items: center;
   padding: 12px 4px;
 }
-.proxima-goose-tier-label {
+.proxima-tier-label {
   font-family: var(--mono);
   font-size: 12px;
   color: var(--ink-100);
   letter-spacing: 0.04em;
 }
-.proxima-goose-tier-detail {
+.proxima-tier-detail {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -331,15 +307,15 @@
   font-size: 12px;
   color: var(--ink-80);
 }
-.proxima-goose-tier-model {
+.proxima-tier-model {
   display: inline-flex;
   align-items: center;
   gap: 6px;
 }
-.proxima-goose-tier-sep {
+.proxima-tier-sep {
   color: var(--ink-50);
 }
-.proxima-goose-tag {
+.proxima-target-tag {
   font-family: var(--mono);
   font-size: 9px;
   letter-spacing: 0.06em;
@@ -349,14 +325,10 @@
   background: var(--bg);
   text-transform: lowercase;
 }
-.proxima-goose-tag-soft {
-  color: var(--ink-50);
-  border-style: dashed;
-}
-.proxima-goose-tier.is-empty .proxima-goose-tier-label {
+.proxima-tier-row.is-empty .proxima-tier-label {
   color: var(--ink-60);
 }
-.proxima-goose-tier-actions {
+.proxima-tier-actions {
   display: inline-flex;
   align-items: center;
   gap: 12px;
@@ -386,24 +358,24 @@
   filter: brightness(1.15);
 }
 
-.proxima-goose-tier-editor {
+.proxima-tier-editor {
   padding: 4px 4px 14px 4px;
   border-top: 1px dashed var(--rule);
   background: var(--bg);
 }
-.proxima-goose-editor-grid {
+.proxima-target-editor-grid {
   display: grid;
   grid-template-columns: 120px 1fr;
   gap: 8px 12px;
   margin: 12px 0;
   align-items: center;
 }
-.proxima-goose-editor-grid label {
+.proxima-target-editor-grid label {
   font-size: 11px;
   color: var(--ink-60);
 }
-.proxima-goose-editor-grid select,
-.proxima-goose-editor-grid textarea {
+.proxima-target-editor-grid input,
+.proxima-target-editor-grid select {
   background: var(--bg);
   border: 1px solid var(--rule-strong);
   color: var(--ink-90);
@@ -411,17 +383,12 @@
   font-family: var(--mono);
   font-size: 11px;
 }
-.proxima-goose-editor-grid textarea {
-  resize: vertical;
-  min-height: 80px;
-  line-height: 1.4;
-}
-.proxima-goose-editor-actions {
+.proxima-tier-editor-actions {
   display: flex;
   gap: 8px;
 }
 
-.proxima-goose-cta {
+.proxima-tier-cta {
   display: flex;
   gap: 8px;
   margin-top: 12px;

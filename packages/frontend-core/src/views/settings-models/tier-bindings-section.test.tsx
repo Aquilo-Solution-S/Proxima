@@ -8,14 +8,15 @@ const owner = sentinelOwner();
 
 const target = (
   targetRef: string,
-  command = targetRef,
 ): InferenceTargetTs => ({
   target_ref: targetRef,
   config: {
-    kind: "local_cli",
-    command,
-    profile: null,
-    env_overrides: [],
+    kind: "mistral_chat",
+    base_url: "https://api.mistral.ai",
+    model_id: targetRef,
+    api_key_env: "MISTRAL_API_KEY",
+    temperature: null,
+    max_completion_tokens: null,
   },
   created_at: "2026-05-07T00:00:00Z",
   updated_at: "2026-05-07T00:00:00Z",
@@ -29,7 +30,7 @@ describe("TierBindingsSection", () => {
 
   it("binds a tier to a selected inference target", async () => {
     const bindings: InferenceTierBindingTs[] = [
-      { tier: "fast", target_ref: "local-goose" },
+      { tier: "fast", target_ref: "local-mistral" },
     ];
     const client = {
       bindInferenceTier: vi.fn(async () => undefined),
@@ -40,8 +41,8 @@ describe("TierBindingsSection", () => {
         client={client}
         owner={owner}
         targets={() => [
-          target("local-goose", "goose"),
-          target("remote-claude", "claude"),
+          target("local-mistral"),
+          target("remote-openai"),
         ]}
         bindings={() => bindings}
         refetchBindings={vi.fn()}
@@ -52,17 +53,17 @@ describe("TierBindingsSection", () => {
       expect(screen.getAllByRole("combobox")).toHaveLength(3),
     );
     const fastSelect = screen.getAllByRole("combobox")[0] as HTMLSelectElement;
-    await waitFor(() => expect(fastSelect.value).toBe("local-goose"));
+    await waitFor(() => expect(fastSelect.value).toBe("local-mistral"));
 
     fireEvent.change(fastSelect, {
-      target: { value: "remote-claude" },
+      target: { value: "remote-openai" },
     });
 
     await waitFor(() => {
       expect(client.bindInferenceTier).toHaveBeenCalledWith({
         owner,
         tier: "fast",
-        target_ref: "remote-claude",
+        target_ref: "remote-openai",
       });
     });
   });
@@ -79,16 +80,16 @@ describe("TierBindingsSection", () => {
         client={client}
         owner={owner}
         targets={() => [
-          target("local-goose", "goose"),
-          target("missing-target", "missing"),
+          target("local-mistral"),
+          target("missing-target"),
         ]}
-        bindings={() => [{ tier: "fast" as const, target_ref: "local-goose" }]}
+        bindings={() => [{ tier: "fast" as const, target_ref: "local-mistral" }]}
         refetchBindings={vi.fn()}
       />
     ));
 
     const fastSelect = (await screen.findAllByRole("combobox"))[0] as HTMLSelectElement;
-    await waitFor(() => expect(fastSelect.value).toBe("local-goose"));
+    await waitFor(() => expect(fastSelect.value).toBe("local-mistral"));
     fireEvent.change(fastSelect, {
       target: { value: "missing-target" },
     });

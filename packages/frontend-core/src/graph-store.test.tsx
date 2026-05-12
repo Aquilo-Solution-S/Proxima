@@ -61,9 +61,6 @@ const graphClient = (overrides: Partial<EngineClient>): EngineClient => ({
   listInferenceTierBindings: async () => {
     return [];
   },
-  detectLocalHarness: async () => null,
-  listOwnerRecipes: async () => ({ root_path: "", recipes: [] }),
-  listBundledRecipes: async () => [],
   listMcpTools: async () => [],
   listWorkspaceTools: async () => [],
   listRelations: async () => [],

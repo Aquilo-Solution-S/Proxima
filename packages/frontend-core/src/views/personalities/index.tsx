@@ -10,15 +10,12 @@ import {
 } from "solid-js";
 import {
   commands,
-  type BundledRecipeTs,
   type InstantiatePersonalityOutcomeTs,
   type InstantiatePersonalityTs,
   type ListWakeInvocationsTs,
-  type ListOwnerRecipesTs,
   type ListPersonalityInstancesTs,
   type McpToolTs,
   type Owner,
-  type OwnerRecipesListingTs,
   type PersonalityInstanceTs,
   type ProtocolError,
   type ProducesTs,
@@ -61,10 +58,6 @@ export type PersonalityCommandClient = {
   tombstonePersonality: (
     req: TombstonePersonalityTs,
   ) => CommandResult<TombstonePersonalityOutcomeTs>;
-  listOwnerRecipes: (
-    req: ListOwnerRecipesTs,
-  ) => CommandResult<OwnerRecipesListingTs>;
-  listBundledRecipes: () => CommandResult<BundledRecipeTs[]>;
   listMcpTools: () => CommandResult<McpToolTs[]>;
   listWorkspaceTools: () => CommandResult<WorkspaceToolTs[]>;
   listRelations: () => CommandResult<RelationTs[]>;
@@ -87,7 +80,6 @@ const entryToDraft = (
   authored_by: entry.authored_by,
   probability_promille: entry.probability_promille,
   goal_scope: entry.goal_scope,
-  recipe_ref: entry.recipe_ref,
   instructions: entry.instructions,
   model_tier: entry.model_tier,
   inference_target_ref: entry.inference_target_ref,
@@ -105,12 +97,9 @@ const cloneDraft = (draft: WakeEntryDraftTs): WakeEntryDraftTs => ({
 export const PersonalitiesView: Component<{
   client?: PersonalityCommandClient;
   owner?: Owner;
-  revealRecipesFolder?: (path: string) => void;
 }> = (props) => {
   const owner = props.owner ?? sentinelOwner();
   const client = props.client ?? commands;
-  const revealRecipesFolder =
-    props.revealRecipesFolder ?? defaultRevealRecipesFolder;
 
   const [instances, setInstances] = createSignal<PersonalityInstanceTs[]>([]);
   const [loading, setLoading] = createSignal(false);
@@ -125,12 +114,6 @@ export const PersonalitiesView: Component<{
   const [confirmingTombstone, setConfirmingTombstone] = createSignal<
     string | null
   >(null);
-  const [recipesListing, setRecipesListing] =
-    createSignal<OwnerRecipesListingTs | null>(null);
-  const [bundledRecipes, setBundledRecipes] = createSignal<
-    BundledRecipeTs[] | null
-  >(null);
-  const [recipesError, setRecipesError] = createSignal<string | null>(null);
   const [mcpTools, setMcpTools] = createSignal<McpToolTs[] | null>(null);
   const [workspaceTools, setWorkspaceTools] = createSignal<
     WorkspaceToolTs[] | null
@@ -144,20 +127,6 @@ export const PersonalitiesView: Component<{
   const [wakeInvocationsError, setWakeInvocationsError] =
     createSignal<string | null>(null);
   let wakeInvocationRequestSeq = 0;
-
-  const refreshRecipes = async () => {
-    setRecipesError(null);
-    try {
-      const [listing, bundled] = await Promise.all([
-        unwrap(client.listOwnerRecipes({ owner })),
-        unwrap(client.listBundledRecipes()),
-      ]);
-      setRecipesListing(listing);
-      setBundledRecipes(bundled);
-    } catch (err) {
-      setRecipesError(errorMessage(err));
-    }
-  };
 
   const refreshTools = async () => {
     setToolsError(null);
@@ -256,7 +225,6 @@ export const PersonalitiesView: Component<{
 
   createEffect(() => {
     void refresh();
-    void refreshRecipes();
     void refreshTools();
   });
 
@@ -523,11 +491,6 @@ export const PersonalitiesView: Component<{
           dirty={dirty()}
           saving={saving()}
           error={creating() ? null : error()}
-          recipes={recipesListing()}
-          bundledRecipes={bundledRecipes()}
-          recipesError={recipesError()}
-          onRefreshRecipes={() => void refreshRecipes()}
-          onRevealRecipesFolder={revealRecipesFolder}
           mcpTools={mcpTools()}
           workspaceTools={workspaceTools()}
           relations={relations()}
@@ -585,16 +548,6 @@ const unwrap = async <T, E>(
   const value = await result;
   if (value.status === "error") throw value.error;
   return value.data;
-};
-
-const defaultRevealRecipesFolder = (path: string): void => {
-  if (!path) return;
-  void import("@tauri-apps/plugin-opener")
-    .then((mod) => mod.revealItemInDir(path))
-    .catch((err) => {
-      // Fallback for non-Tauri / dev: log so devs can still see the path.
-      console.warn("revealItemInDir failed", err);
-    });
 };
 
 const errorMessage = (err: unknown): string => {

@@ -20,11 +20,10 @@ pub const ROOT_PERSONALITY_PERSPECTIVE_SIDECAR_TABLE: &str =
 /// Maximum wake chain depth constant.
 pub const MAX_WAKE_CHAIN_DEPTH: u16 = 10;
 
-/// Canonical workspace tool catalog. These IDs gate filesystem/process
-/// side effects when a wake entry runs in `WakeExecutionMode::Workspace`.
-/// v1 treats the palette as declared intent — Goose's recipe controls
-/// runtime tool availability today; Phase 1e wires enforcement into the
-/// fire path.
+/// Canonical workspace tool catalog. `set_wake_entries` validates
+/// declared palettes against this list, and the harness builds its
+/// `HarnessProgram` from the palette so only listed tools reach the
+/// provider.
 pub const WORKSPACE_TOOL_CATALOG: &[(&str, &str)] = &[
     (
         "proxima-workspace/shell",

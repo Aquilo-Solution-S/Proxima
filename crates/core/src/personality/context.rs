@@ -24,12 +24,11 @@ pub struct PersonalityToolContext<'a> {
     pub writeable_schemas: Vec<String>,
     pub writeable_relations: Vec<String>,
     pub palette: &'a [Arc<dyn PersonalityTool>],
-    /// Active wake invocation, when this tool call is dispatched as part
-    /// of a goose-driven wake. `None` for the legacy admin-tool path
-    /// (no wake context bound to the request). Substrate tools that
-    /// stamp memory provenance read `model_id` from here so the row
-    /// reflects the actual InferenceTarget that drove the wake instead
-    /// of a static `Standard`-tier guess.
+    /// Wake invocation bound by the MCP substrate handler after
+    /// extracting the wake token from request extensions. Provenance-
+    /// stamping substrate tools read `model_id` from here so the row
+    /// reflects the InferenceTarget that drove the wake instead of a
+    /// static `Standard`-tier guess. `None` only in unit tests.
     pub wake_invocation: Option<&'a crate::wake::token_store::WakeTokenContext>,
     read_log: Arc<tokio::sync::Mutex<Vec<(MemoryId, WakeChainDepth)>>>,
 }

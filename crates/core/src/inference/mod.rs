@@ -1,9 +1,9 @@
 //! Settings-side InferenceTarget verbs + WakeEntry validation pipeline.
 //!
-//! The dispatcher rewrite (next plan) will add adapter-trait abstraction
-//! and the actual goose-run subprocess. v1 only ships the Settings
-//! storage surface and the write-time validation that gates
-//! `set_wake_entries`.
+//! `InferenceTargetConfig` enumerates the providers the harness can
+//! drive (`MistralChat`, `OpenAIChat`, `OpenAIResponses`). This module
+//! owns the Settings storage surface and the write-time validation
+//! that gates `set_wake_entries`.
 
 pub mod types;
 

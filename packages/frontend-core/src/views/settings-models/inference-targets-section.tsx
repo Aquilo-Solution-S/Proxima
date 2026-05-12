@@ -1,4 +1,3 @@
-import { open } from "@tauri-apps/plugin-dialog";
 import {
   For,
   Show,
@@ -15,14 +14,22 @@ import type {
 } from "../../bindings";
 import type { EngineClient } from "../../client";
 import { sentinelOwner } from "../../graph-store";
-import { GoosePresetCard } from "./goose-preset-card";
-import { SYSTEM_PROMPT_ENV, TIERS, decodeGooseConfig } from "./constants";
+import {
+  PRESET_TARGET_REFS,
+  TARGET_KIND_OPTIONS,
+  configFromDraft,
+  configSummary as targetConfigSummary,
+  draftForKind,
+  kindLabel,
+  type InferenceTargetKind,
+  type TargetDraft,
+} from "./constants";
+import { TargetDraftEditor, TierPresetCard } from "./tier-preset-card";
 import { TierBindingsSection } from "./tier-bindings-section";
 
 interface Props {
   client: Pick<
     EngineClient,
-    | "detectLocalHarness"
     | "registerInferenceTarget"
     | "removeInferenceTarget"
     | "bindInferenceTier"
@@ -50,98 +57,41 @@ const errorMessage = (err: unknown): string => {
   return String(err);
 };
 
-const systemPromptFromConfig = (
-  config: InferenceTargetConfigTs,
-): string | undefined => {
-  if (config.kind !== "local_cli") return undefined;
-  return config.env_overrides.find(([key]) => key === SYSTEM_PROMPT_ENV)?.[1];
-};
-
 const configSummary = (target: InferenceTargetTs): string => {
-  switch (target.config.kind) {
-    case "local_cli": {
-      const decoded = decodeGooseConfig(target.config);
-      if (decoded?.provider && decoded.model) {
-        const reasoning = decoded.reasoning ? ` · ${decoded.reasoning}` : "";
-        return `${decoded.provider} / ${decoded.model}${reasoning}`;
-      }
-      const prompt = systemPromptFromConfig(target.config);
-      return prompt ? "system prompt set" : "no system prompt";
-    }
-    case "remote_model":
-      return `${target.config.vendor} / ${target.config.model_id}`;
-  }
-};
-
-const kindLabel = (kind: InferenceTargetConfigTs["kind"]): string => {
-  switch (kind) {
-    case "local_cli":
-      return "Local CLI";
-    case "remote_model":
-      return "Remote model";
-  }
+  return targetConfigSummary(target.config);
 };
 
 export const InferenceTargetsSection: Component<Props> = (props) => {
   const owner = () => props.owner ?? sentinelOwner();
   const [targetRef, setTargetRef] = createSignal("");
-  const [kind, setKind] = createSignal<InferenceTargetConfigTs["kind"]>("local_cli");
-  const [systemPrompt, setSystemPrompt] = createSignal("");
-  const [vendor, setVendor] = createSignal("");
-  const [dialect, setDialect] = createSignal("");
-  const [modelId, setModelId] = createSignal("");
+  const [draft, setDraft] = createSignal<TargetDraft>(draftForKind("mistral_chat"));
   const [error, setError] = createSignal<string | null>(null);
 
-  const presetRefs = new Set(TIERS.map((tier) => `goose-${tier}`));
   const customTargets = createMemo(() =>
-    (props.targets() ?? []).filter((t) => !presetRefs.has(t.target_ref)),
+    (props.targets() ?? []).filter((t) => !PRESET_TARGET_REFS.has(t.target_ref)),
   );
 
   const clearForm = () => {
     setTargetRef("");
-    setSystemPrompt("");
-    setVendor("");
-    setDialect("");
-    setModelId("");
+    setDraft(draftForKind("mistral_chat"));
   };
 
-  const chooseTargetPath = async () => {
-    setError(null);
-    try {
-      const selected = await open({
-        directory: false,
-        multiple: false,
-        title: "Select inference target",
-      });
-      if (typeof selected === "string") setTargetRef(selected);
-    } catch (err) {
-      setError(errorMessage(err));
-    }
+  const switchKind = (kind: InferenceTargetKind) => {
+    setDraft(draftForKind(kind));
   };
+
+  const updateDraft = (patch: Partial<TargetDraft>) =>
+    setDraft({ ...draft(), ...patch });
 
   const submit = async (event: Event) => {
     event.preventDefault();
     setError(null);
-    const prompt = systemPrompt().trim();
-    const config: InferenceTargetConfigTs =
-      kind() === "local_cli"
-        ? {
-            kind: "local_cli",
-            command: targetRef(),
-            profile: null,
-            env_overrides: prompt.length > 0 ? [[SYSTEM_PROMPT_ENV, prompt]] : [],
-          }
-        : {
-            kind: "remote_model",
-            vendor: vendor(),
-            dialect: dialect(),
-            model_id: modelId(),
-            credentials_ref: null,
-          };
+    const ref = targetRef().trim();
+    const config: InferenceTargetConfigTs = configFromDraft(draft());
     try {
       await props.client.registerInferenceTarget({
         owner: owner(),
-        target_ref: targetRef(),
+        target_ref: ref,
         config,
       });
       clearForm();
@@ -175,7 +125,7 @@ export const InferenceTargetsSection: Component<Props> = (props) => {
         )}
       </Show>
 
-      <GoosePresetCard
+      <TierPresetCard
         client={props.client}
         owner={owner()}
         targets={props.targets}
@@ -226,9 +176,8 @@ export const InferenceTargetsSection: Component<Props> = (props) => {
           <Show when={props.bindings && props.refetchBindings}>
             <h4 class="proxima-models-subhead">Tier bindings</h4>
             <p class="proxima-dim proxima-models-helper">
-              Override which target a tier resolves to. Defaults bind each
-              tier to its <span class="proxima-mono">goose-&lt;tier&gt;</span>{" "}
-              preset.
+              Override which target a tier resolves to. Defaults bind each tier
+              to its native preset target.
             </p>
             <TierBindingsSection
               client={props.client}
@@ -244,70 +193,32 @@ export const InferenceTargetsSection: Component<Props> = (props) => {
         <h4 class="proxima-models-subhead">Register custom target</h4>
         <form onSubmit={(event) => void submit(event)}>
           <div class="proxima-models-form-grid">
-            <label for="inference-target-ref">Target path</label>
-            <div class="proxima-models-path-row">
-              <input
-                id="inference-target-ref"
-                type="text"
-                value={targetRef()}
-                onInput={(event) => setTargetRef(event.currentTarget.value)}
-              />
-              <button
-                type="button"
-                class="proxima-btn"
-                onClick={() => void chooseTargetPath()}
-              >
-                select
-              </button>
-            </div>
+            <label for="inference-target-ref">Target ref</label>
+            <input
+              id="inference-target-ref"
+              type="text"
+              value={targetRef()}
+              onInput={(event) => setTargetRef(event.currentTarget.value)}
+            />
 
             <label for="inference-target-kind">Kind</label>
             <select
               id="inference-target-kind"
-              value={kind()}
+              value={draft().kind}
               onChange={(event) =>
-                setKind(event.currentTarget.value as InferenceTargetConfigTs["kind"])
+                switchKind(event.currentTarget.value as InferenceTargetKind)
               }
             >
-              <option value="local_cli">Local CLI</option>
-              <option value="remote_model">Remote model</option>
+              <For each={TARGET_KIND_OPTIONS}>
+                {(option) => <option value={option.kind}>{option.label}</option>}
+              </For>
             </select>
 
-            <Show when={kind() === "local_cli"}>
-              <label for="inference-target-system-prompt">System Prompt</label>
-              <textarea
-                id="inference-target-system-prompt"
-                rows={5}
-                value={systemPrompt()}
-                onInput={(event) => setSystemPrompt(event.currentTarget.value)}
-              />
-            </Show>
-
-            <Show when={kind() === "remote_model"}>
-              <label for="inference-target-vendor">vendor</label>
-              <input
-                id="inference-target-vendor"
-                type="text"
-                value={vendor()}
-                onInput={(event) => setVendor(event.currentTarget.value)}
-              />
-
-              <label for="inference-target-dialect">dialect</label>
-              <input
-                id="inference-target-dialect"
-                type="text"
-                value={dialect()}
-                onInput={(event) => setDialect(event.currentTarget.value)}
-              />
-
-              <label for="inference-target-model-id">model_id</label>
-              <input
-                id="inference-target-model-id"
-                type="text"
-                value={modelId()}
-                onInput={(event) => setModelId(event.currentTarget.value)}
-              />
-            </Show>
+            <TargetDraftEditor
+              draft={draft()}
+              onUpdate={updateDraft}
+              idPrefix="custom-target"
+            />
           </div>
           <div class="proxima-models-form-actions">
             <button type="submit" class="proxima-btn">
