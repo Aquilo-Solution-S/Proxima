@@ -112,7 +112,6 @@ impl TargetAdapter for LocalCliGooseAdapter {
         if invocation.enable_developer_builtin {
             cmd.arg("--with-builtin").arg("developer");
         }
-        cmd.arg("--no-profile");
         cmd.arg("--no-session");
         cmd.arg("--max-tool-repetitions").arg("3");
         cmd.arg("--output-format").arg("stream-json");
@@ -386,7 +385,6 @@ fn redacted_argv(invocation: &TargetInvocation) -> Vec<String> {
         argv.push("developer".to_string());
     }
     argv.extend([
-        "--no-profile".to_string(),
         "--no-session".to_string(),
         "--max-tool-repetitions".to_string(),
         "3".to_string(),
