@@ -122,7 +122,6 @@ const wakeEntry = (enabled = true): WakeEntryTs => ({
   authored_by: "other" as const,
   probability_promille: 1000,
   goal_scope: "trigger_goal_assigned" as const,
-  recipe_ref: "bundled:proxima-code/plan_execution_requests",
   instructions: "",
   model_tier: "deep" as const,
   inference_target_ref: null,

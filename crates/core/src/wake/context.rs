@@ -2,8 +2,9 @@
 //! receives (spec docs/superpowers/specs/2026-05-07 lines 285–306).
 //!
 //! No per-entry configuration, no DSL: every WakeEntry on every
-//! Personality gets the same four envelopes. Recipes weave whichever
-//! they need; extras are dropped silently by `goose run`.
+//! Personality gets the same four envelopes. The dispatcher attaches
+//! them to `HarnessProgram::context_params`; wake-entry instructions
+//! reference whichever are relevant for the prompt.
 
 use serde::Serialize;
 use uuid::Uuid;
@@ -14,8 +15,8 @@ use crate::personality::{PersonalityInstanceId, SidecarSpec};
 use crate::storage::Storage;
 use crate::{MemoryId, Owner};
 
-/// The four fixed envelopes the dispatcher passes to a recipe via
-/// `goose run --params`.
+/// The four fixed envelopes the dispatcher attaches to
+/// `HarnessProgram::context_params` for every wake.
 #[derive(Debug, Clone, Serialize)]
 pub struct WakeContext {
     pub root_perspective: RootPerspectiveEnvelope,

@@ -48,7 +48,7 @@ async fn seed_personality_with_entry(
         WakeEntryAuthoredBy::Any,
         1000,
         ModelTier::Fast,
-        Some("local-cli:goose".to_string()),
+        Some("primary".to_string()),
         vec!["core/query".to_string()],
         4,
     )

@@ -35,9 +35,9 @@ pub struct WorkspacePrepareInput<'a> {
     pub invocation_id: Uuid,
     pub owner: &'a Owner,
     /// The wake_token the dispatcher has minted for this invocation.
-    /// Forwarded to the runner so workspace-side tools can authenticate
-    /// to the substrate MCP listener with the same token the goose
-    /// subprocess receives via `PROXIMA_WAKE_TOKEN`.
+    /// Forwarded to the runner so workspace-side tools authenticate to
+    /// the substrate MCP listener under the same identity as the
+    /// harness loop driving the wake.
     pub wake_token: Uuid,
     /// Substrate MCP URL the runner forwards to its inner subprocess
     /// (typically as `PROXIMA_MCP_URL`). Phase 1's wake/fire dispatch
@@ -58,7 +58,7 @@ pub struct WorkspacePrepareInput<'a> {
     /// unchanged; the flavor runner interprets its own fields.
     pub triggering_memory_payload: &'a serde_json::Value,
     /// Provider-neutral capability allowlist for workspace-side
-    /// tools. Phase 3 maps these to goose extension/tool names.
+    /// tools. The harness exposes only these tool IDs to the provider.
     pub workspace_tool_palette: &'a [String],
     pub effective_recipe_path: &'a Path,
     /// Legacy recipe bytes. The harness cut passes an empty slice.

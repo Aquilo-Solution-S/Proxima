@@ -4,22 +4,18 @@ import type {
   EventHistoryRequest,
   EventHistoryResponse,
   EventIngestOutcome,
-  BundledRecipeTs,
   GoalDraft,
   GoalReactivateTs,
   GoalWriteOutcome,
   InstantiatePersonalityOutcomeTs,
   InstantiatePersonalityTs,
   BindInferenceTierTs,
-  DetectedHarnessTs,
   InferenceTargetTs,
   InferenceTierBindingTs,
   ListInferenceTargetsTs,
   ListInferenceTierBindingsTs,
-  ListOwnerRecipesTs,
   ListPersonalityInstancesTs,
   McpToolTs,
-  OwnerRecipesListingTs,
   ProducesTs,
   PersonalityInstanceTs,
   QueryRequest,
@@ -71,9 +67,6 @@ export interface EngineClient {
   listInferenceTierBindings(
     req: ListInferenceTierBindingsTs,
   ): Promise<InferenceTierBindingTs[]>;
-  detectLocalHarness(name: string): Promise<DetectedHarnessTs | null>;
-  listOwnerRecipes(req: ListOwnerRecipesTs): Promise<OwnerRecipesListingTs>;
-  listBundledRecipes(): Promise<BundledRecipeTs[]>;
   listMcpTools(): Promise<McpToolTs[]>;
   listWorkspaceTools(): Promise<WorkspaceToolTs[]>;
   listRelations(): Promise<RelationTs[]>;

@@ -29,15 +29,6 @@ export const commands = {
 	removeInferenceTarget: (req: RemoveInferenceTargetTs) => typedError<RemoveInferenceTargetOutcomeTs, ProtocolError>(__TAURI_INVOKE("remove_inference_target", { req })),
 	bindInferenceTier: (req: BindInferenceTierTs) => typedError<null, ProtocolError>(__TAURI_INVOKE("bind_inference_tier", { req })),
 	listInferenceTierBindings: (req: ListInferenceTierBindingsTs) => typedError<InferenceTierBindingTs[], ProtocolError>(__TAURI_INVOKE("list_inference_tier_bindings", { req })),
-	/**
-	 *  # Errors
-	 *  Returns `ProtocolError::Internal` when the platform lookup command cannot
-	 *  be executed. Missing harness binaries return `Ok(None)`.
-	 */
-	detectLocalHarness: (name: string) => typedError<{
-	path: string,
-	version: string,
-} | null, ProtocolError>(__TAURI_INVOKE("detect_local_harness", { name })),
 	listMcpTools: () => typedError<McpToolTs[], ProtocolError>(__TAURI_INVOKE("list_mcp_tools")),
 	listWorkspaceTools: () => typedError<WorkspaceToolTs[], ProtocolError>(__TAURI_INVOKE("list_workspace_tools")),
 	listRelations: () => typedError<RelationTs[], ProtocolError>(__TAURI_INVOKE("list_relations")),
@@ -331,11 +322,6 @@ export type CommandError =
 { kind: "secret_store"; data: {
 	message: string,
 } };
-
-export type DetectedHarnessTs = {
-	path: string,
-	version: string,
-};
 
 export type EdgeRow = {
 	id: string,

@@ -7,11 +7,9 @@ import {
 } from "solid-js";
 import type {
   AuthoredByTs,
-  BundledRecipeTs,
   ExecutionModeTs,
   McpToolTs,
   ModelTierTs,
-  OwnerRecipesListingTs,
   PersonalityInstanceTs,
   RelationTs,
   TriggerKindTs,
@@ -110,9 +108,6 @@ interface InspectorProps {
   dirty: boolean;
   saving: boolean;
   error: string | null;
-  recipes: OwnerRecipesListingTs | null;
-  bundledRecipes: BundledRecipeTs[] | null;
-  recipesError: string | null;
   mcpTools: McpToolTs[] | null;
   workspaceTools: WorkspaceToolTs[] | null;
   relations: RelationTs[] | null;
@@ -135,8 +130,6 @@ interface InspectorProps {
   confirmingTombstone: string | null;
   onConfirmTombstone: (instanceId: string) => void;
   onCancelTombstone: () => void;
-  onRefreshRecipes: () => void;
-  onRevealRecipesFolder: (path: string) => void;
 }
 
 const findInstance = (
@@ -234,9 +227,6 @@ export const Inspector: Component<InspectorProps> = (props) => {
             entryIndex={
               (props.selection as { entry_index: number }).entry_index
             }
-            recipes={props.recipes}
-            bundledRecipes={props.bundledRecipes}
-            recipesError={props.recipesError}
             mcpTools={props.mcpTools}
             workspaceTools={props.workspaceTools}
             relations={props.relations}
@@ -256,8 +246,6 @@ export const Inspector: Component<InspectorProps> = (props) => {
               if (sel?.kind !== "wake_entry") return;
               props.onRemoveEntry(sel.instance_id, sel.entry_index);
             }}
-            onRefreshRecipes={props.onRefreshRecipes}
-            onRevealRecipesFolder={props.onRevealRecipesFolder}
           />
         </Show>
 
@@ -426,17 +414,12 @@ const WakeEntryDetail: Component<{
   instance: PersonalityInstanceTs;
   draft: WakeEntryDraftTs;
   entryIndex: number;
-  recipes: OwnerRecipesListingTs | null;
-  bundledRecipes: BundledRecipeTs[] | null;
-  recipesError: string | null;
   mcpTools: McpToolTs[] | null;
   workspaceTools: WorkspaceToolTs[] | null;
   relations: RelationTs[] | null;
   toolsError: string | null;
   onUpdate: (mutate: (draft: WakeEntryDraftTs) => void) => void;
   onRemove: () => void;
-  onRefreshRecipes: () => void;
-  onRevealRecipesFolder: (path: string) => void;
   wakeInvocations: WakeInvocationTs[] | null;
   wakeInvocationsLoading: boolean;
   wakeInvocationsError: string | null;
@@ -619,7 +602,7 @@ const WakeEntryDetail: Component<{
       <details class="personality-section" open>
         <summary>Behavior</summary>
         <p class="personality-section-hint">
-          What runs on each wake. Recipe weaves the per-trigger prose.
+          What runs on each wake.
         </p>
         <div class="personality-section-grid">
           <label class="personality-section-grid-full">
@@ -634,19 +617,6 @@ const WakeEntryDetail: Component<{
               }
             />
           </label>
-          <RecipePicker
-            recipeRef={props.draft.recipe_ref}
-            recipes={props.recipes}
-            bundledRecipes={props.bundledRecipes}
-            recipesError={props.recipesError}
-            onChange={(value) =>
-              props.onUpdate((draft) => {
-                draft.recipe_ref = value;
-              })
-            }
-            onRefresh={props.onRefreshRecipes}
-            onReveal={props.onRevealRecipesFolder}
-          />
           <SubstrateToolPicker
             selected={props.draft.substrate_tool_palette}
             tools={props.mcpTools}
@@ -885,240 +855,6 @@ const formatDuration = (durationMs: number | null): string => {
   if (durationMs === null) return "-";
   if (durationMs < 1000) return `${durationMs} ms`;
   return `${(durationMs / 1000).toFixed(1)} s`;
-};
-
-const USER_PREFIX = "user:";
-const BUNDLED_PREFIX = "bundled:";
-
-type RecipeTab = "user" | "bundled";
-
-const tabFromRef = (recipeRef: string): RecipeTab =>
-  recipeRef.startsWith(BUNDLED_PREFIX) ? "bundled" : "user";
-
-const RecipePicker: Component<{
-  recipeRef: string;
-  recipes: OwnerRecipesListingTs | null;
-  bundledRecipes: BundledRecipeTs[] | null;
-  recipesError: string | null;
-  onChange: (value: string) => void;
-  onRefresh: () => void;
-  onReveal: (path: string) => void;
-}> = (props) => {
-  const [activeTab, setActiveTab] = createSignal<RecipeTab>(
-    tabFromRef(props.recipeRef),
-  );
-
-  const userOptions = createMemo<{ value: string; label: string }[]>(() => {
-    const listing = props.recipes;
-    if (!listing) return [];
-    return listing.recipes.map((recipe) => ({
-      value: `${USER_PREFIX}${recipe.filename}`,
-      label: recipe.filename,
-    }));
-  });
-
-  const bundledOptions = createMemo<{ value: string; label: string }[]>(() => {
-    const list = props.bundledRecipes;
-    if (!list) return [];
-    return list.map((recipe) => ({
-      value: `${BUNDLED_PREFIX}${recipe.slug}`,
-      label: recipe.slug,
-    }));
-  });
-
-  const userOrphan = createMemo<{ value: string; label: string } | null>(() => {
-    const ref = props.recipeRef;
-    if (!ref.startsWith(USER_PREFIX)) return null;
-    if (userOptions().some((opt) => opt.value === ref)) return null;
-    return { value: ref, label: `${ref.slice(USER_PREFIX.length)} (missing)` };
-  });
-
-  const bundledOrphan = createMemo<{ value: string; label: string } | null>(
-    () => {
-      const ref = props.recipeRef;
-      if (!ref.startsWith(BUNDLED_PREFIX)) return null;
-      if (bundledOptions().some((opt) => opt.value === ref)) return null;
-      return {
-        value: ref,
-        label: `${ref.slice(BUNDLED_PREFIX.length)} (unknown)`,
-      };
-    },
-  );
-
-  const otherOrphan = createMemo<{ value: string; label: string } | null>(
-    () => {
-      const ref = props.recipeRef;
-      if (!ref) return null;
-      if (ref.startsWith(USER_PREFIX) || ref.startsWith(BUNDLED_PREFIX))
-        return null;
-      return { value: ref, label: `${ref} (unrecognized)` };
-    },
-  );
-
-  const userLoading = createMemo(() => props.recipes === null);
-  const bundledLoading = createMemo(() => props.bundledRecipes === null);
-  const userEmpty = createMemo(
-    () => props.recipes !== null && props.recipes.recipes.length === 0,
-  );
-  const bundledEmpty = createMemo(
-    () => props.bundledRecipes !== null && props.bundledRecipes.length === 0,
-  );
-  const folderPath = createMemo(() => props.recipes?.root_path ?? "");
-
-  const currentValue = createMemo(() => {
-    const tab = activeTab();
-    const ref = props.recipeRef;
-    if (tab === "user") {
-      if (ref.startsWith(USER_PREFIX)) return ref;
-      return "";
-    }
-    if (ref.startsWith(BUNDLED_PREFIX)) return ref;
-    return "";
-  });
-
-  return (
-    <div class="personality-section-grid-full personality-recipe-picker">
-      <div class="personality-recipe-picker-tabs" role="tablist" aria-label="Recipe source">
-        <button
-          type="button"
-          role="tab"
-          aria-selected={activeTab() === "user"}
-          class={`personality-recipe-picker-tab${
-            activeTab() === "user" ? " is-active" : ""
-          }`}
-          onClick={() => setActiveTab("user")}
-        >
-          Private
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={activeTab() === "bundled"}
-          class={`personality-recipe-picker-tab${
-            activeTab() === "bundled" ? " is-active" : ""
-          }`}
-          onClick={() => setActiveTab("bundled")}
-        >
-          Bundled
-        </button>
-      </div>
-
-      <Show when={activeTab() === "user"}>
-        <label>
-          Recipe
-          <div class="personality-recipe-picker-row">
-            <select
-              value={currentValue()}
-              disabled={userLoading()}
-              aria-label="Recipe"
-              onChange={(event) => props.onChange(event.currentTarget.value)}
-            >
-              <Show when={!currentValue()}>
-                <option value="" disabled>
-                  {userLoading() ? "Loading recipes…" : "Select a recipe"}
-                </option>
-              </Show>
-              <Show when={userOrphan()}>
-                {(orphan) => (
-                  <option value={orphan().value}>{orphan().label}</option>
-                )}
-              </Show>
-              <Show when={activeTab() === "user" ? otherOrphan() : null}>
-                {(orphan) => (
-                  <option value={orphan().value}>{orphan().label}</option>
-                )}
-              </Show>
-              <For each={userOptions()}>
-                {(option) => (
-                  <option value={option.value}>{option.label}</option>
-                )}
-              </For>
-            </select>
-            <button
-              type="button"
-              class="hub-nav-item"
-              onClick={props.onRefresh}
-              aria-label="Refresh recipes"
-              title="Refresh"
-            >
-              ↻
-            </button>
-          </div>
-        </label>
-        <p class="personality-recipe-picker-hint">
-          <Show
-            when={folderPath()}
-            fallback={<span>Loading recipes folder…</span>}
-          >
-            <span>
-              Recipes folder: <Mono>{folderPath()}</Mono>
-            </span>
-            <button
-              type="button"
-              class="personality-recipe-picker-link"
-              onClick={() => props.onReveal(folderPath())}
-            >
-              Reveal
-            </button>
-          </Show>
-        </p>
-        <Show when={userEmpty()}>
-          <p class="personality-recipe-picker-empty">
-            No recipes found. Drop a *.yaml in the folder above, then refresh.
-          </p>
-        </Show>
-      </Show>
-
-      <Show when={activeTab() === "bundled"}>
-        <label>
-          Recipe
-          <div class="personality-recipe-picker-row">
-            <select
-              value={currentValue()}
-              disabled={bundledLoading()}
-              aria-label="Recipe"
-              onChange={(event) => props.onChange(event.currentTarget.value)}
-            >
-              <Show when={!currentValue()}>
-                <option value="" disabled>
-                  {bundledLoading()
-                    ? "Loading bundled recipes…"
-                    : "Select a bundled recipe"}
-                </option>
-              </Show>
-              <Show when={bundledOrphan()}>
-                {(orphan) => (
-                  <option value={orphan().value}>{orphan().label}</option>
-                )}
-              </Show>
-              <For each={bundledOptions()}>
-                {(option) => (
-                  <option value={option.value}>{option.label}</option>
-                )}
-              </For>
-            </select>
-          </div>
-        </label>
-        <p class="personality-recipe-picker-hint">
-          Ships with the app — read-only. Copy a bundled file into the
-          recipes folder to customize.
-        </p>
-        <Show when={bundledEmpty()}>
-          <p class="personality-recipe-picker-empty">
-            No bundled recipes registered.
-          </p>
-        </Show>
-      </Show>
-
-      <Show when={props.recipesError}>
-        {(message) => (
-          <p class="proxima-error" role="alert">
-            {message()}
-          </p>
-        )}
-      </Show>
-    </div>
-  );
 };
 
 const SubstrateToolPicker: Component<{

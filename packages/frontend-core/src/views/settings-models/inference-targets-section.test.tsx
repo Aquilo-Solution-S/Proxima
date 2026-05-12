@@ -4,23 +4,32 @@ import { sentinelOwner } from "../../graph-store";
 import type { InferenceTargetTs } from "../../bindings";
 import { InferenceTargetsSection } from "./inference-targets-section";
 
-vi.mock("@tauri-apps/plugin-dialog", () => ({
-  open: vi.fn(async () => "/usr/local/bin/goose"),
-}));
-
 const owner = sentinelOwner();
 
 const sampleTarget: InferenceTargetTs = {
-  target_ref: "local-goose",
+  target_ref: "custom-mistral",
   config: {
-    kind: "local_cli",
-    command: "goose",
-    profile: null,
-    env_overrides: [],
+    kind: "mistral_chat",
+    base_url: "https://api.mistral.ai",
+    model_id: "mistral-medium-latest",
+    api_key_env: "MISTRAL_API_KEY",
+    temperature: null,
+    max_completion_tokens: null,
   },
   created_at: "2026-05-07T00:00:00Z",
   updated_at: "2026-05-07T00:00:00Z",
 };
+
+const client = () => ({
+  registerInferenceTarget: vi.fn(async () => ({
+    target_ref: "custom-target",
+    idempotent_replay: false,
+  })),
+  removeInferenceTarget: vi.fn(async () => ({
+    idempotent_replay: false,
+  })),
+  bindInferenceTier: vi.fn(async () => undefined),
+});
 
 describe("InferenceTargetsSection", () => {
   afterEach(() => {
@@ -28,17 +37,12 @@ describe("InferenceTargetsSection", () => {
     vi.clearAllMocks();
   });
 
-  it("renders custom (non-preset) targets", async () => {
-    const client = {
-      detectLocalHarness: vi.fn(async () => null),
-      registerInferenceTarget: vi.fn(),
-      removeInferenceTarget: vi.fn(),
-      bindInferenceTier: vi.fn(),
-    };
+  it("renders custom non-preset targets", async () => {
+    const c = client();
 
     render(() => (
       <InferenceTargetsSection
-        client={client}
+        client={c}
         owner={owner}
         targets={() => [sampleTarget]}
         refetchTargets={vi.fn()}
@@ -46,35 +50,20 @@ describe("InferenceTargetsSection", () => {
       />
     ));
 
-    expect(await screen.findByText("local-goose")).toBeTruthy();
-    expect(screen.getAllByText("Local CLI").length).toBeGreaterThan(0);
+    expect(await screen.findByText("custom-mistral")).toBeTruthy();
+    expect(screen.getAllByText("Mistral Chat").length).toBeGreaterThan(0);
   });
 
-  it("hides preset goose-{tier} rows from the custom targets table", async () => {
+  it("hides native preset rows from the custom targets table", async () => {
     const presetTarget: InferenceTargetTs = {
-      target_ref: "goose-fast",
-      config: {
-        kind: "local_cli",
-        command: "/fake/goose",
-        profile: null,
-        env_overrides: [
-          ["GOOSE_PROVIDER", "mistral"],
-          ["GOOSE_MODEL", "mistral-medium-latest"],
-        ],
-      },
-      created_at: "2026-05-08T00:00:00Z",
-      updated_at: "2026-05-08T00:00:00Z",
+      ...sampleTarget,
+      target_ref: "default-fast",
     };
-    const client = {
-      detectLocalHarness: vi.fn(async () => null),
-      registerInferenceTarget: vi.fn(),
-      removeInferenceTarget: vi.fn(),
-      bindInferenceTier: vi.fn(),
-    };
+    const c = client();
 
     render(() => (
       <InferenceTargetsSection
-        client={client}
+        client={c}
         owner={owner}
         targets={() => [presetTarget]}
         refetchTargets={vi.fn()}
@@ -82,25 +71,16 @@ describe("InferenceTargetsSection", () => {
       />
     ));
 
-    await waitFor(() =>
-      expect(screen.getByText("Mistral Medium (latest)")).toBeTruthy(),
-    );
+    expect(screen.getByText("mistral-medium-latest")).toBeTruthy();
     expect(screen.queryByText("Existing custom targets")).toBeNull();
   });
 
-  it("shows server-side typed errors verbatim on register", async () => {
-    const client = {
-      detectLocalHarness: vi.fn(async () => null),
-      registerInferenceTarget: vi.fn(async () => {
-        throw new Error("target_ref_conflict: local-goose");
-      }),
-      removeInferenceTarget: vi.fn(),
-      bindInferenceTier: vi.fn(),
-    };
+  it("registers a custom Mistral Chat target with blank chat fields as null", async () => {
+    const c = client();
 
     render(() => (
       <InferenceTargetsSection
-        client={client}
+        client={c}
         owner={owner}
         targets={() => []}
         refetchTargets={vi.fn()}
@@ -108,55 +88,127 @@ describe("InferenceTargetsSection", () => {
       />
     ));
 
-    fireEvent.input(screen.getByLabelText("Target path"), {
-      target: { value: "/usr/local/bin/goose" },
+    fireEvent.input(screen.getByLabelText("Target ref"), {
+      target: { value: "custom-fast" },
     });
-    fireEvent.input(screen.getByLabelText("System Prompt"), {
-      target: { value: "Stay inside the Proxima MCP surface." },
+    fireEvent.click(screen.getByRole("button", { name: /^register$/i }));
+
+    await waitFor(() => {
+      expect(c.registerInferenceTarget).toHaveBeenCalledWith({
+        owner,
+        target_ref: "custom-fast",
+        config: sampleTarget.config,
+      });
+    });
+  });
+
+  it("registers a custom OpenAI Chat target with chat-only numeric fields", async () => {
+    const c = client();
+
+    render(() => (
+      <InferenceTargetsSection
+        client={c}
+        owner={owner}
+        targets={() => []}
+        refetchTargets={vi.fn()}
+        onChanged={vi.fn()}
+      />
+    ));
+
+    fireEvent.change(screen.getByLabelText("Kind"), {
+      target: { value: "openai_chat" },
+    });
+    fireEvent.input(screen.getByLabelText("Target ref"), {
+      target: { value: "custom-openai-chat" },
+    });
+    fireEvent.input(screen.getByLabelText("temperature"), {
+      target: { value: "0.2" },
+    });
+    fireEvent.input(screen.getByLabelText("max_completion_tokens"), {
+      target: { value: "4096" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^register$/i }));
+
+    await waitFor(() => {
+      expect(c.registerInferenceTarget).toHaveBeenCalledWith({
+        owner,
+        target_ref: "custom-openai-chat",
+        config: {
+          kind: "openai_chat",
+          base_url: "https://api.openai.com",
+          model_id: "gpt-5.3-codex-spark",
+          api_key_env: "OPENAI_API_KEY",
+          temperature: 0.2,
+          max_completion_tokens: 4096,
+        },
+      });
+    });
+  });
+
+  it("registers a custom OpenAI Responses target with blank reasoning as null", async () => {
+    const c = client();
+
+    render(() => (
+      <InferenceTargetsSection
+        client={c}
+        owner={owner}
+        targets={() => []}
+        refetchTargets={vi.fn()}
+        onChanged={vi.fn()}
+      />
+    ));
+
+    fireEvent.change(screen.getByLabelText("Kind"), {
+      target: { value: "openai_responses" },
+    });
+    fireEvent.input(screen.getByLabelText("Target ref"), {
+      target: { value: "custom-responses" },
+    });
+    fireEvent.change(screen.getByLabelText("reasoning_effort"), {
+      target: { value: "" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /^register$/i }));
+
+    await waitFor(() => {
+      expect(c.registerInferenceTarget).toHaveBeenCalledWith({
+        owner,
+        target_ref: "custom-responses",
+        config: {
+          kind: "openai_responses",
+          base_url: "https://api.openai.com",
+          model_id: "gpt-5.3-codex-spark",
+          api_key_env: "OPENAI_API_KEY",
+          reasoning_effort: null,
+        },
+      });
+    });
+  });
+
+  it("shows server-side typed errors verbatim on register", async () => {
+    const c = {
+      ...client(),
+      registerInferenceTarget: vi.fn(async () => {
+        throw new Error("target_ref_conflict: custom-fast");
+      }),
+    };
+
+    render(() => (
+      <InferenceTargetsSection
+        client={c}
+        owner={owner}
+        targets={() => []}
+        refetchTargets={vi.fn()}
+        onChanged={vi.fn()}
+      />
+    ));
+
+    fireEvent.input(screen.getByLabelText("Target ref"), {
+      target: { value: "custom-fast" },
     });
     fireEvent.click(screen.getByRole("button", { name: /^register$/i }));
 
     await waitFor(() => {
       expect(screen.getByText(/target_ref_conflict/)).toBeTruthy();
-    });
-    expect(client.registerInferenceTarget).toHaveBeenCalledWith({
-      owner,
-      target_ref: "/usr/local/bin/goose",
-      config: {
-        kind: "local_cli",
-        command: "/usr/local/bin/goose",
-        profile: null,
-        env_overrides: [
-          ["PROXIMA_SYSTEM_PROMPT", "Stay inside the Proxima MCP surface."],
-        ],
-      },
-    });
-  });
-
-  it("can pick a local target path from the platform dialog", async () => {
-    const client = {
-      detectLocalHarness: vi.fn(async () => null),
-      registerInferenceTarget: vi.fn(),
-      removeInferenceTarget: vi.fn(),
-      bindInferenceTier: vi.fn(),
-    };
-
-    render(() => (
-      <InferenceTargetsSection
-        client={client}
-        owner={owner}
-        targets={() => []}
-        refetchTargets={vi.fn()}
-        onChanged={vi.fn()}
-      />
-    ));
-
-    fireEvent.click(screen.getByRole("button", { name: /^select$/i }));
-
-    await waitFor(() => {
-      expect((screen.getByLabelText("Target path") as HTMLInputElement).value).toBe(
-        "/usr/local/bin/goose",
-      );
     });
   });
 });

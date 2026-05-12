@@ -7,10 +7,8 @@ import {
 } from "@solidjs/testing-library";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
-  BundledRecipeTs,
   InstantiatePersonalityOutcomeTs,
   McpToolTs,
-  OwnerRecipesListingTs,
   PersonalityInstanceTs,
   RelationTs,
   SetWakeEntriesOutcomeTs,
@@ -44,7 +42,6 @@ const wakeEntry = (overrides: Partial<WakeEntryTs> = {}): WakeEntryTs => ({
   authored_by: "any",
   probability_promille: 1000,
   goal_scope: "none",
-  recipe_ref: "user:default.yaml",
   instructions: "",
   model_tier: "standard",
   inference_target_ref: null,
@@ -125,15 +122,6 @@ const mockClient = (
       idempotent_replay: false,
     }),
   );
-  const listOwnerRecipes = vi.fn((_) =>
-    ok<OwnerRecipesListingTs>({
-      root_path: "/tmp/recipes",
-      recipes: [{ filename: "default.yaml", modified_at: null }],
-    }),
-  );
-  const listBundledRecipes = vi.fn(() =>
-    ok<BundledRecipeTs[]>([]),
-  );
   const listMcpTools = vi.fn(() =>
     ok<McpToolTs[]>([
       {
@@ -195,8 +183,6 @@ const mockClient = (
       instantiatePersonality,
       setWakeEntries,
       tombstonePersonality,
-      listOwnerRecipes,
-      listBundledRecipes,
       listMcpTools,
       listWorkspaceTools,
       listRelations,
@@ -207,8 +193,6 @@ const mockClient = (
     instantiatePersonality,
     setWakeEntries,
     tombstonePersonality,
-    listOwnerRecipes,
-    listBundledRecipes,
     listMcpTools,
     listWorkspaceTools,
     listRelations,
@@ -389,10 +373,7 @@ describe("PersonalitiesView", () => {
     await selectEntry("react-to-commit");
 
     expect(screen.getByDisplayValue("react-to-commit")).toBeTruthy();
-    const recipeSelect = screen.getByLabelText("Recipe") as HTMLSelectElement;
-    await waitFor(() => {
-      expect(recipeSelect.value).toBe("user:default.yaml");
-    });
+    expect(screen.getByLabelText("Instructions")).toBeTruthy();
     expect(
       screen.getByRole("button", {
         name: /^Trigger id: proxima-code\/commit-summary-v1$/,
@@ -472,7 +453,6 @@ describe("PersonalitiesView", () => {
             authored_by: "any",
             probability_promille: 1000,
             goal_scope: "none",
-            recipe_ref: "user:default.yaml",
             instructions: "",
             model_tier: "standard",
             inference_target_ref: null,
@@ -627,44 +607,6 @@ describe("PersonalitiesView", () => {
     expect(screen.getByText("No wake entries yet.")).toBeTruthy();
   });
 
-  it("lists user recipes from listOwnerRecipes and writes user:<filename> on save", async () => {
-    const row = instance();
-    const { client, setWakeEntries, listOwnerRecipes } = mockClient([row]);
-    listOwnerRecipes.mockResolvedValue({
-      status: "ok",
-      data: {
-        root_path: "/tmp/recipes/owner",
-        recipes: [
-          { filename: "default.yaml", modified_at: null },
-          { filename: "review.yaml", modified_at: null },
-        ],
-      },
-    });
-
-    render(() => <PersonalitiesView client={client} owner={owner} />);
-
-    await selectPersonality("Engineer");
-    await selectEntry("react-to-commit");
-
-    const select = await waitFor(() => {
-      const node = screen.getByLabelText("Recipe") as HTMLSelectElement;
-      const labels = Array.from(node.options).map((opt) => opt.textContent);
-      if (!labels.includes("review.yaml")) {
-        throw new Error(`recipes not loaded yet, got ${labels.join(",")}`);
-      }
-      return node;
-    });
-    fireEvent.change(select, { target: { value: "user:review.yaml" } });
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
-
-    await waitFor(() => {
-      expect(setWakeEntries).toHaveBeenCalled();
-      expect(setWakeEntries.mock.calls[0][0].entries[0].recipe_ref).toBe(
-        "user:review.yaml",
-      );
-    });
-  });
-
   it("edits wake entry instructions and sends them on save", async () => {
     const row = instance();
     const { client, setWakeEntries } = mockClient([row]);
@@ -685,141 +627,9 @@ describe("PersonalitiesView", () => {
       expect(setWakeEntries.mock.calls[0][0].entries[0].instructions).toBe(
         "Summarize the triggering commit and decide next action.",
       );
+      const removedField = ["recipe", "ref"].join("_");
+      expect(removedField in setWakeEntries.mock.calls[0][0].entries[0]).toBe(false);
     });
-  });
-
-  it("shows an empty-folder hint when the recipes folder has no yaml", async () => {
-    const row = instance({
-      wake_entries: [wakeEntry({ recipe_ref: "" })],
-    });
-    const { client, listOwnerRecipes } = mockClient([row]);
-    listOwnerRecipes.mockResolvedValue({
-      status: "ok",
-      data: { root_path: "/tmp/recipes/owner", recipes: [] },
-    });
-
-    render(() => <PersonalitiesView client={client} owner={owner} />);
-
-    await selectPersonality("Engineer");
-    await selectEntry("react-to-commit");
-
-    expect(
-      await screen.findByText(/No recipes found/),
-    ).toBeTruthy();
-    expect(screen.getByText("/tmp/recipes/owner")).toBeTruthy();
-  });
-
-  it("renders an orphan badge when recipe_ref points at a missing file", async () => {
-    const row = instance({
-      wake_entries: [wakeEntry({ recipe_ref: "user:gone.yaml" })],
-    });
-    const { client, listOwnerRecipes } = mockClient([row]);
-    listOwnerRecipes.mockResolvedValue({
-      status: "ok",
-      data: {
-        root_path: "/tmp/recipes/owner",
-        recipes: [{ filename: "default.yaml", modified_at: null }],
-      },
-    });
-
-    render(() => <PersonalitiesView client={client} owner={owner} />);
-
-    await selectPersonality("Engineer");
-    await selectEntry("react-to-commit");
-
-    await waitFor(() => {
-      const select = screen.getByLabelText("Recipe") as HTMLSelectElement;
-      const selected = select.options[select.selectedIndex];
-      expect(selected.textContent).toBe("gone.yaml (missing)");
-    });
-  });
-
-  it("opens the bundled tab when recipe_ref starts with bundled:", async () => {
-    const row = instance({
-      wake_entries: [wakeEntry({ recipe_ref: "bundled:proxima-code/engineer" })],
-    });
-    const { client, listBundledRecipes } = mockClient([row]);
-    listBundledRecipes.mockResolvedValue({
-      status: "ok",
-      data: [
-        { slug: "proxima-code/engineer", flavor_id: "proxima-code" },
-        { slug: "proxima-code/commit_summary", flavor_id: "proxima-code" },
-      ],
-    });
-
-    render(() => <PersonalitiesView client={client} owner={owner} />);
-
-    await selectPersonality("Engineer");
-    await selectEntry("react-to-commit");
-
-    const bundledTab = await screen.findByRole("tab", { name: "Bundled" });
-    expect(bundledTab.getAttribute("aria-selected")).toBe("true");
-
-    await waitFor(() => {
-      const select = screen.getByLabelText("Recipe") as HTMLSelectElement;
-      expect(select.value).toBe("bundled:proxima-code/engineer");
-    });
-  });
-
-  it("writes bundled:<slug> when a bundled option is selected", async () => {
-    const row = instance({
-      wake_entries: [wakeEntry({ recipe_ref: "" })],
-    });
-    const { client, setWakeEntries, listBundledRecipes } = mockClient([row]);
-    listBundledRecipes.mockResolvedValue({
-      status: "ok",
-      data: [
-        { slug: "proxima-code/engineer", flavor_id: "proxima-code" },
-      ],
-    });
-
-    render(() => <PersonalitiesView client={client} owner={owner} />);
-
-    await selectPersonality("Engineer");
-    await selectEntry("react-to-commit");
-
-    fireEvent.click(screen.getByRole("tab", { name: "Bundled" }));
-    const select = await waitFor(() => {
-      const node = screen.getByLabelText("Recipe") as HTMLSelectElement;
-      const labels = Array.from(node.options).map((opt) => opt.textContent);
-      if (!labels.includes("proxima-code/engineer")) {
-        throw new Error(`bundled options not loaded: ${labels.join(",")}`);
-      }
-      return node;
-    });
-    fireEvent.change(select, {
-      target: { value: "bundled:proxima-code/engineer" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
-
-    await waitFor(() => {
-      expect(setWakeEntries).toHaveBeenCalled();
-      expect(setWakeEntries.mock.calls[0][0].entries[0].recipe_ref).toBe(
-        "bundled:proxima-code/engineer",
-      );
-    });
-  });
-
-  it("preserves recipe_ref when the user toggles tabs without selecting", async () => {
-    const row = instance({
-      wake_entries: [wakeEntry({ recipe_ref: "user:default.yaml" })],
-    });
-    const { client, setWakeEntries } = mockClient([row]);
-
-    render(() => <PersonalitiesView client={client} owner={owner} />);
-
-    await selectPersonality("Engineer");
-    await selectEntry("react-to-commit");
-
-    fireEvent.click(screen.getByRole("tab", { name: "Bundled" }));
-    fireEvent.click(screen.getByRole("tab", { name: "Private" }));
-
-    await waitFor(() => {
-      const select = screen.getByLabelText("Recipe") as HTMLSelectElement;
-      expect(select.value).toBe("user:default.yaml");
-    });
-
-    expect(setWakeEntries).not.toHaveBeenCalled();
   });
 
   it("renders substrate tools from listMcpTools and toggles selection on save", async () => {
