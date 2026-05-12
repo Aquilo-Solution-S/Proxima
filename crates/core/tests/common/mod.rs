@@ -15,14 +15,13 @@ use proxima_core::personality::{
 use proxima_core::storage::Storage;
 use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
 use proxima_core::verbs::query::MemoryStore;
-use proxima_core::verbs::schema::FlavorRegistryFrozen;
 use proxima_core::wake::target_adapter::{
     TargetAdapter, TargetAdapterError, TargetInvocation, TargetOutcome, TargetOutcomeKind,
 };
 use proxima_core::{
-    BindInferenceTierRequest, InferenceTargetConfig, LocalCliConfig, ModelTier, OrgId, Owner,
-    Principal, RegisterInferenceTargetRequest, SchemaId, SchemaVersion, SourceBatchId, SourceId,
-    StorageHandle, UserId, WakeEntryAuthoredBy, WakeEntryTriggerKind,
+    BindInferenceTierRequest, FlavorRegistry, InferenceTargetConfig, MistralChatConfig, ModelTier,
+    OrgId, Owner, Principal, RegisterInferenceTargetRequest, SchemaId, SchemaVersion,
+    SourceBatchId, SourceId, StorageHandle, UserId, WakeEntryAuthoredBy, WakeEntryTriggerKind,
 };
 use proxima_storage_pg::PgStorage;
 use sqlx::{Connection, Executor, PgConnection, Row};
@@ -196,7 +195,7 @@ pub async fn seed_wake_context_fixture()
     ))
 }
 
-/// `TargetAdapter` mock used by dispatch fixtures: counts invocations,
+/// Harness adapter mock used by dispatch fixtures: counts invocations,
 /// returns `Succeeded` without spawning anything. Identical in shape to
 /// the inline mock in `wake_dispatch_idempotent.rs`; promoted here so
 /// multiple dispatch tests can share it without a refactor.
@@ -222,18 +221,21 @@ impl TargetAdapter for MockAdapter {
     async fn run(
         &self,
         _invocation: TargetInvocation,
+        _ctx: proxima_core::harness::HarnessContext,
     ) -> Result<TargetOutcome, TargetAdapterError> {
         *self.calls.lock().unwrap() += 1;
         Ok(TargetOutcome {
             kind: TargetOutcomeKind::Succeeded,
-            turn_count: Some(1),
-            exit_code: Some(0),
+            finish_reason: proxima_core::harness::FinishReason::Stop,
+            error_class: proxima_core::harness::ErrorClass::None,
+            failure_reason: None,
+            rounds_used: 1,
             duration_ms: 1,
-            stdout_tail: String::new(),
-            stderr_tail: String::new(),
-            stdout_truncated: false,
-            stderr_truncated: false,
-            session_log_error: None,
+            total_prompt_tokens: None,
+            total_completion_tokens: None,
+            tool_call_count: 0,
+            jsonl_bytes: b"{\"record\":\"test\"}\n".to_vec(),
+            jsonl_truncated: false,
         })
     }
 }
@@ -247,10 +249,7 @@ impl TargetAdapter for MockAdapter {
 /// the dispatcher loop wants to observe what `start` does, so the
 /// fixture stops short of starting it. `mcp_url` is pre-set to a stub
 /// so `fire_wake_entry` doesn't error with `mcp_listener_not_started`,
-/// and `goose_bin` is pinned to `echo` so [`Engine::start`]'s
-/// `verify_goose_on_path` self-check passes without needing a real
-/// goose on PATH (the actual goose subprocess is never spawned because
-/// the `MockAdapter` short-circuits the fire path).
+/// The `MockAdapter` short-circuits the fire path.
 ///
 /// Returns `None` when no test PG is reachable — callers should treat
 /// the `None` arm as a skip, matching `seed_wake_context_fixture`.
@@ -262,10 +261,6 @@ pub struct DispatchEngineFixture {
     pub wake_entry_id: Uuid,
     pub mock: MockAdapter,
     pub pg: PgFixture,
-    // Recipes tempdir kept alive for the duration of the fixture so
-    // `set_wake_entries`'s recipe-resolution layer keeps seeing the
-    // file we just wrote.
-    pub _recipes_dir: tempfile::TempDir,
 }
 
 impl DispatchEngineFixture {
@@ -308,10 +303,12 @@ pub async fn seed_dispatch_fixture_with_match_and_engine(
         .register_inference_target(&RegisterInferenceTargetRequest {
             owner: owner.clone(),
             target_ref: target_ref.into(),
-            config: InferenceTargetConfig::LocalCli(LocalCliConfig {
-                command: "echo".into(),
-                profile: None,
-                env_overrides: Vec::new(),
+            config: InferenceTargetConfig::MistralChat(MistralChatConfig {
+                base_url: "http://127.0.0.1:9".into(),
+                model_id: "test-model".into(),
+                api_key_env: "PATH".into(),
+                temperature: None,
+                max_completion_tokens: None,
             }),
         })
         .await
@@ -325,20 +322,7 @@ pub async fn seed_dispatch_fixture_with_match_and_engine(
         .await
         .expect("bind tier");
 
-    // 2. Recipe on disk under owner_recipes_root so
-    //    resolve_recipe_ref("user:smoke.yaml") succeeds.
-    let recipes_dir = tempfile::tempdir().expect("tempdir");
-    let recipes_root = recipes_dir.path().to_path_buf();
-    let principal_id = match &owner.principal {
-        Principal::User(u) => u.into_inner(),
-        Principal::Group(g) => g.into_inner(),
-    };
-    let owner_recipes = recipes_root.join(principal_id.to_string());
-    std::fs::create_dir_all(&owner_recipes).expect("mkdir owner recipes");
-    let recipe_path = owner_recipes.join("smoke.yaml");
-    std::fs::write(&recipe_path, b"name: smoke\nversion: 1\n").expect("write recipe");
-
-    // 3. WakeEntry that matches the seeded fact's schema.
+    // 2. WakeEntry that matches the seeded fact's schema.
     let wake_entry_id = Uuid::now_v7();
     let wake_entry = WakeEntryDraft::new(
         wake_entry_id,
@@ -347,8 +331,7 @@ pub async fn seed_dispatch_fixture_with_match_and_engine(
         "proxima-test/wake-context-fact-v1",
         "smoke-trigger",
         WakeEntryAuthoredBy::Any,
-        1000, // probability_promille — always-fire
-        "user:smoke.yaml",
+        1000,
         ModelTier::Standard,
         None,
         Vec::new(),
@@ -364,25 +347,19 @@ pub async fn seed_dispatch_fixture_with_match_and_engine(
         .await
         .expect("set wake entries");
 
-    // 4. Engine wired with: live PG handle, recipes_root, mock target
-    //    adapter (no real goose), `echo` as the goose bin so the boot
-    //    self-check passes (`echo --version` prints "--version" and
-    //    exits 0), and the requested dispatch interval.
+    // 3. Engine wired with live PG handle and mock harness adapter.
     let principal = owner.principal.clone();
     let resolver = NoAuth::new(principal, owner.clone());
     let mock = MockAdapter::new();
-    let echo_bin = which::which("echo").expect("echo on PATH");
     let engine = Arc::new(
         Engine::new(
-            FlavorRegistryFrozen::new(),
+            FlavorRegistry::default().freeze(),
             MemoryStore::new(),
             Box::new(resolver),
         )
         .with_storage(storage.clone())
-        .with_recipes_root(recipes_root)
         .with_target_adapter(Arc::new(mock.clone()) as Arc<dyn TargetAdapter>)
-        .with_dispatch_interval(dispatch_interval)
-        .with_goose_bin(echo_bin),
+        .with_dispatch_interval(dispatch_interval),
     );
     // `fire_wake_entry` reads `mcp_url()` and refuses to fire without
     // one. The fixture deliberately does NOT attach an MCP listener
@@ -401,7 +378,6 @@ pub async fn seed_dispatch_fixture_with_match_and_engine(
         wake_entry_id,
         mock,
         pg,
-        _recipes_dir: recipes_dir,
     })
 }
 

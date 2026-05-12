@@ -172,7 +172,9 @@ pub async fn list_workspace_reviews(
     .bind(run_memory_id.into_inner())
     .fetch_all(pool)
     .await?;
-    rows.into_iter().map(|row| review_record_from_row(&row)).collect()
+    rows.into_iter()
+        .map(|row| review_record_from_row(&row))
+        .collect()
 }
 
 /// Return a bounded unified diff for one workspace run.

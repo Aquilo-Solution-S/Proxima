@@ -1,6 +1,8 @@
 //! Wake-trace schemas. See the harness design spec
 //! §"Observability: three layers".
 
+pub mod emit;
+
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;

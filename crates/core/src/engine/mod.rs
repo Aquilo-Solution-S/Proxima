@@ -10,7 +10,6 @@ pub mod mcp_listener;
 mod query;
 
 use std::net::SocketAddr;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -28,7 +27,7 @@ use crate::wake::target_adapter::TargetAdapter;
 use crate::wake::token_store::WakeTokenStore;
 use crate::{
     BindInferenceTierRequest, BindInferenceTierResponse, InferenceTargetRow,
-    InferenceTierBindingRow, Owner, Principal, RegisterInferenceTargetRequest,
+    InferenceTierBindingRow, Owner, RegisterInferenceTargetRequest,
     RegisterInferenceTargetResponse, RemoveInferenceTargetRequest, RemoveInferenceTargetResponse,
     SetWakeEntriesRequest, SetWakeEntriesResponse,
 };
@@ -41,13 +40,11 @@ pub struct Engine {
     memories: MemoryStore,
     auth: Box<dyn AuthResolver>,
     storage: StorageHandle,
-    recipes_root: PathBuf,
     anthropic: Option<Arc<dyn AnthropicClient>>,
     embed: Option<Arc<dyn EmbeddingClient>>,
     pub(crate) dispatch_interval: Duration,
     pub(crate) wake_token_ttl: Duration,
     pub(crate) mcp_listen_addr: SocketAddr,
-    pub(crate) goose_bin: Option<PathBuf>,
     pub(crate) mcp_listener: Option<Arc<dyn EngineMcpListener>>,
     pub(crate) mcp_url: Arc<RwLock<Option<String>>>,
     pub(crate) wake_token_store: Arc<WakeTokenStore>,
@@ -164,18 +161,8 @@ impl Engine {
         let ctx = crate::inference::set_wake_entries::SetWakeEntriesContext {
             storage: self.storage.as_ref(),
             registry: self.registry(),
-            owner_recipes_root: self.owner_recipes_root(&req.owner),
         };
         crate::inference::set_wake_entries::set_wake_entries(&ctx, req).await
-    }
-
-    #[must_use]
-    pub fn owner_recipes_root(&self, owner: &Owner) -> PathBuf {
-        let principal_id = match &owner.principal {
-            Principal::User(user) => user.into_inner(),
-            Principal::Group(group) => group.into_inner(),
-        };
-        self.recipes_root.join(principal_id.to_string())
     }
 
     /// Bound MCP URL after [`Engine::start`] succeeds. `None` before
@@ -221,25 +208,18 @@ impl Engine {
             .await
     }
 
-    /// Currently-installed [`TargetAdapter`]. Returns `None` until either
-    /// [`Engine::start`] resolves the goose binary and installs a
-    /// `LocalCliGooseAdapter`, or a test wires a mock via
-    /// [`Engine::with_target_adapter`].
+    /// Currently-installed wake harness adapter.
     #[must_use]
     pub fn target_adapter(&self) -> Option<Arc<dyn TargetAdapter>> {
         self.target_adapter.try_read().ok().and_then(|g| g.clone())
     }
 
-    /// Override the installed [`TargetAdapter`]. Test seam: dispatch
-    /// tests inject a mock that returns `Succeeded` without spawning a
-    /// real goose subprocess. Production callers go through
-    /// [`Engine::start`] which installs `LocalCliGooseAdapter`.
+    /// Override the installed wake harness adapter.
     pub async fn set_target_adapter(&self, adapter: Arc<dyn TargetAdapter>) {
         *self.target_adapter.write().await = Some(adapter);
     }
 
-    /// Resolve the goose binary, run the boot self-check, spawn the
-    /// MCP listener (if attached), and start the dispatcher tick loop.
+    /// Spawn the MCP listener (if attached) and start the dispatcher tick loop.
     ///
     /// Returns an [`EngineHandle`] the caller passes to
     /// [`Engine::stop`] to shut both tasks down cleanly. The engine
@@ -248,46 +228,9 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// - `goose` not on PATH and no `with_goose_bin(...)` set
-    /// - `goose --version` exited non-zero or could not be spawned
     /// - the attached [`EngineMcpListener`] failed to bind/serve
     pub async fn start(self: Arc<Self>) -> Result<EngineHandle, ProtocolError> {
-        // 1. Resolve + self-check goose. The dispatcher (Task 9) shells
-        // out to this binary per wake, so a missing/broken goose is a
-        // boot-time failure rather than a per-wake surprise.
-        let goose_bin = match &self.goose_bin {
-            Some(p) => p.clone(),
-            None => which::which("goose").map_err(|e| ProtocolError {
-                code: crate::error::ErrorCode::GooseCliUnavailable,
-                message: format!("goose not on PATH: {e}"),
-                request_id: None,
-            })?,
-        };
-        let _info = crate::wake::boot_check::verify_goose_on_path(&goose_bin)
-            .await
-            .map_err(|e| ProtocolError {
-                code: crate::error::ErrorCode::GooseCliUnavailable,
-                message: format!("goose self-check failed: {e}"),
-                request_id: None,
-            })?;
-
-        // Install the production adapter unless a test seam already
-        // populated one via `set_target_adapter`. The dispatcher reads
-        // `target_adapter()` lazily on each fire, so tests can replace
-        // it before `start` and we'll still see the mock.
-        {
-            let mut slot = self.target_adapter.write().await;
-            if slot.is_none() {
-                let adapter: Arc<dyn TargetAdapter> = Arc::new(
-                    crate::wake::target_adapter::local_cli_goose::LocalCliGooseAdapter::new(
-                        goose_bin.clone(),
-                    ),
-                );
-                *slot = Some(adapter);
-            }
-        }
-
-        // 2. Spawn MCP listener if a host attached one. Tests and
+        // 1. Spawn MCP listener if a host attached one. Tests and
         // headless callers that don't need MCP can skip
         // `with_mcp_listener` and `mcp_url()` will stay `None`.
         let mcp_join = if let Some(listener) = self.mcp_listener.clone() {
@@ -305,9 +248,7 @@ impl Engine {
             None
         };
 
-        // 3. Spawn dispatcher tick loop. Body is currently a Phase 1a
-        // stub returning Ok(0); Task 9 replaces it with the real
-        // dispatch logic.
+        // 2. Spawn dispatcher tick loop.
         let (stop_tx, mut stop_rx) = watch::channel(false);
         let engine_for_dispatch = self.clone();
         let interval = self.dispatch_interval;
@@ -357,7 +298,6 @@ impl std::fmt::Debug for Engine {
             .field("memories", &self.memories)
             .field("auth", &"<dyn AuthResolver>")
             .field("storage", &"<dyn Storage>")
-            .field("recipes_root", &self.recipes_root)
             .finish()
     }
 }

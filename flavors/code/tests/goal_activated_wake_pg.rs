@@ -10,6 +10,7 @@ use std::time::Instant;
 use async_trait::async_trait;
 use proxima_code::{CodeDevelopmentPerspectiveV1, build_engine_with};
 use proxima_core::auth::NoAuth;
+use proxima_core::harness::{ErrorClass, FinishReason};
 use proxima_core::llm::{EmbeddingClient, LlmError};
 use proxima_core::mcp::McpAuthorContext;
 use proxima_core::personality::{
@@ -17,17 +18,17 @@ use proxima_core::personality::{
 };
 use proxima_core::storage::Storage;
 use proxima_core::wake::target_adapter::{
-    TargetAdapter, TargetAdapterError, TargetInvocation, TargetOutcome, TargetOutcomeKind,
+    TargetAdapter, TargetAdapterError, TargetContext, TargetInvocation, TargetOutcome,
+    TargetOutcomeKind,
 };
 use proxima_core::{
     BindInferenceTierRequest, CORE_AUTHORED_RELATION, CORE_DERIVED_FROM_RELATION,
-    InferenceTargetConfig, LocalCliConfig, ModelTier, OrgId, Owner, PerspectivePayload, Principal,
-    RegisterInferenceTargetRequest, UserId, WakeEntryAuthoredBy, WakeEntryTriggerKind,
+    InferenceTargetConfig, MistralChatConfig, ModelTier, OrgId, Owner, PerspectivePayload,
+    Principal, RegisterInferenceTargetRequest, UserId, WakeEntryAuthoredBy, WakeEntryTriggerKind,
 };
-use proxima_mcp_server::{McpToolHost, McpAuthStore};
+use proxima_mcp_server::{McpAuthStore, McpToolHost};
 use proxima_storage_pg::PgStorage;
 use sqlx::{Connection, Executor, PgConnection, Row};
-use tempfile::TempDir;
 use uuid::Uuid;
 
 const ADMIN_URL: &str = "postgres://proxima:proxima@localhost/postgres";
@@ -59,15 +60,10 @@ struct ScriptedExecutorAdapter {
 }
 
 impl ScriptedExecutorAdapter {
-    async fn emit_perspective(&self, invocation: TargetInvocation) -> Result<(), String> {
-        let token = invocation
-            .env
-            .get("PROXIMA_WAKE_TOKEN")
-            .ok_or_else(|| "missing PROXIMA_WAKE_TOKEN".to_string())
-            .and_then(|raw| Uuid::parse_str(raw).map_err(|err| err.to_string()))?;
+    async fn emit_perspective(&self, ctx: TargetContext) -> Result<(), String> {
         let auth = self
             .auth_store
-            .resolve(token)
+            .resolve(ctx.wake_token)
             .await
             .ok_or_else(|| "wake token did not resolve".to_string())?;
         let output = self
@@ -91,7 +87,7 @@ impl ScriptedExecutorAdapter {
                     model_id: "scripted-executor".into(),
                     client_name: "m2-smoke-adapter".into(),
                     client_version: "1".into(),
-                    caller_self_perspective: None,
+                    caller_self_perspective: Some(ctx.root_perspective_memory_id),
                 },
                 Some(auth),
             )
@@ -109,24 +105,34 @@ impl ScriptedExecutorAdapter {
 
 #[async_trait]
 impl TargetAdapter for ScriptedExecutorAdapter {
-    async fn run(&self, invocation: TargetInvocation) -> Result<TargetOutcome, TargetAdapterError> {
+    async fn run(
+        &self,
+        _invocation: TargetInvocation,
+        ctx: TargetContext,
+    ) -> Result<TargetOutcome, TargetAdapterError> {
         let started = Instant::now();
-        let result = self.emit_perspective(invocation).await;
+        let result = self.emit_perspective(ctx).await;
         let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-        let (kind, stderr_tail) = match result {
-            Ok(()) => (TargetOutcomeKind::Succeeded, String::new()),
-            Err(err) => (TargetOutcomeKind::Failed, err),
+        let (kind, error_class, failure_reason) = match result {
+            Ok(()) => (TargetOutcomeKind::Succeeded, ErrorClass::None, None),
+            Err(err) => (
+                TargetOutcomeKind::Failed,
+                ErrorClass::ToolDispatchFatal,
+                Some(err),
+            ),
         };
         Ok(TargetOutcome {
             kind,
-            turn_count: Some(1),
-            exit_code: Some(i32::from(!matches!(kind, TargetOutcomeKind::Succeeded))),
+            finish_reason: FinishReason::Stop,
+            error_class,
+            failure_reason,
+            rounds_used: 1,
             duration_ms,
-            stdout_tail: String::new(),
-            stderr_tail,
-            stdout_truncated: false,
-            stderr_truncated: false,
-            session_log_error: None,
+            total_prompt_tokens: None,
+            total_completion_tokens: None,
+            tool_call_count: 1,
+            jsonl_bytes: br#"{"record":"scripted-executor"}"#.to_vec(),
+            jsonl_truncated: false,
         })
     }
 }
@@ -189,24 +195,6 @@ fn test_owner() -> Owner {
     }
 }
 
-fn owner_recipes_dir(root: &TempDir, owner: &Owner) -> std::path::PathBuf {
-    let principal_id = match &owner.principal {
-        Principal::User(user) => user.into_inner(),
-        Principal::Group(group) => group.into_inner(),
-    };
-    root.path().join(principal_id.to_string())
-}
-
-async fn write_executor_recipe(root: &TempDir, owner: &Owner) -> Result<(), std::io::Error> {
-    let owner_dir = owner_recipes_dir(root, owner);
-    tokio::fs::create_dir_all(&owner_dir).await?;
-    tokio::fs::write(
-        owner_dir.join("executor-smoke.yaml"),
-        b"version: 1.0.0\ntitle: M2 Executor Smoke\nprompt: no-op\n",
-    )
-    .await
-}
-
 #[tokio::test(flavor = "multi_thread")]
 async fn goal_activated_fact_wakes_substrate_executor_and_emits_perspective()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -216,8 +204,6 @@ async fn goal_activated_fact_wakes_substrate_executor_and_emits_perspective()
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = test_owner();
-        let recipes_root = tempfile::tempdir()?;
-        write_executor_recipe(&recipes_root, &owner).await?;
 
         let engine = Arc::new(
             build_engine_with(
@@ -225,7 +211,6 @@ async fn goal_activated_fact_wakes_substrate_executor_and_emits_perspective()
                 Box::new(NoAuth::new(owner.principal.clone(), owner.clone())),
                 proxima_flavor_goal::register,
             )
-            .with_recipes_root(recipes_root.path().to_path_buf())
             .with_embed(Arc::new(FakeEmbedding)),
         );
         engine
@@ -260,10 +245,12 @@ async fn goal_activated_fact_wakes_substrate_executor_and_emits_perspective()
         pg.register_inference_target(&RegisterInferenceTargetRequest {
             owner: owner.clone(),
             target_ref: "test/scripted-executor".into(),
-            config: InferenceTargetConfig::LocalCli(LocalCliConfig {
-                command: "scripted-executor".into(),
-                profile: None,
-                env_overrides: Vec::new(),
+            config: InferenceTargetConfig::MistralChat(MistralChatConfig {
+                base_url: "http://127.0.0.1:9".into(),
+                model_id: "test-model".into(),
+                api_key_env: "PATH".into(),
+                temperature: None,
+                max_completion_tokens: None,
             }),
         })
         .await?;
@@ -289,7 +276,6 @@ async fn goal_activated_fact_wakes_substrate_executor_and_emits_perspective()
             "goal-activated-smoke",
             WakeEntryAuthoredBy::Other,
             1000,
-            "user:executor-smoke.yaml",
             ModelTier::Standard,
             None,
             vec!["core/emit_perspective".into()],

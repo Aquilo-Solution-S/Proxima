@@ -66,7 +66,6 @@ fn sample_entry(instance: PersonalityInstanceId, trigger_id: &str) -> WakeEntryD
         "on_test_fact",
         WakeEntryAuthoredBy::Any,
         250,
-        "recipe:proxima-test/personality-v1",
         ModelTier::Fast,
         Some("local-cli:codex-spark".to_string()),
         vec!["core/query".to_string()],
@@ -168,9 +167,9 @@ async fn personality_wake_schema_enforces_root_sidecar_and_promille() {
             "INSERT INTO proxima_core.personality_wake_entries
                 (owner_principal_kind, owner_principal_id, owner_org_id,
                  personality_instance_id, wake_entry_id, trigger_kind, trigger_id,
-                 label, authored_by, probability_promille, recipe_ref, model_tier)
+                 label, authored_by, probability_promille, model_tier)
              VALUES ('User', $1, $2, $3, $4, 'on_memory', 'proxima-test/fact-v1',
-                     'bad', 'any', 1001, 'recipe:test', 'fast')",
+                     'bad', 'any', 1001, 'fast')",
         )
         .bind(principal_id(&owner))
         .bind(owner.org_id.into_inner())
@@ -231,7 +230,6 @@ async fn personality_wake_storage_round_trip() {
         })
         .await?;
         let mut replacement = sample_entry(instance, "proxima-goal/goal-activated-v1");
-        replacement.recipe_ref = "bundled:proxima-code/plan_execution_requests".into();
         replacement.goal_scope = WakeEntryGoalScope::TriggerGoalAssigned;
         pg.set_wake_entries(&SetWakeEntriesRequest {
             owner: owner.clone(),

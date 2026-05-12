@@ -5,30 +5,31 @@ use futures::future::BoxFuture;
 use proxima_core::mcp::{McpTool, McpToolCtx, McpToolError};
 use proxima_core::{EdgeId, MemoryId};
 
-use super::types::{
-    CodeEmitCorrectionExecutionRequestArgs, CodeEmitCorrectionExecutionRequestOutput,
-    CodeEmitWorkspaceReviewArgs, CodeEmitWorkspaceReviewOutput, CorrectionTrigger,
+use super::MAX_WORKSPACE_VETO_ROUNDS;
+use super::helpers::{correction_instructions, correction_title, validate_findings};
+use super::ingest::{
+    append_review_derived_edge, ingest_workspace_review, insert_workspace_review_sidecar,
 };
 use super::loaders::{
     find_execution_request_for_run, load_latest_rejected_review_for_run, load_workspace_decision,
     load_workspace_review, load_workspace_run, veto_count_for_request,
 };
-use super::ingest::{
-    append_review_derived_edge, ingest_workspace_review, insert_workspace_review_sidecar,
+use super::types::{
+    CodeEmitCorrectionExecutionRequestArgs, CodeEmitCorrectionExecutionRequestOutput,
+    CodeEmitWorkspaceReviewArgs, CodeEmitWorkspaceReviewOutput, CorrectionTrigger,
 };
-use super::helpers::{correction_instructions, correction_title, validate_findings};
-use super::MAX_WORKSPACE_VETO_ROUNDS;
 
-use proxima_core::FactPayload;
-use crate::payloads::{ExecutionRequestV1, WorkspaceDecision, WorkspaceReviewV1, WorkspaceReviewVerdict};
 use crate::mcp::emit_execution_request::{
     append_authored_edge, append_target_edge, find_execution_request_by_key,
     ingest_execution_request, insert_sidecar as insert_execution_request_sidecar,
-    load_execution_request, load_prior_derived_targets, push_derived_edge,
-    resolve_memory_id, resolve_personality_id, validate_target_execution_wake,
-    validate_target_personality,
+    load_execution_request, load_prior_derived_targets, push_derived_edge, resolve_memory_id,
+    resolve_personality_id, validate_target_execution_wake, validate_target_personality,
 };
 use crate::mcp::sql::map_storage;
+use crate::payloads::{
+    ExecutionRequestV1, WorkspaceDecision, WorkspaceReviewV1, WorkspaceReviewVerdict,
+};
+use proxima_core::FactPayload;
 
 /// MCP tool for emitting workspace reviews
 #[derive(Debug)]
@@ -54,18 +55,41 @@ impl McpTool for CodeEmitWorkspaceReviewTool {
                 )
             })?;
             let workspace_run_memory_id = resolve_memory_id(&ctx, &args.workspace_run_memory)?;
-            let _idempotency_key =
-                crate::mcp::emit_execution_request::normalize_text("idempotency_key", &args.idempotency_key, 1, 240)?;
-            let summary = crate::mcp::emit_execution_request::normalize_text("summary", &args.summary, 1, 4000)?;
+            let _idempotency_key = crate::mcp::emit_execution_request::normalize_text(
+                "idempotency_key",
+                &args.idempotency_key,
+                1,
+                240,
+            )?;
+            let summary = crate::mcp::emit_execution_request::normalize_text(
+                "summary",
+                &args.summary,
+                1,
+                4000,
+            )?;
             let correction_instructions = args
                 .correction_instructions
                 .as_deref()
-                .map(|value| crate::mcp::emit_execution_request::normalize_text("correction_instructions", value, 1, 12_000))
+                .map(|value| {
+                    crate::mcp::emit_execution_request::normalize_text(
+                        "correction_instructions",
+                        value,
+                        1,
+                        12_000,
+                    )
+                })
                 .transpose()?;
             let verification_summary = args
                 .verification_summary
                 .as_deref()
-                .map(|value| crate::mcp::emit_execution_request::normalize_text("verification_summary", value, 1, 4000))
+                .map(|value| {
+                    crate::mcp::emit_execution_request::normalize_text(
+                        "verification_summary",
+                        value,
+                        1,
+                        4000,
+                    )
+                })
                 .transpose()?;
             validate_findings(&args.findings)?;
 
@@ -167,10 +191,7 @@ impl McpTool for CodeEmitCorrectionExecutionRequestTool {
     fn call(
         ctx: McpToolCtx,
         args: CodeEmitCorrectionExecutionRequestArgs,
-    ) -> BoxFuture<
-        'static,
-        Result<CodeEmitCorrectionExecutionRequestOutput, McpToolError>,
-    > {
+    ) -> BoxFuture<'static, Result<CodeEmitCorrectionExecutionRequestOutput, McpToolError>> {
         Box::pin(async move {
             let correction_author_root = ctx.caller_self_perspective.ok_or_else(|| {
                 McpToolError::InvalidInput(
@@ -194,10 +215,18 @@ impl McpTool for CodeEmitCorrectionExecutionRequestTool {
                 ));
             }
             let target_personality_id = resolve_personality_id(&ctx, &args.target_personality)?;
-            let request_key =
-                crate::mcp::emit_execution_request::normalize_text("request_key", &args.request_key, 1, 240)?;
-            let idempotency_key =
-                crate::mcp::emit_execution_request::normalize_text("idempotency_key", &args.idempotency_key, 1, 240)?;
+            let request_key = crate::mcp::emit_execution_request::normalize_text(
+                "request_key",
+                &args.request_key,
+                1,
+                240,
+            )?;
+            let idempotency_key = crate::mcp::emit_execution_request::normalize_text(
+                "idempotency_key",
+                &args.idempotency_key,
+                1,
+                240,
+            )?;
             if request_key != idempotency_key {
                 return Err(McpToolError::InvalidInput(
                     "request_key must match idempotency_key".into(),

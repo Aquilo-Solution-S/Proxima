@@ -14,23 +14,37 @@ use crate::commands::engine::{ModelTierTs, tier_from_ts, tier_to_ts};
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum InferenceTargetConfigTs {
-    LocalCli(LocalCliConfigTs),
-    RemoteModel(RemoteModelConfigTs),
+    MistralChat(MistralChatConfigTs),
+    #[serde(rename = "openai_chat")]
+    OpenAIChat(OpenAIChatConfigTs),
+    #[serde(rename = "openai_responses")]
+    OpenAIResponses(OpenAIResponsesConfigTs),
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
-pub struct LocalCliConfigTs {
-    pub command: String,
-    pub profile: Option<String>,
-    pub env_overrides: Vec<(String, String)>,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
-pub struct RemoteModelConfigTs {
-    pub vendor: String,
-    pub dialect: String,
+pub struct MistralChatConfigTs {
+    pub base_url: String,
     pub model_id: String,
-    pub credentials_ref: Option<String>,
+    pub api_key_env: String,
+    pub temperature: Option<f32>,
+    pub max_completion_tokens: Option<u32>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
+pub struct OpenAIChatConfigTs {
+    pub base_url: String,
+    pub model_id: String,
+    pub api_key_env: String,
+    pub temperature: Option<f32>,
+    pub max_completion_tokens: Option<u32>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
+pub struct OpenAIResponsesConfigTs {
+    pub base_url: String,
+    pub model_id: String,
+    pub api_key_env: String,
+    pub reasoning_effort: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
@@ -90,19 +104,30 @@ pub struct ListInferenceTierBindingsTs {
 
 fn config_to_core(config: InferenceTargetConfigTs) -> InferenceTargetConfig {
     match config {
-        InferenceTargetConfigTs::LocalCli(local) => {
-            InferenceTargetConfig::LocalCli(proxima_core::LocalCliConfig {
-                command: local.command,
-                profile: local.profile,
-                env_overrides: local.env_overrides,
+        InferenceTargetConfigTs::MistralChat(config) => {
+            InferenceTargetConfig::MistralChat(proxima_core::MistralChatConfig {
+                base_url: config.base_url,
+                model_id: config.model_id,
+                api_key_env: config.api_key_env,
+                temperature: config.temperature,
+                max_completion_tokens: config.max_completion_tokens,
             })
         }
-        InferenceTargetConfigTs::RemoteModel(remote) => {
-            InferenceTargetConfig::RemoteModel(proxima_core::RemoteModelConfig {
-                vendor: remote.vendor,
-                dialect: remote.dialect,
-                model_id: remote.model_id,
-                credentials_ref: remote.credentials_ref,
+        InferenceTargetConfigTs::OpenAIChat(config) => {
+            InferenceTargetConfig::OpenAIChat(proxima_core::OpenAIChatConfig {
+                base_url: config.base_url,
+                model_id: config.model_id,
+                api_key_env: config.api_key_env,
+                temperature: config.temperature,
+                max_completion_tokens: config.max_completion_tokens,
+            })
+        }
+        InferenceTargetConfigTs::OpenAIResponses(config) => {
+            InferenceTargetConfig::OpenAIResponses(proxima_core::OpenAIResponsesConfig {
+                base_url: config.base_url,
+                model_id: config.model_id,
+                api_key_env: config.api_key_env,
+                reasoning_effort: config.reasoning_effort,
             })
         }
     }
@@ -110,19 +135,30 @@ fn config_to_core(config: InferenceTargetConfigTs) -> InferenceTargetConfig {
 
 fn config_from_core(config: &InferenceTargetConfig) -> InferenceTargetConfigTs {
     match config {
-        InferenceTargetConfig::LocalCli(local) => {
-            InferenceTargetConfigTs::LocalCli(LocalCliConfigTs {
-                command: local.command.clone(),
-                profile: local.profile.clone(),
-                env_overrides: local.env_overrides.clone(),
+        InferenceTargetConfig::MistralChat(config) => {
+            InferenceTargetConfigTs::MistralChat(MistralChatConfigTs {
+                base_url: config.base_url.clone(),
+                model_id: config.model_id.clone(),
+                api_key_env: config.api_key_env.clone(),
+                temperature: config.temperature,
+                max_completion_tokens: config.max_completion_tokens,
             })
         }
-        InferenceTargetConfig::RemoteModel(remote) => {
-            InferenceTargetConfigTs::RemoteModel(RemoteModelConfigTs {
-                vendor: remote.vendor.clone(),
-                dialect: remote.dialect.clone(),
-                model_id: remote.model_id.clone(),
-                credentials_ref: remote.credentials_ref.clone(),
+        InferenceTargetConfig::OpenAIChat(config) => {
+            InferenceTargetConfigTs::OpenAIChat(OpenAIChatConfigTs {
+                base_url: config.base_url.clone(),
+                model_id: config.model_id.clone(),
+                api_key_env: config.api_key_env.clone(),
+                temperature: config.temperature,
+                max_completion_tokens: config.max_completion_tokens,
+            })
+        }
+        InferenceTargetConfig::OpenAIResponses(config) => {
+            InferenceTargetConfigTs::OpenAIResponses(OpenAIResponsesConfigTs {
+                base_url: config.base_url.clone(),
+                model_id: config.model_id.clone(),
+                api_key_env: config.api_key_env.clone(),
+                reasoning_effort: config.reasoning_effort.clone(),
             })
         }
     }

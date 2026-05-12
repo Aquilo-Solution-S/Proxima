@@ -1,11 +1,8 @@
 //! WakeEntry write-time validation pipeline.
 
 use std::collections::HashSet;
-use std::path::PathBuf;
 
 use crate::error::ProtocolError;
-use crate::inference::recipe_resolve::resolve_recipe_ref;
-use crate::inference::recipe_validate::{RecipeValidateError, validate_recipe as goose_validate};
 use crate::personality::{substrate_pack, workspace_tool_ids};
 use crate::storage::{Storage, StorageError};
 use crate::{
@@ -16,7 +13,6 @@ use crate::{
 pub struct SetWakeEntriesContext<'a> {
     pub storage: &'a dyn Storage,
     pub registry: &'a FlavorRegistryFrozen,
-    pub owner_recipes_root: PathBuf,
 }
 
 pub async fn set_wake_entries(
@@ -60,7 +56,6 @@ pub async fn set_wake_entries(
         .collect();
 
     for entry in &req.entries {
-        validate_recipe_ref(ctx, entry).await?;
         validate_target_or_tier(entry, &owner_target_refs, &bound_tiers)?;
     }
 
@@ -112,12 +107,6 @@ fn validate_entry_shape(entry: &WakeEntryDraft) -> Result<(), ProtocolError> {
             "must be non-empty",
         ));
     }
-    if entry.recipe_ref.trim().is_empty() {
-        return Err(ProtocolError::invalid_argument(
-            "recipe_ref",
-            "must be non-empty",
-        ));
-    }
     if entry.label.trim().is_empty() {
         return Err(ProtocolError::invalid_argument(
             "label",
@@ -149,23 +138,6 @@ fn validate_palettes(
         }
     }
     Ok(())
-}
-
-async fn validate_recipe_ref(
-    ctx: &SetWakeEntriesContext<'_>,
-    entry: &WakeEntryDraft,
-) -> Result<(), ProtocolError> {
-    let path = resolve_recipe_ref(&entry.recipe_ref, &ctx.owner_recipes_root, ctx.registry)
-        .map_err(|_| ProtocolError::recipe_not_found(&entry.recipe_ref))?;
-
-    match goose_validate(&path).await {
-        Ok(()) => Ok(()),
-        Err(RecipeValidateError::Unavailable) => Err(ProtocolError::goose_cli_unavailable()),
-        Err(RecipeValidateError::Invalid { stderr }) => Err(ProtocolError::recipe_invalid(stderr)),
-        Err(RecipeValidateError::Timeout(_) | RecipeValidateError::Io(_)) => Err(
-            ProtocolError::internal("recipe-validate subprocess failed; check engine logs"),
-        ),
-    }
 }
 
 fn validate_target_or_tier(

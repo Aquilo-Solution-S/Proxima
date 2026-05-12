@@ -4,14 +4,16 @@ mod common;
 
 use common::{drop_db, fresh_pg, owner_fixture};
 use proxima_core::{
-    InferenceTargetConfig, LocalCliConfig, RegisterInferenceTargetRequest, Storage,
+    InferenceTargetConfig, MistralChatConfig, RegisterInferenceTargetRequest, Storage,
 };
 
 fn local_cli(command: &str, profile: Option<&str>) -> InferenceTargetConfig {
-    InferenceTargetConfig::LocalCli(LocalCliConfig {
-        command: command.into(),
-        profile: profile.map(str::to_string),
-        env_overrides: vec![],
+    InferenceTargetConfig::MistralChat(MistralChatConfig {
+        base_url: "http://127.0.0.1:9".into(),
+        model_id: command.into(),
+        api_key_env: profile.unwrap_or("PATH").into(),
+        temperature: None,
+        max_completion_tokens: None,
     })
 }
 

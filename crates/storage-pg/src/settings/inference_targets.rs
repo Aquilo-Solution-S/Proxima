@@ -16,8 +16,9 @@ use super::types::{
 
 fn config_kind(config: &InferenceTargetConfig) -> &'static str {
     match config {
-        InferenceTargetConfig::LocalCli(_) => "local_cli",
-        InferenceTargetConfig::RemoteModel(_) => "remote_model",
+        InferenceTargetConfig::MistralChat(_) => "mistral_chat",
+        InferenceTargetConfig::OpenAIChat(_) => "openai_chat",
+        InferenceTargetConfig::OpenAIResponses(_) => "openai_responses",
     }
 }
 

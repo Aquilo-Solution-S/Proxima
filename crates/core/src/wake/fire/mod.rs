@@ -3,7 +3,6 @@
 pub mod finalize;
 pub mod input;
 pub mod outcome;
-pub mod recipe;
 pub mod resolve;
 
 #[allow(clippy::module_inception)]

@@ -2,15 +2,15 @@
 use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
-use proxima_core::{
-    relation::CORE_DERIVED_FROM_RELATION, MemoryId, SchemaId, SchemaVersion, SourceBatchId,
-    SourceId,
-};
+use proxima_core::FactPayload;
 use proxima_core::mcp::{McpToolCtx, McpToolError};
 use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
+use proxima_core::{
+    MemoryId, SchemaId, SchemaVersion, SourceBatchId, SourceId,
+    relation::CORE_DERIVED_FROM_RELATION,
+};
 use proxima_storage_pg::verbs::edge_append::{EdgeDraft, append_edge_in_tx};
 use proxima_storage_pg::verbs::event_ingest::ingest_event_in_tx;
-use proxima_core::FactPayload;
 
 use crate::payloads::WorkspaceReviewV1;
 

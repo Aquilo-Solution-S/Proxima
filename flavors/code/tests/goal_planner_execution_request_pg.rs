@@ -10,6 +10,7 @@ use std::time::Instant;
 use async_trait::async_trait;
 use proxima_code::{CommitV1, ExecutionRequestV1, build_engine_with, ingest_commit, register_repo};
 use proxima_core::auth::NoAuth;
+use proxima_core::harness::{ErrorClass, FinishReason};
 use proxima_core::llm::{EmbeddingClient, LlmError};
 use proxima_core::mcp::McpAuthorContext;
 use proxima_core::personality::{
@@ -19,15 +20,16 @@ use proxima_core::personality::{
 use proxima_core::storage::Storage;
 use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
 use proxima_core::wake::target_adapter::{
-    TargetAdapter, TargetAdapterError, TargetInvocation, TargetOutcome, TargetOutcomeKind,
+    TargetAdapter, TargetAdapterError, TargetContext, TargetInvocation, TargetOutcome,
+    TargetOutcomeKind,
 };
 use proxima_core::{
     BindInferenceTierRequest, CORE_AUTHORED_RELATION, CORE_DERIVED_FROM_RELATION, FactPayload,
-    FlavorRegistry, FlavorRegistryFrozen, InferenceTargetConfig, LocalCliConfig, MemoryId,
+    FlavorRegistry, FlavorRegistryFrozen, InferenceTargetConfig, MemoryId, MistralChatConfig,
     ModelTier, OrgId, Owner, Principal, RegisterInferenceTargetRequest, SchemaId, SchemaVersion,
     SourceBatchId, SourceId, UserId, WakeEntryAuthoredBy, WakeEntryGoalScope, WakeEntryTriggerKind,
 };
-use proxima_mcp_server::{McpToolHost, McpAuthStore};
+use proxima_mcp_server::{McpAuthStore, McpToolHost};
 use proxima_storage_pg::PgStorage;
 use proxima_storage_pg::verbs::edge_append::{EdgeDraft, append_edge_in_tx};
 use proxima_storage_pg::verbs::event_ingest::ingest_event_in_tx;
@@ -68,15 +70,14 @@ struct ScriptedPlannerAdapter {
 }
 
 impl ScriptedPlannerAdapter {
-    async fn emit_execution_request(&self, invocation: TargetInvocation) -> Result<(), String> {
-        let token = invocation
-            .env
-            .get("PROXIMA_WAKE_TOKEN")
-            .ok_or_else(|| "missing PROXIMA_WAKE_TOKEN".to_string())
-            .and_then(|raw| Uuid::parse_str(raw).map_err(|err| err.to_string()))?;
+    async fn emit_execution_request(
+        &self,
+        invocation: TargetInvocation,
+        ctx: TargetContext,
+    ) -> Result<(), String> {
         let auth = self
             .auth_store
-            .resolve(token)
+            .resolve(ctx.wake_token)
             .await
             .ok_or_else(|| "wake token did not resolve".to_string())?;
         let planner_root = auth
@@ -113,7 +114,7 @@ impl ScriptedPlannerAdapter {
             .and_then(serde_json::Value::as_str)
             .ok_or_else(|| format!("missing commit handle: {first_commit}"))?;
         let goal_activated_memory = invocation
-            .params
+            .context_params
             .get("triggering_memory")
             .and_then(|value| value.get("memory_id"))
             .and_then(serde_json::Value::as_str)
@@ -146,24 +147,34 @@ impl ScriptedPlannerAdapter {
 
 #[async_trait]
 impl TargetAdapter for ScriptedPlannerAdapter {
-    async fn run(&self, invocation: TargetInvocation) -> Result<TargetOutcome, TargetAdapterError> {
+    async fn run(
+        &self,
+        invocation: TargetInvocation,
+        ctx: TargetContext,
+    ) -> Result<TargetOutcome, TargetAdapterError> {
         let started = Instant::now();
-        let result = self.emit_execution_request(invocation).await;
+        let result = self.emit_execution_request(invocation, ctx).await;
         let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-        let (kind, stderr_tail) = match result {
-            Ok(()) => (TargetOutcomeKind::Succeeded, String::new()),
-            Err(err) => (TargetOutcomeKind::Failed, err),
+        let (kind, error_class, failure_reason) = match result {
+            Ok(()) => (TargetOutcomeKind::Succeeded, ErrorClass::None, None),
+            Err(err) => (
+                TargetOutcomeKind::Failed,
+                ErrorClass::ToolDispatchFatal,
+                Some(err),
+            ),
         };
         Ok(TargetOutcome {
             kind,
-            turn_count: Some(1),
-            exit_code: Some(i32::from(!matches!(kind, TargetOutcomeKind::Succeeded))),
+            finish_reason: FinishReason::Stop,
+            error_class,
+            failure_reason,
+            rounds_used: 1,
             duration_ms,
-            stdout_tail: String::new(),
-            stderr_tail,
-            stdout_truncated: false,
-            stderr_truncated: false,
-            session_log_error: None,
+            total_prompt_tokens: None,
+            total_completion_tokens: None,
+            tool_call_count: 2,
+            jsonl_bytes: br#"{"record":"scripted-planner"}"#.to_vec(),
+            jsonl_truncated: false,
         })
     }
 }
@@ -343,10 +354,12 @@ async fn configure_execution_worker(
     pg.register_inference_target(&RegisterInferenceTargetRequest {
         owner: owner.clone(),
         target_ref: "test/retry-worker".into(),
-        config: InferenceTargetConfig::LocalCli(LocalCliConfig {
-            command: "retry-worker".into(),
-            profile: None,
-            env_overrides: Vec::new(),
+        config: InferenceTargetConfig::MistralChat(MistralChatConfig {
+            base_url: "http://127.0.0.1:9".into(),
+            model_id: "test-model".into(),
+            api_key_env: "PATH".into(),
+            temperature: None,
+            max_completion_tokens: None,
         }),
     })
     .await?;
@@ -364,7 +377,6 @@ async fn configure_execution_worker(
         "execution-worker",
         WakeEntryAuthoredBy::Any,
         1000,
-        "bundled:proxima-code/execution_worker",
         ModelTier::Standard,
         None,
         Vec::new(),
@@ -1017,10 +1029,12 @@ async fn accepted_goal_wakes_planner_and_emits_execution_request()
         pg.register_inference_target(&RegisterInferenceTargetRequest {
             owner: owner.clone(),
             target_ref: "test/scripted-planner".into(),
-            config: InferenceTargetConfig::LocalCli(LocalCliConfig {
-                command: "scripted-planner".into(),
-                profile: None,
-                env_overrides: Vec::new(),
+            config: InferenceTargetConfig::MistralChat(MistralChatConfig {
+                base_url: "http://127.0.0.1:9".into(),
+                model_id: "test-model".into(),
+                api_key_env: "PATH".into(),
+                temperature: None,
+                max_completion_tokens: None,
             }),
         })
         .await?;
@@ -1046,7 +1060,6 @@ async fn accepted_goal_wakes_planner_and_emits_execution_request()
             "plan-execution-requests",
             WakeEntryAuthoredBy::Other,
             1000,
-            "bundled:proxima-code/plan_execution_requests",
             ModelTier::Standard,
             None,
             vec![
@@ -1077,7 +1090,6 @@ async fn accepted_goal_wakes_planner_and_emits_execution_request()
             "plan-execution-requests-unassigned",
             WakeEntryAuthoredBy::Other,
             1000,
-            "bundled:proxima-code/plan_execution_requests",
             ModelTier::Standard,
             None,
             vec![

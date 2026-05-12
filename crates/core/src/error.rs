@@ -28,8 +28,6 @@ pub enum ErrorCode {
     IdempotencyConflict,
     NotFound,
     InvalidArgument,
-    RecipeInvalid,
-    RecipeNotFound,
     ToolNotRegistered,
     InferenceTargetMissing,
     TierUnbound,
@@ -37,7 +35,6 @@ pub enum ErrorCode {
     TargetInUse,
     TriggerConflict,
     DuplicateTriggerInRequest,
-    GooseCliUnavailable,
     Internal,
 }
 
@@ -97,22 +94,6 @@ impl ProtocolError {
         Self {
             code: ErrorCode::InvalidArgument,
             message: format!("invalid argument {}: {}", field.as_ref(), reason.as_ref()),
-            request_id: None,
-        }
-    }
-
-    pub fn recipe_invalid(stderr: impl Into<String>) -> Self {
-        Self {
-            code: ErrorCode::RecipeInvalid,
-            message: stderr.into(),
-            request_id: None,
-        }
-    }
-
-    pub fn recipe_not_found(recipe_ref: impl AsRef<str>) -> Self {
-        Self {
-            code: ErrorCode::RecipeNotFound,
-            message: format!("recipe not found: {}", recipe_ref.as_ref()),
             request_id: None,
         }
     }
@@ -184,14 +165,6 @@ impl ProtocolError {
                 trigger_kind.as_ref(),
                 trigger_id.as_ref()
             ),
-            request_id: None,
-        }
-    }
-
-    pub fn goose_cli_unavailable() -> Self {
-        Self {
-            code: ErrorCode::GooseCliUnavailable,
-            message: "goose CLI unavailable".into(),
             request_id: None,
         }
     }

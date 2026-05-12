@@ -94,7 +94,6 @@ async fn wake_token_audit_attributes_caller_personality() -> Result<(), Box<dyn 
             authored_by: WakeEntryAuthoredBy::Any,
             probability_promille: 1000,
             goal_scope: WakeEntryGoalScope::None,
-            recipe_ref: "proxima-code/engineer".into(),
             instructions: String::new(),
             model_tier: ModelTier::Standard,
             inference_target_ref: None,

@@ -1,6 +1,6 @@
 // Workspace review types and constants
-use serde::{Deserialize, Serialize};
 use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
 use proxima_core::MemoryId;
 
@@ -87,9 +87,7 @@ impl CorrectionTrigger {
     #[must_use]
     pub fn workspace_run_memory_id(&self) -> MemoryId {
         match self {
-            Self::RejectedReview(review) => {
-                MemoryId::new(review.payload.workspace_run_memory_id)
-            }
+            Self::RejectedReview(review) => MemoryId::new(review.payload.workspace_run_memory_id),
             Self::RetryDecision { decision, .. } => {
                 MemoryId::new(decision.payload.workspace_run_memory_id)
             }

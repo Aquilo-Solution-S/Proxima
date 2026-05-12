@@ -87,19 +87,19 @@ Verification: `cargo build -p proxima-harness -p proxima-core -p proxima-mcp-ser
 - [x] [`task-26-persist-wake-trace-storage-impl.md`](task-26-persist-wake-trace-storage-impl.md) — Postgres atomic verb writing 13 rows in one transaction (cited_objects + sidecar + event + memory + citation_mapping + sidecar + wake_trace_v1 + change_event + `core/authored` + N×`core/derived-from`)
 - [x] [`task-27-persist-wake-trace-integration-test.md`](task-27-persist-wake-trace-integration-test.md) — Postgres-backed test for atomicity + idempotent replay
 
-### Phase 8 — THE CUT (one atomic commit)
+### Phase 8 — THE CUT (one atomic commit) — **DONE**
 
 > **Atomicity warning:** Tasks 28–37 land in one commit. Intermediate states do not compile. Work on a feature branch; verify with `cargo test --workspace` before committing.
 
-- [`task-28-inference-target-config-rewrite.md`](task-28-inference-target-config-rewrite.md) — Rewrite `InferenceTargetConfig` to `MistralChat | OpenAIChat | OpenAIResponses`; delete `LocalCliConfig`/`RemoteModelConfig`
-- [`task-29-inference-targets-data-migration.md`](task-29-inference-targets-data-migration.md) — One-shot data migration `20260512000030_inference_targets_rewrite.sql`; aborts on unmappable rows
-- [`task-30-drop-recipe-ref-column.md`](task-30-drop-recipe-ref-column.md) — Drop `personality_wake_entries.recipe_ref`
-- [`task-31-delete-goose-and-recipes.md`](task-31-delete-goose-and-recipes.md) — `git rm` Goose adapter + recipe modules + recipe YAML; `target_adapter/mod.rs` becomes alias shim
-- [`task-32-fire-wake-entry-rewrite.md`](task-32-fire-wake-entry-rewrite.md) — Build `HarnessProgram` + `HarnessContext`, call `adapter.run`, emit wake-trace via `persist_wake_trace`
-- [`task-33-harness-loop-in-binaries.md`](task-33-harness-loop-in-binaries.md) — Construct `HarnessLoop` in all four binaries
-- [`task-34-shell-inference-target-record.md`](task-34-shell-inference-target-record.md) — Shell `InferenceTargetRecord` rewrite + TOML round-trip tests
-- [`task-35-e2e-harness-wake-test.md`](task-35-e2e-harness-wake-test.md) — End-to-end test asserting `wake-trace-v1` Fact + JSONL CitedObject + `core/authored` edge + personality-attributed authorship + `core/derived-from` edge
-- [`task-37-atomic-cut-commit.md`](task-37-atomic-cut-commit.md) — Build, test, commit (verifies grep absence of `LocalCli`/`RemoteModel`/`write_effective_recipe`/`recipe_ref`/`engineer.yaml` etc.)
+- [x] [`task-28-inference-target-config-rewrite.md`](task-28-inference-target-config-rewrite.md) — Rewrite `InferenceTargetConfig` to `MistralChat | OpenAIChat | OpenAIResponses`; delete `LocalCliConfig`/`RemoteModelConfig`
+- [x] [`task-29-inference-targets-data-migration.md`](task-29-inference-targets-data-migration.md) — One-shot data migration `20260512000030_inference_targets_rewrite.sql`; aborts on unmappable rows
+- [x] [`task-30-drop-recipe-ref-column.md`](task-30-drop-recipe-ref-column.md) — Drop `personality_wake_entries.recipe_ref`
+- [x] [`task-31-delete-goose-and-recipes.md`](task-31-delete-goose-and-recipes.md) — `git rm` Goose adapter + recipe modules + recipe YAML; `target_adapter/mod.rs` becomes alias shim
+- [x] [`task-32-fire-wake-entry-rewrite.md`](task-32-fire-wake-entry-rewrite.md) — Build `HarnessProgram` + `HarnessContext`, call `adapter.run`, emit wake-trace via `persist_wake_trace`
+- [x] [`task-33-harness-loop-in-binaries.md`](task-33-harness-loop-in-binaries.md) — Construct `HarnessLoop` in all wake-running binaries
+- [x] [`task-34-shell-inference-target-record.md`](task-34-shell-inference-target-record.md) — Shell `InferenceTargetRecord` rewrite + TOML round-trip tests
+- [x] [`task-35-e2e-harness-wake-test.md`](task-35-e2e-harness-wake-test.md) — End-to-end test asserting `wake-trace-v1` Fact + JSONL CitedObject + `core/authored` edge + personality-attributed authorship + `core/derived-from` edge
+- [x] [`task-37-atomic-cut-commit.md`](task-37-atomic-cut-commit.md) — Build, test, commit (verifies grep absence of `LocalCli`/`RemoteModel`/`write_effective_recipe`/`recipe_ref`/`engineer.yaml` etc.)
 
 ---
 

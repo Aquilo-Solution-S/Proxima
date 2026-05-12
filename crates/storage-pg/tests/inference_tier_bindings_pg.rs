@@ -2,7 +2,7 @@ mod common;
 
 use common::{drop_db, fresh_pg, owner_fixture};
 use proxima_core::{
-    BindInferenceTierRequest, InferenceTargetConfig, LocalCliConfig, ModelTier,
+    BindInferenceTierRequest, InferenceTargetConfig, MistralChatConfig, ModelTier,
     RegisterInferenceTargetRequest, Storage,
 };
 
@@ -14,10 +14,12 @@ async fn register(
     pg.register_inference_target(&RegisterInferenceTargetRequest {
         owner: owner.clone(),
         target_ref: target_ref.into(),
-        config: InferenceTargetConfig::LocalCli(LocalCliConfig {
-            command: "goose".into(),
-            profile: None,
-            env_overrides: vec![],
+        config: InferenceTargetConfig::MistralChat(MistralChatConfig {
+            base_url: "http://127.0.0.1:9".into(),
+            model_id: "test-model".into(),
+            api_key_env: "PATH".into(),
+            temperature: None,
+            max_completion_tokens: None,
         }),
     })
     .await

@@ -9,7 +9,7 @@ use proxima_code::{WorkspaceDecisionV1, WorkspaceReviewV1, WorkspaceRunV1, build
 use proxima_core::auth::NoAuth;
 use proxima_core::storage::Storage;
 use proxima_core::{
-    BindInferenceTierRequest, Credentials, FactPayload, InferenceTargetConfig, LocalCliConfig,
+    BindInferenceTierRequest, Credentials, FactPayload, InferenceTargetConfig, MistralChatConfig,
     ModelTier, OrgId, Owner, Principal, RegisterInferenceTargetRequest, SetWakeEntriesRequest,
     UserId, WakeEntryAuthoredBy, WakeEntryDraft, WakeEntryTriggerKind, WakeExecutionMode,
 };
@@ -80,7 +80,6 @@ fn workspace_wake(
     personality_instance_id: proxima_core::PersonalityInstanceId,
     trigger_id: &str,
     label: &str,
-    recipe_ref: &str,
     workspace_tool_palette: Vec<String>,
 ) -> Result<WakeEntryDraft, proxima_core::ProtocolError> {
     let mut wake = WakeEntryDraft::new(
@@ -91,7 +90,6 @@ fn workspace_wake(
         label,
         WakeEntryAuthoredBy::Other,
         1000,
-        recipe_ref,
         ModelTier::Standard,
         None,
         Vec::new(),
@@ -119,10 +117,12 @@ async fn workspace_review_loop_wake_entries_validate() -> Result<(), Box<dyn std
         pg.register_inference_target(&RegisterInferenceTargetRequest {
             owner: owner.clone(),
             target_ref: "test/review-loop".into(),
-            config: InferenceTargetConfig::LocalCli(LocalCliConfig {
-                command: "review-loop".into(),
-                profile: None,
-                env_overrides: Vec::new(),
+            config: InferenceTargetConfig::MistralChat(MistralChatConfig {
+                base_url: "http://127.0.0.1:9".into(),
+                model_id: "test-model".into(),
+                api_key_env: "PATH".into(),
+                temperature: None,
+                max_completion_tokens: None,
             }),
         })
         .await?;
@@ -152,7 +152,6 @@ async fn workspace_review_loop_wake_entries_validate() -> Result<(), Box<dyn std
             verifier.instance_id,
             WorkspaceRunV1::SCHEMA_ID,
             "verify-workspace-run",
-            "bundled:proxima-code/verify_workspace_run",
             vec!["proxima-workspace/shell".into()],
         )?;
         let verifier_out = engine
@@ -171,14 +170,12 @@ async fn workspace_review_loop_wake_entries_validate() -> Result<(), Box<dyn std
             correction_planner.instance_id,
             WorkspaceReviewV1::SCHEMA_ID,
             "plan-workspace-review-correction",
-            "bundled:proxima-code/plan_workspace_correction",
             Vec::new(),
         )?;
         let decision_wake = workspace_wake(
             correction_planner.instance_id,
             WorkspaceDecisionV1::SCHEMA_ID,
             "plan-workspace-decision-correction",
-            "bundled:proxima-code/plan_workspace_correction",
             Vec::new(),
         )?;
         let correction_out = engine
@@ -194,7 +191,7 @@ async fn workspace_review_loop_wake_entries_validate() -> Result<(), Box<dyn std
         assert_eq!(correction_out.active_entries, 2);
 
         let rows = sqlx::query(
-            "SELECT trigger_id, recipe_ref, execution_mode, workspace_tool_palette
+            "SELECT trigger_id, execution_mode, workspace_tool_palette
              FROM proxima_core.personality_wake_entries
              WHERE personality_instance_id IN ($1, $2)
                AND tombstoned_at IS NULL
@@ -206,34 +203,26 @@ async fn workspace_review_loop_wake_entries_validate() -> Result<(), Box<dyn std
         .await?;
         assert_eq!(rows.len(), 3);
 
-        let persisted: Vec<(String, String, String, Vec<String>)> = rows
+        let persisted: Vec<(String, String, Vec<String>)> = rows
             .into_iter()
             .map(|row| {
                 Ok::<_, sqlx::Error>((
                     row.try_get("trigger_id")?,
-                    row.try_get("recipe_ref")?,
                     row.try_get("execution_mode")?,
                     row.try_get("workspace_tool_palette")?,
                 ))
             })
             .collect::<Result<_, _>>()?;
-        assert!(persisted.iter().any(|(trigger, recipe, mode, tools)| {
+        assert!(persisted.iter().any(|(trigger, mode, tools)| {
             trigger == WorkspaceRunV1::SCHEMA_ID
-                && recipe == "bundled:proxima-code/verify_workspace_run"
                 && mode == "workspace"
                 && tools == &vec!["proxima-workspace/shell".to_string()]
         }));
-        assert!(persisted.iter().any(|(trigger, recipe, mode, tools)| {
-            trigger == WorkspaceReviewV1::SCHEMA_ID
-                && recipe == "bundled:proxima-code/plan_workspace_correction"
-                && mode == "workspace"
-                && tools.is_empty()
+        assert!(persisted.iter().any(|(trigger, mode, tools)| {
+            trigger == WorkspaceReviewV1::SCHEMA_ID && mode == "workspace" && tools.is_empty()
         }));
-        assert!(persisted.iter().any(|(trigger, recipe, mode, tools)| {
-            trigger == WorkspaceDecisionV1::SCHEMA_ID
-                && recipe == "bundled:proxima-code/plan_workspace_correction"
-                && mode == "workspace"
-                && tools.is_empty()
+        assert!(persisted.iter().any(|(trigger, mode, tools)| {
+            trigger == WorkspaceDecisionV1::SCHEMA_ID && mode == "workspace" && tools.is_empty()
         }));
 
         Ok(())

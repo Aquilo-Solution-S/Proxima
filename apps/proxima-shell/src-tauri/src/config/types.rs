@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 /// Top-level config parsed from `proxima.config.toml` or loaded from settings tables.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub struct AppConfig {
     #[serde(default)]
@@ -12,7 +12,7 @@ pub struct AppConfig {
     pub embedding: EmbeddingConfig,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub struct InferenceConfig {
     #[serde(default)]
@@ -32,7 +32,7 @@ pub struct InferenceTierBindings {
     pub deep: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub struct InferenceTargetRecord {
     pub target_ref: String,
@@ -140,17 +140,19 @@ mod tests {
         let cfg = AppConfig {
             inference: InferenceConfig {
                 targets: vec![InferenceTargetRecord {
-                    target_ref: "local-goose".to_string(),
-                    config: proxima_core::InferenceTargetConfig::LocalCli(
-                        proxima_core::LocalCliConfig {
-                            command: "goose".to_string(),
-                            profile: Some("work".to_string()),
-                            env_overrides: vec![("GOOSE_MODE".to_string(), "auto".to_string())],
+                    target_ref: "default-chat".to_string(),
+                    config: proxima_core::InferenceTargetConfig::MistralChat(
+                        proxima_core::MistralChatConfig {
+                            base_url: "https://api.mistral.ai".to_string(),
+                            model_id: "mistral-medium-3.5".to_string(),
+                            api_key_env: "MISTRAL_API_KEY".to_string(),
+                            temperature: None,
+                            max_completion_tokens: None,
                         },
                     ),
                 }],
                 inference_tier_bindings: InferenceTierBindings {
-                    fast: Some("local-goose".to_string()),
+                    fast: Some("default-chat".to_string()),
                     standard: None,
                     deep: None,
                 },
@@ -170,6 +172,58 @@ mod tests {
         let s = toml::to_string(&cfg).expect("to_string");
         let back: AppConfig = toml::from_str(&s).expect("from_str");
         assert_eq!(cfg, back);
+    }
+
+    fn roundtrip_target(config: proxima_core::InferenceTargetConfig, expected_kind: &str) {
+        let cfg = AppConfig {
+            inference: InferenceConfig {
+                targets: vec![InferenceTargetRecord {
+                    target_ref: expected_kind.to_string(),
+                    config,
+                }],
+                inference_tier_bindings: InferenceTierBindings::default(),
+            },
+            embedding: EmbeddingConfig::default(),
+        };
+        let s = toml::to_string(&cfg).expect("to_string");
+        assert!(s.contains(&format!("kind = \"{expected_kind}\"")));
+        let back: AppConfig = toml::from_str(&s).expect("from_str");
+        assert_eq!(cfg, back);
+    }
+
+    #[test]
+    fn roundtrip_inference_target_variants() {
+        roundtrip_target(
+            proxima_core::InferenceTargetConfig::MistralChat(proxima_core::MistralChatConfig {
+                base_url: "https://api.mistral.ai".to_string(),
+                model_id: "mistral-medium-3.5".to_string(),
+                api_key_env: "MISTRAL_API_KEY".to_string(),
+                temperature: Some(0.2),
+                max_completion_tokens: Some(2048),
+            }),
+            "mistral_chat",
+        );
+        roundtrip_target(
+            proxima_core::InferenceTargetConfig::OpenAIChat(proxima_core::OpenAIChatConfig {
+                base_url: "https://api.openai.com".to_string(),
+                model_id: "gpt-4.1".to_string(),
+                api_key_env: "OPENAI_API_KEY".to_string(),
+                temperature: Some(0.1),
+                max_completion_tokens: Some(4096),
+            }),
+            "openai_chat",
+        );
+        roundtrip_target(
+            proxima_core::InferenceTargetConfig::OpenAIResponses(
+                proxima_core::OpenAIResponsesConfig {
+                    base_url: "https://api.openai.com".to_string(),
+                    model_id: "codex-mini-latest".to_string(),
+                    api_key_env: "OPENAI_API_KEY".to_string(),
+                    reasoning_effort: Some("medium".to_string()),
+                },
+            ),
+            "openai_responses",
+        );
     }
 
     #[test]

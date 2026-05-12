@@ -115,10 +115,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let source = LocalGitSource::new(repo_id, repo_path, owner.clone());
 
-    // Dispatcher engine: optional. Without --no-dispatcher we wire Ollama
-    // embeddings; the substrate's wake/decide/write loop now talks to
-    // Anthropic, which the CLI does not configure yet — the dispatcher
-    // skips wakes when the Anthropic client is unwired.
+    // Dispatcher engine: optional.
     let _ = llm_model;
     let engine = if no_dispatcher {
         None
@@ -129,14 +126,33 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             Box::new(NoAuth::new(owner.principal.clone(), owner.clone())),
         )
         .with_embed(Arc::new(embed));
-        eprintln!(
-            "dispatcher enabled - embed={embed_model} (dim={embed_dim}); anthropic unwired (wakes will skip)"
-        );
+        let engine = Arc::new(engine);
+        let bridge = Arc::new(
+            proxima_mcp_server::McpToolHost::from_pool(
+                pg.pool().clone(),
+                owner.clone(),
+                Arc::new(engine.registry().clone()),
+            )
+            .with_engine(engine.clone()),
+        ) as Arc<dyn proxima_core::mcp::HarnessSubstrateBridge>;
+        engine
+            .set_target_adapter(Arc::new(proxima_harness::HarnessLoop::new(
+                engine.clone(),
+                bridge,
+            )))
+            .await;
+        eprintln!("dispatcher enabled - embed={embed_model} (dim={embed_dim})");
         Some(engine)
     };
 
     if watch {
-        watch_loop(&source, &pg, engine.as_ref(), poll_interval_ms).await
+        watch_loop(
+            &source,
+            &pg,
+            engine.as_ref().map(std::convert::AsRef::as_ref),
+            poll_interval_ms,
+        )
+        .await
     } else {
         let (report, _cursor) = source
             .run_poll(pg.pool(), &Cursor::empty(), &mut |_| {})

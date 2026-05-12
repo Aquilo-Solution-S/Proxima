@@ -18,7 +18,7 @@ use proxima_core::verbs::query::MemoryStore;
 use proxima_core::verbs::schema::{PayloadKind, SchemaInfo};
 use proxima_core::{
     BindInferenceTierRequest, CORE_AUTHORED_RELATION, CORE_DERIVED_FROM_RELATION, FactPayload,
-    FlavorRegistry, FlavorRegistryFrozen, InferenceTargetConfig, LocalCliConfig, MemoryId,
+    FlavorRegistry, FlavorRegistryFrozen, InferenceTargetConfig, MemoryId, MistralChatConfig,
     ModelTier, OrgId, Owner, Principal, RegisterInferenceTargetRequest, SchemaId, SchemaVersion,
     SourceBatchId, SourceId, UserId, WakeEntryAuthoredBy, WakeEntryTriggerKind,
 };
@@ -964,10 +964,12 @@ async fn configure_execution_worker(
     pg.register_inference_target(&RegisterInferenceTargetRequest {
         owner: owner.clone(),
         target_ref: "test/correction-worker".into(),
-        config: InferenceTargetConfig::LocalCli(LocalCliConfig {
-            command: "correction-worker".into(),
-            profile: None,
-            env_overrides: Vec::new(),
+        config: InferenceTargetConfig::MistralChat(MistralChatConfig {
+            base_url: "http://127.0.0.1:9".into(),
+            model_id: "test-model".into(),
+            api_key_env: "PATH".into(),
+            temperature: None,
+            max_completion_tokens: None,
         }),
     })
     .await?;
@@ -985,7 +987,6 @@ async fn configure_execution_worker(
         "execution-worker",
         WakeEntryAuthoredBy::Any,
         1000,
-        "bundled:proxima-code/execution_worker",
         ModelTier::Standard,
         None,
         Vec::new(),

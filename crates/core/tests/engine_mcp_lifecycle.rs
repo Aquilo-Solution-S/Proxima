@@ -10,7 +10,6 @@
 //! core test crate.
 
 use std::net::SocketAddr;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -73,15 +72,7 @@ fn make_test_engine_with_dispatch_interval(dispatch_interval: Duration) -> Engin
         Box::new(resolver),
     )
     .with_dispatch_interval(dispatch_interval)
-    // `verify_goose_on_path` runs `<bin> --version`; `echo --version`
-    // exits 0 on every Unix the test suite targets, so this avoids a
-    // hard goose dependency in CI without weakening the boot check.
-    .with_goose_bin(echo_path())
     .with_mcp_listener(Arc::new(StubListener))
-}
-
-fn echo_path() -> PathBuf {
-    which::which("echo").expect("echo present on PATH for boot-check stub")
 }
 
 #[tokio::test]
@@ -122,8 +113,7 @@ async fn engine_start_without_listener_leaves_url_none() {
             MemoryStore::new(),
             Box::new(resolver),
         )
-        .with_dispatch_interval(Duration::from_millis(200))
-        .with_goose_bin(echo_path()),
+        .with_dispatch_interval(Duration::from_millis(200)),
     );
 
     let handle = engine.clone().start().await.expect("start");

@@ -47,7 +47,6 @@ async fn seed_personality_with_entry(
         "on_test_fact",
         WakeEntryAuthoredBy::Any,
         1000,
-        "bundled:proxima-test/personality-v1",
         ModelTier::Fast,
         Some("local-cli:goose".to_string()),
         vec!["core/query".to_string()],

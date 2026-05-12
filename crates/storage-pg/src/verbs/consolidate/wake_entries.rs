@@ -30,7 +30,6 @@ struct WakeEntryJoinRow {
     authored_by: String,
     probability_promille: i32,
     goal_scope: String,
-    recipe_ref: String,
     instructions: String,
     model_tier: String,
     inference_target_ref: Option<String>,
@@ -108,7 +107,7 @@ async fn read_wake_entries_in_tx(
     let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(owner);
     let rows = sqlx::query(
         "SELECT wake_entry_id, trigger_kind, trigger_id, label, enabled,
-                execution_mode, authored_by, probability_promille, goal_scope, recipe_ref,
+                execution_mode, authored_by, probability_promille, goal_scope,
                 instructions, model_tier, inference_target_ref, substrate_tool_palette,
                 workspace_tool_palette, max_rounds
          FROM proxima_core.personality_wake_entries
@@ -141,7 +140,6 @@ async fn read_wake_entries_in_tx(
             probability_promille: u16::try_from(row.get::<i32, _>("probability_promille"))
                 .unwrap_or(0),
             goal_scope: parse_goal_scope(&row.get::<String, _>("goal_scope")),
-            recipe_ref: row.get("recipe_ref"),
             instructions: row.get("instructions"),
             model_tier: parse_model_tier(&row.get::<String, _>("model_tier")),
             inference_target_ref: row.get("inference_target_ref"),
@@ -284,7 +282,6 @@ pub async fn list_active_wake_entries(
                 e.authored_by,
                 e.probability_promille,
                 e.goal_scope,
-                e.recipe_ref,
                 e.instructions,
                 e.model_tier,
                 e.inference_target_ref,
@@ -336,7 +333,6 @@ pub async fn list_active_wake_entries(
                 authored_by: parse_row_authored_by(&row.authored_by),
                 probability_promille: u16::try_from(row.probability_promille).unwrap_or(0),
                 goal_scope: parse_goal_scope(&row.goal_scope),
-                recipe_ref: row.recipe_ref,
                 instructions: row.instructions,
                 model_tier: parse_model_tier(&row.model_tier),
                 inference_target_ref: row.inference_target_ref,
@@ -359,10 +355,10 @@ async fn upsert_wake_entry(
             (owner_principal_kind, owner_principal_id, owner_org_id,
              personality_instance_id, wake_entry_id, trigger_kind, trigger_id,
              label, enabled, execution_mode, authored_by, probability_promille,
-             goal_scope, recipe_ref, instructions, model_tier, inference_target_ref,
+             goal_scope, instructions, model_tier, inference_target_ref,
              substrate_tool_palette, workspace_tool_palette, max_rounds)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
-                 $12, $13, $14, $15, $16, $17, $18, $19, $20)
+                 $12, $13, $14, $15, $16, $17, $18, $19)
          ON CONFLICT (
              owner_principal_kind,
              owner_principal_id,
@@ -378,7 +374,6 @@ async fn upsert_wake_entry(
              authored_by = EXCLUDED.authored_by,
              probability_promille = EXCLUDED.probability_promille,
              goal_scope = EXCLUDED.goal_scope,
-             recipe_ref = EXCLUDED.recipe_ref,
              instructions = EXCLUDED.instructions,
              model_tier = EXCLUDED.model_tier,
              inference_target_ref = EXCLUDED.inference_target_ref,
@@ -402,7 +397,6 @@ async fn upsert_wake_entry(
     .bind(entry.authored_by.as_str())
     .bind(i32::from(entry.probability_promille))
     .bind(entry.goal_scope.as_str())
-    .bind(&entry.recipe_ref)
     .bind(&entry.instructions)
     .bind(model_tier_str(entry.model_tier))
     .bind(&entry.inference_target_ref)

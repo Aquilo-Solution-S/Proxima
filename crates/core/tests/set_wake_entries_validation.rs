@@ -16,7 +16,7 @@ use proxima_core::{
     AbstractionRow, ActiveGoalSummary, BindInferenceTierRequest, BindInferenceTierResponse,
     ChangeEventForWake, ErrorCode, FactRow, FlavorRegistry, InferenceTargetRow,
     InferenceTierBindingRow, InstantiatePersonalityRequest, InstantiatePersonalityResponse,
-    LocalCliConfig, MemoryId, MemorySnapshot, ModelTier, OrgId, Owner, PersonalityInstanceId,
+    MemoryId, MemorySnapshot, ModelTier, OrgId, Owner, PersonalityInstanceId,
     PersonalityInstanceRow, PersonalityRef, PersonalityRuntimeRow, PersonalityWriteOutcome,
     PersonalityWriteRequest, Principal, RegisterInferenceTargetRequest,
     RegisterInferenceTargetResponse, RemoveInferenceTargetRequest, RemoveInferenceTargetResponse,
@@ -349,7 +349,7 @@ fn instance_id() -> PersonalityInstanceId {
     PersonalityInstanceId::new(Uuid::from_u128(1))
 }
 
-fn entry(trigger: &str, recipe_ref: &str) -> WakeEntryDraft {
+fn entry(trigger: &str) -> WakeEntryDraft {
     WakeEntryDraft {
         wake_entry_id: Uuid::now_v7(),
         personality_instance_id: instance_id(),
@@ -361,7 +361,6 @@ fn entry(trigger: &str, recipe_ref: &str) -> WakeEntryDraft {
         authored_by: WakeEntryAuthoredBy::Any,
         probability_promille: 1000,
         goal_scope: proxima_core::WakeEntryGoalScope::None,
-        recipe_ref: recipe_ref.into(),
         instructions: String::new(),
         model_tier: ModelTier::Standard,
         inference_target_ref: None,
@@ -383,21 +382,13 @@ fn req(entries: Vec<WakeEntryDraft>) -> SetWakeEntriesRequest {
 async fn duplicate_trigger_in_request_is_rejected() {
     let storage = FixtureStorage::default();
     let registry = registry();
-    let recipes_root = tempfile::tempdir().unwrap();
     let ctx = SetWakeEntriesContext {
         storage: &storage,
         registry: &registry,
-        owner_recipes_root: recipes_root.path().to_path_buf(),
     };
-    let err = set_wake_entries(
-        &ctx,
-        &req(vec![
-            entry("schema-a", "user:r.yaml"),
-            entry("schema-a", "user:r.yaml"),
-        ]),
-    )
-    .await
-    .unwrap_err();
+    let err = set_wake_entries(&ctx, &req(vec![entry("schema-a"), entry("schema-a")]))
+        .await
+        .unwrap_err();
     assert_eq!(err.code, ErrorCode::DuplicateTriggerInRequest);
 }
 
@@ -405,45 +396,25 @@ async fn duplicate_trigger_in_request_is_rejected() {
 async fn empty_label_is_rejected() {
     let storage = FixtureStorage::default();
     let registry = registry();
-    let recipes_root = tempfile::tempdir().unwrap();
     let ctx = SetWakeEntriesContext {
         storage: &storage,
         registry: &registry,
-        owner_recipes_root: recipes_root.path().to_path_buf(),
     };
-    let mut draft = entry("schema-a", "user:r.yaml");
+    let mut draft = entry("schema-a");
     draft.label = "   ".into();
     let err = set_wake_entries(&ctx, &req(vec![draft])).await.unwrap_err();
     assert_eq!(err.code, ErrorCode::InvalidArgument);
 }
 
 #[tokio::test]
-async fn missing_user_recipe_returns_recipe_not_found() {
-    let storage = FixtureStorage::default();
-    let registry = registry();
-    let recipes_root = tempfile::tempdir().unwrap();
-    let ctx = SetWakeEntriesContext {
-        storage: &storage,
-        registry: &registry,
-        owner_recipes_root: recipes_root.path().to_path_buf(),
-    };
-    let err = set_wake_entries(&ctx, &req(vec![entry("schema-a", "user:nope.yaml")]))
-        .await
-        .unwrap_err();
-    assert_eq!(err.code, ErrorCode::RecipeNotFound);
-}
-
-#[tokio::test]
 async fn unregistered_tool_is_rejected() {
     let storage = FixtureStorage::default();
     let registry = registry();
-    let recipes_root = tempfile::tempdir().unwrap();
     let ctx = SetWakeEntriesContext {
         storage: &storage,
         registry: &registry,
-        owner_recipes_root: recipes_root.path().to_path_buf(),
     };
-    let mut draft = entry("schema-a", "user:r.yaml");
+    let mut draft = entry("schema-a");
     draft.substrate_tool_palette = vec!["proxima-test/missing".into()];
     let err = set_wake_entries(&ctx, &req(vec![draft])).await.unwrap_err();
     assert_eq!(err.code, ErrorCode::ToolNotRegistered);
@@ -453,29 +424,25 @@ async fn unregistered_tool_is_rejected() {
 async fn substrate_pack_tool_ids_are_registered_for_wake_entries() {
     let storage = FixtureStorage::default();
     let registry = registry();
-    let recipes_root = tempfile::tempdir().unwrap();
     let ctx = SetWakeEntriesContext {
         storage: &storage,
         registry: &registry,
-        owner_recipes_root: recipes_root.path().to_path_buf(),
     };
-    let mut draft = entry("schema-a", "user:nope.yaml");
+    let mut draft = entry("schema-a");
     draft.substrate_tool_palette = vec!["core/fetch_memory".into(), "core/emit_abstraction".into()];
     let err = set_wake_entries(&ctx, &req(vec![draft])).await.unwrap_err();
-    assert_eq!(err.code, ErrorCode::RecipeNotFound);
+    assert_eq!(err.code, ErrorCode::TierUnbound);
 }
 
 #[tokio::test]
 async fn workspace_tool_outside_catalog_is_rejected() {
     let storage = FixtureStorage::default();
     let registry = registry();
-    let recipes_root = tempfile::tempdir().unwrap();
     let ctx = SetWakeEntriesContext {
         storage: &storage,
         registry: &registry,
-        owner_recipes_root: recipes_root.path().to_path_buf(),
     };
-    let mut draft = entry("schema-a", "user:r.yaml");
+    let mut draft = entry("schema-a");
     draft.workspace_tool_palette = vec!["proxima-workspace/not-real".into()];
     let err = set_wake_entries(&ctx, &req(vec![draft])).await.unwrap_err();
     assert_eq!(err.code, ErrorCode::ToolNotRegistered);
@@ -486,13 +453,11 @@ async fn substrate_tool_id_in_workspace_palette_is_rejected() {
     // A registered MCP tool ID belongs in substrate, never workspace.
     let storage = FixtureStorage::default();
     let registry = registry();
-    let recipes_root = tempfile::tempdir().unwrap();
     let ctx = SetWakeEntriesContext {
         storage: &storage,
         registry: &registry,
-        owner_recipes_root: recipes_root.path().to_path_buf(),
     };
-    let mut draft = entry("schema-a", "user:r.yaml");
+    let mut draft = entry("schema-a");
     // Cross-tier: an MCP id placed in the workspace slot.
     draft.workspace_tool_palette = vec!["proxima-core/append-event".into()];
     let err = set_wake_entries(&ctx, &req(vec![draft])).await.unwrap_err();
@@ -500,27 +465,21 @@ async fn substrate_tool_id_in_workspace_palette_is_rejected() {
 }
 
 #[tokio::test]
-async fn existing_recipe_reaches_recipe_validate_or_tier_resolution() {
+async fn unbound_tier_is_rejected_after_shape_validation() {
     let storage = FixtureStorage::default();
     let registry = registry();
-    let recipes_root = tempfile::tempdir().unwrap();
-    std::fs::write(recipes_root.path().join("r.yaml"), "version: 1.0.0").unwrap();
     let ctx = SetWakeEntriesContext {
         storage: &storage,
         registry: &registry,
-        owner_recipes_root: recipes_root.path().to_path_buf(),
     };
-    let err = set_wake_entries(&ctx, &req(vec![entry("schema-a", "user:r.yaml")]))
+    let err = set_wake_entries(&ctx, &req(vec![entry("schema-a")]))
         .await
         .unwrap_err();
-    assert!(matches!(
-        err.code,
-        ErrorCode::TierUnbound | ErrorCode::GooseCliUnavailable | ErrorCode::RecipeInvalid
-    ));
+    assert!(matches!(err.code, ErrorCode::TierUnbound));
 }
 
 #[tokio::test]
-async fn pinned_missing_target_is_rejected_after_recipe_validation() {
+async fn pinned_missing_target_is_rejected() {
     let storage = FixtureStorage {
         targets: vec![],
         bindings: vec![InferenceTierBindingRow {
@@ -531,36 +490,32 @@ async fn pinned_missing_target_is_rejected_after_recipe_validation() {
         set_calls: Mutex::new(0),
     };
     let registry = registry();
-    let recipes_root = tempfile::tempdir().unwrap();
-    std::fs::write(recipes_root.path().join("r.yaml"), "version: 1.0.0").unwrap();
     let ctx = SetWakeEntriesContext {
         storage: &storage,
         registry: &registry,
-        owner_recipes_root: recipes_root.path().to_path_buf(),
     };
-    let mut draft = entry("schema-a", "user:r.yaml");
+    let mut draft = entry("schema-a");
     draft.inference_target_ref = Some("missing".into());
     let err = set_wake_entries(&ctx, &req(vec![draft])).await.unwrap_err();
-    assert!(matches!(
-        err.code,
-        ErrorCode::InferenceTargetMissing
-            | ErrorCode::GooseCliUnavailable
-            | ErrorCode::RecipeInvalid
-    ));
+    assert!(matches!(err.code, ErrorCode::InferenceTargetMissing));
 }
 
 #[tokio::test]
-async fn valid_target_and_recipe_calls_storage_when_goose_accepts() {
+async fn valid_target_calls_storage() {
     let target_ref = "local";
     let storage = FixtureStorage {
         targets: vec![InferenceTargetRow {
             owner: owner(),
             target_ref: target_ref.into(),
-            config: proxima_core::InferenceTargetConfig::LocalCli(LocalCliConfig {
-                command: "goose".into(),
-                profile: None,
-                env_overrides: Vec::new(),
-            }),
+            config: proxima_core::InferenceTargetConfig::MistralChat(
+                proxima_core::MistralChatConfig {
+                    base_url: "http://127.0.0.1:9".into(),
+                    model_id: "test-model".into(),
+                    api_key_env: "TEST_KEY".into(),
+                    temperature: None,
+                    max_completion_tokens: None,
+                },
+            ),
             created_at: time::OffsetDateTime::UNIX_EPOCH,
             updated_at: time::OffsetDateTime::UNIX_EPOCH,
         }],
@@ -568,22 +523,13 @@ async fn valid_target_and_recipe_calls_storage_when_goose_accepts() {
         set_calls: Mutex::new(0),
     };
     let registry = registry();
-    let recipes_root = tempfile::tempdir().unwrap();
-    std::fs::write(recipes_root.path().join("r.yaml"), "version: 1.0.0").unwrap();
     let ctx = SetWakeEntriesContext {
         storage: &storage,
         registry: &registry,
-        owner_recipes_root: recipes_root.path().to_path_buf(),
     };
-    let mut draft = entry("schema-a", "user:r.yaml");
+    let mut draft = entry("schema-a");
     draft.inference_target_ref = Some(target_ref.into());
     let result = set_wake_entries(&ctx, &req(vec![draft])).await;
-    if let Err(err) = result {
-        assert!(matches!(
-            err.code,
-            ErrorCode::GooseCliUnavailable | ErrorCode::RecipeInvalid
-        ));
-    } else {
-        assert_eq!(*storage.set_calls.lock().unwrap(), 1);
-    }
+    result.unwrap();
+    assert_eq!(*storage.set_calls.lock().unwrap(), 1);
 }

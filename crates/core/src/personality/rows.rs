@@ -54,7 +54,6 @@ pub struct WakeEntryRow {
     pub authored_by: WakeEntryAuthoredBy,
     pub probability_promille: u16,
     pub goal_scope: WakeEntryGoalScope,
-    pub recipe_ref: String,
     pub instructions: String,
     pub model_tier: crate::ModelTier,
     pub inference_target_ref: Option<String>,

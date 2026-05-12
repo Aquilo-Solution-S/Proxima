@@ -1,5 +1,4 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -29,13 +28,11 @@ impl Engine {
             memories,
             auth,
             storage: Arc::new(NoopStorage),
-            recipes_root: default_recipes_root(),
             anthropic: None,
             embed: None,
             dispatch_interval: DEFAULT_DISPATCH_INTERVAL,
             wake_token_ttl: DEFAULT_WAKE_TOKEN_TTL,
             mcp_listen_addr: DEFAULT_MCP_LISTEN_ADDR,
-            goose_bin: None,
             mcp_listener: None,
             mcp_url: Arc::new(RwLock::new(None)),
             wake_token_store: Arc::new(WakeTokenStore::new(DEFAULT_WAKE_TOKEN_TTL)),
@@ -53,12 +50,6 @@ impl Engine {
     #[must_use]
     pub fn with_storage(mut self, storage: StorageHandle) -> Self {
         self.storage = storage;
-        self
-    }
-
-    #[must_use]
-    pub fn with_recipes_root(mut self, recipes_root: PathBuf) -> Self {
-        self.recipes_root = recipes_root;
         self
     }
 
@@ -98,15 +89,6 @@ impl Engine {
         self
     }
 
-    /// Pin the goose binary used by the dispatcher's local-CLI target
-    /// adapter. Defaults to `which::which("goose")` resolved at
-    /// [`Engine::start`].
-    #[must_use]
-    pub fn with_goose_bin(mut self, bin: PathBuf) -> Self {
-        self.goose_bin = Some(bin);
-        self
-    }
-
     /// Attach an MCP listener implementation. Without this, the
     /// engine starts without an MCP server (`mcp_url()` stays `None`)
     /// — fine for tests and headless callers that don't need MCP.
@@ -118,10 +100,7 @@ impl Engine {
         self
     }
 
-    /// Pre-install a [`TargetAdapter`]. Test seam: dispatch tests wire
-    /// a mock so they don't need a real goose binary. Production paths
-    /// rely on [`Engine::start`] installing `LocalCliGooseAdapter` from
-    /// the resolved goose binary.
+    /// Pre-install a wake harness adapter.
     ///
     /// Replaces the `Arc<RwLock<...>>` slot wholesale rather than
     /// reaching into it — builders run single-threaded so we don't pay
@@ -132,11 +111,4 @@ impl Engine {
         self.target_adapter = Arc::new(RwLock::new(Some(adapter)));
         self
     }
-}
-
-fn default_recipes_root() -> PathBuf {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_default()
-        .join(".proxima/recipes")
 }

@@ -77,18 +77,7 @@ async fn discovery_to_mutation_smoke() -> Result<(), Box<dyn std::error::Error>>
     let session = initialize(&client, &url, &bearer).await?;
     initialized(&client, &url, &session, &bearer).await?;
 
-    // 1. Discovery: list_recipes succeeds (likely empty).
-    let _recipes = call_tool(
-        &client,
-        &url,
-        &session,
-        &bearer,
-        "core/list_recipes",
-        json!({}),
-    )
-    .await?;
-
-    // 2. Discovery: list_substrate_tools includes substrate-pack + MCP CRUD.
+    // 1. Discovery: list_substrate_tools includes substrate-pack + MCP CRUD.
     let tools = call_tool(
         &client,
         &url,

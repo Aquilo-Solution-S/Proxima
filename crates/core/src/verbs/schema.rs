@@ -3,8 +3,6 @@
 //! See docs/14-protocol-surface.md §"Schema" and
 //! docs/03-schema-registry.md.
 
-use std::path::PathBuf;
-
 use crate::{
     FlavorDescriptor, McpToolDescriptor, RegisteredRelation, RelationDescriptor, SchemaId,
     SchemaVersion,
@@ -75,14 +73,13 @@ pub struct SchemaResponse {
     pub schemas: Vec<SchemaInfo>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct FlavorRegistryFrozen {
     schemas: Vec<SchemaInfo>,
     relations: Vec<RelationDescriptor>,
     validators: Vec<PayloadValidatorEntry>,
     mcp_tools: Vec<McpToolDescriptor>,
     flavors: Vec<FlavorDescriptor>,
-    bundled_recipes: Vec<(String, PathBuf)>,
     workspace_runners: Vec<(
         String,
         std::sync::Arc<dyn crate::personality::workspace::WorkspaceRunner>,
@@ -106,7 +103,6 @@ impl FlavorRegistryFrozen {
             validators: Vec::new(),
             mcp_tools: Vec::new(),
             flavors: Vec::new(),
-            bundled_recipes: Vec::new(),
             workspace_runners: Vec::new(),
             workspace_triggers: Vec::new(),
         }
@@ -126,7 +122,6 @@ impl FlavorRegistryFrozen {
             validators: Vec::new(),
             mcp_tools: Vec::new(),
             flavors: Vec::new(),
-            bundled_recipes: Vec::new(),
             workspace_runners: Vec::new(),
             workspace_triggers: Vec::new(),
         }
@@ -139,7 +134,6 @@ impl FlavorRegistryFrozen {
         validators: Vec<PayloadValidatorEntry>,
         mcp_tools: Vec<McpToolDescriptor>,
         flavors: Vec<FlavorDescriptor>,
-        bundled_recipes: Vec<(String, PathBuf)>,
         workspace_runners: Vec<(
             String,
             std::sync::Arc<dyn crate::personality::workspace::WorkspaceRunner>,
@@ -152,7 +146,6 @@ impl FlavorRegistryFrozen {
             validators,
             mcp_tools,
             flavors,
-            bundled_recipes,
             workspace_runners,
             workspace_triggers,
         }
@@ -180,14 +173,6 @@ impl FlavorRegistryFrozen {
             .collect()
     }
 
-    #[must_use]
-    pub fn bundled_recipe_path(&self, slug: &str) -> Option<PathBuf> {
-        self.bundled_recipes
-            .iter()
-            .find(|(s, _)| s == slug)
-            .map(|(_, path)| path.clone())
-    }
-
     /// Lookup the workspace runner registered by the named flavor.
     /// Returns `None` if the flavor either was not linked into the
     /// composite binary or did not declare a workspace runner.
@@ -205,23 +190,6 @@ impl FlavorRegistryFrozen {
     #[must_use]
     pub fn is_workspace_trigger(&self, schema_id: &str) -> bool {
         self.workspace_triggers.iter().any(|id| id == schema_id)
-    }
-
-    /// All bundled recipe slugs registered for a given flavor. Order
-    /// matches registration order. Used by tests.
-    #[must_use]
-    pub fn bundled_recipes_for(&self, flavor_id: &str) -> Vec<&str> {
-        let prefix = format!("{flavor_id}/");
-        self.bundled_recipes
-            .iter()
-            .filter_map(|(slug, _)| slug.strip_prefix(&prefix).map(|_| slug.as_str()))
-            .collect()
-    }
-
-    /// All bundled recipes registered, ordered by registration. Each
-    /// slug is `<flavor_id>/<name>`.
-    pub fn list_bundled_recipes(&self) -> impl Iterator<Item = &str> {
-        self.bundled_recipes.iter().map(|(slug, _)| slug.as_str())
     }
 
     /// All `FlavorDescriptor`s registered through `proxima_flavor!`.

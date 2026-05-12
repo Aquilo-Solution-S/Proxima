@@ -36,7 +36,9 @@ pub async fn finalize(
             stderr_truncated: outcome.stderr_truncated,
         })
         .await
-        .map_err(|e| crate::error::ProtocolError::internal(format!("finalize_wake_invocation: {e}")))
+        .map_err(|e| {
+            crate::error::ProtocolError::internal(format!("finalize_wake_invocation: {e}"))
+        })
 }
 
 /// Append a session artifact log entry.
@@ -75,16 +77,11 @@ pub async fn append_session_artifact_log(
 pub async fn append_session_log_error_if_present(
     engine: &Engine,
     input: &FireWakeEntryInput,
-    outcome_result: &Result<crate::wake::target_adapter::TargetOutcome, crate::wake::target_adapter::TargetAdapterError>,
+    outcome_result: &Result<crate::harness::HarnessOutcome, crate::harness::HarnessError>,
 ) {
-    let Some(error) = outcome_result
-        .as_ref()
-        .ok()
-        .and_then(|outcome| outcome.session_log_error.as_ref())
-    else {
-        return;
-    };
-    append_session_artifact_log(engine, input, "failed", error.clone()).await;
+    if let Err(error) = outcome_result {
+        append_session_artifact_log(engine, input, "failed", error.to_string()).await;
+    }
 }
 
 /// Generate the wake session log path.
