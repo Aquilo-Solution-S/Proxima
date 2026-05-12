@@ -21,7 +21,7 @@
 | 3. Three workspace tools — **DONE** | own commit | no — additive in harness crate |
 | 4. Substrate/flavor dispatch + reverse-map + `HarnessLoop` driver — **DONE** | own commit | no — additive in harness crate |
 | 5. OpenAIChat + OpenAIResponses providers | own commit | no — additive in harness crate |
-| 6. `WakeEntry.instructions` column + `DefaultWakeEntrySeed` constants + onboarding wiring | own commit | additive — column is unread by Goose path |
+| 6. `WakeEntry.instructions` column + user-authored wake-entry plumbing | own commit | additive — column is unread by Goose path |
 | 7. Three wake-trace schemas + two new payload traits + `persist_wake_trace` atomic verb | own commit | additive — verb exists but no caller yet |
 | 8. **THE CUT** — `InferenceTargetConfig` rewrite, harness wired into `fire_wake_entry`, `persist_wake_trace` called from the new emit path, file deletions, data migration, end-to-end test | one atomic commit | yes — replaces Goose at runtime |
 
@@ -70,16 +70,14 @@ Verification: `cargo build -p proxima-harness -p proxima-core -p proxima-mcp-ser
 
 ### Phase 5 — OpenAIChat + OpenAIResponses providers
 
-- [`task-16-openai-chat.md`](task-16-openai-chat.md) — `OpenAIChatClient` using the private Chat Completions wire helpers
-- [`task-17-openai-responses.md`](task-17-openai-responses.md) — `OpenAIResponsesClient` for `/v1/responses` (Codex tier) with `output[].type` switch
+- [x] [`task-16-openai-chat.md`](task-16-openai-chat.md) — `OpenAIChatClient` using the private Chat Completions wire helpers
+- [x] [`task-17-openai-responses.md`](task-17-openai-responses.md) — `OpenAIResponsesClient` for `/v1/responses` (Codex tier) with `output[].type` switch
 
-### Phase 6 — `WakeEntry.instructions` column + `DefaultWakeEntrySeed` constants + onboarding wiring
+### Phase 6 — `WakeEntry.instructions` column + user-authored wake-entry plumbing
 
 - [`task-18-wake-entry-instructions-migration.md`](task-18-wake-entry-instructions-migration.md) — Migration adds `instructions text NOT NULL DEFAULT ''`
-- [`task-19-wake-entry-row-rust.md`](task-19-wake-entry-row-rust.md) — `WakeEntryRow.instructions` field
-- [`task-20-default-wake-entry-seed-trait.md`](task-20-default-wake-entry-seed-trait.md) — `DefaultWakeEntrySeed` trait + flavor surface
-- [`task-21-code-flavor-personality-constants.md`](task-21-code-flavor-personality-constants.md) — Engineer + Execution Worker constants in `flavors/code/src/personalities.rs`
-- [`task-22-provisioning-wires-seeds.md`](task-22-provisioning-wires-seeds.md) — Provisioning path copies `instructions` into the wake_entries insert
+- [`task-19-wake-entry-row-rust.md`](task-19-wake-entry-row-rust.md) — Core/storage round-trip for `WakeEntry.instructions`
+- [`task-20-wake-entry-instructions-surfaces.md`](task-20-wake-entry-instructions-surfaces.md) — MCP + Shell + Personalities UI surfaces for user-authored instructions
 
 ### Phase 7 — Wake-trace schemas + `persist_wake_trace` atomic verb
 
@@ -101,7 +99,6 @@ Verification: `cargo build -p proxima-harness -p proxima-core -p proxima-mcp-ser
 - [`task-33-harness-loop-in-binaries.md`](task-33-harness-loop-in-binaries.md) — Construct `HarnessLoop` in all four binaries
 - [`task-34-shell-inference-target-record.md`](task-34-shell-inference-target-record.md) — Shell `InferenceTargetRecord` rewrite + TOML round-trip tests
 - [`task-35-e2e-harness-wake-test.md`](task-35-e2e-harness-wake-test.md) — End-to-end test asserting `wake-trace-v1` Fact + JSONL CitedObject + `core/authored` edge + personality-attributed authorship + `core/derived-from` edge
-- [`task-36-migrate-code-personalities-to-native-provider.md`](task-36-migrate-code-personalities-to-native-provider.md) — Migrate Code's two personalities to a native provider target; prefer MistralChat when `MISTRAL_API_KEY` exists
 - [`task-37-atomic-cut-commit.md`](task-37-atomic-cut-commit.md) — Build, test, commit (verifies grep absence of `LocalCli`/`RemoteModel`/`write_effective_recipe`/`recipe_ref`/`engineer.yaml` etc.)
 
 ---
@@ -115,7 +112,6 @@ Verification: `cargo build -p proxima-harness -p proxima-core -p proxima-mcp-ser
 - `crates/core/src/verbs/persist_wake_trace.rs` — typed input/outcome
 - `crates/core/src/wake/trace/mod.rs` — wake-trace payload structs (Fact + CitedObject + CitationMapping)
 - `crates/core/src/wake/trace/emit.rs` — `HarnessOutcome → WakeTracePersistInput → engine.persist_wake_trace`
-- `crates/core/src/personality/default_seeds.rs` — `DefaultWakeEntrySeed` + flavor trait
 - `crates/harness/Cargo.toml`
 - `crates/harness/src/lib.rs` — `HarnessLoop` concrete adapter + re-exports
 - `crates/harness/src/program.rs` — `HarnessProgram` builder
@@ -135,9 +131,6 @@ Verification: `cargo build -p proxima-harness -p proxima-core -p proxima-mcp-ser
 - `crates/storage-pg/tests/persist_wake_trace.rs`
 - `crates/core/tests/{harness_outcome_classifier,persist_wake_trace_types,wake_trace_emission,inference_target_migration,flavor_registry}.rs`
 - `crates/harness/tests/{mistral_chat_replay,openai_chat_replay,openai_responses_replay,workspace_shell,workspace_text_editor,workspace_list_files,substrate_dispatch,loop_driver,end_to_end_wake}.rs`
-- `flavors/code/src/personalities.rs` — `EngineerSeed`, `ExecutionWorkerSeed` constants
-- `flavors/code/instructions/{engineer,execution_worker}.txt`
-- `flavors/code/tests/default_seeds.rs`
 
 **Modified files:**
 
@@ -148,13 +141,11 @@ Verification: `cargo build -p proxima-harness -p proxima-core -p proxima-mcp-ser
 - `crates/core/src/inference/types.rs` (rewrite `InferenceTargetConfig`)
 - `crates/core/src/inference/mod.rs` (drop `recipe_resolve`, `recipe_validate` from `pub mod`)
 - `crates/core/src/personality/rows.rs` (`WakeEntryRow` — drop `recipe_ref`, add `instructions`)
-- `crates/core/src/personality/mod.rs` (re-export `default_seeds`)
 - `crates/core/src/verbs/mod.rs` (add `persist_wake_trace`)
 - `crates/core/src/wake/target_adapter/mod.rs` (alias re-export of `HarnessAdapter` at the seam)
 - `crates/core/src/wake/fire/fire.rs` (rewire to `HarnessAdapter`; remove `write_effective_recipe`; call `engine.persist_wake_trace`)
 - `crates/core/src/wake/fire/mod.rs` (drop `pub mod recipe`)
 - `crates/storage-pg/src/verbs/mod.rs` + `lib.rs` (export `persist_wake_trace`)
-- `flavors/code/src/lib.rs` (call `register_default_seeds`)
 - `apps/proxima-engine/src/main.rs` + `apps/proxima-shell/src-tauri/src/boot.rs` + `apps/proxima-code/src/main.rs` + `apps/proxima-mcp/src/main.rs` (construct `HarnessLoop`)
 - `apps/proxima-shell/src-tauri/src/config/types.rs` (`InferenceTargetRecord` variants)
 

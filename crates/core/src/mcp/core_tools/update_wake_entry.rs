@@ -25,6 +25,8 @@ pub struct WakeEntryPatch {
     #[serde(default)]
     pub recipe_ref: Option<String>,
     #[serde(default)]
+    pub instructions: Option<String>,
+    #[serde(default)]
     pub model_tier: Option<ModelTier>,
     /// Outer Option = field present in patch; inner Option = set to None
     /// or to Some(value).
@@ -112,6 +114,9 @@ impl McpTool for UpdateWakeEntryTool {
                 }
                 if let Some(v) = patch.recipe_ref {
                     entry.recipe_ref = v;
+                }
+                if let Some(v) = patch.instructions {
+                    entry.instructions = v;
                 }
                 if let Some(v) = patch.model_tier {
                     entry.model_tier = v;

@@ -162,7 +162,8 @@ async fn personality_wake_schema_enforces_root_sidecar_and_promille() {
         .await?;
         assert_eq!(columns, vec!["memory_id", "display_name", "purpose"]);
 
-        let entry = sample_entry(response.instance_id, "proxima-test/fact-v1");
+        let mut entry = sample_entry(response.instance_id, "proxima-test/fact-v1");
+        entry.instructions = "Use the committed fact to decide whether to write a summary.".into();
         let err = sqlx::query(
             "INSERT INTO proxima_core.personality_wake_entries
                 (owner_principal_kind, owner_principal_id, owner_org_id,
@@ -330,6 +331,10 @@ async fn list_personality_instances_populates_wake_entries() {
         assert_eq!(rows[0].wake_entries.len(), 1);
         assert_eq!(rows[0].wake_entries[0].label, "on_test_fact");
         assert_eq!(rows[0].wake_entries[0].goal_scope, WakeEntryGoalScope::None);
+        assert_eq!(
+            rows[0].wake_entries[0].instructions,
+            "Use the committed fact to decide whether to write a summary."
+        );
         Ok(())
     }
     .await;

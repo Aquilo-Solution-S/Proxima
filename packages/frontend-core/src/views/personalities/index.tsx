@@ -88,6 +88,7 @@ const entryToDraft = (
   probability_promille: entry.probability_promille,
   goal_scope: entry.goal_scope,
   recipe_ref: entry.recipe_ref,
+  instructions: entry.instructions,
   model_tier: entry.model_tier,
   inference_target_ref: entry.inference_target_ref,
   substrate_tool_palette: [...entry.substrate_tool_palette],

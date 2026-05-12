@@ -117,6 +117,7 @@ pub struct WakeEntryTs {
     pub probability_promille: u16,
     pub goal_scope: GoalScopeTs,
     pub recipe_ref: String,
+    pub instructions: String,
     pub model_tier: ModelTierTs,
     pub inference_target_ref: Option<String>,
     pub substrate_tool_palette: Vec<String>,
@@ -136,6 +137,7 @@ pub struct WakeEntryDraftTs {
     pub probability_promille: u16,
     pub goal_scope: GoalScopeTs,
     pub recipe_ref: String,
+    pub instructions: String,
     pub model_tier: ModelTierTs,
     pub inference_target_ref: Option<String>,
     pub substrate_tool_palette: Vec<String>,
@@ -806,6 +808,7 @@ impl WakeEntryTs {
                 }
             },
             recipe_ref: row.recipe_ref.clone(),
+            instructions: row.instructions.clone(),
             model_tier: tier_to_ts(row.model_tier),
             inference_target_ref: row.inference_target_ref.clone(),
             substrate_tool_palette: row.substrate_tool_palette.clone(),
@@ -907,6 +910,7 @@ fn draft_to_core(
             }
         },
         recipe_ref: draft.recipe_ref,
+        instructions: draft.instructions,
         model_tier: tier_from_ts(draft.model_tier),
         inference_target_ref: draft.inference_target_ref,
         substrate_tool_palette: draft.substrate_tool_palette,
