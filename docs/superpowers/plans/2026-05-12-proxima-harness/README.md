@@ -18,7 +18,7 @@
 |---|---|---|
 | 1. `HarnessAdapter` trait + value types + outcome classifier — **DONE** | own commit | no — additive in `proxima-core` |
 | 2. `crates/harness` skeleton + MistralChat provider + JSONL buffer — **DONE** | own commit | no — new crate not yet wired |
-| 3. Three workspace tools | own commit | no — additive in harness crate |
+| 3. Three workspace tools — **DONE** | own commit | no — additive in harness crate |
 | 4. Substrate/flavor dispatch + reverse-map + `HarnessLoop` driver | own commit | no — additive in harness crate |
 | 5. OpenAIChat + OpenAIResponses providers | own commit | no — additive in harness crate |
 | 6. `WakeEntry.instructions` column + `DefaultWakeEntrySeed` constants + onboarding wiring | own commit | additive — column is unread by Goose path |
@@ -50,17 +50,19 @@ Verification: `rustfmt --check crates/core/src/harness/mod.rs crates/core/src/ha
 
 Verification: `cargo build -p proxima-harness`; `cargo test -p proxima-harness --test jsonl_buffer`; `cargo test -p proxima-harness --test mistral_chat_replay`; `cargo fmt -p proxima-harness --check`; `cargo clippy -p proxima-harness --all-targets`; `cargo test -p proxima-harness`; `cargo test --workspace`.
 
-### Phase 3 — Three workspace tools
+### Phase 3 — Three workspace tools — **DONE**
 
-- [`task-08-workspace-tool-trait.md`](task-08-workspace-tool-trait.md) — `WorkspaceTool` trait + `jail_path` cwd-jail helper + registry
-- [`task-09-workspace-shell.md`](task-09-workspace-shell.md) — `workspace_shell` with `bash -lc`, env-clear, 32 KB output cap, timeout
-- [`task-10-workspace-text-editor.md`](task-10-workspace-text-editor.md) — `workspace_text_editor` with View/Create/StrReplace/Insert ops
-- [`task-11-workspace-list-files.md`](task-11-workspace-list-files.md) — `workspace_list_files` with hidden-skip + entry cap
+- [x] [`task-08-workspace-tool-trait.md`](task-08-workspace-tool-trait.md) — `WorkspaceTool` trait + `jail_path` cwd-jail helper + registry
+- [x] [`task-09-workspace-shell.md`](task-09-workspace-shell.md) — `workspace_shell` with `bash -lc`, env-clear, 32 KB output cap, timeout
+- [x] [`task-10-workspace-text-editor.md`](task-10-workspace-text-editor.md) — `workspace_text_editor` with View/Create/StrReplace/Insert ops
+- [x] [`task-11-workspace-list-files.md`](task-11-workspace-list-files.md) — `workspace_list_files` with hidden-skip + entry cap
+
+Verification: `cargo test -p proxima-harness --test workspace_shell -- --test-threads=1`; `cargo test -p proxima-harness --test workspace_text_editor`; `cargo test -p proxima-harness --test workspace_list_files`; `cargo fmt -p proxima-harness --check`; `cargo test -p proxima-harness`; `cargo clippy -p proxima-harness --all-targets`; `cargo test --workspace`.
 
 ### Phase 4 — Substrate/flavor dispatch + reverse-map + `HarnessLoop` driver
 
 - [`task-12-program-builder-name-map.md`](task-12-program-builder-name-map.md) — `HarnessProgram::resolve` builder with canonical↔provider-safe name maps
-- [`task-13-substrate-dispatch.md`](task-13-substrate-dispatch.md) — Substrate dispatch via `HarnessSubstrateBridge` implemented by `DevMcpServer` (registry MCP tools + personality substrate pack)
+- [`task-13-substrate-dispatch.md`](task-13-substrate-dispatch.md) — Substrate dispatch via `HarnessSubstrateBridge` implemented by `McpToolHost` (registry MCP tools + personality substrate pack)
 - [`task-14-harness-loop-driver.md`](task-14-harness-loop-driver.md) — Full `HarnessLoop` driver with multi-round dispatch, JSONL logging, outcome classification
 - [`task-15-substrate-dispatch-test.md`](task-15-substrate-dispatch-test.md) — Program-builder name-map round-trip tests
 
@@ -174,7 +176,7 @@ Verification: `cargo build -p proxima-harness`; `cargo test -p proxima-harness -
 
 - Task 29 updates `inference_targets.kind`, rewrites `config`, and replaces `inference_targets_kind_chk`.
 - Task 32 finalizes missing-credential wakes as `credentials_missing:{ENV}` and revokes wake tokens.
-- Tasks 13/14 route substrate calls through `HarnessSubstrateBridge`, preserving `DevMcpServer::call_tool` and `call_personality_tool`.
+- Tasks 13/14 route substrate calls through `HarnessSubstrateBridge`, preserving `McpToolHost::call_tool` and `call_personality_tool`.
 - Task 13 sets `caller_self_perspective` from the firing Root Perspective before MCP authoring tools run.
 - Task 8 rejects existing symlink leaves and missing leaves under symlinked directories.
 - Task 21 uses `proxima-code/code_emit_execution_request`.
@@ -184,7 +186,7 @@ Verification: `cargo build -p proxima-harness`; `cargo test -p proxima-harness -
 
 **Known fragilities for the implementing agent:**
 
-- `HarnessSubstrateBridge` is defined in `proxima-core::mcp` and implemented for `DevMcpServer` (task 13). `HarnessLoop::new` takes `(Arc<Engine>, Arc<dyn HarnessSubstrateBridge>)`; binary wiring in task 33 passes `Arc<DevMcpServer>` cast to `Arc<dyn HarnessSubstrateBridge>`. **Do not** replace it with registry-only `McpToolDescriptor` dispatch: the bridge must preserve `DevMcpServer::call_tool` and its `call_personality_tool` fallback for `core/fetch_memory`, `core/emit_perspective`, and the rest of `personality::substrate_pack()`.
+- `HarnessSubstrateBridge` is defined in `proxima-core::mcp` and implemented for `McpToolHost` (task 13). `HarnessLoop::new` takes `(Arc<Engine>, Arc<dyn HarnessSubstrateBridge>)`; binary wiring in task 33 passes `Arc<McpToolHost>` cast to `Arc<dyn HarnessSubstrateBridge>`. **Do not** replace it with registry-only `McpToolDescriptor` dispatch: the bridge must preserve `McpToolHost::call_tool` and its `call_personality_tool` fallback for `core/fetch_memory`, `core/emit_perspective`, and the rest of `personality::substrate_pack()`.
 - Wake-scoped substrate calls must populate `McpToolCtx.caller_self_perspective` from the firing personality's root perspective. Task 13 sets `McpAuthorContext.caller_self_perspective = Some(ctx.root_perspective_memory_id)` in harness dispatch and keeps a bridge fallback from `WakeTokenContext.current_root_perspective_memory_id`. Without this, authoring registry tools such as `proxima-code/code_emit_execution_request` fail with `caller_self_perspective is required...`.
 - `persist_wake_trace` is wired through the `Storage` trait. `proxima-core` does not depend on `proxima-storage-pg`; `Engine::persist_wake_trace` calls `self.storage.persist_wake_trace_atomic(&self.registry, &input)` (task 26 step 1 & 2). `Engine` already holds `registry: FlavorRegistryFrozen` and `storage: StorageHandle` — no new fields.
 - `core/derived-from` uses the dash form (`CORE_DERIVED_FROM_RELATION = "core/derived-from"` in `crates/core/src/relation.rs:26`), never the underscore. Same goes for `CORE_AUTHORED_RELATION = "core/authored"`. Use the constants; literal strings are a bug source.

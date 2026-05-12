@@ -18,11 +18,11 @@ use rmcp::model::{
 use rmcp::service::{MaybeSendFuture, RequestContext, RoleServer};
 
 use crate::auth::{McpAuthContext, McpToolScope};
-use crate::server::DevMcpServer;
+use crate::server::McpToolHost;
 
 #[derive(Clone, Debug)]
 pub struct DynamicHandler {
-    pub server: DevMcpServer,
+    pub server: McpToolHost,
 }
 
 impl ServerHandler for DynamicHandler {
@@ -127,7 +127,7 @@ fn tool_name_matches(canonical: &str, request_name: &str) -> bool {
     canonical == request_name || provider_safe_tool_name(canonical) == request_name
 }
 
-fn canonical_tool_name(server: &DevMcpServer, request_name: &str) -> Option<String> {
+fn canonical_tool_name(server: &McpToolHost, request_name: &str) -> Option<String> {
     server
         .registry()
         .list_mcp_tools()

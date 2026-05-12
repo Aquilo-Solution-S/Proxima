@@ -27,7 +27,7 @@ use proxima_core::{
     ModelTier, OrgId, Owner, Principal, RegisterInferenceTargetRequest, SchemaId, SchemaVersion,
     SourceBatchId, SourceId, UserId, WakeEntryAuthoredBy, WakeEntryGoalScope, WakeEntryTriggerKind,
 };
-use proxima_mcp_server::{DevMcpServer, McpAuthStore};
+use proxima_mcp_server::{McpToolHost, McpAuthStore};
 use proxima_storage_pg::PgStorage;
 use proxima_storage_pg::verbs::edge_append::{EdgeDraft, append_edge_in_tx};
 use proxima_storage_pg::verbs::event_ingest::ingest_event_in_tx;
@@ -63,7 +63,7 @@ impl EmbeddingClient for FakeEmbedding {
 
 #[derive(Debug, Clone)]
 struct ScriptedPlannerAdapter {
-    server: DevMcpServer,
+    server: McpToolHost,
     auth_store: Arc<McpAuthStore>,
 }
 
@@ -455,7 +455,7 @@ async fn shell_author_retries_execution_request_with_target_and_provenance()
             )
             .with_embed(Arc::new(FakeEmbedding)),
         );
-        let server = DevMcpServer::from_pool(pg.pool().clone(), owner.clone(), registry.clone())
+        let server = McpToolHost::from_pool(pg.pool().clone(), owner.clone(), registry.clone())
             .with_engine(engine.clone());
         let auth_store = Arc::new(McpAuthStore::new(engine.wake_token_store()));
         let master_token = Uuid::now_v7();
@@ -788,7 +788,7 @@ async fn shell_author_retry_rejects_invalid_call_shapes() -> Result<(), Box<dyn 
             )
             .with_embed(Arc::new(FakeEmbedding)),
         );
-        let server = DevMcpServer::from_pool(pg.pool().clone(), owner.clone(), registry.clone())
+        let server = McpToolHost::from_pool(pg.pool().clone(), owner.clone(), registry.clone())
             .with_engine(engine.clone());
         let auth_store = Arc::new(McpAuthStore::new(engine.wake_token_store()));
         let master_token = Uuid::now_v7();
@@ -992,7 +992,7 @@ async fn accepted_goal_wakes_planner_and_emits_execution_request()
         let mut server_registry = proxima_core::FlavorRegistry::new();
         proxima_flavor_goal::register(&mut server_registry);
         proxima_code::register(&mut server_registry);
-        let server = DevMcpServer::from_pool(
+        let server = McpToolHost::from_pool(
             pg.pool().clone(),
             owner.clone(),
             Arc::new(server_registry.freeze()),

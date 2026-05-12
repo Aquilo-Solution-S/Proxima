@@ -25,7 +25,7 @@ use crate::McpServerError;
 use crate::auth::McpAuthStore;
 use crate::handler::DynamicHandler;
 use crate::security::{OriginAllowlist, assert_loopback, mcp_auth_layer};
-use crate::server::DevMcpServer;
+use crate::server::McpToolHost;
 
 /// # Errors
 ///
@@ -35,7 +35,7 @@ use crate::server::DevMcpServer;
 /// either an in-flight wake invocation or a Shell-local master token.
 pub async fn serve_streamable_http(
     addr: SocketAddr,
-    server: DevMcpServer,
+    server: McpToolHost,
     allowlist: OriginAllowlist,
     auth_store: Arc<McpAuthStore>,
 ) -> Result<(JoinHandle<Result<(), McpServerError>>, SocketAddr), McpServerError> {

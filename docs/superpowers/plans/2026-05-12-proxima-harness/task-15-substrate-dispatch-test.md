@@ -5,7 +5,7 @@
 **Files:**
 - Create: `crates/harness/tests/substrate_dispatch.rs`
 
-This test ensures the reverse-map and palette enforcement behave correctly. Because direct dispatch needs a wired `Engine` + `DevMcpServer` bridge, defer the full e2e to Phase 8 and instead exercise the program builder's name maps here. Task 4.2 adds a separate bridge inventory regression for substrate-pack tools.
+This test ensures the reverse-map and palette enforcement behave correctly. Because direct dispatch needs a wired `Engine` + `McpToolHost` bridge, defer the full e2e to Phase 8 and instead exercise the program builder's name maps here. Task 4.2 adds a separate bridge inventory regression for substrate-pack tools.
 
 - [ ] **Step 1: Write the test**
 

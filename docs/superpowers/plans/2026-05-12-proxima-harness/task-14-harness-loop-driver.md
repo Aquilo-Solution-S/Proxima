@@ -35,7 +35,7 @@ use crate::trace::jsonl::JsonlBuffer;
 
 /// Concrete `HarnessAdapter` impl. Holds a clone of the Engine for
 /// general use and a `HarnessSubstrateBridge` for wake-visible
-/// substrate dispatch. In practice `DevMcpServer` implements the
+/// substrate dispatch. In practice `McpToolHost` implements the
 /// bridge (Task 4.2), preserving registry MCP tools plus the
 /// personality substrate pack.
 #[derive(Clone)]

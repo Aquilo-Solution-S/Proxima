@@ -12,19 +12,19 @@
 
 `grep -rn "LocalCliGooseAdapter::new\|target_adapter" apps/` shows where Goose is wired today. Replace each.
 
-`HarnessLoop::new` takes two args: `Arc<Engine>` and `Arc<dyn proxima_core::mcp::HarnessSubstrateBridge>`. The bridge is implemented by `DevMcpServer` (Task 4.2). Every binary that boots `Engine` also constructs a `DevMcpServer` (search for `DevMcpServer::from_pool` or `DevMcpServer::from_database_url` to find the construction site — it lives next to `Engine::start`).
+`HarnessLoop::new` takes two args: `Arc<Engine>` and `Arc<dyn proxima_core::mcp::HarnessSubstrateBridge>`. The bridge is implemented by `McpToolHost` (Task 4.2). Every binary that boots `Engine` also constructs a `McpToolHost` (search for `McpToolHost::from_pool` or `McpToolHost::from_database_url` to find the construction site — it lives next to `Engine::start`).
 
 ```rust
-let dev_mcp = std::sync::Arc::new(dev_mcp); // already wired today; ensure it's Arc-owned
+let mcp_tool_host = std::sync::Arc::new(mcp_tool_host); // already wired today; ensure it's Arc-owned
 let adapter = std::sync::Arc::new(
     proxima_harness::HarnessLoop::new(
         engine.clone(),
-        dev_mcp.clone() as std::sync::Arc<dyn proxima_core::mcp::HarnessSubstrateBridge>,
+        mcp_tool_host.clone() as std::sync::Arc<dyn proxima_core::mcp::HarnessSubstrateBridge>,
     ),
 );
 ```
 
-If a binary today owns `DevMcpServer` by value (not `Arc`), wrap the existing instance in `Arc::new(...)` at the boot site and update other references — the `Clone` impl on `DevMcpServer` already takes `&self` so existing uses keep compiling.
+If a binary today owns `McpToolHost` by value (not `Arc`), wrap the existing instance in `Arc::new(...)` at the boot site and update other references — the `Clone` impl on `McpToolHost` already takes `&self` so existing uses keep compiling.
 
 `Engine::set_target_adapter(adapter)` or the equivalent setter — match the existing call shape. The adapter trait alias from Task 8.4 keeps the type name working.
 
@@ -39,5 +39,5 @@ Expected: clean.
 
 ```bash
 git add apps/proxima-engine apps/proxima-shell apps/proxima-code apps/proxima-mcp
-git commit -m "apps: wire HarnessLoop into every binary with DevMcpServer bridge"
+git commit -m "apps: wire HarnessLoop into every binary with McpToolHost bridge"
 ```

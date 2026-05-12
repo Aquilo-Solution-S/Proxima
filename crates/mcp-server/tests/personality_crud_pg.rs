@@ -11,7 +11,7 @@ use std::time::Duration;
 use common::{create_db, drop_db, initialize, initialized, post_rpc};
 use proxima_core::wake::token_store::WakeTokenStore;
 use proxima_core::{FlavorRegistry, OrgId, Owner, Principal, UserId};
-use proxima_mcp_server::{DevMcpServer, McpAuthStore, default_allowlist, serve_streamable_http};
+use proxima_mcp_server::{McpToolHost, McpAuthStore, default_allowlist, serve_streamable_http};
 use serde_json::{Value, json};
 
 #[tokio::test(flavor = "multi_thread")]
@@ -55,7 +55,7 @@ async fn discovery_to_mutation_smoke() -> Result<(), Box<dyn std::error::Error>>
         org_id: OrgId::new(uuid::Uuid::now_v7()),
     };
     let registry = FlavorRegistry::new();
-    let server = DevMcpServer::from_database_url(&database_url, owner.clone(), registry).await?;
+    let server = McpToolHost::from_database_url(&database_url, owner.clone(), registry).await?;
     let store = Arc::new(WakeTokenStore::new(Duration::from_mins(5)));
     let auth_store = Arc::new(McpAuthStore::new(store));
     let master_token = uuid::Uuid::now_v7();

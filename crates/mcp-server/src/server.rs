@@ -11,7 +11,7 @@ use proxima_core::{Engine, FlavorRegistry, FlavorRegistryFrozen, Owner, WakeInvo
 use crate::auth::McpAuthContext;
 
 #[derive(Clone)]
-pub struct DevMcpServer {
+pub struct McpToolHost {
     pool: sqlx::PgPool,
     owner: Owner,
     handles: Arc<HandleTable>,
@@ -19,16 +19,16 @@ pub struct DevMcpServer {
     engine: Option<Arc<Engine>>,
 }
 
-impl std::fmt::Debug for DevMcpServer {
+impl std::fmt::Debug for McpToolHost {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("DevMcpServer")
+        f.debug_struct("McpToolHost")
             .field("owner", &self.owner)
             .field("has_engine", &self.engine.is_some())
             .finish_non_exhaustive()
     }
 }
 
-impl DevMcpServer {
+impl McpToolHost {
     #[must_use]
     pub fn from_pool(
         pool: sqlx::PgPool,
@@ -307,9 +307,9 @@ mod tests {
         }
     }
 
-    fn make_server() -> DevMcpServer {
+    fn make_server() -> McpToolHost {
         let pool = sqlx::PgPool::connect_lazy("postgres://placeholder/db").expect("lazy pool");
-        DevMcpServer {
+        McpToolHost {
             owner: fake_owner(),
             handles: Arc::new(HandleTable::new()),
             registry: Arc::new(FlavorRegistry::new().freeze()),

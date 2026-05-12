@@ -33,11 +33,11 @@ async fn engineer_wake_emits_succeeded_trace_fact_with_authored_edge() {
     let mock_url = spawn_mistral_chat_mock_returning_stop().await;
     register_mistral_chat_inference_target(&engine, &owner, mock_url).await;
 
-    // HarnessLoop needs a HarnessSubstrateBridge — DevMcpServer implements
+    // HarnessLoop needs a HarnessSubstrateBridge — McpToolHost implements
     // it (Task 4.2). Build the dev MCP server alongside the engine
     // (its existing helper takes the same registry the engine froze).
-    let dev_mcp = Arc::new(
-        proxima_mcp_server::DevMcpServer::from_pool(
+    let mcp_tool_host = Arc::new(
+        proxima_mcp_server::McpToolHost::from_pool(
             pool.clone(),
             owner.clone(),
             engine.registry().clone().into(),
@@ -46,7 +46,7 @@ async fn engineer_wake_emits_succeeded_trace_fact_with_authored_edge() {
     );
     let adapter = Arc::new(HarnessLoop::new(
         engine.clone(),
-        dev_mcp.clone() as Arc<dyn proxima_core::mcp::HarnessSubstrateBridge>,
+        mcp_tool_host.clone() as Arc<dyn proxima_core::mcp::HarnessSubstrateBridge>,
     ));
     engine.set_harness_adapter(adapter.clone()).await;
 
@@ -186,11 +186,11 @@ async fn missing_provider_credentials_finalize_failed_wake_and_revoke_token() {
     )
     .await;
 
-    let dev_mcp = Arc::new(/* same DevMcpServer setup as first test */);
+    let mcp_tool_host = Arc::new(/* same McpToolHost setup as first test */);
     engine
         .set_harness_adapter(Arc::new(HarnessLoop::new(
             engine.clone(),
-            dev_mcp.clone() as Arc<dyn proxima_core::mcp::HarnessSubstrateBridge>,
+            mcp_tool_host.clone() as Arc<dyn proxima_core::mcp::HarnessSubstrateBridge>,
         )))
         .await;
 

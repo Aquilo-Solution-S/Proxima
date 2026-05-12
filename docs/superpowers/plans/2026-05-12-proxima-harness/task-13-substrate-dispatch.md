@@ -2,13 +2,13 @@
 
 > Part of [Proxima Harness Implementation Plan](README.md). Subagent execution: implement steps in order, commit at the end of the task.
 
-**Why this task is shaped the way it is.** The live MCP tool surface is not only `FlavorRegistryFrozen::list_mcp_tools()`. Wake-authenticated calls also expose the substrate personality pack through `DevMcpServer::substrate_tools()` and dispatch them through `DevMcpServer::call_personality_tool` (`core/fetch_memory`, `core/emit_abstraction`, `core/emit_perspective`, `core/emit_goal`, `core/create_edge`, etc.). Those tools need `WakeTokenContext`, read-log propagation, `writeable_schemas_for_palette`, `writeable_relations_for_palette`, and wake-invocation logging. Calling only `McpToolDescriptor.call` would hide or reject existing Code Engineer palettes.
+**Why this task is shaped the way it is.** The live MCP tool surface is not only `FlavorRegistryFrozen::list_mcp_tools()`. Wake-authenticated calls also expose the substrate personality pack through `McpToolHost::substrate_tools()` and dispatch them through `McpToolHost::call_personality_tool` (`core/fetch_memory`, `core/emit_abstraction`, `core/emit_perspective`, `core/emit_goal`, `core/create_edge`, etc.). Those tools need `WakeTokenContext`, read-log propagation, `writeable_schemas_for_palette`, `writeable_relations_for_palette`, and wake-invocation logging. Calling only `McpToolDescriptor.call` would hide or reject existing Code Engineer palettes.
 
-The harness must therefore receive a **substrate bridge**, not a raw `McpToolCtx` factory. The bridge is core-owned, implemented by `DevMcpServer`, and exposes the same combined inventory and call semantics as the HTTP MCP path while staying in-process: no HTTP, no JSON-RPC.
+The harness must therefore receive a **substrate bridge**, not a raw `McpToolCtx` factory. The bridge is core-owned, implemented by `McpToolHost`, and exposes the same combined inventory and call semantics as the HTTP MCP path while staying in-process: no HTTP, no JSON-RPC.
 
 **Files:**
 - Modify: `crates/core/src/mcp/mod.rs` (add the bridge trait + DTOs)
-- Modify: `crates/mcp-server/src/server.rs` (impl the trait for `DevMcpServer`)
+- Modify: `crates/mcp-server/src/server.rs` (impl the trait for `McpToolHost`)
 - Create: `crates/harness/src/tools/substrate_dispatch.rs`
 
 - [ ] **Step 1: Add `HarnessSubstrateBridge` to `proxima-core::mcp`**
@@ -77,13 +77,13 @@ pub trait HarnessSubstrateBridge: Send + Sync {
 
 If `Owner` is not already in scope, import it from `crate::Owner`.
 
-- [ ] **Step 2: Implement the trait for `DevMcpServer`**
+- [ ] **Step 2: Implement the trait for `McpToolHost`**
 
-Open `crates/mcp-server/src/server.rs`. Implement the bridge beside the existing `DevMcpServer` methods:
+Open `crates/mcp-server/src/server.rs`. Implement the bridge beside the existing `McpToolHost` methods:
 
 ```rust
 #[async_trait::async_trait]
-impl proxima_core::mcp::HarnessSubstrateBridge for DevMcpServer {
+impl proxima_core::mcp::HarnessSubstrateBridge for McpToolHost {
     fn list_harness_tools(
         &self,
         palette: &[String],
@@ -177,7 +177,7 @@ fn map_tool_error(err: proxima_core::mcp::McpToolError) -> proxima_core::mcp::Ha
 ```
 
 Load-bearing details:
-- `call_harness_tool` deliberately calls `DevMcpServer::call_tool`, not `(descriptor.call)` directly. That preserves the existing registry-first / `call_personality_tool` fallback path.
+- `call_harness_tool` deliberately calls `McpToolHost::call_tool`, not `(descriptor.call)` directly. That preserves the existing registry-first / `call_personality_tool` fallback path.
 - The bridge reconstructs `McpAuthContext` from the live `WakeTokenContext`; do not invent a parallel auth struct in the harness.
 - Before constructing `McpToolCtx`, the bridge must default `McpAuthorContext.caller_self_perspective` from `WakeTokenContext.current_root_perspective_memory_id` when the caller did not supply one. This matches `handler::author_from_args` on the HTTP MCP path and keeps authoring tools such as `proxima-code/code_emit_execution_request` from failing with `caller_self_perspective is required...`.
 - `list_harness_tools` must include `core/fetch_memory` and `core/emit_perspective` when those ids are in the palette.
@@ -206,7 +206,7 @@ impl HarnessLoop {
 }
 ```
 
-Every binary that constructs `HarnessLoop` passes the existing `Arc<DevMcpServer>` as `Arc<dyn HarnessSubstrateBridge>`.
+Every binary that constructs `HarnessLoop` passes the existing `Arc<McpToolHost>` as `Arc<dyn HarnessSubstrateBridge>`.
 
 - [ ] **Step 4: Implement `crates/harness/src/tools/substrate_dispatch.rs`**
 
@@ -214,7 +214,7 @@ Every binary that constructs `HarnessLoop` passes the existing `Arc<DevMcpServer
 //! In-process dispatch into wake-visible substrate tools.
 //!
 //! Calls the injected `HarnessSubstrateBridge`, which is implemented by
-//! `DevMcpServer` and preserves the live MCP behavior: registry MCP
+//! `McpToolHost` and preserves the live MCP behavior: registry MCP
 //! tools plus wake-scoped personality substrate-pack tools.
 
 use std::sync::Arc;
@@ -266,7 +266,7 @@ pub async fn dispatch(
 
 - [ ] **Step 5: Add dispatch inventory regression**
 
-Create or extend `crates/harness/tests/substrate_dispatch.rs` with a test using a real `DevMcpServer` bridge:
+Create or extend `crates/harness/tests/substrate_dispatch.rs` with a test using a real `McpToolHost` bridge:
 
 1. Build a palette containing `core/fetch_memory`, `core/emit_perspective`, and one registry MCP tool such as `core/list_substrate_tools`.
 2. Call `bridge.list_harness_tools(&palette)`.
@@ -294,9 +294,9 @@ git add crates/core/src/mcp/mod.rs crates/mcp-server/src/server.rs \
         crates/harness/src/tools/substrate_dispatch.rs \
         crates/harness/tests/substrate_dispatch.rs
 git commit -m "$(cat <<'EOF'
-harness: preserve substrate-pack tool dispatch via DevMcpServer bridge
+harness: preserve substrate-pack tool dispatch via McpToolHost bridge
 
-Adds a core-owned HarnessSubstrateBridge implemented by DevMcpServer.
+Adds a core-owned HarnessSubstrateBridge implemented by McpToolHost.
 The harness lists and calls the same wake-visible tool surface as the
 HTTP MCP path: registry MCP tools plus personality substrate-pack tools.
 This preserves core/fetch_memory and core/emit_perspective for existing

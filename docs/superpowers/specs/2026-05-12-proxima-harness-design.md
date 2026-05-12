@@ -68,7 +68,7 @@ crates/harness/                  # the concrete implementation
     loop.rs                        # the wake-loop driver: model.tool_round() → dispatch_tools() → repeat
     tools/
       mod.rs                       # ToolBinding enum: Substrate | Flavor | Workspace
-      substrate_dispatch.rs        # in-process call into HarnessSubstrateBridge (DevMcpServer impl preserves registry MCP + personality substrate pack)
+      substrate_dispatch.rs        # in-process call into HarnessSubstrateBridge (McpToolHost impl preserves registry MCP + personality substrate pack)
       workspace/
         mod.rs                     # WorkspaceTool trait
         shell.rs                   # bounded bash; timeout, output cap, exit code structural
@@ -413,13 +413,13 @@ pub struct FsEntry {
 
 ### Substrate / flavor tool dispatch
 
-The model sees substrate and flavor tools as ordinary function-calling tools. Tool specs come from `HarnessSubstrateBridge::list_harness_tools`, implemented by `DevMcpServer` as the same combined wake-visible inventory the HTTP MCP path lists: `FlavorRegistryFrozen::list_mcp_tools()` plus `DevMcpServer::substrate_tools()` / `personality::substrate_pack()`.
+The model sees substrate and flavor tools as ordinary function-calling tools. Tool specs come from `HarnessSubstrateBridge::list_harness_tools`, implemented by `McpToolHost` as the same combined wake-visible inventory the HTTP MCP path lists: `FlavorRegistryFrozen::list_mcp_tools()` plus `McpToolHost::substrate_tools()` / `personality::substrate_pack()`.
 
 When the model emits a tool call, the harness:
 
 1. Reverse-maps the provider-safe name to the canonical tool id.
 2. Calls `HarnessSubstrateBridge::call_harness_tool` with the canonical id, args, owner, model author context, and wake token.
-3. The `DevMcpServer` implementation resolves the wake token into `McpAuthContext`, defaults `McpAuthorContext.caller_self_perspective` from the wake's root perspective when absent, and calls `DevMcpServer::call_tool`, preserving the existing registry-first / `call_personality_tool` fallback path. No HTTP transport. No JSON-RPC. Result is already a typed `serde_json::Value`.
+3. The `McpToolHost` implementation resolves the wake token into `McpAuthContext`, defaults `McpAuthorContext.caller_self_perspective` from the wake's root perspective when absent, and calls `McpToolHost::call_tool`, preserving the existing registry-first / `call_personality_tool` fallback path. No HTTP transport. No JSON-RPC. Result is already a typed `serde_json::Value`.
 4. Wraps the result as a `Turn::ToolResult` and appends to the conversation.
 5. Records a `wake_invocation_log` row (`phase: "tool_call"`, `tool_id`, `status`, `duration_ms`, `message_tail`) — identical to today's MCP-path logging, just emitted from the harness instead.
 
@@ -512,7 +512,7 @@ The existing `wake_invocation_log` table (`crates/core/src/personality/...` → 
 | `finish_reason` (new column) | provider-reported, normalized |
 | `message_tail` | last 2 KB of assistant text or error message |
 
-`tool_call` rows for substrate/flavor tools keep being written by the existing path (now from the harness instead of from `DevMcpServer::call_tool`). One row, one event, one phase.
+`tool_call` rows for substrate/flavor tools keep being written by the existing path (now from the harness instead of from `McpToolHost::call_tool`). One row, one event, one phase.
 
 #### Layer 3 — `wake-trace-v1` Fact
 
@@ -665,8 +665,8 @@ Net deletion in the cut: ~700 lines of Rust, every recipe YAML, the entire "rege
 - `WakeEntry` row shape (trigger, palette, max_rounds, model_tier, inference_target_ref).
 - Four-param wake context — passed as typed JSON to the harness, no template engine involved.
 - `InferenceTarget` indirection (the variants change; the indirection stays).
-- In-process MCP server (`crates/mcp-server`) — external callers use HTTP MCP; wakes reuse `DevMcpServer` as an in-process bridge and bypass only the transport.
-- `McpToolDescriptor` registration and substrate-tool pack — the harness consumes the same combined wake-visible surface through `DevMcpServer`'s bridge, preserving `call_personality_tool` semantics.
+- In-process MCP server (`crates/mcp-server`) — external callers use HTTP MCP; wakes reuse `McpToolHost` as an in-process bridge and bypass only the transport.
+- `McpToolDescriptor` registration and substrate-tool pack — the harness consumes the same combined wake-visible surface through `McpToolHost`'s bridge, preserving `call_personality_tool` semantics.
 - `WorkspaceRunner` prepare/finalize trait — the prepared worktree, the workspace-context payload, the workspace facts (`workspace-run-v1`, `workspace-decision-v1`) all keep working.
 - Wake-token store and palette-scope authorization — moved from the MCP transport layer to the harness's substrate-dispatch layer; same semantics.
 

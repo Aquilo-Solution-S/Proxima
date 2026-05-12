@@ -2,7 +2,7 @@ pub mod args;
 
 pub use args::{ArgsError, McpConfig, USAGE, parse_args};
 pub use proxima_mcp_server::{
-    DevMcpServer, McpAuthStore, McpServerError, ToolInvocationError, default_allowlist,
+    McpToolHost, McpAuthStore, McpServerError, ToolInvocationError, default_allowlist,
     serve_streamable_http,
 };
 
@@ -65,7 +65,7 @@ pub async fn run_with_handle(
     let mut registry = FlavorRegistry::new();
     proxima_mcp_substrate::register(&mut registry);
     proxima_flavor_goal::register(&mut registry);
-    let server = DevMcpServer::from_pool(
+    let server = McpToolHost::from_pool(
         pg.pool().clone(),
         config.owner.clone(),
         std::sync::Arc::new(registry.freeze()),

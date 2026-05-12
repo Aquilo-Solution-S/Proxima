@@ -7,7 +7,7 @@ mod common;
 use common::{create_db, drop_db, initialize, initialized, post_rpc};
 use proxima_core::FlavorRegistry;
 use proxima_core::wake::token_store::WakeTokenStore;
-use proxima_mcp_server::{DevMcpServer, McpAuthStore, default_allowlist, serve_streamable_http};
+use proxima_mcp_server::{McpToolHost, McpAuthStore, default_allowlist, serve_streamable_http};
 use serde_json::json;
 
 #[tokio::test]
@@ -18,7 +18,7 @@ async fn streamable_http_initialize_list_and_remember() -> Result<(), Box<dyn st
     let database_url = format!("postgres://postgres@localhost/{db_name}");
     let mut registry = FlavorRegistry::new();
     proxima_mcp_substrate::register(&mut registry);
-    let server = DevMcpServer::from_database_url(&database_url, nil_owner(), registry).await?;
+    let server = McpToolHost::from_database_url(&database_url, nil_owner(), registry).await?;
     let store = Arc::new(WakeTokenStore::new(Duration::from_mins(1)));
     let token = store
         .mint(make_token_ctx(vec![
@@ -101,7 +101,7 @@ async fn missing_auth_returns_401() -> Result<(), Box<dyn std::error::Error>> {
     let database_url = format!("postgres://postgres@localhost/{db_name}");
     let mut registry = FlavorRegistry::new();
     proxima_mcp_substrate::register(&mut registry);
-    let server = DevMcpServer::from_database_url(&database_url, nil_owner(), registry).await?;
+    let server = McpToolHost::from_database_url(&database_url, nil_owner(), registry).await?;
     let store = Arc::new(WakeTokenStore::new(Duration::from_mins(1)));
     let auth_store = Arc::new(McpAuthStore::new(store));
     let (handle, addr) = serve_streamable_http(
@@ -136,7 +136,7 @@ async fn disallowed_origin_returns_403_with_valid_token() -> Result<(), Box<dyn 
     let database_url = format!("postgres://postgres@localhost/{db_name}");
     let mut registry = FlavorRegistry::new();
     proxima_mcp_substrate::register(&mut registry);
-    let server = DevMcpServer::from_database_url(&database_url, nil_owner(), registry).await?;
+    let server = McpToolHost::from_database_url(&database_url, nil_owner(), registry).await?;
     let store = Arc::new(WakeTokenStore::new(Duration::from_mins(1)));
     let auth_store = Arc::new(McpAuthStore::new(store));
     let token = uuid::Uuid::new_v4();
@@ -177,7 +177,7 @@ async fn local_master_token_lists_all_tools_without_origin()
     let database_url = format!("postgres://postgres@localhost/{db_name}");
     let mut registry = FlavorRegistry::new();
     proxima_mcp_substrate::register(&mut registry);
-    let server = DevMcpServer::from_database_url(&database_url, nil_owner(), registry).await?;
+    let server = McpToolHost::from_database_url(&database_url, nil_owner(), registry).await?;
     let store = Arc::new(WakeTokenStore::new(Duration::from_mins(1)));
     let auth_store = Arc::new(McpAuthStore::new(store));
     let token = uuid::Uuid::new_v4();
@@ -228,7 +228,7 @@ async fn non_loopback_bind_refused_immediately() -> Result<(), Box<dyn std::erro
     let database_url = format!("postgres://postgres@localhost/{db_name}");
     let mut registry = FlavorRegistry::new();
     proxima_mcp_substrate::register(&mut registry);
-    let server = DevMcpServer::from_database_url(&database_url, nil_owner(), registry).await?;
+    let server = McpToolHost::from_database_url(&database_url, nil_owner(), registry).await?;
     let bind: SocketAddr = "0.0.0.0:0".parse()?;
     let store = Arc::new(WakeTokenStore::new(Duration::from_mins(1)));
     let auth_store = Arc::new(McpAuthStore::new(store));

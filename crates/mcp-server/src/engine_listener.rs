@@ -3,7 +3,7 @@
 //!
 //! Lives in this crate (which depends on `proxima-core`) so the engine
 //! can stay listener-agnostic and dependency-free of `rmcp`. Hosts
-//! build the adapter once (with their `DevMcpServer` + allowlist) and
+//! build the adapter once (with their `McpToolHost` + allowlist) and
 //! hand it to the engine via `Engine::with_mcp_listener`.
 
 use std::net::SocketAddr;
@@ -17,22 +17,22 @@ use proxima_core::wake::token_store::WakeTokenStore;
 
 use crate::auth::McpAuthStore;
 use crate::security::OriginAllowlist;
-use crate::server::DevMcpServer;
+use crate::server::McpToolHost;
 use crate::transport::serve_streamable_http;
 
 /// Concrete [`EngineMcpListener`] backed by Streamable HTTP. The
-/// adapter clones the inner `DevMcpServer` per `start` invocation
+/// adapter clones the inner `McpToolHost` per `start` invocation
 /// (same pattern the headless `proxima-mcp` binary uses).
 #[derive(Debug)]
 pub struct EngineHostedMcpListener {
-    server: DevMcpServer,
+    server: McpToolHost,
     allowlist: OriginAllowlist,
     auth_store: Option<Arc<McpAuthStore>>,
 }
 
 impl EngineHostedMcpListener {
     #[must_use]
-    pub fn new(server: DevMcpServer, allowlist: OriginAllowlist) -> Self {
+    pub fn new(server: McpToolHost, allowlist: OriginAllowlist) -> Self {
         Self {
             server,
             allowlist,
@@ -42,7 +42,7 @@ impl EngineHostedMcpListener {
 
     #[must_use]
     pub fn with_auth_store(
-        server: DevMcpServer,
+        server: McpToolHost,
         allowlist: OriginAllowlist,
         auth_store: Arc<McpAuthStore>,
     ) -> Self {
