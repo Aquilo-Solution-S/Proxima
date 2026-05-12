@@ -37,6 +37,23 @@ Replace the subprocess with an in-process Rust loop — the **Proxima Harness** 
 
 ### Crate layout
 
+**Dependency direction (no cycle):**
+
+```
+proxima-core   defines  HarnessAdapter trait + HarnessProgram / HarnessOutcome / HarnessError
+                        (mirrors the existing TargetAdapter seam at
+                        crates/core/src/wake/target_adapter/mod.rs)
+
+crates/harness depends on proxima-core. Holds the loop driver, ProviderClient
+                impls, workspace tools, JSONL trace buffer.
+
+apps/proxima-shell  depends on both, instantiates the concrete HarnessAdapter
+                    and registers it on Engine at boot, exactly like the
+                    LocalCliGooseAdapter is wired today.
+```
+
+`fire_wake_entry` already takes `&dyn TargetAdapter` — the v2 path will take `&dyn HarnessAdapter` the same way. Core never names a concrete provider type; the harness crate is the only place that touches `reqwest`, provider HTTP shapes, or `tokio::process::Command` for `workspace_shell`. This keeps `proxima-core` free of network/runtime deps.
+
 ```
 crates/harness/
   Cargo.toml
@@ -59,7 +76,7 @@ crates/harness/
       mistral.rs                   # /v1/chat/completions, tool-calling
       openai_chat.rs               # /v1/chat/completions, tool-calling
       openai_responses.rs          # /v1/responses (Codex tier)
-      anthropic.rs                 # /v1/messages (behind `claude` feature flag for v1)
+      # anthropic.rs is OUT OF v1 SCOPE — added in a follow-up spec
     trace/
       jsonl.rs                     # in-memory JSONL buffer with size cap + truncate-marker
       wake_trace_fact.rs           # emit_wake_trace_fact: builds Fact + Citation + edges
@@ -130,9 +147,31 @@ pub enum Turn {
 
 pub struct ToolCall {
     pub call_id: String,            // provider-issued; opaque to harness
-    pub tool_name: String,          // canonical name (not provider-safe rewrite)
+    pub tool_name: String,          // canonical, after reverse-mapping from provider-safe
     pub arguments: serde_json::Value,
 }
+
+/// Two-way name mapping. Providers (Mistral, OpenAI, Anthropic) reject
+/// tool names containing `/`, `-`, or `.` — the canonical id
+/// `core/emit_abstraction` becomes `core_emit_abstraction` over the wire.
+/// `crates/core/src/mcp/mod.rs::provider_safe_tool_name` already exists
+/// (verified used by `crates/mcp-server/src/handler.rs`); the harness reuses
+/// it.
+pub struct ToolSpec {
+    pub canonical: String,                   // e.g. "core/emit_abstraction"
+    pub provider_safe: String,               // e.g. "core_emit_abstraction"
+    pub description: String,
+    pub input_schema: serde_json::Value,     // JSON Schema for the model
+    pub binding: ToolBinding,                // Substrate | Flavor | Workspace
+}
+
+/// Harness owns the round-trip: send provider-safe names to the model;
+/// reverse-map the call's `function.name` (or equivalent) to `canonical`
+/// before palette membership and `McpAuthStore` scope checks run.
+/// A name the model returns that doesn't reverse-map is a structural
+/// error (model fabricated a tool); the dispatcher records a
+/// `phase: "tool_call", outcome: "unknown_tool"` log row and feeds an
+/// error tool result back to the model rather than crashing the wake.
 
 pub struct ToolResultTurn {
     pub call_id: String,
@@ -233,13 +272,6 @@ pub enum InferenceTargetConfig {
     Mistral(MistralConfig),
     OpenAIChat(OpenAIChatConfig),
     OpenAIResponses(OpenAIResponsesConfig),  // Codex tier
-    Anthropic(AnthropicConfig),              // gated behind `claude` feature for v1
-    /// Deprecated. Existing rows continue to deserialize, but the
-    /// dispatcher rejects fires against `LocalCli` once the Goose
-    /// adapter is removed (Phase 3). Used during the migration window
-    /// only.
-    #[deprecated(note = "use Mistral/OpenAI/Anthropic native adapters")]
-    LocalCli(LocalCliConfig),
 }
 
 pub struct MistralConfig {
@@ -258,12 +290,23 @@ pub struct OpenAIResponsesConfig {
 }
 
 pub struct OpenAIChatConfig { /* parallel to MistralConfig */ }
-pub struct AnthropicConfig { /* base_url, model_id, api_key_env, thinking, etc. */ }
 ```
 
-`LocalCli` stays in the enum across Phase 1 and Phase 2 so existing rows keep parsing. The dispatcher's target-resolution path routes `Mistral/OpenAI/Anthropic` to the new harness and `LocalCli` to the old Goose adapter during the migration window. Phase 3 removes the variant and the adapter together; rows still referencing `LocalCli` are surfaced in the migration script and re-pointed.
+**Anthropic deferred.** Out of v1 scope. Day-one harness ships Mistral + OpenAIChat + OpenAIResponses only. A follow-up spec adds Anthropic as a peer variant when needed. This matches the repo's no-feature-flag flavor discipline.
 
-The four-tier model registry on the Shell config (`apps/proxima-shell/src-tauri/src/config/types.rs::InferenceTargetRecord`) reflects the same variants; the TOML round-trip test grows three cases.
+**Greenfield cut, no transition window.** The current enum is `LocalCli | RemoteModel { vendor, dialect, model_id, credentials_ref }` (verified at `crates/core/src/inference/types.rs:22-40`). Both variants are dropped in the same change that lands the new ones — there is no co-existence period, no `#[deprecated]` lane, no migration shim. Existing `inference_targets` rows are translated by a one-shot data migration that runs against every Owner before the new enum ships:
+
+| Source row | Target variant |
+|---|---|
+| `RemoteModel { vendor="mistral", ... }` | `Mistral { model_id, api_key_env: derive_from(credentials_ref), base_url: default }` |
+| `RemoteModel { vendor="openai", dialect="chat", ... }` | `OpenAIChat { ... }` |
+| `RemoteModel { vendor="openai", dialect="responses", ... }` | `OpenAIResponses { ... }` |
+| `LocalCli { ... }` | hand-mapped to a peer Mistral/OpenAI target by the operator running the cut |
+| anything else | migration aborts loudly |
+
+The migration runs once, transactionally per-Owner; any row it cannot map terminates the cut before it commits. There is no fallback to Goose at runtime — the moment the new code is live, every wake fires through the harness or fails the dispatch entirely.
+
+The four-tier model registry on the Shell config (`apps/proxima-shell/src-tauri/src/config/types.rs::InferenceTargetRecord`) reflects the three variants; the TOML round-trip test covers all three.
 
 ### Workspace tools
 
@@ -365,7 +408,36 @@ The MCP server (`crates/mcp-server`) **continues to exist** for external callers
   Triggering memory:   {triggering_memory JSON}
   Workspace context:   {workspace_context JSON}   # workspace mode only
   ```
-- `recipe_ref` column stays on `WakeEntry` during the migration for backwards compatibility but is **unread by the harness path**. Phase 3 drops the column.
+- `WakeEntry.recipe_ref` column is dropped in the same change (no compatibility window).
+
+**Provisioning defaults (where flavor-shipped instructions come from after YAML).**
+
+Killing the YAML files removes the build-time source of the default `instructions:` body that each flavor ships for its bundled personalities. Storage on `WakeEntry.instructions` doesn't answer "what does it get initialised to when a brand-new Owner sets up Proxima for the first time?"
+
+The replacement is build-time-only, Rust-native:
+
+```rust
+// crates/core/src/personality/mod.rs (or each flavor crate)
+
+pub struct DefaultWakeEntrySeed {
+    pub trigger_kind: TriggerKind,
+    pub trigger_id: TriggerId,
+    pub palette: ToolPaletteSeed,
+    pub max_rounds: u16,
+    pub model_tier: ModelTier,
+    pub execution_mode: ExecutionMode,
+    pub instructions: &'static str,   // the body that used to live in recipes/*.yaml
+}
+
+pub trait Flavor {
+    fn default_personalities(&self) -> Vec<DefaultPersonalitySeed>;
+    // where DefaultPersonalitySeed contains the Root P perspective + a Vec<DefaultWakeEntrySeed>
+}
+```
+
+The Owner-init provisioning path (`crates/core/src/onboarding/...` — same path that today writes the Engineer and Execution Worker default personalities) copies `instructions` straight into the new `WakeEntry.instructions` column. Flavor authors edit their `instructions: &'static str` constants in Rust source; the value flows through `cargo build` straight into provisioning, just like every other flavor-shipped constant. No runtime templating, no YAML, no on-disk recipe registry.
+
+This satisfies the build-time-only contract that the flavor system already holds for tool schemas, perspective payloads, and registry entries (see `feature_no_doc_duplication` in repo discipline). The two existing recipes (`flavors/code/recipes/engineer.yaml` and `execution_worker.yaml`) become two `DefaultWakeEntrySeed` constants in `flavors/code/src/personalities.rs` — the `instructions:` field of `execution_worker.yaml` lines 43-75 moves verbatim to a `const EXECUTION_WORKER_INSTRUCTIONS: &str = ...` string.
 - A one-shot migration script (`scripts/migrate-recipes-to-wake-entries.rs`) reads each bundled YAML's `instructions:` field and writes it to the matching WakeEntry rows. The bundled `flavors/code/recipes/*.yaml` files are deleted in the same PR that flips the default flag.
 
 The `recipe_resolve.rs` / `recipe_validate.rs` modules are deleted alongside the YAML files.
@@ -449,14 +521,42 @@ pub struct WakeTracePayload {
 }
 ```
 
-Edge wiring:
-- `wake_trace → core/derived_from → triggering_memory` (always)
-- `wake_trace → core/derived_from → root_perspective_memory` (always)
-- `wake_trace → core/derived_from → active_goal_memory` (one edge per active goal at wake time)
-- `wake_trace → core/cites → cited_object` (the JSONL CitedObject)
-- For every Memory the wake authored during its rounds: `wake_trace → core/authored → output_memory`
+**Edge wiring (corrected against `docs/11`).** Citations are not edges — they're `Memory.citation_mapping_id` → one `CitationMapping` → one `CitedObject`. Authorship of the wake_trace Fact follows the canonical direction `Root Perspective --core/authored--> Fact`, same as every other Fact the wake emits. The output memories the wake authored during its rounds are not linked to the trace by edge; they're queryable via shared authoring Root P + the `wake_invocation_log` `[started_at, finished_at]` window.
 
-The Citation is concrete: a new schema `proxima-core/wake-trace-citation-v1 (PayloadKind::CitationMapping)` maps the wake-trace Fact's claim ("invocation X produced these outputs from these inputs across N rounds") to the JSONL evidence. `cited_object.content_hash` is the BLAKE3 of the JSONL bytes, exactly as the existing `CitedObjectHint` already supports.
+Edges actually emitted:
+- `root_perspective --core/authored--> wake_trace_fact` (engine's canonical authorship edge, written by EventIngest automatically)
+- `wake_trace_fact --core/derived_from--> triggering_memory` (always)
+- `wake_trace_fact --core/derived_from--> root_perspective_memory` (always)
+- `wake_trace_fact --core/derived_from--> active_goal_memory` (one per active goal at wake time)
+
+Citation (carried inside the `EventDraft`, not as an edge — verified against `crates/core/src/verbs/event_ingest.rs:14-38`):
+
+```rust
+EventDraft {
+    schema_id: "proxima-core/wake-trace-v1",
+    payload: serialize(WakeTracePayload { ... }),
+    cited_object: CitedObjectHint {
+        schema_id: "proxima-core/wake-trace-jsonl-v1",
+        schema_version: v1,
+        content_hash: blake3(jsonl_bytes),       // dedup key within Owner
+    },
+    citation_mapping: CitationMappingHint {
+        schema_id: "proxima-core/wake-trace-citation-v1",
+        schema_version: v1,
+    },
+    ...
+}
+```
+
+Three new registered schemas (all in core, all `PayloadKind` per docs/11):
+
+| Schema id | Kind | Sidecar fields |
+|---|---|---|
+| `proxima-core/wake-trace-v1` | Fact | `WakeTracePayload` columns above |
+| `proxima-core/wake-trace-jsonl-v1` | CitedObject | `s3_path` (or local path during dev), `byte_len`, `line_count`, `truncated: bool` |
+| `proxima-core/wake-trace-citation-v1` | CitationMapping | `byte_range: [u64; 2]` (optional, defaults to whole-blob) |
+
+If we ever need an explicit "this invocation produced this Memory" relation, register it then. v1 doesn't.
 
 Fact emission is **last and non-blocking** for invocation status: if the Fact write fails (storage outage, schema mismatch), the wake still finalizes with its real outcome and a `wake_invocation_log` row records the Fact-emit failure. The wake's correctness does not depend on its own observability.
 
@@ -468,7 +568,7 @@ Fact emission is **last and non-blocking** for invocation status: if the Fact wr
 pub async fn fire_wake_entry(...) -> Result<bool, ProtocolError> {
     // 0. self-wake guard                                     [unchanged]
     // 1. assemble four-param context                         [unchanged]
-    // 2. resolve InferenceTarget                             [behavior shift: routes to harness adapter when target kind is Mistral/OpenAI/Anthropic; LocalCli still routes to Goose adapter during migration]
+    // 2. resolve InferenceTarget                             [variant must be Mistral | OpenAIChat | OpenAIResponses; no other variant exists post-cut]
     // 3. mint wake token, INSERT invocation row              [unchanged]
     //
     //    REMOVED: step 7 (write_effective_recipe). No YAML rewriting.
@@ -486,44 +586,40 @@ pub async fn fire_wake_entry(...) -> Result<bool, ProtocolError> {
 }
 ```
 
-The four-param context, idempotency keys, chain-depth guard, workspace prepare/finalize trait, self-wake exclusion, and authorship-edge wiring are all untouched. The change is entirely below the `TargetAdapter::run` seam — plus the new Fact emission.
+The four-param context, idempotency keys, chain-depth guard, workspace prepare/finalize trait, self-wake exclusion, and authorship-edge wiring are all untouched. The change is entirely below the `HarnessAdapter::run` seam (renamed from `TargetAdapter::run` in the same cut) — plus the new Fact emission.
 
 ### Provider scope for v1
 
-**Decision: B1.** Day one: Mistral + OpenAI-Responses (Codex) + OpenAI-Chat. Anthropic adapter scaffolded behind `#[cfg(feature = "claude")]` — wired but not default-built. This keeps the v1 surface focused on the two providers Heinrich is currently driving Proxima against and avoids shipping an untested Anthropic path.
+**Decision: B1, revised.** Day one: Mistral + OpenAI-Chat + OpenAI-Responses (Codex). No Anthropic, no feature flag. Adding a fourth provider becomes its own peer spec when needed — gating an untested adapter behind a `claude` flag inside v1 just builds dead code paths and breaks the repo's no-feature-flag flavor discipline.
 
-### Staged Goose removal
+### Single-cut Goose removal
 
-#### Phase 1 — harness lands, off by default
+Greenfield. No staging, no `#[deprecated]`, no coexistence window. Goose, the YAML, the `LocalCli` adapter, the `RemoteModel` enum variant, the recipe rewriter — all leave in the same change-set that lands the harness. The repo is on `road-to-v1` and no external consumer depends on the current shape.
 
-- New `crates/harness/` crate, `HarnessAdapter` impl, three providers (Mistral, OpenAI-Chat, OpenAI-Responses).
-- New `InferenceTargetConfig` variants alongside the deprecated `LocalCli`.
-- New `WakeEntry.instructions` column; recipe YAML still primary.
-- Dispatcher routes by `InferenceTargetConfig` variant: new variants → harness; `LocalCli` → existing Goose adapter.
-- New `proxima-core/wake-trace-v1` schema + Fact emission **wired for the harness path only**. The Goose path keeps writing the existing `session_log_path` JSONL on disk during this phase.
-- One flavor (Code's engineer personality) is migrated to a `Mistral` target as a smoke test. All other flavors stay on `LocalCli`/Goose.
-- New tests:
-  - per-provider replay tests with recorded HTTP fixtures (no live calls in CI)
-  - workspace tool isolation tests (path-traversal rejection, env clearing, output capping)
-  - outcome classifier exhaustiveness test (one case per row of the classification table)
-  - Fact emission with truncated JSONL (cap fires, marker line present, Fact still emits)
+**Lands together:**
 
-#### Phase 2 — default flip + migration
-
-- Migrate remaining flavors to native targets. `flavors/code/recipes/*.yaml` instruction bodies move into `WakeEntry.instructions` via one-shot script.
-- Recipe YAML files **deleted** in the same commit.
-- `recipe_resolve.rs`, `recipe_validate.rs`, `recipe.rs::write_effective_recipe` deleted.
-- Goose adapter still ships for legacy `LocalCli` rows but is marked deprecated in the UI.
-- The Goose path's `session_log_path` JSONL writer is replaced with the same `wake-trace-v1` Fact emission, so observability is uniform across both adapter types during the deprecation window.
-
-#### Phase 3 — Goose removal
-
-- `LocalCli` variant removed from `InferenceTargetConfig` (and the Postgres rows migrated to fail-loud on read, surfaced in a one-shot migration audit).
+- `crates/harness/` crate with `HarnessAdapter` impl and three providers (Mistral, OpenAIChat, OpenAIResponses).
+- `InferenceTargetConfig` rewritten to the three-variant enum above; one-shot data migration translates every existing row before the cut commits (table above).
+- New `WakeEntry.instructions` column populated from each flavor's `DefaultWakeEntrySeed.instructions` constant.
+- `proxima-core/wake-trace-v1` Fact + `wake-trace-jsonl-v1` CitedObject + `wake-trace-citation-v1` CitationMapping schemas registered.
 - `crates/core/src/wake/target_adapter/local_cli_goose.rs` deleted.
-- `WakeEntry.recipe_ref` column dropped.
-- Goose CLI dependency removed from `scripts/` and dev docs.
+- `crates/core/src/wake/target_adapter/mod.rs` `TargetAdapter` trait replaced by `HarnessAdapter` (same seam, new contract).
+- `crates/core/src/wake/fire/recipe.rs` (`write_effective_recipe`, `workspace_tool_supported`, recipe-rewrite helpers) deleted.
+- `crates/core/src/wake/fire/recipe_resolve.rs` and `recipe_validate.rs` deleted.
+- `flavors/code/recipes/engineer.yaml` and `execution_worker.yaml` deleted; their `instructions:` bodies move into `flavors/code/src/personalities.rs` as `&'static str` constants.
+- `WakeEntry.recipe_ref` column dropped; the `extensions:` rewriter that injects MCP URLs and palettes is gone.
+- Goose CLI dependency removed from `scripts/` and dev docs in the same commit.
 
-Net deletion at end of Phase 3: ~700 lines of Rust, 7 YAML files, one third-party CLI dependency, and the entire "regex-the-CLI-output" pattern.
+**Tests that must be green before the cut merges:**
+
+- per-provider replay tests with recorded HTTP fixtures (no live calls in CI)
+- workspace tool isolation tests (path-traversal rejection, env clearing, output capping)
+- outcome classifier exhaustiveness test (one case per row of the classification table)
+- Fact emission with truncated JSONL (cap fires, marker line present, Fact still emits, CitedObject content_hash matches the truncated bytes)
+- end-to-end wake against a recorded Mistral fixture: fires, dispatches workspace tools, emits expected Memory + wake-trace Fact + CitedObject + CitationMapping
+- end-to-end migration test: a database seeded with `LocalCli` and `RemoteModel` rows is translated cleanly into the new variants by the migration; one unmappable row aborts the migration.
+
+Net deletion in the cut: ~700 lines of Rust, every recipe YAML, the entire "regex-the-CLI-output" pattern, the Goose subprocess path, and the recipe-rewriter middle layer.
 
 ### What stays valuable that we keep
 
@@ -546,7 +642,7 @@ Net deletion at end of Phase 3: ~700 lines of Rust, 7 YAML files, one third-part
 ## Out of scope
 
 - Streaming tool-call responses (v1.1).
-- A UI for editing `WakeEntry.instructions` (Phase 1 ships SQL-only; the existing recipe-picker UI in the Personalities view changes after Phase 2).
-- Hosted/remote-engine inference targets (the `RemoteModel` variant exists in storage but the harness wires only direct provider HTTP for now).
-- Goose recipe import tooling — Phase 2's one-shot migration covers bundled recipes; user recipes (`~/.proxima/recipes/<owner>/`) are out of scope, the user re-writes them as WakeEntry rows.
+- A UI for editing `WakeEntry.instructions` (v1 ships SQL-only; the existing recipe-picker UI in the Personalities view is rewritten against the new column in a follow-up).
+- Hosted/remote-engine inference targets (only direct provider HTTP is wired in v1).
+- Goose recipe import tooling — the one-shot data migration covers the bundled recipes shipped in this repo; user recipes living anywhere outside the repo are not migrated, the user re-writes them as `WakeEntry.instructions` rows.
 - Per-tool circuit-breaker tuning UI (defaults are hard-coded in v1).
