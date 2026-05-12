@@ -1,68 +1,43 @@
 # Proxima
 
-The causal chain engine for Aquilo.
+We unconsciously perceive reality as it is. The filter we call our perception stems from our intrinsic motivations as well as our conditioning based on past experiences. Here, we refer to reality as facts (F). To abstract facts, we need a perspective (or multiple perspectives) and relate them to goals (G). This gives rise to insights—here, abstractions (A).
 
-## Name
+Actions that originate from us are indistinguishable from external factors—the only difference is that, in this case, the source can be traced directly back to us. Proxima is based on the idea that consequences can only contribute to the continuous learning and improvement of a system through traceability.
 
-Two truths, both load-bearing.
+The system is designed in a way to be typesafe at compile time while maintaining a lot of flexibility by providing the possibility to create your own flavors. The word flavor was specifically choosen since domains are mostly defined by certain paradigmas and norms, but your perspective is something personal, like your taste, therefore flavor seemed better to me.
 
-1. **Proxima Centauri** — the next nearest star to the sun. Continues the
-   Aquilo star-themed family.
-2. ***Causa proxima*** — the nearest abductively plausible cause that
-   meta-reflection can reach. *Not* the legal/Thomist "immediate cause"
-   sense; see `docs/universe.md §3` for the redefinition, the lineage
-   (Hume → Peirce → van Fraassen → Pearl), and the perspectivist-
-   constructivist position the engine encodes as a hard invariant.
+## Start
 
-## What this is
-
-A standalone engine for storing, traversing, and consolidating **causal
-chains** — the network of Facts, Abstractions, and Perspectives that an
-agent builds about a Reality over time.
-
-The engine is domain-agnostic; only the **Event Sources** and the
-**Actuators** differ between flavors. For the ontology, the Spinning
-Wheel, the worked Code / Learning / Jurisdiction walkthroughs, and the
-philosophical commitments, see [`docs/universe.md`](docs/universe.md).
-For what must not slip, see [`AGENTS.md`](AGENTS.md).
-
-## What this is not
-
-- Not a memory store retrofitted with a graph. It is the wheel
-  (`docs/universe.md §2`) implemented cold-start.
-- Not a port of hippocampus. Hippocampus becomes one consumer of Proxima.
-- Not a research project. It is a buildable system. The core crates,
-  Postgres storage, gRPC wire layer, Code flavor, and Solid/Tauri shell
-  are in-tree.
-
-## Status
-
-Implementation phase. Build path to a locally-runnable Code demo.
-
+```sh
+pnpm install
+pnpm --filter proxima-shell tauri:dev
 ```
-proxima/
-├── apps/
-│   ├── proxima-engine/      Rust engine binary
-│   ├── proxima-code/        Rust Code-flavor binary
-│   ├── proxima-mcp/         Rust headless MCP host binary (substrate + goal)
-│   └── proxima-shell/       Solid + Vite + Tauri 2 shell
-│       └── src-tauri/       Tauri Rust crate
-├── crates/
-│   ├── core/                Rust lib crate `proxima-core`
-│   ├── mcp-server/          MCP HTTP listener (`proxima_mcp_server`)
-│   ├── storage-pg/          Postgres storage adapter + migrations
-│   ├── wire-grpc/           gRPC wire crate
-│   └── llm-openai-compat/   OpenAI-compatible model client
-├── packages/
-│   └── frontend-core/       npm package `@proxima/core`
-├── flavors/
-│   ├── code/                Rust Code flavor crate
-│   ├── goal/                Rust Goal flavor crate
-│   └── mcp/                 Rust MCP substrate flavor crate
-├── proto/                   Proxima v1 protobuf surface
-├── docs/                    design source of truth
-├── Cargo.toml               Rust workspace
-└── pnpm-workspace.yaml      frontend workspace
+
+`tauri:dev` starts the desktop shell, brings up dev Postgres via
+`docker-compose.dev.yml`, and writes perf logs under
+`apps/proxima-shell/perf-logs/`.
+
+```sh
+PROXIMA_PERF=0 pnpm --filter proxima-shell tauri:dev
+```
+
+Raw shell startup. No Docker, no perf capture. Uses the current
+`DATABASE_URL`.
+
+```sh
+pnpm --filter proxima-shell dev --host 127.0.0.1
+cargo run -p proxima-mcp -- --owner-user <uuid> --owner-org <uuid>
+```
+
+Frontend-only Vite dev server. Headless MCP server at
+`http://127.0.0.1:31415/mcp`.
+
+```sh
+cargo check --workspace
+pnpm --filter @proxima/core typecheck
+pnpm --filter proxima-shell typecheck
+pnpm --filter proxima-shell build
+pnpm --filter proxima-shell perf:down
 ```
 
 Design source of truth:
@@ -135,87 +110,6 @@ Design source of truth:
 - [`docs/dev-perf.md`](docs/dev-perf.md) — dev-time perf instrumentation:
   per-session artifact layout under `apps/proxima-shell/perf-logs/`,
   IPC / MCP / engine / Postgres capture, opt-out via `PROXIMA_PERF=0`.
-
-## Verification
-
-Use the smallest relevant check.
-
-| Surface | Command |
-|---|---|
-| Rust workspace | `cargo check --workspace` |
-| Rust lint | `cargo clippy --workspace --all-targets` |
-| Core frontend | `pnpm --filter @proxima/core typecheck` |
-| Shell frontend | `pnpm --filter proxima-shell typecheck` |
-| Shell build | `pnpm --filter proxima-shell build` |
-
-Frontend dev server:
-
-```sh
-pnpm --filter proxima-shell dev --host 127.0.0.1
-```
-
-### Connecting Your Coding Agent To Proxima
-
-Proxima Shell auto-starts a Streamable HTTP MCP server when the
-desktop app is running. Copy the local bearer token from
-`Settings -> MCP`:
-
-```text
-http://localhost:31415/mcp
-Authorization: Bearer <token-from-settings>
-```
-
-Claude Code:
-
-```jsonc
-{
-  "mcpServers": {
-    "proxima": {
-      "type": "http",
-      "url": "http://localhost:31415/mcp",
-      "headers": { "Authorization": "Bearer <token-from-settings>" }
-    }
-  }
-}
-```
-
-Codex CLI:
-
-```toml
-[mcp_servers.proxima]
-type = "http"
-url = "http://localhost:31415/mcp"
-http_headers = { "Authorization" = "Bearer <token-from-settings>" }
-```
-
-Port override:
-
-```sh
-PROXIMA_MCP_BIND=127.0.0.1:31419 pnpm --filter proxima-shell tauri:dev
-```
-
-The listener binds loopback only. Present `Origin` headers must be
-allowed; native CLI clients may omit `Origin` when they send a valid
-bearer token.
-
-Headless:
-
-```sh
-cargo run -p proxima-mcp -- \
-  --owner-user 00000000-0000-0000-0000-000000000000 \
-  --owner-org  00000000-0000-0000-0000-000000000000 \
-  --master-token 00000000-0000-0000-0000-000000000000 \
-  --bind 127.0.0.1:31415
-```
-
-MCP server. Substrate tools (always):
-`proxima-mcp/proxima_search_graph`, `proxima-mcp/proxima_open`,
-`proxima-mcp/proxima_remember`, `proxima-mcp/proxima_derive`,
-`proxima-mcp/proxima_link`. Goal flavor (composited into
-`apps/proxima-mcp`): `proxima-goal/goal_propose`,
-`proxima-goal/goal_accept`, `proxima-goal/goal_decline`,
-`proxima-goal/goal_modify`. Other composite binaries extend the
-tool list at link time; see `docs/13-flavor-marketplace.md`.
 
 ## Implementation commitment
 
