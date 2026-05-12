@@ -179,6 +179,7 @@ export const InferenceTargetsSection: Component<Props> = (props) => {
         client={props.client}
         owner={owner()}
         targets={props.targets}
+        bindings={props.bindings}
         onChanged={props.onChanged}
       />
 

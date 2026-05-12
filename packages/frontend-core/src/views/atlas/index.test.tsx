@@ -23,14 +23,21 @@ import {
   type GraphStore,
 } from "../../graph-store";
 import { createHub } from "../../hub";
+import {
+  clearRegistriesForTests,
+  registerGoalPayloadEditor,
+  registerPayloadRenderer,
+} from "../../registry";
 import { Atlas } from "./index";
 import type { AtlasEdge, AtlasNode } from "./types";
 
+const goalWriteMock = vi.hoisted(() => vi.fn());
 const goalReactivateMock = vi.hoisted(() => vi.fn());
 const listPersonalityInstancesMock = vi.hoisted(() => vi.fn());
 
 vi.mock("../../bindings", () => ({
   commands: {
+    goalWrite: goalWriteMock,
     goalReactivate: goalReactivateMock,
     listPersonalityInstances: listPersonalityInstancesMock,
   },
@@ -116,6 +123,79 @@ const activeGoal = (id: string): GoalRow => ({
   payload: [],
 });
 
+const okWrite = () =>
+  Promise.resolve({
+    status: "ok" as const,
+    data: {
+      goal_id: "019dfa50-0000-7000-8000-000000000301",
+      change_event_seq: "019dfa50-0000-7000-8000-000000000302",
+      idempotent_replay: false,
+    },
+  });
+
+const okReactivate = () =>
+  Promise.resolve({
+    status: "ok" as const,
+    data: {
+      event_id: "feed000000000000000000000000000000000000000000000000000000000000",
+      memory_id: "019dfa50-0000-7000-8000-000000000303",
+      change_event_seq: "019dfa50-0000-7000-8000-000000000304",
+      idempotent_replay: false,
+    },
+  });
+
+const wakeEntry = () => ({
+  wake_entry_id: "019dfa50-0000-7000-8000-000000000305",
+  trigger_kind: "on_memory" as const,
+  trigger_id: "proxima-goal/goal-activated-v1",
+  label: "plan execution requests",
+  enabled: true,
+  execution_mode: "substrate_only" as const,
+  authored_by: "other" as const,
+  probability_promille: 1000,
+  goal_scope: "trigger_goal_assigned" as const,
+  recipe_ref: "bundled:proxima-code/plan_execution_requests",
+  model_tier: "deep" as const,
+  inference_target_ref: null,
+  substrate_tool_palette: [],
+  workspace_tool_palette: [],
+  max_rounds: 16,
+  disabled_reason: null,
+});
+
+const planner = (id: string, display_name: string): PersonalityInstanceTs => ({
+  owner,
+  personality_instance_id: id,
+  current_root_perspective_memory_id: "019dfa50-0000-7000-8000-000000000306",
+  display_name,
+  status: "active",
+  wake_entries: [wakeEntry()],
+});
+
+const registerSimpleTextSchema = () => {
+  registerPayloadRenderer({
+    schemaId: "proxima-goal/simple-text-v1",
+    schemaVersion: 1,
+    kind: "Goal",
+    flavor: "proxima-goal",
+    codec: {
+      decode: () => ({}),
+      encode: () => new Uint8Array([0xa0]),
+    },
+    renderer: {
+      render: () => null,
+    },
+  });
+  registerGoalPayloadEditor<Record<string, never>>({
+    schemaId: "proxima-goal/simple-text-v1",
+    schemaVersion: 1,
+    flavor: "proxima-goal",
+    label: "Simple text",
+    defaults: () => ({}),
+    component: () => null,
+  });
+};
+
 const atlasEdge = (id: string, src: string, tgt: string, kind = "code/calls"): AtlasEdge => ({
   id,
   src,
@@ -157,6 +237,8 @@ const snapshot = (
 describe("Atlas graph wiring", () => {
   afterEach(() => {
     cleanup();
+    clearRegistriesForTests();
+    goalWriteMock.mockReset();
     goalReactivateMock.mockReset();
     listPersonalityInstancesMock.mockReset();
   });
@@ -775,6 +857,122 @@ describe("Atlas graph wiring", () => {
       screen.getByRole("button", { name: "Reactivate goal" }).textContent,
     ).toContain("Reactivated");
     raycast.mockRestore();
+  });
+
+  it("opens the goal dialog from Atlas chrome", async () => {
+    registerSimpleTextSchema();
+    listPersonalityInstancesMock.mockResolvedValue({
+      status: "ok",
+      data: [planner("019dfa50-0000-7000-8000-000000000311", "Planner")],
+    });
+    const store: GraphStore = {
+      state: () => snapshot([], []),
+      refresh: () => Promise.resolve(),
+    };
+    render(() => (
+      <GraphProvider store={store}>
+        <GraphFilterProvider store={createGraphFilterStore()}>
+          <Atlas hub={createHub([])} />
+        </GraphFilterProvider>
+      </GraphProvider>
+    ));
+
+    fireEvent.click(screen.getByRole("button", { name: "New goal" }));
+
+    expect(await screen.findByRole("dialog", { name: "Goal editor" })).toBeTruthy();
+    expect(screen.getByLabelText("Type")).toBeTruthy();
+    expect(await screen.findByText("Planner")).toBeTruthy();
+  });
+
+  it("renders registered goal editors in the Atlas goal type selector", async () => {
+    registerSimpleTextSchema();
+    registerPayloadRenderer({
+      schemaId: "proxima-code/task-goal-v1",
+      schemaVersion: 1,
+      kind: "Goal",
+      flavor: "proxima-code",
+      codec: {
+        decode: () => ({ repo: "" }),
+        encode: () => new Uint8Array([0xa1, 0x64, 0x72, 0x65, 0x70, 0x6f, 0x60]),
+      },
+      renderer: {
+        render: () => null,
+      },
+    });
+    registerGoalPayloadEditor<{ repo: string }>({
+      schemaId: "proxima-code/task-goal-v1",
+      schemaVersion: 1,
+      flavor: "proxima-code",
+      label: "Task",
+      defaults: () => ({ repo: "" }),
+      component: () => null,
+    });
+    listPersonalityInstancesMock.mockResolvedValue({
+      status: "ok",
+      data: [planner("019dfa50-0000-7000-8000-000000000321", "Planner")],
+    });
+    const store: GraphStore = {
+      state: () => snapshot([], []),
+      refresh: () => Promise.resolve(),
+    };
+    render(() => (
+      <GraphProvider store={store}>
+        <GraphFilterProvider store={createGraphFilterStore()}>
+          <Atlas hub={createHub([])} />
+        </GraphFilterProvider>
+      </GraphProvider>
+    ));
+
+    fireEvent.click(screen.getByRole("button", { name: "New goal" }));
+
+    const type = (await screen.findByLabelText("Type")) as HTMLSelectElement;
+    const options = Array.from(type.options).map((option) => option.textContent);
+    expect(options).toEqual(["Simple text", "Task"]);
+  });
+
+  it("refreshes the graph and closes after creating an assigned Atlas goal", async () => {
+    registerSimpleTextSchema();
+    const target = planner(
+      "019dfa50-0000-7000-8000-000000000331",
+      "Planner",
+    );
+    listPersonalityInstancesMock.mockResolvedValue({
+      status: "ok",
+      data: [target],
+    });
+    goalWriteMock.mockImplementation(okWrite);
+    goalReactivateMock.mockImplementation(okReactivate);
+    const refresh = vi.fn().mockResolvedValue(undefined);
+    const store: GraphStore = {
+      state: () => snapshot([], []),
+      refresh,
+    };
+    render(() => (
+      <GraphProvider store={store}>
+        <GraphFilterProvider store={createGraphFilterStore()}>
+          <Atlas hub={createHub([])} />
+        </GraphFilterProvider>
+      </GraphProvider>
+    ));
+
+    fireEvent.click(screen.getByRole("button", { name: "New goal" }));
+    await screen.findByText("Planner");
+    fireEvent.input(screen.getByLabelText("Title"), {
+      target: { value: "Atlas-created goal" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+
+    await waitFor(() => expect(goalWriteMock).toHaveBeenCalledOnce());
+    await waitFor(() => expect(goalReactivateMock).toHaveBeenCalledOnce());
+    expect(goalReactivateMock).toHaveBeenCalledWith({
+      owner,
+      goal_id: "019dfa50-0000-7000-8000-000000000301",
+      target_personality_id: target.personality_instance_id,
+    });
+    await waitFor(() => expect(refresh).toHaveBeenCalledOnce());
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "Goal editor" })).toBeNull(),
+    );
   });
 
   it("resizes the inspector column by dragging its handle", () => {

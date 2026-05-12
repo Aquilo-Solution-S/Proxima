@@ -7,6 +7,7 @@ import { flavorFilterId, useGraphFilter } from "../../graph-filter-store";
 import { filterGraphSnapshot } from "../../graph-selectors";
 import type { Hub } from "../../hub";
 import { getEdgeStyle } from "../../registry";
+import { GoalDialog } from "../goal-dialog";
 import { buildAdjacency, chainOf } from "./adjacency";
 import { Inspector, Pill } from "./inspector";
 import { atlasProjectionFromGraph } from "./projection";
@@ -53,6 +54,7 @@ export const Atlas: Component<{
   const [pickHistoryIndex, setPickHistoryIndex] = createSignal(-1);
   const [inspectorWidth, setInspectorWidth] = createSignal(INSPECTOR_DEFAULT_WIDTH);
   const [resizingInspector, setResizingInspector] = createSignal(false);
+  const [goalDialogOpen, setGoalDialogOpen] = createSignal(false);
 
   const colorFor = (value: number | string | undefined, fallback: number) =>
     value === undefined ? fallback : new THREE.Color(value);
@@ -650,6 +652,15 @@ export const Atlas: Component<{
           <span class="atlas-sub">deterministic memory map</span>
         </div>
         <div class="atlas-chrome-r">
+          <Show when={graph !== null}>
+            <button
+              type="button"
+              class="atlas-new-goal"
+              onClick={() => setGoalDialogOpen(true)}
+            >
+              New goal
+            </button>
+          </Show>
           <div class="atlas-nav" aria-label="Atlas node history">
             <button
               type="button"
@@ -686,6 +697,17 @@ export const Atlas: Component<{
           </span>
         </div>
       </div>
+
+      <Show when={goalDialogOpen() && graph !== null}>
+        <GoalDialog
+          hub={props.hub}
+          assignmentMode="goal-reactive"
+          onClose={() => setGoalDialogOpen(false)}
+          onAfterWrite={() => {
+            void graph?.refresh();
+          }}
+        />
+      </Show>
 
       <div
         class="atlas-body"

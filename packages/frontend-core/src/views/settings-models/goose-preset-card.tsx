@@ -8,7 +8,13 @@ import {
   type Accessor,
   type Component,
 } from "solid-js";
-import type { InferenceTargetTs, ModelTierTs, Owner } from "../../bindings";
+import type {
+  InferenceTargetConfigTs,
+  InferenceTargetTs,
+  InferenceTierBindingTs,
+  ModelTierTs,
+  Owner,
+} from "../../bindings";
 import type { EngineClient } from "../../client";
 import {
   DEFAULT_TIER_PRESETS,
@@ -35,6 +41,7 @@ interface Props {
   >;
   owner: Owner;
   targets: Accessor<InferenceTargetTs[] | undefined>;
+  bindings?: Accessor<InferenceTierBindingTs[] | undefined>;
   onChanged: () => void;
 }
 
@@ -61,6 +68,47 @@ const errorMessage = (err: unknown): string => {
 };
 
 const targetRefForTier = (tier: ModelTierTs): string => `goose-${tier}`;
+
+const configKey = (config: InferenceTargetConfigTs): string => {
+  switch (config.kind) {
+    case "local_cli":
+      return JSON.stringify([
+        "local_cli",
+        config.command,
+        config.profile ?? null,
+        config.env_overrides,
+      ]);
+    case "remote_model":
+      return JSON.stringify([
+        "remote_model",
+        config.vendor,
+        config.dialect,
+        config.model_id,
+        config.credentials_ref ?? null,
+      ]);
+  }
+};
+
+const sameConfig = (
+  left: InferenceTargetConfigTs,
+  right: InferenceTargetConfigTs,
+): boolean => configKey(left) === configKey(right);
+
+const shortHash = (input: string): string => {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < input.length; i += 1) {
+    hash ^= input.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(36);
+};
+
+const safeRefPart = (input: string): string =>
+  input
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 36) || "target";
 
 const buildEnvOverrides = (
   provider: GooseProvider,
@@ -98,22 +146,28 @@ export const GoosePresetCard: Component<Props> = (props) => {
   const [editingTier, setEditingTier] = createSignal<ModelTierTs | null>(null);
   const [draft, setDraft] = createSignal<Draft>(draftFromDefaults("fast"));
 
-  const targetByTier = createMemo(() => {
+  const targetByRef = createMemo(() => {
     const list = props.targets() ?? [];
-    const map = new Map<ModelTierTs, InferenceTargetTs>();
-    for (const tier of TIERS) {
-      const found = list.find((x) => x.target_ref === targetRefForTier(tier));
-      if (found) map.set(tier, found);
-    }
+    const map = new Map<string, InferenceTargetTs>();
+    for (const target of list) map.set(target.target_ref, target);
     return map;
   });
 
+  const boundTargetRef = (tier: ModelTierTs) =>
+    props.bindings?.()?.find((binding) => binding.tier === tier)?.target_ref ??
+    targetRefForTier(tier);
+
+  const targetForTier = (tier: ModelTierTs) =>
+    targetByRef().get(boundTargetRef(tier)) ??
+    targetByRef().get(targetRefForTier(tier));
+
   const decodedFor = (tier: ModelTierTs) => {
-    const target = targetByTier().get(tier);
+    const target = targetForTier(tier);
     return target ? decodeGooseConfig(target.config) : null;
   };
 
-  const configuredCount = () => targetByTier().size;
+  const configuredCount = () =>
+    TIERS.filter((tier) => targetForTier(tier) !== undefined).length;
 
   const detectGoose = async () => {
     setError(null);
@@ -199,17 +253,31 @@ export const GoosePresetCard: Component<Props> = (props) => {
   ) => {
     const command = goosePath().trim();
     if (!command) throw new Error("goose path is required");
-    const targetRef = targetRefForTier(tier);
-    await props.client.registerInferenceTarget({
-      owner: props.owner,
-      target_ref: targetRef,
-      config: {
-        kind: "local_cli",
-        command,
-        profile: null,
-        env_overrides: buildEnvOverrides(provider, model, reasoning, systemPrompt),
-      },
-    });
+    const config: InferenceTargetConfigTs = {
+      kind: "local_cli",
+      command,
+      profile: null,
+      env_overrides: buildEnvOverrides(provider, model, reasoning, systemPrompt),
+    };
+    const existing = (props.targets() ?? []).find((target) =>
+      sameConfig(target.config, config),
+    );
+    let targetRef = existing?.target_ref;
+    if (!targetRef) {
+      const defaultRef = targetRefForTier(tier);
+      const defaultTarget = targetByRef().get(defaultRef);
+      targetRef =
+        !defaultTarget || sameConfig(defaultTarget.config, config)
+          ? defaultRef
+          : `goose-${tier}-${safeRefPart(provider)}-${safeRefPart(model)}-${shortHash(
+              configKey(config),
+            )}`;
+      await props.client.registerInferenceTarget({
+        owner: props.owner,
+        target_ref: targetRef,
+        config,
+      });
+    }
     await props.client.bindInferenceTier({
       owner: props.owner,
       tier,
@@ -236,7 +304,7 @@ export const GoosePresetCard: Component<Props> = (props) => {
     try {
       await props.client.removeInferenceTarget({
         owner: props.owner,
-        target_ref: targetRefForTier(tier),
+        target_ref: boundTargetRef(tier),
       });
       if (editingTier() === tier) setEditingTier(null);
       props.onChanged();

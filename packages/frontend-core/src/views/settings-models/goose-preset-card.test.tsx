@@ -4,6 +4,7 @@ import type {
   BindInferenceTierTs,
   DetectedHarnessTs,
   InferenceTargetTs,
+  InferenceTierBindingTs,
   RegisterInferenceTargetTs,
   RemoveInferenceTargetTs,
 } from "../../bindings";
@@ -27,10 +28,12 @@ const renderCard = (
   options: {
     detectLocalHarness?: (name: string) => Promise<DetectedHarnessTs | null>;
     targets?: InferenceTargetTs[];
+    bindings?: InferenceTierBindingTs[];
   } = {},
 ) => {
   const detectLocalHarness = options.detectLocalHarness ?? detectedGoose;
   const targets = options.targets ?? [];
+  const bindings = options.bindings ?? [];
   const client = {
     detectLocalHarness,
     registerInferenceTarget: vi.fn(
@@ -53,6 +56,7 @@ const renderCard = (
       client={client}
       owner={owner}
       targets={() => targets}
+      bindings={() => bindings}
       onChanged={onChanged}
     />
   ));
@@ -61,6 +65,29 @@ const renderCard = (
 };
 
 const goosePillVisible = () => screen.findByText(/goose 1\.33\.1/i);
+
+const gooseTarget = (
+  targetRef: string,
+  provider: string,
+  model: string,
+  reasoning?: string,
+): InferenceTargetTs => ({
+  target_ref: targetRef,
+  config: {
+    kind: "local_cli",
+    command: "/fake/goose",
+    profile: null,
+    env_overrides: [
+      ["GOOSE_PROVIDER", provider],
+      ["GOOSE_MODEL", model],
+      ...(reasoning
+        ? ([["CHATGPT_CODEX_REASONING_EFFORT", reasoning]] as [string, string][])
+        : []),
+    ],
+  },
+  created_at: "2026-05-08T00:00:00Z",
+  updated_at: "2026-05-08T00:00:00Z",
+});
 
 describe("GoosePresetCard", () => {
   afterEach(() => {
@@ -145,6 +172,73 @@ describe("GoosePresetCard", () => {
       { owner, tier: "deep", target_ref: "goose-deep" },
     ]);
     expect(onChanged).toHaveBeenCalledTimes(1);
+  });
+
+  it("rebinds a tier to an existing matching Goose target instead of re-registering the fixed ref", async () => {
+    const { client, onChanged } = renderCard({
+      targets: [
+        gooseTarget("goose-fast", "mistral", "mistral-medium-latest"),
+        gooseTarget(
+          "goose-standard",
+          "chatgpt_codex",
+          "gpt-5.3-codex-spark",
+          "medium",
+        ),
+      ],
+      bindings: [{ tier: "standard", target_ref: "goose-standard" }],
+    });
+
+    await goosePillVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Edit standard" }));
+    fireEvent.change(screen.getByLabelText("Provider"), {
+      target: { value: "mistral" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => {
+      expect(client.bindInferenceTier).toHaveBeenCalledWith({
+        owner,
+        tier: "standard",
+        target_ref: "goose-fast",
+      });
+    });
+    expect(client.registerInferenceTarget).not.toHaveBeenCalled();
+    await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(1));
+  });
+
+  it("creates a new Goose target ref when a tier fixed ref already exists with another body", async () => {
+    const { client } = renderCard({
+      targets: [
+        gooseTarget(
+          "goose-standard",
+          "chatgpt_codex",
+          "gpt-5.3-codex-spark",
+          "medium",
+        ),
+      ],
+      bindings: [{ tier: "standard", target_ref: "goose-standard" }],
+    });
+
+    await goosePillVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Edit standard" }));
+    fireEvent.change(screen.getByLabelText("Provider"), {
+      target: { value: "mistral" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => {
+      expect(client.registerInferenceTarget).toHaveBeenCalledTimes(1);
+    });
+    const registered = client.registerInferenceTarget.mock.calls[0][0];
+    expect(registered.target_ref).toMatch(
+      /^goose-standard-mistral-mistral-medium-latest-/,
+    );
+    expect(registered.target_ref).not.toBe("goose-standard");
+    expect(client.bindInferenceTier).toHaveBeenCalledWith({
+      owner,
+      tier: "standard",
+      target_ref: registered.target_ref,
+    });
   });
 
   it("surfaces missing goose detection without filling the path", async () => {
