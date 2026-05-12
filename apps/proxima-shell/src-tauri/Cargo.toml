@@ -22,6 +22,7 @@ tauri-plugin-dialog = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 proxima-core = { path = "../../../crates/core" }
+proxima-harness = { path = "../../../crates/harness" }
 proxima-storage-pg = { path = "../../../crates/storage-pg" }
 proxima-code = { path = "../../../flavors/code" }
 proxima-flavor-goal = { path = "../../../flavors/goal" }

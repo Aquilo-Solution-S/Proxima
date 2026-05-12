@@ -101,16 +101,6 @@ proxima_core::proxima_flavor! {
         "proxima-code/workspace-review-v1",
         "proxima-code/workspace-decision-v1",
     ],
-    recipes_root = env!("CARGO_MANIFEST_DIR"),
-    recipes = [
-        "commit_summary",
-        "engineer",
-        "execution_worker",
-        "verify_workspace_run",
-        "plan_workspace_correction",
-        "close_goal_after_merge",
-        "plan_execution_requests",
-    ],
 }
 
 #[cfg(test)]

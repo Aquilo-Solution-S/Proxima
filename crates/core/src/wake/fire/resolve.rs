@@ -1,10 +1,8 @@
-//! Target and recipe resolution for wake fire.
+//! Target resolution for wake fire.
 
-use std::path::PathBuf;
-
-use crate::InferenceTargetRow;
 use crate::engine::Engine;
 use crate::error::ProtocolError;
+use crate::{InferenceTargetConfig, InferenceTargetRow};
 
 use super::input::FireWakeEntryInput;
 
@@ -12,7 +10,7 @@ use super::input::FireWakeEntryInput;
 pub struct ResolvedTarget {
     pub target_ref: String,
     pub config_model_id: Option<String>,
-    pub env_overrides: Vec<(String, String)>,
+    pub config: InferenceTargetConfig,
 }
 
 /// Resolve the inference target for a wake entry.
@@ -53,48 +51,16 @@ pub async fn resolve_target(
 
 /// Decode an inference target row into a resolved target.
 pub fn decode_target(target_ref: String, row: InferenceTargetRow) -> ResolvedTarget {
-    use crate::InferenceTargetConfig;
-    let mut env_overrides: Vec<(String, String)> = Vec::new();
-    let config_model_id: Option<String> = match row.config {
-        InferenceTargetConfig::LocalCli(cfg) => {
-            if let Some(profile) = cfg.profile {
-                env_overrides.push(("GOOSE_PROFILE".to_string(), profile));
-            }
-            for (k, v) in cfg.env_overrides {
-                env_overrides.push((k, v));
-            }
-            Some(cfg.command)
-        }
-        InferenceTargetConfig::RemoteModel(cfg) => {
-            // Vendor-specific credential injection lands in Phase 2;
-            // for v1 the LocalCli adapter is the only consumer.
-            Some(cfg.model_id)
-        }
+    let config_model_id: Option<String> = match &row.config {
+        InferenceTargetConfig::MistralChat(cfg) => Some(cfg.model_id.clone()),
+        InferenceTargetConfig::OpenAIChat(cfg) => Some(cfg.model_id.clone()),
+        InferenceTargetConfig::OpenAIResponses(cfg) => Some(cfg.model_id.clone()),
     };
     ResolvedTarget {
         target_ref,
         config_model_id,
-        env_overrides,
+        config: row.config,
     }
-}
-
-/// Resolve the recipe path for a wake entry.
-pub fn resolve_recipe_path(
-    engine: &Engine,
-    input: &FireWakeEntryInput,
-) -> Result<PathBuf, ProtocolError> {
-    crate::inference::recipe_resolve::resolve_recipe_ref(
-        &input.wake_entry.recipe_ref,
-        &engine.owner_recipes_root(&input.owner),
-        engine.registry(),
-    )
-    .map_err(|e| match e {
-        crate::inference::recipe_resolve::RecipeResolveError::Malformed(_)
-        | crate::inference::recipe_resolve::RecipeResolveError::BundledNotRegistered(_)
-        | crate::inference::recipe_resolve::RecipeResolveError::UserMissing(_) => {
-            ProtocolError::recipe_not_found(&input.wake_entry.recipe_ref)
-        }
-    })
 }
 
 /// Collect sidecar specs from the engine's registry.
@@ -104,10 +70,11 @@ pub fn collect_sidecars(engine: &Engine) -> Vec<crate::personality::SidecarSpec>
         .list()
         .into_iter()
         .filter_map(|s| {
-            s.sidecar_table.map(|table| crate::personality::SidecarSpec {
-                schema_id: s.schema_id,
-                sidecar_table: table,
-            })
+            s.sidecar_table
+                .map(|table| crate::personality::SidecarSpec {
+                    schema_id: s.schema_id,
+                    sidecar_table: table,
+                })
         })
         .collect()
 }

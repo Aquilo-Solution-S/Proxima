@@ -10,8 +10,8 @@
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::personality::types::WakeInvocationStatus;
 use crate::Owner;
+use crate::personality::types::WakeInvocationStatus;
 
 use super::personality::PersonalityInstanceId;
 

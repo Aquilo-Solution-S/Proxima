@@ -6,7 +6,7 @@ use proxima_core::llm::EmbeddingClient;
 use proxima_core::secrets::ResolverRegistry;
 use proxima_core::{Engine, FlavorRegistry, FlavorRegistryFrozen, OrgId, Owner, Principal, UserId};
 use proxima_llm_openai_compat::{OpenAiCompatConfig, OpenAiCompatEmbeddingClient};
-use proxima_mcp_server::{McpToolHost, EngineHostedMcpListener, McpAuthStore, default_allowlist};
+use proxima_mcp_server::{EngineHostedMcpListener, McpAuthStore, McpToolHost, default_allowlist};
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
 
@@ -200,8 +200,14 @@ pub(crate) async fn build_mcp_listener(
     pool: sqlx::PgPool,
     owner: Owner,
     auth_store: Arc<McpAuthStore>,
-) -> Result<(Arc<dyn EngineMcpListener>, std::net::SocketAddr), proxima_mcp_server::McpServerError>
-{
+) -> Result<
+    (
+        Arc<dyn EngineMcpListener>,
+        std::net::SocketAddr,
+        McpToolHost,
+    ),
+    proxima_mcp_server::McpServerError,
+> {
     let bind_raw =
         std::env::var("PROXIMA_MCP_BIND").unwrap_or_else(|_| DEFAULT_MCP_BIND.to_string());
     let bind = bind_raw.parse().map_err(|err| {
@@ -222,11 +228,12 @@ pub(crate) async fn build_mcp_listener(
     let server = McpToolHost::from_pool(pool, owner, frozen);
     Ok((
         Arc::new(EngineHostedMcpListener::with_auth_store(
-            server,
+            server.clone(),
             default_allowlist(),
             auth_store,
         )),
         bind,
+        server,
     ))
 }
 

@@ -2,7 +2,7 @@ pub mod args;
 
 pub use args::{ArgsError, McpConfig, USAGE, parse_args};
 pub use proxima_mcp_server::{
-    McpToolHost, McpAuthStore, McpServerError, ToolInvocationError, default_allowlist,
+    McpAuthStore, McpServerError, McpToolHost, ToolInvocationError, default_allowlist,
     serve_streamable_http,
 };
 

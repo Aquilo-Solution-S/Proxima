@@ -12,7 +12,6 @@ use crate::{
     RelationDescriptor, SchemaVersion, core_relation_descriptors,
 };
 
-use std::path::PathBuf;
 use std::sync::Arc;
 
 /// Structured per-flavor metadata. Populated by `proxima_flavor!` at
@@ -60,9 +59,6 @@ pub struct FlavorRegistry {
     validators: Vec<PayloadValidatorEntry>,
     mcp_tools: Vec<McpToolDescriptor>,
     flavors: Vec<FlavorDescriptor>,
-    /// Bundled recipe paths registered by `proxima_flavor! { recipes = [ ... ] }`.
-    /// Slug shape is `<flavor_id>/<filename_without_ext>`.
-    bundled_recipes: Vec<(String, PathBuf)>,
     /// Per-flavor workspace runner. Populated by
     /// `proxima_flavor! { workspace_runner = ... }`. Frozen into
     /// `FlavorRegistryFrozen.workspace_runners` and looked up by
@@ -81,7 +77,6 @@ impl Default for FlavorRegistry {
             validators: Vec::new(),
             mcp_tools: Vec::new(),
             flavors: Vec::new(),
-            bundled_recipes: Vec::new(),
             workspace_runners: Vec::new(),
             workspace_triggers: Vec::new(),
         };
@@ -251,20 +246,6 @@ impl FlavorRegistry {
         self.relations.push(descriptor);
     }
 
-    /// Record a bundled recipe under a unique slug. Slug shape is
-    /// `<flavor_id>/<filename_without_ext>`. Panics on duplicate slug
-    /// to catch flavor-author mistakes at registration time.
-    pub fn add_bundled_recipe(&mut self, slug: String, path: PathBuf) {
-        assert!(
-            !self
-                .bundled_recipes
-                .iter()
-                .any(|(existing, _)| existing == &slug),
-            "duplicate bundled recipe slug {slug:?}"
-        );
-        self.bundled_recipes.push((slug, path));
-    }
-
     /// Register a flavor's workspace runner. Called by
     /// `proxima_flavor!` once per flavor (at most one runner per
     /// flavor). Duplicate registration for the same flavor_id
@@ -419,7 +400,6 @@ impl FlavorRegistry {
             self.validators,
             self.mcp_tools,
             self.flavors,
-            self.bundled_recipes,
             self.workspace_runners,
             self.workspace_triggers,
         )
@@ -522,23 +502,6 @@ mod tests {
     }
 
     #[test]
-    fn bundled_recipe_round_trip_through_freeze() {
-        let mut registry = FlavorRegistry::new();
-        registry.add_flavor(FlavorDescriptor {
-            flavor_id: "test-flavor".to_string(),
-            display_name: "Test".to_string(),
-            package_version: "0.0.0".to_string(),
-            author: None,
-            provenance: FlavorProvenance::Builtin,
-        });
-        let path = PathBuf::from("/tmp/test-flavor/recipes/foo.yaml");
-        registry.add_bundled_recipe("test-flavor/foo".to_string(), path.clone());
-        let frozen = registry.freeze();
-        assert_eq!(frozen.bundled_recipe_path("test-flavor/foo"), Some(path));
-        assert_eq!(frozen.bundled_recipe_path("test-flavor/missing"), None);
-    }
-
-    #[test]
     fn workspace_runner_round_trips_through_freeze() {
         use crate::personality::workspace::{
             WorkspaceFinalizeInput, WorkspacePrepareInput, WorkspacePreparedRun,
@@ -635,7 +598,7 @@ mod tests {
     }
 
     #[test]
-    fn default_registry_includes_all_20_substrate_mcp_tools() {
+    fn default_registry_includes_all_19_substrate_mcp_tools() {
         let frozen = FlavorRegistry::new().freeze();
         let names: std::collections::HashSet<_> =
             frozen.list_mcp_tools().iter().map(|d| d.name).collect();
@@ -655,7 +618,6 @@ mod tests {
             "core/register_inference_target",
             "core/remove_inference_target",
             "core/bind_inference_tier",
-            "core/list_recipes",
             "core/list_substrate_tools",
             "core/list_workspace_tools",
             "core/list_schemas",
@@ -664,6 +626,6 @@ mod tests {
         for name in expected {
             assert!(names.contains(name), "missing tool {name}");
         }
-        assert_eq!(names.len(), 20, "exactly 20 substrate tools registered");
+        assert_eq!(names.len(), 19, "exactly 19 substrate tools registered");
     }
 }

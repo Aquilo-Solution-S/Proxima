@@ -22,13 +22,10 @@ pub fn protocol_error_to_status(err: ProtocolError) -> Status {
         CoreErrorCode::InvalidArgument | CoreErrorCode::DuplicateTriggerInRequest => {
             tonic::Code::InvalidArgument
         }
-        CoreErrorCode::RecipeInvalid
-        | CoreErrorCode::RecipeNotFound
-        | CoreErrorCode::ToolNotRegistered
+        CoreErrorCode::ToolNotRegistered
         | CoreErrorCode::InferenceTargetMissing
         | CoreErrorCode::TierUnbound
-        | CoreErrorCode::TargetInUse
-        | CoreErrorCode::GooseCliUnavailable => tonic::Code::FailedPrecondition,
+        | CoreErrorCode::TargetInUse => tonic::Code::FailedPrecondition,
         CoreErrorCode::Internal => tonic::Code::Internal,
     };
 
@@ -57,8 +54,6 @@ fn pb_error_code_from_core(code: CoreErrorCode) -> PbErrorCode {
         }
         CoreErrorCode::NotFound => PbErrorCode::NotFound,
         CoreErrorCode::InvalidArgument => PbErrorCode::InvalidArgument,
-        CoreErrorCode::RecipeInvalid => PbErrorCode::RecipeInvalid,
-        CoreErrorCode::RecipeNotFound => PbErrorCode::RecipeNotFound,
         CoreErrorCode::ToolNotRegistered => PbErrorCode::ToolNotRegistered,
         CoreErrorCode::InferenceTargetMissing => PbErrorCode::InferenceTargetMissing,
         CoreErrorCode::TierUnbound => PbErrorCode::TierUnbound,
@@ -66,7 +61,6 @@ fn pb_error_code_from_core(code: CoreErrorCode) -> PbErrorCode {
         CoreErrorCode::TargetInUse => PbErrorCode::TargetInUse,
         CoreErrorCode::TriggerConflict => PbErrorCode::TriggerConflict,
         CoreErrorCode::DuplicateTriggerInRequest => PbErrorCode::DuplicateTriggerInRequest,
-        CoreErrorCode::GooseCliUnavailable => PbErrorCode::GooseCliUnavailable,
         CoreErrorCode::Internal => PbErrorCode::Internal,
     }
 }

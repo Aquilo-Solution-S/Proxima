@@ -8,7 +8,7 @@
 use crate::{ModelTier, Owner};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, specta::Type)]
 pub struct InferenceTargetRow {
     pub owner: Owner,
     pub target_ref: String,
@@ -17,26 +17,40 @@ pub struct InferenceTargetRow {
     pub updated_at: time::OffsetDateTime,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, specta::Type)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum InferenceTargetConfig {
-    LocalCli(LocalCliConfig),
-    RemoteModel(RemoteModelConfig),
+    MistralChat(MistralChatConfig),
+    #[serde(rename = "openai_chat")]
+    OpenAIChat(OpenAIChatConfig),
+    #[serde(rename = "openai_responses")]
+    OpenAIResponses(OpenAIResponsesConfig),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
-pub struct LocalCliConfig {
-    pub command: String,
-    pub profile: Option<String>,
-    pub env_overrides: Vec<(String, String)>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
-pub struct RemoteModelConfig {
-    pub vendor: String,
-    pub dialect: String,
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, specta::Type)]
+pub struct MistralChatConfig {
+    pub base_url: String,
     pub model_id: String,
-    pub credentials_ref: Option<String>,
+    pub api_key_env: String,
+    pub temperature: Option<f32>,
+    pub max_completion_tokens: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, specta::Type)]
+pub struct OpenAIChatConfig {
+    pub base_url: String,
+    pub model_id: String,
+    pub api_key_env: String,
+    pub temperature: Option<f32>,
+    pub max_completion_tokens: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, specta::Type)]
+pub struct OpenAIResponsesConfig {
+    pub base_url: String,
+    pub model_id: String,
+    pub api_key_env: String,
+    pub reasoning_effort: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
@@ -46,7 +60,7 @@ pub struct InferenceTierBindingRow {
     pub target_ref: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RegisterInferenceTargetRequest {
     pub owner: Owner,
     pub target_ref: String,

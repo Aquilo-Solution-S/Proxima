@@ -3,7 +3,6 @@ mod harness;
 mod inference_targets;
 mod mcp;
 mod models;
-mod recipes;
 mod repo_ingest;
 mod repos;
 mod tools;
@@ -35,8 +34,6 @@ pub(crate) fn specta_builder() -> Builder<tauri::Wry> {
         inference_targets::bind_inference_tier,
         inference_targets::list_inference_tier_bindings,
         harness::detect_local_harness,
-        recipes::list_owner_recipes,
-        recipes::list_bundled_recipes,
         tools::list_mcp_tools,
         tools::list_workspace_tools,
         tools::list_relations,

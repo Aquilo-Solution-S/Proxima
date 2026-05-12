@@ -3394,7 +3394,9 @@ version = "0.1.0"
 dependencies = [
  "proxima-code",
  "proxima-core",
+ "proxima-harness",
  "proxima-llm-openai-compat",
+ "proxima-mcp-server",
  "proxima-storage-pg",
  "tokio",
  "uuid",
@@ -3568,6 +3570,7 @@ dependencies = [
  "proxima-code",
  "proxima-core",
  "proxima-flavor-goal",
+ "proxima-harness",
  "proxima-llm-openai-compat",
  "proxima-mcp-server",
  "proxima-mcp-substrate",

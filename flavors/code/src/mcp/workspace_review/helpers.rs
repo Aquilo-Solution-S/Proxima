@@ -69,20 +69,23 @@ pub fn correction_instructions(
     } else {
         "none".to_string()
     };
-    let review_memory = review
-        .map_or_else(|| "none".into(), |review| review.memory_id.into_inner().to_string());
+    let review_memory = review.map_or_else(
+        || "none".into(),
+        |review| review.memory_id.into_inner().to_string(),
+    );
     let workspace_run = review
         .map(|review| review.payload.workspace_run_memory_id.to_string())
         .or_else(|| decision.map(|decision| decision.payload.workspace_run_memory_id.to_string()))
         .unwrap_or_else(|| "unknown".into());
-    let review_summary = review
-        .map_or("none", |review| review.payload.summary.as_str());
+    let review_summary = review.map_or("none", |review| review.payload.summary.as_str());
     let correction_notes = review
         .and_then(|review| review.payload.correction_instructions.as_deref())
         .or_else(|| decision.and_then(|decision| decision.payload.reason_text.as_deref()))
         .unwrap_or("none");
-    let retry_decision = decision
-        .map_or_else(|| "none".into(), |decision| decision.memory_id.into_inner().to_string());
+    let retry_decision = decision.map_or_else(
+        || "none".into(),
+        |decision| decision.memory_id.into_inner().to_string(),
+    );
     let retry_reason = decision
         .and_then(|decision| decision.payload.reason_text.as_deref())
         .unwrap_or("none");

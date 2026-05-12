@@ -15,7 +15,7 @@ use proxima_core::verbs::query::MemoryStore;
 use proxima_core::{Engine, FlavorRegistry, McpTool};
 use proxima_flavor_goal::tools::propose::{ProposeArgs, ProposeTool};
 use proxima_flavor_goal::tools::util::{GoalPayloadInput, SimpleTextGoalBody};
-use proxima_mcp_server::{McpToolHost, McpAuthContext, McpAuthStore};
+use proxima_mcp_server::{McpAuthContext, McpAuthStore, McpToolHost};
 use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;

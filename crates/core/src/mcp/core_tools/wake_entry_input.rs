@@ -31,7 +31,6 @@ pub struct WakeEntryDraftInput {
     pub probability_promille: u16,
     #[serde(default)]
     pub goal_scope: WakeEntryGoalScope,
-    pub recipe_ref: String,
     #[serde(default)]
     pub instructions: String,
     #[serde(default = "default_model_tier")]
@@ -82,7 +81,6 @@ impl WakeEntryDraftInput {
             authored_by: self.authored_by,
             probability_promille: self.probability_promille,
             goal_scope: self.goal_scope,
-            recipe_ref: self.recipe_ref,
             instructions: self.instructions,
             model_tier: self.model_tier,
             inference_target_ref: self.inference_target_ref,

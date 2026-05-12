@@ -1,6 +1,6 @@
 //! Outcome types and conversion for wake fire.
 
-use crate::wake::target_adapter::{TargetAdapterError, TargetOutcome, TargetOutcomeKind};
+use crate::harness::{HarnessError, HarnessOutcome, HarnessOutcomeKind};
 
 use super::input::FireWakeEntryInput;
 
@@ -39,61 +39,57 @@ impl WakeInvocationFinalizeOutcome {
 }
 
 /// Convert a target outcome result to a wake invocation finalize outcome.
-pub fn wake_outcome_from_target_result(
+pub fn wake_outcome_from_harness_outcome(
     input: &FireWakeEntryInput,
-    outcome_result: Result<TargetOutcome, TargetAdapterError>,
+    outcome_result: Result<HarnessOutcome, HarnessError>,
 ) -> WakeInvocationFinalizeOutcome {
     match outcome_result {
-        Ok(TargetOutcome {
+        Ok(HarnessOutcome {
             kind,
-            turn_count,
-            exit_code,
+            rounds_used,
             duration_ms,
-            stdout_tail,
-            stderr_tail,
-            stdout_truncated,
-            stderr_truncated,
-            session_log_error: _,
+            failure_reason,
+            ..
         }) => match kind {
-            TargetOutcomeKind::Succeeded => WakeInvocationFinalizeOutcome {
+            HarnessOutcomeKind::Succeeded => WakeInvocationFinalizeOutcome {
                 status: crate::personality::WakeInvocationStatus::Succeeded,
-                turn_count: turn_count.and_then(|c| u16::try_from(c.max(0)).ok()),
+                turn_count: u16::try_from(rounds_used).ok(),
                 cost_usd: None,
                 failure_reason: None,
-                exit_code,
+                exit_code: Some(0),
                 duration_ms: Some(duration_ms),
-                stdout_tail: Some(stdout_tail),
-                stderr_tail: Some(stderr_tail),
-                stdout_truncated,
-                stderr_truncated,
+                stdout_tail: None,
+                stderr_tail: None,
+                stdout_truncated: false,
+                stderr_truncated: false,
             },
-            TargetOutcomeKind::Truncated => WakeInvocationFinalizeOutcome {
+            HarnessOutcomeKind::Truncated => WakeInvocationFinalizeOutcome {
                 status: crate::personality::WakeInvocationStatus::Truncated,
-                turn_count: turn_count
-                    .and_then(|c| u16::try_from(c.max(0)).ok())
+                turn_count: u16::try_from(rounds_used)
+                    .ok()
                     .or(Some(input.wake_entry.max_rounds)),
                 cost_usd: None,
-                failure_reason: Some("max_rounds_reached".to_string()),
-                exit_code,
+                failure_reason: failure_reason.or_else(|| Some("max_rounds_reached".to_string())),
+                exit_code: Some(0),
                 duration_ms: Some(duration_ms),
-                stdout_tail: Some(stdout_tail),
-                stderr_tail: Some(stderr_tail),
-                stdout_truncated,
-                stderr_truncated,
+                stdout_tail: None,
+                stderr_tail: None,
+                stdout_truncated: false,
+                stderr_truncated: false,
             },
-            TargetOutcomeKind::Failed => WakeInvocationFinalizeOutcome {
+            HarnessOutcomeKind::Failed => WakeInvocationFinalizeOutcome {
                 status: crate::personality::WakeInvocationStatus::Failed,
-                turn_count: turn_count.and_then(|c| u16::try_from(c.max(0)).ok()),
+                turn_count: u16::try_from(rounds_used).ok(),
                 cost_usd: None,
-                failure_reason: Some(stderr_tail.clone()),
-                exit_code,
+                failure_reason,
+                exit_code: Some(1),
                 duration_ms: Some(duration_ms),
-                stdout_tail: Some(stdout_tail),
-                stderr_tail: Some(stderr_tail),
-                stdout_truncated,
-                stderr_truncated,
+                stdout_tail: None,
+                stderr_tail: None,
+                stdout_truncated: false,
+                stderr_truncated: false,
             },
         },
-        Err(e) => WakeInvocationFinalizeOutcome::failed(format!("adapter_error: {e}")),
+        Err(e) => WakeInvocationFinalizeOutcome::failed(format!("harness_error:{e}")),
     }
 }

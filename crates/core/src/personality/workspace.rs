@@ -61,7 +61,7 @@ pub struct WorkspacePrepareInput<'a> {
     /// tools. Phase 3 maps these to goose extension/tool names.
     pub workspace_tool_palette: &'a [String],
     pub effective_recipe_path: &'a Path,
-    /// Bytes of the bundled or user recipe selected by `recipe_ref`.
+    /// Legacy recipe bytes. The harness cut passes an empty slice.
     pub recipe_bytes: &'a [u8],
     /// Pre-computed sha256 hex of `recipe_bytes`. Stored on the
     /// wake_invocation row.

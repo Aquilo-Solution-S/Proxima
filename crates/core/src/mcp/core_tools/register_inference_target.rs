@@ -20,7 +20,8 @@ pub struct RegisterInferenceTargetTool;
 pub struct RegisterInferenceTargetArgs {
     pub target_ref: String,
     /// Provider config — accepted as JSON; deserialised into the typed
-    /// `InferenceTargetConfig` (kind = "local_cli" | "remote_model").
+    /// `InferenceTargetConfig` (`mistral_chat`, `openai_chat`, or
+    /// `openai_responses`).
     pub config: serde_json::Value,
 }
 

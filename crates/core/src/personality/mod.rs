@@ -21,15 +21,15 @@ pub mod personality;
 
 // Re-export from personality submodule
 pub use personality::{
-    MAX_WAKE_CHAIN_DEPTH, ROOT_PERSONALITY_PERSPECTIVE_SCHEMA_ID,
-    ROOT_PERSONALITY_PERSPECTIVE_SIDECAR_TABLE, PersonalityInstanceId, PersonalityRef,
+    MAX_WAKE_CHAIN_DEPTH, PersonalityInstanceId, PersonalityRef,
+    ROOT_PERSONALITY_PERSPECTIVE_SCHEMA_ID, ROOT_PERSONALITY_PERSPECTIVE_SIDECAR_TABLE,
     WORKSPACE_TOOL_CATALOG, workspace_tool_ids,
 };
 
 // Re-export from types submodule
 pub use types::{
-    WakeChainDepth, WakeEntryAuthoredBy, WakeEntryExecutionMode, WakeEntryGoalScope,
-    WakeEntryTriggerKind, WakeExecutionMode, WakeInvocationStatus, PersonalityMemoryKind,
+    PersonalityMemoryKind, WakeChainDepth, WakeEntryAuthoredBy, WakeEntryExecutionMode,
+    WakeEntryGoalScope, WakeEntryTriggerKind, WakeExecutionMode, WakeInvocationStatus,
 };
 
 // Re-export from drafts submodule
@@ -40,8 +40,8 @@ pub use drafts::{
 
 // Re-export from rows submodule
 pub use rows::{
-    ChangeEventForWake, PersonalityInstanceRow, PersonalityRuntimeRow, RootPersonalityPerspectiveRow,
-    WakeDispatchEntryRow, WakeEntryRow,
+    ChangeEventForWake, PersonalityInstanceRow, PersonalityRuntimeRow,
+    RootPersonalityPerspectiveRow, WakeDispatchEntryRow, WakeEntryRow,
 };
 
 // Re-export from context submodule
@@ -56,8 +56,8 @@ pub use invocation::{
 // Re-export from requests submodule
 pub use requests::{
     InstantiatePersonalityRequest, InstantiatePersonalityResponse, ListWakeInvocationsRequest,
-    ReplayWakeEventsOutcome, ReplayWakeEventsRequest, SetWakeEntriesRequest, SetWakeEntriesResponse,
-    TombstonePersonalityRequest, TombstonePersonalityResponse,
+    ReplayWakeEventsOutcome, ReplayWakeEventsRequest, SetWakeEntriesRequest,
+    SetWakeEntriesResponse, TombstonePersonalityRequest, TombstonePersonalityResponse,
 };
 
 // Re-export from tool submodule
@@ -88,7 +88,6 @@ mod tests {
             "on_test_fact",
             WakeEntryAuthoredBy::Any,
             250,
-            "recipe:proxima-test/personality-v1",
             ModelTier::Fast,
             Some("local-cli:codex-spark".to_string()),
             vec!["core/query".to_string()],
@@ -115,7 +114,6 @@ mod tests {
             "on_test_fact",
             WakeEntryAuthoredBy::Any,
             1001,
-            "recipe:proxima-test/personality-v1",
             ModelTier::Standard,
             None,
             Vec::new(),

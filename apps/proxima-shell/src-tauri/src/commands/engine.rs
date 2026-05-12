@@ -116,7 +116,6 @@ pub struct WakeEntryTs {
     pub authored_by: AuthoredByTs,
     pub probability_promille: u16,
     pub goal_scope: GoalScopeTs,
-    pub recipe_ref: String,
     pub instructions: String,
     pub model_tier: ModelTierTs,
     pub inference_target_ref: Option<String>,
@@ -136,7 +135,6 @@ pub struct WakeEntryDraftTs {
     pub authored_by: AuthoredByTs,
     pub probability_promille: u16,
     pub goal_scope: GoalScopeTs,
-    pub recipe_ref: String,
     pub instructions: String,
     pub model_tier: ModelTierTs,
     pub inference_target_ref: Option<String>,
@@ -807,7 +805,6 @@ impl WakeEntryTs {
                     GoalScopeTs::TriggerGoalAssigned
                 }
             },
-            recipe_ref: row.recipe_ref.clone(),
             instructions: row.instructions.clone(),
             model_tier: tier_to_ts(row.model_tier),
             inference_target_ref: row.inference_target_ref.clone(),
@@ -909,7 +906,6 @@ fn draft_to_core(
                 proxima_core::WakeEntryGoalScope::TriggerGoalAssigned
             }
         },
-        recipe_ref: draft.recipe_ref,
         instructions: draft.instructions,
         model_tier: tier_from_ts(draft.model_tier),
         inference_target_ref: draft.inference_target_ref,

@@ -1,10 +1,10 @@
 //! Proto <-> core conversions for `InferenceTarget` / `WakeEntry` / Tier.
 
 use proxima_core::{
-    InferenceTargetConfig, InferenceTargetRow, InferenceTierBindingRow,
-    LocalCliConfig as CoreLocalCli, ModelTier, RemoteModelConfig as CoreRemoteModel,
-    WakeEntryAuthoredBy, WakeEntryDraft, WakeEntryExecutionMode, WakeEntryGoalScope, WakeEntryRow,
-    WakeEntryTriggerKind, WakeExecutionMode,
+    InferenceTargetConfig, InferenceTargetRow, InferenceTierBindingRow, MistralChatConfig,
+    ModelTier, OpenAIChatConfig, OpenAIResponsesConfig, WakeEntryAuthoredBy, WakeEntryDraft,
+    WakeEntryExecutionMode, WakeEntryGoalScope, WakeEntryRow, WakeEntryTriggerKind,
+    WakeExecutionMode,
 };
 use tonic::Status;
 
@@ -102,7 +102,6 @@ pub fn wake_entry_to_proto(row: &WakeEntryRow) -> pb::WakeEntry {
         execution_mode: execution_mode_to_proto(row.execution_mode),
         authored_by: authored_by_to_proto(row.authored_by),
         probability_promille: u32::from(row.probability_promille),
-        recipe_ref: row.recipe_ref.clone(),
         model_tier: tier_to_proto(row.model_tier),
         inference_target_ref: row.inference_target_ref.clone(),
         substrate_tool_palette: row.substrate_tool_palette.clone(),
@@ -129,7 +128,6 @@ pub fn wake_entry_draft_from_proto(
         probability_promille: u16::try_from(proto.probability_promille)
             .map_err(|_| Status::invalid_argument("probability_promille > u16::MAX"))?,
         goal_scope: goal_scope_from_proto(proto.goal_scope)?,
-        recipe_ref: proto.recipe_ref,
         instructions: String::new(),
         model_tier: tier_from_proto(proto.model_tier)?,
         inference_target_ref: proto.inference_target_ref,
@@ -152,24 +150,28 @@ pub fn inference_target_to_proto(row: &InferenceTargetRow) -> pb::InferenceTarge
 pub fn inference_config_to_proto(config: &InferenceTargetConfig) -> pb::InferenceTargetConfig {
     use pb::inference_target_config::Kind;
     let kind = match config {
-        InferenceTargetConfig::LocalCli(local) => Kind::LocalCli(pb::LocalCliConfig {
-            command: local.command.clone(),
-            profile: local.profile.clone(),
-            env_overrides: local
-                .env_overrides
-                .iter()
-                .map(|(key, value)| pb::EnvOverride {
-                    key: key.clone(),
-                    value: value.clone(),
-                })
-                .collect(),
+        InferenceTargetConfig::MistralChat(config) => Kind::MistralChat(pb::MistralChatConfig {
+            base_url: config.base_url.clone(),
+            model_id: config.model_id.clone(),
+            api_key_env: config.api_key_env.clone(),
+            temperature: config.temperature,
+            max_completion_tokens: config.max_completion_tokens,
         }),
-        InferenceTargetConfig::RemoteModel(remote) => Kind::RemoteModel(pb::RemoteModelConfig {
-            vendor: remote.vendor.clone(),
-            dialect: remote.dialect.clone(),
-            model_id: remote.model_id.clone(),
-            credentials_ref: remote.credentials_ref.clone(),
+        InferenceTargetConfig::OpenAIChat(config) => Kind::OpenaiChat(pb::OpenAiChatConfig {
+            base_url: config.base_url.clone(),
+            model_id: config.model_id.clone(),
+            api_key_env: config.api_key_env.clone(),
+            temperature: config.temperature,
+            max_completion_tokens: config.max_completion_tokens,
         }),
+        InferenceTargetConfig::OpenAIResponses(config) => {
+            Kind::OpenaiResponses(pb::OpenAiResponsesConfig {
+                base_url: config.base_url.clone(),
+                model_id: config.model_id.clone(),
+                api_key_env: config.api_key_env.clone(),
+                reasoning_effort: config.reasoning_effort.clone(),
+            })
+        }
     };
     pb::InferenceTargetConfig { kind: Some(kind) }
 }
@@ -179,23 +181,30 @@ pub fn inference_config_from_proto(
 ) -> Result<InferenceTargetConfig, Status> {
     use pb::inference_target_config::Kind;
     match proto.kind {
-        Some(Kind::LocalCli(local)) => Ok(InferenceTargetConfig::LocalCli(CoreLocalCli {
-            command: local.command,
-            profile: local.profile,
-            env_overrides: local
-                .env_overrides
-                .into_iter()
-                .map(|e| (e.key, e.value))
-                .collect(),
-        })),
-        Some(Kind::RemoteModel(remote)) => {
-            Ok(InferenceTargetConfig::RemoteModel(CoreRemoteModel {
-                vendor: remote.vendor,
-                dialect: remote.dialect,
-                model_id: remote.model_id,
-                credentials_ref: remote.credentials_ref,
+        Some(Kind::MistralChat(config)) => {
+            Ok(InferenceTargetConfig::MistralChat(MistralChatConfig {
+                base_url: config.base_url,
+                model_id: config.model_id,
+                api_key_env: config.api_key_env,
+                temperature: config.temperature,
+                max_completion_tokens: config.max_completion_tokens,
             }))
         }
+        Some(Kind::OpenaiChat(config)) => Ok(InferenceTargetConfig::OpenAIChat(OpenAIChatConfig {
+            base_url: config.base_url,
+            model_id: config.model_id,
+            api_key_env: config.api_key_env,
+            temperature: config.temperature,
+            max_completion_tokens: config.max_completion_tokens,
+        })),
+        Some(Kind::OpenaiResponses(config)) => Ok(InferenceTargetConfig::OpenAIResponses(
+            OpenAIResponsesConfig {
+                base_url: config.base_url,
+                model_id: config.model_id,
+                api_key_env: config.api_key_env,
+                reasoning_effort: config.reasoning_effort,
+            },
+        )),
         None => Err(Status::invalid_argument(
             "InferenceTargetConfig.kind must be set",
         )),

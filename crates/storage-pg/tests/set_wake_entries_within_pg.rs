@@ -26,7 +26,6 @@ fn wake_entry(
         authored_by: WakeEntryAuthoredBy::Any,
         probability_promille: 1000,
         goal_scope: proxima_core::WakeEntryGoalScope::None,
-        recipe_ref: "proxima-code/engineer".to_string(),
         instructions: String::new(),
         model_tier: ModelTier::Standard,
         inference_target_ref: None,

@@ -1,4 +1,3 @@
-pub mod boot_check;
 pub mod context;
 pub mod dispatch;
 pub mod fire;

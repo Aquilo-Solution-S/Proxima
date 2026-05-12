@@ -20,6 +20,7 @@ use proxima_code::{
     WorkspaceRunV1,
 };
 use proxima_core::auth::NoAuth;
+use proxima_core::harness::{ErrorClass, FinishReason};
 use proxima_core::llm::{EmbeddingClient, LlmError};
 use proxima_core::mcp::{HandleTable, McpAuthorContext, McpTool, McpToolCtx};
 use proxima_core::personality::{
@@ -30,11 +31,12 @@ use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, Ev
 use proxima_core::verbs::query::MemoryStore;
 use proxima_core::verbs::schema::{PayloadKind, SchemaInfo};
 use proxima_core::wake::target_adapter::{
-    TargetAdapter, TargetAdapterError, TargetInvocation, TargetOutcome, TargetOutcomeKind,
+    TargetAdapter, TargetAdapterError, TargetContext, TargetInvocation, TargetOutcome,
+    TargetOutcomeKind,
 };
 use proxima_core::{
     BindInferenceTierRequest, CORE_AUTHORED_RELATION, CORE_DERIVED_FROM_RELATION, Engine,
-    FactPayload, FlavorRegistry, InferenceTargetConfig, LocalCliConfig, ModelTier, OrgId, Owner,
+    FactPayload, FlavorRegistry, InferenceTargetConfig, MistralChatConfig, ModelTier, OrgId, Owner,
     Principal, RegisterInferenceTargetRequest, SchemaId, SchemaVersion, SourceBatchId, SourceId,
     UserId, WakeEntryAuthoredBy, WakeEntryTriggerKind, WorkspacePrepareInput, WorkspaceRunner,
 };
@@ -78,9 +80,13 @@ struct WorktreeWritingAdapter;
 
 #[async_trait]
 impl TargetAdapter for WorktreeWritingAdapter {
-    async fn run(&self, invocation: TargetInvocation) -> Result<TargetOutcome, TargetAdapterError> {
+    async fn run(
+        &self,
+        invocation: TargetInvocation,
+        _ctx: TargetContext,
+    ) -> Result<TargetOutcome, TargetAdapterError> {
         let started = Instant::now();
-        let Some(cwd) = invocation.cwd else {
+        let Some(cwd) = invocation.workspace_root else {
             return Ok(target_failed(started, "missing cwd"));
         };
         let write_result = async {
@@ -106,14 +112,16 @@ impl TargetAdapter for WorktreeWritingAdapter {
         match write_result {
             Ok(()) => Ok(TargetOutcome {
                 kind: TargetOutcomeKind::Succeeded,
-                turn_count: Some(1),
-                exit_code: Some(0),
+                finish_reason: FinishReason::Stop,
+                error_class: ErrorClass::None,
+                failure_reason: None,
+                rounds_used: 1,
                 duration_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
-                stdout_tail: String::new(),
-                stderr_tail: String::new(),
-                stdout_truncated: false,
-                stderr_truncated: false,
-                session_log_error: None,
+                total_prompt_tokens: None,
+                total_completion_tokens: None,
+                tool_call_count: 0,
+                jsonl_bytes: br#"{"record":"workspace-smoke"}"#.to_vec(),
+                jsonl_truncated: false,
             }),
             Err(err) => Ok(target_failed(started, &err)),
         }
@@ -123,14 +131,16 @@ impl TargetAdapter for WorktreeWritingAdapter {
 fn target_failed(started: Instant, err: &str) -> TargetOutcome {
     TargetOutcome {
         kind: TargetOutcomeKind::Failed,
-        turn_count: Some(1),
-        exit_code: Some(1),
+        finish_reason: FinishReason::Stop,
+        error_class: ErrorClass::ToolDispatchFatal,
+        failure_reason: Some(err.to_string()),
+        rounds_used: 1,
         duration_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
-        stdout_tail: String::new(),
-        stderr_tail: err.to_string(),
-        stdout_truncated: false,
-        stderr_truncated: false,
-        session_log_error: None,
+        total_prompt_tokens: None,
+        total_completion_tokens: None,
+        tool_call_count: 0,
+        jsonl_bytes: format!(r#"{{"record":"workspace-smoke","error":{err:?}}}"#).into_bytes(),
+        jsonl_truncated: false,
     }
 }
 
@@ -305,20 +315,6 @@ fn registry_with_runner(
             cbor_encoder: None,
         },
     ])
-}
-
-async fn write_recipe(root: &TempDir, owner: &Owner) -> Result<(), std::io::Error> {
-    let principal_id = match &owner.principal {
-        Principal::User(user) => user.into_inner(),
-        Principal::Group(group) => group.into_inner(),
-    };
-    let owner_dir = root.path().join(principal_id.to_string());
-    tokio::fs::create_dir_all(&owner_dir).await?;
-    tokio::fs::write(
-        owner_dir.join("workspace-smoke.yaml"),
-        b"version: 1.0.0\ntitle: Workspace Smoke\nprompt: no-op\n",
-    )
-    .await
 }
 
 async fn seed_execution_request_for_runner(
@@ -2039,8 +2035,6 @@ async fn workspace_wake_emits_run_fact_and_edges() -> Result<(), Box<dyn std::er
         let owner = test_owner();
         let repo_root = tempfile::tempdir()?;
         let worktrees_root = tempfile::tempdir()?;
-        let recipes_root = tempfile::tempdir()?;
-        write_recipe(&recipes_root, &owner).await?;
         let (repo_path, commit_sha) = init_repo(&repo_root).map_err(std::io::Error::other)?;
         let repo_id = Uuid::now_v7();
         let repo = proxima_code::register_repo(
@@ -2064,7 +2058,6 @@ async fn workspace_wake_emits_run_fact_and_edges() -> Result<(), Box<dyn std::er
                 Box::new(NoAuth::new(owner.principal.clone(), owner.clone())),
             )
             .with_storage(Arc::new(pg.clone()))
-            .with_recipes_root(recipes_root.path().to_path_buf())
             .with_embed(Arc::new(FakeEmbedding)),
         );
         engine
@@ -2077,10 +2070,12 @@ async fn workspace_wake_emits_run_fact_and_edges() -> Result<(), Box<dyn std::er
         pg.register_inference_target(&RegisterInferenceTargetRequest {
             owner: owner.clone(),
             target_ref: "test/workspace-adapter".into(),
-            config: InferenceTargetConfig::LocalCli(LocalCliConfig {
-                command: "workspace-adapter".into(),
-                profile: None,
-                env_overrides: Vec::new(),
+            config: InferenceTargetConfig::MistralChat(MistralChatConfig {
+                base_url: "http://127.0.0.1:9".into(),
+                model_id: "test-model".into(),
+                api_key_env: "PATH".into(),
+                temperature: None,
+                max_completion_tokens: None,
             }),
         })
         .await?;
@@ -2106,7 +2101,6 @@ async fn workspace_wake_emits_run_fact_and_edges() -> Result<(), Box<dyn std::er
             "workspace-smoke",
             WakeEntryAuthoredBy::Other,
             1000,
-            "user:workspace-smoke.yaml",
             ModelTier::Standard,
             None,
             Vec::new(),

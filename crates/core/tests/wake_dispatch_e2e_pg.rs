@@ -1,55 +1,89 @@
-//! Phase 1d Task 12: full pipeline. Real PG, real engine MCP listener, real
-//! Goose subprocess, real recipe that emits an Abstraction.
-//!
-//! **Currently `#[ignore]`'d.** This test is a contract test for the runtime
-//! spine — it documents what end-to-end success looks like once the
-//! Phase 1d.5 follow-up lands the MCP→PersonalityTool dispatch bridge.
-//! Today, when Goose calls `core/emit_abstraction` over MCP, the call
-//! lands at the `McpToolDescriptor` path which does NOT thread through
-//! `PersonalityToolContext.wake_invocation` — so memory provenance
-//! stamping (Task 10) won't apply to Goose-driven writes until the bridge
-//! exists.
-//!
-//! **Re-enable this test by removing `#[ignore]` once:**
-//! 1. The MCP server's `tools/call` dispatch threads `WakeTokenContext`
-//!    through to whatever path actually writes memories on behalf of
-//!    Goose (likely via constructing a `PersonalityToolContext` with
-//!    `with_wake_invocation(...)`).
-//! 2. The substrate `core/emit_*` MCP descriptors delegate to the
-//!    `PersonalityTool` impls (or share the same provenance-stamping
-//!    write path).
-//!
-//! **Skipped at runtime if `goose` is not on PATH.**
-//!
-//! ## Contract this test will assert (once enabled)
-//!
-//! 1. Boot engine with a real `EngineHostedMcpListener` attached so
-//!    `Engine::start` binds a loopback HTTP MCP server.
-//! 2. Provision Owner + InferenceTarget + tier binding for `standard`.
-//!    Recipe at `~/.proxima/recipes/<owner>/emit_one.yaml` that calls
-//!    `core/emit_abstraction` once with a fixed `schema_id`.
-//!    `WakeEntry` triggered by an external memory schema; substrate
-//!    palette = `["core/emit_abstraction"]`.
-//! 3. Start engine — spawns MCP listener + dispatcher tick loop.
-//! 4. Append the triggering memory.
-//! 5. Wait up to 60s for the wake to land an `Abstraction` authored by
-//!    the personality.
-//! 6. Assert provenance: `mem.author == fixture.instance_id` and
-//!    `mem.model_id.is_some()` (stamped from `WakeTokenContext`).
-//! 7. Assert invocation row: `status == "succeeded"`,
-//!    `wake_token.is_some()`, `recipe_sha256.is_some()`,
-//!    `resolved_inference_target_ref.is_some()`.
+//! Harness-backed wake dispatch persists a wake-trace Fact with JSONL
+//! citation and provenance edges.
 
-fn goose_on_path() -> bool {
-    which::which("goose").is_ok()
-}
+mod common;
+
+use std::time::Duration;
+
+use proxima_core::{CORE_AUTHORED_RELATION, CORE_DERIVED_FROM_RELATION};
+use sqlx::Row;
 
 #[tokio::test]
-#[ignore = "requires Phase 1d.5 MCP→PersonalityTool bridge + configured Goose provider"]
-async fn wake_pipeline_writes_memory_through_real_goose() {
-    // See module-level docstring for what this test verifies and what's
-    // needed to enable it. Body is intentionally a placeholder — the
-    // contract is documented above so the test can be filled in once the
-    // bridge lands.
-    let _ = goose_on_path();
+async fn harness_wake_persists_trace_fact_jsonl_and_provenance() {
+    let Some(fixture) =
+        common::seed_dispatch_fixture_with_match_and_engine(Duration::from_millis(100)).await
+    else {
+        eprintln!("skipping: PG unavailable");
+        return;
+    };
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let fired = fixture.engine.run_dispatcher_tick().await?;
+        assert_eq!(fired, 1);
+
+        let trigger: uuid::Uuid = sqlx::query_scalar(
+            "SELECT entity_memory_id FROM proxima_core.change_event WHERE seq = $1",
+        )
+        .bind(fixture.change_event_seq)
+        .fetch_one(fixture.pg.pg.pool())
+        .await?;
+
+        let trace = sqlx::query(
+            "SELECT wt.memory_id, wt.outcome_kind, wt.invocation_id, wt.jsonl_truncated, \
+                    m.personality_instance_id, cm.cited_object_id \
+             FROM proxima_core.wake_trace_v1 wt \
+             JOIN proxima_core.memories m ON m.memory_id = wt.memory_id \
+             JOIN proxima_core.citation_mappings cm ON cm.memory_id = wt.memory_id \
+             WHERE wt.wake_entry_id = $1 AND wt.personality_instance_id = $2",
+        )
+        .bind(fixture.wake_entry_id)
+        .bind(fixture.instance_id.into_inner())
+        .fetch_one(fixture.pg.pg.pool())
+        .await?;
+        let trace_memory: uuid::Uuid = trace.try_get("memory_id")?;
+        let cited_object_id: uuid::Uuid = trace.try_get("cited_object_id")?;
+        assert_eq!(trace.try_get::<String, _>("outcome_kind")?, "succeeded");
+        assert!(!trace.try_get::<bool, _>("jsonl_truncated")?);
+        assert_eq!(
+            trace.try_get::<uuid::Uuid, _>("personality_instance_id")?,
+            fixture.instance_id.into_inner()
+        );
+
+        let jsonl: (Vec<u8>, i64) = sqlx::query_as(
+            "SELECT body, byte_len FROM proxima_core.cited_wake_trace_jsonl_v1 \
+             WHERE cited_object_id = $1",
+        )
+        .bind(cited_object_id)
+        .fetch_one(fixture.pg.pg.pool())
+        .await?;
+        assert_eq!(jsonl.0, b"{\"record\":\"test\"}\n");
+        assert_eq!(jsonl.1, jsonl.0.len() as i64);
+
+        let authored: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM proxima_core.edges \
+             WHERE relation = $1 AND target_memory_id = $2 AND source_kind = 'Perspective'",
+        )
+        .bind(CORE_AUTHORED_RELATION)
+        .bind(trace_memory)
+        .fetch_one(fixture.pg.pg.pool())
+        .await?;
+        assert_eq!(authored, 1);
+
+        let derived: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM proxima_core.edges \
+             WHERE relation = $1 AND source_memory_id = $2 AND target_memory_id = $3",
+        )
+        .bind(CORE_DERIVED_FROM_RELATION)
+        .bind(trace_memory)
+        .bind(trigger)
+        .fetch_one(fixture.pg.pg.pool())
+        .await?;
+        assert_eq!(derived, 1);
+
+        Ok(())
+    }
+    .await;
+
+    fixture.cleanup().await;
+    result.expect("harness wake trace persisted");
 }

@@ -2,7 +2,7 @@ mod common;
 
 use common::{drop_db, fresh_pg, owner_fixture};
 use proxima_core::{
-    InferenceTargetConfig, LocalCliConfig, RegisterInferenceTargetRequest, Storage,
+    InferenceTargetConfig, MistralChatConfig, RegisterInferenceTargetRequest, Storage,
 };
 
 #[tokio::test(flavor = "multi_thread")]
@@ -19,10 +19,12 @@ async fn list_inference_targets_returns_owner_scoped_rows_in_order() {
             let req = RegisterInferenceTargetRequest {
                 owner: owner.clone(),
                 target_ref: slug.into(),
-                config: InferenceTargetConfig::LocalCli(LocalCliConfig {
-                    command: "goose".into(),
-                    profile: None,
-                    env_overrides: vec![],
+                config: InferenceTargetConfig::MistralChat(MistralChatConfig {
+                    base_url: "http://127.0.0.1:9".into(),
+                    model_id: "test-model".into(),
+                    api_key_env: "PATH".into(),
+                    temperature: None,
+                    max_completion_tokens: None,
                 }),
             };
             pg.register_inference_target(&req).await?;

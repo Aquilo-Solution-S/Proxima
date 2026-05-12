@@ -45,7 +45,7 @@ pub async fn list_personality_instances(
     let wake_rows = sqlx::query(
         "SELECT personality_instance_id,
                 wake_entry_id, trigger_kind, trigger_id, label, enabled,
-                execution_mode, authored_by, probability_promille, goal_scope, recipe_ref,
+                execution_mode, authored_by, probability_promille, goal_scope,
                 instructions, model_tier, inference_target_ref, substrate_tool_palette,
                 workspace_tool_palette, max_rounds, disabled_reason
          FROM proxima_core.personality_wake_entries
@@ -79,7 +79,6 @@ pub async fn list_personality_instances(
             probability_promille: u16::try_from(row.get::<i32, _>("probability_promille"))
                 .unwrap_or(0),
             goal_scope: parse_goal_scope(&row.get::<String, _>("goal_scope")),
-            recipe_ref: row.get("recipe_ref"),
             instructions: row.get("instructions"),
             model_tier: parse_model_tier(&row.get::<String, _>("model_tier")),
             inference_target_ref: row.get("inference_target_ref"),

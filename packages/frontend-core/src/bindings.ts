@@ -38,8 +38,6 @@ export const commands = {
 	path: string,
 	version: string,
 } | null, ProtocolError>(__TAURI_INVOKE("detect_local_harness", { name })),
-	listOwnerRecipes: (req: ListOwnerRecipesTs) => typedError<OwnerRecipesListingTs, ProtocolError>(__TAURI_INVOKE("list_owner_recipes", { req })),
-	listBundledRecipes: () => typedError<BundledRecipeTs[], ProtocolError>(__TAURI_INVOKE("list_bundled_recipes")),
 	listMcpTools: () => typedError<McpToolTs[], ProtocolError>(__TAURI_INVOKE("list_mcp_tools")),
 	listWorkspaceTools: () => typedError<WorkspaceToolTs[], ProtocolError>(__TAURI_INVOKE("list_workspace_tools")),
 	listRelations: () => typedError<RelationTs[], ProtocolError>(__TAURI_INVOKE("list_relations")),
@@ -195,11 +193,6 @@ export type BindInferenceTierTs = {
 	owner: Owner,
 	tier: ModelTierTs,
 	target_ref: string,
-};
-
-export type BundledRecipeTs = {
-	slug: string,
-	flavor_id: string,
 };
 
 export type ChangeEvent = {
@@ -392,7 +385,7 @@ export type EntityRef = ({ Memory: MemoryId }) & { Goal?: never } | ({ Goal: Goa
  *  Subset of docs/14's `ErrorCode` exercised in M1. Additional
  *  variants land with the verbs that raise them.
  */
-export type ErrorCode = "AuthRequired" | "Forbidden" | "UnknownSchema" | "AlreadyIngested" | "IdempotencyConflict" | "NotFound" | "InvalidArgument" | "RecipeInvalid" | "RecipeNotFound" | "ToolNotRegistered" | "InferenceTargetMissing" | "TierUnbound" | "TargetRefConflict" | "TargetInUse" | "TriggerConflict" | "DuplicateTriggerInRequest" | "GooseCliUnavailable" | "Internal";
+export type ErrorCode = "AuthRequired" | "Forbidden" | "UnknownSchema" | "AlreadyIngested" | "IdempotencyConflict" | "NotFound" | "InvalidArgument" | "ToolNotRegistered" | "InferenceTargetMissing" | "TierUnbound" | "TargetRefConflict" | "TargetInUse" | "TriggerConflict" | "DuplicateTriggerInRequest" | "Internal";
 
 export type EventDraft = {
 	source_id: SourceId,
@@ -530,7 +523,7 @@ export type IndexReportTs = {
 	chunks_tombstoned: number,
 };
 
-export type InferenceTargetConfigTs = { kind: "local_cli" } & (LocalCliConfigTs) | { kind: "remote_model" } & (RemoteModelConfigTs);
+export type InferenceTargetConfigTs = { kind: "mistral_chat" } & (MistralChatConfigTs) | { kind: "openai_chat" } & (OpenAIChatConfigTs) | { kind: "openai_responses" } & (OpenAIResponsesConfigTs);
 
 export type InferenceTargetTs = {
 	target_ref: string,
@@ -572,10 +565,6 @@ export type ListInferenceTierBindingsTs = {
 	owner: Owner,
 };
 
-export type ListOwnerRecipesTs = {
-	owner: Owner,
-};
-
 export type ListPersonalityInstancesTs = {
 	owner: Owner,
 	include_tombstoned?: boolean,
@@ -586,12 +575,6 @@ export type ListWakeInvocationsTs = {
 	personality_instance_id: string,
 	wake_entry_id: string | null,
 	limit: number,
-};
-
-export type LocalCliConfigTs = {
-	command: string,
-	profile: string | null,
-	env_overrides: ([string, string])[],
 };
 
 export type McpConnectionTs = {
@@ -628,9 +611,32 @@ export type MemoryRow = {
 	payload: number[],
 };
 
+export type MistralChatConfigTs = {
+	base_url: string,
+	model_id: string,
+	api_key_env: string,
+	temperature: number | null,
+	max_completion_tokens: number | null,
+};
+
 export type ModelId = string;
 
 export type ModelTierTs = "fast" | "standard" | "deep";
+
+export type OpenAIChatConfigTs = {
+	base_url: string,
+	model_id: string,
+	api_key_env: string,
+	temperature: number | null,
+	max_completion_tokens: number | null,
+};
+
+export type OpenAIResponsesConfigTs = {
+	base_url: string,
+	model_id: string,
+	api_key_env: string,
+	reasoning_effort: string | null,
+};
 
 export type OperatorId = string;
 
@@ -645,16 +651,6 @@ export type OrgId = string;
 export type Owner = {
 	principal: Principal,
 	org_id: OrgId,
-};
-
-export type OwnerRecipeTs = {
-	filename: string,
-	modified_at: string | null,
-};
-
-export type OwnerRecipesListingTs = {
-	root_path: string,
-	recipes: OwnerRecipeTs[],
 };
 
 export type PayloadKind = "Fact" | "Abstraction" | "Perspective" | "Goal" | 
@@ -792,13 +788,6 @@ export type RelationTs = {
 	flavor_id: string,
 	class: string,
 	typed: boolean,
-};
-
-export type RemoteModelConfigTs = {
-	vendor: string,
-	dialect: string,
-	model_id: string,
-	credentials_ref: string | null,
 };
 
 export type RemoveInferenceTargetOutcomeTs = {
@@ -968,7 +957,6 @@ export type WakeEntryDraftTs = {
 	authored_by: AuthoredByTs,
 	probability_promille: number,
 	goal_scope: GoalScopeTs,
-	recipe_ref: string,
 	instructions: string,
 	model_tier: ModelTierTs,
 	inference_target_ref: string | null,
@@ -987,7 +975,6 @@ export type WakeEntryTs = {
 	authored_by: AuthoredByTs,
 	probability_promille: number,
 	goal_scope: GoalScopeTs,
-	recipe_ref: string,
 	instructions: string,
 	model_tier: ModelTierTs,
 	inference_target_ref: string | null,

@@ -81,7 +81,7 @@ pub fn run() {
         }
         Err(err) => tracing::warn!("MCP master token unavailable at boot: {err}"),
     }
-    let (mcp_listener, mcp_addr) = tauri::async_runtime::block_on(async {
+    let (mcp_listener, mcp_addr, mcp_tool_host) = tauri::async_runtime::block_on(async {
         boot::build_mcp_listener(pg.pool().clone(), owner, mcp_auth_store.clone()).await
     })
     .expect("failed to build Shell MCP listener");
@@ -90,6 +90,13 @@ pub fn run() {
             .with_mcp_listener(mcp_listener)
             .with_mcp_listen_addr(mcp_addr),
     );
+    tauri::async_runtime::block_on(engine.set_target_adapter(std::sync::Arc::new(
+        proxima_harness::HarnessLoop::new(
+            engine.clone(),
+            std::sync::Arc::new(mcp_tool_host.with_engine(engine.clone()))
+                as std::sync::Arc<dyn proxima_core::mcp::HarnessSubstrateBridge>,
+        ),
+    )));
     let engine_handle =
         tauri::async_runtime::block_on(engine.clone().start()).expect("failed to start engine");
     let mcp_url = engine

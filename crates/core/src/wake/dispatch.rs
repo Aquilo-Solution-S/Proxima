@@ -436,7 +436,6 @@ fn wake_entry_draft_to_row(draft: &WakeEntryDraft) -> WakeEntryRow {
         },
         authored_by: draft.authored_by,
         probability_promille: draft.probability_promille,
-        recipe_ref: draft.recipe_ref.clone(),
         instructions: draft.instructions.clone(),
         model_tier: draft.model_tier,
         inference_target_ref: draft.inference_target_ref.clone(),
