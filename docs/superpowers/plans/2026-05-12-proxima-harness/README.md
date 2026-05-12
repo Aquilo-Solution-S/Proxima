@@ -16,7 +16,7 @@
 
 | Phase | Lands as | Affects existing wake path? |
 |---|---|---|
-| 1. `HarnessAdapter` trait + value types + outcome classifier | own commit | no — additive in `proxima-core` |
+| 1. `HarnessAdapter` trait + value types + outcome classifier — **DONE** | own commit | no — additive in `proxima-core` |
 | 2. `crates/harness` skeleton + MistralChat provider + JSONL buffer | own commit | no — new crate not yet wired |
 | 3. Three workspace tools | own commit | no — additive in harness crate |
 | 4. Substrate/flavor dispatch + reverse-map + `HarnessLoop` driver | own commit | no — additive in harness crate |
@@ -33,10 +33,12 @@ Phases 1–7 are land-anytime; Phase 8 is the single atomic change where Goose, 
 
 Each task is self-contained — open the file, follow the steps, commit. Subagent-driven execution: hand one task file at a time to a fresh subagent.
 
-### Phase 1 — `HarnessAdapter` trait + value types + outcome classifier
+### Phase 1 — `HarnessAdapter` trait + value types + outcome classifier — **DONE**
 
-- [`task-01-harness-trait-and-types.md`](task-01-harness-trait-and-types.md) — Create `crates/core/src/harness/` module (`HarnessAdapter`, `HarnessProgram`, `HarnessContext`, `HarnessOutcome`, `HarnessError`, `ProviderTarget`, `SubstrateToolBinding`)
-- [`task-02-outcome-classifier.md`](task-02-outcome-classifier.md) — Exhaustive classifier test (14 table rows from spec)
+- [x] [`task-01-harness-trait-and-types.md`](task-01-harness-trait-and-types.md) — Create `crates/core/src/harness/` module (`HarnessAdapter`, `HarnessProgram`, `HarnessContext`, `HarnessOutcome`, `HarnessError`, `ProviderTarget`, `SubstrateToolBinding`)
+- [x] [`task-02-outcome-classifier.md`](task-02-outcome-classifier.md) — Exhaustive classifier test (spec outcome rows)
+
+Verification: `rustfmt --check crates/core/src/harness/mod.rs crates/core/src/harness/outcome.rs crates/core/tests/harness_outcome_classifier.rs`; `cargo test -p proxima-core --test harness_outcome_classifier`; `cargo build -p proxima-core`; `cargo test --workspace`.
 
 ### Phase 2 — `crates/harness` skeleton + MistralChat provider + JSONL buffer
 
