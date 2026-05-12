@@ -17,7 +17,7 @@
 | Phase | Lands as | Affects existing wake path? |
 |---|---|---|
 | 1. `HarnessAdapter` trait + value types + outcome classifier — **DONE** | own commit | no — additive in `proxima-core` |
-| 2. `crates/harness` skeleton + MistralChat provider + JSONL buffer | own commit | no — new crate not yet wired |
+| 2. `crates/harness` skeleton + MistralChat provider + JSONL buffer — **DONE** | own commit | no — new crate not yet wired |
 | 3. Three workspace tools | own commit | no — additive in harness crate |
 | 4. Substrate/flavor dispatch + reverse-map + `HarnessLoop` driver | own commit | no — additive in harness crate |
 | 5. OpenAIChat + OpenAIResponses providers | own commit | no — additive in harness crate |
@@ -40,13 +40,15 @@ Each task is self-contained — open the file, follow the steps, commit. Subagen
 
 Verification: `rustfmt --check crates/core/src/harness/mod.rs crates/core/src/harness/outcome.rs crates/core/tests/harness_outcome_classifier.rs`; `cargo test -p proxima-core --test harness_outcome_classifier`; `cargo build -p proxima-core`; `cargo test --workspace`.
 
-### Phase 2 — `crates/harness` skeleton + MistralChat provider + JSONL buffer
+### Phase 2 — `crates/harness` skeleton + MistralChat provider + JSONL buffer — **DONE**
 
-- [`task-03-harness-crate-skeleton.md`](task-03-harness-crate-skeleton.md) — Workspace member + Cargo.toml + module stubs (stubs created BEFORE first `cargo build`)
-- [`task-04-conversation-types.md`](task-04-conversation-types.md) — `Conversation`, `Turn`, `ToolCall`, `ToolSpec`, `AssistantTurn`, `ToolResultTurn`
-- [`task-05-provider-trait-and-mistral-chat.md`](task-05-provider-trait-and-mistral-chat.md) — `ProviderClient` trait + private Chat Completions wire helpers + `MistralChatClient`
-- [`task-06-jsonl-buffer.md`](task-06-jsonl-buffer.md) — In-memory JSONL transcript with size cap + truncate marker
-- [`task-07-mistral-chat-replay-test.md`](task-07-mistral-chat-replay-test.md) — MistralChat replay against recorded HTTP fixtures (no live calls)
+- [x] [`task-03-harness-crate-skeleton.md`](task-03-harness-crate-skeleton.md) — Workspace member + Cargo.toml + module stubs (stubs created BEFORE first `cargo build`)
+- [x] [`task-04-conversation-types.md`](task-04-conversation-types.md) — `Conversation`, `Turn`, `ToolCall`, `ToolSpec`, `AssistantTurn`, `ToolResultTurn`
+- [x] [`task-05-provider-trait-and-mistral-chat.md`](task-05-provider-trait-and-mistral-chat.md) — `ProviderClient` trait + private Chat Completions wire helpers + `MistralChatClient`
+- [x] [`task-06-jsonl-buffer.md`](task-06-jsonl-buffer.md) — In-memory JSONL transcript with size cap + truncate marker
+- [x] [`task-07-mistral-chat-replay-test.md`](task-07-mistral-chat-replay-test.md) — MistralChat replay against recorded HTTP fixtures (no live calls)
+
+Verification: `cargo build -p proxima-harness`; `cargo test -p proxima-harness --test jsonl_buffer`; `cargo test -p proxima-harness --test mistral_chat_replay`; `cargo fmt -p proxima-harness --check`; `cargo clippy -p proxima-harness --all-targets`; `cargo test -p proxima-harness`; `cargo test --workspace`.
 
 ### Phase 3 — Three workspace tools
 
