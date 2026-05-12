@@ -51,7 +51,6 @@ pub async fn try_begin_wake_invocation(
             wake_entry_id,
             change_event_seq,
             wake_token: uuid::Uuid::nil(),
-            recipe_sha256: String::new(),
             resolved_inference_target_ref: String::new(),
         },
     )
@@ -68,9 +67,9 @@ pub async fn start_wake_invocation(
         "INSERT INTO proxima_core.personality_wake_invocations
             (owner_principal_kind, owner_principal_id, owner_org_id,
              personality_instance_id, wake_entry_id, change_event_seq,
-             status, started_at, wake_token, recipe_sha256,
+             status, started_at, wake_token,
              resolved_inference_target_ref)
-         VALUES ($1, $2, $3, $4, $5, $6, 'running', now(), $7, $8, $9)
+         VALUES ($1, $2, $3, $4, $5, $6, 'running', now(), $7, $8)
          ON CONFLICT (owner_principal_kind, owner_principal_id, owner_org_id,
                       personality_instance_id, wake_entry_id, change_event_seq)
          DO NOTHING
@@ -83,7 +82,6 @@ pub async fn start_wake_invocation(
     .bind(start.wake_entry_id)
     .bind(start.change_event_seq)
     .bind(start.wake_token)
-    .bind(&start.recipe_sha256)
     .bind(&start.resolved_inference_target_ref)
     .fetch_optional(pool)
     .await
@@ -215,7 +213,6 @@ struct WakeInvocationRowDb {
     finished_at: Option<time::OffsetDateTime>,
     turn_count: i32,
     cost_usd: f64,
-    recipe_sha256: Option<String>,
     resolved_inference_target_ref: Option<String>,
     failure_reason: Option<String>,
     exit_code: Option<i32>,
@@ -247,7 +244,7 @@ pub async fn list_wake_invocations(
         "SELECT i.owner_principal_kind, i.owner_principal_id, i.owner_org_id,
                 i.personality_instance_id, i.wake_entry_id, e.label AS wake_entry_label,
                 i.change_event_seq, i.status, i.started_at, i.finished_at,
-                i.turn_count, i.cost_usd::float8 AS cost_usd, i.recipe_sha256,
+                i.turn_count, i.cost_usd::float8 AS cost_usd,
                 i.resolved_inference_target_ref, i.failure_reason,
                 i.exit_code, i.duration_ms, i.stdout_tail, i.stderr_tail,
                 i.stdout_truncated, i.stderr_truncated
@@ -313,7 +310,6 @@ pub async fn list_wake_invocations(
             finished_at: row.finished_at,
             turn_count: u16::try_from(row.turn_count).unwrap_or(0),
             cost_usd: row.cost_usd,
-            recipe_sha256: row.recipe_sha256,
             resolved_inference_target_ref: row.resolved_inference_target_ref,
             failure_reason: row.failure_reason,
             exit_code: row.exit_code,

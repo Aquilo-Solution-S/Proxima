@@ -21,7 +21,7 @@ use super::loaders::{
     load_execution_request, load_execution_request_for_run, load_goal_context_for_request,
     load_latest_rejected_review_for_run, load_latest_review_for_run, load_repo,
     load_reviews_for_request, load_target_worker_personality_for_request, load_workspace_run,
-    parse_payload, recipe_declares_title, repo_id_from_payload, veto_count_for_request,
+    parse_payload, repo_id_from_payload, veto_count_for_request,
 };
 use super::{CodeWorkspaceRunner, PreparedState};
 
@@ -154,7 +154,6 @@ impl CodeWorkspaceRunner {
             })?;
             return Ok(WorkspacePreparedRun {
                 work_dir: worktree_path,
-                effective_recipe_path: input.effective_recipe_path.to_path_buf(),
                 workspace_context: Some(workspace_context),
                 runner_state,
             });
@@ -240,7 +239,6 @@ impl CodeWorkspaceRunner {
         })?;
         Ok(WorkspacePreparedRun {
             work_dir: worktree_path,
-            effective_recipe_path: input.effective_recipe_path.to_path_buf(),
             workspace_context: Some(workspace_context),
             runner_state,
         })
@@ -288,7 +286,7 @@ impl CodeWorkspaceRunner {
             "veto_count": veto_count,
             "max_veto_rounds": crate::mcp::MAX_WORKSPACE_VETO_ROUNDS,
         });
-        self.prepared_from_existing_run(input, &run, context)
+        self.prepared_from_existing_run(&run, context)
     }
 
     async fn prepare_workspace_review_correction(
@@ -350,7 +348,7 @@ impl CodeWorkspaceRunner {
             "max_veto_rounds": crate::mcp::MAX_WORKSPACE_VETO_ROUNDS,
             "target_worker_personality": target_worker.map(|id| id.to_string()),
         });
-        self.prepared_from_existing_run(input, &run, context)
+        self.prepared_from_existing_run(&run, context)
     }
 
     async fn prepare_workspace_decision(
@@ -361,23 +359,20 @@ impl CodeWorkspaceRunner {
             input.triggering_memory_payload,
             WorkspaceDecisionV1::SCHEMA_ID,
         )?;
-        let wants_correction =
-            recipe_declares_title(input.recipe_bytes, "Plan Workspace Correction");
-        let wants_goal_close = recipe_declares_title(input.recipe_bytes, "Close Goal After Merge");
         match decision.decision {
-            WorkspaceDecision::RetryRequested if wants_correction => {
+            WorkspaceDecision::RetryRequested => {
                 self.prepare_workspace_retry_decision(input, decision).await
             }
-            WorkspaceDecision::Merged if wants_goal_close => {
+            WorkspaceDecision::Merged => {
                 self.prepare_workspace_merge_goal_close(input, decision)
                     .await
             }
-            WorkspaceDecision::RetryRequested
-            | WorkspaceDecision::Merged
-            | WorkspaceDecision::Rejected
-            | WorkspaceDecision::Accepted => Err(WorkspaceRunnerError::TriggerNotEligible(
-                "workspace decision is not eligible for this recipe".into(),
-            )),
+            WorkspaceDecision::Rejected | WorkspaceDecision::Accepted => Err(
+                WorkspaceRunnerError::TriggerNotEligible(format!(
+                    "workspace-decision variant {:?} has no workspace prep",
+                    decision.decision
+                )),
+            ),
         }
     }
 
@@ -446,7 +441,7 @@ impl CodeWorkspaceRunner {
             "max_veto_rounds": crate::mcp::MAX_WORKSPACE_VETO_ROUNDS,
             "target_worker_personality": target_worker.map(|id| id.to_string()),
         });
-        self.prepared_from_existing_run(input, &run, context)
+        self.prepared_from_existing_run(&run, context)
     }
 
     async fn prepare_workspace_merge_goal_close(
@@ -505,13 +500,12 @@ impl CodeWorkspaceRunner {
             "active_goal": active_goal,
             "goal_close": close_candidate,
         });
-        self.prepared_from_existing_run(input, &run, context)
+        self.prepared_from_existing_run(&run, context)
     }
 
-    #[allow(clippy::unused_self, clippy::needless_pass_by_value)]
+    #[allow(clippy::unused_self)]
     fn prepared_from_existing_run(
         &self,
-        input: WorkspacePrepareInput<'_>,
         run: &WorkspaceRunV1,
         workspace_context: serde_json::Value,
     ) -> Result<WorkspacePreparedRun, WorkspaceRunnerError> {
@@ -528,7 +522,6 @@ impl CodeWorkspaceRunner {
         })?;
         Ok(WorkspacePreparedRun {
             work_dir: PathBuf::from(&run.worktree_path),
-            effective_recipe_path: input.effective_recipe_path.to_path_buf(),
             workspace_context: Some(workspace_context),
             runner_state,
         })

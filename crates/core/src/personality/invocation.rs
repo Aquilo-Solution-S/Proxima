@@ -22,7 +22,6 @@ pub struct WakeInvocationStart {
     pub wake_entry_id: Uuid,
     pub change_event_seq: Uuid,
     pub wake_token: Uuid,
-    pub recipe_sha256: String,
     pub resolved_inference_target_ref: String,
 }
 
@@ -80,7 +79,6 @@ pub struct WakeInvocationRow {
     pub finished_at: Option<OffsetDateTime>,
     pub turn_count: u16,
     pub cost_usd: f64,
-    pub recipe_sha256: Option<String>,
     pub resolved_inference_target_ref: Option<String>,
     pub failure_reason: Option<String>,
     pub exit_code: Option<i32>,

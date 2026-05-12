@@ -537,7 +537,6 @@ async fn write_chain_depth_exhausted(
         wake_entry_id: entry.wake_entry_id,
         change_event_seq: event.event.seq,
         wake_token: Uuid::nil(),
-        recipe_sha256: String::new(),
         resolved_inference_target_ref: String::new(),
     };
     let inserted = engine
@@ -587,7 +586,6 @@ async fn write_filter_misconfigured(
         wake_entry_id: entry.wake_entry_id,
         change_event_seq: event.event.seq,
         wake_token: Uuid::nil(),
-        recipe_sha256: String::new(),
         resolved_inference_target_ref: String::new(),
     };
     let inserted = engine
