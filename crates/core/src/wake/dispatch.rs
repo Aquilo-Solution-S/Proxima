@@ -49,9 +49,9 @@ const REPLAY_MAX_INVOCATIONS_MAX: u16 = 20;
 /// # Errors
 ///
 /// Propagates the first storage or fire error encountered. Per-fire
-/// failures (target adapter, recipe IO, etc.) come back as `Ok(_)` so
-/// the loop continues — only plumbing failures (storage scan, cursor
-/// advance, missing target adapter) abort the tick.
+/// failures (target adapter, harness program, etc.) come back as
+/// `Ok(_)` so the loop continues — only plumbing failures (storage
+/// scan, cursor advance, missing target adapter) abort the tick.
 pub async fn dispatch_tick(engine: &Engine) -> Result<usize, ProtocolError> {
     let mut fired = 0usize;
 

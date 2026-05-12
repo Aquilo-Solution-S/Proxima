@@ -399,7 +399,7 @@ pub trait Storage: Send + Sync {
 
     /// Owner-scoped fetch of the root-perspective sidecar (display_name,
     /// purpose) for a given memory_id. Used to populate the
-    /// `root_perspective` parameter passed to recipes.
+    /// `root_perspective` field on the assembled `WakeContext`.
     async fn fetch_root_personality_perspective(
         &self,
         owner: &Owner,

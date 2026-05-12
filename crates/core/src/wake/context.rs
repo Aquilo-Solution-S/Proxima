@@ -129,10 +129,10 @@ pub async fn assemble_wake_context(
 
     // v1 system prompt is the Root Perspective's `purpose` — the
     // dedicated `system_prompt` column was dropped in migration
-    // 20260507000050; recipe authors weave additional prose in via the
-    // recipe template. Falls back to display_name if purpose is empty
-    // so the assertion `system_prompt.len() > 0` always holds for a
-    // well-formed personality.
+    // 20260507000050; wake entries layer per-trigger context on top via
+    // `HarnessProgram::context_params`. Falls back to display_name if
+    // purpose is empty so the assertion `system_prompt.len() > 0`
+    // always holds for a well-formed personality.
     let system_prompt = if root_payload.purpose.trim().is_empty() {
         root_payload.display_name.clone()
     } else {
@@ -233,8 +233,8 @@ pub async fn assemble_wake_context(
 /// triple the trigger envelope and triggering-memory lookup need.
 ///
 /// For `EntityAppend` of a memory, the memory id is the entity. For
-/// `EntityAppend` of a Goal, no memory is associated; recipes that
-/// trigger on Goal-only events would need a different
+/// `EntityAppend` of a Goal, no memory is associated; wake entries
+/// that trigger on Goal-only events would need a different
 /// `triggering_memory` strategy, so we return `NotFound` for now.
 ///
 /// For `EdgeAppend`, the triggering memory is the edge's target when it

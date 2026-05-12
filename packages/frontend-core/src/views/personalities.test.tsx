@@ -77,7 +77,7 @@ const wakeInvocation = (
   turn_count: 1,
   cost_usd: 0,
   resolved_inference_target_ref: null,
-  failure_reason: "Error: Invalid recipe",
+  failure_reason: "Error: harness failed",
   exit_code: 1,
   duration_ms: 8120,
   stdout_tail: "stdout tail",
@@ -322,7 +322,7 @@ describe("PersonalitiesView", () => {
     await waitFor(() => {
       expect(invocationsSection?.hasAttribute("open")).toBe(true);
     });
-    expect(screen.getByText("Error: Invalid recipe")).toBeTruthy();
+    expect(screen.getByText("Error: harness failed")).toBeTruthy();
     expect(screen.getByText("stderr tail")).toBeTruthy();
     expect(screen.getByText("proxima-mcp/proxima_derive")).toBeTruthy();
   });
@@ -516,7 +516,7 @@ describe("PersonalitiesView", () => {
     setWakeEntries.mockResolvedValueOnce({
       status: "error",
       error: {
-        code: "RecipeInvalid",
+        code: "WakeEntryInvalid",
         message: "parse error at line 3",
         request_id: "req-1",
       },
@@ -533,7 +533,7 @@ describe("PersonalitiesView", () => {
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
     expect(
-      await screen.findByText("RecipeInvalid: parse error at line 3"),
+      await screen.findByText("WakeEntryInvalid: parse error at line 3"),
     ).toBeTruthy();
   });
 

@@ -242,8 +242,8 @@ impl TargetAdapter for MockAdapter {
 
 /// Phase 1d Task 11 fixture: extends [`seed_wake_context_fixture`] with
 /// the dispatch wiring `wake_dispatch_idempotent.rs` previously did
-/// inline (inference target + tier binding, recipe on disk, wake entry,
-/// `Engine` built with mock adapter), then wraps the engine in `Arc`.
+/// inline (inference target + tier binding, wake entry, `Engine` built
+/// with mock adapter), then wraps the engine in `Arc`.
 ///
 /// The caller invokes `engine.start()` themselves — the smoke test for
 /// the dispatcher loop wants to observe what `start` does, so the
