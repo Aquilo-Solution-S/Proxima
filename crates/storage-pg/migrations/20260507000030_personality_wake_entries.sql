@@ -58,6 +58,7 @@ CREATE TABLE proxima_core.personality_wake_entries (
     execution_mode text NOT NULL DEFAULT 'substrate_only',
     authored_by text NOT NULL DEFAULT 'any',
     probability_promille integer NOT NULL DEFAULT 1000,
+    recipe_ref text NOT NULL,
     model_tier text NOT NULL DEFAULT 'standard',
     inference_target_ref text,
     substrate_tool_palette text[] NOT NULL DEFAULT '{}',
