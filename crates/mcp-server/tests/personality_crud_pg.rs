@@ -11,7 +11,7 @@ use std::time::Duration;
 use common::{create_db, drop_db, initialize, initialized, post_rpc};
 use proxima_core::wake::token_store::WakeTokenStore;
 use proxima_core::{FlavorRegistry, OrgId, Owner, Principal, UserId};
-use proxima_mcp_server::{McpToolHost, McpAuthStore, default_allowlist, serve_streamable_http};
+use proxima_mcp_server::{McpAuthStore, McpToolHost, default_allowlist, serve_streamable_http};
 use serde_json::{Value, json};
 
 #[tokio::test(flavor = "multi_thread")]

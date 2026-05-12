@@ -14,6 +14,7 @@ pub use handles::{EntityRef, Handle, HandleTable};
 
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use futures::future::BoxFuture;
 
 use crate::{MemoryId, Owner, verbs::schema::FlavorRegistryFrozen};
@@ -24,6 +25,51 @@ pub struct McpAuthorContext {
     pub client_name: String,
     pub client_version: String,
     pub caller_self_perspective: Option<MemoryId>,
+}
+
+#[derive(Debug, Clone)]
+pub struct HarnessSubstrateToolSpec {
+    pub canonical_name: String,
+    pub description: String,
+    pub args_schema: serde_json::Value,
+}
+
+#[derive(Debug, Clone)]
+pub struct HarnessSubstrateCall {
+    pub canonical_name: String,
+    pub args: serde_json::Value,
+    pub owner: Owner,
+    /// Wake token minted by `fire_wake_entry`.
+    pub wake_token: uuid::Uuid,
+    pub author: McpAuthorContext,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum HarnessSubstrateError {
+    #[error("tool not found: {0}")]
+    ToolNotFound(String),
+    #[error("tool not authorized for wake palette: {0}")]
+    Unauthorized(String),
+    #[error("wake token not found or expired")]
+    MissingWakeContext,
+    #[error("storage: {0}")]
+    Storage(String),
+    #[error("layering: {0}")]
+    Layering(String),
+    #[error("tool: {0}")]
+    Tool(String),
+}
+
+#[async_trait]
+pub trait HarnessSubstrateBridge: Send + Sync {
+    /// Return the combined wake-visible substrate inventory for `palette`.
+    fn list_harness_tools(&self, palette: &[String]) -> Vec<HarnessSubstrateToolSpec>;
+
+    /// Dispatch one wake-scoped substrate call by canonical tool id.
+    async fn call_harness_tool(
+        &self,
+        call: HarnessSubstrateCall,
+    ) -> Result<serde_json::Value, HarnessSubstrateError>;
 }
 
 #[derive(Clone)]

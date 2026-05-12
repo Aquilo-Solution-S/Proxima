@@ -852,7 +852,7 @@ Find `serve_streamable_http`. Add an overload (or change the signature) to accep
 ```rust
 pub async fn serve_streamable_http_with_layer<L>(
     bind: SocketAddr,
-    server: DevMcpServer,
+    server: McpToolHost,
     allowlist: Allowlist,
     layer: Option<L>,
 ) -> Result<(), McpServerError>

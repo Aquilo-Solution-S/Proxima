@@ -19,7 +19,7 @@
 | 1. `HarnessAdapter` trait + value types + outcome classifier — **DONE** | own commit | no — additive in `proxima-core` |
 | 2. `crates/harness` skeleton + MistralChat provider + JSONL buffer — **DONE** | own commit | no — new crate not yet wired |
 | 3. Three workspace tools — **DONE** | own commit | no — additive in harness crate |
-| 4. Substrate/flavor dispatch + reverse-map + `HarnessLoop` driver | own commit | no — additive in harness crate |
+| 4. Substrate/flavor dispatch + reverse-map + `HarnessLoop` driver — **DONE** | own commit | no — additive in harness crate |
 | 5. OpenAIChat + OpenAIResponses providers | own commit | no — additive in harness crate |
 | 6. `WakeEntry.instructions` column + `DefaultWakeEntrySeed` constants + onboarding wiring | own commit | additive — column is unread by Goose path |
 | 7. Three wake-trace schemas + two new payload traits + `persist_wake_trace` atomic verb | own commit | additive — verb exists but no caller yet |
@@ -59,12 +59,14 @@ Verification: `cargo build -p proxima-harness`; `cargo test -p proxima-harness -
 
 Verification: `cargo test -p proxima-harness --test workspace_shell -- --test-threads=1`; `cargo test -p proxima-harness --test workspace_text_editor`; `cargo test -p proxima-harness --test workspace_list_files`; `cargo fmt -p proxima-harness --check`; `cargo test -p proxima-harness`; `cargo clippy -p proxima-harness --all-targets`; `cargo test --workspace`.
 
-### Phase 4 — Substrate/flavor dispatch + reverse-map + `HarnessLoop` driver
+### Phase 4 — Substrate/flavor dispatch + reverse-map + `HarnessLoop` driver — **DONE**
 
-- [`task-12-program-builder-name-map.md`](task-12-program-builder-name-map.md) — `HarnessProgram::resolve` builder with canonical↔provider-safe name maps
-- [`task-13-substrate-dispatch.md`](task-13-substrate-dispatch.md) — Substrate dispatch via `HarnessSubstrateBridge` implemented by `McpToolHost` (registry MCP tools + personality substrate pack)
-- [`task-14-harness-loop-driver.md`](task-14-harness-loop-driver.md) — Full `HarnessLoop` driver with multi-round dispatch, JSONL logging, outcome classification
-- [`task-15-substrate-dispatch-test.md`](task-15-substrate-dispatch-test.md) — Program-builder name-map round-trip tests
+- [x] [`task-12-program-builder-name-map.md`](task-12-program-builder-name-map.md) — `HarnessProgram::resolve` builder with canonical↔provider-safe name maps
+- [x] [`task-13-substrate-dispatch.md`](task-13-substrate-dispatch.md) — Substrate dispatch via `HarnessSubstrateBridge` implemented by `McpToolHost` (registry MCP tools + personality substrate pack)
+- [x] [`task-14-harness-loop-driver.md`](task-14-harness-loop-driver.md) — Full `HarnessLoop` driver with multi-round dispatch, JSONL logging, outcome classification
+- [x] [`task-15-substrate-dispatch-test.md`](task-15-substrate-dispatch-test.md) — Program-builder name-map round-trip tests
+
+Verification: `cargo build -p proxima-harness -p proxima-core -p proxima-mcp-server`; `cargo test -p proxima-harness --test substrate_dispatch`; `cargo test -p proxima-harness --test loop_driver`; `cargo test -p proxima-harness`; `cargo test -p proxima-mcp-server`; `rustfmt --check crates/core/src/mcp/mod.rs`; `cargo fmt -p proxima-harness -p proxima-mcp-server --check`; `cargo clippy -p proxima-harness --all-targets`; `cargo test --workspace`.
 
 ### Phase 5 — OpenAIChat + OpenAIResponses providers
 
