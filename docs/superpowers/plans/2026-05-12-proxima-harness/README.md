@@ -22,7 +22,7 @@
 | 4. Substrate/flavor dispatch + reverse-map + `HarnessLoop` driver — **DONE** | own commit | no — additive in harness crate |
 | 5. OpenAIChat + OpenAIResponses providers | own commit | no — additive in harness crate |
 | 6. `WakeEntry.instructions` column + user-authored wake-entry plumbing | own commit | additive — column is unread by Goose path |
-| 7. Three wake-trace schemas + two new payload traits + `persist_wake_trace` atomic verb | own commit | additive — verb exists but no caller yet |
+| 7. Three wake-trace schemas + two new payload traits + `persist_wake_trace` atomic verb — **DONE** | own commit | additive — verb exists but no caller yet |
 | 8. **THE CUT** — `InferenceTargetConfig` rewrite, harness wired into `fire_wake_entry`, `persist_wake_trace` called from the new emit path, file deletions, data migration, end-to-end test | one atomic commit | yes — replaces Goose at runtime |
 
 Phases 1–7 are land-anytime; Phase 8 is the single atomic change where Goose, recipe YAML, `LocalCli`, `RemoteModel`, and the recipe rewriter all leave together.
@@ -75,17 +75,17 @@ Verification: `cargo build -p proxima-harness -p proxima-core -p proxima-mcp-ser
 
 ### Phase 6 — `WakeEntry.instructions` column + user-authored wake-entry plumbing
 
-- [`task-18-wake-entry-instructions-migration.md`](task-18-wake-entry-instructions-migration.md) — Migration adds `instructions text NOT NULL DEFAULT ''`
-- [`task-19-wake-entry-row-rust.md`](task-19-wake-entry-row-rust.md) — Core/storage round-trip for `WakeEntry.instructions`
-- [`task-20-wake-entry-instructions-surfaces.md`](task-20-wake-entry-instructions-surfaces.md) — MCP + Shell + Personalities UI surfaces for user-authored instructions
+- [x] [`task-18-wake-entry-instructions-migration.md`](task-18-wake-entry-instructions-migration.md) — Migration adds `instructions text NOT NULL DEFAULT ''`
+- [x] [`task-19-wake-entry-row-rust.md`](task-19-wake-entry-row-rust.md) — Core/storage round-trip for `WakeEntry.instructions`
+- [x] [`task-20-wake-entry-instructions-surfaces.md`](task-20-wake-entry-instructions-surfaces.md) — MCP + Shell + Personalities UI surfaces for user-authored instructions
 
-### Phase 7 — Wake-trace schemas + `persist_wake_trace` atomic verb
+### Phase 7 — Wake-trace schemas + `persist_wake_trace` atomic verb — **DONE**
 
-- [`task-23-wake-trace-sidecar-migration.md`](task-23-wake-trace-sidecar-migration.md) — Sidecar tables for `wake_trace_v1`, `cited_wake_trace_jsonl_v1`, `citation_wake_trace_v1`
-- [`task-24-wake-trace-payload-traits.md`](task-24-wake-trace-payload-traits.md) — Add `CitedObjectPayload` + `CitationMappingPayload` traits (mirror `FactPayload` pattern); register the three wake-trace schemas in the core flavor
-- [`task-25-persist-wake-trace-core-types.md`](task-25-persist-wake-trace-core-types.md) — `WakeTracePersistInput` + `WakeTracePersistOutcome` typed surface (rationale: `EventIngest` can't be reused — stamps external/nil authorship, writes no sidecars, writes no edges)
-- [`task-26-persist-wake-trace-storage-impl.md`](task-26-persist-wake-trace-storage-impl.md) — Postgres atomic verb writing 13 rows in one transaction (cited_objects + sidecar + event + memory + citation_mapping + sidecar + wake_trace_v1 + change_event + `core/authored` + N×`core/derived-from`)
-- [`task-27-persist-wake-trace-integration-test.md`](task-27-persist-wake-trace-integration-test.md) — Postgres-backed test for atomicity + idempotent replay
+- [x] [`task-23-wake-trace-sidecar-migration.md`](task-23-wake-trace-sidecar-migration.md) — Sidecar tables for `wake_trace_v1`, `cited_wake_trace_jsonl_v1`, `citation_wake_trace_v1`
+- [x] [`task-24-wake-trace-payload-traits.md`](task-24-wake-trace-payload-traits.md) — Add `CitedObjectPayload` + `CitationMappingPayload` traits (mirror `FactPayload` pattern); register the three wake-trace schemas in the core flavor
+- [x] [`task-25-persist-wake-trace-core-types.md`](task-25-persist-wake-trace-core-types.md) — `WakeTracePersistInput` + `WakeTracePersistOutcome` typed surface (rationale: `EventIngest` can't be reused — stamps external/nil authorship, writes no sidecars, writes no edges)
+- [x] [`task-26-persist-wake-trace-storage-impl.md`](task-26-persist-wake-trace-storage-impl.md) — Postgres atomic verb writing 13 rows in one transaction (cited_objects + sidecar + event + memory + citation_mapping + sidecar + wake_trace_v1 + change_event + `core/authored` + N×`core/derived-from`)
+- [x] [`task-27-persist-wake-trace-integration-test.md`](task-27-persist-wake-trace-integration-test.md) — Postgres-backed test for atomicity + idempotent replay
 
 ### Phase 8 — THE CUT (one atomic commit)
 

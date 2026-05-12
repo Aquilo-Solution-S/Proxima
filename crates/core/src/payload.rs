@@ -105,3 +105,43 @@ pub trait EdgePayload: serde::Serialize + serde::de::DeserializeOwned + 'static 
         SchemaId::new(Self::SCHEMA_ID.to_string())
     }
 }
+
+/// Typed payload for a `cited_objects` row, keyed on
+/// `cited_object_id`. Cited objects do not participate in F/A/P
+/// queries; the sidecar stores the artifact body, while the core row
+/// stores ownership and a content-addressed hash. See docs/11
+/// §"Trait families".
+pub trait CitedObjectPayload: serde::Serialize + serde::de::DeserializeOwned + 'static {
+    const SCHEMA_ID: &'static str;
+    const SCHEMA_VERSION: u32;
+    /// See `FactPayload::SPECIAL_CATEGORY`.
+    const SPECIAL_CATEGORY: bool = false;
+    fn sidecar_table() -> &'static str;
+    fn schema_id() -> SchemaId {
+        SchemaId::new(Self::SCHEMA_ID.to_string())
+    }
+
+    /// Stable BLAKE3-32 hash of the artifact content. Re-ingesting
+    /// the same artifact for the same Owner deduplicates the
+    /// `cited_objects` row via `(owner, schema_id, content_hash)`.
+    fn idempotency_key(&self) -> [u8; 32];
+}
+
+/// Typed payload for a `citation_mappings` row, keyed on
+/// `citation_mapping_id`. Citation mappings pin exactly one Memory
+/// to exactly one CitedObject; the sidecar stores extra mapping
+/// metadata such as byte ranges. See docs/11 §"Trait families".
+pub trait CitationMappingPayload: serde::Serialize + serde::de::DeserializeOwned + 'static {
+    const SCHEMA_ID: &'static str;
+    const SCHEMA_VERSION: u32;
+    /// See `FactPayload::SPECIAL_CATEGORY`.
+    const SPECIAL_CATEGORY: bool = false;
+    fn sidecar_table() -> &'static str;
+    fn schema_id() -> SchemaId {
+        SchemaId::new(Self::SCHEMA_ID.to_string())
+    }
+
+    /// Schema id of the `CitedObjectPayload` this mapping is allowed
+    /// to annotate.
+    fn cited_object_schema() -> SchemaId;
+}

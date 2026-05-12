@@ -5,6 +5,7 @@ use crate::error::ProtocolError;
 use crate::storage::StorageError;
 use crate::verbs::close_batch::CloseBatchOutcome;
 use crate::verbs::event_ingest::{EventDraft, EventIngestOutcome};
+use crate::verbs::persist_wake_trace::{WakeTracePersistInput, WakeTracePersistOutcome};
 
 impl Engine {
     /// docs/14 §"EventIngest" — Owner-scoped write. Validates
@@ -46,6 +47,39 @@ impl Engine {
             .ingest_event_atomic(&draft)
             .await
             .map_err(|e| ProtocolError::internal(e.to_string()))
+    }
+
+    /// Atomic wake-trace persistence. The storage layer writes the
+    /// Fact, JSONL citation artifact, sidecars, and provenance edges
+    /// in one transaction.
+    pub async fn persist_wake_trace(
+        &self,
+        creds: &Credentials,
+        input: WakeTracePersistInput,
+    ) -> Result<WakeTracePersistOutcome, ProtocolError> {
+        let resolved = self
+            .auth
+            .resolve(creds)
+            .map_err(|_| ProtocolError::auth_required())?;
+        if !resolved.can_access_owner(&input.owner) {
+            return Err(ProtocolError::forbidden(
+                "principal cannot access requested owner",
+            ));
+        }
+        self.persist_wake_trace_internal(input)
+            .await
+            .map_err(|e| ProtocolError::internal(e.to_string()))
+    }
+
+    /// Internal wake path. Callers have already resolved wake-token
+    /// authorization.
+    pub(crate) async fn persist_wake_trace_internal(
+        &self,
+        input: WakeTracePersistInput,
+    ) -> Result<WakeTracePersistOutcome, StorageError> {
+        self.storage
+            .persist_wake_trace_atomic(&self.registry, &input)
+            .await
     }
 
     /// docs/01 §"The contract" — Owner-scoped, idempotent batch close.

@@ -211,6 +211,15 @@ impl Storage for MockStorage {
         unimplemented!("mock")
     }
 
+    async fn persist_wake_trace_atomic(
+        &self,
+        _registry: &proxima_core::FlavorRegistryFrozen,
+        _input: &proxima_core::verbs::persist_wake_trace::WakeTracePersistInput,
+    ) -> Result<proxima_core::verbs::persist_wake_trace::WakeTracePersistOutcome, StorageError>
+    {
+        unimplemented!("mock")
+    }
+
     async fn write_goal_atomic(
         &self,
         _draft: &GoalDraft,

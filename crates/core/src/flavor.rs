@@ -7,9 +7,9 @@
 use crate::personality::workspace::WorkspaceRunner;
 use crate::verbs::schema::{FlavorRegistryFrozen, PayloadKind, PayloadValidatorEntry, SchemaInfo};
 use crate::{
-    AbstractionPayload, EdgePayload, FactPayload, GoalPayload, McpCallFn, McpTool,
-    McpToolDescriptor, McpToolError, PerspectivePayload, RelationDescriptor, SchemaVersion,
-    core_relation_descriptors,
+    AbstractionPayload, CitationMappingPayload, CitedObjectPayload, EdgePayload, FactPayload,
+    GoalPayload, McpCallFn, McpTool, McpToolDescriptor, McpToolError, PerspectivePayload,
+    RelationDescriptor, SchemaVersion, core_relation_descriptors,
 };
 
 use std::path::PathBuf;
@@ -87,6 +87,9 @@ impl Default for FlavorRegistry {
         };
         // Substrate-shipped Fact schema for MCP-CRUD audit.
         registry.add_fact_schema::<crate::mcp::core_tools::PersonalityConfigChangedV1>();
+        registry.add_fact_schema::<crate::wake::trace::WakeTracePayload>();
+        registry.add_cited_object_schema::<crate::wake::trace::WakeTraceJsonlPayload>();
+        registry.add_citation_mapping_schema::<crate::wake::trace::WakeTraceCitationPayload>();
         crate::mcp::core_tools::register_all(&mut registry);
         registry
     }
@@ -200,6 +203,44 @@ impl FlavorRegistry {
             schema_version: SchemaVersion::new(E::SCHEMA_VERSION),
             kind: PayloadKind::Edge,
             validate: validate_payload_type::<E>,
+        });
+    }
+
+    pub fn add_cited_object_schema<C: CitedObjectPayload>(&mut self) {
+        self.schemas.push(SchemaInfo {
+            schema_id: C::schema_id(),
+            schema_version: SchemaVersion::new(C::SCHEMA_VERSION),
+            kind: PayloadKind::CitedObject,
+            filter_keys: vec![],
+            sidecar_table: Some(C::sidecar_table().to_string()),
+            natural_key_columns: vec![],
+            tombstone: None,
+            cbor_encoder: Some(encode_payload_cbor::<C>),
+        });
+        self.validators.push(PayloadValidatorEntry {
+            schema_id: C::schema_id(),
+            schema_version: SchemaVersion::new(C::SCHEMA_VERSION),
+            kind: PayloadKind::CitedObject,
+            validate: validate_payload_type::<C>,
+        });
+    }
+
+    pub fn add_citation_mapping_schema<M: CitationMappingPayload>(&mut self) {
+        self.schemas.push(SchemaInfo {
+            schema_id: M::schema_id(),
+            schema_version: SchemaVersion::new(M::SCHEMA_VERSION),
+            kind: PayloadKind::CitationMapping,
+            filter_keys: vec![],
+            sidecar_table: Some(M::sidecar_table().to_string()),
+            natural_key_columns: vec![],
+            tombstone: None,
+            cbor_encoder: Some(encode_payload_cbor::<M>),
+        });
+        self.validators.push(PayloadValidatorEntry {
+            schema_id: M::schema_id(),
+            schema_version: SchemaVersion::new(M::SCHEMA_VERSION),
+            kind: PayloadKind::CitationMapping,
+            validate: validate_payload_type::<M>,
         });
     }
 
