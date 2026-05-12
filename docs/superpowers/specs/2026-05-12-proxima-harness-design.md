@@ -28,10 +28,10 @@ Replace the subprocess with an in-process Rust loop — the **Proxima Harness** 
 
 ### Six principles
 
-1. **Native model tool-calling, every v1 provider.** Each adapter speaks the provider's tool-use protocol directly: Mistral's `/v1/chat/completions` with `tools: [...]`, OpenAI's `/v1/responses` (Codex tier), and OpenAI's `/v1/chat/completions`. We **never** parse model prose to detect control flow. Termination is the provider's `finish_reason` (`stop` | `tool_calls` | `length` | provider-equivalent). Additional providers are added in follow-up specs as peer adapters.
-2. **Tools are typed bindings dispatched in-process.** Substrate and flavor tools call `McpToolDescriptor.call` directly with a wake-token-derived `McpToolCtx`. No TCP loopback at wake time, no JSON-RPC envelope, no MCP transport layer in the hot path. Workspace tools implement a Rust `WorkspaceTool` trait. Provider tool-call arguments validate against `args_schema` before dispatch — invalid args produce a structured tool error message; the model self-corrects on the next round.
+1. **Native model tool-calling behind one provider interface.** Every provider adapter implements `ProviderClient::tool_round` and returns the same `RoundResult` / `ProviderError` vocabulary. Mistral Chat and OpenAI Chat both speak `/v1/chat/completions`, but they are separate adapter implementations because vendor quirks belong behind the interface, not in public `compat` flags. OpenAI Responses remains separate because `/v1/responses` is a different wire protocol. We **never** parse model prose to detect control flow. Termination is the provider's structural signal (`finish_reason`, Responses `status`, or provider-equivalent).
+2. **Tools are typed bindings dispatched in-process.** Substrate and flavor tools route through the same wake-visible dispatch bridge that backs the live MCP server: registered `McpToolDescriptor`s first, then wake-scoped personality substrate-pack tools (`core/fetch_memory`, `core/emit_perspective`, etc.). No TCP loopback at wake time, no JSON-RPC envelope, no MCP transport layer in the hot path. Workspace tools implement a Rust `WorkspaceTool` trait. Provider tool-call arguments validate against `args_schema` before dispatch — invalid args produce a structured tool error message; the model self-corrects on the next round.
 3. **Workspace toolkit is three Rust tools, not Goose's `developer` builtin.** `workspace_shell`, `workspace_text_editor`, `workspace_list_files`, each cwd-jailed to the prepared worktree. Their JSON schemas are generated from `schemars` derives. The model sees them as native function-calling tools; the harness dispatches them as Rust functions.
-4. **Credentials are env vars resolved at wake time.** `InferenceTargetConfig` is rewritten to three variants: `Mistral`, `OpenAIChat`, `OpenAIResponses`. Each carries `base_url`, `model_id`, and `api_key_env` (the name of the env var to read). The engine reads the env at fire time — not at startup — so users can rotate keys without restart. Missing env → invocation finalizes as `Failed("credentials_missing:MISTRAL_API_KEY")`, precise and structured. **No third-party CLI config file is consulted, ever.**
+4. **Credentials are env vars resolved at wake time.** `InferenceTargetConfig` is rewritten to three adapter-selector variants: `MistralChat`, `OpenAIChat`, `OpenAIResponses`. Each carries `base_url`, `model_id`, and `api_key_env` (the name of the env var to read). The engine reads the env at fire time — not at startup — so users can rotate keys without restart. Missing env → invocation finalizes as `Failed("credentials_missing:MISTRAL_API_KEY")`, precise and structured. **No third-party CLI config file is consulted, ever.**
 5. **Outcome derives from explicit signals, never regex.** The outcome classifier sees: HTTP status, provider-reported `finish_reason`, round counter, tool-dispatch results, exception class. The classification table (below) is exhaustive and deterministic.
 6. **Every wake leaves three observability traces: a JSONL transcript, `wake_invocation_log` rows, and a `wake-trace-v1` Fact in the memory graph.** No layer is optional. The Fact is the substrate-native index; the log table is the SQL-queryable cross-cut; the JSONL is the forensic raw. The JSONL persists as a `CitedObject` content-addressed by BLAKE3 and pinned to the Fact via `CitationMapping`.
 
@@ -68,7 +68,7 @@ crates/harness/                  # the concrete implementation
     loop.rs                        # the wake-loop driver: model.tool_round() → dispatch_tools() → repeat
     tools/
       mod.rs                       # ToolBinding enum: Substrate | Flavor | Workspace
-      substrate_dispatch.rs        # in-process call into McpToolDescriptor.call
+      substrate_dispatch.rs        # in-process call into HarnessSubstrateBridge (DevMcpServer impl preserves registry MCP + personality substrate pack)
       workspace/
         mod.rs                     # WorkspaceTool trait
         shell.rs                   # bounded bash; timeout, output cap, exit code structural
@@ -76,8 +76,9 @@ crates/harness/                  # the concrete implementation
         list_files.rs              # cwd-rooted recursive listing
     providers/
       mod.rs                       # ProviderClient trait + ProviderError
-      mistral.rs                   # /v1/chat/completions, tool-calling
-      openai_chat.rs               # /v1/chat/completions, tool-calling
+      chat_completions_wire.rs     # crate-private (`mod`, not `pub mod`) shared DTOs/parser for chat completions — visibility enforces the no-public-compat boundary
+      mistral_chat.rs              # Mistral /v1/chat/completions adapter
+      openai_chat.rs               # OpenAI /v1/chat/completions adapter
       openai_responses.rs          # /v1/responses (Codex tier)
       # anthropic.rs is OUT OF v1 SCOPE — added in a follow-up spec
     trace/
@@ -100,10 +101,11 @@ pub trait HarnessAdapter: Send + Sync {
 
 // crates/harness/src/lib.rs
 //
-// Concrete adapter only. One impl: HarnessLoop<P: ProviderClient>.
-// The driver is generic over provider; per-provider differences live
-// in ProviderClient. The binary instantiates HarnessLoop<MistralClient>
-// (etc.) and registers &dyn HarnessAdapter on Engine at boot.
+// Concrete adapter only. One impl: HarnessLoop.
+// HarnessLoop selects MistralChatClient, OpenAIChatClient, or
+// OpenAIResponsesClient from the typed ProviderTarget and then runs the
+// shared loop against &dyn ProviderClient. Per-provider differences live
+// behind ProviderClient, not in HarnessContext or core.
 ```
 
 ```rust
@@ -197,7 +199,11 @@ pub struct ToolResultTurn {
 ```rust
 // crates/harness/src/loop.rs (sketch)
 
-pub async fn run_loop(program: HarnessProgram, ctx: HarnessContext)
+pub async fn run_loop(
+    provider: &dyn ProviderClient,
+    program: HarnessProgram,
+    ctx: HarnessContext,
+)
     -> Result<HarnessOutcome, HarnessError>
 {
     let mut conv = program.seed_conversation();
@@ -206,7 +212,7 @@ pub async fn run_loop(program: HarnessProgram, ctx: HarnessContext)
 
     for round_idx in 0..ctx.max_rounds {
         let round_started = Instant::now();
-        let round = ctx.provider.tool_round(&conv, &program.tool_specs, ctx.cancel.clone()).await;
+        let round = provider.tool_round(&conv, &program.tool_specs, ctx.cancel.clone()).await;
         trace.record_round_outbound(round_idx, &conv);
 
         match round {
@@ -281,15 +287,25 @@ Every row above is decidable from a structural signal. No regex appears in the c
 // crates/core/src/inference/types.rs (after migration)
 
 pub enum InferenceTargetConfig {
-    Mistral(MistralConfig),
+    MistralChat(MistralChatConfig),
+    #[serde(rename = "openai_chat")]
     OpenAIChat(OpenAIChatConfig),
+    #[serde(rename = "openai_responses")]
     OpenAIResponses(OpenAIResponsesConfig),  // Codex tier
 }
 
-pub struct MistralConfig {
+pub struct MistralChatConfig {
     pub base_url: String,            // default "https://api.mistral.ai"
     pub model_id: String,            // e.g. "mistral-medium-3.5"
     pub api_key_env: String,         // env var name to read at wake time
+    pub temperature: Option<f32>,
+    pub max_completion_tokens: Option<u32>,
+}
+
+pub struct OpenAIChatConfig {
+    pub base_url: String,            // default "https://api.openai.com"
+    pub model_id: String,            // e.g. "gpt-5.1"
+    pub api_key_env: String,         // default "OPENAI_API_KEY"
     pub temperature: Option<f32>,
     pub max_completion_tokens: Option<u32>,
 }
@@ -301,24 +317,27 @@ pub struct OpenAIResponsesConfig {
     pub reasoning_effort: Option<ReasoningEffort>,   // low | medium | high
 }
 
-pub struct OpenAIChatConfig { /* parallel to MistralConfig */ }
 ```
 
-**Anthropic deferred.** Out of v1 scope. Day-one harness ships Mistral + OpenAIChat + OpenAIResponses only. A follow-up spec adds Anthropic as a peer variant when needed. This matches the repo's no-feature-flag flavor discipline.
+**Anthropic deferred.** Out of v1 scope. Day-one harness ships MistralChat + OpenAIChat + OpenAIResponses only. A follow-up spec adds Anthropic or native Mistral Conversations as a peer adapter variant when needed. This matches the repo's no-feature-flag flavor discipline.
 
-**Greenfield cut, no transition window.** The current enum is `LocalCli | RemoteModel { vendor, dialect, model_id, credentials_ref }` (verified at `crates/core/src/inference/types.rs:22-40`). Both variants are dropped in the same change that lands the new ones — there is no co-existence period, no `#[deprecated]` lane, no migration shim. Existing `inference_targets` rows are translated by a one-shot data migration that runs against every Owner before the new enum ships:
+**Provider extension boundary.** `ProviderClient` is the unified harness contract; `InferenceTargetConfig` variants select implementations. Do not add a public `compat` struct or provider-quirk flags for auth shape, token field names, endpoint behavior, retry semantics, tool-call shape, or finish-reason normalization. If a provider differs from an existing adapter, add a small adapter implementing `ProviderClient`; share private wire helpers where useful. The boundary is enforced mechanically by Rust visibility: `chat_completions_wire` is declared `mod chat_completions_wire;` (not `pub mod`) in `providers/mod.rs`, so its entire contents are unreachable from outside the `proxima-harness` crate regardless of `pub` markers inside. Adapter modules access it via `super::chat_completions_wire`. Changing the module to `pub mod` is the single line a reviewer must reject.
+
+**Wire discriminants.** `InferenceTargetConfig` uses `#[serde(tag = "kind", rename_all = "snake_case")]`, plus explicit OpenAI variant renames: `OpenAIChat` serializes as `openai_chat`, and `OpenAIResponses` as `openai_responses`. Do not rely on acronym inference (`open_ai_chat` / `open_a_i_chat`) in migrations, Shell TOML, or tests.
+
+**Greenfield cut, no transition window.** The current enum is `LocalCli | RemoteModel { vendor, dialect, model_id, credentials_ref }` (verified at `crates/core/src/inference/types.rs:22-40`). Both variants are dropped in the same change that lands the new ones — there is no co-existence period, no `#[deprecated]` lane, no migration shim. Existing `inference_targets` rows are translated by a one-shot data migration that runs against every Owner before the new enum ships. The migration updates both storage discriminators: `inference_targets.kind` and `inference_targets.config->>'kind'`.
 
 | Source row | Target variant |
 |---|---|
-| `RemoteModel { vendor="mistral", ... }` | `Mistral { model_id, api_key_env: derive_from(credentials_ref), base_url: default }` |
+| `RemoteModel { vendor="mistral", ... }` | `MistralChat { model_id, api_key_env: derive_from(credentials_ref), base_url: default }` |
 | `RemoteModel { vendor="openai", dialect="chat", ... }` | `OpenAIChat { ... }` |
 | `RemoteModel { vendor="openai", dialect="responses", ... }` | `OpenAIResponses { ... }` |
-| `LocalCli { ... }` | hand-mapped to a peer Mistral/OpenAI target by the operator running the cut |
+| `LocalCli { ... }` | hand-mapped to a MistralChat/OpenAIChat/OpenAIResponses target by the operator running the cut |
 | anything else | migration aborts loudly |
 
-The migration runs once, transactionally per-Owner; any row it cannot map terminates the cut before it commits. There is no fallback to Goose at runtime — the moment the new code is live, every wake fires through the harness or fails the dispatch entirely.
+The migration runs once, transactionally per-Owner; any row it cannot map terminates the cut before it commits. It drops the old `inference_targets_kind_chk` (`local_cli | remote_model`) and recreates it as `mistral_chat | openai_chat | openai_responses` after all rows satisfy `kind = config->>'kind'`. There is no fallback to Goose at runtime — the moment the new code is live, every wake fires through the harness or fails the dispatch entirely.
 
-The four-tier model registry on the Shell config (`apps/proxima-shell/src-tauri/src/config/types.rs::InferenceTargetRecord`) reflects the three variants; the TOML round-trip test covers all three.
+The Shell config (`apps/proxima-shell/src-tauri/src/config/types.rs::InferenceTargetRecord`) reflects the three adapter-selector variants; TOML round-trip tests cover MistralChat, OpenAIChat, and OpenAIResponses records.
 
 ### Workspace tools
 
@@ -394,11 +413,13 @@ pub struct FsEntry {
 
 ### Substrate / flavor tool dispatch
 
-The model sees substrate and flavor MCP tools as ordinary function-calling tools, schema generated from the existing `McpToolDescriptor.args_schema`. When the model emits a tool call, the harness:
+The model sees substrate and flavor tools as ordinary function-calling tools. Tool specs come from `HarnessSubstrateBridge::list_harness_tools`, implemented by `DevMcpServer` as the same combined wake-visible inventory the HTTP MCP path lists: `FlavorRegistryFrozen::list_mcp_tools()` plus `DevMcpServer::substrate_tools()` / `personality::substrate_pack()`.
 
-1. Looks up the canonical tool name (already-typed via `WakeEntry.substrate_tool_palette`).
-2. Constructs an `McpToolCtx` from the wake-token context — the same context that today's HTTP path builds in `crates/mcp-server/src/handler.rs::call_tool`.
-3. Calls `(descriptor.call)(ctx, args)` directly. No HTTP transport. No JSON-RPC. Result is already a typed `serde_json::Value`.
+When the model emits a tool call, the harness:
+
+1. Reverse-maps the provider-safe name to the canonical tool id.
+2. Calls `HarnessSubstrateBridge::call_harness_tool` with the canonical id, args, owner, model author context, and wake token.
+3. The `DevMcpServer` implementation resolves the wake token into `McpAuthContext`, defaults `McpAuthorContext.caller_self_perspective` from the wake's root perspective when absent, and calls `DevMcpServer::call_tool`, preserving the existing registry-first / `call_personality_tool` fallback path. No HTTP transport. No JSON-RPC. Result is already a typed `serde_json::Value`.
 4. Wraps the result as a `Turn::ToolResult` and appends to the conversation.
 5. Records a `wake_invocation_log` row (`phase: "tool_call"`, `tool_id`, `status`, `duration_ms`, `message_tail`) — identical to today's MCP-path logging, just emitted from the harness instead.
 
@@ -472,7 +493,7 @@ Every harness run accumulates a JSONL buffer in memory. One record per event:
 
 The buffer enforces a per-invocation byte cap (default 5 MB, configurable per-owner). On cap hit, the harness writes a final `truncated` marker line and stops appending — **the wake itself does not fail**; `wake_invocation_log` still records every round, just without per-message bytes.
 
-At wake finalization, the JSONL bytes become the `CitedObject` *body*, content-addressed by `blake3(jsonl_bytes)`. The Fact emission (Layer 3 below) is the place where `EventDraft.cited_object` / `citation_mapping` are populated — the JSONL is the cited artefact, not the Fact payload.
+At wake finalization, the JSONL bytes become the `CitedObject` *body*, content-addressed by `blake3(jsonl_bytes)`. The Fact emission (Layer 3 below) is the place where the JSONL bytes are pinned to the Fact via the `CitationMapping` — the JSONL is the cited artefact, not the Fact payload.
 
 #### Layer 2 — `wake_invocation_log` rows
 
@@ -523,29 +544,37 @@ pub struct WakeTracePayload {
 **Edge wiring (corrected against `docs/11`).** Citations are not edges — they're `Memory.citation_mapping_id` → one `CitationMapping` → one `CitedObject`. Authorship of the wake_trace Fact follows the canonical direction `Root Perspective --core/authored--> Fact`, same as every other Fact the wake emits. The output memories the wake authored during its rounds are not linked to the trace by edge; they're queryable via shared authoring Root P + the `wake_invocation_log` `[started_at, finished_at]` window.
 
 Edges actually emitted:
-- `root_perspective --core/authored--> wake_trace_fact` (engine's canonical authorship edge, written by EventIngest automatically)
-- `wake_trace_fact --core/derived_from--> triggering_memory` (always)
-- `wake_trace_fact --core/derived_from--> root_perspective_memory` (always)
-- `wake_trace_fact --core/derived_from--> active_goal_memory` (one per active goal at wake time)
+- `root_perspective --core/authored--> wake_trace_fact` (written by the `persist_wake_trace` verb described below — *not* by EventIngest, which stamps external/nil authorship)
+- `wake_trace_fact --core/derived-from--> triggering_memory` (always)
+- `wake_trace_fact --core/derived-from--> root_perspective_memory` (always)
+- `wake_trace_fact --core/derived-from--> active_goal` — **one per active Goal entity at wake time**. The edge is written with `target_kind = "Goal"`, `target_goal_id = Some(goal_id)`, `target_memory_id = None`. Goals are entities (not a `Memory.kind`); `Storage::list_active_goals` already returns `Vec<ActiveGoalSummary>` keyed on `goal_id: GoalId`.
 
-Citation (carried inside the `EventDraft`, not as an edge — verified against `crates/core/src/verbs/event_ingest.rs:14-38`):
+**The `EventIngest` verb is not used for wake-trace emission.** Two reasons. (1) `EventIngest`'s memory row stamps `personality_instance_id = '00000000-...-000'` (external authorship); the wake-trace Fact must record the *authoring* `PersonalityInstanceId` so cross-personality audit queries (`Memory.personality_instance_id`) hit. (2) `EventIngest` writes only the core rows (`cited_object`, `event`, `memory`, `citation_mapping`, `change_event`) — it does not write the `wake_trace_v1` / `cited_wake_trace_jsonl_v1` / `citation_wake_trace_v1` sidecar payload rows, and it does not write the `core/authored` + `core/derived-from` edges. Reusing it would leave six rows missing and force a follow-up write that wouldn't be atomic with the Fact insertion.
 
-```rust
-EventDraft {
-    schema_id: "proxima-core/wake-trace-v1",
-    payload: serialize(WakeTracePayload { ... }),
-    cited_object: CitedObjectHint {
-        schema_id: "proxima-core/wake-trace-jsonl-v1",
-        schema_version: v1,
-        content_hash: blake3(jsonl_bytes),       // dedup key within Owner
-    },
-    citation_mapping: CitationMappingHint {
-        schema_id: "proxima-core/wake-trace-citation-v1",
-        schema_version: v1,
-    },
-    ...
-}
-```
+Instead, a dedicated atomic storage verb — `persist_wake_trace` — lives in `crates/core/src/verbs/persist_wake_trace.rs` (typed input/outcome), with the Postgres implementation in `crates/storage-pg/src/verbs/persist_wake_trace.rs`. **The wiring goes through the existing `Storage` trait**: `proxima-core` never depends on `proxima-storage-pg` (it delegates through `Storage`, see `crates/core/src/storage.rs:61`), so the verb is added as `Storage::persist_wake_trace_atomic(&self, registry: &FlavorRegistryFrozen, input: &WakeTracePersistInput)`, `NoopStorage` returns the standard `StorageError::Internal("NoopStorage rejects writes")`, and `PgStorage` delegates to the module-level `persist_wake_trace_atomic` helper. `Engine::persist_wake_trace` (public, auth-checked) and `Engine::persist_wake_trace_internal` (crate-private, called from `fire_wake_entry` after the wake-token store has authorised the dispatcher) both call `self.storage.persist_wake_trace_atomic(&self.registry, &input)`. One transaction writes the following rows in order:
+
+1. `cited_objects` (JSONL CitedObject row, dedup-keyed on `(owner, schema_id, content_hash)`).
+2. `proxima_core.cited_wake_trace_jsonl_v1` sidecar (`body bytea`, `byte_len`, `line_count`, `truncated bool`).
+3. `source_batches` upsert.
+4. `events` (`proxima-core/wake-trace-v1` row).
+5. `memories` (Fact, `personality_instance_id = authoring_personality_instance_id`).
+6. `citation_mappings` row.
+7. `proxima_core.citation_wake_trace_v1` sidecar (`byte_range_start`, `byte_range_end`).
+8. `proxima_core.wake_trace_v1` sidecar (the typed Fact payload columns above).
+9. `change_event` (`EntityAppend` / `Fact`).
+10. `edges` — `root_perspective --core/authored--> wake_trace_fact` (Engine authorship).
+11. `edges` — `wake_trace_fact --core/derived-from--> triggering_memory`.
+12. `edges` — `wake_trace_fact --core/derived-from--> root_perspective_memory`.
+13. `edges` — `wake_trace_fact --core/derived-from--> active_goal_i` for each active Goal entity at wake time (`target_kind = "Goal"`, `target_goal_id = Some(goal_id)`, `target_memory_id = None`).
+
+The input is one struct (`WakeTracePersistInput`) carrying the JSONL bytes, the `WakeTracePayload` Fact fields, the authoring `PersonalityInstanceId`, the Root-Perspective `MemoryId`, the triggering `MemoryId`, and the active `GoalId`s (`Vec<GoalId>`, sourced from `Storage::list_active_goals` — these are Goal entities, not memories). The outcome (`WakeTracePersistOutcome`) returns `event_id`, `fact_memory_id`, `cited_object_id`, `citation_mapping_id`, `change_event_seq`, and an `idempotent_replay: bool` flag.
+
+**Two distinct idempotency layers (do not conflate):**
+
+- **Whole-verb replay** — keyed on `WakeTracePersistInput::event_id()` (BLAKE3 over source-id, owner, content_hash, **and** `invocation_id`). A re-issued persist with the same `event_id` collides on `memories.event_id` and the verb short-circuits, returning the original outcome row ids with `idempotent_replay = true`. Two *distinct* wake invocations that happen to produce byte-identical JSONL produce *different* `event_id`s (different `invocation_id`) and do NOT collapse.
+- **Cited-object row dedup** — `UNIQUE (owner, schema_id, content_hash)` on `cited_objects` (docs/11 §"Idempotency"). When the whole-verb replay check misses but the content hash matches a prior CitedObject row (e.g. the wake produced JSONL identical to an earlier wake's), the `ON CONFLICT DO UPDATE … RETURNING cited_object_id` clause returns the existing row; the new wake-trace Fact + CitationMapping point at the shared CitedObject. This is row-level dedup of the artefact only — it does NOT short-circuit the Fact or the CitationMapping write.
+
+The verb is non-blocking for invocation finalization — wrap the call in a `tokio::task::spawn` and `?`-log the result against the same `wake_invocation_log` row. The wake's outcome is decided by the harness; the trace is the recorder, not the gate.
 
 Three new registered schemas (all in core, all `PayloadKind` per docs/11):
 
@@ -567,8 +596,11 @@ Fact emission is **last and non-blocking** for invocation status: if the Fact wr
 pub async fn fire_wake_entry(...) -> Result<bool, ProtocolError> {
     // 0. self-wake guard                                     [unchanged]
     // 1. assemble four-param context                         [unchanged]
-    // 2. resolve InferenceTarget                             [variant must be Mistral | OpenAIChat | OpenAIResponses; no other variant exists post-cut]
+    // 2. resolve InferenceTarget                             [variant must be MistralChat | OpenAIChat | OpenAIResponses; no other variant exists post-cut]
     // 3. mint wake token, INSERT invocation row              [unchanged]
+    //    After this point, pre-run failures are wake outcomes, not
+    //    propagated dispatcher errors. Missing credentials finalize as
+    //    Failed("credentials_missing:{ENV}") and revoke the wake token.
     //
     //    REMOVED: step 7 (write_effective_recipe). No YAML rewriting.
     //
@@ -576,11 +608,19 @@ pub async fn fire_wake_entry(...) -> Result<bool, ProtocolError> {
     //    - wake_context (4 params, typed)
     //    - WakeEntry.instructions
     //    - root_perspective.system_prompt
-    //    - WakeEntry.substrate_tool_palette + workspace_tool_palette (typed ToolBindings)
+    //    - WakeEntry.substrate_tool_palette ids (resolved by HarnessLoop through HarnessSubstrateBridge)
+    //    - WakeEntry.workspace_tool_palette (workspace tools gated by workspace_root)
     //    - workspace_context (if execution_mode = Workspace)
     // 5. select adapter from InferenceTargetConfig variant.
     // 6. adapter.run(program, harness_ctx) → HarnessOutcome
-    // 7. emit wake-trace Fact + CitedObject (JSONL)          [NEW; non-blocking]
+    // 7. call engine.persist_wake_trace_internal(WakeTracePersistInput {..})
+    //    — crate-private path that bypasses auth_resolver (the wake-token
+    //    store already authorised this dispatcher). Delegates to
+    //    Storage::persist_wake_trace_atomic; PgStorage writes Fact + JSONL
+    //    CitedObject + CitationMapping + sidecar rows + core/authored +
+    //    core/derived-from edges in one tx. Non-blocking for invocation
+    //    status; failure logs against wake_invocation_log but doesn't fail
+    //    the wake.                                             [NEW]
     // 8. revoke wake token; finalize invocation              [unchanged]
 }
 ```
@@ -589,7 +629,7 @@ The four-param context, idempotency keys, chain-depth guard, workspace prepare/f
 
 ### Provider scope for v1
 
-**Decision: B1, revised.** Day one: Mistral + OpenAI-Chat + OpenAI-Responses (Codex). No Anthropic, no feature flag. Adding a fourth provider becomes its own peer spec when needed — gating an untested adapter behind a `claude` flag inside v1 just builds dead code paths and breaks the repo's no-feature-flag flavor discipline.
+**Decision: B1, revised.** Day one: MistralChat + OpenAIChat + OpenAIResponses (Codex). Mistral/OpenAI Chat share private Chat Completions wire helpers but stay separate adapter implementations. No Anthropic, no feature flag. Adding a fourth provider becomes its own peer spec when needed — gating an untested adapter behind a `claude` flag inside v1 just builds dead code paths and breaks the repo's no-feature-flag flavor discipline.
 
 ### Single-cut Goose removal
 
@@ -597,7 +637,7 @@ Greenfield. No staging, no `#[deprecated]`, no coexistence window. Goose, the YA
 
 **Lands together:**
 
-- `crates/harness/` crate with `HarnessAdapter` impl and three providers (Mistral, OpenAIChat, OpenAIResponses).
+- `crates/harness/` crate with `HarnessAdapter` impl and three provider adapters (MistralChat, OpenAIChat, OpenAIResponses).
 - `InferenceTargetConfig` rewritten to the three-variant enum above; one-shot data migration translates every existing row before the cut commits (table above).
 - New `WakeEntry.instructions` column populated from each flavor's `DefaultWakeEntrySeed.instructions` constant.
 - `proxima-core/wake-trace-v1` Fact + `wake-trace-jsonl-v1` CitedObject + `wake-trace-citation-v1` CitationMapping schemas registered.
@@ -615,7 +655,7 @@ Greenfield. No staging, no `#[deprecated]`, no coexistence window. Goose, the YA
 - workspace tool isolation tests (path-traversal rejection, env clearing, output capping)
 - outcome classifier exhaustiveness test (one case per row of the classification table)
 - Fact emission with truncated JSONL (cap fires, marker line present, Fact still emits, CitedObject content_hash matches the truncated bytes)
-- end-to-end wake against a recorded Mistral fixture: fires, dispatches workspace tools, emits expected Memory + wake-trace Fact + CitedObject + CitationMapping
+- end-to-end wake against a recorded MistralChat fixture: fires, dispatches workspace tools, emits expected Memory + wake-trace Fact + CitedObject + CitationMapping
 - end-to-end migration test: a database seeded with `LocalCli` and `RemoteModel` rows is translated cleanly into the new variants by the migration; one unmappable row aborts the migration.
 
 Net deletion in the cut: ~700 lines of Rust, every recipe YAML, the entire "regex-the-CLI-output" pattern, the Goose subprocess path, and the recipe-rewriter middle layer.
@@ -625,15 +665,15 @@ Net deletion in the cut: ~700 lines of Rust, every recipe YAML, the entire "rege
 - `WakeEntry` row shape (trigger, palette, max_rounds, model_tier, inference_target_ref).
 - Four-param wake context — passed as typed JSON to the harness, no template engine involved.
 - `InferenceTarget` indirection (the variants change; the indirection stays).
-- In-process MCP server (`crates/mcp-server`) — for external callers; wakes simply bypass it.
-- `McpToolDescriptor` registration and substrate-tool pack — the harness consumes the same registry, just calls the function pointers directly.
+- In-process MCP server (`crates/mcp-server`) — external callers use HTTP MCP; wakes reuse `DevMcpServer` as an in-process bridge and bypass only the transport.
+- `McpToolDescriptor` registration and substrate-tool pack — the harness consumes the same combined wake-visible surface through `DevMcpServer`'s bridge, preserving `call_personality_tool` semantics.
 - `WorkspaceRunner` prepare/finalize trait — the prepared worktree, the workspace-context payload, the workspace facts (`workspace-run-v1`, `workspace-decision-v1`) all keep working.
 - Wake-token store and palette-scope authorization — moved from the MCP transport layer to the harness's substrate-dispatch layer; same semantics.
 
 ### Risks and open questions
 
-1. **Tool-call streaming.** Mistral and OpenAI both support streamed tool calls. v1 explicitly **does not** stream — the harness waits for full responses per round, then dispatches. Simpler control, identical wall-time for non-interactive wakes, easier to record into the JSONL deterministically. Streaming is v1.1 if it turns out to matter.
-2. **Codex variant choice.** OpenAI's `/v1/responses` endpoint is the Codex-tier surface; `/v1/chat/completions` works for general models. The spec ships both adapters in v1 to give InferenceTarget rows a choice. If `gpt-5-codex` exclusively requires `/v1/responses`, the OpenAI-Chat adapter just won't be used for Codex models.
+1. **Tool-call streaming.** Mistral and OpenAI both support streamed tool calls on Chat Completions. v1 explicitly **does not** stream — the harness waits for full responses per round, then dispatches. Simpler control, identical wall-time for non-interactive wakes, easier to record into the JSONL deterministically. Streaming is v1.1 if it turns out to matter.
+2. **Codex variant choice.** OpenAI's `/v1/responses` endpoint is the Codex-tier surface; `/v1/chat/completions` works for compatible general models. The spec ships both OpenAI adapters in v1 to give InferenceTarget rows a choice. If `gpt-5-codex` exclusively requires `/v1/responses`, OpenAIChat just won't be used for Codex models.
 3. **External Claude Code integration unaffected.** v1 ships no Anthropic provider in the harness — personalities cannot run Claude as their inference target until a follow-up spec lands one. The unrelated external integration where Claude Code connects *to* the Shell's master-token MCP surface (as a client) continues unchanged; it never went through the harness.
 4. **Provider tool-call argument validation.** When a provider's tool call carries arguments that don't validate against the tool's JSON schema, the harness returns a `Turn::ToolResult { status: Error, content: {"error":"schema_violation","details":...} }` and continues. The model gets a structured correction; the harness doesn't try to coerce. Defense-in-depth circuit breaker fires only if the same tool's args fail 5+ times in a row.
 5. **JSONL bytes in the DB.** Per-invocation cap default is 5 MB. Empirical: a 30-round wake with moderate tool args averages 200–500 KB. At 1 MB/wake × 1000 wakes/day that's ~1 GB/day; well within Postgres comfort. If a deployment routinely pushes past 10 MB per trace, chunking the `CitedObject` body into `wake_trace_artifact_chunk(invocation_id, chunk_idx, bytes)` is a storage-layer detail that doesn't touch the Citation API.

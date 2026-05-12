@@ -103,7 +103,7 @@ async fn passes_current_batch_mode_flag_to_goose() {
     let outcome = adapter.run(invocation).await.expect("run ok");
     assert!(matches!(outcome.kind, TargetOutcomeKind::Succeeded));
     let captured = fs::read_to_string(args).unwrap();
-    assert!(captured.contains("--no-profile\n"));
+    assert!(!captured.contains("--no-profile\n"));
     assert!(captured.contains("--no-session\n"));
     assert!(captured.contains("--max-tool-repetitions\n3\n"));
     assert!(captured.contains("--output-format\nstream-json\n"));
@@ -173,7 +173,7 @@ async fn omits_max_turns_when_max_rounds_is_zero() {
     let captured = fs::read_to_string(args).unwrap();
     assert!(!captured.contains("--max-turns\n"));
     assert!(!captured.contains("--debug\n"));
-    assert!(captured.contains("--no-profile\n"));
+    assert!(!captured.contains("--no-profile\n"));
     assert!(captured.contains("--no-session\n"));
 }
 
