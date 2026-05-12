@@ -39,6 +39,27 @@
   color: var(--ink-70); letter-spacing: 0.01em;
 }
 .atlas-chrome-r { display: flex; align-items: center; gap: 18px; }
+.atlas-new-goal {
+  height: 26px;
+  border: 1px solid var(--rule-strong);
+  border-radius: 0;
+  background: var(--bg-card);
+  color: var(--ink-90);
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+  padding: 0 10px;
+}
+.atlas-new-goal:hover {
+  border-color: var(--accent-commit);
+  color: var(--ink-100);
+}
+.atlas-new-goal:focus-visible {
+  outline: 1px solid var(--accent-commit);
+  outline-offset: 2px;
+}
 .atlas-stat {
   font-family: var(--mono); font-size: 10.5px;
   color: var(--ink-70);

@@ -1,8 +1,11 @@
+import "./goal-dialog.css";
+
 import {
   For,
   Show,
   createMemo,
   createSignal,
+  onMount,
   type Component,
 } from "solid-js";
 import { Portal } from "solid-js/web";
@@ -12,18 +15,59 @@ import {
 } from "../registry";
 import { useGraph } from "../graph-store";
 import type { Hub } from "../hub";
-import { commands, type GoalDraft, type GoalRow } from "../bindings";
+import {
+  commands,
+  type GoalDraft,
+  type GoalRow,
+  type Owner,
+  type PersonalityInstanceTs,
+} from "../bindings";
 
 export interface GoalDialogProps {
   hub: Hub;
   /** Optional proposal being modified — pre-populates schema + payload. */
   proposal?: GoalRow;
+  assignmentMode?: "goal-reactive";
   onClose: () => void;
   onAfterWrite: () => void;
 }
 
+type GoalReactivePersonality = {
+  id: string;
+  rootId: string;
+  label: string;
+};
+
 const editorKey = (editor: RegisteredGoalPayloadEditor): string =>
   `${editor.schemaId}@${editor.schemaVersion}`;
+
+const commandErrorMessage = (raw: unknown): string => {
+  if (typeof raw === "object" && raw !== null && "message" in raw) {
+    return String((raw as { message: unknown }).message);
+  }
+  return typeof raw === "string" ? raw : "command failed";
+};
+
+const goalReactivePersonalities = (
+  instances: PersonalityInstanceTs[],
+): GoalReactivePersonality[] =>
+  instances
+    .filter(
+      (instance) =>
+        instance.status === "active" &&
+        instance.wake_entries.some(
+          (entry) =>
+            entry.enabled &&
+            entry.trigger_kind === "on_memory" &&
+            entry.trigger_id === "proxima-goal/goal-activated-v1" &&
+            entry.goal_scope === "trigger_goal_assigned",
+        ),
+    )
+    .map((instance) => ({
+      id: instance.personality_instance_id,
+      rootId: instance.current_root_perspective_memory_id,
+      label: instance.display_name,
+    }));
 
 const decodeProposalPayload = (
   hub: Hub,
@@ -42,6 +86,8 @@ const decodeProposalPayload = (
 export const GoalDialog: Component<GoalDialogProps> = (props) => {
   const graph = useGraph();
   const editors = registeredGoalPayloadEditors();
+  const assignmentEnabled = () =>
+    props.assignmentMode === "goal-reactive" && props.proposal === undefined;
 
   const initialEditor = (): RegisteredGoalPayloadEditor | null => {
     if (props.proposal !== undefined) {
@@ -78,6 +124,61 @@ export const GoalDialog: Component<GoalDialogProps> = (props) => {
   const [text, setText] = createSignal(props.proposal?.text ?? "");
   const [busy, setBusy] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
+  const [assignable, setAssignable] = createSignal<GoalReactivePersonality[]>(
+    [],
+  );
+  const [selectedPersonalityIds, setSelectedPersonalityIds] = createSignal<
+    string[]
+  >([]);
+  const [personalitiesLoading, setPersonalitiesLoading] = createSignal(false);
+  const [createdGoalId, setCreatedGoalId] = createSignal<string | null>(null);
+  const [failedAssignmentIds, setFailedAssignmentIds] = createSignal<string[]>(
+    [],
+  );
+  const [assignmentLoadError, setAssignmentLoadError] = createSignal<
+    string | null
+  >(null);
+
+  onMount(() => {
+    if (!assignmentEnabled()) return;
+    const owner = graph.state().owner;
+    setPersonalitiesLoading(true);
+    setAssignmentLoadError(null);
+    void commands
+      .listPersonalityInstances({ owner, include_tombstoned: false })
+      .then((result) => {
+        if (result.status === "error") {
+          setAssignable([]);
+          setSelectedPersonalityIds([]);
+          setAssignmentLoadError(commandErrorMessage(result.error));
+          return;
+        }
+        const candidates = goalReactivePersonalities(result.data);
+        setAssignable(candidates);
+        setSelectedPersonalityIds(candidates.map((candidate) => candidate.id));
+      })
+      .catch((loadError: unknown) => {
+        setAssignable([]);
+        setSelectedPersonalityIds([]);
+        setAssignmentLoadError(
+          loadError instanceof Error
+            ? loadError.message
+            : "Failed to load personalities",
+        );
+      })
+      .finally(() => setPersonalitiesLoading(false));
+  });
+
+  const targetLabel = (id: string): string =>
+    assignable().find((candidate) => candidate.id === id)?.label ?? id;
+
+  const togglePersonality = (id: string, checked: boolean) => {
+    if (createdGoalId() !== null) return;
+    setSelectedPersonalityIds((current) => {
+      if (checked) return current.includes(id) ? current : [...current, id];
+      return current.filter((entry) => entry !== id);
+    });
+  };
 
   const onSchemaChange = (key: string) => {
     setSelectedKey(key);
@@ -85,10 +186,43 @@ export const GoalDialog: Component<GoalDialogProps> = (props) => {
     if (editor !== null) setPayload(editor.defaults());
   };
 
+  const assignGoal = async (
+    owner: Owner,
+    goalId: string,
+    targetIds: string[],
+  ): Promise<string[]> => {
+    const failed: string[] = [];
+    for (const targetId of targetIds) {
+      const result = await commands.goalReactivate({
+        owner,
+        goal_id: goalId,
+        target_personality_id: targetId,
+      });
+      if (result.status === "error") failed.push(targetId);
+    }
+    return failed;
+  };
+
   const submit = async (event: Event) => {
     event.preventDefault();
     const editor = selected();
     if (editor === null) return;
+    if (assignmentEnabled()) {
+      if (personalitiesLoading()) return;
+      if (assignable().length === 0) {
+        setError("No goal-reactive personality is configured.");
+        return;
+      }
+      if (createdGoalId() === null && selectedPersonalityIds().length === 0) {
+        setError("Select at least one personality.");
+        return;
+      }
+      if (createdGoalId() !== null && failedAssignmentIds().length === 0) {
+        props.onAfterWrite();
+        props.onClose();
+        return;
+      }
+    }
     const codec = props.hub.codecFor(editor.schemaId, editor.schemaVersion);
     if (codec === null) {
       setError("No codec registered for this schema");
@@ -97,23 +231,45 @@ export const GoalDialog: Component<GoalDialogProps> = (props) => {
     setBusy(true);
     setError(null);
     try {
-      const draft: GoalDraft = {
-        owner: props.proposal?.owner ?? graph.state().owner,
-        schema_id: editor.schemaId,
-        schema_version: editor.schemaVersion,
-        title: title(),
-        text: text(),
-        payload: Array.from(codec.encode(payload())),
-        state: "Active",
-        parent_goal_ids: props.proposal?.parent_goal_ids ?? [],
-        supersedes_goal_id: props.proposal?.id ?? null,
-        authorship: "User",
-        request_id: `goal-dialog:${props.proposal?.id ?? "new"}:${Date.now()}`,
-      };
-      const result = await commands.goalWrite(draft);
-      if (result.status === "error") {
-        setError(JSON.stringify(result.error));
-        return;
+      const owner = props.proposal?.owner ?? graph.state().owner;
+      let goalId = createdGoalId();
+      if (goalId === null) {
+        const draft: GoalDraft = {
+          owner,
+          schema_id: editor.schemaId,
+          schema_version: editor.schemaVersion,
+          title: title(),
+          text: text(),
+          payload: Array.from(codec.encode(payload())),
+          state: "Active",
+          parent_goal_ids: props.proposal?.parent_goal_ids ?? [],
+          supersedes_goal_id: props.proposal?.id ?? null,
+          authorship: "User",
+          request_id: `goal-dialog:${props.proposal?.id ?? "new"}:${Date.now()}`,
+        };
+        const result = await commands.goalWrite(draft);
+        if (result.status === "error") {
+          setError(JSON.stringify(result.error));
+          return;
+        }
+        goalId = result.data.goal_id;
+        setCreatedGoalId(goalId);
+      }
+      if (assignmentEnabled()) {
+        const targets =
+          failedAssignmentIds().length > 0
+            ? failedAssignmentIds()
+            : selectedPersonalityIds();
+        const failed = await assignGoal(owner, goalId, targets);
+        setFailedAssignmentIds(failed);
+        if (failed.length > 0) {
+          setError(
+            `Goal created, assignment failed for: ${failed
+              .map(targetLabel)
+              .join(", ")}`,
+          );
+          return;
+        }
       }
       props.onAfterWrite();
       props.onClose();
@@ -153,7 +309,7 @@ export const GoalDialog: Component<GoalDialogProps> = (props) => {
             <select
               value={selectedKey() ?? ""}
               onChange={(event) => onSchemaChange(event.currentTarget.value)}
-              disabled={props.proposal !== undefined}
+              disabled={props.proposal !== undefined || createdGoalId() !== null}
             >
               <For each={editors}>
                 {(editor) => (
@@ -167,6 +323,7 @@ export const GoalDialog: Component<GoalDialogProps> = (props) => {
             <input
               type="text"
               value={title()}
+              disabled={createdGoalId() !== null}
               onInput={(event) => setTitle(event.currentTarget.value)}
             />
           </label>
@@ -175,6 +332,7 @@ export const GoalDialog: Component<GoalDialogProps> = (props) => {
             <textarea
               rows={4}
               value={text()}
+              disabled={createdGoalId() !== null}
               onInput={(event) => setText(event.currentTarget.value)}
             />
           </label>
@@ -189,6 +347,58 @@ export const GoalDialog: Component<GoalDialogProps> = (props) => {
             }}
           </Show>
         </Show>
+        <Show when={assignmentEnabled()}>
+          <section class="goal-dialog-assignments">
+            <div class="goal-dialog-section-head">Assign to</div>
+            <Show
+              when={!personalitiesLoading()}
+              fallback={
+                <p class="goal-dialog-empty">Loading goal-reactive personalities.</p>
+              }
+            >
+              <Show when={assignmentLoadError() !== null}>
+                <p class="goal-dialog-error">{assignmentLoadError()}</p>
+              </Show>
+              <Show
+                when={assignable().length > 0}
+                fallback={
+                  <p class="goal-dialog-empty">
+                    No goal-reactive personality is configured.
+                  </p>
+                }
+              >
+                <div class="goal-dialog-assignment-list">
+                  <For each={assignable()}>
+                    {(candidate) => (
+                      <label
+                        class="goal-dialog-assignment-row"
+                        classList={{
+                          failed: failedAssignmentIds().includes(candidate.id),
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={selectedPersonalityIds().includes(candidate.id)}
+                          disabled={createdGoalId() !== null}
+                          onChange={(event) =>
+                            togglePersonality(
+                              candidate.id,
+                              event.currentTarget.checked,
+                            )
+                          }
+                        />
+                        <span>
+                          <strong>{candidate.label}</strong>
+                          <em>{candidate.rootId}</em>
+                        </span>
+                      </label>
+                    )}
+                  </For>
+                </div>
+              </Show>
+            </Show>
+          </section>
+        </Show>
         <Show when={error() !== null}>
           <p class="goal-dialog-error">{error()}</p>
         </Show>
@@ -196,8 +406,23 @@ export const GoalDialog: Component<GoalDialogProps> = (props) => {
           <button type="button" disabled={busy()} onClick={props.onClose}>
             Cancel
           </button>
-          <button type="submit" disabled={busy() || selected() === null}>
-            {props.proposal === undefined ? "Create" : "Accept"}
+          <button
+            type="submit"
+            disabled={
+              busy() ||
+              selected() === null ||
+              (assignmentEnabled() &&
+                (personalitiesLoading() ||
+                  assignable().length === 0 ||
+                  (createdGoalId() === null &&
+                    selectedPersonalityIds().length === 0)))
+            }
+          >
+            {createdGoalId() !== null
+              ? "Retry"
+              : props.proposal === undefined
+                ? "Create"
+                : "Accept"}
           </button>
         </footer>
       </form>
