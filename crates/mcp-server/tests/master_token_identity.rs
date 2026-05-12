@@ -14,7 +14,7 @@ use proxima_core::mcp::McpAuthorContext;
 use proxima_core::storage::Storage;
 use proxima_core::verbs::query::MemoryStore;
 use proxima_core::{Engine, FlavorRegistry, OrgId, Owner, Principal, UserId};
-use proxima_mcp_server::{McpToolHost, McpAuthStore, McpToolScope};
+use proxima_mcp_server::{McpAuthStore, McpToolHost, McpToolScope};
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
 

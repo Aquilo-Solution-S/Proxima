@@ -238,6 +238,99 @@ impl McpToolHost {
     }
 }
 
+#[async_trait::async_trait]
+impl proxima_core::mcp::HarnessSubstrateBridge for McpToolHost {
+    fn list_harness_tools(
+        &self,
+        palette: &[String],
+    ) -> Vec<proxima_core::mcp::HarnessSubstrateToolSpec> {
+        let allows = |name: &str| palette.iter().any(|allowed| allowed == name);
+        let mut out = Vec::new();
+
+        for desc in self.registry().list_mcp_tools() {
+            if allows(desc.name) {
+                out.push(proxima_core::mcp::HarnessSubstrateToolSpec {
+                    canonical_name: desc.name.to_string(),
+                    description: desc.description.to_string(),
+                    args_schema: desc.args_schema.clone(),
+                });
+            }
+        }
+
+        for tool in self.substrate_tools() {
+            if allows(tool.tool_id()) {
+                out.push(proxima_core::mcp::HarnessSubstrateToolSpec {
+                    canonical_name: tool.tool_id().to_string(),
+                    description: tool.description().to_string(),
+                    args_schema: tool.args_schema(),
+                });
+            }
+        }
+
+        out
+    }
+
+    async fn call_harness_tool(
+        &self,
+        call: proxima_core::mcp::HarnessSubstrateCall,
+    ) -> Result<serde_json::Value, proxima_core::mcp::HarnessSubstrateError> {
+        let Some(engine) = self.engine.as_ref() else {
+            return Err(proxima_core::mcp::HarnessSubstrateError::Tool(
+                "wake-scoped substrate dispatch requires an attached engine".into(),
+            ));
+        };
+        let Some(wake) = engine.wake_token_store().resolve(call.wake_token).await else {
+            return Err(proxima_core::mcp::HarnessSubstrateError::MissingWakeContext);
+        };
+        if wake.owner != call.owner {
+            return Err(proxima_core::mcp::HarnessSubstrateError::Unauthorized(
+                call.canonical_name,
+            ));
+        }
+        if !wake.palette.iter().any(|tool| tool == &call.canonical_name) {
+            return Err(proxima_core::mcp::HarnessSubstrateError::Unauthorized(
+                call.canonical_name,
+            ));
+        }
+
+        let mut author = call.author;
+        if author.caller_self_perspective.is_none() {
+            author.caller_self_perspective = Some(wake.current_root_perspective_memory_id);
+        }
+
+        let auth = crate::auth::McpAuthContext {
+            owner: wake.owner.clone(),
+            scope: crate::auth::McpToolScope::Palette(wake.palette.clone()),
+            model_id: Some(wake.model_id.clone()),
+            wake: Some(wake),
+            master_token_id: None,
+        };
+
+        self.call_tool(&call.canonical_name, call.args, author, Some(auth))
+            .await
+            .map_err(|err| match err {
+                crate::server::ToolInvocationError::ToolNotFound(name) => {
+                    proxima_core::mcp::HarnessSubstrateError::ToolNotFound(name)
+                }
+                crate::server::ToolInvocationError::Tool(tool_err) => map_tool_error(tool_err),
+            })
+    }
+}
+
+fn map_tool_error(
+    err: proxima_core::mcp::McpToolError,
+) -> proxima_core::mcp::HarnessSubstrateError {
+    match err {
+        proxima_core::mcp::McpToolError::Storage(e) => {
+            proxima_core::mcp::HarnessSubstrateError::Storage(e.to_string())
+        }
+        proxima_core::mcp::McpToolError::LayeringViolation(s) => {
+            proxima_core::mcp::HarnessSubstrateError::Layering(s)
+        }
+        other => proxima_core::mcp::HarnessSubstrateError::Tool(other.to_string()),
+    }
+}
+
 async fn append_tool_log(
     engine: &Engine,
     auth: &McpAuthContext,

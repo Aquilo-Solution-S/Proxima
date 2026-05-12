@@ -1,4 +1,435 @@
-//! Loop driver — filled in Task 4.3. Stub `HarnessLoop` for now.
+//! `HarnessLoop` — the concrete `HarnessAdapter` impl.
 
-#[derive(Debug, Default)]
-pub struct HarnessLoop;
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Instant;
+
+use async_trait::async_trait;
+use proxima_core::Engine;
+use proxima_core::harness::{
+    ErrorClass, FinishReason, HarnessAdapter, HarnessContext, HarnessError, HarnessOutcome,
+    HarnessProgram, ProviderTarget, classify_outcome, duration_ms,
+};
+use serde_json::json;
+use tokio_util::sync::CancellationToken;
+
+use crate::conversation::{ToolResultStatus, ToolResultTurn, Turn};
+use crate::program::{ResolvedProgram, resolve};
+use crate::providers::mistral_chat::MistralChatClient;
+use crate::providers::{ProviderClient, ProviderError, RoundResult};
+use crate::tools::workspace::dispatch as workspace_dispatch;
+use crate::tools::{ToolBinding, WorkspaceCtx};
+use crate::trace::jsonl::JsonlBuffer;
+
+#[derive(Clone)]
+pub struct HarnessLoop {
+    pub engine: Arc<Engine>,
+    pub substrate_bridge: Arc<dyn proxima_core::mcp::HarnessSubstrateBridge>,
+    pub jsonl_cap_bytes: usize,
+}
+
+impl HarnessLoop {
+    #[must_use]
+    pub fn new(
+        engine: Arc<Engine>,
+        substrate_bridge: Arc<dyn proxima_core::mcp::HarnessSubstrateBridge>,
+    ) -> Self {
+        Self {
+            engine,
+            substrate_bridge,
+            jsonl_cap_bytes: 5 * 1024 * 1024,
+        }
+    }
+}
+
+impl std::fmt::Debug for HarnessLoop {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HarnessLoop")
+            .field("jsonl_cap_bytes", &self.jsonl_cap_bytes)
+            .finish_non_exhaustive()
+    }
+}
+
+#[async_trait]
+impl HarnessAdapter for HarnessLoop {
+    async fn run(
+        &self,
+        program: HarnessProgram,
+        ctx: HarnessContext,
+    ) -> Result<HarnessOutcome, HarnessError> {
+        let max_rounds = program.max_rounds;
+        let workspace_root = program.workspace_root.clone();
+        let provider_target = program.provider.clone();
+        let model_id = model_id_for_log(&provider_target);
+        let provider = build_provider(&provider_target).ok_or_else(|| {
+            HarnessError::InvalidProvider("unsupported provider for this phase".into())
+        })?;
+
+        let substrate_tools =
+            resolve_substrate_tools(&*self.substrate_bridge, &program.substrate_tool_palette)
+                .map_err(HarnessError::Internal)?;
+        let resolved = resolve(program, &substrate_tools);
+
+        run_loop(
+            self,
+            &*provider,
+            resolved,
+            workspace_root,
+            ctx,
+            max_rounds,
+            &model_id,
+        )
+        .await
+    }
+}
+
+fn model_id_for_log(target: &ProviderTarget) -> String {
+    match target {
+        ProviderTarget::MistralChat { model_id, .. }
+        | ProviderTarget::OpenAIChat { model_id, .. }
+        | ProviderTarget::OpenAIResponses { model_id, .. } => model_id.clone(),
+    }
+}
+
+fn build_provider(target: &ProviderTarget) -> Option<Box<dyn ProviderClient>> {
+    match target {
+        ProviderTarget::MistralChat {
+            base_url,
+            model_id,
+            api_key,
+            temperature,
+            max_completion_tokens,
+        } => Some(Box::new(MistralChatClient {
+            http: reqwest::Client::new(),
+            base_url: base_url.clone(),
+            model_id: model_id.clone(),
+            api_key: api_key.clone(),
+            temperature: *temperature,
+            max_completion_tokens: *max_completion_tokens,
+        })),
+        ProviderTarget::OpenAIChat { .. } | ProviderTarget::OpenAIResponses { .. } => None,
+    }
+}
+
+fn resolve_substrate_tools(
+    bridge: &dyn proxima_core::mcp::HarnessSubstrateBridge,
+    palette: &[String],
+) -> Result<Vec<proxima_core::harness::SubstrateToolBinding>, String> {
+    let mut by_name: HashMap<_, _> = bridge
+        .list_harness_tools(palette)
+        .into_iter()
+        .map(|spec| (spec.canonical_name.clone(), spec))
+        .collect();
+    let mut out = Vec::with_capacity(palette.len());
+
+    for name in palette {
+        let Some(spec) = by_name.remove(name) else {
+            return Err(format!("unknown_substrate_tool:{name}"));
+        };
+        out.push(proxima_core::harness::SubstrateToolBinding {
+            canonical_name: spec.canonical_name,
+            description: spec.description,
+            args_schema: spec.args_schema,
+        });
+    }
+
+    Ok(out)
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "wake loop state is clearer in one place"
+)]
+async fn run_loop(
+    loop_: &HarnessLoop,
+    provider: &dyn ProviderClient,
+    mut resolved: ResolvedProgram,
+    workspace_root: Option<std::path::PathBuf>,
+    ctx: HarnessContext,
+    max_rounds: u32,
+    model_id: &str,
+) -> Result<HarnessOutcome, HarnessError> {
+    let started = Instant::now();
+    let cancel = CancellationToken::new();
+    let cancel_clone = cancel.clone();
+    let invocation_timeout = ctx.invocation_timeout;
+    tokio::spawn(async move {
+        tokio::time::sleep(invocation_timeout).await;
+        cancel_clone.cancel();
+    });
+
+    let mut jsonl = JsonlBuffer::with_capacity(loop_.jsonl_cap_bytes);
+    jsonl.append(&json!({
+        "record": "start",
+        "invocation_id": ctx.invocation_id,
+        "model_id": model_id,
+        "max_rounds": max_rounds,
+    }));
+
+    let mut rounds_used = 0;
+    let mut tool_call_count = 0;
+
+    let (finish_reason, error_class, failure_reason) = loop {
+        if max_rounds > 0 && rounds_used >= max_rounds {
+            break (FinishReason::MaxRounds, ErrorClass::None, None);
+        }
+
+        rounds_used += 1;
+        jsonl.append(&json!({
+            "record": "round_start",
+            "round_idx": rounds_used,
+        }));
+
+        let round = provider
+            .tool_round(&resolved.conversation, &resolved.tools, cancel.clone())
+            .await;
+
+        match round {
+            Ok(RoundResult::Final {
+                text,
+                raw_assistant,
+            }) => {
+                jsonl.append(&json!({
+                    "record": "assistant_message",
+                    "round_idx": rounds_used,
+                    "text_excerpt": excerpt(&text, 2000),
+                    "tool_call_count": 0,
+                }));
+                resolved
+                    .conversation
+                    .turns
+                    .push(Turn::Assistant(raw_assistant));
+                break (FinishReason::Stop, ErrorClass::None, None);
+            }
+            Ok(RoundResult::LengthCap {
+                partial_text,
+                raw_assistant,
+            }) => {
+                jsonl.append(&json!({
+                    "record": "assistant_message",
+                    "round_idx": rounds_used,
+                    "text_excerpt": excerpt(partial_text.as_deref().unwrap_or(""), 2000),
+                    "length_cap": true,
+                }));
+                resolved
+                    .conversation
+                    .turns
+                    .push(Turn::Assistant(raw_assistant));
+                break (FinishReason::Length, ErrorClass::None, None);
+            }
+            Ok(RoundResult::ToolCalls {
+                calls,
+                raw_assistant,
+            }) => {
+                resolved
+                    .conversation
+                    .turns
+                    .push(Turn::Assistant(raw_assistant));
+
+                for call in calls {
+                    tool_call_count += 1;
+                    let canonical = resolved
+                        .reverse_map
+                        .get(&call.tool_name)
+                        .cloned()
+                        .unwrap_or_else(|| call.tool_name.clone());
+                    jsonl.append(&json!({
+                        "record": "tool_call",
+                        "round_idx": rounds_used,
+                        "call_id": call.call_id,
+                        "tool_name": canonical,
+                        "args": call.arguments,
+                    }));
+
+                    let dispatch_started = Instant::now();
+                    let result = dispatch_one(
+                        loop_,
+                        &resolved,
+                        &canonical,
+                        call.arguments.clone(),
+                        workspace_root.as_deref(),
+                        &ctx,
+                        model_id,
+                    )
+                    .await;
+                    let duration = duration_ms(dispatch_started.elapsed());
+                    let (status, content, fatal) = match result {
+                        DispatchOne::Ok(value) => (ToolResultStatus::Ok, value, None),
+                        DispatchOne::Recoverable(message) => {
+                            (ToolResultStatus::Error, json!({ "error": message }), None)
+                        }
+                        DispatchOne::Fatal(message) => (
+                            ToolResultStatus::Error,
+                            json!({ "error": message }),
+                            Some(message),
+                        ),
+                        DispatchOne::Unknown => (
+                            ToolResultStatus::Error,
+                            json!({ "error": "unknown_tool", "tool_name": canonical }),
+                            None,
+                        ),
+                    };
+                    jsonl.append(&json!({
+                        "record": "tool_result",
+                        "round_idx": rounds_used,
+                        "call_id": call.call_id,
+                        "status": status,
+                        "duration_ms": duration,
+                    }));
+                    resolved
+                        .conversation
+                        .turns
+                        .push(Turn::ToolResult(ToolResultTurn {
+                            call_id: call.call_id,
+                            status,
+                            content,
+                        }));
+
+                    if let Some(message) = fatal {
+                        return Ok(finish_outcome(
+                            &mut jsonl,
+                            started,
+                            FinishReason::ToolCalls,
+                            ErrorClass::ToolDispatchFatal,
+                            Some(message),
+                            rounds_used,
+                            max_rounds,
+                            tool_call_count,
+                        ));
+                    }
+                }
+            }
+            Err(error) => {
+                let (class, message) = error_class_for(&error);
+                jsonl.append(&json!({
+                    "record": "provider_error",
+                    "round_idx": rounds_used,
+                    "class": format!("{class:?}"),
+                    "message": message,
+                }));
+                break (FinishReason::Stop, class, Some(message));
+            }
+        }
+    };
+
+    Ok(finish_outcome(
+        &mut jsonl,
+        started,
+        finish_reason,
+        error_class,
+        failure_reason,
+        rounds_used,
+        max_rounds,
+        tool_call_count,
+    ))
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "outcome fields are intentionally explicit"
+)]
+fn finish_outcome(
+    jsonl: &mut JsonlBuffer,
+    started: Instant,
+    finish_reason: FinishReason,
+    error_class: ErrorClass,
+    failure_reason: Option<String>,
+    rounds_used: u32,
+    max_rounds: u32,
+    tool_call_count: u32,
+) -> HarnessOutcome {
+    let duration = duration_ms(started.elapsed());
+    let kind = classify_outcome(finish_reason, error_class, rounds_used, max_rounds);
+    jsonl.append(&json!({
+        "record": "finish",
+        "outcome_kind": format!("{kind:?}"),
+        "failure_reason": failure_reason,
+        "rounds_used": rounds_used,
+        "total_duration_ms": duration,
+    }));
+    let snapshot = jsonl.snapshot();
+    HarnessOutcome {
+        kind,
+        finish_reason,
+        error_class,
+        failure_reason,
+        rounds_used,
+        duration_ms: duration,
+        total_prompt_tokens: None,
+        total_completion_tokens: None,
+        tool_call_count,
+        jsonl_bytes: snapshot.bytes,
+        jsonl_truncated: snapshot.truncated,
+    }
+}
+
+enum DispatchOne {
+    Ok(serde_json::Value),
+    Recoverable(String),
+    Fatal(String),
+    Unknown,
+}
+
+async fn dispatch_one(
+    loop_: &HarnessLoop,
+    resolved: &ResolvedProgram,
+    canonical: &str,
+    args: serde_json::Value,
+    workspace_root: Option<&std::path::Path>,
+    ctx: &HarnessContext,
+    model_id: &str,
+) -> DispatchOne {
+    match resolved.bindings.get(canonical) {
+        Some(ToolBinding::Substrate(binding)) => {
+            use crate::tools::substrate_dispatch::{SubstrateDispatchResult, dispatch};
+            match dispatch(&loop_.substrate_bridge, binding, args, ctx, model_id).await {
+                SubstrateDispatchResult::Ok(value) => DispatchOne::Ok(value),
+                SubstrateDispatchResult::Recoverable(message) => DispatchOne::Recoverable(message),
+                SubstrateDispatchResult::Fatal(message) => DispatchOne::Fatal(message),
+            }
+        }
+        Some(ToolBinding::Workspace(name)) => {
+            let Some(root) = workspace_root else {
+                return DispatchOne::Recoverable(
+                    "workspace tool called in non-workspace wake".to_string(),
+                );
+            };
+            match workspace_dispatch(
+                *name,
+                args,
+                &WorkspaceCtx {
+                    workspace_root: root.to_path_buf(),
+                },
+            )
+            .await
+            {
+                Ok(value) => DispatchOne::Ok(value),
+                Err(error) => DispatchOne::Recoverable(error.to_string()),
+            }
+        }
+        None => DispatchOne::Unknown,
+    }
+}
+
+fn error_class_for(error: &ProviderError) -> (ErrorClass, String) {
+    match error {
+        ProviderError::Auth => (ErrorClass::Auth, "auth".to_string()),
+        ProviderError::RateLimited { .. } => (ErrorClass::RateLimited, "rate_limited".to_string()),
+        ProviderError::ContextLength => (ErrorClass::ContextLength, "context_length".to_string()),
+        ProviderError::InvalidRequest(message) => (ErrorClass::InvalidRequest, message.clone()),
+        ProviderError::ServerError(message) => (ErrorClass::ServerError, message.clone()),
+        ProviderError::Network(message) => (ErrorClass::Network, message.clone()),
+        ProviderError::Timeout => (ErrorClass::Timeout, "timeout".to_string()),
+        ProviderError::Deserialize(message) => (ErrorClass::Deserialize, message.clone()),
+    }
+}
+
+fn excerpt(value: &str, max_chars: usize) -> String {
+    let mut chars = value.chars();
+    let excerpt: String = chars.by_ref().take(max_chars).collect();
+    if chars.next().is_some() {
+        format!("{excerpt}...")
+    } else {
+        excerpt
+    }
+}

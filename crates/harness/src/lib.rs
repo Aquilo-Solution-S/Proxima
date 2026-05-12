@@ -14,3 +14,7 @@ pub mod tools;
 pub mod trace;
 
 pub use loop_driver::HarnessLoop;
+pub use proxima_core::harness::{
+    HarnessAdapter, HarnessContext, HarnessError, HarnessOutcome, HarnessOutcomeKind,
+    HarnessProgram, ProviderTarget, SubstrateToolBinding,
+};

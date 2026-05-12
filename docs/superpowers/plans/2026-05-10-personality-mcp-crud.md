@@ -928,9 +928,9 @@ impl McpToolCtx {
 Run: `grep -n 'pub fn storage' crates/core/src/engine/mod.rs`
 Expected: shows the accessor (or its actual name). Adjust the helper.
 
-- [ ] **Step 4: Update `DevMcpServer::ctx` to populate the new field**
+- [ ] **Step 4: Update `McpToolHost::ctx` to populate the new field**
 
-In `crates/mcp-server/src/server.rs`, modify `DevMcpServer::ctx`:
+In `crates/mcp-server/src/server.rs`, modify `McpToolHost::ctx`:
 
 ```rust
 #[must_use]
@@ -3830,7 +3830,7 @@ use std::time::Duration;
 
 use proxima_core::wake::token_store::WakeTokenStore;
 use proxima_core::{FlavorRegistry, OrgId, Owner, Principal, UserId};
-use proxima_mcp_server::{DevMcpServer, McpAuthStore, default_allowlist, serve_streamable_http};
+use proxima_mcp_server::{McpToolHost, McpAuthStore, default_allowlist, serve_streamable_http};
 use serde_json::{Value, json};
 use sqlx::{Connection, Executor, PgConnection};
 
@@ -3845,7 +3845,7 @@ async fn discovery_to_mutation_smoke() -> Result<(), Box<dyn std::error::Error>>
         org_id: OrgId::new(uuid::Uuid::now_v7()),
     };
     let registry = FlavorRegistry::new();
-    let server = DevMcpServer::from_database_url(&database_url, owner.clone(), registry).await?;
+    let server = McpToolHost::from_database_url(&database_url, owner.clone(), registry).await?;
     let store = Arc::new(WakeTokenStore::new(Duration::from_mins(5)));
     let auth_store = Arc::new(McpAuthStore::new(store));
     let master_token = uuid::Uuid::now_v7();
@@ -3996,7 +3996,7 @@ use proxima_core::{
     FlavorRegistry, InstantiatePersonalityRequest, OrgId, Owner, Principal,
     UserId,
 };
-use proxima_mcp_server::{DevMcpServer, McpAuthStore, default_allowlist, serve_streamable_http};
+use proxima_mcp_server::{McpToolHost, McpAuthStore, default_allowlist, serve_streamable_http};
 use serde_json::json;
 use sqlx::{Connection, Executor, PgConnection};
 
@@ -4035,7 +4035,7 @@ async fn drop_db(name: &str) -> Result<(), Box<dyn std::error::Error>> {
 - [ ] **Step 2: Implement the test body**
 
 Replace the `todo!()` with concrete steps:
-1. Build a `DevMcpServer.with_engine(engine)`.
+1. Build a `McpToolHost.with_engine(engine)`.
 2. Instantiate a personality via the engine API.
 3. Mint a `WakeTokenContext` whose `current_root_perspective_memory_id` matches the personality's Root.
 4. Construct an `McpToolCtx` with `caller_self_perspective: Some(root)`.

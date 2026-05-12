@@ -18,7 +18,7 @@ logic) starts attributing correctly without per-tool changes.
 trait method `ensure_master_token_personality(owner, master_token_id)
 → MasterTokenPersonality { instance_id, self_perspective_memory_id }`.
 MCP server's auth layer surfaces `master_token_id` on
-`McpAuthContext`; `DevMcpServer::call_tool` ensures the per-token
+`McpAuthContext`; `McpToolHost::call_tool` ensures the per-token
 personality on every master-token call and threads
 `self_perspective_memory_id` into `ctx.caller_self_perspective` (and
 `master_token_id` into a new field on `McpToolCtx`). Audit code
@@ -521,7 +521,7 @@ git commit -m "feat(core): master_token_id on McpToolCtx"
 
 ---
 
-### Task 6: Wire ensure-on-call in `DevMcpServer::call_tool`
+### Task 6: Wire ensure-on-call in `McpToolHost::call_tool`
 
 **Files:**
 - Modify: `crates/mcp-server/src/server.rs:87-117`
@@ -713,7 +713,7 @@ git commit -m "test: align ctx fixtures with M0 master-token contract"
 //! caller_self_perspective + master_token_id.
 //!
 //! This rides on the same scaffolding the existing rmcp tests use
-//! (search this directory for `DevMcpServer` setup helpers).
+//! (search this directory for `McpToolHost` setup helpers).
 
 mod common;
 
@@ -801,8 +801,8 @@ If `crates/mcp-server/tests/common.rs` doesn't already export
 `fresh_engine_with_pg` and `with_master_token`, mirror the patterns
 in the closest existing rmcp integration test file in that
 directory. Both helpers are short:
-- `fresh_engine_with_pg` returns `Option<(Arc<Engine>, DevMcpServer, Owner)>` skipping when no PG is available (same shape as `fresh_pg`).
-- `with_master_token` calls `server.auth().replace_local_master_token(token, owner)` (expose `auth()` getter on `DevMcpServer` if not already public).
+- `fresh_engine_with_pg` returns `Option<(Arc<Engine>, McpToolHost, Owner)>` skipping when no PG is available (same shape as `fresh_pg`).
+- `with_master_token` calls `server.auth().replace_local_master_token(token, owner)` (expose `auth()` getter on `McpToolHost` if not already public).
 
 - [ ] **Step 2: Run the test**
 
