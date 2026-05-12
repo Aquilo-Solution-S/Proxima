@@ -26,6 +26,7 @@ const wakeEntry = (
   probability_promille: 1000,
   goal_scope: "none",
   recipe_ref: "user:default.yaml",
+  instructions: "",
   model_tier: "standard",
   inference_target_ref: null,
   substrate_tool_palette: [],

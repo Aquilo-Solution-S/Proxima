@@ -12,7 +12,7 @@ use uuid::Uuid;
 use crate::error::ProtocolError;
 use crate::personality::types::{
     PersonalityMemoryKind, WakeChainDepth, WakeEntryAuthoredBy, WakeEntryGoalScope,
-    WakeExecutionMode, WakeEntryTriggerKind,
+    WakeEntryTriggerKind, WakeExecutionMode,
 };
 use crate::{MemoryId, ModelTier, Owner, RegisteredRelation, SchemaId, SchemaVersion};
 
@@ -31,6 +31,7 @@ pub struct WakeEntryDraft {
     pub probability_promille: u16,
     pub goal_scope: WakeEntryGoalScope,
     pub recipe_ref: String,
+    pub instructions: String,
     pub model_tier: ModelTier,
     pub inference_target_ref: Option<String>,
     pub substrate_tool_palette: Vec<String>,
@@ -71,6 +72,7 @@ impl WakeEntryDraft {
             probability_promille,
             goal_scope: WakeEntryGoalScope::None,
             recipe_ref: recipe_ref.into(),
+            instructions: String::new(),
             model_tier,
             inference_target_ref,
             substrate_tool_palette,

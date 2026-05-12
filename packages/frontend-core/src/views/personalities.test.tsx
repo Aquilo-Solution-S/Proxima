@@ -45,6 +45,7 @@ const wakeEntry = (overrides: Partial<WakeEntryTs> = {}): WakeEntryTs => ({
   probability_promille: 1000,
   goal_scope: "none",
   recipe_ref: "user:default.yaml",
+  instructions: "",
   model_tier: "standard",
   inference_target_ref: null,
   substrate_tool_palette: [],
@@ -472,6 +473,7 @@ describe("PersonalitiesView", () => {
             probability_promille: 1000,
             goal_scope: "none",
             recipe_ref: "user:default.yaml",
+            instructions: "",
             model_tier: "standard",
             inference_target_ref: null,
             substrate_tool_palette: [],
@@ -659,6 +661,29 @@ describe("PersonalitiesView", () => {
       expect(setWakeEntries).toHaveBeenCalled();
       expect(setWakeEntries.mock.calls[0][0].entries[0].recipe_ref).toBe(
         "user:review.yaml",
+      );
+    });
+  });
+
+  it("edits wake entry instructions and sends them on save", async () => {
+    const row = instance();
+    const { client, setWakeEntries } = mockClient([row]);
+
+    render(() => <PersonalitiesView client={client} owner={owner} />);
+
+    await selectPersonality("Engineer");
+    await selectEntry("react-to-commit");
+
+    const textarea = screen.getByLabelText("Instructions") as HTMLTextAreaElement;
+    fireEvent.input(textarea, {
+      target: { value: "Summarize the triggering commit and decide next action." },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => {
+      expect(setWakeEntries).toHaveBeenCalled();
+      expect(setWakeEntries.mock.calls[0][0].entries[0].instructions).toBe(
+        "Summarize the triggering commit and decide next action.",
       );
     });
   });

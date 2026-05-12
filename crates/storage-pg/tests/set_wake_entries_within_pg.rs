@@ -27,6 +27,7 @@ fn wake_entry(
         probability_promille: 1000,
         goal_scope: proxima_core::WakeEntryGoalScope::None,
         recipe_ref: "proxima-code/engineer".to_string(),
+        instructions: String::new(),
         model_tier: ModelTier::Standard,
         inference_target_ref: None,
         substrate_tool_palette: vec![],
@@ -100,7 +101,8 @@ async fn set_wake_entries_within_preserves_carried_entry_id()
         .await?;
 
     let pid = inst.instance_id;
-    let first = wake_entry(pid, "core/personality_config_changed_v1", "first");
+    let mut first = wake_entry(pid, "core/personality_config_changed_v1", "first");
+    first.instructions = "carry this instruction body".into();
     let first_id = first.wake_entry_id;
     pg.set_wake_entries_within(&owner, pid, Box::new(move |_| Ok(vec![first.clone()])))
         .await?;
@@ -111,6 +113,7 @@ async fn set_wake_entries_within_preserves_carried_entry_id()
         Box::new(move |current: &[WakeEntryDraft]| {
             assert_eq!(current.len(), 1);
             assert_eq!(current[0].wake_entry_id, first_id);
+            assert_eq!(current[0].instructions, "carry this instruction body");
             let mut carried = current[0].clone();
             carried.label = "first carried".into();
             Ok(vec![
@@ -127,11 +130,9 @@ async fn set_wake_entries_within_preserves_carried_entry_id()
         .find(|r| r.personality_instance_id == pid)
         .expect("found");
     assert_eq!(row.wake_entries.len(), 2);
-    assert!(
-        row.wake_entries
-            .iter()
-            .any(|e| e.wake_entry_id == first_id && e.label == "first carried")
-    );
+    assert!(row.wake_entries.iter().any(|e| e.wake_entry_id == first_id
+        && e.label == "first carried"
+        && e.instructions == "carry this instruction body"));
 
     drop_db(&db).await?;
     Ok(())

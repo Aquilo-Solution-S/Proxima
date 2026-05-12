@@ -1,13 +1,16 @@
-# Task 6.2 — `WakeEntryRow` Rust shape
+# Task 6.2 — `WakeEntry.instructions` core/storage round-trip
 
 > Part of [Proxima Harness Implementation Plan](README.md). Subagent execution: implement steps in order, commit at the end of the task.
 
 **Files:**
+- Modify: `crates/core/src/personality/drafts.rs`
 - Modify: `crates/core/src/personality/rows.rs`
+- Modify: `crates/core/src/wake/dispatch.rs`
+- Modify: `crates/storage-pg/src/verbs/consolidate/{wake_entries.rs,instances.rs}`
 
 - [ ] **Step 1: Add the field**
 
-In `WakeEntryRow` (around line 47–64), add `instructions: String` after `recipe_ref`:
+In `WakeEntryDraft` and `WakeEntryRow`, add `instructions: String` after `recipe_ref`:
 
 ```rust
 pub struct WakeEntryRow {
@@ -31,18 +34,24 @@ pub struct WakeEntryRow {
 }
 ```
 
-If `WakeEntryDraft` (likely nearby in the same file) carries the same fields, add `instructions: String` there as well. Use `String::new()` as the default for any test fixture / builder that materialises a row.
+Keep `WakeEntryDraft::new(...)`'s signature stable and initialise
+`instructions: String::new()`. Use `String::new()` as the default for
+any test fixture / builder that materialises a row.
 
 - [ ] **Step 2: Update storage SQL**
 
-Find the `SELECT` / `INSERT` for `personality_wake_entries` in `crates/storage-pg/src/`. Add `instructions` to both the column list and the `RETURNING`/`SELECT` shape. The query macro will fail at `cargo check` if the row no longer matches.
+Find the `SELECT` / `INSERT` / `UPSERT` paths for
+`personality_wake_entries` in `crates/storage-pg/src/`. Add
+`instructions` to the column lists, row structs, row mappers, and update
+sets. Ensure `set_wake_entries_within` preserves carried instructions
+because it reads current entries before applying the mutation.
 
-Run: `cargo check -p proxima-storage-pg`
+Run: `cargo check -p proxima-core -p proxima-storage-pg`
 Expected: green.
 
 - [ ] **Step 3: Update test fixtures**
 
-`grep -rn "WakeEntryRow {" crates/ flavors/ apps/ --include="*.rs"` to find every construction site. Add `instructions: String::new()` (or `instructions: String::from("…")` where the test cares about the value).
+`rg -n "WakeEntryDraft \\{|WakeEntryRow \\{" crates/ flavors/ apps/ -g "*.rs"` to find every construction site. Add `instructions: String::new()` or a meaningful value where the test asserts round-trip behavior.
 
 Run: `cargo build --workspace`
 Expected: green.
@@ -50,7 +59,6 @@ Expected: green.
 - [ ] **Step 4: Commit**
 
 ```bash
-git add crates/core/src/personality/rows.rs crates/storage-pg/src
-git commit -m "core(wake_entries): add instructions field; storage round-trips it"
+git add crates/core/src/personality crates/core/src/wake/dispatch.rs crates/storage-pg/src
+git commit -m "core(wake_entries): add user-authored instructions field"
 ```
-

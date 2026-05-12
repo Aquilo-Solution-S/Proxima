@@ -622,6 +622,18 @@ const WakeEntryDetail: Component<{
           What runs on each wake. Recipe weaves the per-trigger prose.
         </p>
         <div class="personality-section-grid">
+          <label class="personality-section-grid-full">
+            Instructions
+            <textarea
+              rows="7"
+              value={props.draft.instructions}
+              onInput={(event) =>
+                props.onUpdate((draft) => {
+                  draft.instructions = event.currentTarget.value;
+                })
+              }
+            />
+          </label>
           <RecipePicker
             recipeRef={props.draft.recipe_ref}
             recipes={props.recipes}

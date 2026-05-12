@@ -46,7 +46,7 @@ pub async fn list_personality_instances(
         "SELECT personality_instance_id,
                 wake_entry_id, trigger_kind, trigger_id, label, enabled,
                 execution_mode, authored_by, probability_promille, goal_scope, recipe_ref,
-                model_tier, inference_target_ref, substrate_tool_palette,
+                instructions, model_tier, inference_target_ref, substrate_tool_palette,
                 workspace_tool_palette, max_rounds, disabled_reason
          FROM proxima_core.personality_wake_entries
          WHERE owner_principal_kind = $1
@@ -80,6 +80,7 @@ pub async fn list_personality_instances(
                 .unwrap_or(0),
             goal_scope: parse_goal_scope(&row.get::<String, _>("goal_scope")),
             recipe_ref: row.get("recipe_ref"),
+            instructions: row.get("instructions"),
             model_tier: parse_model_tier(&row.get::<String, _>("model_tier")),
             inference_target_ref: row.get("inference_target_ref"),
             substrate_tool_palette: row.get("substrate_tool_palette"),

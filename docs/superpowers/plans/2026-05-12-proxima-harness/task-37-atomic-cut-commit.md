@@ -15,7 +15,6 @@ Expected: all tests pass, including:
 - `mistral_chat_replay`, `openai_chat_replay`, `openai_responses_replay`
 - `workspace_shell`, `workspace_text_editor`, `workspace_list_files`
 - `jsonl_buffer`, `substrate_dispatch`, `loop_driver`
-- `default_seeds` (code flavor)
 - `inference_target_migration`
 - the e2e wake test
 - every pre-existing test in the workspace
@@ -60,9 +59,8 @@ docs/superpowers/specs/2026-05-12-proxima-harness-design.md:
 - Construct HarnessLoop in every binary (engine, shell, code, mcp).
 - End-to-end test: Engineer wake → MistralChat mock → wake-trace Fact
   persisted with non-empty JSONL CitedObject.
-- Migrate Code's two default personalities to a native MistralChat or
-  OpenAIChat target; provisioning errors loudly if no API key env var
-  is set.
+- Existing user-defined personalities resolve native inference targets from
+  their WakeEntry tier binding or explicit `inference_target_ref`.
 
 This is the single commit Heinrich approved as the greenfield cut —
 no transition window, no deprecation lane, no coexistence variants.
@@ -86,7 +84,7 @@ EOF
 | Workspace tools (shell, text_editor, list_files) | Tasks 3.1–3.4 |
 | Substrate/flavor in-process dispatch + reverse-map | Tasks 4.1 + 4.2 + 4.4 |
 | Recipe lifecycle: kill the YAML | Tasks 6.1–6.5 + 8.4 |
-| Provisioning defaults (DefaultWakeEntrySeed) | Tasks 6.3–6.5 |
+| User-authored WakeEntry.instructions | Tasks 6.1–6.3 |
 | Three observability layers | Layer 1 in Task 2.4 + 4.3 (JSONL); Layer 2 in 4.3 (`wake_invocation_log` rows already written by existing code, harness adds `harness_round` phase rows — Task 4.3 sketch covers it); Layer 3 in Tasks 7.1 + 7.2 + 8.5 |
 | Changes in fire_wake_entry | Task 8.5 |
 | Provider scope (MistralChat + OpenAIChat + OpenAIResponses) | Phases 2 + 5 |

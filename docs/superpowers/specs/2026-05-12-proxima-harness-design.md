@@ -443,35 +443,18 @@ The MCP server (`crates/mcp-server`) **continues to exist** for external callers
   ```
 - `WakeEntry.recipe_ref` column is dropped in the same change (no compatibility window).
 
-**Provisioning defaults (where flavor-shipped instructions come from after YAML).**
+**User-authored wake instructions.**
 
-Killing the YAML files removes the build-time source of the default `instructions:` body that each flavor ships for its bundled personalities. Storage on `WakeEntry.instructions` doesn't answer "what does it get initialised to when a brand-new Owner sets up Proxima for the first time?"
+There are no flavor-shipped default personalities and no owner-default
+provisioning path. Personalities and their WakeEntries are user-defined.
+`WakeEntry.instructions` is therefore a runtime-authored field on the
+WakeEntry row, populated by `set_wake_entries`, MCP wake-entry tools, and
+the Personalities UI. Existing rows migrate with `instructions = ''`; users
+edit the field explicitly.
 
-The replacement is build-time-only, Rust-native:
-
-```rust
-// crates/core/src/personality/mod.rs (or each flavor crate)
-
-pub struct DefaultWakeEntrySeed {
-    pub trigger_kind: TriggerKind,
-    pub trigger_id: TriggerId,
-    pub palette: ToolPaletteSeed,
-    pub max_rounds: u16,
-    pub model_tier: ModelTier,
-    pub execution_mode: ExecutionMode,
-    pub instructions: &'static str,   // the body that used to live in recipes/*.yaml
-}
-
-pub trait Flavor {
-    fn default_personalities(&self) -> Vec<DefaultPersonalitySeed>;
-    // where DefaultPersonalitySeed contains the Root P perspective + a Vec<DefaultWakeEntrySeed>
-}
-```
-
-The current owner-default-provisioning path — the same path that today seeds the Engineer and Execution Worker personalities on a fresh Owner — copies `instructions` straight into the new `WakeEntry.instructions` column. (The exact module is to be located during implementation; the spec deliberately doesn't pin a path that may move.) Flavor authors edit their `instructions: &'static str` constants in Rust source; the value flows through `cargo build` straight into provisioning, just like every other flavor-shipped constant. No runtime templating, no YAML, no on-disk recipe registry.
-
-This satisfies the build-time-only contract that the flavor system already holds for tool schemas, perspective payloads, and registry entries (see `feature_no_doc_duplication` in repo discipline). The two existing recipes (`flavors/code/recipes/engineer.yaml` and `execution_worker.yaml`) become two `DefaultWakeEntrySeed` constants in `flavors/code/src/personalities.rs` — the `instructions:` field of `execution_worker.yaml` lines 43-75 moves verbatim to a `const EXECUTION_WORKER_INSTRUCTIONS: &str = ...` string.
-- A one-shot migration script (`scripts/migrate-recipes-to-wake-entries.rs`) reads each bundled YAML's `instructions:` field and writes it to the matching WakeEntry rows. The bundled `flavors/code/recipes/*.yaml` files are deleted in the same PR that flips the default flag.
+No seed trait, no default-personality constants, no YAML importer, no
+onboarding hook. The bundled recipes remain only until the Phase 8 cut
+removes Goose and `recipe_ref`.
 
 The `recipe_resolve.rs` / `recipe_validate.rs` modules are deleted alongside the YAML files.
 
@@ -639,13 +622,13 @@ Greenfield. No staging, no `#[deprecated]`, no coexistence window. Goose, the YA
 
 - `crates/harness/` crate with `HarnessAdapter` impl and three provider adapters (MistralChat, OpenAIChat, OpenAIResponses).
 - `InferenceTargetConfig` rewritten to the three-variant enum above; one-shot data migration translates every existing row before the cut commits (table above).
-- New `WakeEntry.instructions` column populated from each flavor's `DefaultWakeEntrySeed.instructions` constant.
+- New `WakeEntry.instructions` column populated only from user-authored wake-entry writes; existing rows default to `''`.
 - `proxima-core/wake-trace-v1` Fact + `wake-trace-jsonl-v1` CitedObject + `wake-trace-citation-v1` CitationMapping schemas registered.
 - `crates/core/src/wake/target_adapter/local_cli_goose.rs` deleted.
 - `crates/core/src/wake/target_adapter/mod.rs` `TargetAdapter` trait replaced by `HarnessAdapter` (same seam, new contract).
 - `crates/core/src/wake/fire/recipe.rs` (`write_effective_recipe`, `workspace_tool_supported`, recipe-rewrite helpers) deleted.
 - `crates/core/src/wake/fire/recipe_resolve.rs` and `recipe_validate.rs` deleted.
-- `flavors/code/recipes/engineer.yaml` and `execution_worker.yaml` deleted; their `instructions:` bodies move into `flavors/code/src/personalities.rs` as `&'static str` constants.
+- `flavors/code/recipes/engineer.yaml` and `execution_worker.yaml` deleted with the rest of the Goose recipe surface.
 - `WakeEntry.recipe_ref` column dropped; the `extensions:` rewriter that injects MCP URLs and palettes is gone.
 - Goose CLI dependency removed from `scripts/` and dev docs in the same commit.
 
@@ -681,7 +664,7 @@ Net deletion in the cut: ~700 lines of Rust, every recipe YAML, the entire "rege
 ## Out of scope
 
 - Streaming tool-call responses (v1.1).
-- A UI for editing `WakeEntry.instructions` (v1 ships SQL-only; the existing recipe-picker UI in the Personalities view is rewritten against the new column in a follow-up).
+- Default personalities, seed traits, and owner-default onboarding hooks.
 - Hosted/remote-engine inference targets (only direct provider HTTP is wired in v1).
-- Goose recipe import tooling — the one-shot data migration covers the bundled recipes shipped in this repo; user recipes living anywhere outside the repo are not migrated, the user re-writes them as `WakeEntry.instructions` rows.
+- Goose recipe import tooling; existing rows keep `instructions = ''` until edited.
 - Per-tool circuit-breaker tuning UI (defaults are hard-coded in v1).

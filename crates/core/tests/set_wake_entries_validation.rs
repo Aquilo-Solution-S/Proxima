@@ -353,6 +353,7 @@ fn entry(trigger: &str, recipe_ref: &str) -> WakeEntryDraft {
         probability_promille: 1000,
         goal_scope: proxima_core::WakeEntryGoalScope::None,
         recipe_ref: recipe_ref.into(),
+        instructions: String::new(),
         model_tier: ModelTier::Standard,
         inference_target_ref: None,
         substrate_tool_palette: vec![],

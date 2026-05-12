@@ -130,6 +130,7 @@ pub fn wake_entry_draft_from_proto(
             .map_err(|_| Status::invalid_argument("probability_promille > u16::MAX"))?,
         goal_scope: goal_scope_from_proto(proto.goal_scope)?,
         recipe_ref: proto.recipe_ref,
+        instructions: String::new(),
         model_tier: tier_from_proto(proto.model_tier)?,
         inference_target_ref: proto.inference_target_ref,
         substrate_tool_palette: proto.substrate_tool_palette,
