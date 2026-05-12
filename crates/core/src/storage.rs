@@ -27,6 +27,8 @@ use crate::verbs::close_batch::CloseBatchOutcome;
 use crate::verbs::event_history::{EventHistoryRequest, EventHistoryResponse};
 use crate::verbs::event_ingest::{EventDraft, EventIngestOutcome};
 use crate::verbs::goal_write::{GoalDraft, GoalWriteOutcome};
+use crate::verbs::persist_wake_trace::{WakeTracePersistInput, WakeTracePersistOutcome};
+use crate::verbs::schema::FlavorRegistryFrozen;
 use crate::verbs::subscribe::ChangeEventStream;
 
 #[derive(Debug, Clone, thiserror::Error)]
@@ -73,6 +75,17 @@ pub trait Storage: Send + Sync {
         &self,
         draft: &EventDraft,
     ) -> Result<EventIngestOutcome, StorageError>;
+
+    /// Atomic wake-trace materialization. One transaction writes the
+    /// wake-trace Fact, JSONL CitedObject, CitationMapping, all three
+    /// sidecars, the entity change event, and authorship/provenance
+    /// edges. Whole-verb replay returns the original ids with
+    /// `idempotent_replay = true`.
+    async fn persist_wake_trace_atomic(
+        &self,
+        registry: &FlavorRegistryFrozen,
+        input: &WakeTracePersistInput,
+    ) -> Result<WakeTracePersistOutcome, StorageError>;
 
     /// Atomic Goal write per docs/14 §GoalWrite.
     /// Single transaction inserting goal, goal_parents,
@@ -454,6 +467,14 @@ impl Storage for NoopStorage {
         &self,
         _draft: &EventDraft,
     ) -> Result<EventIngestOutcome, StorageError> {
+        Err(StorageError::Internal("NoopStorage rejects writes".into()))
+    }
+
+    async fn persist_wake_trace_atomic(
+        &self,
+        _registry: &FlavorRegistryFrozen,
+        _input: &WakeTracePersistInput,
+    ) -> Result<WakeTracePersistOutcome, StorageError> {
         Err(StorageError::Internal("NoopStorage rejects writes".into()))
     }
 
