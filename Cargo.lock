@@ -3557,6 +3557,7 @@ dependencies = [
  "blake3",
  "futures",
  "http",
+ "proxima-codex-auth",
  "proxima-core",
  "proxima-mcp-server",
  "reqwest 0.12.28",
