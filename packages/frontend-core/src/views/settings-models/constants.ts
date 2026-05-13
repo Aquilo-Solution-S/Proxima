@@ -15,6 +15,7 @@ export const TARGET_KIND_OPTIONS: {
   { kind: "mistral_chat", label: "Mistral Chat" },
   { kind: "openai_chat", label: "OpenAI Chat" },
   { kind: "openai_responses", label: "OpenAI Responses" },
+  { kind: "chatgpt_codex", label: "ChatGPT (subscription)" },
 ];
 
 export const kindLabel = (kind: InferenceTargetKind): string => {
@@ -25,6 +26,8 @@ export const kindLabel = (kind: InferenceTargetKind): string => {
       return "OpenAI Chat";
     case "openai_responses":
       return "OpenAI Responses";
+    case "chatgpt_codex":
+      return "ChatGPT (subscription)";
   }
 };
 
@@ -52,6 +55,14 @@ export const configSummary = (config: InferenceTargetConfigTs): string => {
       ].filter(Boolean);
       return details.join(" / ");
     }
+    case "chatgpt_codex": {
+      const details = [
+        config.base_url,
+        config.model_id,
+        config.reasoning_effort ? `${config.reasoning_effort} reasoning` : null,
+      ].filter(Boolean);
+      return details.join(" / ");
+    }
   }
 };
 
@@ -75,6 +86,13 @@ export const configKey = (config: InferenceTargetConfigTs): string => {
         config.api_key_env,
         config.reasoning_effort ?? null,
       ]);
+    case "chatgpt_codex":
+      return JSON.stringify([
+        config.kind,
+        config.base_url,
+        config.model_id,
+        config.reasoning_effort ?? null,
+      ]);
   }
 };
 
@@ -93,6 +111,8 @@ export const cloneConfig = (
       return { ...config, kind: "openai_chat" };
     case "openai_responses":
       return { ...config, kind: "openai_responses" };
+    case "chatgpt_codex":
+      return { ...config, kind: "chatgpt_codex" };
   }
 };
 
@@ -125,6 +145,13 @@ export const defaultConfigForKind = (
         base_url: placeholder.baseUrl,
         model_id: "",
         api_key_env: placeholder.apiKeyEnv,
+        reasoning_effort: null,
+      };
+    case "chatgpt_codex":
+      return {
+        kind: "chatgpt_codex",
+        base_url: placeholder.baseUrl,
+        model_id: "gpt-5.3-codex",
         reasoning_effort: null,
       };
   }
@@ -188,6 +215,16 @@ export const draftFromConfig = (
         maxCompletionTokens: "",
         reasoningEffort: config.reasoning_effort ?? "",
       };
+    case "chatgpt_codex":
+      return {
+        kind: config.kind,
+        baseUrl: config.base_url,
+        modelId: config.model_id,
+        apiKeyEnv: "",
+        temperature: "",
+        maxCompletionTokens: "",
+        reasoningEffort: config.reasoning_effort ?? "",
+      };
   }
 };
 
@@ -222,6 +259,13 @@ export const configFromDraft = (draft: TargetDraft): InferenceTargetConfigTs => 
         api_key_env: draft.apiKeyEnv.trim(),
         reasoning_effort: nullableString(draft.reasoningEffort),
       };
+    case "chatgpt_codex":
+      return {
+        kind: "chatgpt_codex",
+        base_url: draft.baseUrl.trim(),
+        model_id: draft.modelId.trim(),
+        reasoning_effort: nullableString(draft.reasoningEffort),
+      };
   }
 };
 
@@ -242,5 +286,9 @@ export const KIND_PLACEHOLDERS: Record<InferenceTargetKind, KindPlaceholder> = {
   openai_responses: {
     baseUrl: "https://api.openai.com",
     apiKeyEnv: "OPENAI_API_KEY",
+  },
+  chatgpt_codex: {
+    baseUrl: "https://chatgpt.com/backend-api/codex",
+    apiKeyEnv: "",
   },
 };
