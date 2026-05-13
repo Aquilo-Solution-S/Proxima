@@ -46,7 +46,7 @@ impl McpTool for SetWakeEntriesTool {
             let pid = ctx
                 .handles.as_ref().unwrap()
                 .resolve_personality(&args.personality)
-                .ok_or_else(|| McpToolError::UnknownHandle(args.personality.clone()))?;
+                .map_err(McpToolError::Resolve)?;
             let engine = ctx
                 .engine()
                 .ok_or_else(|| McpToolError::Other("engine unavailable".into()))?;

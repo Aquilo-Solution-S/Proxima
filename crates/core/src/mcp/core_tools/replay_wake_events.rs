@@ -45,14 +45,14 @@ impl McpTool for ReplayWakeEventsTool {
             let personality_instance_id = ctx
                 .handles.as_ref().unwrap()
                 .resolve_personality(&args.personality)
-                .ok_or_else(|| McpToolError::UnknownHandle(args.personality.clone()))?;
+                .map_err(McpToolError::Resolve)?;
             let wake_entry_id = args
                 .wake_entry
                 .as_deref()
                 .map(|handle| {
                     ctx.handles.as_ref().unwrap()
                         .resolve_wake_entry(handle)
-                        .ok_or_else(|| McpToolError::UnknownHandle(handle.to_string()))
+                        .map_err(McpToolError::Resolve)
                 })
                 .transpose()?;
             let after_seq = parse_optional_uuid("after_seq", args.after_seq)?;
@@ -140,6 +140,6 @@ mod tests {
         )
         .await
         .expect_err("unknown handle");
-        assert!(matches!(err, McpToolError::UnknownHandle(_)));
+        assert!(matches!(err, McpToolError::Resolve(crate::mcp::ResolveError::Unknown { .. })));
     }
 }

@@ -1,4 +1,4 @@
-use proxima_core::mcp::{EntityRef, McpTool, McpToolCtx, McpToolError};
+use proxima_core::mcp::{McpTool, McpToolCtx, McpToolError};
 use proxima_core::verbs::goal_write::{GoalAuthorship, GoalDraft, GoalState, SystemOrigin};
 use proxima_core::{EdgeId, GoalId, MemoryId, ToolId};
 use schemars::JsonSchema;
@@ -177,21 +177,7 @@ fn skipped_output(supersedes: &str, reason: impl Into<String>) -> MarkAchievedOu
 }
 
 fn resolve_goal_ref(ctx: &McpToolCtx, value: &str) -> Result<GoalId, McpToolError> {
-    if let Some(entity) = ctx.handles.as_ref().unwrap().resolve(value) {
-        return match entity {
-            EntityRef::Goal(id) => Ok(id),
-            EntityRef::Memory(_)
-            | EntityRef::Edge(_)
-            | EntityRef::FlavorObject { .. }
-            | EntityRef::Personality(_)
-            | EntityRef::WakeEntry(_) => Err(McpToolError::InvalidInput(
-                "goal must resolve to a Goal handle".into(),
-            )),
-        };
-    }
-    uuid::Uuid::parse_str(value)
-        .map(GoalId::new)
-        .map_err(|_| McpToolError::UnknownHandle(value.to_string()))
+    ctx.resolve_goal(value)
 }
 
 async fn resolve_evidence_refs(
@@ -201,17 +187,7 @@ async fn resolve_evidence_refs(
 ) -> Result<Vec<EvidenceRef>, McpToolError> {
     let mut out = Vec::with_capacity(evidence.len());
     for value in evidence {
-        let memory_id = match ctx.handles.as_ref().unwrap().resolve(value) {
-            Some(EntityRef::Memory(memory_id)) => memory_id,
-            Some(_) => {
-                return Err(McpToolError::InvalidInput(format!(
-                    "evidence {value} must resolve to a Memory handle"
-                )));
-            }
-            None => uuid::Uuid::parse_str(value)
-                .map(MemoryId::new)
-                .map_err(|_| McpToolError::UnknownHandle(value.clone()))?,
-        };
+        let memory_id = ctx.resolve_memory(value)?;
         out.push(load_evidence_ref(tx, ctx, memory_id, value).await?);
     }
     Ok(out)

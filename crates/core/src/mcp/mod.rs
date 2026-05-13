@@ -10,7 +10,7 @@ pub use core_tools::{
     AuditEmit, PersonalityConfigChangedCaller, PersonalityConfigChangedSubject,
     PersonalityConfigChangedV1, PersonalityConfigChangedVerb, emit_personality_config_changed,
 };
-pub use handles::{EntityRef, Handle, HandleTable, PreSeededHandles};
+pub use handles::{EntityKind, EntityRef, Handle, HandleTable, PreSeededHandles, ResolveError};
 
 use std::sync::Arc;
 
@@ -198,17 +198,15 @@ impl McpToolCtx {
     ///
     /// # Errors
     ///
-    /// Returns `McpToolError::UnknownHandle` in `Handles` mode if the
-    /// handle is unknown, and `McpToolError::InvalidInput` in `RawIds`
-    /// mode if `raw` is not a well-formed UUID. (Step 4 of the
-    /// handles-per-wake spec replaces these with kind-aware
-    /// `ResolveError`s.)
+    /// Returns `McpToolError::Resolve` in `Handles` mode if the handle
+    /// is unknown or names the wrong kind, and `McpToolError::InvalidInput`
+    /// in `RawIds` mode if `raw` is not a well-formed UUID.
     pub fn resolve_memory(&self, raw: &str) -> Result<MemoryId, McpToolError> {
         match self.mode {
             OutputMode::Handles => self
                 .handle_table()
                 .resolve_memory(raw)
-                .ok_or_else(|| McpToolError::UnknownHandle(raw.to_string())),
+                .map_err(McpToolError::Resolve),
             OutputMode::RawIds => raw
                 .parse::<uuid::Uuid>()
                 .map(MemoryId::new)
@@ -226,7 +224,7 @@ impl McpToolCtx {
             OutputMode::Handles => self
                 .handle_table()
                 .resolve_goal(raw)
-                .ok_or_else(|| McpToolError::UnknownHandle(raw.to_string())),
+                .map_err(McpToolError::Resolve),
             OutputMode::RawIds => raw
                 .parse::<uuid::Uuid>()
                 .map(GoalId::new)
@@ -244,7 +242,7 @@ impl McpToolCtx {
             OutputMode::Handles => self
                 .handle_table()
                 .resolve_edge(raw)
-                .ok_or_else(|| McpToolError::UnknownHandle(raw.to_string())),
+                .map_err(McpToolError::Resolve),
             OutputMode::RawIds => raw
                 .parse::<uuid::Uuid>()
                 .map(EdgeId::new)
@@ -262,7 +260,7 @@ impl McpToolCtx {
             OutputMode::Handles => self
                 .handle_table()
                 .resolve_personality(raw)
-                .ok_or_else(|| McpToolError::UnknownHandle(raw.to_string())),
+                .map_err(McpToolError::Resolve),
             OutputMode::RawIds => raw
                 .parse::<uuid::Uuid>()
                 .map(PersonalityInstanceId::new)
@@ -280,7 +278,7 @@ impl McpToolCtx {
             OutputMode::Handles => self
                 .handle_table()
                 .resolve_wake_entry(raw)
-                .ok_or_else(|| McpToolError::UnknownHandle(raw.to_string())),
+                .map_err(McpToolError::Resolve),
             OutputMode::RawIds => raw
                 .parse::<uuid::Uuid>()
                 .map_err(|e| McpToolError::InvalidInput(format!("not a uuid: {e}"))),
@@ -302,7 +300,7 @@ impl McpToolCtx {
             OutputMode::Handles => self
                 .handle_table()
                 .resolve_flavor_object(raw, kind)
-                .ok_or_else(|| McpToolError::UnknownHandle(raw.to_string())),
+                .map_err(McpToolError::Resolve),
             OutputMode::RawIds => raw
                 .parse::<uuid::Uuid>()
                 .map_err(|e| McpToolError::InvalidInput(format!("not a uuid: {e}"))),
@@ -314,14 +312,24 @@ impl McpToolCtx {
 pub enum McpToolError {
     #[error("invalid input: {0}")]
     InvalidInput(String),
+    /// Deprecated: prefer `Resolve(ResolveError)`. Kept for one cycle
+    /// until steps 5/6 sweep the last call sites — remove after.
     #[error("unknown handle: {0}")]
     UnknownHandle(String),
+    #[error("{0}")]
+    Resolve(ResolveError),
     #[error("layering violation: {0}")]
     LayeringViolation(String),
     #[error("storage: {0}")]
     Storage(#[from] crate::StorageError),
     #[error("{0}")]
     Other(String),
+}
+
+impl From<ResolveError> for McpToolError {
+    fn from(e: ResolveError) -> Self {
+        McpToolError::Resolve(e)
+    }
 }
 
 #[derive(Debug, Clone)]

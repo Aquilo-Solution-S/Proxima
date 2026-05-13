@@ -54,7 +54,7 @@ pub async fn resolve_repo_identifier(
     if trimmed.is_empty() {
         return Err(McpToolError::InvalidInput("repo_handle required".into()));
     }
-    if let Some(repo_id) = ctx
+    if let Ok(repo_id) = ctx
         .handles.as_ref().unwrap()
         .resolve_flavor_object(trimmed, super::REPO_HANDLE_KIND)
     {

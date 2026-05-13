@@ -1,6 +1,6 @@
 #![allow(clippy::missing_errors_doc)]
 
-use proxima_core::mcp::{EntityRef, McpTool, McpToolCtx, McpToolError};
+use proxima_core::mcp::{McpTool, McpToolCtx, McpToolError};
 use proxima_core::verbs::goal_write::{GoalAuthorship, GoalDraft, GoalState};
 use proxima_core::{EdgeId, GoalId};
 use schemars::JsonSchema;
@@ -52,22 +52,7 @@ pub async fn accept_goal(
     args: AcceptArgs,
     state: GoalState,
 ) -> Result<AcceptOutput, McpToolError> {
-    let proposal_id = match ctx
-        .handles.as_ref().unwrap()
-        .resolve(&args.proposal)
-        .ok_or_else(|| McpToolError::UnknownHandle(args.proposal.clone()))?
-    {
-        EntityRef::Goal(id) => id,
-        EntityRef::Memory(_)
-        | EntityRef::Edge(_)
-        | EntityRef::FlavorObject { .. }
-        | EntityRef::Personality(_)
-        | EntityRef::WakeEntry(_) => {
-            return Err(McpToolError::InvalidInput(
-                "proposal must resolve to a Goal handle".into(),
-            ));
-        }
-    };
+    let proposal_id = ctx.resolve_goal(&args.proposal)?;
     let supersedes_handle = ctx.handles.as_ref().unwrap().assign_goal(proposal_id);
 
     let mut tx = ctx.pool.begin().await.map_err(map_storage)?;

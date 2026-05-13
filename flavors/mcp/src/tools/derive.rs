@@ -1,4 +1,4 @@
-use proxima_core::mcp::{EntityRef, McpTool, McpToolCtx, McpToolError};
+use proxima_core::mcp::{McpTool, McpToolCtx, McpToolError};
 use proxima_core::{
     AbstractionPayload, CORE_DERIVED_FROM_RELATION, EdgeId, MemoryId, SchemaId, SchemaVersion,
 };
@@ -90,15 +90,8 @@ impl McpTool for DeriveTool {
 
             let mut source_uuids = Vec::with_capacity(args.source_handles.len());
             for handle in &args.source_handles {
-                match ctx.handles.as_ref().unwrap().resolve(handle) {
-                    Some(EntityRef::Memory(memory_id)) => source_uuids.push(memory_id.into_inner()),
-                    Some(_) => {
-                        return Err(McpToolError::InvalidInput(format!(
-                            "{handle} is not a memory handle"
-                        )));
-                    }
-                    None => return Err(McpToolError::UnknownHandle(handle.clone())),
-                }
+                let memory_id = ctx.resolve_memory(handle)?;
+                source_uuids.push(memory_id.into_inner());
             }
 
             let source_kinds = load_source_kinds(&ctx.pool, &ctx.owner, &source_uuids).await?;

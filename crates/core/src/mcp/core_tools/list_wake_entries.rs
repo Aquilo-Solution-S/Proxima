@@ -54,7 +54,7 @@ impl McpTool for ListWakeEntriesTool {
             let pid = ctx
                 .handles.as_ref().unwrap()
                 .resolve_personality(&args.personality)
-                .ok_or_else(|| McpToolError::UnknownHandle(args.personality.clone()))?;
+                .map_err(McpToolError::Resolve)?;
             let storage = ctx
                 .storage()
                 .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;
@@ -137,6 +137,6 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(matches!(err, McpToolError::UnknownHandle(_)));
+        assert!(matches!(err, McpToolError::Resolve(crate::mcp::ResolveError::Unknown { .. })));
     }
 }

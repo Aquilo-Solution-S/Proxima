@@ -13,6 +13,99 @@ pub enum EntityRef {
     WakeEntry(uuid::Uuid),
 }
 
+impl EntityRef {
+    #[must_use]
+    pub fn kind(&self) -> EntityKind {
+        match self {
+            EntityRef::Memory(_) => EntityKind::Memory,
+            EntityRef::Edge(_) => EntityKind::Edge,
+            EntityRef::Goal(_) => EntityKind::Goal,
+            EntityRef::FlavorObject { kind, .. } => EntityKind::FlavorObject { kind: kind.clone() },
+            EntityRef::Personality(_) => EntityKind::Personality,
+            EntityRef::WakeEntry(_) => EntityKind::WakeEntry,
+        }
+    }
+}
+
+/// Typed tag identifying which kind of entity a [`HandleTable`] entry
+/// resolves to. Used by [`ResolveError::WrongKind`] to tell the model
+/// what it asked for versus what it got.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EntityKind {
+    Memory,
+    Edge,
+    Goal,
+    FlavorObject { kind: String },
+    Personality,
+    WakeEntry,
+}
+
+impl EntityKind {
+    /// Stable handle prefix for this kind (`N`, `E`, `G`, `P`, `W`).
+    /// Flavor objects use flavor-defined prefixes — `<flavor>` is a
+    /// placeholder for messages.
+    #[must_use]
+    pub fn prefix(&self) -> &'static str {
+        match self {
+            EntityKind::Memory => "N",
+            EntityKind::Edge => "E",
+            EntityKind::Goal => "G",
+            EntityKind::FlavorObject { .. } => "<flavor>",
+            EntityKind::Personality => "P",
+            EntityKind::WakeEntry => "W",
+        }
+    }
+}
+
+impl std::fmt::Display for EntityKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EntityKind::Memory => write!(f, "Memory"),
+            EntityKind::Edge => write!(f, "Edge"),
+            EntityKind::Goal => write!(f, "Goal"),
+            EntityKind::FlavorObject { kind } => write!(f, "FlavorObject({kind})"),
+            EntityKind::Personality => write!(f, "Personality"),
+            EntityKind::WakeEntry => write!(f, "WakeEntry"),
+        }
+    }
+}
+
+/// Error returned by [`HandleTable`] resolver methods. Replaces the
+/// previous flat `Option<TypedId>` API; carries enough information for
+/// the model-facing wrapper to format a corrective message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResolveError {
+    /// `input` is not present in the table (typo, stale handle, or
+    /// malformed shape).
+    Unknown { input: String },
+    /// `input` is a valid handle but refers to a different kind of
+    /// entity than the caller asked for.
+    WrongKind {
+        input: String,
+        got: EntityKind,
+        expected: EntityKind,
+    },
+}
+
+impl std::fmt::Display for ResolveError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ResolveError::Unknown { input } => write!(f, "unknown handle: {input}"),
+            ResolveError::WrongKind {
+                input,
+                got,
+                expected,
+            } => write!(
+                f,
+                "expected {expected} handle ({}…), got {got} handle '{input}'",
+                expected.prefix(),
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ResolveError {}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Handle(String);
 
@@ -112,10 +205,11 @@ impl HandleTable {
         handle
     }
 
-    #[must_use]
-    pub fn resolve(&self, raw: &str) -> Option<EntityRef> {
+    pub fn resolve_entity(&self, raw: &str) -> Result<EntityRef, ResolveError> {
         if !is_valid_handle_shape(raw) {
-            return None;
+            return Err(ResolveError::Unknown {
+                input: raw.to_string(),
+            });
         }
         self.inner
             .lock()
@@ -123,81 +217,82 @@ impl HandleTable {
             .by_handle
             .get(raw)
             .cloned()
+            .ok_or_else(|| ResolveError::Unknown {
+                input: raw.to_string(),
+            })
     }
 
-    #[must_use]
-    pub fn resolve_memory(&self, raw: &str) -> Option<MemoryId> {
-        match self.resolve(raw)? {
-            EntityRef::Memory(id) => Some(id),
-            EntityRef::Edge(_)
-            | EntityRef::Goal(_)
-            | EntityRef::FlavorObject { .. }
-            | EntityRef::Personality(_)
-            | EntityRef::WakeEntry(_) => None,
+    pub fn resolve_memory(&self, raw: &str) -> Result<MemoryId, ResolveError> {
+        match self.resolve_entity(raw)? {
+            EntityRef::Memory(id) => Ok(id),
+            other => Err(ResolveError::WrongKind {
+                input: raw.to_string(),
+                got: other.kind(),
+                expected: EntityKind::Memory,
+            }),
         }
     }
 
-    #[must_use]
-    pub fn resolve_edge(&self, raw: &str) -> Option<EdgeId> {
-        match self.resolve(raw)? {
-            EntityRef::Edge(id) => Some(id),
-            EntityRef::Memory(_)
-            | EntityRef::Goal(_)
-            | EntityRef::FlavorObject { .. }
-            | EntityRef::Personality(_)
-            | EntityRef::WakeEntry(_) => None,
+    pub fn resolve_edge(&self, raw: &str) -> Result<EdgeId, ResolveError> {
+        match self.resolve_entity(raw)? {
+            EntityRef::Edge(id) => Ok(id),
+            other => Err(ResolveError::WrongKind {
+                input: raw.to_string(),
+                got: other.kind(),
+                expected: EntityKind::Edge,
+            }),
         }
     }
 
-    #[must_use]
-    pub fn resolve_goal(&self, raw: &str) -> Option<GoalId> {
-        match self.resolve(raw)? {
-            EntityRef::Goal(id) => Some(id),
-            EntityRef::Memory(_)
-            | EntityRef::Edge(_)
-            | EntityRef::FlavorObject { .. }
-            | EntityRef::Personality(_)
-            | EntityRef::WakeEntry(_) => None,
+    pub fn resolve_goal(&self, raw: &str) -> Result<GoalId, ResolveError> {
+        match self.resolve_entity(raw)? {
+            EntityRef::Goal(id) => Ok(id),
+            other => Err(ResolveError::WrongKind {
+                input: raw.to_string(),
+                got: other.kind(),
+                expected: EntityKind::Goal,
+            }),
         }
     }
 
-    #[must_use]
-    pub fn resolve_flavor_object(&self, raw: &str, kind: &str) -> Option<uuid::Uuid> {
-        match self.resolve(raw)? {
+    pub fn resolve_flavor_object(&self, raw: &str, kind: &str) -> Result<uuid::Uuid, ResolveError> {
+        match self.resolve_entity(raw)? {
             EntityRef::FlavorObject {
                 kind: actual_kind,
                 id,
-            } if actual_kind == kind => Some(id),
-            EntityRef::FlavorObject { .. }
-            | EntityRef::Memory(_)
-            | EntityRef::Edge(_)
-            | EntityRef::Goal(_)
-            | EntityRef::Personality(_)
-            | EntityRef::WakeEntry(_) => None,
+            } if actual_kind == kind => Ok(id),
+            other => Err(ResolveError::WrongKind {
+                input: raw.to_string(),
+                got: other.kind(),
+                expected: EntityKind::FlavorObject {
+                    kind: kind.to_string(),
+                },
+            }),
         }
     }
 
-    #[must_use]
-    pub fn resolve_personality(&self, raw: &str) -> Option<PersonalityInstanceId> {
-        match self.resolve(raw)? {
-            EntityRef::Personality(id) => Some(id),
-            EntityRef::Memory(_)
-            | EntityRef::Edge(_)
-            | EntityRef::Goal(_)
-            | EntityRef::FlavorObject { .. }
-            | EntityRef::WakeEntry(_) => None,
+    pub fn resolve_personality(
+        &self,
+        raw: &str,
+    ) -> Result<PersonalityInstanceId, ResolveError> {
+        match self.resolve_entity(raw)? {
+            EntityRef::Personality(id) => Ok(id),
+            other => Err(ResolveError::WrongKind {
+                input: raw.to_string(),
+                got: other.kind(),
+                expected: EntityKind::Personality,
+            }),
         }
     }
 
-    #[must_use]
-    pub fn resolve_wake_entry(&self, raw: &str) -> Option<uuid::Uuid> {
-        match self.resolve(raw)? {
-            EntityRef::WakeEntry(id) => Some(id),
-            EntityRef::Memory(_)
-            | EntityRef::Edge(_)
-            | EntityRef::Goal(_)
-            | EntityRef::FlavorObject { .. }
-            | EntityRef::Personality(_) => None,
+    pub fn resolve_wake_entry(&self, raw: &str) -> Result<uuid::Uuid, ResolveError> {
+        match self.resolve_entity(raw)? {
+            EntityRef::WakeEntry(id) => Ok(id),
+            other => Err(ResolveError::WrongKind {
+                input: raw.to_string(),
+                got: other.kind(),
+                expected: EntityKind::WakeEntry,
+            }),
         }
     }
 }
@@ -250,9 +345,15 @@ mod tests {
     }
 
     #[test]
-    fn resolve_unknown_handle_returns_none() {
+    fn resolve_unknown_handle_returns_unknown_error() {
         let table = HandleTable::new();
-        assert!(table.resolve("N99").is_none());
+        let err = table.resolve_entity("N99").unwrap_err();
+        assert_eq!(
+            err,
+            ResolveError::Unknown {
+                input: "N99".into()
+            }
+        );
     }
 
     #[test]
@@ -260,17 +361,23 @@ mod tests {
         let table = HandleTable::new();
         let m = MemoryId::new(Uuid::now_v7());
         let h = table.assign_memory(m);
-        let r = table.resolve(h.as_str()).expect("known handle");
+        let r = table.resolve_entity(h.as_str()).expect("known handle");
         assert!(matches!(r, EntityRef::Memory(x) if x == m));
     }
 
     #[test]
     fn malformed_handle_string_is_rejected() {
         let table = HandleTable::new();
-        assert!(table.resolve("nope").is_none());
-        assert!(table.resolve("N").is_none());
-        assert!(table.resolve("Nfoo").is_none());
-        assert!(table.resolve("X1").is_none());
+        for raw in ["nope", "N", "Nfoo", "X1"] {
+            let err = table.resolve_entity(raw).unwrap_err();
+            assert_eq!(
+                err,
+                ResolveError::Unknown {
+                    input: raw.to_string()
+                },
+                "input {raw}"
+            );
+        }
     }
 
     #[test]
@@ -300,17 +407,78 @@ mod tests {
         let _ = table.assign_personality(p);
         let m = MemoryId::new(uuid::Uuid::now_v7());
         let mh = table.assign_memory(m);
-        assert!(
-            table.resolve_personality(mh.as_str()).is_none(),
-            "memory handle must not resolve as personality"
+        let err = table.resolve_personality(mh.as_str()).unwrap_err();
+        assert_eq!(
+            err,
+            ResolveError::WrongKind {
+                input: mh.as_str().to_string(),
+                got: EntityKind::Memory,
+                expected: EntityKind::Personality,
+            }
         );
     }
 
     #[test]
     fn malformed_personality_handle_rejected() {
         let table = HandleTable::new();
-        assert!(table.resolve_personality("Pfoo").is_none());
-        assert!(table.resolve_personality("P").is_none());
-        assert!(table.resolve_personality("p1").is_none(), "case-sensitive");
+        for raw in ["Pfoo", "P", "p1"] {
+            let err = table.resolve_personality(raw).unwrap_err();
+            assert_eq!(
+                err,
+                ResolveError::Unknown {
+                    input: raw.to_string()
+                },
+                "input {raw}"
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_memory_wrong_kind_returns_typed_error() {
+        let table = HandleTable::new();
+        let g = GoalId::new(Uuid::now_v7());
+        let h = table.assign_goal(g);
+        let err = table.resolve_memory(h.as_str()).unwrap_err();
+        assert_eq!(
+            err,
+            ResolveError::WrongKind {
+                input: h.as_str().to_string(),
+                got: EntityKind::Goal,
+                expected: EntityKind::Memory,
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_error_display_includes_kinds() {
+        let err = ResolveError::WrongKind {
+            input: "G7".into(),
+            got: EntityKind::Goal,
+            expected: EntityKind::Memory,
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("expected Memory"), "msg: {msg}");
+        assert!(msg.contains("got Goal"), "msg: {msg}");
+        assert!(msg.contains("G7"), "msg: {msg}");
+    }
+
+    #[test]
+    fn resolve_flavor_object_wrong_kind_returns_typed_error() {
+        let table = HandleTable::new();
+        let id = uuid::Uuid::now_v7();
+        let h = table.assign_flavor_object("code/repository", id, 'R');
+        let err = table.resolve_flavor_object(h.as_str(), "code/file").unwrap_err();
+        assert_eq!(
+            err,
+            ResolveError::WrongKind {
+                input: h.as_str().to_string(),
+                got: EntityKind::FlavorObject {
+                    kind: "code/repository".into()
+                },
+                expected: EntityKind::FlavorObject {
+                    kind: "code/file".into()
+                },
+            }
+        );
     }
 }

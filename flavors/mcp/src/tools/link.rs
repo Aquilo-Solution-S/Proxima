@@ -1,5 +1,5 @@
 use proxima_core::EdgeId;
-use proxima_core::mcp::{EntityRef, McpTool, McpToolCtx, McpToolError};
+use proxima_core::mcp::{McpTool, McpToolCtx, McpToolError};
 use proxima_storage_pg::verbs::edge_append::{EdgeDraft, append_edge_in_tx};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -106,13 +106,7 @@ impl McpTool for LinkTool {
 }
 
 fn resolve_memory(ctx: &McpToolCtx, raw: &str) -> Result<uuid::Uuid, McpToolError> {
-    match ctx.handles.as_ref().unwrap().resolve(raw) {
-        Some(EntityRef::Memory(memory_id)) => Ok(memory_id.into_inner()),
-        Some(_) => Err(McpToolError::InvalidInput(format!(
-            "{raw} is not a memory handle"
-        ))),
-        None => Err(McpToolError::UnknownHandle(raw.to_string())),
-    }
+    ctx.resolve_memory(raw).map(|id| id.into_inner())
 }
 
 async fn load_kind(
