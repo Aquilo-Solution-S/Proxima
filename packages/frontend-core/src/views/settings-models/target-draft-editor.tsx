@@ -8,6 +8,12 @@ export const TargetDraftEditor: Component<{
 }> = (props) => {
   const id = (suffix: string) =>
     `${props.idPrefix ?? "register-target"}-${suffix}`;
+  const isChatGptCodex = () => props.draft.kind === "chatgpt_codex";
+  const isOpenAiResponses = () => props.draft.kind === "openai_responses";
+  const supportsReasoningEffort = () =>
+    isOpenAiResponses() || isChatGptCodex();
+  const supportsTemperature = () =>
+    !isOpenAiResponses() && !isChatGptCodex();
   return (
     <div class="proxima-target-editor-grid">
       <label for={id("base-url")}>base_url</label>
@@ -28,16 +34,26 @@ export const TargetDraftEditor: Component<{
         }
       />
 
-      <label for={id("api-key-env")}>api_key_env</label>
-      <input
-        id={id("api-key-env")}
-        value={props.draft.apiKeyEnv}
-        onInput={(event) =>
-          props.onUpdate({ apiKeyEnv: event.currentTarget.value })
-        }
-      />
+      <Show when={!isChatGptCodex()}>
+        <label for={id("api-key-env")}>api_key_env</label>
+        <input
+          id={id("api-key-env")}
+          value={props.draft.apiKeyEnv}
+          onInput={(event) =>
+            props.onUpdate({ apiKeyEnv: event.currentTarget.value })
+          }
+        />
+      </Show>
 
-      <Show when={props.draft.kind !== "openai_responses"}>
+      <Show when={isChatGptCodex()}>
+        <span />
+        <p class="proxima-target-editor-note">
+          Authenticates via your Codex login (~/.codex/auth.json). Run{" "}
+          <code>codex login</code> in a terminal if you haven't already.
+        </p>
+      </Show>
+
+      <Show when={supportsTemperature()}>
         <label for={id("temperature")}>temperature</label>
         <input
           id={id("temperature")}
@@ -62,7 +78,7 @@ export const TargetDraftEditor: Component<{
         />
       </Show>
 
-      <Show when={props.draft.kind === "openai_responses"}>
+      <Show when={supportsReasoningEffort()}>
         <label for={id("reasoning-effort")}>reasoning_effort</label>
         <select
           id={id("reasoning-effort")}
