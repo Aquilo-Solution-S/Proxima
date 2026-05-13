@@ -9,6 +9,12 @@ pub enum TaskPriority {
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct TaskGoalV1 {
+    // RFC 3339 explicit so storage projections via Postgres
+    // `row_to_json(sidecar)` deserialize cleanly. Without this, time's
+    // default human-readable deserializer (`serde-human-readable`) rejects
+    // the 'T' separator with "a character literal was not valid". See
+    // `WakeTracePayload` for the same fix in the wake-trace path.
+    #[serde(with = "time::serde::rfc3339::option")]
     pub due_at: Option<time::OffsetDateTime>,
     pub priority: Option<TaskPriority>,
 }

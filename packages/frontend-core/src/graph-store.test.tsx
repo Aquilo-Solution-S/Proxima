@@ -544,3 +544,75 @@ describe("memoryProvenance", () => {
     expect(prov?.authoring_personality_instance_id).toBe(null);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Hydration retry bounding
+// ---------------------------------------------------------------------------
+
+describe("flushHydration failure handling", () => {
+  // Regression: a persistently-failing hydration query (e.g. storage Query
+  // verb returns an error because one row's payload won't deserialize) used
+  // to pin the loop at HYDRATION_WINDOW_MS forever — `attempts` only
+  // incremented on the success path. The catch arm now applies the same
+  // 3-attempt cutoff and surfaces a `hydration_missing` decode error.
+  it("stops retrying after 3 failed hydration queries and records the error", async () => {
+    const memId = "01ARYZ6S41TS5G7QFC0V44N5KH";
+    const queryAttempts: QueryRequest[] = [];
+    const client = graphClient({
+      query: async (req) => {
+        // First call is the initial snapshot (no memory_ids filter); let it
+        // succeed. Subsequent hydration calls (filtered by memory_ids) fail.
+        if (req.memory_ids && req.memory_ids.length > 0) {
+          queryAttempts.push(req);
+          throw new Error("storage Query verb failed");
+        }
+        return { memories: [], goals: [], edges: [], seq_high_water: null };
+      },
+      subscribe: async (_req, onEvent) => {
+        // Push the failing event after the store has finished bootstrapping.
+        queueMicrotask(() => {
+          onEvent({
+            seq: memId,
+            owner,
+            kind: {
+              EntityAppend: {
+                entity_kind: "Fact",
+                entity: { Memory: memId },
+                schema_id: "schema-a",
+                schema_version: 1,
+                supersedes: null,
+              },
+            },
+          });
+        });
+        return { unsubscribe() {} };
+      },
+    });
+
+    await new Promise<void>((resolve) => {
+      createRoot((dispose) => {
+        const store = createGraphStore(client, createHub([]), owner);
+        void vi
+          .waitFor(
+            () => {
+              expect(queryAttempts.length).toBeGreaterThanOrEqual(3);
+              expect(store.state().pendingHydration.has(memId)).toBe(false);
+              const err = store.state().decodeErrorsByEntity.get(memId);
+              expect(err?.kind).toBe("hydration_missing");
+              expect(err?.message).toContain("storage Query verb failed");
+            },
+            { timeout: 2000 },
+          )
+          .then(() => {
+            // After cutoff: no further retries should fire.
+            const settled = queryAttempts.length;
+            return new Promise((r) => setTimeout(r, 300)).then(() => {
+              expect(queryAttempts.length).toBe(settled);
+              dispose();
+              resolve();
+            });
+          });
+      });
+    });
+  });
+});

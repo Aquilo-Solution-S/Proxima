@@ -584,8 +584,45 @@ export function createGraphStore(
           decodeErrorsByEntity: errors,
         };
       });
-    } catch {
-      setState((prev) => ({ ...prev, streamStatus: "degraded" }));
+    } catch (err) {
+      // Bound retries on full-batch failure too. Without this, one
+      // persistently bad row (e.g. a payload the storage Query verb cannot
+      // project) pins the loop at HYDRATION_WINDOW_MS forever — `attempts`
+      // only increments in the success path above. Use the same 3-attempt
+      // cutoff and surface the underlying error so the cause is visible.
+      const message = err instanceof Error ? err.message : String(err);
+      setState((prev) => {
+        const pending = new Map(prev.pendingHydration);
+        let errors = new Map(prev.decodeErrorsByEntity);
+        for (const [id] of pendingEntries) {
+          const current = pending.get(id);
+          if (current === undefined) continue;
+          const attempts = current.attempts + 1;
+          if (attempts >= 3) {
+            pending.delete(id);
+            if (!hydrationWarnings.has(id)) {
+              hydrationWarnings.add(id);
+              console.warn(
+                `payload decode: hydration query failed for ${current.kind} ${id} after 3 attempts: ${message}`,
+              );
+            }
+            errors.set(id, {
+              id,
+              kind: "hydration_missing",
+              message: `hydration query failed: ${message}`,
+            });
+          } else {
+            pending.set(id, { ...current, attempts });
+          }
+        }
+        errors = trimErrors(errors);
+        return {
+          ...prev,
+          pendingHydration: pending,
+          decodeErrorsByEntity: errors,
+          streamStatus: "degraded",
+        };
+      });
     } finally {
       hydrationInFlight = false;
       if (state().pendingHydration.size > 0) scheduleHydration();
