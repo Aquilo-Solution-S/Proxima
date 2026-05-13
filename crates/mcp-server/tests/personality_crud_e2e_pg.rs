@@ -80,11 +80,11 @@ async fn wake_token_audit_attributes_caller_personality() -> Result<(), Box<dyn 
     };
 
     // Pre-assign the personality handle so the tool can resolve it.
-    let p_handle = ctx.handles.as_ref().unwrap().assign_personality(inst.instance_id);
+    let p_handle = ctx.format_personality(inst.instance_id);
 
     // Call core/add_wake_entry on this personality.
     let args = AddWakeEntryArgs {
-        personality: p_handle.as_str().to_string(),
+        personality: p_handle,
         entry: WakeEntryDraftInput {
             wake_entry_id: None,
             trigger_kind: WakeEntryTriggerKind::OnMemory,

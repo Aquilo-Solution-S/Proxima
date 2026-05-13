@@ -41,18 +41,13 @@ impl McpTool for AddWakeEntryTool {
         args: AddWakeEntryArgs,
     ) -> BoxFuture<'static, Result<AddWakeEntryOutput, McpToolError>> {
         Box::pin(async move {
-            let pid = ctx
-                .handles.as_ref().unwrap()
-                .resolve_personality(&args.personality)
-                .map_err(McpToolError::Resolve)?;
+            let pid = ctx.resolve_personality(&args.personality)?;
             let storage = ctx
                 .storage()
                 .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;
 
             // Resolve input now so handle errors fail fast (before tx).
-            let new_draft = args
-                .entry
-                .into_draft(ctx.handles.as_ref().unwrap(), pid)?;
+            let new_draft = args.entry.into_draft(&ctx, pid)?;
             let new_id = new_draft.wake_entry_id;
             let new_trigger_kind = new_draft.trigger_kind;
             let new_trigger_id = new_draft.trigger_id.clone();
@@ -89,9 +84,8 @@ impl McpTool for AddWakeEntryTool {
                 AuditEmit::Ok => None,
                 AuditEmit::Failed { reason } => Some(reason),
             };
-            let w_handle = ctx.handles.as_ref().unwrap().assign_wake_entry(new_id);
             Ok(AddWakeEntryOutput {
-                wake_entry: w_handle.as_str().to_string(),
+                wake_entry: ctx.format_wake_entry(new_id),
                 audit_emit_failed,
             })
         })

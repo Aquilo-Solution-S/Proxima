@@ -41,10 +41,7 @@ impl McpTool for TombstonePersonalityTool {
         args: TombstonePersonalityArgs,
     ) -> BoxFuture<'static, Result<TombstonePersonalityOutput, McpToolError>> {
         Box::pin(async move {
-            let pid = ctx
-                .handles.as_ref().unwrap()
-                .resolve_personality(&args.personality)
-                .map_err(McpToolError::Resolve)?;
+            let pid = ctx.resolve_personality(&args.personality)?;
             let engine = ctx
                 .engine()
                 .ok_or_else(|| McpToolError::Other("engine unavailable".into()))?;

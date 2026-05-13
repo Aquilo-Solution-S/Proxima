@@ -6,7 +6,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::mcp::{HandleTable, McpToolError};
+use crate::mcp::{McpToolCtx, McpToolError};
 use crate::{
     ModelTier, PersonalityInstanceId, WakeEntryAuthoredBy, WakeEntryDraft, WakeEntryGoalScope,
     WakeEntryTriggerKind, WakeExecutionMode,
@@ -57,18 +57,16 @@ fn default_model_tier() -> ModelTier {
 
 impl WakeEntryDraftInput {
     /// Resolve into a `WakeEntryDraft`. Allocates a fresh UUID when
-    /// `wake_entry_id` is `None`; resolves through `HandleTable` when
-    /// `Some`.
+    /// `wake_entry_id` is `None`; resolves through `ctx.resolve_wake_entry`
+    /// otherwise so the call works in both `Handles` and `RawIds` modes.
     pub fn into_draft(
         self,
-        handles: &HandleTable,
+        ctx: &McpToolCtx,
         personality_instance_id: PersonalityInstanceId,
     ) -> Result<WakeEntryDraft, McpToolError> {
         let wake_entry_id = match self.wake_entry_id {
             None => uuid::Uuid::now_v7(),
-            Some(handle) => handles
-                .resolve_wake_entry(&handle)
-                .map_err(McpToolError::Resolve)?,
+            Some(handle) => ctx.resolve_wake_entry(&handle)?,
         };
         Ok(WakeEntryDraft {
             wake_entry_id,

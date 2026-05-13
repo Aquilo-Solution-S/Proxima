@@ -166,15 +166,13 @@ impl McpTool for DeriveTool {
                     append_edge_in_tx(&mut tx, &edge_draft, None)
                         .await
                         .map_err(McpToolError::Storage)?;
-                    let handle = ctx.handles.as_ref().unwrap().assign_edge(EdgeId::new(edge_id));
-                    provenance_edge_handles.push(handle.as_str().to_string());
+                    provenance_edge_handles.push(ctx.format_edge(EdgeId::new(edge_id)));
                 }
             }
             tx.commit().await.map_err(map_storage)?;
 
-            let handle = ctx.handles.as_ref().unwrap().assign_memory(MemoryId::new(memory_id));
             Ok(DeriveOutput {
-                handle: handle.as_str().to_string(),
+                handle: ctx.format_memory(MemoryId::new(memory_id)),
                 idempotent_replay: outcome.idempotent_replay,
                 provenance_edge_handles,
             })

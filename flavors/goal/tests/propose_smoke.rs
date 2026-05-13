@@ -20,9 +20,7 @@ async fn propose_writes_goal_and_motivated_by_atomically() -> Result<(), Box<dyn
         let owner = owner_fixture();
         let ctx = ctx(&pg, owner.clone());
         let evidence = insert_abstraction(&pg, &owner).await?;
-        let evidence_handle = ctx
-            .handles.as_ref().unwrap()
-            .assign_memory(proxima_core::MemoryId::new(evidence));
+        let evidence_handle = ctx.format_memory(proxima_core::MemoryId::new(evidence));
 
         let outcome = ProposeTool::call(
             ctx.clone(),
@@ -31,14 +29,13 @@ async fn propose_writes_goal_and_motivated_by_atomically() -> Result<(), Box<dyn
                     title: "ship goal flavor".into(),
                     text: "ship goal flavor".into(),
                 }),
-                evidence: vec![evidence_handle.as_str().to_string()],
+                evidence: vec![evidence_handle],
                 target_personality: None,
                 idempotency_key: Some("proposal-1".into()),
             },
         )
         .await?;
         let goal_id = ctx
-            .handles.as_ref().unwrap()
             .resolve_goal(&outcome.handle)
             .expect("goal handle resolves")
             .into_inner();
@@ -120,7 +117,6 @@ async fn propose_writes_inspires_edge_for_personality_caller()
         )
         .await?;
         let goal_id = ctx
-            .handles.as_ref().unwrap()
             .resolve_goal(&outcome.handle)
             .expect("goal handle resolves")
             .into_inner();
@@ -130,7 +126,6 @@ async fn propose_writes_inspires_edge_for_personality_caller()
             .as_deref()
             .expect("personality caller writes core/inspires edge");
         let inspires_edge_id = ctx
-            .handles.as_ref().unwrap()
             .resolve_edge(inspires_edge_handle)
             .expect("inspires edge handle resolves")
             .into_inner();
@@ -167,9 +162,7 @@ async fn propose_rejects_evidence_in_other_owner() -> Result<(), Box<dyn std::er
         let other = other_owner_fixture();
         let ctx = ctx(&pg, owner);
         let evidence = insert_abstraction(&pg, &other).await?;
-        let evidence_handle = ctx
-            .handles.as_ref().unwrap()
-            .assign_memory(proxima_core::MemoryId::new(evidence));
+        let evidence_handle = ctx.format_memory(proxima_core::MemoryId::new(evidence));
 
         let err = ProposeTool::call(
             ctx,
@@ -178,7 +171,7 @@ async fn propose_rejects_evidence_in_other_owner() -> Result<(), Box<dyn std::er
                     title: "x".into(),
                     text: "x".into(),
                 }),
-                evidence: vec![evidence_handle.as_str().to_string()],
+                evidence: vec![evidence_handle],
                 target_personality: None,
                 idempotency_key: None,
             },

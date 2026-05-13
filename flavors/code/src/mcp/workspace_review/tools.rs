@@ -147,25 +147,12 @@ impl McpTool for CodeEmitWorkspaceReviewTool {
             tx.commit().await.map_err(map_storage)?;
 
             Ok(CodeEmitWorkspaceReviewOutput {
-                handle: ctx
-                    .handles.as_ref().unwrap()
-                    .assign_memory(outcome.memory_id)
-                    .as_str()
-                    .to_string(),
-                authored_edge_handle: authored_edge_id.map(|edge_id| {
-                    ctx.handles.as_ref().unwrap()
-                        .assign_edge(EdgeId::new(edge_id))
-                        .as_str()
-                        .to_string()
-                }),
+                handle: ctx.format_memory(outcome.memory_id),
+                authored_edge_handle: authored_edge_id
+                    .map(|edge_id| ctx.format_edge(EdgeId::new(edge_id))),
                 derived_edge_handles: derived_edge_ids
                     .into_iter()
-                    .map(|edge_id| {
-                        ctx.handles.as_ref().unwrap()
-                            .assign_edge(EdgeId::new(edge_id))
-                            .as_str()
-                            .to_string()
-                    })
+                    .map(|edge_id| ctx.format_edge(EdgeId::new(edge_id)))
                     .collect(),
                 verdict,
                 round_index,
@@ -265,7 +252,7 @@ impl McpTool for CodeEmitCorrectionExecutionRequestTool {
             {
                 tx.commit().await.map_err(map_storage)?;
                 return Ok(CodeEmitCorrectionExecutionRequestOutput {
-                    handle: ctx.handles.as_ref().unwrap().assign_memory(existing).as_str().to_string(),
+                    handle: ctx.format_memory(existing),
                     authored_edge_handle: None,
                     target_edge_handle: None,
                     derived_edge_handles: Vec::new(),
@@ -369,31 +356,14 @@ impl McpTool for CodeEmitCorrectionExecutionRequestTool {
             tx.commit().await.map_err(map_storage)?;
 
             Ok(CodeEmitCorrectionExecutionRequestOutput {
-                handle: ctx
-                    .handles.as_ref().unwrap()
-                    .assign_memory(outcome.memory_id)
-                    .as_str()
-                    .to_string(),
-                authored_edge_handle: authored_edge_id.map(|edge_id| {
-                    ctx.handles.as_ref().unwrap()
-                        .assign_edge(EdgeId::new(edge_id))
-                        .as_str()
-                        .to_string()
-                }),
-                target_edge_handle: target_edge_id.map(|edge_id| {
-                    ctx.handles.as_ref().unwrap()
-                        .assign_edge(EdgeId::new(edge_id))
-                        .as_str()
-                        .to_string()
-                }),
+                handle: ctx.format_memory(outcome.memory_id),
+                authored_edge_handle: authored_edge_id
+                    .map(|edge_id| ctx.format_edge(EdgeId::new(edge_id))),
+                target_edge_handle: target_edge_id
+                    .map(|edge_id| ctx.format_edge(EdgeId::new(edge_id))),
                 derived_edge_handles: derived_edge_ids
                     .into_iter()
-                    .map(|edge_id| {
-                        ctx.handles.as_ref().unwrap()
-                            .assign_edge(EdgeId::new(edge_id))
-                            .as_str()
-                            .to_string()
-                    })
+                    .map(|edge_id| ctx.format_edge(EdgeId::new(edge_id)))
                     .collect(),
                 idempotent_replay: outcome.idempotent_replay,
             })

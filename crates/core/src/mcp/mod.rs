@@ -312,10 +312,6 @@ impl McpToolCtx {
 pub enum McpToolError {
     #[error("invalid input: {0}")]
     InvalidInput(String),
-    /// Deprecated: prefer `Resolve(ResolveError)`. Kept for one cycle
-    /// until steps 5/6 sweep the last call sites — remove after.
-    #[error("unknown handle: {0}")]
-    UnknownHandle(String),
     #[error("{0}")]
     Resolve(ResolveError),
     #[error("layering violation: {0}")]

@@ -43,10 +43,7 @@ impl McpTool for SetWakeEntriesTool {
         args: SetWakeEntriesArgs,
     ) -> BoxFuture<'static, Result<SetWakeEntriesOutput, McpToolError>> {
         Box::pin(async move {
-            let pid = ctx
-                .handles.as_ref().unwrap()
-                .resolve_personality(&args.personality)
-                .map_err(McpToolError::Resolve)?;
+            let pid = ctx.resolve_personality(&args.personality)?;
             let engine = ctx
                 .engine()
                 .ok_or_else(|| McpToolError::Other("engine unavailable".into()))?;
@@ -74,7 +71,7 @@ impl McpTool for SetWakeEntriesTool {
             let drafts = args
                 .entries
                 .into_iter()
-                .map(|input| input.into_draft(ctx.handles.as_ref().unwrap(), pid))
+                .map(|input| input.into_draft(&ctx, pid))
                 .collect::<Result<Vec<_>, _>>()?;
 
             let req = SetWakeEntriesRequest {
@@ -89,12 +86,7 @@ impl McpTool for SetWakeEntriesTool {
 
             let entry_handles: Vec<String> = drafts
                 .iter()
-                .map(|d| {
-                    ctx.handles.as_ref().unwrap()
-                        .assign_wake_entry(d.wake_entry_id)
-                        .as_str()
-                        .to_string()
-                })
+                .map(|d| ctx.format_wake_entry(d.wake_entry_id))
                 .collect();
 
             let after = serde_json::json!({

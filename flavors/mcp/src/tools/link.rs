@@ -97,9 +97,8 @@ impl McpTool for LinkTool {
                 .map_err(McpToolError::Storage)?;
             tx.commit().await.map_err(map_storage)?;
 
-            let handle = ctx.handles.as_ref().unwrap().assign_edge(EdgeId::new(edge_id));
             Ok(LinkOutput {
-                edge_handle: handle.as_str().to_string(),
+                edge_handle: ctx.format_edge(EdgeId::new(edge_id)),
             })
         })
     }

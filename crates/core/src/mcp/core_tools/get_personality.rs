@@ -65,10 +65,7 @@ impl McpTool for GetPersonalityTool {
         args: GetPersonalityArgs,
     ) -> BoxFuture<'static, Result<GetPersonalityOutput, McpToolError>> {
         Box::pin(async move {
-            let target_id = ctx
-                .handles.as_ref().unwrap()
-                .resolve_personality(&args.personality)
-                .map_err(McpToolError::Resolve)?;
+            let target_id = ctx.resolve_personality(&args.personality)?;
             let storage = ctx
                 .storage()
                 .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;
@@ -85,17 +82,14 @@ impl McpTool for GetPersonalityTool {
                         args.personality
                     ))
                 })?;
-            let p_handle = ctx.handles.as_ref().unwrap().assign_personality(row.personality_instance_id);
-            let n_handle = ctx
-                .handles.as_ref().unwrap()
-                .assign_memory(row.current_root_perspective_memory_id);
+            let personality = ctx.format_personality(row.personality_instance_id);
+            let root_perspective = ctx.format_memory(row.current_root_perspective_memory_id);
             let wake_entries = row
                 .wake_entries
                 .into_iter()
                 .map(|e| {
-                    let w = ctx.handles.as_ref().unwrap().assign_wake_entry(e.wake_entry_id);
                     GetPersonalityWakeEntry {
-                        wake_entry: w.as_str().to_string(),
+                        wake_entry: ctx.format_wake_entry(e.wake_entry_id),
                         trigger_kind: format!("{:?}", e.trigger_kind),
                         trigger_id: e.trigger_id,
                         label: e.label,
@@ -115,10 +109,10 @@ impl McpTool for GetPersonalityTool {
                 })
                 .collect();
             Ok(GetPersonalityOutput {
-                personality: p_handle.as_str().to_string(),
+                personality,
                 display_name: row.display_name,
                 status: row.status,
-                root_perspective: n_handle.as_str().to_string(),
+                root_perspective,
                 wake_entries,
             })
         })

@@ -5,7 +5,7 @@
     clippy::needless_pass_by_value
 )]
 
-use proxima_core::mcp::{EntityRef, McpToolCtx, McpToolError};
+use proxima_core::mcp::{McpToolCtx, McpToolError};
 use proxima_core::relation::{CORE_AUTHORED_RELATION, CORE_DERIVED_FROM_RELATION};
 use proxima_core::verbs::event_ingest::{
     CitationMappingHint, CitedObjectHint, EventDraft, EventIngestOutcome,
@@ -198,10 +198,7 @@ pub async fn target_personality_root(
     ctx: &McpToolCtx,
     handle: &str,
 ) -> Result<MemoryId, McpToolError> {
-    let instance_id = ctx
-        .handles.as_ref().unwrap()
-        .resolve_personality(handle)
-        .map_err(McpToolError::Resolve)?;
+    let instance_id = ctx.resolve_personality(handle)?;
     personality_root_in_owner(tx, &ctx.owner, instance_id).await
 }
 
@@ -278,55 +275,41 @@ pub async fn validate_evidence_in_owner(
     let mut out = Vec::with_capacity(evidence.len());
     let (owner_kind, owner_principal_id, _owner_org_id) = owner_columns(&ctx.owner);
     for handle in evidence {
-        let entity = ctx
-            .handles.as_ref().unwrap()
-            .resolve_entity(handle)
-            .map_err(McpToolError::Resolve)?;
-        match entity {
-            EntityRef::Memory(memory_id) => {
-                let row: Option<(String, String, uuid::Uuid)> = sqlx::query_as(
-                    "SELECT kind, owner_principal_kind, owner_principal_id
-                     FROM proxima_core.memories
-                     WHERE memory_id = $1",
-                )
-                .bind(memory_id.into_inner())
-                .fetch_optional(&mut *tx)
-                .await
-                .map_err(map_storage)?;
-                let Some((kind, row_owner_kind, row_owner_principal_id)) = row else {
-                    return Err(McpToolError::UnknownHandle(handle.clone()));
-                };
-                if row_owner_kind != owner_kind || row_owner_principal_id != owner_principal_id {
-                    return Err(McpToolError::LayeringViolation(format!(
-                        "evidence {handle} crosses Owner boundary"
-                    )));
-                }
-                let target_kind = match kind.as_str() {
-                    "Fact" => "Fact",
-                    "Abstraction" => "Abstraction",
-                    _ => {
-                        return Err(McpToolError::LayeringViolation(format!(
-                            "evidence {handle} must be Fact or Abstraction"
-                        )));
-                    }
-                };
-                out.push(EvidenceRef {
-                    handle: handle.clone(),
-                    target_kind,
-                    target_memory_id: Some(memory_id.into_inner()),
-                    target_goal_id: None,
-                });
-            }
-            EntityRef::Goal(_)
-            | EntityRef::Edge(_)
-            | EntityRef::FlavorObject { .. }
-            | EntityRef::Personality(_)
-            | EntityRef::WakeEntry(_) => {
+        let memory_id = ctx.resolve_memory(handle)?;
+        let row: Option<(String, String, uuid::Uuid)> = sqlx::query_as(
+            "SELECT kind, owner_principal_kind, owner_principal_id
+             FROM proxima_core.memories
+             WHERE memory_id = $1",
+        )
+        .bind(memory_id.into_inner())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(map_storage)?;
+        let Some((kind, row_owner_kind, row_owner_principal_id)) = row else {
+            return Err(McpToolError::InvalidInput(format!(
+                "evidence not found for owner: {handle}"
+            )));
+        };
+        if row_owner_kind != owner_kind || row_owner_principal_id != owner_principal_id {
+            return Err(McpToolError::LayeringViolation(format!(
+                "evidence {handle} crosses Owner boundary"
+            )));
+        }
+        let target_kind = match kind.as_str() {
+            "Fact" => "Fact",
+            "Abstraction" => "Abstraction",
+            _ => {
                 return Err(McpToolError::LayeringViolation(format!(
-                    "evidence {handle} must resolve to Fact or Abstraction"
+                    "evidence {handle} must be Fact or Abstraction"
                 )));
             }
-        }
+        };
+        out.push(EvidenceRef {
+            handle: handle.clone(),
+            target_kind,
+            target_memory_id: Some(memory_id.into_inner()),
+            target_goal_id: None,
+        });
     }
     Ok(out)
 }
@@ -589,11 +572,7 @@ pub async fn outgoing_motivated_by_evidence(
 
     let mut out = Vec::with_capacity(rows.len());
     for (edge_id, target_kind, target_memory_id, target_goal_id) in rows {
-        let handle = ctx
-            .handles.as_ref().unwrap()
-            .assign_edge(proxima_core::EdgeId::new(edge_id))
-            .as_str()
-            .to_string();
+        let handle = ctx.format_edge(proxima_core::EdgeId::new(edge_id));
         let target_kind = match target_kind.as_str() {
             "Fact" => "Fact",
             "Abstraction" => "Abstraction",

@@ -122,18 +122,16 @@ impl McpTool for CodeSearchChunksTool {
             let mut matches = Vec::with_capacity(rows.len());
             let mut chunk_ids = Vec::with_capacity(rows.len());
             for row in rows {
-                let handle = ctx.handles.as_ref().unwrap().assign_memory(MemoryId::new(row.memory_id));
-                let repo_handle = ctx.handles.as_ref().unwrap().assign_flavor_object(
-                    super::REPO_HANDLE_KIND,
-                    row.repo_id,
-                    super::REPO_HANDLE_PREFIX,
-                );
                 chunk_ids.push(row.memory_id);
                 let (match_kind, matched_line, matched_excerpt) =
                     match_metadata(query, &row.file_path, &row.text, row.line_range_start);
                 matches.push(ChunkMatch {
-                    handle: handle.as_str().to_string(),
-                    repo_handle: repo_handle.as_str().to_string(),
+                    handle: ctx.format_memory(MemoryId::new(row.memory_id)),
+                    repo_handle: ctx.format_flavor_object(
+                        super::REPO_HANDLE_KIND,
+                        row.repo_id,
+                        super::REPO_HANDLE_PREFIX,
+                    ),
                     file_path: row.file_path,
                     chunk_index: row.chunk_index,
                     language: row.language,
@@ -222,25 +220,16 @@ async fn load_call_edges(
 
     Ok(rows
         .into_iter()
-        .map(|row| {
-            let edge_handle = ctx.handles.as_ref().unwrap().assign_edge(EdgeId::new(row.edge_id));
-            CallEdge {
-                edge_handle: edge_handle.as_str().to_string(),
-                source: row.source_memory_id.map(|id| {
-                    ctx.handles.as_ref().unwrap()
-                        .assign_memory(MemoryId::new(id))
-                        .as_str()
-                        .to_string()
-                }),
-                target: row.target_memory_id.map(|id| {
-                    ctx.handles.as_ref().unwrap()
-                        .assign_memory(MemoryId::new(id))
-                        .as_str()
-                        .to_string()
-                }),
-                callee_name: row.callee_name,
-                is_dynamic: row.is_dynamic,
-            }
+        .map(|row| CallEdge {
+            edge_handle: ctx.format_edge(EdgeId::new(row.edge_id)),
+            source: row
+                .source_memory_id
+                .map(|id| ctx.format_memory(MemoryId::new(id))),
+            target: row
+                .target_memory_id
+                .map(|id| ctx.format_memory(MemoryId::new(id))),
+            callee_name: row.callee_name,
+            is_dynamic: row.is_dynamic,
         })
         .collect())
 }

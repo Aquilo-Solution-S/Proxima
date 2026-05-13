@@ -76,7 +76,6 @@ impl McpTool for InstantiatePersonalityTool {
                 Some(after),
             )
             .await;
-            let p_handle = ctx.handles.as_ref().unwrap().assign_personality(resp.instance_id);
             let audit_emit_failed = match audit {
                 AuditEmit::Ok => None,
                 AuditEmit::Failed { reason } => {
@@ -85,7 +84,7 @@ impl McpTool for InstantiatePersonalityTool {
                 }
             };
             Ok(InstantiatePersonalityOutput {
-                personality: p_handle.as_str().to_string(),
+                personality: ctx.format_personality(resp.instance_id),
                 audit_emit_failed,
             })
         })

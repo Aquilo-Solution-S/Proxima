@@ -1,4 +1,4 @@
-use proxima_core::mcp::{HandleTable, McpTool, McpToolCtx, McpToolError};
+use proxima_core::mcp::{McpTool, McpToolCtx, McpToolError};
 use proxima_core::{EdgeId, MemoryId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -71,10 +71,9 @@ impl McpTool for SearchGraphTool {
             let mut matches = Vec::with_capacity(rows.len());
             let mut memory_ids = Vec::with_capacity(rows.len());
             for row in rows {
-                let handle = ctx.handles.as_ref().unwrap().assign_memory(MemoryId::new(row.memory_id));
                 memory_ids.push(row.memory_id);
                 matches.push(GraphMatch {
-                    handle: handle.as_str().to_string(),
+                    handle: ctx.format_memory(MemoryId::new(row.memory_id)),
                     kind: row.kind,
                     schema_id: row.schema_id,
                     title: row.title,
@@ -84,8 +83,7 @@ impl McpTool for SearchGraphTool {
                 });
             }
 
-            let neighbor_edges =
-                neighbor_edges(&ctx.pool, &ctx.owner, ctx.handles.as_ref().unwrap(), &memory_ids).await?;
+            let neighbor_edges = neighbor_edges(&ctx, &memory_ids).await?;
             Ok(SearchGraphOutput {
                 matches,
                 neighbor_edges,
@@ -145,15 +143,13 @@ struct SearchRow {
 ///
 /// Returns storage errors from the owner-filtered edge query.
 pub async fn neighbor_edges(
-    pool: &sqlx::PgPool,
-    owner: &proxima_core::Owner,
-    handles: &HandleTable,
+    ctx: &McpToolCtx,
     memory_ids: &[uuid::Uuid],
 ) -> Result<Vec<NeighborEdge>, McpToolError> {
     if memory_ids.is_empty() {
         return Ok(Vec::new());
     }
-    let (owner_kind, owner_principal_id) = owner_principal(owner);
+    let (owner_kind, owner_principal_id) = owner_principal(&ctx.owner);
     let rows: Vec<EdgeRow> = sqlx::query_as(
         "SELECT edge_id, relation, source_memory_id, target_memory_id
          FROM proxima_core.edges
@@ -166,30 +162,21 @@ pub async fn neighbor_edges(
     .bind(owner_kind)
     .bind(owner_principal_id)
     .bind(memory_ids)
-    .fetch_all(pool)
+    .fetch_all(&ctx.pool)
     .await
     .map_err(map_storage)?;
 
     Ok(rows
         .into_iter()
-        .map(|row| {
-            let edge_handle = handles.assign_edge(EdgeId::new(row.edge_id));
-            NeighborEdge {
-                handle: edge_handle.as_str().to_string(),
-                relation: row.relation,
-                source: row.source_memory_id.map(|id| {
-                    handles
-                        .assign_memory(MemoryId::new(id))
-                        .as_str()
-                        .to_string()
-                }),
-                target: row.target_memory_id.map(|id| {
-                    handles
-                        .assign_memory(MemoryId::new(id))
-                        .as_str()
-                        .to_string()
-                }),
-            }
+        .map(|row| NeighborEdge {
+            handle: ctx.format_edge(EdgeId::new(row.edge_id)),
+            relation: row.relation,
+            source: row
+                .source_memory_id
+                .map(|id| ctx.format_memory(MemoryId::new(id))),
+            target: row
+                .target_memory_id
+                .map(|id| ctx.format_memory(MemoryId::new(id))),
         })
         .collect())
 }
@@ -245,8 +232,7 @@ impl McpTool for OpenTool {
                 .ok_or_else(|| {
                     McpToolError::InvalidInput(format!("memory {memory_uuid} not found"))
                 })?;
-            let neighbor_edges =
-                neighbor_edges(&ctx.pool, &ctx.owner, ctx.handles.as_ref().unwrap(), &[memory_uuid]).await?;
+            let neighbor_edges = neighbor_edges(&ctx, &[memory_uuid]).await?;
             Ok(OpenOutput {
                 handle: args.handle,
                 kind: memory_kind_for_edge(row.kind.as_deref()).to_string(),

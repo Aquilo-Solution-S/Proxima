@@ -81,22 +81,18 @@ impl McpTool for CodeSearchCommitsTool {
                 .map_err(map_storage)?;
             let commits = commit_rows
                 .into_iter()
-                .map(|row| {
-                    let handle = ctx.handles.as_ref().unwrap().assign_memory(MemoryId::new(row.memory_id));
-                    let repo_handle = ctx.handles.as_ref().unwrap().assign_flavor_object(
+                .map(|row| CommitMatch {
+                    handle: ctx.format_memory(MemoryId::new(row.memory_id)),
+                    repo_handle: ctx.format_flavor_object(
                         super::REPO_HANDLE_KIND,
                         row.repo_id,
                         super::REPO_HANDLE_PREFIX,
-                    );
-                    CommitMatch {
-                        handle: handle.as_str().to_string(),
-                        repo_handle: repo_handle.as_str().to_string(),
-                        sha: row.sha,
-                        author_name: row.author_name,
-                        committer_time: row.committer_time,
-                        message_snippet: row.message_snippet,
-                        score: row.score,
-                    }
+                    ),
+                    sha: row.sha,
+                    author_name: row.author_name,
+                    committer_time: row.committer_time,
+                    message_snippet: row.message_snippet,
+                    score: row.score,
                 })
                 .collect();
 
@@ -112,22 +108,18 @@ impl McpTool for CodeSearchCommitsTool {
                 .map_err(map_storage)?;
             let summaries = summary_rows
                 .into_iter()
-                .map(|row| {
-                    let handle = ctx.handles.as_ref().unwrap().assign_memory(MemoryId::new(row.memory_id));
-                    let repo_handle = ctx.handles.as_ref().unwrap().assign_flavor_object(
+                .map(|row| SummaryMatch {
+                    handle: ctx.format_memory(MemoryId::new(row.memory_id)),
+                    repo_handle: ctx.format_flavor_object(
                         super::REPO_HANDLE_KIND,
                         row.repo_id,
                         super::REPO_HANDLE_PREFIX,
-                    );
-                    SummaryMatch {
-                        handle: handle.as_str().to_string(),
-                        repo_handle: repo_handle.as_str().to_string(),
-                        commit_sha: row.commit_sha,
-                        change_kind: row.change_kind,
-                        key_files: row.key_files,
-                        summary: row.summary,
-                        score: row.score,
-                    }
+                    ),
+                    commit_sha: row.commit_sha,
+                    change_kind: row.change_kind,
+                    key_files: row.key_files,
+                    summary: row.summary,
+                    score: row.score,
                 })
                 .collect();
 

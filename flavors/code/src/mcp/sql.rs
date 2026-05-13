@@ -54,10 +54,7 @@ pub async fn resolve_repo_identifier(
     if trimmed.is_empty() {
         return Err(McpToolError::InvalidInput("repo_handle required".into()));
     }
-    if let Ok(repo_id) = ctx
-        .handles.as_ref().unwrap()
-        .resolve_flavor_object(trimmed, super::REPO_HANDLE_KIND)
-    {
+    if let Ok(repo_id) = ctx.resolve_flavor_object(trimmed, super::REPO_HANDLE_KIND) {
         return Ok(repo_id);
     }
     if let Ok(repo_id) = uuid::Uuid::parse_str(trimmed) {
@@ -90,7 +87,9 @@ pub async fn resolve_repo_identifier(
 
     match rows.as_slice() {
         [row] => Ok(row.repo_id),
-        [] => Err(McpToolError::UnknownHandle(identifier.to_string())),
+        [] => Err(McpToolError::InvalidInput(format!(
+            "repo_handle not found for owner: {identifier}"
+        ))),
         _ => Err(McpToolError::InvalidInput(
             "repo_handle matched multiple repos; use a returned repo_handle".into(),
         )),

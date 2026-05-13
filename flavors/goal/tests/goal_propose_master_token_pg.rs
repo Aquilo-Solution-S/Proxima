@@ -165,7 +165,6 @@ async fn master_token_propose_creates_inspires_edge_to_per_token_self_perspectiv
         // Resolve the edge handle and read the row directly to verify
         // the target_memory_id matches the per-token Self-Perspective.
         let edge_id = ctx
-            .handles.as_ref().unwrap()
             .resolve_edge(inspires_edge_handle)
             .expect("inspires edge handle resolves")
             .into_inner();
