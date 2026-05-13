@@ -281,7 +281,6 @@ async fn correction_request_derives_from_review_and_targets_worker()
         json!({
             "workspace_review_memory": review.into_inner().to_string(),
             "target_personality": worker.instance_id.into_inner().to_string(),
-            "request_key": "correction-request:correction:0",
             "idempotency_key": "correction-request:correction:0"
         }),
     )
@@ -364,7 +363,6 @@ async fn correction_request_derives_from_review_and_targets_worker()
         json!({
             "workspace_review_memory": review.into_inner().to_string(),
             "target_personality": Uuid::now_v7().to_string(),
-            "request_key": "correction-request:correction:0",
             "idempotency_key": "correction-request:correction:0"
         }),
     )
@@ -425,7 +423,6 @@ async fn correction_request_can_derive_from_retry_decision_without_rejected_revi
         json!({
             "workspace_decision_memory": decision.into_inner().to_string(),
             "target_personality": worker.instance_id.into_inner().to_string(),
-            "request_key": "retry-decision-request:correction:0",
             "idempotency_key": "retry-decision-request:correction:0"
         }),
     )

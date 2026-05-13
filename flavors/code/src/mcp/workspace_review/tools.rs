@@ -216,22 +216,11 @@ impl McpTool for CodeEmitCorrectionExecutionRequestTool {
             }
             let target_personality_id = resolve_personality_id(&ctx, &args.target_personality)?;
             let request_key = crate::mcp::emit_execution_request::normalize_text(
-                "request_key",
-                &args.request_key,
-                1,
-                240,
-            )?;
-            let idempotency_key = crate::mcp::emit_execution_request::normalize_text(
                 "idempotency_key",
                 &args.idempotency_key,
                 1,
                 240,
             )?;
-            if request_key != idempotency_key {
-                return Err(McpToolError::InvalidInput(
-                    "request_key must match idempotency_key".into(),
-                ));
-            }
 
             let mut tx = ctx.pool.begin().await.map_err(map_storage)?;
             let trigger = if let Some(memory_id) = workspace_review_memory_id {

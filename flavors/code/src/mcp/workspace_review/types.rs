@@ -47,7 +47,6 @@ pub struct CodeEmitCorrectionExecutionRequestArgs {
     #[serde(default)]
     pub workspace_decision_memory: Option<String>,
     pub target_personality: String,
-    pub request_key: String,
     pub idempotency_key: String,
 }
 
