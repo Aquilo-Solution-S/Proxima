@@ -96,8 +96,8 @@ impl ScriptedExecutorAdapter {
         if let Some(error) = output.get("error").and_then(serde_json::Value::as_str) {
             return Err(error.to_string());
         }
-        if output.get("memory_id").is_none() {
-            return Err(format!("emit_perspective returned no memory_id: {output}"));
+        if output.get("memory").is_none() {
+            return Err(format!("emit_perspective returned no memory handle: {output}"));
         }
         Ok(())
     }

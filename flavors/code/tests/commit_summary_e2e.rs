@@ -136,10 +136,11 @@ async fn commit_summary_e2e_produces_abstraction_with_correct_provenance() {
 
         // Re-script Anthropic with the actual fetch + emit calls. We
         // can't mutate the engine's anthropic in place; rebuild it.
+        // N1 = triggering (commit) memory, pre-seeded before round 1.
         let scripted = Arc::new(ScriptedAnthropicClient::new(vec![
             ScriptedTurn::tool_use(
                 "core/fetch_memory",
-                serde_json::json!({"memory_id": commit_memory_id.into_inner()}),
+                serde_json::json!({"memory": "N1"}),
             ),
             ScriptedTurn::tool_use(
                 "core/emit_abstraction",
