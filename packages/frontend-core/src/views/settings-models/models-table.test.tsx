@@ -42,7 +42,7 @@ const baseClient = () => ({
   })),
   removeInferenceTarget: vi.fn(async () => ({ idempotent_replay: false })),
   bindInferenceTier: vi.fn(async () => undefined),
-  inferenceEnvStatus: vi.fn(async () => ({ present: true })),
+  inferenceEnvStatus: vi.fn(async (_req: { env_var: string }) => ({ present: true })),
   testInferenceTarget: vi.fn(async () => ({
     ok: true,
     latency_ms: 1,
@@ -211,5 +211,29 @@ describe("ModelsTable", () => {
       name: /remove my-fast/i,
     }) as HTMLButtonElement;
     expect(remove.disabled).toBe(true);
+  });
+
+  it("renders API key health pill from inferenceEnvStatus", async () => {
+    const c = baseClient();
+    c.inferenceEnvStatus = vi.fn(async (req: { env_var: string }) => ({
+      present: req.env_var === "MISTRAL_API_KEY",
+    }));
+    render(() => (
+      <ModelsTable
+        client={c}
+        owner={owner}
+        targets={() => [fastTarget, deepTarget]}
+        bindings={() => []}
+        refetchTargets={vi.fn()}
+        refetchBindings={vi.fn()}
+      />
+    ));
+    await waitFor(() => expect(c.inferenceEnvStatus).toHaveBeenCalled());
+    expect(
+      await screen.findByLabelText("key status for my-fast: set"),
+    ).toBeTruthy();
+    expect(
+      await screen.findByLabelText("key status for my-deep: missing"),
+    ).toBeTruthy();
   });
 });
