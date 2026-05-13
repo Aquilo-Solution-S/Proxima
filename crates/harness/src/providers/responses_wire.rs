@@ -215,6 +215,49 @@ pub(super) fn accumulate_sse(body: &str) -> Result<Value, ProviderError> {
     Ok(Value::Object(body_obj))
 }
 
+/// Classifier for an SSE-streamed Codex response. Mirrors `classify`'s
+/// status-code triage, then collects the body via `text()` and pipes
+/// through `accumulate_sse` + `parse_success`.
+pub(super) async fn classify_sse(resp: reqwest::Response) -> Result<RoundResult, ProviderError> {
+    let status = resp.status();
+    if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+        return Err(ProviderError::Auth);
+    }
+    if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        let retry_after = resp
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u64>().ok())
+            .map(Duration::from_secs);
+        return Err(ProviderError::RateLimited { retry_after });
+    }
+
+    let body = resp
+        .text()
+        .await
+        .map_err(|err| ProviderError::Network(err.to_string()))?;
+
+    if !status.is_success() {
+        if status == reqwest::StatusCode::BAD_REQUEST && looks_like_context_length(&body) {
+            return Err(ProviderError::ContextLength);
+        }
+        if status.is_server_error() {
+            return Err(ProviderError::ServerError(body));
+        }
+        return Err(ProviderError::InvalidRequest(body));
+    }
+
+    let assembled = accumulate_sse(&body)?;
+    let raw_output = assembled
+        .get("output")
+        .cloned()
+        .ok_or_else(|| ProviderError::Deserialize("missing output".to_string()))?;
+    let parsed: ResponsesBody = serde_json::from_value(assembled)
+        .map_err(|err| ProviderError::Deserialize(err.to_string()))?;
+    parse_success(&parsed, raw_output)
+}
+
 fn looks_like_context_length(body: &str) -> bool {
     let lower = body.to_ascii_lowercase();
     lower.contains("context_length")
