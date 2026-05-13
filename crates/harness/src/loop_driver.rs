@@ -15,6 +15,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::conversation::{ToolResultStatus, ToolResultTurn, Turn};
 use crate::program::{ResolvedProgram, resolve};
+use crate::providers::chatgpt_codex::ChatGPTCodexClient;
 use crate::providers::mistral_chat::MistralChatClient;
 use crate::providers::openai_chat::OpenAIChatClient;
 use crate::providers::openai_responses::OpenAIResponsesClient;
@@ -133,7 +134,20 @@ fn build_provider(target: &ProviderTarget) -> Box<dyn ProviderClient> {
             client.reasoning_effort.clone_from(reasoning_effort);
             Box::new(client)
         }
-        ProviderTarget::ChatGPTCodex { .. } => todo!("ChatGPTCodexClient wired in task 5"),
+        ProviderTarget::ChatGPTCodex {
+            base_url,
+            model_id,
+            reasoning_effort,
+            auth_json,
+        } => {
+            let mut client = ChatGPTCodexClient::new(
+                base_url.clone(),
+                model_id.clone(),
+                proxima_codex_auth::AuthDotJsonPath::from_explicit(auth_json.clone()),
+            );
+            client.reasoning_effort.clone_from(reasoning_effort);
+            Box::new(client)
+        }
     }
 }
 
