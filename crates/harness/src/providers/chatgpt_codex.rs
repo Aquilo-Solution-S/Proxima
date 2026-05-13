@@ -1,9 +1,12 @@
 //! ChatGPT (subscription) `/responses` provider adapter against
 //! `chatgpt.com/backend-api/codex`.
 
+use std::sync::Arc;
 use std::time::Duration;
 
-use proxima_codex_auth::{AuthDotJsonPath, CodexAuthResolver, CodexCredentials};
+use proxima_codex_auth::{
+    AuthDotJsonPath, CodexAuthError, CodexAuthResolver, CodexCredentials,
+};
 use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderName, HeaderValue};
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
@@ -13,7 +16,10 @@ use crate::conversation::{Conversation, ToolSpec};
 use super::responses_wire;
 use super::{ProviderClient, ProviderError, RoundResult};
 
-#[derive(Debug, Clone)]
+type ResolverFactory =
+    Arc<dyn Fn() -> Result<CodexAuthResolver, CodexAuthError> + Send + Sync + 'static>;
+
+#[derive(Clone)]
 pub struct ChatGPTCodexClient {
     pub http: reqwest::Client,
     pub base_url: String,
@@ -21,6 +27,19 @@ pub struct ChatGPTCodexClient {
     pub reasoning_effort: Option<String>,
     pub auth_json: AuthDotJsonPath,
     pub request_timeout: Duration,
+    resolver_factory: Option<ResolverFactory>,
+}
+
+impl std::fmt::Debug for ChatGPTCodexClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ChatGPTCodexClient")
+            .field("base_url", &self.base_url)
+            .field("model_id", &self.model_id)
+            .field("reasoning_effort", &self.reasoning_effort)
+            .field("auth_json", &self.auth_json)
+            .field("request_timeout", &self.request_timeout)
+            .finish_non_exhaustive()
+    }
 }
 
 impl ChatGPTCodexClient {
@@ -33,7 +52,16 @@ impl ChatGPTCodexClient {
             reasoning_effort: None,
             auth_json,
             request_timeout: Duration::from_mins(3),
+            resolver_factory: None,
         }
+    }
+
+    pub fn with_resolver_factory<F>(mut self, factory: F) -> Self
+    where
+        F: Fn() -> Result<CodexAuthResolver, CodexAuthError> + Send + Sync + 'static,
+    {
+        self.resolver_factory = Some(Arc::new(factory));
+        self
     }
 
     fn build_headers(&self, creds: &CodexCredentials) -> Result<HeaderMap, ProviderError> {
@@ -70,6 +98,34 @@ impl ChatGPTCodexClient {
         }
         body
     }
+
+    async fn send(
+        &self,
+        url: &str,
+        creds: &CodexCredentials,
+        body: &Value,
+        cancel: CancellationToken,
+    ) -> Result<reqwest::Response, ProviderError> {
+        let headers = self.build_headers(creds)?;
+        let fut = self
+            .http
+            .post(url)
+            .headers(headers)
+            .timeout(self.request_timeout)
+            .json(body)
+            .send();
+        tokio::select! {
+            result = fut => result.map_err(|err| ProviderError::Network(err.to_string())),
+            () = cancel.cancelled() => Err(ProviderError::Timeout),
+        }
+    }
+
+    fn make_resolver(&self) -> Result<CodexAuthResolver, ProviderError> {
+        if let Some(factory) = &self.resolver_factory {
+            return factory().map_err(|_| ProviderError::Auth);
+        }
+        CodexAuthResolver::new(self.auth_json.clone()).map_err(|_| ProviderError::Auth)
+    }
 }
 
 #[async_trait::async_trait]
@@ -80,25 +136,20 @@ impl ProviderClient for ChatGPTCodexClient {
         tools: &[ToolSpec],
         cancel: CancellationToken,
     ) -> Result<RoundResult, ProviderError> {
-        let resolver =
-            CodexAuthResolver::new(self.auth_json.clone()).map_err(|_| ProviderError::Auth)?;
+        let resolver = self.make_resolver()?;
         let creds = resolver.resolve().await.map_err(|_| ProviderError::Auth)?;
         let body = self.build_body(conversation, tools);
         let url = format!("{}/responses", self.base_url.trim_end_matches('/'));
 
-        let headers = self.build_headers(&creds)?;
-        let request = self
-            .http
-            .post(url)
-            .headers(headers)
-            .timeout(self.request_timeout)
-            .json(&body)
-            .send();
-        let resp = tokio::select! {
-            result = request => result.map_err(|err| ProviderError::Network(err.to_string()))?,
-            () = cancel.cancelled() => return Err(ProviderError::Timeout),
-        };
-
+        let resp = self.send(&url, &creds, &body, cancel.clone()).await?;
+        if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+            let refreshed = resolver
+                .invalidate_and_refresh()
+                .await
+                .map_err(|_| ProviderError::Auth)?;
+            let resp2 = self.send(&url, &refreshed, &body, cancel).await?;
+            return responses_wire::classify_sse(resp2).await;
+        }
         responses_wire::classify_sse(resp).await
     }
 }
