@@ -29,6 +29,8 @@ export const commands = {
 	removeInferenceTarget: (req: RemoveInferenceTargetTs) => typedError<RemoveInferenceTargetOutcomeTs, ProtocolError>(__TAURI_INVOKE("remove_inference_target", { req })),
 	bindInferenceTier: (req: BindInferenceTierTs) => typedError<null, ProtocolError>(__TAURI_INVOKE("bind_inference_tier", { req })),
 	listInferenceTierBindings: (req: ListInferenceTierBindingsTs) => typedError<InferenceTierBindingTs[], ProtocolError>(__TAURI_INVOKE("list_inference_tier_bindings", { req })),
+	inferenceEnvStatus: (req: InferenceEnvStatusTs) => typedError<InferenceEnvStatusOutcomeTs, ProtocolError>(__TAURI_INVOKE("inference_env_status", { req })),
+	testInferenceTarget: (req: TestInferenceTargetTs) => typedError<TestInferenceTargetOutcomeTs, ProtocolError>(__TAURI_INVOKE("test_inference_target", { req })),
 	listMcpTools: () => typedError<McpToolTs[], ProtocolError>(__TAURI_INVOKE("list_mcp_tools")),
 	listWorkspaceTools: () => typedError<WorkspaceToolTs[], ProtocolError>(__TAURI_INVOKE("list_workspace_tools")),
 	listRelations: () => typedError<RelationTs[], ProtocolError>(__TAURI_INVOKE("list_relations")),
@@ -509,6 +511,14 @@ export type IndexReportTs = {
 	chunks_tombstoned: number,
 };
 
+export type InferenceEnvStatusOutcomeTs = {
+	present: boolean,
+};
+
+export type InferenceEnvStatusTs = {
+	env_var: string,
+};
+
 export type InferenceTargetConfigTs = { kind: "mistral_chat" } & (MistralChatConfigTs) | { kind: "openai_chat" } & (OpenAIChatConfigTs) | { kind: "openai_responses" } & (OpenAIResponsesConfigTs);
 
 export type InferenceTargetTs = {
@@ -915,6 +925,18 @@ export type SystemOrigin = ({ Operator: {
 } }) & { Tool?: never } | ({ Tool: {
 	tool_id: ToolId,
 } }) & { Operator?: never };
+
+export type TestInferenceTargetOutcomeTs = {
+	ok: boolean,
+	latency_ms: number,
+	error_code: string | null,
+	error_message: string | null,
+};
+
+export type TestInferenceTargetTs = {
+	owner: Owner,
+	target_ref: string,
+};
 
 export type TombstoneFilter = "PresentOnly" | "IncludeTombstoned";
 
