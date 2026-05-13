@@ -5,11 +5,11 @@ use std::sync::OnceLock;
 
 use async_trait::async_trait;
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 use crate::error::ProtocolError;
 use crate::personality::{PersonalityTool, PersonalityToolContext, PersonalityToolResult};
-use crate::{GoalId, SchemaId, SchemaVersion};
+use crate::{GoalId, MemoryId};
 
 #[derive(Debug, Default)]
 pub struct ListActiveGoalsTool;
@@ -33,14 +33,13 @@ fn args_schema_value() -> &'static serde_json::Value {
     })
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Triage-level summary of one active goal. Detail (text, schema_id,
+/// payload) is reachable via `core/fetch_memory(goal_activated_memory_id)`.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActiveGoalSummary {
     pub goal_id: GoalId,
-    pub schema_id: SchemaId,
-    pub schema_version: SchemaVersion,
+    pub goal_activated_memory_id: Option<MemoryId>,
     pub title: String,
-    pub text: String,
-    pub payload: Vec<u8>,
 }
 
 #[async_trait]
@@ -68,8 +67,19 @@ impl PersonalityTool for ListActiveGoalsTool {
             .list_active_goals(ctx.owner, ctx.current_root_perspective_memory_id, 100)
             .await
             .map_err(|e| ProtocolError::internal(e.to_string()))?;
+        let goals_payload: Vec<serde_json::Value> = goals
+            .into_iter()
+            .filter_map(|g| {
+                let activated = g.goal_activated_memory_id?;
+                Some(serde_json::json!({
+                    "goal": ctx.handles.assign_goal(g.goal_id).as_str(),
+                    "goal_activated_memory": ctx.handles.assign_memory(activated).as_str(),
+                    "title": g.title,
+                }))
+            })
+            .collect();
         Ok(PersonalityToolResult::ok(serde_json::json!({
-            "goals": goals,
+            "goals": goals_payload,
         })))
     }
 }
@@ -119,5 +129,47 @@ mod tests {
             .expect("tool succeeds");
         assert!(!result.is_error);
         assert_eq!(result.content, serde_json::json!({ "goals": [] }));
+    }
+
+    #[test]
+    fn skips_goals_without_activated_memory() {
+        let goals = vec![
+            ActiveGoalSummary {
+                goal_id: GoalId::new(uuid::Uuid::now_v7()),
+                goal_activated_memory_id: None,
+                title: "no activation".into(),
+            },
+            ActiveGoalSummary {
+                goal_id: GoalId::new(uuid::Uuid::now_v7()),
+                goal_activated_memory_id: Some(MemoryId::new(uuid::Uuid::now_v7())),
+                title: "real goal".into(),
+            },
+        ];
+        let handles = HandleTable::new();
+        let payload: Vec<serde_json::Value> = goals
+            .into_iter()
+            .filter_map(|g| {
+                let activated = g.goal_activated_memory_id?;
+                Some(serde_json::json!({
+                    "goal": handles.assign_goal(g.goal_id).as_str(),
+                    "goal_activated_memory": handles.assign_memory(activated).as_str(),
+                    "title": g.title,
+                }))
+            })
+            .collect();
+        assert_eq!(payload.len(), 1);
+        let only = &payload[0];
+        assert!(only["goal"].as_str().unwrap().starts_with('G'));
+        assert!(
+            only["goal_activated_memory"]
+                .as_str()
+                .unwrap()
+                .starts_with('N')
+        );
+        assert_eq!(only["title"], "real goal");
+        assert!(only.get("goal_id").is_none());
+        assert!(only.get("text").is_none());
+        assert!(only.get("payload").is_none());
+        assert!(only.get("schema_id").is_none());
     }
 }
