@@ -270,6 +270,7 @@ async fn chatgpt_codex_request(
             "content": [{ "type": "input_text", "text": "ping" }],
         }],
         "store": false,
+        "stream": true,
     });
     if let Some(effort) = config.reasoning_effort.as_deref() {
         if let Some(obj) = body.as_object_mut() {
@@ -520,6 +521,7 @@ mod tests {
                     "content": [{ "type": "input_text", "text": "ping" }],
                 }],
                 "store": false,
+                "stream": true,
             })))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "id": "resp_001",
