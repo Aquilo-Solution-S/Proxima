@@ -1,5 +1,6 @@
 mod engine;
 mod inference_targets;
+mod inference_test;
 mod mcp;
 mod models;
 mod repo_ingest;
@@ -32,6 +33,7 @@ pub(crate) fn specta_builder() -> Builder<tauri::Wry> {
         inference_targets::remove_inference_target,
         inference_targets::bind_inference_tier,
         inference_targets::list_inference_tier_bindings,
+        inference_test::inference_env_status,
         tools::list_mcp_tools,
         tools::list_workspace_tools,
         tools::list_relations,
