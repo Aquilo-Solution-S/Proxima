@@ -8,7 +8,7 @@ use proxima_code::{
     CommitV1, ExecutionRequestV1, WorkspaceDecision, WorkspaceReviewVerdict, WorkspaceRunV1,
 };
 use proxima_core::auth::NoAuth;
-use proxima_core::mcp::{HandleTable, McpAuthorContext, McpTool, McpToolCtx};
+use proxima_core::mcp::{HandleTable, McpAuthorContext, McpTool, McpToolCtx, OutputMode};
 use proxima_core::personality::{
     InstantiatePersonalityRequest, SetWakeEntriesRequest, WakeEntryDraft, WakeExecutionMode,
 };
@@ -547,7 +547,8 @@ fn ctx(
     McpToolCtx {
         pool,
         owner,
-        handles: Arc::new(HandleTable::new()),
+        handles: Some(Arc::new(HandleTable::new())),
+        mode: OutputMode::Handles,
         registry,
         author: McpAuthorContext {
             model_id: "test/0".into(),

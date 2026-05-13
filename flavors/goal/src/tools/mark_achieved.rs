@@ -63,7 +63,7 @@ pub async fn mark_achieved(
     args: MarkAchievedArgs,
 ) -> Result<MarkAchievedOutput, McpToolError> {
     let prior_goal_id = resolve_goal_ref(&ctx, &args.goal)?;
-    let supersedes_handle = ctx.handles.assign_goal(prior_goal_id);
+    let supersedes_handle = ctx.handles.as_ref().unwrap().assign_goal(prior_goal_id);
     let request_id = request_id("goal_mark_achieved", args.idempotency_key);
 
     let mut tx = ctx.pool.begin().await.map_err(map_storage)?;
@@ -73,7 +73,7 @@ pub async fn mark_achieved(
         existing_achieved_goal(&mut tx, &ctx, &request_id, prior_goal_id).await?
     {
         tx.commit().await.map_err(map_storage)?;
-        let handle = ctx.handles.assign_goal(GoalId::new(existing));
+        let handle = ctx.handles.as_ref().unwrap().assign_goal(GoalId::new(existing));
         return Ok(MarkAchievedOutput {
             status: MarkAchievedStatus::IdempotentReplay,
             handle: Some(handle.as_str().to_string()),
@@ -136,7 +136,7 @@ pub async fn mark_achieved(
         append_lifecycle_derived_from_edges(&mut tx, &ctx, lifecycle_memory, &evidence).await?;
     tx.commit().await.map_err(map_storage)?;
 
-    let handle = ctx.handles.assign_goal(GoalId::new(achieved_id));
+    let handle = ctx.handles.as_ref().unwrap().assign_goal(GoalId::new(achieved_id));
     Ok(MarkAchievedOutput {
         status: MarkAchievedStatus::Achieved,
         handle: Some(handle.as_str().to_string()),
@@ -145,7 +145,7 @@ pub async fn mark_achieved(
         evidence_edge_handles: evidence_edge_ids
             .into_iter()
             .map(|edge_id| {
-                ctx.handles
+                ctx.handles.as_ref().unwrap()
                     .assign_edge(EdgeId::new(edge_id))
                     .as_str()
                     .to_string()
@@ -154,7 +154,7 @@ pub async fn mark_achieved(
         derived_edge_handles: derived_edge_ids
             .into_iter()
             .map(|edge_id| {
-                ctx.handles
+                ctx.handles.as_ref().unwrap()
                     .assign_edge(EdgeId::new(edge_id))
                     .as_str()
                     .to_string()
@@ -177,7 +177,7 @@ fn skipped_output(supersedes: &str, reason: impl Into<String>) -> MarkAchievedOu
 }
 
 fn resolve_goal_ref(ctx: &McpToolCtx, value: &str) -> Result<GoalId, McpToolError> {
-    if let Some(entity) = ctx.handles.resolve(value) {
+    if let Some(entity) = ctx.handles.as_ref().unwrap().resolve(value) {
         return match entity {
             EntityRef::Goal(id) => Ok(id),
             EntityRef::Memory(_)
@@ -201,7 +201,7 @@ async fn resolve_evidence_refs(
 ) -> Result<Vec<EvidenceRef>, McpToolError> {
     let mut out = Vec::with_capacity(evidence.len());
     for value in evidence {
-        let memory_id = match ctx.handles.resolve(value) {
+        let memory_id = match ctx.handles.as_ref().unwrap().resolve(value) {
             Some(EntityRef::Memory(memory_id)) => memory_id,
             Some(_) => {
                 return Err(McpToolError::InvalidInput(format!(

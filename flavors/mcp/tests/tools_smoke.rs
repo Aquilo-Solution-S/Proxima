@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use proxima_core::McpToolError;
-use proxima_core::mcp::{HandleTable, McpAuthorContext, McpToolCtx};
+use proxima_core::mcp::{HandleTable, McpAuthorContext, McpToolCtx, OutputMode};
 use proxima_core::{FlavorRegistry, OrgId, Owner, Principal, UserId};
 use serde_json::json;
 use sqlx::{Connection, Executor, PgConnection};
@@ -248,7 +248,8 @@ async fn call_tool(
         McpToolCtx {
             pool: pool.clone(),
             owner: owner.clone(),
-            handles: handles.clone(),
+            handles: Some(handles.clone()),
+            mode: OutputMode::Handles,
             registry: registry.clone(),
             author,
             caller_self_perspective: None,

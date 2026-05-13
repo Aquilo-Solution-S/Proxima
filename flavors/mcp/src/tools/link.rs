@@ -97,7 +97,7 @@ impl McpTool for LinkTool {
                 .map_err(McpToolError::Storage)?;
             tx.commit().await.map_err(map_storage)?;
 
-            let handle = ctx.handles.assign_edge(EdgeId::new(edge_id));
+            let handle = ctx.handles.as_ref().unwrap().assign_edge(EdgeId::new(edge_id));
             Ok(LinkOutput {
                 edge_handle: handle.as_str().to_string(),
             })
@@ -106,7 +106,7 @@ impl McpTool for LinkTool {
 }
 
 fn resolve_memory(ctx: &McpToolCtx, raw: &str) -> Result<uuid::Uuid, McpToolError> {
-    match ctx.handles.resolve(raw) {
+    match ctx.handles.as_ref().unwrap().resolve(raw) {
         Some(EntityRef::Memory(memory_id)) => Ok(memory_id.into_inner()),
         Some(_) => Err(McpToolError::InvalidInput(format!(
             "{raw} is not a memory handle"

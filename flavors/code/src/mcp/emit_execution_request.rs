@@ -132,12 +132,12 @@ impl McpTool for CodeEmitExecutionRequestTool {
 
             Ok(CodeEmitExecutionRequestOutput {
                 handle: ctx
-                    .handles
+                    .handles.as_ref().unwrap()
                     .assign_memory(outcome.memory_id)
                     .as_str()
                     .to_string(),
                 authored_edge_handle: authored_edge_id.map(|edge_id| {
-                    ctx.handles
+                    ctx.handles.as_ref().unwrap()
                         .assign_edge(EdgeId::new(edge_id))
                         .as_str()
                         .to_string()
@@ -145,7 +145,7 @@ impl McpTool for CodeEmitExecutionRequestTool {
                 derived_edge_handles: derived_edge_ids
                     .into_iter()
                     .map(|edge_id| {
-                        ctx.handles
+                        ctx.handles.as_ref().unwrap()
                             .assign_edge(EdgeId::new(edge_id))
                             .as_str()
                             .to_string()
@@ -197,7 +197,7 @@ impl McpTool for CodeRetryExecutionRequestTool {
             {
                 tx.commit().await.map_err(map_storage)?;
                 return Ok(CodeRetryExecutionRequestOutput {
-                    handle: ctx.handles.assign_memory(existing).as_str().to_string(),
+                    handle: ctx.handles.as_ref().unwrap().assign_memory(existing).as_str().to_string(),
                     authored_edge_handle: None,
                     target_edge_handle: None,
                     derived_edge_handles: Vec::new(),
@@ -280,18 +280,18 @@ impl McpTool for CodeRetryExecutionRequestTool {
 
             Ok(CodeRetryExecutionRequestOutput {
                 handle: ctx
-                    .handles
+                    .handles.as_ref().unwrap()
                     .assign_memory(outcome.memory_id)
                     .as_str()
                     .to_string(),
                 authored_edge_handle: authored_edge_id.map(|edge_id| {
-                    ctx.handles
+                    ctx.handles.as_ref().unwrap()
                         .assign_edge(EdgeId::new(edge_id))
                         .as_str()
                         .to_string()
                 }),
                 target_edge_handle: target_edge_id.map(|edge_id| {
-                    ctx.handles
+                    ctx.handles.as_ref().unwrap()
                         .assign_edge(EdgeId::new(edge_id))
                         .as_str()
                         .to_string()
@@ -299,7 +299,7 @@ impl McpTool for CodeRetryExecutionRequestTool {
                 derived_edge_handles: derived_edge_ids
                     .into_iter()
                     .map(|edge_id| {
-                        ctx.handles
+                        ctx.handles.as_ref().unwrap()
                             .assign_edge(EdgeId::new(edge_id))
                             .as_str()
                             .to_string()
@@ -348,7 +348,7 @@ fn retry_instructions(
 }
 
 pub(super) fn resolve_memory_id(ctx: &McpToolCtx, raw: &str) -> Result<MemoryId, McpToolError> {
-    if let Some(memory_id) = ctx.handles.resolve_memory(raw) {
+    if let Some(memory_id) = ctx.handles.as_ref().unwrap().resolve_memory(raw) {
         return Ok(memory_id);
     }
     Uuid::parse_str(raw)
@@ -360,7 +360,7 @@ pub(super) fn resolve_personality_id(
     ctx: &McpToolCtx,
     raw: &str,
 ) -> Result<PersonalityInstanceId, McpToolError> {
-    if let Some(personality_id) = ctx.handles.resolve_personality(raw) {
+    if let Some(personality_id) = ctx.handles.as_ref().unwrap().resolve_personality(raw) {
         return Ok(personality_id);
     }
     Uuid::parse_str(raw)

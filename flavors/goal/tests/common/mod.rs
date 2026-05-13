@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use proxima_core::mcp::{HandleTable, McpAuthorContext, McpToolCtx};
+use proxima_core::mcp::{HandleTable, McpAuthorContext, McpToolCtx, OutputMode};
 use proxima_core::{FlavorRegistry, OrgId, Owner, Principal, UserId};
 use proxima_storage_pg::PgStorage;
 use sqlx::{Connection, Executor, PgConnection};
@@ -78,7 +78,8 @@ pub fn ctx(pg: &PgStorage, owner: Owner) -> McpToolCtx {
     McpToolCtx {
         pool: pg.pool().clone(),
         owner,
-        handles: Arc::new(HandleTable::new()),
+        handles: Some(Arc::new(HandleTable::new())),
+        mode: OutputMode::Handles,
         registry: Arc::new(registry.freeze()),
         author: McpAuthorContext {
             model_id: "test-model".into(),

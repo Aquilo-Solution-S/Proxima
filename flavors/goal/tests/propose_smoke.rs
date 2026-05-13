@@ -21,7 +21,7 @@ async fn propose_writes_goal_and_motivated_by_atomically() -> Result<(), Box<dyn
         let ctx = ctx(&pg, owner.clone());
         let evidence = insert_abstraction(&pg, &owner).await?;
         let evidence_handle = ctx
-            .handles
+            .handles.as_ref().unwrap()
             .assign_memory(proxima_core::MemoryId::new(evidence));
 
         let outcome = ProposeTool::call(
@@ -38,7 +38,7 @@ async fn propose_writes_goal_and_motivated_by_atomically() -> Result<(), Box<dyn
         )
         .await?;
         let goal_id = ctx
-            .handles
+            .handles.as_ref().unwrap()
             .resolve_goal(&outcome.handle)
             .expect("goal handle resolves")
             .into_inner();
@@ -120,7 +120,7 @@ async fn propose_writes_inspires_edge_for_personality_caller()
         )
         .await?;
         let goal_id = ctx
-            .handles
+            .handles.as_ref().unwrap()
             .resolve_goal(&outcome.handle)
             .expect("goal handle resolves")
             .into_inner();
@@ -130,7 +130,7 @@ async fn propose_writes_inspires_edge_for_personality_caller()
             .as_deref()
             .expect("personality caller writes core/inspires edge");
         let inspires_edge_id = ctx
-            .handles
+            .handles.as_ref().unwrap()
             .resolve_edge(inspires_edge_handle)
             .expect("inspires edge handle resolves")
             .into_inner();
@@ -168,7 +168,7 @@ async fn propose_rejects_evidence_in_other_owner() -> Result<(), Box<dyn std::er
         let ctx = ctx(&pg, owner);
         let evidence = insert_abstraction(&pg, &other).await?;
         let evidence_handle = ctx
-            .handles
+            .handles.as_ref().unwrap()
             .assign_memory(proxima_core::MemoryId::new(evidence));
 
         let err = ProposeTool::call(

@@ -71,7 +71,7 @@ impl McpTool for SearchGraphTool {
             let mut matches = Vec::with_capacity(rows.len());
             let mut memory_ids = Vec::with_capacity(rows.len());
             for row in rows {
-                let handle = ctx.handles.assign_memory(MemoryId::new(row.memory_id));
+                let handle = ctx.handles.as_ref().unwrap().assign_memory(MemoryId::new(row.memory_id));
                 memory_ids.push(row.memory_id);
                 matches.push(GraphMatch {
                     handle: handle.as_str().to_string(),
@@ -85,7 +85,7 @@ impl McpTool for SearchGraphTool {
             }
 
             let neighbor_edges =
-                neighbor_edges(&ctx.pool, &ctx.owner, &ctx.handles, &memory_ids).await?;
+                neighbor_edges(&ctx.pool, &ctx.owner, ctx.handles.as_ref().unwrap(), &memory_ids).await?;
             Ok(SearchGraphOutput {
                 matches,
                 neighbor_edges,
@@ -233,7 +233,7 @@ impl McpTool for OpenTool {
     ) -> futures::future::BoxFuture<'static, Result<OpenOutput, McpToolError>> {
         Box::pin(async move {
             let entity = ctx
-                .handles
+                .handles.as_ref().unwrap()
                 .resolve(&args.handle)
                 .ok_or_else(|| McpToolError::UnknownHandle(args.handle.clone()))?;
             let EntityRef::Memory(memory_id) = entity else {
@@ -254,7 +254,7 @@ impl McpTool for OpenTool {
                     McpToolError::InvalidInput(format!("memory {memory_uuid} not found"))
                 })?;
             let neighbor_edges =
-                neighbor_edges(&ctx.pool, &ctx.owner, &ctx.handles, &[memory_uuid]).await?;
+                neighbor_edges(&ctx.pool, &ctx.owner, ctx.handles.as_ref().unwrap(), &[memory_uuid]).await?;
             Ok(OpenOutput {
                 handle: args.handle,
                 kind: memory_kind_for_edge(row.kind.as_deref()).to_string(),

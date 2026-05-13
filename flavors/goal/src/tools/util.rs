@@ -199,7 +199,7 @@ pub async fn target_personality_root(
     handle: &str,
 ) -> Result<MemoryId, McpToolError> {
     let instance_id = ctx
-        .handles
+        .handles.as_ref().unwrap()
         .resolve_personality(handle)
         .ok_or_else(|| McpToolError::UnknownHandle(handle.to_string()))?;
     personality_root_in_owner(tx, &ctx.owner, instance_id).await
@@ -275,7 +275,7 @@ pub async fn validate_evidence_in_owner(
     let (owner_kind, owner_principal_id, _owner_org_id) = owner_columns(&ctx.owner);
     for handle in evidence {
         let entity = ctx
-            .handles
+            .handles.as_ref().unwrap()
             .resolve(handle)
             .ok_or_else(|| McpToolError::UnknownHandle(handle.clone()))?;
         match entity {
@@ -586,7 +586,7 @@ pub async fn outgoing_motivated_by_evidence(
     let mut out = Vec::with_capacity(rows.len());
     for (edge_id, target_kind, target_memory_id, target_goal_id) in rows {
         let handle = ctx
-            .handles
+            .handles.as_ref().unwrap()
             .assign_edge(proxima_core::EdgeId::new(edge_id))
             .as_str()
             .to_string();

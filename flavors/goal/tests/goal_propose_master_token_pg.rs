@@ -9,7 +9,7 @@ mod common;
 
 use common::{drop_db, migrated, owner_fixture};
 use proxima_core::auth::NoAuth;
-use proxima_core::mcp::{HandleTable, McpAuthorContext, McpToolCtx};
+use proxima_core::mcp::{HandleTable, McpAuthorContext, McpToolCtx, OutputMode};
 use proxima_core::storage::Storage;
 use proxima_core::verbs::query::MemoryStore;
 use proxima_core::{Engine, FlavorRegistry, McpTool};
@@ -127,7 +127,8 @@ async fn master_token_propose_creates_inspires_edge_to_per_token_self_perspectiv
         let ctx = McpToolCtx {
             pool: pg.pool().clone(),
             owner: owner.clone(),
-            handles: Arc::new(HandleTable::new()),
+            handles: Some(Arc::new(HandleTable::new())),
+            mode: OutputMode::Handles,
             registry: Arc::new(registry.freeze()),
             author: McpAuthorContext {
                 model_id: "test".into(),
@@ -164,7 +165,7 @@ async fn master_token_propose_creates_inspires_edge_to_per_token_self_perspectiv
         // Resolve the edge handle and read the row directly to verify
         // the target_memory_id matches the per-token Self-Perspective.
         let edge_id = ctx
-            .handles
+            .handles.as_ref().unwrap()
             .resolve_edge(inspires_edge_handle)
             .expect("inspires edge handle resolves")
             .into_inner();

@@ -17,7 +17,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use futures::future::BoxFuture;
 
-use crate::{MemoryId, Owner, verbs::schema::FlavorRegistryFrozen};
+use crate::{EdgeId, GoalId, MemoryId, Owner, PersonalityInstanceId, verbs::schema::FlavorRegistryFrozen};
 
 #[derive(Debug, Clone)]
 pub struct McpAuthorContext {
@@ -72,11 +72,28 @@ pub trait HarnessSubstrateBridge: Send + Sync {
     ) -> Result<serde_json::Value, HarnessSubstrateError>;
 }
 
+/// Selects the regime that `McpToolCtx::format_*` / `resolve_*`
+/// helpers operate in.
+///
+/// - `Handles`: wake-dispatched, model-facing. Emits/parses handle
+///   strings (`N1`, `G7`, …) against the wake's `HandleTable`.
+/// - `RawIds`: master-token / human-facing. Emits/parses raw UUID
+///   strings. No `HandleTable` is consulted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputMode {
+    Handles,
+    RawIds,
+}
+
 #[derive(Clone)]
 pub struct McpToolCtx {
     pub pool: sqlx::PgPool,
     pub owner: Owner,
-    pub handles: Arc<HandleTable>,
+    /// `Some` for wake-dispatched calls (table provided by the wake);
+    /// `None` for master-token / unauthenticated calls. Must be `Some`
+    /// when `mode == OutputMode::Handles`.
+    pub handles: Option<Arc<HandleTable>>,
+    pub mode: OutputMode,
     pub registry: Arc<FlavorRegistryFrozen>,
     pub author: McpAuthorContext,
     pub caller_self_perspective: Option<MemoryId>,
@@ -113,6 +130,183 @@ impl McpToolCtx {
     #[must_use]
     pub fn storage(&self) -> Option<&dyn crate::Storage> {
         self.engine.as_ref().map(|e| &**e.storage())
+    }
+
+    fn handle_table(&self) -> &HandleTable {
+        self.handles
+            .as_ref()
+            .expect("OutputMode::Handles requires a HandleTable")
+    }
+
+    #[must_use]
+    pub fn format_memory(&self, id: MemoryId) -> String {
+        match self.mode {
+            OutputMode::Handles => self.handle_table().assign_memory(id).as_str().to_string(),
+            OutputMode::RawIds => id.into_inner().to_string(),
+        }
+    }
+
+    #[must_use]
+    pub fn format_goal(&self, id: GoalId) -> String {
+        match self.mode {
+            OutputMode::Handles => self.handle_table().assign_goal(id).as_str().to_string(),
+            OutputMode::RawIds => id.into_inner().to_string(),
+        }
+    }
+
+    #[must_use]
+    pub fn format_edge(&self, id: EdgeId) -> String {
+        match self.mode {
+            OutputMode::Handles => self.handle_table().assign_edge(id).as_str().to_string(),
+            OutputMode::RawIds => id.into_inner().to_string(),
+        }
+    }
+
+    #[must_use]
+    pub fn format_personality(&self, id: PersonalityInstanceId) -> String {
+        match self.mode {
+            OutputMode::Handles => self
+                .handle_table()
+                .assign_personality(id)
+                .as_str()
+                .to_string(),
+            OutputMode::RawIds => id.into_inner().to_string(),
+        }
+    }
+
+    #[must_use]
+    pub fn format_wake_entry(&self, id: uuid::Uuid) -> String {
+        match self.mode {
+            OutputMode::Handles => self.handle_table().assign_wake_entry(id).as_str().to_string(),
+            OutputMode::RawIds => id.to_string(),
+        }
+    }
+
+    #[must_use]
+    pub fn format_flavor_object(&self, kind: &str, id: uuid::Uuid, prefix: char) -> String {
+        match self.mode {
+            OutputMode::Handles => self
+                .handle_table()
+                .assign_flavor_object(kind, id, prefix)
+                .as_str()
+                .to_string(),
+            OutputMode::RawIds => id.to_string(),
+        }
+    }
+
+    /// Parse `raw` as a memory reference under the active mode.
+    ///
+    /// # Errors
+    ///
+    /// Returns `McpToolError::UnknownHandle` in `Handles` mode if the
+    /// handle is unknown, and `McpToolError::InvalidInput` in `RawIds`
+    /// mode if `raw` is not a well-formed UUID. (Step 4 of the
+    /// handles-per-wake spec replaces these with kind-aware
+    /// `ResolveError`s.)
+    pub fn resolve_memory(&self, raw: &str) -> Result<MemoryId, McpToolError> {
+        match self.mode {
+            OutputMode::Handles => self
+                .handle_table()
+                .resolve_memory(raw)
+                .ok_or_else(|| McpToolError::UnknownHandle(raw.to_string())),
+            OutputMode::RawIds => raw
+                .parse::<uuid::Uuid>()
+                .map(MemoryId::new)
+                .map_err(|e| McpToolError::InvalidInput(format!("not a uuid: {e}"))),
+        }
+    }
+
+    /// Parse `raw` as a goal reference under the active mode.
+    ///
+    /// # Errors
+    ///
+    /// See [`McpToolCtx::resolve_memory`].
+    pub fn resolve_goal(&self, raw: &str) -> Result<GoalId, McpToolError> {
+        match self.mode {
+            OutputMode::Handles => self
+                .handle_table()
+                .resolve_goal(raw)
+                .ok_or_else(|| McpToolError::UnknownHandle(raw.to_string())),
+            OutputMode::RawIds => raw
+                .parse::<uuid::Uuid>()
+                .map(GoalId::new)
+                .map_err(|e| McpToolError::InvalidInput(format!("not a uuid: {e}"))),
+        }
+    }
+
+    /// Parse `raw` as an edge reference under the active mode.
+    ///
+    /// # Errors
+    ///
+    /// See [`McpToolCtx::resolve_memory`].
+    pub fn resolve_edge(&self, raw: &str) -> Result<EdgeId, McpToolError> {
+        match self.mode {
+            OutputMode::Handles => self
+                .handle_table()
+                .resolve_edge(raw)
+                .ok_or_else(|| McpToolError::UnknownHandle(raw.to_string())),
+            OutputMode::RawIds => raw
+                .parse::<uuid::Uuid>()
+                .map(EdgeId::new)
+                .map_err(|e| McpToolError::InvalidInput(format!("not a uuid: {e}"))),
+        }
+    }
+
+    /// Parse `raw` as a personality reference under the active mode.
+    ///
+    /// # Errors
+    ///
+    /// See [`McpToolCtx::resolve_memory`].
+    pub fn resolve_personality(&self, raw: &str) -> Result<PersonalityInstanceId, McpToolError> {
+        match self.mode {
+            OutputMode::Handles => self
+                .handle_table()
+                .resolve_personality(raw)
+                .ok_or_else(|| McpToolError::UnknownHandle(raw.to_string())),
+            OutputMode::RawIds => raw
+                .parse::<uuid::Uuid>()
+                .map(PersonalityInstanceId::new)
+                .map_err(|e| McpToolError::InvalidInput(format!("not a uuid: {e}"))),
+        }
+    }
+
+    /// Parse `raw` as a wake-entry reference under the active mode.
+    ///
+    /// # Errors
+    ///
+    /// See [`McpToolCtx::resolve_memory`].
+    pub fn resolve_wake_entry(&self, raw: &str) -> Result<uuid::Uuid, McpToolError> {
+        match self.mode {
+            OutputMode::Handles => self
+                .handle_table()
+                .resolve_wake_entry(raw)
+                .ok_or_else(|| McpToolError::UnknownHandle(raw.to_string())),
+            OutputMode::RawIds => raw
+                .parse::<uuid::Uuid>()
+                .map_err(|e| McpToolError::InvalidInput(format!("not a uuid: {e}"))),
+        }
+    }
+
+    /// Parse `raw` as a flavor-object reference of the given `kind`
+    /// under the active mode.
+    ///
+    /// # Errors
+    ///
+    /// See [`McpToolCtx::resolve_memory`].
+    pub fn resolve_flavor_object(
+        &self,
+        raw: &str,
+        kind: &str,
+    ) -> Result<uuid::Uuid, McpToolError> {
+        match self.mode {
+            OutputMode::Handles => self
+                .handle_table()
+                .resolve_flavor_object(raw, kind)
+                .ok_or_else(|| McpToolError::UnknownHandle(raw.to_string())),
+            OutputMode::RawIds => raw
+                .parse::<uuid::Uuid>()
+                .map_err(|e| McpToolError::InvalidInput(format!("not a uuid: {e}"))),
+        }
     }
 }
 
@@ -220,7 +414,8 @@ mod ctx_engine_tests {
         let ctx = McpToolCtx {
             pool,
             owner: owner.clone(),
-            handles: Arc::new(HandleTable::new()),
+            handles: Some(Arc::new(HandleTable::new())),
+            mode: OutputMode::Handles,
             registry: Arc::new(FlavorRegistry::new().freeze()),
             author: McpAuthorContext {
                 model_id: "t".into(),
@@ -252,7 +447,8 @@ mod ctx_engine_tests {
         let ctx = McpToolCtx {
             pool,
             owner,
-            handles: Arc::new(HandleTable::new()),
+            handles: Some(Arc::new(HandleTable::new())),
+            mode: OutputMode::Handles,
             registry: Arc::new(FlavorRegistry::new().freeze()),
             author: McpAuthorContext {
                 model_id: "t".into(),
