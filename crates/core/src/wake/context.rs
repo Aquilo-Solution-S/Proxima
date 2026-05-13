@@ -37,20 +37,19 @@ pub struct RootPerspectiveEnvelope {
     pub system_prompt: String,
 }
 
-/// Spec line 292: `{ goal_payload, motivation_via }`.
+/// Triage envelope for one active Goal — `{ goal_id,
+/// goal_activated_memory_id, title, motivation_via }`. The model fetches
+/// full goal detail via `core/fetch_memory(goal_activated_memory_id)`.
 ///
-/// `goal_payload` is the full typed sidecar payload of the active Goal
-/// (whatever shape the flavor authored). `motivation_via` is the list of
-/// memory ids whose `core/inspires` edges trace from the goal head row to
-/// the active personality. With the v1 schema that's a direct
-/// Goal -> Perspective edge, so the path goes through the root
-/// perspective memory id.
+/// `motivation_via` is the list of memory ids whose `core/inspires` edges
+/// trace from the goal head row to the active personality. With the v1
+/// schema that's a direct Goal -> Perspective edge, so the path goes
+/// through the root perspective memory id.
 #[derive(Debug, Clone, Serialize)]
 pub struct ActiveGoalEnvelope {
     pub goal_id: Uuid,
-    pub schema_id: String,
+    pub goal_activated_memory_id: Option<Uuid>,
     pub title: String,
-    pub goal_payload: serde_json::Value,
     pub motivation_via: Vec<Uuid>,
 }
 
@@ -159,21 +158,11 @@ pub async fn assemble_wake_context(
 
     let active_goals = active_goal_rows
         .into_iter()
-        .map(|row| {
-            let goal_payload = if row.payload.is_empty() {
-                serde_json::Value::Null
-            } else {
-                serde_json::from_slice::<serde_json::Value>(&row.payload).unwrap_or_else(|_| {
-                    serde_json::Value::String(String::from_utf8_lossy(&row.payload).into_owned())
-                })
-            };
-            ActiveGoalEnvelope {
-                goal_id: row.goal_id.into_inner(),
-                schema_id: row.schema_id.into_inner(),
-                title: row.title,
-                goal_payload,
-                motivation_via: vec![root_memory_id.into_inner()],
-            }
+        .map(|row| ActiveGoalEnvelope {
+            goal_id: row.goal_id.into_inner(),
+            goal_activated_memory_id: row.goal_activated_memory_id.map(MemoryId::into_inner),
+            title: row.title,
+            motivation_via: vec![root_memory_id.into_inner()],
         })
         .collect();
 
