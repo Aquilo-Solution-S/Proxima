@@ -17,70 +17,6 @@ export const TARGET_KIND_OPTIONS: {
   { kind: "openai_responses", label: "OpenAI Responses" },
 ];
 
-export const DEFAULT_TIER_PRESETS: ReadonlyArray<{
-  tier: ModelTierTs;
-  targetRef: string;
-  label: string;
-  config: InferenceTargetConfigTs;
-}> = [
-  {
-    tier: "fast",
-    targetRef: "default-fast",
-    label: "Fast",
-    config: {
-      kind: "mistral_chat",
-      base_url: "https://api.mistral.ai",
-      model_id: "mistral-medium-latest",
-      api_key_env: "MISTRAL_API_KEY",
-      temperature: null,
-      max_completion_tokens: null,
-    },
-  },
-  {
-    tier: "standard",
-    targetRef: "default-standard",
-    label: "Standard",
-    config: {
-      kind: "openai_responses",
-      base_url: "https://api.openai.com",
-      model_id: "gpt-5.3-codex-spark",
-      api_key_env: "OPENAI_API_KEY",
-      reasoning_effort: "medium",
-    },
-  },
-  {
-    tier: "deep",
-    targetRef: "default-deep",
-    label: "Deep",
-    config: {
-      kind: "openai_responses",
-      base_url: "https://api.openai.com",
-      model_id: "gpt-5.5",
-      api_key_env: "OPENAI_API_KEY",
-      reasoning_effort: "high",
-    },
-  },
-] as const satisfies ReadonlyArray<{
-  tier: ModelTierTs;
-  targetRef: string;
-  label: string;
-  config: InferenceTargetConfigTs;
-}>;
-
-export const PRESET_TARGET_REFS = new Set(
-  DEFAULT_TIER_PRESETS.map((preset) => preset.targetRef),
-);
-
-export const targetRefForTier = (tier: ModelTierTs): string =>
-  DEFAULT_TIER_PRESETS.find((preset) => preset.tier === tier)?.targetRef ??
-  `default-${tier}`;
-
-export const defaultPresetForTier = (tier: ModelTierTs) => {
-  const preset = DEFAULT_TIER_PRESETS.find((entry) => entry.tier === tier);
-  if (!preset) throw new Error(`unknown tier: ${tier}`);
-  return preset;
-};
-
 export const kindLabel = (kind: InferenceTargetKind): string => {
   switch (kind) {
     case "mistral_chat":
@@ -147,22 +83,6 @@ export const sameConfig = (
   right: InferenceTargetConfigTs,
 ): boolean => configKey(left) === configKey(right);
 
-export const shortHash = (input: string): string => {
-  let hash = 0x811c9dc5;
-  for (let i = 0; i < input.length; i += 1) {
-    hash ^= input.charCodeAt(i);
-    hash = Math.imul(hash, 0x01000193);
-  }
-  return (hash >>> 0).toString(36);
-};
-
-export const safeRefPart = (input: string): string =>
-  input
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 36) || "target";
-
 export const cloneConfig = (
   config: InferenceTargetConfigTs,
 ): InferenceTargetConfigTs => {
@@ -179,20 +99,34 @@ export const cloneConfig = (
 export const defaultConfigForKind = (
   kind: InferenceTargetKind,
 ): InferenceTargetConfigTs => {
+  const placeholder = KIND_PLACEHOLDERS[kind];
   switch (kind) {
     case "mistral_chat":
-      return cloneConfig(defaultPresetForTier("fast").config);
+      return {
+        kind: "mistral_chat",
+        base_url: placeholder.baseUrl,
+        model_id: "",
+        api_key_env: placeholder.apiKeyEnv,
+        temperature: null,
+        max_completion_tokens: null,
+      };
     case "openai_chat":
       return {
         kind: "openai_chat",
-        base_url: "https://api.openai.com",
-        model_id: "gpt-5.3-codex-spark",
-        api_key_env: "OPENAI_API_KEY",
+        base_url: placeholder.baseUrl,
+        model_id: "",
+        api_key_env: placeholder.apiKeyEnv,
         temperature: null,
         max_completion_tokens: null,
       };
     case "openai_responses":
-      return cloneConfig(defaultPresetForTier("standard").config);
+      return {
+        kind: "openai_responses",
+        base_url: placeholder.baseUrl,
+        model_id: "",
+        api_key_env: placeholder.apiKeyEnv,
+        reasoning_effort: null,
+      };
   }
 };
 
@@ -291,20 +225,6 @@ export const configFromDraft = (draft: TargetDraft): InferenceTargetConfigTs => 
   }
 };
 
-export const targetRefForCollision = (
-  tier: ModelTierTs,
-  config: InferenceTargetConfigTs,
-): string => {
-  switch (config.kind) {
-    case "mistral_chat":
-    case "openai_chat":
-    case "openai_responses":
-      return `${targetRefForTier(tier)}-${safeRefPart(config.kind)}-${safeRefPart(
-        config.model_id,
-      )}-${shortHash(configKey(config))}`;
-  }
-};
-
 export interface KindPlaceholder {
   baseUrl: string;
   apiKeyEnv: string;
@@ -323,17 +243,4 @@ export const KIND_PLACEHOLDERS: Record<InferenceTargetKind, KindPlaceholder> = {
     baseUrl: "https://api.openai.com",
     apiKeyEnv: "OPENAI_API_KEY",
   },
-};
-
-export const blankDraftForKind = (kind: InferenceTargetKind): TargetDraft => {
-  const placeholder = KIND_PLACEHOLDERS[kind];
-  return {
-    kind,
-    baseUrl: placeholder.baseUrl,
-    modelId: "",
-    apiKeyEnv: placeholder.apiKeyEnv,
-    temperature: "",
-    maxCompletionTokens: "",
-    reasoningEffort: "",
-  };
 };

@@ -3,8 +3,8 @@ import type { Owner } from "../../bindings";
 import type { EngineClient } from "../../client";
 import {
   TARGET_KIND_OPTIONS,
-  blankDraftForKind,
   configFromDraft,
+  draftForKind,
   type InferenceTargetKind,
   type TargetDraft,
 } from "./constants";
@@ -33,12 +33,12 @@ const errorMessage = (err: unknown): string => {
 export const RegisterModelModal: Component<Props> = (props) => {
   const [targetRef, setTargetRef] = createSignal("");
   const [draft, setDraft] = createSignal<TargetDraft>(
-    blankDraftForKind("mistral_chat"),
+    draftForKind("mistral_chat"),
   );
   const [error, setError] = createSignal<string | null>(null);
 
   const switchKind = (kind: InferenceTargetKind) => {
-    setDraft(blankDraftForKind(kind));
+    setDraft(draftForKind(kind));
   };
 
   const updateDraft = (patch: Partial<TargetDraft>) =>
