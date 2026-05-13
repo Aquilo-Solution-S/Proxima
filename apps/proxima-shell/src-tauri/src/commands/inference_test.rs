@@ -1,9 +1,11 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use proxima_codex_auth::AuthDotJsonPath;
 use proxima_core::auth::Credentials;
 use proxima_core::error::ProtocolError;
-use proxima_core::{Engine, InferenceTargetConfig, Owner};
+use proxima_core::{ChatGPTCodexConfig, Engine, InferenceTargetConfig, Owner};
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue, AUTHORIZATION};
 use serde_json::json;
 use tauri::State;
 
@@ -34,6 +36,52 @@ pub async fn inference_env_status(
     Ok(env_status_with(&req.env_var, |key| {
         std::env::var(key).is_ok()
     }))
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
+pub struct CodexAuthStatusOutcomeTs {
+    /// True if ~/.codex/auth.json exists and is readable.
+    pub auth_json_present: bool,
+    /// True if tokens.access_token is set and parseable as a JWT.
+    pub access_token_present: bool,
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn codex_auth_status() -> Result<CodexAuthStatusOutcomeTs, ProtocolError> {
+    let Some(home) = std::env::var_os("HOME") else {
+        return Ok(CodexAuthStatusOutcomeTs {
+            auth_json_present: false,
+            access_token_present: false,
+        });
+    };
+    let path = std::path::PathBuf::from(home).join(".codex/auth.json");
+    let bytes = match std::fs::read(&path) {
+        Ok(b) => b,
+        Err(_) => {
+            return Ok(CodexAuthStatusOutcomeTs {
+                auth_json_present: false,
+                access_token_present: false,
+            });
+        }
+    };
+    let json: serde_json::Value = match serde_json::from_slice(&bytes) {
+        Ok(v) => v,
+        Err(_) => {
+            return Ok(CodexAuthStatusOutcomeTs {
+                auth_json_present: true,
+                access_token_present: false,
+            });
+        }
+    };
+    let access_token_present = json["tokens"]["access_token"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .is_some();
+    Ok(CodexAuthStatusOutcomeTs {
+        auth_json_present: true,
+        access_token_present,
+    })
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
@@ -93,6 +141,24 @@ impl PingError {
             message: "request exceeded 5s".into(),
         }
     }
+    fn codex_auth_missing(message: String) -> Self {
+        Self {
+            code: "codex_auth_missing".into(),
+            message,
+        }
+    }
+    fn codex_auth_invalid(message: String) -> Self {
+        Self {
+            code: "codex_auth_invalid".into(),
+            message,
+        }
+    }
+    fn codex_auth_refresh_failed(message: String) -> Self {
+        Self {
+            code: "codex_auth_refresh_failed".into(),
+            message,
+        }
+    }
 }
 
 fn config_api_key_env(config: &InferenceTargetConfig) -> Option<&str> {
@@ -128,8 +194,11 @@ fn ping_endpoint(config: &InferenceTargetConfig) -> String {
         InferenceTargetConfig::MistralChat(_) | InferenceTargetConfig::OpenAIChat(_) => {
             format!("{base}/v1/chat/completions")
         }
-        InferenceTargetConfig::OpenAIResponses(_) | InferenceTargetConfig::ChatGPTCodex(_) => {
+        InferenceTargetConfig::OpenAIResponses(_) => {
             format!("{base}/responses")
+        }
+        InferenceTargetConfig::ChatGPTCodex(_) => {
+            unreachable!("ChatGPTCodex is routed through ping_chatgpt_codex")
         }
     }
 }
@@ -142,25 +211,146 @@ fn ping_body(config: &InferenceTargetConfig) -> serde_json::Value {
             "messages": [{ "role": "user", "content": "ping" }],
             "max_tokens": 1,
         }),
-        InferenceTargetConfig::OpenAIResponses(_) | InferenceTargetConfig::ChatGPTCodex(_) => json!({
+        InferenceTargetConfig::OpenAIResponses(_) => json!({
             "model": model,
             "input": "ping",
             "max_output_tokens": 16,
         }),
+        InferenceTargetConfig::ChatGPTCodex(_) => {
+            unreachable!("ChatGPTCodex is routed through ping_chatgpt_codex")
+        }
     }
 }
 
-/// Inner function that accepts an env-lookup closure so tests can supply
-/// a stub without mutating process env (the crate forbids `unsafe`).
-pub async fn ping_target_with<F>(
+fn codex_auth_to_ping_error(e: proxima_codex_auth::CodexAuthError) -> PingError {
+    use proxima_codex_auth::CodexAuthError;
+    match e {
+        CodexAuthError::AuthJsonMissing { .. } => PingError::codex_auth_missing(e.to_string()),
+        CodexAuthError::AuthJsonInvalid(_) | CodexAuthError::MissingAccountId => {
+            PingError::codex_auth_invalid(e.to_string())
+        }
+        CodexAuthError::RefreshFailed => PingError::codex_auth_refresh_failed(e.to_string()),
+        CodexAuthError::Network(detail) => PingError::network(detail),
+    }
+}
+
+/// Send one POST to `{base_url}/responses`. Returns (status, latency_ms, body_text).
+async fn chatgpt_codex_request(
+    config: &ChatGPTCodexConfig,
+    access_token: &str,
+    account_id: &str,
+) -> Result<(u16, u32, String), PingError> {
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        AUTHORIZATION,
+        HeaderValue::from_str(&format!("Bearer {access_token}"))
+            .map_err(|e| PingError::network(format!("invalid access_token header: {e}")))?,
+    );
+    headers.insert(
+        HeaderName::from_static("chatgpt-account-id"),
+        HeaderValue::from_str(account_id)
+            .map_err(|e| PingError::network(format!("invalid account_id header: {e}")))?,
+    );
+    headers.insert(
+        HeaderName::from_static("originator"),
+        HeaderValue::from_static("proxima"),
+    );
+
+    let base = config.base_url.trim_end_matches('/');
+    let url = format!("{base}/responses");
+    let body = json!({
+        "model": config.model_id,
+        "input": "ping",
+        "max_output_tokens": 16,
+    });
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .map_err(|e| PingError::network(format!("client build: {e}")))?;
+
+    let started = Instant::now();
+    let resp = client
+        .post(&url)
+        .headers(headers)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| {
+            if e.is_timeout() {
+                PingError::timeout()
+            } else {
+                PingError::network(e.to_string())
+            }
+        })?;
+
+    let latency_ms = started.elapsed().as_millis() as u32;
+    let status = resp.status().as_u16();
+    let body_text = resp.text().await.unwrap_or_default();
+    Ok((status, latency_ms, body_text))
+}
+
+/// Inner implementation that accepts the auth.json path explicitly —
+/// allows tests to inject a fixture path without mutating process env
+/// (which would require `unsafe` in edition 2024).
+async fn ping_chatgpt_codex_with(
+    config: &ChatGPTCodexConfig,
+    auth_json: AuthDotJsonPath,
+) -> Result<u32, PingError> {
+    use proxima_codex_auth::CodexAuthResolver;
+
+    let resolver = CodexAuthResolver::new(auth_json)
+        .map_err(|e| PingError::network(format!("codex auth resolver: {e}")))?;
+
+    // First attempt with the proactively-resolved credentials.
+    let creds = resolver.resolve().await.map_err(codex_auth_to_ping_error)?;
+    let (status, latency_ms, body_text) =
+        chatgpt_codex_request(config, &creds.access_token, &creds.account_id).await?;
+    if status >= 200 && status < 300 {
+        return Ok(latency_ms);
+    }
+
+    // On 401, force a refresh and retry exactly once.
+    if status == 401 {
+        let refreshed = resolver
+            .invalidate_and_refresh()
+            .await
+            .map_err(codex_auth_to_ping_error)?;
+        let (status2, latency_ms2, body_text2) = chatgpt_codex_request(
+            config,
+            &refreshed.access_token,
+            &refreshed.account_id,
+        )
+        .await?;
+        if status2 >= 200 && status2 < 300 {
+            return Ok(latency_ms2);
+        }
+        let excerpt: String = body_text2.chars().take(200).collect();
+        return Err(PingError::http(status2, excerpt));
+    }
+
+    let excerpt: String = body_text.chars().take(200).collect();
+    Err(PingError::http(status, excerpt))
+}
+
+async fn ping_chatgpt_codex(config: &ChatGPTCodexConfig) -> Result<u32, PingError> {
+    let home = std::env::var_os("HOME").ok_or_else(|| {
+        PingError::network("HOME env var not set".to_string())
+    })?;
+    let auth_json = AuthDotJsonPath::from_home(&std::path::PathBuf::from(home));
+    ping_chatgpt_codex_with(config, auth_json).await
+}
+
+async fn ping_via_env_key<F>(
     config: &InferenceTargetConfig,
     env_lookup: F,
 ) -> Result<u32, PingError>
 where
     F: Fn(&str) -> Option<String>,
 {
-    let env_var = config_api_key_env(config)
-        .ok_or_else(|| PingError::not_supported("ChatGPTCodex routing arrives in Task 8"))?;
+    let env_var = config_api_key_env(config).ok_or_else(|| {
+        PingError::not_supported("no env-var-based credential resolver for this target kind")
+    })?;
     let api_key = env_lookup(env_var).ok_or_else(|| PingError::env_missing(env_var))?;
     let url = ping_endpoint(config);
     let body = ping_body(config);
@@ -190,6 +380,21 @@ where
         return Err(PingError::http(status, excerpt));
     }
     Ok(latency_ms)
+}
+
+/// Inner function that accepts an env-lookup closure so tests can supply
+/// a stub without mutating process env (the crate forbids `unsafe`).
+pub async fn ping_target_with<F>(
+    config: &InferenceTargetConfig,
+    env_lookup: F,
+) -> Result<u32, PingError>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    match config {
+        InferenceTargetConfig::ChatGPTCodex(c) => ping_chatgpt_codex(c).await,
+        _ => ping_via_env_key(config, env_lookup).await,
+    }
 }
 
 pub async fn ping_target(config: &InferenceTargetConfig) -> Result<u32, PingError> {
@@ -260,5 +465,80 @@ mod tests {
         let err = result.expect_err("must error when env unset");
         assert_eq!(err.code(), "env_missing");
         assert!(err.message().contains("PROXIMA_TEST_PING_NO_KEY"));
+    }
+
+    fn make_fresh_access_token(account_id: &str) -> String {
+        use base64::Engine as _;
+        let exp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
+            + 3600;
+        let claims = serde_json::json!({
+            "chatgpt_account_id": account_id,
+            "exp": exp,
+        });
+        let payload_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(serde_json::to_vec(&claims).unwrap());
+        format!("header.{payload_b64}.signature")
+    }
+
+    #[tokio::test]
+    async fn ping_chatgpt_codex_uses_codex_oauth_against_configured_endpoint() {
+        use wiremock::matchers::{header, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        // Stand up wiremock as the "chatgpt.com/backend-api/codex" server.
+        let server = MockServer::start().await;
+
+        let fresh_access = make_fresh_access_token("acct-test");
+
+        // Expect POST {server}/responses with the three required headers and correct body.
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .and(header("authorization", format!("Bearer {fresh_access}").as_str()))
+            .and(header("chatgpt-account-id", "acct-test"))
+            .and(header("originator", "proxima"))
+            .and(wiremock::matchers::body_json(serde_json::json!({
+                "model": "gpt-5.3-codex",
+                "input": "ping",
+                "max_output_tokens": 16,
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "resp_001",
+                "model": "gpt-5.3-codex",
+                "output": []
+            })))
+            .mount(&server)
+            .await;
+
+        // Build a temp HOME with a fixture auth.json carrying fresh tokens.
+        let tmp = tempfile::tempdir().unwrap();
+        let codex_dir = tmp.path().join(".codex");
+        std::fs::create_dir(&codex_dir).unwrap();
+        let auth_json_value = serde_json::json!({
+            "tokens": {
+                "id_token": "id",
+                "access_token": fresh_access,
+                "refresh_token": "ref",
+            }
+        });
+        std::fs::write(
+            codex_dir.join("auth.json"),
+            auth_json_value.to_string(),
+        )
+        .unwrap();
+
+        let config = ChatGPTCodexConfig {
+            base_url: server.uri(),
+            model_id: "gpt-5.3-codex".to_string(),
+            reasoning_effort: None,
+        };
+        let auth = AuthDotJsonPath(codex_dir.join("auth.json"));
+
+        let latency_ms = ping_chatgpt_codex_with(&config, auth)
+            .await
+            .expect("ping should succeed");
+        assert!(latency_ms < 5_000, "ping latency reasonable: {latency_ms}ms");
     }
 }
