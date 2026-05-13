@@ -42,6 +42,7 @@ type ModelsTableClient = Pick<
   | "removeInferenceTarget"
   | "bindInferenceTier"
   | "inferenceEnvStatus"
+  | "codexAuthStatus"
   | "testInferenceTarget"
 >;
 
@@ -53,6 +54,10 @@ const baseClient = (): ModelsTableClient => ({
   removeInferenceTarget: vi.fn(async () => ({ idempotent_replay: false })),
   bindInferenceTier: vi.fn(async () => undefined),
   inferenceEnvStatus: vi.fn(async (_req: { env_var: string }) => ({ present: true })),
+  codexAuthStatus: vi.fn(async () => ({
+    auth_json_present: true,
+    access_token_present: true,
+  })),
   testInferenceTarget: vi.fn(async () => ({
     ok: true,
     latency_ms: 1,

@@ -12,6 +12,7 @@ import {
   type InstantiatePersonalityOutcomeTs,
   type InstantiatePersonalityTs,
   type BindInferenceTierTs,
+  type CodexAuthStatusOutcomeTs,
   type InferenceEnvStatusOutcomeTs,
   type InferenceEnvStatusTs,
   type InferenceTargetTs,
@@ -173,6 +174,10 @@ export class TauriEngineClient implements EngineClient {
     req: InferenceEnvStatusTs,
   ): Promise<InferenceEnvStatusOutcomeTs> {
     return unwrap(commands.inferenceEnvStatus(req), "inference_env_status");
+  }
+
+  async codexAuthStatus(): Promise<CodexAuthStatusOutcomeTs> {
+    return unwrap(commands.codexAuthStatus(), "codex_auth_status");
   }
 
   async testInferenceTarget(

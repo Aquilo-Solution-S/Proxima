@@ -62,6 +62,10 @@ const graphClient = (overrides: Partial<EngineClient>): EngineClient => ({
     return [];
   },
   inferenceEnvStatus: async () => ({ present: false }),
+  codexAuthStatus: async () => ({
+    auth_json_present: false,
+    access_token_present: false,
+  }),
   testInferenceTarget: async () => ({
     ok: true,
     latency_ms: 0,

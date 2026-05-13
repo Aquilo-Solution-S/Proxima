@@ -10,6 +10,7 @@ import type {
   InstantiatePersonalityOutcomeTs,
   InstantiatePersonalityTs,
   BindInferenceTierTs,
+  CodexAuthStatusOutcomeTs,
   InferenceEnvStatusOutcomeTs,
   InferenceEnvStatusTs,
   InferenceTargetTs,
@@ -74,6 +75,7 @@ export interface EngineClient {
   inferenceEnvStatus(
     req: InferenceEnvStatusTs,
   ): Promise<InferenceEnvStatusOutcomeTs>;
+  codexAuthStatus(): Promise<CodexAuthStatusOutcomeTs>;
   testInferenceTarget(
     req: TestInferenceTargetTs,
   ): Promise<TestInferenceTargetOutcomeTs>;
