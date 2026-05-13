@@ -75,18 +75,18 @@ impl McpTool for ProposeTool {
                     .await?;
             tx.commit().await.map_err(map_storage)?;
 
-            let handle = ctx.handles.assign_goal(GoalId::new(goal_id));
+            let handle = ctx.handles.as_ref().unwrap().assign_goal(GoalId::new(goal_id));
             let edge_handles = edge_uuids
                 .into_iter()
                 .map(|edge_id| {
-                    ctx.handles
+                    ctx.handles.as_ref().unwrap()
                         .assign_edge(EdgeId::new(edge_id))
                         .as_str()
                         .to_string()
                 })
                 .collect();
             let inspires_edge_handle = inspires_edge_id.map(|edge_id| {
-                ctx.handles
+                ctx.handles.as_ref().unwrap()
                     .assign_edge(EdgeId::new(edge_id))
                     .as_str()
                     .to_string()

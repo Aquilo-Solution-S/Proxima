@@ -66,7 +66,7 @@ impl McpTool for GetPersonalityTool {
     ) -> BoxFuture<'static, Result<GetPersonalityOutput, McpToolError>> {
         Box::pin(async move {
             let target_id = ctx
-                .handles
+                .handles.as_ref().unwrap()
                 .resolve_personality(&args.personality)
                 .ok_or_else(|| McpToolError::UnknownHandle(args.personality.clone()))?;
             let storage = ctx
@@ -85,15 +85,15 @@ impl McpTool for GetPersonalityTool {
                         args.personality
                     ))
                 })?;
-            let p_handle = ctx.handles.assign_personality(row.personality_instance_id);
+            let p_handle = ctx.handles.as_ref().unwrap().assign_personality(row.personality_instance_id);
             let n_handle = ctx
-                .handles
+                .handles.as_ref().unwrap()
                 .assign_memory(row.current_root_perspective_memory_id);
             let wake_entries = row
                 .wake_entries
                 .into_iter()
                 .map(|e| {
-                    let w = ctx.handles.assign_wake_entry(e.wake_entry_id);
+                    let w = ctx.handles.as_ref().unwrap().assign_wake_entry(e.wake_entry_id);
                     GetPersonalityWakeEntry {
                         wake_entry: w.as_str().to_string(),
                         trigger_kind: format!("{:?}", e.trigger_kind),
@@ -128,6 +128,7 @@ impl McpTool for GetPersonalityTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mcp::OutputMode;
     use crate::auth::NoAuth;
     use crate::mcp::HandleTable;
     use crate::verbs::query::MemoryStore;
@@ -148,7 +149,8 @@ mod tests {
         McpToolCtx {
             pool: sqlx::PgPool::connect_lazy("postgres://x/x").expect("lazy"),
             owner,
-            handles: Arc::new(HandleTable::new()),
+            handles: Some(Arc::new(HandleTable::new())),
+            mode: OutputMode::Handles,
             registry: Arc::new(FlavorRegistry::new().freeze()),
             author: McpAuthorContext {
                 model_id: "t".into(),

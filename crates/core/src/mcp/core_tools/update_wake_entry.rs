@@ -77,7 +77,7 @@ impl McpTool for UpdateWakeEntryTool {
     ) -> BoxFuture<'static, Result<UpdateWakeEntryOutput, McpToolError>> {
         Box::pin(async move {
             let wid = ctx
-                .handles
+                .handles.as_ref().unwrap()
                 .resolve_wake_entry(&args.wake_entry)
                 .ok_or_else(|| McpToolError::UnknownHandle(args.wake_entry.clone()))?;
             let storage = ctx
@@ -163,7 +163,7 @@ impl McpTool for UpdateWakeEntryTool {
                 AuditEmit::Ok => None,
                 AuditEmit::Failed { reason } => Some(reason),
             };
-            let w_handle = ctx.handles.assign_wake_entry(wid);
+            let w_handle = ctx.handles.as_ref().unwrap().assign_wake_entry(wid);
             Ok(UpdateWakeEntryOutput {
                 wake_entry: w_handle.as_str().to_string(),
                 audit_emit_failed,

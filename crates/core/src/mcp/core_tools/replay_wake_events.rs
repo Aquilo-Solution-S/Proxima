@@ -43,14 +43,14 @@ impl McpTool for ReplayWakeEventsTool {
     ) -> BoxFuture<'static, Result<ReplayWakeEventsOutcome, McpToolError>> {
         Box::pin(async move {
             let personality_instance_id = ctx
-                .handles
+                .handles.as_ref().unwrap()
                 .resolve_personality(&args.personality)
                 .ok_or_else(|| McpToolError::UnknownHandle(args.personality.clone()))?;
             let wake_entry_id = args
                 .wake_entry
                 .as_deref()
                 .map(|handle| {
-                    ctx.handles
+                    ctx.handles.as_ref().unwrap()
                         .resolve_wake_entry(handle)
                         .ok_or_else(|| McpToolError::UnknownHandle(handle.to_string()))
                 })
@@ -89,6 +89,7 @@ fn parse_optional_uuid(field: &str, value: Option<String>) -> Result<Option<Uuid
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mcp::OutputMode;
     use crate::auth::NoAuth;
     use crate::mcp::HandleTable;
     use crate::verbs::query::MemoryStore;
@@ -109,7 +110,8 @@ mod tests {
         McpToolCtx {
             pool: sqlx::PgPool::connect_lazy("postgres://x/x").expect("lazy"),
             owner,
-            handles: Arc::new(HandleTable::new()),
+            handles: Some(Arc::new(HandleTable::new())),
+            mode: OutputMode::Handles,
             registry: Arc::new(FlavorRegistry::new().freeze()),
             author: McpAuthorContext {
                 model_id: "t".into(),

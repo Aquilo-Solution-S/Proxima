@@ -89,8 +89,8 @@ impl McpTool for CodeOpenFileRevisionTool {
                 .await
                 .map_err(map_storage)?
                 .map(|row| {
-                    let handle = ctx.handles.assign_memory(MemoryId::new(row.memory_id));
-                    let repo_handle = ctx.handles.assign_flavor_object(
+                    let handle = ctx.handles.as_ref().unwrap().assign_memory(MemoryId::new(row.memory_id));
+                    let repo_handle = ctx.handles.as_ref().unwrap().assign_flavor_object(
                         super::REPO_HANDLE_KIND,
                         row.repo_id,
                         super::REPO_HANDLE_PREFIX,
@@ -135,7 +135,7 @@ impl McpTool for CodeOpenFileRevisionTool {
             let chunks = chunk_rows
                 .into_iter()
                 .map(|row| {
-                    let handle = ctx.handles.assign_memory(MemoryId::new(row.memory_id));
+                    let handle = ctx.handles.as_ref().unwrap().assign_memory(MemoryId::new(row.memory_id));
                     let (text, text_line_range) = project_text(
                         row.text,
                         row.line_range_start,

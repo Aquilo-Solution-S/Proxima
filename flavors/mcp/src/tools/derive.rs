@@ -90,7 +90,7 @@ impl McpTool for DeriveTool {
 
             let mut source_uuids = Vec::with_capacity(args.source_handles.len());
             for handle in &args.source_handles {
-                match ctx.handles.resolve(handle) {
+                match ctx.handles.as_ref().unwrap().resolve(handle) {
                     Some(EntityRef::Memory(memory_id)) => source_uuids.push(memory_id.into_inner()),
                     Some(_) => {
                         return Err(McpToolError::InvalidInput(format!(
@@ -173,13 +173,13 @@ impl McpTool for DeriveTool {
                     append_edge_in_tx(&mut tx, &edge_draft, None)
                         .await
                         .map_err(McpToolError::Storage)?;
-                    let handle = ctx.handles.assign_edge(EdgeId::new(edge_id));
+                    let handle = ctx.handles.as_ref().unwrap().assign_edge(EdgeId::new(edge_id));
                     provenance_edge_handles.push(handle.as_str().to_string());
                 }
             }
             tx.commit().await.map_err(map_storage)?;
 
-            let handle = ctx.handles.assign_memory(MemoryId::new(memory_id));
+            let handle = ctx.handles.as_ref().unwrap().assign_memory(MemoryId::new(memory_id));
             Ok(DeriveOutput {
                 handle: handle.as_str().to_string(),
                 idempotent_replay: outcome.idempotent_replay,

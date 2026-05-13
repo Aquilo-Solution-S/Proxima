@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use proxima_core::mcp::{HandleTable, McpAuthorContext, McpToolCtx, McpToolError};
+use proxima_core::mcp::{McpAuthorContext, McpToolCtx, McpToolError, OutputMode};
 use proxima_core::personality::{
     PersonalityTool, PersonalityToolContext, substrate_pack, writeable_relations_for_palette,
     writeable_schemas_for_palette,
@@ -14,7 +14,6 @@ use crate::auth::McpAuthContext;
 pub struct McpToolHost {
     pool: sqlx::PgPool,
     owner: Owner,
-    handles: Arc<HandleTable>,
     registry: Arc<FlavorRegistryFrozen>,
     engine: Option<Arc<Engine>>,
 }
@@ -38,7 +37,6 @@ impl McpToolHost {
         Self {
             pool,
             owner,
-            handles: Arc::new(HandleTable::new()),
             registry,
             engine: None,
         }
@@ -83,17 +81,29 @@ impl McpToolHost {
         substrate_pack()
     }
 
+    /// Build a per-call `McpToolCtx` derived from the auth regime.
+    ///
+    /// Wake-dispatched calls (`auth.wake.is_some()`) receive the
+    /// wake's `HandleTable` and `OutputMode::Handles`. Master-token
+    /// and unauthenticated calls receive no table and
+    /// `OutputMode::RawIds`.
     #[must_use]
-    pub fn ctx(
+    pub fn ctx_for(
         &self,
         author: McpAuthorContext,
         owner: Option<Owner>,
-        master_token_id: Option<uuid::Uuid>,
+        auth: Option<&McpAuthContext>,
     ) -> McpToolCtx {
+        let (handles, mode) = match auth.and_then(|a| a.wake.as_ref()) {
+            Some(wake) => (Some(wake.handles.clone()), OutputMode::Handles),
+            None => (None, OutputMode::RawIds),
+        };
+        let master_token_id = auth.and_then(|c| c.master_token_id);
         McpToolCtx {
             pool: self.pool.clone(),
             owner: owner.unwrap_or_else(|| self.owner.clone()),
-            handles: self.handles.clone(),
+            handles,
+            mode,
             registry: self.registry.clone(),
             caller_self_perspective: author.caller_self_perspective,
             master_token_id,
@@ -137,7 +147,8 @@ impl McpToolHost {
         {
             let owner = auth.as_ref().map(|ctx| ctx.owner.clone());
             let started = Instant::now();
-            let result = (descriptor.call)(self.ctx(author, owner, master_token_id), args).await;
+            let result =
+                (descriptor.call)(self.ctx_for(author, owner, auth.as_ref()), args).await;
             if let (Some(engine), Some(auth)) = (self.engine.as_ref(), auth.as_ref()) {
                 let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
                 match &result {
@@ -391,7 +402,8 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use proxima_core::mcp::{HandleTable, McpAuthorContext};
+    use crate::auth::{McpAuthContext, McpToolScope};
+    use proxima_core::mcp::McpAuthorContext;
     use proxima_core::{FlavorRegistry, OrgId, Owner, Principal, UserId};
 
     fn fake_owner() -> Owner {
@@ -405,15 +417,24 @@ mod tests {
         let pool = sqlx::PgPool::connect_lazy("postgres://placeholder/db").expect("lazy pool");
         McpToolHost {
             owner: fake_owner(),
-            handles: Arc::new(HandleTable::new()),
             registry: Arc::new(FlavorRegistry::new().freeze()),
             pool,
             engine: None,
         }
     }
 
+    fn master_token_auth(owner: Owner, token: uuid::Uuid) -> McpAuthContext {
+        McpAuthContext {
+            owner,
+            scope: McpToolScope::All,
+            model_id: None,
+            wake: None,
+            master_token_id: Some(token),
+        }
+    }
+
     #[tokio::test]
-    async fn ctx_threads_master_token_id() {
+    async fn ctx_for_threads_master_token_id_in_raw_ids_mode() {
         let server = make_server();
         let author = McpAuthorContext {
             model_id: "test-model".into(),
@@ -422,11 +443,62 @@ mod tests {
             caller_self_perspective: None,
         };
         let token = uuid::Uuid::now_v7();
+        let auth = master_token_auth(fake_owner(), token);
 
-        let ctx = server.ctx(author.clone(), None, Some(token));
+        let ctx = server.ctx_for(author.clone(), None, Some(&auth));
         assert_eq!(ctx.master_token_id, Some(token));
+        assert_eq!(ctx.mode, OutputMode::RawIds);
+        assert!(ctx.handles.is_none());
 
-        let ctx_no_token = server.ctx(author, None, None);
-        assert_eq!(ctx_no_token.master_token_id, None);
+        let ctx_no_auth = server.ctx_for(author, None, None);
+        assert_eq!(ctx_no_auth.master_token_id, None);
+        assert_eq!(ctx_no_auth.mode, OutputMode::RawIds);
+        assert!(ctx_no_auth.handles.is_none());
+    }
+
+    #[tokio::test]
+    async fn ctx_for_wake_dispatched_runs_in_handles_mode() {
+        use proxima_core::mcp::HandleTable;
+        use proxima_core::personality::WakeChainDepth;
+        use proxima_core::wake::token_store::WakeTokenContext;
+        use proxima_core::MemoryId;
+
+        let server = make_server();
+        let author = McpAuthorContext {
+            model_id: "test-model".into(),
+            client_name: "test-client".into(),
+            client_version: "0.1.0".into(),
+            caller_self_perspective: None,
+        };
+        let owner = fake_owner();
+        let wake_handles = Arc::new(HandleTable::new());
+        let wake = WakeTokenContext {
+            invocation_id: uuid::Uuid::now_v7(),
+            personality_instance_id: uuid::Uuid::now_v7(),
+            wake_entry_id: uuid::Uuid::now_v7(),
+            change_event_seq: uuid::Uuid::now_v7(),
+            owner: owner.clone(),
+            palette: Vec::new(),
+            model_id: "test/model".into(),
+            max_rounds: 4,
+            current_root_perspective_memory_id: MemoryId::new(uuid::Uuid::now_v7()),
+            triggering_event_memory_id: MemoryId::new(uuid::Uuid::now_v7()),
+            triggering_event_depth: WakeChainDepth::new(0),
+            read_log: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+            handles: wake_handles.clone(),
+        };
+        let auth = McpAuthContext {
+            owner: owner.clone(),
+            scope: McpToolScope::All,
+            model_id: Some("test/model".into()),
+            wake: Some(wake),
+            master_token_id: None,
+        };
+
+        let ctx = server.ctx_for(author, None, Some(&auth));
+        assert_eq!(ctx.mode, OutputMode::Handles);
+        let ctx_handles = ctx.handles.expect("wake regime carries handles");
+        assert!(Arc::ptr_eq(&ctx_handles, &wake_handles));
+        assert_eq!(ctx.master_token_id, None);
     }
 }

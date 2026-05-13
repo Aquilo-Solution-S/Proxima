@@ -17,7 +17,7 @@
 
 use time::OffsetDateTime;
 
-use crate::mcp::McpToolCtx;
+use crate::mcp::{McpToolCtx};
 use crate::mcp::core_tools::payload::{
     PersonalityConfigChangedCaller, PersonalityConfigChangedSubject, PersonalityConfigChangedV1,
     PersonalityConfigChangedVerb,
@@ -131,6 +131,7 @@ async fn write_fact(ctx: &McpToolCtx, payload: &PersonalityConfigChangedV1) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mcp::OutputMode;
     use crate::mcp::HandleTable;
     use crate::{FlavorRegistry, McpAuthorContext, OrgId, Owner, Principal, UserId};
     use std::sync::Arc;
@@ -147,7 +148,8 @@ mod tests {
         let ctx = McpToolCtx {
             pool: sqlx::PgPool::connect_lazy("postgres://placeholder/db").expect("lazy connect"),
             owner: fake_owner(),
-            handles: Arc::new(HandleTable::new()),
+            handles: Some(Arc::new(HandleTable::new())),
+            mode: OutputMode::Handles,
             registry: Arc::new(FlavorRegistry::new().freeze()),
             author: McpAuthorContext {
                 model_id: "test".into(),
@@ -194,7 +196,8 @@ mod tests {
         let ctx = McpToolCtx {
             pool: sqlx::PgPool::connect_lazy("postgres://placeholder/db").expect("lazy connect"),
             owner,
-            handles: Arc::new(HandleTable::new()),
+            handles: Some(Arc::new(HandleTable::new())),
+            mode: OutputMode::Handles,
             registry: Arc::new(FlavorRegistry::new().freeze()),
             author: McpAuthorContext {
                 model_id: "t".into(),

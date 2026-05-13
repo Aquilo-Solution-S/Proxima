@@ -58,9 +58,9 @@ impl McpTool for ListPersonalitiesTool {
             let personalities = rows
                 .into_iter()
                 .map(|row| {
-                    let p_handle = ctx.handles.assign_personality(row.personality_instance_id);
+                    let p_handle = ctx.handles.as_ref().unwrap().assign_personality(row.personality_instance_id);
                     let n_handle = ctx
-                        .handles
+                        .handles.as_ref().unwrap()
                         .assign_memory(row.current_root_perspective_memory_id);
                     let count = u32::try_from(row.wake_entries.len()).unwrap_or(u32::MAX);
                     ListPersonalitiesItem {
@@ -80,6 +80,7 @@ impl McpTool for ListPersonalitiesTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mcp::OutputMode;
     use crate::auth::NoAuth;
     use crate::mcp::HandleTable;
     use crate::verbs::query::MemoryStore;
@@ -100,7 +101,8 @@ mod tests {
         McpToolCtx {
             pool: sqlx::PgPool::connect_lazy("postgres://x/x").expect("lazy"),
             owner,
-            handles: Arc::new(HandleTable::new()),
+            handles: Some(Arc::new(HandleTable::new())),
+            mode: OutputMode::Handles,
             registry: Arc::new(FlavorRegistry::new().freeze()),
             author: McpAuthorContext {
                 model_id: "t".into(),

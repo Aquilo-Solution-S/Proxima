@@ -5,7 +5,7 @@ use proxima_code::mcp::{CodeOpenFileRevisionTool, CodeSearchChunksTool, CodeSear
 use proxima_code::{CodeChunkV1, CommitV1, FileRevisionV1, register_repo};
 use proxima_core::auth::{Credentials, NoAuth};
 use proxima_core::engine::Engine;
-use proxima_core::mcp::{HandleTable, McpAuthorContext, McpTool, McpToolCtx};
+use proxima_core::mcp::{HandleTable, McpAuthorContext, McpTool, McpToolCtx, OutputMode};
 use proxima_core::storage::Storage;
 use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
 use proxima_core::verbs::query::MemoryStore;
@@ -282,7 +282,7 @@ async fn open_file_revision_returns_head_with_chunks() -> Result<(), Box<dyn std
 
     let test_ctx = ctx(fixture.pg.pool().clone(), owner.clone(), registry);
     let repo_handle = test_ctx
-        .handles
+        .handles.as_ref().unwrap()
         .assign_flavor_object("proxima-code/repo", repo_id, 'R');
     let result = run_tool::<CodeOpenFileRevisionTool>(
         test_ctx,
@@ -467,7 +467,8 @@ fn ctx(pool: PgPool, owner: Owner, registry: Arc<FlavorRegistryFrozen>) -> McpTo
     McpToolCtx {
         pool,
         owner,
-        handles: Arc::new(HandleTable::new()),
+        handles: Some(Arc::new(HandleTable::new())),
+        mode: OutputMode::Handles,
         registry,
         author: McpAuthorContext {
             model_id: "test/0".into(),

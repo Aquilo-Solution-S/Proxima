@@ -9,7 +9,7 @@ use common::{create_db, drop_db};
 use proxima_core::auth::NoAuth;
 use proxima_core::mcp::core_tools::add_wake_entry::AddWakeEntryTool;
 use proxima_core::mcp::core_tools::wake_entry_input::WakeEntryDraftInput;
-use proxima_core::mcp::{HandleTable, McpAuthorContext, McpToolCtx};
+use proxima_core::mcp::{HandleTable, McpAuthorContext, McpToolCtx, OutputMode};
 use proxima_core::storage::Storage;
 use proxima_core::verbs::query::MemoryStore;
 use proxima_core::{
@@ -65,7 +65,8 @@ async fn wake_token_audit_attributes_caller_personality() -> Result<(), Box<dyn 
     let ctx = McpToolCtx {
         pool,
         owner: owner.clone(),
-        handles: Arc::new(HandleTable::new()),
+        handles: Some(Arc::new(HandleTable::new())),
+        mode: OutputMode::Handles,
         registry: Arc::new(FlavorRegistry::new().freeze()),
         author: McpAuthorContext {
             model_id: "test".into(),
@@ -79,7 +80,7 @@ async fn wake_token_audit_attributes_caller_personality() -> Result<(), Box<dyn 
     };
 
     // Pre-assign the personality handle so the tool can resolve it.
-    let p_handle = ctx.handles.assign_personality(inst.instance_id);
+    let p_handle = ctx.handles.as_ref().unwrap().assign_personality(inst.instance_id);
 
     // Call core/add_wake_entry on this personality.
     let args = AddWakeEntryArgs {

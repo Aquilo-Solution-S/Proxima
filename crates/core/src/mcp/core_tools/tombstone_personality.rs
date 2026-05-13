@@ -42,7 +42,7 @@ impl McpTool for TombstonePersonalityTool {
     ) -> BoxFuture<'static, Result<TombstonePersonalityOutput, McpToolError>> {
         Box::pin(async move {
             let pid = ctx
-                .handles
+                .handles.as_ref().unwrap()
                 .resolve_personality(&args.personality)
                 .ok_or_else(|| McpToolError::UnknownHandle(args.personality.clone()))?;
             let engine = ctx

@@ -38,7 +38,7 @@ pub use inference::{
 pub use llm::*;
 pub use mcp::{
     Handle, HandleTable, McpAuthorContext, McpCallFn, McpTool, McpToolCtx, McpToolDescriptor,
-    McpToolError,
+    McpToolError, OutputMode,
 };
 pub use models::*;
 pub use outbox::*;

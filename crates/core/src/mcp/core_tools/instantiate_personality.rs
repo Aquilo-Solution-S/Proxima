@@ -76,7 +76,7 @@ impl McpTool for InstantiatePersonalityTool {
                 Some(after),
             )
             .await;
-            let p_handle = ctx.handles.assign_personality(resp.instance_id);
+            let p_handle = ctx.handles.as_ref().unwrap().assign_personality(resp.instance_id);
             let audit_emit_failed = match audit {
                 AuditEmit::Ok => None,
                 AuditEmit::Failed { reason } => {

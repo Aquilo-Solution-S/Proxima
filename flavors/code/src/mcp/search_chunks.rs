@@ -122,8 +122,8 @@ impl McpTool for CodeSearchChunksTool {
             let mut matches = Vec::with_capacity(rows.len());
             let mut chunk_ids = Vec::with_capacity(rows.len());
             for row in rows {
-                let handle = ctx.handles.assign_memory(MemoryId::new(row.memory_id));
-                let repo_handle = ctx.handles.assign_flavor_object(
+                let handle = ctx.handles.as_ref().unwrap().assign_memory(MemoryId::new(row.memory_id));
+                let repo_handle = ctx.handles.as_ref().unwrap().assign_flavor_object(
                     super::REPO_HANDLE_KIND,
                     row.repo_id,
                     super::REPO_HANDLE_PREFIX,
@@ -223,17 +223,17 @@ async fn load_call_edges(
     Ok(rows
         .into_iter()
         .map(|row| {
-            let edge_handle = ctx.handles.assign_edge(EdgeId::new(row.edge_id));
+            let edge_handle = ctx.handles.as_ref().unwrap().assign_edge(EdgeId::new(row.edge_id));
             CallEdge {
                 edge_handle: edge_handle.as_str().to_string(),
                 source: row.source_memory_id.map(|id| {
-                    ctx.handles
+                    ctx.handles.as_ref().unwrap()
                         .assign_memory(MemoryId::new(id))
                         .as_str()
                         .to_string()
                 }),
                 target: row.target_memory_id.map(|id| {
-                    ctx.handles
+                    ctx.handles.as_ref().unwrap()
                         .assign_memory(MemoryId::new(id))
                         .as_str()
                         .to_string()

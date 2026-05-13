@@ -44,7 +44,7 @@ impl McpTool for SetWakeEntriesTool {
     ) -> BoxFuture<'static, Result<SetWakeEntriesOutput, McpToolError>> {
         Box::pin(async move {
             let pid = ctx
-                .handles
+                .handles.as_ref().unwrap()
                 .resolve_personality(&args.personality)
                 .ok_or_else(|| McpToolError::UnknownHandle(args.personality.clone()))?;
             let engine = ctx
@@ -74,7 +74,7 @@ impl McpTool for SetWakeEntriesTool {
             let drafts = args
                 .entries
                 .into_iter()
-                .map(|input| input.into_draft(&ctx.handles, pid))
+                .map(|input| input.into_draft(ctx.handles.as_ref().unwrap(), pid))
                 .collect::<Result<Vec<_>, _>>()?;
 
             let req = SetWakeEntriesRequest {
@@ -90,7 +90,7 @@ impl McpTool for SetWakeEntriesTool {
             let entry_handles: Vec<String> = drafts
                 .iter()
                 .map(|d| {
-                    ctx.handles
+                    ctx.handles.as_ref().unwrap()
                         .assign_wake_entry(d.wake_entry_id)
                         .as_str()
                         .to_string()

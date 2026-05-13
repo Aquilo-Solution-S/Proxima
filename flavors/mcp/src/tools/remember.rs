@@ -118,7 +118,7 @@ impl McpTool for RememberTool {
             }
             tx.commit().await.map_err(map_storage)?;
 
-            let handle = ctx.handles.assign_memory(outcome.memory_id);
+            let handle = ctx.handles.as_ref().unwrap().assign_memory(outcome.memory_id);
             Ok(RememberOutput {
                 handle: handle.as_str().to_string(),
                 idempotent_replay: outcome.idempotent_replay,

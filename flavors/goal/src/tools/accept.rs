@@ -53,7 +53,7 @@ pub async fn accept_goal(
     state: GoalState,
 ) -> Result<AcceptOutput, McpToolError> {
     let proposal_id = match ctx
-        .handles
+        .handles.as_ref().unwrap()
         .resolve(&args.proposal)
         .ok_or_else(|| McpToolError::UnknownHandle(args.proposal.clone()))?
     {
@@ -68,7 +68,7 @@ pub async fn accept_goal(
             ));
         }
     };
-    let supersedes_handle = ctx.handles.assign_goal(proposal_id);
+    let supersedes_handle = ctx.handles.as_ref().unwrap().assign_goal(proposal_id);
 
     let mut tx = ctx.pool.begin().await.map_err(map_storage)?;
     let payload = match args.payload {
@@ -123,11 +123,11 @@ pub async fn accept_goal(
     }
     tx.commit().await.map_err(map_storage)?;
 
-    let handle = ctx.handles.assign_goal(GoalId::new(goal_id));
+    let handle = ctx.handles.as_ref().unwrap().assign_goal(GoalId::new(goal_id));
     let edge_handles = edge_uuids
         .into_iter()
         .map(|edge_id| {
-            ctx.handles
+            ctx.handles.as_ref().unwrap()
                 .assign_edge(EdgeId::new(edge_id))
                 .as_str()
                 .to_string()
@@ -138,7 +138,7 @@ pub async fn accept_goal(
         supersedes: supersedes_handle.as_str().to_string(),
         edge_handles,
         inspires_edge_handle: inspires_edge_id.map(|edge_id| {
-            ctx.handles
+            ctx.handles.as_ref().unwrap()
                 .assign_edge(EdgeId::new(edge_id))
                 .as_str()
                 .to_string()
