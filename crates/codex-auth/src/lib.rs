@@ -6,6 +6,7 @@ mod refresh;
 
 pub use auth_json::AuthDotJsonPath;
 pub use jwt::{decode_chatgpt_claims, ChatGptClaims};
+pub use refresh::{RefreshClient, RefreshedTokens};
 
 #[derive(Debug, Clone)]
 pub struct CodexCredentials {
