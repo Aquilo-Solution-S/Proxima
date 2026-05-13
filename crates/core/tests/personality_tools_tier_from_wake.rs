@@ -25,7 +25,8 @@ use proxima_core::personality::{PersonalityInstanceId, PersonalityToolContext};
 use proxima_core::verbs::query::MemoryStore;
 use proxima_core::wake::token_store::WakeTokenContext;
 use proxima_core::{
-    Engine, FlavorRegistry, MemoryId, ModelTier, OrgId, Owner, Principal, UserId, WakeChainDepth,
+    Engine, FlavorRegistry, HandleTable, MemoryId, ModelTier, OrgId, Owner, Principal, UserId,
+    WakeChainDepth,
 };
 
 #[derive(Debug)]
@@ -80,6 +81,7 @@ fn wake_ctx(model_id: &str) -> WakeTokenContext {
         triggering_event_memory_id: MemoryId::new(uuid::Uuid::now_v7()),
         triggering_event_depth: WakeChainDepth::new(0),
         read_log: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+        handles: Arc::new(HandleTable::new()),
     }
 }
 

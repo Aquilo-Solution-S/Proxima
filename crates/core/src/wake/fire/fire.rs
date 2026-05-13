@@ -404,7 +404,11 @@ async fn mint_wake_token(
             u16::try_from(wake_context.trigger_event.wake_chain_depth).unwrap_or(0),
         ),
         read_log: std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new())),
+        handles: std::sync::Arc::new(crate::mcp::HandleTable::new()),
     };
+    // Force pre-seed so handle counter state is deterministic before
+    // any other code touches the table.
+    let _ = crate::wake::handles::pre_seed_wake_handles(&token_ctx);
     engine
         .wake_token_store()
         .mint_with_max_lifetime(token_ctx, invocation_timeout)

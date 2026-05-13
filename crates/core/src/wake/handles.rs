@@ -1,0 +1,97 @@
+//! Wake-bootstrap handle pre-seeding.
+//!
+//! Registers the three entities the wake context already names with
+//! the wake's `HandleTable`. The returned `PreSeededHandles` struct
+//! is the model's contract for round 1 — `{triggering,
+//! root_perspective, self_instance}` resolve before any tool call.
+
+use crate::mcp::PreSeededHandles;
+use crate::wake::token_store::WakeTokenContext;
+
+pub fn pre_seed_wake_handles(ctx: &WakeTokenContext) -> PreSeededHandles {
+    let triggering = ctx.handles.assign_memory(ctx.triggering_event_memory_id);
+    let root_perspective = ctx
+        .handles
+        .assign_memory(ctx.current_root_perspective_memory_id);
+    let self_instance = ctx
+        .handles
+        .assign_personality(ctx.personality_instance_id());
+    PreSeededHandles {
+        triggering,
+        root_perspective,
+        self_instance,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mcp::HandleTable;
+    use crate::personality::WakeChainDepth;
+    use crate::wake::token_store::WakeTokenContext;
+    use crate::{EdgeId, GoalId, MemoryId, OrgId, Owner, PersonalityInstanceId, Principal, UserId};
+    use std::sync::Arc;
+    use uuid::Uuid;
+
+    fn make_ctx() -> WakeTokenContext {
+        let triggering = MemoryId::new(Uuid::now_v7());
+        let root = MemoryId::new(Uuid::now_v7());
+        let pid = PersonalityInstanceId::new(Uuid::now_v7());
+        WakeTokenContext {
+            invocation_id: Uuid::now_v7(),
+            personality_instance_id: pid.into_inner(),
+            wake_entry_id: Uuid::now_v7(),
+            change_event_seq: Uuid::now_v7(),
+            owner: Owner {
+                principal: Principal::User(UserId::new(Uuid::now_v7())),
+                org_id: OrgId::new(Uuid::now_v7()),
+            },
+            palette: Vec::new(),
+            model_id: "test/model".into(),
+            max_rounds: 16,
+            current_root_perspective_memory_id: root,
+            triggering_event_memory_id: triggering,
+            triggering_event_depth: WakeChainDepth::new(0),
+            read_log: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+            handles: Arc::new(HandleTable::new()),
+        }
+    }
+
+    #[test]
+    fn pre_seed_assigns_n1_n2_p1_at_construction_time() {
+        let ctx = make_ctx();
+        let seeded = pre_seed_wake_handles(&ctx);
+        assert_eq!(seeded.triggering.as_str(), "N1");
+        assert_eq!(seeded.root_perspective.as_str(), "N2");
+        assert_eq!(seeded.self_instance.as_str(), "P1");
+    }
+
+    #[test]
+    fn pre_seed_struct_survives_n_subsequent_assignments() {
+        let ctx = make_ctx();
+        let triggering = ctx.triggering_event_memory_id;
+        let seeded = pre_seed_wake_handles(&ctx);
+
+        for _ in 0..32 {
+            let _ = ctx.handles.assign_memory(MemoryId::new(Uuid::now_v7()));
+            let _ = ctx.handles.assign_edge(EdgeId::new(Uuid::now_v7()));
+            let _ = ctx.handles.assign_goal(GoalId::new(Uuid::now_v7()));
+        }
+
+        let resolved = ctx
+            .handles
+            .resolve_memory(seeded.triggering.as_str())
+            .expect("triggering handle still resolves");
+        assert_eq!(resolved, triggering);
+    }
+
+    #[test]
+    fn pre_seed_is_idempotent() {
+        let ctx = make_ctx();
+        let first = pre_seed_wake_handles(&ctx);
+        let second = pre_seed_wake_handles(&ctx);
+        assert_eq!(first.triggering, second.triggering);
+        assert_eq!(first.root_perspective, second.root_perspective);
+        assert_eq!(first.self_instance, second.self_instance);
+    }
+}

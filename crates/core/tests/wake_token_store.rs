@@ -4,7 +4,7 @@ use uuid::Uuid;
 use proxima_core::wake::token_store::{WakeTokenContext, WakeTokenStore};
 use std::sync::Arc;
 
-use proxima_core::{MemoryId, OrgId, Owner, Principal, UserId, WakeChainDepth};
+use proxima_core::{HandleTable, MemoryId, OrgId, Owner, Principal, UserId, WakeChainDepth};
 
 fn make_owner() -> Owner {
     Owner {
@@ -27,6 +27,7 @@ fn make_ctx(owner: Owner) -> WakeTokenContext {
         triggering_event_memory_id: MemoryId::new(Uuid::now_v7()),
         triggering_event_depth: WakeChainDepth::new(0),
         read_log: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+        handles: Arc::new(HandleTable::new()),
     }
 }
 

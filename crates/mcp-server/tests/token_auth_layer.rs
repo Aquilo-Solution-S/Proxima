@@ -8,7 +8,7 @@ use axum::http::{Request, StatusCode, header};
 use axum::routing::get;
 use axum::{Extension, Router};
 use proxima_core::wake::token_store::{WakeTokenContext, WakeTokenStore};
-use proxima_core::{MemoryId, OrgId, Owner, Principal, UserId, WakeChainDepth};
+use proxima_core::{HandleTable, MemoryId, OrgId, Owner, Principal, UserId, WakeChainDepth};
 use proxima_mcp_server::security::{default_allowlist, mcp_auth_layer};
 use proxima_mcp_server::{McpAuthContext, McpAuthStore, McpToolScope};
 use tower::util::ServiceExt;
@@ -35,6 +35,7 @@ fn make_ctx() -> WakeTokenContext {
         triggering_event_memory_id: MemoryId::new(Uuid::now_v7()),
         triggering_event_depth: WakeChainDepth::new(0),
         read_log: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+        handles: Arc::new(HandleTable::new()),
     }
 }
 

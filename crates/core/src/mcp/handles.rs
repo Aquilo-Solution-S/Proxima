@@ -202,6 +202,18 @@ impl HandleTable {
     }
 }
 
+/// Handles assigned by `pre_seed_wake_handles` for entities the wake
+/// context already names. Brief formatters and substrate tools that
+/// need to refer to "the memory that woke me" / "the root
+/// perspective" / "self" by handle read from this struct rather than
+/// hard-coding handle strings.
+#[derive(Debug, Clone)]
+pub struct PreSeededHandles {
+    pub triggering: Handle,
+    pub root_perspective: Handle,
+    pub self_instance: Handle,
+}
+
 fn is_valid_handle_shape(raw: &str) -> bool {
     let mut chars = raw.chars();
     match chars.next() {
