@@ -10,6 +10,8 @@ import type {
   InstantiatePersonalityOutcomeTs,
   InstantiatePersonalityTs,
   BindInferenceTierTs,
+  InferenceEnvStatusOutcomeTs,
+  InferenceEnvStatusTs,
   InferenceTargetTs,
   InferenceTierBindingTs,
   ListInferenceTargetsTs,
@@ -29,6 +31,8 @@ import type {
   SetWakeEntriesOutcomeTs,
   SetWakeEntriesTs,
   SubscribeRequest,
+  TestInferenceTargetOutcomeTs,
+  TestInferenceTargetTs,
   WorkspaceToolTs,
 } from "./bindings";
 
@@ -67,6 +71,12 @@ export interface EngineClient {
   listInferenceTierBindings(
     req: ListInferenceTierBindingsTs,
   ): Promise<InferenceTierBindingTs[]>;
+  inferenceEnvStatus(
+    req: InferenceEnvStatusTs,
+  ): Promise<InferenceEnvStatusOutcomeTs>;
+  testInferenceTarget(
+    req: TestInferenceTargetTs,
+  ): Promise<TestInferenceTargetOutcomeTs>;
   listMcpTools(): Promise<McpToolTs[]>;
   listWorkspaceTools(): Promise<WorkspaceToolTs[]>;
   listRelations(): Promise<RelationTs[]>;

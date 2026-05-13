@@ -61,6 +61,13 @@ const graphClient = (overrides: Partial<EngineClient>): EngineClient => ({
   listInferenceTierBindings: async () => {
     return [];
   },
+  inferenceEnvStatus: async () => ({ present: false }),
+  testInferenceTarget: async () => ({
+    ok: true,
+    latency_ms: 0,
+    error_code: null,
+    error_message: null,
+  }),
   listMcpTools: async () => [],
   listWorkspaceTools: async () => [],
   listRelations: async () => [],

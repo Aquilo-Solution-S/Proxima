@@ -12,6 +12,8 @@ import {
   type InstantiatePersonalityOutcomeTs,
   type InstantiatePersonalityTs,
   type BindInferenceTierTs,
+  type InferenceEnvStatusOutcomeTs,
+  type InferenceEnvStatusTs,
   type InferenceTargetTs,
   type InferenceTierBindingTs,
   type ListInferenceTargetsTs,
@@ -31,6 +33,8 @@ import {
   type SetWakeEntriesOutcomeTs,
   type SetWakeEntriesTs,
   type SubscribeRequest,
+  type TestInferenceTargetOutcomeTs,
+  type TestInferenceTargetTs,
   type WorkspaceToolTs,
 } from "./bindings";
 import type { EngineClient, Subscription } from "./client";
@@ -163,6 +167,18 @@ export class TauriEngineClient implements EngineClient {
       commands.listInferenceTierBindings(req),
       "list_inference_tier_bindings",
     );
+  }
+
+  async inferenceEnvStatus(
+    req: InferenceEnvStatusTs,
+  ): Promise<InferenceEnvStatusOutcomeTs> {
+    return unwrap(commands.inferenceEnvStatus(req), "inference_env_status");
+  }
+
+  async testInferenceTarget(
+    req: TestInferenceTargetTs,
+  ): Promise<TestInferenceTargetOutcomeTs> {
+    return unwrap(commands.testInferenceTarget(req), "test_inference_target");
   }
 
   async listMcpTools(): Promise<McpToolTs[]> {
