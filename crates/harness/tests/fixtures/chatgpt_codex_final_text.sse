@@ -1,0 +1,33 @@
+event: response.created
+data: {"type":"response.created","response":{"id":"resp_0c1c0decc717c61f016a047cee25588191b4008612194b5f3b","object":"response","created_at":1778679022,"status":"in_progress","background":false,"completed_at":null,"error":null,"frequency_penalty":0.0,"incomplete_details":null,"instructions":"Reply with the single word: pong.","max_output_tokens":null,"max_tool_calls":null,"model":"gpt-5.5","moderation":null,"output":[],"parallel_tool_calls":true,"presence_penalty":0.0,"previous_response_id":null,"prompt_cache_key":"8d3abd32-d588-4b9d-a62c-513b55900d09","prompt_cache_retention":"24h","reasoning":{"effort":"medium","summary":null},"safety_identifier":"user-CRaqISjhm5PXid2lcp61PFRV","service_tier":"auto","store":false,"temperature":1.0,"text":{"format":{"type":"text"},"verbosity":"medium"},"tool_choice":"auto","tool_usage":{"image_gen":{"input_tokens":0,"input_tokens_details":{"image_tokens":0,"text_tokens":0},"output_tokens":0,"output_tokens_details":{"image_tokens":0,"text_tokens":0},"total_tokens":0},"web_search":{"num_requests":0}},"tools":[],"top_logprobs":0,"top_p":0.98,"truncation":"disabled","usage":null,"user":null,"metadata":{}},"sequence_number":0}
+
+event: response.in_progress
+data: {"type":"response.in_progress","response":{"id":"resp_0c1c0decc717c61f016a047cee25588191b4008612194b5f3b","object":"response","created_at":1778679022,"status":"in_progress","background":false,"completed_at":null,"error":null,"frequency_penalty":0.0,"incomplete_details":null,"instructions":"Reply with the single word: pong.","max_output_tokens":null,"max_tool_calls":null,"model":"gpt-5.5","moderation":null,"output":[],"parallel_tool_calls":true,"presence_penalty":0.0,"previous_response_id":null,"prompt_cache_key":"8d3abd32-d588-4b9d-a62c-513b55900d09","prompt_cache_retention":"24h","reasoning":{"effort":"medium","summary":null},"safety_identifier":"user-CRaqISjhm5PXid2lcp61PFRV","service_tier":"auto","store":false,"temperature":1.0,"text":{"format":{"type":"text"},"verbosity":"medium"},"tool_choice":"auto","tool_usage":{"image_gen":{"input_tokens":0,"input_tokens_details":{"image_tokens":0,"text_tokens":0},"output_tokens":0,"output_tokens_details":{"image_tokens":0,"text_tokens":0},"total_tokens":0},"web_search":{"num_requests":0}},"tools":[],"top_logprobs":0,"top_p":0.98,"truncation":"disabled","usage":null,"user":null,"metadata":{}},"sequence_number":1}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","item":{"id":"rs_0c1c0decc717c61f016a047ceee53881919ddbb74c9403eb82","type":"reasoning","summary":[]},"output_index":0,"sequence_number":2}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","item":{"id":"rs_0c1c0decc717c61f016a047ceee53881919ddbb74c9403eb82","type":"reasoning","summary":[]},"output_index":0,"sequence_number":3}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","item":{"id":"msg_0c1c0decc717c61f016a047cef82708191b09275e89ca04f93","type":"message","status":"in_progress","content":[],"phase":"final_answer","role":"assistant"},"output_index":1,"sequence_number":4}
+
+event: response.content_part.added
+data: {"type":"response.content_part.added","content_index":0,"item_id":"msg_0c1c0decc717c61f016a047cef82708191b09275e89ca04f93","output_index":1,"part":{"type":"output_text","annotations":[],"logprobs":[],"text":""},"sequence_number":5}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","content_index":0,"delta":"pong","item_id":"msg_0c1c0decc717c61f016a047cef82708191b09275e89ca04f93","logprobs":[],"obfuscation":"18yMIeNWrEvf","output_index":1,"sequence_number":6}
+
+event: response.output_text.done
+data: {"type":"response.output_text.done","content_index":0,"item_id":"msg_0c1c0decc717c61f016a047cef82708191b09275e89ca04f93","logprobs":[],"output_index":1,"sequence_number":7,"text":"pong"}
+
+event: response.content_part.done
+data: {"type":"response.content_part.done","content_index":0,"item_id":"msg_0c1c0decc717c61f016a047cef82708191b09275e89ca04f93","output_index":1,"part":{"type":"output_text","annotations":[],"logprobs":[],"text":"pong"},"sequence_number":8}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","item":{"id":"msg_0c1c0decc717c61f016a047cef82708191b09275e89ca04f93","type":"message","status":"completed","content":[{"type":"output_text","annotations":[],"logprobs":[],"text":"pong"}],"phase":"final_answer","role":"assistant"},"output_index":1,"sequence_number":9}
+
+event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_0c1c0decc717c61f016a047cee25588191b4008612194b5f3b","object":"response","created_at":1778679022,"status":"completed","background":false,"completed_at":1778679023,"error":null,"frequency_penalty":0.0,"incomplete_details":null,"instructions":"Reply with the single word: pong.","max_output_tokens":null,"max_tool_calls":null,"model":"gpt-5.5","moderation":null,"output":[],"parallel_tool_calls":true,"presence_penalty":0.0,"previous_response_id":null,"prompt_cache_key":"8d3abd32-d588-4b9d-a62c-513b55900d09","prompt_cache_retention":"24h","reasoning":{"effort":"medium","summary":null},"safety_identifier":"user-CRaqISjhm5PXid2lcp61PFRV","service_tier":"default","store":false,"temperature":1.0,"text":{"format":{"type":"text"},"verbosity":"medium"},"tool_choice":"auto","tool_usage":{"image_gen":{"input_tokens":0,"input_tokens_details":{"image_tokens":0,"text_tokens":0},"output_tokens":0,"output_tokens_details":{"image_tokens":0,"text_tokens":0},"total_tokens":0},"web_search":{"num_requests":0}},"tools":[],"top_logprobs":0,"top_p":0.98,"truncation":"disabled","usage":{"input_tokens":19,"input_tokens_details":{"cached_tokens":0},"output_tokens":21,"output_tokens_details":{"reasoning_tokens":14},"total_tokens":40},"user":null,"metadata":{}},"sequence_number":10}
+
