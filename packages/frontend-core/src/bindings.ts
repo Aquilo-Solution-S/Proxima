@@ -30,6 +30,7 @@ export const commands = {
 	bindInferenceTier: (req: BindInferenceTierTs) => typedError<null, ProtocolError>(__TAURI_INVOKE("bind_inference_tier", { req })),
 	listInferenceTierBindings: (req: ListInferenceTierBindingsTs) => typedError<InferenceTierBindingTs[], ProtocolError>(__TAURI_INVOKE("list_inference_tier_bindings", { req })),
 	inferenceEnvStatus: (req: InferenceEnvStatusTs) => typedError<InferenceEnvStatusOutcomeTs, ProtocolError>(__TAURI_INVOKE("inference_env_status", { req })),
+	codexAuthStatus: () => typedError<CodexAuthStatusOutcomeTs, ProtocolError>(__TAURI_INVOKE("codex_auth_status")),
 	testInferenceTarget: (req: TestInferenceTargetTs) => typedError<TestInferenceTargetOutcomeTs, ProtocolError>(__TAURI_INVOKE("test_inference_target", { req })),
 	listMcpTools: () => typedError<McpToolTs[], ProtocolError>(__TAURI_INVOKE("list_mcp_tools")),
 	listWorkspaceTools: () => typedError<WorkspaceToolTs[], ProtocolError>(__TAURI_INVOKE("list_workspace_tools")),
@@ -218,6 +219,12 @@ export type ChangeEventKind = ({ EntityAppend: {
 	target: EntityRef,
 } }) & { EntityAppend?: never };
 
+export type ChatGPTCodexConfigTs = {
+	base_url: string,
+	model_id: string,
+	reasoning_effort: string | null,
+};
+
 export type CitationMappingHint = {
 	schema_id: SchemaId,
 	schema_version: SchemaVersion,
@@ -248,6 +255,13 @@ export type CodeChunkV1 = {
 	line_range_start: number,
 	line_range_end: number,
 	state: FileState,
+};
+
+export type CodexAuthStatusOutcomeTs = {
+	// True if ~/.codex/auth.json exists and is readable.
+	auth_json_present: boolean,
+	// True if tokens.access_token is set and parseable as a JWT.
+	access_token_present: boolean,
 };
 
 /**
@@ -519,7 +533,7 @@ export type InferenceEnvStatusTs = {
 	env_var: string,
 };
 
-export type InferenceTargetConfigTs = { kind: "mistral_chat" } & (MistralChatConfigTs) | { kind: "openai_chat" } & (OpenAIChatConfigTs) | { kind: "openai_responses" } & (OpenAIResponsesConfigTs);
+export type InferenceTargetConfigTs = { kind: "mistral_chat" } & (MistralChatConfigTs) | { kind: "openai_chat" } & (OpenAIChatConfigTs) | { kind: "openai_responses" } & (OpenAIResponsesConfigTs) | { kind: "chatgpt_codex" } & (ChatGPTCodexConfigTs);
 
 export type InferenceTargetTs = {
 	target_ref: string,
