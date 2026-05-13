@@ -4,12 +4,16 @@ use std::path::{Path, PathBuf};
 
 use crate::CodexAuthError;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct AuthDotJsonPath(pub PathBuf);
 
 impl AuthDotJsonPath {
     pub fn from_home(home: &Path) -> Self {
         Self(home.join(".codex/auth.json"))
+    }
+
+    pub fn from_explicit(path: PathBuf) -> Self {
+        Self(path)
     }
 
     /// Read and parse `~/.codex/auth.json`.
