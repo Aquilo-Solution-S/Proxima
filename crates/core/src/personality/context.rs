@@ -5,6 +5,7 @@
 
 use std::sync::Arc;
 
+use crate::mcp::HandleTable;
 use crate::personality::tool::PersonalityTool;
 use crate::personality::types::WakeChainDepth;
 use crate::{Engine, MemoryId, Owner};
@@ -31,6 +32,11 @@ pub struct PersonalityToolContext<'a> {
     /// static `Standard`-tier guess. `None` only in unit tests.
     pub wake_invocation: Option<&'a crate::wake::token_store::WakeTokenContext>,
     read_log: Arc<tokio::sync::Mutex<Vec<(MemoryId, WakeChainDepth)>>>,
+    /// Per-wake handle table. In production this is
+    /// `wake.handles.clone()`. In unit tests without a wake it is a
+    /// fresh empty table; tests exercising handle behavior pre-seed
+    /// it manually.
+    pub handles: Arc<HandleTable>,
 }
 
 impl<'a> PersonalityToolContext<'a> {
@@ -47,6 +53,7 @@ impl<'a> PersonalityToolContext<'a> {
         writeable_schemas: Vec<String>,
         writeable_relations: Vec<String>,
         palette: &'a [Arc<dyn PersonalityTool>],
+        handles: Arc<HandleTable>,
     ) -> Self {
         Self {
             engine,
@@ -61,6 +68,7 @@ impl<'a> PersonalityToolContext<'a> {
             palette,
             wake_invocation: None,
             read_log: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+            handles,
         }
     }
 

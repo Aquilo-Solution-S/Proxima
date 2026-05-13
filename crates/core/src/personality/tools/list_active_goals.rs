@@ -76,8 +76,11 @@ impl PersonalityTool for ListActiveGoalsTool {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use crate::auth::NoAuth;
+    use crate::mcp::HandleTable;
     use crate::verbs::query::MemoryStore;
     use crate::{
         Engine, FlavorRegistry, MemoryId, OrgId, Owner, PersonalityInstanceId, Principal, UserId,
@@ -107,6 +110,7 @@ mod tests {
             Vec::new(),
             Vec::new(),
             &palette,
+            Arc::new(HandleTable::new()),
         );
 
         let result = ListActiveGoalsTool

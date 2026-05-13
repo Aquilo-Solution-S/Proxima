@@ -200,6 +200,7 @@ impl McpToolHost {
             writeable_schemas_for_palette(engine, &wake.palette),
             writeable_relations_for_palette(engine, &wake.palette),
             substrate_pack(),
+            wake.handles.clone(),
         )
         .with_wake_invocation(wake)
         .with_read_log(wake.read_log.clone());
