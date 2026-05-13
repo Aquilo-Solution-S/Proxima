@@ -38,6 +38,15 @@ pub fn run() {
     // layer; missing .env is silently fine.
     dotenvy::dotenv().ok();
 
+    // Also load `~/.proxima/.env` as a shared user-level dotenv for
+    // inference API keys (MISTRAL_API_KEY, OPENAI_API_KEY, …). dotenvy
+    // does not override variables already present in the process env,
+    // so precedence is: shell env > CWD `.env` > `~/.proxima/.env`.
+    if let Some(home) = std::env::var_os("HOME") {
+        let path = std::path::PathBuf::from(home).join(".proxima/.env");
+        dotenvy::from_path(&path).ok();
+    }
+
     // rmcp 1.6 logs idle-session keep-alive expiry and the resulting
     // session-cleanup race at ERROR; both are clean lifecycle events
     // (`quit_reason=Closed`). Pin those targets to `warn` until rmcp
