@@ -141,6 +141,80 @@ pub(super) async fn classify(resp: reqwest::Response) -> Result<RoundResult, Pro
     parse_success(&parsed, raw_output)
 }
 
+/// Accumulate an SSE response body into a `ResponsesBody`-shaped JSON
+/// `Value` that `parse_success` can consume.
+///
+/// Iterates over `event:`/`data:` frame pairs (split by blank lines).
+/// Collects every `data.item` from `response.output_item.done` events
+/// into the output array; reads `data.response.status` and
+/// `data.response.incomplete_details` from the terminating
+/// `response.completed` event. If the stream ends before
+/// `response.completed`, returns a `ProviderError::Deserialize` -
+/// callers treat that as a transport failure.
+pub(super) fn accumulate_sse(body: &str) -> Result<Value, ProviderError> {
+    let mut output_items: Vec<Value> = Vec::new();
+    let mut status: Option<String> = None;
+    let mut incomplete_details: Option<Value> = None;
+    let mut saw_completed = false;
+
+    for block in body.split("\n\n") {
+        if block.trim().is_empty() {
+            continue;
+        }
+        let mut event_name: Option<&str> = None;
+        let mut data_line: Option<&str> = None;
+        for line in block.lines() {
+            if let Some(rest) = line.strip_prefix("event: ") {
+                event_name = Some(rest);
+            } else if let Some(rest) = line.strip_prefix("data: ") {
+                data_line = Some(rest);
+            }
+        }
+        let (Some(name), Some(data)) = (event_name, data_line) else {
+            continue;
+        };
+        let payload: Value = serde_json::from_str(data).map_err(|err| {
+            ProviderError::Deserialize(format!("SSE frame data not JSON: {err}"))
+        })?;
+        match name {
+            "response.output_item.done" => {
+                if let Some(item) = payload.get("item").cloned() {
+                    output_items.push(item);
+                }
+            }
+            "response.completed" => {
+                saw_completed = true;
+                if let Some(response_obj) = payload.get("response") {
+                    if let Some(s) = response_obj.get("status").and_then(|v| v.as_str()) {
+                        status = Some(s.to_string());
+                    }
+                    incomplete_details = response_obj
+                        .get("incomplete_details")
+                        .cloned()
+                        .filter(|v| !v.is_null());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if !saw_completed {
+        return Err(ProviderError::Deserialize(
+            "Codex SSE stream ended before response.completed".to_string(),
+        ));
+    }
+
+    let mut body_obj = serde_json::Map::new();
+    body_obj.insert("output".to_string(), Value::Array(output_items));
+    if let Some(s) = status {
+        body_obj.insert("status".to_string(), Value::String(s));
+    }
+    if let Some(d) = incomplete_details {
+        body_obj.insert("incomplete_details".to_string(), d);
+    }
+    Ok(Value::Object(body_obj))
+}
+
 fn looks_like_context_length(body: &str) -> bool {
     let lower = body.to_ascii_lowercase();
     lower.contains("context_length")
@@ -273,4 +347,34 @@ struct OutputContent {
     kind: String,
     #[serde(default)]
     text: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const FINAL_TEXT_SSE: &str = include_str!("../../tests/fixtures/chatgpt_codex_final_text.sse");
+    const TOOL_CALL_SSE: &str = include_str!("../../tests/fixtures/chatgpt_codex_tool_call.sse");
+
+    #[test]
+    fn accumulate_sse_extracts_final_text() {
+        let body = accumulate_sse(FINAL_TEXT_SSE).expect("accumulate");
+        let parsed: ResponsesBody = serde_json::from_value(body.clone()).expect("parsed");
+        assert_eq!(parsed.status.as_deref(), Some("completed"));
+        // Output array must include the message item with text "pong".
+        let output: Vec<OutputItem> =
+            serde_json::from_value(body["output"].clone()).expect("output");
+        let text = extract_text(&output);
+        assert_eq!(text, "pong");
+    }
+
+    #[test]
+    fn accumulate_sse_extracts_tool_call() {
+        let body = accumulate_sse(TOOL_CALL_SSE).expect("accumulate");
+        let output: Vec<OutputItem> =
+            serde_json::from_value(body["output"].clone()).expect("output");
+        let calls = extract_tool_calls(&output).expect("calls");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].tool_name, "get_time");
+    }
 }
