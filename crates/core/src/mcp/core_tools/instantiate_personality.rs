@@ -24,14 +24,17 @@ pub struct InstantiatePersonalityArgs {
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct InstantiatePersonalityOutput {
-    pub handle: String,
+    /// `P`-prefixed handle for the new instance. Pass as `personality`
+    /// to subsequent CRUD calls.
+    pub personality: String,
     pub audit_emit_failed: Option<String>,
 }
 
 impl McpTool for InstantiatePersonalityTool {
     const NAME: &'static str = "core/instantiate_personality";
     const DESCRIPTION: &'static str = "Instantiate one inert personality with a Root Perspective and \
-         empty WakeConfig. Returns the new P-handle.";
+         empty WakeConfig. Returns the new P-handle in the `personality` field — pass that value as \
+         the `personality` argument to add_wake_entry, get_personality, tombstone_personality, etc.";
     type Args = InstantiatePersonalityArgs;
     type Output = InstantiatePersonalityOutput;
 
@@ -82,7 +85,7 @@ impl McpTool for InstantiatePersonalityTool {
                 }
             };
             Ok(InstantiatePersonalityOutput {
-                handle: p_handle.as_str().to_string(),
+                personality: p_handle.as_str().to_string(),
                 audit_emit_failed,
             })
         })

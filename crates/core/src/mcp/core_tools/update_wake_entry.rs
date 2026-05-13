@@ -56,14 +56,18 @@ pub struct UpdateWakeEntryArgs {
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct UpdateWakeEntryOutput {
-    pub handle: String,
+    /// `W`-prefixed handle. Matches the `wake_entry` argument that was
+    /// passed in.
+    pub wake_entry: String,
     pub audit_emit_failed: Option<String>,
 }
 
 impl McpTool for UpdateWakeEntryTool {
     const NAME: &'static str = "core/update_wake_entry";
-    const DESCRIPTION: &'static str = "Update one wake entry. Only fields present in `patch` change. \
-         To change trigger_kind/trigger_id, use remove_wake_entry + add_wake_entry.";
+    const DESCRIPTION: &'static str = "Update one wake entry. Args: \
+         `{\"wake_entry\": \"W1\", \"patch\": {…}}` where the W-handle comes from list_wake_entries or \
+         get_personality. Only fields present in `patch` change. To change trigger_kind/trigger_id, use \
+         remove_wake_entry + add_wake_entry.";
     type Args = UpdateWakeEntryArgs;
     type Output = UpdateWakeEntryOutput;
 
@@ -161,7 +165,7 @@ impl McpTool for UpdateWakeEntryTool {
             };
             let w_handle = ctx.handles.assign_wake_entry(wid);
             Ok(UpdateWakeEntryOutput {
-                handle: w_handle.as_str().to_string(),
+                wake_entry: w_handle.as_str().to_string(),
                 audit_emit_failed,
             })
         })

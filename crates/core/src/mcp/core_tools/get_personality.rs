@@ -20,7 +20,9 @@ pub struct GetPersonalityArgs {
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct GetPersonalityWakeEntry {
-    pub handle: String,
+    /// `W`-prefixed handle. Pass as `wake_entry` to update_wake_entry,
+    /// remove_wake_entry, and replay_wake_events.
+    pub wake_entry: String,
     pub trigger_kind: String,
     pub trigger_id: String,
     pub label: String,
@@ -40,7 +42,9 @@ pub struct GetPersonalityWakeEntry {
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct GetPersonalityOutput {
-    pub handle: String,
+    /// `P`-prefixed handle. Matches the `personality` argument that was
+    /// passed in.
+    pub personality: String,
     pub display_name: String,
     pub status: String,
     pub root_perspective: String,
@@ -49,8 +53,10 @@ pub struct GetPersonalityOutput {
 
 impl McpTool for GetPersonalityTool {
     const NAME: &'static str = "core/get_personality";
-    const DESCRIPTION: &'static str = "Read one personality with all wake entries. Returns W-handles \
-         for each entry usable in update/remove calls.";
+    const DESCRIPTION: &'static str = "Read one personality with all wake entries. Args: \
+         `{\"personality\": \"P1\"}` where the value is a P-handle from list_personalities. Each wake \
+         entry in the response carries a `wake_entry` field (W-handle) — pass that to update_wake_entry, \
+         remove_wake_entry, or replay_wake_events.";
     type Args = GetPersonalityArgs;
     type Output = GetPersonalityOutput;
 
@@ -89,7 +95,7 @@ impl McpTool for GetPersonalityTool {
                 .map(|e| {
                     let w = ctx.handles.assign_wake_entry(e.wake_entry_id);
                     GetPersonalityWakeEntry {
-                        handle: w.as_str().to_string(),
+                        wake_entry: w.as_str().to_string(),
                         trigger_kind: format!("{:?}", e.trigger_kind),
                         trigger_id: e.trigger_id,
                         label: e.label,
@@ -109,7 +115,7 @@ impl McpTool for GetPersonalityTool {
                 })
                 .collect();
             Ok(GetPersonalityOutput {
-                handle: p_handle.as_str().to_string(),
+                personality: p_handle.as_str().to_string(),
                 display_name: row.display_name,
                 status: row.status,
                 root_perspective: n_handle.as_str().to_string(),
