@@ -591,7 +591,7 @@ git commit -m "feat(core,harness): add ProviderTarget::ChatGPTCodex variant"
 The Codex endpoint streams SSE; we collect items and synthesize a single JSON body that `responses_wire::parse_success` can already parse. Lives in `responses_wire.rs` next to `classify` so both helpers share the parsing path.
 
 **Files:**
-- Modify: `crates/harness/src/providers/responses_wire.rs` — add `classify_sse`
+- Modify: `crates/harness/src/providers/responses_wire.rs` — add `accumulate_sse` (and its tests)
 - Create: `crates/harness/tests/fixtures/chatgpt_codex_final_text.sse` — captured stream from live probe
 - Create: `crates/harness/tests/fixtures/chatgpt_codex_tool_call.sse` — captured tool-call stream (recorded in Task 4.5 below)
 
@@ -723,53 +723,9 @@ pub(super) fn accumulate_sse(body: &str) -> Result<Value, ProviderError> {
     }
     Ok(Value::Object(body_obj))
 }
-
-/// Classifier for an SSE-streamed Codex response. Mirrors `classify`'s
-/// status-code triage, then collects the body via `text()` and pipes
-/// through `accumulate_sse` + `parse_success`.
-pub(super) async fn classify_sse(
-    resp: reqwest::Response,
-) -> Result<RoundResult, ProviderError> {
-    let status = resp.status();
-    if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN
-    {
-        return Err(ProviderError::Auth);
-    }
-    if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-        let retry_after = resp
-            .headers()
-            .get(reqwest::header::RETRY_AFTER)
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.parse::<u64>().ok())
-            .map(Duration::from_secs);
-        return Err(ProviderError::RateLimited { retry_after });
-    }
-
-    let body = resp
-        .text()
-        .await
-        .map_err(|err| ProviderError::Network(err.to_string()))?;
-
-    if !status.is_success() {
-        if status == reqwest::StatusCode::BAD_REQUEST && looks_like_context_length(&body) {
-            return Err(ProviderError::ContextLength);
-        }
-        if status.is_server_error() {
-            return Err(ProviderError::ServerError(body));
-        }
-        return Err(ProviderError::InvalidRequest(body));
-    }
-
-    let assembled = accumulate_sse(&body)?;
-    let raw_output = assembled
-        .get("output")
-        .cloned()
-        .ok_or_else(|| ProviderError::Deserialize("missing output".to_string()))?;
-    let parsed: ResponsesBody = serde_json::from_value(assembled)
-        .map_err(|err| ProviderError::Deserialize(err.to_string()))?;
-    parse_success(&parsed, raw_output)
-}
 ```
+
+`classify_sse` (the HTTP-receiving wrapper around `accumulate_sse` + `parse_success`) is **not** added in this task — it has only one caller (`chatgpt_codex.rs`) and `proxima-harness` denies unused functions, so it must be added in the same commit as its caller. Task 5 introduces it.
 
 - [ ] **Step 5: Run the test, confirm it passes**
 
@@ -837,9 +793,62 @@ git commit -m "feat(harness): SSE accumulator for Codex /responses streaming"
 
 **Files:**
 - Create: `crates/harness/src/providers/chatgpt_codex.rs`
+- Modify: `crates/harness/src/providers/responses_wire.rs` — add `classify_sse`
 - Modify: `crates/harness/src/providers/mod.rs` — `pub mod chatgpt_codex;`
 - Create: `crates/harness/tests/chatgpt_codex_replay.rs`
-- Reuse: `crates/harness/tests/fixtures/chatgpt_codex_final_text.sse` (created in Task 4)
+- Reuse: `crates/harness/tests/fixtures/chatgpt_codex_final_text.sse` (committed in Task 4 prerequisites)
+
+`classify_sse` lands in this commit (not Task 4) because its sole caller is the new `ChatGPTCodexClient` and `proxima-harness` denies unused functions. Add it to `responses_wire.rs` immediately before adding the chatgpt_codex provider — both go in the same commit.
+
+The `classify_sse` body to append to `responses_wire.rs`:
+
+```rust
+/// Classifier for an SSE-streamed Codex response. Mirrors `classify`'s
+/// status-code triage, then collects the body via `text()` and pipes
+/// through `accumulate_sse` + `parse_success`.
+pub(super) async fn classify_sse(
+    resp: reqwest::Response,
+) -> Result<RoundResult, ProviderError> {
+    let status = resp.status();
+    if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN
+    {
+        return Err(ProviderError::Auth);
+    }
+    if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        let retry_after = resp
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<u64>().ok())
+            .map(Duration::from_secs);
+        return Err(ProviderError::RateLimited { retry_after });
+    }
+
+    let body = resp
+        .text()
+        .await
+        .map_err(|err| ProviderError::Network(err.to_string()))?;
+
+    if !status.is_success() {
+        if status == reqwest::StatusCode::BAD_REQUEST && looks_like_context_length(&body) {
+            return Err(ProviderError::ContextLength);
+        }
+        if status.is_server_error() {
+            return Err(ProviderError::ServerError(body));
+        }
+        return Err(ProviderError::InvalidRequest(body));
+    }
+
+    let assembled = accumulate_sse(&body)?;
+    let raw_output = assembled
+        .get("output")
+        .cloned()
+        .ok_or_else(|| ProviderError::Deserialize("missing output".to_string()))?;
+    let parsed: ResponsesBody = serde_json::from_value(assembled)
+        .map_err(|err| ProviderError::Deserialize(err.to_string()))?;
+    parse_success(&parsed, raw_output)
+}
+```
 
 - [ ] **Step 1: Write the failing replay test (final-text round)**
 
@@ -1091,6 +1100,7 @@ Expected: passes.
 
 ```bash
 git add crates/harness/src/providers/mod.rs \
+        crates/harness/src/providers/responses_wire.rs \
         crates/harness/src/providers/chatgpt_codex.rs \
         crates/harness/tests/chatgpt_codex_replay.rs \
         crates/harness/tests/fixtures/chatgpt_codex_auth.json
@@ -1381,6 +1391,6 @@ git commit -m "chore: refresh Cargo.lock for codex-auth → harness dep"
 - `ProviderTarget::ChatGPTCodex { base_url, model_id, reasoning_effort, auth_json }` is consistent across Tasks 3, 5, 6, 7.
 - `ChatGPTCodexClient::new(base_url, model_id, auth_json)` is consistent in Tasks 5, 6, 7.
 - `AuthDotJsonPath::from_explicit` is referenced in Tasks 5–7; Task 5 step 1 spec'd to add it to `crates/codex-auth/src/auth_json.rs` if absent — first use defines it.
-- `responses_wire::{build_input_array, tools_array, classify, classify_sse, accumulate_sse}` consistent across Tasks 2, 4, 5, 6. `classify` (non-streamed) stays for `OpenAIResponsesClient`; `classify_sse` is Codex-only. Task 6's 401 check is inlined as `resp.status() == reqwest::StatusCode::UNAUTHORIZED` — no helper, since it has only one caller.
+- `responses_wire::{build_input_array, tools_array, classify}` from Task 2. `accumulate_sse` added in Task 4 (used immediately by its tests). `classify_sse` added in Task 5 alongside its sole caller `ChatGPTCodexClient` — splitting it earlier trips the workspace's deny-unused-functions lint. Task 6's 401 check is inlined as `resp.status() == reqwest::StatusCode::UNAUTHORIZED` — no helper, since it has only one caller.
 
 **Out-of-scope confirmation:** gRPC convert stub (`crates/wire-grpc/src/convert/inference.rs:175-180`) deliberately untouched; v1 desktop runs the engine in-process per the embedded-engine memory.
