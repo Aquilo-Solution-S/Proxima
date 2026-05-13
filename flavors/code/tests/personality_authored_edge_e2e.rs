@@ -188,6 +188,7 @@ async fn emit_abstraction_writes_core_authored_edge_from_root_perspective() {
             writeable_schemas,
             Vec::new(),
             &palette,
+            wake.handles.clone(),
         )
         .with_wake_invocation(&wake);
 

@@ -102,6 +102,7 @@ async fn returns_wake_context_model_id_when_bound() {
         Vec::new(),
         Vec::new(),
         &palette,
+        wake.handles.clone(),
     )
     .with_wake_invocation(&wake);
     let anthropic = StubAnthropic {
@@ -128,6 +129,7 @@ async fn falls_back_to_standard_tier_without_wake_context() {
         Vec::new(),
         Vec::new(),
         &palette,
+        Arc::new(HandleTable::new()),
     );
     let anthropic = StubAnthropic {
         label: "anthropic/claude-default-standard".into(),
@@ -135,4 +137,44 @@ async fn falls_back_to_standard_tier_without_wake_context() {
     let resolved =
         proxima_core::personality::__test_only_model_id_from_wake_invocation(&ctx, &anthropic);
     assert_eq!(resolved, "anthropic/claude-default-standard");
+}
+
+#[tokio::test]
+async fn handles_arc_propagates_from_wake_to_tool_ctx() {
+    use proxima_core::wake::handles::pre_seed_wake_handles;
+
+    let engine = engine();
+    let owner = owner();
+    let palette: Vec<Arc<dyn proxima_core::personality::PersonalityTool>> = Vec::new();
+    let wake = wake_ctx("test/handles-propagation");
+    let seeded = pre_seed_wake_handles(&wake);
+    let ctx = PersonalityToolContext::new(
+        &engine,
+        &owner,
+        "test/personality",
+        PersonalityInstanceId::new(wake.personality_instance_id),
+        wake.current_root_perspective_memory_id,
+        wake.triggering_event_memory_id,
+        WakeChainDepth::new(0),
+        Vec::new(),
+        Vec::new(),
+        &palette,
+        wake.handles.clone(),
+    );
+
+    // The Arc carried by the ctx is the same instance the wake holds —
+    // handles minted in one are visible from the other.
+    assert!(Arc::ptr_eq(&ctx.handles, &wake.handles));
+
+    // Round-trip the pre-seeded triggering handle through the ctx's view.
+    let resolved = ctx
+        .handles
+        .resolve_memory(seeded.triggering.as_str())
+        .expect("triggering handle resolves");
+    assert_eq!(resolved, wake.triggering_event_memory_id);
+
+    // A handle minted via the ctx is visible from the wake's table.
+    let fresh_id = MemoryId::new(uuid::Uuid::now_v7());
+    let h = ctx.handles.assign_memory(fresh_id);
+    assert_eq!(wake.handles.resolve_memory(h.as_str()), Some(fresh_id));
 }
