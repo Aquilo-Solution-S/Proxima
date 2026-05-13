@@ -1,6 +1,7 @@
 import {
   For,
   Show,
+  createEffect,
   createMemo,
   createSignal,
   type Accessor,
@@ -93,6 +94,33 @@ export const ModelsTable: Component<Props> = (props) => {
 
   const targets = createMemo(() => props.targets() ?? []);
 
+  const [envStatus, setEnvStatus] = createSignal<Map<string, boolean>>(new Map());
+
+  const refreshEnvStatus = async () => {
+    const seen = new Set<string>();
+    const requests: Promise<[string, boolean]>[] = [];
+    for (const target of targets()) {
+      if ("api_key_env" in target.config) {
+        const key = target.config.api_key_env;
+        if (key && !seen.has(key)) {
+          seen.add(key);
+          requests.push(
+            props.client
+              .inferenceEnvStatus({ env_var: key })
+              .then((out) => [key, out.present] as [string, boolean])
+              .catch(() => [key, false] as [string, boolean]),
+          );
+        }
+      }
+    }
+    const results = await Promise.all(requests);
+    setEnvStatus(new Map(results));
+  };
+
+  createEffect(() => {
+    void refreshEnvStatus();
+  });
+
   return (
     <div class="proxima-models-table">
       <header class="proxima-tier-summary-header">
@@ -160,11 +188,24 @@ export const ModelsTable: Component<Props> = (props) => {
                     </div>
                   </td>
                   <td>
-                    <span class="proxima-mono proxima-dim">
-                      {"api_key_env" in target.config
-                        ? target.config.api_key_env
-                        : ""}
-                    </span>
+                    {(() => {
+                      const config = target.config;
+                      const key = "api_key_env" in config ? config.api_key_env : "";
+                      const present = key ? envStatus().get(key) : undefined;
+                      const label = present === true ? "set" : "missing";
+                      return (
+                        <span
+                          class={
+                            "proxima-key-pill " +
+                            (present === true ? "is-set" : "is-missing")
+                          }
+                          aria-label={`key status for ${target.target_ref}: ${label}`}
+                          title={key}
+                        >
+                          {present === true ? "● set" : "○ missing"}
+                        </span>
+                      );
+                    })()}
                   </td>
                   <For each={TIERS}>
                     {(tier) => {
