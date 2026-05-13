@@ -28,7 +28,8 @@ use proxima_core::personality::{
 use proxima_core::storage::Storage;
 use proxima_core::wake::token_store::WakeTokenContext;
 use proxima_core::{
-    AbstractionPayload, MemoryId, OrgId, Owner, Principal, SourceBatchId, UserId, WakeChainDepth,
+    AbstractionPayload, HandleTable, MemoryId, OrgId, Owner, Principal, SourceBatchId, UserId,
+    WakeChainDepth,
 };
 use proxima_storage_pg::PgStorage;
 use sqlx::{Connection, Executor, PgConnection};
@@ -174,6 +175,7 @@ async fn emit_abstraction_writes_core_authored_edge_from_root_perspective() {
             triggering_event_memory_id: commit_memory_id,
             triggering_event_depth: WakeChainDepth::new(0),
             read_log: Arc::new(tokio::sync::Mutex::new(Vec::new())),
+            handles: Arc::new(HandleTable::new()),
         };
         let ctx = PersonalityToolContext::new(
             &engine,

@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
+use crate::mcp::HandleTable;
 use crate::personality::{PersonalityInstanceId, WakeChainDepth};
 use crate::{MemoryId, Owner};
 
@@ -22,6 +23,11 @@ pub struct WakeTokenContext {
     pub triggering_event_memory_id: MemoryId,
     pub triggering_event_depth: WakeChainDepth,
     pub read_log: Arc<tokio::sync::Mutex<Vec<(MemoryId, WakeChainDepth)>>>,
+    /// Per-wake handle table. Pre-seeded with triggering memory,
+    /// root perspective, and self instance before round 1 via
+    /// `pre_seed_wake_handles`. Substrate and MCP tools resolve /
+    /// emit handles against this table for the duration of the wake.
+    pub handles: Arc<HandleTable>,
 }
 
 impl WakeTokenContext {

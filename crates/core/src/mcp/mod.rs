@@ -10,7 +10,7 @@ pub use core_tools::{
     AuditEmit, PersonalityConfigChangedCaller, PersonalityConfigChangedSubject,
     PersonalityConfigChangedV1, PersonalityConfigChangedVerb, emit_personality_config_changed,
 };
-pub use handles::{EntityRef, Handle, HandleTable};
+pub use handles::{EntityRef, Handle, HandleTable, PreSeededHandles};
 
 use std::sync::Arc;
 

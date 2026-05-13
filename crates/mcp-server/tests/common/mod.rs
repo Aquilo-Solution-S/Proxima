@@ -4,7 +4,7 @@ use serde_json::json;
 use sqlx::{Connection, Executor, PgConnection};
 
 use proxima_core::wake::token_store::WakeTokenContext;
-use proxima_core::{OrgId, Owner, Principal, UserId};
+use proxima_core::{HandleTable, OrgId, Owner, Principal, UserId};
 
 const ADMIN_URL: &str = "postgres://postgres@localhost/postgres";
 
@@ -33,6 +33,7 @@ pub fn make_token_ctx(palette: Vec<String>) -> WakeTokenContext {
         triggering_event_memory_id: proxima_core::MemoryId::new(uuid::Uuid::now_v7()),
         triggering_event_depth: proxima_core::WakeChainDepth::new(0),
         read_log: std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new())),
+        handles: std::sync::Arc::new(HandleTable::new()),
     }
 }
 
