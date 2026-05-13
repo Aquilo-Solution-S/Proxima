@@ -17,7 +17,8 @@ pub struct WalkLineageTool;
 #[derive(Debug, Deserialize, JsonSchema)]
 #[allow(dead_code)]
 pub struct WalkLineageArgs {
-    pub memory_id: uuid::Uuid,
+    /// Handle of the memory to start walking from (e.g., `N1`).
+    pub memory: String,
     #[serde(default = "default_direction")]
     pub direction: String,
     #[serde(default = "default_depth")]

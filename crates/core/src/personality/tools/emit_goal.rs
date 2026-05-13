@@ -20,10 +20,12 @@ pub struct EmitGoalArgs {
     pub schema_id: String,
     pub schema_version: u32,
     pub payload: serde_json::Value,
+    /// Handle of the target self-Perspective memory (e.g., `N2`).
     #[serde(default)]
-    pub inspires_target_self_perspective: Option<uuid::Uuid>,
+    pub inspires_target_self_perspective: Option<String>,
+    /// Memory handles that motivate this goal.
     #[serde(default)]
-    pub motivated_by: Vec<uuid::Uuid>,
+    pub motivated_by: Vec<String>,
 }
 
 fn args_schema_value() -> &'static serde_json::Value {

@@ -141,7 +141,7 @@ async fn engineer_e2e_emits_perspective_with_chained_provenance() {
             now,
         )
         .await?;
-        let commit_memory_id = commit_outcome.memory_id;
+        let _commit_memory_id = commit_outcome.memory_id;
 
         // 3) First tick: commit-summary fires + emits an abstraction.
         //    Use `core/emit_perspective` with the commit-summary scripted
@@ -161,10 +161,11 @@ async fn engineer_e2e_emits_perspective_with_chained_provenance() {
         //    Provenance still includes the triggering abstraction
         //    via the auto-wired snapshot.
         let scripted = Arc::new(ScriptedAnthropicClient::new(vec![
-            // commit-summary wake
+            // commit-summary wake — N1 = triggering (commit) memory,
+            // pre-seeded by pre_seed_wake_handles before round 1.
             ScriptedTurn::tool_use(
                 "core/fetch_memory",
-                serde_json::json!({"memory_id": commit_memory_id.into_inner()}),
+                serde_json::json!({"memory": "N1"}),
             ),
             ScriptedTurn::tool_use(
                 "core/emit_abstraction",

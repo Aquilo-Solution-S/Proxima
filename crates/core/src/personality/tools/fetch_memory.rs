@@ -1,4 +1,4 @@
-//! `core/fetch_memory` substrate tool — read a single memory by id.
+//! `core/fetch_memory` substrate tool — read a single memory by handle.
 
 use std::sync::OnceLock;
 
@@ -11,14 +11,15 @@ use crate::personality::{
     PersonalityTool, PersonalityToolContext, PersonalityToolResult, SidecarSpec,
 };
 use crate::verbs::schema::PayloadKind;
-use crate::{MemoryId, SchemaId};
+use crate::SchemaId;
 
 #[derive(Debug, Default)]
 pub struct FetchMemoryTool;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct FetchMemoryArgs {
-    pub memory_id: uuid::Uuid,
+    /// Handle of the memory to load (e.g., `N1`).
+    pub memory: String,
 }
 
 fn args_schema_value() -> &'static serde_json::Value {
@@ -36,7 +37,7 @@ impl PersonalityTool for FetchMemoryTool {
     }
 
     fn description(&self) -> &'static str {
-        "Fetch one memory by id. Returns kind, schema_id, schema_version, \
+        "Fetch one memory by handle. Returns kind, schema_id, schema_version, \
          text, payload, and wake_chain_depth."
     }
 
@@ -57,7 +58,14 @@ impl PersonalityTool for FetchMemoryTool {
                 })));
             }
         };
-        let memory_id = MemoryId::new(parsed.memory_id);
+        let memory_id = match ctx.handles.resolve_memory(&parsed.memory) {
+            Ok(id) => id,
+            Err(e) => {
+                return Ok(PersonalityToolResult::error(serde_json::json!({
+                    "error": e.to_string(),
+                })));
+            }
+        };
         let sidecars: Vec<SidecarSpec> = ctx
             .engine
             .registry()
@@ -83,13 +91,14 @@ impl PersonalityTool for FetchMemoryTool {
         let Some(snapshot) = snapshot else {
             return Ok(PersonalityToolResult::error(serde_json::json!({
                 "error": "memory not found",
-                "memory_id": parsed.memory_id,
+                "memory": parsed.memory,
             })));
         };
         ctx.record_read([(snapshot.memory_id, snapshot.wake_chain_depth)])
             .await;
+        let handle = ctx.handles.assign_memory(snapshot.memory_id);
         Ok(PersonalityToolResult::ok(serde_json::json!({
-            "memory_id": snapshot.memory_id.into_inner(),
+            "memory": handle.as_str(),
             "kind": snapshot.kind,
             "schema_id": snapshot.schema_id.as_str(),
             "schema_version": snapshot.schema_version.into_inner(),

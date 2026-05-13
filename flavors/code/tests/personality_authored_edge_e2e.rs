@@ -210,19 +210,16 @@ async fn emit_abstraction_writes_core_authored_edge_from_root_perspective() {
             "emit_abstraction must succeed; got error payload: {:?}",
             result.content
         );
-        let new_memory_id: Uuid = result
+        let memory_handle = result
             .content
-            .get("memory_id")
-            .and_then(|v| v.as_str())
-            .and_then(|s| Uuid::parse_str(s).ok())
-            .or_else(|| {
-                result
-                    .content
-                    .get("memory_id")
-                    .and_then(serde_json::Value::as_str)
-                    .and_then(|s| Uuid::parse_str(s).ok())
-            })
-            .expect("emit returns memory_id");
+            .get("memory")
+            .and_then(serde_json::Value::as_str)
+            .expect("emit returns memory handle");
+        let new_memory_id: Uuid = wake
+            .handles
+            .resolve_memory(memory_handle)
+            .expect("emitted memory handle resolves")
+            .into_inner();
 
         let edges: Vec<(Uuid, Uuid, String, String, String, String)> = sqlx::query_as(
             "SELECT source_memory_id, target_memory_id, source_kind, target_kind,

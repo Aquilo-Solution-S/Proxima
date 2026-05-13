@@ -55,10 +55,14 @@ impl PersonalityTool for ListSelfPerspectivesTool {
         let entries: Vec<serde_json::Value> = rows
             .iter()
             .map(|row| {
+                let personality_handle =
+                    ctx.handles.assign_personality(row.personality_instance_id);
+                let root_handle = ctx
+                    .handles
+                    .assign_memory(row.current_root_perspective_memory_id);
                 serde_json::json!({
-                    "personality_instance_id": row.personality_instance_id.into_inner(),
-                    "current_root_perspective_memory_id":
-                        row.current_root_perspective_memory_id.into_inner(),
+                    "personality": personality_handle.as_str(),
+                    "current_root_perspective": root_handle.as_str(),
                     "display_name": row.display_name,
                     "status": row.status,
                 })

@@ -20,9 +20,11 @@ pub struct CreateEdgeTool;
 #[derive(Debug, Deserialize, JsonSchema)]
 #[allow(dead_code)]
 pub struct CreateEdgeArgs {
-    pub source_memory_id: uuid::Uuid,
+    /// Handle of the source memory (e.g., `N1`).
+    pub source: String,
     pub relation_id: String,
-    pub target_memory_id: uuid::Uuid,
+    /// Handle of the target memory (e.g., `N2`).
+    pub target: String,
 }
 
 fn args_schema_value() -> &'static serde_json::Value {
