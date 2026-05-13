@@ -28,7 +28,6 @@ pub struct CodeEmitExecutionRequestArgs {
     pub repo_handle: String,
     pub title: String,
     pub instructions: String,
-    pub request_key: String,
     pub idempotency_key: String,
     pub goal_activated_memory: String,
     #[serde(default)]
@@ -47,7 +46,6 @@ pub struct CodeEmitExecutionRequestOutput {
 pub struct CodeRetryExecutionRequestArgs {
     pub prior_execution_request: String,
     pub target_personality: String,
-    pub request_key: String,
     pub idempotency_key: String,
     #[serde(default)]
     pub title: Option<String>,
@@ -89,13 +87,7 @@ impl McpTool for CodeEmitExecutionRequestTool {
 
             let title = normalize_text("title", &args.title, 1, 240)?;
             let instructions = normalize_text("instructions", &args.instructions, 1, 20_000)?;
-            let request_key = normalize_text("request_key", &args.request_key, 1, 240)?;
-            let idempotency_key = normalize_text("idempotency_key", &args.idempotency_key, 1, 240)?;
-            if request_key != idempotency_key {
-                return Err(McpToolError::InvalidInput(
-                    "request_key must match idempotency_key".into(),
-                ));
-            }
+            let request_key = normalize_text("idempotency_key", &args.idempotency_key, 1, 240)?;
 
             let planner_root = ctx.caller_self_perspective.ok_or_else(|| {
                 McpToolError::InvalidInput(
@@ -195,13 +187,7 @@ impl McpTool for CodeRetryExecutionRequestTool {
             })?;
             let prior_memory_id = resolve_memory_id(&ctx, &args.prior_execution_request)?;
             let target_personality_id = resolve_personality_id(&ctx, &args.target_personality)?;
-            let request_key = normalize_text("request_key", &args.request_key, 1, 240)?;
-            let idempotency_key = normalize_text("idempotency_key", &args.idempotency_key, 1, 240)?;
-            if request_key != idempotency_key {
-                return Err(McpToolError::InvalidInput(
-                    "request_key must match idempotency_key".into(),
-                ));
-            }
+            let request_key = normalize_text("idempotency_key", &args.idempotency_key, 1, 240)?;
             let explicit_evidence = resolve_evidence(&ctx, &args.evidence)?;
 
             let mut tx = ctx.pool.begin().await.map_err(map_storage)?;

@@ -128,7 +128,6 @@ impl ScriptedPlannerAdapter {
                     "repo_handle": "planner-test",
                     "title": REQUEST_TITLE,
                     "instructions": "Make the smallest code change that satisfies the accepted goal.",
-                    "request_key": REQUEST_KEY,
                     "idempotency_key": REQUEST_KEY,
                     "goal_activated_memory": goal_activated_memory,
                     "evidence": [commit_handle]
@@ -512,7 +511,7 @@ async fn shell_author_retries_execution_request_with_target_and_provenance()
             .and_then(|items| {
                 items.iter().find_map(|item| {
                     (item.get("display_name")?.as_str()? == "Retry Worker")
-                        .then(|| item.get("handle")?.as_str())
+                        .then(|| item.get("personality")?.as_str())
                         .flatten()
                 })
             })
@@ -524,7 +523,6 @@ async fn shell_author_retries_execution_request_with_target_and_provenance()
                 serde_json::json!({
                     "prior_execution_request": prior.into_inner().to_string(),
                     "target_personality": worker_handle,
-                    "request_key": "retry-request",
                     "idempotency_key": "retry-request",
                     "instructions_append": "Retry after shell-author review.",
                     "evidence": [commit.memory_id.into_inner().to_string()]
@@ -671,7 +669,6 @@ async fn shell_author_retries_execution_request_with_target_and_provenance()
                 serde_json::json!({
                     "prior_execution_request": prior.into_inner().to_string(),
                     "target_personality": worker_handle,
-                    "request_key": "retry-request",
                     "idempotency_key": "retry-request"
                 }),
                 author,
@@ -700,7 +697,6 @@ async fn shell_author_retries_execution_request_with_target_and_provenance()
                 serde_json::json!({
                     "prior_execution_request": prior.into_inner().to_string(),
                     "target_personality": Uuid::now_v7().to_string(),
-                    "request_key": "retry-request",
                     "idempotency_key": "retry-request"
                 }),
                 McpAuthorContext {
@@ -850,7 +846,6 @@ async fn shell_author_retry_rejects_invalid_call_shapes() -> Result<(), Box<dyn 
             serde_json::json!({
                 "prior_execution_request": prior_memory.into_inner().to_string(),
                 "target_personality": target.to_string(),
-                "request_key": key,
                 "idempotency_key": key
             })
         };
@@ -1130,7 +1125,7 @@ async fn accepted_goal_wakes_planner_and_emits_execution_request()
             .and_then(|items| {
                 items.iter().find_map(|item| {
                     (item.get("display_name")?.as_str()? == "Configured Planner")
-                        .then(|| item.get("handle")?.as_str())
+                        .then(|| item.get("personality")?.as_str())
                         .flatten()
                 })
             })
