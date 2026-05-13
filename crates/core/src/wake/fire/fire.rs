@@ -71,7 +71,7 @@ pub async fn fire_wake_entry(
     let invocation_id_for_dispatch = Uuid::now_v7();
     let max_rounds = u32::from(input.wake_entry.max_rounds);
     let invocation_timeout = per_invocation_timeout(max_rounds);
-    let wake_token = mint_wake_token(
+    let (wake_token, seeded_handles) = mint_wake_token(
         engine,
         &input,
         &wake_context,
@@ -137,6 +137,7 @@ pub async fn fire_wake_entry(
             adapter,
             input,
             wake_token,
+            seeded_handles,
             wake_context,
             resolved,
             context_params,
@@ -167,7 +168,7 @@ pub async fn fire_wake_entry(
         }
     };
     let program = HarnessProgram {
-        system_prompt: wake_context.root_perspective.system_prompt.clone(),
+        system_prompt: build_system_prompt(&wake_context, &seeded_handles),
         instructions: input.wake_entry.instructions.clone(),
         context_params,
         substrate_tool_palette: input.wake_entry.substrate_tool_palette.clone(),
@@ -217,6 +218,7 @@ async fn handle_workspace_mode(
     adapter: &dyn HarnessAdapter,
     input: FireWakeEntryInput,
     wake_token: Uuid,
+    seeded_handles: crate::mcp::PreSeededHandles,
     wake_context: WakeContext,
     resolved: ResolvedTarget,
     mut context_params: HashMap<String, serde_json::Value>,
@@ -320,7 +322,7 @@ async fn handle_workspace_mode(
         }
     };
     let program = HarnessProgram {
-        system_prompt: wake_context.root_perspective.system_prompt.clone(),
+        system_prompt: build_system_prompt(&wake_context, &seeded_handles),
         instructions: input.wake_entry.instructions.clone(),
         context_params,
         substrate_tool_palette: input.wake_entry.substrate_tool_palette.clone(),
@@ -388,7 +390,7 @@ async fn mint_wake_token(
     resolved: &ResolvedTarget,
     invocation_id: Uuid,
     invocation_timeout: Duration,
-) -> Uuid {
+) -> (Uuid, crate::mcp::PreSeededHandles) {
     let token_ctx = WakeTokenContext {
         invocation_id,
         personality_instance_id: input.personality_instance_id.into_inner(),
@@ -407,12 +409,15 @@ async fn mint_wake_token(
         handles: std::sync::Arc::new(crate::mcp::HandleTable::new()),
     };
     // Force pre-seed so handle counter state is deterministic before
-    // any other code touches the table.
-    let _ = crate::wake::handles::pre_seed_wake_handles(&token_ctx);
-    engine
+    // any other code touches the table. Capture the seeded struct so
+    // the wake bootstrap can render the round-1 system-prompt preamble
+    // from the assigned handle strings.
+    let seeded = crate::wake::handles::pre_seed_wake_handles(&token_ctx);
+    let wake_token = engine
         .wake_token_store()
         .mint_with_max_lifetime(token_ctx, invocation_timeout)
-        .await
+        .await;
+    (wake_token, seeded)
 }
 
 fn harness_context(
@@ -563,6 +568,25 @@ fn provider_target_failure_reason(err: &ProviderTargetBuildError) -> String {
             format!("provider_not_yet_supported:{variant}")
         }
     }
+}
+
+/// Round-1 `system_prompt`: handle-context preamble prepended to the
+/// Root Perspective's `system_prompt`. The preamble reads from the
+/// pre-seeded handle struct so the model knows which handles refer to
+/// the triggering memory, root perspective, and self.
+fn build_system_prompt(
+    wake_context: &WakeContext,
+    seeded: &crate::mcp::PreSeededHandles,
+) -> String {
+    let schema_id = wake_context.triggering_memory.schema_id.as_str();
+    let schema_arg = if schema_id.is_empty() {
+        None
+    } else {
+        Some(schema_id)
+    };
+    let mut prompt = crate::wake::handles::format_wake_context_preamble(seeded, schema_arg);
+    prompt.push_str(&wake_context.root_perspective.system_prompt);
+    prompt
 }
 
 fn build_context_params(
