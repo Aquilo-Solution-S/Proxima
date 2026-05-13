@@ -61,9 +61,9 @@ impl CodexAuthResolver {
 
     pub async fn resolve(&self) -> Result<CodexCredentials, CodexAuthError> {
         let mut value = self.auth_json.read()?;
-        let mut access_token = read_token_field(&value, "access_token")?;
+        let access_token = read_token_field(&value, "access_token")?;
         let refresh_token = read_token_field(&value, "refresh_token")?;
-        let mut claims = crate::jwt::decode_chatgpt_claims(&access_token)?;
+        let claims = crate::jwt::decode_chatgpt_claims(&access_token)?;
 
         if needs_refresh(claims.exp) {
             let refreshed = self.refresh_client.refresh(&refresh_token).await?;
@@ -72,8 +72,7 @@ impl CodexAuthResolver {
                 tracing::warn!(error = %err,
                     "codex_auth: refreshed tokens but could not persist back to auth.json");
             }
-            access_token = refreshed.access_token;
-            claims = crate::jwt::decode_chatgpt_claims(&access_token)?;
+            return credentials_from_refreshed(&value, refreshed);
         }
 
         let account_id = claims
@@ -90,6 +89,27 @@ impl CodexAuthResolver {
             access_token,
             account_id,
         })
+    }
+
+    /// Force a refresh of the stored Codex OAuth tokens regardless of the
+    /// access_token's `exp` claim, then return the resulting credentials.
+    ///
+    /// Use this when an upstream request returned 401 even though `resolve`
+    /// previously thought the token was fresh — e.g. server-side
+    /// invalidation, account-id mismatch, or clock skew that defeated the
+    /// proactive-refresh window.
+    pub async fn invalidate_and_refresh(&self) -> Result<CodexCredentials, CodexAuthError> {
+        let mut value = self.auth_json.read()?;
+        let refresh_token = read_token_field(&value, "refresh_token")?;
+
+        let refreshed = self.refresh_client.refresh(&refresh_token).await?;
+        apply_refresh(&mut value, &refreshed);
+        if let Err(err) = self.auth_json.write_atomic(&value) {
+            tracing::warn!(error = %err,
+                "codex_auth: invalidate_and_refresh succeeded but could not persist back to auth.json");
+        }
+
+        credentials_from_refreshed(&value, refreshed)
     }
 }
 
@@ -109,6 +129,26 @@ fn needs_refresh(exp: Option<i64>) -> bool {
         Some(exp) => now + REFRESH_SKEW_SECS >= exp,
         None => true,
     }
+}
+
+fn credentials_from_refreshed(
+    value: &serde_json::Value,
+    refreshed: crate::refresh::RefreshedTokens,
+) -> Result<CodexCredentials, CodexAuthError> {
+    let claims = crate::jwt::decode_chatgpt_claims(&refreshed.access_token)?;
+    let account_id = claims
+        .chatgpt_account_id
+        .or_else(|| {
+            value["tokens"]
+                .get("account_id")
+                .and_then(|v| v.as_str())
+                .map(String::from)
+        })
+        .ok_or(CodexAuthError::MissingAccountId)?;
+    Ok(CodexCredentials {
+        access_token: refreshed.access_token,
+        account_id,
+    })
 }
 
 fn apply_refresh(value: &mut serde_json::Value, r: &crate::refresh::RefreshedTokens) {
