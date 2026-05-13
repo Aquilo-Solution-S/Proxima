@@ -23,6 +23,31 @@ pub fn pre_seed_wake_handles(ctx: &WakeTokenContext) -> PreSeededHandles {
     }
 }
 
+/// Format the round-1 wake-context preamble. Reads handle strings from
+/// `PreSeededHandles` — never hard-codes `N1`/`N2`/`P1`.
+///
+/// The preamble is prepended to the personality's `system_prompt` by
+/// the wake bootstrap. It names the three handles the model can rely
+/// on being addressable in round 1.
+pub fn format_wake_context_preamble(
+    seeded: &PreSeededHandles,
+    triggering_schema_id: Option<&str>,
+) -> String {
+    let schema_clause = triggering_schema_id
+        .filter(|s| !s.is_empty())
+        .map(|s| format!("a `{s}` Fact"))
+        .unwrap_or_else(|| "a Fact".to_string());
+    format!(
+        "You were woken by {triggering}, {schema_clause}. \
+Your current root perspective is {root}. You are {self_p}. \
+When emitting a memory, you may reference {triggering} for \
+the activated fact handle expected by Planner/Worker emit tools.\n\n",
+        triggering = seeded.triggering.as_str(),
+        root = seeded.root_perspective.as_str(),
+        self_p = seeded.self_instance.as_str(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -93,5 +118,50 @@ mod tests {
         assert_eq!(first.triggering, second.triggering);
         assert_eq!(first.root_perspective, second.root_perspective);
         assert_eq!(first.self_instance, second.self_instance);
+    }
+
+    #[test]
+    fn preamble_uses_pre_seeded_handles() {
+        let ctx = make_ctx();
+        let seeded = pre_seed_wake_handles(&ctx);
+        let preamble = format_wake_context_preamble(&seeded, None);
+        assert!(preamble.contains(seeded.triggering.as_str()));
+        assert!(preamble.contains(seeded.root_perspective.as_str()));
+        assert!(preamble.contains(seeded.self_instance.as_str()));
+    }
+
+    #[test]
+    fn preamble_includes_triggering_schema_when_provided() {
+        let ctx = make_ctx();
+        let seeded = pre_seed_wake_handles(&ctx);
+        let preamble =
+            format_wake_context_preamble(&seeded, Some("proxima-goal/goal-activated-v1"));
+        assert!(preamble.contains("proxima-goal/goal-activated-v1"));
+    }
+
+    #[test]
+    fn preamble_omits_schema_clause_when_empty() {
+        let ctx = make_ctx();
+        let seeded = pre_seed_wake_handles(&ctx);
+        let with = format_wake_context_preamble(&seeded, Some(""));
+        let without = format_wake_context_preamble(&seeded, None);
+        assert_eq!(with, without);
+    }
+
+    #[test]
+    fn preamble_does_not_hardcode_n1_p1() {
+        let ctx = make_ctx();
+        // Mint unrelated entities first to perturb counter state so the
+        // pre-seed handles aren't N1/N2/P1.
+        for _ in 0..5 {
+            let _ = ctx.handles.assign_memory(MemoryId::new(Uuid::now_v7()));
+        }
+        let seeded = pre_seed_wake_handles(&ctx);
+        let preamble = format_wake_context_preamble(&seeded, None);
+        assert!(preamble.contains(seeded.triggering.as_str()));
+        assert_ne!(seeded.triggering.as_str(), "N1");
+        assert!(!preamble.contains(" N1 "));
+        assert!(!preamble.contains(" N1."));
+        assert!(!preamble.contains(" N1,"));
     }
 }
