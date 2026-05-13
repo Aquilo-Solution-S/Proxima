@@ -348,24 +348,14 @@ fn retry_instructions(
 }
 
 pub(super) fn resolve_memory_id(ctx: &McpToolCtx, raw: &str) -> Result<MemoryId, McpToolError> {
-    if let Some(memory_id) = ctx.handles.as_ref().unwrap().resolve_memory(raw) {
-        return Ok(memory_id);
-    }
-    Uuid::parse_str(raw)
-        .map(MemoryId::new)
-        .map_err(|_| McpToolError::UnknownHandle(raw.to_string()))
+    ctx.resolve_memory(raw)
 }
 
 pub(super) fn resolve_personality_id(
     ctx: &McpToolCtx,
     raw: &str,
 ) -> Result<PersonalityInstanceId, McpToolError> {
-    if let Some(personality_id) = ctx.handles.as_ref().unwrap().resolve_personality(raw) {
-        return Ok(personality_id);
-    }
-    Uuid::parse_str(raw)
-        .map(PersonalityInstanceId::new)
-        .map_err(|_| McpToolError::UnknownHandle(raw.to_string()))
+    ctx.resolve_personality(raw)
 }
 
 fn resolve_evidence(ctx: &McpToolCtx, raw: &[String]) -> Result<Vec<MemoryId>, McpToolError> {

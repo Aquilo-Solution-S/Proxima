@@ -79,7 +79,7 @@ impl McpTool for UpdateWakeEntryTool {
             let wid = ctx
                 .handles.as_ref().unwrap()
                 .resolve_wake_entry(&args.wake_entry)
-                .ok_or_else(|| McpToolError::UnknownHandle(args.wake_entry.clone()))?;
+                .map_err(McpToolError::Resolve)?;
             let storage = ctx
                 .storage()
                 .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;

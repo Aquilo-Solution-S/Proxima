@@ -201,7 +201,7 @@ pub async fn target_personality_root(
     let instance_id = ctx
         .handles.as_ref().unwrap()
         .resolve_personality(handle)
-        .ok_or_else(|| McpToolError::UnknownHandle(handle.to_string()))?;
+        .map_err(McpToolError::Resolve)?;
     personality_root_in_owner(tx, &ctx.owner, instance_id).await
 }
 
@@ -225,8 +225,12 @@ pub async fn personality_root_in_owner(
     .fetch_optional(tx)
     .await
     .map_err(map_storage)?;
-    row.map(MemoryId::new)
-        .ok_or_else(|| McpToolError::UnknownHandle(format!("P:{}", instance_id.into_inner())))
+    row.map(MemoryId::new).ok_or_else(|| {
+        McpToolError::Other(format!(
+            "personality {} has no root perspective",
+            instance_id.into_inner()
+        ))
+    })
 }
 
 pub async fn append_inspires_edge(
@@ -276,8 +280,8 @@ pub async fn validate_evidence_in_owner(
     for handle in evidence {
         let entity = ctx
             .handles.as_ref().unwrap()
-            .resolve(handle)
-            .ok_or_else(|| McpToolError::UnknownHandle(handle.clone()))?;
+            .resolve_entity(handle)
+            .map_err(McpToolError::Resolve)?;
         match entity {
             EntityRef::Memory(memory_id) => {
                 let row: Option<(String, String, uuid::Uuid)> = sqlx::query_as(

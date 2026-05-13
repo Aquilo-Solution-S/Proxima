@@ -1,4 +1,4 @@
-use proxima_core::mcp::{EntityRef, HandleTable, McpTool, McpToolCtx, McpToolError};
+use proxima_core::mcp::{HandleTable, McpTool, McpToolCtx, McpToolError};
 use proxima_core::{EdgeId, MemoryId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -232,15 +232,7 @@ impl McpTool for OpenTool {
         args: OpenArgs,
     ) -> futures::future::BoxFuture<'static, Result<OpenOutput, McpToolError>> {
         Box::pin(async move {
-            let entity = ctx
-                .handles.as_ref().unwrap()
-                .resolve(&args.handle)
-                .ok_or_else(|| McpToolError::UnknownHandle(args.handle.clone()))?;
-            let EntityRef::Memory(memory_id) = entity else {
-                return Err(McpToolError::InvalidInput(
-                    "proxima_open expects a memory handle".into(),
-                ));
-            };
+            let memory_id = ctx.resolve_memory(&args.handle)?;
             let (owner_kind, owner_principal_id) = owner_principal(&ctx.owner);
             let memory_uuid = memory_id.into_inner();
             let row = sqlx::query_as::<_, OpenRow>(OPEN_SQL)

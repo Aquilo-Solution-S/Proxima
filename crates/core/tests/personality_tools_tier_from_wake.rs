@@ -176,5 +176,5 @@ async fn handles_arc_propagates_from_wake_to_tool_ctx() {
     // A handle minted via the ctx is visible from the wake's table.
     let fresh_id = MemoryId::new(uuid::Uuid::now_v7());
     let h = ctx.handles.assign_memory(fresh_id);
-    assert_eq!(wake.handles.resolve_memory(h.as_str()), Some(fresh_id));
+    assert_eq!(wake.handles.resolve_memory(h.as_str()), Ok(fresh_id));
 }
