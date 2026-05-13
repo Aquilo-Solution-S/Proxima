@@ -554,6 +554,9 @@ fn provider_target_failure_reason(err: &ProviderTargetBuildError) -> String {
         ProviderTargetBuildError::MissingCredentials { env } => {
             format!("credentials_missing:{env}")
         }
+        ProviderTargetBuildError::NotYetSupported { variant } => {
+            format!("provider_not_yet_supported:{variant}")
+        }
     }
 }
 

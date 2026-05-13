@@ -197,6 +197,7 @@ fn model_id(config: &crate::InferenceTargetConfig) -> String {
         crate::InferenceTargetConfig::MistralChat(cfg) => cfg.model_id.clone(),
         crate::InferenceTargetConfig::OpenAIChat(cfg) => cfg.model_id.clone(),
         crate::InferenceTargetConfig::OpenAIResponses(cfg) => cfg.model_id.clone(),
+        crate::InferenceTargetConfig::ChatGPTCodex(cfg) => cfg.model_id.clone(),
     }
 }
 
@@ -224,6 +225,11 @@ pub fn provider_target_from_config(
             api_key: read_key(&cfg.api_key_env)?,
             reasoning_effort: cfg.reasoning_effort.clone(),
         }),
+        crate::InferenceTargetConfig::ChatGPTCodex(_cfg) => {
+            Err(ProviderTargetBuildError::NotYetSupported {
+                variant: "ChatGPTCodex",
+            })
+        }
     }
 }
 
@@ -237,4 +243,6 @@ fn read_key(env: &str) -> Result<String, ProviderTargetBuildError> {
 pub enum ProviderTargetBuildError {
     #[error("missing credentials in env var {env}")]
     MissingCredentials { env: String },
+    #[error("provider variant {variant} not yet supported in harness dispatch")]
+    NotYetSupported { variant: &'static str },
 }

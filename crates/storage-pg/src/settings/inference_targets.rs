@@ -19,6 +19,7 @@ fn config_kind(config: &InferenceTargetConfig) -> &'static str {
         InferenceTargetConfig::MistralChat(_) => "mistral_chat",
         InferenceTargetConfig::OpenAIChat(_) => "openai_chat",
         InferenceTargetConfig::OpenAIResponses(_) => "openai_responses",
+        InferenceTargetConfig::ChatGPTCodex(_) => "chatgpt_codex",
     }
 }
 

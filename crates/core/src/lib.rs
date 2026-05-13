@@ -29,9 +29,10 @@ pub use error::*;
 pub use flavor::*;
 pub use ids::*;
 pub use inference::{
-    BindInferenceTierRequest, BindInferenceTierResponse, InferenceTargetConfig, InferenceTargetRow,
-    InferenceTierBindingRow, ListInferenceTargetsRequest, ListInferenceTierBindingsRequest,
-    MistralChatConfig, OpenAIChatConfig, OpenAIResponsesConfig, RegisterInferenceTargetRequest,
+    BindInferenceTierRequest, BindInferenceTierResponse, ChatGPTCodexConfig,
+    InferenceTargetConfig, InferenceTargetRow, InferenceTierBindingRow,
+    ListInferenceTargetsRequest, ListInferenceTierBindingsRequest, MistralChatConfig,
+    OpenAIChatConfig, OpenAIResponsesConfig, RegisterInferenceTargetRequest,
     RegisterInferenceTargetResponse, RemoveInferenceTargetRequest, RemoveInferenceTargetResponse,
 };
 pub use llm::*;

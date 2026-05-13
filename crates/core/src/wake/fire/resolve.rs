@@ -55,6 +55,7 @@ pub fn decode_target(target_ref: String, row: InferenceTargetRow) -> ResolvedTar
         InferenceTargetConfig::MistralChat(cfg) => Some(cfg.model_id.clone()),
         InferenceTargetConfig::OpenAIChat(cfg) => Some(cfg.model_id.clone()),
         InferenceTargetConfig::OpenAIResponses(cfg) => Some(cfg.model_id.clone()),
+        InferenceTargetConfig::ChatGPTCodex(cfg) => Some(cfg.model_id.clone()),
     };
     ResolvedTarget {
         target_ref,

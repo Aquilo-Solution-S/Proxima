@@ -69,6 +69,12 @@ impl PingError {
             message: format!("env var {env_var} is not set"),
         }
     }
+    fn not_supported(detail: impl Into<String>) -> Self {
+        Self {
+            code: "not_supported".into(),
+            message: detail.into(),
+        }
+    }
     fn network(detail: String) -> Self {
         Self {
             code: "network".into(),
@@ -89,11 +95,12 @@ impl PingError {
     }
 }
 
-fn config_api_key_env(config: &InferenceTargetConfig) -> &str {
+fn config_api_key_env(config: &InferenceTargetConfig) -> Option<&str> {
     match config {
-        InferenceTargetConfig::MistralChat(c) => &c.api_key_env,
-        InferenceTargetConfig::OpenAIChat(c) => &c.api_key_env,
-        InferenceTargetConfig::OpenAIResponses(c) => &c.api_key_env,
+        InferenceTargetConfig::MistralChat(c) => Some(&c.api_key_env),
+        InferenceTargetConfig::OpenAIChat(c) => Some(&c.api_key_env),
+        InferenceTargetConfig::OpenAIResponses(c) => Some(&c.api_key_env),
+        InferenceTargetConfig::ChatGPTCodex(_) => None,
     }
 }
 
@@ -102,6 +109,7 @@ fn config_base_url(config: &InferenceTargetConfig) -> &str {
         InferenceTargetConfig::MistralChat(c) => &c.base_url,
         InferenceTargetConfig::OpenAIChat(c) => &c.base_url,
         InferenceTargetConfig::OpenAIResponses(c) => &c.base_url,
+        InferenceTargetConfig::ChatGPTCodex(c) => &c.base_url,
     }
 }
 
@@ -110,6 +118,7 @@ fn config_model_id(config: &InferenceTargetConfig) -> &str {
         InferenceTargetConfig::MistralChat(c) => &c.model_id,
         InferenceTargetConfig::OpenAIChat(c) => &c.model_id,
         InferenceTargetConfig::OpenAIResponses(c) => &c.model_id,
+        InferenceTargetConfig::ChatGPTCodex(c) => &c.model_id,
     }
 }
 
@@ -119,7 +128,9 @@ fn ping_endpoint(config: &InferenceTargetConfig) -> String {
         InferenceTargetConfig::MistralChat(_) | InferenceTargetConfig::OpenAIChat(_) => {
             format!("{base}/v1/chat/completions")
         }
-        InferenceTargetConfig::OpenAIResponses(_) => format!("{base}/v1/responses"),
+        InferenceTargetConfig::OpenAIResponses(_) | InferenceTargetConfig::ChatGPTCodex(_) => {
+            format!("{base}/responses")
+        }
     }
 }
 
@@ -131,7 +142,7 @@ fn ping_body(config: &InferenceTargetConfig) -> serde_json::Value {
             "messages": [{ "role": "user", "content": "ping" }],
             "max_tokens": 1,
         }),
-        InferenceTargetConfig::OpenAIResponses(_) => json!({
+        InferenceTargetConfig::OpenAIResponses(_) | InferenceTargetConfig::ChatGPTCodex(_) => json!({
             "model": model,
             "input": "ping",
             "max_output_tokens": 16,
@@ -148,7 +159,8 @@ pub async fn ping_target_with<F>(
 where
     F: Fn(&str) -> Option<String>,
 {
-    let env_var = config_api_key_env(config);
+    let env_var = config_api_key_env(config)
+        .ok_or_else(|| PingError::not_supported("ChatGPTCodex routing arrives in Task 8"))?;
     let api_key = env_lookup(env_var).ok_or_else(|| PingError::env_missing(env_var))?;
     let url = ping_endpoint(config);
     let body = ping_body(config);
