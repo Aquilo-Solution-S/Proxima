@@ -258,11 +258,24 @@ async fn chatgpt_codex_request(
 
     let base = config.base_url.trim_end_matches('/');
     let url = format!("{base}/responses");
-    let body = json!({
+    // chatgpt.com/backend-api/codex/responses rejects requests without an
+    // `instructions` field and expects `input` as an array of role+content
+    // items (not a bare string). Mirrors the shape Goose's chatgpt_codex
+    // provider builds — minimal version for a connectivity ping.
+    let mut body = json!({
         "model": config.model_id,
-        "input": "ping",
-        "max_output_tokens": 16,
+        "instructions": "Reply with the single word: pong.",
+        "input": [{
+            "role": "user",
+            "content": [{ "type": "input_text", "text": "ping" }],
+        }],
+        "store": false,
     });
+    if let Some(effort) = config.reasoning_effort.as_deref() {
+        if let Some(obj) = body.as_object_mut() {
+            obj.insert("reasoning".to_string(), json!({ "effort": effort }));
+        }
+    }
 
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(5))
@@ -501,8 +514,12 @@ mod tests {
             .and(header("originator", "proxima"))
             .and(wiremock::matchers::body_json(serde_json::json!({
                 "model": "gpt-5.3-codex",
-                "input": "ping",
-                "max_output_tokens": 16,
+                "instructions": "Reply with the single word: pong.",
+                "input": [{
+                    "role": "user",
+                    "content": [{ "type": "input_text", "text": "ping" }],
+                }],
+                "store": false,
             })))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "id": "resp_001",
