@@ -187,6 +187,7 @@ pub async fn fire_wake_entry(
     let finished_at = time::OffsetDateTime::now_utc();
 
     engine.wake_token_store().revoke(wake_token).await;
+    write_session_jsonl_to_disk(&session_log_path, &outcome_result).await;
     append_session_log_error_if_present(engine, &input, &outcome_result).await;
     emit_trace_from_outcome(
         engine,
@@ -581,6 +582,40 @@ fn build_context_params(
         serde_json::to_value(&wake_context.triggering_memory)?,
     );
     Ok(context_params)
+}
+
+/// Mirror the harness JSONL into `~/.proxima/wake-runs/<owner>/<invocation_id>/worker-session.jsonl`
+/// so the Shell UI's "session log" link resolves for native-harness invocations.
+/// On error from the harness (no `outcome` to extract bytes from) write a single
+/// synthesized `record: "error"` line so the file is never empty.
+async fn write_session_jsonl_to_disk(
+    path: &std::path::Path,
+    outcome_result: &Result<crate::harness::HarnessOutcome, crate::harness::HarnessError>,
+) {
+    let bytes: Vec<u8> = match outcome_result {
+        Ok(outcome) => outcome.jsonl_bytes.clone(),
+        Err(err) => {
+            let line = serde_json::json!({
+                "record": "error",
+                "message": err.to_string(),
+            });
+            let mut s = line.to_string();
+            s.push('\n');
+            s.into_bytes()
+        }
+    };
+    if bytes.is_empty() {
+        return;
+    }
+    if let Some(parent) = path.parent()
+        && let Err(err) = tokio::fs::create_dir_all(parent).await
+    {
+        tracing::warn!(error = %err, path = %parent.display(), "failed to create wake-run dir");
+        return;
+    }
+    if let Err(err) = tokio::fs::write(path, &bytes).await {
+        tracing::warn!(error = %err, path = %path.display(), "failed to write worker-session.jsonl");
+    }
 }
 
 fn warn_if_failed(input: &FireWakeEntryInput, outcome: &WakeInvocationFinalizeOutcome) {
