@@ -27,6 +27,7 @@ interface Props {
     | "removeInferenceTarget"
     | "bindInferenceTier"
     | "inferenceEnvStatus"
+    | "codexAuthStatus"
     | "testInferenceTarget"
   >;
   owner: Owner;
@@ -34,6 +35,11 @@ interface Props {
   bindings: Accessor<InferenceTierBindingTs[] | undefined>;
   refetchTargets: () => void;
   refetchBindings: () => void;
+}
+
+interface CodexAuthState {
+  auth_json_present: boolean;
+  access_token_present: boolean;
 }
 
 const TIER_DESCRIPTIONS: Record<ModelTierTs, string> = {
@@ -95,11 +101,17 @@ export const ModelsTable: Component<Props> = (props) => {
   const targets = createMemo(() => props.targets() ?? []);
 
   const [envStatus, setEnvStatus] = createSignal<Map<string, boolean>>(new Map());
+  const [codexAuth, setCodexAuth] = createSignal<CodexAuthState | null>(null);
 
   const refreshEnvStatus = async () => {
     const seen = new Set<string>();
     const requests: Promise<[string, boolean]>[] = [];
+    let needsCodex = false;
     for (const target of targets()) {
+      if (target.config.kind === "chatgpt_codex") {
+        needsCodex = true;
+        continue;
+      }
       if ("api_key_env" in target.config) {
         const key = target.config.api_key_env;
         if (key && !seen.has(key)) {
@@ -115,6 +127,16 @@ export const ModelsTable: Component<Props> = (props) => {
     }
     const results = await Promise.all(requests);
     setEnvStatus(new Map(results));
+    if (needsCodex) {
+      try {
+        const out = await props.client.codexAuthStatus();
+        setCodexAuth(out);
+      } catch {
+        setCodexAuth({ auth_json_present: false, access_token_present: false });
+      }
+    } else {
+      setCodexAuth(null);
+    }
   };
 
   createEffect(() => {
@@ -218,6 +240,31 @@ export const ModelsTable: Component<Props> = (props) => {
                   <td>
                     {(() => {
                       const config = target.config;
+                      if (config.kind === "chatgpt_codex") {
+                        const auth = codexAuth();
+                        const ok =
+                          auth?.auth_json_present === true &&
+                          auth?.access_token_present === true;
+                        const title = !auth
+                          ? "checking ~/.codex/auth.json…"
+                          : ok
+                            ? "~/.codex/auth.json present with access_token"
+                            : auth.auth_json_present
+                              ? "~/.codex/auth.json present but missing tokens.access_token — run `codex login`"
+                              : "~/.codex/auth.json not found — run `codex login`";
+                        return (
+                          <span
+                            class={
+                              "proxima-key-pill " +
+                              (ok ? "is-set" : "is-missing")
+                            }
+                            aria-label={`codex auth status for ${target.target_ref}: ${ok ? "ready" : "missing"}`}
+                            title={title}
+                          >
+                            {ok ? "● codex" : "○ codex"}
+                          </span>
+                        );
+                      }
                       const key = "api_key_env" in config ? config.api_key_env : "";
                       const present = key ? envStatus().get(key) : undefined;
                       const label = present === true ? "set" : "missing";
