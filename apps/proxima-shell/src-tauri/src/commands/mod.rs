@@ -34,6 +34,7 @@ pub(crate) fn specta_builder() -> Builder<tauri::Wry> {
         inference_targets::bind_inference_tier,
         inference_targets::list_inference_tier_bindings,
         inference_test::inference_env_status,
+        inference_test::test_inference_target,
         tools::list_mcp_tools,
         tools::list_workspace_tools,
         tools::list_relations,
