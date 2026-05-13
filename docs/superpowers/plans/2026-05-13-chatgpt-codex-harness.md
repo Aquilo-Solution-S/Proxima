@@ -595,83 +595,21 @@ The Codex endpoint streams SSE; we collect items and synthesize a single JSON bo
 - Create: `crates/harness/tests/fixtures/chatgpt_codex_final_text.sse` — captured stream from live probe
 - Create: `crates/harness/tests/fixtures/chatgpt_codex_tool_call.sse` — captured tool-call stream (recorded in Task 4.5 below)
 
-- [ ] **Step 1: Capture the final-text fixture from the live endpoint**
+- [x] **Step 1: Capture the final-text fixture from the live endpoint** (already done — commit `f5c3b67`)
 
-Create a one-shot probe binary that uses the audited `proxima_codex_auth::CodexAuthResolver` so the access token stays opaque. Write to `crates/codex-auth/examples/probe_capture_sse.rs`:
+Both SSE fixtures were pre-captured because Codex Exec's workspace-write sandbox blocks outbound network. The files are already at:
 
-```rust
-//! One-shot fixture capture for the Codex /responses SSE stream.
-//! Deleted after Task 4 step 7. Do not commit.
+- `crates/harness/tests/fixtures/chatgpt_codex_final_text.sse` — 5860 bytes, terminates with `event: response.completed`
+- `crates/harness/tests/fixtures/chatgpt_codex_tool_call.sse` — 5489 bytes, contains a `response.output_item.done` whose `item.type == "function_call"`, `name == "get_time"`, `arguments == "{}"`
 
-use std::time::Duration;
-
-use proxima_codex_auth::{AuthDotJsonPath, CodexAuthResolver};
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue, AUTHORIZATION};
-use serde_json::json;
-
-const ENDPOINT: &str = "https://chatgpt.com/backend-api/codex/responses";
-const MODEL: &str = "gpt-5.5";
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let home = std::env::var_os("HOME").ok_or("HOME unset")?;
-    let resolver =
-        CodexAuthResolver::new(AuthDotJsonPath::from_home(std::path::Path::new(&home)))?;
-    let creds = resolver.resolve().await?;
-
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        AUTHORIZATION,
-        HeaderValue::from_str(&format!("Bearer {}", creds.access_token))?,
-    );
-    headers.insert(
-        HeaderName::from_static("chatgpt-account-id"),
-        HeaderValue::from_str(&creds.account_id)?,
-    );
-    headers.insert(
-        HeaderName::from_static("originator"),
-        HeaderValue::from_static("proxima"),
-    );
-    headers.insert(
-        reqwest::header::ACCEPT,
-        HeaderValue::from_static("text/event-stream"),
-    );
-
-    let body = json!({
-        "model": MODEL,
-        "instructions": "Reply with the single word: pong.",
-        "input": [{"role":"user","content":[{"type":"input_text","text":"ping"}]}],
-        "store": false,
-        "stream": true,
-    });
-
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .build()?;
-    let text = client
-        .post(ENDPOINT)
-        .headers(headers)
-        .json(&body)
-        .send()
-        .await?
-        .text()
-        .await?;
-    std::fs::write("/tmp/codex-final-text.sse", &text)?;
-    println!("wrote {} bytes to /tmp/codex-final-text.sse", text.len());
-    Ok(())
-}
-```
-
-Then:
+Verify they exist before continuing to Step 2:
 
 ```bash
-mkdir -p crates/codex-auth/examples crates/harness/tests/fixtures
-cargo run -p proxima-codex-auth --example probe_capture_sse
-cp /tmp/codex-final-text.sse crates/harness/tests/fixtures/chatgpt_codex_final_text.sse
-head -3 crates/harness/tests/fixtures/chatgpt_codex_final_text.sse
+ls -la crates/harness/tests/fixtures/chatgpt_codex_*.sse
+head -1 crates/harness/tests/fixtures/chatgpt_codex_final_text.sse
 ```
 
-Expected: the file's first line is `event: response.created`. If `cargo run` fails with `proxima-codex-auth has no example named …`, Cargo auto-discovers files under `examples/` so no Cargo.toml change is needed — just confirm the file exists.
+Expected: both files present, head shows `event: response.created`.
 
 - [ ] **Step 2: Write failing accumulator test**
 
@@ -838,42 +776,28 @@ pub(super) async fn classify_sse(
 Run: `cargo test -p proxima-harness --lib responses_wire`
 Expected: pass.
 
-- [ ] **Step 6: Capture the tool-call SSE fixture**
+- [x] **Step 6: Tool-call SSE fixture** (already captured — same commit `f5c3b67`)
 
-Edit `crates/codex-auth/examples/probe_capture_sse.rs`: replace the request body with the tool-call variant and change the output path:
+The fixture is at `crates/harness/tests/fixtures/chatgpt_codex_tool_call.sse`. Add the second unit test against it (still in `responses_wire.rs`'s `mod tests`):
 
 ```rust
-    let body = json!({
-        "model": MODEL,
-        "instructions": "When the user asks for the time, call the tool `get_time`.",
-        "input": [{"role":"user","content":[{"type":"input_text","text":"What time is it?"}]}],
-        "tools": [{
-            "type": "function",
-            "name": "get_time",
-            "description": "Return the current time.",
-            "parameters": {"type":"object","properties":{},"additionalProperties":false},
-        }],
-        "tool_choice": "auto",
-        "store": false,
-        "stream": true,
-    });
-    // ... unchanged through send ...
-    std::fs::write("/tmp/codex-tool-call.sse", &text)?;
+const TOOL_CALL_SSE: &str = include_str!(
+    "../../tests/fixtures/chatgpt_codex_tool_call.sse"
+);
+
+#[test]
+fn accumulate_sse_extracts_tool_call() {
+    let body = accumulate_sse(TOOL_CALL_SSE).expect("accumulate");
+    let output: Vec<OutputItem> =
+        serde_json::from_value(body["output"].clone()).expect("output");
+    let calls = extract_tool_calls(&output).expect("calls");
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].tool_name, "get_time");
+}
 ```
 
-Then:
-
-```bash
-cargo run -p proxima-codex-auth --example probe_capture_sse
-cp /tmp/codex-tool-call.sse crates/harness/tests/fixtures/chatgpt_codex_tool_call.sse
-```
-
-Verify the fixture contains a `response.output_item.done` frame whose `item.type == "function_call"`:
-
-```bash
-grep -o 'function_call' crates/harness/tests/fixtures/chatgpt_codex_tool_call.sse | head -1
-```
-Expected: prints `function_call`. If empty, the model didn't call the tool — adjust the `instructions` to be more forcing (e.g. add "You MUST call `get_time`.") and re-capture.
+Run: `cargo test -p proxima-harness --lib responses_wire`
+Expected: both tests pass.
 
 Add a second test asserting that `accumulate_sse` on the tool-call fixture yields `output` containing a `{type:"function_call", name:"get_time", arguments:"{}"}` item that `extract_tool_calls` can decode:
 
@@ -896,20 +820,14 @@ fn accumulate_sse_extracts_tool_call() {
 Run: `cargo test -p proxima-harness --lib responses_wire`
 Expected: both tests pass.
 
-- [ ] **Step 7: Delete the probe binary**
-
-It served its purpose; the fixture files carry the wire reality forward. The probe was never committed, so plain `rm` suffices.
-
-```bash
-rm -rf crates/codex-auth/examples
-```
+- [x] **Step 7: Probe binary** (never landed — captured from harness side, no probe to delete)
 
 - [ ] **Step 8: Commit**
 
+The fixtures were already committed in `f5c3b67`. This commit only adds the SSE accumulator code + its tests.
+
 ```bash
-git add crates/harness/src/providers/responses_wire.rs \
-        crates/harness/tests/fixtures/chatgpt_codex_final_text.sse \
-        crates/harness/tests/fixtures/chatgpt_codex_tool_call.sse
+git add crates/harness/src/providers/responses_wire.rs
 git commit -m "feat(harness): SSE accumulator for Codex /responses streaming"
 ```
 
