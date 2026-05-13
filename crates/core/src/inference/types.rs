@@ -25,6 +25,8 @@ pub enum InferenceTargetConfig {
     OpenAIChat(OpenAIChatConfig),
     #[serde(rename = "openai_responses")]
     OpenAIResponses(OpenAIResponsesConfig),
+    #[serde(rename = "chatgpt_codex")]
+    ChatGPTCodex(ChatGPTCodexConfig),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, specta::Type)]
@@ -51,6 +53,17 @@ pub struct OpenAIResponsesConfig {
     pub model_id: String,
     pub api_key_env: String,
     pub reasoning_effort: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, specta::Type)]
+pub struct ChatGPTCodexConfig {
+    pub base_url: String,
+    pub model_id: String,
+    pub reasoning_effort: Option<String>,
+}
+
+impl ChatGPTCodexConfig {
+    pub const DEFAULT_BASE_URL: &'static str = "https://chatgpt.com/backend-api/codex";
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
@@ -102,4 +115,34 @@ pub struct BindInferenceTierResponse {}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ListInferenceTierBindingsRequest {
     pub owner: Owner,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chatgpt_codex_roundtrip_through_json() {
+        let original = InferenceTargetConfig::ChatGPTCodex(ChatGPTCodexConfig {
+            base_url: ChatGPTCodexConfig::DEFAULT_BASE_URL.to_string(),
+            model_id: "gpt-5.3-codex".to_string(),
+            reasoning_effort: Some("medium".to_string()),
+        });
+
+        let json = serde_json::to_string(&original).unwrap();
+        // Tag-based discriminator should land as "kind":"chatgpt_codex"
+        assert!(json.contains(r#""kind":"chatgpt_codex""#));
+        assert!(json.contains(r#""model_id":"gpt-5.3-codex""#));
+
+        let parsed: InferenceTargetConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, original);
+    }
+
+    #[test]
+    fn chatgpt_codex_default_base_url_is_chatgpt_internal_endpoint() {
+        assert_eq!(
+            ChatGPTCodexConfig::DEFAULT_BASE_URL,
+            "https://chatgpt.com/backend-api/codex"
+        );
+    }
 }

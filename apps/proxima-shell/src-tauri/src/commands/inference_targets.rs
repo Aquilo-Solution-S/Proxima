@@ -19,6 +19,8 @@ pub enum InferenceTargetConfigTs {
     OpenAIChat(OpenAIChatConfigTs),
     #[serde(rename = "openai_responses")]
     OpenAIResponses(OpenAIResponsesConfigTs),
+    #[serde(rename = "chatgpt_codex")]
+    ChatGPTCodex(ChatGPTCodexConfigTs),
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
@@ -44,6 +46,13 @@ pub struct OpenAIResponsesConfigTs {
     pub base_url: String,
     pub model_id: String,
     pub api_key_env: String,
+    pub reasoning_effort: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
+pub struct ChatGPTCodexConfigTs {
+    pub base_url: String,
+    pub model_id: String,
     pub reasoning_effort: Option<String>,
 }
 
@@ -130,6 +139,13 @@ fn config_to_core(config: InferenceTargetConfigTs) -> InferenceTargetConfig {
                 reasoning_effort: config.reasoning_effort,
             })
         }
+        InferenceTargetConfigTs::ChatGPTCodex(config) => {
+            InferenceTargetConfig::ChatGPTCodex(proxima_core::ChatGPTCodexConfig {
+                base_url: config.base_url,
+                model_id: config.model_id,
+                reasoning_effort: config.reasoning_effort,
+            })
+        }
     }
 }
 
@@ -158,6 +174,13 @@ fn config_from_core(config: &InferenceTargetConfig) -> InferenceTargetConfigTs {
                 base_url: config.base_url.clone(),
                 model_id: config.model_id.clone(),
                 api_key_env: config.api_key_env.clone(),
+                reasoning_effort: config.reasoning_effort.clone(),
+            })
+        }
+        InferenceTargetConfig::ChatGPTCodex(config) => {
+            InferenceTargetConfigTs::ChatGPTCodex(ChatGPTCodexConfigTs {
+                base_url: config.base_url.clone(),
+                model_id: config.model_id.clone(),
                 reasoning_effort: config.reasoning_effort.clone(),
             })
         }

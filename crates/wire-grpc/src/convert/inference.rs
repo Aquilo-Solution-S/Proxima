@@ -172,6 +172,14 @@ pub fn inference_config_to_proto(config: &InferenceTargetConfig) -> pb::Inferenc
                 reasoning_effort: config.reasoning_effort.clone(),
             })
         }
+        // ChatGPTCodex has no gRPC proto variant yet; the wire path is
+        // deferred. Targets stored with this variant are not exposed over gRPC
+        // until a corresponding proto message is added.
+        InferenceTargetConfig::ChatGPTCodex(_) => {
+            // Encode as an empty config with no kind set so callers receive
+            // a "kind must be set" error rather than a panic.
+            return pb::InferenceTargetConfig { kind: None };
+        }
     };
     pb::InferenceTargetConfig { kind: Some(kind) }
 }
