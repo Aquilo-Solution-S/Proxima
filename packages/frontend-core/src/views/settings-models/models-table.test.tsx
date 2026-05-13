@@ -4,6 +4,7 @@ import type {
   InferenceTargetTs,
   InferenceTierBindingTs,
 } from "../../bindings";
+import type { EngineClient } from "../../client";
 import { sentinelOwner } from "../../graph-store";
 import { ModelsTable } from "./models-table";
 
@@ -35,7 +36,16 @@ const deepTarget: InferenceTargetTs = {
   },
 };
 
-const baseClient = () => ({
+type ModelsTableClient = Pick<
+  EngineClient,
+  | "registerInferenceTarget"
+  | "removeInferenceTarget"
+  | "bindInferenceTier"
+  | "inferenceEnvStatus"
+  | "testInferenceTarget"
+>;
+
+const baseClient = (): ModelsTableClient => ({
   registerInferenceTarget: vi.fn(async () => ({
     target_ref: "x",
     idempotent_replay: false,
@@ -235,5 +245,57 @@ describe("ModelsTable", () => {
     expect(
       await screen.findByLabelText("key status for my-deep: missing"),
     ).toBeTruthy();
+  });
+
+  it("renders ok result after Test connection succeeds", async () => {
+    const c = baseClient();
+    c.testInferenceTarget = vi.fn(async () => ({
+      ok: true,
+      latency_ms: 213,
+      error_code: null,
+      error_message: null,
+    }));
+    render(() => (
+      <ModelsTable
+        client={c}
+        owner={owner}
+        targets={() => [fastTarget]}
+        bindings={() => []}
+        refetchTargets={vi.fn()}
+        refetchBindings={vi.fn()}
+      />
+    ));
+    fireEvent.click(screen.getByRole("button", { name: /test my-fast/i }));
+    await waitFor(() =>
+      expect(c.testInferenceTarget).toHaveBeenCalledWith({
+        owner,
+        target_ref: "my-fast",
+      }),
+    );
+    expect(await screen.findByText(/tested ok/i)).toBeTruthy();
+    expect(screen.getByText(/213ms/i)).toBeTruthy();
+  });
+
+  it("renders error result after Test connection fails", async () => {
+    const c = baseClient();
+    c.testInferenceTarget = vi.fn(async () => ({
+      ok: false,
+      latency_ms: 12,
+      error_code: "http_401",
+      error_message: "Unauthorized",
+    }));
+    render(() => (
+      <ModelsTable
+        client={c}
+        owner={owner}
+        targets={() => [fastTarget]}
+        bindings={() => []}
+        refetchTargets={vi.fn()}
+        refetchBindings={vi.fn()}
+      />
+    ));
+    fireEvent.click(screen.getByRole("button", { name: /test my-fast/i }));
+    expect(await screen.findByText(/failed/i)).toBeTruthy();
+    expect(screen.getByText(/http_401/i)).toBeTruthy();
   });
 });

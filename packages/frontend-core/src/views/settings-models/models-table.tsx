@@ -121,6 +121,34 @@ export const ModelsTable: Component<Props> = (props) => {
     void refreshEnvStatus();
   });
 
+  interface TestOutcome {
+    ok: boolean;
+    latency_ms: number;
+    error_code: string | null;
+    error_message: string | null;
+  }
+
+  const [testResults, setTestResults] = createSignal<Map<string, TestOutcome>>(
+    new Map(),
+  );
+
+  const handleTest = async (targetRef: string) => {
+    setError(null);
+    try {
+      const out = await props.client.testInferenceTarget({
+        owner: props.owner,
+        target_ref: targetRef,
+      });
+      setTestResults((prev) => {
+        const next = new Map(prev);
+        next.set(targetRef, out);
+        return next;
+      });
+    } catch (err) {
+      setError(errorMessage(err));
+    }
+  };
+
   return (
     <div class="proxima-models-table">
       <header class="proxima-tier-summary-header">
@@ -225,20 +253,49 @@ export const ModelsTable: Component<Props> = (props) => {
                     }}
                   </For>
                   <td>
-                    <button
-                      type="button"
-                      class="proxima-btn proxima-btn-danger"
-                      aria-label={`remove ${target.target_ref}`}
-                      disabled={ownsTier(target.target_ref).length > 0}
-                      title={
-                        ownsTier(target.target_ref).length > 0
-                          ? `reassign tier(s) ${ownsTier(target.target_ref).join(", ")} first`
-                          : undefined
-                      }
-                      onClick={() => void handleRemove(target.target_ref)}
-                    >
-                      remove
-                    </button>
+                    <div class="proxima-models-row-actions">
+                      <button
+                        type="button"
+                        class="proxima-btn"
+                        aria-label={`test ${target.target_ref}`}
+                        onClick={() => void handleTest(target.target_ref)}
+                      >
+                        test
+                      </button>
+                      <button
+                        type="button"
+                        class="proxima-btn proxima-btn-danger"
+                        aria-label={`remove ${target.target_ref}`}
+                        disabled={ownsTier(target.target_ref).length > 0}
+                        title={
+                          ownsTier(target.target_ref).length > 0
+                            ? `reassign tier(s) ${ownsTier(target.target_ref).join(", ")} first`
+                            : undefined
+                        }
+                        onClick={() => void handleRemove(target.target_ref)}
+                      >
+                        remove
+                      </button>
+                    </div>
+                    <Show when={testResults().get(target.target_ref)}>
+                      {(result) => (
+                        <div
+                          class={
+                            "proxima-test-result " +
+                            (result().ok ? "is-ok" : "is-err")
+                          }
+                        >
+                          {result().ok ? (
+                            <span>● tested ok · {result().latency_ms}ms</span>
+                          ) : (
+                            <span>
+                              ○ failed · {result().error_code} ·{" "}
+                              {result().error_message ?? "no detail"}
+                            </span>
+                          )}
+                        </div>
+                      )}
+                    </Show>
                   </td>
                 </tr>
               )}
