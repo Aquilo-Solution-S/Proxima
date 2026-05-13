@@ -304,3 +304,36 @@ export const targetRefForCollision = (
       )}-${shortHash(configKey(config))}`;
   }
 };
+
+export interface KindPlaceholder {
+  baseUrl: string;
+  apiKeyEnv: string;
+}
+
+export const KIND_PLACEHOLDERS: Record<InferenceTargetKind, KindPlaceholder> = {
+  mistral_chat: {
+    baseUrl: "https://api.mistral.ai",
+    apiKeyEnv: "MISTRAL_API_KEY",
+  },
+  openai_chat: {
+    baseUrl: "https://api.openai.com",
+    apiKeyEnv: "OPENAI_API_KEY",
+  },
+  openai_responses: {
+    baseUrl: "https://api.openai.com",
+    apiKeyEnv: "OPENAI_API_KEY",
+  },
+};
+
+export const blankDraftForKind = (kind: InferenceTargetKind): TargetDraft => {
+  const placeholder = KIND_PLACEHOLDERS[kind];
+  return {
+    kind,
+    baseUrl: placeholder.baseUrl,
+    modelId: "",
+    apiKeyEnv: placeholder.apiKeyEnv,
+    temperature: "",
+    maxCompletionTokens: "",
+    reasoningEffort: "",
+  };
+};
