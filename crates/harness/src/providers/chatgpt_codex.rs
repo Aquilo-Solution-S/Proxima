@@ -92,6 +92,7 @@ impl ChatGPTCodexClient {
             "tool_choice": "auto",
             "store": false,
             "stream": true,
+            "include": ["reasoning.encrypted_content"],
         });
         if let Some(effort) = &self.reasoning_effort {
             body["reasoning"] = json!({ "effort": effort });
