@@ -20,7 +20,9 @@ pub struct ListPersonalitiesArgs {
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct ListPersonalitiesItem {
-    pub handle: String,
+    /// `P`-prefixed handle. Pass as `personality` to get_personality,
+    /// tombstone_personality, list_wake_entries, add_wake_entry, etc.
+    pub personality: String,
     pub display_name: String,
     pub status: String,
     pub root_perspective: String,
@@ -34,8 +36,10 @@ pub struct ListPersonalitiesOutput {
 
 impl McpTool for ListPersonalitiesTool {
     const NAME: &'static str = "core/list_personalities";
-    const DESCRIPTION: &'static str = "List personality instances for the authenticated owner. Returns handles \
-         (P-prefixed) usable in subsequent CRUD calls.";
+    const DESCRIPTION: &'static str = "List personality instances for the authenticated owner. Each item \
+         carries a `personality` field (P-prefixed handle) — pass that value as the `personality` argument \
+         to get_personality, tombstone_personality, list_wake_entries, add_wake_entry, set_wake_entries, \
+         and replay_wake_events.";
     type Args = ListPersonalitiesArgs;
     type Output = ListPersonalitiesOutput;
 
@@ -60,7 +64,7 @@ impl McpTool for ListPersonalitiesTool {
                         .assign_memory(row.current_root_perspective_memory_id);
                     let count = u32::try_from(row.wake_entries.len()).unwrap_or(u32::MAX);
                     ListPersonalitiesItem {
-                        handle: p_handle.as_str().to_string(),
+                        personality: p_handle.as_str().to_string(),
                         display_name: row.display_name,
                         status: row.status,
                         root_perspective: n_handle.as_str().to_string(),

@@ -22,14 +22,17 @@ pub struct AddWakeEntryArgs {
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct AddWakeEntryOutput {
-    pub handle: String,
+    /// `W`-prefixed handle for the new entry. Pass as `wake_entry` to
+    /// update_wake_entry, remove_wake_entry, or replay_wake_events.
+    pub wake_entry: String,
     pub audit_emit_failed: Option<String>,
 }
 
 impl McpTool for AddWakeEntryTool {
     const NAME: &'static str = "core/add_wake_entry";
-    const DESCRIPTION: &'static str = "Append one wake entry to a personality. Conflicts with an existing \
-         (trigger_kind, trigger_id) on the personality return an error.";
+    const DESCRIPTION: &'static str = "Append one wake entry to a personality. Args: \
+         `{\"personality\": \"P1\", \"entry\": …}`. Returns the new W-handle in the `wake_entry` field. \
+         Conflicts with an existing (trigger_kind, trigger_id) on the personality return an error.";
     type Args = AddWakeEntryArgs;
     type Output = AddWakeEntryOutput;
 
@@ -86,7 +89,7 @@ impl McpTool for AddWakeEntryTool {
             };
             let w_handle = ctx.handles.assign_wake_entry(new_id);
             Ok(AddWakeEntryOutput {
-                handle: w_handle.as_str().to_string(),
+                wake_entry: w_handle.as_str().to_string(),
                 audit_emit_failed,
             })
         })

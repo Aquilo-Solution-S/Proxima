@@ -111,7 +111,7 @@ async fn discovery_to_mutation_smoke() -> Result<(), Box<dyn std::error::Error>>
         json!({ "display_name": "TestSubject", "purpose": "smoke test" }),
     )
     .await?;
-    let p_handle = inst["handle"].as_str().expect("P handle").to_string();
+    let p_handle = inst["personality"].as_str().expect("P handle").to_string();
     assert!(
         p_handle.starts_with('P'),
         "P-prefixed handle, got {p_handle}"
