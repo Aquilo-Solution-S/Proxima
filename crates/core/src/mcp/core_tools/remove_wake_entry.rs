@@ -37,10 +37,7 @@ impl McpTool for RemoveWakeEntryTool {
         args: RemoveWakeEntryArgs,
     ) -> BoxFuture<'static, Result<RemoveWakeEntryOutput, McpToolError>> {
         Box::pin(async move {
-            let wid = ctx
-                .handles.as_ref().unwrap()
-                .resolve_wake_entry(&args.wake_entry)
-                .map_err(McpToolError::Resolve)?;
+            let wid = ctx.resolve_wake_entry(&args.wake_entry)?;
             let storage = ctx
                 .storage()
                 .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;

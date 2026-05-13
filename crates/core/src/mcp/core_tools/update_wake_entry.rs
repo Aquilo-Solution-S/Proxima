@@ -76,10 +76,7 @@ impl McpTool for UpdateWakeEntryTool {
         args: UpdateWakeEntryArgs,
     ) -> BoxFuture<'static, Result<UpdateWakeEntryOutput, McpToolError>> {
         Box::pin(async move {
-            let wid = ctx
-                .handles.as_ref().unwrap()
-                .resolve_wake_entry(&args.wake_entry)
-                .map_err(McpToolError::Resolve)?;
+            let wid = ctx.resolve_wake_entry(&args.wake_entry)?;
             let storage = ctx
                 .storage()
                 .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;
@@ -163,9 +160,8 @@ impl McpTool for UpdateWakeEntryTool {
                 AuditEmit::Ok => None,
                 AuditEmit::Failed { reason } => Some(reason),
             };
-            let w_handle = ctx.handles.as_ref().unwrap().assign_wake_entry(wid);
             Ok(UpdateWakeEntryOutput {
-                wake_entry: w_handle.as_str().to_string(),
+                wake_entry: ctx.format_wake_entry(wid),
                 audit_emit_failed,
             })
         })

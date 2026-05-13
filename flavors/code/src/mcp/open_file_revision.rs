@@ -88,22 +88,18 @@ impl McpTool for CodeOpenFileRevisionTool {
                 .fetch_optional(&ctx.pool)
                 .await
                 .map_err(map_storage)?
-                .map(|row| {
-                    let handle = ctx.handles.as_ref().unwrap().assign_memory(MemoryId::new(row.memory_id));
-                    let repo_handle = ctx.handles.as_ref().unwrap().assign_flavor_object(
+                .map(|row| FileRevisionInfo {
+                    handle: ctx.format_memory(MemoryId::new(row.memory_id)),
+                    repo_handle: ctx.format_flavor_object(
                         super::REPO_HANDLE_KIND,
                         row.repo_id,
                         super::REPO_HANDLE_PREFIX,
-                    );
-                    FileRevisionInfo {
-                        handle: handle.as_str().to_string(),
-                        repo_handle: repo_handle.as_str().to_string(),
-                        file_path: row.file_path,
-                        language: row.language,
-                        size_bytes: row.size_bytes,
-                        indexed_commit_sha: row.indexed_commit_sha,
-                        state: row.state,
-                    }
+                    ),
+                    file_path: row.file_path,
+                    language: row.language,
+                    size_bytes: row.size_bytes,
+                    indexed_commit_sha: row.indexed_commit_sha,
+                    state: row.state,
                 });
 
             let chunk_sql = format!(
@@ -135,7 +131,6 @@ impl McpTool for CodeOpenFileRevisionTool {
             let chunks = chunk_rows
                 .into_iter()
                 .map(|row| {
-                    let handle = ctx.handles.as_ref().unwrap().assign_memory(MemoryId::new(row.memory_id));
                     let (text, text_line_range) = project_text(
                         row.text,
                         row.line_range_start,
@@ -143,7 +138,7 @@ impl McpTool for CodeOpenFileRevisionTool {
                         args.max_text_bytes,
                     );
                     ChunkSummary {
-                        handle: handle.as_str().to_string(),
+                        handle: ctx.format_memory(MemoryId::new(row.memory_id)),
                         chunk_index: row.chunk_index,
                         chunk_type: row.chunk_type,
                         line_range: (row.line_range_start, row.line_range_end),

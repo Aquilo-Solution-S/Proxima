@@ -19,9 +19,7 @@ async fn propose_with_evidence(
     ctx: &proxima_core::McpToolCtx,
 ) -> Result<uuid::Uuid, Box<dyn std::error::Error>> {
     let evidence = insert_abstraction(pg, &ctx.owner).await?;
-    let evidence_handle = ctx
-        .handles.as_ref().unwrap()
-        .assign_memory(proxima_core::MemoryId::new(evidence));
+    let evidence_handle = ctx.format_memory(proxima_core::MemoryId::new(evidence));
     let outcome = ProposeTool::call(
         ctx.clone(),
         ProposeArgs {
@@ -35,9 +33,7 @@ async fn propose_with_evidence(
         },
     )
     .await?;
-    let goal_id = ctx
-        .handles.as_ref().unwrap()
-        .resolve_goal(&outcome.handle)
+    let goal_id = ctx.resolve_goal(&outcome.handle)
         .expect("goal handle resolves")
         .into_inner();
     Ok(goal_id)
@@ -63,18 +59,14 @@ async fn propose_for_self(
         },
     )
     .await?;
-    let goal_id = ctx
-        .handles.as_ref().unwrap()
-        .resolve_goal(&outcome.handle)
+    let goal_id = ctx.resolve_goal(&outcome.handle)
         .expect("goal handle resolves")
         .into_inner();
     let inspires_edge_handle = outcome
         .inspires_edge_handle
         .as_deref()
         .expect("personality proposal writes core/inspires");
-    let inspires_edge_id = ctx
-        .handles.as_ref().unwrap()
-        .resolve_edge(inspires_edge_handle)
+    let inspires_edge_id = ctx.resolve_edge(inspires_edge_handle)
         .expect("inspires edge handle resolves")
         .into_inner();
     Ok((ctx, goal_id, inspires_edge_id))
@@ -185,7 +177,7 @@ async fn accept_supersedes_and_re_emits_motivated_by() -> Result<(), Box<dyn std
     let result = async {
         let ctx = ctx(&pg, owner_fixture());
         let proposal = propose_with_evidence(&pg, &ctx).await?;
-        let proposal_handle = ctx.handles.as_ref().unwrap().assign_goal(GoalId::new(proposal));
+        let proposal_handle = ctx.format_goal(GoalId::new(proposal));
 
         let accepted = AcceptTool::call(
             ctx.clone(),
@@ -198,9 +190,7 @@ async fn accept_supersedes_and_re_emits_motivated_by() -> Result<(), Box<dyn std
             },
         )
         .await?;
-        let accepted_id = ctx
-            .handles.as_ref().unwrap()
-            .resolve_goal(&accepted.handle)
+        let accepted_id = ctx.resolve_goal(&accepted.handle)
             .expect("goal handle resolves")
             .into_inner();
 
@@ -249,9 +239,7 @@ async fn propose_and_accept_emit_lifecycle_facts_and_authored_edges()
         let self_id = insert_self_perspective(&pg, &owner).await?;
         ctx.caller_self_perspective = Some(self_id);
         let evidence = insert_abstraction(&pg, &owner).await?;
-        let evidence_handle = ctx
-            .handles.as_ref().unwrap()
-            .assign_memory(proxima_core::MemoryId::new(evidence));
+        let evidence_handle = ctx.format_memory(proxima_core::MemoryId::new(evidence));
 
         let proposed = ProposeTool::call(
             ctx.clone(),
@@ -266,12 +254,10 @@ async fn propose_and_accept_emit_lifecycle_facts_and_authored_edges()
             },
         )
         .await?;
-        let proposal_id = ctx
-            .handles.as_ref().unwrap()
-            .resolve_goal(&proposed.handle)
+        let proposal_id = ctx.resolve_goal(&proposed.handle)
             .expect("goal handle resolves")
             .into_inner();
-        let proposal_handle = ctx.handles.as_ref().unwrap().assign_goal(GoalId::new(proposal_id));
+        let proposal_handle = ctx.format_goal(GoalId::new(proposal_id));
 
         let accepted = AcceptTool::call(
             ctx.clone(),
@@ -284,9 +270,7 @@ async fn propose_and_accept_emit_lifecycle_facts_and_authored_edges()
             },
         )
         .await?;
-        let accepted_id = ctx
-            .handles.as_ref().unwrap()
-            .resolve_goal(&accepted.handle)
+        let accepted_id = ctx.resolve_goal(&accepted.handle)
             .expect("accepted goal handle resolves")
             .into_inner();
 
@@ -343,7 +327,7 @@ async fn mark_achieved_supersedes_active_goal_with_lifecycle_and_edges()
         let owner = owner_fixture();
         let ctx = ctx(&pg, owner);
         let proposal = propose_with_evidence(&pg, &ctx).await?;
-        let proposal_handle = ctx.handles.as_ref().unwrap().assign_goal(GoalId::new(proposal));
+        let proposal_handle = ctx.format_goal(GoalId::new(proposal));
         let active = AcceptTool::call(
             ctx.clone(),
             AcceptArgs {
@@ -355,9 +339,7 @@ async fn mark_achieved_supersedes_active_goal_with_lifecycle_and_edges()
             },
         )
         .await?;
-        let active_id = ctx
-            .handles.as_ref().unwrap()
-            .resolve_goal(&active.handle)
+        let active_id = ctx.resolve_goal(&active.handle)
             .expect("active goal handle resolves")
             .into_inner();
         let evidence = insert_abstraction(&pg, &ctx.owner).await?;
@@ -372,9 +354,7 @@ async fn mark_achieved_supersedes_active_goal_with_lifecycle_and_edges()
         )
         .await?;
         assert!(matches!(achieved.status, MarkAchievedStatus::Achieved));
-        let achieved_id = ctx
-            .handles.as_ref().unwrap()
-            .resolve_goal(achieved.handle.as_deref().expect("achieved handle"))
+        let achieved_id = ctx.resolve_goal(achieved.handle.as_deref().expect("achieved handle"))
             .expect("achieved goal handle resolves")
             .into_inner();
 
@@ -462,7 +442,7 @@ async fn mark_achieved_skips_stale_or_terminal_goal_head() -> Result<(), Box<dyn
     let result = async {
         let ctx = ctx(&pg, owner_fixture());
         let proposal = propose_with_evidence(&pg, &ctx).await?;
-        let proposal_handle = ctx.handles.as_ref().unwrap().assign_goal(GoalId::new(proposal));
+        let proposal_handle = ctx.format_goal(GoalId::new(proposal));
         let active = AcceptTool::call(
             ctx.clone(),
             AcceptArgs {
@@ -474,9 +454,7 @@ async fn mark_achieved_skips_stale_or_terminal_goal_head() -> Result<(), Box<dyn
             },
         )
         .await?;
-        let active_id = ctx
-            .handles.as_ref().unwrap()
-            .resolve_goal(&active.handle)
+        let active_id = ctx.resolve_goal(&active.handle)
             .expect("active goal handle resolves")
             .into_inner();
         let evidence = insert_abstraction(&pg, &ctx.owner).await?;
@@ -544,7 +522,7 @@ async fn modify_uses_supplied_payload() -> Result<(), Box<dyn std::error::Error>
     let result = async {
         let ctx = ctx(&pg, owner_fixture());
         let proposal = propose_with_evidence(&pg, &ctx).await?;
-        let proposal_handle = ctx.handles.as_ref().unwrap().assign_goal(GoalId::new(proposal));
+        let proposal_handle = ctx.format_goal(GoalId::new(proposal));
 
         let modified = ModifyTool::call(
             ctx.clone(),
@@ -559,9 +537,7 @@ async fn modify_uses_supplied_payload() -> Result<(), Box<dyn std::error::Error>
             },
         )
         .await?;
-        let modified_id = ctx
-            .handles.as_ref().unwrap()
-            .resolve_goal(&modified.handle)
+        let modified_id = ctx.resolve_goal(&modified.handle)
             .expect("goal handle resolves")
             .into_inner();
 
@@ -591,7 +567,7 @@ async fn decline_makes_goal_terminal() -> Result<(), Box<dyn std::error::Error>>
     let result = async {
         let ctx = ctx(&pg, owner_fixture());
         let proposal = propose_with_evidence(&pg, &ctx).await?;
-        let proposal_handle = ctx.handles.as_ref().unwrap().assign_goal(GoalId::new(proposal));
+        let proposal_handle = ctx.format_goal(GoalId::new(proposal));
 
         let declined = DeclineTool::call(
             ctx.clone(),
@@ -601,9 +577,7 @@ async fn decline_makes_goal_terminal() -> Result<(), Box<dyn std::error::Error>>
             },
         )
         .await?;
-        let declined_id = ctx
-            .handles.as_ref().unwrap()
-            .resolve_goal(&declined.handle)
+        let declined_id = ctx.resolve_goal(&declined.handle)
             .expect("goal handle resolves")
             .into_inner();
 
@@ -646,7 +620,7 @@ async fn accept_and_decline_preserve_inspires_edge() -> Result<(), Box<dyn std::
     let result = async {
         let owner = owner_fixture();
         let (ctx, proposal, edge_id) = propose_for_self(&pg, owner.clone()).await?;
-        let proposal_handle = ctx.handles.as_ref().unwrap().assign_goal(GoalId::new(proposal));
+        let proposal_handle = ctx.format_goal(GoalId::new(proposal));
 
         let accepted = AcceptTool::call(
             ctx.clone(),
@@ -659,16 +633,14 @@ async fn accept_and_decline_preserve_inspires_edge() -> Result<(), Box<dyn std::
             },
         )
         .await?;
-        let accepted_id = ctx
-            .handles.as_ref().unwrap()
-            .resolve_goal(&accepted.handle)
+        let accepted_id = ctx.resolve_goal(&accepted.handle)
             .expect("goal handle resolves")
             .into_inner();
         assert_ne!(accepted_id, proposal);
         assert_inspires_edge_unchanged(&pg, edge_id, proposal).await?;
 
         let (ctx, declined_proposal, declined_edge_id) = propose_for_self(&pg, owner).await?;
-        let declined_handle = ctx.handles.as_ref().unwrap().assign_goal(GoalId::new(declined_proposal));
+        let declined_handle = ctx.format_goal(GoalId::new(declined_proposal));
         let declined = DeclineTool::call(
             ctx.clone(),
             DeclineArgs {
@@ -677,9 +649,7 @@ async fn accept_and_decline_preserve_inspires_edge() -> Result<(), Box<dyn std::
             },
         )
         .await?;
-        let declined_id = ctx
-            .handles.as_ref().unwrap()
-            .resolve_goal(&declined.handle)
+        let declined_id = ctx.resolve_goal(&declined.handle)
             .expect("goal handle resolves")
             .into_inner();
         assert_ne!(declined_id, declined_proposal);

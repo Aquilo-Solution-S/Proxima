@@ -58,16 +58,13 @@ impl McpTool for ListPersonalitiesTool {
             let personalities = rows
                 .into_iter()
                 .map(|row| {
-                    let p_handle = ctx.handles.as_ref().unwrap().assign_personality(row.personality_instance_id);
-                    let n_handle = ctx
-                        .handles.as_ref().unwrap()
-                        .assign_memory(row.current_root_perspective_memory_id);
                     let count = u32::try_from(row.wake_entries.len()).unwrap_or(u32::MAX);
                     ListPersonalitiesItem {
-                        personality: p_handle.as_str().to_string(),
+                        personality: ctx.format_personality(row.personality_instance_id),
                         display_name: row.display_name,
                         status: row.status,
-                        root_perspective: n_handle.as_str().to_string(),
+                        root_perspective: ctx
+                            .format_memory(row.current_root_perspective_memory_id),
                         wake_entry_count: count,
                     }
                 })

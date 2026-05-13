@@ -51,10 +51,7 @@ impl McpTool for ListWakeEntriesTool {
         args: ListWakeEntriesArgs,
     ) -> BoxFuture<'static, Result<ListWakeEntriesOutput, McpToolError>> {
         Box::pin(async move {
-            let pid = ctx
-                .handles.as_ref().unwrap()
-                .resolve_personality(&args.personality)
-                .map_err(McpToolError::Resolve)?;
+            let pid = ctx.resolve_personality(&args.personality)?;
             let storage = ctx
                 .storage()
                 .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;
@@ -72,9 +69,8 @@ impl McpTool for ListWakeEntriesTool {
                 .wake_entries
                 .into_iter()
                 .map(|e| {
-                    let w = ctx.handles.as_ref().unwrap().assign_wake_entry(e.wake_entry_id);
                     ListWakeEntriesItem {
-                        wake_entry: w.as_str().to_string(),
+                        wake_entry: ctx.format_wake_entry(e.wake_entry_id),
                         trigger_kind: format!("{:?}", e.trigger_kind),
                         trigger_id: e.trigger_id,
                         label: e.label,

@@ -42,18 +42,11 @@ impl McpTool for ReplayWakeEventsTool {
         args: ReplayWakeEventsArgs,
     ) -> BoxFuture<'static, Result<ReplayWakeEventsOutcome, McpToolError>> {
         Box::pin(async move {
-            let personality_instance_id = ctx
-                .handles.as_ref().unwrap()
-                .resolve_personality(&args.personality)
-                .map_err(McpToolError::Resolve)?;
+            let personality_instance_id = ctx.resolve_personality(&args.personality)?;
             let wake_entry_id = args
                 .wake_entry
                 .as_deref()
-                .map(|handle| {
-                    ctx.handles.as_ref().unwrap()
-                        .resolve_wake_entry(handle)
-                        .map_err(McpToolError::Resolve)
-                })
+                .map(|handle| ctx.resolve_wake_entry(handle))
                 .transpose()?;
             let after_seq = parse_optional_uuid("after_seq", args.after_seq)?;
             let until_seq = parse_optional_uuid("until_seq", args.until_seq)?;

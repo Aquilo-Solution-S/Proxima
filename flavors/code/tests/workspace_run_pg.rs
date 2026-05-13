@@ -1831,7 +1831,6 @@ async fn merged_decision_trigger_prepares_goal_close_context()
         .await?;
         assert!(matches!(close.status, MarkAchievedStatus::Achieved));
         let achieved_id = goal_ctx
-            .handles.as_ref().unwrap()
             .resolve_goal(close.handle.as_deref().expect("achieved handle"))
             .expect("achieved handle resolves")
             .into_inner();

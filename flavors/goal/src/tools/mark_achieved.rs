@@ -63,7 +63,7 @@ pub async fn mark_achieved(
     args: MarkAchievedArgs,
 ) -> Result<MarkAchievedOutput, McpToolError> {
     let prior_goal_id = resolve_goal_ref(&ctx, &args.goal)?;
-    let supersedes_handle = ctx.handles.as_ref().unwrap().assign_goal(prior_goal_id);
+    let supersedes = ctx.format_goal(prior_goal_id);
     let request_id = request_id("goal_mark_achieved", args.idempotency_key);
 
     let mut tx = ctx.pool.begin().await.map_err(map_storage)?;
@@ -73,11 +73,10 @@ pub async fn mark_achieved(
         existing_achieved_goal(&mut tx, &ctx, &request_id, prior_goal_id).await?
     {
         tx.commit().await.map_err(map_storage)?;
-        let handle = ctx.handles.as_ref().unwrap().assign_goal(GoalId::new(existing));
         return Ok(MarkAchievedOutput {
             status: MarkAchievedStatus::IdempotentReplay,
-            handle: Some(handle.as_str().to_string()),
-            supersedes: supersedes_handle.as_str().to_string(),
+            handle: Some(ctx.format_goal(GoalId::new(existing))),
+            supersedes,
             lifecycle_memory: None,
             evidence_edge_handles: Vec::new(),
             derived_edge_handles: Vec::new(),
@@ -86,19 +85,22 @@ pub async fn mark_achieved(
     }
 
     let Some(state) = load_goal_state(&mut tx, &ctx, prior_goal_id).await? else {
-        return Err(McpToolError::UnknownHandle(args.goal));
+        return Err(McpToolError::InvalidInput(format!(
+            "goal not found for owner: {}",
+            args.goal
+        )));
     };
     if state != "Active" {
         tx.commit().await.map_err(map_storage)?;
         return Ok(skipped_output(
-            supersedes_handle.as_str(),
+            &supersedes,
             format!("goal head is not Active: {state}"),
         ));
     }
     if has_newer_goal(&mut tx, &ctx, prior_goal_id).await? {
         tx.commit().await.map_err(map_storage)?;
         return Ok(skipped_output(
-            supersedes_handle.as_str(),
+            &supersedes,
             "goal is not the current lineage head",
         ));
     }
@@ -136,29 +138,18 @@ pub async fn mark_achieved(
         append_lifecycle_derived_from_edges(&mut tx, &ctx, lifecycle_memory, &evidence).await?;
     tx.commit().await.map_err(map_storage)?;
 
-    let handle = ctx.handles.as_ref().unwrap().assign_goal(GoalId::new(achieved_id));
     Ok(MarkAchievedOutput {
         status: MarkAchievedStatus::Achieved,
-        handle: Some(handle.as_str().to_string()),
-        supersedes: supersedes_handle.as_str().to_string(),
-        lifecycle_memory: Some(lifecycle_memory.into_inner().to_string()),
+        handle: Some(ctx.format_goal(GoalId::new(achieved_id))),
+        supersedes,
+        lifecycle_memory: Some(ctx.format_memory(lifecycle_memory)),
         evidence_edge_handles: evidence_edge_ids
             .into_iter()
-            .map(|edge_id| {
-                ctx.handles.as_ref().unwrap()
-                    .assign_edge(EdgeId::new(edge_id))
-                    .as_str()
-                    .to_string()
-            })
+            .map(|edge_id| ctx.format_edge(EdgeId::new(edge_id)))
             .collect(),
         derived_edge_handles: derived_edge_ids
             .into_iter()
-            .map(|edge_id| {
-                ctx.handles.as_ref().unwrap()
-                    .assign_edge(EdgeId::new(edge_id))
-                    .as_str()
-                    .to_string()
-            })
+            .map(|edge_id| ctx.format_edge(EdgeId::new(edge_id)))
             .collect(),
         reason: None,
     })
@@ -210,7 +201,9 @@ async fn load_evidence_ref(
     .await
     .map_err(map_storage)?;
     let Some((kind, row_owner_kind, row_owner_principal_id)) = row else {
-        return Err(McpToolError::UnknownHandle(original_ref.to_string()));
+        return Err(McpToolError::InvalidInput(format!(
+            "evidence not found for owner: {original_ref}"
+        )));
     };
     if row_owner_kind != owner_kind || row_owner_principal_id != owner_principal_id {
         return Err(McpToolError::LayeringViolation(format!(
