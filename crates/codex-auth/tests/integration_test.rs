@@ -329,3 +329,55 @@ async fn resolve_returns_invalid_when_tokens_missing_from_auth_json() {
         "got {err:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Task 6: invalidate_and_refresh
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn invalidate_and_refresh_forces_refresh_even_when_token_fresh() {
+    let dir = tempfile::tempdir().unwrap();
+    // Token's exp is FAR in the future — proactive refresh would not fire.
+    let fresh_access = jwt_with_claims(serde_json::json!({
+        "chatgpt_account_id": "acct-before",
+        "exp": fresh_exp(),
+    }));
+    let after_refresh = jwt_with_claims(serde_json::json!({
+        "chatgpt_account_id": "acct-after",
+        "exp": fresh_exp(),
+    }));
+    let auth_path = write_auth_json(dir.path(), serde_json::json!({
+        "tokens": {
+            "id_token": "id-old",
+            "access_token": fresh_access,
+            "refresh_token": "ref-old",
+        }
+    }));
+
+    let server = wiremock::MockServer::start().await;
+    wiremock::Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "id_token": "id-new",
+            "access_token": after_refresh.clone(),
+            "refresh_token": "ref-new",
+        })))
+        // Expect exactly one call — invalidate_and_refresh must fire refresh once.
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let http = reqwest::Client::new();
+    let refresh = RefreshClient::with_endpoint(http, format!("{}/oauth/token", server.uri()));
+    let resolver = CodexAuthResolver::with_refresh_client(AuthDotJsonPath(auth_path.clone()), refresh);
+
+    let creds = resolver.invalidate_and_refresh().await.unwrap();
+    assert_eq!(creds.account_id, "acct-after");
+    assert_eq!(creds.access_token, after_refresh);
+
+    // Persistence check.
+    let persisted: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&auth_path).unwrap()).unwrap();
+    assert_eq!(persisted["tokens"]["access_token"], after_refresh);
+    assert_eq!(persisted["tokens"]["refresh_token"], "ref-new");
+}
