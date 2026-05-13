@@ -87,7 +87,8 @@ fn model_id_for_log(target: &ProviderTarget) -> String {
     match target {
         ProviderTarget::MistralChat { model_id, .. }
         | ProviderTarget::OpenAIChat { model_id, .. }
-        | ProviderTarget::OpenAIResponses { model_id, .. } => model_id.clone(),
+        | ProviderTarget::OpenAIResponses { model_id, .. }
+        | ProviderTarget::ChatGPTCodex { model_id, .. } => model_id.clone(),
     }
 }
 
@@ -132,6 +133,7 @@ fn build_provider(target: &ProviderTarget) -> Box<dyn ProviderClient> {
             client.reasoning_effort.clone_from(reasoning_effort);
             Box::new(client)
         }
+        ProviderTarget::ChatGPTCodex { .. } => todo!("ChatGPTCodexClient wired in task 5"),
     }
 }
 

@@ -65,6 +65,15 @@ pub enum ProviderTarget {
         api_key: String,
         reasoning_effort: Option<String>,
     },
+    ChatGPTCodex {
+        base_url: String,
+        model_id: String,
+        reasoning_effort: Option<String>,
+        /// `~/.codex/auth.json` location. The client constructs a fresh
+        /// `CodexAuthResolver` per `tool_round` and pays the cost of a
+        /// JSON read; refresh remains stateful in the file itself.
+        auth_json: std::path::PathBuf,
+    },
 }
 
 /// Tool descriptor resolved in `crates/harness` through the substrate bridge.

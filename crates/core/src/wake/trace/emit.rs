@@ -225,9 +225,18 @@ pub fn provider_target_from_config(
             api_key: read_key(&cfg.api_key_env)?,
             reasoning_effort: cfg.reasoning_effort.clone(),
         }),
-        crate::InferenceTargetConfig::ChatGPTCodex(_cfg) => {
-            Err(ProviderTargetBuildError::NotYetSupported {
-                variant: "ChatGPTCodex",
+        crate::InferenceTargetConfig::ChatGPTCodex(cfg) => {
+            let home = std::env::var_os("HOME").ok_or_else(|| {
+                ProviderTargetBuildError::MissingCredentials {
+                    env: "HOME".to_string(),
+                }
+            })?;
+            let auth_json = std::path::PathBuf::from(home).join(".codex/auth.json");
+            Ok(ProviderTarget::ChatGPTCodex {
+                base_url: cfg.base_url.clone(),
+                model_id: cfg.model_id.clone(),
+                reasoning_effort: cfg.reasoning_effort.clone(),
+                auth_json,
             })
         }
     }
