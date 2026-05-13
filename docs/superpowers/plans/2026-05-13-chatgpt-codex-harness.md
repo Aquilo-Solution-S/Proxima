@@ -253,13 +253,6 @@ pub(super) async fn classify(resp: reqwest::Response) -> Result<RoundResult, Pro
     parse_success(&parsed, raw_output)
 }
 
-/// Classifier for the 401 case specifically — Codex needs to detect this
-/// to decide whether to refresh and retry. Returns `true` iff the
-/// response is `401 Unauthorized`.
-pub(super) fn is_unauthorized(status: reqwest::StatusCode) -> bool {
-    status == reqwest::StatusCode::UNAUTHORIZED
-}
-
 fn looks_like_context_length(body: &str) -> bool {
     let lower = body.to_ascii_lowercase();
     lower.contains("context_length")
@@ -1282,7 +1275,7 @@ Inside `ChatGPTCodexClient::tool_round`, after the first `classify_sse` call, br
         let url = format!("{}/responses", self.base_url.trim_end_matches('/'));
 
         let resp = self.send(&url, &creds, &body, cancel.clone()).await?;
-        if responses_wire::is_unauthorized(resp.status()) {
+        if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
             let refreshed = resolver
                 .invalidate_and_refresh()
                 .await
@@ -1470,6 +1463,6 @@ git commit -m "chore: refresh Cargo.lock for codex-auth → harness dep"
 - `ProviderTarget::ChatGPTCodex { base_url, model_id, reasoning_effort, auth_json }` is consistent across Tasks 3, 5, 6, 7.
 - `ChatGPTCodexClient::new(base_url, model_id, auth_json)` is consistent in Tasks 5, 6, 7.
 - `AuthDotJsonPath::from_explicit` is referenced in Tasks 5–7; Task 5 step 1 spec'd to add it to `crates/codex-auth/src/auth_json.rs` if absent — first use defines it.
-- `responses_wire::{build_input_array, tools_array, classify, classify_sse, accumulate_sse, is_unauthorized}` consistent across Tasks 2, 4, 5, 6. `classify` (non-streamed) stays for `OpenAIResponsesClient`; `classify_sse` is Codex-only.
+- `responses_wire::{build_input_array, tools_array, classify, classify_sse, accumulate_sse}` consistent across Tasks 2, 4, 5, 6. `classify` (non-streamed) stays for `OpenAIResponsesClient`; `classify_sse` is Codex-only. Task 6's 401 check is inlined as `resp.status() == reqwest::StatusCode::UNAUTHORIZED` — no helper, since it has only one caller.
 
 **Out-of-scope confirmation:** gRPC convert stub (`crates/wire-grpc/src/convert/inference.rs:175-180`) deliberately untouched; v1 desktop runs the engine in-process per the embedded-engine memory.
