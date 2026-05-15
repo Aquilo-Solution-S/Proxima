@@ -1,4 +1,7 @@
+use std::collections::BTreeMap;
+
 use proxima_core::mcp::{McpTool, McpToolCtx, McpToolError};
+use proxima_core::verbs::query::{MemorySearchRequest, MemorySearchResult, SearchMode};
 use proxima_core::{EdgeId, MemoryId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -9,6 +12,15 @@ use super::util::{map_storage, memory_kind_for_edge, owner_principal};
 pub struct SearchGraphArgs {
     pub query: String,
     pub limit: Option<u32>,
+    pub mode: Option<SearchGraphMode>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum SearchGraphMode {
+    Lexical,
+    Semantic,
+    Hybrid,
 }
 
 #[derive(Debug, Serialize)]
@@ -58,38 +70,279 @@ impl McpTool for SearchGraphTool {
                 ));
             }
             let limit = args.limit.unwrap_or(12).min(50);
-            let (owner_kind, owner_principal_id) = owner_principal(&ctx.owner);
-            let rows: Vec<SearchRow> = sqlx::query_as(SEARCH_SQL)
-                .bind(owner_kind)
-                .bind(owner_principal_id)
-                .bind(query)
-                .bind(i64::from(limit))
-                .fetch_all(&ctx.pool)
-                .await
-                .map_err(map_storage)?;
-
-            let mut matches = Vec::with_capacity(rows.len());
-            let mut memory_ids = Vec::with_capacity(rows.len());
-            for row in rows {
-                memory_ids.push(row.memory_id);
-                matches.push(GraphMatch {
-                    handle: ctx.format_memory(MemoryId::new(row.memory_id)),
-                    kind: row.kind,
-                    schema_id: row.schema_id,
-                    title: row.title,
-                    snippet: row.snippet,
-                    score: row.score,
-                    tags: row.tags,
-                });
+            let mode = args.mode.unwrap_or(SearchGraphMode::Lexical);
+            if matches!(mode, SearchGraphMode::Lexical) {
+                return search_graph_lexical(ctx, query, limit).await;
             }
 
-            let neighbor_edges = neighbor_edges(&ctx, &memory_ids).await?;
-            Ok(SearchGraphOutput {
-                matches,
-                neighbor_edges,
-            })
+            search_graph_semantic_or_hybrid(ctx, query, limit, mode).await
         })
     }
+}
+
+async fn search_graph_lexical(
+    ctx: McpToolCtx,
+    query: &str,
+    limit: u32,
+) -> Result<SearchGraphOutput, McpToolError> {
+    let (owner_kind, owner_principal_id) = owner_principal(&ctx.owner);
+    let rows: Vec<SearchRow> = sqlx::query_as(SEARCH_SQL)
+        .bind(owner_kind)
+        .bind(owner_principal_id)
+        .bind(query)
+        .bind(i64::from(limit))
+        .fetch_all(&ctx.pool)
+        .await
+        .map_err(map_storage)?;
+
+    let mut matches = Vec::with_capacity(rows.len());
+    let mut memory_ids = Vec::with_capacity(rows.len());
+    for row in rows {
+        memory_ids.push(row.memory_id);
+        matches.push(GraphMatch {
+            handle: ctx.format_memory(MemoryId::new(row.memory_id)),
+            kind: row.kind,
+            schema_id: row.schema_id,
+            title: row.title,
+            snippet: row.snippet,
+            score: row.score,
+            tags: row.tags,
+        });
+    }
+
+    let neighbor_edges = neighbor_edges(&ctx, &memory_ids).await?;
+    Ok(SearchGraphOutput {
+        matches,
+        neighbor_edges,
+    })
+}
+
+async fn search_graph_semantic_or_hybrid(
+    ctx: McpToolCtx,
+    query: &str,
+    limit: u32,
+    mode: SearchGraphMode,
+) -> Result<SearchGraphOutput, McpToolError> {
+    let engine = ctx
+        .engine()
+        .ok_or_else(|| McpToolError::Other("engine-backed search unavailable".into()))?;
+    let embed = engine
+        .embed_client()
+        .ok_or_else(|| McpToolError::Other("embedding client not wired into engine".into()))?;
+    let query_embedding = embed
+        .embed(query)
+        .await
+        .map_err(|e| McpToolError::Other(format!("embed query: {e}")))?;
+
+    let mut candidates = BTreeMap::<uuid::Uuid, GraphCandidate>::new();
+    if matches!(mode, SearchGraphMode::Hybrid) {
+        merge_lexical_candidates(&ctx, query, limit, &mut candidates).await?;
+    }
+
+    let storage = ctx
+        .storage()
+        .ok_or_else(|| McpToolError::Other("engine-backed storage unavailable".into()))?;
+    let semantic_rows = storage
+        .search_memories(
+            &MemorySearchRequest {
+                owner: ctx.owner.clone(),
+                query: query.to_string(),
+                mode: SearchMode::Semantic,
+                limit: limit.saturating_mul(4),
+                kind: None,
+                schema_id: None,
+                query_embedding: Some(query_embedding),
+                embedding_model_id: Some(embed.model_id().to_string()),
+                embedding_dim: Some(embed.dim()),
+            },
+            ctx.registry.list().as_slice(),
+        )
+        .await?;
+    merge_semantic_candidates(&ctx, semantic_rows, &mut candidates).await?;
+    graph_output_from_candidates(&ctx, candidates, mode, limit).await
+}
+
+async fn merge_lexical_candidates(
+    ctx: &McpToolCtx,
+    query: &str,
+    limit: u32,
+    candidates: &mut BTreeMap<uuid::Uuid, GraphCandidate>,
+) -> Result<(), McpToolError> {
+    for row in lexical_rows(ctx, query, limit.saturating_mul(4)).await? {
+        candidates.insert(
+            row.memory_id,
+            GraphCandidate {
+                memory_id: row.memory_id,
+                kind: row.kind,
+                schema_id: row.schema_id,
+                title: row.title,
+                snippet: row.snippet,
+                tags: row.tags,
+                lexical_score: (row.score * 10.0).clamp(0.0, 1.0),
+                similarity_score: 0.0,
+            },
+        );
+    }
+    Ok(())
+}
+
+async fn merge_semantic_candidates(
+    ctx: &McpToolCtx,
+    semantic_rows: Vec<MemorySearchResult>,
+    candidates: &mut BTreeMap<uuid::Uuid, GraphCandidate>,
+) -> Result<(), McpToolError> {
+    let semantic_ids: Vec<uuid::Uuid> = semantic_rows
+        .iter()
+        .map(|row| row.memory_id.into_inner())
+        .collect();
+    let payloads = load_graph_payloads(ctx, &semantic_ids).await?;
+    for row in semantic_rows {
+        let memory_id = row.memory_id.into_inner();
+        let payload = payloads.get(&memory_id);
+        let entry = candidates
+            .entry(memory_id)
+            .or_insert_with(|| GraphCandidate {
+                memory_id,
+                kind: memory_kind_for_edge(memory_kind_db(row.kind)).to_string(),
+                schema_id: row.schema_id.as_str().to_string(),
+                title: payload
+                    .and_then(|p| p.title.clone())
+                    .unwrap_or_else(|| row.schema_id.as_str().to_string()),
+                snippet: payload.and_then(|p| p.body.clone()).map_or_else(
+                    || row.snippet.clone(),
+                    |body| body.chars().take(480).collect(),
+                ),
+                tags: payload.and_then(|p| p.tags.clone()).unwrap_or_default(),
+                lexical_score: 0.0,
+                similarity_score: 0.0,
+            });
+        entry.similarity_score = entry.similarity_score.max(row.similarity_score);
+        if entry.snippet.is_empty() {
+            entry.snippet = row.snippet;
+        }
+    }
+    Ok(())
+}
+
+async fn graph_output_from_candidates(
+    ctx: &McpToolCtx,
+    candidates: BTreeMap<uuid::Uuid, GraphCandidate>,
+    mode: SearchGraphMode,
+    limit: u32,
+) -> Result<SearchGraphOutput, McpToolError> {
+    let mut ranked: Vec<_> = candidates.into_values().collect();
+    ranked.sort_by(|a, b| {
+        b.score(mode)
+            .total_cmp(&a.score(mode))
+            .then_with(|| b.memory_id.cmp(&a.memory_id))
+    });
+    ranked.truncate(usize::try_from(limit).unwrap_or(50));
+
+    let mut matches = Vec::with_capacity(ranked.len());
+    let mut memory_ids = Vec::with_capacity(ranked.len());
+    for row in ranked {
+        let score = row.score(mode);
+        memory_ids.push(row.memory_id);
+        matches.push(GraphMatch {
+            handle: ctx.format_memory(MemoryId::new(row.memory_id)),
+            kind: row.kind,
+            schema_id: row.schema_id,
+            title: row.title,
+            snippet: row.snippet,
+            score,
+            tags: row.tags,
+        });
+    }
+
+    let neighbor_edges = neighbor_edges(ctx, &memory_ids).await?;
+    Ok(SearchGraphOutput {
+        matches,
+        neighbor_edges,
+    })
+}
+
+async fn lexical_rows(
+    ctx: &McpToolCtx,
+    query: &str,
+    limit: u32,
+) -> Result<Vec<SearchRow>, McpToolError> {
+    let (owner_kind, owner_principal_id) = owner_principal(&ctx.owner);
+    sqlx::query_as(SEARCH_SQL)
+        .bind(owner_kind)
+        .bind(owner_principal_id)
+        .bind(query)
+        .bind(i64::from(limit))
+        .fetch_all(&ctx.pool)
+        .await
+        .map_err(map_storage)
+}
+
+#[derive(Debug)]
+struct GraphCandidate {
+    memory_id: uuid::Uuid,
+    kind: String,
+    schema_id: String,
+    title: String,
+    snippet: String,
+    tags: Vec<String>,
+    lexical_score: f32,
+    similarity_score: f32,
+}
+
+impl GraphCandidate {
+    fn score(&self, mode: SearchGraphMode) -> f32 {
+        match mode {
+            SearchGraphMode::Lexical => self.lexical_score,
+            SearchGraphMode::Semantic => self.similarity_score,
+            SearchGraphMode::Hybrid => (0.6 * self.similarity_score) + (0.4 * self.lexical_score),
+        }
+    }
+}
+
+fn memory_kind_db(kind: proxima_core::verbs::query::EntityKind) -> Option<&'static str> {
+    match kind {
+        proxima_core::verbs::query::EntityKind::Fact => None,
+        proxima_core::verbs::query::EntityKind::Abstraction => Some("Abstraction"),
+        proxima_core::verbs::query::EntityKind::Perspective => Some("Perspective"),
+        proxima_core::verbs::query::EntityKind::Goal => Some("Goal"),
+    }
+}
+
+async fn load_graph_payloads(
+    ctx: &McpToolCtx,
+    memory_ids: &[uuid::Uuid],
+) -> Result<BTreeMap<uuid::Uuid, GraphPayloadRow>, McpToolError> {
+    if memory_ids.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    let (owner_kind, owner_principal_id) = owner_principal(&ctx.owner);
+    let rows: Vec<GraphPayloadRow> = sqlx::query_as(
+        "SELECT m.memory_id,
+                COALESCE(n.title, d.title) AS title,
+                COALESCE(n.body, d.body) AS body,
+                COALESCE(n.tags, d.tags) AS tags
+         FROM proxima_core.memories m
+         LEFT JOIN proxima_mcp.agent_note_v1 n USING (memory_id)
+         LEFT JOIN proxima_mcp.agent_derivation_v1 d USING (memory_id)
+         WHERE m.owner_principal_kind = $1
+           AND m.owner_principal_id = $2
+           AND m.memory_id = ANY($3::uuid[])",
+    )
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(memory_ids)
+    .fetch_all(&ctx.pool)
+    .await
+    .map_err(map_storage)?;
+    Ok(rows.into_iter().map(|row| (row.memory_id, row)).collect())
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct GraphPayloadRow {
+    memory_id: uuid::Uuid,
+    title: Option<String>,
+    body: Option<String>,
+    tags: Option<Vec<String>>,
 }
 
 const SEARCH_SQL: &str = r"

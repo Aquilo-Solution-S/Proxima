@@ -26,7 +26,9 @@ use proxima_core::verbs::event_history::{EventHistoryRequest, EventHistoryRespon
 use proxima_core::verbs::event_ingest::{EventDraft, EventIngestOutcome};
 use proxima_core::verbs::goal_write::{GoalDraft, GoalWriteOutcome};
 use proxima_core::verbs::persist_wake_trace::{WakeTracePersistInput, WakeTracePersistOutcome};
-use proxima_core::verbs::query::{QueryRequest, QueryResponse};
+use proxima_core::verbs::query::{
+    MemorySearchRequest, MemorySearchResult, QueryRequest, QueryResponse,
+};
 use proxima_core::verbs::subscribe::ChangeEventStream;
 use proxima_core::{
     BindInferenceTierRequest, BindInferenceTierResponse, ChangeEvent, GoalId, InferenceTargetRow,
@@ -227,6 +229,14 @@ impl Storage for PgStorage {
         schemas: &[proxima_core::verbs::schema::SchemaInfo],
     ) -> Result<QueryResponse, StorageError> {
         verbs::query::query_memories(&self.pool, req, schemas).await
+    }
+
+    async fn search_memories(
+        &self,
+        req: &MemorySearchRequest,
+        schemas: &[proxima_core::verbs::schema::SchemaInfo],
+    ) -> Result<Vec<MemorySearchResult>, StorageError> {
+        verbs::query::search_memories(&self.pool, req, schemas).await
     }
 
     async fn list_active_goals(

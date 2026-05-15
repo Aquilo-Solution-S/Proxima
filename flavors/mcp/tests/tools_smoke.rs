@@ -1,12 +1,35 @@
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use proxima_core::McpToolError;
+use proxima_core::auth::NoAuth;
+use proxima_core::engine::Engine;
+use proxima_core::llm::{EmbeddingClient, LlmError};
 use proxima_core::mcp::{HandleTable, McpAuthorContext, McpToolCtx, OutputMode};
+use proxima_core::verbs::query::MemoryStore;
 use proxima_core::{FlavorRegistry, OrgId, Owner, Principal, UserId};
 use serde_json::json;
 use sqlx::{Connection, Executor, PgConnection};
 
 const ADMIN_URL: &str = "postgres://postgres@localhost/postgres";
+
+#[derive(Debug)]
+struct FixedEmbedding;
+
+#[async_trait]
+impl EmbeddingClient for FixedEmbedding {
+    async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
+        Ok(vec![1.0, 0.0, 0.0])
+    }
+
+    fn model_id(&self) -> &'static str {
+        "test-embed"
+    }
+
+    fn dim(&self) -> usize {
+        3
+    }
+}
 
 #[tokio::test]
 async fn remember_then_search_round_trip() -> Result<(), Box<dyn std::error::Error>> {
@@ -62,6 +85,85 @@ async fn remember_then_search_round_trip() -> Result<(), Box<dyn std::error::Err
         searched["matches"][0]["handle"], remembered["handle"],
         "search should reuse the session handle"
     );
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn search_graph_hybrid_returns_embedding_only_match() -> Result<(), Box<dyn std::error::Error>>
+{
+    let Some(db_name) = create_db().await? else {
+        return Ok(());
+    };
+    let pg =
+        proxima_storage_pg::PgStorage::connect(&format!("postgres://postgres@localhost/{db_name}"))
+            .await?;
+    pg.run_migrations().await?;
+    proxima_mcp_substrate::migrator().run(pg.pool()).await?;
+
+    let mut registry = FlavorRegistry::new();
+    proxima_mcp_substrate::register(&mut registry);
+    let frozen_inner = registry.freeze();
+    let frozen = Arc::new(frozen_inner.clone());
+    let owner = nil_owner();
+    let handles = Arc::new(HandleTable::new());
+    let author = author_ctx();
+
+    let remembered = call_tool(
+        pg.pool(),
+        &owner,
+        &handles,
+        &frozen,
+        author.clone(),
+        "proxima-mcp/proxima_remember",
+        json!({
+            "title": "Operational note",
+            "body": "This body deliberately omits the query token.",
+            "tags": ["hybrid"],
+            "idempotency_key": "tools-smoke-hybrid-embedding-only"
+        }),
+    )
+    .await?;
+    let memory_id = handles
+        .resolve_memory(remembered["handle"].as_str().expect("handle"))?
+        .into_inner();
+    insert_embedding(pg.pool(), &owner, memory_id).await?;
+
+    let lexical = call_tool(
+        pg.pool(),
+        &owner,
+        &handles,
+        &frozen,
+        author.clone(),
+        "proxima-mcp/proxima_search_graph",
+        json!({"query": "galaxy", "limit": 5}),
+    )
+    .await?;
+    assert!(lexical["matches"].as_array().expect("matches").is_empty());
+
+    let engine = Arc::new(
+        Engine::new(
+            frozen_inner,
+            MemoryStore::new(),
+            Box::new(NoAuth::new(owner.principal.clone(), owner.clone())),
+        )
+        .with_storage(pg.clone().into_handle())
+        .with_embed(Arc::new(FixedEmbedding)),
+    );
+    let hybrid = call_tool_with_engine(
+        pg.pool(),
+        &owner,
+        &handles,
+        &frozen,
+        author,
+        Some(engine),
+        "proxima-mcp/proxima_search_graph",
+        json!({"query": "galaxy", "mode": "hybrid", "limit": 5}),
+    )
+    .await?;
+    assert_eq!(hybrid["matches"][0]["handle"], remembered["handle"]);
 
     drop(pg);
     drop_db(&db_name).await?;
@@ -239,6 +341,20 @@ async fn call_tool(
     name: &str,
     args: serde_json::Value,
 ) -> Result<serde_json::Value, proxima_core::McpToolError> {
+    call_tool_with_engine(pool, owner, handles, registry, author, None, name, args).await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn call_tool_with_engine(
+    pool: &sqlx::PgPool,
+    owner: &Owner,
+    handles: &Arc<HandleTable>,
+    registry: &Arc<proxima_core::FlavorRegistryFrozen>,
+    author: McpAuthorContext,
+    engine: Option<Arc<Engine>>,
+    name: &str,
+    args: serde_json::Value,
+) -> Result<serde_json::Value, proxima_core::McpToolError> {
     let descriptor = registry
         .list_mcp_tools()
         .iter()
@@ -254,11 +370,36 @@ async fn call_tool(
             author,
             caller_self_perspective: None,
             master_token_id: None,
-            engine: None,
+            engine,
         },
         args,
     )
     .await
+}
+
+async fn insert_embedding(
+    pool: &sqlx::PgPool,
+    owner: &Owner,
+    memory_id: uuid::Uuid,
+) -> Result<(), sqlx::Error> {
+    let (owner_kind, owner_principal_id) = match &owner.principal {
+        Principal::User(user) => ("User", user.into_inner()),
+        Principal::Group(group) => ("Group", group.into_inner()),
+    };
+    sqlx::query(
+        "INSERT INTO proxima_core.embeddings
+            (entity_kind, entity_id, embedding_version, model_id, vec, dim,
+             owner_principal_kind, owner_principal_id, owner_org_id)
+         VALUES ('Fact', $1, 1, 'test-embed', $2, 3, $3, $4, $5)",
+    )
+    .bind(memory_id)
+    .bind(vec![1.0f32, 0.0, 0.0])
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(owner.org_id.into_inner())
+    .execute(pool)
+    .await
+    .map(|_| ())
 }
 
 fn nil_owner() -> Owner {

@@ -68,7 +68,7 @@ impl Engine {
     }
 
     #[must_use]
-    pub(crate) fn embed_client(&self) -> Option<&Arc<dyn EmbeddingClient>> {
+    pub fn embed_client(&self) -> Option<&Arc<dyn EmbeddingClient>> {
         self.embed.as_ref()
     }
 
