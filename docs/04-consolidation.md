@@ -15,6 +15,15 @@ Reality event
 ```
 
 Consolidation is the per-personality wake/decide/write loop.
+Dreaming is the name for flavor-declared consolidation policy executed
+through this loop. Core owns scheduling, idempotency, owner scope, depth,
+registry checks, typed A/P write contracts, and central edge invariants.
+Flavors own compaction, reflection, synthesis, self-update, prompts,
+schemas, and retrieval policy.
+
+Dream outputs are ordinary writes: Abstraction, Perspective, Goal, and
+registered Edge. No Dream entity, Dream relation class, or Core dream
+pipeline exists.
 
 ## Runtime Tables
 

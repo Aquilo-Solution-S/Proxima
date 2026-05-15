@@ -251,8 +251,9 @@ One-liner each; invariant carries the rule, doc carries the detail.
 - Registering two F→A operators on the same `(Fact, Abstraction)`
   pair — see invariant 20. Multiple F→A over the same Fact schema
   with distinct Abstractions is fine.
-- Treating "dreaming" as a separate flavor kind or core component —
-  see invariant 20.
+- Adding a Dream entity, Dream relation class, or Core dream pipeline —
+  dreaming is flavor-declared F→A / A→P / A→Goal consolidation under
+  ordinary registry and edge invariants; see invariant 20.
 - Conflating `source_batch_id` and `cited_object_id` — distinct
   concepts; see [04 §Source-batch lifecycle](docs/04-consolidation.md#source-batch-lifecycle).
 - Materializing `chain(f)` as an authoritative table — see

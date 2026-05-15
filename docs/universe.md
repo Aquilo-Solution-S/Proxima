@@ -72,7 +72,7 @@ Actions that attempt to move Reality. The motor of the wheel.
                       ┌─────────────┐
                       │  Memories   │  ← Self substrate
                       └──────┬──────┘
-                             │ consolidate via dream
+                             │ dream: flavor-declared consolidation
                              ▼
                       ┌─────────────┐
                       │ Perspective │  ← world model
@@ -83,6 +83,13 @@ Actions that attempt to move Reality. The motor of the wheel.
                       │   Goals     │  (loop closes)
                       └─────────────┘
 ```
+
+Dreaming is the upward consolidation process in the wheel: flavor-declared
+F→A / A→P / A→Goal wakes under a personality instance. Core schedules and
+constrains it; flavors define compaction, reflection, synthesis, self-update,
+prompts, schemas, and retrieval policy. Dreams produce ordinary typed
+Abstractions, Perspectives, Goals, and registered edges. There is no Dream
+entity, Dream relation class, or Core dream pipeline.
 
 ## 3. Philosophical commitments
 
