@@ -13,8 +13,8 @@ pnpm install
 pnpm --filter proxima-shell tauri:dev
 ```
 
-`tauri:dev` starts the desktop shell, brings up dev Postgres via
-`docker-compose.dev.yml`, and writes perf logs under
+`tauri:dev` starts the desktop shell, brings up dev Postgres and MinIO
+via `docker-compose.dev.yml`, creates the local S3 bucket, and writes perf logs under
 `apps/proxima-shell/perf-logs/`.
 
 ```sh
@@ -22,7 +22,7 @@ PROXIMA_PERF=0 pnpm --filter proxima-shell tauri:dev
 ```
 
 Raw shell startup. No Docker, no perf capture. Uses the current
-`DATABASE_URL`.
+`DATABASE_URL` and S3 env.
 
 ```sh
 pnpm --filter proxima-shell dev --host 127.0.0.1
@@ -80,18 +80,14 @@ Design source of truth:
   composite crate. No feature flags — the flavor crate is the unit
   of inclusion.
 - [`docs/09-frontend.md`](docs/09-frontend.md) — frontend & client
-  model. Tauri 2 + Solid; one UI codebase across web, desktop,
-  iOS, Android. gRPC server-streaming subscriptions; SQLite +
-  sqlite-vec local cache. Schema-aware components via
-  `.proto → buf → codegen`. Per-flavor frontend packages composed
-  into the shell at build time. Optional embedded-engine mode for
-  desktop power users.
+  model. Tauri 2 + Solid Shell; embedded Tauri IPC over `Arc<Engine>`;
+  generated Tauri/Specta bindings in `@proxima/core`; in-memory
+  graph store over `Schema` / `Query` / `EventHistory` / `Subscribe`;
+  flavor-owned frontend packages registered at Shell startup.
 - [`docs/10-configuration.md`](docs/10-configuration.md) — runtime
-  config surface: model tiers (`Fast`/`Standard`/`Deep`) declared
-  per operator, mapped per Owner; build-time `(vendor, model_id)`
-  registry with capability validation; per-Owner BYOK credential
-  table with secret-ref indirection; operator concurrency and
-  binary-wide cost cap.
+  config surface: Owner-scoped inference targets and tier bindings;
+  wake-entry model routing; env/Codex auth resolution; binary-wide
+  embedding model and active selection.
 - [`docs/11-citations.md`](docs/11-citations.md) — `CitedObject` /
   `CitationMapping` traits; bibliographic provenance; Fact-only
   citation rule.
@@ -102,9 +98,10 @@ Design source of truth:
   substrate + reference flavors, independent flavor authorship,
   composite discipline.
 - [`docs/14-protocol-surface.md`](docs/14-protocol-surface.md) —
-  the engine's contract to clients. Five verbs (Query / Subscribe /
-  GoalWrite / EventIngest / Schema), owner-scoped, transport-agnostic;
-  decider, operators, and tool registry stay inside the binary.
+  the engine's contract to clients. Six verbs (Query / Subscribe /
+  EventHistory / GoalWrite / EventIngest / Schema), owner-scoped,
+  transport-agnostic; decider, operators, and tool registry stay
+  inside the binary.
 - [`docs/15-compliance.md`](docs/15-compliance.md) — compliance
   primitives: owner deletion, pause/resume, export, suppression, audit.
 - [`docs/dev-perf.md`](docs/dev-perf.md) — dev-time perf instrumentation:

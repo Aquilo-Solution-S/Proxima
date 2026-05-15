@@ -28,12 +28,12 @@ explicit request.
 | `docs/06-goals-and-self.md` | Goal entity (DAG, supersession); Self as pure query |
 | `docs/07-storage.md` | IDs, identity rules, append-only, vector store independence |
 | `docs/08-core-and-flavors.md` | Bare core / flavor layering, no-feature-flags |
-| `docs/09-frontend.md` | Tauri 2 + Solid; mobile + offline + schema-aware components |
-| `docs/10-configuration.md` | Model tiers (`Fast`/`Standard`/`Deep`), build-time model registry, BYOK credential resolution, operator concurrency, deployment shapes |
+| `docs/09-frontend.md` | Current Tauri 2 + Solid frontend contract; embedded IPC, graph store, flavor package composition |
+| `docs/10-configuration.md` | Owner-scoped inference targets/tier bindings; env/Codex auth; binary-wide embedding settings |
 | `docs/11-citations.md` | `CitedObject` / `CitationMapping` traits; bibliographic provenance, Fact-only citation rule |
 | `docs/12-tool-manifest.md` | T1 (runtime, schema-consuming) vs T2 (build-time flavors) tool tiers |
 | `docs/13-flavor-marketplace.md` | Substrate + reference flavors; independent authorship; composite discipline |
-| `docs/14-protocol-surface.md` | Engine's contract to clients: five verbs (Query / Subscribe / GoalWrite / EventIngest / Schema), owner-scoped, transport-agnostic |
+| `docs/14-protocol-surface.md` | Engine's contract to clients: six verbs (Query / Subscribe / EventHistory / GoalWrite / EventIngest / Schema), owner-scoped, transport-agnostic |
 | `docs/15-compliance.md` | Compliance primitives: owner deletion, pause/resume, export, suppression, audit |
 | `docs/dev-perf.md` | Dev-time perf instrumentation: per-session artifact layout under `apps/proxima-shell/perf-logs/` |
 

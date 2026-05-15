@@ -46,6 +46,10 @@ export const commands = {
 	 *  Returns `CommandError::SecretStore` when the OS keychain cannot be used.
 	 */
 	mcpMasterTokenRotate: () => typedError<McpConnectionTs, CommandError>(__TAURI_INVOKE("mcp_master_token_rotate")),
+	citedBlobUploadPrepare: (req: CitedBlobUploadPrepareTs) => typedError<CitedBlobUploadPrepareOutcomeTs, CommandError>(__TAURI_INVOKE("cited_blob_upload_prepare", { req })),
+	citedBlobUploadComplete: (req: CitedBlobUploadCompleteTs) => typedError<CitedBlobUploadCompleteOutcomeTs, CommandError>(__TAURI_INVOKE("cited_blob_upload_complete", { req })),
+	citedBlobUploadAbort: (req: CitedBlobUploadAbortTs) => typedError<CitedBlobUploadAbortOutcomeTs, CommandError>(__TAURI_INVOKE("cited_blob_upload_abort", { req })),
+	citedBlobReadUrl: (req: CitedBlobReadUrlTs) => typedError<CitedBlobReadUrlOutcomeTs, CommandError>(__TAURI_INVOKE("cited_blob_read_url", { req })),
 	/**
 	 *  # Errors
 	 *  Returns `CommandError::Storage` on database failures.
@@ -230,6 +234,55 @@ export type CitationMappingHint = {
 	schema_version: SchemaVersion,
 };
 
+export type CitedBlobReadUrlOutcomeTs = {
+	read_url: string,
+	expires_at: string,
+};
+
+export type CitedBlobReadUrlTs = {
+	owner: Owner,
+	cited_object_id: string,
+};
+
+export type CitedBlobUploadAbortOutcomeTs = {
+	aborted: boolean,
+};
+
+export type CitedBlobUploadAbortTs = {
+	owner: Owner,
+	upload_id: string,
+};
+
+export type CitedBlobUploadCompleteOutcomeTs = {
+	cited_object_id: string,
+	schema: string,
+	content_hash: string,
+	sha256: string,
+	byte_len: number,
+	mime: string,
+	filename: string,
+	idempotent_replay: boolean,
+};
+
+export type CitedBlobUploadCompleteTs = {
+	owner: Owner,
+	upload_id: string,
+};
+
+export type CitedBlobUploadPrepareOutcomeTs = {
+	upload_id: string,
+	upload_url: string,
+	expires_at: string,
+	headers: PresignedHeaderTs[],
+};
+
+export type CitedBlobUploadPrepareTs = {
+	owner: Owner,
+	filename: string,
+	mime: string,
+	byte_len: number,
+};
+
 export type CitedObjectHint = {
 	schema_id: SchemaId,
 	schema_version: SchemaVersion,
@@ -260,7 +313,7 @@ export type CodeChunkV1 = {
 export type CodexAuthStatusOutcomeTs = {
 	// True if ~/.codex/auth.json exists and is readable.
 	auth_json_present: boolean,
-	// True if tokens.access_token is set and parseable as a JWT.
+	// True if `tokens.access_token` is set and parseable as a JWT.
 	access_token_present: boolean,
 };
 
@@ -336,6 +389,18 @@ export type CommandError =
 } } | 
 // Local secret store could not load or save a secret.
 { kind: "secret_store"; data: {
+	message: string,
+} } | 
+// S3 runtime configuration is missing or invalid.
+{ kind: "s3_config"; data: {
+	message: string,
+} } | 
+// S3 command failed.
+{ kind: "s3"; data: {
+	message: string,
+} } | 
+// Cited-object upload lifecycle rejected the request.
+{ kind: "cited_object_upload"; data: {
 	message: string,
 } };
 
@@ -731,6 +796,11 @@ export type PersonalityRootFilter =
  *  rows when they otherwise match the query.
  */
 "IncludeInactive";
+
+export type PresignedHeaderTs = {
+	name: string,
+	value: string,
+};
 
 export type Principal = ({ User: UserId }) & { Group?: never } | ({ Group: GroupId }) & { User?: never };
 

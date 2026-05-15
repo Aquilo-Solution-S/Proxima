@@ -3,7 +3,6 @@ use std::sync::Arc;
 use proxima_storage_pg::PgStorage;
 use tauri::State;
 
-use crate::boot::sentinel_owner;
 use crate::command_error::CommandError;
 use crate::config::{EmbeddingModelRecord, EmbeddingModelRef};
 
@@ -19,8 +18,7 @@ use crate::config::{EmbeddingModelRecord, EmbeddingModelRef};
 pub async fn models_list_embedding(
     pg: State<'_, Arc<PgStorage>>,
 ) -> Result<Vec<EmbeddingModelRecord>, CommandError> {
-    let owner = sentinel_owner();
-    let rows = pg.list_embedding_models(&owner).await?;
+    let rows = pg.list_embedding_models().await?;
     Ok(rows.into_iter().map(EmbeddingModelRecord::from).collect())
 }
 
@@ -31,8 +29,7 @@ pub async fn models_list_embedding(
 pub async fn embedding_active_get(
     pg: State<'_, Arc<PgStorage>>,
 ) -> Result<Option<EmbeddingModelRef>, CommandError> {
-    let owner = sentinel_owner();
-    let pair = pg.get_embedding_active(&owner).await?;
+    let pair = pg.get_embedding_active().await?;
     Ok(pair.map(|(vendor, model_id)| EmbeddingModelRef { vendor, model_id }))
 }
 
@@ -45,8 +42,7 @@ pub async fn models_register_embedding(
     pg: State<'_, Arc<PgStorage>>,
     record: EmbeddingModelRecord,
 ) -> Result<(), CommandError> {
-    let owner = sentinel_owner();
-    pg.register_embedding_model(&owner, record.into())
+    pg.register_embedding_model(record.into())
         .await
         .map_err(CommandError::from)
 }
@@ -60,8 +56,7 @@ pub async fn models_delete_embedding(
     vendor: String,
     model_id: String,
 ) -> Result<bool, CommandError> {
-    let owner = sentinel_owner();
-    pg.delete_embedding_model(&owner, &vendor, &model_id)
+    pg.delete_embedding_model(&vendor, &model_id)
         .await
         .map_err(CommandError::from)
 }
@@ -76,8 +71,7 @@ pub async fn embedding_active_set(
     vendor: String,
     model_id: String,
 ) -> Result<(), CommandError> {
-    let owner = sentinel_owner();
-    pg.set_embedding_active(&owner, &vendor, &model_id)
+    pg.set_embedding_active(&vendor, &model_id)
         .await
         .map_err(CommandError::from)
 }
@@ -87,8 +81,7 @@ pub async fn embedding_active_set(
 #[tauri::command]
 #[specta::specta]
 pub async fn embedding_active_clear(pg: State<'_, Arc<PgStorage>>) -> Result<bool, CommandError> {
-    let owner = sentinel_owner();
-    pg.clear_embedding_active(&owner)
+    pg.clear_embedding_active()
         .await
         .map_err(CommandError::from)
 }

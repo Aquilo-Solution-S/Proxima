@@ -17,10 +17,7 @@
 //! - `ModelTier` is the routing class operators declare; the
 //!   tier→`(vendor, model_id)` binding is runtime.
 //!
-//! See docs/10 §Model tiers and §Operator declaration. (Note: that
-//! doc's "Build-time model registry" section is stale w.r.t. v1 —
-//! `(vendor, model_id)` listing is runtime, per design correction
-//! 2026-05-05.)
+//! See docs/10 §Model tiers and §Capability vocabulary.
 
 /// Which HTTP API shape a runtime model client speaks. Independent
 /// of vendor: most non-Anthropic vendors expose the OpenAI dialect,

@@ -11,7 +11,7 @@ Binding ADR for connection-via-lifecycle:
 ## Why now
 
 - Decider has nothing intentional to optimise without Goals
-  ([06](../../06-goals-and-self.md), [10](../../10-configuration.md)).
+  ([06](../../docs/06-goals-and-self.md), [10](../../docs/10-configuration.md)).
 - A→Goal is on the roadmap as the third operator family (per typed-goals
   decision; codified by `OperatorKind::AtoGoal` in
   `crates/core/src/verbs/goal_write.rs`). The agent-driven proposal

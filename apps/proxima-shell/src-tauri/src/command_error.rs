@@ -82,11 +82,41 @@ pub enum CommandError {
     /// Local secret store could not load or save a secret.
     #[error("secret store error: {message}")]
     SecretStore { message: String },
+
+    /// S3 runtime configuration is missing or invalid.
+    #[error("S3 config error: {message}")]
+    S3Config { message: String },
+
+    /// S3 command failed.
+    #[error("S3 error: {message}")]
+    S3 { message: String },
+
+    /// Cited-object upload lifecycle rejected the request.
+    #[error("cited-object upload error: {message}")]
+    CitedObjectUpload { message: String },
 }
 
 impl CommandError {
     pub(crate) fn secret_store(message: String) -> Self {
         Self::SecretStore { message }
+    }
+
+    pub(crate) fn s3_config(message: impl Into<String>) -> Self {
+        Self::S3Config {
+            message: message.into(),
+        }
+    }
+
+    pub(crate) fn s3(message: impl Into<String>) -> Self {
+        Self::S3 {
+            message: message.into(),
+        }
+    }
+
+    pub(crate) fn cited_object_upload(message: impl Into<String>) -> Self {
+        Self::CitedObjectUpload {
+            message: message.into(),
+        }
     }
 }
 

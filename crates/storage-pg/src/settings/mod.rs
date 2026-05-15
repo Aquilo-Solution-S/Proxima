@@ -1,7 +1,9 @@
-//! Per-Owner settings registration — runtime inference/embedding state.
+//! Runtime settings registration.
 //!
 //! Tables: `proxima_core.inference_targets`,
 //! `inference_tier_bindings`, `embedding_models`, `embedding_active`.
+//! Inference targets and tier bindings are Owner-scoped. Embedding
+//! models and active embedding selection are binary-wide.
 //!
 //! Not on the `Storage` wire trait — settings are a desktop/admin
 //! concern, not a verb in docs/14. Methods are free functions taking

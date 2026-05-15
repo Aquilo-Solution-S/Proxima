@@ -1,6 +1,7 @@
 //! Proxima engine core.
 pub mod auth;
 pub mod canonical_json;
+pub mod citations;
 pub mod cursor;
 pub mod engine;
 pub mod error;
@@ -23,6 +24,7 @@ pub mod wake;
 
 pub use auth::*;
 pub use canonical_json::canonical_json;
+pub use citations::*;
 pub use cursor::*;
 pub use engine::*;
 pub use error::*;

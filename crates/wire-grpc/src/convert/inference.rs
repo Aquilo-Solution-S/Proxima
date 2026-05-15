@@ -1,9 +1,9 @@
 //! Proto <-> core conversions for `InferenceTarget` / `WakeEntry` / Tier.
 
 use proxima_core::{
-    InferenceTargetConfig, InferenceTargetRow, InferenceTierBindingRow, MistralChatConfig,
-    ModelTier, OpenAIChatConfig, OpenAIResponsesConfig, WakeEntryAuthoredBy, WakeEntryDraft,
-    WakeEntryExecutionMode, WakeEntryGoalScope, WakeEntryRow, WakeEntryTriggerKind,
+    ChatGPTCodexConfig, InferenceTargetConfig, InferenceTargetRow, InferenceTierBindingRow,
+    MistralChatConfig, ModelTier, OpenAIChatConfig, OpenAIResponsesConfig, WakeEntryAuthoredBy,
+    WakeEntryDraft, WakeEntryExecutionMode, WakeEntryGoalScope, WakeEntryRow, WakeEntryTriggerKind,
     WakeExecutionMode,
 };
 use tonic::Status;
@@ -172,14 +172,11 @@ pub fn inference_config_to_proto(config: &InferenceTargetConfig) -> pb::Inferenc
                 reasoning_effort: config.reasoning_effort.clone(),
             })
         }
-        // ChatGPTCodex has no gRPC proto variant yet; the wire path is
-        // deferred. Targets stored with this variant are not exposed over gRPC
-        // until a corresponding proto message is added.
-        InferenceTargetConfig::ChatGPTCodex(_) => {
-            // Encode as an empty config with no kind set so callers receive
-            // a "kind must be set" error rather than a panic.
-            return pb::InferenceTargetConfig { kind: None };
-        }
+        InferenceTargetConfig::ChatGPTCodex(config) => Kind::ChatgptCodex(pb::ChatGptCodexConfig {
+            base_url: config.base_url.clone(),
+            model_id: config.model_id.clone(),
+            reasoning_effort: config.reasoning_effort.clone(),
+        }),
     };
     pb::InferenceTargetConfig { kind: Some(kind) }
 }
@@ -213,6 +210,13 @@ pub fn inference_config_from_proto(
                 reasoning_effort: config.reasoning_effort,
             },
         )),
+        Some(Kind::ChatgptCodex(config)) => {
+            Ok(InferenceTargetConfig::ChatGPTCodex(ChatGPTCodexConfig {
+                base_url: config.base_url,
+                model_id: config.model_id,
+                reasoning_effort: config.reasoning_effort,
+            }))
+        }
         None => Err(Status::invalid_argument(
             "InferenceTargetConfig.kind must be set",
         )),

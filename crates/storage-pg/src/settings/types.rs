@@ -104,7 +104,7 @@ pub enum SettingsError {
     DuplicateEmbeddingModel { vendor: String, model_id: String },
 
     /// FK violation when setting active embedding — the (vendor,
-    /// `model_id`) is not in `embedding_models` for this owner.
+    /// `model_id`) is not in binary-wide `embedding_models`.
     #[error("unknown embedding model {vendor:?}/{model_id:?}")]
     UnknownEmbeddingModel { vendor: String, model_id: String },
 

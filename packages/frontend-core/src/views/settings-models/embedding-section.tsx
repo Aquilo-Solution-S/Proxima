@@ -258,7 +258,7 @@ export const EmbeddingSection: Component<{
               onInput={(e) =>
                 setFormData({ ...formData(), secret_ref: e.target.value })
               }
-              placeholder="keychain://openai_api_key"
+              placeholder="keychain:proxima:openai_api_key"
             />
 
             <label>Capabilities</label>

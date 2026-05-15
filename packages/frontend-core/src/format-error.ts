@@ -32,5 +32,11 @@ export function formatCommandError(err: CommandError): string {
       return `Invalid UUID: ${err.data.value}`;
     case "secret_store":
       return `Secret store error: ${err.data.message}`;
+    case "s3_config":
+      return `S3 config error: ${err.data.message}`;
+    case "s3":
+      return `S3 error: ${err.data.message}`;
+    case "cited_object_upload":
+      return `Cited-object upload error: ${err.data.message}`;
   }
 }

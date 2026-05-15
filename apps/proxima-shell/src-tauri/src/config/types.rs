@@ -54,8 +54,8 @@ impl From<proxima_core::InferenceTargetRow> for InferenceTargetRecord {
 pub struct EmbeddingConfig {
     #[serde(default)]
     pub models: Vec<EmbeddingModelRecord>,
-    /// Globally-active embedding model. v1 is single-global per
-    /// docs/10 §Composite embedding selection.
+    /// Binary-wide active embedding model. v1 is single-global per
+    /// docs/10 §Embedding model: one per binary.
     #[serde(default)]
     pub active: Option<EmbeddingModelRef>,
 }

@@ -2,7 +2,7 @@
 //!
 //! Storage holds these in `proxima_core.inference_targets` +
 //! `proxima_core.inference_tier_bindings`. Resolution at wake time
-//! (next plan) reads them through `Storage::list_inference_targets` /
+//! reads them through `Storage::list_inference_targets` /
 //! `list_inference_tier_bindings`.
 
 use crate::{ModelTier, Owner};
