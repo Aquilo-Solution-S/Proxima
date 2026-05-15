@@ -94,13 +94,14 @@ Design source of truth:
 - [`docs/12-tool-manifest.md`](docs/12-tool-manifest.md) — build-time
   tool vocabulary, wake-entry palettes, MCP/workspace dispatch, and
   deferred tool-compliance enforcement.
+- [`docs/13-compliance.md`](docs/13-compliance.md) — compliance
+  primitives: owner deletion, source-scope deletion, pause/resume,
+  export, suppression, audit.
 - [`docs/14-protocol-surface.md`](docs/14-protocol-surface.md) —
   the engine's contract to clients. Six verbs (Query / Subscribe /
   EventHistory / GoalWrite / EventIngest / Schema), owner-scoped,
   transport-agnostic; decider, operators, and tool registry stay
   inside the binary.
-- [`docs/15-compliance.md`](docs/15-compliance.md) — compliance
-  primitives: owner deletion, pause/resume, export, suppression, audit.
 - [`docs/dev-perf.md`](docs/dev-perf.md) — dev-time perf instrumentation:
   per-session artifact layout under `apps/proxima-shell/perf-logs/`,
   IPC / MCP / engine / Postgres capture, opt-out via `PROXIMA_PERF=0`.

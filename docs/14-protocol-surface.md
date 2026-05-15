@@ -1,483 +1,360 @@
 # 14 — Protocol Surface
 
-The engine's contract to clients. Transport-agnostic — *what* the
-verbs are, *what* the change-stream emits, *how* consistency, auth,
-and errors behave. Wire format (gRPC / HTTP / framing / serialization)
-is downstream of this and lives in 09.
+Transport-agnostic engine contract. 14 owns verb semantics,
+change-stream semantics, consistency, auth, and error shape. 09 owns
+client transport, Shell bindings, stream framing, and UI state.
 
 ## Scope
 
-A Proxima deployment is one composite binary (core + linked flavor
-crates, per 08). Clients — frontend apps (Memophant mobile, Code
-web, etc.) and trusted EventSources (chat webhooks, system processes)
-— talk to the binary through the surfaces below. Wake execution, the
-operators ([04](04-consolidation.md)), the tool registry (05), and any flavor-registered
-behavior all run **inside** the binary; clients never see them on the
-wire.
+A deployment is one composite binary: core plus linked flavor crates
+(see [08](08-core-and-flavors.md)). Frontends, wire clients, and
+trusted EventSources talk to the binary through graph verbs and
+operational RPCs.
+
+| Surface | Status | Contract |
+|---|---|---|
+| graph verbs | current | cognitive graph reads/writes/events |
+| operational/config RPCs | current | runtime personality and inference config |
+| compliance admin operations | design intent | compliance primitives in [13](13-compliance.md), admin surface deferred |
+| operators / wake / tools / LLM calls | internal | clients observe committed graph effects as `ChangeEvent`s |
+
+No runtime schema/source/tool/flavor registration surface exists.
 
 ## The six verbs
 
-| Verb | Direction | Idempotent | Scope |
-|---|---|---|---|
-| `Query` | client → engine, sync | yes | Owner |
-| `Subscribe` | engine → client, stream | n/a | Owner |
-| `EventHistory` | client → engine, sync | yes | Owner |
-| `GoalWrite` | client → engine, sync | by `request_id` | Owner |
-| `EventIngest` | source → engine, sync | by `event_id` | Owner |
-| `Schema` | client → engine, sync | yes | global (binary-scoped) |
+Semantic graph/client contract:
 
-That's the entire client-facing surface. Operators, tools, the
-wake execution, LLM calls, external-tool dispatches are internal — clients
-observe their effects only as `ChangeEvent`s on `Subscribe`.
+| Verb | Direction | Idempotency | Scope | Current status |
+|---|---|---|---|---|
+| `Query` | client -> engine, sync | yes | Owner | current |
+| `Subscribe` | engine -> client, stream | n/a | Owner | current |
+| `EventHistory` | client -> engine, sync | yes | Owner | current |
+| `GoalWrite` | client -> engine, sync | `request_id` | Owner | current |
+| `EventIngest` | source -> engine, sync | `event_id` | Owner | current |
+| `Schema` | client -> engine, sync | yes | binary | current |
+
+These six verbs are the cognitive graph surface. Operational/config
+RPCs below are not graph verbs.
 
 ## Owner-scoping — the primary axis
 
-Every read, write, and subscribe carries one `Owner` (01). A
-principal resolves to a set of accessible Owners (membership lives
-in the org model, see auth below); each call names exactly one.
+Every graph read, write, ingest, and subscribe names exactly one
+`Owner` (see [01](01-event-source.md#owner--scoping-primitive)).
+Dispatch verifies caller access to that Owner.
 
-Multi-tenant and single-tenant deployments use the same protocol —
-single-tenant is just `|Owners| = 1` for one principal. No surface
-flag, no two modes.
+| Shape | Contract |
+|---|---|
+| single-tenant | one accessible Owner |
+| multi-tenant | same calls, different Owner per call |
+| multi-owner streams | one `Subscribe` stream per Owner |
+| cross-owner graph data | not exposed by protocol |
 
-## Verbs
+## Graph Verbs
 
 ### Query
 
 Owner-scoped snapshot read of memories, goals, and edges.
 
-- **Filters** split into two layers:
-  - **Core-generic** — entity_kind (per 02 `EntityKind`), schema_id,
-    owner, time range, supersession status (head only / include
-    superseded), tombstone visibility (`PresentOnly` /
-    `IncludeTombstoned`), edge traversal (follow N relations from a
-    seed), pagination cursor + limit.
-  - **Flavor-typed** — registered per sidecar by flavors ([08](08-core-and-flavors.md)). A Code
-    flavor that wants `severity >= P1` filtering on a `BugReportV1`
-    sidecar registers it the same way it registers the schema. The
-    `Schema` verb advertises which filter keys are available per
-    schema_id so clients can render typed filter UI generically.
-- **Returns** data + a `seq_high_water` watermark. The client uses
-  this watermark to start a `Subscribe` without missing or
-  duplicating events (see *Cold-start stitching* below).
-- **Tombstones** — default `PresentOnly`. For stateful Fact schemas,
-  `HeadsOnly + PresentOnly` first computes the latest row per natural
-  key, then drops rows whose registered tombstone discriminator
-  matches. Older present rows under a tombstoned natural key are not
-  revived. `IncludeTombstoned` exposes tombstone heads for history
-  views.
+| Axis | Current contract |
+|---|---|
+| owner | required |
+| entity kind | optional |
+| schema id | optional |
+| supersession | heads-only or include superseded |
+| tombstones | present-only or include tombstoned |
+| personality roots | include/exclude inactive root Perspectives |
+| pagination | `limit`; cursor pagination deferred |
+| payloads | optional payload bytes; identity hydration by memory/goal/edge ids |
+| stateful Facts | heads by registered natural key; tombstone heads suppress prior present rows |
+| flavor-typed filters | design intent; advertised/validated only when implemented by a linked flavor |
+| edge traversal / time range | deferred |
+
+Returns rows plus `seq_high_water`. Clients use the watermark as the
+`Subscribe(since)` cursor for cold-start stitching.
 
 ### Subscribe
 
-Owner-scoped server-push stream of `ChangeEvent`s. One stream per
-Owner (a principal with N Owners opens N streams).
+Owner-scoped server-push stream of identity-only `ChangeEvent`s.
+Current core request shape is `owner + since`; gRPC may carry a
+`ReadFilter`, but current conversion does not enforce it.
 
-```rust
-struct ChangeEvent {
-    seq:    Uuid7,         // monotonic cursor; embeds timestamp
-    owner:  Owner,
-    kind:   ChangeKind,
-}
+| Field | Contract |
+|---|---|
+| `seq` | server-generated UUIDv7 cursor |
+| `owner` | event Owner |
+| `EntityAppend` | Fact / Abstraction / Perspective / Goal identity, schema, optional supersedes |
+| `EdgeAppend` | edge identity, relation, source, target |
+| authoring metadata | optional personality instance and wake-chain depth |
 
-enum ChangeKind {
-    EntityAppend {
-        entity_kind:    EntityKind,        // Fact | Abstraction | Perspective | Goal
-        entity_id:      EntityId,          // 02 §Edges
-        schema_id:      SchemaId,
-        schema_version: SchemaVersion,
-        supersedes:     Option<EntityId>,  // present iff this row supersedes a prior head; A/P/Goal only — never set for Facts (02 §Re-derivation and supersession)
-    },
-    EdgeAppend {
-        edge_id:  EdgeId,
-        relation: RelationId,
-        source:   EntityId,
-        target:   EntityId,
-    },
-}
-```
+Rules:
 
-**Append-only world, two event types.** No `EntityRemoved`, no
-`EntityMutated`. Supersession is itself an `EntityAppend` carrying
-`supersedes`, so the client learns "this is the new head" through
-the same event shape as a fresh write. **Supersession is A/P/Goal
-only**: `EventIngest` never produces a `supersedes`-carrying
-`EntityAppend` (Facts are immutable per [02 §Re-derivation and
-supersession](02-memory.md#re-derivation-and-supersession)). The
-supersedes-carrying paths are `GoalWrite::supersede_goal` (client →
-engine) and the internal A/P-emit pipeline (operator → engine, not a
-public verb). Stateful Fact projections ("current revision of file X")
-arrive on the stream as repeated `EntityAppend`s under the same
-schema and natural key; clients fold to heads on the read side
-(`Query` heads-only filter).
-
-**Filters** mirror `Query`'s core-generic + flavor-typed split.
-Filtering happens in the engine; the client only sees events
-matching its subscription.
-
-**`ReadFilter.tombstones` is ignored on Subscribe.** Tombstone
-`EntityAppend`s reach subscribers regardless of the filter so clients
-that maintain a current-head cache can evict prior natural-key heads.
-Identity-only payload fetch still runs through `Query`; clients that
-want the tombstone payload pass `IncludeTombstoned` on the hydration
-query.
-
-**`ChangeEvent` is identity + reference, not payload.** Payload
-fetch is a follow-up `Query` keyed on the `entity_id` /
-`edge_id`. This keeps the stream cheap on bandwidth and lets clients
-render typed payloads through the registered schema.
+- No payload bytes on the stream. Hydration is a follow-up `Query`.
+- No `EntityRemoved` or `EntityMutated`; append-only deltas only.
+- `supersedes` is valid for A/P/Goal, never for Facts.
+- Stateful Fact projections stream as repeated `EntityAppend`s under
+  the same schema/natural key; readers fold with `Query`.
+- Subscribe-side filtering beyond owner/since is deferred until the
+  engine enforces the same axes advertised to clients.
 
 ### EventHistory
 
-Owner-scoped bounded read of the change-event log, newest-first.
+Owner-scoped bounded read of `change_event`, newest-first.
 
-- **Filters** — owner only in v1. The same core-generic + flavor-typed
-  axes that `Subscribe` and `Query` carry land here together when
-  any of them gain new axes.
-- **Pagination** — `limit` is required (1..=1000, server-clamped).
-  `before: Option<Uuid7>` returns rows with `seq < before` for
-  older pages. No `after` cursor; resume into newer events is
-  `Subscribe`'s job.
-- **Returns** events newest-first plus a `seq_high_water` watermark
-  with the same semantics as `Query` — the latest seq in the
-  owner's `change_event` log at read time. Clients seed local
-  caches from `events` and start `Subscribe(since = seq_high_water)`
-  to pick up live appends.
-- **Idempotent.** `EventHistory` reads only; no commit, no side
-  effect.
+| Field | Contract |
+|---|---|
+| `owner` | required |
+| `limit` | required; `1..=1000`, server-clamped |
+| `before` | optional UUIDv7 cursor; returns `seq < before` |
+| filters | owner-only in current implementation |
+| return order | newest-first |
+| `seq_high_water` | latest owner event seq at read time |
+
+No `after` cursor. Live resume is `Subscribe`.
 
 ### GoalWrite
 
-```rust
-fn write_goal(draft: GoalDraft, owner: Owner, author: GoalAuthorship,
-              request_id: String) -> Result<GoalId, ProtocolError>;
+Owner-scoped append or supersession of a Goal row (see
+[06 §Goal-Write API](06-goals-and-self.md#goal-write-api)).
 
-fn supersede_goal(prior: GoalId, draft: GoalDraft, author: GoalAuthorship,
-                  request_id: String) -> Result<GoalId, ProtocolError>;
-```
-
-- Validates the typed payload against the registered `GoalPayload`
-  schema ([06](06-goals-and-self.md)). Unknown `schema_id` → `UnknownSchema`.
-- `request_id` is the client-supplied idempotency key. Replay with
-  the same `request_id` and identical body returns the same
-  `GoalId`; replay with a different body returns
-  `IdempotencyConflict`.
-- Strong write→stream consistency: when the call returns success,
-  the corresponding `EntityAppend{ entity_kind: Goal }` is
-  guaranteed to have been emitted to the outbox (see *Consistency*
-  below).
+| Rule | Contract |
+|---|---|
+| schema | validates registered `GoalPayload` schema |
+| request id | `(Owner, request_id)` idempotency key |
+| replay | same body returns prior `GoalId`; different body returns conflict |
+| supersession | prior goal must be same Owner and current head |
+| stream | success commits a Goal `EntityAppend` in the outbox |
 
 ### EventIngest
 
-The 01 `EventSource` path, exposed as a verb so external sources
-can push.
+EventSource path from [01](01-event-source.md), exposed for external
+sources and in-app sources.
 
-- Auth is per-source. A client EventSource (e.g. Memophant in-app
-  chat) authenticates as the user. A webhook EventSource (Git,
-  Slack, Linear) authenticates with a per-source shared secret
-  registered alongside the source.
-- Synchronous through to Fact materialization (per [05 §Validation](05-actions.md#validation-at-ingest)
-  at ingest): the call returns only after the resulting Fact and
-  any structural edges from its payload are committed and emitted
-  on the change-stream.
-- `event_id` is the idempotency key; replay is silently a no-op.
+| Rule | Contract |
+|---|---|
+| event id | server-computed content hash of source, Owner, payload |
+| replay | duplicate event id returns prior outcome / no new Fact |
+| commit | returns after Fact and structural edges are committed |
+| stream | success commits corresponding `ChangeEvent`s |
+| auth | user or source credential, depending on source type |
 
 ### Schema
 
-Registry introspection. Lists registered schemas, versions, and
-declared filter keys for the running binary.
+Binary-scoped registry introspection.
 
-- Binary-scoped: tells the client what *this* deployment exposes,
-  regardless of which flavors are linked.
-- Lets clients render typed payloads and filters generically rather
-  than hard-coding flavor knowledge.
-- Returned shape covers all six payload traits (FactPayload,
-  AbstractionPayload, PerspectivePayload, GoalPayload,
-  CitedObjectPayload, CitationMappingPayload — see [03](03-schema-registry.md), [06](06-goals-and-self.md), [11](11-citations.md)).
+| Includes | Contract |
+|---|---|
+| payload schemas | registered Fact / Abstraction / Perspective / Goal / cited-object / citation-mapping schemas |
+| relations | registered `RelationDescriptor`s |
+| filters | only keys actually registered by the running binary |
 
-## Cursor & resume
+Schema is structural metadata. Deployments may expose it without
+auth or gate it like any other call.
 
-`seq` is a `Uuid7` — monotonic by time, server-generated at write.
-Resume on disconnect:
+## Cursor & Resume
+
+`seq` is a server-generated UUIDv7 cursor. Servers return events with
+`seq > since`.
 
 ```
-client persists last_seq it has acknowledged
+client persists last_seq it processed
 on reconnect:
-    Subscribe(owner, since = last_seq - Δ)   // small overlap window
-    server returns events with seq > since
-    client dedupes by seq (set membership of what it already has)
+    Subscribe(owner, since = last_seq)
+    client dedupes by seq
 ```
 
-The overlap covers clock skew and any in-flight events the client
-hadn't received when it dropped. No ack protocol; no per-client
-server-side state. At-least-once with client-side dedup.
+No ack protocol. No per-client server cursor state. Delivery is
+at-least-once with client dedup.
 
-## Cold-start stitching — `Query` → `Subscribe`
+## Cold-Start Stitching — Query -> Subscribe
 
-Fresh client without local state must seed itself without missing or
-duplicating events:
+Snapshot-only seed:
 
 ```
 1. snapshot, hwm = Query(owner, filters)
-2. apply snapshot to local cache
-3. Subscribe(owner, since = hwm, filters = same)
-4. apply each ChangeEvent to local cache
+2. apply snapshot
+3. Subscribe(owner, since = hwm)
+4. hydrate streamed identities with Query
 ```
 
-`Query`'s `seq_high_water` is the watermark of the engine's outbox at
-read time. Any event committed after that watermark is delivered via
-`Subscribe`; any event before is in the snapshot. No race window.
+Any event committed after `hwm` arrives via `Subscribe`; events at or
+before `hwm` are represented in the snapshot.
 
-### With history seed
-
-A client that wants to render the recent change-log (e.g. an "Event
-stream" UI rail) seeds it with `EventHistory` in parallel with the
-snapshot:
+History rail seed:
 
 ```
 1. (snapshot, hwm_q), (events, hwm_e) = parallel(
        Query(owner, filters),
        EventHistory(owner, limit = N, before = None))
-2. apply snapshot to local cache
-3. seed local event log with events
-4. Subscribe(owner, since = max(hwm_q, hwm_e), filters = same)
+2. apply snapshot
+3. seed event log with events
+4. Subscribe(owner, since = max(hwm_q, hwm_e))
+5. dedupe live events by seq
 ```
 
-`max(hwm_q, hwm_e)` is defensive — the two reads observe the same
-log; in steady state they agree. Clients dedup live events by
-`seq` membership against the seeded log (`Subscribe` is at-least-once
-per the cursor section).
+## Consistency — Strong Write -> Stream
 
-## Multi-Owner stance
+Graph writes commit entity/edge rows and corresponding
+`change_event` rows in one storage transaction.
 
-One stream per Owner. Rationale:
+| Property | Contract |
+|---|---|
+| atomic write/event | no committed graph row without outbox row |
+| write return | `GoalWrite` / `EventIngest` success means event is committed |
+| delivery | at-least-once; clients dedupe by `seq` |
+| replay | `EventHistory` reads the same protocol outbox |
+| broker | none required for v1; Postgres tailing is sufficient |
 
-- One stream = one auth scope; principal access changes don't create
-  mid-stream consistency questions.
-- Backpressure isolation: a slow Owner can't starve other Owners.
-- v1 deployments are single-Owner-active (Memophant per user, Code
-  per dev); paying complexity now for benefit later isn't worth it.
+`change_event` is the protocol outbox and replay log (see
+[07](07-storage.md#core-tables--abstract)). Compliance audit is
+separate (see [13](13-compliance.md#audit-log)).
 
-A principal with N Owners opens N streams. A multiplexed-stream
-variant can be added later as a wrapper without breaking the
-per-Owner shape.
+## Operational / Config RPCs
 
-## Consistency — strong write→stream, via outbox
+Current RPCs outside the six graph verbs:
 
-Every write commits the entity row and a corresponding
-`change_event` row in the same DB transaction. A publisher process
-tails `change_event` by `seq` and fans out to subscribed clients.
+| Family | RPCs | Contract |
+|---|---|---|
+| personality lifecycle | `InstantiatePersonality`, `SetWakeEntries`, `ListPersonalityInstances`, `TombstonePersonality` | mutate runtime personality config and wake entries; not graph verbs |
+| inference config | `RegisterInferenceTarget`, `ListInferenceTargets`, `RemoveInferenceTarget`, `BindInferenceTier`, `ListInferenceTierBindings` | owner-scoped model target and tier binding config (see [10](10-configuration.md)) |
 
-```
-single DB transaction:
-    INSERT entity row (memory | goal | edge)
-    INSERT change_event row (seq = Uuid7, owner, ChangeKind)
-COMMIT
+`InstantiatePersonality` writes the root self-Perspective and emits
+one Perspective `EntityAppend`. Other personality config mutations do
+not emit cognitive `ChangeEvent`s; personality list UIs refresh with
+the list RPC, not by folding `Subscribe`.
 
-publisher process:
-    SELECT * FROM change_event WHERE seq > last_published ORDER BY seq
-    fan out to per-Owner Subscribe streams
-    advance last_published
-```
+### Personality Lifecycle
 
-Properties:
+| Operation | Contract |
+|---|---|
+| instantiate | creates a runtime personality instance and root self-Perspective |
+| set wake entries | replaces wake-entry config for one personality instance |
+| list | returns active instances by default; tombstoned rows opt-in |
+| tombstone | removes instance from default listings and dispatcher selection |
 
-- **Atomic write→event.** No torn states visible to subscribers.
-- **`GoalWrite` / `EventIngest` return = event committed.** UI can
-  rely on "I wrote it, the next stream tick contains it."
-- **At-least-once with client dedup by `seq`.** Publisher can
-  replay safely.
-- **The `change_event` table is the audit log.** Replay engine
-  history by reading it.
-- **No external broker required for v1.** Postgres + a tail process
-  is sufficient. A broker (NATS, Redis Streams) is a later
-  optimization, not an architectural commitment.
+`TombstonePersonality` is idempotent for an existing instance.
+Operations against missing or tombstoned rows return `NotFound` where
+the UI must distinguish stale state from backend failure.
 
-The `change_event` storage shape lives in [07](07-storage.md) — this
-doc only fixes the *behavior* (atomic write→event, monotonic `seq`,
-at-least-once with client dedup).
+## Compliance Admin Surface
 
-## Auth model
+Compliance primitives are defined in [13](13-compliance.md). Their
+admin protocol surface is deferred unless a concrete RPC exists.
 
-### Resolution surface
+| Primitive | Protocol status |
+|---|---|
+| `delete_owner` | design intent |
+| `delete_source_scope` | design intent |
+| `pause_owner` / `resume_owner` | design intent |
+| `export_owner` | design intent |
+| tool-recipient export | deferred |
+| legal-consequence blocking | deferred |
 
-Auth is pluggable per binary, not per flavor. The engine exposes one
-trait; transport (09) extracts credentials from the wire and hands
-them in:
+Compliance operations are admin/controller actions, not cognitive
+graph writes.
 
-```rust
-trait AuthResolver: Send + Sync {
-    fn resolve(&self, creds: &Credentials) -> Result<Resolved, AuthError>;
-}
+## Auth Model
 
-struct Resolved {
-    principal:         Principal,     // 01 — User(uid) | Group(gid)
-    accessible_owners: Set<Owner>,    // gates the Owner each call names
-}
+Auth is pluggable per binary, not per flavor. Transport extracts
+credentials; engine dispatch receives resolved principal and Owner
+access.
 
-enum Credentials {
-    None,                             // NoAuth deployment
-    Bearer(BearerToken),              // user principals
-    Source(SourceCredential),         // shape per-source (01)
-}
-```
+| Credential class | Use |
+|---|---|
+| `None` | local embedded / NoAuth deployments |
+| bearer token | user principal |
+| source credential | external EventSource |
 
-Per-verb dispatch enforces `call.owner ∈ resolved.accessible_owners`,
-returning `Forbidden` otherwise. `Subscribe` opens one stream per
-Owner the principal asks for; each is gated independently.
+| Principal | Access |
+|---|---|
+| user | `Query`, `Subscribe`, `EventHistory`, `GoalWrite`; in-app `EventIngest` when acting as a source |
+| source | `EventIngest` for the registered source |
+| admin/controller | operational/config RPCs and future compliance admin operations |
 
-Reference impls live in the workspace:
+Per-call dispatch enforces `call.owner` inside the resolved Owner set.
+Signup, MFA, billing, group membership, and tenancy services live in
+front of the engine.
 
-- **`NoAuth`** — fixed principal + fixed accessible Owner. Local
-  desktop, embedded-engine mode (09), single-tenant CLI use.
-- **`OIDC`** — validates a JWT against a configured issuer + JWKS,
-  maps `sub` to `Principal::User`, reads a configured claim for the
-  accessible Owner set. Default for hosted deployments.
+## Error Envelope
 
-A binary picks one resolver at startup. Switching deployment posture
-is a config change, not a code change.
+Current core envelope:
 
-### Principal classes
+| Field | Contract |
+|---|---|
+| `code` | typed `ErrorCode` |
+| `message` | safe client-facing text |
+| `request_id` | optional echo for write/idempotency paths |
 
-- **User principals** access `Query`, `Subscribe`, `GoalWrite`.
-  Multi-Owner per principal works without protocol changes (Justitia
-  lawyer with N client matters; family Memophant account with multiple
-  personal Owners).
-- **Source principals** access `EventIngest`. An in-app EventSource on
-  a client may piggyback on the user principal; a webhook source
-  authenticates with a shared secret registered to that source. New
-  source types introduce their own credential shape as needed; the
-  engine doesn't prescribe one.
+Transport-specific extensions may carry structured `details`; gRPC
+uses typed trailer details in the proto surface.
 
-### Deployment concerns live outside the binary
+Current code families include auth/scope, schema/input, idempotency,
+not-found/state, tool/inference config, and internal errors. Docs must
+not require a code variant until it exists in `crates/core/src/error.rs`
+or the owning wire surface.
 
-The resolver only answers *who is this caller and which Owners can
-they touch*. Everything that shapes that answer — signup UX, password
-reset, MFA, billing, plan enforcement, the Group-membership store
-(01 §Owner already names `usermanager` as its home) — runs in front
-of the engine and is not Proxima's concern. A typical hosted
-deployment puts an IdP (e.g. Zitadel) and a tenancy service
-(e.g. `usermanager`) ahead of the engine; the `OIDC` resolver
-consumes whatever token they hand off. Local and embedded deployments
-need none of it and pick `NoAuth`. Same binary serves both.
+On `Subscribe`, errors terminate the stream through the transport
+error path.
 
-`Schema` is unauthenticated by default (the registry is structural
-metadata, not user data). Deployments may gate it behind a principal
-if they want to keep the schema set private.
+## EventSource Registration
 
-## Error envelope — one shape across all verbs
+EventSources register at startup from linked flavor crates, same
+build-time posture as schemas, relations, prompts, and tools. Runtime
+EventSource registration is deferred and requires a new ADR.
 
-```rust
-struct ProtocolError {
-    code:        ErrorCode,
-    message:     String,
-    details:     Option<ErrorDetails>,  // structured per code
-    request_id:  Option<String>,        // echo on writes
-}
+## Backpressure
 
-enum ErrorCode {
-    // input / schema (the engine is strict at the boundary)
-    UnknownSchema,
-    SchemaVersionMismatch,
-    InvalidPayload,
-    InvalidRelation,            // mask violation, unknown relation
+Current contract:
 
-    // auth / scope
-    AuthRequired,
-    Forbidden,                  // principal lacks access to this Owner
-    OwnerNotFound,
+| Concern | Rule |
+|---|---|
+| sync reads | clients request smaller `limit`s |
+| streams | reconnect with `since`; dedupe by `seq` |
+| per-stream server buffer policy | deferred |
+| broker/offline queue | deferred |
 
-    // idempotency / state
-    IdempotencyConflict,        // request_id reused with different body
-    Superseded,                 // target of supersede_* already superseded
-    NotFound,
+## Out of Scope
 
-    // engine
-    EngineUnavailable,
-    TransactionConflict,        // retry-safe
-    Internal,                   // catch-all, no detail leak
-}
-```
+- Transport/framing/serialization choices: [09](09-frontend.md).
+- Shell graph store, hydration, and generated bindings: [09](09-frontend.md).
+- Runtime registration of schemas/tools/sources/flavors.
+- Local-first durable replica and offline write queue.
+- Compliance operation implementation details: [13](13-compliance.md).
 
-Same envelope on every verb. Codes are typed so clients can branch;
-`details` carries the structured payload (e.g.
-`{ schema_id, expected_version, got_version }` for
-`SchemaVersionMismatch`). On `Subscribe`, errors arrive as a
-stream-terminating frame.
+## Cross-References
 
-## EventSource registration — build-time in v1
-
-EventSources register at startup from the linked flavor crates,
-same posture as tools (05, 12) and schemas (03). v1 ships
-build-time only. Runtime registration of EventSource manifests is
-deferred and requires a new ADR.
-
-## Backpressure — client-side concern in v1
-
-Slow clients on flaky networks request smaller pages on `Query` and
-narrower filters on `Subscribe`. Engine-side per-stream buffer
-policy is deferred; the cursor + dedup model means any drop is
-recoverable on reconnect. Revisit when a real deployment hurts.
-
-## Personality lifecycle RPCs — operational, not cognitive
-
-Personality management RPCs are operational config: `ProvisionOwner`,
-`InstantiatePersonality`, `SetWakeEntries`, `ListPersonalityInstances`,
-`TombstonePersonality`. They mutate `personality` / `personality_wake_entries`
-(and the root self-Perspective on instantiation), not the cognitive
-append-only log.
-They **do not emit cognitive `ChangeEvent`s**: clients refresh
-personality lists by re-calling `ListPersonalityInstances`, not by
-folding events. `TombstonePersonality` is idempotent on
-`(owner, personality_type_id, personality_instance_id)`; tombstoned
-rows are excluded from the dispatcher's active set and from the
-default `ListPersonalityInstances` listing
-(`include_tombstoned = false`). Both `SetWakeEntries` against a
-tombstoned row and `TombstonePersonality` against a missing row return
-`NotFound` (not `Internal`), so UI can distinguish stale state from a
-backend failure.
-
-## What's out of scope here
-
-- **Transport** (HTTP/2 + SSE? WebSocket? gRPC? long-poll?) — 09.
-- **Serialization** (protobuf? JSON? CBOR?) — 09.
-- **Stream framing** for `Subscribe` — 09.
-- **Schema-driven UI codegen** (proto → typed components) — 09.
-- **Local-first replica + offline queue** — 09.
-
-This doc fixes the semantic contract; 09 picks the bytes.
-
-## Cross-references
-
-- `EntityId` / `EntityKind` / `Edge`: 02 §Edges.
-- Six payload traits: 03, 06, 11.
-- Operators (F→A, A→P, A→Goal): [04 §Phase 2 — Personality embedding](04-consolidation.md#phase-2--personality-embedding).
-- Tools, wake palettes, `EventSource` invariants: [01](01-event-source.md), [05](05-actions.md), [12](12-tool-manifest.md).
-- Goal entity, `GoalAuthorship`, `GoalPayload`: [06](06-goals-and-self.md).
-- Storage shape, `change_event` table (TBD here): [07](07-storage.md).
-- Flavor registration (`proxima_flavor!`), build-time posture: [08](08-core-and-flavors.md).
-- Frontend client model + transport choices: [09](09-frontend.md).
+- Owner and EventSource invariants: [01](01-event-source.md).
+- Entity / edge model: [02](02-memory.md).
+- Payload/schema registry: [03](03-schema-registry.md).
+- Operators: [04](04-consolidation.md).
+- Actions and human approval: [05](05-actions.md).
+- Goal entity and GoalWrite: [06](06-goals-and-self.md).
+- Storage and `change_event`: [07](07-storage.md).
+- Flavor composition: [08](08-core-and-flavors.md).
+- Frontend/client transport: [09](09-frontend.md).
+- Inference config: [10](10-configuration.md).
+- Compliance primitives: [13](13-compliance.md).
 
 ## Anchors
 
 - `scope`
-- `the-five-verbs`
-- `owner-scoping-the-primary-axis`
-- `verbs`
+- `the-six-verbs`
+- `owner-scoping--the-primary-axis`
+- `graph-verbs`
 - `query`
 - `subscribe`
+- `eventhistory`
 - `goalwrite`
 - `eventingest`
 - `schema`
-- `cursor-resume`
-- `cold-start-stitching-query-to-subscribe`
-- `multi-owner-stance`
-- `consistency-strong-write-to-stream-via-outbox`
+- `cursor--resume`
+- `cold-start-stitching--query---subscribe`
+- `consistency--strong-write---stream`
+- `operational--config-rpcs`
+- `personality-lifecycle`
+- `compliance-admin-surface`
 - `auth-model`
-- `resolution-surface`
-- `principal-classes`
-- `deployment-concerns-live-outside-the-binary`
-- `error-envelope-one-shape-across-all-verbs`
-- `eventsource-registration-build-time-in-v1`
-- `backpressure-client-side-concern-in-v1`
-- `whats-out-of-scope-here`
+- `error-envelope`
+- `eventsource-registration`
+- `backpressure`
+- `out-of-scope`
 - `cross-references`

@@ -79,7 +79,7 @@ Rules:
 - Request ids, message ids, branch names, issue ids, and payload references may
   create ordinary structural edges.
 - No action-effect shortcut relation is required.
-- No rollback is implied by deleting or superseding Proxima rows (see 15).
+- No rollback is implied by deleting or superseding Proxima rows (see 13).
 
 ## Dispatcher-emitted call Facts
 

@@ -23,7 +23,7 @@ pub trait FactPayload: serde::Serialize + serde::de::DeserializeOwned + 'static 
     /// Defaults to `false`; controllers handling health, biometric,
     /// political, or other heightened-protection categories must
     /// override to `true`. See docs/03 §Special-category declaration
-    /// and docs/15 §Compliance vocabulary.
+    /// and docs/13 §Compliance vocabulary.
     const SPECIAL_CATEGORY: bool = false;
     fn render(&self) -> String;
     fn sidecar_table() -> &'static str;
