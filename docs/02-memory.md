@@ -430,6 +430,8 @@ Perspective-mediated explanations (no plain succession).
 `PersonalityFlavor` is the decider unit (08). Each runtime instance is
 addressed by `(personality_type_id, personality_instance_id)`, owns a
 self-Perspective, and stores wake filters in `personality_wake_config`.
+Dreaming is flavor-declared consolidation through this path, not a
+separate entity, relation class, or Core pipeline.
 
 ```rust
 change_event
@@ -446,6 +448,16 @@ Layer targets remain strict:
 | Fact-triggered wake | Facts sharing one source batch | Abstraction |
 | Abstraction-triggered wake | Abstractions visible to the instance | Perspective |
 | Goal / edge-triggered wake | Goal or `core/inspires` edge to self-Perspective | Perspective / Goal response |
+
+Dream forms:
+
+| Form | Signature | Owner |
+|---|---|---|
+| Compaction | `2^F × Π -> A` | flavor operator/personality |
+| Reflection | `2^A × Π -> P` | flavor operator/personality |
+| Cross-domain synthesis | `2^F_cross × Π -> A_cross` | flavor schema/operator |
+| Self/Perspective revision | `2^A × P_active × G_active -> P_new` | personality |
+| Goal reorientation | `P/A evidence -> Goal supersession/proposal` | goal flavor + personality |
 
 Same Facts or Abstractions under different personality instances produce
 parallel lineages. Each output carries the split personality identity;
