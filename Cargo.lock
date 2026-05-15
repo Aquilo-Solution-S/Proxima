@@ -3521,15 +3521,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "proxima-engine"
-version = "0.1.0"
-dependencies = [
- "proxima-core",
- "tokio",
- "uuid",
-]
-
-[[package]]
 name = "proxima-flavor-goal"
 version = "0.1.0"
 dependencies = [

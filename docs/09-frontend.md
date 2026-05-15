@@ -52,8 +52,8 @@ via `cbor-x` and the schema-driven dispatch table (§Encoding).
 
 ### Wire path (deferred, non-desktop / remote)
 
-When a deployment binds the engine to a network address (`proxima-engine
-serve --addr ...`), the same `wire-grpc` `EngineGrpcServer` mounts on
+When a deployment binds the engine to a network address, the same
+`wire-grpc` `EngineGrpcServer` mounts on
 a tonic `Server`. Browser-friendly framing (Connect-RPC, gRPC-Web)
 is a follow-on adapter on the same port — not v1 scope, since the
 only v1 client is Tauri Rust which speaks tonic natively.
