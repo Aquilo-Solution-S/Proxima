@@ -55,7 +55,7 @@ Two distinct lifecycle layers, never confused:
 | Cognitive | Supersession only; Facts immutable; A/P/Goals revise via new memory + `supersedes` edge | `EventSource`, `Operator*`, `PerspectiveLink`, `Core(Engine)`, `Core(User)` — see [02 §The core entity](02-memory.md#the-core-entity) | The supersession chain itself is the audit |
 | Compliance | Hard delete, pause, restriction, export | Admin-invoked; no Authorship variant; flavor selectors may calculate scope | Separate `compliance.*` schema, never visible to operators |
 
-Operators and deciders observe the diminished graph as if deleted
+Operators and wake execution observe the diminished graph as if deleted
 entries had never existed. They cannot read the compliance audit
 log; they cannot author compliance operations; they cannot
 overload them as cognitive lifecycle transitions. The compliance
@@ -173,7 +173,7 @@ either re-scope the affected data into a sub-Owner that can be
 ### `pause_owner(owner_id)` / `resume_owner(owner_id)`
 
 Art. 18 restriction of processing. While paused, operators skip
-the Owner — no F→A, no A→P, no decider runs — but data remains
+the Owner — no F→A, no A→P, no wake execution — but data remains
 intact and reads remain available (`export_owner` still works,
 UI reads still work). Implementation: a `paused` flag on the
 Owner row; every operator's `availability` predicate AND'd with
@@ -261,7 +261,7 @@ the same Owner, by design.
 
 ## External side effects
 
-Compliance operations cannot reach beyond the substrate. A decider
+Compliance operations cannot reach beyond the substrate. Wake execution
 that, prior to `delete_owner`, fired an external tool call (sent
 an email, posted a Slack message, opened a PR, transferred funds,
 filed a legal notice) *has done that*; the resulting state in the
@@ -280,14 +280,12 @@ Implications:
   are at least mechanically discharge-able by Ops.
 - Tools that perform legally-significant external actions (sending
   legal notices, transferring funds, modifying public records,
-  contacting third parties on the subject's behalf) must be wired
-  under human-in-the-loop deciders — the pattern is the
-  proposal-Fact-plus-approval-Source flow already documented in
-  [05 §Deciders](05-actions.md#deciders--flavor-supplied), gated
-  by the `legal_consequence: bool` flag on the tool manifest
-  ([12](12-tool-manifest.md)). Engine refuses to wire a
-  `legal_consequence = true` tool to a fully-automatic decider
-  without an explicit override.
+  contacting third parties on the subject's behalf) must use human
+  approval — the proposal-Fact-plus-approval-Fact flow documented in
+  [05 §Human approval](05-actions.md#human-approval), gated by the
+  `legal_consequence: bool` flag on the tool manifest ([12](12-tool-manifest.md)).
+  Engine refuses to expose a `legal_consequence = true` tool to fully
+  automatic wake execution without an explicit override.
 
 ## Compliance vocabulary
 
@@ -414,7 +412,7 @@ preempts) or waits.
 [14](14-protocol-surface.md), every write produces an entry in
 `compliance.actions` with the diff (old → new) and the requesting
 principal. No operator authorship; no flavor extension; no API
-exposure to deciders or the cognitive read surface.
+exposure to wake execution or the cognitive read surface.
 
 **Default-empty semantics.** A fresh Owner with no
 `owner_policy` row is treated as the all-permissive default:

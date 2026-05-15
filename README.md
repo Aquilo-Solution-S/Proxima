@@ -58,8 +58,8 @@ Design source of truth:
 - [`docs/04-consolidation.md`](docs/04-consolidation.md) — the two-step
   inclusion model (graph embedding + personality embedding). F→A and A→P
   as set transforms, cycle resolution via edge buffering, supersession.
-- [`docs/05-actions.md`](docs/05-actions.md) — actions as `system`-source
-  events. No new entity; collapses onto 01 + 03 plus a tool registry.
+- [`docs/05-actions.md`](docs/05-actions.md) — actions as ordinary Facts
+  emitted through trusted sources / tools. No Action entity.
 - [`docs/06-goals-and-self.md`](docs/06-goals-and-self.md) — Goal as
   distinct entity (DAG, supersession-only lifecycle, embedded text
   for retrieval). Self as pure query. Conversation-extraction

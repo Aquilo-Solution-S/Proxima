@@ -25,8 +25,9 @@ enum Principal {
 ```
 
 Used identically across components 01 / 02 / 05 / 06. Storage: three
-columns (`owner_principal_kind`, `owner_principal_id`, `owner_org_id`)
-plus a check constraint. Schemas ([03](docs/03-schema-registry.md)) are binary-scoped (per [03 §Scoping](docs/03-schema-registry.md#scoping-one-namespace-per-binary)).
+columns (`owner_principal_kind`, `owner_principal_id`, `owner_org_id`);
+`owner_principal_kind` is a SQL enum. Schemas ([03](03-schema-registry.md))
+are binary-scoped (per [03 §Scoping](03-schema-registry.md#scoping-one-namespace-per-binary)).
 
 Access rule (`org_id` never enters):
 
@@ -80,7 +81,7 @@ messages, edits, and reactions; a Forgejo source emits push, PR, issue, and
 comment events. There is no per-source `Event` associated type and no
 per-source `schema_version()` accessor — both would falsely encode "source
 = one schema". Schema declaration for registration happens per-flavor (see
-[03 §Scoping](docs/03-schema-registry.md#scoping-one-namespace-per-binary)),
+[03 §Scoping](03-schema-registry.md#scoping-one-namespace-per-binary)),
 not via a runtime accessor on the source.
 
 Each event the source produces becomes one Fact. The 1:1 mapping is mandatory
@@ -99,13 +100,13 @@ consolidation operates on a source batch (component 02): the chunks of one
 PDF, the files of one repo crawl, the messages of one chat session.
 
 Batch lifecycle (open / closed / consolidated) is persisted in the core
-`source_batches` table — see [04 §Source-batch lifecycle](docs/04-consolidation.md#source-batch-lifecycle). The source
+`source_batches` table — see [04 §Source-batch lifecycle](04-consolidation.md#source-batch-lifecycle). The source
 signals batch-complete via `engine.close_batch(source_batch_id)`; the
 engine gates F→A on `closed_at IS NOT NULL`.
 
 `source_batch_id` is the F→A consolidation episode, distinct from the
 artefact a Fact cites (`citation_mapping_id` → `cited_object_id`,
-see [11](docs/11-citations.md)). They often coincide — one PDF ingestion → one batch → one
+see [11](11-citations.md)). They often coincide — one PDF ingestion → one batch → one
 Document — but for streams (one ChatSession lasting months → many
 batches over time) they don't. Coincidence isn't identity.
 
@@ -184,7 +185,7 @@ fails if any of these leak into a source:
    classification is an Abstraction produced upstream.
 3. **No cross-source joining.** A source does not look at what another source
    produced. Each source is local to its own Reality slice. Cross-source
-   patterns are Perspectives.
+   synthesis is a typed Abstraction; Perspective may frame it.
 4. **No filtering by relevance.** A source may filter by *correctness* (drop
    malformed payloads, validate schema). It may not filter by "is this
    interesting" — that is Goal-driven, not source-driven.
@@ -241,7 +242,7 @@ immutable; their typing is frozen at insert time.
 ## Bootstrap
 
 The engine itself has no founding goal. Per-flavor onboarding is the
-bootstrap mechanism (see [06](docs/06-goals-and-self.md)): the flavor's signup flow asks the user
+bootstrap mechanism (see [06](06-goals-and-self.md)): the flavor's signup flow asks the user
 flavor-specific founding-letter questions and writes Goals + Events
 under that user's `Owner`.
 
@@ -249,7 +250,7 @@ Engine-level config registers source *instances* with their default
 owner. Source-instance shape lives here; the broader runtime config
 surface (LLM endpoint, embedding model, credential resolution)
 extends the same `proxima.config.toml` and is specified in
-[10](docs/10-configuration.md).
+[10](10-configuration.md).
 
 For example, a shared Forgejo crawler for org-AQS emits with
 `principal = Group(org_AQS_everyone)`, `org_id = org_AQS`; a personal

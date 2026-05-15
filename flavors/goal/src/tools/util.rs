@@ -413,9 +413,6 @@ pub async fn insert_motivated_by_edges(
         })?;
     let mut edge_ids = Vec::with_capacity(evidence.len());
     for ev in evidence {
-        if ev.target_kind != "Fact" {
-            continue;
-        }
         let edge_id = uuid::Uuid::now_v7();
         let draft = EdgeDraft {
             edge_id,
@@ -528,6 +525,9 @@ pub async fn append_lifecycle_derived_from_edges(
         })?;
     let mut edge_ids = Vec::with_capacity(evidence.len());
     for ev in evidence {
+        if ev.target_kind != "Fact" {
+            continue;
+        }
         let edge_id = uuid::Uuid::now_v7();
         let draft = EdgeDraft {
             edge_id,

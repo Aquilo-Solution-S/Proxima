@@ -10,8 +10,8 @@ is downstream of this and lives in 09.
 A Proxima deployment is one composite binary (core + linked flavor
 crates, per 08). Clients — frontend apps (Memophant mobile, Code
 web, etc.) and trusted EventSources (chat webhooks, system processes)
-— talk to the binary through the surfaces below. The decider, the
-operators (04), the tool registry (05), and any flavor-registered
+— talk to the binary through the surfaces below. Wake execution, the
+operators ([04](04-consolidation.md)), the tool registry (05), and any flavor-registered
 behavior all run **inside** the binary; clients never see them on the
 wire.
 
@@ -27,7 +27,7 @@ wire.
 | `Schema` | client → engine, sync | yes | global (binary-scoped) |
 
 That's the entire client-facing surface. Operators, tools, the
-decider, LLM calls, external-tool dispatches are internal — clients
+wake execution, LLM calls, external-tool dispatches are internal — clients
 observe their effects only as `ChangeEvent`s on `Subscribe`.
 
 ## Owner-scoping — the primary axis
@@ -52,7 +52,7 @@ Owner-scoped snapshot read of memories, goals, and edges.
     superseded), tombstone visibility (`PresentOnly` /
     `IncludeTombstoned`), edge traversal (follow N relations from a
     seed), pagination cursor + limit.
-  - **Flavor-typed** — registered per sidecar by flavors ([08](docs/08-core-and-flavors.md)). A Code
+  - **Flavor-typed** — registered per sidecar by flavors ([08](08-core-and-flavors.md)). A Code
     flavor that wants `severity >= P1` filtering on a `BugReportV1`
     sidecar registers it the same way it registers the schema. The
     `Schema` verb advertises which filter keys are available per
@@ -156,7 +156,7 @@ fn supersede_goal(prior: GoalId, draft: GoalDraft, author: GoalAuthorship,
 ```
 
 - Validates the typed payload against the registered `GoalPayload`
-  schema ([06](docs/06-goals-and-self.md)). Unknown `schema_id` → `UnknownSchema`.
+  schema ([06](06-goals-and-self.md)). Unknown `schema_id` → `UnknownSchema`.
 - `request_id` is the client-supplied idempotency key. Replay with
   the same `request_id` and identical body returns the same
   `GoalId`; replay with a different body returns
@@ -175,7 +175,7 @@ can push.
   chat) authenticates as the user. A webhook EventSource (Git,
   Slack, Linear) authenticates with a per-source shared secret
   registered alongside the source.
-- Synchronous through to Fact materialization (per [05 §Validation](docs/05-actions.md#validation-at-ingest)
+- Synchronous through to Fact materialization (per [05 §Validation](05-actions.md#validation-at-ingest)
   at ingest): the call returns only after the resulting Fact and
   any structural edges from its payload are committed and emitted
   on the change-stream.
@@ -192,7 +192,7 @@ declared filter keys for the running binary.
   than hard-coding flavor knowledge.
 - Returned shape covers all six payload traits (FactPayload,
   AbstractionPayload, PerspectivePayload, GoalPayload,
-  CitedObjectPayload, CitationMappingPayload — see [03](docs/03-schema-registry.md), [06](docs/06-goals-and-self.md), [11](docs/11-citations.md)).
+  CitedObjectPayload, CitationMappingPayload — see [03](03-schema-registry.md), [06](06-goals-and-self.md), [11](11-citations.md)).
 
 ## Cursor & resume
 
@@ -450,12 +450,12 @@ This doc fixes the semantic contract; 09 picks the bytes.
 
 - `EntityId` / `EntityKind` / `Edge`: 02 §Edges.
 - Six payload traits: 03, 06, 11.
-- Operators (F→A, A→P, A→Goal): 04.
-- Tools (T1/T2), `EventSource` invariants: [01](docs/01-event-source.md), [05](docs/05-actions.md), [12](docs/12-tool-manifest.md).
-- Goal entity, `GoalAuthorship`, `GoalPayload`: [06](docs/06-goals-and-self.md).
-- Storage shape, `change_event` table (TBD here): [07](docs/07-storage.md).
-- Flavor registration (`proxima_flavor!`), build-time posture: [08](docs/08-core-and-flavors.md).
-- Frontend client model + transport choices: [09](docs/09-frontend.md).
+- Operators (F→A, A→P, A→Goal): [04 §Phase 2 — Personality embedding](04-consolidation.md#phase-2--personality-embedding).
+- Tools (T1/T2), `EventSource` invariants: [01](01-event-source.md), [05](05-actions.md), [12](12-tool-manifest.md).
+- Goal entity, `GoalAuthorship`, `GoalPayload`: [06](06-goals-and-self.md).
+- Storage shape, `change_event` table (TBD here): [07](07-storage.md).
+- Flavor registration (`proxima_flavor!`), build-time posture: [08](08-core-and-flavors.md).
+- Frontend client model + transport choices: [09](09-frontend.md).
 
 ## Anchors
 

@@ -21,7 +21,7 @@ id          = "code/forgejo-comment-issue"
 version     = 1
 description = "Post a comment on a Forgejo issue."
 
-# OpenAI-compatible function definition. Fed verbatim to the decider LLM.
+# OpenAI-compatible function definition. Fed verbatim to the tool-calling wake runtime.
 [tool.function]
 name        = "forgejo_comment_issue"
 description = "Post a comment on a Forgejo issue."
@@ -62,7 +62,7 @@ algorithm = "ed25519"
 sig       = "..."
 ```
 
-`[tool.function]` is the OpenAI / Anthropic function-call shape verbatim; passed to the decider unchanged. `[tool.capabilities]` and `[tool.body]` are Proxima-specific and never reach the LLM.
+`[tool.function]` is the OpenAI / Anthropic function-call shape verbatim; passed to the tool-calling wake runtime unchanged. `[tool.capabilities]` and `[tool.body]` are Proxima-specific and never reach the LLM.
 
 ## Rust types
 
@@ -128,7 +128,7 @@ fails for any tool whose manifest omits one. Vocabulary
   invocation time and refuses calls when the tool's residency
   is not in the Owner's allowlist. A US-only Owner attempting
   to invoke an EU-only tool gets a structured rejection
-  (`InvocationError::ResidencyDenied`); the decider observes
+  (`InvocationError::ResidencyDenied`); the wake runtime observes
   the rejection like any other tool-call failure.
 - **`recipients: Vec<RecipientId>`** — opaque identifiers of
   the third parties that receive data through this tool's
@@ -146,12 +146,12 @@ fails for any tool whose manifest omits one. Vocabulary
   legal notice, transferring funds, modifying public records,
   contacting third parties on the subject's behalf, filing a
   regulatory submission. The flag triggers Art. 22 protections:
-  engine refuses to wire a `legal_consequence = true` tool
-  under a fully-automatic decider. Such tools must be wired
-  under the human-in-the-loop pattern documented in
-  [05 §Deciders](05-actions.md#deciders--flavor-supplied) — a
-  decider emits the proposal Fact, a separate `Core(User)`-
-  authored approval Fact triggers the actual external call. An
+  engine refuses to expose a `legal_consequence = true` tool to
+  fully automatic wake execution. Such tools must use the
+  human-approval pattern documented in
+  [05 §Human approval](05-actions.md#human-approval): a wake/source
+  emits the proposal Fact, and a separate user-authored approval
+  Fact triggers the actual external call. An
   explicit override (`config.allow_unmediated_legal_consequence
   = true`) is available for deployments that have completed an
   Art. 22 DPIA and obtained explicit consent or other valid
@@ -182,22 +182,22 @@ enum InstallError {
     DuplicateToolId,
     BodyUnreachable,
     MissingComplianceField(&'static str),    // declared at install, not runtime
-    LegalConsequenceUnmediated,              // tool wired to non-AYU decider
+    LegalConsequenceUnmediated,              // tool exposed to automatic wake
                                              // without explicit override
 }
 ```
 
 `install` validates `capabilities.emit_facts` and `capabilities.emit_relations` against the registered (build-time) set. Unknown id ⇒ reject. T1 cannot widen what T2 has frozen.
 
-`install` also validates the `compliance` block: all three fields must be present, and if `legal_consequence = true` the tool's wiring (which decider invokes it) is checked against the AYU pattern; non-AYU wiring without the explicit deployment override yields `LegalConsequenceUnmediated`.
+`install` also validates the `compliance` block: all three fields must be present, and if `legal_consequence = true` the tool's wake/tool-palette exposure is checked against the approval pattern; non-approval wiring without the explicit deployment override yields `LegalConsequenceUnmediated`.
 
-`available_for` returns the exact OpenAI function set the decider sees; nothing more.
+`available_for` returns the exact OpenAI function set exposed to one wake/tool-calling run; nothing more.
 
 ## Invocation flow
 
-For how tools integrate with the SYSTEM EventSource, see [05-actions.md](docs/05-actions.md).
+For how tools integrate with action-attempt Facts, see [05-actions.md](05-actions.md).
 
-1. Decider receives `available_for(ctx)`; selects a tool with arguments.
+1. Wake execution receives `available_for(ctx)`; selects a tool with arguments.
 2. Engine validates args against `manifest.function.parameters` (jsonschema crate).
 3. Engine validates `manifest.compliance.data_residency ∈ owner_policy.allowed_residencies`. Mismatch ⇒ `InvocationError::ResidencyDenied`, no dispatch.
 4. Engine dispatches `body`:
@@ -206,8 +206,8 @@ For how tools integrate with the SYSTEM EventSource, see [05-actions.md](docs/05
    - `Http`: POST args; parse JSON.
 5. Body returns `ToolResult { fact: FactPayloadJson, relations: Vec<EdgeRef> }`.
 6. Engine validates `fact.schema_id ∈ capabilities.emit_facts` and every `relation.id ∈ capabilities.emit_relations`.
-7. Engine emits `SYSTEM` event → Fact + structural edges in one transaction ([05](docs/05-actions.md)). The Fact row carries `manifest.compliance.recipients` for later `export_owner` recall ([15](15-compliance.md)).
-8. Engine returns `memory_id` to the decider.
+7. Engine emits an action-attempt Fact + structural edges in one transaction ([05](05-actions.md)). The Fact row carries `manifest.compliance.recipients` for later `export_owner` recall ([15](15-compliance.md)).
+8. Engine returns `memory_id` to the wake/tool caller.
 
 A failed validation aborts; nothing is persisted; the failure is recorded on `tool_invocations.error`.
 
@@ -250,7 +250,7 @@ Append-only in the audit sense: revoke sets `revoked_at`; never `DELETE`.
 
 ## Why this layering
 
-- **OpenAI shape for the LLM-facing slice.** Universal across decider models; zero glue.
+- **OpenAI shape for the LLM-facing slice.** Universal across tool-calling models; zero glue.
 - **MCP as a body transport.** Mount Anthropic / GitHub / Slack tool servers without inventing a wire format. MCP's capability model is *not* used; Proxima's `[tool.capabilities]` block is authoritative.
 - **Capability declaration on top.** Output Fact schema, allowed relations, owner scope — none of which OpenAI or MCP define. This is the engine-enforceable part.
 
