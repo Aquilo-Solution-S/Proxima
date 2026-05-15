@@ -246,11 +246,9 @@ message RelationDescriptor {
   optional SchemaRef payload_schema = 3;
 }
 
-// docs/13 §Unit — structured per-flavor metadata. One descriptor per
+// docs/08 §Flavor Metadata — structured per-flavor metadata. One descriptor per
 // `proxima_flavor!` invocation, populated at macro-expansion time
-// from the calling crate's Cargo.toml. Surfaced with every
-// `PersonalityInstance` so the hub can render the flavor label
-// authoritatively without deriving it from personality identity.
+// from the calling crate's Cargo.toml.
 message FlavorDescriptor {
   string flavor_id = 1; // e.g. "proxima-code"
   string display_name = 2; // e.g. "Code"
@@ -259,12 +257,15 @@ message FlavorDescriptor {
   FlavorProvenance provenance = 5;
 }
 
-// Where a flavor came from. v1 ships only `Builtin`; the other
-// variants are available for marketplace / out-of-process loading.
+// Where a flavor came from. v1 ships only `Builtin`. Other variants
+// remain wire-compatible reserved values; they are not a runtime
+// registration contract.
 message FlavorProvenance {
   oneof kind {
     Builtin builtin = 1;
+    // Reserved compatibility value. Not a v1 runtime-install contract.
     Marketplace marketplace = 2;
+    // Reserved compatibility value. Not a v1 dynamic-loading contract.
     Local local = 3;
   }
   message Builtin {}

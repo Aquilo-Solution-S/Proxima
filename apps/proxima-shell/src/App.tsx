@@ -100,13 +100,13 @@ function createAppHub(): Hub {
       flavor: null,
     },
     {
-      id: "marketplace",
-      label: "Marketplace",
+      id: "flavors",
+      label: "Flavors",
       component: viewWithHub(async () => {
-        const { MarketplaceView } = await import(
-          "@proxima/core/views/marketplace"
+        const { FlavorsView } = await import(
+          "@proxima/core/views/flavors"
         );
-        return { default: () => <MarketplaceView hub={hub} /> };
+        return { default: () => <FlavorsView hub={hub} /> };
       }),
       flavor: null,
     },

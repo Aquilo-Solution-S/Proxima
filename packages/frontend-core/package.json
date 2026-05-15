@@ -16,7 +16,7 @@
     "./styles.css": "./src/primitives/styles.css",
     "./proxima-loader.js": "./src/primitives/proxima-loader.js",
     "./views/atlas": "./src/views/atlas/index.tsx",
-    "./views/marketplace": "./src/views/marketplace.tsx",
+    "./views/flavors": "./src/views/flavors.tsx",
     "./views/personalities": "./src/views/personalities/index.tsx",
     "./views/schemas": "./src/views/schemas.tsx",
     "./views/settings": "./src/views/settings.tsx",

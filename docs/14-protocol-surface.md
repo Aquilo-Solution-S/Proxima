@@ -407,9 +407,9 @@ stream-terminating frame.
 ## EventSource registration — build-time in v1
 
 EventSources register at startup from the linked flavor crates,
-same posture as T2 tools (05) and schemas (03). v1 ships
+same posture as tools (05, 12) and schemas (03). v1 ships
 build-time only. Runtime registration of EventSource manifests is
-deferred — same trajectory as T1 tools.
+deferred and requires a new ADR.
 
 ## Backpressure — client-side concern in v1
 
@@ -451,7 +451,7 @@ This doc fixes the semantic contract; 09 picks the bytes.
 - `EntityId` / `EntityKind` / `Edge`: 02 §Edges.
 - Six payload traits: 03, 06, 11.
 - Operators (F→A, A→P, A→Goal): [04 §Phase 2 — Personality embedding](04-consolidation.md#phase-2--personality-embedding).
-- Tools (T1/T2), `EventSource` invariants: [01](01-event-source.md), [05](05-actions.md), [12](12-tool-manifest.md).
+- Tools, wake palettes, `EventSource` invariants: [01](01-event-source.md), [05](05-actions.md), [12](12-tool-manifest.md).
 - Goal entity, `GoalAuthorship`, `GoalPayload`: [06](06-goals-and-self.md).
 - Storage shape, `change_event` table (TBD here): [07](07-storage.md).
 - Flavor registration (`proxima_flavor!`), build-time posture: [08](08-core-and-flavors.md).

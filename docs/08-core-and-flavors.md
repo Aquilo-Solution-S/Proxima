@@ -100,7 +100,7 @@ Every macro invocation adds one `FlavorDescriptor`:
 | `display_name` | `display_name` or `flavor_id`. |
 | `package_version` | Calling crate `CARGO_PKG_VERSION`. |
 | `author` | First `CARGO_PKG_AUTHORS` entry, if present. |
-| `provenance` | `Builtin` in v1; `Marketplace` and `Local` reserved. |
+| `provenance` | `Builtin` in v1; other wire variants are reserved compatibility values. |
 
 The frozen registry exposes `list_flavors()` and `flavor(flavor_id)`.
 Flavor metadata describes linked vocabulary; it does not define runtime

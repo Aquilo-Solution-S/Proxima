@@ -91,12 +91,9 @@ Design source of truth:
 - [`docs/11-citations.md`](docs/11-citations.md) — `CitedObject` /
   `CitationMapping` traits; bibliographic provenance; Fact-only
   citation rule.
-- [`docs/12-tool-manifest.md`](docs/12-tool-manifest.md) — T1
-  (runtime, schema-consuming) vs T2 (build-time flavors) tool
-  tiers.
-- [`docs/13-flavor-marketplace.md`](docs/13-flavor-marketplace.md) —
-  substrate + reference flavors, independent flavor authorship,
-  composite discipline.
+- [`docs/12-tool-manifest.md`](docs/12-tool-manifest.md) — build-time
+  tool vocabulary, wake-entry palettes, MCP/workspace dispatch, and
+  deferred tool-compliance enforcement.
 - [`docs/14-protocol-surface.md`](docs/14-protocol-surface.md) —
   the engine's contract to clients. Six verbs (Query / Subscribe /
   EventHistory / GoalWrite / EventIngest / Schema), owner-scoped,
