@@ -260,7 +260,7 @@ Rules:
   (see 03), not supersession.
 - Deletion observations are Facts with state in their sidecar, not erased
   rows.
-- Hard delete exists only as compliance erasure (see 15), outside cognitive
+- Hard delete exists only as compliance erasure (see 13), outside cognitive
   graph semantics.
 
 Default lineage scope is the personality instance that authored the derived

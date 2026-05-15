@@ -116,22 +116,24 @@ Every source declares four compliance-vocabulary fields at
 registration. Substrate startup fails if any is absent. The
 vocabulary, default-trivial values, and the why-each-field
 rationale live in
-[15 §Compliance vocabulary](15-compliance.md#compliance-vocabulary);
+[13 §Compliance vocabulary](13-compliance.md#compliance-vocabulary);
 01 specifies what a *source* must declare.
 
 ```rust
 struct SourceComplianceMetadata {
-    lawful_basis:        LawfulBasis,        // 15 §Compliance vocabulary
+    lawful_basis:        LawfulBasis,        // 13 §Compliance vocabulary
     collection_purpose:  String,             // free-form, controller-authored
     retention_policy:    RetentionPolicy,    // source-default; per-Owner overrides
-                                             // live in compliance.owner_policy (15)
+                                             // live in compliance.owner_policy (13)
     data_residency:      Region,             // where the source's payloads land
 }
 ```
 
 Inheritance: every Fact a source emits inherits these four values
 into its row at insert time. `delete_owner` and the suppression-list
-mechanic ([15](15-compliance.md)) operate on the inherited values;
+mechanic ([13 §Operations](13-compliance.md#operations),
+[13 §Suppression list](13-compliance.md#suppression-list--re-ingest-rejection))
+operate on the inherited values;
 operators and deciders never see them (compliance metadata is not
 part of the cognitive surface).
 
@@ -147,7 +149,7 @@ the controller refines per Owner.
 opaque by construction — it must remain so. Sources must not
 substitute a verbatim natural-person identifier (email address,
 national ID, phone number) for the hash, because the suppression
-list ([15 §Suppression list](15-compliance.md#suppression-list--re-ingest-rejection))
+list ([13 §Suppression list](13-compliance.md#suppression-list--re-ingest-rejection))
 retains `event_id` indefinitely as a re-ingest guard, and a
 non-opaque key would itself become PII surviving deletion.
 

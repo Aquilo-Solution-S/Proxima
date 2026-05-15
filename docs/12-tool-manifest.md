@@ -216,7 +216,7 @@ Declared / deferred:
 
 | Item | v1 status |
 |---|---|
-| field vocabulary | defined in 15 §Compliance vocabulary |
+| field vocabulary | defined in [13 §Compliance vocabulary](13-compliance.md#compliance-vocabulary) |
 | field placement on tool descriptors | deferred |
 | startup failure for missing fields | deferred |
 | Owner residency allowlist enforcement for tool calls | deferred |
@@ -225,7 +225,7 @@ Declared / deferred:
 
 Until these fields land on the current `McpToolDescriptor` /
 workspace-tool surfaces, docs must not claim implemented storage or
-runtime enforcement. Owner-policy enforcement belongs to 15.
+runtime enforcement. Owner-policy enforcement belongs to 13.
 
 ## Non-Goals
 
@@ -243,7 +243,7 @@ runtime enforcement. Owner-policy enforcement belongs to 15.
 |---|---|
 | actions as ordinary Facts | [05](05-actions.md) |
 | build-time vocabulary | [08](08-core-and-flavors.md) |
-| owner policy and compliance vocabulary | [15](15-compliance.md) |
+| owner policy and compliance vocabulary | [13 §Owner policy](13-compliance.md#owner-policy), [13 §Compliance vocabulary](13-compliance.md#compliance-vocabulary) |
 | protocol clients observe changes, not Tool entities | [14](14-protocol-surface.md) |
 
 ## Anchors

@@ -217,7 +217,7 @@ Scope:
 
 The flag feeds compliance behavior: audit emphasis, export metadata,
 deletion policy checks, and administrative reporting (see
-[15 §Compliance vocabulary](15-compliance.md#compliance-vocabulary)).
+[13 §Compliance vocabulary](13-compliance.md#compliance-vocabulary)).
 
 ## Sidecar tables
 
