@@ -14,12 +14,11 @@ pub(crate) async fn list_active_goals(
     // sidecar schema. Probe for it so the substrate degrades gracefully
     // (returns goals with `goal_activated_memory_id = None`) when the
     // flavor isn't loaded.
-    let activated_table_present: bool = sqlx::query_scalar(
-        "SELECT to_regclass('proxima_goal.goal_activated_v1') IS NOT NULL",
-    )
-    .fetch_one(pool)
-    .await
-    .map_err(|e| StorageError::Internal(e.to_string()))?;
+    let activated_table_present: bool =
+        sqlx::query_scalar("SELECT to_regclass('proxima_goal.goal_activated_v1') IS NOT NULL")
+            .fetch_one(pool)
+            .await
+            .map_err(|e| StorageError::Internal(e.to_string()))?;
 
     let sql = if activated_table_present {
         "WITH RECURSIVE linked_goals(goal_id) AS (

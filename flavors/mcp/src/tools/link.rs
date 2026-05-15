@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{AGENT_LINK_RELATION, AgentLinkV1};
 
-use super::util::{assert_layer_top_down, map_storage, memory_kind_for_edge, owner_columns};
+use super::util::{map_storage, memory_kind_for_edge, owner_columns};
 
 const LINK_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
     0x4d, 0x70, 0x9b, 0xfb, 0x71, 0xc7, 0x4e, 0x37, 0xb2, 0x88, 0x3a, 0x09, 0xe7, 0x05, 0x69, 0xb5,
@@ -64,7 +64,6 @@ impl McpTool for LinkTool {
 
             let source_kind = load_kind(&ctx, source_id).await?;
             let target_kind = load_kind(&ctx, target_id).await?;
-            assert_layer_top_down(source_kind.as_deref(), target_kind.as_deref())?;
 
             let edge_id = link_edge_id(&ctx.owner, source_id, target_id);
             let relation = ctx

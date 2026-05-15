@@ -325,8 +325,7 @@ async fn list_active_goals_surfaces_goal_activated_memory_when_present()
         let proposed = write_goal(&pg, &owner, GoalState::Proposed, None, "p-proposed").await?;
         link_goal_to_self(&pg, &owner, proposed, self_a).await?;
         let active = write_goal(&pg, &owner, GoalState::Active, Some(proposed), "p-active").await?;
-        let activated_memory =
-            insert_goal_activated_fact(&pg, &owner, active, "p-active").await?;
+        let activated_memory = insert_goal_activated_fact(&pg, &owner, active, "p-active").await?;
 
         let goals = pg.list_active_goals(&owner, self_a, 100).await?;
         assert_eq!(goals.len(), 1);

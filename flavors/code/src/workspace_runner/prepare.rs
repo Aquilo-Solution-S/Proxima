@@ -367,12 +367,12 @@ impl CodeWorkspaceRunner {
                 self.prepare_workspace_merge_goal_close(input, decision)
                     .await
             }
-            WorkspaceDecision::Rejected | WorkspaceDecision::Accepted => Err(
-                WorkspaceRunnerError::TriggerNotEligible(format!(
+            WorkspaceDecision::Rejected | WorkspaceDecision::Accepted => {
+                Err(WorkspaceRunnerError::TriggerNotEligible(format!(
                     "workspace-decision variant {:?} has no workspace prep",
                     decision.decision
-                )),
-            ),
+                )))
+            }
         }
     }
 

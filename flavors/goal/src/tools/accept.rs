@@ -116,7 +116,6 @@ pub async fn accept_goal(
         handle: ctx.format_goal(GoalId::new(goal_id)),
         supersedes,
         edge_handles,
-        inspires_edge_handle: inspires_edge_id
-            .map(|edge_id| ctx.format_edge(EdgeId::new(edge_id))),
+        inspires_edge_handle: inspires_edge_id.map(|edge_id| ctx.format_edge(EdgeId::new(edge_id))),
     })
 }

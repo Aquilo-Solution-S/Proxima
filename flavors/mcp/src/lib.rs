@@ -7,7 +7,10 @@ pub mod tools;
 pub use migrations::migrator;
 pub use payloads::{AgentDerivationV1, AgentLinkV1, AgentNoteV1};
 
-use proxima_core::{RelationClass, RelationDescriptor, SchemaId, SchemaRef, SchemaVersion};
+use proxima_core::{
+    AuthorshipKindMask, EntityKindMask, RelationClass, RelationDescriptor, SchemaId, SchemaRef,
+    SchemaVersion,
+};
 
 pub const AGENT_LINK_RELATION: &str = "proxima-mcp/agent-link-refers-to";
 
@@ -29,11 +32,14 @@ proxima_core::proxima_flavor! {
     relations = [
         RelationDescriptor::typed(
             AGENT_LINK_RELATION,
-            RelationClass::Structural,
+            RelationClass::Interpretive,
             SchemaRef::new(
                 SchemaId::new("proxima-mcp/agent-link-v1".into()),
                 SchemaVersion::new(1),
             ),
+            EntityKindMask::abstraction_perspective(),
+            EntityKindMask::memory(),
+            AuthorshipKindMask::external_agent(),
         ),
     ],
     mcp_tools = [

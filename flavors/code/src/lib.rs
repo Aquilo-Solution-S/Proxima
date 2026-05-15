@@ -43,7 +43,10 @@ pub use workspace_flow::{
     list_workspace_runs, merge_workspace_run,
 };
 
-use proxima_core::{RelationClass, RelationDescriptor, SchemaId, SchemaRef, SchemaVersion};
+use proxima_core::{
+    AuthorshipKindMask, EntityKindMask, RelationClass, RelationDescriptor, SchemaId, SchemaRef,
+    SchemaVersion,
+};
 
 proxima_core::proxima_flavor! {
     name = "proxima-code",
@@ -76,10 +79,16 @@ proxima_core::proxima_flavor! {
                 SchemaId::new("proxima-code/calls".into()),
                 SchemaVersion::new(1),
             ),
+            EntityKindMask::fact(),
+            EntityKindMask::fact(),
+            AuthorshipKindMask::event_source(),
         ),
         RelationDescriptor::substrate(
             mcp::CODE_TARGETS_EXECUTION_REQUEST_RELATION,
             RelationClass::Causal,
+            EntityKindMask::perspective(),
+            EntityKindMask::fact(),
+            AuthorshipKindMask::external_agent(),
         ),
     ],
     mcp_tools = [

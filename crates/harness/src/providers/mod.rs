@@ -14,11 +14,11 @@ use crate::conversation::{AssistantTurn, Conversation, ToolCall, ToolSpec};
 // Vendor adapters in this same `providers/` directory access it via
 // `super::chat_completions_wire`. Do NOT change this to `pub mod`.
 mod chat_completions_wire;
-mod responses_wire;
 pub mod chatgpt_codex;
 pub mod mistral_chat;
 pub mod openai_chat;
 pub mod openai_responses;
+mod responses_wire;
 
 #[doc(hidden)]
 pub async fn classify_chat_completions_fixture(

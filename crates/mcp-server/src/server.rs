@@ -147,8 +147,7 @@ impl McpToolHost {
         {
             let owner = auth.as_ref().map(|ctx| ctx.owner.clone());
             let started = Instant::now();
-            let result =
-                (descriptor.call)(self.ctx_for(author, owner, auth.as_ref()), args).await;
+            let result = (descriptor.call)(self.ctx_for(author, owner, auth.as_ref()), args).await;
             if let (Some(engine), Some(auth)) = (self.engine.as_ref(), auth.as_ref()) {
                 let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
                 match &result {
@@ -458,10 +457,10 @@ mod tests {
 
     #[tokio::test]
     async fn ctx_for_wake_dispatched_runs_in_handles_mode() {
+        use proxima_core::MemoryId;
         use proxima_core::mcp::HandleTable;
         use proxima_core::personality::WakeChainDepth;
         use proxima_core::wake::token_store::WakeTokenContext;
-        use proxima_core::MemoryId;
 
         let server = make_server();
         let author = McpAuthorContext {

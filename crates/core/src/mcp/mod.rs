@@ -17,7 +17,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use futures::future::BoxFuture;
 
-use crate::{EdgeId, GoalId, MemoryId, Owner, PersonalityInstanceId, verbs::schema::FlavorRegistryFrozen};
+use crate::{
+    EdgeId, GoalId, MemoryId, Owner, PersonalityInstanceId, verbs::schema::FlavorRegistryFrozen,
+};
 
 #[derive(Debug, Clone)]
 pub struct McpAuthorContext {
@@ -177,7 +179,11 @@ impl McpToolCtx {
     #[must_use]
     pub fn format_wake_entry(&self, id: uuid::Uuid) -> String {
         match self.mode {
-            OutputMode::Handles => self.handle_table().assign_wake_entry(id).as_str().to_string(),
+            OutputMode::Handles => self
+                .handle_table()
+                .assign_wake_entry(id)
+                .as_str()
+                .to_string(),
             OutputMode::RawIds => id.to_string(),
         }
     }
@@ -291,11 +297,7 @@ impl McpToolCtx {
     /// # Errors
     ///
     /// See [`McpToolCtx::resolve_memory`].
-    pub fn resolve_flavor_object(
-        &self,
-        raw: &str,
-        kind: &str,
-    ) -> Result<uuid::Uuid, McpToolError> {
+    pub fn resolve_flavor_object(&self, raw: &str, kind: &str) -> Result<uuid::Uuid, McpToolError> {
         match self.mode {
             OutputMode::Handles => self
                 .handle_table()

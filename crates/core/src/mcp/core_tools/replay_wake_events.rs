@@ -82,9 +82,9 @@ fn parse_optional_uuid(field: &str, value: Option<String>) -> Result<Option<Uuid
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mcp::OutputMode;
     use crate::auth::NoAuth;
     use crate::mcp::HandleTable;
+    use crate::mcp::OutputMode;
     use crate::verbs::query::MemoryStore;
     use crate::{Engine, FlavorRegistry, McpAuthorContext, OrgId, Owner, Principal, UserId};
     use std::sync::Arc;
@@ -133,6 +133,9 @@ mod tests {
         )
         .await
         .expect_err("unknown handle");
-        assert!(matches!(err, McpToolError::Resolve(crate::mcp::ResolveError::Unknown { .. })));
+        assert!(matches!(
+            err,
+            McpToolError::Resolve(crate::mcp::ResolveError::Unknown { .. })
+        ));
     }
 }

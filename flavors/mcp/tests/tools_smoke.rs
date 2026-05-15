@@ -92,6 +92,81 @@ async fn remember_then_search_round_trip() -> Result<(), Box<dyn std::error::Err
 }
 
 #[tokio::test]
+async fn link_rejects_direct_fact_to_fact_interpretation() -> Result<(), Box<dyn std::error::Error>>
+{
+    let Some(db_name) = create_db().await? else {
+        return Ok(());
+    };
+    let pg =
+        proxima_storage_pg::PgStorage::connect(&format!("postgres://postgres@localhost/{db_name}"))
+            .await?;
+    pg.run_migrations().await?;
+    proxima_mcp_substrate::migrator().run(pg.pool()).await?;
+
+    let mut registry = FlavorRegistry::new();
+    proxima_mcp_substrate::register(&mut registry);
+    let frozen = Arc::new(registry.freeze());
+    let owner = nil_owner();
+    let handles = Arc::new(HandleTable::new());
+    let author = author_ctx();
+
+    let first = call_tool(
+        pg.pool(),
+        &owner,
+        &handles,
+        &frozen,
+        author.clone(),
+        "proxima-mcp/proxima_remember",
+        json!({
+            "title": "First fact",
+            "body": "A remembered observation.",
+            "idempotency_key": "link-fact-a"
+        }),
+    )
+    .await?;
+    let second = call_tool(
+        pg.pool(),
+        &owner,
+        &handles,
+        &frozen,
+        author.clone(),
+        "proxima-mcp/proxima_remember",
+        json!({
+            "title": "Second fact",
+            "body": "Another remembered observation.",
+            "idempotency_key": "link-fact-b"
+        }),
+    )
+    .await?;
+
+    let link = call_tool(
+        pg.pool(),
+        &owner,
+        &handles,
+        &frozen,
+        author,
+        "proxima-mcp/proxima_link",
+        json!({
+            "source": first["handle"],
+            "target": second["handle"],
+            "reason": "semantic direct Fact-to-Fact interpretation"
+        }),
+    )
+    .await;
+
+    match link {
+        Err(McpToolError::Storage(proxima_core::StorageError::ConstraintViolation(msg))) => {
+            assert!(msg.contains("source kind Fact"));
+        }
+        other => panic!("expected central relation-mask rejection, got {other:?}"),
+    }
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn search_graph_hybrid_returns_embedding_only_match() -> Result<(), Box<dyn std::error::Error>>
 {
     let Some(db_name) = create_db().await? else {

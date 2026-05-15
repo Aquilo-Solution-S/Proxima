@@ -6,12 +6,12 @@ use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::Deserialize;
 
+use crate::SchemaId;
 use crate::error::ProtocolError;
 use crate::personality::{
     PersonalityTool, PersonalityToolContext, PersonalityToolResult, SidecarSpec,
 };
 use crate::verbs::schema::PayloadKind;
-use crate::SchemaId;
 
 #[derive(Debug, Default)]
 pub struct FetchMemoryTool;

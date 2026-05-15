@@ -27,14 +27,15 @@ Binding ADR for connection-via-lifecycle:
 
 - Engine-scheduled `OperatorKind::AtoGoal` operator family (separate
   spec; reuses `MotivatedBy`).
-- Cross-domain Perspective consolidation.
+- Cross-domain Perspective consolidation beyond explicit cross-domain
+  Abstraction framing.
 - `MotivatedBy` typed `EdgePayload` sidecar (additive enrichment; lands
   later without breaking v1 consumers).
 - Goal→Goal `MotivatedBy` (layering allows but no v1 use case;
   `parent_goal_ids` already covers Goal→Goal DAG of motivation between
   Goals — `MotivatedBy` is exclusively Goal→{A, F}).
-- Soften invariant 20 (F→A intra-flavor). Cross-flavor synthesis goes
-  through the substrate-flavor + cross-flavor A→A pattern, unchanged.
+- Direct semantic Fact-to-Fact linking. Cross-domain evidence synthesis goes
+  through a typed Abstraction, then Perspective/Goal framing.
 
 ## Prerequisite
 

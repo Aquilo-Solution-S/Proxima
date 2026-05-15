@@ -63,8 +63,7 @@ impl McpTool for ListPersonalitiesTool {
                         personality: ctx.format_personality(row.personality_instance_id),
                         display_name: row.display_name,
                         status: row.status,
-                        root_perspective: ctx
-                            .format_memory(row.current_root_perspective_memory_id),
+                        root_perspective: ctx.format_memory(row.current_root_perspective_memory_id),
                         wake_entry_count: count,
                     }
                 })
@@ -77,9 +76,9 @@ impl McpTool for ListPersonalitiesTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mcp::OutputMode;
     use crate::auth::NoAuth;
     use crate::mcp::HandleTable;
+    use crate::mcp::OutputMode;
     use crate::verbs::query::MemoryStore;
     use crate::{Engine, FlavorRegistry, McpAuthorContext, OrgId, Owner, Principal, UserId};
     use std::sync::Arc;

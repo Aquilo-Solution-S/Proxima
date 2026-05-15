@@ -22,7 +22,7 @@ use proxima_code::{
 use proxima_core::auth::NoAuth;
 use proxima_core::harness::{ErrorClass, FinishReason};
 use proxima_core::llm::{EmbeddingClient, LlmError};
-use proxima_core::mcp::{HandleTable, McpAuthorContext, McpTool, McpToolCtx, OutputMode};
+use proxima_core::mcp::{McpAuthorContext, McpTool, McpToolCtx, OutputMode};
 use proxima_core::personality::{
     InstantiatePersonalityRequest, SetWakeEntriesRequest, WakeEntryDraft, WakeExecutionMode,
 };
@@ -1804,8 +1804,8 @@ async fn merged_decision_trigger_prepares_goal_close_context()
         let goal_ctx = McpToolCtx {
             pool: pg.pool().clone(),
             owner: owner.clone(),
-            handles: Some(Arc::new(HandleTable::new())),
-            mode: OutputMode::Handles,
+            handles: None,
+            mode: OutputMode::RawIds,
             registry: Arc::new(goal_registry.freeze()),
             author: McpAuthorContext {
                 model_id: "test-model".into(),

@@ -348,6 +348,12 @@ impl FlavorRegistry {
         // RelationClass. Catches authoring drift at startup, not
         // at first edge-write.
         for rel in &self.relations {
+            rel.validate_descriptor().unwrap_or_else(|err| {
+                panic!(
+                    "RelationDescriptor {:?} has invalid masks: {err}",
+                    rel.relation
+                )
+            });
             if let Some(payload_schema) = &rel.payload_schema {
                 let info = self
                     .schemas

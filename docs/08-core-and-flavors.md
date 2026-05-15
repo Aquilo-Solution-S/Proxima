@@ -129,6 +129,10 @@ renderers; it does not own the entity contract (see 06 §Goal Entity).
 Goal creation uses the `proxima-goal/goal_propose` flavor tool, not a
 substrate `emit_goal` tool.
 
+Relation descriptors carry source-kind, target-kind, and authorship masks.
+Masks tighten the universal storage rules; they cannot permit upward F/A/P
+edges or direct semantic/causal Fact-to-Fact edges.
+
 ## Freeze Guards
 
 `FlavorRegistry::freeze()` rejects:
@@ -143,6 +147,8 @@ substrate `emit_goal` tool.
 8. Personalities whose `personality_type_id` prefix has no matching
    `FlavorDescriptor` (catches freestanding `add_personality` calls
    that bypass `proxima_flavor!`).
+9. Empty relation masks or a `Causal` / `Interpretive` descriptor that
+   admits Fact-to-Fact.
 
 Freeze-time failure is startup failure.
 

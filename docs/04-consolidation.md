@@ -41,7 +41,8 @@ For each active instance:
 6. Apply deterministic probability hash `(seq, type_id, instance_id, wake_entry_id)`.
 7. Insert invocation row before running the decider.
 8. Run decider with substrate tool palette plus flavor tools.
-9. Validate every write against declared schema/relation allow-lists.
+9. Validate every write against declared schema/relation allow-lists and
+   central edge invariants.
 10. Append memory/edge rows atomically.
 11. Advance cursor regardless of match or write output.
 
@@ -62,6 +63,10 @@ Personality writes:
 Substrate auto-wires `core/derived-from` provenance from the triggering event
 and tracked reads. Personalities cannot author `core/derived-from` or
 `core/supersedes` directly.
+
+Edge writes pass through the frozen relation descriptor and the storage trigger.
+Tool-local checks may narrow inputs for UX, but must not duplicate the
+load-bearing layer, owner, endpoint-kind, or semantic Fact-to-Fact rules.
 
 ## Chain Depth
 
@@ -92,6 +97,8 @@ and `max_rounds`. Strict validation failure sets the entry
 - Facts remain immutable observations.
 - A/P outputs carry typed sidecars.
 - Edges obey `layer(src) >= layer(tgt)`.
+- Direct semantic/causal Fact-to-Fact edges are forbidden; use a typed
+  Abstraction over the Fact set.
 - Relation ids resolve through the frozen registry.
 - Similarity never creates edges.
 - Wake entries are operational policy; Goals are direction, not policy.
