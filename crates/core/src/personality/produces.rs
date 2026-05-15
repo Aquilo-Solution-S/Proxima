@@ -107,6 +107,9 @@ mod tests {
         let relations = vec![RelationDescriptor::substrate(
             "test/related-to",
             RelationClass::Causal,
+            crate::EntityKindMask::perspective(),
+            crate::EntityKindMask::fact(),
+            crate::AuthorshipKindMask::engine(),
         )];
         let registry = FlavorRegistryFrozen::with_schemas_and_relations(schemas, relations);
         let owner = Owner {

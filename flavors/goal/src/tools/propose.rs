@@ -79,8 +79,8 @@ impl McpTool for ProposeTool {
                 .into_iter()
                 .map(|edge_id| ctx.format_edge(EdgeId::new(edge_id)))
                 .collect();
-            let inspires_edge_handle = inspires_edge_id
-                .map(|edge_id| ctx.format_edge(EdgeId::new(edge_id)));
+            let inspires_edge_handle =
+                inspires_edge_id.map(|edge_id| ctx.format_edge(EdgeId::new(edge_id)));
             Ok(ProposeOutput {
                 handle: ctx.format_goal(GoalId::new(goal_id)),
                 edge_handles,

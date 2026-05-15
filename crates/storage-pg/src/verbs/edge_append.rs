@@ -74,6 +74,9 @@ pub async fn append_edge_in_tx(
             )));
         }
     }
+    descriptor
+        .validate_edge_shape(draft.source_kind, draft.target_kind, draft.authorship_kind)
+        .map_err(StorageError::ConstraintViolation)?;
 
     // 1. Insert the edge row. ON CONFLICT (edge_id) DO NOTHING +
     //    RETURNING gives us a sentinel that distinguishes a fresh

@@ -43,25 +43,3 @@ pub fn memory_kind_for_edge(kind: Option<&str>) -> &'static str {
         None | Some(_) => "Fact",
     }
 }
-
-pub fn layer(kind: Option<&str>) -> u8 {
-    match kind {
-        Some("Abstraction") => 1,
-        Some("Perspective") => 2,
-        None | Some(_) => 0,
-    }
-}
-
-pub fn assert_layer_top_down(
-    source_kind: Option<&str>,
-    target_kind: Option<&str>,
-) -> Result<(), McpToolError> {
-    let source_layer = layer(source_kind);
-    let target_layer = layer(target_kind);
-    if source_layer < target_layer {
-        return Err(McpToolError::LayeringViolation(format!(
-            "layering: src layer {source_layer} < tgt layer {target_layer}"
-        )));
-    }
-    Ok(())
-}

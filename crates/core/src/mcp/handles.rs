@@ -271,10 +271,7 @@ impl HandleTable {
         }
     }
 
-    pub fn resolve_personality(
-        &self,
-        raw: &str,
-    ) -> Result<PersonalityInstanceId, ResolveError> {
+    pub fn resolve_personality(&self, raw: &str) -> Result<PersonalityInstanceId, ResolveError> {
         match self.resolve_entity(raw)? {
             EntityRef::Personality(id) => Ok(id),
             other => Err(ResolveError::WrongKind {
@@ -467,7 +464,9 @@ mod tests {
         let table = HandleTable::new();
         let id = uuid::Uuid::now_v7();
         let h = table.assign_flavor_object("code/repository", id, 'R');
-        let err = table.resolve_flavor_object(h.as_str(), "code/file").unwrap_err();
+        let err = table
+            .resolve_flavor_object(h.as_str(), "code/file")
+            .unwrap_err();
         assert_eq!(
             err,
             ResolveError::WrongKind {

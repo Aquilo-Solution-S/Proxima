@@ -104,10 +104,12 @@ processing / active inference (Friston, Clark, Hohwy): the brain does not observ
 causes, it infers them under priors.
 
 The load-bearing architectural consequence: **Perspective is the locus of
-causal claims**, never Facts. Edges encoding causation must be P-authored
-or operator-justified; cosine similarity is observer-independent and so
-cannot encode an observer-relative relation. This grounds invariant 6 and
-the directionality rule of `02-memory.md`.
+causal claims**, never Facts. Facts from multiple domains may be connected only
+by a typed Abstraction over those Facts, optionally framed by a Perspective.
+Direct semantic or causal Fact-to-Fact edges are forbidden. Mechanical
+Fact-to-Fact edges remain structural/provenance only. Cosine similarity is
+observer-independent and so cannot encode an observer-relative relation. This
+grounds invariants 6 and 20 and the directionality rule of `02-memory.md`.
 
 ### "Causa proxima" as abductive inference, not legal proximity
 
@@ -169,7 +171,8 @@ distinct working contexts:
 - **Abstracted memories** aggregate over factual memories without themselves
   referring to a single source — they hold patterns, not records.
 - **Perspective memories** sit above both layers and carry the system's
-  reasoning. They are the only legal author of cross-Fact causal edges.
+  reasoning. They may frame cross-domain Abstractions, but do not create direct
+  semantic Fact-to-Fact edges.
 
 The architectural commitment is that this layering is *strict and irreversible*:
 no operator may produce a lower-layer memory from a higher-layer one. That is

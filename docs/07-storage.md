@@ -382,15 +382,18 @@ the parent row.
 |---|---|
 | `INSERT` | yes |
 | `UPDATE` | no |
-| `DELETE` | no, except the explicit GDPR erasure path |
+| `DELETE` | no, except explicit compliance erasure |
 
 State transitions are **new rows with `supersedes`**, not row
 updates. Active set queries filter `WHERE NOT EXISTS (… supersedes
 == this.id)` (see [06](docs/06-goals-and-self.md) for the Goal form; [02](docs/02-memory.md) for memories).
 
-Genuinely INSERT only on memories and goals; the only legitimate
-DELETE is GDPR erasure. Schema migration is pure insert-into-new-sidecar
-+ delete-from-old-sidecar, with no UPDATE on parent rows.
+Genuinely INSERT only on memories and goals. The only legitimate
+DELETE is compliance erasure: whole-Owner deletion or an
+Owner-scoped source-object deletion such as Code repo erasure
+(see [15 §Operations](15-compliance.md#operations)). Schema
+migration is pure insert-into-new-sidecar + delete-from-old-sidecar,
+with no UPDATE on parent rows.
 
 ## Content-hash dedup
 

@@ -186,10 +186,13 @@ breaks if these slip.
     a `CitedObject`, not the batch row.
     See [04 §Source-batch lifecycle](docs/04-consolidation.md#source-batch-lifecycle),
     [07 §Core tables — abstract](docs/07-storage.md#core-tables--abstract).
-20. **F→A is exclusive per `(Fact schema, Abstraction schema)` pair.**
+20. **F→A is exclusive per output Abstraction schema/operator.**
     Multiple F→A over the same Fact schema producing distinct
-    Abstractions are allowed; collision is on the pair. A→P / A→Goal
-    / Edge plurality is intentional. F→A is always intra-flavor.
+    Abstractions are allowed; collision is the same operator writing the
+    same Abstraction schema for the same input contract. Cross-domain Fact
+    synthesis is legal only as a typed Abstraction with provenance to its
+    inputs; direct semantic/causal Fact→Fact edges are forbidden. A→P /
+    A→Goal / mechanical Edge plurality is intentional.
     See [04 §Phase 2 — Personality embedding](docs/04-consolidation.md#phase-2--personality-embedding),
     [08 §Composite discipline](docs/08-core-and-flavors.md#composite-discipline).
 21. **Read-scope matrix governs cross-personality reads.** Per-Owner

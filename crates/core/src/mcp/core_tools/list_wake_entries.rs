@@ -68,18 +68,16 @@ impl McpTool for ListWakeEntriesTool {
             let wake_entries = row
                 .wake_entries
                 .into_iter()
-                .map(|e| {
-                    ListWakeEntriesItem {
-                        wake_entry: ctx.format_wake_entry(e.wake_entry_id),
-                        trigger_kind: format!("{:?}", e.trigger_kind),
-                        trigger_id: e.trigger_id,
-                        label: e.label,
-                        enabled: e.enabled,
-                        instructions: e.instructions,
-                        probability_promille: e.probability_promille,
-                        goal_scope: e.goal_scope.as_str().to_string(),
-                        max_rounds: e.max_rounds,
-                    }
+                .map(|e| ListWakeEntriesItem {
+                    wake_entry: ctx.format_wake_entry(e.wake_entry_id),
+                    trigger_kind: format!("{:?}", e.trigger_kind),
+                    trigger_id: e.trigger_id,
+                    label: e.label,
+                    enabled: e.enabled,
+                    instructions: e.instructions,
+                    probability_promille: e.probability_promille,
+                    goal_scope: e.goal_scope.as_str().to_string(),
+                    max_rounds: e.max_rounds,
                 })
                 .collect();
             Ok(ListWakeEntriesOutput { wake_entries })
@@ -90,9 +88,9 @@ impl McpTool for ListWakeEntriesTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mcp::OutputMode;
     use crate::auth::NoAuth;
     use crate::mcp::HandleTable;
+    use crate::mcp::OutputMode;
     use crate::verbs::query::MemoryStore;
     use crate::{Engine, FlavorRegistry, McpAuthorContext, OrgId, Owner, Principal, UserId};
     use std::sync::Arc;
@@ -133,6 +131,9 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(matches!(err, McpToolError::Resolve(crate::mcp::ResolveError::Unknown { .. })));
+        assert!(matches!(
+            err,
+            McpToolError::Resolve(crate::mcp::ResolveError::Unknown { .. })
+        ));
     }
 }

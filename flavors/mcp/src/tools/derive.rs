@@ -10,8 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::AgentDerivationV1;
 
 use super::util::{
-    assert_layer_top_down, map_storage, memory_kind_for_edge, normalize_tags, owner_columns,
-    owner_principal,
+    map_storage, memory_kind_for_edge, normalize_tags, owner_columns, owner_principal,
 };
 
 const DERIVED_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
@@ -95,9 +94,6 @@ impl McpTool for DeriveTool {
             }
 
             let source_kinds = load_source_kinds(&ctx.pool, &ctx.owner, &source_uuids).await?;
-            for source_kind in &source_kinds {
-                assert_layer_top_down(Some(args.kind.as_str()), source_kind.as_deref())?;
-            }
 
             let key = args.idempotency_key.clone().unwrap_or_else(|| {
                 format!(

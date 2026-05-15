@@ -10,11 +10,7 @@ production order**:
                        │ wakes / decides / writes
                        ▼
    Facts ────────► Abstraction ────────► Perspective
-                                                 │
-                                                 │
-   ↑                                             │
-   │                                             │
-   └────── Perspective can link Facts ───────────┘
+          cross-domain Facts connect here, not as semantic F→F edges
 ```
 
 Personality wakes (the arrows) produce higher-layer memories from lower:
@@ -22,9 +18,9 @@ Personality wakes (the arrows) produce higher-layer memories from lower:
 - **F→A** — Facts → Abstraction. Biased by personality (Perspective + Goals).
 - **A→P** — Abstractions → Perspective. Biased by full personality (Q4).
 
-Perspective may additionally **link existing Facts** with interpretive
-edges. The Facts are unchanged; the edge is authored by the Perspective —
-the only legal cross-Fact edge channel besides Event-Source authorship.
+Perspective may additionally **frame cross-domain Abstractions**. The Facts
+are unchanged; semantic or causal Fact-to-Fact edges are forbidden. The legal
+cross-domain channel is `A_cross -> F*`, optionally framed by `P -> A_cross`.
 
 Forbidden: any wake that lowers layer (A→F, P→A, P→F); any edge that
 references a higher layer (F→A-edge, F→P-edge, A→P-edge). Full edge
@@ -52,21 +48,21 @@ Wake/write paths are indexed by Π:
 
 | Operator | Signature | Restriction |
 |---|---|---|
-| F→A   | `2^F × Π → A`      | `S ⊆ F` sharing `source_batch_id` (intra-source); multiple personalities may produce distinct typed Abstractions over the same Facts. |
+| F→A   | `2^F × Π → A`      | `S ⊆ F`; intra-source by default, cross-domain only when the output schema is an explicit cross-domain Abstraction. Multiple personalities may produce distinct typed Abstractions over the same Facts. |
 | A→P   | `2^A × Π → P`      | `S ⊆ A` visible to the personality instance; plural personalities allowed |
-| link  | `P × F × F → Edge` | only legal cross-Fact edge channel besides Event-Source authorship |
+| frame | `P × A_cross → Edge` | optional Perspective authorship/framing of a cross-domain Abstraction |
 
 Edge constraint: for every edge `e : m_s → m_t`, `ℓ(m_s) ≥ ℓ(m_t)`.
 
 **Stepping between layers.** Π biases wakes *downward*: a self-Perspective
-or Goal change reshapes future F→A / A→P outputs and authorises new `link`
-edges over existing F. Personality outputs propagate *upward* via new memories
+or Goal change reshapes future F→A / A→P outputs and authorises new framed
+Abstractions over existing F. Personality outputs propagate *upward* via new memories
 and supersession edges; never by mutation.
 
-**Causa proxima.** A "why" answer for `f ∈ F` is a path through
-`link(p, ·, f)` for some `p ∈ P_active`, justified by `prov(p) ⊆ A` and
-the source batches of each `a ∈ prov(p)`. Not extractable from F alone:
-F yields correlation in time; the causal chain is A/P-mediated.
+**Causa proxima.** A "why" answer for `f ∈ F` is a path through `A/P` for
+some `p ∈ P_active`, justified by `prov(p) ⊆ A` and the Fact provenance of
+each Abstraction. Not extractable from F alone: F yields correlation in time;
+the causal chain is A/P-mediated.
 
 ## Why this layering — the trauma test
 
@@ -189,7 +185,7 @@ Perspective — is carried by **edges**, not by JSON inside the Memory row.
 
 | Operator | Scope | Input | Why |
 |---|---|---|---|
-| **F→A** | intra-source-batch (always intra) | Facts sharing one `source_batch_id` (one PDF, one chat session, one repo crawl) | local understanding; sources are not blended at this layer; a batch belongs to one source. Multiple F→A operators may run in parallel over the same batch, each producing a different typed Abstraction — parallel cognitive frames over the same Reality. |
+| **F→A** | intra-source by default; explicit cross-domain Abstractions allowed | Facts selected by the operator; cross-domain input requires an output schema that names the synthesis | local understanding first; domain blending is represented by a typed Abstraction, never a semantic Fact-to-Fact edge. Multiple F→A operators may run in parallel over the same Facts, each producing a different typed Abstraction. |
 | **A→P** | intra-flavor or cross-flavor | Abstractions retrieved by similarity / relevance, scoped per the operator's declaration | personalization; weaving disparate sources is what makes a Perspective *this agent's*; multiple A→P operators may run in parallel and produce different typed Perspectives |
 
 A **source batch** is the set of Facts emitted as a single observation
@@ -243,7 +239,7 @@ enum Authorship {
     OperatorFtoA(MemoryId),         // provenance A→F; owned by the source Abstraction
     OperatorAtoP(MemoryId),         // provenance P→A; owned by the source Perspective
     OperatorAtoGoal(GoalId),        // provenance Goal→A; owned by the produced Goal (04 §A→Goal)
-    PerspectiveLink(MemoryId),      // interpretive F→F (within-F set), owned by a Perspective
+    PerspectiveLink(MemoryId),      // P-authored framing edge; never semantic F→F
 
     // Core / infrastructure: supersession and explicit user edits; not flavor-pluggable.
     Core(CoreAuthor),
@@ -264,8 +260,8 @@ higher-layer endpoint owns the edge. So a P→A edge is owned by its
 source P, an A→F edge by its source A, a P→F edge by its source P.
 Within-set edges (F→F, A→A, P→P) are trivial — owned by whoever
 authored them in that context (`EventSource` for structural payload
-edges, `PerspectiveLink` for interpretive F→F edges, `Core(Engine)` for
-P→P and A→A supersession). No edge is ever co-owned by both endpoints.
+edges, `Core(Engine)` for P→P and A→A supersession). Semantic and causal
+F→F edges are not legal. No edge is ever co-owned by both endpoints.
 
 For Goal-involved edges, ownership is determined by the producing
 operator, source, engine, or user API rather than by layer comparison
@@ -364,7 +360,7 @@ Within F/A/P:
 
 | From → To | Allowed? | Typical class | Authorship |
 |---|---|---|---|
-| Fact → Fact | ✓ | `Structural` (Event Source) or `Causal`/`Interpretive` (PerspectiveLink); **never `Supersedes`** | `EventSource`, `PerspectiveLink` |
+| Fact → Fact | ✓ | `Structural` / `Provenance`; **never `Causal`, `Interpretive`, or `Supersedes`** | `EventSource`, `Engine`, `ExternalAgent` |
 | Abstraction → Fact | ✓ | `Provenance` | `OperatorFtoA` |
 | Abstraction → Abstraction | ✓ | `Structural` / flavor-specific | `Core(Engine)` for supersession |
 | Perspective → Fact | ✓ | `Causal` / `Interpretive` | `PerspectiveLink` |
@@ -385,13 +381,13 @@ Goal-involved (Goal sits outside F/A/P; descriptor masks govern):
 | Goal → Fact / Perspective | — | only as registered; no built-in core relation | — |
 
 The F/A/P layer rule is **hardcoded**: it falls out of the operators'
-set signatures (F→A : 2^F × Π → A; A→P : 2^A × Π → P; link : P × F ×
-F → Edge). No registered relation can permit an upward F/A/P edge —
-descriptor masks tighten the rule per relation, never relax it.
-Database check constraint joins `edge.source_id`/`edge.target_id` to
-`kind` for the storage-level guarantee. For Goal endpoints the check
-constraint validates `EntityKind` against the descriptor's masks; the
-F/A/P layer comparison short-circuits when either endpoint is Goal.
+set signatures (F→A : 2^F × Π → A; A→P : 2^A × Π → P; framing :
+P × A_cross → Edge). No registered relation can permit an upward F/A/P
+edge — descriptor masks tighten the rule per relation, never relax it.
+Database triggers join edge endpoints to stored endpoint kinds for the
+storage-level guarantee and reject direct `Causal` or `Interpretive` F→F.
+For Goal endpoints the trigger validates endpoint truth; the F/A/P layer
+comparison short-circuits when either endpoint is Goal.
 
 ### Edge scope invariant
 
@@ -466,9 +462,8 @@ trigger and read provenance are recorded as edges.
 contract: each Fact is one observation at one time, immutable at the
 identity layer, never replaced and never linked to a successor. The
 Fact layer therefore registers no `Supersedes`-class relation; the
-F→F directionality row in the table above admits only `Structural`
-(Event-Source authored) and `Causal`/`Interpretive` (PerspectiveLink)
-edges.
+F→F directionality row in the table above admits only mechanical
+`Structural` / `Provenance` edges.
 
 Stateful Fact projections — "current revision of file X", "latest
 snapshot of resource Y" — are expressed at **query time** as

@@ -341,21 +341,6 @@ pub async fn persist_wake_trace_in_tx(
     };
     append_edge_in_tx(tx.as_mut(), &derived_to_trigger, None).await?;
 
-    let derived_to_root_p = EdgeDraft {
-        edge_id: uuid::Uuid::now_v7(),
-        relation: derived_relation,
-        source_kind: "Fact",
-        source_memory_id: Some(memory_id),
-        source_goal_id: None,
-        target_kind: "Perspective",
-        target_memory_id: Some(input.root_perspective_memory_id.into_inner()),
-        target_goal_id: None,
-        authorship_kind: "Engine",
-        authorship_owner_memory_id: None,
-        owner: &input.owner,
-    };
-    append_edge_in_tx(tx.as_mut(), &derived_to_root_p, None).await?;
-
     for goal_id in &input.active_goal_ids {
         let derived_to_goal = EdgeDraft {
             edge_id: uuid::Uuid::now_v7(),

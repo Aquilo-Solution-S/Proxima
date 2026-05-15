@@ -97,7 +97,9 @@ impl ScriptedExecutorAdapter {
             return Err(error.to_string());
         }
         if output.get("memory").is_none() {
-            return Err(format!("emit_perspective returned no memory handle: {output}"));
+            return Err(format!(
+                "emit_perspective returned no memory handle: {output}"
+            ));
         }
         Ok(())
     }

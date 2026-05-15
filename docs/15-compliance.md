@@ -53,19 +53,22 @@ Two distinct lifecycle layers, never confused:
 | Layer | Mode | Authorship | Audit |
 |---|---|---|---|
 | Cognitive | Supersession only; Facts immutable; A/P/Goals revise via new memory + `supersedes` edge | `EventSource`, `Operator*`, `PerspectiveLink`, `Core(Engine)`, `Core(User)` — see [02 §The core entity](02-memory.md#the-core-entity) | The supersession chain itself is the audit |
-| Compliance | Hard delete, pause, restriction, export | Substrate-only — invoked through admin API, not flavor-pluggable, no Authorship variant | Separate `compliance.*` schema, never visible to operators |
+| Compliance | Hard delete, pause, restriction, export | Admin-invoked; no Authorship variant; flavor selectors may calculate scope | Separate `compliance.*` schema, never visible to operators |
 
 Operators and deciders observe the diminished graph as if deleted
 entries had never existed. They cannot read the compliance audit
 log; they cannot author compliance operations; they cannot
-overload them via flavor extension. The compliance API is owned
-by the engine and surfaced through [14](14-protocol-surface.md),
-not through `proxima_flavor!`.
+overload them as cognitive lifecycle transitions. The compliance
+API is owned by the engine and surfaced through
+[14](14-protocol-surface.md). Flavors may provide typed selectors
+for scope calculation; the resulting hard delete is still a
+compliance operation, not a flavor-authored Memory mutation.
 
 ## Operations
 
-All compliance operations are owner-scoped. Cross-owner edges are
-not expressible in v1 (see [06 §Scoping](06-goals-and-self.md#scoping)),
+All compliance operations are bounded by one Owner. The target may
+be the whole Owner or an Owner-scoped source object. Cross-owner
+edges are not expressible in v1 (see [06 §Scoping](06-goals-and-self.md#scoping)),
 so a single-Owner operation is structurally complete — no
 distributed coordination, no cross-shard cleanup.
 
@@ -116,6 +119,34 @@ able to refuse a subject deletion request with a recorded basis;
 the refusal is itself an auditable event and surfaceable to the
 data subject as a structured response. Refusal is not failure —
 it is one of the two valid outcomes.
+
+### `delete_source_scope(owner_id, source_scope, reason)` — v1 scoped primitive
+
+Atomic erasure of all substrate rows attributable to one
+Owner-scoped source object, plus that source object's flavor-owned
+index rows. Example: Code flavor repo erasure deletes the repo's
+Facts, derived Abstractions, incident edges, edge sidecars,
+embeddings, events, citation mappings, cited objects with no
+remaining mappings, source batches with no remaining events, and
+the `proxima_code.repos` row.
+
+```
+SourceScope =
+  { flavor_id: "proxima-code", object_kind: "repo", object_id: RepoId }
+| { flavor_id: "...", object_kind: "...", object_id: ... }
+```
+
+Rules:
+
+- Scope resolution is flavor-typed; deletion execution is
+  compliance-mode.
+- The scope must resolve entirely inside one Owner.
+- The receipt records counts and the opaque source object id, never
+  deleted payloads.
+- Suppression keys are retained for every deleted source batch /
+  source object natural key needed to prevent silent re-ingest.
+- If retention policy protects any member row, the operation returns
+  `DeletionRefusal` unless controller policy permits partial erasure.
 
 ### `cascade_delete(memory_id, reason)` — deferred
 
@@ -200,8 +231,9 @@ APIs; surfaced only through 14's admin protocol.
 
 Two tables minimum:
 
-- `compliance.deletions` — one row per `delete_owner` /
-  `cascade_delete` invocation (when the latter ships).
+- `compliance.deletions` — one row per `delete_owner`,
+  `delete_source_scope`, or `cascade_delete` invocation (when the
+  latter ships).
 - `compliance.actions` — one row per `pause_owner`,
   `resume_owner`, `restrict_processing`, `export_owner`
   invocation.

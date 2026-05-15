@@ -17,7 +17,7 @@
 
 use time::OffsetDateTime;
 
-use crate::mcp::{McpToolCtx};
+use crate::mcp::McpToolCtx;
 use crate::mcp::core_tools::payload::{
     PersonalityConfigChangedCaller, PersonalityConfigChangedSubject, PersonalityConfigChangedV1,
     PersonalityConfigChangedVerb,
@@ -131,8 +131,8 @@ async fn write_fact(ctx: &McpToolCtx, payload: &PersonalityConfigChangedV1) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mcp::OutputMode;
     use crate::mcp::HandleTable;
+    use crate::mcp::OutputMode;
     use crate::{FlavorRegistry, McpAuthorContext, OrgId, Owner, Principal, UserId};
     use std::sync::Arc;
 
