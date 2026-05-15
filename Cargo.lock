@@ -3462,20 +3462,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "proxima-code-bin"
-version = "0.1.0"
-dependencies = [
- "proxima-code",
- "proxima-core",
- "proxima-harness",
- "proxima-llm-openai-compat",
- "proxima-mcp-server",
- "proxima-storage-pg",
- "tokio",
- "uuid",
-]
-
-[[package]]
 name = "proxima-codex-auth"
 version = "0.1.0"
 dependencies = [
