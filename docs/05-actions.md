@@ -58,14 +58,15 @@ Tools are effect adapters.
 
 | Boundary | Rule |
 |---|---|
-| Tool manifest | 12 owns capability, body, trust, and compliance metadata |
+| Tool vocabulary | 12 owns build-time tool classes, wake palettes, and compliance declarations |
 | Runtime palette | wake entry selects which tools are available for one run |
 | Persistence | tool result enters storage only as registered Fact / Edge writes |
 | A/P writes | operator/wake output protocol only; tools do not bypass 04 |
 | Failure | failed attempts are Facts when the source/tool schema models them |
 
-Tool bodies may be local, MCP-backed, HTTP-backed, or future sandboxed
-runtime tools. That execution detail is not an action ontology.
+Current v1 tool execution is internal MCP / personality / workspace
+dispatch. External HTTP/WASM body transports are deferred. That
+execution detail is not an action ontology.
 
 ## Effect on Reality
 
@@ -108,7 +109,7 @@ Some tools require human approval before external execution.
 
 | Case | Rule |
 |---|---|
-| Legal consequence | tool manifest marks the risk; engine requires user-authored approval unless explicitly overridden |
+| Legal consequence | tool metadata marks the risk; user-authored approval remains required design intent |
 | Proposal | wake/source emits a proposal Fact |
 | Approval | user-authored EventSource Fact is the firing observation |
 | Execution | approved tool call emits its own attempt/result Facts |
@@ -136,7 +137,7 @@ Every action-attempt or effect Fact follows the ordinary ingest contract:
 | owner | source/tool may write only within the authorized Owner |
 | schema | `schema_id` / version must resolve to a registered `FactPayload` |
 | relation | structural edges must use registered relation descriptors |
-| capability | tool output must stay within the manifest's declared capabilities |
+| capability | tool output must stay within registered schemas/relations and wake-palette masks |
 | atomicity | Fact, sidecar, structural edges, and change event commit together |
 
 Publication is synchronous with Fact materialization for engine-mediated tool
@@ -146,7 +147,8 @@ it.
 ## Versioning
 
 Action-attempt and effect payloads follow Fact schema migration discipline
-(see 03). Tool-manifest versioning lives in 12.
+(see 03). Tool vocabulary follows build-time core/flavor versioning
+(see 08, 12).
 
 Schema evolution moves sidecar bytes only. Fact identity, citations, and
 provenance stay fixed.
@@ -156,7 +158,7 @@ provenance stay fixed.
 - EventSource membrane and Owner scoping: 01.
 - Fact payload typing and migration: 03.
 - Wake execution and output protocol: 04.
-- Tool manifest and capability validation: 12.
+- Tool vocabulary and wake-palette validation: 12.
 - External side effects and approval posture: 15.
 - Motivation is interpretation over Facts or Goal evidence, not a core action
   field.

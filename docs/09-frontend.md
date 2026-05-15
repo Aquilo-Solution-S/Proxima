@@ -192,7 +192,7 @@ Substrate views:
 | Surface | Memory lanes, goal rail, event rail, detail pane. |
 | Atlas | Deterministic projection over current graph data; layer axis fixed by entity kind. |
 | Schemas | Runtime schema/renderer visibility. |
-| Marketplace | Installed flavor frontend metadata. |
+| Flavors | Compiled-in flavor frontend metadata. |
 | Personalities | Runtime personality instances and type metadata. |
 | Settings | General, model, MCP panels owned by Shell/core. |
 

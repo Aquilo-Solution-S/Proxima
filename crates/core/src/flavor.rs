@@ -36,14 +36,13 @@ pub struct FlavorDescriptor {
     /// is empty.
     pub author: Option<String>,
     /// How this flavor was loaded into the binary. v1 is always
-    /// `Builtin`; marketplace and local-dev variants are reserved for
-    /// when out-of-process loading lands.
+    /// `Builtin`; other variants are wire-compatible reserved values,
+    /// not a runtime registration contract.
     pub provenance: FlavorProvenance,
 }
 
 /// Where the flavor came from. Reserved cases are out-of-scope for
-/// v1 but kept on the wire so post-v1 flavors don't need a contract
-/// change.
+/// v1 and do not imply dynamic flavor loading.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum FlavorProvenance {

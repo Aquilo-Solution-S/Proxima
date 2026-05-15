@@ -2,13 +2,12 @@ import { For, Show, type Component } from "solid-js";
 import type { Hub } from "../hub";
 import { SchemaTag } from "../primitives";
 
-export const MarketplaceView: Component<{ hub: Hub }> = (props) => {
+export const FlavorsView: Component<{ hub: Hub }> = (props) => {
   return (
-    <section class="proxima-view proxima-view-marketplace">
-      <h1>Marketplace</h1>
+    <section class="proxima-view proxima-view-flavors">
+      <h1>Flavors</h1>
       <p class="proxima-dim">
-        Flavors compiled into this binary. Runtime install lands when
-        out-of-process flavors do.
+        Build-time flavor crates compiled into this binary.
       </p>
 
       <Show

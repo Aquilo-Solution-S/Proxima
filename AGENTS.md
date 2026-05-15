@@ -32,7 +32,6 @@ explicit request.
 | `docs/10-configuration.md` | Owner-scoped inference targets/tier bindings; env/Codex auth; binary-wide embedding settings |
 | `docs/11-citations.md` | `CitedObject` / `CitationMapping` traits; bibliographic provenance, Fact-only citation rule |
 | `docs/12-tool-manifest.md` | T1 (runtime, schema-consuming) vs T2 (build-time flavors) tool tiers |
-| `docs/13-flavor-marketplace.md` | Substrate + reference flavors; independent authorship; composite discipline |
 | `docs/14-protocol-surface.md` | Engine's contract to clients: six verbs (Query / Subscribe / EventHistory / GoalWrite / EventIngest / Schema), owner-scoped, transport-agnostic |
 | `docs/15-compliance.md` | Compliance primitives: owner deletion, pause/resume, export, suppression, audit |
 | `docs/dev-perf.md` | Dev-time perf instrumentation: per-session artifact layout under `apps/proxima-shell/perf-logs/` |

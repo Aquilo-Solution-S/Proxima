@@ -3,7 +3,7 @@ export { SettingsView } from "./settings";
 export { SettingsGeneralPanel } from "./settings-general";
 export { SettingsModelsPanel } from "./settings-models";
 export { SchemasView } from "./schemas";
-export { MarketplaceView } from "./marketplace";
+export { FlavorsView } from "./flavors";
 export { PersonalitiesView } from "./personalities";
 export { FullSurface } from "./surface";
 export { CompactSurface } from "./compact-surface";

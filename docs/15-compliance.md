@@ -272,20 +272,19 @@ Implications:
 - The `DeletionReceipt` does not promise external state was rolled
   back. It promises substrate-internal erasure only.
 - Controllers responsible for downstream cleanup must do so out of
-  band, using the *exported* tool-call records (run `export_owner`
-  before `delete_owner`) as a reference list of where data went.
-- Tool manifests ([12](12-tool-manifest.md)) must declare
-  `recipients: Vec<RecipientId>` so Art. 19 notification
-  obligations (informing each recipient the data was shared with)
-  are at least mechanically discharge-able by Ops.
+  band. Once per-call recipient records land, `export_owner` before
+  `delete_owner` is the reference list of where data went.
+- Tool metadata ([12](12-tool-manifest.md)) must declare
+  `recipients: Vec<RecipientId>` as design intent so Art. 19
+  notification obligations have a substrate-owned field to land on.
+  v1 storage/export of per-call recipients is deferred.
 - Tools that perform legally-significant external actions (sending
   legal notices, transferring funds, modifying public records,
   contacting third parties on the subject's behalf) must use human
   approval — the proposal-Fact-plus-approval-Fact flow documented in
-  [05 §Human approval](05-actions.md#human-approval), gated by the
-  `legal_consequence: bool` flag on the tool manifest ([12](12-tool-manifest.md)).
-  Engine refuses to expose a `legal_consequence = true` tool to fully
-  automatic wake execution without an explicit override.
+  [05 §Human approval](05-actions.md#human-approval). The
+  `legal_consequence: bool` tool field is the intended gate; v1
+  runtime blocking is deferred in [12](12-tool-manifest.md).
 
 ## Compliance vocabulary
 
@@ -335,8 +334,8 @@ discipline against them. Same code path, different values.
 
 Compliance operations rely on the vocabulary above being present
 on every source, schema, and tool. Each field is declared at its
-home doc's registration call; substrate startup fails if a
-required field is absent.
+home doc's registration call. Tool-field placement and startup
+enforcement are deferred in [12](12-tool-manifest.md).
 
 | Metadata | Doc | Purpose |
 |---|---|---|
@@ -351,9 +350,9 @@ required field is absent.
 
 Per-Owner consent state, residency allowlists (`allowed_residencies:
 Set<Region>`), and the pause flag live as `compliance.owner_policy`
-rows in the audit-side schema, not in `proxima_core`. Engine
-consults them on every operator dispatch and tool invocation;
-violations are runtime errors, not silent skips.
+rows in the audit-side schema, not in `proxima_core`. Intended engine
+enforcement reads them on every operator dispatch and tool invocation;
+tool-call enforcement is deferred in 12.
 
 ## Owner policy
 
@@ -374,8 +373,8 @@ CREATE TABLE compliance.owner_policy (
     paused_reason          text,
 
     -- Residency allowlist (Chapter V). Empty set = no restriction;
-    -- otherwise the engine refuses tool calls whose
-    -- manifest.compliance.data_residency is not in the set.
+    -- future tool enforcement refuses calls whose declared
+    -- data_residency is not in the set.
     allowed_residencies    text[]     NOT NULL DEFAULT '{}',
 
     -- Per-Owner override of source-default retention.
@@ -388,8 +387,8 @@ CREATE TABLE compliance.owner_policy (
     consent_state          jsonb      NOT NULL DEFAULT '{}',
 
     -- Per-Owner override of the Art. 22 wiring constraint.
-    -- See 12 §Compliance metadata; controllers with a documented
-    -- DPIA may flip this for specific Owners after consent capture.
+    -- See 12 §Compliance metadata. Effective once tool-call
+    -- legal-consequence enforcement lands.
     allow_unmediated_legal_consequence boolean NOT NULL DEFAULT false,
 
     updated_at             timestamptz NOT NULL DEFAULT now(),
@@ -399,14 +398,14 @@ CREATE TABLE compliance.owner_policy (
 );
 ```
 
-**Read pattern.** Engine reads `owner_policy` once per dispatch
-(operator run, tool invocation, source ingest) and caches the row
-for the duration of the call. Updates are immediate but the
-caller-scope cache means a mid-call mutation is observed at the
-next dispatch, not retroactively. Pause / restriction is therefore
-not "stop in flight"; it is "stop the next one." For genuine
-in-flight termination, the controller invokes `delete_owner` (which
-preempts) or waits.
+**Read pattern.** Intended enforcement reads `owner_policy` once per
+dispatch (operator run, source ingest, future tool call) and caches the
+row for the duration of the call. Updates are immediate but the
+caller-scope cache means a mid-call mutation is observed at the next
+dispatch, not retroactively. Pause / restriction is therefore not
+"stop in flight"; it is "stop the next one." For genuine in-flight
+termination, the controller invokes `delete_owner` (which preempts) or
+waits.
 
 **Write pattern.** Updates go through admin-only RPC surfaced via
 [14](14-protocol-surface.md), every write produces an entry in
@@ -442,8 +441,8 @@ or product layer:
 - Breach detection and 72-hour notification (Art. 33)
 - DPO appointment (Art. 37–39)
 - SCCs / Adequacy-decision sourcing for cross-border transfers
-  (substrate enforces `data_residency` allowlists; the controller
-  files the SCCs)
+  (substrate-owned `data_residency` allowlists define the policy;
+  tool-call enforcement is deferred in 12; the controller files the SCCs)
 - Children's-data verification (Art. 8) — auth-layer concern
 - Anonymisation pipelines (substrate ships pseudonymisation via
   opaque `OwnerId`; full anonymisation of historical exports is
