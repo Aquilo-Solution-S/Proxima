@@ -15,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: "CLA Assistant"
-        if: (contains(fromJson('[' + github.event.pull_request.labels.*.name + ']'), 'CLA signed') == false || github.event.action == 'synchronize') && github.actor != 'cla-assistant' && github.actor != 'dependabot[bot]'
+        if: (!contains(github.event.pull_request.labels.*.name, 'CLA signed') || github.event.action == 'synchronize') && github.actor != 'cla-assistant' && github.actor != 'dependabot[bot]'
         uses: contributor-assistant/github-action@v2.3.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
