@@ -201,6 +201,10 @@ breaks if these slip.
     `personality_id`.
     See [02 §Read-scope matrix](docs/02-memory.md#read-scope-matrix),
     [07 §Core tables — abstract](docs/07-storage.md#core-tables--abstract).
+22. **Closed DB vocabularies are SQL enums.** Do not model enum-like
+    storage values as `text` plus membership `CHECK`; `CHECK` is for
+    shape, subset, range, and cross-column rules.
+    See [07 §Core tables — abstract](docs/07-storage.md#core-tables--abstract).
 
 ## Doc conventions
 
@@ -254,6 +258,8 @@ One-liner each; invariant carries the rule, doc carries the detail.
 - Adding a Dream entity, Dream relation class, or Core dream pipeline —
   dreaming is flavor-declared F→A / A→P / A→Goal consolidation under
   ordinary registry and edge invariants; see invariant 20.
+- Adding `text CHECK (x IN (...))` for a closed DB vocabulary — use a
+  PostgreSQL enum; see invariant 22.
 - Conflating `source_batch_id` and `cited_object_id` — distinct
   concepts; see [04 §Source-batch lifecycle](docs/04-consolidation.md#source-batch-lifecycle).
 - Materializing `chain(f)` as an authoritative table — see

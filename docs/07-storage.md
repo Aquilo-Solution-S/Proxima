@@ -116,6 +116,11 @@ namespaces"). Boring on purpose; what it buys:
 
 ## Core tables — abstract
 
+Closed vocabularies are PostgreSQL enums, not `text` plus membership
+`CHECK`. `CHECK` remains for shape, subset, range, and cross-column rules.
+Open identifiers remain `text`: `schema_id`, `relation`, `model_id`,
+`target_ref`, `vendor`, `tool_id`, paths, handles, and payload text.
+
 ```
 events(
     event_id              pk,

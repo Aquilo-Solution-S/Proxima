@@ -72,7 +72,7 @@ struct ScriptedPlannerAdapter {
 impl ScriptedPlannerAdapter {
     async fn emit_execution_request(
         &self,
-        invocation: TargetInvocation,
+        _invocation: TargetInvocation,
         ctx: TargetContext,
     ) -> Result<(), String> {
         let auth = self
@@ -113,12 +113,15 @@ impl ScriptedPlannerAdapter {
             .get("handle")
             .and_then(serde_json::Value::as_str)
             .ok_or_else(|| format!("missing commit handle: {first_commit}"))?;
-        let goal_activated_memory = invocation
-            .context_params
-            .get("triggering_memory")
-            .and_then(|value| value.get("memory_id"))
-            .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| "missing triggering_memory.memory_id".to_string())?;
+        let wake = auth
+            .wake
+            .as_ref()
+            .ok_or_else(|| "missing wake context".to_string())?;
+        let goal_activated_memory = wake
+            .handles
+            .assign_memory(wake.triggering_event_memory_id)
+            .as_str()
+            .to_string();
 
         let output = self
             .server

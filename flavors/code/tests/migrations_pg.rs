@@ -70,6 +70,19 @@ async fn flavor_migrations_apply_to_fresh_db() {
             assert!(row.is_some(), "expected table proxima_core.{table}");
         }
 
+        for (table, column) in [
+            ("repos", "owner_principal_kind"),
+            ("repo_ingestion_runs", "owner_principal_kind"),
+            ("repo_ingestion_runs", "status"),
+            ("repo_ingestion_runs", "stage"),
+            ("file_revision_v1", "state"),
+            ("code_chunk_v1", "state"),
+            ("workspace_decision_v1", "decision"),
+            ("workspace_review_v1", "verdict"),
+        ] {
+            assert_enum_column(pg.pool(), "proxima_code", table, column).await?;
+        }
+
         // Idempotency — a second run must not error.
         proxima_code::migrator().run(pg.pool()).await?;
 
@@ -79,4 +92,35 @@ async fn flavor_migrations_apply_to_fresh_db() {
 
     let _ = drop_db(&db_name).await;
     result.expect("flavor_migrations_apply_to_fresh_db failed");
+}
+
+async fn assert_enum_column(
+    pool: &sqlx::PgPool,
+    schema: &str,
+    table: &str,
+    column: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let typtype: Option<String> = sqlx::query_scalar(
+        "SELECT t.typtype::text
+           FROM pg_attribute a
+           JOIN pg_class c ON c.oid = a.attrelid
+           JOIN pg_namespace n ON n.oid = c.relnamespace
+           JOIN pg_type t ON t.oid = a.atttypid
+          WHERE n.nspname = $1
+            AND c.relname = $2
+            AND a.attname = $3
+            AND NOT a.attisdropped",
+    )
+    .bind(schema)
+    .bind(table)
+    .bind(column)
+    .fetch_optional(pool)
+    .await?;
+
+    assert_eq!(
+        typtype.as_deref(),
+        Some("e"),
+        "expected {schema}.{table}.{column} to be a SQL enum"
+    );
+    Ok(())
 }
