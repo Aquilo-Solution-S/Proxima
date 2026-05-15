@@ -9,12 +9,12 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use proxima_code::{CommitV1, build_engine_with, ingest_commit, migrator, register_repo};
+use proxima_code::{build_engine_with, migrator, register_repo};
 use proxima_core::auth::NoAuth;
 use proxima_core::llm::scripted::{ScriptedAnthropicClient, ScriptedTurn};
 use proxima_core::llm::{EmbeddingClient, LlmError};
 use proxima_core::personality::{InstantiatePersonalityRequest, PersonalityInstanceId};
-use proxima_core::{CORE_INSPIRES_RELATION, OrgId, Owner, Principal, SourceBatchId, UserId};
+use proxima_core::{CORE_INSPIRES_RELATION, OrgId, Owner, Principal, UserId};
 use proxima_storage_pg::PgStorage;
 use sqlx::{Connection, Executor, PgConnection};
 use uuid::Uuid;
@@ -82,7 +82,7 @@ impl EmbeddingClient for FakeEmbedding {
 async fn author_inspires_edge(
     pg: &PgStorage,
     owner: &Owner,
-    source_memory_id: Uuid,
+    source_goal_id: Uuid,
     target_memory_id: Uuid,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (owner_kind, owner_principal_id, owner_org_id) = match &owner.principal {
@@ -98,12 +98,12 @@ async fn author_inspires_edge(
              target_kind, target_memory_id, target_goal_id,
              authorship_kind,
              owner_principal_kind, owner_principal_id, owner_org_id)
-         VALUES ($1, $2, 'Causal', 'Fact', $3, NULL, 'Perspective', $4, NULL,
+         VALUES ($1, $2, 'Causal', 'Goal', NULL, $3, 'Perspective', $4, NULL,
                  'User', $5, $6, $7)",
     )
     .bind(edge_id)
     .bind(CORE_INSPIRES_RELATION)
-    .bind(source_memory_id)
+    .bind(source_goal_id)
     .bind(target_memory_id)
     .bind(owner_kind)
     .bind(owner_principal_id)
@@ -116,10 +116,10 @@ async fn author_inspires_edge(
         "INSERT INTO proxima_core.change_event
             (seq, owner_principal_kind, owner_principal_id, owner_org_id, kind,
              edge_id, edge_relation,
-             edge_source_kind, edge_source_memory_id,
+             edge_source_kind, edge_source_goal_id,
              edge_target_kind, edge_target_memory_id)
          VALUES ($1, $2, $3, $4, 'EdgeAppend', $5, $6,
-                 'Fact', $7, 'Perspective', $8)",
+                 'Goal', $7, 'Perspective', $8)",
     )
     .bind(seq)
     .bind(owner_kind)
@@ -127,12 +127,40 @@ async fn author_inspires_edge(
     .bind(owner_org_id)
     .bind(edge_id)
     .bind(CORE_INSPIRES_RELATION)
-    .bind(source_memory_id)
+    .bind(source_goal_id)
     .bind(target_memory_id)
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
     Ok(())
+}
+
+async fn seed_active_goal(
+    pg: &PgStorage,
+    owner: &Owner,
+) -> Result<Uuid, Box<dyn std::error::Error>> {
+    let (owner_kind, owner_principal_id, owner_org_id) = match &owner.principal {
+        Principal::User(u) => ("User", u.into_inner(), owner.org_id.into_inner()),
+        Principal::Group(g) => ("Group", g.into_inner(), owner.org_id.into_inner()),
+    };
+    let goal_id = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO proxima_core.goals
+            (goal_id, schema_id, schema_version,
+             owner_principal_kind, owner_principal_id, owner_org_id,
+             title, text, state, authorship_kind, request_id, payload)
+         VALUES ($1, 'proxima-goal/simple-text-v1', 1,
+                 $2, $3, $4,
+                 'goal targeting', 'target Alice only', 'Active', 'User',
+                 'goal-targeting-e2e', ''::bytea)",
+    )
+    .bind(goal_id)
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(owner_org_id)
+    .execute(pg.pool())
+    .await?;
+    Ok(goal_id)
 }
 
 async fn self_perspective_for(
@@ -194,32 +222,10 @@ async fn inspires_edge_targets_only_intended_engineer_instance() {
         let bob_self = self_perspective_for(&pg, bob.instance_id).await?;
         assert_ne!(alice_self, bob_self);
 
-        // Ingest a commit (we need a memory to use as the inspires
-        // edge source).
-        let now = time::OffsetDateTime::now_utc();
-        let commit = ingest_commit(
-            pg.pool(),
-            &owner,
-            SourceBatchId::new(Uuid::now_v7()),
-            &CommitV1 {
-                repo_id,
-                sha: "goalsource".into(),
-                parents: Vec::new(),
-                author_name: "E2E".into(),
-                author_email: "e2e@example.com".into(),
-                author_time: now,
-                committer_name: "E2E".into(),
-                committer_email: "e2e@example.com".into(),
-                committer_time: now,
-                message: "fact".into(),
-            },
-            now,
-        )
-        .await?;
-
-        // Author an inspires edge from the commit -> Alice's
+        // Author an inspires edge from an active Goal -> Alice's
         // self-Perspective.
-        author_inspires_edge(&pg, &owner, commit.memory_id.into_inner(), alice_self).await?;
+        let goal_id = seed_active_goal(&pg, &owner).await?;
+        author_inspires_edge(&pg, &owner, goal_id, alice_self).await?;
 
         // Run dispatcher with enough turns for both engineer wakes to
         // complete (each emits end_turn). Plus 1 for the commit-summary
