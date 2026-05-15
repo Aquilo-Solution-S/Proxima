@@ -10,7 +10,8 @@ use proxima_core::verbs::event_history::{EventHistoryRequest, EventHistoryRespon
 use proxima_core::verbs::event_ingest::{EventDraft, EventIngestOutcome};
 use proxima_core::verbs::goal_write::{GoalDraft, GoalWriteOutcome};
 use proxima_core::verbs::query::{
-    MemorySearchRequest, MemorySearchResult, QueryRequest, QueryResponse,
+    MemoryLineageRequest, MemoryLineageResponse, MemorySearchRequest, MemorySearchResult,
+    QueryRequest, QueryResponse,
 };
 use proxima_core::verbs::schema::SchemaInfo;
 use proxima_core::verbs::subscribe::ChangeEventStream;
@@ -98,6 +99,17 @@ impl Storage for FixtureStorage {
         _schemas: &[SchemaInfo],
     ) -> Result<Vec<MemorySearchResult>, StorageError> {
         Ok(Vec::new())
+    }
+
+    async fn walk_memory_lineage(
+        &self,
+        _req: &MemoryLineageRequest,
+    ) -> Result<MemoryLineageResponse, StorageError> {
+        Ok(MemoryLineageResponse {
+            nodes: Vec::new(),
+            edges: Vec::new(),
+            truncated: false,
+        })
     }
 
     async fn list_active_goals(
