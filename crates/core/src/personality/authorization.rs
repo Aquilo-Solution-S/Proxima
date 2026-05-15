@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use crate::personality::PersonalityTool;
-use crate::{CORE_DERIVED_FROM_RELATION, CORE_SUPERSEDES_RELATION};
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum AuthorizationError {
@@ -9,10 +8,6 @@ pub enum AuthorizationError {
     OutsidePalette { tool_id: String },
     #[error("schema outside writeable_schemas: {schema_id}")]
     OutsideWriteableSchemas { schema_id: String },
-    #[error("relation outside writeable_relations: {relation_id}")]
-    OutsideWriteableRelations { relation_id: String },
-    #[error("relation is substrate-only: {relation_id}")]
-    SubstrateOnlyRelation { relation_id: String },
 }
 
 pub fn authorize_tool_call(
@@ -36,26 +31,6 @@ pub fn authorize_emit(
     }
     Err(AuthorizationError::OutsideWriteableSchemas {
         schema_id: schema_id.to_string(),
-    })
-}
-
-pub fn authorize_create_edge(
-    relation_id: &str,
-    writeable_relations: &[String],
-) -> Result<(), AuthorizationError> {
-    if matches!(
-        relation_id,
-        CORE_DERIVED_FROM_RELATION | CORE_SUPERSEDES_RELATION
-    ) {
-        return Err(AuthorizationError::SubstrateOnlyRelation {
-            relation_id: relation_id.to_string(),
-        });
-    }
-    if writeable_relations.iter().any(|id| id == relation_id) {
-        return Ok(());
-    }
-    Err(AuthorizationError::OutsideWriteableRelations {
-        relation_id: relation_id.to_string(),
     })
 }
 
@@ -115,28 +90,6 @@ mod tests {
             authorize_emit("test/other", &allowed),
             Err(AuthorizationError::OutsideWriteableSchemas {
                 schema_id: "test/other".to_string()
-            })
-        );
-    }
-
-    #[test]
-    fn rejects_relation_outside_writeable_set() {
-        let allowed = vec!["test/allowed".to_string()];
-        assert_eq!(
-            authorize_create_edge("test/other", &allowed),
-            Err(AuthorizationError::OutsideWriteableRelations {
-                relation_id: "test/other".to_string()
-            })
-        );
-    }
-
-    #[test]
-    fn rejects_substrate_only_relations() {
-        let allowed = vec![CORE_DERIVED_FROM_RELATION.to_string()];
-        assert_eq!(
-            authorize_create_edge(CORE_DERIVED_FROM_RELATION, &allowed),
-            Err(AuthorizationError::SubstrateOnlyRelation {
-                relation_id: CORE_DERIVED_FROM_RELATION.to_string()
             })
         );
     }

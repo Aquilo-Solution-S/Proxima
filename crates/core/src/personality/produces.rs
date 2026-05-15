@@ -2,11 +2,10 @@
 //!
 //! These helpers are the canonical mapping
 //! `(palette, registry) → {schema_ids, relation_ids}`. The substrate
-//! emit tools (`core/emit_abstraction`, `core/emit_perspective`,
-//! `core/create_edge`) gate runtime authorization on the same lists,
-//! constructed via these helpers in the wake fire path. Flavor MCP
-//! tools can additionally advertise produced schemas through their
-//! registered tool descriptor.
+//! emit tools (`core/emit_abstraction`, `core/emit_perspective`) gate
+//! runtime authorization on the same lists, constructed via these
+//! helpers in the wake fire path. Flavor MCP tools can additionally
+//! advertise produced schemas through their registered tool descriptor.
 
 use crate::Engine;
 use crate::verbs::schema::PayloadKind;
@@ -37,19 +36,11 @@ pub fn writeable_schemas_for_palette(engine: &Engine, palette: &[String]) -> Vec
     schema_ids
 }
 
-/// Relations this palette could create. Returns every registered
-/// relation if `core/create_edge` is in the palette; empty otherwise.
+/// Relations this palette could create. v1 has no generic substrate
+/// relation writer; relation-authoring tools are flavor-specific.
 #[must_use]
-pub fn writeable_relations_for_palette(engine: &Engine, palette: &[String]) -> Vec<String> {
-    if !palette.iter().any(|id| id == "core/create_edge") {
-        return Vec::new();
-    }
-    engine
-        .registry()
-        .list_relations()
-        .iter()
-        .map(|relation| relation.relation.clone())
-        .collect()
+pub fn writeable_relations_for_palette(_engine: &Engine, _palette: &[String]) -> Vec<String> {
+    Vec::new()
 }
 
 #[cfg(test)]
@@ -156,16 +147,15 @@ mod tests {
         let palette = vec!["core/emit_abstraction".to_string()];
         let schemas = writeable_schemas_for_palette(&engine, &palette);
         assert_eq!(schemas, vec!["test/abstraction-v1".to_string()]);
-        // No relations: create_edge not in palette
         assert!(writeable_relations_for_palette(&engine, &palette).is_empty());
     }
 
     #[test]
-    fn create_edge_only_returns_all_relations() {
+    fn relation_writes_are_not_inferred_from_palette() {
         let engine = engine_with_test_registry();
         let palette = vec!["core/create_edge".to_string()];
         let relations = writeable_relations_for_palette(&engine, &palette);
-        assert_eq!(relations, vec!["test/related-to".to_string()]);
+        assert!(relations.is_empty());
         assert!(writeable_schemas_for_palette(&engine, &palette).is_empty());
     }
 
