@@ -84,7 +84,7 @@ pub(crate) async fn query_memories(
 
     let mut sql = String::from(
         "SELECT m.memory_id, m.owner_principal_kind, m.owner_principal_id, \
-                m.owner_org_id, m.schema_id, m.schema_version, m.kind, m.event_id,",
+                m.owner_org_id, m.schema_id, m.schema_version, m.kind,",
     );
 
     // Bindings: $1=owner_kind, $2=owner_principal_id.
