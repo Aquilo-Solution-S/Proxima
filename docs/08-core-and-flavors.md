@@ -113,11 +113,15 @@ Default tools available to every personality:
 | `list_self_perspectives` | `emit_perspective` |
 | `fetch_memory` | `emit_abstraction` |
 | `walk_lineage` |  |
-| `search_memories` | `create_edge` |
+| `search_memories` |  |
 | `list_active_goals` |  |
 
 Flavor tools extend the palette. Write tools enforce declared schemas and
 relations.
+
+Relation creation is flavor-specific. Core does not expose a generic
+`create_edge` substrate tool because typed relations require relation-shaped
+payloads and validation.
 
 `Goal` is a core entity. `proxima-goal` is the reference flavor for
 GoalPayload schemas, proposal/accept/decline MCP tools, sidecars, and

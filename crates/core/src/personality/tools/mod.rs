@@ -2,8 +2,8 @@
 //! effective palette.
 //!
 //! Read tools append to `PersonalityToolContext.read_log` on success;
-//! write tools (`emit_abstraction`, `emit_perspective`, `create_edge`)
-//! snapshot the union of `{triggering_event} ∪ read_log` for auto-wired
+//! write tools (`emit_abstraction`, `emit_perspective`) snapshot the
+//! union of `{triggering_event} ∪ read_log` for auto-wired
 //! Provenance and `wake_chain_depth` per spec §Substrate-shipped tool
 //! pack.
 
@@ -11,7 +11,6 @@ use std::sync::{Arc, OnceLock};
 
 use crate::personality::PersonalityTool;
 
-mod create_edge;
 mod emit_abstraction;
 mod emit_perspective;
 mod fetch_memory;
@@ -24,7 +23,6 @@ mod walk_lineage;
 #[doc(hidden)]
 pub use shared::model_id_from_wake_invocation as __test_only_model_id_from_wake_invocation;
 
-pub use create_edge::CreateEdgeTool;
 pub use emit_abstraction::EmitAbstractionTool;
 pub use emit_perspective::EmitPerspectiveTool;
 pub use fetch_memory::FetchMemoryTool;
@@ -48,7 +46,6 @@ pub fn substrate_pack() -> &'static [Arc<dyn PersonalityTool>] {
             Arc::new(ListActiveGoalsTool),
             Arc::new(EmitAbstractionTool),
             Arc::new(EmitPerspectiveTool),
-            Arc::new(CreateEdgeTool),
         ]
     })
     .as_slice()
