@@ -2,12 +2,12 @@
 //
 // Source-of-truth split (docs/09 §Transport, docs/03 §"What a schema is"):
 // the *envelope* below is protobuf-authoritative. Payload bytes are
-// `serde_json` of the flavor's payload struct (Rust trait impls per
-// docs/03, registered via `proxima_flavor!` per docs/08); this file
-// declares the carrier, never the payload schema.
+// CBOR for the flavor's payload struct (Rust trait impls per docs/03,
+// registered via `proxima_flavor!` per docs/08); this file declares
+// the carrier, never the payload schema.
 //
 // UUIDs are textual (RFC 4122 hyphenated). Saves 20B per id over raw
-// bytes but keeps Connect's JSON codec readable for debugging
+// bytes while keeping text-format traces readable for debugging
 // (docs/09 §Transport).
 //
 // Content hashes (`event_id`, `content_hash`) stay as raw `bytes`.
@@ -123,7 +123,8 @@ message Memory {
 // identity-only via `ChangeEvent` (docs/14 §Subscribe).
 //
 // `payload` is CBOR for the payload struct registered for
-// `memory.schema`; codecs live client-side per docs/09 §Encoding.
+// `memory.schema`; codecs live client-side per docs/09
+// §Schema-Driven UI + Codegen.
 message TypedMemory {
   Memory memory = 1;
   bytes payload = 2;
@@ -357,6 +358,7 @@ message InferenceTargetConfig {
     MistralChatConfig mistral_chat = 1;
     OpenAIChatConfig openai_chat = 2;
     OpenAIResponsesConfig openai_responses = 3;
+    ChatGPTCodexConfig chatgpt_codex = 4;
   }
 }
 
@@ -381,6 +383,12 @@ message OpenAIResponsesConfig {
   string model_id = 2;
   string api_key_env = 3;
   optional string reasoning_effort = 4;
+}
+
+message ChatGPTCodexConfig {
+  string base_url = 1;
+  string model_id = 2;
+  optional string reasoning_effort = 3;
 }
 
 message InferenceTierBinding {

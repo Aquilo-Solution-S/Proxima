@@ -12,6 +12,17 @@ const REPO = resolve(fileURLToPath(import.meta.url), "../..");
 const COMPOSE = join(REPO, "docker-compose.dev.yml");
 const PERF_LOGS = join(REPO, "apps/proxima-shell/perf-logs");
 const DB_URL = "postgres://proxima:proxima@127.0.0.1:5432/proxima";
+const S3_ENV = {
+  PROXIMA_S3_BUCKET: "proxima-dev",
+  PROXIMA_S3_REGION: "us-east-1",
+  PROXIMA_S3_ENDPOINT_URL: "http://127.0.0.1:9100",
+  PROXIMA_S3_FORCE_PATH_STYLE: "true",
+  PROXIMA_S3_UPLOAD_TTL_SECONDS: "900",
+  PROXIMA_S3_READ_TTL_SECONDS: "300",
+  AWS_ACCESS_KEY_ID: "proxima",
+  AWS_SECRET_ACCESS_KEY: "proxima-dev",
+  AWS_REGION: "us-east-1",
+};
 
 function timestamp() {
   const d = new Date();
@@ -55,8 +66,12 @@ async function main() {
   console.log(`[perf-driver] session dir: ${sessionDir}`);
   const startedAt = Date.now();
 
-  console.log("[perf-driver] bringing up Postgres…");
-  runOrDie("docker", ["compose", "-f", COMPOSE, "up", "-d", "--wait"]);
+  console.log("[perf-driver] bringing up Postgres + MinIO…");
+  runOrDie("docker", ["compose", "-f", COMPOSE, "up", "-d", "--wait", "postgres", "minio"]);
+  runOrDie("docker", [
+    "compose", "-f", COMPOSE, "--profile", "init",
+    "run", "--rm", "minio-init",
+  ]);
 
   const reset = spawnSync(
     "docker",
@@ -85,6 +100,7 @@ async function main() {
     stdio: "inherit",
     env: {
       ...process.env,
+      ...S3_ENV,
       DATABASE_URL: DB_URL,
       PROXIMA_PERF_SESSION_DIR: sessionDir,
     },

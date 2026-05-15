@@ -1,10 +1,10 @@
 //! Embedded engine wiring for the desktop shell.
 //!
 //! The shell holds an `Arc<Engine>` via `tauri::Builder::manage` and
-//! exposes the five verb surfaces from docs/14 as `#[tauri::command]`
+//! exposes the engine command surfaces as `#[tauri::command]`
 //! handlers. tauri-specta generates the matching TS bindings into
-//! `../src/lib/bindings.ts` on debug builds — Rust traits remain the
-//! source of truth (docs/09 §Generation pipeline).
+//! `packages/frontend-core/src/bindings.ts`; Rust command signatures
+//! remain the source of truth (docs/09 §Schema-Driven UI + Codegen).
 //!
 //! v1 uses Postgres-backed storage (mandatory via `DATABASE_URL`)
 //! with the proxima-code flavor. `NoopStorage` was removed once

@@ -9,12 +9,10 @@ lint:
     # engine.proto) under package `proxima.v1`, not file-per-package.
     - PACKAGE_DIRECTORY_MATCH
     # `service Engine` (not `EngineService`) — matches the Rust
-    # `Engine` type and docs/09's flavor-endpoint example
-    # (`service CodeFlavor`, mounted as `CodeFlavorServer`).
+    # `Engine` type and the wire service named in docs/09.
     - SERVICE_SUFFIX
-    # docs/09 §Stream framing: "each `ChangeEvent` is one
-    # length-prefixed protobuf frame." Direct frame, not a
-    # wrapper response message.
+    # `Subscribe` returns direct `ChangeEvent` values, not a wrapper
+    # response message.
     - RPC_RESPONSE_STANDARD_NAME
 breaking:
   use:

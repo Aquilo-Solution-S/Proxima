@@ -1,471 +1,281 @@
 # 09 — Frontend & Client Model
 
-The frontend is a view of the user's mind. Mobile and offline are
-first-class. This doc picks the bytes for the semantic contract
-fixed in [14](docs/14-protocol-surface.md): transport, serialization,
-stream framing, schema-driven UI codegen, and the local-first
-replica.
+Current contract for the implemented frontend. 14 owns the protocol
+semantics; 09 owns the client transport, state, rendering, and bundle
+composition facts.
 
+No protocol extension, runtime registration path, or offline replica is
+defined here.
+
+<a id="stack"></a>
 ## Stack
 
-| Layer | Choice | Why |
+| Layer | Current choice | Boundary |
 |---|---|---|
-| Shell | Tauri 2 | Rust everywhere; native-grade integration per platform; web bundle for browser target. |
-| UI framework | Solid | Signals match the 14 `Subscribe` model directly; minimal reconciliation per `ChangeEvent`. |
-| Transport | Tauri IPC (v1 desktop, embedded engine); gRPC over HTTP/2 (deferred, for headless / remote / web) | Same proto contract via the `wire-grpc` crate either way; embedded mode bypasses encoding by calling `Engine` directly. |
-| Local cache | SQLite + sqlite-vec | Mirrors engine schema (memories, edges, goals, embeddings) at the visible-Owner window. |
-| Build | Vite + buf + Cargo | Single workspace, parallel dev. |
+| Shell | Tauri 2 + Solid | `apps/proxima-shell` product composition and desktop host. |
+| Engine access | Tauri IPC over embedded `Arc<Engine>` | JS calls generated Tauri command bindings; Rust handlers call engine verbs in-process. |
+| Command bindings | `packages/frontend-core/src/bindings.ts` | Generated from the Tauri/Specta Rust command surface; do not edit by hand. |
+| Core frontend package | `@proxima/core` | Shell primitives, hub, graph/filter stores, Tauri client, substrate views. |
+| Flavor frontend packages | `@proxima/flavor-code`, `@proxima/flavor-goal`, `@proxima/flavor-mcp` | Payload codecs/renderers/editors/styles/views registered at Shell startup. |
+| Payload bytes | CBOR | Decoded by registered flavor codecs; unknown payloads surface metadata/decode fallback. |
+| State | In-memory `createGraphStore()` | Built from `Schema` + `Query` + `EventHistory` + `Subscribe`; no durable frontend replica. |
 
-Stack is **locked**: Solid + Tauri 2. No fallback framework. One
-TypeScript codebase across web, desktop, iOS, Android.
+Locked implementation choice: Solid + Tauri 2 for the Shell.
 
+<a id="transport"></a>
 ## Transport
 
-The five 14 verbs are the contract. v1 desktop fulfills it via the
-**embedded path**: the engine runs in-process inside the Tauri
-binary; the JS layer calls verbs through Tauri IPC; no wire bytes
-flow on the desktop golden path. Other deployments (headless server,
-future remote, future browser) fulfill the same contract via the
-**wire path**: same protos, served by tonic over HTTP/2. The
-`wire-grpc` crate houses the proto contract and the gRPC service
-impl; embedded mode calls `Engine` methods directly, wire mode
-routes through tonic. **One contract, two fulfillments.**
+The client-facing protocol surface is the six verbs in
+[14](14-protocol-surface.md#the-six-verbs):
 
-### Embedded path (v1 desktop)
-
-| Verb | Tauri command shape |
+| Verb | Current Shell path |
 |---|---|
-| `Query`       | `invoke('query', { req })` → unary |
-| `Subscribe`   | `invoke('subscribe', { req, ch })` → streams via `tauri::ipc::Channel<ChangeEvent>` |
-| `GoalWrite`   | `invoke('goal_write', { req })` → unary, idempotent by `request_id` |
-| `EventIngest` | `invoke('event_ingest', { req })` → unary, idempotent by `event_id` |
-| `Schema`      | `invoke('schema', { req })` → unary |
+| `Query` | `commands.query(req)` |
+| `Subscribe` | `commands.subscribe(req, Channel<ChangeEvent>)` |
+| `EventHistory` | `commands.eventHistory(req)` |
+| `GoalWrite` | `commands.goalWrite(draft)` |
+| `EventIngest` | `commands.eventIngest(draft)` |
+| `Schema` | `commands.schema()` |
 
-The Tauri Rust core holds `Arc<Engine>` via `tauri::Builder::manage`;
-each `#[tauri::command]` handler dispatches to the matching engine
-verb directly. Subscribe's server-stream is fanned through a Tauri
-`Channel` so JS receives a typed callback per `ChangeEvent`. Argument
-and result shapes match the wire-grpc proto types — the JS↔Rust
-boundary uses Tauri's default serialization for envelope fields, and
-the `payload` field stays opaque `Uint8Array` decoded to typed values
-via `cbor-x` and the schema-driven dispatch table (§Encoding).
+Desktop Shell path:
 
-### Wire path (deferred, non-desktop / remote)
+1. `apps/proxima-shell/src/App.tsx` builds `TauriEngineClient`.
+2. `packages/frontend-core/src/tauri-client.ts` wraps generated
+   Tauri commands behind `EngineClient`.
+3. `apps/proxima-shell/src-tauri/src/commands/engine.rs` receives
+   `State<'_, Arc<Engine>>`.
+4. Commands call the matching engine method with `Credentials::None`.
+5. `Subscribe` streams identity-only `ChangeEvent`s through
+   `tauri::ipc::Channel`.
 
-When a deployment binds the engine to a network address, the same
-`wire-grpc` `EngineGrpcServer` mounts on
-a tonic `Server`. Browser-friendly framing (Connect-RPC, gRPC-Web)
-is a follow-on adapter on the same port — not v1 scope, since the
-only v1 client is Tauri Rust which speaks tonic natively.
+The Rust engine stays in-process with the Shell. The JS side does not
+talk to the MCP listener and does not route through a loopback protocol
+adapter on the desktop path.
 
-**Stream framing** for wire-path `Subscribe`: each `ChangeEvent` is
-one length-prefixed protobuf frame on a tonic server-stream over
-HTTP/2. HTTP/2 keepalive carries liveness; the cursor (`seq`) carries
-durability. No app-level heartbeat is added on top — reconnect uses
-14's resume protocol (client persists `last_seq`, reconnects with
-`since = last_seq − Δ`, dedupes by `seq`).
+Wire deployments remain a separate fulfillment of the same 14 contract:
+`proto/proxima/v1/engine.proto` and `crates/wire-grpc` expose the
+engine service over gRPC for headless/remote clients. The Shell frontend
+does not currently consume that path.
 
-### Serialization (both paths)
+Envelope rows cross the JS boundary as generated Tauri/Specta types.
+Typed payload fields remain opaque bytes until a flavor codec decodes
+them.
 
-**Envelope** — verb arguments, `ChangeEvent`, `Memory` row, edges,
-schema metadata — is protobuf, generated by `buf` from one shared
-`.proto` set in `proto/` and implemented by `crates/wire-grpc/`.
-**Payload** (the `bytes` field on every
-`Memory` / `EventDraft` / `Goal`) is **CBOR** of the flavor's payload
-struct, opaque to the wire — `ciborium` in Rust, `cbor-x` in TS.
-CBOR is chosen over JSON for ~3-4× slimmer encoding of vector
-payloads (embeddings encode at 4 bytes per `f32`, vs ~14 bytes per
-textual float in JSON) without imposing a per-flavor codegen tax —
-`Serialize`/`Deserialize` traits carry over unchanged. The split
-keeps source-of-truth singular: payload schemas are declared as Rust
-traits per [03 §What a schema is](03-schema-registry.md#what-a-schema-is)
-and registered at build time per
-[08 §Registration mechanism](08-core-and-flavors.md#registration-mechanism);
-a parallel `.proto` per payload would duplicate that authority and
-break the marketplace story.
+<a id="schema-driven-ui-codegen"></a>
+## Schema-Driven UI + Codegen
 
-In the embedded path the envelope encoding is bypassed: Tauri commands
-take and return the same Rust types the proto would generate, but no
-proto bytes are produced. The CBOR payload encoding still applies —
-JS receives `Uint8Array` and decodes via the same dispatch table.
+Source of truth:
 
-### Credentials (both paths)
-
-Regardless of path, each call hands a `Credentials` to the engine's
-`AuthResolver` (14 §Auth model). Wire-path: extracted from
-HTTP-standard form — `Authorization: Bearer <token>` for the `OIDC`
-resolver, nothing for `NoAuth`, source-specific headers for webhook
-sources. Embedded-path: derived from local OS context — Tauri commands
-inherit the authenticated session from the parent app's user model
-(`NoAuth` for v1 single-user desktop). What the token contains, how
-it's minted, and how membership maps to Owners are deployment
-concerns and not 09's job.
-
-## Schema-driven UI codegen
-
-### Source of truth
-
-Payload schemas are Rust trait impls in flavor crates per
-[03 §What a schema is](03-schema-registry.md#what-a-schema-is),
-registered at link time per
-[08 §Registration mechanism](08-core-and-flavors.md#registration-mechanism).
-The frontend derives from those impls — it does **not** mirror them
-in a parallel `.proto` set. One source per schema; everything else
-is generated.
-
-### Generation pipeline
-
-The `proxima_flavor!` macro emits, alongside its existing Rust
-registry call, two artefacts per registered payload struct:
-
-- A TypeScript type, via `specta` + `tauri-specta` — embedded mode
-  (v1 desktop) uses `tauri-specta` to generate type-safe `invoke`
-  bindings directly from the Rust handler signatures; the wire path
-  consumes the same TS types over the gRPC transport.
-- A JSON Schema, via `schemars`, exposed at runtime through the
-  `Schema` verb (14 §Schema).
-
-Both land under the flavor crate's `frontend/generated/` directory
-at workspace build time. The flavor's npm package re-exports them.
-
-### Encoding
-
-Payloads are encoded via `ciborium::ser::into_writer` on send and
-decoded via `ciborium::de::from_reader` (Rust) or `cbor-x` (TS) on
-receive. The TS client dispatches on `(schema_id, schema_version)`
-to the typed decoder:
-
-```ts
-// generated/registry.ts
-import type { CommitV1 } from "./code/CommitV1";
-import { decode } from "cbor-x";
-export const PAYLOAD_DECODERS = {
-  "proxima-code/commit-v1@1": (b: Uint8Array) =>
-    decode(b) as CommitV1,
-  // ...
-} satisfies Record<string, (b: Uint8Array) => unknown>;
-```
-
-The Subscribe hot path carries identity only (per 14
-§ChangeEvent), so no payload decode happens on the live signal.
-Decoding is bounded to `Query` responses and offline-replica
-refresh.
-
-### Renderer dispatch
-
-The `(schema_id, schema_version) → Renderer` lookup is the core's
-responsibility, populated by flavor `register()` calls per
-§[Hub architecture](#hub-architecture). Unrecognized pairs fall
-through to the JSON-Schema-driven generic renderer (§Unknown-schema
-fallback). Each flavor's frontend npm package lives next to its
-Rust crate:
-
-```
-flavors/code/
-├── src/                     Rust crate (08)
-├── frontend/
-│   ├── package.json         npm: "@proxima/code"
-│   ├── src/
-│   │   ├── register.ts      register(scope: FlavorScope)
-│   │   ├── bindings.ts      generated: specta TS types + JSON Schema
-│   │   ├── renderers/       per-schema components keyed by (SCHEMA_ID, SCHEMA_VERSION)
-│   │   ├── pages/           optional custom views via scope.registerView
-│   │   └── codec.ts         cbor-x decode for flavor's payload types
-│   └── i18n/
-└── migrations/
-```
-
-### Unknown-schema fallback
-
-A client running an older bundle may receive a `Memory` whose
-`schema_id` it has no compiled type for. The renderer falls back
-to the JSON Schema returned by the `Schema` verb, walks it
-generically, and renders untyped. Schemas are immutable per
-version, so the `(schema_id, schema_version)` JSON Schema response
-is a permanent client-side cache — refetched only on first sight
-of a new pair.
-
-### Filter UI
-
-Filter UI is rendered from the `Schema` verb's declared filter keys
-(14 §Query). Typed filters fall out of the same codegen path.
-
-Bare core ships defaults for every entity kind in 02 (Fact,
-Abstraction, Perspective, Goal). A flavor frontend may override
-any default for any of its registered schemas. Schema additions
-propagate via codegen on rebuild — no hand-written form per schema.
-
-## Local-first replica + offline queue
-
-Always available: a network drop must not cost access to the
-user's own data.
-
-**Read path.** SQLite mirrors the visible-Owner window — memories,
-edges, goals, embeddings — with the same schema shape as 07.
-Cold-start stitching is the 14 protocol verbatim: `Query` for the
-snapshot, then `Subscribe(since = seq_high_water)` for the live
-tail. Reconnect uses 14 resume.
-
-**Write path.** Offline `GoalWrite` and `EventIngest` calls append
-to a local write log keyed by client-generated `request_id` /
-`event_id`. On reconnect the queue drains in order; 14's
-idempotency guarantees make replay safe (`IdempotencyConflict`
-surfaces only when the body changed, which the queue prevents by
-construction).
-
-**Vector search** runs against `sqlite-vec` locally for the cached
-window; queries that miss the local set fall through to the
-engine. The split is opportunistic, not authoritative — the engine
-remains the source of truth.
-
-## UI bundle composition
-
-Bare core ships `proxima-shell` (Tauri + Solid app with generic
-Memory / Goal / Edge UI). A per-product frontend bundle is
-`proxima-shell` + the npm packages of the linked flavors, built
-once per binary. The composition rule is the JS analogue of 08
-§Composite discipline: a bundle links exactly the flavor JS
-packages whose Rust crates the binary links. No feature flags.
-
-A bundle is a **product** artifact, not a deployment artifact — the
-same binary serves many environments, distinguished only by injected
-config (auth issuer URL, DB DSN, secrets). The repo-tier split that
-keeps substrate, product, and deployment separable is detailed in
-[13 §Composition](docs/13-flavor-marketplace.md#composition).
-
-## Hub architecture
-
-The frontend is a **substrate of views + a registry of flavor
-renderers**. Substrate provides the views (FullSurface, Atlas,
-Schemas, Marketplace, Settings); flavors plug in by registering
-renderers keyed on `(schema_id, schema_version)`. Composition is
-build-time — the JS analogue of
-[08 §Composite discipline](08-core-and-flavors.md#composite-discipline).
-
-A flavor's *primary* contribution is renderers. Custom views
-(extra entries in the top chrome's view-switcher) are an opt-in
-escape hatch for cases where substrate views can't express the
-flavor's data model — most flavors ship zero custom views.
-
-### Hub interface
-
-```ts
-interface Hub {
-  registerFlavor(name: string, register: (scope: FlavorScope) => void): void;
-}
-
-interface FlavorScope {
-  registerRenderer<T>(
-    schemaId: string,
-    schemaVersion: number,
-    renderer: Renderer<T>,
-  ): void;
-
-  // Optional — when substrate views (Surface/Atlas) don't suffice.
-  // Appears in TopChrome's view-switcher.
-  registerView(view: { id: string; label: string; component: Component }): void;
-}
-
-interface Renderer<T> {
-  render: (props: { memory: MemoryRow; payload: T }) => JSX.Element;
-}
-```
-
-`registerFlavor` is the single registration boundary. The hub
-records every registration with its owning flavor name; the
-Marketplace view reads from this metadata to list installed flavors
-and their schemas / views.
-
-### Substrate views
-
-| View | Purpose |
+| Surface | Owner |
 |---|---|
-| **FullSurface** | F→A→P traversal lanes (center) + Goal DAG rail (left) + Event stream (right). The primary memory browser; renders Facts / Abstractions / Perspectives through `hub.rendererFor(...)`. |
-| **CompactSurface** | 768px responsive variant of FullSurface. Wired alongside FullSurface from day one — responsive discipline baked in, not retrofit. |
-| **Atlas** | 3D embedding-projected memory map. Z-axis locked to layer (F=0, A=1.6, P=3.2, G=4.8); x/y from a UMAP projection over the `embeddings` table (07). Filterable by layer / flavor / personality / goal. |
-| **Schemas** | Registry browser — lists every `SchemaInfo` from the `Schema` verb, links to renderer override (if any) and JSON Schema (if generated). |
-| **Marketplace** | Lists registered flavors with their schemas + views. v1: build-time-registered only. Post-v1: discovery + install when runtime composition arrives ([13](13-flavor-marketplace.md)). |
-| **Settings** | Core-only in v1: DB connection, owner config, theme. Flavor-scoped settings (`registerSettingsPanel`) deferred. |
+| Payload schema identity | Flavor Rust crates, registered at build time per [03](03-schema-registry.md) and [08](08-core-and-flavors.md). |
+| Engine command/envelope types | Rust command signatures + Tauri/Specta bindings. |
+| Runtime schema list | `Schema` verb response (`SchemaInfo`, filters, relations). |
+| Payload decoding/rendering | Flavor frontend package registry calls. |
 
-### View switching
+Current generated artifact:
 
-In-app `currentView` signal in the Hub, no URL routing in v1. View
-state stays URL-serializable (string view id + serializable params)
-so Solid Router can be layered on later for deep links without
-restructuring. No deep-link / back-button UX in v1.
+```
+packages/frontend-core/src/bindings.ts
+```
 
-### Substrate / flavor split
+Current manual flavor frontend artifact:
 
-| Lives in core | Lives in flavor |
+```
+flavors/<name>/frontend/src/index.ts
+```
+
+Payload decode path:
+
+1. `Query` returns row metadata plus optional CBOR payload bytes.
+2. `GraphStore` asks `hub.codecFor(schema_id, schema_version)`.
+3. Registered codec decodes bytes to a typed JS value.
+4. Missing codec records `DecodeError { kind: "missing_codec" }`.
+5. Decode failure records `DecodeError { kind: "decode_failed" }`.
+6. Views render metadata, byte length, and fallback payload/error text
+   when no renderer/codec is available.
+
+No current contract:
+
+- generated per-flavor TypeScript payload bindings;
+- generated JSON-Schema renderer as the generic fallback;
+- payload `.proto` files mirroring Rust sidecars.
+
+<a id="local-first-replica-offline-queue"></a>
+## Local-First Replica + Offline Queue
+
+Deferred. Current frontend state is memory-only.
+
+`createGraphStore(client, hub, owner)` owns the visible graph snapshot:
+
+| Input | Use |
 |---|---|
-| TopChrome (view-switcher + status footer) | Renderers per `(schema_id, schema_version)` — primary contract |
-| FullSurface + CompactSurface | Optional custom views (e.g. `proxima-code/calls-graph`) |
-| Atlas | Flavor's `bindings.ts` (paired Rust types via specta) |
-| Schemas / Marketplace / Settings views | Flavor's CBOR codec for its payloads |
-| Shared primitives: `Mono`, `SchemaTag`, `Timecode` | Flavor's `register(scope)` entry point |
-| Design system (`styles.css`) | |
-| SealAssets (identity) | |
-| Fallback renderer (raw JSON for unrecognized schemas) | |
+| `schema()` | Populate schema metadata for filters, views, and stateful natural-key handling. |
+| `query(snapshotReq(owner))` | Cold snapshot of memories, goals, and edges. |
+| `eventHistory({ owner, limit, before: null })` | Recent event rail seed and memory provenance seed. |
+| `subscribe({ owner, since })` | Live identity-only append stream. |
+| follow-up `query(... include_payloads: true ...)` | Hydrate entities referenced by live events. |
 
-### Repo layout
+`Subscribe` events are identity-only. The store marks pending
+hydration for appended memory/goal/edge IDs, batches follow-up
+`Query` calls, dedupes events by `seq`, and marks the stream
+`degraded` on seq regression or repeated hydration failure.
 
-The frontend forms a pnpm workspace rooted at the repo:
+No current frontend durable cache, write queue, local vector index, or
+offline replay contract.
+
+<a id="ui-bundle-composition"></a>
+## UI Bundle Composition
+
+The Shell bundle is composed at build/startup from one substrate package
+plus flavor frontend packages.
+
+| Package | Responsibility |
+|---|---|
+| `@proxima/core` | `Shell`, `createHub`, `createGraphStore`, `createGraphFilterStore`, Tauri client, primitives, substrate views. |
+| `apps/proxima-shell` | Product app, substrate view list, settings panels, Tauri host, flavor init call. |
+| `@proxima/flavor-code` | Code payload codecs/renderers, code relation styles, code shell view, styles. |
+| `@proxima/flavor-goal` | Goal proposal renderers/editors and goal relation styles. |
+| `@proxima/flavor-mcp` | MCP substrate renderers and relation styles. |
+
+Startup path:
 
 ```
-/
-├── pnpm-workspace.yaml
-├── package.json                  workspace root
-├── packages/
-│   └── frontend-core/            @proxima/core (Hub + substrate views)
-├── apps/
-│   └── proxima-shell/            Tauri host — consumes @proxima/core + flavor frontends
-└── flavors/
-    └── code/
-        ├── src/                  Rust crate (existing)
-        └── frontend/             @proxima/code
+apps/proxima-shell/src/flavors.ts
+  initCode()
+  initGoal()
+  initMcp()
+
+apps/proxima-shell/src/App.tsx
+  initFlavors()
+  createHub(substrateViews, substrateSettingsPanels)
+  createGraphStore(createTauriEngineClient(), hub)
 ```
 
-Adding a new flavor frontend is `flavors/<name>/frontend/` plus one
-import line in `apps/proxima-shell/src/App.tsx` — the JS analogue of
-linking the flavor's Rust crate.
+`pnpm-workspace.yaml` includes `packages/*` and `flavors/*/frontend`.
+The linked JS flavor packages must match the Rust flavor crates linked
+into the product binary. This is the frontend analogue of 08 composite
+discipline; not a runtime plugin system.
 
-### Implementation order
+<a id="hub-architecture"></a>
+## Hub Architecture
 
-1. Substrate primitives + design system (`styles.css` ported as-is).
-2. FullSurface — the demonstrator's heart.
-3. Schemas / Marketplace / Settings views.
-4. CompactSurface — responsive variant.
-5. Atlas — final v1 step.
+Core surfaces:
 
-Step ordering mirrors v1's "show the substrate, then add the flavor"
-discipline: a working FullSurface with the substrate's three lanes +
-goal rail + event stream demonstrates the architecture before any
-flavor renderer plugs in.
+| Surface | File |
+|---|---|
+| `createHub()` | `packages/frontend-core/src/hub.ts` |
+| Registry hooks | `packages/frontend-core/src/registry/index.ts` |
+| Graph state | `packages/frontend-core/src/graph-store.tsx` |
+| Filter state | `packages/frontend-core/src/graph-filter-store.tsx` |
+| Tauri client | `packages/frontend-core/src/tauri-client.ts` |
 
-## Flavor endpoints (deferred)
+Flavor registration hooks:
 
-The five 14 verbs are the wire surface. Flavor-specific behavior
-fits inside them: schemas + filter keys for queries, schema-typed
-payloads for writes, the `Schema` verb for runtime introspection.
-v1 ships nothing else.
+| Hook | Key |
+|---|---|
+| `registerPayloadRenderer` | `(kind?, schemaId, schemaVersion)` |
+| `registerEdgeStyle` | `relationId` |
+| `registerShellView` | `id` / `route` |
+| `registerGoalPayloadEditor` | `(schemaId, schemaVersion)` |
+| `registerPersonalityType` | `typeId` |
 
-For genuine misfits — synchronous side-effect operations,
-specialized search semantics that don't fit `Query` filter keys,
-flavor-specific aggregations — the architectural escape hatch is a
-flavor-extended gRPC service. In wire mode it mounts alongside the
-engine's service on the same tonic `Server`; in embedded mode the
-flavor's methods become additional Tauri commands sharing the
-managed `Arc<Engine>`. Either way each flavor ships its own `.proto`
-declaring a `service <FlavorName>`; `tonic-build` generates the
-Rust trait; the composite binary wires it up:
+Legacy hub methods still exist for substrate-local registration
+(`registerFlavor`, `registerCodec`, `registerRenderer`,
+`registerView`, `registerSettingsPanel`), but current flavor packages
+use the registry hooks above.
 
-```rust
-Server::builder()
-    .add_service(EngineServer::new(engine_svc))         // 14 verbs
-    .add_service(CodeFlavorServer::new(code_svc))       // flavor methods
-    .serve(addr).await?;
-```
+Substrate views:
 
-This does **not** contradict §Schema-driven UI codegen's "no
-parallel proto per payload" rule. The duplication concern is
-payload-specific — N schemas would mirror N Rust trait impls.
-Methods are bounded, hand-authored, naturally proto-shaped, and
-follow `tonic`'s normal direction (proto authoritative for the RPC
-surface, Rust trait derived). The flavor crate's `proto/` dir is
-picked up by the composite binary's build script alongside the
-envelope `.proto`s.
+| View | Contract |
+|---|---|
+| Surface | Memory lanes, goal rail, event rail, detail pane. |
+| Atlas | Deterministic projection over current graph data; layer axis fixed by entity kind. |
+| Schemas | Runtime schema/renderer visibility. |
+| Marketplace | Installed flavor frontend metadata. |
+| Personalities | Runtime personality instances and type metadata. |
+| Settings | General, model, MCP panels owned by Shell/core. |
 
-Frontend bundle composition mirrors: each flavor's npm package
-re-exports the `buf`-generated TS client for its service.
-gRPC routes by fully-qualified service name (`proxima.v1.Engine`
-vs `proxima_code.v1.CodeFlavor`); collisions are impossible. In
-embedded mode the equivalent is unique Tauri command names
-(`engine_query` vs `code_flavor_method_x`).
+Renderer fallback:
 
-**Not built in v1.** No flavor in scope demands a synchronous
-endpoint outside the five verbs. The mechanism is sketched here so
-flavor authors don't force a behavior call through `EventIngest`
-when a typed RPC is the right shape; when a real candidate lands,
-adding it is one PR with no architectural change.
+1. Exact registered payload renderer by kind/schema/version.
+2. Schema/version renderer without kind.
+3. Substrate metadata/payload fallback.
+4. Decode errors surfaced from `GraphStore.decodeErrorsByEntity`.
 
+<a id="flavor-endpoints-deferred"></a>
+## Flavor Endpoints (Deferred)
+
+Current rule: flavor-specific frontend behavior fits inside the six 14
+verbs by way of registered schemas, relations, filters, renderers,
+codecs, editors, and views.
+
+No current flavor-specific frontend transport endpoint is part of the
+Shell contract. A future flavor service must be specified in the
+owning flavor and mounted by a composite binary without adding runtime
+registration.
+
+<a id="multi-owner-ui"></a>
 ## Multi-Owner UI
 
-Authentication and Owner scoping follow 14 §Auth model and
-§Multi-Owner stance — the UI authenticates as a `Principal` and
-opens one `Subscribe` stream per visible Owner. The frontend's
-specific job is the UX:
+Protocol stance: one Owner per read/write/subscribe call
+([14](14-protocol-surface.md#owner-scoping--the-primary-axis)).
 
-- An Owner switcher appears when more than one Owner is in scope
-  (personal vs `<org>-everyone`, lawyer with N matters, etc.).
-- An "active Owner" signal scopes new writes (`GoalWrite`,
-  `EventIngest`) to that Owner.
-- Streams for non-active Owners stay open in the background so
-  notification badges and counts stay live.
+Current Shell state: `createGraphStore()` is constructed for one owner
+at a time. Multi-owner switching, background streams per visible Owner,
+and cross-owner notification badges are not implemented frontend
+contracts yet.
 
+Deferred UI contract:
+
+| Concern | Rule |
+|---|---|
+| Active Owner | New `GoalWrite` / `EventIngest` uses selected Owner. |
+| Owner switch | Recreate or partition graph/filter stores by Owner. |
+| Background Owners | One `Subscribe` per visible Owner when implemented. |
+
+<a id="mobile"></a>
 ## Mobile
 
-| Concern | Mechanism |
+Deferred. Current implementation target is the desktop Shell.
+
+Mobile must preserve:
+
+| Concern | Contract |
 |---|---|
-| Auth | QR-pair from web → long-lived token in iOS Keychain / Android Keystore |
-| Notifications | APNs / FCM, server-pushed on memory / goal events from the `ChangeEvent` stream |
-| Background sync | iOS BGAppRefreshTask / Android WorkManager pulls deltas via 14 resume |
-| Capture | Share-sheet / Siri shortcut / Quick Tile → `EventIngest` under the active Owner |
-| Biometric gate | Face ID / fingerprint to unlock the local SQLite (optional) |
+| Protocol | Same six 14 verbs. |
+| Owner scoping | Same per-call Owner. |
+| Payloads | Same CBOR payload bytes and flavor codecs. |
+| Composition | Same flavor-owned UI/rendering boundary where possible. |
 
-Capture surfaces emit through `EventIngest` (14) like any other
-EventSource (01). A Siri shortcut hits a small `mobile-capture`
-source registered in the flavor and the Fact lands under the
-active Owner.
+No current contract for platform notification services, background
+tasks, capture shortcuts, mobile storage, or biometric unlock.
 
-## Embedded engine mode (v1 desktop)
+<a id="embedded-engine-mode-desktop"></a>
+## Embedded Engine Mode (Desktop)
 
-The v1 desktop shape: link the flavor crates as libraries directly
-into the Tauri binary, hold `Arc<Engine>` via
-`tauri::Builder::manage`, expose the five verbs as
-`#[tauri::command]` handlers. No localhost listener, no sidecar
-daemon, no port management. Storage is local Postgres (or SQLite
-per [07](docs/07-storage.md)) opened by the same process.
+Current desktop shape:
 
-**Why embedded for v1**: the wire transport's only v1 client is
-Tauri's Rust core; making it loop through gRPC over loopback to
-talk to itself buys nothing on payload size (both paths use CBOR),
-nothing on the JS↔Rust hop (Tauri IPC either way), and adds
-process-management surface area. The wire transport pays its way
-once a second client (CLI sharing live state, mobile shell, remote
-engine on a team server) actually exists.
+| Item | Fact |
+|---|---|
+| Engine ownership | Shell builds an `Engine` and stores `Arc<Engine>` in Tauri state. |
+| Storage | Postgres via `DATABASE_URL`; migrations run during Shell boot. |
+| Auth | `NoAuth` resolver, command calls pass `Credentials::None`. |
+| Commands | `#[tauri::command]` handlers expose engine operations. |
+| Bindings | Tauri/Specta exports TypeScript command types to `@proxima/core`. |
+| MCP | Shell also hosts MCP at `127.0.0.1:31415`; frontend does not use it as its client transport. |
 
-**Background ingestion outliving the UI window** is not embedded
-mode's blocker — Tauri's tray-only mode + `tokio::spawn` background
-tasks keep the engine running while the window is hidden. Window
-close ≠ process exit.
+Boot path:
 
-**Multi-process local** (power user runs CLI alongside Tauri shell)
-is solved by Postgres / SQLite-WAL as the IPC: both processes open
-their own `Engine` against the same backend, idempotency on
-`event_id` makes duplicate ingest a no-op, and the storage layer
-handles concurrency. Wasteful (both run their own ingest loop) but
-correct; appropriate for "occasional CLI alongside desktop," not
-for "daemon serving N clients."
+```
+apps/proxima-shell/src-tauri/src/boot.rs
+  PgStorage::connect(DATABASE_URL)
+  run core + flavor migrations
+  build proxima-code engine
+  register mcp-substrate + goal flavors
+  host MCP listener
+```
 
-**The contract is preserved across modes**: same Rust crates, same
-flavor packages, same proto contract as the wire deployment — only
-the transport-side glue differs. The `wire-grpc` crate stays
-compiled and tested as the contract definition; mounting it on a
-port is a deployment-mode flag, not a v1 concern. Migration to
-wire-mode (when remote / multi-client arrives) is a localized
-refactor inside `src-tauri/`: swap `state.engine.query(...)` for
-`state.client.query(...).await?.into_inner()`. JS-side Tauri
-commands stay identical; the renderer doesn't notice.
-
-## Anchors
-
-- `stack`
-- `transport`
-- `schema-driven-ui-codegen`
-- `local-first-replica-offline-queue`
-- `ui-bundle-composition`
-- `hub-architecture`
-- `flavor-endpoints-deferred`
-- `multi-owner-ui`
-- `mobile`
-- `embedded-engine-mode-desktop`
+The embedded mode preserves the 14 contract at the command boundary.
+Moving a future Shell to a remote engine is a client transport change,
+not a renderer/state contract change.

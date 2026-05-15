@@ -1,7 +1,9 @@
 //! Secret resolution — `secret_ref` strings to opaque bytes.
 //!
-//! Runtime model registration (docs/10 §Model registration) stores
-//! credentials as `secret_ref` URIs of shape `<scheme>:<body>`.
+//! Embedding model registration (docs/10 §Embedding model: one per binary)
+//! stores optional credentials as `secret_ref` URIs of shape
+//! `<scheme>:<body>`. Current chat inference targets use `api_key_env`
+//! names or provider-specific auth.
 //! Schemes for v1:
 //!
 //! - `env:NAME` — process environment variable lookup

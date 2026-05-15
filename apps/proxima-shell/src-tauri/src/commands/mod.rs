@@ -1,3 +1,4 @@
+mod cited_blob;
 mod engine;
 mod inference_targets;
 mod inference_test;
@@ -42,6 +43,10 @@ pub(crate) fn specta_builder() -> Builder<tauri::Wry> {
         tools::wake_entry_produces,
         mcp::mcp_connection_get,
         mcp::mcp_master_token_rotate,
+        cited_blob::cited_blob_upload_prepare,
+        cited_blob::cited_blob_upload_complete,
+        cited_blob::cited_blob_upload_abort,
+        cited_blob::cited_blob_read_url,
         // Embedding settings
         models::models_list_embedding,
         models::models_register_embedding,

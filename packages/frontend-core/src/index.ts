@@ -1,4 +1,5 @@
 export * from "./bindings";
+export * from "./cited-blob-upload";
 export * from "./client";
 export * from "./filter-dialog";
 export * from "./graph-filter-store";

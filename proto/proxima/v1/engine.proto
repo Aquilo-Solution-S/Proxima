@@ -1,7 +1,7 @@
 // Proxima — engine service surface.
 //
-// The six verbs of docs/14, mapped to gRPC methods over Connect-RPC
-// (docs/09 §Transport). Auth credentials ride in HTTP headers
+// The six verbs of docs/14, mapped to gRPC methods for wire
+// deployments (docs/09 §Transport). Auth credentials ride in HTTP headers
 // (`Authorization: Bearer ...` for OIDC, source-specific headers for
 // webhook EventSources); the message bodies below carry no
 // credentials per docs/14 §"Auth model".

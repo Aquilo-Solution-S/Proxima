@@ -583,18 +583,16 @@ impl PgStorage {
     /// `SettingsError::Database` for connectivity failures.
     pub async fn list_embedding_models(
         &self,
-        owner: &Owner,
     ) -> Result<Vec<settings::EmbeddingModel>, settings::SettingsError> {
-        settings::list_embedding_models(&self.pool, owner).await
+        settings::list_embedding_models(&self.pool).await
     }
 
     /// # Errors
     /// `SettingsError::Database` for connectivity failures.
     pub async fn get_embedding_active(
         &self,
-        owner: &Owner,
     ) -> Result<Option<(String, String)>, settings::SettingsError> {
-        settings::get_embedding_active(&self.pool, owner).await
+        settings::get_embedding_active(&self.pool).await
     }
 
     /// # Errors
@@ -602,21 +600,19 @@ impl PgStorage {
     /// `SettingsError::DuplicateEmbeddingModel` if (vendor, `model_id`) already exists.
     pub async fn register_embedding_model(
         &self,
-        owner: &Owner,
         m: settings::EmbeddingModel,
     ) -> Result<(), settings::SettingsError> {
-        settings::register_embedding_model(&self.pool, owner, m).await
+        settings::register_embedding_model(&self.pool, m).await
     }
 
     /// # Errors
     /// `SettingsError::Database` for connectivity failures.
     pub async fn delete_embedding_model(
         &self,
-        owner: &Owner,
         vendor: &str,
         model_id: &str,
     ) -> Result<bool, settings::SettingsError> {
-        settings::delete_embedding_model(&self.pool, owner, vendor, model_id).await
+        settings::delete_embedding_model(&self.pool, vendor, model_id).await
     }
 
     /// # Errors
@@ -624,19 +620,15 @@ impl PgStorage {
     /// `SettingsError::UnknownEmbeddingModel` if (vendor, `model_id`) is not registered.
     pub async fn set_embedding_active(
         &self,
-        owner: &Owner,
         vendor: &str,
         model_id: &str,
     ) -> Result<(), settings::SettingsError> {
-        settings::set_embedding_active(&self.pool, owner, vendor, model_id).await
+        settings::set_embedding_active(&self.pool, vendor, model_id).await
     }
 
     /// # Errors
     /// `SettingsError::Database` for connectivity failures.
-    pub async fn clear_embedding_active(
-        &self,
-        owner: &Owner,
-    ) -> Result<bool, settings::SettingsError> {
-        settings::clear_embedding_active(&self.pool, owner).await
+    pub async fn clear_embedding_active(&self) -> Result<bool, settings::SettingsError> {
+        settings::clear_embedding_active(&self.pool).await
     }
 }

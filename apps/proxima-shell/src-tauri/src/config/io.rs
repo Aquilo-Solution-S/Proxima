@@ -19,8 +19,8 @@ pub async fn load_app_config(
 ) -> Result<AppConfig, settings::SettingsError> {
     let inference_targets = settings::list_inference_targets(pg.pool(), owner).await?;
     let inference_tier_bindings = settings::list_inference_tier_bindings(pg.pool(), owner).await?;
-    let embedding = pg.list_embedding_models(owner).await?;
-    let active = pg.get_embedding_active(owner).await?;
+    let embedding = pg.list_embedding_models().await?;
+    let active = pg.get_embedding_active().await?;
 
     let mut tiers = InferenceTierBindings::default();
     for binding in inference_tier_bindings {

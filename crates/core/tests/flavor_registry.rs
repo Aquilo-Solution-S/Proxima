@@ -18,6 +18,10 @@ fn wake_trace_schemas_are_registered_in_core_flavor() {
         PayloadKind::CitedObject
     ));
     assert!(has(
+        "proxima-core/uploaded-blob-v1",
+        PayloadKind::CitedObject
+    ));
+    assert!(has(
         "proxima-core/wake-trace-citation-v1",
         PayloadKind::CitationMapping
     ));

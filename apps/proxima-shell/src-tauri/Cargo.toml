@@ -19,6 +19,8 @@ tauri-build = { workspace = true }
 tauri = { workspace = true }
 tauri-plugin-opener = { workspace = true }
 tauri-plugin-dialog = { workspace = true }
+aws-config = { workspace = true }
+aws-sdk-s3 = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -34,13 +36,15 @@ proxima-llm-openai-compat = { path = "../../../crates/llm-openai-compat" }
 keyring = { workspace = true }
 toml = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync"] }
+tokio = { workspace = true, features = ["io-util", "macros", "rt-multi-thread", "sync"] }
 tokio-stream = { workspace = true }
 futures-util = { workspace = true }
 sqlx = { workspace = true }
 uuid = { workspace = true }
 ciborium = { workspace = true }
 blake3 = { workspace = true }
+hex = { workspace = true }
+sha2 = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-chrome = "0.7"

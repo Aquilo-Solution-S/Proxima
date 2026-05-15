@@ -16,8 +16,9 @@ A / P    no citation_mapping_id; citations accumulate transitively
          via provenance edges (A → F, P → A → F).
 ```
 
-- **CitedObject** — the artefact. Document with S3 path, Image with
-  dimensions, ChatSession with platform + session id, etc.
+- **CitedObject** — the artefact. Uploaded blob with internal S3
+  `bucket + object_key`, Image with dimensions, ChatSession with
+  platform + session id, etc.
   Typed-per-domain via `CitedObjectPayload`. Idempotent on
   `content_hash` within Owner.
 - **CitationMapping** — the typed annotation pointing one Memory at one
@@ -81,8 +82,8 @@ cited_objects(
             schema_id, content_hash)
 )
 -- Per-schema sidecar (one per registered CitedObjectPayload):
-cited_doc_pdf_v1(cited_object_id pk FK, s3_path, sha256, mime, title?, ...)
-cited_media_image_v1(cited_object_id pk FK, s3_path, sha256, dims, format, ...)
+cited_uploaded_blob_v1(cited_object_id pk FK, bucket, object_key, sha256, byte_len, mime, filename, etag, uploaded_at)
+cited_media_image_v1(cited_object_id pk FK, bucket, object_key, sha256, dims, format, ...)
 cited_chat_telegram_session_v1(cited_object_id pk FK, session_external_id, started_at, ...)
 
 citation_mappings(
@@ -125,6 +126,38 @@ become silent no-ops. Different chunks of the same artefact land
 distinct memories with distinct mappings, all pointing at one
 CitedObject.
 
+## Large artefact storage
+
+Large original artefacts live in S3. Postgres stores Owner, schema,
+`content_hash`, citation metadata, and opaque storage coordinates.
+Clients never receive `bucket` or `object_key`; command surfaces return
+presigned URLs.
+
+Generic uploaded blob:
+
+| Field | Location | Contract |
+|---|---|---|
+| `content_hash` | `cited_objects` | BLAKE3-32 of original bytes; Owner-scoped idempotency key |
+| `sha256`, `byte_len`, `mime`, `filename`, `etag`, `uploaded_at` | `cited_uploaded_blob_v1` | typed sidecar metadata |
+| `bucket`, `object_key` | `cited_uploaded_blob_v1` | internal storage coordinates only |
+
+Direct upload:
+
+1. `prepare` inserts a pending upload and returns a presigned S3 `PUT`.
+2. Client uploads bytes directly to `pending/<owner-hash>/<upload-id>`.
+3. `complete` verifies the pending object, streams bytes to compute
+   BLAKE3 + SHA-256, copies to
+   `objects/<owner-hash>/proxima-core/uploaded-blob-v1/<blake3-hex>`,
+   deletes the pending object, inserts or reuses `cited_objects`,
+   inserts `cited_uploaded_blob_v1`, marks upload completed.
+4. Same Owner + same bytes returns the existing CitedObject and marks
+   the result as an idempotent replay.
+5. `abort` deletes the pending object when present and marks the
+   upload aborted.
+
+S3 preserves original bytes only. It does not replace
+`CitationMapping`, Fact-only citations, or provenance edges.
+
 ## Owner scoping
 
 CitedObject carries Owner. A document ingested for `User(A)` is not
@@ -163,9 +196,8 @@ separate `citations` table for them; the F→A / A→P invocation key
 ## What this does not include
 
 - **Renderers.** No `render()` on `CitedObjectPayload` or
-  `CitationMappingPayload`. The artefact is the artefact (binary blob
-  in S3 / file system); UI fetches it via the typed sidecar's path
-  fields.
+  `CitationMappingPayload`. The artefact is the artefact; UI fetches
+  large binaries via presigned read URLs, not raw storage coordinates.
 - **Access control on artefacts.** Owner is the only scope. Per-asset
   ACLs (e.g., one document shared with N users) are a v2+ extension
   layered above Owner.
@@ -181,6 +213,7 @@ separate `citations` table for them; the F→A / A→P invocation key
 - `tables`
 - `multiplicity`
 - `idempotency`
+- `large-artefact-storage`
 - `owner-scoping`
 - `edges-do-not-cite`
 - `operator-invocation-provenance-lives-on-the-memory-row`
