@@ -149,6 +149,14 @@ pub trait Storage: Send + Sync {
         schemas: &[crate::verbs::schema::SchemaInfo],
     ) -> Result<crate::verbs::query::QueryResponse, StorageError>;
 
+    /// Owner-scoped lexical/semantic memory search. Similarity is
+    /// query-time only; this method never writes edges.
+    async fn search_memories(
+        &self,
+        req: &crate::verbs::query::MemorySearchRequest,
+        schemas: &[crate::verbs::schema::SchemaInfo],
+    ) -> Result<Vec<crate::verbs::query::MemorySearchResult>, StorageError>;
+
     /// Owner-scoped active Goal query for one personality Self-Perspective.
     /// Traverses `core/inspires` edges authored at proposal/attachment time,
     /// follows Goal supersession forward, and returns only current Active
@@ -522,6 +530,14 @@ impl Storage for NoopStorage {
             edges: Vec::new(),
             seq_high_water: None,
         })
+    }
+
+    async fn search_memories(
+        &self,
+        _req: &crate::verbs::query::MemorySearchRequest,
+        _schemas: &[crate::verbs::schema::SchemaInfo],
+    ) -> Result<Vec<crate::verbs::query::MemorySearchResult>, StorageError> {
+        Ok(Vec::new())
     }
 
     async fn list_active_goals(

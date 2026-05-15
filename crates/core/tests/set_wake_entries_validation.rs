@@ -9,7 +9,9 @@ use proxima_core::verbs::close_batch::CloseBatchOutcome;
 use proxima_core::verbs::event_history::{EventHistoryRequest, EventHistoryResponse};
 use proxima_core::verbs::event_ingest::{EventDraft, EventIngestOutcome};
 use proxima_core::verbs::goal_write::{GoalDraft, GoalWriteOutcome};
-use proxima_core::verbs::query::{QueryRequest, QueryResponse};
+use proxima_core::verbs::query::{
+    MemorySearchRequest, MemorySearchResult, QueryRequest, QueryResponse,
+};
 use proxima_core::verbs::schema::SchemaInfo;
 use proxima_core::verbs::subscribe::ChangeEventStream;
 use proxima_core::{
@@ -88,6 +90,14 @@ impl Storage for FixtureStorage {
         _schemas: &[SchemaInfo],
     ) -> Result<QueryResponse, StorageError> {
         Err(StorageError::Internal("unused".into()))
+    }
+
+    async fn search_memories(
+        &self,
+        _req: &MemorySearchRequest,
+        _schemas: &[SchemaInfo],
+    ) -> Result<Vec<MemorySearchResult>, StorageError> {
+        Ok(Vec::new())
     }
 
     async fn list_active_goals(

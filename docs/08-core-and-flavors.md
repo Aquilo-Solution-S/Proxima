@@ -113,7 +113,7 @@ Default tools available to every personality:
 | `list_self_perspectives` | `emit_perspective` |
 | `fetch_memory` | `emit_abstraction` |
 | `walk_lineage` |  |
-| `search_by_embedding` | `create_edge` |
+| `search_memories` | `create_edge` |
 | `list_active_goals` |  |
 
 Flavor tools extend the palette. Write tools enforce declared schemas and

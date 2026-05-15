@@ -16,6 +16,60 @@ use crate::{GoalId, MemoryId, Owner, SchemaId, SchemaVersion};
 /// types; specta's type-name uniqueness check caught it.
 pub use crate::outbox::EntityKind;
 
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    schemars::JsonSchema,
+    specta::Type,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum SearchMode {
+    Lexical,
+    Semantic,
+    Hybrid,
+}
+
+fn default_search_mode() -> SearchMode {
+    SearchMode::Hybrid
+}
+
+/// Owner-scoped memory search. Semantic modes require the engine/tool
+/// layer to populate the query embedding and active embedding-space
+/// metadata before dispatching to storage.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, specta::Type)]
+pub struct MemorySearchRequest {
+    pub owner: Owner,
+    pub query: String,
+    #[serde(default = "default_search_mode")]
+    pub mode: SearchMode,
+    pub limit: u32,
+    pub kind: Option<EntityKind>,
+    pub schema_id: Option<SchemaId>,
+    #[serde(skip)]
+    pub query_embedding: Option<Vec<f32>>,
+    #[serde(skip)]
+    pub embedding_model_id: Option<String>,
+    #[serde(skip)]
+    pub embedding_dim: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, specta::Type)]
+pub struct MemorySearchResult {
+    pub memory_id: MemoryId,
+    pub kind: EntityKind,
+    pub schema_id: SchemaId,
+    pub snippet: String,
+    pub score: f32,
+    pub lexical_score: f32,
+    pub similarity_score: f32,
+    pub wake_chain_depth: crate::WakeChainDepth,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
 pub enum SupersessionStatus {
     /// Heads only — exclude rows that are superseded.

@@ -3562,6 +3562,7 @@ dependencies = [
 name = "proxima-mcp-substrate"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "blake3",
  "ciborium",
  "futures",
