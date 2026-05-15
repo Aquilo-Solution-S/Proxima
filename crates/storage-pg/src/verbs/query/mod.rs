@@ -16,10 +16,12 @@
 
 mod edges;
 mod goals;
+mod lineage;
 mod memories;
 mod rows;
 mod search;
 
 pub use edges::MAX_SNAPSHOT_EDGES;
+pub(crate) use lineage::walk_memory_lineage;
 pub(crate) use memories::query_memories;
 pub(crate) use search::search_memories;

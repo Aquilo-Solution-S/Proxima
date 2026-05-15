@@ -71,6 +71,48 @@ pub struct MemorySearchResult {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
+pub enum MemoryLineageDirection {
+    Ancestors,
+    Descendants,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemoryLineageRequest {
+    pub owner: Owner,
+    pub start_memory_id: MemoryId,
+    pub direction: MemoryLineageDirection,
+    pub depth: u8,
+    pub limit: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemoryLineageNode {
+    pub memory_id: MemoryId,
+    pub kind: EntityKind,
+    pub schema_id: SchemaId,
+    pub snippet: String,
+    pub wake_chain_depth: crate::WakeChainDepth,
+    pub distance: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemoryLineageEdge {
+    pub edge_id: uuid::Uuid,
+    pub relation: String,
+    pub relation_class: String,
+    pub source_memory_id: MemoryId,
+    pub target_memory_id: MemoryId,
+    pub distance: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemoryLineageResponse {
+    pub nodes: Vec<MemoryLineageNode>,
+    pub edges: Vec<MemoryLineageEdge>,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
 pub enum SupersessionStatus {
     /// Heads only — exclude rows that are superseded.
     HeadsOnly,

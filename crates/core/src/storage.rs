@@ -157,6 +157,13 @@ pub trait Storage: Send + Sync {
         schemas: &[crate::verbs::schema::SchemaInfo],
     ) -> Result<Vec<crate::verbs::query::MemorySearchResult>, StorageError>;
 
+    /// Owner-scoped bounded walk over memory-only Provenance and
+    /// Supersession edges. Does not traverse Goals or write edges.
+    async fn walk_memory_lineage(
+        &self,
+        req: &crate::verbs::query::MemoryLineageRequest,
+    ) -> Result<crate::verbs::query::MemoryLineageResponse, StorageError>;
+
     /// Owner-scoped active Goal query for one personality Self-Perspective.
     /// Traverses `core/inspires` edges authored at proposal/attachment time,
     /// follows Goal supersession forward, and returns only current Active
@@ -538,6 +545,17 @@ impl Storage for NoopStorage {
         _schemas: &[crate::verbs::schema::SchemaInfo],
     ) -> Result<Vec<crate::verbs::query::MemorySearchResult>, StorageError> {
         Ok(Vec::new())
+    }
+
+    async fn walk_memory_lineage(
+        &self,
+        _req: &crate::verbs::query::MemoryLineageRequest,
+    ) -> Result<crate::verbs::query::MemoryLineageResponse, StorageError> {
+        Ok(crate::verbs::query::MemoryLineageResponse {
+            nodes: Vec::new(),
+            edges: Vec::new(),
+            truncated: false,
+        })
     }
 
     async fn list_active_goals(
