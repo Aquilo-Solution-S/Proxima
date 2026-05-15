@@ -19,16 +19,14 @@ thiserror = { workspace = true }
 tokio = { workspace = true, features = ["process", "fs", "time", "io-util"] }
 tokio-util = { workspace = true }
 reqwest = { workspace = true }
-uuid = { workspace = true }
 schemars = { workspace = true }
-tracing = { workspace = true }
-time = { workspace = true }
 blake3 = { workspace = true }
-futures = { workspace = true }
 
 [dev-dependencies]
+futures = { workspace = true }
 http = { workspace = true }
 proxima-mcp-server = { path = "../mcp-server" }
 sqlx = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util", "fs"] }
 tempfile = "3"
+uuid = { workspace = true }

@@ -12,7 +12,6 @@ name = "proxima_storage_pg"
 [dependencies]
 proxima-core = { path = "../core" }
 sqlx = { workspace = true, features = ["json"] }
-serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 thiserror = { workspace = true }
@@ -31,6 +30,7 @@ workspace = true
 [dev-dependencies]
 proxima-core = { path = "../core", features = ["test-fixtures"] }
 proxima-mcp-substrate = { path = "../../flavors/mcp" }
+serde = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 time = { workspace = true }
 tokio-stream = { workspace = true }
