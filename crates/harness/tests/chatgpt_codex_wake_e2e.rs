@@ -13,9 +13,7 @@ use proxima_core::mcp::{
 };
 use proxima_core::personality::PersonalityInstanceId;
 use proxima_core::verbs::query::MemoryStore;
-use proxima_core::{
-    Engine, FlavorRegistry, MemoryId, OrgId, Owner, Principal, UserId,
-};
+use proxima_core::{Engine, FlavorRegistry, MemoryId, OrgId, Owner, Principal, UserId};
 use proxima_harness::HarnessLoop;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -70,7 +68,7 @@ async fn spawn_mock(body: &'static str, status: &'static str) -> String {
         );
         socket.write_all(resp.as_bytes()).await.unwrap();
     });
-    format!("http://{}", addr)
+    format!("http://{addr}")
 }
 
 #[tokio::test]

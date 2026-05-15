@@ -37,7 +37,7 @@ async fn spawn_mock(body: &'static str, status: &'static str) -> String {
         );
         socket.write_all(resp.as_bytes()).await.unwrap();
     });
-    format!("http://{}", addr)
+    format!("http://{addr}")
 }
 
 async fn spawn_seq_mock(responses: Vec<(&'static str, &'static str)>) -> String {
@@ -55,7 +55,7 @@ async fn spawn_seq_mock(responses: Vec<(&'static str, &'static str)>) -> String 
             socket.write_all(resp.as_bytes()).await.unwrap();
         }
     });
-    format!("http://{}", addr)
+    format!("http://{addr}")
 }
 
 async fn spawn_refresh_mock() -> String {
@@ -74,7 +74,7 @@ async fn spawn_refresh_mock() -> String {
         );
         socket.write_all(resp.as_bytes()).await.unwrap();
     });
-    format!("http://{}", addr)
+    format!("http://{addr}")
 }
 
 #[tokio::test]

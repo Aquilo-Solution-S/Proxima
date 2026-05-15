@@ -70,7 +70,7 @@ async fn persist_writes_fact_jsonl_citation_sidecars_and_authored_edge() {
         .fetch_one(pg.pool())
         .await?;
         assert_eq!(jsonl_row.0, jsonl);
-        assert_eq!(jsonl_row.1 as usize, jsonl.len());
+        assert_eq!(usize::try_from(jsonl_row.1).unwrap(), jsonl.len());
 
         let cm_row: (uuid::Uuid, uuid::Uuid) = sqlx::query_as(
             "SELECT memory_id, cited_object_id FROM proxima_core.citation_mappings \
@@ -466,7 +466,8 @@ fn sample_persist_input(
 ) -> WakeTracePersistInput {
     let now = time::OffsetDateTime::now_utc();
     let content_hash = *blake3::hash(&jsonl_bytes).as_bytes();
-    let line_count = jsonl_bytes.iter().filter(|b| **b == b'\n').count() as u64;
+    let line_count =
+        u64::try_from(jsonl_bytes.split(|b| *b == b'\n').count().saturating_sub(1)).unwrap();
     WakeTracePersistInput {
         owner: owner.clone(),
         authoring_personality_instance_id: personality_instance_id,

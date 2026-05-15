@@ -14,6 +14,11 @@ const WAKE_TRACE_FACT_SCHEMA: &str = "proxima-core/wake-trace-v1";
 const WAKE_TRACE_JSONL_SCHEMA: &str = "proxima-core/wake-trace-jsonl-v1";
 const WAKE_TRACE_CITATION_SCHEMA: &str = "proxima-core/wake-trace-citation-v1";
 
+/// Persist one wake trace in a new transaction.
+///
+/// # Errors
+///
+/// Returns [`StorageError`] if validation fails or any storage write fails.
 pub async fn persist_wake_trace_atomic(
     pool: &PgPool,
     registry: &FlavorRegistryFrozen,
@@ -28,6 +33,11 @@ pub async fn persist_wake_trace_atomic(
     Ok(outcome)
 }
 
+/// Persist one wake trace using an existing transaction.
+///
+/// # Errors
+///
+/// Returns [`StorageError`] if validation fails or any storage write fails.
 #[allow(clippy::too_many_lines)]
 pub async fn persist_wake_trace_in_tx(
     tx: &mut Transaction<'_, Postgres>,
@@ -46,7 +56,7 @@ pub async fn persist_wake_trace_in_tx(
     let owner_org_id = input.owner.org_id.into_inner();
 
     validate_memory_ref_owner(
-        &mut **tx,
+        tx.as_mut(),
         input.root_perspective_memory_id.into_inner(),
         "Perspective",
         owner_kind,
@@ -56,7 +66,7 @@ pub async fn persist_wake_trace_in_tx(
     )
     .await?;
     validate_memory_ref_owner(
-        &mut **tx,
+        tx.as_mut(),
         input.triggering_memory_id.into_inner(),
         "Fact",
         owner_kind,
@@ -67,7 +77,7 @@ pub async fn persist_wake_trace_in_tx(
     .await?;
     for goal_id in &input.active_goal_ids {
         validate_goal_ref_owner(
-            &mut **tx,
+            tx.as_mut(),
             goal_id.into_inner(),
             owner_kind,
             owner_principal_id,
@@ -76,7 +86,7 @@ pub async fn persist_wake_trace_in_tx(
         .await?;
     }
     ensure_source_batch_owner(
-        &mut **tx,
+        tx.as_mut(),
         input.source_batch_id.into_inner(),
         input.source_id.as_str(),
         owner_kind,
@@ -93,7 +103,7 @@ pub async fn persist_wake_trace_in_tx(
          WHERE m.event_id = $1",
     )
     .bind(&event_id_bytes[..])
-    .fetch_optional(&mut **tx)
+    .fetch_optional(tx.as_mut())
     .await
     .map_err(map_err)?;
 
@@ -103,7 +113,7 @@ pub async fn persist_wake_trace_in_tx(
              WHERE entity_memory_id = $1 ORDER BY seq ASC LIMIT 1",
         )
         .bind(memory_id)
-        .fetch_one(&mut **tx)
+        .fetch_one(tx.as_mut())
         .await
         .map_err(map_err)?;
 
@@ -138,7 +148,7 @@ pub async fn persist_wake_trace_in_tx(
     .bind(owner_principal_id)
     .bind(owner_org_id)
     .bind(&input.jsonl_content_hash[..])
-    .fetch_one(&mut **tx)
+    .fetch_one(tx.as_mut())
     .await
     .map_err(map_err)?;
 
@@ -153,7 +163,7 @@ pub async fn persist_wake_trace_in_tx(
     .bind(i64::try_from(input.jsonl_line_count).unwrap_or(i64::MAX))
     .bind(input.jsonl_truncated)
     .bind(&input.jsonl_bytes[..])
-    .execute(&mut **tx)
+    .execute(tx.as_mut())
     .await
     .map_err(map_err)?;
 
@@ -173,7 +183,7 @@ pub async fn persist_wake_trace_in_tx(
     .bind(WAKE_TRACE_FACT_SCHEMA)
     .bind(input.observed_at)
     .bind(input.occurred_at)
-    .execute(&mut **tx)
+    .execute(tx.as_mut())
     .await
     .map_err(map_err)?;
 
@@ -192,7 +202,7 @@ pub async fn persist_wake_trace_in_tx(
     .bind(&event_id_bytes[..])
     .bind(citation_mapping_id)
     .bind(input.authoring_personality_instance_id)
-    .execute(&mut **tx)
+    .execute(tx.as_mut())
     .await
     .map_err(map_err)?;
 
@@ -210,7 +220,7 @@ pub async fn persist_wake_trace_in_tx(
     .bind(owner_kind)
     .bind(owner_principal_id)
     .bind(owner_org_id)
-    .execute(&mut **tx)
+    .execute(tx.as_mut())
     .await
     .map_err(map_err)?;
 
@@ -228,7 +238,7 @@ pub async fn persist_wake_trace_in_tx(
     .bind(citation_mapping_id)
     .bind(range_start)
     .bind(range_end)
-    .execute(&mut **tx)
+    .execute(tx.as_mut())
     .await
     .map_err(map_err)?;
 
@@ -264,7 +274,7 @@ pub async fn persist_wake_trace_in_tx(
     )
     .bind(i32::try_from(wt.tool_call_count).unwrap_or(i32::MAX))
     .bind(wt.jsonl_truncated)
-    .execute(&mut **tx)
+    .execute(tx.as_mut())
     .await
     .map_err(map_err)?;
 
@@ -307,7 +317,7 @@ pub async fn persist_wake_trace_in_tx(
         authorship_owner_memory_id: None,
         owner: &input.owner,
     };
-    append_edge_in_tx(&mut **tx, &authored, None).await?;
+    append_edge_in_tx(tx.as_mut(), &authored, None).await?;
 
     let derived_relation = registry
         .resolve_relation(CORE_DERIVED_FROM_RELATION)
@@ -329,7 +339,7 @@ pub async fn persist_wake_trace_in_tx(
         authorship_owner_memory_id: None,
         owner: &input.owner,
     };
-    append_edge_in_tx(&mut **tx, &derived_to_trigger, None).await?;
+    append_edge_in_tx(tx.as_mut(), &derived_to_trigger, None).await?;
 
     let derived_to_root_p = EdgeDraft {
         edge_id: uuid::Uuid::now_v7(),
@@ -344,7 +354,7 @@ pub async fn persist_wake_trace_in_tx(
         authorship_owner_memory_id: None,
         owner: &input.owner,
     };
-    append_edge_in_tx(&mut **tx, &derived_to_root_p, None).await?;
+    append_edge_in_tx(tx.as_mut(), &derived_to_root_p, None).await?;
 
     for goal_id in &input.active_goal_ids {
         let derived_to_goal = EdgeDraft {
@@ -360,7 +370,7 @@ pub async fn persist_wake_trace_in_tx(
             authorship_owner_memory_id: None,
             owner: &input.owner,
         };
-        append_edge_in_tx(&mut **tx, &derived_to_goal, None).await?;
+        append_edge_in_tx(tx.as_mut(), &derived_to_goal, None).await?;
     }
 
     Ok(WakeTracePersistOutcome {

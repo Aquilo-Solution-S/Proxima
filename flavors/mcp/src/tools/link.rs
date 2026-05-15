@@ -105,7 +105,8 @@ impl McpTool for LinkTool {
 }
 
 fn resolve_memory(ctx: &McpToolCtx, raw: &str) -> Result<uuid::Uuid, McpToolError> {
-    ctx.resolve_memory(raw).map(|id| id.into_inner())
+    ctx.resolve_memory(raw)
+        .map(proxima_core::MemoryId::into_inner)
 }
 
 async fn load_kind(

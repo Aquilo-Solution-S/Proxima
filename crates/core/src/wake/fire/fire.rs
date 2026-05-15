@@ -20,8 +20,8 @@ use crate::personality::{
 use crate::wake::context::{WakeContext, assemble_wake_context};
 use crate::wake::token_store::WakeTokenContext;
 use crate::wake::trace::emit::{
-    ProviderTargetBuildError, emit_trace_from_failed_preflight, emit_trace_from_outcome,
-    provider_target_from_config,
+    ProviderTargetBuildError, TraceTiming, emit_trace_from_failed_preflight,
+    emit_trace_from_outcome, provider_target_from_config,
 };
 
 use super::finalize::{
@@ -111,17 +111,21 @@ pub async fn fire_wake_entry(
     let context_params = match build_context_params(&wake_context) {
         Ok(params) => params,
         Err(err) => {
-            let finished_at = time::OffsetDateTime::now_utc();
+            let timing = TraceTiming {
+                started_at,
+                finished_at: time::OffsetDateTime::now_utc(),
+            };
             finalize_failed_started_wake(
                 engine,
                 &input,
                 &wake_context,
                 &resolved,
-                invocation_id_for_dispatch,
-                wake_token,
-                started_at,
-                finished_at,
-                format!("context_param_serialization:{err}"),
+                StartedWakeFailure {
+                    invocation_id: invocation_id_for_dispatch,
+                    wake_token,
+                    timing,
+                    failure_reason: format!("context_param_serialization:{err}"),
+                },
             )
             .await?;
             return Ok(true);
@@ -135,15 +139,17 @@ pub async fn fire_wake_entry(
         return handle_workspace_mode(
             engine,
             adapter,
-            input,
-            wake_token,
-            seeded_handles,
-            wake_context,
-            resolved,
-            context_params,
-            invocation_id_for_dispatch,
-            invocation_timeout,
-            started_at,
+            WorkspaceModeState {
+                input,
+                wake_token,
+                seeded_handles,
+                wake_context,
+                resolved,
+                context_params,
+                invocation_id_for_dispatch,
+                invocation_timeout,
+                started_at,
+            },
         )
         .await;
     }
@@ -151,17 +157,21 @@ pub async fn fire_wake_entry(
     let provider_target = match provider_target_from_config(&resolved.config) {
         Ok(target) => target,
         Err(err) => {
-            let finished_at = time::OffsetDateTime::now_utc();
+            let timing = TraceTiming {
+                started_at,
+                finished_at: time::OffsetDateTime::now_utc(),
+            };
             finalize_failed_started_wake(
                 engine,
                 &input,
                 &wake_context,
                 &resolved,
-                invocation_id_for_dispatch,
-                wake_token,
-                started_at,
-                finished_at,
-                provider_target_failure_reason(&err),
+                StartedWakeFailure {
+                    invocation_id: invocation_id_for_dispatch,
+                    wake_token,
+                    timing,
+                    failure_reason: provider_target_failure_reason(&err),
+                },
             )
             .await?;
             return Ok(true);
@@ -185,7 +195,10 @@ pub async fn fire_wake_entry(
     );
 
     let outcome_result = adapter.run(program, hctx).await;
-    let finished_at = time::OffsetDateTime::now_utc();
+    let timing = TraceTiming {
+        started_at,
+        finished_at: time::OffsetDateTime::now_utc(),
+    };
 
     engine.wake_token_store().revoke(wake_token).await;
     write_session_jsonl_to_disk(&session_log_path, &outcome_result).await;
@@ -197,8 +210,7 @@ pub async fn fire_wake_entry(
         &resolved,
         invocation_id_for_dispatch,
         &outcome_result,
-        started_at,
-        finished_at,
+        timing,
     )
     .await
     .ok();
@@ -209,23 +221,35 @@ pub async fn fire_wake_entry(
     Ok(true)
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "workspace fire state is explicit"
-)]
-async fn handle_workspace_mode(
-    engine: &Engine,
-    adapter: &dyn HarnessAdapter,
+struct WorkspaceModeState {
     input: FireWakeEntryInput,
     wake_token: Uuid,
     seeded_handles: crate::mcp::PreSeededHandles,
     wake_context: WakeContext,
     resolved: ResolvedTarget,
-    mut context_params: HashMap<String, serde_json::Value>,
+    context_params: HashMap<String, serde_json::Value>,
     invocation_id_for_dispatch: Uuid,
     invocation_timeout: Duration,
     started_at: time::OffsetDateTime,
+}
+
+async fn handle_workspace_mode(
+    engine: &Engine,
+    adapter: &dyn HarnessAdapter,
+    state: WorkspaceModeState,
 ) -> Result<bool, ProtocolError> {
+    let WorkspaceModeState {
+        input,
+        wake_token,
+        seeded_handles,
+        wake_context,
+        resolved,
+        mut context_params,
+        invocation_id_for_dispatch,
+        invocation_timeout,
+        started_at,
+    } = state;
+
     let flavor_id = input.wake_entry.trigger_id.split('/').next().unwrap_or("");
     let Some(runner) = engine.registry().workspace_runner(flavor_id) else {
         engine.wake_token_store().revoke(wake_token).await;
@@ -302,7 +326,10 @@ async fn handle_workspace_mode(
     let provider_target = match provider_target_from_config(&resolved.config) {
         Ok(target) => target,
         Err(err) => {
-            let finished_at = time::OffsetDateTime::now_utc();
+            let timing = TraceTiming {
+                started_at,
+                finished_at: time::OffsetDateTime::now_utc(),
+            };
             let failure_reason = provider_target_failure_reason(&err);
             let finalize_outcome = WakeInvocationFinalizeOutcome::failed(failure_reason);
             finalize_pre_run_workspace(
@@ -310,12 +337,13 @@ async fn handle_workspace_mode(
                 &input,
                 &wake_context,
                 &resolved,
-                invocation_id_for_dispatch,
-                wake_token,
-                prepared,
-                started_at,
-                finished_at,
-                finalize_outcome,
+                PreRunWorkspaceFailure {
+                    invocation_id: invocation_id_for_dispatch,
+                    wake_token,
+                    prepared,
+                    timing,
+                    finalize_outcome,
+                },
             )
             .await?;
             return Ok(true);
@@ -338,7 +366,10 @@ async fn handle_workspace_mode(
         invocation_timeout,
     );
     let outcome_result = adapter.run(program, hctx).await;
-    let finished_at = time::OffsetDateTime::now_utc();
+    let timing = TraceTiming {
+        started_at,
+        finished_at: time::OffsetDateTime::now_utc(),
+    };
 
     append_session_log_error_if_present(engine, &input, &outcome_result).await;
     emit_trace_from_outcome(
@@ -348,8 +379,7 @@ async fn handle_workspace_mode(
         &resolved,
         invocation_id_for_dispatch,
         &outcome_result,
-        started_at,
-        finished_at,
+        timing,
     )
     .await
     .ok();
@@ -439,64 +469,65 @@ fn harness_context(
     }
 }
 
+struct StartedWakeFailure {
+    invocation_id: Uuid,
+    wake_token: Uuid,
+    timing: TraceTiming,
+    failure_reason: String,
+}
+
+struct PreRunWorkspaceFailure {
+    invocation_id: Uuid,
+    wake_token: Uuid,
+    prepared: WorkspacePreparedRun,
+    timing: TraceTiming,
+    finalize_outcome: WakeInvocationFinalizeOutcome,
+}
+
 async fn finalize_failed_started_wake(
     engine: &Engine,
     input: &FireWakeEntryInput,
     wake_context: &WakeContext,
     resolved: &ResolvedTarget,
-    invocation_id: Uuid,
-    wake_token: Uuid,
-    started_at: time::OffsetDateTime,
-    finished_at: time::OffsetDateTime,
-    failure_reason: String,
+    failure: StartedWakeFailure,
 ) -> Result<(), ProtocolError> {
     emit_trace_from_failed_preflight(
         engine,
         input,
         wake_context,
         resolved,
-        invocation_id,
-        started_at,
-        finished_at,
-        failure_reason.clone(),
+        failure.invocation_id,
+        failure.timing,
+        failure.failure_reason.clone(),
     )
     .await
     .ok();
 
-    engine.wake_token_store().revoke(wake_token).await;
+    engine.wake_token_store().revoke(failure.wake_token).await;
     finalize(
         engine,
         input,
-        WakeInvocationFinalizeOutcome::failed(failure_reason),
+        WakeInvocationFinalizeOutcome::failed(failure.failure_reason),
     )
     .await
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "failure cleanup state is explicit"
-)]
 async fn finalize_pre_run_workspace(
     engine: &Engine,
     input: &FireWakeEntryInput,
     wake_context: &WakeContext,
     resolved: &ResolvedTarget,
-    invocation_id: Uuid,
-    wake_token: Uuid,
-    prepared: WorkspacePreparedRun,
-    started_at: time::OffsetDateTime,
-    finished_at: time::OffsetDateTime,
-    finalize_outcome: WakeInvocationFinalizeOutcome,
+    failure: PreRunWorkspaceFailure,
 ) -> Result<(), ProtocolError> {
     emit_trace_from_failed_preflight(
         engine,
         input,
         wake_context,
         resolved,
-        invocation_id,
-        started_at,
-        finished_at,
-        finalize_outcome
+        failure.invocation_id,
+        failure.timing,
+        failure
+            .finalize_outcome
             .failure_reason
             .clone()
             .unwrap_or_else(|| "pre_run_failure".to_string()),
@@ -504,22 +535,22 @@ async fn finalize_pre_run_workspace(
     .await
     .ok();
     let workspace_outcome = WorkspaceOutcome {
-        exit_code: finalize_outcome.exit_code,
-        stdout_tail: finalize_outcome.stdout_tail.clone(),
-        stderr_tail: finalize_outcome.stderr_tail.clone(),
-        duration_ms: finalize_outcome.duration_ms,
+        exit_code: failure.finalize_outcome.exit_code,
+        stdout_tail: failure.finalize_outcome.stdout_tail.clone(),
+        stderr_tail: failure.finalize_outcome.stderr_tail.clone(),
+        duration_ms: failure.finalize_outcome.duration_ms,
     };
     let _ = finalize_workspace_runner(
         engine,
         input,
         wake_context,
-        invocation_id,
-        prepared,
+        failure.invocation_id,
+        failure.prepared,
         workspace_outcome,
     )
     .await;
-    engine.wake_token_store().revoke(wake_token).await;
-    finalize(engine, input, finalize_outcome).await
+    engine.wake_token_store().revoke(failure.wake_token).await;
+    finalize(engine, input, failure.finalize_outcome).await
 }
 
 async fn finalize_workspace_runner(

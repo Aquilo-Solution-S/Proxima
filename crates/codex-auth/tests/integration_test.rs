@@ -14,7 +14,9 @@ fn fresh_exp() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
-        .as_secs() as i64
+        .as_secs()
+        .try_into()
+        .unwrap_or(i64::MAX)
         + 3600 // 1 hour in the future
 }
 
@@ -22,18 +24,20 @@ fn stale_exp() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
-        .as_secs() as i64
+        .as_secs()
+        .try_into()
+        .unwrap_or(i64::MAX)
         - 60 // 60s in the past
 }
 
-fn jwt_with_claims(claims: serde_json::Value) -> String {
+fn jwt_with_claims(claims: &serde_json::Value) -> String {
     use base64::Engine as _;
     let payload_b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .encode(serde_json::to_vec(&claims).unwrap());
+        .encode(serde_json::to_vec(claims).unwrap());
     format!("header.{payload_b64}.signature")
 }
 
-fn write_auth_json(dir: &std::path::Path, body: serde_json::Value) -> PathBuf {
+fn write_auth_json(dir: &std::path::Path, body: &serde_json::Value) -> PathBuf {
     let path = dir.join("auth.json");
     std::fs::write(&path, body.to_string()).unwrap();
     path
@@ -68,9 +72,7 @@ async fn refresh_401_returns_refresh_failed() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/oauth/token"))
-        .respond_with(
-            ResponseTemplate::new(401).set_body_string(r#"{"error":"unauthorized"}"#),
-        )
+        .respond_with(ResponseTemplate::new(401).set_body_string(r#"{"error":"unauthorized"}"#))
         .mount(&server)
         .await;
     let http = reqwest::Client::new();
@@ -139,13 +141,13 @@ async fn refresh_sends_correct_body() {
 #[tokio::test]
 async fn resolve_returns_credentials_when_tokens_fresh() {
     let dir = tempfile::tempdir().unwrap();
-    let access = jwt_with_claims(serde_json::json!({
+    let access = jwt_with_claims(&serde_json::json!({
         "chatgpt_account_id": "acct-fresh",
         "exp": fresh_exp(),
     }));
     let path = write_auth_json(
         dir.path(),
-        serde_json::json!({
+        &serde_json::json!({
             "tokens": {
                 "id_token": "id",
                 "access_token": access,
@@ -169,17 +171,17 @@ async fn resolve_returns_credentials_when_tokens_fresh() {
 #[tokio::test]
 async fn resolve_refreshes_and_persists_when_exp_within_skew() {
     let dir = tempfile::tempdir().unwrap();
-    let stale_access = jwt_with_claims(serde_json::json!({
+    let stale_access = jwt_with_claims(&serde_json::json!({
         "chatgpt_account_id": "acct-stale",
         "exp": stale_exp(),
     }));
-    let new_access = jwt_with_claims(serde_json::json!({
+    let new_access = jwt_with_claims(&serde_json::json!({
         "chatgpt_account_id": "acct-after-refresh",
         "exp": fresh_exp(),
     }));
     let auth_path = write_auth_json(
         dir.path(),
-        serde_json::json!({
+        &serde_json::json!({
             "tokens": {
                 "id_token": "id-old",
                 "access_token": stale_access,
@@ -191,13 +193,11 @@ async fn resolve_refreshes_and_persists_when_exp_within_skew() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/oauth/token"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "id_token": "id-new",
-                "access_token": new_access.clone(),
-                "refresh_token": "ref-new",
-            })),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "id_token": "id-new",
+            "access_token": new_access.clone(),
+            "refresh_token": "ref-new",
+        })))
         .mount(&server)
         .await;
 
@@ -221,10 +221,10 @@ async fn resolve_refreshes_and_persists_when_exp_within_skew() {
 #[tokio::test]
 async fn resolve_falls_back_to_tokens_account_id_field_when_jwt_claim_absent() {
     let dir = tempfile::tempdir().unwrap();
-    let access = jwt_with_claims(serde_json::json!({ "exp": fresh_exp() })); // no chatgpt_account_id
+    let access = jwt_with_claims(&serde_json::json!({ "exp": fresh_exp() })); // no chatgpt_account_id
     let auth_path = write_auth_json(
         dir.path(),
-        serde_json::json!({
+        &serde_json::json!({
             "tokens": {
                 "id_token": "id",
                 "access_token": access,
@@ -246,10 +246,10 @@ async fn resolve_falls_back_to_tokens_account_id_field_when_jwt_claim_absent() {
 #[tokio::test]
 async fn resolve_returns_missing_account_id_when_both_paths_absent() {
     let dir = tempfile::tempdir().unwrap();
-    let access = jwt_with_claims(serde_json::json!({ "exp": fresh_exp() })); // no chatgpt_account_id
+    let access = jwt_with_claims(&serde_json::json!({ "exp": fresh_exp() })); // no chatgpt_account_id
     let auth_path = write_auth_json(
         dir.path(),
-        serde_json::json!({
+        &serde_json::json!({
             "tokens": {
                 "id_token": "id",
                 "access_token": access,
@@ -274,13 +274,13 @@ async fn resolve_returns_missing_account_id_when_both_paths_absent() {
 #[tokio::test]
 async fn resolve_returns_refresh_failed_when_endpoint_401s() {
     let dir = tempfile::tempdir().unwrap();
-    let stale_access = jwt_with_claims(serde_json::json!({
+    let stale_access = jwt_with_claims(&serde_json::json!({
         "chatgpt_account_id": "acct-stale",
         "exp": stale_exp(),
     }));
     let auth_path = write_auth_json(
         dir.path(),
-        serde_json::json!({
+        &serde_json::json!({
             "tokens": {
                 "id_token": "id-old",
                 "access_token": stale_access,
@@ -301,10 +301,7 @@ async fn resolve_returns_refresh_failed_when_endpoint_401s() {
     let resolver = CodexAuthResolver::with_refresh_client(AuthDotJsonPath(auth_path), refresh);
 
     let err = resolver.resolve().await.unwrap_err();
-    assert!(
-        matches!(err, CodexAuthError::RefreshFailed),
-        "got {err:?}"
-    );
+    assert!(matches!(err, CodexAuthError::RefreshFailed), "got {err:?}");
 }
 
 #[tokio::test]
@@ -312,7 +309,7 @@ async fn resolve_returns_invalid_when_tokens_missing_from_auth_json() {
     let dir = tempfile::tempdir().unwrap();
     let auth_path = write_auth_json(
         dir.path(),
-        serde_json::json!({
+        &serde_json::json!({
             "OPENAI_API_KEY": null,
             // no "tokens" key at all
         }),
@@ -338,30 +335,35 @@ async fn resolve_returns_invalid_when_tokens_missing_from_auth_json() {
 async fn invalidate_and_refresh_forces_refresh_even_when_token_fresh() {
     let dir = tempfile::tempdir().unwrap();
     // Token's exp is FAR in the future — proactive refresh would not fire.
-    let fresh_access = jwt_with_claims(serde_json::json!({
+    let fresh_access = jwt_with_claims(&serde_json::json!({
         "chatgpt_account_id": "acct-before",
         "exp": fresh_exp(),
     }));
-    let after_refresh = jwt_with_claims(serde_json::json!({
+    let after_refresh = jwt_with_claims(&serde_json::json!({
         "chatgpt_account_id": "acct-after",
         "exp": fresh_exp(),
     }));
-    let auth_path = write_auth_json(dir.path(), serde_json::json!({
-        "tokens": {
-            "id_token": "id-old",
-            "access_token": fresh_access,
-            "refresh_token": "ref-old",
-        }
-    }));
+    let auth_path = write_auth_json(
+        dir.path(),
+        &serde_json::json!({
+            "tokens": {
+                "id_token": "id-old",
+                "access_token": fresh_access,
+                "refresh_token": "ref-old",
+            }
+        }),
+    );
 
     let server = wiremock::MockServer::start().await;
     wiremock::Mock::given(method("POST"))
         .and(path("/oauth/token"))
-        .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "id_token": "id-new",
-            "access_token": after_refresh.clone(),
-            "refresh_token": "ref-new",
-        })))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id_token": "id-new",
+                "access_token": after_refresh.clone(),
+                "refresh_token": "ref-new",
+            })),
+        )
         // Expect exactly one call — invalidate_and_refresh must fire refresh once.
         .expect(1)
         .mount(&server)
@@ -369,7 +371,8 @@ async fn invalidate_and_refresh_forces_refresh_even_when_token_fresh() {
 
     let http = reqwest::Client::new();
     let refresh = RefreshClient::with_endpoint(http, format!("{}/oauth/token", server.uri()));
-    let resolver = CodexAuthResolver::with_refresh_client(AuthDotJsonPath(auth_path.clone()), refresh);
+    let resolver =
+        CodexAuthResolver::with_refresh_client(AuthDotJsonPath(auth_path.clone()), refresh);
 
     let creds = resolver.invalidate_and_refresh().await.unwrap();
     assert_eq!(creds.account_id, "acct-after");

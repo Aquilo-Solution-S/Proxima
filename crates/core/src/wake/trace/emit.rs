@@ -10,6 +10,12 @@ use crate::wake::fire::resolve::ResolvedTarget;
 use crate::wake::trace::WakeTracePayload;
 use crate::{Engine, GoalId, MemoryId, SourceBatchId, SourceId, StorageError};
 
+#[derive(Debug, Clone, Copy)]
+pub struct TraceTiming {
+    pub started_at: time::OffsetDateTime,
+    pub finished_at: time::OffsetDateTime,
+}
+
 pub async fn emit_trace_from_outcome(
     engine: &Engine,
     input: &FireWakeEntryInput,
@@ -17,8 +23,7 @@ pub async fn emit_trace_from_outcome(
     resolved: &ResolvedTarget,
     invocation_id: uuid::Uuid,
     outcome_result: &Result<HarnessOutcome, HarnessError>,
-    started_at: time::OffsetDateTime,
-    finished_at: time::OffsetDateTime,
+    timing: TraceTiming,
 ) -> Result<WakeTracePersistOutcome, StorageError> {
     let persist = persist_input_from_outcome(
         input,
@@ -26,8 +31,7 @@ pub async fn emit_trace_from_outcome(
         resolved,
         invocation_id,
         outcome_result,
-        started_at,
-        finished_at,
+        timing,
     );
     persist_wake_trace(engine, invocation_id, persist).await
 }
@@ -38,8 +42,7 @@ pub async fn emit_trace_from_failed_preflight(
     wake_context: &WakeContext,
     resolved: &ResolvedTarget,
     invocation_id: uuid::Uuid,
-    started_at: time::OffsetDateTime,
-    finished_at: time::OffsetDateTime,
+    timing: TraceTiming,
     failure_reason: String,
 ) -> Result<WakeTracePersistOutcome, StorageError> {
     let outcome = HarnessOutcome {
@@ -61,8 +64,7 @@ pub async fn emit_trace_from_failed_preflight(
         resolved,
         invocation_id,
         &Ok(outcome),
-        started_at,
-        finished_at,
+        timing,
     );
     persist_wake_trace(engine, invocation_id, persist).await
 }
@@ -83,15 +85,13 @@ async fn persist_wake_trace(
     result
 }
 
-#[expect(clippy::too_many_arguments, reason = "trace fields are explicit")]
 fn persist_input_from_outcome(
     input: &FireWakeEntryInput,
     wake_context: &WakeContext,
     resolved: &ResolvedTarget,
     invocation_id: uuid::Uuid,
     outcome_result: &Result<HarnessOutcome, HarnessError>,
-    started_at: time::OffsetDateTime,
-    finished_at: time::OffsetDateTime,
+    timing: TraceTiming,
 ) -> WakeTracePersistInput {
     let (
         jsonl_bytes,
@@ -142,8 +142,8 @@ fn persist_input_from_outcome(
         personality_instance_id: input.personality_instance_id.into_inner(),
         model_target_ref: resolved.target_ref.clone(),
         model_id: model_id(&resolved.config),
-        started_at,
-        finished_at,
+        started_at: timing.started_at,
+        finished_at: timing.finished_at,
         outcome_kind,
         failure_reason,
         rounds_used,
@@ -169,7 +169,7 @@ fn persist_input_from_outcome(
         source_id: SourceId::new("core/wake-trace".to_string()),
         source_batch_id: SourceBatchId::new(uuid::Uuid::now_v7()),
         observed_at: time::OffsetDateTime::now_utc(),
-        occurred_at: finished_at,
+        occurred_at: timing.finished_at,
     }
 }
 

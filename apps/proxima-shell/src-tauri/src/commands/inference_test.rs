@@ -5,7 +5,7 @@ use proxima_codex_auth::AuthDotJsonPath;
 use proxima_core::auth::Credentials;
 use proxima_core::error::ProtocolError;
 use proxima_core::{ChatGPTCodexConfig, Engine, InferenceTargetConfig, Owner};
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue, AUTHORIZATION};
+use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderName, HeaderValue};
 use serde_json::json;
 use tauri::State;
 
@@ -42,7 +42,7 @@ pub async fn inference_env_status(
 pub struct CodexAuthStatusOutcomeTs {
     /// True if ~/.codex/auth.json exists and is readable.
     pub auth_json_present: bool,
-    /// True if tokens.access_token is set and parseable as a JWT.
+    /// True if `tokens.access_token` is set and parseable as a JWT.
     pub access_token_present: bool,
 }
 
@@ -56,14 +56,11 @@ pub async fn codex_auth_status() -> Result<CodexAuthStatusOutcomeTs, ProtocolErr
         });
     };
     let path = std::path::PathBuf::from(home).join(".codex/auth.json");
-    let bytes = match std::fs::read(&path) {
-        Ok(b) => b,
-        Err(_) => {
-            return Ok(CodexAuthStatusOutcomeTs {
-                auth_json_present: false,
-                access_token_present: false,
-            });
-        }
+    let Ok(bytes) = std::fs::read(&path) else {
+        return Ok(CodexAuthStatusOutcomeTs {
+            auth_json_present: false,
+            access_token_present: false,
+        });
     };
     let json: serde_json::Value = match serde_json::from_slice(&bytes) {
         Ok(v) => v,
@@ -76,8 +73,7 @@ pub async fn codex_auth_status() -> Result<CodexAuthStatusOutcomeTs, ProtocolErr
     };
     let access_token_present = json["tokens"]["access_token"]
         .as_str()
-        .filter(|s| !s.is_empty())
-        .is_some();
+        .is_some_and(|s| !s.is_empty());
     Ok(CodexAuthStatusOutcomeTs {
         auth_json_present: true,
         access_token_present,
@@ -234,7 +230,11 @@ fn codex_auth_to_ping_error(e: proxima_codex_auth::CodexAuthError) -> PingError 
     }
 }
 
-/// Send one POST to `{base_url}/responses`. Returns (status, latency_ms, body_text).
+fn elapsed_ms(started: Instant) -> u32 {
+    u32::try_from(started.elapsed().as_millis()).unwrap_or(u32::MAX)
+}
+
+/// Send one POST to `{base_url}/responses`. Returns `(status, latency_ms, body_text)`.
 async fn chatgpt_codex_request(
     config: &ChatGPTCodexConfig,
     access_token: &str,
@@ -272,10 +272,10 @@ async fn chatgpt_codex_request(
         "store": false,
         "stream": true,
     });
-    if let Some(effort) = config.reasoning_effort.as_deref() {
-        if let Some(obj) = body.as_object_mut() {
-            obj.insert("reasoning".to_string(), json!({ "effort": effort }));
-        }
+    if let Some(effort) = config.reasoning_effort.as_deref()
+        && let Some(obj) = body.as_object_mut()
+    {
+        obj.insert("reasoning".to_string(), json!({ "effort": effort }));
     }
 
     let client = reqwest::Client::builder()
@@ -298,7 +298,7 @@ async fn chatgpt_codex_request(
             }
         })?;
 
-    let latency_ms = started.elapsed().as_millis() as u32;
+    let latency_ms = elapsed_ms(started);
     let status = resp.status().as_u16();
     let body_text = resp.text().await.unwrap_or_default();
     Ok((status, latency_ms, body_text))
@@ -320,7 +320,7 @@ async fn ping_chatgpt_codex_with(
     let creds = resolver.resolve().await.map_err(codex_auth_to_ping_error)?;
     let (status, latency_ms, body_text) =
         chatgpt_codex_request(config, &creds.access_token, &creds.account_id).await?;
-    if status >= 200 && status < 300 {
+    if (200..300).contains(&status) {
         return Ok(latency_ms);
     }
 
@@ -330,13 +330,9 @@ async fn ping_chatgpt_codex_with(
             .invalidate_and_refresh()
             .await
             .map_err(codex_auth_to_ping_error)?;
-        let (status2, latency_ms2, body_text2) = chatgpt_codex_request(
-            config,
-            &refreshed.access_token,
-            &refreshed.account_id,
-        )
-        .await?;
-        if status2 >= 200 && status2 < 300 {
+        let (status2, latency_ms2, body_text2) =
+            chatgpt_codex_request(config, &refreshed.access_token, &refreshed.account_id).await?;
+        if (200..300).contains(&status2) {
             return Ok(latency_ms2);
         }
         let excerpt: String = body_text2.chars().take(200).collect();
@@ -348,9 +344,8 @@ async fn ping_chatgpt_codex_with(
 }
 
 async fn ping_chatgpt_codex(config: &ChatGPTCodexConfig) -> Result<u32, PingError> {
-    let home = std::env::var_os("HOME").ok_or_else(|| {
-        PingError::network("HOME env var not set".to_string())
-    })?;
+    let home = std::env::var_os("HOME")
+        .ok_or_else(|| PingError::network("HOME env var not set".to_string()))?;
     let auth_json = AuthDotJsonPath::from_home(&std::path::PathBuf::from(home));
     ping_chatgpt_codex_with(config, auth_json).await
 }
@@ -386,7 +381,7 @@ where
                 PingError::network(e.to_string())
             }
         })?;
-    let latency_ms = started.elapsed().as_millis() as u32;
+    let latency_ms = elapsed_ms(started);
     if !resp.status().is_success() {
         let status = resp.status().as_u16();
         let body_text = resp.text().await.unwrap_or_default();
@@ -443,7 +438,7 @@ pub async fn test_inference_target(
         }),
         Err(err) => Ok(TestInferenceTargetOutcomeTs {
             ok: false,
-            latency_ms: started.elapsed().as_millis() as u32,
+            latency_ms: elapsed_ms(started),
             error_code: Some(err.code().to_string()),
             error_message: Some(err.message().to_string()),
         }),
@@ -483,10 +478,13 @@ mod tests {
 
     fn make_fresh_access_token(account_id: &str) -> String {
         use base64::Engine as _;
-        let exp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64
+        let exp = i64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs(),
+        )
+        .unwrap_or(i64::MAX)
             + 3600;
         let claims = serde_json::json!({
             "chatgpt_account_id": account_id,
@@ -510,7 +508,10 @@ mod tests {
         // Expect POST {server}/responses with the three required headers and correct body.
         Mock::given(method("POST"))
             .and(path("/responses"))
-            .and(header("authorization", format!("Bearer {fresh_access}").as_str()))
+            .and(header(
+                "authorization",
+                format!("Bearer {fresh_access}").as_str(),
+            ))
             .and(header("chatgpt-account-id", "acct-test"))
             .and(header("originator", "proxima"))
             .and(wiremock::matchers::body_json(serde_json::json!({
@@ -542,11 +543,7 @@ mod tests {
                 "refresh_token": "ref",
             }
         });
-        std::fs::write(
-            codex_dir.join("auth.json"),
-            auth_json_value.to_string(),
-        )
-        .unwrap();
+        std::fs::write(codex_dir.join("auth.json"), auth_json_value.to_string()).unwrap();
 
         let config = ChatGPTCodexConfig {
             base_url: server.uri(),
@@ -558,6 +555,9 @@ mod tests {
         let latency_ms = ping_chatgpt_codex_with(&config, auth)
             .await
             .expect("ping should succeed");
-        assert!(latency_ms < 5_000, "ping latency reasonable: {latency_ms}ms");
+        assert!(
+            latency_ms < 5_000,
+            "ping latency reasonable: {latency_ms}ms"
+        );
     }
 }
