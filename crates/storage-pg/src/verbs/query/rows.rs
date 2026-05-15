@@ -178,7 +178,6 @@ pub(super) struct EdgeRowDb {
 }
 
 #[derive(Debug, sqlx::FromRow)]
-#[allow(dead_code)]
 pub(super) struct MemoryRowDb {
     memory_id: uuid::Uuid,
     owner_principal_kind: String,
@@ -187,7 +186,6 @@ pub(super) struct MemoryRowDb {
     schema_id: String,
     schema_version: i32,
     kind: Option<String>,
-    event_id: Option<Vec<u8>>,
     payload_json: Option<String>,
 }
 

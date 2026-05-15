@@ -112,7 +112,7 @@ Default tools available to every personality:
 |---|---|
 | `list_self_perspectives` | `emit_perspective` |
 | `fetch_memory` | `emit_abstraction` |
-| `walk_lineage` | `emit_goal` |
+| `walk_lineage` |  |
 | `search_by_embedding` | `create_edge` |
 | `list_active_goals` |  |
 
@@ -122,6 +122,8 @@ relations.
 `Goal` is a core entity. `proxima-goal` is the reference flavor for
 GoalPayload schemas, proposal/accept/decline MCP tools, sidecars, and
 renderers; it does not own the entity contract (see 06 §Goal Entity).
+Goal creation uses the `proxima-goal/goal_propose` flavor tool, not a
+substrate `emit_goal` tool.
 
 ## Freeze Guards
 
