@@ -1,141 +1,257 @@
 # 06. Goals And Self
 
-Binding ADR:
-`docs/superpowers/specs/2026-05-06-personality-wake-decide-write-design.md`.
+## Contract
 
-Core owns `Goal`, `GoalState`, `GoalAuthorship`, the `GoalPayload`
-trait, `GoalWrite`, `core/inspires`, and active-goal query semantics.
-Flavors ship concrete payload schemas, proposal/accept/decline tools,
-sidecars, and renderers.
+| Surface | Contract |
+|---|---|
+| Goal | Direction: desired future state, DAG position, lifecycle head |
+| Memory | Observation or interpretation; never a Goal |
+| Self | Query result, not entity |
+| Assignment | `Goal --core/inspires--> Self-Perspective` |
+| Wake policy | Explicit wake entries; never stored on Goal |
+
+<a id="goal-entity"></a>
 
 ## Goal Entity
 
-`Goal` is distinct from `Memory`.
+`Goal` is a core entity.
 
-```
-Goal {
-  goal_id: UUIDv7,
-  owner: Owner,
-  schema_id: SchemaId,
-  schema_version: u32,
-  title: text,
-  text: text,
-  state: GoalState,
-  supersedes: GoalId?,
-  parent_goal_ids: GoalId[],
-  authorship: User | System | External,
-}
-```
+Not Memory:
 
-`GoalState` lives in `crates/core/src/verbs/goal_write.rs`.
-`Proposed` and `Rejected` are the propose/accept/decline lifecycle.
+| Kind | Meaning | Lifecycle |
+|---|---|---|
+| Fact | observation | immutable |
+| Abstraction | operator-authored synthesis | supersession |
+| Perspective | personality-relative view | supersession |
+| Goal | intended direction | supersession |
+
+Goal row fields:
+
+| Field | Rule |
+|---|---|
+| `goal_id` | UUIDv7 identity |
+| `owner` | per-row access scope |
+| `schema_id`, `schema_version` | registered `GoalPayload` |
+| `title`, `text` | core retrieval/render text |
+| `payload` | typed sidecar bytes |
+| `state` | lifecycle state |
+| `supersedes` | previous Goal head, nullable |
+| `parent_goal_ids` | DAG parents |
+| `authorship` | `User`, `System`, or `External` |
+| `request_id` | Owner-scoped idempotency key |
+
+States:
+
+| State | Active set | Terminal | Meaning |
+|---|---:|---:|---|
+| `Proposed` | no | no | Awaiting gate |
+| `Active` | yes | no | Live direction |
+| `Paused` | no | no | Suspended direction |
+| `Achieved` | no | yes | Positive close |
+| `Abandoned` | no | yes | Post-active negative close |
+| `Rejected` | no | yes | Gate-time decline |
 
 Lifecycle:
 
 ```
-create -> Proposed | Active
-supersede -> new Goal row + supersedes prior
-state change -> new Goal row + supersedes prior
-erase -> GDPR owner erasure only
+(none) -> Proposed -> Active -> Paused -> Active
+                    \-> Rejected
+                    \-> Achieved
+                    \-> Abandoned
+
+(none) -> Active
+Active -> Active       # modification
 ```
 
-No in-place mutation.
+Every transition writes a new Goal row. No in-place mutation.
+Compliance erasure is the only delete path.
 
-## Self
+Active set:
 
-There is no global Self row.
+```
+G_active(owner) =
+  current Goal heads
+  where state = Active
+```
 
-Runtime self for one personality instance:
+<a id="goal-write-api"></a>
+
+## Goal-Write API
+
+`GoalWrite` is the protocol write surface for Goal rows.
+
+Rules:
+
+| Rule | Effect |
+|---|---|
+| Owner-scoped | caller must access `draft.owner` |
+| Schema-checked | `schema_id` / `schema_version` resolves to `GoalPayload` |
+| Append-only | create or supersede; never update |
+| Idempotent | same `(Owner, request_id, body)` returns same `GoalId` |
+| Conflict-detecting | reused request id with different body fails |
+| Stream-visible | successful write emits `change_event` |
+
+Supersession constraints:
+
+| Constraint | Rule |
+|---|---|
+| Same Owner | prior and new Goal share Owner |
+| Current head | stale prior cannot be lifecycle head |
+| Valid transition | prior state and new state pair is admitted |
+| Payload typed | new row carries the target schema payload |
+
+Lifecycle Facts are observations of Goal lifecycle writes. They do not
+replace Goal identity.
+
+<a id="self--flavor-projection"></a>
+
+## Self -- Flavor Projection
+
+There is no Self row.
+
+Runtime Self for one personality instance:
 
 ```
 Self(instance) =
-  personality.current_root_perspective_memory_id
-  + active owner Goals addressable to that self-Perspective
+  current_root_perspective(instance)
+  + active_goals(current_root_perspective(instance))
 ```
 
-The self anchor is a Perspective row whose schema is declared by
-`PersonalityFlavor::self_schema()`.
+The self anchor is a Perspective memory row whose schema is declared by
+the personality flavor. Self evolution is Perspective supersession plus
+the instance's current-root pointer changing to the new head.
 
-```
-PersonalityInstance {
-  personality_type_id: text,
-  personality_instance_id: UUID,
-  current_root_perspective_memory_id: MemoryId,
-}
-```
+Self is never cached as:
 
-Self evolution:
+| Forbidden | Reason |
+|---|---|
+| Memory row | duplicates Perspective and Goal state |
+| Goal row | confuses direction with identity |
+| materialized causal chain | cache would become authority |
 
-```
-self_Perspective_vN+1 --core/supersedes--> self_Perspective_vN
-personality.current_root_perspective_memory_id = vN+1
-```
-
-`personality_wake_config.status = tombstoned` removes the runtime
-instance from dispatch and default listings. It does not delete the
-self-Perspective, wake entries, wake cursor, invocations, or authored A/P
-rows. Tombstone is operational config (like wake-entry edits), not Memory
-mutation; the instance's cognitive history stays queryable.
+<a id="goal-assignment"></a>
 
 ## Goal Assignment
 
-Goal-to-personality assignment is an edge:
+Assignment is a typed edge:
 
 ```
 Goal
   --core/inspires-->
-self-Perspective memory
+Self-Perspective
 ```
 
-`core/inspires` wakes the addressed personality through the auto-added
-`WakeEntry(trigger_kind = on_edge, trigger_id = core/inspires)`.
+Storage endpoint kinds:
 
-Assignment does not imply obligation. The personality may read, ignore,
-accept, counter, or write a different perspective.
-
-### Goal Connection
+| Endpoint | Kind |
+|---|---|
+| source | `Goal` |
+| target | `Perspective` |
 
 No `GoalConnection` sidecar.
-
-Lifecycle:
-
-```
-propose -> Goal(state = Proposed) + core/inspires(Goal -> Self-Perspective)
-accept  -> new Goal(state = Active, supersedes = Proposed); edge unchanged
-decline -> new Goal(state = Rejected, supersedes = Proposed); edge unchanged
-```
 
 `active_goals(instance)`:
 
 ```
-traverse core/inspires to current_root_perspective_memory_id
-follow Goal supersession to head rows
-filter state = Active
+self = current_root_perspective(instance)
+assigned = incoming core/inspires targets where target = self
+heads = follow Goal supersession for each assigned source
+return heads where state = Active
 ```
 
-The Goal head's `state` column is the approval state.
+Assignment means "this Goal may inspire this Self." It does not imply
+execution, obligation, repository scope, or wake policy.
 
-## Separation
+## Goal Flavor Boundary
 
-| Surface | Holds |
+Core owns:
+
+| Surface | Owned by core |
 |---|---|
-| Goal | desired direction, DAG, lifecycle |
-| Wake config | operational policy, filters, probabilities |
-| Self-Perspective | identity anchor for one instance |
-| PersonalityFlavor | prompt, tools, write allow-lists |
-| Goal flavor | reference payload schemas, tools, sidecars, renderers |
+| Entity | Goal row, Goal identity, Goal state |
+| Trait | `GoalPayload` |
+| Verb | `GoalWrite` |
+| Relation | `core/inspires` |
+| Query | active-goal traversal |
 
-Goals do not carry wake policy.
+`proxima-goal` owns:
+
+| Surface | Owned by Goal flavor |
+|---|---|
+| Payloads | reference Goal payload schemas |
+| Lifecycle Facts | proposed / activated / achieved schemas |
+| Tools | proposal, accept, decline, modify, achievement tools |
+| Relation | `proxima-goal/motivated-by` |
+| Renderers | Goal and lifecycle payload views |
+
+Evidence:
+
+```
+Goal --proxima-goal/motivated-by--> Fact
+Goal --proxima-goal/motivated-by--> Abstraction
+```
+
+Lifecycle Fact provenance:
+
+```
+Lifecycle Fact --core/derived-from--> Fact evidence
+```
+
+Abstraction evidence remains represented by `proxima-goal/motivated-by`.
+
+## Goal-Scoped Wake Policy
+
+Goal assignment does not create wake behavior.
+
+Goal-reactive execution requires an enabled wake entry whose policy
+matches the emitted event. The usual goal-reactive trigger:
+
+| Field | Value |
+|---|---|
+| `trigger_kind` | `on_memory` |
+| `trigger_id` | `proxima-goal/goal-activated-v1` |
+| `goal_scope` | `trigger_goal_assigned` |
+
+`goal_scope = trigger_goal_assigned` means the wake receives the Goal
+only when the triggering lifecycle Fact refers to a Goal assigned to the
+personality's current Self-Perspective.
+
+Planner-first execution:
+
+```
+Goal -> planner personality -> execution-request Fact -> worker
+```
+
+Goals do not bind repos, worktrees, commands, or workers directly.
+
+<a id="scoping"></a>
+
+## Scoping
+
+Owner is per row.
+
+| Object | Scope |
+|---|---|
+| Goal | Owner columns on Goal row |
+| Self-Perspective | Owner columns on Memory row |
+| `core/inspires` edge | same Owner as endpoints |
+| `proxima-goal/motivated-by` edge | same Owner as endpoints |
+| Lifecycle Fact | same Owner as Goal write |
+
+Cross-owner Goal assignment and cross-owner evidence are rejected.
+`org_id` is not an access predicate.
 
 ## Authorship
 
-System-authored Goals carry operator/tool provenance. Personality-authored
-memory rows carry split personality identity:
+Goal authorship:
 
-```
-personality_type_id
-personality_instance_id
-wake_chain_depth
-```
+| Author | Use |
+|---|---|
+| `User` | direct user Goal writes and gates |
+| `External` | outside-agent proposals |
+| `System(Tool)` | tool-authored lifecycle close |
+| `System(Operator)` | A->Goal operator output |
 
-Operator-invocation reproducibility is row metadata, not a citation.
+Memory authorship remains separate. Personality-authored Memory rows
+carry personality identity and wake-chain depth. Operator-invocation
+reproducibility is row metadata, not citation.

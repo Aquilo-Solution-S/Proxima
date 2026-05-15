@@ -1,6 +1,6 @@
 # 10 — Configuration
 
-Per [08 §Decision](docs/08-core-and-flavors.md): build-time
+Per [08 §Decision](08-core-and-flavors.md#decision): build-time
 registers the *types*; runtime config picks *which* instance and
 *which* credentials. This doc is the runtime side — specifically
 the LLM endpoint, embedding model, and credential surfaces that
@@ -19,7 +19,7 @@ Three axes are runtime-configurable per binary:
 What is **not** runtime-configurable: schemas, relations,
 personality prompts, registered tools, wake-filter kinds, source *types*.
 Those are flavor
-crates ([08](docs/08-core-and-flavors.md)). Picking different
+crates ([08](08-core-and-flavors.md)). Picking different
 behavior means a different binary.
 
 ## Config file
@@ -241,7 +241,7 @@ everyone at once.
 ### Personality declaration
 
 Each personality declares two LLM-routing fields at registration
-([08 §Registration mechanism](docs/08-core-and-flavors.md#registration-mechanism)):
+([08 §Registration mechanism](08-core-and-flavors.md#registration-mechanism)):
 
 - `tier: ModelTier` — which tier this personality belongs in. Default
   `Standard` if omitted.
@@ -281,7 +281,7 @@ When no row exists for `(owner, tier)`:
 
 | Policy | Effect |
 |---|---|
-| `strict` (default) | Fail-closed. Personality wake emits `ConfigUnavailable` Action-Fact; UI surfaces the gap. |
+| `strict` (default) | Fail-closed. Personality wake emits `ConfigUnavailable` Fact; UI surfaces the gap. |
 | `upgrade` | Walk `Fast → Standard → Deep`. Personality gets a more capable (more expensive) model than declared. |
 | `downgrade` | Walk `Deep → Standard → Fast`. Caps-check still applies — a `Deep` personality that needs `long_context` won't silently fall to a `Fast` model that lacks it. |
 
@@ -343,7 +343,7 @@ governs the primary similarity surface only.
 
 ## Dispatcher concurrency
 
-Per [04 §Execution model and isolation](docs/04-consolidation.md#execution-model-and-isolation):
+Per [04 §Execution model and isolation](04-consolidation.md#execution-model-and-isolation):
 personalities run inside the substrate's dispatcher, with
 per-personality bounded queues and per-(Owner, personality instance)
 fairness within each queue. Build-time registration fixes the
@@ -398,7 +398,7 @@ What each axis controls:
 - `personalities.defaults.timeout_s` — hard cap on a single
   invocation; the LLM call is cancelled and the run is recorded
   as failed (no partial persistence — see
-  [04 §Output protocol](docs/04-consolidation.md#output-protocol)).
+  [04 §Output protocol](04-consolidation.md#output-protocol)).
 - `personalities.defaults.fairness` — how the per-personality queue
   schedules across (Owner, personality instance) keys. `deficit` gives
   weighted fairness under uneven load; `round-robin` is simpler
@@ -413,7 +413,7 @@ What each axis controls:
 - `sources.defaults.rate_limit_per_minute` — Phase-1 rate limit
   per `EventSource` instance. Independent of the personality
   dispatcher; Phase 1 doesn't go through it
-  ([04 §Execution model and isolation](docs/04-consolidation.md#execution-model-and-isolation)).
+  ([04 §Execution model and isolation](04-consolidation.md#execution-model-and-isolation)).
 
 `per_personality` overrides match by `personality_type_id`.
 Unmatched personalities inherit `defaults`. The dispatcher logs
@@ -447,8 +447,8 @@ Per-call resolution path:
 7. if cred is None or cred.secret_ref unresolvable:
        fail-closed:
          - personality wake does not run
-         - emit ConfigUnavailable Action-Fact ([05](docs/05-actions.md))
-         - UI surfaces the Action-Fact; user reconfigures
+         - emit ConfigUnavailable Fact ([05](05-actions.md))
+         - UI surfaces the Fact; user reconfigures
 8. caps-check: assert entry.caps satisfies personality.requires
    (already enforced at write time per §Caps validation; this is
    a defence-in-depth assert, not a routing decision)
@@ -505,7 +505,7 @@ the actual key lands in AWS Secrets Manager, never in Postgres.
 ## Price book
 
 The dispatcher computes `cost_micro_usd` for each `LlmCallV1` /
-`EmbeddingCallV1` Fact ([05 §Dispatcher-emitted call Facts](docs/05-actions.md#dispatcher-emitted-call-facts))
+`EmbeddingCallV1` Fact ([05 §Dispatcher-emitted call Facts](05-actions.md#dispatcher-emitted-call-facts))
 from a runtime price book keyed by `(vendor, model_id)`. The book
 is runtime config — vendors change prices, new models appear — but
 populated identically across deployment shapes.
@@ -667,7 +667,7 @@ drift `cost_cap` enforcement.
 
 ## Bootstrap
 
-[06](docs/06-goals-and-self.md) covers each flavor's onboarding
+[06](06-goals-and-self.md) covers each flavor's onboarding
 flow eliciting founding goals. Configuration bootstrap layers on
 top:
 
@@ -710,9 +710,9 @@ flag.
 - **Not a tenant-management spec.** `Owner` resolution and the
   admin UX for editing `llm_credential` rows live in 09 and the
   org-admin surface (TBD).
-- **Not a billing spec.** Usage metering rides on the Action-Fact
-  stream — bare core's `LlmCallV1` and `EmbeddingCallV1` payloads
-  ([05 §Dispatcher-emitted call Facts](docs/05-actions.md#dispatcher-emitted-call-facts))
+- **Not a billing spec.** Usage metering rides on the Fact stream —
+  bare core's `LlmCallV1` and `EmbeddingCallV1` payloads
+  ([05 §Dispatcher-emitted call Facts](05-actions.md#dispatcher-emitted-call-facts))
   carry per-call token counts (including cache reads / writes),
   latency, and `cost_micro_usd` computed from §Price book.
   Billing is a downstream consumer of the same change feed every

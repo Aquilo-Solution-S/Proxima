@@ -1,113 +1,194 @@
-# 04. Consolidation
+# 04 — Consolidation
 
-Binding ADR:
-`docs/superpowers/specs/2026-05-06-personality-wake-decide-write-design.md`.
+Consolidation = operator runtime above EventSource Fact ingest.
+
+Core owns scheduling, idempotency, owner isolation, registry validation, and
+append-only writes. Flavors own operators, prompts, payload schemas, wake
+policy, and retrieval policy.
 
 ## Shape
 
 ```
-Reality event
-  -> change_event(seq, owner, entity | edge, authoring personality?, depth)
-  -> wake entries per (Owner, personality_instance_id)
-  -> decider(system_prompt, self-Perspective, tools, reads)
-  -> memory writes + edge writes
+EventSource
+  -> Event + Fact + structural Edge
+  -> source-batch F->A gate
+  -> Abstraction + provenance Edge
+
+change_event(F/A/P/Goal/Edge)
+  -> wake entry match
+  -> invocation
+  -> decide(reads, prompt, tools)
+  -> typed A/P/Goal/Edge writes
   -> change_event(...)
 ```
 
-Consolidation is the per-personality wake/decide/write loop.
-Dreaming is the name for flavor-declared consolidation policy executed
-through this loop. Core owns scheduling, idempotency, owner scope, depth,
-registry checks, typed A/P write contracts, and central edge invariants.
-Flavors own compaction, reflection, synthesis, self-update, prompts,
-schemas, and retrieval policy.
+Phase split:
 
-Dream outputs are ordinary writes: Abstraction, Perspective, Goal, and
-registered Edge. No Dream entity, Dream relation class, or Core dream
-pipeline exists.
+| Phase | Input | Output | Runtime |
+|---|---|---|---|
+| EventSource ingest | external event | Fact + structural Edge | 01 / 03 / 05 |
+| F->A | Fact set, source batch | Abstraction + provenance Edge | source-batch gate |
+| A->P | Abstraction set, active personality instance | Perspective + provenance Edge | wake entry |
+| A->Goal | Abstraction set, active personality instance | Goal + evidence Edge | wake entry |
 
-## Runtime Tables
+## Source-batch lifecycle
+
+`source_batches` is core EventSource lifecycle, not a domain payload.
+
+| Column family | Rule |
+|---|---|
+| `source_batch_id` | UUIDv7 declared by the source; unique within `(source_id, owner)` |
+| owner + source | access scope and source identity |
+| lifecycle | ingest started / completed / failed / suppressed |
+| counts + timestamps | operational accounting only |
+
+Domain metadata belongs on `CitedObject` / `CitationMapping` sidecars, not on
+`source_batches`.
+
+`source_batch_f2a` tracks F->A invocation gating:
+
+| Dimension | Rule |
+|---|---|
+| owner, source batch | gate scope |
+| Fact schema set | input contract |
+| output Abstraction schema | collision target |
+| operator id | flavor-declared F->A operator |
+| prompt version, model id | reproducibility |
+| personality instance | runtime authoring context, if the operator is personality-bound |
+| status, invocation key | idempotence and retry boundary |
+
+One completed row means the same operator cannot emit the same output
+Abstraction schema for the same source-batch input contract again.
+
+## Phase 2 — Personality embedding
+
+Operator rules:
+
+| Operator | Signature | Rule |
+|---|---|---|
+| F->A | `2^F x Pi -> A` | Facts become one typed Abstraction. |
+| A->P | `2^A x Pi -> P` | Abstractions become one typed Perspective. |
+| A->Goal | `2^A x Pi -> Goal` | Abstractions may propose or supersede Goals. |
+
+`Pi` = active personality instance and its registered flavor behavior.
+
+F->A exclusivity:
+
+- Exclusive per `(input contract, operator id, output Abstraction schema)`.
+- Multiple F->A operators may read the same Fact schema when they emit distinct
+  Abstraction schemas.
+- The same operator may emit a new row only when the input contract or output
+  Abstraction schema differs.
+
+Cross-domain synthesis:
+
+```
+F(D1) + F(D2) -> A(D1,D2)
+```
+
+The join object is a typed Abstraction with provenance to every input Fact.
+Direct semantic / causal Fact-to-Fact edges remain forbidden (see 02 §Edges).
+
+A->P, A->Goal, and mechanical Edge writes are intentionally plural: different
+personalities can frame the same Abstractions differently.
+
+## Prompt locality
+
+Prompts live with the flavor operators that use them.
+
+| Layer | Owns |
+|---|---|
+| Core | dispatcher, template interface, registry validation, write protocol |
+| Flavor | prompt text, operator code, retrieval policy, write allow-list |
+| Runtime config | model-tier binding, concurrency, credential references |
+
+Core stores prompt version references on outputs. Core does not ship
+domain prompts and does not accept runtime prompt registration.
+
+## Execution model and isolation
+
+Wake execution is per Owner and per personality instance.
+
+Runtime tables:
 
 | Table | Key | Function |
 |---|---|---|
-| `personality` | `(Owner, instance_id)` | root Perspective pointer, `active | tombstoned` |
-| `personality_wake_entries` | `(Owner, instance_id, wake_entry_id)` | trigger, recipe, tier, palettes, `active | needs_repair` |
-| `personality_wake_cursor` | `(Owner, type_id, instance_id)` | last considered `change_event.seq` |
-| `personality_wake_invocations` | `(Owner, type_id, instance_id, seq)` | idempotency for fired wakes |
-| `memories` | `memory_id` | F/A/P row, split personality identity, `wake_chain_depth` |
+| `personality_wake_entries` | `(Owner, personality_instance_id, wake_entry_id)` | trigger, recipe, tier, palette, status |
+| `personality_wake_cursor` | `(Owner, personality_instance_id)` | last considered `change_event.seq` |
+| `personality_wake_invocations` | `(Owner, personality_instance_id, wake_entry_id, change_event_seq)` | fired-wake idempotency |
 
-`source_batches` remains EventSource lifecycle. Domain metadata belongs on
-`CitedObject`, not the batch.
+Dispatcher loop:
 
-## Dispatcher Contract
-
-For each active instance:
-
-1. Read cursor.
-2. Walk owner `change_event` rows with `seq > cursor`.
+1. Read active wake entries for `(Owner, personality_instance_id)`.
+2. Read owner `change_event` rows after the cursor.
 3. Reject self-authored events.
-4. Reject events with `wake_chain_depth >= max_wake_chain_depth`.
-5. Evaluate `WakeEntry` rows.
-6. Apply deterministic probability hash `(seq, type_id, instance_id, wake_entry_id)`.
-7. Insert invocation row before running the decider.
-8. Run decider with substrate tool palette plus flavor tools.
-9. Validate every write against declared schema/relation allow-lists and
-   central edge invariants.
-10. Append memory/edge rows atomically.
-11. Advance cursor regardless of match or write output.
+4. Reject events at or above the wake-chain depth bound.
+5. Match wake entry trigger against event kind / schema / relation.
+6. Insert invocation key before model/tool execution.
+7. Execute with the entry palette and visible read scope.
+8. Validate every write through schema and relation registries.
+9. Commit output rows and emitted `change_event` rows atomically.
+10. Advance cursor after consideration, independent of output count.
 
-Cursor advancement is separate from invocation idempotency. Low-probability
-instances do not re-walk old events.
+Isolation:
 
-## Writes
+- Owner is the access boundary.
+- Cross-owner reads and edges are invalid.
+- Read-scope matrix governs cross-personality reads (see 02 §Read-scope matrix).
+- Depth bound terminates wake cycles.
 
-Personality writes:
+## Output protocol
 
-| Write | Required |
+Operators write ordinary typed entities only:
+
+| Output | Required |
 |---|---|
-| Abstraction | typed sidecar, text, model id, prompt version, split personality identity |
-| Perspective | typed sidecar, text, model id, prompt version, split personality identity |
-| Goal | Goal row, Goal sidecar, authorship |
-| Edge | registered relation only |
+| Abstraction | memory row, typed sidecar, text, operator provenance |
+| Perspective | memory row, typed sidecar, text, operator provenance |
+| Goal | goal row, typed sidecar, authorship, optional supersession |
+| Edge | registered relation, legal endpoint kinds, owner match |
 
-Substrate auto-wires `core/derived-from` provenance from the triggering event
-and tracked reads. Personalities cannot author `core/derived-from` or
-`core/supersedes` directly.
+No Dream entity. No Dream relation class. No Core dream pipeline.
 
-Edge writes pass through the frozen relation descriptor and the storage trigger.
-Tool-local checks may narrow inputs for UX, but must not duplicate the
-load-bearing layer, owner, endpoint-kind, or semantic Fact-to-Fact rules.
+Dreaming is flavor policy expressed as ordinary F->A / A->P / A->Goal
+operators under the same registry and edge invariants as every other
+consolidation pass.
 
-## Chain Depth
+Partial persistence is invalid: either all outputs from one invocation commit
+with their change events, or none do.
 
-```
-external Fact depth = 0
-personality write depth = max(trigger depth, read_log depths) + 1
-wake allowed iff trigger depth < PersonalityFlavor::max_wake_chain_depth()
-```
+## Idempotence and reproducibility
 
-Cross-personality cycles terminate by depth bound.
+Idempotence keys:
 
-## Wake Entries
-
-`WakeEntry` match fields:
-
-| Field | Match |
+| Path | Key |
 |---|---|
-| `trigger_kind = on_memory` | `EntityAppend` memory schema |
-| `trigger_kind = on_edge` | `EdgeAppend` relation |
-| `authored_by` | `any | self_author | other` |
+| Event ingest | `event_id` |
+| F->A source-batch gate | source batch + input contract + operator + output schema |
+| wake invocation | Owner + personality instance + wake entry + change-event seq |
+| GoalWrite | client `request_id` |
 
-Stored entries carry `recipe_ref`, model tier, execution mode, palettes,
-and `max_rounds`. Strict validation failure sets the entry
-`disabled_reason`.
+Reproducibility metadata:
+
+| Row | Columns |
+|---|---|
+| Abstraction / Perspective | operator kind, model id, prompt version, personality instance, wake depth |
+| Goal | authorship, schema id/version, supersession lineage |
+| Edge | relation id, authoring path, endpoint ids |
+
+Bibliographic citation remains Fact-only (see 11). Operator reproducibility is
+inline provenance, not citation.
+
+Retries append only through the same idempotency boundary. A changed prompt,
+model binding, operator version, personality instance, or input contract is a
+new derivation, not mutation of the old row.
 
 ## Invariants
 
-- Facts remain immutable observations.
-- A/P outputs carry typed sidecars.
-- Edges obey `layer(src) >= layer(tgt)`.
-- Direct semantic/causal Fact-to-Fact edges are forbidden; use a typed
-  Abstraction over the Fact set.
-- Relation ids resolve through the frozen registry.
-- Similarity never creates edges.
-- Wake entries are operational policy; Goals are direction, not policy.
+- F/A/P layering and edge direction: 02 §Edges.
+- Typed A/P sidecars: 03 §Sidecar tables.
+- Append-only identity and supersession: 07 §Append-only.
+- Build-time schemas, relations, prompts, tools: 08 §Registration mechanism.
+- Fact-only bibliographic citation: 11 §Three-layer model.
+- Source-batch lifecycle is core; domain metadata is citation-sidecar data.
+- F->A exclusivity is per output Abstraction schema and operator.

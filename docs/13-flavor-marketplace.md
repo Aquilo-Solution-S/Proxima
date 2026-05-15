@@ -65,7 +65,7 @@ or similarity-authored edges.
 
 Goal is a core entity. A flavor may ship GoalPayload schemas, sidecars,
 renderers, and schema-aware tools; it does not redefine Goal lifecycle or
-approval state (see 06 §Goal Connection).
+approval state (see [06 §Goal Assignment](06-goals-and-self.md#goal-assignment)).
 
 ## Composite Discipline
 
