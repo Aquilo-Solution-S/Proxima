@@ -1,4 +1,4 @@
-//! OpenAI `/v1/responses` provider adapter.
+//! `OpenAI` `/v1/responses` provider adapter.
 
 use std::time::Duration;
 

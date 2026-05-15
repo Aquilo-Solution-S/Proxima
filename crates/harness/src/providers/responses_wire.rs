@@ -1,7 +1,7 @@
-//! Shared wire helpers for the OpenAI Responses API shape.
+//! Shared wire helpers for the `OpenAI` Responses API shape.
 //!
-//! Both `openai_responses.rs` (against api.openai.com) and
-//! `chatgpt_codex.rs` (against chatgpt.com/backend-api/codex) build
+//! Both `openai_responses.rs` (against `api.openai.com`) and
+//! `chatgpt_codex.rs` (against `chatgpt.com/backend-api/codex`) build
 //! requests in this shape; the only top-level differences are the
 //! `instructions` field placement and the auth/headers (handled by the
 //! caller).
@@ -19,7 +19,7 @@ use crate::conversation::{
 use super::{ProviderError, RoundResult};
 
 /// Build the `input` array. When `system_role_in_input` is true, the
-/// system prompt is prepended as a `role: system` item (OpenAI shape).
+/// system prompt is prepended as a `role: system` item (`OpenAI` shape).
 /// When false, the caller is responsible for placing the system prompt
 /// in a top-level `instructions` field (Codex shape).
 pub(super) fn build_input_array(conv: &Conversation, system_role_in_input: bool) -> Vec<Value> {
@@ -173,9 +173,8 @@ pub(super) fn accumulate_sse(body: &str) -> Result<Value, ProviderError> {
         let (Some(name), Some(data)) = (event_name, data_line) else {
             continue;
         };
-        let payload: Value = serde_json::from_str(data).map_err(|err| {
-            ProviderError::Deserialize(format!("SSE frame data not JSON: {err}"))
-        })?;
+        let payload: Value = serde_json::from_str(data)
+            .map_err(|err| ProviderError::Deserialize(format!("SSE frame data not JSON: {err}")))?;
         match name {
             "response.output_item.done" => {
                 if let Some(item) = payload.get("item").cloned() {

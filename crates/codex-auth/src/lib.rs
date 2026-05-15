@@ -5,7 +5,7 @@ mod jwt;
 mod refresh;
 
 pub use auth_json::AuthDotJsonPath;
-pub use jwt::{decode_chatgpt_claims, ChatGptClaims};
+pub use jwt::{ChatGptClaims, decode_chatgpt_claims};
 pub use refresh::{RefreshClient, RefreshedTokens};
 
 const REFRESH_SKEW_SECS: i64 = 30;
@@ -39,6 +39,11 @@ pub struct CodexAuthResolver {
 impl CodexAuthResolver {
     /// Production constructor: builds a reqwest client and the default-endpoint
     /// refresh client.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CodexAuthError::Network`] when the `reqwest` client cannot be
+    /// constructed.
     pub fn new(auth_json: AuthDotJsonPath) -> Result<Self, CodexAuthError> {
         let http = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(10))
@@ -50,8 +55,9 @@ impl CodexAuthResolver {
         })
     }
 
-    /// Test / advanced constructor that injects a pre-built RefreshClient
+    /// Test / advanced constructor that injects a pre-built `RefreshClient`
     /// (e.g. one pointed at a wiremock endpoint).
+    #[must_use]
     pub fn with_refresh_client(auth_json: AuthDotJsonPath, refresh_client: RefreshClient) -> Self {
         Self {
             auth_json,
@@ -59,6 +65,13 @@ impl CodexAuthResolver {
         }
     }
 
+    /// Resolve usable Codex credentials from `auth.json`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CodexAuthError`] when `auth.json` is missing or malformed,
+    /// token claims are insufficient, refresh fails, or the network request
+    /// fails.
     pub async fn resolve(&self) -> Result<CodexCredentials, CodexAuthError> {
         let mut value = self.auth_json.read()?;
         let access_token = read_token_field(&value, "access_token")?;
@@ -92,12 +105,17 @@ impl CodexAuthResolver {
     }
 
     /// Force a refresh of the stored Codex OAuth tokens regardless of the
-    /// access_token's `exp` claim, then return the resulting credentials.
+    /// `access_token`'s `exp` claim, then return the resulting credentials.
     ///
     /// Use this when an upstream request returned 401 even though `resolve`
     /// previously thought the token was fresh — e.g. server-side
     /// invalidation, account-id mismatch, or clock skew that defeated the
     /// proactive-refresh window.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CodexAuthError`] when `auth.json` is missing or malformed,
+    /// token refresh fails, or refreshed credentials cannot be resolved.
     pub async fn invalidate_and_refresh(&self) -> Result<CodexCredentials, CodexAuthError> {
         let mut value = self.auth_json.read()?;
         let refresh_token = read_token_field(&value, "refresh_token")?;
@@ -123,8 +141,7 @@ fn read_token_field(value: &serde_json::Value, field: &str) -> Result<String, Co
 fn needs_refresh(exp: Option<i64>) -> bool {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
     match exp {
         Some(exp) => now + REFRESH_SKEW_SECS >= exp,
         None => true,
@@ -152,9 +169,8 @@ fn credentials_from_refreshed(
 }
 
 fn apply_refresh(value: &mut serde_json::Value, r: &crate::refresh::RefreshedTokens) {
-    let tokens = match value.get_mut("tokens").and_then(|t| t.as_object_mut()) {
-        Some(t) => t,
-        None => return,
+    let Some(tokens) = value.get_mut("tokens").and_then(|t| t.as_object_mut()) else {
+        return;
     };
     tokens.insert("id_token".to_string(), r.id_token.clone().into());
     tokens.insert("access_token".to_string(), r.access_token.clone().into());

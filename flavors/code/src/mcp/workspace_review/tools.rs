@@ -44,6 +44,7 @@ impl McpTool for CodeEmitWorkspaceReviewTool {
     type Args = CodeEmitWorkspaceReviewArgs;
     type Output = CodeEmitWorkspaceReviewOutput;
 
+    #[allow(clippy::too_many_lines)]
     fn call(
         ctx: McpToolCtx,
         args: CodeEmitWorkspaceReviewArgs,

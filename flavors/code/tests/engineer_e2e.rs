@@ -141,7 +141,7 @@ async fn engineer_e2e_emits_perspective_with_chained_provenance() {
             now,
         )
         .await?;
-        let _commit_memory_id = commit_outcome.memory_id;
+        assert_ne!(commit_outcome.memory_id.into_inner(), Uuid::nil());
 
         // 3) First tick: commit-summary fires + emits an abstraction.
         //    Use `core/emit_perspective` with the commit-summary scripted

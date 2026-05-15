@@ -1,12 +1,10 @@
-//! ChatGPT (subscription) `/responses` provider adapter against
+//! `ChatGPT` (subscription) `/responses` provider adapter against
 //! `chatgpt.com/backend-api/codex`.
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use proxima_codex_auth::{
-    AuthDotJsonPath, CodexAuthError, CodexAuthResolver, CodexCredentials,
-};
+use proxima_codex_auth::{AuthDotJsonPath, CodexAuthError, CodexAuthResolver, CodexCredentials};
 use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderName, HeaderValue};
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
@@ -56,6 +54,7 @@ impl ChatGPTCodexClient {
         }
     }
 
+    #[must_use]
     pub fn with_resolver_factory<F>(mut self, factory: F) -> Self
     where
         F: Fn() -> Result<CodexAuthResolver, CodexAuthError> + Send + Sync + 'static,
@@ -64,7 +63,7 @@ impl ChatGPTCodexClient {
         self
     }
 
-    fn build_headers(&self, creds: &CodexCredentials) -> Result<HeaderMap, ProviderError> {
+    fn build_headers(creds: &CodexCredentials) -> Result<HeaderMap, ProviderError> {
         let mut headers = HeaderMap::new();
         headers.insert(
             AUTHORIZATION,
@@ -107,7 +106,7 @@ impl ChatGPTCodexClient {
         body: &Value,
         cancel: CancellationToken,
     ) -> Result<reqwest::Response, ProviderError> {
-        let headers = self.build_headers(creds)?;
+        let headers = Self::build_headers(creds)?;
         let fut = self
             .http
             .post(url)

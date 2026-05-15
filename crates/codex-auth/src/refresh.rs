@@ -1,4 +1,4 @@
-//! OAuth refresh client against auth.openai.com.
+//! OAuth refresh client against `auth.openai.com`.
 
 pub(crate) const CODEX_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 pub(crate) const DEFAULT_TOKEN_ENDPOINT: &str = "https://auth.openai.com/oauth/token";
@@ -16,6 +16,7 @@ pub struct RefreshClient {
     endpoint: String,
 }
 
+#[allow(clippy::struct_field_names)]
 #[derive(serde::Deserialize)]
 struct RefreshResp {
     id_token: Option<String>,
@@ -24,7 +25,8 @@ struct RefreshResp {
 }
 
 impl RefreshClient {
-    /// Production-default client targeting OpenAI's auth issuer.
+    /// Production-default client targeting `OpenAI`'s auth issuer.
+    #[must_use]
     pub fn new(http: reqwest::Client) -> Self {
         Self {
             http,
@@ -33,6 +35,7 @@ impl RefreshClient {
     }
 
     /// Test/override variant: point at a different token endpoint (wiremock).
+    #[must_use]
     pub fn with_endpoint(http: reqwest::Client, endpoint: impl Into<String>) -> Self {
         Self {
             http,
@@ -40,6 +43,13 @@ impl RefreshClient {
         }
     }
 
+    /// Refresh stored OAuth tokens.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::CodexAuthError`] when the HTTP request fails, the
+    /// server returns non-2xx, or the response does not contain all expected
+    /// token fields.
     pub async fn refresh(
         &self,
         refresh_token: &str,
@@ -75,13 +85,11 @@ impl RefreshClient {
             .map_err(|_| crate::CodexAuthError::RefreshFailed)?;
 
         match (resp.id_token, resp.access_token, resp.refresh_token) {
-            (Some(id_token), Some(access_token), Some(refresh_token)) => {
-                Ok(RefreshedTokens {
-                    id_token,
-                    access_token,
-                    refresh_token,
-                })
-            }
+            (Some(id_token), Some(access_token), Some(refresh_token)) => Ok(RefreshedTokens {
+                id_token,
+                access_token,
+                refresh_token,
+            }),
             _ => Err(crate::CodexAuthError::RefreshFailed),
         }
     }

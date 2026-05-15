@@ -8,10 +8,12 @@ use crate::CodexAuthError;
 pub struct AuthDotJsonPath(pub PathBuf);
 
 impl AuthDotJsonPath {
+    #[must_use]
     pub fn from_home(home: &Path) -> Self {
         Self(home.join(".codex/auth.json"))
     }
 
+    #[must_use]
     pub fn from_explicit(path: PathBuf) -> Self {
         Self(path)
     }
@@ -21,6 +23,11 @@ impl AuthDotJsonPath {
     /// * Missing file → [`CodexAuthError::AuthJsonMissing`].
     /// * Any other IO error → [`CodexAuthError::AuthJsonInvalid`].
     /// * JSON parse error → [`CodexAuthError::AuthJsonInvalid`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CodexAuthError`] when the auth file is missing, unreadable,
+    /// or malformed JSON.
     pub fn read(&self) -> Result<serde_json::Value, CodexAuthError> {
         let bytes = std::fs::read(&self.0).map_err(|e| {
             if e.kind() == io::ErrorKind::NotFound {
@@ -40,6 +47,11 @@ impl AuthDotJsonPath {
     ///
     /// Writes to a sibling `.proxima.tmp` file first, syncs, sets `0o600`
     /// permissions on Unix, then renames into place.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`io::Error`] if the path is invalid, serialization fails,
+    /// the temporary file cannot be written, or the final rename fails.
     pub fn write_atomic(&self, value: &serde_json::Value) -> io::Result<()> {
         let dir = self.0.parent().ok_or_else(|| {
             io::Error::new(
@@ -51,10 +63,15 @@ impl AuthDotJsonPath {
         let target_filename = self
             .0
             .file_name()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "auth.json path has no filename"))?
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "auth.json path has no filename",
+                )
+            })?
             .to_string_lossy();
 
-        let tmp_path = dir.join(format!("{}.proxima.tmp", target_filename));
+        let tmp_path = dir.join(format!("{target_filename}.proxima.tmp"));
 
         let result = (|| -> io::Result<()> {
             let bytes = serde_json::to_vec_pretty(value)
@@ -138,7 +155,7 @@ mod tests {
         let original = json!({
             "access_token": "tok-abc",
             "refresh_token": "ref-xyz",
-            "expires_at": 9999999999i64,
+            "expires_at": 9_999_999_999_i64,
             "nested": { "chatgpt_account_id": "user-123", "flag": true }
         });
 
@@ -147,7 +164,7 @@ mod tests {
         let read_back = path.read().unwrap();
         assert_eq!(read_back["access_token"], "tok-abc");
         assert_eq!(read_back["refresh_token"], "ref-xyz");
-        assert_eq!(read_back["expires_at"], 9999999999i64);
+        assert_eq!(read_back["expires_at"], 9_999_999_999_i64);
         assert_eq!(read_back["nested"]["chatgpt_account_id"], "user-123");
         assert_eq!(read_back["nested"]["flag"], true);
     }
@@ -192,7 +209,10 @@ mod tests {
             use std::os::unix::fs::PermissionsExt as _;
             let meta = std::fs::metadata(&file_path).unwrap();
             let mode = meta.permissions().mode() & 0o777;
-            assert_eq!(mode, 0o600, "expected 0o600 after overwrite, got 0o{mode:o}");
+            assert_eq!(
+                mode, 0o600,
+                "expected 0o600 after overwrite, got 0o{mode:o}"
+            );
         }
     }
 }
