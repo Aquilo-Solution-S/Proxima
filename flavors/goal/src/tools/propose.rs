@@ -1,6 +1,6 @@
 use proxima_core::mcp::{McpTool, McpToolCtx, McpToolError};
 use proxima_core::verbs::goal_write::{GoalAuthorship, GoalDraft, GoalState};
-use proxima_core::{EdgeId, GoalId};
+use proxima_core::{EdgeAuthorshipKind, EdgeId, GoalId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -65,14 +65,25 @@ impl McpTool for ProposeTool {
             };
             let inspires_edge_id = match target_root {
                 Some(self_memory_id) => Some(
-                    append_inspires_edge(&mut tx, &ctx, goal_id, self_memory_id, "ExternalAgent")
-                        .await?,
+                    append_inspires_edge(
+                        &mut tx,
+                        &ctx,
+                        goal_id,
+                        self_memory_id,
+                        EdgeAuthorshipKind::ExternalAgent,
+                    )
+                    .await?,
                 ),
                 None => None,
             };
-            let edge_uuids =
-                insert_motivated_by_edges(&mut tx, &ctx, goal_id, &evidence, "ExternalAgent")
-                    .await?;
+            let edge_uuids = insert_motivated_by_edges(
+                &mut tx,
+                &ctx,
+                goal_id,
+                &evidence,
+                EdgeAuthorshipKind::ExternalAgent,
+            )
+            .await?;
             tx.commit().await.map_err(map_storage)?;
 
             let edge_handles = edge_uuids

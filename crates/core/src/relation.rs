@@ -89,6 +89,22 @@ pub enum EdgeAuthorshipKind {
     ExternalAgent,
 }
 
+impl EdgeAuthorshipKind {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::EventSource => "EventSource",
+            Self::OperatorFtoA => "OperatorFtoA",
+            Self::OperatorAtoP => "OperatorAtoP",
+            Self::OperatorAtoGoal => "OperatorAtoGoal",
+            Self::PerspectiveLink => "PerspectiveLink",
+            Self::User => "User",
+            Self::Engine => "Engine",
+            Self::ExternalAgent => "ExternalAgent",
+        }
+    }
+}
+
 /// Bit mask over edge endpoint kinds admitted by a relation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct EntityKindMask(u8);

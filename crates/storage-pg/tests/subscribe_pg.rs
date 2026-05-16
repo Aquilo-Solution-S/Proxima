@@ -119,9 +119,7 @@ fn build_engine(storage: Arc<dyn Storage>, owner: Owner, principal: Principal) -
 #[tokio::test]
 async fn subscribe_fresh_no_since_live_ingest() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if create_db(&db_name).await.is_err() {
-        panic!("PG required for tests but admin connect failed");
-    }
+    create_db(&db_name).await.expect("PG required for tests");
     let url = db_url(&db_name);
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
@@ -190,9 +188,7 @@ async fn subscribe_fresh_no_since_live_ingest() {
 #[tokio::test]
 async fn subscribe_resume_with_since_mid() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if create_db(&db_name).await.is_err() {
-        panic!("PG required for tests but admin connect failed");
-    }
+    create_db(&db_name).await.expect("PG required for tests");
     let url = db_url(&db_name);
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
@@ -273,9 +269,7 @@ async fn subscribe_resume_with_since_mid() {
 #[tokio::test]
 async fn subscribe_owner_isolation() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if create_db(&db_name).await.is_err() {
-        panic!("PG required for tests but admin connect failed");
-    }
+    create_db(&db_name).await.expect("PG required for tests");
     let url = db_url(&db_name);
 
     let result: Result<(), Box<dyn std::error::Error>> = async {

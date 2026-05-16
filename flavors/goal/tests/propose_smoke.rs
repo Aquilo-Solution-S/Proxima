@@ -4,6 +4,7 @@ use common::{
     ctx, drop_db, insert_abstraction, insert_self_perspective, migrated, other_owner_fixture,
     owner_fixture,
 };
+use proxima_core::EdgeAuthorshipKind;
 use proxima_core::mcp::McpTool;
 use proxima_core::verbs::goal_write::{GoalAuthorshipKind, GoalState};
 use proxima_flavor_goal::tools::propose::{ProposeArgs, ProposeTool};
@@ -129,7 +130,6 @@ async fn propose_writes_inspires_edge_for_personality_caller()
             .resolve_edge(inspires_edge_handle)
             .expect("inspires edge handle resolves")
             .into_inner();
-        use proxima_core::EdgeAuthorshipKind;
         let row: (
             String,
             uuid::Uuid,

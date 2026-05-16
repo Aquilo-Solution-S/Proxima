@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::McpTool;
 use crate::mcp::{McpToolCtx, McpToolError};
+use crate::personality::PersonalityStatus;
 
 #[derive(Debug, Default)]
 pub struct ListPersonalitiesTool;
@@ -24,7 +25,7 @@ pub struct ListPersonalitiesItem {
     /// tombstone_personality, list_wake_entries, add_wake_entry, etc.
     pub personality: String,
     pub display_name: String,
-    pub status: String,
+    pub status: PersonalityStatus,
     pub root_perspective: String,
     pub wake_entry_count: u32,
 }

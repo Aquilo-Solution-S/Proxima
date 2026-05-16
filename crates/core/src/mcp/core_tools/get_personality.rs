@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::McpTool;
 use crate::mcp::{McpToolCtx, McpToolError};
+use crate::personality::PersonalityStatus;
 
 #[derive(Debug, Default)]
 pub struct GetPersonalityTool;
@@ -46,7 +47,7 @@ pub struct GetPersonalityOutput {
     /// passed in.
     pub personality: String,
     pub display_name: String,
-    pub status: String,
+    pub status: PersonalityStatus,
     pub root_perspective: String,
     pub wake_entries: Vec<GetPersonalityWakeEntry>,
 }

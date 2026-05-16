@@ -15,9 +15,9 @@ use proxima_core::verbs::goal_write::{
 };
 use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{
-    EntityKind, FactPayload, GoalId, GoalPayload, MemoryId, Owner, OwnerPrincipalKind,
-    PersonalityInstanceId, Principal, SchemaId, SchemaVersion, SourceBatchId, SourceId,
-    StorageError,
+    EdgeAuthorshipKind, EntityKind, FactPayload, GoalId, GoalPayload, MemoryId, Owner,
+    OwnerPrincipalKind, PersonalityInstanceId, Principal, SchemaId, SchemaVersion, SourceBatchId,
+    SourceId, StorageError,
 };
 use proxima_storage_pg::verbs::edge_append::{EdgeDraft, append_edge_in_tx};
 use proxima_storage_pg::verbs::event_ingest::ingest_event_in_tx;
@@ -235,7 +235,7 @@ pub async fn append_inspires_edge(
     ctx: &McpToolCtx,
     goal_id: uuid::Uuid,
     self_memory_id: MemoryId,
-    authorship_kind: &'static str,
+    authorship_kind: EdgeAuthorshipKind,
 ) -> Result<uuid::Uuid, McpToolError> {
     let edge_id = uuid::Uuid::now_v7();
     let relation = ctx
@@ -251,10 +251,10 @@ pub async fn append_inspires_edge(
     let draft = EdgeDraft {
         edge_id,
         relation,
-        source_kind: "Goal",
+        source_kind: EntityKind::Goal,
         source_memory_id: None,
         source_goal_id: Some(goal_id),
-        target_kind: "Perspective",
+        target_kind: EntityKind::Perspective,
         target_memory_id: Some(self_memory_uuid),
         target_goal_id: None,
         authorship_kind,
@@ -298,9 +298,9 @@ pub async fn validate_evidence_in_owner(
             )));
         }
         let target_kind = match row.kind {
-            Some(EntityKind::Abstraction) => "Abstraction",
+            Some(EntityKind::Abstraction) => EntityKind::Abstraction,
             // NULL kind on memories indicates a Fact (memories_variant_chk enforces invariant).
-            None => "Fact",
+            None => EntityKind::Fact,
             Some(_) => {
                 return Err(McpToolError::LayeringViolation(format!(
                     "evidence {handle} must be Fact or Abstraction"
@@ -320,7 +320,7 @@ pub async fn validate_evidence_in_owner(
 #[derive(Debug)]
 pub struct EvidenceRef {
     pub handle: String,
-    pub target_kind: &'static str,
+    pub target_kind: EntityKind,
     pub target_memory_id: Option<uuid::Uuid>,
     pub target_goal_id: Option<uuid::Uuid>,
 }
@@ -407,7 +407,7 @@ pub async fn insert_motivated_by_edges(
     ctx: &McpToolCtx,
     goal_id: uuid::Uuid,
     evidence: &[EvidenceRef],
-    authorship_kind: &'static str,
+    authorship_kind: EdgeAuthorshipKind,
 ) -> Result<Vec<uuid::Uuid>, McpToolError> {
     let relation = ctx
         .registry
@@ -421,7 +421,7 @@ pub async fn insert_motivated_by_edges(
         let draft = EdgeDraft {
             edge_id,
             relation,
-            source_kind: "Goal",
+            source_kind: EntityKind::Goal,
             source_memory_id: None,
             source_goal_id: Some(goal_id),
             target_kind: ev.target_kind,
@@ -529,20 +529,20 @@ pub async fn append_lifecycle_derived_from_edges(
         })?;
     let mut edge_ids = Vec::with_capacity(evidence.len());
     for ev in evidence {
-        if ev.target_kind != "Fact" {
+        if ev.target_kind != EntityKind::Fact {
             continue;
         }
         let edge_id = uuid::Uuid::now_v7();
         let draft = EdgeDraft {
             edge_id,
             relation,
-            source_kind: "Fact",
+            source_kind: EntityKind::Fact,
             source_memory_id: Some(source_memory_id.into_inner()),
             source_goal_id: None,
             target_kind: ev.target_kind,
             target_memory_id: ev.target_memory_id,
             target_goal_id: ev.target_goal_id,
-            authorship_kind: "Engine",
+            authorship_kind: EdgeAuthorshipKind::Engine,
             authorship_owner_memory_id: None,
             owner: &ctx.owner,
         };
@@ -584,8 +584,8 @@ pub async fn outgoing_motivated_by_evidence(
     for row in rows {
         let handle = ctx.format_edge(proxima_core::EdgeId::new(row.edge_id));
         let target_kind = match row.target_kind {
-            EntityKind::Fact => "Fact",
-            EntityKind::Abstraction => "Abstraction",
+            EntityKind::Fact => EntityKind::Fact,
+            EntityKind::Abstraction => EntityKind::Abstraction,
             other => {
                 return Err(McpToolError::LayeringViolation(format!(
                     "stored MotivatedBy target must be Fact or Abstraction, got {other:?}"
@@ -811,13 +811,13 @@ async fn insert_lifecycle_authored_edge(
     let draft = EdgeDraft {
         edge_id: uuid::Uuid::now_v7(),
         relation,
-        source_kind: "Perspective",
+        source_kind: EntityKind::Perspective,
         source_memory_id: Some(self_id.into_inner()),
         source_goal_id: None,
-        target_kind: "Fact",
+        target_kind: EntityKind::Fact,
         target_memory_id: Some(fact_id.into_inner()),
         target_goal_id: None,
-        authorship_kind: "Engine",
+        authorship_kind: EdgeAuthorshipKind::Engine,
         authorship_owner_memory_id: None,
         owner: &ctx.owner,
     };

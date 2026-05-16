@@ -6,8 +6,8 @@ use proxima_core::relation::CORE_INSPIRES_RELATION;
 use proxima_core::storage::Storage;
 use proxima_core::verbs::goal_write::{GoalAuthorship, GoalDraft, GoalState};
 use proxima_core::{
-    FlavorRegistry, GoalId, MemoryId, OrgId, Owner, OwnerPrincipalKind, Principal, SchemaId,
-    SchemaVersion, UserId,
+    EdgeAuthorshipKind, EntityKind, FlavorRegistry, GoalId, MemoryId, OrgId, Owner,
+    OwnerPrincipalKind, Principal, SchemaId, SchemaVersion, UserId,
 };
 use proxima_storage_pg::PgStorage;
 use proxima_storage_pg::verbs::edge_append::{EdgeDraft, append_edge_in_tx};
@@ -113,13 +113,13 @@ async fn link_goal_to_self(
         &EdgeDraft {
             edge_id: Uuid::now_v7(),
             relation,
-            source_kind: "Goal",
+            source_kind: EntityKind::Goal,
             source_memory_id: None,
             source_goal_id: Some(goal_id.into_inner()),
-            target_kind: "Perspective",
+            target_kind: EntityKind::Perspective,
             target_memory_id: Some(self_id.into_inner()),
             target_goal_id: None,
-            authorship_kind: "ExternalAgent",
+            authorship_kind: EdgeAuthorshipKind::ExternalAgent,
             authorship_owner_memory_id: Some(self_id.into_inner()),
             owner,
         },

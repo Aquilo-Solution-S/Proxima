@@ -1,7 +1,7 @@
 use proxima_core::personality::{
     ListWakeInvocationsRequest, PersonalityInstanceId, WakeInvocationFinalize,
-    WakeInvocationLogDraft, WakeInvocationLogRow, WakeInvocationRow, WakeInvocationStart,
-    WakeInvocationStatus,
+    WakeInvocationLogDraft, WakeInvocationLogRow, WakeInvocationLogStatus, WakeInvocationRow,
+    WakeInvocationStart, WakeInvocationStatus,
 };
 use proxima_core::{Owner, OwnerPrincipalKind, StorageError};
 use sqlx::PgPool;
@@ -178,14 +178,12 @@ pub async fn append_wake_invocation_log(
     log: &WakeInvocationLogDraft,
 ) -> Result<(), StorageError> {
     let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(&log.owner);
-    // TODO(macro-sweep): bind as text+cast; add Rust mirror for proxima_core.wake_invocation_log_status
     sqlx::query(
         "INSERT INTO proxima_core.personality_wake_invocation_logs
             (owner_principal_kind, owner_principal_id, owner_org_id,
              personality_instance_id, wake_entry_id, change_event_seq,
              phase, tool_id, status, duration_ms, message_tail)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8,
-                 $9::proxima_core.wake_invocation_log_status, $10, $11)",
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
     )
     .bind(owner_kind as OwnerPrincipalKind)
     .bind(owner_principal_id)
@@ -195,7 +193,7 @@ pub async fn append_wake_invocation_log(
     .bind(log.change_event_seq)
     .bind(&log.phase)
     .bind(&log.tool_id)
-    .bind(&log.status)
+    .bind(log.status)
     .bind(log.duration_ms.and_then(|v| i64::try_from(v).ok()))
     .bind(&log.message_tail)
     .execute(pool)
@@ -234,7 +232,7 @@ struct WakeInvocationLogRowDb {
     at: time::OffsetDateTime,
     phase: String,
     tool_id: Option<String>,
-    status: String,
+    status: WakeInvocationLogStatus,
     duration_ms: Option<i64>,
     message_tail: Option<String>,
 }
@@ -284,9 +282,8 @@ pub async fn list_wake_invocations(
 
     let mut out = Vec::with_capacity(rows.len());
     for row in rows {
-        // TODO(macro-sweep): bind as text+cast; add Rust mirror for proxima_core.wake_invocation_log_status
         let logs: Vec<WakeInvocationLogRowDb> = sqlx::query_as(
-            "SELECT log_seq, at, phase, tool_id, status::text AS status, duration_ms, message_tail
+            "SELECT log_seq, at, phase, tool_id, status, duration_ms, message_tail
              FROM proxima_core.personality_wake_invocation_logs
              WHERE owner_principal_kind = $1
                AND owner_principal_id = $2

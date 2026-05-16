@@ -9,24 +9,12 @@ use proxima_core::verbs::persist_wake_trace::WakeTracePersistInput;
 use proxima_core::wake::trace::WakeTracePayload;
 use proxima_core::{
     EntityKind, GoalId, MemoryId, OrgId, Owner, OwnerPrincipalKind, Principal, SchemaId,
-    SchemaVersion, SourceBatchId, SourceId, Storage, StorageError, UserId,
+    SchemaVersion, SourceBatchId, SourceId, Storage, StorageError, UserId, WakeTraceOutcomeKind,
 };
 use proxima_storage_pg::verbs::persist_wake_trace::persist_wake_trace_atomic;
 use uuid::Uuid;
 
 const WAKE_TRACE_JSONL_SCHEMA: &str = "proxima-core/wake-trace-jsonl-v1";
-
-/// Local mirror of `proxima_core.wake_trace_outcome_kind` for test
-/// decoding. The substrate has no Rust-side mirror yet (see TODO in
-/// `crates/storage-pg/src/verbs/persist_wake_trace.rs`); once the
-/// mirror lands in `proxima_core::wake::trace`, this can be removed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, sqlx::Type)]
-#[sqlx(type_name = "proxima_core.wake_trace_outcome_kind", rename_all = "lowercase")]
-enum WakeTraceOutcomeKind {
-    Succeeded,
-    Truncated,
-    Failed,
-}
 
 #[tokio::test]
 async fn persist_writes_fact_jsonl_citation_sidecars_and_authored_edge() {
@@ -499,7 +487,7 @@ fn sample_persist_input(
             model_id: "mistral-medium-3.5".into(),
             started_at: now,
             finished_at: now,
-            outcome_kind: "succeeded".into(),
+            outcome_kind: proxima_core::WakeTraceOutcomeKind::Succeeded,
             failure_reason: None,
             rounds_used: 3,
             finish_reason: Some("stop".into()),

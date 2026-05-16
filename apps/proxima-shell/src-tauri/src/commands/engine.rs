@@ -12,9 +12,10 @@ use proxima_core::verbs::query::{QueryRequest, QueryResponse};
 use proxima_core::verbs::schema::{SchemaRequest, SchemaResponse};
 use proxima_core::verbs::subscribe::SubscribeRequest;
 use proxima_core::{
-    CORE_INSPIRES_RELATION, ChangeEvent, Engine, FactPayload, GoalId, ListWakeInvocationsRequest,
-    Owner, OwnerPrincipalKind, PersonalityInstanceId, PersonalityInstanceRow, SchemaId,
-    SchemaVersion, SourceBatchId, SourceId, WakeInvocationLogRow, WakeInvocationRow,
+    CORE_INSPIRES_RELATION, ChangeEvent, EdgeAuthorshipKind, Engine, EntityKind, FactPayload,
+    GoalId, ListWakeInvocationsRequest, Owner, OwnerPrincipalKind, PersonalityInstanceId,
+    PersonalityInstanceRow, SchemaId, SchemaVersion, SourceBatchId, SourceId,
+    WakeInvocationLogRow, WakeInvocationRow,
 };
 use proxima_flavor_goal::GoalActivatedV1;
 use proxima_storage_pg::PgStorage;
@@ -541,13 +542,13 @@ async fn ensure_goal_planner_assignment(
             &EdgeDraft {
                 edge_id: uuid::Uuid::now_v7(),
                 relation,
-                source_kind: "Goal",
+                source_kind: EntityKind::Goal,
                 source_memory_id: None,
                 source_goal_id: Some(goal_id),
-                target_kind: "Perspective",
+                target_kind: EntityKind::Perspective,
                 target_memory_id: Some(target_root),
                 target_goal_id: None,
-                authorship_kind: "User",
+                authorship_kind: EdgeAuthorshipKind::User,
                 authorship_owner_memory_id: Some(target_root),
                 owner,
             },
@@ -773,7 +774,7 @@ impl PersonalityInstanceTs {
                 .into_inner()
                 .to_string(),
             display_name: row.display_name,
-            status: row.status,
+            status: row.status.as_str().to_string(),
             wake_entries,
         }
     }
@@ -855,7 +856,7 @@ impl WakeInvocationLogTs {
             at: row.at.to_string(),
             phase: row.phase,
             tool_id: row.tool_id,
-            status: row.status,
+            status: row.status.as_str().to_string(),
             duration_ms: row.duration_ms,
             message_tail: row.message_tail,
         }

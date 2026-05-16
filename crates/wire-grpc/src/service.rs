@@ -387,7 +387,7 @@ fn personality_instance_to_proto(row: proxima_core::PersonalityInstanceRow) -> P
             .into_inner()
             .to_string(),
         display_name: row.display_name,
-        status: row.status,
+        status: row.status.as_str().to_string(),
         flavor: None,
         wake_entries: row.wake_entries.iter().map(wake_entry_to_proto).collect(),
     }

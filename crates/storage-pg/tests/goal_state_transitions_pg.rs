@@ -1,6 +1,10 @@
 mod common;
 
 use common::{drop_db, fresh_pg, owner_fixture};
+use proxima_core::verbs::goal_write::GoalAuthorshipKind::{External, System, User};
+use proxima_core::verbs::goal_write::GoalState::{
+    Abandoned, Achieved, Active, Paused, Proposed, Rejected,
+};
 use proxima_core::verbs::goal_write::{GoalAuthorshipKind, GoalAuthorshipOrigin, GoalState};
 use proxima_core::{Owner, OwnerPrincipalKind, Principal};
 use proxima_storage_pg::PgStorage;
@@ -127,8 +131,6 @@ async fn goal_transition_trigger_enforces_matrix() -> Result<(), Box<dyn std::er
     let result = async {
         pg.run_migrations().await?;
         let owner = owner_fixture();
-        use GoalAuthorshipKind::{External, System, User};
-        use GoalState::{Abandoned, Achieved, Active, Paused, Proposed, Rejected};
 
         assert_seed_allowed(&pg, &owner, Proposed, External).await;
         assert_seed_allowed(&pg, &owner, Active, User).await;

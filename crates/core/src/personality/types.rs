@@ -245,3 +245,93 @@ impl PersonalityMemoryKind {
         }
     }
 }
+
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    schemars::JsonSchema,
+    sqlx::Type,
+)]
+#[serde(rename_all = "snake_case")]
+#[sqlx(type_name = "proxima_core.personality_status", rename_all = "snake_case")]
+pub enum PersonalityStatus {
+    Active,
+    NeedsRepair,
+    Tombstoned,
+}
+
+impl PersonalityStatus {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::NeedsRepair => "needs_repair",
+            Self::Tombstoned => "tombstoned",
+        }
+    }
+}
+
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, sqlx::Type,
+)]
+#[serde(rename_all = "lowercase")]
+#[sqlx(
+    type_name = "proxima_core.wake_invocation_log_status",
+    rename_all = "lowercase"
+)]
+pub enum WakeInvocationLogStatus {
+    Started,
+    Succeeded,
+    Failed,
+}
+
+impl WakeInvocationLogStatus {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Started => "started",
+            Self::Succeeded => "succeeded",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    schemars::JsonSchema,
+    sqlx::Type,
+)]
+#[serde(rename_all = "lowercase")]
+#[sqlx(
+    type_name = "proxima_core.wake_trace_outcome_kind",
+    rename_all = "lowercase"
+)]
+pub enum WakeTraceOutcomeKind {
+    Succeeded,
+    Truncated,
+    Failed,
+}
+
+impl WakeTraceOutcomeKind {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Succeeded => "succeeded",
+            Self::Truncated => "truncated",
+            Self::Failed => "failed",
+        }
+    }
+}

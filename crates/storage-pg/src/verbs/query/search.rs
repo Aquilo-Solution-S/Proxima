@@ -44,13 +44,13 @@ pub(crate) async fn search_memories(
 
     if matches!(req.mode, SearchMode::Lexical | SearchMode::Hybrid) {
         for row in run_lexical(pool, req, schemas, limit.saturating_mul(4)).await? {
-            merge_row(&mut candidates, row)?;
+            merge_row(&mut candidates, row);
         }
     }
 
     if matches!(req.mode, SearchMode::Semantic | SearchMode::Hybrid) {
         for row in run_semantic(pool, req, schemas, limit.saturating_mul(4)).await? {
-            merge_row(&mut candidates, row)?;
+            merge_row(&mut candidates, row);
         }
     }
 
@@ -86,10 +86,7 @@ pub(crate) async fn search_memories(
     Ok(results)
 }
 
-fn merge_row(
-    candidates: &mut BTreeMap<uuid::Uuid, Candidate>,
-    row: SearchRow,
-) -> Result<(), StorageError> {
+fn merge_row(candidates: &mut BTreeMap<uuid::Uuid, Candidate>, row: SearchRow) {
     let entry = candidates
         .entry(row.memory_id)
         .or_insert_with(|| Candidate {
@@ -108,7 +105,6 @@ fn merge_row(
     if entry.snippet.is_empty() && !row.snippet.is_empty() {
         entry.snippet = row.snippet;
     }
-    Ok(())
 }
 
 async fn run_lexical(

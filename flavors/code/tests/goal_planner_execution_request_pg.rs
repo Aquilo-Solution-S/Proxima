@@ -24,10 +24,11 @@ use proxima_core::wake::target_adapter::{
     TargetOutcomeKind,
 };
 use proxima_core::{
-    BindInferenceTierRequest, CORE_AUTHORED_RELATION, CORE_DERIVED_FROM_RELATION, FactPayload,
-    FlavorRegistry, FlavorRegistryFrozen, InferenceTargetConfig, MemoryId, MistralChatConfig,
-    ModelTier, OrgId, Owner, Principal, RegisterInferenceTargetRequest, SchemaId, SchemaVersion,
-    SourceBatchId, SourceId, UserId, WakeEntryAuthoredBy, WakeEntryGoalScope, WakeEntryTriggerKind,
+    BindInferenceTierRequest, CORE_AUTHORED_RELATION, CORE_DERIVED_FROM_RELATION,
+    EdgeAuthorshipKind, EntityKind, FactPayload, FlavorRegistry, FlavorRegistryFrozen,
+    InferenceTargetConfig, MemoryId, MistralChatConfig, ModelTier, OrgId, Owner, Principal,
+    RegisterInferenceTargetRequest, SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId,
+    WakeEntryAuthoredBy, WakeEntryGoalScope, WakeEntryTriggerKind,
 };
 use proxima_mcp_server::{McpAuthStore, McpToolHost};
 use proxima_storage_pg::PgStorage;
@@ -209,9 +210,7 @@ fn db_url(db_name: &str) -> String {
 
 async fn migrated_db() -> Option<(String, PgStorage)> {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if create_db(&db_name).await.is_err() {
-        panic!("PG required for tests but admin connect failed");
-    }
+    create_db(&db_name).await.expect("PG required for tests");
     let pg = PgStorage::connect(&db_url(&db_name))
         .await
         .expect("connect test db");
@@ -328,13 +327,13 @@ async fn seed_execution_request(
             &EdgeDraft {
                 edge_id: Uuid::now_v7(),
                 relation,
-                source_kind: "Fact",
+                source_kind: EntityKind::Fact,
                 source_memory_id: Some(outcome.memory_id.into_inner()),
                 source_goal_id: None,
-                target_kind: "Fact",
+                target_kind: EntityKind::Fact,
                 target_memory_id: Some(target.into_inner()),
                 target_goal_id: None,
-                authorship_kind: "ExternalAgent",
+                authorship_kind: EdgeAuthorshipKind::ExternalAgent,
                 authorship_owner_memory_id: None,
                 owner,
             },

@@ -3,7 +3,7 @@
 //! `Storage` trait method.
 
 use proxima_core::personality::{
-    ChangeEventForWake, PersonalityInstanceId, PersonalityRuntimeRow,
+    ChangeEventForWake, PersonalityInstanceId, PersonalityRuntimeRow, PersonalityStatus,
     RootPersonalityPerspectiveRow, WakeChainDepth,
 };
 use proxima_core::{MemoryId, Owner, OwnerPrincipalKind, Principal, StorageError};
@@ -28,12 +28,10 @@ pub(crate) async fn fetch_personality_runtime(
     let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(owner);
     // The Root-Perspective memory row carries the wake display text;
     // the instance id lives on `proxima_core.personality`.
-    // TODO(macro-sweep): p.status is proxima_core.personality_status enum —
-    // bound to text for now; add Rust mirror to make this typed.
     let row = sqlx::query!(
         r#"SELECT p.current_root_perspective_memory_id,
                   m.text AS display_name,
-                  p.status::text AS "status!"
+                  p.status AS "status: PersonalityStatus"
              FROM proxima_core.personality p
              JOIN proxima_core.memories m
                ON m.memory_id = p.current_root_perspective_memory_id

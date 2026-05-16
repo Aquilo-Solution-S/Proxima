@@ -7,6 +7,7 @@ use crate::verbs::persist_wake_trace::{WakeTracePersistInput, WakeTracePersistOu
 use crate::wake::context::WakeContext;
 use crate::wake::fire::input::FireWakeEntryInput;
 use crate::wake::fire::resolve::ResolvedTarget;
+use crate::personality::WakeTraceOutcomeKind;
 use crate::wake::trace::WakeTracePayload;
 use crate::{Engine, GoalId, MemoryId, SourceBatchId, SourceId, StorageError};
 
@@ -107,7 +108,7 @@ fn persist_input_from_outcome(
         Ok(outcome) => (
             outcome.jsonl_bytes.clone(),
             outcome.jsonl_truncated,
-            outcome_kind_str(outcome.kind).to_string(),
+            outcome_kind_typed(outcome.kind),
             outcome.failure_reason.clone(),
             outcome.rounds_used,
             Some(finish_reason_str(outcome.finish_reason).to_string()),
@@ -118,7 +119,7 @@ fn persist_input_from_outcome(
         Err(err) => (
             Vec::new(),
             false,
-            "failed".to_string(),
+            WakeTraceOutcomeKind::Failed,
             Some(err.to_string()),
             0,
             None,
@@ -173,11 +174,11 @@ fn persist_input_from_outcome(
     }
 }
 
-fn outcome_kind_str(kind: HarnessOutcomeKind) -> &'static str {
+fn outcome_kind_typed(kind: HarnessOutcomeKind) -> WakeTraceOutcomeKind {
     match kind {
-        HarnessOutcomeKind::Succeeded => "succeeded",
-        HarnessOutcomeKind::Truncated => "truncated",
-        HarnessOutcomeKind::Failed => "failed",
+        HarnessOutcomeKind::Succeeded => WakeTraceOutcomeKind::Succeeded,
+        HarnessOutcomeKind::Truncated => WakeTraceOutcomeKind::Truncated,
+        HarnessOutcomeKind::Failed => WakeTraceOutcomeKind::Failed,
     }
 }
 

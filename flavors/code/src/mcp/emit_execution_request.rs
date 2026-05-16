@@ -1,11 +1,12 @@
 use std::collections::HashSet;
 
 use proxima_core::mcp::{McpTool, McpToolCtx, McpToolError};
-use proxima_core::personality::PersonalityInstanceId;
+use proxima_core::personality::{PersonalityInstanceId, PersonalityStatus};
 use proxima_core::relation::{CORE_AUTHORED_RELATION, CORE_DERIVED_FROM_RELATION};
 use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
 use proxima_core::{
-    EdgeId, EntityKind, FactPayload, MemoryId, SchemaId, SchemaVersion, SourceBatchId, SourceId,
+    EdgeAuthorshipKind, EdgeId, EntityKind, FactPayload, MemoryId, SchemaId, SchemaVersion,
+    SourceBatchId, SourceId,
 };
 use proxima_storage_pg::verbs::edge_append::{EdgeDraft, append_edge_in_tx};
 use proxima_storage_pg::verbs::event_ingest::ingest_event_in_tx;
@@ -421,26 +422,6 @@ pub(super) async fn find_execution_request_by_key(
     Ok(existing.map(MemoryId::new))
 }
 
-/// Local mirror of `proxima_core.personality_status` SQL enum (no Rust
-/// mirror exported from proxima_core yet).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, sqlx::Type)]
-#[sqlx(type_name = "proxima_core.personality_status", rename_all = "snake_case")]
-enum PersonalityStatus {
-    Active,
-    NeedsRepair,
-    Tombstoned,
-}
-
-impl PersonalityStatus {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Active => "active",
-            Self::NeedsRepair => "needs_repair",
-            Self::Tombstoned => "tombstoned",
-        }
-    }
-}
-
 pub(super) async fn validate_target_personality(
     tx: &mut Transaction<'_, Postgres>,
     ctx: &McpToolCtx,
@@ -793,13 +774,13 @@ pub(super) async fn append_authored_edge(
         &EdgeDraft {
             edge_id,
             relation,
-            source_kind: "Perspective",
+            source_kind: EntityKind::Perspective,
             source_memory_id: Some(planner_root.into_inner()),
             source_goal_id: None,
-            target_kind: "Fact",
+            target_kind: EntityKind::Fact,
             target_memory_id: Some(request_memory_id.into_inner()),
             target_goal_id: None,
-            authorship_kind: "ExternalAgent",
+            authorship_kind: EdgeAuthorshipKind::ExternalAgent,
             authorship_owner_memory_id: Some(planner_root.into_inner()),
             owner: &ctx.owner,
         },
@@ -830,13 +811,13 @@ pub(super) async fn append_target_edge(
         &EdgeDraft {
             edge_id,
             relation,
-            source_kind: "Perspective",
+            source_kind: EntityKind::Perspective,
             source_memory_id: Some(target_root.into_inner()),
             source_goal_id: None,
-            target_kind: "Fact",
+            target_kind: EntityKind::Fact,
             target_memory_id: Some(request_memory_id.into_inner()),
             target_goal_id: None,
-            authorship_kind: "ExternalAgent",
+            authorship_kind: EdgeAuthorshipKind::ExternalAgent,
             authorship_owner_memory_id: ctx.caller_self_perspective.map(MemoryId::into_inner),
             owner: &ctx.owner,
         },
@@ -863,13 +844,13 @@ pub(super) async fn append_derived_edge(
         &EdgeDraft {
             edge_id,
             relation,
-            source_kind: "Fact",
+            source_kind: EntityKind::Fact,
             source_memory_id: Some(request_memory_id.into_inner()),
             source_goal_id: None,
-            target_kind: "Fact",
+            target_kind: EntityKind::Fact,
             target_memory_id: Some(evidence_memory_id.into_inner()),
             target_goal_id: None,
-            authorship_kind: "ExternalAgent",
+            authorship_kind: EdgeAuthorshipKind::ExternalAgent,
             authorship_owner_memory_id: ctx.caller_self_perspective.map(MemoryId::into_inner),
             owner: &ctx.owner,
         },

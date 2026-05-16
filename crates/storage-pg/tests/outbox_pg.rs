@@ -107,9 +107,7 @@ fn fresh_goal_draft(owner: &Owner, request_id: String) -> GoalDraft {
 #[tokio::test]
 async fn outbox_publishes_entity_append_for_fact() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if create_db(&db_name).await.is_err() {
-        panic!("PG required for tests but admin connect failed");
-    }
+    create_db(&db_name).await.expect("PG required for tests");
     let url = db_url(&db_name);
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
@@ -178,9 +176,7 @@ async fn outbox_publishes_entity_append_for_fact() {
 #[tokio::test]
 async fn outbox_publishes_entity_append_for_goal() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if create_db(&db_name).await.is_err() {
-        panic!("PG required for tests but admin connect failed");
-    }
+    create_db(&db_name).await.expect("PG required for tests");
     let url = db_url(&db_name);
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
@@ -247,9 +243,7 @@ async fn outbox_publishes_entity_append_for_goal() {
 #[tokio::test]
 async fn outbox_publishes_fact_then_goal() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if create_db(&db_name).await.is_err() {
-        panic!("PG required for tests but admin connect failed");
-    }
+    create_db(&db_name).await.expect("PG required for tests");
     let url = db_url(&db_name);
 
     let result: Result<(), Box<dyn std::error::Error>> = async {

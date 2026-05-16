@@ -17,10 +17,11 @@ use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, Ev
 use proxima_core::verbs::query::MemoryStore;
 use proxima_core::verbs::schema::{PayloadKind, SchemaInfo};
 use proxima_core::{
-    BindInferenceTierRequest, CORE_AUTHORED_RELATION, CORE_DERIVED_FROM_RELATION, FactPayload,
-    FlavorRegistry, FlavorRegistryFrozen, InferenceTargetConfig, MemoryId, MistralChatConfig,
-    ModelTier, OrgId, Owner, Principal, RegisterInferenceTargetRequest, SchemaId, SchemaVersion,
-    SourceBatchId, SourceId, UserId, WakeEntryAuthoredBy, WakeEntryTriggerKind,
+    BindInferenceTierRequest, CORE_AUTHORED_RELATION, CORE_DERIVED_FROM_RELATION,
+    EdgeAuthorshipKind, EntityKind, FactPayload, FlavorRegistry, FlavorRegistryFrozen,
+    InferenceTargetConfig, MemoryId, MistralChatConfig, ModelTier, OrgId, Owner, Principal,
+    RegisterInferenceTargetRequest, SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId,
+    WakeEntryAuthoredBy, WakeEntryTriggerKind,
 };
 use proxima_storage_pg::PgStorage;
 use proxima_storage_pg::verbs::edge_append::{EdgeDraft, append_edge_in_tx};
@@ -574,9 +575,7 @@ struct TestDb {
 impl TestDb {
     async fn fresh() -> Result<Option<Self>, Box<dyn std::error::Error>> {
         let name = format!("proxima_test_{}", Uuid::now_v7().simple());
-        if create_db(&name).await.is_err() {
-            panic!("PG required for tests but admin connect failed");
-        }
+        create_db(&name).await.expect("PG required for tests");
         let setup: Result<PgStorage, Box<dyn std::error::Error>> = async {
             let pg = PgStorage::connect(&db_url(&name)).await?;
             pg.run_migrations().await?;
@@ -795,13 +794,13 @@ async fn seed_execution_request(
             &EdgeDraft {
                 edge_id: Uuid::now_v7(),
                 relation,
-                source_kind: "Fact",
+                source_kind: EntityKind::Fact,
                 source_memory_id: Some(outcome.memory_id.into_inner()),
                 source_goal_id: None,
-                target_kind: "Fact",
+                target_kind: EntityKind::Fact,
                 target_memory_id: Some(target.into_inner()),
                 target_goal_id: None,
-                authorship_kind: "ExternalAgent",
+                authorship_kind: EdgeAuthorshipKind::ExternalAgent,
                 authorship_owner_memory_id: None,
                 owner,
             },
@@ -894,13 +893,13 @@ async fn seed_workspace_run(
         &EdgeDraft {
             edge_id: Uuid::now_v7(),
             relation,
-            source_kind: "Fact",
+            source_kind: EntityKind::Fact,
             source_memory_id: Some(outcome.memory_id.into_inner()),
             source_goal_id: None,
-            target_kind: "Fact",
+            target_kind: EntityKind::Fact,
             target_memory_id: Some(request.into_inner()),
             target_goal_id: None,
-            authorship_kind: "EventSource",
+            authorship_kind: EdgeAuthorshipKind::EventSource,
             authorship_owner_memory_id: None,
             owner,
         },

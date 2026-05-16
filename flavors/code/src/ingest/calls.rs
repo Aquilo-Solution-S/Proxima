@@ -1,4 +1,4 @@
-use proxima_core::Owner;
+use proxima_core::{EdgeAuthorshipKind, EntityKind, Owner};
 use sqlx::PgPool;
 
 use super::IngestError;
@@ -112,13 +112,13 @@ pub async fn ingest_calls_edge(
     let draft = EdgeDraft {
         edge_id,
         relation,
-        source_kind: "Fact",
+        source_kind: EntityKind::Fact,
         source_memory_id: Some(edge.source_memory_id),
         source_goal_id: None,
-        target_kind: "Fact",
+        target_kind: EntityKind::Fact,
         target_memory_id: Some(edge.target_memory_id),
         target_goal_id: None,
-        authorship_kind: "EventSource",
+        authorship_kind: EdgeAuthorshipKind::EventSource,
         authorship_owner_memory_id: Some(edge.source_memory_id),
         owner,
     };

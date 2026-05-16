@@ -489,9 +489,7 @@ struct TestDb {
 impl TestDb {
     async fn fresh() -> Result<Option<Self>, Box<dyn std::error::Error>> {
         let name = format!("proxima_test_{}", Uuid::now_v7().simple());
-        if create_db(&name).await.is_err() {
-            panic!("PG required for tests but admin connect failed");
-        }
+        create_db(&name).await.expect("PG required for tests");
         let setup: Result<PgStorage, Box<dyn std::error::Error>> = async {
             let pg = PgStorage::connect(&format!("postgres://proxima:proxima@localhost/{name}")).await?;
             pg.run_migrations().await?;

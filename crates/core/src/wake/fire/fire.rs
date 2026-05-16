@@ -14,8 +14,8 @@ use crate::personality::workspace::{
     WorkspaceRunnerError,
 };
 use crate::personality::{
-    PersonalityInstanceId, WakeChainDepth, WakeEntryExecutionMode, WakeInvocationStart,
-    WakeInvocationStatus,
+    PersonalityInstanceId, WakeChainDepth, WakeEntryExecutionMode, WakeInvocationLogStatus,
+    WakeInvocationStart, WakeInvocationStatus,
 };
 use crate::wake::context::{WakeContext, assemble_wake_context};
 use crate::wake::token_store::WakeTokenContext;
@@ -102,7 +102,7 @@ pub async fn fire_wake_entry(
     append_session_artifact_log(
         engine,
         &input,
-        "started",
+        WakeInvocationLogStatus::Started,
         session_log_path.display().to_string(),
     )
     .await;

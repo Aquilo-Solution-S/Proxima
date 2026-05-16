@@ -1,7 +1,7 @@
 use proxima_core::personality::{
-    PersonalityInstanceId, SetWakeEntriesRequest, SetWakeEntriesResponse, WakeDispatchEntryRow,
-    WakeEntryAuthoredBy, WakeEntryDraft, WakeEntryGoalScope, WakeEntryTriggerKind,
-    WakeExecutionMode,
+    PersonalityInstanceId, PersonalityStatus, SetWakeEntriesRequest, SetWakeEntriesResponse,
+    WakeDispatchEntryRow, WakeEntryAuthoredBy, WakeEntryDraft, WakeEntryGoalScope,
+    WakeEntryTriggerKind, WakeExecutionMode,
 };
 use proxima_core::{MemoryId, ModelTier, Owner, OwnerPrincipalKind, StorageError};
 use sqlx::{PgPool, Row};
@@ -223,13 +223,13 @@ pub async fn tombstone_personality(
     if result.rows_affected() == 1 {
         tx.commit().await.map_err(map_err)?;
         return Ok(proxima_core::TombstonePersonalityResponse {
-            status: "tombstoned".into(),
+            status: PersonalityStatus::Tombstoned.as_str().into(),
             idempotent_replay: false,
         });
     }
 
-    let existing: Option<(String,)> = sqlx::query_as(
-        "SELECT status::text
+    let existing: Option<(PersonalityStatus,)> = sqlx::query_as(
+        "SELECT status
          FROM proxima_core.personality
          WHERE owner_principal_kind = $1
            AND owner_principal_id = $2
@@ -247,12 +247,10 @@ pub async fn tombstone_personality(
     tx.commit().await.map_err(map_err)?;
 
     match existing {
-        Some((status,)) if status == "tombstoned" => {
-            Ok(proxima_core::TombstonePersonalityResponse {
-                status: "tombstoned".into(),
-                idempotent_replay: true,
-            })
-        }
+        Some((PersonalityStatus::Tombstoned,)) => Ok(proxima_core::TombstonePersonalityResponse {
+            status: PersonalityStatus::Tombstoned.as_str().into(),
+            idempotent_replay: true,
+        }),
         Some(_) => {
             unreachable!("UPDATE excluded only tombstoned rows; non-tombstoned must have hit")
         }

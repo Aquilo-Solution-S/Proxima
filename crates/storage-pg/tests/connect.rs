@@ -1,11 +1,13 @@
-//! Connectivity smoke test. Requires a reachable PG —
-//! `createdb proxima_dev` locally is the dev path.
+//! Connectivity smoke test. Requires a reachable PG — the dev-compose
+//! setup at `proxima:proxima@localhost/proxima` is the default path.
 
-use proxima_storage_pg::{DEFAULT_DATABASE_URL, PgStorage};
+use proxima_storage_pg::PgStorage;
+
+const DEV_URL: &str = "postgres://proxima:proxima@localhost/proxima";
 
 #[tokio::test]
 async fn connect_to_default_dev_db() {
-    let url = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DATABASE_URL.to_string());
+    let url = std::env::var("DATABASE_URL").unwrap_or_else(|_| DEV_URL.to_string());
 
     match PgStorage::connect(&url).await {
         Ok(_) => {

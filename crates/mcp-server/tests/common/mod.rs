@@ -144,9 +144,9 @@ pub async fn sse_json(
 #[allow(dead_code)]
 pub async fn create_db() -> Result<Option<String>, Box<dyn std::error::Error>> {
     let db_name = format!("proxima_test_{}", uuid::Uuid::now_v7().simple());
-    let Ok(mut conn) = PgConnection::connect(ADMIN_URL).await else {
-        panic!("PG required for tests but admin connect failed");
-    };
+    let mut conn = PgConnection::connect(ADMIN_URL)
+        .await
+        .expect("PG required for tests");
     conn.execute(format!("CREATE DATABASE \"{db_name}\"").as_str())
         .await?;
     conn.close().await?;

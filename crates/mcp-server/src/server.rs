@@ -6,7 +6,10 @@ use proxima_core::personality::{
     PersonalityTool, PersonalityToolContext, substrate_pack, writeable_relations_for_palette,
     writeable_schemas_for_palette,
 };
-use proxima_core::{Engine, FlavorRegistry, FlavorRegistryFrozen, Owner, WakeInvocationLogDraft};
+use proxima_core::{
+    Engine, FlavorRegistry, FlavorRegistryFrozen, Owner, WakeInvocationLogDraft,
+    WakeInvocationLogStatus,
+};
 
 use crate::auth::McpAuthContext;
 
@@ -156,7 +159,7 @@ impl McpToolHost {
                             engine,
                             auth,
                             name,
-                            "succeeded",
+                            WakeInvocationLogStatus::Succeeded,
                             duration_ms,
                             Some(summarize_tool_content(content)),
                         )
@@ -167,7 +170,7 @@ impl McpToolHost {
                             engine,
                             auth,
                             name,
-                            "failed",
+                            WakeInvocationLogStatus::Failed,
                             duration_ms,
                             Some(tail_chars(&err.to_string(), 2_000)),
                         )
@@ -224,7 +227,7 @@ impl McpToolHost {
                     engine,
                     auth,
                     name,
-                    "succeeded",
+                    WakeInvocationLogStatus::Succeeded,
                     duration_ms,
                     Some(message_tail),
                 )
@@ -236,7 +239,7 @@ impl McpToolHost {
                     engine,
                     auth,
                     name,
-                    "failed",
+                    WakeInvocationLogStatus::Failed,
                     duration_ms,
                     Some(tail_chars(&err.to_string(), 2_000)),
                 )
@@ -346,7 +349,7 @@ async fn append_tool_log(
     engine: &Engine,
     auth: &McpAuthContext,
     tool_id: &str,
-    status: &str,
+    status: WakeInvocationLogStatus,
     duration_ms: u64,
     message_tail: Option<String>,
 ) {
@@ -360,7 +363,7 @@ async fn append_tool_log(
         change_event_seq: wake.change_event_seq,
         phase: "tool_call".to_string(),
         tool_id: Some(tool_id.to_string()),
-        status: status.to_string(),
+        status,
         duration_ms: Some(duration_ms),
         message_tail,
     };

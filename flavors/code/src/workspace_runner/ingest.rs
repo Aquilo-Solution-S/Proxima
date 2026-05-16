@@ -1,7 +1,7 @@
 use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
 use proxima_core::{
-    FactPayload, MemoryId, SchemaId, SchemaVersion, SourceBatchId, SourceId,
-    WorkspaceFinalizeInput, WorkspaceRunnerError,
+    EdgeAuthorshipKind, EntityKind, FactPayload, MemoryId, SchemaId, SchemaVersion, SourceBatchId,
+    SourceId, WorkspaceFinalizeInput, WorkspaceRunnerError,
 };
 use proxima_storage_pg::verbs::edge_append::{EdgeDraft, append_edge_in_tx};
 use proxima_storage_pg::verbs::event_ingest::ingest_event_in_tx;
@@ -83,13 +83,13 @@ pub(super) async fn ingest_workspace_run(
         let authored = EdgeDraft {
             edge_id: Uuid::now_v7(),
             relation: input.authored_relation,
-            source_kind: "Perspective",
+            source_kind: EntityKind::Perspective,
             source_memory_id: Some(input.root_perspective_memory_id.into_inner()),
             source_goal_id: None,
-            target_kind: "Fact",
+            target_kind: EntityKind::Fact,
             target_memory_id: Some(outcome.memory_id.into_inner()),
             target_goal_id: None,
-            authorship_kind: "Engine",
+            authorship_kind: EdgeAuthorshipKind::Engine,
             authorship_owner_memory_id: None,
             owner: input.owner,
         };
@@ -102,13 +102,13 @@ pub(super) async fn ingest_workspace_run(
         let derived = EdgeDraft {
             edge_id: Uuid::now_v7(),
             relation: input.derived_from_relation,
-            source_kind: "Fact",
+            source_kind: EntityKind::Fact,
             source_memory_id: Some(outcome.memory_id.into_inner()),
             source_goal_id: None,
-            target_kind: "Fact",
+            target_kind: EntityKind::Fact,
             target_memory_id: Some(input.triggering_memory_id.into_inner()),
             target_goal_id: None,
-            authorship_kind: "EventSource",
+            authorship_kind: EdgeAuthorshipKind::EventSource,
             authorship_owner_memory_id: None,
             owner: input.owner,
         };

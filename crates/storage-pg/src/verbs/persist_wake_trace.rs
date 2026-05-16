@@ -2,8 +2,8 @@
 
 use proxima_core::verbs::persist_wake_trace::{WakeTracePersistInput, WakeTracePersistOutcome};
 use proxima_core::{
-    CORE_AUTHORED_RELATION, CORE_DERIVED_FROM_RELATION, FlavorRegistryFrozen, MemoryId,
-    OwnerPrincipalKind, Principal, StorageError,
+    CORE_AUTHORED_RELATION, CORE_DERIVED_FROM_RELATION, EdgeAuthorshipKind, EntityKind,
+    FlavorRegistryFrozen, MemoryId, OwnerPrincipalKind, Principal, StorageError,
 };
 use sqlx::{PgPool, Postgres, Transaction};
 
@@ -58,7 +58,7 @@ pub async fn persist_wake_trace_in_tx(
     validate_memory_ref_owner(
         tx.as_mut(),
         input.root_perspective_memory_id.into_inner(),
-        "Perspective",
+        EntityKind::Perspective,
         owner_kind,
         owner_principal_id,
         owner_org_id,
@@ -68,7 +68,7 @@ pub async fn persist_wake_trace_in_tx(
     validate_memory_ref_owner(
         tx.as_mut(),
         input.triggering_memory_id.into_inner(),
-        "Fact",
+        EntityKind::Fact,
         owner_kind,
         owner_principal_id,
         owner_org_id,
@@ -245,11 +245,6 @@ pub async fn persist_wake_trace_in_tx(
     .await
     .map_err(map_err)?;
 
-    // TODO(macro-sweep): wt.outcome_kind is proxima_core.wake_trace_outcome_kind enum;
-    // WakeTracePayload.outcome_kind is `String` (public payload field) and there is no
-    // Rust mirror yet, so this single INSERT stays on the runtime form with an
-    // explicit SQL cast. Adding `WakeTraceOutcomeKind` enum + sqlx::Type derive in
-    // `crates/core/src/wake/trace/mod.rs` would let this become a macro.
     let wt = &input.wake_trace;
     sqlx::query(
         "INSERT INTO proxima_core.wake_trace_v1 \
@@ -259,8 +254,7 @@ pub async fn persist_wake_trace_in_tx(
              total_prompt_tokens, total_completion_tokens, tool_call_count, \
              jsonl_truncated) \
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, \
-                 $9::proxima_core.wake_trace_outcome_kind, \
-                 $10, $11, $12, $13, $14, $15, $16)",
+                 $9, $10, $11, $12, $13, $14, $15, $16)",
     )
     .bind(memory_id)
     .bind(wt.invocation_id)
@@ -270,7 +264,7 @@ pub async fn persist_wake_trace_in_tx(
     .bind(&wt.model_id)
     .bind(wt.started_at)
     .bind(wt.finished_at)
-    .bind(&wt.outcome_kind)
+    .bind(wt.outcome_kind)
     .bind(wt.failure_reason.as_deref())
     .bind(i32::try_from(wt.rounds_used).unwrap_or(i32::MAX))
     .bind(wt.finish_reason.as_deref())
@@ -317,13 +311,13 @@ pub async fn persist_wake_trace_in_tx(
     let authored = EdgeDraft {
         edge_id: uuid::Uuid::now_v7(),
         relation: authored_relation,
-        source_kind: "Perspective",
+        source_kind: EntityKind::Perspective,
         source_memory_id: Some(input.root_perspective_memory_id.into_inner()),
         source_goal_id: None,
-        target_kind: "Fact",
+        target_kind: EntityKind::Fact,
         target_memory_id: Some(memory_id),
         target_goal_id: None,
-        authorship_kind: "Engine",
+        authorship_kind: EdgeAuthorshipKind::Engine,
         authorship_owner_memory_id: None,
         owner: &input.owner,
     };
@@ -339,13 +333,13 @@ pub async fn persist_wake_trace_in_tx(
     let derived_to_trigger = EdgeDraft {
         edge_id: uuid::Uuid::now_v7(),
         relation: derived_relation,
-        source_kind: "Fact",
+        source_kind: EntityKind::Fact,
         source_memory_id: Some(memory_id),
         source_goal_id: None,
-        target_kind: "Fact",
+        target_kind: EntityKind::Fact,
         target_memory_id: Some(input.triggering_memory_id.into_inner()),
         target_goal_id: None,
-        authorship_kind: "Engine",
+        authorship_kind: EdgeAuthorshipKind::Engine,
         authorship_owner_memory_id: None,
         owner: &input.owner,
     };
@@ -355,13 +349,13 @@ pub async fn persist_wake_trace_in_tx(
         let derived_to_goal = EdgeDraft {
             edge_id: uuid::Uuid::now_v7(),
             relation: derived_relation,
-            source_kind: "Fact",
+            source_kind: EntityKind::Fact,
             source_memory_id: Some(memory_id),
             source_goal_id: None,
-            target_kind: "Goal",
+            target_kind: EntityKind::Goal,
             target_memory_id: None,
             target_goal_id: Some(goal_id.into_inner()),
-            authorship_kind: "Engine",
+            authorship_kind: EdgeAuthorshipKind::Engine,
             authorship_owner_memory_id: None,
             owner: &input.owner,
         };
@@ -391,7 +385,7 @@ fn validate_jsonl_content_hash(input: &WakeTracePersistInput) -> Result<(), Stor
 async fn validate_memory_ref_owner(
     tx: &mut sqlx::PgConnection,
     memory_id: uuid::Uuid,
-    expected_kind: &str,
+    expected_kind: EntityKind,
     owner_kind: OwnerPrincipalKind,
     owner_principal_id: uuid::Uuid,
     owner_org_id: uuid::Uuid,
@@ -400,7 +394,7 @@ async fn validate_memory_ref_owner(
     let row = sqlx::query!(
         r#"SELECT owner_principal_kind AS "owner_principal_kind: OwnerPrincipalKind",
                   owner_principal_id, owner_org_id,
-                  COALESCE(kind::text, 'Fact') AS "memory_kind!"
+                  kind AS "kind: EntityKind"
              FROM proxima_core.memories
              WHERE memory_id = $1"#,
         memory_id,
@@ -420,9 +414,11 @@ async fn validate_memory_ref_owner(
             "{label} crosses Owner boundary"
         )));
     }
-    if row.memory_kind != expected_kind {
+    let memory_kind = row.kind.unwrap_or(EntityKind::Fact);
+    if memory_kind != expected_kind {
         return Err(StorageError::ConstraintViolation(format!(
-            "{label} must be {expected_kind}"
+            "{label} must be {}",
+            expected_kind.as_str()
         )));
     }
     Ok(())

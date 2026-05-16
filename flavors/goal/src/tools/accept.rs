@@ -2,7 +2,7 @@
 
 use proxima_core::mcp::{McpTool, McpToolCtx, McpToolError};
 use proxima_core::verbs::goal_write::{GoalAuthorship, GoalDraft, GoalState};
-use proxima_core::{EdgeId, GoalId};
+use proxima_core::{EdgeAuthorshipKind, EdgeId, GoalId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -82,13 +82,23 @@ pub async fn accept_goal(
     let edge_uuids = if state == GoalState::Rejected {
         Vec::new()
     } else {
-        insert_motivated_by_edges(&mut tx, &ctx, goal_id, &evidence, "User").await?
+        insert_motivated_by_edges(&mut tx, &ctx, goal_id, &evidence, EdgeAuthorshipKind::User)
+            .await?
     };
     let inspires_edge_id = if state == GoalState::Active {
         match args.target_personality.as_deref() {
             Some(handle) => {
                 let target_root = target_personality_root(&mut tx, &ctx, handle).await?;
-                Some(append_inspires_edge(&mut tx, &ctx, goal_id, target_root, "User").await?)
+                Some(
+                    append_inspires_edge(
+                        &mut tx,
+                        &ctx,
+                        goal_id,
+                        target_root,
+                        EdgeAuthorshipKind::User,
+                    )
+                    .await?,
+                )
             }
             None => None,
         }

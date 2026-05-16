@@ -6,7 +6,7 @@ use proxima_core::FactPayload;
 use proxima_core::mcp::{McpToolCtx, McpToolError};
 use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
 use proxima_core::{
-    MemoryId, SchemaId, SchemaVersion, SourceBatchId, SourceId,
+    EdgeAuthorshipKind, EntityKind, MemoryId, SchemaId, SchemaVersion, SourceBatchId, SourceId,
     relation::CORE_DERIVED_FROM_RELATION,
 };
 use proxima_storage_pg::verbs::edge_append::{EdgeDraft, append_edge_in_tx};
@@ -112,13 +112,13 @@ pub async fn append_review_derived_edge(
         &EdgeDraft {
             edge_id,
             relation,
-            source_kind: "Fact",
+            source_kind: EntityKind::Fact,
             source_memory_id: Some(review_memory_id.into_inner()),
             source_goal_id: None,
-            target_kind: "Fact",
+            target_kind: EntityKind::Fact,
             target_memory_id: Some(target_memory_id.into_inner()),
             target_goal_id: None,
-            authorship_kind: "ExternalAgent",
+            authorship_kind: EdgeAuthorshipKind::ExternalAgent,
             authorship_owner_memory_id: ctx.caller_self_perspective.map(MemoryId::into_inner),
             owner: &ctx.owner,
         },
