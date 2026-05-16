@@ -3,7 +3,7 @@ use std::fmt::Write as _;
 
 use proxima_core::verbs::query::{EntityKind, MemorySearchRequest, MemorySearchResult, SearchMode};
 use proxima_core::verbs::schema::{PayloadKind, SchemaInfo};
-use proxima_core::{MemoryId, Principal, SchemaId, StorageError, WakeChainDepth};
+use proxima_core::{MemoryId, OwnerPrincipalKind, Principal, SchemaId, StorageError, WakeChainDepth};
 use sqlx::PgPool;
 
 use crate::pg_ident::PgIdent;
@@ -311,8 +311,8 @@ fn bind_common<'q>(
     req: &'q MemorySearchRequest,
 ) -> sqlx::query::QueryAs<'q, sqlx::Postgres, SearchRow, sqlx::postgres::PgArguments> {
     let (owner_kind, owner_principal_id) = match &req.owner.principal {
-        Principal::User(user) => ("User", user.into_inner()),
-        Principal::Group(group) => ("Group", group.into_inner()),
+        Principal::User(user) => (OwnerPrincipalKind::User, user.into_inner()),
+        Principal::Group(group) => (OwnerPrincipalKind::Group, group.into_inner()),
     };
     q = q.bind(owner_kind);
     q = q.bind(owner_principal_id);

@@ -5,7 +5,7 @@
 //! between backfill and live attachment.
 
 use proxima_core::verbs::subscribe::ChangeEventStream;
-use proxima_core::{ChangeEvent, Owner, Principal, StorageError};
+use proxima_core::{ChangeEvent, Owner, OwnerPrincipalKind, Principal, StorageError};
 use sqlx::PgPool;
 use tokio::sync::broadcast;
 
@@ -25,42 +25,38 @@ pub(crate) async fn subscribe_changes(
 
     // 2. Backfill: SELECT change_event seqs matching this owner
     //    with seq > since (or all if None), ORDER BY seq ASC.
-    let owner_kind: &str = match &owner.principal {
-        Principal::User(_) => "User",
-        Principal::Group(_) => "Group",
+    let (owner_kind, owner_principal_id) = match &owner.principal {
+        Principal::User(u) => (OwnerPrincipalKind::User, u.into_inner()),
+        Principal::Group(g) => (OwnerPrincipalKind::Group, g.into_inner()),
     };
-    let owner_principal_id = match &owner.principal {
-        Principal::User(u) => u.into_inner(),
-        Principal::Group(g) => g.into_inner(),
-    };
-    let rows: Vec<(uuid::Uuid,)> = match since {
-        Some(since_seq) => sqlx::query_as(
-            "SELECT seq FROM proxima_core.change_event \
-             WHERE owner_principal_kind = $1 AND owner_principal_id = $2 \
-               AND seq > $3 \
-             ORDER BY seq ASC",
+    let seqs: Vec<uuid::Uuid> = match since {
+        Some(since_seq) => sqlx::query_scalar!(
+            r#"SELECT seq FROM proxima_core.change_event
+                 WHERE owner_principal_kind = $1 AND owner_principal_id = $2
+                   AND seq > $3
+                 ORDER BY seq ASC"#,
+            owner_kind as OwnerPrincipalKind,
+            owner_principal_id,
+            since_seq,
         )
-        .bind(owner_kind)
-        .bind(owner_principal_id)
-        .bind(since_seq)
         .fetch_all(pool)
         .await
         .map_err(|e| StorageError::Internal(e.to_string()))?,
-        None => sqlx::query_as(
-            "SELECT seq FROM proxima_core.change_event \
-             WHERE owner_principal_kind = $1 AND owner_principal_id = $2 \
-             ORDER BY seq ASC",
+        None => sqlx::query_scalar!(
+            r#"SELECT seq FROM proxima_core.change_event
+                 WHERE owner_principal_kind = $1 AND owner_principal_id = $2
+                 ORDER BY seq ASC"#,
+            owner_kind as OwnerPrincipalKind,
+            owner_principal_id,
         )
-        .bind(owner_kind)
-        .bind(owner_principal_id)
         .fetch_all(pool)
         .await
         .map_err(|e| StorageError::Internal(e.to_string()))?,
     };
 
     // 3. Hydrate each backfill seq.
-    let mut backfill = Vec::with_capacity(rows.len());
-    for (seq,) in rows {
+    let mut backfill = Vec::with_capacity(seqs.len());
+    for seq in seqs {
         if let Some(ce) = hydrate_change_event(pool, seq).await? {
             backfill.push(ce);
         }

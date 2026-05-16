@@ -1,9 +1,9 @@
-use proxima_core::{Owner, Principal};
+use proxima_core::{Owner, OwnerPrincipalKind, Principal};
 
-pub(super) fn owner_columns(owner: &Owner) -> (&'static str, uuid::Uuid, uuid::Uuid) {
+pub(super) fn owner_columns(owner: &Owner) -> (OwnerPrincipalKind, uuid::Uuid, uuid::Uuid) {
     let (kind, principal_id) = match &owner.principal {
-        Principal::User(u) => ("User", u.into_inner()),
-        Principal::Group(g) => ("Group", g.into_inner()),
+        Principal::User(u) => (OwnerPrincipalKind::User, u.into_inner()),
+        Principal::Group(g) => (OwnerPrincipalKind::Group, g.into_inner()),
     };
     (kind, principal_id, owner.org_id.into_inner())
 }

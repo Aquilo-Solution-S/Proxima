@@ -1,0 +1,44 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT owner_principal_kind AS \"owner_principal_kind: OwnerPrincipalKind\",\n                  owner_principal_id, owner_org_id\n             FROM proxima_core.goals\n             WHERE goal_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "owner_principal_kind: OwnerPrincipalKind",
+        "type_info": {
+          "Custom": {
+            "name": "proxima_core.owner_principal_kind",
+            "kind": {
+              "Enum": [
+                "User",
+                "Group"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "owner_principal_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "owner_org_id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "9a3949a06c2d87c1fba098f16f619ab480ed499be17fffdd464b3cb9a7a4bf30"
+}

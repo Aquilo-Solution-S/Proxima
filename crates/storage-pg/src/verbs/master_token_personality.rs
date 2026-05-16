@@ -18,8 +18,8 @@
 //! `(org, token)` only — it does not block the rest of the system.
 
 use proxima_core::{
-    InstantiatePersonalityRequest, MasterTokenPersonality, MemoryId, Owner, PersonalityInstanceId,
-    Principal, StorageError,
+    InstantiatePersonalityRequest, MasterTokenPersonality, MemoryId, Owner, OwnerPrincipalKind,
+    PersonalityInstanceId, Principal, StorageError,
 };
 use sqlx::{PgConnection, PgPool};
 use uuid::Uuid;
@@ -54,9 +54,8 @@ pub async fn ensure_master_token_personality(
     // connection so concurrent first-connects can't both mint.
     let mut conn = pool.acquire().await.map_err(map_err)?;
     let key = lock_key(owner.org_id.into_inner(), master_token_id);
-    sqlx::query("SELECT pg_advisory_lock($1)")
-        .bind(key)
-        .execute(&mut *conn)
+    sqlx::query!("SELECT pg_advisory_lock($1)", key)
+        .fetch_one(&mut *conn)
         .await
         .map_err(map_err)?;
 
@@ -75,9 +74,8 @@ pub async fn ensure_master_token_personality(
     // connection drop returns it to the pool with the lock still held;
     // it releases when the connection is closed (sqlx max_lifetime) or
     // when a future caller on that same connection invokes unlock.
-    let _ = sqlx::query("SELECT pg_advisory_unlock($1)")
-        .bind(key)
-        .execute(&mut *conn)
+    let _ = sqlx::query!("SELECT pg_advisory_unlock($1)", key)
+        .fetch_one(&mut *conn)
         .await;
 
     result
@@ -88,7 +86,7 @@ async fn mint_under_lock(
     pool: &PgPool,
     owner: &Owner,
     master_token_id: Uuid,
-    kind: &'static str,
+    kind: OwnerPrincipalKind,
     principal_id: Uuid,
     org_id: Uuid,
 ) -> Result<MasterTokenPersonality, StorageError> {
@@ -105,27 +103,27 @@ async fn mint_under_lock(
     let resp = consolidate::instantiate_personality(pool, &req).await?;
     let instance_id = resp.instance_id;
 
-    sqlx::query(
-        "INSERT INTO proxima_core.master_token_personality (
+    sqlx::query!(
+        r#"INSERT INTO proxima_core.master_token_personality (
              master_token_id, owner_principal_kind, owner_principal_id,
              owner_org_id, personality_instance_id
-         ) VALUES ($1, $2, $3, $4, $5)",
+         ) VALUES ($1, $2, $3, $4, $5)"#,
+        master_token_id,
+        kind as OwnerPrincipalKind,
+        principal_id,
+        org_id,
+        instance_id.into_inner(),
     )
-    .bind(master_token_id)
-    .bind(kind)
-    .bind(principal_id)
-    .bind(org_id)
-    .bind(instance_id.into_inner())
     .execute(&mut *conn)
     .await
     .map_err(map_err)?;
 
-    let root_id: Uuid = sqlx::query_scalar(
-        "SELECT current_root_perspective_memory_id
-         FROM proxima_core.personality
-         WHERE personality_instance_id = $1",
+    let root_id: Uuid = sqlx::query_scalar!(
+        r#"SELECT current_root_perspective_memory_id
+             FROM proxima_core.personality
+             WHERE personality_instance_id = $1"#,
+        instance_id.into_inner(),
     )
-    .bind(instance_id.into_inner())
     .fetch_one(&mut *conn)
     .await
     .map_err(map_err)?;
@@ -139,49 +137,60 @@ async fn mint_under_lock(
 async fn lookup_pool(
     pool: &PgPool,
     master_token_id: Uuid,
-    kind: &'static str,
+    kind: OwnerPrincipalKind,
     principal_id: Uuid,
     org_id: Uuid,
 ) -> Result<Option<MasterTokenPersonality>, StorageError> {
-    let row: Option<(Uuid, Uuid)> = sqlx::query_as(LOOKUP_SQL)
-        .bind(master_token_id)
-        .bind(kind)
-        .bind(principal_id)
-        .bind(org_id)
-        .fetch_optional(pool)
-        .await
-        .map_err(map_err)?;
-    Ok(row.map(into_personality))
+    let row = sqlx::query!(
+        r#"SELECT mtp.personality_instance_id,
+                  p.current_root_perspective_memory_id
+             FROM proxima_core.master_token_personality mtp
+             JOIN proxima_core.personality p
+               ON p.personality_instance_id = mtp.personality_instance_id
+             WHERE mtp.master_token_id = $1
+               AND mtp.owner_principal_kind = $2
+               AND mtp.owner_principal_id = $3
+               AND mtp.owner_org_id = $4
+             LIMIT 1"#,
+        master_token_id,
+        kind as OwnerPrincipalKind,
+        principal_id,
+        org_id,
+    )
+    .fetch_optional(pool)
+    .await
+    .map_err(map_err)?;
+    Ok(row.map(|r| into_personality((r.personality_instance_id, r.current_root_perspective_memory_id))))
 }
 
 async fn lookup_conn(
     conn: &mut PgConnection,
     master_token_id: Uuid,
-    kind: &'static str,
+    kind: OwnerPrincipalKind,
     principal_id: Uuid,
     org_id: Uuid,
 ) -> Result<Option<MasterTokenPersonality>, StorageError> {
-    let row: Option<(Uuid, Uuid)> = sqlx::query_as(LOOKUP_SQL)
-        .bind(master_token_id)
-        .bind(kind)
-        .bind(principal_id)
-        .bind(org_id)
-        .fetch_optional(&mut *conn)
-        .await
-        .map_err(map_err)?;
-    Ok(row.map(into_personality))
+    let row = sqlx::query!(
+        r#"SELECT mtp.personality_instance_id,
+                  p.current_root_perspective_memory_id
+             FROM proxima_core.master_token_personality mtp
+             JOIN proxima_core.personality p
+               ON p.personality_instance_id = mtp.personality_instance_id
+             WHERE mtp.master_token_id = $1
+               AND mtp.owner_principal_kind = $2
+               AND mtp.owner_principal_id = $3
+               AND mtp.owner_org_id = $4
+             LIMIT 1"#,
+        master_token_id,
+        kind as OwnerPrincipalKind,
+        principal_id,
+        org_id,
+    )
+    .fetch_optional(&mut *conn)
+    .await
+    .map_err(map_err)?;
+    Ok(row.map(|r| into_personality((r.personality_instance_id, r.current_root_perspective_memory_id))))
 }
-
-const LOOKUP_SQL: &str = "SELECT mtp.personality_instance_id,
-            p.current_root_perspective_memory_id
-     FROM proxima_core.master_token_personality mtp
-     JOIN proxima_core.personality p
-       ON p.personality_instance_id = mtp.personality_instance_id
-     WHERE mtp.master_token_id = $1
-       AND mtp.owner_principal_kind = $2
-       AND mtp.owner_principal_id = $3
-       AND mtp.owner_org_id = $4
-     LIMIT 1";
 
 fn into_personality((instance_id, root_id): (Uuid, Uuid)) -> MasterTokenPersonality {
     MasterTokenPersonality {
@@ -202,10 +211,10 @@ fn lock_key(org_id: Uuid, master_token_id: Uuid) -> i64 {
     i64::from_le_bytes(bytes)
 }
 
-fn owner_columns(owner: &Owner) -> (&'static str, Uuid, Uuid) {
+fn owner_columns(owner: &Owner) -> (OwnerPrincipalKind, Uuid, Uuid) {
     let (kind, principal_id) = match &owner.principal {
-        Principal::User(u) => ("User", u.into_inner()),
-        Principal::Group(g) => ("Group", g.into_inner()),
+        Principal::User(u) => (OwnerPrincipalKind::User, u.into_inner()),
+        Principal::Group(g) => (OwnerPrincipalKind::Group, g.into_inner()),
     };
     (kind, principal_id, owner.org_id.into_inner())
 }

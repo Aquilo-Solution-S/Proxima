@@ -339,7 +339,7 @@ async fn goal_activated_fact_wakes_substrate_executor_and_emits_perspective()
         assert_eq!(fired, 1, "goal-activated Fact fires the Executor wake");
 
         let invocation_status: String = sqlx::query_scalar(
-            "SELECT status
+            "SELECT status::text
              FROM proxima_core.personality_wake_invocations
              WHERE personality_instance_id = $1
                AND wake_entry_id = $2",

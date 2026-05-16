@@ -8,25 +8,14 @@
 
 use std::collections::HashSet;
 
-use proxima_core::verbs::goal_write::{GoalDraft, GoalState, GoalWriteOutcome};
-use proxima_core::{GoalId, Principal, StorageError};
+use proxima_core::verbs::goal_write::{
+    GoalAuthorshipKind, GoalAuthorshipOrigin, GoalDraft, GoalState, GoalWriteOutcome, OperatorKind,
+};
+use proxima_core::{GoalId, OwnerPrincipalKind, Principal, StorageError};
 use sqlx::PgPool;
 
 use crate::authorship::{authorship_columns, check_authorship_match};
 use crate::error::map_err;
-
-/// Replay-check tuple read from `proxima_core.goals`:
-/// `(schema_id, schema_version, title, text, state, parent_goal_ids, supersedes, payload)`.
-type GoalBodyRow = (
-    String,
-    i32,
-    String,
-    String,
-    String,
-    Vec<uuid::Uuid>,
-    Option<uuid::Uuid>,
-    Vec<u8>,
-);
 
 #[allow(clippy::too_many_lines)]
 pub(crate) async fn write_goal_atomic(
@@ -34,8 +23,8 @@ pub(crate) async fn write_goal_atomic(
     draft: &GoalDraft,
 ) -> Result<GoalWriteOutcome, StorageError> {
     let (owner_kind, owner_principal_id) = match &draft.owner.principal {
-        Principal::User(u) => ("User", u.into_inner()),
-        Principal::Group(g) => ("Group", g.into_inner()),
+        Principal::User(u) => (OwnerPrincipalKind::User, u.into_inner()),
+        Principal::Group(g) => (OwnerPrincipalKind::Group, g.into_inner()),
     };
     let owner_org_id = draft.owner.org_id.into_inner();
 
@@ -46,55 +35,57 @@ pub(crate) async fn write_goal_atomic(
 
     // Replay check by (owner, request_id).
     // We need to join with change_event to get the seq.
-    let existing: Option<(uuid::Uuid, uuid::Uuid)> = sqlx::query_as(
-        "SELECT g.goal_id, ce.seq \
-         FROM proxima_core.goals g \
-         JOIN proxima_core.change_event ce ON ce.entity_goal_id = g.goal_id \
-         WHERE (g.owner_principal_kind, g.owner_principal_id, g.owner_org_id, g.request_id) \
-           = ($1, $2, $3, $4) \
-         ORDER BY ce.seq ASC LIMIT 1",
+    let existing = sqlx::query!(
+        r#"SELECT g.goal_id, ce.seq
+             FROM proxima_core.goals g
+             JOIN proxima_core.change_event ce ON ce.entity_goal_id = g.goal_id
+             WHERE (g.owner_principal_kind, g.owner_principal_id, g.owner_org_id, g.request_id)
+               = ($1, $2, $3, $4)
+             ORDER BY ce.seq ASC LIMIT 1"#,
+        owner_kind as OwnerPrincipalKind,
+        owner_principal_id,
+        owner_org_id,
+        &draft.request_id,
     )
-    .bind(owner_kind)
-    .bind(owner_principal_id)
-    .bind(owner_org_id)
-    .bind(&draft.request_id)
     .fetch_optional(&mut *tx)
     .await
     .map_err(map_err)?;
 
-    if let Some((existing_goal_id, existing_seq)) = existing {
+    if let Some(existing) = existing {
+        let existing_goal_id = existing.goal_id;
+        let existing_seq = existing.seq;
+
         // Compare the existing body with the draft.
-        let existing_row: GoalBodyRow = sqlx::query_as(
-            "SELECT schema_id, schema_version, title, text, state, \
-                     COALESCE((SELECT array_agg(parent_goal_id) FROM proxima_core.goal_parents WHERE goal_id = $1), '{}'::uuid[]), \
-                     supersedes, payload \
-             FROM proxima_core.goals WHERE goal_id = $1",
+        let existing_row = sqlx::query!(
+            r#"SELECT schema_id, schema_version, title, text,
+                       state AS "state: GoalState",
+                       COALESCE((SELECT array_agg(parent_goal_id) FROM proxima_core.goal_parents WHERE goal_id = $1), '{}'::uuid[]) AS "parents!",
+                       supersedes, payload
+                 FROM proxima_core.goals WHERE goal_id = $1"#,
+            existing_goal_id,
         )
-        .bind(existing_goal_id)
         .fetch_one(&mut *tx)
         .await
         .map_err(map_err)?;
 
-        let existing_parents: HashSet<uuid::Uuid> = existing_row.5.into_iter().collect();
+        let existing_parents: HashSet<uuid::Uuid> = existing_row.parents.into_iter().collect();
         let draft_parents: HashSet<uuid::Uuid> = draft
             .parent_goal_ids
             .iter()
             .map(|g| g.into_inner())
             .collect();
 
-        let state_str = goal_state_str(draft.state);
-
         // Check if all fields match.
-        let schema_id_match = existing_row.0 == draft.schema_id.as_str();
+        let schema_id_match = existing_row.schema_id == draft.schema_id.as_str();
         let schema_version_match =
-            existing_row.1 == draft.schema_version.into_inner().cast_signed();
-        let title_match = existing_row.2 == draft.title;
-        let text_match = existing_row.3 == draft.text;
-        let state_match = existing_row.4 == state_str;
+            existing_row.schema_version == draft.schema_version.into_inner().cast_signed();
+        let title_match = existing_row.title == draft.title;
+        let text_match = existing_row.text == draft.text;
+        let state_match = existing_row.state == draft.state;
         let parents_match = existing_parents == draft_parents;
         let expected_supersedes = draft.supersedes_goal_id.map(GoalId::into_inner);
-        let supersedes_match = existing_row.6 == expected_supersedes;
-        let payload_match = existing_row.7 == draft.payload;
+        let supersedes_match = existing_row.supersedes == expected_supersedes;
+        let payload_match = existing_row.payload == draft.payload;
 
         // Also need to check authorship fields.
         let authorship_matches = check_authorship_match(&mut tx, existing_goal_id, draft).await?;
@@ -159,8 +150,8 @@ pub(crate) async fn supersede_goal_atomic(
     }
 
     let (owner_kind, owner_principal_id) = match &draft.owner.principal {
-        Principal::User(u) => ("User", u.into_inner()),
-        Principal::Group(g) => ("Group", g.into_inner()),
+        Principal::User(u) => (OwnerPrincipalKind::User, u.into_inner()),
+        Principal::Group(g) => (OwnerPrincipalKind::Group, g.into_inner()),
     };
     let owner_org_id = draft.owner.org_id.into_inner();
 
@@ -170,54 +161,56 @@ pub(crate) async fn supersede_goal_atomic(
         .map_err(|e| StorageError::Internal(e.to_string()))?;
 
     // Replay check by (owner, request_id) — same as write_goal.
-    let existing: Option<(uuid::Uuid, uuid::Uuid)> = sqlx::query_as(
-        "SELECT g.goal_id, ce.seq \
-         FROM proxima_core.goals g \
-         JOIN proxima_core.change_event ce ON ce.entity_goal_id = g.goal_id \
-         WHERE (g.owner_principal_kind, g.owner_principal_id, g.owner_org_id, g.request_id) \
-           = ($1, $2, $3, $4) \
-         ORDER BY ce.seq ASC LIMIT 1",
+    let existing = sqlx::query!(
+        r#"SELECT g.goal_id, ce.seq
+             FROM proxima_core.goals g
+             JOIN proxima_core.change_event ce ON ce.entity_goal_id = g.goal_id
+             WHERE (g.owner_principal_kind, g.owner_principal_id, g.owner_org_id, g.request_id)
+               = ($1, $2, $3, $4)
+             ORDER BY ce.seq ASC LIMIT 1"#,
+        owner_kind as OwnerPrincipalKind,
+        owner_principal_id,
+        owner_org_id,
+        &draft.request_id,
     )
-    .bind(owner_kind)
-    .bind(owner_principal_id)
-    .bind(owner_org_id)
-    .bind(&draft.request_id)
     .fetch_optional(&mut *tx)
     .await
     .map_err(map_err)?;
 
-    if let Some((existing_goal_id, existing_seq)) = existing {
+    if let Some(existing) = existing {
+        let existing_goal_id = existing.goal_id;
+        let existing_seq = existing.seq;
+
         // Compare the existing body with the draft (including supersedes = prior).
-        let existing_row: GoalBodyRow = sqlx::query_as(
-            "SELECT schema_id, schema_version, title, text, state, \
-                     COALESCE((SELECT array_agg(parent_goal_id) FROM proxima_core.goal_parents WHERE goal_id = $1), '{}'::uuid[]), \
-                     supersedes, payload \
-             FROM proxima_core.goals WHERE goal_id = $1",
+        let existing_row = sqlx::query!(
+            r#"SELECT schema_id, schema_version, title, text,
+                       state AS "state: GoalState",
+                       COALESCE((SELECT array_agg(parent_goal_id) FROM proxima_core.goal_parents WHERE goal_id = $1), '{}'::uuid[]) AS "parents!",
+                       supersedes, payload
+                 FROM proxima_core.goals WHERE goal_id = $1"#,
+            existing_goal_id,
         )
-        .bind(existing_goal_id)
         .fetch_one(&mut *tx)
         .await
         .map_err(map_err)?;
 
-        let existing_parents: HashSet<uuid::Uuid> = existing_row.5.into_iter().collect();
+        let existing_parents: HashSet<uuid::Uuid> = existing_row.parents.into_iter().collect();
         let draft_parents: HashSet<uuid::Uuid> = draft
             .parent_goal_ids
             .iter()
             .map(|g| g.into_inner())
             .collect();
 
-        let state_str = goal_state_str(draft.state);
-
         // Check if all fields match (including supersedes = prior).
-        let schema_id_match = existing_row.0 == draft.schema_id.as_str();
+        let schema_id_match = existing_row.schema_id == draft.schema_id.as_str();
         let schema_version_match =
-            existing_row.1 == draft.schema_version.into_inner().cast_signed();
-        let title_match = existing_row.2 == draft.title;
-        let text_match = existing_row.3 == draft.text;
-        let state_match = existing_row.4 == state_str;
+            existing_row.schema_version == draft.schema_version.into_inner().cast_signed();
+        let title_match = existing_row.title == draft.title;
+        let text_match = existing_row.text == draft.text;
+        let state_match = existing_row.state == draft.state;
         let parents_match = existing_parents == draft_parents;
-        let supersedes_match = existing_row.6 == Some(prior.into_inner());
-        let payload_match = existing_row.7 == draft.payload;
+        let supersedes_match = existing_row.supersedes == Some(prior.into_inner());
+        let payload_match = existing_row.payload == draft.payload;
 
         // Also need to check authorship fields.
         let authorship_matches = check_authorship_match(&mut tx, existing_goal_id, draft).await?;
@@ -271,17 +264,6 @@ pub(crate) async fn supersede_goal_atomic(
     })
 }
 
-fn goal_state_str(state: GoalState) -> &'static str {
-    match state {
-        GoalState::Proposed => "Proposed",
-        GoalState::Active => "Active",
-        GoalState::Paused => "Paused",
-        GoalState::Achieved => "Achieved",
-        GoalState::Abandoned => "Abandoned",
-        GoalState::Rejected => "Rejected",
-    }
-}
-
 async fn insert_goal_row(
     tx: &mut sqlx::PgConnection,
     draft: &GoalDraft,
@@ -289,44 +271,43 @@ async fn insert_goal_row(
     supersedes: Option<uuid::Uuid>,
 ) -> Result<(), StorageError> {
     let (owner_kind, owner_principal_id) = match &draft.owner.principal {
-        Principal::User(u) => ("User", u.into_inner()),
-        Principal::Group(g) => ("Group", g.into_inner()),
+        Principal::User(u) => (OwnerPrincipalKind::User, u.into_inner()),
+        Principal::Group(g) => (OwnerPrincipalKind::Group, g.into_inner()),
     };
     let owner_org_id = draft.owner.org_id.into_inner();
 
-    let state_str = goal_state_str(draft.state);
-
     let authorship = authorship_columns(&draft.authorship);
 
-    sqlx::query(
-        "INSERT INTO proxima_core.goals \
-            (goal_id, schema_id, schema_version, owner_principal_kind, \
-             owner_principal_id, owner_org_id, title, text, payload, state, supersedes, \
-             authorship_kind, authorship_origin, authorship_operator_id, \
-             authorship_tool_id, operator_kind, model_id, prompt_version, \
-             personality_instance_id, request_id) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)",
+    sqlx::query!(
+        r#"INSERT INTO proxima_core.goals
+            (goal_id, schema_id, schema_version, owner_principal_kind,
+             owner_principal_id, owner_org_id, title, text, payload, state, supersedes,
+             authorship_kind, authorship_origin, authorship_operator_id,
+             authorship_tool_id, operator_kind, model_id, prompt_version,
+             personality_instance_id, request_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+                 $12, $13, $14, $15, $16, $17, $18, $19, $20)"#,
+        goal_id,
+        draft.schema_id.as_str(),
+        draft.schema_version.into_inner().cast_signed(),
+        owner_kind as OwnerPrincipalKind,
+        owner_principal_id,
+        owner_org_id,
+        &draft.title,
+        &draft.text,
+        &draft.payload,
+        draft.state as GoalState,
+        supersedes,
+        authorship.authorship_kind as GoalAuthorshipKind,
+        authorship.authorship_origin as Option<GoalAuthorshipOrigin>,
+        authorship.authorship_operator_id,
+        authorship.authorship_tool_id,
+        authorship.operator_kind as Option<OperatorKind>,
+        authorship.model_id,
+        authorship.prompt_version,
+        authorship.personality_instance_id,
+        &draft.request_id,
     )
-    .bind(goal_id)
-    .bind(draft.schema_id.as_str())
-    .bind(draft.schema_version.into_inner().cast_signed())
-    .bind(owner_kind)
-    .bind(owner_principal_id)
-    .bind(owner_org_id)
-    .bind(&draft.title)
-    .bind(&draft.text)
-    .bind(&draft.payload)
-    .bind(state_str)
-    .bind(supersedes)
-    .bind(authorship.authorship_kind)
-    .bind(authorship.authorship_origin)
-    .bind(authorship.authorship_operator_id)
-    .bind(authorship.authorship_tool_id)
-    .bind(authorship.operator_kind)
-    .bind(authorship.model_id)
-    .bind(authorship.prompt_version)
-    .bind(authorship.personality_instance_id)
-    .bind(&draft.request_id)
     .execute(tx)
     .await
     .map_err(map_err)?;
@@ -337,22 +318,25 @@ async fn insert_goal_row(
 async fn validate_prior_goal_owner(
     tx: &mut sqlx::PgConnection,
     prior_goal_id: uuid::Uuid,
-    owner_kind: &str,
+    owner_kind: OwnerPrincipalKind,
     owner_principal_id: uuid::Uuid,
 ) -> Result<(), StorageError> {
-    let prior_row: Option<(String, uuid::Uuid)> = sqlx::query_as(
-        "SELECT owner_principal_kind, owner_principal_id \
-         FROM proxima_core.goals WHERE goal_id = $1",
+    let prior_row = sqlx::query!(
+        r#"SELECT owner_principal_kind AS "owner_principal_kind: OwnerPrincipalKind",
+                  owner_principal_id
+             FROM proxima_core.goals WHERE goal_id = $1"#,
+        prior_goal_id,
     )
-    .bind(prior_goal_id)
     .fetch_optional(tx)
     .await
     .map_err(map_err)?;
 
     match prior_row {
         None => Err(StorageError::NotFound),
-        Some((p_kind, p_principal_id)) => {
-            if p_kind != owner_kind || p_principal_id != owner_principal_id {
+        Some(row) => {
+            if row.owner_principal_kind != owner_kind
+                || row.owner_principal_id != owner_principal_id
+            {
                 Err(StorageError::ConstraintViolation(
                     "supersede crosses Owner boundary".to_string(),
                 ))
@@ -369,12 +353,12 @@ async fn insert_goal_parents(
     goal_id: uuid::Uuid,
 ) -> Result<(), StorageError> {
     for parent_id in &draft.parent_goal_ids {
-        sqlx::query(
-            "INSERT INTO proxima_core.goal_parents (goal_id, parent_goal_id) \
+        sqlx::query!(
+            "INSERT INTO proxima_core.goal_parents (goal_id, parent_goal_id)
              VALUES ($1, $2)",
+            goal_id,
+            parent_id.into_inner(),
         )
-        .bind(goal_id)
-        .bind(parent_id.into_inner())
         .execute(&mut *tx)
         .await
         .map_err(map_err)?;
@@ -390,47 +374,47 @@ async fn insert_goal_change_event(
     supersedes_goal_id: Option<uuid::Uuid>,
 ) -> Result<(), StorageError> {
     let (owner_kind, owner_principal_id) = match &draft.owner.principal {
-        Principal::User(u) => ("User", u.into_inner()),
-        Principal::Group(g) => ("Group", g.into_inner()),
+        Principal::User(u) => (OwnerPrincipalKind::User, u.into_inner()),
+        Principal::Group(g) => (OwnerPrincipalKind::Group, g.into_inner()),
     };
     let owner_org_id = draft.owner.org_id.into_inner();
 
     match supersedes_goal_id {
         None => {
-            sqlx::query(
-                "INSERT INTO proxima_core.change_event \
-                    (seq, owner_principal_kind, owner_principal_id, owner_org_id, \
-                     kind, entity_kind, entity_goal_id, entity_schema_id, \
-                     entity_schema_version) \
-                 VALUES ($1, $2, $3, $4, 'EntityAppend', 'Goal', $5, $6, $7)",
+            sqlx::query!(
+                r#"INSERT INTO proxima_core.change_event
+                    (seq, owner_principal_kind, owner_principal_id, owner_org_id,
+                     kind, entity_kind, entity_goal_id, entity_schema_id,
+                     entity_schema_version)
+                 VALUES ($1, $2, $3, $4, 'EntityAppend', 'Goal', $5, $6, $7)"#,
+                change_seq,
+                owner_kind as OwnerPrincipalKind,
+                owner_principal_id,
+                owner_org_id,
+                goal_id,
+                draft.schema_id.as_str(),
+                draft.schema_version.into_inner().cast_signed(),
             )
-            .bind(change_seq)
-            .bind(owner_kind)
-            .bind(owner_principal_id)
-            .bind(owner_org_id)
-            .bind(goal_id)
-            .bind(draft.schema_id.as_str())
-            .bind(draft.schema_version.into_inner().cast_signed())
             .execute(tx)
             .await
             .map_err(map_err)?;
         }
         Some(prior_id) => {
-            sqlx::query(
-                "INSERT INTO proxima_core.change_event \
-                    (seq, owner_principal_kind, owner_principal_id, owner_org_id, \
-                     kind, entity_kind, entity_goal_id, entity_schema_id, \
-                     entity_schema_version, supersedes_goal_id) \
-                 VALUES ($1, $2, $3, $4, 'EntityAppend', 'Goal', $5, $6, $7, $8)",
+            sqlx::query!(
+                r#"INSERT INTO proxima_core.change_event
+                    (seq, owner_principal_kind, owner_principal_id, owner_org_id,
+                     kind, entity_kind, entity_goal_id, entity_schema_id,
+                     entity_schema_version, supersedes_goal_id)
+                 VALUES ($1, $2, $3, $4, 'EntityAppend', 'Goal', $5, $6, $7, $8)"#,
+                change_seq,
+                owner_kind as OwnerPrincipalKind,
+                owner_principal_id,
+                owner_org_id,
+                goal_id,
+                draft.schema_id.as_str(),
+                draft.schema_version.into_inner().cast_signed(),
+                prior_id,
             )
-            .bind(change_seq)
-            .bind(owner_kind)
-            .bind(owner_principal_id)
-            .bind(owner_org_id)
-            .bind(goal_id)
-            .bind(draft.schema_id.as_str())
-            .bind(draft.schema_version.into_inner().cast_signed())
-            .bind(prior_id)
             .execute(tx)
             .await
             .map_err(map_err)?;

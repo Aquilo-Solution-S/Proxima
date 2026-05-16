@@ -11,7 +11,7 @@
 //! event here once a consumer needs the live signal.
 
 use proxima_core::verbs::close_batch::CloseBatchOutcome;
-use proxima_core::{Owner, Principal, SourceBatchId, StorageError};
+use proxima_core::{Owner, OwnerPrincipalKind, Principal, SourceBatchId, StorageError};
 use sqlx::PgPool;
 
 use crate::error::map_err;
@@ -26,30 +26,30 @@ pub async fn close_batch(
     source_batch_id: SourceBatchId,
 ) -> Result<CloseBatchOutcome, StorageError> {
     let (owner_kind, owner_principal_id) = match &owner.principal {
-        Principal::User(u) => ("User", u.into_inner()),
-        Principal::Group(g) => ("Group", g.into_inner()),
+        Principal::User(u) => (OwnerPrincipalKind::User, u.into_inner()),
+        Principal::Group(g) => (OwnerPrincipalKind::Group, g.into_inner()),
     };
     let batch_id = source_batch_id.into_inner();
 
     // Read current closed_at under owner scope.
-    let existing: Option<(Option<time::OffsetDateTime>,)> = sqlx::query_as(
-        "SELECT closed_at FROM proxima_core.source_batches \
-         WHERE id = $1 \
-           AND owner_principal_kind = $2 \
-           AND owner_principal_id = $3",
+    let existing = sqlx::query!(
+        r#"SELECT closed_at FROM proxima_core.source_batches
+             WHERE id = $1
+               AND owner_principal_kind = $2
+               AND owner_principal_id = $3"#,
+        batch_id,
+        owner_kind as OwnerPrincipalKind,
+        owner_principal_id,
     )
-    .bind(batch_id)
-    .bind(owner_kind)
-    .bind(owner_principal_id)
     .fetch_optional(pool)
     .await
     .map_err(map_err)?;
 
-    let Some((maybe_closed_at,)) = existing else {
+    let Some(row) = existing else {
         return Err(StorageError::NotFound);
     };
 
-    if let Some(closed_at) = maybe_closed_at {
+    if let Some(closed_at) = row.closed_at {
         return Ok(CloseBatchOutcome {
             source_batch_id,
             closed_at,
@@ -60,48 +60,48 @@ pub async fn close_batch(
     // Idempotent UPDATE: only flip when still NULL. If a concurrent
     // closer beat us, RETURNING is empty and we fall through to a
     // re-read.
-    let updated: Option<(time::OffsetDateTime,)> = sqlx::query_as(
-        "UPDATE proxima_core.source_batches \
-         SET closed_at = now() \
-         WHERE id = $1 \
-           AND owner_principal_kind = $2 \
-           AND owner_principal_id = $3 \
-           AND closed_at IS NULL \
-         RETURNING closed_at",
+    let updated = sqlx::query!(
+        r#"UPDATE proxima_core.source_batches
+             SET closed_at = now()
+             WHERE id = $1
+               AND owner_principal_kind = $2
+               AND owner_principal_id = $3
+               AND closed_at IS NULL
+             RETURNING closed_at AS "closed_at!""#,
+        batch_id,
+        owner_kind as OwnerPrincipalKind,
+        owner_principal_id,
     )
-    .bind(batch_id)
-    .bind(owner_kind)
-    .bind(owner_principal_id)
     .fetch_optional(pool)
     .await
     .map_err(map_err)?;
 
-    if let Some((closed_at,)) = updated {
+    if let Some(row) = updated {
         return Ok(CloseBatchOutcome {
             source_batch_id,
-            closed_at,
+            closed_at: row.closed_at,
             already_closed: false,
         });
     }
 
     // Lost the race; re-read to get the winner's closed_at.
-    let (closed_at,): (time::OffsetDateTime,) = sqlx::query_as(
-        "SELECT closed_at FROM proxima_core.source_batches \
-         WHERE id = $1 \
-           AND owner_principal_kind = $2 \
-           AND owner_principal_id = $3 \
-           AND closed_at IS NOT NULL",
+    let row = sqlx::query!(
+        r#"SELECT closed_at AS "closed_at!" FROM proxima_core.source_batches
+             WHERE id = $1
+               AND owner_principal_kind = $2
+               AND owner_principal_id = $3
+               AND closed_at IS NOT NULL"#,
+        batch_id,
+        owner_kind as OwnerPrincipalKind,
+        owner_principal_id,
     )
-    .bind(batch_id)
-    .bind(owner_kind)
-    .bind(owner_principal_id)
     .fetch_one(pool)
     .await
     .map_err(map_err)?;
 
     Ok(CloseBatchOutcome {
         source_batch_id,
-        closed_at,
+        closed_at: row.closed_at,
         already_closed: true,
     })
 }

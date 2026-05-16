@@ -1,0 +1,34 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT m.memory_id,\n                  m.citation_mapping_id AS \"citation_mapping_id!\",\n                  cm.cited_object_id\n             FROM proxima_core.memories m\n             JOIN proxima_core.citation_mappings cm\n               ON cm.citation_mapping_id = m.citation_mapping_id\n             WHERE m.event_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "memory_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "citation_mapping_id!",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "cited_object_id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "c744ca745bd8ac35280d76efba2243af0a634435a97499efb39bb9fbfbc4e495"
+}

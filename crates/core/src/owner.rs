@@ -17,3 +17,53 @@ pub enum Principal {
     User(UserId),
     Group(GroupId),
 }
+
+/// Discriminant tag for `Principal`, mirrors the SQL enum
+/// `proxima_core.owner_principal_kind`. Storage rows split a
+/// `Principal` across two columns (`owner_principal_kind` +
+/// `owner_principal_id`); FromRow decoders read this tag.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    specta::Type,
+    sqlx::Type,
+)]
+#[sqlx(type_name = "proxima_core.owner_principal_kind")]
+pub enum OwnerPrincipalKind {
+    User,
+    Group,
+}
+
+impl OwnerPrincipalKind {
+    #[must_use]
+    pub fn of(principal: &Principal) -> Self {
+        match principal {
+            Principal::User(_) => Self::User,
+            Principal::Group(_) => Self::Group,
+        }
+    }
+
+    #[must_use]
+    pub fn with_uuid(self, id: uuid::Uuid) -> Principal {
+        match self {
+            Self::User => Principal::User(crate::UserId::new(id)),
+            Self::Group => Principal::Group(crate::GroupId::new(id)),
+        }
+    }
+
+    /// Stable bytes for non-SQL contexts (e.g. external-key hashing).
+    /// Matches the SQL enum label exactly.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::User => "User",
+            Self::Group => "Group",
+        }
+    }
+}

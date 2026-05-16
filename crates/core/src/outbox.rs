@@ -7,13 +7,45 @@ use uuid::Uuid;
 use crate::{GoalId, MemoryId, Owner, SchemaId, SchemaVersion};
 
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, specta::Type,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    specta::Type,
+    sqlx::Type,
 )]
+#[sqlx(type_name = "proxima_core.entity_kind")]
 pub enum EntityKind {
     Fact,
     Abstraction,
     Perspective,
     Goal,
+}
+
+/// Discriminant tag for `ChangeEventKind`, mirrors the SQL enum
+/// `proxima_core.change_event_kind`. The rich `ChangeEventKind`
+/// carries payload; this tag is what the `change_event.kind` column
+/// stores and what FromRow decoders see.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    specta::Type,
+    sqlx::Type,
+)]
+#[sqlx(type_name = "proxima_core.change_event_kind")]
+pub enum ChangeEventKindTag {
+    EntityAppend,
+    EdgeAppend,
 }
 
 /// Endpoint of an Edge or supersedes target. Sum type matching

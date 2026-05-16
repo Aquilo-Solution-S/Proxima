@@ -1,5 +1,6 @@
 use proxima_core::personality::ActiveGoalSummary;
-use proxima_core::{GoalId, MemoryId, Owner, Principal, StorageError};
+use proxima_core::verbs::goal_write::GoalState;
+use proxima_core::{GoalId, MemoryId, Owner, OwnerPrincipalKind, Principal, StorageError};
 use sqlx::PgPool;
 
 pub(crate) async fn list_active_goals(
@@ -44,7 +45,7 @@ pub(crate) async fn list_active_goals(
            LEFT JOIN proxima_goal.goal_activated_v1 ga ON ga.goal_id = g.goal_id
           WHERE g.owner_principal_kind = $1
             AND g.owner_principal_id = $2
-            AND g.state = 'Active'
+            AND g.state = $4
             AND NOT EXISTS (
                 SELECT 1
                   FROM proxima_core.goals newer
@@ -53,7 +54,7 @@ pub(crate) async fn list_active_goals(
                    AND newer.owner_principal_id = $2
             )
           ORDER BY g.created_at DESC
-          LIMIT $4"
+          LIMIT $5"
     } else {
         "WITH RECURSIVE linked_goals(goal_id) AS (
              SELECT e.source_goal_id
@@ -77,7 +78,7 @@ pub(crate) async fn list_active_goals(
            JOIN linked_goals linked ON linked.goal_id = g.goal_id
           WHERE g.owner_principal_kind = $1
             AND g.owner_principal_id = $2
-            AND g.state = 'Active'
+            AND g.state = $4
             AND NOT EXISTS (
                 SELECT 1
                   FROM proxima_core.goals newer
@@ -86,13 +87,14 @@ pub(crate) async fn list_active_goals(
                    AND newer.owner_principal_id = $2
             )
           ORDER BY g.created_at DESC
-          LIMIT $4"
+          LIMIT $5"
     };
 
     let rows: Vec<ActiveGoalRow> = sqlx::query_as(sql)
         .bind(owner_kind)
         .bind(owner_principal_id)
         .bind(self_perspective_memory_id.into_inner())
+        .bind(GoalState::Active)
         .bind(i64::try_from(limit).unwrap_or(i64::MAX))
         .fetch_all(pool)
         .await
@@ -115,9 +117,9 @@ struct ActiveGoalRow {
     goal_activated_memory_id: Option<uuid::Uuid>,
 }
 
-fn owner_columns(owner: &Owner) -> (&'static str, uuid::Uuid) {
+fn owner_columns(owner: &Owner) -> (OwnerPrincipalKind, uuid::Uuid) {
     match &owner.principal {
-        Principal::User(user) => ("User", user.into_inner()),
-        Principal::Group(group) => ("Group", group.into_inner()),
+        Principal::User(user) => (OwnerPrincipalKind::User, user.into_inner()),
+        Principal::Group(group) => (OwnerPrincipalKind::Group, group.into_inner()),
     }
 }

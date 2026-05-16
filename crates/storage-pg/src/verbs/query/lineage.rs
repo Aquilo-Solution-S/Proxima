@@ -4,7 +4,7 @@ use proxima_core::verbs::query::{
     EntityKind, MemoryLineageDirection, MemoryLineageEdge, MemoryLineageNode, MemoryLineageRequest,
     MemoryLineageResponse,
 };
-use proxima_core::{MemoryId, Principal, SchemaId, StorageError, WakeChainDepth};
+use proxima_core::{MemoryId, OwnerPrincipalKind, Principal, SchemaId, StorageError, WakeChainDepth};
 use sqlx::PgPool;
 
 #[derive(Debug, sqlx::FromRow)]
@@ -34,8 +34,8 @@ pub(crate) async fn walk_memory_lineage(
     let limit = req.limit.min(200);
     let depth = req.depth.min(8);
     let (owner_kind, owner_principal_id) = match &req.owner.principal {
-        Principal::User(user) => ("User", user.into_inner()),
-        Principal::Group(group) => ("Group", group.into_inner()),
+        Principal::User(user) => (OwnerPrincipalKind::User, user.into_inner()),
+        Principal::Group(group) => (OwnerPrincipalKind::Group, group.into_inner()),
     };
 
     if !start_memory_visible(pool, owner_kind, owner_principal_id, req.start_memory_id).await? {
@@ -108,20 +108,20 @@ pub(crate) async fn walk_memory_lineage(
 
 async fn start_memory_visible(
     pool: &PgPool,
-    owner_kind: &str,
+    owner_kind: OwnerPrincipalKind,
     owner_principal_id: uuid::Uuid,
     memory_id: MemoryId,
 ) -> Result<bool, StorageError> {
-    let present: Option<(uuid::Uuid,)> = sqlx::query_as(
-        "SELECT memory_id
-         FROM proxima_core.memories
-         WHERE owner_principal_kind = $1
-           AND owner_principal_id = $2
-           AND memory_id = $3",
+    let present = sqlx::query_scalar!(
+        r#"SELECT memory_id
+             FROM proxima_core.memories
+             WHERE owner_principal_kind = $1
+               AND owner_principal_id = $2
+               AND memory_id = $3"#,
+        owner_kind as OwnerPrincipalKind,
+        owner_principal_id,
+        memory_id.into_inner(),
     )
-    .bind(owner_kind)
-    .bind(owner_principal_id)
-    .bind(memory_id.into_inner())
     .fetch_optional(pool)
     .await
     .map_err(|e| StorageError::Internal(e.to_string()))?;
@@ -131,7 +131,7 @@ async fn start_memory_visible(
 async fn walk_edges(
     pool: &PgPool,
     req: &MemoryLineageRequest,
-    owner_kind: &str,
+    owner_kind: OwnerPrincipalKind,
     owner_principal_id: uuid::Uuid,
     depth: u8,
     limit: u32,
@@ -153,24 +153,38 @@ async fn walk_edges(
 
 async fn load_nodes(
     pool: &PgPool,
-    owner_kind: &str,
+    owner_kind: OwnerPrincipalKind,
     owner_principal_id: uuid::Uuid,
     memory_ids: &[uuid::Uuid],
 ) -> Result<Vec<NodeRow>, StorageError> {
-    let rows = sqlx::query_as(
-        "SELECT memory_id, kind, schema_id, left(COALESCE(text, ''), 480) AS snippet,
-                wake_chain_depth
-         FROM proxima_core.memories
-         WHERE owner_principal_kind = $1
-           AND owner_principal_id = $2
-           AND memory_id = ANY($3::uuid[])",
+    let rows = sqlx::query!(
+        r#"SELECT memory_id,
+                  kind::text AS kind,
+                  schema_id,
+                  left(COALESCE(text, ''), 480) AS snippet,
+                  wake_chain_depth
+             FROM proxima_core.memories
+             WHERE owner_principal_kind = $1
+               AND owner_principal_id = $2
+               AND memory_id = ANY($3::uuid[])"#,
+        owner_kind as OwnerPrincipalKind,
+        owner_principal_id,
+        memory_ids,
     )
-    .bind(owner_kind)
-    .bind(owner_principal_id)
-    .bind(memory_ids)
     .fetch_all(pool)
     .await
     .map_err(|e| StorageError::Internal(e.to_string()))?;
+
+    let rows: Vec<NodeRow> = rows
+        .into_iter()
+        .map(|r| NodeRow {
+            memory_id: r.memory_id,
+            kind: r.kind,
+            schema_id: r.schema_id,
+            snippet: r.snippet,
+            wake_chain_depth: r.wake_chain_depth,
+        })
+        .collect();
 
     let expected: BTreeSet<_> = memory_ids.iter().copied().collect();
     let actual: BTreeSet<_> = rows.iter().map(|row: &NodeRow| row.memory_id).collect();

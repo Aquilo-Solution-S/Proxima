@@ -1,0 +1,41 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT g.goal_id, ce.seq\n             FROM proxima_core.goals g\n             JOIN proxima_core.change_event ce ON ce.entity_goal_id = g.goal_id\n             WHERE (g.owner_principal_kind, g.owner_principal_id, g.owner_org_id, g.request_id)\n               = ($1, $2, $3, $4)\n             ORDER BY ce.seq ASC LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "goal_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "seq",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        {
+          "Custom": {
+            "name": "proxima_core.owner_principal_kind",
+            "kind": {
+              "Enum": [
+                "User",
+                "Group"
+              ]
+            }
+          }
+        },
+        "Uuid",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "4eff33456f4f00b589d5f05d28771859905422655dd9c71653163f03312ed5b6"
+}

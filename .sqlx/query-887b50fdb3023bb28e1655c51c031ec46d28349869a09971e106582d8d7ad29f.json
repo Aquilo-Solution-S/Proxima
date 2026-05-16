@@ -1,0 +1,58 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT memory_id,\n                  kind::text AS kind,\n                  schema_id,\n                  left(COALESCE(text, ''), 480) AS snippet,\n                  wake_chain_depth\n             FROM proxima_core.memories\n             WHERE owner_principal_kind = $1\n               AND owner_principal_id = $2\n               AND memory_id = ANY($3::uuid[])",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "memory_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "kind",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "schema_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "snippet",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "wake_chain_depth",
+        "type_info": "Int2"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        {
+          "Custom": {
+            "name": "proxima_core.owner_principal_kind",
+            "kind": {
+              "Enum": [
+                "User",
+                "Group"
+              ]
+            }
+          }
+        },
+        "Uuid",
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      false,
+      null,
+      false
+    ]
+  },
+  "hash": "887b50fdb3023bb28e1655c51c031ec46d28349869a09971e106582d8d7ad29f"
+}

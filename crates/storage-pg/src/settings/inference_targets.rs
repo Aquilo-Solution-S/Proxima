@@ -4,24 +4,14 @@
 //! identical kind + JSON config. A differing body is a conflict.
 
 use proxima_core::{
-    BindInferenceTierRequest, BindInferenceTierResponse, InferenceTargetConfig, InferenceTargetRow,
-    InferenceTierBindingRow, ModelTier, Owner, RegisterInferenceTargetRequest,
-    RegisterInferenceTargetResponse, RemoveInferenceTargetRequest, RemoveInferenceTargetResponse,
+    BindInferenceTierRequest, BindInferenceTierResponse, InferenceTargetConfig, InferenceTargetKind,
+    InferenceTargetRow, InferenceTierBindingRow, ModelTier, Owner, OwnerPrincipalKind,
+    RegisterInferenceTargetRequest, RegisterInferenceTargetResponse, RemoveInferenceTargetRequest,
+    RemoveInferenceTargetResponse,
 };
-use sqlx::{PgPool, Row};
+use sqlx::PgPool;
 
-use super::types::{
-    SettingsError, map_sqlx_err_inference_target, owner_triple, str_to_tier, tier_to_str,
-};
-
-fn config_kind(config: &InferenceTargetConfig) -> &'static str {
-    match config {
-        InferenceTargetConfig::MistralChat(_) => "mistral_chat",
-        InferenceTargetConfig::OpenAIChat(_) => "openai_chat",
-        InferenceTargetConfig::OpenAIResponses(_) => "openai_responses",
-        InferenceTargetConfig::ChatGPTCodex(_) => "chatgpt_codex",
-    }
-}
+use super::types::{SettingsError, map_sqlx_err_inference_target, owner_triple};
 
 /// Register an inference target for an owner.
 ///
@@ -33,29 +23,27 @@ pub async fn register_inference_target(
     req: &RegisterInferenceTargetRequest,
 ) -> Result<RegisterInferenceTargetResponse, SettingsError> {
     let (owner_kind, owner_principal_id, owner_org_id) = owner_triple(&req.owner);
-    let kind = config_kind(&req.config);
+    let kind = req.config.kind();
     let config_json = serde_json::to_value(&req.config).map_err(SettingsError::Json)?;
 
-    let existing = sqlx::query(
-        "SELECT kind, config
-         FROM proxima_core.inference_targets
-         WHERE owner_principal_kind = $1
-           AND owner_principal_id = $2
-           AND owner_org_id = $3
-           AND target_ref = $4",
+    let existing = sqlx::query!(
+        r#"SELECT kind AS "kind: InferenceTargetKind", config
+             FROM proxima_core.inference_targets
+             WHERE owner_principal_kind = $1
+               AND owner_principal_id = $2
+               AND owner_org_id = $3
+               AND target_ref = $4"#,
+        owner_kind as OwnerPrincipalKind,
+        owner_principal_id,
+        owner_org_id,
+        &req.target_ref,
     )
-    .bind(owner_kind)
-    .bind(owner_principal_id)
-    .bind(owner_org_id)
-    .bind(&req.target_ref)
     .fetch_optional(pool)
     .await
     .map_err(SettingsError::Database)?;
 
     if let Some(row) = existing {
-        let existing_kind: String = row.get("kind");
-        let existing_config: serde_json::Value = row.get("config");
-        if existing_kind == kind && existing_config == config_json {
+        if row.kind == kind && row.config == config_json {
             return Ok(RegisterInferenceTargetResponse {
                 target_ref: req.target_ref.clone(),
                 idempotent_replay: true,
@@ -67,18 +55,18 @@ pub async fn register_inference_target(
         )));
     }
 
-    sqlx::query(
-        "INSERT INTO proxima_core.inference_targets
+    sqlx::query!(
+        r#"INSERT INTO proxima_core.inference_targets
             (owner_principal_kind, owner_principal_id, owner_org_id,
              target_ref, kind, config)
-         VALUES ($1, $2, $3, $4, $5, $6)",
+         VALUES ($1, $2, $3, $4, $5, $6)"#,
+        owner_kind as OwnerPrincipalKind,
+        owner_principal_id,
+        owner_org_id,
+        &req.target_ref,
+        kind as InferenceTargetKind,
+        config_json,
     )
-    .bind(owner_kind)
-    .bind(owner_principal_id)
-    .bind(owner_org_id)
-    .bind(&req.target_ref)
-    .bind(kind)
-    .bind(config_json)
     .execute(pool)
     .await
     .map_err(map_sqlx_err_inference_target)?;
@@ -98,17 +86,17 @@ pub async fn list_inference_targets(
     owner: &Owner,
 ) -> Result<Vec<InferenceTargetRow>, SettingsError> {
     let (owner_kind, owner_principal_id, owner_org_id) = owner_triple(owner);
-    let rows = sqlx::query(
-        "SELECT target_ref, config, created_at, updated_at
-         FROM proxima_core.inference_targets
-         WHERE owner_principal_kind = $1
-           AND owner_principal_id = $2
-           AND owner_org_id = $3
-         ORDER BY target_ref",
+    let rows = sqlx::query!(
+        r#"SELECT target_ref, config, created_at, updated_at
+             FROM proxima_core.inference_targets
+             WHERE owner_principal_kind = $1
+               AND owner_principal_id = $2
+               AND owner_org_id = $3
+             ORDER BY target_ref"#,
+        owner_kind as OwnerPrincipalKind,
+        owner_principal_id,
+        owner_org_id,
     )
-    .bind(owner_kind)
-    .bind(owner_principal_id)
-    .bind(owner_org_id)
     .fetch_all(pool)
     .await
     .map_err(SettingsError::Database)?;
@@ -116,13 +104,13 @@ pub async fn list_inference_targets(
     rows.into_iter()
         .map(|row| {
             let config: InferenceTargetConfig =
-                serde_json::from_value(row.get("config")).map_err(SettingsError::Json)?;
+                serde_json::from_value(row.config).map_err(SettingsError::Json)?;
             Ok(InferenceTargetRow {
                 owner: owner.clone(),
-                target_ref: row.get("target_ref"),
+                target_ref: row.target_ref,
                 config,
-                created_at: row.get("created_at"),
-                updated_at: row.get("updated_at"),
+                created_at: row.created_at,
+                updated_at: row.updated_at,
             })
         })
         .collect()
@@ -139,43 +127,44 @@ pub async fn remove_inference_target(
 ) -> Result<RemoveInferenceTargetResponse, SettingsError> {
     let (owner_kind, owner_principal_id, owner_org_id) = owner_triple(&req.owner);
 
-    let tiers: Vec<String> = sqlx::query_scalar(
-        "SELECT tier
-         FROM proxima_core.inference_tier_bindings
-         WHERE owner_principal_kind = $1
-           AND owner_principal_id = $2
-           AND owner_org_id = $3
-           AND target_ref = $4",
+    let tiers = sqlx::query_scalar!(
+        r#"SELECT tier AS "tier: ModelTier"
+             FROM proxima_core.inference_tier_bindings
+             WHERE owner_principal_kind = $1
+               AND owner_principal_id = $2
+               AND owner_org_id = $3
+               AND target_ref = $4"#,
+        owner_kind as OwnerPrincipalKind,
+        owner_principal_id,
+        owner_org_id,
+        &req.target_ref,
     )
-    .bind(owner_kind)
-    .bind(owner_principal_id)
-    .bind(owner_org_id)
-    .bind(&req.target_ref)
     .fetch_all(pool)
     .await
     .map_err(SettingsError::Database)?;
 
     if !tiers.is_empty() {
+        let tier_strs: Vec<String> = tiers.iter().map(|t| format!("{t:?}")).collect();
         return Err(SettingsError::InUse(format!(
             "target `{}` still bound to tiers: {}",
             req.target_ref,
-            tiers.join(", ")
+            tier_strs.join(", ")
         )));
     }
 
-    let wake_entries: Vec<String> = sqlx::query_scalar(
-        "SELECT wake_entry_id::text
-         FROM proxima_core.personality_wake_entries
-         WHERE owner_principal_kind = $1
-           AND owner_principal_id = $2
-           AND owner_org_id = $3
-           AND inference_target_ref = $4
-           AND tombstoned_at IS NULL",
+    let wake_entries = sqlx::query_scalar!(
+        r#"SELECT wake_entry_id::text AS "wake_entry_id!"
+             FROM proxima_core.personality_wake_entries
+             WHERE owner_principal_kind = $1
+               AND owner_principal_id = $2
+               AND owner_org_id = $3
+               AND inference_target_ref = $4
+               AND tombstoned_at IS NULL"#,
+        owner_kind as OwnerPrincipalKind,
+        owner_principal_id,
+        owner_org_id,
+        &req.target_ref,
     )
-    .bind(owner_kind)
-    .bind(owner_principal_id)
-    .bind(owner_org_id)
-    .bind(&req.target_ref)
     .fetch_all(pool)
     .await
     .map_err(SettingsError::Database)?;
@@ -188,17 +177,17 @@ pub async fn remove_inference_target(
         )));
     }
 
-    let result = sqlx::query(
-        "DELETE FROM proxima_core.inference_targets
-         WHERE owner_principal_kind = $1
-           AND owner_principal_id = $2
-           AND owner_org_id = $3
-           AND target_ref = $4",
+    let result = sqlx::query!(
+        r#"DELETE FROM proxima_core.inference_targets
+             WHERE owner_principal_kind = $1
+               AND owner_principal_id = $2
+               AND owner_org_id = $3
+               AND target_ref = $4"#,
+        owner_kind as OwnerPrincipalKind,
+        owner_principal_id,
+        owner_org_id,
+        &req.target_ref,
     )
-    .bind(owner_kind)
-    .bind(owner_principal_id)
-    .bind(owner_org_id)
-    .bind(&req.target_ref)
     .execute(pool)
     .await
     .map_err(SettingsError::Database)?;
@@ -217,18 +206,18 @@ pub async fn bind_inference_tier(
     req: &BindInferenceTierRequest,
 ) -> Result<BindInferenceTierResponse, SettingsError> {
     let (owner_kind, owner_principal_id, owner_org_id) = owner_triple(&req.owner);
-    sqlx::query(
-        "INSERT INTO proxima_core.inference_tier_bindings
+    sqlx::query!(
+        r#"INSERT INTO proxima_core.inference_tier_bindings
             (owner_principal_kind, owner_principal_id, owner_org_id, tier, target_ref)
          VALUES ($1, $2, $3, $4, $5)
          ON CONFLICT (owner_principal_kind, owner_principal_id, owner_org_id, tier)
-         DO UPDATE SET target_ref = EXCLUDED.target_ref, bound_at = now()",
+         DO UPDATE SET target_ref = EXCLUDED.target_ref, bound_at = now()"#,
+        owner_kind as OwnerPrincipalKind,
+        owner_principal_id,
+        owner_org_id,
+        req.tier as ModelTier,
+        &req.target_ref,
     )
-    .bind(owner_kind)
-    .bind(owner_principal_id)
-    .bind(owner_org_id)
-    .bind(tier_to_str(req.tier))
-    .bind(&req.target_ref)
     .execute(pool)
     .await
     .map_err(map_sqlx_err_inference_target)?;
@@ -246,17 +235,17 @@ pub async fn unbind_inference_tier(
     tier: ModelTier,
 ) -> Result<(), SettingsError> {
     let (owner_kind, owner_principal_id, owner_org_id) = owner_triple(owner);
-    sqlx::query(
-        "DELETE FROM proxima_core.inference_tier_bindings
-         WHERE owner_principal_kind = $1
-           AND owner_principal_id = $2
-           AND owner_org_id = $3
-           AND tier = $4",
+    sqlx::query!(
+        r#"DELETE FROM proxima_core.inference_tier_bindings
+             WHERE owner_principal_kind = $1
+               AND owner_principal_id = $2
+               AND owner_org_id = $3
+               AND tier = $4"#,
+        owner_kind as OwnerPrincipalKind,
+        owner_principal_id,
+        owner_org_id,
+        tier as ModelTier,
     )
-    .bind(owner_kind)
-    .bind(owner_principal_id)
-    .bind(owner_org_id)
-    .bind(tier_to_str(tier))
     .execute(pool)
     .await
     .map_err(SettingsError::Database)?;
@@ -272,17 +261,17 @@ pub async fn list_inference_tier_bindings(
     owner: &Owner,
 ) -> Result<Vec<InferenceTierBindingRow>, SettingsError> {
     let (owner_kind, owner_principal_id, owner_org_id) = owner_triple(owner);
-    let rows = sqlx::query(
-        "SELECT tier, target_ref
-         FROM proxima_core.inference_tier_bindings
-         WHERE owner_principal_kind = $1
-           AND owner_principal_id = $2
-           AND owner_org_id = $3
-         ORDER BY tier",
+    let rows = sqlx::query!(
+        r#"SELECT tier AS "tier: ModelTier", target_ref
+             FROM proxima_core.inference_tier_bindings
+             WHERE owner_principal_kind = $1
+               AND owner_principal_id = $2
+               AND owner_org_id = $3
+             ORDER BY tier"#,
+        owner_kind as OwnerPrincipalKind,
+        owner_principal_id,
+        owner_org_id,
     )
-    .bind(owner_kind)
-    .bind(owner_principal_id)
-    .bind(owner_org_id)
     .fetch_all(pool)
     .await
     .map_err(SettingsError::Database)?;
@@ -291,8 +280,8 @@ pub async fn list_inference_tier_bindings(
         .map(|row| {
             Ok(InferenceTierBindingRow {
                 owner: owner.clone(),
-                tier: str_to_tier(&row.get::<String, _>("tier"))?,
-                target_ref: row.get("target_ref"),
+                tier: row.tier,
+                target_ref: row.target_ref,
             })
         })
         .collect()

@@ -1,5 +1,5 @@
-use proxima_core::models::{EmbedCaps, ModelTier};
-use proxima_core::{Owner, Principal};
+use proxima_core::models::EmbedCaps;
+use proxima_core::{Owner, OwnerPrincipalKind, Principal};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -13,31 +13,11 @@ pub struct EmbeddingModel {
     pub secret_ref: Option<String>,
 }
 
-/// Helper: `ModelTier` → lowercase string for DB.
-#[must_use]
-pub(super) fn tier_to_str(t: ModelTier) -> &'static str {
-    match t {
-        ModelTier::Fast => "fast",
-        ModelTier::Standard => "standard",
-        ModelTier::Deep => "deep",
-    }
-}
-
-/// Helper: lowercase string → `ModelTier`.
-pub(super) fn str_to_tier(s: &str) -> Result<ModelTier, SettingsError> {
-    match s {
-        "fast" => Ok(ModelTier::Fast),
-        "standard" => Ok(ModelTier::Standard),
-        "deep" => Ok(ModelTier::Deep),
-        _ => Err(SettingsError::Invariant(format!("unknown tier '{s}'"))),
-    }
-}
-
 /// Helper: decompose Owner into the triple used in WHERE clauses.
-pub(super) fn owner_triple(owner: &Owner) -> (&'static str, Uuid, Uuid) {
+pub(super) fn owner_triple(owner: &Owner) -> (OwnerPrincipalKind, Uuid, Uuid) {
     let (kind, principal_id) = match &owner.principal {
-        Principal::User(u) => ("User", u.into_inner()),
-        Principal::Group(g) => ("Group", g.into_inner()),
+        Principal::User(u) => (OwnerPrincipalKind::User, u.into_inner()),
+        Principal::Group(g) => (OwnerPrincipalKind::Group, g.into_inner()),
     };
     (kind, principal_id, owner.org_id.into_inner())
 }

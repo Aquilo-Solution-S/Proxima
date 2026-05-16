@@ -29,6 +29,39 @@ pub enum InferenceTargetConfig {
     ChatGPTCodex(ChatGPTCodexConfig),
 }
 
+/// Rust mirror of `proxima_core.inference_target_kind`.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    specta::Type,
+    sqlx::Type,
+)]
+#[serde(rename_all = "snake_case")]
+#[sqlx(type_name = "proxima_core.inference_target_kind", rename_all = "snake_case")]
+pub enum InferenceTargetKind {
+    MistralChat,
+    OpenAIChat,
+    OpenAIResponses,
+    ChatGPTCodex,
+}
+
+impl InferenceTargetConfig {
+    #[must_use]
+    pub fn kind(&self) -> InferenceTargetKind {
+        match self {
+            Self::MistralChat(_) => InferenceTargetKind::MistralChat,
+            Self::OpenAIChat(_) => InferenceTargetKind::OpenAIChat,
+            Self::OpenAIResponses(_) => InferenceTargetKind::OpenAIResponses,
+            Self::ChatGPTCodex(_) => InferenceTargetKind::ChatGPTCodex,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, specta::Type)]
 pub struct MistralChatConfig {
     pub base_url: String,

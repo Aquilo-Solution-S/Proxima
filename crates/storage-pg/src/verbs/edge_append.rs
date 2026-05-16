@@ -7,15 +7,12 @@
 //!
 //! Used by M5.5 typed F-layer edges (e.g. `proxima-code/calls`).
 
-use proxima_core::{Owner, RegisteredRelation, StorageError};
+use proxima_core::{Owner, OwnerPrincipalKind, RegisteredRelation, StorageError};
 
 use crate::error::map_err;
 use crate::pg_ident::PgIdent;
 
-/// Draft of an edge to be written. All fields map directly to
-/// `proxima_core.edges` columns except `edge_id`, which is generated
-/// by the caller (UUIDv7 per AGENTS.md invariant 17), and
-/// `relation`, which must be resolved from `FlavorRegistryFrozen`.
+/// Draft of an edge to be written.
 #[derive(Debug, Clone)]
 pub struct EdgeDraft<'a> {
     pub edge_id: uuid::Uuid,
@@ -32,20 +29,7 @@ pub struct EdgeDraft<'a> {
 }
 
 /// Write an edge row + (optional) typed sidecar + the EdgeAppend
-/// change_event in one transaction. The relation must be resolved
-/// from the immutable `FlavorRegistryFrozen`, so the writer never accepts
-/// ad-hoc relation strings. Typed relations require a payload;
-/// substrate relations reject one.
-///
-/// Idempotency: the edge insert uses `ON CONFLICT (edge_id) DO
-/// NOTHING`. When a caller derives `edge_id` from a stable natural
-/// key (e.g. `Uuid::new_v5` over the relation tuple), re-ingesting
-/// the same logical edge collapses to a single row — and crucially,
-/// the sidecar `INSERT` and the `EdgeAppend` change_event are gated
-/// on the edge insert actually returning a row, so a conflict
-/// short-circuits without writing duplicate sidecar rows or firing a
-/// duplicate change_event. v1 edges are immutable, so dropping the
-/// duplicate is correct semantics, not lossy.
+/// change_event in one transaction.
 ///
 /// # Errors
 ///
@@ -78,9 +62,10 @@ pub async fn append_edge_in_tx(
         .validate_edge_shape(draft.source_kind, draft.target_kind, draft.authorship_kind)
         .map_err(StorageError::ConstraintViolation)?;
 
-    // 1. Insert the edge row. ON CONFLICT (edge_id) DO NOTHING +
-    //    RETURNING gives us a sentinel that distinguishes a fresh
-    //    insert (`Some`) from a deduplicated re-ingest (`None`).
+    // TODO(macro-sweep): source_kind/target_kind/authorship_kind are
+    // proxima_core enum columns; callers pass &str. Macroizing requires
+    // either typed enum callers (EntityKind / EdgeAuthorshipKind) or
+    // adding Rust mirrors. Leaving on runtime form for this iteration.
     let inserted: Option<(uuid::Uuid,)> = sqlx::query_as(
         "INSERT INTO proxima_core.edges \
             (edge_id, relation, relation_class, \
@@ -88,7 +73,12 @@ pub async fn append_edge_in_tx(
              target_kind, target_memory_id, target_goal_id, \
              authorship_kind, authorship_owner_memory_id, \
              owner_principal_kind, owner_principal_id, owner_org_id) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) \
+         VALUES ($1, $2, \
+                 $3::proxima_core.relation_class, \
+                 $4::proxima_core.entity_kind, $5, $6, \
+                 $7::proxima_core.entity_kind, $8, $9, \
+                 $10::proxima_core.edge_authorship_kind, $11, \
+                 $12::proxima_core.owner_principal_kind, $13, $14) \
          ON CONFLICT (edge_id) DO NOTHING \
          RETURNING edge_id",
     )
@@ -103,23 +93,18 @@ pub async fn append_edge_in_tx(
     .bind(draft.target_goal_id)
     .bind(draft.authorship_kind)
     .bind(draft.authorship_owner_memory_id)
-    .bind(owner_kind)
+    .bind(owner_kind as OwnerPrincipalKind)
     .bind(owner_principal_id)
     .bind(owner_org_id)
     .fetch_optional(&mut *tx)
     .await
     .map_err(map_err)?;
 
-    // Re-ingest of an existing edge: nothing further to do. The
-    // sidecar row is already present from the first ingest; emitting
-    // a second change_event would (a) violate the
-    // one-event-per-observation invariant and (b) noisily fan out
-    // outbox subscribers for no semantic change.
     if inserted.is_none() {
         return Ok(());
     }
 
-    // 2. Insert typed sidecar if provided.
+    // Sidecar SQL composed from validated identifier; can't be a macro.
     if let (Some(payload_json), Some(table)) = (payload, sidecar_table) {
         let table = PgIdent::table(table)?;
 
@@ -139,8 +124,8 @@ pub async fn append_edge_in_tx(
             .map_err(map_err)?;
     }
 
-    // 3. Insert EdgeAppend change_event.
     let seq = uuid::Uuid::now_v7();
+    // TODO(macro-sweep): same as above for edge_source_kind / edge_target_kind.
     sqlx::query(
         "INSERT INTO proxima_core.change_event \
             (seq, owner_principal_kind, owner_principal_id, owner_org_id, kind, \
@@ -148,10 +133,11 @@ pub async fn append_edge_in_tx(
              edge_source_kind, edge_source_memory_id, edge_source_goal_id, \
              edge_target_kind, edge_target_memory_id, edge_target_goal_id) \
          VALUES ($1, $2, $3, $4, 'EdgeAppend', $5, $6, \
-                 $7, $8, $9, $10, $11, $12)",
+                 $7::proxima_core.entity_kind, $8, $9, \
+                 $10::proxima_core.entity_kind, $11, $12)",
     )
     .bind(seq)
-    .bind(owner_kind)
+    .bind(owner_kind as OwnerPrincipalKind)
     .bind(owner_principal_id)
     .bind(owner_org_id)
     .bind(draft.edge_id)
@@ -169,10 +155,10 @@ pub async fn append_edge_in_tx(
     Ok(())
 }
 
-fn owner_columns(owner: &Owner) -> (&'static str, uuid::Uuid, uuid::Uuid) {
+fn owner_columns(owner: &Owner) -> (OwnerPrincipalKind, uuid::Uuid, uuid::Uuid) {
     let (kind, principal_id) = match &owner.principal {
-        proxima_core::Principal::User(u) => ("User", u.into_inner()),
-        proxima_core::Principal::Group(g) => ("Group", g.into_inner()),
+        proxima_core::Principal::User(u) => (OwnerPrincipalKind::User, u.into_inner()),
+        proxima_core::Principal::Group(g) => (OwnerPrincipalKind::Group, g.into_inner()),
     };
     (kind, principal_id, owner.org_id.into_inner())
 }

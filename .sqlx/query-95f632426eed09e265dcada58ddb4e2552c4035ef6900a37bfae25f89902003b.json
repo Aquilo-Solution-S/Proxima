@@ -1,0 +1,41 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT s.display_name, s.purpose\n             FROM proxima_core.root_personality_perspective_v1 s\n             JOIN proxima_core.memories m\n               ON m.memory_id = s.memory_id\n             WHERE s.memory_id = $1\n               AND m.owner_principal_kind = $2\n               AND m.owner_principal_id = $3\n               AND m.owner_org_id = $4",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "display_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "purpose",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        {
+          "Custom": {
+            "name": "proxima_core.owner_principal_kind",
+            "kind": {
+              "Enum": [
+                "User",
+                "Group"
+              ]
+            }
+          }
+        },
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "95f632426eed09e265dcada58ddb4e2552c4035ef6900a37bfae25f89902003b"
+}

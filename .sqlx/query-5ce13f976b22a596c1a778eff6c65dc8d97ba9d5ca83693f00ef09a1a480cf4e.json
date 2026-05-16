@@ -1,0 +1,78 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT schema_id, schema_version, title, text,\n                       state AS \"state: GoalState\",\n                       COALESCE((SELECT array_agg(parent_goal_id) FROM proxima_core.goal_parents WHERE goal_id = $1), '{}'::uuid[]) AS \"parents!\",\n                       supersedes, payload\n                 FROM proxima_core.goals WHERE goal_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "schema_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "schema_version",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 2,
+        "name": "title",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "text",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "state: GoalState",
+        "type_info": {
+          "Custom": {
+            "name": "proxima_core.goal_state",
+            "kind": {
+              "Enum": [
+                "Proposed",
+                "Active",
+                "Paused",
+                "Achieved",
+                "Abandoned",
+                "Rejected"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "parents!",
+        "type_info": "UuidArray"
+      },
+      {
+        "ordinal": 6,
+        "name": "supersedes",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 7,
+        "name": "payload",
+        "type_info": "Bytea"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      null,
+      true,
+      false
+    ]
+  },
+  "hash": "5ce13f976b22a596c1a778eff6c65dc8d97ba9d5ca83693f00ef09a1a480cf4e"
+}

@@ -1,6 +1,6 @@
 use std::fmt::Write as _;
 
-use proxima_core::StorageError;
+use proxima_core::{OwnerPrincipalKind, StorageError};
 use proxima_core::verbs::query::{GoalRow, QueryRequest, SupersessionStatus};
 use sqlx::PgPool;
 
@@ -9,7 +9,7 @@ use super::rows::{GoalRowDb, goal_row_from_db};
 pub(super) async fn query_goals(
     pool: &PgPool,
     req: &QueryRequest,
-    owner_kind: &str,
+    owner_kind: OwnerPrincipalKind,
     owner_principal_id: uuid::Uuid,
     schema_id_filter: Option<&str>,
 ) -> Result<Vec<GoalRow>, StorageError> {

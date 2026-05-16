@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO proxima_core.source_batches\n            (id, source_id, owner_principal_kind,\n             owner_principal_id, owner_org_id)\n         VALUES ($1, $2, $3, $4, $5)\n         ON CONFLICT (id) DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        {
+          "Custom": {
+            "name": "proxima_core.owner_principal_kind",
+            "kind": {
+              "Enum": [
+                "User",
+                "Group"
+              ]
+            }
+          }
+        },
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "28823cfec941a1eebc0003eecea4e33ba9598bd2131a7ceb180982eec6e300c7"
+}

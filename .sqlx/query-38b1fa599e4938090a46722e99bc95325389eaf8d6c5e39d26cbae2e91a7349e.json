@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO proxima_core.goal_parents (goal_id, parent_goal_id)\n             VALUES ($1, $2)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "38b1fa599e4938090a46722e99bc95325389eaf8d6c5e39d26cbae2e91a7349e"
+}

@@ -1,6 +1,17 @@
 use proxima_core::GoalPayload;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    specta::Type,
+    sqlx::Type,
+)]
+#[sqlx(type_name = "proxima_goal.task_priority")]
 pub enum TaskPriority {
     Low,
     Medium,

@@ -207,7 +207,7 @@ async fn load_source_kinds(
 fn derived_memory_id(owner: &proxima_core::Owner, kind: &str, key: &str) -> uuid::Uuid {
     let (principal_kind, principal_id, org_id) = owner_columns(owner);
     let mut buf = Vec::with_capacity(96 + key.len());
-    buf.extend_from_slice(principal_kind.as_bytes());
+    buf.extend_from_slice(principal_kind.as_str().as_bytes());
     buf.push(0);
     buf.extend_from_slice(principal_id.as_bytes());
     buf.push(0);

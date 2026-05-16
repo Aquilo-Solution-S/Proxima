@@ -1,0 +1,41 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO proxima_core.inference_targets\n            (owner_principal_kind, owner_principal_id, owner_org_id,\n             target_ref, kind, config)\n         VALUES ($1, $2, $3, $4, $5, $6)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        {
+          "Custom": {
+            "name": "proxima_core.owner_principal_kind",
+            "kind": {
+              "Enum": [
+                "User",
+                "Group"
+              ]
+            }
+          }
+        },
+        "Uuid",
+        "Uuid",
+        "Text",
+        {
+          "Custom": {
+            "name": "proxima_core.inference_target_kind",
+            "kind": {
+              "Enum": [
+                "mistral_chat",
+                "openai_chat",
+                "openai_responses",
+                "chatgpt_codex"
+              ]
+            }
+          }
+        },
+        "Jsonb"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "5e13bd3642b02296a507b7d5a2e529e91d6e9ab33ae85ed1e8e5ea361f5625f9"
+}
