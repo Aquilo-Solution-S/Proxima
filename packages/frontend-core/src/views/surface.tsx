@@ -4,16 +4,18 @@ import { useGraph } from "../graph-store";
 import { useGraphFilter } from "../graph-filter-store";
 import { filterGraphSnapshot, oneHopLineage } from "../graph-selectors";
 import type { Hub } from "../hub";
-import type { GoalRow } from "../bindings";
+import { commands, type GoalDraft, type GoalRow } from "../bindings";
 import type { DecodedMemory } from "../graph-store";
 import { ActivityStrip, type EngineState } from "./surface/activity-strip";
 import { ChipRail } from "./surface/chip-rail";
 import { DetailPane } from "./surface/detail-pane";
 import { FilterDrawer, type FilterFacets } from "./surface/filter-drawer";
+import { RequestsStrip } from "./surface/requests-strip";
 import { RowList, type ActiveTab } from "./surface/row-list";
 import { TabStrip } from "./surface/tab-strip";
 import { installSurfaceKeys } from "./surface/keys";
 import { EventStream } from "./surface-events";
+import { GoalDialog } from "./goal-dialog";
 
 const goalToDecodedMemory = (goal: GoalRow): DecodedMemory => ({
   row: {
@@ -44,6 +46,9 @@ export const FullSurface: Component<{ hub: Hub }> = (props) => {
   const [drawerOpen, setDrawerOpen] = createSignal(false);
   const [eventsOpen, setEventsOpen] = createSignal(false);
   const [selectedId, setSelectedId] = createSignal<string | null>(null);
+  const [acceptProposal, setAcceptProposal] = createSignal<GoalRow | null>(null);
+  const [decliningId, setDecliningId] = createSignal<string | null>(null);
+  const [requestsError, setRequestsError] = createSignal<string | null>(null);
 
   const filtered = createMemo(() => {
     const layer = tabLayer(activeTab());
@@ -138,6 +143,48 @@ export const FullSurface: Component<{ hub: Hub }> = (props) => {
     ),
   );
 
+  const proposals = createMemo<GoalRow[]>(() =>
+    Array.from(graph.state().goalsById.values()).filter(
+      (g) => g.state === "Proposed",
+    ),
+  );
+
+  const declineProposal = async (proposal: GoalRow): Promise<void> => {
+    if (decliningId() !== null) return;
+    setDecliningId(proposal.id);
+    setRequestsError(null);
+    const draft: GoalDraft = {
+      owner: proposal.owner,
+      schema_id: proposal.schema_id,
+      schema_version: proposal.schema_version,
+      title: proposal.title,
+      text: proposal.text,
+      payload: proposal.payload,
+      state: "Rejected",
+      parent_goal_ids: proposal.parent_goal_ids,
+      supersedes_goal_id: proposal.id,
+      authorship: "User",
+      request_id: `surface-decline:${proposal.id}:${Date.now()}`,
+    };
+    try {
+      const result = await commands.goalWrite(draft);
+      if (result.status === "error") {
+        const raw = result.error as unknown;
+        const message =
+          typeof raw === "object" && raw !== null && "message" in raw
+            ? String((raw as { message: unknown }).message)
+            : typeof raw === "string"
+              ? raw
+              : "decline failed";
+        setRequestsError(message);
+        return;
+      }
+      void graph.refresh?.();
+    } finally {
+      setDecliningId(null);
+    }
+  };
+
   onMount(() => {
     const cleanup = installSurfaceKeys({
       onTab: setActiveTab,
@@ -157,6 +204,29 @@ export const FullSurface: Component<{ hub: Hub }> = (props) => {
         onToggleFilters={() => setDrawerOpen((o) => !o)}
       />
       <ChipRail flavors={facets().flavors} />
+      <RequestsStrip
+        proposals={proposals()}
+        pendingId={decliningId()}
+        onAccept={(proposal) => setAcceptProposal(proposal)}
+        onDecline={(proposal) => {
+          void declineProposal(proposal);
+        }}
+      />
+      <Show when={requestsError() !== null}>
+        <p class="surface-requests__error">{requestsError()}</p>
+      </Show>
+      <Show when={acceptProposal()} keyed>
+        {(proposal) => (
+          <GoalDialog
+            hub={props.hub}
+            proposal={proposal}
+            onClose={() => setAcceptProposal(null)}
+            onAfterWrite={() => {
+              void graph.refresh?.();
+            }}
+          />
+        )}
+      </Show>
       <div class="surface__body">
         <RowList
           rows={rowsForList()}
