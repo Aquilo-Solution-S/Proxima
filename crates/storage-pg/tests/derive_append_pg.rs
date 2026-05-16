@@ -1,7 +1,7 @@
 mod common;
 
 use common::{drop_db, fresh_pg, owner_fixture};
-use proxima_core::{SchemaId, SchemaVersion};
+use proxima_core::{EntityKind, MemoryOperatorKind, SchemaId, SchemaVersion};
 use proxima_storage_pg::verbs::derive_append::{DerivedDraft, append_derived_in_tx};
 
 #[tokio::test]
@@ -19,11 +19,11 @@ async fn external_agent_abstraction_persists_with_replay() -> Result<(), Box<dyn
         let draft = DerivedDraft {
             memory_id,
             owner,
-            kind: "Abstraction",
+            kind: EntityKind::Abstraction,
             schema_id: SchemaId::new("proxima-mcp/agent-derivation-v1".into()),
             schema_version: SchemaVersion::new(1),
             text: "the agent view".into(),
-            operator_kind: "ExternalAgent",
+            operator_kind: MemoryOperatorKind::ExternalAgent,
             model_id: "claude-opus-4.7",
             prompt_version: "mcp-agent-v1",
             sidecar_table: Some("proxima_mcp.agent_derivation_v1"),
@@ -78,11 +78,11 @@ async fn external_agent_perspective_persists() -> Result<(), Box<dyn std::error:
         let draft = DerivedDraft {
             memory_id,
             owner: owner_fixture(),
-            kind: "Perspective",
+            kind: EntityKind::Perspective,
             schema_id: SchemaId::new("proxima-mcp/agent-derivation-v1".into()),
             schema_version: SchemaVersion::new(1),
             text: "perspective body".into(),
-            operator_kind: "ExternalAgent",
+            operator_kind: MemoryOperatorKind::ExternalAgent,
             model_id: "claude-opus-4.7",
             prompt_version: "mcp-agent-v1",
             sidecar_table: Some("proxima_mcp.agent_derivation_v1"),
@@ -100,12 +100,12 @@ async fn external_agent_perspective_persists() -> Result<(), Box<dyn std::error:
         let mut tx = pg.pool().begin().await?;
         append_derived_in_tx(&mut tx, &draft).await?;
         tx.commit().await?;
-        let kind: String =
+        let kind: EntityKind =
             sqlx::query_scalar("SELECT kind FROM proxima_core.memories WHERE memory_id = $1")
                 .bind(memory_id)
                 .fetch_one(pg.pool())
                 .await?;
-        assert_eq!(kind, "Perspective");
+        assert_eq!(kind, EntityKind::Perspective);
         Ok::<(), Box<dyn std::error::Error>>(())
     }
     .await;

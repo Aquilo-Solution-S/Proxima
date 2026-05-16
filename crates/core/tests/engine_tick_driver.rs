@@ -12,8 +12,7 @@ async fn dispatcher_loop_fires_after_start() {
     let Some(fixture) =
         common::seed_dispatch_fixture_with_match_and_engine(Duration::from_millis(100)).await
     else {
-        eprintln!("skipping: PG unavailable");
-        return;
+        panic!("PG required for tests but unavailable");
     };
     let engine = fixture.engine.clone();
 

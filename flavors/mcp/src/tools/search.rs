@@ -101,7 +101,7 @@ async fn search_graph_lexical(
         memory_ids.push(row.memory_id);
         matches.push(GraphMatch {
             handle: ctx.format_memory(MemoryId::new(row.memory_id)),
-            kind: row.kind,
+            kind: row.kind.as_str().to_string(),
             schema_id: row.schema_id,
             title: row.title,
             snippet: row.snippet,
@@ -173,7 +173,7 @@ async fn merge_lexical_candidates(
             row.memory_id,
             GraphCandidate {
                 memory_id: row.memory_id,
-                kind: row.kind,
+                kind: row.kind.as_str().to_string(),
                 schema_id: row.schema_id,
                 title: row.title,
                 snippet: row.snippet,
@@ -203,7 +203,7 @@ async fn merge_semantic_candidates(
             .entry(memory_id)
             .or_insert_with(|| GraphCandidate {
                 memory_id,
-                kind: memory_kind_for_edge(memory_kind_db(row.kind)).to_string(),
+                kind: memory_kind_for_edge(Some(row.kind)).as_str().to_string(),
                 schema_id: row.schema_id.as_str().to_string(),
                 title: payload
                     .and_then(|p| p.title.clone())
@@ -299,15 +299,6 @@ impl GraphCandidate {
     }
 }
 
-fn memory_kind_db(kind: proxima_core::verbs::query::EntityKind) -> Option<&'static str> {
-    match kind {
-        proxima_core::verbs::query::EntityKind::Fact => None,
-        proxima_core::verbs::query::EntityKind::Abstraction => Some("Abstraction"),
-        proxima_core::verbs::query::EntityKind::Perspective => Some("Perspective"),
-        proxima_core::verbs::query::EntityKind::Goal => Some("Goal"),
-    }
-}
-
 async fn load_graph_payloads(
     ctx: &McpToolCtx,
     memory_ids: &[uuid::Uuid],
@@ -350,7 +341,7 @@ WITH q AS (SELECT websearch_to_tsquery('simple', $3) AS tsq)
 SELECT *
 FROM (
     SELECT m.memory_id,
-           'Fact' AS kind,
+           'Fact'::proxima_core.entity_kind AS kind,
            m.schema_id,
            a.title,
            left(a.body, 480) AS snippet,
@@ -384,7 +375,7 @@ LIMIT $4
 #[derive(Debug, sqlx::FromRow)]
 struct SearchRow {
     memory_id: uuid::Uuid,
-    kind: String,
+    kind: proxima_core::EntityKind,
     schema_id: String,
     title: String,
     snippet: String,
@@ -488,7 +479,7 @@ impl McpTool for OpenTool {
             let neighbor_edges = neighbor_edges(&ctx, &[memory_uuid]).await?;
             Ok(OpenOutput {
                 handle: args.handle,
-                kind: memory_kind_for_edge(row.kind.as_deref()).to_string(),
+                kind: memory_kind_for_edge(row.kind).as_str().to_string(),
                 schema_id: row.schema_id,
                 title: row.title,
                 body: row.body,
@@ -514,7 +505,7 @@ WHERE m.memory_id = $1
 
 #[derive(Debug, sqlx::FromRow)]
 struct OpenRow {
-    kind: Option<String>,
+    kind: Option<proxima_core::EntityKind>,
     schema_id: String,
     title: Option<String>,
     body: Option<String>,

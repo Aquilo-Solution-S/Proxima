@@ -54,8 +54,7 @@ fn db_url(db_name: &str) -> String {
 async fn migrated_db() -> Option<(String, PgStorage)> {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if create_db(&db_name).await.is_err() {
-        eprintln!("skipping (no admin PG)");
-        return None;
+        panic!("PG required for tests but admin connect failed");
     }
     let pg = PgStorage::connect(&db_url(&db_name))
         .await
@@ -67,10 +66,9 @@ async fn migrated_db() -> Option<(String, PgStorage)> {
     }
     .await
     {
-        eprintln!("skipping (migration failed): {err}");
         drop(pg);
         let _ = drop_db(&db_name).await;
-        return None;
+        panic!("migration failed: {err}");
     }
     Some((db_name, pg))
 }
@@ -227,7 +225,7 @@ async fn merge_fast_forwards_and_emits_decision() -> Result<(), Box<dyn std::err
         assert_eq!(outcome.old_target_sha, parent_sha);
         assert_eq!(outcome.new_target_sha, head_sha);
         assert_eq!(git(&repo_path, &["rev-parse", "main"])?, head_sha);
-        let decision: String = sqlx::query_scalar(
+        let decision: WorkspaceDecision = sqlx::query_scalar(
             "SELECT decision
              FROM proxima_code.workspace_decision_v1
              WHERE memory_id = $1",
@@ -235,7 +233,7 @@ async fn merge_fast_forwards_and_emits_decision() -> Result<(), Box<dyn std::err
         .bind(outcome.decision_memory_id)
         .fetch_one(pg.pool())
         .await?;
-        assert_eq!(decision, "merged");
+        assert_eq!(decision, WorkspaceDecision::Merged);
         let derived_edges: i64 = sqlx::query_scalar(
             "SELECT count(*)
              FROM proxima_core.edges
@@ -306,7 +304,7 @@ async fn rejected_decision_is_persisted() -> Result<(), Box<dyn std::error::Erro
         )
         .await?;
 
-        let row: (String, Option<String>) = sqlx::query_as(
+        let row: (WorkspaceDecision, Option<String>) = sqlx::query_as(
             "SELECT decision, reason_text
              FROM proxima_code.workspace_decision_v1
              WHERE memory_id = $1",
@@ -314,7 +312,7 @@ async fn rejected_decision_is_persisted() -> Result<(), Box<dyn std::error::Erro
         .bind(decision.into_inner())
         .fetch_one(pg.pool())
         .await?;
-        assert_eq!(row.0, "rejected");
+        assert_eq!(row.0, WorkspaceDecision::Rejected);
         assert_eq!(row.1.as_deref(), Some("wrong behavior"));
         let runs = proxima_code::list_workspace_runs(pg.pool(), &owner, repo_id, 10).await?;
         assert_eq!(
@@ -366,7 +364,7 @@ async fn retry_requested_decision_is_persisted() -> Result<(), Box<dyn std::erro
         )
         .await?;
 
-        let row: (String, Option<String>) = sqlx::query_as(
+        let row: (WorkspaceDecision, Option<String>) = sqlx::query_as(
             "SELECT decision, reason_text
              FROM proxima_code.workspace_decision_v1
              WHERE memory_id = $1",
@@ -374,7 +372,7 @@ async fn retry_requested_decision_is_persisted() -> Result<(), Box<dyn std::erro
         .bind(decision.into_inner())
         .fetch_one(pg.pool())
         .await?;
-        assert_eq!(row.0, "retry_requested");
+        assert_eq!(row.0, WorkspaceDecision::RetryRequested);
         assert_eq!(row.1.as_deref(), Some("try again"));
         let runs = proxima_code::list_workspace_runs(pg.pool(), &owner, repo_id, 10).await?;
         assert_eq!(
@@ -680,7 +678,7 @@ async fn seed_workspace_review(
     .bind(outcome.memory_id.into_inner())
     .bind(payload.workspace_run_memory_id)
     .bind(payload.execution_request_memory_id)
-    .bind(payload.verdict.as_str())
+    .bind(payload.verdict)
     .bind(i32::try_from(payload.round_index).unwrap_or(i32::MAX))
     .bind(&payload.summary)
     .bind(serde_json::to_value(&payload.findings)?)

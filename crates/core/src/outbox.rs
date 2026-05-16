@@ -26,6 +26,41 @@ pub enum EntityKind {
     Goal,
 }
 
+impl EntityKind {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Fact => "Fact",
+            Self::Abstraction => "Abstraction",
+            Self::Perspective => "Perspective",
+            Self::Goal => "Goal",
+        }
+    }
+}
+
+/// Rust mirror of `proxima_core.memory_operator_kind`. Tags the operator
+/// that produced a derived memory (Abstraction / Perspective) and is also
+/// stored on Goal authorship rows. Variants match the SQL enum labels.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    specta::Type,
+    sqlx::Type,
+)]
+#[sqlx(type_name = "proxima_core.memory_operator_kind")]
+pub enum MemoryOperatorKind {
+    FtoA,
+    AtoP,
+    ExternalAgent,
+    Wake,
+}
+
 /// Discriminant tag for `ChangeEventKind`, mirrors the SQL enum
 /// `proxima_core.change_event_kind`. The rich `ChangeEventKind`
 /// carries payload; this tag is what the `change_event.kind` column

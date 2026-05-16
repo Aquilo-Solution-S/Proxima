@@ -1,4 +1,4 @@
-use proxima_core::{MemoryId, Owner};
+use proxima_core::{MemoryId, Owner, OwnerPrincipalKind};
 use sqlx::PgPool;
 
 use crate::payloads::FileState;
@@ -23,13 +23,14 @@ pub async fn file_revision_heads(
     repo_id: uuid::Uuid,
 ) -> Result<Vec<FileRevisionHead>, IngestError> {
     use proxima_core::Principal;
-    let (kind, principal_id) = match &owner.principal {
-        Principal::User(u) => ("User", u.into_inner()),
-        Principal::Group(g) => ("Group", g.into_inner()),
+    let kind = OwnerPrincipalKind::of(&owner.principal);
+    let principal_id = match &owner.principal {
+        Principal::User(u) => u.into_inner(),
+        Principal::Group(g) => g.into_inner(),
     };
     let org_id = owner.org_id.into_inner();
 
-    let rows: Vec<(uuid::Uuid, String, Vec<u8>, String)> = sqlx::query_as(
+    let rows: Vec<(uuid::Uuid, String, Vec<u8>, FileState)> = sqlx::query_as(
         "SELECT m.memory_id, s.file_path, s.content_sha256, s.state \
          FROM proxima_core.memories m \
          JOIN proxima_code.file_revision_v1 s USING (memory_id) \
@@ -66,10 +67,7 @@ pub async fn file_revision_heads(
                 memory_id: MemoryId::new(mid),
                 file_path: fp,
                 content_sha256: h,
-                state: match state.as_str() {
-                    "Tombstone" => FileState::Tombstone,
-                    _ => FileState::Present,
-                },
+                state,
             }
         })
         .collect())
@@ -85,9 +83,10 @@ pub async fn present_chunk_indexes(
     file_path: &str,
 ) -> Result<Vec<u32>, IngestError> {
     use proxima_core::Principal;
-    let (kind, principal_id) = match &owner.principal {
-        Principal::User(u) => ("User", u.into_inner()),
-        Principal::Group(g) => ("Group", g.into_inner()),
+    let kind = OwnerPrincipalKind::of(&owner.principal);
+    let principal_id = match &owner.principal {
+        Principal::User(u) => u.into_inner(),
+        Principal::Group(g) => g.into_inner(),
     };
     let org_id = owner.org_id.into_inner();
 
@@ -156,9 +155,10 @@ pub async fn lookup_present_chunk_memory_id_by_text(
     text_to_match: &str,
 ) -> Result<Option<MemoryId>, IngestError> {
     use proxima_core::Principal;
-    let (kind, principal_id) = match &owner.principal {
-        Principal::User(u) => ("User", u.into_inner()),
-        Principal::Group(g) => ("Group", g.into_inner()),
+    let kind = OwnerPrincipalKind::of(&owner.principal);
+    let principal_id = match &owner.principal {
+        Principal::User(u) => u.into_inner(),
+        Principal::Group(g) => g.into_inner(),
     };
     let org_id = owner.org_id.into_inner();
 

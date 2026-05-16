@@ -79,7 +79,7 @@ async fn fetch_wake_invocation(
         Option<String>,
         bool,
         bool,
-        String,
+        WakeInvocationStatus,
     );
     let principal_id = match owner.principal {
         Principal::User(id) => id.into_inner(),
@@ -124,12 +124,7 @@ async fn fetch_wake_invocation(
         stderr_tail,
         stdout_truncated,
         stderr_truncated,
-        status: match status.as_str() {
-            "succeeded" => WakeInvocationStatus::Succeeded,
-            "truncated" => WakeInvocationStatus::Truncated,
-            "failed" => WakeInvocationStatus::Failed,
-            _ => WakeInvocationStatus::Running,
-        },
+        status,
     })
 }
 

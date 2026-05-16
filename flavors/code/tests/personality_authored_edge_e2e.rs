@@ -28,12 +28,14 @@ use proxima_core::personality::{
 use proxima_core::storage::Storage;
 use proxima_core::wake::token_store::WakeTokenContext;
 use proxima_core::{
-    AbstractionPayload, HandleTable, MemoryId, OrgId, Owner, Principal, SourceBatchId, UserId,
-    WakeChainDepth,
+    AbstractionPayload, EntityKind, HandleTable, MemoryId, OrgId, Owner, Principal, RelationClass,
+    SourceBatchId, UserId, WakeChainDepth,
 };
 use proxima_storage_pg::PgStorage;
 use sqlx::{Connection, Executor, PgConnection};
 use uuid::Uuid;
+
+use proxima_core::EdgeAuthorshipKind;
 
 const ADMIN_URL: &str = "postgres://proxima:proxima@localhost/postgres";
 
@@ -58,8 +60,7 @@ async fn drop_db(name: &str) -> Result<(), sqlx::Error> {
 async fn migrated_db() -> Option<(String, PgStorage)> {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if create_db(&db_name).await.is_err() {
-        eprintln!("skipping (no admin PG)");
-        return None;
+        panic!("PG required for tests but admin connect failed");
     }
     let admin = std::env::var("PROXIMA_TEST_PG_URL").unwrap_or_else(|_| ADMIN_URL.into());
     let url = match admin.rfind('/') {
@@ -221,7 +222,14 @@ async fn emit_abstraction_writes_core_authored_edge_from_root_perspective() {
             .expect("emitted memory handle resolves")
             .into_inner();
 
-        let edges: Vec<(Uuid, Uuid, String, String, String, String)> = sqlx::query_as(
+        let edges: Vec<(
+            Uuid,
+            Uuid,
+            EntityKind,
+            EntityKind,
+            RelationClass,
+            EdgeAuthorshipKind,
+        )> = sqlx::query_as(
             "SELECT source_memory_id, target_memory_id, source_kind, target_kind,
                     relation_class, authorship_kind
              FROM proxima_core.edges
@@ -244,10 +252,22 @@ async fn emit_abstraction_writes_core_authored_edge_from_root_perspective() {
             "edge originates at the snapshotted Root Perspective threaded through ctx"
         );
         assert_eq!(edge.1, new_memory_id, "edge targets the new memory");
-        assert_eq!(edge.2, "Perspective", "source_kind == Perspective");
-        assert_eq!(edge.3, "Abstraction", "target_kind == Abstraction");
-        assert_eq!(edge.4, "Causal", "core/authored class == Causal");
-        assert_eq!(edge.5, "Engine", "substrate authors the edge");
+        assert_eq!(
+            edge.2,
+            EntityKind::Perspective,
+            "source_kind == Perspective"
+        );
+        assert_eq!(
+            edge.3,
+            EntityKind::Abstraction,
+            "target_kind == Abstraction"
+        );
+        assert_eq!(edge.4, RelationClass::Causal, "core/authored class == Causal");
+        assert_eq!(
+            edge.5,
+            EdgeAuthorshipKind::Engine,
+            "substrate authors the edge"
+        );
 
         Ok(())
     }

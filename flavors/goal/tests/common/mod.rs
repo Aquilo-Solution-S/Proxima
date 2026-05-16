@@ -8,7 +8,7 @@ use proxima_storage_pg::PgStorage;
 use sqlx::{Connection, Executor, PgConnection};
 use uuid::Uuid;
 
-const ADMIN_URL: &str = "postgres://postgres@localhost/postgres";
+const ADMIN_URL: &str = "postgres://proxima:proxima@localhost/proxima";
 
 pub fn owner_fixture() -> Owner {
     Owner {
@@ -27,17 +27,15 @@ pub fn other_owner_fixture() -> Owner {
 
 pub async fn fresh_pg() -> Option<(PgStorage, String)> {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if create_db(&db_name).await.is_err() {
-        eprintln!("skipping (no admin PG)");
-        return None;
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
     }
-    let url = format!("postgres://postgres@localhost/{db_name}");
+    let url = format!("postgres://proxima:proxima@localhost/{db_name}");
     match PgStorage::connect(&url).await {
         Ok(pg) => Some((pg, db_name)),
         Err(err) => {
             let _ = drop_db(&db_name).await;
-            eprintln!("skipping (PG unavailable): {err}");
-            None
+            panic!("PG required for tests but unavailable: {err}");
         }
     }
 }
@@ -67,9 +65,8 @@ pub async fn migrated() -> Option<(PgStorage, String)> {
     }
     .await
     {
-        eprintln!("skipping (migration failed): {err}");
         let _ = drop_db(&db_name).await;
-        return None;
+        panic!("migration failed: {err}");
     }
     Some((pg, db_name))
 }
@@ -99,23 +96,27 @@ pub async fn insert_abstraction(
     pg: &PgStorage,
     owner: &Owner,
 ) -> Result<uuid::Uuid, Box<dyn std::error::Error>> {
-    let (owner_kind, owner_principal_id) = match owner.principal {
-        Principal::User(u) => ("User", u.into_inner()),
-        Principal::Group(g) => ("Group", g.into_inner()),
+    let owner_kind = proxima_core::OwnerPrincipalKind::of(&owner.principal);
+    let owner_principal_id = match owner.principal {
+        Principal::User(u) => u.into_inner(),
+        Principal::Group(g) => g.into_inner(),
     };
     let memory_id = Uuid::now_v7();
     sqlx::query(
         "INSERT INTO proxima_core.memories
             (memory_id, owner_principal_kind, owner_principal_id, owner_org_id,
              schema_id, schema_version, kind, text, operator_kind, model_id,
-             prompt_version, personality_id)
-         VALUES ($1, $2, $3, $4, 'test/abstraction', 1, 'Abstraction',
-                 'evidence', 'FtoA', 'test-model', 'v1', 'test/personality')",
+             prompt_version, personality_instance_id)
+         VALUES ($1, $2, $3, $4, 'test/abstraction', 1, $5,
+                 'evidence', $6, 'test-model', 'v1', $7)",
     )
     .bind(memory_id)
     .bind(owner_kind)
     .bind(owner_principal_id)
     .bind(owner.org_id.into_inner())
+    .bind(proxima_core::EntityKind::Abstraction)
+    .bind(proxima_core::MemoryOperatorKind::FtoA)
+    .bind(Uuid::nil())
     .execute(pg.pool())
     .await?;
     Ok(memory_id)
@@ -125,23 +126,27 @@ pub async fn insert_self_perspective(
     pg: &PgStorage,
     owner: &Owner,
 ) -> Result<proxima_core::MemoryId, Box<dyn std::error::Error>> {
-    let (owner_kind, owner_principal_id) = match owner.principal {
-        Principal::User(u) => ("User", u.into_inner()),
-        Principal::Group(g) => ("Group", g.into_inner()),
+    let owner_kind = proxima_core::OwnerPrincipalKind::of(&owner.principal);
+    let owner_principal_id = match owner.principal {
+        Principal::User(u) => u.into_inner(),
+        Principal::Group(g) => g.into_inner(),
     };
     let memory_id = Uuid::now_v7();
     sqlx::query(
         "INSERT INTO proxima_core.memories
             (memory_id, owner_principal_kind, owner_principal_id, owner_org_id,
              schema_id, schema_version, kind, text, operator_kind, model_id,
-             prompt_version, personality_id)
-         VALUES ($1, $2, $3, $4, 'test/self-perspective', 1, 'Perspective',
-                 'self', 'AtoP', 'test-model', 'v1', 'test/personality')",
+             prompt_version, personality_instance_id)
+         VALUES ($1, $2, $3, $4, 'test/self-perspective', 1, $5,
+                 'self', $6, 'test-model', 'v1', $7)",
     )
     .bind(memory_id)
     .bind(owner_kind)
     .bind(owner_principal_id)
     .bind(owner.org_id.into_inner())
+    .bind(proxima_core::EntityKind::Perspective)
+    .bind(proxima_core::MemoryOperatorKind::AtoP)
+    .bind(Uuid::nil())
     .execute(pg.pool())
     .await?;
     Ok(proxima_core::MemoryId::new(memory_id))

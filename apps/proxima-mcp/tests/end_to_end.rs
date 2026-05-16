@@ -6,8 +6,7 @@ use serde_json::json;
 #[tokio::test]
 async fn run_with_handle_serves_tools_list() -> Result<(), Box<dyn std::error::Error>> {
     let Ok(database_url) = std::env::var("DATABASE_URL") else {
-        eprintln!("skipping (DATABASE_URL unset)");
-        return Ok(());
+        panic!("DATABASE_URL must be set for tests");
     };
     let cfg = proxima_mcp::McpConfig {
         database_url,

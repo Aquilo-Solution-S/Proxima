@@ -1,6 +1,9 @@
 //! External-agent Derived memory append verb.
 
-use proxima_core::{MemoryId, Owner, Principal, SchemaId, SchemaVersion, StorageError};
+use proxima_core::{
+    EntityKind, MemoryId, MemoryOperatorKind, Owner, OwnerPrincipalKind, Principal, SchemaId,
+    SchemaVersion, StorageError,
+};
 use sqlx::{Postgres, Transaction};
 
 use crate::error::map_err;
@@ -10,11 +13,11 @@ use crate::pg_ident::PgIdent;
 pub struct DerivedDraft<'a> {
     pub memory_id: uuid::Uuid,
     pub owner: Owner,
-    pub kind: &'a str,
+    pub kind: EntityKind,
     pub schema_id: SchemaId,
     pub schema_version: SchemaVersion,
     pub text: String,
-    pub operator_kind: &'a str,
+    pub operator_kind: MemoryOperatorKind,
     pub model_id: &'a str,
     pub prompt_version: &'a str,
     pub sidecar_table: Option<&'a str>,
@@ -116,10 +119,11 @@ pub async fn append_derived_in_tx(
     })
 }
 
-fn owner_columns(owner: &Owner) -> (&'static str, uuid::Uuid, uuid::Uuid) {
-    let (kind, principal_id) = match &owner.principal {
-        Principal::User(u) => ("User", u.into_inner()),
-        Principal::Group(g) => ("Group", g.into_inner()),
+fn owner_columns(owner: &Owner) -> (OwnerPrincipalKind, uuid::Uuid, uuid::Uuid) {
+    let kind = OwnerPrincipalKind::of(&owner.principal);
+    let principal_id = match &owner.principal {
+        Principal::User(u) => u.into_inner(),
+        Principal::Group(g) => g.into_inner(),
     };
     (kind, principal_id, owner.org_id.into_inner())
 }

@@ -46,7 +46,7 @@ pub(super) async fn load_execution_request(
 ) -> Result<LoadedExecutionRequest, WorkspaceRunnerError> {
     let (owner_kind, owner_principal_id, _) = owner_columns_pub(owner);
     let row = sqlx::query(
-        "SELECT COALESCE(m.kind, 'Fact') AS kind,
+        "SELECT COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind,
                 m.schema_id,
                 r.repo_id,
                 r.title,
@@ -442,7 +442,7 @@ pub(super) async fn load_workspace_run(
 ) -> Result<WorkspaceRunV1, WorkspaceRunnerError> {
     let (owner_kind, owner_principal_id, _) = owner_columns_pub(owner);
     let row = sqlx::query(
-        "SELECT COALESCE(m.kind, 'Fact') AS kind,
+        "SELECT COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind,
                 m.schema_id,
                 r.wake_invocation_id,
                 r.repo_id,

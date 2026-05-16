@@ -16,10 +16,21 @@ use proxima_core::verbs::query::{
 };
 use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaInfo};
 use proxima_core::{
-    OrgId, Owner, Principal, SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId,
+    OrgId, Owner, OwnerPrincipalKind, Principal, SchemaId, SchemaVersion, SourceBatchId, SourceId,
+    UserId,
 };
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
+
+/// Local mirror of `proxima_core.personality_status` for test binding.
+/// No substrate-side Rust mirror exists yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, sqlx::Type)]
+#[sqlx(type_name = "proxima_core.personality_status", rename_all = "snake_case")]
+enum PersonalityStatus {
+    Active,
+    NeedsRepair,
+    Tombstoned,
+}
 
 fn schemas_for_test() -> Vec<SchemaInfo> {
     vec![
@@ -142,9 +153,10 @@ async fn insert_test_edge(
     created_offset_seconds: i64,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
     let edge_id = Uuid::now_v7();
-    let (owner_kind, owner_principal_id) = match &owner.principal {
-        Principal::User(user) => ("User", user.into_inner()),
-        Principal::Group(group) => ("Group", group.into_inner()),
+    let owner_kind = OwnerPrincipalKind::of(&owner.principal);
+    let owner_principal_id = match &owner.principal {
+        Principal::User(user) => user.into_inner(),
+        Principal::Group(group) => group.into_inner(),
     };
     sqlx::query(
         "INSERT INTO proxima_core.edges
@@ -179,9 +191,10 @@ async fn insert_n_test_edges_bulk(
     target: Uuid,
     count: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let (owner_kind, owner_principal_id) = match &owner.principal {
-        Principal::User(user) => ("User", user.into_inner()),
-        Principal::Group(group) => ("Group", group.into_inner()),
+    let owner_kind = OwnerPrincipalKind::of(&owner.principal);
+    let owner_principal_id = match &owner.principal {
+        Principal::User(user) => user.into_inner(),
+        Principal::Group(group) => group.into_inner(),
     };
     let edge_ids: Vec<Uuid> = (0..count).map(|_| Uuid::now_v7()).collect();
     sqlx::query(
@@ -231,13 +244,14 @@ async fn insert_perspective_memory(
     owner: &Owner,
     schema_id: &str,
     text: &str,
-    personality_status: Option<&str>,
+    personality_status: Option<PersonalityStatus>,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
     let memory_id = Uuid::now_v7();
     let instance_id = Uuid::now_v7();
-    let (owner_kind, owner_principal_id) = match &owner.principal {
-        Principal::User(user) => ("User", user.into_inner()),
-        Principal::Group(group) => ("Group", group.into_inner()),
+    let owner_kind = OwnerPrincipalKind::of(&owner.principal);
+    let owner_principal_id = match &owner.principal {
+        Principal::User(user) => user.into_inner(),
+        Principal::Group(group) => group.into_inner(),
     };
     sqlx::query(
         "INSERT INTO proxima_core.memories
@@ -258,13 +272,17 @@ async fn insert_perspective_memory(
     .await?;
 
     if let Some(status) = personality_status {
+        let tombstoned_at = if matches!(status, PersonalityStatus::Tombstoned) {
+            Some(time::OffsetDateTime::now_utc())
+        } else {
+            None
+        };
         sqlx::query(
             "INSERT INTO proxima_core.personality
                 (owner_principal_kind, owner_principal_id, owner_org_id,
                  personality_instance_id, current_root_perspective_memory_id,
                  status, tombstoned_at)
-             VALUES ($1, $2, $3, $4, $5, $6,
-                     CASE WHEN $6 = 'tombstoned' THEN now() ELSE NULL END)",
+             VALUES ($1, $2, $3, $4, $5, $6, $7)",
         )
         .bind(owner_kind)
         .bind(owner_principal_id)
@@ -272,6 +290,7 @@ async fn insert_perspective_memory(
         .bind(instance_id)
         .bind(memory_id)
         .bind(status)
+        .bind(tombstoned_at)
         .execute(pg.pool())
         .await?;
     }
@@ -283,8 +302,7 @@ async fn insert_perspective_memory(
 async fn query_returns_stored_schema_version() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if create_db(&db_name).await.is_err() {
-        eprintln!("skipping (no admin PG)");
-        return;
+        panic!("PG required for tests but admin connect failed");
     }
     let url = db_url(&db_name);
 
@@ -335,8 +353,7 @@ async fn query_returns_stored_schema_version() {
 async fn query_active_only_filters_inactive_personality_roots() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if create_db(&db_name).await.is_err() {
-        eprintln!("skipping (no admin PG)");
-        return;
+        panic!("PG required for tests but admin connect failed");
     }
     let url = db_url(&db_name);
 
@@ -364,7 +381,7 @@ async fn query_active_only_filters_inactive_personality_roots() {
             &owner,
             ROOT_PERSONALITY_PERSPECTIVE_SCHEMA_ID,
             "active root",
-            Some("active"),
+            Some(PersonalityStatus::Active),
         )
         .await?;
         let tombstoned_root = insert_perspective_memory(
@@ -372,7 +389,7 @@ async fn query_active_only_filters_inactive_personality_roots() {
             &owner,
             "proxima-code/engineer-self-v1",
             "tombstoned root",
-            Some("tombstoned"),
+            Some(PersonalityStatus::Tombstoned),
         )
         .await?;
         let orphan_root = insert_perspective_memory(
@@ -433,8 +450,7 @@ async fn query_active_only_filters_inactive_personality_roots() {
 async fn query_returns_fact_rows() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if create_db(&db_name).await.is_err() {
-        eprintln!("skipping (no admin PG)");
-        return;
+        panic!("PG required for tests but admin connect failed");
     }
     let url = db_url(&db_name);
 
@@ -501,8 +517,7 @@ async fn query_returns_fact_rows() {
 async fn query_returns_all_edges_between_returned_nodes_even_when_edge_count_exceeds_limit() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if create_db(&db_name).await.is_err() {
-        eprintln!("skipping (no admin PG)");
-        return;
+        panic!("PG required for tests but admin connect failed");
     }
     let url = db_url(&db_name);
 
@@ -567,8 +582,7 @@ async fn query_returns_all_edges_between_returned_nodes_even_when_edge_count_exc
 async fn query_excludes_edges_with_endpoint_outside_returned_node_window() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if create_db(&db_name).await.is_err() {
-        eprintln!("skipping (no admin PG)");
-        return;
+        panic!("PG required for tests but admin connect failed");
     }
     let url = db_url(&db_name);
 
@@ -646,8 +660,7 @@ async fn query_excludes_edges_with_endpoint_outside_returned_node_window() {
 async fn query_edge_id_hydration_returns_requested_edge_without_visible_nodes() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if create_db(&db_name).await.is_err() {
-        eprintln!("skipping (no admin PG)");
-        return;
+        panic!("PG required for tests but admin connect failed");
     }
     let url = db_url(&db_name);
 
@@ -704,8 +717,7 @@ async fn query_edge_id_hydration_returns_requested_edge_without_visible_nodes() 
 async fn query_caps_snapshot_edges_at_max_snapshot_edges() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if create_db(&db_name).await.is_err() {
-        eprintln!("skipping (no admin PG)");
-        return;
+        panic!("PG required for tests but admin connect failed");
     }
     let url = db_url(&db_name);
 
@@ -765,8 +777,7 @@ async fn query_caps_snapshot_edges_at_max_snapshot_edges() {
 async fn query_owner_scope_ignores_org_id() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if create_db(&db_name).await.is_err() {
-        eprintln!("skipping (no admin PG)");
-        return;
+        panic!("PG required for tests but admin connect failed");
     }
     let url = db_url(&db_name);
 
@@ -821,8 +832,7 @@ async fn query_owner_scope_ignores_org_id() {
 async fn query_filter_abstraction_returns_empty() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if create_db(&db_name).await.is_err() {
-        eprintln!("skipping (no admin PG)");
-        return;
+        panic!("PG required for tests but admin connect failed");
     }
     let url = db_url(&db_name);
 
@@ -880,8 +890,7 @@ async fn query_filter_abstraction_returns_empty() {
 async fn query_goals_filter_by_schema_id() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if create_db(&db_name).await.is_err() {
-        eprintln!("skipping (no admin PG)");
-        return;
+        panic!("PG required for tests but admin connect failed");
     }
     let url = db_url(&db_name);
 
@@ -990,8 +999,7 @@ async fn query_goals_filter_by_schema_id() {
 async fn query_returns_stored_goal_schema_version() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if create_db(&db_name).await.is_err() {
-        eprintln!("skipping (no admin PG)");
-        return;
+        panic!("PG required for tests but admin connect failed");
     }
     let url = db_url(&db_name);
 
@@ -1052,8 +1060,7 @@ async fn query_returns_stored_goal_schema_version() {
 async fn query_filter_nonexistent_schema_returns_empty() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if create_db(&db_name).await.is_err() {
-        eprintln!("skipping (no admin PG)");
-        return;
+        panic!("PG required for tests but admin connect failed");
     }
     let url = db_url(&db_name);
 

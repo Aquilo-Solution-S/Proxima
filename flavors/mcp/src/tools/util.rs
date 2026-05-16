@@ -36,10 +36,10 @@ pub fn normalize_tags(tags: Vec<String>) -> Result<Vec<String>, McpToolError> {
     Ok(out)
 }
 
-pub fn memory_kind_for_edge(kind: Option<&str>) -> &'static str {
+pub fn memory_kind_for_edge(kind: Option<proxima_core::EntityKind>) -> proxima_core::EntityKind {
     match kind {
-        Some("Abstraction") => "Abstraction",
-        Some("Perspective") => "Perspective",
-        None | Some(_) => "Fact",
+        Some(proxima_core::EntityKind::Abstraction) => proxima_core::EntityKind::Abstraction,
+        Some(proxima_core::EntityKind::Perspective) => proxima_core::EntityKind::Perspective,
+        None | Some(_) => proxima_core::EntityKind::Fact,
     }
 }

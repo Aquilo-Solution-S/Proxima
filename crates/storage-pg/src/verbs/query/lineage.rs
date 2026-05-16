@@ -4,7 +4,9 @@ use proxima_core::verbs::query::{
     EntityKind, MemoryLineageDirection, MemoryLineageEdge, MemoryLineageNode, MemoryLineageRequest,
     MemoryLineageResponse,
 };
-use proxima_core::{MemoryId, OwnerPrincipalKind, Principal, SchemaId, StorageError, WakeChainDepth};
+use proxima_core::{
+    MemoryId, OwnerPrincipalKind, Principal, RelationClass, SchemaId, StorageError, WakeChainDepth,
+};
 use sqlx::PgPool;
 
 #[derive(Debug, sqlx::FromRow)]
@@ -12,7 +14,7 @@ struct EdgeWalkRow {
     distance: i32,
     edge_id: uuid::Uuid,
     relation: String,
-    relation_class: String,
+    relation_class: RelationClass,
     source_memory_id: uuid::Uuid,
     target_memory_id: uuid::Uuid,
     next_memory_id: uuid::Uuid,
@@ -21,7 +23,7 @@ struct EdgeWalkRow {
 #[derive(Debug, sqlx::FromRow)]
 struct NodeRow {
     memory_id: uuid::Uuid,
-    kind: Option<String>,
+    kind: Option<EntityKind>,
     schema_id: String,
     snippet: Option<String>,
     wake_chain_depth: i16,
@@ -73,26 +75,24 @@ pub(crate) async fn walk_memory_lineage(
     let node_rows = load_nodes(pool, owner_kind, owner_principal_id, &memory_ids).await?;
     let nodes = node_rows
         .into_iter()
-        .map(|row| {
-            Ok(MemoryLineageNode {
-                memory_id: MemoryId::new(row.memory_id),
-                kind: parse_kind(row.kind.as_deref())?,
-                schema_id: SchemaId::new(row.schema_id),
-                snippet: row.snippet.unwrap_or_default(),
-                wake_chain_depth: WakeChainDepth::new(
-                    u16::try_from(row.wake_chain_depth).unwrap_or(0),
-                ),
-                distance: *distances.get(&row.memory_id).unwrap_or(&0),
-            })
+        .map(|row| MemoryLineageNode {
+            memory_id: MemoryId::new(row.memory_id),
+            kind: row.kind.unwrap_or(EntityKind::Fact),
+            schema_id: SchemaId::new(row.schema_id),
+            snippet: row.snippet.unwrap_or_default(),
+            wake_chain_depth: WakeChainDepth::new(
+                u16::try_from(row.wake_chain_depth).unwrap_or(0),
+            ),
+            distance: *distances.get(&row.memory_id).unwrap_or(&0),
         })
-        .collect::<Result<Vec<_>, StorageError>>()?;
+        .collect();
 
     let edges = edge_rows
         .into_iter()
         .map(|row| MemoryLineageEdge {
             edge_id: row.edge_id,
             relation: row.relation,
-            relation_class: row.relation_class,
+            relation_class: row.relation_class.as_str().to_string(),
             source_memory_id: MemoryId::new(row.source_memory_id),
             target_memory_id: MemoryId::new(row.target_memory_id),
             distance: u8::try_from(row.distance).unwrap_or(u8::MAX),
@@ -159,7 +159,7 @@ async fn load_nodes(
 ) -> Result<Vec<NodeRow>, StorageError> {
     let rows = sqlx::query!(
         r#"SELECT memory_id,
-                  kind::text AS kind,
+                  kind AS "kind: EntityKind",
                   schema_id,
                   left(COALESCE(text, ''), 480) AS snippet,
                   wake_chain_depth
@@ -194,17 +194,6 @@ async fn load_nodes(
         ));
     }
     Ok(rows)
-}
-
-fn parse_kind(kind: Option<&str>) -> Result<EntityKind, StorageError> {
-    match kind {
-        None => Ok(EntityKind::Fact),
-        Some("Abstraction") => Ok(EntityKind::Abstraction),
-        Some("Perspective") => Ok(EntityKind::Perspective),
-        Some(other) => Err(StorageError::Internal(format!(
-            "unexpected lineage memory kind: {other}"
-        ))),
-    }
 }
 
 const ANCESTORS_SQL: &str = r"

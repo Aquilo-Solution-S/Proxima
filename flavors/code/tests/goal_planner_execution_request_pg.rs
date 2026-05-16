@@ -210,8 +210,7 @@ fn db_url(db_name: &str) -> String {
 async fn migrated_db() -> Option<(String, PgStorage)> {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if create_db(&db_name).await.is_err() {
-        eprintln!("skipping (no admin PG)");
-        return None;
+        panic!("PG required for tests but admin connect failed");
     }
     let pg = PgStorage::connect(&db_url(&db_name))
         .await
@@ -224,10 +223,9 @@ async fn migrated_db() -> Option<(String, PgStorage)> {
     }
     .await
     {
-        eprintln!("skipping (migration failed): {err}");
         drop(pg);
         let _ = drop_db(&db_name).await;
-        return None;
+        panic!("migration failed: {err}");
     }
     Some((db_name, pg))
 }
@@ -1202,10 +1200,12 @@ async fn accepted_goal_wakes_planner_and_emits_execution_request()
         .bind(wake_entry.wake_entry_id)
         .fetch_one(pg.pool())
         .await?;
-        let invocation_status: String = invocation.try_get("status")?;
+        let invocation_status: proxima_core::WakeInvocationStatus =
+            invocation.try_get("status")?;
         let failure_reason: Option<String> = invocation.try_get("failure_reason")?;
         assert_eq!(
-            invocation_status, "succeeded",
+            invocation_status,
+            proxima_core::WakeInvocationStatus::Succeeded,
             "planner wake failed: {failure_reason:?}",
         );
 

@@ -12,11 +12,7 @@ async fn connect_to_default_dev_db() {
             // Pool acquired + SELECT 1 succeeded.
         }
         Err(e) => {
-            // Don't fail CI when there's no PG reachable.
-            // The dev workflow does have PG; the test
-            // surfaces a real misconfig only when paired
-            // with a live DB.
-            eprintln!("skipping: {e}");
+            panic!("PG required for tests but unavailable: {e}");
         }
     }
 }

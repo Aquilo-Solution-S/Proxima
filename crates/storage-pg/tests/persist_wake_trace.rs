@@ -8,13 +8,25 @@ use proxima_core::verbs::goal_write::{GoalAuthorship, GoalDraft, GoalState};
 use proxima_core::verbs::persist_wake_trace::WakeTracePersistInput;
 use proxima_core::wake::trace::WakeTracePayload;
 use proxima_core::{
-    GoalId, MemoryId, OrgId, Owner, Principal, SchemaId, SchemaVersion, SourceBatchId, SourceId,
-    Storage, StorageError, UserId,
+    EntityKind, GoalId, MemoryId, OrgId, Owner, OwnerPrincipalKind, Principal, SchemaId,
+    SchemaVersion, SourceBatchId, SourceId, Storage, StorageError, UserId,
 };
 use proxima_storage_pg::verbs::persist_wake_trace::persist_wake_trace_atomic;
 use uuid::Uuid;
 
 const WAKE_TRACE_JSONL_SCHEMA: &str = "proxima-core/wake-trace-jsonl-v1";
+
+/// Local mirror of `proxima_core.wake_trace_outcome_kind` for test
+/// decoding. The substrate has no Rust-side mirror yet (see TODO in
+/// `crates/storage-pg/src/verbs/persist_wake_trace.rs`); once the
+/// mirror lands in `proxima_core::wake::trace`, this can be removed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, sqlx::Type)]
+#[sqlx(type_name = "proxima_core.wake_trace_outcome_kind", rename_all = "lowercase")]
+enum WakeTraceOutcomeKind {
+    Succeeded,
+    Truncated,
+    Failed,
+}
 
 #[tokio::test]
 async fn persist_writes_fact_jsonl_citation_sidecars_and_authored_edge() {
@@ -52,7 +64,7 @@ async fn persist_writes_fact_jsonl_citation_sidecars_and_authored_edge() {
         .await?;
         assert_eq!(memory_row.0, personality_instance_id);
 
-        let sidecar: (uuid::Uuid, String) = sqlx::query_as(
+        let sidecar: (uuid::Uuid, WakeTraceOutcomeKind) = sqlx::query_as(
             "SELECT invocation_id, outcome_kind FROM proxima_core.wake_trace_v1 \
              WHERE memory_id = $1",
         )
@@ -60,7 +72,7 @@ async fn persist_writes_fact_jsonl_citation_sidecars_and_authored_edge() {
         .fetch_one(pg.pool())
         .await?;
         assert_eq!(sidecar.0, input.wake_trace.invocation_id);
-        assert_eq!(sidecar.1, "succeeded");
+        assert_eq!(sidecar.1, WakeTraceOutcomeKind::Succeeded);
 
         let jsonl_row: (Vec<u8>, i64) = sqlx::query_as(
             "SELECT body, byte_len FROM proxima_core.cited_wake_trace_jsonl_v1 \
@@ -139,7 +151,7 @@ async fn active_goal_ids_emit_goal_kind_edges_targeting_goal_id() {
 
         let outcome = persist_wake_trace_atomic(pg.pool(), &registry, &input).await?;
 
-        let goal_edges: Vec<(Option<uuid::Uuid>, Option<uuid::Uuid>, String)> = sqlx::query_as(
+        let goal_edges: Vec<(Option<uuid::Uuid>, Option<uuid::Uuid>, EntityKind)> = sqlx::query_as(
             "SELECT target_memory_id, target_goal_id, target_kind \
              FROM proxima_core.edges \
              WHERE relation = 'core/derived-from' \
@@ -152,7 +164,7 @@ async fn active_goal_ids_emit_goal_kind_edges_targeting_goal_id() {
         .await?;
         assert_eq!(goal_edges.len(), 2);
         for (target_memory_id, target_goal_id, target_kind) in goal_edges {
-            assert_eq!(target_kind, "Goal");
+            assert_eq!(target_kind, EntityKind::Goal);
             assert!(target_memory_id.is_none());
             assert!(target_goal_id.is_some());
         }
@@ -515,9 +527,10 @@ async fn insert_test_perspective_memory(
     owner: &Owner,
 ) -> Result<MemoryId, sqlx::Error> {
     let memory_id = Uuid::now_v7();
-    let (owner_kind, owner_principal_id) = match &owner.principal {
-        Principal::User(u) => ("User", u.into_inner()),
-        Principal::Group(g) => ("Group", g.into_inner()),
+    let owner_kind = OwnerPrincipalKind::of(&owner.principal);
+    let owner_principal_id = match &owner.principal {
+        Principal::User(u) => u.into_inner(),
+        Principal::Group(g) => g.into_inner(),
     };
     sqlx::query(
         "INSERT INTO proxima_core.memories \
@@ -543,9 +556,10 @@ async fn insert_test_source_batch(
     owner: &Owner,
     source_batch_id: SourceBatchId,
 ) -> Result<(), sqlx::Error> {
-    let (owner_kind, owner_principal_id) = match &owner.principal {
-        Principal::User(u) => ("User", u.into_inner()),
-        Principal::Group(g) => ("Group", g.into_inner()),
+    let owner_kind = OwnerPrincipalKind::of(&owner.principal);
+    let owner_principal_id = match &owner.principal {
+        Principal::User(u) => u.into_inner(),
+        Principal::Group(g) => g.into_inner(),
     };
     sqlx::query(
         "INSERT INTO proxima_core.source_batches \

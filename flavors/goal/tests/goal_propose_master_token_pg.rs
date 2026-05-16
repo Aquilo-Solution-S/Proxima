@@ -169,7 +169,14 @@ async fn master_token_propose_creates_inspires_edge_to_per_token_self_perspectiv
             .expect("inspires edge handle resolves")
             .into_inner();
 
-        let row: (String, uuid::Uuid, uuid::Uuid, String, Option<uuid::Uuid>) = sqlx::query_as(
+        use proxima_core::EdgeAuthorshipKind;
+        let row: (
+            String,
+            uuid::Uuid,
+            uuid::Uuid,
+            EdgeAuthorshipKind,
+            Option<uuid::Uuid>,
+        ) = sqlx::query_as(
             "SELECT relation, source_goal_id, target_memory_id, authorship_kind,
                     authorship_owner_memory_id
                FROM proxima_core.edges
@@ -185,7 +192,7 @@ async fn master_token_propose_creates_inspires_edge_to_per_token_self_perspectiv
             identity.self_perspective_memory_id.into_inner(),
             "inspires edge should target the per-token shell-author Self-Perspective",
         );
-        assert_eq!(row.3, "ExternalAgent");
+        assert_eq!(row.3, EdgeAuthorshipKind::ExternalAgent);
         assert_eq!(
             row.4,
             Some(identity.self_perspective_memory_id.into_inner()),

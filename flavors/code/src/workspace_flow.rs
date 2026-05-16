@@ -517,7 +517,7 @@ async fn ingest_workspace_decision(
         )
         .bind(outcome.memory_id.into_inner())
         .bind(payload.workspace_run_memory_id)
-        .bind(payload.decision.as_str())
+        .bind(payload.decision)
         .bind(payload.decided_at)
         .bind(payload.reason_text.as_deref())
         .bind(payload.decided_by_owner_id)

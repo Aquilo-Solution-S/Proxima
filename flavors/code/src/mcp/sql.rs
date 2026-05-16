@@ -1,6 +1,6 @@
 //! Owner-scoped head-by-natural-key CTEs and lookup helpers for code MCP tools.
 
-use proxima_core::{McpToolCtx, McpToolError, Owner, Principal};
+use proxima_core::{McpToolCtx, McpToolError, Owner, OwnerPrincipalKind, Principal};
 
 pub const CHUNK_HEADS_CTE: &str = r"
 chunk_heads AS (
@@ -39,11 +39,13 @@ file_revision_heads AS (
 )
 ";
 
-pub fn owner_principal(owner: &Owner) -> (&'static str, uuid::Uuid) {
-    match &owner.principal {
-        Principal::User(user) => ("User", user.into_inner()),
-        Principal::Group(group) => ("Group", group.into_inner()),
-    }
+pub fn owner_principal(owner: &Owner) -> (OwnerPrincipalKind, uuid::Uuid) {
+    let kind = OwnerPrincipalKind::of(&owner.principal);
+    let id = match &owner.principal {
+        Principal::User(user) => user.into_inner(),
+        Principal::Group(group) => group.into_inner(),
+    };
+    (kind, id)
 }
 
 pub async fn resolve_repo_identifier(

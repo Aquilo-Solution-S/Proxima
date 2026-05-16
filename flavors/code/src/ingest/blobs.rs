@@ -3,7 +3,7 @@ use proxima_core::{FactPayload, Owner, SourceBatchId};
 use proxima_storage_pg::verbs::event_ingest::ingest_event_in_tx;
 use sqlx::PgPool;
 
-use crate::payloads::{CodeChunkV1, CommitV1, FileRevisionV1, FileState};
+use crate::payloads::{CodeChunkV1, CommitV1, FileRevisionV1};
 
 use super::IngestError;
 use super::draft::{Citation, make_draft};
@@ -104,10 +104,6 @@ pub async fn ingest_file_revision(
     let mut tx = pool.begin().await?;
     let outcome = ingest_event_in_tx(&mut tx, &draft).await?;
     if !outcome.idempotent_replay {
-        let state_text = match payload.state {
-            FileState::Present => "Present",
-            FileState::Tombstone => "Tombstone",
-        };
         sqlx::query(
             "INSERT INTO proxima_code.file_revision_v1 \
                 (memory_id, repo_id, file_path, language, content_sha256, \
@@ -121,7 +117,7 @@ pub async fn ingest_file_revision(
         .bind(&payload.content_sha256[..])
         .bind(i64::try_from(payload.size_bytes).unwrap_or(i64::MAX))
         .bind(&payload.indexed_commit_sha)
-        .bind(state_text)
+        .bind(payload.state)
         .execute(&mut *tx)
         .await?;
     }
@@ -162,10 +158,6 @@ pub async fn ingest_code_chunk(
     let mut tx = pool.begin().await?;
     let outcome = ingest_event_in_tx(&mut tx, &draft).await?;
     if !outcome.idempotent_replay {
-        let state_text = match payload.state {
-            FileState::Present => "Present",
-            FileState::Tombstone => "Tombstone",
-        };
         sqlx::query(
             "INSERT INTO proxima_code.code_chunk_v1 \
                 (memory_id, repo_id, file_path, chunk_index, \
@@ -184,7 +176,7 @@ pub async fn ingest_code_chunk(
         .bind(i64::from(payload.byte_range_end))
         .bind(i64::from(payload.line_range_start))
         .bind(i64::from(payload.line_range_end))
-        .bind(state_text)
+        .bind(payload.state)
         .execute(&mut *tx)
         .await?;
     }

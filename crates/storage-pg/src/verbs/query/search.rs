@@ -11,7 +11,7 @@ use crate::pg_ident::PgIdent;
 #[derive(Debug, sqlx::FromRow)]
 struct SearchRow {
     memory_id: uuid::Uuid,
-    kind: String,
+    kind: EntityKind,
     schema_id: String,
     snippet: String,
     lexical_score: f32,
@@ -90,12 +90,11 @@ fn merge_row(
     candidates: &mut BTreeMap<uuid::Uuid, Candidate>,
     row: SearchRow,
 ) -> Result<(), StorageError> {
-    let kind = parse_kind(&row.kind)?;
     let entry = candidates
         .entry(row.memory_id)
         .or_insert_with(|| Candidate {
             memory_id: row.memory_id,
-            kind,
+            kind: row.kind,
             schema_id: SchemaId::new(row.schema_id.clone()),
             snippet: row.snippet.clone(),
             lexical_score: 0.0,
@@ -254,7 +253,7 @@ fn common_candidates_sql(
     let mut sql = String::from("WITH candidates AS (SELECT m.memory_id, ");
     sql.push_str(
         "m.owner_principal_kind, m.owner_principal_id, \
-         COALESCE(m.kind, 'Fact') AS kind, m.schema_id, m.wake_chain_depth, ",
+         COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind, m.schema_id, m.wake_chain_depth, ",
     );
     push_search_text_expr(&mut sql, sidecars, *next_param)?;
     *next_param += sidecars.len() * 2;
@@ -332,13 +331,3 @@ fn memory_sidecars(schemas: &[SchemaInfo]) -> Vec<&SchemaInfo> {
         .collect()
 }
 
-fn parse_kind(raw: &str) -> Result<EntityKind, StorageError> {
-    match raw {
-        "Fact" => Ok(EntityKind::Fact),
-        "Abstraction" => Ok(EntityKind::Abstraction),
-        "Perspective" => Ok(EntityKind::Perspective),
-        other => Err(StorageError::Internal(format!(
-            "unexpected memory kind in search result: {other}"
-        ))),
-    }
-}

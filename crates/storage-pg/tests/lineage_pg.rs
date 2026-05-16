@@ -3,7 +3,9 @@ mod common;
 use common::{drop_db, fresh_pg, owner_fixture};
 
 use proxima_core::verbs::query::{MemoryLineageDirection, MemoryLineageRequest};
-use proxima_core::{MemoryId, OrgId, Owner, Principal, Storage, UserId};
+use proxima_core::{
+    MemoryId, OrgId, Owner, OwnerPrincipalKind, Principal, RelationClass, Storage, UserId,
+};
 use uuid::Uuid;
 
 #[tokio::test]
@@ -25,14 +27,22 @@ async fn walk_memory_lineage_follows_provenance_and_supersession_by_owner()
     let perspective = insert_memory(&pg, &owner, "perspective", 3).await?;
     let other = insert_memory(&pg, &other_owner, "other owner", 4).await?;
 
-    insert_edge(&pg, &owner, new, old, "core/supersedes", "Supersession").await?;
+    insert_edge(
+        &pg,
+        &owner,
+        new,
+        old,
+        "core/supersedes",
+        RelationClass::Supersession,
+    )
+    .await?;
     insert_edge(
         &pg,
         &owner,
         perspective,
         new,
         "core/derived-from",
-        "Provenance",
+        RelationClass::Provenance,
     )
     .await?;
     insert_edge(
@@ -41,7 +51,7 @@ async fn walk_memory_lineage_follows_provenance_and_supersession_by_owner()
         other,
         old,
         "other/derived-from",
-        "Provenance",
+        RelationClass::Provenance,
     )
     .await?;
 
@@ -98,9 +108,10 @@ async fn insert_memory(
     wake_chain_depth: i16,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
     let memory_id = Uuid::now_v7();
-    let (owner_kind, owner_principal_id) = match &owner.principal {
-        Principal::User(user) => ("User", user.into_inner()),
-        Principal::Group(group) => ("Group", group.into_inner()),
+    let owner_kind = OwnerPrincipalKind::of(&owner.principal);
+    let owner_principal_id = match &owner.principal {
+        Principal::User(user) => user.into_inner(),
+        Principal::Group(group) => group.into_inner(),
     };
     sqlx::query(
         "INSERT INTO proxima_core.memories
@@ -128,12 +139,13 @@ async fn insert_edge(
     source: Uuid,
     target: Uuid,
     relation: &str,
-    relation_class: &str,
+    relation_class: RelationClass,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
     let edge_id = Uuid::now_v7();
-    let (owner_kind, owner_principal_id) = match &owner.principal {
-        Principal::User(user) => ("User", user.into_inner()),
-        Principal::Group(group) => ("Group", group.into_inner()),
+    let owner_kind = OwnerPrincipalKind::of(&owner.principal);
+    let owner_principal_id = match &owner.principal {
+        Principal::User(user) => user.into_inner(),
+        Principal::Group(group) => group.into_inner(),
     };
     sqlx::query(
         "INSERT INTO proxima_core.edges

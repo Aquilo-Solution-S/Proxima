@@ -7,7 +7,8 @@ use proxima_core::auth::NoAuth;
 use proxima_core::personality::{PersonalityInstanceId, PersonalityTool, PersonalityToolContext};
 use proxima_core::verbs::query::MemoryStore;
 use proxima_core::{
-    Engine, FlavorRegistry, HandleTable, MemoryId, Owner, Principal, WakeChainDepth,
+    Engine, FlavorRegistry, HandleTable, MemoryId, Owner, OwnerPrincipalKind, Principal,
+    RelationClass, WakeChainDepth,
 };
 use uuid::Uuid;
 
@@ -28,7 +29,7 @@ async fn walk_lineage_returns_handles_and_records_read_log()
         derived,
         source,
         "core/derived-from",
-        "Provenance",
+        RelationClass::Provenance,
     )
     .await?;
 
@@ -94,9 +95,10 @@ async fn insert_memory(
     wake_chain_depth: i16,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
     let memory_id = Uuid::now_v7();
-    let (owner_kind, owner_principal_id) = match &owner.principal {
-        Principal::User(user) => ("User", user.into_inner()),
-        Principal::Group(group) => ("Group", group.into_inner()),
+    let owner_kind = OwnerPrincipalKind::of(&owner.principal);
+    let owner_principal_id = match &owner.principal {
+        Principal::User(user) => user.into_inner(),
+        Principal::Group(group) => group.into_inner(),
     };
     sqlx::query(
         "INSERT INTO proxima_core.memories
@@ -124,12 +126,13 @@ async fn insert_edge(
     source: Uuid,
     target: Uuid,
     relation: &str,
-    relation_class: &str,
+    relation_class: RelationClass,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
     let edge_id = Uuid::now_v7();
-    let (owner_kind, owner_principal_id) = match &owner.principal {
-        Principal::User(user) => ("User", user.into_inner()),
-        Principal::Group(group) => ("Group", group.into_inner()),
+    let owner_kind = OwnerPrincipalKind::of(&owner.principal);
+    let owner_principal_id = match &owner.principal {
+        Principal::User(user) => user.into_inner(),
+        Principal::Group(group) => group.into_inner(),
     };
     sqlx::query(
         "INSERT INTO proxima_core.edges

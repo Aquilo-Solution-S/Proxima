@@ -3,6 +3,7 @@ mod common;
 use common::{ctx, drop_db, insert_abstraction, insert_self_perspective, migrated, owner_fixture};
 use proxima_core::mcp::McpTool;
 use proxima_core::storage::Storage;
+use proxima_core::verbs::goal_write::{GoalAuthorshipKind, GoalAuthorshipOrigin, GoalState};
 use proxima_core::verbs::query::QueryRequest;
 use proxima_core::{EntityRef, GoalId, MemoryId};
 use proxima_flavor_goal::tools::accept::{AcceptArgs, AcceptTool};
@@ -198,12 +199,12 @@ async fn accept_supersedes_and_re_emits_motivated_by() -> Result<(), Box<dyn std
             .expect("goal handle resolves")
             .into_inner();
 
-        let row: (String, Option<uuid::Uuid>) =
+        let row: (GoalState, Option<uuid::Uuid>) =
             sqlx::query_as("SELECT state, supersedes FROM proxima_core.goals WHERE goal_id = $1")
                 .bind(accepted_id)
                 .fetch_one(pg.pool())
                 .await?;
-        assert_eq!(row.0, "Active");
+        assert_eq!(row.0, GoalState::Active);
         assert_eq!(row.1, Some(proposal));
 
         let proposal_edges: i64 = sqlx::query_scalar(
@@ -367,10 +368,10 @@ async fn mark_achieved_supersedes_active_goal_with_lifecycle_and_edges()
             .into_inner();
 
         let row: (
-            String,
+            GoalState,
             Option<uuid::Uuid>,
-            String,
-            Option<String>,
+            GoalAuthorshipKind,
+            Option<GoalAuthorshipOrigin>,
             Option<String>,
         ) = sqlx::query_as(
             "SELECT state, supersedes, authorship_kind, authorship_origin, authorship_tool_id
@@ -380,10 +381,10 @@ async fn mark_achieved_supersedes_active_goal_with_lifecycle_and_edges()
         .bind(achieved_id)
         .fetch_one(pg.pool())
         .await?;
-        assert_eq!(row.0, "Achieved");
+        assert_eq!(row.0, GoalState::Achieved);
         assert_eq!(row.1, Some(active_id));
-        assert_eq!(row.2, "System");
-        assert_eq!(row.3.as_deref(), Some("Tool"));
+        assert_eq!(row.2, GoalAuthorshipKind::System);
+        assert_eq!(row.3, Some(GoalAuthorshipOrigin::Tool));
         assert_eq!(row.4.as_deref(), Some("proxima-goal/goal_mark_achieved"));
 
         let lifecycle = read_achieved_lifecycle_fact(&pg, achieved_id).await?;
@@ -593,12 +594,12 @@ async fn decline_makes_goal_terminal() -> Result<(), Box<dyn std::error::Error>>
             .expect("goal handle resolves")
             .into_inner();
 
-        let state: String =
+        let state: GoalState =
             sqlx::query_scalar("SELECT state FROM proxima_core.goals WHERE goal_id = $1")
                 .bind(declined_id)
                 .fetch_one(pg.pool())
                 .await?;
-        assert_eq!(state, "Rejected");
+        assert_eq!(state, GoalState::Rejected);
 
         let err = ModifyTool::call(
             ctx,

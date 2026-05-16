@@ -124,8 +124,7 @@ fn build_engine(storage: Arc<dyn Storage>, owner: Owner, principal: Principal) -
 async fn m2_done_when_resume_with_last_seq() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if create_db(&db_name).await.is_err() {
-        eprintln!("skipping (no admin PG)");
-        return;
+        panic!("PG required for tests but admin connect failed");
     }
     let url = db_url(&db_name);
 

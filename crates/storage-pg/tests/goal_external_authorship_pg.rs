@@ -11,7 +11,7 @@ use std::sync::Arc;
 use proxima_core::auth::{Credentials, NoAuth};
 use proxima_core::engine::Engine;
 use proxima_core::storage::Storage;
-use proxima_core::verbs::goal_write::{GoalAuthorship, GoalDraft, GoalState};
+use proxima_core::verbs::goal_write::{GoalAuthorship, GoalAuthorshipKind, GoalDraft, GoalState};
 use proxima_core::verbs::query::MemoryStore;
 use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaInfo};
 use proxima_core::{OrgId, Owner, Principal, SchemaId, SchemaVersion, UserId};
@@ -51,8 +51,7 @@ fn external_draft(owner: &Owner, state: GoalState, request_id: &str) -> GoalDraf
 async fn external_authorship_admitted_at_proposed_seed_only() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if create_db(&db_name).await.is_err() {
-        eprintln!("skipping (no admin PG)");
-        return;
+        panic!("PG required for tests but admin connect failed");
     }
     let url = db_url(&db_name);
 
@@ -84,13 +83,13 @@ async fn external_authorship_admitted_at_proposed_seed_only() {
             .await?;
         assert!(!proposed.idempotent_replay);
 
-        let row: (String, String) = sqlx::query_as(
+        let row: (GoalState, GoalAuthorshipKind) = sqlx::query_as(
             "SELECT state, authorship_kind FROM proxima_core.goals WHERE goal_id = $1",
         )
         .bind(proposed.goal_id.into_inner())
         .fetch_one(pg.pool())
         .await?;
-        assert_eq!(row, ("Proposed".to_string(), "External".to_string()));
+        assert_eq!(row, (GoalState::Proposed, GoalAuthorshipKind::External));
 
         // Active seed under External: trigger rejects.
         let err = engine

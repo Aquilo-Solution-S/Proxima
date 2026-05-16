@@ -25,7 +25,7 @@ use tempfile::TempDir;
 use tokio_stream::StreamExt;
 use uuid::Uuid;
 
-const ADMIN_URL: &str = "postgres://postgres@localhost/postgres";
+const ADMIN_URL: &str = "postgres://proxima:proxima@localhost/proxima";
 
 async fn create_db(name: &str) -> Result<(), sqlx::Error> {
     let mut conn = PgConnection::connect(ADMIN_URL).await?;
@@ -106,9 +106,10 @@ fn count_main_commits(repo: &Path) -> usize {
 }
 
 async fn count_commit_v1_facts(pool: &sqlx::PgPool, owner: &Owner, repo_id: Uuid) -> i64 {
-    let (kind, principal_id) = match &owner.principal {
-        Principal::User(u) => ("User", u.into_inner()),
-        Principal::Group(g) => ("Group", g.into_inner()),
+    let kind = proxima_core::OwnerPrincipalKind::of(&owner.principal);
+    let principal_id = match &owner.principal {
+        Principal::User(u) => u.into_inner(),
+        Principal::Group(g) => g.into_inner(),
     };
     let org_id = owner.org_id.into_inner();
     let row: (i64,) = sqlx::query_as(
@@ -134,10 +135,9 @@ async fn count_commit_v1_facts(pool: &sqlx::PgPool, owner: &Owner, repo_id: Uuid
 async fn self_ingestion_streams_proxima_main() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if create_db(&db_name).await.is_err() {
-        eprintln!("skipping (no admin PG)");
-        return;
+        panic!("PG required for tests but admin connect failed");
     }
-    let url = format!("postgres://postgres@localhost/{db_name}");
+    let url = format!("postgres://proxima:proxima@localhost/{db_name}");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;

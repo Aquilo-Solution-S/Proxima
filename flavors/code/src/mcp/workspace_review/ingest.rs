@@ -75,7 +75,7 @@ pub async fn insert_workspace_review_sidecar(
     .bind(memory_id.into_inner())
     .bind(payload.workspace_run_memory_id)
     .bind(payload.execution_request_memory_id)
-    .bind(payload.verdict.as_str())
+    .bind(payload.verdict)
     .bind(i32::try_from(payload.round_index).unwrap_or(i32::MAX))
     .bind(&payload.summary)
     .bind(

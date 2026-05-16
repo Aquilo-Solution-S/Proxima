@@ -6,7 +6,7 @@ use sqlx::{Connection, Executor, PgConnection};
 use proxima_core::wake::token_store::WakeTokenContext;
 use proxima_core::{HandleTable, OrgId, Owner, Principal, UserId};
 
-const ADMIN_URL: &str = "postgres://postgres@localhost/postgres";
+const ADMIN_URL: &str = "postgres://proxima:proxima@localhost/proxima";
 
 /// Returns a nil owner for token tests.
 #[allow(dead_code)]
@@ -145,8 +145,7 @@ pub async fn sse_json(
 pub async fn create_db() -> Result<Option<String>, Box<dyn std::error::Error>> {
     let db_name = format!("proxima_test_{}", uuid::Uuid::now_v7().simple());
     let Ok(mut conn) = PgConnection::connect(ADMIN_URL).await else {
-        eprintln!("skipping (no admin PG)");
-        return Ok(None);
+        panic!("PG required for tests but admin connect failed");
     };
     conn.execute(format!("CREATE DATABASE \"{db_name}\"").as_str())
         .await?;
