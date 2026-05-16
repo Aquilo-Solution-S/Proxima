@@ -4,7 +4,7 @@ use aws_config::BehaviorVersion;
 use aws_sdk_s3::Client;
 use aws_sdk_s3::config::Region;
 use aws_sdk_s3::presigning::PresigningConfig;
-use proxima_core::{Owner, Principal, UPLOADED_BLOB_SCHEMA_ID};
+use proxima_core::{Owner, OwnerPrincipalKind, Principal, UPLOADED_BLOB_SCHEMA_ID};
 use proxima_storage_pg::PgStorage;
 use sha2::{Digest, Sha256};
 use sqlx::Row;
@@ -721,10 +721,18 @@ fn parse_u64_env(key: &str, default: u64) -> Result<u64, CommandError> {
         .map_err(|_| CommandError::s3_config(format!("invalid integer {key}={value}")))
 }
 
-fn owner_columns(owner: &Owner) -> (&'static str, Uuid, Uuid) {
+fn owner_columns(owner: &Owner) -> (OwnerPrincipalKind, Uuid, Uuid) {
     match &owner.principal {
-        Principal::User(user) => ("User", user.into_inner(), owner.org_id.into_inner()),
-        Principal::Group(group) => ("Group", group.into_inner(), owner.org_id.into_inner()),
+        Principal::User(user) => (
+            OwnerPrincipalKind::User,
+            user.into_inner(),
+            owner.org_id.into_inner(),
+        ),
+        Principal::Group(group) => (
+            OwnerPrincipalKind::Group,
+            group.into_inner(),
+            owner.org_id.into_inner(),
+        ),
     }
 }
 
@@ -732,7 +740,7 @@ fn owner_hash_hex(owner: &Owner) -> String {
     let (kind, principal_id, org_id) = owner_columns(owner);
     let mut hasher = blake3::Hasher::new();
     hasher.update(b"proxima-owner-s3-key-v1\0");
-    hasher.update(kind.as_bytes());
+    hasher.update(kind.as_str().as_bytes());
     hasher.update(b"\0");
     hasher.update(principal_id.as_bytes());
     hasher.update(b"\0");
@@ -771,7 +779,7 @@ mod tests {
         let canonical = canonical_object_key(&owner_hash, &"a".repeat(64));
 
         assert_eq!(owner_hash.len(), 64);
-        assert!(!pending.contains(owner_kind));
+        assert!(!pending.contains(owner_kind.as_str()));
         assert!(!pending.contains(&principal_id.to_string()));
         assert!(!pending.contains(&org_id.to_string()));
         assert!(pending.starts_with("pending/"));

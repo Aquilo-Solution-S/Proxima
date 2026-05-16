@@ -1,5 +1,4 @@
 use super::records::{RepoIngestionRun, RepoRecord, RunStage, RunStatus};
-use std::str::FromStr;
 use uuid::Uuid;
 
 fn u32_from_i32(v: i32) -> u32 {
@@ -21,8 +20,8 @@ pub(super) struct RepoRow {
 pub(super) struct RunRow {
     run_id: Uuid,
     repo_id: Uuid,
-    status: String,
-    stage: String,
+    status: RunStatus,
+    stage: RunStage,
     commits_emitted: i32,
     files_emitted: i32,
     chunks_emitted: i32,
@@ -40,15 +39,11 @@ pub(super) struct RunRow {
 
 impl From<RunRow> for RepoIngestionRun {
     fn from(row: RunRow) -> Self {
-        let status = RunStatus::from_str(&row.status)
-            .unwrap_or_else(|err| panic!("invalid persisted ingestion run status: {err}"));
-        let stage = RunStage::from_str(&row.stage)
-            .unwrap_or_else(|err| panic!("invalid persisted ingestion run stage: {err}"));
         Self {
             run_id: row.run_id,
             repo_id: row.repo_id,
-            status,
-            stage,
+            status: row.status,
+            stage: row.stage,
             commits_emitted: u32_from_i32(row.commits_emitted),
             files_emitted: u32_from_i32(row.files_emitted),
             chunks_emitted: u32_from_i32(row.chunks_emitted),

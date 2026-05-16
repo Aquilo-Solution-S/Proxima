@@ -47,8 +47,9 @@ impl FactPayload for WorkspaceRunV1 {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type, sqlx::Type)]
 #[serde(rename_all = "snake_case")]
+#[sqlx(type_name = "proxima_code.workspace_decision", rename_all = "snake_case")]
 pub enum WorkspaceDecision {
     Rejected,
     RetryRequested,
@@ -91,8 +92,11 @@ impl FactPayload for WorkspaceDecisionV1 {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, specta::Type)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, specta::Type, sqlx::Type,
+)]
 #[serde(rename_all = "snake_case")]
+#[sqlx(type_name = "proxima_code.workspace_review_verdict", rename_all = "snake_case")]
 pub enum WorkspaceReviewVerdict {
     Approved,
     Rejected,

@@ -1,7 +1,8 @@
 use proxima_core::{FactPayload, FactTombstone, proxima_schema_id};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type, sqlx::Type)]
+#[sqlx(type_name = "proxima_code.file_state")]
 pub enum FileState {
     Present,
     Tombstone,

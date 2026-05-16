@@ -1,12 +1,16 @@
+use proxima_core::verbs::goal_write::GoalState;
 use proxima_core::{
-    CORE_DERIVED_FROM_RELATION, FactPayload, MemoryId, Owner, WorkspaceRunnerError,
+    CORE_DERIVED_FROM_RELATION, EntityKind, FactPayload, MemoryId, Owner, WorkspaceRunnerError,
 };
 use serde::de::DeserializeOwned;
 use serde_json::json;
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
-use crate::payloads::{ExecutionRequestV1, WorkspaceDecisionV1, WorkspaceReviewV1, WorkspaceRunV1};
+use crate::payloads::{
+    ExecutionRequestV1, WorkspaceDecision, WorkspaceDecisionV1, WorkspaceReviewV1,
+    WorkspaceReviewVerdict, WorkspaceRunV1,
+};
 use crate::repos::owner_columns_pub;
 
 use super::RunnerRepoRow;
@@ -66,9 +70,9 @@ pub(super) async fn load_execution_request(
             memory_id.into_inner()
         )));
     };
-    let kind: String = row.try_get("kind").map_err(map_sqlx_internal)?;
+    let kind: EntityKind = row.try_get("kind").map_err(map_sqlx_internal)?;
     let schema_id: String = row.try_get("schema_id").map_err(map_sqlx_internal)?;
-    if kind != "Fact" || schema_id != ExecutionRequestV1::SCHEMA_ID {
+    if kind != EntityKind::Fact || schema_id != ExecutionRequestV1::SCHEMA_ID {
         return Err(WorkspaceRunnerError::PrepareFailed(format!(
             "memory {} is not an execution request",
             memory_id.into_inner()
@@ -353,7 +357,7 @@ pub(super) async fn load_goal_context_for_request(
         .map_err(map_sqlx_internal)?;
     let head_title: String = row.try_get("head_title").map_err(map_sqlx_internal)?;
     let head_text: String = row.try_get("head_text").map_err(map_sqlx_internal)?;
-    let head_state: String = row.try_get("head_state").map_err(map_sqlx_internal)?;
+    let head_state: GoalState = row.try_get("head_state").map_err(map_sqlx_internal)?;
     let head_supersedes: Option<Uuid> =
         row.try_get("head_supersedes").map_err(map_sqlx_internal)?;
     let head_created_at: time::OffsetDateTime =
@@ -470,9 +474,9 @@ pub(super) async fn load_workspace_run(
             memory_id.into_inner()
         )));
     };
-    let kind: String = row.try_get("kind").map_err(map_sqlx_internal)?;
+    let kind: EntityKind = row.try_get("kind").map_err(map_sqlx_internal)?;
     let schema_id: String = row.try_get("schema_id").map_err(map_sqlx_internal)?;
-    if kind != "Fact" || schema_id != WorkspaceRunV1::SCHEMA_ID {
+    if kind != EntityKind::Fact || schema_id != WorkspaceRunV1::SCHEMA_ID {
         return Err(WorkspaceRunnerError::PrepareFailed(format!(
             "memory {} is not a workspace run",
             memory_id.into_inner()
@@ -639,7 +643,7 @@ fn review_row_to_json(
     let execution_request_memory_id: Uuid = row
         .try_get("execution_request_memory_id")
         .map_err(map_sqlx_internal)?;
-    let verdict: String = row.try_get("verdict").map_err(map_sqlx_internal)?;
+    let verdict: WorkspaceReviewVerdict = row.try_get("verdict").map_err(map_sqlx_internal)?;
     let round_index: i32 = row.try_get("round_index").map_err(map_sqlx_internal)?;
     let summary: String = row.try_get("summary").map_err(map_sqlx_internal)?;
     let findings: serde_json::Value = row.try_get("findings_json").map_err(map_sqlx_internal)?;
@@ -713,7 +717,7 @@ fn decision_row_to_json(
     let workspace_run_memory_id: Uuid = row
         .try_get("workspace_run_memory_id")
         .map_err(map_sqlx_internal)?;
-    let decision: String = row.try_get("decision").map_err(map_sqlx_internal)?;
+    let decision: WorkspaceDecision = row.try_get("decision").map_err(map_sqlx_internal)?;
     let decided_at: time::OffsetDateTime = row.try_get("decided_at").map_err(map_sqlx_internal)?;
     let reason_text: Option<String> = row.try_get("reason_text").map_err(map_sqlx_internal)?;
     let decided_by_owner_id: Uuid = row

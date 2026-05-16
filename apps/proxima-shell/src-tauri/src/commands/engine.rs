@@ -13,8 +13,8 @@ use proxima_core::verbs::schema::{SchemaRequest, SchemaResponse};
 use proxima_core::verbs::subscribe::SubscribeRequest;
 use proxima_core::{
     CORE_INSPIRES_RELATION, ChangeEvent, Engine, FactPayload, GoalId, ListWakeInvocationsRequest,
-    Owner, PersonalityInstanceId, PersonalityInstanceRow, SchemaId, SchemaVersion, SourceBatchId,
-    SourceId, WakeInvocationLogRow, WakeInvocationRow,
+    Owner, OwnerPrincipalKind, PersonalityInstanceId, PersonalityInstanceRow, SchemaId,
+    SchemaVersion, SourceBatchId, SourceId, WakeInvocationLogRow, WakeInvocationRow,
 };
 use proxima_flavor_goal::GoalActivatedV1;
 use proxima_storage_pg::PgStorage;
@@ -747,14 +747,18 @@ async fn ingest_goal_activated_fact(
     Ok(outcome)
 }
 
-fn owner_columns(owner: &Owner) -> (&'static str, uuid::Uuid, uuid::Uuid) {
+fn owner_columns(owner: &Owner) -> (OwnerPrincipalKind, uuid::Uuid, uuid::Uuid) {
     match &owner.principal {
-        proxima_core::Principal::User(user) => {
-            ("User", user.into_inner(), owner.org_id.into_inner())
-        }
-        proxima_core::Principal::Group(group) => {
-            ("Group", group.into_inner(), owner.org_id.into_inner())
-        }
+        proxima_core::Principal::User(user) => (
+            OwnerPrincipalKind::User,
+            user.into_inner(),
+            owner.org_id.into_inner(),
+        ),
+        proxima_core::Principal::Group(group) => (
+            OwnerPrincipalKind::Group,
+            group.into_inner(),
+            owner.org_id.into_inner(),
+        ),
     }
 }
 

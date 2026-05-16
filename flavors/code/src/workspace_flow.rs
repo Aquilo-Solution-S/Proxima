@@ -437,14 +437,13 @@ async fn has_workspace_decision_after(
 fn review_record_from_row(
     row: &sqlx::postgres::PgRow,
 ) -> Result<WorkspaceReviewRecord, WorkspaceFlowError> {
-    let verdict: String = row.try_get("verdict")?;
     let round_index: i32 = row.try_get("round_index")?;
     let findings: serde_json::Value = row.try_get("findings_json")?;
     Ok(WorkspaceReviewRecord {
         memory_id: row.try_get("memory_id")?,
         workspace_run_memory_id: row.try_get("workspace_run_memory_id")?,
         execution_request_memory_id: row.try_get("execution_request_memory_id")?,
-        verdict: parse_verdict(&verdict)?,
+        verdict: row.try_get("verdict")?,
         round_index: u32::try_from(round_index).map_err(|_| {
             WorkspaceFlowError::InvalidSidecar {
                 message: format!("negative review round_index: {round_index}"),
@@ -466,11 +465,10 @@ fn review_record_from_row(
 fn decision_record_from_row(
     row: &sqlx::postgres::PgRow,
 ) -> Result<WorkspaceDecisionRecord, WorkspaceFlowError> {
-    let decision: String = row.try_get("decision")?;
     Ok(WorkspaceDecisionRecord {
         memory_id: row.try_get("memory_id")?,
         workspace_run_memory_id: row.try_get("workspace_run_memory_id")?,
-        decision: parse_decision(&decision)?,
+        decision: row.try_get("decision")?,
         decided_at: row.try_get("decided_at")?,
         reason_text: row.try_get("reason_text")?,
         decided_by_owner_id: row.try_get("decided_by_owner_id")?,
@@ -552,29 +550,6 @@ async fn ingest_workspace_decision(
     }
     tx.commit().await?;
     Ok(outcome.memory_id)
-}
-
-fn parse_verdict(value: &str) -> Result<WorkspaceReviewVerdict, WorkspaceFlowError> {
-    match value {
-        "approved" => Ok(WorkspaceReviewVerdict::Approved),
-        "rejected" => Ok(WorkspaceReviewVerdict::Rejected),
-        "needs_user" => Ok(WorkspaceReviewVerdict::NeedsUser),
-        other => Err(WorkspaceFlowError::InvalidReviewVerdict {
-            value: other.to_string(),
-        }),
-    }
-}
-
-fn parse_decision(value: &str) -> Result<WorkspaceDecision, WorkspaceFlowError> {
-    match value {
-        "rejected" => Ok(WorkspaceDecision::Rejected),
-        "retry_requested" => Ok(WorkspaceDecision::RetryRequested),
-        "accepted" => Ok(WorkspaceDecision::Accepted),
-        "merged" => Ok(WorkspaceDecision::Merged),
-        other => Err(WorkspaceFlowError::InvalidDecision {
-            value: other.to_string(),
-        }),
-    }
 }
 
 fn truncate_utf8(value: String, max_bytes: usize) -> (String, bool) {
