@@ -2,7 +2,7 @@ use proxima_core::personality::{
     AbstractionRow, FactRow, MemorySnapshot, PersonalityRef, PersonalityWriteOutcome,
     PersonalityWriteRequest, SidecarSpec, WakeChainDepth,
 };
-use proxima_core::{EntityKind, MemoryId, Owner, SchemaId, SchemaVersion, StorageError};
+use proxima_core::{EdgeAuthorshipKind, EntityKind, MemoryId, Owner, SchemaId, SchemaVersion, StorageError};
 use sqlx::PgPool;
 
 use super::rows::owner_columns;
@@ -257,8 +257,7 @@ pub async fn append_personality_memories(
                  schema_id, schema_version, kind, text, operator_kind, model_id,
                  prompt_version, personality_instance_id,
                  wake_chain_depth, supersedes)
-             VALUES ($1, $2, $3, $4, $5, $6,
-                     $7::text::proxima_core.entity_kind, $8, 'Wake',
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'Wake',
                      $9, $10, $11, $12, $13)",
         )
         .bind(memory_id)
@@ -267,7 +266,7 @@ pub async fn append_personality_memories(
         .bind(owner_org_id)
         .bind(memory.schema_id.as_str())
         .bind(i32::try_from(memory.schema_version.into_inner()).unwrap_or(1))
-        .bind(memory.kind.as_str())
+        .bind(memory.kind.entity_kind())
         .bind(&memory.text)
         .bind(req.model_id)
         .bind(req.prompt_version)
@@ -301,13 +300,13 @@ pub async fn append_personality_memories(
                  entity_personality_instance_id,
                  wake_chain_depth, supersedes_memory_id)
              VALUES ($1, $2, $3, $4, 'EntityAppend',
-                     $5::text::proxima_core.entity_kind, $6, $7, $8, $9, $10, $11)",
+                     $5, $6, $7, $8, $9, $10, $11)",
         )
         .bind(change_seq)
         .bind(owner_kind)
         .bind(owner_principal_id)
         .bind(owner_org_id)
-        .bind(memory.kind.as_str())
+        .bind(memory.kind.entity_kind())
         .bind(memory_id)
         .bind(memory.schema_id.as_str())
         .bind(i32::try_from(memory.schema_version.into_inner()).unwrap_or(1))
@@ -324,10 +323,10 @@ pub async fn append_personality_memories(
             let draft = EdgeDraft {
                 edge_id: uuid::Uuid::now_v7(),
                 relation: req.provenance_relation,
-                source_kind: memory.kind.as_str(),
+                source_kind: memory.kind.entity_kind(),
                 source_memory_id: Some(memory_id),
                 source_goal_id: None,
-                target_kind: target_kind.as_str(),
+                target_kind,
                 target_memory_id: Some(prov_id.into_inner()),
                 target_goal_id: None,
                 authorship_kind,
@@ -341,13 +340,13 @@ pub async fn append_personality_memories(
             let draft = EdgeDraft {
                 edge_id: uuid::Uuid::now_v7(),
                 relation: req.supersedes_relation,
-                source_kind: memory.kind.as_str(),
+                source_kind: memory.kind.entity_kind(),
                 source_memory_id: Some(memory_id),
                 source_goal_id: None,
-                target_kind: memory.kind.as_str(),
+                target_kind: memory.kind.entity_kind(),
                 target_memory_id: Some(prior_head),
                 target_goal_id: None,
-                authorship_kind: "Engine",
+                authorship_kind: EdgeAuthorshipKind::Engine,
                 authorship_owner_memory_id: None,
                 owner: &req.owner,
             };
@@ -357,13 +356,13 @@ pub async fn append_personality_memories(
         let authored = EdgeDraft {
             edge_id: uuid::Uuid::now_v7(),
             relation: req.authored_relation,
-            source_kind: "Perspective",
+            source_kind: EntityKind::Perspective,
             source_memory_id: Some(req.current_root_perspective_memory_id.into_inner()),
             source_goal_id: None,
-            target_kind: memory.kind.as_str(),
+            target_kind: memory.kind.entity_kind(),
             target_memory_id: Some(memory_id),
             target_goal_id: None,
-            authorship_kind: "Engine",
+            authorship_kind: EdgeAuthorshipKind::Engine,
             authorship_owner_memory_id: None,
             owner: &req.owner,
         };
@@ -375,10 +374,9 @@ pub async fn append_personality_memories(
             "INSERT INTO proxima_core.embeddings
                 (entity_kind, entity_id, embedding_version, model_id, vec, dim,
                  owner_principal_kind, owner_principal_id, owner_org_id)
-             VALUES ($1::text::proxima_core.entity_kind,
-                     $2, 1, $3, $4, $5, $6, $7, $8)",
+             VALUES ($1, $2, 1, $3, $4, $5, $6, $7, $8)",
         )
-        .bind(memory.kind.as_str())
+        .bind(memory.kind.entity_kind())
         .bind(memory_id)
         .bind(&memory.embedding_model_id)
         .bind(&memory.embedding)
@@ -395,10 +393,13 @@ pub async fn append_personality_memories(
     Ok(PersonalityWriteOutcome { memory_ids })
 }
 
-fn provenance_edge_authorship_kind(kind: proxima_core::PersonalityMemoryKind) -> &'static str {
+fn provenance_edge_authorship_kind(
+    kind: proxima_core::PersonalityMemoryKind,
+) -> proxima_core::EdgeAuthorshipKind {
+    use proxima_core::EdgeAuthorshipKind;
     match kind {
-        proxima_core::PersonalityMemoryKind::Abstraction => "OperatorFtoA",
-        proxima_core::PersonalityMemoryKind::Perspective => "OperatorAtoP",
+        proxima_core::PersonalityMemoryKind::Abstraction => EdgeAuthorshipKind::OperatorFtoA,
+        proxima_core::PersonalityMemoryKind::Perspective => EdgeAuthorshipKind::OperatorAtoP,
     }
 }
 

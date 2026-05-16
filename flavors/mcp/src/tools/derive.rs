@@ -1,6 +1,7 @@
 use proxima_core::mcp::{McpTool, McpToolCtx, McpToolError};
 use proxima_core::{
-    AbstractionPayload, CORE_DERIVED_FROM_RELATION, EdgeId, MemoryId, SchemaId, SchemaVersion,
+    AbstractionPayload, CORE_DERIVED_FROM_RELATION, EdgeAuthorshipKind, EdgeId, MemoryId,
+    SchemaId, SchemaVersion,
 };
 use proxima_storage_pg::verbs::derive_append::{DerivedDraft, append_derived_in_tx};
 use proxima_storage_pg::verbs::edge_append::{EdgeDraft, append_edge_in_tx};
@@ -156,13 +157,13 @@ impl McpTool for DeriveTool {
                     let edge_draft = EdgeDraft {
                         edge_id,
                         relation,
-                        source_kind: args.kind.as_str(),
+                        source_kind: args.kind.to_entity_kind(),
                         source_memory_id: Some(memory_id),
                         source_goal_id: None,
-                        target_kind: memory_kind_for_edge(source_kind).as_str(),
+                        target_kind: memory_kind_for_edge(source_kind),
                         target_memory_id: Some(*source_id),
                         target_goal_id: None,
-                        authorship_kind: "ExternalAgent",
+                        authorship_kind: EdgeAuthorshipKind::ExternalAgent,
                         authorship_owner_memory_id: None,
                         owner: &ctx.owner,
                     };

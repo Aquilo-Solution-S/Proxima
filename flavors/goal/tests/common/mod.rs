@@ -17,7 +17,6 @@ pub fn owner_fixture() -> Owner {
     }
 }
 
-#[allow(dead_code)]
 pub fn other_owner_fixture() -> Owner {
     Owner {
         principal: Principal::User(UserId::new(Uuid::now_v7())),

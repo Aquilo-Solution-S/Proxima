@@ -11,7 +11,7 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::Owner;
-use crate::personality::types::WakeInvocationStatus;
+use crate::personality::types::{WakeInvocationLogStatus, WakeInvocationStatus};
 
 use super::personality::PersonalityInstanceId;
 
@@ -51,7 +51,7 @@ pub struct WakeInvocationLogDraft {
     pub change_event_seq: Uuid,
     pub phase: String,
     pub tool_id: Option<String>,
-    pub status: String,
+    pub status: WakeInvocationLogStatus,
     pub duration_ms: Option<u64>,
     pub message_tail: Option<String>,
 }
@@ -62,7 +62,7 @@ pub struct WakeInvocationLogRow {
     pub at: OffsetDateTime,
     pub phase: String,
     pub tool_id: Option<String>,
-    pub status: String,
+    pub status: WakeInvocationLogStatus,
     pub duration_ms: Option<u64>,
     pub message_tail: Option<String>,
 }

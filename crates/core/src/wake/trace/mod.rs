@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+use crate::personality::WakeTraceOutcomeKind;
 use crate::{CitationMappingPayload, CitedObjectPayload, FactPayload, SchemaId, proxima_schema_id};
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -29,7 +30,7 @@ pub struct WakeTracePayload {
     #[serde(with = "time::serde::rfc3339")]
     #[schemars(with = "String")]
     pub finished_at: OffsetDateTime,
-    pub outcome_kind: String,
+    pub outcome_kind: WakeTraceOutcomeKind,
     pub failure_reason: Option<String>,
     pub rounds_used: u32,
     pub finish_reason: Option<String>,
@@ -46,7 +47,9 @@ impl FactPayload for WakeTracePayload {
     fn render(&self) -> String {
         format!(
             "Wake {} {} ({} rounds)",
-            self.invocation_id, self.outcome_kind, self.rounds_used
+            self.invocation_id,
+            self.outcome_kind.as_str(),
+            self.rounds_used
         )
     }
 

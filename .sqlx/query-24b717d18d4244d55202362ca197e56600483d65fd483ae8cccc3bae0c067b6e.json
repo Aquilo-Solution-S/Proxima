@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT owner_principal_kind AS \"owner_principal_kind: OwnerPrincipalKind\",\n                  owner_principal_id, owner_org_id,\n                  COALESCE(kind::text, 'Fact') AS \"memory_kind!\"\n             FROM proxima_core.memories\n             WHERE memory_id = $1",
+  "query": "SELECT owner_principal_kind AS \"owner_principal_kind: OwnerPrincipalKind\",\n                  owner_principal_id, owner_org_id,\n                  kind AS \"kind: EntityKind\"\n             FROM proxima_core.memories\n             WHERE memory_id = $1",
   "describe": {
     "columns": [
       {
@@ -30,8 +30,20 @@
       },
       {
         "ordinal": 3,
-        "name": "memory_kind!",
-        "type_info": "Text"
+        "name": "kind: EntityKind",
+        "type_info": {
+          "Custom": {
+            "name": "proxima_core.entity_kind",
+            "kind": {
+              "Enum": [
+                "Fact",
+                "Abstraction",
+                "Perspective",
+                "Goal"
+              ]
+            }
+          }
+        }
       }
     ],
     "parameters": {
@@ -43,8 +55,8 @@
       false,
       false,
       false,
-      null
+      true
     ]
   },
-  "hash": "13142eba03f39bc826430f2ec9ea8dcb9dc252e8a7ac3e9e381d5d2d783955b3"
+  "hash": "24b717d18d4244d55202362ca197e56600483d65fd483ae8cccc3bae0c067b6e"
 }

@@ -1,7 +1,8 @@
 use proxima_core::personality::{
     InstantiatePersonalityRequest, InstantiatePersonalityResponse, PersonalityInstanceId,
-    PersonalityInstanceRow, ROOT_PERSONALITY_PERSPECTIVE_SCHEMA_ID, WakeEntryAuthoredBy,
-    WakeEntryExecutionMode, WakeEntryGoalScope, WakeEntryRow, WakeEntryTriggerKind,
+    PersonalityInstanceRow, PersonalityStatus, ROOT_PERSONALITY_PERSPECTIVE_SCHEMA_ID,
+    WakeEntryAuthoredBy, WakeEntryExecutionMode, WakeEntryGoalScope, WakeEntryRow,
+    WakeEntryTriggerKind,
 };
 use proxima_core::{MemoryId, ModelTier, Owner, OwnerPrincipalKind, StorageError};
 use sqlx::PgPool;
@@ -15,14 +16,11 @@ pub async fn list_personality_instances(
     include_tombstoned: bool,
 ) -> Result<Vec<PersonalityInstanceRow>, StorageError> {
     let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(owner);
-    // status::text keeps PersonalityInstanceRow.status as String; the
-    // SQL enum value 'tombstoned' is the existing public contract.
-    // TODO(macro-sweep): bind as text+cast; add Rust mirror for proxima_core.personality_status
-    let rows: Vec<(uuid::Uuid, uuid::Uuid, String, String)> = sqlx::query_as(
+    let rows: Vec<(uuid::Uuid, uuid::Uuid, String, PersonalityStatus)> = sqlx::query_as(
         "SELECT p.personality_instance_id,
                 p.current_root_perspective_memory_id,
                 m.text AS display_name,
-                p.status::text AS status
+                p.status
          FROM proxima_core.personality p
          JOIN proxima_core.memories m
            ON m.memory_id = p.current_root_perspective_memory_id
@@ -169,21 +167,20 @@ pub async fn instantiate_personality(
     .await
     .map_err(map_err)?;
 
-    // TODO(macro-sweep): bind as text+cast; add Rust mirror for proxima_core.personality_status
     sqlx::query(
         "INSERT INTO proxima_core.personality
             (owner_principal_kind, owner_principal_id, owner_org_id,
              personality_instance_id, current_root_perspective_memory_id,
              max_wake_chain_depth, status)
-         VALUES ($1::text::proxima_core.owner_principal_kind, $2, $3, $4, $5, $6,
-                 'active'::proxima_core.personality_status)",
+         VALUES ($1, $2, $3, $4, $5, $6, $7)",
     )
-    .bind(owner_kind.as_str())
+    .bind(owner_kind)
     .bind(owner_principal_id)
     .bind(owner_org_id)
     .bind(instance_id)
     .bind(memory_id)
     .bind(i32::from(proxima_core::personality::MAX_WAKE_CHAIN_DEPTH))
+    .bind(PersonalityStatus::Active)
     .execute(&mut *tx)
     .await
     .map_err(map_err)?;

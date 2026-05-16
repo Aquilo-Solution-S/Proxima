@@ -4,10 +4,10 @@
 //! per docs/superpowers/specs/2026-05-10-spinning-wheel-proof-roadmap.md
 //! §M0.
 
-#[allow(dead_code)]
 mod common;
 
 use common::{drop_db, migrated, owner_fixture};
+use proxima_core::EdgeAuthorshipKind;
 use proxima_core::auth::NoAuth;
 use proxima_core::mcp::{HandleTable, McpAuthorContext, McpToolCtx, OutputMode};
 use proxima_core::storage::Storage;
@@ -169,7 +169,6 @@ async fn master_token_propose_creates_inspires_edge_to_per_token_self_perspectiv
             .expect("inspires edge handle resolves")
             .into_inner();
 
-        use proxima_core::EdgeAuthorshipKind;
         let row: (
             String,
             uuid::Uuid,

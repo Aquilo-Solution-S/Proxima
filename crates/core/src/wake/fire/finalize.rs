@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use crate::Owner;
 use crate::engine::Engine;
-use crate::personality::{WakeInvocationFinalize, WakeInvocationLogDraft};
+use crate::personality::{WakeInvocationFinalize, WakeInvocationLogDraft, WakeInvocationLogStatus};
 
 use super::input::FireWakeEntryInput;
 use super::outcome::WakeInvocationFinalizeOutcome;
@@ -45,7 +45,7 @@ pub async fn finalize(
 pub async fn append_session_artifact_log(
     engine: &Engine,
     input: &FireWakeEntryInput,
-    status: &str,
+    status: WakeInvocationLogStatus,
     message_tail: String,
 ) {
     if let Err(err) = engine
@@ -57,7 +57,7 @@ pub async fn append_session_artifact_log(
             change_event_seq: input.change_event_seq,
             phase: "session_artifact".to_string(),
             tool_id: None,
-            status: status.to_string(),
+            status,
             duration_ms: None,
             message_tail: Some(message_tail),
         })
@@ -80,7 +80,7 @@ pub async fn append_session_log_error_if_present(
     outcome_result: &Result<crate::harness::HarnessOutcome, crate::harness::HarnessError>,
 ) {
     if let Err(error) = outcome_result {
-        append_session_artifact_log(engine, input, "failed", error.to_string()).await;
+        append_session_artifact_log(engine, input, WakeInvocationLogStatus::Failed, error.to_string()).await;
     }
 }
 

@@ -22,15 +22,7 @@ use proxima_core::{
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
 
-/// Local mirror of `proxima_core.personality_status` for test binding.
-/// No substrate-side Rust mirror exists yet.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, sqlx::Type)]
-#[sqlx(type_name = "proxima_core.personality_status", rename_all = "snake_case")]
-enum PersonalityStatus {
-    Active,
-    NeedsRepair,
-    Tombstoned,
-}
+use proxima_core::PersonalityStatus;
 
 fn schemas_for_test() -> Vec<SchemaInfo> {
     vec![
@@ -301,9 +293,7 @@ async fn insert_perspective_memory(
 #[tokio::test]
 async fn query_returns_stored_schema_version() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if create_db(&db_name).await.is_err() {
-        panic!("PG required for tests but admin connect failed");
-    }
+    create_db(&db_name).await.expect("PG required for tests");
     let url = db_url(&db_name);
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
@@ -352,9 +342,7 @@ async fn query_returns_stored_schema_version() {
 #[tokio::test]
 async fn query_active_only_filters_inactive_personality_roots() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if create_db(&db_name).await.is_err() {
-        panic!("PG required for tests but admin connect failed");
-    }
+    create_db(&db_name).await.expect("PG required for tests");
     let url = db_url(&db_name);
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
@@ -449,9 +437,7 @@ async fn query_active_only_filters_inactive_personality_roots() {
 #[tokio::test]
 async fn query_returns_fact_rows() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if create_db(&db_name).await.is_err() {
-        panic!("PG required for tests but admin connect failed");
-    }
+    create_db(&db_name).await.expect("PG required for tests");
     let url = db_url(&db_name);
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
@@ -516,9 +502,7 @@ async fn query_returns_fact_rows() {
 #[tokio::test]
 async fn query_returns_all_edges_between_returned_nodes_even_when_edge_count_exceeds_limit() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if create_db(&db_name).await.is_err() {
-        panic!("PG required for tests but admin connect failed");
-    }
+    create_db(&db_name).await.expect("PG required for tests");
     let url = db_url(&db_name);
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
@@ -581,9 +565,7 @@ async fn query_returns_all_edges_between_returned_nodes_even_when_edge_count_exc
 #[tokio::test]
 async fn query_excludes_edges_with_endpoint_outside_returned_node_window() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if create_db(&db_name).await.is_err() {
-        panic!("PG required for tests but admin connect failed");
-    }
+    create_db(&db_name).await.expect("PG required for tests");
     let url = db_url(&db_name);
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
@@ -659,9 +641,7 @@ async fn query_excludes_edges_with_endpoint_outside_returned_node_window() {
 #[tokio::test]
 async fn query_edge_id_hydration_returns_requested_edge_without_visible_nodes() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if create_db(&db_name).await.is_err() {
-        panic!("PG required for tests but admin connect failed");
-    }
+    create_db(&db_name).await.expect("PG required for tests");
     let url = db_url(&db_name);
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
@@ -716,9 +696,7 @@ async fn query_edge_id_hydration_returns_requested_edge_without_visible_nodes() 
 #[tokio::test]
 async fn query_caps_snapshot_edges_at_max_snapshot_edges() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if create_db(&db_name).await.is_err() {
-        panic!("PG required for tests but admin connect failed");
-    }
+    create_db(&db_name).await.expect("PG required for tests");
     let url = db_url(&db_name);
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
@@ -776,9 +754,7 @@ async fn query_caps_snapshot_edges_at_max_snapshot_edges() {
 #[tokio::test]
 async fn query_owner_scope_ignores_org_id() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if create_db(&db_name).await.is_err() {
-        panic!("PG required for tests but admin connect failed");
-    }
+    create_db(&db_name).await.expect("PG required for tests");
     let url = db_url(&db_name);
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
@@ -831,9 +807,7 @@ async fn query_owner_scope_ignores_org_id() {
 #[tokio::test]
 async fn query_filter_abstraction_returns_empty() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if create_db(&db_name).await.is_err() {
-        panic!("PG required for tests but admin connect failed");
-    }
+    create_db(&db_name).await.expect("PG required for tests");
     let url = db_url(&db_name);
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
@@ -889,9 +863,7 @@ async fn query_filter_abstraction_returns_empty() {
 #[tokio::test]
 async fn query_goals_filter_by_schema_id() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if create_db(&db_name).await.is_err() {
-        panic!("PG required for tests but admin connect failed");
-    }
+    create_db(&db_name).await.expect("PG required for tests");
     let url = db_url(&db_name);
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
@@ -998,9 +970,7 @@ async fn query_goals_filter_by_schema_id() {
 #[tokio::test]
 async fn query_returns_stored_goal_schema_version() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if create_db(&db_name).await.is_err() {
-        panic!("PG required for tests but admin connect failed");
-    }
+    create_db(&db_name).await.expect("PG required for tests");
     let url = db_url(&db_name);
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
@@ -1059,9 +1029,7 @@ async fn query_returns_stored_goal_schema_version() {
 #[tokio::test]
 async fn query_filter_nonexistent_schema_returns_empty() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if create_db(&db_name).await.is_err() {
-        panic!("PG required for tests but admin connect failed");
-    }
+    create_db(&db_name).await.expect("PG required for tests");
     let url = db_url(&db_name);
 
     let result: Result<(), Box<dyn std::error::Error>> = async {

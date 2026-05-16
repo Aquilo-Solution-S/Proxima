@@ -9,8 +9,8 @@ use proxima_code::{
 };
 use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
 use proxima_core::{
-    CORE_DERIVED_FROM_RELATION, FactPayload, FlavorRegistry, MemoryId, OrgId, Owner, Principal,
-    SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId,
+    CORE_DERIVED_FROM_RELATION, EdgeAuthorshipKind, EntityKind, FactPayload, FlavorRegistry,
+    MemoryId, OrgId, Owner, Principal, SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId,
 };
 use proxima_storage_pg::PgStorage;
 use proxima_storage_pg::verbs::edge_append::{EdgeDraft, append_edge_in_tx};
@@ -53,9 +53,7 @@ fn db_url(db_name: &str) -> String {
 
 async fn migrated_db() -> Option<(String, PgStorage)> {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if create_db(&db_name).await.is_err() {
-        panic!("PG required for tests but admin connect failed");
-    }
+    create_db(&db_name).await.expect("PG required for tests");
     let pg = PgStorage::connect(&db_url(&db_name))
         .await
         .expect("connect test db");
@@ -259,7 +257,7 @@ async fn merge_fast_forwards_and_emits_decision() -> Result<(), Box<dyn std::err
             runs[0]
                 .latest_decision
                 .as_ref()
-                .map(|row| row.decision.clone()),
+                .map(|row| row.decision),
             Some(WorkspaceDecision::Merged)
         );
         Ok(())
@@ -319,7 +317,7 @@ async fn rejected_decision_is_persisted() -> Result<(), Box<dyn std::error::Erro
             runs[0]
                 .latest_decision
                 .as_ref()
-                .map(|row| row.decision.clone()),
+                .map(|row| row.decision),
             Some(WorkspaceDecision::Rejected)
         );
         Ok(())
@@ -379,7 +377,7 @@ async fn retry_requested_decision_is_persisted() -> Result<(), Box<dyn std::erro
             runs[0]
                 .latest_decision
                 .as_ref()
-                .map(|row| row.decision.clone()),
+                .map(|row| row.decision),
             Some(WorkspaceDecision::RetryRequested)
         );
         Ok(())
@@ -552,13 +550,13 @@ async fn seed_workspace_run(
         &EdgeDraft {
             edge_id: Uuid::now_v7(),
             relation,
-            source_kind: "Fact",
+            source_kind: EntityKind::Fact,
             source_memory_id: Some(outcome.memory_id.into_inner()),
             source_goal_id: None,
-            target_kind: "Fact",
+            target_kind: EntityKind::Fact,
             target_memory_id: Some(request.into_inner()),
             target_goal_id: None,
-            authorship_kind: "EventSource",
+            authorship_kind: EdgeAuthorshipKind::EventSource,
             authorship_owner_memory_id: None,
             owner,
         },

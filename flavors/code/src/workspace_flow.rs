@@ -5,8 +5,8 @@ use std::process::Stdio;
 
 use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
 use proxima_core::{
-    CORE_DERIVED_FROM_RELATION, FactPayload, FlavorRegistry, MemoryId, Owner, SchemaId,
-    SchemaVersion, SourceBatchId, SourceId,
+    CORE_DERIVED_FROM_RELATION, EdgeAuthorshipKind, EntityKind, FactPayload, FlavorRegistry,
+    MemoryId, Owner, SchemaId, SchemaVersion, SourceBatchId, SourceId,
 };
 use proxima_storage_pg::verbs::edge_append::{EdgeDraft, append_edge_in_tx};
 use proxima_storage_pg::verbs::event_ingest::ingest_event_in_tx;
@@ -534,13 +534,13 @@ async fn ingest_workspace_decision(
             &EdgeDraft {
                 edge_id: Uuid::now_v7(),
                 relation,
-                source_kind: "Fact",
+                source_kind: EntityKind::Fact,
                 source_memory_id: Some(outcome.memory_id.into_inner()),
                 source_goal_id: None,
-                target_kind: "Fact",
+                target_kind: EntityKind::Fact,
                 target_memory_id: Some(payload.workspace_run_memory_id),
                 target_goal_id: None,
-                authorship_kind: "EventSource",
+                authorship_kind: EdgeAuthorshipKind::EventSource,
                 authorship_owner_memory_id: None,
                 owner,
             },

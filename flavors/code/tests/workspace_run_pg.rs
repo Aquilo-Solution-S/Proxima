@@ -36,11 +36,11 @@ use proxima_core::wake::target_adapter::{
 };
 use proxima_core::verbs::goal_write::{GoalAuthorshipKind, GoalState};
 use proxima_core::{
-    BindInferenceTierRequest, CORE_AUTHORED_RELATION, CORE_DERIVED_FROM_RELATION, Engine,
-    FactPayload, FlavorRegistry, InferenceTargetConfig, MistralChatConfig, ModelTier, OrgId, Owner,
-    OwnerPrincipalKind, Principal, RegisterInferenceTargetRequest, SchemaId, SchemaVersion,
-    SourceBatchId, SourceId, UserId, WakeEntryAuthoredBy, WakeEntryTriggerKind,
-    WorkspacePrepareInput, WorkspaceRunner,
+    BindInferenceTierRequest, CORE_AUTHORED_RELATION, CORE_DERIVED_FROM_RELATION,
+    EdgeAuthorshipKind, Engine, EntityKind, FactPayload, FlavorRegistry, InferenceTargetConfig,
+    MistralChatConfig, ModelTier, OrgId, Owner, OwnerPrincipalKind, Principal,
+    RegisterInferenceTargetRequest, SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId,
+    WakeEntryAuthoredBy, WakeEntryTriggerKind, WorkspacePrepareInput, WorkspaceRunner,
 };
 use proxima_flavor_goal::tools::mark_achieved::{
     MarkAchievedArgs, MarkAchievedStatus, MarkAchievedTool,
@@ -174,9 +174,7 @@ fn db_url(db_name: &str) -> String {
 
 async fn migrated_db() -> Option<(String, PgStorage)> {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if create_db(&db_name).await.is_err() {
-        panic!("PG required for tests but admin connect failed");
-    }
+    create_db(&db_name).await.expect("PG required for tests");
     let pg = PgStorage::connect(&db_url(&db_name))
         .await
         .expect("connect test db");
@@ -438,13 +436,13 @@ async fn seed_workspace_run_for_runner(
         &EdgeDraft {
             edge_id: Uuid::now_v7(),
             relation,
-            source_kind: "Fact",
+            source_kind: EntityKind::Fact,
             source_memory_id: Some(outcome.memory_id.into_inner()),
             source_goal_id: None,
-            target_kind: "Fact",
+            target_kind: EntityKind::Fact,
             target_memory_id: Some(request.into_inner()),
             target_goal_id: None,
-            authorship_kind: "EventSource",
+            authorship_kind: EdgeAuthorshipKind::EventSource,
             authorship_owner_memory_id: None,
             owner,
         },
@@ -523,13 +521,13 @@ async fn append_derived_edge_for_runner(
         &EdgeDraft {
             edge_id: Uuid::now_v7(),
             relation,
-            source_kind: "Fact",
+            source_kind: EntityKind::Fact,
             source_memory_id: Some(source.into_inner()),
             source_goal_id: None,
-            target_kind: "Fact",
+            target_kind: EntityKind::Fact,
             target_memory_id: Some(target.into_inner()),
             target_goal_id: None,
-            authorship_kind: "EventSource",
+            authorship_kind: EdgeAuthorshipKind::EventSource,
             authorship_owner_memory_id: None,
             owner,
         },

@@ -134,9 +134,7 @@ async fn count_commit_v1_facts(pool: &sqlx::PgPool, owner: &Owner, repo_id: Uuid
 #[tokio::test]
 async fn self_ingestion_streams_proxima_main() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if create_db(&db_name).await.is_err() {
-        panic!("PG required for tests but admin connect failed");
-    }
+    create_db(&db_name).await.expect("PG required for tests");
     let url = format!("postgres://proxima:proxima@localhost/{db_name}");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {

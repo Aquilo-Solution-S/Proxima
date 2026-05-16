@@ -12,8 +12,8 @@ use uuid::Uuid;
 
 use crate::outbox::ChangeEvent;
 use crate::personality::types::{
-    WakeChainDepth, WakeEntryAuthoredBy, WakeEntryExecutionMode, WakeEntryGoalScope,
-    WakeEntryTriggerKind,
+    PersonalityStatus, WakeChainDepth, WakeEntryAuthoredBy, WakeEntryExecutionMode,
+    WakeEntryGoalScope, WakeEntryTriggerKind,
 };
 use crate::{MemoryId, Owner};
 
@@ -29,7 +29,7 @@ pub struct PersonalityRuntimeRow {
     pub personality_instance_id: PersonalityInstanceId,
     pub current_root_perspective_memory_id: MemoryId,
     pub display_name: String,
-    pub status: String,
+    pub status: PersonalityStatus,
 }
 
 /// Sidecar row backing a Root-Perspective memory. Returned by
@@ -69,7 +69,7 @@ pub struct PersonalityInstanceRow {
     pub personality_instance_id: PersonalityInstanceId,
     pub current_root_perspective_memory_id: MemoryId,
     pub display_name: String,
-    pub status: String,
+    pub status: PersonalityStatus,
     pub wake_entries: Vec<WakeEntryRow>,
 }
 

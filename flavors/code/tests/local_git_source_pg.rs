@@ -178,9 +178,7 @@ async fn fetch_file_revision_state(
 #[tokio::test]
 async fn local_git_source_full_cycle() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if create_db(&db_name).await.is_err() {
-        panic!("PG required for tests but admin connect failed");
-    }
+    create_db(&db_name).await.expect("PG required for tests");
     let url = format!("postgres://proxima:proxima@localhost/{db_name}");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
@@ -420,9 +418,7 @@ async fn polyglot_markdown_emits_file_revision_and_fallback_chunks() {
     // Subset of the above: tighter assertion on FileState::Present
     // for a markdown-only fixture.
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if create_db(&db_name).await.is_err() {
-        panic!("PG required for tests but admin connect failed");
-    }
+    create_db(&db_name).await.expect("PG required for tests");
     let url = format!("postgres://proxima:proxima@localhost/{db_name}");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {

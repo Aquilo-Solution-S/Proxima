@@ -231,9 +231,7 @@ async fn insert_memory_edge(
 #[allow(clippy::too_many_lines)]
 async fn heads_only_returns_latest_per_natural_key() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if create_db(&db_name).await.is_err() {
-        panic!("PG required for tests but admin connect failed");
-    }
+    create_db(&db_name).await.expect("PG required for tests");
     let url = format!("postgres://proxima:proxima@localhost/{db_name}");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
@@ -365,9 +363,7 @@ async fn heads_only_no_op_for_stateless_fact_schema() {
     // A/P-style supersedes scan, which (since Facts have no supersedes)
     // returns every row.
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if create_db(&db_name).await.is_err() {
-        panic!("PG required for tests but admin connect failed");
-    }
+    create_db(&db_name).await.expect("PG required for tests");
     let url = format!("postgres://proxima:proxima@localhost/{db_name}");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
@@ -423,9 +419,7 @@ async fn heads_only_no_op_for_stateless_fact_schema() {
 #[tokio::test]
 async fn owner_snapshot_heads_only_folds_all_stateful_fact_schemas() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if create_db(&db_name).await.is_err() {
-        panic!("PG required for tests but admin connect failed");
-    }
+    create_db(&db_name).await.expect("PG required for tests");
     let url = format!("postgres://proxima:proxima@localhost/{db_name}");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
@@ -510,9 +504,7 @@ async fn owner_snapshot_heads_only_folds_all_stateful_fact_schemas() {
 #[tokio::test]
 async fn present_only_excludes_tombstone_head_without_reviving_previous_present() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if create_db(&db_name).await.is_err() {
-        panic!("PG required for tests but admin connect failed");
-    }
+    create_db(&db_name).await.expect("PG required for tests");
     let url = format!("postgres://proxima:proxima@localhost/{db_name}");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
@@ -615,9 +607,7 @@ async fn present_only_excludes_tombstone_head_without_reviving_previous_present(
 #[tokio::test]
 async fn present_only_snapshot_excludes_edges_to_tombstoned_heads() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if create_db(&db_name).await.is_err() {
-        panic!("PG required for tests but admin connect failed");
-    }
+    create_db(&db_name).await.expect("PG required for tests");
     let url = format!("postgres://proxima:proxima@localhost/{db_name}");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
@@ -677,9 +667,7 @@ async fn present_only_snapshot_excludes_edges_to_tombstoned_heads() {
 #[tokio::test]
 async fn present_only_edge_id_hydration_excludes_edges_with_hidden_endpoint() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
-    if create_db(&db_name).await.is_err() {
-        panic!("PG required for tests but admin connect failed");
-    }
+    create_db(&db_name).await.expect("PG required for tests");
     let url = format!("postgres://proxima:proxima@localhost/{db_name}");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {

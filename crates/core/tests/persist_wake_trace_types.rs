@@ -57,7 +57,7 @@ fn sample_wake_trace() -> proxima_core::wake::trace::WakeTracePayload {
         model_id: "test-model".into(),
         started_at: now,
         finished_at: now,
-        outcome_kind: "succeeded".into(),
+        outcome_kind: proxima_core::WakeTraceOutcomeKind::Succeeded,
         failure_reason: None,
         rounds_used: 1,
         finish_reason: Some("stop".into()),

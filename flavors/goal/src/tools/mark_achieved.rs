@@ -1,6 +1,6 @@
 use proxima_core::mcp::{McpTool, McpToolCtx, McpToolError};
 use proxima_core::verbs::goal_write::{GoalAuthorship, GoalDraft, GoalState, SystemOrigin};
-use proxima_core::{EdgeId, EntityKind, GoalId, MemoryId, OwnerPrincipalKind, ToolId};
+use proxima_core::{EdgeAuthorshipKind, EdgeId, EntityKind, GoalId, MemoryId, OwnerPrincipalKind, ToolId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -124,8 +124,14 @@ pub async fn mark_achieved(
         request_id,
     };
     let achieved_id = insert_goal_in_tx(&mut tx, &ctx, &draft, &encoded).await?;
-    let evidence_edge_ids =
-        insert_motivated_by_edges(&mut tx, &ctx, achieved_id, &evidence, "Engine").await?;
+    let evidence_edge_ids = insert_motivated_by_edges(
+        &mut tx,
+        &ctx,
+        achieved_id,
+        &evidence,
+        EdgeAuthorshipKind::Engine,
+    )
+    .await?;
     let lifecycle_memory = emit_goal_achieved_fact(
         &mut tx,
         &ctx,
@@ -214,9 +220,9 @@ async fn load_evidence_ref(
         )));
     }
     let target_kind = match row.kind {
-        Some(EntityKind::Abstraction) => "Abstraction",
+        Some(EntityKind::Abstraction) => EntityKind::Abstraction,
         // NULL kind on memories indicates a Fact (variant check enforces invariant).
-        None => "Fact",
+        None => EntityKind::Fact,
         Some(_) => {
             return Err(McpToolError::LayeringViolation(format!(
                 "evidence {original_ref} must be Fact or Abstraction"

@@ -7,7 +7,9 @@
 //!
 //! Used by M5.5 typed F-layer edges (e.g. `proxima-code/calls`).
 
-use proxima_core::{Owner, OwnerPrincipalKind, RegisteredRelation, StorageError};
+use proxima_core::{
+    EdgeAuthorshipKind, EntityKind, Owner, OwnerPrincipalKind, RegisteredRelation, StorageError,
+};
 
 use crate::error::map_err;
 use crate::pg_ident::PgIdent;
@@ -17,13 +19,13 @@ use crate::pg_ident::PgIdent;
 pub struct EdgeDraft<'a> {
     pub edge_id: uuid::Uuid,
     pub relation: RegisteredRelation<'a>,
-    pub source_kind: &'a str,
+    pub source_kind: EntityKind,
     pub source_memory_id: Option<uuid::Uuid>,
     pub source_goal_id: Option<uuid::Uuid>,
-    pub target_kind: &'a str,
+    pub target_kind: EntityKind,
     pub target_memory_id: Option<uuid::Uuid>,
     pub target_goal_id: Option<uuid::Uuid>,
-    pub authorship_kind: &'a str,
+    pub authorship_kind: EdgeAuthorshipKind,
     pub authorship_owner_memory_id: Option<uuid::Uuid>,
     pub owner: &'a Owner,
 }
@@ -59,13 +61,13 @@ pub async fn append_edge_in_tx(
         }
     }
     descriptor
-        .validate_edge_shape(draft.source_kind, draft.target_kind, draft.authorship_kind)
+        .validate_edge_shape(
+            draft.source_kind.as_str(),
+            draft.target_kind.as_str(),
+            draft.authorship_kind.as_str(),
+        )
         .map_err(StorageError::ConstraintViolation)?;
 
-    // TODO(macro-sweep): source_kind/target_kind/authorship_kind are
-    // proxima_core enum columns; callers pass &str. Macroizing requires
-    // either typed enum callers (EntityKind / EdgeAuthorshipKind) or
-    // adding Rust mirrors. Leaving on runtime form for this iteration.
     let inserted: Option<(uuid::Uuid,)> = sqlx::query_as(
         "INSERT INTO proxima_core.edges \
             (edge_id, relation, relation_class, \
@@ -73,18 +75,13 @@ pub async fn append_edge_in_tx(
              target_kind, target_memory_id, target_goal_id, \
              authorship_kind, authorship_owner_memory_id, \
              owner_principal_kind, owner_principal_id, owner_org_id) \
-         VALUES ($1, $2, \
-                 $3::proxima_core.relation_class, \
-                 $4::proxima_core.entity_kind, $5, $6, \
-                 $7::proxima_core.entity_kind, $8, $9, \
-                 $10::proxima_core.edge_authorship_kind, $11, \
-                 $12::proxima_core.owner_principal_kind, $13, $14) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) \
          ON CONFLICT (edge_id) DO NOTHING \
          RETURNING edge_id",
     )
     .bind(draft.edge_id)
     .bind(descriptor.relation.as_str())
-    .bind(descriptor.class.as_str())
+    .bind(descriptor.class)
     .bind(draft.source_kind)
     .bind(draft.source_memory_id)
     .bind(draft.source_goal_id)
@@ -93,7 +90,7 @@ pub async fn append_edge_in_tx(
     .bind(draft.target_goal_id)
     .bind(draft.authorship_kind)
     .bind(draft.authorship_owner_memory_id)
-    .bind(owner_kind as OwnerPrincipalKind)
+    .bind(owner_kind)
     .bind(owner_principal_id)
     .bind(owner_org_id)
     .fetch_optional(&mut *tx)
@@ -125,19 +122,16 @@ pub async fn append_edge_in_tx(
     }
 
     let seq = uuid::Uuid::now_v7();
-    // TODO(macro-sweep): same as above for edge_source_kind / edge_target_kind.
     sqlx::query(
         "INSERT INTO proxima_core.change_event \
             (seq, owner_principal_kind, owner_principal_id, owner_org_id, kind, \
              edge_id, edge_relation, \
              edge_source_kind, edge_source_memory_id, edge_source_goal_id, \
              edge_target_kind, edge_target_memory_id, edge_target_goal_id) \
-         VALUES ($1, $2, $3, $4, 'EdgeAppend', $5, $6, \
-                 $7::proxima_core.entity_kind, $8, $9, \
-                 $10::proxima_core.entity_kind, $11, $12)",
+         VALUES ($1, $2, $3, $4, 'EdgeAppend', $5, $6, $7, $8, $9, $10, $11, $12)",
     )
     .bind(seq)
-    .bind(owner_kind as OwnerPrincipalKind)
+    .bind(owner_kind)
     .bind(owner_principal_id)
     .bind(owner_org_id)
     .bind(draft.edge_id)

@@ -5,20 +5,8 @@ mod common;
 
 use std::time::Duration;
 
-use proxima_core::{CORE_AUTHORED_RELATION, CORE_DERIVED_FROM_RELATION};
+use proxima_core::{CORE_AUTHORED_RELATION, CORE_DERIVED_FROM_RELATION, WakeTraceOutcomeKind};
 use sqlx::Row;
-
-/// Rust mirror of the `proxima_core.wake_trace_outcome_kind` SQL enum.
-/// Mirrors `crates/storage-pg/migrations/.../baseline.sql` enum variants.
-/// Used here for typed decode so the test exercises the same enum
-/// boundary the runtime persists.
-#[derive(Debug, PartialEq, Eq, sqlx::Type)]
-#[sqlx(type_name = "proxima_core.wake_trace_outcome_kind", rename_all = "lowercase")]
-enum WakeTraceOutcomeKind {
-    Succeeded,
-    Truncated,
-    Failed,
-}
 
 #[tokio::test]
 async fn harness_wake_persists_trace_fact_jsonl_and_provenance() {

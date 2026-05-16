@@ -7,7 +7,8 @@ use common::{drop_db, fresh_pg, owner_fixture};
 use proxima_core::personality::{
     InstantiatePersonalityRequest, ListWakeInvocationsRequest, PersonalityInstanceId,
     SetWakeEntriesRequest, WakeEntryAuthoredBy, WakeEntryDraft, WakeEntryTriggerKind,
-    WakeInvocationFinalize, WakeInvocationLogDraft, WakeInvocationStart, WakeInvocationStatus,
+    WakeInvocationFinalize, WakeInvocationLogDraft, WakeInvocationLogStatus, WakeInvocationStart,
+    WakeInvocationStatus,
 };
 use proxima_core::storage::Storage;
 use proxima_core::{ModelTier, Owner, Principal};
@@ -200,7 +201,7 @@ async fn wake_invocation_carries_dispatch_columns() {
             change_event_seq,
             phase: "tool_call".to_string(),
             tool_id: Some("proxima-mcp/proxima_derive".to_string()),
-            status: "failed".to_string(),
+            status: WakeInvocationLogStatus::Failed,
             duration_ms: Some(77),
             message_tail: Some("tool failed".to_string()),
         })
@@ -212,7 +213,7 @@ async fn wake_invocation_carries_dispatch_columns() {
             change_event_seq,
             phase: "session_artifact".to_string(),
             tool_id: None,
-            status: "started".to_string(),
+            status: WakeInvocationLogStatus::Started,
             duration_ms: None,
             message_tail: Some(
                 "~/.proxima/wake-runs/user/example/worker-session.jsonl".to_string(),
@@ -240,7 +241,7 @@ async fn wake_invocation_carries_dispatch_columns() {
             Some("tool failed")
         );
         assert_eq!(listed[0].logs[1].phase, "session_artifact");
-        assert_eq!(listed[0].logs[1].status, "started");
+        assert_eq!(listed[0].logs[1].status, WakeInvocationLogStatus::Started);
         assert_eq!(
             listed[0].logs[1].message_tail.as_deref(),
             Some("~/.proxima/wake-runs/user/example/worker-session.jsonl")
