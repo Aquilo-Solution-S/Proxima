@@ -1,6 +1,6 @@
 services:
   postgres:
-    image: postgres:17
+    image: postgres:18
     container_name: proxima_dev_pg
     environment:
       POSTGRES_USER: proxima
