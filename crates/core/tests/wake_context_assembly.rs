@@ -12,8 +12,7 @@ async fn assembles_all_four_params() {
     let Some((storage, owner, instance_id, change_event_seq, fixture)) =
         common::seed_wake_context_fixture().await
     else {
-        eprintln!("skipping: PG unavailable");
-        return;
+        panic!("PG required for tests but unavailable");
     };
 
     let sidecars = vec![SidecarSpec {

@@ -18,11 +18,13 @@ use proxima_core::relation::{
 use proxima_core::storage::Storage;
 use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
 use proxima_core::{
-    MemoryId, ModelTier, Owner, Principal, RegisteredRelation, SchemaId, SchemaVersion,
-    SourceBatchId, SourceId, WakeEntryGoalScope,
+    EntityKind, MemoryId, ModelTier, Owner, Principal, RegisteredRelation, RelationClass, SchemaId,
+    SchemaVersion, SourceBatchId, SourceId, WakeEntryGoalScope,
 };
 use sqlx::Executor;
 use uuid::Uuid;
+
+use proxima_core::EdgeAuthorshipKind;
 
 async fn apply_personality_output_sidecar(pool: &sqlx::PgPool) -> sqlx::Result<()> {
     pool.execute(
@@ -246,7 +248,7 @@ async fn personality_wake_storage_round_trip() {
         .fetch_one(pg.pool())
         .await?;
         assert_eq!(active, 1);
-        let goal_scope: String = sqlx::query_scalar(
+        let goal_scope: WakeEntryGoalScope = sqlx::query_scalar(
             "SELECT goal_scope
              FROM proxima_core.personality_wake_entries
              WHERE personality_instance_id = $1
@@ -257,7 +259,7 @@ async fn personality_wake_storage_round_trip() {
         .bind(replacement.wake_entry_id)
         .fetch_one(pg.pool())
         .await?;
-        assert_eq!(goal_scope, "trigger_goal_assigned");
+        assert_eq!(goal_scope, WakeEntryGoalScope::TriggerGoalAssigned);
 
         let seq = Uuid::now_v7();
         pg.advance_wake_cursor(&owner, instance, seq).await?;
@@ -457,7 +459,7 @@ async fn personality_provenance_edges_use_operator_authorship() {
             })
             .await?;
 
-        let authored: Vec<(Uuid, String)> = sqlx::query_as(
+        let authored: Vec<(Uuid, EdgeAuthorshipKind)> = sqlx::query_as(
             "SELECT source_memory_id, authorship_kind
              FROM proxima_core.edges
              WHERE source_memory_id = ANY($1)
@@ -478,9 +480,12 @@ async fn personality_provenance_edges_use_operator_authorship() {
             vec![
                 (
                     perspective.memory_ids[0].into_inner(),
-                    "OperatorAtoP".into()
+                    EdgeAuthorshipKind::OperatorAtoP,
                 ),
-                (abstraction_id.into_inner(), "OperatorFtoA".into()),
+                (
+                    abstraction_id.into_inner(),
+                    EdgeAuthorshipKind::OperatorFtoA,
+                ),
             ]
         );
 
@@ -569,7 +574,14 @@ async fn personality_authored_edge_links_root_to_emitted_memory() {
             .await?;
         let perspective_id = perspective.memory_ids[0];
 
-        let mut authored_rows: Vec<(Uuid, Uuid, String, String, String, String)> = sqlx::query_as(
+        let authored_rows: Vec<(
+            Uuid,
+            Uuid,
+            EntityKind,
+            EntityKind,
+            RelationClass,
+            EdgeAuthorshipKind,
+        )> = sqlx::query_as(
             "SELECT source_memory_id, target_memory_id, source_kind, target_kind,
                         relation_class, authorship_kind
                  FROM proxima_core.edges
@@ -580,7 +592,6 @@ async fn personality_authored_edge_links_root_to_emitted_memory() {
         .bind(&[abstraction_id.into_inner(), perspective_id.into_inner()][..])
         .fetch_all(pg.pool())
         .await?;
-        authored_rows.sort_by_key(|row| row.3.clone());
 
         assert_eq!(
             authored_rows.len(),
@@ -594,22 +605,25 @@ async fn personality_authored_edge_links_root_to_emitted_memory() {
                 "edge originates at the wake's snapshotted Root Perspective"
             );
             assert_eq!(
-                row.2, "Perspective",
+                row.2,
+                EntityKind::Perspective,
                 "source_kind must mark the edge origin as the Root Perspective"
             );
             assert_eq!(
-                row.4, "Causal",
+                row.4,
+                RelationClass::Causal,
                 "core/authored is registered with class Causal, mirroring core/inspires"
             );
             assert_eq!(
-                row.5, "Engine",
+                row.5,
+                EdgeAuthorshipKind::Engine,
                 "substrate authors the edge on the personality's behalf"
             );
         }
         assert_eq!(authored_rows[0].1, abstraction_id.into_inner());
-        assert_eq!(authored_rows[0].3, "Abstraction");
+        assert_eq!(authored_rows[0].3, EntityKind::Abstraction);
         assert_eq!(authored_rows[1].1, perspective_id.into_inner());
-        assert_eq!(authored_rows[1].3, "Perspective");
+        assert_eq!(authored_rows[1].3, EntityKind::Perspective);
 
         Ok(())
     }

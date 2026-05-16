@@ -5,7 +5,7 @@ use proxima_core::personality::PersonalityInstanceId;
 use proxima_core::relation::{CORE_AUTHORED_RELATION, CORE_DERIVED_FROM_RELATION};
 use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
 use proxima_core::{
-    EdgeId, FactPayload, MemoryId, SchemaId, SchemaVersion, SourceBatchId, SourceId,
+    EdgeId, EntityKind, FactPayload, MemoryId, SchemaId, SchemaVersion, SourceBatchId, SourceId,
 };
 use proxima_storage_pg::verbs::edge_append::{EdgeDraft, append_edge_in_tx};
 use proxima_storage_pg::verbs::event_ingest::ingest_event_in_tx;
@@ -348,9 +348,14 @@ pub(super) async fn load_execution_request(
 ) -> Result<PriorExecutionRequest, McpToolError> {
     let (owner_kind, owner_principal_id) = owner_principal(&ctx.owner);
     #[allow(clippy::type_complexity)]
-    let row: Option<(String, String, Option<Uuid>, Option<String>, Option<String>)> =
-        sqlx::query_as(
-            "SELECT COALESCE(m.kind, 'Fact') AS kind,
+    let row: Option<(
+        EntityKind,
+        String,
+        Option<Uuid>,
+        Option<String>,
+        Option<String>,
+    )> = sqlx::query_as(
+        "SELECT COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind,
                 m.schema_id,
                 r.repo_id,
                 r.title,
@@ -360,20 +365,20 @@ pub(super) async fn load_execution_request(
          WHERE m.memory_id = $1
            AND m.owner_principal_kind = $2
            AND m.owner_principal_id = $3",
-        )
-        .bind(memory_id.into_inner())
-        .bind(owner_kind)
-        .bind(owner_principal_id)
-        .fetch_optional(&mut **tx)
-        .await
-        .map_err(map_storage)?;
+    )
+    .bind(memory_id.into_inner())
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(map_storage)?;
     let Some((kind, schema_id, repo_id, title, instructions)) = row else {
         return Err(McpToolError::InvalidInput(format!(
             "prior_execution_request is not visible: {}",
             memory_id.into_inner()
         )));
     };
-    if kind != "Fact" || schema_id != ExecutionRequestV1::SCHEMA_ID {
+    if kind != EntityKind::Fact || schema_id != ExecutionRequestV1::SCHEMA_ID {
         return Err(McpToolError::InvalidInput(
             "prior_execution_request must be a proxima-code/execution-request-v1 Fact".into(),
         ));
@@ -416,13 +421,33 @@ pub(super) async fn find_execution_request_by_key(
     Ok(existing.map(MemoryId::new))
 }
 
+/// Local mirror of `proxima_core.personality_status` SQL enum (no Rust
+/// mirror exported from proxima_core yet).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, sqlx::Type)]
+#[sqlx(type_name = "proxima_core.personality_status", rename_all = "snake_case")]
+enum PersonalityStatus {
+    Active,
+    NeedsRepair,
+    Tombstoned,
+}
+
+impl PersonalityStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::NeedsRepair => "needs_repair",
+            Self::Tombstoned => "tombstoned",
+        }
+    }
+}
+
 pub(super) async fn validate_target_personality(
     tx: &mut Transaction<'_, Postgres>,
     ctx: &McpToolCtx,
     target_personality: PersonalityInstanceId,
 ) -> Result<MemoryId, McpToolError> {
     let (owner_kind, owner_principal_id) = owner_principal(&ctx.owner);
-    let row: Option<(Uuid, String)> = sqlx::query_as(
+    let row: Option<(Uuid, PersonalityStatus)> = sqlx::query_as(
         "SELECT current_root_perspective_memory_id, status
          FROM proxima_core.personality
          WHERE owner_principal_kind = $1
@@ -441,9 +466,10 @@ pub(super) async fn validate_target_personality(
             target_personality.into_inner()
         )));
     };
-    if status != "active" {
+    if status != PersonalityStatus::Active {
         return Err(McpToolError::InvalidInput(format!(
-            "target_personality is not active: {status}"
+            "target_personality is not active: {}",
+            status.as_str()
         )));
     }
     Ok(MemoryId::new(root))
@@ -561,8 +587,9 @@ async fn validate_goal_activated_fact(
     memory_id: MemoryId,
 ) -> Result<Uuid, McpToolError> {
     let (owner_kind, owner_principal_id) = owner_principal(&ctx.owner);
-    let row: Option<(String, String, Uuid)> = sqlx::query_as(
-        "SELECT COALESCE(m.kind, 'Fact') AS kind, m.schema_id, g.goal_id
+    let row: Option<(EntityKind, String, Uuid)> = sqlx::query_as(
+        "SELECT COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind,
+                m.schema_id, g.goal_id
          FROM proxima_core.memories m
          JOIN proxima_goal.goal_activated_v1 g USING (memory_id)
          WHERE m.memory_id = $1
@@ -581,7 +608,7 @@ async fn validate_goal_activated_fact(
             memory_id.into_inner()
         )));
     };
-    if kind != "Fact" || schema_id != "proxima-goal/goal-activated-v1" {
+    if kind != EntityKind::Fact || schema_id != "proxima-goal/goal-activated-v1" {
         return Err(McpToolError::InvalidInput(
             "goal_activated_memory must be a proxima-goal/goal-activated-v1 Fact".into(),
         ));
@@ -663,8 +690,8 @@ async fn validate_evidence_in_owner(
 ) -> Result<(), McpToolError> {
     let (owner_kind, owner_principal_id) = owner_principal(&ctx.owner);
     for memory_id in evidence {
-        let row: Option<String> = sqlx::query_scalar(
-            "SELECT COALESCE(kind, 'Fact') AS kind
+        let row: Option<EntityKind> = sqlx::query_scalar(
+            "SELECT COALESCE(kind, 'Fact'::proxima_core.entity_kind) AS kind
              FROM proxima_core.memories
              WHERE memory_id = $1
                AND owner_principal_kind = $2
@@ -676,8 +703,8 @@ async fn validate_evidence_in_owner(
         .fetch_optional(&mut **tx)
         .await
         .map_err(map_storage)?;
-        match row.as_deref() {
-            Some("Fact" | "Abstraction") => {}
+        match row {
+            Some(EntityKind::Fact | EntityKind::Abstraction) => {}
             Some(_) => {
                 return Err(McpToolError::LayeringViolation(format!(
                     "evidence {} must be Fact or Abstraction",

@@ -49,7 +49,7 @@ async fn discovery_to_mutation_smoke() -> Result<(), Box<dyn std::error::Error>>
     let Some(db_name) = create_db().await? else {
         return Ok(());
     };
-    let database_url = format!("postgres://postgres@localhost/{db_name}");
+    let database_url = format!("postgres://proxima:proxima@localhost/{db_name}");
     let owner = Owner {
         principal: Principal::User(UserId::new(uuid::Uuid::now_v7())),
         org_id: OrgId::new(uuid::Uuid::now_v7()),

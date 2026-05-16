@@ -61,6 +61,34 @@ impl RelationClass {
     }
 }
 
+/// Rust mirror of `proxima_core.edge_authorship_kind`. Tags which
+/// operator/agent authored an edge row. See
+/// `crates/storage-pg/migrations/20260516000010_baseline.sql` for the
+/// canonical variant set.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    specta::Type,
+    sqlx::Type,
+)]
+#[sqlx(type_name = "proxima_core.edge_authorship_kind")]
+pub enum EdgeAuthorshipKind {
+    EventSource,
+    OperatorFtoA,
+    OperatorAtoP,
+    OperatorAtoGoal,
+    PerspectiveLink,
+    User,
+    Engine,
+    ExternalAgent,
+}
+
 /// Bit mask over edge endpoint kinds admitted by a relation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct EntityKindMask(u8);

@@ -31,7 +31,7 @@ use uuid::Uuid;
 /// PG: `postgres://proxima:proxima@localhost/proxima`). The default
 /// targets a peer-auth local PG with a `postgres` superuser, matching
 /// the `proxima-storage-pg` test harness.
-const DEFAULT_ADMIN_URL: &str = "postgres://postgres@localhost/postgres";
+const DEFAULT_ADMIN_URL: &str = "postgres://proxima:proxima@localhost/proxima";
 
 pub fn admin_url() -> String {
     std::env::var("PROXIMA_TEST_PG_URL").unwrap_or_else(|_| DEFAULT_ADMIN_URL.into())
@@ -54,17 +54,15 @@ pub fn owner_fixture() -> Owner {
 
 pub async fn fresh_pg() -> Option<(PgStorage, String)> {
     let db_name = format!("proxima_core_test_{}", Uuid::now_v7().simple());
-    if create_db(&db_name).await.is_err() {
-        eprintln!("skipping (no admin PG)");
-        return None;
+    if let Err(e) = create_db(&db_name).await {
+        panic!("PG required for tests but admin connect failed: {e}");
     }
     let url = db_url(&db_name);
     match PgStorage::connect(&url).await {
         Ok(pg) => Some((pg, db_name)),
         Err(err) => {
             let _ = drop_db(&db_name).await;
-            eprintln!("skipping (PG unavailable): {err}");
-            None
+            panic!("PG required for tests but unavailable: {err}");
         }
     }
 }

@@ -168,8 +168,7 @@ fn db_url(db_name: &str) -> String {
 async fn migrated_db() -> Option<(String, PgStorage)> {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if create_db(&db_name).await.is_err() {
-        eprintln!("skipping (no admin PG)");
-        return None;
+        panic!("PG required for tests but admin connect failed");
     }
     let pg = PgStorage::connect(&db_url(&db_name))
         .await
@@ -182,10 +181,9 @@ async fn migrated_db() -> Option<(String, PgStorage)> {
     }
     .await
     {
-        eprintln!("skipping (migration failed): {err}");
         drop(pg);
         let _ = drop_db(&db_name).await;
-        return None;
+        panic!("migration failed: {err}");
     }
     Some((db_name, pg))
 }
@@ -338,8 +336,8 @@ async fn goal_activated_fact_wakes_substrate_executor_and_emits_perspective()
         let fired = engine.run_dispatcher_tick().await?;
         assert_eq!(fired, 1, "goal-activated Fact fires the Executor wake");
 
-        let invocation_status: String = sqlx::query_scalar(
-            "SELECT status::text
+        let invocation_status: proxima_core::WakeInvocationStatus = sqlx::query_scalar(
+            "SELECT status
              FROM proxima_core.personality_wake_invocations
              WHERE personality_instance_id = $1
                AND wake_entry_id = $2",
@@ -348,7 +346,10 @@ async fn goal_activated_fact_wakes_substrate_executor_and_emits_perspective()
         .bind(wake_entry.wake_entry_id)
         .fetch_one(pg.pool())
         .await?;
-        assert_eq!(invocation_status, "succeeded");
+        assert_eq!(
+            invocation_status,
+            proxima_core::WakeInvocationStatus::Succeeded
+        );
 
         let activated_fact: Uuid = sqlx::query_scalar(
             "SELECT memory_id

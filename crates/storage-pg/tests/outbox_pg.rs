@@ -108,8 +108,7 @@ fn fresh_goal_draft(owner: &Owner, request_id: String) -> GoalDraft {
 async fn outbox_publishes_entity_append_for_fact() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if create_db(&db_name).await.is_err() {
-        eprintln!("skipping (no admin PG)");
-        return;
+        panic!("PG required for tests but admin connect failed");
     }
     let url = db_url(&db_name);
 
@@ -180,8 +179,7 @@ async fn outbox_publishes_entity_append_for_fact() {
 async fn outbox_publishes_entity_append_for_goal() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if create_db(&db_name).await.is_err() {
-        eprintln!("skipping (no admin PG)");
-        return;
+        panic!("PG required for tests but admin connect failed");
     }
     let url = db_url(&db_name);
 
@@ -250,8 +248,7 @@ async fn outbox_publishes_entity_append_for_goal() {
 async fn outbox_publishes_fact_then_goal() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if create_db(&db_name).await.is_err() {
-        eprintln!("skipping (no admin PG)");
-        return;
+        panic!("PG required for tests but admin connect failed");
     }
     let url = db_url(&db_name);
 

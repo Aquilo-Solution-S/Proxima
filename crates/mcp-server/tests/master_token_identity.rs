@@ -24,7 +24,7 @@ async fn master_token_call_mints_per_token_self_perspective()
     let Some(db_name) = create_db().await? else {
         return Ok(());
     };
-    let database_url = format!("postgres://postgres@localhost/{db_name}");
+    let database_url = format!("postgres://proxima:proxima@localhost/{db_name}");
     let pg = PgStorage::connect(&database_url).await?;
     pg.run_migrations().await?;
 
@@ -130,7 +130,7 @@ async fn distinct_master_tokens_resolve_to_distinct_identities()
     let Some(db_name) = create_db().await? else {
         return Ok(());
     };
-    let database_url = format!("postgres://postgres@localhost/{db_name}");
+    let database_url = format!("postgres://proxima:proxima@localhost/{db_name}");
     let pg = PgStorage::connect(&database_url).await?;
     pg.run_migrations().await?;
 

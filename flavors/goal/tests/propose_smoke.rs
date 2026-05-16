@@ -5,7 +5,7 @@ use common::{
     owner_fixture,
 };
 use proxima_core::mcp::McpTool;
-use proxima_core::verbs::goal_write::GoalState;
+use proxima_core::verbs::goal_write::{GoalAuthorshipKind, GoalState};
 use proxima_flavor_goal::tools::propose::{ProposeArgs, ProposeTool};
 use proxima_flavor_goal::tools::util::{GoalPayloadInput, SimpleTextGoalBody};
 
@@ -40,7 +40,7 @@ async fn propose_writes_goal_and_motivated_by_atomically() -> Result<(), Box<dyn
             .expect("goal handle resolves")
             .into_inner();
 
-        let goal: (String, String, String, String, Vec<u8>) = sqlx::query_as(
+        let goal: (GoalState, GoalAuthorshipKind, String, String, Vec<u8>) = sqlx::query_as(
             "SELECT state, authorship_kind, title, text, payload
              FROM proxima_core.goals
              WHERE goal_id = $1",
@@ -48,8 +48,8 @@ async fn propose_writes_goal_and_motivated_by_atomically() -> Result<(), Box<dyn
         .bind(goal_id)
         .fetch_one(pg.pool())
         .await?;
-        assert_eq!(goal.0, "Proposed");
-        assert_eq!(goal.1, "External");
+        assert_eq!(goal.0, GoalState::Proposed);
+        assert_eq!(goal.1, GoalAuthorshipKind::External);
         assert_eq!(goal.2, "ship goal flavor");
         assert_eq!(goal.3, "ship goal flavor");
         let _: proxima_flavor_goal::SimpleTextGoalV1 = ciborium::de::from_reader(&goal.4[..])?;
@@ -129,7 +129,14 @@ async fn propose_writes_inspires_edge_for_personality_caller()
             .resolve_edge(inspires_edge_handle)
             .expect("inspires edge handle resolves")
             .into_inner();
-        let row: (String, uuid::Uuid, uuid::Uuid, String, Option<uuid::Uuid>) = sqlx::query_as(
+        use proxima_core::EdgeAuthorshipKind;
+        let row: (
+            String,
+            uuid::Uuid,
+            uuid::Uuid,
+            EdgeAuthorshipKind,
+            Option<uuid::Uuid>,
+        ) = sqlx::query_as(
             "SELECT relation, source_goal_id, target_memory_id, authorship_kind,
                     authorship_owner_memory_id
                FROM proxima_core.edges
@@ -141,7 +148,7 @@ async fn propose_writes_inspires_edge_for_personality_caller()
         assert_eq!(row.0, "core/inspires");
         assert_eq!(row.1, goal_id);
         assert_eq!(row.2, self_id.into_inner());
-        assert_eq!(row.3, "ExternalAgent");
+        assert_eq!(row.3, EdgeAuthorshipKind::ExternalAgent);
         assert_eq!(row.4, Some(self_id.into_inner()));
         Ok::<(), Box<dyn std::error::Error>>(())
     }

@@ -13,7 +13,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use proxima_code::{CodeChunkV1, CommitV1, FileRevisionV1};
+use proxima_code::{CodeChunkV1, CommitV1, FileRevisionV1, FileState};
 use proxima_core::auth::{Credentials, NoAuth};
 use proxima_core::engine::Engine;
 use proxima_core::storage::Storage;
@@ -30,7 +30,7 @@ use proxima_storage_pg::PgStorage;
 use sqlx::{Connection, Executor, PgConnection, PgPool};
 use uuid::Uuid;
 
-const ADMIN_URL: &str = "postgres://postgres@localhost/postgres";
+const ADMIN_URL: &str = "postgres://proxima:proxima@localhost/proxima";
 
 async fn create_db(name: &str) -> Result<(), sqlx::Error> {
     let mut conn = PgConnection::connect(ADMIN_URL).await?;
@@ -117,7 +117,16 @@ async fn seed_file_revision(
     file_path: &str,
     seed: &[u8],
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
-    seed_file_revision_state(pool, engine, owner, repo_id, file_path, seed, "Present").await
+    seed_file_revision_state(
+        pool,
+        engine,
+        owner,
+        repo_id,
+        file_path,
+        seed,
+        FileState::Present,
+    )
+    .await
 }
 
 async fn seed_file_revision_state(
@@ -127,7 +136,7 @@ async fn seed_file_revision_state(
     repo_id: Uuid,
     file_path: &str,
     seed: &[u8],
-    state: &str,
+    state: FileState,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
     // 1. EventIngest creates the memories row + supporting plumbing.
     let draft = fresh_draft(owner, FileRevisionV1::SCHEMA_ID, seed);
@@ -163,7 +172,7 @@ async fn seed_code_chunk_state(
     file_path: &str,
     chunk_index: i32,
     seed: &[u8],
-    state: &str,
+    state: FileState,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
     let draft = fresh_draft(owner, CodeChunkV1::SCHEMA_ID, seed);
     let outcome = engine.event_ingest(&Credentials::None, draft).await?;
@@ -194,10 +203,7 @@ async fn insert_memory_edge(
     target_memory_id: Uuid,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
     let edge_id = Uuid::now_v7();
-    let owner_kind = match &owner.principal {
-        Principal::User(_) => "User",
-        Principal::Group(_) => "Group",
-    };
+    let owner_kind = proxima_core::OwnerPrincipalKind::of(&owner.principal);
     let owner_principal_id = match &owner.principal {
         Principal::User(u) => u.into_inner(),
         Principal::Group(g) => g.into_inner(),
@@ -226,10 +232,9 @@ async fn insert_memory_edge(
 async fn heads_only_returns_latest_per_natural_key() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if create_db(&db_name).await.is_err() {
-        eprintln!("skipping (no admin PG)");
-        return;
+        panic!("PG required for tests but admin connect failed");
     }
-    let url = format!("postgres://postgres@localhost/{db_name}");
+    let url = format!("postgres://proxima:proxima@localhost/{db_name}");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
@@ -361,10 +366,9 @@ async fn heads_only_no_op_for_stateless_fact_schema() {
     // returns every row.
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if create_db(&db_name).await.is_err() {
-        eprintln!("skipping (no admin PG)");
-        return;
+        panic!("PG required for tests but admin connect failed");
     }
-    let url = format!("postgres://postgres@localhost/{db_name}");
+    let url = format!("postgres://proxima:proxima@localhost/{db_name}");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
@@ -420,10 +424,9 @@ async fn heads_only_no_op_for_stateless_fact_schema() {
 async fn owner_snapshot_heads_only_folds_all_stateful_fact_schemas() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if create_db(&db_name).await.is_err() {
-        eprintln!("skipping (no admin PG)");
-        return;
+        panic!("PG required for tests but admin connect failed");
     }
-    let url = format!("postgres://postgres@localhost/{db_name}");
+    let url = format!("postgres://proxima:proxima@localhost/{db_name}");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
@@ -446,7 +449,7 @@ async fn owner_snapshot_heads_only_folds_all_stateful_fact_schemas() {
             repo_id,
             "src/a.rs",
             b"a1",
-            "Present",
+            FileState::Present,
         )
         .await?;
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -457,7 +460,7 @@ async fn owner_snapshot_heads_only_folds_all_stateful_fact_schemas() {
             repo_id,
             "src/a.rs",
             b"a2",
-            "Present",
+            FileState::Present,
         )
         .await?;
         let c_v1 = seed_code_chunk_state(
@@ -468,7 +471,7 @@ async fn owner_snapshot_heads_only_folds_all_stateful_fact_schemas() {
             "src/a.rs",
             0,
             b"c1",
-            "Present",
+            FileState::Present,
         )
         .await?;
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -480,7 +483,7 @@ async fn owner_snapshot_heads_only_folds_all_stateful_fact_schemas() {
             "src/a.rs",
             0,
             b"c2",
-            "Present",
+            FileState::Present,
         )
         .await?;
 
@@ -508,10 +511,9 @@ async fn owner_snapshot_heads_only_folds_all_stateful_fact_schemas() {
 async fn present_only_excludes_tombstone_head_without_reviving_previous_present() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if create_db(&db_name).await.is_err() {
-        eprintln!("skipping (no admin PG)");
-        return;
+        panic!("PG required for tests but admin connect failed");
     }
-    let url = format!("postgres://postgres@localhost/{db_name}");
+    let url = format!("postgres://proxima:proxima@localhost/{db_name}");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
@@ -534,7 +536,7 @@ async fn present_only_excludes_tombstone_head_without_reviving_previous_present(
             repo_id,
             "src/deleted.rs",
             b"v1",
-            "Present",
+            FileState::Present,
         )
         .await?;
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -545,7 +547,7 @@ async fn present_only_excludes_tombstone_head_without_reviving_previous_present(
             repo_id,
             "src/deleted.rs",
             b"v2",
-            "Tombstone",
+            FileState::Tombstone,
         )
         .await?;
 
@@ -614,10 +616,9 @@ async fn present_only_excludes_tombstone_head_without_reviving_previous_present(
 async fn present_only_snapshot_excludes_edges_to_tombstoned_heads() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if create_db(&db_name).await.is_err() {
-        eprintln!("skipping (no admin PG)");
-        return;
+        panic!("PG required for tests but admin connect failed");
     }
-    let url = format!("postgres://postgres@localhost/{db_name}");
+    let url = format!("postgres://proxima:proxima@localhost/{db_name}");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
@@ -639,7 +640,7 @@ async fn present_only_snapshot_excludes_edges_to_tombstoned_heads() {
             repo_id,
             "src/live.rs",
             b"live",
-            "Present",
+            FileState::Present,
         )
         .await?;
         let deleted = seed_file_revision_state(
@@ -649,7 +650,7 @@ async fn present_only_snapshot_excludes_edges_to_tombstoned_heads() {
             repo_id,
             "src/deleted.rs",
             b"gone",
-            "Tombstone",
+            FileState::Tombstone,
         )
         .await?;
         let edge_id = insert_memory_edge(pg.pool(), &owner, active, deleted).await?;
@@ -677,10 +678,9 @@ async fn present_only_snapshot_excludes_edges_to_tombstoned_heads() {
 async fn present_only_edge_id_hydration_excludes_edges_with_hidden_endpoint() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if create_db(&db_name).await.is_err() {
-        eprintln!("skipping (no admin PG)");
-        return;
+        panic!("PG required for tests but admin connect failed");
     }
-    let url = format!("postgres://postgres@localhost/{db_name}");
+    let url = format!("postgres://proxima:proxima@localhost/{db_name}");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
@@ -702,7 +702,7 @@ async fn present_only_edge_id_hydration_excludes_edges_with_hidden_endpoint() {
             repo_id,
             "src/live.rs",
             b"live",
-            "Present",
+            FileState::Present,
         )
         .await?;
         let deleted = seed_file_revision_state(
@@ -712,7 +712,7 @@ async fn present_only_edge_id_hydration_excludes_edges_with_hidden_endpoint() {
             repo_id,
             "src/deleted.rs",
             b"gone",
-            "Tombstone",
+            FileState::Tombstone,
         )
         .await?;
         let edge_id = insert_memory_edge(pg.pool(), &owner, active, deleted).await?;

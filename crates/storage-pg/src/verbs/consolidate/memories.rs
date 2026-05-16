@@ -2,7 +2,7 @@ use proxima_core::personality::{
     AbstractionRow, FactRow, MemorySnapshot, PersonalityRef, PersonalityWriteOutcome,
     PersonalityWriteRequest, SidecarSpec, WakeChainDepth,
 };
-use proxima_core::{MemoryId, Owner, SchemaId, SchemaVersion, StorageError};
+use proxima_core::{EntityKind, MemoryId, Owner, SchemaId, SchemaVersion, StorageError};
 use sqlx::PgPool;
 
 use super::rows::owner_columns;
@@ -147,7 +147,7 @@ pub async fn load_memory_by_id(
     sidecars: &[SidecarSpec],
 ) -> Result<Option<MemorySnapshot>, StorageError> {
     let (owner_kind, owner_principal_id, _owner_org_id) = owner_columns(owner);
-    let head: Option<(Option<String>, String, i32, Option<String>, i16)> = sqlx::query_as(
+    let head: Option<(Option<EntityKind>, String, i32, Option<String>, i16)> = sqlx::query_as(
         "SELECT kind, schema_id, schema_version, text, wake_chain_depth
          FROM proxima_core.memories
          WHERE memory_id = $1
@@ -163,7 +163,10 @@ pub async fn load_memory_by_id(
     let Some((kind, schema_id, schema_version, text, depth)) = head else {
         return Ok(None);
     };
-    let kind_str = kind.unwrap_or_else(|| "Fact".to_string());
+    let kind_str = kind
+        .unwrap_or(EntityKind::Fact)
+        .as_str()
+        .to_string();
     let payload_json =
         if let Some(spec) = sidecars.iter().find(|s| s.schema_id.as_str() == schema_id) {
             let sidecar = PgIdent::table(&spec.sidecar_table)?;
@@ -324,7 +327,7 @@ pub async fn append_personality_memories(
                 source_kind: memory.kind.as_str(),
                 source_memory_id: Some(memory_id),
                 source_goal_id: None,
-                target_kind,
+                target_kind: target_kind.as_str(),
                 target_memory_id: Some(prov_id.into_inner()),
                 target_goal_id: None,
                 authorship_kind,
@@ -402,19 +405,12 @@ fn provenance_edge_authorship_kind(kind: proxima_core::PersonalityMemoryKind) ->
 async fn memory_kind_for_provenance(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     memory_id: MemoryId,
-) -> Result<&'static str, StorageError> {
-    let row: Option<(Option<String>,)> =
+) -> Result<EntityKind, StorageError> {
+    let row: Option<(Option<EntityKind>,)> =
         sqlx::query_as("SELECT kind FROM proxima_core.memories WHERE memory_id = $1")
             .bind(memory_id.into_inner())
             .fetch_optional(&mut **tx)
             .await
             .map_err(map_err)?;
-    match row.and_then(|(kind,)| kind) {
-        Some(kind) if kind == "Abstraction" => Ok("Abstraction"),
-        Some(kind) if kind == "Perspective" => Ok("Perspective"),
-        Some(other) => Err(StorageError::Internal(format!(
-            "unsupported provenance memory kind: {other}"
-        ))),
-        None => Ok("Fact"),
-    }
+    Ok(row.and_then(|(kind,)| kind).unwrap_or(EntityKind::Fact))
 }

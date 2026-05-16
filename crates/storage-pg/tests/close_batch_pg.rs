@@ -82,8 +82,7 @@ fn fresh_draft(owner: Owner, source_batch_id: SourceBatchId) -> EventDraft {
 async fn close_batch_idempotent_and_owner_scoped() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if create_db(&db_name).await.is_err() {
-        eprintln!("skipping (no admin PG)");
-        return;
+        panic!("PG required for tests but admin connect failed");
     }
     let url = db_url(&db_name);
 

@@ -27,7 +27,7 @@ use sqlx::{Connection, Executor, PgConnection, Row};
 use tempfile::TempDir;
 use uuid::Uuid;
 
-const ADMIN_URL: &str = "postgres://postgres@localhost/postgres";
+const ADMIN_URL: &str = "postgres://proxima:proxima@localhost/proxima";
 
 async fn create_db(name: &str) -> Result<(), sqlx::Error> {
     let mut conn = PgConnection::connect(ADMIN_URL).await?;
@@ -93,9 +93,10 @@ fn fixture_repo() -> TempDir {
 }
 
 async fn count_present_chunks(pool: &sqlx::PgPool, owner: &Owner, repo_id: Uuid) -> i64 {
-    let (kind, principal_id) = match &owner.principal {
-        Principal::User(u) => ("User", u.into_inner()),
-        Principal::Group(g) => ("Group", g.into_inner()),
+    let kind = proxima_core::OwnerPrincipalKind::of(&owner.principal);
+    let principal_id = match &owner.principal {
+        Principal::User(u) => u.into_inner(),
+        Principal::Group(g) => g.into_inner(),
     };
     let org_id = owner.org_id.into_inner();
     let row = sqlx::query(
@@ -135,13 +136,14 @@ async fn fetch_file_revision_state(
     owner: &Owner,
     repo_id: Uuid,
     file_path: &str,
-) -> Option<String> {
-    let (kind, principal_id) = match &owner.principal {
-        Principal::User(u) => ("User", u.into_inner()),
-        Principal::Group(g) => ("Group", g.into_inner()),
+) -> Option<FileState> {
+    let kind = proxima_core::OwnerPrincipalKind::of(&owner.principal);
+    let principal_id = match &owner.principal {
+        Principal::User(u) => u.into_inner(),
+        Principal::Group(g) => g.into_inner(),
     };
     let org_id = owner.org_id.into_inner();
-    let row: Option<(String,)> = sqlx::query_as(
+    let row: Option<(FileState,)> = sqlx::query_as(
         "SELECT s.state \
          FROM proxima_core.memories m \
          JOIN proxima_code.file_revision_v1 s USING (memory_id) \
@@ -177,10 +179,9 @@ async fn fetch_file_revision_state(
 async fn local_git_source_full_cycle() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if create_db(&db_name).await.is_err() {
-        eprintln!("skipping (no admin PG)");
-        return;
+        panic!("PG required for tests but admin connect failed");
     }
-    let url = format!("postgres://postgres@localhost/{db_name}");
+    let url = format!("postgres://proxima:proxima@localhost/{db_name}");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
@@ -347,7 +348,7 @@ async fn local_git_source_full_cycle() {
         let (r3, cursor) = source.run_poll(pg.pool(), &cursor, &mut |_| {}).await?;
         assert!(r3.files_tombstoned >= 1, "expected tombstone for main.ts");
         let main_state = fetch_file_revision_state(pg.pool(), &owner, repo_id, "src/main.ts").await;
-        assert_eq!(main_state.as_deref(), Some("Tombstone"));
+        assert_eq!(main_state, Some(FileState::Tombstone));
 
         // ----------------------------------------------------------------
         // Phase 4 — rename README.md → docs/README.md and reindex.
@@ -363,8 +364,8 @@ async fn local_git_source_full_cycle() {
         let old_state = fetch_file_revision_state(pg.pool(), &owner, repo_id, "README.md").await;
         let new_state =
             fetch_file_revision_state(pg.pool(), &owner, repo_id, "docs/README.md").await;
-        assert_eq!(old_state.as_deref(), Some("Tombstone"));
-        assert_eq!(new_state.as_deref(), Some("Present"));
+        assert_eq!(old_state, Some(FileState::Tombstone));
+        assert_eq!(new_state, Some(FileState::Present));
 
         // ----------------------------------------------------------------
         // Phase 5 — markdown is polyglot: present revision, fallback chunks.
@@ -420,10 +421,9 @@ async fn polyglot_markdown_emits_file_revision_and_fallback_chunks() {
     // for a markdown-only fixture.
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if create_db(&db_name).await.is_err() {
-        eprintln!("skipping (no admin PG)");
-        return;
+        panic!("PG required for tests but admin connect failed");
     }
-    let url = format!("postgres://postgres@localhost/{db_name}");
+    let url = format!("postgres://proxima:proxima@localhost/{db_name}");
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
@@ -456,7 +456,7 @@ async fn polyglot_markdown_emits_file_revision_and_fallback_chunks() {
         assert!(report.files_present_emitted >= 1);
 
         let state = fetch_file_revision_state(pg.pool(), &owner, repo_id, "doc.md").await;
-        assert_eq!(state.as_deref(), Some("Present"));
+        assert_eq!(state, Some(FileState::Present));
 
         // Markdown lacks a tree-sitter grammar in our deps → fallback
         // chunker; chunk_type = "file".

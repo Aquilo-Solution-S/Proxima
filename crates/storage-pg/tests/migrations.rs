@@ -13,8 +13,7 @@ async fn migrations_apply_to_fresh_db() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
 
     if let Err(e) = create_db(&db_name).await {
-        eprintln!("skipping (no admin PG): {e}");
-        return;
+        panic!("PG required for tests but admin connect failed: {e}");
     }
 
     let url = db_url(&db_name);

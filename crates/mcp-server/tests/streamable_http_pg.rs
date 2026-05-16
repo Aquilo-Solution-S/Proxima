@@ -15,7 +15,7 @@ async fn streamable_http_initialize_list_and_remember() -> Result<(), Box<dyn st
     let Some(db_name) = create_db().await? else {
         return Ok(());
     };
-    let database_url = format!("postgres://postgres@localhost/{db_name}");
+    let database_url = format!("postgres://proxima:proxima@localhost/{db_name}");
     let mut registry = FlavorRegistry::new();
     proxima_mcp_substrate::register(&mut registry);
     let server = McpToolHost::from_database_url(&database_url, nil_owner(), registry).await?;
@@ -98,7 +98,7 @@ async fn missing_auth_returns_401() -> Result<(), Box<dyn std::error::Error>> {
     let Some(db_name) = create_db().await? else {
         return Ok(());
     };
-    let database_url = format!("postgres://postgres@localhost/{db_name}");
+    let database_url = format!("postgres://proxima:proxima@localhost/{db_name}");
     let mut registry = FlavorRegistry::new();
     proxima_mcp_substrate::register(&mut registry);
     let server = McpToolHost::from_database_url(&database_url, nil_owner(), registry).await?;
@@ -133,7 +133,7 @@ async fn disallowed_origin_returns_403_with_valid_token() -> Result<(), Box<dyn 
     let Some(db_name) = create_db().await? else {
         return Ok(());
     };
-    let database_url = format!("postgres://postgres@localhost/{db_name}");
+    let database_url = format!("postgres://proxima:proxima@localhost/{db_name}");
     let mut registry = FlavorRegistry::new();
     proxima_mcp_substrate::register(&mut registry);
     let server = McpToolHost::from_database_url(&database_url, nil_owner(), registry).await?;
@@ -174,7 +174,7 @@ async fn local_master_token_lists_all_tools_without_origin()
     let Some(db_name) = create_db().await? else {
         return Ok(());
     };
-    let database_url = format!("postgres://postgres@localhost/{db_name}");
+    let database_url = format!("postgres://proxima:proxima@localhost/{db_name}");
     let mut registry = FlavorRegistry::new();
     proxima_mcp_substrate::register(&mut registry);
     let server = McpToolHost::from_database_url(&database_url, nil_owner(), registry).await?;
@@ -225,7 +225,7 @@ async fn non_loopback_bind_refused_immediately() -> Result<(), Box<dyn std::erro
     let Some(db_name) = create_db().await? else {
         return Ok(());
     };
-    let database_url = format!("postgres://postgres@localhost/{db_name}");
+    let database_url = format!("postgres://proxima:proxima@localhost/{db_name}");
     let mut registry = FlavorRegistry::new();
     proxima_mcp_substrate::register(&mut registry);
     let server = McpToolHost::from_database_url(&database_url, nil_owner(), registry).await?;

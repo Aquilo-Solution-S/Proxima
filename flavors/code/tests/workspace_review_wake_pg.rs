@@ -48,8 +48,7 @@ fn db_url(db_name: &str) -> String {
 async fn migrated_db() -> Option<(String, PgStorage)> {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if create_db(&db_name).await.is_err() {
-        eprintln!("skipping (no admin PG)");
-        return None;
+        panic!("PG required for tests but admin connect failed");
     }
     let pg = PgStorage::connect(&db_url(&db_name))
         .await
@@ -61,10 +60,9 @@ async fn migrated_db() -> Option<(String, PgStorage)> {
     }
     .await
     {
-        eprintln!("skipping (migration failed): {err}");
         drop(pg);
         let _ = drop_db(&db_name).await;
-        return None;
+        panic!("migration failed: {err}");
     }
     Some((db_name, pg))
 }
@@ -203,7 +201,7 @@ async fn workspace_review_loop_wake_entries_validate() -> Result<(), Box<dyn std
         .await?;
         assert_eq!(rows.len(), 3);
 
-        let persisted: Vec<(String, String, Vec<String>)> = rows
+        let persisted: Vec<(String, WakeExecutionMode, Vec<String>)> = rows
             .into_iter()
             .map(|row| {
                 Ok::<_, sqlx::Error>((
@@ -215,14 +213,18 @@ async fn workspace_review_loop_wake_entries_validate() -> Result<(), Box<dyn std
             .collect::<Result<_, _>>()?;
         assert!(persisted.iter().any(|(trigger, mode, tools)| {
             trigger == WorkspaceRunV1::SCHEMA_ID
-                && mode == "workspace"
+                && *mode == WakeExecutionMode::Workspace
                 && tools == &vec!["proxima-workspace/shell".to_string()]
         }));
         assert!(persisted.iter().any(|(trigger, mode, tools)| {
-            trigger == WorkspaceReviewV1::SCHEMA_ID && mode == "workspace" && tools.is_empty()
+            trigger == WorkspaceReviewV1::SCHEMA_ID
+                && *mode == WakeExecutionMode::Workspace
+                && tools.is_empty()
         }));
         assert!(persisted.iter().any(|(trigger, mode, tools)| {
-            trigger == WorkspaceDecisionV1::SCHEMA_ID && mode == "workspace" && tools.is_empty()
+            trigger == WorkspaceDecisionV1::SCHEMA_ID
+                && *mode == WakeExecutionMode::Workspace
+                && tools.is_empty()
         }));
 
         Ok(())

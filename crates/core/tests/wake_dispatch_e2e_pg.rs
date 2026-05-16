@@ -8,13 +8,24 @@ use std::time::Duration;
 use proxima_core::{CORE_AUTHORED_RELATION, CORE_DERIVED_FROM_RELATION};
 use sqlx::Row;
 
+/// Rust mirror of the `proxima_core.wake_trace_outcome_kind` SQL enum.
+/// Mirrors `crates/storage-pg/migrations/.../baseline.sql` enum variants.
+/// Used here for typed decode so the test exercises the same enum
+/// boundary the runtime persists.
+#[derive(Debug, PartialEq, Eq, sqlx::Type)]
+#[sqlx(type_name = "proxima_core.wake_trace_outcome_kind", rename_all = "lowercase")]
+enum WakeTraceOutcomeKind {
+    Succeeded,
+    Truncated,
+    Failed,
+}
+
 #[tokio::test]
 async fn harness_wake_persists_trace_fact_jsonl_and_provenance() {
     let Some(fixture) =
         common::seed_dispatch_fixture_with_match_and_engine(Duration::from_millis(100)).await
     else {
-        eprintln!("skipping: PG unavailable");
-        return;
+        panic!("PG required for tests but unavailable");
     };
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
@@ -42,7 +53,10 @@ async fn harness_wake_persists_trace_fact_jsonl_and_provenance() {
         .await?;
         let trace_memory: uuid::Uuid = trace.try_get("memory_id")?;
         let cited_object_id: uuid::Uuid = trace.try_get("cited_object_id")?;
-        assert_eq!(trace.try_get::<String, _>("outcome_kind")?, "succeeded");
+        assert_eq!(
+            trace.try_get::<WakeTraceOutcomeKind, _>("outcome_kind")?,
+            WakeTraceOutcomeKind::Succeeded
+        );
         assert!(!trace.try_get::<bool, _>("jsonl_truncated")?);
         assert_eq!(
             trace.try_get::<uuid::Uuid, _>("personality_instance_id")?,

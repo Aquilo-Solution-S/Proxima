@@ -19,7 +19,7 @@ use serde_json::json;
 use sqlx::{Connection, Executor, PgConnection, PgPool};
 use uuid::Uuid;
 
-const ADMIN_URL: &str = "postgres://postgres@localhost/postgres";
+const ADMIN_URL: &str = "postgres://proxima:proxima@localhost/proxima";
 
 #[tokio::test]
 async fn search_chunks_returns_only_head_per_nk() -> Result<(), Box<dyn std::error::Error>> {
@@ -490,11 +490,10 @@ impl TestDb {
     async fn fresh() -> Result<Option<Self>, Box<dyn std::error::Error>> {
         let name = format!("proxima_test_{}", Uuid::now_v7().simple());
         if create_db(&name).await.is_err() {
-            eprintln!("skipping (no admin PG)");
-            return Ok(None);
+            panic!("PG required for tests but admin connect failed");
         }
         let setup: Result<PgStorage, Box<dyn std::error::Error>> = async {
-            let pg = PgStorage::connect(&format!("postgres://postgres@localhost/{name}")).await?;
+            let pg = PgStorage::connect(&format!("postgres://proxima:proxima@localhost/{name}")).await?;
             pg.run_migrations().await?;
             proxima_code::migrator().run(pg.pool()).await?;
             Ok(pg)
@@ -789,16 +788,19 @@ async fn ingest_commit_summary(
         "INSERT INTO proxima_core.memories
             (memory_id, owner_principal_kind, owner_principal_id, owner_org_id,
              schema_id, schema_version, kind, text, operator_kind, model_id, prompt_version,
-             personality_id)
-         VALUES ($1, $2, $3, $4, $5, 1, 'Abstraction', $6,
-             'FtoA', 'test/0', 'test', 'test/personality')",
+             personality_instance_id)
+         VALUES ($1, $2, $3, $4, $5, 1, $6, $7,
+             $8, 'test/0', 'test', $9)",
     )
     .bind(memory_id)
     .bind(owner_kind)
     .bind(owner_id)
     .bind(owner.org_id.into_inner())
     .bind(proxima_code::CommitSummaryV1::schema_id().into_inner())
+    .bind(proxima_core::EntityKind::Abstraction)
     .bind(summary)
+    .bind(proxima_core::MemoryOperatorKind::FtoA)
+    .bind(Uuid::nil())
     .execute(pool)
     .await?;
 
@@ -857,9 +859,11 @@ async fn ingest_calls_edge(
     Ok(edge_id)
 }
 
-fn owner_principal(owner: &Owner) -> (&'static str, Uuid) {
-    match &owner.principal {
-        Principal::User(user) => ("User", user.into_inner()),
-        Principal::Group(group) => ("Group", group.into_inner()),
-    }
+fn owner_principal(owner: &Owner) -> (proxima_core::OwnerPrincipalKind, Uuid) {
+    let kind = proxima_core::OwnerPrincipalKind::of(&owner.principal);
+    let principal_id = match &owner.principal {
+        Principal::User(user) => user.into_inner(),
+        Principal::Group(group) => group.into_inner(),
+    };
+    (kind, principal_id)
 }

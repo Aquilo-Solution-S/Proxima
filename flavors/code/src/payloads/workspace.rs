@@ -47,7 +47,9 @@ impl FactPayload for WorkspaceRunV1 {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type, sqlx::Type)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type, sqlx::Type,
+)]
 #[serde(rename_all = "snake_case")]
 #[sqlx(type_name = "proxima_code.workspace_decision", rename_all = "snake_case")]
 pub enum WorkspaceDecision {

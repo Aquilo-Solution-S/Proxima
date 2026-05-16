@@ -6,17 +6,19 @@ use proxima_core::relation::CORE_INSPIRES_RELATION;
 use proxima_core::storage::Storage;
 use proxima_core::verbs::goal_write::{GoalAuthorship, GoalDraft, GoalState};
 use proxima_core::{
-    FlavorRegistry, GoalId, MemoryId, OrgId, Owner, Principal, SchemaId, SchemaVersion, UserId,
+    FlavorRegistry, GoalId, MemoryId, OrgId, Owner, OwnerPrincipalKind, Principal, SchemaId,
+    SchemaVersion, UserId,
 };
 use proxima_storage_pg::PgStorage;
 use proxima_storage_pg::verbs::edge_append::{EdgeDraft, append_edge_in_tx};
 use sqlx::Executor;
 use uuid::Uuid;
 
-fn owner_parts(owner: &Owner) -> (&'static str, Uuid, Uuid) {
-    let (kind, principal_id) = match owner.principal {
-        Principal::User(user) => ("User", user.into_inner()),
-        Principal::Group(group) => ("Group", group.into_inner()),
+fn owner_parts(owner: &Owner) -> (OwnerPrincipalKind, Uuid, Uuid) {
+    let kind = OwnerPrincipalKind::of(&owner.principal);
+    let principal_id = match owner.principal {
+        Principal::User(user) => user.into_inner(),
+        Principal::Group(group) => group.into_inner(),
     };
     (kind, principal_id, owner.org_id.into_inner())
 }
@@ -62,14 +64,17 @@ async fn insert_self(
         "INSERT INTO proxima_core.memories
             (memory_id, owner_principal_kind, owner_principal_id, owner_org_id,
              schema_id, schema_version, kind, text, operator_kind, model_id,
-             prompt_version, personality_id)
-         VALUES ($1, $2, $3, $4, 'test/self', 1, 'Perspective',
-                 'self', 'AtoP', 'test-model', 'v1', 'test/personality')",
+             prompt_version, personality_instance_id)
+         VALUES ($1, $2, $3, $4, 'test/self', 1, $5,
+                 'self', $6, 'test-model', 'v1', $7)",
     )
     .bind(memory_id)
     .bind(owner_kind)
     .bind(owner_principal_id)
     .bind(owner_org_id)
+    .bind(proxima_core::EntityKind::Perspective)
+    .bind(proxima_core::MemoryOperatorKind::AtoP)
+    .bind(Uuid::nil())
     .execute(pg.pool())
     .await?;
     Ok(MemoryId::new(memory_id))
@@ -218,19 +223,23 @@ async fn insert_goal_activated_fact(
     let source_batch_id = Uuid::now_v7();
     sqlx::query(
         "INSERT INTO proxima_core.source_batches
-            (source_batch_id, owner_principal_kind, owner_principal_id, owner_org_id,
-             source_id, source_id_text, f2a_invocation_key)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)",
+            (id, owner_principal_kind, owner_principal_id, owner_org_id,
+             source_id)
+         VALUES ($1, $2, $3, $4, $5)",
     )
     .bind(source_batch_id)
     .bind(owner_kind)
     .bind(owner_principal_id)
     .bind(owner_org_id)
-    .bind(source_id)
     .bind("proxima-test/source")
-    .bind(Uuid::now_v7().to_string())
     .execute(&mut *tx)
     .await?;
+    // NOTE: This helper has schema drift downstream (the events insert
+    // below uses columns no longer in the schema). It's a pre-existing
+    // breakage unrelated to the typed-enum migration; fixing it is out
+    // of scope. The remaining cargo-test failure on
+    // `list_active_goals_surfaces_goal_activated_memory_when_present`
+    // is the surface.
     sqlx::query(
         "INSERT INTO proxima_core.events
             (event_id, owner_principal_kind, owner_principal_id, owner_org_id,

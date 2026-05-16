@@ -8,6 +8,11 @@ services:
       POSTGRES_DB: proxima
     ports:
       - "5432:5432"
+    # Bumped from the 64MB default — test parallelism creates many
+    # transient databases and PG's per-backend hash/sort memory plus
+    # FK validation scans during `run_migrations` blow the 64MB cap
+    # under concurrent `cargo test`.
+    shm_size: 1gb
     volumes:
       - proxima_dev_pgdata:/var/lib/postgresql
       - ./scripts/pg-init.sql:/docker-entrypoint-initdb.d/00-pg-stat-statements.sql:ro

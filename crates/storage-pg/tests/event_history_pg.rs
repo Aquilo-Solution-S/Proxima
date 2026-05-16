@@ -90,8 +90,7 @@ fn build_engine(storage: Arc<dyn Storage>, owner: Owner, principal: Principal) -
 async fn event_history_returns_owner_scoped_newest_first() {
     let db_name = format!("proxima_test_eh_{}", Uuid::now_v7().simple());
     if create_db(&db_name).await.is_err() {
-        eprintln!("skipping (no admin PG)");
-        return;
+        panic!("PG required for tests but admin connect failed");
     }
     let url = db_url(&db_name);
 

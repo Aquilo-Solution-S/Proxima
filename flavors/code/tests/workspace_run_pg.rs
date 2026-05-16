@@ -34,11 +34,13 @@ use proxima_core::wake::target_adapter::{
     TargetAdapter, TargetAdapterError, TargetContext, TargetInvocation, TargetOutcome,
     TargetOutcomeKind,
 };
+use proxima_core::verbs::goal_write::{GoalAuthorshipKind, GoalState};
 use proxima_core::{
     BindInferenceTierRequest, CORE_AUTHORED_RELATION, CORE_DERIVED_FROM_RELATION, Engine,
     FactPayload, FlavorRegistry, InferenceTargetConfig, MistralChatConfig, ModelTier, OrgId, Owner,
-    Principal, RegisterInferenceTargetRequest, SchemaId, SchemaVersion, SourceBatchId, SourceId,
-    UserId, WakeEntryAuthoredBy, WakeEntryTriggerKind, WorkspacePrepareInput, WorkspaceRunner,
+    OwnerPrincipalKind, Principal, RegisterInferenceTargetRequest, SchemaId, SchemaVersion,
+    SourceBatchId, SourceId, UserId, WakeEntryAuthoredBy, WakeEntryTriggerKind,
+    WorkspacePrepareInput, WorkspaceRunner,
 };
 use proxima_flavor_goal::tools::mark_achieved::{
     MarkAchievedArgs, MarkAchievedStatus, MarkAchievedTool,
@@ -173,8 +175,7 @@ fn db_url(db_name: &str) -> String {
 async fn migrated_db() -> Option<(String, PgStorage)> {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if create_db(&db_name).await.is_err() {
-        eprintln!("skipping (no admin PG)");
-        return None;
+        panic!("PG required for tests but admin connect failed");
     }
     let pg = PgStorage::connect(&db_url(&db_name))
         .await
@@ -186,10 +187,9 @@ async fn migrated_db() -> Option<(String, PgStorage)> {
     }
     .await
     {
-        eprintln!("skipping (migration failed): {err}");
         drop(pg);
         let _ = drop_db(&db_name).await;
-        return None;
+        panic!("migration failed: {err}");
     }
     Some((db_name, pg))
 }
@@ -494,7 +494,7 @@ async fn seed_workspace_review_for_runner(
     .bind(outcome.memory_id.into_inner())
     .bind(payload.workspace_run_memory_id)
     .bind(payload.execution_request_memory_id)
-    .bind(payload.verdict.as_str())
+    .bind(payload.verdict)
     .bind(i32::try_from(payload.round_index).unwrap_or(i32::MAX))
     .bind(&payload.summary)
     .bind(serde_json::to_value(&payload.findings)?)
@@ -549,10 +549,12 @@ async fn seed_goal_context_for_runner(
     let goal_id = Uuid::now_v7();
     let mut goal_payload = Vec::new();
     ciborium::ser::into_writer(&SimpleTextGoalV1 {}, &mut goal_payload)?;
-    let (owner_kind, owner_principal_id, owner_org_id) = match &owner.principal {
-        Principal::User(user) => ("User", user.into_inner(), owner.org_id.into_inner()),
-        Principal::Group(group) => ("Group", group.into_inner(), owner.org_id.into_inner()),
+    let owner_kind = OwnerPrincipalKind::of(&owner.principal);
+    let owner_principal_id = match &owner.principal {
+        Principal::User(user) => user.into_inner(),
+        Principal::Group(group) => group.into_inner(),
     };
+    let owner_org_id = owner.org_id.into_inner();
     sqlx::query(
         "INSERT INTO proxima_core.goals
             (goal_id, schema_id, schema_version, owner_principal_kind,
@@ -569,8 +571,8 @@ async fn seed_goal_context_for_runner(
     .bind("Ship closure")
     .bind("Acceptance criteria: close the verifier loop.")
     .bind(goal_payload)
-    .bind("Active")
-    .bind("User")
+    .bind(GoalState::Active)
+    .bind(GoalAuthorshipKind::User)
     .bind(format!("goal-{}", Uuid::now_v7()))
     .execute(pg.pool())
     .await?;
@@ -1834,12 +1836,12 @@ async fn merged_decision_trigger_prepares_goal_close_context()
             .resolve_goal(close.handle.as_deref().expect("achieved handle"))
             .expect("achieved handle resolves")
             .into_inner();
-        let row: (String, Option<Uuid>) =
+        let row: (GoalState, Option<Uuid>) =
             sqlx::query_as("SELECT state, supersedes FROM proxima_core.goals WHERE goal_id = $1")
                 .bind(achieved_id)
                 .fetch_one(pg.pool())
                 .await?;
-        assert_eq!(row.0, "Achieved");
+        assert_eq!(row.0, GoalState::Achieved);
         assert_eq!(row.1, Some(goal_id));
         let achieved_fact_count: i64 = sqlx::query_scalar(
             "SELECT count(*)
@@ -2084,7 +2086,7 @@ async fn workspace_wake_emits_run_fact_and_edges() -> Result<(), Box<dyn std::er
         let fired = engine.run_dispatcher_tick().await?;
         assert_eq!(fired, 1, "commit Fact fires workspace wake");
 
-        let invocation_status: String = sqlx::query_scalar(
+        let invocation_status: proxima_core::WakeInvocationStatus = sqlx::query_scalar(
             "SELECT status
              FROM proxima_core.personality_wake_invocations
              WHERE personality_instance_id = $1
@@ -2094,7 +2096,10 @@ async fn workspace_wake_emits_run_fact_and_edges() -> Result<(), Box<dyn std::er
         .bind(wake_entry.wake_entry_id)
         .fetch_one(pg.pool())
         .await?;
-        assert_eq!(invocation_status, "succeeded");
+        assert_eq!(
+            invocation_status,
+            proxima_core::WakeInvocationStatus::Succeeded
+        );
         let persisted_target: Option<String> =
             sqlx::query_scalar("SELECT target_branch FROM proxima_code.repos WHERE repo_id = $1")
                 .bind(repo_id)

@@ -14,7 +14,7 @@ use sqlx::{Connection, Executor, PgConnection};
 use tempfile::TempDir;
 use uuid::Uuid;
 
-const ADMIN_URL: &str = "postgres://postgres@localhost/postgres";
+const ADMIN_URL: &str = "postgres://proxima:proxima@localhost/proxima";
 
 async fn create_db(name: &str) -> Result<(), sqlx::Error> {
     let mut conn = PgConnection::connect(ADMIN_URL).await?;
@@ -35,10 +35,9 @@ async fn drop_db(name: &str) -> Result<(), sqlx::Error> {
 async fn migrated_db() -> Option<(String, PgStorage)> {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     if create_db(&db_name).await.is_err() {
-        eprintln!("skipping (no admin PG)");
-        return None;
+        panic!("PG required for tests but admin connect failed");
     }
-    let url = format!("postgres://postgres@localhost/{db_name}");
+    let url = format!("postgres://proxima:proxima@localhost/{db_name}");
     let pg = PgStorage::connect(&url).await.expect("connect test db");
     pg.run_migrations().await.expect("core migrations");
     migrator().run(pg.pool()).await.expect("code migrations");
@@ -52,10 +51,11 @@ fn test_owner() -> Owner {
     }
 }
 
-fn owner_cols(owner: &Owner) -> (&'static str, Uuid, Uuid) {
-    let (kind, principal_id) = match &owner.principal {
-        Principal::User(u) => ("User", u.into_inner()),
-        Principal::Group(g) => ("Group", g.into_inner()),
+fn owner_cols(owner: &Owner) -> (proxima_core::OwnerPrincipalKind, Uuid, Uuid) {
+    let kind = proxima_core::OwnerPrincipalKind::of(&owner.principal);
+    let principal_id = match &owner.principal {
+        Principal::User(u) => u.into_inner(),
+        Principal::Group(g) => g.into_inner(),
     };
     (kind, principal_id, owner.org_id.into_inner())
 }
@@ -218,7 +218,7 @@ async fn sweep_retires_orphans_and_unblocks_start_run() {
         }
 
         let (kind, principal_id, org_id) = owner_cols(&owner);
-        let messages: Vec<(String, Option<String>)> = sqlx::query_as(
+        let messages: Vec<(RunStatus, Option<String>)> = sqlx::query_as(
             "SELECT status, error_message \
              FROM proxima_code.repo_ingestion_runs \
              WHERE owner_principal_kind = $1 AND owner_principal_id = $2 \
@@ -232,7 +232,7 @@ async fn sweep_retires_orphans_and_unblocks_start_run() {
         .await?;
         assert_eq!(messages.len(), 2);
         for (status, msg) in &messages {
-            assert_eq!(status, "failed");
+            assert_eq!(*status, RunStatus::Failed);
             assert_eq!(msg.as_deref(), Some("abandoned by process restart"));
         }
 

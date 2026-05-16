@@ -80,10 +80,10 @@ impl McpTool for LinkTool {
             let edge_draft = EdgeDraft {
                 edge_id,
                 relation,
-                source_kind: memory_kind_for_edge(source_kind.as_deref()),
+                source_kind: memory_kind_for_edge(source_kind).as_str(),
                 source_memory_id: Some(source_id),
                 source_goal_id: None,
-                target_kind: memory_kind_for_edge(target_kind.as_deref()),
+                target_kind: memory_kind_for_edge(target_kind).as_str(),
                 target_memory_id: Some(target_id),
                 target_goal_id: None,
                 authorship_kind: "ExternalAgent",
@@ -111,7 +111,7 @@ fn resolve_memory(ctx: &McpToolCtx, raw: &str) -> Result<uuid::Uuid, McpToolErro
 async fn load_kind(
     ctx: &McpToolCtx,
     memory_id: uuid::Uuid,
-) -> Result<Option<String>, McpToolError> {
+) -> Result<Option<proxima_core::EntityKind>, McpToolError> {
     let (owner_kind, owner_principal_id, _) = owner_columns(&ctx.owner);
     sqlx::query_scalar(
         "SELECT kind

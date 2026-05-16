@@ -3,6 +3,8 @@ use proxima_core::mcp::{McpTool, McpToolCtx, McpToolError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::payloads::FileState;
+
 use super::sql::{
     CHUNK_HEADS_CTE, FILE_REVISION_HEADS_CTE, map_storage, owner_principal, resolve_repo_identifier,
 };
@@ -32,7 +34,7 @@ pub struct FileRevisionInfo {
     pub language: Option<String>,
     pub size_bytes: i64,
     pub indexed_commit_sha: String,
-    pub state: String,
+    pub state: FileState,
 }
 
 #[derive(Debug, Serialize)]
@@ -231,7 +233,7 @@ struct RevisionRow {
     language: Option<String>,
     size_bytes: i64,
     indexed_commit_sha: String,
-    state: String,
+    state: FileState,
 }
 
 #[derive(Debug, sqlx::FromRow)]

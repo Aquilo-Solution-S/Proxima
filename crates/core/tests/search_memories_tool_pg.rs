@@ -10,7 +10,9 @@ use proxima_core::personality::{
     PersonalityInstanceId, PersonalityTool, PersonalityToolContext, substrate_pack,
 };
 use proxima_core::verbs::query::MemoryStore;
-use proxima_core::{Engine, FlavorRegistry, HandleTable, MemoryId, Principal, WakeChainDepth};
+use proxima_core::{
+    Engine, FlavorRegistry, HandleTable, MemoryId, OwnerPrincipalKind, Principal, WakeChainDepth,
+};
 use uuid::Uuid;
 
 #[derive(Debug)]
@@ -100,9 +102,10 @@ async fn insert_embedded_memory(
     embedding: [f32; 3],
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
     let memory_id = Uuid::now_v7();
-    let (owner_kind, owner_principal_id) = match &owner.principal {
-        Principal::User(user) => ("User", user.into_inner()),
-        Principal::Group(group) => ("Group", group.into_inner()),
+    let owner_kind = OwnerPrincipalKind::of(&owner.principal);
+    let owner_principal_id = match &owner.principal {
+        Principal::User(user) => user.into_inner(),
+        Principal::Group(group) => group.into_inner(),
     };
     sqlx::query(
         "INSERT INTO proxima_core.memories

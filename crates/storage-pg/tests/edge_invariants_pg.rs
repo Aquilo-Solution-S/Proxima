@@ -4,14 +4,18 @@ use common::personality::{
     TEST_ABSTRACTION_SCHEMA, TEST_PERSPECTIVE_SCHEMA, apply_test_schemas, ingest_other_fact,
     ingest_test_fact,
 };
-use proxima_core::{MemoryId, OrgId, Owner, Principal, UserId};
+use proxima_core::{
+    EntityKind, MemoryId, MemoryOperatorKind, OrgId, Owner, OwnerPrincipalKind, Principal,
+    RelationClass, UserId,
+};
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
 
-fn owner_parts(owner: &Owner) -> (&'static str, Uuid, Uuid) {
-    let (kind, principal_id) = match &owner.principal {
-        Principal::User(user) => ("User", user.into_inner()),
-        Principal::Group(group) => ("Group", group.into_inner()),
+fn owner_parts(owner: &Owner) -> (OwnerPrincipalKind, Uuid, Uuid) {
+    let kind = OwnerPrincipalKind::of(&owner.principal);
+    let principal_id = match &owner.principal {
+        Principal::User(user) => user.into_inner(),
+        Principal::Group(group) => group.into_inner(),
     };
     (kind, principal_id, owner.org_id.into_inner())
 }
@@ -26,17 +30,17 @@ fn other_owner() -> Owner {
 async fn insert_derived_memory(
     pg: &PgStorage,
     owner: &Owner,
-    kind: &'static str,
+    kind: EntityKind,
 ) -> Result<MemoryId, sqlx::Error> {
     let (owner_kind, owner_principal_id, owner_org_id) = owner_parts(owner);
     let memory_id = Uuid::now_v7();
     let schema_id = match kind {
-        "Perspective" => TEST_PERSPECTIVE_SCHEMA,
+        EntityKind::Perspective => TEST_PERSPECTIVE_SCHEMA,
         _ => TEST_ABSTRACTION_SCHEMA,
     };
     let operator_kind = match kind {
-        "Perspective" => "AtoP",
-        _ => "FtoA",
+        EntityKind::Perspective => MemoryOperatorKind::AtoP,
+        _ => MemoryOperatorKind::FtoA,
     };
     sqlx::query(
         "INSERT INTO proxima_core.memories
@@ -63,10 +67,10 @@ async fn insert_derived_memory(
 async fn insert_memory_edge(
     pg: &PgStorage,
     owner: &Owner,
-    relation_class: &'static str,
-    source_kind: &'static str,
+    relation_class: RelationClass,
+    source_kind: EntityKind,
     source_memory_id: MemoryId,
-    target_kind: &'static str,
+    target_kind: EntityKind,
     target_memory_id: MemoryId,
 ) -> Result<(), sqlx::Error> {
     let (owner_kind, owner_principal_id, owner_org_id) = owner_parts(owner);
@@ -110,27 +114,44 @@ async fn trigger_rejects_upward_edges_and_semantic_fact_to_fact() {
         let owner = common::owner_fixture();
         let fact_a = ingest_test_fact(&pg, &owner, "a").await;
         let fact_b = ingest_test_fact(&pg, &owner, "b").await;
-        let perspective = insert_derived_memory(&pg, &owner, "Perspective").await?;
+        let perspective = insert_derived_memory(&pg, &owner, EntityKind::Perspective).await?;
 
         let err = insert_memory_edge(
             &pg,
             &owner,
-            "Provenance",
-            "Fact",
+            RelationClass::Provenance,
+            EntityKind::Fact,
             fact_a,
-            "Perspective",
+            EntityKind::Perspective,
             perspective,
         )
         .await
         .expect_err("Fact -> Perspective must be rejected");
         assert!(err.to_string().contains("layer violation"));
 
-        let err = insert_memory_edge(&pg, &owner, "Causal", "Fact", fact_a, "Fact", fact_b)
-            .await
-            .expect_err("Causal Fact -> Fact must be rejected");
+        let err = insert_memory_edge(
+            &pg,
+            &owner,
+            RelationClass::Causal,
+            EntityKind::Fact,
+            fact_a,
+            EntityKind::Fact,
+            fact_b,
+        )
+        .await
+        .expect_err("Causal Fact -> Fact must be rejected");
         assert!(err.to_string().contains("semantic Fact-to-Fact"));
 
-        insert_memory_edge(&pg, &owner, "Structural", "Fact", fact_a, "Fact", fact_b).await?;
+        insert_memory_edge(
+            &pg,
+            &owner,
+            RelationClass::Structural,
+            EntityKind::Fact,
+            fact_a,
+            EntityKind::Fact,
+            fact_b,
+        )
+        .await?;
         Ok(())
     }
     .await;
@@ -154,14 +175,30 @@ async fn trigger_rejects_endpoint_kind_and_owner_mismatch() {
         let fact = ingest_test_fact(&pg, &owner, "a").await;
         let other_fact = ingest_test_fact(&pg, &other, "b").await;
 
-        let err = insert_memory_edge(&pg, &owner, "Structural", "Abstraction", fact, "Fact", fact)
-            .await
-            .expect_err("stored Fact endpoint cannot be declared Abstraction");
+        let err = insert_memory_edge(
+            &pg,
+            &owner,
+            RelationClass::Structural,
+            EntityKind::Abstraction,
+            fact,
+            EntityKind::Fact,
+            fact,
+        )
+        .await
+        .expect_err("stored Fact endpoint cannot be declared Abstraction");
         assert!(err.to_string().contains("source kind"));
 
-        let err = insert_memory_edge(&pg, &owner, "Structural", "Fact", fact, "Fact", other_fact)
-            .await
-            .expect_err("cross-owner target must be rejected");
+        let err = insert_memory_edge(
+            &pg,
+            &owner,
+            RelationClass::Structural,
+            EntityKind::Fact,
+            fact,
+            EntityKind::Fact,
+            other_fact,
+        )
+        .await
+        .expect_err("cross-owner target must be rejected");
         assert!(err.to_string().contains("Owner boundary"));
         Ok(())
     }
@@ -184,25 +221,25 @@ async fn trigger_allows_cross_domain_fact_set_abstraction() {
         let owner = common::owner_fixture();
         let fact_a = ingest_test_fact(&pg, &owner, "a").await;
         let fact_b = ingest_other_fact(&pg, &owner, "b").await;
-        let abstraction = insert_derived_memory(&pg, &owner, "Abstraction").await?;
+        let abstraction = insert_derived_memory(&pg, &owner, EntityKind::Abstraction).await?;
 
         insert_memory_edge(
             &pg,
             &owner,
-            "Provenance",
-            "Abstraction",
+            RelationClass::Provenance,
+            EntityKind::Abstraction,
             abstraction,
-            "Fact",
+            EntityKind::Fact,
             fact_a,
         )
         .await?;
         insert_memory_edge(
             &pg,
             &owner,
-            "Provenance",
-            "Abstraction",
+            RelationClass::Provenance,
+            EntityKind::Abstraction,
             abstraction,
-            "Fact",
+            EntityKind::Fact,
             fact_b,
         )
         .await?;

@@ -43,6 +43,13 @@ impl DerivedKind {
             Self::Perspective => "Perspective",
         }
     }
+
+    fn to_entity_kind(self) -> proxima_core::EntityKind {
+        match self {
+            Self::Abstraction => proxima_core::EntityKind::Abstraction,
+            Self::Perspective => proxima_core::EntityKind::Perspective,
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -118,11 +125,11 @@ impl McpTool for DeriveTool {
             let draft = DerivedDraft {
                 memory_id,
                 owner: ctx.owner.clone(),
-                kind: args.kind.as_str(),
+                kind: args.kind.to_entity_kind(),
                 schema_id: SchemaId::new(AgentDerivationV1::SCHEMA_ID.into()),
                 schema_version: SchemaVersion::new(AgentDerivationV1::SCHEMA_VERSION),
                 text: body.to_string(),
-                operator_kind: "ExternalAgent",
+                operator_kind: proxima_core::MemoryOperatorKind::ExternalAgent,
                 model_id: &args.model_id,
                 prompt_version: "mcp-agent-v1",
                 sidecar_table: Some("proxima_mcp.agent_derivation_v1"),
@@ -152,7 +159,7 @@ impl McpTool for DeriveTool {
                         source_kind: args.kind.as_str(),
                         source_memory_id: Some(memory_id),
                         source_goal_id: None,
-                        target_kind: memory_kind_for_edge(source_kind.as_deref()),
+                        target_kind: memory_kind_for_edge(source_kind).as_str(),
                         target_memory_id: Some(*source_id),
                         target_goal_id: None,
                         authorship_kind: "ExternalAgent",
@@ -180,11 +187,11 @@ async fn load_source_kinds(
     pool: &sqlx::PgPool,
     owner: &proxima_core::Owner,
     memory_ids: &[uuid::Uuid],
-) -> Result<Vec<Option<String>>, McpToolError> {
+) -> Result<Vec<Option<proxima_core::EntityKind>>, McpToolError> {
     let (owner_kind, owner_principal_id) = owner_principal(owner);
     let mut out = Vec::with_capacity(memory_ids.len());
     for memory_id in memory_ids {
-        let kind: Option<Option<String>> = sqlx::query_scalar(
+        let kind: Option<Option<proxima_core::EntityKind>> = sqlx::query_scalar(
             "SELECT kind
              FROM proxima_core.memories
              WHERE memory_id = $1

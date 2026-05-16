@@ -26,7 +26,8 @@ pub async fn load_workspace_run(
 ) -> Result<(), McpToolError> {
     let (owner_kind, owner_principal_id) = owner_principal(&ctx.owner);
     let row: Option<(EntityKind, String, Option<Uuid>)> = sqlx::query_as(
-        "SELECT COALESCE(m.kind, 'Fact') AS kind, m.schema_id, r.memory_id
+        "SELECT COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind,
+                m.schema_id, r.memory_id
          FROM proxima_core.memories m
          LEFT JOIN proxima_code.workspace_run_v1 r USING (memory_id)
          WHERE m.memory_id = $1
@@ -84,7 +85,7 @@ pub async fn load_workspace_review(
         Option<String>,
         Option<time::OffsetDateTime>,
     )> = sqlx::query_as(
-        "SELECT COALESCE(m.kind, 'Fact') AS kind,
+        "SELECT COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind,
                 m.schema_id,
                 r.workspace_run_memory_id,
                 r.execution_request_memory_id,
@@ -196,7 +197,7 @@ pub async fn load_workspace_decision(
         Option<String>,
         Option<Uuid>,
     )> = sqlx::query_as(
-        "SELECT COALESCE(m.kind, 'Fact') AS kind,
+        "SELECT COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind,
                 m.schema_id,
                 d.workspace_run_memory_id,
                 d.decision,

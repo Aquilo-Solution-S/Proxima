@@ -7,11 +7,13 @@ use proxima_core::engine::Engine;
 use proxima_core::llm::{EmbeddingClient, LlmError};
 use proxima_core::mcp::{HandleTable, McpAuthorContext, McpToolCtx, OutputMode};
 use proxima_core::verbs::query::MemoryStore;
-use proxima_core::{FlavorRegistry, OrgId, Owner, Principal, UserId};
+use proxima_core::{
+    EntityKind, FlavorRegistry, OrgId, Owner, OwnerPrincipalKind, Principal, UserId,
+};
 use serde_json::json;
 use sqlx::{Connection, Executor, PgConnection};
 
-const ADMIN_URL: &str = "postgres://postgres@localhost/postgres";
+const ADMIN_URL: &str = "postgres://proxima:proxima@localhost/proxima";
 
 #[derive(Debug)]
 struct FixedEmbedding;
@@ -37,7 +39,7 @@ async fn remember_then_search_round_trip() -> Result<(), Box<dyn std::error::Err
         return Ok(());
     };
     let pg =
-        proxima_storage_pg::PgStorage::connect(&format!("postgres://postgres@localhost/{db_name}"))
+        proxima_storage_pg::PgStorage::connect(&format!("postgres://proxima:proxima@localhost/{db_name}"))
             .await?;
     pg.run_migrations().await?;
     proxima_mcp_substrate::migrator().run(pg.pool()).await?;
@@ -98,7 +100,7 @@ async fn link_rejects_direct_fact_to_fact_interpretation() -> Result<(), Box<dyn
         return Ok(());
     };
     let pg =
-        proxima_storage_pg::PgStorage::connect(&format!("postgres://postgres@localhost/{db_name}"))
+        proxima_storage_pg::PgStorage::connect(&format!("postgres://proxima:proxima@localhost/{db_name}"))
             .await?;
     pg.run_migrations().await?;
     proxima_mcp_substrate::migrator().run(pg.pool()).await?;
@@ -173,7 +175,7 @@ async fn search_graph_hybrid_returns_embedding_only_match() -> Result<(), Box<dy
         return Ok(());
     };
     let pg =
-        proxima_storage_pg::PgStorage::connect(&format!("postgres://postgres@localhost/{db_name}"))
+        proxima_storage_pg::PgStorage::connect(&format!("postgres://proxima:proxima@localhost/{db_name}"))
             .await?;
     pg.run_migrations().await?;
     proxima_mcp_substrate::migrator().run(pg.pool()).await?;
@@ -251,7 +253,7 @@ async fn derive_scopes_idempotency_by_owner_and_kind() -> Result<(), Box<dyn std
         return Ok(());
     };
     let pg =
-        proxima_storage_pg::PgStorage::connect(&format!("postgres://postgres@localhost/{db_name}"))
+        proxima_storage_pg::PgStorage::connect(&format!("postgres://proxima:proxima@localhost/{db_name}"))
             .await?;
     pg.run_migrations().await?;
     proxima_mcp_substrate::migrator().run(pg.pool()).await?;
@@ -349,7 +351,7 @@ async fn derive_rejects_upward_provenance() -> Result<(), Box<dyn std::error::Er
         return Ok(());
     };
     let pg =
-        proxima_storage_pg::PgStorage::connect(&format!("postgres://postgres@localhost/{db_name}"))
+        proxima_storage_pg::PgStorage::connect(&format!("postgres://proxima:proxima@localhost/{db_name}"))
             .await?;
     pg.run_migrations().await?;
     proxima_mcp_substrate::migrator().run(pg.pool()).await?;
@@ -457,16 +459,18 @@ async fn insert_embedding(
     owner: &Owner,
     memory_id: uuid::Uuid,
 ) -> Result<(), sqlx::Error> {
-    let (owner_kind, owner_principal_id) = match &owner.principal {
-        Principal::User(user) => ("User", user.into_inner()),
-        Principal::Group(group) => ("Group", group.into_inner()),
+    let owner_kind = OwnerPrincipalKind::of(&owner.principal);
+    let owner_principal_id = match &owner.principal {
+        Principal::User(user) => user.into_inner(),
+        Principal::Group(group) => group.into_inner(),
     };
     sqlx::query(
         "INSERT INTO proxima_core.embeddings
             (entity_kind, entity_id, embedding_version, model_id, vec, dim,
              owner_principal_kind, owner_principal_id, owner_org_id)
-         VALUES ('Fact', $1, 1, 'test-embed', $2, 3, $3, $4, $5)",
+         VALUES ($1, $2, 1, 'test-embed', $3, 3, $4, $5, $6)",
     )
+    .bind(EntityKind::Fact)
     .bind(memory_id)
     .bind(vec![1.0f32, 0.0, 0.0])
     .bind(owner_kind)
@@ -496,8 +500,7 @@ fn author_ctx() -> McpAuthorContext {
 async fn create_db() -> Result<Option<String>, Box<dyn std::error::Error>> {
     let db_name = format!("proxima_test_{}", uuid::Uuid::now_v7().simple());
     let Ok(mut conn) = PgConnection::connect(ADMIN_URL).await else {
-        eprintln!("skipping (no admin PG)");
-        return Ok(None);
+        panic!("PG required for tests but admin connect failed");
     };
     conn.execute(format!("CREATE DATABASE \"{db_name}\"").as_str())
         .await?;

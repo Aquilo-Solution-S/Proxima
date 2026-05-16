@@ -575,8 +575,7 @@ impl TestDb {
     async fn fresh() -> Result<Option<Self>, Box<dyn std::error::Error>> {
         let name = format!("proxima_test_{}", Uuid::now_v7().simple());
         if create_db(&name).await.is_err() {
-            eprintln!("skipping (no admin PG)");
-            return Ok(None);
+            panic!("PG required for tests but admin connect failed");
         }
         let setup: Result<PgStorage, Box<dyn std::error::Error>> = async {
             let pg = PgStorage::connect(&db_url(&name)).await?;
