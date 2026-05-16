@@ -232,7 +232,7 @@ async fn merge_fast_forwards_and_emits_decision() -> Result<(), Box<dyn std::err
         .fetch_one(pg.pool())
         .await?;
         assert_eq!(decision, WorkspaceDecision::Merged);
-        let derived_edges: i64 = sqlx::query_scalar(
+        let decides_edges: i64 = sqlx::query_scalar(
             "SELECT count(*)
              FROM proxima_core.edges
              WHERE relation = $1
@@ -241,12 +241,12 @@ async fn merge_fast_forwards_and_emits_decision() -> Result<(), Box<dyn std::err
                AND target_kind = 'Fact'
                AND target_memory_id = $3",
         )
-        .bind(proxima_core::CORE_DERIVED_FROM_RELATION)
+        .bind(proxima_code::CODE_DECIDES_RELATION)
         .bind(outcome.decision_memory_id)
         .bind(run.into_inner())
         .fetch_one(pg.pool())
         .await?;
-        assert_eq!(derived_edges, 1);
+        assert_eq!(decides_edges, 1);
         let runs = proxima_code::list_workspace_runs(pg.pool(), &owner, repo_id, 10).await?;
         assert_eq!(runs.len(), 1);
         assert_eq!(
