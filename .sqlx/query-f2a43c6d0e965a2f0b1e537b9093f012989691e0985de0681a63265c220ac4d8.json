@@ -1,0 +1,173 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT i.owner_principal_kind AS \"owner_principal_kind: OwnerPrincipalKind\",\n                  i.owner_principal_id, i.owner_org_id,\n                  i.personality_instance_id, i.wake_entry_id,\n                  e.label AS wake_entry_label,\n                  i.change_event_seq,\n                  i.status AS \"status: WakeInvocationStatus\",\n                  i.started_at, i.finished_at,\n                  i.turn_count, i.cost_usd::float8 AS \"cost_usd!\",\n                  i.resolved_inference_target_ref, i.failure_reason,\n                  i.exit_code, i.duration_ms, i.stdout_tail, i.stderr_tail,\n                  i.stdout_truncated, i.stderr_truncated\n             FROM proxima_core.personality_wake_invocations i\n             JOIN proxima_core.personality_wake_entries e\n               ON e.owner_principal_kind = i.owner_principal_kind\n              AND e.owner_principal_id = i.owner_principal_id\n              AND e.owner_org_id = i.owner_org_id\n              AND e.personality_instance_id = i.personality_instance_id\n              AND e.wake_entry_id = i.wake_entry_id\n             WHERE i.owner_principal_kind = $1\n               AND i.owner_principal_id = $2\n               AND i.owner_org_id = $3\n               AND i.personality_instance_id = $4\n               AND ($5::uuid IS NULL OR i.wake_entry_id = $5)\n             ORDER BY i.started_at DESC\n             LIMIT $6",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "owner_principal_kind: OwnerPrincipalKind",
+        "type_info": {
+          "Custom": {
+            "name": "proxima_core.owner_principal_kind",
+            "kind": {
+              "Enum": [
+                "User",
+                "Group"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "owner_principal_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
+        "name": "owner_org_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "personality_instance_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 4,
+        "name": "wake_entry_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 5,
+        "name": "wake_entry_label",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "change_event_seq",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 7,
+        "name": "status: WakeInvocationStatus",
+        "type_info": {
+          "Custom": {
+            "name": "proxima_core.wake_invocation_status",
+            "kind": {
+              "Enum": [
+                "running",
+                "succeeded",
+                "truncated",
+                "failed"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "started_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 9,
+        "name": "finished_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 10,
+        "name": "turn_count",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 11,
+        "name": "cost_usd!",
+        "type_info": "Float8"
+      },
+      {
+        "ordinal": 12,
+        "name": "resolved_inference_target_ref",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 13,
+        "name": "failure_reason",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 14,
+        "name": "exit_code",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 15,
+        "name": "duration_ms",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 16,
+        "name": "stdout_tail",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 17,
+        "name": "stderr_tail",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 18,
+        "name": "stdout_truncated",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 19,
+        "name": "stderr_truncated",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        {
+          "Custom": {
+            "name": "proxima_core.owner_principal_kind",
+            "kind": {
+              "Enum": [
+                "User",
+                "Group"
+              ]
+            }
+          }
+        },
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      null,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "f2a43c6d0e965a2f0b1e537b9093f012989691e0985de0681a63265c220ac4d8"
+}

@@ -1,0 +1,51 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE proxima_core.personality_wake_invocations\n         SET status = $1,\n             finished_at = now(),\n             turn_count = COALESCE($2, turn_count),\n             cost_usd = COALESCE($3::float8, cost_usd),\n             failure_reason = $4,\n             exit_code = $5,\n             duration_ms = $6,\n             stdout_tail = $7,\n             stderr_tail = $8,\n             stdout_truncated = $9,\n             stderr_truncated = $10\n         WHERE owner_principal_kind = $11\n           AND owner_principal_id = $12\n           AND owner_org_id = $13\n           AND personality_instance_id = $14\n           AND wake_entry_id = $15\n           AND change_event_seq = $16",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        {
+          "Custom": {
+            "name": "proxima_core.wake_invocation_status",
+            "kind": {
+              "Enum": [
+                "running",
+                "succeeded",
+                "truncated",
+                "failed"
+              ]
+            }
+          }
+        },
+        "Int4",
+        "Float8",
+        "Text",
+        "Int4",
+        "Int8",
+        "Text",
+        "Text",
+        "Bool",
+        "Bool",
+        {
+          "Custom": {
+            "name": "proxima_core.owner_principal_kind",
+            "kind": {
+              "Enum": [
+                "User",
+                "Group"
+              ]
+            }
+          }
+        },
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "7d5082a446ccf283fb4effd7ad6bfe72300319b95412ef57c5e9645890883267"
+}
