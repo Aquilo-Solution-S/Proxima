@@ -750,6 +750,105 @@ async fn code_workspace_prepare_builds_context_with_preloaded_paths()
     result
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn emit_workspace_decision_writes_typed_decides_edge()
+-> Result<(), Box<dyn std::error::Error>> {
+    let Some((db_name, pg)) = migrated_db().await else {
+        return Ok(());
+    };
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = test_owner();
+        let mut registry = FlavorRegistry::new();
+        proxima_code::register(&mut registry);
+        let registry = Arc::new(registry.freeze());
+        let repo_id = Uuid::now_v7();
+        let request = seed_execution_request_for_runner(
+            &pg,
+            &owner,
+            repo_id,
+            "decides-request",
+            "Decides request",
+            "Make the change.",
+        )
+        .await?;
+        let run = seed_workspace_run_for_runner(
+            &pg,
+            &owner,
+            &registry,
+            &WorkspaceRunV1 {
+                wake_invocation_id: Uuid::now_v7(),
+                repo_id,
+                target_branch: "main".into(),
+                worktree_path: "/tmp/proxima-decision-test".into(),
+                branch_name: format!("proxima/wake/{}", Uuid::now_v7()),
+                parent_sha: "0000000".into(),
+                head_sha: "1111111".into(),
+                diff_stat_json: WorkspaceDiffStat {
+                    files_changed: 1,
+                    insertions: 3,
+                    deletions: 1,
+                    files: Vec::new(),
+                },
+                exit_code: Some(0),
+                stdout_tail: Some("ok".into()),
+                stderr_tail: None,
+                duration_ms: Some(42),
+            },
+            request,
+        )
+        .await?;
+
+        let decision_memory = proxima_code::emit_workspace_decision(
+            pg.pool(),
+            &owner,
+            run,
+            WorkspaceDecision::Rejected,
+            Some("test reject"),
+        )
+        .await?;
+
+        let decides_edges: i64 = sqlx::query_scalar(
+            "SELECT count(*)
+             FROM proxima_core.edges
+             WHERE relation = $1
+               AND source_kind = 'Fact'
+               AND source_memory_id = $2
+               AND target_kind = 'Fact'
+               AND target_memory_id = $3",
+        )
+        .bind(proxima_code::CODE_DECIDES_RELATION)
+        .bind(decision_memory.into_inner())
+        .bind(run.into_inner())
+        .fetch_one(pg.pool())
+        .await?;
+        assert_eq!(decides_edges, 1, "missing proxima-code/decides edge");
+
+        let stale_derived: i64 = sqlx::query_scalar(
+            "SELECT count(*)
+             FROM proxima_core.edges
+             WHERE relation = $1
+               AND source_kind = 'Fact'
+               AND source_memory_id = $2
+               AND target_kind = 'Fact'
+               AND target_memory_id = $3",
+        )
+        .bind(CORE_DERIVED_FROM_RELATION)
+        .bind(decision_memory.into_inner())
+        .bind(run.into_inner())
+        .fetch_one(pg.pool())
+        .await?;
+        assert_eq!(stale_derived, 0, "decision→run derived edge must be replaced");
+
+        Ok(())
+    }
+    .await;
+
+    drop(pg);
+    let _ = drop_db(&db_name).await;
+    result
+}
+
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread")]
 async fn code_workspace_runner_hydrates_pnpm_tooling() -> Result<(), Box<dyn std::error::Error>> {
