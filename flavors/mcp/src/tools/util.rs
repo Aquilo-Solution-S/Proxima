@@ -1,13 +1,13 @@
-use proxima_core::{McpToolError, Owner, Principal};
+use proxima_core::{McpToolError, Owner, OwnerPrincipalKind, Principal};
 
-pub fn owner_principal(owner: &Owner) -> (&'static str, uuid::Uuid) {
+pub fn owner_principal(owner: &Owner) -> (OwnerPrincipalKind, uuid::Uuid) {
     match &owner.principal {
-        Principal::User(u) => ("User", u.into_inner()),
-        Principal::Group(g) => ("Group", g.into_inner()),
+        Principal::User(u) => (OwnerPrincipalKind::User, u.into_inner()),
+        Principal::Group(g) => (OwnerPrincipalKind::Group, g.into_inner()),
     }
 }
 
-pub fn owner_columns(owner: &Owner) -> (&'static str, uuid::Uuid, uuid::Uuid) {
+pub fn owner_columns(owner: &Owner) -> (OwnerPrincipalKind, uuid::Uuid, uuid::Uuid) {
     let (kind, principal_id) = owner_principal(owner);
     (kind, principal_id, owner.org_id.into_inner())
 }

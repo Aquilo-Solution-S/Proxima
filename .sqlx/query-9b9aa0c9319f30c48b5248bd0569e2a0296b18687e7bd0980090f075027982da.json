@@ -1,0 +1,34 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT current_root_perspective_memory_id\n             FROM proxima_core.personality\n             WHERE owner_principal_kind = $1\n               AND owner_principal_id = $2\n               AND personality_instance_id = $3\n               AND status <> 'tombstoned'::proxima_core.personality_status",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "current_root_perspective_memory_id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        {
+          "Custom": {
+            "name": "proxima_core.owner_principal_kind",
+            "kind": {
+              "Enum": [
+                "User",
+                "Group"
+              ]
+            }
+          }
+        },
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "9b9aa0c9319f30c48b5248bd0569e2a0296b18687e7bd0980090f075027982da"
+}

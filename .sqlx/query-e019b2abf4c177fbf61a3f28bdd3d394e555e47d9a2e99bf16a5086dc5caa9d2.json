@@ -1,0 +1,34 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT seq FROM proxima_core.change_event\n                 WHERE owner_principal_kind = $1 AND owner_principal_id = $2\n                   AND seq > $3\n                 ORDER BY seq ASC",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "seq",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        {
+          "Custom": {
+            "name": "proxima_core.owner_principal_kind",
+            "kind": {
+              "Enum": [
+                "User",
+                "Group"
+              ]
+            }
+          }
+        },
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "e019b2abf4c177fbf61a3f28bdd3d394e555e47d9a2e99bf16a5086dc5caa9d2"
+}

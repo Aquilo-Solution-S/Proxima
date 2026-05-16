@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT seq FROM proxima_core.change_event\n                 WHERE entity_memory_id = $1 ORDER BY seq ASC LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "seq",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "fc701dae3c837a7523be2db8315cac9086fa4910842fa2f184e56d35a2f15bfd"
+}

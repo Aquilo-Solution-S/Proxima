@@ -1,6 +1,6 @@
 use proxima_core::mcp::{McpTool, McpToolCtx, McpToolError};
 use proxima_core::verbs::goal_write::{GoalAuthorship, GoalDraft, GoalState, SystemOrigin};
-use proxima_core::{EdgeId, GoalId, MemoryId, ToolId};
+use proxima_core::{EdgeId, EntityKind, GoalId, MemoryId, OwnerPrincipalKind, ToolId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -84,17 +84,18 @@ pub async fn mark_achieved(
         });
     }
 
-    let Some(state) = load_goal_state(&mut tx, &ctx, prior_goal_id).await? else {
+    let Some(state): Option<GoalState> = load_goal_state(&mut tx, &ctx, prior_goal_id).await?
+    else {
         return Err(McpToolError::InvalidInput(format!(
             "goal not found for owner: {}",
             args.goal
         )));
     };
-    if state != "Active" {
+    if state != GoalState::Active {
         tx.commit().await.map_err(map_storage)?;
         return Ok(skipped_output(
             &supersedes,
-            format!("goal head is not Active: {state}"),
+            format!("goal head is not Active: {state:?}"),
         ));
     }
     if has_newer_goal(&mut tx, &ctx, prior_goal_id).await? {
@@ -191,29 +192,32 @@ async fn load_evidence_ref(
     original_ref: &str,
 ) -> Result<EvidenceRef, McpToolError> {
     let (owner_kind, owner_principal_id, _owner_org_id) = owner_columns(&ctx.owner);
-    let row: Option<(String, String, uuid::Uuid)> = sqlx::query_as(
-        "SELECT COALESCE(kind, 'Fact') AS kind, owner_principal_kind, owner_principal_id
-         FROM proxima_core.memories
-         WHERE memory_id = $1",
+    let row = sqlx::query!(
+        r#"SELECT kind AS "kind: EntityKind",
+                  owner_principal_kind AS "owner_principal_kind: OwnerPrincipalKind",
+                  owner_principal_id
+             FROM proxima_core.memories
+             WHERE memory_id = $1"#,
+        memory_id.into_inner(),
     )
-    .bind(memory_id.into_inner())
     .fetch_optional(&mut *tx)
     .await
     .map_err(map_storage)?;
-    let Some((kind, row_owner_kind, row_owner_principal_id)) = row else {
+    let Some(row) = row else {
         return Err(McpToolError::InvalidInput(format!(
             "evidence not found for owner: {original_ref}"
         )));
     };
-    if row_owner_kind != owner_kind || row_owner_principal_id != owner_principal_id {
+    if row.owner_principal_kind != owner_kind || row.owner_principal_id != owner_principal_id {
         return Err(McpToolError::LayeringViolation(format!(
             "evidence {original_ref} crosses Owner boundary"
         )));
     }
-    let target_kind = match kind.as_str() {
-        "Fact" => "Fact",
-        "Abstraction" => "Abstraction",
-        _ => {
+    let target_kind = match row.kind {
+        Some(EntityKind::Abstraction) => "Abstraction",
+        // NULL kind on memories indicates a Fact (variant check enforces invariant).
+        None => "Fact",
+        Some(_) => {
             return Err(McpToolError::LayeringViolation(format!(
                 "evidence {original_ref} must be Fact or Abstraction"
             )));
@@ -234,26 +238,29 @@ async fn existing_achieved_goal(
     prior_goal_id: GoalId,
 ) -> Result<Option<uuid::Uuid>, McpToolError> {
     let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(&ctx.owner);
-    let row: Option<(uuid::Uuid, String, Option<uuid::Uuid>)> = sqlx::query_as(
-        "SELECT goal_id, state, supersedes
-         FROM proxima_core.goals
-         WHERE owner_principal_kind = $1
-           AND owner_principal_id = $2
-           AND owner_org_id = $3
-           AND request_id = $4",
+    let row = sqlx::query!(
+        r#"SELECT goal_id,
+                  state AS "state: GoalState",
+                  supersedes
+             FROM proxima_core.goals
+             WHERE owner_principal_kind = $1
+               AND owner_principal_id = $2
+               AND owner_org_id = $3
+               AND request_id = $4"#,
+        owner_kind as OwnerPrincipalKind,
+        owner_principal_id,
+        owner_org_id,
+        request_id,
     )
-    .bind(owner_kind)
-    .bind(owner_principal_id)
-    .bind(owner_org_id)
-    .bind(request_id)
     .fetch_optional(&mut *tx)
     .await
     .map_err(map_storage)?;
     match row {
-        Some((goal_id, state, supersedes))
-            if state == "Achieved" && supersedes == Some(prior_goal_id.into_inner()) =>
+        Some(row)
+            if row.state == GoalState::Achieved
+                && row.supersedes == Some(prior_goal_id.into_inner()) =>
         {
-            Ok(Some(goal_id))
+            Ok(Some(row.goal_id))
         }
         Some(_) => Err(McpToolError::InvalidInput(format!(
             "idempotency conflict for {request_id}"
@@ -266,19 +273,19 @@ async fn load_goal_state(
     tx: &mut sqlx::PgConnection,
     ctx: &McpToolCtx,
     goal_id: GoalId,
-) -> Result<Option<String>, McpToolError> {
+) -> Result<Option<GoalState>, McpToolError> {
     let (owner_kind, owner_principal_id, _owner_org_id) = owner_columns(&ctx.owner);
-    sqlx::query_scalar(
-        "SELECT state
-         FROM proxima_core.goals
-         WHERE owner_principal_kind = $1
-           AND owner_principal_id = $2
-           AND goal_id = $3",
+    sqlx::query_scalar!(
+        r#"SELECT state AS "state: GoalState"
+             FROM proxima_core.goals
+             WHERE owner_principal_kind = $1
+               AND owner_principal_id = $2
+               AND goal_id = $3"#,
+        owner_kind as OwnerPrincipalKind,
+        owner_principal_id,
+        goal_id.into_inner(),
     )
-    .bind(owner_kind)
-    .bind(owner_principal_id)
-    .bind(goal_id.into_inner())
-    .fetch_optional(tx)
+    .fetch_optional(&mut *tx)
     .await
     .map_err(map_storage)
 }
@@ -289,19 +296,19 @@ async fn has_newer_goal(
     goal_id: GoalId,
 ) -> Result<bool, McpToolError> {
     let (owner_kind, owner_principal_id, _owner_org_id) = owner_columns(&ctx.owner);
-    sqlx::query_scalar(
-        "SELECT EXISTS (
+    sqlx::query_scalar!(
+        r#"SELECT EXISTS (
              SELECT 1
              FROM proxima_core.goals newer
              WHERE newer.owner_principal_kind = $1
                AND newer.owner_principal_id = $2
                AND newer.supersedes = $3
-         )",
+         ) AS "exists!""#,
+        owner_kind as OwnerPrincipalKind,
+        owner_principal_id,
+        goal_id.into_inner(),
     )
-    .bind(owner_kind)
-    .bind(owner_principal_id)
-    .bind(goal_id.into_inner())
-    .fetch_one(tx)
+    .fetch_one(&mut *tx)
     .await
     .map_err(map_storage)
 }

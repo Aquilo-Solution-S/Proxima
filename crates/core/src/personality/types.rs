@@ -60,8 +60,10 @@ impl WakeChainDepth {
     serde::Deserialize,
     specta::Type,
     schemars::JsonSchema,
+    sqlx::Type,
 )]
 #[serde(rename_all = "snake_case")]
+#[sqlx(type_name = "proxima_core.wake_trigger_kind", rename_all = "snake_case")]
 pub enum WakeEntryTriggerKind {
     OnMemory,
     OnEdge,
@@ -89,8 +91,10 @@ impl WakeEntryTriggerKind {
     serde::Deserialize,
     specta::Type,
     schemars::JsonSchema,
+    sqlx::Type,
 )]
 #[serde(rename_all = "snake_case")]
+#[sqlx(type_name = "proxima_core.wake_goal_scope", rename_all = "snake_case")]
 pub enum WakeEntryGoalScope {
     #[default]
     None,
@@ -108,9 +112,18 @@ impl WakeEntryGoalScope {
 }
 
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    schemars::JsonSchema,
+    sqlx::Type,
 )]
 #[serde(rename_all = "snake_case")]
+#[sqlx(type_name = "proxima_core.wake_execution_mode", rename_all = "snake_case")]
 pub enum WakeExecutionMode {
     SubstrateOnly,
     Workspace,
@@ -136,8 +149,10 @@ impl WakeExecutionMode {
     serde::Deserialize,
     specta::Type,
     schemars::JsonSchema,
+    sqlx::Type,
 )]
 #[serde(rename_all = "snake_case")]
+#[sqlx(type_name = "proxima_core.wake_execution_mode", rename_all = "snake_case")]
 pub enum WakeEntryExecutionMode {
     SubstrateOnly,
     Workspace,
@@ -154,11 +169,17 @@ pub enum WakeEntryExecutionMode {
     specta::Type,
     Default,
     schemars::JsonSchema,
+    sqlx::Type,
 )]
 #[serde(rename_all = "snake_case")]
+#[sqlx(type_name = "proxima_core.wake_authored_by", rename_all = "snake_case")]
 pub enum WakeEntryAuthoredBy {
     #[default]
     Any,
+    // serde keeps `self_author` (existing JSON contract); SQL enum
+    // value is `self` (the historical CHECK/text discriminator the
+    // ENUM migration preserved).
+    #[sqlx(rename = "self")]
     SelfAuthor,
     Other,
 }
@@ -174,8 +195,14 @@ impl WakeEntryAuthoredBy {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, sqlx::Type,
+)]
 #[serde(rename_all = "lowercase")]
+#[sqlx(
+    type_name = "proxima_core.wake_invocation_status",
+    rename_all = "lowercase"
+)]
 pub enum WakeInvocationStatus {
     Running,
     Succeeded,

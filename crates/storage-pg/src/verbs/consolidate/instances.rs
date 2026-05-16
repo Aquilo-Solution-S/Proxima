@@ -1,14 +1,11 @@
 use proxima_core::personality::{
     InstantiatePersonalityRequest, InstantiatePersonalityResponse, PersonalityInstanceId,
-    PersonalityInstanceRow, ROOT_PERSONALITY_PERSPECTIVE_SCHEMA_ID, WakeEntryRow,
+    PersonalityInstanceRow, ROOT_PERSONALITY_PERSPECTIVE_SCHEMA_ID, WakeEntryAuthoredBy,
+    WakeEntryExecutionMode, WakeEntryGoalScope, WakeEntryRow, WakeEntryTriggerKind,
 };
-use proxima_core::{MemoryId, Owner, StorageError};
-use sqlx::{PgPool, Row};
+use proxima_core::{MemoryId, ModelTier, Owner, OwnerPrincipalKind, StorageError};
+use sqlx::PgPool;
 
-use super::parse::{
-    parse_goal_scope, parse_model_tier, parse_row_authored_by, parse_row_execution_mode,
-    parse_trigger_kind,
-};
 use super::rows::owner_columns;
 use crate::error::map_err;
 
@@ -18,21 +15,24 @@ pub async fn list_personality_instances(
     include_tombstoned: bool,
 ) -> Result<Vec<PersonalityInstanceRow>, StorageError> {
     let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(owner);
+    // status::text keeps PersonalityInstanceRow.status as String; the
+    // SQL enum value 'tombstoned' is the existing public contract.
+    // TODO(macro-sweep): bind as text+cast; add Rust mirror for proxima_core.personality_status
     let rows: Vec<(uuid::Uuid, uuid::Uuid, String, String)> = sqlx::query_as(
         "SELECT p.personality_instance_id,
                 p.current_root_perspective_memory_id,
                 m.text AS display_name,
-                p.status
+                p.status::text AS status
          FROM proxima_core.personality p
          JOIN proxima_core.memories m
            ON m.memory_id = p.current_root_perspective_memory_id
          WHERE p.owner_principal_kind = $1
            AND p.owner_principal_id = $2
            AND p.owner_org_id = $3
-           AND ($4::bool OR p.status <> 'tombstoned')
+           AND ($4::bool OR p.status <> 'tombstoned'::proxima_core.personality_status)
          ORDER BY p.created_at, p.personality_instance_id",
     )
-    .bind(owner_kind)
+    .bind(owner_kind as OwnerPrincipalKind)
     .bind(owner_principal_id)
     .bind(owner_org_id)
     .bind(include_tombstoned)
@@ -42,24 +42,31 @@ pub async fn list_personality_instances(
 
     let instance_ids: Vec<uuid::Uuid> = rows.iter().map(|(id, _, _, _)| *id).collect();
 
-    let wake_rows = sqlx::query(
-        "SELECT personality_instance_id,
-                wake_entry_id, trigger_kind, trigger_id, label, enabled,
-                execution_mode, authored_by, probability_promille, goal_scope,
-                instructions, model_tier, inference_target_ref, substrate_tool_palette,
-                workspace_tool_palette, max_rounds, disabled_reason
-         FROM proxima_core.personality_wake_entries
-         WHERE owner_principal_kind = $1
-           AND owner_principal_id = $2
-           AND owner_org_id = $3
-           AND personality_instance_id = ANY($4::uuid[])
-           AND tombstoned_at IS NULL
-         ORDER BY label, wake_entry_id",
+    let wake_rows = sqlx::query!(
+        r#"SELECT personality_instance_id,
+                  wake_entry_id,
+                  trigger_kind AS "trigger_kind: WakeEntryTriggerKind",
+                  trigger_id, label, enabled,
+                  execution_mode AS "execution_mode: WakeEntryExecutionMode",
+                  authored_by AS "authored_by: WakeEntryAuthoredBy",
+                  probability_promille,
+                  goal_scope AS "goal_scope: WakeEntryGoalScope",
+                  instructions,
+                  model_tier AS "model_tier: ModelTier",
+                  inference_target_ref, substrate_tool_palette,
+                  workspace_tool_palette, max_rounds, disabled_reason
+             FROM proxima_core.personality_wake_entries
+             WHERE owner_principal_kind = $1
+               AND owner_principal_id = $2
+               AND owner_org_id = $3
+               AND personality_instance_id = ANY($4::uuid[])
+               AND tombstoned_at IS NULL
+             ORDER BY label, wake_entry_id"#,
+        owner_kind as OwnerPrincipalKind,
+        owner_principal_id,
+        owner_org_id,
+        &instance_ids[..],
     )
-    .bind(owner_kind)
-    .bind(owner_principal_id)
-    .bind(owner_org_id)
-    .bind(&instance_ids)
     .fetch_all(pool)
     .await
     .map_err(map_err)?;
@@ -67,25 +74,24 @@ pub async fn list_personality_instances(
     let mut wake_by_instance: std::collections::HashMap<uuid::Uuid, Vec<WakeEntryRow>> =
         std::collections::HashMap::with_capacity(instance_ids.len());
     for row in wake_rows {
-        let pid: uuid::Uuid = row.get("personality_instance_id");
+        let pid: uuid::Uuid = row.personality_instance_id;
         wake_by_instance.entry(pid).or_default().push(WakeEntryRow {
-            wake_entry_id: row.get("wake_entry_id"),
-            trigger_kind: parse_trigger_kind(&row.get::<String, _>("trigger_kind")),
-            trigger_id: row.get("trigger_id"),
-            label: row.get("label"),
-            enabled: row.get("enabled"),
-            execution_mode: parse_row_execution_mode(&row.get::<String, _>("execution_mode")),
-            authored_by: parse_row_authored_by(&row.get::<String, _>("authored_by")),
-            probability_promille: u16::try_from(row.get::<i32, _>("probability_promille"))
-                .unwrap_or(0),
-            goal_scope: parse_goal_scope(&row.get::<String, _>("goal_scope")),
-            instructions: row.get("instructions"),
-            model_tier: parse_model_tier(&row.get::<String, _>("model_tier")),
-            inference_target_ref: row.get("inference_target_ref"),
-            substrate_tool_palette: row.get("substrate_tool_palette"),
-            workspace_tool_palette: row.get("workspace_tool_palette"),
-            max_rounds: u16::try_from(row.get::<i32, _>("max_rounds")).unwrap_or(1),
-            disabled_reason: row.get("disabled_reason"),
+            wake_entry_id: row.wake_entry_id,
+            trigger_kind: row.trigger_kind,
+            trigger_id: row.trigger_id,
+            label: row.label,
+            enabled: row.enabled,
+            execution_mode: row.execution_mode,
+            authored_by: row.authored_by,
+            probability_promille: u16::try_from(row.probability_promille).unwrap_or(0),
+            goal_scope: row.goal_scope,
+            instructions: row.instructions,
+            model_tier: row.model_tier,
+            inference_target_ref: row.inference_target_ref,
+            substrate_tool_palette: row.substrate_tool_palette,
+            workspace_tool_palette: row.workspace_tool_palette,
+            max_rounds: u16::try_from(row.max_rounds).unwrap_or(1),
+            disabled_reason: row.disabled_reason,
         });
     }
 
@@ -113,64 +119,66 @@ pub async fn instantiate_personality(
     let memory_id = uuid::Uuid::now_v7();
     let mut tx = pool.begin().await.map_err(map_err)?;
 
-    sqlx::query(
-        "INSERT INTO proxima_core.memories
+    sqlx::query!(
+        r#"INSERT INTO proxima_core.memories
             (memory_id, owner_principal_kind, owner_principal_id, owner_org_id,
              schema_id, schema_version, kind, text, operator_kind, model_id,
              prompt_version, personality_instance_id, wake_chain_depth)
          VALUES ($1, $2, $3, $4, $5, 1, 'Perspective', $6, 'Wake', 'substrate',
-                 'self-v1', $7, 0)",
+                 'self-v1', $7, 0)"#,
+        memory_id,
+        owner_kind as OwnerPrincipalKind,
+        owner_principal_id,
+        owner_org_id,
+        ROOT_PERSONALITY_PERSPECTIVE_SCHEMA_ID,
+        &req.display_name,
+        instance_id,
     )
-    .bind(memory_id)
-    .bind(owner_kind)
-    .bind(owner_principal_id)
-    .bind(owner_org_id)
-    .bind(ROOT_PERSONALITY_PERSPECTIVE_SCHEMA_ID)
-    .bind(&req.display_name)
-    .bind(instance_id)
     .execute(&mut *tx)
     .await
     .map_err(map_err)?;
 
-    sqlx::query(
-        "INSERT INTO proxima_core.root_personality_perspective_v1
+    sqlx::query!(
+        r#"INSERT INTO proxima_core.root_personality_perspective_v1
             (memory_id, display_name, purpose)
-         VALUES ($1, $2, $3)",
+         VALUES ($1, $2, $3)"#,
+        memory_id,
+        &req.display_name,
+        &req.purpose,
     )
-    .bind(memory_id)
-    .bind(&req.display_name)
-    .bind(&req.purpose)
     .execute(&mut *tx)
     .await
     .map_err(map_err)?;
 
     let change_seq = uuid::Uuid::now_v7();
-    sqlx::query(
-        "INSERT INTO proxima_core.change_event
+    sqlx::query!(
+        r#"INSERT INTO proxima_core.change_event
             (seq, owner_principal_kind, owner_principal_id, owner_org_id, kind,
              entity_kind, entity_memory_id, entity_schema_id, entity_schema_version,
              entity_personality_instance_id, wake_chain_depth)
-         VALUES ($1, $2, $3, $4, 'EntityAppend', 'Perspective', $5, $6, 1, $7, 0)",
+         VALUES ($1, $2, $3, $4, 'EntityAppend', 'Perspective', $5, $6, 1, $7, 0)"#,
+        change_seq,
+        owner_kind as OwnerPrincipalKind,
+        owner_principal_id,
+        owner_org_id,
+        memory_id,
+        ROOT_PERSONALITY_PERSPECTIVE_SCHEMA_ID,
+        instance_id,
     )
-    .bind(change_seq)
-    .bind(owner_kind)
-    .bind(owner_principal_id)
-    .bind(owner_org_id)
-    .bind(memory_id)
-    .bind(ROOT_PERSONALITY_PERSPECTIVE_SCHEMA_ID)
-    .bind(instance_id)
     .execute(&mut *tx)
     .await
     .map_err(map_err)?;
 
+    // TODO(macro-sweep): bind as text+cast; add Rust mirror for proxima_core.personality_status
     sqlx::query(
         "INSERT INTO proxima_core.personality
             (owner_principal_kind, owner_principal_id, owner_org_id,
              personality_instance_id, current_root_perspective_memory_id,
              max_wake_chain_depth, status)
-         VALUES ($1, $2, $3, $4, $5, $6, 'active')",
+         VALUES ($1::text::proxima_core.owner_principal_kind, $2, $3, $4, $5, $6,
+                 'active'::proxima_core.personality_status)",
     )
-    .bind(owner_kind)
+    .bind(owner_kind.as_str())
     .bind(owner_principal_id)
     .bind(owner_org_id)
     .bind(instance_id)
@@ -180,17 +188,17 @@ pub async fn instantiate_personality(
     .await
     .map_err(map_err)?;
 
-    sqlx::query(
-        "INSERT INTO proxima_core.personality_wake_cursor
+    sqlx::query!(
+        r#"INSERT INTO proxima_core.personality_wake_cursor
             (owner_principal_kind, owner_principal_id, owner_org_id,
              personality_instance_id, last_considered_seq)
-         VALUES ($1, $2, $3, $4, $5)",
+         VALUES ($1, $2, $3, $4, $5)"#,
+        owner_kind as OwnerPrincipalKind,
+        owner_principal_id,
+        owner_org_id,
+        instance_id,
+        uuid::Uuid::nil(),
     )
-    .bind(owner_kind)
-    .bind(owner_principal_id)
-    .bind(owner_org_id)
-    .bind(instance_id)
-    .bind(uuid::Uuid::nil())
     .execute(&mut *tx)
     .await
     .map_err(map_err)?;

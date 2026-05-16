@@ -1,0 +1,50 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT vendor, model_id, base_url, caps_dim, caps_matryoshka, secret_ref\n             FROM proxima_core.embedding_models\n             ORDER BY vendor, model_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "vendor",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "model_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "base_url",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "caps_dim",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 4,
+        "name": "caps_matryoshka",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 5,
+        "name": "secret_ref",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "823a1fbb748710c87901439de1fb1cde935c14bac9fecfe0ea18fc49370d24f2"
+}

@@ -16,8 +16,8 @@ pub mod set_wake_entries;
 
 pub use types::{
     BindInferenceTierRequest, BindInferenceTierResponse, ChatGPTCodexConfig, InferenceTargetConfig,
-    InferenceTargetRow, InferenceTierBindingRow, ListInferenceTargetsRequest,
-    ListInferenceTierBindingsRequest, MistralChatConfig, OpenAIChatConfig, OpenAIResponsesConfig,
-    RegisterInferenceTargetRequest, RegisterInferenceTargetResponse, RemoveInferenceTargetRequest,
-    RemoveInferenceTargetResponse,
+    InferenceTargetKind, InferenceTargetRow, InferenceTierBindingRow,
+    ListInferenceTargetsRequest, ListInferenceTierBindingsRequest, MistralChatConfig,
+    OpenAIChatConfig, OpenAIResponsesConfig, RegisterInferenceTargetRequest,
+    RegisterInferenceTargetResponse, RemoveInferenceTargetRequest, RemoveInferenceTargetResponse,
 };

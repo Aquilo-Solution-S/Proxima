@@ -32,7 +32,7 @@ pub use flavor::*;
 pub use ids::*;
 pub use inference::{
     BindInferenceTierRequest, BindInferenceTierResponse, ChatGPTCodexConfig, InferenceTargetConfig,
-    InferenceTargetRow, InferenceTierBindingRow, ListInferenceTargetsRequest,
+    InferenceTargetKind, InferenceTargetRow, InferenceTierBindingRow, ListInferenceTargetsRequest,
     ListInferenceTierBindingsRequest, MistralChatConfig, OpenAIChatConfig, OpenAIResponsesConfig,
     RegisterInferenceTargetRequest, RegisterInferenceTargetResponse, RemoveInferenceTargetRequest,
     RemoveInferenceTargetResponse,

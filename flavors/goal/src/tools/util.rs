@@ -10,11 +10,14 @@ use proxima_core::relation::{CORE_AUTHORED_RELATION, CORE_DERIVED_FROM_RELATION}
 use proxima_core::verbs::event_ingest::{
     CitationMappingHint, CitedObjectHint, EventDraft, EventIngestOutcome,
 };
-use proxima_core::verbs::goal_write::{GoalAuthorship, GoalDraft, GoalState, SystemOrigin};
+use proxima_core::verbs::goal_write::{
+    GoalAuthorship, GoalAuthorshipKind, GoalAuthorshipOrigin, GoalDraft, SystemOrigin,
+};
 use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{
-    FactPayload, GoalId, GoalPayload, MemoryId, Owner, PersonalityInstanceId, Principal, SchemaId,
-    SchemaVersion, SourceBatchId, SourceId, StorageError,
+    EntityKind, FactPayload, GoalId, GoalPayload, MemoryId, Owner, OwnerPrincipalKind,
+    PersonalityInstanceId, Principal, SchemaId, SchemaVersion, SourceBatchId, SourceId,
+    StorageError,
 };
 use proxima_storage_pg::verbs::edge_append::{EdgeDraft, append_edge_in_tx};
 use proxima_storage_pg::verbs::event_ingest::ingest_event_in_tx;
@@ -74,7 +77,7 @@ pub enum GoalSidecar {
     SimpleText,
     Task {
         due_at: Option<time::OffsetDateTime>,
-        priority: Option<&'static str>,
+        priority: Option<crate::payloads::TaskPriority>,
     },
 }
 
@@ -161,10 +164,7 @@ impl GoalPayloadInput {
                     title: title.to_string(),
                     text: text.to_string(),
                     bytes,
-                    sidecar: GoalSidecar::Task {
-                        due_at,
-                        priority: priority.map(task_priority_str),
-                    },
+                    sidecar: GoalSidecar::Task { due_at, priority },
                 })
             }
         }
@@ -185,10 +185,10 @@ pub fn map_storage(error: sqlx::Error) -> McpToolError {
     McpToolError::Storage(StorageError::Internal(error.to_string()))
 }
 
-pub fn owner_columns(owner: &Owner) -> (&'static str, uuid::Uuid, uuid::Uuid) {
+pub fn owner_columns(owner: &Owner) -> (OwnerPrincipalKind, uuid::Uuid, uuid::Uuid) {
     let (kind, principal_id) = match &owner.principal {
-        Principal::User(u) => ("User", u.into_inner()),
-        Principal::Group(g) => ("Group", g.into_inner()),
+        Principal::User(u) => (OwnerPrincipalKind::User, u.into_inner()),
+        Principal::Group(g) => (OwnerPrincipalKind::Group, g.into_inner()),
     };
     (kind, principal_id, owner.org_id.into_inner())
 }
@@ -208,18 +208,18 @@ pub async fn personality_root_in_owner(
     instance_id: PersonalityInstanceId,
 ) -> Result<MemoryId, McpToolError> {
     let (owner_kind, owner_principal_id, _owner_org_id) = owner_columns(owner);
-    let row: Option<uuid::Uuid> = sqlx::query_scalar(
-        "SELECT current_root_perspective_memory_id
-         FROM proxima_core.personality
-         WHERE owner_principal_kind = $1
-           AND owner_principal_id = $2
-           AND personality_instance_id = $3
-           AND status <> 'tombstoned'",
+    let row = sqlx::query_scalar!(
+        r#"SELECT current_root_perspective_memory_id
+             FROM proxima_core.personality
+             WHERE owner_principal_kind = $1
+               AND owner_principal_id = $2
+               AND personality_instance_id = $3
+               AND status <> 'tombstoned'::proxima_core.personality_status"#,
+        owner_kind as OwnerPrincipalKind,
+        owner_principal_id,
+        instance_id.into_inner(),
     )
-    .bind(owner_kind)
-    .bind(owner_principal_id)
-    .bind(instance_id.into_inner())
-    .fetch_optional(tx)
+    .fetch_optional(&mut *tx)
     .await
     .map_err(map_storage)?;
     row.map(MemoryId::new).ok_or_else(|| {
@@ -276,29 +276,32 @@ pub async fn validate_evidence_in_owner(
     let (owner_kind, owner_principal_id, _owner_org_id) = owner_columns(&ctx.owner);
     for handle in evidence {
         let memory_id = ctx.resolve_memory(handle)?;
-        let row: Option<(String, String, uuid::Uuid)> = sqlx::query_as(
-            "SELECT kind, owner_principal_kind, owner_principal_id
-             FROM proxima_core.memories
-             WHERE memory_id = $1",
+        let row = sqlx::query!(
+            r#"SELECT kind AS "kind: EntityKind",
+                      owner_principal_kind AS "owner_principal_kind: OwnerPrincipalKind",
+                      owner_principal_id
+                 FROM proxima_core.memories
+                 WHERE memory_id = $1"#,
+            memory_id.into_inner(),
         )
-        .bind(memory_id.into_inner())
         .fetch_optional(&mut *tx)
         .await
         .map_err(map_storage)?;
-        let Some((kind, row_owner_kind, row_owner_principal_id)) = row else {
+        let Some(row) = row else {
             return Err(McpToolError::InvalidInput(format!(
                 "evidence not found for owner: {handle}"
             )));
         };
-        if row_owner_kind != owner_kind || row_owner_principal_id != owner_principal_id {
+        if row.owner_principal_kind != owner_kind || row.owner_principal_id != owner_principal_id {
             return Err(McpToolError::LayeringViolation(format!(
                 "evidence {handle} crosses Owner boundary"
             )));
         }
-        let target_kind = match kind.as_str() {
-            "Fact" => "Fact",
-            "Abstraction" => "Abstraction",
-            _ => {
+        let target_kind = match row.kind {
+            Some(EntityKind::Abstraction) => "Abstraction",
+            // NULL kind on memories indicates a Fact (memories_variant_chk enforces invariant).
+            None => "Fact",
+            Some(_) => {
                 return Err(McpToolError::LayeringViolation(format!(
                     "evidence {handle} must be Fact or Abstraction"
                 )));
@@ -330,17 +333,18 @@ pub async fn insert_goal_in_tx(
 ) -> Result<uuid::Uuid, McpToolError> {
     let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(&ctx.owner);
     let goal_id = uuid::Uuid::now_v7();
-    let state = goal_state_str(draft.state);
     let (authorship_kind, authorship_origin, authorship_tool_id): (
-        &'static str,
-        Option<&'static str>,
+        GoalAuthorshipKind,
+        Option<GoalAuthorshipOrigin>,
         Option<String>,
     ) = match &draft.authorship {
-        GoalAuthorship::User => ("User", None, None),
-        GoalAuthorship::External => ("External", None, None),
-        GoalAuthorship::System(SystemOrigin::Tool { tool_id }) => {
-            ("System", Some("Tool"), Some(tool_id.as_str().to_string()))
-        }
+        GoalAuthorship::User => (GoalAuthorshipKind::User, None, None),
+        GoalAuthorship::External => (GoalAuthorshipKind::External, None, None),
+        GoalAuthorship::System(SystemOrigin::Tool { tool_id }) => (
+            GoalAuthorshipKind::System,
+            Some(GoalAuthorshipOrigin::Tool),
+            Some(tool_id.as_str().to_string()),
+        ),
         GoalAuthorship::System(SystemOrigin::Operator { .. }) => {
             return Err(McpToolError::InvalidInput(
                 "goal MCP tools do not write System/Operator-authored goals".into(),
@@ -348,49 +352,49 @@ pub async fn insert_goal_in_tx(
         }
     };
 
-    sqlx::query(
-        "INSERT INTO proxima_core.goals
+    sqlx::query!(
+        r#"INSERT INTO proxima_core.goals
             (goal_id, schema_id, schema_version, owner_principal_kind,
              owner_principal_id, owner_org_id, title, text, payload, state, supersedes,
              authorship_kind, authorship_origin, authorship_tool_id, request_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)",
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)"#,
+        goal_id,
+        draft.schema_id.as_str(),
+        draft.schema_version.into_inner().cast_signed(),
+        owner_kind as OwnerPrincipalKind,
+        owner_principal_id,
+        owner_org_id,
+        &draft.title,
+        &draft.text,
+        &draft.payload,
+        draft.state as _,
+        draft.supersedes_goal_id.map(GoalId::into_inner),
+        authorship_kind as GoalAuthorshipKind,
+        authorship_origin as Option<GoalAuthorshipOrigin>,
+        authorship_tool_id,
+        &draft.request_id,
     )
-    .bind(goal_id)
-    .bind(draft.schema_id.as_str())
-    .bind(draft.schema_version.into_inner().cast_signed())
-    .bind(owner_kind)
-    .bind(owner_principal_id)
-    .bind(owner_org_id)
-    .bind(&draft.title)
-    .bind(&draft.text)
-    .bind(&draft.payload)
-    .bind(state)
-    .bind(draft.supersedes_goal_id.map(GoalId::into_inner))
-    .bind(authorship_kind)
-    .bind(authorship_origin)
-    .bind(authorship_tool_id)
-    .bind(&draft.request_id)
     .execute(&mut *tx)
     .await
     .map_err(map_storage)?;
 
     insert_goal_sidecar(tx, goal_id, &encoded.sidecar).await?;
 
-    sqlx::query(
-        "INSERT INTO proxima_core.change_event
+    sqlx::query!(
+        r#"INSERT INTO proxima_core.change_event
             (seq, owner_principal_kind, owner_principal_id, owner_org_id,
              kind, entity_kind, entity_goal_id, entity_schema_id,
              entity_schema_version, supersedes_goal_id)
-         VALUES ($1, $2, $3, $4, 'EntityAppend', 'Goal', $5, $6, $7, $8)",
+         VALUES ($1, $2, $3, $4, 'EntityAppend', 'Goal', $5, $6, $7, $8)"#,
+        uuid::Uuid::now_v7(),
+        owner_kind as OwnerPrincipalKind,
+        owner_principal_id,
+        owner_org_id,
+        goal_id,
+        draft.schema_id.as_str(),
+        draft.schema_version.into_inner().cast_signed(),
+        draft.supersedes_goal_id.map(GoalId::into_inner),
     )
-    .bind(uuid::Uuid::now_v7())
-    .bind(owner_kind)
-    .bind(owner_principal_id)
-    .bind(owner_org_id)
-    .bind(goal_id)
-    .bind(draft.schema_id.as_str())
-    .bind(draft.schema_version.into_inner().cast_signed())
-    .bind(draft.supersedes_goal_id.map(GoalId::into_inner))
     .execute(&mut *tx)
     .await
     .map_err(map_storage)?;
@@ -556,40 +560,43 @@ pub async fn outgoing_motivated_by_evidence(
     goal_id: GoalId,
 ) -> Result<Vec<EvidenceRef>, McpToolError> {
     let (owner_kind, owner_principal_id, _owner_org_id) = owner_columns(&ctx.owner);
-    let rows: Vec<(uuid::Uuid, String, Option<uuid::Uuid>, Option<uuid::Uuid>)> = sqlx::query_as(
-        "SELECT edge_id, target_kind, target_memory_id, target_goal_id
-         FROM proxima_core.edges
-         WHERE relation = $1
-           AND source_goal_id = $2
-           AND owner_principal_kind = $3
-           AND owner_principal_id = $4
-         ORDER BY created_at ASC",
+    let rows = sqlx::query!(
+        r#"SELECT edge_id,
+                  target_kind AS "target_kind: EntityKind",
+                  target_memory_id,
+                  target_goal_id
+             FROM proxima_core.edges
+             WHERE relation = $1
+               AND source_goal_id = $2
+               AND owner_principal_kind = $3
+               AND owner_principal_id = $4
+             ORDER BY created_at ASC"#,
+        MOTIVATED_BY_RELATION,
+        goal_id.into_inner(),
+        owner_kind as OwnerPrincipalKind,
+        owner_principal_id,
     )
-    .bind(MOTIVATED_BY_RELATION)
-    .bind(goal_id.into_inner())
-    .bind(owner_kind)
-    .bind(owner_principal_id)
     .fetch_all(&mut *tx)
     .await
     .map_err(map_storage)?;
 
     let mut out = Vec::with_capacity(rows.len());
-    for (edge_id, target_kind, target_memory_id, target_goal_id) in rows {
-        let handle = ctx.format_edge(proxima_core::EdgeId::new(edge_id));
-        let target_kind = match target_kind.as_str() {
-            "Fact" => "Fact",
-            "Abstraction" => "Abstraction",
-            _ => {
+    for row in rows {
+        let handle = ctx.format_edge(proxima_core::EdgeId::new(row.edge_id));
+        let target_kind = match row.target_kind {
+            EntityKind::Fact => "Fact",
+            EntityKind::Abstraction => "Abstraction",
+            other => {
                 return Err(McpToolError::LayeringViolation(format!(
-                    "stored MotivatedBy target must be Fact or Abstraction, got {target_kind}"
+                    "stored MotivatedBy target must be Fact or Abstraction, got {other:?}"
                 )));
             }
         };
         out.push(EvidenceRef {
             handle,
             target_kind,
-            target_memory_id,
-            target_goal_id,
+            target_memory_id: row.target_memory_id,
+            target_goal_id: row.target_goal_id,
         });
     }
     Ok(out)
@@ -599,28 +606,28 @@ pub async fn load_goal_payload(
     tx: &mut sqlx::PgConnection,
     goal_id: GoalId,
 ) -> Result<GoalPayloadInput, McpToolError> {
-    let row: (String, String, String, Vec<u8>) = sqlx::query_as(
+    let row = sqlx::query!(
         "SELECT schema_id, title, text, payload FROM proxima_core.goals WHERE goal_id = $1",
+        goal_id.into_inner(),
     )
-    .bind(goal_id.into_inner())
-    .fetch_one(tx)
+    .fetch_one(&mut *tx)
     .await
     .map_err(map_storage)?;
-    match row.0.as_str() {
+    match row.schema_id.as_str() {
         SimpleTextGoalV1::SCHEMA_ID => {
-            let _: SimpleTextGoalV1 = ciborium::de::from_reader(&row.3[..])
+            let _: SimpleTextGoalV1 = ciborium::de::from_reader(&row.payload[..])
                 .map_err(|err| McpToolError::InvalidInput(err.to_string()))?;
             Ok(GoalPayloadInput::SimpleText(SimpleTextGoalBody {
-                title: row.1,
-                text: row.2,
+                title: row.title,
+                text: row.text,
             }))
         }
         TaskGoalV1::SCHEMA_ID => {
-            let payload: TaskGoalV1 = ciborium::de::from_reader(&row.3[..])
+            let payload: TaskGoalV1 = ciborium::de::from_reader(&row.payload[..])
                 .map_err(|err| McpToolError::InvalidInput(err.to_string()))?;
             Ok(GoalPayloadInput::Task(TaskGoalBody {
-                title: row.1,
-                text: row.2,
+                title: row.title,
+                text: row.text,
                 due_at: payload.due_at.map(|dt| {
                     dt.format(&time::format_description::well_known::Rfc3339)
                         .expect("Rfc3339 formatting succeeds for OffsetDateTime")
@@ -730,15 +737,15 @@ async fn insert_goal_proposed_sidecar(
     memory_id: MemoryId,
     payload: &GoalProposedV1,
 ) -> Result<(), McpToolError> {
-    sqlx::query(
+    sqlx::query!(
         "INSERT INTO proxima_goal.goal_proposed_v1
             (memory_id, goal_id, schema_id, title)
          VALUES ($1, $2, $3, $4)",
+        memory_id.into_inner(),
+        payload.goal_id,
+        &payload.schema_id,
+        &payload.title,
     )
-    .bind(memory_id.into_inner())
-    .bind(payload.goal_id)
-    .bind(&payload.schema_id)
-    .bind(&payload.title)
     .execute(&mut **tx)
     .await
     .map_err(map_storage)?;
@@ -750,17 +757,17 @@ async fn insert_goal_activated_sidecar(
     memory_id: MemoryId,
     payload: &GoalActivatedV1,
 ) -> Result<(), McpToolError> {
-    sqlx::query(
+    sqlx::query!(
         "INSERT INTO proxima_goal.goal_activated_v1
             (memory_id, goal_id, schema_id, title, accepted_at, evidence_count)
          VALUES ($1, $2, $3, $4, $5, $6)",
+        memory_id.into_inner(),
+        payload.goal_id,
+        &payload.schema_id,
+        &payload.title,
+        payload.accepted_at,
+        i32::try_from(payload.evidence_count).unwrap_or(i32::MAX),
     )
-    .bind(memory_id.into_inner())
-    .bind(payload.goal_id)
-    .bind(&payload.schema_id)
-    .bind(&payload.title)
-    .bind(payload.accepted_at)
-    .bind(i32::try_from(payload.evidence_count).unwrap_or(i32::MAX))
     .execute(&mut **tx)
     .await
     .map_err(map_storage)?;
@@ -772,17 +779,17 @@ async fn insert_goal_achieved_sidecar(
     memory_id: MemoryId,
     payload: &GoalAchievedV1,
 ) -> Result<(), McpToolError> {
-    sqlx::query(
+    sqlx::query!(
         "INSERT INTO proxima_goal.goal_achieved_v1
             (memory_id, goal_id, schema_id, title, achieved_at, evidence_count)
          VALUES ($1, $2, $3, $4, $5, $6)",
+        memory_id.into_inner(),
+        payload.goal_id,
+        &payload.schema_id,
+        &payload.title,
+        payload.achieved_at,
+        i32::try_from(payload.evidence_count).unwrap_or(i32::MAX),
     )
-    .bind(memory_id.into_inner())
-    .bind(payload.goal_id)
-    .bind(&payload.schema_id)
-    .bind(&payload.title)
-    .bind(payload.achieved_at)
-    .bind(i32::try_from(payload.evidence_count).unwrap_or(i32::MAX))
     .execute(&mut **tx)
     .await
     .map_err(map_storage)?;
@@ -819,16 +826,6 @@ async fn insert_lifecycle_authored_edge(
         .map_err(McpToolError::Storage)
 }
 
-fn goal_state_str(state: GoalState) -> &'static str {
-    match state {
-        GoalState::Proposed => "Proposed",
-        GoalState::Active => "Active",
-        GoalState::Paused => "Paused",
-        GoalState::Achieved => "Achieved",
-        GoalState::Abandoned => "Abandoned",
-        GoalState::Rejected => "Rejected",
-    }
-}
 
 async fn insert_goal_sidecar(
     tx: &mut sqlx::PgConnection,
@@ -837,35 +834,27 @@ async fn insert_goal_sidecar(
 ) -> Result<(), McpToolError> {
     match sidecar {
         GoalSidecar::SimpleText => {
-            sqlx::query(
+            sqlx::query!(
                 "INSERT INTO proxima_goal.simple_text_goal_v1 (goal_id)
                  VALUES ($1)",
+                goal_id,
             )
-            .bind(goal_id)
-            .execute(tx)
+            .execute(&mut *tx)
             .await
             .map_err(map_storage)?;
         }
         GoalSidecar::Task { due_at, priority } => {
-            sqlx::query(
-                "INSERT INTO proxima_goal.task_goal_v1 (goal_id, due_at, priority)
-                 VALUES ($1, $2, $3)",
+            sqlx::query!(
+                r#"INSERT INTO proxima_goal.task_goal_v1 (goal_id, due_at, priority)
+                 VALUES ($1, $2, $3)"#,
+                goal_id,
+                due_at.as_ref(),
+                priority.as_ref() as Option<&crate::payloads::TaskPriority>,
             )
-            .bind(goal_id)
-            .bind(due_at)
-            .bind(priority)
-            .execute(tx)
+            .execute(&mut *tx)
             .await
             .map_err(map_storage)?;
         }
     }
     Ok(())
-}
-
-fn task_priority_str(priority: crate::payloads::TaskPriority) -> &'static str {
-    match priority {
-        crate::payloads::TaskPriority::Low => "Low",
-        crate::payloads::TaskPriority::Medium => "Medium",
-        crate::payloads::TaskPriority::High => "High",
-    }
 }

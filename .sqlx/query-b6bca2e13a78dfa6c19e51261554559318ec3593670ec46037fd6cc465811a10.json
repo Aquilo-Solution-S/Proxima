@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM proxima_core.embedding_models\n             WHERE vendor = $1 AND model_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b6bca2e13a78dfa6c19e51261554559318ec3593670ec46037fd6cc465811a10"
+}

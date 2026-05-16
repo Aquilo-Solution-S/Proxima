@@ -9,7 +9,18 @@ use crate::{
     SchemaVersion, ToolId,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    specta::Type,
+    sqlx::Type,
+)]
+#[sqlx(type_name = "proxima_core.goal_state")]
 pub enum GoalState {
     Proposed,
     Active,
@@ -19,9 +30,57 @@ pub enum GoalState {
     Rejected,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    specta::Type,
+    sqlx::Type,
+)]
+#[sqlx(type_name = "proxima_core.goal_operator_kind")]
 pub enum OperatorKind {
     AtoGoal,
+}
+
+/// Rust mirror of `proxima_core.goal_authorship_kind`.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    specta::Type,
+    sqlx::Type,
+)]
+#[sqlx(type_name = "proxima_core.goal_authorship_kind")]
+pub enum GoalAuthorshipKind {
+    User,
+    System,
+    External,
+}
+
+/// Rust mirror of `proxima_core.goal_authorship_origin`.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    specta::Type,
+    sqlx::Type,
+)]
+#[sqlx(type_name = "proxima_core.goal_authorship_origin")]
+pub enum GoalAuthorshipOrigin {
+    Operator,
+    Tool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]

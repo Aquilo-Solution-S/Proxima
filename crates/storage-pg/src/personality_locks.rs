@@ -47,9 +47,8 @@ pub async fn acquire_wake_lock(
 ) -> Result<WakeLockGuard, StorageError> {
     let key = instance_lock_key(owner, instance);
     let mut conn = pool.acquire().await.map_err(map_err)?;
-    sqlx::query("SELECT pg_advisory_lock($1)")
-        .bind(key)
-        .execute(&mut *conn)
+    sqlx::query!("SELECT pg_advisory_lock($1)", key)
+        .fetch_one(&mut *conn)
         .await
         .map_err(map_err)?;
     // Stash the lock-holding connection inside the guard so the unlock
@@ -60,9 +59,8 @@ pub async fn acquire_wake_lock(
             return;
         };
         tokio::spawn(async move {
-            if let Err(err) = sqlx::query("SELECT pg_advisory_unlock($1)")
-                .bind(key)
-                .execute(&mut *conn)
+            if let Err(err) = sqlx::query!("SELECT pg_advisory_unlock($1)", key)
+                .fetch_one(&mut *conn)
                 .await
             {
                 tracing::warn!(?err, key, "pg_advisory_unlock failed");

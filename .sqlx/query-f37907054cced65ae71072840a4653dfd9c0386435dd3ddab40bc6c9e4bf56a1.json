@@ -1,0 +1,168 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT seq,\n                  owner_principal_kind AS \"owner_principal_kind: OwnerPrincipalKind\",\n                  owner_principal_id, owner_org_id,\n                  kind AS \"kind: ChangeEventKindTag\",\n                  entity_kind AS \"entity_kind: EntityKind\",\n                  entity_memory_id, entity_goal_id,\n                  entity_schema_id, entity_schema_version,\n                  supersedes_memory_id, supersedes_goal_id,\n                  edge_id, edge_relation,\n                  edge_source_memory_id, edge_source_goal_id,\n                  edge_target_memory_id, edge_target_goal_id,\n                  entity_personality_instance_id,\n                  wake_chain_depth\n             FROM proxima_core.change_event WHERE seq = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "seq",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "owner_principal_kind: OwnerPrincipalKind",
+        "type_info": {
+          "Custom": {
+            "name": "proxima_core.owner_principal_kind",
+            "kind": {
+              "Enum": [
+                "User",
+                "Group"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "owner_principal_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "owner_org_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 4,
+        "name": "kind: ChangeEventKindTag",
+        "type_info": {
+          "Custom": {
+            "name": "proxima_core.change_event_kind",
+            "kind": {
+              "Enum": [
+                "EntityAppend",
+                "EdgeAppend"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "entity_kind: EntityKind",
+        "type_info": {
+          "Custom": {
+            "name": "proxima_core.entity_kind",
+            "kind": {
+              "Enum": [
+                "Fact",
+                "Abstraction",
+                "Perspective",
+                "Goal"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "entity_memory_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 7,
+        "name": "entity_goal_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 8,
+        "name": "entity_schema_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 9,
+        "name": "entity_schema_version",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 10,
+        "name": "supersedes_memory_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 11,
+        "name": "supersedes_goal_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 12,
+        "name": "edge_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 13,
+        "name": "edge_relation",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 14,
+        "name": "edge_source_memory_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 15,
+        "name": "edge_source_goal_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 16,
+        "name": "edge_target_memory_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 17,
+        "name": "edge_target_goal_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 18,
+        "name": "entity_personality_instance_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 19,
+        "name": "wake_chain_depth",
+        "type_info": "Int2"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "f37907054cced65ae71072840a4653dfd9c0386435dd3ddab40bc6c9e4bf56a1"
+}

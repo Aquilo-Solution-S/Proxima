@@ -47,8 +47,10 @@ pub enum Dialect {
     serde::Deserialize,
     specta::Type,
     schemars::JsonSchema,
+    sqlx::Type,
 )]
 #[serde(rename_all = "snake_case")]
+#[sqlx(type_name = "proxima_core.model_tier", rename_all = "snake_case")]
 pub enum ModelTier {
     Fast,
     Standard,

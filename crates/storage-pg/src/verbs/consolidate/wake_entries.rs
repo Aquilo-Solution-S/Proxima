@@ -1,20 +1,18 @@
 use proxima_core::personality::{
     PersonalityInstanceId, SetWakeEntriesRequest, SetWakeEntriesResponse, WakeDispatchEntryRow,
-    WakeEntryDraft,
+    WakeEntryAuthoredBy, WakeEntryDraft, WakeEntryGoalScope, WakeEntryTriggerKind,
+    WakeExecutionMode,
 };
-use proxima_core::{MemoryId, Owner, StorageError};
+use proxima_core::{MemoryId, ModelTier, Owner, OwnerPrincipalKind, StorageError};
 use sqlx::{PgPool, Row};
 
-use super::parse::{
-    model_tier_str, owner_from_parts, parse_execution_mode, parse_goal_scope, parse_model_tier,
-    parse_row_authored_by, parse_trigger_kind,
-};
+use super::parse::owner_from_parts;
 use super::rows::owner_columns;
 use crate::error::map_err;
 
 #[derive(sqlx::FromRow)]
 struct WakeEntryJoinRow {
-    owner_principal_kind: String,
+    owner_principal_kind: OwnerPrincipalKind,
     owner_principal_id: uuid::Uuid,
     owner_org_id: uuid::Uuid,
     personality_instance_id: uuid::Uuid,
@@ -22,16 +20,16 @@ struct WakeEntryJoinRow {
     max_wake_chain_depth: i32,
     last_considered_seq: uuid::Uuid,
     wake_entry_id: uuid::Uuid,
-    trigger_kind: String,
+    trigger_kind: WakeEntryTriggerKind,
     trigger_id: String,
     label: String,
     enabled: bool,
-    execution_mode: String,
-    authored_by: String,
+    execution_mode: WakeExecutionMode,
+    authored_by: WakeEntryAuthoredBy,
     probability_promille: i32,
-    goal_scope: String,
+    goal_scope: WakeEntryGoalScope,
     instructions: String,
-    model_tier: String,
+    model_tier: ModelTier,
     inference_target_ref: Option<String>,
     substrate_tool_palette: Vec<String>,
     workspace_tool_palette: Vec<String>,
@@ -131,17 +129,17 @@ async fn read_wake_entries_in_tx(
         out.push(WakeEntryDraft {
             wake_entry_id: row.get("wake_entry_id"),
             personality_instance_id: pid,
-            trigger_kind: parse_trigger_kind(&row.get::<String, _>("trigger_kind")),
+            trigger_kind: row.get("trigger_kind"),
             trigger_id: row.get("trigger_id"),
             label: row.get("label"),
             enabled: row.get("enabled"),
-            execution_mode: parse_execution_mode(&row.get::<String, _>("execution_mode")),
-            authored_by: parse_row_authored_by(&row.get::<String, _>("authored_by")),
+            execution_mode: row.get("execution_mode"),
+            authored_by: row.get("authored_by"),
             probability_promille: u16::try_from(row.get::<i32, _>("probability_promille"))
                 .unwrap_or(0),
-            goal_scope: parse_goal_scope(&row.get::<String, _>("goal_scope")),
+            goal_scope: row.get("goal_scope"),
             instructions: row.get("instructions"),
-            model_tier: parse_model_tier(&row.get::<String, _>("model_tier")),
+            model_tier: row.get("model_tier"),
             inference_target_ref: row.get("inference_target_ref"),
             substrate_tool_palette: row.get("substrate_tool_palette"),
             workspace_tool_palette: row.get("workspace_tool_palette"),
@@ -231,7 +229,7 @@ pub async fn tombstone_personality(
     }
 
     let existing: Option<(String,)> = sqlx::query_as(
-        "SELECT status
+        "SELECT status::text
          FROM proxima_core.personality
          WHERE owner_principal_kind = $1
            AND owner_principal_id = $2
@@ -312,7 +310,7 @@ pub async fn list_active_wake_entries(
         .into_iter()
         .map(|row| WakeDispatchEntryRow {
             owner: owner_from_parts(
-                &row.owner_principal_kind,
+                row.owner_principal_kind,
                 row.owner_principal_id,
                 row.owner_org_id,
             ),
@@ -325,16 +323,16 @@ pub async fn list_active_wake_entries(
             wake_entry: WakeEntryDraft {
                 wake_entry_id: row.wake_entry_id,
                 personality_instance_id: PersonalityInstanceId::new(row.personality_instance_id),
-                trigger_kind: parse_trigger_kind(&row.trigger_kind),
+                trigger_kind: row.trigger_kind,
                 trigger_id: row.trigger_id,
                 label: row.label,
                 enabled: row.enabled,
-                execution_mode: parse_execution_mode(&row.execution_mode),
-                authored_by: parse_row_authored_by(&row.authored_by),
+                execution_mode: row.execution_mode,
+                authored_by: row.authored_by,
                 probability_promille: u16::try_from(row.probability_promille).unwrap_or(0),
-                goal_scope: parse_goal_scope(&row.goal_scope),
+                goal_scope: row.goal_scope,
                 instructions: row.instructions,
-                model_tier: parse_model_tier(&row.model_tier),
+                model_tier: row.model_tier,
                 inference_target_ref: row.inference_target_ref,
                 substrate_tool_palette: row.substrate_tool_palette,
                 workspace_tool_palette: row.workspace_tool_palette,
@@ -389,16 +387,16 @@ async fn upsert_wake_entry(
     .bind(owner_org_id)
     .bind(entry.personality_instance_id.into_inner())
     .bind(entry.wake_entry_id)
-    .bind(entry.trigger_kind.as_str())
+    .bind(entry.trigger_kind)
     .bind(&entry.trigger_id)
     .bind(&entry.label)
     .bind(entry.enabled)
-    .bind(entry.execution_mode.as_str())
-    .bind(entry.authored_by.as_str())
+    .bind(entry.execution_mode)
+    .bind(entry.authored_by)
     .bind(i32::from(entry.probability_promille))
-    .bind(entry.goal_scope.as_str())
+    .bind(entry.goal_scope)
     .bind(&entry.instructions)
-    .bind(model_tier_str(entry.model_tier))
+    .bind(entry.model_tier)
     .bind(&entry.inference_target_ref)
     .bind(&entry.substrate_tool_palette)
     .bind(&entry.workspace_tool_palette)

@@ -28,7 +28,8 @@ pub const CORE_AUTHORED_RELATION: &str = "core/authored";
 ///
 /// Discriminator values match the SQL CHECK on
 /// `proxima_core.edges.relation_class`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, sqlx::Type)]
+#[sqlx(type_name = "proxima_core.relation_class")]
 pub enum RelationClass {
     /// EventSource-authored edges shaped from payload structure
     /// (e.g. `commit→parent_commit`, `chunk→file_revision`).

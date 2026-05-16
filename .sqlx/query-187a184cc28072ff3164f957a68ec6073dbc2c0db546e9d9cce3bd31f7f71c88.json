@@ -1,0 +1,39 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO proxima_core.personality_wake_invocations\n            (owner_principal_kind, owner_principal_id, owner_org_id,\n             personality_instance_id, wake_entry_id, change_event_seq,\n             status, started_at, wake_token,\n             resolved_inference_target_ref)\n         VALUES ($1, $2, $3, $4, $5, $6, 'running', now(), $7, $8)\n         ON CONFLICT (owner_principal_kind, owner_principal_id, owner_org_id,\n                      personality_instance_id, wake_entry_id, change_event_seq)\n         DO NOTHING\n         RETURNING change_event_seq",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "change_event_seq",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        {
+          "Custom": {
+            "name": "proxima_core.owner_principal_kind",
+            "kind": {
+              "Enum": [
+                "User",
+                "Group"
+              ]
+            }
+          }
+        },
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "187a184cc28072ff3164f957a68ec6073dbc2c0db546e9d9cce3bd31f7f71c88"
+}

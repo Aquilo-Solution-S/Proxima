@@ -132,7 +132,7 @@ async fn load_kind(
 fn link_edge_id(owner: &proxima_core::Owner, source: uuid::Uuid, target: uuid::Uuid) -> uuid::Uuid {
     let (kind, principal_id, org_id) = owner_columns(owner);
     let mut key = Vec::with_capacity(96);
-    key.extend_from_slice(kind.as_bytes());
+    key.extend_from_slice(kind.as_str().as_bytes());
     key.push(0);
     key.extend_from_slice(principal_id.as_bytes());
     key.push(0);

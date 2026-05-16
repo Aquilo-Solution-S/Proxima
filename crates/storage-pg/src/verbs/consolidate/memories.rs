@@ -254,7 +254,9 @@ pub async fn append_personality_memories(
                  schema_id, schema_version, kind, text, operator_kind, model_id,
                  prompt_version, personality_instance_id,
                  wake_chain_depth, supersedes)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'Wake', $9, $10, $11, $12, $13)",
+             VALUES ($1, $2, $3, $4, $5, $6,
+                     $7::text::proxima_core.entity_kind, $8, 'Wake',
+                     $9, $10, $11, $12, $13)",
         )
         .bind(memory_id)
         .bind(owner_kind)
@@ -295,7 +297,8 @@ pub async fn append_personality_memories(
                  entity_kind, entity_memory_id, entity_schema_id, entity_schema_version,
                  entity_personality_instance_id,
                  wake_chain_depth, supersedes_memory_id)
-             VALUES ($1, $2, $3, $4, 'EntityAppend', $5, $6, $7, $8, $9, $10, $11)",
+             VALUES ($1, $2, $3, $4, 'EntityAppend',
+                     $5::text::proxima_core.entity_kind, $6, $7, $8, $9, $10, $11)",
         )
         .bind(change_seq)
         .bind(owner_kind)
@@ -369,7 +372,8 @@ pub async fn append_personality_memories(
             "INSERT INTO proxima_core.embeddings
                 (entity_kind, entity_id, embedding_version, model_id, vec, dim,
                  owner_principal_kind, owner_principal_id, owner_org_id)
-             VALUES ($1, $2, 1, $3, $4, $5, $6, $7, $8)",
+             VALUES ($1::text::proxima_core.entity_kind,
+                     $2, 1, $3, $4, $5, $6, $7, $8)",
         )
         .bind(memory.kind.as_str())
         .bind(memory_id)

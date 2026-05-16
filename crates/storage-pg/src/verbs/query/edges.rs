@@ -1,4 +1,4 @@
-use proxima_core::StorageError;
+use proxima_core::{OwnerPrincipalKind, StorageError};
 use proxima_core::verbs::query::{EdgeRow, QueryRequest};
 use sqlx::PgPool;
 
@@ -12,7 +12,7 @@ pub const MAX_SNAPSHOT_EDGES: usize = 50_000;
 pub(super) async fn query_edges(
     pool: &PgPool,
     req: &QueryRequest,
-    owner_kind: &str,
+    owner_kind: OwnerPrincipalKind,
     owner_principal_id: uuid::Uuid,
     visible_memory_ids: &[uuid::Uuid],
     visible_goal_ids: &[uuid::Uuid],
@@ -46,7 +46,7 @@ async fn query_edges_by_id(
     pool: &PgPool,
     req: &QueryRequest,
     edge_ids: &[uuid::Uuid],
-    owner_kind: &str,
+    owner_kind: OwnerPrincipalKind,
     owner_principal_id: uuid::Uuid,
 ) -> Result<Vec<EdgeRow>, StorageError> {
     let rows = sqlx::query_as::<_, EdgeRowDb>(
@@ -119,7 +119,7 @@ fn endpoint_visible(
 
 async fn query_edges_between_visible_nodes(
     pool: &PgPool,
-    owner_kind: &str,
+    owner_kind: OwnerPrincipalKind,
     owner_principal_id: uuid::Uuid,
     visible_memory_ids: &[uuid::Uuid],
     visible_goal_ids: &[uuid::Uuid],

@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO proxima_goal.goal_achieved_v1\n            (memory_id, goal_id, schema_id, title, achieved_at, evidence_count)\n         VALUES ($1, $2, $3, $4, $5, $6)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Text",
+        "Timestamptz",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d1b5be99370fd30f68e925b6915593b53c70079758ca739b9bd47074bb4c8ab2"
+}

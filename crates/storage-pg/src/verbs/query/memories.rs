@@ -7,7 +7,7 @@ use proxima_core::verbs::query::{
     TombstoneFilter,
 };
 use proxima_core::verbs::schema::{PayloadKind, SchemaInfo};
-use proxima_core::{Principal, StorageError};
+use proxima_core::{OwnerPrincipalKind, Principal, StorageError};
 use sqlx::PgPool;
 
 use crate::pg_ident::PgIdent;
@@ -29,13 +29,9 @@ pub(crate) async fn query_memories(
     req: &QueryRequest,
     schemas: &[SchemaInfo],
 ) -> Result<QueryResponse, StorageError> {
-    let owner_kind: &str = match &req.owner.principal {
-        Principal::User(_) => "User",
-        Principal::Group(_) => "Group",
-    };
-    let owner_principal_id = match &req.owner.principal {
-        Principal::User(u) => u.into_inner(),
-        Principal::Group(g) => g.into_inner(),
+    let (owner_kind, owner_principal_id) = match &req.owner.principal {
+        Principal::User(u) => (OwnerPrincipalKind::User, u.into_inner()),
+        Principal::Group(g) => (OwnerPrincipalKind::Group, g.into_inner()),
     };
     let id_hydration =
         !req.memory_ids.is_empty() || !req.goal_ids.is_empty() || !req.edge_ids.is_empty();
@@ -314,7 +310,7 @@ pub(crate) async fn query_memories(
 pub(super) async fn visible_ids_for(
     pool: &PgPool,
     req: &QueryRequest,
-    owner_kind: &str,
+    owner_kind: OwnerPrincipalKind,
     owner_principal_id: uuid::Uuid,
     candidate_memory_ids: &[uuid::Uuid],
     candidate_goal_ids: &[uuid::Uuid],
@@ -342,7 +338,7 @@ pub(super) async fn visible_ids_for(
 async fn query_visible_memory_ids(
     pool: &PgPool,
     req: &QueryRequest,
-    owner_kind: &str,
+    owner_kind: OwnerPrincipalKind,
     owner_principal_id: uuid::Uuid,
     candidate_memory_ids: &[uuid::Uuid],
 ) -> Result<HashSet<uuid::Uuid>, StorageError> {
@@ -463,7 +459,7 @@ async fn query_visible_memory_ids(
 async fn query_visible_goal_ids(
     pool: &PgPool,
     req: &QueryRequest,
-    owner_kind: &str,
+    owner_kind: OwnerPrincipalKind,
     owner_principal_id: uuid::Uuid,
     candidate_goal_ids: &[uuid::Uuid],
 ) -> Result<HashSet<uuid::Uuid>, StorageError> {
@@ -658,7 +654,7 @@ fn push_tombstone_exclusion(
             sql,
             "(m.schema_id = ${schema} \
               AND m.schema_version = ${version} \
-              AND {alias}.{column} = ${tombstone})",
+              AND {alias}.{column}::text = ${tombstone})",
             schema = p.schema,
             version = p.version,
             alias = alias,

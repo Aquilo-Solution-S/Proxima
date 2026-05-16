@@ -1,0 +1,94 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT authorship_kind AS \"authorship_kind: GoalAuthorshipKind\",\n                  authorship_origin AS \"authorship_origin: GoalAuthorshipOrigin\",\n                  authorship_operator_id,\n                  authorship_tool_id,\n                  operator_kind AS \"operator_kind: OperatorKind\",\n                  model_id,\n                  prompt_version,\n                  personality_instance_id\n             FROM proxima_core.goals WHERE goal_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "authorship_kind: GoalAuthorshipKind",
+        "type_info": {
+          "Custom": {
+            "name": "proxima_core.goal_authorship_kind",
+            "kind": {
+              "Enum": [
+                "User",
+                "System",
+                "External"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "authorship_origin: GoalAuthorshipOrigin",
+        "type_info": {
+          "Custom": {
+            "name": "proxima_core.goal_authorship_origin",
+            "kind": {
+              "Enum": [
+                "Operator",
+                "Tool"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "authorship_operator_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 3,
+        "name": "authorship_tool_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "operator_kind: OperatorKind",
+        "type_info": {
+          "Custom": {
+            "name": "proxima_core.goal_operator_kind",
+            "kind": {
+              "Enum": [
+                "AtoGoal"
+              ]
+            }
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "model_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "prompt_version",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "personality_instance_id",
+        "type_info": "Uuid"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "2a86057ec5230c6ea29b3d9161df12dcc75eb455218eb46b04bda94c45ecf121"
+}
