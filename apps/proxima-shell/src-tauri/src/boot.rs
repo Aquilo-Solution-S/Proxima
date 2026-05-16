@@ -174,6 +174,41 @@ fn shell_secret_resolver() -> ResolverRegistry {
     resolver
 }
 
+/// Wires the per-OS `keyring-core` default store. Idempotent —
+/// returns early once a store is installed.
+///
+/// keyring 4.0 split the library into `keyring-core` plus per-OS
+/// store crates; without an explicit `set_default_store(...)`, every
+/// `Entry` op fails with `Error::NoDefaultStore`. Each host platform
+/// pulls in one store crate via cfg-gated deps in `Cargo.toml`; this
+/// fn picks the matching one at compile time. `run()` only invokes
+/// this in release builds (debug uses file-backed `dev_secrets`),
+/// but the fn stays callable in any profile so `#[ignore]`'d
+/// integration tests that talk to the real OS keychain can opt in.
+#[allow(dead_code)] // Unused in debug builds outside of `#[cfg(test)]` opt-in callers.
+pub(crate) fn install_keychain_default_store() {
+    if keyring_core::get_default_store().is_some() {
+        return;
+    }
+    // Apple ships two store flavors (`keychain` / `protected`); we
+    // enable only `keychain` for classic Generic Password items, which
+    // matches keyring v3's `apple-native` behavior.
+    #[cfg(target_os = "macos")]
+    let store = apple_native_keyring_store::keychain::Store::new();
+    #[cfg(target_os = "windows")]
+    let store = windows_native_keyring_store::Store::new();
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    let store = dbus_secret_service_keyring_store::Store::new();
+
+    match store {
+        Ok(store) => keyring_core::set_default_store(store),
+        Err(err) => tracing::error!(
+            "failed to initialize OS keychain store: {err}; \
+             keychain-backed secrets and the MCP master token will fail to resolve"
+        ),
+    }
+}
+
 fn resolve_optional_secret(
     resolver: &ResolverRegistry,
     secret_ref: Option<&str>,

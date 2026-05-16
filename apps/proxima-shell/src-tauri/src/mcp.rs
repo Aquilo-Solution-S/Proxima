@@ -73,7 +73,7 @@ pub(crate) fn load_or_create_master_token(owner: &Owner) -> Result<Uuid, String>
                 Ok(token) => Ok(token),
                 Err(_) => rotate_master_token(owner),
             },
-            Err(keyring::Error::NoEntry) => rotate_master_token(owner),
+            Err(keyring_core::Error::NoEntry) => rotate_master_token(owner),
             Err(err) => Err(format!("keychain get_password: {err}")),
         }
     }
@@ -95,8 +95,8 @@ pub(crate) fn rotate_master_token(owner: &Owner) -> Result<Uuid, String> {
 }
 
 #[cfg(not(debug_assertions))]
-fn master_token_entry(owner: &Owner) -> Result<keyring::Entry, String> {
-    keyring::Entry::new(MCP_MASTER_TOKEN_SERVICE, &master_token_account(owner))
+fn master_token_entry(owner: &Owner) -> Result<keyring_core::Entry, String> {
+    keyring_core::Entry::new(MCP_MASTER_TOKEN_SERVICE, &master_token_account(owner))
         .map_err(|err| format!("keyring entry: {err}"))
 }
 

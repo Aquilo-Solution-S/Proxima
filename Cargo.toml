@@ -63,8 +63,11 @@ tauri-build = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 
-# OS-native keychain access for secret_ref resolution (S1.c)
-keyring = { version = "3", default-features = false, features = ["apple-native", "windows-native", "linux-native-sync-persistent"] }
+# OS-native keychain access for secret_ref resolution (S1.c).
+# Library split: keyring-core holds the API surface; per-OS store
+# crates live in proxima-shell as cfg(target_os) deps and are
+# wired via `keyring_core::set_default_store(...)` at boot.
+keyring-core = "1"
 
 # specta — Rust→TS type bridge for tauri-specta. Source-of-truth
 # stays Rust traits; TS bindings are codegen artefacts. See
