@@ -135,23 +135,56 @@ async fn emit_workspace_review_writes_review_and_edges() -> Result<(), Box<dyn s
     .await?;
     assert_eq!(authored_edges, 1);
 
-    for target in [run.into_inner(), request.into_inner()] {
-        let derived_edges: i64 = sqlx::query_scalar(
-            "SELECT count(*)
-             FROM proxima_core.edges
-             WHERE relation = $1
-               AND source_kind = 'Fact'
-               AND source_memory_id = $2
-               AND target_kind = 'Fact'
-               AND target_memory_id = $3",
-        )
-        .bind(CORE_DERIVED_FROM_RELATION)
-        .bind(review_memory)
-        .bind(target)
-        .fetch_one(fixture.pg.pool())
-        .await?;
-        assert_eq!(derived_edges, 1, "missing derived edge to {target}");
-    }
+    // review→run is now typed as proxima-code/reviews
+    let reviews_edges: i64 = sqlx::query_scalar(
+        "SELECT count(*)
+         FROM proxima_core.edges
+         WHERE relation = $1
+           AND source_kind = 'Fact'
+           AND source_memory_id = $2
+           AND target_kind = 'Fact'
+           AND target_memory_id = $3",
+    )
+    .bind(proxima_code::CODE_REVIEWS_RELATION)
+    .bind(review_memory)
+    .bind(run.into_inner())
+    .fetch_one(fixture.pg.pool())
+    .await?;
+    assert_eq!(reviews_edges, 1, "missing proxima-code/reviews edge");
+
+    // review→request stays as core/derived-from
+    let derived_edges: i64 = sqlx::query_scalar(
+        "SELECT count(*)
+         FROM proxima_core.edges
+         WHERE relation = $1
+           AND source_kind = 'Fact'
+           AND source_memory_id = $2
+           AND target_kind = 'Fact'
+           AND target_memory_id = $3",
+    )
+    .bind(CORE_DERIVED_FROM_RELATION)
+    .bind(review_memory)
+    .bind(request.into_inner())
+    .fetch_one(fixture.pg.pool())
+    .await?;
+    assert_eq!(derived_edges, 1, "missing core/derived-from edge to request");
+
+    // negative: no derived edge from review→run should remain
+    let stale_derived: i64 = sqlx::query_scalar(
+        "SELECT count(*)
+         FROM proxima_core.edges
+         WHERE relation = $1
+           AND source_kind = 'Fact'
+           AND source_memory_id = $2
+           AND target_kind = 'Fact'
+           AND target_memory_id = $3",
+    )
+    .bind(CORE_DERIVED_FROM_RELATION)
+    .bind(review_memory)
+    .bind(run.into_inner())
+    .fetch_one(fixture.pg.pool())
+    .await?;
+    assert_eq!(stale_derived, 0, "review→run derived edge must be replaced");
 
     Ok(())
 }

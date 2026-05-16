@@ -10,7 +10,7 @@ pub mod types;
 // Re-export all public types and tools from the original file
 
 pub use helpers::*;
-pub use ingest::*;
+pub use ingest::{append_review_derived_edge, append_review_reviews_edge};
 pub use loaders::*;
 pub use tools::*;
 pub use types::*;
