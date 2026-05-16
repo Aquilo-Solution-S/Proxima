@@ -3,7 +3,7 @@ use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
 use proxima_core::mcp::{McpToolCtx, McpToolError};
-use proxima_core::{MemoryId, relation::CORE_DERIVED_FROM_RELATION};
+use proxima_core::{EntityKind, MemoryId, relation::CORE_DERIVED_FROM_RELATION};
 
 use crate::payloads::{
     ExecutionRequestV1, WorkspaceDecision, WorkspaceDecisionV1, WorkspaceReviewV1,
@@ -25,7 +25,7 @@ pub async fn load_workspace_run(
     memory_id: MemoryId,
 ) -> Result<(), McpToolError> {
     let (owner_kind, owner_principal_id) = owner_principal(&ctx.owner);
-    let row: Option<(String, String, Option<Uuid>)> = sqlx::query_as(
+    let row: Option<(EntityKind, String, Option<Uuid>)> = sqlx::query_as(
         "SELECT COALESCE(m.kind, 'Fact') AS kind, m.schema_id, r.memory_id
          FROM proxima_core.memories m
          LEFT JOIN proxima_code.workspace_run_v1 r USING (memory_id)
@@ -45,7 +45,7 @@ pub async fn load_workspace_run(
             memory_id.into_inner()
         )));
     };
-    if kind != "Fact" || schema_id != "proxima-code/workspace-run-v1" {
+    if kind != EntityKind::Fact || schema_id != "proxima-code/workspace-run-v1" {
         return Err(McpToolError::InvalidInput(
             "workspace_run_memory must be a proxima-code/workspace-run-v1 Fact".into(),
         ));
@@ -72,11 +72,11 @@ pub async fn load_workspace_review(
     let (owner_kind, owner_principal_id) = owner_principal(&ctx.owner);
     #[allow(clippy::type_complexity)]
     let row: Option<(
-        String,
+        EntityKind,
         String,
         Option<Uuid>,
         Option<Uuid>,
-        Option<String>,
+        Option<WorkspaceReviewVerdict>,
         Option<i32>,
         Option<String>,
         Option<serde_json::Value>,
@@ -126,7 +126,7 @@ pub async fn load_workspace_review(
             memory_id.into_inner()
         )));
     };
-    if kind != "Fact" || schema_id != WorkspaceReviewV1::SCHEMA_ID {
+    if kind != EntityKind::Fact || schema_id != WorkspaceReviewV1::SCHEMA_ID {
         return Err(McpToolError::InvalidInput(
             "workspace_review_memory must be a proxima-code/workspace-review-v1 Fact".into(),
         ));
@@ -152,16 +152,6 @@ pub async fn load_workspace_review(
         return Err(McpToolError::InvalidInput(
             "workspace_review_memory sidecar row is missing".into(),
         ));
-    };
-    let verdict = match verdict.as_str() {
-        "approved" => WorkspaceReviewVerdict::Approved,
-        "rejected" => WorkspaceReviewVerdict::Rejected,
-        "needs_user" => WorkspaceReviewVerdict::NeedsUser,
-        other => {
-            return Err(McpToolError::InvalidInput(format!(
-                "workspace_review_memory has invalid verdict: {other}"
-            )));
-        }
     };
     let findings = serde_json::from_value(findings_json)
         .map_err(|err| McpToolError::InvalidInput(format!("findings_json: {err}")))?;
@@ -198,10 +188,10 @@ pub async fn load_workspace_decision(
     let (owner_kind, owner_principal_id) = owner_principal(&ctx.owner);
     #[allow(clippy::type_complexity)]
     let row: Option<(
-        String,
+        EntityKind,
         String,
         Option<Uuid>,
-        Option<String>,
+        Option<WorkspaceDecision>,
         Option<time::OffsetDateTime>,
         Option<String>,
         Option<Uuid>,
@@ -240,7 +230,7 @@ pub async fn load_workspace_decision(
             memory_id.into_inner()
         )));
     };
-    if kind != "Fact" || schema_id != WorkspaceDecisionV1::SCHEMA_ID {
+    if kind != EntityKind::Fact || schema_id != WorkspaceDecisionV1::SCHEMA_ID {
         return Err(McpToolError::InvalidInput(
             "workspace_decision_memory must be a proxima-code/workspace-decision-v1 Fact".into(),
         ));
@@ -260,17 +250,6 @@ pub async fn load_workspace_decision(
         return Err(McpToolError::InvalidInput(
             "workspace_decision_memory sidecar row is missing".into(),
         ));
-    };
-    let decision = match decision.as_str() {
-        "rejected" => WorkspaceDecision::Rejected,
-        "retry_requested" => WorkspaceDecision::RetryRequested,
-        "accepted" => WorkspaceDecision::Accepted,
-        "merged" => WorkspaceDecision::Merged,
-        other => {
-            return Err(McpToolError::InvalidInput(format!(
-                "workspace_decision_memory has invalid decision: {other}"
-            )));
-        }
     };
     Ok(LoadedWorkspaceDecision {
         memory_id,

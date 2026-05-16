@@ -104,7 +104,10 @@ async fn emit_workspace_review_writes_review_and_edges() -> Result<(), Box<dyn s
     .bind(review_memory)
     .fetch_one(fixture.pg.pool())
     .await?;
-    assert_eq!(review.try_get::<String, _>("verdict")?, "approved");
+    assert_eq!(
+        review.try_get::<WorkspaceReviewVerdict, _>("verdict")?,
+        WorkspaceReviewVerdict::Approved
+    );
     assert_eq!(review.try_get::<i32, _>("round_index")?, 0);
     assert_eq!(
         review.try_get::<String, _>("summary")?,

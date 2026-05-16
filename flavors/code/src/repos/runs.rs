@@ -142,7 +142,7 @@ pub async fn advance_stage(
                     error_message, started_at, updated_at, finished_at",
     )
     .bind(run_id)
-    .bind(next_stage.as_str())
+    .bind(next_stage)
     .bind(i32_from_u32(counters.commits_emitted))
     .bind(i32_from_u32(counters.files_emitted))
     .bind(i32_from_u32(counters.chunks_emitted))

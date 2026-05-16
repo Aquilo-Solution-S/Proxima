@@ -45,8 +45,14 @@ pub enum InferenceTargetConfig {
 #[sqlx(type_name = "proxima_core.inference_target_kind", rename_all = "snake_case")]
 pub enum InferenceTargetKind {
     MistralChat,
+    #[serde(rename = "openai_chat")]
+    #[sqlx(rename = "openai_chat")]
     OpenAIChat,
+    #[serde(rename = "openai_responses")]
+    #[sqlx(rename = "openai_responses")]
     OpenAIResponses,
+    #[serde(rename = "chatgpt_codex")]
+    #[sqlx(rename = "chatgpt_codex")]
     ChatGPTCodex,
 }
 
