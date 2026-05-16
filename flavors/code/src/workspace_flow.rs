@@ -525,11 +525,13 @@ async fn ingest_workspace_decision(
         .bind(payload.decided_by_owner_id)
         .execute(&mut *tx)
         .await?;
-        let registry = FlavorRegistry::default().freeze();
+        let mut registry = FlavorRegistry::default();
+        crate::register(&mut registry);
+        let registry = registry.freeze();
         let relation = registry
-            .resolve_relation(CORE_DERIVED_FROM_RELATION)
+            .resolve_relation(CODE_DECIDES_RELATION)
             .ok_or_else(|| WorkspaceFlowError::InvalidSidecar {
-                message: "core/derived-from relation not registered".into(),
+                message: "proxima-code/decides relation not registered".into(),
             })?;
         append_edge_in_tx(
             &mut tx,
