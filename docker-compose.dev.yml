@@ -9,7 +9,7 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - proxima_dev_pgdata:/var/lib/postgresql/data
+      - proxima_dev_pgdata:/var/lib/postgresql
       - ./scripts/pg-init.sql:/docker-entrypoint-initdb.d/00-pg-stat-statements.sql:ro
     command:
       - "postgres"
