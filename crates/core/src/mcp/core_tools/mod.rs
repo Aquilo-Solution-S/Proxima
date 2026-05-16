@@ -14,6 +14,7 @@ pub mod update_wake_entry;
 pub mod wake_entry_input;
 
 pub mod bind_inference_tier;
+pub mod get_graph;
 pub mod get_personality;
 pub mod instantiate_personality;
 pub mod list_edge_types;
@@ -31,6 +32,7 @@ pub mod tombstone_personality;
 pub use add_wake_entry::AddWakeEntryTool;
 pub use audit::{AuditEmit, emit_personality_config_changed};
 pub use bind_inference_tier::BindInferenceTierTool;
+pub use get_graph::GetGraphTool;
 pub use get_personality::GetPersonalityTool;
 pub use instantiate_personality::InstantiatePersonalityTool;
 pub use list_edge_types::ListEdgeTypesTool;
@@ -59,6 +61,7 @@ pub use wake_entry_input::WakeEntryDraftInput;
 pub(crate) fn register_all(registry: &mut crate::FlavorRegistry) {
     registry.add_substrate_mcp_tool::<ListPersonalitiesTool>();
     registry.add_substrate_mcp_tool::<GetPersonalityTool>();
+    registry.add_substrate_mcp_tool::<GetGraphTool>();
     registry.add_substrate_mcp_tool::<InstantiatePersonalityTool>();
     registry.add_substrate_mcp_tool::<TombstonePersonalityTool>();
     registry.add_substrate_mcp_tool::<ListWakeEntriesTool>();
