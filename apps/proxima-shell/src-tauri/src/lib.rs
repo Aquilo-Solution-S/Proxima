@@ -77,6 +77,15 @@ pub fn run() {
         tracing::info!(perf_session_dir = %dir.display(), "perf capture active");
     }
 
+    // Wire the OS keychain store before anything touches `keyring_core`
+    // (the MCP master token below, KeychainResolver during engine boot,
+    // and any user-triggered secret_ref resolution). keyring 4 requires
+    // an explicit `set_default_store(...)`; without it every Entry op
+    // fails with `NoDefaultStore`. Debug builds use file-backed
+    // dev_secrets instead and skip this wiring.
+    #[cfg(not(debug_assertions))]
+    boot::install_keychain_default_store();
+
     let (engine, pg) = boot::build_engine();
     let wake_token_store = engine.wake_token_store();
     let mcp_auth_store =

@@ -1,8 +1,11 @@
 //! Keychain-backed `SecretResolver` for the desktop shell.
 //!
-//! Implements the `keychain:<service>:<account>` scheme via the
-//! `keyring` crate. Each platform's native secret store is used:
-//! macOS Keychain, Windows Credential Manager, Linux Secret Service.
+//! Implements the `keychain:<service>:<account>` scheme via
+//! `keyring-core`. The default store is wired in `boot.rs` for
+//! release builds; debug builds use `dev_secrets` instead and
+//! never reach this resolver. Each platform's native secret store
+//! is used: macOS Keychain, Windows Credential Manager, Linux
+//! Secret Service.
 //!
 //! Lives in the Tauri shell rather than `core` so headless binaries
 //! (gRPC engine, tests, CI) don't pull in OS-keychain dependencies.
@@ -39,16 +42,16 @@ impl SecretResolver for KeychainResolver {
             )));
         }
 
-        let entry = keyring::Entry::new(service, account)
-            .map_err(|e| SecretError::ResolverFailed(format!("keyring::Entry::new: {e}")))?;
+        let entry = keyring_core::Entry::new(service, account)
+            .map_err(|e| SecretError::ResolverFailed(format!("keyring_core::Entry::new: {e}")))?;
 
         match entry.get_password() {
             Ok(secret) => Ok(SecretBytes::new(secret.into_bytes())),
-            Err(keyring::Error::NoEntry) => Err(SecretError::NotFound(format!(
+            Err(keyring_core::Error::NoEntry) => Err(SecretError::NotFound(format!(
                 "keychain entry {service}/{account}"
             ))),
             Err(e) => Err(SecretError::ResolverFailed(format!(
-                "keyring::Entry::get_password: {e}"
+                "keyring_core::Entry::get_password: {e}"
             ))),
         }
     }
@@ -84,12 +87,13 @@ mod tests {
     #[test]
     #[ignore = "writes to real OS keychain; run with --ignored on a workstation"]
     fn roundtrip_against_real_keychain() {
+        crate::boot::install_keychain_default_store();
         let service = "proxima-test-s1c";
         let account = format!("test-account-{}", std::process::id());
         let secret_value = "round-trip-secret-value";
 
-        // Write directly via the keyring crate (the resolver is read-only).
-        let entry = keyring::Entry::new(service, &account).expect("Entry::new");
+        // Write directly via keyring-core (the resolver is read-only).
+        let entry = keyring_core::Entry::new(service, &account).expect("Entry::new");
         entry
             .set_password(secret_value)
             .expect("set_password — does the test host have a keychain?");
@@ -108,6 +112,7 @@ mod tests {
     #[test]
     #[ignore = "talks to real OS keychain"]
     fn missing_entry_is_not_found() {
+        crate::boot::install_keychain_default_store();
         let body = format!("proxima-test-s1c:absent-{}", uuid::Uuid::now_v7());
         let err = KeychainResolver::new().resolve(&body).unwrap_err();
         assert!(

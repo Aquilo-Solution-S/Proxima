@@ -33,7 +33,7 @@ proxima-flavor-goal = { path = "../../../flavors/goal" }
 proxima-mcp-server = { path = "../../../crates/mcp-server" }
 proxima-mcp-substrate = { path = "../../../flavors/mcp" }
 proxima-llm-openai-compat = { path = "../../../crates/llm-openai-compat" }
-keyring = { workspace = true }
+keyring-core = { workspace = true }
 toml = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "macros", "rt-multi-thread", "sync"] }
@@ -60,6 +60,22 @@ base64 = { workspace = true }
 tempfile = "3"
 wiremock = "0.6"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+# Per-OS keyring store implementations. The keyring crate split in
+# v4 means the library (keyring-core) no longer ships any store —
+# each platform pulls in its own and the binary wires it at boot
+# via `keyring_core::set_default_store(...)`.
+# `keychain` feature = classic Keychain (Generic Password items), the
+# direct successor to keyring v3's `apple-native` feature. `protected`
+# is the newer Data Protection Keychain and has different ACL prompts.
+[target.'cfg(target_os = "macos")'.dependencies]
+apple-native-keyring-store = { version = "1", features = ["keychain"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-native-keyring-store = "1"
+
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
+dbus-secret-service-keyring-store = "1"
 
 [lints]
 workspace = true
