@@ -137,10 +137,19 @@ async function main() {
     console.log("[perf-driver] generating summary.md…");
     try {
       const { buildSummary } = await import(join(REPO, "scripts/perf-summary.mjs"));
-      const readNdjson = (p) =>
-        fs.existsSync(p)
-          ? fs.readFileSync(p, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l))
-          : [];
+      const readNdjson = (p) => {
+        if (!fs.existsSync(p)) return [];
+        const out = [];
+        for (const line of fs.readFileSync(p, "utf8").split("\n")) {
+          if (!line) continue;
+          try {
+            out.push(JSON.parse(line));
+          } catch {
+            // truncated tail line from SIGINT mid-write — skip it.
+          }
+        }
+        return out;
+      };
       const readJson = (p) => {
         if (!fs.existsSync(p)) return [];
         const raw = fs.readFileSync(p, "utf8").trim();
