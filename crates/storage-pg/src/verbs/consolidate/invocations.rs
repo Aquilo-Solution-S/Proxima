@@ -128,15 +128,12 @@ pub async fn finalize_wake_invocation(
 ) -> Result<(), StorageError> {
     let owner = &finalize.owner;
     let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(owner);
-    // TODO(macro-sweep): cost_usd is numeric(10,6) — sqlx macros need
-    // bigdecimal/rust_decimal feature to bind f64 to NUMERIC. Keeping
-    // this UPDATE on the runtime form to avoid adding a new dependency.
-    sqlx::query(
-        "UPDATE proxima_core.personality_wake_invocations
+    sqlx::query!(
+        r#"UPDATE proxima_core.personality_wake_invocations
          SET status = $1,
              finished_at = now(),
              turn_count = COALESCE($2, turn_count),
-             cost_usd = COALESCE($3, cost_usd),
+             cost_usd = COALESCE($3::float8, cost_usd),
              failure_reason = $4,
              exit_code = $5,
              duration_ms = $6,
@@ -149,24 +146,24 @@ pub async fn finalize_wake_invocation(
            AND owner_org_id = $13
            AND personality_instance_id = $14
            AND wake_entry_id = $15
-           AND change_event_seq = $16",
+           AND change_event_seq = $16"#,
+        finalize.status as WakeInvocationStatus,
+        finalize.turn_count.map(i32::from),
+        finalize.cost_usd,
+        finalize.failure_reason,
+        finalize.exit_code,
+        finalize.duration_ms.and_then(|v| i64::try_from(v).ok()),
+        finalize.stdout_tail,
+        finalize.stderr_tail,
+        finalize.stdout_truncated,
+        finalize.stderr_truncated,
+        owner_kind as OwnerPrincipalKind,
+        owner_principal_id,
+        owner_org_id,
+        finalize.personality_instance_id.into_inner(),
+        finalize.wake_entry_id,
+        finalize.change_event_seq,
     )
-    .bind(finalize.status)
-    .bind(finalize.turn_count.map(i32::from))
-    .bind(finalize.cost_usd)
-    .bind(&finalize.failure_reason)
-    .bind(finalize.exit_code)
-    .bind(finalize.duration_ms.and_then(|v| i64::try_from(v).ok()))
-    .bind(&finalize.stdout_tail)
-    .bind(&finalize.stderr_tail)
-    .bind(finalize.stdout_truncated)
-    .bind(finalize.stderr_truncated)
-    .bind(owner_kind)
-    .bind(owner_principal_id)
-    .bind(owner_org_id)
-    .bind(finalize.personality_instance_id.into_inner())
-    .bind(finalize.wake_entry_id)
-    .bind(finalize.change_event_seq)
     .execute(pool)
     .await
     .map_err(map_err)?;
@@ -202,56 +199,21 @@ pub async fn append_wake_invocation_log(
     Ok(())
 }
 
-#[derive(sqlx::FromRow)]
-struct WakeInvocationRowDb {
-    owner_principal_kind: OwnerPrincipalKind,
-    owner_principal_id: uuid::Uuid,
-    owner_org_id: uuid::Uuid,
-    personality_instance_id: uuid::Uuid,
-    wake_entry_id: uuid::Uuid,
-    wake_entry_label: String,
-    change_event_seq: uuid::Uuid,
-    status: WakeInvocationStatus,
-    started_at: time::OffsetDateTime,
-    finished_at: Option<time::OffsetDateTime>,
-    turn_count: i32,
-    cost_usd: f64,
-    resolved_inference_target_ref: Option<String>,
-    failure_reason: Option<String>,
-    exit_code: Option<i32>,
-    duration_ms: Option<i64>,
-    stdout_tail: Option<String>,
-    stderr_tail: Option<String>,
-    stdout_truncated: bool,
-    stderr_truncated: bool,
-}
-
-#[derive(sqlx::FromRow)]
-struct WakeInvocationLogRowDb {
-    log_seq: i32,
-    at: time::OffsetDateTime,
-    phase: String,
-    tool_id: Option<String>,
-    status: WakeInvocationLogStatus,
-    duration_ms: Option<i64>,
-    message_tail: Option<String>,
-}
-
 pub async fn list_wake_invocations(
     pool: &PgPool,
     req: &ListWakeInvocationsRequest,
 ) -> Result<Vec<WakeInvocationRow>, StorageError> {
     let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(&req.owner);
     let limit = i64::from(req.limit.clamp(1, 100));
-    // TODO(macro-sweep): cost_usd is numeric — needs bigdecimal feature for
-    // macro to bind f64. Keep on runtime form.
-    let rows: Vec<WakeInvocationRowDb> = sqlx::query_as(
-        r#"SELECT i.owner_principal_kind AS "owner_principal_kind",
+    let rows = sqlx::query!(
+        r#"SELECT i.owner_principal_kind AS "owner_principal_kind: OwnerPrincipalKind",
                   i.owner_principal_id, i.owner_org_id,
-                  i.personality_instance_id, i.wake_entry_id, e.label AS wake_entry_label,
-                  i.change_event_seq, i.status AS "status",
+                  i.personality_instance_id, i.wake_entry_id,
+                  e.label AS wake_entry_label,
+                  i.change_event_seq,
+                  i.status AS "status: WakeInvocationStatus",
                   i.started_at, i.finished_at,
-                  i.turn_count, i.cost_usd::float8 AS cost_usd,
+                  i.turn_count, i.cost_usd::float8 AS "cost_usd!",
                   i.resolved_inference_target_ref, i.failure_reason,
                   i.exit_code, i.duration_ms, i.stdout_tail, i.stderr_tail,
                   i.stdout_truncated, i.stderr_truncated
@@ -269,39 +231,29 @@ pub async fn list_wake_invocations(
                AND ($5::uuid IS NULL OR i.wake_entry_id = $5)
              ORDER BY i.started_at DESC
              LIMIT $6"#,
+        owner_kind as OwnerPrincipalKind,
+        owner_principal_id,
+        owner_org_id,
+        req.personality_instance_id.into_inner(),
+        req.wake_entry_id,
+        limit,
     )
-    .bind(owner_kind)
-    .bind(owner_principal_id)
-    .bind(owner_org_id)
-    .bind(req.personality_instance_id.into_inner())
-    .bind(req.wake_entry_id)
-    .bind(limit)
     .fetch_all(pool)
     .await
     .map_err(map_err)?;
 
     let mut out = Vec::with_capacity(rows.len());
     for row in rows {
-        let logs: Vec<WakeInvocationLogRowDb> = sqlx::query_as(
-            "SELECT log_seq, at, phase, tool_id, status, duration_ms, message_tail
-             FROM proxima_core.personality_wake_invocation_logs
-             WHERE owner_principal_kind = $1
-               AND owner_principal_id = $2
-               AND owner_org_id = $3
-               AND personality_instance_id = $4
-               AND wake_entry_id = $5
-               AND change_event_seq = $6
-             ORDER BY log_seq ASC",
+        let logs = fetch_invocation_logs(
+            pool,
+            owner_kind,
+            owner_principal_id,
+            owner_org_id,
+            row.personality_instance_id,
+            row.wake_entry_id,
+            row.change_event_seq,
         )
-        .bind(owner_kind as OwnerPrincipalKind)
-        .bind(owner_principal_id)
-        .bind(owner_org_id)
-        .bind(row.personality_instance_id)
-        .bind(row.wake_entry_id)
-        .bind(row.change_event_seq)
-        .fetch_all(pool)
-        .await
-        .map_err(map_err)?;
+        .await?;
         out.push(WakeInvocationRow {
             owner: owner_from_parts(
                 row.owner_principal_kind,
@@ -325,19 +277,54 @@ pub async fn list_wake_invocations(
             stderr_tail: row.stderr_tail,
             stdout_truncated: row.stdout_truncated,
             stderr_truncated: row.stderr_truncated,
-            logs: logs
-                .into_iter()
-                .map(|log| WakeInvocationLogRow {
-                    log_seq: i64::from(log.log_seq),
-                    at: log.at,
-                    phase: log.phase,
-                    tool_id: log.tool_id,
-                    status: log.status,
-                    duration_ms: log.duration_ms.and_then(|v| u64::try_from(v).ok()),
-                    message_tail: log.message_tail,
-                })
-                .collect(),
+            logs,
         });
     }
     Ok(out)
+}
+
+async fn fetch_invocation_logs(
+    pool: &PgPool,
+    owner_kind: OwnerPrincipalKind,
+    owner_principal_id: uuid::Uuid,
+    owner_org_id: uuid::Uuid,
+    personality_instance_id: uuid::Uuid,
+    wake_entry_id: uuid::Uuid,
+    change_event_seq: uuid::Uuid,
+) -> Result<Vec<WakeInvocationLogRow>, StorageError> {
+    sqlx::query!(
+        r#"SELECT log_seq, at, phase, tool_id,
+                  status AS "status: WakeInvocationLogStatus",
+                  duration_ms, message_tail
+             FROM proxima_core.personality_wake_invocation_logs
+             WHERE owner_principal_kind = $1
+               AND owner_principal_id = $2
+               AND owner_org_id = $3
+               AND personality_instance_id = $4
+               AND wake_entry_id = $5
+               AND change_event_seq = $6
+             ORDER BY log_seq ASC"#,
+        owner_kind as OwnerPrincipalKind,
+        owner_principal_id,
+        owner_org_id,
+        personality_instance_id,
+        wake_entry_id,
+        change_event_seq,
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(map_err)
+    .map(|rows| {
+        rows.into_iter()
+            .map(|log| WakeInvocationLogRow {
+                log_seq: i64::from(log.log_seq),
+                at: log.at,
+                phase: log.phase,
+                tool_id: log.tool_id,
+                status: log.status,
+                duration_ms: log.duration_ms.and_then(|v| u64::try_from(v).ok()),
+                message_tail: log.message_tail,
+            })
+            .collect()
+    })
 }
