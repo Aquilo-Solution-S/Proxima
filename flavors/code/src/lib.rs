@@ -99,6 +99,7 @@ proxima_core::proxima_flavor! {
         mcp::CodeRetryExecutionRequestTool,
         mcp::CodeEmitWorkspaceReviewTool,
         mcp::CodeEmitCorrectionExecutionRequestTool,
+        mcp::CodeMergeWorkspaceRunTool,
     ],
     workspace_runner = workspace_runner::CodeWorkspaceRunner,
     workspace_triggers = [
