@@ -128,3 +128,43 @@ pub async fn append_review_derived_edge(
     .map_err(McpToolError::Storage)?;
     Ok(edge_id)
 }
+
+/// Append a typed `proxima-code/reviews` edge from a review to the workspace run it reviews.
+///
+/// # Errors
+///
+/// Returns an error if the relation is not registered or edge insertion fails.
+pub async fn append_review_reviews_edge(
+    tx: &mut Transaction<'_, Postgres>,
+    ctx: &McpToolCtx,
+    review_memory_id: MemoryId,
+    run_memory_id: MemoryId,
+) -> Result<Uuid, McpToolError> {
+    let relation = ctx
+        .registry
+        .resolve_relation(super::CODE_REVIEWS_RELATION)
+        .ok_or_else(|| {
+            McpToolError::Other("proxima-code/reviews relation not registered".into())
+        })?;
+    let edge_id = Uuid::now_v7();
+    append_edge_in_tx(
+        tx,
+        &EdgeDraft {
+            edge_id,
+            relation,
+            source_kind: EntityKind::Fact,
+            source_memory_id: Some(review_memory_id.into_inner()),
+            source_goal_id: None,
+            target_kind: EntityKind::Fact,
+            target_memory_id: Some(run_memory_id.into_inner()),
+            target_goal_id: None,
+            authorship_kind: EdgeAuthorshipKind::ExternalAgent,
+            authorship_owner_memory_id: ctx.caller_self_perspective.map(MemoryId::into_inner),
+            owner: &ctx.owner,
+        },
+        None,
+    )
+    .await
+    .map_err(McpToolError::Storage)?;
+    Ok(edge_id)
+}

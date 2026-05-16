@@ -8,7 +8,8 @@ use proxima_core::{EdgeId, MemoryId};
 use super::MAX_WORKSPACE_VETO_ROUNDS;
 use super::helpers::{correction_instructions, correction_title, validate_findings};
 use super::ingest::{
-    append_review_derived_edge, ingest_workspace_review, insert_workspace_review_sidecar,
+    append_review_derived_edge, append_review_reviews_edge, ingest_workspace_review,
+    insert_workspace_review_sidecar,
 };
 use super::loaders::{
     find_execution_request_for_run, load_latest_rejected_review_for_run, load_workspace_decision,
@@ -128,7 +129,7 @@ impl McpTool for CodeEmitWorkspaceReviewTool {
                 let authored_edge_id =
                     append_authored_edge(&mut tx, &ctx, verifier_root, outcome.memory_id).await?;
                 let derived_edge_ids = vec![
-                    append_review_derived_edge(
+                    append_review_reviews_edge(
                         &mut tx,
                         &ctx,
                         outcome.memory_id,
