@@ -27,6 +27,8 @@ const WORKSPACE_DECISION_OBJECT_SCHEMA: &str = "proxima-code/workspace-decision-
 const WORKSPACE_DECISION_WHOLE_SCHEMA: &str = "proxima-code/workspace-decision-whole-v1";
 const WORKSPACE_RUN_DIFF_MAX_BYTES: usize = 96 * 1024;
 
+pub const CODE_DECIDES_RELATION: &str = "proxima-code/decides";
+
 #[derive(Debug, thiserror::Error)]
 pub enum WorkspaceFlowError {
     #[error("database error: {0}")]

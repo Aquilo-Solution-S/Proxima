@@ -23,6 +23,7 @@ pub use ingest::{
 };
 pub use local_git_source::{IndexError, IndexReport, IngestProgress, LocalGitSource};
 pub use migrations::migrator;
+pub use mcp::CODE_REVIEWS_RELATION;
 pub use payloads::{
     CodeChunkV1, CodeCommitSummarizerSelfV1, CodeDevelopmentPerspectiveV1, CodeEngineerSelfV1,
     CommitSummaryV1, CommitV1, EdgeCallsV1, ExecutionRequestV1, FileRevisionV1, FileState,
@@ -39,8 +40,8 @@ pub use repos::{
     sweep_orphaned_runs, update_cursor,
 };
 pub use workspace_flow::{
-    WorkspaceFlowError, emit_workspace_decision, get_workspace_run_diff, list_workspace_reviews,
-    list_workspace_runs, merge_workspace_run,
+    CODE_DECIDES_RELATION, WorkspaceFlowError, emit_workspace_decision, get_workspace_run_diff,
+    list_workspace_reviews, list_workspace_runs, merge_workspace_run,
 };
 
 use proxima_core::{
@@ -89,6 +90,20 @@ proxima_core::proxima_flavor! {
             EntityKindMask::perspective(),
             EntityKindMask::fact(),
             AuthorshipKindMask::external_agent(),
+        ),
+        RelationDescriptor::substrate(
+            mcp::workspace_review::CODE_REVIEWS_RELATION,
+            RelationClass::Provenance,
+            EntityKindMask::fact(),
+            EntityKindMask::fact(),
+            AuthorshipKindMask::external_agent(),
+        ),
+        RelationDescriptor::substrate(
+            workspace_flow::CODE_DECIDES_RELATION,
+            RelationClass::Provenance,
+            EntityKindMask::fact(),
+            EntityKindMask::fact(),
+            AuthorshipKindMask::event_source(),
         ),
     ],
     mcp_tools = [
@@ -149,6 +164,8 @@ mod tests {
         let relation_ids: HashSet<_> = relations.iter().map(|r| r.relation.as_str()).collect();
         assert!(relation_ids.contains("proxima-code/calls"));
         assert!(relation_ids.contains("proxima-code/targets-execution-request"));
+        assert!(relation_ids.contains("proxima-code/reviews"));
+        assert!(relation_ids.contains("proxima-code/decides"));
         assert!(relation_ids.contains(CORE_DERIVED_FROM_RELATION));
 
         let calls = frozen
