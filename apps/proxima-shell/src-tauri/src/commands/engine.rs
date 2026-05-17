@@ -8,14 +8,17 @@ use proxima_core::verbs::event_ingest::{
     CitationMappingHint, CitedObjectHint, EventDraft, EventIngestOutcome,
 };
 use proxima_core::verbs::goal_write::{GoalDraft, GoalWriteOutcome};
-use proxima_core::verbs::query::{QueryRequest, QueryResponse};
+use proxima_core::verbs::query::{
+    EdgeRow as EngineEdgeRow, GoalRow, MemoryRow as EngineMemoryRow, QueryRequest,
+    QueryResponse as EngineQueryResponse,
+};
 use proxima_core::verbs::schema::{SchemaRequest, SchemaResponse};
 use proxima_core::verbs::subscribe::SubscribeRequest;
 use proxima_core::{
-    CORE_INSPIRES_RELATION, ChangeEvent, EdgeAuthorshipKind, Engine, EntityKind, FactPayload,
-    GoalId, ListWakeInvocationsRequest, Owner, OwnerPrincipalKind, PersonalityInstanceId,
-    PersonalityInstanceRow, SchemaId, SchemaVersion, SourceBatchId, SourceId,
-    WakeInvocationLogRow, WakeInvocationRow,
+    CORE_INSPIRES_RELATION, ChangeEvent, EdgeAuthorshipKind, Engine, EntityKind, EntityRef,
+    FactPayload, GoalId, ListWakeInvocationsRequest, MemoryId, Owner, OwnerPrincipalKind,
+    PersonalityInstanceId, PersonalityInstanceRow, SchemaId, SchemaVersion, SourceBatchId,
+    SourceId, WakeInvocationLogRow, WakeInvocationRow,
 };
 use proxima_flavor_goal::GoalActivatedV1;
 use proxima_storage_pg::PgStorage;
@@ -215,6 +218,85 @@ pub async fn schema(engine: State<'_, Arc<Engine>>) -> Result<SchemaResponse, Pr
     .await
 }
 
+/// FE-facing projection of the engine `MemoryRow`. v1 keeps the
+/// same shape as the engine type — every field is read by at least
+/// one FE view (`payload` everywhere; `owner` in
+/// `views/atlas/inspector.tsx` and `views/surface.tsx`'s
+/// goal-to-memory synthesis). This wrapper exists as a wire-diet
+/// hook: when the FE consolidates `owner` to the snapshot level we
+/// can drop the field here without touching the engine type (whose
+/// gRPC consumer at `crates/wire-grpc/src/convert/rows.rs` still
+/// requires it).
+#[derive(Debug, Clone, serde::Serialize, specta::Type)]
+pub struct MemoryRow {
+    pub id: MemoryId,
+    pub kind: EntityKind,
+    pub schema_id: SchemaId,
+    pub schema_version: SchemaVersion,
+    pub owner: Owner,
+    pub payload: Vec<u8>,
+}
+
+impl From<EngineMemoryRow> for MemoryRow {
+    fn from(r: EngineMemoryRow) -> Self {
+        Self {
+            id: r.id,
+            kind: r.kind,
+            schema_id: r.schema_id,
+            schema_version: r.schema_version,
+            owner: r.owner,
+            payload: r.payload,
+        }
+    }
+}
+
+/// FE-facing projection of the engine `EdgeRow`. Drops `owner`,
+/// which the FE never reads (verified against
+/// `perf-logs/2026-05-16_14-31-40/ipc-fields.json` plus a grep across
+/// the FE source). `payload` is kept — `views/surface-events.tsx`
+/// displays its byte length in the event detail card.
+#[derive(Debug, Clone, serde::Serialize, specta::Type)]
+pub struct EdgeRow {
+    pub id: uuid::Uuid,
+    pub relation: String,
+    pub relation_class: String,
+    pub source: EntityRef,
+    pub target: EntityRef,
+    pub payload: Vec<u8>,
+}
+
+impl From<EngineEdgeRow> for EdgeRow {
+    fn from(r: EngineEdgeRow) -> Self {
+        Self {
+            id: r.id,
+            relation: r.relation,
+            relation_class: r.relation_class,
+            source: r.source,
+            target: r.target,
+            payload: r.payload,
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Serialize, specta::Type)]
+pub struct QueryResponse {
+    pub memories: Vec<MemoryRow>,
+    pub goals: Vec<GoalRow>,
+    pub edges: Vec<EdgeRow>,
+    pub seq_high_water: Option<uuid::Uuid>,
+}
+
+impl From<EngineQueryResponse> for QueryResponse {
+    fn from(r: EngineQueryResponse) -> Self {
+        Self {
+            memories: r.memories.into_iter().map(MemoryRow::from).collect(),
+            goals: r.goals,
+            edges: r.edges.into_iter().map(EdgeRow::from).collect(),
+            seq_high_water: r.seq_high_water,
+        }
+    }
+}
+
 #[tauri::command]
 #[specta::specta]
 pub async fn query(
@@ -223,7 +305,10 @@ pub async fn query(
 ) -> Result<QueryResponse, ProtocolError> {
     let req_bytes = crate::perf::ipc::req_size(&req);
     crate::perf::ipc::record("query", req_bytes, async move {
-        engine.query(&Credentials::None, &req).await
+        engine
+            .query(&Credentials::None, &req)
+            .await
+            .map(QueryResponse::from)
     })
     .await
 }
