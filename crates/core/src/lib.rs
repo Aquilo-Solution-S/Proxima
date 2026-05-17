@@ -1,4 +1,5 @@
 //! Proxima engine core.
+pub mod approval;
 pub mod auth;
 pub mod canonical_json;
 pub mod citations;
@@ -9,6 +10,7 @@ pub mod flavor;
 pub mod harness;
 pub mod ids;
 pub mod inference;
+pub mod inquiry;
 pub mod llm;
 pub mod mcp;
 pub mod models;
@@ -22,6 +24,7 @@ pub mod storage;
 pub mod verbs;
 pub mod wake;
 
+pub use approval::*;
 pub use auth::*;
 pub use canonical_json::canonical_json;
 pub use citations::*;
@@ -37,6 +40,7 @@ pub use inference::{
     RegisterInferenceTargetRequest, RegisterInferenceTargetResponse, RemoveInferenceTargetRequest,
     RemoveInferenceTargetResponse,
 };
+pub use inquiry::*;
 pub use llm::*;
 pub use mcp::{
     Handle, HandleTable, McpAuthorContext, McpCallFn, McpTool, McpToolCtx, McpToolDescriptor,

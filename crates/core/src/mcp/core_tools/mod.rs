@@ -5,6 +5,7 @@
 //! See docs/superpowers/specs/2026-05-10-personality-mcp-crud-design.md.
 
 pub mod add_wake_entry;
+pub mod approval;
 pub mod audit;
 pub mod payload;
 pub mod remove_wake_entry;
@@ -16,6 +17,7 @@ pub mod wake_entry_input;
 pub mod bind_inference_tier;
 pub mod get_graph;
 pub mod get_personality;
+pub mod inquiry;
 pub mod instantiate_personality;
 pub mod list_edge_types;
 pub mod list_inference_targets;
@@ -30,10 +32,12 @@ pub mod remove_inference_target;
 pub mod tombstone_personality;
 
 pub use add_wake_entry::AddWakeEntryTool;
+pub use approval::{EmitApprovalPolicyTool, EmitApprovalVoteTool, TryEmitApprovalDecisionTool};
 pub use audit::{AuditEmit, emit_personality_config_changed};
 pub use bind_inference_tier::BindInferenceTierTool;
 pub use get_graph::GetGraphTool;
 pub use get_personality::GetPersonalityTool;
+pub use inquiry::{EmitDirectedAnswerTool, EmitDirectedQuestionTool, ListInquiryTargetsTool};
 pub use instantiate_personality::InstantiatePersonalityTool;
 pub use list_edge_types::ListEdgeTypesTool;
 pub use list_inference_targets::ListInferenceTargetsTool;
@@ -79,4 +83,10 @@ pub(crate) fn register_all(registry: &mut crate::FlavorRegistry) {
     registry.add_substrate_mcp_tool::<ListWorkspaceToolsTool>();
     registry.add_substrate_mcp_tool::<ListSchemasTool>();
     registry.add_substrate_mcp_tool::<ListEdgeTypesTool>();
+    registry.add_substrate_mcp_tool::<EmitApprovalPolicyTool>();
+    registry.add_substrate_mcp_tool::<EmitApprovalVoteTool>();
+    registry.add_substrate_mcp_tool::<TryEmitApprovalDecisionTool>();
+    registry.add_substrate_mcp_tool::<ListInquiryTargetsTool>();
+    registry.add_substrate_mcp_tool::<EmitDirectedQuestionTool>();
+    registry.add_substrate_mcp_tool::<EmitDirectedAnswerTool>();
 }

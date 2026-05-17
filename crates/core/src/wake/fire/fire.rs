@@ -5,7 +5,6 @@ use std::time::Duration;
 
 use uuid::Uuid;
 
-use crate::MemoryId;
 use crate::engine::Engine;
 use crate::error::ProtocolError;
 use crate::harness::{HarnessAdapter, HarnessContext, HarnessProgram};
@@ -23,6 +22,7 @@ use crate::wake::trace::emit::{
     ProviderTargetBuildError, TraceTiming, emit_trace_from_failed_preflight,
     emit_trace_from_outcome, provider_target_from_config,
 };
+use crate::{MemoryId, inquiry};
 
 use super::finalize::{
     append_session_artifact_log, append_session_log_error_if_present, finalize,
@@ -108,7 +108,7 @@ pub async fn fire_wake_entry(
     .await;
 
     let started_at = time::OffsetDateTime::now_utc();
-    let context_params = match build_context_params(&wake_context) {
+    let context_params = match build_context_params(engine, &input, &wake_context).await {
         Ok(params) => params,
         Err(err) => {
             let timing = TraceTiming {
@@ -620,27 +620,46 @@ fn build_system_prompt(
     prompt
 }
 
-fn build_context_params(
+async fn build_context_params(
+    engine: &Engine,
+    input: &FireWakeEntryInput,
     wake_context: &WakeContext,
-) -> Result<HashMap<String, serde_json::Value>, serde_json::Error> {
+) -> Result<HashMap<String, serde_json::Value>, ProtocolError> {
     let mut context_params: HashMap<String, serde_json::Value> = HashMap::new();
     context_params.insert(
         "root_perspective".into(),
-        serde_json::to_value(&wake_context.root_perspective)?,
+        context_value(&wake_context.root_perspective)?,
     );
     context_params.insert(
         "active_goals".into(),
-        serde_json::to_value(&wake_context.active_goals)?,
+        context_value(&wake_context.active_goals)?,
     );
     context_params.insert(
         "trigger_event".into(),
-        serde_json::to_value(&wake_context.trigger_event)?,
+        context_value(&wake_context.trigger_event)?,
     );
     context_params.insert(
         "triggering_memory".into(),
-        serde_json::to_value(&wake_context.triggering_memory)?,
+        context_value(&wake_context.triggering_memory)?,
+    );
+    let coordination_context = inquiry::build_wake_coordination_context(
+        engine,
+        &input.owner,
+        input.personality_instance_id,
+        &input.wake_entry,
+    )
+    .await
+    .map_err(|err| ProtocolError::internal(format!("build_wake_coordination_context: {err}")))?;
+    context_params.insert(
+        "coordination_context".into(),
+        context_value(&coordination_context)?,
     );
     Ok(context_params)
+}
+
+fn context_value<T: serde::Serialize>(value: T) -> Result<serde_json::Value, ProtocolError> {
+    serde_json::to_value(value)
+        .map_err(|err| ProtocolError::internal(format!("serialize wake context: {err}")))
 }
 
 /// Mirror the harness JSONL into `~/.proxima/wake-runs/<owner>/<invocation_id>/worker-session.jsonl`
