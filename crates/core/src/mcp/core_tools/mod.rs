@@ -37,7 +37,9 @@ pub use audit::{AuditEmit, emit_personality_config_changed};
 pub use bind_inference_tier::BindInferenceTierTool;
 pub use get_graph::GetGraphTool;
 pub use get_personality::GetPersonalityTool;
-pub use inquiry::{EmitDirectedAnswerTool, EmitDirectedQuestionTool, ListInquiryTargetsTool};
+pub use inquiry::{
+    EmitDirectedAnswerTool, EmitDirectedQuestionTool, GetInquiryThreadTool, ListInquiryTargetsTool,
+};
 pub use instantiate_personality::InstantiatePersonalityTool;
 pub use list_edge_types::ListEdgeTypesTool;
 pub use list_inference_targets::ListInferenceTargetsTool;
@@ -87,6 +89,7 @@ pub(crate) fn register_all(registry: &mut crate::FlavorRegistry) {
     registry.add_substrate_mcp_tool::<EmitApprovalVoteTool>();
     registry.add_substrate_mcp_tool::<TryEmitApprovalDecisionTool>();
     registry.add_substrate_mcp_tool::<ListInquiryTargetsTool>();
+    registry.add_substrate_mcp_tool::<GetInquiryThreadTool>();
     registry.add_substrate_mcp_tool::<EmitDirectedQuestionTool>();
     registry.add_substrate_mcp_tool::<EmitDirectedAnswerTool>();
 }
