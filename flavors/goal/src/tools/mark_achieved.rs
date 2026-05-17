@@ -1,6 +1,8 @@
 use proxima_core::mcp::{McpTool, McpToolCtx, McpToolError};
 use proxima_core::verbs::goal_write::{GoalAuthorship, GoalDraft, GoalState, SystemOrigin};
-use proxima_core::{EdgeAuthorshipKind, EdgeId, EntityKind, GoalId, MemoryId, OwnerPrincipalKind, ToolId};
+use proxima_core::{
+    EdgeAuthorshipKind, EdgeId, EntityKind, GoalId, MemoryId, OwnerPrincipalKind, ToolId,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -175,7 +177,13 @@ fn skipped_output(supersedes: &str, reason: impl Into<String>) -> MarkAchievedOu
 }
 
 fn resolve_goal_ref(ctx: &McpToolCtx, value: &str) -> Result<GoalId, McpToolError> {
-    ctx.resolve_goal(value)
+    match ctx.resolve_goal(value) {
+        Ok(goal_id) => Ok(goal_id),
+        Err(resolve_err) => value
+            .parse::<uuid::Uuid>()
+            .map(GoalId::new)
+            .map_err(|_| resolve_err),
+    }
 }
 
 async fn resolve_evidence_refs(
@@ -185,10 +193,20 @@ async fn resolve_evidence_refs(
 ) -> Result<Vec<EvidenceRef>, McpToolError> {
     let mut out = Vec::with_capacity(evidence.len());
     for value in evidence {
-        let memory_id = ctx.resolve_memory(value)?;
+        let memory_id = resolve_memory_ref(ctx, value)?;
         out.push(load_evidence_ref(tx, ctx, memory_id, value).await?);
     }
     Ok(out)
+}
+
+fn resolve_memory_ref(ctx: &McpToolCtx, value: &str) -> Result<MemoryId, McpToolError> {
+    match ctx.resolve_memory(value) {
+        Ok(memory_id) => Ok(memory_id),
+        Err(resolve_err) => value
+            .parse::<uuid::Uuid>()
+            .map(MemoryId::new)
+            .map_err(|_| resolve_err),
+    }
 }
 
 async fn load_evidence_ref(

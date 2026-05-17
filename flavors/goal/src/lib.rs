@@ -32,6 +32,7 @@ proxima_core::proxima_flavor! {
         tools::AcceptTool,
         tools::ModifyTool,
         tools::DeclineTool,
+        tools::DecomposeTool,
         tools::MarkAchievedTool,
     ],
 }
