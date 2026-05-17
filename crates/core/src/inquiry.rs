@@ -6,6 +6,10 @@ use serde::{Deserialize, Serialize};
 use sqlx::{Postgres, Transaction};
 use time::OffsetDateTime;
 
+use crate::approval::{
+    ApprovalDecision, ApprovalEligibleVoter, ApprovalRequirement, ApprovalTargetKind,
+    ApprovalVoteVerdict, ApprovalVoterKind,
+};
 use crate::mcp::{McpTool, McpToolCtx, McpToolError};
 use crate::personality::{
     PersonalityInstanceId, PersonalityStatus, WakeEntryRow, WakeEntryTriggerKind,
@@ -13,8 +17,10 @@ use crate::personality::{
 };
 use crate::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
 use crate::{
-    CORE_ANSWERS_QUESTION_RELATION, CORE_RECEIVES_DIRECTED_QUESTION_RELATION, EdgeAuthorshipKind,
-    EdgeId, Engine, EntityKind, FactPayload, MemoryId, Owner, OwnerPrincipalKind, Principal,
+    CORE_ANSWERS_QUESTION_RELATION, CORE_DERIVED_FROM_RELATION,
+    CORE_HAS_APPROVAL_DECISION_RELATION, CORE_HAS_APPROVAL_POLICY_RELATION,
+    CORE_RECEIVES_DIRECTED_QUESTION_RELATION, CORE_VOTES_ON_RELATION, EdgeAuthorshipKind, EdgeId,
+    Engine, EntityKind, FactPayload, GoalId, MemoryId, Owner, OwnerPrincipalKind, Principal,
     SchemaId, SchemaVersion, SourceBatchId, SourceId, StorageError,
 };
 
@@ -111,6 +117,129 @@ pub struct ListInquiryTargetsOutput {
     pub targets: Vec<InquiryTargetOutput>,
 }
 
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct GetInquiryThreadArgs {
+    #[serde(default)]
+    pub thread_key: Option<String>,
+    #[serde(default)]
+    pub anchor: Option<String>,
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct GetInquiryThreadOutput {
+    pub thread_key: String,
+    pub questions: Vec<ThreadQuestion>,
+    pub answers: Vec<ThreadAnswer>,
+    pub approval_policies: Vec<ThreadApprovalPolicy>,
+    pub approval_votes: Vec<ThreadApprovalVote>,
+    pub approval_decisions: Vec<ThreadApprovalDecision>,
+    pub edges: Vec<ThreadEdge>,
+    pub open_items: ThreadOpenItems,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ThreadQuestion {
+    pub handle: String,
+    pub thread_key: String,
+    pub question: String,
+    pub target_personality: String,
+    pub target_self_perspective: String,
+    pub asked_by_self_perspective: String,
+    pub parent_question: Option<String>,
+    pub context_memories: Vec<String>,
+    pub context_goals: Vec<String>,
+    pub idempotency_key: String,
+    #[serde(with = "time::serde::rfc3339")]
+    pub asked_at: OffsetDateTime,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ThreadAnswer {
+    pub handle: String,
+    pub question: String,
+    pub thread_key: String,
+    pub answer: String,
+    pub answered_by_personality: String,
+    pub answered_by_self_perspective: String,
+    pub context_memories_used: Vec<String>,
+    pub idempotency_key: String,
+    #[serde(with = "time::serde::rfc3339")]
+    pub answered_at: OffsetDateTime,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ThreadApprovalPolicy {
+    pub handle: String,
+    pub target_kind: ApprovalTargetKind,
+    pub target: String,
+    pub title: String,
+    pub summary: String,
+    pub eligible_voters: Vec<ApprovalEligibleVoter>,
+    pub requirements: Vec<ApprovalRequirement>,
+    pub idempotency_key: String,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ThreadApprovalVote {
+    pub handle: String,
+    pub policy: String,
+    pub voter_key: String,
+    pub voter_kind: ApprovalVoterKind,
+    pub role: Option<String>,
+    pub personality: Option<String>,
+    pub self_perspective: Option<String>,
+    pub master_token_id: Option<uuid::Uuid>,
+    pub verdict: ApprovalVoteVerdict,
+    pub rationale: String,
+    pub idempotency_key: String,
+    #[serde(with = "time::serde::rfc3339")]
+    pub voted_at: OffsetDateTime,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ThreadApprovalDecision {
+    pub handle: String,
+    pub policy: String,
+    pub target_kind: ApprovalTargetKind,
+    pub target: String,
+    pub decision: ApprovalDecision,
+    pub reason: String,
+    pub counted_votes: Vec<ThreadApprovalCountedVote>,
+    pub idempotency_key: String,
+    #[serde(with = "time::serde::rfc3339")]
+    pub decided_at: OffsetDateTime,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ThreadApprovalCountedVote {
+    pub vote: String,
+    pub voter_key: String,
+    pub verdict: ApprovalVoteVerdict,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ThreadEdge {
+    pub handle: String,
+    pub relation: String,
+    pub source_kind: String,
+    pub source: String,
+    pub target_kind: String,
+    pub target: String,
+    pub authorship_kind: String,
+    #[serde(with = "time::serde::rfc3339")]
+    pub created_at: OffsetDateTime,
+}
+
+#[derive(Debug, Default, Serialize)]
+pub struct ThreadOpenItems {
+    pub unanswered_questions: Vec<String>,
+    pub undecided_policies: Vec<String>,
+}
+
 #[derive(Debug, Default)]
 pub struct ListInquiryTargetsTool;
 
@@ -135,6 +264,36 @@ impl McpTool for ListInquiryTargetsTool {
                 caller_self_perspective: ctx.format_memory(caller_self),
                 targets,
             })
+        })
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct GetInquiryThreadTool;
+
+impl McpTool for GetInquiryThreadTool {
+    const NAME: &'static str = "core/get_inquiry_thread";
+    const DESCRIPTION: &'static str = "Return the graph-derived directed inquiry and approval thread for one thread key or anchor.";
+
+    type Args = GetInquiryThreadArgs;
+    type Output = GetInquiryThreadOutput;
+
+    fn call(
+        ctx: McpToolCtx,
+        args: GetInquiryThreadArgs,
+    ) -> BoxFuture<'static, Result<GetInquiryThreadOutput, McpToolError>> {
+        Box::pin(async move {
+            let thread_key = match (args.thread_key.as_deref(), args.anchor.as_deref()) {
+                (Some(_), Some(_)) | (None, None) => {
+                    return Err(McpToolError::InvalidInput(
+                        "exactly one of thread_key or anchor is required".into(),
+                    ));
+                }
+                (Some(raw), None) => normalize_text("thread_key", raw, 1, 240)?,
+                (None, Some(anchor)) => resolve_thread_key_from_anchor(&ctx, anchor).await?,
+            };
+            let limit = args.limit.unwrap_or(100).clamp(1, 200);
+            load_inquiry_thread(&ctx, thread_key, i64::from(limit)).await
         })
     }
 }
@@ -580,6 +739,929 @@ async fn resolve_personality_for_self(
                 "caller_self_perspective is not an active personality".into(),
             )
         })
+}
+
+#[derive(Clone)]
+struct LoadedQuestion {
+    memory_id: MemoryId,
+    payload: DirectedQuestionV1,
+}
+
+#[derive(Clone)]
+struct LoadedAnswer {
+    memory_id: MemoryId,
+    payload: DirectedAnswerV1,
+}
+
+#[derive(Clone)]
+struct LoadedApprovalPolicy {
+    memory_id: MemoryId,
+    target_kind: ApprovalTargetKind,
+    target_memory_id: Option<uuid::Uuid>,
+    target_goal_id: Option<uuid::Uuid>,
+    title: String,
+    summary: String,
+    eligible_voters: Vec<ApprovalEligibleVoter>,
+    requirements: Vec<ApprovalRequirement>,
+    idempotency_key: String,
+    created_at: OffsetDateTime,
+}
+
+#[derive(Clone)]
+struct LoadedApprovalVote {
+    memory_id: MemoryId,
+    policy_memory_id: uuid::Uuid,
+    voter_key: String,
+    voter_kind: ApprovalVoterKind,
+    role: Option<String>,
+    personality_instance_id: Option<uuid::Uuid>,
+    self_perspective_memory_id: Option<uuid::Uuid>,
+    master_token_id: Option<uuid::Uuid>,
+    verdict: ApprovalVoteVerdict,
+    rationale: String,
+    idempotency_key: String,
+    voted_at: OffsetDateTime,
+}
+
+#[derive(Clone)]
+struct LoadedApprovalDecision {
+    memory_id: MemoryId,
+    policy_memory_id: uuid::Uuid,
+    target_kind: ApprovalTargetKind,
+    target_memory_id: Option<uuid::Uuid>,
+    target_goal_id: Option<uuid::Uuid>,
+    decision: ApprovalDecision,
+    reason: String,
+    counted_votes: Vec<ThreadApprovalCountedVoteRaw>,
+    idempotency_key: String,
+    decided_at: OffsetDateTime,
+}
+
+#[derive(Clone, Deserialize)]
+struct ThreadApprovalCountedVoteRaw {
+    vote_memory_id: uuid::Uuid,
+    voter_key: String,
+    verdict: ApprovalVoteVerdict,
+}
+
+struct LoadedThreadEdge {
+    edge_id: EdgeId,
+    relation: String,
+    source_kind: EntityKind,
+    source_memory_id: Option<uuid::Uuid>,
+    source_goal_id: Option<uuid::Uuid>,
+    target_kind: EntityKind,
+    target_memory_id: Option<uuid::Uuid>,
+    target_goal_id: Option<uuid::Uuid>,
+    authorship_kind: EdgeAuthorshipKind,
+    created_at: OffsetDateTime,
+}
+
+async fn load_inquiry_thread(
+    ctx: &McpToolCtx,
+    thread_key: String,
+    limit: i64,
+) -> Result<GetInquiryThreadOutput, McpToolError> {
+    let questions = load_thread_questions(ctx, &thread_key, limit).await?;
+    let answers = load_thread_answers(ctx, &thread_key, limit).await?;
+    let inquiry_memory_ids: Vec<_> = questions
+        .iter()
+        .map(|question| question.memory_id.into_inner())
+        .chain(answers.iter().map(|answer| answer.memory_id.into_inner()))
+        .collect();
+    let policies = load_thread_approval_policies(ctx, &inquiry_memory_ids, limit).await?;
+    let policy_ids: Vec<_> = policies
+        .iter()
+        .map(|policy| policy.memory_id.into_inner())
+        .collect();
+    let votes = load_thread_approval_votes(ctx, &policy_ids, limit).await?;
+    let decisions = load_thread_approval_decisions(ctx, &policy_ids, limit).await?;
+    let thread_memory_ids: Vec<_> = inquiry_memory_ids
+        .iter()
+        .copied()
+        .chain(policy_ids.iter().copied())
+        .chain(votes.iter().map(|vote| vote.memory_id.into_inner()))
+        .chain(
+            decisions
+                .iter()
+                .map(|decision| decision.memory_id.into_inner()),
+        )
+        .collect();
+    let edges = load_thread_edges(ctx, &thread_memory_ids, limit).await?;
+
+    let answered_question_ids: HashSet<_> = answers
+        .iter()
+        .map(|answer| answer.payload.question_memory_id)
+        .collect();
+    let decided_policy_ids: HashSet<_> = decisions
+        .iter()
+        .map(|decision| decision.policy_memory_id)
+        .collect();
+    let open_items = ThreadOpenItems {
+        unanswered_questions: questions
+            .iter()
+            .filter(|question| !answered_question_ids.contains(&question.memory_id.into_inner()))
+            .map(|question| ctx.format_memory(question.memory_id))
+            .collect(),
+        undecided_policies: policies
+            .iter()
+            .filter(|policy| !decided_policy_ids.contains(&policy.memory_id.into_inner()))
+            .map(|policy| ctx.format_memory(policy.memory_id))
+            .collect(),
+    };
+
+    Ok(GetInquiryThreadOutput {
+        thread_key,
+        questions: questions
+            .into_iter()
+            .map(|question| render_thread_question(ctx, question))
+            .collect(),
+        answers: answers
+            .into_iter()
+            .map(|answer| render_thread_answer(ctx, answer))
+            .collect(),
+        approval_policies: policies
+            .into_iter()
+            .map(|policy| render_thread_policy(ctx, policy))
+            .collect::<Result<_, _>>()?,
+        approval_votes: votes
+            .into_iter()
+            .map(|vote| render_thread_vote(ctx, vote))
+            .collect(),
+        approval_decisions: decisions
+            .into_iter()
+            .map(|decision| render_thread_decision(ctx, decision))
+            .collect::<Result<_, _>>()?,
+        edges: edges
+            .into_iter()
+            .map(|edge| render_thread_edge(ctx, edge))
+            .collect::<Result<_, _>>()?,
+        open_items,
+    })
+}
+
+async fn resolve_thread_key_from_anchor(
+    ctx: &McpToolCtx,
+    anchor: &str,
+) -> Result<String, McpToolError> {
+    let memory_id = ctx.resolve_memory(anchor)?;
+    if let Some(thread_key) = thread_key_for_inquiry_memory(ctx, memory_id.into_inner()).await? {
+        return Ok(thread_key);
+    }
+    if let Some(policy_id) = policy_id_for_vote_or_decision(ctx, memory_id.into_inner()).await? {
+        return thread_key_for_policy(ctx, policy_id).await;
+    }
+    thread_key_for_policy(ctx, memory_id.into_inner()).await
+}
+
+async fn thread_key_for_policy(
+    ctx: &McpToolCtx,
+    policy_memory_id: uuid::Uuid,
+) -> Result<String, McpToolError> {
+    let (owner_kind, owner_id, owner_org_id) = owner_columns(&ctx.owner);
+    let target_memory_id: Option<Option<uuid::Uuid>> = sqlx::query_scalar(
+        "SELECT p.target_memory_id
+           FROM proxima_core.approval_policy_v1 p
+           JOIN proxima_core.memories m USING (memory_id)
+          WHERE p.memory_id = $1
+            AND p.target_kind = 'fact'
+            AND m.owner_principal_kind = $2
+            AND m.owner_principal_id = $3
+            AND m.owner_org_id = $4",
+    )
+    .bind(policy_memory_id)
+    .bind(owner_kind)
+    .bind(owner_id)
+    .bind(owner_org_id)
+    .fetch_optional(&ctx.pool)
+    .await
+    .map_err(map_sql)?;
+    let Some(Some(target_memory_id)) = target_memory_id else {
+        return Err(McpToolError::InvalidInput(
+            "anchor is not an inquiry thread Fact".into(),
+        ));
+    };
+    thread_key_for_inquiry_memory(ctx, target_memory_id)
+        .await?
+        .ok_or_else(|| {
+            McpToolError::InvalidInput("anchor target is not in an inquiry thread".into())
+        })
+}
+
+async fn policy_id_for_vote_or_decision(
+    ctx: &McpToolCtx,
+    memory_id: uuid::Uuid,
+) -> Result<Option<uuid::Uuid>, McpToolError> {
+    let (owner_kind, owner_id, owner_org_id) = owner_columns(&ctx.owner);
+    sqlx::query_scalar(
+        "SELECT policy_memory_id
+           FROM proxima_core.approval_vote_v1 v
+           JOIN proxima_core.memories m USING (memory_id)
+          WHERE v.memory_id = $1
+            AND m.owner_principal_kind = $2
+            AND m.owner_principal_id = $3
+            AND m.owner_org_id = $4
+         UNION ALL
+         SELECT policy_memory_id
+           FROM proxima_core.approval_decision_v1 d
+           JOIN proxima_core.memories m USING (memory_id)
+          WHERE d.memory_id = $1
+            AND m.owner_principal_kind = $2
+            AND m.owner_principal_id = $3
+            AND m.owner_org_id = $4
+          LIMIT 1",
+    )
+    .bind(memory_id)
+    .bind(owner_kind)
+    .bind(owner_id)
+    .bind(owner_org_id)
+    .fetch_optional(&ctx.pool)
+    .await
+    .map_err(map_sql)
+}
+
+async fn thread_key_for_inquiry_memory(
+    ctx: &McpToolCtx,
+    memory_id: uuid::Uuid,
+) -> Result<Option<String>, McpToolError> {
+    let (owner_kind, owner_id, owner_org_id) = owner_columns(&ctx.owner);
+    sqlx::query_scalar(
+        "SELECT q.thread_key
+           FROM proxima_core.directed_question_v1 q
+           JOIN proxima_core.memories m USING (memory_id)
+          WHERE q.memory_id = $1
+            AND m.owner_principal_kind = $2
+            AND m.owner_principal_id = $3
+            AND m.owner_org_id = $4
+         UNION ALL
+         SELECT a.thread_key
+           FROM proxima_core.directed_answer_v1 a
+           JOIN proxima_core.memories m USING (memory_id)
+          WHERE a.memory_id = $1
+            AND m.owner_principal_kind = $2
+            AND m.owner_principal_id = $3
+            AND m.owner_org_id = $4
+          LIMIT 1",
+    )
+    .bind(memory_id)
+    .bind(owner_kind)
+    .bind(owner_id)
+    .bind(owner_org_id)
+    .fetch_optional(&ctx.pool)
+    .await
+    .map_err(map_sql)
+}
+
+async fn load_thread_questions(
+    ctx: &McpToolCtx,
+    thread_key: &str,
+    limit: i64,
+) -> Result<Vec<LoadedQuestion>, McpToolError> {
+    let (owner_kind, owner_id, owner_org_id) = owner_columns(&ctx.owner);
+    let rows: Vec<(
+        uuid::Uuid,
+        String,
+        String,
+        uuid::Uuid,
+        uuid::Uuid,
+        uuid::Uuid,
+        Option<uuid::Uuid>,
+        Vec<uuid::Uuid>,
+        Vec<uuid::Uuid>,
+        String,
+        OffsetDateTime,
+    )> = sqlx::query_as(
+        "SELECT q.memory_id, q.thread_key, q.question, q.target_personality_instance_id,
+                q.target_self_perspective_memory_id, q.asked_by_self_perspective_memory_id,
+                q.parent_question_memory_id, q.context_memory_ids, q.context_goal_ids,
+                q.idempotency_key, q.asked_at
+           FROM proxima_core.directed_question_v1 q
+           JOIN proxima_core.memories m USING (memory_id)
+          WHERE q.thread_key = $1
+            AND m.owner_principal_kind = $2
+            AND m.owner_principal_id = $3
+            AND m.owner_org_id = $4
+          ORDER BY q.asked_at ASC, q.memory_id ASC
+          LIMIT $5",
+    )
+    .bind(thread_key)
+    .bind(owner_kind)
+    .bind(owner_id)
+    .bind(owner_org_id)
+    .bind(limit)
+    .fetch_all(&ctx.pool)
+    .await
+    .map_err(map_sql)?;
+    Ok(rows
+        .into_iter()
+        .map(
+            |(
+                memory_id,
+                thread_key,
+                question,
+                target_personality_instance_id,
+                target_self_perspective_memory_id,
+                asked_by_self_perspective_memory_id,
+                parent_question_memory_id,
+                context_memory_ids,
+                context_goal_ids,
+                idempotency_key,
+                asked_at,
+            )| LoadedQuestion {
+                memory_id: MemoryId::new(memory_id),
+                payload: DirectedQuestionV1 {
+                    thread_key,
+                    question,
+                    target_personality_instance_id,
+                    target_self_perspective_memory_id,
+                    asked_by_self_perspective_memory_id,
+                    parent_question_memory_id,
+                    context_memory_ids,
+                    context_goal_ids,
+                    idempotency_key,
+                    asked_at,
+                },
+            },
+        )
+        .collect())
+}
+
+async fn load_thread_answers(
+    ctx: &McpToolCtx,
+    thread_key: &str,
+    limit: i64,
+) -> Result<Vec<LoadedAnswer>, McpToolError> {
+    let (owner_kind, owner_id, owner_org_id) = owner_columns(&ctx.owner);
+    let rows: Vec<(
+        uuid::Uuid,
+        uuid::Uuid,
+        String,
+        String,
+        uuid::Uuid,
+        uuid::Uuid,
+        Vec<uuid::Uuid>,
+        String,
+        OffsetDateTime,
+    )> = sqlx::query_as(
+        "SELECT a.memory_id, a.question_memory_id, a.thread_key, a.answer,
+                a.answered_by_personality_instance_id,
+                a.answered_by_self_perspective_memory_id,
+                a.context_memory_ids_used, a.idempotency_key, a.answered_at
+           FROM proxima_core.directed_answer_v1 a
+           JOIN proxima_core.memories m USING (memory_id)
+          WHERE a.thread_key = $1
+            AND m.owner_principal_kind = $2
+            AND m.owner_principal_id = $3
+            AND m.owner_org_id = $4
+          ORDER BY a.answered_at ASC, a.memory_id ASC
+          LIMIT $5",
+    )
+    .bind(thread_key)
+    .bind(owner_kind)
+    .bind(owner_id)
+    .bind(owner_org_id)
+    .bind(limit)
+    .fetch_all(&ctx.pool)
+    .await
+    .map_err(map_sql)?;
+    Ok(rows
+        .into_iter()
+        .map(
+            |(
+                memory_id,
+                question_memory_id,
+                thread_key,
+                answer,
+                answered_by_personality_instance_id,
+                answered_by_self_perspective_memory_id,
+                context_memory_ids_used,
+                idempotency_key,
+                answered_at,
+            )| LoadedAnswer {
+                memory_id: MemoryId::new(memory_id),
+                payload: DirectedAnswerV1 {
+                    question_memory_id,
+                    thread_key,
+                    answer,
+                    answered_by_personality_instance_id,
+                    answered_by_self_perspective_memory_id,
+                    context_memory_ids_used,
+                    idempotency_key,
+                    answered_at,
+                },
+            },
+        )
+        .collect())
+}
+
+async fn load_thread_approval_policies(
+    ctx: &McpToolCtx,
+    target_memory_ids: &[uuid::Uuid],
+    limit: i64,
+) -> Result<Vec<LoadedApprovalPolicy>, McpToolError> {
+    if target_memory_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let (owner_kind, owner_id, owner_org_id) = owner_columns(&ctx.owner);
+    let rows: Vec<(
+        uuid::Uuid,
+        ApprovalTargetKind,
+        Option<uuid::Uuid>,
+        Option<uuid::Uuid>,
+        String,
+        String,
+        serde_json::Value,
+        serde_json::Value,
+        String,
+        OffsetDateTime,
+    )> = sqlx::query_as(
+        "SELECT p.memory_id, p.target_kind, p.target_memory_id, p.target_goal_id,
+                p.title, p.summary, p.eligible_voters_json, p.requirements_json,
+                p.idempotency_key, p.created_at
+           FROM proxima_core.approval_policy_v1 p
+           JOIN proxima_core.memories m USING (memory_id)
+          WHERE p.target_kind = 'fact'
+            AND p.target_memory_id = ANY($1::uuid[])
+            AND m.owner_principal_kind = $2
+            AND m.owner_principal_id = $3
+            AND m.owner_org_id = $4
+          ORDER BY p.created_at ASC, p.memory_id ASC
+          LIMIT $5",
+    )
+    .bind(target_memory_ids)
+    .bind(owner_kind)
+    .bind(owner_id)
+    .bind(owner_org_id)
+    .bind(limit)
+    .fetch_all(&ctx.pool)
+    .await
+    .map_err(map_sql)?;
+    rows.into_iter()
+        .map(
+            |(
+                memory_id,
+                target_kind,
+                target_memory_id,
+                target_goal_id,
+                title,
+                summary,
+                eligible_voters_json,
+                requirements_json,
+                idempotency_key,
+                created_at,
+            )| {
+                Ok(LoadedApprovalPolicy {
+                    memory_id: MemoryId::new(memory_id),
+                    target_kind,
+                    target_memory_id,
+                    target_goal_id,
+                    title,
+                    summary,
+                    eligible_voters: serde_json::from_value(eligible_voters_json).map_err(
+                        |err| McpToolError::Other(format!("decode eligible voters: {err}")),
+                    )?,
+                    requirements: serde_json::from_value(requirements_json).map_err(|err| {
+                        McpToolError::Other(format!("decode approval requirements: {err}"))
+                    })?,
+                    idempotency_key,
+                    created_at,
+                })
+            },
+        )
+        .collect()
+}
+
+async fn load_thread_approval_votes(
+    ctx: &McpToolCtx,
+    policy_memory_ids: &[uuid::Uuid],
+    limit: i64,
+) -> Result<Vec<LoadedApprovalVote>, McpToolError> {
+    if policy_memory_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let (owner_kind, owner_id, owner_org_id) = owner_columns(&ctx.owner);
+    let rows: Vec<(
+        uuid::Uuid,
+        uuid::Uuid,
+        String,
+        ApprovalVoterKind,
+        Option<String>,
+        Option<uuid::Uuid>,
+        Option<uuid::Uuid>,
+        Option<uuid::Uuid>,
+        ApprovalVoteVerdict,
+        String,
+        String,
+        OffsetDateTime,
+    )> = sqlx::query_as(
+        "SELECT v.memory_id, v.policy_memory_id, v.voter_key, v.voter_kind,
+                v.role, v.personality_instance_id, v.self_perspective_memory_id,
+                v.master_token_id, v.verdict, v.rationale, v.idempotency_key, v.voted_at
+           FROM proxima_core.approval_vote_v1 v
+           JOIN proxima_core.memories m USING (memory_id)
+          WHERE v.policy_memory_id = ANY($1::uuid[])
+            AND m.owner_principal_kind = $2
+            AND m.owner_principal_id = $3
+            AND m.owner_org_id = $4
+          ORDER BY v.voted_at ASC, v.memory_id ASC
+          LIMIT $5",
+    )
+    .bind(policy_memory_ids)
+    .bind(owner_kind)
+    .bind(owner_id)
+    .bind(owner_org_id)
+    .bind(limit)
+    .fetch_all(&ctx.pool)
+    .await
+    .map_err(map_sql)?;
+    Ok(rows
+        .into_iter()
+        .map(
+            |(
+                memory_id,
+                policy_memory_id,
+                voter_key,
+                voter_kind,
+                role,
+                personality_instance_id,
+                self_perspective_memory_id,
+                master_token_id,
+                verdict,
+                rationale,
+                idempotency_key,
+                voted_at,
+            )| LoadedApprovalVote {
+                memory_id: MemoryId::new(memory_id),
+                policy_memory_id,
+                voter_key,
+                voter_kind,
+                role,
+                personality_instance_id,
+                self_perspective_memory_id,
+                master_token_id,
+                verdict,
+                rationale,
+                idempotency_key,
+                voted_at,
+            },
+        )
+        .collect())
+}
+
+async fn load_thread_approval_decisions(
+    ctx: &McpToolCtx,
+    policy_memory_ids: &[uuid::Uuid],
+    limit: i64,
+) -> Result<Vec<LoadedApprovalDecision>, McpToolError> {
+    if policy_memory_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let (owner_kind, owner_id, owner_org_id) = owner_columns(&ctx.owner);
+    let rows: Vec<(
+        uuid::Uuid,
+        uuid::Uuid,
+        ApprovalTargetKind,
+        Option<uuid::Uuid>,
+        Option<uuid::Uuid>,
+        ApprovalDecision,
+        String,
+        serde_json::Value,
+        String,
+        OffsetDateTime,
+    )> = sqlx::query_as(
+        "SELECT d.memory_id, d.policy_memory_id, d.target_kind, d.target_memory_id,
+                d.target_goal_id, d.decision, d.reason, d.counted_votes_json,
+                d.idempotency_key, d.decided_at
+           FROM proxima_core.approval_decision_v1 d
+           JOIN proxima_core.memories m USING (memory_id)
+          WHERE d.policy_memory_id = ANY($1::uuid[])
+            AND m.owner_principal_kind = $2
+            AND m.owner_principal_id = $3
+            AND m.owner_org_id = $4
+          ORDER BY d.decided_at ASC, d.memory_id ASC
+          LIMIT $5",
+    )
+    .bind(policy_memory_ids)
+    .bind(owner_kind)
+    .bind(owner_id)
+    .bind(owner_org_id)
+    .bind(limit)
+    .fetch_all(&ctx.pool)
+    .await
+    .map_err(map_sql)?;
+    rows.into_iter()
+        .map(
+            |(
+                memory_id,
+                policy_memory_id,
+                target_kind,
+                target_memory_id,
+                target_goal_id,
+                decision,
+                reason,
+                counted_votes_json,
+                idempotency_key,
+                decided_at,
+            )| {
+                Ok(LoadedApprovalDecision {
+                    memory_id: MemoryId::new(memory_id),
+                    policy_memory_id,
+                    target_kind,
+                    target_memory_id,
+                    target_goal_id,
+                    decision,
+                    reason,
+                    counted_votes: serde_json::from_value(counted_votes_json).map_err(|err| {
+                        McpToolError::Other(format!("decode counted votes: {err}"))
+                    })?,
+                    idempotency_key,
+                    decided_at,
+                })
+            },
+        )
+        .collect()
+}
+
+async fn load_thread_edges(
+    ctx: &McpToolCtx,
+    thread_memory_ids: &[uuid::Uuid],
+    limit: i64,
+) -> Result<Vec<LoadedThreadEdge>, McpToolError> {
+    if thread_memory_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let (owner_kind, owner_id, owner_org_id) = owner_columns(&ctx.owner);
+    let rows: Vec<(
+        uuid::Uuid,
+        String,
+        EntityKind,
+        Option<uuid::Uuid>,
+        Option<uuid::Uuid>,
+        EntityKind,
+        Option<uuid::Uuid>,
+        Option<uuid::Uuid>,
+        EdgeAuthorshipKind,
+        OffsetDateTime,
+    )> = sqlx::query_as(
+        "SELECT edge_id, relation, source_kind, source_memory_id, source_goal_id,
+                target_kind, target_memory_id, target_goal_id, authorship_kind, created_at
+           FROM proxima_core.edges
+          WHERE owner_principal_kind = $1
+            AND owner_principal_id = $2
+            AND owner_org_id = $3
+            AND relation = ANY($4::text[])
+            AND (source_memory_id = ANY($5::uuid[])
+                 OR target_memory_id = ANY($5::uuid[]))
+          ORDER BY created_at ASC, edge_id ASC
+          LIMIT $6",
+    )
+    .bind(owner_kind)
+    .bind(owner_id)
+    .bind(owner_org_id)
+    .bind(&[
+        CORE_RECEIVES_DIRECTED_QUESTION_RELATION,
+        CORE_ANSWERS_QUESTION_RELATION,
+        CORE_HAS_APPROVAL_POLICY_RELATION,
+        CORE_VOTES_ON_RELATION,
+        CORE_HAS_APPROVAL_DECISION_RELATION,
+        CORE_DERIVED_FROM_RELATION,
+    ])
+    .bind(thread_memory_ids)
+    .bind(limit)
+    .fetch_all(&ctx.pool)
+    .await
+    .map_err(map_sql)?;
+    Ok(rows
+        .into_iter()
+        .filter(
+            |(_, relation, _, source_memory_id, _, _, target_memory_id, _, _, _)| {
+                if relation == CORE_RECEIVES_DIRECTED_QUESTION_RELATION {
+                    endpoint_in_thread(target_memory_id, thread_memory_ids)
+                } else {
+                    endpoint_in_thread(source_memory_id, thread_memory_ids)
+                        && endpoint_in_thread(target_memory_id, thread_memory_ids)
+                }
+            },
+        )
+        .map(
+            |(
+                edge_id,
+                relation,
+                source_kind,
+                source_memory_id,
+                source_goal_id,
+                target_kind,
+                target_memory_id,
+                target_goal_id,
+                authorship_kind,
+                created_at,
+            )| LoadedThreadEdge {
+                edge_id: EdgeId::new(edge_id),
+                relation,
+                source_kind,
+                source_memory_id,
+                source_goal_id,
+                target_kind,
+                target_memory_id,
+                target_goal_id,
+                authorship_kind,
+                created_at,
+            },
+        )
+        .collect())
+}
+
+fn endpoint_in_thread(endpoint: &Option<uuid::Uuid>, thread_memory_ids: &[uuid::Uuid]) -> bool {
+    endpoint
+        .as_ref()
+        .is_some_and(|id| thread_memory_ids.contains(id))
+}
+
+fn render_thread_question(ctx: &McpToolCtx, question: LoadedQuestion) -> ThreadQuestion {
+    let payload = question.payload;
+    ThreadQuestion {
+        handle: ctx.format_memory(question.memory_id),
+        thread_key: payload.thread_key,
+        question: payload.question,
+        target_personality: ctx.format_personality(PersonalityInstanceId::new(
+            payload.target_personality_instance_id,
+        )),
+        target_self_perspective: ctx
+            .format_memory(MemoryId::new(payload.target_self_perspective_memory_id)),
+        asked_by_self_perspective: ctx
+            .format_memory(MemoryId::new(payload.asked_by_self_perspective_memory_id)),
+        parent_question: payload
+            .parent_question_memory_id
+            .map(|id| ctx.format_memory(MemoryId::new(id))),
+        context_memories: payload
+            .context_memory_ids
+            .into_iter()
+            .map(|id| ctx.format_memory(MemoryId::new(id)))
+            .collect(),
+        context_goals: payload
+            .context_goal_ids
+            .into_iter()
+            .map(|id| ctx.format_goal(GoalId::new(id)))
+            .collect(),
+        idempotency_key: payload.idempotency_key,
+        asked_at: payload.asked_at,
+    }
+}
+
+fn render_thread_answer(ctx: &McpToolCtx, answer: LoadedAnswer) -> ThreadAnswer {
+    let payload = answer.payload;
+    ThreadAnswer {
+        handle: ctx.format_memory(answer.memory_id),
+        question: ctx.format_memory(MemoryId::new(payload.question_memory_id)),
+        thread_key: payload.thread_key,
+        answer: payload.answer,
+        answered_by_personality: ctx.format_personality(PersonalityInstanceId::new(
+            payload.answered_by_personality_instance_id,
+        )),
+        answered_by_self_perspective: ctx.format_memory(MemoryId::new(
+            payload.answered_by_self_perspective_memory_id,
+        )),
+        context_memories_used: payload
+            .context_memory_ids_used
+            .into_iter()
+            .map(|id| ctx.format_memory(MemoryId::new(id)))
+            .collect(),
+        idempotency_key: payload.idempotency_key,
+        answered_at: payload.answered_at,
+    }
+}
+
+fn render_thread_policy(
+    ctx: &McpToolCtx,
+    policy: LoadedApprovalPolicy,
+) -> Result<ThreadApprovalPolicy, McpToolError> {
+    Ok(ThreadApprovalPolicy {
+        handle: ctx.format_memory(policy.memory_id),
+        target_kind: policy.target_kind,
+        target: format_target(
+            ctx,
+            policy.target_kind,
+            policy.target_memory_id,
+            policy.target_goal_id,
+        )?,
+        title: policy.title,
+        summary: policy.summary,
+        eligible_voters: policy.eligible_voters,
+        requirements: policy.requirements,
+        idempotency_key: policy.idempotency_key,
+        created_at: policy.created_at,
+    })
+}
+
+fn render_thread_vote(ctx: &McpToolCtx, vote: LoadedApprovalVote) -> ThreadApprovalVote {
+    ThreadApprovalVote {
+        handle: ctx.format_memory(vote.memory_id),
+        policy: ctx.format_memory(MemoryId::new(vote.policy_memory_id)),
+        voter_key: vote.voter_key,
+        voter_kind: vote.voter_kind,
+        role: vote.role,
+        personality: vote
+            .personality_instance_id
+            .map(|id| ctx.format_personality(PersonalityInstanceId::new(id))),
+        self_perspective: vote
+            .self_perspective_memory_id
+            .map(|id| ctx.format_memory(MemoryId::new(id))),
+        master_token_id: vote.master_token_id,
+        verdict: vote.verdict,
+        rationale: vote.rationale,
+        idempotency_key: vote.idempotency_key,
+        voted_at: vote.voted_at,
+    }
+}
+
+fn render_thread_decision(
+    ctx: &McpToolCtx,
+    decision: LoadedApprovalDecision,
+) -> Result<ThreadApprovalDecision, McpToolError> {
+    Ok(ThreadApprovalDecision {
+        handle: ctx.format_memory(decision.memory_id),
+        policy: ctx.format_memory(MemoryId::new(decision.policy_memory_id)),
+        target_kind: decision.target_kind,
+        target: format_target(
+            ctx,
+            decision.target_kind,
+            decision.target_memory_id,
+            decision.target_goal_id,
+        )?,
+        decision: decision.decision,
+        reason: decision.reason,
+        counted_votes: decision
+            .counted_votes
+            .into_iter()
+            .map(|vote| ThreadApprovalCountedVote {
+                vote: ctx.format_memory(MemoryId::new(vote.vote_memory_id)),
+                voter_key: vote.voter_key,
+                verdict: vote.verdict,
+            })
+            .collect(),
+        idempotency_key: decision.idempotency_key,
+        decided_at: decision.decided_at,
+    })
+}
+
+fn render_thread_edge(
+    ctx: &McpToolCtx,
+    edge: LoadedThreadEdge,
+) -> Result<ThreadEdge, McpToolError> {
+    Ok(ThreadEdge {
+        handle: ctx.format_edge(edge.edge_id),
+        relation: edge.relation,
+        source_kind: edge.source_kind.as_str().to_string(),
+        source: format_endpoint(
+            ctx,
+            edge.source_kind,
+            edge.source_memory_id,
+            edge.source_goal_id,
+        )?,
+        target_kind: edge.target_kind.as_str().to_string(),
+        target: format_endpoint(
+            ctx,
+            edge.target_kind,
+            edge.target_memory_id,
+            edge.target_goal_id,
+        )?,
+        authorship_kind: edge.authorship_kind.as_str().to_string(),
+        created_at: edge.created_at,
+    })
+}
+
+fn format_target(
+    ctx: &McpToolCtx,
+    target_kind: ApprovalTargetKind,
+    target_memory_id: Option<uuid::Uuid>,
+    target_goal_id: Option<uuid::Uuid>,
+) -> Result<String, McpToolError> {
+    match target_kind {
+        ApprovalTargetKind::Goal => target_goal_id
+            .map(|id| ctx.format_goal(GoalId::new(id)))
+            .ok_or_else(|| McpToolError::Other("approval target missing goal_id".into())),
+        ApprovalTargetKind::Fact
+        | ApprovalTargetKind::Abstraction
+        | ApprovalTargetKind::Perspective => target_memory_id
+            .map(|id| ctx.format_memory(MemoryId::new(id)))
+            .ok_or_else(|| McpToolError::Other("approval target missing memory_id".into())),
+    }
+}
+
+fn format_endpoint(
+    ctx: &McpToolCtx,
+    kind: EntityKind,
+    memory_id: Option<uuid::Uuid>,
+    goal_id: Option<uuid::Uuid>,
+) -> Result<String, McpToolError> {
+    match kind {
+        EntityKind::Goal => goal_id
+            .map(|id| ctx.format_goal(GoalId::new(id)))
+            .ok_or_else(|| McpToolError::Other("edge endpoint missing goal_id".into())),
+        EntityKind::Fact | EntityKind::Abstraction | EntityKind::Perspective => memory_id
+            .map(|id| ctx.format_memory(MemoryId::new(id)))
+            .ok_or_else(|| McpToolError::Other("edge endpoint missing memory_id".into())),
+    }
 }
 
 async fn load_question(

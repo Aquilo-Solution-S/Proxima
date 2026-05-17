@@ -1,3 +1,3 @@
 pub use crate::inquiry::{
-    EmitDirectedAnswerTool, EmitDirectedQuestionTool, ListInquiryTargetsTool,
+    EmitDirectedAnswerTool, EmitDirectedQuestionTool, GetInquiryThreadTool, ListInquiryTargetsTool,
 };

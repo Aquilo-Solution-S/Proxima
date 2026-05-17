@@ -68,8 +68,7 @@ fn kind_str(k: PayloadKind) -> &'static str {
 
 impl McpTool for GetGraphTool {
     const NAME: &'static str = "core/get_graph";
-    const DESCRIPTION: &'static str =
-        "Single-shot read of the owner's full personality graph plus the catalogs that wake-entry \
+    const DESCRIPTION: &'static str = "Single-shot read of the owner's full personality graph plus the catalogs that wake-entry \
          config references (schemas, edge types, substrate tools, workspace tools, inference \
          targets, tier bindings). Use this in place of eight separate list_/get_ round trips when \
          rendering a graph view. Args: `{\"include_tombstoned\": false}` (default).";
@@ -214,4 +213,3 @@ impl McpTool for GetGraphTool {
         })
     }
 }
-
