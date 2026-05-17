@@ -43,7 +43,6 @@ const edge = (id: string, relation: string, source: EntityRef, target: EntityRef
   relation_class: "Structural",
   source,
   target,
-  owner,
   payload: [],
 });
 

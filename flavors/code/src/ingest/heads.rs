@@ -30,25 +30,25 @@ pub async fn file_revision_heads(
     };
     let org_id = owner.org_id.into_inner();
 
+    // DISTINCT ON over (file_path) ordered by created_at DESC picks
+    // the latest revision per NK in a single index scan. Replaces a
+    // correlated NOT EXISTS whose inner anti-join cost grew linearly
+    // with versions-per-NK and went quadratic on long replay sessions
+    // (see perf-logs/2026-05-16_14-31-40: 9 sqlx slow-statement
+    // warnings, 1.5s → 26s as history accumulated).
     let rows: Vec<(uuid::Uuid, String, Vec<u8>, FileState)> = sqlx::query_as(
-        "SELECT m.memory_id, s.file_path, s.content_sha256, s.state \
-         FROM proxima_core.memories m \
-         JOIN proxima_code.file_revision_v1 s USING (memory_id) \
-         WHERE m.owner_principal_kind = $1 \
-           AND m.owner_principal_id = $2 \
-           AND m.owner_org_id = $3 \
-           AND s.repo_id = $4 \
-           AND NOT EXISTS ( \
-                 SELECT 1 FROM proxima_core.memories m2 \
-                 JOIN proxima_code.file_revision_v1 s2 USING (memory_id) \
-                 WHERE m2.schema_id = m.schema_id \
-                   AND m2.owner_principal_kind = m.owner_principal_kind \
-                   AND m2.owner_principal_id = m.owner_principal_id \
-                   AND m2.owner_org_id = m.owner_org_id \
-                   AND s2.repo_id = s.repo_id \
-                   AND s2.file_path = s.file_path \
-                   AND m2.created_at > m.created_at \
-           )",
+        "SELECT memory_id, file_path, content_sha256, state \
+         FROM ( \
+             SELECT DISTINCT ON (s.file_path) \
+                 m.memory_id, s.file_path, s.content_sha256, s.state \
+             FROM proxima_core.memories m \
+             JOIN proxima_code.file_revision_v1 s USING (memory_id) \
+             WHERE m.owner_principal_kind = $1 \
+               AND m.owner_principal_id = $2 \
+               AND m.owner_org_id = $3 \
+               AND s.repo_id = $4 \
+             ORDER BY s.file_path, m.created_at DESC \
+         ) latest",
     )
     .bind(kind)
     .bind(principal_id)
@@ -90,28 +90,27 @@ pub async fn present_chunk_indexes(
     };
     let org_id = owner.org_id.into_inner();
 
+    // DISTINCT ON per (chunk_index) finds the latest head per NK in a
+    // single pass; we then filter to Present so tombstoned-latest
+    // chunks fall away. The previous NOT EXISTS variant ran a nested
+    // anti-join per candidate row and was the dominant slow statement
+    // in long replay sessions (94s / 4145 calls in
+    // perf-logs/2026-05-16_14-31-40).
     let rows: Vec<(i32,)> = sqlx::query_as(
-        "SELECT s.chunk_index \
-         FROM proxima_core.memories m \
-         JOIN proxima_code.code_chunk_v1 s USING (memory_id) \
-         WHERE m.owner_principal_kind = $1 \
-           AND m.owner_principal_id = $2 \
-           AND m.owner_org_id = $3 \
-           AND s.repo_id = $4 \
-           AND s.file_path = $5 \
-           AND s.state = 'Present' \
-           AND NOT EXISTS ( \
-                 SELECT 1 FROM proxima_core.memories m2 \
-                 JOIN proxima_code.code_chunk_v1 s2 USING (memory_id) \
-                 WHERE m2.schema_id = m.schema_id \
-                   AND m2.owner_principal_kind = m.owner_principal_kind \
-                   AND m2.owner_principal_id = m.owner_principal_id \
-                   AND m2.owner_org_id = m.owner_org_id \
-                   AND s2.repo_id = s.repo_id \
-                   AND s2.file_path = s.file_path \
-                   AND s2.chunk_index = s.chunk_index \
-                   AND m2.created_at > m.created_at \
-           )",
+        "SELECT chunk_index \
+         FROM ( \
+             SELECT DISTINCT ON (s.chunk_index) \
+                 s.chunk_index, s.state \
+             FROM proxima_core.memories m \
+             JOIN proxima_code.code_chunk_v1 s USING (memory_id) \
+             WHERE m.owner_principal_kind = $1 \
+               AND m.owner_principal_id = $2 \
+               AND m.owner_org_id = $3 \
+               AND s.repo_id = $4 \
+               AND s.file_path = $5 \
+             ORDER BY s.chunk_index, m.created_at DESC \
+         ) latest \
+         WHERE latest.state = 'Present'",
     )
     .bind(kind)
     .bind(principal_id)
@@ -162,31 +161,28 @@ pub async fn lookup_present_chunk_memory_id_by_text(
     };
     let org_id = owner.org_id.into_inner();
 
+    // NK is fully constrained (repo_id + file_path + chunk_index),
+    // so the latest row is just ORDER BY created_at DESC LIMIT 1. The
+    // outer filter (state = Present AND text matches) rejects the
+    // latest row if it doesn't match — that preserves the original
+    // semantics: a tombstoned head shouldn't dedup to a Present chunk.
     let row: Option<(uuid::Uuid,)> = sqlx::query_as(
-        "SELECT m.memory_id \
-         FROM proxima_core.memories m \
-         JOIN proxima_code.code_chunk_v1 s USING (memory_id) \
-         WHERE m.owner_principal_kind = $1 \
-           AND m.owner_principal_id = $2 \
-           AND m.owner_org_id = $3 \
-           AND s.repo_id = $4 \
-           AND s.file_path = $5 \
-           AND s.chunk_index = $6 \
-           AND s.state = 'Present' \
-           AND s.text = $7 \
-           AND NOT EXISTS ( \
-                 SELECT 1 FROM proxima_core.memories m2 \
-                 JOIN proxima_code.code_chunk_v1 s2 USING (memory_id) \
-                 WHERE m2.schema_id = m.schema_id \
-                   AND m2.owner_principal_kind = m.owner_principal_kind \
-                   AND m2.owner_principal_id = m.owner_principal_id \
-                   AND m2.owner_org_id = m.owner_org_id \
-                   AND s2.repo_id = s.repo_id \
-                   AND s2.file_path = s.file_path \
-                   AND s2.chunk_index = s.chunk_index \
-                   AND m2.created_at > m.created_at \
-           ) \
-         LIMIT 1",
+        "SELECT memory_id \
+         FROM ( \
+             SELECT m.memory_id, s.text, s.state \
+             FROM proxima_core.memories m \
+             JOIN proxima_code.code_chunk_v1 s USING (memory_id) \
+             WHERE m.owner_principal_kind = $1 \
+               AND m.owner_principal_id = $2 \
+               AND m.owner_org_id = $3 \
+               AND s.repo_id = $4 \
+               AND s.file_path = $5 \
+               AND s.chunk_index = $6 \
+             ORDER BY m.created_at DESC \
+             LIMIT 1 \
+         ) latest \
+         WHERE latest.state = 'Present' \
+           AND latest.text = $7",
     )
     .bind(kind)
     .bind(principal_id)

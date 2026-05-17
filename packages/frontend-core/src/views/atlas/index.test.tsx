@@ -90,7 +90,6 @@ const edge = (id: string, source: string, target: string): EdgeRow => ({
   relation_class: "Structural",
   source: { Memory: source },
   target: { Memory: target },
-  owner,
   payload: [],
 });
 

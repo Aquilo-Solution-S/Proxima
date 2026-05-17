@@ -139,7 +139,6 @@ const edgeRow = (
   relation_class: "Provenance",
   source: { Memory: sourceMemoryId },
   target: { Memory: targetMemoryId },
-  owner,
   payload: [],
 });
 

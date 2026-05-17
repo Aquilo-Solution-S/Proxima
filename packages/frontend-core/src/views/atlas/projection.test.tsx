@@ -53,7 +53,6 @@ const edge = (id: string, source: EdgeRow["source"], target: EdgeRow["target"]):
   relation_class: "Structural",
   source,
   target,
-  owner,
   payload: [],
 });
 

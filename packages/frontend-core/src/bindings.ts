@@ -404,13 +404,19 @@ export type CommandError =
 	message: string,
 } };
 
+/**
+ *  FE-facing projection of the engine `EdgeRow`. Drops `owner`,
+ *  which the FE never reads (verified against
+ *  `perf-logs/2026-05-16_14-31-40/ipc-fields.json` plus a grep across
+ *  the FE source). `payload` is kept — `views/surface-events.tsx`
+ *  displays its byte length in the event detail card.
+ */
 export type EdgeRow = {
 	id: string,
 	relation: string,
 	relation_class: string,
 	source: EntityRef,
 	target: EntityRef,
-	owner: Owner,
 	payload: number[],
 };
 
@@ -668,8 +674,15 @@ export type McpToolTs = {
 export type MemoryId = string;
 
 /**
- *  Snapshot of a memory row. Goal rows have their own shape
- *  (M2+); not modelled here.
+ *  FE-facing projection of the engine `MemoryRow`. v1 keeps the
+ *  same shape as the engine type — every field is read by at least
+ *  one FE view (`payload` everywhere; `owner` in
+ *  `views/atlas/inspector.tsx` and `views/surface.tsx`'s
+ *  goal-to-memory synthesis). This wrapper exists as a wire-diet
+ *  hook: when the FE consolidates `owner` to the snapshot level we
+ *  can drop the field here without touching the engine type (whose
+ *  gRPC consumer at `crates/wire-grpc/src/convert/rows.rs` still
+ *  requires it).
  */
 export type MemoryRow = {
 	id: MemoryId,
@@ -677,12 +690,6 @@ export type MemoryRow = {
 	schema_id: SchemaId,
 	schema_version: SchemaVersion,
 	owner: Owner,
-	/**
-	 *  CBOR projection of the sidecar row, populated by storage at read
-	 *  time. Empty when the schema has no sidecar or when an
-	 *  identity-only query mode is added.
-	 *  Wire-only field — never persisted (docs/07).
-	 */
 	payload: number[],
 };
 
@@ -845,10 +852,6 @@ export type QueryResponse = {
 	memories: MemoryRow[],
 	goals: GoalRow[],
 	edges: EdgeRow[],
-	/**
-	 *  docs/14 §"Cursor & resume" — None when the store has
-	 *  not yet recorded any change events.
-	 */
 	seq_high_water: string | null,
 };
 
