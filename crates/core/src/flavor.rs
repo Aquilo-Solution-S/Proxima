@@ -81,6 +81,11 @@ impl Default for FlavorRegistry {
         };
         // Substrate-shipped Fact schema for MCP-CRUD audit.
         registry.add_fact_schema::<crate::mcp::core_tools::PersonalityConfigChangedV1>();
+        registry.add_fact_schema::<crate::approval::ApprovalPolicyV1>();
+        registry.add_fact_schema::<crate::approval::ApprovalVoteV1>();
+        registry.add_fact_schema::<crate::approval::ApprovalDecisionV1>();
+        registry.add_fact_schema::<crate::inquiry::DirectedQuestionV1>();
+        registry.add_fact_schema::<crate::inquiry::DirectedAnswerV1>();
         registry.add_cited_object_schema::<crate::citations::UploadedBlobPayload>();
         registry.add_fact_schema::<crate::wake::trace::WakeTracePayload>();
         registry.add_cited_object_schema::<crate::wake::trace::WakeTraceJsonlPayload>();
@@ -604,7 +609,7 @@ mod tests {
     }
 
     #[test]
-    fn default_registry_includes_all_20_substrate_mcp_tools() {
+    fn default_registry_includes_all_26_substrate_mcp_tools() {
         let frozen = FlavorRegistry::new().freeze();
         let names: std::collections::HashSet<_> =
             frozen.list_mcp_tools().iter().map(|d| d.name).collect();
@@ -629,10 +634,16 @@ mod tests {
             "core/list_workspace_tools",
             "core/list_schemas",
             "core/list_edge_types",
+            "core/emit_approval_policy",
+            "core/emit_approval_vote",
+            "core/try_emit_approval_decision",
+            "core/list_inquiry_targets",
+            "core/emit_directed_question",
+            "core/emit_directed_answer",
         ];
         for name in expected {
             assert!(names.contains(name), "missing tool {name}");
         }
-        assert_eq!(names.len(), 20, "exactly 20 substrate tools registered");
+        assert_eq!(names.len(), 26, "exactly 26 substrate tools registered");
     }
 }
