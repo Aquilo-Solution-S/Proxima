@@ -379,6 +379,7 @@ pub async fn insert_goal_in_tx(
     .map_err(map_storage)?;
 
     insert_goal_sidecar(tx, goal_id, &encoded.sidecar).await?;
+    insert_goal_parents(tx, goal_id, &draft.parent_goal_ids).await?;
 
     sqlx::query!(
         r#"INSERT INTO proxima_core.change_event
@@ -400,6 +401,25 @@ pub async fn insert_goal_in_tx(
     .map_err(map_storage)?;
 
     Ok(goal_id)
+}
+
+async fn insert_goal_parents(
+    tx: &mut sqlx::PgConnection,
+    goal_id: uuid::Uuid,
+    parent_goal_ids: &[GoalId],
+) -> Result<(), McpToolError> {
+    for parent_id in parent_goal_ids {
+        sqlx::query(
+            "INSERT INTO proxima_core.goal_parents (goal_id, parent_goal_id)
+             VALUES ($1, $2)",
+        )
+        .bind(goal_id)
+        .bind(parent_id.into_inner())
+        .execute(&mut *tx)
+        .await
+        .map_err(map_storage)?;
+    }
+    Ok(())
 }
 
 pub async fn insert_motivated_by_edges(
@@ -825,7 +845,6 @@ async fn insert_lifecycle_authored_edge(
         .await
         .map_err(McpToolError::Storage)
 }
-
 
 async fn insert_goal_sidecar(
     tx: &mut sqlx::PgConnection,
