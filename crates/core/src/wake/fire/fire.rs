@@ -16,13 +16,17 @@ use crate::personality::{
     PersonalityInstanceId, WakeChainDepth, WakeEntryExecutionMode, WakeInvocationLogStatus,
     WakeInvocationStart, WakeInvocationStatus,
 };
+use crate::verbs::persist_wake_trace::WakeTracePersistOutcome;
 use crate::wake::context::{WakeContext, assemble_wake_context};
 use crate::wake::token_store::WakeTokenContext;
 use crate::wake::trace::emit::{
     ProviderTargetBuildError, TraceTiming, emit_trace_from_failed_preflight,
     emit_trace_from_outcome, provider_target_from_config,
 };
-use crate::{MemoryId, inquiry};
+use crate::{
+    BudgetReviewPersistInput, BudgetReviewRequestedV1, GoalId, MemoryId, SourceBatchId, SourceId,
+    inquiry,
+};
 
 use super::finalize::{
     append_session_artifact_log, append_session_log_error_if_present, finalize,
@@ -203,7 +207,7 @@ pub async fn fire_wake_entry(
     engine.wake_token_store().revoke(wake_token).await;
     write_session_jsonl_to_disk(&session_log_path, &outcome_result).await;
     append_session_log_error_if_present(engine, &input, &outcome_result).await;
-    emit_trace_from_outcome(
+    let trace_outcome = emit_trace_from_outcome(
         engine,
         &input,
         &wake_context,
@@ -217,6 +221,15 @@ pub async fn fire_wake_entry(
 
     let outcome = wake_outcome_from_harness_outcome(&input, outcome_result);
     warn_if_failed(&input, &outcome);
+    maybe_emit_budget_review(
+        engine,
+        &input,
+        &wake_context,
+        invocation_id_for_dispatch,
+        trace_outcome.as_ref(),
+        &outcome,
+    )
+    .await;
     finalize(engine, &input, outcome).await?;
     Ok(true)
 }
@@ -372,7 +385,7 @@ async fn handle_workspace_mode(
     };
 
     append_session_log_error_if_present(engine, &input, &outcome_result).await;
-    emit_trace_from_outcome(
+    let trace_outcome = emit_trace_from_outcome(
         engine,
         &input,
         &wake_context,
@@ -409,6 +422,15 @@ async fn handle_workspace_mode(
             WakeInvocationFinalizeOutcome::failed(format!("workspace_runner_finalize:{err}"))
         }
     };
+    maybe_emit_budget_review(
+        engine,
+        &input,
+        &wake_context,
+        invocation_id_for_dispatch,
+        trace_outcome.as_ref(),
+        &outcome,
+    )
+    .await;
     finalize(engine, &input, outcome).await?;
     Ok(true)
 }
@@ -708,6 +730,77 @@ fn warn_if_failed(input: &FireWakeEntryInput, outcome: &WakeInvocationFinalizeOu
             status = outcome.status.as_str(),
             failure_reason = outcome.failure_reason.as_deref().unwrap_or(""),
             "wake invocation did not complete successfully"
+        );
+    }
+}
+
+async fn maybe_emit_budget_review(
+    engine: &Engine,
+    input: &FireWakeEntryInput,
+    wake_context: &WakeContext,
+    invocation_id: Uuid,
+    trace_outcome: Option<&WakeTracePersistOutcome>,
+    outcome: &WakeInvocationFinalizeOutcome,
+) {
+    if !matches!(outcome.status, WakeInvocationStatus::Truncated) {
+        return;
+    }
+    if outcome.failure_reason.as_deref() != Some("max_rounds_reached") {
+        return;
+    }
+    let Some(policy) = input.wake_entry.budget_policy.as_ref() else {
+        return;
+    };
+    let Some(trace_outcome) = trace_outcome else {
+        tracing::warn!(
+            invocation_id = %invocation_id,
+            "wake budget review skipped because wake trace persistence failed"
+        );
+        return;
+    };
+    let requested_at = time::OffsetDateTime::now_utc();
+    let active_goal_ids = wake_context
+        .active_goals
+        .iter()
+        .map(|goal| GoalId::new(goal.goal_id))
+        .collect::<Vec<_>>();
+    let request = BudgetReviewRequestedV1 {
+        original_invocation_id: invocation_id,
+        original_wake_entry_id: input.wake_entry.wake_entry_id,
+        original_personality_instance_id: input.personality_instance_id.into_inner(),
+        original_change_event_seq: input.change_event_seq,
+        triggering_memory_id: wake_context.triggering_memory.memory_id,
+        wake_trace_memory_id: trace_outcome.fact_memory_id.into_inner(),
+        target_budgeter_personality_instance_id: policy.budgeter_personality_instance_id,
+        max_rounds: input.wake_entry.max_rounds,
+        rounds_used: outcome.turn_count.unwrap_or(input.wake_entry.max_rounds),
+        budget_extension_rounds: policy.budget_extension_rounds,
+        budget_hard_cap_rounds: policy.budget_hard_cap_rounds,
+        continued_rounds_used: 0,
+        active_goal_ids: active_goal_ids
+            .iter()
+            .map(|goal_id| goal_id.into_inner())
+            .collect(),
+        progress_contract: policy.budget_progress_contract.clone(),
+        idempotency_key: format!("budget-review:{invocation_id}"),
+        requested_at,
+    };
+    let persist = BudgetReviewPersistInput {
+        owner: input.owner.clone(),
+        root_perspective_memory_id: MemoryId::new(wake_context.root_perspective.memory_id),
+        request,
+        source_batch_id: SourceBatchId::new(Uuid::now_v7()),
+        source_id: SourceId::new(crate::BUDGET_SOURCE_ID),
+    };
+    if let Err(err) = engine
+        .storage()
+        .persist_budget_review_requested_atomic(engine.registry(), &persist)
+        .await
+    {
+        tracing::warn!(
+            invocation_id = %invocation_id,
+            error = %err,
+            "wake budget review persistence failed"
         );
     }
 }

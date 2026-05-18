@@ -1000,5 +1000,6 @@ fn draft_to_core(
         substrate_tool_palette: draft.substrate_tool_palette,
         workspace_tool_palette: draft.workspace_tool_palette,
         max_rounds: draft.max_rounds,
+        budget_policy: None,
     }
 }

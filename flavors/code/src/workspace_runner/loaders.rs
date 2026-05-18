@@ -325,6 +325,112 @@ pub(super) async fn load_continuation_workspace_run_for_request(
     }
 }
 
+pub(super) async fn latest_review_verdict_for_request(
+    pool: &PgPool,
+    owner: &Owner,
+    request_memory_id: MemoryId,
+) -> Result<Option<WorkspaceReviewVerdict>, WorkspaceRunnerError> {
+    let (owner_kind, owner_principal_id, _) = owner_columns_pub(owner);
+    sqlx::query_scalar(
+        "SELECT r.verdict
+         FROM proxima_code.workspace_review_v1 r
+         JOIN proxima_core.memories m USING (memory_id)
+         WHERE m.owner_principal_kind = $1
+           AND m.owner_principal_id = $2
+           AND r.execution_request_memory_id = $3
+         ORDER BY r.created_at DESC, r.memory_id DESC
+         LIMIT 1",
+    )
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(request_memory_id.into_inner())
+    .fetch_optional(pool)
+    .await
+    .map_err(|err| WorkspaceRunnerError::Internal(format!("load latest review verdict: {err}")))
+}
+
+pub(super) async fn request_has_direct_workspace_run(
+    pool: &PgPool,
+    owner: &Owner,
+    request_memory_id: MemoryId,
+) -> Result<bool, WorkspaceRunnerError> {
+    let (owner_kind, owner_principal_id, _) = owner_columns_pub(owner);
+    sqlx::query_scalar(
+        "SELECT EXISTS (
+             SELECT 1
+             FROM proxima_core.edges e
+             JOIN proxima_core.memories m
+               ON m.memory_id = e.source_memory_id
+              AND m.owner_principal_kind = e.owner_principal_kind
+              AND m.owner_principal_id = e.owner_principal_id
+             WHERE e.owner_principal_kind = $1
+               AND e.owner_principal_id = $2
+               AND e.relation = $3
+               AND e.source_kind = 'Fact'
+               AND e.target_kind = 'Fact'
+               AND e.target_memory_id = $4
+               AND m.schema_id = $5
+         )",
+    )
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(CORE_DERIVED_FROM_RELATION)
+    .bind(request_memory_id.into_inner())
+    .bind(WorkspaceRunV1::SCHEMA_ID)
+    .fetch_one(pool)
+    .await
+    .map_err(|err| WorkspaceRunnerError::Internal(format!("check direct workspace run: {err}")))
+}
+
+pub(super) async fn request_is_correction_request(
+    pool: &PgPool,
+    owner: &Owner,
+    request_memory_id: MemoryId,
+) -> Result<bool, WorkspaceRunnerError> {
+    let (owner_kind, owner_principal_id, _) = owner_columns_pub(owner);
+    sqlx::query_scalar(
+        "SELECT EXISTS (
+             SELECT 1
+             FROM proxima_core.edges e
+             JOIN proxima_core.memories m
+               ON m.memory_id = e.target_memory_id
+              AND m.owner_principal_kind = e.owner_principal_kind
+              AND m.owner_principal_id = e.owner_principal_id
+             LEFT JOIN proxima_code.workspace_review_v1 r
+               ON r.memory_id = m.memory_id
+             LEFT JOIN proxima_code.workspace_decision_v1 d
+               ON d.memory_id = m.memory_id
+             WHERE e.owner_principal_kind = $1
+               AND e.owner_principal_id = $2
+               AND e.relation = $3
+               AND e.source_kind = 'Fact'
+               AND e.source_memory_id = $4
+               AND e.target_kind = 'Fact'
+               AND (
+                    (m.schema_id = $5 AND r.verdict = 'rejected')
+                 OR (m.schema_id = $6 AND d.decision = 'retry_requested')
+               )
+         )
+         OR EXISTS (
+             SELECT 1
+             FROM proxima_code.execution_request_v1 er
+             WHERE er.memory_id = $4
+               AND er.request_key LIKE '%correction%'
+         )",
+    )
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(CORE_DERIVED_FROM_RELATION)
+    .bind(request_memory_id.into_inner())
+    .bind(WorkspaceReviewV1::SCHEMA_ID)
+    .bind(WorkspaceDecisionV1::SCHEMA_ID)
+    .fetch_one(pool)
+    .await
+    .map_err(|err| {
+        WorkspaceRunnerError::Internal(format!("check correction request ancestry: {err}"))
+    })
+}
+
 #[allow(clippy::too_many_lines)]
 pub(super) async fn load_goal_context_for_request(
     pool: &PgPool,

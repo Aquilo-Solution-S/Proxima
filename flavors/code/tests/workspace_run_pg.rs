@@ -28,19 +28,20 @@ use proxima_core::personality::{
 };
 use proxima_core::storage::Storage;
 use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
+use proxima_core::verbs::goal_write::{GoalAuthorshipKind, GoalState};
 use proxima_core::verbs::query::MemoryStore;
 use proxima_core::verbs::schema::{PayloadKind, SchemaInfo};
 use proxima_core::wake::target_adapter::{
     TargetAdapter, TargetAdapterError, TargetContext, TargetInvocation, TargetOutcome,
     TargetOutcomeKind,
 };
-use proxima_core::verbs::goal_write::{GoalAuthorshipKind, GoalState};
 use proxima_core::{
     BindInferenceTierRequest, CORE_AUTHORED_RELATION, CORE_DERIVED_FROM_RELATION,
     EdgeAuthorshipKind, Engine, EntityKind, FactPayload, FlavorRegistry, InferenceTargetConfig,
     MistralChatConfig, ModelTier, OrgId, Owner, OwnerPrincipalKind, Principal,
     RegisterInferenceTargetRequest, SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId,
     WakeEntryAuthoredBy, WakeEntryTriggerKind, WorkspacePrepareInput, WorkspaceRunner,
+    WorkspaceRunnerError,
 };
 use proxima_flavor_goal::tools::mark_achieved::{
     MarkAchievedArgs, MarkAchievedStatus, MarkAchievedTool,
@@ -538,6 +539,104 @@ async fn append_derived_edge_for_runner(
     Ok(())
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn approved_execution_request_suppresses_duplicate_workspace_prepare()
+-> Result<(), Box<dyn std::error::Error>> {
+    let Some((db_name, pg)) = migrated_db().await else {
+        return Ok(());
+    };
+    let result = async {
+        let owner = test_owner();
+        let repo_id = Uuid::now_v7();
+        let registry_root = tempfile::tempdir()?;
+        let registry = registry_with_runner(&pg, registry_root.path().to_path_buf());
+        let request = seed_execution_request_for_runner(
+            &pg,
+            &owner,
+            repo_id,
+            "terminal-request",
+            "Terminal request",
+            "Make the requested change.",
+        )
+        .await?;
+        let run_payload = WorkspaceRunV1 {
+            wake_invocation_id: Uuid::now_v7(),
+            repo_id,
+            target_branch: "main".into(),
+            worktree_path: "/tmp/proxima-terminal-request".into(),
+            branch_name: "proxima/wake/terminal".into(),
+            parent_sha: "0".repeat(40),
+            head_sha: "1".repeat(40),
+            diff_stat_json: WorkspaceDiffStat {
+                files_changed: 1,
+                insertions: 1,
+                deletions: 0,
+                files: vec![WorkspaceDiffFile {
+                    path: "README.md".into(),
+                    insertions: 1,
+                    deletions: 0,
+                }],
+            },
+            exit_code: Some(0),
+            stdout_tail: None,
+            stderr_tail: None,
+            duration_ms: Some(100),
+        };
+        let run =
+            seed_workspace_run_for_runner(&pg, &owner, &registry, &run_payload, request).await?;
+        let review_payload = WorkspaceReviewV1 {
+            workspace_run_memory_id: run.into_inner(),
+            execution_request_memory_id: request.into_inner(),
+            verdict: WorkspaceReviewVerdict::Approved,
+            round_index: 0,
+            summary: "Approved.".into(),
+            findings: Vec::new(),
+            correction_instructions: None,
+            verification_summary: Some("checks passed".into()),
+            reviewed_at: time::OffsetDateTime::now_utc(),
+        };
+        seed_workspace_review_for_runner(&pg, &owner, &review_payload).await?;
+
+        let payload = serde_json::to_value(ExecutionRequestV1 {
+            repo_id,
+            title: "Terminal request".into(),
+            instructions: "Make the requested change.".into(),
+            request_key: "terminal-request".into(),
+        })?;
+        let runner = CodeWorkspaceRunner::new(pg.pool().clone());
+        let err = match runner
+            .prepare(WorkspacePrepareInput {
+                invocation_id: Uuid::now_v7(),
+                owner: &owner,
+                wake_token: Uuid::now_v7(),
+                mcp_url: "http://127.0.0.1:1/mcp",
+                root_perspective_memory_id: proxima_core::MemoryId::new(Uuid::now_v7()),
+                triggering_memory_id: request,
+                triggering_memory_schema_id: ExecutionRequestV1::SCHEMA_ID,
+                triggering_memory_payload: &payload,
+                workspace_tool_palette: &[],
+            })
+            .await
+        {
+            Ok(_) => panic!("terminal request should not prepare another workspace run"),
+            Err(err) => err,
+        };
+
+        match err {
+            WorkspaceRunnerError::TriggerNotEligible(reason) => {
+                assert!(reason.contains("terminal workspace review"), "{reason}");
+            }
+            other => panic!("unexpected error: {other}"),
+        }
+        Ok::<(), Box<dyn std::error::Error>>(())
+    }
+    .await;
+
+    drop(pg);
+    let _ = drop_db(&db_name).await;
+    result
+}
+
 async fn seed_goal_context_for_runner(
     pg: &PgStorage,
     owner: &Owner,
@@ -838,7 +937,10 @@ async fn emit_workspace_decision_writes_typed_decides_edge()
         .bind(run.into_inner())
         .fetch_one(pg.pool())
         .await?;
-        assert_eq!(stale_derived, 0, "decision→run derived edge must be replaced");
+        assert_eq!(
+            stale_derived, 0,
+            "decision→run derived edge must be replaced"
+        );
 
         Ok(())
     }

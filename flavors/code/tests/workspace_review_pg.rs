@@ -537,6 +537,28 @@ async fn rejected_review_at_veto_limit_becomes_needs_user() -> Result<(), Box<dy
 
     assert_eq!(output["verdict"], "needs_user");
     assert_eq!(output["round_index"], 2);
+    let correction = run_tool::<CodeEmitCorrectionExecutionRequestTool>(
+        ctx(
+            fixture.pg.pool().clone(),
+            owner.clone(),
+            registry.clone(),
+            Some(root),
+            Some(Uuid::now_v7()),
+        ),
+        json!({
+            "workspace_review_memory": output["handle"].as_str().expect("review handle"),
+            "target_personality": Uuid::now_v7().to_string(),
+            "idempotency_key": "review-limit-correction"
+        }),
+    )
+    .await;
+    let correction_err = correction.expect_err("needs_user review must not emit correction");
+    assert!(
+        correction_err
+            .to_string()
+            .contains("workspace_review_memory must point at a rejected workspace review"),
+        "{correction_err}"
+    );
     let needs_user_rows: i64 = sqlx::query_scalar(
         "SELECT count(*)
          FROM proxima_code.workspace_review_v1

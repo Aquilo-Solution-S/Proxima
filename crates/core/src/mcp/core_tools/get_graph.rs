@@ -113,6 +113,7 @@ impl McpTool for GetGraphTool {
                             probability_promille: e.probability_promille,
                             goal_scope: e.goal_scope.as_str().to_string(),
                             max_rounds: e.max_rounds,
+                            budget_policy: e.budget_policy,
                             disabled_reason: e.disabled_reason,
                         })
                         .collect();

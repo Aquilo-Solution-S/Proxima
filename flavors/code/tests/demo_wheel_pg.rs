@@ -35,11 +35,11 @@ use proxima_core::personality::{
 };
 use proxima_core::storage::Storage;
 use proxima_core::{
-    BindInferenceTierRequest, CORE_INSPIRES_RELATION, Credentials, EdgeAuthorshipKind, Engine,
-    EntityKind, FactPayload, FlavorRegistry, GoalId, InferenceTargetConfig, MemoryId,
-    MistralChatConfig, ModelTier, OrgId, Owner, PersonalityInstanceId, Principal,
-    RegisterInferenceTargetRequest, UserId, WakeEntryAuthoredBy, WakeEntryGoalScope,
-    WakeEntryTriggerKind, WakeExecutionMode,
+    BindInferenceTierRequest, BudgetDecisionV1, BudgetExhaustionPolicy, BudgetReviewRequestedV1,
+    CORE_INSPIRES_RELATION, Credentials, EdgeAuthorshipKind, Engine, EntityKind, FactPayload,
+    FlavorRegistry, GoalId, InferenceTargetConfig, MemoryId, MistralChatConfig, ModelTier, OrgId,
+    Owner, PersonalityInstanceId, Principal, RegisterInferenceTargetRequest, UserId,
+    WakeEntryAuthoredBy, WakeEntryGoalScope, WakeEntryTriggerKind, WakeExecutionMode,
 };
 use proxima_harness::HarnessLoop;
 use proxima_mcp_server::McpToolHost;
@@ -215,7 +215,16 @@ struct DemoConfig {
     api_key_env: String,
     max_ticks: u32,
     max_correction_loops: u32,
-    wake_max_rounds: u16,
+    role_max_rounds: RoleMaxRounds,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+struct RoleMaxRounds {
+    planner: u16,
+    worker: u16,
+    verifier: u16,
+    goal_reviewer: u16,
+    budgeter: u16,
 }
 
 #[derive(Debug, Serialize)]
@@ -225,13 +234,15 @@ struct Metrics {
     db_name: String,
     max_ticks: u32,
     max_correction_loops: u32,
-    wake_max_rounds: u16,
+    role_max_rounds: RoleMaxRounds,
     dispatcher_tick_count: u32,
     wake_invocation_count_by_role: BTreeMap<String, u32>,
     wake_invocations: Vec<WakeInvocationMetric>,
+    terminal_guard_hits: BTreeMap<String, u32>,
     correction_loop_count: u32,
     output_sidecar_counts_by_schema: BTreeMap<String, i64>,
     workspace_run_count: i64,
+    request_flow_counts: Vec<RequestFlowCount>,
     review_verdicts: BTreeMap<String, i64>,
     final_goal_state: String,
     goal_achieved_fact_exists: bool,
@@ -240,6 +251,7 @@ struct Metrics {
     final_changed_files: Vec<String>,
     deterministic_checks: BTreeMap<String, bool>,
     deterministic_pass: bool,
+    functional_pass: bool,
     flow_graph_json: String,
     flow_graph_mermaid: String,
     flow_graph_summary: FlowGraphSummary,
@@ -252,6 +264,16 @@ struct Metrics {
     score_per_model_round: Option<f64>,
     score_per_wall_clock_second: f64,
     budget_pass: bool,
+    overall_pass: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct RequestFlowCount {
+    request_memory_id: String,
+    title: String,
+    workspace_run_count: i64,
+    workspace_review_count: i64,
+    terminal_review_count: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -269,6 +291,26 @@ struct WakeInvocationMetric {
     failure_reason: Option<String>,
 }
 
+fn terminal_guard_hits(invocations: &[WakeInvocationMetric]) -> BTreeMap<String, u32> {
+    let mut hits = BTreeMap::new();
+    for invocation in invocations {
+        let Some(reason) = invocation.failure_reason.as_deref() else {
+            continue;
+        };
+        let key = if reason.contains("terminal workspace review") {
+            "terminal_review"
+        } else if reason.contains("already has a workspace run")
+            || reason.contains("derived workspace run")
+        {
+            "duplicate_workspace_run"
+        } else {
+            continue;
+        };
+        *hits.entry(key.to_string()).or_default() += 1;
+    }
+    hits
+}
+
 #[derive(Debug, Default, Serialize)]
 struct FlowGraphSummary {
     node_count: usize,
@@ -279,6 +321,8 @@ struct FlowGraphSummary {
     workspace_run_count: usize,
     workspace_review_count: usize,
     verification_evidence_count: usize,
+    budget_review_count: usize,
+    budget_decision_count: usize,
     wake_invocation_count: usize,
     unresolved_endpoint_count: usize,
 }
@@ -392,7 +436,7 @@ struct DemoWorld {
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "live Mistral API call; set PROXIMA_LIVE_MISTRAL=1"]
-async fn measurable_signal_match_demo_wheel() -> Result<(), Box<dyn std::error::Error>> {
+async fn measurable_complex_demo_wheel() -> Result<(), Box<dyn std::error::Error>> {
     let Some(cfg) = DemoConfig::from_env()? else {
         return Ok(());
     };
@@ -441,8 +485,25 @@ impl DemoConfig {
             api_key_env: "MISTRAL_API_KEY".into(),
             max_ticks: env_u32("PROXIMA_DEMO_MAX_TICKS", 12)?,
             max_correction_loops: env_u32("PROXIMA_DEMO_MAX_CORRECTION_LOOPS", 2)?,
-            wake_max_rounds: env_u16("PROXIMA_DEMO_WAKE_MAX_ROUNDS", 10)?,
+            role_max_rounds: RoleMaxRounds::from_env()?,
         }))
+    }
+}
+
+impl RoleMaxRounds {
+    fn from_env() -> Result<Self, Box<dyn std::error::Error>> {
+        let fallback = env_optional_u16("PROXIMA_DEMO_WAKE_MAX_ROUNDS")?;
+        Ok(Self {
+            planner: env_u16_with_fallback("PROXIMA_DEMO_PLANNER_MAX_ROUNDS", 8, fallback)?,
+            worker: env_u16_with_fallback("PROXIMA_DEMO_WORKER_MAX_ROUNDS", 14, fallback)?,
+            verifier: env_u16_with_fallback("PROXIMA_DEMO_VERIFIER_MAX_ROUNDS", 5, fallback)?,
+            goal_reviewer: env_u16_with_fallback(
+                "PROXIMA_DEMO_GOAL_REVIEWER_MAX_ROUNDS",
+                5,
+                fallback,
+            )?,
+            budgeter: env_u16_with_fallback("PROXIMA_DEMO_BUDGETER_MAX_ROUNDS", 3, fallback)?,
+        })
     }
 }
 
@@ -519,6 +580,14 @@ impl DemoWorld {
                 "Close achieved goals or request corrections",
             )
             .await?;
+        let budgeter = self
+            .instantiate(
+                "Budgeter",
+                "Decide whether max-round wake truncations deserve more budget",
+            )
+            .await?;
+        self.set_budgeter_wake(budgeter).await?;
+        let budget_policy = demo_budget_policy(budgeter);
 
         self.set_single_wake(
             planner,
@@ -535,7 +604,8 @@ impl DemoWorld {
             WakeOptions {
                 goal_scope: WakeEntryGoalScope::TriggerGoalAssigned,
                 authored_by: WakeEntryAuthoredBy::Any,
-                ..WakeOptions::default_with_rounds(self.cfg.wake_max_rounds)
+                budget_policy: Some(budget_policy.clone()),
+                ..WakeOptions::default_with_rounds(self.cfg.role_max_rounds.planner)
             },
         )
         .await?;
@@ -552,7 +622,10 @@ impl DemoWorld {
                 "proxima-workspace/list_files",
             ],
             worker_instruction(self.cfg.challenge),
-            WakeOptions::default_with_rounds(self.cfg.wake_max_rounds),
+            WakeOptions {
+                budget_policy: Some(budget_policy.clone()),
+                ..WakeOptions::default_with_rounds(self.cfg.role_max_rounds.worker)
+            },
         )
         .await?;
         self.set_single_wake(
@@ -571,14 +644,18 @@ impl DemoWorld {
                 "proxima-workspace/list_files",
             ],
             verifier_instruction(self.cfg.challenge),
-            WakeOptions::default_with_rounds(self.cfg.wake_max_rounds),
+            WakeOptions {
+                budget_policy: Some(budget_policy.clone()),
+                ..WakeOptions::default_with_rounds(self.cfg.role_max_rounds.verifier)
+            },
         )
         .await?;
 
         let (_goal_memory, active_goal) = self.activate_goal(planner).await?;
         self.goal_id = Some(active_goal);
         self.append_goal_assignment(active_goal, reviewer).await?;
-        self.set_goal_reviewer_wakes(reviewer).await?;
+        self.set_goal_reviewer_wakes(reviewer, budget_policy)
+            .await?;
 
         let mut ticks = 0_u32;
         while ticks < self.cfg.max_ticks {
@@ -587,7 +664,7 @@ impl DemoWorld {
             let correction_loops = self.correction_loop_count().await?;
             if self.demo_goal_graph_complete().await? {
                 let mut metrics = self.collect_metrics(started, ticks).await?;
-                if !metrics.budget_pass || !metrics.deterministic_pass {
+                if !metrics.overall_pass {
                     self.write_outputs(&metrics).await?;
                     return Err(self.failure_report("final checks failed").await?.into());
                 }
@@ -720,6 +797,7 @@ impl DemoWorld {
         wake.goal_scope = options.goal_scope;
         wake.instructions = instructions;
         wake.workspace_tool_palette = workspace_palette.into_iter().map(str::to_string).collect();
+        wake.budget_policy = options.budget_policy;
         self.engine
             .set_wake_entries(
                 &Credentials::None,
@@ -733,9 +811,41 @@ impl DemoWorld {
         Ok(())
     }
 
+    async fn set_budgeter_wake(
+        &self,
+        budgeter: PersonalityInstanceId,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut wake = WakeEntryDraft::new(
+            Uuid::now_v7(),
+            budgeter,
+            WakeEntryTriggerKind::OnMemory,
+            BudgetReviewRequestedV1::SCHEMA_ID,
+            "Budgeter demo wake",
+            WakeEntryAuthoredBy::Any,
+            1000,
+            ModelTier::Standard,
+            Some(TARGET_REF.into()),
+            vec!["core/emit_budget_decision".into()],
+            self.cfg.role_max_rounds.budgeter,
+        )?;
+        wake.instructions = budgeter_instruction();
+        self.engine
+            .set_wake_entries(
+                &Credentials::None,
+                &SetWakeEntriesRequest {
+                    owner: self.owner.clone(),
+                    personality_instance_id: budgeter,
+                    entries: vec![wake],
+                },
+            )
+            .await?;
+        Ok(())
+    }
+
     async fn set_goal_reviewer_wakes(
         &self,
         reviewer: PersonalityInstanceId,
+        budget_policy: BudgetExhaustionPolicy,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let mut review_wake = WakeEntryDraft::new(
             Uuid::now_v7(),
@@ -752,9 +862,10 @@ impl DemoWorld {
                 "proxima-goal/goal_mark_achieved".into(),
                 "proxima-code/code_emit_correction_execution_request".into(),
             ],
-            self.cfg.wake_max_rounds,
+            self.cfg.role_max_rounds.goal_reviewer,
         )?;
         review_wake.instructions = goal_reviewer_instruction();
+        review_wake.budget_policy = Some(budget_policy);
 
         let mut target_validation_wake = WakeEntryDraft::new(
             Uuid::now_v7(),
@@ -1000,6 +1111,7 @@ impl DemoWorld {
                 });
         let output_sidecar_counts_by_schema = self.output_sidecar_counts().await?;
         let review_verdicts = self.review_verdicts().await?;
+        let request_flow_counts = self.request_flow_counts().await?;
         let workspace_run_count = *output_sidecar_counts_by_schema
             .get(WorkspaceRunV1::SCHEMA_ID)
             .unwrap_or(&0);
@@ -1015,9 +1127,17 @@ impl DemoWorld {
             &final_changed_files,
         );
         let deterministic_pass = deterministic_checks.values().all(|value| *value);
-        let wake_failures = wake_invocations
-            .iter()
-            .any(|row| row.status != "succeeded" && row.status != "skipped");
+        let budget_decision_count = *output_sidecar_counts_by_schema
+            .get(BudgetDecisionV1::SCHEMA_ID)
+            .unwrap_or(&0);
+        let wake_failures = wake_invocations.iter().any(|row| {
+            if row.status == "succeeded" || row.status == "skipped" {
+                return false;
+            }
+            row.status != "truncated"
+                || row.failure_reason.as_deref() != Some("max_rounds_reached")
+                || budget_decision_count == 0
+        });
         let correction_loop_count = self.correction_loop_count().await?;
         let budget_pass = ticks <= self.cfg.max_ticks
             && correction_loop_count <= self.cfg.max_correction_loops
@@ -1035,6 +1155,7 @@ impl DemoWorld {
         let reviewer_raw = reviewer_score
             .as_ref()
             .map_or(0, |score| score.score.min(100));
+        let functional_pass = deterministic_pass && reviewer_raw >= 70;
         let overall_score = if deterministic_pass {
             reviewer_raw
         } else {
@@ -1052,13 +1173,15 @@ impl DemoWorld {
             db_name: self.db_name.clone(),
             max_ticks: self.cfg.max_ticks,
             max_correction_loops: self.cfg.max_correction_loops,
-            wake_max_rounds: self.cfg.wake_max_rounds,
+            role_max_rounds: self.cfg.role_max_rounds,
             dispatcher_tick_count: ticks,
             wake_invocation_count_by_role,
+            terminal_guard_hits: terminal_guard_hits(&wake_invocations),
             wake_invocations,
             correction_loop_count,
             output_sidecar_counts_by_schema,
             workspace_run_count,
+            request_flow_counts,
             review_verdicts,
             final_goal_state,
             goal_achieved_fact_exists,
@@ -1067,6 +1190,7 @@ impl DemoWorld {
             final_changed_files,
             deterministic_checks,
             deterministic_pass,
+            functional_pass,
             flow_graph_json: self
                 .cfg
                 .run_dir
@@ -1093,7 +1217,44 @@ impl DemoWorld {
             },
             score_per_wall_clock_second: f64::from(overall_score) / wall_clock_seconds.max(0.001),
             budget_pass,
+            overall_pass: functional_pass && budget_pass,
         })
+    }
+
+    async fn request_flow_counts(&self) -> Result<Vec<RequestFlowCount>, sqlx::Error> {
+        let rows = sqlx::query(
+            "SELECT er.memory_id,
+                    er.title,
+                    count(DISTINCT wr.memory_id) AS workspace_run_count,
+                    count(DISTINCT rv.memory_id) AS workspace_review_count,
+                    count(DISTINCT rv.memory_id)
+                      FILTER (WHERE rv.verdict IN ('approved', 'needs_user')) AS terminal_review_count
+             FROM proxima_code.execution_request_v1 er
+             LEFT JOIN proxima_core.edges e
+               ON e.source_kind = 'Fact'
+              AND e.target_kind = 'Fact'
+              AND e.target_memory_id = er.memory_id
+              AND e.relation = 'core/derived-from'
+             LEFT JOIN proxima_code.workspace_run_v1 wr
+               ON wr.memory_id = e.source_memory_id
+             LEFT JOIN proxima_code.workspace_review_v1 rv
+               ON rv.execution_request_memory_id = er.memory_id
+             GROUP BY er.memory_id, er.title
+             ORDER BY er.title, er.memory_id",
+        )
+        .fetch_all(self.pg.pool())
+        .await?;
+        rows.into_iter()
+            .map(|row| {
+                Ok(RequestFlowCount {
+                    request_memory_id: row.try_get::<Uuid, _>("memory_id")?.to_string(),
+                    title: row.try_get("title")?,
+                    workspace_run_count: row.try_get("workspace_run_count")?,
+                    workspace_review_count: row.try_get("workspace_review_count")?,
+                    terminal_review_count: row.try_get("terminal_review_count")?,
+                })
+            })
+            .collect()
     }
 
     async fn wake_invocation_metrics(
@@ -1174,6 +1335,14 @@ impl DemoWorld {
             (
                 "proxima-goal/goal-achieved-v1",
                 "proxima_goal.goal_achieved_v1",
+            ),
+            (
+                BudgetReviewRequestedV1::SCHEMA_ID,
+                "proxima_core.budget_review_requested_v1",
+            ),
+            (
+                BudgetDecisionV1::SCHEMA_ID,
+                "proxima_core.budget_decision_v1",
             ),
         ] {
             let count: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM {table}"))
@@ -1424,7 +1593,10 @@ impl DemoWorld {
 
         for row in sqlx::query(
             "SELECT m.memory_id, m.schema_id,
-                    COALESCE(er.title, wr.branch_name, rv.summary, ga.title, gp.title, gh.title, m.schema_id) AS label
+                    COALESCE(er.title, wr.branch_name, rv.summary, ga.title, gp.title, gh.title,
+                             'Budget review: ' || br.original_invocation_id::text,
+                             'Budget decision: ' || bd.decision::text,
+                             m.schema_id) AS label
              FROM proxima_core.memories m
              LEFT JOIN proxima_code.execution_request_v1 er USING (memory_id)
              LEFT JOIN proxima_code.workspace_run_v1 wr USING (memory_id)
@@ -1433,6 +1605,8 @@ impl DemoWorld {
              LEFT JOIN proxima_goal.goal_activated_v1 ga USING (memory_id)
              LEFT JOIN proxima_goal.goal_proposed_v1 gp USING (memory_id)
              LEFT JOIN proxima_goal.goal_achieved_v1 gh USING (memory_id)
+             LEFT JOIN proxima_core.budget_review_requested_v1 br USING (memory_id)
+             LEFT JOIN proxima_core.budget_decision_v1 bd USING (memory_id)
              ORDER BY m.created_at ASC",
         )
         .fetch_all(self.pg.pool())
@@ -1613,19 +1787,44 @@ impl DemoWorld {
             goal_count: nodes.iter().filter(|n| n.kind == "goal").count(),
             execution_request_count: nodes
                 .iter()
-                .filter(|n| n.schema_id.as_deref() == Some(ExecutionRequestV1::SCHEMA_ID))
+                .filter(|n| {
+                    n.kind == "memory"
+                        && n.schema_id.as_deref() == Some(ExecutionRequestV1::SCHEMA_ID)
+                })
                 .count(),
             workspace_run_count: nodes
                 .iter()
-                .filter(|n| n.schema_id.as_deref() == Some(WorkspaceRunV1::SCHEMA_ID))
+                .filter(|n| {
+                    n.kind == "memory" && n.schema_id.as_deref() == Some(WorkspaceRunV1::SCHEMA_ID)
+                })
                 .count(),
             workspace_review_count: nodes
                 .iter()
-                .filter(|n| n.schema_id.as_deref() == Some(WorkspaceReviewV1::SCHEMA_ID))
+                .filter(|n| {
+                    n.kind == "memory"
+                        && n.schema_id.as_deref() == Some(WorkspaceReviewV1::SCHEMA_ID)
+                })
                 .count(),
             verification_evidence_count: nodes
                 .iter()
-                .filter(|n| n.schema_id.as_deref() == Some("proxima-code/verification-evidence-v1"))
+                .filter(|n| {
+                    n.kind == "memory"
+                        && n.schema_id.as_deref() == Some("proxima-code/verification-evidence-v1")
+                })
+                .count(),
+            budget_review_count: nodes
+                .iter()
+                .filter(|n| {
+                    n.kind == "memory"
+                        && n.schema_id.as_deref() == Some(BudgetReviewRequestedV1::SCHEMA_ID)
+                })
+                .count(),
+            budget_decision_count: nodes
+                .iter()
+                .filter(|n| {
+                    n.kind == "memory"
+                        && n.schema_id.as_deref() == Some(BudgetDecisionV1::SCHEMA_ID)
+                })
                 .count(),
             wake_invocation_count: nodes.iter().filter(|n| n.kind == "wake_invocation").count(),
             unresolved_endpoint_count,
@@ -1711,6 +1910,7 @@ struct WakeOptions {
     authored_by: WakeEntryAuthoredBy,
     goal_scope: WakeEntryGoalScope,
     max_rounds: u16,
+    budget_policy: Option<BudgetExhaustionPolicy>,
 }
 
 impl WakeOptions {
@@ -1719,7 +1919,17 @@ impl WakeOptions {
             authored_by: WakeEntryAuthoredBy::Other,
             goal_scope: WakeEntryGoalScope::None,
             max_rounds,
+            budget_policy: None,
         }
+    }
+}
+
+fn demo_budget_policy(budgeter: PersonalityInstanceId) -> BudgetExhaustionPolicy {
+    BudgetExhaustionPolicy {
+        budgeter_personality_instance_id: budgeter.into_inner(),
+        budget_extension_rounds: 4,
+        budget_hard_cap_rounds: 8,
+        budget_progress_contract: "Decide from the budget review Fact and wake lineage whether the truncated wake made concrete progress toward the active demo Goal. Loops with repeated tool errors should stop. Truncations after useful work or after the larger goal has enough downstream evidence may be accepted as terminal for v1; automatic continuation is not enabled in this demo yet.".into(),
     }
 }
 
@@ -1932,6 +2142,10 @@ fn goal_reviewer_instruction() -> String {
     "Read the workspace review payload in Triggering Memory. If verdict is approved, first call proxima_code_code_goal_completion_status with {\"workspace_review_memory\":\"N1\"}. If its child_close is present, call proxima_goal_goal_mark_achieved using exactly child_close.goal, child_close.evidence, and child_close.idempotency_key. If its parent.parent_close is present, call proxima_goal_goal_mark_achieved after the child call using exactly parent.parent_close.goal, parent.parent_close.evidence, and parent.parent_close.idempotency_key. If verdict is rejected, call proxima_code_code_emit_correction_execution_request with {\"workspace_review_memory\":\"N1\",\"target_personality\":\"P1\",\"idempotency_key\":\"demo-signal-match-correction-1\"}. Then stop.".into()
 }
 
+fn budgeter_instruction() -> String {
+    "You are the Budgeter for this E2E demo. Triggering Memory N1 is a core/budget-review-requested-v1 Fact. First inspect N1. You may call core_walk_lineage with {\"memory\":\"N1\"} if you need the wake trace and triggering Fact context. Automatic continuation is intentionally not enabled in this demo wiring yet, so do not choose continue. If the review indicates max_rounds_reached after concrete progress, downstream evidence, or a likely terminal-but-truncated wake, call core_emit_budget_decision with {\"budget_request\":\"N1\",\"decision\":\"accept_terminal\",\"rationale\":\"<short evidence-based reason>\",\"idempotency_key\":\"demo-budgeter-accept-N1\"}. If the wake appears to be looping, blocked, or making no useful progress, call core_emit_budget_decision with decision \"stop\" and idempotency_key \"demo-budgeter-stop-N1\". Then stop.".into()
+}
+
 fn deterministic_checks(
     challenge: DemoChallenge,
     achieved: bool,
@@ -2003,7 +2217,7 @@ fn deterministic_checks(
 
 fn render_report(metrics: &Metrics, flow_graph: &FlowGraph) -> String {
     format!(
-        "# Proxima Demo Wheel Report\n\n- run_dir: `{}`\n- repo_path: `{}`\n- db_name: `{}`\n- ticks: `{}`\n- corrections: `{}`\n- goal_state: `{}`\n- deterministic_pass: `{}`\n- budget_pass: `{}`\n- reviewer_score: `{}`\n- overall_score: `{}`\n- score_per_model_round: `{:?}`\n- score_per_wall_clock_second: `{:.4}`\n\n## Goal Graph\n\n```json\n{}\n```\n\n## Flow Graph\n\n- graph_json: `{}`\n- graph_mermaid: `{}`\n- nodes: `{}`\n- edges: `{}`\n- unresolved_endpoints: `{}`\n\n```mermaid\n{}\n```\n\n## Auto Merge\n\n```json\n{}\n```\n\n## Diff\n\n- files_changed: `{}`\n- insertions: `{}`\n- deletions: `{}`\n- files: `{:?}`\n\n## Wake Invocations\n\n```json\n{}\n```\n\n## Checks\n\n```json\n{}\n```\n",
+        "# Proxima Demo Wheel Report\n\n- run_dir: `{}`\n- repo_path: `{}`\n- db_name: `{}`\n- ticks: `{}`\n- corrections: `{}`\n- goal_state: `{}`\n- deterministic_pass: `{}`\n- functional_pass: `{}`\n- budget_pass: `{}`\n- overall_pass: `{}`\n- reviewer_score: `{}`\n- overall_score: `{}`\n- score_per_model_round: `{:?}`\n- score_per_wall_clock_second: `{:.4}`\n\n## Role Budgets\n\n```json\n{}\n```\n\n## Goal Graph\n\n```json\n{}\n```\n\n## Request Flow Counts\n\n```json\n{}\n```\n\n## Terminal Guard Hits\n\n```json\n{}\n```\n\n## Flow Graph\n\n- graph_json: `{}`\n- graph_mermaid: `{}`\n- nodes: `{}`\n- edges: `{}`\n- budget_reviews: `{}`\n- budget_decisions: `{}`\n- unresolved_endpoints: `{}`\n\n```mermaid\n{}\n```\n\n## Auto Merge\n\n```json\n{}\n```\n\n## Diff\n\n- files_changed: `{}`\n- insertions: `{}`\n- deletions: `{}`\n- files: `{:?}`\n\n## Wake Invocations\n\n```json\n{}\n```\n\n## Checks\n\n```json\n{}\n```\n",
         metrics.run_dir,
         metrics.repo_path,
         metrics.db_name,
@@ -2011,7 +2225,9 @@ fn render_report(metrics: &Metrics, flow_graph: &FlowGraph) -> String {
         metrics.correction_loop_count,
         metrics.final_goal_state,
         metrics.deterministic_pass,
+        metrics.functional_pass,
         metrics.budget_pass,
+        metrics.overall_pass,
         metrics
             .reviewer_score
             .as_ref()
@@ -2020,11 +2236,16 @@ fn render_report(metrics: &Metrics, flow_graph: &FlowGraph) -> String {
         metrics.overall_score,
         metrics.score_per_model_round,
         metrics.score_per_wall_clock_second,
+        serde_json::to_string_pretty(&metrics.role_max_rounds).unwrap_or_default(),
         serde_json::to_string_pretty(&metrics.goal_graph).unwrap_or_default(),
+        serde_json::to_string_pretty(&metrics.request_flow_counts).unwrap_or_default(),
+        serde_json::to_string_pretty(&metrics.terminal_guard_hits).unwrap_or_default(),
         metrics.flow_graph_json,
         metrics.flow_graph_mermaid,
         flow_graph.summary.node_count,
         flow_graph.summary.edge_count,
+        flow_graph.summary.budget_review_count,
+        flow_graph.summary.budget_decision_count,
         flow_graph.summary.unresolved_endpoint_count,
         render_flow_mermaid(flow_graph),
         serde_json::to_string_pretty(&metrics.auto_merge).unwrap_or_default(),
@@ -2279,10 +2500,22 @@ fn env_u32(name: &str, default: u32) -> Result<u32, Box<dyn std::error::Error>> 
     }
 }
 
-fn env_u16(name: &str, default: u16) -> Result<u16, Box<dyn std::error::Error>> {
+fn env_optional_u16(name: &str) -> Result<Option<u16>, Box<dyn std::error::Error>> {
+    match std::env::var(name) {
+        Ok(value) => Ok(Some(value.parse()?)),
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(err) => Err(err.into()),
+    }
+}
+
+fn env_u16_with_fallback(
+    name: &str,
+    default: u16,
+    fallback: Option<u16>,
+) -> Result<u16, Box<dyn std::error::Error>> {
     match std::env::var(name) {
         Ok(value) => Ok(value.parse()?),
-        Err(std::env::VarError::NotPresent) => Ok(default),
+        Err(std::env::VarError::NotPresent) => Ok(fallback.unwrap_or(default)),
         Err(err) => Err(err.into()),
     }
 }

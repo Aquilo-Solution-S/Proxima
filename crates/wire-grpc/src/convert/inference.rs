@@ -135,6 +135,7 @@ pub fn wake_entry_draft_from_proto(
         workspace_tool_palette: proto.workspace_tool_palette,
         max_rounds: u16::try_from(proto.max_rounds)
             .map_err(|_| Status::invalid_argument("max_rounds > u16::MAX"))?,
+        budget_policy: None,
     })
 }
 

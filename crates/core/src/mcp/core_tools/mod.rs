@@ -7,6 +7,7 @@
 pub mod add_wake_entry;
 pub mod approval;
 pub mod audit;
+pub mod budget;
 pub mod payload;
 pub mod remove_wake_entry;
 pub mod replay_wake_events;
@@ -35,6 +36,7 @@ pub use add_wake_entry::AddWakeEntryTool;
 pub use approval::{EmitApprovalPolicyTool, EmitApprovalVoteTool, TryEmitApprovalDecisionTool};
 pub use audit::{AuditEmit, emit_personality_config_changed};
 pub use bind_inference_tier::BindInferenceTierTool;
+pub use budget::EmitBudgetDecisionTool;
 pub use get_graph::GetGraphTool;
 pub use get_personality::GetPersonalityTool;
 pub use inquiry::{
@@ -88,6 +90,7 @@ pub(crate) fn register_all(registry: &mut crate::FlavorRegistry) {
     registry.add_substrate_mcp_tool::<EmitApprovalPolicyTool>();
     registry.add_substrate_mcp_tool::<EmitApprovalVoteTool>();
     registry.add_substrate_mcp_tool::<TryEmitApprovalDecisionTool>();
+    registry.add_substrate_mcp_tool::<EmitBudgetDecisionTool>();
     registry.add_substrate_mcp_tool::<ListInquiryTargetsTool>();
     registry.add_substrate_mcp_tool::<GetInquiryThreadTool>();
     registry.add_substrate_mcp_tool::<EmitDirectedQuestionTool>();
