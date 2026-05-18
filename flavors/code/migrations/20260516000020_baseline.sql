@@ -9,19 +9,6 @@ CREATE SCHEMA proxima_code;
 
 
 --
--- Name: acceptance_verifier_kind; Type: TYPE; Schema: proxima_code; Owner: -
---
-
-CREATE TYPE proxima_code.acceptance_verifier_kind AS ENUM (
-    'file_exists',
-    'command',
-    'browser_smoke',
-    'diff_scope',
-    'reviewer_only'
-);
-
-
---
 -- Name: file_state; Type: TYPE; Schema: proxima_code; Owner: -
 --
 
@@ -81,17 +68,6 @@ CREATE TYPE proxima_code.workspace_review_verdict AS ENUM (
 
 
 --
--- Name: verification_evidence_status; Type: TYPE; Schema: proxima_code; Owner: -
---
-
-CREATE TYPE proxima_code.verification_evidence_status AS ENUM (
-    'passed',
-    'failed',
-    'skipped'
-);
-
-
---
 -- Name: text_array_search(text[]); Type: FUNCTION; Schema: proxima_code; Owner: -
 --
 
@@ -100,19 +76,6 @@ CREATE FUNCTION proxima_code.text_array_search(items text[]) RETURNS text
     AS $$
     SELECT array_to_string(items, ' ')
 $$;
-
-
---
--- Name: acceptance_criteria_v1; Type: TABLE; Schema: proxima_code; Owner: -
---
-
-CREATE TABLE proxima_code.acceptance_criteria_v1 (
-    memory_id uuid NOT NULL,
-    execution_request_memory_id uuid NOT NULL,
-    criteria_json jsonb NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT acceptance_criteria_v1_nonempty_chk CHECK (((jsonb_typeof(criteria_json) = 'array'::text) AND (jsonb_array_length(criteria_json) > 0)))
-);
 
 
 
@@ -363,38 +326,11 @@ CREATE TABLE proxima_code.workspace_run_v1 (
 
 
 --
--- Name: verification_evidence_v1; Type: TABLE; Schema: proxima_code; Owner: -
---
-
-CREATE TABLE proxima_code.verification_evidence_v1 (
-    memory_id uuid NOT NULL,
-    workspace_run_memory_id uuid NOT NULL,
-    execution_request_memory_id uuid NOT NULL,
-    criterion_key text NOT NULL,
-    status proxima_code.verification_evidence_status NOT NULL,
-    summary text NOT NULL,
-    artifact_refs_json jsonb NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT verification_evidence_v1_artifacts_object_chk CHECK ((jsonb_typeof(artifact_refs_json) = 'object'::text)),
-    CONSTRAINT verification_evidence_v1_criterion_key_chk CHECK (((char_length(criterion_key) >= 1) AND (char_length(criterion_key) <= 80))),
-    CONSTRAINT verification_evidence_v1_summary_chk CHECK (((char_length(summary) >= 1) AND (char_length(summary) <= 4000)))
-);
-
-
---
 -- Name: code_calls_v1 code_calls_v1_pkey; Type: CONSTRAINT; Schema: proxima_code; Owner: -
 --
 
 ALTER TABLE ONLY proxima_code.code_calls_v1
     ADD CONSTRAINT code_calls_v1_pkey PRIMARY KEY (edge_id);
-
-
---
--- Name: acceptance_criteria_v1 acceptance_criteria_v1_pkey; Type: CONSTRAINT; Schema: proxima_code; Owner: -
---
-
-ALTER TABLE ONLY proxima_code.acceptance_criteria_v1
-    ADD CONSTRAINT acceptance_criteria_v1_pkey PRIMARY KEY (memory_id);
 
 
 --
@@ -518,14 +454,6 @@ ALTER TABLE ONLY proxima_code.workspace_run_v1
 
 
 --
--- Name: verification_evidence_v1 verification_evidence_v1_pkey; Type: CONSTRAINT; Schema: proxima_code; Owner: -
---
-
-ALTER TABLE ONLY proxima_code.verification_evidence_v1
-    ADD CONSTRAINT verification_evidence_v1_pkey PRIMARY KEY (memory_id);
-
-
---
 -- Name: idx_code_chunk_v1_chunk_type; Type: INDEX; Schema: proxima_code; Owner: -
 --
 
@@ -610,13 +538,6 @@ CREATE UNIQUE INDEX idx_execution_request_v1_repo_key ON proxima_code.execution_
 
 
 --
--- Name: idx_acceptance_criteria_v1_request; Type: INDEX; Schema: proxima_code; Owner: -
---
-
-CREATE INDEX idx_acceptance_criteria_v1_request ON proxima_code.acceptance_criteria_v1 USING btree (execution_request_memory_id);
-
-
---
 -- Name: idx_file_revision_v1_nk; Type: INDEX; Schema: proxima_code; Owner: -
 --
 
@@ -659,20 +580,6 @@ CREATE INDEX idx_workspace_run_v1_repo ON proxima_code.workspace_run_v1 USING bt
 
 
 --
--- Name: idx_verification_evidence_v1_request; Type: INDEX; Schema: proxima_code; Owner: -
---
-
-CREATE INDEX idx_verification_evidence_v1_request ON proxima_code.verification_evidence_v1 USING btree (execution_request_memory_id, criterion_key, status);
-
-
---
--- Name: idx_verification_evidence_v1_run; Type: INDEX; Schema: proxima_code; Owner: -
---
-
-CREATE INDEX idx_verification_evidence_v1_run ON proxima_code.verification_evidence_v1 USING btree (workspace_run_memory_id, criterion_key, status);
-
-
---
 -- Name: repo_ingestion_runs_by_repo; Type: INDEX; Schema: proxima_code; Owner: -
 --
 
@@ -692,22 +599,6 @@ CREATE UNIQUE INDEX repo_ingestion_runs_one_active ON proxima_code.repo_ingestio
 
 ALTER TABLE ONLY proxima_code.code_calls_v1
     ADD CONSTRAINT code_calls_v1_edge_id_fkey FOREIGN KEY (edge_id) REFERENCES proxima_core.edges(edge_id);
-
-
---
--- Name: acceptance_criteria_v1 acceptance_criteria_v1_execution_request_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_code; Owner: -
---
-
-ALTER TABLE ONLY proxima_code.acceptance_criteria_v1
-    ADD CONSTRAINT acceptance_criteria_v1_execution_request_memory_id_fkey FOREIGN KEY (execution_request_memory_id) REFERENCES proxima_core.memories(memory_id);
-
-
---
--- Name: acceptance_criteria_v1 acceptance_criteria_v1_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_code; Owner: -
---
-
-ALTER TABLE ONLY proxima_code.acceptance_criteria_v1
-    ADD CONSTRAINT acceptance_criteria_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memories(memory_id);
 
 
 --
@@ -828,30 +719,6 @@ ALTER TABLE ONLY proxima_code.workspace_review_v1
 
 ALTER TABLE ONLY proxima_code.workspace_run_v1
     ADD CONSTRAINT workspace_run_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memories(memory_id);
-
-
---
--- Name: verification_evidence_v1 verification_evidence_v1_execution_request_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_code; Owner: -
---
-
-ALTER TABLE ONLY proxima_code.verification_evidence_v1
-    ADD CONSTRAINT verification_evidence_v1_execution_request_memory_id_fkey FOREIGN KEY (execution_request_memory_id) REFERENCES proxima_core.memories(memory_id);
-
-
---
--- Name: verification_evidence_v1 verification_evidence_v1_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_code; Owner: -
---
-
-ALTER TABLE ONLY proxima_code.verification_evidence_v1
-    ADD CONSTRAINT verification_evidence_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memories(memory_id);
-
-
---
--- Name: verification_evidence_v1 verification_evidence_v1_workspace_run_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_code; Owner: -
---
-
-ALTER TABLE ONLY proxima_code.verification_evidence_v1
-    ADD CONSTRAINT verification_evidence_v1_workspace_run_memory_id_fkey FOREIGN KEY (workspace_run_memory_id) REFERENCES proxima_core.memories(memory_id);
 
 
 --
