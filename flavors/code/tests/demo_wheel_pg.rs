@@ -56,8 +56,137 @@ const TARGET_REF: &str = "demo/mistral-medium-3.5";
 const MODEL_ID: &str = "mistral-medium-3.5";
 const EMBED_VENDOR: &str = "Ollama";
 const EMBED_MODEL: &str = "qwen3-embedding:8b";
-const DEMO_REPO_HANDLE: &str = "signal-match-demo";
-const GOAL_TITLE: &str = "Signal Match static SPA demo";
+const SIGNAL_MATCH_REPO_HANDLE: &str = "signal-match-demo";
+const SIGNAL_MATCH_GOAL_TITLE: &str = "Signal Match static SPA demo";
+const TODO_CLI_REPO_HANDLE: &str = "todo-audit-demo";
+const TODO_CLI_GOAL_TITLE: &str = "Todo Audit CLI demo";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DemoChallenge {
+    SignalMatch,
+    TodoCli,
+}
+
+impl DemoChallenge {
+    fn from_env() -> Result<Self, Box<dyn std::error::Error>> {
+        match std::env::var("PROXIMA_DEMO_CHALLENGE")
+            .unwrap_or_else(|_| "signal_match".into())
+            .as_str()
+        {
+            "signal_match" => Ok(Self::SignalMatch),
+            "todo_cli" => Ok(Self::TodoCli),
+            value => Err(format!(
+                "unsupported PROXIMA_DEMO_CHALLENGE {value:?}; expected signal_match or todo_cli"
+            )
+            .into()),
+        }
+    }
+
+    fn repo_handle(self) -> &'static str {
+        match self {
+            Self::SignalMatch => SIGNAL_MATCH_REPO_HANDLE,
+            Self::TodoCli => TODO_CLI_REPO_HANDLE,
+        }
+    }
+
+    fn default_repo_name(self) -> &'static str {
+        match self {
+            Self::SignalMatch => "signal-match-repo",
+            Self::TodoCli => "todo-audit-repo",
+        }
+    }
+
+    fn marker(self) -> &'static str {
+        match self {
+            Self::SignalMatch => "signal-match\n",
+            Self::TodoCli => "todo-audit-cli\n",
+        }
+    }
+
+    fn goal_title(self) -> &'static str {
+        match self {
+            Self::SignalMatch => SIGNAL_MATCH_GOAL_TITLE,
+            Self::TodoCli => TODO_CLI_GOAL_TITLE,
+        }
+    }
+
+    fn goal_text(self) -> &'static str {
+        match self {
+            Self::SignalMatch => {
+                "Build a package-free static SPA game named Signal Match in index.html. It must run by opening index.html directly, be responsive, have four colored pads, sequence playback, click and keyboard input, score and level display, failure state, and restart."
+            }
+            Self::TodoCli => {
+                "Build a package-free Node.js CLI named Todo Audit. It must parse Markdown task lists, extract completion state, owners, tags, priorities, due dates, and output deterministic JSON summaries with tests and sample fixtures."
+            }
+        }
+    }
+
+    fn worktree_has_primary_output(self, path: &Path) -> bool {
+        self.required_files()
+            .iter()
+            .any(|file| path.join(file).is_file())
+            || git_output(path, &["ls-files", "--others", "--exclude-standard"]).is_ok_and(|out| {
+                out.lines()
+                    .any(|line| self.required_files().iter().any(|file| line == *file))
+            })
+    }
+
+    fn required_files(self) -> &'static [&'static str] {
+        match self {
+            Self::SignalMatch => &["index.html"],
+            Self::TodoCli => &["todo_audit.mjs", "test_todo_audit.mjs"],
+        }
+    }
+
+    fn reviewer_prompt(
+        self,
+        worktree: Option<WorktreeInfo>,
+        diff_stats: &GitDiffStats,
+        changed_files: &[String],
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        let excerpt = match (self, worktree) {
+            (Self::SignalMatch, Some(worktree)) => read_excerpt(&worktree.path.join("index.html"))?,
+            (Self::TodoCli, Some(worktree)) => {
+                let mut text = String::new();
+                for file in ["todo_audit.mjs", "test_todo_audit.mjs", "examples/tasks.md"] {
+                    text.push_str(&format!("\n--- {file} ---\n"));
+                    text.push_str(&read_excerpt(&worktree.path.join(file))?);
+                }
+                text
+            }
+            (_, None) => String::new(),
+        };
+        let required = match self {
+            Self::SignalMatch => {
+                "direct index.html run, responsive layout, four pads, sequence playback, keyboard/click input, score/level, failure/restart"
+            }
+            Self::TodoCli => {
+                "Node CLI with no package install, Markdown task parser, owners, tags, priority and due-date extraction, deterministic JSON output, sample fixture, and runnable tests"
+            }
+        };
+        Ok(format!(
+            "Score the {} implementation as JSON only. \
+             Categories are requirements, usability, code_simplicity, visual_polish, robustness. \
+             Each category and score is 0-100. Include short rationale. \
+             Required: {required}. \
+             Diff stats: {} files, +{}, -{}. Changed files: {:?}. Excerpt:\n{}",
+            self.goal_title(),
+            diff_stats.files_changed,
+            diff_stats.insertions,
+            diff_stats.deletions,
+            changed_files,
+            excerpt.chars().take(14_000).collect::<String>()
+        ))
+    }
+}
+
+fn read_excerpt(path: &Path) -> Result<String, Box<dyn std::error::Error>> {
+    if path.is_file() {
+        Ok(std::fs::read_to_string(path)?)
+    } else {
+        Ok(String::new())
+    }
+}
 
 #[derive(Debug)]
 struct DemoEmbedding;
@@ -79,6 +208,7 @@ impl EmbeddingClient for DemoEmbedding {
 
 #[derive(Debug, Clone)]
 struct DemoConfig {
+    challenge: DemoChallenge,
     repo_path: PathBuf,
     run_dir: PathBuf,
     base_url: String,
@@ -285,6 +415,7 @@ impl DemoConfig {
         }
         std::env::var("MISTRAL_API_KEY")
             .map_err(|_| "MISTRAL_API_KEY must be set for demo wheel")?;
+        let challenge = DemoChallenge::from_env()?;
 
         let timestamp = time::OffsetDateTime::now_utc()
             .format(&time::format_description::well_known::Rfc3339)?
@@ -296,13 +427,14 @@ impl DemoConfig {
             });
         let repo_path = std::env::var("PROXIMA_DEMO_REPO")
             .map(PathBuf::from)
-            .unwrap_or_else(|_| run_dir.join("signal-match-repo"));
+            .unwrap_or_else(|_| run_dir.join(challenge.default_repo_name()));
         let base_url = std::env::var("MISTRAL_BASE_URL")
             .unwrap_or_else(|_| "https://api.mistral.ai".to_string())
             .trim_end_matches('/')
             .trim_end_matches("/v1")
             .to_string();
         Ok(Some(Self {
+            challenge,
             repo_path,
             run_dir,
             base_url,
@@ -362,13 +494,13 @@ impl DemoWorld {
     }
 
     async fn run(&mut self, started: Instant) -> Result<(), Box<dyn std::error::Error>> {
-        let repo_id = prepare_demo_repo(&self.cfg.repo_path).await?;
+        let repo_id = prepare_demo_repo(&self.cfg.repo_path, self.cfg.challenge).await?;
         register_repo(
             self.pg.pool(),
             &self.owner,
             repo_id,
             self.cfg.repo_path.to_str().ok_or("repo path is not utf8")?,
-            DEMO_REPO_HANDLE,
+            self.cfg.challenge.repo_handle(),
         )
         .await?;
 
@@ -399,7 +531,7 @@ impl DemoWorld {
                 "proxima-code/code_emit_execution_request",
             ],
             Vec::new(),
-            planner_instruction(planner),
+            planner_instruction(planner, self.cfg.challenge),
             WakeOptions {
                 goal_scope: WakeEntryGoalScope::TriggerGoalAssigned,
                 authored_by: WakeEntryAuthoredBy::Any,
@@ -419,7 +551,7 @@ impl DemoWorld {
                 "proxima-workspace/shell",
                 "proxima-workspace/list_files",
             ],
-            worker_instruction(),
+            worker_instruction(self.cfg.challenge),
             WakeOptions::default_with_rounds(self.cfg.wake_max_rounds),
         )
         .await?;
@@ -438,7 +570,7 @@ impl DemoWorld {
                 "proxima-workspace/shell",
                 "proxima-workspace/list_files",
             ],
-            verifier_instruction(),
+            verifier_instruction(self.cfg.challenge),
             WakeOptions::default_with_rounds(self.cfg.wake_max_rounds),
         )
         .await?;
@@ -665,13 +797,13 @@ impl DemoWorld {
                     "payload": {
                         "schema_id": "proxima-goal/simple-text-v1",
                         "body": {
-                            "title": GOAL_TITLE,
-                            "text": "Build a package-free static SPA game named Signal Match in index.html. It must run by opening index.html directly, be responsive, have four colored pads, sequence playback, click and keyboard input, score and level display, failure state, and restart."
+                            "title": self.cfg.challenge.goal_title(),
+                            "text": self.cfg.challenge.goal_text()
                         }
                     },
                     "target_personality": planner.into_inner().to_string(),
                     "evidence": [],
-                    "idempotency_key": "demo-signal-match-propose"
+                    "idempotency_key": format!("demo-{}-propose", self.cfg.challenge.repo_handle())
                 }),
                 setup_author(),
                 None,
@@ -687,7 +819,7 @@ impl DemoWorld {
                 json!({
                     "proposal": proposal,
                     "target_personality": planner.into_inner().to_string(),
-                    "idempotency_key": "demo-signal-match-accept"
+                    "idempotency_key": format!("demo-{}-accept", self.cfg.challenge.repo_handle())
                 }),
                 setup_author(),
                 None,
@@ -700,7 +832,7 @@ impl DemoWorld {
              ORDER BY accepted_at DESC
              LIMIT 1",
         )
-        .bind(GOAL_TITLE)
+        .bind(self.cfg.challenge.goal_title())
         .fetch_one(self.pg.pool())
         .await?;
         Ok((
@@ -765,7 +897,7 @@ impl DemoWorld {
                 SELECT 1 FROM proxima_goal.goal_achieved_v1 WHERE title = $1
              )",
         )
-        .bind(GOAL_TITLE)
+        .bind(self.cfg.challenge.goal_title())
         .fetch_one(self.pg.pool())
         .await
     }
@@ -876,6 +1008,7 @@ impl DemoWorld {
         let final_goal_state = self.final_goal_state().await?;
         let (git_diff_stats, final_changed_files) = self.git_diff_metrics().await?;
         let deterministic_checks = deterministic_checks(
+            self.cfg.challenge,
             goal_achieved_fact_exists,
             &goal_graph,
             &git_diff_stats,
@@ -1129,10 +1262,7 @@ impl DemoWorld {
         .await?;
         for row in rows {
             let path = PathBuf::from(row.try_get::<String, _>("worktree_path")?);
-            if path.join("index.html").is_file()
-                || git_output(&path, &["ls-files", "--others", "--exclude-standard"])
-                    .is_ok_and(|out| out.lines().any(|line| line == "index.html"))
-            {
+            if self.cfg.challenge.worktree_has_primary_output(&path) {
                 return Ok(Some(WorktreeInfo {
                     path,
                     branch_name: row.try_get("branch_name")?,
@@ -1147,26 +1277,11 @@ impl DemoWorld {
         diff_stats: &GitDiffStats,
         changed_files: &[String],
     ) -> Result<ReviewerScore, Box<dyn std::error::Error>> {
-        let index = self
-            .latest_worktree()
-            .await?
-            .map(|worktree| worktree.path.join("index.html"))
-            .filter(|path| path.is_file())
-            .map(std::fs::read_to_string)
-            .transpose()?
-            .unwrap_or_default();
-        let prompt = format!(
-            "Score the static Signal Match SPA implementation as JSON only. \
-             Categories are requirements, usability, code_simplicity, visual_polish, robustness. \
-             Each category and score is 0-100. Include short rationale. \
-             Required: direct index.html run, responsive layout, four pads, sequence playback, keyboard/click input, score/level, failure/restart. \
-             Diff stats: {} files, +{}, -{}. Changed files: {:?}. index.html excerpt:\n{}",
-            diff_stats.files_changed,
-            diff_stats.insertions,
-            diff_stats.deletions,
+        let prompt = self.cfg.challenge.reviewer_prompt(
+            self.latest_worktree().await?,
+            diff_stats,
             changed_files,
-            &index.chars().take(12_000).collect::<String>()
-        );
+        )?;
         let outcome = self
             .harness
             .run(
@@ -1608,7 +1723,10 @@ impl WakeOptions {
     }
 }
 
-async fn prepare_demo_repo(path: &Path) -> Result<Uuid, Box<dyn std::error::Error>> {
+async fn prepare_demo_repo(
+    path: &Path,
+    challenge: DemoChallenge,
+) -> Result<Uuid, Box<dyn std::error::Error>> {
     if path.exists() {
         let marker = path.join(".proxima-demo-repo");
         if marker.is_file() {
@@ -1622,11 +1740,26 @@ async fn prepare_demo_repo(path: &Path) -> Result<Uuid, Box<dyn std::error::Erro
         }
     }
     std::fs::create_dir_all(path)?;
-    std::fs::write(path.join(".proxima-demo-repo"), "signal-match\n")?;
-    std::fs::write(
-        path.join("README.md"),
-        "# Signal Match\n\nThe demo wheel should create `index.html`.\n",
-    )?;
+    std::fs::write(path.join(".proxima-demo-repo"), challenge.marker())?;
+    match challenge {
+        DemoChallenge::SignalMatch => {
+            std::fs::write(
+                path.join("README.md"),
+                "# Signal Match\n\nThe demo wheel should create `index.html`.\n",
+            )?;
+        }
+        DemoChallenge::TodoCli => {
+            std::fs::create_dir_all(path.join("examples"))?;
+            std::fs::write(
+                path.join("README.md"),
+                "# Todo Audit\n\nBuild `todo_audit.mjs` and `test_todo_audit.mjs`. Use only Node built-ins.\n",
+            )?;
+            std::fs::write(
+                path.join("examples/tasks.md"),
+                "- [ ] Ship parser @ana #cli !high due:2026-05-17\n- [x] Draft README @bo #docs !low due:2026-05-10\n- [ ] Add JSON output @ana #cli #report !medium due:2026-05-20\n- [ ] Triage backlog @cy #ops !high\n",
+            )?;
+        }
+    }
     git(path, &["init", "-b", "main"])?;
     git(path, &["add", "."])?;
     git(
@@ -1638,13 +1771,45 @@ async fn prepare_demo_repo(path: &Path) -> Result<Uuid, Box<dyn std::error::Erro
             "user.email=demo@example.test",
             "commit",
             "-m",
-            "chore: seed signal match demo",
+            match challenge {
+                DemoChallenge::SignalMatch => "chore: seed signal match demo",
+                DemoChallenge::TodoCli => "chore: seed todo audit demo",
+            },
         ],
     )?;
     Ok(Uuid::now_v7())
 }
 
-fn planner_instruction(planner: PersonalityInstanceId) -> String {
+fn planner_instruction(planner: PersonalityInstanceId, challenge: DemoChallenge) -> String {
+    match challenge {
+        DemoChallenge::SignalMatch => signal_match_planner_instruction(planner),
+        DemoChallenge::TodoCli => todo_cli_planner_instruction(planner),
+    }
+}
+
+fn worker_instruction(challenge: DemoChallenge) -> String {
+    match challenge {
+        DemoChallenge::SignalMatch => {
+            let app = signal_match_index_html();
+            format!(
+                "Use workspace_text_editor to create `index.html` with exactly this file_text, then run workspace_shell with command `test -f index.html && grep -E \"Signal Match|data-pad|keydown|restart|level|score\" index.html` and stop. file_text JSON string: {}",
+                serde_json::to_string(&app).expect("serialize app")
+            )
+        }
+        DemoChallenge::TodoCli => {
+            "Implement the requested Todo Audit CLI using only Node.js built-ins. Create or update `todo_audit.mjs`, `test_todo_audit.mjs`, and `examples/tasks.md` as needed. The CLI must support `node todo_audit.mjs <markdown-file> --today 2026-05-18 --json`, parse Markdown task-list items, extract done/open state, @owner, #tags, !priority, due:YYYY-MM-DD, compute totals, open/done/overdue counts, byOwner, byTag, highPriorityOpen, and nextDue sorted by due date. Write meaningful tests in `test_todo_audit.mjs` using node:assert/child_process only, run `node test_todo_audit.mjs`, then stop.".into()
+        }
+    }
+}
+
+fn verifier_instruction(challenge: DemoChallenge) -> String {
+    match challenge {
+        DemoChallenge::SignalMatch => signal_match_verifier_instruction(),
+        DemoChallenge::TodoCli => todo_cli_verifier_instruction(),
+    }
+}
+
+fn signal_match_planner_instruction(planner: PersonalityInstanceId) -> String {
     format!(
         "You are the Planner for the triggering active Goal in N1. Decide whether the Goal is small enough for one execution request or should first be decomposed. This demo Goal is intentionally larger than one directly verifiable unit; prefer decomposing it into independently verifiable child Goals before emitting execution requests. Do not create child Goals unless you decide decomposition is warranted. If N1 is the top-level Signal Match static SPA demo Goal, call proxima_goal_goal_decompose with parent_goal \"N1\", activate_children true, target_personality \"{}\", idempotency_key \"demo-signal-match-decompose\", and these suggested children: {}. Then stop. If N1 is already one of those child Goals, call proxima_code_code_emit_execution_request for that child with repo_handle \"{}\", goal_activated_memory \"N1\", evidence [], a child-specific title/instructions/idempotency_key, and these required acceptance_criteria: {}. Use idempotency_key \"demo-signal-match-shell\" for the shell/pads child and \"demo-signal-match-gameplay\" for the gameplay/restart child. Then stop.",
         planner.into_inner(),
@@ -1670,7 +1835,7 @@ fn planner_instruction(planner: PersonalityInstanceId) -> String {
                 "evidence": []
             }
         ]),
-        DEMO_REPO_HANDLE,
+        SIGNAL_MATCH_REPO_HANDLE,
         json!([
             {
                 "key": "static_entrypoint",
@@ -1692,16 +1857,75 @@ fn planner_instruction(planner: PersonalityInstanceId) -> String {
     )
 }
 
-fn worker_instruction() -> String {
-    let app = signal_match_index_html();
+fn todo_cli_planner_instruction(planner: PersonalityInstanceId) -> String {
     format!(
-        "Use workspace_text_editor to create `index.html` with exactly this file_text, then run workspace_shell with command `test -f index.html && grep -E \"Signal Match|data-pad|keydown|restart|level|score\" index.html` and stop. file_text JSON string: {}",
-        serde_json::to_string(&app).expect("serialize app")
+        "You are the Planner for the triggering active Goal in N1. Decide whether the Goal is small enough for one execution request or should first be decomposed. This Todo Audit CLI Goal requires parser logic, CLI output, fixtures, and tests; prefer decomposing it into independently verifiable child Goals before emitting execution requests. Do not create child Goals unless you decide decomposition is warranted. If N1 is the top-level Todo Audit CLI demo Goal, call proxima_goal_goal_decompose with parent_goal \"N1\", activate_children true, target_personality \"{}\", idempotency_key \"demo-todo-audit-decompose\", and these suggested children: {}. Then stop. If N1 is already one of those child Goals, call proxima_code_code_emit_execution_request for that child with repo_handle \"{}\", goal_activated_memory \"N1\", evidence [], a child-specific title/instructions/idempotency_key, and these required acceptance_criteria: {}. Each child request must still produce a complete runnable CLI and test suite because workspace runs are evaluated independently. Then stop.",
+        planner.into_inner(),
+        json!([
+            {
+                "payload": {
+                    "schema_id": "proxima-goal/simple-text-v1",
+                    "body": {
+                        "title": "Todo Audit parser and data model",
+                        "text": "Implement Markdown task-list parsing for done/open state, @owner, #tags, !priority, due date tokens, and stable task records."
+                    }
+                },
+                "evidence": []
+            },
+            {
+                "payload": {
+                    "schema_id": "proxima-goal/simple-text-v1",
+                    "body": {
+                        "title": "Todo Audit JSON summary CLI",
+                        "text": "Implement a package-free Node CLI that reads a Markdown file and prints deterministic JSON summary counts, byOwner, byTag, highPriorityOpen, and nextDue."
+                    }
+                },
+                "evidence": []
+            },
+            {
+                "payload": {
+                    "schema_id": "proxima-goal/simple-text-v1",
+                    "body": {
+                        "title": "Todo Audit fixtures and tests",
+                        "text": "Add sample Markdown tasks and Node built-in tests that verify parser and CLI JSON behavior."
+                    }
+                },
+                "evidence": []
+            }
+        ]),
+        TODO_CLI_REPO_HANDLE,
+        json!([
+            {
+                "key": "cli_entrypoint",
+                "description": "todo_audit.mjs exists and can be executed with Node without package installation",
+                "required": true,
+                "verifier_kind": "file_exists",
+                "verifier_spec_json": { "path": "todo_audit.mjs" }
+            },
+            {
+                "key": "parser_tests",
+                "description": "Node built-in test script passes",
+                "required": true,
+                "verifier_kind": "command",
+                "verifier_spec_json": { "command": ["node", "test_todo_audit.mjs"] }
+            },
+            {
+                "key": "json_summary",
+                "description": "CLI emits deterministic JSON summary for examples/tasks.md",
+                "required": true,
+                "verifier_kind": "command",
+                "verifier_spec_json": { "command": ["sh", "-c", "node todo_audit.mjs examples/tasks.md --today 2026-05-18 --json | grep -E '\"total\"|\"open\"|\"byOwner\"|\"nextDue\"'"] }
+            }
+        ])
     )
 }
 
-fn verifier_instruction() -> String {
+fn signal_match_verifier_instruction() -> String {
     "Inspect the prepared workspace. Run workspace_shell with command `test -f index.html && grep -E \"Signal Match|data-pad|keydown|restart|level|score|game-over\" index.html`. If it exits 0, first call proxima_code_code_emit_verification_evidence twice: {\"workspace_run_memory\":\"N1\",\"criterion_key\":\"static_entrypoint\",\"status\":\"passed\",\"summary\":\"index.html exists\",\"artifact_refs_json\":{\"path\":\"index.html\"},\"idempotency_key\":\"demo-signal-match-evidence-static\"} and {\"workspace_run_memory\":\"N1\",\"criterion_key\":\"gameplay_controls\",\"status\":\"passed\",\"summary\":\"index.html contains Signal Match controls and states\",\"artifact_refs_json\":{\"path\":\"index.html\"},\"idempotency_key\":\"demo-signal-match-evidence-gameplay\"}. Then call proxima_code_code_emit_workspace_review with {\"workspace_run_memory\":\"N1\",\"verdict\":\"approved\",\"summary\":\"Signal Match requirements satisfied\",\"findings\":[],\"verification_summary\":\"index.html exists and contains direct-run Signal Match gameplay controls\",\"idempotency_key\":\"demo-signal-match-review-approved\"}. If the shell check fails, call proxima_code_code_emit_verification_evidence for both keys with status \"failed\", then call the review tool with verdict rejected, summary \"Signal Match requirements missing\", one finding for index.html, correction_instructions \"Create a complete direct-run Signal Match index.html. Failed criteria: static_entrypoint, gameplay_controls\", and idempotency_key \"demo-signal-match-review-rejected\". Then stop.".into()
+}
+
+fn todo_cli_verifier_instruction() -> String {
+    "Inspect the prepared workspace. Run workspace_shell with command `test -f todo_audit.mjs && test -f test_todo_audit.mjs && test -f examples/tasks.md && node test_todo_audit.mjs && node todo_audit.mjs examples/tasks.md --today 2026-05-18 --json | grep -E '\"total\"|\"open\"|\"byOwner\"|\"nextDue\"'`. If it exits 0, first call proxima_code_code_emit_verification_evidence exactly three times with these JSON objects: {\"workspace_run_memory\":\"N1\",\"criterion_key\":\"cli_entrypoint\",\"status\":\"passed\",\"summary\":\"todo_audit.mjs exists and runs with Node\",\"artifact_refs_json\":{\"paths\":[\"todo_audit.mjs\"]},\"idempotency_key\":\"demo-todo-audit-evidence-entrypoint\"}, {\"workspace_run_memory\":\"N1\",\"criterion_key\":\"parser_tests\",\"status\":\"passed\",\"summary\":\"node test_todo_audit.mjs passed\",\"artifact_refs_json\":{\"paths\":[\"test_todo_audit.mjs\",\"todo_audit.mjs\"]},\"idempotency_key\":\"demo-todo-audit-evidence-tests\"}, and {\"workspace_run_memory\":\"N1\",\"criterion_key\":\"json_summary\",\"status\":\"passed\",\"summary\":\"CLI emitted expected JSON summary fields\",\"artifact_refs_json\":{\"paths\":[\"examples/tasks.md\",\"todo_audit.mjs\"]},\"idempotency_key\":\"demo-todo-audit-evidence-json\"}. Then call proxima_code_code_emit_workspace_review with {\"workspace_run_memory\":\"N1\",\"verdict\":\"approved\",\"summary\":\"Todo Audit CLI requirements satisfied\",\"findings\":[],\"verification_summary\":\"entrypoint, tests, and JSON summary passed\",\"idempotency_key\":\"demo-todo-audit-review-approved\"}. If the shell check fails, first call proxima_code_code_emit_verification_evidence exactly three times with status \"failed\" for cli_entrypoint, parser_tests, and json_summary, using artifact_refs_json objects like {\"paths\":[\"todo_audit.mjs\"]}. Then call the review tool with verdict rejected, summary \"Todo Audit CLI requirements missing\", one finding for todo_audit.mjs, correction_instructions \"Create a complete package-free Node Todo Audit CLI with parser tests and deterministic JSON output. Failed criteria: cli_entrypoint, parser_tests, json_summary\", and idempotency_key \"demo-todo-audit-review-rejected\". Then stop.".into()
 }
 
 fn goal_reviewer_instruction() -> String {
@@ -1709,6 +1933,7 @@ fn goal_reviewer_instruction() -> String {
 }
 
 fn deterministic_checks(
+    challenge: DemoChallenge,
     achieved: bool,
     goal_graph: &GoalGraphMetrics,
     diff: &GitDiffStats,
@@ -1717,7 +1942,10 @@ fn deterministic_checks(
     let mut checks = BTreeMap::new();
     checks.insert(
         "required_files_exist".into(),
-        changed_files.iter().any(|f| f == "index.html"),
+        challenge
+            .required_files()
+            .iter()
+            .all(|file| changed_files.iter().any(|changed| changed == file)),
     );
     checks.insert(
         "no_package_install_required".into(),
@@ -1761,8 +1989,10 @@ fn deterministic_checks(
             .all(|f| !f.starts_with('/') && !f.contains("..")),
     );
     checks.insert(
-        "static_app_entrypoint_exists".into(),
-        changed_files.iter().any(|f| f == "index.html"),
+        "primary_entrypoint_exists".into(),
+        changed_files
+            .iter()
+            .any(|f| f == challenge.required_files()[0]),
     );
     checks.insert(
         "nonempty_diff".into(),
