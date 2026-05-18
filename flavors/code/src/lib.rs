@@ -10,6 +10,7 @@ pub mod mcp;
 pub mod migrations;
 pub mod payloads;
 pub mod repos;
+pub mod verification;
 pub mod workspace_flow;
 pub mod workspace_runner;
 
@@ -22,13 +23,14 @@ pub use ingest::{
     ingest_code_chunk, ingest_commit, ingest_file_revision,
 };
 pub use local_git_source::{IndexError, IndexReport, IngestProgress, LocalGitSource};
-pub use migrations::migrator;
 pub use mcp::CODE_REVIEWS_RELATION;
+pub use migrations::migrator;
 pub use payloads::{
-    CodeChunkV1, CodeCommitSummarizerSelfV1, CodeDevelopmentPerspectiveV1, CodeEngineerSelfV1,
-    CommitSummaryV1, CommitV1, EdgeCallsV1, ExecutionRequestV1, FileRevisionV1, FileState,
-    WorkspaceDecision, WorkspaceDecisionV1, WorkspaceReviewFinding, WorkspaceReviewV1,
-    WorkspaceReviewVerdict, WorkspaceRunV1,
+    AcceptanceCriteriaV1, AcceptanceCriterionV1, AcceptanceVerifierKind, CodeChunkV1,
+    CodeCommitSummarizerSelfV1, CodeDevelopmentPerspectiveV1, CodeEngineerSelfV1, CommitSummaryV1,
+    CommitV1, EdgeCallsV1, ExecutionRequestV1, FileRevisionV1, FileState,
+    VerificationEvidenceStatus, VerificationEvidenceV1, WorkspaceDecision, WorkspaceDecisionV1,
+    WorkspaceReviewFinding, WorkspaceReviewV1, WorkspaceReviewVerdict, WorkspaceRunV1,
 };
 
 pub use repos::{
@@ -57,9 +59,11 @@ proxima_core::proxima_flavor! {
         payloads::FileRevisionV1,
         payloads::CodeChunkV1,
         payloads::ExecutionRequestV1,
+        payloads::AcceptanceCriteriaV1,
         payloads::WorkspaceRunV1,
         payloads::WorkspaceDecisionV1,
         payloads::WorkspaceReviewV1,
+        payloads::VerificationEvidenceV1,
     ],
     abstraction_schemas = [
         payloads::CommitSummaryV1,
@@ -99,6 +103,13 @@ proxima_core::proxima_flavor! {
             AuthorshipKindMask::external_agent(),
         ),
         RelationDescriptor::substrate(
+            mcp::CODE_HAS_ACCEPTANCE_CRITERIA_RELATION,
+            RelationClass::Provenance,
+            EntityKindMask::fact(),
+            EntityKindMask::fact(),
+            AuthorshipKindMask::external_agent(),
+        ),
+        RelationDescriptor::substrate(
             workspace_flow::CODE_DECIDES_RELATION,
             RelationClass::Provenance,
             EntityKindMask::fact(),
@@ -112,8 +123,10 @@ proxima_core::proxima_flavor! {
         mcp::CodeSearchCommitsTool,
         mcp::CodeEmitExecutionRequestTool,
         mcp::CodeRetryExecutionRequestTool,
+        mcp::CodeEmitVerificationEvidenceTool,
         mcp::CodeEmitWorkspaceReviewTool,
         mcp::CodeEmitCorrectionExecutionRequestTool,
+        mcp::CodeGoalCompletionStatusTool,
         mcp::CodeMergeWorkspaceRunTool,
     ],
     workspace_runner = workspace_runner::CodeWorkspaceRunner,
@@ -122,8 +135,10 @@ proxima_core::proxima_flavor! {
         "proxima-code/file-revision-v1",
         "proxima-code/code-chunk-v1",
         "proxima-code/execution-request-v1",
+        "proxima-code/acceptance-criteria-v1",
         "proxima-code/workspace-run-v1",
         "proxima-code/workspace-review-v1",
+        "proxima-code/verification-evidence-v1",
         "proxima-code/workspace-decision-v1",
     ],
 }
@@ -147,9 +162,11 @@ mod tests {
         assert!(schema_ids.contains("proxima-code/file-revision-v1"));
         assert!(schema_ids.contains("proxima-code/code-chunk-v1"));
         assert!(schema_ids.contains("proxima-code/execution-request-v1"));
+        assert!(schema_ids.contains("proxima-code/acceptance-criteria-v1"));
         assert!(schema_ids.contains("proxima-code/workspace-run-v1"));
         assert!(schema_ids.contains("proxima-code/workspace-decision-v1"));
         assert!(schema_ids.contains("proxima-code/workspace-review-v1"));
+        assert!(schema_ids.contains("proxima-code/verification-evidence-v1"));
         // Abstraction schemas
         assert!(schema_ids.contains("proxima-code/commit-summary-v1"));
         // Perspective schemas
@@ -165,6 +182,7 @@ mod tests {
         assert!(relation_ids.contains("proxima-code/calls"));
         assert!(relation_ids.contains("proxima-code/targets-execution-request"));
         assert!(relation_ids.contains("proxima-code/reviews"));
+        assert!(relation_ids.contains("proxima-code/has-acceptance-criteria"));
         assert!(relation_ids.contains("proxima-code/decides"));
         assert!(relation_ids.contains(CORE_DERIVED_FROM_RELATION));
 
@@ -212,7 +230,9 @@ mod tests {
         assert!(names.contains("proxima-code/code_search_commits"));
         assert!(names.contains("proxima-code/code_emit_execution_request"));
         assert!(names.contains("proxima-code/code_retry_execution_request"));
+        assert!(names.contains("proxima-code/code_emit_verification_evidence"));
         assert!(names.contains("proxima-code/code_emit_workspace_review"));
         assert!(names.contains("proxima-code/code_emit_correction_execution_request"));
+        assert!(names.contains("proxima-code/code_goal_completion_status"));
     }
 }

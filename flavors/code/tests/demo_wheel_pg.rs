@@ -105,10 +105,14 @@ struct Metrics {
     review_verdicts: BTreeMap<String, i64>,
     final_goal_state: String,
     goal_achieved_fact_exists: bool,
+    goal_graph: GoalGraphMetrics,
     git_diff_stats: GitDiffStats,
     final_changed_files: Vec<String>,
     deterministic_checks: BTreeMap<String, bool>,
     deterministic_pass: bool,
+    flow_graph_json: String,
+    flow_graph_mermaid: String,
+    flow_graph_summary: FlowGraphSummary,
     reviewer_score: Option<ReviewerScore>,
     reviewer_score_error: Option<String>,
     auto_merge: Option<AutoMergeMetric>,
@@ -133,6 +137,82 @@ struct WakeInvocationMetric {
     completion_tokens: Option<i64>,
     cost_usd: Option<String>,
     failure_reason: Option<String>,
+}
+
+#[derive(Debug, Default, Serialize)]
+struct FlowGraphSummary {
+    node_count: usize,
+    edge_count: usize,
+    personality_count: usize,
+    goal_count: usize,
+    execution_request_count: usize,
+    workspace_run_count: usize,
+    workspace_review_count: usize,
+    verification_evidence_count: usize,
+    wake_invocation_count: usize,
+    unresolved_endpoint_count: usize,
+}
+
+#[derive(Debug, Default, Clone, Serialize)]
+struct GoalGraphMetrics {
+    child_goal_count: i64,
+    achieved_child_goal_count: i64,
+    child_execution_request_count: i64,
+    child_workspace_run_count: i64,
+    child_workspace_review_count: i64,
+    verification_evidence_count: i64,
+}
+
+impl GoalGraphMetrics {
+    fn complete(&self, parent_achieved: bool) -> bool {
+        parent_achieved
+            && self.child_goal_count >= 2
+            && self.achieved_child_goal_count == self.child_goal_count
+            && self.child_execution_request_count >= 2
+            && self.child_workspace_run_count >= 2
+            && self.child_workspace_review_count >= 2
+            && self.verification_evidence_count >= 1
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct FlowGraph {
+    nodes: Vec<FlowNode>,
+    edges: Vec<FlowEdge>,
+    events: Vec<FlowEvent>,
+    summary: FlowGraphSummary,
+}
+
+#[derive(Debug, Serialize)]
+struct FlowNode {
+    id: String,
+    kind: String,
+    label: String,
+    role: Option<String>,
+    schema_id: Option<String>,
+    state: Option<String>,
+    status: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct FlowEdge {
+    id: String,
+    source: String,
+    target: String,
+    relation: String,
+    persisted_edge_id: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct FlowEvent {
+    seq: String,
+    kind: String,
+    entity_kind: Option<String>,
+    entity_id: Option<String>,
+    schema_id: Option<String>,
+    edge_relation: Option<String>,
+    personality_instance_id: Option<String>,
+    wake_chain_depth: i16,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -314,9 +394,12 @@ impl DemoWorld {
             WakeEntryTriggerKind::OnMemory,
             "proxima-goal/goal-activated-v1",
             WakeExecutionMode::SubstrateOnly,
-            vec!["proxima-code/code_emit_execution_request"],
+            vec![
+                "proxima-goal/goal_decompose",
+                "proxima-code/code_emit_execution_request",
+            ],
             Vec::new(),
-            planner_instruction(),
+            planner_instruction(planner),
             WakeOptions {
                 goal_scope: WakeEntryGoalScope::TriggerGoalAssigned,
                 authored_by: WakeEntryAuthoredBy::Any,
@@ -346,7 +429,10 @@ impl DemoWorld {
             WakeEntryTriggerKind::OnMemory,
             WorkspaceRunV1::SCHEMA_ID,
             WakeExecutionMode::Workspace,
-            vec!["proxima-code/code_emit_workspace_review"],
+            vec![
+                "proxima-code/code_emit_verification_evidence",
+                "proxima-code/code_emit_workspace_review",
+            ],
             vec![
                 "proxima-workspace/text_editor",
                 "proxima-workspace/shell",
@@ -367,7 +453,7 @@ impl DemoWorld {
             ticks += 1;
             let fired = self.engine.run_dispatcher_tick().await?;
             let correction_loops = self.correction_loop_count().await?;
-            if self.goal_achieved_fact_exists().await? {
+            if self.demo_goal_graph_complete().await? {
                 let mut metrics = self.collect_metrics(started, ticks).await?;
                 if !metrics.budget_pass || !metrics.deterministic_pass {
                     self.write_outputs(&metrics).await?;
@@ -530,7 +616,7 @@ impl DemoWorld {
             ModelTier::Deep,
             Some(TARGET_REF.into()),
             vec![
-                "core/list_active_goals".into(),
+                "proxima-code/code_goal_completion_status".into(),
                 "proxima-goal/goal_mark_achieved".into(),
                 "proxima-code/code_emit_correction_execution_request".into(),
             ],
@@ -684,6 +770,89 @@ impl DemoWorld {
         .await
     }
 
+    async fn demo_goal_graph_complete(&self) -> Result<bool, sqlx::Error> {
+        let parent_achieved = self.goal_achieved_fact_exists().await?;
+        let graph = self.goal_graph_metrics().await?;
+        Ok(graph.complete(parent_achieved))
+    }
+
+    async fn goal_graph_metrics(&self) -> Result<GoalGraphMetrics, sqlx::Error> {
+        let Some(parent_goal) = self.goal_id else {
+            return Ok(GoalGraphMetrics::default());
+        };
+        let row = sqlx::query(
+            "WITH RECURSIVE child_roots AS (
+                 SELECT gp.goal_id AS root_goal_id
+                   FROM proxima_core.goal_parents gp
+                  WHERE gp.parent_goal_id = $1
+             ),
+             child_lineage(root_goal_id, goal_id, depth, path) AS (
+                 SELECT root_goal_id, root_goal_id, 0, ARRAY[root_goal_id]
+                   FROM child_roots
+                 UNION ALL
+                 SELECT l.root_goal_id, child.goal_id, l.depth + 1, l.path || child.goal_id
+                   FROM child_lineage l
+                   JOIN proxima_core.goals child
+                     ON child.supersedes = l.goal_id
+                  WHERE NOT child.goal_id = ANY(l.path)
+             ),
+             child_heads AS (
+                 SELECT DISTINCT ON (l.root_goal_id)
+                        l.root_goal_id,
+                        g.goal_id AS head_goal_id,
+                        g.state
+                   FROM child_lineage l
+                   JOIN proxima_core.goals g ON g.goal_id = l.goal_id
+                  ORDER BY l.root_goal_id, l.depth DESC, g.created_at DESC
+             ),
+             child_activations AS (
+                 SELECT ga.memory_id, ga.goal_id
+                   FROM proxima_goal.goal_activated_v1 ga
+                   JOIN child_roots cr ON cr.root_goal_id = ga.goal_id
+             ),
+             child_requests AS (
+                 SELECT DISTINCT er.memory_id
+                   FROM proxima_code.execution_request_v1 er
+                   JOIN proxima_core.edges e
+                     ON e.source_kind = 'Fact'
+                    AND e.source_memory_id = er.memory_id
+                    AND e.target_kind = 'Fact'
+                    AND e.target_memory_id IN (SELECT memory_id FROM child_activations)
+                    AND e.relation = 'core/derived-from'
+             ),
+             child_runs AS (
+                 SELECT DISTINCT wr.memory_id
+                   FROM proxima_code.workspace_run_v1 wr
+                   JOIN proxima_core.edges e
+                     ON e.source_kind = 'Fact'
+                    AND e.source_memory_id = wr.memory_id
+                    AND e.target_kind = 'Fact'
+                    AND e.target_memory_id IN (SELECT memory_id FROM child_requests)
+                    AND e.relation = 'core/derived-from'
+             )
+             SELECT
+                (SELECT count(*) FROM child_roots) AS child_goal_count,
+                (SELECT count(*) FROM child_heads WHERE state = 'Achieved') AS achieved_child_goal_count,
+                (SELECT count(*) FROM child_requests) AS child_execution_request_count,
+                (SELECT count(*) FROM child_runs) AS child_workspace_run_count,
+                (SELECT count(*) FROM proxima_code.workspace_review_v1
+                  WHERE execution_request_memory_id IN (SELECT memory_id FROM child_requests)) AS child_workspace_review_count,
+                (SELECT count(*) FROM proxima_code.verification_evidence_v1
+                  WHERE execution_request_memory_id IN (SELECT memory_id FROM child_requests)) AS verification_evidence_count",
+        )
+        .bind(parent_goal.into_inner())
+        .fetch_one(self.pg.pool())
+        .await?;
+        Ok(GoalGraphMetrics {
+            child_goal_count: row.try_get("child_goal_count")?,
+            achieved_child_goal_count: row.try_get("achieved_child_goal_count")?,
+            child_execution_request_count: row.try_get("child_execution_request_count")?,
+            child_workspace_run_count: row.try_get("child_workspace_run_count")?,
+            child_workspace_review_count: row.try_get("child_workspace_review_count")?,
+            verification_evidence_count: row.try_get("verification_evidence_count")?,
+        })
+    }
+
     async fn collect_metrics(
         &self,
         started: Instant,
@@ -703,10 +872,12 @@ impl DemoWorld {
             .get(WorkspaceRunV1::SCHEMA_ID)
             .unwrap_or(&0);
         let goal_achieved_fact_exists = self.goal_achieved_fact_exists().await?;
+        let goal_graph = self.goal_graph_metrics().await?;
         let final_goal_state = self.final_goal_state().await?;
         let (git_diff_stats, final_changed_files) = self.git_diff_metrics().await?;
         let deterministic_checks = deterministic_checks(
             goal_achieved_fact_exists,
+            &goal_graph,
             &git_diff_stats,
             &final_changed_files,
         );
@@ -758,10 +929,24 @@ impl DemoWorld {
             review_verdicts,
             final_goal_state,
             goal_achieved_fact_exists,
+            goal_graph,
             git_diff_stats,
             final_changed_files,
             deterministic_checks,
             deterministic_pass,
+            flow_graph_json: self
+                .cfg
+                .run_dir
+                .join("flow_graph.json")
+                .display()
+                .to_string(),
+            flow_graph_mermaid: self
+                .cfg
+                .run_dir
+                .join("flow_graph.mmd")
+                .display()
+                .to_string(),
+            flow_graph_summary: self.collect_flow_graph().await?.summary,
             reviewer_score,
             reviewer_score_error,
             auto_merge: None,
@@ -1066,11 +1251,276 @@ impl DemoWorld {
     async fn write_outputs(&self, metrics: &Metrics) -> Result<(), Box<dyn std::error::Error>> {
         let metrics_path = self.cfg.run_dir.join("metrics.json");
         let report_path = self.cfg.run_dir.join("report.md");
+        let graph_path = self.cfg.run_dir.join("flow_graph.json");
+        let mermaid_path = self.cfg.run_dir.join("flow_graph.mmd");
+        let flow_graph = self.collect_flow_graph().await?;
         std::fs::write(&metrics_path, serde_json::to_vec_pretty(metrics)?)?;
-        std::fs::write(&report_path, render_report(metrics))?;
+        std::fs::write(&graph_path, serde_json::to_vec_pretty(&flow_graph)?)?;
+        std::fs::write(&mermaid_path, render_flow_mermaid(&flow_graph))?;
+        std::fs::write(&report_path, render_report(metrics, &flow_graph))?;
         eprintln!("demo metrics: {}", metrics_path.display());
         eprintln!("demo report: {}", report_path.display());
+        eprintln!("demo flow graph: {}", graph_path.display());
+        eprintln!("demo flow mermaid: {}", mermaid_path.display());
         Ok(())
+    }
+
+    async fn collect_flow_graph(&self) -> Result<FlowGraph, Box<dyn std::error::Error>> {
+        let mut nodes = BTreeMap::<String, FlowNode>::new();
+        let mut edges = Vec::<FlowEdge>::new();
+
+        for (role, id) in &self.role_ids {
+            nodes.insert(
+                entity_node_id("personality", id.into_inner()),
+                FlowNode {
+                    id: entity_node_id("personality", id.into_inner()),
+                    kind: "personality".into(),
+                    label: role.clone(),
+                    role: Some(role.clone()),
+                    schema_id: None,
+                    state: None,
+                    status: Some("active".into()),
+                },
+            );
+        }
+
+        for row in sqlx::query(
+            "SELECT goal_id, title, state::text AS state
+             FROM proxima_core.goals
+             ORDER BY created_at ASC",
+        )
+        .fetch_all(self.pg.pool())
+        .await?
+        {
+            let goal_id: Uuid = row.try_get("goal_id")?;
+            nodes.insert(
+                entity_node_id("goal", goal_id),
+                FlowNode {
+                    id: entity_node_id("goal", goal_id),
+                    kind: "goal".into(),
+                    label: row.try_get("title")?,
+                    role: None,
+                    schema_id: Some("proxima-goal".into()),
+                    state: Some(row.try_get("state")?),
+                    status: None,
+                },
+            );
+        }
+
+        for row in sqlx::query(
+            "SELECT m.memory_id, m.schema_id,
+                    COALESCE(er.title, wr.branch_name, rv.summary, ga.title, gp.title, gh.title, m.schema_id) AS label
+             FROM proxima_core.memories m
+             LEFT JOIN proxima_code.execution_request_v1 er USING (memory_id)
+             LEFT JOIN proxima_code.workspace_run_v1 wr USING (memory_id)
+             LEFT JOIN proxima_code.workspace_review_v1 rv USING (memory_id)
+             LEFT JOIN proxima_code.verification_evidence_v1 ve USING (memory_id)
+             LEFT JOIN proxima_goal.goal_activated_v1 ga USING (memory_id)
+             LEFT JOIN proxima_goal.goal_proposed_v1 gp USING (memory_id)
+             LEFT JOIN proxima_goal.goal_achieved_v1 gh USING (memory_id)
+             ORDER BY m.created_at ASC",
+        )
+        .fetch_all(self.pg.pool())
+        .await?
+        {
+            let memory_id: Uuid = row.try_get("memory_id")?;
+            let schema_id: String = row.try_get("schema_id")?;
+            nodes.insert(
+                entity_node_id("memory", memory_id),
+                FlowNode {
+                    id: entity_node_id("memory", memory_id),
+                    kind: "memory".into(),
+                    label: row.try_get("label")?,
+                    role: None,
+                    schema_id: Some(schema_id),
+                    state: None,
+                    status: None,
+                },
+            );
+        }
+
+        for row in sqlx::query(
+            "SELECT goal_id, parent_goal_id
+             FROM proxima_core.goal_parents
+             ORDER BY parent_goal_id, goal_id",
+        )
+        .fetch_all(self.pg.pool())
+        .await?
+        {
+            let child: Uuid = row.try_get("goal_id")?;
+            let parent: Uuid = row.try_get("parent_goal_id")?;
+            edges.push(FlowEdge {
+                id: format!("goal-parent:{parent}:{child}"),
+                source: entity_node_id("goal", parent),
+                target: entity_node_id("goal", child),
+                relation: "goal_parent".into(),
+                persisted_edge_id: None,
+            });
+        }
+
+        for row in sqlx::query(
+            "SELECT edge_id, relation,
+                    source_memory_id, source_goal_id,
+                    target_memory_id, target_goal_id
+             FROM proxima_core.edges
+             ORDER BY created_at ASC",
+        )
+        .fetch_all(self.pg.pool())
+        .await?
+        {
+            let edge_id: Uuid = row.try_get("edge_id")?;
+            let source = flow_endpoint(
+                row.try_get::<Option<Uuid>, _>("source_memory_id")?,
+                row.try_get::<Option<Uuid>, _>("source_goal_id")?,
+            );
+            let target = flow_endpoint(
+                row.try_get::<Option<Uuid>, _>("target_memory_id")?,
+                row.try_get::<Option<Uuid>, _>("target_goal_id")?,
+            );
+            edges.push(FlowEdge {
+                id: format!("edge:{edge_id}"),
+                source,
+                target,
+                relation: row.try_get("relation")?,
+                persisted_edge_id: Some(edge_id.to_string()),
+            });
+        }
+
+        for row in sqlx::query(
+            "SELECT i.personality_instance_id, i.wake_entry_id, i.change_event_seq, i.status::text AS status
+             FROM proxima_core.personality_wake_invocations i
+             ORDER BY i.started_at ASC",
+        )
+        .fetch_all(self.pg.pool())
+        .await?
+        {
+            let personality_id: Uuid = row.try_get("personality_instance_id")?;
+            let change_event_seq: Uuid = row.try_get("change_event_seq")?;
+            let wake_entry_id: Uuid = row.try_get("wake_entry_id")?;
+            let wake_node_id = format!("wake:{personality_id}:{wake_entry_id}:{change_event_seq}");
+            nodes.insert(
+                wake_node_id.clone(),
+                FlowNode {
+                    id: wake_node_id.clone(),
+                    kind: "wake_invocation".into(),
+                    label: role_for_personality(&self.role_ids, personality_id)
+                        .unwrap_or_else(|| "wake".into()),
+                    role: role_for_personality(&self.role_ids, personality_id),
+                    schema_id: None,
+                    state: None,
+                    status: Some(row.try_get("status")?),
+                },
+            );
+            edges.push(FlowEdge {
+                id: format!("wake-trigger:{personality_id}:{change_event_seq}"),
+                source: format!("event:{change_event_seq}"),
+                target: wake_node_id.clone(),
+                relation: "wake_triggered".into(),
+                persisted_edge_id: None,
+            });
+            edges.push(FlowEdge {
+                id: format!("wake-role:{personality_id}:{change_event_seq}"),
+                source: entity_node_id("personality", personality_id),
+                target: wake_node_id,
+                relation: "wake_executed_by".into(),
+                persisted_edge_id: None,
+            });
+        }
+
+        let mut events = Vec::new();
+        for row in sqlx::query(
+            "SELECT seq, kind::text AS kind, entity_kind::text AS entity_kind,
+                    entity_memory_id, entity_goal_id, entity_schema_id, edge_relation,
+                    entity_personality_instance_id, wake_chain_depth
+             FROM proxima_core.change_event
+             ORDER BY seq ASC",
+        )
+        .fetch_all(self.pg.pool())
+        .await?
+        {
+            let seq: Uuid = row.try_get("seq")?;
+            let entity_memory_id: Option<Uuid> = row.try_get("entity_memory_id")?;
+            let entity_goal_id: Option<Uuid> = row.try_get("entity_goal_id")?;
+            let event_node_id = format!("event:{seq}");
+            nodes.insert(
+                event_node_id.clone(),
+                FlowNode {
+                    id: event_node_id,
+                    kind: "change_event".into(),
+                    label: row.try_get("kind")?,
+                    role: None,
+                    schema_id: row.try_get("entity_schema_id")?,
+                    state: None,
+                    status: None,
+                },
+            );
+            if let Some(entity_id) = entity_memory_id {
+                edges.push(FlowEdge {
+                    id: format!("event-entity:{seq}:{entity_id}"),
+                    source: format!("event:{seq}"),
+                    target: entity_node_id("memory", entity_id),
+                    relation: "event_appended".into(),
+                    persisted_edge_id: None,
+                });
+            }
+            if let Some(entity_id) = entity_goal_id {
+                edges.push(FlowEdge {
+                    id: format!("event-goal:{seq}:{entity_id}"),
+                    source: format!("event:{seq}"),
+                    target: entity_node_id("goal", entity_id),
+                    relation: "event_appended".into(),
+                    persisted_edge_id: None,
+                });
+            }
+            events.push(FlowEvent {
+                seq: seq.to_string(),
+                kind: row.try_get("kind")?,
+                entity_kind: row.try_get("entity_kind")?,
+                entity_id: entity_memory_id.or(entity_goal_id).map(|id| id.to_string()),
+                schema_id: row.try_get("entity_schema_id")?,
+                edge_relation: row.try_get("edge_relation")?,
+                personality_instance_id: row
+                    .try_get::<Option<Uuid>, _>("entity_personality_instance_id")?
+                    .map(|id| id.to_string()),
+                wake_chain_depth: row.try_get("wake_chain_depth")?,
+            });
+        }
+
+        let unresolved_endpoint_count = edges
+            .iter()
+            .filter(|edge| !nodes.contains_key(&edge.source) || !nodes.contains_key(&edge.target))
+            .count();
+        let nodes = nodes.into_values().collect::<Vec<_>>();
+        let summary = FlowGraphSummary {
+            node_count: nodes.len(),
+            edge_count: edges.len(),
+            personality_count: nodes.iter().filter(|n| n.kind == "personality").count(),
+            goal_count: nodes.iter().filter(|n| n.kind == "goal").count(),
+            execution_request_count: nodes
+                .iter()
+                .filter(|n| n.schema_id.as_deref() == Some(ExecutionRequestV1::SCHEMA_ID))
+                .count(),
+            workspace_run_count: nodes
+                .iter()
+                .filter(|n| n.schema_id.as_deref() == Some(WorkspaceRunV1::SCHEMA_ID))
+                .count(),
+            workspace_review_count: nodes
+                .iter()
+                .filter(|n| n.schema_id.as_deref() == Some(WorkspaceReviewV1::SCHEMA_ID))
+                .count(),
+            verification_evidence_count: nodes
+                .iter()
+                .filter(|n| n.schema_id.as_deref() == Some("proxima-code/verification-evidence-v1"))
+                .count(),
+            wake_invocation_count: nodes.iter().filter(|n| n.kind == "wake_invocation").count(),
+            unresolved_endpoint_count,
+        };
+        Ok(FlowGraph {
+            nodes,
+            edges,
+            events,
+            summary,
+        })
     }
 
     async fn failure_report(&self, stage: &str) -> Result<String, Box<dyn std::error::Error>> {
@@ -1194,17 +1644,51 @@ async fn prepare_demo_repo(path: &Path) -> Result<Uuid, Box<dyn std::error::Erro
     Ok(Uuid::now_v7())
 }
 
-fn planner_instruction() -> String {
+fn planner_instruction(planner: PersonalityInstanceId) -> String {
     format!(
-        "Call proxima_code_code_emit_execution_request exactly once with this JSON: {}. Then stop.",
-        json!({
-            "repo_handle": DEMO_REPO_HANDLE,
-            "title": "Build Signal Match static SPA",
-            "instructions": "Create `index.html`. Build a package-free static SPA game named Signal Match that runs by opening index.html directly. Requirements: responsive layout, four colored pads, sequence playback, click input, keyboard input using Q W A S, score and level display, failure state, restart control. No package install. Keep all app code in index.html.",
-            "idempotency_key": "demo-signal-match-build",
-            "goal_activated_memory": "N1",
-            "evidence": []
-        })
+        "You are the Planner for the triggering active Goal in N1. Decide whether the Goal is small enough for one execution request or should first be decomposed. This demo Goal is intentionally larger than one directly verifiable unit; prefer decomposing it into independently verifiable child Goals before emitting execution requests. Do not create child Goals unless you decide decomposition is warranted. If N1 is the top-level Signal Match static SPA demo Goal, call proxima_goal_goal_decompose with parent_goal \"N1\", activate_children true, target_personality \"{}\", idempotency_key \"demo-signal-match-decompose\", and these suggested children: {}. Then stop. If N1 is already one of those child Goals, call proxima_code_code_emit_execution_request for that child with repo_handle \"{}\", goal_activated_memory \"N1\", evidence [], a child-specific title/instructions/idempotency_key, and these required acceptance_criteria: {}. Use idempotency_key \"demo-signal-match-shell\" for the shell/pads child and \"demo-signal-match-gameplay\" for the gameplay/restart child. Then stop.",
+        planner.into_inner(),
+        json!([
+            {
+                "payload": {
+                    "schema_id": "proxima-goal/simple-text-v1",
+                    "body": {
+                        "title": "Signal Match static shell and responsive pads",
+                        "text": "Create index.html with a package-free responsive Signal Match shell, title, four colored pads, and direct browser entrypoint."
+                    }
+                },
+                "evidence": []
+            },
+            {
+                "payload": {
+                    "schema_id": "proxima-goal/simple-text-v1",
+                    "body": {
+                        "title": "Signal Match gameplay controls and restart loop",
+                        "text": "Create index.html gameplay behavior for sequence playback, click input, Q W A S keyboard input, score and level display, failure state, and restart control."
+                    }
+                },
+                "evidence": []
+            }
+        ]),
+        DEMO_REPO_HANDLE,
+        json!([
+            {
+                "key": "static_entrypoint",
+                "description": "index.html exists and runs without package installation",
+                "required": true,
+                "verifier_kind": "file_exists",
+                "verifier_spec_json": { "path": "index.html" }
+            },
+            {
+                "key": "gameplay_controls",
+                "description": "Signal Match includes pads, keyboard input, score, level, failure state, and restart",
+                "required": true,
+                "verifier_kind": "command",
+                "verifier_spec_json": {
+                    "command": ["grep", "-E", "Signal Match|data-pad|keydown|restart|level|score|game-over", "index.html"]
+                }
+            }
+        ])
     )
 }
 
@@ -1217,15 +1701,16 @@ fn worker_instruction() -> String {
 }
 
 fn verifier_instruction() -> String {
-    "Inspect the prepared workspace. Run workspace_shell with command `test -f index.html && grep -E \"Signal Match|data-pad|keydown|restart|level|score|game-over\" index.html`. If it exits 0, call proxima_code_code_emit_workspace_review with {\"workspace_run_memory\":\"N1\",\"verdict\":\"approved\",\"summary\":\"Signal Match requirements satisfied\",\"findings\":[],\"verification_summary\":\"index.html exists and contains direct-run Signal Match gameplay controls\",\"idempotency_key\":\"demo-signal-match-review-approved\"}. If it fails, call the same tool with verdict rejected, summary \"Signal Match requirements missing\", one finding for index.html, correction_instructions \"Create a complete direct-run Signal Match index.html\", and idempotency_key \"demo-signal-match-review-rejected\". Then stop.".into()
+    "Inspect the prepared workspace. Run workspace_shell with command `test -f index.html && grep -E \"Signal Match|data-pad|keydown|restart|level|score|game-over\" index.html`. If it exits 0, first call proxima_code_code_emit_verification_evidence twice: {\"workspace_run_memory\":\"N1\",\"criterion_key\":\"static_entrypoint\",\"status\":\"passed\",\"summary\":\"index.html exists\",\"artifact_refs_json\":{\"path\":\"index.html\"},\"idempotency_key\":\"demo-signal-match-evidence-static\"} and {\"workspace_run_memory\":\"N1\",\"criterion_key\":\"gameplay_controls\",\"status\":\"passed\",\"summary\":\"index.html contains Signal Match controls and states\",\"artifact_refs_json\":{\"path\":\"index.html\"},\"idempotency_key\":\"demo-signal-match-evidence-gameplay\"}. Then call proxima_code_code_emit_workspace_review with {\"workspace_run_memory\":\"N1\",\"verdict\":\"approved\",\"summary\":\"Signal Match requirements satisfied\",\"findings\":[],\"verification_summary\":\"index.html exists and contains direct-run Signal Match gameplay controls\",\"idempotency_key\":\"demo-signal-match-review-approved\"}. If the shell check fails, call proxima_code_code_emit_verification_evidence for both keys with status \"failed\", then call the review tool with verdict rejected, summary \"Signal Match requirements missing\", one finding for index.html, correction_instructions \"Create a complete direct-run Signal Match index.html. Failed criteria: static_entrypoint, gameplay_controls\", and idempotency_key \"demo-signal-match-review-rejected\". Then stop.".into()
 }
 
 fn goal_reviewer_instruction() -> String {
-    "Read the workspace review payload in Triggering Memory. If verdict is approved, first call core_list_active_goals with {}, then call proxima_goal_goal_mark_achieved using the returned goal handle, evidence [\"N1\"], and idempotency_key \"demo-signal-match-goal-achieved\". If verdict is rejected, call proxima_code_code_emit_correction_execution_request with {\"workspace_review_memory\":\"N1\",\"target_personality\":\"P1\",\"idempotency_key\":\"demo-signal-match-correction-1\"}. Then stop.".into()
+    "Read the workspace review payload in Triggering Memory. If verdict is approved, first call proxima_code_code_goal_completion_status with {\"workspace_review_memory\":\"N1\"}. If its child_close is present, call proxima_goal_goal_mark_achieved using exactly child_close.goal, child_close.evidence, and child_close.idempotency_key. If its parent.parent_close is present, call proxima_goal_goal_mark_achieved after the child call using exactly parent.parent_close.goal, parent.parent_close.evidence, and parent.parent_close.idempotency_key. If verdict is rejected, call proxima_code_code_emit_correction_execution_request with {\"workspace_review_memory\":\"N1\",\"target_personality\":\"P1\",\"idempotency_key\":\"demo-signal-match-correction-1\"}. Then stop.".into()
 }
 
 fn deterministic_checks(
     achieved: bool,
+    goal_graph: &GoalGraphMetrics,
     diff: &GitDiffStats,
     changed_files: &[String],
 ) -> BTreeMap<String, bool> {
@@ -1245,6 +1730,31 @@ fn deterministic_checks(
     );
     checks.insert("goal_achieved_fact_exists".into(), achieved);
     checks.insert(
+        "planner_decomposed_parent_goal".into(),
+        goal_graph.child_goal_count >= 2,
+    );
+    checks.insert(
+        "all_child_goals_achieved_before_parent_completion".into(),
+        goal_graph.child_goal_count >= 2
+            && goal_graph.achieved_child_goal_count == goal_graph.child_goal_count,
+    );
+    checks.insert(
+        "child_execution_requests_observed".into(),
+        goal_graph.child_execution_request_count >= 2,
+    );
+    checks.insert(
+        "child_workspace_runs_observed".into(),
+        goal_graph.child_workspace_run_count >= 2,
+    );
+    checks.insert(
+        "child_workspace_reviews_observed".into(),
+        goal_graph.child_workspace_review_count >= 2,
+    );
+    checks.insert(
+        "deterministic_verifier_evidence_observed".into(),
+        goal_graph.verification_evidence_count >= 1,
+    );
+    checks.insert(
         "final_diff_modifies_only_demo_repo_files".into(),
         changed_files
             .iter()
@@ -1261,9 +1771,9 @@ fn deterministic_checks(
     checks
 }
 
-fn render_report(metrics: &Metrics) -> String {
+fn render_report(metrics: &Metrics, flow_graph: &FlowGraph) -> String {
     format!(
-        "# Proxima Demo Wheel Report\n\n- run_dir: `{}`\n- repo_path: `{}`\n- db_name: `{}`\n- ticks: `{}`\n- corrections: `{}`\n- goal_state: `{}`\n- deterministic_pass: `{}`\n- budget_pass: `{}`\n- reviewer_score: `{}`\n- overall_score: `{}`\n- score_per_model_round: `{:?}`\n- score_per_wall_clock_second: `{:.4}`\n\n## Auto Merge\n\n```json\n{}\n```\n\n## Diff\n\n- files_changed: `{}`\n- insertions: `{}`\n- deletions: `{}`\n- files: `{:?}`\n\n## Wake Invocations\n\n```json\n{}\n```\n\n## Checks\n\n```json\n{}\n```\n",
+        "# Proxima Demo Wheel Report\n\n- run_dir: `{}`\n- repo_path: `{}`\n- db_name: `{}`\n- ticks: `{}`\n- corrections: `{}`\n- goal_state: `{}`\n- deterministic_pass: `{}`\n- budget_pass: `{}`\n- reviewer_score: `{}`\n- overall_score: `{}`\n- score_per_model_round: `{:?}`\n- score_per_wall_clock_second: `{:.4}`\n\n## Goal Graph\n\n```json\n{}\n```\n\n## Flow Graph\n\n- graph_json: `{}`\n- graph_mermaid: `{}`\n- nodes: `{}`\n- edges: `{}`\n- unresolved_endpoints: `{}`\n\n```mermaid\n{}\n```\n\n## Auto Merge\n\n```json\n{}\n```\n\n## Diff\n\n- files_changed: `{}`\n- insertions: `{}`\n- deletions: `{}`\n- files: `{:?}`\n\n## Wake Invocations\n\n```json\n{}\n```\n\n## Checks\n\n```json\n{}\n```\n",
         metrics.run_dir,
         metrics.repo_path,
         metrics.db_name,
@@ -1280,6 +1790,13 @@ fn render_report(metrics: &Metrics) -> String {
         metrics.overall_score,
         metrics.score_per_model_round,
         metrics.score_per_wall_clock_second,
+        serde_json::to_string_pretty(&metrics.goal_graph).unwrap_or_default(),
+        metrics.flow_graph_json,
+        metrics.flow_graph_mermaid,
+        flow_graph.summary.node_count,
+        flow_graph.summary.edge_count,
+        flow_graph.summary.unresolved_endpoint_count,
+        render_flow_mermaid(flow_graph),
         serde_json::to_string_pretty(&metrics.auto_merge).unwrap_or_default(),
         metrics.git_diff_stats.files_changed,
         metrics.git_diff_stats.insertions,
@@ -1288,6 +1805,65 @@ fn render_report(metrics: &Metrics) -> String {
         serde_json::to_string_pretty(&metrics.wake_invocations).unwrap_or_default(),
         serde_json::to_string_pretty(&metrics.deterministic_checks).unwrap_or_default()
     )
+}
+
+fn render_flow_mermaid(graph: &FlowGraph) -> String {
+    let mut out = String::from("graph TD\n");
+    for node in &graph.nodes {
+        out.push_str(&format!(
+            "  {}[\"{}\"]\n",
+            mermaid_id(&node.id),
+            mermaid_label(&node.label)
+        ));
+    }
+    for edge in &graph.edges {
+        out.push_str(&format!(
+            "  {} -->|{}| {}\n",
+            mermaid_id(&edge.source),
+            mermaid_label(&edge.relation),
+            mermaid_id(&edge.target)
+        ));
+    }
+    out
+}
+
+fn entity_node_id(kind: &str, id: Uuid) -> String {
+    format!("{kind}:{id}")
+}
+
+fn flow_endpoint(memory_id: Option<Uuid>, goal_id: Option<Uuid>) -> String {
+    if let Some(memory_id) = memory_id {
+        entity_node_id("memory", memory_id)
+    } else if let Some(goal_id) = goal_id {
+        entity_node_id("goal", goal_id)
+    } else {
+        "missing:endpoint".into()
+    }
+}
+
+fn role_for_personality(
+    role_ids: &BTreeMap<String, PersonalityInstanceId>,
+    personality_id: Uuid,
+) -> Option<String> {
+    role_ids
+        .iter()
+        .find_map(|(role, id)| (id.into_inner() == personality_id).then(|| role.clone()))
+}
+
+fn mermaid_id(raw: &str) -> String {
+    let mut id = String::from("n");
+    for ch in raw.chars() {
+        if ch.is_ascii_alphanumeric() {
+            id.push(ch);
+        } else {
+            id.push('_');
+        }
+    }
+    id
+}
+
+fn mermaid_label(raw: &str) -> String {
+    raw.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 fn signal_match_index_html() -> String {

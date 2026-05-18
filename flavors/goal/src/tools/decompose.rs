@@ -69,7 +69,8 @@ pub async fn decompose_goal(
     ctx: McpToolCtx,
     args: DecomposeArgs,
 ) -> Result<DecomposeOutput, McpToolError> {
-    let parent_goal_id = ctx.resolve_goal(&args.parent_goal)?;
+    let mut tx = ctx.pool.begin().await.map_err(map_storage)?;
+    let parent_goal_id = resolve_parent_goal_ref(&mut tx, &ctx, &args.parent_goal).await?;
     if args.children.is_empty() {
         return Err(McpToolError::InvalidInput(
             "children must contain at least one child goal".into(),
@@ -87,7 +88,6 @@ pub async fn decompose_goal(
         ));
     }
 
-    let mut tx = ctx.pool.begin().await.map_err(map_storage)?;
     validate_current_active_parent(&mut tx, &ctx, parent_goal_id).await?;
     let target_root = if args.activate_children {
         match args.target_personality.as_deref() {
@@ -190,6 +190,43 @@ pub async fn decompose_goal(
         children,
         idempotent_replay,
     })
+}
+
+async fn resolve_parent_goal_ref(
+    tx: &mut sqlx::PgConnection,
+    ctx: &McpToolCtx,
+    value: &str,
+) -> Result<GoalId, McpToolError> {
+    match ctx.resolve_goal(value) {
+        Ok(goal_id) => return Ok(goal_id),
+        Err(goal_err) => {
+            let memory_id = ctx.resolve_memory(value).map_err(|_| goal_err)?;
+            let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(&ctx.owner);
+            let row: Option<(uuid::Uuid,)> = sqlx::query_as(
+                "SELECT g.goal_id
+                   FROM proxima_core.memories m
+                   JOIN proxima_goal.goal_activated_v1 g USING (memory_id)
+                  WHERE m.memory_id = $1
+                    AND m.owner_principal_kind = $2
+                    AND m.owner_principal_id = $3
+                    AND m.owner_org_id = $4
+                    AND COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) = 'Fact'
+                    AND m.schema_id = 'proxima-goal/goal-activated-v1'",
+            )
+            .bind(memory_id.into_inner())
+            .bind(owner_kind)
+            .bind(owner_principal_id)
+            .bind(owner_org_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(map_storage)?;
+            row.map(|(goal_id,)| GoalId::new(goal_id)).ok_or_else(|| {
+                McpToolError::InvalidInput(format!(
+                    "parent_goal must be a Goal or visible goal_activated memory: {value}"
+                ))
+            })
+        }
+    }
 }
 
 async fn validate_current_active_parent(

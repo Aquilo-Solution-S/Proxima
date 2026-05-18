@@ -12,7 +12,7 @@ use proxima_core::{
 use proxima_storage_pg::verbs::edge_append::{EdgeDraft, append_edge_in_tx};
 use proxima_storage_pg::verbs::event_ingest::ingest_event_in_tx;
 
-use crate::payloads::WorkspaceReviewV1;
+use crate::payloads::{VerificationEvidenceV1, WorkspaceReviewV1};
 
 use crate::mcp::sql::map_storage;
 
@@ -53,6 +53,74 @@ pub async fn ingest_workspace_review(
     ingest_event_in_tx(tx, &draft)
         .await
         .map_err(McpToolError::Storage)
+}
+
+/// Ingest a verification evidence Fact.
+///
+/// # Errors
+///
+/// Returns an error if serialization fails or event ingestion fails.
+pub async fn ingest_verification_evidence(
+    tx: &mut Transaction<'_, Postgres>,
+    ctx: &McpToolCtx,
+    payload: &VerificationEvidenceV1,
+) -> Result<proxima_core::verbs::event_ingest::EventIngestOutcome, McpToolError> {
+    let mut payload_bytes = Vec::new();
+    ciborium::ser::into_writer(payload, &mut payload_bytes)
+        .map_err(|err| McpToolError::InvalidInput(err.to_string()))?;
+    let content_hash = blake3::hash(&payload_bytes);
+    let observed_at = time::OffsetDateTime::now_utc();
+    let draft = EventDraft {
+        source_id: SourceId::new("proxima-code/verification-evidence"),
+        source_batch_id: SourceBatchId::new(Uuid::now_v7()),
+        owner: ctx.owner.clone(),
+        schema_id: SchemaId::new(VerificationEvidenceV1::SCHEMA_ID.into()),
+        schema_version: SchemaVersion::new(VerificationEvidenceV1::SCHEMA_VERSION),
+        payload: payload_bytes,
+        observed_at,
+        occurred_at: observed_at,
+        cited_object: CitedObjectHint {
+            schema_id: SchemaId::new("proxima-code/verification-evidence-object-v1".into()),
+            schema_version: SchemaVersion::new(1),
+            content_hash: *content_hash.as_bytes(),
+        },
+        citation_mapping: CitationMappingHint {
+            schema_id: SchemaId::new("proxima-code/verification-evidence-whole-v1".into()),
+            schema_version: SchemaVersion::new(1),
+        },
+    };
+    ingest_event_in_tx(tx, &draft)
+        .await
+        .map_err(McpToolError::Storage)
+}
+
+/// Insert verification evidence sidecar row.
+///
+/// # Errors
+///
+/// Returns an error if serialization or database insertion fails.
+pub async fn insert_verification_evidence_sidecar(
+    tx: &mut Transaction<'_, Postgres>,
+    memory_id: MemoryId,
+    payload: &VerificationEvidenceV1,
+) -> Result<(), McpToolError> {
+    sqlx::query(
+        "INSERT INTO proxima_code.verification_evidence_v1
+            (memory_id, workspace_run_memory_id, execution_request_memory_id,
+             criterion_key, status, summary, artifact_refs_json)
+         VALUES ($1,$2,$3,$4,$5,$6,$7)",
+    )
+    .bind(memory_id.into_inner())
+    .bind(payload.workspace_run_memory_id)
+    .bind(payload.execution_request_memory_id)
+    .bind(&payload.criterion_key)
+    .bind(payload.status)
+    .bind(&payload.summary)
+    .bind(&payload.artifact_refs_json)
+    .execute(&mut **tx)
+    .await
+    .map_err(map_storage)?;
+    Ok(())
 }
 
 /// Insert workspace review sidecar row.

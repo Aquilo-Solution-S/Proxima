@@ -8,8 +8,8 @@ use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
 use crate::payloads::{
-    ExecutionRequestV1, WorkspaceDecision, WorkspaceDecisionV1, WorkspaceReviewV1,
-    WorkspaceReviewVerdict, WorkspaceRunV1,
+    AcceptanceCriterionV1, ExecutionRequestV1, WorkspaceDecision, WorkspaceDecisionV1,
+    WorkspaceReviewV1, WorkspaceReviewVerdict, WorkspaceRunV1,
 };
 use crate::repos::owner_columns_pub;
 
@@ -99,6 +99,97 @@ pub(super) async fn load_execution_request(
             request_key,
         },
     })
+}
+
+pub(super) async fn load_acceptance_criteria_for_request(
+    pool: &PgPool,
+    owner: &Owner,
+    request_memory_id: MemoryId,
+) -> Result<Vec<AcceptanceCriterionV1>, WorkspaceRunnerError> {
+    let (owner_kind, owner_principal_id, _) = owner_columns_pub(owner);
+    let rows: Vec<serde_json::Value> = sqlx::query_scalar(
+        "SELECT a.criteria_json
+         FROM proxima_code.acceptance_criteria_v1 a
+         JOIN proxima_core.memories m USING (memory_id)
+         WHERE a.execution_request_memory_id = $1
+           AND m.owner_principal_kind = $2
+           AND m.owner_principal_id = $3
+         ORDER BY m.created_at DESC",
+    )
+    .bind(request_memory_id.into_inner())
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|err| WorkspaceRunnerError::Internal(format!("load acceptance criteria: {err}")))?;
+    let mut criteria = Vec::new();
+    for value in rows {
+        let mut parsed: Vec<AcceptanceCriterionV1> =
+            serde_json::from_value(value).map_err(|err| {
+                WorkspaceRunnerError::Internal(format!("decode acceptance criteria: {err}"))
+            })?;
+        criteria.append(&mut parsed);
+    }
+    Ok(criteria)
+}
+
+pub(super) async fn load_verification_evidence_for_request(
+    pool: &PgPool,
+    owner: &Owner,
+    request_memory_id: MemoryId,
+) -> Result<Vec<serde_json::Value>, WorkspaceRunnerError> {
+    let (owner_kind, owner_principal_id, _) = owner_columns_pub(owner);
+    let rows = sqlx::query(
+        "SELECT v.memory_id,
+                v.workspace_run_memory_id,
+                v.execution_request_memory_id,
+                v.criterion_key,
+                v.status::text AS status,
+                v.summary,
+                v.artifact_refs_json,
+                v.created_at
+         FROM proxima_code.verification_evidence_v1 v
+         JOIN proxima_core.memories m USING (memory_id)
+         WHERE v.execution_request_memory_id = $1
+           AND m.owner_principal_kind = $2
+           AND m.owner_principal_id = $3
+         ORDER BY v.created_at DESC",
+    )
+    .bind(request_memory_id.into_inner())
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|err| WorkspaceRunnerError::Internal(format!("load verification evidence: {err}")))?;
+    rows.into_iter()
+        .map(|row| {
+            let memory_id: Uuid = row.try_get("memory_id").map_err(map_sqlx_internal)?;
+            let workspace_run_memory_id: Uuid = row
+                .try_get("workspace_run_memory_id")
+                .map_err(map_sqlx_internal)?;
+            let execution_request_memory_id: Uuid = row
+                .try_get("execution_request_memory_id")
+                .map_err(map_sqlx_internal)?;
+            let criterion_key: String = row.try_get("criterion_key").map_err(map_sqlx_internal)?;
+            let status: String = row.try_get("status").map_err(map_sqlx_internal)?;
+            let summary: String = row.try_get("summary").map_err(map_sqlx_internal)?;
+            let artifact_refs_json: serde_json::Value = row
+                .try_get("artifact_refs_json")
+                .map_err(map_sqlx_internal)?;
+            let created_at: time::OffsetDateTime =
+                row.try_get("created_at").map_err(map_sqlx_internal)?;
+            Ok(json!({
+                "memory_id": memory_id.to_string(),
+                "workspace_run_memory_id": workspace_run_memory_id.to_string(),
+                "execution_request_memory_id": execution_request_memory_id.to_string(),
+                "criterion_key": criterion_key,
+                "status": status,
+                "summary": summary,
+                "artifact_refs_json": artifact_refs_json,
+                "created_at": created_at,
+            }))
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone)]

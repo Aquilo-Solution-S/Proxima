@@ -17,11 +17,13 @@ use super::git::{
 };
 use super::ingest::ingest_workspace_run;
 use super::loaders::{
-    goal_close_candidate, load_continuation_workspace_run_for_request, load_decisions_for_request,
+    goal_close_candidate, load_acceptance_criteria_for_request,
+    load_continuation_workspace_run_for_request, load_decisions_for_request,
     load_execution_request, load_execution_request_for_run, load_goal_context_for_request,
     load_latest_rejected_review_for_run, load_latest_review_for_run, load_repo,
-    load_reviews_for_request, load_target_worker_personality_for_request, load_workspace_run,
-    parse_payload, repo_id_from_payload, veto_count_for_request,
+    load_reviews_for_request, load_target_worker_personality_for_request,
+    load_verification_evidence_for_request, load_workspace_run, parse_payload,
+    repo_id_from_payload, veto_count_for_request,
 };
 use super::{CodeWorkspaceRunner, PreparedState};
 
@@ -129,8 +131,19 @@ impl CodeWorkspaceRunner {
                 tooling,
             )
             .await?;
+            let acceptance_criteria =
+                load_acceptance_criteria_for_request(pool, input.owner, input.triggering_memory_id)
+                    .await?;
+            let verification_evidence = load_verification_evidence_for_request(
+                pool,
+                input.owner,
+                input.triggering_memory_id,
+            )
+            .await?;
             if let Some(object) = workspace_context.as_object_mut() {
                 object.insert("mode".into(), json!("continue_execution_request"));
+                object.insert("acceptance_criteria".into(), json!(acceptance_criteria));
+                object.insert("verification_evidence".into(), json!(verification_evidence));
                 object.insert(
                     "continuation_from".into(),
                     json!({
@@ -214,7 +227,7 @@ impl CodeWorkspaceRunner {
         )
         .await;
 
-        let workspace_context = build_workspace_context(
+        let mut workspace_context = build_workspace_context(
             &input,
             repo_id,
             &repo,
@@ -225,6 +238,16 @@ impl CodeWorkspaceRunner {
             tooling,
         )
         .await?;
+        let acceptance_criteria =
+            load_acceptance_criteria_for_request(pool, input.owner, input.triggering_memory_id)
+                .await?;
+        let verification_evidence =
+            load_verification_evidence_for_request(pool, input.owner, input.triggering_memory_id)
+                .await?;
+        if let Some(object) = workspace_context.as_object_mut() {
+            object.insert("acceptance_criteria".into(), json!(acceptance_criteria));
+            object.insert("verification_evidence".into(), json!(verification_evidence));
+        }
 
         let state = PreparedState {
             repo_id,
@@ -260,6 +283,12 @@ impl CodeWorkspaceRunner {
             load_execution_request_for_run(pool, input.owner, input.triggering_memory_id).await?;
         let active_goal =
             load_goal_context_for_request(pool, input.owner, original_request.memory_id).await?;
+        let acceptance_criteria =
+            load_acceptance_criteria_for_request(pool, input.owner, original_request.memory_id)
+                .await?;
+        let verification_evidence =
+            load_verification_evidence_for_request(pool, input.owner, original_request.memory_id)
+                .await?;
         let veto_count =
             veto_count_for_request(pool, input.owner, original_request.memory_id).await?;
         let diff = build_review_diff_context(&worktree_path, &run).await?;
@@ -275,6 +304,8 @@ impl CodeWorkspaceRunner {
             "workspace_run_memory_id": input.triggering_memory_id.into_inner().to_string(),
             "original_request": original_request.to_json(),
             "active_goal": active_goal,
+            "acceptance_criteria": acceptance_criteria,
+            "verification_evidence": verification_evidence,
             "diff_stat": run.diff_stat_json,
             "diff": diff,
             "log_tails": {
