@@ -2,10 +2,14 @@
 
 use std::sync::Arc;
 
-use proxima_code::mcp::{CodeEmitCorrectionExecutionRequestTool, CodeEmitWorkspaceReviewTool};
+use proxima_code::mcp::{
+    CodeEmitCorrectionExecutionRequestTool, CodeEmitVerificationEvidenceTool,
+    CodeEmitWorkspaceReviewTool, CodeGoalCompletionStatusTool,
+};
 use proxima_code::payloads::WorkspaceDiffStat;
 use proxima_code::{
-    CommitV1, ExecutionRequestV1, WorkspaceDecision, WorkspaceReviewVerdict, WorkspaceRunV1,
+    AcceptanceCriteriaV1, AcceptanceCriterionV1, AcceptanceVerifierKind, CommitV1,
+    ExecutionRequestV1, WorkspaceDecision, WorkspaceReviewVerdict, WorkspaceRunV1,
 };
 use proxima_core::auth::NoAuth;
 use proxima_core::mcp::{McpAuthorContext, McpTool, McpToolCtx, OutputMode};
@@ -23,6 +27,11 @@ use proxima_core::{
     RegisterInferenceTargetRequest, SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId,
     WakeEntryAuthoredBy, WakeEntryTriggerKind,
 };
+use proxima_flavor_goal::tools::accept::{AcceptArgs, AcceptTool};
+use proxima_flavor_goal::tools::decompose::{ChildGoalInput, DecomposeArgs, DecomposeTool};
+use proxima_flavor_goal::tools::mark_achieved::{MarkAchievedArgs, MarkAchievedTool};
+use proxima_flavor_goal::tools::propose::{ProposeArgs, ProposeTool};
+use proxima_flavor_goal::tools::util::{GoalPayloadInput, SimpleTextGoalBody};
 use proxima_storage_pg::PgStorage;
 use proxima_storage_pg::verbs::edge_append::{EdgeDraft, append_edge_in_tx};
 use proxima_storage_pg::verbs::event_ingest::ingest_event_in_tx;
@@ -167,7 +176,10 @@ async fn emit_workspace_review_writes_review_and_edges() -> Result<(), Box<dyn s
     .bind(request.into_inner())
     .fetch_one(fixture.pg.pool())
     .await?;
-    assert_eq!(derived_edges, 1, "missing core/derived-from edge to request");
+    assert_eq!(
+        derived_edges, 1,
+        "missing core/derived-from edge to request"
+    );
 
     // negative: no derived edge from review→run should remain
     let stale_derived: i64 = sqlx::query_scalar(
@@ -185,6 +197,286 @@ async fn emit_workspace_review_writes_review_and_edges() -> Result<(), Box<dyn s
     .fetch_one(fixture.pg.pool())
     .await?;
     assert_eq!(stale_derived, 0, "review→run derived edge must be replaced");
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn approved_review_requires_required_verification_evidence()
+-> Result<(), Box<dyn std::error::Error>> {
+    let Some(fixture) = TestDb::fresh().await? else {
+        return Ok(());
+    };
+    let owner = owner_fixture();
+    let registry = registry_for_mcp();
+    let root = root_perspective(&fixture.pg, &owner).await?;
+    let repo_id = Uuid::now_v7();
+    let request = seed_execution_request(
+        &fixture.pg,
+        &owner,
+        registry.as_ref(),
+        repo_id,
+        "criteria-request",
+        "Criteria request",
+        "Implement the criteria.",
+        &[],
+    )
+    .await?;
+    let run = seed_workspace_run(&fixture.pg, &owner, registry.as_ref(), repo_id, request).await?;
+    seed_acceptance_criteria(&fixture.pg, &owner, request).await?;
+
+    let missing = run_tool::<CodeEmitWorkspaceReviewTool>(
+        ctx(
+            fixture.pg.pool().clone(),
+            owner.clone(),
+            registry.clone(),
+            Some(root),
+            None,
+        ),
+        json!({
+            "workspace_run_memory": run.into_inner().to_string(),
+            "verdict": "approved",
+            "summary": "Premature approval.",
+            "findings": [],
+            "verification_summary": "not enough evidence",
+            "idempotency_key": "criteria-review-missing"
+        }),
+    )
+    .await;
+    assert!(
+        missing.is_err(),
+        "approval without evidence must be rejected"
+    );
+
+    for key in ["static_entrypoint", "gameplay_controls"] {
+        run_tool::<CodeEmitVerificationEvidenceTool>(
+            ctx(
+                fixture.pg.pool().clone(),
+                owner.clone(),
+                registry.clone(),
+                Some(root),
+                None,
+            ),
+            json!({
+                "workspace_run_memory": run.into_inner().to_string(),
+                "criterion_key": key,
+                "status": "passed",
+                "summary": format!("{key} passed"),
+                "artifact_refs_json": { "path": "index.html" },
+                "idempotency_key": format!("evidence-{key}")
+            }),
+        )
+        .await?;
+    }
+
+    let approved = run_tool::<CodeEmitWorkspaceReviewTool>(
+        ctx(fixture.pg.pool().clone(), owner, registry, Some(root), None),
+        json!({
+            "workspace_run_memory": run.into_inner().to_string(),
+            "verdict": "approved",
+            "summary": "Criteria passed.",
+            "findings": [],
+            "verification_summary": "all required criteria passed",
+            "idempotency_key": "criteria-review-approved"
+        }),
+    )
+    .await?;
+    assert_eq!(approved["verdict"], "approved");
+    Ok(())
+}
+
+#[tokio::test]
+async fn goal_completion_status_reports_child_and_parent_close_candidates()
+-> Result<(), Box<dyn std::error::Error>> {
+    let Some(fixture) = TestDb::fresh().await? else {
+        return Ok(());
+    };
+    proxima_flavor_goal::migrator()
+        .run(fixture.pg.pool())
+        .await?;
+
+    let owner = owner_fixture();
+    let registry = registry_for_code_and_goal();
+    let root = root_perspective(&fixture.pg, &owner).await?;
+    let goal_ctx = ctx(
+        fixture.pg.pool().clone(),
+        owner.clone(),
+        registry.clone(),
+        Some(root),
+        None,
+    );
+    let parent = ProposeTool::call(
+        goal_ctx.clone(),
+        ProposeArgs {
+            payload: simple_goal("parent"),
+            evidence: Vec::new(),
+            target_personality: None,
+            idempotency_key: Some("status-parent".into()),
+        },
+    )
+    .await?;
+    let parent = AcceptTool::call(
+        goal_ctx.clone(),
+        AcceptArgs {
+            proposal: parent.handle,
+            payload: None,
+            evidence: None,
+            target_personality: None,
+            idempotency_key: Some("status-parent-accept".into()),
+        },
+    )
+    .await?;
+    let children = DecomposeTool::call(
+        goal_ctx.clone(),
+        DecomposeArgs {
+            parent_goal: parent.handle,
+            children: vec![
+                ChildGoalInput {
+                    payload: simple_goal("child one"),
+                    evidence: Vec::new(),
+                },
+                ChildGoalInput {
+                    payload: simple_goal("child two"),
+                    evidence: Vec::new(),
+                },
+            ],
+            target_personality: None,
+            activate_children: true,
+            idempotency_key: "status-children".into(),
+        },
+    )
+    .await?;
+    let child_one_activation = activation_memory_id(&children.children[0])?;
+    let child_two_activation = activation_memory_id(&children.children[1])?;
+
+    let repo_id = Uuid::now_v7();
+    let child_one_request = seed_execution_request(
+        &fixture.pg,
+        &owner,
+        registry.as_ref(),
+        repo_id,
+        "child-one-request",
+        "Child one",
+        "Implement child one.",
+        &[child_one_activation],
+    )
+    .await?;
+    let child_one_run = seed_workspace_run(
+        &fixture.pg,
+        &owner,
+        registry.as_ref(),
+        repo_id,
+        child_one_request,
+    )
+    .await?;
+    let child_one_review = seed_workspace_review(
+        &fixture.pg,
+        &owner,
+        registry.clone(),
+        child_one_run,
+        child_one_request,
+        WorkspaceReviewVerdict::Approved,
+        0,
+    )
+    .await?;
+
+    let first_status = run_tool::<CodeGoalCompletionStatusTool>(
+        goal_ctx.clone(),
+        json!({ "workspace_review_memory": child_one_review.into_inner().to_string() }),
+    )
+    .await?;
+    assert_eq!(first_status["status"], "ready");
+    assert!(first_status["child_close"].is_object());
+    assert_eq!(
+        first_status["parent"]["parent_ready_after_this_child_close"],
+        false
+    );
+    assert!(first_status["parent"]["parent_close"].is_null());
+
+    let child_one_close = first_status["child_close"].clone();
+    MarkAchievedTool::call(
+        goal_ctx.clone(),
+        MarkAchievedArgs {
+            goal: child_one_close["goal"].as_str().expect("goal").into(),
+            evidence: vec![child_one_review.into_inner().to_string()],
+            idempotency_key: Some(
+                child_one_close["idempotency_key"]
+                    .as_str()
+                    .expect("idempotency key")
+                    .into(),
+            ),
+        },
+    )
+    .await?;
+
+    let child_two_request = seed_execution_request(
+        &fixture.pg,
+        &owner,
+        registry.as_ref(),
+        repo_id,
+        "child-two-request",
+        "Child two",
+        "Implement child two.",
+        &[child_two_activation],
+    )
+    .await?;
+    let rejected_run = seed_workspace_run(
+        &fixture.pg,
+        &owner,
+        registry.as_ref(),
+        repo_id,
+        child_two_request,
+    )
+    .await?;
+    let rejected_review = seed_workspace_review(
+        &fixture.pg,
+        &owner,
+        registry.clone(),
+        rejected_run,
+        child_two_request,
+        WorkspaceReviewVerdict::Rejected,
+        0,
+    )
+    .await?;
+    let rejected_status = run_tool::<CodeGoalCompletionStatusTool>(
+        goal_ctx.clone(),
+        json!({ "workspace_review_memory": rejected_review.into_inner().to_string() }),
+    )
+    .await?;
+    assert_eq!(rejected_status["status"], "skipped");
+    assert!(rejected_status["child_close"].is_null());
+    assert!(rejected_status["parent"]["parent_close"].is_null());
+
+    let child_two_run = seed_workspace_run(
+        &fixture.pg,
+        &owner,
+        registry.as_ref(),
+        repo_id,
+        child_two_request,
+    )
+    .await?;
+    let child_two_review = seed_workspace_review(
+        &fixture.pg,
+        &owner,
+        registry.clone(),
+        child_two_run,
+        child_two_request,
+        WorkspaceReviewVerdict::Approved,
+        1,
+    )
+    .await?;
+    let second_status = run_tool::<CodeGoalCompletionStatusTool>(
+        goal_ctx,
+        json!({ "workspace_review_memory": child_two_review.into_inner().to_string() }),
+    )
+    .await?;
+    assert_eq!(second_status["status"], "ready");
+    assert!(second_status["child_close"].is_object());
+    assert_eq!(
+        second_status["parent"]["parent_ready_after_this_child_close"],
+        true
+    );
+    assert!(second_status["parent"]["parent_close"].is_object());
 
     Ok(())
 }
@@ -679,6 +971,13 @@ fn registry_for_mcp() -> Arc<FlavorRegistryFrozen> {
     Arc::new(registry.freeze())
 }
 
+fn registry_for_code_and_goal() -> Arc<FlavorRegistryFrozen> {
+    let mut registry = FlavorRegistry::new();
+    proxima_code::register(&mut registry);
+    proxima_flavor_goal::register(&mut registry);
+    Arc::new(registry.freeze())
+}
+
 fn registry_for_engine() -> FlavorRegistryFrozen {
     let mut flavor = FlavorRegistry::new();
     proxima_code::register(&mut flavor);
@@ -736,6 +1035,23 @@ async fn root_perspective(
     Ok(runtime.current_root_perspective_memory_id)
 }
 
+fn simple_goal(title: &str) -> GoalPayloadInput {
+    GoalPayloadInput::SimpleText(SimpleTextGoalBody {
+        title: title.into(),
+        text: format!("{title} text"),
+    })
+}
+
+fn activation_memory_id(
+    child: &proxima_flavor_goal::tools::decompose::DecomposedChildOutput,
+) -> Result<MemoryId, Box<dyn std::error::Error>> {
+    let raw = child
+        .lifecycle_memory
+        .as_deref()
+        .ok_or("missing child activation memory")?;
+    Ok(MemoryId::new(Uuid::parse_str(raw)?))
+}
+
 async fn seed_commit(
     pg: &PgStorage,
     owner: &Owner,
@@ -761,6 +1077,69 @@ async fn seed_commit(
         time::OffsetDateTime::now_utc(),
     )
     .await?;
+    Ok(outcome.memory_id)
+}
+
+async fn seed_acceptance_criteria(
+    pg: &PgStorage,
+    owner: &Owner,
+    request: MemoryId,
+) -> Result<MemoryId, Box<dyn std::error::Error>> {
+    let payload = AcceptanceCriteriaV1 {
+        execution_request_memory_id: request.into_inner(),
+        criteria: vec![
+            AcceptanceCriterionV1 {
+                key: "static_entrypoint".into(),
+                description: "index.html exists".into(),
+                required: true,
+                verifier_kind: AcceptanceVerifierKind::FileExists,
+                verifier_spec_json: json!({ "path": "index.html" }),
+            },
+            AcceptanceCriterionV1 {
+                key: "gameplay_controls".into(),
+                description: "gameplay controls exist".into(),
+                required: true,
+                verifier_kind: AcceptanceVerifierKind::Command,
+                verifier_spec_json: json!({ "command": ["grep", "Signal Match", "index.html"] }),
+            },
+        ],
+    };
+    let mut payload_bytes = Vec::new();
+    ciborium::ser::into_writer(&payload, &mut payload_bytes)?;
+    let content_hash = blake3::hash(&payload_bytes);
+    let observed_at = time::OffsetDateTime::now_utc();
+    let draft = EventDraft {
+        source_id: SourceId::new("proxima-code/acceptance-criteria"),
+        source_batch_id: SourceBatchId::new(Uuid::now_v7()),
+        owner: owner.clone(),
+        schema_id: SchemaId::new(AcceptanceCriteriaV1::SCHEMA_ID.into()),
+        schema_version: SchemaVersion::new(AcceptanceCriteriaV1::SCHEMA_VERSION),
+        payload: payload_bytes,
+        observed_at,
+        occurred_at: observed_at,
+        cited_object: CitedObjectHint {
+            schema_id: SchemaId::new("proxima-code/acceptance-criteria-object-v1".into()),
+            schema_version: SchemaVersion::new(1),
+            content_hash: *content_hash.as_bytes(),
+        },
+        citation_mapping: CitationMappingHint {
+            schema_id: SchemaId::new("proxima-code/acceptance-criteria-whole-v1".into()),
+            schema_version: SchemaVersion::new(1),
+        },
+    };
+    let mut tx = pg.pool().begin().await?;
+    let outcome = ingest_event_in_tx(&mut tx, &draft).await?;
+    sqlx::query(
+        "INSERT INTO proxima_code.acceptance_criteria_v1
+            (memory_id, execution_request_memory_id, criteria_json)
+         VALUES ($1, $2, $3)",
+    )
+    .bind(outcome.memory_id.into_inner())
+    .bind(request.into_inner())
+    .bind(serde_json::to_value(&payload.criteria)?)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
     Ok(outcome.memory_id)
 }
 

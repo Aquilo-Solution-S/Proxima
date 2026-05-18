@@ -1,3 +1,4 @@
+pub mod acceptance;
 pub mod code_chunk;
 pub mod commit;
 pub mod commit_summary;
@@ -6,6 +7,7 @@ pub mod edge_calls;
 pub mod execution_request;
 pub mod file_revision;
 pub mod personality_self;
+pub mod verification_evidence;
 pub mod workspace;
 
 /// Serde adapter for 32-byte content hashes that round-trips through
@@ -79,6 +81,7 @@ pub(crate) mod content_hash_serde {
     }
 }
 
+pub use acceptance::{AcceptanceCriteriaV1, AcceptanceCriterionV1, AcceptanceVerifierKind};
 pub use code_chunk::CodeChunkV1;
 pub use commit::CommitV1;
 pub use commit_summary::CommitSummaryV1;
@@ -87,6 +90,7 @@ pub use edge_calls::EdgeCallsV1;
 pub use execution_request::ExecutionRequestV1;
 pub use file_revision::{FileRevisionV1, FileState};
 pub use personality_self::{CodeCommitSummarizerSelfV1, CodeEngineerSelfV1};
+pub use verification_evidence::{VerificationEvidenceStatus, VerificationEvidenceV1};
 pub use workspace::{
     WorkspaceDecision, WorkspaceDecisionV1, WorkspaceDiffFile, WorkspaceDiffStat,
     WorkspaceReviewFinding, WorkspaceReviewV1, WorkspaceReviewVerdict, WorkspaceRunV1,

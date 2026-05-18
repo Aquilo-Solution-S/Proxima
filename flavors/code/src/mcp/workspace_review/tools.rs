@@ -4,12 +4,13 @@ use std::collections::HashSet;
 use futures::future::BoxFuture;
 use proxima_core::mcp::{McpTool, McpToolCtx, McpToolError};
 use proxima_core::{EdgeId, MemoryId};
+use sqlx::{Postgres, Transaction};
 
 use super::MAX_WORKSPACE_VETO_ROUNDS;
 use super::helpers::{correction_instructions, correction_title, validate_findings};
 use super::ingest::{
-    append_review_derived_edge, append_review_reviews_edge, ingest_workspace_review,
-    insert_workspace_review_sidecar,
+    append_review_derived_edge, append_review_reviews_edge, ingest_verification_evidence,
+    ingest_workspace_review, insert_verification_evidence_sidecar, insert_workspace_review_sidecar,
 };
 use super::loaders::{
     find_execution_request_for_run, load_latest_rejected_review_for_run, load_workspace_decision,
@@ -17,6 +18,7 @@ use super::loaders::{
 };
 use super::types::{
     CodeEmitCorrectionExecutionRequestArgs, CodeEmitCorrectionExecutionRequestOutput,
+    CodeEmitVerificationEvidenceArgs, CodeEmitVerificationEvidenceOutput,
     CodeEmitWorkspaceReviewArgs, CodeEmitWorkspaceReviewOutput, CorrectionTrigger,
 };
 
@@ -26,9 +28,10 @@ use crate::mcp::emit_execution_request::{
     load_execution_request, load_prior_derived_targets, push_derived_edge, resolve_memory_id,
     resolve_personality_id, validate_target_execution_wake, validate_target_personality,
 };
-use crate::mcp::sql::map_storage;
+use crate::mcp::sql::{map_storage, owner_principal};
 use crate::payloads::{
-    ExecutionRequestV1, WorkspaceDecision, WorkspaceReviewV1, WorkspaceReviewVerdict,
+    AcceptanceVerifierKind, ExecutionRequestV1, VerificationEvidenceV1, WorkspaceDecision,
+    WorkspaceReviewV1, WorkspaceReviewVerdict,
 };
 use proxima_core::FactPayload;
 
@@ -100,6 +103,15 @@ impl McpTool for CodeEmitWorkspaceReviewTool {
             let execution_request_memory_id =
                 find_execution_request_for_run(&mut tx, &ctx, workspace_run_memory_id).await?;
             load_execution_request(&mut tx, &ctx, execution_request_memory_id).await?;
+            if args.verdict == WorkspaceReviewVerdict::Approved {
+                require_passed_evidence_for_approval(
+                    &mut tx,
+                    &ctx,
+                    workspace_run_memory_id,
+                    execution_request_memory_id,
+                )
+                .await?;
+            }
             let veto_count =
                 veto_count_for_request(&mut tx, &ctx, execution_request_memory_id).await?;
             let verdict = if args.verdict == WorkspaceReviewVerdict::Rejected
@@ -158,6 +170,103 @@ impl McpTool for CodeEmitWorkspaceReviewTool {
                     .collect(),
                 verdict,
                 round_index,
+                idempotent_replay: outcome.idempotent_replay,
+            })
+        })
+    }
+}
+
+/// MCP tool for emitting deterministic verifier evidence
+#[derive(Debug)]
+pub struct CodeEmitVerificationEvidenceTool;
+
+impl McpTool for CodeEmitVerificationEvidenceTool {
+    const NAME: &'static str = "proxima-code/code_emit_verification_evidence";
+    const DESCRIPTION: &'static str = "Emit a verifier-authored proxima-code/verification-evidence-v1 Fact for one acceptance criterion.";
+    const PRODUCES_SCHEMA_IDS: &'static [&'static str] = &[VerificationEvidenceV1::SCHEMA_ID];
+
+    type Args = CodeEmitVerificationEvidenceArgs;
+    type Output = CodeEmitVerificationEvidenceOutput;
+
+    fn call(
+        ctx: McpToolCtx,
+        args: CodeEmitVerificationEvidenceArgs,
+    ) -> BoxFuture<'static, Result<CodeEmitVerificationEvidenceOutput, McpToolError>> {
+        Box::pin(async move {
+            let verifier_root = ctx.caller_self_perspective.ok_or_else(|| {
+                McpToolError::InvalidInput(
+                    "caller_self_perspective is required to author verification evidence".into(),
+                )
+            })?;
+            let workspace_run_memory_id = resolve_memory_id(&ctx, &args.workspace_run_memory)?;
+            let _idempotency_key = crate::mcp::emit_execution_request::normalize_text(
+                "idempotency_key",
+                &args.idempotency_key,
+                1,
+                240,
+            )?;
+            let criterion_key = crate::mcp::emit_execution_request::normalize_text(
+                "criterion_key",
+                &args.criterion_key,
+                1,
+                80,
+            )?;
+            let summary = crate::mcp::emit_execution_request::normalize_text(
+                "summary",
+                &args.summary,
+                1,
+                4000,
+            )?;
+
+            let mut tx = ctx.pool.begin().await.map_err(map_storage)?;
+            load_workspace_run(&mut tx, &ctx, workspace_run_memory_id).await?;
+            let execution_request_memory_id =
+                find_execution_request_for_run(&mut tx, &ctx, workspace_run_memory_id).await?;
+            validate_criterion_key(&mut tx, &ctx, execution_request_memory_id, &criterion_key)
+                .await?;
+            let payload = VerificationEvidenceV1 {
+                workspace_run_memory_id: workspace_run_memory_id.into_inner(),
+                execution_request_memory_id: execution_request_memory_id.into_inner(),
+                criterion_key,
+                status: args.status,
+                summary,
+                artifact_refs_json: args.artifact_refs_json,
+            };
+            let outcome = ingest_verification_evidence(&mut tx, &ctx, &payload).await?;
+            let (authored_edge_id, derived_edge_ids) = if outcome.idempotent_replay {
+                (None, Vec::new())
+            } else {
+                insert_verification_evidence_sidecar(&mut tx, outcome.memory_id, &payload).await?;
+                let authored_edge_id =
+                    append_authored_edge(&mut tx, &ctx, verifier_root, outcome.memory_id).await?;
+                let derived_edge_ids = vec![
+                    append_review_derived_edge(
+                        &mut tx,
+                        &ctx,
+                        outcome.memory_id,
+                        workspace_run_memory_id,
+                    )
+                    .await?,
+                    append_review_derived_edge(
+                        &mut tx,
+                        &ctx,
+                        outcome.memory_id,
+                        execution_request_memory_id,
+                    )
+                    .await?,
+                ];
+                (Some(authored_edge_id), derived_edge_ids)
+            };
+            tx.commit().await.map_err(map_storage)?;
+
+            Ok(CodeEmitVerificationEvidenceOutput {
+                handle: ctx.format_memory(outcome.memory_id),
+                authored_edge_handle: authored_edge_id
+                    .map(|edge_id| ctx.format_edge(EdgeId::new(edge_id))),
+                derived_edge_handles: derived_edge_ids
+                    .into_iter()
+                    .map(|edge_id| ctx.format_edge(EdgeId::new(edge_id)))
+                    .collect(),
                 idempotent_replay: outcome.idempotent_replay,
             })
         })
@@ -371,4 +480,117 @@ impl McpTool for CodeEmitCorrectionExecutionRequestTool {
             })
         })
     }
+}
+
+async fn require_passed_evidence_for_approval(
+    tx: &mut Transaction<'_, Postgres>,
+    ctx: &McpToolCtx,
+    workspace_run_memory_id: MemoryId,
+    execution_request_memory_id: MemoryId,
+) -> Result<(), McpToolError> {
+    let required = required_deterministic_criteria(tx, ctx, execution_request_memory_id).await?;
+    if required.is_empty() {
+        return Ok(());
+    }
+    let mut missing = Vec::new();
+    for key in required {
+        let passed: bool = sqlx::query_scalar(
+            "SELECT EXISTS(
+                SELECT 1
+                FROM proxima_code.verification_evidence_v1 v
+                JOIN proxima_core.memories m USING (memory_id)
+                WHERE v.workspace_run_memory_id = $1
+                  AND v.execution_request_memory_id = $2
+                  AND v.criterion_key = $3
+                  AND v.status = 'passed'
+                  AND m.owner_principal_kind = $4
+                  AND m.owner_principal_id = $5
+             )",
+        )
+        .bind(workspace_run_memory_id.into_inner())
+        .bind(execution_request_memory_id.into_inner())
+        .bind(&key)
+        .bind(owner_principal(&ctx.owner).0)
+        .bind(owner_principal(&ctx.owner).1)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(map_storage)?;
+        if !passed {
+            missing.push(key);
+        }
+    }
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(McpToolError::InvalidInput(format!(
+            "approved review requires passed verification evidence for required criteria: {}",
+            missing.join(", ")
+        )))
+    }
+}
+
+async fn validate_criterion_key(
+    tx: &mut Transaction<'_, Postgres>,
+    ctx: &McpToolCtx,
+    execution_request_memory_id: MemoryId,
+    criterion_key: &str,
+) -> Result<(), McpToolError> {
+    let criteria = all_criteria(tx, ctx, execution_request_memory_id).await?;
+    if criteria.is_empty()
+        || criteria
+            .iter()
+            .any(|criterion| criterion.key == criterion_key)
+    {
+        return Ok(());
+    }
+    Err(McpToolError::InvalidInput(format!(
+        "criterion_key is not present on acceptance criteria: {criterion_key}"
+    )))
+}
+
+async fn required_deterministic_criteria(
+    tx: &mut Transaction<'_, Postgres>,
+    ctx: &McpToolCtx,
+    execution_request_memory_id: MemoryId,
+) -> Result<Vec<String>, McpToolError> {
+    Ok(all_criteria(tx, ctx, execution_request_memory_id)
+        .await?
+        .into_iter()
+        .filter(|criterion| {
+            criterion.required && criterion.verifier_kind != AcceptanceVerifierKind::ReviewerOnly
+        })
+        .map(|criterion| criterion.key)
+        .collect())
+}
+
+async fn all_criteria(
+    tx: &mut Transaction<'_, Postgres>,
+    ctx: &McpToolCtx,
+    execution_request_memory_id: MemoryId,
+) -> Result<Vec<crate::payloads::AcceptanceCriterionV1>, McpToolError> {
+    let (owner_kind, owner_principal_id) = owner_principal(&ctx.owner);
+    let rows: Vec<serde_json::Value> = sqlx::query_scalar(
+        "SELECT a.criteria_json
+         FROM proxima_code.acceptance_criteria_v1 a
+         JOIN proxima_core.memories m USING (memory_id)
+         WHERE a.execution_request_memory_id = $1
+           AND m.owner_principal_kind = $2
+           AND m.owner_principal_id = $3
+         ORDER BY m.created_at DESC",
+    )
+    .bind(execution_request_memory_id.into_inner())
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(map_storage)?;
+    let mut criteria = Vec::new();
+    for value in rows {
+        let mut parsed: Vec<crate::payloads::AcceptanceCriterionV1> = serde_json::from_value(value)
+            .map_err(|err| {
+                McpToolError::Other(format!("decode acceptance criteria JSON: {err}"))
+            })?;
+        criteria.append(&mut parsed);
+    }
+    Ok(criteria)
 }

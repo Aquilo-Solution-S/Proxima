@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
-use crate::payloads::ExecutionRequestV1;
+use crate::payloads::{AcceptanceCriteriaV1, AcceptanceCriterionV1, ExecutionRequestV1};
 
 use super::sql::{map_storage, owner_principal, resolve_repo_identifier};
 
@@ -23,6 +23,10 @@ const EXECUTION_REQUEST_SOURCE_ID: &str = "proxima-code/execution-request";
 const EXECUTION_REQUEST_OBJECT_SCHEMA: &str = "proxima-code/execution-request-object-v1";
 const EXECUTION_REQUEST_WHOLE_SCHEMA: &str = "proxima-code/execution-request-whole-v1";
 pub const CODE_TARGETS_EXECUTION_REQUEST_RELATION: &str = "proxima-code/targets-execution-request";
+pub const CODE_HAS_ACCEPTANCE_CRITERIA_RELATION: &str = "proxima-code/has-acceptance-criteria";
+const ACCEPTANCE_CRITERIA_SOURCE_ID: &str = "proxima-code/acceptance-criteria";
+const ACCEPTANCE_CRITERIA_OBJECT_SCHEMA: &str = "proxima-code/acceptance-criteria-object-v1";
+const ACCEPTANCE_CRITERIA_WHOLE_SCHEMA: &str = "proxima-code/acceptance-criteria-whole-v1";
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CodeEmitExecutionRequestArgs {
@@ -33,6 +37,8 @@ pub struct CodeEmitExecutionRequestArgs {
     pub goal_activated_memory: String,
     #[serde(default)]
     pub evidence: Vec<String>,
+    #[serde(default)]
+    pub acceptance_criteria: Vec<AcceptanceCriterionV1>,
 }
 
 #[derive(Debug, Serialize)]
@@ -40,6 +46,8 @@ pub struct CodeEmitExecutionRequestOutput {
     pub handle: String,
     pub authored_edge_handle: Option<String>,
     pub derived_edge_handles: Vec<String>,
+    pub acceptance_criteria_handle: Option<String>,
+    pub acceptance_criteria_edge_handle: Option<String>,
     pub idempotent_replay: bool,
 }
 
@@ -89,6 +97,7 @@ impl McpTool for CodeEmitExecutionRequestTool {
             let title = normalize_text("title", &args.title, 1, 240)?;
             let instructions = normalize_text("instructions", &args.instructions, 1, 20_000)?;
             let request_key = normalize_text("idempotency_key", &args.idempotency_key, 1, 240)?;
+            let acceptance_criteria = validate_acceptance_criteria(args.acceptance_criteria)?;
 
             let planner_root = ctx.caller_self_perspective.ok_or_else(|| {
                 McpToolError::InvalidInput(
@@ -111,24 +120,67 @@ impl McpTool for CodeEmitExecutionRequestTool {
                 request_key,
             };
             let outcome = ingest_execution_request(&mut tx, &ctx, &payload).await?;
-            let (authored_edge_id, derived_edge_ids) = if outcome.idempotent_replay {
-                (None, Vec::new())
-            } else {
-                insert_sidecar(&mut tx, outcome.memory_id, &payload).await?;
-                let authored_edge_id =
-                    append_authored_edge(&mut tx, &ctx, planner_root, outcome.memory_id).await?;
-                let mut derived_edge_ids = Vec::with_capacity(1 + evidence.len());
-                derived_edge_ids.push(
-                    append_derived_edge(&mut tx, &ctx, outcome.memory_id, goal_activated_memory_id)
-                        .await?,
-                );
-                for memory_id in evidence {
+            let (authored_edge_id, derived_edge_ids, acceptance_memory_id, acceptance_edge_id) =
+                if outcome.idempotent_replay {
+                    (None, Vec::new(), None, None)
+                } else {
+                    insert_sidecar(&mut tx, outcome.memory_id, &payload).await?;
+                    let authored_edge_id =
+                        append_authored_edge(&mut tx, &ctx, planner_root, outcome.memory_id)
+                            .await?;
+                    let mut derived_edge_ids = Vec::with_capacity(1 + evidence.len());
                     derived_edge_ids.push(
-                        append_derived_edge(&mut tx, &ctx, outcome.memory_id, memory_id).await?,
+                        append_derived_edge(
+                            &mut tx,
+                            &ctx,
+                            outcome.memory_id,
+                            goal_activated_memory_id,
+                        )
+                        .await?,
                     );
-                }
-                (Some(authored_edge_id), derived_edge_ids)
-            };
+                    for memory_id in evidence {
+                        derived_edge_ids.push(
+                            append_derived_edge(&mut tx, &ctx, outcome.memory_id, memory_id)
+                                .await?,
+                        );
+                    }
+                    let (acceptance_memory_id, acceptance_edge_id) = if acceptance_criteria
+                        .is_empty()
+                    {
+                        (None, None)
+                    } else {
+                        let criteria_payload = AcceptanceCriteriaV1 {
+                            execution_request_memory_id: outcome.memory_id.into_inner(),
+                            criteria: acceptance_criteria,
+                        };
+                        let criteria_outcome =
+                            ingest_acceptance_criteria(&mut tx, &ctx, &criteria_payload).await?;
+                        if criteria_outcome.idempotent_replay {
+                            (Some(criteria_outcome.memory_id), None)
+                        } else {
+                            insert_acceptance_criteria_sidecar(
+                                &mut tx,
+                                criteria_outcome.memory_id,
+                                &criteria_payload,
+                            )
+                            .await?;
+                            let edge_id = append_acceptance_criteria_edge(
+                                &mut tx,
+                                &ctx,
+                                outcome.memory_id,
+                                criteria_outcome.memory_id,
+                            )
+                            .await?;
+                            (Some(criteria_outcome.memory_id), Some(edge_id))
+                        }
+                    };
+                    (
+                        Some(authored_edge_id),
+                        derived_edge_ids,
+                        acceptance_memory_id,
+                        acceptance_edge_id,
+                    )
+                };
             tx.commit().await.map_err(map_storage)?;
 
             Ok(CodeEmitExecutionRequestOutput {
@@ -139,6 +191,9 @@ impl McpTool for CodeEmitExecutionRequestTool {
                     .into_iter()
                     .map(|edge_id| ctx.format_edge(EdgeId::new(edge_id)))
                     .collect(),
+                acceptance_criteria_handle: acceptance_memory_id.map(|id| ctx.format_memory(id)),
+                acceptance_criteria_edge_handle: acceptance_edge_id
+                    .map(|edge_id| ctx.format_edge(EdgeId::new(edge_id))),
                 idempotent_replay: outcome.idempotent_replay,
             })
         })
@@ -296,6 +351,40 @@ pub(super) fn normalize_text(
         )));
     }
     Ok(trimmed.to_string())
+}
+
+pub(super) fn validate_acceptance_criteria(
+    criteria: Vec<AcceptanceCriterionV1>,
+) -> Result<Vec<AcceptanceCriterionV1>, McpToolError> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::with_capacity(criteria.len());
+    for mut criterion in criteria {
+        criterion.key = normalize_text("acceptance_criteria.key", &criterion.key, 1, 80)?;
+        criterion.description = normalize_text(
+            "acceptance_criteria.description",
+            &criterion.description,
+            1,
+            1000,
+        )?;
+        if !criterion
+            .key
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-'))
+        {
+            return Err(McpToolError::InvalidInput(
+                "acceptance_criteria.key must contain only ASCII letters, digits, '-' or '_'"
+                    .into(),
+            ));
+        }
+        if !seen.insert(criterion.key.clone()) {
+            return Err(McpToolError::InvalidInput(format!(
+                "duplicate acceptance criterion key: {}",
+                criterion.key
+            )));
+        }
+        out.push(criterion);
+    }
+    Ok(out)
 }
 
 fn retry_instructions(
@@ -756,6 +845,99 @@ pub(super) async fn insert_sidecar(
     .await
     .map_err(map_storage)?;
     Ok(())
+}
+
+pub(super) async fn ingest_acceptance_criteria(
+    tx: &mut Transaction<'_, Postgres>,
+    ctx: &McpToolCtx,
+    payload: &AcceptanceCriteriaV1,
+) -> Result<proxima_core::verbs::event_ingest::EventIngestOutcome, McpToolError> {
+    let mut payload_bytes = Vec::new();
+    ciborium::ser::into_writer(payload, &mut payload_bytes)
+        .map_err(|err| McpToolError::InvalidInput(err.to_string()))?;
+    let content_hash = blake3::hash(&payload_bytes);
+    let observed_at = time::OffsetDateTime::now_utc();
+    let draft = EventDraft {
+        source_id: SourceId::new(ACCEPTANCE_CRITERIA_SOURCE_ID),
+        source_batch_id: SourceBatchId::new(Uuid::now_v7()),
+        owner: ctx.owner.clone(),
+        schema_id: SchemaId::new(AcceptanceCriteriaV1::SCHEMA_ID.into()),
+        schema_version: SchemaVersion::new(AcceptanceCriteriaV1::SCHEMA_VERSION),
+        payload: payload_bytes,
+        observed_at,
+        occurred_at: observed_at,
+        cited_object: CitedObjectHint {
+            schema_id: SchemaId::new(ACCEPTANCE_CRITERIA_OBJECT_SCHEMA.into()),
+            schema_version: SchemaVersion::new(1),
+            content_hash: *content_hash.as_bytes(),
+        },
+        citation_mapping: CitationMappingHint {
+            schema_id: SchemaId::new(ACCEPTANCE_CRITERIA_WHOLE_SCHEMA.into()),
+            schema_version: SchemaVersion::new(1),
+        },
+    };
+    ingest_event_in_tx(tx, &draft)
+        .await
+        .map_err(McpToolError::Storage)
+}
+
+pub(super) async fn insert_acceptance_criteria_sidecar(
+    tx: &mut Transaction<'_, Postgres>,
+    memory_id: MemoryId,
+    payload: &AcceptanceCriteriaV1,
+) -> Result<(), McpToolError> {
+    sqlx::query(
+        "INSERT INTO proxima_code.acceptance_criteria_v1
+            (memory_id, execution_request_memory_id, criteria_json)
+         VALUES ($1, $2, $3)",
+    )
+    .bind(memory_id.into_inner())
+    .bind(payload.execution_request_memory_id)
+    .bind(
+        serde_json::to_value(&payload.criteria)
+            .map_err(|err| McpToolError::InvalidInput(format!("serialize criteria: {err}")))?,
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(map_storage)?;
+    Ok(())
+}
+
+pub(super) async fn append_acceptance_criteria_edge(
+    tx: &mut Transaction<'_, Postgres>,
+    ctx: &McpToolCtx,
+    request_memory_id: MemoryId,
+    criteria_memory_id: MemoryId,
+) -> Result<Uuid, McpToolError> {
+    let relation = ctx
+        .registry
+        .resolve_relation(CODE_HAS_ACCEPTANCE_CRITERIA_RELATION)
+        .ok_or_else(|| {
+            McpToolError::Other(format!(
+                "{CODE_HAS_ACCEPTANCE_CRITERIA_RELATION} relation not registered"
+            ))
+        })?;
+    let edge_id = Uuid::now_v7();
+    append_edge_in_tx(
+        tx,
+        &EdgeDraft {
+            edge_id,
+            relation,
+            source_kind: EntityKind::Fact,
+            source_memory_id: Some(request_memory_id.into_inner()),
+            source_goal_id: None,
+            target_kind: EntityKind::Fact,
+            target_memory_id: Some(criteria_memory_id.into_inner()),
+            target_goal_id: None,
+            authorship_kind: EdgeAuthorshipKind::ExternalAgent,
+            authorship_owner_memory_id: ctx.caller_self_perspective.map(MemoryId::into_inner),
+            owner: &ctx.owner,
+        },
+        None,
+    )
+    .await
+    .map_err(McpToolError::Storage)?;
+    Ok(edge_id)
 }
 
 pub(super) async fn append_authored_edge(

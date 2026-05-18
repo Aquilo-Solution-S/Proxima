@@ -241,6 +241,63 @@ async fn goal_decompose_defaults_to_proposed_children_without_assignment()
 }
 
 #[tokio::test]
+async fn goal_decompose_accepts_parent_activation_memory_handle()
+-> Result<(), Box<dyn std::error::Error>> {
+    let Some((pg, db_name)) = migrated().await else {
+        return Ok(());
+    };
+
+    let result = async {
+        let owner = owner_fixture();
+        let ctx = ctx(&pg, owner);
+        let parent = active_parent(&pg, &ctx).await?;
+        let activation_memory: uuid::Uuid = sqlx::query_scalar(
+            "SELECT memory_id
+               FROM proxima_goal.goal_activated_v1
+              WHERE goal_id = $1",
+        )
+        .bind(parent.into_inner())
+        .fetch_one(pg.pool())
+        .await?;
+
+        let output = DecomposeTool::call(
+            ctx.clone(),
+            DecomposeArgs {
+                parent_goal: ctx.format_memory(MemoryId::new(activation_memory)),
+                children: vec![ChildGoalInput {
+                    payload: simple_goal("child from activation"),
+                    evidence: Vec::new(),
+                }],
+                target_personality: None,
+                activate_children: false,
+                idempotency_key: "decompose-activation-handle".into(),
+            },
+        )
+        .await?;
+
+        assert_eq!(output.parent_goal, ctx.format_goal(parent));
+        assert_eq!(output.children.len(), 1);
+        let child_id = ctx.resolve_goal(&output.children[0].handle)?;
+        let parent_link_count: i64 = sqlx::query_scalar(
+            "SELECT count(*)
+               FROM proxima_core.goal_parents
+              WHERE goal_id = $1
+                AND parent_goal_id = $2",
+        )
+        .bind(child_id.into_inner())
+        .bind(parent.into_inner())
+        .fetch_one(pg.pool())
+        .await?;
+        assert_eq!(parent_link_count, 1);
+        Ok::<(), Box<dyn std::error::Error>>(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result
+}
+
+#[tokio::test]
 async fn goal_decompose_rejects_non_active_parent() -> Result<(), Box<dyn std::error::Error>> {
     let Some((pg, db_name)) = migrated().await else {
         return Ok(());
