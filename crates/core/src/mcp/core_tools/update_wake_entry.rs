@@ -6,6 +6,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::McpTool;
+use crate::budget::BudgetExhaustionPolicy;
 use crate::mcp::core_tools::audit::{AuditEmit, emit_personality_config_changed};
 use crate::mcp::core_tools::payload::{
     PersonalityConfigChangedSubject, PersonalityConfigChangedVerb,
@@ -40,6 +41,8 @@ pub struct WakeEntryPatch {
     #[serde(default)]
     #[schemars(range(min = 1))]
     pub max_rounds: Option<u16>,
+    #[serde(default)]
+    pub budget_policy: Option<Option<BudgetExhaustionPolicy>>,
     #[serde(default)]
     pub execution_mode: Option<WakeExecutionMode>,
     #[serde(default)]
@@ -131,6 +134,9 @@ impl McpTool for UpdateWakeEntryTool {
                 }
                 if let Some(v) = patch.max_rounds {
                     entry.max_rounds = v;
+                }
+                if let Some(v) = patch.budget_policy {
+                    entry.budget_policy = v;
                 }
                 if let Some(v) = patch.execution_mode {
                     entry.execution_mode = v;

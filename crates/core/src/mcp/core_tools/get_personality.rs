@@ -6,6 +6,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::McpTool;
+use crate::budget::BudgetExhaustionPolicy;
 use crate::mcp::{McpToolCtx, McpToolError};
 use crate::personality::PersonalityStatus;
 
@@ -38,6 +39,7 @@ pub struct GetPersonalityWakeEntry {
     pub probability_promille: u16,
     pub goal_scope: String,
     pub max_rounds: u16,
+    pub budget_policy: Option<BudgetExhaustionPolicy>,
     pub disabled_reason: Option<String>,
 }
 
@@ -104,6 +106,7 @@ impl McpTool for GetPersonalityTool {
                     probability_promille: e.probability_promille,
                     goal_scope: e.goal_scope.as_str().to_string(),
                     max_rounds: e.max_rounds,
+                    budget_policy: e.budget_policy,
                     disabled_reason: e.disabled_reason,
                 })
                 .collect();

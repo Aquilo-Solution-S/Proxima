@@ -17,13 +17,14 @@ use super::git::{
 };
 use super::ingest::ingest_workspace_run;
 use super::loaders::{
-    goal_close_candidate, load_acceptance_criteria_for_request,
+    goal_close_candidate, latest_review_verdict_for_request, load_acceptance_criteria_for_request,
     load_continuation_workspace_run_for_request, load_decisions_for_request,
     load_execution_request, load_execution_request_for_run, load_goal_context_for_request,
     load_latest_rejected_review_for_run, load_latest_review_for_run, load_repo,
     load_reviews_for_request, load_target_worker_personality_for_request,
     load_verification_evidence_for_request, load_workspace_run, parse_payload,
-    repo_id_from_payload, veto_count_for_request,
+    repo_id_from_payload, request_has_direct_workspace_run, request_is_correction_request,
+    veto_count_for_request,
 };
 use super::{CodeWorkspaceRunner, PreparedState};
 
@@ -92,6 +93,24 @@ impl CodeWorkspaceRunner {
     ) -> Result<WorkspacePreparedRun, WorkspaceRunnerError> {
         let pool = self.pool()?;
         let repo_id = repo_id_from_payload(input.triggering_memory_payload)?;
+        if let Some(verdict) =
+            latest_review_verdict_for_request(pool, input.owner, input.triggering_memory_id).await?
+        {
+            match verdict {
+                WorkspaceReviewVerdict::Approved | WorkspaceReviewVerdict::NeedsUser => {
+                    return Err(WorkspaceRunnerError::TriggerNotEligible(format!(
+                        "execution request already has terminal workspace review: {}",
+                        verdict.as_str()
+                    )));
+                }
+                WorkspaceReviewVerdict::Rejected => {}
+            }
+        }
+        if request_has_direct_workspace_run(pool, input.owner, input.triggering_memory_id).await? {
+            return Err(WorkspaceRunnerError::TriggerNotEligible(
+                "execution request already has a workspace run".into(),
+            ));
+        }
         if let Some(prior_run) = load_continuation_workspace_run_for_request(
             pool,
             input.owner,
@@ -99,6 +118,12 @@ impl CodeWorkspaceRunner {
         )
         .await?
         {
+            if !request_is_correction_request(pool, input.owner, input.triggering_memory_id).await?
+            {
+                return Err(WorkspaceRunnerError::TriggerNotEligible(
+                    "execution request already has a derived workspace run".into(),
+                ));
+            }
             if prior_run.repo_id != repo_id {
                 return Err(WorkspaceRunnerError::PrepareFailed(format!(
                     "continuation workspace run repo {} does not match execution request repo {repo_id}",

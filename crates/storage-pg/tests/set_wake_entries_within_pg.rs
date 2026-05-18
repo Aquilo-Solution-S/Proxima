@@ -32,6 +32,7 @@ fn wake_entry(
         substrate_tool_palette: vec![],
         workspace_tool_palette: vec![],
         max_rounds: 3,
+        budget_policy: None,
     }
 }
 

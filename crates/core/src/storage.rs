@@ -8,6 +8,7 @@ use std::sync::Arc;
 use crate::GoalId;
 use crate::Owner;
 use crate::SourceBatchId;
+use crate::budget::{BudgetReviewPersistInput, BudgetReviewPersistOutcome};
 use crate::inference::{
     BindInferenceTierRequest, BindInferenceTierResponse, InferenceTargetRow,
     InferenceTierBindingRow, RegisterInferenceTargetRequest, RegisterInferenceTargetResponse,
@@ -86,6 +87,17 @@ pub trait Storage: Send + Sync {
         registry: &FlavorRegistryFrozen,
         input: &WakeTracePersistInput,
     ) -> Result<WakeTracePersistOutcome, StorageError>;
+
+    /// Atomic BudgetReviewRequested Fact materialization plus routing edge.
+    async fn persist_budget_review_requested_atomic(
+        &self,
+        _registry: &FlavorRegistryFrozen,
+        _input: &BudgetReviewPersistInput,
+    ) -> Result<BudgetReviewPersistOutcome, StorageError> {
+        Err(StorageError::Internal(
+            "storage backend does not implement budget review persistence".into(),
+        ))
+    }
 
     /// Atomic Goal write per docs/14 §GoalWrite.
     /// Single transaction inserting goal, goal_parents,
@@ -490,6 +502,14 @@ impl Storage for NoopStorage {
         _registry: &FlavorRegistryFrozen,
         _input: &WakeTracePersistInput,
     ) -> Result<WakeTracePersistOutcome, StorageError> {
+        Err(StorageError::Internal("NoopStorage rejects writes".into()))
+    }
+
+    async fn persist_budget_review_requested_atomic(
+        &self,
+        _registry: &FlavorRegistryFrozen,
+        _input: &BudgetReviewPersistInput,
+    ) -> Result<BudgetReviewPersistOutcome, StorageError> {
         Err(StorageError::Internal("NoopStorage rejects writes".into()))
     }
 

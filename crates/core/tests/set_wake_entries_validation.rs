@@ -389,6 +389,7 @@ fn entry(trigger: &str) -> WakeEntryDraft {
         substrate_tool_palette: vec![],
         workspace_tool_palette: vec![],
         max_rounds: 4,
+        budget_policy: None,
     }
 }
 

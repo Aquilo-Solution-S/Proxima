@@ -84,6 +84,8 @@ impl Default for FlavorRegistry {
         registry.add_fact_schema::<crate::approval::ApprovalPolicyV1>();
         registry.add_fact_schema::<crate::approval::ApprovalVoteV1>();
         registry.add_fact_schema::<crate::approval::ApprovalDecisionV1>();
+        registry.add_fact_schema::<crate::budget::BudgetReviewRequestedV1>();
+        registry.add_fact_schema::<crate::budget::BudgetDecisionV1>();
         registry.add_fact_schema::<crate::inquiry::DirectedQuestionV1>();
         registry.add_fact_schema::<crate::inquiry::DirectedAnswerV1>();
         registry.add_cited_object_schema::<crate::citations::UploadedBlobPayload>();

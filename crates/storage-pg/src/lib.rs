@@ -197,6 +197,17 @@ impl Storage for PgStorage {
         verbs::persist_wake_trace::persist_wake_trace_atomic(&self.pool, registry, input).await
     }
 
+    async fn persist_budget_review_requested_atomic(
+        &self,
+        registry: &proxima_core::FlavorRegistryFrozen,
+        input: &proxima_core::BudgetReviewPersistInput,
+    ) -> Result<proxima_core::BudgetReviewPersistOutcome, StorageError> {
+        verbs::persist_budget_review::persist_budget_review_requested_atomic(
+            &self.pool, registry, input,
+        )
+        .await
+    }
+
     async fn write_goal_atomic(&self, draft: &GoalDraft) -> Result<GoalWriteOutcome, StorageError> {
         verbs::goal_write::write_goal_atomic(&self.pool, draft).await
     }

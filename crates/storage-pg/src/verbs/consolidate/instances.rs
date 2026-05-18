@@ -1,3 +1,4 @@
+use proxima_core::budget::BudgetExhaustionPolicy;
 use proxima_core::personality::{
     InstantiatePersonalityRequest, InstantiatePersonalityResponse, PersonalityInstanceId,
     PersonalityInstanceRow, PersonalityStatus, ROOT_PERSONALITY_PERSPECTIVE_SCHEMA_ID,
@@ -40,31 +41,36 @@ pub async fn list_personality_instances(
 
     let instance_ids: Vec<uuid::Uuid> = rows.iter().map(|(id, _, _, _)| *id).collect();
 
-    let wake_rows = sqlx::query!(
-        r#"SELECT personality_instance_id,
-                  wake_entry_id,
-                  trigger_kind AS "trigger_kind: WakeEntryTriggerKind",
-                  trigger_id, label, enabled,
-                  execution_mode AS "execution_mode: WakeEntryExecutionMode",
-                  authored_by AS "authored_by: WakeEntryAuthoredBy",
-                  probability_promille,
-                  goal_scope AS "goal_scope: WakeEntryGoalScope",
-                  instructions,
-                  model_tier AS "model_tier: ModelTier",
-                  inference_target_ref, substrate_tool_palette,
-                  workspace_tool_palette, max_rounds, disabled_reason
-             FROM proxima_core.personality_wake_entries
-             WHERE owner_principal_kind = $1
-               AND owner_principal_id = $2
-               AND owner_org_id = $3
-               AND personality_instance_id = ANY($4::uuid[])
-               AND tombstoned_at IS NULL
-             ORDER BY label, wake_entry_id"#,
-        owner_kind as OwnerPrincipalKind,
-        owner_principal_id,
-        owner_org_id,
-        &instance_ids[..],
+    let wake_rows: Vec<WakeEntryProjectionRow> = sqlx::query_as(
+        "SELECT personality_instance_id,
+                wake_entry_id,
+                trigger_kind,
+                trigger_id, label, enabled,
+                execution_mode,
+                authored_by,
+                probability_promille,
+                goal_scope,
+                instructions,
+                model_tier,
+                inference_target_ref, substrate_tool_palette,
+                workspace_tool_palette, max_rounds,
+                budgeter_personality_instance_id,
+                budget_extension_rounds,
+                budget_hard_cap_rounds,
+                budget_progress_contract,
+                disabled_reason
+           FROM proxima_core.personality_wake_entries
+           WHERE owner_principal_kind = $1
+             AND owner_principal_id = $2
+             AND owner_org_id = $3
+             AND personality_instance_id = ANY($4::uuid[])
+             AND tombstoned_at IS NULL
+           ORDER BY label, wake_entry_id",
     )
+    .bind(owner_kind as OwnerPrincipalKind)
+    .bind(owner_principal_id)
+    .bind(owner_org_id)
+    .bind(&instance_ids[..])
     .fetch_all(pool)
     .await
     .map_err(map_err)?;
@@ -89,6 +95,12 @@ pub async fn list_personality_instances(
             substrate_tool_palette: row.substrate_tool_palette,
             workspace_tool_palette: row.workspace_tool_palette,
             max_rounds: u16::try_from(row.max_rounds).unwrap_or(1),
+            budget_policy: budget_policy_from_parts(
+                row.budgeter_personality_instance_id,
+                row.budget_extension_rounds,
+                row.budget_hard_cap_rounds,
+                row.budget_progress_contract,
+            ),
             disabled_reason: row.disabled_reason,
         });
     }
@@ -106,6 +118,47 @@ pub async fn list_personality_instances(
     }
 
     Ok(out)
+}
+
+#[derive(sqlx::FromRow)]
+struct WakeEntryProjectionRow {
+    personality_instance_id: uuid::Uuid,
+    wake_entry_id: uuid::Uuid,
+    trigger_kind: WakeEntryTriggerKind,
+    trigger_id: String,
+    label: String,
+    enabled: bool,
+    execution_mode: WakeEntryExecutionMode,
+    authored_by: WakeEntryAuthoredBy,
+    probability_promille: i32,
+    goal_scope: WakeEntryGoalScope,
+    instructions: String,
+    model_tier: ModelTier,
+    inference_target_ref: Option<String>,
+    substrate_tool_palette: Vec<String>,
+    workspace_tool_palette: Vec<String>,
+    max_rounds: i32,
+    budgeter_personality_instance_id: Option<uuid::Uuid>,
+    budget_extension_rounds: i32,
+    budget_hard_cap_rounds: i32,
+    budget_progress_contract: String,
+    disabled_reason: Option<String>,
+}
+
+fn budget_policy_from_parts(
+    budgeter_personality_instance_id: Option<uuid::Uuid>,
+    budget_extension_rounds: i32,
+    budget_hard_cap_rounds: i32,
+    budget_progress_contract: String,
+) -> Option<BudgetExhaustionPolicy> {
+    budgeter_personality_instance_id.map(|budgeter_personality_instance_id| {
+        BudgetExhaustionPolicy {
+            budgeter_personality_instance_id,
+            budget_extension_rounds: u16::try_from(budget_extension_rounds).unwrap_or(0),
+            budget_hard_cap_rounds: u16::try_from(budget_hard_cap_rounds).unwrap_or(0),
+            budget_progress_contract,
+        }
+    })
 }
 
 pub async fn instantiate_personality(
