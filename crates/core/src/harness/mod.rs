@@ -7,6 +7,7 @@
 //! `&dyn HarnessAdapter` without pulling provider implementations into core.
 
 pub mod outcome;
+pub mod tool_projection;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -21,6 +22,9 @@ use crate::{MemoryId, Owner};
 pub use outcome::{
     ErrorClass, FinishReason, HarnessOutcome, HarnessOutcomeKind, classify_outcome, duration_ms,
 };
+pub use tool_projection::{
+    HarnessToolDispatch, HarnessToolProjection, ToolProjectionError, build_wake_tool_projection,
+};
 
 /// Everything the dispatcher hands the harness for one wake invocation.
 #[derive(Debug, Clone)]
@@ -32,6 +36,8 @@ pub struct HarnessProgram {
     /// Rendered wake context: root perspective, active goals, trigger
     /// event, triggering memory, plus workspace context when applicable.
     pub context_params: HashMap<String, serde_json::Value>,
+    /// Provider-facing tool projection derived from the wake's raw palette.
+    pub tool_projection: Vec<HarnessToolProjection>,
     /// Substrate + flavor tool ids from `WakeEntry.substrate_tool_palette`.
     pub substrate_tool_palette: Vec<String>,
     /// Workspace-mode jail root. `None` for substrate-only wakes.

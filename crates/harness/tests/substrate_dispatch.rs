@@ -4,7 +4,10 @@ use std::collections::HashMap;
 
 use futures::future::BoxFuture;
 use proxima_core::auth::NoAuth;
-use proxima_core::harness::{HarnessProgram, ProviderTarget, SubstrateToolBinding};
+use proxima_core::harness::{
+    HarnessProgram, HarnessToolDispatch, HarnessToolProjection, ProviderTarget,
+    SubstrateToolBinding,
+};
 use proxima_core::mcp::{
     HarnessSubstrateBridge, HarnessSubstrateCall, McpAuthorContext, McpTool, McpToolCtx,
     McpToolError,
@@ -37,11 +40,25 @@ fn binding(canonical: &str) -> SubstrateToolBinding {
     }
 }
 
+fn direct_projection(binding: &SubstrateToolBinding) -> HarnessToolProjection {
+    HarnessToolProjection {
+        palette_id: binding.canonical_name.clone(),
+        canonical_name: binding.canonical_name.clone(),
+        provider_name: proxima_core::mcp::provider_safe_tool_name(&binding.canonical_name),
+        description: binding.description.clone(),
+        input_schema: binding.args_schema.clone(),
+        dispatch: HarnessToolDispatch::DirectSubstrate {
+            internal_canonical_name: binding.canonical_name.clone(),
+        },
+    }
+}
+
 fn empty_program(bindings: &[SubstrateToolBinding], workspace: bool) -> HarnessProgram {
     HarnessProgram {
         system_prompt: "sys".into(),
         instructions: "do".into(),
         context_params: HashMap::default(),
+        tool_projection: bindings.iter().map(direct_projection).collect(),
         substrate_tool_palette: bindings.iter().map(|b| b.canonical_name.clone()).collect(),
         workspace_root: workspace.then(|| std::path::PathBuf::from("/tmp/x")),
         max_rounds: 5,
@@ -57,25 +74,41 @@ fn empty_program(bindings: &[SubstrateToolBinding], workspace: bool) -> HarnessP
 
 #[test]
 fn provider_safe_names_reverse_map_back_to_canonical() {
-    let bindings = vec![binding("core/emit_abstraction")];
+    let bindings = vec![binding("core/fetch_memory")];
     let program = empty_program(&bindings, false);
-    let resolved = resolve(program, &bindings);
+    let resolved = resolve(program, &bindings).expect("resolve");
     let spec = resolved
         .tools
         .iter()
-        .find(|tool| tool.canonical == "core/emit_abstraction")
+        .find(|tool| tool.canonical == "core/fetch_memory")
         .expect("tool spec");
 
-    assert_eq!(spec.provider_safe, "core_emit_abstraction");
+    assert_eq!(spec.provider_safe, "core_fetch_memory");
     assert_eq!(
-        resolved.reverse_map.get("core_emit_abstraction").unwrap(),
-        "core/emit_abstraction"
+        resolved.reverse_map.get("core_fetch_memory").unwrap(),
+        "core/fetch_memory"
+    );
+}
+
+#[test]
+fn raw_emit_capability_is_not_provider_visible_without_projection() {
+    let bindings = vec![binding("core/emit_abstraction")];
+    let mut program = empty_program(&bindings, false);
+    program.tool_projection = Vec::new();
+
+    let resolved = resolve(program, &bindings).expect("resolve");
+
+    assert!(
+        !resolved
+            .tools
+            .iter()
+            .any(|tool| tool.canonical == "core/emit_abstraction")
     );
 }
 
 #[test]
 fn workspace_tools_appear_only_when_workspace_root_is_set() {
-    let without_workspace = resolve(empty_program(&[], false), &[]);
+    let without_workspace = resolve(empty_program(&[], false), &[]).expect("resolve");
     assert!(
         !without_workspace
             .tools
@@ -83,7 +116,7 @@ fn workspace_tools_appear_only_when_workspace_root_is_set() {
             .any(|tool| tool.canonical.starts_with("workspace_"))
     );
 
-    let with_workspace = resolve(empty_program(&[], true), &[]);
+    let with_workspace = resolve(empty_program(&[], true), &[]).expect("resolve");
     let names: Vec<&str> = with_workspace
         .tools
         .iter()
@@ -122,14 +155,13 @@ async fn bridge_inventory_includes_registry_and_personality_pack_tools() {
             args_schema: spec.args_schema,
         })
         .collect();
-    let resolved = resolve(empty_program(&bindings, false), &bindings);
+    let resolved = resolve(empty_program(&bindings, false), &bindings).expect("resolve");
     let safe_names: Vec<&str> = resolved
         .tools
         .iter()
         .map(|tool| tool.provider_safe.as_str())
         .collect();
     assert!(safe_names.contains(&"core_fetch_memory"));
-    assert!(safe_names.contains(&"core_emit_perspective"));
     assert!(safe_names.contains(&"core_list_substrate_tools"));
 }
 

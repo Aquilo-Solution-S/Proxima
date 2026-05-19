@@ -34,13 +34,35 @@ async fn harness_wake_persists_trace_fact_jsonl_and_provenance() {
             .context_params
             .get("wake_contract")
             .expect("wake contract context");
+        assert_eq!(contract["wake_entry"], "W1");
         assert_eq!(contract["label"], "smoke-trigger");
         assert_eq!(contract["trigger_id"], "proxima-test/wake-context-fact-v1");
         assert_eq!(contract["execution_mode"], "substrate_only");
+        assert!(
+            contract["handle_domains"]["personality"]
+                .as_str()
+                .expect("personality domain")
+                .contains("P*")
+        );
         assert_eq!(
             contract["tool_palettes"]["substrate_tool_palette"][0],
             "core/fetch_memory"
         );
+        assert_eq!(
+            program.context_params["root_perspective"]["personality"],
+            "P1"
+        );
+        assert_eq!(
+            program.context_params["root_perspective"]["root_perspective"],
+            "N2"
+        );
+        assert_eq!(program.context_params["triggering_memory"]["memory"], "N1");
+        for (key, value) in &program.context_params {
+            assert!(
+                !contains_uuid_like(value),
+                "model-facing context {key} leaked a raw uuid: {value}"
+            );
+        }
 
         let trigger: uuid::Uuid = sqlx::query_scalar(
             "SELECT entity_memory_id FROM proxima_core.change_event WHERE seq = $1",
@@ -110,6 +132,17 @@ async fn harness_wake_persists_trace_fact_jsonl_and_provenance() {
 
     fixture.cleanup().await;
     result.expect("harness wake trace persisted");
+}
+
+fn contains_uuid_like(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::String(raw) => uuid::Uuid::parse_str(raw).is_ok(),
+        serde_json::Value::Array(values) => values.iter().any(contains_uuid_like),
+        serde_json::Value::Object(map) => map.values().any(contains_uuid_like),
+        serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => {
+            false
+        }
+    }
 }
 
 #[tokio::test]

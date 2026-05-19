@@ -1,18 +1,18 @@
 //! Generated per-invocation wake contract.
 //!
 //! This is derived from the stored `WakeEntryRow` at fire time. It is
-//! prompt context only; it does not alter tool schemas or provider
-//! strictness.
+//! prompt context only; the provider-visible substrate tools are rendered from
+//! the same projection handed to the harness.
 
 use serde::Serialize;
 
-use crate::mcp::provider_safe_tool_name;
-use crate::personality::{WORKSPACE_TOOL_CATALOG, WakeEntryRow, substrate_pack};
-use crate::verbs::schema::FlavorRegistryFrozen;
+use crate::harness::HarnessToolProjection;
+use crate::mcp::{HandleTable, provider_safe_tool_name};
+use crate::personality::{WORKSPACE_TOOL_CATALOG, WakeEntryRow};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct WakeContract {
-    pub wake_entry_id: uuid::Uuid,
+    pub wake_entry: String,
     pub label: String,
     pub trigger_kind: String,
     pub trigger_id: String,
@@ -21,8 +21,19 @@ pub struct WakeContract {
     pub authored_by: String,
     pub goal_scope: String,
     pub max_rounds: u16,
+    pub handle_domains: WakeContractHandleDomains,
     pub tool_palettes: WakeContractToolPalettes,
     pub resolved_tools: WakeContractResolvedTools,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct WakeContractHandleDomains {
+    pub memory: String,
+    pub goal: String,
+    pub personality: String,
+    pub edge: String,
+    pub wake_entry: String,
+    pub flavor_object: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -47,11 +58,15 @@ pub struct WakeContractTool {
 
 #[must_use]
 pub fn build_wake_contract(
-    registry: &FlavorRegistryFrozen,
     wake_entry: &WakeEntryRow,
+    tool_projection: &[HarnessToolProjection],
+    handles: &HandleTable,
 ) -> WakeContract {
     WakeContract {
-        wake_entry_id: wake_entry.wake_entry_id,
+        wake_entry: handles
+            .assign_wake_entry(wake_entry.wake_entry_id)
+            .as_str()
+            .to_string(),
         label: wake_entry.label.clone(),
         trigger_kind: wake_entry.trigger_kind.as_str().to_string(),
         trigger_id: wake_entry.trigger_id.clone(),
@@ -60,42 +75,37 @@ pub fn build_wake_contract(
         authored_by: wake_entry.authored_by.as_str().to_string(),
         goal_scope: wake_entry.goal_scope.as_str().to_string(),
         max_rounds: wake_entry.max_rounds,
+        handle_domains: WakeContractHandleDomains {
+            memory: "N*: memory Fact/Abstraction/Perspective handle; use in memory arguments"
+                .to_string(),
+            goal: "G*: Goal handle; use in goal arguments".to_string(),
+            personality: "P*: Personality handle; use in target_personality/personality arguments"
+                .to_string(),
+            edge: "E*: Edge handle; use in edge arguments".to_string(),
+            wake_entry: "W*: Wake-entry handle; use in wake-entry arguments".to_string(),
+            flavor_object:
+                "Other uppercase prefixes are flavor object handles such as repo handles"
+                    .to_string(),
+        },
         tool_palettes: WakeContractToolPalettes {
             substrate_tool_palette: wake_entry.substrate_tool_palette.clone(),
             workspace_tool_palette: wake_entry.workspace_tool_palette.clone(),
         },
         resolved_tools: WakeContractResolvedTools {
-            substrate: resolve_substrate_tools(registry, &wake_entry.substrate_tool_palette),
+            substrate: resolve_substrate_tools(tool_projection),
             workspace: resolve_workspace_tools(&wake_entry.workspace_tool_palette),
         },
     }
 }
 
-fn resolve_substrate_tools(
-    registry: &FlavorRegistryFrozen,
-    palette: &[String],
-) -> Vec<WakeContractTool> {
-    palette
+fn resolve_substrate_tools(tool_projection: &[HarnessToolProjection]) -> Vec<WakeContractTool> {
+    tool_projection
         .iter()
-        .map(|tool_id| {
-            let description = substrate_pack()
-                .iter()
-                .find(|tool| tool.tool_id() == tool_id)
-                .map(|tool| tool.description().to_string())
-                .or_else(|| {
-                    registry
-                        .list_mcp_tools()
-                        .iter()
-                        .find(|tool| tool.name == tool_id)
-                        .map(|tool| tool.description.to_string())
-                })
-                .unwrap_or_default();
-            WakeContractTool {
-                palette_id: tool_id.clone(),
-                canonical_name: tool_id.clone(),
-                provider_name: provider_safe_tool_name(tool_id),
-                description,
-            }
+        .map(|tool| WakeContractTool {
+            palette_id: tool.palette_id.clone(),
+            canonical_name: tool.canonical_name.clone(),
+            provider_name: tool.provider_name.clone(),
+            description: tool.description.clone(),
         })
         .collect()
 }
@@ -136,8 +146,10 @@ mod tests {
     use uuid::Uuid;
 
     use crate::{
-        FlavorRegistry, ModelTier, WakeEntryAuthoredBy, WakeEntryExecutionMode, WakeEntryGoalScope,
-        WakeEntryRow, WakeEntryTriggerKind,
+        ModelTier, WakeEntryAuthoredBy, WakeEntryExecutionMode, WakeEntryGoalScope, WakeEntryRow,
+        WakeEntryTriggerKind,
+        harness::{HarnessToolDispatch, HarnessToolProjection},
+        mcp::HandleTable,
     };
 
     use super::build_wake_contract;
@@ -165,9 +177,27 @@ mod tests {
             disabled_reason: None,
         };
 
-        let contract = build_wake_contract(&FlavorRegistry::new().freeze(), &wake_entry);
+        let projection = vec![HarnessToolProjection {
+            palette_id: "core/fetch_memory".into(),
+            canonical_name: "core/fetch_memory".into(),
+            provider_name: "core_fetch_memory".into(),
+            description: "Fetch a memory".into(),
+            input_schema: serde_json::json!({ "type": "object", "properties": {} }),
+            dispatch: HarnessToolDispatch::DirectSubstrate {
+                internal_canonical_name: "core/fetch_memory".into(),
+            },
+        }];
 
-        assert_eq!(contract.wake_entry_id, wake_entry_id);
+        let handles = HandleTable::new();
+        let contract = build_wake_contract(&wake_entry, &projection, &handles);
+
+        assert_eq!(contract.wake_entry, "W1");
+        assert_eq!(
+            handles
+                .resolve_wake_entry(&contract.wake_entry)
+                .expect("wake handle"),
+            wake_entry_id
+        );
         assert_eq!(contract.label, "Planner child-goal demo wake");
         assert_eq!(contract.trigger_id, "proxima-test/fact-v1");
         assert_eq!(contract.trigger_schema_id, "proxima-test/fact-v1");
@@ -191,5 +221,6 @@ mod tests {
             contract.resolved_tools.workspace[0].canonical_name,
             "workspace_shell"
         );
+        assert!(contract.handle_domains.personality.contains("P*"));
     }
 }

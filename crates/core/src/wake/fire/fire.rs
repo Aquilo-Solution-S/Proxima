@@ -1,13 +1,18 @@
 //! Per-entry wake fire path backed by the in-process harness.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 use uuid::Uuid;
 
 use crate::engine::Engine;
 use crate::error::ProtocolError;
-use crate::harness::{HarnessAdapter, HarnessContext, HarnessProgram};
+use crate::harness::{
+    HarnessAdapter, HarnessContext, HarnessProgram, HarnessToolProjection,
+    build_wake_tool_projection,
+};
+use crate::mcp::HandleTable;
 use crate::personality::workspace::{
     WorkspaceFinalizeInput, WorkspaceOutcome, WorkspacePrepareInput, WorkspacePreparedRun,
     WorkspaceRunnerError,
@@ -76,7 +81,7 @@ pub async fn fire_wake_entry(
     let invocation_id_for_dispatch = Uuid::now_v7();
     let max_rounds = u32::from(input.wake_entry.max_rounds);
     let invocation_timeout = per_invocation_timeout(max_rounds);
-    let (wake_token, seeded_handles) = mint_wake_token(
+    let (wake_token, seeded_handles, handle_table) = mint_wake_token(
         engine,
         &input,
         &wake_context,
@@ -123,30 +128,64 @@ pub async fn fire_wake_entry(
     .await;
 
     let started_at = time::OffsetDateTime::now_utc();
-    let context_params =
-        match build_context_params(engine, &input, &wake_context, &seeded_handles).await {
-            Ok(params) => params,
-            Err(err) => {
-                let timing = TraceTiming {
-                    started_at,
-                    finished_at: time::OffsetDateTime::now_utc(),
-                };
-                finalize_failed_started_wake(
-                    engine,
-                    &input,
-                    &wake_context,
-                    &resolved,
-                    StartedWakeFailure {
-                        invocation_id: invocation_id_for_dispatch,
-                        wake_token,
-                        timing,
-                        failure_reason: format!("context_param_serialization:{err}"),
-                    },
-                )
-                .await?;
-                return Ok(true);
-            }
-        };
+    let tool_projection = match build_wake_tool_projection(
+        engine.registry(),
+        &input.wake_entry.substrate_tool_palette,
+    ) {
+        Ok(projection) => projection,
+        Err(err) => {
+            let timing = TraceTiming {
+                started_at,
+                finished_at: time::OffsetDateTime::now_utc(),
+            };
+            finalize_failed_started_wake(
+                engine,
+                &input,
+                &wake_context,
+                &resolved,
+                StartedWakeFailure {
+                    invocation_id: invocation_id_for_dispatch,
+                    wake_token,
+                    timing,
+                    failure_reason: format!("tool_projection:{err}"),
+                },
+            )
+            .await?;
+            return Ok(true);
+        }
+    };
+    let context_params = match build_context_params(
+        engine,
+        &input,
+        &wake_context,
+        &seeded_handles,
+        &handle_table,
+        &tool_projection,
+    )
+    .await
+    {
+        Ok(params) => params,
+        Err(err) => {
+            let timing = TraceTiming {
+                started_at,
+                finished_at: time::OffsetDateTime::now_utc(),
+            };
+            finalize_failed_started_wake(
+                engine,
+                &input,
+                &wake_context,
+                &resolved,
+                StartedWakeFailure {
+                    invocation_id: invocation_id_for_dispatch,
+                    wake_token,
+                    timing,
+                    failure_reason: format!("context_param_serialization:{err}"),
+                },
+            )
+            .await?;
+            return Ok(true);
+        }
+    };
 
     if matches!(
         input.wake_entry.execution_mode,
@@ -162,6 +201,8 @@ pub async fn fire_wake_entry(
                 wake_context,
                 resolved,
                 context_params,
+                tool_projection,
+                session_log_path,
                 invocation_id_for_dispatch,
                 invocation_timeout,
                 started_at,
@@ -201,6 +242,7 @@ pub async fn fire_wake_entry(
         ),
         instructions: input.wake_entry.instructions.clone(),
         context_params,
+        tool_projection,
         substrate_tool_palette: input.wake_entry.substrate_tool_palette.clone(),
         workspace_root: None,
         max_rounds,
@@ -263,6 +305,8 @@ struct WorkspaceModeState {
     wake_context: WakeContext,
     resolved: ResolvedTarget,
     context_params: HashMap<String, serde_json::Value>,
+    tool_projection: Vec<HarnessToolProjection>,
+    session_log_path: std::path::PathBuf,
     invocation_id_for_dispatch: Uuid,
     invocation_timeout: Duration,
     started_at: time::OffsetDateTime,
@@ -280,6 +324,8 @@ async fn handle_workspace_mode(
         wake_context,
         resolved,
         mut context_params,
+        tool_projection,
+        session_log_path,
         invocation_id_for_dispatch,
         invocation_timeout,
         started_at,
@@ -396,6 +442,7 @@ async fn handle_workspace_mode(
         ),
         instructions: input.wake_entry.instructions.clone(),
         context_params,
+        tool_projection,
         substrate_tool_palette: input.wake_entry.substrate_tool_palette.clone(),
         workspace_root: Some(prepared.work_dir.clone()),
         max_rounds: u32::from(input.wake_entry.max_rounds),
@@ -414,6 +461,7 @@ async fn handle_workspace_mode(
         finished_at: time::OffsetDateTime::now_utc(),
     };
 
+    write_session_jsonl_to_disk(&session_log_path, &outcome_result).await;
     append_session_log_error_if_present(
         engine,
         &input,
@@ -478,7 +526,7 @@ async fn mint_wake_token(
     resolved: &ResolvedTarget,
     invocation_id: Uuid,
     invocation_timeout: Duration,
-) -> (Uuid, crate::mcp::PreSeededHandles) {
+) -> (Uuid, crate::mcp::PreSeededHandles, Arc<HandleTable>) {
     let token_ctx = WakeTokenContext {
         invocation_id,
         personality_instance_id: input.personality_instance_id.into_inner(),
@@ -523,11 +571,12 @@ async fn mint_wake_token(
                 .assign_memory(continuation.original_triggering_memory_id),
         );
     }
+    let handles = token_ctx.handles.clone();
     let wake_token = engine
         .wake_token_store()
         .mint_with_max_lifetime(token_ctx, invocation_timeout)
         .await;
-    (wake_token, seeded)
+    (wake_token, seeded, handles)
 }
 
 fn harness_context(
@@ -705,31 +754,46 @@ fn build_system_prompt(
     };
     let mut prompt = crate::wake::handles::format_wake_context_preamble(seeded, schema_arg);
     if let Some(continuation) = continuation {
-        prompt.push_str(&format_continuation_preamble(continuation));
+        prompt.push_str(&format_continuation_preamble(seeded, continuation));
     }
     prompt.push_str(&wake_context.root_perspective.system_prompt);
     prompt
 }
 
-fn format_continuation_preamble(continuation: &super::input::FireWakeContinuation) -> String {
+fn format_continuation_preamble(
+    seeded: &crate::mcp::PreSeededHandles,
+    continuation: &super::input::FireWakeContinuation,
+) -> String {
     format!(
         "\nWake continuation context:\n\
          - This invocation continues a prior truncated wake. Use persisted Proxima state as the continuity source; provider chat session state is not available.\n\
-         - original_invocation_id: {}\n\
-         - original_change_event_seq: {}\n\
          - intervention_request_memory: {}\n\
          - intervention_decision_memory: {}\n\
          - wake_trace_memory: {}\n\
-         - original_triggering_memory_id: {}\n\
+         - original_triggering_memory: {}\n\
          - granted_rounds: {}\n\
          - supervisor_rationale: {}\n\
          - Inspect the prior trace or lineage before repeating work.\n\n",
-        continuation.original_invocation_id,
-        continuation.original_change_event_seq,
-        continuation.intervention_request_memory_id.into_inner(),
-        continuation.intervention_decision_memory_id.into_inner(),
-        continuation.wake_trace_memory_id.into_inner(),
-        continuation.original_triggering_memory_id.into_inner(),
+        seeded
+            .continuation_request
+            .as_ref()
+            .map(crate::mcp::Handle::as_str)
+            .unwrap_or("<unavailable>"),
+        seeded
+            .continuation_decision
+            .as_ref()
+            .map(crate::mcp::Handle::as_str)
+            .unwrap_or("<unavailable>"),
+        seeded
+            .continuation_wake_trace
+            .as_ref()
+            .map(crate::mcp::Handle::as_str)
+            .unwrap_or("<unavailable>"),
+        seeded
+            .continuation_original_triggering
+            .as_ref()
+            .map(crate::mcp::Handle::as_str)
+            .unwrap_or("<unavailable>"),
         continuation.grant_rounds,
         continuation.rationale.trim(),
     )
@@ -742,22 +806,16 @@ fn continuation_context_params(
     serde_json::json!({
         "intervention_decision": {
             "handle": seeded.continuation_decision.as_ref().map(crate::mcp::Handle::as_str),
-            "memory_id": continuation.intervention_decision_memory_id.into_inner(),
         },
         "intervention_request": {
             "handle": seeded.continuation_request.as_ref().map(crate::mcp::Handle::as_str),
-            "memory_id": continuation.intervention_request_memory_id.into_inner(),
         },
         "prior_wake_trace": {
             "handle": seeded.continuation_wake_trace.as_ref().map(crate::mcp::Handle::as_str),
-            "memory_id": continuation.wake_trace_memory_id.into_inner(),
         },
         "original_triggering_memory": {
             "handle": seeded.continuation_original_triggering.as_ref().map(crate::mcp::Handle::as_str),
-            "memory_id": continuation.original_triggering_memory_id.into_inner(),
         },
-        "original_invocation_id": continuation.original_invocation_id,
-        "original_change_event_seq": continuation.original_change_event_seq,
         "grant_rounds": continuation.grant_rounds,
         "rationale": continuation.rationale.as_str(),
         "instruction": "Inspect the prior trace or lineage before repeating work. Provider chat session state is unavailable; persisted graph state is the continuity source.",
@@ -769,27 +827,30 @@ async fn build_context_params(
     input: &FireWakeEntryInput,
     wake_context: &WakeContext,
     seeded_handles: &crate::mcp::PreSeededHandles,
+    handles: &HandleTable,
+    tool_projection: &[HarnessToolProjection],
 ) -> Result<HashMap<String, serde_json::Value>, ProtocolError> {
     let mut context_params: HashMap<String, serde_json::Value> = HashMap::new();
     context_params.insert(
         "root_perspective".into(),
-        context_value(&wake_context.root_perspective)?,
+        project_root_perspective(wake_context, handles),
     );
     context_params.insert(
         "active_goals".into(),
-        context_value(&wake_context.active_goals)?,
+        project_active_goals(wake_context, handles),
     );
-    context_params.insert(
-        "trigger_event".into(),
-        context_value(&wake_context.trigger_event)?,
-    );
+    context_params.insert("trigger_event".into(), project_trigger_event(wake_context));
     context_params.insert(
         "triggering_memory".into(),
-        context_value(&wake_context.triggering_memory)?,
+        project_triggering_memory(wake_context, handles),
     );
     context_params.insert(
         "wake_contract".into(),
-        context_value(build_wake_contract(engine.registry(), &input.wake_entry))?,
+        context_value(build_wake_contract(
+            &input.wake_entry,
+            tool_projection,
+            handles,
+        ))?,
     );
     let coordination_context = inquiry::build_wake_coordination_context(
         engine,
@@ -801,7 +862,7 @@ async fn build_context_params(
     .map_err(|err| ProtocolError::internal(format!("build_wake_coordination_context: {err}")))?;
     context_params.insert(
         "coordination_context".into(),
-        context_value(&coordination_context)?,
+        project_coordination_context(&coordination_context, handles),
     );
     if let Some(continuation) = input.continuation.as_ref() {
         context_params.insert(
@@ -810,6 +871,213 @@ async fn build_context_params(
         );
     }
     Ok(context_params)
+}
+
+fn project_root_perspective(
+    wake_context: &WakeContext,
+    handles: &HandleTable,
+) -> serde_json::Value {
+    serde_json::json!({
+        "personality": handles
+            .assign_personality(PersonalityInstanceId::new(wake_context.root_perspective.instance_id))
+            .as_str()
+            .to_string(),
+        "root_perspective": handles
+            .assign_memory(MemoryId::new(wake_context.root_perspective.memory_id))
+            .as_str()
+            .to_string(),
+        "display_name": wake_context.root_perspective.display_name.as_str(),
+        "purpose": wake_context.root_perspective.purpose.as_str(),
+        "system_prompt": wake_context.root_perspective.system_prompt.as_str(),
+    })
+}
+
+fn project_active_goals(wake_context: &WakeContext, handles: &HandleTable) -> serde_json::Value {
+    serde_json::Value::Array(
+        wake_context
+            .active_goals
+            .iter()
+            .map(|goal| {
+                serde_json::json!({
+                    "goal": handles.assign_goal(GoalId::new(goal.goal_id)).as_str().to_string(),
+                    "goal_activated_memory": goal
+                        .goal_activated_memory_id
+                        .map(|id| handles.assign_memory(MemoryId::new(id)).as_str().to_string()),
+                    "title": goal.title.as_str(),
+                    "motivation_via": goal
+                        .motivation_via
+                        .iter()
+                        .map(|id| handles.assign_memory(MemoryId::new(*id)).as_str().to_string())
+                        .collect::<Vec<_>>(),
+                })
+            })
+            .collect(),
+    )
+}
+
+fn project_trigger_event(wake_context: &WakeContext) -> serde_json::Value {
+    serde_json::json!({
+        "kind": wake_context.trigger_event.kind.as_str(),
+        "schema_id": wake_context.trigger_event.schema_id.as_str(),
+        "wake_chain_depth": wake_context.trigger_event.wake_chain_depth,
+    })
+}
+
+fn project_triggering_memory(
+    wake_context: &WakeContext,
+    handles: &HandleTable,
+) -> serde_json::Value {
+    serde_json::json!({
+        "memory": handles
+            .assign_memory(MemoryId::new(wake_context.triggering_memory.memory_id))
+            .as_str()
+            .to_string(),
+        "schema_id": wake_context.triggering_memory.schema_id.as_str(),
+        "schema_version": wake_context.triggering_memory.schema_version,
+        "typed_payload": project_model_value(&wake_context.triggering_memory.typed_payload, None, handles),
+    })
+}
+
+fn project_coordination_context(
+    context: &inquiry::WakeCoordinationContext,
+    handles: &HandleTable,
+) -> serde_json::Value {
+    serde_json::json!({
+        "askable_personalities": context
+            .askable_personalities
+            .iter()
+            .map(|target| {
+                serde_json::json!({
+                    "personality": handles
+                        .assign_personality(PersonalityInstanceId::new(target.personality_instance_id))
+                        .as_str()
+                        .to_string(),
+                    "display_name": target.display_name.as_str(),
+                    "root_perspective": handles
+                        .assign_memory(MemoryId::new(target.root_perspective_memory_id))
+                        .as_str()
+                        .to_string(),
+                    "directed_question_wake_entries": target
+                        .directed_question_wake_entry_ids
+                        .iter()
+                        .map(|id| handles.assign_wake_entry(*id).as_str().to_string())
+                        .collect::<Vec<_>>(),
+                })
+            })
+            .collect::<Vec<_>>(),
+        "wake_path": {
+            "upstream": context
+                .wake_path
+                .upstream
+                .iter()
+                .map(|node| project_wake_path_node(node, handles))
+                .collect::<Vec<_>>(),
+            "current": project_wake_path_node(&context.wake_path.current, handles),
+            "downstream": context
+                .wake_path
+                .downstream
+                .iter()
+                .map(|node| project_wake_path_node(node, handles))
+                .collect::<Vec<_>>(),
+        }
+    })
+}
+
+fn project_wake_path_node(
+    node: &inquiry::WakePathNode,
+    handles: &HandleTable,
+) -> serde_json::Value {
+    serde_json::json!({
+        "personality": handles
+            .assign_personality(PersonalityInstanceId::new(node.personality_instance_id))
+            .as_str()
+            .to_string(),
+        "display_name": node.display_name.as_str(),
+        "root_perspective": if node.root_perspective_memory_id == Uuid::nil() {
+            serde_json::Value::Null
+        } else {
+            serde_json::Value::String(
+                handles
+                    .assign_memory(MemoryId::new(node.root_perspective_memory_id))
+                    .as_str()
+                    .to_string(),
+            )
+        },
+        "wake_entry": handles.assign_wake_entry(node.wake_entry_id).as_str().to_string(),
+        "wake_entry_label": node.wake_entry_label.as_str(),
+        "trigger_schema_id": node.trigger_schema_id.as_str(),
+        "produces_schema_ids": node.produces_schema_ids.clone(),
+    })
+}
+
+fn project_model_value(
+    value: &serde_json::Value,
+    key: Option<&str>,
+    handles: &HandleTable,
+) -> serde_json::Value {
+    match value {
+        serde_json::Value::String(raw) => project_model_string(raw, key, handles),
+        serde_json::Value::Array(values) => serde_json::Value::Array(
+            values
+                .iter()
+                .map(|value| project_model_value(value, key, handles))
+                .collect(),
+        ),
+        serde_json::Value::Object(map) => serde_json::Value::Object(
+            map.iter()
+                .map(|(field, value)| {
+                    (
+                        field.clone(),
+                        project_model_value(value, Some(field.as_str()), handles),
+                    )
+                })
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
+fn project_model_string(raw: &str, key: Option<&str>, handles: &HandleTable) -> serde_json::Value {
+    let Some(uuid) = Uuid::parse_str(raw).ok() else {
+        return serde_json::Value::String(raw.to_string());
+    };
+    let Some(key) = key else {
+        return serde_json::Value::String("<opaque-uuid>".to_string());
+    };
+    let normalized = key.strip_suffix('s').unwrap_or(key);
+    if normalized == "goal_id" || normalized.ends_with("_goal_id") {
+        return serde_json::Value::String(
+            handles.assign_goal(GoalId::new(uuid)).as_str().to_string(),
+        );
+    }
+    if normalized == "memory_id" || normalized.ends_with("_memory_id") {
+        return serde_json::Value::String(
+            handles
+                .assign_memory(MemoryId::new(uuid))
+                .as_str()
+                .to_string(),
+        );
+    }
+    if normalized == "personality_instance_id" || normalized.ends_with("_personality_instance_id") {
+        return serde_json::Value::String(
+            handles
+                .assign_personality(PersonalityInstanceId::new(uuid))
+                .as_str()
+                .to_string(),
+        );
+    }
+    if normalized == "wake_entry_id" || normalized.ends_with("_wake_entry_id") {
+        return serde_json::Value::String(handles.assign_wake_entry(uuid).as_str().to_string());
+    }
+    if normalized == "edge_id" || normalized.ends_with("_edge_id") {
+        return serde_json::Value::String(
+            handles
+                .assign_edge(crate::EdgeId::new(uuid))
+                .as_str()
+                .to_string(),
+        );
+    }
+    serde_json::Value::String("<opaque-uuid>".to_string())
 }
 
 fn context_value<T: serde::Serialize>(value: T) -> Result<serde_json::Value, ProtocolError> {
@@ -944,6 +1212,7 @@ mod tests {
 
     #[test]
     fn continuation_preamble_uses_persisted_proxima_state_not_provider_state() {
+        let handles = HandleTable::new();
         let continuation = crate::wake::fire::input::FireWakeContinuation {
             intervention_decision_memory_id: MemoryId::new(Uuid::now_v7()),
             intervention_request_memory_id: MemoryId::new(Uuid::now_v7()),
@@ -954,17 +1223,67 @@ mod tests {
             grant_rounds: 3,
             rationale: "made progress".into(),
         };
+        let seeded = crate::mcp::PreSeededHandles {
+            triggering: handles.assign_memory(MemoryId::new(Uuid::now_v7())),
+            root_perspective: handles.assign_memory(MemoryId::new(Uuid::now_v7())),
+            self_instance: handles.assign_personality(PersonalityInstanceId::new(Uuid::now_v7())),
+            continuation_decision: Some(
+                handles.assign_memory(continuation.intervention_decision_memory_id),
+            ),
+            continuation_request: Some(
+                handles.assign_memory(continuation.intervention_request_memory_id),
+            ),
+            continuation_wake_trace: Some(handles.assign_memory(continuation.wake_trace_memory_id)),
+            continuation_original_triggering: Some(
+                handles.assign_memory(continuation.original_triggering_memory_id),
+            ),
+        };
 
-        let preamble = format_continuation_preamble(&continuation);
+        let preamble = format_continuation_preamble(&seeded, &continuation);
 
         assert!(preamble.contains("persisted Proxima state"));
         assert!(preamble.contains("provider chat session state is not available"));
-        assert!(preamble.contains("original_invocation_id"));
-        assert!(preamble.contains("original_change_event_seq"));
         assert!(preamble.contains("wake_trace_memory"));
         assert!(preamble.contains("intervention_decision_memory"));
-        assert!(preamble.contains("original_triggering_memory_id"));
+        assert!(preamble.contains("original_triggering_memory"));
         assert!(preamble.contains("granted_rounds: 3"));
         assert!(preamble.contains("supervisor_rationale: made progress"));
+        assert!(!preamble.contains(&continuation.original_invocation_id.to_string()));
+        assert!(!preamble.contains(&continuation.original_change_event_seq.to_string()));
+    }
+
+    #[test]
+    fn model_payload_projection_turns_reference_uuids_into_handles() {
+        let handles = HandleTable::new();
+        let goal_id = Uuid::now_v7();
+        let memory_id = Uuid::now_v7();
+        let repo_id = Uuid::now_v7();
+        let projected = project_model_value(
+            &serde_json::json!({
+                "goal_id": goal_id,
+                "goal_activated_memory_id": memory_id,
+                "repo_id": repo_id,
+            }),
+            None,
+            &handles,
+        );
+
+        assert_eq!(projected["goal_id"], "G1");
+        assert_eq!(projected["goal_activated_memory_id"], "N1");
+        assert_eq!(projected["repo_id"], "<opaque-uuid>");
+        assert_eq!(
+            handles
+                .resolve_goal("G1")
+                .expect("goal handle")
+                .into_inner(),
+            goal_id
+        );
+        assert_eq!(
+            handles
+                .resolve_memory("N1")
+                .expect("memory handle")
+                .into_inner(),
+            memory_id
+        );
     }
 }

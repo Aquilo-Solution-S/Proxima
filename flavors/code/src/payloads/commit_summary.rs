@@ -1,4 +1,5 @@
 use proxima_core::{AbstractionPayload, proxima_schema_id};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// First Code F→A output — a per-commit synthesis covering the
@@ -8,7 +9,7 @@ use serde::{Deserialize, Serialize};
 /// The Abstraction's `text` (operator-authored narrative) lives on
 /// the substrate `memories.text` column; this sidecar carries the
 /// typed structured fields.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct CommitSummaryV1 {
     pub repo_id: uuid::Uuid,
     pub commit_sha: String,
@@ -27,5 +28,12 @@ impl AbstractionPayload for CommitSummaryV1 {
     const SCHEMA_VERSION: u32 = 1;
     fn sidecar_table() -> &'static str {
         "proxima_code.commit_summary_v1"
+    }
+
+    fn json_schema() -> Option<serde_json::Value> {
+        Some(
+            serde_json::to_value(schemars::schema_for!(Self))
+                .expect("CommitSummaryV1 schema serializes"),
+        )
     }
 }

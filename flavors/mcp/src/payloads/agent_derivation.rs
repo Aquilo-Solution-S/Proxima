@@ -1,7 +1,8 @@
 use proxima_core::{AbstractionPayload, PerspectivePayload};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct AgentDerivationV1 {
     pub title: String,
     pub body: String,
@@ -20,6 +21,13 @@ impl AbstractionPayload for AgentDerivationV1 {
     fn sidecar_table() -> &'static str {
         "proxima_mcp.agent_derivation_v1"
     }
+
+    fn json_schema() -> Option<serde_json::Value> {
+        Some(
+            serde_json::to_value(schemars::schema_for!(Self))
+                .expect("AgentDerivationV1 schema serializes"),
+        )
+    }
 }
 
 impl PerspectivePayload for AgentDerivationV1 {
@@ -28,5 +36,12 @@ impl PerspectivePayload for AgentDerivationV1 {
 
     fn sidecar_table() -> &'static str {
         "proxima_mcp.agent_derivation_v1"
+    }
+
+    fn json_schema() -> Option<serde_json::Value> {
+        Some(
+            serde_json::to_value(schemars::schema_for!(Self))
+                .expect("AgentDerivationV1 schema serializes"),
+        )
     }
 }
