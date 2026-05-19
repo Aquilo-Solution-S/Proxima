@@ -21,12 +21,16 @@ impl WakeOptions {
 
 pub(super) fn demo_intervention_policy(
     wake_supervisor: PersonalityInstanceId,
+    mode: DemoInterventionMode,
 ) -> InterventionPolicy {
     InterventionPolicy {
         intervention_personality_instance_id: wake_supervisor.into_inner(),
         intervention_extension_rounds: 4,
         intervention_hard_cap_rounds: 8,
-        intervention_progress_contract: "Decide from the intervention request Fact and wake lineage whether the truncated wake made concrete progress toward the active demo Goal. Loops with repeated tool errors should stop. Truncations after useful work or after the larger goal has enough downstream evidence may be accepted as terminal for v1; automatic continuation is not enabled in this demo yet.".into(),
+        intervention_progress_contract: match mode {
+            DemoInterventionMode::Normal => "Decide from the intervention request Fact and wake lineage whether the truncated wake made concrete progress toward the active demo Goal. Loops with repeated tool errors should stop. Truncations after useful work or after the larger goal has enough downstream evidence may be accepted as terminal for v1; automatic continuation is allowed when the truncated wake has useful unfinished work.".into(),
+            DemoInterventionMode::ForceContinue => "Forced continuation demo. Emit continue for the first useful max-round truncation so the next dispatcher tick starts a continuation from the InterventionDecisionV1 event.".into(),
+        },
     }
 }
 
@@ -110,12 +114,21 @@ pub(super) async fn prepare_demo_repo(
     Ok(Uuid::now_v7())
 }
 
-pub(super) fn visionary_instruction(challenge: DemoChallenge) -> String {
-    format!(
+pub(super) fn visionary_instruction(
+    challenge: DemoChallenge,
+    mode: DemoInterventionMode,
+) -> String {
+    let normal = format!(
         "You are the Visionary for the triggering active Goal in N1. Do not create files, child Goals, or execution requests. Interpret the user's real expectation before planning. Use the `triggering_memory` context JSON: payload.goal_id is the goal_id and memory_id is goal_activated_memory_id. Call core_emit_abstraction exactly once with schema_id \"{}\", schema_version 1, and a payload matching this contract: goal_id from triggering_memory.typed_payload.goal_id; goal_activated_memory_id from triggering_memory.memory_id; original_goal_text {}; interpreted_outcome as the intended product outcome, not an HTML implementation detail; target_user; use_case; artifact_shape; ambition_level \"Production\"; quality_bar; constraints as an array of strings; assumptions as an array of strings; open_questions as an array of strings; acceptance_rubric as a flat JSON array of strings, not an object; demo_proof; planner_directive. The planner_directive must tell Planner to walk lineage from the VisionBrief to the goal_activated Fact, decompose the parent Goal, and preserve the quality bar. Then stop.",
         VisionBriefV1::SCHEMA_ID,
         serde_json::to_string(challenge.goal_text()).expect("goal text serializes")
-    )
+    );
+    match mode {
+        DemoInterventionMode::Normal => normal,
+        DemoInterventionMode::ForceContinue => format!(
+            "Forced continuation branch: if the Continuation context is present, do not call core_emit_abstraction and do not emit a second VisionBrief. Instead call core_fetch_memory exactly once for each Continuation handle: continuation.intervention_decision.handle, continuation.intervention_request.handle, continuation.prior_wake_trace.handle, and continuation.original_triggering_memory.handle. After those four fetches, stop. If no Continuation context is present, follow this first-wake instruction exactly:\n\n{normal}"
+        ),
+    }
 }
 
 pub(super) fn planner_instruction(
@@ -347,8 +360,11 @@ pub(super) fn goal_reviewer_instruction() -> String {
     "Read the workspace review payload in Triggering Memory. If verdict is approved, first call proxima_code_code_goal_completion_status with {\"workspace_review_memory\":\"N1\"}. If its child_close is present, call proxima_goal_goal_mark_achieved using exactly child_close.goal, child_close.evidence, and child_close.idempotency_key. If its parent.parent_close is present, call proxima_goal_goal_mark_achieved after the child call using exactly parent.parent_close.goal, parent.parent_close.evidence, and parent.parent_close.idempotency_key. If verdict is rejected, call proxima_code_code_emit_correction_execution_request with {\"workspace_review_memory\":\"N1\",\"target_personality\":\"P1\",\"idempotency_key\":\"demo-signal-match-correction-1\"}. Then stop.".into()
 }
 
-pub(super) fn wake_supervisor_instruction() -> String {
-    "You are the Wake Supervisor for this E2E demo. Triggering Memory N1 is a core/intervention-requested-v1 Fact. First inspect N1. You may call core_walk_lineage with {\"memory\":\"N1\"} if you need the wake trace and triggering Fact context. If the truncated wake made concrete progress but needs a few more rounds, call core_emit_intervention_decision with {\"intervention_request\":\"N1\",\"decision\":\"continue\",\"grant_rounds\":4,\"rationale\":\"<short evidence-based reason>\",\"idempotency_key\":\"demo-wake_supervisor-continue-N1\"}. If the larger goal already has enough downstream evidence or the wake is likely terminal-but-truncated, call core_emit_intervention_decision with {\"intervention_request\":\"N1\",\"decision\":\"accept_terminal\",\"rationale\":\"<short evidence-based reason>\",\"idempotency_key\":\"demo-wake_supervisor-accept-N1\"}. If the wake appears to be looping, blocked, or making no useful progress, call core_emit_intervention_decision with decision \"stop\" and idempotency_key \"demo-wake_supervisor-stop-N1\". Then stop.".into()
+pub(super) fn wake_supervisor_instruction(mode: DemoInterventionMode) -> String {
+    match mode {
+        DemoInterventionMode::Normal => "You are the Wake Supervisor for this E2E demo. Triggering Memory N1 is a core/intervention-requested-v1 Fact. First inspect N1. You may call core_walk_lineage with {\"memory\":\"N1\"} if you need the wake trace and triggering Fact context. If the truncated wake made concrete progress but needs a few more rounds, call core_emit_intervention_decision with {\"intervention_request\":\"N1\",\"decision\":\"continue\",\"grant_rounds\":4,\"rationale\":\"<short evidence-based reason>\",\"idempotency_key\":\"demo-wake_supervisor-continue-N1\"}. If the larger goal already has enough downstream evidence or the wake is likely terminal-but-truncated, call core_emit_intervention_decision with {\"intervention_request\":\"N1\",\"decision\":\"accept_terminal\",\"rationale\":\"<short evidence-based reason>\",\"idempotency_key\":\"demo-wake_supervisor-accept-N1\"}. If the wake appears to be looping, blocked, or making no useful progress, call core_emit_intervention_decision with decision \"stop\" and idempotency_key \"demo-wake_supervisor-stop-N1\". Then stop.".into(),
+        DemoInterventionMode::ForceContinue => "You are the Wake Supervisor for the forced continuation demo. Triggering Memory N1 is a core/intervention-requested-v1 Fact for a useful max-round truncation. Always call core_emit_intervention_decision exactly once with {\"intervention_request\":\"N1\",\"decision\":\"continue\",\"grant_rounds\":4,\"rationale\":\"Forced demo: validate persisted graph continuation from the intervention decision event.\",\"idempotency_key\":\"demo-forced-wake-supervisor-continue-N1\"}. Then stop.".into(),
+    }
 }
 
 pub(super) fn deterministic_checks(

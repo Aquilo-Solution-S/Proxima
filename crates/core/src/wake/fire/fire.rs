@@ -122,29 +122,30 @@ pub async fn fire_wake_entry(
     .await;
 
     let started_at = time::OffsetDateTime::now_utc();
-    let context_params = match build_context_params(engine, &input, &wake_context).await {
-        Ok(params) => params,
-        Err(err) => {
-            let timing = TraceTiming {
-                started_at,
-                finished_at: time::OffsetDateTime::now_utc(),
-            };
-            finalize_failed_started_wake(
-                engine,
-                &input,
-                &wake_context,
-                &resolved,
-                StartedWakeFailure {
-                    invocation_id: invocation_id_for_dispatch,
-                    wake_token,
-                    timing,
-                    failure_reason: format!("context_param_serialization:{err}"),
-                },
-            )
-            .await?;
-            return Ok(true);
-        }
-    };
+    let context_params =
+        match build_context_params(engine, &input, &wake_context, &seeded_handles).await {
+            Ok(params) => params,
+            Err(err) => {
+                let timing = TraceTiming {
+                    started_at,
+                    finished_at: time::OffsetDateTime::now_utc(),
+                };
+                finalize_failed_started_wake(
+                    engine,
+                    &input,
+                    &wake_context,
+                    &resolved,
+                    StartedWakeFailure {
+                        invocation_id: invocation_id_for_dispatch,
+                        wake_token,
+                        timing,
+                        failure_reason: format!("context_param_serialization:{err}"),
+                    },
+                )
+                .await?;
+                return Ok(true);
+            }
+        };
 
     if matches!(
         input.wake_entry.execution_mode,
@@ -498,7 +499,29 @@ async fn mint_wake_token(
     // any other code touches the table. Capture the seeded struct so
     // the wake bootstrap can render the round-1 system-prompt preamble
     // from the assigned handle strings.
-    let seeded = crate::wake::handles::pre_seed_wake_handles(&token_ctx);
+    let mut seeded = crate::wake::handles::pre_seed_wake_handles(&token_ctx);
+    if let Some(continuation) = input.continuation.as_ref() {
+        seeded.continuation_decision = Some(
+            token_ctx
+                .handles
+                .assign_memory(continuation.intervention_decision_memory_id),
+        );
+        seeded.continuation_request = Some(
+            token_ctx
+                .handles
+                .assign_memory(continuation.intervention_request_memory_id),
+        );
+        seeded.continuation_wake_trace = Some(
+            token_ctx
+                .handles
+                .assign_memory(continuation.wake_trace_memory_id),
+        );
+        seeded.continuation_original_triggering = Some(
+            token_ctx
+                .handles
+                .assign_memory(continuation.original_triggering_memory_id),
+        );
+    }
     let wake_token = engine
         .wake_token_store()
         .mint_with_max_lifetime(token_ctx, invocation_timeout)
@@ -692,27 +715,59 @@ fn format_continuation_preamble(continuation: &super::input::FireWakeContinuatio
         "\nWake continuation context:\n\
          - This invocation continues a prior truncated wake. Use persisted Proxima state as the continuity source; provider chat session state is not available.\n\
          - original_invocation_id: {}\n\
+         - original_change_event_seq: {}\n\
          - intervention_request_memory: {}\n\
          - intervention_decision_memory: {}\n\
          - wake_trace_memory: {}\n\
-         - original_triggering_memory: {}\n\
+         - original_triggering_memory_id: {}\n\
          - granted_rounds: {}\n\
          - supervisor_rationale: {}\n\
          - Inspect the prior trace or lineage before repeating work.\n\n",
         continuation.original_invocation_id,
+        continuation.original_change_event_seq,
         continuation.intervention_request_memory_id.into_inner(),
         continuation.intervention_decision_memory_id.into_inner(),
         continuation.wake_trace_memory_id.into_inner(),
-        continuation.triggering_memory_id.into_inner(),
+        continuation.original_triggering_memory_id.into_inner(),
         continuation.grant_rounds,
         continuation.rationale.trim(),
     )
+}
+
+fn continuation_context_params(
+    seeded: &crate::mcp::PreSeededHandles,
+    continuation: &super::input::FireWakeContinuation,
+) -> serde_json::Value {
+    serde_json::json!({
+        "intervention_decision": {
+            "handle": seeded.continuation_decision.as_ref().map(crate::mcp::Handle::as_str),
+            "memory_id": continuation.intervention_decision_memory_id.into_inner(),
+        },
+        "intervention_request": {
+            "handle": seeded.continuation_request.as_ref().map(crate::mcp::Handle::as_str),
+            "memory_id": continuation.intervention_request_memory_id.into_inner(),
+        },
+        "prior_wake_trace": {
+            "handle": seeded.continuation_wake_trace.as_ref().map(crate::mcp::Handle::as_str),
+            "memory_id": continuation.wake_trace_memory_id.into_inner(),
+        },
+        "original_triggering_memory": {
+            "handle": seeded.continuation_original_triggering.as_ref().map(crate::mcp::Handle::as_str),
+            "memory_id": continuation.original_triggering_memory_id.into_inner(),
+        },
+        "original_invocation_id": continuation.original_invocation_id,
+        "original_change_event_seq": continuation.original_change_event_seq,
+        "grant_rounds": continuation.grant_rounds,
+        "rationale": continuation.rationale.as_str(),
+        "instruction": "Inspect the prior trace or lineage before repeating work. Provider chat session state is unavailable; persisted graph state is the continuity source.",
+    })
 }
 
 async fn build_context_params(
     engine: &Engine,
     input: &FireWakeEntryInput,
     wake_context: &WakeContext,
+    seeded_handles: &crate::mcp::PreSeededHandles,
 ) -> Result<HashMap<String, serde_json::Value>, ProtocolError> {
     let mut context_params: HashMap<String, serde_json::Value> = HashMap::new();
     context_params.insert(
@@ -743,6 +798,12 @@ async fn build_context_params(
         "coordination_context".into(),
         context_value(&coordination_context)?,
     );
+    if let Some(continuation) = input.continuation.as_ref() {
+        context_params.insert(
+            "continuation".into(),
+            continuation_context_params(seeded_handles, continuation),
+        );
+    }
     Ok(context_params)
 }
 
@@ -882,8 +943,9 @@ mod tests {
             intervention_decision_memory_id: MemoryId::new(Uuid::now_v7()),
             intervention_request_memory_id: MemoryId::new(Uuid::now_v7()),
             original_invocation_id: Uuid::now_v7(),
+            original_change_event_seq: Uuid::now_v7(),
             wake_trace_memory_id: MemoryId::new(Uuid::now_v7()),
-            triggering_memory_id: MemoryId::new(Uuid::now_v7()),
+            original_triggering_memory_id: MemoryId::new(Uuid::now_v7()),
             grant_rounds: 3,
             rationale: "made progress".into(),
         };
@@ -893,9 +955,10 @@ mod tests {
         assert!(preamble.contains("persisted Proxima state"));
         assert!(preamble.contains("provider chat session state is not available"));
         assert!(preamble.contains("original_invocation_id"));
+        assert!(preamble.contains("original_change_event_seq"));
         assert!(preamble.contains("wake_trace_memory"));
         assert!(preamble.contains("intervention_decision_memory"));
-        assert!(preamble.contains("original_triggering_memory"));
+        assert!(preamble.contains("original_triggering_memory_id"));
         assert!(preamble.contains("granted_rounds: 3"));
         assert!(preamble.contains("supervisor_rationale: made progress"));
     }

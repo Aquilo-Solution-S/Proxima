@@ -144,6 +144,20 @@ pub struct InterventionWakeRequest {
     pub intervention_personality_instance_id: PersonalityInstanceId,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InterventionContinueCandidate {
+    pub intervention_decision_memory_id: MemoryId,
+    pub intervention_request_memory_id: MemoryId,
+    pub original_invocation_id: Uuid,
+    pub original_wake_entry_id: Uuid,
+    pub original_personality_instance_id: PersonalityInstanceId,
+    pub original_change_event_seq: Uuid,
+    pub original_triggering_memory_id: MemoryId,
+    pub wake_trace_memory_id: MemoryId,
+    pub grant_rounds: u16,
+    pub rationale: String,
+}
+
 pub fn intervention_request_event_draft(
     owner: Owner,
     payload: &[u8],

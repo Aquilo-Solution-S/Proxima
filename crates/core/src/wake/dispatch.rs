@@ -23,6 +23,7 @@ use crate::MemoryId;
 use crate::Owner;
 use crate::engine::Engine;
 use crate::error::ProtocolError;
+use crate::intervention::{INTERVENTION_DECISION_SCHEMA_ID, InterventionContinueCandidate};
 use crate::outbox::{ChangeEventKind, EntityRef};
 use crate::personality::{
     ChangeEventForWake, MAX_WAKE_CHAIN_DEPTH, PersonalityInstanceId, ReplayWakeEventsOutcome,
@@ -31,6 +32,7 @@ use crate::personality::{
     WakeExecutionMode, WakeInvocationFinalize, WakeInvocationStatus,
 };
 use crate::wake::context::assemble_wake_context;
+use crate::wake::fire::input::FireWakeContinuation;
 use crate::wake::fire::{FireWakeEntryInput, fire_wake_entry};
 
 /// Per-tick scan limit on change events fetched per (owner, personality).
@@ -91,6 +93,13 @@ pub async fn dispatch_tick(engine: &Engine) -> Result<usize, ProtocolError> {
         for event in &events {
             if event.event.seq > highest_seq {
                 highest_seq = event.event.seq;
+            }
+            if let Some(decision_memory_id) = intervention_decision_memory(event)
+                && let Some(candidate) =
+                    load_continue_candidate(engine, &group, decision_memory_id).await?
+                && fire_continuation_candidate(engine, &group, event, candidate).await?
+            {
+                fired += 1;
             }
             for entry in &group.entries {
                 match prepare_wake_candidate(engine, &group, entry, event).await? {
@@ -196,6 +205,21 @@ pub async fn replay_missed_wakes(
     'events: for event in &events {
         outcome.considered_events += 1;
         outcome.next_after_seq = Some(event.event.seq);
+        if let Some(decision_memory_id) = intervention_decision_memory(event)
+            && let Some(candidate) =
+                load_continue_candidate(engine, &group, decision_memory_id).await?
+        {
+            outcome.eligible_events += 1;
+            if fire_continuation_candidate(engine, &group, event, candidate).await? {
+                outcome.started_invocations += 1;
+                if outcome.started_invocations >= u32::from(max_invocations) {
+                    hit_invocation_cap = true;
+                    break 'events;
+                }
+            } else {
+                outcome.already_recorded += 1;
+            }
+        }
         for entry in &group.entries {
             match prepare_wake_candidate(engine, &group, entry, event).await? {
                 WakeCandidate::Fire {
@@ -401,6 +425,87 @@ async fn fire_candidate(
         change_event_seq: event.event.seq,
         triggering_memory_id: triggering_memory_id.into_inner(),
         continuation: None,
+    };
+
+    match fire_wake_entry(engine, adapter.as_ref(), input).await {
+        Ok(true) => Ok(true),
+        Ok(false) => Ok(false),
+        Err(e) if is_idempotency_conflict(&e) => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
+fn intervention_decision_memory(event: &ChangeEventForWake) -> Option<MemoryId> {
+    match &event.event.kind {
+        ChangeEventKind::EntityAppend {
+            entity: EntityRef::Memory(memory_id),
+            schema_id,
+            ..
+        } if schema_id.as_str() == INTERVENTION_DECISION_SCHEMA_ID => Some(*memory_id),
+        _ => None,
+    }
+}
+
+async fn load_continue_candidate(
+    engine: &Engine,
+    group: &PersonalityGroup,
+    decision_memory_id: MemoryId,
+) -> Result<Option<InterventionContinueCandidate>, ProtocolError> {
+    let candidate = engine
+        .storage()
+        .load_intervention_continue_candidate(&group.owner, decision_memory_id)
+        .await
+        .map_err(|e| {
+            ProtocolError::internal(format!("load_intervention_continue_candidate: {e}"))
+        })?;
+    Ok(candidate.filter(|candidate| {
+        candidate.original_personality_instance_id == group.personality_instance_id
+            && group
+                .entries
+                .iter()
+                .any(|entry| entry.wake_entry_id == candidate.original_wake_entry_id)
+    }))
+}
+
+async fn fire_continuation_candidate(
+    engine: &Engine,
+    group: &PersonalityGroup,
+    event: &ChangeEventForWake,
+    candidate: InterventionContinueCandidate,
+) -> Result<bool, ProtocolError> {
+    let Some(entry) = group
+        .entries
+        .iter()
+        .find(|entry| entry.wake_entry_id == candidate.original_wake_entry_id)
+    else {
+        return Ok(false);
+    };
+    let mut wake_entry = wake_entry_draft_to_row(entry);
+    wake_entry.max_rounds = candidate.grant_rounds;
+    wake_entry.intervention_policy = None;
+
+    let adapter = engine.target_adapter().ok_or_else(|| {
+        ProtocolError::internal(
+            "dispatcher fired before target adapter was installed — \
+             call Engine::start (or with_target_adapter) first",
+        )
+    })?;
+    let input = FireWakeEntryInput {
+        owner: group.owner.clone(),
+        personality_instance_id: group.personality_instance_id,
+        wake_entry,
+        change_event_seq: event.event.seq,
+        triggering_memory_id: candidate.intervention_decision_memory_id.into_inner(),
+        continuation: Some(FireWakeContinuation {
+            intervention_decision_memory_id: candidate.intervention_decision_memory_id,
+            intervention_request_memory_id: candidate.intervention_request_memory_id,
+            original_invocation_id: candidate.original_invocation_id,
+            original_change_event_seq: candidate.original_change_event_seq,
+            wake_trace_memory_id: candidate.wake_trace_memory_id,
+            original_triggering_memory_id: candidate.original_triggering_memory_id,
+            grant_rounds: candidate.grant_rounds,
+            rationale: candidate.rationale,
+        }),
     };
 
     match fire_wake_entry(engine, adapter.as_ref(), input).await {

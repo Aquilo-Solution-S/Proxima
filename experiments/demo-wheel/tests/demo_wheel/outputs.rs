@@ -150,7 +150,9 @@ impl DemoWorld {
         }
 
         for row in sqlx::query(
-            "SELECT i.personality_instance_id, i.wake_entry_id, i.change_event_seq, i.status::text AS status
+            "SELECT i.personality_instance_id, i.wake_entry_id, i.change_event_seq,
+                    i.continuation_intervention_decision_memory_id,
+                    i.status::text AS status
              FROM proxima_core.personality_wake_invocations i
              ORDER BY i.started_at ASC",
         )
@@ -184,10 +186,21 @@ impl DemoWorld {
             edges.push(FlowEdge {
                 id: format!("wake-role:{personality_id}:{change_event_seq}"),
                 source: entity_node_id("personality", personality_id),
-                target: wake_node_id,
+                target: wake_node_id.clone(),
                 relation: "wake_executed_by".into(),
                 persisted_edge_id: None,
             });
+            if let Some(decision_memory_id) =
+                row.try_get::<Option<Uuid>, _>("continuation_intervention_decision_memory_id")?
+            {
+                edges.push(FlowEdge {
+                    id: format!("wake-continuation:{decision_memory_id}:{change_event_seq}"),
+                    source: entity_node_id("memory", decision_memory_id),
+                    target: wake_node_id,
+                    relation: "continuation_wake".into(),
+                    persisted_edge_id: None,
+                });
+            }
         }
 
         let mut events = Vec::new();

@@ -180,7 +180,7 @@ impl DemoWorld {
             vec!["core/emit_intervention_decision".into()],
             self.cfg.role_max_rounds.wake_supervisor,
         )?;
-        wake.instructions = wake_supervisor_instruction();
+        wake.instructions = wake_supervisor_instruction(self.cfg.intervention_mode);
         self.engine
             .set_wake_entries(
                 &Credentials::None,

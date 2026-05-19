@@ -3,7 +3,10 @@ use proxima_core::personality::{
     WakeInvocationLogDraft, WakeInvocationLogRow, WakeInvocationRow, WakeInvocationStart,
     WakeInvocationStatus,
 };
-use proxima_core::{Owner, OwnerPrincipalKind, StorageError};
+use proxima_core::{
+    CORE_DERIVED_FROM_RELATION, InterventionContinueCandidate, MemoryId, Owner, OwnerPrincipalKind,
+    StorageError,
+};
 use sqlx::PgPool;
 use sqlx::Row;
 
@@ -19,12 +22,12 @@ pub async fn advance_wake_cursor(
 ) -> Result<(), StorageError> {
     let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(owner);
     sqlx::query!(
-        r#"UPDATE proxima_core.personality_wake_cursor
+        r"UPDATE proxima_core.personality_wake_cursor
          SET last_considered_seq = GREATEST(last_considered_seq, $1), updated_at = now()
          WHERE owner_principal_kind = $2
            AND owner_principal_id = $3
            AND owner_org_id = $4
-           AND personality_instance_id = $5"#,
+           AND personality_instance_id = $5",
         last_considered_seq,
         owner_kind as OwnerPrincipalKind,
         owner_principal_id,
@@ -86,7 +89,7 @@ pub async fn start_wake_invocation(
          DO NOTHING"
     };
     let sql = format!(
-        r#"INSERT INTO proxima_core.personality_wake_invocations
+        r"INSERT INTO proxima_core.personality_wake_invocations
             (owner_principal_kind, owner_principal_id, owner_org_id,
              personality_instance_id, wake_entry_id, change_event_seq, invocation_id,
              status, started_at, wake_token,
@@ -94,7 +97,7 @@ pub async fn start_wake_invocation(
              continuation_original_invocation_id)
          VALUES ($1, $2, $3, $4, $5, $6, $7, 'running', now(), $8, $9, $10, $11)
          {conflict_clause}
-         RETURNING invocation_id"#
+         RETURNING invocation_id"
     );
     let inserted = sqlx::query_scalar::<_, uuid::Uuid>(&sql)
         .bind(owner_kind as OwnerPrincipalKind)
@@ -155,7 +158,7 @@ pub async fn finalize_wake_invocation(
     let owner = &finalize.owner;
     let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(owner);
     sqlx::query(
-        r#"UPDATE proxima_core.personality_wake_invocations
+        r"UPDATE proxima_core.personality_wake_invocations
          SET status = $1,
              finished_at = now(),
              turn_count = COALESCE($2, turn_count),
@@ -173,7 +176,7 @@ pub async fn finalize_wake_invocation(
            AND personality_instance_id = $14
            AND wake_entry_id = $15
            AND change_event_seq = $16
-           AND ($17::uuid = '00000000-0000-0000-0000-000000000000'::uuid OR invocation_id = $17)"#,
+           AND ($17::uuid = '00000000-0000-0000-0000-000000000000'::uuid OR invocation_id = $17)",
     )
     .bind(finalize.status)
     .bind(finalize.turn_count.map(i32::from))
@@ -235,7 +238,7 @@ pub async fn list_wake_invocations(
     let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(&req.owner);
     let limit = i64::from(req.limit.clamp(1, 100));
     let rows = sqlx::query(
-        r#"SELECT i.owner_principal_kind,
+        r"SELECT i.owner_principal_kind,
                   i.owner_principal_id, i.owner_org_id,
                   i.invocation_id, i.personality_instance_id, i.wake_entry_id,
                   e.label AS wake_entry_label,
@@ -261,7 +264,7 @@ pub async fn list_wake_invocations(
                AND i.personality_instance_id = $4
                AND ($5::uuid IS NULL OR i.wake_entry_id = $5)
              ORDER BY i.started_at DESC
-             LIMIT $6"#,
+             LIMIT $6",
     )
     .bind(owner_kind as OwnerPrincipalKind)
     .bind(owner_principal_id)
@@ -318,12 +321,12 @@ async fn fetch_invocation_logs(
     invocation_id: uuid::Uuid,
 ) -> Result<Vec<WakeInvocationLogRow>, StorageError> {
     let rows = sqlx::query(
-        r#"SELECT log_seq, at, phase, tool_id,
+        r"SELECT log_seq, at, phase, tool_id,
                   status,
                   duration_ms, message_tail
              FROM proxima_core.personality_wake_invocation_logs
              WHERE invocation_id = $1
-             ORDER BY log_seq ASC"#,
+             ORDER BY log_seq ASC",
     )
     .bind(invocation_id)
     .fetch_all(pool)
@@ -343,4 +346,74 @@ async fn fetch_invocation_logs(
             message_tail: log.get("message_tail"),
         })
         .collect())
+}
+
+pub async fn load_intervention_continue_candidate(
+    pool: &PgPool,
+    owner: &Owner,
+    decision_memory_id: MemoryId,
+) -> Result<Option<InterventionContinueCandidate>, StorageError> {
+    let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(owner);
+    let row = sqlx::query(
+        r"SELECT d.memory_id AS decision_memory_id,
+                  d.intervention_request_memory_id,
+                  r.original_invocation_id,
+                  r.original_wake_entry_id,
+                  r.original_personality_instance_id,
+                  r.original_change_event_seq,
+                  r.triggering_memory_id,
+                  r.wake_trace_memory_id,
+                  d.grant_rounds,
+                  d.rationale
+             FROM proxima_core.intervention_decision_v1 d
+             JOIN proxima_core.memories dm
+               ON dm.memory_id = d.memory_id
+             JOIN proxima_core.intervention_requested_v1 r
+               ON r.memory_id = d.intervention_request_memory_id
+             JOIN proxima_core.edges e
+               ON e.relation = $5
+              AND e.source_memory_id = d.memory_id
+              AND e.target_memory_id = r.memory_id
+              AND e.owner_principal_kind = dm.owner_principal_kind
+              AND e.owner_principal_id = dm.owner_principal_id
+              AND e.owner_org_id = dm.owner_org_id
+            WHERE d.memory_id = $1
+              AND d.decision = 'continue'
+              AND d.grant_rounds IS NOT NULL
+              AND dm.owner_principal_kind = $2
+              AND dm.owner_principal_id = $3
+              AND dm.owner_org_id = $4",
+    )
+    .bind(decision_memory_id.into_inner())
+    .bind(owner_kind as OwnerPrincipalKind)
+    .bind(owner_principal_id)
+    .bind(owner_org_id)
+    .bind(CORE_DERIVED_FROM_RELATION)
+    .fetch_optional(pool)
+    .await
+    .map_err(map_err)?;
+
+    row.map(|row| {
+        let grant_rounds = row
+            .get::<i32, _>("grant_rounds")
+            .try_into()
+            .map_err(|_| StorageError::Internal("grant_rounds outside u16 range".into()))?;
+        Ok(InterventionContinueCandidate {
+            intervention_decision_memory_id: MemoryId::new(row.get("decision_memory_id")),
+            intervention_request_memory_id: MemoryId::new(
+                row.get("intervention_request_memory_id"),
+            ),
+            original_invocation_id: row.get("original_invocation_id"),
+            original_wake_entry_id: row.get("original_wake_entry_id"),
+            original_personality_instance_id: PersonalityInstanceId::new(
+                row.get("original_personality_instance_id"),
+            ),
+            original_change_event_seq: row.get("original_change_event_seq"),
+            original_triggering_memory_id: MemoryId::new(row.get("triggering_memory_id")),
+            wake_trace_memory_id: MemoryId::new(row.get("wake_trace_memory_id")),
+            grant_rounds,
+            rationale: row.get("rationale"),
+        })
+    })
+    .transpose()
 }

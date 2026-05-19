@@ -16,12 +16,12 @@ use proxima_core::personality::{
 };
 use proxima_core::storage::Storage;
 use proxima_core::{
-    AbstractionPayload, BindInferenceTierRequest, CORE_INSPIRES_RELATION, Credentials,
-    EdgeAuthorshipKind, Engine, EntityKind, FactPayload, FlavorRegistry, GoalId,
-    InferenceTargetConfig, InterventionDecisionV1, InterventionPolicy, InterventionRequestedV1,
-    MemoryId, MistralChatConfig, ModelTier, OrgId, Owner, PersonalityInstanceId, Principal,
-    RegisterInferenceTargetRequest, UserId, WakeEntryAuthoredBy, WakeEntryGoalScope,
-    WakeEntryTriggerKind, WakeExecutionMode,
+    AbstractionPayload, BindInferenceTierRequest, CORE_DERIVED_FROM_RELATION,
+    CORE_INSPIRES_RELATION, Credentials, EdgeAuthorshipKind, Engine, EntityKind, FactPayload,
+    FlavorRegistry, GoalId, InferenceTargetConfig, InterventionDecisionV1, InterventionPolicy,
+    InterventionRequestedV1, MemoryId, MistralChatConfig, ModelTier, OrgId, Owner,
+    PersonalityInstanceId, Principal, RegisterInferenceTargetRequest, UserId, WakeEntryAuthoredBy,
+    WakeEntryGoalScope, WakeEntryTriggerKind, WakeExecutionMode,
 };
 use proxima_flavor_intent::VisionBriefV1;
 use proxima_harness::HarnessLoop;
@@ -63,6 +63,13 @@ enum DemoChallenge {
     SignalMatch,
     TodoCli,
     KanbanBoard,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum DemoInterventionMode {
+    Normal,
+    ForceContinue,
 }
 
 impl DemoChallenge {
@@ -207,6 +214,7 @@ impl DemoChallenge {
 
 #[derive(Debug, Clone)]
 struct DemoConfig {
+    intervention_mode: DemoInterventionMode,
     challenge: DemoChallenge,
     repo_path: PathBuf,
     run_dir: PathBuf,
@@ -229,6 +237,7 @@ struct RoleMaxRounds {
 
 #[derive(Debug, Serialize)]
 struct Metrics {
+    intervention_mode: DemoInterventionMode,
     run_dir: String,
     repo_path: String,
     db_name: String,
@@ -251,6 +260,8 @@ struct Metrics {
     final_changed_files: Vec<String>,
     deterministic_checks: BTreeMap<String, bool>,
     deterministic_pass: bool,
+    forced_continuation_checks: BTreeMap<String, bool>,
+    forced_continuation_pass: bool,
     functional_pass: bool,
     flow_graph_json: String,
     flow_graph_mermaid: String,
@@ -436,7 +447,17 @@ struct DemoWorld {
 }
 
 pub async fn run_from_env() -> Result<(), Box<dyn std::error::Error>> {
-    let Some(cfg) = DemoConfig::from_env()? else {
+    run_with_mode_from_env(DemoInterventionMode::Normal).await
+}
+
+pub async fn run_forced_continue_from_env() -> Result<(), Box<dyn std::error::Error>> {
+    run_with_mode_from_env(DemoInterventionMode::ForceContinue).await
+}
+
+async fn run_with_mode_from_env(
+    mode: DemoInterventionMode,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let Some(cfg) = DemoConfig::from_env(mode)? else {
         return Ok(());
     };
     let started = Instant::now();
@@ -451,7 +472,9 @@ pub async fn run_from_env() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 impl DemoConfig {
-    fn from_env() -> Result<Option<Self>, Box<dyn std::error::Error>> {
+    fn from_env(
+        intervention_mode: DemoInterventionMode,
+    ) -> Result<Option<Self>, Box<dyn std::error::Error>> {
         if std::env::var("PROXIMA_LIVE_MISTRAL").ok().as_deref() != Some("1") {
             eprintln!("skipping demo wheel: set PROXIMA_LIVE_MISTRAL=1");
             return Ok(None);
@@ -477,6 +500,7 @@ impl DemoConfig {
             .trim_end_matches("/v1")
             .to_string();
         Ok(Some(Self {
+            intervention_mode,
             challenge,
             repo_path,
             run_dir,
@@ -484,15 +508,15 @@ impl DemoConfig {
             api_key_env: "MISTRAL_API_KEY".into(),
             max_ticks: env_u32("PROXIMA_DEMO_MAX_TICKS", 24)?,
             max_correction_loops: env_u32("PROXIMA_DEMO_MAX_CORRECTION_LOOPS", 2)?,
-            role_max_rounds: RoleMaxRounds::from_env()?,
+            role_max_rounds: RoleMaxRounds::from_env(intervention_mode)?,
         }))
     }
 }
 
 impl RoleMaxRounds {
-    fn from_env() -> Result<Self, Box<dyn std::error::Error>> {
+    fn from_env(mode: DemoInterventionMode) -> Result<Self, Box<dyn std::error::Error>> {
         let fallback = env_optional_u16("PROXIMA_DEMO_WAKE_MAX_ROUNDS")?;
-        Ok(Self {
+        let mut rounds = Self {
             visionary: env_u16_with_fallback("PROXIMA_DEMO_VISIONARY_MAX_ROUNDS", 5, fallback)?,
             planner: env_u16_with_fallback("PROXIMA_DEMO_PLANNER_MAX_ROUNDS", 8, fallback)?,
             worker: env_u16_with_fallback("PROXIMA_DEMO_WORKER_MAX_ROUNDS", 14, fallback)?,
@@ -507,6 +531,11 @@ impl RoleMaxRounds {
                 3,
                 fallback,
             )?,
-        })
+        };
+        if mode == DemoInterventionMode::ForceContinue {
+            rounds.visionary = 1;
+            rounds.wake_supervisor = rounds.wake_supervisor.max(3);
+        }
+        Ok(rounds)
     }
 }

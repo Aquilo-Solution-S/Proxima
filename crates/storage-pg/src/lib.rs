@@ -209,6 +209,19 @@ impl Storage for PgStorage {
         .await
     }
 
+    async fn load_intervention_continue_candidate(
+        &self,
+        owner: &Owner,
+        decision_memory_id: MemoryId,
+    ) -> Result<Option<proxima_core::InterventionContinueCandidate>, StorageError> {
+        verbs::consolidate::load_intervention_continue_candidate(
+            &self.pool,
+            owner,
+            decision_memory_id,
+        )
+        .await
+    }
+
     async fn write_goal_atomic(&self, draft: &GoalDraft) -> Result<GoalWriteOutcome, StorageError> {
         verbs::goal_write::write_goal_atomic(&self.pool, draft).await
     }
