@@ -50,14 +50,15 @@ pub use context::PersonalityToolContext;
 
 // Re-export from invocation submodule
 pub use invocation::{
-    WakeInvocationFinalize, WakeInvocationLogDraft, WakeInvocationLogRow, WakeInvocationRow,
-    WakeInvocationStart,
+    WakeInvocationContinuation, WakeInvocationFinalize, WakeInvocationLogDraft,
+    WakeInvocationLogRow, WakeInvocationRow, WakeInvocationStart,
 };
 
 // Re-export from requests submodule
 pub use requests::{
-    InstantiatePersonalityRequest, InstantiatePersonalityResponse, ListWakeInvocationsRequest,
-    ReplayWakeEventsOutcome, ReplayWakeEventsRequest, SetWakeEntriesRequest,
+    InstantiatePersonalityRequest, InstantiatePersonalityResponse, ListReadScopeRequest,
+    ListReadScopeResponse, ListWakeInvocationsRequest, ReplayWakeEventsOutcome,
+    ReplayWakeEventsRequest, SetReadScopeRequest, SetReadScopeResponse, SetWakeEntriesRequest,
     SetWakeEntriesResponse, TombstonePersonalityRequest, TombstonePersonalityResponse,
 };
 

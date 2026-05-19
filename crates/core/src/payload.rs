@@ -39,6 +39,9 @@ pub trait FactPayload: serde::Serialize + serde::de::DeserializeOwned + 'static 
     fn tombstone() -> Option<FactTombstone> {
         None
     }
+    fn json_schema() -> Option<serde_json::Value> {
+        None
+    }
     fn schema_id() -> SchemaId {
         SchemaId::new(Self::SCHEMA_ID.to_string())
     }
@@ -50,6 +53,9 @@ pub trait AbstractionPayload: serde::Serialize + serde::de::DeserializeOwned + '
     /// See `FactPayload::SPECIAL_CATEGORY`.
     const SPECIAL_CATEGORY: bool = false;
     fn sidecar_table() -> &'static str;
+    fn json_schema() -> Option<serde_json::Value> {
+        None
+    }
     fn schema_id() -> SchemaId {
         SchemaId::new(Self::SCHEMA_ID.to_string())
     }
@@ -61,6 +67,9 @@ pub trait PerspectivePayload: serde::Serialize + serde::de::DeserializeOwned + '
     /// See `FactPayload::SPECIAL_CATEGORY`.
     const SPECIAL_CATEGORY: bool = false;
     fn sidecar_table() -> &'static str;
+    fn json_schema() -> Option<serde_json::Value> {
+        None
+    }
     fn schema_id() -> SchemaId {
         SchemaId::new(Self::SCHEMA_ID.to_string())
     }
@@ -76,6 +85,9 @@ pub trait GoalPayload: serde::Serialize + serde::de::DeserializeOwned + 'static 
     /// See `FactPayload::SPECIAL_CATEGORY`.
     const SPECIAL_CATEGORY: bool = false;
     fn sidecar_table() -> &'static str;
+    fn json_schema() -> Option<serde_json::Value> {
+        None
+    }
     fn schema_id() -> SchemaId {
         SchemaId::new(Self::SCHEMA_ID.to_string())
     }
@@ -101,6 +113,9 @@ pub trait EdgePayload: serde::Serialize + serde::de::DeserializeOwned + 'static 
     /// `"proxima_code.code_calls_v1"`). The table's primary key is
     /// `edge_id uuid` referencing `proxima_core.edges(edge_id)`.
     fn sidecar_table() -> &'static str;
+    fn json_schema() -> Option<serde_json::Value> {
+        None
+    }
     fn schema_id() -> SchemaId {
         SchemaId::new(Self::SCHEMA_ID.to_string())
     }
@@ -117,6 +132,9 @@ pub trait CitedObjectPayload: serde::Serialize + serde::de::DeserializeOwned + '
     /// See `FactPayload::SPECIAL_CATEGORY`.
     const SPECIAL_CATEGORY: bool = false;
     fn sidecar_table() -> &'static str;
+    fn json_schema() -> Option<serde_json::Value> {
+        None
+    }
     fn schema_id() -> SchemaId {
         SchemaId::new(Self::SCHEMA_ID.to_string())
     }
@@ -137,6 +155,9 @@ pub trait CitationMappingPayload: serde::Serialize + serde::de::DeserializeOwned
     /// See `FactPayload::SPECIAL_CATEGORY`.
     const SPECIAL_CATEGORY: bool = false;
     fn sidecar_table() -> &'static str;
+    fn json_schema() -> Option<serde_json::Value> {
+        None
+    }
     fn schema_id() -> SchemaId {
         SchemaId::new(Self::SCHEMA_ID.to_string())
     }

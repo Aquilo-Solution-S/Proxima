@@ -62,6 +62,7 @@ async fn walk_memory_lineage_follows_provenance_and_supersession_by_owner()
             direction: MemoryLineageDirection::Ancestors,
             depth: 3,
             limit: 10,
+            reader_personality_instance_id: None,
         })
         .await?;
     assert_eq!(ancestors.nodes.len(), 3);
@@ -86,6 +87,7 @@ async fn walk_memory_lineage_follows_provenance_and_supersession_by_owner()
             direction: MemoryLineageDirection::Descendants,
             depth: 3,
             limit: 10,
+            reader_personality_instance_id: None,
         })
         .await?;
     assert_eq!(descendants.nodes.len(), 3);

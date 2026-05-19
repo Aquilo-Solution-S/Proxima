@@ -1,7 +1,6 @@
 //! Proxima engine core.
 pub mod approval;
 pub mod auth;
-pub mod budget;
 pub mod canonical_json;
 pub mod citations;
 pub mod cursor;
@@ -12,6 +11,7 @@ pub mod harness;
 pub mod ids;
 pub mod inference;
 pub mod inquiry;
+pub mod intervention;
 pub mod llm;
 pub mod mcp;
 pub mod models;
@@ -27,7 +27,6 @@ pub mod wake;
 
 pub use approval::*;
 pub use auth::*;
-pub use budget::*;
 pub use canonical_json::canonical_json;
 pub use citations::*;
 pub use cursor::*;
@@ -43,6 +42,7 @@ pub use inference::{
     RemoveInferenceTargetResponse,
 };
 pub use inquiry::*;
+pub use intervention::*;
 pub use llm::*;
 pub use mcp::{
     Handle, HandleTable, McpAuthorContext, McpCallFn, McpTool, McpToolCtx, McpToolDescriptor,

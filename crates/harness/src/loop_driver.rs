@@ -315,6 +315,7 @@ async fn run_loop(
                         "call_id": call.call_id,
                         "status": status,
                         "duration_ms": duration,
+                        "content": content,
                     }));
                     resolved
                         .conversation

@@ -30,8 +30,7 @@ pub struct CodeMergeWorkspaceRunOutput {
 
 impl McpTool for CodeMergeWorkspaceRunTool {
     const NAME: &'static str = "proxima-code/code_merge_workspace_run";
-    const DESCRIPTION: &'static str =
-        "Fast-forward the repo target branch to the workspace run's head SHA after an Approved \
+    const DESCRIPTION: &'static str = "Fast-forward the repo target branch to the workspace run's head SHA after an Approved \
          latest workspace-review-v1 and emit a proxima-code/workspace-decision-v1 Fact with \
          decision=Merged. Rejects if the latest review is not Approved or a later workspace \
          decision already exists. Args: `{workspace_run_memory: \"W…\"}`.";
@@ -95,9 +94,9 @@ fn map_workspace_flow_err(err: WorkspaceFlowError) -> McpToolError {
         WorkspaceFlowError::RepoNotFound { repo_id } => {
             McpToolError::InvalidInput(format!("repo not found: {repo_id}"))
         }
-        WorkspaceFlowError::MissingTargetBranch { repo_id } => McpToolError::InvalidInput(format!(
-            "repo has no target branch configured: {repo_id}"
-        )),
+        WorkspaceFlowError::MissingTargetBranch { repo_id } => {
+            McpToolError::InvalidInput(format!("repo has no target branch configured: {repo_id}"))
+        }
         WorkspaceFlowError::Git { command, stderr } => McpToolError::Other(format!(
             "git command failed during merge: {command}: {stderr}"
         )),
@@ -108,9 +107,9 @@ fn map_workspace_flow_err(err: WorkspaceFlowError) -> McpToolError {
             McpToolError::Storage(StorageError::Internal(err.to_string()))
         }
         WorkspaceFlowError::Storage(err) => McpToolError::Storage(err),
-        WorkspaceFlowError::InvalidReviewVerdict { value } => {
-            McpToolError::InvalidInput(format!("invalid workspace review verdict in sidecar: {value}"))
-        }
+        WorkspaceFlowError::InvalidReviewVerdict { value } => McpToolError::InvalidInput(format!(
+            "invalid workspace review verdict in sidecar: {value}"
+        )),
         WorkspaceFlowError::InvalidDecision { value } => {
             McpToolError::InvalidInput(format!("invalid workspace decision in sidecar: {value}"))
         }

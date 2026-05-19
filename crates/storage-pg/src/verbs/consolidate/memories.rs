@@ -1,8 +1,11 @@
 use proxima_core::personality::{
-    AbstractionRow, FactRow, MemorySnapshot, PersonalityRef, PersonalityWriteOutcome,
-    PersonalityWriteRequest, SidecarSpec, WakeChainDepth,
+    AbstractionRow, FactRow, MemorySnapshot, PersonalityInstanceId, PersonalityRef,
+    PersonalityWriteOutcome, PersonalityWriteRequest, SidecarSpec, WakeChainDepth,
 };
-use proxima_core::{EdgeAuthorshipKind, EntityKind, MemoryId, Owner, SchemaId, SchemaVersion, StorageError};
+use proxima_core::{
+    EdgeAuthorshipKind, EntityKind, MemoryId, Owner, OwnerPrincipalKind, SchemaId, SchemaVersion,
+    StorageError,
+};
 use sqlx::PgPool;
 
 use super::rows::owner_columns;
@@ -144,11 +147,19 @@ pub async fn load_memory_by_id(
     pool: &PgPool,
     owner: &Owner,
     memory_id: MemoryId,
+    reader_personality_instance_id: Option<PersonalityInstanceId>,
     sidecars: &[SidecarSpec],
 ) -> Result<Option<MemorySnapshot>, StorageError> {
     let (owner_kind, owner_principal_id, _owner_org_id) = owner_columns(owner);
-    let head: Option<(Option<EntityKind>, String, i32, Option<String>, i16)> = sqlx::query_as(
-        "SELECT kind, schema_id, schema_version, text, wake_chain_depth
+    let head: Option<(
+        Option<EntityKind>,
+        String,
+        i32,
+        Option<String>,
+        i16,
+        Option<uuid::Uuid>,
+    )> = sqlx::query_as(
+        "SELECT kind, schema_id, schema_version, text, wake_chain_depth, personality_instance_id
          FROM proxima_core.memories
          WHERE memory_id = $1
            AND owner_principal_kind = $2
@@ -160,13 +171,23 @@ pub async fn load_memory_by_id(
     .fetch_optional(pool)
     .await
     .map_err(map_err)?;
-    let Some((kind, schema_id, schema_version, text, depth)) = head else {
+    let Some((kind, schema_id, schema_version, text, depth, personality_instance_id)) = head else {
         return Ok(None);
     };
-    let kind_str = kind
-        .unwrap_or(EntityKind::Fact)
-        .as_str()
-        .to_string();
+    if !memory_visible_to_reader(
+        pool,
+        owner_kind,
+        owner_principal_id,
+        memory_id,
+        reader_personality_instance_id,
+        kind,
+        personality_instance_id,
+    )
+    .await?
+    {
+        return Ok(None);
+    }
+    let kind_str = kind.unwrap_or(EntityKind::Fact).as_str().to_string();
     let payload_json =
         if let Some(spec) = sidecars.iter().find(|s| s.schema_id.as_str() == schema_id) {
             let sidecar = PgIdent::table(&spec.sidecar_table)?;
@@ -192,6 +213,52 @@ pub async fn load_memory_by_id(
         wake_chain_depth: WakeChainDepth::new(u16::try_from(depth).unwrap_or(0)),
         payload_json,
     }))
+}
+
+async fn memory_visible_to_reader(
+    pool: &PgPool,
+    owner_kind: OwnerPrincipalKind,
+    owner_principal_id: uuid::Uuid,
+    memory_id: MemoryId,
+    reader_personality_instance_id: Option<PersonalityInstanceId>,
+    kind: Option<EntityKind>,
+    memory_personality_instance_id: Option<uuid::Uuid>,
+) -> Result<bool, StorageError> {
+    let Some(reader) = reader_personality_instance_id else {
+        return Ok(true);
+    };
+    if kind.is_none() {
+        return Ok(true);
+    }
+    let Some(readable_id) = memory_personality_instance_id else {
+        return Ok(false);
+    };
+    let reader_id = reader.into_inner();
+    if reader_id == readable_id {
+        return Ok(true);
+    }
+    let allowed: Option<(i32,)> = sqlx::query_as(
+        "SELECT 1
+           FROM proxima_core.read_scope_matrix r
+           JOIN proxima_core.memories m
+             ON m.owner_principal_kind = r.owner_principal_kind
+            AND m.owner_principal_id = r.owner_principal_id
+            AND m.owner_org_id = r.owner_org_id
+            AND m.memory_id = $5
+          WHERE r.owner_principal_kind = $1
+            AND r.owner_principal_id = $2
+            AND r.reader_personality_instance_id = $3
+            AND r.readable_personality_instance_id = $4",
+    )
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(reader_id)
+    .bind(readable_id)
+    .bind(memory_id.into_inner())
+    .fetch_optional(pool)
+    .await
+    .map_err(map_err)?;
+    Ok(allowed.is_some())
 }
 
 pub async fn lookup_prior_personality_head(

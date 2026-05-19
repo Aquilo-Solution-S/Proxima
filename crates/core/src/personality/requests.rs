@@ -39,6 +39,29 @@ pub struct SetWakeEntriesResponse {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListReadScopeRequest {
+    pub owner: Owner,
+    pub reader_personality_instance_id: PersonalityInstanceId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
+pub struct ListReadScopeResponse {
+    pub readable_personality_instance_ids: Vec<PersonalityInstanceId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SetReadScopeRequest {
+    pub owner: Owner,
+    pub reader_personality_instance_id: PersonalityInstanceId,
+    pub readable_personality_instance_ids: Vec<PersonalityInstanceId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
+pub struct SetReadScopeResponse {
+    pub readable_count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TombstonePersonalityRequest {
     pub owner: Owner,
     pub personality_instance_id: PersonalityInstanceId,

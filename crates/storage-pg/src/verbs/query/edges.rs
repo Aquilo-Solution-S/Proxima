@@ -1,5 +1,5 @@
-use proxima_core::{OwnerPrincipalKind, StorageError};
 use proxima_core::verbs::query::{EdgeRow, QueryRequest};
+use proxima_core::{OwnerPrincipalKind, StorageError};
 use sqlx::PgPool;
 
 use super::memories::visible_ids_for;

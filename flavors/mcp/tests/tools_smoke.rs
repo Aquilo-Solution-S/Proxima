@@ -38,9 +38,10 @@ async fn remember_then_search_round_trip() -> Result<(), Box<dyn std::error::Err
     let Some(db_name) = create_db().await? else {
         return Ok(());
     };
-    let pg =
-        proxima_storage_pg::PgStorage::connect(&format!("postgres://proxima:proxima@localhost/{db_name}"))
-            .await?;
+    let pg = proxima_storage_pg::PgStorage::connect(&format!(
+        "postgres://proxima:proxima@localhost/{db_name}"
+    ))
+    .await?;
     pg.run_migrations().await?;
     proxima_mcp_substrate::migrator().run(pg.pool()).await?;
 
@@ -99,9 +100,10 @@ async fn link_rejects_direct_fact_to_fact_interpretation() -> Result<(), Box<dyn
     let Some(db_name) = create_db().await? else {
         return Ok(());
     };
-    let pg =
-        proxima_storage_pg::PgStorage::connect(&format!("postgres://proxima:proxima@localhost/{db_name}"))
-            .await?;
+    let pg = proxima_storage_pg::PgStorage::connect(&format!(
+        "postgres://proxima:proxima@localhost/{db_name}"
+    ))
+    .await?;
     pg.run_migrations().await?;
     proxima_mcp_substrate::migrator().run(pg.pool()).await?;
 
@@ -174,9 +176,10 @@ async fn search_graph_hybrid_returns_embedding_only_match() -> Result<(), Box<dy
     let Some(db_name) = create_db().await? else {
         return Ok(());
     };
-    let pg =
-        proxima_storage_pg::PgStorage::connect(&format!("postgres://proxima:proxima@localhost/{db_name}"))
-            .await?;
+    let pg = proxima_storage_pg::PgStorage::connect(&format!(
+        "postgres://proxima:proxima@localhost/{db_name}"
+    ))
+    .await?;
     pg.run_migrations().await?;
     proxima_mcp_substrate::migrator().run(pg.pool()).await?;
 
@@ -252,9 +255,10 @@ async fn derive_scopes_idempotency_by_owner_and_kind() -> Result<(), Box<dyn std
     let Some(db_name) = create_db().await? else {
         return Ok(());
     };
-    let pg =
-        proxima_storage_pg::PgStorage::connect(&format!("postgres://proxima:proxima@localhost/{db_name}"))
-            .await?;
+    let pg = proxima_storage_pg::PgStorage::connect(&format!(
+        "postgres://proxima:proxima@localhost/{db_name}"
+    ))
+    .await?;
     pg.run_migrations().await?;
     proxima_mcp_substrate::migrator().run(pg.pool()).await?;
 
@@ -350,9 +354,10 @@ async fn derive_rejects_upward_provenance() -> Result<(), Box<dyn std::error::Er
     let Some(db_name) = create_db().await? else {
         return Ok(());
     };
-    let pg =
-        proxima_storage_pg::PgStorage::connect(&format!("postgres://proxima:proxima@localhost/{db_name}"))
-            .await?;
+    let pg = proxima_storage_pg::PgStorage::connect(&format!(
+        "postgres://proxima:proxima@localhost/{db_name}"
+    ))
+    .await?;
     pg.run_migrations().await?;
     proxima_mcp_substrate::migrator().run(pg.pool()).await?;
 

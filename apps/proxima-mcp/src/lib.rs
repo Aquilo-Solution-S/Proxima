@@ -61,10 +61,15 @@ pub async fn run_with_handle(
         .run(pg.pool())
         .await
         .map_err(McpServerError::from)?;
+    proxima_flavor_intent::migrator()
+        .run(pg.pool())
+        .await
+        .map_err(McpServerError::from)?;
 
     let mut registry = FlavorRegistry::new();
     proxima_mcp_substrate::register(&mut registry);
     proxima_flavor_goal::register(&mut registry);
+    proxima_flavor_intent::register(&mut registry);
     let server = McpToolHost::from_pool(
         pg.pool().clone(),
         config.owner.clone(),

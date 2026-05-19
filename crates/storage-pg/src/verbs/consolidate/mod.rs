@@ -7,6 +7,7 @@ mod instances;
 mod invocations;
 mod memories;
 mod parse;
+mod read_scope;
 mod rows;
 mod wake_entries;
 
@@ -21,6 +22,7 @@ pub use memories::{
     append_personality_memories, load_abstraction_heads, load_memory_batch_facts,
     load_memory_by_id, lookup_prior_personality_head,
 };
+pub use read_scope::{list_read_scope, set_read_scope};
 pub use wake_entries::{
     list_active_wake_entries, set_wake_entries, set_wake_entries_within, tombstone_personality,
 };

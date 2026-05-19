@@ -13,9 +13,10 @@ use std::time::Duration;
 
 use proxima_core::personality::{
     AbstractionRow, ActiveGoalSummary, ChangeEventForWake, InstantiatePersonalityRequest,
-    InstantiatePersonalityResponse, ListWakeInvocationsRequest, MemorySnapshot,
-    PersonalityInstanceId, PersonalityInstanceRow, PersonalityRef, PersonalityRuntimeRow,
-    PersonalityWriteOutcome, PersonalityWriteRequest, RootPersonalityPerspectiveRow,
+    InstantiatePersonalityResponse, ListReadScopeRequest, ListReadScopeResponse,
+    ListWakeInvocationsRequest, MemorySnapshot, PersonalityInstanceId, PersonalityInstanceRow,
+    PersonalityRef, PersonalityRuntimeRow, PersonalityWriteOutcome, PersonalityWriteRequest,
+    RootPersonalityPerspectiveRow, SetReadScopeRequest, SetReadScopeResponse,
     SetWakeEntriesRequest, SetWakeEntriesResponse, SidecarSpec, TombstonePersonalityRequest,
     TombstonePersonalityResponse, WakeDispatchEntryRow, WakeInvocationFinalize,
     WakeInvocationLogDraft, WakeInvocationRow, WakeInvocationStart, WakeInvocationStatus,
@@ -197,12 +198,12 @@ impl Storage for PgStorage {
         verbs::persist_wake_trace::persist_wake_trace_atomic(&self.pool, registry, input).await
     }
 
-    async fn persist_budget_review_requested_atomic(
+    async fn persist_intervention_requested_atomic(
         &self,
         registry: &proxima_core::FlavorRegistryFrozen,
-        input: &proxima_core::BudgetReviewPersistInput,
-    ) -> Result<proxima_core::BudgetReviewPersistOutcome, StorageError> {
-        verbs::persist_budget_review::persist_budget_review_requested_atomic(
+        input: &proxima_core::InterventionRequestPersistInput,
+    ) -> Result<proxima_core::InterventionRequestPersistOutcome, StorageError> {
+        verbs::persist_intervention_request::persist_intervention_requested_atomic(
             &self.pool, registry, input,
         )
         .await
@@ -388,6 +389,20 @@ impl Storage for PgStorage {
         .await
     }
 
+    async fn list_read_scope(
+        &self,
+        req: &ListReadScopeRequest,
+    ) -> Result<ListReadScopeResponse, StorageError> {
+        verbs::consolidate::list_read_scope(&self.pool, req).await
+    }
+
+    async fn set_read_scope(
+        &self,
+        req: &SetReadScopeRequest,
+    ) -> Result<SetReadScopeResponse, StorageError> {
+        verbs::consolidate::set_read_scope(&self.pool, req).await
+    }
+
     async fn list_active_wake_entries(&self) -> Result<Vec<WakeDispatchEntryRow>, StorageError> {
         verbs::consolidate::list_active_wake_entries(&self.pool).await
     }
@@ -529,9 +544,17 @@ impl Storage for PgStorage {
         &self,
         owner: &Owner,
         memory_id: proxima_core::MemoryId,
+        reader_personality_instance_id: Option<PersonalityInstanceId>,
         sidecars: &[SidecarSpec],
     ) -> Result<Option<MemorySnapshot>, StorageError> {
-        verbs::consolidate::load_memory_by_id(&self.pool, owner, memory_id, sidecars).await
+        verbs::consolidate::load_memory_by_id(
+            &self.pool,
+            owner,
+            memory_id,
+            reader_personality_instance_id,
+            sidecars,
+        )
+        .await
     }
 
     async fn fetch_personality_runtime(

@@ -30,19 +30,12 @@ pub enum InferenceTargetConfig {
 }
 
 /// Rust mirror of `proxima_core.inference_target_kind`.
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    Serialize,
-    Deserialize,
-    specta::Type,
-    sqlx::Type,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type, sqlx::Type)]
 #[serde(rename_all = "snake_case")]
-#[sqlx(type_name = "proxima_core.inference_target_kind", rename_all = "snake_case")]
+#[sqlx(
+    type_name = "proxima_core.inference_target_kind",
+    rename_all = "snake_case"
+)]
 pub enum InferenceTargetKind {
     MistralChat,
     #[serde(rename = "openai_chat")]

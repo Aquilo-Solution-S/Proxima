@@ -36,6 +36,7 @@ async fn semantic_search_ranks_nearest_vector_and_isolates_owner()
                 query_embedding: Some(vec![1.0, 0.0, 0.0]),
                 embedding_model_id: Some("test-embed".into()),
                 embedding_dim: Some(3),
+                reader_personality_instance_id: None,
             },
             &[],
         )

@@ -160,7 +160,12 @@ async fn lookup_pool(
     .fetch_optional(pool)
     .await
     .map_err(map_err)?;
-    Ok(row.map(|r| into_personality((r.personality_instance_id, r.current_root_perspective_memory_id))))
+    Ok(row.map(|r| {
+        into_personality((
+            r.personality_instance_id,
+            r.current_root_perspective_memory_id,
+        ))
+    }))
 }
 
 async fn lookup_conn(
@@ -189,7 +194,12 @@ async fn lookup_conn(
     .fetch_optional(&mut *conn)
     .await
     .map_err(map_err)?;
-    Ok(row.map(|r| into_personality((r.personality_instance_id, r.current_root_perspective_memory_id))))
+    Ok(row.map(|r| {
+        into_personality((
+            r.personality_instance_id,
+            r.current_root_perspective_memory_id,
+        ))
+    }))
 }
 
 fn into_personality((instance_id, root_id): (Uuid, Uuid)) -> MasterTokenPersonality {

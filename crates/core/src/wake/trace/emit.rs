@@ -3,11 +3,11 @@
 use crate::harness::{
     FinishReason, HarnessError, HarnessOutcome, HarnessOutcomeKind, ProviderTarget,
 };
+use crate::personality::WakeTraceOutcomeKind;
 use crate::verbs::persist_wake_trace::{WakeTracePersistInput, WakeTracePersistOutcome};
 use crate::wake::context::WakeContext;
 use crate::wake::fire::input::FireWakeEntryInput;
 use crate::wake::fire::resolve::ResolvedTarget;
-use crate::personality::WakeTraceOutcomeKind;
 use crate::wake::trace::WakeTracePayload;
 use crate::{Engine, GoalId, MemoryId, SourceBatchId, SourceId, StorageError};
 

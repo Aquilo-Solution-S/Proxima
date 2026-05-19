@@ -1,4 +1,4 @@
-use proxima_core::budget::BudgetExhaustionPolicy;
+use proxima_core::intervention::InterventionPolicy;
 use proxima_core::personality::{
     InstantiatePersonalityRequest, InstantiatePersonalityResponse, PersonalityInstanceId,
     PersonalityInstanceRow, PersonalityStatus, ROOT_PERSONALITY_PERSPECTIVE_SCHEMA_ID,
@@ -54,10 +54,10 @@ pub async fn list_personality_instances(
                 model_tier,
                 inference_target_ref, substrate_tool_palette,
                 workspace_tool_palette, max_rounds,
-                budgeter_personality_instance_id,
-                budget_extension_rounds,
-                budget_hard_cap_rounds,
-                budget_progress_contract,
+                intervention_personality_instance_id,
+                intervention_extension_rounds,
+                intervention_hard_cap_rounds,
+                intervention_progress_contract,
                 disabled_reason
            FROM proxima_core.personality_wake_entries
            WHERE owner_principal_kind = $1
@@ -95,11 +95,11 @@ pub async fn list_personality_instances(
             substrate_tool_palette: row.substrate_tool_palette,
             workspace_tool_palette: row.workspace_tool_palette,
             max_rounds: u16::try_from(row.max_rounds).unwrap_or(1),
-            budget_policy: budget_policy_from_parts(
-                row.budgeter_personality_instance_id,
-                row.budget_extension_rounds,
-                row.budget_hard_cap_rounds,
-                row.budget_progress_contract,
+            intervention_policy: intervention_policy_from_parts(
+                row.intervention_personality_instance_id,
+                row.intervention_extension_rounds,
+                row.intervention_hard_cap_rounds,
+                row.intervention_progress_contract,
             ),
             disabled_reason: row.disabled_reason,
         });
@@ -138,25 +138,26 @@ struct WakeEntryProjectionRow {
     substrate_tool_palette: Vec<String>,
     workspace_tool_palette: Vec<String>,
     max_rounds: i32,
-    budgeter_personality_instance_id: Option<uuid::Uuid>,
-    budget_extension_rounds: i32,
-    budget_hard_cap_rounds: i32,
-    budget_progress_contract: String,
+    intervention_personality_instance_id: Option<uuid::Uuid>,
+    intervention_extension_rounds: i32,
+    intervention_hard_cap_rounds: i32,
+    intervention_progress_contract: String,
     disabled_reason: Option<String>,
 }
 
-fn budget_policy_from_parts(
-    budgeter_personality_instance_id: Option<uuid::Uuid>,
-    budget_extension_rounds: i32,
-    budget_hard_cap_rounds: i32,
-    budget_progress_contract: String,
-) -> Option<BudgetExhaustionPolicy> {
-    budgeter_personality_instance_id.map(|budgeter_personality_instance_id| {
-        BudgetExhaustionPolicy {
-            budgeter_personality_instance_id,
-            budget_extension_rounds: u16::try_from(budget_extension_rounds).unwrap_or(0),
-            budget_hard_cap_rounds: u16::try_from(budget_hard_cap_rounds).unwrap_or(0),
-            budget_progress_contract,
+fn intervention_policy_from_parts(
+    intervention_personality_instance_id: Option<uuid::Uuid>,
+    intervention_extension_rounds: i32,
+    intervention_hard_cap_rounds: i32,
+    intervention_progress_contract: String,
+) -> Option<InterventionPolicy> {
+    intervention_personality_instance_id.map(|intervention_personality_instance_id| {
+        InterventionPolicy {
+            intervention_personality_instance_id,
+            intervention_extension_rounds: u16::try_from(intervention_extension_rounds)
+                .unwrap_or(0),
+            intervention_hard_cap_rounds: u16::try_from(intervention_hard_cap_rounds).unwrap_or(0),
+            intervention_progress_contract,
         }
     })
 }

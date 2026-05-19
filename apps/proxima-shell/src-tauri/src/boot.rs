@@ -47,6 +47,10 @@ pub(crate) fn build_engine() -> (Engine, Arc<PgStorage>) {
             .run(pg.pool())
             .await
             .expect("failed to run proxima-goal flavor migrations");
+        proxima_flavor_intent::migrator()
+            .run(pg.pool())
+            .await
+            .expect("failed to run proxima-intent flavor migrations");
 
         // Single-writer invariant (docs/09 §Embedded engine mode): any
         // queued/running run at boot is a prior-process orphan whose
@@ -70,6 +74,7 @@ pub(crate) fn build_engine() -> (Engine, Arc<PgStorage>) {
         let engine = proxima_code::build_engine_with(pg, Box::new(auth), |registry| {
             proxima_mcp_substrate::register(registry);
             proxima_flavor_goal::register(registry);
+            proxima_flavor_intent::register(registry);
         });
 
         (
@@ -254,10 +259,12 @@ pub(crate) async fn build_mcp_listener(
 
     proxima_mcp_substrate::migrator().run(&pool).await?;
     proxima_flavor_goal::migrator().run(&pool).await?;
+    proxima_flavor_intent::migrator().run(&pool).await?;
 
     let mut registry = FlavorRegistry::new();
     proxima_mcp_substrate::register(&mut registry);
     proxima_flavor_goal::register(&mut registry);
+    proxima_flavor_intent::register(&mut registry);
     proxima_code::register(&mut registry);
     let frozen: Arc<FlavorRegistryFrozen> = Arc::new(registry.freeze());
     let server = McpToolHost::from_pool(pool, owner, frozen);

@@ -1,4 +1,4 @@
-//! Budget-review hook payloads and wake-entry policy.
+//! Wake intervention hook payloads and wake-entry policy.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -8,29 +8,29 @@ use uuid::Uuid;
 use crate::{FactPayload, MemoryId, Owner, SourceBatchId, SourceId};
 use crate::{PersonalityInstanceId, SchemaId, SchemaVersion};
 
-pub const BUDGET_REVIEW_REQUESTED_SCHEMA_ID: &str = "core/budget-review-requested-v1";
-pub const BUDGET_DECISION_SCHEMA_ID: &str = "core/budget-decision-v1";
+pub const INTERVENTION_REQUESTED_SCHEMA_ID: &str = "core/intervention-requested-v1";
+pub const INTERVENTION_DECISION_SCHEMA_ID: &str = "core/intervention-decision-v1";
 
-pub const BUDGET_SOURCE_ID: &str = "core/budget-review";
-pub const BUDGET_REVIEW_OBJECT_SCHEMA: &str = "core/budget-review-requested-object-v1";
-pub const BUDGET_REVIEW_WHOLE_SCHEMA: &str = "core/budget-review-requested-whole-v1";
-pub const BUDGET_DECISION_OBJECT_SCHEMA: &str = "core/budget-decision-object-v1";
-pub const BUDGET_DECISION_WHOLE_SCHEMA: &str = "core/budget-decision-whole-v1";
+pub const INTERVENTION_SOURCE_ID: &str = "core/intervention";
+pub const INTERVENTION_REQUESTED_OBJECT_SCHEMA: &str = "core/intervention-requested-object-v1";
+pub const INTERVENTION_REQUESTED_WHOLE_SCHEMA: &str = "core/intervention-requested-whole-v1";
+pub const INTERVENTION_DECISION_OBJECT_SCHEMA: &str = "core/intervention-decision-object-v1";
+pub const INTERVENTION_DECISION_WHOLE_SCHEMA: &str = "core/intervention-decision-whole-v1";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, specta::Type)]
-pub struct BudgetExhaustionPolicy {
-    pub budgeter_personality_instance_id: Uuid,
-    pub budget_extension_rounds: u16,
-    pub budget_hard_cap_rounds: u16,
-    pub budget_progress_contract: String,
+pub struct InterventionPolicy {
+    pub intervention_personality_instance_id: Uuid,
+    pub intervention_extension_rounds: u16,
+    pub intervention_hard_cap_rounds: u16,
+    pub intervention_progress_contract: String,
 }
 
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, specta::Type, sqlx::Type,
 )]
-#[sqlx(type_name = "proxima_core.budget_decision_kind")]
+#[sqlx(type_name = "proxima_core.intervention_decision_kind")]
 #[serde(rename_all = "snake_case")]
-pub enum BudgetDecisionKind {
+pub enum InterventionDecisionKind {
     #[sqlx(rename = "continue")]
     Continue,
     #[sqlx(rename = "stop")]
@@ -43,7 +43,7 @@ pub enum BudgetDecisionKind {
     AcceptTerminal,
 }
 
-impl BudgetDecisionKind {
+impl InterventionDecisionKind {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -57,18 +57,18 @@ impl BudgetDecisionKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
-pub struct BudgetReviewRequestedV1 {
+pub struct InterventionRequestedV1 {
     pub original_invocation_id: Uuid,
     pub original_wake_entry_id: Uuid,
     pub original_personality_instance_id: Uuid,
     pub original_change_event_seq: Uuid,
     pub triggering_memory_id: Uuid,
     pub wake_trace_memory_id: Uuid,
-    pub target_budgeter_personality_instance_id: Uuid,
+    pub target_intervention_personality_instance_id: Uuid,
     pub max_rounds: u16,
     pub rounds_used: u16,
-    pub budget_extension_rounds: u16,
-    pub budget_hard_cap_rounds: u16,
+    pub intervention_extension_rounds: u16,
+    pub intervention_hard_cap_rounds: u16,
     pub continued_rounds_used: u16,
     pub active_goal_ids: Vec<Uuid>,
     pub progress_contract: String,
@@ -77,26 +77,26 @@ pub struct BudgetReviewRequestedV1 {
     pub requested_at: OffsetDateTime,
 }
 
-impl FactPayload for BudgetReviewRequestedV1 {
-    const SCHEMA_ID: &'static str = BUDGET_REVIEW_REQUESTED_SCHEMA_ID;
+impl FactPayload for InterventionRequestedV1 {
+    const SCHEMA_ID: &'static str = INTERVENTION_REQUESTED_SCHEMA_ID;
     const SCHEMA_VERSION: u32 = 1;
 
     fn sidecar_table() -> &'static str {
-        "proxima_core.budget_review_requested_v1"
+        "proxima_core.intervention_requested_v1"
     }
 
     fn render(&self) -> String {
         format!(
-            "Budget review requested: invocation {} used {}/{} rounds",
+            "Intervention requested: invocation {} used {}/{} rounds",
             self.original_invocation_id, self.rounds_used, self.max_rounds
         )
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
-pub struct BudgetDecisionV1 {
-    pub budget_request_memory_id: Uuid,
-    pub decision: BudgetDecisionKind,
+pub struct InterventionDecisionV1 {
+    pub intervention_request_memory_id: Uuid,
+    pub decision: InterventionDecisionKind,
     #[serde(default)]
     pub grant_rounds: Option<u16>,
     #[serde(default)]
@@ -107,44 +107,44 @@ pub struct BudgetDecisionV1 {
     pub decided_at: OffsetDateTime,
 }
 
-impl FactPayload for BudgetDecisionV1 {
-    const SCHEMA_ID: &'static str = BUDGET_DECISION_SCHEMA_ID;
+impl FactPayload for InterventionDecisionV1 {
+    const SCHEMA_ID: &'static str = INTERVENTION_DECISION_SCHEMA_ID;
     const SCHEMA_VERSION: u32 = 1;
 
     fn sidecar_table() -> &'static str {
-        "proxima_core.budget_decision_v1"
+        "proxima_core.intervention_decision_v1"
     }
 
     fn render(&self) -> String {
-        format!("Budget decision: {}", self.decision.as_str())
+        format!("Intervention decision: {}", self.decision.as_str())
     }
 }
 
 #[derive(Debug, Clone)]
-pub struct BudgetReviewPersistInput {
+pub struct InterventionRequestPersistInput {
     pub owner: Owner,
     pub root_perspective_memory_id: MemoryId,
-    pub request: BudgetReviewRequestedV1,
+    pub request: InterventionRequestedV1,
     pub source_batch_id: SourceBatchId,
     pub source_id: SourceId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BudgetReviewPersistOutcome {
+pub struct InterventionRequestPersistOutcome {
     pub memory_id: MemoryId,
     pub change_event_seq: Uuid,
     pub idempotent_replay: bool,
 }
 
 #[derive(Debug, Clone)]
-pub struct BudgetReviewWakeRequest {
+pub struct InterventionWakeRequest {
     pub owner: Owner,
     pub request_memory_id: MemoryId,
     pub change_event_seq: Uuid,
-    pub budgeter_personality_instance_id: PersonalityInstanceId,
+    pub intervention_personality_instance_id: PersonalityInstanceId,
 }
 
-pub fn budget_review_event_draft(
+pub fn intervention_request_event_draft(
     owner: Owner,
     payload: &[u8],
     source_batch_id: SourceBatchId,
@@ -156,24 +156,24 @@ pub fn budget_review_event_draft(
         source_id,
         source_batch_id,
         owner,
-        schema_id: SchemaId::new(BUDGET_REVIEW_REQUESTED_SCHEMA_ID.into()),
+        schema_id: SchemaId::new(INTERVENTION_REQUESTED_SCHEMA_ID.into()),
         schema_version: SchemaVersion::new(1),
         payload: payload.to_vec(),
         observed_at,
         occurred_at: observed_at,
         cited_object: crate::verbs::event_ingest::CitedObjectHint {
-            schema_id: SchemaId::new(BUDGET_REVIEW_OBJECT_SCHEMA.into()),
+            schema_id: SchemaId::new(INTERVENTION_REQUESTED_OBJECT_SCHEMA.into()),
             schema_version: SchemaVersion::new(1),
             content_hash: *content_hash.as_bytes(),
         },
         citation_mapping: crate::verbs::event_ingest::CitationMappingHint {
-            schema_id: SchemaId::new(BUDGET_REVIEW_WHOLE_SCHEMA.into()),
+            schema_id: SchemaId::new(INTERVENTION_REQUESTED_WHOLE_SCHEMA.into()),
             schema_version: SchemaVersion::new(1),
         },
     }
 }
 
-pub fn budget_decision_event_draft(
+pub fn intervention_decision_event_draft(
     owner: Owner,
     payload: &[u8],
     source_batch_id: SourceBatchId,
@@ -185,18 +185,18 @@ pub fn budget_decision_event_draft(
         source_id,
         source_batch_id,
         owner,
-        schema_id: SchemaId::new(BUDGET_DECISION_SCHEMA_ID.into()),
+        schema_id: SchemaId::new(INTERVENTION_DECISION_SCHEMA_ID.into()),
         schema_version: SchemaVersion::new(1),
         payload: payload.to_vec(),
         observed_at,
         occurred_at: observed_at,
         cited_object: crate::verbs::event_ingest::CitedObjectHint {
-            schema_id: SchemaId::new(BUDGET_DECISION_OBJECT_SCHEMA.into()),
+            schema_id: SchemaId::new(INTERVENTION_DECISION_OBJECT_SCHEMA.into()),
             schema_version: SchemaVersion::new(1),
             content_hash: *content_hash.as_bytes(),
         },
         citation_mapping: crate::verbs::event_ingest::CitationMappingHint {
-            schema_id: SchemaId::new(BUDGET_DECISION_WHOLE_SCHEMA.into()),
+            schema_id: SchemaId::new(INTERVENTION_DECISION_WHOLE_SCHEMA.into()),
             schema_version: SchemaVersion::new(1),
         },
     }

@@ -9,8 +9,8 @@
 
 use uuid::Uuid;
 
-use crate::budget::BudgetExhaustionPolicy;
 use crate::error::ProtocolError;
+use crate::intervention::InterventionPolicy;
 use crate::personality::types::{
     PersonalityMemoryKind, WakeChainDepth, WakeEntryAuthoredBy, WakeEntryGoalScope,
     WakeEntryTriggerKind, WakeExecutionMode,
@@ -37,7 +37,7 @@ pub struct WakeEntryDraft {
     pub substrate_tool_palette: Vec<String>,
     pub workspace_tool_palette: Vec<String>,
     pub max_rounds: u16,
-    pub budget_policy: Option<BudgetExhaustionPolicy>,
+    pub intervention_policy: Option<InterventionPolicy>,
 }
 
 impl WakeEntryDraft {
@@ -77,7 +77,7 @@ impl WakeEntryDraft {
             substrate_tool_palette,
             workspace_tool_palette: Vec::new(),
             max_rounds,
-            budget_policy: None,
+            intervention_policy: None,
         })
     }
 }

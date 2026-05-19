@@ -254,10 +254,7 @@ async fn merge_fast_forwards_and_emits_decision() -> Result<(), Box<dyn std::err
             Some("Workspace flow request")
         );
         assert_eq!(
-            runs[0]
-                .latest_decision
-                .as_ref()
-                .map(|row| row.decision),
+            runs[0].latest_decision.as_ref().map(|row| row.decision),
             Some(WorkspaceDecision::Merged)
         );
         Ok(())
@@ -314,10 +311,7 @@ async fn rejected_decision_is_persisted() -> Result<(), Box<dyn std::error::Erro
         assert_eq!(row.1.as_deref(), Some("wrong behavior"));
         let runs = proxima_code::list_workspace_runs(pg.pool(), &owner, repo_id, 10).await?;
         assert_eq!(
-            runs[0]
-                .latest_decision
-                .as_ref()
-                .map(|row| row.decision),
+            runs[0].latest_decision.as_ref().map(|row| row.decision),
             Some(WorkspaceDecision::Rejected)
         );
         Ok(())
@@ -374,10 +368,7 @@ async fn retry_requested_decision_is_persisted() -> Result<(), Box<dyn std::erro
         assert_eq!(row.1.as_deref(), Some("try again"));
         let runs = proxima_code::list_workspace_runs(pg.pool(), &owner, repo_id, 10).await?;
         assert_eq!(
-            runs[0]
-                .latest_decision
-                .as_ref()
-                .map(|row| row.decision),
+            runs[0].latest_decision.as_ref().map(|row| row.decision),
             Some(WorkspaceDecision::RetryRequested)
         );
         Ok(())

@@ -10,7 +10,7 @@
 
 use uuid::Uuid;
 
-use crate::budget::BudgetExhaustionPolicy;
+use crate::intervention::InterventionPolicy;
 use crate::outbox::ChangeEvent;
 use crate::personality::types::{
     PersonalityStatus, WakeChainDepth, WakeEntryAuthoredBy, WakeEntryExecutionMode,
@@ -61,7 +61,7 @@ pub struct WakeEntryRow {
     pub substrate_tool_palette: Vec<String>,
     pub workspace_tool_palette: Vec<String>,
     pub max_rounds: u16,
-    pub budget_policy: Option<BudgetExhaustionPolicy>,
+    pub intervention_policy: Option<InterventionPolicy>,
     pub disabled_reason: Option<String>,
 }
 

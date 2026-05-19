@@ -1,7 +1,7 @@
 use std::fmt::Write as _;
 
-use proxima_core::{OwnerPrincipalKind, StorageError};
 use proxima_core::verbs::query::{GoalRow, QueryRequest, SupersessionStatus};
+use proxima_core::{OwnerPrincipalKind, StorageError};
 use sqlx::PgPool;
 
 use super::rows::{GoalRowDb, goal_row_from_db};

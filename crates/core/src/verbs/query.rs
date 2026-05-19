@@ -6,6 +6,7 @@
 use uuid::Uuid;
 
 use crate::outbox::EntityRef;
+use crate::personality::PersonalityInstanceId;
 use crate::verbs::goal_write::GoalState;
 use crate::verbs::schema::SchemaTombstone;
 use crate::{GoalId, MemoryId, Owner, SchemaId, SchemaVersion};
@@ -56,6 +57,8 @@ pub struct MemorySearchRequest {
     pub embedding_model_id: Option<String>,
     #[serde(skip)]
     pub embedding_dim: Option<usize>,
+    #[serde(skip)]
+    pub reader_personality_instance_id: Option<PersonalityInstanceId>,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, specta::Type)]
@@ -83,6 +86,7 @@ pub struct MemoryLineageRequest {
     pub direction: MemoryLineageDirection,
     pub depth: u8,
     pub limit: u32,
+    pub reader_personality_instance_id: Option<PersonalityInstanceId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

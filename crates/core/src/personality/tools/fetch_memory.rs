@@ -85,7 +85,7 @@ impl PersonalityTool for FetchMemoryTool {
         let snapshot = ctx
             .engine
             .storage()
-            .load_memory_by_id(ctx.owner, memory_id, &sidecars)
+            .load_memory_by_id(ctx.owner, memory_id, Some(ctx.instance_id), &sidecars)
             .await
             .map_err(|e| ProtocolError::internal(format!("load_memory_by_id: {e}")))?;
         let Some(snapshot) = snapshot else {

@@ -84,8 +84,8 @@ impl Default for FlavorRegistry {
         registry.add_fact_schema::<crate::approval::ApprovalPolicyV1>();
         registry.add_fact_schema::<crate::approval::ApprovalVoteV1>();
         registry.add_fact_schema::<crate::approval::ApprovalDecisionV1>();
-        registry.add_fact_schema::<crate::budget::BudgetReviewRequestedV1>();
-        registry.add_fact_schema::<crate::budget::BudgetDecisionV1>();
+        registry.add_fact_schema::<crate::intervention::InterventionRequestedV1>();
+        registry.add_fact_schema::<crate::intervention::InterventionDecisionV1>();
         registry.add_fact_schema::<crate::inquiry::DirectedQuestionV1>();
         registry.add_fact_schema::<crate::inquiry::DirectedAnswerV1>();
         registry.add_cited_object_schema::<crate::citations::UploadedBlobPayload>();
@@ -125,6 +125,7 @@ impl FlavorRegistry {
             schema_version: SchemaVersion::new(F::SCHEMA_VERSION),
             kind: PayloadKind::Fact,
             validate: validate_payload_type::<F>,
+            json_schema: F::json_schema(),
         });
     }
 
@@ -144,6 +145,7 @@ impl FlavorRegistry {
             schema_version: SchemaVersion::new(A::SCHEMA_VERSION),
             kind: PayloadKind::Abstraction,
             validate: validate_payload_type::<A>,
+            json_schema: A::json_schema(),
         });
     }
 
@@ -163,6 +165,7 @@ impl FlavorRegistry {
             schema_version: SchemaVersion::new(P::SCHEMA_VERSION),
             kind: PayloadKind::Perspective,
             validate: validate_payload_type::<P>,
+            json_schema: P::json_schema(),
         });
     }
 
@@ -182,6 +185,7 @@ impl FlavorRegistry {
             schema_version: SchemaVersion::new(G::SCHEMA_VERSION),
             kind: PayloadKind::Goal,
             validate: validate_payload_type::<G>,
+            json_schema: G::json_schema(),
         });
     }
 
@@ -205,6 +209,7 @@ impl FlavorRegistry {
             schema_version: SchemaVersion::new(E::SCHEMA_VERSION),
             kind: PayloadKind::Edge,
             validate: validate_payload_type::<E>,
+            json_schema: E::json_schema(),
         });
     }
 
@@ -224,6 +229,7 @@ impl FlavorRegistry {
             schema_version: SchemaVersion::new(C::SCHEMA_VERSION),
             kind: PayloadKind::CitedObject,
             validate: validate_payload_type::<C>,
+            json_schema: C::json_schema(),
         });
     }
 
@@ -243,6 +249,7 @@ impl FlavorRegistry {
             schema_version: SchemaVersion::new(M::SCHEMA_VERSION),
             kind: PayloadKind::CitationMapping,
             validate: validate_payload_type::<M>,
+            json_schema: M::json_schema(),
         });
     }
 
@@ -611,7 +618,7 @@ mod tests {
     }
 
     #[test]
-    fn default_registry_includes_all_27_substrate_mcp_tools() {
+    fn default_registry_includes_all_30_substrate_mcp_tools() {
         let frozen = FlavorRegistry::new().freeze();
         let names: std::collections::HashSet<_> =
             frozen.list_mcp_tools().iter().map(|d| d.name).collect();
@@ -623,6 +630,8 @@ mod tests {
             "core/tombstone_personality",
             "core/list_wake_entries",
             "core/set_wake_entries",
+            "core/list_read_scope",
+            "core/set_read_scope",
             "core/add_wake_entry",
             "core/update_wake_entry",
             "core/remove_wake_entry",
@@ -639,6 +648,7 @@ mod tests {
             "core/emit_approval_policy",
             "core/emit_approval_vote",
             "core/try_emit_approval_decision",
+            "core/emit_intervention_decision",
             "core/list_inquiry_targets",
             "core/get_inquiry_thread",
             "core/emit_directed_question",
@@ -647,6 +657,10 @@ mod tests {
         for name in expected {
             assert!(names.contains(name), "missing tool {name}");
         }
-        assert_eq!(names.len(), 27, "exactly 27 substrate tools registered");
+        assert!(
+            !names.contains("core/emit_budget_decision"),
+            "old intervention tool name must not remain registered"
+        );
+        assert_eq!(names.len(), 30, "exactly 30 substrate tools registered");
     }
 }

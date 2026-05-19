@@ -3,7 +3,9 @@ use std::fmt::Write as _;
 
 use proxima_core::verbs::query::{EntityKind, MemorySearchRequest, MemorySearchResult, SearchMode};
 use proxima_core::verbs::schema::{PayloadKind, SchemaInfo};
-use proxima_core::{MemoryId, OwnerPrincipalKind, Principal, SchemaId, StorageError, WakeChainDepth};
+use proxima_core::{
+    MemoryId, OwnerPrincipalKind, Principal, SchemaId, StorageError, WakeChainDepth,
+};
 use sqlx::PgPool;
 
 use crate::pg_ident::PgIdent;
@@ -150,6 +152,9 @@ async fn run_lexical(
     if let Some(schema_id) = &req.schema_id {
         q = q.bind(schema_id.as_str().to_string());
     }
+    if let Some(reader) = req.reader_personality_instance_id {
+        q = q.bind(reader.into_inner());
+    }
     q = q.bind(req.query.clone());
     q.fetch_all(pool)
         .await
@@ -233,6 +238,9 @@ async fn run_semantic(
     if let Some(schema_id) = &req.schema_id {
         q = q.bind(schema_id.as_str().to_string());
     }
+    if let Some(reader) = req.reader_personality_instance_id {
+        q = q.bind(reader.into_inner());
+    }
     q = q.bind(query_embedding.clone());
     q = q.bind(model_id.clone());
     q = q.bind(i32::try_from(dim).unwrap_or(i32::MAX));
@@ -268,6 +276,27 @@ fn common_candidates_sql(
     }
     if req.schema_id.is_some() {
         write!(sql, " AND m.schema_id = ${}", *next_param).expect("write to String is infallible");
+        *next_param += 1;
+    }
+    if req.reader_personality_instance_id.is_some() {
+        write!(
+            sql,
+            " AND (
+                m.kind IS NULL
+                OR m.personality_instance_id = ${}
+                OR EXISTS (
+                    SELECT 1
+                      FROM proxima_core.read_scope_matrix r
+                     WHERE r.owner_principal_kind = m.owner_principal_kind
+                       AND r.owner_principal_id = m.owner_principal_id
+                       AND r.owner_org_id = m.owner_org_id
+                       AND r.reader_personality_instance_id = ${}
+                       AND r.readable_personality_instance_id = m.personality_instance_id
+                )
+            )",
+            *next_param, *next_param
+        )
+        .expect("write to String is infallible");
         *next_param += 1;
     }
     sql.push(')');
@@ -326,4 +355,3 @@ fn memory_sidecars(schemas: &[SchemaInfo]) -> Vec<&SchemaInfo> {
         })
         .collect()
 }
-

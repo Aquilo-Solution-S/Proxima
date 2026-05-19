@@ -4,10 +4,10 @@
 //! identical kind + JSON config. A differing body is a conflict.
 
 use proxima_core::{
-    BindInferenceTierRequest, BindInferenceTierResponse, InferenceTargetConfig, InferenceTargetKind,
-    InferenceTargetRow, InferenceTierBindingRow, ModelTier, Owner, OwnerPrincipalKind,
-    RegisterInferenceTargetRequest, RegisterInferenceTargetResponse, RemoveInferenceTargetRequest,
-    RemoveInferenceTargetResponse,
+    BindInferenceTierRequest, BindInferenceTierResponse, InferenceTargetConfig,
+    InferenceTargetKind, InferenceTargetRow, InferenceTierBindingRow, ModelTier, Owner,
+    OwnerPrincipalKind, RegisterInferenceTargetRequest, RegisterInferenceTargetResponse,
+    RemoveInferenceTargetRequest, RemoveInferenceTargetResponse,
 };
 use sqlx::PgPool;
 

@@ -13,8 +13,8 @@ use crate::personality::workspace::{
     WorkspaceRunnerError,
 };
 use crate::personality::{
-    PersonalityInstanceId, WakeChainDepth, WakeEntryExecutionMode, WakeInvocationLogStatus,
-    WakeInvocationStart, WakeInvocationStatus,
+    PersonalityInstanceId, WakeChainDepth, WakeEntryExecutionMode, WakeInvocationContinuation,
+    WakeInvocationLogStatus, WakeInvocationStart, WakeInvocationStatus,
 };
 use crate::verbs::persist_wake_trace::WakeTracePersistOutcome;
 use crate::wake::context::{WakeContext, assemble_wake_context};
@@ -24,8 +24,8 @@ use crate::wake::trace::emit::{
     emit_trace_from_outcome, provider_target_from_config,
 };
 use crate::{
-    BudgetReviewPersistInput, BudgetReviewRequestedV1, GoalId, MemoryId, SourceBatchId, SourceId,
-    inquiry,
+    GoalId, InterventionRequestPersistInput, InterventionRequestedV1, MemoryId, SourceBatchId,
+    SourceId, inquiry,
 };
 
 use super::finalize::{
@@ -88,12 +88,21 @@ pub async fn fire_wake_entry(
     let inserted = engine
         .storage()
         .start_wake_invocation(&WakeInvocationStart {
+            invocation_id: invocation_id_for_dispatch,
             owner: input.owner.clone(),
             personality_instance_id: input.personality_instance_id,
             wake_entry_id: input.wake_entry.wake_entry_id,
             change_event_seq: input.change_event_seq,
             wake_token,
             resolved_inference_target_ref: resolved.target_ref.clone(),
+            continuation: input.continuation.as_ref().map(|continuation| {
+                WakeInvocationContinuation {
+                    intervention_decision_memory_id: continuation
+                        .intervention_decision_memory_id
+                        .into_inner(),
+                    original_invocation_id: continuation.original_invocation_id,
+                }
+            }),
         })
         .await
         .map_err(|e| ProtocolError::internal(format!("start_wake_invocation: {e}")))?;
@@ -106,6 +115,7 @@ pub async fn fire_wake_entry(
     append_session_artifact_log(
         engine,
         &input,
+        invocation_id_for_dispatch,
         WakeInvocationLogStatus::Started,
         session_log_path.display().to_string(),
     )
@@ -182,7 +192,11 @@ pub async fn fire_wake_entry(
         }
     };
     let program = HarnessProgram {
-        system_prompt: build_system_prompt(&wake_context, &seeded_handles),
+        system_prompt: build_system_prompt(
+            &wake_context,
+            &seeded_handles,
+            input.continuation.as_ref(),
+        ),
         instructions: input.wake_entry.instructions.clone(),
         context_params,
         substrate_tool_palette: input.wake_entry.substrate_tool_palette.clone(),
@@ -206,7 +220,13 @@ pub async fn fire_wake_entry(
 
     engine.wake_token_store().revoke(wake_token).await;
     write_session_jsonl_to_disk(&session_log_path, &outcome_result).await;
-    append_session_log_error_if_present(engine, &input, &outcome_result).await;
+    append_session_log_error_if_present(
+        engine,
+        &input,
+        invocation_id_for_dispatch,
+        &outcome_result,
+    )
+    .await;
     let trace_outcome = emit_trace_from_outcome(
         engine,
         &input,
@@ -221,7 +241,7 @@ pub async fn fire_wake_entry(
 
     let outcome = wake_outcome_from_harness_outcome(&input, outcome_result);
     warn_if_failed(&input, &outcome);
-    maybe_emit_budget_review(
+    maybe_emit_intervention_request(
         engine,
         &input,
         &wake_context,
@@ -230,7 +250,7 @@ pub async fn fire_wake_entry(
         &outcome,
     )
     .await;
-    finalize(engine, &input, outcome).await?;
+    finalize(engine, &input, invocation_id_for_dispatch, outcome).await?;
     Ok(true)
 }
 
@@ -269,6 +289,7 @@ async fn handle_workspace_mode(
         finalize(
             engine,
             &input,
+            invocation_id_for_dispatch,
             WakeInvocationFinalizeOutcome::failed(format!(
                 "workspace_no_runner_for_flavor:{flavor_id}"
             )),
@@ -285,6 +306,7 @@ async fn handle_workspace_mode(
         finalize(
             engine,
             &input,
+            invocation_id_for_dispatch,
             WakeInvocationFinalizeOutcome::failed(format!(
                 "workspace_trigger_not_eligible:{}",
                 input.wake_entry.trigger_id
@@ -313,6 +335,7 @@ async fn handle_workspace_mode(
             finalize(
                 engine,
                 &input,
+                invocation_id_for_dispatch,
                 WakeInvocationFinalizeOutcome::failed(
                     "workspace_mode_not_yet_implemented".to_string(),
                 ),
@@ -325,6 +348,7 @@ async fn handle_workspace_mode(
             finalize(
                 engine,
                 &input,
+                invocation_id_for_dispatch,
                 WakeInvocationFinalizeOutcome::failed(format!("workspace_runner_prepare:{err}")),
             )
             .await?;
@@ -363,7 +387,11 @@ async fn handle_workspace_mode(
         }
     };
     let program = HarnessProgram {
-        system_prompt: build_system_prompt(&wake_context, &seeded_handles),
+        system_prompt: build_system_prompt(
+            &wake_context,
+            &seeded_handles,
+            input.continuation.as_ref(),
+        ),
         instructions: input.wake_entry.instructions.clone(),
         context_params,
         substrate_tool_palette: input.wake_entry.substrate_tool_palette.clone(),
@@ -384,7 +412,13 @@ async fn handle_workspace_mode(
         finished_at: time::OffsetDateTime::now_utc(),
     };
 
-    append_session_log_error_if_present(engine, &input, &outcome_result).await;
+    append_session_log_error_if_present(
+        engine,
+        &input,
+        invocation_id_for_dispatch,
+        &outcome_result,
+    )
+    .await;
     let trace_outcome = emit_trace_from_outcome(
         engine,
         &input,
@@ -422,7 +456,7 @@ async fn handle_workspace_mode(
             WakeInvocationFinalizeOutcome::failed(format!("workspace_runner_finalize:{err}"))
         }
     };
-    maybe_emit_budget_review(
+    maybe_emit_intervention_request(
         engine,
         &input,
         &wake_context,
@@ -431,7 +465,7 @@ async fn handle_workspace_mode(
         &outcome,
     )
     .await;
-    finalize(engine, &input, outcome).await?;
+    finalize(engine, &input, invocation_id_for_dispatch, outcome).await?;
     Ok(true)
 }
 
@@ -529,6 +563,7 @@ async fn finalize_failed_started_wake(
     finalize(
         engine,
         input,
+        failure.invocation_id,
         WakeInvocationFinalizeOutcome::failed(failure.failure_reason),
     )
     .await
@@ -572,7 +607,13 @@ async fn finalize_pre_run_workspace(
     )
     .await;
     engine.wake_token_store().revoke(failure.wake_token).await;
-    finalize(engine, input, failure.finalize_outcome).await
+    finalize(
+        engine,
+        input,
+        failure.invocation_id,
+        failure.finalize_outcome,
+    )
+    .await
 }
 
 async fn finalize_workspace_runner(
@@ -630,6 +671,7 @@ fn provider_target_failure_reason(err: &ProviderTargetBuildError) -> String {
 fn build_system_prompt(
     wake_context: &WakeContext,
     seeded: &crate::mcp::PreSeededHandles,
+    continuation: Option<&super::input::FireWakeContinuation>,
 ) -> String {
     let schema_id = wake_context.triggering_memory.schema_id.as_str();
     let schema_arg = if schema_id.is_empty() {
@@ -638,8 +680,33 @@ fn build_system_prompt(
         Some(schema_id)
     };
     let mut prompt = crate::wake::handles::format_wake_context_preamble(seeded, schema_arg);
+    if let Some(continuation) = continuation {
+        prompt.push_str(&format_continuation_preamble(continuation));
+    }
     prompt.push_str(&wake_context.root_perspective.system_prompt);
     prompt
+}
+
+fn format_continuation_preamble(continuation: &super::input::FireWakeContinuation) -> String {
+    format!(
+        "\nWake continuation context:\n\
+         - This invocation continues a prior truncated wake. Use persisted Proxima state as the continuity source; provider chat session state is not available.\n\
+         - original_invocation_id: {}\n\
+         - intervention_request_memory: {}\n\
+         - intervention_decision_memory: {}\n\
+         - wake_trace_memory: {}\n\
+         - original_triggering_memory: {}\n\
+         - granted_rounds: {}\n\
+         - supervisor_rationale: {}\n\
+         - Inspect the prior trace or lineage before repeating work.\n\n",
+        continuation.original_invocation_id,
+        continuation.intervention_request_memory_id.into_inner(),
+        continuation.intervention_decision_memory_id.into_inner(),
+        continuation.wake_trace_memory_id.into_inner(),
+        continuation.triggering_memory_id.into_inner(),
+        continuation.grant_rounds,
+        continuation.rationale.trim(),
+    )
 }
 
 async fn build_context_params(
@@ -734,7 +801,7 @@ fn warn_if_failed(input: &FireWakeEntryInput, outcome: &WakeInvocationFinalizeOu
     }
 }
 
-async fn maybe_emit_budget_review(
+async fn maybe_emit_intervention_request(
     engine: &Engine,
     input: &FireWakeEntryInput,
     wake_context: &WakeContext,
@@ -748,13 +815,13 @@ async fn maybe_emit_budget_review(
     if outcome.failure_reason.as_deref() != Some("max_rounds_reached") {
         return;
     }
-    let Some(policy) = input.wake_entry.budget_policy.as_ref() else {
+    let Some(policy) = input.wake_entry.intervention_policy.as_ref() else {
         return;
     };
     let Some(trace_outcome) = trace_outcome else {
         tracing::warn!(
             invocation_id = %invocation_id,
-            "wake budget review skipped because wake trace persistence failed"
+            "wake intervention request skipped because wake trace persistence failed"
         );
         return;
     };
@@ -764,43 +831,72 @@ async fn maybe_emit_budget_review(
         .iter()
         .map(|goal| GoalId::new(goal.goal_id))
         .collect::<Vec<_>>();
-    let request = BudgetReviewRequestedV1 {
+    let request = InterventionRequestedV1 {
         original_invocation_id: invocation_id,
         original_wake_entry_id: input.wake_entry.wake_entry_id,
         original_personality_instance_id: input.personality_instance_id.into_inner(),
         original_change_event_seq: input.change_event_seq,
         triggering_memory_id: wake_context.triggering_memory.memory_id,
         wake_trace_memory_id: trace_outcome.fact_memory_id.into_inner(),
-        target_budgeter_personality_instance_id: policy.budgeter_personality_instance_id,
+        target_intervention_personality_instance_id: policy.intervention_personality_instance_id,
         max_rounds: input.wake_entry.max_rounds,
         rounds_used: outcome.turn_count.unwrap_or(input.wake_entry.max_rounds),
-        budget_extension_rounds: policy.budget_extension_rounds,
-        budget_hard_cap_rounds: policy.budget_hard_cap_rounds,
+        intervention_extension_rounds: policy.intervention_extension_rounds,
+        intervention_hard_cap_rounds: policy.intervention_hard_cap_rounds,
         continued_rounds_used: 0,
         active_goal_ids: active_goal_ids
             .iter()
             .map(|goal_id| goal_id.into_inner())
             .collect(),
-        progress_contract: policy.budget_progress_contract.clone(),
-        idempotency_key: format!("budget-review:{invocation_id}"),
+        progress_contract: policy.intervention_progress_contract.clone(),
+        idempotency_key: format!("intervention-request:{invocation_id}"),
         requested_at,
     };
-    let persist = BudgetReviewPersistInput {
+    let persist = InterventionRequestPersistInput {
         owner: input.owner.clone(),
         root_perspective_memory_id: MemoryId::new(wake_context.root_perspective.memory_id),
         request,
         source_batch_id: SourceBatchId::new(Uuid::now_v7()),
-        source_id: SourceId::new(crate::BUDGET_SOURCE_ID),
+        source_id: SourceId::new(crate::INTERVENTION_SOURCE_ID),
     };
     if let Err(err) = engine
         .storage()
-        .persist_budget_review_requested_atomic(engine.registry(), &persist)
+        .persist_intervention_requested_atomic(engine.registry(), &persist)
         .await
     {
         tracing::warn!(
             invocation_id = %invocation_id,
             error = %err,
-            "wake budget review persistence failed"
+            "wake intervention request persistence failed"
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn continuation_preamble_uses_persisted_proxima_state_not_provider_state() {
+        let continuation = crate::wake::fire::input::FireWakeContinuation {
+            intervention_decision_memory_id: MemoryId::new(Uuid::now_v7()),
+            intervention_request_memory_id: MemoryId::new(Uuid::now_v7()),
+            original_invocation_id: Uuid::now_v7(),
+            wake_trace_memory_id: MemoryId::new(Uuid::now_v7()),
+            triggering_memory_id: MemoryId::new(Uuid::now_v7()),
+            grant_rounds: 3,
+            rationale: "made progress".into(),
+        };
+
+        let preamble = format_continuation_preamble(&continuation);
+
+        assert!(preamble.contains("persisted Proxima state"));
+        assert!(preamble.contains("provider chat session state is not available"));
+        assert!(preamble.contains("original_invocation_id"));
+        assert!(preamble.contains("wake_trace_memory"));
+        assert!(preamble.contains("intervention_decision_memory"));
+        assert!(preamble.contains("original_triggering_memory"));
+        assert!(preamble.contains("granted_rounds: 3"));
+        assert!(preamble.contains("supervisor_rationale: made progress"));
     }
 }

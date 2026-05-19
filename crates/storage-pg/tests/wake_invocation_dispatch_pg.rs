@@ -3,12 +3,13 @@
 
 mod common;
 
+use common::personality::ingest_test_fact;
 use common::{drop_db, fresh_pg, owner_fixture};
 use proxima_core::personality::{
     InstantiatePersonalityRequest, ListWakeInvocationsRequest, PersonalityInstanceId,
     SetWakeEntriesRequest, WakeEntryAuthoredBy, WakeEntryDraft, WakeEntryTriggerKind,
-    WakeInvocationFinalize, WakeInvocationLogDraft, WakeInvocationLogStatus, WakeInvocationStart,
-    WakeInvocationStatus,
+    WakeInvocationContinuation, WakeInvocationFinalize, WakeInvocationLogDraft,
+    WakeInvocationLogStatus, WakeInvocationStart, WakeInvocationStatus,
 };
 use proxima_core::storage::Storage;
 use proxima_core::{ModelTier, Owner, Principal};
@@ -26,6 +27,87 @@ struct WakeInvocationDispatchRow {
     stdout_truncated: bool,
     stderr_truncated: bool,
     status: WakeInvocationStatus,
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn continuation_invocation_can_share_original_wake_natural_key() {
+    let Some((pg, db)) = fresh_pg().await else {
+        return;
+    };
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        pg.run_migrations().await?;
+        let owner = owner_fixture();
+        let (instance_id, wake_entry_id) = seed_personality_with_entry(&pg, &owner).await?;
+        let change_event_seq = Uuid::now_v7();
+        let original_invocation_id = Uuid::now_v7();
+        let continuation_invocation_id = Uuid::now_v7();
+        let intervention_decision_memory_id =
+            ingest_test_fact(&pg, &owner, "intervention decision")
+                .await
+                .into_inner();
+
+        let normal = WakeInvocationStart {
+            invocation_id: original_invocation_id,
+            owner: owner.clone(),
+            personality_instance_id: instance_id,
+            wake_entry_id,
+            change_event_seq,
+            wake_token: Uuid::new_v4(),
+            resolved_inference_target_ref: "normal".into(),
+            continuation: None,
+        };
+        assert!(pg.start_wake_invocation(&normal).await?);
+
+        let continuation = WakeInvocationStart {
+            invocation_id: continuation_invocation_id,
+            owner: owner.clone(),
+            personality_instance_id: instance_id,
+            wake_entry_id,
+            change_event_seq,
+            wake_token: Uuid::new_v4(),
+            resolved_inference_target_ref: "continuation".into(),
+            continuation: Some(WakeInvocationContinuation {
+                intervention_decision_memory_id,
+                original_invocation_id,
+            }),
+        };
+        assert!(pg.start_wake_invocation(&continuation).await?);
+        assert!(!pg.start_wake_invocation(&continuation).await?);
+
+        let listed = pg
+            .list_wake_invocations(&ListWakeInvocationsRequest {
+                owner,
+                personality_instance_id: instance_id,
+                wake_entry_id: Some(wake_entry_id),
+                limit: 10,
+            })
+            .await?;
+        assert_eq!(listed.len(), 2);
+        assert!(
+            listed
+                .iter()
+                .any(|row| row.invocation_id == original_invocation_id)
+        );
+        let continued = listed
+            .iter()
+            .find(|row| row.invocation_id == continuation_invocation_id)
+            .expect("continuation row");
+        assert_eq!(
+            continued.continuation_intervention_decision_memory_id,
+            Some(intervention_decision_memory_id)
+        );
+        assert_eq!(
+            continued.continuation_original_invocation_id,
+            Some(original_invocation_id)
+        );
+        Ok(())
+    }
+    .await;
+
+    drop(pg);
+    let _ = drop_db(&db).await;
+    result.expect("continuation invocation identity failed");
 }
 
 async fn seed_personality_with_entry(
@@ -143,19 +225,23 @@ async fn wake_invocation_carries_dispatch_columns() {
         let change_event_seq = Uuid::now_v7();
 
         let wake_token = Uuid::new_v4();
+        let invocation_id = Uuid::now_v7();
         let resolved_target = "default-standard";
 
         let start = WakeInvocationStart {
+            invocation_id,
             owner: owner.clone(),
             personality_instance_id: instance_id,
             wake_entry_id,
             change_event_seq,
             wake_token,
             resolved_inference_target_ref: resolved_target.to_string(),
+            continuation: None,
         };
         pg.start_wake_invocation(&start).await.expect("start ok");
 
         let finalize = WakeInvocationFinalize {
+            invocation_id,
             owner: owner.clone(),
             personality_instance_id: instance_id,
             wake_entry_id,
@@ -195,6 +281,7 @@ async fn wake_invocation_carries_dispatch_columns() {
         assert!(matches!(row.status, WakeInvocationStatus::Failed));
 
         pg.append_wake_invocation_log(&WakeInvocationLogDraft {
+            invocation_id,
             owner: owner.clone(),
             personality_instance_id: instance_id,
             wake_entry_id,
@@ -207,6 +294,7 @@ async fn wake_invocation_carries_dispatch_columns() {
         })
         .await?;
         pg.append_wake_invocation_log(&WakeInvocationLogDraft {
+            invocation_id,
             owner: owner.clone(),
             personality_instance_id: instance_id,
             wake_entry_id,

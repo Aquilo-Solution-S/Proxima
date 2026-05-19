@@ -400,6 +400,7 @@ async fn fire_candidate(
         wake_entry: wake_entry_draft_to_row(entry),
         change_event_seq: event.event.seq,
         triggering_memory_id: triggering_memory_id.into_inner(),
+        continuation: None,
     };
 
     match fire_wake_entry(engine, adapter.as_ref(), input).await {
@@ -442,7 +443,7 @@ fn wake_entry_draft_to_row(draft: &WakeEntryDraft) -> WakeEntryRow {
         substrate_tool_palette: draft.substrate_tool_palette.clone(),
         workspace_tool_palette: draft.workspace_tool_palette.clone(),
         max_rounds: draft.max_rounds,
-        budget_policy: draft.budget_policy.clone(),
+        intervention_policy: draft.intervention_policy.clone(),
         disabled_reason: None,
         goal_scope: draft.goal_scope,
     }
@@ -533,13 +534,16 @@ async fn write_chain_depth_exhausted(
     use crate::personality::WakeInvocationStart;
 
     let start = WakeInvocationStart {
+        invocation_id: Uuid::now_v7(),
         owner: group.owner.clone(),
         personality_instance_id: group.personality_instance_id,
         wake_entry_id: entry.wake_entry_id,
         change_event_seq: event.event.seq,
         wake_token: Uuid::nil(),
         resolved_inference_target_ref: String::new(),
+        continuation: None,
     };
+    let invocation_id = start.invocation_id;
     let inserted = engine
         .storage()
         .start_wake_invocation(&start)
@@ -552,6 +556,7 @@ async fn write_chain_depth_exhausted(
     engine
         .storage()
         .finalize_wake_invocation(&WakeInvocationFinalize {
+            invocation_id,
             owner: group.owner.clone(),
             personality_instance_id: group.personality_instance_id,
             wake_entry_id: entry.wake_entry_id,
@@ -582,13 +587,16 @@ async fn write_filter_misconfigured(
     use crate::personality::WakeInvocationStart;
 
     let start = WakeInvocationStart {
+        invocation_id: Uuid::now_v7(),
         owner: group.owner.clone(),
         personality_instance_id: group.personality_instance_id,
         wake_entry_id: entry.wake_entry_id,
         change_event_seq: event.event.seq,
         wake_token: Uuid::nil(),
         resolved_inference_target_ref: String::new(),
+        continuation: None,
     };
+    let invocation_id = start.invocation_id;
     let inserted = engine
         .storage()
         .start_wake_invocation(&start)
@@ -600,6 +608,7 @@ async fn write_filter_misconfigured(
     engine
         .storage()
         .finalize_wake_invocation(&WakeInvocationFinalize {
+            invocation_id,
             owner: group.owner.clone(),
             personality_instance_id: group.personality_instance_id,
             wake_entry_id: entry.wake_entry_id,

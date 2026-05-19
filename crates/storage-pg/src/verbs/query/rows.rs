@@ -34,11 +34,7 @@ pub(super) fn memory_row_from_db(
         kind: r.kind.unwrap_or(EntityKind::Fact),
         schema_id,
         schema_version,
-        owner: owner_from_parts(
-            r.owner_principal_kind,
-            r.owner_principal_id,
-            r.owner_org_id,
-        ),
+        owner: owner_from_parts(r.owner_principal_kind, r.owner_principal_id, r.owner_org_id),
         payload: r
             .payload_json
             .as_deref()
@@ -76,11 +72,7 @@ pub(super) fn goal_row_from_db(r: GoalRowDb) -> Result<GoalRow, StorageError> {
         id: GoalId::new(r.goal_id),
         schema_id: SchemaId::new(r.schema_id),
         schema_version: SchemaVersion::new(schema_version),
-        owner: owner_from_parts(
-            r.owner_principal_kind,
-            r.owner_principal_id,
-            r.owner_org_id,
-        ),
+        owner: owner_from_parts(r.owner_principal_kind, r.owner_principal_id, r.owner_org_id),
         title: r.title,
         text: r.text,
         state,
@@ -99,11 +91,7 @@ pub(super) fn edge_row_from_db(r: EdgeRowDb) -> Result<EdgeRow, StorageError> {
         relation_class: r.relation_class.as_str().to_string(),
         source,
         target,
-        owner: owner_from_parts(
-            r.owner_principal_kind,
-            r.owner_principal_id,
-            r.owner_org_id,
-        ),
+        owner: owner_from_parts(r.owner_principal_kind, r.owner_principal_id, r.owner_org_id),
         payload: Vec::new(),
     })
 }
@@ -121,7 +109,11 @@ fn entity_ref_from_endpoint(
     }
 }
 
-fn owner_from_parts(kind: OwnerPrincipalKind, principal_id: uuid::Uuid, org_id: uuid::Uuid) -> Owner {
+fn owner_from_parts(
+    kind: OwnerPrincipalKind,
+    principal_id: uuid::Uuid,
+    org_id: uuid::Uuid,
+) -> Owner {
     Owner {
         principal: match kind {
             OwnerPrincipalKind::User => Principal::User(UserId::new(principal_id)),

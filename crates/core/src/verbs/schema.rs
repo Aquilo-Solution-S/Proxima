@@ -17,6 +17,7 @@ pub(crate) struct PayloadValidatorEntry {
     pub schema_version: SchemaVersion,
     pub kind: PayloadKind,
     pub validate: PayloadValidator,
+    pub json_schema: Option<serde_json::Value>,
 }
 
 #[derive(
@@ -163,6 +164,23 @@ impl FlavorRegistryFrozen {
     #[must_use]
     pub fn list_mcp_tools(&self) -> &[McpToolDescriptor] {
         &self.mcp_tools
+    }
+
+    #[must_use]
+    pub fn payload_json_schema(
+        &self,
+        schema_id: &SchemaId,
+        schema_version: SchemaVersion,
+        kind: PayloadKind,
+    ) -> Option<&serde_json::Value> {
+        self.validators
+            .iter()
+            .find(|entry| {
+                entry.schema_id == *schema_id
+                    && entry.schema_version == schema_version
+                    && entry.kind == kind
+            })
+            .and_then(|entry| entry.json_schema.as_ref())
     }
 
     #[must_use]

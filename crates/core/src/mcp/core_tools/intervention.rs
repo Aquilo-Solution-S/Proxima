@@ -1,27 +1,34 @@
-//! `core/emit_budget_decision` — Budgeter-authored budget decision Fact.
+//! `core/emit_intervention_decision` — Wake Supervisor-authored intervention decision Fact.
 
 use futures::future::BoxFuture;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use sqlx::{Postgres, Transaction};
+use sqlx::{Postgres, Row, Transaction};
 use time::OffsetDateTime;
 
-use crate::budget::{
-    BUDGET_SOURCE_ID, BudgetDecisionKind, BudgetDecisionV1, budget_decision_event_draft,
+use crate::intervention::{
+    INTERVENTION_SOURCE_ID, InterventionDecisionKind, InterventionDecisionV1,
+    intervention_decision_event_draft,
 };
 use crate::mcp::{McpTool, McpToolCtx, McpToolError};
+use crate::personality::{
+    PersonalityInstanceId, WakeEntryAuthoredBy, WakeEntryExecutionMode, WakeEntryGoalScope,
+    WakeEntryRow, WakeEntryTriggerKind,
+};
+use crate::wake::fire::input::FireWakeContinuation;
+use crate::wake::fire::{FireWakeEntryInput, fire_wake_entry};
 use crate::{
     CORE_AUTHORED_RELATION, CORE_DERIVED_FROM_RELATION, EdgeAuthorshipKind, EntityKind, MemoryId,
-    Owner, OwnerPrincipalKind, Principal, SourceBatchId, SourceId,
+    ModelTier, Owner, OwnerPrincipalKind, Principal, SourceBatchId, SourceId,
 };
 
 #[derive(Debug, Default)]
-pub struct EmitBudgetDecisionTool;
+pub struct EmitInterventionDecisionTool;
 
 #[derive(Debug, Deserialize, JsonSchema)]
-pub struct EmitBudgetDecisionArgs {
-    pub budget_request: String,
-    pub decision: BudgetDecisionKind,
+pub struct EmitInterventionDecisionArgs {
+    pub intervention_request: String,
+    pub decision: InterventionDecisionKind,
     #[serde(default)]
     pub grant_rounds: Option<u16>,
     #[serde(default)]
@@ -31,34 +38,39 @@ pub struct EmitBudgetDecisionArgs {
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
-pub struct EmitBudgetDecisionOutput {
-    pub budget_decision: String,
-    pub decision: BudgetDecisionKind,
+pub struct EmitInterventionDecisionOutput {
+    pub intervention_decision: String,
+    pub decision: InterventionDecisionKind,
     pub continuation_applied: bool,
     pub continuation_note: Option<String>,
 }
 
 #[derive(Debug)]
-struct LoadedBudgetRequest {
+struct LoadedInterventionRequest {
     memory_id: uuid::Uuid,
-    target_budgeter_personality_instance_id: uuid::Uuid,
-    budget_extension_rounds: i32,
-    budget_hard_cap_rounds: i32,
+    original_invocation_id: uuid::Uuid,
+    original_wake_entry_id: uuid::Uuid,
+    original_personality_instance_id: uuid::Uuid,
+    original_change_event_seq: uuid::Uuid,
+    triggering_memory_id: uuid::Uuid,
+    wake_trace_memory_id: uuid::Uuid,
+    target_intervention_personality_instance_id: uuid::Uuid,
+    intervention_extension_rounds: i32,
+    intervention_hard_cap_rounds: i32,
 }
 
-impl McpTool for EmitBudgetDecisionTool {
-    const NAME: &'static str = "core/emit_budget_decision";
-    const DESCRIPTION: &'static str =
-        "Emit a typed BudgetDecision for a BudgetReviewRequested Fact targeted at caller Self.";
-    type Args = EmitBudgetDecisionArgs;
-    type Output = EmitBudgetDecisionOutput;
+impl McpTool for EmitInterventionDecisionTool {
+    const NAME: &'static str = "core/emit_intervention_decision";
+    const DESCRIPTION: &'static str = "Emit a typed InterventionDecision for a InterventionRequested Fact targeted at caller Self.";
+    type Args = EmitInterventionDecisionArgs;
+    type Output = EmitInterventionDecisionOutput;
 
     fn call(
         ctx: McpToolCtx,
-        args: EmitBudgetDecisionArgs,
-    ) -> BoxFuture<'static, Result<EmitBudgetDecisionOutput, McpToolError>> {
+        args: EmitInterventionDecisionArgs,
+    ) -> BoxFuture<'static, Result<EmitInterventionDecisionOutput, McpToolError>> {
         Box::pin(async move {
-            let budget_request = ctx.resolve_memory(&args.budget_request)?;
+            let intervention_request = ctx.resolve_memory(&args.intervention_request)?;
             if args.rationale.trim().is_empty() {
                 return Err(McpToolError::InvalidInput("rationale is empty".into()));
             }
@@ -70,16 +82,16 @@ impl McpTool for EmitBudgetDecisionTool {
             let caller_self = ctx.caller_self_perspective.ok_or_else(|| {
                 McpToolError::InvalidInput("caller_self_perspective required".into())
             })?;
-            let loaded = load_budget_request(&ctx, budget_request).await?;
-            validate_budgeter(&ctx, caller_self, &loaded).await?;
+            let loaded = load_intervention_request(&ctx, intervention_request).await?;
+            validate_intervention_target(&ctx, caller_self, &loaded).await?;
             validate_decision_shape(&ctx, &args, &loaded).await?;
             let redirect_personality_instance_id = args
                 .redirect_personality
                 .as_deref()
                 .map(|raw| ctx.resolve_personality(raw).map(|id| id.into_inner()))
                 .transpose()?;
-            let payload = BudgetDecisionV1 {
-                budget_request_memory_id: loaded.memory_id,
+            let payload = InterventionDecisionV1 {
+                intervention_request_memory_id: loaded.memory_id,
                 decision: args.decision,
                 grant_rounds: args.grant_rounds,
                 redirect_personality_instance_id,
@@ -90,16 +102,18 @@ impl McpTool for EmitBudgetDecisionTool {
             if let Some(existing) =
                 existing_decision(&ctx, loaded.memory_id, &payload.idempotency_key).await?
             {
-                return Ok(EmitBudgetDecisionOutput {
-                    budget_decision: ctx.format_memory(existing),
+                let continuation =
+                    apply_continue_if_requested(&ctx, &loaded, existing, &payload).await?;
+                return Ok(EmitInterventionDecisionOutput {
+                    intervention_decision: ctx.format_memory(existing),
                     decision: payload.decision,
-                    continuation_applied: false,
-                    continuation_note: Some("idempotent replay".into()),
+                    continuation_applied: continuation.applied,
+                    continuation_note: Some(format!("idempotent replay; {}", continuation.note)),
                 });
             }
             let mut tx = ctx.pool.begin().await.map_err(map_sql)?;
-            let outcome = ingest_budget_decision_fact(&mut tx, &ctx, &payload).await?;
-            insert_budget_decision_sidecar(&mut tx, outcome.memory_id, &payload).await?;
+            let outcome = ingest_intervention_decision_fact(&mut tx, &ctx, &payload).await?;
+            insert_intervention_decision_sidecar(&mut tx, outcome.memory_id, &payload).await?;
             append_fact_edge(
                 &mut tx,
                 &ctx,
@@ -114,41 +128,47 @@ impl McpTool for EmitBudgetDecisionTool {
                 &ctx,
                 CORE_DERIVED_FROM_RELATION,
                 outcome.memory_id,
-                budget_request,
+                intervention_request,
                 EdgeAuthorshipKind::ExternalAgent,
             )
             .await?;
             tx.commit().await.map_err(map_sql)?;
+            let continuation =
+                apply_continue_if_requested(&ctx, &loaded, outcome.memory_id, &payload).await?;
 
-            Ok(EmitBudgetDecisionOutput {
-                budget_decision: ctx.format_memory(outcome.memory_id),
+            Ok(EmitInterventionDecisionOutput {
+                intervention_decision: ctx.format_memory(outcome.memory_id),
                 decision: payload.decision,
-                continuation_applied: false,
-                continuation_note: (payload.decision == BudgetDecisionKind::Continue).then(|| {
-                    "continue decision recorded; dispatcher continuation is a follow-up hook".into()
-                }),
+                continuation_applied: continuation.applied,
+                continuation_note: Some(continuation.note),
             })
         })
     }
 }
 
+#[derive(Debug, Clone)]
+struct ContinueApplication {
+    applied: bool,
+    note: String,
+}
+
 async fn existing_decision(
     ctx: &McpToolCtx,
-    budget_request_memory_id: uuid::Uuid,
+    intervention_request_memory_id: uuid::Uuid,
     idempotency_key: &str,
 ) -> Result<Option<MemoryId>, McpToolError> {
     let (owner_kind, owner_id, owner_org_id) = owner_columns(&ctx.owner);
     let row: Option<uuid::Uuid> = sqlx::query_scalar(
         "SELECT d.memory_id
-           FROM proxima_core.budget_decision_v1 d
+           FROM proxima_core.intervention_decision_v1 d
            JOIN proxima_core.memories m USING (memory_id)
-          WHERE d.budget_request_memory_id = $1
+          WHERE d.intervention_request_memory_id = $1
             AND d.idempotency_key = $2
             AND m.owner_principal_kind = $3
             AND m.owner_principal_id = $4
             AND m.owner_org_id = $5",
     )
-    .bind(budget_request_memory_id)
+    .bind(intervention_request_memory_id)
     .bind(idempotency_key)
     .bind(owner_kind)
     .bind(owner_id)
@@ -159,15 +179,29 @@ async fn existing_decision(
     Ok(row.map(MemoryId::new))
 }
 
-async fn load_budget_request(
+async fn load_intervention_request(
     ctx: &McpToolCtx,
     memory_id: MemoryId,
-) -> Result<LoadedBudgetRequest, McpToolError> {
+) -> Result<LoadedInterventionRequest, McpToolError> {
     let (owner_kind, owner_id, owner_org_id) = owner_columns(&ctx.owner);
-    let row: Option<(uuid::Uuid, uuid::Uuid, i32, i32)> = sqlx::query_as(
-        "SELECT b.memory_id, b.target_budgeter_personality_instance_id,
-                b.budget_extension_rounds, b.budget_hard_cap_rounds
-           FROM proxima_core.budget_review_requested_v1 b
+    let row: Option<(
+        uuid::Uuid,
+        uuid::Uuid,
+        uuid::Uuid,
+        uuid::Uuid,
+        uuid::Uuid,
+        uuid::Uuid,
+        uuid::Uuid,
+        uuid::Uuid,
+        i32,
+        i32,
+    )> = sqlx::query_as(
+        "SELECT b.memory_id, b.original_invocation_id, b.original_wake_entry_id,
+                b.original_personality_instance_id, b.original_change_event_seq,
+                b.triggering_memory_id, b.wake_trace_memory_id,
+                b.target_intervention_personality_instance_id,
+                b.intervention_extension_rounds, b.intervention_hard_cap_rounds
+           FROM proxima_core.intervention_requested_v1 b
            JOIN proxima_core.memories m USING (memory_id)
           WHERE b.memory_id = $1
             AND m.owner_principal_kind = $2
@@ -183,27 +217,39 @@ async fn load_budget_request(
     .map_err(map_sql)?;
     let Some((
         memory_id,
-        target_budgeter_personality_instance_id,
-        budget_extension_rounds,
-        budget_hard_cap_rounds,
+        original_invocation_id,
+        original_wake_entry_id,
+        original_personality_instance_id,
+        original_change_event_seq,
+        triggering_memory_id,
+        wake_trace_memory_id,
+        target_intervention_personality_instance_id,
+        intervention_extension_rounds,
+        intervention_hard_cap_rounds,
     )) = row
     else {
         return Err(McpToolError::InvalidInput(
-            "budget_request is not a BudgetReviewRequested Fact for this owner".into(),
+            "intervention_request is not a InterventionRequested Fact for this owner".into(),
         ));
     };
-    Ok(LoadedBudgetRequest {
+    Ok(LoadedInterventionRequest {
         memory_id,
-        target_budgeter_personality_instance_id,
-        budget_extension_rounds,
-        budget_hard_cap_rounds,
+        original_invocation_id,
+        original_wake_entry_id,
+        original_personality_instance_id,
+        original_change_event_seq,
+        triggering_memory_id,
+        wake_trace_memory_id,
+        target_intervention_personality_instance_id,
+        intervention_extension_rounds,
+        intervention_hard_cap_rounds,
     })
 }
 
-async fn validate_budgeter(
+async fn validate_intervention_target(
     ctx: &McpToolCtx,
     caller_self: MemoryId,
-    loaded: &LoadedBudgetRequest,
+    loaded: &LoadedInterventionRequest,
 ) -> Result<(), McpToolError> {
     let (owner_kind, owner_id, owner_org_id) = owner_columns(&ctx.owner);
     let matched: Option<uuid::Uuid> = sqlx::query_scalar(
@@ -217,7 +263,7 @@ async fn validate_budgeter(
             AND status = 'active'",
     )
     .bind(caller_self.into_inner())
-    .bind(loaded.target_budgeter_personality_instance_id)
+    .bind(loaded.target_intervention_personality_instance_id)
     .bind(owner_kind)
     .bind(owner_id)
     .bind(owner_org_id)
@@ -226,7 +272,7 @@ async fn validate_budgeter(
     .map_err(map_sql)?;
     if matched.is_none() {
         return Err(McpToolError::InvalidInput(
-            "caller Self is not the targeted Budgeter".into(),
+            "caller Self is not the targeted Wake Supervisor".into(),
         ));
     }
     Ok(())
@@ -234,18 +280,18 @@ async fn validate_budgeter(
 
 async fn validate_decision_shape(
     ctx: &McpToolCtx,
-    args: &EmitBudgetDecisionArgs,
-    loaded: &LoadedBudgetRequest,
+    args: &EmitInterventionDecisionArgs,
+    loaded: &LoadedInterventionRequest,
 ) -> Result<(), McpToolError> {
     match args.decision {
-        BudgetDecisionKind::Continue => {
+        InterventionDecisionKind::Continue => {
             let Some(grant_rounds) = args.grant_rounds else {
                 return Err(McpToolError::InvalidInput(
                     "continue requires grant_rounds".into(),
                 ));
             };
             if i32::from(grant_rounds) == 0
-                || i32::from(grant_rounds) > loaded.budget_extension_rounds
+                || i32::from(grant_rounds) > loaded.intervention_extension_rounds
             {
                 return Err(McpToolError::InvalidInput(
                     "grant_rounds exceeds request extension".into(),
@@ -253,9 +299,9 @@ async fn validate_decision_shape(
             }
             let prior: Option<i64> = sqlx::query_scalar(
                 "SELECT COALESCE(SUM(d.grant_rounds), 0)
-                   FROM proxima_core.budget_decision_v1 d
+                   FROM proxima_core.intervention_decision_v1 d
                    JOIN proxima_core.memories m USING (memory_id)
-                  WHERE d.budget_request_memory_id = $1
+                  WHERE d.intervention_request_memory_id = $1
                     AND d.decision = 'continue'
                     AND m.owner_principal_kind = $2
                     AND m.owner_principal_id = $3
@@ -269,14 +315,14 @@ async fn validate_decision_shape(
             .await
             .map_err(map_sql)?;
             if prior.unwrap_or(0) + i64::from(grant_rounds)
-                > i64::from(loaded.budget_hard_cap_rounds)
+                > i64::from(loaded.intervention_hard_cap_rounds)
             {
                 return Err(McpToolError::InvalidInput(
                     "grant_rounds exceeds request hard cap".into(),
                 ));
             }
         }
-        BudgetDecisionKind::Redirect => {
+        InterventionDecisionKind::Redirect => {
             if args.redirect_personality.is_none() {
                 return Err(McpToolError::InvalidInput(
                     "redirect requires redirect_personality".into(),
@@ -294,19 +340,136 @@ async fn validate_decision_shape(
     Ok(())
 }
 
-async fn ingest_budget_decision_fact(
+async fn apply_continue_if_requested(
+    ctx: &McpToolCtx,
+    loaded: &LoadedInterventionRequest,
+    intervention_decision_memory_id: MemoryId,
+    payload: &InterventionDecisionV1,
+) -> Result<ContinueApplication, McpToolError> {
+    if payload.decision != InterventionDecisionKind::Continue {
+        return Ok(ContinueApplication {
+            applied: false,
+            note: "no continuation requested".into(),
+        });
+    }
+    let Some(grant_rounds) = payload.grant_rounds else {
+        return Err(McpToolError::InvalidInput(
+            "continue requires grant_rounds".into(),
+        ));
+    };
+    let Some(engine) = ctx.engine() else {
+        return Ok(ContinueApplication {
+            applied: false,
+            note: "continue decision recorded; no engine attached to apply it".into(),
+        });
+    };
+    let Some(adapter) = engine.target_adapter() else {
+        return Ok(ContinueApplication {
+            applied: false,
+            note: "continue decision recorded; no wake target adapter installed".into(),
+        });
+    };
+
+    let mut wake_entry = load_original_wake_entry(ctx, loaded).await?;
+    wake_entry.max_rounds = grant_rounds;
+    wake_entry.intervention_policy = None;
+    let input = FireWakeEntryInput {
+        owner: ctx.owner.clone(),
+        personality_instance_id: PersonalityInstanceId::new(
+            loaded.original_personality_instance_id,
+        ),
+        wake_entry,
+        change_event_seq: loaded.original_change_event_seq,
+        triggering_memory_id: loaded.triggering_memory_id,
+        continuation: Some(FireWakeContinuation {
+            intervention_decision_memory_id,
+            intervention_request_memory_id: MemoryId::new(loaded.memory_id),
+            original_invocation_id: loaded.original_invocation_id,
+            wake_trace_memory_id: MemoryId::new(loaded.wake_trace_memory_id),
+            triggering_memory_id: MemoryId::new(loaded.triggering_memory_id),
+            grant_rounds,
+            rationale: payload.rationale.clone(),
+        }),
+    };
+
+    match fire_wake_entry(engine, adapter.as_ref(), input).await {
+        Ok(true) => Ok(ContinueApplication {
+            applied: true,
+            note: format!("continued original wake for {grant_rounds} rounds"),
+        }),
+        Ok(false) => Ok(ContinueApplication {
+            applied: false,
+            note: "continuation already applied or skipped by wake filters".into(),
+        }),
+        Err(err) => Err(McpToolError::Other(format!(
+            "apply continuation failed: {err}"
+        ))),
+    }
+}
+
+async fn load_original_wake_entry(
+    ctx: &McpToolCtx,
+    loaded: &LoadedInterventionRequest,
+) -> Result<WakeEntryRow, McpToolError> {
+    let (owner_kind, owner_id, owner_org_id) = owner_columns(&ctx.owner);
+    let row = sqlx::query(
+        "SELECT wake_entry_id, trigger_kind, trigger_id, label, enabled,
+                execution_mode, authored_by, probability_promille, goal_scope,
+                instructions, model_tier, inference_target_ref,
+                substrate_tool_palette, workspace_tool_palette, max_rounds,
+                disabled_reason
+           FROM proxima_core.personality_wake_entries
+          WHERE owner_principal_kind = $1
+            AND owner_principal_id = $2
+            AND owner_org_id = $3
+            AND personality_instance_id = $4
+            AND wake_entry_id = $5
+            AND tombstoned_at IS NULL",
+    )
+    .bind(owner_kind)
+    .bind(owner_id)
+    .bind(owner_org_id)
+    .bind(loaded.original_personality_instance_id)
+    .bind(loaded.original_wake_entry_id)
+    .fetch_optional(&ctx.pool)
+    .await
+    .map_err(map_sql)?
+    .ok_or_else(|| McpToolError::InvalidInput("original wake entry not found".into()))?;
+
+    Ok(WakeEntryRow {
+        wake_entry_id: row.get("wake_entry_id"),
+        trigger_kind: row.get::<WakeEntryTriggerKind, _>("trigger_kind"),
+        trigger_id: row.get("trigger_id"),
+        label: row.get("label"),
+        enabled: row.get("enabled"),
+        execution_mode: row.get::<WakeEntryExecutionMode, _>("execution_mode"),
+        authored_by: row.get::<WakeEntryAuthoredBy, _>("authored_by"),
+        probability_promille: u16::try_from(row.get::<i32, _>("probability_promille")).unwrap_or(0),
+        goal_scope: row.get::<WakeEntryGoalScope, _>("goal_scope"),
+        instructions: row.get("instructions"),
+        model_tier: row.get::<ModelTier, _>("model_tier"),
+        inference_target_ref: row.get("inference_target_ref"),
+        substrate_tool_palette: row.get("substrate_tool_palette"),
+        workspace_tool_palette: row.get("workspace_tool_palette"),
+        max_rounds: u16::try_from(row.get::<i32, _>("max_rounds")).unwrap_or(0),
+        intervention_policy: None,
+        disabled_reason: row.get("disabled_reason"),
+    })
+}
+
+async fn ingest_intervention_decision_fact(
     tx: &mut Transaction<'_, Postgres>,
     ctx: &McpToolCtx,
-    payload: &BudgetDecisionV1,
+    payload: &InterventionDecisionV1,
 ) -> Result<crate::verbs::event_ingest::EventIngestOutcome, McpToolError> {
     let mut payload_bytes = Vec::new();
     ciborium::ser::into_writer(payload, &mut payload_bytes)
         .map_err(|err| McpToolError::InvalidInput(format!("serialize payload: {err}")))?;
-    let draft = budget_decision_event_draft(
+    let draft = intervention_decision_event_draft(
         ctx.owner.clone(),
         &payload_bytes,
         SourceBatchId::new(uuid::Uuid::now_v7()),
-        SourceId::new(BUDGET_SOURCE_ID),
+        SourceId::new(INTERVENTION_SOURCE_ID),
         payload.decided_at,
     );
     ingest_event_in_tx(tx, &draft).await
@@ -460,20 +623,20 @@ async fn ingest_event_in_tx(
     })
 }
 
-async fn insert_budget_decision_sidecar(
+async fn insert_intervention_decision_sidecar(
     tx: &mut Transaction<'_, Postgres>,
     memory_id: MemoryId,
-    payload: &BudgetDecisionV1,
+    payload: &InterventionDecisionV1,
 ) -> Result<(), McpToolError> {
     sqlx::query(
-        "INSERT INTO proxima_core.budget_decision_v1
-            (memory_id, budget_request_memory_id, decision, grant_rounds,
+        "INSERT INTO proxima_core.intervention_decision_v1
+            (memory_id, intervention_request_memory_id, decision, grant_rounds,
              redirect_personality_instance_id, rationale, decided_at, idempotency_key)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-         ON CONFLICT (budget_request_memory_id, idempotency_key) DO NOTHING",
+         ON CONFLICT (intervention_request_memory_id, idempotency_key) DO NOTHING",
     )
     .bind(memory_id.into_inner())
-    .bind(payload.budget_request_memory_id)
+    .bind(payload.intervention_request_memory_id)
     .bind(payload.decision)
     .bind(payload.grant_rounds.map(i32::from))
     .bind(payload.redirect_personality_instance_id)

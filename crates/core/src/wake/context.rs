@@ -193,7 +193,12 @@ pub async fn assemble_wake_context(
     };
 
     let memory_snapshot = storage
-        .load_memory_by_id(owner, triggering_memory_id, sidecars)
+        .load_memory_by_id(
+            owner,
+            triggering_memory_id,
+            Some(personality_instance_id),
+            sidecars,
+        )
         .await
         .map_err(|e| ProtocolError::internal(format!("load_memory_by_id: {e}")))?
         .ok_or_else(|| {
