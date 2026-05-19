@@ -68,6 +68,10 @@ fn normalize_object(
         if key == "$schema" || key == "default" {
             continue;
         }
+        if key == "additionalProperties" && matches!(value, Value::Bool(false)) {
+            normalized.insert(key.clone(), Value::Bool(false));
+            continue;
+        }
         normalized.insert(key.clone(), normalize_node(value, &join_key(pointer, key))?);
     }
 
