@@ -279,6 +279,9 @@ struct Metrics {
     flow_graph_json: String,
     flow_graph_mermaid: String,
     flow_graph_summary: FlowGraphSummary,
+    conversation_index_json: String,
+    conversation_invocation_count: usize,
+    conversation_missing_log_count: usize,
     reviewer_score: Option<ReviewerScore>,
     reviewer_score_error: Option<String>,
     auto_merge: Option<AutoMergeMetric>,
@@ -314,6 +317,31 @@ struct WakeInvocationMetric {
     completion_tokens: Option<i64>,
     cost_usd: Option<String>,
     failure_reason: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ConversationIndex {
+    run_dir: String,
+    index_path: String,
+    invocation_count: usize,
+    missing_log_count: usize,
+    invocations: Vec<ConversationInvocationArtifact>,
+}
+
+#[derive(Debug, Serialize)]
+struct ConversationInvocationArtifact {
+    invocation_id: String,
+    role: String,
+    personality_instance_id: String,
+    wake_entry_id: String,
+    trigger_schema_id: String,
+    change_event_seq: String,
+    execution_mode: String,
+    status: String,
+    source_jsonl_path: Option<String>,
+    copied_jsonl_path: Option<String>,
+    missing_log: bool,
+    copy_error: Option<String>,
 }
 
 fn terminal_guard_hits(invocations: &[WakeInvocationMetric]) -> BTreeMap<String, u32> {

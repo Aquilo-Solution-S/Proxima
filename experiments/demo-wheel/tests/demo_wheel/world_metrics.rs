@@ -260,6 +260,14 @@ impl DemoWorld {
                 .display()
                 .to_string(),
             flow_graph_summary: self.collect_flow_graph().await?.summary,
+            conversation_index_json: self
+                .cfg
+                .run_dir
+                .join("conversations/index.json")
+                .display()
+                .to_string(),
+            conversation_invocation_count: 0,
+            conversation_missing_log_count: 0,
             reviewer_score,
             reviewer_score_error,
             auto_merge: None,

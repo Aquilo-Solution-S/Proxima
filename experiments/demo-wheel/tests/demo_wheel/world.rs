@@ -173,8 +173,8 @@ impl DemoWorld {
             if let Some(max_seconds) = self.cfg.max_wall_clock_seconds
                 && started.elapsed() >= Duration::from_secs(max_seconds)
             {
-                let metrics = self.collect_metrics(started, ticks).await?;
-                self.write_outputs(&metrics).await?;
+                let mut metrics = self.collect_metrics(started, ticks).await?;
+                self.write_outputs(&mut metrics).await?;
                 return Err(self
                     .failure_report("max wall clock seconds exceeded")
                     .await?
@@ -187,8 +187,8 @@ impl DemoWorld {
                     .values()
                     .all(|value| *value)
             {
-                let metrics = self.collect_metrics(started, ticks).await?;
-                self.write_outputs(&metrics).await?;
+                let mut metrics = self.collect_metrics(started, ticks).await?;
+                self.write_outputs(&mut metrics).await?;
                 return Ok(());
             }
             if self.cfg.intervention_mode == DemoInterventionMode::Normal
@@ -196,16 +196,16 @@ impl DemoWorld {
             {
                 let mut metrics = self.collect_metrics(started, ticks).await?;
                 if !metrics.overall_pass {
-                    self.write_outputs(&metrics).await?;
+                    self.write_outputs(&mut metrics).await?;
                     return Err(self.failure_report("final checks failed").await?.into());
                 }
                 metrics.auto_merge = Some(self.auto_merge_successful_worktree().await?);
-                self.write_outputs(&metrics).await?;
+                self.write_outputs(&mut metrics).await?;
                 return Ok(());
             }
             if correction_loops > self.cfg.max_correction_loops {
-                let metrics = self.collect_metrics(started, ticks).await?;
-                self.write_outputs(&metrics).await?;
+                let mut metrics = self.collect_metrics(started, ticks).await?;
+                self.write_outputs(&mut metrics).await?;
                 return Err(self
                     .failure_report("max correction loops exceeded")
                     .await?
@@ -216,8 +216,8 @@ impl DemoWorld {
             }
         }
 
-        let metrics = self.collect_metrics(started, ticks).await?;
-        self.write_outputs(&metrics).await?;
+        let mut metrics = self.collect_metrics(started, ticks).await?;
+        self.write_outputs(&mut metrics).await?;
         Err(self
             .failure_report("max dispatcher ticks exceeded")
             .await?
