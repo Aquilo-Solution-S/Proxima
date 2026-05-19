@@ -42,6 +42,7 @@ fn wake_visible_core_and_workspace_tools_describe_object_properties() {
         .iter()
         .map(|tool| tool.tool_id().to_string())
         .filter(|tool_id| tool_id != "core/emit_abstraction" && tool_id != "core/emit_perspective")
+        .chain(["core/emit_intervention_decision".to_string()])
         .collect::<Vec<_>>();
     let mut schemas = build_wake_tool_projection(&registry, &palette)
         .expect("core substrate projection")
