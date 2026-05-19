@@ -88,6 +88,20 @@ impl CodeWorkspaceRunner {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub(super) enum FinalizePolicy {
+    EmitWorkspaceRun,
+    InspectOnly {
+        head_sha: String,
+        status_porcelain: String,
+    },
+}
+
+fn default_finalize_policy() -> FinalizePolicy {
+    FinalizePolicy::EmitWorkspaceRun
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct PreparedState {
     pub(super) repo_id: Uuid,
@@ -96,6 +110,8 @@ pub(super) struct PreparedState {
     pub(super) branch_name: String,
     pub(super) parent_sha: String,
     pub(super) worktree_path: String,
+    #[serde(default = "default_finalize_policy")]
+    pub(super) finalize_policy: FinalizePolicy,
 }
 
 #[derive(Debug, sqlx::FromRow)]

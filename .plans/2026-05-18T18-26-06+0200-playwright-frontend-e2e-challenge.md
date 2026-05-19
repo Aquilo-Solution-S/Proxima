@@ -1,348 +1,128 @@
-# Playwright Frontend E2E Challenge
+# Flexible Frontend E2E Challenge
 
-Goal: add a harder live demo challenge that proves browser-visible frontend behavior with deterministic Playwright evidence.
-Architecture: keep the spinning-wheel personalities responsible for planning, decomposition, implementation, and review; add deterministic browser verification behind existing `AcceptanceVerifierKind::BrowserSmoke`, then wire a new `kanban_board` demo challenge that requires that verifier.
-Tech Stack: Rust `proxima-code`, existing demo wheel test, pnpm workspace, Playwright Chromium runner, static generated HTML/CSS/JS app.
+Goal: add a harder live demo challenge that tests whether the wheel can use shell-native repo tooling for frontend verification.
+Architecture: keep Proxima tools for graph/state transitions; use workspace shell for git inspection, tests, and frontend toolchains. No Playwright MCP or Proxima-owned browser runner in this iteration.
+Tech Stack: Rust `proxima-code`, existing demo wheel test, package-free static frontend challenge, Node built-in tests.
 REQUIRED SUB-SKILL: superpowers-executing-plans
 
-Status: Proposed
+Status: Implemented, live E2E still under iteration
 Created: 2026-05-18
 Reviewed:
-Implemented:
+Implemented: 2026-05-18
 Implementation:
 Verification:
-- pending
+- `git diff --check` passed
+- `cargo test -p proxima-code --test demo_wheel_pg --no-run` passed
+- `cargo test -p proxima-code --test workspace_run_pg workspace_run_review_finalize -- --test-threads=1` passed
+- `cargo test -p proxima-code --test workspace_run_pg workspace_run_trigger_prepares_verifier_context_from_worker_branch -- --test-threads=1` passed
+- Live Kanban run after inspect-only finalization: failed at max dispatcher ticks, but workspace-run loop is gone (`workspace_run_count = 3`, `workspace_review_count = 0`).
+- Live Kanban run after verifier read-only palette and `8` verifier rounds: failed at max dispatcher ticks after real progress (`workspace_run_count = 4`, `workspace_review_count = 3`, `goal_achieved_count = 1`).
+- Live Kanban run after `18` ticks and verifier `10` rounds: failed at max dispatcher ticks after correction progress (`workspace_run_count = 4`, `workspace_review_count = 4`, `goal_achieved_count = 2`).
+- Live Kanban run after `24` ticks: failed at max dispatcher ticks with one unreviewed child run (`workspace_run_count = 3`, `workspace_review_count = 2`, `goal_achieved_count = 2`).
 Notes:
-- Current mismatch fix: `FlowGraphSummary` schema counters must count `kind == "memory"` only; change-event nodes carry the same schema id and otherwise double-count Facts.
+- Current decision: explicit browser tooling is deferred until experiments show shell-driven verification is too weak.
+- Current gap: dispatcher scheduling/termination for the harder decomposed flow is still nondeterministic. The old verifier self-loop is fixed; remaining failures are missed final verifier/goal-reviewer turns before tick cap.
 
 ## Summary
 
-Current demo state:
-- `flavors/code/tests/demo_wheel_pg.rs` supports `signal_match` and `todo_cli`.
-- Budgeter is wired as an ordinary personality and appeared in the latest flow graph.
-- `flavors/code/src/payloads/acceptance.rs` already defines `AcceptanceVerifierKind::BrowserSmoke`.
-- `flavors/code/src/verification/checks.rs` has `DeterministicCheck::BrowserSmoke`, but it only checks that an entrypoint is local and ignores selector assertions.
-- `flavors/code/tests/verification_checks.rs` covers file and command checks only.
-- `packages/frontend-core/package.json` and `flavors/code/frontend/package.json` use Vitest; no Playwright dependency is present.
-
-Target outcome:
-- `PROXIMA_DEMO_CHALLENGE=kanban_board` creates a package-free static frontend task.
-- Planner is encouraged, not forced, to decompose into child goals.
-- Worker builds the app through normal workspace tools.
-- Verifier emits evidence backed by deterministic Playwright browser checks.
-- Report artifacts include screenshot and browser-check JSON paths.
-- Flow graph counts match sidecar counts for budget reviews and decisions.
+Current implemented state:
+- `flavors/code/tests/demo_wheel_pg.rs` supports `signal_match`, `todo_cli`, and `kanban_board`.
+- Verifier workspace context includes `diff_inspection_commands`.
+- Verifier prompts tell the personality to inspect git status/diff through `workspace_shell` and not edit files.
+- Existing-run workspace preparations finalize as inspect-only and do not emit another `WorkspaceRunV1`.
+- Inspect-only finalization rejects verifier-caused worktree mutations.
+- `kanban_board` seeds a static frontend repo with `README.md`, `data/tasks.json`, and `docs/acceptance.md`.
+- Planner is encouraged, not forced, to decompose the frontend task into three child goals.
+- Worker can edit with `workspace_text_editor` and execute repo-native checks with `workspace_shell`.
+- Verifier checks the resulting app through shell commands, including `node test_kanban.mjs`.
 
 ## File Structure
 
-- `package.json` - root private workspace dev dependency and script for Playwright browser smoke.
-- `pnpm-lock.yaml` - generated by `pnpm add -Dw @playwright/test`.
-- `flavors/code/tests/browser_smoke_runner.mjs` - Playwright runner used by Rust verification checks.
-- `flavors/code/src/verification/checks.rs` - make `BrowserSmoke` execute Playwright, actions, assertions, screenshot capture.
-- `flavors/code/tests/verification_checks.rs` - unit/integration coverage for browser smoke pass/fail behavior.
-- `flavors/code/tests/demo_wheel_pg.rs` - add `kanban_board` challenge, instructions, criteria, deterministic metrics, report fields.
-- `flavors/code/src/workspace_runner/loaders.rs` - only touch if acceptance criteria need a shared conversion helper.
+- `flavors/code/src/workspace_runner/prepare.rs` - adds review-time `diff_inspection_commands`.
+- `flavors/code/tests/demo_wheel_pg.rs` - adds `kanban_board` challenge, prompts, seed repo, metrics gates, and verifier shell checks.
 
 ## Goals / Acceptance
 
-- [ ] `flow_graph.summary.budget_review_count == metrics.output_sidecar_counts_by_schema["core/budget-review-requested-v1"]`.
-- [ ] `flow_graph.summary.budget_decision_count == metrics.output_sidecar_counts_by_schema["core/budget-decision-v1"]`.
-- [ ] `BrowserSmoke` fails when a required selector/text assertion is missing.
-- [ ] `BrowserSmoke` passes on a static local `index.html` after executing configured browser actions.
-- [ ] `kanban_board` live E2E produces `index.html`, no app-local package install, at least three child execution requests, and at least one Playwright-backed verification evidence Fact.
-- [ ] Demo report links screenshot and browser JSON artifacts under the run directory.
-- [ ] `cargo test -p proxima-code --test demo_wheel_pg --no-run` passes.
+- [x] Verifier can explore worktree diff through shell-provided git commands.
+- [x] `PROXIMA_DEMO_CHALLENGE=kanban_board` is accepted by the demo test.
+- [x] Kanban seed repo includes static frontend input data and acceptance docs.
+- [x] Planner prompt advertises three decomposable frontend work streams.
+- [x] Worker prompt asks for package-free `index.html` plus executable `test_kanban.mjs`.
+- [x] Verifier prompt runs shell-based git inspection and `node test_kanban.mjs`.
+- [x] Verifier is configured without `workspace_text_editor`.
+- [x] Existing-run verifier finalization does not emit a new `WorkspaceRunV1`.
+- [x] Kanban deterministic gates require three child goals/runs/reviews.
+- [x] Compile check passes.
 
 ## Decisions
 
-- Browser verifier location: repo-root Playwright dependency plus a test helper script. Rationale: the generated demo repo stays package-free; verification belongs to Proxima's harness, not the produced app.
-- Browser scope: static `file://` verification first. Rationale: generated app can be inspected without starting a dev server; local server support can be added later if needed.
-- Challenge shape: `kanban_board`. Rationale: harder than the CLI because it requires layout, DOM state, filtering, task movement, persistence, and visible responsive behavior.
-- LLM enforcement: do not enforce decomposition in code. Planner prompt advertises decomposition and criteria make the work naturally divisible.
-- Evidence source: deterministic harness evidence is authoritative; Verifier personality still decides review verdict from the evidence and workspace state.
-- Playwright install: add `@playwright/test` with `pnpm add -Dw @playwright/test`; local one-time browser install command is `pnpm exec playwright install chromium`.
+- Browser tooling: do not add Playwright MCP, `BrowserSmoke`, or a side container now. Rationale: shell already exposes repo-native test runners and avoids reinventing each domain tool.
+- Frontend proof: require executable repo-native tests through `workspace_shell`. Rationale: Planner/Worker can choose the test strategy; Verifier observes by running commands.
+- Challenge shape: `kanban_board`. Rationale: harder than the CLI because it requires UI contract, state, filtering, movement, persistence, and tests.
+- Write access: Worker remains the repo writer. Verifier uses shell/listing for inspection and review evidence, not file edits.
+- Existing-run finalization: no new event type. Runner state carries a private finalize policy; only fresh execution requests emit `WorkspaceRunV1`.
+- Future BrowserSmoke: only add if repeated experiments show skipped/faked browser verification or need stable screenshots for scoring.
 
-## Tasks
+## Implemented Slice
 
-### Task 1: Keep Flow Graph Counts Fact-Only
-
-Files:
-- Modify: `flavors/code/tests/demo_wheel_pg.rs`
-- Test: `flavors/code/tests/demo_wheel_pg.rs`
-
-Steps:
-- [ ] Preserve the existing `kind == "memory"` filter on schema-specific `FlowGraphSummary` counters:
-  ```rust
-  nodes
-      .iter()
-      .filter(|n| {
-          n.kind == "memory"
-              && n.schema_id.as_deref() == Some(BudgetDecisionV1::SCHEMA_ID)
-      })
-      .count()
-  ```
-- [ ] Run: `cargo test -p proxima-code --test demo_wheel_pg --no-run`
-  Expected after implementation: test binary builds.
-- [ ] Run after one live demo: `jq '.summary | {budget_review_count,budget_decision_count}' /private/tmp/proxima-demo-runs/<run>/flow_graph.json`
-  Expected after implementation: each count matches `metrics.json.output_sidecar_counts_by_schema`.
-- [ ] Commit: `fix(flavors-code): count flow graph fact schemas once`
-
-### Task 2: Add Playwright Browser Smoke Runner
+### Diff Inspection Context
 
 Files:
-- Modify: `package.json`
-- Modify: `pnpm-lock.yaml`
-- Create: `flavors/code/tests/browser_smoke_runner.mjs`
-- Modify: `flavors/code/src/verification/checks.rs`
-- Test: `flavors/code/tests/verification_checks.rs`
+- Modified: `flavors/code/src/workspace_runner/prepare.rs`
 
-Steps:
-- [ ] Add dependency:
-  ```sh
-  pnpm add -Dw @playwright/test
-  pnpm exec playwright install chromium
-  ```
-- [ ] Add root script:
-  ```json
-  {
-    "scripts": {
-      "browser-smoke": "node flavors/code/tests/browser_smoke_runner.mjs"
-    }
-  }
-  ```
-- [ ] Create runner contract:
-  ```js
-  // argv: <worktree> <spec-json>
-  // spec: { entrypoint, actions, assertions, screenshotPath }
-  // action: { kind: "click" | "fill" | "press", selector, value }
-  // assertion: { selector, expectedText, visible }
-  ```
-- [ ] Implement Rust check shape:
-  ```rust
-  #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
-  pub struct BrowserAction {
-      pub kind: BrowserActionKind,
-      pub selector: String,
-      pub value: Option<String>,
-  }
-
-  #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
-  pub struct BrowserAssertion {
-      pub selector: String,
-      pub expected_text: Option<String>,
-      pub visible: bool,
-  }
-
-  DeterministicCheck::BrowserSmoke {
-      entrypoint,
-      actions,
-      assertions,
-      screenshot_path,
-      timeout_ms,
-  }
-  ```
-- [ ] `browser_smoke()` must:
-  ```rust
-  // reject absolute/parent-path entrypoints except localhost/file URLs
-  // call `pnpm browser-smoke -- <worktree> <spec-json>` from repo root
-  // return Passed only on exit 0
-  // include stdout_tail, stderr_tail, screenshot_path, and assertion count in artifact_refs_json
-  ```
-- [ ] Add tests:
-  ```rust
-  #[tokio::test]
-  async fn browser_smoke_checks_selector_text() {
-      let temp = tempfile::tempdir().unwrap();
-      std::fs::write(temp.path().join("index.html"), r#"
-        <button data-testid="add">Add</button>
-        <output data-testid="count">0</output>
-        <script>
-          document.querySelector('[data-testid=add]').onclick = () =>
-            document.querySelector('[data-testid=count]').textContent = '1';
-        </script>
-      "#).unwrap();
-      let outcome = run_check(temp.path(), "browser", &DeterministicCheck::BrowserSmoke {
-          entrypoint: "index.html".into(),
-          actions: vec![BrowserAction { kind: BrowserActionKind::Click, selector: "[data-testid=add]".into(), value: None }],
-          assertions: vec![BrowserAssertion { selector: "[data-testid=count]".into(), expected_text: Some("1".into()), visible: true }],
-          screenshot_path: Some("browser-smoke.png".into()),
-          timeout_ms: 10_000,
-      }).await;
-      assert_eq!(outcome.status, VerificationEvidenceStatus::Passed);
-  }
-  ```
-- [ ] Run: `cargo test -p proxima-code --test verification_checks browser_smoke -- --test-threads=1`
-  Expected after implementation: browser smoke pass/fail tests pass when Chromium is installed; missing browser error points to `pnpm exec playwright install chromium`.
-- [ ] Commit: `feat(flavors-code): run browser smoke checks with playwright`
-
-### Task 3: Add Kanban Board Demo Challenge
-
-Files:
-- Modify: `flavors/code/tests/demo_wheel_pg.rs`
-
-Steps:
-- [ ] Add challenge enum and env parsing:
-  ```rust
-  const KANBAN_REPO_HANDLE: &str = "kanban-board-demo";
-  const KANBAN_GOAL_TITLE: &str = "Kanban Board frontend demo";
-
-  enum DemoChallenge {
-      SignalMatch,
-      TodoCli,
-      KanbanBoard,
-  }
-  ```
-- [ ] Seed repo:
-  ```rust
-  // README.md: build package-free `index.html`; no dependencies.
-  // data/tasks.json: backlog, active, blocked, done seed tasks.
-  // docs/acceptance.md: required UI behavior and test ids.
-  ```
-- [ ] Planner prompt:
-  ```text
-  Prefer decomposing into child Goals:
-  1. static board shell and responsive columns
-  2. task filtering/search and status counters
-  3. move-task interactions, keyboard accessible controls, localStorage persistence
-  ```
-- [ ] Worker prompt:
-  ```text
-  Build a package-free static Kanban app in index.html. Required test ids:
-  app-title, search-input, status-filter, task-card, move-next, move-prev,
-  task-count, done-count, reset-board. Use localStorage key proxima-kanban-demo-v1.
-  ```
-- [ ] Acceptance criteria:
-  ```json
-  [
-    {"key":"static_entrypoint","required":true,"verifier_kind":"file_exists","verifier_spec_json":{"path":"index.html"}},
-    {"key":"browser_board_loads","required":true,"verifier_kind":"browser_smoke","verifier_spec_json":{
-      "entrypoint":"index.html",
-      "assertions":[
-        {"selector":"[data-testid=app-title]","expectedText":"Kanban Board","visible":true},
-        {"selector":"[data-testid=task-card]","visible":true}
-      ],
-      "screenshotPath":"kanban-load.png",
-      "timeoutMs":10000
-    }},
-    {"key":"browser_interaction","required":true,"verifier_kind":"browser_smoke","verifier_spec_json":{
-      "entrypoint":"index.html",
-      "actions":[
-        {"kind":"fill","selector":"[data-testid=search-input]","value":"API"},
-        {"kind":"click","selector":"[data-testid=move-next]"}
-      ],
-      "assertions":[
-        {"selector":"[data-testid=task-count]","expectedText":"1","visible":true},
-        {"selector":"[data-testid=done-count]","visible":true}
-      ],
-      "screenshotPath":"kanban-interaction.png",
-      "timeoutMs":10000
-    }}
+Behavior:
+```json
+{
+  "diff_inspection_commands": [
+    "git status --short",
+    "git diff --stat <parent>..HEAD",
+    "git diff --name-only <parent>..HEAD",
+    "git diff --unified=80 <parent>..HEAD"
   ]
-  ```
-- [ ] Deterministic checks:
-  ```rust
-  checks.insert("browser_verification_observed".into(), goal_graph.verification_evidence_count >= 2);
-  checks.insert("kanban_primary_entrypoint_exists".into(), changed_files.iter().any(|f| f == "index.html"));
-  checks.insert("no_package_install_required".into(), !changed_files.iter().any(|f| f.ends_with("lock") || f == "package.json"));
-  ```
-- [ ] Run: `cargo test -p proxima-code --test demo_wheel_pg --no-run`
-  Expected after implementation: test binary builds.
-- [ ] Commit: `feat(flavors-code): add kanban browser demo challenge`
+}
+```
 
-### Task 4: Wire Deterministic Browser Evidence Into Review Flow
+### Kanban Challenge
 
 Files:
-- Modify: `flavors/code/tests/demo_wheel_pg.rs`
-- Modify: `flavors/code/src/verification/checks.rs`
-- Test: `flavors/code/tests/demo_wheel_pg.rs`
+- Modified: `flavors/code/tests/demo_wheel_pg.rs`
 
-Steps:
-- [ ] Add helper in demo test:
-  ```rust
-  async fn emit_required_deterministic_evidence(
-      &self,
-      workspace_run: MemoryId,
-      request: MemoryId,
-      worktree: &Path,
-      criteria: &[AcceptanceCriterionV1],
-  ) -> Result<Vec<CheckOutcome>, Box<dyn std::error::Error>>
-  ```
-- [ ] Convert criteria to checks:
-  ```rust
-  match criterion.verifier_kind {
-      AcceptanceVerifierKind::FileExists => serde_json::from_value::<FileExistsSpec>(...),
-      AcceptanceVerifierKind::Command => serde_json::from_value::<CommandSpec>(...),
-      AcceptanceVerifierKind::BrowserSmoke => serde_json::from_value::<BrowserSmokeSpec>(...),
-      AcceptanceVerifierKind::ReviewerOnly => continue,
-      AcceptanceVerifierKind::DiffScope => ...
-  }
-  ```
-- [ ] Emit `VerificationEvidenceV1` for every required deterministic criterion before final metrics are collected. Keep the Verifier personality review verdict in the loop; do not bypass it.
-- [ ] Verifier prompt for `kanban_board`:
-  ```text
-  Inspect deterministic verification evidence for Triggering Memory N1 before approving. Approve only if static_entrypoint, browser_board_loads, and browser_interaction evidence are passed.
-  ```
-- [ ] Run: `cargo test -p proxima-code --test demo_wheel_pg --no-run`
-  Expected after implementation: compile pass.
-- [ ] Commit: `feat(flavors-code): attach deterministic browser evidence to demo reviews`
+Runtime:
+```sh
+PROXIMA_LIVE_MISTRAL=1 \
+PROXIMA_DEMO_CHALLENGE=kanban_board \
+PROXIMA_DEMO_REPO=/private/tmp/proxima-kanban-e2e \
+cargo test -p proxima-code --test demo_wheel_pg -- --ignored --nocapture --test-threads=1
+```
 
-### Task 5: Run Live Next-Level E2E
+Expected signals:
+- `overall_pass: true`
+- `functional_pass: true`
+- `deterministic_pass: true`
+- `final_goal_state: Achieved`
+- `goal_graph.child_goal_count >= 3`
+- `goal_graph.child_workspace_run_count >= 3`
+- `goal_graph.verification_evidence_count >= 1`
+- changed files include `index.html` and `test_kanban.mjs`
+- no app-local package files are required
+
+## Inspect-Only Finalization
 
 Files:
-- Runtime artifacts only under `/private/tmp/proxima-demo-runs/<timestamp>/`
+- Modified: `flavors/code/src/workspace_runner/mod.rs`
+- Modified: `flavors/code/src/workspace_runner/prepare.rs`
+- Modified: `flavors/code/tests/workspace_run_pg.rs`
 
-Steps:
-- [ ] Build check:
-  ```sh
-  cargo test -p proxima-code --test verification_checks -- --test-threads=1
-  cargo test -p proxima-code --test demo_wheel_pg --no-run
-  ```
-- [ ] Live run:
-  ```sh
-  set -a
-  source ~/.proxima/.env
-  set +a
-  PROXIMA_LIVE_MISTRAL=1 \
-  PROXIMA_DEMO_CHALLENGE=kanban_board \
-  PROXIMA_DEMO_REPO=/private/tmp/proxima-kanban-e2e \
-  cargo test -p proxima-code --test demo_wheel_pg -- --ignored --nocapture --test-threads=1
-  ```
-- [ ] Expected report:
-  ```json
-  {
-    "overall_pass": true,
-    "functional_pass": true,
-    "deterministic_pass": true,
-    "final_goal_state": "Achieved",
-    "flow_graph_summary": {
-      "budget_review_count": 1,
-      "budget_decision_count": 1
-    }
-  }
-  ```
-- [ ] Expected artifact refs:
-  ```json
-  {
-    "browser": {
-      "screenshots": ["kanban-load.png", "kanban-interaction.png"],
-      "assertions_passed": 2
-    }
-  }
-  ```
-- [ ] Commit: `test(flavors-code): prove kanban browser e2e`
-
-## Docs Alignment
-
-- `AGENTS.md` invariant 7: no runtime schema/tool/source registration; this plan reuses existing `AcceptanceVerifierKind` and flavor code.
-- `AGENTS.md` invariant 13: no new ad-hoc relation strings.
-- `docs/05-actions.md`: verifier evidence remains an ordinary Fact emitted through tool/runtime flow.
-- `docs/09-frontend.md#stack`: does not alter Proxima Shell frontend architecture; this is a harness-level browser check for generated demo repos.
-- `README.md#start`: keeps existing dev commands; Playwright is a test dependency, not a runtime service.
+Contract:
+- Fresh `ExecutionRequestV1` workspace runs emit `WorkspaceRunV1`.
+- Existing `WorkspaceRunV1` / review / decision preparations are inspect-only.
+- Inspect-only finalize returns `primary_memory_id = None`.
+- Inspect-only finalize fails if `HEAD` or `git status --porcelain` changes during inspection.
 
 ## Out of Scope
 
-- Automatic Budgeter continuation after `continue`.
-- Playwright testing of `apps/proxima-shell`.
-- New MCP tools or backend protocol verbs.
-- Package installation inside generated demo repos.
-- CI-wide browser setup.
+- Playwright MCP tools.
+- Proxima-owned browser smoke runner.
+- Browser side container.
+- Automatic repo ingestion after merge.
+- Read-only shell allowlisting.

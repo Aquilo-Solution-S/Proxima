@@ -26,7 +26,7 @@ use super::loaders::{
     repo_id_from_payload, request_has_direct_workspace_run, request_is_correction_request,
     veto_count_for_request,
 };
-use super::{CodeWorkspaceRunner, PreparedState};
+use super::{CodeWorkspaceRunner, FinalizePolicy, PreparedState};
 
 #[async_trait::async_trait]
 impl WorkspaceRunner for CodeWorkspaceRunner {
@@ -63,6 +63,29 @@ impl WorkspaceRunner for CodeWorkspaceRunner {
             .map_err(|stderr| {
                 WorkspaceRunnerError::FinalizeFailed(format!("rev-parse HEAD: {stderr}"))
             })?;
+        match &state.finalize_policy {
+            FinalizePolicy::EmitWorkspaceRun => {}
+            FinalizePolicy::InspectOnly {
+                head_sha: expected_head,
+                status_porcelain: expected_status,
+            } => {
+                let status = git_output(worktree, &["status", "--porcelain"])
+                    .await
+                    .map_err(|stderr| {
+                        WorkspaceRunnerError::FinalizeFailed(format!(
+                            "git status --porcelain: {stderr}"
+                        ))
+                    })?;
+                if &head_sha != expected_head || &status != expected_status {
+                    return Err(WorkspaceRunnerError::FinalizeFailed(format!(
+                        "workspace_inspect_modified_worktree: expected head/status {expected_head:?}/{expected_status:?}, got {head_sha:?}/{status:?}"
+                    )));
+                }
+                return Ok(WorkspaceRunRecord {
+                    primary_memory_id: None,
+                });
+            }
+        }
         let diff_stat = diff_stat(worktree, &state.parent_sha, &head_sha).await?;
         let payload = WorkspaceRunV1 {
             wake_invocation_id: input.invocation_id,
@@ -186,6 +209,7 @@ impl CodeWorkspaceRunner {
                 branch_name: prior_run.branch_name.clone(),
                 parent_sha: prior_run.parent_sha.clone(),
                 worktree_path: worktree_path.to_string_lossy().to_string(),
+                finalize_policy: FinalizePolicy::EmitWorkspaceRun,
             };
             let runner_state = serde_json::to_value(&state).map_err(|err| {
                 WorkspaceRunnerError::Internal(format!("serialize runner state: {err}"))
@@ -281,6 +305,7 @@ impl CodeWorkspaceRunner {
             branch_name,
             parent_sha,
             worktree_path: worktree_arg,
+            finalize_policy: FinalizePolicy::EmitWorkspaceRun,
         };
         let runner_state = serde_json::to_value(&state).map_err(|err| {
             WorkspaceRunnerError::Internal(format!("serialize runner state: {err}"))
@@ -317,6 +342,13 @@ impl CodeWorkspaceRunner {
         let veto_count =
             veto_count_for_request(pool, input.owner, original_request.memory_id).await?;
         let diff = build_review_diff_context(&worktree_path, &run).await?;
+        let diff_range_to_head = format!("{}..HEAD", run.parent_sha);
+        let diff_inspection_commands = vec![
+            "git status --short".to_string(),
+            format!("git diff --stat {diff_range_to_head}"),
+            format!("git diff --name-only {diff_range_to_head}"),
+            format!("git diff --unified=80 {diff_range_to_head}"),
+        ];
         let context = json!({
             "mode": "verify_workspace_run",
             "repo_id": run.repo_id.to_string(),
@@ -333,6 +365,7 @@ impl CodeWorkspaceRunner {
             "verification_evidence": verification_evidence,
             "diff_stat": run.diff_stat_json,
             "diff": diff,
+            "diff_inspection_commands": diff_inspection_commands,
             "log_tails": {
                 "stdout_tail": run.stdout_tail,
                 "stderr_tail": run.stderr_tail,
@@ -342,7 +375,7 @@ impl CodeWorkspaceRunner {
             "veto_count": veto_count,
             "max_veto_rounds": crate::mcp::MAX_WORKSPACE_VETO_ROUNDS,
         });
-        self.prepared_from_existing_run(&run, context)
+        self.prepared_from_existing_run(&run, context).await
     }
 
     async fn prepare_workspace_review_correction(
@@ -404,7 +437,7 @@ impl CodeWorkspaceRunner {
             "max_veto_rounds": crate::mcp::MAX_WORKSPACE_VETO_ROUNDS,
             "target_worker_personality": target_worker.map(|id| id.to_string()),
         });
-        self.prepared_from_existing_run(&run, context)
+        self.prepared_from_existing_run(&run, context).await
     }
 
     async fn prepare_workspace_decision(
@@ -497,7 +530,7 @@ impl CodeWorkspaceRunner {
             "max_veto_rounds": crate::mcp::MAX_WORKSPACE_VETO_ROUNDS,
             "target_worker_personality": target_worker.map(|id| id.to_string()),
         });
-        self.prepared_from_existing_run(&run, context)
+        self.prepared_from_existing_run(&run, context).await
     }
 
     async fn prepare_workspace_merge_goal_close(
@@ -556,15 +589,26 @@ impl CodeWorkspaceRunner {
             "active_goal": active_goal,
             "goal_close": close_candidate,
         });
-        self.prepared_from_existing_run(&run, context)
+        self.prepared_from_existing_run(&run, context).await
     }
 
-    #[allow(clippy::unused_self)]
-    fn prepared_from_existing_run(
+    async fn prepared_from_existing_run(
         &self,
         run: &WorkspaceRunV1,
         workspace_context: serde_json::Value,
     ) -> Result<WorkspacePreparedRun, WorkspaceRunnerError> {
+        let worktree_path = PathBuf::from(&run.worktree_path);
+        ensure_worktree_head(&worktree_path, &run.branch_name, &run.head_sha).await?;
+        let head_sha = git_output(&worktree_path, &["rev-parse", "HEAD"])
+            .await
+            .map_err(|stderr| {
+                WorkspaceRunnerError::PrepareFailed(format!("rev-parse HEAD: {stderr}"))
+            })?;
+        let status_porcelain = git_output(&worktree_path, &["status", "--porcelain"])
+            .await
+            .map_err(|stderr| {
+                WorkspaceRunnerError::PrepareFailed(format!("git status --porcelain: {stderr}"))
+            })?;
         let state = PreparedState {
             repo_id: run.repo_id,
             canonical_path: String::new(),
@@ -572,12 +616,16 @@ impl CodeWorkspaceRunner {
             branch_name: run.branch_name.clone(),
             parent_sha: run.parent_sha.clone(),
             worktree_path: run.worktree_path.clone(),
+            finalize_policy: FinalizePolicy::InspectOnly {
+                head_sha,
+                status_porcelain,
+            },
         };
         let runner_state = serde_json::to_value(&state).map_err(|err| {
             WorkspaceRunnerError::Internal(format!("serialize runner state: {err}"))
         })?;
         Ok(WorkspacePreparedRun {
-            work_dir: PathBuf::from(&run.worktree_path),
+            work_dir: worktree_path,
             workspace_context: Some(workspace_context),
             runner_state,
         })

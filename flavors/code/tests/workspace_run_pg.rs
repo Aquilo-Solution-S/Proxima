@@ -40,8 +40,8 @@ use proxima_core::{
     EdgeAuthorshipKind, Engine, EntityKind, FactPayload, FlavorRegistry, InferenceTargetConfig,
     MistralChatConfig, ModelTier, OrgId, Owner, OwnerPrincipalKind, Principal,
     RegisterInferenceTargetRequest, SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId,
-    WakeEntryAuthoredBy, WakeEntryTriggerKind, WorkspacePrepareInput, WorkspaceRunner,
-    WorkspaceRunnerError,
+    WakeEntryAuthoredBy, WakeEntryTriggerKind, WorkspaceFinalizeInput, WorkspaceOutcome,
+    WorkspacePrepareInput, WorkspaceRunner, WorkspaceRunnerError,
 };
 use proxima_flavor_goal::tools::mark_achieved::{
     MarkAchievedArgs, MarkAchievedStatus, MarkAchievedTool,
@@ -1189,6 +1189,291 @@ async fn workspace_run_trigger_prepares_verifier_context_from_worker_branch()
             git(&prepared.work_dir, &["rev-parse", "HEAD"]).map_err(std::io::Error::other)?,
             head_sha
         );
+        Ok(())
+    }
+    .await;
+
+    drop(pg);
+    let _ = drop_db(&db_name).await;
+    result
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn workspace_run_review_finalize_does_not_emit_workspace_run()
+-> Result<(), Box<dyn std::error::Error>> {
+    let Some((db_name, pg)) = migrated_db().await else {
+        return Ok(());
+    };
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = test_owner();
+        let repo_root = tempfile::tempdir()?;
+        let worktree_root = tempfile::tempdir()?;
+        let (repo_path, parent_sha) = init_repo(&repo_root).map_err(std::io::Error::other)?;
+        let branch_name = format!("proxima/wake/{}", Uuid::now_v7());
+        let worker_tree = worktree_root.path().join("worker");
+        git(
+            &repo_path,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                &branch_name,
+                worker_tree.to_str().expect("utf8 worktree"),
+                "main",
+            ],
+        )
+        .map_err(std::io::Error::other)?;
+        std::fs::write(worker_tree.join("README.md"), "initial\nverified change\n")?;
+        git(&worker_tree, &["add", "README.md"]).map_err(std::io::Error::other)?;
+        git(
+            &worker_tree,
+            &[
+                "-c",
+                "user.name=Proxima Test",
+                "-c",
+                "user.email=proxima@example.test",
+                "commit",
+                "-m",
+                "worker change",
+            ],
+        )
+        .map_err(std::io::Error::other)?;
+        let head_sha = git(&worker_tree, &["rev-parse", "HEAD"]).map_err(std::io::Error::other)?;
+
+        let repo_id = Uuid::now_v7();
+        proxima_code::register_repo(
+            pg.pool(),
+            &owner,
+            repo_id,
+            repo_path.to_str().expect("utf8 repo path"),
+            "inspect-only-finalize",
+        )
+        .await?;
+        let registry_root = tempfile::tempdir()?;
+        let registry = registry_with_runner(&pg, registry_root.path().to_path_buf());
+        let request = seed_execution_request_for_runner(
+            &pg,
+            &owner,
+            repo_id,
+            "inspect-only-finalize-request",
+            "Update README",
+            "Update `README.md`.",
+        )
+        .await?;
+        let run_payload = WorkspaceRunV1 {
+            wake_invocation_id: Uuid::now_v7(),
+            repo_id,
+            target_branch: "main".into(),
+            worktree_path: worker_tree.to_string_lossy().to_string(),
+            branch_name,
+            parent_sha: parent_sha.clone(),
+            head_sha,
+            diff_stat_json: WorkspaceDiffStat {
+                files_changed: 1,
+                insertions: 1,
+                deletions: 0,
+                files: vec![WorkspaceDiffFile {
+                    path: "README.md".into(),
+                    insertions: 1,
+                    deletions: 0,
+                }],
+            },
+            exit_code: Some(0),
+            stdout_tail: Some("worker stdout".into()),
+            stderr_tail: None,
+            duration_ms: Some(123),
+        };
+        let run =
+            seed_workspace_run_for_runner(&pg, &owner, &registry, &run_payload, request).await?;
+        let runner = CodeWorkspaceRunner::new(pg.pool().clone());
+        let prepared = runner
+            .prepare(WorkspacePrepareInput {
+                invocation_id: Uuid::now_v7(),
+                owner: &owner,
+                wake_token: Uuid::now_v7(),
+                mcp_url: "http://127.0.0.1:1/mcp",
+                root_perspective_memory_id: proxima_core::MemoryId::new(Uuid::now_v7()),
+                triggering_memory_id: run,
+                triggering_memory_schema_id: WorkspaceRunV1::SCHEMA_ID,
+                triggering_memory_payload: &serde_json::to_value(&run_payload)?,
+                workspace_tool_palette: &[],
+            })
+            .await?;
+        let before: i64 = sqlx::query_scalar("SELECT count(*) FROM proxima_code.workspace_run_v1")
+            .fetch_one(pg.pool())
+            .await?;
+        let record = runner
+            .finalize(WorkspaceFinalizeInput {
+                owner: &owner,
+                invocation_id: Uuid::now_v7(),
+                root_perspective_memory_id: proxima_core::MemoryId::new(Uuid::now_v7()),
+                triggering_memory_id: run,
+                authored_relation: registry
+                    .resolve_relation(CORE_AUTHORED_RELATION)
+                    .expect("core/authored registered"),
+                derived_from_relation: registry
+                    .resolve_relation(CORE_DERIVED_FROM_RELATION)
+                    .expect("core/derived-from registered"),
+                prepared,
+                outcome: WorkspaceOutcome {
+                    exit_code: Some(0),
+                    stdout_tail: Some("inspected".into()),
+                    stderr_tail: None,
+                    duration_ms: Some(10),
+                },
+            })
+            .await?;
+        let after: i64 = sqlx::query_scalar("SELECT count(*) FROM proxima_code.workspace_run_v1")
+            .fetch_one(pg.pool())
+            .await?;
+
+        assert!(record.primary_memory_id.is_none());
+        assert_eq!(after, before);
+        Ok(())
+    }
+    .await;
+
+    drop(pg);
+    let _ = drop_db(&db_name).await;
+    result
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn workspace_run_review_finalize_rejects_inspection_mutations()
+-> Result<(), Box<dyn std::error::Error>> {
+    let Some((db_name, pg)) = migrated_db().await else {
+        return Ok(());
+    };
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let owner = test_owner();
+        let repo_root = tempfile::tempdir()?;
+        let worktree_root = tempfile::tempdir()?;
+        let (repo_path, parent_sha) = init_repo(&repo_root).map_err(std::io::Error::other)?;
+        let branch_name = format!("proxima/wake/{}", Uuid::now_v7());
+        let worker_tree = worktree_root.path().join("worker");
+        git(
+            &repo_path,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                &branch_name,
+                worker_tree.to_str().expect("utf8 worktree"),
+                "main",
+            ],
+        )
+        .map_err(std::io::Error::other)?;
+        std::fs::write(worker_tree.join("README.md"), "initial\nverified change\n")?;
+        git(&worker_tree, &["add", "README.md"]).map_err(std::io::Error::other)?;
+        git(
+            &worker_tree,
+            &[
+                "-c",
+                "user.name=Proxima Test",
+                "-c",
+                "user.email=proxima@example.test",
+                "commit",
+                "-m",
+                "worker change",
+            ],
+        )
+        .map_err(std::io::Error::other)?;
+        let head_sha = git(&worker_tree, &["rev-parse", "HEAD"]).map_err(std::io::Error::other)?;
+
+        let repo_id = Uuid::now_v7();
+        proxima_code::register_repo(
+            pg.pool(),
+            &owner,
+            repo_id,
+            repo_path.to_str().expect("utf8 repo path"),
+            "inspect-only-mutation",
+        )
+        .await?;
+        let registry_root = tempfile::tempdir()?;
+        let registry = registry_with_runner(&pg, registry_root.path().to_path_buf());
+        let request = seed_execution_request_for_runner(
+            &pg,
+            &owner,
+            repo_id,
+            "inspect-only-mutation-request",
+            "Update README",
+            "Update `README.md`.",
+        )
+        .await?;
+        let run_payload = WorkspaceRunV1 {
+            wake_invocation_id: Uuid::now_v7(),
+            repo_id,
+            target_branch: "main".into(),
+            worktree_path: worker_tree.to_string_lossy().to_string(),
+            branch_name,
+            parent_sha,
+            head_sha,
+            diff_stat_json: WorkspaceDiffStat {
+                files_changed: 1,
+                insertions: 1,
+                deletions: 0,
+                files: vec![WorkspaceDiffFile {
+                    path: "README.md".into(),
+                    insertions: 1,
+                    deletions: 0,
+                }],
+            },
+            exit_code: Some(0),
+            stdout_tail: Some("worker stdout".into()),
+            stderr_tail: None,
+            duration_ms: Some(123),
+        };
+        let run =
+            seed_workspace_run_for_runner(&pg, &owner, &registry, &run_payload, request).await?;
+        let runner = CodeWorkspaceRunner::new(pg.pool().clone());
+        let prepared = runner
+            .prepare(WorkspacePrepareInput {
+                invocation_id: Uuid::now_v7(),
+                owner: &owner,
+                wake_token: Uuid::now_v7(),
+                mcp_url: "http://127.0.0.1:1/mcp",
+                root_perspective_memory_id: proxima_core::MemoryId::new(Uuid::now_v7()),
+                triggering_memory_id: run,
+                triggering_memory_schema_id: WorkspaceRunV1::SCHEMA_ID,
+                triggering_memory_payload: &serde_json::to_value(&run_payload)?,
+                workspace_tool_palette: &[],
+            })
+            .await?;
+
+        std::fs::write(worker_tree.join("verifier-mutated.txt"), "mutation\n")?;
+        let err = match runner
+            .finalize(WorkspaceFinalizeInput {
+                owner: &owner,
+                invocation_id: Uuid::now_v7(),
+                root_perspective_memory_id: proxima_core::MemoryId::new(Uuid::now_v7()),
+                triggering_memory_id: run,
+                authored_relation: registry
+                    .resolve_relation(CORE_AUTHORED_RELATION)
+                    .expect("core/authored registered"),
+                derived_from_relation: registry
+                    .resolve_relation(CORE_DERIVED_FROM_RELATION)
+                    .expect("core/derived-from registered"),
+                prepared,
+                outcome: WorkspaceOutcome {
+                    exit_code: Some(0),
+                    stdout_tail: Some("inspected".into()),
+                    stderr_tail: None,
+                    duration_ms: Some(10),
+                },
+            })
+            .await
+        {
+            Ok(_) => panic!("inspect-only finalize accepted a worktree mutation"),
+            Err(err) => err,
+        };
+        match err {
+            WorkspaceRunnerError::FinalizeFailed(reason) => {
+                assert!(reason.contains("workspace_inspect_modified_worktree"));
+            }
+            other => panic!("unexpected error: {other}"),
+        }
         Ok(())
     }
     .await;
