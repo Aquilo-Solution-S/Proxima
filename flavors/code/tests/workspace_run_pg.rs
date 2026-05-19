@@ -2584,6 +2584,30 @@ async fn workspace_wake_emits_run_fact_and_edges() -> Result<(), Box<dyn std::er
             invocation_status,
             proxima_core::WakeInvocationStatus::Succeeded
         );
+
+        let (invocation_id, session_log_path): (Uuid, String) = sqlx::query_as(
+            "SELECT i.invocation_id, l.message_tail
+             FROM proxima_core.personality_wake_invocations i
+             JOIN proxima_core.personality_wake_invocation_logs l
+               ON l.invocation_id = i.invocation_id
+             WHERE i.personality_instance_id = $1
+               AND i.wake_entry_id = $2
+               AND l.phase = 'session_artifact'
+               AND l.status = 'started'
+             ORDER BY l.log_seq ASC
+             LIMIT 1",
+        )
+        .bind(executor.instance_id.into_inner())
+        .bind(wake_entry.wake_entry_id)
+        .fetch_one(pg.pool())
+        .await?;
+        assert_ne!(invocation_id, Uuid::nil());
+        let session_log = tokio::fs::read_to_string(&session_log_path).await?;
+        assert!(
+            session_log.contains(r#""record":"workspace-smoke""#),
+            "workspace-mode wake should mirror harness JSONL to {session_log_path}: {session_log}"
+        );
+
         let persisted_target: Option<String> =
             sqlx::query_scalar("SELECT target_branch FROM proxima_code.repos WHERE repo_id = $1")
                 .bind(repo_id)

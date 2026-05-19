@@ -92,6 +92,7 @@ async fn codex_wake_round_completes_without_provider_not_yet_supported() {
         system_prompt: "system".into(),
         instructions: "reply".into(),
         context_params: HashMap::new(),
+        tool_projection: Vec::new(),
         substrate_tool_palette: Vec::new(),
         workspace_root: None,
         max_rounds: 1,

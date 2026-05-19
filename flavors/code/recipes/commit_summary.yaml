@@ -38,9 +38,8 @@ instructions: |
 
   The rendered prompt contains the fixed wake context. The triggering memory is a `proxima-code/commit-v1` Fact: call `core_fetch_memory` with the triggering memory id to read the commit and its associated facts.
 
-  Then call `core_emit_abstraction` exactly once with:
-    - `schema_id` = "proxima-code/commit-summary-v1"
-    - `schema_version` = 1
-    - `payload` = a JSON object matching the schema with keys: `repo_id` (UUID), `commit_sha` (string), `summary` (1-3 sentences), `key_files` (string array, max 5), `change_kind` (one of: feature, fix, refactor, docs, test, chore, other).
+  Then call the commit summary emit tool listed in Wake Contract exactly once.
+  Pass `repo_id`, `commit_sha`, `summary`, `key_files`, `change_kind`, and optional `text` as top-level arguments.
+  Do not pass `schema_id`, `schema_version`, or `payload`.
 
-  Do not call any other tool. After `core_emit_abstraction` succeeds, end your turn.
+  Do not call any other tool. After the emit tool succeeds, end your turn.

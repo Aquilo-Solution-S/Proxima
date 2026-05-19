@@ -69,7 +69,8 @@ impl HarnessAdapter for HarnessLoop {
         let substrate_tools =
             resolve_substrate_tools(&*self.substrate_bridge, &program.substrate_tool_palette)
                 .map_err(HarnessError::Internal)?;
-        let resolved = resolve(program, &substrate_tools);
+        let resolved = resolve(program, &substrate_tools)
+            .map_err(|err| HarnessError::Internal(format!("program_resolve:{err}")))?;
 
         run_loop(
             self,

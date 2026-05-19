@@ -15,10 +15,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use proxima_code::payloads::{WorkspaceDiffFile, WorkspaceDiffStat};
 use proxima_code::{
-    CodeChunkV1, CodeDevelopmentPerspectiveV1, CommitSummaryV1, CommitV1, ExecutionRequestV1,
-    FileRevisionV1, FileState, WorkspaceReviewFinding, WorkspaceReviewV1, WorkspaceReviewVerdict,
-    WorkspaceRunV1, build_engine_with, ingest_code_chunk, ingest_commit, ingest_file_revision,
-    register_repo,
+    CodeChunkV1, CommitV1, ExecutionRequestV1, FileRevisionV1, FileState, WorkspaceReviewFinding,
+    WorkspaceReviewV1, WorkspaceReviewVerdict, WorkspaceRunV1, build_engine_with,
+    ingest_code_chunk, ingest_commit, ingest_file_revision, register_repo,
 };
 use proxima_core::auth::NoAuth;
 use proxima_core::llm::{EmbeddingClient, LlmError};
@@ -29,12 +28,11 @@ use proxima_core::personality::{
 use proxima_core::storage::Storage;
 use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
 use proxima_core::{
-    AbstractionPayload, BindInferenceTierRequest, CORE_DERIVED_FROM_RELATION, Credentials,
-    EdgeAuthorshipKind, EntityKind, FactPayload, FlavorRegistry, InferenceTargetConfig, MemoryId,
-    MistralChatConfig, ModelTier, OrgId, Owner, PerspectivePayload, Principal,
-    RegisterInferenceTargetRequest, SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId,
-    WakeEntryAuthoredBy, WakeEntryGoalScope, WakeEntryTriggerKind, WakeExecutionMode,
-    WakeInvocationStatus, WakeTraceOutcomeKind,
+    BindInferenceTierRequest, CORE_DERIVED_FROM_RELATION, Credentials, EdgeAuthorshipKind,
+    EntityKind, FactPayload, FlavorRegistry, InferenceTargetConfig, MemoryId, MistralChatConfig,
+    ModelTier, OrgId, Owner, Principal, RegisterInferenceTargetRequest, SchemaId, SchemaVersion,
+    SourceBatchId, SourceId, UserId, WakeEntryAuthoredBy, WakeEntryGoalScope, WakeEntryTriggerKind,
+    WakeExecutionMode, WakeInvocationStatus, WakeTraceOutcomeKind,
 };
 use proxima_harness::HarnessLoop;
 use proxima_mcp_server::McpToolHost;
@@ -1355,18 +1353,14 @@ fn wake_entry(
 
 fn emit_perspective_instruction(summary: &str) -> String {
     format!(
-        "Call the available function core_emit_perspective exactly once with this JSON: {}. Then stop.",
+        "Call the available development perspective emit tool from Wake Contract exactly once with these top-level JSON fields: {}. Do not pass schema_id, schema_version, or payload. Then stop.",
         serde_json::json!({
-            "schema_id": CodeDevelopmentPerspectiveV1::SCHEMA_ID,
-            "schema_version": 1,
-            "payload": {
-                "repo_id": null,
-                "summary": summary,
-                "pattern": "live_mistral_test",
-                "risk": "low",
-                "recommended_posture": "continue",
-                "confidence": 0.9
-            },
+            "repo_id": null,
+            "summary": summary,
+            "pattern": "live_mistral_test",
+            "risk": "low",
+            "recommended_posture": "continue",
+            "confidence": 0.9,
             "text": summary
         })
     )
@@ -1374,17 +1368,13 @@ fn emit_perspective_instruction(summary: &str) -> String {
 
 fn emit_abstraction_instruction(repo_id: Uuid, sha: &str) -> String {
     format!(
-        "Call the available function core_emit_abstraction exactly once with this JSON: {}. Then stop.",
+        "Call the available commit summary emit tool from Wake Contract exactly once with these top-level JSON fields: {}. Do not pass schema_id, schema_version, or payload. Then stop.",
         serde_json::json!({
-            "schema_id": CommitSummaryV1::SCHEMA_ID,
-            "schema_version": 1,
-            "payload": {
-                "repo_id": repo_id,
-                "commit_sha": sha,
-                "summary": "live mistral commit summary",
-                "key_files": ["README.md"],
-                "change_kind": "test"
-            },
+            "repo_id": repo_id,
+            "commit_sha": sha,
+            "summary": "live mistral commit summary",
+            "key_files": ["README.md"],
+            "change_kind": "test",
             "text": "live mistral commit summary"
         })
     )

@@ -7,7 +7,9 @@ use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use super::shared::{PROMPT_VERSION, derive_text, emit_personality_memory};
+use super::shared::{
+    PROMPT_VERSION, derive_text, emit_personality_memory, normalize_handle_refs_in_payload,
+};
 use crate::error::ProtocolError;
 use crate::personality::{
     PersonalityMemoryDraft, PersonalityMemoryKind, PersonalityTool, PersonalityToolContext,
@@ -57,7 +59,7 @@ impl PersonalityTool for EmitAbstractionTool {
         ctx: &PersonalityToolContext<'_>,
         args: serde_json::Value,
     ) -> Result<PersonalityToolResult, ProtocolError> {
-        let parsed: EmitAbstractionArgs = match serde_json::from_value(args) {
+        let mut parsed: EmitAbstractionArgs = match serde_json::from_value(args) {
             Ok(v) => v,
             Err(e) => {
                 return Ok(PersonalityToolResult::error(serde_json::json!({
@@ -86,6 +88,7 @@ impl PersonalityTool for EmitAbstractionTool {
         let sidecar_table = info.sidecar_table.as_deref().ok_or_else(|| {
             ProtocolError::internal(format!("schema {} has no sidecar", parsed.schema_id,))
         })?;
+        normalize_handle_refs_in_payload(ctx, &mut parsed.payload);
         ctx.engine
             .registry()
             .validate_payload(

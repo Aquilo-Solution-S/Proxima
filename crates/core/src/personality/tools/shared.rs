@@ -25,6 +25,83 @@ pub(super) fn derive_text(payload: &serde_json::Value) -> String {
         .unwrap_or_else(|| payload.to_string())
 }
 
+pub(super) fn normalize_handle_refs_in_payload(
+    ctx: &PersonalityToolContext<'_>,
+    payload: &mut serde_json::Value,
+) {
+    normalize_handle_refs_value(ctx, None, payload);
+}
+
+fn normalize_handle_refs_value(
+    ctx: &PersonalityToolContext<'_>,
+    key: Option<&str>,
+    value: &mut serde_json::Value,
+) {
+    match value {
+        serde_json::Value::String(raw) => {
+            if let Some(resolved) = resolve_handle_ref(ctx, key, raw) {
+                *raw = resolved;
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for item in values {
+                normalize_handle_refs_value(ctx, key, item);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for (field, item) in map {
+                normalize_handle_refs_value(ctx, Some(field.as_str()), item);
+            }
+        }
+        serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => {}
+    }
+}
+
+fn resolve_handle_ref(
+    ctx: &PersonalityToolContext<'_>,
+    key: Option<&str>,
+    raw: &str,
+) -> Option<String> {
+    let key = key?;
+    let normalized = key.strip_suffix('s').unwrap_or(key);
+    if normalized == "goal_id" || normalized.ends_with("_goal_id") {
+        return ctx
+            .handles
+            .resolve_goal(raw)
+            .ok()
+            .map(|id| id.into_inner().to_string());
+    }
+    if normalized == "memory_id" || normalized.ends_with("_memory_id") {
+        return ctx
+            .handles
+            .resolve_memory(raw)
+            .ok()
+            .map(|id| id.into_inner().to_string());
+    }
+    if normalized == "personality_instance_id" || normalized.ends_with("_personality_instance_id") {
+        return ctx
+            .handles
+            .resolve_personality(raw)
+            .ok()
+            .map(|id| id.into_inner().to_string());
+    }
+    if normalized == "wake_entry_id" || normalized.ends_with("_wake_entry_id") {
+        return ctx
+            .handles
+            .resolve_wake_entry(raw)
+            .ok()
+            .map(|id| id.to_string());
+    }
+    if normalized == "edge_id" || normalized.ends_with("_edge_id") {
+        return ctx
+            .handles
+            .resolve_edge(raw)
+            .ok()
+            .map(|id| id.into_inner().to_string());
+    }
+    None
+}
+
 /// Persist a single personality-authored memory through the existing
 /// `append_personality_memories` storage path. Used by `emit_*` tools
 /// after the typed-payload validation + provenance snapshot.

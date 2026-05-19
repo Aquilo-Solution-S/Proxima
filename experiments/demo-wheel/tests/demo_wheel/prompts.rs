@@ -119,14 +119,14 @@ pub(super) fn visionary_instruction(
     mode: DemoInterventionMode,
 ) -> String {
     let normal = format!(
-        "You are the Visionary for the triggering active Goal in N1. Do not create files, child Goals, or execution requests. Interpret the user's real expectation before planning. Use the `triggering_memory` context JSON: payload.goal_id is the goal_id and memory_id is goal_activated_memory_id. Call core_emit_abstraction exactly once with schema_id \"{}\", schema_version 1, and a payload matching this contract: goal_id from triggering_memory.typed_payload.goal_id; goal_activated_memory_id from triggering_memory.memory_id; original_goal_text {}; interpreted_outcome as the intended product outcome, not an HTML implementation detail; target_user; use_case; artifact_shape; ambition_level \"Production\"; quality_bar; constraints as an array of strings; assumptions as an array of strings; open_questions as an array of strings; acceptance_rubric as a flat JSON array of strings, not an object; demo_proof; planner_directive. The planner_directive must tell Planner to walk lineage from the VisionBrief to the goal_activated Fact, decompose the parent Goal, and preserve the quality bar. Then stop.",
+        "You are the Visionary for the triggering active Goal in N1. Do not create files, child Goals, or execution requests. Interpret the user's real expectation before planning. Use the `triggering_memory` context JSON handles: typed_payload.goal_id is the goal handle and memory is the goal_activated_memory handle. Call the available VisionBrief emit tool listed in Wake Contract exactly once. Pass top-level JSON fields matching schema \"{}\" v1: goal_id from triggering_memory.typed_payload.goal_id; goal_activated_memory_id from triggering_memory.memory; original_goal_text {}; interpreted_outcome as the intended product outcome, not an HTML implementation detail; target_user; use_case; artifact_shape; ambition_level \"Production\"; quality_bar; constraints as an array of strings; assumptions as an array of strings; open_questions as an array of strings; acceptance_rubric as a flat JSON array of strings, not an object; demo_proof; planner_directive; optional text. Do not pass schema_id, schema_version, or payload. The planner_directive must tell Planner to walk lineage from the VisionBrief to the goal_activated Fact, decompose the parent Goal, and preserve the quality bar. Then stop.",
         VisionBriefV1::SCHEMA_ID,
         serde_json::to_string(challenge.goal_text()).expect("goal text serializes")
     );
     match mode {
         DemoInterventionMode::Normal => normal,
         DemoInterventionMode::ForceContinue => format!(
-            "Forced continuation branch: if the Continuation context is present, do not call core_emit_abstraction and do not emit a second VisionBrief. Instead call core_fetch_memory exactly once for each Continuation handle: continuation.intervention_decision.handle, continuation.intervention_request.handle, continuation.prior_wake_trace.handle, and continuation.original_triggering_memory.handle. After those four fetches, stop. If no Continuation context is present, follow this first-wake instruction exactly:\n\n{normal}"
+            "Forced continuation branch: if the Continuation context is present, do not call a VisionBrief emit tool and do not emit a second VisionBrief. Instead call core_fetch_memory exactly once for each Continuation handle: continuation.intervention_decision.handle, continuation.intervention_request.handle, continuation.prior_wake_trace.handle, and continuation.original_triggering_memory.handle. After those four fetches, stop. If no Continuation context is present, follow this first-wake instruction exactly:\n\n{normal}"
         ),
     }
 }
@@ -179,7 +179,7 @@ pub(super) fn verifier_instruction(
 }
 
 pub(super) fn real_planner_instruction(
-    planner: PersonalityInstanceId,
+    _planner: PersonalityInstanceId,
     challenge: DemoChallenge,
 ) -> String {
     let repo_handle = challenge.repo_handle();
@@ -189,8 +189,7 @@ pub(super) fn real_planner_instruction(
         DemoChallenge::TodoCli | DemoChallenge::KanbanBoard => "two or three",
     };
     format!(
-        "You are the Planner. This is real-planner demo mode: plan from the Goal, VisionBrief, Triggering Memory, Wake Contract, Coordination Context, and tool descriptors instead of replaying fixture child goals. Do not use scripted child titles or request keys. If N1 is a proxima-intent VisionBrief, walk lineage from N1 to the active parent goal, decompose that parent exactly once for target personality \"{}\", activate the children, and author {child_bounds} original child goals that together cover this target outcome: {}. Then stop. If N1 is a child proxima-goal/goal-activated-v1 Fact, emit exactly one execution request for repo_handle \"{repo_handle}\" using N1 as the activated goal, with a title, implementation instructions, idempotency key, and acceptance criteria derived from that child goal. Acceptance criteria must be repo-native, include the primary output, and be deterministic enough for a verifier or reviewer. Then stop.",
-        planner.into_inner(),
+        "You are the Planner. This is real-planner demo mode: plan from the Goal, VisionBrief, Triggering Memory, Wake Contract, Coordination Context, and tool descriptors instead of replaying fixture child goals. Do not use scripted child titles or request keys. Use only handles from context for graph/runtime references. If N1 is a proxima-intent VisionBrief, walk lineage from N1 to the active parent goal, decompose that parent exactly once with target_personality \"P1\", activate the children, and author {child_bounds} original child goals that together cover this target outcome: {}. Then stop. If N1 is a child proxima-goal/goal-activated-v1 Fact, emit exactly one execution request for repo_handle \"{repo_handle}\" using N1 as the activated goal, with a title, implementation instructions, idempotency key, and acceptance criteria derived from that child goal. Acceptance criteria must be repo-native, include the primary output, and be deterministic enough for a verifier or reviewer. Then stop.",
         serde_json::to_string(goal_text).expect("goal text serializes"),
     )
 }
@@ -222,9 +221,9 @@ pub(super) fn scripted_request_keys() -> Vec<&'static str> {
 }
 
 pub(super) fn signal_match_planner_instruction(planner: PersonalityInstanceId) -> String {
+    let _ = planner;
     format!(
-        "You are the Planner. If N1 is a proxima-intent VisionBrief, call core_walk_lineage with memory \"N1\", direction \"ancestors\", depth 2, limit 10; find the returned proxima-goal/goal-activated-v1 memory handle; call proxima_goal_goal_decompose with parent_goal set to that handle, activate_children true, target_personality \"{}\", idempotency_key \"demo-signal-match-decompose\", and these suggested children: {}. Then stop. If N1 is already one of those child goal_activated Facts, call proxima_code_code_emit_execution_request for that child with repo_handle \"{}\", goal_activated_memory \"N1\", evidence [], a child-specific title/instructions/idempotency_key, and these required acceptance_criteria: {}. Use idempotency_key \"demo-signal-match-shell\" for the shell/pads child and \"demo-signal-match-gameplay\" for the gameplay/restart child. Then stop.",
-        planner.into_inner(),
+        "You are the Planner. If N1 is a proxima-intent VisionBrief, call core_walk_lineage with memory \"N1\", direction \"ancestors\", depth 2, limit 10; find the returned proxima-goal/goal-activated-v1 memory handle; call proxima_goal_goal_decompose with parent_goal set to that handle, activate_children true, target_personality \"P1\", idempotency_key \"demo-signal-match-decompose\", and these suggested children: {}. Then stop. If N1 is already one of those child goal_activated Facts, call proxima_code_code_emit_execution_request for that child with repo_handle \"{}\", goal_activated_memory \"N1\", evidence [], a child-specific title/instructions/idempotency_key, and these required acceptance_criteria: {}. Use idempotency_key \"demo-signal-match-shell\" for the shell/pads child and \"demo-signal-match-gameplay\" for the gameplay/restart child. Then stop.",
         json!([
             {
                 "payload": {
@@ -270,9 +269,9 @@ pub(super) fn signal_match_planner_instruction(planner: PersonalityInstanceId) -
 }
 
 pub(super) fn todo_cli_planner_instruction(planner: PersonalityInstanceId) -> String {
+    let _ = planner;
     format!(
-        "You are the Planner. If N1 is a proxima-intent VisionBrief, call core_walk_lineage with memory \"N1\", direction \"ancestors\", depth 2, limit 10; find the returned proxima-goal/goal-activated-v1 memory handle; call proxima_goal_goal_decompose with parent_goal set to that handle, activate_children true, target_personality \"{}\", idempotency_key \"demo-todo-audit-decompose\", and these suggested children: {}. Then stop. If N1 is already one of those child goal_activated Facts, call proxima_code_code_emit_execution_request for that child with repo_handle \"{}\", goal_activated_memory \"N1\", evidence [], a child-specific title/instructions/idempotency_key, and these required acceptance_criteria: {}. Each child request must still produce a complete runnable CLI and test suite because workspace runs are evaluated independently. Then stop.",
-        planner.into_inner(),
+        "You are the Planner. If N1 is a proxima-intent VisionBrief, call core_walk_lineage with memory \"N1\", direction \"ancestors\", depth 2, limit 10; find the returned proxima-goal/goal-activated-v1 memory handle; call proxima_goal_goal_decompose with parent_goal set to that handle, activate_children true, target_personality \"P1\", idempotency_key \"demo-todo-audit-decompose\", and these suggested children: {}. Then stop. If N1 is already one of those child goal_activated Facts, call proxima_code_code_emit_execution_request for that child with repo_handle \"{}\", goal_activated_memory \"N1\", evidence [], a child-specific title/instructions/idempotency_key, and these required acceptance_criteria: {}. Each child request must still produce a complete runnable CLI and test suite because workspace runs are evaluated independently. Then stop.",
         json!([
             {
                 "payload": {
@@ -333,9 +332,9 @@ pub(super) fn todo_cli_planner_instruction(planner: PersonalityInstanceId) -> St
 }
 
 pub(super) fn kanban_board_planner_instruction(planner: PersonalityInstanceId) -> String {
+    let _ = planner;
     format!(
-        "You are the Planner. If N1 is a proxima-intent VisionBrief, call core_walk_lineage with memory \"N1\", direction \"ancestors\", depth 2, limit 10; find the returned proxima-goal/goal-activated-v1 memory handle; call proxima_goal_goal_decompose with parent_goal set to that handle, activate_children true, target_personality \"{}\", idempotency_key \"demo-kanban-board-decompose\", and these suggested children: {}. Then stop. If N1 is already one of those child goal_activated Facts, call proxima_code_code_emit_execution_request for that child with repo_handle \"{}\", goal_activated_memory \"N1\", evidence [], a child-specific title/instructions/idempotency_key, and these required acceptance_criteria: {}. Each child request must still produce a complete package-free index.html and test_kanban.mjs because workspace runs are evaluated independently. The planner may ask for browser-style or DOM tests, but verification is executed through shell and repo-native commands, not a special browser tool. Then stop.",
-        planner.into_inner(),
+        "You are the Planner. If N1 is a proxima-intent VisionBrief, call core_walk_lineage with memory \"N1\", direction \"ancestors\", depth 2, limit 10; find the returned proxima-goal/goal-activated-v1 memory handle; call proxima_goal_goal_decompose with parent_goal set to that handle, activate_children true, target_personality \"P1\", idempotency_key \"demo-kanban-board-decompose\", and these suggested children: {}. Then stop. If N1 is already one of those child goal_activated Facts, call proxima_code_code_emit_execution_request for that child with repo_handle \"{}\", goal_activated_memory \"N1\", evidence [], a child-specific title/instructions/idempotency_key, and these required acceptance_criteria: {}. Each child request must still produce a complete package-free index.html and test_kanban.mjs because workspace runs are evaluated independently. The planner may ask for browser-style or DOM tests, but verification is executed through shell and repo-native commands, not a special browser tool. Then stop.",
         json!([
             {
                 "payload": {
@@ -629,4 +628,25 @@ pub(super) fn signal_match_index_html() -> String {
 </html>
 "#
     .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn planner_prompts_use_handle_target_personality_not_uuid() {
+        let planner = PersonalityInstanceId::new(Uuid::now_v7());
+        let raw = planner.into_inner().to_string();
+
+        for prompt in [
+            real_planner_instruction(planner, DemoChallenge::SignalMatch),
+            signal_match_planner_instruction(planner),
+            todo_cli_planner_instruction(planner),
+            kanban_board_planner_instruction(planner),
+        ] {
+            assert!(!prompt.contains(&raw));
+            assert!(prompt.contains("target_personality \"P1\""));
+        }
+    }
 }

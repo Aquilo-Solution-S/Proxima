@@ -784,6 +784,7 @@ impl DemoWorld {
                     system_prompt: "You are a strict read-only product evaluator.".into(),
                     instructions: prompt,
                     context_params: BTreeMap::new().into_iter().collect(),
+                    tool_projection: Vec::new(),
                     substrate_tool_palette: Vec::new(),
                     workspace_root: None,
                     max_rounds: 1,
