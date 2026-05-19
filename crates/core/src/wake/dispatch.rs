@@ -473,29 +473,42 @@ async fn fire_continuation_candidate(
     event: &ChangeEventForWake,
     candidate: InterventionContinueCandidate,
 ) -> Result<bool, ProtocolError> {
-    let Some(entry) = group
-        .entries
-        .iter()
-        .find(|entry| entry.wake_entry_id == candidate.original_wake_entry_id)
-    else {
-        return Ok(false);
-    };
-    let mut wake_entry = wake_entry_draft_to_row(entry);
-    wake_entry.max_rounds = candidate.grant_rounds;
-    wake_entry.intervention_policy = None;
-
     let adapter = engine.target_adapter().ok_or_else(|| {
         ProtocolError::internal(
             "dispatcher fired before target adapter was installed — \
              call Engine::start (or with_target_adapter) first",
         )
     })?;
-    let input = FireWakeEntryInput {
+    let Some(input) = continuation_fire_input(group, event, candidate) else {
+        return Ok(false);
+    };
+
+    match fire_wake_entry(engine, adapter.as_ref(), input).await {
+        Ok(true) => Ok(true),
+        Ok(false) => Ok(false),
+        Err(e) if is_idempotency_conflict(&e) => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
+fn continuation_fire_input(
+    group: &PersonalityGroup,
+    event: &ChangeEventForWake,
+    candidate: InterventionContinueCandidate,
+) -> Option<FireWakeEntryInput> {
+    let entry = group
+        .entries
+        .iter()
+        .find(|entry| entry.wake_entry_id == candidate.original_wake_entry_id)?;
+    let mut wake_entry = wake_entry_draft_to_row(entry);
+    wake_entry.max_rounds = candidate.grant_rounds;
+    wake_entry.intervention_policy = None;
+    Some(FireWakeEntryInput {
         owner: group.owner.clone(),
         personality_instance_id: group.personality_instance_id,
         wake_entry,
         change_event_seq: event.event.seq,
-        triggering_memory_id: candidate.intervention_decision_memory_id.into_inner(),
+        triggering_memory_id: candidate.original_triggering_memory_id.into_inner(),
         continuation: Some(FireWakeContinuation {
             intervention_decision_memory_id: candidate.intervention_decision_memory_id,
             intervention_request_memory_id: candidate.intervention_request_memory_id,
@@ -506,14 +519,7 @@ async fn fire_continuation_candidate(
             grant_rounds: candidate.grant_rounds,
             rationale: candidate.rationale,
         }),
-    };
-
-    match fire_wake_entry(engine, adapter.as_ref(), input).await {
-        Ok(true) => Ok(true),
-        Ok(false) => Ok(false),
-        Err(e) if is_idempotency_conflict(&e) => Ok(false),
-        Err(e) => Err(e),
-    }
+    })
 }
 
 /// Pull the triggering memory id off a change event — `EntityAppend`
@@ -732,4 +738,108 @@ async fn write_filter_misconfigured(
         .await
         .map_err(|e| ProtocolError::internal(format!("finalize_wake_invocation: {e}")))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{EntityKind, ModelTier, OrgId, Principal, SchemaId, SchemaVersion, UserId};
+
+    #[test]
+    fn continuation_fire_input_uses_original_trigger_as_wake_subject() {
+        let owner = Owner {
+            principal: Principal::User(UserId::new(Uuid::from_u128(1))),
+            org_id: OrgId::new(Uuid::from_u128(2)),
+        };
+        let personality = PersonalityInstanceId::new(Uuid::from_u128(3));
+        let original_wake_entry = Uuid::from_u128(4);
+        let original_triggering_memory = MemoryId::new(Uuid::from_u128(5));
+        let intervention_decision_memory = MemoryId::new(Uuid::from_u128(6));
+        let intervention_request_memory = MemoryId::new(Uuid::from_u128(7));
+        let wake_trace_memory = MemoryId::new(Uuid::from_u128(8));
+        let decision_event_seq = Uuid::from_u128(9);
+        let original_change_event_seq = Uuid::from_u128(10);
+
+        let mut wake_entry = WakeEntryDraft::new(
+            original_wake_entry,
+            personality,
+            WakeEntryTriggerKind::OnMemory,
+            "proxima-code/workspace-run-v1",
+            "Verifier",
+            WakeEntryAuthoredBy::Any,
+            1000,
+            ModelTier::Standard,
+            None,
+            vec!["proxima-code/code_emit_workspace_review".into()],
+            10,
+        )
+        .expect("wake entry");
+        wake_entry.execution_mode = WakeExecutionMode::Workspace;
+        wake_entry.workspace_tool_palette = vec!["workspace_shell".into()];
+
+        let group = PersonalityGroup {
+            owner: owner.clone(),
+            personality_instance_id: personality,
+            last_considered_seq: Uuid::nil(),
+            entries: vec![wake_entry],
+        };
+        let event = ChangeEventForWake {
+            event: crate::outbox::ChangeEvent {
+                seq: decision_event_seq,
+                owner,
+                kind: ChangeEventKind::EntityAppend {
+                    entity_kind: EntityKind::Fact,
+                    entity: EntityRef::Memory(intervention_decision_memory),
+                    schema_id: SchemaId::new(INTERVENTION_DECISION_SCHEMA_ID.into()),
+                    schema_version: SchemaVersion::new(1),
+                    supersedes: None,
+                },
+                authoring_personality_instance_id: None,
+                wake_chain_depth: 0,
+            },
+            authoring_personality_instance_id: None,
+            wake_chain_depth: crate::personality::WakeChainDepth::new(0),
+        };
+        let candidate = InterventionContinueCandidate {
+            intervention_decision_memory_id: intervention_decision_memory,
+            intervention_request_memory_id: intervention_request_memory,
+            original_invocation_id: Uuid::from_u128(11),
+            original_wake_entry_id: original_wake_entry,
+            original_personality_instance_id: personality,
+            original_change_event_seq,
+            original_triggering_memory_id: original_triggering_memory,
+            wake_trace_memory_id: wake_trace_memory,
+            grant_rounds: 4,
+            rationale: "continue from persisted graph state".into(),
+        };
+
+        let input = continuation_fire_input(&group, &event, candidate).expect("continuation input");
+
+        assert_eq!(input.change_event_seq, decision_event_seq);
+        assert_eq!(
+            input.triggering_memory_id,
+            original_triggering_memory.into_inner()
+        );
+        assert_eq!(input.wake_entry.trigger_id, "proxima-code/workspace-run-v1");
+        assert_eq!(input.wake_entry.max_rounds, 4);
+        assert!(input.wake_entry.intervention_policy.is_none());
+
+        let continuation = input.continuation.expect("continuation metadata");
+        assert_eq!(
+            continuation.intervention_decision_memory_id,
+            intervention_decision_memory
+        );
+        assert_eq!(
+            continuation.intervention_request_memory_id,
+            intervention_request_memory
+        );
+        assert_eq!(
+            continuation.original_triggering_memory_id,
+            original_triggering_memory
+        );
+        assert_eq!(
+            continuation.original_change_event_seq,
+            original_change_event_seq
+        );
+    }
 }
