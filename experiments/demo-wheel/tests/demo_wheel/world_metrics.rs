@@ -26,10 +26,7 @@ impl DemoWorld {
     pub(super) async fn demo_goal_graph_complete(&self) -> Result<bool, sqlx::Error> {
         let parent_achieved = self.goal_achieved_fact_exists().await?;
         let graph = self.goal_graph_metrics().await?;
-        Ok(graph.complete(
-            parent_achieved,
-            self.cfg.challenge.required_child_goal_count(),
-        ))
+        Ok(graph.complete(parent_achieved, self.cfg.required_child_goal_count()))
     }
 
     pub(super) async fn goal_graph_metrics(&self) -> Result<GoalGraphMetrics, sqlx::Error> {
@@ -137,6 +134,7 @@ impl DemoWorld {
         let (git_diff_stats, final_changed_files) = self.git_diff_metrics().await?;
         let deterministic_checks = deterministic_checks(
             self.cfg.challenge,
+            self.cfg.required_child_goal_count(),
             goal_achieved_fact_exists,
             &goal_graph,
             vision_brief_count,
@@ -146,6 +144,8 @@ impl DemoWorld {
         let deterministic_pass = deterministic_checks.values().all(|value| *value);
         let forced_continuation_checks = self.forced_continuation_checks().await?;
         let forced_continuation_pass = forced_continuation_checks.values().all(|value| *value);
+        let real_planner_checks = self.real_planner_checks().await?;
+        let real_planner_pass = real_planner_checks.values().all(|value| *value);
         let intervention_decision_count = *output_sidecar_counts_by_schema
             .get(InterventionDecisionV1::SCHEMA_ID)
             .unwrap_or(&0);
@@ -181,7 +181,9 @@ impl DemoWorld {
                 let reviewer_raw = reviewer_score
                     .as_ref()
                     .map_or(0, |score| score.score.min(100));
-                deterministic_pass && reviewer_raw >= 70
+                deterministic_pass
+                    && reviewer_raw >= 70
+                    && (self.cfg.planner_mode == DemoPlannerMode::Scripted || real_planner_pass)
             }
             DemoInterventionMode::ForceContinue => forced_continuation_pass,
         };
@@ -204,16 +206,24 @@ impl DemoWorld {
             .filter_map(|value| u32::try_from(value).ok())
             .sum();
         let wall_clock_seconds = started.elapsed().as_secs_f64();
+        let wall_clock_timed_out = self
+            .cfg
+            .max_wall_clock_seconds
+            .is_some_and(|max| wall_clock_seconds >= max as f64);
         let overall_pass = match self.cfg.intervention_mode {
-            DemoInterventionMode::Normal => functional_pass && intervention_pass,
+            DemoInterventionMode::Normal => {
+                functional_pass && intervention_pass && !wall_clock_timed_out
+            }
             DemoInterventionMode::ForceContinue => forced_continuation_pass && intervention_pass,
         };
         Ok(Metrics {
             intervention_mode: self.cfg.intervention_mode,
+            planner_mode: self.cfg.planner_mode,
             run_dir: self.cfg.run_dir.display().to_string(),
             repo_path: self.cfg.repo_path.display().to_string(),
             db_name: self.db_name.clone(),
             max_ticks: self.cfg.max_ticks,
+            max_wall_clock_seconds: self.cfg.max_wall_clock_seconds,
             max_correction_loops: self.cfg.max_correction_loops,
             role_max_rounds: self.cfg.role_max_rounds,
             dispatcher_tick_count: ticks,
@@ -234,6 +244,8 @@ impl DemoWorld {
             deterministic_pass,
             forced_continuation_checks,
             forced_continuation_pass,
+            real_planner_checks,
+            real_planner_pass,
             functional_pass,
             flow_graph_json: self
                 .cfg
@@ -254,6 +266,7 @@ impl DemoWorld {
             overall_score,
             total_model_rounds,
             wall_clock_seconds,
+            wall_clock_timed_out,
             score_per_model_round: if total_model_rounds == 0 {
                 None
             } else {
@@ -361,6 +374,122 @@ impl DemoWorld {
         checks.insert(
             "continuation_trace_fetches_seeded_context_handles".into(),
             decision_handle && request_handle && prior_trace_handle && original_trigger_handle,
+        );
+        Ok(checks)
+    }
+
+    pub(super) async fn real_planner_checks(
+        &self,
+    ) -> Result<BTreeMap<String, bool>, Box<dyn std::error::Error>> {
+        let mut checks = BTreeMap::new();
+        if self.cfg.planner_mode != DemoPlannerMode::Real {
+            return Ok(checks);
+        }
+        let Some(parent_goal) = self.goal_id else {
+            checks.insert("planner_created_child_goals".into(), false);
+            checks.insert("child_goal_titles_model_authored".into(), false);
+            checks.insert("execution_requests_from_child_goals".into(), false);
+            checks.insert("execution_requests_have_model_text".into(), false);
+            checks.insert("execution_request_keys_not_scripted".into(), false);
+            checks.insert(
+                "execution_requests_include_acceptance_criteria".into(),
+                false,
+            );
+            checks.insert("workspace_run_and_review_from_real_requests".into(), false);
+            return Ok(checks);
+        };
+        let row = sqlx::query(
+            "WITH child_roots AS (
+                 SELECT gp.goal_id AS root_goal_id
+                   FROM proxima_core.goal_parents gp
+                  WHERE gp.parent_goal_id = $1
+             ),
+             child_activations AS (
+                 SELECT ga.memory_id, ga.goal_id, ga.title
+                   FROM proxima_goal.goal_activated_v1 ga
+                   JOIN child_roots cr ON cr.root_goal_id = ga.goal_id
+             ),
+             child_requests AS (
+                 SELECT DISTINCT er.memory_id, er.title, er.instructions, er.request_key
+                   FROM proxima_code.execution_request_v1 er
+                   JOIN proxima_core.edges e
+                     ON e.source_kind = 'Fact'
+                    AND e.source_memory_id = er.memory_id
+                    AND e.target_kind = 'Fact'
+                    AND e.target_memory_id IN (SELECT memory_id FROM child_activations)
+                    AND e.relation = 'core/derived-from'
+             ),
+             child_runs AS (
+                 SELECT DISTINCT wr.memory_id
+                   FROM proxima_code.workspace_run_v1 wr
+                   JOIN proxima_core.edges e
+                     ON e.source_kind = 'Fact'
+                    AND e.source_memory_id = wr.memory_id
+                    AND e.target_kind = 'Fact'
+                    AND e.target_memory_id IN (SELECT memory_id FROM child_requests)
+                    AND e.relation = 'core/derived-from'
+             )
+             SELECT
+                (SELECT count(*) FROM child_activations) AS child_goal_count,
+                (SELECT count(*) FROM child_activations
+                  WHERE title = ANY($2)) AS scripted_child_title_count,
+                (SELECT count(*) FROM child_requests) AS execution_request_count,
+                (SELECT count(*) FROM child_requests
+                  WHERE length(btrim(title)) > 0
+                    AND length(btrim(instructions)) > 0) AS request_with_text_count,
+                (SELECT count(*) FROM child_requests
+                  WHERE request_key = ANY($3)) AS scripted_request_key_count,
+                (SELECT count(DISTINCT cr.memory_id)
+                   FROM child_requests cr
+                   JOIN proxima_code.acceptance_criteria_v1 ac
+                     ON ac.execution_request_memory_id = cr.memory_id) AS request_with_acceptance_count,
+                (SELECT count(*) FROM child_runs) AS workspace_run_count,
+                (SELECT count(*)
+                   FROM proxima_code.workspace_review_v1
+                  WHERE execution_request_memory_id IN (SELECT memory_id FROM child_requests)) AS workspace_review_count",
+        )
+        .bind(parent_goal.into_inner())
+        .bind(scripted_child_titles())
+        .bind(scripted_request_keys())
+        .fetch_one(self.pg.pool())
+        .await?;
+        let required = self.cfg.required_child_goal_count();
+        let child_goal_count: i64 = row.try_get("child_goal_count")?;
+        let scripted_child_title_count: i64 = row.try_get("scripted_child_title_count")?;
+        let execution_request_count: i64 = row.try_get("execution_request_count")?;
+        let request_with_text_count: i64 = row.try_get("request_with_text_count")?;
+        let scripted_request_key_count: i64 = row.try_get("scripted_request_key_count")?;
+        let request_with_acceptance_count: i64 = row.try_get("request_with_acceptance_count")?;
+        let workspace_run_count: i64 = row.try_get("workspace_run_count")?;
+        let workspace_review_count: i64 = row.try_get("workspace_review_count")?;
+
+        checks.insert(
+            "planner_created_child_goals".into(),
+            child_goal_count >= required,
+        );
+        checks.insert(
+            "child_goal_titles_model_authored".into(),
+            child_goal_count >= required && scripted_child_title_count == 0,
+        );
+        checks.insert(
+            "execution_requests_from_child_goals".into(),
+            execution_request_count >= required,
+        );
+        checks.insert(
+            "execution_requests_have_model_text".into(),
+            request_with_text_count >= required,
+        );
+        checks.insert(
+            "execution_request_keys_not_scripted".into(),
+            scripted_request_key_count == 0,
+        );
+        checks.insert(
+            "execution_requests_include_acceptance_criteria".into(),
+            request_with_acceptance_count >= required,
+        );
+        checks.insert(
+            "workspace_run_and_review_from_real_requests".into(),
+            workspace_run_count >= required && workspace_review_count >= required,
         );
         Ok(checks)
     }

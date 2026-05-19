@@ -26,11 +26,12 @@ pub use local_git_source::{IndexError, IndexReport, IngestProgress, LocalGitSour
 pub use mcp::CODE_REVIEWS_RELATION;
 pub use migrations::migrator;
 pub use payloads::{
-    AcceptanceCriteriaV1, AcceptanceCriterionV1, AcceptanceVerifierKind, CodeChunkV1,
-    CodeCommitSummarizerSelfV1, CodeDevelopmentPerspectiveV1, CodeEngineerSelfV1, CommitSummaryV1,
-    CommitV1, EdgeCallsV1, ExecutionRequestV1, FileRevisionV1, FileState,
-    VerificationEvidenceStatus, VerificationEvidenceV1, WorkspaceDecision, WorkspaceDecisionV1,
-    WorkspaceReviewFinding, WorkspaceReviewV1, WorkspaceReviewVerdict, WorkspaceRunV1,
+    AcceptanceCriteriaV1, AcceptanceCriterionV1, AcceptanceVerifierKind, AcceptanceVerifierSpecV1,
+    CodeChunkV1, CodeCommitSummarizerSelfV1, CodeDevelopmentPerspectiveV1, CodeEngineerSelfV1,
+    CommitSummaryV1, CommitV1, EdgeCallsV1, ExecutionRequestV1, FileRevisionV1, FileState,
+    VerificationArtifactRefsV1, VerificationEvidenceStatus, VerificationEvidenceV1,
+    WorkspaceDecision, WorkspaceDecisionV1, WorkspaceReviewFinding, WorkspaceReviewV1,
+    WorkspaceReviewVerdict, WorkspaceRunV1,
 };
 
 pub use repos::{

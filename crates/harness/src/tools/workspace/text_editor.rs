@@ -8,27 +8,28 @@ use tokio::fs;
 use super::{WorkspaceCtx, WorkspaceToolError, jail_path};
 
 #[derive(Debug, Deserialize, JsonSchema)]
-#[serde(tag = "op", rename_all = "snake_case")]
-pub enum TextEditorArgs {
-    View {
-        path: String,
-        #[serde(default)]
-        view_range: Option<[u32; 2]>,
-    },
-    Create {
-        path: String,
-        file_text: String,
-    },
-    StrReplace {
-        path: String,
-        old_str: String,
-        new_str: String,
-    },
-    Insert {
-        path: String,
-        insert_line: u32,
-        new_str: String,
-    },
+pub struct TextEditorArgs {
+    pub op: TextEditorOp,
+    pub path: String,
+    #[serde(default)]
+    pub view_range: Option<[u32; 2]>,
+    #[serde(default)]
+    pub file_text: Option<String>,
+    #[serde(default)]
+    pub old_str: Option<String>,
+    #[serde(default)]
+    pub new_str: Option<String>,
+    #[serde(default)]
+    pub insert_line: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TextEditorOp {
+    View,
+    Create,
+    StrReplace,
+    Insert,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -48,20 +49,39 @@ pub struct TextEditorResult {
 pub async fn run(args: Value, ctx: &WorkspaceCtx) -> Result<Value, WorkspaceToolError> {
     let parsed: TextEditorArgs =
         serde_json::from_value(args).map_err(|e| WorkspaceToolError::InvalidArgs(e.to_string()))?;
-    match parsed {
-        TextEditorArgs::View { path, view_range } => view(ctx, &path, view_range).await,
-        TextEditorArgs::Create { path, file_text } => create(ctx, &path, &file_text).await,
-        TextEditorArgs::StrReplace {
-            path,
-            old_str,
-            new_str,
-        } => str_replace(ctx, &path, &old_str, &new_str).await,
-        TextEditorArgs::Insert {
-            path,
-            insert_line,
-            new_str,
-        } => insert(ctx, &path, insert_line, &new_str).await,
+    match parsed.op {
+        TextEditorOp::View => view(ctx, &parsed.path, parsed.view_range).await,
+        TextEditorOp::Create => {
+            let file_text = required_field(parsed.file_text, "file_text", "create")?;
+            create(ctx, &parsed.path, &file_text).await
+        }
+        TextEditorOp::StrReplace => {
+            let old_str = required_field(parsed.old_str, "old_str", "str_replace")?;
+            let new_str = required_field(parsed.new_str, "new_str", "str_replace")?;
+            str_replace(ctx, &parsed.path, &old_str, &new_str).await
+        }
+        TextEditorOp::Insert => {
+            let insert_line = parsed.insert_line.ok_or_else(|| {
+                WorkspaceToolError::InvalidArgs(
+                    "insert_line is required for workspace_text_editor op insert".into(),
+                )
+            })?;
+            let new_str = required_field(parsed.new_str, "new_str", "insert")?;
+            insert(ctx, &parsed.path, insert_line, &new_str).await
+        }
     }
+}
+
+fn required_field(
+    value: Option<String>,
+    field: &str,
+    op: &str,
+) -> Result<String, WorkspaceToolError> {
+    value.ok_or_else(|| {
+        WorkspaceToolError::InvalidArgs(format!(
+            "{field} is required for workspace_text_editor op {op}"
+        ))
+    })
 }
 
 async fn view(

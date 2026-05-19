@@ -5,8 +5,8 @@ use serde::{Deserialize, Serialize};
 use proxima_core::MemoryId;
 
 use crate::payloads::{
-    VerificationEvidenceStatus, WorkspaceDecisionV1, WorkspaceReviewFinding, WorkspaceReviewV1,
-    WorkspaceReviewVerdict,
+    VerificationArtifactRefsV1, VerificationEvidenceStatus, WorkspaceDecisionV1,
+    WorkspaceReviewFinding, WorkspaceReviewV1, WorkspaceReviewVerdict,
 };
 
 pub const WORKSPACE_REVIEW_SOURCE_ID: &str = "proxima-code/workspace-review";
@@ -48,7 +48,7 @@ pub struct CodeEmitVerificationEvidenceArgs {
     pub status: VerificationEvidenceStatus,
     pub summary: String,
     #[serde(default)]
-    pub artifact_refs_json: serde_json::Value,
+    pub artifact_refs: VerificationArtifactRefsV1,
     pub idempotency_key: String,
 }
 

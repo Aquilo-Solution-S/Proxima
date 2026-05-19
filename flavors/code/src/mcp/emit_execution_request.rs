@@ -15,7 +15,9 @@ use serde::{Deserialize, Serialize};
 use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
-use crate::payloads::{AcceptanceCriteriaV1, AcceptanceCriterionV1, ExecutionRequestV1};
+use crate::payloads::{
+    AcceptanceCriteriaV1, AcceptanceCriterionV1, AcceptanceVerifierKind, ExecutionRequestV1,
+};
 
 use super::sql::{map_storage, owner_principal, resolve_repo_identifier};
 
@@ -382,9 +384,48 @@ pub(super) fn validate_acceptance_criteria(
                 criterion.key
             )));
         }
+        validate_acceptance_verifier_spec(&criterion)?;
         out.push(criterion);
     }
     Ok(out)
+}
+
+fn validate_acceptance_verifier_spec(
+    criterion: &AcceptanceCriterionV1,
+) -> Result<(), McpToolError> {
+    match criterion.verifier_kind {
+        AcceptanceVerifierKind::FileExists => {
+            let path = criterion.verifier_spec.path.as_deref().ok_or_else(|| {
+                McpToolError::InvalidInput(format!(
+                    "acceptance_criteria.{}.verifier_spec.path is required for file_exists",
+                    criterion.key
+                ))
+            })?;
+            let _ = normalize_text("acceptance_criteria.verifier_spec.path", path, 1, 1000)?;
+        }
+        AcceptanceVerifierKind::Command => {
+            let command = criterion.verifier_spec.command.as_ref().ok_or_else(|| {
+                McpToolError::InvalidInput(format!(
+                    "acceptance_criteria.{}.verifier_spec.command is required for command",
+                    criterion.key
+                ))
+            })?;
+            if command.is_empty() {
+                return Err(McpToolError::InvalidInput(format!(
+                    "acceptance_criteria.{}.verifier_spec.command must not be empty",
+                    criterion.key
+                )));
+            }
+            for part in command {
+                let _ =
+                    normalize_text("acceptance_criteria.verifier_spec.command[]", part, 1, 2000)?;
+            }
+        }
+        AcceptanceVerifierKind::BrowserSmoke
+        | AcceptanceVerifierKind::DiffScope
+        | AcceptanceVerifierKind::ReviewerOnly => {}
+    }
+    Ok(())
 }
 
 fn retry_instructions(

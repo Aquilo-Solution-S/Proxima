@@ -4,7 +4,9 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 
-use crate::payloads::{VerificationEvidenceStatus, VerificationEvidenceV1};
+use crate::payloads::{
+    VerificationArtifactRefsV1, VerificationEvidenceStatus, VerificationEvidenceV1,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 pub struct BrowserAssertion {
@@ -36,7 +38,7 @@ pub struct CheckOutcome {
     pub criterion_key: String,
     pub status: VerificationEvidenceStatus,
     pub summary: String,
-    pub artifact_refs_json: serde_json::Value,
+    pub artifact_refs: VerificationArtifactRefsV1,
 }
 
 impl CheckOutcome {
@@ -52,7 +54,7 @@ impl CheckOutcome {
             criterion_key: self.criterion_key,
             status: self.status,
             summary: self.summary,
-            artifact_refs_json: self.artifact_refs_json,
+            artifact_refs: self.artifact_refs,
         }
     }
 }
@@ -94,7 +96,10 @@ fn file_exists(worktree: &Path, criterion_key: &str, path: &str) -> CheckOutcome
         } else {
             format!("file missing: {path}")
         },
-        artifact_refs_json: serde_json::json!({ "path": path }),
+        artifact_refs: VerificationArtifactRefsV1 {
+            path: Some(path.into()),
+            ..Default::default()
+        },
     }
 }
 
@@ -109,7 +114,10 @@ async fn command_check(
             criterion_key: criterion_key.into(),
             status: VerificationEvidenceStatus::Failed,
             summary: "command check has empty argv".into(),
-            artifact_refs_json: serde_json::json!({ "command": command }),
+            artifact_refs: VerificationArtifactRefsV1 {
+                command: command.to_vec(),
+                ..Default::default()
+            },
         };
     }
     let mut cmd = Command::new(&command[0]);
@@ -121,34 +129,42 @@ async fn command_check(
             criterion_key: criterion_key.into(),
             status: VerificationEvidenceStatus::Passed,
             summary: format!("command passed: {}", command.join(" ")),
-            artifact_refs_json: serde_json::json!({
-                "command": command,
-                "stdout_tail": tail(&output.stdout),
-                "stderr_tail": tail(&output.stderr),
-            }),
+            artifact_refs: VerificationArtifactRefsV1 {
+                command: command.to_vec(),
+                stdout_tail: Some(tail(&output.stdout)),
+                stderr_tail: Some(tail(&output.stderr)),
+                ..Default::default()
+            },
         },
         Ok(Ok(output)) => CheckOutcome {
             criterion_key: criterion_key.into(),
             status: VerificationEvidenceStatus::Failed,
             summary: format!("command failed: {}", command.join(" ")),
-            artifact_refs_json: serde_json::json!({
-                "command": command,
-                "exit_code": output.status.code(),
-                "stdout_tail": tail(&output.stdout),
-                "stderr_tail": tail(&output.stderr),
-            }),
+            artifact_refs: VerificationArtifactRefsV1 {
+                command: command.to_vec(),
+                exit_code: output.status.code(),
+                stdout_tail: Some(tail(&output.stdout)),
+                stderr_tail: Some(tail(&output.stderr)),
+                ..Default::default()
+            },
         },
         Ok(Err(err)) => CheckOutcome {
             criterion_key: criterion_key.into(),
             status: VerificationEvidenceStatus::Failed,
             summary: format!("command failed to start: {err}"),
-            artifact_refs_json: serde_json::json!({ "command": command }),
+            artifact_refs: VerificationArtifactRefsV1 {
+                command: command.to_vec(),
+                ..Default::default()
+            },
         },
         Err(_) => CheckOutcome {
             criterion_key: criterion_key.into(),
             status: VerificationEvidenceStatus::Failed,
             summary: format!("command timed out after {timeout_ms}ms"),
-            artifact_refs_json: serde_json::json!({ "command": command }),
+            artifact_refs: VerificationArtifactRefsV1 {
+                command: command.to_vec(),
+                ..Default::default()
+            },
         },
     }
 }
@@ -173,7 +189,10 @@ fn browser_smoke(worktree: &Path, criterion_key: &str, entrypoint: &str) -> Chec
         } else {
             format!("browser smoke entrypoint is not local or missing: {entrypoint}")
         },
-        artifact_refs_json: serde_json::json!({ "entrypoint": entrypoint }),
+        artifact_refs: VerificationArtifactRefsV1 {
+            entrypoint: Some(entrypoint.into()),
+            ..Default::default()
+        },
     }
 }
 
@@ -192,7 +211,10 @@ async fn diff_scope(
             criterion_key: criterion_key.into(),
             status: VerificationEvidenceStatus::Failed,
             summary: "git diff scope check failed to start".into(),
-            artifact_refs_json: serde_json::json!({ "allowed_prefixes": allowed_prefixes }),
+            artifact_refs: VerificationArtifactRefsV1 {
+                allowed_prefixes: allowed_prefixes.to_vec(),
+                ..Default::default()
+            },
         };
     };
     let files = String::from_utf8_lossy(&output.stdout)
@@ -218,10 +240,11 @@ async fn diff_scope(
         } else {
             "changed files exceed allowed prefixes".into()
         },
-        artifact_refs_json: serde_json::json!({
-            "allowed_prefixes": allowed_prefixes,
-            "changed_files": files,
-        }),
+        artifact_refs: VerificationArtifactRefsV1 {
+            allowed_prefixes: allowed_prefixes.to_vec(),
+            changed_files: files,
+            ..Default::default()
+        },
     }
 }
 

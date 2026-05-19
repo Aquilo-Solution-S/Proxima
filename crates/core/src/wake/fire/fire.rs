@@ -18,6 +18,7 @@ use crate::personality::{
 };
 use crate::verbs::persist_wake_trace::WakeTracePersistOutcome;
 use crate::wake::context::{WakeContext, assemble_wake_context};
+use crate::wake::contract::build_wake_contract;
 use crate::wake::token_store::WakeTokenContext;
 use crate::wake::trace::emit::{
     ProviderTargetBuildError, TraceTiming, emit_trace_from_failed_preflight,
@@ -785,6 +786,10 @@ async fn build_context_params(
     context_params.insert(
         "triggering_memory".into(),
         context_value(&wake_context.triggering_memory)?,
+    );
+    context_params.insert(
+        "wake_contract".into(),
+        context_value(build_wake_contract(engine.registry(), &input.wake_entry))?,
     );
     let coordination_context = inquiry::build_wake_coordination_context(
         engine,

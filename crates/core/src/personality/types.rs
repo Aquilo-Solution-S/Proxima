@@ -167,6 +167,16 @@ pub enum WakeEntryExecutionMode {
     Workspace,
 }
 
+impl WakeEntryExecutionMode {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::SubstrateOnly => "substrate_only",
+            Self::Workspace => "workspace",
+        }
+    }
+}
+
 #[derive(
     Debug,
     Clone,

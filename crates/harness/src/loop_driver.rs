@@ -204,6 +204,8 @@ async fn run_loop(
         "invocation_id": ctx.invocation_id,
         "model_id": model_id,
         "max_rounds": max_rounds,
+        "system_prompt": &resolved.conversation.system_prompt,
+        "user_seed": &resolved.conversation.user_seed,
     }));
 
     let mut rounds_used = 0;

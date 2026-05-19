@@ -127,7 +127,8 @@ impl DemoWorld {
             ],
             self.cfg.role_max_rounds.planner,
         )?;
-        vision_wake.instructions = planner_instruction(planner, self.cfg.challenge);
+        vision_wake.instructions =
+            planner_instruction(planner, self.cfg.challenge, self.cfg.planner_mode);
         vision_wake.intervention_policy = Some(intervention_policy.clone());
 
         let mut child_goal_wake = WakeEntryDraft::new(
@@ -147,7 +148,8 @@ impl DemoWorld {
             self.cfg.role_max_rounds.planner,
         )?;
         child_goal_wake.goal_scope = WakeEntryGoalScope::TriggerGoalAssigned;
-        child_goal_wake.instructions = planner_instruction(planner, self.cfg.challenge);
+        child_goal_wake.instructions =
+            planner_instruction(planner, self.cfg.challenge, self.cfg.planner_mode);
         child_goal_wake.intervention_policy = Some(intervention_policy);
 
         self.engine

@@ -32,12 +32,24 @@ impl AcceptanceVerifierKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct AcceptanceVerifierSpecV1 {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pattern: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct AcceptanceCriterionV1 {
     pub key: String,
     pub description: String,
     pub required: bool,
     pub verifier_kind: AcceptanceVerifierKind,
-    pub verifier_spec_json: serde_json::Value,
+    pub verifier_spec: AcceptanceVerifierSpecV1,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

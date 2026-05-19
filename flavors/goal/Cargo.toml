@@ -24,6 +24,7 @@ time = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
+proxima-harness = { path = "../../crates/harness" }
 proxima-mcp-server = { path = "../../crates/mcp-server" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 

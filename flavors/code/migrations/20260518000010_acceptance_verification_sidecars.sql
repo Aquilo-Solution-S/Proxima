@@ -33,7 +33,7 @@ CREATE TABLE proxima_code.verification_evidence_v1 (
     criterion_key text NOT NULL,
     status proxima_code.verification_evidence_status NOT NULL,
     summary text NOT NULL,
-    artifact_refs_json jsonb NOT NULL,
+    artifact_refs jsonb NOT NULL,
     created_at timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT verification_evidence_v1_criterion_key_chk CHECK (
         char_length(criterion_key) >= 1
@@ -44,7 +44,7 @@ CREATE TABLE proxima_code.verification_evidence_v1 (
         AND char_length(summary) <= 4000
     ),
     CONSTRAINT verification_evidence_v1_artifacts_object_chk CHECK (
-        jsonb_typeof(artifact_refs_json) = 'object'
+        jsonb_typeof(artifact_refs) = 'object'
     )
 );
 
