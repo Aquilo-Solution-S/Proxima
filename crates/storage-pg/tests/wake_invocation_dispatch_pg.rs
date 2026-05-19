@@ -12,7 +12,13 @@ use proxima_core::personality::{
     WakeInvocationLogStatus, WakeInvocationStart, WakeInvocationStatus,
 };
 use proxima_core::storage::Storage;
-use proxima_core::{ModelTier, Owner, Principal};
+use proxima_core::{
+    CORE_DERIVED_FROM_RELATION, EdgeAuthorshipKind, EntityKind, INTERVENTION_SOURCE_ID,
+    InterventionDecisionKind, InterventionDecisionV1, InterventionRequestedV1, MemoryId, ModelTier,
+    Owner, OwnerPrincipalKind, Principal, RelationClass, SourceBatchId, SourceId,
+    intervention_decision_event_draft, intervention_request_event_draft,
+};
+use time::OffsetDateTime;
 use uuid::Uuid;
 
 #[derive(Debug)]
@@ -110,6 +116,69 @@ async fn continuation_invocation_can_share_original_wake_natural_key() {
     result.expect("continuation invocation identity failed");
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn continuation_candidate_requires_decision_request_derived_edge() {
+    let Some((pg, db)) = fresh_pg().await else {
+        return;
+    };
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        pg.run_migrations().await?;
+        let owner = owner_fixture();
+        let (request_memory_id, decision_memory_id, expected) =
+            seed_intervention_continue_sidecars(&pg, &owner).await?;
+
+        let missing_edge = pg
+            .load_intervention_continue_candidate(&owner, decision_memory_id)
+            .await?;
+        assert!(missing_edge.is_none());
+
+        insert_decision_request_derived_edge(&pg, &owner, decision_memory_id, request_memory_id)
+            .await?;
+        let candidate = pg
+            .load_intervention_continue_candidate(&owner, decision_memory_id)
+            .await?
+            .expect("derived edge makes continuation candidate visible");
+        assert_eq!(
+            candidate.intervention_decision_memory_id,
+            decision_memory_id
+        );
+        assert_eq!(candidate.intervention_request_memory_id, request_memory_id);
+        assert_eq!(
+            candidate.original_invocation_id,
+            expected.original_invocation_id
+        );
+        assert_eq!(
+            candidate.original_wake_entry_id,
+            expected.original_wake_entry_id
+        );
+        assert_eq!(
+            candidate.original_personality_instance_id.into_inner(),
+            expected.original_personality_instance_id
+        );
+        assert_eq!(
+            candidate.original_change_event_seq,
+            expected.original_change_event_seq
+        );
+        assert_eq!(
+            candidate.original_triggering_memory_id.into_inner(),
+            expected.triggering_memory_id
+        );
+        assert_eq!(
+            candidate.wake_trace_memory_id.into_inner(),
+            expected.wake_trace_memory_id
+        );
+        assert_eq!(candidate.grant_rounds, 3);
+        assert_eq!(candidate.rationale, "prior wake made progress");
+        Ok(())
+    }
+    .await;
+
+    drop(pg);
+    let _ = drop_db(&db).await;
+    result.expect("continuation candidate graph-shape test failed");
+}
+
 async fn seed_personality_with_entry(
     pg: &proxima_storage_pg::PgStorage,
     owner: &Owner,
@@ -143,6 +212,167 @@ async fn seed_personality_with_entry(
     })
     .await?;
     Ok((response.instance_id, wake_entry_id))
+}
+
+struct ExpectedInterventionRequest {
+    original_invocation_id: Uuid,
+    original_wake_entry_id: Uuid,
+    original_personality_instance_id: Uuid,
+    original_change_event_seq: Uuid,
+    triggering_memory_id: Uuid,
+    wake_trace_memory_id: Uuid,
+}
+
+async fn seed_intervention_continue_sidecars(
+    pg: &proxima_storage_pg::PgStorage,
+    owner: &Owner,
+) -> Result<(MemoryId, MemoryId, ExpectedInterventionRequest), Box<dyn std::error::Error>> {
+    let now = OffsetDateTime::now_utc();
+    let triggering_memory_id = ingest_test_fact(pg, owner, "original trigger")
+        .await
+        .into_inner();
+    let wake_trace_memory_id = ingest_test_fact(pg, owner, "wake trace").await.into_inner();
+    let request = InterventionRequestedV1 {
+        original_invocation_id: Uuid::now_v7(),
+        original_wake_entry_id: Uuid::now_v7(),
+        original_personality_instance_id: Uuid::now_v7(),
+        original_change_event_seq: Uuid::now_v7(),
+        triggering_memory_id,
+        wake_trace_memory_id,
+        target_intervention_personality_instance_id: Uuid::now_v7(),
+        max_rounds: 4,
+        rounds_used: 4,
+        intervention_extension_rounds: 4,
+        intervention_hard_cap_rounds: 8,
+        continued_rounds_used: 0,
+        active_goal_ids: Vec::new(),
+        progress_contract: "show progress".into(),
+        idempotency_key: format!("request-{}", Uuid::now_v7()),
+        requested_at: now,
+    };
+    let mut request_payload = Vec::new();
+    ciborium::ser::into_writer(&request, &mut request_payload)?;
+    let request_outcome = pg
+        .ingest_event_atomic(&intervention_request_event_draft(
+            owner.clone(),
+            &request_payload,
+            SourceBatchId::new(Uuid::now_v7()),
+            SourceId::new(INTERVENTION_SOURCE_ID),
+            now,
+        ))
+        .await?;
+    sqlx::query(
+        "INSERT INTO proxima_core.intervention_requested_v1
+            (memory_id, original_invocation_id, original_wake_entry_id,
+             original_personality_instance_id, original_change_event_seq,
+             triggering_memory_id, wake_trace_memory_id,
+             target_intervention_personality_instance_id, max_rounds, rounds_used,
+             intervention_extension_rounds, intervention_hard_cap_rounds, continued_rounds_used,
+             active_goal_ids, progress_contract, requested_at, idempotency_key)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)",
+    )
+    .bind(request_outcome.memory_id.into_inner())
+    .bind(request.original_invocation_id)
+    .bind(request.original_wake_entry_id)
+    .bind(request.original_personality_instance_id)
+    .bind(request.original_change_event_seq)
+    .bind(request.triggering_memory_id)
+    .bind(request.wake_trace_memory_id)
+    .bind(request.target_intervention_personality_instance_id)
+    .bind(i32::from(request.max_rounds))
+    .bind(i32::from(request.rounds_used))
+    .bind(i32::from(request.intervention_extension_rounds))
+    .bind(i32::from(request.intervention_hard_cap_rounds))
+    .bind(i32::from(request.continued_rounds_used))
+    .bind(&request.active_goal_ids)
+    .bind(&request.progress_contract)
+    .bind(request.requested_at)
+    .bind(&request.idempotency_key)
+    .execute(pg.pool())
+    .await?;
+
+    let decision = InterventionDecisionV1 {
+        intervention_request_memory_id: request_outcome.memory_id.into_inner(),
+        decision: InterventionDecisionKind::Continue,
+        grant_rounds: Some(3),
+        redirect_personality_instance_id: None,
+        rationale: "prior wake made progress".into(),
+        idempotency_key: format!("decision-{}", Uuid::now_v7()),
+        decided_at: now,
+    };
+    let mut decision_payload = Vec::new();
+    ciborium::ser::into_writer(&decision, &mut decision_payload)?;
+    let decision_outcome = pg
+        .ingest_event_atomic(&intervention_decision_event_draft(
+            owner.clone(),
+            &decision_payload,
+            SourceBatchId::new(Uuid::now_v7()),
+            SourceId::new(INTERVENTION_SOURCE_ID),
+            now,
+        ))
+        .await?;
+    sqlx::query(
+        "INSERT INTO proxima_core.intervention_decision_v1
+            (memory_id, intervention_request_memory_id, decision, grant_rounds,
+             redirect_personality_instance_id, rationale, decided_at, idempotency_key)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
+    )
+    .bind(decision_outcome.memory_id.into_inner())
+    .bind(decision.intervention_request_memory_id)
+    .bind(decision.decision)
+    .bind(decision.grant_rounds.map(i32::from))
+    .bind(decision.redirect_personality_instance_id)
+    .bind(&decision.rationale)
+    .bind(decision.decided_at)
+    .bind(&decision.idempotency_key)
+    .execute(pg.pool())
+    .await?;
+
+    Ok((
+        request_outcome.memory_id,
+        decision_outcome.memory_id,
+        ExpectedInterventionRequest {
+            original_invocation_id: request.original_invocation_id,
+            original_wake_entry_id: request.original_wake_entry_id,
+            original_personality_instance_id: request.original_personality_instance_id,
+            original_change_event_seq: request.original_change_event_seq,
+            triggering_memory_id,
+            wake_trace_memory_id,
+        },
+    ))
+}
+
+async fn insert_decision_request_derived_edge(
+    pg: &proxima_storage_pg::PgStorage,
+    owner: &Owner,
+    decision_memory_id: MemoryId,
+    request_memory_id: MemoryId,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let principal_id = match owner.principal {
+        Principal::User(id) => id.into_inner(),
+        Principal::Group(id) => id.into_inner(),
+    };
+    sqlx::query(
+        "INSERT INTO proxima_core.edges
+            (edge_id, relation, relation_class,
+             source_kind, source_memory_id, target_kind, target_memory_id,
+             authorship_kind, owner_principal_kind, owner_principal_id, owner_org_id)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(CORE_DERIVED_FROM_RELATION)
+    .bind(RelationClass::Provenance)
+    .bind(EntityKind::Fact)
+    .bind(decision_memory_id.into_inner())
+    .bind(EntityKind::Fact)
+    .bind(request_memory_id.into_inner())
+    .bind(EdgeAuthorshipKind::ExternalAgent)
+    .bind(OwnerPrincipalKind::of(&owner.principal))
+    .bind(principal_id)
+    .bind(owner.org_id.into_inner())
+    .execute(pg.pool())
+    .await?;
+    Ok(())
 }
 
 async fn fetch_wake_invocation(

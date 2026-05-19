@@ -12,8 +12,9 @@ pub struct FireWakeContinuation {
     pub intervention_decision_memory_id: crate::MemoryId,
     pub intervention_request_memory_id: crate::MemoryId,
     pub original_invocation_id: Uuid,
+    pub original_change_event_seq: Uuid,
     pub wake_trace_memory_id: crate::MemoryId,
-    pub triggering_memory_id: crate::MemoryId,
+    pub original_triggering_memory_id: crate::MemoryId,
     pub grant_rounds: u16,
     pub rationale: String,
 }

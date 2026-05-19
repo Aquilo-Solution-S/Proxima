@@ -13,7 +13,10 @@ use crate::inference::{
     InferenceTierBindingRow, RegisterInferenceTargetRequest, RegisterInferenceTargetResponse,
     RemoveInferenceTargetRequest, RemoveInferenceTargetResponse,
 };
-use crate::intervention::{InterventionRequestPersistInput, InterventionRequestPersistOutcome};
+use crate::intervention::{
+    InterventionContinueCandidate, InterventionRequestPersistInput,
+    InterventionRequestPersistOutcome,
+};
 use crate::personality::WakeEntryDraft;
 use crate::personality::{
     AbstractionRow, ActiveGoalSummary, ChangeEventForWake, InstantiatePersonalityRequest,
@@ -98,6 +101,14 @@ pub trait Storage: Send + Sync {
         Err(StorageError::Internal(
             "storage backend does not implement intervention request persistence".into(),
         ))
+    }
+
+    async fn load_intervention_continue_candidate(
+        &self,
+        _owner: &Owner,
+        _decision_memory_id: crate::MemoryId,
+    ) -> Result<Option<InterventionContinueCandidate>, StorageError> {
+        Ok(None)
     }
 
     /// Atomic Goal write per docs/14 §GoalWrite.

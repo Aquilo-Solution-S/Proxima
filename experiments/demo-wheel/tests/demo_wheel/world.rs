@@ -87,7 +87,8 @@ impl DemoWorld {
             )
             .await?;
         self.set_wake_supervisor_wake(wake_supervisor).await?;
-        let intervention_policy = demo_intervention_policy(wake_supervisor);
+        let intervention_policy =
+            demo_intervention_policy(wake_supervisor, self.cfg.intervention_mode);
 
         self.set_single_wake(
             visionary,
@@ -102,7 +103,7 @@ impl DemoWorld {
                 "core/emit_abstraction",
             ],
             Vec::new(),
-            visionary_instruction(self.cfg.challenge),
+            visionary_instruction(self.cfg.challenge, self.cfg.intervention_mode),
             WakeOptions {
                 goal_scope: WakeEntryGoalScope::TriggerGoalAssigned,
                 authored_by: WakeEntryAuthoredBy::Any,
@@ -169,7 +170,20 @@ impl DemoWorld {
             ticks += 1;
             let fired = self.engine.run_dispatcher_tick().await?;
             let correction_loops = self.correction_loop_count().await?;
-            if self.demo_goal_graph_complete().await? {
+            if self.cfg.intervention_mode == DemoInterventionMode::ForceContinue
+                && self
+                    .forced_continuation_checks()
+                    .await?
+                    .values()
+                    .all(|value| *value)
+            {
+                let metrics = self.collect_metrics(started, ticks).await?;
+                self.write_outputs(&metrics).await?;
+                return Ok(());
+            }
+            if self.cfg.intervention_mode == DemoInterventionMode::Normal
+                && self.demo_goal_graph_complete().await?
+            {
                 let mut metrics = self.collect_metrics(started, ticks).await?;
                 if !metrics.overall_pass {
                     self.write_outputs(&metrics).await?;

@@ -15,8 +15,8 @@ pub use events::{list_change_events_after, list_change_events_for_replay};
 pub use instances::{instantiate_personality, list_personality_instances};
 pub use invocations::{
     advance_wake_cursor, append_wake_invocation_log, finalize_wake_invocation,
-    finish_wake_invocation, list_wake_invocations, start_wake_invocation,
-    try_begin_wake_invocation,
+    finish_wake_invocation, list_wake_invocations, load_intervention_continue_candidate,
+    start_wake_invocation, try_begin_wake_invocation,
 };
 pub use memories::{
     append_personality_memories, load_abstraction_heads, load_memory_batch_facts,

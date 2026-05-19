@@ -88,6 +88,7 @@ fn build_user_seed(program: &HarnessProgram) -> String {
         "active_goals",
         "trigger_event",
         "triggering_memory",
+        "continuation",
         "workspace_context",
     ] {
         if let Some(value) = program.context_params.get(key) {

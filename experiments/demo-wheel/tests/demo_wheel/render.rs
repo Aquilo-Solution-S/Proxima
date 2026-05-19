@@ -2,7 +2,8 @@ use super::*;
 
 pub(super) fn render_report(metrics: &Metrics, flow_graph: &FlowGraph) -> String {
     format!(
-        "# Proxima Demo Wheel Report\n\n- run_dir: `{}`\n- repo_path: `{}`\n- db_name: `{}`\n- ticks: `{}`\n- corrections: `{}`\n- goal_state: `{}`\n- deterministic_pass: `{}`\n- functional_pass: `{}`\n- intervention_pass: `{}`\n- overall_pass: `{}`\n- reviewer_score: `{}`\n- overall_score: `{}`\n- score_per_model_round: `{:?}`\n- score_per_wall_clock_second: `{:.4}`\n\n## Role Round Caps\n\n```json\n{}\n```\n\n## Goal Graph\n\n```json\n{}\n```\n\n## Request Flow Counts\n\n```json\n{}\n```\n\n## Terminal Guard Hits\n\n```json\n{}\n```\n\n## Flow Graph\n\n- graph_json: `{}`\n- graph_mermaid: `{}`\n- nodes: `{}`\n- edges: `{}`\n- intervention_requests: `{}`\n- intervention_decisions: `{}`\n- unresolved_endpoints: `{}`\n\n```mermaid\n{}\n```\n\n## Auto Merge\n\n```json\n{}\n```\n\n## Diff\n\n- files_changed: `{}`\n- insertions: `{}`\n- deletions: `{}`\n- files: `{:?}`\n\n## Wake Invocations\n\n```json\n{}\n```\n\n## Checks\n\n```json\n{}\n```\n",
+        "# Proxima Demo Wheel Report\n\n- intervention_mode: `{:?}`\n- run_dir: `{}`\n- repo_path: `{}`\n- db_name: `{}`\n- ticks: `{}`\n- corrections: `{}`\n- goal_state: `{}`\n- deterministic_pass: `{}`\n- forced_continuation_pass: `{}`\n- functional_pass: `{}`\n- intervention_pass: `{}`\n- overall_pass: `{}`\n- reviewer_score: `{}`\n- overall_score: `{}`\n- score_per_model_round: `{:?}`\n- score_per_wall_clock_second: `{:.4}`\n\n## Role Round Caps\n\n```json\n{}\n```\n\n## Goal Graph\n\n```json\n{}\n```\n\n## Request Flow Counts\n\n```json\n{}\n```\n\n## Terminal Guard Hits\n\n```json\n{}\n```\n\n## Flow Graph\n\n- graph_json: `{}`\n- graph_mermaid: `{}`\n- nodes: `{}`\n- edges: `{}`\n- intervention_requests: `{}`\n- intervention_decisions: `{}`\n- unresolved_endpoints: `{}`\n\n```mermaid\n{}\n```\n\n## Auto Merge\n\n```json\n{}\n```\n\n## Diff\n\n- files_changed: `{}`\n- insertions: `{}`\n- deletions: `{}`\n- files: `{:?}`\n\n## Wake Invocations\n\n```json\n{}\n```\n\n## Forced Continuation Checks\n\n```json\n{}\n```\n\n## Checks\n\n```json\n{}\n```\n",
+        metrics.intervention_mode,
         metrics.run_dir,
         metrics.repo_path,
         metrics.db_name,
@@ -10,6 +11,7 @@ pub(super) fn render_report(metrics: &Metrics, flow_graph: &FlowGraph) -> String
         metrics.correction_loop_count,
         metrics.final_goal_state,
         metrics.deterministic_pass,
+        metrics.forced_continuation_pass,
         metrics.functional_pass,
         metrics.intervention_pass,
         metrics.overall_pass,
@@ -39,6 +41,7 @@ pub(super) fn render_report(metrics: &Metrics, flow_graph: &FlowGraph) -> String
         metrics.git_diff_stats.deletions,
         metrics.final_changed_files,
         serde_json::to_string_pretty(&metrics.wake_invocations).unwrap_or_default(),
+        serde_json::to_string_pretty(&metrics.forced_continuation_checks).unwrap_or_default(),
         serde_json::to_string_pretty(&metrics.deterministic_checks).unwrap_or_default()
     )
 }

@@ -20,6 +20,10 @@ pub fn pre_seed_wake_handles(ctx: &WakeTokenContext) -> PreSeededHandles {
         triggering,
         root_perspective,
         self_instance,
+        continuation_decision: None,
+        continuation_request: None,
+        continuation_wake_trace: None,
+        continuation_original_triggering: None,
     }
 }
 

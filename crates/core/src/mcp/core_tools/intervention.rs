@@ -3,7 +3,7 @@
 use futures::future::BoxFuture;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use sqlx::{Postgres, Row, Transaction};
+use sqlx::{Postgres, Transaction};
 use time::OffsetDateTime;
 
 use crate::intervention::{
@@ -11,15 +11,9 @@ use crate::intervention::{
     intervention_decision_event_draft,
 };
 use crate::mcp::{McpTool, McpToolCtx, McpToolError};
-use crate::personality::{
-    PersonalityInstanceId, WakeEntryAuthoredBy, WakeEntryExecutionMode, WakeEntryGoalScope,
-    WakeEntryRow, WakeEntryTriggerKind,
-};
-use crate::wake::fire::input::FireWakeContinuation;
-use crate::wake::fire::{FireWakeEntryInput, fire_wake_entry};
 use crate::{
     CORE_AUTHORED_RELATION, CORE_DERIVED_FROM_RELATION, EdgeAuthorshipKind, EntityKind, MemoryId,
-    ModelTier, Owner, OwnerPrincipalKind, Principal, SourceBatchId, SourceId,
+    Owner, OwnerPrincipalKind, Principal, SourceBatchId, SourceId,
 };
 
 #[derive(Debug, Default)]
@@ -41,19 +35,11 @@ pub struct EmitInterventionDecisionArgs {
 pub struct EmitInterventionDecisionOutput {
     pub intervention_decision: String,
     pub decision: InterventionDecisionKind,
-    pub continuation_applied: bool,
-    pub continuation_note: Option<String>,
 }
 
 #[derive(Debug)]
 struct LoadedInterventionRequest {
     memory_id: uuid::Uuid,
-    original_invocation_id: uuid::Uuid,
-    original_wake_entry_id: uuid::Uuid,
-    original_personality_instance_id: uuid::Uuid,
-    original_change_event_seq: uuid::Uuid,
-    triggering_memory_id: uuid::Uuid,
-    wake_trace_memory_id: uuid::Uuid,
     target_intervention_personality_instance_id: uuid::Uuid,
     intervention_extension_rounds: i32,
     intervention_hard_cap_rounds: i32,
@@ -102,13 +88,9 @@ impl McpTool for EmitInterventionDecisionTool {
             if let Some(existing) =
                 existing_decision(&ctx, loaded.memory_id, &payload.idempotency_key).await?
             {
-                let continuation =
-                    apply_continue_if_requested(&ctx, &loaded, existing, &payload).await?;
                 return Ok(EmitInterventionDecisionOutput {
                     intervention_decision: ctx.format_memory(existing),
                     decision: payload.decision,
-                    continuation_applied: continuation.applied,
-                    continuation_note: Some(format!("idempotent replay; {}", continuation.note)),
                 });
             }
             let mut tx = ctx.pool.begin().await.map_err(map_sql)?;
@@ -133,23 +115,13 @@ impl McpTool for EmitInterventionDecisionTool {
             )
             .await?;
             tx.commit().await.map_err(map_sql)?;
-            let continuation =
-                apply_continue_if_requested(&ctx, &loaded, outcome.memory_id, &payload).await?;
 
             Ok(EmitInterventionDecisionOutput {
                 intervention_decision: ctx.format_memory(outcome.memory_id),
                 decision: payload.decision,
-                continuation_applied: continuation.applied,
-                continuation_note: Some(continuation.note),
             })
         })
     }
-}
-
-#[derive(Debug, Clone)]
-struct ContinueApplication {
-    applied: bool,
-    note: String,
 }
 
 async fn existing_decision(
@@ -184,22 +156,8 @@ async fn load_intervention_request(
     memory_id: MemoryId,
 ) -> Result<LoadedInterventionRequest, McpToolError> {
     let (owner_kind, owner_id, owner_org_id) = owner_columns(&ctx.owner);
-    let row: Option<(
-        uuid::Uuid,
-        uuid::Uuid,
-        uuid::Uuid,
-        uuid::Uuid,
-        uuid::Uuid,
-        uuid::Uuid,
-        uuid::Uuid,
-        uuid::Uuid,
-        i32,
-        i32,
-    )> = sqlx::query_as(
-        "SELECT b.memory_id, b.original_invocation_id, b.original_wake_entry_id,
-                b.original_personality_instance_id, b.original_change_event_seq,
-                b.triggering_memory_id, b.wake_trace_memory_id,
-                b.target_intervention_personality_instance_id,
+    let row: Option<(uuid::Uuid, uuid::Uuid, i32, i32)> = sqlx::query_as(
+        "SELECT b.memory_id, b.target_intervention_personality_instance_id,
                 b.intervention_extension_rounds, b.intervention_hard_cap_rounds
            FROM proxima_core.intervention_requested_v1 b
            JOIN proxima_core.memories m USING (memory_id)
@@ -217,12 +175,6 @@ async fn load_intervention_request(
     .map_err(map_sql)?;
     let Some((
         memory_id,
-        original_invocation_id,
-        original_wake_entry_id,
-        original_personality_instance_id,
-        original_change_event_seq,
-        triggering_memory_id,
-        wake_trace_memory_id,
         target_intervention_personality_instance_id,
         intervention_extension_rounds,
         intervention_hard_cap_rounds,
@@ -234,12 +186,6 @@ async fn load_intervention_request(
     };
     Ok(LoadedInterventionRequest {
         memory_id,
-        original_invocation_id,
-        original_wake_entry_id,
-        original_personality_instance_id,
-        original_change_event_seq,
-        triggering_memory_id,
-        wake_trace_memory_id,
         target_intervention_personality_instance_id,
         intervention_extension_rounds,
         intervention_hard_cap_rounds,
@@ -338,123 +284,6 @@ async fn validate_decision_shape(
         }
     }
     Ok(())
-}
-
-async fn apply_continue_if_requested(
-    ctx: &McpToolCtx,
-    loaded: &LoadedInterventionRequest,
-    intervention_decision_memory_id: MemoryId,
-    payload: &InterventionDecisionV1,
-) -> Result<ContinueApplication, McpToolError> {
-    if payload.decision != InterventionDecisionKind::Continue {
-        return Ok(ContinueApplication {
-            applied: false,
-            note: "no continuation requested".into(),
-        });
-    }
-    let Some(grant_rounds) = payload.grant_rounds else {
-        return Err(McpToolError::InvalidInput(
-            "continue requires grant_rounds".into(),
-        ));
-    };
-    let Some(engine) = ctx.engine() else {
-        return Ok(ContinueApplication {
-            applied: false,
-            note: "continue decision recorded; no engine attached to apply it".into(),
-        });
-    };
-    let Some(adapter) = engine.target_adapter() else {
-        return Ok(ContinueApplication {
-            applied: false,
-            note: "continue decision recorded; no wake target adapter installed".into(),
-        });
-    };
-
-    let mut wake_entry = load_original_wake_entry(ctx, loaded).await?;
-    wake_entry.max_rounds = grant_rounds;
-    wake_entry.intervention_policy = None;
-    let input = FireWakeEntryInput {
-        owner: ctx.owner.clone(),
-        personality_instance_id: PersonalityInstanceId::new(
-            loaded.original_personality_instance_id,
-        ),
-        wake_entry,
-        change_event_seq: loaded.original_change_event_seq,
-        triggering_memory_id: loaded.triggering_memory_id,
-        continuation: Some(FireWakeContinuation {
-            intervention_decision_memory_id,
-            intervention_request_memory_id: MemoryId::new(loaded.memory_id),
-            original_invocation_id: loaded.original_invocation_id,
-            wake_trace_memory_id: MemoryId::new(loaded.wake_trace_memory_id),
-            triggering_memory_id: MemoryId::new(loaded.triggering_memory_id),
-            grant_rounds,
-            rationale: payload.rationale.clone(),
-        }),
-    };
-
-    match fire_wake_entry(engine, adapter.as_ref(), input).await {
-        Ok(true) => Ok(ContinueApplication {
-            applied: true,
-            note: format!("continued original wake for {grant_rounds} rounds"),
-        }),
-        Ok(false) => Ok(ContinueApplication {
-            applied: false,
-            note: "continuation already applied or skipped by wake filters".into(),
-        }),
-        Err(err) => Err(McpToolError::Other(format!(
-            "apply continuation failed: {err}"
-        ))),
-    }
-}
-
-async fn load_original_wake_entry(
-    ctx: &McpToolCtx,
-    loaded: &LoadedInterventionRequest,
-) -> Result<WakeEntryRow, McpToolError> {
-    let (owner_kind, owner_id, owner_org_id) = owner_columns(&ctx.owner);
-    let row = sqlx::query(
-        "SELECT wake_entry_id, trigger_kind, trigger_id, label, enabled,
-                execution_mode, authored_by, probability_promille, goal_scope,
-                instructions, model_tier, inference_target_ref,
-                substrate_tool_palette, workspace_tool_palette, max_rounds,
-                disabled_reason
-           FROM proxima_core.personality_wake_entries
-          WHERE owner_principal_kind = $1
-            AND owner_principal_id = $2
-            AND owner_org_id = $3
-            AND personality_instance_id = $4
-            AND wake_entry_id = $5
-            AND tombstoned_at IS NULL",
-    )
-    .bind(owner_kind)
-    .bind(owner_id)
-    .bind(owner_org_id)
-    .bind(loaded.original_personality_instance_id)
-    .bind(loaded.original_wake_entry_id)
-    .fetch_optional(&ctx.pool)
-    .await
-    .map_err(map_sql)?
-    .ok_or_else(|| McpToolError::InvalidInput("original wake entry not found".into()))?;
-
-    Ok(WakeEntryRow {
-        wake_entry_id: row.get("wake_entry_id"),
-        trigger_kind: row.get::<WakeEntryTriggerKind, _>("trigger_kind"),
-        trigger_id: row.get("trigger_id"),
-        label: row.get("label"),
-        enabled: row.get("enabled"),
-        execution_mode: row.get::<WakeEntryExecutionMode, _>("execution_mode"),
-        authored_by: row.get::<WakeEntryAuthoredBy, _>("authored_by"),
-        probability_promille: u16::try_from(row.get::<i32, _>("probability_promille")).unwrap_or(0),
-        goal_scope: row.get::<WakeEntryGoalScope, _>("goal_scope"),
-        instructions: row.get("instructions"),
-        model_tier: row.get::<ModelTier, _>("model_tier"),
-        inference_target_ref: row.get("inference_target_ref"),
-        substrate_tool_palette: row.get("substrate_tool_palette"),
-        workspace_tool_palette: row.get("workspace_tool_palette"),
-        max_rounds: u16::try_from(row.get::<i32, _>("max_rounds")).unwrap_or(0),
-        intervention_policy: None,
-        disabled_reason: row.get("disabled_reason"),
-    })
 }
 
 async fn ingest_intervention_decision_fact(
@@ -711,4 +540,24 @@ fn owner_columns(owner: &Owner) -> (OwnerPrincipalKind, uuid::Uuid, uuid::Uuid) 
 
 fn map_sql(err: sqlx::Error) -> McpToolError {
     McpToolError::Storage(crate::StorageError::Internal(err.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn intervention_decision_output_is_record_only() {
+        let output = EmitInterventionDecisionOutput {
+            intervention_decision: "N1".into(),
+            decision: InterventionDecisionKind::Continue,
+        };
+
+        let value = serde_json::to_value(output).expect("serialize output");
+
+        assert_eq!(value["intervention_decision"], "N1");
+        assert_eq!(value["decision"], "continue");
+        assert!(value.get("continuation_applied").is_none());
+        assert!(value.get("continuation_note").is_none());
+    }
 }

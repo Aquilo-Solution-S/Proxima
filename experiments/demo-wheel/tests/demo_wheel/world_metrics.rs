@@ -144,6 +144,8 @@ impl DemoWorld {
             &final_changed_files,
         );
         let deterministic_pass = deterministic_checks.values().all(|value| *value);
+        let forced_continuation_checks = self.forced_continuation_checks().await?;
+        let forced_continuation_pass = forced_continuation_checks.values().all(|value| *value);
         let intervention_decision_count = *output_sidecar_counts_by_schema
             .get(InterventionDecisionV1::SCHEMA_ID)
             .unwrap_or(&0);
@@ -159,24 +161,42 @@ impl DemoWorld {
         let intervention_pass = ticks <= self.cfg.max_ticks
             && correction_loop_count <= self.cfg.max_correction_loops
             && !wake_failures;
-        let (reviewer_score, reviewer_score_error) = match self
-            .run_read_only_reviewer(&git_diff_stats, &final_changed_files)
-            .await
-        {
-            Ok(score) => (Some(score), None),
-            Err(err) => {
-                eprintln!("read-only reviewer failed: {err}");
-                (None, Some(err.to_string()))
+        let (reviewer_score, reviewer_score_error) =
+            if self.cfg.intervention_mode == DemoInterventionMode::ForceContinue {
+                (None, None)
+            } else {
+                match self
+                    .run_read_only_reviewer(&git_diff_stats, &final_changed_files)
+                    .await
+                {
+                    Ok(score) => (Some(score), None),
+                    Err(err) => {
+                        eprintln!("read-only reviewer failed: {err}");
+                        (None, Some(err.to_string()))
+                    }
+                }
+            };
+        let functional_pass = match self.cfg.intervention_mode {
+            DemoInterventionMode::Normal => {
+                let reviewer_raw = reviewer_score
+                    .as_ref()
+                    .map_or(0, |score| score.score.min(100));
+                deterministic_pass && reviewer_raw >= 70
             }
+            DemoInterventionMode::ForceContinue => forced_continuation_pass,
         };
         let reviewer_raw = reviewer_score
             .as_ref()
             .map_or(0, |score| score.score.min(100));
-        let functional_pass = deterministic_pass && reviewer_raw >= 70;
-        let overall_score = if deterministic_pass {
-            reviewer_raw
-        } else {
-            reviewer_raw.min(49)
+        let overall_score = match self.cfg.intervention_mode {
+            DemoInterventionMode::Normal => {
+                if deterministic_pass {
+                    reviewer_raw
+                } else {
+                    reviewer_raw.min(49)
+                }
+            }
+            DemoInterventionMode::ForceContinue => u32::from(forced_continuation_pass) * 100,
         };
         let total_model_rounds: u32 = wake_invocations
             .iter()
@@ -184,7 +204,12 @@ impl DemoWorld {
             .filter_map(|value| u32::try_from(value).ok())
             .sum();
         let wall_clock_seconds = started.elapsed().as_secs_f64();
+        let overall_pass = match self.cfg.intervention_mode {
+            DemoInterventionMode::Normal => functional_pass && intervention_pass,
+            DemoInterventionMode::ForceContinue => forced_continuation_pass && intervention_pass,
+        };
         Ok(Metrics {
+            intervention_mode: self.cfg.intervention_mode,
             run_dir: self.cfg.run_dir.display().to_string(),
             repo_path: self.cfg.repo_path.display().to_string(),
             db_name: self.db_name.clone(),
@@ -207,6 +232,8 @@ impl DemoWorld {
             final_changed_files,
             deterministic_checks,
             deterministic_pass,
+            forced_continuation_checks,
+            forced_continuation_pass,
             functional_pass,
             flow_graph_json: self
                 .cfg
@@ -234,8 +261,160 @@ impl DemoWorld {
             },
             score_per_wall_clock_second: f64::from(overall_score) / wall_clock_seconds.max(0.001),
             intervention_pass,
-            overall_pass: functional_pass && intervention_pass,
+            overall_pass,
         })
+    }
+
+    pub(super) async fn forced_continuation_checks(
+        &self,
+    ) -> Result<BTreeMap<String, bool>, Box<dyn std::error::Error>> {
+        let continue_decision_count: i64 = sqlx::query_scalar(
+            "SELECT count(*)
+             FROM proxima_core.intervention_decision_v1
+             WHERE decision = 'continue'",
+        )
+        .fetch_one(self.pg.pool())
+        .await?;
+        let decision_request_edge_count: i64 = sqlx::query_scalar(
+            "SELECT count(*)
+             FROM proxima_core.intervention_decision_v1 d
+             JOIN proxima_core.edges e
+               ON e.source_kind = 'Fact'
+              AND e.target_kind = 'Fact'
+              AND e.source_memory_id = d.memory_id
+              AND e.target_memory_id = d.intervention_request_memory_id
+              AND e.relation = $1
+             WHERE d.decision = 'continue'",
+        )
+        .bind(CORE_DERIVED_FROM_RELATION)
+        .fetch_one(self.pg.pool())
+        .await?;
+        let continuation_invocation_count: i64 = sqlx::query_scalar(
+            "SELECT count(*)
+             FROM proxima_core.personality_wake_invocations
+             WHERE continuation_intervention_decision_memory_id IS NOT NULL",
+        )
+        .fetch_one(self.pg.pool())
+        .await?;
+        let continuation_row_links_decision_count: i64 = sqlx::query_scalar(
+            "SELECT count(*)
+             FROM proxima_core.personality_wake_invocations i
+             JOIN proxima_core.intervention_decision_v1 d
+               ON d.memory_id = i.continuation_intervention_decision_memory_id
+             WHERE d.decision = 'continue'",
+        )
+        .fetch_one(self.pg.pool())
+        .await?;
+        let continuation_uses_decision_event_count: i64 = sqlx::query_scalar(
+            "SELECT count(*)
+             FROM proxima_core.personality_wake_invocations i
+             JOIN proxima_core.change_event ce
+               ON ce.seq = i.change_event_seq
+              AND ce.entity_memory_id = i.continuation_intervention_decision_memory_id
+             JOIN proxima_core.intervention_decision_v1 d
+               ON d.memory_id = i.continuation_intervention_decision_memory_id
+             WHERE d.decision = 'continue'",
+        )
+        .fetch_one(self.pg.pool())
+        .await?;
+
+        let fetch_handles = self.continuation_fetch_memory_handles().await?;
+        let decision_handle = fetch_handles.iter().any(|handle| handle == "N1");
+        let request_handle = fetch_handles.iter().any(|handle| handle == "N3");
+        let prior_trace_handle = fetch_handles.iter().any(|handle| handle == "N4");
+        let original_trigger_handle = fetch_handles.iter().any(|handle| handle == "N5");
+
+        let mut checks = BTreeMap::new();
+        checks.insert("one_continue_decision".into(), continue_decision_count == 1);
+        checks.insert(
+            "decision_has_core_derived_from_request".into(),
+            decision_request_edge_count == 1,
+        );
+        checks.insert(
+            "one_continuation_invocation".into(),
+            continuation_invocation_count == 1,
+        );
+        checks.insert(
+            "continuation_invocation_uses_decision_change_event".into(),
+            continuation_uses_decision_event_count == 1,
+        );
+        checks.insert(
+            "continuation_row_links_intervention_decision".into(),
+            continuation_row_links_decision_count == 1,
+        );
+        checks.insert(
+            "continuation_trace_fetches_intervention_decision_handle".into(),
+            decision_handle,
+        );
+        checks.insert(
+            "continuation_trace_fetches_intervention_request_handle".into(),
+            request_handle,
+        );
+        checks.insert(
+            "continuation_trace_fetches_prior_wake_trace_handle".into(),
+            prior_trace_handle,
+        );
+        checks.insert(
+            "continuation_trace_fetches_original_triggering_handle".into(),
+            original_trigger_handle,
+        );
+        checks.insert(
+            "continuation_trace_fetches_seeded_context_handles".into(),
+            decision_handle && request_handle && prior_trace_handle && original_trigger_handle,
+        );
+        Ok(checks)
+    }
+
+    async fn continuation_fetch_memory_handles(
+        &self,
+    ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+        let Some(invocation_id) = sqlx::query_scalar::<_, Uuid>(
+            "SELECT invocation_id
+             FROM proxima_core.personality_wake_invocations
+             WHERE continuation_intervention_decision_memory_id IS NOT NULL
+             ORDER BY started_at ASC
+             LIMIT 1",
+        )
+        .fetch_optional(self.pg.pool())
+        .await?
+        else {
+            return Ok(Vec::new());
+        };
+        let rows = sqlx::query(
+            "SELECT cj.body
+             FROM proxima_core.wake_trace_v1 wt
+             JOIN proxima_core.citation_mappings cm ON cm.memory_id = wt.memory_id
+             JOIN proxima_core.cited_wake_trace_jsonl_v1 cj
+               ON cj.cited_object_id = cm.cited_object_id
+             WHERE wt.invocation_id = $1
+             ORDER BY wt.started_at ASC",
+        )
+        .bind(invocation_id)
+        .fetch_all(self.pg.pool())
+        .await?;
+        let mut handles = Vec::new();
+        for row in rows {
+            let body: Vec<u8> = row.try_get("body")?;
+            for line in String::from_utf8_lossy(&body).lines() {
+                let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+                    continue;
+                };
+                if value.get("record").and_then(serde_json::Value::as_str) != Some("tool_call")
+                    || value.get("tool_name").and_then(serde_json::Value::as_str)
+                        != Some("core/fetch_memory")
+                {
+                    continue;
+                }
+                if let Some(memory) = value
+                    .get("args")
+                    .and_then(|args| args.get("memory"))
+                    .and_then(serde_json::Value::as_str)
+                {
+                    handles.push(memory.to_string());
+                }
+            }
+        }
+        Ok(handles)
     }
 
     pub(super) async fn request_flow_counts(&self) -> Result<Vec<RequestFlowCount>, sqlx::Error> {

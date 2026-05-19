@@ -304,6 +304,10 @@ pub struct PreSeededHandles {
     pub triggering: Handle,
     pub root_perspective: Handle,
     pub self_instance: Handle,
+    pub continuation_decision: Option<Handle>,
+    pub continuation_request: Option<Handle>,
+    pub continuation_wake_trace: Option<Handle>,
+    pub continuation_original_triggering: Option<Handle>,
 }
 
 fn is_valid_handle_shape(raw: &str) -> bool {
