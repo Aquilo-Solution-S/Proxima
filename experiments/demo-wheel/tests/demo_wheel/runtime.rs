@@ -76,6 +76,17 @@ pub(super) fn env_u32(name: &str, default: u32) -> Result<u32, Box<dyn std::erro
     }
 }
 
+pub(super) fn env_optional_u64(
+    name: &str,
+    default: Option<u64>,
+) -> Result<Option<u64>, Box<dyn std::error::Error>> {
+    match std::env::var(name) {
+        Ok(value) => Ok(Some(value.parse()?)),
+        Err(std::env::VarError::NotPresent) => Ok(default),
+        Err(err) => Err(err.into()),
+    }
+}
+
 pub(super) fn env_optional_u16(name: &str) -> Result<Option<u16>, Box<dyn std::error::Error>> {
     match std::env::var(name) {
         Ok(value) => Ok(Some(value.parse()?)),

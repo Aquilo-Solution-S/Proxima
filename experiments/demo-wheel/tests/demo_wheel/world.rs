@@ -151,7 +151,7 @@ impl DemoWorld {
                 "proxima-workspace/shell",
                 "proxima-workspace/list_files",
             ],
-            verifier_instruction(self.cfg.challenge),
+            verifier_instruction(self.cfg.challenge, self.cfg.planner_mode),
             WakeOptions {
                 intervention_policy: Some(intervention_policy.clone()),
                 ..WakeOptions::default_with_rounds(self.cfg.role_max_rounds.verifier)
@@ -170,6 +170,16 @@ impl DemoWorld {
             ticks += 1;
             let fired = self.engine.run_dispatcher_tick().await?;
             let correction_loops = self.correction_loop_count().await?;
+            if let Some(max_seconds) = self.cfg.max_wall_clock_seconds
+                && started.elapsed() >= Duration::from_secs(max_seconds)
+            {
+                let metrics = self.collect_metrics(started, ticks).await?;
+                self.write_outputs(&metrics).await?;
+                return Err(self
+                    .failure_report("max wall clock seconds exceeded")
+                    .await?
+                    .into());
+            }
             if self.cfg.intervention_mode == DemoInterventionMode::ForceContinue
                 && self
                     .forced_continuation_checks()

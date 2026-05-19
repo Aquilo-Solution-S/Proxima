@@ -24,6 +24,7 @@ uuid = { workspace = true }
 
 [dev-dependencies]
 async-trait = { workspace = true }
+proxima-harness = { path = "../../crates/harness" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [lints]

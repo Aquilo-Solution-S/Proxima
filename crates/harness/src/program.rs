@@ -88,6 +88,8 @@ fn build_user_seed(program: &HarnessProgram) -> String {
         "active_goals",
         "trigger_event",
         "triggering_memory",
+        "wake_contract",
+        "coordination_context",
         "continuation",
         "workspace_context",
     ] {
@@ -102,6 +104,65 @@ fn build_user_seed(program: &HarnessProgram) -> String {
     }
 
     seed.trim_end().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use proxima_core::harness::ProviderTarget;
+    use serde_json::json;
+
+    use super::build_user_seed;
+
+    #[test]
+    fn user_seed_renders_wake_contract_and_coordination_context() {
+        let program = proxima_core::harness::HarnessProgram {
+            system_prompt: "sys".into(),
+            instructions: "do the wake".into(),
+            context_params: HashMap::from([
+                (
+                    "wake_contract".into(),
+                    json!({
+                        "label": "Planner child-goal demo wake",
+                        "trigger_id": "proxima-goal/goal-activated-v1",
+                        "execution_mode": "substrate_only",
+                        "tool_palettes": {
+                            "substrate_tool_palette": ["proxima-goal/goal_decompose"],
+                            "workspace_tool_palette": []
+                        }
+                    }),
+                ),
+                (
+                    "coordination_context".into(),
+                    json!({
+                        "wake_path": {
+                            "current": {
+                                "wake_entry_label": "Planner child-goal demo wake"
+                            }
+                        }
+                    }),
+                ),
+            ]),
+            substrate_tool_palette: Vec::new(),
+            workspace_root: None,
+            max_rounds: 1,
+            provider: ProviderTarget::MistralChat {
+                base_url: "http://127.0.0.1:1".into(),
+                model_id: "test".into(),
+                api_key: "test".into(),
+                temperature: None,
+                max_completion_tokens: None,
+            },
+        };
+
+        let seed = build_user_seed(&program);
+
+        assert!(seed.contains("Wake Contract:"));
+        assert!(seed.contains("Coordination Context:"));
+        assert!(seed.contains("Planner child-goal demo wake"));
+        assert!(seed.contains("proxima-goal/goal_decompose"));
+    }
 }
 
 fn snake_to_title(s: &str) -> String {

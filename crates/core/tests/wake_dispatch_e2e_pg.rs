@@ -29,6 +29,19 @@ async fn harness_wake_persists_trace_fact_jsonl_and_provenance() {
         let fired = fixture.engine.run_dispatcher_tick().await?;
         assert_eq!(fired, 1);
 
+        let program = fixture.mock.latest_program().expect("captured program");
+        let contract = program
+            .context_params
+            .get("wake_contract")
+            .expect("wake contract context");
+        assert_eq!(contract["label"], "smoke-trigger");
+        assert_eq!(contract["trigger_id"], "proxima-test/wake-context-fact-v1");
+        assert_eq!(contract["execution_mode"], "substrate_only");
+        assert_eq!(
+            contract["tool_palettes"]["substrate_tool_palette"][0],
+            "core/fetch_memory"
+        );
+
         let trigger: uuid::Uuid = sqlx::query_scalar(
             "SELECT entity_memory_id FROM proxima_core.change_event WHERE seq = $1",
         )

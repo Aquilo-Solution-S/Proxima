@@ -5,7 +5,8 @@ use tokio_util::sync::CancellationToken;
 use crate::conversation::{Conversation, ToolSpec};
 
 use super::chat_completions_wire::{
-    ChatCompletionsRequestOptions, TokenLimitField, build_request, classify_and_parse,
+    ChatCompletionsRequestOptions, ChatCompletionsToolPolicy, TokenLimitField, build_request,
+    classify_and_parse,
 };
 use super::{ProviderClient, ProviderError, RoundResult};
 
@@ -33,6 +34,11 @@ impl ProviderClient for MistralChatClient {
                 temperature: self.temperature,
                 max_completion_tokens: self.max_completion_tokens,
                 token_limit_field: TokenLimitField::MaxTokens,
+                tool_policy: ChatCompletionsToolPolicy {
+                    strict_tools: true,
+                    tool_choice: Some("auto"),
+                    parallel_tool_calls: Some(false),
+                },
             },
             conversation,
             tools,

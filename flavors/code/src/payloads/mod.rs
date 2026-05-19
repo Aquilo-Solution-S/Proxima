@@ -81,7 +81,9 @@ pub(crate) mod content_hash_serde {
     }
 }
 
-pub use acceptance::{AcceptanceCriteriaV1, AcceptanceCriterionV1, AcceptanceVerifierKind};
+pub use acceptance::{
+    AcceptanceCriteriaV1, AcceptanceCriterionV1, AcceptanceVerifierKind, AcceptanceVerifierSpecV1,
+};
 pub use code_chunk::CodeChunkV1;
 pub use commit::CommitV1;
 pub use commit_summary::CommitSummaryV1;
@@ -90,7 +92,9 @@ pub use edge_calls::EdgeCallsV1;
 pub use execution_request::ExecutionRequestV1;
 pub use file_revision::{FileRevisionV1, FileState};
 pub use personality_self::{CodeCommitSummarizerSelfV1, CodeEngineerSelfV1};
-pub use verification_evidence::{VerificationEvidenceStatus, VerificationEvidenceV1};
+pub use verification_evidence::{
+    VerificationArtifactRefsV1, VerificationEvidenceStatus, VerificationEvidenceV1,
+};
 pub use workspace::{
     WorkspaceDecision, WorkspaceDecisionV1, WorkspaceDiffFile, WorkspaceDiffStat,
     WorkspaceReviewFinding, WorkspaceReviewV1, WorkspaceReviewVerdict, WorkspaceRunV1,

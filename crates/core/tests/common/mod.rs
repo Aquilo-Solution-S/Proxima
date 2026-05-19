@@ -200,17 +200,23 @@ pub async fn seed_wake_context_fixture()
 #[derive(Debug, Clone)]
 pub struct MockAdapter {
     pub calls: Arc<Mutex<usize>>,
+    pub programs: Arc<Mutex<Vec<TargetInvocation>>>,
 }
 
 impl MockAdapter {
     pub fn new() -> Self {
         Self {
             calls: Arc::new(Mutex::new(0)),
+            programs: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
     pub fn call_count(&self) -> usize {
         *self.calls.lock().unwrap()
+    }
+
+    pub fn latest_program(&self) -> Option<TargetInvocation> {
+        self.programs.lock().unwrap().last().cloned()
     }
 }
 
@@ -218,10 +224,11 @@ impl MockAdapter {
 impl TargetAdapter for MockAdapter {
     async fn run(
         &self,
-        _invocation: TargetInvocation,
+        invocation: TargetInvocation,
         _ctx: proxima_core::harness::HarnessContext,
     ) -> Result<TargetOutcome, TargetAdapterError> {
         *self.calls.lock().unwrap() += 1;
+        self.programs.lock().unwrap().push(invocation);
         Ok(TargetOutcome {
             kind: TargetOutcomeKind::Succeeded,
             finish_reason: proxima_core::harness::FinishReason::Stop,
@@ -332,7 +339,7 @@ pub async fn seed_dispatch_fixture_with_match_and_engine(
         1000,
         ModelTier::Standard,
         None,
-        Vec::new(),
+        vec!["core/fetch_memory".into()],
         4,
     )
     .expect("build wake entry");

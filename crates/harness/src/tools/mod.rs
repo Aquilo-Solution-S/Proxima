@@ -13,6 +13,8 @@ use std::path::PathBuf;
 
 use proxima_core::harness::SubstrateToolBinding;
 
+pub mod strict_inventory;
+pub mod strict_schema;
 pub mod substrate_dispatch;
 pub mod workspace;
 

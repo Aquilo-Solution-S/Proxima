@@ -8,8 +8,8 @@ use proxima_code::mcp::{
 };
 use proxima_code::payloads::WorkspaceDiffStat;
 use proxima_code::{
-    AcceptanceCriteriaV1, AcceptanceCriterionV1, AcceptanceVerifierKind, CommitV1,
-    ExecutionRequestV1, WorkspaceDecision, WorkspaceReviewVerdict, WorkspaceRunV1,
+    AcceptanceCriteriaV1, AcceptanceCriterionV1, AcceptanceVerifierKind, AcceptanceVerifierSpecV1,
+    CommitV1, ExecutionRequestV1, WorkspaceDecision, WorkspaceReviewVerdict, WorkspaceRunV1,
 };
 use proxima_core::auth::NoAuth;
 use proxima_core::mcp::{McpAuthorContext, McpTool, McpToolCtx, OutputMode};
@@ -262,7 +262,7 @@ async fn approved_review_requires_required_verification_evidence()
                 "criterion_key": key,
                 "status": "passed",
                 "summary": format!("{key} passed"),
-                "artifact_refs_json": { "path": "index.html" },
+                "artifact_refs": { "path": "index.html" },
                 "idempotency_key": format!("evidence-{key}")
             }),
         )
@@ -1115,14 +1115,28 @@ async fn seed_acceptance_criteria(
                 description: "index.html exists".into(),
                 required: true,
                 verifier_kind: AcceptanceVerifierKind::FileExists,
-                verifier_spec_json: json!({ "path": "index.html" }),
+                verifier_spec: AcceptanceVerifierSpecV1 {
+                    path: Some("index.html".into()),
+                    command: None,
+                    pattern: None,
+                    note: None,
+                },
             },
             AcceptanceCriterionV1 {
                 key: "gameplay_controls".into(),
                 description: "gameplay controls exist".into(),
                 required: true,
                 verifier_kind: AcceptanceVerifierKind::Command,
-                verifier_spec_json: json!({ "command": ["grep", "Signal Match", "index.html"] }),
+                verifier_spec: AcceptanceVerifierSpecV1 {
+                    path: None,
+                    command: Some(vec![
+                        "grep".into(),
+                        "Signal Match".into(),
+                        "index.html".into(),
+                    ]),
+                    pattern: None,
+                    note: None,
+                },
             },
         ],
     };

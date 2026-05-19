@@ -72,6 +72,13 @@ enum DemoInterventionMode {
     ForceContinue,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum DemoPlannerMode {
+    Scripted,
+    Real,
+}
+
 impl DemoChallenge {
     fn from_env() -> Result<Self, Box<dyn std::error::Error>> {
         match std::env::var("PROXIMA_DEMO_CHALLENGE")
@@ -215,12 +222,14 @@ impl DemoChallenge {
 #[derive(Debug, Clone)]
 struct DemoConfig {
     intervention_mode: DemoInterventionMode,
+    planner_mode: DemoPlannerMode,
     challenge: DemoChallenge,
     repo_path: PathBuf,
     run_dir: PathBuf,
     base_url: String,
     api_key_env: String,
     max_ticks: u32,
+    max_wall_clock_seconds: Option<u64>,
     max_correction_loops: u32,
     role_max_rounds: RoleMaxRounds,
 }
@@ -238,10 +247,12 @@ struct RoleMaxRounds {
 #[derive(Debug, Serialize)]
 struct Metrics {
     intervention_mode: DemoInterventionMode,
+    planner_mode: DemoPlannerMode,
     run_dir: String,
     repo_path: String,
     db_name: String,
     max_ticks: u32,
+    max_wall_clock_seconds: Option<u64>,
     max_correction_loops: u32,
     role_max_rounds: RoleMaxRounds,
     dispatcher_tick_count: u32,
@@ -262,6 +273,8 @@ struct Metrics {
     deterministic_pass: bool,
     forced_continuation_checks: BTreeMap<String, bool>,
     forced_continuation_pass: bool,
+    real_planner_checks: BTreeMap<String, bool>,
+    real_planner_pass: bool,
     functional_pass: bool,
     flow_graph_json: String,
     flow_graph_mermaid: String,
@@ -272,6 +285,7 @@ struct Metrics {
     overall_score: u32,
     total_model_rounds: u32,
     wall_clock_seconds: f64,
+    wall_clock_timed_out: bool,
     score_per_model_round: Option<f64>,
     score_per_wall_clock_second: f64,
     intervention_pass: bool,
@@ -434,6 +448,8 @@ struct WorktreeInfo {
     branch_name: String,
 }
 
+type DemoRunResult = Result<(), Box<dyn std::error::Error>>;
+
 struct DemoWorld {
     cfg: DemoConfig,
     db_name: String,
@@ -447,17 +463,48 @@ struct DemoWorld {
 }
 
 pub async fn run_from_env() -> Result<(), Box<dyn std::error::Error>> {
-    run_with_mode_from_env(DemoInterventionMode::Normal).await
+    run_with_modes_from_env(
+        DemoInterventionMode::Normal,
+        DemoPlannerMode::Scripted,
+        None,
+        None,
+    )
+    .await
 }
 
 pub async fn run_forced_continue_from_env() -> Result<(), Box<dyn std::error::Error>> {
-    run_with_mode_from_env(DemoInterventionMode::ForceContinue).await
+    run_with_modes_from_env(
+        DemoInterventionMode::ForceContinue,
+        DemoPlannerMode::Scripted,
+        None,
+        None,
+    )
+    .await
 }
 
-async fn run_with_mode_from_env(
-    mode: DemoInterventionMode,
+pub async fn run_real_planner_signal_match_target_from_env() -> DemoRunResult {
+    run_with_modes_from_env(
+        DemoInterventionMode::Normal,
+        DemoPlannerMode::Real,
+        Some(DemoChallenge::SignalMatch),
+        Some(600),
+    )
+    .await
+}
+
+async fn run_with_modes_from_env(
+    intervention_mode: DemoInterventionMode,
+    planner_mode: DemoPlannerMode,
+    default_challenge: Option<DemoChallenge>,
+    default_max_wall_clock_seconds: Option<u64>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let Some(cfg) = DemoConfig::from_env(mode)? else {
+    let Some(cfg) = DemoConfig::from_env(
+        intervention_mode,
+        planner_mode,
+        default_challenge,
+        default_max_wall_clock_seconds,
+    )?
+    else {
         return Ok(());
     };
     let started = Instant::now();
@@ -474,6 +521,9 @@ async fn run_with_mode_from_env(
 impl DemoConfig {
     fn from_env(
         intervention_mode: DemoInterventionMode,
+        planner_mode: DemoPlannerMode,
+        default_challenge: Option<DemoChallenge>,
+        default_max_wall_clock_seconds: Option<u64>,
     ) -> Result<Option<Self>, Box<dyn std::error::Error>> {
         if std::env::var("PROXIMA_LIVE_MISTRAL").ok().as_deref() != Some("1") {
             eprintln!("skipping demo wheel: set PROXIMA_LIVE_MISTRAL=1");
@@ -481,7 +531,15 @@ impl DemoConfig {
         }
         std::env::var("MISTRAL_API_KEY")
             .map_err(|_| "MISTRAL_API_KEY must be set for demo wheel")?;
-        let challenge = DemoChallenge::from_env()?;
+        let challenge = if let Some(challenge) = default_challenge {
+            challenge
+        } else {
+            match std::env::var("PROXIMA_DEMO_CHALLENGE") {
+                Ok(_) => DemoChallenge::from_env()?,
+                Err(std::env::VarError::NotPresent) => DemoChallenge::SignalMatch,
+                Err(err) => return Err(err.into()),
+            }
+        };
 
         let timestamp = time::OffsetDateTime::now_utc()
             .format(&time::format_description::well_known::Rfc3339)?
@@ -501,15 +559,30 @@ impl DemoConfig {
             .to_string();
         Ok(Some(Self {
             intervention_mode,
+            planner_mode,
             challenge,
             repo_path,
             run_dir,
             base_url,
             api_key_env: "MISTRAL_API_KEY".into(),
             max_ticks: env_u32("PROXIMA_DEMO_MAX_TICKS", 24)?,
+            max_wall_clock_seconds: env_optional_u64(
+                "PROXIMA_DEMO_MAX_WALL_CLOCK_SECONDS",
+                default_max_wall_clock_seconds,
+            )?,
             max_correction_loops: env_u32("PROXIMA_DEMO_MAX_CORRECTION_LOOPS", 2)?,
             role_max_rounds: RoleMaxRounds::from_env(intervention_mode)?,
         }))
+    }
+
+    fn required_child_goal_count(&self) -> i64 {
+        if self.planner_mode == DemoPlannerMode::Real
+            && self.challenge == DemoChallenge::SignalMatch
+        {
+            1
+        } else {
+            self.challenge.required_child_goal_count()
+        }
     }
 }
 

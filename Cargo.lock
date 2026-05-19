@@ -4314,6 +4314,7 @@ dependencies = [
  "ciborium",
  "futures",
  "proxima-core",
+ "proxima-harness",
  "proxima-mcp-server",
  "proxima-storage-pg",
  "schemars 1.2.1",
@@ -4331,6 +4332,7 @@ name = "proxima-flavor-intent"
 version = "0.1.0"
 dependencies = [
  "proxima-core",
+ "proxima-harness",
  "proxima-storage-pg",
  "schemars 1.2.1",
  "serde",
@@ -4429,6 +4431,7 @@ dependencies = [
  "ciborium",
  "futures",
  "proxima-core",
+ "proxima-harness",
  "proxima-storage-pg",
  "schemars 1.2.1",
  "serde",

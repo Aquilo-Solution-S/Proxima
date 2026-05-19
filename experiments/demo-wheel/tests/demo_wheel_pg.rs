@@ -22,6 +22,14 @@
 //! PROXIMA_LIVE_MISTRAL=1 \
 //! PROXIMA_DEMO_REPO=/private/tmp/proxima-forced-continue \
 //! cargo test -p proxima-demo-wheel --test demo_wheel_pg forced_intervention_continue_demo_wheel -- --ignored --nocapture --test-threads=1
+//!
+//! Real planner target:
+//!
+//! ```sh
+//! set -a; source ~/.proxima/.env; set +a
+//! PROXIMA_LIVE_MISTRAL=1 \
+//! PROXIMA_DEMO_REPO=/private/tmp/proxima-real-planner-signal-match \
+//! cargo test -p proxima-demo-wheel --test demo_wheel_pg real_planner_signal_match_target_demo_wheel -- --ignored --nocapture --test-threads=1
 //! ```
 
 mod demo_wheel;
@@ -36,4 +44,10 @@ async fn measurable_complex_demo_wheel() -> Result<(), Box<dyn std::error::Error
 #[ignore = "live Mistral API call; set PROXIMA_LIVE_MISTRAL=1"]
 async fn forced_intervention_continue_demo_wheel() -> Result<(), Box<dyn std::error::Error>> {
     demo_wheel::run_forced_continue_from_env().await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "live Mistral API call; set PROXIMA_LIVE_MISTRAL=1"]
+async fn real_planner_signal_match_target_demo_wheel() -> Result<(), Box<dyn std::error::Error>> {
+    demo_wheel::run_real_planner_signal_match_target_from_env().await
 }

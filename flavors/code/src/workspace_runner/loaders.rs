@@ -146,7 +146,7 @@ pub(super) async fn load_verification_evidence_for_request(
                 v.criterion_key,
                 v.status::text AS status,
                 v.summary,
-                v.artifact_refs_json,
+                v.artifact_refs,
                 v.created_at
          FROM proxima_code.verification_evidence_v1 v
          JOIN proxima_core.memories m USING (memory_id)
@@ -173,9 +173,8 @@ pub(super) async fn load_verification_evidence_for_request(
             let criterion_key: String = row.try_get("criterion_key").map_err(map_sqlx_internal)?;
             let status: String = row.try_get("status").map_err(map_sqlx_internal)?;
             let summary: String = row.try_get("summary").map_err(map_sqlx_internal)?;
-            let artifact_refs_json: serde_json::Value = row
-                .try_get("artifact_refs_json")
-                .map_err(map_sqlx_internal)?;
+            let artifact_refs: serde_json::Value =
+                row.try_get("artifact_refs").map_err(map_sqlx_internal)?;
             let created_at: time::OffsetDateTime =
                 row.try_get("created_at").map_err(map_sqlx_internal)?;
             Ok(json!({
@@ -185,7 +184,7 @@ pub(super) async fn load_verification_evidence_for_request(
                 "criterion_key": criterion_key,
                 "status": status,
                 "summary": summary,
-                "artifact_refs_json": artifact_refs_json,
+                "artifact_refs": artifact_refs,
                 "created_at": created_at,
             }))
         })

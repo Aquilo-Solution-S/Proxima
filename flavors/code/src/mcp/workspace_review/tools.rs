@@ -230,7 +230,7 @@ impl McpTool for CodeEmitVerificationEvidenceTool {
                 criterion_key,
                 status: args.status,
                 summary,
-                artifact_refs_json: args.artifact_refs_json,
+                artifact_refs: args.artifact_refs,
             };
             let outcome = ingest_verification_evidence(&mut tx, &ctx, &payload).await?;
             let (authored_edge_id, derived_edge_ids) = if outcome.idempotent_replay {

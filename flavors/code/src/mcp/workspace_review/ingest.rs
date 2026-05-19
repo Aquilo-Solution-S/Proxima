@@ -107,7 +107,7 @@ pub async fn insert_verification_evidence_sidecar(
     sqlx::query(
         "INSERT INTO proxima_code.verification_evidence_v1
             (memory_id, workspace_run_memory_id, execution_request_memory_id,
-             criterion_key, status, summary, artifact_refs_json)
+             criterion_key, status, summary, artifact_refs)
          VALUES ($1,$2,$3,$4,$5,$6,$7)",
     )
     .bind(memory_id.into_inner())
@@ -116,7 +116,10 @@ pub async fn insert_verification_evidence_sidecar(
     .bind(&payload.criterion_key)
     .bind(payload.status)
     .bind(&payload.summary)
-    .bind(&payload.artifact_refs_json)
+    .bind(
+        serde_json::to_value(&payload.artifact_refs)
+            .map_err(|err| McpToolError::InvalidInput(format!("serialize artifact refs: {err}")))?,
+    )
     .execute(&mut **tx)
     .await
     .map_err(map_storage)?;
