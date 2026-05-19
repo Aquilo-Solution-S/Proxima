@@ -18,6 +18,7 @@ pub enum PersonalityConfigChangedVerb {
     RegisterInferenceTarget,
     RemoveInferenceTarget,
     BindInferenceTier,
+    SetReadScope,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

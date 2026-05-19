@@ -7,7 +7,7 @@
 pub mod add_wake_entry;
 pub mod approval;
 pub mod audit;
-pub mod budget;
+pub mod intervention;
 pub mod payload;
 pub mod remove_wake_entry;
 pub mod replay_wake_events;
@@ -24,29 +24,32 @@ pub mod list_edge_types;
 pub mod list_inference_targets;
 pub mod list_inference_tier_bindings;
 pub mod list_personalities;
+pub mod list_read_scope;
 pub mod list_schemas;
 pub mod list_substrate_tools;
 pub mod list_wake_entries;
 pub mod list_workspace_tools;
 pub mod register_inference_target;
 pub mod remove_inference_target;
+pub mod set_read_scope;
 pub mod tombstone_personality;
 
 pub use add_wake_entry::AddWakeEntryTool;
 pub use approval::{EmitApprovalPolicyTool, EmitApprovalVoteTool, TryEmitApprovalDecisionTool};
 pub use audit::{AuditEmit, emit_personality_config_changed};
 pub use bind_inference_tier::BindInferenceTierTool;
-pub use budget::EmitBudgetDecisionTool;
 pub use get_graph::GetGraphTool;
 pub use get_personality::GetPersonalityTool;
 pub use inquiry::{
     EmitDirectedAnswerTool, EmitDirectedQuestionTool, GetInquiryThreadTool, ListInquiryTargetsTool,
 };
 pub use instantiate_personality::InstantiatePersonalityTool;
+pub use intervention::EmitInterventionDecisionTool;
 pub use list_edge_types::ListEdgeTypesTool;
 pub use list_inference_targets::ListInferenceTargetsTool;
 pub use list_inference_tier_bindings::ListInferenceTierBindingsTool;
 pub use list_personalities::ListPersonalitiesTool;
+pub use list_read_scope::ListReadScopeTool;
 pub use list_schemas::ListSchemasTool;
 pub use list_substrate_tools::ListSubstrateToolsTool;
 pub use list_wake_entries::ListWakeEntriesTool;
@@ -59,6 +62,7 @@ pub use register_inference_target::RegisterInferenceTargetTool;
 pub use remove_inference_target::RemoveInferenceTargetTool;
 pub use remove_wake_entry::RemoveWakeEntryTool;
 pub use replay_wake_events::ReplayWakeEventsTool;
+pub use set_read_scope::SetReadScopeTool;
 pub use set_wake_entries::SetWakeEntriesTool;
 pub use tombstone_personality::TombstonePersonalityTool;
 pub use update_wake_entry::{UpdateWakeEntryTool, WakeEntryPatch};
@@ -74,6 +78,8 @@ pub(crate) fn register_all(registry: &mut crate::FlavorRegistry) {
     registry.add_substrate_mcp_tool::<TombstonePersonalityTool>();
     registry.add_substrate_mcp_tool::<ListWakeEntriesTool>();
     registry.add_substrate_mcp_tool::<SetWakeEntriesTool>();
+    registry.add_substrate_mcp_tool::<ListReadScopeTool>();
+    registry.add_substrate_mcp_tool::<SetReadScopeTool>();
     registry.add_substrate_mcp_tool::<AddWakeEntryTool>();
     registry.add_substrate_mcp_tool::<UpdateWakeEntryTool>();
     registry.add_substrate_mcp_tool::<RemoveWakeEntryTool>();
@@ -90,7 +96,7 @@ pub(crate) fn register_all(registry: &mut crate::FlavorRegistry) {
     registry.add_substrate_mcp_tool::<EmitApprovalPolicyTool>();
     registry.add_substrate_mcp_tool::<EmitApprovalVoteTool>();
     registry.add_substrate_mcp_tool::<TryEmitApprovalDecisionTool>();
-    registry.add_substrate_mcp_tool::<EmitBudgetDecisionTool>();
+    registry.add_substrate_mcp_tool::<EmitInterventionDecisionTool>();
     registry.add_substrate_mcp_tool::<ListInquiryTargetsTool>();
     registry.add_substrate_mcp_tool::<GetInquiryThreadTool>();
     registry.add_substrate_mcp_tool::<EmitDirectedQuestionTool>();

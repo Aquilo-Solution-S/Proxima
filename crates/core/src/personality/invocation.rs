@@ -16,17 +16,26 @@ use crate::personality::types::{WakeInvocationLogStatus, WakeInvocationStatus};
 use super::personality::PersonalityInstanceId;
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct WakeInvocationContinuation {
+    pub intervention_decision_memory_id: Uuid,
+    pub original_invocation_id: Uuid,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct WakeInvocationStart {
+    pub invocation_id: Uuid,
     pub owner: Owner,
     pub personality_instance_id: PersonalityInstanceId,
     pub wake_entry_id: Uuid,
     pub change_event_seq: Uuid,
     pub wake_token: Uuid,
     pub resolved_inference_target_ref: String,
+    pub continuation: Option<WakeInvocationContinuation>,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct WakeInvocationFinalize {
+    pub invocation_id: Uuid,
     pub owner: Owner,
     pub personality_instance_id: PersonalityInstanceId,
     pub wake_entry_id: Uuid,
@@ -45,6 +54,7 @@ pub struct WakeInvocationFinalize {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WakeInvocationLogDraft {
+    pub invocation_id: Uuid,
     pub owner: Owner,
     pub personality_instance_id: PersonalityInstanceId,
     pub wake_entry_id: Uuid,
@@ -69,6 +79,7 @@ pub struct WakeInvocationLogRow {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct WakeInvocationRow {
+    pub invocation_id: Uuid,
     pub owner: Owner,
     pub personality_instance_id: PersonalityInstanceId,
     pub wake_entry_id: Uuid,
@@ -87,5 +98,7 @@ pub struct WakeInvocationRow {
     pub stderr_tail: Option<String>,
     pub stdout_truncated: bool,
     pub stderr_truncated: bool,
+    pub continuation_intervention_decision_memory_id: Option<Uuid>,
+    pub continuation_original_invocation_id: Option<Uuid>,
     pub logs: Vec<WakeInvocationLogRow>,
 }

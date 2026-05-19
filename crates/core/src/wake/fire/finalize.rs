@@ -15,11 +15,13 @@ use super::outcome::WakeInvocationFinalizeOutcome;
 pub async fn finalize(
     engine: &Engine,
     input: &FireWakeEntryInput,
+    invocation_id: Uuid,
     outcome: WakeInvocationFinalizeOutcome,
 ) -> Result<(), crate::error::ProtocolError> {
     engine
         .storage()
         .finalize_wake_invocation(&WakeInvocationFinalize {
+            invocation_id,
             owner: input.owner.clone(),
             personality_instance_id: input.personality_instance_id,
             wake_entry_id: input.wake_entry.wake_entry_id,
@@ -45,12 +47,14 @@ pub async fn finalize(
 pub async fn append_session_artifact_log(
     engine: &Engine,
     input: &FireWakeEntryInput,
+    invocation_id: Uuid,
     status: WakeInvocationLogStatus,
     message_tail: String,
 ) {
     if let Err(err) = engine
         .storage()
         .append_wake_invocation_log(&WakeInvocationLogDraft {
+            invocation_id,
             owner: input.owner.clone(),
             personality_instance_id: input.personality_instance_id,
             wake_entry_id: input.wake_entry.wake_entry_id,
@@ -77,10 +81,18 @@ pub async fn append_session_artifact_log(
 pub async fn append_session_log_error_if_present(
     engine: &Engine,
     input: &FireWakeEntryInput,
+    invocation_id: Uuid,
     outcome_result: &Result<crate::harness::HarnessOutcome, crate::harness::HarnessError>,
 ) {
     if let Err(error) = outcome_result {
-        append_session_artifact_log(engine, input, WakeInvocationLogStatus::Failed, error.to_string()).await;
+        append_session_artifact_log(
+            engine,
+            input,
+            invocation_id,
+            WakeInvocationLogStatus::Failed,
+            error.to_string(),
+        )
+        .await;
     }
 }
 

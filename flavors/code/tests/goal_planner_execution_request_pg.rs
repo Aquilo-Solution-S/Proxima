@@ -1199,8 +1199,7 @@ async fn accepted_goal_wakes_planner_and_emits_execution_request()
         .bind(wake_entry.wake_entry_id)
         .fetch_one(pg.pool())
         .await?;
-        let invocation_status: proxima_core::WakeInvocationStatus =
-            invocation.try_get("status")?;
+        let invocation_status: proxima_core::WakeInvocationStatus = invocation.try_get("status")?;
         let failure_reason: Option<String> = invocation.try_get("failure_reason")?;
         assert_eq!(
             invocation_status,

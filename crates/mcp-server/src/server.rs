@@ -276,7 +276,11 @@ impl proxima_core::mcp::HarnessSubstrateBridge for McpToolHost {
                 out.push(proxima_core::mcp::HarnessSubstrateToolSpec {
                     canonical_name: tool.tool_id().to_string(),
                     description: tool.description().to_string(),
-                    args_schema: tool.args_schema(),
+                    args_schema: harness_substrate_args_schema(
+                        self.registry(),
+                        tool.tool_id(),
+                        tool.args_schema(),
+                    ),
                 });
             }
         }
@@ -331,6 +335,89 @@ impl proxima_core::mcp::HarnessSubstrateBridge for McpToolHost {
     }
 }
 
+fn harness_substrate_args_schema(
+    registry: &proxima_core::FlavorRegistryFrozen,
+    tool_id: &str,
+    fallback: serde_json::Value,
+) -> serde_json::Value {
+    match tool_id {
+        "core/emit_abstraction" => emit_memory_args_schema(
+            registry,
+            proxima_core::verbs::schema::PayloadKind::Abstraction,
+            fallback,
+        ),
+        "core/emit_perspective" => emit_memory_args_schema(
+            registry,
+            proxima_core::verbs::schema::PayloadKind::Perspective,
+            fallback,
+        ),
+        _ => fallback,
+    }
+}
+
+fn emit_memory_args_schema(
+    registry: &proxima_core::FlavorRegistryFrozen,
+    kind: proxima_core::verbs::schema::PayloadKind,
+    fallback: serde_json::Value,
+) -> serde_json::Value {
+    let registry_schemas = registry.list();
+    let schemas = registry_schemas
+        .iter()
+        .filter(|schema| schema.kind == kind)
+        .collect::<Vec<_>>();
+    if schemas.is_empty() {
+        return fallback;
+    }
+
+    let text_schema = serde_json::json!({
+        "type": ["string", "null"],
+        "description": "Optional authored text. Omit or null to derive text from payload."
+    });
+    let branches = schemas
+        .iter()
+        .map(|schema| {
+            let payload_schema = registry
+                .payload_json_schema(&schema.schema_id, schema.schema_version, kind)
+                .cloned()
+                .unwrap_or_else(|| {
+                    serde_json::json!({
+                        "type": "object",
+                        "description": "Typed payload for the selected schema_id."
+                    })
+                });
+            serde_json::json!({
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["schema_id", "schema_version", "payload"],
+                "properties": {
+                    "schema_id": {
+                        "type": "string",
+                        "enum": [schema.schema_id.as_str()],
+                        "description": "Registered schema id to emit."
+                    },
+                    "schema_version": {
+                        "type": "integer",
+                        "enum": [schema.schema_version.into_inner()],
+                        "description": "Registered schema version."
+                    },
+                    "payload": payload_schema,
+                    "text": text_schema.clone()
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+
+    if branches.len() == 1 {
+        branches.into_iter().next().expect("one schema")
+    } else {
+        serde_json::json!({
+            "type": "object",
+            "oneOf": branches,
+            "description": "Emit one registered typed memory payload."
+        })
+    }
+}
+
 fn map_tool_error(
     err: proxima_core::mcp::McpToolError,
 ) -> proxima_core::mcp::HarnessSubstrateError {
@@ -357,6 +444,7 @@ async fn append_tool_log(
         return;
     };
     let log = WakeInvocationLogDraft {
+        invocation_id: wake.invocation_id(),
         owner: auth.owner.clone(),
         personality_instance_id: wake.personality_instance_id(),
         wake_entry_id: wake.wake_entry_id,
@@ -405,8 +493,54 @@ mod tests {
 
     use super::*;
     use crate::auth::{McpAuthContext, McpToolScope};
-    use proxima_core::mcp::McpAuthorContext;
-    use proxima_core::{FlavorRegistry, OrgId, Owner, Principal, UserId};
+    use proxima_core::mcp::{HarnessSubstrateBridge, McpAuthorContext};
+    use proxima_core::{AbstractionPayload, FlavorRegistry, OrgId, Owner, Principal, UserId};
+
+    #[derive(
+        Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+    )]
+    struct TestBriefPayload {
+        acceptance_rubric: Vec<String>,
+    }
+
+    impl AbstractionPayload for TestBriefPayload {
+        const SCHEMA_ID: &'static str = "test/brief-v1";
+        const SCHEMA_VERSION: u32 = 1;
+
+        fn sidecar_table() -> &'static str {
+            "test.brief_v1"
+        }
+
+        fn json_schema() -> Option<serde_json::Value> {
+            Some(
+                serde_json::to_value(schemars::schema_for!(Self))
+                    .expect("TestBriefPayload schema serializes"),
+            )
+        }
+    }
+
+    #[derive(
+        Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+    )]
+    struct TestOtherPayload {
+        title: String,
+    }
+
+    impl AbstractionPayload for TestOtherPayload {
+        const SCHEMA_ID: &'static str = "test/other-v1";
+        const SCHEMA_VERSION: u32 = 1;
+
+        fn sidecar_table() -> &'static str {
+            "test.other_v1"
+        }
+
+        fn json_schema() -> Option<serde_json::Value> {
+            Some(
+                serde_json::to_value(schemars::schema_for!(Self))
+                    .expect("TestOtherPayload schema serializes"),
+            )
+        }
+    }
 
     fn fake_owner() -> Owner {
         Owner {
@@ -433,6 +567,50 @@ mod tests {
             wake: None,
             master_token_id: Some(token),
         }
+    }
+
+    #[tokio::test]
+    async fn emit_abstraction_harness_schema_uses_registered_payload_schema() {
+        let mut registry = FlavorRegistry::new();
+        registry.add_abstraction_schema::<TestBriefPayload>();
+        registry.add_abstraction_schema::<TestOtherPayload>();
+        let pool = sqlx::PgPool::connect_lazy("postgres://placeholder/db").expect("lazy pool");
+        let server = McpToolHost {
+            owner: fake_owner(),
+            registry: Arc::new(registry.freeze()),
+            pool,
+            engine: None,
+        };
+
+        let tools =
+            HarnessSubstrateBridge::list_harness_tools(&server, &["core/emit_abstraction".into()]);
+        assert_eq!(tools.len(), 1);
+
+        let args_schema = &tools[0].args_schema;
+        let branch = args_schema
+            .pointer("/oneOf")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|branches| {
+                branches.iter().find(|branch| {
+                    branch
+                        .pointer("/properties/schema_id/enum/0")
+                        .and_then(serde_json::Value::as_str)
+                        == Some("test/brief-v1")
+                })
+            })
+            .expect("brief branch present");
+        assert_eq!(
+            branch
+                .pointer("/properties/schema_id/enum/0")
+                .and_then(serde_json::Value::as_str),
+            Some("test/brief-v1")
+        );
+        assert_eq!(
+            branch
+                .pointer("/properties/payload/properties/acceptance_rubric/type")
+                .and_then(serde_json::Value::as_str),
+            Some("array")
+        );
     }
 
     #[tokio::test]

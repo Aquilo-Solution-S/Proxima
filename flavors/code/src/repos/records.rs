@@ -44,7 +44,10 @@ pub struct RepoEraseReceipt {
     sqlx::Type,
 )]
 #[serde(rename_all = "snake_case")]
-#[sqlx(type_name = "proxima_code.repo_ingestion_run_status", rename_all = "snake_case")]
+#[sqlx(
+    type_name = "proxima_code.repo_ingestion_run_status",
+    rename_all = "snake_case"
+)]
 pub enum RunStatus {
     Queued,
     Running,
@@ -90,7 +93,10 @@ impl FromStr for RunStatus {
     sqlx::Type,
 )]
 #[serde(rename_all = "snake_case")]
-#[sqlx(type_name = "proxima_code.repo_ingestion_run_stage", rename_all = "snake_case")]
+#[sqlx(
+    type_name = "proxima_code.repo_ingestion_run_stage",
+    rename_all = "snake_case"
+)]
 pub enum RunStage {
     Starting,
     Facts,

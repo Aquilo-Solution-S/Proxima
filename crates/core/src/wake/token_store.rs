@@ -32,6 +32,11 @@ pub struct WakeTokenContext {
 
 impl WakeTokenContext {
     #[must_use]
+    pub fn invocation_id(&self) -> Uuid {
+        self.invocation_id
+    }
+
+    #[must_use]
     pub fn personality_instance_id(&self) -> PersonalityInstanceId {
         PersonalityInstanceId::new(self.personality_instance_id)
     }

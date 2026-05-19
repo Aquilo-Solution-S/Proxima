@@ -107,6 +107,7 @@ impl PersonalityTool for WalkLineageTool {
             direction,
             depth: parsed.depth.clamp(1, 8),
             limit: parsed.limit.clamp(1, 200),
+            reader_personality_instance_id: Some(ctx.instance_id),
         };
         let response = ctx
             .engine

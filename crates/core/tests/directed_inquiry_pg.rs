@@ -526,7 +526,7 @@ fn wake_row(draft: &WakeEntryDraft) -> WakeEntryRow {
         substrate_tool_palette: draft.substrate_tool_palette.clone(),
         workspace_tool_palette: draft.workspace_tool_palette.clone(),
         max_rounds: draft.max_rounds,
-        budget_policy: draft.budget_policy.clone(),
+        intervention_policy: draft.intervention_policy.clone(),
         disabled_reason: None,
     }
 }

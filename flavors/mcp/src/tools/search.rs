@@ -154,6 +154,7 @@ async fn search_graph_semantic_or_hybrid(
                 query_embedding: Some(query_embedding),
                 embedding_model_id: Some(embed.model_id().to_string()),
                 embedding_dim: Some(embed.dim()),
+                reader_personality_instance_id: None,
             },
             ctx.registry.list().as_slice(),
         )

@@ -63,7 +63,10 @@ impl WakeChainDepth {
     sqlx::Type,
 )]
 #[serde(rename_all = "snake_case")]
-#[sqlx(type_name = "proxima_core.wake_trigger_kind", rename_all = "snake_case")]
+#[sqlx(
+    type_name = "proxima_core.wake_trigger_kind",
+    rename_all = "snake_case"
+)]
 pub enum WakeEntryTriggerKind {
     OnMemory,
     OnEdge,
@@ -123,7 +126,10 @@ impl WakeEntryGoalScope {
     sqlx::Type,
 )]
 #[serde(rename_all = "snake_case")]
-#[sqlx(type_name = "proxima_core.wake_execution_mode", rename_all = "snake_case")]
+#[sqlx(
+    type_name = "proxima_core.wake_execution_mode",
+    rename_all = "snake_case"
+)]
 pub enum WakeExecutionMode {
     SubstrateOnly,
     Workspace,
@@ -152,7 +158,10 @@ impl WakeExecutionMode {
     sqlx::Type,
 )]
 #[serde(rename_all = "snake_case")]
-#[sqlx(type_name = "proxima_core.wake_execution_mode", rename_all = "snake_case")]
+#[sqlx(
+    type_name = "proxima_core.wake_execution_mode",
+    rename_all = "snake_case"
+)]
 pub enum WakeEntryExecutionMode {
     SubstrateOnly,
     Workspace,
@@ -195,9 +204,7 @@ impl WakeEntryAuthoredBy {
     }
 }
 
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, sqlx::Type,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, sqlx::Type)]
 #[serde(rename_all = "lowercase")]
 #[sqlx(
     type_name = "proxima_core.wake_invocation_status",
@@ -259,7 +266,10 @@ impl PersonalityMemoryKind {
     sqlx::Type,
 )]
 #[serde(rename_all = "snake_case")]
-#[sqlx(type_name = "proxima_core.personality_status", rename_all = "snake_case")]
+#[sqlx(
+    type_name = "proxima_core.personality_status",
+    rename_all = "snake_case"
+)]
 pub enum PersonalityStatus {
     Active,
     NeedsRepair,

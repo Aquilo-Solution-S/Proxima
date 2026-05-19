@@ -41,7 +41,9 @@ pub async fn list_change_events_after(
                     .entity_personality_instance_id
                     .filter(|id| !id.is_nil())
                     .map(PersonalityInstanceId::new),
-                wake_chain_depth: WakeChainDepth::new(u16::try_from(r.wake_chain_depth).unwrap_or(0)),
+                wake_chain_depth: WakeChainDepth::new(
+                    u16::try_from(r.wake_chain_depth).unwrap_or(0),
+                ),
             });
         }
     }
@@ -86,7 +88,9 @@ pub async fn list_change_events_for_replay(
                     .entity_personality_instance_id
                     .filter(|id| !id.is_nil())
                     .map(PersonalityInstanceId::new),
-                wake_chain_depth: WakeChainDepth::new(u16::try_from(r.wake_chain_depth).unwrap_or(0)),
+                wake_chain_depth: WakeChainDepth::new(
+                    u16::try_from(r.wake_chain_depth).unwrap_or(0),
+                ),
             });
         }
     }

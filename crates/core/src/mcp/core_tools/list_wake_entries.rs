@@ -6,7 +6,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::McpTool;
-use crate::budget::BudgetExhaustionPolicy;
+use crate::intervention::InterventionPolicy;
 use crate::mcp::{McpToolCtx, McpToolError};
 
 #[derive(Debug, Default)]
@@ -31,7 +31,7 @@ pub struct ListWakeEntriesItem {
     pub probability_promille: u16,
     pub goal_scope: String,
     pub max_rounds: u16,
-    pub budget_policy: Option<BudgetExhaustionPolicy>,
+    pub intervention_policy: Option<InterventionPolicy>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -80,7 +80,7 @@ impl McpTool for ListWakeEntriesTool {
                     probability_promille: e.probability_promille,
                     goal_scope: e.goal_scope.as_str().to_string(),
                     max_rounds: e.max_rounds,
-                    budget_policy: e.budget_policy,
+                    intervention_policy: e.intervention_policy,
                 })
                 .collect();
             Ok(ListWakeEntriesOutput { wake_entries })

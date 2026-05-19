@@ -127,6 +127,7 @@ impl PersonalityTool for SearchMemoriesTool {
             query_embedding: None,
             embedding_model_id: None,
             embedding_dim: None,
+            reader_personality_instance_id: Some(ctx.instance_id),
         };
 
         if matches!(mode, SearchMode::Semantic | SearchMode::Hybrid) {

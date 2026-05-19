@@ -1,4 +1,4 @@
-use proxima_core::budget::BudgetExhaustionPolicy;
+use proxima_core::intervention::InterventionPolicy;
 use proxima_core::personality::{
     PersonalityInstanceId, PersonalityStatus, SetWakeEntriesRequest, SetWakeEntriesResponse,
     WakeDispatchEntryRow, WakeEntryAuthoredBy, WakeEntryDraft, WakeEntryGoalScope,
@@ -35,10 +35,10 @@ struct WakeEntryJoinRow {
     substrate_tool_palette: Vec<String>,
     workspace_tool_palette: Vec<String>,
     max_rounds: i32,
-    budgeter_personality_instance_id: Option<uuid::Uuid>,
-    budget_extension_rounds: i32,
-    budget_hard_cap_rounds: i32,
-    budget_progress_contract: String,
+    intervention_personality_instance_id: Option<uuid::Uuid>,
+    intervention_extension_rounds: i32,
+    intervention_hard_cap_rounds: i32,
+    intervention_progress_contract: String,
 }
 
 async fn replace_wake_entries_in_tx(
@@ -112,8 +112,8 @@ async fn read_wake_entries_in_tx(
         "SELECT wake_entry_id, trigger_kind, trigger_id, label, enabled,
                 execution_mode, authored_by, probability_promille, goal_scope,
                 instructions, model_tier, inference_target_ref, substrate_tool_palette,
-                workspace_tool_palette, max_rounds, budgeter_personality_instance_id,
-                budget_extension_rounds, budget_hard_cap_rounds, budget_progress_contract
+                workspace_tool_palette, max_rounds, intervention_personality_instance_id,
+                intervention_extension_rounds, intervention_hard_cap_rounds, intervention_progress_contract
          FROM proxima_core.personality_wake_entries
          WHERE owner_principal_kind = $1
            AND owner_principal_id = $2
@@ -150,11 +150,11 @@ async fn read_wake_entries_in_tx(
             substrate_tool_palette: row.get("substrate_tool_palette"),
             workspace_tool_palette: row.get("workspace_tool_palette"),
             max_rounds: u16::try_from(row.get::<i32, _>("max_rounds")).unwrap_or(1),
-            budget_policy: budget_policy_from_parts(
-                row.get("budgeter_personality_instance_id"),
-                row.get::<i32, _>("budget_extension_rounds"),
-                row.get::<i32, _>("budget_hard_cap_rounds"),
-                row.get("budget_progress_contract"),
+            intervention_policy: intervention_policy_from_parts(
+                row.get("intervention_personality_instance_id"),
+                row.get::<i32, _>("intervention_extension_rounds"),
+                row.get::<i32, _>("intervention_hard_cap_rounds"),
+                row.get("intervention_progress_contract"),
             ),
         });
     }
@@ -296,10 +296,10 @@ pub async fn list_active_wake_entries(
                 e.substrate_tool_palette,
                 e.workspace_tool_palette,
                 e.max_rounds,
-                e.budgeter_personality_instance_id,
-                e.budget_extension_rounds,
-                e.budget_hard_cap_rounds,
-                e.budget_progress_contract
+                e.intervention_personality_instance_id,
+                e.intervention_extension_rounds,
+                e.intervention_hard_cap_rounds,
+                e.intervention_progress_contract
          FROM proxima_core.personality p
          JOIN proxima_core.personality_wake_cursor cur
            ON cur.owner_principal_kind = p.owner_principal_kind
@@ -351,11 +351,11 @@ pub async fn list_active_wake_entries(
                 substrate_tool_palette: row.substrate_tool_palette,
                 workspace_tool_palette: row.workspace_tool_palette,
                 max_rounds: u16::try_from(row.max_rounds).unwrap_or(1),
-                budget_policy: budget_policy_from_parts(
-                    row.budgeter_personality_instance_id,
-                    row.budget_extension_rounds,
-                    row.budget_hard_cap_rounds,
-                    row.budget_progress_contract,
+                intervention_policy: intervention_policy_from_parts(
+                    row.intervention_personality_instance_id,
+                    row.intervention_extension_rounds,
+                    row.intervention_hard_cap_rounds,
+                    row.intervention_progress_contract,
                 ),
             },
         })
@@ -375,8 +375,8 @@ async fn upsert_wake_entry(
              label, enabled, execution_mode, authored_by, probability_promille,
              goal_scope, instructions, model_tier, inference_target_ref,
              substrate_tool_palette, workspace_tool_palette, max_rounds,
-             budgeter_personality_instance_id, budget_extension_rounds,
-             budget_hard_cap_rounds, budget_progress_contract)
+             intervention_personality_instance_id, intervention_extension_rounds,
+             intervention_hard_cap_rounds, intervention_progress_contract)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
                  $12, $13, $14, $15, $16, $17, $18, $19, $20,
                  $21, $22, $23)
@@ -401,10 +401,10 @@ async fn upsert_wake_entry(
              substrate_tool_palette = EXCLUDED.substrate_tool_palette,
              workspace_tool_palette = EXCLUDED.workspace_tool_palette,
              max_rounds = EXCLUDED.max_rounds,
-             budgeter_personality_instance_id = EXCLUDED.budgeter_personality_instance_id,
-             budget_extension_rounds = EXCLUDED.budget_extension_rounds,
-             budget_hard_cap_rounds = EXCLUDED.budget_hard_cap_rounds,
-             budget_progress_contract = EXCLUDED.budget_progress_contract,
+             intervention_personality_instance_id = EXCLUDED.intervention_personality_instance_id,
+             intervention_extension_rounds = EXCLUDED.intervention_extension_rounds,
+             intervention_hard_cap_rounds = EXCLUDED.intervention_hard_cap_rounds,
+             intervention_progress_contract = EXCLUDED.intervention_progress_contract,
              disabled_reason = NULL,
              tombstoned_at = NULL,
              updated_at = now()",
@@ -430,27 +430,27 @@ async fn upsert_wake_entry(
     .bind(i32::from(entry.max_rounds))
     .bind(
         entry
-            .budget_policy
+            .intervention_policy
             .as_ref()
-            .map(|policy| policy.budgeter_personality_instance_id),
+            .map(|policy| policy.intervention_personality_instance_id),
     )
     .bind(
         entry
-            .budget_policy
+            .intervention_policy
             .as_ref()
-            .map_or(0, |policy| i32::from(policy.budget_extension_rounds)),
+            .map_or(0, |policy| i32::from(policy.intervention_extension_rounds)),
     )
     .bind(
         entry
-            .budget_policy
+            .intervention_policy
             .as_ref()
-            .map_or(0, |policy| i32::from(policy.budget_hard_cap_rounds)),
+            .map_or(0, |policy| i32::from(policy.intervention_hard_cap_rounds)),
     )
     .bind(
         entry
-            .budget_policy
+            .intervention_policy
             .as_ref()
-            .map_or("", |policy| policy.budget_progress_contract.as_str()),
+            .map_or("", |policy| policy.intervention_progress_contract.as_str()),
     )
     .execute(&mut **tx)
     .await
@@ -458,18 +458,19 @@ async fn upsert_wake_entry(
     Ok(())
 }
 
-fn budget_policy_from_parts(
-    budgeter_personality_instance_id: Option<uuid::Uuid>,
-    budget_extension_rounds: i32,
-    budget_hard_cap_rounds: i32,
-    budget_progress_contract: String,
-) -> Option<BudgetExhaustionPolicy> {
-    budgeter_personality_instance_id.map(|budgeter_personality_instance_id| {
-        BudgetExhaustionPolicy {
-            budgeter_personality_instance_id,
-            budget_extension_rounds: u16::try_from(budget_extension_rounds).unwrap_or(0),
-            budget_hard_cap_rounds: u16::try_from(budget_hard_cap_rounds).unwrap_or(0),
-            budget_progress_contract,
+fn intervention_policy_from_parts(
+    intervention_personality_instance_id: Option<uuid::Uuid>,
+    intervention_extension_rounds: i32,
+    intervention_hard_cap_rounds: i32,
+    intervention_progress_contract: String,
+) -> Option<InterventionPolicy> {
+    intervention_personality_instance_id.map(|intervention_personality_instance_id| {
+        InterventionPolicy {
+            intervention_personality_instance_id,
+            intervention_extension_rounds: u16::try_from(intervention_extension_rounds)
+                .unwrap_or(0),
+            intervention_hard_cap_rounds: u16::try_from(intervention_hard_cap_rounds).unwrap_or(0),
+            intervention_progress_contract,
         }
     })
 }

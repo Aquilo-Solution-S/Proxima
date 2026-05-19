@@ -491,7 +491,8 @@ impl TestDb {
         let name = format!("proxima_test_{}", Uuid::now_v7().simple());
         create_db(&name).await.expect("PG required for tests");
         let setup: Result<PgStorage, Box<dyn std::error::Error>> = async {
-            let pg = PgStorage::connect(&format!("postgres://proxima:proxima@localhost/{name}")).await?;
+            let pg =
+                PgStorage::connect(&format!("postgres://proxima:proxima@localhost/{name}")).await?;
             pg.run_migrations().await?;
             proxima_code::migrator().run(pg.pool()).await?;
             Ok(pg)

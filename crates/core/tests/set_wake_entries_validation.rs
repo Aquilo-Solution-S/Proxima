@@ -19,14 +19,15 @@ use proxima_core::{
     AbstractionRow, ActiveGoalSummary, BindInferenceTierRequest, BindInferenceTierResponse,
     ChangeEventForWake, ErrorCode, FactRow, FlavorRegistry, InferenceTargetRow,
     InferenceTierBindingRow, InstantiatePersonalityRequest, InstantiatePersonalityResponse,
-    MemoryId, MemorySnapshot, ModelTier, OrgId, Owner, PersonalityInstanceId,
-    PersonalityInstanceRow, PersonalityRef, PersonalityRuntimeRow, PersonalityWriteOutcome,
-    PersonalityWriteRequest, Principal, RegisterInferenceTargetRequest,
+    ListReadScopeRequest, ListReadScopeResponse, MemoryId, MemorySnapshot, ModelTier, OrgId, Owner,
+    PersonalityInstanceId, PersonalityInstanceRow, PersonalityRef, PersonalityRuntimeRow,
+    PersonalityWriteOutcome, PersonalityWriteRequest, Principal, RegisterInferenceTargetRequest,
     RegisterInferenceTargetResponse, RemoveInferenceTargetRequest, RemoveInferenceTargetResponse,
-    RootPersonalityPerspectiveRow, SetWakeEntriesRequest, SetWakeEntriesResponse, SidecarSpec,
-    SourceBatchId, TombstonePersonalityRequest, TombstonePersonalityResponse, UserId,
-    WakeDispatchEntryRow, WakeEntryAuthoredBy, WakeEntryDraft, WakeEntryTriggerKind,
-    WakeExecutionMode, WakeInvocationFinalize, WakeInvocationStart, WakeInvocationStatus,
+    RootPersonalityPerspectiveRow, SetReadScopeRequest, SetReadScopeResponse,
+    SetWakeEntriesRequest, SetWakeEntriesResponse, SidecarSpec, SourceBatchId,
+    TombstonePersonalityRequest, TombstonePersonalityResponse, UserId, WakeDispatchEntryRow,
+    WakeEntryAuthoredBy, WakeEntryDraft, WakeEntryTriggerKind, WakeExecutionMode,
+    WakeInvocationFinalize, WakeInvocationStart, WakeInvocationStatus,
 };
 use uuid::Uuid;
 
@@ -221,6 +222,22 @@ impl Storage for FixtureStorage {
         Err(StorageError::Internal("unused".into()))
     }
 
+    async fn list_read_scope(
+        &self,
+        _req: &ListReadScopeRequest,
+    ) -> Result<ListReadScopeResponse, StorageError> {
+        Ok(ListReadScopeResponse {
+            readable_personality_instance_ids: Vec::new(),
+        })
+    }
+
+    async fn set_read_scope(
+        &self,
+        _req: &SetReadScopeRequest,
+    ) -> Result<SetReadScopeResponse, StorageError> {
+        Err(StorageError::Internal("unused".into()))
+    }
+
     async fn list_active_wake_entries(&self) -> Result<Vec<WakeDispatchEntryRow>, StorageError> {
         Ok(Vec::new())
     }
@@ -318,6 +335,7 @@ impl Storage for FixtureStorage {
         &self,
         _owner: &Owner,
         _memory_id: MemoryId,
+        _reader_personality_instance_id: Option<PersonalityInstanceId>,
         _sidecars: &[SidecarSpec],
     ) -> Result<Option<MemorySnapshot>, StorageError> {
         Ok(None)
@@ -389,7 +407,7 @@ fn entry(trigger: &str) -> WakeEntryDraft {
         substrate_tool_palette: vec![],
         workspace_tool_palette: vec![],
         max_rounds: 4,
-        budget_policy: None,
+        intervention_policy: None,
     }
 }
 
@@ -452,7 +470,11 @@ async fn substrate_pack_tool_ids_are_registered_for_wake_entries() {
         registry: &registry,
     };
     let mut draft = entry("schema-a");
-    draft.substrate_tool_palette = vec!["core/fetch_memory".into(), "core/emit_abstraction".into()];
+    draft.substrate_tool_palette = vec![
+        "core/fetch_memory".into(),
+        "core/emit_abstraction".into(),
+        "core/emit_intervention_decision".into(),
+    ];
     let err = set_wake_entries(&ctx, &req(vec![draft])).await.unwrap_err();
     assert_eq!(err.code, ErrorCode::TierUnbound);
 }

@@ -8,18 +8,19 @@ use std::sync::Arc;
 use crate::GoalId;
 use crate::Owner;
 use crate::SourceBatchId;
-use crate::budget::{BudgetReviewPersistInput, BudgetReviewPersistOutcome};
 use crate::inference::{
     BindInferenceTierRequest, BindInferenceTierResponse, InferenceTargetRow,
     InferenceTierBindingRow, RegisterInferenceTargetRequest, RegisterInferenceTargetResponse,
     RemoveInferenceTargetRequest, RemoveInferenceTargetResponse,
 };
+use crate::intervention::{InterventionRequestPersistInput, InterventionRequestPersistOutcome};
 use crate::personality::WakeEntryDraft;
 use crate::personality::{
     AbstractionRow, ActiveGoalSummary, ChangeEventForWake, InstantiatePersonalityRequest,
-    InstantiatePersonalityResponse, ListWakeInvocationsRequest, MemorySnapshot,
-    PersonalityInstanceId, PersonalityInstanceRow, PersonalityRef, PersonalityRuntimeRow,
-    PersonalityWriteOutcome, PersonalityWriteRequest, RootPersonalityPerspectiveRow,
+    InstantiatePersonalityResponse, ListReadScopeRequest, ListReadScopeResponse,
+    ListWakeInvocationsRequest, MemorySnapshot, PersonalityInstanceId, PersonalityInstanceRow,
+    PersonalityRef, PersonalityRuntimeRow, PersonalityWriteOutcome, PersonalityWriteRequest,
+    RootPersonalityPerspectiveRow, SetReadScopeRequest, SetReadScopeResponse,
     SetWakeEntriesRequest, SetWakeEntriesResponse, SidecarSpec, TombstonePersonalityRequest,
     TombstonePersonalityResponse, WakeDispatchEntryRow, WakeInvocationFinalize,
     WakeInvocationLogDraft, WakeInvocationRow, WakeInvocationStart, WakeInvocationStatus,
@@ -88,14 +89,14 @@ pub trait Storage: Send + Sync {
         input: &WakeTracePersistInput,
     ) -> Result<WakeTracePersistOutcome, StorageError>;
 
-    /// Atomic BudgetReviewRequested Fact materialization plus routing edge.
-    async fn persist_budget_review_requested_atomic(
+    /// Atomic InterventionRequested Fact materialization plus routing edge.
+    async fn persist_intervention_requested_atomic(
         &self,
         _registry: &FlavorRegistryFrozen,
-        _input: &BudgetReviewPersistInput,
-    ) -> Result<BudgetReviewPersistOutcome, StorageError> {
+        _input: &InterventionRequestPersistInput,
+    ) -> Result<InterventionRequestPersistOutcome, StorageError> {
         Err(StorageError::Internal(
-            "storage backend does not implement budget review persistence".into(),
+            "storage backend does not implement intervention request persistence".into(),
         ))
     }
 
@@ -302,6 +303,20 @@ pub trait Storage: Send + Sync {
         mutate: WakeEntriesMutator,
     ) -> Result<SetWakeEntriesResponse, StorageError>;
 
+    /// List explicit read-scope grants for one reader personality. Identity
+    /// reads are implicit and are not returned.
+    async fn list_read_scope(
+        &self,
+        req: &ListReadScopeRequest,
+    ) -> Result<ListReadScopeResponse, StorageError>;
+
+    /// Replace explicit read-scope grants for one reader personality. Identity
+    /// reads remain implicit even when omitted.
+    async fn set_read_scope(
+        &self,
+        req: &SetReadScopeRequest,
+    ) -> Result<SetReadScopeResponse, StorageError>;
+
     /// Active WakeEntry rows plus their cursor positions.
     async fn list_active_wake_entries(&self) -> Result<Vec<WakeDispatchEntryRow>, StorageError>;
 
@@ -411,6 +426,7 @@ pub trait Storage: Send + Sync {
         &self,
         owner: &Owner,
         memory_id: crate::MemoryId,
+        reader_personality_instance_id: Option<PersonalityInstanceId>,
         sidecars: &[SidecarSpec],
     ) -> Result<Option<MemorySnapshot>, StorageError>;
 
@@ -505,11 +521,11 @@ impl Storage for NoopStorage {
         Err(StorageError::Internal("NoopStorage rejects writes".into()))
     }
 
-    async fn persist_budget_review_requested_atomic(
+    async fn persist_intervention_requested_atomic(
         &self,
         _registry: &FlavorRegistryFrozen,
-        _input: &BudgetReviewPersistInput,
-    ) -> Result<BudgetReviewPersistOutcome, StorageError> {
+        _input: &InterventionRequestPersistInput,
+    ) -> Result<InterventionRequestPersistOutcome, StorageError> {
         Err(StorageError::Internal("NoopStorage rejects writes".into()))
     }
 
@@ -686,6 +702,22 @@ impl Storage for NoopStorage {
         Err(StorageError::Internal("NoopStorage rejects writes".into()))
     }
 
+    async fn list_read_scope(
+        &self,
+        _req: &ListReadScopeRequest,
+    ) -> Result<ListReadScopeResponse, StorageError> {
+        Ok(ListReadScopeResponse {
+            readable_personality_instance_ids: Vec::new(),
+        })
+    }
+
+    async fn set_read_scope(
+        &self,
+        _req: &SetReadScopeRequest,
+    ) -> Result<SetReadScopeResponse, StorageError> {
+        Err(StorageError::Internal("NoopStorage rejects writes".into()))
+    }
+
     async fn list_active_wake_entries(&self) -> Result<Vec<WakeDispatchEntryRow>, StorageError> {
         Ok(Vec::new())
     }
@@ -783,6 +815,7 @@ impl Storage for NoopStorage {
         &self,
         _owner: &Owner,
         _memory_id: crate::MemoryId,
+        _reader_personality_instance_id: Option<PersonalityInstanceId>,
         _sidecars: &[SidecarSpec],
     ) -> Result<Option<MemorySnapshot>, StorageError> {
         Ok(None)

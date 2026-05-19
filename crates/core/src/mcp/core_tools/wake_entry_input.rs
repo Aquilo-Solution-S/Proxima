@@ -6,7 +6,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::budget::BudgetExhaustionPolicy;
+use crate::intervention::InterventionPolicy;
 use crate::mcp::{McpToolCtx, McpToolError};
 use crate::{
     ModelTier, PersonalityInstanceId, WakeEntryAuthoredBy, WakeEntryDraft, WakeEntryGoalScope,
@@ -45,7 +45,7 @@ pub struct WakeEntryDraftInput {
     #[schemars(range(min = 0))]
     pub max_rounds: u16,
     #[serde(default)]
-    pub budget_policy: Option<BudgetExhaustionPolicy>,
+    pub intervention_policy: Option<InterventionPolicy>,
 }
 
 fn default_enabled() -> bool {
@@ -88,7 +88,7 @@ impl WakeEntryDraftInput {
             substrate_tool_palette: self.substrate_tool_palette,
             workspace_tool_palette: self.workspace_tool_palette,
             max_rounds: self.max_rounds,
-            budget_policy: self.budget_policy,
+            intervention_policy: self.intervention_policy,
         })
     }
 }

@@ -260,7 +260,11 @@ async fn emit_abstraction_writes_core_authored_edge_from_root_perspective() {
             EntityKind::Abstraction,
             "target_kind == Abstraction"
         );
-        assert_eq!(edge.4, RelationClass::Causal, "core/authored class == Causal");
+        assert_eq!(
+            edge.4,
+            RelationClass::Causal,
+            "core/authored class == Causal"
+        );
         assert_eq!(
             edge.5,
             EdgeAuthorshipKind::Engine,

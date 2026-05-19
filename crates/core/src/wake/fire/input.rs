@@ -7,6 +7,17 @@ use uuid::Uuid;
 use crate::Owner;
 use crate::personality::{PersonalityInstanceId, WakeEntryRow};
 
+#[derive(Debug, Clone)]
+pub struct FireWakeContinuation {
+    pub intervention_decision_memory_id: crate::MemoryId,
+    pub intervention_request_memory_id: crate::MemoryId,
+    pub original_invocation_id: Uuid,
+    pub wake_trace_memory_id: crate::MemoryId,
+    pub triggering_memory_id: crate::MemoryId,
+    pub grant_rounds: u16,
+    pub rationale: String,
+}
+
 /// Inputs to one wake fire — assembled by the dispatcher tick from the
 /// `WakeDispatchEntryRow` it just matched.
 #[derive(Debug, Clone)]
@@ -16,6 +27,7 @@ pub struct FireWakeEntryInput {
     pub wake_entry: WakeEntryRow,
     pub change_event_seq: Uuid,
     pub triggering_memory_id: Uuid,
+    pub continuation: Option<FireWakeContinuation>,
 }
 
 /// Per-invocation timeout calculation.
