@@ -3,13 +3,17 @@ use super::*;
 impl DemoWorld {
     pub(super) async fn write_outputs(
         &self,
-        metrics: &Metrics,
+        metrics: &mut Metrics,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let metrics_path = self.cfg.run_dir.join("metrics.json");
         let report_path = self.cfg.run_dir.join("report.md");
         let graph_path = self.cfg.run_dir.join("flow_graph.json");
         let mermaid_path = self.cfg.run_dir.join("flow_graph.mmd");
         let flow_graph = self.collect_flow_graph().await?;
+        let conversation_index = self.write_conversation_bundle().await?;
+        metrics.conversation_index_json = conversation_index.index_path.clone();
+        metrics.conversation_invocation_count = conversation_index.invocation_count;
+        metrics.conversation_missing_log_count = conversation_index.missing_log_count;
         std::fs::write(&metrics_path, serde_json::to_vec_pretty(metrics)?)?;
         std::fs::write(&graph_path, serde_json::to_vec_pretty(&flow_graph)?)?;
         std::fs::write(&mermaid_path, render_flow_mermaid(&flow_graph))?;
@@ -18,7 +22,106 @@ impl DemoWorld {
         eprintln!("demo report: {}", report_path.display());
         eprintln!("demo flow graph: {}", graph_path.display());
         eprintln!("demo flow mermaid: {}", mermaid_path.display());
+        eprintln!("demo conversations: {}", conversation_index.index_path);
         Ok(())
+    }
+
+    pub(super) async fn write_conversation_bundle(
+        &self,
+    ) -> Result<ConversationIndex, Box<dyn std::error::Error>> {
+        let conversations_dir = self.cfg.run_dir.join("conversations");
+        std::fs::create_dir_all(&conversations_dir)?;
+        let index_path = conversations_dir.join("index.json");
+        let role_case = self.role_case_sql();
+        let sql = format!(
+            "SELECT i.invocation_id,
+                    {role_case} AS role,
+                    i.personality_instance_id,
+                    i.wake_entry_id,
+                    e.trigger_id,
+                    i.change_event_seq,
+                    e.execution_mode::text AS execution_mode,
+                    i.status::text AS status,
+                    artifact.message_tail AS source_jsonl_path
+             FROM proxima_core.personality_wake_invocations i
+             JOIN proxima_core.personality_wake_entries e
+               ON e.owner_principal_kind = i.owner_principal_kind
+              AND e.owner_principal_id = i.owner_principal_id
+              AND e.owner_org_id = i.owner_org_id
+              AND e.personality_instance_id = i.personality_instance_id
+              AND e.wake_entry_id = i.wake_entry_id
+             LEFT JOIN LATERAL (
+                SELECT l.message_tail
+                FROM proxima_core.personality_wake_invocation_logs l
+                WHERE l.invocation_id = i.invocation_id
+                  AND l.phase = 'session_artifact'
+                  AND l.status = 'started'
+                ORDER BY l.log_seq ASC
+                LIMIT 1
+             ) artifact ON true
+             ORDER BY i.started_at ASC"
+        );
+        let rows = sqlx::query(&sql).fetch_all(self.pg.pool()).await?;
+        let mut invocations = Vec::with_capacity(rows.len());
+        for row in rows {
+            let invocation_id: Uuid = row.try_get("invocation_id")?;
+            let role: String = row.try_get("role")?;
+            let source_jsonl_path: Option<String> = row.try_get("source_jsonl_path")?;
+            let copied_name = format!(
+                "{}-{}.jsonl",
+                conversation_file_component(&role),
+                invocation_id
+            );
+            let copied_relative = PathBuf::from("conversations").join(copied_name);
+            let copied_absolute = self.cfg.run_dir.join(&copied_relative);
+            let mut copied_jsonl_path = None;
+            let mut copy_error = None;
+            let missing_log = match source_jsonl_path.as_deref() {
+                Some(source) if Path::new(source).is_file() => {
+                    if let Err(err) = std::fs::copy(source, &copied_absolute) {
+                        copy_error = Some(err.to_string());
+                        true
+                    } else {
+                        copied_jsonl_path = Some(copied_relative.display().to_string());
+                        false
+                    }
+                }
+                Some(source) => {
+                    copy_error = Some(format!("source log not found: {source}"));
+                    true
+                }
+                None => true,
+            };
+            invocations.push(ConversationInvocationArtifact {
+                invocation_id: invocation_id.to_string(),
+                role,
+                personality_instance_id: row
+                    .try_get::<Uuid, _>("personality_instance_id")?
+                    .to_string(),
+                wake_entry_id: row.try_get::<Uuid, _>("wake_entry_id")?.to_string(),
+                trigger_schema_id: row.try_get("trigger_id")?,
+                change_event_seq: row.try_get::<Uuid, _>("change_event_seq")?.to_string(),
+                execution_mode: row.try_get("execution_mode")?,
+                status: row.try_get("status")?,
+                source_jsonl_path,
+                copied_jsonl_path,
+                missing_log,
+                copy_error,
+            });
+        }
+        let missing_log_count = invocations
+            .iter()
+            .filter(|invocation| invocation.missing_log)
+            .count();
+        let index = ConversationIndex {
+            run_dir: self.cfg.run_dir.display().to_string(),
+            index_path: index_path.display().to_string(),
+            invocation_count: invocations.len(),
+            missing_log_count,
+            invocations,
+        };
+        std::fs::write(&index_path, serde_json::to_vec_pretty(&index)?)?;
+        Ok(index)
     }
 
     pub(super) async fn collect_flow_graph(&self) -> Result<FlowGraph, Box<dyn std::error::Error>> {
@@ -398,5 +501,34 @@ impl DemoWorld {
             }
         }
         Ok(errors)
+    }
+}
+
+pub(super) fn conversation_file_component(raw: &str) -> String {
+    let mut out = String::new();
+    for ch in raw.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch.to_ascii_lowercase());
+        } else if !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    let trimmed = out.trim_matches('-');
+    if trimmed.is_empty() {
+        "unknown".into()
+    } else {
+        trimmed.into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::conversation_file_component;
+
+    #[test]
+    fn conversation_file_component_is_stable_for_roles() {
+        assert_eq!(conversation_file_component("Goal Reviewer"), "goal-reviewer");
+        assert_eq!(conversation_file_component("Wake/Supervisor"), "wake-supervisor");
+        assert_eq!(conversation_file_component("  "), "unknown");
     }
 }

@@ -2,7 +2,7 @@ use super::*;
 
 pub(super) fn render_report(metrics: &Metrics, flow_graph: &FlowGraph) -> String {
     format!(
-        "# Proxima Demo Wheel Report\n\n- intervention_mode: `{:?}`\n- planner_mode: `{:?}`\n- run_dir: `{}`\n- repo_path: `{}`\n- db_name: `{}`\n- ticks: `{}`\n- max_wall_clock_seconds: `{:?}`\n- wall_clock_timed_out: `{}`\n- corrections: `{}`\n- goal_state: `{}`\n- deterministic_pass: `{}`\n- forced_continuation_pass: `{}`\n- real_planner_pass: `{}`\n- functional_pass: `{}`\n- intervention_pass: `{}`\n- overall_pass: `{}`\n- reviewer_score: `{}`\n- overall_score: `{}`\n- score_per_model_round: `{:?}`\n- score_per_wall_clock_second: `{:.4}`\n\n## Role Round Caps\n\n```json\n{}\n```\n\n## Goal Graph\n\n```json\n{}\n```\n\n## Request Flow Counts\n\n```json\n{}\n```\n\n## Terminal Guard Hits\n\n```json\n{}\n```\n\n## Flow Graph\n\n- graph_json: `{}`\n- graph_mermaid: `{}`\n- nodes: `{}`\n- edges: `{}`\n- intervention_requests: `{}`\n- intervention_decisions: `{}`\n- unresolved_endpoints: `{}`\n\n```mermaid\n{}\n```\n\n## Auto Merge\n\n```json\n{}\n```\n\n## Diff\n\n- files_changed: `{}`\n- insertions: `{}`\n- deletions: `{}`\n- files: `{:?}`\n\n## Wake Invocations\n\n```json\n{}\n```\n\n## Forced Continuation Checks\n\n```json\n{}\n```\n\n## Real Planner Checks\n\n```json\n{}\n```\n\n## Checks\n\n```json\n{}\n```\n",
+        "# Proxima Demo Wheel Report\n\n- intervention_mode: `{:?}`\n- planner_mode: `{:?}`\n- run_dir: `{}`\n- repo_path: `{}`\n- db_name: `{}`\n- ticks: `{}`\n- max_wall_clock_seconds: `{:?}`\n- wall_clock_timed_out: `{}`\n- corrections: `{}`\n- goal_state: `{}`\n- deterministic_pass: `{}`\n- forced_continuation_pass: `{}`\n- real_planner_pass: `{}`\n- functional_pass: `{}`\n- intervention_pass: `{}`\n- overall_pass: `{}`\n- reviewer_score: `{}`\n- overall_score: `{}`\n- score_per_model_round: `{:?}`\n- score_per_wall_clock_second: `{:.4}`\n\n## Role Round Caps\n\n```json\n{}\n```\n\n## Goal Graph\n\n```json\n{}\n```\n\n## Request Flow Counts\n\n```json\n{}\n```\n\n## Terminal Guard Hits\n\n```json\n{}\n```\n\n## Flow Graph\n\n- graph_json: `{}`\n- graph_mermaid: `{}`\n- nodes: `{}`\n- edges: `{}`\n- intervention_requests: `{}`\n- intervention_decisions: `{}`\n- unresolved_endpoints: `{}`\n\n```mermaid\n{}\n```\n\n## Conversations\n\n- index_json: `{}`\n- invocations: `{}`\n- missing_logs: `{}`\n\n## Auto Merge\n\n```json\n{}\n```\n\n## Diff\n\n- files_changed: `{}`\n- insertions: `{}`\n- deletions: `{}`\n- files: `{:?}`\n\n## Wake Invocations\n\n```json\n{}\n```\n\n## Forced Continuation Checks\n\n```json\n{}\n```\n\n## Real Planner Checks\n\n```json\n{}\n```\n\n## Checks\n\n```json\n{}\n```\n",
         metrics.intervention_mode,
         metrics.planner_mode,
         metrics.run_dir,
@@ -39,6 +39,9 @@ pub(super) fn render_report(metrics: &Metrics, flow_graph: &FlowGraph) -> String
         flow_graph.summary.intervention_decision_count,
         flow_graph.summary.unresolved_endpoint_count,
         render_flow_mermaid(flow_graph),
+        metrics.conversation_index_json,
+        metrics.conversation_invocation_count,
+        metrics.conversation_missing_log_count,
         serde_json::to_string_pretty(&metrics.auto_merge).unwrap_or_default(),
         metrics.git_diff_stats.files_changed,
         metrics.git_diff_stats.insertions,
