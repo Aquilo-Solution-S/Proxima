@@ -9,7 +9,7 @@ use crate::RemoveInferenceTargetRequest;
 use crate::auth::Credentials;
 use crate::mcp::core_tools::audit::{AuditEmit, emit_personality_config_changed};
 use crate::mcp::core_tools::payload::{
-    PersonalityConfigChangedSubject, PersonalityConfigChangedVerb,
+    PersonalityConfigChangeSnapshot, PersonalityConfigChangedSubject, PersonalityConfigChangedVerb,
 };
 use crate::mcp::{McpToolCtx, McpToolError};
 
@@ -54,7 +54,7 @@ impl McpTool for RemoveInferenceTargetTool {
                 &ctx,
                 PersonalityConfigChangedVerb::RemoveInferenceTarget,
                 PersonalityConfigChangedSubject::InferenceTarget(target_ref),
-                Some(serde_json::Value::Null),
+                Some(PersonalityConfigChangeSnapshot::RemovedInferenceTarget),
                 None,
             )
             .await;

@@ -9,7 +9,7 @@ use crate::McpTool;
 use crate::intervention::InterventionPolicy;
 use crate::mcp::core_tools::audit::{AuditEmit, emit_personality_config_changed};
 use crate::mcp::core_tools::payload::{
-    PersonalityConfigChangedSubject, PersonalityConfigChangedVerb,
+    PersonalityConfigChangeSnapshot, PersonalityConfigChangedSubject, PersonalityConfigChangedVerb,
 };
 use crate::mcp::{McpToolCtx, McpToolError};
 use crate::{ModelTier, WakeEntryAuthoredBy, WakeEntryGoalScope, WakeExecutionMode};
@@ -158,8 +158,11 @@ impl McpTool for UpdateWakeEntryTool {
                 &ctx,
                 PersonalityConfigChangedVerb::UpdateWakeEntry,
                 PersonalityConfigChangedSubject::WakeEntry(wid),
-                Some(serde_json::json!({ "wake_entry_id": wid, "patch_applied": true })),
-                Some(serde_json::Value::Null),
+                Some(PersonalityConfigChangeSnapshot::WakeEntry {
+                    wake_entry_id: wid,
+                    patch_applied: Some(true),
+                }),
+                None,
             )
             .await;
             let audit_emit_failed = match audit {

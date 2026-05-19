@@ -18,6 +18,7 @@ pub mod models;
 pub mod outbox;
 pub mod owner;
 pub mod payload;
+pub mod payload_contract;
 pub mod personality;
 pub mod relation;
 pub mod secrets;
@@ -52,6 +53,7 @@ pub use models::*;
 pub use outbox::*;
 pub use owner::*;
 pub use payload::*;
+pub use payload_contract::assert_no_serde_json_value_fields;
 pub use personality::workspace::{
     WorkspaceFinalizeInput, WorkspaceOutcome, WorkspacePrepareInput, WorkspacePreparedRun,
     WorkspaceRunRecord, WorkspaceRunner, WorkspaceRunnerError,

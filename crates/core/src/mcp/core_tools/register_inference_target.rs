@@ -8,6 +8,7 @@ use crate::McpTool;
 use crate::auth::Credentials;
 use crate::mcp::core_tools::audit::{AuditEmit, emit_personality_config_changed};
 use crate::mcp::core_tools::payload::{
+    InferenceTargetConfigSnapshot, PersonalityConfigChangeSnapshot,
     PersonalityConfigChangedSubject, PersonalityConfigChangedVerb,
 };
 use crate::mcp::{McpToolCtx, McpToolError};
@@ -49,6 +50,7 @@ impl McpTool for RegisterInferenceTargetTool {
             let target_ref = args.target_ref.clone();
             let config: InferenceTargetConfig = serde_json::from_value(args.config.clone())
                 .map_err(|e| McpToolError::InvalidInput(format!("config: {e}")))?;
+            let audit_config = InferenceTargetConfigSnapshot::from(&config);
             let req = RegisterInferenceTargetRequest {
                 owner: ctx.owner.clone(),
                 target_ref: target_ref.clone(),
@@ -63,7 +65,9 @@ impl McpTool for RegisterInferenceTargetTool {
                 PersonalityConfigChangedVerb::RegisterInferenceTarget,
                 PersonalityConfigChangedSubject::InferenceTarget(target_ref.clone()),
                 None,
-                Some(args.config.clone()),
+                Some(PersonalityConfigChangeSnapshot::InferenceTarget {
+                    config: audit_config,
+                }),
             )
             .await;
             let audit_emit_failed = match audit {
