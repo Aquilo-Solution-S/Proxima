@@ -11,6 +11,9 @@ use crate::payloads::WorkspaceReviewVerdict;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CodeGoalCompletionStatusArgs {
+    #[schemars(
+        description = "`N...` memory handle for the proxima-code/workspace-review-v1 Fact used to derive Goal completion status."
+    )]
     pub workspace_review_memory: String,
 }
 

@@ -12,20 +12,49 @@ pub enum VisionAmbitionLevel {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct VisionBriefV1 {
+    #[schemars(
+        description = "`G...` Goal handle in provider-facing typed emit wrappers; stored as the source Goal UUID."
+    )]
     pub goal_id: uuid::Uuid,
+    #[schemars(
+        description = "`N...` goal-activated Fact memory handle in provider-facing typed emit wrappers; stored as the activation memory UUID."
+    )]
     pub goal_activated_memory_id: uuid::Uuid,
+    #[schemars(description = "Original Goal text the planner interpreted.")]
     pub original_goal_text: String,
+    #[schemars(description = "Planner's interpreted outcome for the Goal.")]
     pub interpreted_outcome: String,
+    #[schemars(description = "Target user or audience for the desired artifact.")]
     pub target_user: String,
+    #[schemars(description = "Concrete use case the artifact should support.")]
     pub use_case: String,
+    #[schemars(
+        description = "Expected artifact shape, such as frontend app, plan, or repo-native test."
+    )]
     pub artifact_shape: String,
+    #[schemars(
+        description = "Ambition level for the artifact: Prototype, Competent, Production, or Exceptional."
+    )]
     pub ambition_level: VisionAmbitionLevel,
+    #[schemars(description = "Quality bar the implementation should satisfy.")]
     pub quality_bar: String,
+    #[schemars(
+        description = "Constraints the implementation must respect. Use `[]` when none are known."
+    )]
     pub constraints: Vec<String>,
+    #[schemars(description = "Planner assumptions. Use `[]` when none are needed.")]
     pub assumptions: Vec<String>,
+    #[schemars(
+        description = "Open questions. Use `[]` unless the worker must resolve explicit unknowns."
+    )]
     pub open_questions: Vec<String>,
+    #[schemars(
+        description = "Acceptance rubric items for evaluating the artifact. Use `[]` when no rubric is needed."
+    )]
     pub acceptance_rubric: Vec<String>,
+    #[schemars(description = "Concrete demo or proof expected after implementation.")]
     pub demo_proof: String,
+    #[schemars(description = "Directive for the downstream planner or worker.")]
     pub planner_directive: String,
 }
 

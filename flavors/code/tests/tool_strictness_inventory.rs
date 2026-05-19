@@ -4,7 +4,7 @@ use proxima_code::mcp::workspace_review::CodeEmitVerificationEvidenceArgs;
 use proxima_core::FlavorRegistry;
 use proxima_harness::tools::strict_inventory::{
     assert_all_tools_strict_compatible, assert_inventory_checkpoint_is_current,
-    registry_tool_inventory_for_prefix,
+    assert_tool_schemas_have_property_descriptions, registry_tool_inventory_for_prefix,
 };
 use serde_json::json;
 
@@ -25,6 +25,46 @@ fn inventory_checkpoint_is_current() {
 fn all_tools_are_strict_schema_compatible() {
     let rows = collect_inventory();
     assert_all_tools_strict_compatible(&rows);
+}
+
+#[test]
+fn code_wake_visible_tools_describe_object_properties() {
+    let mut registry = FlavorRegistry::new();
+    proxima_code::register(&mut registry);
+    let registry = registry.freeze();
+
+    let schemas = registry
+        .list_mcp_tools()
+        .iter()
+        .filter(|tool| tool.name.starts_with("proxima-code/"))
+        .map(|tool| (tool.name.to_string(), tool.args_schema.clone()))
+        .collect();
+
+    assert_tool_schemas_have_property_descriptions(schemas);
+}
+
+#[test]
+fn execution_request_planner_fields_explain_handles_and_empty_evidence() {
+    let mut registry = FlavorRegistry::new();
+    proxima_code::register(&mut registry);
+    let registry = registry.freeze();
+    let tool = registry
+        .list_mcp_tools()
+        .iter()
+        .find(|tool| tool.name == "proxima-code/code_emit_execution_request")
+        .expect("execution request tool");
+
+    let goal_activation = description_at(&tool.args_schema, "/properties/goal_activated_memory");
+    assert!(goal_activation.contains("N"));
+    assert!(goal_activation.contains("goal-activated Fact"));
+
+    let evidence = description_at(&tool.args_schema, "/properties/evidence");
+    for required in ["Fact", "N", "[]", "never G"] {
+        assert!(
+            evidence.contains(required),
+            "evidence description must contain {required:?}: {evidence}"
+        );
+    }
 }
 
 #[test]
@@ -53,4 +93,12 @@ fn collect_inventory() -> Vec<proxima_harness::tools::strict_inventory::ToolInve
     let registry = registry.freeze();
 
     registry_tool_inventory_for_prefix(&registry, "proxima-code/", "flavor")
+}
+
+fn description_at<'a>(schema: &'a serde_json::Value, pointer: &str) -> &'a str {
+    schema
+        .pointer(pointer)
+        .and_then(|value| value.get("description"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("")
 }

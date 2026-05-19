@@ -32,22 +32,49 @@ impl VerificationEvidenceStatus {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema, Default)]
 pub struct VerificationArtifactRefsV1 {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(
+        description = "Optional single repo-relative artifact path. Omit or null when not needed."
+    )]
     pub path: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(
+        description = "Optional repo-relative artifact paths. Use `[]` when no path list is needed."
+    )]
     pub paths: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(
+        description = "Optional command argv used for verification. Use `[]` when no command was run."
+    )]
     pub command: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(
+        description = "Optional tool or script entrypoint used for verification. Omit or null when not applicable."
+    )]
     pub entrypoint: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(
+        description = "Optional allowed command prefixes for verifier policy context. Use `[]` when not applicable."
+    )]
     pub allowed_prefixes: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(
+        description = "Optional changed file paths relevant to the verification. Use `[]` when not applicable."
+    )]
     pub changed_files: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(
+        description = "Optional process exit code from the verification command. Omit or null when no process ran."
+    )]
     pub exit_code: Option<i32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(
+        description = "Optional capped stdout tail from the verification command. Omit or null when unavailable."
+    )]
     pub stdout_tail: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(
+        description = "Optional capped stderr tail from the verification command. Omit or null when unavailable."
+    )]
     pub stderr_tail: Option<String>,
 }
 

@@ -18,10 +18,18 @@ const NOTE_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct RememberArgs {
+    #[schemars(description = "Short title for the agent-observed Fact, 1 to 160 chars.")]
     pub title: String,
+    #[schemars(description = "Body text for the agent-observed Fact, 1 to 20000 chars.")]
     pub body: String,
     #[serde(default)]
+    #[schemars(
+        description = "Optional normalized tags for later search. Use `[]` when no tags are needed."
+    )]
     pub tags: Vec<String>,
+    #[schemars(
+        description = "Optional stable idempotency key for replay-safe Fact creation. Omit or null for a fresh Fact."
+    )]
     pub idempotency_key: Option<String>,
 }
 

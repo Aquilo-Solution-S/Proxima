@@ -17,8 +17,14 @@ const STREAM_CAP: usize = 32 * 1024;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ShellArgs {
+    #[schemars(
+        description = "Shell command to run as `bash -lc` in the prepared workspace root. Use relative paths inside the workspace; output is capped."
+    )]
     pub command: String,
     #[serde(default)]
+    #[schemars(
+        description = "Optional timeout in milliseconds. Omit for the default 30000 ms; values above 120000 ms are clamped."
+    )]
     pub timeout_ms: Option<u32>,
 }
 

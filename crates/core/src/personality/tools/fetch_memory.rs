@@ -19,6 +19,7 @@ pub struct FetchMemoryTool;
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct FetchMemoryArgs {
     /// Handle of the memory to load (e.g., `N1`).
+    #[schemars(description = "`N...` memory handle to load from the wake handle table.")]
     pub memory: String,
 }
 

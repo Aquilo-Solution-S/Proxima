@@ -7,7 +7,11 @@ use super::accept::{AcceptArgs, AcceptOutput, accept_goal};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct DeclineArgs {
+    #[schemars(description = "`G...` Goal handle for the Proposed Goal to decline.")]
     pub proposal: String,
+    #[schemars(
+        description = "Optional stable idempotency key. Omit or null to derive a fresh request id."
+    )]
     pub idempotency_key: Option<String>,
 }
 

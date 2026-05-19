@@ -32,14 +32,33 @@ const ACCEPTANCE_CRITERIA_WHOLE_SCHEMA: &str = "proxima-code/acceptance-criteria
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CodeEmitExecutionRequestArgs {
+    #[schemars(
+        description = "Repo handle from code search/list context, typically `R...` in wake output. This selects the repo for the execution request."
+    )]
     pub repo_handle: String,
+    #[schemars(description = "Short human-readable execution-request title, 1 to 240 chars.")]
     pub title: String,
+    #[schemars(
+        description = "Concrete implementation instructions for the worker wake, 1 to 20000 chars."
+    )]
     pub instructions: String,
+    #[schemars(
+        description = "Stable idempotency key for this requested work slice, 1 to 240 chars. Reuse only for exact replay."
+    )]
     pub idempotency_key: String,
+    #[schemars(
+        description = "`N...` goal-activated Fact memory handle for the Active Goal that caused this planner wake. This is not a `G...` Goal handle."
+    )]
     pub goal_activated_memory: String,
     #[serde(default)]
+    #[schemars(
+        description = "Optional additional Fact memory handles (`N...`) used as evidence for the execution request. Use `[]` when no separate Fact evidence is needed; never G... Goal handles."
+    )]
     pub evidence: Vec<String>,
     #[serde(default)]
+    #[schemars(
+        description = "Optional acceptance criteria for worker/verifier evaluation. Use `[]` when no criteria are needed."
+    )]
     pub acceptance_criteria: Vec<AcceptanceCriterionV1>,
 }
 
@@ -55,14 +74,32 @@ pub struct CodeEmitExecutionRequestOutput {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CodeRetryExecutionRequestArgs {
+    #[schemars(
+        description = "`N...` memory handle for the prior proxima-code/execution-request-v1 Fact being retried."
+    )]
     pub prior_execution_request: String,
+    #[schemars(
+        description = "`P...` Personality handle for the worker that should receive the retry assignment."
+    )]
     pub target_personality: String,
+    #[schemars(
+        description = "Stable idempotency key for this retry request. Reuse only for exact replay."
+    )]
     pub idempotency_key: String,
     #[serde(default)]
+    #[schemars(
+        description = "Optional replacement title for the retry request. Omit or null to derive from the prior request."
+    )]
     pub title: Option<String>,
     #[serde(default)]
+    #[schemars(
+        description = "Optional instructions to append to the prior request. Omit or null when the retry needs no extra guidance."
+    )]
     pub instructions_append: Option<String>,
     #[serde(default)]
+    #[schemars(
+        description = "Optional additional Fact memory handles (`N...`) for retry evidence. Use `[]` when no extra evidence is needed; never G... Goal handles."
+    )]
     pub evidence: Vec<String>,
 }
 

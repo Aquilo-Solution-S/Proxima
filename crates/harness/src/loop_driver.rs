@@ -24,6 +24,9 @@ use crate::tools::workspace::dispatch as workspace_dispatch;
 use crate::tools::{ToolBinding, WorkspaceCtx};
 use crate::trace::jsonl::JsonlBuffer;
 
+const PROMPT_RECORD: &str = "prompt";
+const TOOLS_SENT_RECORD: &str = "tools_sent";
+
 #[derive(Clone)]
 pub struct HarnessLoop {
     pub engine: Arc<Engine>,
@@ -208,6 +211,7 @@ async fn run_loop(
         "system_prompt": &resolved.conversation.system_prompt,
         "user_seed": &resolved.conversation.user_seed,
     }));
+    append_prompt_and_tools_records(&mut jsonl, &resolved, &ctx, model_id, max_rounds);
 
     let mut rounds_used = 0;
     let mut tool_call_count = 0;
@@ -368,6 +372,43 @@ async fn run_loop(
     ))
 }
 
+fn append_prompt_and_tools_records(
+    jsonl: &mut JsonlBuffer,
+    resolved: &ResolvedProgram,
+    ctx: &HarnessContext,
+    model_id: &str,
+    max_rounds: u32,
+) {
+    jsonl.append(&json!({
+        "record": PROMPT_RECORD,
+        "invocation_id": ctx.invocation_id,
+        "wake_entry_id": ctx.wake_entry_id,
+        "personality_instance_id": ctx.personality_instance_id.into_inner(),
+        "change_event_seq": ctx.change_event_seq,
+        "model_id": model_id,
+        "max_rounds": max_rounds,
+        "system_prompt": &resolved.conversation.system_prompt,
+        "user_seed": &resolved.conversation.user_seed,
+    }));
+    jsonl.append(&json!({
+        "record": TOOLS_SENT_RECORD,
+        "invocation_id": ctx.invocation_id,
+        "model_id": model_id,
+        "tools": resolved
+            .tools
+            .iter()
+            .map(|tool| {
+                json!({
+                    "canonical_name": &tool.canonical,
+                    "provider_name": &tool.provider_safe,
+                    "description": &tool.description,
+                    "input_schema": &tool.input_schema,
+                })
+            })
+            .collect::<Vec<_>>(),
+    }));
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "outcome fields are intentionally explicit"
@@ -494,5 +535,91 @@ fn excerpt(value: &str, max_chars: usize) -> String {
         format!("{excerpt}...")
     } else {
         excerpt
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+    use std::time::Duration;
+
+    use proxima_core::{MemoryId, OrgId, Owner, PersonalityInstanceId, Principal, UserId};
+    use serde_json::json;
+    use uuid::Uuid;
+
+    use crate::conversation::{Conversation, ToolSpec};
+    use crate::program::ResolvedProgram;
+    use crate::tools::ToolBinding;
+    use crate::trace::jsonl::JsonlBuffer;
+
+    use super::append_prompt_and_tools_records;
+
+    #[test]
+    fn prompt_and_tools_records_are_extractable_from_jsonl() {
+        let invocation_id = Uuid::now_v7();
+        let resolved = ResolvedProgram {
+            conversation: Conversation {
+                system_prompt: "system body".into(),
+                user_seed: "Wake Contract:\n{}".into(),
+                turns: Vec::new(),
+            },
+            tools: vec![ToolSpec {
+                canonical: "proxima-code/code_emit_execution_request".into(),
+                provider_safe: "proxima_code_code_emit_execution_request".into(),
+                description: "Emit execution request".into(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "evidence": { "type": "array", "items": { "type": "string" } }
+                    }
+                }),
+            }],
+            reverse_map: HashMap::new(),
+            bindings: HashMap::<String, ToolBinding>::new(),
+        };
+        let ctx = proxima_core::harness::HarnessContext {
+            owner: Owner {
+                principal: Principal::User(UserId::new(Uuid::now_v7())),
+                org_id: OrgId::new(Uuid::now_v7()),
+            },
+            invocation_id,
+            wake_entry_id: Uuid::now_v7(),
+            personality_instance_id: PersonalityInstanceId::new(Uuid::now_v7()),
+            change_event_seq: Uuid::now_v7(),
+            root_perspective_memory_id: MemoryId::new(Uuid::now_v7()),
+            wake_token: Uuid::now_v7(),
+            invocation_timeout: Duration::from_secs(30),
+        };
+        let mut jsonl = JsonlBuffer::with_capacity(64 * 1024);
+
+        append_prompt_and_tools_records(&mut jsonl, &resolved, &ctx, "mistral-medium-3.5", 4);
+
+        let snapshot = jsonl.snapshot();
+        let lines = String::from_utf8(snapshot.bytes).expect("jsonl utf8");
+        let records: Vec<serde_json::Value> = lines
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("json record"))
+            .collect();
+        let prompt = records
+            .iter()
+            .find(|record| record["record"] == "prompt")
+            .expect("prompt record");
+        let tools = records
+            .iter()
+            .find(|record| record["record"] == "tools_sent")
+            .expect("tools_sent record");
+
+        assert_eq!(prompt["system_prompt"], "system body");
+        assert_eq!(prompt["user_seed"], "Wake Contract:\n{}");
+        assert_eq!(prompt["invocation_id"], invocation_id.to_string());
+        assert_eq!(
+            tools["tools"][0]["canonical_name"],
+            "proxima-code/code_emit_execution_request"
+        );
+        assert_eq!(
+            tools["tools"][0]["provider_name"],
+            "proxima_code_code_emit_execution_request"
+        );
+        assert_eq!(tools["tools"][0]["input_schema"]["type"], "object");
     }
 }

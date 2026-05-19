@@ -8,9 +8,19 @@ use super::util::GoalPayloadInput;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ModifyArgs {
+    #[schemars(
+        description = "`G...` Goal handle for the Proposed Goal to accept with modifications."
+    )]
     pub proposal: String,
+    #[schemars(description = "Replacement typed Goal payload for the accepted Active Goal.")]
     pub payload: GoalPayloadInput,
+    #[schemars(
+        description = "Optional replacement evidence memory handles (`N...`). Omit or null to copy proposal evidence; use `[]` to clear evidence."
+    )]
     pub evidence: Option<Vec<String>>,
+    #[schemars(
+        description = "Optional stable idempotency key. Omit or null to derive a fresh request id."
+    )]
     pub idempotency_key: Option<String>,
 }
 

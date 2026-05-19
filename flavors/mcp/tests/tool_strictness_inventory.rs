@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use proxima_core::FlavorRegistry;
 use proxima_harness::tools::strict_inventory::{
     assert_all_tools_strict_compatible, assert_inventory_checkpoint_is_current,
-    registry_tool_inventory_for_prefix,
+    assert_tool_schemas_have_property_descriptions, registry_tool_inventory_for_prefix,
 };
 
 const COMMAND: &str = "cargo test -p proxima-mcp-substrate --test tool_strictness_inventory inventory_checkpoint_is_current -- --nocapture";
@@ -31,6 +31,22 @@ fn all_tools_are_strict_schema_compatible() {
 
     let rows = registry_tool_inventory_for_prefix(&registry, "proxima-mcp/", "flavor");
     assert_all_tools_strict_compatible(&rows);
+}
+
+#[test]
+fn mcp_wake_visible_tools_describe_object_properties() {
+    let mut registry = FlavorRegistry::new();
+    proxima_mcp_substrate::register(&mut registry);
+    let registry = registry.freeze();
+
+    let schemas = registry
+        .list_mcp_tools()
+        .iter()
+        .filter(|tool| tool.name.starts_with("proxima-mcp/"))
+        .map(|tool| (tool.name.to_string(), tool.args_schema.clone()))
+        .collect();
+
+    assert_tool_schemas_have_property_descriptions(schemas);
 }
 
 fn checkpoint_path() -> PathBuf {

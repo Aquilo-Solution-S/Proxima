@@ -9,17 +9,38 @@ use super::{WorkspaceCtx, WorkspaceToolError, jail_path};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct TextEditorArgs {
+    #[schemars(
+        description = "Workspace text-editor operation: `view`, `create`, `str_replace`, or `insert`."
+    )]
     pub op: TextEditorOp,
+    #[schemars(
+        description = "Relative path inside the prepared workspace. Absolute paths, `..`, and symlink escapes are rejected."
+    )]
     pub path: String,
     #[serde(default)]
+    #[schemars(
+        description = "Optional 1-based inclusive line range for `view`, as `[start, end]`. Omit or null to view the whole file."
+    )]
     pub view_range: Option<[u32; 2]>,
     #[serde(default)]
+    #[schemars(
+        description = "Optional full file text for `create`; required only when `op` is `create`."
+    )]
     pub file_text: Option<String>,
     #[serde(default)]
+    #[schemars(
+        description = "Optional exact text to replace for `str_replace`; required only when `op` is `str_replace` and must match once."
+    )]
     pub old_str: Option<String>,
     #[serde(default)]
+    #[schemars(
+        description = "Optional replacement or insertion text. Required for `str_replace` and `insert`; omit or null for other ops."
+    )]
     pub new_str: Option<String>,
     #[serde(default)]
+    #[schemars(
+        description = "Optional 0-based insertion line for `insert`; required only when `op` is `insert`."
+    )]
     pub insert_line: Option<u32>,
 }
 

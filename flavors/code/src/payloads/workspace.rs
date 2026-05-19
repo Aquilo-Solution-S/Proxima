@@ -122,9 +122,17 @@ impl WorkspaceReviewVerdict {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, specta::Type)]
 pub struct WorkspaceReviewFinding {
+    #[schemars(description = "Finding severity such as `info`, `warning`, or `error`.")]
     pub severity: String,
+    #[schemars(
+        description = "Optional repo-relative file path for the finding. Omit or null when not file-specific."
+    )]
     pub file_path: Option<String>,
+    #[schemars(
+        description = "Optional 1-based line number for the finding. Omit or null when not line-specific."
+    )]
     pub line: Option<u32>,
+    #[schemars(description = "Concrete finding message.")]
     pub message: String,
 }
 

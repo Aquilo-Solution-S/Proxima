@@ -34,21 +34,44 @@ impl AcceptanceVerifierKind {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct AcceptanceVerifierSpecV1 {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(
+        description = "Optional repo-relative file path for file_exists, diff_scope, or reviewer context. Omit or null when not path-based."
+    )]
     pub path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(
+        description = "Optional command argv for command verification. Omit or null for non-command criteria."
+    )]
     pub command: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(
+        description = "Optional expected pattern for command output or file content. Omit or null when no pattern check is needed."
+    )]
     pub pattern: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(
+        description = "Optional verifier note or reviewer instruction. Omit or null when not needed."
+    )]
     pub note: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct AcceptanceCriterionV1 {
+    #[schemars(
+        description = "Stable criterion key used by verifier evidence, for example `build` or `tests`."
+    )]
     pub key: String,
+    #[schemars(
+        description = "Human-readable acceptance condition the worker/verifier should satisfy."
+    )]
     pub description: String,
+    #[schemars(description = "Whether this criterion is required for acceptance.")]
     pub required: bool,
+    #[schemars(
+        description = "Verifier category that determines how `verifier_spec` should be interpreted."
+    )]
     pub verifier_kind: AcceptanceVerifierKind,
+    #[schemars(description = "Structured verifier parameters for the selected `verifier_kind`.")]
     pub verifier_spec: AcceptanceVerifierSpecV1,
 }
 

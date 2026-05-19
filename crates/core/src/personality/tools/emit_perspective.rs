@@ -25,10 +25,22 @@ pub struct EmitPerspectiveTool;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct EmitPerspectiveArgs {
+    #[schemars(
+        description = "Registered Perspective schema id to emit. Raw internal tool field; provider-facing wakes usually use typed emit wrappers instead."
+    )]
     pub schema_id: String,
+    #[schemars(
+        description = "Registered Perspective schema version to emit. Raw internal tool field; provider-facing wakes usually use typed emit wrappers instead."
+    )]
     pub schema_version: u32,
+    #[schemars(
+        description = "Typed Perspective payload object for the selected schema. Provenance is auto-wired and the prior personality head may be superseded."
+    )]
     pub payload: serde_json::Value,
     #[serde(default)]
+    #[schemars(
+        description = "Optional authored memory text. Omit or null to derive text from the typed payload."
+    )]
     pub text: Option<String>,
 }
 

@@ -61,14 +61,25 @@ impl From<SearchMemoriesKind> for EntityKind {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SearchMemoriesArgs {
+    #[schemars(description = "Search query over visible memories. 1 to 512 chars.")]
     pub query: String,
     #[serde(default = "default_mode")]
+    #[schemars(description = "Search mode: lexical, semantic, or hybrid. Defaults to hybrid.")]
     pub mode: SearchMemoriesMode,
     #[serde(default = "default_limit")]
+    #[schemars(
+        description = "Maximum number of memories to return. Defaults to 8; values are clamped to 1..=50."
+    )]
     pub limit: u32,
     #[serde(default)]
+    #[schemars(
+        description = "Optional memory kind filter: Fact, Abstraction, or Perspective. Omit or null for all kinds."
+    )]
     pub kind: Option<SearchMemoriesKind>,
     #[serde(default)]
+    #[schemars(
+        description = "Optional schema_id filter, for example `proxima-code/commit-v1`. Omit or null for all schemas."
+    )]
     pub schema_id: Option<String>,
 }
 

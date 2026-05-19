@@ -183,6 +183,30 @@ pub fn assert_all_tools_strict_compatible(rows: &[ToolInventoryRow]) {
     );
 }
 
+pub fn assert_tool_schemas_have_property_descriptions(schemas: Vec<(String, Value)>) {
+    let failures = schemas
+        .iter()
+        .flat_map(|(name, schema)| {
+            property_description_failures(schema)
+                .into_iter()
+                .map(move |path| format!("{name}: {path}"))
+        })
+        .collect::<Vec<_>>();
+
+    assert!(
+        failures.is_empty(),
+        "tool schema object properties without descriptions:\n{}",
+        failures.join("\n")
+    );
+}
+
+#[must_use]
+pub fn property_description_failures(schema: &Value) -> Vec<String> {
+    let mut failures = Vec::new();
+    collect_property_description_failures(schema, "$", &mut failures);
+    failures
+}
+
 #[must_use]
 pub fn sorted_rows(mut rows: Vec<ToolInventoryRow>) -> Vec<ToolInventoryRow> {
     rows.sort_by(|left, right| left.canonical_name.cmp(&right.canonical_name));
@@ -225,6 +249,56 @@ fn contains_unbounded_json(schema: &Value) -> bool {
 
 fn strict_error(error: &StrictSchemaError) -> String {
     error.to_string()
+}
+
+fn collect_property_description_failures(schema: &Value, path: &str, failures: &mut Vec<String>) {
+    let Value::Object(object) = schema else {
+        return;
+    };
+
+    if let Some(properties) = object.get("properties").and_then(Value::as_object) {
+        for (property_name, property_schema) in properties {
+            let property_path = format!("{path}/properties/{property_name}");
+            let has_description = property_schema
+                .get("description")
+                .and_then(Value::as_str)
+                .is_some_and(|description| !description.trim().is_empty());
+            if !has_description {
+                failures.push(property_path.clone());
+            }
+            collect_property_description_failures(property_schema, &property_path, failures);
+        }
+    }
+
+    for container_key in ["$defs", "definitions"] {
+        if let Some(defs) = object.get(container_key).and_then(Value::as_object) {
+            for (name, value) in defs {
+                collect_property_description_failures(
+                    value,
+                    &format!("{path}/{container_key}/{name}"),
+                    failures,
+                );
+            }
+        }
+    }
+
+    for object_key in ["items", "additionalProperties"] {
+        if let Some(value) = object.get(object_key) {
+            collect_property_description_failures(value, &format!("{path}/{object_key}"), failures);
+        }
+    }
+
+    for array_key in ["allOf", "anyOf", "oneOf", "prefixItems"] {
+        if let Some(values) = object.get(array_key).and_then(Value::as_array) {
+            for (idx, value) in values.iter().enumerate() {
+                collect_property_description_failures(
+                    value,
+                    &format!("{path}/{array_key}/{idx}"),
+                    failures,
+                );
+            }
+        }
+    }
 }
 
 fn cell(value: &str) -> String {

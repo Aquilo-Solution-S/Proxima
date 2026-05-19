@@ -254,6 +254,7 @@ fn typed_emit_input_schema(payload_schema: &Value) -> Result<Value, String> {
 
     let mut lifted = properties.clone();
     normalize_reference_properties(&mut lifted);
+    ensure_property_descriptions(&mut lifted);
     lifted.insert(
         "text".to_string(),
         serde_json::json!({
@@ -267,6 +268,28 @@ fn typed_emit_input_schema(payload_schema: &Value) -> Result<Value, String> {
     }
 
     Ok(Value::Object(root))
+}
+
+fn ensure_property_descriptions(properties: &mut Map<String, Value>) {
+    for (key, schema) in properties.iter_mut() {
+        if schema
+            .get("description")
+            .and_then(Value::as_str)
+            .is_none_or(|description| description.trim().is_empty())
+        {
+            if let Some(object) = schema.as_object_mut() {
+                object.insert(
+                    "description".to_string(),
+                    Value::String(format!(
+                        "Typed payload field `{key}` for this emitted memory."
+                    )),
+                );
+            }
+        }
+        if let Some(nested) = schema.get_mut("properties").and_then(Value::as_object_mut) {
+            ensure_property_descriptions(nested);
+        }
+    }
 }
 
 fn normalize_reference_properties(properties: &mut Map<String, Value>) {
