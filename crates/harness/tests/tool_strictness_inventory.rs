@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use proxima_core::FlavorRegistry;
+use proxima_core::harness::{HarnessProgram, ProviderTarget, SubstrateToolBinding};
 use proxima_harness::tools::strict_inventory::{
     assert_all_tools_strict_compatible, assert_inventory_checkpoint_is_current,
     registry_tool_inventory, sorted_rows, workspace_tool_inventory,
@@ -63,6 +64,76 @@ fn strict_schema_rejects_non_object_roots() {
     });
 
     assert!(StrictToolSchema::from_schema(&schema).is_err());
+}
+
+#[test]
+fn writable_schema_generates_strict_emit_abstraction_wrapper() {
+    let schema_id = "proxima-intent/vision-brief-v1";
+    let bindings = vec![SubstrateToolBinding {
+        canonical_name: "core/emit_abstraction".into(),
+        description: "Emit one Abstraction memory.".into(),
+        args_schema: json!({
+            "type": "object",
+            "oneOf": [{
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["schema_id", "schema_version", "payload"],
+                "properties": {
+                    "schema_id": { "type": "string", "enum": [schema_id] },
+                    "schema_version": { "type": "integer", "enum": [1] },
+                    "payload": {
+                        "type": "object",
+                        "properties": {
+                            "goal_id": { "type": "string" },
+                            "planner_directive": { "type": "string" }
+                        },
+                        "required": ["goal_id", "planner_directive"]
+                    }
+                }
+            }]
+        }),
+    }];
+    let resolved = proxima_harness::program::resolve(
+        HarnessProgram {
+            system_prompt: "sys".into(),
+            instructions: "do".into(),
+            context_params: std::collections::HashMap::from([(
+                "coordination_context".into(),
+                json!({
+                    "wake_path": {
+                        "current": {
+                            "produces_schema_ids": [schema_id]
+                        }
+                    }
+                }),
+            )]),
+            substrate_tool_palette: vec!["core/emit_abstraction".into()],
+            workspace_root: None,
+            max_rounds: 4,
+            provider: ProviderTarget::MistralChat {
+                base_url: "http://localhost".into(),
+                model_id: "mistral-medium-latest".into(),
+                api_key: "test".into(),
+                temperature: None,
+                max_completion_tokens: None,
+            },
+        },
+        &bindings,
+    );
+
+    let wrapper_canonical = "core/emit_abstraction::proxima-intent/vision-brief-v1";
+    let wrapper = resolved
+        .tools
+        .iter()
+        .find(|tool| tool.canonical == wrapper_canonical)
+        .expect("generated VisionBrief emit wrapper");
+    assert!(StrictToolSchema::from_schema(&wrapper.input_schema).is_ok());
+    assert!(
+        !resolved
+            .tools
+            .iter()
+            .any(|tool| tool.canonical == "core/emit_abstraction")
+    );
 }
 
 fn checkpoint_path() -> PathBuf {

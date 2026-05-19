@@ -12,6 +12,7 @@
 use std::path::PathBuf;
 
 use proxima_core::harness::SubstrateToolBinding;
+use proxima_core::verbs::schema::PayloadKind;
 
 pub mod strict_inventory;
 pub mod strict_schema;
@@ -22,6 +23,12 @@ pub mod workspace;
 #[derive(Clone)]
 pub enum ToolBinding {
     Substrate(SubstrateToolBinding),
+    TypedEmit {
+        internal: SubstrateToolBinding,
+        schema_id: String,
+        schema_version: u32,
+        kind: PayloadKind,
+    },
     Workspace(workspace::WorkspaceToolName),
 }
 
@@ -29,6 +36,18 @@ impl std::fmt::Debug for ToolBinding {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Substrate(s) => f.debug_tuple("Substrate").field(&s.canonical_name).finish(),
+            Self::TypedEmit {
+                internal,
+                schema_id,
+                schema_version,
+                kind,
+            } => f
+                .debug_struct("TypedEmit")
+                .field("internal", &internal.canonical_name)
+                .field("schema_id", schema_id)
+                .field("schema_version", schema_version)
+                .field("kind", kind)
+                .finish(),
             Self::Workspace(w) => f.debug_tuple("Workspace").field(w).finish(),
         }
     }

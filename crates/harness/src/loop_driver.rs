@@ -431,6 +431,25 @@ async fn dispatch_one(
                 SubstrateDispatchResult::Fatal(message) => DispatchOne::Fatal(message),
             }
         }
+        Some(ToolBinding::TypedEmit {
+            internal,
+            schema_id,
+            schema_version,
+            kind: _,
+        }) => {
+            use crate::tools::substrate_dispatch::{
+                SubstrateDispatchResult, dispatch, typed_emit_args,
+            };
+            let args = match typed_emit_args(schema_id, *schema_version, args) {
+                Ok(args) => args,
+                Err(message) => return DispatchOne::Recoverable(message),
+            };
+            match dispatch(&loop_.substrate_bridge, internal, args, ctx, model_id).await {
+                SubstrateDispatchResult::Ok(value) => DispatchOne::Ok(value),
+                SubstrateDispatchResult::Recoverable(message) => DispatchOne::Recoverable(message),
+                SubstrateDispatchResult::Fatal(message) => DispatchOne::Fatal(message),
+            }
+        }
         Some(ToolBinding::Workspace(name)) => {
             let Some(root) = workspace_root else {
                 return DispatchOne::Recoverable(

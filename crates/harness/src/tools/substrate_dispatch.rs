@@ -45,3 +45,50 @@ pub async fn dispatch(
         Err(other) => SubstrateDispatchResult::Recoverable(other.to_string()),
     }
 }
+
+pub fn typed_emit_args(schema_id: &str, schema_version: u32, args: Value) -> Result<Value, String> {
+    let Value::Object(mut payload) = args else {
+        return Err("typed emit wrapper arguments must be an object".to_string());
+    };
+    let text = payload.remove("text");
+    let mut wrapped = serde_json::json!({
+        "schema_id": schema_id,
+        "schema_version": schema_version,
+        "payload": Value::Object(payload),
+    });
+    if let Some(text) = text {
+        wrapped["text"] = text;
+    }
+    Ok(wrapped)
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::typed_emit_args;
+
+    #[test]
+    fn typed_emit_wrapper_reconstructs_internal_emit_args() {
+        let wrapped = typed_emit_args(
+            "proxima-intent/vision-brief-v1",
+            1,
+            json!({
+                "goal_id": "G1",
+                "planner_directive": "Plan product-first.",
+                "text": "Vision brief"
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(wrapped["schema_id"], "proxima-intent/vision-brief-v1");
+        assert_eq!(wrapped["schema_version"], 1);
+        assert_eq!(wrapped["payload"]["goal_id"], "G1");
+        assert_eq!(
+            wrapped["payload"]["planner_directive"],
+            "Plan product-first."
+        );
+        assert!(wrapped["payload"]["text"].is_null());
+        assert_eq!(wrapped["text"], "Vision brief");
+    }
+}
