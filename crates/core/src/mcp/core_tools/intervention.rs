@@ -21,13 +21,29 @@ pub struct EmitInterventionDecisionTool;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct EmitInterventionDecisionArgs {
+    #[schemars(
+        description = "`N...` intervention-requested Fact memory handle that woke the Wake Supervisor."
+    )]
     pub intervention_request: String,
+    #[schemars(
+        description = "Decision to emit for the intervention request: continue, stop, redirect, decompose, or accept_terminal."
+    )]
     pub decision: InterventionDecisionKind,
+    #[schemars(
+        description = "Optional extra wake rounds to grant for a continue decision. Omit or null for stop, redirect, decompose, or accept_terminal."
+    )]
     #[serde(default)]
     pub grant_rounds: Option<u16>,
+    #[schemars(
+        description = "Optional `P...` Personality handle to redirect to. Required only for redirect; omit or null otherwise."
+    )]
     #[serde(default)]
     pub redirect_personality: Option<String>,
+    #[schemars(description = "Evidence-based rationale for the decision, 1 to 20000 chars.")]
     pub rationale: String,
+    #[schemars(
+        description = "Stable idempotency key for this intervention decision. Reuse only for exact replay."
+    )]
     pub idempotency_key: String,
 }
 
