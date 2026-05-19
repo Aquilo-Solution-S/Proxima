@@ -9,7 +9,7 @@ use crate::SetWakeEntriesRequest;
 use crate::auth::Credentials;
 use crate::mcp::core_tools::audit::{AuditEmit, emit_personality_config_changed};
 use crate::mcp::core_tools::payload::{
-    PersonalityConfigChangedSubject, PersonalityConfigChangedVerb,
+    PersonalityConfigChangeSnapshot, PersonalityConfigChangedSubject, PersonalityConfigChangedVerb,
 };
 use crate::mcp::core_tools::wake_entry_input::WakeEntryDraftInput;
 use crate::mcp::{McpTool, McpToolCtx, McpToolError};
@@ -59,12 +59,9 @@ impl McpTool for SetWakeEntriesTool {
             let before = before_rows
                 .iter()
                 .find(|r| r.personality_instance_id == pid)
-                .map(|r| {
-                    serde_json::json!({
-                        "wake_entry_count": r.wake_entries.len(),
-                        "wake_entry_ids": r.wake_entries.iter()
-                            .map(|e| e.wake_entry_id).collect::<Vec<_>>(),
-                    })
+                .map(|r| PersonalityConfigChangeSnapshot::WakeEntries {
+                    wake_entry_count: r.wake_entries.len(),
+                    wake_entry_ids: r.wake_entries.iter().map(|e| e.wake_entry_id).collect(),
                 });
 
             // Resolve inputs into drafts.
@@ -89,10 +86,10 @@ impl McpTool for SetWakeEntriesTool {
                 .map(|d| ctx.format_wake_entry(d.wake_entry_id))
                 .collect();
 
-            let after = serde_json::json!({
-                "wake_entry_count": drafts.len(),
-                "wake_entry_ids": drafts.iter().map(|d| d.wake_entry_id).collect::<Vec<_>>(),
-            });
+            let after = PersonalityConfigChangeSnapshot::WakeEntries {
+                wake_entry_count: drafts.len(),
+                wake_entry_ids: drafts.iter().map(|d| d.wake_entry_id).collect(),
+            };
             let audit = emit_personality_config_changed(
                 &ctx,
                 PersonalityConfigChangedVerb::SetWakeEntries,

@@ -9,7 +9,7 @@ use crate::McpTool;
 use crate::TombstonePersonalityRequest;
 use crate::mcp::core_tools::audit::{AuditEmit, emit_personality_config_changed};
 use crate::mcp::core_tools::payload::{
-    PersonalityConfigChangedSubject, PersonalityConfigChangedVerb,
+    PersonalityConfigChangeSnapshot, PersonalityConfigChangedSubject, PersonalityConfigChangedVerb,
 };
 use crate::mcp::{McpToolCtx, McpToolError};
 
@@ -54,12 +54,12 @@ impl McpTool for TombstonePersonalityTool {
                 .await
                 .map_err(McpToolError::Storage)?;
             let before_row = rows.iter().find(|r| r.personality_instance_id == pid);
-            let before = before_row.map(|r| {
-                serde_json::json!({
-                    "display_name": r.display_name,
-                    "status": r.status,
-                    "wake_entry_count": r.wake_entries.len(),
-                })
+            let before = before_row.map(|r| PersonalityConfigChangeSnapshot::Personality {
+                personality_instance_id: Some(r.personality_instance_id.into_inner()),
+                display_name: Some(r.display_name.clone()),
+                purpose: None,
+                status: Some(r.status.as_str().to_string()),
+                wake_entry_count: Some(r.wake_entries.len()),
             });
             let req = TombstonePersonalityRequest {
                 owner: ctx.owner.clone(),

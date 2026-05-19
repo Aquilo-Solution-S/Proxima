@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::McpTool;
 use crate::mcp::core_tools::audit::{AuditEmit, emit_personality_config_changed};
 use crate::mcp::core_tools::payload::{
-    PersonalityConfigChangedSubject, PersonalityConfigChangedVerb,
+    PersonalityConfigChangeSnapshot, PersonalityConfigChangedSubject, PersonalityConfigChangedVerb,
 };
 use crate::mcp::{McpToolCtx, McpToolError};
 
@@ -72,7 +72,10 @@ impl McpTool for RemoveWakeEntryTool {
                 &ctx,
                 PersonalityConfigChangedVerb::RemoveWakeEntry,
                 PersonalityConfigChangedSubject::WakeEntry(wid),
-                Some(serde_json::json!({ "wake_entry_id": wid })),
+                Some(PersonalityConfigChangeSnapshot::WakeEntry {
+                    wake_entry_id: wid,
+                    patch_applied: None,
+                }),
                 None,
             )
             .await;

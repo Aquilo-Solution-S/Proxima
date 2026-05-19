@@ -8,7 +8,7 @@ use crate::McpTool;
 use crate::auth::Credentials;
 use crate::mcp::core_tools::audit::{AuditEmit, emit_personality_config_changed};
 use crate::mcp::core_tools::payload::{
-    PersonalityConfigChangedSubject, PersonalityConfigChangedVerb,
+    PersonalityConfigChangeSnapshot, PersonalityConfigChangedSubject, PersonalityConfigChangedVerb,
 };
 use crate::mcp::{McpToolCtx, McpToolError};
 use crate::{BindInferenceTierRequest, ModelTier};
@@ -70,10 +70,10 @@ impl McpTool for BindInferenceTierTool {
                 PersonalityConfigChangedVerb::BindInferenceTier,
                 PersonalityConfigChangedSubject::TierBinding(subject_id),
                 None,
-                Some(serde_json::json!({
-                    "tier": format!("{:?}", tier),
-                    "target_ref": target_ref,
-                })),
+                Some(PersonalityConfigChangeSnapshot::TierBinding {
+                    tier: format!("{:?}", tier),
+                    target_ref: target_ref.clone(),
+                }),
             )
             .await;
             let audit_emit_failed = match audit {

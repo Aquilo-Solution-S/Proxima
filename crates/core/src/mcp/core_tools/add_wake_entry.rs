@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::mcp::core_tools::audit::{AuditEmit, emit_personality_config_changed};
 use crate::mcp::core_tools::payload::{
-    PersonalityConfigChangedSubject, PersonalityConfigChangedVerb,
+    PersonalityConfigChangeSnapshot, PersonalityConfigChangedSubject, PersonalityConfigChangedVerb,
 };
 use crate::mcp::core_tools::wake_entry_input::WakeEntryDraftInput;
 use crate::mcp::{McpTool, McpToolCtx, McpToolError};
@@ -71,7 +71,10 @@ impl McpTool for AddWakeEntryTool {
                 .await
                 .map_err(|e| McpToolError::Other(e.to_string()))?;
 
-            let after = serde_json::json!({ "wake_entry_id": new_id });
+            let after = PersonalityConfigChangeSnapshot::WakeEntry {
+                wake_entry_id: new_id,
+                patch_applied: None,
+            };
             let audit = emit_personality_config_changed(
                 &ctx,
                 PersonalityConfigChangedVerb::AddWakeEntry,

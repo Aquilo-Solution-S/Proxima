@@ -9,7 +9,7 @@ use crate::InstantiatePersonalityRequest;
 use crate::McpTool;
 use crate::mcp::core_tools::audit::{AuditEmit, emit_personality_config_changed};
 use crate::mcp::core_tools::payload::{
-    PersonalityConfigChangedSubject, PersonalityConfigChangedVerb,
+    PersonalityConfigChangeSnapshot, PersonalityConfigChangedSubject, PersonalityConfigChangedVerb,
 };
 use crate::mcp::{McpToolCtx, McpToolError};
 
@@ -63,11 +63,13 @@ impl McpTool for InstantiatePersonalityTool {
                 .instantiate_personality(req)
                 .await
                 .map_err(|e| McpToolError::Other(e.to_string()))?;
-            let after = serde_json::json!({
-                "personality_instance_id": resp.instance_id.into_inner(),
-                "display_name": display_name,
-                "purpose": purpose,
-            });
+            let after = PersonalityConfigChangeSnapshot::Personality {
+                personality_instance_id: Some(resp.instance_id.into_inner()),
+                display_name: Some(display_name),
+                purpose: Some(purpose),
+                status: None,
+                wake_entry_count: None,
+            };
             let audit = emit_personality_config_changed(
                 &ctx,
                 PersonalityConfigChangedVerb::Instantiate,

@@ -19,8 +19,8 @@ use time::OffsetDateTime;
 
 use crate::mcp::McpToolCtx;
 use crate::mcp::core_tools::payload::{
-    PersonalityConfigChangedCaller, PersonalityConfigChangedSubject, PersonalityConfigChangedV1,
-    PersonalityConfigChangedVerb,
+    PersonalityConfigChangeSnapshot, PersonalityConfigChangedCaller,
+    PersonalityConfigChangedSubject, PersonalityConfigChangedV1, PersonalityConfigChangedVerb,
 };
 use crate::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
 use crate::{FactPayload, SchemaId, SchemaVersion, SourceBatchId, SourceId};
@@ -38,8 +38,8 @@ pub async fn emit_personality_config_changed(
     ctx: &McpToolCtx,
     verb: PersonalityConfigChangedVerb,
     subject: PersonalityConfigChangedSubject,
-    before: Option<serde_json::Value>,
-    after: Option<serde_json::Value>,
+    before: Option<PersonalityConfigChangeSnapshot>,
+    after: Option<PersonalityConfigChangeSnapshot>,
 ) -> AuditEmit {
     let caller = match resolve_caller(ctx).await {
         Ok(c) => c,
@@ -166,7 +166,13 @@ mod tests {
             PersonalityConfigChangedVerb::Instantiate,
             PersonalityConfigChangedSubject::Personality(uuid::Uuid::now_v7()),
             None,
-            Some(serde_json::json!({})),
+            Some(PersonalityConfigChangeSnapshot::Personality {
+                personality_instance_id: None,
+                display_name: None,
+                purpose: None,
+                status: None,
+                wake_entry_count: None,
+            }),
         )
         .await;
         match outcome {
@@ -214,7 +220,13 @@ mod tests {
             PersonalityConfigChangedVerb::Instantiate,
             PersonalityConfigChangedSubject::Personality(uuid::Uuid::now_v7()),
             None,
-            Some(serde_json::json!({})),
+            Some(PersonalityConfigChangeSnapshot::Personality {
+                personality_instance_id: None,
+                display_name: None,
+                purpose: None,
+                status: None,
+                wake_entry_count: None,
+            }),
         )
         .await;
         match outcome {

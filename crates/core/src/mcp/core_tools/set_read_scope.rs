@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::SetReadScopeRequest;
 use crate::mcp::core_tools::audit::{AuditEmit, emit_personality_config_changed};
 use crate::mcp::core_tools::payload::{
-    PersonalityConfigChangedSubject, PersonalityConfigChangedVerb,
+    PersonalityConfigChangeSnapshot, PersonalityConfigChangedSubject, PersonalityConfigChangedVerb,
 };
 use crate::mcp::{McpTool, McpToolCtx, McpToolError};
 
@@ -60,14 +60,12 @@ impl McpTool for SetReadScopeTool {
                 })
                 .await
                 .ok()
-                .map(|response| {
-                    serde_json::json!({
-                        "readable_personality_instance_ids": response
-                            .readable_personality_instance_ids
-                            .into_iter()
-                            .map(|id| id.into_inner())
-                            .collect::<Vec<_>>(),
-                    })
+                .map(|response| PersonalityConfigChangeSnapshot::ReadScope {
+                    readable_personality_instance_ids: response
+                        .readable_personality_instance_ids
+                        .into_iter()
+                        .map(|id| id.into_inner())
+                        .collect::<Vec<_>>(),
                 });
 
             let response = storage
@@ -85,9 +83,9 @@ impl McpTool for SetReadScopeTool {
                 .filter(|id| *id != pid)
                 .map(|id| id.into_inner())
                 .collect::<Vec<_>>();
-            let after = serde_json::json!({
-                "readable_personality_instance_ids": after_ids,
-            });
+            let after = PersonalityConfigChangeSnapshot::ReadScope {
+                readable_personality_instance_ids: after_ids,
+            };
             let audit = emit_personality_config_changed(
                 &ctx,
                 PersonalityConfigChangedVerb::SetReadScope,

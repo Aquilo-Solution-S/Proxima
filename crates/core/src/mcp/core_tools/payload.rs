@@ -4,7 +4,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::FactPayload;
+use crate::{FactPayload, InferenceTargetConfig};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -40,12 +40,112 @@ pub enum PersonalityConfigChangedCaller {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct PersonalityConfigChangedV1 {
     pub verb: PersonalityConfigChangedVerb,
-    /// Opaque snapshot of relevant prior state. `None` on create-style verbs.
-    pub before: Option<serde_json::Value>,
-    /// Opaque snapshot of relevant new state. `None` on tombstone-style verbs.
-    pub after: Option<serde_json::Value>,
+    /// Typed snapshot of relevant prior state. `None` on create-style verbs.
+    pub before: Option<PersonalityConfigChangeSnapshot>,
+    /// Typed snapshot of relevant new state. `None` on tombstone-style verbs.
+    pub after: Option<PersonalityConfigChangeSnapshot>,
     pub subject: PersonalityConfigChangedSubject,
     pub caller: PersonalityConfigChangedCaller,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum PersonalityConfigChangeSnapshot {
+    Personality {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        personality_instance_id: Option<uuid::Uuid>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        display_name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        purpose: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        status: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        wake_entry_count: Option<usize>,
+    },
+    WakeEntry {
+        wake_entry_id: uuid::Uuid,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        patch_applied: Option<bool>,
+    },
+    WakeEntries {
+        wake_entry_count: usize,
+        wake_entry_ids: Vec<uuid::Uuid>,
+    },
+    ReadScope {
+        readable_personality_instance_ids: Vec<uuid::Uuid>,
+    },
+    TierBinding {
+        tier: String,
+        target_ref: String,
+    },
+    InferenceTarget {
+        config: InferenceTargetConfigSnapshot,
+    },
+    RemovedInferenceTarget,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum InferenceTargetConfigSnapshot {
+    MistralChat {
+        base_url: String,
+        model_id: String,
+        api_key_env: String,
+        temperature: Option<f32>,
+        max_completion_tokens: Option<u32>,
+    },
+    OpenAIChat {
+        base_url: String,
+        model_id: String,
+        api_key_env: String,
+        temperature: Option<f32>,
+        max_completion_tokens: Option<u32>,
+    },
+    OpenAIResponses {
+        base_url: String,
+        model_id: String,
+        api_key_env: String,
+        reasoning_effort: Option<String>,
+    },
+    #[serde(rename = "chatgpt_codex")]
+    ChatGPTCodex {
+        base_url: String,
+        model_id: String,
+        reasoning_effort: Option<String>,
+    },
+}
+
+impl From<&InferenceTargetConfig> for InferenceTargetConfigSnapshot {
+    fn from(config: &InferenceTargetConfig) -> Self {
+        match config {
+            InferenceTargetConfig::MistralChat(cfg) => Self::MistralChat {
+                base_url: cfg.base_url.clone(),
+                model_id: cfg.model_id.clone(),
+                api_key_env: cfg.api_key_env.clone(),
+                temperature: cfg.temperature,
+                max_completion_tokens: cfg.max_completion_tokens,
+            },
+            InferenceTargetConfig::OpenAIChat(cfg) => Self::OpenAIChat {
+                base_url: cfg.base_url.clone(),
+                model_id: cfg.model_id.clone(),
+                api_key_env: cfg.api_key_env.clone(),
+                temperature: cfg.temperature,
+                max_completion_tokens: cfg.max_completion_tokens,
+            },
+            InferenceTargetConfig::OpenAIResponses(cfg) => Self::OpenAIResponses {
+                base_url: cfg.base_url.clone(),
+                model_id: cfg.model_id.clone(),
+                api_key_env: cfg.api_key_env.clone(),
+                reasoning_effort: cfg.reasoning_effort.clone(),
+            },
+            InferenceTargetConfig::ChatGPTCodex(cfg) => Self::ChatGPTCodex {
+                base_url: cfg.base_url.clone(),
+                model_id: cfg.model_id.clone(),
+                reasoning_effort: cfg.reasoning_effort.clone(),
+            },
+        }
+    }
 }
 
 impl FactPayload for PersonalityConfigChangedV1 {
@@ -71,7 +171,13 @@ mod tests {
             verb: PersonalityConfigChangedVerb::Instantiate,
             subject: PersonalityConfigChangedSubject::Personality(uuid::Uuid::now_v7()),
             before: None,
-            after: Some(serde_json::json!({ "display_name": "Engineer" })),
+            after: Some(PersonalityConfigChangeSnapshot::Personality {
+                personality_instance_id: None,
+                display_name: Some("Engineer".into()),
+                purpose: None,
+                status: None,
+                wake_entry_count: None,
+            }),
             caller: PersonalityConfigChangedCaller::MasterToken {
                 personality_instance_id: uuid::Uuid::now_v7(),
             },
