@@ -60,11 +60,14 @@ const SIGNAL_MATCH_REPO_HANDLE: &str = "signal-match-demo";
 const SIGNAL_MATCH_GOAL_TITLE: &str = "Signal Match static SPA demo";
 const TODO_CLI_REPO_HANDLE: &str = "todo-audit-demo";
 const TODO_CLI_GOAL_TITLE: &str = "Todo Audit CLI demo";
+const KANBAN_REPO_HANDLE: &str = "kanban-board-demo";
+const KANBAN_GOAL_TITLE: &str = "Kanban Board frontend demo";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DemoChallenge {
     SignalMatch,
     TodoCli,
+    KanbanBoard,
 }
 
 impl DemoChallenge {
@@ -75,8 +78,9 @@ impl DemoChallenge {
         {
             "signal_match" => Ok(Self::SignalMatch),
             "todo_cli" => Ok(Self::TodoCli),
+            "kanban_board" => Ok(Self::KanbanBoard),
             value => Err(format!(
-                "unsupported PROXIMA_DEMO_CHALLENGE {value:?}; expected signal_match or todo_cli"
+                "unsupported PROXIMA_DEMO_CHALLENGE {value:?}; expected signal_match, todo_cli, or kanban_board"
             )
             .into()),
         }
@@ -86,6 +90,7 @@ impl DemoChallenge {
         match self {
             Self::SignalMatch => SIGNAL_MATCH_REPO_HANDLE,
             Self::TodoCli => TODO_CLI_REPO_HANDLE,
+            Self::KanbanBoard => KANBAN_REPO_HANDLE,
         }
     }
 
@@ -93,6 +98,7 @@ impl DemoChallenge {
         match self {
             Self::SignalMatch => "signal-match-repo",
             Self::TodoCli => "todo-audit-repo",
+            Self::KanbanBoard => "kanban-board-repo",
         }
     }
 
@@ -100,6 +106,7 @@ impl DemoChallenge {
         match self {
             Self::SignalMatch => "signal-match\n",
             Self::TodoCli => "todo-audit-cli\n",
+            Self::KanbanBoard => "kanban-board\n",
         }
     }
 
@@ -107,6 +114,7 @@ impl DemoChallenge {
         match self {
             Self::SignalMatch => SIGNAL_MATCH_GOAL_TITLE,
             Self::TodoCli => TODO_CLI_GOAL_TITLE,
+            Self::KanbanBoard => KANBAN_GOAL_TITLE,
         }
     }
 
@@ -117,6 +125,9 @@ impl DemoChallenge {
             }
             Self::TodoCli => {
                 "Build a package-free Node.js CLI named Todo Audit. It must parse Markdown task lists, extract completion state, owners, tags, priorities, due dates, and output deterministic JSON summaries with tests and sample fixtures."
+            }
+            Self::KanbanBoard => {
+                "Build a package-free static Kanban frontend in index.html with executable tests. It must run by opening index.html directly, render seeded tasks, support search and status filtering, move tasks between columns with accessible controls, update counters, persist state in localStorage, and include repo-native tests runnable from shell."
             }
         }
     }
@@ -135,6 +146,14 @@ impl DemoChallenge {
         match self {
             Self::SignalMatch => &["index.html"],
             Self::TodoCli => &["todo_audit.mjs", "test_todo_audit.mjs"],
+            Self::KanbanBoard => &["index.html", "test_kanban.mjs"],
+        }
+    }
+
+    fn required_child_goal_count(self) -> i64 {
+        match self {
+            Self::SignalMatch | Self::TodoCli => 2,
+            Self::KanbanBoard => 3,
         }
     }
 
@@ -154,6 +173,14 @@ impl DemoChallenge {
                 }
                 text
             }
+            (Self::KanbanBoard, Some(worktree)) => {
+                let mut text = String::new();
+                for file in ["index.html", "test_kanban.mjs", "data/tasks.json"] {
+                    text.push_str(&format!("\n--- {file} ---\n"));
+                    text.push_str(&read_excerpt(&worktree.path.join(file))?);
+                }
+                text
+            }
             (_, None) => String::new(),
         };
         let required = match self {
@@ -162,6 +189,9 @@ impl DemoChallenge {
             }
             Self::TodoCli => {
                 "Node CLI with no package install, Markdown task parser, owners, tags, priority and due-date extraction, deterministic JSON output, sample fixture, and runnable tests"
+            }
+            Self::KanbanBoard => {
+                "direct index.html run, responsive Kanban layout, seeded tasks, search and status filtering, move controls, counters, localStorage persistence, and runnable repo-native frontend tests"
             }
         };
         Ok(format!(
@@ -338,13 +368,13 @@ struct GoalGraphMetrics {
 }
 
 impl GoalGraphMetrics {
-    fn complete(&self, parent_achieved: bool) -> bool {
+    fn complete(&self, parent_achieved: bool, required_child_goal_count: i64) -> bool {
         parent_achieved
-            && self.child_goal_count >= 2
+            && self.child_goal_count >= required_child_goal_count
             && self.achieved_child_goal_count == self.child_goal_count
-            && self.child_execution_request_count >= 2
-            && self.child_workspace_run_count >= 2
-            && self.child_workspace_review_count >= 2
+            && self.child_execution_request_count >= required_child_goal_count
+            && self.child_workspace_run_count >= required_child_goal_count
+            && self.child_workspace_review_count >= required_child_goal_count
             && self.verification_evidence_count >= 1
     }
 }
@@ -483,7 +513,7 @@ impl DemoConfig {
             run_dir,
             base_url,
             api_key_env: "MISTRAL_API_KEY".into(),
-            max_ticks: env_u32("PROXIMA_DEMO_MAX_TICKS", 12)?,
+            max_ticks: env_u32("PROXIMA_DEMO_MAX_TICKS", 24)?,
             max_correction_loops: env_u32("PROXIMA_DEMO_MAX_CORRECTION_LOOPS", 2)?,
             role_max_rounds: RoleMaxRounds::from_env()?,
         }))
@@ -496,7 +526,7 @@ impl RoleMaxRounds {
         Ok(Self {
             planner: env_u16_with_fallback("PROXIMA_DEMO_PLANNER_MAX_ROUNDS", 8, fallback)?,
             worker: env_u16_with_fallback("PROXIMA_DEMO_WORKER_MAX_ROUNDS", 14, fallback)?,
-            verifier: env_u16_with_fallback("PROXIMA_DEMO_VERIFIER_MAX_ROUNDS", 5, fallback)?,
+            verifier: env_u16_with_fallback("PROXIMA_DEMO_VERIFIER_MAX_ROUNDS", 10, fallback)?,
             goal_reviewer: env_u16_with_fallback(
                 "PROXIMA_DEMO_GOAL_REVIEWER_MAX_ROUNDS",
                 5,
@@ -616,11 +646,7 @@ impl DemoWorld {
             ExecutionRequestV1::SCHEMA_ID,
             WakeExecutionMode::Workspace,
             Vec::new(),
-            vec![
-                "proxima-workspace/text_editor",
-                "proxima-workspace/shell",
-                "proxima-workspace/list_files",
-            ],
+            vec!["proxima-workspace/shell", "proxima-workspace/list_files"],
             worker_instruction(self.cfg.challenge),
             WakeOptions {
                 budget_policy: Some(budget_policy.clone()),
@@ -1016,7 +1042,10 @@ impl DemoWorld {
     async fn demo_goal_graph_complete(&self) -> Result<bool, sqlx::Error> {
         let parent_achieved = self.goal_achieved_fact_exists().await?;
         let graph = self.goal_graph_metrics().await?;
-        Ok(graph.complete(parent_achieved))
+        Ok(graph.complete(
+            parent_achieved,
+            self.cfg.challenge.required_child_goal_count(),
+        ))
     }
 
     async fn goal_graph_metrics(&self) -> Result<GoalGraphMetrics, sqlx::Error> {
@@ -1518,7 +1547,11 @@ impl DemoWorld {
                 "user.email=demo@example.test",
                 "commit",
                 "-m",
-                "feat: auto merge signal match demo result",
+                match self.cfg.challenge {
+                    DemoChallenge::SignalMatch => "feat: auto merge signal match demo result",
+                    DemoChallenge::TodoCli => "feat: auto merge todo audit demo result",
+                    DemoChallenge::KanbanBoard => "feat: auto merge kanban board demo result",
+                },
             ],
         )?;
         let commit_sha = git_output(&worktree.path, &["rev-parse", "HEAD"])?;
@@ -1969,6 +2002,28 @@ async fn prepare_demo_repo(
                 "- [ ] Ship parser @ana #cli !high due:2026-05-17\n- [x] Draft README @bo #docs !low due:2026-05-10\n- [ ] Add JSON output @ana #cli #report !medium due:2026-05-20\n- [ ] Triage backlog @cy #ops !high\n",
             )?;
         }
+        DemoChallenge::KanbanBoard => {
+            std::fs::create_dir_all(path.join("data"))?;
+            std::fs::create_dir_all(path.join("docs"))?;
+            std::fs::write(
+                path.join("README.md"),
+                "# Kanban Board\n\nBuild a package-free static frontend in `index.html` and executable tests in `test_kanban.mjs`. Use only browser APIs and Node built-ins. The app must run by opening `index.html` directly.\n",
+            )?;
+            std::fs::write(
+                path.join("data/tasks.json"),
+                r#"[
+  {"id":"api-contract","title":"Review API contract","status":"backlog","owner":"Ana","priority":"high","tag":"API"},
+  {"id":"wire-ui","title":"Wire board UI","status":"active","owner":"Bo","priority":"medium","tag":"UI"},
+  {"id":"blocked-auth","title":"Unblock auth mock","status":"blocked","owner":"Cy","priority":"high","tag":"Auth"},
+  {"id":"docs-done","title":"Publish usage notes","status":"done","owner":"Dee","priority":"low","tag":"Docs"}
+]
+"#,
+            )?;
+            std::fs::write(
+                path.join("docs/acceptance.md"),
+                "# Acceptance\n\nRequired test ids: `app-title`, `search-input`, `status-filter`, `task-card`, `move-next`, `move-prev`, `task-count`, `done-count`, `reset-board`.\n\nRequired behavior: render seeded tasks, filter by text/status, move tasks between columns, update counters, persist board state with localStorage key `proxima-kanban-demo-v1`, and reset to seed data.\n",
+            )?;
+        }
     }
     git(path, &["init", "-b", "main"])?;
     git(path, &["add", "."])?;
@@ -1984,6 +2039,7 @@ async fn prepare_demo_repo(
             match challenge {
                 DemoChallenge::SignalMatch => "chore: seed signal match demo",
                 DemoChallenge::TodoCli => "chore: seed todo audit demo",
+                DemoChallenge::KanbanBoard => "chore: seed kanban board demo",
             },
         ],
     )?;
@@ -1994,6 +2050,7 @@ fn planner_instruction(planner: PersonalityInstanceId, challenge: DemoChallenge)
     match challenge {
         DemoChallenge::SignalMatch => signal_match_planner_instruction(planner),
         DemoChallenge::TodoCli => todo_cli_planner_instruction(planner),
+        DemoChallenge::KanbanBoard => kanban_board_planner_instruction(planner),
     }
 }
 
@@ -2009,6 +2066,9 @@ fn worker_instruction(challenge: DemoChallenge) -> String {
         DemoChallenge::TodoCli => {
             "Implement the requested Todo Audit CLI using only Node.js built-ins. Create or update `todo_audit.mjs`, `test_todo_audit.mjs`, and `examples/tasks.md` as needed. The CLI must support `node todo_audit.mjs <markdown-file> --today 2026-05-18 --json`, parse Markdown task-list items, extract done/open state, @owner, #tags, !priority, due:YYYY-MM-DD, compute totals, open/done/overdue counts, byOwner, byTag, highPriorityOpen, and nextDue sorted by due date. Write meaningful tests in `test_todo_audit.mjs` using node:assert/child_process only, run `node test_todo_audit.mjs`, then stop.".into()
         }
+        DemoChallenge::KanbanBoard => {
+            "Implement the requested Kanban frontend using only `index.html`, browser APIs, and Node built-ins for tests. Create or update `index.html` and `test_kanban.mjs`; keep `data/tasks.json` and `docs/acceptance.md` useful if needed. Required test ids: app-title, search-input, status-filter, task-card, move-next, move-prev, task-count, done-count, reset-board. The app must render seeded tasks, filter by search and status, move tasks between backlog/active/blocked/done with accessible buttons, update task and done counters, persist state under localStorage key `proxima-kanban-demo-v1`, reset to seed data, and run by opening index.html directly. Write meaningful package-free tests in `test_kanban.mjs` using node:assert/fs only; the tests should inspect index.html for the selector contract, seeded-data contract, localStorage key, and movement/filtering logic markers. Run `node test_kanban.mjs`, then stop.".into()
+        }
     }
 }
 
@@ -2016,6 +2076,7 @@ fn verifier_instruction(challenge: DemoChallenge) -> String {
     match challenge {
         DemoChallenge::SignalMatch => signal_match_verifier_instruction(),
         DemoChallenge::TodoCli => todo_cli_verifier_instruction(),
+        DemoChallenge::KanbanBoard => kanban_board_verifier_instruction(),
     }
 }
 
@@ -2130,12 +2191,81 @@ fn todo_cli_planner_instruction(planner: PersonalityInstanceId) -> String {
     )
 }
 
+fn kanban_board_planner_instruction(planner: PersonalityInstanceId) -> String {
+    format!(
+        "You are the Planner for the triggering active Goal in N1. Decide whether the Goal is small enough for one execution request or should first be decomposed. This Kanban frontend Goal requires UI shell, stateful interactions, persistence, and executable verification; prefer decomposing it into independently verifiable child Goals before emitting execution requests. Do not create child Goals unless you decide decomposition is warranted. If N1 is the top-level Kanban Board frontend demo Goal, call proxima_goal_goal_decompose with parent_goal \"N1\", activate_children true, target_personality \"{}\", idempotency_key \"demo-kanban-board-decompose\", and these suggested children: {}. Then stop. If N1 is already one of those child Goals, call proxima_code_code_emit_execution_request for that child with repo_handle \"{}\", goal_activated_memory \"N1\", evidence [], a child-specific title/instructions/idempotency_key, and these required acceptance_criteria: {}. Each child request must still produce a complete package-free index.html and test_kanban.mjs because workspace runs are evaluated independently. The planner may ask for browser-style or DOM tests, but verification is executed through shell and repo-native commands, not a special browser tool. Then stop.",
+        planner.into_inner(),
+        json!([
+            {
+                "payload": {
+                    "schema_id": "proxima-goal/simple-text-v1",
+                    "body": {
+                        "title": "Kanban board shell and seeded task rendering",
+                        "text": "Create a package-free index.html Kanban shell that renders seeded tasks into responsive backlog, active, blocked, and done columns with the required data-testid selector contract."
+                    }
+                },
+                "evidence": []
+            },
+            {
+                "payload": {
+                    "schema_id": "proxima-goal/simple-text-v1",
+                    "body": {
+                        "title": "Kanban filtering counters and accessible movement",
+                        "text": "Implement search, status filtering, task and done counters, and accessible move-next and move-prev controls for tasks."
+                    }
+                },
+                "evidence": []
+            },
+            {
+                "payload": {
+                    "schema_id": "proxima-goal/simple-text-v1",
+                    "body": {
+                        "title": "Kanban persistence reset and executable tests",
+                        "text": "Persist board state with localStorage key proxima-kanban-demo-v1, add reset behavior, and write package-free Node tests that verify the frontend contract."
+                    }
+                },
+                "evidence": []
+            }
+        ]),
+        KANBAN_REPO_HANDLE,
+        json!([
+            {
+                "key": "static_entrypoint",
+                "description": "index.html exists and runs without package installation",
+                "required": true,
+                "verifier_kind": "file_exists",
+                "verifier_spec_json": { "path": "index.html" }
+            },
+            {
+                "key": "frontend_tests",
+                "description": "Package-free frontend contract tests pass",
+                "required": true,
+                "verifier_kind": "command",
+                "verifier_spec_json": { "command": ["node", "test_kanban.mjs"] }
+            },
+            {
+                "key": "ui_contract",
+                "description": "Kanban app exposes required selectors and persistence key",
+                "required": true,
+                "verifier_kind": "command",
+                "verifier_spec_json": {
+                    "command": ["sh", "-c", "grep -E 'data-testid=\"(app-title|search-input|status-filter|task-card|move-next|move-prev|task-count|done-count|reset-board)\"|proxima-kanban-demo-v1|localStorage' index.html"]
+                }
+            }
+        ])
+    )
+}
+
 fn signal_match_verifier_instruction() -> String {
-    "Inspect the prepared workspace. Run workspace_shell with command `test -f index.html && grep -E \"Signal Match|data-pad|keydown|restart|level|score|game-over\" index.html`. If it exits 0, first call proxima_code_code_emit_verification_evidence twice: {\"workspace_run_memory\":\"N1\",\"criterion_key\":\"static_entrypoint\",\"status\":\"passed\",\"summary\":\"index.html exists\",\"artifact_refs_json\":{\"path\":\"index.html\"},\"idempotency_key\":\"demo-signal-match-evidence-static\"} and {\"workspace_run_memory\":\"N1\",\"criterion_key\":\"gameplay_controls\",\"status\":\"passed\",\"summary\":\"index.html contains Signal Match controls and states\",\"artifact_refs_json\":{\"path\":\"index.html\"},\"idempotency_key\":\"demo-signal-match-evidence-gameplay\"}. Then call proxima_code_code_emit_workspace_review with {\"workspace_run_memory\":\"N1\",\"verdict\":\"approved\",\"summary\":\"Signal Match requirements satisfied\",\"findings\":[],\"verification_summary\":\"index.html exists and contains direct-run Signal Match gameplay controls\",\"idempotency_key\":\"demo-signal-match-review-approved\"}. If the shell check fails, call proxima_code_code_emit_verification_evidence for both keys with status \"failed\", then call the review tool with verdict rejected, summary \"Signal Match requirements missing\", one finding for index.html, correction_instructions \"Create a complete direct-run Signal Match index.html. Failed criteria: static_entrypoint, gameplay_controls\", and idempotency_key \"demo-signal-match-review-rejected\". Then stop.".into()
+    "Inspect the prepared workspace and its diff before judging. Do not edit files. The workspace context contains diff_inspection_commands; if the embedded diff is insufficient, run workspace_shell with those git status/diff commands. Then run workspace_shell with command `test -f index.html && grep -E \"Signal Match|data-pad|keydown|restart|level|score|game-over\" index.html`. If it exits 0, first call proxima_code_code_emit_verification_evidence twice: {\"workspace_run_memory\":\"N1\",\"criterion_key\":\"static_entrypoint\",\"status\":\"passed\",\"summary\":\"index.html exists\",\"artifact_refs_json\":{\"path\":\"index.html\"},\"idempotency_key\":\"demo-signal-match-evidence-static\"} and {\"workspace_run_memory\":\"N1\",\"criterion_key\":\"gameplay_controls\",\"status\":\"passed\",\"summary\":\"index.html contains Signal Match controls and states\",\"artifact_refs_json\":{\"path\":\"index.html\"},\"idempotency_key\":\"demo-signal-match-evidence-gameplay\"}. Then call proxima_code_code_emit_workspace_review with {\"workspace_run_memory\":\"N1\",\"verdict\":\"approved\",\"summary\":\"Signal Match requirements satisfied\",\"findings\":[],\"verification_summary\":\"index.html exists and contains direct-run Signal Match gameplay controls\",\"idempotency_key\":\"demo-signal-match-review-approved\"}. If the shell check fails, call proxima_code_code_emit_verification_evidence for both keys with status \"failed\", then call the review tool with verdict rejected, summary \"Signal Match requirements missing\", one finding for index.html, correction_instructions \"Create a complete direct-run Signal Match index.html. Failed criteria: static_entrypoint, gameplay_controls\", and idempotency_key \"demo-signal-match-review-rejected\". Then stop.".into()
 }
 
 fn todo_cli_verifier_instruction() -> String {
-    "Inspect the prepared workspace. Run workspace_shell with command `test -f todo_audit.mjs && test -f test_todo_audit.mjs && test -f examples/tasks.md && node test_todo_audit.mjs && node todo_audit.mjs examples/tasks.md --today 2026-05-18 --json | grep -E '\"total\"|\"open\"|\"byOwner\"|\"nextDue\"'`. If it exits 0, first call proxima_code_code_emit_verification_evidence exactly three times with these JSON objects: {\"workspace_run_memory\":\"N1\",\"criterion_key\":\"cli_entrypoint\",\"status\":\"passed\",\"summary\":\"todo_audit.mjs exists and runs with Node\",\"artifact_refs_json\":{\"paths\":[\"todo_audit.mjs\"]},\"idempotency_key\":\"demo-todo-audit-evidence-entrypoint\"}, {\"workspace_run_memory\":\"N1\",\"criterion_key\":\"parser_tests\",\"status\":\"passed\",\"summary\":\"node test_todo_audit.mjs passed\",\"artifact_refs_json\":{\"paths\":[\"test_todo_audit.mjs\",\"todo_audit.mjs\"]},\"idempotency_key\":\"demo-todo-audit-evidence-tests\"}, and {\"workspace_run_memory\":\"N1\",\"criterion_key\":\"json_summary\",\"status\":\"passed\",\"summary\":\"CLI emitted expected JSON summary fields\",\"artifact_refs_json\":{\"paths\":[\"examples/tasks.md\",\"todo_audit.mjs\"]},\"idempotency_key\":\"demo-todo-audit-evidence-json\"}. Then call proxima_code_code_emit_workspace_review with {\"workspace_run_memory\":\"N1\",\"verdict\":\"approved\",\"summary\":\"Todo Audit CLI requirements satisfied\",\"findings\":[],\"verification_summary\":\"entrypoint, tests, and JSON summary passed\",\"idempotency_key\":\"demo-todo-audit-review-approved\"}. If the shell check fails, first call proxima_code_code_emit_verification_evidence exactly three times with status \"failed\" for cli_entrypoint, parser_tests, and json_summary, using artifact_refs_json objects like {\"paths\":[\"todo_audit.mjs\"]}. Then call the review tool with verdict rejected, summary \"Todo Audit CLI requirements missing\", one finding for todo_audit.mjs, correction_instructions \"Create a complete package-free Node Todo Audit CLI with parser tests and deterministic JSON output. Failed criteria: cli_entrypoint, parser_tests, json_summary\", and idempotency_key \"demo-todo-audit-review-rejected\". Then stop.".into()
+    "Inspect the prepared workspace and its diff before judging. Do not edit files. The workspace context contains diff_inspection_commands; if the embedded diff is insufficient, run workspace_shell with those git status/diff commands. Then run workspace_shell with command `test -f todo_audit.mjs && test -f test_todo_audit.mjs && test -f examples/tasks.md && node test_todo_audit.mjs && node todo_audit.mjs examples/tasks.md --today 2026-05-18 --json | grep -E '\"total\"|\"open\"|\"byOwner\"|\"nextDue\"'`. If it exits 0, first call proxima_code_code_emit_verification_evidence exactly three times with these JSON objects: {\"workspace_run_memory\":\"N1\",\"criterion_key\":\"cli_entrypoint\",\"status\":\"passed\",\"summary\":\"todo_audit.mjs exists and runs with Node\",\"artifact_refs_json\":{\"paths\":[\"todo_audit.mjs\"]},\"idempotency_key\":\"demo-todo-audit-evidence-entrypoint\"}, {\"workspace_run_memory\":\"N1\",\"criterion_key\":\"parser_tests\",\"status\":\"passed\",\"summary\":\"node test_todo_audit.mjs passed\",\"artifact_refs_json\":{\"paths\":[\"test_todo_audit.mjs\",\"todo_audit.mjs\"]},\"idempotency_key\":\"demo-todo-audit-evidence-tests\"}, and {\"workspace_run_memory\":\"N1\",\"criterion_key\":\"json_summary\",\"status\":\"passed\",\"summary\":\"CLI emitted expected JSON summary fields\",\"artifact_refs_json\":{\"paths\":[\"examples/tasks.md\",\"todo_audit.mjs\"]},\"idempotency_key\":\"demo-todo-audit-evidence-json\"}. Then call proxima_code_code_emit_workspace_review with {\"workspace_run_memory\":\"N1\",\"verdict\":\"approved\",\"summary\":\"Todo Audit CLI requirements satisfied\",\"findings\":[],\"verification_summary\":\"entrypoint, tests, and JSON summary passed\",\"idempotency_key\":\"demo-todo-audit-review-approved\"}. If the shell check fails, first call proxima_code_code_emit_verification_evidence exactly three times with status \"failed\" for cli_entrypoint, parser_tests, and json_summary, using artifact_refs_json objects like {\"paths\":[\"todo_audit.mjs\"]}. Then call the review tool with verdict rejected, summary \"Todo Audit CLI requirements missing\", one finding for todo_audit.mjs, correction_instructions \"Create a complete package-free Node Todo Audit CLI with parser tests and deterministic JSON output. Failed criteria: cli_entrypoint, parser_tests, json_summary\", and idempotency_key \"demo-todo-audit-review-rejected\". Then stop.".into()
+}
+
+fn kanban_board_verifier_instruction() -> String {
+    "Inspect the prepared workspace and its diff before judging. Do not edit files. The workspace context contains diff_inspection_commands; if the embedded diff is insufficient, run workspace_shell with those git status/diff commands. Then run workspace_shell with command `test -f index.html && test -f test_kanban.mjs && node test_kanban.mjs && grep -E 'data-testid=\"(app-title|search-input|status-filter|task-card|move-next|move-prev|task-count|done-count|reset-board)\"|proxima-kanban-demo-v1|localStorage' index.html`. If it exits 0, first call proxima_code_code_emit_verification_evidence exactly three times with these JSON objects: {\"workspace_run_memory\":\"N1\",\"criterion_key\":\"static_entrypoint\",\"status\":\"passed\",\"summary\":\"index.html exists and runs directly\",\"artifact_refs_json\":{\"paths\":[\"index.html\"]},\"idempotency_key\":\"demo-kanban-evidence-entrypoint\"}, {\"workspace_run_memory\":\"N1\",\"criterion_key\":\"frontend_tests\",\"status\":\"passed\",\"summary\":\"node test_kanban.mjs passed\",\"artifact_refs_json\":{\"paths\":[\"test_kanban.mjs\",\"index.html\"]},\"idempotency_key\":\"demo-kanban-evidence-tests\"}, and {\"workspace_run_memory\":\"N1\",\"criterion_key\":\"ui_contract\",\"status\":\"passed\",\"summary\":\"Kanban selector and localStorage contract present\",\"artifact_refs_json\":{\"paths\":[\"index.html\",\"docs/acceptance.md\"]},\"idempotency_key\":\"demo-kanban-evidence-ui-contract\"}. Then call proxima_code_code_emit_workspace_review with {\"workspace_run_memory\":\"N1\",\"verdict\":\"approved\",\"summary\":\"Kanban frontend requirements satisfied\",\"findings\":[],\"verification_summary\":\"entrypoint, package-free tests, selector contract, and persistence contract passed through shell\",\"idempotency_key\":\"demo-kanban-review-approved\"}. If the shell check fails, first call proxima_code_code_emit_verification_evidence exactly three times with status \"failed\" for static_entrypoint, frontend_tests, and ui_contract, using artifact_refs_json objects like {\"paths\":[\"index.html\",\"test_kanban.mjs\"]}. Then call the review tool with verdict rejected, summary \"Kanban frontend requirements missing\", one finding for index.html, correction_instructions \"Create a complete package-free static Kanban index.html with test_kanban.mjs. Failed criteria: static_entrypoint, frontend_tests, ui_contract\", and idempotency_key \"demo-kanban-review-rejected\". Then stop.".into()
 }
 
 fn goal_reviewer_instruction() -> String {
@@ -2154,6 +2284,7 @@ fn deterministic_checks(
     changed_files: &[String],
 ) -> BTreeMap<String, bool> {
     let mut checks = BTreeMap::new();
+    let required_child_goal_count = challenge.required_child_goal_count();
     checks.insert(
         "required_files_exist".into(),
         challenge
@@ -2173,24 +2304,24 @@ fn deterministic_checks(
     checks.insert("goal_achieved_fact_exists".into(), achieved);
     checks.insert(
         "planner_decomposed_parent_goal".into(),
-        goal_graph.child_goal_count >= 2,
+        goal_graph.child_goal_count >= required_child_goal_count,
     );
     checks.insert(
         "all_child_goals_achieved_before_parent_completion".into(),
-        goal_graph.child_goal_count >= 2
+        goal_graph.child_goal_count >= required_child_goal_count
             && goal_graph.achieved_child_goal_count == goal_graph.child_goal_count,
     );
     checks.insert(
         "child_execution_requests_observed".into(),
-        goal_graph.child_execution_request_count >= 2,
+        goal_graph.child_execution_request_count >= required_child_goal_count,
     );
     checks.insert(
         "child_workspace_runs_observed".into(),
-        goal_graph.child_workspace_run_count >= 2,
+        goal_graph.child_workspace_run_count >= required_child_goal_count,
     );
     checks.insert(
         "child_workspace_reviews_observed".into(),
-        goal_graph.child_workspace_review_count >= 2,
+        goal_graph.child_workspace_review_count >= required_child_goal_count,
     );
     checks.insert(
         "deterministic_verifier_evidence_observed".into(),
