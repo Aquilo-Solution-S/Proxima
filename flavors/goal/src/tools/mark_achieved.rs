@@ -13,8 +13,17 @@ use super::util::{
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct MarkAchievedArgs {
+    #[schemars(
+        description = "`G...` Goal handle for the current Active Goal head to mark Achieved."
+    )]
     pub goal: String,
+    #[schemars(
+        description = "Required Fact or Abstraction memory evidence handles (`N...`) supporting achievement."
+    )]
     pub evidence: Vec<String>,
+    #[schemars(
+        description = "Optional stable idempotency key. Omit or null to derive a fresh request id."
+    )]
     pub idempotency_key: Option<String>,
 }
 

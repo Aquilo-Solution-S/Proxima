@@ -10,8 +10,15 @@ use super::util::{map_storage, memory_kind_for_edge, owner_principal};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SearchGraphArgs {
+    #[schemars(
+        description = "Lexical, semantic, or hybrid query over visible agent-authored graph memories. 1 to 512 chars."
+    )]
     pub query: String,
+    #[schemars(
+        description = "Optional maximum number of graph matches. Omit or null for 12; values above 50 are clamped."
+    )]
     pub limit: Option<u32>,
+    #[schemars(description = "Optional search mode. Omit or null for lexical search.")]
     pub mode: Option<SearchGraphMode>,
 }
 
@@ -436,6 +443,7 @@ struct EdgeRow {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct OpenArgs {
+    #[schemars(description = "`N...` memory handle to open and inspect with neighbor edges.")]
     pub handle: String,
 }
 

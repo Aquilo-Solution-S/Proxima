@@ -15,6 +15,9 @@ pub struct CodeMergeWorkspaceRunTool;
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CodeMergeWorkspaceRunArgs {
     /// Handle (W…) for the proxima-code/workspace-run-v1 Fact to merge.
+    #[schemars(
+        description = "`N...` memory handle for the proxima-code/workspace-run-v1 Fact to merge after approval. Model wakes should not call this."
+    )]
     pub workspace_run_memory: String,
 }
 

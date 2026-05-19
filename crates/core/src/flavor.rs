@@ -308,7 +308,8 @@ impl FlavorRegistry {
             prefix,
         );
         let schema = schemars::schema_for!(T::Args);
-        let args_schema = serde_json::to_value(schema).expect("JsonSchema must serialize");
+        let mut args_schema = serde_json::to_value(schema).expect("JsonSchema must serialize");
+        describe_generated_schema_fields(&mut args_schema);
         let call: McpCallFn = |ctx, args| {
             Box::pin(async move {
                 let typed: T::Args = serde_json::from_value(args)
@@ -337,7 +338,8 @@ impl FlavorRegistry {
             T::NAME,
         );
         let schema = schemars::schema_for!(T::Args);
-        let args_schema = serde_json::to_value(schema).expect("JsonSchema must serialize");
+        let mut args_schema = serde_json::to_value(schema).expect("JsonSchema must serialize");
+        describe_generated_schema_fields(&mut args_schema);
         let call: McpCallFn = |ctx, args| {
             Box::pin(async move {
                 let typed: T::Args = serde_json::from_value(args)
@@ -434,6 +436,70 @@ impl FlavorRegistry {
                 "duplicate FlavorDescriptor flavor_id registered: {}",
                 flavor.flavor_id,
             );
+        }
+    }
+}
+
+fn describe_generated_schema_fields(schema: &mut serde_json::Value) {
+    let serde_json::Value::Object(object) = schema else {
+        return;
+    };
+
+    if let Some(properties) = object
+        .get_mut("properties")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        for (property_name, property_schema) in properties {
+            if property_schema
+                .get("description")
+                .and_then(serde_json::Value::as_str)
+                .is_none_or(|description| description.trim().is_empty())
+            {
+                let description = match property_name.as_str() {
+                    "schema_id" => Some(
+                        "Schema discriminator id selecting the typed payload variant for this object.",
+                    ),
+                    "body" => Some("Typed payload body for the selected schema_id variant."),
+                    _ => None,
+                };
+                if let (Some(description), Some(object)) =
+                    (description, property_schema.as_object_mut())
+                {
+                    object.insert(
+                        "description".to_string(),
+                        serde_json::Value::String(description.to_string()),
+                    );
+                }
+            }
+            describe_generated_schema_fields(property_schema);
+        }
+    }
+
+    for container_key in ["$defs", "definitions"] {
+        if let Some(defs) = object
+            .get_mut(container_key)
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            for value in defs.values_mut() {
+                describe_generated_schema_fields(value);
+            }
+        }
+    }
+
+    for object_key in ["items", "additionalProperties"] {
+        if let Some(value) = object.get_mut(object_key) {
+            describe_generated_schema_fields(value);
+        }
+    }
+
+    for array_key in ["allOf", "anyOf", "oneOf", "prefixItems"] {
+        if let Some(values) = object
+            .get_mut(array_key)
+            .and_then(serde_json::Value::as_array_mut)
+        {
+            for value in values {
+                describe_generated_schema_fields(value);
+            }
         }
     }
 }

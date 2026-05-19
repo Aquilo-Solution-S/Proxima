@@ -18,6 +18,9 @@ pub struct ListActiveGoalsTool;
 #[allow(dead_code)]
 pub struct ListActiveGoalsArgs {
     #[serde(default = "default_scope")]
+    #[schemars(
+        description = "Goal listing scope. Use the default `linked_to_self`; other values are currently ignored."
+    )]
     pub scope: String,
 }
 

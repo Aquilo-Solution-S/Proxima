@@ -11,12 +11,28 @@ use super::sql::{
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CodeOpenFileRevisionArgs {
+    #[schemars(description = "Repo handle from code search output, typically `R...`.")]
     pub repo_handle: String,
+    #[schemars(
+        description = "Repo-relative file path to open at the current indexed head revision."
+    )]
     pub file_path: String,
     #[serde(default)]
+    #[schemars(
+        description = "Whether to include chunk text in the response. Defaults to false, but line/text limits imply true."
+    )]
     pub include_text: bool,
+    #[schemars(
+        description = "Optional 1-based starting line for a text window. Omit or null to return chunk snippets only."
+    )]
     pub line_start: Option<i64>,
+    #[schemars(
+        description = "Optional maximum number of lines from `line_start`. Omit or null when no line window is needed."
+    )]
     pub line_limit: Option<i64>,
+    #[schemars(
+        description = "Optional cap on returned text bytes per chunk. Omit or null to use the default projection."
+    )]
     pub max_text_bytes: Option<usize>,
 }
 

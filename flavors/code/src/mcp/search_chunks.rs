@@ -7,12 +7,28 @@ use super::sql::{CHUNK_HEADS_CTE, map_storage, owner_principal, resolve_repo_ide
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CodeSearchChunksArgs {
+    #[schemars(
+        description = "Lexical query string for code chunk search. Matches file paths and chunk text; 1 to 512 chars."
+    )]
     pub query: String,
+    #[schemars(
+        description = "Optional maximum number of chunk matches. Omit or null for 12; values above 50 are clamped."
+    )]
     pub limit: Option<u32>,
+    #[schemars(
+        description = "Optional repo handle filter, typically `R...`. Omit or null to search all visible repos."
+    )]
     pub repo_handle: Option<String>,
+    #[schemars(
+        description = "Optional language filter, for example `rust` or `typescript`. Omit or null for all languages."
+    )]
     pub language: Option<String>,
+    #[schemars(description = "Optional chunk type filter. Omit or null for all chunk types.")]
     pub chunk_type: Option<String>,
     #[serde(default = "default_include_calls")]
+    #[schemars(
+        description = "Whether to include neighboring proxima-code/calls edges. Defaults to true."
+    )]
     pub include_calls: bool,
 }
 

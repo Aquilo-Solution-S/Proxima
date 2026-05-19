@@ -12,10 +12,20 @@ use super::util::{
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ProposeArgs {
+    #[schemars(description = "Typed Goal payload for the proposed Goal.")]
     pub payload: GoalPayloadInput,
     #[serde(default)]
+    #[schemars(
+        description = "Optional Fact or Abstraction memory evidence handles (`N...`). Use `[]` when no separate evidence is needed; never use `G...` here."
+    )]
     pub evidence: Vec<String>,
+    #[schemars(
+        description = "Optional `P...` Personality handle to assign the proposed Goal to. Omit or null to use the caller Self when available."
+    )]
     pub target_personality: Option<String>,
+    #[schemars(
+        description = "Optional stable idempotency key. Omit or null to derive a fresh request id."
+    )]
     pub idempotency_key: Option<String>,
 }
 

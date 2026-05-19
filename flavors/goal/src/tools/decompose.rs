@@ -16,17 +16,36 @@ const MAX_CHILD_GOALS: usize = 50;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct DecomposeArgs {
+    #[schemars(
+        description = "`G...` Goal handle for the current Active parent Goal. A visible `N...` goal_activated Fact memory is also accepted for compatibility."
+    )]
     pub parent_goal: String,
+    #[schemars(
+        description = "Child Goals to create under `parent_goal`. Must contain at least one child and at most 50."
+    )]
     pub children: Vec<ChildGoalInput>,
+    #[schemars(
+        description = "Optional `P...` Personality handle to assign active children to. Omit or null to use the caller Self when `activate_children` is true."
+    )]
     pub target_personality: Option<String>,
+    #[schemars(
+        description = "Whether children should be created Active and assigned, instead of Proposed."
+    )]
     pub activate_children: bool,
+    #[schemars(
+        description = "Stable idempotency key for this decomposition. Reuse only for exact replay."
+    )]
     pub idempotency_key: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ChildGoalInput {
+    #[schemars(description = "Typed Goal payload for the child Goal.")]
     pub payload: GoalPayloadInput,
     #[serde(default)]
+    #[schemars(
+        description = "Optional memory evidence handles (`N...`) motivating this child Goal. Use `[]` unless explicit Fact or Abstraction evidence is required."
+    )]
     pub evidence: Vec<String>,
 }
 

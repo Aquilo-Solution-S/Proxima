@@ -11,10 +11,17 @@ const ENTRY_CAP: usize = 500;
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ListFilesArgs {
     #[serde(default = "default_path")]
+    #[schemars(
+        description = "Relative directory path inside the prepared workspace. Defaults to `.`; absolute paths and `..` are rejected."
+    )]
     pub path: String,
     #[serde(default)]
+    #[schemars(description = "Whether to include dotfiles and `.git` entries. Defaults to false.")]
     pub include_hidden: bool,
     #[serde(default = "default_recursive")]
+    #[schemars(
+        description = "Whether to recurse into subdirectories. Defaults to false; output is capped at 500 entries."
+    )]
     pub recursive: bool,
 }
 

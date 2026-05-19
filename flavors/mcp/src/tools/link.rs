@@ -14,10 +14,14 @@ const LINK_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct LinkArgs {
+    #[schemars(description = "`N...` source memory handle for the agent-authored link edge.")]
     pub source: String,
+    #[schemars(description = "`N...` target memory handle for the agent-authored link edge.")]
     pub target: String,
+    #[schemars(description = "Reason for linking source to target, 1 to 1000 chars.")]
     pub reason: String,
     #[serde(default = "default_confidence")]
+    #[schemars(description = "Confidence score from 0 to 100. Defaults to 80.")]
     pub confidence: u8,
 }
 

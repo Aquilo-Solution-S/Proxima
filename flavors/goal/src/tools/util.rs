@@ -43,15 +43,23 @@ pub enum GoalPayloadInput {
 
 #[derive(Debug, Clone, serde::Deserialize, schemars::JsonSchema)]
 pub struct SimpleTextGoalBody {
+    #[schemars(description = "Goal title, 1 to 240 chars.")]
     pub title: String,
+    #[schemars(description = "Goal text/body, 1 to 20000 chars.")]
     pub text: String,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, schemars::JsonSchema)]
 pub struct TaskGoalBody {
+    #[schemars(description = "Task Goal title, 1 to 240 chars.")]
     pub title: String,
+    #[schemars(description = "Task Goal text/body, 1 to 20000 chars.")]
     pub text: String,
+    #[schemars(
+        description = "Optional RFC3339 due timestamp. Omit or null when the task has no due date."
+    )]
     pub due_at: Option<String>,
+    #[schemars(description = "Optional task priority. Omit or null when priority is unspecified.")]
     pub priority: Option<TaskPriorityInput>,
 }
 

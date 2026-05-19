@@ -20,14 +20,29 @@ const DERIVED_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct DeriveArgs {
+    #[schemars(description = "Derived memory kind to author: Abstraction or Perspective.")]
     pub kind: DerivedKind,
+    #[schemars(description = "Short title for the derived memory, 1 to 160 chars.")]
     pub title: String,
+    #[schemars(description = "Body text for the derived memory, 1 to 20000 chars.")]
     pub body: String,
     #[serde(default)]
+    #[schemars(
+        description = "Optional normalized tags for later search. Use `[]` when no tags are needed."
+    )]
     pub tags: Vec<String>,
     #[serde(default)]
+    #[schemars(
+        description = "Optional source memory handles (`N...`) this derivation is based on. Use `[]` only when there is no concrete memory provenance."
+    )]
     pub source_handles: Vec<String>,
+    #[schemars(
+        description = "Model identifier or external agent label used as operator provenance, 1 to 120 chars."
+    )]
     pub model_id: String,
+    #[schemars(
+        description = "Optional stable idempotency key. Omit or null to derive one from model_id and body."
+    )]
     pub idempotency_key: Option<String>,
 }
 

@@ -11,15 +11,26 @@ use serde::{Deserialize, Serialize};
 /// typed structured fields.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct CommitSummaryV1 {
+    #[schemars(
+        description = "Repo UUID for the summarized commit; provider-facing typed emit wrappers may replace *_id fields with handles."
+    )]
     pub repo_id: uuid::Uuid,
+    #[schemars(description = "Git commit SHA being summarized.")]
     pub commit_sha: String,
     /// 1–3 sentence summary of what this commit accomplished.
+    #[schemars(description = "One to three sentence summary of what this commit accomplished.")]
     pub summary: String,
     /// Key files the operator highlighted as central to the change.
+    #[schemars(
+        description = "Key repo-relative files the operator highlighted as central to the change. Use `[]` when no key files stand out."
+    )]
     pub key_files: Vec<String>,
     /// Operator-classified change type, free-form lowercase string.
     /// Common values: `"feature"`, `"fix"`, `"refactor"`, `"docs"`,
     /// `"test"`, `"chore"`. v1 does not constrain the vocabulary.
+    #[schemars(
+        description = "Operator-classified lowercase change type, for example `feature`, `fix`, `refactor`, `docs`, `test`, or `chore`."
+    )]
     pub change_kind: String,
 }
 

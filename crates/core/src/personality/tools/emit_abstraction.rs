@@ -23,10 +23,22 @@ pub struct EmitAbstractionTool;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct EmitAbstractionArgs {
+    #[schemars(
+        description = "Registered Abstraction schema id to emit. Raw internal tool field; provider-facing wakes usually use typed emit wrappers instead."
+    )]
     pub schema_id: String,
+    #[schemars(
+        description = "Registered Abstraction schema version to emit. Raw internal tool field; provider-facing wakes usually use typed emit wrappers instead."
+    )]
     pub schema_version: u32,
+    #[schemars(
+        description = "Typed Abstraction payload object for the selected schema. Provenance is auto-wired from the wake trigger and reads."
+    )]
     pub payload: serde_json::Value,
     #[serde(default)]
+    #[schemars(
+        description = "Optional authored memory text. Omit or null to derive text from the typed payload."
+    )]
     pub text: Option<String>,
 }
 

@@ -7,9 +7,21 @@ use super::sql::{map_storage, owner_principal, resolve_repo_identifier};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CodeSearchCommitsArgs {
+    #[schemars(
+        description = "Lexical query string for Git commit and commit-summary search. Matches SHA, message, and summary text; 1 to 512 chars."
+    )]
     pub query: String,
+    #[schemars(
+        description = "Optional maximum number of commit and summary matches. Omit or null for 10; values above 50 are clamped."
+    )]
     pub limit: Option<u32>,
+    #[schemars(
+        description = "Optional repo handle filter, typically `R...`. Omit or null to search all visible repos."
+    )]
     pub repo_handle: Option<String>,
+    #[schemars(
+        description = "Optional commit-summary change_kind filter such as `feature`, `fix`, or `docs`. Omit or null for all kinds."
+    )]
     pub change_kind: Option<String>,
 }
 

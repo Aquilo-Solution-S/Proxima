@@ -1,13 +1,16 @@
 use std::path::PathBuf;
 
 use proxima_core::FlavorRegistry;
+use proxima_core::harness::build_wake_tool_projection;
 use proxima_core::harness::{
     HarnessProgram, HarnessToolDispatch, HarnessToolProjection, ProviderTarget,
     SubstrateToolBinding,
 };
+use proxima_core::personality::substrate_pack;
 use proxima_harness::tools::strict_inventory::{
     assert_all_tools_strict_compatible, assert_inventory_checkpoint_is_current,
-    registry_tool_inventory, sorted_rows, workspace_tool_inventory,
+    assert_tool_schemas_have_property_descriptions, registry_tool_inventory, sorted_rows,
+    workspace_tool_inventory,
 };
 use proxima_harness::tools::strict_schema::StrictToolSchema;
 use serde_json::json;
@@ -30,6 +33,33 @@ fn inventory_checkpoint_is_current() {
 fn all_tools_are_strict_schema_compatible() {
     let rows = collect_inventory();
     assert_all_tools_strict_compatible(&rows);
+}
+
+#[test]
+fn wake_visible_core_and_workspace_tools_describe_object_properties() {
+    let registry = FlavorRegistry::new().freeze();
+    let palette = substrate_pack()
+        .iter()
+        .map(|tool| tool.tool_id().to_string())
+        .filter(|tool_id| tool_id != "core/emit_abstraction" && tool_id != "core/emit_perspective")
+        .collect::<Vec<_>>();
+    let mut schemas = build_wake_tool_projection(&registry, &palette)
+        .expect("core substrate projection")
+        .into_iter()
+        .map(|tool| (tool.canonical_name, tool.input_schema))
+        .collect::<Vec<_>>();
+
+    schemas.extend(
+        [
+            proxima_harness::tools::workspace::WorkspaceToolName::Shell,
+            proxima_harness::tools::workspace::WorkspaceToolName::TextEditor,
+            proxima_harness::tools::workspace::WorkspaceToolName::ListFiles,
+        ]
+        .into_iter()
+        .map(|tool| (tool.canonical().to_string(), tool.input_schema())),
+    );
+
+    assert_tool_schemas_have_property_descriptions(schemas);
 }
 
 #[test]

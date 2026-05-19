@@ -14,10 +14,23 @@ use super::util::{
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct AcceptArgs {
+    #[schemars(description = "`G...` Goal handle for the Proposed Goal to accept.")]
     pub proposal: String,
+    #[schemars(
+        description = "Optional replacement typed Goal payload. Omit or null to keep the proposal payload."
+    )]
     pub payload: Option<GoalPayloadInput>,
+    #[schemars(
+        description = "Optional replacement evidence memory handles (`N...`). Omit or null to copy proposal evidence; use `[]` to clear evidence."
+    )]
     pub evidence: Option<Vec<String>>,
+    #[schemars(
+        description = "Optional `P...` Personality handle to assign the accepted Active Goal to. Omit or null for no new assignment."
+    )]
     pub target_personality: Option<String>,
+    #[schemars(
+        description = "Optional stable idempotency key. Omit or null to derive a fresh request id."
+    )]
     pub idempotency_key: Option<String>,
 }
 

@@ -17,12 +17,20 @@ pub struct WalkLineageTool;
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct WalkLineageArgs {
     /// Handle of the memory to start walking from (e.g., `N1`).
+    #[schemars(description = "`N...` memory handle to start lineage walking from.")]
     pub memory: String,
     #[serde(default = "default_direction")]
+    #[schemars(
+        description = "Lineage direction: ancestors or descendants. Defaults to ancestors."
+    )]
     pub direction: WalkLineageDirectionArg,
     #[serde(default = "default_depth")]
+    #[schemars(description = "Maximum lineage depth. Defaults to 3; values are clamped to 1..=8.")]
     pub depth: u8,
     #[serde(default = "default_limit")]
+    #[schemars(
+        description = "Maximum number of lineage nodes to return. Defaults to 50; values are clamped to 1..=200."
+    )]
     pub limit: u32,
 }
 

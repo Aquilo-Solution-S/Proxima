@@ -527,8 +527,14 @@ mod tests {
 
     #[test]
     fn conversation_file_component_is_stable_for_roles() {
-        assert_eq!(conversation_file_component("Goal Reviewer"), "goal-reviewer");
-        assert_eq!(conversation_file_component("Wake/Supervisor"), "wake-supervisor");
+        assert_eq!(
+            conversation_file_component("Goal Reviewer"),
+            "goal-reviewer"
+        );
+        assert_eq!(
+            conversation_file_component("Wake/Supervisor"),
+            "wake-supervisor"
+        );
         assert_eq!(conversation_file_component("  "), "unknown");
     }
 }
