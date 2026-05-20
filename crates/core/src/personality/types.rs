@@ -186,6 +186,59 @@ impl WakeEntryExecutionMode {
     serde::Serialize,
     serde::Deserialize,
     specta::Type,
+    schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum WakeWorkspaceFinalize {
+    CommitAll,
+    LeaveDirty,
+}
+
+impl WakeWorkspaceFinalize {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::CommitAll => "commit_all",
+            Self::LeaveDirty => "leave_dirty",
+        }
+    }
+}
+
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    specta::Type,
+    schemars::JsonSchema,
+)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum WakeWorkspaceBinding {
+    GitWorktree {
+        repo_path: String,
+        #[serde(default = "default_git_worktree_base_ref")]
+        base_ref: String,
+        finalize: WakeWorkspaceFinalize,
+        #[serde(default)]
+        worktrees_root: Option<String>,
+    },
+}
+
+fn default_git_worktree_base_ref() -> String {
+    "HEAD".into()
+}
+
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    specta::Type,
     Default,
     schemars::JsonSchema,
     sqlx::Type,

@@ -9,7 +9,7 @@ use crate::verbs::schema::{FlavorRegistryFrozen, PayloadKind, PayloadValidatorEn
 use crate::{
     AbstractionPayload, CitationMappingPayload, CitedObjectPayload, EdgePayload, FactPayload,
     GoalPayload, McpCallFn, McpTool, McpToolDescriptor, McpToolError, PerspectivePayload,
-    RelationDescriptor, SchemaVersion, core_relation_descriptors,
+    RelationDescriptor, SchemaId, SchemaVersion, core_relation_descriptors,
 };
 
 use std::sync::Arc;
@@ -89,6 +89,31 @@ impl Default for FlavorRegistry {
         registry.add_fact_schema::<crate::inquiry::DirectedQuestionV1>();
         registry.add_fact_schema::<crate::inquiry::DirectedAnswerV1>();
         registry.add_cited_object_schema::<crate::citations::UploadedBlobPayload>();
+        registry.add_fact_schema::<crate::workspace_run::CoreWorkspaceRunV1>();
+        registry.schemas.push(SchemaInfo {
+            schema_id: SchemaId::new(
+                crate::workspace_run::CORE_WORKSPACE_RUN_OBJECT_SCHEMA.to_string(),
+            ),
+            schema_version: SchemaVersion::new(1),
+            kind: PayloadKind::CitedObject,
+            filter_keys: vec![],
+            sidecar_table: None,
+            natural_key_columns: vec![],
+            tombstone: None,
+            cbor_encoder: None,
+        });
+        registry.schemas.push(SchemaInfo {
+            schema_id: SchemaId::new(
+                crate::workspace_run::CORE_WORKSPACE_RUN_WHOLE_SCHEMA.to_string(),
+            ),
+            schema_version: SchemaVersion::new(1),
+            kind: PayloadKind::CitationMapping,
+            filter_keys: vec![],
+            sidecar_table: None,
+            natural_key_columns: vec![],
+            tombstone: None,
+            cbor_encoder: None,
+        });
         registry.add_fact_schema::<crate::wake::trace::WakeTracePayload>();
         registry.add_cited_object_schema::<crate::wake::trace::WakeTraceJsonlPayload>();
         registry.add_citation_mapping_schema::<crate::wake::trace::WakeTraceCitationPayload>();

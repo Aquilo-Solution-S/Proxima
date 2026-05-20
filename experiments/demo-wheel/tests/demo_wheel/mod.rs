@@ -17,11 +17,12 @@ use proxima_core::personality::{
 use proxima_core::storage::Storage;
 use proxima_core::{
     AbstractionPayload, BindInferenceTierRequest, CORE_DERIVED_FROM_RELATION,
-    CORE_INSPIRES_RELATION, Credentials, EdgeAuthorshipKind, Engine, EntityKind, FactPayload,
-    FlavorRegistry, GoalId, InferenceTargetConfig, InterventionDecisionV1, InterventionPolicy,
-    InterventionRequestedV1, MemoryId, MistralChatConfig, ModelTier, OrgId, Owner,
-    PersonalityInstanceId, Principal, RegisterInferenceTargetRequest, UserId, WakeEntryAuthoredBy,
-    WakeEntryGoalScope, WakeEntryTriggerKind, WakeExecutionMode,
+    CORE_INSPIRES_RELATION, CoreWorkspaceRunV1, Credentials, EdgeAuthorshipKind, Engine,
+    EntityKind, FactPayload, FlavorRegistry, GoalId, InferenceTargetConfig, InterventionDecisionV1,
+    InterventionPolicy, InterventionRequestedV1, MemoryId, MistralChatConfig, ModelTier, OrgId,
+    Owner, PersonalityInstanceId, Principal, RegisterInferenceTargetRequest, UserId,
+    WakeEntryAuthoredBy, WakeEntryGoalScope, WakeEntryTriggerKind, WakeExecutionMode,
+    WakeWorkspaceBinding, WakeWorkspaceFinalize,
 };
 use proxima_flavor_intent::VisionBriefV1;
 use proxima_harness::HarnessLoop;
@@ -77,6 +78,7 @@ enum DemoInterventionMode {
 enum DemoPlannerMode {
     Scripted,
     Real,
+    VisionDocument,
 }
 
 impl DemoChallenge {
@@ -262,6 +264,7 @@ struct Metrics {
     correction_loop_count: u32,
     output_sidecar_counts_by_schema: BTreeMap<String, i64>,
     workspace_run_count: i64,
+    core_workspace_run_count: i64,
     request_flow_counts: Vec<RequestFlowCount>,
     review_verdicts: BTreeMap<String, i64>,
     final_goal_state: String,
@@ -516,6 +519,16 @@ pub async fn run_real_planner_signal_match_target_from_env() -> DemoRunResult {
         DemoPlannerMode::Real,
         Some(DemoChallenge::SignalMatch),
         Some(600),
+    )
+    .await
+}
+
+pub async fn run_goal_to_vision_document_from_env() -> DemoRunResult {
+    run_with_modes_from_env(
+        DemoInterventionMode::Normal,
+        DemoPlannerMode::VisionDocument,
+        Some(DemoChallenge::SignalMatch),
+        Some(240),
     )
     .await
 }

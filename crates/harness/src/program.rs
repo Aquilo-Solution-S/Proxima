@@ -26,6 +26,8 @@ pub struct ResolvedProgram {
 pub enum ProgramResolveError {
     #[error("projected tool {projected} requires missing internal tool {internal}")]
     MissingInternalTool { projected: String, internal: String },
+    #[error("unknown workspace tool: {0}")]
+    UnknownWorkspaceTool(String),
 }
 
 pub fn resolve(
@@ -52,11 +54,9 @@ pub fn resolve(
     }
 
     if program.workspace_root.is_some() {
-        for name in [
-            WorkspaceToolName::Shell,
-            WorkspaceToolName::TextEditor,
-            WorkspaceToolName::ListFiles,
-        ] {
+        for palette_id in &program.workspace_tool_palette {
+            let name = workspace_tool_from_palette_id(palette_id)
+                .ok_or_else(|| ProgramResolveError::UnknownWorkspaceTool(palette_id.clone()))?;
             let canonical = name.canonical().to_string();
             let provider_safe = provider_safe_tool_name(&canonical);
             tools.push(ToolSpec {
@@ -80,6 +80,21 @@ pub fn resolve(
         reverse_map,
         bindings,
     })
+}
+
+fn workspace_tool_from_palette_id(palette_id: &str) -> Option<WorkspaceToolName> {
+    match palette_id {
+        "workspace_shell" | "proxima-workspace/shell" | "core-workspace/shell" => {
+            Some(WorkspaceToolName::Shell)
+        }
+        "workspace_text_editor"
+        | "proxima-workspace/text_editor"
+        | "core-workspace/text_editor" => Some(WorkspaceToolName::TextEditor),
+        "workspace_list_files" | "proxima-workspace/list_files" | "core-workspace/list_files" => {
+            Some(WorkspaceToolName::ListFiles)
+        }
+        _ => WorkspaceToolName::from_canonical(palette_id),
+    }
 }
 
 fn push_projected_tool(
@@ -221,6 +236,7 @@ mod tests {
             tool_projection: Vec::new(),
             substrate_tool_palette: Vec::new(),
             workspace_root: None,
+            workspace_tool_palette: Vec::new(),
             max_rounds: 1,
             provider: ProviderTarget::MistralChat {
                 base_url: "http://127.0.0.1:1".into(),

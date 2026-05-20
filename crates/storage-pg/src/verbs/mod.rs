@@ -13,6 +13,7 @@ pub(crate) mod event_history;
 pub mod event_ingest;
 pub(crate) mod goal_write;
 pub mod master_token_personality;
+pub mod persist_core_workspace_run;
 pub mod persist_intervention_request;
 pub mod persist_wake_trace;
 pub(crate) mod query;

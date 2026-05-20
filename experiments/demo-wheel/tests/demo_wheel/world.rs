@@ -58,6 +58,9 @@ impl DemoWorld {
             self.cfg.challenge.repo_handle(),
         )
         .await?;
+        if self.cfg.planner_mode == DemoPlannerMode::VisionDocument {
+            return self.run_vision_document_only(started).await;
+        }
 
         let visionary = self
             .instantiate(
@@ -87,8 +90,11 @@ impl DemoWorld {
             )
             .await?;
         self.set_wake_supervisor_wake(wake_supervisor).await?;
-        let intervention_policy =
-            demo_intervention_policy(wake_supervisor, self.cfg.intervention_mode);
+        let intervention_policy = demo_intervention_policy(
+            wake_supervisor,
+            self.cfg.intervention_mode,
+            self.cfg.planner_mode,
+        );
 
         self.set_single_wake(
             visionary,
@@ -103,7 +109,11 @@ impl DemoWorld {
                 "core/emit_abstraction",
             ],
             Vec::new(),
-            visionary_instruction(self.cfg.challenge, self.cfg.intervention_mode),
+            visionary_instruction(
+                self.cfg.challenge,
+                self.cfg.intervention_mode,
+                self.cfg.planner_mode,
+            ),
             WakeOptions {
                 goal_scope: WakeEntryGoalScope::TriggerGoalAssigned,
                 authored_by: WakeEntryAuthoredBy::Any,
@@ -128,8 +138,12 @@ impl DemoWorld {
             ExecutionRequestV1::SCHEMA_ID,
             WakeExecutionMode::Workspace,
             Vec::new(),
-            vec!["proxima-workspace/shell", "proxima-workspace/list_files"],
-            worker_instruction(self.cfg.challenge),
+            vec![
+                "proxima-workspace/text_editor",
+                "proxima-workspace/shell",
+                "proxima-workspace/list_files",
+            ],
+            worker_instruction(self.cfg.challenge, self.cfg.planner_mode),
             WakeOptions {
                 intervention_policy: Some(intervention_policy.clone()),
                 ..WakeOptions::default_with_rounds(self.cfg.role_max_rounds.worker)
@@ -210,6 +224,97 @@ impl DemoWorld {
                     .failure_report("max correction loops exceeded")
                     .await?
                     .into());
+            }
+            if fired == 0 {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }
+
+        let mut metrics = self.collect_metrics(started, ticks).await?;
+        self.write_outputs(&mut metrics).await?;
+        Err(self
+            .failure_report("max dispatcher ticks exceeded")
+            .await?
+            .into())
+    }
+
+    async fn run_vision_document_only(
+        &mut self,
+        started: Instant,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let visionary = self
+            .instantiate(
+                "Visionary",
+                "Interpret ambiguous goals into a reviewable vision document",
+            )
+            .await?;
+        let wake_supervisor = self
+            .instantiate(
+                "Wake Supervisor",
+                "Decide whether max-round wake truncations need intervention",
+            )
+            .await?;
+        self.set_wake_supervisor_wake(wake_supervisor).await?;
+        let intervention_policy = demo_intervention_policy(
+            wake_supervisor,
+            self.cfg.intervention_mode,
+            self.cfg.planner_mode,
+        );
+        self.set_single_wake(
+            visionary,
+            "Visionary",
+            WakeEntryTriggerKind::OnMemory,
+            "proxima-goal/goal-activated-v1",
+            WakeExecutionMode::Workspace,
+            vec!["core/emit_abstraction"],
+            vec!["core-workspace/text_editor", "core-workspace/list_files"],
+            visionary_instruction(
+                self.cfg.challenge,
+                self.cfg.intervention_mode,
+                self.cfg.planner_mode,
+            ),
+            WakeOptions {
+                goal_scope: WakeEntryGoalScope::TriggerGoalAssigned,
+                authored_by: WakeEntryAuthoredBy::Any,
+                intervention_policy: Some(intervention_policy),
+                workspace_binding: Some(WakeWorkspaceBinding::GitWorktree {
+                    repo_path: self.cfg.repo_path.to_string_lossy().to_string(),
+                    base_ref: "HEAD".into(),
+                    finalize: WakeWorkspaceFinalize::CommitAll,
+                    worktrees_root: Some(
+                        self.cfg
+                            .run_dir
+                            .join("core-worktrees")
+                            .to_string_lossy()
+                            .to_string(),
+                    ),
+                }),
+                ..WakeOptions::default_with_rounds(self.cfg.role_max_rounds.visionary)
+            },
+        )
+        .await?;
+
+        let (_goal_memory, active_goal) = self.activate_goal(visionary).await?;
+        self.goal_id = Some(active_goal);
+
+        let mut ticks = 0_u32;
+        while ticks < self.cfg.max_ticks {
+            ticks += 1;
+            let fired = self.engine.run_dispatcher_tick().await?;
+            if let Some(max_seconds) = self.cfg.max_wall_clock_seconds
+                && started.elapsed() >= Duration::from_secs(max_seconds)
+            {
+                let mut metrics = self.collect_metrics(started, ticks).await?;
+                self.write_outputs(&mut metrics).await?;
+                return Err(self
+                    .failure_report("max wall clock seconds exceeded")
+                    .await?
+                    .into());
+            }
+            let mut metrics = self.collect_metrics(started, ticks).await?;
+            if metrics.overall_pass {
+                self.write_outputs(&mut metrics).await?;
+                return Ok(());
             }
             if fired == 0 {
                 tokio::time::sleep(Duration::from_millis(100)).await;

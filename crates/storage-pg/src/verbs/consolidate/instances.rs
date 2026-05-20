@@ -3,7 +3,7 @@ use proxima_core::personality::{
     InstantiatePersonalityRequest, InstantiatePersonalityResponse, PersonalityInstanceId,
     PersonalityInstanceRow, PersonalityStatus, ROOT_PERSONALITY_PERSPECTIVE_SCHEMA_ID,
     WakeEntryAuthoredBy, WakeEntryExecutionMode, WakeEntryGoalScope, WakeEntryRow,
-    WakeEntryTriggerKind,
+    WakeEntryTriggerKind, WakeWorkspaceBinding,
 };
 use proxima_core::{MemoryId, ModelTier, Owner, OwnerPrincipalKind, StorageError};
 use sqlx::PgPool;
@@ -53,7 +53,7 @@ pub async fn list_personality_instances(
                 instructions,
                 model_tier,
                 inference_target_ref, substrate_tool_palette,
-                workspace_tool_palette, max_rounds,
+                workspace_tool_palette, workspace_binding, max_rounds,
                 intervention_personality_instance_id,
                 intervention_extension_rounds,
                 intervention_hard_cap_rounds,
@@ -94,6 +94,7 @@ pub async fn list_personality_instances(
             inference_target_ref: row.inference_target_ref,
             substrate_tool_palette: row.substrate_tool_palette,
             workspace_tool_palette: row.workspace_tool_palette,
+            workspace_binding: decode_workspace_binding(row.workspace_binding)?,
             max_rounds: u16::try_from(row.max_rounds).unwrap_or(1),
             intervention_policy: intervention_policy_from_parts(
                 row.intervention_personality_instance_id,
@@ -137,6 +138,7 @@ struct WakeEntryProjectionRow {
     inference_target_ref: Option<String>,
     substrate_tool_palette: Vec<String>,
     workspace_tool_palette: Vec<String>,
+    workspace_binding: Option<serde_json::Value>,
     max_rounds: i32,
     intervention_personality_instance_id: Option<uuid::Uuid>,
     intervention_extension_rounds: i32,
@@ -160,6 +162,15 @@ fn intervention_policy_from_parts(
             intervention_progress_contract,
         }
     })
+}
+
+fn decode_workspace_binding(
+    value: Option<serde_json::Value>,
+) -> Result<Option<WakeWorkspaceBinding>, StorageError> {
+    value
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|err| StorageError::Internal(err.to_string()))
 }
 
 pub async fn instantiate_personality(

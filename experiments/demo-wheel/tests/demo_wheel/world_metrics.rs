@@ -128,19 +128,36 @@ impl DemoWorld {
         let workspace_run_count = *output_sidecar_counts_by_schema
             .get(WorkspaceRunV1::SCHEMA_ID)
             .unwrap_or(&0);
+        let core_workspace_run_count = *output_sidecar_counts_by_schema
+            .get(CoreWorkspaceRunV1::SCHEMA_ID)
+            .unwrap_or(&0);
         let goal_achieved_fact_exists = self.goal_achieved_fact_exists().await?;
         let goal_graph = self.goal_graph_metrics().await?;
         let final_goal_state = self.final_goal_state().await?;
         let (git_diff_stats, final_changed_files) = self.git_diff_metrics().await?;
-        let deterministic_checks = deterministic_checks(
-            self.cfg.challenge,
-            self.cfg.required_child_goal_count(),
-            goal_achieved_fact_exists,
-            &goal_graph,
-            vision_brief_count,
-            &git_diff_stats,
-            &final_changed_files,
-        );
+        let deterministic_checks = if self.cfg.planner_mode == DemoPlannerMode::VisionDocument {
+            vision_document_checks(
+                vision_brief_count,
+                *output_sidecar_counts_by_schema
+                    .get(ExecutionRequestV1::SCHEMA_ID)
+                    .unwrap_or(&0),
+                workspace_run_count,
+                core_workspace_run_count,
+                &wake_invocation_count_by_role,
+                &git_diff_stats,
+                &final_changed_files,
+            )
+        } else {
+            deterministic_checks(
+                self.cfg.challenge,
+                self.cfg.required_child_goal_count(),
+                goal_achieved_fact_exists,
+                &goal_graph,
+                vision_brief_count,
+                &git_diff_stats,
+                &final_changed_files,
+            )
+        };
         let deterministic_pass = deterministic_checks.values().all(|value| *value);
         let forced_continuation_checks = self.forced_continuation_checks().await?;
         let forced_continuation_pass = forced_continuation_checks.values().all(|value| *value);
@@ -161,29 +178,40 @@ impl DemoWorld {
         let intervention_pass = ticks <= self.cfg.max_ticks
             && correction_loop_count <= self.cfg.max_correction_loops
             && !wake_failures;
-        let (reviewer_score, reviewer_score_error) =
-            if self.cfg.intervention_mode == DemoInterventionMode::ForceContinue {
-                (None, None)
-            } else {
-                match self
-                    .run_read_only_reviewer(&git_diff_stats, &final_changed_files)
-                    .await
-                {
-                    Ok(score) => (Some(score), None),
-                    Err(err) => {
-                        eprintln!("read-only reviewer failed: {err}");
-                        (None, Some(err.to_string()))
-                    }
+        let (reviewer_score, reviewer_score_error) = if self.cfg.intervention_mode
+            == DemoInterventionMode::ForceContinue
+            || self.cfg.planner_mode == DemoPlannerMode::VisionDocument
+        {
+            (None, None)
+        } else {
+            match self
+                .run_read_only_reviewer(&git_diff_stats, &final_changed_files)
+                .await
+            {
+                Ok(score) => (Some(score), None),
+                Err(err) => {
+                    eprintln!("read-only reviewer failed: {err}");
+                    (None, Some(err.to_string()))
                 }
-            };
+            }
+        };
+        let wall_clock_seconds = started.elapsed().as_secs_f64();
+        let wall_clock_timed_out = self
+            .cfg
+            .max_wall_clock_seconds
+            .is_some_and(|max| wall_clock_seconds >= max as f64);
         let functional_pass = match self.cfg.intervention_mode {
             DemoInterventionMode::Normal => {
-                let reviewer_raw = reviewer_score
-                    .as_ref()
-                    .map_or(0, |score| score.score.min(100));
-                deterministic_pass
-                    && reviewer_raw >= 70
-                    && (self.cfg.planner_mode == DemoPlannerMode::Scripted || real_planner_pass)
+                if self.cfg.planner_mode == DemoPlannerMode::VisionDocument {
+                    deterministic_pass
+                } else {
+                    let reviewer_raw = reviewer_score
+                        .as_ref()
+                        .map_or(0, |score| score.score.min(100));
+                    deterministic_pass
+                        && reviewer_raw >= 70
+                        && (self.cfg.planner_mode == DemoPlannerMode::Scripted || real_planner_pass)
+                }
             }
             DemoInterventionMode::ForceContinue => forced_continuation_pass,
         };
@@ -192,7 +220,9 @@ impl DemoWorld {
             .map_or(0, |score| score.score.min(100));
         let overall_score = match self.cfg.intervention_mode {
             DemoInterventionMode::Normal => {
-                if deterministic_pass {
+                if self.cfg.planner_mode == DemoPlannerMode::VisionDocument {
+                    u32::from(deterministic_pass) * 100
+                } else if deterministic_pass {
                     reviewer_raw
                 } else {
                     reviewer_raw.min(49)
@@ -205,11 +235,6 @@ impl DemoWorld {
             .filter_map(|row| row.rounds_or_turns)
             .filter_map(|value| u32::try_from(value).ok())
             .sum();
-        let wall_clock_seconds = started.elapsed().as_secs_f64();
-        let wall_clock_timed_out = self
-            .cfg
-            .max_wall_clock_seconds
-            .is_some_and(|max| wall_clock_seconds >= max as f64);
         let overall_pass = match self.cfg.intervention_mode {
             DemoInterventionMode::Normal => {
                 functional_pass && intervention_pass && !wall_clock_timed_out
@@ -233,6 +258,7 @@ impl DemoWorld {
             correction_loop_count,
             output_sidecar_counts_by_schema,
             workspace_run_count,
+            core_workspace_run_count,
             request_flow_counts,
             review_verdicts,
             final_goal_state,
@@ -660,6 +686,10 @@ impl DemoWorld {
                 ExecutionRequestV1::SCHEMA_ID,
                 "proxima_code.execution_request_v1",
             ),
+            (
+                CoreWorkspaceRunV1::SCHEMA_ID,
+                "proxima_core.workspace_run_v1",
+            ),
             (WorkspaceRunV1::SCHEMA_ID, "proxima_code.workspace_run_v1"),
             (
                 WorkspaceReviewV1::SCHEMA_ID,
@@ -756,6 +786,20 @@ impl DemoWorld {
     }
 
     pub(super) async fn latest_worktree(&self) -> Result<Option<WorktreeInfo>, sqlx::Error> {
+        if self.cfg.planner_mode == DemoPlannerMode::VisionDocument {
+            let root = self.cfg.run_dir.join("core-worktrees");
+            if let Ok(entries) = std::fs::read_dir(root) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.join("VISION.md").is_file() {
+                        let branch_name = git_output(&path, &["branch", "--show-current"])
+                            .unwrap_or_else(|_| "unknown".into());
+                        return Ok(Some(WorktreeInfo { path, branch_name }));
+                    }
+                }
+            }
+            return Ok(None);
+        }
         let rows = sqlx::query(
             "SELECT worktree_path, branch_name
              FROM proxima_code.workspace_run_v1
@@ -795,6 +839,7 @@ impl DemoWorld {
                     tool_projection: Vec::new(),
                     substrate_tool_palette: Vec::new(),
                     workspace_root: None,
+                    workspace_tool_palette: Vec::new(),
                     max_rounds: 1,
                     provider: ProviderTarget::MistralChat {
                         base_url: self.cfg.base_url.clone(),

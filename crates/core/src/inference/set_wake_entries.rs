@@ -70,6 +70,12 @@ fn validate_workspace_trigger(
     entry: &WakeEntryDraft,
 ) -> Result<(), ProtocolError> {
     if entry.execution_mode != WakeExecutionMode::Workspace {
+        if entry.workspace_binding.is_some() {
+            return Err(ProtocolError::invalid_argument(
+                "workspace_binding",
+                "workspace_binding requires execution_mode = workspace",
+            ));
+        }
         return Ok(());
     }
     if entry.trigger_kind != WakeEntryTriggerKind::OnMemory {
@@ -77,6 +83,9 @@ fn validate_workspace_trigger(
             "execution_mode",
             "workspace mode requires an on_memory trigger",
         ));
+    }
+    if entry.workspace_binding.is_some() {
+        return Ok(());
     }
     if !registry.is_workspace_trigger(&entry.trigger_id) {
         return Err(ProtocolError::invalid_argument(

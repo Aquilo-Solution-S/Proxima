@@ -26,6 +26,18 @@ pub const MAX_WAKE_CHAIN_DEPTH: u16 = 10;
 /// provider.
 pub const WORKSPACE_TOOL_CATALOG: &[(&str, &str)] = &[
     (
+        "core-workspace/shell",
+        "Run shell commands in the workspace",
+    ),
+    (
+        "core-workspace/text_editor",
+        "View and edit files in the workspace",
+    ),
+    (
+        "core-workspace/list_files",
+        "List files and directories in the workspace",
+    ),
+    (
         "proxima-workspace/shell",
         "Run shell commands (build, test, git, package managers)",
     ),

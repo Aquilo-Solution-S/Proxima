@@ -62,6 +62,11 @@ fn empty_program(bindings: &[SubstrateToolBinding], workspace: bool) -> HarnessP
         tool_projection: bindings.iter().map(direct_projection).collect(),
         substrate_tool_palette: bindings.iter().map(|b| b.canonical_name.clone()).collect(),
         workspace_root: workspace.then(|| std::path::PathBuf::from("/tmp/x")),
+        workspace_tool_palette: if workspace {
+            vec!["workspace_list_files".into()]
+        } else {
+            Vec::new()
+        },
         max_rounds: 5,
         provider: ProviderTarget::MistralChat {
             base_url: "http://x".into(),

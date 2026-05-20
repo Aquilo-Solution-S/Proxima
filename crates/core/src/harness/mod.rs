@@ -42,6 +42,9 @@ pub struct HarnessProgram {
     pub substrate_tool_palette: Vec<String>,
     /// Workspace-mode jail root. `None` for substrate-only wakes.
     pub workspace_root: Option<PathBuf>,
+    /// Workspace tool ids allowed for this wake. Empty means no workspace
+    /// tools, even when a workspace root is present.
+    pub workspace_tool_palette: Vec<String>,
     /// Hard round cap. `0` means no model-imposed cap.
     pub max_rounds: u32,
     /// Resolved provider configuration.

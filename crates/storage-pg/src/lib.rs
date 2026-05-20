@@ -209,6 +209,17 @@ impl Storage for PgStorage {
         .await
     }
 
+    async fn persist_core_workspace_run_atomic(
+        &self,
+        registry: &proxima_core::FlavorRegistryFrozen,
+        input: &proxima_core::CoreWorkspaceRunPersistInput,
+    ) -> Result<proxima_core::CoreWorkspaceRunPersistOutcome, StorageError> {
+        verbs::persist_core_workspace_run::persist_core_workspace_run_atomic(
+            &self.pool, registry, input,
+        )
+        .await
+    }
+
     async fn load_intervention_continue_candidate(
         &self,
         owner: &Owner,

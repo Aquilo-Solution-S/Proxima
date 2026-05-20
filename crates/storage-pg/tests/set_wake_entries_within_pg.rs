@@ -31,6 +31,7 @@ fn wake_entry(
         inference_target_ref: None,
         substrate_tool_palette: vec![],
         workspace_tool_palette: vec![],
+        workspace_binding: None,
         max_rounds: 3,
         intervention_policy: None,
     }
@@ -76,6 +77,7 @@ async fn set_wake_entries_within_appends_one() -> Result<(), Box<dyn std::error:
     assert_eq!(row.wake_entries.len(), 1);
     assert_eq!(row.wake_entries[0].label, "rmw-test");
 
+    drop(pg);
     drop_db(&db).await?;
     Ok(())
 }
@@ -134,6 +136,7 @@ async fn set_wake_entries_within_preserves_carried_entry_id()
         && e.label == "first carried"
         && e.instructions == "carry this instruction body"));
 
+    drop(pg);
     drop_db(&db).await?;
     Ok(())
 }

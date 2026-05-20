@@ -999,6 +999,7 @@ fn draft_to_core(
         inference_target_ref: draft.inference_target_ref,
         substrate_tool_palette: draft.substrate_tool_palette,
         workspace_tool_palette: draft.workspace_tool_palette,
+        workspace_binding: None,
         max_rounds: draft.max_rounds,
         intervention_policy: None,
     }

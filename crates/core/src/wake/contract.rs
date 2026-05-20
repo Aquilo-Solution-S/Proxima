@@ -172,6 +172,7 @@ mod tests {
             inference_target_ref: None,
             substrate_tool_palette: vec!["core/fetch_memory".into()],
             workspace_tool_palette: vec!["proxima-workspace/shell".into()],
+            workspace_binding: None,
             max_rounds: 4,
             intervention_policy: None,
             disabled_reason: None,

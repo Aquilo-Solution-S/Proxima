@@ -133,6 +133,7 @@ pub fn wake_entry_draft_from_proto(
         inference_target_ref: proto.inference_target_ref,
         substrate_tool_palette: proto.substrate_tool_palette,
         workspace_tool_palette: proto.workspace_tool_palette,
+        workspace_binding: None,
         max_rounds: u16::try_from(proto.max_rounds)
             .map_err(|_| Status::invalid_argument("max_rounds > u16::MAX"))?,
         intervention_policy: None,

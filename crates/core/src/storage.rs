@@ -35,6 +35,7 @@ use crate::verbs::goal_write::{GoalDraft, GoalWriteOutcome};
 use crate::verbs::persist_wake_trace::{WakeTracePersistInput, WakeTracePersistOutcome};
 use crate::verbs::schema::FlavorRegistryFrozen;
 use crate::verbs::subscribe::ChangeEventStream;
+use crate::workspace_run::{CoreWorkspaceRunPersistInput, CoreWorkspaceRunPersistOutcome};
 
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum StorageError {
@@ -100,6 +101,17 @@ pub trait Storage: Send + Sync {
     ) -> Result<InterventionRequestPersistOutcome, StorageError> {
         Err(StorageError::Internal(
             "storage backend does not implement intervention request persistence".into(),
+        ))
+    }
+
+    /// Atomic core workspace-run Fact materialization plus provenance edges.
+    async fn persist_core_workspace_run_atomic(
+        &self,
+        _registry: &FlavorRegistryFrozen,
+        _input: &CoreWorkspaceRunPersistInput,
+    ) -> Result<CoreWorkspaceRunPersistOutcome, StorageError> {
+        Err(StorageError::Internal(
+            "storage backend does not implement core workspace run persistence".into(),
         ))
     }
 
