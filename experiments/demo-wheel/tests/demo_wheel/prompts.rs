@@ -6,6 +6,7 @@ pub(super) struct WakeOptions {
     pub(super) goal_scope: WakeEntryGoalScope,
     pub(super) max_rounds: u16,
     pub(super) intervention_policy: Option<InterventionPolicy>,
+    pub(super) workspace_binding: Option<WakeWorkspaceBinding>,
 }
 
 impl WakeOptions {
@@ -15,6 +16,7 @@ impl WakeOptions {
             goal_scope: WakeEntryGoalScope::None,
             max_rounds,
             intervention_policy: None,
+            workspace_binding: None,
         }
     }
 }
@@ -22,14 +24,16 @@ impl WakeOptions {
 pub(super) fn demo_intervention_policy(
     wake_supervisor: PersonalityInstanceId,
     mode: DemoInterventionMode,
+    planner_mode: DemoPlannerMode,
 ) -> InterventionPolicy {
     InterventionPolicy {
         intervention_personality_instance_id: wake_supervisor.into_inner(),
         intervention_extension_rounds: 4,
         intervention_hard_cap_rounds: 8,
-        intervention_progress_contract: match mode {
-            DemoInterventionMode::Normal => "Decide from the intervention request Fact and wake lineage whether the truncated wake made concrete progress toward the active demo Goal. Loops with repeated tool errors should stop. Truncations after useful work or after the larger goal has enough downstream evidence may be accepted as terminal for v1; automatic continuation is allowed when the truncated wake has useful unfinished work.".into(),
-            DemoInterventionMode::ForceContinue => "Forced continuation demo. Emit continue for the first useful max-round truncation so the next dispatcher tick starts a continuation from the InterventionDecisionV1 event.".into(),
+        intervention_progress_contract: match (mode, planner_mode) {
+            (DemoInterventionMode::Normal, DemoPlannerMode::VisionDocument) => "Decide from the intervention request Fact and wake payload whether the truncated wake produced a VisionBrief or VISION.md progress. Continue at most once when the only missing step is the markdown file or the typed vision brief. Stop repeated tool errors.".into(),
+            (DemoInterventionMode::Normal, _) => "Decide from the intervention request Fact and wake lineage whether the truncated wake made concrete progress toward the active demo Goal. Loops with repeated tool errors should stop. Truncations after useful work or after the larger goal has enough downstream evidence may be accepted as terminal for v1; automatic continuation is allowed when the truncated wake has useful unfinished work.".into(),
+            (DemoInterventionMode::ForceContinue, _) => "Forced continuation demo. Emit continue for the first useful max-round truncation so the next dispatcher tick starts a continuation from the InterventionDecisionV1 event.".into(),
         },
     }
 }
@@ -117,7 +121,20 @@ pub(super) async fn prepare_demo_repo(
 pub(super) fn visionary_instruction(
     challenge: DemoChallenge,
     mode: DemoInterventionMode,
+    planner_mode: DemoPlannerMode,
 ) -> String {
+    if planner_mode == DemoPlannerMode::VisionDocument {
+        let normal = format!(
+            "You are the Visionary for the triggering active Goal. Interpret the active Goal from the wake context. First emit exactly one typed vision brief using schema {} through the available abstraction tool. Then create or replace `VISION.md` in the workspace root using the workspace text editor. The markdown must be concise and reviewable, with sections: Outcome, Audience, Use Case, Quality Bar, Constraints, Assumptions, Acceptance Signals, and Next Planning Question. Do not create child goals, execution requests, implementation files, tests, or plans. Stop after the VisionBrief exists and VISION.md has been written.",
+            VisionBriefV1::SCHEMA_ID
+        );
+        return match mode {
+            DemoInterventionMode::Normal => normal,
+            DemoInterventionMode::ForceContinue => format!(
+                "If this is a continuation wake, inspect the continuation context and finish only the missing VisionBrief or VISION.md step without duplicating completed work. Otherwise follow this role contract:\n\n{normal}"
+            ),
+        };
+    }
     let normal = format!(
         "You are the Visionary for the triggering active Goal in N1. Do not create files, child Goals, or execution requests. Interpret the user's real expectation before planning. Use the `triggering_memory` context JSON handles: typed_payload.goal_id is the goal handle and memory is the goal_activated_memory handle. Call the available VisionBrief emit tool listed in Wake Contract exactly once. Pass top-level JSON fields matching schema \"{}\" v1: goal_id from triggering_memory.typed_payload.goal_id; goal_activated_memory_id from triggering_memory.memory; original_goal_text {}; interpreted_outcome as the intended product outcome, not an HTML implementation detail; target_user; use_case; artifact_shape; ambition_level \"Production\"; quality_bar; constraints as an array of strings; assumptions as an array of strings; open_questions as an array of strings; acceptance_rubric as a flat JSON array of strings, not an object; demo_proof; planner_directive; optional text. Do not pass schema_id, schema_version, or payload. The planner_directive must tell Planner to walk lineage from the VisionBrief to the goal_activated Fact, decompose the parent Goal, and preserve the quality bar. Then stop.",
         VisionBriefV1::SCHEMA_ID,
@@ -143,22 +160,34 @@ pub(super) fn planner_instruction(
             DemoChallenge::KanbanBoard => kanban_board_planner_instruction(planner),
         },
         DemoPlannerMode::Real => real_planner_instruction(planner, challenge),
+        DemoPlannerMode::VisionDocument => {
+            "Vision-document mode does not instantiate a Planner.".into()
+        }
     }
 }
 
-pub(super) fn worker_instruction(challenge: DemoChallenge) -> String {
-    match challenge {
-        DemoChallenge::SignalMatch => {
+pub(super) fn worker_instruction(
+    challenge: DemoChallenge,
+    planner_mode: DemoPlannerMode,
+) -> String {
+    match (challenge, planner_mode) {
+        (DemoChallenge::SignalMatch, DemoPlannerMode::Scripted) => {
             let app = signal_match_index_html();
             format!(
                 "Use workspace_text_editor to create `index.html` with exactly this file_text, then run workspace_shell with command `test -f index.html && grep -E \"Signal Match|data-pad|keydown|restart|level|score\" index.html` and stop. file_text JSON string: {}",
                 serde_json::to_string(&app).expect("serialize app")
             )
         }
-        DemoChallenge::TodoCli => {
+        (DemoChallenge::SignalMatch, DemoPlannerMode::Real) => {
+            "Implement the execution request in Triggering Memory and Workspace Context. Do not use a fixture or prewritten app. Create or update `index.html` only as needed for the requested Signal Match child goal. The final app must be package-free, runnable by opening `index.html` directly, responsive, and must satisfy the execution request acceptance criteria. Use workspace_text_editor for file edits, and use workspace_shell for deterministic checks. At minimum, run `test -f index.html && grep -q \"Signal Match\" index.html && grep -q \"data-pad\" index.html && grep -q \"keydown\" index.html && grep -q \"restart\" index.html && grep -q \"level\" index.html && grep -q \"score\" index.html && grep -q \"game-over\" index.html`, then stop.".into()
+        }
+        (_, DemoPlannerMode::VisionDocument) => {
+            "Vision-document mode does not instantiate a Worker.".into()
+        }
+        (DemoChallenge::TodoCli, _) => {
             "Implement the requested Todo Audit CLI using only Node.js built-ins. Create or update `todo_audit.mjs`, `test_todo_audit.mjs`, and `examples/tasks.md` as needed. The CLI must support `node todo_audit.mjs <markdown-file> --today 2026-05-18 --json`, parse Markdown task-list items, extract done/open state, @owner, #tags, !priority, due:YYYY-MM-DD, compute totals, open/done/overdue counts, byOwner, byTag, highPriorityOpen, and nextDue sorted by due date. Write meaningful tests in `test_todo_audit.mjs` using node:assert/child_process only, run `node test_todo_audit.mjs`, then stop.".into()
         }
-        DemoChallenge::KanbanBoard => {
+        (DemoChallenge::KanbanBoard, _) => {
             "Implement the requested Kanban frontend using only `index.html`, browser APIs, and Node built-ins for tests. Create or update `index.html` and `test_kanban.mjs`; keep `data/tasks.json` and `docs/acceptance.md` useful if needed. Required test ids: app-title, search-input, status-filter, task-card, move-next, move-prev, task-count, done-count, reset-board. The app must render seeded tasks, filter by search and status, move tasks between backlog/active/blocked/done with accessible buttons, update task and done counters, persist state under localStorage key `proxima-kanban-demo-v1`, reset to seed data, and run by opening index.html directly. Write meaningful package-free tests in `test_kanban.mjs` using node:assert/fs only; the tests should inspect index.html for the selector contract, seeded-data contract, localStorage key, and movement/filtering logic markers. Run `node test_kanban.mjs`, then stop.".into()
         }
     }
@@ -189,7 +218,7 @@ pub(super) fn real_planner_instruction(
         DemoChallenge::TodoCli | DemoChallenge::KanbanBoard => "two or three",
     };
     format!(
-        "You are the Planner. This is real-planner demo mode: plan from the Goal, VisionBrief, Triggering Memory, Wake Contract, Coordination Context, and tool descriptors instead of replaying fixture child goals. Do not use scripted child titles or request keys. Use only handles from context for graph/runtime references. If N1 is a proxima-intent VisionBrief, walk lineage from N1 to the active parent goal, decompose that parent exactly once with target_personality \"P1\", activate the children, and author {child_bounds} original child goals that together cover this target outcome: {}. Then stop. If N1 is a child proxima-goal/goal-activated-v1 Fact, emit exactly one execution request for repo_handle \"{repo_handle}\" using N1 as the activated goal, with a title, implementation instructions, idempotency key, and acceptance criteria derived from that child goal. Acceptance criteria must be repo-native, include the primary output, and be deterministic enough for a verifier or reviewer. Then stop.",
+        "You are the Planner. This is real-planner demo mode: plan from the Goal, VisionBrief, Triggering Memory, Wake Contract, Coordination Context, and tool descriptors instead of replaying fixture child goals. Do not use scripted child titles or request keys. Use only handles from context for graph/runtime references. If N1 is a proxima-intent VisionBrief, walk lineage from N1 to the active parent goal, decompose that parent exactly once, leave target_personality unset so activated children are assigned to you, activate the children, and author {child_bounds} original child goals that together cover this target outcome: {}. Then stop. If N1 is a child proxima-goal/goal-activated-v1 Fact, emit exactly one execution request for repo_handle \"{repo_handle}\" using N1 as the activated goal, with a title, implementation instructions, idempotency key, and acceptance criteria derived from that child goal. Acceptance criteria must be repo-native, include the primary output, and be deterministic enough for a verifier or reviewer. Then stop.",
         serde_json::to_string(goal_text).expect("goal text serializes"),
     )
 }
@@ -223,7 +252,7 @@ pub(super) fn scripted_request_keys() -> Vec<&'static str> {
 pub(super) fn signal_match_planner_instruction(planner: PersonalityInstanceId) -> String {
     let _ = planner;
     format!(
-        "You are the Planner. If N1 is a proxima-intent VisionBrief, call core_walk_lineage with memory \"N1\", direction \"ancestors\", depth 2, limit 10; find the returned proxima-goal/goal-activated-v1 memory handle; call proxima_goal_goal_decompose with parent_goal set to that handle, activate_children true, target_personality \"P1\", idempotency_key \"demo-signal-match-decompose\", and these suggested children: {}. Then stop. If N1 is already one of those child goal_activated Facts, call proxima_code_code_emit_execution_request for that child with repo_handle \"{}\", goal_activated_memory \"N1\", evidence [], a child-specific title/instructions/idempotency_key, and these required acceptance_criteria: {}. Use idempotency_key \"demo-signal-match-shell\" for the shell/pads child and \"demo-signal-match-gameplay\" for the gameplay/restart child. Then stop.",
+        "You are the Planner. If N1 is a proxima-intent VisionBrief, call core_walk_lineage with memory \"N1\", direction \"ancestors\", depth 2, limit 10; find the returned proxima-goal/goal-activated-v1 memory handle; call proxima_goal_goal_decompose with parent_goal set to that handle, activate_children true, leave target_personality unset, idempotency_key \"demo-signal-match-decompose\", and these suggested children: {}. Then stop. If N1 is already one of those child goal_activated Facts, call proxima_code_code_emit_execution_request for that child with repo_handle \"{}\", goal_activated_memory \"N1\", evidence [], a child-specific title/instructions/idempotency_key, and these required acceptance_criteria: {}. Use idempotency_key \"demo-signal-match-shell\" for the shell/pads child and \"demo-signal-match-gameplay\" for the gameplay/restart child. Then stop.",
         json!([
             {
                 "payload": {
@@ -271,7 +300,7 @@ pub(super) fn signal_match_planner_instruction(planner: PersonalityInstanceId) -
 pub(super) fn todo_cli_planner_instruction(planner: PersonalityInstanceId) -> String {
     let _ = planner;
     format!(
-        "You are the Planner. If N1 is a proxima-intent VisionBrief, call core_walk_lineage with memory \"N1\", direction \"ancestors\", depth 2, limit 10; find the returned proxima-goal/goal-activated-v1 memory handle; call proxima_goal_goal_decompose with parent_goal set to that handle, activate_children true, target_personality \"P1\", idempotency_key \"demo-todo-audit-decompose\", and these suggested children: {}. Then stop. If N1 is already one of those child goal_activated Facts, call proxima_code_code_emit_execution_request for that child with repo_handle \"{}\", goal_activated_memory \"N1\", evidence [], a child-specific title/instructions/idempotency_key, and these required acceptance_criteria: {}. Each child request must still produce a complete runnable CLI and test suite because workspace runs are evaluated independently. Then stop.",
+        "You are the Planner. If N1 is a proxima-intent VisionBrief, call core_walk_lineage with memory \"N1\", direction \"ancestors\", depth 2, limit 10; find the returned proxima-goal/goal-activated-v1 memory handle; call proxima_goal_goal_decompose with parent_goal set to that handle, activate_children true, leave target_personality unset, idempotency_key \"demo-todo-audit-decompose\", and these suggested children: {}. Then stop. If N1 is already one of those child goal_activated Facts, call proxima_code_code_emit_execution_request for that child with repo_handle \"{}\", goal_activated_memory \"N1\", evidence [], a child-specific title/instructions/idempotency_key, and these required acceptance_criteria: {}. Each child request must still produce a complete runnable CLI and test suite because workspace runs are evaluated independently. Then stop.",
         json!([
             {
                 "payload": {
@@ -334,7 +363,7 @@ pub(super) fn todo_cli_planner_instruction(planner: PersonalityInstanceId) -> St
 pub(super) fn kanban_board_planner_instruction(planner: PersonalityInstanceId) -> String {
     let _ = planner;
     format!(
-        "You are the Planner. If N1 is a proxima-intent VisionBrief, call core_walk_lineage with memory \"N1\", direction \"ancestors\", depth 2, limit 10; find the returned proxima-goal/goal-activated-v1 memory handle; call proxima_goal_goal_decompose with parent_goal set to that handle, activate_children true, target_personality \"P1\", idempotency_key \"demo-kanban-board-decompose\", and these suggested children: {}. Then stop. If N1 is already one of those child goal_activated Facts, call proxima_code_code_emit_execution_request for that child with repo_handle \"{}\", goal_activated_memory \"N1\", evidence [], a child-specific title/instructions/idempotency_key, and these required acceptance_criteria: {}. Each child request must still produce a complete package-free index.html and test_kanban.mjs because workspace runs are evaluated independently. The planner may ask for browser-style or DOM tests, but verification is executed through shell and repo-native commands, not a special browser tool. Then stop.",
+        "You are the Planner. If N1 is a proxima-intent VisionBrief, call core_walk_lineage with memory \"N1\", direction \"ancestors\", depth 2, limit 10; find the returned proxima-goal/goal-activated-v1 memory handle; call proxima_goal_goal_decompose with parent_goal set to that handle, activate_children true, leave target_personality unset, idempotency_key \"demo-kanban-board-decompose\", and these suggested children: {}. Then stop. If N1 is already one of those child goal_activated Facts, call proxima_code_code_emit_execution_request for that child with repo_handle \"{}\", goal_activated_memory \"N1\", evidence [], a child-specific title/instructions/idempotency_key, and these required acceptance_criteria: {}. Each child request must still produce a complete package-free index.html and test_kanban.mjs because workspace runs are evaluated independently. The planner may ask for browser-style or DOM tests, but verification is executed through shell and repo-native commands, not a special browser tool. Then stop.",
         json!([
             {
                 "payload": {
@@ -495,6 +524,51 @@ pub(super) fn deterministic_checks(
     checks
 }
 
+pub(super) fn vision_document_checks(
+    vision_brief_count: i64,
+    execution_request_count: i64,
+    workspace_run_count: i64,
+    core_workspace_run_count: i64,
+    wake_invocation_count_by_role: &BTreeMap<String, u32>,
+    diff: &GitDiffStats,
+    changed_files: &[String],
+) -> BTreeMap<String, bool> {
+    let mut checks = BTreeMap::new();
+    checks.insert(
+        "visionary_woke".into(),
+        wake_invocation_count_by_role.get("Visionary") == Some(&1),
+    );
+    checks.insert("vision_brief_emitted".into(), vision_brief_count == 1);
+    checks.insert(
+        "vision_md_changed".into(),
+        changed_files.iter().any(|file| file == "VISION.md"),
+    );
+    checks.insert(
+        "only_vision_md_changed".into(),
+        changed_files.len() == 1 && changed_files[0] == "VISION.md",
+    );
+    checks.insert(
+        "nonempty_diff".into(),
+        diff.files_changed == 1 && diff.insertions > 0,
+    );
+    checks.insert("no_execution_requests".into(), execution_request_count == 0);
+    checks.insert(
+        "no_code_workspace_run_fact".into(),
+        workspace_run_count == 0,
+    );
+    checks.insert(
+        "core_workspace_run_fact_emitted".into(),
+        core_workspace_run_count == 1,
+    );
+    checks.insert(
+        "no_worker_planner_verifier_roles".into(),
+        !["Planner", "Worker", "Verifier", "Goal-Reviewer"]
+            .iter()
+            .any(|role| wake_invocation_count_by_role.contains_key(*role)),
+    );
+    checks
+}
+
 pub(super) fn signal_match_index_html() -> String {
     r#"<!doctype html>
 <html lang="en">
@@ -646,7 +720,6 @@ mod tests {
             kanban_board_planner_instruction(planner),
         ] {
             assert!(!prompt.contains(&raw));
-            assert!(prompt.contains("target_personality \"P1\""));
         }
     }
 }

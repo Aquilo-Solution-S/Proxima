@@ -2,7 +2,7 @@ use proxima_core::intervention::InterventionPolicy;
 use proxima_core::personality::{
     PersonalityInstanceId, PersonalityStatus, SetWakeEntriesRequest, SetWakeEntriesResponse,
     WakeDispatchEntryRow, WakeEntryAuthoredBy, WakeEntryDraft, WakeEntryGoalScope,
-    WakeEntryTriggerKind, WakeExecutionMode,
+    WakeEntryTriggerKind, WakeExecutionMode, WakeWorkspaceBinding,
 };
 use proxima_core::{MemoryId, ModelTier, Owner, OwnerPrincipalKind, StorageError};
 use sqlx::{PgPool, Row};
@@ -34,6 +34,7 @@ struct WakeEntryJoinRow {
     inference_target_ref: Option<String>,
     substrate_tool_palette: Vec<String>,
     workspace_tool_palette: Vec<String>,
+    workspace_binding: Option<serde_json::Value>,
     max_rounds: i32,
     intervention_personality_instance_id: Option<uuid::Uuid>,
     intervention_extension_rounds: i32,
@@ -112,7 +113,7 @@ async fn read_wake_entries_in_tx(
         "SELECT wake_entry_id, trigger_kind, trigger_id, label, enabled,
                 execution_mode, authored_by, probability_promille, goal_scope,
                 instructions, model_tier, inference_target_ref, substrate_tool_palette,
-                workspace_tool_palette, max_rounds, intervention_personality_instance_id,
+                workspace_tool_palette, workspace_binding, max_rounds, intervention_personality_instance_id,
                 intervention_extension_rounds, intervention_hard_cap_rounds, intervention_progress_contract
          FROM proxima_core.personality_wake_entries
          WHERE owner_principal_kind = $1
@@ -149,6 +150,7 @@ async fn read_wake_entries_in_tx(
             inference_target_ref: row.get("inference_target_ref"),
             substrate_tool_palette: row.get("substrate_tool_palette"),
             workspace_tool_palette: row.get("workspace_tool_palette"),
+            workspace_binding: decode_workspace_binding(row.get("workspace_binding"))?,
             max_rounds: u16::try_from(row.get::<i32, _>("max_rounds")).unwrap_or(1),
             intervention_policy: intervention_policy_from_parts(
                 row.get("intervention_personality_instance_id"),
@@ -295,6 +297,7 @@ pub async fn list_active_wake_entries(
                 e.inference_target_ref,
                 e.substrate_tool_palette,
                 e.workspace_tool_palette,
+                e.workspace_binding,
                 e.max_rounds,
                 e.intervention_personality_instance_id,
                 e.intervention_extension_rounds,
@@ -320,46 +323,50 @@ pub async fn list_active_wake_entries(
     .await
     .map_err(map_err)?;
 
-    Ok(rows
-        .into_iter()
-        .map(|row| WakeDispatchEntryRow {
-            owner: owner_from_parts(
-                row.owner_principal_kind,
-                row.owner_principal_id,
-                row.owner_org_id,
-            ),
-            personality_instance_id: PersonalityInstanceId::new(row.personality_instance_id),
-            current_root_perspective_memory_id: MemoryId::new(
-                row.current_root_perspective_memory_id,
-            ),
-            max_wake_chain_depth: u16::try_from(row.max_wake_chain_depth).unwrap_or(0),
-            last_considered_seq: row.last_considered_seq,
-            wake_entry: WakeEntryDraft {
-                wake_entry_id: row.wake_entry_id,
-                personality_instance_id: PersonalityInstanceId::new(row.personality_instance_id),
-                trigger_kind: row.trigger_kind,
-                trigger_id: row.trigger_id,
-                label: row.label,
-                enabled: row.enabled,
-                execution_mode: row.execution_mode,
-                authored_by: row.authored_by,
-                probability_promille: u16::try_from(row.probability_promille).unwrap_or(0),
-                goal_scope: row.goal_scope,
-                instructions: row.instructions,
-                model_tier: row.model_tier,
-                inference_target_ref: row.inference_target_ref,
-                substrate_tool_palette: row.substrate_tool_palette,
-                workspace_tool_palette: row.workspace_tool_palette,
-                max_rounds: u16::try_from(row.max_rounds).unwrap_or(1),
-                intervention_policy: intervention_policy_from_parts(
-                    row.intervention_personality_instance_id,
-                    row.intervention_extension_rounds,
-                    row.intervention_hard_cap_rounds,
-                    row.intervention_progress_contract,
+    rows.into_iter()
+        .map(|row| {
+            Ok(WakeDispatchEntryRow {
+                owner: owner_from_parts(
+                    row.owner_principal_kind,
+                    row.owner_principal_id,
+                    row.owner_org_id,
                 ),
-            },
+                personality_instance_id: PersonalityInstanceId::new(row.personality_instance_id),
+                current_root_perspective_memory_id: MemoryId::new(
+                    row.current_root_perspective_memory_id,
+                ),
+                max_wake_chain_depth: u16::try_from(row.max_wake_chain_depth).unwrap_or(0),
+                last_considered_seq: row.last_considered_seq,
+                wake_entry: WakeEntryDraft {
+                    wake_entry_id: row.wake_entry_id,
+                    personality_instance_id: PersonalityInstanceId::new(
+                        row.personality_instance_id,
+                    ),
+                    trigger_kind: row.trigger_kind,
+                    trigger_id: row.trigger_id,
+                    label: row.label,
+                    enabled: row.enabled,
+                    execution_mode: row.execution_mode,
+                    authored_by: row.authored_by,
+                    probability_promille: u16::try_from(row.probability_promille).unwrap_or(0),
+                    goal_scope: row.goal_scope,
+                    instructions: row.instructions,
+                    model_tier: row.model_tier,
+                    inference_target_ref: row.inference_target_ref,
+                    substrate_tool_palette: row.substrate_tool_palette,
+                    workspace_tool_palette: row.workspace_tool_palette,
+                    workspace_binding: decode_workspace_binding(row.workspace_binding)?,
+                    max_rounds: u16::try_from(row.max_rounds).unwrap_or(1),
+                    intervention_policy: intervention_policy_from_parts(
+                        row.intervention_personality_instance_id,
+                        row.intervention_extension_rounds,
+                        row.intervention_hard_cap_rounds,
+                        row.intervention_progress_contract,
+                    ),
+                },
+            })
         })
-        .collect())
+        .collect()
 }
 
 async fn upsert_wake_entry(
@@ -374,12 +381,12 @@ async fn upsert_wake_entry(
              personality_instance_id, wake_entry_id, trigger_kind, trigger_id,
              label, enabled, execution_mode, authored_by, probability_promille,
              goal_scope, instructions, model_tier, inference_target_ref,
-             substrate_tool_palette, workspace_tool_palette, max_rounds,
+             substrate_tool_palette, workspace_tool_palette, workspace_binding, max_rounds,
              intervention_personality_instance_id, intervention_extension_rounds,
              intervention_hard_cap_rounds, intervention_progress_contract)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
                  $12, $13, $14, $15, $16, $17, $18, $19, $20,
-                 $21, $22, $23)
+                 $21, $22, $23, $24)
          ON CONFLICT (
              owner_principal_kind,
              owner_principal_id,
@@ -400,6 +407,7 @@ async fn upsert_wake_entry(
              inference_target_ref = EXCLUDED.inference_target_ref,
              substrate_tool_palette = EXCLUDED.substrate_tool_palette,
              workspace_tool_palette = EXCLUDED.workspace_tool_palette,
+             workspace_binding = EXCLUDED.workspace_binding,
              max_rounds = EXCLUDED.max_rounds,
              intervention_personality_instance_id = EXCLUDED.intervention_personality_instance_id,
              intervention_extension_rounds = EXCLUDED.intervention_extension_rounds,
@@ -427,6 +435,14 @@ async fn upsert_wake_entry(
     .bind(&entry.inference_target_ref)
     .bind(&entry.substrate_tool_palette)
     .bind(&entry.workspace_tool_palette)
+    .bind(
+        entry
+            .workspace_binding
+            .as_ref()
+            .map(serde_json::to_value)
+            .transpose()
+            .map_err(|err| StorageError::Internal(err.to_string()))?,
+    )
     .bind(i32::from(entry.max_rounds))
     .bind(
         entry
@@ -473,4 +489,13 @@ fn intervention_policy_from_parts(
             intervention_progress_contract,
         }
     })
+}
+
+fn decode_workspace_binding(
+    value: Option<serde_json::Value>,
+) -> Result<Option<WakeWorkspaceBinding>, StorageError> {
+    value
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|err| StorageError::Internal(err.to_string()))
 }

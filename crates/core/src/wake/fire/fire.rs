@@ -1,9 +1,13 @@
 //! Per-entry wake fire path backed by the in-process harness.
 
 use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use tokio::process::Command;
 use uuid::Uuid;
 
 use crate::engine::Engine;
@@ -19,7 +23,8 @@ use crate::personality::workspace::{
 };
 use crate::personality::{
     PersonalityInstanceId, WakeChainDepth, WakeEntryExecutionMode, WakeInvocationContinuation,
-    WakeInvocationLogStatus, WakeInvocationStart, WakeInvocationStatus,
+    WakeInvocationLogStatus, WakeInvocationStart, WakeInvocationStatus, WakeWorkspaceBinding,
+    WakeWorkspaceFinalize,
 };
 use crate::verbs::persist_wake_trace::WakeTracePersistOutcome;
 use crate::verbs::query::{QueryRequest, SupersessionStatus};
@@ -29,6 +34,10 @@ use crate::wake::token_store::WakeTokenContext;
 use crate::wake::trace::emit::{
     ProviderTargetBuildError, TraceTiming, emit_trace_from_failed_preflight,
     emit_trace_from_outcome, provider_target_from_config,
+};
+use crate::workspace_run::{
+    CORE_WORKSPACE_RUN_SOURCE_ID, CoreWorkspaceDiffFile, CoreWorkspaceDiffStat,
+    CoreWorkspaceRunPersistInput, CoreWorkspaceRunV1,
 };
 use crate::{
     GoalId, InterventionRequestPersistInput, InterventionRequestedV1, MemoryId, Owner,
@@ -246,6 +255,7 @@ pub async fn fire_wake_entry(
         tool_projection,
         substrate_tool_palette: input.wake_entry.substrate_tool_palette.clone(),
         workspace_root: None,
+        workspace_tool_palette: Vec::new(),
         max_rounds,
         provider: provider_target,
     };
@@ -313,6 +323,19 @@ struct WorkspaceModeState {
     started_at: time::OffsetDateTime,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum CoreWorkspaceRunnerState {
+    GitWorktree {
+        repo_path: String,
+        worktree_path: String,
+        branch_name: String,
+        base_ref: String,
+        parent_sha: String,
+        finalize: WakeWorkspaceFinalize,
+    },
+}
+
 async fn handle_workspace_mode(
     engine: &Engine,
     adapter: &dyn HarnessAdapter,
@@ -332,39 +355,6 @@ async fn handle_workspace_mode(
         started_at,
     } = state;
 
-    let flavor_id = input.wake_entry.trigger_id.split('/').next().unwrap_or("");
-    let Some(runner) = engine.registry().workspace_runner(flavor_id) else {
-        engine.wake_token_store().revoke(wake_token).await;
-        finalize(
-            engine,
-            &input,
-            invocation_id_for_dispatch,
-            WakeInvocationFinalizeOutcome::failed(format!(
-                "workspace_no_runner_for_flavor:{flavor_id}"
-            )),
-        )
-        .await?;
-        return Ok(true);
-    };
-
-    if !engine
-        .registry()
-        .is_workspace_trigger(&input.wake_entry.trigger_id)
-    {
-        engine.wake_token_store().revoke(wake_token).await;
-        finalize(
-            engine,
-            &input,
-            invocation_id_for_dispatch,
-            WakeInvocationFinalizeOutcome::failed(format!(
-                "workspace_trigger_not_eligible:{}",
-                input.wake_entry.trigger_id
-            )),
-        )
-        .await?;
-        return Ok(true);
-    }
-
     let mcp_url = engine.mcp_url().unwrap_or_default();
     let prepare_input = WorkspacePrepareInput {
         invocation_id: invocation_id_for_dispatch,
@@ -377,7 +367,12 @@ async fn handle_workspace_mode(
         triggering_memory_payload: &wake_context.triggering_memory.typed_payload,
         workspace_tool_palette: &input.wake_entry.workspace_tool_palette,
     };
-    let prepared = match runner.prepare(prepare_input).await {
+    let prepared_result = if let Some(binding) = input.wake_entry.workspace_binding.as_ref() {
+        prepare_core_workspace_binding(prepare_input, binding).await
+    } else {
+        prepare_legacy_workspace_runner(engine, &input, prepare_input).await
+    };
+    let prepared = match prepared_result {
         Ok(prepared) => prepared,
         Err(WorkspaceRunnerError::Unimplemented) => {
             engine.wake_token_store().revoke(wake_token).await;
@@ -446,6 +441,7 @@ async fn handle_workspace_mode(
         tool_projection,
         substrate_tool_palette: input.wake_entry.substrate_tool_palette.clone(),
         workspace_root: Some(prepared.work_dir.clone()),
+        workspace_tool_palette: input.wake_entry.workspace_tool_palette.clone(),
         max_rounds: u32::from(input.wake_entry.max_rounds),
         provider: provider_target,
     };
@@ -518,6 +514,126 @@ async fn handle_workspace_mode(
     .await;
     finalize(engine, &input, invocation_id_for_dispatch, outcome).await?;
     Ok(true)
+}
+
+async fn prepare_legacy_workspace_runner(
+    engine: &Engine,
+    input: &FireWakeEntryInput,
+    prepare_input: WorkspacePrepareInput<'_>,
+) -> Result<WorkspacePreparedRun, WorkspaceRunnerError> {
+    let flavor_id = input.wake_entry.trigger_id.split('/').next().unwrap_or("");
+    let runner = engine
+        .registry()
+        .workspace_runner(flavor_id)
+        .ok_or_else(|| {
+            WorkspaceRunnerError::TriggerNotEligible(format!(
+                "workspace_no_runner_for_flavor:{flavor_id}"
+            ))
+        })?;
+
+    if !engine
+        .registry()
+        .is_workspace_trigger(&input.wake_entry.trigger_id)
+    {
+        return Err(WorkspaceRunnerError::TriggerNotEligible(format!(
+            "workspace_trigger_not_eligible:{}",
+            input.wake_entry.trigger_id
+        )));
+    }
+
+    runner.prepare(prepare_input).await
+}
+
+async fn prepare_core_workspace_binding(
+    input: WorkspacePrepareInput<'_>,
+    binding: &WakeWorkspaceBinding,
+) -> Result<WorkspacePreparedRun, WorkspaceRunnerError> {
+    match binding {
+        WakeWorkspaceBinding::GitWorktree {
+            repo_path,
+            base_ref,
+            finalize,
+            worktrees_root,
+        } => prepare_core_git_worktree(input, repo_path, base_ref, *finalize, worktrees_root).await,
+    }
+}
+
+async fn prepare_core_git_worktree(
+    input: WorkspacePrepareInput<'_>,
+    repo_path: &str,
+    base_ref: &str,
+    finalize: WakeWorkspaceFinalize,
+    worktrees_root: &Option<String>,
+) -> Result<WorkspacePreparedRun, WorkspaceRunnerError> {
+    let repo = std::fs::canonicalize(repo_path).map_err(|err| {
+        WorkspaceRunnerError::PrepareFailed(format!("canonicalize repo_path {repo_path}: {err}"))
+    })?;
+    let parent_sha = git_output(&repo, &["rev-parse", base_ref])
+        .await
+        .map_err(|stderr| {
+            WorkspaceRunnerError::PrepareFailed(format!("rev-parse {base_ref}: {stderr}"))
+        })?;
+    let root = worktrees_root
+        .as_ref()
+        .map(PathBuf::from)
+        .unwrap_or_else(default_core_worktrees_root);
+    let worktree_path = root.join(input.invocation_id.to_string());
+    if let Some(parent) = worktree_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|err| {
+            WorkspaceRunnerError::PrepareFailed(format!("create worktree parent: {err}"))
+        })?;
+    }
+    let branch_name = format!("proxima/wake/{}", input.invocation_id);
+    let worktree_arg = worktree_path.to_string_lossy().to_string();
+    git_output(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            &branch_name,
+            &worktree_arg,
+            &parent_sha,
+        ],
+    )
+    .await
+    .map_err(|stderr| WorkspaceRunnerError::PrepareFailed(format!("worktree add: {stderr}")))?;
+
+    let state = CoreWorkspaceRunnerState::GitWorktree {
+        repo_path: repo.to_string_lossy().to_string(),
+        worktree_path: worktree_arg.clone(),
+        branch_name: branch_name.clone(),
+        base_ref: base_ref.to_string(),
+        parent_sha: parent_sha.clone(),
+        finalize,
+    };
+    let workspace_context = json!({
+        "mode": "core_git_worktree",
+        "repo_path": repo.to_string_lossy(),
+        "worktree_path": worktree_arg,
+        "branch_name": branch_name,
+        "base_ref": base_ref,
+        "parent_sha": parent_sha,
+        "finalize": finalize.as_str(),
+        "triggering_memory_schema_id": input.triggering_memory_schema_id,
+        "triggering_memory_id": input.triggering_memory_id.into_inner().to_string(),
+    });
+    let runner_state = serde_json::to_value(state).map_err(|err| {
+        WorkspaceRunnerError::Internal(format!("serialize core workspace state: {err}"))
+    })?;
+    Ok(WorkspacePreparedRun {
+        work_dir: worktree_path,
+        workspace_context: Some(workspace_context),
+        runner_state,
+    })
+}
+
+fn default_core_worktrees_root() -> PathBuf {
+    std::env::var_os("HOME")
+        .map_or_else(std::env::temp_dir, PathBuf::from)
+        .join(".proxima")
+        .join("worktrees")
+        .join("core")
 }
 
 async fn mint_wake_token(
@@ -702,6 +818,17 @@ async fn finalize_workspace_runner(
     prepared: WorkspacePreparedRun,
     outcome: WorkspaceOutcome,
 ) -> Result<(), String> {
+    if input.wake_entry.workspace_binding.is_some() {
+        return finalize_core_workspace_binding(
+            engine,
+            input,
+            wake_context,
+            invocation_id,
+            prepared,
+            outcome,
+        )
+        .await;
+    }
     let flavor_id = input.wake_entry.trigger_id.split('/').next().unwrap_or("");
     let runner = engine
         .registry()
@@ -729,6 +856,225 @@ async fn finalize_workspace_runner(
         .await
         .map(|_| ())
         .map_err(|err| err.to_string())
+}
+
+#[derive(Debug, Clone)]
+struct CoreGitWorkspaceFinalization {
+    head_sha: String,
+    committed: bool,
+    diff_stat: CoreWorkspaceDiffStat,
+}
+
+async fn finalize_core_workspace_binding(
+    engine: &Engine,
+    input: &FireWakeEntryInput,
+    wake_context: &WakeContext,
+    invocation_id: Uuid,
+    prepared: WorkspacePreparedRun,
+    outcome: WorkspaceOutcome,
+) -> Result<(), String> {
+    let state: CoreWorkspaceRunnerState = serde_json::from_value(prepared.runner_state)
+        .map_err(|err| format!("decode core workspace state: {err}"))?;
+    match state {
+        CoreWorkspaceRunnerState::GitWorktree {
+            repo_path,
+            worktree_path,
+            branch_name,
+            base_ref,
+            parent_sha,
+            finalize,
+        } => {
+            let finalization =
+                finalize_core_git_worktree(&PathBuf::from(&worktree_path), finalize).await?;
+            let run = CoreWorkspaceRunV1 {
+                wake_invocation_id: invocation_id,
+                wake_entry_id: input.wake_entry.wake_entry_id,
+                personality_instance_id: input.personality_instance_id.into_inner(),
+                binding_kind: "git_worktree".to_string(),
+                finalize: finalize.as_str().to_string(),
+                repo_path,
+                base_ref,
+                worktree_path,
+                branch_name,
+                parent_sha,
+                head_sha: finalization.head_sha,
+                committed: finalization.committed,
+                diff_stat_json: finalization.diff_stat,
+                exit_code: outcome.exit_code,
+                stdout_tail: outcome.stdout_tail,
+                stderr_tail: outcome.stderr_tail,
+                duration_ms: outcome.duration_ms,
+            };
+            let observed_at = time::OffsetDateTime::now_utc();
+            engine
+                .persist_core_workspace_run_internal(CoreWorkspaceRunPersistInput {
+                    owner: input.owner.clone(),
+                    root_perspective_memory_id: MemoryId::new(
+                        wake_context.root_perspective.memory_id,
+                    ),
+                    triggering_memory_id: MemoryId::new(wake_context.triggering_memory.memory_id),
+                    run,
+                    source_batch_id: SourceBatchId::new(Uuid::now_v7()),
+                    source_id: SourceId::new(CORE_WORKSPACE_RUN_SOURCE_ID.to_string()),
+                    observed_at,
+                })
+                .await
+                .map_err(|err| format!("persist core workspace run: {err}"))?;
+            Ok(())
+        }
+    }
+}
+
+async fn finalize_core_git_worktree(
+    worktree: &Path,
+    finalize: WakeWorkspaceFinalize,
+) -> Result<CoreGitWorkspaceFinalization, String> {
+    match finalize {
+        WakeWorkspaceFinalize::LeaveDirty => {
+            let diff_stat = dirty_worktree_diff_stat(worktree).await?;
+            let head_sha = git_output(worktree, &["rev-parse", "HEAD"])
+                .await
+                .map_err(|stderr| format!("git rev-parse HEAD: {stderr}"))?;
+            Ok(CoreGitWorkspaceFinalization {
+                head_sha,
+                committed: false,
+                diff_stat,
+            })
+        }
+        WakeWorkspaceFinalize::CommitAll => {
+            let status = git_output(worktree, &["status", "--porcelain"])
+                .await
+                .map_err(|stderr| format!("git status --porcelain: {stderr}"))?;
+            if status.trim().is_empty() {
+                let head_sha = git_output(worktree, &["rev-parse", "HEAD"])
+                    .await
+                    .map_err(|stderr| format!("git rev-parse HEAD: {stderr}"))?;
+                return Ok(CoreGitWorkspaceFinalization {
+                    head_sha,
+                    committed: false,
+                    diff_stat: CoreWorkspaceDiffStat {
+                        files_changed: 0,
+                        insertions: 0,
+                        deletions: 0,
+                        files: Vec::new(),
+                    },
+                });
+            }
+            git_output(worktree, &["add", "-A"])
+                .await
+                .map_err(|stderr| format!("git add -A: {stderr}"))?;
+            let diff_stat = cached_diff_stat(worktree).await?;
+            git_output(
+                worktree,
+                &[
+                    "-c",
+                    "user.name=Proxima Wake",
+                    "-c",
+                    "user.email=wake@proxima.local",
+                    "commit",
+                    "-m",
+                    "chore(proxima): record wake workspace changes",
+                ],
+            )
+            .await
+            .map_err(|stderr| format!("git commit: {stderr}"))?;
+            let head_sha = git_output(worktree, &["rev-parse", "HEAD"])
+                .await
+                .map_err(|stderr| format!("git rev-parse HEAD: {stderr}"))?;
+            Ok(CoreGitWorkspaceFinalization {
+                head_sha,
+                committed: true,
+                diff_stat,
+            })
+        }
+    }
+}
+
+async fn cached_diff_stat(worktree: &Path) -> Result<CoreWorkspaceDiffStat, String> {
+    let numstat = git_output(worktree, &["diff", "--cached", "--numstat", "HEAD"])
+        .await
+        .map_err(|stderr| format!("git diff --cached --numstat HEAD: {stderr}"))?;
+    Ok(parse_numstat(&numstat))
+}
+
+async fn dirty_worktree_diff_stat(worktree: &Path) -> Result<CoreWorkspaceDiffStat, String> {
+    let numstat = git_output(worktree, &["diff", "--numstat", "HEAD"])
+        .await
+        .map_err(|stderr| format!("git diff --numstat HEAD: {stderr}"))?;
+    let mut diff_stat = parse_numstat(&numstat);
+    let mut seen: HashSet<String> = diff_stat
+        .files
+        .iter()
+        .map(|file| file.path.clone())
+        .collect();
+    let status = git_output(worktree, &["status", "--porcelain"])
+        .await
+        .map_err(|stderr| format!("git status --porcelain: {stderr}"))?;
+    for line in status.lines() {
+        if let Some(path) = status_path(line) {
+            if seen.insert(path.clone()) {
+                diff_stat.files.push(CoreWorkspaceDiffFile {
+                    path,
+                    insertions: 0,
+                    deletions: 0,
+                });
+            }
+        }
+    }
+    diff_stat.files_changed = diff_stat.files.len() as u64;
+    Ok(diff_stat)
+}
+
+fn parse_numstat(numstat: &str) -> CoreWorkspaceDiffStat {
+    let mut files = Vec::new();
+    let mut insertions = 0_u64;
+    let mut deletions = 0_u64;
+    for line in numstat.lines().filter(|line| !line.trim().is_empty()) {
+        let parts: Vec<&str> = line.split('\t').collect();
+        if parts.len() < 3 {
+            continue;
+        }
+        let file_insertions = parts[0].parse::<u64>().unwrap_or(0);
+        let file_deletions = parts[1].parse::<u64>().unwrap_or(0);
+        insertions = insertions.saturating_add(file_insertions);
+        deletions = deletions.saturating_add(file_deletions);
+        files.push(CoreWorkspaceDiffFile {
+            path: parts[2..].join("\t"),
+            insertions: file_insertions,
+            deletions: file_deletions,
+        });
+    }
+    CoreWorkspaceDiffStat {
+        files_changed: files.len() as u64,
+        insertions,
+        deletions,
+        files,
+    }
+}
+
+fn status_path(line: &str) -> Option<String> {
+    let trimmed = line.get(3..)?.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let path = trimmed
+        .split_once(" -> ")
+        .map_or(trimmed, |(_, renamed)| renamed)
+        .to_string();
+    Some(path)
+}
+
+async fn git_output(cwd: &Path, args: &[&str]) -> Result<String, String> {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(cwd)
+        .output()
+        .await
+        .map_err(|err| err.to_string())?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 fn provider_target_failure_reason(err: &ProviderTargetBuildError) -> String {

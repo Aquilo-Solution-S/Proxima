@@ -30,7 +30,8 @@ pub use personality::{
 pub use types::{
     PersonalityMemoryKind, PersonalityStatus, WakeChainDepth, WakeEntryAuthoredBy,
     WakeEntryExecutionMode, WakeEntryGoalScope, WakeEntryTriggerKind, WakeExecutionMode,
-    WakeInvocationLogStatus, WakeInvocationStatus, WakeTraceOutcomeKind,
+    WakeInvocationLogStatus, WakeInvocationStatus, WakeTraceOutcomeKind, WakeWorkspaceBinding,
+    WakeWorkspaceFinalize,
 };
 
 // Re-export from drafts submodule

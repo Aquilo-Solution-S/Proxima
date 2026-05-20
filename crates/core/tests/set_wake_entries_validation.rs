@@ -27,7 +27,8 @@ use proxima_core::{
     SetWakeEntriesRequest, SetWakeEntriesResponse, SidecarSpec, SourceBatchId,
     TombstonePersonalityRequest, TombstonePersonalityResponse, UserId, WakeDispatchEntryRow,
     WakeEntryAuthoredBy, WakeEntryDraft, WakeEntryTriggerKind, WakeExecutionMode,
-    WakeInvocationFinalize, WakeInvocationStart, WakeInvocationStatus,
+    WakeInvocationFinalize, WakeInvocationStart, WakeInvocationStatus, WakeWorkspaceBinding,
+    WakeWorkspaceFinalize,
 };
 use uuid::Uuid;
 
@@ -406,6 +407,7 @@ fn entry(trigger: &str) -> WakeEntryDraft {
         inference_target_ref: None,
         substrate_tool_palette: vec![],
         workspace_tool_palette: vec![],
+        workspace_binding: None,
         max_rounds: 4,
         intervention_policy: None,
     }
@@ -507,6 +509,46 @@ async fn substrate_tool_id_in_workspace_palette_is_rejected() {
     draft.workspace_tool_palette = vec!["proxima-core/append-event".into()];
     let err = set_wake_entries(&ctx, &req(vec![draft])).await.unwrap_err();
     assert_eq!(err.code, ErrorCode::ToolNotRegistered);
+}
+
+#[tokio::test]
+async fn workspace_binding_allows_non_registry_workspace_trigger() {
+    let storage = FixtureStorage::default();
+    let registry = registry();
+    let ctx = SetWakeEntriesContext {
+        storage: &storage,
+        registry: &registry,
+    };
+    let mut draft = entry("proxima-goal/goal-activated-v1");
+    draft.execution_mode = WakeExecutionMode::Workspace;
+    draft.workspace_tool_palette = vec!["core-workspace/text_editor".into()];
+    draft.workspace_binding = Some(WakeWorkspaceBinding::GitWorktree {
+        repo_path: "/tmp/repo".into(),
+        base_ref: "HEAD".into(),
+        finalize: WakeWorkspaceFinalize::CommitAll,
+        worktrees_root: None,
+    });
+    let err = set_wake_entries(&ctx, &req(vec![draft])).await.unwrap_err();
+    assert_eq!(err.code, ErrorCode::TierUnbound);
+}
+
+#[tokio::test]
+async fn workspace_binding_requires_workspace_mode() {
+    let storage = FixtureStorage::default();
+    let registry = registry();
+    let ctx = SetWakeEntriesContext {
+        storage: &storage,
+        registry: &registry,
+    };
+    let mut draft = entry("proxima-goal/goal-activated-v1");
+    draft.workspace_binding = Some(WakeWorkspaceBinding::GitWorktree {
+        repo_path: "/tmp/repo".into(),
+        base_ref: "HEAD".into(),
+        finalize: WakeWorkspaceFinalize::CommitAll,
+        worktrees_root: None,
+    });
+    let err = set_wake_entries(&ctx, &req(vec![draft])).await.unwrap_err();
+    assert_eq!(err.code, ErrorCode::InvalidArgument);
 }
 
 #[tokio::test]

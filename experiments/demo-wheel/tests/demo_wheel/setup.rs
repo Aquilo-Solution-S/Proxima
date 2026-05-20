@@ -89,6 +89,7 @@ impl DemoWorld {
         wake.goal_scope = options.goal_scope;
         wake.instructions = instructions;
         wake.workspace_tool_palette = workspace_palette.into_iter().map(str::to_string).collect();
+        wake.workspace_binding = options.workspace_binding;
         wake.intervention_policy = options.intervention_policy;
         self.engine
             .set_wake_entries(

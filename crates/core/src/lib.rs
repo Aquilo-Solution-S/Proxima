@@ -25,6 +25,7 @@ pub mod secrets;
 pub mod storage;
 pub mod verbs;
 pub mod wake;
+pub mod workspace_run;
 
 pub use approval::*;
 pub use auth::*;
@@ -62,6 +63,7 @@ pub use personality::*;
 pub use relation::*;
 pub use secrets::*;
 pub use storage::*;
+pub use workspace_run::*;
 
 // Re-export verb modules for convenience.
 pub use verbs::*;
