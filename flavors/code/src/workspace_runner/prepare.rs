@@ -13,7 +13,8 @@ use crate::payloads::{
 
 use super::context::{build_workspace_context, hydrate_workspace_tooling};
 use super::git::{
-    build_review_diff_context, diff_stat, ensure_worktree_head, git_output, owner_component,
+    build_review_diff_context, commit_all_candidate, diff_stat, ensure_worktree_head, git_output,
+    owner_component,
 };
 use super::ingest::ingest_workspace_run;
 use super::loaders::{
@@ -58,13 +59,22 @@ impl WorkspaceRunner for CodeWorkspaceRunner {
                 WorkspaceRunnerError::FinalizeFailed(format!("decode runner state: {err}"))
             })?;
         let worktree = Path::new(&state.worktree_path);
-        let head_sha = git_output(worktree, &["rev-parse", "HEAD"])
-            .await
-            .map_err(|stderr| {
-                WorkspaceRunnerError::FinalizeFailed(format!("rev-parse HEAD: {stderr}"))
-            })?;
+        let mut head_sha =
+            git_output(worktree, &["rev-parse", "HEAD"])
+                .await
+                .map_err(|stderr| {
+                    WorkspaceRunnerError::FinalizeFailed(format!("rev-parse HEAD: {stderr}"))
+                })?;
         match &state.finalize_policy {
             FinalizePolicy::EmitWorkspaceRun => {}
+            FinalizePolicy::CommitAllCandidate => {
+                if let Some(committed_head) =
+                    commit_all_candidate(worktree, input.triggering_memory_id, input.invocation_id)
+                        .await?
+                {
+                    head_sha = committed_head;
+                }
+            }
             FinalizePolicy::InspectOnly {
                 head_sha: expected_head,
                 status_porcelain: expected_status,
@@ -209,7 +219,7 @@ impl CodeWorkspaceRunner {
                 branch_name: prior_run.branch_name.clone(),
                 parent_sha: prior_run.parent_sha.clone(),
                 worktree_path: worktree_path.to_string_lossy().to_string(),
-                finalize_policy: FinalizePolicy::EmitWorkspaceRun,
+                finalize_policy: FinalizePolicy::CommitAllCandidate,
             };
             let runner_state = serde_json::to_value(&state).map_err(|err| {
                 WorkspaceRunnerError::Internal(format!("serialize runner state: {err}"))
@@ -305,7 +315,7 @@ impl CodeWorkspaceRunner {
             branch_name,
             parent_sha,
             worktree_path: worktree_arg,
-            finalize_policy: FinalizePolicy::EmitWorkspaceRun,
+            finalize_policy: FinalizePolicy::CommitAllCandidate,
         };
         let runner_state = serde_json::to_value(&state).map_err(|err| {
             WorkspaceRunnerError::Internal(format!("serialize runner state: {err}"))

@@ -97,6 +97,52 @@ pub(super) async fn git_output(cwd: &Path, args: &[&str]) -> Result<String, Stri
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+pub(super) async fn commit_all_candidate(
+    worktree: &Path,
+    triggering_memory_id: proxima_core::MemoryId,
+    invocation_id: uuid::Uuid,
+) -> Result<Option<String>, WorkspaceRunnerError> {
+    let status = git_output(worktree, &["status", "--porcelain"])
+        .await
+        .map_err(|stderr| {
+            WorkspaceRunnerError::FinalizeFailed(format!("git status --porcelain: {stderr}"))
+        })?;
+    if status.trim().is_empty() {
+        return Ok(None);
+    }
+    git_output(worktree, &["add", "-A"])
+        .await
+        .map_err(|stderr| WorkspaceRunnerError::FinalizeFailed(format!("git add -A: {stderr}")))?;
+    let triggering_memory = triggering_memory_id.into_inner().to_string();
+    let invocation = invocation_id.to_string();
+    git_output(
+        worktree,
+        &[
+            "-c",
+            "user.name=Proxima Worker",
+            "-c",
+            "user.email=worker@proxima.local",
+            "commit",
+            "-m",
+            "proxima worker candidate",
+            "-m",
+            &format!("Triggering-Memory: {triggering_memory}"),
+            "-m",
+            &format!("Wake-Invocation: {invocation}"),
+        ],
+    )
+    .await
+    .map_err(|stderr| {
+        WorkspaceRunnerError::FinalizeFailed(format!("git commit candidate: {stderr}"))
+    })?;
+    let head_sha = git_output(worktree, &["rev-parse", "HEAD"])
+        .await
+        .map_err(|stderr| {
+            WorkspaceRunnerError::FinalizeFailed(format!("rev-parse committed HEAD: {stderr}"))
+        })?;
+    Ok(Some(head_sha))
+}
+
 pub(super) async fn diff_stat(
     worktree: &Path,
     parent_sha: &str,

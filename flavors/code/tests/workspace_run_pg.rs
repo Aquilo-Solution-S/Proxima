@@ -96,19 +96,6 @@ impl TargetAdapter for WorktreeWritingAdapter {
             tokio::fs::write(cwd.join("workspace-output.txt"), b"workspace smoke\n")
                 .await
                 .map_err(|err| err.to_string())?;
-            git(&cwd, &["add", "workspace-output.txt"])?;
-            git(
-                &cwd,
-                &[
-                    "-c",
-                    "user.name=Proxima Test",
-                    "-c",
-                    "user.email=proxima@example.test",
-                    "commit",
-                    "-m",
-                    "workspace smoke",
-                ],
-            )?;
             Ok::<(), String>(())
         }
         .await;
@@ -2616,7 +2603,7 @@ async fn workspace_wake_emits_run_fact_and_edges() -> Result<(), Box<dyn std::er
         assert_eq!(persisted_target.as_deref(), Some("main"));
 
         let run = sqlx::query(
-            "SELECT memory_id, repo_id, target_branch, parent_sha, head_sha, diff_stat_json
+            "SELECT memory_id, repo_id, target_branch, worktree_path, parent_sha, head_sha, diff_stat_json
              FROM proxima_code.workspace_run_v1
              WHERE repo_id = $1",
         )
@@ -2626,6 +2613,7 @@ async fn workspace_wake_emits_run_fact_and_edges() -> Result<(), Box<dyn std::er
         let run_memory_id: Uuid = run.try_get("memory_id")?;
         let run_repo_id: Uuid = run.try_get("repo_id")?;
         let target_branch: String = run.try_get("target_branch")?;
+        let run_worktree_path: String = run.try_get("worktree_path")?;
         let parent_sha: String = run.try_get("parent_sha")?;
         let head_sha: String = run.try_get("head_sha")?;
         let diff_stat: serde_json::Value = run.try_get("diff_stat_json")?;
@@ -2638,6 +2626,24 @@ async fn workspace_wake_emits_run_fact_and_edges() -> Result<(), Box<dyn std::er
                 .get("files_changed")
                 .and_then(serde_json::Value::as_u64),
             Some(1)
+        );
+        let run_worktree = Path::new(&run_worktree_path);
+        assert_eq!(git(run_worktree, &["status", "--porcelain"])?, "");
+        let commit_message = git(run_worktree, &["log", "-1", "--format=%B"])?;
+        assert!(
+            commit_message.contains("proxima worker candidate"),
+            "{commit_message}"
+        );
+        assert!(
+            commit_message.contains(&format!(
+                "Triggering-Memory: {}",
+                commit_outcome.memory_id.into_inner()
+            )),
+            "{commit_message}"
+        );
+        assert!(
+            commit_message.contains(&format!("Wake-Invocation: {invocation_id}")),
+            "{commit_message}"
         );
 
         let authored_edges: i64 = sqlx::query_scalar(

@@ -839,28 +839,31 @@ impl DemoWorld {
             )
             .into());
         }
+        let target_head = git_output(&self.cfg.repo_path, &["rev-parse", "main"])?;
         let worktree_status = git_output(&worktree.path, &["status", "--porcelain"])?;
-        if worktree_status.trim().is_empty() {
-            return Err("generated worktree has no changes to auto merge".into());
+        if !worktree_status.trim().is_empty() {
+            git(&worktree.path, &["add", "-A"])?;
+            git(
+                &worktree.path,
+                &[
+                    "-c",
+                    "user.name=Proxima Demo",
+                    "-c",
+                    "user.email=demo@example.test",
+                    "commit",
+                    "-m",
+                    match self.cfg.challenge {
+                        DemoChallenge::SignalMatch => "feat: auto merge signal match demo result",
+                        DemoChallenge::TodoCli => "feat: auto merge todo audit demo result",
+                        DemoChallenge::KanbanBoard => "feat: auto merge kanban board demo result",
+                    },
+                ],
+            )?;
         }
-        git(&worktree.path, &["add", "-A"])?;
-        git(
-            &worktree.path,
-            &[
-                "-c",
-                "user.name=Proxima Demo",
-                "-c",
-                "user.email=demo@example.test",
-                "commit",
-                "-m",
-                match self.cfg.challenge {
-                    DemoChallenge::SignalMatch => "feat: auto merge signal match demo result",
-                    DemoChallenge::TodoCli => "feat: auto merge todo audit demo result",
-                    DemoChallenge::KanbanBoard => "feat: auto merge kanban board demo result",
-                },
-            ],
-        )?;
         let commit_sha = git_output(&worktree.path, &["rev-parse", "HEAD"])?;
+        if commit_sha == target_head {
+            return Err("generated worktree has no candidate commit to auto merge".into());
+        }
         git(&self.cfg.repo_path, &["merge", "--ff-only", &commit_sha])?;
         Ok(AutoMergeMetric {
             worktree_path: worktree.path.display().to_string(),
