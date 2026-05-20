@@ -92,6 +92,7 @@ impl CodeWorkspaceRunner {
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub(super) enum FinalizePolicy {
     EmitWorkspaceRun,
+    CommitAllCandidate,
     InspectOnly {
         head_sha: String,
         status_porcelain: String,
