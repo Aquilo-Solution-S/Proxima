@@ -53,7 +53,7 @@ async fn goal_decompose_writes_active_children_parent_links_and_assignments()
         ctx.caller_self_perspective = Some(self_id);
         let parent = active_parent(&pg, &ctx).await?;
         let evidence = insert_abstraction(&pg, &owner).await?;
-        let evidence_handle = ctx.format_memory(MemoryId::new(evidence));
+        let evidence_handle = ctx.format_abstraction_memory(MemoryId::new(evidence));
 
         let output = DecomposeTool::call(
             ctx.clone(),
@@ -263,7 +263,7 @@ async fn goal_decompose_accepts_parent_activation_memory_handle()
         let output = DecomposeTool::call(
             ctx.clone(),
             DecomposeArgs {
-                parent_goal: ctx.format_memory(MemoryId::new(activation_memory)),
+                parent_goal: ctx.format_fact_memory(MemoryId::new(activation_memory)),
                 children: vec![ChildGoalInput {
                     payload: simple_goal("child from activation"),
                     evidence: Vec::new(),

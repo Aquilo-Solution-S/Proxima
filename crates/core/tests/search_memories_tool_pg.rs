@@ -61,7 +61,7 @@ async fn search_memories_returns_handles_and_records_read_log()
         &engine,
         &owner,
         "test/personality",
-        PersonalityInstanceId::new(Uuid::now_v7()),
+        PersonalityInstanceId::new(Uuid::nil()),
         MemoryId::new(Uuid::now_v7()),
         MemoryId::new(Uuid::now_v7()),
         WakeChainDepth::new(0),
@@ -83,7 +83,7 @@ async fn search_memories_returns_handles_and_records_read_log()
         )
         .await?;
 
-    assert_eq!(result.content["memories"][0]["memory"], "N1");
+    assert_eq!(result.content["memories"][0]["memory"], "A1");
     assert_eq!(
         read_log.lock().await.as_slice(),
         &[(MemoryId::new(memory_id), WakeChainDepth::new(4))]

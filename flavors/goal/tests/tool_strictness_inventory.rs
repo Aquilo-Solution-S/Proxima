@@ -64,7 +64,7 @@ fn decompose_handle_fields_explain_domains() {
     assert!(parent_goal.contains("G"), "{parent_goal}");
 
     let target_personality = description_at(&tool.args_schema, "/properties/target_personality");
-    assert!(target_personality.contains("P"), "{target_personality}");
+    assert!(target_personality.contains("I"), "{target_personality}");
 }
 
 fn checkpoint_path() -> PathBuf {

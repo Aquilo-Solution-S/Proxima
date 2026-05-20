@@ -12,7 +12,7 @@ use crate::payloads::WorkspaceReviewVerdict;
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CodeGoalCompletionStatusArgs {
     #[schemars(
-        description = "`N...` memory handle for the proxima-code/workspace-review-v1 Fact used to derive Goal completion status."
+        description = "`F...` memory handle for the proxima-code/workspace-review-v1 Fact used to derive Goal completion status."
     )]
     pub workspace_review_memory: String,
 }
@@ -88,8 +88,8 @@ pub async fn goal_completion_status(
     ctx: McpToolCtx,
     args: CodeGoalCompletionStatusArgs,
 ) -> Result<CodeGoalCompletionStatusOutput, McpToolError> {
-    let review_memory = ctx.resolve_memory(&args.workspace_review_memory)?;
-    let review_handle = ctx.format_memory(review_memory);
+    let review_memory = ctx.resolve_fact_memory(&args.workspace_review_memory)?;
+    let review_handle = ctx.format_fact_memory(review_memory);
     let mut tx = ctx.pool.begin().await.map_err(map_storage)?;
     let review = load_workspace_review(&mut tx, &ctx, review_memory).await?;
     tx.commit().await.map_err(map_storage)?;
@@ -101,7 +101,7 @@ pub async fn goal_completion_status(
             status: "skipped".into(),
             workspace_review_memory: review_handle,
             review_verdict: review.payload.verdict,
-            execution_request_memory: ctx.format_memory(request_memory),
+            execution_request_memory: ctx.format_fact_memory(request_memory),
             originating_goal: None,
             child_close: None,
             parent: None,
@@ -142,7 +142,7 @@ pub async fn goal_completion_status(
         status: status.into(),
         workspace_review_memory: review_handle,
         review_verdict: review.payload.verdict,
-        execution_request_memory: ctx.format_memory(request_memory),
+        execution_request_memory: ctx.format_fact_memory(request_memory),
         originating_goal: Some(originating_goal),
         child_close,
         parent,
@@ -393,7 +393,7 @@ fn close_command(
 ) -> GoalCloseCommand {
     GoalCloseCommand {
         goal: goal.to_string(),
-        evidence: vec![ctx.format_memory(review_memory)],
+        evidence: vec![ctx.format_fact_memory(review_memory)],
         idempotency_key: format!("goal-completion-{kind}-{}", review_memory.into_inner()),
     }
 }

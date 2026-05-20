@@ -10,7 +10,9 @@ pub use core_tools::{
     AuditEmit, PersonalityConfigChangedCaller, PersonalityConfigChangedSubject,
     PersonalityConfigChangedV1, PersonalityConfigChangedVerb, emit_personality_config_changed,
 };
-pub use handles::{EntityKind, EntityRef, Handle, HandleTable, PreSeededHandles, ResolveError};
+pub use handles::{
+    EntityKind, EntityRef, Handle, HandleTable, MemoryHandleClass, PreSeededHandles, ResolveError,
+};
 
 use std::sync::Arc;
 
@@ -78,7 +80,7 @@ pub trait HarnessSubstrateBridge: Send + Sync {
 /// helpers operate in.
 ///
 /// - `Handles`: wake-dispatched, model-facing. Emits/parses handle
-///   strings (`N1`, `G7`, …) against the wake's `HandleTable`.
+///   strings (`F1`, `A1`, `P1`, `G7`, …) against the wake's `HandleTable`.
 /// - `RawIds`: master-token / human-facing. Emits/parses raw UUID
 ///   strings. No `HandleTable` is consulted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -142,8 +144,50 @@ impl McpToolCtx {
 
     #[must_use]
     pub fn format_memory(&self, id: MemoryId) -> String {
+        self.format_fact_memory(id)
+    }
+
+    #[must_use]
+    pub fn format_memory_with_class(&self, id: MemoryId, class: MemoryHandleClass) -> String {
+        match class {
+            MemoryHandleClass::Fact => self.format_fact_memory(id),
+            MemoryHandleClass::Abstraction => self.format_abstraction_memory(id),
+            MemoryHandleClass::Perspective => self.format_perspective_memory(id),
+        }
+    }
+
+    #[must_use]
+    pub fn format_fact_memory(&self, id: MemoryId) -> String {
         match self.mode {
-            OutputMode::Handles => self.handle_table().assign_memory(id).as_str().to_string(),
+            OutputMode::Handles => self
+                .handle_table()
+                .assign_fact_memory(id)
+                .as_str()
+                .to_string(),
+            OutputMode::RawIds => id.into_inner().to_string(),
+        }
+    }
+
+    #[must_use]
+    pub fn format_abstraction_memory(&self, id: MemoryId) -> String {
+        match self.mode {
+            OutputMode::Handles => self
+                .handle_table()
+                .assign_abstraction_memory(id)
+                .as_str()
+                .to_string(),
+            OutputMode::RawIds => id.into_inner().to_string(),
+        }
+    }
+
+    #[must_use]
+    pub fn format_perspective_memory(&self, id: MemoryId) -> String {
+        match self.mode {
+            OutputMode::Handles => self
+                .handle_table()
+                .assign_perspective_memory(id)
+                .as_str()
+                .to_string(),
             OutputMode::RawIds => id.into_inner().to_string(),
         }
     }
@@ -212,6 +256,45 @@ impl McpToolCtx {
             OutputMode::Handles => self
                 .handle_table()
                 .resolve_memory(raw)
+                .map_err(McpToolError::Resolve),
+            OutputMode::RawIds => raw
+                .parse::<uuid::Uuid>()
+                .map(MemoryId::new)
+                .map_err(|e| McpToolError::InvalidInput(format!("not a uuid: {e}"))),
+        }
+    }
+
+    pub fn resolve_fact_memory(&self, raw: &str) -> Result<MemoryId, McpToolError> {
+        match self.mode {
+            OutputMode::Handles => self
+                .handle_table()
+                .resolve_fact_memory(raw)
+                .map_err(McpToolError::Resolve),
+            OutputMode::RawIds => raw
+                .parse::<uuid::Uuid>()
+                .map(MemoryId::new)
+                .map_err(|e| McpToolError::InvalidInput(format!("not a uuid: {e}"))),
+        }
+    }
+
+    pub fn resolve_abstraction_memory(&self, raw: &str) -> Result<MemoryId, McpToolError> {
+        match self.mode {
+            OutputMode::Handles => self
+                .handle_table()
+                .resolve_abstraction_memory(raw)
+                .map_err(McpToolError::Resolve),
+            OutputMode::RawIds => raw
+                .parse::<uuid::Uuid>()
+                .map(MemoryId::new)
+                .map_err(|e| McpToolError::InvalidInput(format!("not a uuid: {e}"))),
+        }
+    }
+
+    pub fn resolve_perspective_memory(&self, raw: &str) -> Result<MemoryId, McpToolError> {
+        match self.mode {
+            OutputMode::Handles => self
+                .handle_table()
+                .resolve_perspective_memory(raw)
                 .map_err(McpToolError::Resolve),
             OutputMode::RawIds => raw
                 .parse::<uuid::Uuid>()

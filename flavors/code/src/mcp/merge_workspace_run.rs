@@ -7,16 +7,14 @@ use crate::payloads::WorkspaceDecisionV1;
 use crate::repos::WorkspaceMergeOutcome;
 use crate::workspace_flow::{WorkspaceFlowError, merge_workspace_run};
 
-use super::emit_execution_request::resolve_memory_id;
-
 #[derive(Debug)]
 pub struct CodeMergeWorkspaceRunTool;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CodeMergeWorkspaceRunArgs {
-    /// Handle (W…) for the proxima-code/workspace-run-v1 Fact to merge.
+    /// Handle (F…) for the proxima-code/workspace-run-v1 Fact to merge.
     #[schemars(
-        description = "`N...` memory handle for the proxima-code/workspace-run-v1 Fact to merge after approval. Model wakes should not call this."
+        description = "`F...` memory handle for the proxima-code/workspace-run-v1 Fact to merge after approval. Model wakes should not call this."
     )]
     pub workspace_run_memory: String,
 }
@@ -59,7 +57,7 @@ impl McpTool for CodeMergeWorkspaceRunTool {
                         .into(),
                 ));
             }
-            let run_memory_id = resolve_memory_id(&ctx, &args.workspace_run_memory)?;
+            let run_memory_id = ctx.resolve_fact_memory(&args.workspace_run_memory)?;
             let outcome = merge_workspace_run(&ctx.pool, &ctx.owner, run_memory_id)
                 .await
                 .map_err(map_workspace_flow_err)?;
@@ -72,8 +70,9 @@ impl McpTool for CodeMergeWorkspaceRunTool {
                 new_target_sha,
             } = outcome;
             Ok(CodeMergeWorkspaceRunOutput {
-                workspace_run_memory: ctx.format_memory(MemoryId::new(run_memory_id)),
-                workspace_decision_memory: ctx.format_memory(MemoryId::new(decision_memory_id)),
+                workspace_run_memory: ctx.format_fact_memory(MemoryId::new(run_memory_id)),
+                workspace_decision_memory: ctx
+                    .format_fact_memory(MemoryId::new(decision_memory_id)),
                 repo_id: repo_id.to_string(),
                 target_branch,
                 old_target_sha,

@@ -18,7 +18,7 @@ pub struct TombstonePersonalityTool;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct TombstonePersonalityArgs {
-    /// `P`-handle of the personality to tombstone.
+    /// `I`-handle of the personality to tombstone.
     pub personality: String,
 }
 

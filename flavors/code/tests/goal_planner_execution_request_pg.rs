@@ -120,7 +120,7 @@ impl ScriptedPlannerAdapter {
             .ok_or_else(|| "missing wake context".to_string())?;
         let goal_activated_memory = wake
             .handles
-            .assign_memory(wake.triggering_event_memory_id)
+            .assign_fact_memory(wake.triggering_event_memory_id)
             .as_str()
             .to_string();
 

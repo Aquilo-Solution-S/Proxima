@@ -22,7 +22,7 @@ pub struct EmitInterventionDecisionTool;
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct EmitInterventionDecisionArgs {
     #[schemars(
-        description = "`N...` intervention-requested Fact memory handle that woke the Wake Supervisor."
+        description = "`F...` intervention-requested Fact memory handle that woke the Wake Supervisor."
     )]
     pub intervention_request: String,
     #[schemars(
@@ -35,7 +35,7 @@ pub struct EmitInterventionDecisionArgs {
     #[serde(default)]
     pub grant_rounds: Option<u16>,
     #[schemars(
-        description = "Optional `P...` Personality handle to redirect to. Required only for redirect; omit or null otherwise."
+        description = "Optional `I...` Personality handle to redirect to. Required only for redirect; omit or null otherwise."
     )]
     #[serde(default)]
     pub redirect_personality: Option<String>,
@@ -72,7 +72,7 @@ impl McpTool for EmitInterventionDecisionTool {
         args: EmitInterventionDecisionArgs,
     ) -> BoxFuture<'static, Result<EmitInterventionDecisionOutput, McpToolError>> {
         Box::pin(async move {
-            let intervention_request = ctx.resolve_memory(&args.intervention_request)?;
+            let intervention_request = ctx.resolve_fact_memory(&args.intervention_request)?;
             if args.rationale.trim().is_empty() {
                 return Err(McpToolError::InvalidInput("rationale is empty".into()));
             }
@@ -105,7 +105,7 @@ impl McpTool for EmitInterventionDecisionTool {
                 existing_decision(&ctx, loaded.memory_id, &payload.idempotency_key).await?
             {
                 return Ok(EmitInterventionDecisionOutput {
-                    intervention_decision: ctx.format_memory(existing),
+                    intervention_decision: ctx.format_fact_memory(existing),
                     decision: payload.decision,
                 });
             }
@@ -133,7 +133,7 @@ impl McpTool for EmitInterventionDecisionTool {
             tx.commit().await.map_err(map_sql)?;
 
             Ok(EmitInterventionDecisionOutput {
-                intervention_decision: ctx.format_memory(outcome.memory_id),
+                intervention_decision: ctx.format_fact_memory(outcome.memory_id),
                 decision: payload.decision,
             })
         })
@@ -565,13 +565,13 @@ mod tests {
     #[test]
     fn intervention_decision_output_is_record_only() {
         let output = EmitInterventionDecisionOutput {
-            intervention_decision: "N1".into(),
+            intervention_decision: "F1".into(),
             decision: InterventionDecisionKind::Continue,
         };
 
         let value = serde_json::to_value(output).expect("serialize output");
 
-        assert_eq!(value["intervention_decision"], "N1");
+        assert_eq!(value["intervention_decision"], "F1");
         assert_eq!(value["decision"], "continue");
         assert!(value.get("continuation_applied").is_none());
         assert!(value.get("continuation_note").is_none());

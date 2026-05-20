@@ -639,7 +639,7 @@ mod tests {
     #[tokio::test]
     async fn ctx_for_wake_dispatched_runs_in_handles_mode() {
         use proxima_core::MemoryId;
-        use proxima_core::mcp::HandleTable;
+        use proxima_core::mcp::{HandleTable, MemoryHandleClass};
         use proxima_core::personality::WakeChainDepth;
         use proxima_core::wake::token_store::WakeTokenContext;
 
@@ -662,7 +662,9 @@ mod tests {
             model_id: "test/model".into(),
             max_rounds: 4,
             current_root_perspective_memory_id: MemoryId::new(uuid::Uuid::now_v7()),
+            current_root_perspective_memory_class: MemoryHandleClass::Perspective,
             triggering_event_memory_id: MemoryId::new(uuid::Uuid::now_v7()),
+            triggering_event_memory_class: MemoryHandleClass::Fact,
             triggering_event_depth: WakeChainDepth::new(0),
             read_log: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             handles: wake_handles.clone(),

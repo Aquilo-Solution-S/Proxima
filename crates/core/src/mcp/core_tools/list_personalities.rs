@@ -21,7 +21,7 @@ pub struct ListPersonalitiesArgs {
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct ListPersonalitiesItem {
-    /// `P`-prefixed handle. Pass as `personality` to get_personality,
+    /// `I`-prefixed handle. Pass as `personality` to get_personality,
     /// tombstone_personality, list_wake_entries, add_wake_entry, etc.
     pub personality: String,
     pub display_name: String,
@@ -38,7 +38,7 @@ pub struct ListPersonalitiesOutput {
 impl McpTool for ListPersonalitiesTool {
     const NAME: &'static str = "core/list_personalities";
     const DESCRIPTION: &'static str = "List personality instances for the authenticated owner. Each item \
-         carries a `personality` field (P-prefixed handle) — pass that value as the `personality` argument \
+         carries a `personality` field (I-prefixed handle) — pass that value as the `personality` argument \
          to get_personality, tombstone_personality, list_wake_entries, add_wake_entry, set_wake_entries, \
          and replay_wake_events.";
     type Args = ListPersonalitiesArgs;
@@ -64,7 +64,8 @@ impl McpTool for ListPersonalitiesTool {
                         personality: ctx.format_personality(row.personality_instance_id),
                         display_name: row.display_name,
                         status: row.status,
-                        root_perspective: ctx.format_memory(row.current_root_perspective_memory_id),
+                        root_perspective: ctx
+                            .format_perspective_memory(row.current_root_perspective_memory_id),
                         wake_entry_count: count,
                     }
                 })

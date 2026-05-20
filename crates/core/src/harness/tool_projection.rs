@@ -297,7 +297,7 @@ fn normalize_reference_properties(properties: &mut Map<String, Value>) {
         if is_reference_key(key) {
             *schema = serde_json::json!({
                 "type": "string",
-                "description": format!("Use the wake handle for `{key}` (for example N1, G1, P1, E1, or W1), not a raw UUID.")
+                "description": format!("Use the wake handle for `{key}` (for example F1, A1, P1, G1, I1, E1, or W1), not a raw UUID.")
             });
             continue;
         }

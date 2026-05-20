@@ -168,7 +168,9 @@ impl PersonalityTool for SearchMemoriesTool {
         let memories: Vec<_> = rows
             .into_iter()
             .map(|row| {
-                let handle = ctx.handles.assign_memory(row.memory_id);
+                let handle = ctx
+                    .handles
+                    .assign_memory_kind(row.memory_id, &format!("{:?}", row.kind));
                 serde_json::json!({
                     "memory": handle.as_str(),
                     "kind": format!("{:?}", row.kind),

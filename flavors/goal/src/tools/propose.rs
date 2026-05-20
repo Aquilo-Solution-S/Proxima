@@ -16,11 +16,11 @@ pub struct ProposeArgs {
     pub payload: GoalPayloadInput,
     #[serde(default)]
     #[schemars(
-        description = "Optional Fact or Abstraction memory evidence handles (`N...`). Use `[]` when no separate evidence is needed; never use `G...` here."
+        description = "Optional `F...` Fact or `A...` Abstraction memory evidence handles. Use `[]` when no separate evidence is needed; never use `G...` here."
     )]
     pub evidence: Vec<String>,
     #[schemars(
-        description = "Optional `P...` Personality handle to assign the proposed Goal to. Omit or null to use the caller Self when available."
+        description = "Optional `I...` Personality handle to assign the proposed Goal to. Omit or null to use the caller Self when available."
     )]
     pub target_personality: Option<String>,
     #[schemars(

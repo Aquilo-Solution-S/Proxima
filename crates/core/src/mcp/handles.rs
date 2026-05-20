@@ -3,12 +3,56 @@ use std::sync::Mutex;
 
 use crate::{EdgeId, GoalId, MemoryId, PersonalityInstanceId};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MemoryHandleClass {
+    Fact,
+    Abstraction,
+    Perspective,
+}
+
+impl MemoryHandleClass {
+    #[must_use]
+    pub const fn prefix(self) -> char {
+        match self {
+            Self::Fact => 'F',
+            Self::Abstraction => 'A',
+            Self::Perspective => 'P',
+        }
+    }
+
+    #[must_use]
+    pub fn from_memory_kind(kind: &str) -> Option<Self> {
+        match kind {
+            "Fact" | "fact" => Some(Self::Fact),
+            "Abstraction" | "abstraction" => Some(Self::Abstraction),
+            "Perspective" | "perspective" => Some(Self::Perspective),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for MemoryHandleClass {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Fact => write!(f, "Fact"),
+            Self::Abstraction => write!(f, "Abstraction"),
+            Self::Perspective => write!(f, "Perspective"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum EntityRef {
-    Memory(MemoryId),
+    Memory {
+        id: MemoryId,
+        class: MemoryHandleClass,
+    },
     Edge(EdgeId),
     Goal(GoalId),
-    FlavorObject { kind: String, id: uuid::Uuid },
+    FlavorObject {
+        kind: String,
+        id: uuid::Uuid,
+    },
     Personality(PersonalityInstanceId),
     WakeEntry(uuid::Uuid),
 }
@@ -17,7 +61,7 @@ impl EntityRef {
     #[must_use]
     pub fn kind(&self) -> EntityKind {
         match self {
-            EntityRef::Memory(_) => EntityKind::Memory,
+            EntityRef::Memory { class, .. } => EntityKind::Memory(*class),
             EntityRef::Edge(_) => EntityKind::Edge,
             EntityRef::Goal(_) => EntityKind::Goal,
             EntityRef::FlavorObject { kind, .. } => EntityKind::FlavorObject { kind: kind.clone() },
@@ -32,7 +76,8 @@ impl EntityRef {
 /// what it asked for versus what it got.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EntityKind {
-    Memory,
+    Memory(MemoryHandleClass),
+    AnyMemory,
     Edge,
     Goal,
     FlavorObject { kind: String },
@@ -41,17 +86,20 @@ pub enum EntityKind {
 }
 
 impl EntityKind {
-    /// Stable handle prefix for this kind (`N`, `E`, `G`, `P`, `W`).
+    /// Stable handle prefix for this kind (`F`, `A`, `P`, `E`, `G`, `I`, `W`).
     /// Flavor objects use flavor-defined prefixes — `<flavor>` is a
     /// placeholder for messages.
     #[must_use]
     pub fn prefix(&self) -> &'static str {
         match self {
-            EntityKind::Memory => "N",
+            EntityKind::Memory(MemoryHandleClass::Fact) => "F",
+            EntityKind::Memory(MemoryHandleClass::Abstraction) => "A",
+            EntityKind::Memory(MemoryHandleClass::Perspective) => "P",
+            EntityKind::AnyMemory => "F/A/P",
             EntityKind::Edge => "E",
             EntityKind::Goal => "G",
             EntityKind::FlavorObject { .. } => "<flavor>",
-            EntityKind::Personality => "P",
+            EntityKind::Personality => "I",
             EntityKind::WakeEntry => "W",
         }
     }
@@ -60,7 +108,8 @@ impl EntityKind {
 impl std::fmt::Display for EntityKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            EntityKind::Memory => write!(f, "Memory"),
+            EntityKind::Memory(class) => write!(f, "{class} memory"),
+            EntityKind::AnyMemory => write!(f, "Memory"),
             EntityKind::Edge => write!(f, "Edge"),
             EntityKind::Goal => write!(f, "Goal"),
             EntityKind::FlavorObject { kind } => write!(f, "FlavorObject({kind})"),
@@ -123,12 +172,15 @@ pub struct HandleTable {
 
 #[derive(Debug, Default)]
 struct HandleTableInner {
-    memory_counter: u32,
+    fact_counter: u32,
+    abstraction_counter: u32,
+    perspective_counter: u32,
     edge_counter: u32,
     goal_counter: u32,
     flavor_counters: HashMap<char, u32>,
     personality_counter: u32,
     wake_entry_counter: u32,
+    by_memory: HashMap<MemoryId, (MemoryHandleClass, Handle)>,
     by_entity: HashMap<EntityRef, Handle>,
     by_handle: HashMap<String, EntityRef>,
 }
@@ -140,9 +192,64 @@ impl HandleTable {
     }
 
     pub fn assign_memory(&self, id: MemoryId) -> Handle {
-        self.assign(EntityRef::Memory(id), 'N', |inner| {
-            &mut inner.memory_counter
-        })
+        self.assign_fact_memory(id)
+    }
+
+    pub fn assign_fact_memory(&self, id: MemoryId) -> Handle {
+        self.assign_memory_with_class(id, MemoryHandleClass::Fact)
+    }
+
+    pub fn assign_abstraction_memory(&self, id: MemoryId) -> Handle {
+        self.assign_memory_with_class(id, MemoryHandleClass::Abstraction)
+    }
+
+    pub fn assign_perspective_memory(&self, id: MemoryId) -> Handle {
+        self.assign_memory_with_class(id, MemoryHandleClass::Perspective)
+    }
+
+    pub fn assign_memory_kind(&self, id: MemoryId, kind: &str) -> Handle {
+        self.assign_memory_with_class(
+            id,
+            MemoryHandleClass::from_memory_kind(kind).unwrap_or(MemoryHandleClass::Fact),
+        )
+    }
+
+    pub fn assign_memory_with_class(&self, id: MemoryId, class: MemoryHandleClass) -> Handle {
+        let mut inner = self.inner.lock().expect("handle table mutex poisoned");
+        if let Some((existing_class, handle)) = inner.by_memory.get(&id) {
+            assert_eq!(
+                *existing_class,
+                class,
+                "memory handle class changed for {}: existing {}, requested {}",
+                id.into_inner(),
+                existing_class,
+                class
+            );
+            return handle.clone();
+        }
+
+        let counter = match class {
+            MemoryHandleClass::Fact => &mut inner.fact_counter,
+            MemoryHandleClass::Abstraction => &mut inner.abstraction_counter,
+            MemoryHandleClass::Perspective => &mut inner.perspective_counter,
+        };
+        *counter = counter.checked_add(1).expect("handle counter overflow");
+        let raw = format!("{}{}", class.prefix(), counter);
+        let handle = Handle(raw.clone());
+        let entity = EntityRef::Memory { id, class };
+        inner.by_memory.insert(id, (class, handle.clone()));
+        inner.by_entity.insert(entity.clone(), handle.clone());
+        inner.by_handle.insert(raw, entity);
+        handle
+    }
+
+    pub fn memory_handle(&self, id: MemoryId) -> Option<Handle> {
+        self.inner
+            .lock()
+            .expect("handle table mutex poisoned")
+            .by_memory
+            .get(&id)
+            .map(|(_, handle)| handle.clone())
     }
 
     pub fn assign_edge(&self, id: EdgeId) -> Handle {
@@ -174,7 +281,7 @@ impl HandleTable {
     }
 
     pub fn assign_personality(&self, id: PersonalityInstanceId) -> Handle {
-        self.assign(EntityRef::Personality(id), 'P', |inner| {
+        self.assign(EntityRef::Personality(id), 'I', |inner| {
             &mut inner.personality_counter
         })
     }
@@ -224,11 +331,38 @@ impl HandleTable {
 
     pub fn resolve_memory(&self, raw: &str) -> Result<MemoryId, ResolveError> {
         match self.resolve_entity(raw)? {
-            EntityRef::Memory(id) => Ok(id),
+            EntityRef::Memory { id, .. } => Ok(id),
             other => Err(ResolveError::WrongKind {
                 input: raw.to_string(),
                 got: other.kind(),
-                expected: EntityKind::Memory,
+                expected: EntityKind::AnyMemory,
+            }),
+        }
+    }
+
+    pub fn resolve_fact_memory(&self, raw: &str) -> Result<MemoryId, ResolveError> {
+        self.resolve_memory_class(raw, MemoryHandleClass::Fact)
+    }
+
+    pub fn resolve_abstraction_memory(&self, raw: &str) -> Result<MemoryId, ResolveError> {
+        self.resolve_memory_class(raw, MemoryHandleClass::Abstraction)
+    }
+
+    pub fn resolve_perspective_memory(&self, raw: &str) -> Result<MemoryId, ResolveError> {
+        self.resolve_memory_class(raw, MemoryHandleClass::Perspective)
+    }
+
+    fn resolve_memory_class(
+        &self,
+        raw: &str,
+        expected_class: MemoryHandleClass,
+    ) -> Result<MemoryId, ResolveError> {
+        match self.resolve_entity(raw)? {
+            EntityRef::Memory { id, class } if class == expected_class => Ok(id),
+            other => Err(ResolveError::WrongKind {
+                input: raw.to_string(),
+                got: other.kind(),
+                expected: EntityKind::Memory(expected_class),
             }),
         }
     }
@@ -328,11 +462,15 @@ mod tests {
     #[test]
     fn handles_grow_monotonically_per_kind() {
         let table = HandleTable::new();
-        let m1 = MemoryId::new(Uuid::now_v7());
-        let m2 = MemoryId::new(Uuid::now_v7());
+        let f1 = MemoryId::new(Uuid::now_v7());
+        let f2 = MemoryId::new(Uuid::now_v7());
+        let a1 = MemoryId::new(Uuid::now_v7());
+        let p1 = MemoryId::new(Uuid::now_v7());
         let e1 = EdgeId::new(Uuid::now_v7());
-        assert_eq!(table.assign_memory(m1).as_str(), "N1");
-        assert_eq!(table.assign_memory(m2).as_str(), "N2");
+        assert_eq!(table.assign_fact_memory(f1).as_str(), "F1");
+        assert_eq!(table.assign_fact_memory(f2).as_str(), "F2");
+        assert_eq!(table.assign_abstraction_memory(a1).as_str(), "A1");
+        assert_eq!(table.assign_perspective_memory(p1).as_str(), "P1");
         assert_eq!(table.assign_edge(e1).as_str(), "E1");
     }
 
@@ -348,11 +486,11 @@ mod tests {
     #[test]
     fn resolve_unknown_handle_returns_unknown_error() {
         let table = HandleTable::new();
-        let err = table.resolve_entity("N99").unwrap_err();
+        let err = table.resolve_entity("F99").unwrap_err();
         assert_eq!(
             err,
             ResolveError::Unknown {
-                input: "N99".into()
+                input: "F99".into()
             }
         );
     }
@@ -361,15 +499,15 @@ mod tests {
     fn resolve_round_trips() {
         let table = HandleTable::new();
         let m = MemoryId::new(Uuid::now_v7());
-        let h = table.assign_memory(m);
+        let h = table.assign_fact_memory(m);
         let r = table.resolve_entity(h.as_str()).expect("known handle");
-        assert!(matches!(r, EntityRef::Memory(x) if x == m));
+        assert!(matches!(r, EntityRef::Memory { id, class: MemoryHandleClass::Fact } if id == m));
     }
 
     #[test]
     fn malformed_handle_string_is_rejected() {
         let table = HandleTable::new();
-        for raw in ["nope", "N", "Nfoo", "X1"] {
+        for raw in ["nope", "F", "Ffoo", "X1"] {
             let err = table.resolve_entity(raw).unwrap_err();
             assert_eq!(
                 err,
@@ -382,13 +520,13 @@ mod tests {
     }
 
     #[test]
-    fn personality_handles_use_p_prefix() {
+    fn personality_handles_use_i_prefix() {
         let table = HandleTable::new();
         let p1 = PersonalityInstanceId::new(uuid::Uuid::now_v7());
         let p2 = PersonalityInstanceId::new(uuid::Uuid::now_v7());
-        assert_eq!(table.assign_personality(p1).as_str(), "P1");
-        assert_eq!(table.assign_personality(p2).as_str(), "P2");
-        assert_eq!(table.assign_personality(p1).as_str(), "P1", "idempotent");
+        assert_eq!(table.assign_personality(p1).as_str(), "I1");
+        assert_eq!(table.assign_personality(p2).as_str(), "I2");
+        assert_eq!(table.assign_personality(p1).as_str(), "I1", "idempotent");
     }
 
     #[test]
@@ -402,7 +540,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_personality_rejects_non_p_handle() {
+    fn resolve_personality_rejects_non_i_handle() {
         let table = HandleTable::new();
         let p = PersonalityInstanceId::new(uuid::Uuid::now_v7());
         let _ = table.assign_personality(p);
@@ -413,7 +551,7 @@ mod tests {
             err,
             ResolveError::WrongKind {
                 input: mh.as_str().to_string(),
-                got: EntityKind::Memory,
+                got: EntityKind::Memory(MemoryHandleClass::Fact),
                 expected: EntityKind::Personality,
             }
         );
@@ -422,7 +560,7 @@ mod tests {
     #[test]
     fn malformed_personality_handle_rejected() {
         let table = HandleTable::new();
-        for raw in ["Pfoo", "P", "p1"] {
+        for raw in ["Ifoo", "I", "i1"] {
             let err = table.resolve_personality(raw).unwrap_err();
             assert_eq!(
                 err,
@@ -445,7 +583,7 @@ mod tests {
             ResolveError::WrongKind {
                 input: h.as_str().to_string(),
                 got: EntityKind::Goal,
-                expected: EntityKind::Memory,
+                expected: EntityKind::AnyMemory,
             }
         );
     }
@@ -455,7 +593,7 @@ mod tests {
         let err = ResolveError::WrongKind {
             input: "G7".into(),
             got: EntityKind::Goal,
-            expected: EntityKind::Memory,
+            expected: EntityKind::AnyMemory,
         };
         let msg = err.to_string();
         assert!(msg.contains("expected Memory"), "msg: {msg}");

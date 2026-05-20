@@ -55,22 +55,25 @@ fn execution_request_planner_fields_explain_handles_and_empty_evidence() {
         .expect("execution request tool");
 
     let goal_activation = description_at(&tool.args_schema, "/properties/goal_activated_memory");
-    assert!(goal_activation.contains("N"));
+    assert!(goal_activation.contains("F"));
     assert!(goal_activation.contains("goal-activated Fact"));
 
     let evidence = description_at(&tool.args_schema, "/properties/evidence");
-    for required in ["Fact", "N", "[]", "never G"] {
+    for required in ["Fact", "F", "[]", "never `G"] {
         assert!(
             evidence.contains(required),
             "evidence description must contain {required:?}: {evidence}"
         );
     }
+    assert!(evidence.contains("A..."), "{evidence}");
+    assert!(evidence.contains("P..."), "{evidence}");
+    assert!(evidence.contains("I..."), "{evidence}");
 }
 
 #[test]
 fn verification_evidence_rejects_non_object_artifact_refs() {
     let result = serde_json::from_value::<CodeEmitVerificationEvidenceArgs>(json!({
-        "workspace_run_memory": "N1",
+        "workspace_run_memory": "F1",
         "criterion_key": "static_entrypoint",
         "status": "passed",
         "summary": "index.html exists",

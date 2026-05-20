@@ -15,7 +15,8 @@ use proxima_core::mcp::{
 use proxima_core::verbs::query::MemoryStore;
 use proxima_core::wake::token_store::WakeTokenContext;
 use proxima_core::{
-    Engine, FlavorRegistry, HandleTable, MemoryId, OrgId, Owner, Principal, UserId, WakeChainDepth,
+    Engine, FlavorRegistry, HandleTable, MemoryHandleClass, MemoryId, OrgId, Owner, Principal,
+    UserId, WakeChainDepth,
 };
 use proxima_harness::program::resolve;
 use proxima_mcp_server::McpToolHost;
@@ -225,7 +226,9 @@ async fn bridge_defaults_caller_self_perspective_for_wake_calls() {
             model_id: "test-model".into(),
             max_rounds: 1,
             current_root_perspective_memory_id: root,
+            current_root_perspective_memory_class: MemoryHandleClass::Perspective,
             triggering_event_memory_id: MemoryId::new(Uuid::now_v7()),
+            triggering_event_memory_class: MemoryHandleClass::Fact,
             triggering_event_depth: WakeChainDepth::zero(),
             read_log: Arc::new(Mutex::new(Vec::new())),
             handles: Arc::new(HandleTable::new()),

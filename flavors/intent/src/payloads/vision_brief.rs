@@ -17,7 +17,7 @@ pub struct VisionBriefV1 {
     )]
     pub goal_id: uuid::Uuid,
     #[schemars(
-        description = "`N...` goal-activated Fact memory handle in provider-facing typed emit wrappers; stored as the activation memory UUID."
+        description = "`F...` goal-activated Fact memory handle in provider-facing typed emit wrappers; stored as the activation memory UUID."
     )]
     pub goal_activated_memory_id: uuid::Uuid,
     #[schemars(description = "Original Goal text the planner interpreted.")]

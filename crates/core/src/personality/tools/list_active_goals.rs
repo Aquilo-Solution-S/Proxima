@@ -76,7 +76,7 @@ impl PersonalityTool for ListActiveGoalsTool {
                 let activated = g.goal_activated_memory_id?;
                 Some(serde_json::json!({
                     "goal": ctx.handles.assign_goal(g.goal_id).as_str(),
-                    "goal_activated_memory": ctx.handles.assign_memory(activated).as_str(),
+                    "goal_activated_memory": ctx.handles.assign_fact_memory(activated).as_str(),
                     "title": g.title,
                 }))
             })
@@ -155,7 +155,7 @@ mod tests {
                 let activated = g.goal_activated_memory_id?;
                 Some(serde_json::json!({
                     "goal": handles.assign_goal(g.goal_id).as_str(),
-                    "goal_activated_memory": handles.assign_memory(activated).as_str(),
+                    "goal_activated_memory": handles.assign_fact_memory(activated).as_str(),
                     "title": g.title,
                 }))
             })
@@ -167,7 +167,7 @@ mod tests {
             only["goal_activated_memory"]
                 .as_str()
                 .unwrap()
-                .starts_with('N')
+                .starts_with('F')
         );
         assert_eq!(only["title"], "real goal");
         assert!(only.get("goal_id").is_none());

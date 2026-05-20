@@ -1,6 +1,6 @@
 //! Per-entry wake fire path backed by the in-process harness.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -12,7 +12,7 @@ use crate::harness::{
     HarnessAdapter, HarnessContext, HarnessProgram, HarnessToolProjection,
     build_wake_tool_projection,
 };
-use crate::mcp::HandleTable;
+use crate::mcp::{HandleTable, MemoryHandleClass};
 use crate::personality::workspace::{
     WorkspaceFinalizeInput, WorkspaceOutcome, WorkspacePrepareInput, WorkspacePreparedRun,
     WorkspaceRunnerError,
@@ -22,6 +22,7 @@ use crate::personality::{
     WakeInvocationLogStatus, WakeInvocationStart, WakeInvocationStatus,
 };
 use crate::verbs::persist_wake_trace::WakeTracePersistOutcome;
+use crate::verbs::query::{QueryRequest, SupersessionStatus};
 use crate::wake::context::{WakeContext, assemble_wake_context};
 use crate::wake::contract::build_wake_contract;
 use crate::wake::token_store::WakeTokenContext;
@@ -30,8 +31,8 @@ use crate::wake::trace::emit::{
     emit_trace_from_outcome, provider_target_from_config,
 };
 use crate::{
-    GoalId, InterventionRequestPersistInput, InterventionRequestedV1, MemoryId, SourceBatchId,
-    SourceId, inquiry,
+    GoalId, InterventionRequestPersistInput, InterventionRequestedV1, MemoryId, Owner,
+    SourceBatchId, SourceId, inquiry,
 };
 
 use super::finalize::{
@@ -537,7 +538,12 @@ async fn mint_wake_token(
         model_id: resolved.config_model_id.clone().unwrap_or_default(),
         max_rounds: u32::from(input.wake_entry.max_rounds),
         current_root_perspective_memory_id: MemoryId::new(wake_context.root_perspective.memory_id),
+        current_root_perspective_memory_class: MemoryHandleClass::Perspective,
         triggering_event_memory_id: MemoryId::new(wake_context.triggering_memory.memory_id),
+        triggering_event_memory_class: MemoryHandleClass::from_memory_kind(
+            &wake_context.triggering_memory.kind,
+        )
+        .unwrap_or(MemoryHandleClass::Fact),
         triggering_event_depth: WakeChainDepth::new(
             u16::try_from(wake_context.trigger_event.wake_chain_depth).unwrap_or(0),
         ),
@@ -553,23 +559,22 @@ async fn mint_wake_token(
         seeded.continuation_decision = Some(
             token_ctx
                 .handles
-                .assign_memory(continuation.intervention_decision_memory_id),
+                .assign_fact_memory(continuation.intervention_decision_memory_id),
         );
         seeded.continuation_request = Some(
             token_ctx
                 .handles
-                .assign_memory(continuation.intervention_request_memory_id),
+                .assign_fact_memory(continuation.intervention_request_memory_id),
         );
         seeded.continuation_wake_trace = Some(
             token_ctx
                 .handles
-                .assign_memory(continuation.wake_trace_memory_id),
+                .assign_fact_memory(continuation.wake_trace_memory_id),
         );
-        seeded.continuation_original_triggering = Some(
-            token_ctx
-                .handles
-                .assign_memory(continuation.original_triggering_memory_id),
-        );
+        seeded.continuation_original_triggering = Some(token_ctx.handles.assign_memory_with_class(
+            continuation.original_triggering_memory_id,
+            token_ctx.triggering_event_memory_class,
+        ));
     }
     let handles = token_ctx.handles.clone();
     let wake_token = engine
@@ -840,9 +845,15 @@ async fn build_context_params(
         project_active_goals(wake_context, handles),
     );
     context_params.insert("trigger_event".into(), project_trigger_event(wake_context));
+    let payload_memory_classes = load_payload_memory_classes(
+        engine,
+        &input.owner,
+        &wake_context.triggering_memory.typed_payload,
+    )
+    .await?;
     context_params.insert(
         "triggering_memory".into(),
-        project_triggering_memory(wake_context, handles),
+        project_triggering_memory(wake_context, handles, &payload_memory_classes),
     );
     context_params.insert(
         "wake_contract".into(),
@@ -883,7 +894,7 @@ fn project_root_perspective(
             .as_str()
             .to_string(),
         "root_perspective": handles
-            .assign_memory(MemoryId::new(wake_context.root_perspective.memory_id))
+            .assign_perspective_memory(MemoryId::new(wake_context.root_perspective.memory_id))
             .as_str()
             .to_string(),
         "display_name": wake_context.root_perspective.display_name.as_str(),
@@ -902,12 +913,12 @@ fn project_active_goals(wake_context: &WakeContext, handles: &HandleTable) -> se
                     "goal": handles.assign_goal(GoalId::new(goal.goal_id)).as_str().to_string(),
                     "goal_activated_memory": goal
                         .goal_activated_memory_id
-                        .map(|id| handles.assign_memory(MemoryId::new(id)).as_str().to_string()),
+                        .map(|id| handles.assign_fact_memory(MemoryId::new(id)).as_str().to_string()),
                     "title": goal.title.as_str(),
                     "motivation_via": goal
                         .motivation_via
                         .iter()
-                        .map(|id| handles.assign_memory(MemoryId::new(*id)).as_str().to_string())
+                        .map(|id| handles.assign_perspective_memory(MemoryId::new(*id)).as_str().to_string())
                         .collect::<Vec<_>>(),
                 })
             })
@@ -926,15 +937,17 @@ fn project_trigger_event(wake_context: &WakeContext) -> serde_json::Value {
 fn project_triggering_memory(
     wake_context: &WakeContext,
     handles: &HandleTable,
+    memory_classes: &HashMap<Uuid, MemoryHandleClass>,
 ) -> serde_json::Value {
     serde_json::json!({
         "memory": handles
-            .assign_memory(MemoryId::new(wake_context.triggering_memory.memory_id))
+            .assign_memory_kind(MemoryId::new(wake_context.triggering_memory.memory_id), &wake_context.triggering_memory.kind)
             .as_str()
             .to_string(),
+        "kind": wake_context.triggering_memory.kind.as_str(),
         "schema_id": wake_context.triggering_memory.schema_id.as_str(),
         "schema_version": wake_context.triggering_memory.schema_version,
-        "typed_payload": project_model_value(&wake_context.triggering_memory.typed_payload, None, handles),
+        "typed_payload": project_model_value(&wake_context.triggering_memory.typed_payload, None, handles, memory_classes),
     })
 }
 
@@ -954,7 +967,7 @@ fn project_coordination_context(
                         .to_string(),
                     "display_name": target.display_name.as_str(),
                     "root_perspective": handles
-                        .assign_memory(MemoryId::new(target.root_perspective_memory_id))
+                        .assign_perspective_memory(MemoryId::new(target.root_perspective_memory_id))
                         .as_str()
                         .to_string(),
                     "directed_question_wake_entries": target
@@ -998,7 +1011,7 @@ fn project_wake_path_node(
         } else {
             serde_json::Value::String(
                 handles
-                    .assign_memory(MemoryId::new(node.root_perspective_memory_id))
+                    .assign_perspective_memory(MemoryId::new(node.root_perspective_memory_id))
                     .as_str()
                     .to_string(),
             )
@@ -1014,13 +1027,14 @@ fn project_model_value(
     value: &serde_json::Value,
     key: Option<&str>,
     handles: &HandleTable,
+    memory_classes: &HashMap<Uuid, MemoryHandleClass>,
 ) -> serde_json::Value {
     match value {
-        serde_json::Value::String(raw) => project_model_string(raw, key, handles),
+        serde_json::Value::String(raw) => project_model_string(raw, key, handles, memory_classes),
         serde_json::Value::Array(values) => serde_json::Value::Array(
             values
                 .iter()
-                .map(|value| project_model_value(value, key, handles))
+                .map(|value| project_model_value(value, key, handles, memory_classes))
                 .collect(),
         ),
         serde_json::Value::Object(map) => serde_json::Value::Object(
@@ -1028,7 +1042,7 @@ fn project_model_value(
                 .map(|(field, value)| {
                     (
                         field.clone(),
-                        project_model_value(value, Some(field.as_str()), handles),
+                        project_model_value(value, Some(field.as_str()), handles, memory_classes),
                     )
                 })
                 .collect(),
@@ -1037,26 +1051,50 @@ fn project_model_value(
     }
 }
 
-fn project_model_string(raw: &str, key: Option<&str>, handles: &HandleTable) -> serde_json::Value {
+fn project_model_string(
+    raw: &str,
+    key: Option<&str>,
+    handles: &HandleTable,
+    memory_classes: &HashMap<Uuid, MemoryHandleClass>,
+) -> serde_json::Value {
     let Some(uuid) = Uuid::parse_str(raw).ok() else {
         return serde_json::Value::String(raw.to_string());
     };
     let Some(key) = key else {
         return serde_json::Value::String("<opaque-uuid>".to_string());
     };
-    let normalized = key.strip_suffix('s').unwrap_or(key);
+    let normalized = normalize_reference_key(key);
     if normalized == "goal_id" || normalized.ends_with("_goal_id") {
         return serde_json::Value::String(
             handles.assign_goal(GoalId::new(uuid)).as_str().to_string(),
         );
     }
-    if normalized == "memory_id" || normalized.ends_with("_memory_id") {
+    if fact_memory_field(&normalized) {
         return serde_json::Value::String(
             handles
-                .assign_memory(MemoryId::new(uuid))
+                .assign_fact_memory(MemoryId::new(uuid))
                 .as_str()
                 .to_string(),
         );
+    }
+    if perspective_memory_field(&normalized) {
+        return serde_json::Value::String(
+            handles
+                .assign_perspective_memory(MemoryId::new(uuid))
+                .as_str()
+                .to_string(),
+        );
+    }
+    if generic_memory_field(&normalized) {
+        if let Some(class) = memory_classes.get(&uuid).copied() {
+            return serde_json::Value::String(
+                handles
+                    .assign_memory_with_class(MemoryId::new(uuid), class)
+                    .as_str()
+                    .to_string(),
+            );
+        }
+        return serde_json::Value::String("<opaque-memory-uuid>".to_string());
     }
     if normalized == "personality_instance_id" || normalized.ends_with("_personality_instance_id") {
         return serde_json::Value::String(
@@ -1078,6 +1116,113 @@ fn project_model_string(raw: &str, key: Option<&str>, handles: &HandleTable) -> 
         );
     }
     serde_json::Value::String("<opaque-uuid>".to_string())
+}
+
+fn fact_memory_field(normalized: &str) -> bool {
+    matches!(
+        normalized,
+        "goal_activated_memory_id"
+            | "intervention_request_memory_id"
+            | "intervention_decision_memory_id"
+            | "wake_trace_memory_id"
+            | "workspace_run_memory_id"
+            | "workspace_review_memory_id"
+            | "workspace_decision_memory_id"
+            | "execution_request_memory_id"
+            | "prior_execution_request_memory_id"
+            | "question_memory_id"
+            | "answer_memory_id"
+    )
+}
+
+fn perspective_memory_field(normalized: &str) -> bool {
+    matches!(
+        normalized,
+        "root_perspective_memory_id" | "current_root_perspective_memory_id"
+    )
+}
+
+fn generic_memory_field(normalized: &str) -> bool {
+    normalized == "memory_id" || normalized.ends_with("_memory_id")
+}
+
+fn normalize_reference_key(key: &str) -> String {
+    if let Some(stem) = key.strip_suffix("_ids_used") {
+        format!("{stem}_id")
+    } else if let Some(stem) = key.strip_suffix("_ids") {
+        format!("{stem}_id")
+    } else {
+        key.strip_suffix('s').unwrap_or(key).to_string()
+    }
+}
+
+async fn load_payload_memory_classes(
+    engine: &Engine,
+    owner: &Owner,
+    payload: &serde_json::Value,
+) -> Result<HashMap<Uuid, MemoryHandleClass>, ProtocolError> {
+    let mut ids = HashSet::new();
+    collect_generic_memory_ids(payload, None, &mut ids);
+    if ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let mut req = QueryRequest::for_owner(owner.clone());
+    req.memory_ids = ids.into_iter().map(MemoryId::new).collect();
+    req.limit = u32::try_from(req.memory_ids.len()).unwrap_or(u32::MAX);
+    req.include_payloads = false;
+    req.supersession = SupersessionStatus::IncludeSuperseded;
+    let response = engine
+        .storage()
+        .query_memories(&req, engine.registry().list().as_slice())
+        .await
+        .map_err(|err| ProtocolError::internal(format!("query payload memory classes: {err}")))?;
+    Ok(response
+        .memories
+        .into_iter()
+        .filter_map(|memory| {
+            memory_class_for_entity_kind(memory.kind).map(|class| (memory.id.into_inner(), class))
+        })
+        .collect())
+}
+
+fn collect_generic_memory_ids(
+    value: &serde_json::Value,
+    key: Option<&str>,
+    ids: &mut HashSet<Uuid>,
+) {
+    match value {
+        serde_json::Value::String(raw) => {
+            let Some(key) = key else {
+                return;
+            };
+            let normalized = normalize_reference_key(key);
+            if generic_memory_field(&normalized) {
+                if let Ok(uuid) = Uuid::parse_str(raw) {
+                    ids.insert(uuid);
+                }
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                collect_generic_memory_ids(value, key, ids);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for (field, value) in map {
+                collect_generic_memory_ids(value, Some(field.as_str()), ids);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn memory_class_for_entity_kind(kind: crate::EntityKind) -> Option<MemoryHandleClass> {
+    match kind {
+        crate::EntityKind::Fact => Some(MemoryHandleClass::Fact),
+        crate::EntityKind::Abstraction => Some(MemoryHandleClass::Abstraction),
+        crate::EntityKind::Perspective => Some(MemoryHandleClass::Perspective),
+        crate::EntityKind::Goal => None,
+    }
 }
 
 fn context_value<T: serde::Serialize>(value: T) -> Result<serde_json::Value, ProtocolError> {
@@ -1224,18 +1369,20 @@ mod tests {
             rationale: "made progress".into(),
         };
         let seeded = crate::mcp::PreSeededHandles {
-            triggering: handles.assign_memory(MemoryId::new(Uuid::now_v7())),
-            root_perspective: handles.assign_memory(MemoryId::new(Uuid::now_v7())),
+            triggering: handles.assign_fact_memory(MemoryId::new(Uuid::now_v7())),
+            root_perspective: handles.assign_perspective_memory(MemoryId::new(Uuid::now_v7())),
             self_instance: handles.assign_personality(PersonalityInstanceId::new(Uuid::now_v7())),
             continuation_decision: Some(
-                handles.assign_memory(continuation.intervention_decision_memory_id),
+                handles.assign_fact_memory(continuation.intervention_decision_memory_id),
             ),
             continuation_request: Some(
-                handles.assign_memory(continuation.intervention_request_memory_id),
+                handles.assign_fact_memory(continuation.intervention_request_memory_id),
             ),
-            continuation_wake_trace: Some(handles.assign_memory(continuation.wake_trace_memory_id)),
+            continuation_wake_trace: Some(
+                handles.assign_fact_memory(continuation.wake_trace_memory_id),
+            ),
             continuation_original_triggering: Some(
-                handles.assign_memory(continuation.original_triggering_memory_id),
+                handles.assign_fact_memory(continuation.original_triggering_memory_id),
             ),
         };
 
@@ -1266,10 +1413,11 @@ mod tests {
             }),
             None,
             &handles,
+            &HashMap::new(),
         );
 
         assert_eq!(projected["goal_id"], "G1");
-        assert_eq!(projected["goal_activated_memory_id"], "N1");
+        assert_eq!(projected["goal_activated_memory_id"], "F1");
         assert_eq!(projected["repo_id"], "<opaque-uuid>");
         assert_eq!(
             handles
@@ -1280,10 +1428,40 @@ mod tests {
         );
         assert_eq!(
             handles
-                .resolve_memory("N1")
+                .resolve_memory("F1")
                 .expect("memory handle")
                 .into_inner(),
             memory_id
         );
+    }
+
+    #[test]
+    fn model_payload_projection_preserves_generic_memory_handles_by_class() {
+        let handles = HandleTable::new();
+        let fact_id = Uuid::now_v7();
+        let abstraction_id = Uuid::now_v7();
+        let perspective_id = Uuid::now_v7();
+        let unknown_id = Uuid::now_v7();
+        let mut memory_classes = HashMap::new();
+        memory_classes.insert(fact_id, MemoryHandleClass::Fact);
+        memory_classes.insert(abstraction_id, MemoryHandleClass::Abstraction);
+        memory_classes.insert(perspective_id, MemoryHandleClass::Perspective);
+
+        let projected = project_model_value(
+            &serde_json::json!({
+                "context_memory_ids": [fact_id, abstraction_id, perspective_id],
+                "context_memory_ids_used": [abstraction_id],
+                "unrelated_memory_id": unknown_id,
+            }),
+            None,
+            &handles,
+            &memory_classes,
+        );
+
+        assert_eq!(projected["context_memory_ids"][0], "F1");
+        assert_eq!(projected["context_memory_ids"][1], "A1");
+        assert_eq!(projected["context_memory_ids"][2], "P1");
+        assert_eq!(projected["context_memory_ids_used"][0], "A1");
+        assert_eq!(projected["unrelated_memory_id"], "<opaque-memory-uuid>");
     }
 }

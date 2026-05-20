@@ -44,14 +44,14 @@ async fn walk_lineage_returns_handles_and_records_read_log()
         .find(|tool| tool.tool_id() == "core/walk_lineage")
         .expect("walk_lineage substrate tool");
     let handles = Arc::new(HandleTable::new());
-    let start_handle = handles.assign_memory(MemoryId::new(derived));
+    let start_handle = handles.assign_abstraction_memory(MemoryId::new(derived));
     let read_log = Arc::new(tokio::sync::Mutex::new(Vec::new()));
     let palette: Vec<Arc<dyn PersonalityTool>> = Vec::new();
     let ctx = PersonalityToolContext::new(
         &engine,
         &owner,
         "test/personality",
-        PersonalityInstanceId::new(Uuid::now_v7()),
+        PersonalityInstanceId::new(Uuid::nil()),
         MemoryId::new(Uuid::now_v7()),
         MemoryId::new(Uuid::now_v7()),
         WakeChainDepth::new(0),

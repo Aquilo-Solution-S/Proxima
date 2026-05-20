@@ -18,7 +18,7 @@ pub struct MarkAchievedArgs {
     )]
     pub goal: String,
     #[schemars(
-        description = "Required Fact or Abstraction memory evidence handles (`N...`) supporting achievement."
+        description = "Required `F...` Fact or `A...` Abstraction memory evidence handles supporting achievement."
     )]
     pub evidence: Vec<String>,
     #[schemars(
@@ -160,7 +160,7 @@ pub async fn mark_achieved(
         status: MarkAchievedStatus::Achieved,
         handle: Some(ctx.format_goal(GoalId::new(achieved_id))),
         supersedes,
-        lifecycle_memory: Some(ctx.format_memory(lifecycle_memory)),
+        lifecycle_memory: Some(ctx.format_fact_memory(lifecycle_memory)),
         evidence_edge_handles: evidence_edge_ids
             .into_iter()
             .map(|edge_id| ctx.format_edge(EdgeId::new(edge_id)))

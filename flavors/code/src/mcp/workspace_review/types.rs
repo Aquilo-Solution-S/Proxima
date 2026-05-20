@@ -18,7 +18,7 @@ pub const MAX_WORKSPACE_VETO_ROUNDS: i64 = 2;
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CodeEmitWorkspaceReviewArgs {
     #[schemars(
-        description = "`N...` memory handle for the proxima-code/workspace-run-v1 Fact being reviewed."
+        description = "`F...` memory handle for the proxima-code/workspace-run-v1 Fact being reviewed."
     )]
     pub workspace_run_memory: String,
     #[schemars(
@@ -63,7 +63,7 @@ pub struct CodeEmitWorkspaceReviewOutput {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CodeEmitVerificationEvidenceArgs {
     #[schemars(
-        description = "`N...` memory handle for the proxima-code/workspace-run-v1 Fact being verified."
+        description = "`F...` memory handle for the proxima-code/workspace-run-v1 Fact being verified."
     )]
     pub workspace_run_memory: String,
     #[schemars(description = "Acceptance criterion key this evidence satisfies or fails.")]
@@ -99,16 +99,16 @@ pub struct CodeEmitVerificationEvidenceOutput {
 pub struct CodeEmitCorrectionExecutionRequestArgs {
     #[serde(default)]
     #[schemars(
-        description = "Optional `N...` workspace-review-v1 Fact memory handle that rejected the run. Provide this or `workspace_decision_memory`."
+        description = "Optional `F...` workspace-review-v1 Fact memory handle that rejected the run. Provide this or `workspace_decision_memory`."
     )]
     pub workspace_review_memory: Option<String>,
     #[serde(default)]
     #[schemars(
-        description = "Optional `N...` workspace-decision-v1 Fact memory handle requesting retry. Provide this or `workspace_review_memory`."
+        description = "Optional `F...` workspace-decision-v1 Fact memory handle requesting retry. Provide this or `workspace_review_memory`."
     )]
     pub workspace_decision_memory: Option<String>,
     #[schemars(
-        description = "`P...` Personality handle for the worker that should receive the correction request."
+        description = "`I...` Personality handle for the worker that should receive the correction request."
     )]
     pub target_personality: String,
     #[schemars(

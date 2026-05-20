@@ -15,7 +15,7 @@ pub struct ModifyArgs {
     #[schemars(description = "Replacement typed Goal payload for the accepted Active Goal.")]
     pub payload: GoalPayloadInput,
     #[schemars(
-        description = "Optional replacement evidence memory handles (`N...`). Omit or null to copy proposal evidence; use `[]` to clear evidence."
+        description = "Optional replacement evidence memory handles (`F...` Fact or `A...` Abstraction). Omit or null to copy proposal evidence; use `[]` to clear evidence."
     )]
     pub evidence: Option<Vec<String>>,
     #[schemars(
