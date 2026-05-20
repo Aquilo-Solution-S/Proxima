@@ -15,7 +15,7 @@ pub struct GetPersonalityTool;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct GetPersonalityArgs {
-    /// `P`-prefixed handle previously returned by list_personalities or
+    /// `I`-prefixed handle previously returned by list_personalities or
     /// instantiate_personality.
     pub personality: String,
 }
@@ -45,7 +45,7 @@ pub struct GetPersonalityWakeEntry {
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct GetPersonalityOutput {
-    /// `P`-prefixed handle. Matches the `personality` argument that was
+    /// `I`-prefixed handle. Matches the `personality` argument that was
     /// passed in.
     pub personality: String,
     pub display_name: String,
@@ -57,7 +57,7 @@ pub struct GetPersonalityOutput {
 impl McpTool for GetPersonalityTool {
     const NAME: &'static str = "core/get_personality";
     const DESCRIPTION: &'static str = "Read one personality with all wake entries. Args: \
-         `{\"personality\": \"P1\"}` where the value is a P-handle from list_personalities. Each wake \
+         `{\"personality\": \"I1\"}` where the value is an I-handle from list_personalities. Each wake \
          entry in the response carries a `wake_entry` field (W-handle) — pass that to update_wake_entry, \
          remove_wake_entry, or replay_wake_events.";
     type Args = GetPersonalityArgs;
@@ -86,7 +86,8 @@ impl McpTool for GetPersonalityTool {
                     ))
                 })?;
             let personality = ctx.format_personality(row.personality_instance_id);
-            let root_perspective = ctx.format_memory(row.current_root_perspective_memory_id);
+            let root_perspective =
+                ctx.format_perspective_memory(row.current_root_perspective_memory_id);
             let wake_entries = row
                 .wake_entries
                 .into_iter()
@@ -166,7 +167,7 @@ mod tests {
         let err = GetPersonalityTool::call(
             ctx,
             GetPersonalityArgs {
-                personality: "P99".into(),
+                personality: "I99".into(),
             },
         )
         .await

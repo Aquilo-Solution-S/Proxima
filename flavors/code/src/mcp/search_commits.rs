@@ -94,7 +94,7 @@ impl McpTool for CodeSearchCommitsTool {
             let commits = commit_rows
                 .into_iter()
                 .map(|row| CommitMatch {
-                    handle: ctx.format_memory(MemoryId::new(row.memory_id)),
+                    handle: ctx.format_fact_memory(MemoryId::new(row.memory_id)),
                     repo_handle: ctx.format_flavor_object(
                         super::REPO_HANDLE_KIND,
                         row.repo_id,
@@ -121,7 +121,7 @@ impl McpTool for CodeSearchCommitsTool {
             let summaries = summary_rows
                 .into_iter()
                 .map(|row| SummaryMatch {
-                    handle: ctx.format_memory(MemoryId::new(row.memory_id)),
+                    handle: ctx.format_fact_memory(MemoryId::new(row.memory_id)),
                     repo_handle: ctx.format_flavor_object(
                         super::REPO_HANDLE_KIND,
                         row.repo_id,

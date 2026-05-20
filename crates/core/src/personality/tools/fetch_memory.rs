@@ -18,8 +18,10 @@ pub struct FetchMemoryTool;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct FetchMemoryArgs {
-    /// Handle of the memory to load (e.g., `N1`).
-    #[schemars(description = "`N...` memory handle to load from the wake handle table.")]
+    /// Handle of the memory to load (e.g., `F1`, `A1`, or `P1`).
+    #[schemars(
+        description = "`F...`, `A...`, or `P...` memory handle to load from the wake handle table."
+    )]
     pub memory: String,
 }
 
@@ -97,7 +99,9 @@ impl PersonalityTool for FetchMemoryTool {
         };
         ctx.record_read([(snapshot.memory_id, snapshot.wake_chain_depth)])
             .await;
-        let handle = ctx.handles.assign_memory(snapshot.memory_id);
+        let handle = ctx
+            .handles
+            .assign_memory_kind(snapshot.memory_id, &snapshot.kind);
         Ok(PersonalityToolResult::ok(serde_json::json!({
             "memory": handle.as_str(),
             "kind": snapshot.kind,

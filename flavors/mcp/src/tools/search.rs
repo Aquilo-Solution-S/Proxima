@@ -107,7 +107,7 @@ async fn search_graph_lexical(
     for row in rows {
         memory_ids.push(row.memory_id);
         matches.push(GraphMatch {
-            handle: ctx.format_memory(MemoryId::new(row.memory_id)),
+            handle: format_memory_by_kind(&ctx, MemoryId::new(row.memory_id), row.kind),
             kind: row.kind.as_str().to_string(),
             schema_id: row.schema_id,
             title: row.title,
@@ -252,7 +252,7 @@ async fn graph_output_from_candidates(
         let score = row.score(mode);
         memory_ids.push(row.memory_id);
         matches.push(GraphMatch {
-            handle: ctx.format_memory(MemoryId::new(row.memory_id)),
+            handle: format_memory_by_kind_label(ctx, MemoryId::new(row.memory_id), &row.kind),
             kind: row.kind,
             schema_id: row.schema_id,
             title: row.title,
@@ -403,7 +403,7 @@ pub async fn neighbor_edges(
     }
     let (owner_kind, owner_principal_id) = owner_principal(&ctx.owner);
     let rows: Vec<EdgeRow> = sqlx::query_as(
-        "SELECT edge_id, relation, source_memory_id, target_memory_id
+        "SELECT edge_id, relation, source_kind, source_memory_id, target_kind, target_memory_id
          FROM proxima_core.edges
          WHERE owner_principal_kind = $1
            AND owner_principal_id = $2
@@ -425,10 +425,10 @@ pub async fn neighbor_edges(
             relation: row.relation,
             source: row
                 .source_memory_id
-                .map(|id| ctx.format_memory(MemoryId::new(id))),
+                .map(|id| format_memory_by_kind(ctx, MemoryId::new(id), row.source_kind)),
             target: row
                 .target_memory_id
-                .map(|id| ctx.format_memory(MemoryId::new(id))),
+                .map(|id| format_memory_by_kind(ctx, MemoryId::new(id), row.target_kind)),
         })
         .collect())
 }
@@ -437,14 +437,38 @@ pub async fn neighbor_edges(
 struct EdgeRow {
     edge_id: uuid::Uuid,
     relation: String,
+    source_kind: proxima_core::EntityKind,
     source_memory_id: Option<uuid::Uuid>,
+    target_kind: proxima_core::EntityKind,
     target_memory_id: Option<uuid::Uuid>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct OpenArgs {
-    #[schemars(description = "`N...` memory handle to open and inspect with neighbor edges.")]
+    #[schemars(
+        description = "`F...`, `A...`, or `P...` memory handle to open and inspect with neighbor edges."
+    )]
     pub handle: String,
+}
+
+fn format_memory_by_kind(
+    ctx: &McpToolCtx,
+    memory_id: MemoryId,
+    kind: proxima_core::EntityKind,
+) -> String {
+    match kind {
+        proxima_core::EntityKind::Abstraction => ctx.format_abstraction_memory(memory_id),
+        proxima_core::EntityKind::Perspective => ctx.format_perspective_memory(memory_id),
+        _ => ctx.format_fact_memory(memory_id),
+    }
+}
+
+fn format_memory_by_kind_label(ctx: &McpToolCtx, memory_id: MemoryId, kind: &str) -> String {
+    match kind {
+        "Abstraction" => ctx.format_abstraction_memory(memory_id),
+        "Perspective" => ctx.format_perspective_memory(memory_id),
+        _ => ctx.format_fact_memory(memory_id),
+    }
 }
 
 #[derive(Debug, Serialize)]

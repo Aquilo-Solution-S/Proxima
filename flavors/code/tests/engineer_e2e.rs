@@ -162,7 +162,7 @@ async fn engineer_e2e_emits_perspective_with_chained_provenance() {
             // pre-seeded by pre_seed_wake_handles before round 1.
             ScriptedTurn::tool_use(
                 "core/fetch_memory",
-                serde_json::json!({"memory": "N1"}),
+                serde_json::json!({"memory": "F1"}),
             ),
             ScriptedTurn::tool_use(
                 "core/emit_abstraction",

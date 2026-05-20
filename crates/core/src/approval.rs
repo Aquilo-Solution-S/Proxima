@@ -366,7 +366,7 @@ impl McpTool for EmitApprovalPolicyTool {
             };
             tx.commit().await.map_err(map_sql)?;
             Ok(EmitApprovalPolicyOutput {
-                handle: ctx.format_memory(outcome.memory_id),
+                handle: ctx.format_fact_memory(outcome.memory_id),
                 target_edge_handle: edge_id.map(|id| ctx.format_edge(EdgeId::new(id))),
                 idempotent_replay: outcome.idempotent_replay,
             })
@@ -391,7 +391,7 @@ impl McpTool for EmitApprovalVoteTool {
         args: EmitApprovalVoteArgs,
     ) -> BoxFuture<'static, Result<EmitApprovalVoteOutput, McpToolError>> {
         Box::pin(async move {
-            let policy_memory_id = ctx.resolve_memory(&args.policy)?;
+            let policy_memory_id = ctx.resolve_fact_memory(&args.policy)?;
             let voter_key = normalize_text("voter_key", &args.voter_key, 1, 120)?;
             let rationale = normalize_text("rationale", &args.rationale, 1, 4000)?;
             let idempotency_key = normalize_text("idempotency_key", &args.idempotency_key, 1, 240)?;
@@ -451,7 +451,7 @@ impl McpTool for EmitApprovalVoteTool {
             };
             tx.commit().await.map_err(map_sql)?;
             Ok(EmitApprovalVoteOutput {
-                handle: ctx.format_memory(outcome.memory_id),
+                handle: ctx.format_fact_memory(outcome.memory_id),
                 vote_edge_handle: edge_id.map(|id| ctx.format_edge(EdgeId::new(id))),
                 idempotent_replay: outcome.idempotent_replay,
             })
@@ -476,7 +476,7 @@ impl McpTool for TryEmitApprovalDecisionTool {
         args: TryEmitApprovalDecisionArgs,
     ) -> BoxFuture<'static, Result<TryEmitApprovalDecisionOutput, McpToolError>> {
         Box::pin(async move {
-            let policy_memory_id = ctx.resolve_memory(&args.policy)?;
+            let policy_memory_id = ctx.resolve_fact_memory(&args.policy)?;
             let idempotency_key = normalize_text("idempotency_key", &args.idempotency_key, 1, 240)?;
             let policy = load_policy(&ctx, policy_memory_id).await?;
             let votes = load_latest_votes(&ctx, policy_memory_id).await?;
@@ -538,7 +538,7 @@ impl McpTool for TryEmitApprovalDecisionTool {
             }
             tx.commit().await.map_err(map_sql)?;
             Ok(TryEmitApprovalDecisionOutput::Written {
-                handle: ctx.format_memory(outcome.memory_id),
+                handle: ctx.format_fact_memory(outcome.memory_id),
                 decision,
                 reason: evaluation.reason,
                 edge_handles: edge_ids

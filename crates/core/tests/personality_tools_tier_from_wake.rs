@@ -78,7 +78,9 @@ fn wake_ctx(model_id: &str) -> WakeTokenContext {
         model_id: model_id.into(),
         max_rounds: 4,
         current_root_perspective_memory_id: MemoryId::new(uuid::Uuid::now_v7()),
+        current_root_perspective_memory_class: proxima_core::MemoryHandleClass::Perspective,
         triggering_event_memory_id: MemoryId::new(uuid::Uuid::now_v7()),
+        triggering_event_memory_class: proxima_core::MemoryHandleClass::Fact,
         triggering_event_depth: WakeChainDepth::new(0),
         read_log: Arc::new(tokio::sync::Mutex::new(Vec::new())),
         handles: Arc::new(HandleTable::new()),
@@ -175,6 +177,6 @@ async fn handles_arc_propagates_from_wake_to_tool_ctx() {
 
     // A handle minted via the ctx is visible from the wake's table.
     let fresh_id = MemoryId::new(uuid::Uuid::now_v7());
-    let h = ctx.handles.assign_memory(fresh_id);
+    let h = ctx.handles.assign_fact_memory(fresh_id);
     assert_eq!(wake.handles.resolve_memory(h.as_str()), Ok(fresh_id));
 }

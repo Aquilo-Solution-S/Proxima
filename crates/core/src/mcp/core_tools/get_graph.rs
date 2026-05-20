@@ -93,7 +93,7 @@ impl McpTool for GetGraphTool {
                 .map(|row| {
                     let personality = ctx.format_personality(row.personality_instance_id);
                     let root_perspective =
-                        ctx.format_memory(row.current_root_perspective_memory_id);
+                        ctx.format_perspective_memory(row.current_root_perspective_memory_id);
                     let wake_entries = row
                         .wake_entries
                         .into_iter()

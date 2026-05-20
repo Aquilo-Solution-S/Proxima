@@ -17,7 +17,7 @@ const MAX_CHILD_GOALS: usize = 50;
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct DecomposeArgs {
     #[schemars(
-        description = "`G...` Goal handle for the current Active parent Goal. A visible `N...` goal_activated Fact memory is also accepted for compatibility."
+        description = "`G...` Goal handle for the current Active parent Goal. A visible `F...` goal_activated Fact memory is also accepted."
     )]
     pub parent_goal: String,
     #[schemars(
@@ -25,7 +25,7 @@ pub struct DecomposeArgs {
     )]
     pub children: Vec<ChildGoalInput>,
     #[schemars(
-        description = "Optional `P...` Personality handle to assign active children to. Omit or null to use the caller Self when `activate_children` is true."
+        description = "Optional `I...` Personality handle to assign active children to. Omit or null to use the caller Self when `activate_children` is true."
     )]
     pub target_personality: Option<String>,
     #[schemars(
@@ -44,7 +44,7 @@ pub struct ChildGoalInput {
     pub payload: GoalPayloadInput,
     #[serde(default)]
     #[schemars(
-        description = "Optional memory evidence handles (`N...`) motivating this child Goal. Use `[]` unless explicit Fact or Abstraction evidence is required."
+        description = "Optional `F...` Fact or `A...` Abstraction memory evidence handles motivating this child Goal. Use `[]` unless explicit evidence is required."
     )]
     pub evidence: Vec<String>,
 }
@@ -192,7 +192,7 @@ pub async fn decompose_goal(
         };
         children.push(DecomposedChildOutput {
             handle: ctx.format_goal(GoalId::new(goal_id)),
-            lifecycle_memory: lifecycle_memory.map(|id| ctx.format_memory(id)),
+            lifecycle_memory: lifecycle_memory.map(|id| ctx.format_fact_memory(id)),
             evidence_edge_handles: evidence_edge_ids
                 .into_iter()
                 .map(|id| ctx.format_edge(EdgeId::new(id)))
@@ -219,7 +219,7 @@ async fn resolve_parent_goal_ref(
     match ctx.resolve_goal(value) {
         Ok(goal_id) => return Ok(goal_id),
         Err(goal_err) => {
-            let memory_id = ctx.resolve_memory(value).map_err(|_| goal_err)?;
+            let memory_id = ctx.resolve_fact_memory(value).map_err(|_| goal_err)?;
             let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(&ctx.owner);
             let row: Option<(uuid::Uuid,)> = sqlx::query_as(
                 "SELECT g.goal_id
@@ -355,7 +355,7 @@ async fn existing_child_by_request_id(
 
     Ok(Some(DecomposedChildOutput {
         handle: ctx.format_goal(GoalId::new(goal_id)),
-        lifecycle_memory: lifecycle_memory.map(|id| ctx.format_memory(id)),
+        lifecycle_memory: lifecycle_memory.map(|id| ctx.format_fact_memory(id)),
         evidence_edge_handles,
         inspires_edge_handle,
         idempotent_replay: true,

@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use futures::future::BoxFuture;
 use schemars::JsonSchema;
@@ -10,7 +10,7 @@ use crate::approval::{
     ApprovalDecision, ApprovalEligibleVoter, ApprovalRequirement, ApprovalTargetKind,
     ApprovalVoteVerdict, ApprovalVoterKind,
 };
-use crate::mcp::{McpTool, McpToolCtx, McpToolError};
+use crate::mcp::{McpTool, McpToolCtx, McpToolError, MemoryHandleClass};
 use crate::personality::{
     PersonalityInstanceId, PersonalityStatus, WakeEntryRow, WakeEntryTriggerKind,
     writeable_schemas_for_palette,
@@ -261,7 +261,7 @@ impl McpTool for ListInquiryTargetsTool {
             })?;
             let targets = list_askable_targets(&ctx, Some(caller_self), args.include_self).await?;
             Ok(ListInquiryTargetsOutput {
-                caller_self_perspective: ctx.format_memory(caller_self),
+                caller_self_perspective: ctx.format_perspective_memory(caller_self),
                 targets,
             })
         })
@@ -347,7 +347,7 @@ impl McpTool for EmitDirectedQuestionTool {
             let parent_question_memory_id = args
                 .parent_question
                 .as_deref()
-                .map(|raw| ctx.resolve_memory(raw).map(MemoryId::into_inner))
+                .map(|raw| ctx.resolve_fact_memory(raw).map(MemoryId::into_inner))
                 .transpose()?;
             if let Some(parent) = parent_question_memory_id {
                 load_question(&ctx, MemoryId::new(parent)).await?;
@@ -390,7 +390,7 @@ impl McpTool for EmitDirectedQuestionTool {
             };
             tx.commit().await.map_err(map_sql)?;
             Ok(EmitDirectedQuestionOutput {
-                handle: ctx.format_memory(outcome.memory_id),
+                handle: ctx.format_fact_memory(outcome.memory_id),
                 target_edge_handle: edge_id.map(|id| ctx.format_edge(EdgeId::new(id))),
                 idempotent_replay: outcome.idempotent_replay,
             })
@@ -434,7 +434,7 @@ impl McpTool for EmitDirectedAnswerTool {
             let caller_self = ctx.caller_self_perspective.ok_or_else(|| {
                 McpToolError::InvalidInput("caller_self_perspective is required".into())
             })?;
-            let question_memory_id = ctx.resolve_memory(&args.question)?;
+            let question_memory_id = ctx.resolve_fact_memory(&args.question)?;
             let question = load_question(&ctx, question_memory_id).await?;
             if question.target_self_perspective_memory_id != caller_self.into_inner() {
                 return Err(McpToolError::InvalidInput(
@@ -485,7 +485,7 @@ impl McpTool for EmitDirectedAnswerTool {
             };
             tx.commit().await.map_err(map_sql)?;
             Ok(EmitDirectedAnswerOutput {
-                handle: ctx.format_memory(outcome.memory_id),
+                handle: ctx.format_fact_memory(outcome.memory_id),
                 answer_edge_handle: edge_id.map(|id| ctx.format_edge(EdgeId::new(id))),
                 idempotent_replay: outcome.idempotent_replay,
             })
@@ -668,7 +668,7 @@ async fn list_askable_targets(
         targets.push(InquiryTargetOutput {
             personality: ctx.format_personality(row.personality_instance_id),
             display_name: row.display_name,
-            root_perspective: ctx.format_memory(row.current_root_perspective_memory_id),
+            root_perspective: ctx.format_perspective_memory(row.current_root_perspective_memory_id),
             directed_question_wake_entries: wake_entries,
         });
     }
@@ -848,6 +848,16 @@ async fn load_inquiry_thread(
         )
         .collect();
     let edges = load_thread_edges(ctx, &thread_memory_ids, limit).await?;
+    let context_memory_ids: Vec<_> = questions
+        .iter()
+        .flat_map(|question| question.payload.context_memory_ids.iter().copied())
+        .chain(
+            answers
+                .iter()
+                .flat_map(|answer| answer.payload.context_memory_ids_used.iter().copied()),
+        )
+        .collect();
+    let context_memory_classes = load_memory_handle_classes(ctx, &context_memory_ids).await?;
 
     let answered_question_ids: HashSet<_> = answers
         .iter()
@@ -861,12 +871,12 @@ async fn load_inquiry_thread(
         unanswered_questions: questions
             .iter()
             .filter(|question| !answered_question_ids.contains(&question.memory_id.into_inner()))
-            .map(|question| ctx.format_memory(question.memory_id))
+            .map(|question| ctx.format_fact_memory(question.memory_id))
             .collect(),
         undecided_policies: policies
             .iter()
             .filter(|policy| !decided_policy_ids.contains(&policy.memory_id.into_inner()))
-            .map(|policy| ctx.format_memory(policy.memory_id))
+            .map(|policy| ctx.format_fact_memory(policy.memory_id))
             .collect(),
     };
 
@@ -874,12 +884,12 @@ async fn load_inquiry_thread(
         thread_key,
         questions: questions
             .into_iter()
-            .map(|question| render_thread_question(ctx, question))
-            .collect(),
+            .map(|question| render_thread_question(ctx, question, &context_memory_classes))
+            .collect::<Result<_, _>>()?,
         answers: answers
             .into_iter()
-            .map(|answer| render_thread_answer(ctx, answer))
-            .collect(),
+            .map(|answer| render_thread_answer(ctx, answer, &context_memory_classes))
+            .collect::<Result<_, _>>()?,
         approval_policies: policies
             .into_iter()
             .map(|policy| render_thread_policy(ctx, policy))
@@ -1477,27 +1487,31 @@ fn endpoint_in_thread(endpoint: &Option<uuid::Uuid>, thread_memory_ids: &[uuid::
         .is_some_and(|id| thread_memory_ids.contains(id))
 }
 
-fn render_thread_question(ctx: &McpToolCtx, question: LoadedQuestion) -> ThreadQuestion {
+fn render_thread_question(
+    ctx: &McpToolCtx,
+    question: LoadedQuestion,
+    memory_classes: &HashMap<uuid::Uuid, MemoryHandleClass>,
+) -> Result<ThreadQuestion, McpToolError> {
     let payload = question.payload;
-    ThreadQuestion {
-        handle: ctx.format_memory(question.memory_id),
+    Ok(ThreadQuestion {
+        handle: ctx.format_fact_memory(question.memory_id),
         thread_key: payload.thread_key,
         question: payload.question,
         target_personality: ctx.format_personality(PersonalityInstanceId::new(
             payload.target_personality_instance_id,
         )),
         target_self_perspective: ctx
-            .format_memory(MemoryId::new(payload.target_self_perspective_memory_id)),
+            .format_perspective_memory(MemoryId::new(payload.target_self_perspective_memory_id)),
         asked_by_self_perspective: ctx
-            .format_memory(MemoryId::new(payload.asked_by_self_perspective_memory_id)),
+            .format_perspective_memory(MemoryId::new(payload.asked_by_self_perspective_memory_id)),
         parent_question: payload
             .parent_question_memory_id
-            .map(|id| ctx.format_memory(MemoryId::new(id))),
+            .map(|id| ctx.format_fact_memory(MemoryId::new(id))),
         context_memories: payload
             .context_memory_ids
             .into_iter()
-            .map(|id| ctx.format_memory(MemoryId::new(id)))
-            .collect(),
+            .map(|id| format_memory_from_class_map(ctx, memory_classes, id))
+            .collect::<Result<_, _>>()?,
         context_goals: payload
             .context_goal_ids
             .into_iter()
@@ -1505,30 +1519,47 @@ fn render_thread_question(ctx: &McpToolCtx, question: LoadedQuestion) -> ThreadQ
             .collect(),
         idempotency_key: payload.idempotency_key,
         asked_at: payload.asked_at,
-    }
+    })
 }
 
-fn render_thread_answer(ctx: &McpToolCtx, answer: LoadedAnswer) -> ThreadAnswer {
+fn render_thread_answer(
+    ctx: &McpToolCtx,
+    answer: LoadedAnswer,
+    memory_classes: &HashMap<uuid::Uuid, MemoryHandleClass>,
+) -> Result<ThreadAnswer, McpToolError> {
     let payload = answer.payload;
-    ThreadAnswer {
-        handle: ctx.format_memory(answer.memory_id),
-        question: ctx.format_memory(MemoryId::new(payload.question_memory_id)),
+    Ok(ThreadAnswer {
+        handle: ctx.format_fact_memory(answer.memory_id),
+        question: ctx.format_fact_memory(MemoryId::new(payload.question_memory_id)),
         thread_key: payload.thread_key,
         answer: payload.answer,
         answered_by_personality: ctx.format_personality(PersonalityInstanceId::new(
             payload.answered_by_personality_instance_id,
         )),
-        answered_by_self_perspective: ctx.format_memory(MemoryId::new(
+        answered_by_self_perspective: ctx.format_perspective_memory(MemoryId::new(
             payload.answered_by_self_perspective_memory_id,
         )),
         context_memories_used: payload
             .context_memory_ids_used
             .into_iter()
-            .map(|id| ctx.format_memory(MemoryId::new(id)))
-            .collect(),
+            .map(|id| format_memory_from_class_map(ctx, memory_classes, id))
+            .collect::<Result<_, _>>()?,
         idempotency_key: payload.idempotency_key,
         answered_at: payload.answered_at,
-    }
+    })
+}
+
+fn format_memory_from_class_map(
+    ctx: &McpToolCtx,
+    memory_classes: &HashMap<uuid::Uuid, MemoryHandleClass>,
+    memory_id: uuid::Uuid,
+) -> Result<String, McpToolError> {
+    let class = memory_classes.get(&memory_id).copied().ok_or_else(|| {
+        McpToolError::Other(format!(
+            "inquiry context memory class not found: {memory_id}"
+        ))
+    })?;
+    Ok(ctx.format_memory_with_class(MemoryId::new(memory_id), class))
 }
 
 fn render_thread_policy(
@@ -1536,7 +1567,7 @@ fn render_thread_policy(
     policy: LoadedApprovalPolicy,
 ) -> Result<ThreadApprovalPolicy, McpToolError> {
     Ok(ThreadApprovalPolicy {
-        handle: ctx.format_memory(policy.memory_id),
+        handle: ctx.format_fact_memory(policy.memory_id),
         target_kind: policy.target_kind,
         target: format_target(
             ctx,
@@ -1555,8 +1586,8 @@ fn render_thread_policy(
 
 fn render_thread_vote(ctx: &McpToolCtx, vote: LoadedApprovalVote) -> ThreadApprovalVote {
     ThreadApprovalVote {
-        handle: ctx.format_memory(vote.memory_id),
-        policy: ctx.format_memory(MemoryId::new(vote.policy_memory_id)),
+        handle: ctx.format_fact_memory(vote.memory_id),
+        policy: ctx.format_fact_memory(MemoryId::new(vote.policy_memory_id)),
         voter_key: vote.voter_key,
         voter_kind: vote.voter_kind,
         role: vote.role,
@@ -1565,7 +1596,7 @@ fn render_thread_vote(ctx: &McpToolCtx, vote: LoadedApprovalVote) -> ThreadAppro
             .map(|id| ctx.format_personality(PersonalityInstanceId::new(id))),
         self_perspective: vote
             .self_perspective_memory_id
-            .map(|id| ctx.format_memory(MemoryId::new(id))),
+            .map(|id| ctx.format_perspective_memory(MemoryId::new(id))),
         master_token_id: vote.master_token_id,
         verdict: vote.verdict,
         rationale: vote.rationale,
@@ -1579,8 +1610,8 @@ fn render_thread_decision(
     decision: LoadedApprovalDecision,
 ) -> Result<ThreadApprovalDecision, McpToolError> {
     Ok(ThreadApprovalDecision {
-        handle: ctx.format_memory(decision.memory_id),
-        policy: ctx.format_memory(MemoryId::new(decision.policy_memory_id)),
+        handle: ctx.format_fact_memory(decision.memory_id),
+        policy: ctx.format_fact_memory(MemoryId::new(decision.policy_memory_id)),
         target_kind: decision.target_kind,
         target: format_target(
             ctx,
@@ -1594,7 +1625,7 @@ fn render_thread_decision(
             .counted_votes
             .into_iter()
             .map(|vote| ThreadApprovalCountedVote {
-                vote: ctx.format_memory(MemoryId::new(vote.vote_memory_id)),
+                vote: ctx.format_fact_memory(MemoryId::new(vote.vote_memory_id)),
                 voter_key: vote.voter_key,
                 verdict: vote.verdict,
             })
@@ -1643,7 +1674,7 @@ fn format_target(
         ApprovalTargetKind::Fact
         | ApprovalTargetKind::Abstraction
         | ApprovalTargetKind::Perspective => target_memory_id
-            .map(|id| ctx.format_memory(MemoryId::new(id)))
+            .map(|id| format_memory_by_approval_kind(ctx, target_kind, MemoryId::new(id)))
             .ok_or_else(|| McpToolError::Other("approval target missing memory_id".into())),
     }
 }
@@ -1659,8 +1690,30 @@ fn format_endpoint(
             .map(|id| ctx.format_goal(GoalId::new(id)))
             .ok_or_else(|| McpToolError::Other("edge endpoint missing goal_id".into())),
         EntityKind::Fact | EntityKind::Abstraction | EntityKind::Perspective => memory_id
-            .map(|id| ctx.format_memory(MemoryId::new(id)))
+            .map(|id| format_memory_by_entity_kind(ctx, kind, MemoryId::new(id)))
             .ok_or_else(|| McpToolError::Other("edge endpoint missing memory_id".into())),
+    }
+}
+
+fn format_memory_by_approval_kind(
+    ctx: &McpToolCtx,
+    kind: ApprovalTargetKind,
+    memory_id: MemoryId,
+) -> String {
+    match kind {
+        ApprovalTargetKind::Fact => ctx.format_fact_memory(memory_id),
+        ApprovalTargetKind::Abstraction => ctx.format_abstraction_memory(memory_id),
+        ApprovalTargetKind::Perspective => ctx.format_perspective_memory(memory_id),
+        ApprovalTargetKind::Goal => ctx.format_fact_memory(memory_id),
+    }
+}
+
+fn format_memory_by_entity_kind(ctx: &McpToolCtx, kind: EntityKind, memory_id: MemoryId) -> String {
+    match kind {
+        EntityKind::Fact => ctx.format_fact_memory(memory_id),
+        EntityKind::Abstraction => ctx.format_abstraction_memory(memory_id),
+        EntityKind::Perspective => ctx.format_perspective_memory(memory_id),
+        EntityKind::Goal => ctx.format_fact_memory(memory_id),
     }
 }
 
@@ -1782,6 +1835,45 @@ async fn validate_memory_ids_visible(
         ));
     }
     Ok(())
+}
+
+async fn load_memory_handle_classes(
+    ctx: &McpToolCtx,
+    memory_ids: &[uuid::Uuid],
+) -> Result<HashMap<uuid::Uuid, MemoryHandleClass>, McpToolError> {
+    let unique_ids: HashSet<_> = memory_ids.iter().copied().collect();
+    if unique_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let ids: Vec<_> = unique_ids.into_iter().collect();
+    let (owner_kind, owner_id, owner_org_id) = owner_columns(&ctx.owner);
+    let rows: Vec<(uuid::Uuid, String)> = sqlx::query_as(
+        "SELECT memory_id, COALESCE(kind::text, 'Fact') AS kind
+           FROM proxima_core.memories
+          WHERE owner_principal_kind = $1
+            AND owner_principal_id = $2
+            AND owner_org_id = $3
+            AND memory_id = ANY($4::uuid[])",
+    )
+    .bind(owner_kind)
+    .bind(owner_id)
+    .bind(owner_org_id)
+    .bind(&ids)
+    .fetch_all(&ctx.pool)
+    .await
+    .map_err(map_sql)?;
+    if rows.len() != ids.len() {
+        return Err(McpToolError::Other(
+            "one or more inquiry context memories were not found".into(),
+        ));
+    }
+    rows.into_iter()
+        .map(|(id, kind)| {
+            MemoryHandleClass::from_memory_kind(&kind)
+                .map(|class| (id, class))
+                .ok_or_else(|| McpToolError::Other(format!("unknown memory kind: {kind}")))
+        })
+        .collect()
 }
 
 async fn validate_goal_ids_visible(
@@ -2169,4 +2261,94 @@ fn owner_columns(owner: &Owner) -> (OwnerPrincipalKind, uuid::Uuid, uuid::Uuid) 
         Principal::Group(group) => (OwnerPrincipalKind::Group, group.into_inner()),
     };
     (kind, principal_id, owner.org_id.into_inner())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mcp::{HandleTable, McpAuthorContext, OutputMode};
+    use crate::{FlavorRegistry, OrgId, UserId};
+    use std::sync::Arc;
+
+    fn test_ctx(handles: Arc<HandleTable>) -> McpToolCtx {
+        McpToolCtx {
+            pool: sqlx::PgPool::connect_lazy("postgres://x/x").expect("lazy pool"),
+            owner: Owner {
+                principal: Principal::User(UserId::new(uuid::Uuid::now_v7())),
+                org_id: OrgId::new(uuid::Uuid::now_v7()),
+            },
+            handles: Some(handles),
+            mode: OutputMode::Handles,
+            registry: Arc::new(FlavorRegistry::new().freeze()),
+            author: McpAuthorContext {
+                model_id: "test/model".into(),
+                client_name: "test".into(),
+                client_version: "1".into(),
+                caller_self_perspective: None,
+            },
+            caller_self_perspective: None,
+            master_token_id: None,
+            engine: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn inquiry_context_memories_render_with_actual_memory_class() {
+        let handles = Arc::new(HandleTable::new());
+        let ctx = test_ctx(handles.clone());
+        let question_id = MemoryId::new(uuid::Uuid::now_v7());
+        let answer_id = MemoryId::new(uuid::Uuid::now_v7());
+        let fact_id = uuid::Uuid::now_v7();
+        let abstraction_id = uuid::Uuid::now_v7();
+        let perspective_id = uuid::Uuid::now_v7();
+        handles.assign_abstraction_memory(MemoryId::new(abstraction_id));
+        handles.assign_perspective_memory(MemoryId::new(perspective_id));
+        let memory_classes = HashMap::from([
+            (fact_id, MemoryHandleClass::Fact),
+            (abstraction_id, MemoryHandleClass::Abstraction),
+            (perspective_id, MemoryHandleClass::Perspective),
+        ]);
+        let asked_at = OffsetDateTime::now_utc();
+        let question = LoadedQuestion {
+            memory_id: question_id,
+            payload: DirectedQuestionV1 {
+                thread_key: "thread".into(),
+                question: "Question?".into(),
+                target_personality_instance_id: uuid::Uuid::now_v7(),
+                target_self_perspective_memory_id: uuid::Uuid::now_v7(),
+                asked_by_self_perspective_memory_id: uuid::Uuid::now_v7(),
+                parent_question_memory_id: None,
+                context_memory_ids: vec![fact_id, abstraction_id, perspective_id],
+                context_goal_ids: Vec::new(),
+                idempotency_key: "q".into(),
+                asked_at,
+            },
+        };
+        let answer = LoadedAnswer {
+            memory_id: answer_id,
+            payload: DirectedAnswerV1 {
+                question_memory_id: question_id.into_inner(),
+                thread_key: "thread".into(),
+                answer: "Answer.".into(),
+                answered_by_personality_instance_id: uuid::Uuid::now_v7(),
+                answered_by_self_perspective_memory_id: perspective_id,
+                context_memory_ids_used: vec![abstraction_id, perspective_id],
+                idempotency_key: "a".into(),
+                answered_at: asked_at,
+            },
+        };
+
+        let rendered_question =
+            render_thread_question(&ctx, question, &memory_classes).expect("question");
+        let rendered_answer = render_thread_answer(&ctx, answer, &memory_classes).expect("answer");
+
+        assert_eq!(
+            rendered_question.context_memories,
+            vec!["F2".to_string(), "A1".to_string(), "P1".to_string()]
+        );
+        assert_eq!(
+            rendered_answer.context_memories_used,
+            vec!["A1".to_string(), "P1".to_string()]
+        );
+    }
 }

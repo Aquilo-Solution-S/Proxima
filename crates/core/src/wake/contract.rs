@@ -76,10 +76,10 @@ pub fn build_wake_contract(
         goal_scope: wake_entry.goal_scope.as_str().to_string(),
         max_rounds: wake_entry.max_rounds,
         handle_domains: WakeContractHandleDomains {
-            memory: "N*: memory Fact/Abstraction/Perspective handle; use in memory arguments"
+            memory: "F*: Fact memory, A*: Abstraction memory, P*: Perspective memory; use the class required by each memory argument"
                 .to_string(),
             goal: "G*: Goal handle; use in goal arguments".to_string(),
-            personality: "P*: Personality handle; use in target_personality/personality arguments"
+            personality: "I*: Personality handle; use in target_personality/personality arguments"
                 .to_string(),
             edge: "E*: Edge handle; use in edge arguments".to_string(),
             wake_entry: "W*: Wake-entry handle; use in wake-entry arguments".to_string(),
@@ -221,6 +221,6 @@ mod tests {
             contract.resolved_tools.workspace[0].canonical_name,
             "workspace_shell"
         );
-        assert!(contract.handle_domains.personality.contains("P*"));
+        assert!(contract.handle_domains.personality.contains("I*"));
     }
 }

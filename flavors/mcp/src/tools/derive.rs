@@ -33,7 +33,7 @@ pub struct DeriveArgs {
     pub tags: Vec<String>,
     #[serde(default)]
     #[schemars(
-        description = "Optional source memory handles (`N...`) this derivation is based on. Use `[]` only when there is no concrete memory provenance."
+        description = "Optional source memory handles (`F...`, `A...`, or `P...`) this derivation is based on. Use `[]` only when there is no concrete memory provenance."
     )]
     pub source_handles: Vec<String>,
     #[schemars(
@@ -191,7 +191,14 @@ impl McpTool for DeriveTool {
             tx.commit().await.map_err(map_storage)?;
 
             Ok(DeriveOutput {
-                handle: ctx.format_memory(MemoryId::new(memory_id)),
+                handle: match args.kind {
+                    DerivedKind::Abstraction => {
+                        ctx.format_abstraction_memory(MemoryId::new(memory_id))
+                    }
+                    DerivedKind::Perspective => {
+                        ctx.format_perspective_memory(MemoryId::new(memory_id))
+                    }
+                },
                 idempotent_replay: outcome.idempotent_replay,
                 provenance_edge_handles,
             })

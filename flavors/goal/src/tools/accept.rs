@@ -21,11 +21,11 @@ pub struct AcceptArgs {
     )]
     pub payload: Option<GoalPayloadInput>,
     #[schemars(
-        description = "Optional replacement evidence memory handles (`N...`). Omit or null to copy proposal evidence; use `[]` to clear evidence."
+        description = "Optional replacement evidence memory handles (`F...` Fact or `A...` Abstraction). Omit or null to copy proposal evidence; use `[]` to clear evidence."
     )]
     pub evidence: Option<Vec<String>>,
     #[schemars(
-        description = "Optional `P...` Personality handle to assign the accepted Active Goal to. Omit or null for no new assignment."
+        description = "Optional `I...` Personality handle to assign the accepted Active Goal to. Omit or null for no new assignment."
     )]
     pub target_personality: Option<String>,
     #[schemars(

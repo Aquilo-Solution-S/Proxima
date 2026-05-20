@@ -1,13 +1,16 @@
 //! `core/walk_lineage` substrate tool — walk memory-only
 //! Provenance/Supersession lineage from a starting memory.
 
+use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::Deserialize;
 
+use crate::MemoryId;
 use crate::error::ProtocolError;
+use crate::mcp::MemoryHandleClass;
 use crate::personality::{PersonalityTool, PersonalityToolContext, PersonalityToolResult};
 use crate::verbs::query::{MemoryLineageDirection, MemoryLineageRequest};
 
@@ -16,8 +19,10 @@ pub struct WalkLineageTool;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct WalkLineageArgs {
-    /// Handle of the memory to start walking from (e.g., `N1`).
-    #[schemars(description = "`N...` memory handle to start lineage walking from.")]
+    /// Handle of the memory to start walking from (e.g., `F1`, `A1`, or `P1`).
+    #[schemars(
+        description = "`F...`, `A...`, or `P...` memory handle to start lineage walking from."
+    )]
     pub memory: String,
     #[serde(default = "default_direction")]
     #[schemars(
@@ -132,11 +137,20 @@ impl PersonalityTool for WalkLineageTool {
         )
         .await;
 
+        let mut node_classes = HashMap::new();
+        for node in &response.nodes {
+            if let Some(class) = MemoryHandleClass::from_memory_kind(&format!("{:?}", node.kind)) {
+                node_classes.insert(node.memory_id, class);
+            }
+        }
+
         let nodes: Vec<_> = response
             .nodes
             .into_iter()
             .map(|node| {
-                let handle = ctx.handles.assign_memory(node.memory_id);
+                let handle = ctx
+                    .handles
+                    .assign_memory_kind(node.memory_id, &format!("{:?}", node.kind));
                 serde_json::json!({
                     "memory": handle.as_str(),
                     "kind": format!("{:?}", node.kind),
@@ -152,8 +166,8 @@ impl PersonalityTool for WalkLineageTool {
             .into_iter()
             .map(|edge| {
                 let handle = ctx.handles.assign_edge(crate::EdgeId::new(edge.edge_id));
-                let source = ctx.handles.assign_memory(edge.source_memory_id);
-                let target = ctx.handles.assign_memory(edge.target_memory_id);
+                let source = lineage_memory_handle(ctx, &node_classes, edge.source_memory_id);
+                let target = lineage_memory_handle(ctx, &node_classes, edge.target_memory_id);
                 serde_json::json!({
                     "edge": handle.as_str(),
                     "relation": edge.relation,
@@ -173,4 +187,19 @@ impl PersonalityTool for WalkLineageTool {
             "truncated": response.truncated,
         })))
     }
+}
+
+fn lineage_memory_handle(
+    ctx: &PersonalityToolContext<'_>,
+    node_classes: &HashMap<MemoryId, MemoryHandleClass>,
+    memory_id: MemoryId,
+) -> crate::mcp::Handle {
+    if let Some(handle) = ctx.handles.memory_handle(memory_id) {
+        return handle;
+    }
+    let class = node_classes
+        .get(&memory_id)
+        .copied()
+        .unwrap_or(MemoryHandleClass::Fact);
+    ctx.handles.assign_memory_with_class(memory_id, class)
 }

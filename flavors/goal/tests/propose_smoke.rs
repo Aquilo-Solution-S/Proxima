@@ -21,7 +21,7 @@ async fn propose_writes_goal_and_motivated_by_atomically() -> Result<(), Box<dyn
         let owner = owner_fixture();
         let ctx = ctx(&pg, owner.clone());
         let evidence = insert_abstraction(&pg, &owner).await?;
-        let evidence_handle = ctx.format_memory(proxima_core::MemoryId::new(evidence));
+        let evidence_handle = ctx.format_abstraction_memory(proxima_core::MemoryId::new(evidence));
 
         let outcome = ProposeTool::call(
             ctx.clone(),
@@ -169,7 +169,7 @@ async fn propose_rejects_evidence_in_other_owner() -> Result<(), Box<dyn std::er
         let other = other_owner_fixture();
         let ctx = ctx(&pg, owner);
         let evidence = insert_abstraction(&pg, &other).await?;
-        let evidence_handle = ctx.format_memory(proxima_core::MemoryId::new(evidence));
+        let evidence_handle = ctx.format_abstraction_memory(proxima_core::MemoryId::new(evidence));
 
         let err = ProposeTool::call(
             ctx,

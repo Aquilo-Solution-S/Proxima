@@ -59,7 +59,7 @@ impl PersonalityTool for ListSelfPerspectivesTool {
                     ctx.handles.assign_personality(row.personality_instance_id);
                 let root_handle = ctx
                     .handles
-                    .assign_memory(row.current_root_perspective_memory_id);
+                    .assign_perspective_memory(row.current_root_perspective_memory_id);
                 serde_json::json!({
                     "personality": personality_handle.as_str(),
                     "current_root_perspective": root_handle.as_str(),

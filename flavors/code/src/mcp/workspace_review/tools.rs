@@ -25,8 +25,8 @@ use super::types::{
 use crate::mcp::emit_execution_request::{
     append_authored_edge, append_target_edge, find_execution_request_by_key,
     ingest_execution_request, insert_sidecar as insert_execution_request_sidecar,
-    load_execution_request, load_prior_derived_targets, push_derived_edge, resolve_memory_id,
-    resolve_personality_id, validate_target_execution_wake, validate_target_personality,
+    load_execution_request, load_prior_derived_targets, push_derived_edge, resolve_personality_id,
+    validate_target_execution_wake, validate_target_personality,
 };
 use crate::mcp::sql::{map_storage, owner_principal};
 use crate::payloads::{
@@ -59,7 +59,7 @@ impl McpTool for CodeEmitWorkspaceReviewTool {
                     "caller_self_perspective is required to author a workspace review".into(),
                 )
             })?;
-            let workspace_run_memory_id = resolve_memory_id(&ctx, &args.workspace_run_memory)?;
+            let workspace_run_memory_id = ctx.resolve_fact_memory(&args.workspace_run_memory)?;
             let _idempotency_key = crate::mcp::emit_execution_request::normalize_text(
                 "idempotency_key",
                 &args.idempotency_key,
@@ -161,7 +161,7 @@ impl McpTool for CodeEmitWorkspaceReviewTool {
             tx.commit().await.map_err(map_storage)?;
 
             Ok(CodeEmitWorkspaceReviewOutput {
-                handle: ctx.format_memory(outcome.memory_id),
+                handle: ctx.format_fact_memory(outcome.memory_id),
                 authored_edge_handle: authored_edge_id
                     .map(|edge_id| ctx.format_edge(EdgeId::new(edge_id))),
                 derived_edge_handles: derived_edge_ids
@@ -198,7 +198,7 @@ impl McpTool for CodeEmitVerificationEvidenceTool {
                     "caller_self_perspective is required to author verification evidence".into(),
                 )
             })?;
-            let workspace_run_memory_id = resolve_memory_id(&ctx, &args.workspace_run_memory)?;
+            let workspace_run_memory_id = ctx.resolve_fact_memory(&args.workspace_run_memory)?;
             let _idempotency_key = crate::mcp::emit_execution_request::normalize_text(
                 "idempotency_key",
                 &args.idempotency_key,
@@ -260,7 +260,7 @@ impl McpTool for CodeEmitVerificationEvidenceTool {
             tx.commit().await.map_err(map_storage)?;
 
             Ok(CodeEmitVerificationEvidenceOutput {
-                handle: ctx.format_memory(outcome.memory_id),
+                handle: ctx.format_fact_memory(outcome.memory_id),
                 authored_edge_handle: authored_edge_id
                     .map(|edge_id| ctx.format_edge(EdgeId::new(edge_id))),
                 derived_edge_handles: derived_edge_ids
@@ -299,12 +299,12 @@ impl McpTool for CodeEmitCorrectionExecutionRequestTool {
             let workspace_review_memory_id = args
                 .workspace_review_memory
                 .as_deref()
-                .map(|value| resolve_memory_id(&ctx, value))
+                .map(|value| ctx.resolve_fact_memory(value))
                 .transpose()?;
             let workspace_decision_memory_id = args
                 .workspace_decision_memory
                 .as_deref()
-                .map(|value| resolve_memory_id(&ctx, value))
+                .map(|value| ctx.resolve_fact_memory(value))
                 .transpose()?;
             if workspace_review_memory_id.is_some() == workspace_decision_memory_id.is_some() {
                 return Err(McpToolError::InvalidInput(
@@ -363,7 +363,7 @@ impl McpTool for CodeEmitCorrectionExecutionRequestTool {
             {
                 tx.commit().await.map_err(map_storage)?;
                 return Ok(CodeEmitCorrectionExecutionRequestOutput {
-                    handle: ctx.format_memory(existing),
+                    handle: ctx.format_fact_memory(existing),
                     authored_edge_handle: None,
                     target_edge_handle: None,
                     derived_edge_handles: Vec::new(),
@@ -467,7 +467,7 @@ impl McpTool for CodeEmitCorrectionExecutionRequestTool {
             tx.commit().await.map_err(map_storage)?;
 
             Ok(CodeEmitCorrectionExecutionRequestOutput {
-                handle: ctx.format_memory(outcome.memory_id),
+                handle: ctx.format_fact_memory(outcome.memory_id),
                 authored_edge_handle: authored_edge_id
                     .map(|edge_id| ctx.format_edge(EdgeId::new(edge_id))),
                 target_edge_handle: target_edge_id

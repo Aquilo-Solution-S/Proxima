@@ -127,7 +127,7 @@ impl McpTool for RememberTool {
             tx.commit().await.map_err(map_storage)?;
 
             Ok(RememberOutput {
-                handle: ctx.format_memory(outcome.memory_id),
+                handle: ctx.format_fact_memory(outcome.memory_id),
                 idempotent_replay: outcome.idempotent_replay,
             })
         })

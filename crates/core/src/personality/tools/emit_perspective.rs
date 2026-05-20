@@ -137,7 +137,7 @@ impl PersonalityTool for EmitPerspectiveTool {
         };
         let memory_id =
             emit_personality_memory(ctx, sidecar_table, depth, PROMPT_VERSION, &draft).await?;
-        let handle = ctx.handles.assign_memory(memory_id);
+        let handle = ctx.handles.assign_perspective_memory(memory_id);
         Ok(PersonalityToolResult::ok(serde_json::json!({
             "memory": handle.as_str(),
             "wake_chain_depth": depth.into_inner(),

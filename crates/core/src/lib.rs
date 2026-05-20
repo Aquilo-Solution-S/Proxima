@@ -47,7 +47,7 @@ pub use intervention::*;
 pub use llm::*;
 pub use mcp::{
     Handle, HandleTable, McpAuthorContext, McpCallFn, McpTool, McpToolCtx, McpToolDescriptor,
-    McpToolError, OutputMode,
+    McpToolError, MemoryHandleClass, OutputMode,
 };
 pub use models::*;
 pub use outbox::*;

@@ -72,6 +72,7 @@ pub struct TriggerEventEnvelope {
 #[derive(Debug, Clone, Serialize)]
 pub struct TriggeringMemoryEnvelope {
     pub memory_id: Uuid,
+    pub kind: String,
     pub schema_id: String,
     pub schema_version: i32,
     pub typed_payload: serde_json::Value,
@@ -210,6 +211,7 @@ pub async fn assemble_wake_context(
 
     let triggering_memory = TriggeringMemoryEnvelope {
         memory_id: memory_snapshot.memory_id.into_inner(),
+        kind: memory_snapshot.kind,
         schema_id: memory_snapshot.schema_id.into_inner(),
         schema_version: i32::try_from(memory_snapshot.schema_version.into_inner()).unwrap_or(1),
         typed_payload: memory_snapshot.payload_json,

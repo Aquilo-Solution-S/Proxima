@@ -47,12 +47,12 @@ pub struct CodeEmitExecutionRequestArgs {
     )]
     pub idempotency_key: String,
     #[schemars(
-        description = "`N...` goal-activated Fact memory handle for the Active Goal that caused this planner wake. This is not a `G...` Goal handle."
+        description = "`F...` goal-activated Fact memory handle for the Active Goal that caused this planner wake. This is not a `G...` Goal handle."
     )]
     pub goal_activated_memory: String,
     #[serde(default)]
     #[schemars(
-        description = "Optional additional Fact memory handles (`N...`) used as evidence for the execution request. Use `[]` when no separate Fact evidence is needed; never G... Goal handles."
+        description = "Optional additional Fact memory handles (`F...`) used as evidence for the execution request. Use `[]` when no separate Fact evidence is needed; never `G...`, `A...`, `P...`, or `I...` handles."
     )]
     pub evidence: Vec<String>,
     #[serde(default)]
@@ -75,11 +75,11 @@ pub struct CodeEmitExecutionRequestOutput {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CodeRetryExecutionRequestArgs {
     #[schemars(
-        description = "`N...` memory handle for the prior proxima-code/execution-request-v1 Fact being retried."
+        description = "`F...` memory handle for the prior proxima-code/execution-request-v1 Fact being retried."
     )]
     pub prior_execution_request: String,
     #[schemars(
-        description = "`P...` Personality handle for the worker that should receive the retry assignment."
+        description = "`I...` Personality handle for the worker that should receive the retry assignment."
     )]
     pub target_personality: String,
     #[schemars(
@@ -98,7 +98,7 @@ pub struct CodeRetryExecutionRequestArgs {
     pub instructions_append: Option<String>,
     #[serde(default)]
     #[schemars(
-        description = "Optional additional Fact memory handles (`N...`) for retry evidence. Use `[]` when no extra evidence is needed; never G... Goal handles."
+        description = "Optional additional Fact memory handles (`F...`) for retry evidence. Use `[]` when no extra evidence is needed; never `G...`, `A...`, `P...`, or `I...` handles."
     )]
     pub evidence: Vec<String>,
 }
@@ -143,7 +143,7 @@ impl McpTool for CodeEmitExecutionRequestTool {
                     "caller_self_perspective is required to author an execution request".into(),
                 )
             })?;
-            let goal_activated_memory_id = resolve_memory_id(&ctx, &args.goal_activated_memory)?;
+            let goal_activated_memory_id = ctx.resolve_fact_memory(&args.goal_activated_memory)?;
             let evidence = resolve_evidence(&ctx, &args.evidence)?;
 
             let mut tx = ctx.pool.begin().await.map_err(map_storage)?;
@@ -223,14 +223,15 @@ impl McpTool for CodeEmitExecutionRequestTool {
             tx.commit().await.map_err(map_storage)?;
 
             Ok(CodeEmitExecutionRequestOutput {
-                handle: ctx.format_memory(outcome.memory_id),
+                handle: ctx.format_fact_memory(outcome.memory_id),
                 authored_edge_handle: authored_edge_id
                     .map(|edge_id| ctx.format_edge(EdgeId::new(edge_id))),
                 derived_edge_handles: derived_edge_ids
                     .into_iter()
                     .map(|edge_id| ctx.format_edge(EdgeId::new(edge_id)))
                     .collect(),
-                acceptance_criteria_handle: acceptance_memory_id.map(|id| ctx.format_memory(id)),
+                acceptance_criteria_handle: acceptance_memory_id
+                    .map(|id| ctx.format_fact_memory(id)),
                 acceptance_criteria_edge_handle: acceptance_edge_id
                     .map(|edge_id| ctx.format_edge(EdgeId::new(edge_id))),
                 idempotent_replay: outcome.idempotent_replay,
@@ -267,7 +268,7 @@ impl McpTool for CodeRetryExecutionRequestTool {
                     "caller_self_perspective is required for shell-author retry provenance".into(),
                 )
             })?;
-            let prior_memory_id = resolve_memory_id(&ctx, &args.prior_execution_request)?;
+            let prior_memory_id = ctx.resolve_fact_memory(&args.prior_execution_request)?;
             let target_personality_id = resolve_personality_id(&ctx, &args.target_personality)?;
             let request_key = normalize_text("idempotency_key", &args.idempotency_key, 1, 240)?;
             let explicit_evidence = resolve_evidence(&ctx, &args.evidence)?;
@@ -279,7 +280,7 @@ impl McpTool for CodeRetryExecutionRequestTool {
             {
                 tx.commit().await.map_err(map_storage)?;
                 return Ok(CodeRetryExecutionRequestOutput {
-                    handle: ctx.format_memory(existing),
+                    handle: ctx.format_fact_memory(existing),
                     authored_edge_handle: None,
                     target_edge_handle: None,
                     derived_edge_handles: Vec::new(),
@@ -361,7 +362,7 @@ impl McpTool for CodeRetryExecutionRequestTool {
             tx.commit().await.map_err(map_storage)?;
 
             Ok(CodeRetryExecutionRequestOutput {
-                handle: ctx.format_memory(outcome.memory_id),
+                handle: ctx.format_fact_memory(outcome.memory_id),
                 authored_edge_handle: authored_edge_id
                     .map(|edge_id| ctx.format_edge(EdgeId::new(edge_id))),
                 target_edge_handle: target_edge_id
@@ -485,10 +486,6 @@ fn retry_instructions(
     normalize_text("instructions", &instructions, 1, 20_000)
 }
 
-pub(super) fn resolve_memory_id(ctx: &McpToolCtx, raw: &str) -> Result<MemoryId, McpToolError> {
-    ctx.resolve_memory(raw)
-}
-
 pub(super) fn resolve_personality_id(
     ctx: &McpToolCtx,
     raw: &str,
@@ -498,7 +495,7 @@ pub(super) fn resolve_personality_id(
 
 fn resolve_evidence(ctx: &McpToolCtx, raw: &[String]) -> Result<Vec<MemoryId>, McpToolError> {
     raw.iter()
-        .map(|value| resolve_memory_id(ctx, value))
+        .map(|value| ctx.resolve_fact_memory(value))
         .collect()
 }
 
@@ -852,11 +849,11 @@ async fn validate_evidence_in_owner(
         .await
         .map_err(map_storage)?;
         match row {
-            Some(EntityKind::Fact | EntityKind::Abstraction) => {}
-            Some(_) => {
+            Some(EntityKind::Fact) => {}
+            Some(kind) => {
                 return Err(McpToolError::LayeringViolation(format!(
-                    "evidence {} must be Fact or Abstraction",
-                    memory_id.into_inner()
+                    "evidence {} must be a Fact memory handle; got {kind:?}",
+                    memory_id.into_inner(),
                 )));
             }
             None => {
@@ -1119,4 +1116,62 @@ pub(super) async fn append_derived_edge(
     .await
     .map_err(McpToolError::Storage)?;
     Ok(edge_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use proxima_core::mcp::{HandleTable, McpAuthorContext, OutputMode};
+    use proxima_core::{FlavorRegistry, GroupId, OrgId, Owner, Principal};
+    use sqlx::postgres::PgPoolOptions;
+
+    use super::*;
+
+    fn test_ctx(handles: Arc<HandleTable>) -> McpToolCtx {
+        McpToolCtx {
+            pool: PgPoolOptions::new()
+                .connect_lazy("postgres://proxima:proxima@localhost/proxima")
+                .expect("lazy pool"),
+            owner: Owner {
+                principal: Principal::Group(GroupId::new(Uuid::now_v7())),
+                org_id: OrgId::new(Uuid::now_v7()),
+            },
+            handles: Some(handles),
+            mode: OutputMode::Handles,
+            registry: Arc::new(FlavorRegistry::new().freeze()),
+            author: McpAuthorContext {
+                model_id: "test/model".into(),
+                client_name: "test".into(),
+                client_version: "test".into(),
+                caller_self_perspective: None,
+            },
+            caller_self_perspective: None,
+            master_token_id: None,
+            engine: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn execution_request_evidence_accepts_only_fact_handles() {
+        let handles = Arc::new(HandleTable::new());
+        let fact = MemoryId::new(Uuid::now_v7());
+        let abstraction = MemoryId::new(Uuid::now_v7());
+        let fact_handle = handles.assign_fact_memory(fact).as_str().to_string();
+        let abstraction_handle = handles
+            .assign_abstraction_memory(abstraction)
+            .as_str()
+            .to_string();
+        let ctx = test_ctx(handles);
+
+        assert_eq!(
+            resolve_evidence(&ctx, &[fact_handle]).expect("fact evidence"),
+            vec![fact]
+        );
+        let err = resolve_evidence(&ctx, &[abstraction_handle]).expect_err("A handle rejected");
+        assert!(
+            err.to_string().contains("expected Fact memory handle"),
+            "{err}"
+        );
+    }
 }

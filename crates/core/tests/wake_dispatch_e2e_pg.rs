@@ -42,7 +42,7 @@ async fn harness_wake_persists_trace_fact_jsonl_and_provenance() {
             contract["handle_domains"]["personality"]
                 .as_str()
                 .expect("personality domain")
-                .contains("P*")
+                .contains("I*")
         );
         assert_eq!(
             contract["tool_palettes"]["substrate_tool_palette"][0],
@@ -50,13 +50,13 @@ async fn harness_wake_persists_trace_fact_jsonl_and_provenance() {
         );
         assert_eq!(
             program.context_params["root_perspective"]["personality"],
-            "P1"
+            "I1"
         );
         assert_eq!(
             program.context_params["root_perspective"]["root_perspective"],
-            "N2"
+            "P1"
         );
-        assert_eq!(program.context_params["triggering_memory"]["memory"], "N1");
+        assert_eq!(program.context_params["triggering_memory"]["memory"], "F1");
         for (key, value) in &program.context_params {
             assert!(
                 !contains_uuid_like(value),

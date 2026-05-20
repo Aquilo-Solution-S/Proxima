@@ -20,7 +20,7 @@ async fn propose_with_evidence(
     ctx: &proxima_core::McpToolCtx,
 ) -> Result<uuid::Uuid, Box<dyn std::error::Error>> {
     let evidence = insert_abstraction(pg, &ctx.owner).await?;
-    let evidence_handle = ctx.format_memory(proxima_core::MemoryId::new(evidence));
+    let evidence_handle = ctx.format_abstraction_memory(proxima_core::MemoryId::new(evidence));
     let outcome = ProposeTool::call(
         ctx.clone(),
         ProposeArgs {
@@ -244,7 +244,7 @@ async fn propose_and_accept_emit_lifecycle_facts_and_authored_edges()
         let self_id = insert_self_perspective(&pg, &owner).await?;
         ctx.caller_self_perspective = Some(self_id);
         let evidence = insert_abstraction(&pg, &owner).await?;
-        let evidence_handle = ctx.format_memory(proxima_core::MemoryId::new(evidence));
+        let evidence_handle = ctx.format_abstraction_memory(proxima_core::MemoryId::new(evidence));
 
         let proposed = ProposeTool::call(
             ctx.clone(),

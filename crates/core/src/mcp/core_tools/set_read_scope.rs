@@ -16,10 +16,10 @@ pub struct SetReadScopeTool;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SetReadScopeArgs {
-    /// `P`-handle for the reader personality whose explicit grants are
+    /// `I`-handle for the reader personality whose explicit grants are
     /// replaced.
     pub personality: String,
-    /// `P`-handles the reader may read in addition to itself.
+    /// `I`-handles the reader may read in addition to itself.
     pub readable_personalities: Vec<String>,
 }
 
@@ -34,7 +34,7 @@ pub struct SetReadScopeOutput {
 impl McpTool for SetReadScopeTool {
     const NAME: &'static str = "core/set_read_scope";
     const DESCRIPTION: &'static str = "Replace explicit cross-personality read grants for one \
-         personality. Identity reads are implicit; list only additional readable P-handles.";
+         personality. Identity reads are implicit; list only additional readable I-handles.";
     type Args = SetReadScopeArgs;
     type Output = SetReadScopeOutput;
 

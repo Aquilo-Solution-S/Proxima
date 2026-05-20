@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
-use crate::mcp::HandleTable;
+use crate::mcp::{HandleTable, MemoryHandleClass};
 use crate::personality::{PersonalityInstanceId, WakeChainDepth};
 use crate::{MemoryId, Owner};
 
@@ -20,7 +20,9 @@ pub struct WakeTokenContext {
     pub model_id: String,
     pub max_rounds: u32,
     pub current_root_perspective_memory_id: MemoryId,
+    pub current_root_perspective_memory_class: MemoryHandleClass,
     pub triggering_event_memory_id: MemoryId,
+    pub triggering_event_memory_class: MemoryHandleClass,
     pub triggering_event_depth: WakeChainDepth,
     pub read_log: Arc<tokio::sync::Mutex<Vec<(MemoryId, WakeChainDepth)>>>,
     /// Per-wake handle table. Pre-seeded with triggering memory,

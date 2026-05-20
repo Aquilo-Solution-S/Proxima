@@ -14,7 +14,7 @@ pub struct ReplayWakeEventsTool;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ReplayWakeEventsArgs {
-    /// `P`-handle for the personality whose active wake entries should
+    /// `I`-handle for the personality whose active wake entries should
     /// be replayed against historical change events.
     pub personality: String,
     /// Optional `W`-handle. When omitted, all active wake entries on the
@@ -123,7 +123,7 @@ mod tests {
         let err = ReplayWakeEventsTool::call(
             make_ctx(),
             ReplayWakeEventsArgs {
-                personality: "P404".into(),
+                personality: "I404".into(),
                 wake_entry: None,
                 after_seq: None,
                 until_seq: None,

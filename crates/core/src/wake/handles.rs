@@ -9,10 +9,14 @@ use crate::mcp::PreSeededHandles;
 use crate::wake::token_store::WakeTokenContext;
 
 pub fn pre_seed_wake_handles(ctx: &WakeTokenContext) -> PreSeededHandles {
-    let triggering = ctx.handles.assign_memory(ctx.triggering_event_memory_id);
-    let root_perspective = ctx
-        .handles
-        .assign_memory(ctx.current_root_perspective_memory_id);
+    let triggering = ctx.handles.assign_memory_with_class(
+        ctx.triggering_event_memory_id,
+        ctx.triggering_event_memory_class,
+    );
+    let root_perspective = ctx.handles.assign_memory_with_class(
+        ctx.current_root_perspective_memory_id,
+        ctx.current_root_perspective_memory_class,
+    );
     let self_instance = ctx
         .handles
         .assign_personality(ctx.personality_instance_id());
@@ -28,7 +32,7 @@ pub fn pre_seed_wake_handles(ctx: &WakeTokenContext) -> PreSeededHandles {
 }
 
 /// Format the round-1 wake-context preamble. Reads handle strings from
-/// `PreSeededHandles` — never hard-codes `N1`/`N2`/`P1`.
+/// `PreSeededHandles` — never hard-codes `F1`/`P1`/`I1`.
 ///
 /// The preamble is prepended to the personality's `system_prompt` by
 /// the wake bootstrap. It names the three handles the model can rely
@@ -79,7 +83,9 @@ mod tests {
             model_id: "test/model".into(),
             max_rounds: 16,
             current_root_perspective_memory_id: root,
+            current_root_perspective_memory_class: crate::mcp::MemoryHandleClass::Perspective,
             triggering_event_memory_id: triggering,
+            triggering_event_memory_class: crate::mcp::MemoryHandleClass::Fact,
             triggering_event_depth: WakeChainDepth::new(0),
             read_log: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             handles: Arc::new(HandleTable::new()),
@@ -87,12 +93,12 @@ mod tests {
     }
 
     #[test]
-    fn pre_seed_assigns_n1_n2_p1_at_construction_time() {
+    fn pre_seed_assigns_f1_p1_i1_at_construction_time() {
         let ctx = make_ctx();
         let seeded = pre_seed_wake_handles(&ctx);
-        assert_eq!(seeded.triggering.as_str(), "N1");
-        assert_eq!(seeded.root_perspective.as_str(), "N2");
-        assert_eq!(seeded.self_instance.as_str(), "P1");
+        assert_eq!(seeded.triggering.as_str(), "F1");
+        assert_eq!(seeded.root_perspective.as_str(), "P1");
+        assert_eq!(seeded.self_instance.as_str(), "I1");
     }
 
     #[test]
@@ -102,7 +108,9 @@ mod tests {
         let seeded = pre_seed_wake_handles(&ctx);
 
         for _ in 0..32 {
-            let _ = ctx.handles.assign_memory(MemoryId::new(Uuid::now_v7()));
+            let _ = ctx
+                .handles
+                .assign_fact_memory(MemoryId::new(Uuid::now_v7()));
             let _ = ctx.handles.assign_edge(EdgeId::new(Uuid::now_v7()));
             let _ = ctx.handles.assign_goal(GoalId::new(Uuid::now_v7()));
         }
@@ -153,19 +161,21 @@ mod tests {
     }
 
     #[test]
-    fn preamble_does_not_hardcode_n1_p1() {
+    fn preamble_does_not_hardcode_f1_i1() {
         let ctx = make_ctx();
         // Mint unrelated entities first to perturb counter state so the
-        // pre-seed handles aren't N1/N2/P1.
+        // pre-seed handles aren't F1/P1/I1.
         for _ in 0..5 {
-            let _ = ctx.handles.assign_memory(MemoryId::new(Uuid::now_v7()));
+            let _ = ctx
+                .handles
+                .assign_fact_memory(MemoryId::new(Uuid::now_v7()));
         }
         let seeded = pre_seed_wake_handles(&ctx);
         let preamble = format_wake_context_preamble(&seeded, None);
         assert!(preamble.contains(seeded.triggering.as_str()));
-        assert_ne!(seeded.triggering.as_str(), "N1");
-        assert!(!preamble.contains(" N1 "));
-        assert!(!preamble.contains(" N1."));
-        assert!(!preamble.contains(" N1,"));
+        assert_ne!(seeded.triggering.as_str(), "F1");
+        assert!(!preamble.contains(" F1 "));
+        assert!(!preamble.contains(" F1."));
+        assert!(!preamble.contains(" F1,"));
     }
 }

@@ -14,7 +14,7 @@ pub struct ListWakeEntriesTool;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ListWakeEntriesArgs {
-    /// `P`-handle for the personality whose wake entries to list.
+    /// `I`-handle for the personality whose wake entries to list.
     pub personality: String,
 }
 
@@ -42,7 +42,7 @@ pub struct ListWakeEntriesOutput {
 impl McpTool for ListWakeEntriesTool {
     const NAME: &'static str = "core/list_wake_entries";
     const DESCRIPTION: &'static str = "List wake entries on one personality. Args: \
-         `{\"personality\": \"P1\"}`. Each item carries a `wake_entry` field (W-handle) — pass that \
+         `{\"personality\": \"I1\"}`. Each item carries a `wake_entry` field (W-handle) — pass that \
          value as the `wake_entry` argument to update_wake_entry, remove_wake_entry, or \
          replay_wake_events. Use core/get_personality for the full per-entry payload.";
     type Args = ListWakeEntriesArgs;
@@ -129,7 +129,7 @@ mod tests {
         let err = ListWakeEntriesTool::call(
             ctx,
             ListWakeEntriesArgs {
-                personality: "P99".into(),
+                personality: "I99".into(),
             },
         )
         .await

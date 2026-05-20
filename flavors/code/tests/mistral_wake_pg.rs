@@ -1198,7 +1198,7 @@ async fn live_mistral_merge_tool_is_master_token_guarded() -> Result<(), Box<dyn
                 WakeEntryTriggerKind::OnMemory,
                 WorkspaceRunV1::SCHEMA_ID,
                 vec!["proxima-code/code_merge_workspace_run"],
-                "Call proxima_code_code_merge_workspace_run with {\"workspace_run_memory\":\"N1\"}. Then stop.".into(),
+                "Call proxima_code_code_merge_workspace_run with {\"workspace_run_memory\":\"F1\"}. Then stop.".into(),
                 WakeOptions {
                     max_rounds: 3,
                     ..WakeOptions::default()
@@ -1381,7 +1381,7 @@ fn emit_abstraction_instruction(repo_id: Uuid, sha: &str) -> String {
 }
 
 fn goal_lifecycle_instruction() -> String {
-    "Use the available functions in this exact order. First call proxima_goal_goal_propose with {\"payload\":{\"schema_id\":\"proxima-goal/simple-text-v1\",\"body\":{\"title\":\"live mistral lifecycle\",\"text\":\"Prove live Mistral goal lifecycle tools.\"}},\"evidence\":[\"N1\"],\"idempotency_key\":\"live-mistral-lifecycle-propose\"}. Then call proxima_goal_goal_accept with the returned proposal handle and idempotency_key live-mistral-lifecycle-accept. Then call proxima_goal_goal_mark_achieved with the active goal handle returned by accept, evidence [\"N1\"], and idempotency_key live-mistral-lifecycle-achieved. Then stop.".into()
+    "Use the available functions in this exact order. First call proxima_goal_goal_propose with {\"payload\":{\"schema_id\":\"proxima-goal/simple-text-v1\",\"body\":{\"title\":\"live mistral lifecycle\",\"text\":\"Prove live Mistral goal lifecycle tools.\"}},\"evidence\":[\"F1\"],\"idempotency_key\":\"live-mistral-lifecycle-propose\"}. Then call proxima_goal_goal_accept with the returned proposal handle and idempotency_key live-mistral-lifecycle-accept. Then call proxima_goal_goal_mark_achieved with the active goal handle returned by accept, evidence [\"F1\"], and idempotency_key live-mistral-lifecycle-achieved. Then stop.".into()
 }
 
 fn execution_request_instruction() -> String {
@@ -1392,24 +1392,24 @@ fn execution_request_instruction() -> String {
             "title": "Live Mistral execution request",
             "instructions": "Make the smallest safe change.",
             "idempotency_key": "live-mistral-execution-request",
-            "goal_activated_memory": "N1",
+            "goal_activated_memory": "F1",
             "evidence": []
         })
     )
 }
 
 fn workspace_review_instruction() -> String {
-    "Call the available function proxima_code_code_emit_workspace_review exactly once with {\"workspace_run_memory\":\"N1\",\"verdict\":\"approved\",\"summary\":\"live mistral workspace review\",\"findings\":[],\"verification_summary\":\"reviewed by live mistral\",\"idempotency_key\":\"live-mistral-workspace-review\"}. Then stop.".into()
+    "Call the available function proxima_code_code_emit_workspace_review exactly once with {\"workspace_run_memory\":\"F1\",\"verdict\":\"approved\",\"summary\":\"live mistral workspace review\",\"findings\":[],\"verification_summary\":\"reviewed by live mistral\",\"idempotency_key\":\"live-mistral-workspace-review\"}. Then stop.".into()
 }
 
 fn correction_request_instruction() -> String {
-    "Call the available function proxima_code_code_emit_correction_execution_request exactly once with {\"workspace_review_memory\":\"N1\",\"target_personality\":\"P1\",\"idempotency_key\":\"live-mistral-correction-request\"}. Then stop.".into()
+    "Call the available function proxima_code_code_emit_correction_execution_request exactly once with {\"workspace_review_memory\":\"F1\",\"target_personality\":\"I1\",\"idempotency_key\":\"live-mistral-correction-request\"}. Then stop.".into()
 }
 
 fn read_tools_instruction() -> String {
     format!(
         "Call these available functions exactly once each, then stop: \
-         core_fetch_memory with {{\"memory\":\"N1\"}}; \
+         core_fetch_memory with {{\"memory\":\"F1\"}}; \
          core_list_active_goals with {{}}; \
          core_search_memories with {{\"query\":\"live mistral\",\"mode\":\"lexical\",\"limit\":3}}; \
          proxima_code_code_search_chunks with {{\"query\":\"important function marker\",\"limit\":3,\"repo_handle\":\"{REPO_HANDLE}\",\"include_calls\":false}}; \

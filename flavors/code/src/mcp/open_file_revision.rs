@@ -107,7 +107,7 @@ impl McpTool for CodeOpenFileRevisionTool {
                 .await
                 .map_err(map_storage)?
                 .map(|row| FileRevisionInfo {
-                    handle: ctx.format_memory(MemoryId::new(row.memory_id)),
+                    handle: ctx.format_fact_memory(MemoryId::new(row.memory_id)),
                     repo_handle: ctx.format_flavor_object(
                         super::REPO_HANDLE_KIND,
                         row.repo_id,
@@ -156,7 +156,7 @@ impl McpTool for CodeOpenFileRevisionTool {
                         args.max_text_bytes,
                     );
                     ChunkSummary {
-                        handle: ctx.format_memory(MemoryId::new(row.memory_id)),
+                        handle: ctx.format_fact_memory(MemoryId::new(row.memory_id)),
                         chunk_index: row.chunk_index,
                         chunk_type: row.chunk_type,
                         line_range: (row.line_range_start, row.line_range_end),

@@ -14,7 +14,7 @@ pub struct ListReadScopeTool;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ListReadScopeArgs {
-    /// `P`-handle for the reader personality.
+    /// `I`-handle for the reader personality.
     pub personality: String,
 }
 
