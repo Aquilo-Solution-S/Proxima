@@ -103,7 +103,7 @@ fn emit_abstraction_palette_expands_to_schema_wrapper() {
 
     let wrapper = projection
         .iter()
-        .find(|tool| tool.palette_id == "core/emit_abstraction")
+        .find(|tool| tool.canonical_name == "core/emit_abstraction::test/brief-v1::v1")
         .expect("typed wrapper");
     assert_eq!(
         wrapper.canonical_name,
@@ -123,17 +123,74 @@ fn emit_abstraction_palette_expands_to_schema_wrapper() {
             .pointer("/properties/goal_id/description")
             .and_then(serde_json::Value::as_str)
             .expect("goal_id description")
-            .contains("Use the wake handle")
+            .contains("Use wake handles")
     );
     assert_eq!(
         wrapper.input_schema.pointer("/properties/text/type"),
         Some(&serde_json::json!(["string", "null"]))
     );
-    assert!(
-        projection
-            .iter()
-            .all(|tool| tool.canonical_name != "core/emit_abstraction")
+    assert!(projection.len() > 1);
+    assert!(projection.iter().all(|tool| {
+        tool.palette_id == "core/emit_abstraction" && tool.canonical_name != "core/emit_abstraction"
+    }));
+}
+
+#[test]
+fn scoped_emit_abstraction_palette_projects_only_named_schema() {
+    let mut registry = FlavorRegistry::new();
+    registry.add_abstraction_schema::<TestBrief>();
+    registry.add_abstraction_schema::<TestCollisionTwo>();
+    let registry = registry.freeze();
+
+    let projection = build_wake_tool_projection(
+        &registry,
+        &["core/emit_abstraction::test/brief-v1::v1".to_string()],
+    )
+    .expect("projection");
+
+    assert_eq!(projection.len(), 1);
+    assert_eq!(
+        projection[0].palette_id,
+        "core/emit_abstraction::test/brief-v1::v1"
     );
+    assert_eq!(
+        projection[0].canonical_name,
+        "core/emit_abstraction::test/brief-v1::v1"
+    );
+    assert!(matches!(
+        &projection[0].dispatch,
+        proxima_core::harness::HarnessToolDispatch::TypedEmit {
+            internal_canonical_name,
+            schema_id,
+            schema_version,
+            ..
+        } if internal_canonical_name == "core/emit_abstraction"
+            && schema_id == "test/brief-v1"
+            && *schema_version == 1
+    ));
+}
+
+#[test]
+fn scoped_emit_abstraction_rejects_missing_schema() {
+    let err = build_wake_tool_projection(
+        &FlavorRegistry::new().freeze(),
+        &["core/emit_abstraction::test/brief-v1::v1".to_string()],
+    )
+    .expect_err("missing scoped schema must fail projection");
+
+    assert!(err.to_string().contains("test/brief-v1"));
+    assert!(err.to_string().contains("not registered"));
+}
+
+#[test]
+fn scoped_emit_abstraction_rejects_malformed_id() {
+    let err = build_wake_tool_projection(
+        &FlavorRegistry::new().freeze(),
+        &["core/emit_abstraction::test/brief-v1".to_string()],
+    )
+    .expect_err("malformed scoped id must fail projection");
+
+    assert!(err.to_string().contains("invalid scoped emit tool"));
 }
 
 #[test]
@@ -201,17 +258,16 @@ fn direct_projection_rejects_unknown_tool_ids() {
 }
 
 #[test]
-fn emit_projection_rejects_empty_concrete_schema_set() {
-    let err = build_wake_tool_projection(
+fn broad_emit_projection_includes_core_registered_schemas() {
+    let projection = build_wake_tool_projection(
         &FlavorRegistry::new().freeze(),
         &["core/emit_abstraction".to_string()],
     )
-    .expect_err("empty abstraction registry must fail projection");
+    .expect("core schemas are registered");
 
-    assert!(
-        err.to_string()
-            .contains("no registered Abstraction schemas")
-    );
+    assert!(projection.iter().any(|tool| {
+        tool.canonical_name == "core/emit_abstraction::core/chat-compaction-v1::v1"
+    }));
 }
 
 #[test]

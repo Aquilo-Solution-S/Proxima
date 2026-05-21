@@ -8,23 +8,38 @@
 //! advertise produced schemas through their registered tool descriptor.
 
 use crate::Engine;
-use crate::verbs::schema::PayloadKind;
+
+use super::{broad_emit_kind, parse_scoped_emit_tool_id};
 
 /// Schemas this palette could emit, given the registry.
 #[must_use]
 pub fn writeable_schemas_for_palette(engine: &Engine, palette: &[String]) -> Vec<String> {
-    let allow_abstraction = palette.iter().any(|id| id == "core/emit_abstraction");
-    let allow_perspective = palette.iter().any(|id| id == "core/emit_perspective");
-    let mut schema_ids: Vec<String> = engine
-        .registry()
-        .list()
-        .into_iter()
-        .filter(|schema| {
-            (allow_abstraction && schema.kind == PayloadKind::Abstraction)
-                || (allow_perspective && schema.kind == PayloadKind::Perspective)
-        })
-        .map(|schema| schema.schema_id.into_inner())
-        .collect();
+    let mut schema_ids: Vec<String> = Vec::new();
+    for palette_id in palette {
+        if let Some(kind) = broad_emit_kind(palette_id) {
+            schema_ids.extend(
+                engine
+                    .registry()
+                    .list()
+                    .into_iter()
+                    .filter(|schema| schema.kind == kind)
+                    .map(|schema| schema.schema_id.into_inner()),
+            );
+            continue;
+        }
+        if let Ok(Some(scoped)) = parse_scoped_emit_tool_id(palette_id) {
+            if engine
+                .registry()
+                .lookup(
+                    &crate::SchemaId::new(scoped.schema_id.clone()),
+                    crate::SchemaVersion::new(scoped.schema_version),
+                )
+                .is_some_and(|schema| schema.kind == scoped.kind)
+            {
+                schema_ids.push(scoped.schema_id);
+            }
+        }
+    }
 
     for tool in engine.registry().list_mcp_tools() {
         if palette.iter().any(|id| id == tool.name) {
@@ -51,7 +66,7 @@ mod tests {
     use crate::owner::{Owner, Principal};
     use crate::relation::{RelationClass, RelationDescriptor};
     use crate::verbs::query::MemoryStore;
-    use crate::verbs::schema::{FlavorRegistryFrozen, SchemaInfo};
+    use crate::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaInfo};
     use crate::{Engine, McpTool};
 
     #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -151,6 +166,22 @@ mod tests {
         let schemas = writeable_schemas_for_palette(&engine, &palette);
         assert_eq!(schemas, vec!["test/abstraction-v1".to_string()]);
         assert!(writeable_relations_for_palette(&engine, &palette).is_empty());
+    }
+
+    #[test]
+    fn scoped_emit_abstraction_returns_only_named_schema() {
+        let engine = engine_with_test_registry();
+        let palette = vec!["core/emit_abstraction::test/abstraction-v1::v1".to_string()];
+        let schemas = writeable_schemas_for_palette(&engine, &palette);
+        assert_eq!(schemas, vec!["test/abstraction-v1".to_string()]);
+        assert!(writeable_relations_for_palette(&engine, &palette).is_empty());
+    }
+
+    #[test]
+    fn scoped_emit_abstraction_ignores_wrong_kind_schema() {
+        let engine = engine_with_test_registry();
+        let palette = vec!["core/emit_abstraction::test/perspective-v1::v1".to_string()];
+        assert!(writeable_schemas_for_palette(&engine, &palette).is_empty());
     }
 
     #[test]

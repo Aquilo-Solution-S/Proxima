@@ -116,7 +116,7 @@ fn raw_emit_capability_is_not_provider_visible_without_projection() {
 }
 
 #[test]
-fn workspace_tools_appear_only_when_workspace_root_is_set() {
+fn workspace_palette_tools_appear_only_when_workspace_root_is_set() {
     let without_workspace = resolve(empty_program(&[], false), &[]).expect("resolve");
     assert!(
         !without_workspace
@@ -131,9 +131,7 @@ fn workspace_tools_appear_only_when_workspace_root_is_set() {
         .iter()
         .map(|tool| tool.canonical.as_str())
         .collect();
-    assert!(names.contains(&"workspace_shell"));
-    assert!(names.contains(&"workspace_text_editor"));
-    assert!(names.contains(&"workspace_list_files"));
+    assert_eq!(names, vec!["workspace_list_files"]);
 }
 
 #[tokio::test]

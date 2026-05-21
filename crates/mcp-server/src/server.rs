@@ -258,7 +258,8 @@ impl proxima_core::mcp::HarnessSubstrateBridge for McpToolHost {
         &self,
         palette: &[String],
     ) -> Vec<proxima_core::mcp::HarnessSubstrateToolSpec> {
-        let allows = |name: &str| palette.iter().any(|allowed| allowed == name);
+        let allows =
+            |name: &str| proxima_core::personality::palette_authorizes_internal_tool(palette, name);
         let mut out = Vec::new();
 
         for desc in self.registry().list_mcp_tools() {
@@ -305,7 +306,10 @@ impl proxima_core::mcp::HarnessSubstrateBridge for McpToolHost {
                 call.canonical_name,
             ));
         }
-        if !wake.palette.iter().any(|tool| tool == &call.canonical_name) {
+        if !proxima_core::personality::palette_authorizes_internal_tool(
+            &wake.palette,
+            &call.canonical_name,
+        ) {
             return Err(proxima_core::mcp::HarnessSubstrateError::Unauthorized(
                 call.canonical_name,
             ));

@@ -115,7 +115,7 @@ async fn run_lexical(
     schemas: &[SchemaInfo],
     limit: u32,
 ) -> Result<Vec<SearchRow>, StorageError> {
-    let sidecars = memory_sidecars(schemas);
+    let sidecars = memory_sidecars(req, schemas);
     let mut next_param = 3;
     let mut sql = common_candidates_sql(req, &sidecars, &mut next_param)?;
     let query_param = next_param;
@@ -188,7 +188,7 @@ async fn run_semantic(
         ));
     }
 
-    let sidecars = memory_sidecars(schemas);
+    let sidecars = memory_sidecars(req, schemas);
     let mut next_param = 3;
     let mut sql = common_candidates_sql(req, &sidecars, &mut next_param)?;
     let vec_param = next_param;
@@ -343,7 +343,10 @@ fn bind_common<'q>(
     q
 }
 
-fn memory_sidecars(schemas: &[SchemaInfo]) -> Vec<&SchemaInfo> {
+fn memory_sidecars<'a>(
+    req: &MemorySearchRequest,
+    schemas: &'a [SchemaInfo],
+) -> Vec<&'a SchemaInfo> {
     schemas
         .iter()
         .filter(|schema| {
@@ -352,6 +355,22 @@ fn memory_sidecars(schemas: &[SchemaInfo]) -> Vec<&SchemaInfo> {
                     schema.kind,
                     PayloadKind::Fact | PayloadKind::Abstraction | PayloadKind::Perspective
                 )
+                && req
+                    .kind
+                    .is_none_or(|kind| schema.kind == payload_kind_for_entity_kind(kind))
+                && req
+                    .schema_id
+                    .as_ref()
+                    .is_none_or(|schema_id| schema.schema_id == *schema_id)
         })
         .collect()
+}
+
+fn payload_kind_for_entity_kind(kind: EntityKind) -> PayloadKind {
+    match kind {
+        EntityKind::Fact => PayloadKind::Fact,
+        EntityKind::Abstraction => PayloadKind::Abstraction,
+        EntityKind::Perspective => PayloadKind::Perspective,
+        EntityKind::Goal => PayloadKind::Goal,
+    }
 }
