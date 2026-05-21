@@ -3,11 +3,11 @@
 use std::collections::HashSet;
 
 use crate::error::ProtocolError;
-use crate::personality::{substrate_pack, workspace_tool_ids};
+use crate::personality::{parse_scoped_emit_tool_id, substrate_pack, workspace_tool_ids};
 use crate::storage::{Storage, StorageError};
 use crate::{
-    FlavorRegistryFrozen, ModelTier, SetWakeEntriesRequest, SetWakeEntriesResponse, WakeEntryDraft,
-    WakeEntryTriggerKind, WakeExecutionMode,
+    FlavorRegistryFrozen, ModelTier, SchemaId, SchemaVersion, SetWakeEntriesRequest,
+    SetWakeEntriesResponse, WakeEntryDraft, WakeEntryTriggerKind, WakeExecutionMode,
 };
 
 pub struct SetWakeEntriesContext<'a> {
@@ -32,7 +32,12 @@ pub async fn set_wake_entries(
     );
     let workspace_registered = workspace_tool_ids();
     for entry in &req.entries {
-        validate_palettes(entry, &substrate_registered, &workspace_registered)?;
+        validate_palettes(
+            ctx.registry,
+            entry,
+            &substrate_registered,
+            &workspace_registered,
+        )?;
         validate_workspace_trigger(ctx.registry, entry)?;
     }
 
@@ -132,12 +137,13 @@ fn validate_entry_shape(entry: &WakeEntryDraft) -> Result<(), ProtocolError> {
 }
 
 fn validate_palettes(
+    registry: &FlavorRegistryFrozen,
     entry: &WakeEntryDraft,
     substrate_registered: &HashSet<String>,
     workspace_registered: &HashSet<String>,
 ) -> Result<(), ProtocolError> {
     for tool_id in &entry.substrate_tool_palette {
-        if !substrate_registered.contains(tool_id) {
+        if !substrate_tool_registered(tool_id, substrate_registered, registry) {
             return Err(ProtocolError::tool_not_registered(tool_id));
         }
     }
@@ -147,6 +153,26 @@ fn validate_palettes(
         }
     }
     Ok(())
+}
+
+fn substrate_tool_registered(
+    tool_id: &str,
+    substrate_registered: &HashSet<String>,
+    registry: &FlavorRegistryFrozen,
+) -> bool {
+    if substrate_registered.contains(tool_id) {
+        return true;
+    }
+    let Ok(Some(scoped)) = parse_scoped_emit_tool_id(tool_id) else {
+        return false;
+    };
+    substrate_registered.contains(scoped.base_tool_id)
+        && registry
+            .lookup(
+                &SchemaId::new(scoped.schema_id),
+                SchemaVersion::new(scoped.schema_version),
+            )
+            .is_some_and(|schema| schema.kind == scoped.kind)
 }
 
 fn validate_target_or_tier(

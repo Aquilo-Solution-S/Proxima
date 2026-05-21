@@ -8,11 +8,10 @@ use std::collections::HashMap;
 use serde_json::{Map, Value};
 
 use crate::mcp::provider_safe_tool_name;
-use crate::personality::substrate_pack;
+use crate::personality::{
+    broad_emit_kind, parse_scoped_emit_tool_id, scoped_emit_tool_id, substrate_pack,
+};
 use crate::verbs::schema::{FlavorRegistryFrozen, PayloadKind};
-
-const EMIT_ABSTRACTION: &str = "core/emit_abstraction";
-const EMIT_PERSPECTIVE: &str = "core/emit_perspective";
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct HarnessToolProjection {
@@ -62,6 +61,14 @@ pub enum ToolProjectionError {
         schema_version: u32,
         reason: String,
     },
+    #[error("invalid scoped emit tool {tool_id}: {reason}")]
+    InvalidScopedEmitToolId { tool_id: String, reason: String },
+    #[error("scoped emit schema {schema_id} v{schema_version} is not registered as {kind:?}")]
+    ScopedEmitSchemaNotRegistered {
+        schema_id: String,
+        schema_version: u32,
+        kind: PayloadKind,
+    },
 }
 
 pub fn build_wake_tool_projection(
@@ -72,20 +79,27 @@ pub fn build_wake_tool_projection(
     let mut provider_names = HashMap::new();
 
     for palette_id in palette {
-        match palette_id.as_str() {
-            EMIT_ABSTRACTION => project_emit_tool(
+        if let Some(scoped) = parse_scoped_emit_tool_id(palette_id).map_err(|err| {
+            ToolProjectionError::InvalidScopedEmitToolId {
+                tool_id: err.tool_id,
+                reason: err.reason,
+            }
+        })? {
+            project_one_emit_tool(
                 registry,
                 palette_id,
-                PayloadKind::Abstraction,
+                scoped.base_tool_id,
+                &scoped.schema_id,
+                scoped.schema_version,
+                scoped.kind,
                 &mut projected,
-            )?,
-            EMIT_PERSPECTIVE => project_emit_tool(
-                registry,
-                palette_id,
-                PayloadKind::Perspective,
-                &mut projected,
-            )?,
-            _ => projected.push(project_direct_tool(registry, palette_id)?),
+            )?;
+            continue;
+        }
+        if let Some(kind) = broad_emit_kind(palette_id) {
+            project_broad_emit_tool(registry, palette_id, kind, &mut projected)?;
+        } else {
+            projected.push(project_direct_tool(registry, palette_id)?);
         }
     }
 
@@ -146,7 +160,7 @@ fn project_direct_tool(
     })
 }
 
-fn project_emit_tool(
+fn project_broad_emit_tool(
     registry: &FlavorRegistryFrozen,
     tool_id: &str,
     kind: PayloadKind,
@@ -165,38 +179,70 @@ fn project_emit_tool(
     }
 
     for schema in schemas {
-        let schema_id = schema.schema_id.as_str().to_string();
-        let schema_version = schema.schema_version.into_inner();
-        let payload_schema = registry
-            .payload_json_schema(&schema.schema_id, schema.schema_version, kind)
-            .ok_or_else(|| ToolProjectionError::MissingPayloadJsonSchema {
-                schema_id: schema_id.clone(),
-                schema_version,
-                kind,
-            })?;
-        let input_schema = typed_emit_input_schema(payload_schema).map_err(|reason| {
-            ToolProjectionError::InvalidPayloadWrapperSchema {
-                schema_id: schema_id.clone(),
-                schema_version,
-                reason,
-            }
-        })?;
-        let canonical_name = format!("{tool_id}::{schema_id}::v{schema_version}");
-        projected.push(HarnessToolProjection {
-            palette_id: tool_id.to_string(),
-            provider_name: provider_safe_tool_name(&canonical_name),
-            canonical_name,
-            description: typed_emit_description(kind, &schema_id),
-            input_schema,
-            dispatch: HarnessToolDispatch::TypedEmit {
-                internal_canonical_name: tool_id.to_string(),
-                schema_id,
-                schema_version,
-                payload_kind: kind,
-            },
-        });
+        project_one_emit_tool(
+            registry,
+            tool_id,
+            tool_id,
+            schema.schema_id.as_str(),
+            schema.schema_version.into_inner(),
+            kind,
+            projected,
+        )?;
     }
 
+    Ok(())
+}
+
+fn project_one_emit_tool(
+    registry: &FlavorRegistryFrozen,
+    palette_id: &str,
+    internal_tool_id: &str,
+    schema_id: &str,
+    schema_version: u32,
+    kind: PayloadKind,
+    projected: &mut Vec<HarnessToolProjection>,
+) -> Result<(), ToolProjectionError> {
+    let schema_id_typed = crate::SchemaId::new(schema_id.to_string());
+    let schema_version_typed = crate::SchemaVersion::new(schema_version);
+    if registry
+        .lookup(&schema_id_typed, schema_version_typed)
+        .filter(|schema| schema.kind == kind)
+        .is_none()
+    {
+        return Err(ToolProjectionError::ScopedEmitSchemaNotRegistered {
+            schema_id: schema_id.to_string(),
+            schema_version,
+            kind,
+        });
+    }
+    let payload_schema = registry
+        .payload_json_schema(&schema_id_typed, schema_version_typed, kind)
+        .ok_or_else(|| ToolProjectionError::MissingPayloadJsonSchema {
+            schema_id: schema_id.to_string(),
+            schema_version,
+            kind,
+        })?;
+    let input_schema = typed_emit_input_schema(payload_schema).map_err(|reason| {
+        ToolProjectionError::InvalidPayloadWrapperSchema {
+            schema_id: schema_id.to_string(),
+            schema_version,
+            reason,
+        }
+    })?;
+    let canonical_name = scoped_emit_tool_id(internal_tool_id, schema_id, schema_version);
+    projected.push(HarnessToolProjection {
+        palette_id: palette_id.to_string(),
+        provider_name: provider_safe_tool_name(&canonical_name),
+        canonical_name,
+        description: typed_emit_description(kind, schema_id),
+        input_schema,
+        dispatch: HarnessToolDispatch::TypedEmit {
+            internal_canonical_name: internal_tool_id.to_string(),
+            schema_id: schema_id.to_string(),
+            schema_version,
+            payload_kind: kind,
+        },
+    });
     Ok(())
 }
 
@@ -295,10 +341,7 @@ fn ensure_property_descriptions(properties: &mut Map<String, Value>) {
 fn normalize_reference_properties(properties: &mut Map<String, Value>) {
     for (key, schema) in properties.iter_mut() {
         if is_reference_key(key) {
-            *schema = serde_json::json!({
-                "type": "string",
-                "description": format!("Use the wake handle for `{key}` (for example F1, A1, P1, G1, I1, E1, or W1), not a raw UUID.")
-            });
+            *schema = reference_property_schema(key);
             continue;
         }
         if let Some(nested) = schema
@@ -307,6 +350,24 @@ fn normalize_reference_properties(properties: &mut Map<String, Value>) {
         {
             normalize_reference_properties(nested);
         }
+    }
+}
+
+fn reference_property_schema(key: &str) -> Value {
+    let description = format!(
+        "Use wake handles for `{key}` (for example F1, A1, P1, G1, I1, E1, or W1), not raw UUIDs."
+    );
+    if is_plural_reference_key(key) {
+        serde_json::json!({
+            "type": "array",
+            "items": { "type": "string" },
+            "description": description,
+        })
+    } else {
+        serde_json::json!({
+            "type": "string",
+            "description": description,
+        })
     }
 }
 
@@ -324,6 +385,19 @@ fn is_reference_key(key: &str) -> bool {
         || normalized.ends_with("_edge_id")
 }
 
+fn is_plural_reference_key(key: &str) -> bool {
+    key == "goal_ids"
+        || key.ends_with("_goal_ids")
+        || key == "memory_ids"
+        || key.ends_with("_memory_ids")
+        || key == "personality_instance_ids"
+        || key.ends_with("_personality_instance_ids")
+        || key == "wake_entry_ids"
+        || key.ends_with("_wake_entry_ids")
+        || key == "edge_ids"
+        || key.ends_with("_edge_ids")
+}
+
 fn typed_emit_description(kind: PayloadKind, schema_id: &str) -> String {
     let kind = match kind {
         PayloadKind::Abstraction => "Abstraction",
@@ -333,4 +407,37 @@ fn typed_emit_description(kind: PayloadKind, schema_id: &str) -> String {
     format!(
         "Emit one {kind} memory with schema {schema_id}. Provide payload fields directly; schema_id and schema_version are hidden dispatch metadata."
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::typed_emit_input_schema;
+
+    #[test]
+    fn typed_emit_schema_keeps_plural_reference_fields_as_arrays() {
+        let payload_schema = json!({
+            "type": "object",
+            "properties": {
+                "source_memory_ids": {
+                    "type": "array",
+                    "items": { "type": "string", "format": "uuid" }
+                },
+                "request_memory_id": {
+                    "type": "string",
+                    "format": "uuid"
+                }
+            },
+            "required": ["source_memory_ids", "request_memory_id"]
+        });
+
+        let projected = typed_emit_input_schema(&payload_schema).expect("schema projects");
+        let source = &projected["properties"]["source_memory_ids"];
+        let request = &projected["properties"]["request_memory_id"];
+
+        assert_eq!(source["type"].as_str(), Some("array"));
+        assert_eq!(source["items"]["type"].as_str(), Some("string"));
+        assert_eq!(request["type"].as_str(), Some("string"));
+    }
 }

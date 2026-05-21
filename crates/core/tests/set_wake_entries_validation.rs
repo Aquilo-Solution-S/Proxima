@@ -16,21 +16,41 @@ use proxima_core::verbs::query::{
 use proxima_core::verbs::schema::SchemaInfo;
 use proxima_core::verbs::subscribe::ChangeEventStream;
 use proxima_core::{
-    AbstractionRow, ActiveGoalSummary, BindInferenceTierRequest, BindInferenceTierResponse,
-    ChangeEventForWake, ErrorCode, FactRow, FlavorRegistry, InferenceTargetRow,
-    InferenceTierBindingRow, InstantiatePersonalityRequest, InstantiatePersonalityResponse,
-    ListReadScopeRequest, ListReadScopeResponse, MemoryId, MemorySnapshot, ModelTier, OrgId, Owner,
-    PersonalityInstanceId, PersonalityInstanceRow, PersonalityRef, PersonalityRuntimeRow,
-    PersonalityWriteOutcome, PersonalityWriteRequest, Principal, RegisterInferenceTargetRequest,
-    RegisterInferenceTargetResponse, RemoveInferenceTargetRequest, RemoveInferenceTargetResponse,
-    RootPersonalityPerspectiveRow, SetReadScopeRequest, SetReadScopeResponse,
-    SetWakeEntriesRequest, SetWakeEntriesResponse, SidecarSpec, SourceBatchId,
-    TombstonePersonalityRequest, TombstonePersonalityResponse, UserId, WakeDispatchEntryRow,
-    WakeEntryAuthoredBy, WakeEntryDraft, WakeEntryTriggerKind, WakeExecutionMode,
-    WakeInvocationFinalize, WakeInvocationStart, WakeInvocationStatus, WakeWorkspaceBinding,
-    WakeWorkspaceFinalize,
+    AbstractionPayload, AbstractionRow, ActiveGoalSummary, BindInferenceTierRequest,
+    BindInferenceTierResponse, ChangeEventForWake, ErrorCode, FactRow, FlavorRegistry,
+    InferenceTargetRow, InferenceTierBindingRow, InstantiatePersonalityRequest,
+    InstantiatePersonalityResponse, ListReadScopeRequest, ListReadScopeResponse, MemoryId,
+    MemorySnapshot, ModelTier, OrgId, Owner, PersonalityInstanceId, PersonalityInstanceRow,
+    PersonalityRef, PersonalityRuntimeRow, PersonalityWriteOutcome, PersonalityWriteRequest,
+    Principal, RegisterInferenceTargetRequest, RegisterInferenceTargetResponse,
+    RemoveInferenceTargetRequest, RemoveInferenceTargetResponse, RootPersonalityPerspectiveRow,
+    SetReadScopeRequest, SetReadScopeResponse, SetWakeEntriesRequest, SetWakeEntriesResponse,
+    SidecarSpec, SourceBatchId, TombstonePersonalityRequest, TombstonePersonalityResponse, UserId,
+    WakeDispatchEntryRow, WakeEntryAuthoredBy, WakeEntryDraft, WakeEntryTriggerKind,
+    WakeExecutionMode, WakeInvocationFinalize, WakeInvocationStart, WakeInvocationStatus,
+    WakeWorkspaceBinding, WakeWorkspaceFinalize,
 };
+use schemars::{JsonSchema, schema_for};
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+struct TestBrief {
+    title: String,
+}
+
+impl AbstractionPayload for TestBrief {
+    const SCHEMA_ID: &'static str = "test/brief-v1";
+    const SCHEMA_VERSION: u32 = 1;
+
+    fn sidecar_table() -> &'static str {
+        "test.brief_v1"
+    }
+
+    fn json_schema() -> Option<serde_json::Value> {
+        serde_json::to_value(schema_for!(TestBrief)).ok()
+    }
+}
 
 #[derive(Default)]
 struct FixtureStorage {
@@ -479,6 +499,36 @@ async fn substrate_pack_tool_ids_are_registered_for_wake_entries() {
     ];
     let err = set_wake_entries(&ctx, &req(vec![draft])).await.unwrap_err();
     assert_eq!(err.code, ErrorCode::TierUnbound);
+}
+
+#[tokio::test]
+async fn scoped_emit_tool_id_is_registered_for_wake_entries() {
+    let storage = FixtureStorage::default();
+    let mut registry = FlavorRegistry::new();
+    registry.add_abstraction_schema::<TestBrief>();
+    let registry = registry.freeze();
+    let ctx = SetWakeEntriesContext {
+        storage: &storage,
+        registry: &registry,
+    };
+    let mut draft = entry("schema-a");
+    draft.substrate_tool_palette = vec!["core/emit_abstraction::test/brief-v1::v1".into()];
+    let err = set_wake_entries(&ctx, &req(vec![draft])).await.unwrap_err();
+    assert_eq!(err.code, ErrorCode::TierUnbound);
+}
+
+#[tokio::test]
+async fn scoped_emit_tool_id_rejects_missing_schema() {
+    let storage = FixtureStorage::default();
+    let registry = registry();
+    let ctx = SetWakeEntriesContext {
+        storage: &storage,
+        registry: &registry,
+    };
+    let mut draft = entry("schema-a");
+    draft.substrate_tool_palette = vec!["core/emit_abstraction::test/brief-v1::v1".into()];
+    let err = set_wake_entries(&ctx, &req(vec![draft])).await.unwrap_err();
+    assert_eq!(err.code, ErrorCode::ToolNotRegistered);
 }
 
 #[tokio::test]

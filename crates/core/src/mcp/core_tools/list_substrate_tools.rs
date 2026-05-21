@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::McpTool;
 use crate::mcp::{McpToolCtx, McpToolError};
+use crate::personality::{EMIT_ABSTRACTION_TOOL_ID, EMIT_PERSPECTIVE_TOOL_ID, scoped_emit_tool_id};
+use crate::verbs::schema::PayloadKind;
 
 #[derive(Debug, Default)]
 pub struct ListSubstrateToolsTool;
@@ -58,7 +60,39 @@ impl McpTool for ListSubstrateToolsTool {
                     description: desc.description.to_string(),
                 });
             }
+            for schema in ctx.registry.list() {
+                let Some(base_tool_id) = scoped_emit_base_tool(schema.kind) else {
+                    continue;
+                };
+                let tool_id = scoped_emit_tool_id(
+                    base_tool_id,
+                    schema.schema_id.as_str(),
+                    schema.schema_version.into_inner(),
+                );
+                tools.push(SubstrateToolItem {
+                    tool_id,
+                    source: "substrate".into(),
+                    description: format!(
+                        "Emit one {:?} memory with schema {} v{}.",
+                        schema.kind,
+                        schema.schema_id.as_str(),
+                        schema.schema_version.into_inner()
+                    ),
+                });
+            }
             Ok(ListSubstrateToolsOutput { tools })
         })
+    }
+}
+
+fn scoped_emit_base_tool(kind: PayloadKind) -> Option<&'static str> {
+    match kind {
+        PayloadKind::Abstraction => Some(EMIT_ABSTRACTION_TOOL_ID),
+        PayloadKind::Perspective => Some(EMIT_PERSPECTIVE_TOOL_ID),
+        PayloadKind::Fact
+        | PayloadKind::Goal
+        | PayloadKind::Edge
+        | PayloadKind::CitedObject
+        | PayloadKind::CitationMapping => None,
     }
 }

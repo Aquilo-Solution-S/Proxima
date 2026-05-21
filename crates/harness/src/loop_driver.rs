@@ -10,6 +10,7 @@ use proxima_core::harness::{
     ErrorClass, FinishReason, HarnessAdapter, HarnessContext, HarnessError, HarnessOutcome,
     HarnessProgram, ProviderTarget, classify_outcome, duration_ms,
 };
+use proxima_core::personality::parse_scoped_emit_tool_id;
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
 
@@ -31,6 +32,7 @@ const PROVIDER_RETRY_BASE_DELAY: Duration = Duration::from_secs(2);
 const PROVIDER_RETRY_MAX_DELAY: Duration = Duration::from_secs(30);
 const PROVIDER_RETRY_AFTER_MAX_DELAY: Duration = Duration::from_secs(90);
 const PROVIDER_REQUEST_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+const FINISH_SOON_REMAINING_THRESHOLD: u32 = 3;
 
 #[derive(Clone)]
 pub struct HarnessLoop {
@@ -178,10 +180,17 @@ fn resolve_substrate_tools(
         .map(|spec| (spec.canonical_name.clone(), spec))
         .collect();
     let mut out = Vec::with_capacity(palette.len());
+    let mut seen = std::collections::HashSet::new();
 
     for name in palette {
-        let Some(spec) = by_name.remove(name) else {
-            return Err(format!("unknown_substrate_tool:{name}"));
+        let internal_name = parse_scoped_emit_tool_id(name)
+            .map_err(|err| format!("invalid_scoped_emit_tool:{}:{}", err.tool_id, err.reason))?
+            .map_or(name.as_str(), |scoped| scoped.base_tool_id);
+        if !seen.insert(internal_name.to_string()) {
+            continue;
+        }
+        let Some(spec) = by_name.remove(internal_name) else {
+            return Err(format!("unknown_substrate_tool:{internal_name}"));
         };
         out.push(proxima_core::harness::SubstrateToolBinding {
             canonical_name: spec.canonical_name,
@@ -226,6 +235,7 @@ async fn run_loop(
     }));
     append_prompt_and_tools_records(&mut jsonl, &resolved, &ctx, model_id, max_rounds);
 
+    let user_seed_without_budget_notice = resolved.conversation.user_seed.clone();
     let mut rounds_used = 0;
     let mut tool_call_count = 0;
 
@@ -235,6 +245,13 @@ async fn run_loop(
         }
 
         rounds_used += 1;
+        apply_round_budget_notice(
+            &mut resolved.conversation.user_seed,
+            &user_seed_without_budget_notice,
+            rounds_used,
+            max_rounds,
+            &mut jsonl,
+        );
         jsonl.append(&json!({
             "record": "round_start",
             "round_idx": rounds_used,
@@ -388,6 +405,42 @@ async fn run_loop(
         rounds_used,
         max_rounds,
         tool_call_count,
+    ))
+}
+
+fn apply_round_budget_notice(
+    user_seed: &mut String,
+    base_user_seed: &str,
+    round_idx: u32,
+    max_rounds: u32,
+    jsonl: &mut JsonlBuffer,
+) {
+    let Some(notice) = round_budget_notice(round_idx, max_rounds) else {
+        user_seed.clear();
+        user_seed.push_str(base_user_seed);
+        return;
+    };
+    *user_seed = format!("{base_user_seed}\n\n{notice}");
+    jsonl.append(&json!({
+        "record": "round_budget_notice",
+        "round_idx": round_idx,
+        "max_rounds": max_rounds,
+        "notice": notice,
+    }));
+}
+
+fn round_budget_notice(round_idx: u32, max_rounds: u32) -> Option<String> {
+    if max_rounds == 0 || round_idx > max_rounds {
+        return None;
+    }
+    let remaining_after_this_round = max_rounds - round_idx;
+    if remaining_after_this_round >= FINISH_SOON_REMAINING_THRESHOLD {
+        return None;
+    }
+    Some(format!(
+        "Runtime budget notice: this is round {round_idx} of {max_rounds}; \
+         {remaining_after_this_round} rounds remain after this response. \
+         You must finish soon. Prefer emitting the required final tool call or reply over further exploration."
     ))
 }
 
@@ -645,7 +698,7 @@ mod tests {
 
     use super::{
         PROVIDER_RETRY_AFTER_MAX_DELAY, PROVIDER_RETRY_BASE_DELAY, append_prompt_and_tools_records,
-        provider_error_is_retryable, provider_retry_delay,
+        provider_error_is_retryable, provider_retry_delay, round_budget_notice,
     };
 
     #[test]
@@ -690,6 +743,19 @@ mod tests {
             ),
             PROVIDER_RETRY_AFTER_MAX_DELAY
         );
+    }
+
+    #[test]
+    fn round_budget_notice_starts_below_three_remaining_rounds() {
+        assert!(round_budget_notice(5, 8).is_none());
+
+        let round_six = round_budget_notice(6, 8).expect("round six warning");
+        assert!(round_six.contains("round 6 of 8"));
+        assert!(round_six.contains("2 rounds remain"));
+        assert!(round_six.contains("You must finish soon"));
+
+        let round_eight = round_budget_notice(8, 8).expect("final round warning");
+        assert!(round_eight.contains("0 rounds remain"));
     }
 
     #[test]

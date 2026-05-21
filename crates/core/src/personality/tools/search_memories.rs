@@ -99,7 +99,9 @@ impl PersonalityTool for SearchMemoriesTool {
 
     fn description(&self) -> &'static str {
         "Search memories by lexical, semantic, or hybrid ranking. Returns \
-         memory handles, snippets, scores, and wake_chain_depth."
+         memory handles, snippets, scores, and wake_chain_depth. Use kind \
+         and schema_id filters when known; broad all-schema searches scan \
+         more visible memory text."
     }
 
     fn args_schema(&self) -> serde_json::Value {

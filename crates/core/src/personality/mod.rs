@@ -7,6 +7,7 @@
 pub mod authorization;
 pub mod context;
 pub mod drafts;
+pub mod emit_palette;
 pub mod invocation;
 pub mod produces;
 pub mod requests;
@@ -68,6 +69,13 @@ pub use tool::{PersonalityTool, PersonalityToolResult};
 
 // Re-export from produces submodule
 pub use produces::{writeable_relations_for_palette, writeable_schemas_for_palette};
+
+// Re-export from emit_palette submodule
+pub use emit_palette::{
+    EMIT_ABSTRACTION_TOOL_ID, EMIT_PERSPECTIVE_TOOL_ID, ScopedEmitToolId, ScopedEmitToolIdError,
+    broad_emit_kind, palette_authorizes_internal_tool, parse_scoped_emit_tool_id,
+    scoped_emit_tool_id,
+};
 
 // Re-export from tools submodule
 #[doc(hidden)]
