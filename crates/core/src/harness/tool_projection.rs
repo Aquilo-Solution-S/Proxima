@@ -354,9 +354,7 @@ fn normalize_reference_properties(properties: &mut Map<String, Value>) {
 }
 
 fn reference_property_schema(key: &str) -> Value {
-    let description = format!(
-        "Use wake handles for `{key}` (for example F1, A1, P1, G1, I1, E1, or W1), not raw UUIDs."
-    );
+    let description = reference_property_description(key);
     if is_plural_reference_key(key) {
         serde_json::json!({
             "type": "array",
@@ -369,6 +367,43 @@ fn reference_property_schema(key: &str) -> Value {
             "description": description,
         })
     }
+}
+
+fn reference_property_description(key: &str) -> String {
+    let examples = if key == "goal_id"
+        || key == "goal_ids"
+        || key.ends_with("_goal_id")
+        || key.ends_with("_goal_ids")
+    {
+        "G1"
+    } else if key == "memory_id"
+        || key == "memory_ids"
+        || key.ends_with("_memory_id")
+        || key.ends_with("_memory_ids")
+    {
+        "F1, A1, or P1"
+    } else if key == "personality_instance_id"
+        || key == "personality_instance_ids"
+        || key.ends_with("_personality_instance_id")
+        || key.ends_with("_personality_instance_ids")
+    {
+        "I1"
+    } else if key == "wake_entry_id"
+        || key == "wake_entry_ids"
+        || key.ends_with("_wake_entry_id")
+        || key.ends_with("_wake_entry_ids")
+    {
+        "W1"
+    } else if key == "edge_id"
+        || key == "edge_ids"
+        || key.ends_with("_edge_id")
+        || key.ends_with("_edge_ids")
+    {
+        "E1"
+    } else {
+        "F1, A1, P1, G1, I1, E1, or W1"
+    };
+    format!("Use wake handles for `{key}` (for example {examples}), not raw UUIDs.")
 }
 
 fn is_reference_key(key: &str) -> bool {
@@ -438,6 +473,9 @@ mod tests {
 
         assert_eq!(source["type"].as_str(), Some("array"));
         assert_eq!(source["items"]["type"].as_str(), Some("string"));
+        let source_description = source["description"].as_str().expect("description");
+        assert!(source_description.contains("F1, A1, or P1"));
+        assert!(!source_description.contains("W1"));
         assert_eq!(request["type"].as_str(), Some("string"));
     }
 }
