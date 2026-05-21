@@ -1,7 +1,10 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use proxima_code::mcp::{CodeOpenFileRevisionTool, CodeSearchChunksTool, CodeSearchCommitsTool};
+use proxima_code::mcp::{
+    CodeListReposTool, CodeOpenFileRevisionTool, CodeRegisterRepoTool, CodeSearchChunksTool,
+    CodeSearchCommitsTool,
+};
 use proxima_code::{CodeChunkV1, CommitV1, FileRevisionV1, register_repo};
 use proxima_core::auth::{Credentials, NoAuth};
 use proxima_core::engine::Engine;
@@ -17,9 +20,60 @@ use proxima_core::{
 use proxima_storage_pg::PgStorage;
 use serde_json::json;
 use sqlx::{Connection, Executor, PgConnection, PgPool};
+use tempfile::TempDir;
 use uuid::Uuid;
 
 const ADMIN_URL: &str = "postgres://proxima:proxima@localhost/proxima";
+
+#[tokio::test]
+async fn register_repo_tool_registers_local_git_repo_idempotently()
+-> Result<(), Box<dyn std::error::Error>> {
+    let Some(fixture) = TestDb::fresh().await? else {
+        return Ok(());
+    };
+    let owner = owner_fixture();
+    let registry = registry_for_mcp();
+    let temp = TempDir::new()?;
+    std::process::Command::new("git")
+        .arg("init")
+        .arg(temp.path())
+        .output()?;
+
+    let result = run_tool::<CodeRegisterRepoTool>(
+        ctx(fixture.pg.pool().clone(), owner.clone(), registry.clone()),
+        json!({ "path": temp.path().to_string_lossy(), "display_name": "Proxima Dogfood" }),
+    )
+    .await?;
+
+    assert_eq!(result["created"], true);
+    assert_eq!(result["repo"]["repo_handle"], "R1");
+    assert_eq!(result["repo"]["display_name"], "Proxima Dogfood");
+    assert_eq!(
+        result["repo"]["canonical_path"].as_str(),
+        Some(
+            std::fs::canonicalize(temp.path())?
+                .to_string_lossy()
+                .as_ref()
+        )
+    );
+
+    let replay = run_tool::<CodeRegisterRepoTool>(
+        ctx(fixture.pg.pool().clone(), owner.clone(), registry.clone()),
+        json!({ "path": temp.path().to_string_lossy(), "display_name": "Ignored Replay Name" }),
+    )
+    .await?;
+    assert_eq!(replay["created"], false);
+    assert_eq!(replay["repo"]["repo_id"], result["repo"]["repo_id"]);
+    assert_eq!(replay["repo"]["display_name"], "Proxima Dogfood");
+
+    let list =
+        run_tool::<CodeListReposTool>(ctx(fixture.pg.pool().clone(), owner, registry), json!({}))
+            .await?;
+    let repos = list["repos"].as_array().expect("repos");
+    assert_eq!(repos.len(), 1);
+    assert_eq!(repos[0]["repo_id"], result["repo"]["repo_id"]);
+    Ok(())
+}
 
 #[tokio::test]
 async fn search_chunks_returns_only_head_per_nk() -> Result<(), Box<dyn std::error::Error>> {
