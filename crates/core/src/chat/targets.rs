@@ -173,7 +173,7 @@ pub(super) async fn load_message(
     )> = sqlx::query_as(
         "SELECT q.thread_key, q.message, q.target_personality_instance_id,
                 q.target_self_perspective_memory_id, q.sent_by_self_perspective_memory_id,
-                q.parent_message_memory_id, q.context_memory_ids, q.context_goal_ids,
+                q.parent_memory_id, q.context_memory_ids, q.context_goal_ids,
                 q.idempotency_key, q.sent_at
            FROM proxima_core.chat_message_v1 q
            JOIN proxima_core.memories m USING (memory_id)
@@ -195,7 +195,7 @@ pub(super) async fn load_message(
         target_personality_instance_id,
         target_self_perspective_memory_id,
         sent_by_self_perspective_memory_id,
-        parent_message_memory_id,
+        parent_memory_id,
         context_memory_ids,
         context_goal_ids,
         idempotency_key,
@@ -212,11 +212,51 @@ pub(super) async fn load_message(
         target_personality_instance_id,
         target_self_perspective_memory_id,
         sent_by_self_perspective_memory_id,
-        parent_message_memory_id,
+        parent_memory_id,
         context_memory_ids,
         context_goal_ids,
         idempotency_key,
         sent_at,
+    })
+}
+
+pub(super) async fn load_chat_parent_thread_key(
+    ctx: &McpToolCtx,
+    parent_memory_id: MemoryId,
+) -> Result<String, McpToolError> {
+    let (owner_kind, owner_id, owner_org_id) = owner_columns(&ctx.owner);
+    let row: Option<(String,)> = sqlx::query_as(
+        "SELECT parent.thread_key
+           FROM (
+                 SELECT q.thread_key
+                   FROM proxima_core.chat_message_v1 q
+                   JOIN proxima_core.memories m USING (memory_id)
+                  WHERE q.memory_id = $1
+                    AND m.owner_principal_kind = $2
+                    AND m.owner_principal_id = $3
+                    AND m.owner_org_id = $4
+                 UNION ALL
+                 SELECT r.thread_key
+                   FROM proxima_core.chat_reply_v1 r
+                   JOIN proxima_core.memories m USING (memory_id)
+                  WHERE r.memory_id = $1
+                    AND m.owner_principal_kind = $2
+                    AND m.owner_principal_id = $3
+                    AND m.owner_org_id = $4
+                ) parent
+          LIMIT 1",
+    )
+    .bind(parent_memory_id.into_inner())
+    .bind(owner_kind)
+    .bind(owner_id)
+    .bind(owner_org_id)
+    .fetch_optional(&ctx.pool)
+    .await
+    .map_err(map_sql)?;
+    row.map(|(thread_key,)| thread_key).ok_or_else(|| {
+        McpToolError::InvalidInput(
+            "chat parent must be a visible chat message or chat reply Fact".into(),
+        )
     })
 }
 

@@ -43,10 +43,14 @@ pub struct StartChatArgs {
     #[schemars(description = "First chat message text.")]
     pub message: String,
     #[serde(default)]
-    #[schemars(description = "Optional memory handles to include as exact context.")]
+    #[schemars(
+        description = "Optional memory handles to include as exact context. Accepts only Fact/Abstraction/Perspective handles (F..., A..., P...) or raw memory UUIDs; do not put Goal handles here."
+    )]
     pub context_memories: Vec<String>,
     #[serde(default)]
-    #[schemars(description = "Optional goal handles to include as exact context.")]
+    #[schemars(
+        description = "Optional Goal handles to include as exact context. Use this field for G... handles; do not put goals in context_memories."
+    )]
     pub context_goals: Vec<String>,
     #[schemars(description = "Stable idempotency key for this start-chat action.")]
     pub idempotency_key: String,
@@ -112,7 +116,7 @@ impl McpTool for StartChatTool {
                 target_personality_instance_id: target.personality_instance_id.into_inner(),
                 target_self_perspective_memory_id: target.root_perspective.into_inner(),
                 sent_by_self_perspective_memory_id: caller_self.into_inner(),
-                parent_message_memory_id: None,
+                parent_memory_id: None,
                 context_memory_ids,
                 context_goal_ids,
                 idempotency_key,
@@ -171,14 +175,18 @@ pub struct EmitChatMessageArgs {
     pub message: String,
     #[serde(default)]
     #[schemars(
-        description = "Optional parent chat-message Fact handle/UUID. Do not pass message text."
+        description = "Optional parent chat Fact handle/UUID. Accepts either a core/chat-message-v1 Fact or a core/chat-reply-v1 Fact in the same thread. Do not pass message text."
     )]
-    pub parent_message: Option<String>,
+    pub parent: Option<String>,
     #[serde(default)]
-    #[schemars(description = "Optional memory handles to include as exact context.")]
+    #[schemars(
+        description = "Optional memory handles to include as exact context. Accepts only Fact/Abstraction/Perspective handles (F..., A..., P...) or raw memory UUIDs; do not put Goal handles here."
+    )]
     pub context_memories: Vec<String>,
     #[serde(default)]
-    #[schemars(description = "Optional goal handles to include as exact context.")]
+    #[schemars(
+        description = "Optional Goal handles to include as exact context. Use this field for G... handles; do not put goals in context_memories."
+    )]
     pub context_goals: Vec<String>,
     #[schemars(description = "Stable idempotency key for this chat message.")]
     pub idempotency_key: String,
@@ -216,13 +224,19 @@ impl McpTool for EmitChatMessageTool {
             let thread_key = normalize_text("thread_key", &args.thread_key, 1, 240)?;
             let message = normalize_text("message", &args.message, 1, 8000)?;
             let idempotency_key = normalize_text("idempotency_key", &args.idempotency_key, 1, 240)?;
-            let parent_message_memory_id = args
-                .parent_message
+            let parent_memory_id = args
+                .parent
                 .as_deref()
                 .map(|raw| ctx.resolve_fact_memory(raw).map(MemoryId::into_inner))
                 .transpose()?;
-            if let Some(parent) = parent_message_memory_id {
-                load_message(&ctx, MemoryId::new(parent)).await?;
+            if let Some(parent) = parent_memory_id {
+                let parent_thread =
+                    load_chat_parent_thread_key(&ctx, MemoryId::new(parent)).await?;
+                if parent_thread != thread_key {
+                    return Err(McpToolError::InvalidInput(
+                        "chat parent belongs to a different thread".into(),
+                    ));
+                }
             }
             let context_memory_ids = resolve_context_memories(&ctx, &args.context_memories).await?;
             let context_goal_ids = resolve_context_goals(&ctx, &args.context_goals).await?;
@@ -232,7 +246,7 @@ impl McpTool for EmitChatMessageTool {
                 target_personality_instance_id: target.personality_instance_id.into_inner(),
                 target_self_perspective_memory_id: target.root_perspective.into_inner(),
                 sent_by_self_perspective_memory_id: caller_self.into_inner(),
-                parent_message_memory_id,
+                parent_memory_id,
                 context_memory_ids,
                 context_goal_ids,
                 idempotency_key,
@@ -279,7 +293,9 @@ pub struct EmitChatReplyArgs {
     #[schemars(description = "Reply text.")]
     pub reply: String,
     #[serde(default)]
-    #[schemars(description = "Optional memory handles actually used while producing this reply.")]
+    #[schemars(
+        description = "Optional memory handles actually used while producing this reply. Accepts only Fact/Abstraction/Perspective handles (F..., A..., P...) or raw memory UUIDs; never pass Goal handles (G...) here."
+    )]
     pub context_memories_used: Vec<String>,
     #[schemars(description = "Stable idempotency key for this reply.")]
     pub idempotency_key: String,
@@ -297,8 +313,7 @@ pub struct EmitChatReplyTool;
 
 impl McpTool for EmitChatReplyTool {
     const NAME: &'static str = "core/emit_chat_reply";
-    const DESCRIPTION: &'static str =
-        "Emit a chat reply Fact for a message addressed to this caller.";
+    const DESCRIPTION: &'static str = "Emit a chat reply Fact for a message addressed to this caller. reply_to must be the triggering chat-message Fact handle, not message text. context_memories_used accepts only F/A/P memory handles, never G Goal handles.";
     const PRODUCES_SCHEMA_IDS: &'static [&'static str] = &[ChatReplyV1::SCHEMA_ID];
 
     type Args = EmitChatReplyArgs;
@@ -377,18 +392,20 @@ pub struct CompactChatThreadArgs {
     #[schemars(description = "Thread key returned by core/start_chat.")]
     pub thread_key: Option<String>,
     #[serde(default)]
-    #[schemars(description = "Optional chat Fact/Abstraction handle used to resolve the thread.")]
+    #[schemars(
+        description = "Optional chat Fact/Abstraction handle used to resolve the thread. Accepts F... or A... chat handles, not Goal handles."
+    )]
     pub anchor: Option<String>,
     #[schemars(description = "Compaction summary for the covered chat turns.")]
     pub summary: String,
     #[serde(default)]
     #[schemars(
-        description = "Optional source memory handles to cover. When omitted, the tool covers current chat thread memories."
+        description = "Optional source memory handles to cover. Accepts only Fact/Abstraction/Perspective handles (F..., A..., P...) or raw memory UUIDs; never Goal handles. When omitted, the tool covers current chat thread memories."
     )]
     pub source_memories: Vec<String>,
     #[serde(default)]
     #[schemars(
-        description = "Optional memory handles actually used while producing this compaction."
+        description = "Optional memory handles actually used while producing this compaction. Accepts only Fact/Abstraction/Perspective handles (F..., A..., P...) or raw memory UUIDs; never Goal handles."
     )]
     pub context_memories_used: Vec<String>,
     #[schemars(description = "Stable idempotency key for this chat compaction.")]
@@ -407,7 +424,7 @@ pub struct CompactChatThreadTool;
 
 impl McpTool for CompactChatThreadTool {
     const NAME: &'static str = "core/compact_chat_thread";
-    const DESCRIPTION: &'static str = "Author a chat-compaction Abstraction for a live chat thread. Use thread_key or anchor, write a concise summary, and omit source_memories to cover the current thread graph.";
+    const DESCRIPTION: &'static str = "Author a chat-compaction Abstraction for a live chat thread. Use thread_key or an F/A chat anchor, write a concise summary, and omit source_memories to cover the current thread graph. Memory fields accept F/A/P handles only, never G Goal handles.";
     const PRODUCES_SCHEMA_IDS: &'static [&'static str] = &[ChatCompactionV1::SCHEMA_ID];
 
     type Args = CompactChatThreadArgs;
@@ -501,7 +518,9 @@ pub struct RequestEndChatArgs {
     #[schemars(description = "Thread key returned by core/start_chat.")]
     pub thread_key: Option<String>,
     #[serde(default)]
-    #[schemars(description = "Optional chat Fact/Abstraction handle used to resolve the thread.")]
+    #[schemars(
+        description = "Optional chat Fact/Abstraction handle used to resolve the thread. Accepts F... or A... chat handles, not Goal handles."
+    )]
     pub anchor: Option<String>,
     #[serde(default)]
     #[schemars(
@@ -613,7 +632,7 @@ pub struct EndChatArgs {
     pub summary: String,
     #[serde(default)]
     #[schemars(
-        description = "Optional memory handles actually used while producing this summary."
+        description = "Optional memory handles actually used while producing this summary. Accepts only Fact/Abstraction/Perspective handles (F..., A..., P...) or raw memory UUIDs; never pass Goal handles (G...) here."
     )]
     pub context_memories_used: Vec<String>,
     #[schemars(description = "Stable idempotency key for this end-chat action.")]
@@ -633,7 +652,7 @@ pub struct EndChatTool;
 
 impl McpTool for EndChatTool {
     const NAME: &'static str = "core/end_chat";
-    const DESCRIPTION: &'static str = "End a chat after a chat-end-requested Fact and author a chat-summary Abstraction. In a chat-end-requested wake, first inspect the thread with core/get_chat_thread(anchor=request), then call this with request set to the triggering Fact handle.";
+    const DESCRIPTION: &'static str = "End a chat after a chat-end-requested Fact and author a chat-summary Abstraction. In a chat-end-requested wake, first inspect the thread with core/get_chat_thread(anchor=request), then call this with request set to the triggering Fact handle. context_memories_used accepts only F/A/P memory handles, never G Goal handles.";
     const PRODUCES_SCHEMA_IDS: &'static [&'static str] =
         &[ChatEndedV1::SCHEMA_ID, ChatSummaryV1::SCHEMA_ID];
 

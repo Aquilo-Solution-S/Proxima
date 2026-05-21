@@ -21,7 +21,7 @@ pub(in crate::chat) async fn load_thread_messages(
     )> = sqlx::query_as(
         "SELECT q.memory_id, q.thread_key, q.message, q.target_personality_instance_id,
                 q.target_self_perspective_memory_id, q.sent_by_self_perspective_memory_id,
-                q.parent_message_memory_id, q.context_memory_ids, q.context_goal_ids,
+                q.parent_memory_id, q.context_memory_ids, q.context_goal_ids,
                 q.idempotency_key, q.sent_at
            FROM proxima_core.chat_message_v1 q
            JOIN proxima_core.memories m USING (memory_id)
@@ -50,7 +50,7 @@ pub(in crate::chat) async fn load_thread_messages(
                 target_personality_instance_id,
                 target_self_perspective_memory_id,
                 sent_by_self_perspective_memory_id,
-                parent_message_memory_id,
+                parent_memory_id,
                 context_memory_ids,
                 context_goal_ids,
                 idempotency_key,
@@ -63,7 +63,7 @@ pub(in crate::chat) async fn load_thread_messages(
                     target_personality_instance_id,
                     target_self_perspective_memory_id,
                     sent_by_self_perspective_memory_id,
-                    parent_message_memory_id,
+                    parent_memory_id,
                     context_memory_ids,
                     context_goal_ids,
                     idempotency_key,

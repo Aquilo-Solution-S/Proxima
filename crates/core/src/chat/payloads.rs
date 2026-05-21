@@ -67,7 +67,7 @@ pub struct ChatMessageV1 {
     pub target_self_perspective_memory_id: uuid::Uuid,
     pub sent_by_self_perspective_memory_id: uuid::Uuid,
     #[serde(default)]
-    pub parent_message_memory_id: Option<uuid::Uuid>,
+    pub parent_memory_id: Option<uuid::Uuid>,
     #[serde(default)]
     pub context_memory_ids: Vec<uuid::Uuid>,
     #[serde(default)]
