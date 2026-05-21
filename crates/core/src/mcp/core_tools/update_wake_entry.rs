@@ -57,6 +57,8 @@ pub struct WakeEntryPatch {
     pub substrate_tool_palette: Option<Vec<String>>,
     #[serde(default)]
     pub workspace_tool_palette: Option<Vec<String>>,
+    #[serde(default)]
+    pub required_produced_schema_ids: Option<Vec<String>>,
     /// Field absent leaves the binding unchanged; `null` clears it;
     /// an object sets a new binding.
     #[serde(default, deserialize_with = "deserialize_patch_field")]
@@ -156,6 +158,9 @@ impl McpTool for UpdateWakeEntryTool {
                 }
                 if let Some(v) = patch.workspace_tool_palette {
                     entry.workspace_tool_palette = v;
+                }
+                if let Some(v) = patch.required_produced_schema_ids {
+                    entry.required_produced_schema_ids = v;
                 }
                 if let PatchField::Set(v) = patch.workspace_binding {
                     entry.workspace_binding = v;

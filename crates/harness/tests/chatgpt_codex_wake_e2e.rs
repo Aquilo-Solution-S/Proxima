@@ -93,6 +93,7 @@ async fn codex_wake_round_completes_without_provider_not_yet_supported() {
         instructions: "reply".into(),
         context_params: HashMap::new(),
         tool_projection: Vec::new(),
+        required_fulfillment_schema_ids: Vec::new(),
         substrate_tool_palette: Vec::new(),
         workspace_root: None,
         workspace_tool_palette: Vec::new(),

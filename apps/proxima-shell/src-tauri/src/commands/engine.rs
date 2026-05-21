@@ -147,6 +147,7 @@ pub struct WakeEntryTs {
     pub substrate_tool_palette: Vec<String>,
     pub workspace_tool_palette: Vec<String>,
     pub workspace_binding: Option<WakeWorkspaceBindingTs>,
+    pub required_produced_schema_ids: Vec<String>,
     pub max_rounds: u16,
     pub disabled_reason: Option<String>,
 }
@@ -167,6 +168,7 @@ pub struct WakeEntryDraftTs {
     pub substrate_tool_palette: Vec<String>,
     pub workspace_tool_palette: Vec<String>,
     pub workspace_binding: Option<WakeWorkspaceBindingTs>,
+    pub required_produced_schema_ids: Vec<String>,
     pub max_rounds: u16,
 }
 
@@ -940,6 +942,7 @@ impl WakeEntryTs {
             substrate_tool_palette: row.substrate_tool_palette.clone(),
             workspace_tool_palette: row.workspace_tool_palette.clone(),
             workspace_binding: row.workspace_binding.clone().map(workspace_binding_to_ts),
+            required_produced_schema_ids: row.required_produced_schema_ids.clone(),
             max_rounds: row.max_rounds,
             disabled_reason: row.disabled_reason.clone(),
         }
@@ -1099,6 +1102,7 @@ fn draft_to_core(
         substrate_tool_palette: draft.substrate_tool_palette,
         workspace_tool_palette: draft.workspace_tool_palette,
         workspace_binding: draft.workspace_binding.map(workspace_binding_from_ts),
+        required_produced_schema_ids: draft.required_produced_schema_ids,
         max_rounds: draft.max_rounds,
         intervention_policy: None,
     }

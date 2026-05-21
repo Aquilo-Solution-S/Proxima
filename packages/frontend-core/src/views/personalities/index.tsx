@@ -86,6 +86,7 @@ const entryToDraft = (
   substrate_tool_palette: [...entry.substrate_tool_palette],
   workspace_tool_palette: [...entry.workspace_tool_palette],
   workspace_binding: entry.workspace_binding,
+  required_produced_schema_ids: [...entry.required_produced_schema_ids],
   max_rounds: entry.max_rounds,
 });
 
@@ -93,6 +94,7 @@ const cloneDraft = (draft: WakeEntryDraftTs): WakeEntryDraftTs => ({
   ...draft,
   substrate_tool_palette: [...draft.substrate_tool_palette],
   workspace_tool_palette: [...draft.workspace_tool_palette],
+  required_produced_schema_ids: [...draft.required_produced_schema_ids],
 });
 
 export const PersonalitiesView: Component<{

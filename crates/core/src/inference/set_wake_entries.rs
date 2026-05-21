@@ -3,7 +3,9 @@
 use std::collections::HashSet;
 
 use crate::error::ProtocolError;
-use crate::personality::{parse_scoped_emit_tool_id, substrate_pack, workspace_tool_ids};
+use crate::personality::{
+    broad_emit_kind, parse_scoped_emit_tool_id, substrate_pack, workspace_tool_ids,
+};
 use crate::storage::{Storage, StorageError};
 use crate::{
     FlavorRegistryFrozen, ModelTier, SchemaId, SchemaVersion, SetWakeEntriesRequest,
@@ -73,9 +75,71 @@ pub fn validate_wake_entries_static_config(
             &substrate_registered,
             &workspace_registered,
         )?;
+        validate_required_produced_schemas(registry, entry)?;
         validate_workspace_trigger(registry, entry)?;
     }
     Ok(())
+}
+
+fn validate_required_produced_schemas(
+    registry: &FlavorRegistryFrozen,
+    entry: &WakeEntryDraft,
+) -> Result<(), ProtocolError> {
+    if entry.required_produced_schema_ids.is_empty() {
+        return Ok(());
+    }
+    let produced = produced_schema_ids_for_palette(registry, &entry.substrate_tool_palette);
+    for schema_id in &entry.required_produced_schema_ids {
+        if schema_id.trim().is_empty() {
+            return Err(ProtocolError::invalid_argument(
+                "required_produced_schema_ids",
+                "schema ids must be non-empty",
+            ));
+        }
+        if !produced.contains(schema_id) {
+            return Err(ProtocolError::invalid_argument(
+                "required_produced_schema_ids",
+                format!("schema id {schema_id:?} is not produced by this substrate_tool_palette"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn produced_schema_ids_for_palette(
+    registry: &FlavorRegistryFrozen,
+    palette: &[String],
+) -> HashSet<String> {
+    let mut schema_ids = HashSet::new();
+    for palette_id in palette {
+        if let Some(kind) = broad_emit_kind(palette_id) {
+            schema_ids.extend(
+                registry
+                    .list()
+                    .into_iter()
+                    .filter(|schema| schema.kind == kind)
+                    .map(|schema| schema.schema_id.into_inner()),
+            );
+            continue;
+        }
+        if let Ok(Some(scoped)) = parse_scoped_emit_tool_id(palette_id) {
+            if registry
+                .lookup(
+                    &SchemaId::new(scoped.schema_id.clone()),
+                    SchemaVersion::new(scoped.schema_version),
+                )
+                .is_some_and(|schema| schema.kind == scoped.kind)
+            {
+                schema_ids.insert(scoped.schema_id);
+            }
+        }
+    }
+    for tool in registry.list_mcp_tools() {
+        if palette.iter().any(|id| id == tool.name) {
+            schema_ids.extend(tool.produces_schema_ids.iter().map(|id| (*id).to_string()));
+        }
+    }
+    schema_ids
 }
 
 fn validate_workspace_trigger(

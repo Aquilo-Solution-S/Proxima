@@ -1072,6 +1072,7 @@ export type WakeEntryDraftTs = {
 	substrate_tool_palette: string[],
 	workspace_tool_palette: string[],
 	workspace_binding: WakeWorkspaceBindingTs | null,
+	required_produced_schema_ids: string[],
 	max_rounds: number,
 };
 
@@ -1091,6 +1092,7 @@ export type WakeEntryTs = {
 	substrate_tool_palette: string[],
 	workspace_tool_palette: string[],
 	workspace_binding: WakeWorkspaceBindingTs | null,
+	required_produced_schema_ids: string[],
 	max_rounds: number,
 	disabled_reason: string | null,
 };

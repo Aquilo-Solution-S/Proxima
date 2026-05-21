@@ -44,6 +44,8 @@ pub struct WakeEntryDraftInput {
     pub workspace_tool_palette: Vec<String>,
     #[serde(default)]
     pub workspace_binding: Option<WakeWorkspaceBinding>,
+    #[serde(default)]
+    pub required_produced_schema_ids: Vec<String>,
     #[schemars(range(min = 0))]
     pub max_rounds: u16,
     #[serde(default)]
@@ -90,6 +92,7 @@ impl WakeEntryDraftInput {
             substrate_tool_palette: self.substrate_tool_palette,
             workspace_tool_palette: self.workspace_tool_palette,
             workspace_binding: self.workspace_binding,
+            required_produced_schema_ids: self.required_produced_schema_ids,
             max_rounds: self.max_rounds,
             intervention_policy: self.intervention_policy,
         })

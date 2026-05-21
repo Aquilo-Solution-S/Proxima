@@ -17,6 +17,7 @@ pub struct ResolvedProgram {
     pub tools: Vec<ToolSpec>,
     /// Canonical tool name -> schema ids this tool can durably produce.
     pub tool_productions: HashMap<String, Vec<String>>,
+    pub required_fulfillment_schema_ids: Vec<String>,
     /// Provider-safe name -> canonical name. The loop driver uses
     /// this to resolve `function.name` values from provider responses.
     pub reverse_map: HashMap<String, String>,
@@ -83,6 +84,7 @@ pub fn resolve(
         },
         tools,
         tool_productions,
+        required_fulfillment_schema_ids: program.required_fulfillment_schema_ids,
         reverse_map,
         bindings,
     })
@@ -253,6 +255,7 @@ mod tests {
                 ),
             ]),
             tool_projection: Vec::new(),
+            required_fulfillment_schema_ids: Vec::new(),
             substrate_tool_palette: Vec::new(),
             workspace_root: None,
             workspace_tool_palette: Vec::new(),

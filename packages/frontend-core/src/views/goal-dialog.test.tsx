@@ -128,6 +128,7 @@ const wakeEntry = (enabled = true): WakeEntryTs => ({
   substrate_tool_palette: [],
   workspace_tool_palette: [],
   workspace_binding: null,
+  required_produced_schema_ids: [],
   max_rounds: 16,
   disabled_reason: null,
 });

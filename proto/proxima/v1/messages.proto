@@ -354,6 +354,7 @@ message WakeEntry {
   optional string disabled_reason = 15;
   GoalScope goal_scope = 16;
   optional WorkspaceBinding workspace_binding = 17;
+  repeated string required_produced_schema_ids = 18;
 }
 
 message WakeEntryDraft {
@@ -371,6 +372,7 @@ message WakeEntryDraft {
   uint32 max_rounds = 13;
   GoalScope goal_scope = 14;
   optional WorkspaceBinding workspace_binding = 15;
+  repeated string required_produced_schema_ids = 16;
 }
 
 message InferenceTarget {

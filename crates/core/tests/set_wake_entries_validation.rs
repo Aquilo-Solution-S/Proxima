@@ -456,6 +456,7 @@ fn entry(trigger: &str) -> WakeEntryDraft {
         substrate_tool_palette: vec![],
         workspace_tool_palette: vec![],
         workspace_binding: None,
+        required_produced_schema_ids: Vec::new(),
         max_rounds: 4,
         intervention_policy: None,
     }
@@ -542,6 +543,43 @@ async fn scoped_emit_tool_id_is_registered_for_wake_entries() {
     let mut draft = entry("schema-a");
     draft.substrate_tool_palette = vec!["core/emit_abstraction::test/brief-v1::v1".into()];
     let err = set_wake_entries(&ctx, &req(vec![draft])).await.unwrap_err();
+    assert_eq!(err.code, ErrorCode::TierUnbound);
+}
+
+#[tokio::test]
+async fn required_produced_schema_must_be_available_from_palette() {
+    let storage = FixtureStorage::default();
+    let mut registry = FlavorRegistry::new();
+    registry.add_abstraction_schema::<TestBrief>();
+    let registry = registry.freeze();
+    let ctx = SetWakeEntriesContext {
+        storage: &storage,
+        registry: &registry,
+    };
+    let mut draft = entry("schema-a");
+    draft.substrate_tool_palette = vec!["core/emit_abstraction::test/brief-v1::v1".into()];
+    draft.required_produced_schema_ids = vec!["test/other-v1".into()];
+    let err = set_wake_entries(&ctx, &req(vec![draft])).await.unwrap_err();
+
+    assert_eq!(err.code, ErrorCode::InvalidArgument);
+    assert!(err.message.contains("required_produced_schema_ids"));
+}
+
+#[tokio::test]
+async fn required_produced_schema_allows_scoped_emit_schema() {
+    let storage = FixtureStorage::default();
+    let mut registry = FlavorRegistry::new();
+    registry.add_abstraction_schema::<TestBrief>();
+    let registry = registry.freeze();
+    let ctx = SetWakeEntriesContext {
+        storage: &storage,
+        registry: &registry,
+    };
+    let mut draft = entry("schema-a");
+    draft.substrate_tool_palette = vec!["core/emit_abstraction::test/brief-v1::v1".into()];
+    draft.required_produced_schema_ids = vec!["test/brief-v1".into()];
+    let err = set_wake_entries(&ctx, &req(vec![draft])).await.unwrap_err();
+
     assert_eq!(err.code, ErrorCode::TierUnbound);
 }
 
