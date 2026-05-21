@@ -10,6 +10,7 @@ use std::fmt;
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, specta::Type, sqlx::Type,
 )]
+#[schemars(description = "Verification status for a criterion.")]
 #[serde(rename_all = "snake_case")]
 #[sqlx(
     type_name = "proxima_code.verification_evidence_status",
@@ -33,6 +34,7 @@ impl VerificationEvidenceStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema, Default)]
+#[schemars(description = "Structured artifact references captured during verification.")]
 pub struct VerificationArtifactRefsV1 {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(

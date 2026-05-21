@@ -71,6 +71,7 @@ impl FactPayload for WorkspaceDecisionV1 {
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, specta::Type, sqlx::Type,
 )]
+#[schemars(description = "Workspace review verdict for a run.")]
 #[serde(rename_all = "snake_case")]
 #[sqlx(
     type_name = "proxima_code.workspace_review_verdict",

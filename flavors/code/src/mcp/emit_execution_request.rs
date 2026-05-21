@@ -79,6 +79,7 @@ pub struct CodeEmitExecutionRequestOutput {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[schemars(description = "Execution plan item category.")]
 #[serde(rename_all = "snake_case")]
 pub enum ExecutionPlanItemKind {
     Implementation,

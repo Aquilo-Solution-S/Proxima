@@ -1,6 +1,7 @@
 use proxima_core::{
     AbstractionPayload, FlavorRegistry, SchemaId, SchemaVersion,
     harness::build_wake_tool_projection,
+    mcp::{McpTool, McpToolCtx, McpToolError},
 };
 use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize};
@@ -89,6 +90,35 @@ impl AbstractionPayload for TestReservedText {
 
     fn json_schema() -> Option<serde_json::Value> {
         serde_json::to_value(schema_for!(TestReservedText)).ok()
+    }
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[allow(dead_code)]
+struct TestDirectProducerArgs {
+    title: String,
+}
+
+#[derive(Debug, Serialize)]
+struct TestDirectProducerOutput {
+    ok: bool,
+}
+
+#[derive(Debug)]
+struct TestDirectProducerTool;
+
+impl McpTool for TestDirectProducerTool {
+    const NAME: &'static str = "test/direct_producer";
+    const DESCRIPTION: &'static str = "Test direct producer tool.";
+    const PRODUCES_SCHEMA_IDS: &'static [&'static str] = &["test/direct-fact-v1"];
+    type Args = TestDirectProducerArgs;
+    type Output = TestDirectProducerOutput;
+
+    fn call(
+        _ctx: McpToolCtx,
+        _args: TestDirectProducerArgs,
+    ) -> futures::future::BoxFuture<'static, Result<TestDirectProducerOutput, McpToolError>> {
+        Box::pin(async move { Ok(TestDirectProducerOutput { ok: true }) })
     }
 }
 
@@ -216,6 +246,23 @@ fn non_emit_palette_ids_remain_direct_provider_tools() {
     assert_eq!(projection[0].palette_id, "core/fetch_memory");
     assert_eq!(projection[0].canonical_name, "core/fetch_memory");
     assert_eq!(projection[0].provider_name, "core_fetch_memory");
+}
+
+#[test]
+fn direct_projection_carries_declared_produced_schemas() {
+    let mut registry = FlavorRegistry::new();
+    registry.add_mcp_tool::<TestDirectProducerTool>("test");
+    let projection =
+        build_wake_tool_projection(&registry.freeze(), &["test/direct_producer".to_string()])
+            .expect("projection");
+
+    assert_eq!(projection[0].palette_id, "test/direct_producer");
+    assert_eq!(projection[0].canonical_name, "test/direct_producer");
+    assert_eq!(projection[0].provider_name, "test_direct_producer");
+    assert_eq!(
+        projection[0].produces_schema_ids,
+        ["test/direct-fact-v1".to_string()]
+    );
 }
 
 #[test]

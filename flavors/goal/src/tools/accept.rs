@@ -2,7 +2,7 @@
 
 use proxima_core::mcp::{McpTool, McpToolCtx, McpToolError};
 use proxima_core::verbs::goal_write::{GoalAuthorship, GoalDraft, GoalState};
-use proxima_core::{EdgeAuthorshipKind, EdgeId, GoalId};
+use proxima_core::{EdgeAuthorshipKind, EdgeId, FactPayload, GoalId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -11,6 +11,7 @@ use super::util::{
     insert_motivated_by_edges, load_goal_payload, map_storage, outgoing_motivated_by_evidence,
     request_id, target_personality_root, validate_evidence_in_owner,
 };
+use crate::payloads::GoalActivatedV1;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct AcceptArgs {
@@ -49,6 +50,7 @@ impl McpTool for AcceptTool {
     const NAME: &'static str = "proxima-goal/goal_accept";
     const DESCRIPTION: &'static str =
         "Accept a Proposed Goal, optionally overriding payload or evidence.";
+    const PRODUCES_SCHEMA_IDS: &'static [&'static str] = &[GoalActivatedV1::SCHEMA_ID];
     type Args = AcceptArgs;
     type Output = AcceptOutput;
 

@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{collections::HashMap, path::PathBuf};
 
 use proxima_code::mcp::workspace_review::CodeEmitVerificationEvidenceArgs;
 use proxima_core::FlavorRegistry;
@@ -41,6 +41,51 @@ fn code_wake_visible_tools_describe_object_properties() {
         .collect();
 
     assert_tool_schemas_have_property_descriptions(schemas);
+}
+
+#[test]
+fn code_write_tools_advertise_produced_schemas() {
+    let mut registry = FlavorRegistry::new();
+    proxima_code::register(&mut registry);
+    let registry = registry.freeze();
+    let produced_by_tool: HashMap<_, _> = registry
+        .list_mcp_tools()
+        .iter()
+        .filter(|tool| tool.name.starts_with("proxima-code/"))
+        .map(|tool| (tool.name, tool.produces_schema_ids))
+        .collect();
+
+    assert_eq!(
+        produced_by_tool["proxima-code/code_emit_execution_request"],
+        ["proxima-code/execution-request-v1"]
+    );
+    assert_eq!(
+        produced_by_tool["proxima-code/code_emit_execution_plan"],
+        [
+            "proxima-code/execution-request-v1",
+            "proxima-code/test-request-v1"
+        ]
+    );
+    assert_eq!(
+        produced_by_tool["proxima-code/code_retry_execution_request"],
+        ["proxima-code/execution-request-v1"]
+    );
+    assert_eq!(
+        produced_by_tool["proxima-code/code_emit_workspace_review"],
+        ["proxima-code/workspace-review-v1"]
+    );
+    assert_eq!(
+        produced_by_tool["proxima-code/code_emit_verification_evidence"],
+        ["proxima-code/verification-evidence-v1"]
+    );
+    assert_eq!(
+        produced_by_tool["proxima-code/code_emit_correction_execution_request"],
+        ["proxima-code/execution-request-v1"]
+    );
+    assert_eq!(
+        produced_by_tool["proxima-code/code_merge_workspace_run"],
+        ["proxima-code/workspace-decision-v1"]
+    );
 }
 
 #[test]

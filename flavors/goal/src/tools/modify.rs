@@ -1,3 +1,4 @@
+use proxima_core::FactPayload;
 use proxima_core::mcp::{McpTool, McpToolCtx, McpToolError};
 use proxima_core::verbs::goal_write::GoalState;
 use schemars::JsonSchema;
@@ -5,6 +6,7 @@ use serde::Deserialize;
 
 use super::accept::{AcceptArgs, AcceptOutput, accept_goal};
 use super::util::GoalPayloadInput;
+use crate::payloads::GoalActivatedV1;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ModifyArgs {
@@ -31,6 +33,7 @@ impl McpTool for ModifyTool {
     const NAME: &'static str = "proxima-goal/goal_modify";
     const DESCRIPTION: &'static str =
         "Accept a proposal as an Active Goal with modified payload or evidence.";
+    const PRODUCES_SCHEMA_IDS: &'static [&'static str] = &[GoalActivatedV1::SCHEMA_ID];
     type Args = ModifyArgs;
     type Output = AcceptOutput;
 
