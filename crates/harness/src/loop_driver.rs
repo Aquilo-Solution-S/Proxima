@@ -110,6 +110,7 @@ fn build_provider(target: &ProviderTarget) -> Box<dyn ProviderClient> {
             api_key,
             temperature,
             max_completion_tokens,
+            reasoning_effort,
         } => Box::new(MistralChatClient {
             http: reqwest::Client::new(),
             base_url: base_url.clone(),
@@ -117,6 +118,7 @@ fn build_provider(target: &ProviderTarget) -> Box<dyn ProviderClient> {
             api_key: api_key.clone(),
             temperature: *temperature,
             max_completion_tokens: *max_completion_tokens,
+            reasoning_effort: reasoning_effort.clone(),
         }),
         ProviderTarget::OpenAIChat {
             base_url,

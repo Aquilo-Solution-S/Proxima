@@ -19,6 +19,7 @@ const fastTarget: InferenceTargetTs = {
     api_key_env: "MISTRAL_API_KEY",
     temperature: null,
     max_completion_tokens: null,
+    reasoning_effort: null,
   },
   created_at: "2026-05-12T00:00:00Z",
   updated_at: "2026-05-12T00:00:00Z",

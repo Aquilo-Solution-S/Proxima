@@ -177,6 +177,7 @@ impl LiveWakeWorld {
                     api_key_env: self.config.api_key_env.clone(),
                     temperature: self.config.temperature,
                     max_completion_tokens: Some(2048),
+                    reasoning_effort: Some("high".into()),
                 }),
             })
             .await?;

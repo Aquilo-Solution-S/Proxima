@@ -22,6 +22,7 @@ pub(crate) struct ChatCompletionsRequestOptions<'a> {
     pub model_id: &'a str,
     pub temperature: Option<f32>,
     pub max_completion_tokens: Option<u32>,
+    pub reasoning_effort: Option<&'a str>,
     pub token_limit_field: TokenLimitField,
     pub tool_policy: ChatCompletionsToolPolicy<'a>,
 }
@@ -105,6 +106,9 @@ pub(crate) fn build_request(
             TokenLimitField::MaxCompletionTokens => "max_completion_tokens",
         };
         request[field] = json!(max_completion_tokens);
+    }
+    if let Some(reasoning_effort) = opts.reasoning_effort {
+        request["reasoning_effort"] = json!(reasoning_effort);
     }
     request
 }
@@ -203,7 +207,7 @@ fn parse_success(response: ChatCompletionResponse) -> Result<RoundResult, Provid
     let finish_reason = choice
         .finish_reason
         .ok_or_else(|| ProviderError::Deserialize("missing finish_reason".to_string()))?;
-    let text = choice.message.content.clone().unwrap_or_default();
+    let text = message_content_text(choice.message.content.as_ref())?;
     let raw_value = serde_json::to_value(&choice.message)
         .map_err(|err| ProviderError::Deserialize(err.to_string()))?;
 
@@ -284,6 +288,33 @@ fn parse_tool_arguments(arguments: Value) -> Result<Value, ProviderError> {
     }
 }
 
+fn message_content_text(content: Option<&Value>) -> Result<String, ProviderError> {
+    let Some(content) = content else {
+        return Ok(String::new());
+    };
+    match content {
+        Value::Null => Ok(String::new()),
+        Value::String(text) => Ok(text.clone()),
+        Value::Array(chunks) => {
+            let mut text = String::new();
+            for chunk in chunks {
+                let Some(chunk_type) = chunk.get("type").and_then(Value::as_str) else {
+                    continue;
+                };
+                if chunk_type == "text"
+                    && let Some(chunk_text) = chunk.get("text").and_then(Value::as_str)
+                {
+                    text.push_str(chunk_text);
+                }
+            }
+            Ok(text)
+        }
+        other => Err(ProviderError::Deserialize(format!(
+            "message content must be string, array, or null, got {other}"
+        ))),
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct ChatCompletionResponse {
     choices: Vec<ChatChoice>,
@@ -297,7 +328,7 @@ struct ChatChoice {
 
 #[derive(Debug, Deserialize, Serialize)]
 struct ChatMessage {
-    content: Option<String>,
+    content: Option<Value>,
     #[serde(default)]
     tool_calls: Option<Vec<ChatToolCall>>,
 }
@@ -327,6 +358,7 @@ mod tests {
                 model_id: "mistral-medium-latest",
                 temperature: Some(0.2),
                 max_completion_tokens: Some(128),
+                reasoning_effort: Some("high"),
                 token_limit_field: TokenLimitField::MaxTokens,
                 tool_policy: ChatCompletionsToolPolicy {
                     strict_tools: true,
@@ -356,6 +388,7 @@ mod tests {
         );
 
         assert_eq!(request["tool_choice"], "auto");
+        assert_eq!(request["reasoning_effort"], "high");
         assert_eq!(request["parallel_tool_calls"], false);
         assert_eq!(request["tools"][0]["function"]["strict"], true);
         assert_eq!(
@@ -376,6 +409,7 @@ mod tests {
                 model_id: "mistral-medium-latest",
                 temperature: None,
                 max_completion_tokens: None,
+                reasoning_effort: None,
                 token_limit_field: TokenLimitField::MaxTokens,
                 tool_policy: ChatCompletionsToolPolicy {
                     strict_tools: true,
@@ -419,6 +453,7 @@ mod tests {
                 model_id: "gpt-4.1",
                 temperature: None,
                 max_completion_tokens: None,
+                reasoning_effort: None,
                 token_limit_field: TokenLimitField::MaxCompletionTokens,
                 tool_policy: ChatCompletionsToolPolicy::default(),
             },
@@ -457,5 +492,36 @@ mod tests {
             parse_tool_arguments(json!({"command": "ls"})).unwrap(),
             json!({"command": "ls"})
         );
+    }
+
+    #[test]
+    fn parses_mistral_reasoning_chunks_as_final_text() {
+        let response: ChatCompletionResponse = serde_json::from_value(json!({
+            "choices": [{
+                "finish_reason": "stop",
+                "message": {
+                    "content": [
+                        {
+                            "type": "thinking",
+                            "thinking": [{
+                                "type": "text",
+                                "text": "scratch"
+                            }]
+                        },
+                        {
+                            "type": "text",
+                            "text": "OK"
+                        }
+                    ]
+                }
+            }]
+        }))
+        .unwrap();
+
+        let result = parse_success(response).unwrap();
+        let RoundResult::Final { text, .. } = result else {
+            panic!("expected final");
+        };
+        assert_eq!(text, "OK");
     }
 }

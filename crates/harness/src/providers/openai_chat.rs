@@ -32,6 +32,7 @@ impl ProviderClient for OpenAIChatClient {
                 model_id: &self.model_id,
                 temperature: self.temperature,
                 max_completion_tokens: self.max_completion_tokens,
+                reasoning_effort: None,
                 token_limit_field: TokenLimitField::MaxCompletionTokens,
                 tool_policy: Default::default(),
             },

@@ -55,6 +55,16 @@ api_key_env = "OPENAI_API_KEY"
 reasoning_effort = "medium"
 
 [[inference.targets]]
+target_ref = "mistral-code"
+
+[inference.targets.config]
+kind = "mistral_chat"
+base_url = "https://api.mistral.ai"
+model_id = "mistral-medium-3-5"
+api_key_env = "MISTRAL_API_KEY"
+reasoning_effort = "high"
+
+[[inference.targets]]
 target_ref = "codex-deep"
 
 [inference.targets.config]
@@ -132,12 +142,12 @@ referenced by a wake entry.
 
 Current variants:
 
-| Variant | Credential source |
-|---|---|
-| `mistral_chat` | `api_key_env` env-var name |
-| `openai_chat` | `api_key_env` env-var name |
-| `openai_responses` | `api_key_env` env-var name |
-| `chatgpt_codex` | `~/.codex/auth.json` |
+| Variant | Credential source | Reasoning knob |
+|---|---|---|
+| `mistral_chat` | `api_key_env` env-var name | optional top-level `reasoning_effort`; Mistral API values: `high`, `none` |
+| `openai_chat` | `api_key_env` env-var name | none |
+| `openai_responses` | `api_key_env` env-var name | optional `reasoning_effort` |
+| `chatgpt_codex` | `~/.codex/auth.json` | optional `reasoning_effort` |
 
 `api_key_env` is an environment variable name, not a secret value and
 not a `secret_ref`.

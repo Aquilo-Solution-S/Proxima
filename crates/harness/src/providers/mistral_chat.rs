@@ -18,6 +18,7 @@ pub struct MistralChatClient {
     pub api_key: String,
     pub temperature: Option<f32>,
     pub max_completion_tokens: Option<u32>,
+    pub reasoning_effort: Option<String>,
 }
 
 #[async_trait::async_trait]
@@ -33,6 +34,7 @@ impl ProviderClient for MistralChatClient {
                 model_id: &self.model_id,
                 temperature: self.temperature,
                 max_completion_tokens: self.max_completion_tokens,
+                reasoning_effort: self.reasoning_effort.as_deref(),
                 token_limit_field: TokenLimitField::MaxTokens,
                 tool_policy: ChatCompletionsToolPolicy {
                     strict_tools: true,

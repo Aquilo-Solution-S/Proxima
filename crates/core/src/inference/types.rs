@@ -68,6 +68,7 @@ pub struct MistralChatConfig {
     pub api_key_env: String,
     pub temperature: Option<f32>,
     pub max_completion_tokens: Option<u32>,
+    pub reasoning_effort: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, specta::Type)]

@@ -212,6 +212,7 @@ pub fn provider_target_from_config(
             api_key: read_key(&cfg.api_key_env)?,
             temperature: cfg.temperature,
             max_completion_tokens: cfg.max_completion_tokens,
+            reasoning_effort: cfg.reasoning_effort.clone(),
         }),
         crate::InferenceTargetConfig::OpenAIChat(cfg) => Ok(ProviderTarget::OpenAIChat {
             base_url: cfg.base_url.clone(),

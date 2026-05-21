@@ -12,6 +12,7 @@ impl DemoWorld {
                     api_key_env: self.cfg.api_key_env.clone(),
                     temperature: Some(0.2),
                     max_completion_tokens: None,
+                    reasoning_effort: None,
                 }),
             })
             .await?;

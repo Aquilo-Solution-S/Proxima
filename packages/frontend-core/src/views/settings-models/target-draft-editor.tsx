@@ -1,5 +1,9 @@
 import { For, Show, type Component } from "solid-js";
-import type { TargetDraft } from "./constants";
+import {
+  MISTRAL_REASONING_EFFORTS,
+  REASONING_EFFORTS,
+  type TargetDraft,
+} from "./constants";
 
 export const TargetDraftEditor: Component<{
   draft: TargetDraft;
@@ -8,12 +12,15 @@ export const TargetDraftEditor: Component<{
 }> = (props) => {
   const id = (suffix: string) =>
     `${props.idPrefix ?? "register-target"}-${suffix}`;
+  const isMistralChat = () => props.draft.kind === "mistral_chat";
   const isChatGptCodex = () => props.draft.kind === "chatgpt_codex";
   const isOpenAiResponses = () => props.draft.kind === "openai_responses";
   const supportsReasoningEffort = () =>
-    isOpenAiResponses() || isChatGptCodex();
+    isMistralChat() || isOpenAiResponses() || isChatGptCodex();
   const supportsTemperature = () =>
     !isOpenAiResponses() && !isChatGptCodex();
+  const reasoningEfforts = () =>
+    isMistralChat() ? MISTRAL_REASONING_EFFORTS : REASONING_EFFORTS;
   return (
     <div class="proxima-target-editor-grid">
       <label for={id("base-url")}>base_url</label>
@@ -88,7 +95,7 @@ export const TargetDraftEditor: Component<{
           }
         >
           <option value="">(default)</option>
-          <For each={["low", "medium", "high", "xhigh"]}>
+          <For each={reasoningEfforts()}>
             {(effort) => <option value={effort}>{effort}</option>}
           </For>
         </select>

@@ -94,6 +94,7 @@ pub enum InferenceTargetConfigSnapshot {
         api_key_env: String,
         temperature: Option<f32>,
         max_completion_tokens: Option<u32>,
+        reasoning_effort: Option<String>,
     },
     OpenAIChat {
         base_url: String,
@@ -125,6 +126,7 @@ impl From<&InferenceTargetConfig> for InferenceTargetConfigSnapshot {
                 api_key_env: cfg.api_key_env.clone(),
                 temperature: cfg.temperature,
                 max_completion_tokens: cfg.max_completion_tokens,
+                reasoning_effort: cfg.reasoning_effort.clone(),
             },
             InferenceTargetConfig::OpenAIChat(cfg) => Self::OpenAIChat {
                 base_url: cfg.base_url.clone(),

@@ -30,6 +30,7 @@ pub struct MistralChatConfigTs {
     pub api_key_env: String,
     pub temperature: Option<f32>,
     pub max_completion_tokens: Option<u32>,
+    pub reasoning_effort: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
@@ -120,6 +121,7 @@ fn config_to_core(config: InferenceTargetConfigTs) -> InferenceTargetConfig {
                 api_key_env: config.api_key_env,
                 temperature: config.temperature,
                 max_completion_tokens: config.max_completion_tokens,
+                reasoning_effort: config.reasoning_effort,
             })
         }
         InferenceTargetConfigTs::OpenAIChat(config) => {
@@ -158,6 +160,7 @@ fn config_from_core(config: &InferenceTargetConfig) -> InferenceTargetConfigTs {
                 api_key_env: config.api_key_env.clone(),
                 temperature: config.temperature,
                 max_completion_tokens: config.max_completion_tokens,
+                reasoning_effort: config.reasoning_effort.clone(),
             })
         }
         InferenceTargetConfig::OpenAIChat(config) => {
