@@ -113,6 +113,49 @@ async fn harness_stops_after_typed_emit_fulfills_required_schema() {
 }
 
 #[tokio::test]
+async fn harness_ignores_intermediate_producer_until_required_schema() {
+    let intermediate = "test/intermediate_tool";
+    let final_tool = "test/final_tool";
+    let base_url = spawn_sequence(vec![
+        tool_call_body(
+            "call_intermediate",
+            &provider_safe_tool_name(intermediate),
+            json!({}),
+        ),
+        tool_call_body(
+            "call_final",
+            &provider_safe_tool_name(final_tool),
+            json!({}),
+        ),
+    ])
+    .await;
+    let loop_ = harness_loop(BridgeMode::Ok);
+    let outcome = loop_
+        .run(
+            program_with_required(
+                base_url,
+                vec![
+                    direct_projection(intermediate, vec!["test/intermediate-v1".into()]),
+                    direct_projection(final_tool, vec!["test/final-v1".into()]),
+                ],
+                vec![intermediate.into(), final_tool.into()],
+                vec!["test/final-v1".into()],
+                0,
+            ),
+            hctx(),
+        )
+        .await
+        .expect("harness run");
+
+    assert_eq!(outcome.kind, HarnessOutcomeKind::Succeeded);
+    assert_eq!(outcome.finish_reason, FinishReason::Fulfilled);
+    assert_eq!(outcome.rounds_used, 2);
+    let jsonl = String::from_utf8(outcome.jsonl_bytes).expect("jsonl utf8");
+    assert!(jsonl.contains("\"tool_name\":\"test/final_tool\""));
+    assert!(!jsonl.contains("\"tool_name\":\"test/intermediate_tool\",\"produced_schema_ids\""));
+}
+
+#[tokio::test]
 async fn harness_fails_after_repeated_identical_tool_error() {
     let canonical = "test/failing_tool";
     let base_url = spawn_sequence(vec![
@@ -273,11 +316,28 @@ fn program(
     substrate_tool_palette: Vec<String>,
     max_rounds: u32,
 ) -> HarnessProgram {
+    program_with_required(
+        base_url,
+        tool_projection,
+        substrate_tool_palette,
+        Vec::new(),
+        max_rounds,
+    )
+}
+
+fn program_with_required(
+    base_url: String,
+    tool_projection: Vec<HarnessToolProjection>,
+    substrate_tool_palette: Vec<String>,
+    required_fulfillment_schema_ids: Vec<String>,
+    max_rounds: u32,
+) -> HarnessProgram {
     HarnessProgram {
         system_prompt: "system".into(),
         instructions: "do work".into(),
         context_params: HashMap::new(),
         tool_projection,
+        required_fulfillment_schema_ids,
         substrate_tool_palette,
         workspace_root: None,
         workspace_tool_palette: Vec::new(),

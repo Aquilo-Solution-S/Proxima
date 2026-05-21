@@ -237,7 +237,10 @@ async fn run_loop(
     append_prompt_and_tools_records(&mut jsonl, &resolved, &ctx, model_id, max_rounds);
 
     let user_seed_without_budget_notice = resolved.conversation.user_seed.clone();
-    let mut fulfillment = FulfillmentProgress::new(&resolved.tool_productions);
+    let mut fulfillment = FulfillmentProgress::new(
+        &resolved.tool_productions,
+        &resolved.required_fulfillment_schema_ids,
+    );
     let mut rounds_used = 0;
     let mut tool_call_count = 0;
 
@@ -889,6 +892,7 @@ mod tests {
                 "proxima-code/code_emit_execution_request".into(),
                 vec!["proxima-code/execution-request-v1".into()],
             )]),
+            required_fulfillment_schema_ids: Vec::new(),
             reverse_map: HashMap::new(),
             bindings: HashMap::<String, ToolBinding>::new(),
         };

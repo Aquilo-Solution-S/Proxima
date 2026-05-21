@@ -319,7 +319,8 @@ async fn list_personality_instances_populates_wake_entries() {
         pg.run_migrations().await?;
         let owner = owner_fixture();
         let response = seed_test_personality(&pg, &owner).await?;
-        let entry = sample_entry(response.instance_id, "proxima-test/fact-v1");
+        let mut entry = sample_entry(response.instance_id, "proxima-test/fact-v1");
+        entry.required_produced_schema_ids = vec!["test/final-v1".into()];
 
         pg.set_wake_entries(&SetWakeEntriesRequest {
             owner: owner.clone(),
@@ -336,6 +337,10 @@ async fn list_personality_instances_populates_wake_entries() {
         assert_eq!(
             rows[0].wake_entries[0].instructions,
             "Use the committed fact to decide whether to write a summary."
+        );
+        assert_eq!(
+            rows[0].wake_entries[0].required_produced_schema_ids,
+            vec!["test/final-v1"]
         );
         Ok(())
     }

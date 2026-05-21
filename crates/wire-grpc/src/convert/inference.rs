@@ -176,6 +176,7 @@ pub fn wake_entry_to_proto(row: &WakeEntryRow) -> pb::WakeEntry {
         max_rounds: u32::from(row.max_rounds),
         disabled_reason: row.disabled_reason.clone(),
         goal_scope: goal_scope_to_proto(row.goal_scope),
+        required_produced_schema_ids: row.required_produced_schema_ids.clone(),
         workspace_binding: row
             .workspace_binding
             .clone()
@@ -205,6 +206,7 @@ pub fn wake_entry_draft_from_proto(
         substrate_tool_palette: proto.substrate_tool_palette,
         workspace_tool_palette: proto.workspace_tool_palette,
         workspace_binding: workspace_binding_from_proto(proto.workspace_binding)?,
+        required_produced_schema_ids: proto.required_produced_schema_ids,
         max_rounds: u16::try_from(proto.max_rounds)
             .map_err(|_| Status::invalid_argument("max_rounds > u16::MAX"))?,
         intervention_policy: None,

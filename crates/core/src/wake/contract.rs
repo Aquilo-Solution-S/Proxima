@@ -61,6 +61,7 @@ pub struct WakeContractFulfillment {
     pub stall_round_limit: u32,
     pub tool_error_streak_limit: u32,
     pub produced_schema_ids: Vec<String>,
+    pub required_produced_schema_ids: Vec<String>,
     pub instruction: String,
 }
 
@@ -108,7 +109,10 @@ pub fn build_wake_contract(
             substrate_tool_palette: wake_entry.substrate_tool_palette.clone(),
             workspace_tool_palette: wake_entry.workspace_tool_palette.clone(),
         },
-        fulfillment_contract: build_fulfillment_contract(tool_projection),
+        fulfillment_contract: build_fulfillment_contract(
+            tool_projection,
+            &wake_entry.required_produced_schema_ids,
+        ),
         resolved_tools: WakeContractResolvedTools {
             substrate: resolve_substrate_tools(tool_projection),
             workspace: resolve_workspace_tools(&wake_entry.workspace_tool_palette),
@@ -131,6 +135,7 @@ fn resolve_substrate_tools(tool_projection: &[HarnessToolProjection]) -> Vec<Wak
 
 fn build_fulfillment_contract(
     tool_projection: &[HarnessToolProjection],
+    configured_required_schema_ids: &[String],
 ) -> WakeContractFulfillment {
     let mut produced_schema_ids = tool_projection
         .iter()
@@ -138,8 +143,18 @@ fn build_fulfillment_contract(
         .collect::<Vec<_>>();
     produced_schema_ids.sort();
     produced_schema_ids.dedup();
-    let durable_result_required = !produced_schema_ids.is_empty();
-    let instruction = if durable_result_required {
+    let mut required_produced_schema_ids = configured_required_schema_ids.to_vec();
+    required_produced_schema_ids.sort();
+    required_produced_schema_ids.dedup();
+    let effective_required_schema_ids = if required_produced_schema_ids.is_empty() {
+        produced_schema_ids.clone()
+    } else {
+        required_produced_schema_ids.clone()
+    };
+    let durable_result_required = !effective_required_schema_ids.is_empty();
+    let instruction = if durable_result_required && !required_produced_schema_ids.is_empty() {
+        "Complete the wake by producing at least one durable result from required_produced_schema_ids when the task is resolved; intermediate produced_schema_ids do not satisfy run-until unless they are also required."
+    } else if durable_result_required {
         "Complete the wake by producing at least one durable result from produced_schema_ids when the task is resolved; stop after the required durable result unless wake instructions explicitly require a second linked artifact."
     } else {
         "No durable write tool is available in this wake; complete by returning a final answer or by using only read-only tools."
@@ -149,7 +164,9 @@ fn build_fulfillment_contract(
     WakeContractFulfillment {
         durable_result_required,
         run_until_enabled: durable_result_required,
-        satisfaction: if durable_result_required {
+        satisfaction: if !required_produced_schema_ids.is_empty() {
+            "any_required_produced_schema"
+        } else if durable_result_required {
             "any_produced_schema"
         } else {
             "none"
@@ -159,6 +176,7 @@ fn build_fulfillment_contract(
         stall_round_limit: FULFILLMENT_STALL_ROUND_LIMIT,
         tool_error_streak_limit: TOOL_ERROR_STREAK_LIMIT,
         produced_schema_ids,
+        required_produced_schema_ids,
         instruction,
     }
 }
@@ -227,6 +245,7 @@ mod tests {
             substrate_tool_palette: vec!["core/fetch_memory".into()],
             workspace_tool_palette: vec!["proxima-workspace/shell".into()],
             workspace_binding: None,
+            required_produced_schema_ids: Vec::new(),
             max_rounds: 4,
             intervention_policy: None,
             disabled_reason: None,
@@ -303,6 +322,7 @@ mod tests {
             ],
             workspace_tool_palette: Vec::new(),
             workspace_binding: None,
+            required_produced_schema_ids: Vec::new(),
             max_rounds: 4,
             intervention_policy: None,
             disabled_reason: None,
@@ -338,9 +358,79 @@ mod tests {
             contract.fulfillment_contract.produced_schema_ids,
             vec!["proxima-mcp/agent-derivation-v1"]
         );
+        assert!(
+            contract
+                .fulfillment_contract
+                .required_produced_schema_ids
+                .is_empty()
+        );
         assert_eq!(
             contract.resolved_tools.substrate[0].produces_schema_ids,
             vec!["proxima-mcp/agent-derivation-v1"]
+        );
+    }
+
+    #[test]
+    fn contract_uses_explicit_required_fulfillment_schemas() {
+        let wake_entry = WakeEntryRow {
+            wake_entry_id: Uuid::now_v7(),
+            trigger_kind: WakeEntryTriggerKind::OnMemory,
+            trigger_id: "proxima-test/fact-v1".into(),
+            label: "Plan".into(),
+            enabled: true,
+            execution_mode: WakeEntryExecutionMode::SubstrateOnly,
+            authored_by: WakeEntryAuthoredBy::Other,
+            probability_promille: 1000,
+            goal_scope: WakeEntryGoalScope::None,
+            instructions: String::new(),
+            model_tier: ModelTier::Standard,
+            inference_target_ref: None,
+            substrate_tool_palette: vec!["test/intermediate".into(), "test/final".into()],
+            workspace_tool_palette: Vec::new(),
+            workspace_binding: None,
+            required_produced_schema_ids: vec!["test/final-v1".into()],
+            max_rounds: 0,
+            intervention_policy: None,
+            disabled_reason: None,
+        };
+        let projection = vec![
+            HarnessToolProjection {
+                palette_id: "test/intermediate".into(),
+                canonical_name: "test/intermediate".into(),
+                provider_name: "test_intermediate".into(),
+                description: "intermediate".into(),
+                produces_schema_ids: vec!["test/intermediate-v1".into()],
+                input_schema: serde_json::json!({ "type": "object", "properties": {} }),
+                dispatch: HarnessToolDispatch::DirectSubstrate {
+                    internal_canonical_name: "test/intermediate".into(),
+                },
+            },
+            HarnessToolProjection {
+                palette_id: "test/final".into(),
+                canonical_name: "test/final".into(),
+                provider_name: "test_final".into(),
+                description: "final".into(),
+                produces_schema_ids: vec!["test/final-v1".into()],
+                input_schema: serde_json::json!({ "type": "object", "properties": {} }),
+                dispatch: HarnessToolDispatch::DirectSubstrate {
+                    internal_canonical_name: "test/final".into(),
+                },
+            },
+        ];
+
+        let contract = build_wake_contract(&wake_entry, &projection, &HandleTable::new());
+
+        assert_eq!(
+            contract.fulfillment_contract.satisfaction,
+            "any_required_produced_schema"
+        );
+        assert_eq!(
+            contract.fulfillment_contract.produced_schema_ids,
+            vec!["test/final-v1", "test/intermediate-v1"]
+        );
+        assert_eq!(
+            contract.fulfillment_contract.required_produced_schema_ids,
+            vec!["test/final-v1"]
         );
     }
 }

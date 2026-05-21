@@ -32,6 +32,7 @@ fn wake_entry(
         substrate_tool_palette: vec![],
         workspace_tool_palette: vec![],
         workspace_binding: None,
+        required_produced_schema_ids: Vec::new(),
         max_rounds: 3,
         intervention_policy: None,
     }

@@ -45,6 +45,9 @@ pub struct HarnessProgram {
     pub context_params: HashMap<String, serde_json::Value>,
     /// Provider-facing tool projection derived from the wake's raw palette.
     pub tool_projection: Vec<HarnessToolProjection>,
+    /// Explicit schema ids that satisfy run-until fulfillment. Empty means
+    /// any producing tool in `tool_projection` can satisfy fulfillment.
+    pub required_fulfillment_schema_ids: Vec<String>,
     /// Substrate + flavor tool ids from `WakeEntry.substrate_tool_palette`.
     pub substrate_tool_palette: Vec<String>,
     /// Workspace-mode jail root. `None` for substrate-only wakes.

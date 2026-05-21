@@ -35,6 +35,7 @@ struct WakeEntryJoinRow {
     substrate_tool_palette: Vec<String>,
     workspace_tool_palette: Vec<String>,
     workspace_binding: Option<serde_json::Value>,
+    required_produced_schema_ids: Vec<String>,
     max_rounds: i32,
     intervention_personality_instance_id: Option<uuid::Uuid>,
     intervention_extension_rounds: i32,
@@ -113,7 +114,8 @@ async fn read_wake_entries_in_tx(
         "SELECT wake_entry_id, trigger_kind, trigger_id, label, enabled,
                 execution_mode, authored_by, probability_promille, goal_scope,
                 instructions, model_tier, inference_target_ref, substrate_tool_palette,
-                workspace_tool_palette, workspace_binding, max_rounds, intervention_personality_instance_id,
+                workspace_tool_palette, workspace_binding, required_produced_schema_ids,
+                max_rounds, intervention_personality_instance_id,
                 intervention_extension_rounds, intervention_hard_cap_rounds, intervention_progress_contract
          FROM proxima_core.personality_wake_entries
          WHERE owner_principal_kind = $1
@@ -151,6 +153,7 @@ async fn read_wake_entries_in_tx(
             substrate_tool_palette: row.get("substrate_tool_palette"),
             workspace_tool_palette: row.get("workspace_tool_palette"),
             workspace_binding: decode_workspace_binding(row.get("workspace_binding"))?,
+            required_produced_schema_ids: row.get("required_produced_schema_ids"),
             max_rounds: u16::try_from(row.get::<i32, _>("max_rounds")).unwrap_or(1),
             intervention_policy: intervention_policy_from_parts(
                 row.get("intervention_personality_instance_id"),
@@ -298,6 +301,7 @@ pub async fn list_active_wake_entries(
                 e.substrate_tool_palette,
                 e.workspace_tool_palette,
                 e.workspace_binding,
+                e.required_produced_schema_ids,
                 e.max_rounds,
                 e.intervention_personality_instance_id,
                 e.intervention_extension_rounds,
@@ -356,6 +360,7 @@ pub async fn list_active_wake_entries(
                     substrate_tool_palette: row.substrate_tool_palette,
                     workspace_tool_palette: row.workspace_tool_palette,
                     workspace_binding: decode_workspace_binding(row.workspace_binding)?,
+                    required_produced_schema_ids: row.required_produced_schema_ids,
                     max_rounds: u16::try_from(row.max_rounds).unwrap_or(1),
                     intervention_policy: intervention_policy_from_parts(
                         row.intervention_personality_instance_id,
@@ -381,12 +386,13 @@ async fn upsert_wake_entry(
              personality_instance_id, wake_entry_id, trigger_kind, trigger_id,
              label, enabled, execution_mode, authored_by, probability_promille,
              goal_scope, instructions, model_tier, inference_target_ref,
-             substrate_tool_palette, workspace_tool_palette, workspace_binding, max_rounds,
+             substrate_tool_palette, workspace_tool_palette, workspace_binding,
+             required_produced_schema_ids, max_rounds,
              intervention_personality_instance_id, intervention_extension_rounds,
              intervention_hard_cap_rounds, intervention_progress_contract)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
                  $12, $13, $14, $15, $16, $17, $18, $19, $20,
-                 $21, $22, $23, $24)
+                 $21, $22, $23, $24, $25)
          ON CONFLICT (
              owner_principal_kind,
              owner_principal_id,
@@ -408,6 +414,7 @@ async fn upsert_wake_entry(
              substrate_tool_palette = EXCLUDED.substrate_tool_palette,
              workspace_tool_palette = EXCLUDED.workspace_tool_palette,
              workspace_binding = EXCLUDED.workspace_binding,
+             required_produced_schema_ids = EXCLUDED.required_produced_schema_ids,
              max_rounds = EXCLUDED.max_rounds,
              intervention_personality_instance_id = EXCLUDED.intervention_personality_instance_id,
              intervention_extension_rounds = EXCLUDED.intervention_extension_rounds,
@@ -443,6 +450,7 @@ async fn upsert_wake_entry(
             .transpose()
             .map_err(|err| StorageError::Internal(err.to_string()))?,
     )
+    .bind(&entry.required_produced_schema_ids)
     .bind(i32::from(entry.max_rounds))
     .bind(
         entry

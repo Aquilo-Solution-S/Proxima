@@ -61,6 +61,7 @@ fn empty_program(bindings: &[SubstrateToolBinding], workspace: bool) -> HarnessP
         instructions: "do".into(),
         context_params: HashMap::default(),
         tool_projection: bindings.iter().map(direct_projection).collect(),
+        required_fulfillment_schema_ids: Vec::new(),
         substrate_tool_palette: bindings.iter().map(|b| b.canonical_name.clone()).collect(),
         workspace_root: workspace.then(|| std::path::PathBuf::from("/tmp/x")),
         workspace_tool_palette: if workspace {

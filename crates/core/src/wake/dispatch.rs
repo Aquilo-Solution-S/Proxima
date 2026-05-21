@@ -713,6 +713,7 @@ fn wake_entry_draft_to_row(draft: &WakeEntryDraft) -> WakeEntryRow {
         substrate_tool_palette: draft.substrate_tool_palette.clone(),
         workspace_tool_palette: draft.workspace_tool_palette.clone(),
         workspace_binding: draft.workspace_binding.clone(),
+        required_produced_schema_ids: draft.required_produced_schema_ids.clone(),
         max_rounds: draft.max_rounds,
         intervention_policy: draft.intervention_policy.clone(),
         disabled_reason: None,

@@ -26,11 +26,18 @@ pub struct FulfillmentProgress {
 
 impl FulfillmentProgress {
     #[must_use]
-    pub fn new(tool_productions: &HashMap<String, Vec<String>>) -> Self {
-        let required_schema_ids = tool_productions
-            .values()
-            .flat_map(|schemas| schemas.iter().cloned())
-            .collect::<BTreeSet<_>>();
+    pub fn new(
+        tool_productions: &HashMap<String, Vec<String>>,
+        required_fulfillment_schema_ids: &[String],
+    ) -> Self {
+        let required_schema_ids = if required_fulfillment_schema_ids.is_empty() {
+            tool_productions
+                .values()
+                .flat_map(|schemas| schemas.iter().cloned())
+                .collect::<BTreeSet<_>>()
+        } else {
+            required_fulfillment_schema_ids.iter().cloned().collect()
+        };
         Self {
             required_schema_ids,
             tool_productions: tool_productions.clone(),
@@ -101,7 +108,7 @@ impl FulfillmentProgress {
     #[must_use]
     pub fn reminder(&self, round_idx: u32) -> String {
         format!(
-            "Fulfillment reminder: this wake requires one durable result with any produced schema in [{}]. This is round {round_idx}; stop immediately after emitting the required durable artifact.",
+            "Fulfillment reminder: this wake requires one durable result with any required produced schema in [{}]. This is round {round_idx}; stop immediately after emitting the required durable artifact.",
             self.required_schema_ids().join(", ")
         )
     }
@@ -109,7 +116,7 @@ impl FulfillmentProgress {
     #[must_use]
     pub fn stall_reason(&self) -> String {
         format!(
-            "fulfillment_stalled:no durable result from [{}] after {FULFILLMENT_STALL_ROUND_LIMIT} rounds",
+            "fulfillment_stalled:no durable result from required produced schemas [{}] after {FULFILLMENT_STALL_ROUND_LIMIT} rounds",
             self.required_schema_ids().join(", ")
         )
     }
@@ -131,7 +138,7 @@ mod tests {
 
     #[test]
     fn typed_emit_success_fulfills_required_schema() {
-        let progress = FulfillmentProgress::new(&productions());
+        let progress = FulfillmentProgress::new(&productions(), &[]);
 
         let matched = progress
             .successful_tool_fulfills("core/emit_abstraction::test/derivation-v1::v1")
@@ -147,7 +154,7 @@ mod tests {
 
     #[test]
     fn repeated_identical_tool_error_fails_on_third_attempt() {
-        let mut progress = FulfillmentProgress::new(&productions());
+        let mut progress = FulfillmentProgress::new(&productions(), &[]);
 
         assert!(
             progress
@@ -169,13 +176,34 @@ mod tests {
 
     #[test]
     fn reminder_and_stall_apply_only_when_durable_required() {
-        let progress = FulfillmentProgress::new(&productions());
+        let progress = FulfillmentProgress::new(&productions(), &[]);
         assert!(progress.should_remind(4));
         assert!(progress.is_stalled_after(16));
 
         let empty =
-            FulfillmentProgress::new(&HashMap::from([("core/fetch_memory".into(), vec![])]));
+            FulfillmentProgress::new(&HashMap::from([("core/fetch_memory".into(), vec![])]), &[]);
         assert!(!empty.should_remind(4));
         assert!(!empty.is_stalled_after(16));
+    }
+
+    #[test]
+    fn explicit_required_schema_ignores_intermediate_producer() {
+        let mut productions = productions();
+        productions.insert(
+            "test/intermediate".into(),
+            vec!["test/intermediate-v1".into()],
+        );
+        let progress = FulfillmentProgress::new(&productions, &["test/derivation-v1".to_string()]);
+
+        assert!(
+            progress
+                .successful_tool_fulfills("test/intermediate")
+                .is_none()
+        );
+        assert!(
+            progress
+                .successful_tool_fulfills("core/emit_abstraction::test/derivation-v1::v1")
+                .is_some()
+        );
     }
 }
