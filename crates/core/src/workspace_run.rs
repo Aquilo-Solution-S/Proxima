@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 use crate::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
 use crate::{
-    FactPayload, MemoryId, Owner, SchemaId, SchemaVersion, SourceBatchId, SourceId,
+    EntityKind, FactPayload, MemoryId, Owner, SchemaId, SchemaVersion, SourceBatchId, SourceId,
     proxima_schema_id,
 };
 
@@ -68,6 +68,7 @@ pub struct CoreWorkspaceRunPersistInput {
     pub owner: Owner,
     pub root_perspective_memory_id: MemoryId,
     pub triggering_memory_id: MemoryId,
+    pub triggering_memory_kind: EntityKind,
     pub run: CoreWorkspaceRunV1,
     pub source_batch_id: SourceBatchId,
     pub source_id: SourceId,

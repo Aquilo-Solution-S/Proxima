@@ -1,6 +1,7 @@
 use proxima_core::verbs::goal_write::GoalState;
 use proxima_core::{
-    CORE_DERIVED_FROM_RELATION, EntityKind, FactPayload, MemoryId, Owner, WorkspaceRunnerError,
+    CORE_DEPENDS_ON_RELATION, CORE_DERIVED_FROM_RELATION, CoreWorkspaceRunV1, EntityKind,
+    FactPayload, MemoryId, Owner, WorkspaceRunnerError,
 };
 use serde::de::DeserializeOwned;
 use serde_json::json;
@@ -8,8 +9,8 @@ use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
 use crate::payloads::{
-    AcceptanceCriterionV1, ExecutionRequestV1, WorkspaceDecision, WorkspaceDecisionV1,
-    WorkspaceReviewV1, WorkspaceReviewVerdict, WorkspaceRunV1,
+    AcceptanceCriterionV1, ExecutionRequestV1, TestRequestV1, WorkspaceDecision,
+    WorkspaceDecisionV1, WorkspaceReviewV1, WorkspaceReviewVerdict,
 };
 use crate::repos::owner_columns_pub;
 
@@ -27,7 +28,7 @@ pub(super) fn parse_payload<T: DeserializeOwned>(
 #[derive(Debug, Clone)]
 pub(super) struct LoadedExecutionRequest {
     pub(super) memory_id: MemoryId,
-    payload: ExecutionRequestV1,
+    pub(super) payload: ExecutionRequestV1,
 }
 
 impl LoadedExecutionRequest {
@@ -37,6 +38,90 @@ impl LoadedExecutionRequest {
             "payload": self.payload,
         })
     }
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct LoadedTestRequest {
+    pub(super) memory_id: MemoryId,
+    pub(super) payload: TestRequestV1,
+}
+
+impl LoadedTestRequest {
+    pub(super) fn to_json(&self) -> serde_json::Value {
+        json!({
+            "memory_id": self.memory_id.into_inner().to_string(),
+            "payload": self.payload,
+        })
+    }
+}
+
+pub(super) async fn load_test_request(
+    pool: &PgPool,
+    owner: &Owner,
+    memory_id: MemoryId,
+) -> Result<LoadedTestRequest, WorkspaceRunnerError> {
+    let (owner_kind, owner_principal_id, _) = owner_columns_pub(owner);
+    let row = sqlx::query(
+        "SELECT COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind,
+                m.schema_id,
+                r.repo_id,
+                r.title,
+                r.instructions,
+                r.test_key,
+                r.criteria_json
+         FROM proxima_core.memories m
+         LEFT JOIN proxima_code.test_request_v1 r USING (memory_id)
+         WHERE m.memory_id = $1
+           AND m.owner_principal_kind = $2
+           AND m.owner_principal_id = $3",
+    )
+    .bind(memory_id.into_inner())
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|err| WorkspaceRunnerError::Internal(format!("load test request: {err}")))?;
+    let Some(row) = row else {
+        return Err(WorkspaceRunnerError::PrepareFailed(format!(
+            "test request not found: {}",
+            memory_id.into_inner()
+        )));
+    };
+    let kind: EntityKind = row.try_get("kind").map_err(map_sqlx_internal)?;
+    let schema_id: String = row.try_get("schema_id").map_err(map_sqlx_internal)?;
+    if kind != EntityKind::Fact || schema_id != TestRequestV1::SCHEMA_ID {
+        return Err(WorkspaceRunnerError::PrepareFailed(format!(
+            "memory {} is not a test request",
+            memory_id.into_inner()
+        )));
+    }
+    let repo_id: Option<Uuid> = row.try_get("repo_id").map_err(map_sqlx_internal)?;
+    let title: Option<String> = row.try_get("title").map_err(map_sqlx_internal)?;
+    let instructions: Option<String> = row.try_get("instructions").map_err(map_sqlx_internal)?;
+    let test_key: Option<String> = row.try_get("test_key").map_err(map_sqlx_internal)?;
+    let criteria_json: Option<serde_json::Value> =
+        row.try_get("criteria_json").map_err(map_sqlx_internal)?;
+    let (Some(repo_id), Some(title), Some(instructions), Some(test_key), Some(criteria_json)) =
+        (repo_id, title, instructions, test_key, criteria_json)
+    else {
+        return Err(WorkspaceRunnerError::PrepareFailed(format!(
+            "test request sidecar missing: {}",
+            memory_id.into_inner()
+        )));
+    };
+    let criteria = serde_json::from_value(criteria_json).map_err(|err| {
+        WorkspaceRunnerError::PrepareFailed(format!("decode test criteria JSON: {err}"))
+    })?;
+    Ok(LoadedTestRequest {
+        memory_id,
+        payload: TestRequestV1 {
+            repo_id,
+            title,
+            instructions,
+            test_key,
+            criteria,
+        },
+    })
 }
 
 pub(super) async fn load_execution_request(
@@ -191,14 +276,110 @@ pub(super) async fn load_verification_evidence_for_request(
         .collect()
 }
 
+pub(super) async fn load_verification_evidence_for_test_request(
+    pool: &PgPool,
+    owner: &Owner,
+    test_request_memory_id: MemoryId,
+) -> Result<Vec<serde_json::Value>, WorkspaceRunnerError> {
+    let (owner_kind, owner_principal_id, _) = owner_columns_pub(owner);
+    let rows = sqlx::query(
+        "SELECT v.memory_id,
+                v.workspace_run_memory_id,
+                v.execution_request_memory_id,
+                v.criterion_key,
+                v.status::text AS status,
+                v.summary,
+                v.artifact_refs,
+                v.created_at
+         FROM proxima_core.edges e
+         JOIN proxima_code.verification_evidence_v1 v
+           ON v.memory_id = e.source_memory_id
+         JOIN proxima_core.memories m
+           ON m.memory_id = v.memory_id
+          AND m.owner_principal_kind = e.owner_principal_kind
+          AND m.owner_principal_id = e.owner_principal_id
+         WHERE e.owner_principal_kind = $1
+           AND e.owner_principal_id = $2
+           AND e.relation = $3
+           AND e.source_kind = 'Fact'
+           AND e.target_kind = 'Fact'
+           AND e.target_memory_id = $4
+         ORDER BY v.created_at DESC",
+    )
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(CORE_DERIVED_FROM_RELATION)
+    .bind(test_request_memory_id.into_inner())
+    .fetch_all(pool)
+    .await
+    .map_err(|err| {
+        WorkspaceRunnerError::Internal(format!("load test request verification evidence: {err}"))
+    })?;
+    rows.into_iter()
+        .map(|row| {
+            let memory_id: Uuid = row.try_get("memory_id").map_err(map_sqlx_internal)?;
+            let workspace_run_memory_id: Uuid = row
+                .try_get("workspace_run_memory_id")
+                .map_err(map_sqlx_internal)?;
+            let execution_request_memory_id: Uuid = row
+                .try_get("execution_request_memory_id")
+                .map_err(map_sqlx_internal)?;
+            let criterion_key: String = row.try_get("criterion_key").map_err(map_sqlx_internal)?;
+            let status: String = row.try_get("status").map_err(map_sqlx_internal)?;
+            let summary: String = row.try_get("summary").map_err(map_sqlx_internal)?;
+            let artifact_refs: serde_json::Value =
+                row.try_get("artifact_refs").map_err(map_sqlx_internal)?;
+            let created_at: time::OffsetDateTime =
+                row.try_get("created_at").map_err(map_sqlx_internal)?;
+            Ok(json!({
+                "memory_id": memory_id.to_string(),
+                "workspace_run_memory_id": workspace_run_memory_id.to_string(),
+                "execution_request_memory_id": execution_request_memory_id.to_string(),
+                "criterion_key": criterion_key,
+                "status": status,
+                "summary": summary,
+                "artifact_refs": artifact_refs,
+                "created_at": created_at,
+            }))
+        })
+        .collect()
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct CodeWorkspaceRun {
+    pub(super) memory_id: MemoryId,
+    pub(super) repo_id: Uuid,
+    pub(super) target_branch: String,
+    pub(super) payload: CoreWorkspaceRunV1,
+}
+
+impl CodeWorkspaceRun {
+    pub(super) fn new(memory_id: MemoryId, repo_id: Uuid, payload: CoreWorkspaceRunV1) -> Self {
+        let target_branch = payload.base_ref.clone();
+        Self {
+            memory_id,
+            repo_id,
+            target_branch,
+            payload,
+        }
+    }
+}
+
+impl std::ops::Deref for CodeWorkspaceRun {
+    type Target = CoreWorkspaceRunV1;
+
+    fn deref(&self) -> &Self::Target {
+        &self.payload
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct LoadedWorkspaceRun {
-    pub(super) memory_id: MemoryId,
-    payload: WorkspaceRunV1,
+    payload: CodeWorkspaceRun,
 }
 
 impl std::ops::Deref for LoadedWorkspaceRun {
-    type Target = WorkspaceRunV1;
+    type Target = CodeWorkspaceRun;
 
     fn deref(&self) -> &Self::Target {
         &self.payload
@@ -210,6 +391,21 @@ pub(super) async fn load_execution_request_for_run(
     owner: &Owner,
     run_memory_id: MemoryId,
 ) -> Result<LoadedExecutionRequest, WorkspaceRunnerError> {
+    load_execution_request_for_run_optional(pool, owner, run_memory_id)
+        .await?
+        .ok_or_else(|| {
+            WorkspaceRunnerError::PrepareFailed(format!(
+                "workspace run has no derived-from execution request: {}",
+                run_memory_id.into_inner()
+            ))
+        })
+}
+
+pub(super) async fn load_execution_request_for_run_optional(
+    pool: &PgPool,
+    owner: &Owner,
+    run_memory_id: MemoryId,
+) -> Result<Option<LoadedExecutionRequest>, WorkspaceRunnerError> {
     let (owner_kind, owner_principal_id, _) = owner_columns_pub(owner);
     let request_id: Option<Uuid> = sqlx::query_scalar(
         "WITH RECURSIVE ancestry(memory_id, depth, path) AS (
@@ -256,12 +452,11 @@ pub(super) async fn load_execution_request_for_run(
         WorkspaceRunnerError::Internal(format!("find execution request for run: {err}"))
     })?;
     let Some(request_id) = request_id else {
-        return Err(WorkspaceRunnerError::PrepareFailed(format!(
-            "workspace run has no derived-from execution request: {}",
-            run_memory_id.into_inner()
-        )));
+        return Ok(None);
     };
-    load_execution_request(pool, owner, MemoryId::new(request_id)).await
+    load_execution_request(pool, owner, MemoryId::new(request_id))
+        .await
+        .map(Some)
 }
 
 pub(super) async fn load_continuation_workspace_run_for_request(
@@ -294,21 +489,39 @@ pub(super) async fn load_continuation_workspace_run_for_request(
               AND e.target_memory_id IS NOT NULL
              WHERE NOT e.target_memory_id = ANY(a.path)
          )
-         SELECT a.memory_id
-         FROM ancestry a
-         JOIN proxima_core.memories m
-           ON m.memory_id = a.memory_id
-          AND m.owner_principal_kind = $1
-          AND m.owner_principal_id = $2
-         WHERE m.schema_id = $5
-         ORDER BY a.depth, a.memory_id DESC
+         SELECT candidate.memory_id
+         FROM (
+             SELECT a.memory_id, a.depth
+             FROM ancestry a
+             JOIN proxima_core.memories m
+               ON m.memory_id = a.memory_id
+              AND m.owner_principal_kind = $1
+              AND m.owner_principal_id = $2
+             WHERE m.schema_id = $5
+             UNION ALL
+             SELECT e.source_memory_id, 0
+             FROM proxima_core.edges e
+             JOIN proxima_core.memories m
+               ON m.memory_id = e.source_memory_id
+              AND m.owner_principal_kind = e.owner_principal_kind
+              AND m.owner_principal_id = e.owner_principal_id
+             WHERE e.owner_principal_kind = $1
+               AND e.owner_principal_id = $2
+               AND e.relation = $3
+               AND e.source_kind = 'Fact'
+               AND e.source_memory_id IS NOT NULL
+               AND e.target_kind = 'Fact'
+               AND e.target_memory_id = $4
+               AND m.schema_id = $5
+         ) candidate
+         ORDER BY candidate.depth, candidate.memory_id DESC
          LIMIT 1",
     )
     .bind(owner_kind)
     .bind(owner_principal_id)
     .bind(CORE_DERIVED_FROM_RELATION)
     .bind(request_memory_id.into_inner())
-    .bind(WorkspaceRunV1::SCHEMA_ID)
+    .bind(CoreWorkspaceRunV1::SCHEMA_ID)
     .fetch_optional(pool)
     .await
     .map_err(|err| {
@@ -318,10 +531,99 @@ pub(super) async fn load_continuation_workspace_run_for_request(
         Some(run_id) => {
             let memory_id = MemoryId::new(run_id);
             let payload = load_workspace_run(pool, owner, memory_id).await?;
-            Ok(Some(LoadedWorkspaceRun { memory_id, payload }))
+            Ok(Some(LoadedWorkspaceRun { payload }))
         }
         None => Ok(None),
     }
+}
+
+pub(super) async fn load_dependency_workspace_run_for_request(
+    pool: &PgPool,
+    owner: &Owner,
+    request_memory_id: MemoryId,
+) -> Result<Option<LoadedWorkspaceRun>, WorkspaceRunnerError> {
+    let (owner_kind, owner_principal_id, _) = owner_columns_pub(owner);
+    let rows = sqlx::query(
+        "WITH RECURSIVE deps(memory_id, depth, path) AS (
+             SELECT dep.target_memory_id, 1, ARRAY[$5::uuid, dep.target_memory_id]
+             FROM proxima_core.edges dep
+             WHERE dep.owner_principal_kind = $1
+               AND dep.owner_principal_id = $2
+               AND dep.relation = $4
+               AND dep.source_kind = 'Fact'
+               AND dep.source_memory_id = $5
+               AND dep.target_kind = 'Fact'
+               AND dep.target_memory_id IS NOT NULL
+             UNION ALL
+             SELECT dep.target_memory_id, deps.depth + 1, deps.path || dep.target_memory_id
+             FROM deps
+             JOIN proxima_core.edges dep
+               ON dep.owner_principal_kind = $1
+              AND dep.owner_principal_id = $2
+              AND dep.relation = $4
+              AND dep.source_kind = 'Fact'
+              AND dep.source_memory_id = deps.memory_id
+              AND dep.target_kind = 'Fact'
+              AND dep.target_memory_id IS NOT NULL
+             WHERE NOT dep.target_memory_id = ANY(deps.path)
+         ),
+         dependency_runs AS (
+             SELECT wr.memory_id,
+                    MIN(deps.depth) AS depth,
+                    MAX(wr.created_at) AS created_at
+             FROM deps
+             JOIN proxima_core.edges derived
+               ON derived.owner_principal_kind = $1
+              AND derived.owner_principal_id = $2
+              AND derived.relation = $3
+              AND derived.source_kind = 'Fact'
+              AND derived.target_kind = 'Fact'
+              AND derived.target_memory_id = deps.memory_id
+             JOIN proxima_core.workspace_run_v1 wr
+               ON wr.memory_id = derived.source_memory_id
+             JOIN proxima_core.personality_wake_invocations i
+               ON i.invocation_id = wr.wake_invocation_id
+             WHERE i.status = 'succeeded'
+             GROUP BY wr.memory_id
+         ),
+         nearest AS (
+             SELECT MIN(depth) AS depth FROM dependency_runs
+         )
+         SELECT dependency_runs.memory_id
+         FROM dependency_runs
+         JOIN nearest USING (depth)
+         ORDER BY dependency_runs.created_at DESC, dependency_runs.memory_id DESC
+         LIMIT 2",
+    )
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(CORE_DERIVED_FROM_RELATION)
+    .bind(CORE_DEPENDS_ON_RELATION)
+    .bind(request_memory_id.into_inner())
+    .fetch_all(pool)
+    .await
+    .map_err(|err| {
+        WorkspaceRunnerError::Internal(format!("find dependency workspace run: {err}"))
+    })?;
+    if rows.len() > 1 {
+        let ids = rows
+            .iter()
+            .filter_map(|row| row.try_get::<Uuid, _>("memory_id").ok())
+            .map(|id| id.to_string())
+            .collect::<Vec<_>>();
+        return Err(WorkspaceRunnerError::PrepareFailed(format!(
+            "ambiguous dependency workspace runs for {}: {}",
+            request_memory_id.into_inner(),
+            ids.join(", ")
+        )));
+    }
+    let Some(row) = rows.into_iter().next() else {
+        return Ok(None);
+    };
+    let run_id: Uuid = row.try_get("memory_id").map_err(map_sqlx_internal)?;
+    let memory_id = MemoryId::new(run_id);
+    let payload = load_workspace_run(pool, owner, memory_id).await?;
+    Ok(Some(LoadedWorkspaceRun { payload }))
 }
 
 pub(super) async fn latest_review_verdict_for_request(
@@ -375,7 +677,7 @@ pub(super) async fn request_has_direct_workspace_run(
     .bind(owner_principal_id)
     .bind(CORE_DERIVED_FROM_RELATION)
     .bind(request_memory_id.into_inner())
-    .bind(WorkspaceRunV1::SCHEMA_ID)
+    .bind(CoreWorkspaceRunV1::SCHEMA_ID)
     .fetch_one(pool)
     .await
     .map_err(|err| WorkspaceRunnerError::Internal(format!("check direct workspace run: {err}")))
@@ -635,25 +937,30 @@ pub(super) async fn load_workspace_run(
     pool: &PgPool,
     owner: &Owner,
     memory_id: MemoryId,
-) -> Result<WorkspaceRunV1, WorkspaceRunnerError> {
+) -> Result<CodeWorkspaceRun, WorkspaceRunnerError> {
     let (owner_kind, owner_principal_id, _) = owner_columns_pub(owner);
     let row = sqlx::query(
         "SELECT COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind,
                 m.schema_id,
                 r.wake_invocation_id,
-                r.repo_id,
-                r.target_branch,
+                r.wake_entry_id,
+                r.personality_instance_id,
+                r.binding_kind,
+                r.finalize,
+                r.repo_path,
+                r.base_ref,
                 r.worktree_path,
                 r.branch_name,
                 r.parent_sha,
                 r.head_sha,
+                r.committed,
                 r.diff_stat_json,
                 r.exit_code,
                 r.stdout_tail,
                 r.stderr_tail,
                 r.duration_ms
          FROM proxima_core.memories m
-         LEFT JOIN proxima_code.workspace_run_v1 r USING (memory_id)
+         LEFT JOIN proxima_core.workspace_run_v1 r USING (memory_id)
          WHERE m.memory_id = $1
            AND m.owner_principal_kind = $2
            AND m.owner_principal_id = $3",
@@ -672,7 +979,7 @@ pub(super) async fn load_workspace_run(
     };
     let kind: EntityKind = row.try_get("kind").map_err(map_sqlx_internal)?;
     let schema_id: String = row.try_get("schema_id").map_err(map_sqlx_internal)?;
-    if kind != EntityKind::Fact || schema_id != WorkspaceRunV1::SCHEMA_ID {
+    if kind != EntityKind::Fact || schema_id != CoreWorkspaceRunV1::SCHEMA_ID {
         return Err(WorkspaceRunnerError::PrepareFailed(format!(
             "memory {} is not a workspace run",
             memory_id.into_inner()
@@ -681,12 +988,19 @@ pub(super) async fn load_workspace_run(
     let wake_invocation_id: Option<Uuid> = row
         .try_get("wake_invocation_id")
         .map_err(map_sqlx_internal)?;
-    let repo_id: Option<Uuid> = row.try_get("repo_id").map_err(map_sqlx_internal)?;
-    let target_branch: Option<String> = row.try_get("target_branch").map_err(map_sqlx_internal)?;
+    let wake_entry_id: Option<Uuid> = row.try_get("wake_entry_id").map_err(map_sqlx_internal)?;
+    let personality_instance_id: Option<Uuid> = row
+        .try_get("personality_instance_id")
+        .map_err(map_sqlx_internal)?;
+    let binding_kind: Option<String> = row.try_get("binding_kind").map_err(map_sqlx_internal)?;
+    let finalize: Option<String> = row.try_get("finalize").map_err(map_sqlx_internal)?;
+    let repo_path: Option<String> = row.try_get("repo_path").map_err(map_sqlx_internal)?;
+    let base_ref: Option<String> = row.try_get("base_ref").map_err(map_sqlx_internal)?;
     let worktree_path: Option<String> = row.try_get("worktree_path").map_err(map_sqlx_internal)?;
     let branch_name: Option<String> = row.try_get("branch_name").map_err(map_sqlx_internal)?;
     let parent_sha: Option<String> = row.try_get("parent_sha").map_err(map_sqlx_internal)?;
     let head_sha: Option<String> = row.try_get("head_sha").map_err(map_sqlx_internal)?;
+    let committed: Option<bool> = row.try_get("committed").map_err(map_sqlx_internal)?;
     let diff_stat_json: Option<serde_json::Value> =
         row.try_get("diff_stat_json").map_err(map_sqlx_internal)?;
     let exit_code: Option<i32> = row.try_get("exit_code").map_err(map_sqlx_internal)?;
@@ -695,21 +1009,31 @@ pub(super) async fn load_workspace_run(
     let duration_ms_raw: Option<i64> = row.try_get("duration_ms").map_err(map_sqlx_internal)?;
     let (
         Some(wake_invocation_id),
-        Some(repo_id),
-        Some(target_branch),
+        Some(wake_entry_id),
+        Some(personality_instance_id),
+        Some(binding_kind),
+        Some(finalize),
+        Some(repo_path),
+        Some(base_ref),
         Some(worktree_path),
         Some(branch_name),
         Some(parent_sha),
         Some(head_sha),
+        Some(committed),
         Some(diff_stat_json),
     ) = (
         wake_invocation_id,
-        repo_id,
-        target_branch,
+        wake_entry_id,
+        personality_instance_id,
+        binding_kind,
+        finalize,
+        repo_path,
+        base_ref,
         worktree_path,
         branch_name,
         parent_sha,
         head_sha,
+        committed,
         diff_stat_json,
     )
     else {
@@ -722,19 +1046,61 @@ pub(super) async fn load_workspace_run(
         WorkspaceRunnerError::PrepareFailed(format!("decode workspace run diff_stat_json: {err}"))
     })?;
     let duration_ms = duration_ms_raw.and_then(|value| u64::try_from(value).ok());
-    Ok(WorkspaceRunV1 {
+    let original_request = load_execution_request_for_run_optional(pool, owner, memory_id).await?;
+    let repo_id = if let Some(original_request) = original_request {
+        original_request.payload.repo_id
+    } else {
+        load_repo_id_for_workspace_run(pool, owner, &repo_path).await?
+    };
+    let run = CoreWorkspaceRunV1 {
         wake_invocation_id,
-        repo_id,
-        target_branch,
+        wake_entry_id,
+        personality_instance_id,
+        binding_kind,
+        finalize,
+        repo_path,
+        base_ref,
         worktree_path,
         branch_name,
         parent_sha,
         head_sha,
+        committed,
         diff_stat_json,
         exit_code,
         stdout_tail,
         stderr_tail,
         duration_ms,
+    };
+    Ok(CodeWorkspaceRun::new(memory_id, repo_id, run))
+}
+
+async fn load_repo_id_for_workspace_run(
+    pool: &PgPool,
+    owner: &Owner,
+    canonical_path: &str,
+) -> Result<Uuid, WorkspaceRunnerError> {
+    let (owner_kind, owner_principal_id, owner_org_id) = owner_columns_pub(owner);
+    let repo_id = sqlx::query_scalar(
+        "SELECT repo_id
+         FROM proxima_code.repos
+         WHERE owner_principal_kind = $1
+           AND owner_principal_id = $2
+           AND owner_org_id = $3
+           AND canonical_path = $4
+         ORDER BY created_at DESC
+         LIMIT 1",
+    )
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(owner_org_id)
+    .bind(canonical_path)
+    .fetch_optional(pool)
+    .await
+    .map_err(|err| WorkspaceRunnerError::Internal(format!("load repo for workspace run: {err}")))?;
+    repo_id.ok_or_else(|| {
+        WorkspaceRunnerError::PrepareFailed(format!(
+            "workspace run has no derived-from execution request and repo is not registered: {canonical_path}"
+        ))
     })
 }
 

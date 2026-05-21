@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use futures::future::BoxFuture;
 use proxima_core::mcp::{McpTool, McpToolCtx, McpToolError};
 use proxima_core::{EdgeId, MemoryId};
-use sqlx::{Postgres, Transaction};
+use sqlx::{Postgres, Row, Transaction};
 
 use super::MAX_WORKSPACE_VETO_ROUNDS;
 use super::helpers::{correction_instructions, correction_title, validate_findings};
@@ -30,10 +30,10 @@ use crate::mcp::emit_execution_request::{
 };
 use crate::mcp::sql::{map_storage, owner_principal};
 use crate::payloads::{
-    AcceptanceVerifierKind, ExecutionRequestV1, VerificationEvidenceV1, WorkspaceDecision,
-    WorkspaceReviewV1, WorkspaceReviewVerdict,
+    AcceptanceVerifierKind, ExecutionRequestV1, TestRequestV1, VerificationEvidenceV1,
+    WorkspaceDecision, WorkspaceReviewV1, WorkspaceReviewVerdict,
 };
-use proxima_core::FactPayload;
+use proxima_core::{CORE_DEPENDS_ON_RELATION, CORE_DERIVED_FROM_RELATION, FactPayload};
 
 /// MCP tool for emitting workspace reviews
 #[derive(Debug)]
@@ -199,6 +199,11 @@ impl McpTool for CodeEmitVerificationEvidenceTool {
                 )
             })?;
             let workspace_run_memory_id = ctx.resolve_fact_memory(&args.workspace_run_memory)?;
+            let test_request_memory_id = args
+                .test_request_memory
+                .as_deref()
+                .map(|value| ctx.resolve_fact_memory(value))
+                .transpose()?;
             let _idempotency_key = crate::mcp::emit_execution_request::normalize_text(
                 "idempotency_key",
                 &args.idempotency_key,
@@ -222,8 +227,20 @@ impl McpTool for CodeEmitVerificationEvidenceTool {
             load_workspace_run(&mut tx, &ctx, workspace_run_memory_id).await?;
             let execution_request_memory_id =
                 find_execution_request_for_run(&mut tx, &ctx, workspace_run_memory_id).await?;
-            validate_criterion_key(&mut tx, &ctx, execution_request_memory_id, &criterion_key)
+            if let Some(test_request_memory_id) = test_request_memory_id {
+                validate_test_request_workspace_run(
+                    &mut tx,
+                    &ctx,
+                    test_request_memory_id,
+                    workspace_run_memory_id,
+                )
                 .await?;
+                validate_test_criterion_key(&mut tx, &ctx, test_request_memory_id, &criterion_key)
+                    .await?;
+            } else {
+                validate_criterion_key(&mut tx, &ctx, execution_request_memory_id, &criterion_key)
+                    .await?;
+            }
             let payload = VerificationEvidenceV1 {
                 workspace_run_memory_id: workspace_run_memory_id.into_inner(),
                 execution_request_memory_id: execution_request_memory_id.into_inner(),
@@ -239,7 +256,7 @@ impl McpTool for CodeEmitVerificationEvidenceTool {
                 insert_verification_evidence_sidecar(&mut tx, outcome.memory_id, &payload).await?;
                 let authored_edge_id =
                     append_authored_edge(&mut tx, &ctx, verifier_root, outcome.memory_id).await?;
-                let derived_edge_ids = vec![
+                let mut derived_edge_ids = vec![
                     append_review_derived_edge(
                         &mut tx,
                         &ctx,
@@ -255,6 +272,17 @@ impl McpTool for CodeEmitVerificationEvidenceTool {
                     )
                     .await?,
                 ];
+                if let Some(test_request_memory_id) = test_request_memory_id {
+                    derived_edge_ids.push(
+                        append_review_derived_edge(
+                            &mut tx,
+                            &ctx,
+                            outcome.memory_id,
+                            test_request_memory_id,
+                        )
+                        .await?,
+                    );
+                }
                 (Some(authored_edge_id), derived_edge_ids)
             };
             tx.commit().await.map_err(map_storage)?;
@@ -548,6 +576,87 @@ async fn validate_criterion_key(
     )))
 }
 
+async fn validate_test_criterion_key(
+    tx: &mut Transaction<'_, Postgres>,
+    ctx: &McpToolCtx,
+    test_request_memory_id: MemoryId,
+    criterion_key: &str,
+) -> Result<(), McpToolError> {
+    let criteria = test_request_criteria(tx, ctx, test_request_memory_id).await?;
+    if criteria
+        .iter()
+        .any(|criterion| criterion.key == criterion_key)
+    {
+        return Ok(());
+    }
+    Err(McpToolError::InvalidInput(format!(
+        "criterion_key is not present on test request criteria: {criterion_key}"
+    )))
+}
+
+async fn validate_test_request_workspace_run(
+    tx: &mut Transaction<'_, Postgres>,
+    ctx: &McpToolCtx,
+    test_request_memory_id: MemoryId,
+    workspace_run_memory_id: MemoryId,
+) -> Result<(), McpToolError> {
+    let (owner_kind, owner_principal_id) = owner_principal(&ctx.owner);
+    let reachable: bool = sqlx::query_scalar(
+        "WITH RECURSIVE deps(memory_id, path) AS (
+             SELECT dep.target_memory_id, ARRAY[$5::uuid, dep.target_memory_id]
+             FROM proxima_core.edges dep
+             WHERE dep.owner_principal_kind = $1
+               AND dep.owner_principal_id = $2
+               AND dep.relation = $3
+               AND dep.source_kind = 'Fact'
+               AND dep.source_memory_id = $5
+               AND dep.target_kind = 'Fact'
+               AND dep.target_memory_id IS NOT NULL
+             UNION ALL
+             SELECT dep.target_memory_id, deps.path || dep.target_memory_id
+             FROM deps
+             JOIN proxima_core.edges dep
+               ON dep.owner_principal_kind = $1
+              AND dep.owner_principal_id = $2
+              AND dep.relation = $3
+              AND dep.source_kind = 'Fact'
+              AND dep.source_memory_id = deps.memory_id
+              AND dep.target_kind = 'Fact'
+              AND dep.target_memory_id IS NOT NULL
+             WHERE NOT dep.target_memory_id = ANY(deps.path)
+         )
+         SELECT EXISTS(
+             SELECT 1
+             FROM deps
+             JOIN proxima_core.edges derived
+               ON derived.owner_principal_kind = $1
+              AND derived.owner_principal_id = $2
+              AND derived.relation = $4
+              AND derived.source_kind = 'Fact'
+              AND derived.source_memory_id = $6
+              AND derived.target_kind = 'Fact'
+              AND derived.target_memory_id = deps.memory_id
+         )",
+    )
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(CORE_DEPENDS_ON_RELATION)
+    .bind(CORE_DERIVED_FROM_RELATION)
+    .bind(test_request_memory_id.into_inner())
+    .bind(workspace_run_memory_id.into_inner())
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(map_storage)?;
+    if reachable {
+        Ok(())
+    } else {
+        Err(McpToolError::InvalidInput(format!(
+            "workspace_run_memory is not reachable from test_request_memory dependencies: {}",
+            test_request_memory_id.into_inner()
+        )))
+    }
+}
+
 async fn required_deterministic_criteria(
     tx: &mut Transaction<'_, Postgres>,
     ctx: &McpToolCtx,
@@ -593,4 +702,52 @@ async fn all_criteria(
         criteria.append(&mut parsed);
     }
     Ok(criteria)
+}
+
+async fn test_request_criteria(
+    tx: &mut Transaction<'_, Postgres>,
+    ctx: &McpToolCtx,
+    test_request_memory_id: MemoryId,
+) -> Result<Vec<crate::payloads::AcceptanceCriterionV1>, McpToolError> {
+    let (owner_kind, owner_principal_id) = owner_principal(&ctx.owner);
+    let row = sqlx::query(
+        "SELECT COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind,
+                m.schema_id,
+                t.criteria_json
+         FROM proxima_core.memories m
+         LEFT JOIN proxima_code.test_request_v1 t USING (memory_id)
+         WHERE m.memory_id = $1
+           AND m.owner_principal_kind = $2
+           AND m.owner_principal_id = $3",
+    )
+    .bind(test_request_memory_id.into_inner())
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(map_storage)?;
+    let Some(row) = row else {
+        return Err(McpToolError::InvalidInput(format!(
+            "test_request_memory not found: {}",
+            test_request_memory_id.into_inner()
+        )));
+    };
+    let kind: proxima_core::EntityKind = row.try_get("kind").map_err(map_storage)?;
+    let schema_id: String = row.try_get("schema_id").map_err(map_storage)?;
+    if kind != proxima_core::EntityKind::Fact || schema_id != TestRequestV1::SCHEMA_ID {
+        return Err(McpToolError::InvalidInput(format!(
+            "test_request_memory must be a proxima-code/test-request-v1 Fact: {}",
+            test_request_memory_id.into_inner()
+        )));
+    }
+    let criteria_json: Option<serde_json::Value> =
+        row.try_get("criteria_json").map_err(map_storage)?;
+    let Some(criteria_json) = criteria_json else {
+        return Err(McpToolError::InvalidInput(format!(
+            "test_request_memory sidecar missing: {}",
+            test_request_memory_id.into_inner()
+        )));
+    };
+    serde_json::from_value(criteria_json)
+        .map_err(|err| McpToolError::Other(format!("decode test request criteria JSON: {err}")))
 }

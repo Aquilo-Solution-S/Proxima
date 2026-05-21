@@ -11,13 +11,11 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use async_trait::async_trait;
-use proxima_code::payloads::{WorkspaceDiffFile, WorkspaceDiffStat};
 use proxima_code::workspace_runner::CodeWorkspaceRunner;
 use proxima_code::{
     CommitV1, EXECUTION_REQUEST_OBJECT_SCHEMA, EXECUTION_REQUEST_WHOLE_SCHEMA, ExecutionRequestV1,
-    WORKSPACE_RUN_OBJECT_SCHEMA, WORKSPACE_RUN_WHOLE_SCHEMA, WorkspaceDecision,
-    WorkspaceDecisionV1, WorkspaceReviewFinding, WorkspaceReviewV1, WorkspaceReviewVerdict,
-    WorkspaceRunV1,
+    WorkspaceDecision, WorkspaceDecisionV1, WorkspaceReviewFinding, WorkspaceReviewV1,
+    WorkspaceReviewVerdict,
 };
 use proxima_core::auth::NoAuth;
 use proxima_core::harness::{ErrorClass, FinishReason};
@@ -37,11 +35,14 @@ use proxima_core::wake::target_adapter::{
 };
 use proxima_core::{
     BindInferenceTierRequest, CORE_AUTHORED_RELATION, CORE_DERIVED_FROM_RELATION,
-    EdgeAuthorshipKind, Engine, EntityKind, FactPayload, FlavorRegistry, InferenceTargetConfig,
-    MistralChatConfig, ModelTier, OrgId, Owner, OwnerPrincipalKind, Principal,
-    RegisterInferenceTargetRequest, SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId,
-    WakeEntryAuthoredBy, WakeEntryTriggerKind, WorkspaceFinalizeInput, WorkspaceOutcome,
-    WorkspacePrepareInput, WorkspaceRunner, WorkspaceRunnerError,
+    CORE_WORKSPACE_RUN_OBJECT_SCHEMA, CORE_WORKSPACE_RUN_SOURCE_ID,
+    CORE_WORKSPACE_RUN_WHOLE_SCHEMA, CoreWorkspaceDiffFile as WorkspaceDiffFile,
+    CoreWorkspaceDiffStat as WorkspaceDiffStat, CoreWorkspaceRunV1, EdgeAuthorshipKind, Engine,
+    EntityKind, FactPayload, FlavorRegistry, InferenceTargetConfig, MistralChatConfig, ModelTier,
+    OrgId, Owner, OwnerPrincipalKind, Principal, RegisterInferenceTargetRequest, SchemaId,
+    SchemaVersion, SourceBatchId, SourceId, UserId, WakeEntryAuthoredBy, WakeEntryTriggerKind,
+    WorkspaceFinalizeInput, WorkspaceOutcome, WorkspacePrepareInput, WorkspaceRunner,
+    WorkspaceRunnerError,
 };
 use proxima_flavor_goal::tools::mark_achieved::{
     MarkAchievedArgs, MarkAchievedStatus, MarkAchievedTool,
@@ -59,6 +60,48 @@ const EXECUTION_REQUEST_SOURCE_ID: &str = "proxima-code/execution-request";
 const WORKSPACE_REVIEW_SOURCE_ID: &str = "proxima-code/workspace-review";
 const WORKSPACE_REVIEW_OBJECT_SCHEMA: &str = "proxima-code/workspace-review-object-v1";
 const WORKSPACE_REVIEW_WHOLE_SCHEMA: &str = "proxima-code/workspace-review-whole-v1";
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct WorkspaceRunV1 {
+    wake_invocation_id: Uuid,
+    repo_id: Uuid,
+    target_branch: String,
+    worktree_path: String,
+    branch_name: String,
+    parent_sha: String,
+    head_sha: String,
+    diff_stat_json: WorkspaceDiffStat,
+    exit_code: Option<i32>,
+    stdout_tail: Option<String>,
+    stderr_tail: Option<String>,
+    duration_ms: Option<u64>,
+}
+
+impl WorkspaceRunV1 {
+    const SCHEMA_ID: &'static str = CoreWorkspaceRunV1::SCHEMA_ID;
+
+    fn core_payload(&self) -> CoreWorkspaceRunV1 {
+        CoreWorkspaceRunV1 {
+            wake_invocation_id: self.wake_invocation_id,
+            wake_entry_id: Uuid::now_v7(),
+            personality_instance_id: Uuid::now_v7(),
+            binding_kind: "code_git_worktree".into(),
+            finalize: "commit_all_candidate".into(),
+            repo_path: self.worktree_path.clone(),
+            base_ref: self.target_branch.clone(),
+            worktree_path: self.worktree_path.clone(),
+            branch_name: self.branch_name.clone(),
+            parent_sha: self.parent_sha.clone(),
+            head_sha: self.head_sha.clone(),
+            committed: true,
+            diff_stat_json: self.diff_stat_json.clone(),
+            exit_code: self.exit_code,
+            stdout_tail: self.stdout_tail.clone(),
+            stderr_tail: self.stderr_tail.clone(),
+            duration_ms: self.duration_ms,
+        }
+    }
+}
 
 #[derive(Debug)]
 struct FakeEmbedding;
@@ -271,7 +314,7 @@ fn registry_with_runner(
             cbor_encoder: None,
         },
         SchemaInfo {
-            schema_id: SchemaId::new(WORKSPACE_RUN_OBJECT_SCHEMA.into()),
+            schema_id: SchemaId::new(CORE_WORKSPACE_RUN_OBJECT_SCHEMA.into()),
             schema_version: SchemaVersion::new(1),
             kind: PayloadKind::CitedObject,
             filter_keys: vec![],
@@ -291,7 +334,7 @@ fn registry_with_runner(
             cbor_encoder: None,
         },
         SchemaInfo {
-            schema_id: SchemaId::new(WORKSPACE_RUN_WHOLE_SCHEMA.into()),
+            schema_id: SchemaId::new(CORE_WORKSPACE_RUN_WHOLE_SCHEMA.into()),
             schema_version: SchemaVersion::new(1),
             kind: PayloadKind::CitationMapping,
             filter_keys: vec![],
@@ -365,52 +408,59 @@ async fn seed_workspace_run_for_runner(
     payload: &WorkspaceRunV1,
     request: proxima_core::MemoryId,
 ) -> Result<proxima_core::MemoryId, Box<dyn std::error::Error>> {
+    let core_payload = payload.core_payload();
     let mut payload_bytes = Vec::new();
-    ciborium::ser::into_writer(payload, &mut payload_bytes)?;
+    ciborium::ser::into_writer(&core_payload, &mut payload_bytes)?;
     let content_hash = blake3::hash(&payload_bytes);
     let observed_at = time::OffsetDateTime::now_utc();
     let draft = EventDraft {
-        source_id: SourceId::new("proxima-code/workspace-runner"),
+        source_id: SourceId::new(CORE_WORKSPACE_RUN_SOURCE_ID),
         source_batch_id: SourceBatchId::new(Uuid::now_v7()),
         owner: owner.clone(),
-        schema_id: SchemaId::new(WorkspaceRunV1::SCHEMA_ID.into()),
-        schema_version: SchemaVersion::new(WorkspaceRunV1::SCHEMA_VERSION),
+        schema_id: SchemaId::new(CoreWorkspaceRunV1::SCHEMA_ID.into()),
+        schema_version: SchemaVersion::new(CoreWorkspaceRunV1::SCHEMA_VERSION),
         payload: payload_bytes,
         observed_at,
         occurred_at: observed_at,
         cited_object: CitedObjectHint {
-            schema_id: SchemaId::new(WORKSPACE_RUN_OBJECT_SCHEMA.into()),
+            schema_id: SchemaId::new(CORE_WORKSPACE_RUN_OBJECT_SCHEMA.into()),
             schema_version: SchemaVersion::new(1),
             content_hash: *content_hash.as_bytes(),
         },
         citation_mapping: CitationMappingHint {
-            schema_id: SchemaId::new(WORKSPACE_RUN_WHOLE_SCHEMA.into()),
+            schema_id: SchemaId::new(CORE_WORKSPACE_RUN_WHOLE_SCHEMA.into()),
             schema_version: SchemaVersion::new(1),
         },
     };
     let mut tx = pg.pool().begin().await?;
     let outcome = ingest_event_in_tx(&mut tx, &draft).await?;
     sqlx::query(
-        "INSERT INTO proxima_code.workspace_run_v1
-            (memory_id, wake_invocation_id, repo_id, target_branch, worktree_path,
-             branch_name, parent_sha, head_sha, diff_stat_json, exit_code,
+        "INSERT INTO proxima_core.workspace_run_v1
+            (memory_id, wake_invocation_id, wake_entry_id, personality_instance_id,
+             binding_kind, finalize, repo_path, base_ref, worktree_path,
+             branch_name, parent_sha, head_sha, committed, diff_stat_json, exit_code,
              stdout_tail, stderr_tail, duration_ms)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)",
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)",
     )
     .bind(outcome.memory_id.into_inner())
-    .bind(payload.wake_invocation_id)
-    .bind(payload.repo_id)
-    .bind(&payload.target_branch)
-    .bind(&payload.worktree_path)
-    .bind(&payload.branch_name)
-    .bind(&payload.parent_sha)
-    .bind(&payload.head_sha)
-    .bind(serde_json::to_value(&payload.diff_stat_json)?)
-    .bind(payload.exit_code)
-    .bind(payload.stdout_tail.as_deref())
-    .bind(payload.stderr_tail.as_deref())
+    .bind(core_payload.wake_invocation_id)
+    .bind(core_payload.wake_entry_id)
+    .bind(core_payload.personality_instance_id)
+    .bind(&core_payload.binding_kind)
+    .bind(&core_payload.finalize)
+    .bind(&core_payload.repo_path)
+    .bind(&core_payload.base_ref)
+    .bind(&core_payload.worktree_path)
+    .bind(&core_payload.branch_name)
+    .bind(&core_payload.parent_sha)
+    .bind(&core_payload.head_sha)
+    .bind(core_payload.committed)
+    .bind(serde_json::to_value(&core_payload.diff_stat_json)?)
+    .bind(core_payload.exit_code)
+    .bind(core_payload.stdout_tail.as_deref())
+    .bind(core_payload.stderr_tail.as_deref())
     .bind(
-        payload
+        core_payload
             .duration_ms
             .and_then(|value| i64::try_from(value).ok()),
     )
@@ -601,6 +651,7 @@ async fn approved_execution_request_suppresses_duplicate_workspace_prepare()
                 triggering_memory_id: request,
                 triggering_memory_schema_id: ExecutionRequestV1::SCHEMA_ID,
                 triggering_memory_payload: &payload,
+                is_continuation: false,
                 workspace_tool_palette: &[],
             })
             .await
@@ -767,6 +818,7 @@ async fn code_workspace_prepare_builds_context_with_preloaded_paths()
                 triggering_memory_id: proxima_core::MemoryId::new(Uuid::now_v7()),
                 triggering_memory_schema_id: ExecutionRequestV1::SCHEMA_ID,
                 triggering_memory_payload: &payload,
+                is_continuation: false,
                 workspace_tool_palette: &[],
             })
             .await?;
@@ -1011,6 +1063,7 @@ async fn code_workspace_runner_hydrates_pnpm_tooling() -> Result<(), Box<dyn std
                 triggering_memory_id: proxima_core::MemoryId::new(Uuid::now_v7()),
                 triggering_memory_schema_id: ExecutionRequestV1::SCHEMA_ID,
                 triggering_memory_payload: &payload,
+                is_continuation: false,
                 workspace_tool_palette: &[],
             })
             .await?;
@@ -1145,6 +1198,7 @@ async fn workspace_run_trigger_prepares_verifier_context_from_worker_branch()
                 triggering_memory_id: run,
                 triggering_memory_schema_id: WorkspaceRunV1::SCHEMA_ID,
                 triggering_memory_payload: &payload,
+                is_continuation: false,
                 workspace_tool_palette: &[],
             })
             .await?;
@@ -1284,16 +1338,19 @@ async fn workspace_run_review_finalize_does_not_emit_workspace_run()
                 triggering_memory_id: run,
                 triggering_memory_schema_id: WorkspaceRunV1::SCHEMA_ID,
                 triggering_memory_payload: &serde_json::to_value(&run_payload)?,
+                is_continuation: false,
                 workspace_tool_palette: &[],
             })
             .await?;
-        let before: i64 = sqlx::query_scalar("SELECT count(*) FROM proxima_code.workspace_run_v1")
+        let before: i64 = sqlx::query_scalar("SELECT count(*) FROM proxima_core.workspace_run_v1")
             .fetch_one(pg.pool())
             .await?;
         let record = runner
             .finalize(WorkspaceFinalizeInput {
                 owner: &owner,
                 invocation_id: Uuid::now_v7(),
+                wake_entry_id: Uuid::now_v7(),
+                personality_instance_id: proxima_core::PersonalityInstanceId::new(Uuid::now_v7()),
                 root_perspective_memory_id: proxima_core::MemoryId::new(Uuid::now_v7()),
                 triggering_memory_id: run,
                 authored_relation: registry
@@ -1311,7 +1368,7 @@ async fn workspace_run_review_finalize_does_not_emit_workspace_run()
                 },
             })
             .await?;
-        let after: i64 = sqlx::query_scalar("SELECT count(*) FROM proxima_code.workspace_run_v1")
+        let after: i64 = sqlx::query_scalar("SELECT count(*) FROM proxima_core.workspace_run_v1")
             .fetch_one(pg.pool())
             .await?;
 
@@ -1425,6 +1482,7 @@ async fn workspace_run_review_finalize_rejects_inspection_mutations()
                 triggering_memory_id: run,
                 triggering_memory_schema_id: WorkspaceRunV1::SCHEMA_ID,
                 triggering_memory_payload: &serde_json::to_value(&run_payload)?,
+                is_continuation: false,
                 workspace_tool_palette: &[],
             })
             .await?;
@@ -1434,6 +1492,8 @@ async fn workspace_run_review_finalize_rejects_inspection_mutations()
             .finalize(WorkspaceFinalizeInput {
                 owner: &owner,
                 invocation_id: Uuid::now_v7(),
+                wake_entry_id: Uuid::now_v7(),
+                personality_instance_id: proxima_core::PersonalityInstanceId::new(Uuid::now_v7()),
                 root_perspective_memory_id: proxima_core::MemoryId::new(Uuid::now_v7()),
                 triggering_memory_id: run,
                 authored_relation: registry
@@ -1588,6 +1648,7 @@ async fn workspace_run_trigger_resolves_original_request_through_run_chain()
                 triggering_memory_id: chained_run,
                 triggering_memory_schema_id: WorkspaceRunV1::SCHEMA_ID,
                 triggering_memory_payload: &serde_json::to_value(&chained_run_payload)?,
+                is_continuation: false,
                 workspace_tool_palette: &[],
             })
             .await?;
@@ -1725,6 +1786,7 @@ async fn workspace_run_trigger_loads_goal_context_from_request_chain()
                 triggering_memory_id: run,
                 triggering_memory_schema_id: WorkspaceRunV1::SCHEMA_ID,
                 triggering_memory_payload: &serde_json::to_value(&run_payload)?,
+                is_continuation: false,
                 workspace_tool_palette: &[],
             })
             .await?;
@@ -1865,6 +1927,35 @@ async fn correction_execution_request_reuses_derived_workspace_run_worktree()
         })?;
         let runner = CodeWorkspaceRunner::new(pg.pool().clone())
             .with_worktrees_root(worktree_root.path().join("new-worktrees"));
+        let continuation_payload = serde_json::to_value(ExecutionRequestV1 {
+            repo_id,
+            title: "Update README".into(),
+            instructions: "Update `README.md`.".into(),
+            request_key: "continuation-request".into(),
+        })?;
+        let continued = runner
+            .prepare(WorkspacePrepareInput {
+                invocation_id: Uuid::now_v7(),
+                owner: &owner,
+                wake_token: Uuid::now_v7(),
+                mcp_url: "http://127.0.0.1:1/mcp",
+                root_perspective_memory_id: proxima_core::MemoryId::new(Uuid::now_v7()),
+                triggering_memory_id: request,
+                triggering_memory_schema_id: ExecutionRequestV1::SCHEMA_ID,
+                triggering_memory_payload: &continuation_payload,
+                is_continuation: true,
+                workspace_tool_palette: &[],
+            })
+            .await?;
+
+        assert_eq!(continued.work_dir, worker_tree);
+        let continued_context = continued.workspace_context.expect("workspace context");
+        assert_eq!(continued_context["mode"], "continue_execution_request");
+        assert_eq!(
+            continued_context["continuation_from"]["workspace_run_memory_id"],
+            run.into_inner().to_string()
+        );
+
         let prepared = runner
             .prepare(WorkspacePrepareInput {
                 invocation_id: Uuid::now_v7(),
@@ -1875,6 +1966,7 @@ async fn correction_execution_request_reuses_derived_workspace_run_worktree()
                 triggering_memory_id: correction_request,
                 triggering_memory_schema_id: ExecutionRequestV1::SCHEMA_ID,
                 triggering_memory_payload: &payload,
+                is_continuation: false,
                 workspace_tool_palette: &[],
             })
             .await?;
@@ -2020,6 +2112,7 @@ async fn rejected_review_trigger_prepares_correction_context()
                 triggering_memory_id: review,
                 triggering_memory_schema_id: WorkspaceReviewV1::SCHEMA_ID,
                 triggering_memory_payload: &payload,
+                is_continuation: false,
                 workspace_tool_palette: &[],
             })
             .await?;
@@ -2134,6 +2227,7 @@ async fn rejected_decision_trigger_is_not_correction_context()
                 triggering_memory_id: decision,
                 triggering_memory_schema_id: WorkspaceDecisionV1::SCHEMA_ID,
                 triggering_memory_payload: &payload,
+                is_continuation: false,
                 workspace_tool_palette: &[],
             })
             .await
@@ -2162,7 +2256,6 @@ async fn merged_decision_trigger_prepares_goal_close_context()
         proxima_flavor_goal::migrator().run(pg.pool()).await?;
         let owner = test_owner();
         let repo_root = tempfile::tempdir()?;
-        let worktree_root = tempfile::tempdir()?;
         let (repo_path, parent_sha) = init_repo(&repo_root).map_err(std::io::Error::other)?;
 
         let repo_id = Uuid::now_v7();
@@ -2191,8 +2284,8 @@ async fn merged_decision_trigger_prepares_goal_close_context()
             wake_invocation_id: Uuid::now_v7(),
             repo_id,
             target_branch: "main".into(),
-            worktree_path: worktree_root.path().to_string_lossy().to_string(),
-            branch_name: "proxima/wake/merge-goal-close".into(),
+            worktree_path: repo_path.to_string_lossy().to_string(),
+            branch_name: "main".into(),
             parent_sha: parent_sha.clone(),
             head_sha: parent_sha,
             diff_stat_json: WorkspaceDiffStat {
@@ -2249,6 +2342,7 @@ async fn merged_decision_trigger_prepares_goal_close_context()
                 triggering_memory_id: decision,
                 triggering_memory_schema_id: WorkspaceDecisionV1::SCHEMA_ID,
                 triggering_memory_payload: &serde_json::to_value(&decision_payload)?,
+                is_continuation: false,
                 workspace_tool_palette: &[],
             })
             .await?;
@@ -2342,7 +2436,6 @@ async fn retry_requested_decision_trigger_prepares_correction_context()
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = test_owner();
         let repo_root = tempfile::tempdir()?;
-        let worktree_root = tempfile::tempdir()?;
         let (repo_path, parent_sha) = init_repo(&repo_root).map_err(std::io::Error::other)?;
 
         let repo_id = Uuid::now_v7();
@@ -2369,8 +2462,8 @@ async fn retry_requested_decision_trigger_prepares_correction_context()
             wake_invocation_id: Uuid::now_v7(),
             repo_id,
             target_branch: "main".into(),
-            worktree_path: worktree_root.path().to_string_lossy().to_string(),
-            branch_name: "proxima/wake/retry".into(),
+            worktree_path: repo_path.to_string_lossy().to_string(),
+            branch_name: "main".into(),
             parent_sha: parent_sha.clone(),
             head_sha: parent_sha,
             diff_stat_json: WorkspaceDiffStat {
@@ -2416,6 +2509,7 @@ async fn retry_requested_decision_trigger_prepares_correction_context()
                 triggering_memory_id: decision,
                 triggering_memory_schema_id: WorkspaceDecisionV1::SCHEMA_ID,
                 triggering_memory_payload: &payload,
+                is_continuation: false,
                 workspace_tool_palette: &[],
             })
             .await?;
@@ -2603,21 +2697,25 @@ async fn workspace_wake_emits_run_fact_and_edges() -> Result<(), Box<dyn std::er
         assert_eq!(persisted_target.as_deref(), Some("main"));
 
         let run = sqlx::query(
-            "SELECT memory_id, repo_id, target_branch, worktree_path, parent_sha, head_sha, diff_stat_json
-             FROM proxima_code.workspace_run_v1
-             WHERE repo_id = $1",
+            "SELECT wr.memory_id, wr.base_ref AS target_branch, wr.worktree_path,
+                    wr.parent_sha, wr.head_sha, wr.diff_stat_json
+             FROM proxima_core.workspace_run_v1 wr
+             JOIN proxima_core.edges e
+               ON e.source_memory_id = wr.memory_id
+              AND e.target_kind = 'Fact'
+              AND e.relation = $2
+             WHERE e.target_memory_id = $1",
         )
-        .bind(repo_id)
+        .bind(commit_outcome.memory_id.into_inner())
+        .bind(CORE_DERIVED_FROM_RELATION)
         .fetch_one(pg.pool())
         .await?;
         let run_memory_id: Uuid = run.try_get("memory_id")?;
-        let run_repo_id: Uuid = run.try_get("repo_id")?;
         let target_branch: String = run.try_get("target_branch")?;
         let run_worktree_path: String = run.try_get("worktree_path")?;
         let parent_sha: String = run.try_get("parent_sha")?;
         let head_sha: String = run.try_get("head_sha")?;
         let diff_stat: serde_json::Value = run.try_get("diff_stat_json")?;
-        assert_eq!(run_repo_id, repo_id);
         assert_eq!(target_branch, "main");
         assert_eq!(parent_sha, commit_sha);
         assert_ne!(head_sha, parent_sha);

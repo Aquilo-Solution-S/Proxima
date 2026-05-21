@@ -34,12 +34,10 @@ pub const CODE_BLOB_BYTE_RANGE_SCHEMA: &str = "proxima-code/code-blob-byte-range
 /// (used by `commit-v1`).
 pub const CODE_COMMIT_WHOLE_SCHEMA: &str = "proxima-code/code-commit-whole-v1";
 
-pub use crate::workspace_runner::{
-    WORKSPACE_RUN_OBJECT_SCHEMA, WORKSPACE_RUN_WHOLE_SCHEMA, WORKSPACE_RUNNER_SOURCE_ID,
-};
-
 pub const EXECUTION_REQUEST_OBJECT_SCHEMA: &str = "proxima-code/execution-request-object-v1";
 pub const EXECUTION_REQUEST_WHOLE_SCHEMA: &str = "proxima-code/execution-request-whole-v1";
+pub const TEST_REQUEST_OBJECT_SCHEMA: &str = "proxima-code/test-request-object-v1";
+pub const TEST_REQUEST_WHOLE_SCHEMA: &str = "proxima-code/test-request-whole-v1";
 pub const WORKSPACE_DECISION_OBJECT_SCHEMA: &str = "proxima-code/workspace-decision-object-v1";
 pub const WORKSPACE_DECISION_WHOLE_SCHEMA: &str = "proxima-code/workspace-decision-whole-v1";
 
@@ -70,7 +68,8 @@ pub(crate) fn schema_registry_with_config(
     extra(&mut flavor);
     crate::register(&mut flavor);
     if let Some(runner) = workspace_runner {
-        flavor.replace_workspace_runner("proxima-code", runner);
+        flavor.replace_workspace_runner("proxima-code", runner.clone());
+        flavor.replace_workspace_runner("proxima-core", runner);
     }
     let flavor = flavor.freeze();
     let mut extra_schemas = Vec::new();
@@ -81,7 +80,7 @@ pub(crate) fn schema_registry_with_config(
         CODE_BLOB_SCHEMA,
         CODE_COMMIT_OBJECT_SCHEMA,
         EXECUTION_REQUEST_OBJECT_SCHEMA,
-        WORKSPACE_RUN_OBJECT_SCHEMA,
+        TEST_REQUEST_OBJECT_SCHEMA,
         WORKSPACE_DECISION_OBJECT_SCHEMA,
     ] {
         extra_schemas.push(SchemaInfo {
@@ -102,7 +101,7 @@ pub(crate) fn schema_registry_with_config(
         CODE_BLOB_BYTE_RANGE_SCHEMA,
         CODE_COMMIT_WHOLE_SCHEMA,
         EXECUTION_REQUEST_WHOLE_SCHEMA,
-        WORKSPACE_RUN_WHOLE_SCHEMA,
+        TEST_REQUEST_WHOLE_SCHEMA,
         WORKSPACE_DECISION_WHOLE_SCHEMA,
     ] {
         extra_schemas.push(SchemaInfo {

@@ -20,6 +20,7 @@ pub const CORE_DERIVED_FROM_RELATION: &str = "core/derived-from";
 pub const CORE_SUPERSEDES_RELATION: &str = "core/supersedes";
 pub const CORE_INSPIRES_RELATION: &str = "core/inspires";
 pub const CORE_AUTHORED_RELATION: &str = "core/authored";
+pub const CORE_DEPENDS_ON_RELATION: &str = "core/depends-on";
 pub const CORE_HAS_APPROVAL_POLICY_RELATION: &str = "core/has-approval-policy";
 pub const CORE_VOTES_ON_RELATION: &str = "core/votes-on";
 pub const CORE_HAS_APPROVAL_DECISION_RELATION: &str = "core/has-approval-decision";
@@ -529,6 +530,13 @@ pub fn core_relation_descriptors() -> Vec<RelationDescriptor> {
             CORE_AUTHORED_RELATION,
             RelationClass::Causal,
             EntityKindMask::perspective(),
+            EntityKindMask::memory(),
+            AuthorshipKindMask::engine().union(AuthorshipKindMask::external_agent()),
+        ),
+        RelationDescriptor::substrate(
+            CORE_DEPENDS_ON_RELATION,
+            RelationClass::Structural,
+            EntityKindMask::memory(),
             EntityKindMask::memory(),
             AuthorshipKindMask::engine().union(AuthorshipKindMask::external_agent()),
         ),

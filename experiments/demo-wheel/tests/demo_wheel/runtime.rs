@@ -41,14 +41,13 @@ pub(super) fn build_demo_engine(cfg: &DemoConfig, pg: PgStorage, owner: Owner) -
     proxima_flavor_goal::register(&mut registry);
     proxima_flavor_intent::register(&mut registry);
     proxima_code::register(&mut registry);
-    registry.replace_workspace_runner(
-        "proxima-code",
-        Arc::new(
-            proxima_code::workspace_runner::CodeWorkspaceRunner::new(pg.pool().clone())
-                .with_worktrees_root(cfg.run_dir.join("worktrees"))
-                .with_pnpm_store_root(cfg.run_dir.join("pnpm-store")),
-        ),
+    let code_runner = Arc::new(
+        proxima_code::workspace_runner::CodeWorkspaceRunner::new(pg.pool().clone())
+            .with_worktrees_root(cfg.run_dir.join("worktrees"))
+            .with_pnpm_store_root(cfg.run_dir.join("pnpm-store")),
     );
+    registry.replace_workspace_runner("proxima-code", code_runner.clone());
+    registry.replace_workspace_runner("proxima-core", code_runner);
 
     Engine::new(
         registry.freeze(),

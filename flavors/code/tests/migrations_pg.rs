@@ -1,5 +1,5 @@
 //! Apply core + flavor migrations to a fresh DB and verify the
-//! `proxima_code` schema and tables exist.
+//! current `proxima_code` schema shape.
 
 use proxima_storage_pg::PgStorage;
 use sqlx::{Connection, Executor, PgConnection};
@@ -40,9 +40,9 @@ async fn flavor_migrations_apply_to_fresh_db() {
             "file_revision_v1",
             "code_chunk_v1",
             "commit_summary_v1",
-            "workspace_run_v1",
             "workspace_decision_v1",
             "execution_request_v1",
+            "test_request_v1",
             "workspace_review_v1",
         ] {
             let row = sqlx::query(
@@ -54,9 +54,24 @@ async fn flavor_migrations_apply_to_fresh_db() {
             .await?;
             assert!(row.is_some(), "expected table proxima_code.{table}");
         }
+        let old_run = sqlx::query(
+            "SELECT 1 AS ok FROM information_schema.tables
+             WHERE table_schema = 'proxima_code' AND table_name = 'workspace_run_v1'",
+        )
+        .fetch_optional(pg.pool())
+        .await?;
+        assert!(
+            old_run.is_none(),
+            "proxima_code.workspace_run_v1 should be dropped"
+        );
 
         // Verify the M5 core tables exist.
-        for table in ["source_batch_f2a", "edges", "embeddings"] {
+        for table in [
+            "source_batch_f2a",
+            "edges",
+            "embeddings",
+            "workspace_run_v1",
+        ] {
             let row = sqlx::query(
                 "SELECT 1 AS ok FROM information_schema.tables
                  WHERE table_schema = 'proxima_core' AND table_name = $1",

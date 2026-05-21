@@ -130,27 +130,29 @@ pub async fn persist_core_workspace_run_atomic(
     )
     .await?;
 
-    let derived_relation = registry
-        .resolve_relation(CORE_DERIVED_FROM_RELATION)
-        .ok_or_else(|| StorageError::Internal("missing core/derived-from relation".into()))?;
-    append_edge_in_tx(
-        tx.as_mut(),
-        &EdgeDraft {
-            edge_id: uuid::Uuid::now_v7(),
-            relation: derived_relation,
-            source_kind: EntityKind::Fact,
-            source_memory_id: Some(memory_id),
-            source_goal_id: None,
-            target_kind: EntityKind::Fact,
-            target_memory_id: Some(input.triggering_memory_id.into_inner()),
-            target_goal_id: None,
-            authorship_kind: EdgeAuthorshipKind::Engine,
-            authorship_owner_memory_id: None,
-            owner: &input.owner,
-        },
-        None,
-    )
-    .await?;
+    if input.triggering_memory_kind == EntityKind::Fact {
+        let derived_relation = registry
+            .resolve_relation(CORE_DERIVED_FROM_RELATION)
+            .ok_or_else(|| StorageError::Internal("missing core/derived-from relation".into()))?;
+        append_edge_in_tx(
+            tx.as_mut(),
+            &EdgeDraft {
+                edge_id: uuid::Uuid::now_v7(),
+                relation: derived_relation,
+                source_kind: EntityKind::Fact,
+                source_memory_id: Some(memory_id),
+                source_goal_id: None,
+                target_kind: EntityKind::Fact,
+                target_memory_id: Some(input.triggering_memory_id.into_inner()),
+                target_goal_id: None,
+                authorship_kind: EdgeAuthorshipKind::Engine,
+                authorship_owner_memory_id: None,
+                owner: &input.owner,
+            },
+            None,
+        )
+        .await?;
+    }
 
     tx.commit().await.map_err(map_err)?;
     Ok(CoreWorkspaceRunPersistOutcome {

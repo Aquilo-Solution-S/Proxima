@@ -1,8 +1,10 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use proxima_core::mcp::{McpTool, McpToolCtx, McpToolError};
 use proxima_core::personality::{PersonalityInstanceId, PersonalityStatus};
-use proxima_core::relation::{CORE_AUTHORED_RELATION, CORE_DERIVED_FROM_RELATION};
+use proxima_core::relation::{
+    CORE_AUTHORED_RELATION, CORE_DEPENDS_ON_RELATION, CORE_DERIVED_FROM_RELATION,
+};
 use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
 use proxima_core::{
     EdgeAuthorshipKind, EdgeId, EntityKind, FactPayload, MemoryId, SchemaId, SchemaVersion,
@@ -17,6 +19,7 @@ use uuid::Uuid;
 
 use crate::payloads::{
     AcceptanceCriteriaV1, AcceptanceCriterionV1, AcceptanceVerifierKind, ExecutionRequestV1,
+    TestRequestV1,
 };
 
 use super::sql::{map_storage, owner_principal, resolve_repo_identifier};
@@ -29,6 +32,9 @@ pub const CODE_HAS_ACCEPTANCE_CRITERIA_RELATION: &str = "proxima-code/has-accept
 const ACCEPTANCE_CRITERIA_SOURCE_ID: &str = "proxima-code/acceptance-criteria";
 const ACCEPTANCE_CRITERIA_OBJECT_SCHEMA: &str = "proxima-code/acceptance-criteria-object-v1";
 const ACCEPTANCE_CRITERIA_WHOLE_SCHEMA: &str = "proxima-code/acceptance-criteria-whole-v1";
+const TEST_REQUEST_SOURCE_ID: &str = "proxima-code/test-request";
+const TEST_REQUEST_OBJECT_SCHEMA: &str = "proxima-code/test-request-object-v1";
+const TEST_REQUEST_WHOLE_SCHEMA: &str = "proxima-code/test-request-whole-v1";
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CodeEmitExecutionRequestArgs {
@@ -70,6 +76,83 @@ pub struct CodeEmitExecutionRequestOutput {
     pub acceptance_criteria_handle: Option<String>,
     pub acceptance_criteria_edge_handle: Option<String>,
     pub idempotent_replay: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionPlanItemKind {
+    Implementation,
+    Test,
+}
+
+impl Default for ExecutionPlanItemKind {
+    fn default() -> Self {
+        Self::Implementation
+    }
+}
+
+impl ExecutionPlanItemKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Implementation => "implementation",
+            Self::Test => "test",
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ExecutionPlanItemArgs {
+    #[serde(default)]
+    #[schemars(description = "Plan item kind. Defaults to `implementation` for compatibility.")]
+    pub kind: ExecutionPlanItemKind,
+    #[schemars(description = "Unique item key inside this plan, 1 to 80 ASCII chars.")]
+    pub key: String,
+    #[schemars(description = "Short human-readable execution-request title, 1 to 240 chars.")]
+    pub title: String,
+    #[schemars(description = "Concrete implementation instructions for this work slice.")]
+    pub instructions: String,
+    #[schemars(description = "Stable idempotency key for this work slice.")]
+    pub idempotency_key: String,
+    #[serde(default)]
+    #[schemars(description = "Item keys that must complete before this item can dispatch.")]
+    pub depends_on: Vec<String>,
+    #[serde(default)]
+    #[schemars(description = "Optional acceptance criteria for this work slice.")]
+    pub acceptance_criteria: Vec<AcceptanceCriterionV1>,
+    #[serde(default)]
+    #[schemars(description = "Required criteria for a `test` item.")]
+    pub test_criteria: Vec<AcceptanceCriterionV1>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CodeEmitExecutionPlanArgs {
+    #[schemars(description = "Repo handle from code search/list context.")]
+    pub repo_handle: String,
+    #[schemars(description = "`F...` goal-activated Fact memory handle for the Active Goal.")]
+    pub goal_activated_memory: String,
+    #[serde(default)]
+    #[schemars(
+        description = "Optional additional Fact memory handles used as evidence for every item."
+    )]
+    pub evidence: Vec<String>,
+    #[schemars(
+        description = "Ordered implementation/test items. Dependencies may reference only earlier item keys."
+    )]
+    pub items: Vec<ExecutionPlanItemArgs>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ExecutionPlanItemOutput {
+    pub key: String,
+    pub kind: ExecutionPlanItemKind,
+    pub handle: String,
+    pub dependency_edge_handles: Vec<String>,
+    pub idempotent_replay: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CodeEmitExecutionPlanOutput {
+    pub items: Vec<ExecutionPlanItemOutput>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -236,6 +319,159 @@ impl McpTool for CodeEmitExecutionRequestTool {
                     .map(|edge_id| ctx.format_edge(EdgeId::new(edge_id))),
                 idempotent_replay: outcome.idempotent_replay,
             })
+        })
+    }
+}
+
+#[derive(Debug)]
+pub struct CodeEmitExecutionPlanTool;
+
+impl McpTool for CodeEmitExecutionPlanTool {
+    const NAME: &'static str = "proxima-code/code_emit_execution_plan";
+    const DESCRIPTION: &'static str = "Atomically emit an ordered set of repo-scoped implementation/test request Facts plus core/depends-on edges.";
+    const PRODUCES_SCHEMA_IDS: &'static [&'static str] =
+        &[ExecutionRequestV1::SCHEMA_ID, TestRequestV1::SCHEMA_ID];
+
+    type Args = CodeEmitExecutionPlanArgs;
+    type Output = CodeEmitExecutionPlanOutput;
+
+    #[allow(clippy::too_many_lines)]
+    fn call(
+        ctx: McpToolCtx,
+        args: CodeEmitExecutionPlanArgs,
+    ) -> futures::future::BoxFuture<'static, Result<CodeEmitExecutionPlanOutput, McpToolError>>
+    {
+        Box::pin(async move {
+            let repo_id = resolve_repo_identifier(&ctx, &args.repo_handle).await?;
+            validate_repo(&ctx, repo_id).await?;
+            let plan_items = validate_plan_items(args.items)?;
+
+            let planner_root = ctx.caller_self_perspective.ok_or_else(|| {
+                McpToolError::InvalidInput(
+                    "caller_self_perspective is required to author an execution plan".into(),
+                )
+            })?;
+            let goal_activated_memory_id = ctx.resolve_fact_memory(&args.goal_activated_memory)?;
+            let evidence = resolve_evidence(&ctx, &args.evidence)?;
+
+            let mut tx = ctx.pool.begin().await.map_err(map_storage)?;
+            let goal_id =
+                validate_goal_activated_fact(&mut tx, &ctx, goal_activated_memory_id).await?;
+            validate_active_goal_context(&mut tx, &ctx, goal_id, planner_root).await?;
+            validate_evidence_in_owner(&mut tx, &ctx, &evidence).await?;
+
+            let mut emitted: HashMap<String, MemoryId> = HashMap::new();
+            let mut outputs = Vec::with_capacity(plan_items.len());
+            for item in plan_items {
+                let kind = item.kind;
+                let outcome = match kind {
+                    ExecutionPlanItemKind::Implementation => {
+                        let payload = ExecutionRequestV1 {
+                            repo_id,
+                            title: item.title,
+                            instructions: item.instructions,
+                            request_key: item.idempotency_key,
+                        };
+                        let outcome = ingest_execution_request(&mut tx, &ctx, &payload).await?;
+                        if !outcome.idempotent_replay {
+                            insert_sidecar(&mut tx, outcome.memory_id, &payload).await?;
+                            append_authored_edge(&mut tx, &ctx, planner_root, outcome.memory_id)
+                                .await?;
+                            append_derived_edge(
+                                &mut tx,
+                                &ctx,
+                                outcome.memory_id,
+                                goal_activated_memory_id,
+                            )
+                            .await?;
+                            for memory_id in &evidence {
+                                append_derived_edge(&mut tx, &ctx, outcome.memory_id, *memory_id)
+                                    .await?;
+                            }
+                            if !item.acceptance_criteria.is_empty() {
+                                let criteria_payload = AcceptanceCriteriaV1 {
+                                    execution_request_memory_id: outcome.memory_id.into_inner(),
+                                    criteria: item.acceptance_criteria,
+                                };
+                                let criteria_outcome =
+                                    ingest_acceptance_criteria(&mut tx, &ctx, &criteria_payload)
+                                        .await?;
+                                if !criteria_outcome.idempotent_replay {
+                                    insert_acceptance_criteria_sidecar(
+                                        &mut tx,
+                                        criteria_outcome.memory_id,
+                                        &criteria_payload,
+                                    )
+                                    .await?;
+                                    append_acceptance_criteria_edge(
+                                        &mut tx,
+                                        &ctx,
+                                        outcome.memory_id,
+                                        criteria_outcome.memory_id,
+                                    )
+                                    .await?;
+                                }
+                            }
+                        }
+                        outcome
+                    }
+                    ExecutionPlanItemKind::Test => {
+                        let payload = TestRequestV1 {
+                            repo_id,
+                            title: item.title,
+                            instructions: item.instructions,
+                            test_key: item.idempotency_key,
+                            criteria: item.test_criteria,
+                        };
+                        let outcome = ingest_test_request(&mut tx, &ctx, &payload).await?;
+                        if !outcome.idempotent_replay {
+                            insert_test_request_sidecar(&mut tx, outcome.memory_id, &payload)
+                                .await?;
+                            append_authored_edge(&mut tx, &ctx, planner_root, outcome.memory_id)
+                                .await?;
+                            append_derived_edge(
+                                &mut tx,
+                                &ctx,
+                                outcome.memory_id,
+                                goal_activated_memory_id,
+                            )
+                            .await?;
+                            for memory_id in &evidence {
+                                append_derived_edge(&mut tx, &ctx, outcome.memory_id, *memory_id)
+                                    .await?;
+                            }
+                        }
+                        outcome
+                    }
+                };
+                let mut dependency_edges = Vec::new();
+                for dependency_key in &item.depends_on {
+                    let dependency_memory_id =
+                        emitted.get(dependency_key).copied().ok_or_else(|| {
+                            McpToolError::InvalidInput(format!(
+                                "depends_on references unavailable item key: {dependency_key}"
+                            ))
+                        })?;
+                    let edge_id = append_dependency_edge(
+                        &mut tx,
+                        &ctx,
+                        outcome.memory_id,
+                        dependency_memory_id,
+                    )
+                    .await?;
+                    dependency_edges.push(ctx.format_edge(EdgeId::new(edge_id)));
+                }
+                emitted.insert(item.key.clone(), outcome.memory_id);
+                outputs.push(ExecutionPlanItemOutput {
+                    key: item.key,
+                    kind,
+                    handle: ctx.format_fact_memory(outcome.memory_id),
+                    dependency_edge_handles: dependency_edges,
+                    idempotent_replay: outcome.idempotent_replay,
+                });
+            }
+            tx.commit().await.map_err(map_storage)?;
+            Ok(CodeEmitExecutionPlanOutput { items: outputs })
         })
     }
 }
@@ -424,6 +660,101 @@ pub(super) fn validate_acceptance_criteria(
         }
         validate_acceptance_verifier_spec(&criterion)?;
         out.push(criterion);
+    }
+    Ok(out)
+}
+
+fn validate_plan_items(
+    items: Vec<ExecutionPlanItemArgs>,
+) -> Result<Vec<ExecutionPlanItemArgs>, McpToolError> {
+    if items.is_empty() || items.len() > 20 {
+        return Err(McpToolError::InvalidInput(
+            "items must contain 1..=20 plan requests".into(),
+        ));
+    }
+    let mut seen = HashSet::new();
+    let mut prior = HashSet::new();
+    let mut out = Vec::with_capacity(items.len());
+    for mut item in items {
+        item.key = normalize_text("items.key", &item.key, 1, 80)?;
+        if !item
+            .key
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-'))
+        {
+            return Err(McpToolError::InvalidInput(
+                "items.key must contain only ASCII letters, digits, '-' or '_'".into(),
+            ));
+        }
+        if !seen.insert(item.key.clone()) {
+            return Err(McpToolError::InvalidInput(format!(
+                "duplicate item key: {}",
+                item.key
+            )));
+        }
+        item.title = normalize_text("items.title", &item.title, 1, 240)?;
+        item.instructions = normalize_text("items.instructions", &item.instructions, 1, 20_000)?;
+        item.idempotency_key =
+            normalize_text("items.idempotency_key", &item.idempotency_key, 1, 240)?;
+        item.acceptance_criteria = validate_acceptance_criteria(item.acceptance_criteria)?;
+        item.test_criteria = validate_acceptance_criteria(item.test_criteria)?;
+        match item.kind {
+            ExecutionPlanItemKind::Implementation => {
+                if !item.test_criteria.is_empty() {
+                    return Err(McpToolError::InvalidInput(format!(
+                        "implementation item {} must not set test_criteria",
+                        item.key
+                    )));
+                }
+            }
+            ExecutionPlanItemKind::Test => {
+                if !item.acceptance_criteria.is_empty() {
+                    return Err(McpToolError::InvalidInput(format!(
+                        "test item {} must not set acceptance_criteria",
+                        item.key
+                    )));
+                }
+                if item.test_criteria.is_empty() {
+                    return Err(McpToolError::InvalidInput(format!(
+                        "test item {} must set test_criteria",
+                        item.key
+                    )));
+                }
+                if !item
+                    .test_criteria
+                    .iter()
+                    .any(|criterion| criterion.required)
+                {
+                    return Err(McpToolError::InvalidInput(format!(
+                        "test item {} must include at least one required test criterion",
+                        item.key
+                    )));
+                }
+            }
+        }
+        let mut item_deps = HashSet::new();
+        let mut normalized_deps = Vec::with_capacity(item.depends_on.len());
+        for dep in &item.depends_on {
+            let dep = normalize_text("items.depends_on[]", dep, 1, 80)?;
+            if !prior.contains(&dep) {
+                return Err(McpToolError::InvalidInput(format!(
+                    "{} item {} depends on {}, but dependencies must reference earlier item keys",
+                    item.kind.as_str(),
+                    item.key,
+                    dep
+                )));
+            }
+            if !item_deps.insert(dep.clone()) {
+                return Err(McpToolError::InvalidInput(format!(
+                    "item {} repeats dependency {}",
+                    item.key, dep
+                )));
+            }
+            normalized_deps.push(dep);
+        }
+        item.depends_on = normalized_deps;
+        prior.insert(item.key.clone());
+        out.push(item);
     }
     Ok(out)
 }
@@ -978,6 +1309,65 @@ pub(super) async fn insert_acceptance_criteria_sidecar(
     Ok(())
 }
 
+pub(super) async fn ingest_test_request(
+    tx: &mut Transaction<'_, Postgres>,
+    ctx: &McpToolCtx,
+    payload: &TestRequestV1,
+) -> Result<proxima_core::verbs::event_ingest::EventIngestOutcome, McpToolError> {
+    let mut payload_bytes = Vec::new();
+    ciborium::ser::into_writer(payload, &mut payload_bytes)
+        .map_err(|err| McpToolError::InvalidInput(err.to_string()))?;
+    let content_hash = blake3::hash(&payload_bytes);
+    let observed_at = time::OffsetDateTime::now_utc();
+    let draft = EventDraft {
+        source_id: SourceId::new(TEST_REQUEST_SOURCE_ID),
+        source_batch_id: SourceBatchId::new(Uuid::now_v7()),
+        owner: ctx.owner.clone(),
+        schema_id: SchemaId::new(TestRequestV1::SCHEMA_ID.into()),
+        schema_version: SchemaVersion::new(TestRequestV1::SCHEMA_VERSION),
+        payload: payload_bytes,
+        observed_at,
+        occurred_at: observed_at,
+        cited_object: CitedObjectHint {
+            schema_id: SchemaId::new(TEST_REQUEST_OBJECT_SCHEMA.into()),
+            schema_version: SchemaVersion::new(1),
+            content_hash: *content_hash.as_bytes(),
+        },
+        citation_mapping: CitationMappingHint {
+            schema_id: SchemaId::new(TEST_REQUEST_WHOLE_SCHEMA.into()),
+            schema_version: SchemaVersion::new(1),
+        },
+    };
+    ingest_event_in_tx(tx, &draft)
+        .await
+        .map_err(McpToolError::Storage)
+}
+
+pub(super) async fn insert_test_request_sidecar(
+    tx: &mut Transaction<'_, Postgres>,
+    memory_id: MemoryId,
+    payload: &TestRequestV1,
+) -> Result<(), McpToolError> {
+    sqlx::query(
+        "INSERT INTO proxima_code.test_request_v1
+            (memory_id, repo_id, title, instructions, test_key, criteria_json)
+         VALUES ($1, $2, $3, $4, $5, $6)",
+    )
+    .bind(memory_id.into_inner())
+    .bind(payload.repo_id)
+    .bind(&payload.title)
+    .bind(&payload.instructions)
+    .bind(&payload.test_key)
+    .bind(
+        serde_json::to_value(&payload.criteria)
+            .map_err(|err| McpToolError::InvalidInput(format!("serialize criteria: {err}")))?,
+    )
+    .execute(&mut **tx)
+    .await
+    .map_err(map_storage)?;
+    Ok(())
+}
+
 pub(super) async fn append_acceptance_criteria_edge(
     tx: &mut Transaction<'_, Postgres>,
     ctx: &McpToolCtx,
@@ -1118,6 +1508,42 @@ pub(super) async fn append_derived_edge(
     Ok(edge_id)
 }
 
+async fn append_dependency_edge(
+    tx: &mut Transaction<'_, Postgres>,
+    ctx: &McpToolCtx,
+    dependent_memory_id: MemoryId,
+    dependency_memory_id: MemoryId,
+) -> Result<Uuid, McpToolError> {
+    let relation = ctx
+        .registry
+        .resolve_relation(CORE_DEPENDS_ON_RELATION)
+        .ok_or_else(|| McpToolError::Other("core/depends-on relation not registered".into()))?;
+    let mut name = Vec::with_capacity(32);
+    name.extend_from_slice(dependent_memory_id.into_inner().as_bytes());
+    name.extend_from_slice(dependency_memory_id.into_inner().as_bytes());
+    let edge_id = Uuid::new_v5(&Uuid::NAMESPACE_OID, &name);
+    append_edge_in_tx(
+        tx,
+        &EdgeDraft {
+            edge_id,
+            relation,
+            source_kind: EntityKind::Fact,
+            source_memory_id: Some(dependent_memory_id.into_inner()),
+            source_goal_id: None,
+            target_kind: EntityKind::Fact,
+            target_memory_id: Some(dependency_memory_id.into_inner()),
+            target_goal_id: None,
+            authorship_kind: EdgeAuthorshipKind::ExternalAgent,
+            authorship_owner_memory_id: ctx.caller_self_perspective.map(MemoryId::into_inner),
+            owner: &ctx.owner,
+        },
+        None,
+    )
+    .await
+    .map_err(McpToolError::Storage)?;
+    Ok(edge_id)
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -1171,6 +1597,73 @@ mod tests {
         let err = resolve_evidence(&ctx, &[abstraction_handle]).expect_err("A handle rejected");
         assert!(
             err.to_string().contains("expected Fact memory handle"),
+            "{err}"
+        );
+    }
+
+    fn criterion(key: &str, required: bool) -> AcceptanceCriterionV1 {
+        AcceptanceCriterionV1 {
+            key: key.into(),
+            description: format!("{key} passes"),
+            required,
+            verifier_kind: AcceptanceVerifierKind::Command,
+            verifier_spec: crate::payloads::AcceptanceVerifierSpecV1 {
+                path: None,
+                command: Some(vec!["true".into()]),
+                pattern: None,
+                note: None,
+            },
+        }
+    }
+
+    #[test]
+    fn validate_plan_items_accepts_mixed_implementation_and_test_nodes() {
+        let items = validate_plan_items(vec![
+            ExecutionPlanItemArgs {
+                kind: ExecutionPlanItemKind::Implementation,
+                key: "impl".into(),
+                title: "Implement".into(),
+                instructions: "Create the feature.".into(),
+                idempotency_key: "impl-key".into(),
+                depends_on: vec![],
+                acceptance_criteria: vec![criterion("build", true)],
+                test_criteria: vec![],
+            },
+            ExecutionPlanItemArgs {
+                kind: ExecutionPlanItemKind::Test,
+                key: "test".into(),
+                title: "Test".into(),
+                instructions: "Verify the feature.".into(),
+                idempotency_key: "test-key".into(),
+                depends_on: vec!["impl".into()],
+                acceptance_criteria: vec![],
+                test_criteria: vec![criterion("smoke", true)],
+            },
+        ])
+        .expect("mixed plan validates");
+
+        assert_eq!(items[0].kind, ExecutionPlanItemKind::Implementation);
+        assert_eq!(items[1].kind, ExecutionPlanItemKind::Test);
+        assert_eq!(items[1].depends_on, vec!["impl"]);
+    }
+
+    #[test]
+    fn validate_plan_items_rejects_test_without_required_criteria() {
+        let err = validate_plan_items(vec![ExecutionPlanItemArgs {
+            kind: ExecutionPlanItemKind::Test,
+            key: "test".into(),
+            title: "Test".into(),
+            instructions: "Verify the feature.".into(),
+            idempotency_key: "test-key".into(),
+            depends_on: vec![],
+            acceptance_criteria: vec![],
+            test_criteria: vec![criterion("optional", false)],
+        }])
+        .expect_err("test must require one criterion");
+
+        assert!(
+            err.to_string()
+                .contains("must include at least one required test criterion"),
             "{err}"
         );
     }

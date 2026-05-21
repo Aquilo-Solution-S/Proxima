@@ -18,7 +18,7 @@ pub const MAX_WORKSPACE_VETO_ROUNDS: i64 = 2;
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CodeEmitWorkspaceReviewArgs {
     #[schemars(
-        description = "`F...` memory handle for the proxima-code/workspace-run-v1 Fact being reviewed."
+        description = "`F...` memory handle for the proxima-core/workspace-run-v1 Fact being reviewed."
     )]
     pub workspace_run_memory: String,
     #[schemars(
@@ -63,9 +63,14 @@ pub struct CodeEmitWorkspaceReviewOutput {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CodeEmitVerificationEvidenceArgs {
     #[schemars(
-        description = "`F...` memory handle for the proxima-code/workspace-run-v1 Fact being verified."
+        description = "`F...` memory handle for the proxima-core/workspace-run-v1 Fact being verified."
     )]
     pub workspace_run_memory: String,
+    #[serde(default)]
+    #[schemars(
+        description = "Optional `F...` proxima-code/test-request-v1 Fact memory handle when this evidence answers a planned test request."
+    )]
+    pub test_request_memory: Option<String>,
     #[schemars(description = "Acceptance criterion key this evidence satisfies or fails.")]
     pub criterion_key: String,
     #[schemars(description = "Verification status for the criterion: passed, failed, or skipped.")]

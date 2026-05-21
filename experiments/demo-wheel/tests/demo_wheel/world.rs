@@ -131,41 +131,63 @@ impl DemoWorld {
                 readable_personality_instance_ids: vec![visionary],
             })
             .await?;
+        let worker_substrate_tools = if self.cfg.intervention_mode == DemoInterventionMode::ForceContinue {
+            vec!["core/fetch_memory"]
+        } else {
+            Vec::new()
+        };
         self.set_single_wake(
             worker,
             "Worker",
             WakeEntryTriggerKind::OnMemory,
             ExecutionRequestV1::SCHEMA_ID,
             WakeExecutionMode::Workspace,
-            Vec::new(),
+            worker_substrate_tools,
             vec![
                 "proxima-workspace/text_editor",
                 "proxima-workspace/shell",
                 "proxima-workspace/list_files",
             ],
-            worker_instruction(self.cfg.challenge, self.cfg.planner_mode),
+            worker_instruction(
+                self.cfg.challenge,
+                self.cfg.planner_mode,
+                self.cfg.intervention_mode,
+            ),
             WakeOptions {
                 intervention_policy: Some(intervention_policy.clone()),
                 ..WakeOptions::default_with_rounds(self.cfg.role_max_rounds.worker)
             },
         )
         .await?;
+        let mut verifier_substrate_tools = vec![
+            "proxima-code/code_emit_verification_evidence",
+            "proxima-code/code_emit_workspace_review",
+        ];
+        if self.cfg.intervention_mode == DemoInterventionMode::ForceContinue {
+            verifier_substrate_tools.push("core/fetch_memory");
+        }
+        let verifier_trigger_schema = if self.cfg.planner_mode == DemoPlannerMode::Real {
+            TestRequestV1::SCHEMA_ID
+        } else {
+            CoreWorkspaceRunV1::SCHEMA_ID
+        };
         self.set_single_wake(
             verifier,
             "Verifier",
             WakeEntryTriggerKind::OnMemory,
-            WorkspaceRunV1::SCHEMA_ID,
+            verifier_trigger_schema,
             WakeExecutionMode::Workspace,
-            vec![
-                "proxima-code/code_emit_verification_evidence",
-                "proxima-code/code_emit_workspace_review",
-            ],
+            verifier_substrate_tools,
             vec![
                 "proxima-workspace/text_editor",
                 "proxima-workspace/shell",
                 "proxima-workspace/list_files",
             ],
-            verifier_instruction(self.cfg.challenge, self.cfg.planner_mode),
+            verifier_instruction(
+                self.cfg.challenge,
+                self.cfg.planner_mode,
+                self.cfg.intervention_mode,
+            ),
             WakeOptions {
                 intervention_policy: Some(intervention_policy.clone()),
                 ..WakeOptions::default_with_rounds(self.cfg.role_max_rounds.verifier)
@@ -175,6 +197,9 @@ impl DemoWorld {
 
         let (_goal_memory, active_goal) = self.activate_goal(visionary).await?;
         self.goal_id = Some(active_goal);
+        if self.cfg.planner_mode == DemoPlannerMode::Real {
+            self.append_goal_assignment(active_goal, planner).await?;
+        }
         self.append_goal_assignment(active_goal, reviewer).await?;
         self.set_goal_reviewer_wakes(reviewer, intervention_policy)
             .await?;
@@ -248,6 +273,18 @@ impl DemoWorld {
                 "Interpret ambiguous goals into a reviewable vision document",
             )
             .await?;
+        let planner = self
+            .instantiate(
+                "Planner",
+                "Write a workspace plan artifact and emit execution requests",
+            )
+            .await?;
+        let worker = self
+            .instantiate("Worker", "Implement execution requests")
+            .await?;
+        let tester = self
+            .instantiate("Tester", "Verify planned test requests and record evidence")
+            .await?;
         let wake_supervisor = self
             .instantiate(
                 "Wake Supervisor",
@@ -266,7 +303,11 @@ impl DemoWorld {
             WakeEntryTriggerKind::OnMemory,
             "proxima-goal/goal-activated-v1",
             WakeExecutionMode::Workspace,
-            vec!["core/emit_abstraction"],
+            if self.cfg.intervention_mode == DemoInterventionMode::ForceContinue {
+                vec!["core/emit_abstraction", "core/fetch_memory"]
+            } else {
+                vec!["core/emit_abstraction"]
+            },
             vec!["core-workspace/text_editor", "core-workspace/list_files"],
             visionary_instruction(
                 self.cfg.challenge,
@@ -276,7 +317,7 @@ impl DemoWorld {
             WakeOptions {
                 goal_scope: WakeEntryGoalScope::TriggerGoalAssigned,
                 authored_by: WakeEntryAuthoredBy::Any,
-                intervention_policy: Some(intervention_policy),
+                intervention_policy: Some(intervention_policy.clone()),
                 workspace_binding: Some(WakeWorkspaceBinding::GitWorktree {
                     repo_path: self.cfg.repo_path.to_string_lossy().to_string(),
                     base_ref: "HEAD".into(),
@@ -293,9 +334,101 @@ impl DemoWorld {
             },
         )
         .await?;
+        self.set_single_wake(
+            planner,
+            "Planner",
+            WakeEntryTriggerKind::OnMemory,
+            VisionBriefV1::SCHEMA_ID,
+            WakeExecutionMode::Workspace,
+            vec![
+                "core/walk_lineage",
+                "core/fetch_memory",
+                "proxima-code/code_emit_execution_plan",
+            ],
+            vec!["core-workspace/text_editor", "core-workspace/list_files"],
+            planner_instruction(
+                planner,
+                self.cfg.challenge,
+                self.cfg.planner_mode,
+                self.cfg.intervention_mode,
+            ),
+            WakeOptions {
+                authored_by: WakeEntryAuthoredBy::Any,
+                intervention_policy: Some(intervention_policy.clone()),
+                workspace_binding: Some(WakeWorkspaceBinding::GitWorktree {
+                    repo_path: self.cfg.repo_path.to_string_lossy().to_string(),
+                    base_ref: "HEAD".into(),
+                    finalize: WakeWorkspaceFinalize::CommitAll,
+                    worktrees_root: Some(
+                        self.cfg
+                            .run_dir
+                            .join("core-worktrees")
+                            .to_string_lossy()
+                            .to_string(),
+                    ),
+                }),
+                ..WakeOptions::default_with_rounds(self.cfg.role_max_rounds.planner)
+            },
+        )
+        .await?;
+        let worker_substrate_tools = if self.cfg.intervention_mode == DemoInterventionMode::ForceContinue {
+            vec!["core/fetch_memory"]
+        } else {
+            Vec::new()
+        };
+        self.set_single_wake(
+            worker,
+            "Worker",
+            WakeEntryTriggerKind::OnMemory,
+            ExecutionRequestV1::SCHEMA_ID,
+            WakeExecutionMode::Workspace,
+            worker_substrate_tools,
+            vec![
+                "proxima-workspace/text_editor",
+                "proxima-workspace/shell",
+                "proxima-workspace/list_files",
+            ],
+            worker_instruction(
+                self.cfg.challenge,
+                self.cfg.planner_mode,
+                self.cfg.intervention_mode,
+            ),
+            WakeOptions {
+                intervention_policy: Some(intervention_policy.clone()),
+                ..WakeOptions::default_with_rounds(self.cfg.role_max_rounds.worker)
+            },
+        )
+        .await?;
+        let mut tester_substrate_tools = vec!["proxima-code/code_emit_verification_evidence"];
+        if self.cfg.intervention_mode == DemoInterventionMode::ForceContinue {
+            tester_substrate_tools.push("core/fetch_memory");
+        }
+        self.set_single_wake(
+            tester,
+            "Tester",
+            WakeEntryTriggerKind::OnMemory,
+            TestRequestV1::SCHEMA_ID,
+            WakeExecutionMode::Workspace,
+            tester_substrate_tools,
+            vec!["proxima-workspace/shell", "proxima-workspace/list_files"],
+            tester_instruction(self.cfg.intervention_mode),
+            WakeOptions {
+                intervention_policy: Some(intervention_policy),
+                ..WakeOptions::default_with_rounds(self.cfg.role_max_rounds.verifier)
+            },
+        )
+        .await?;
+        self.pg
+            .set_read_scope(&SetReadScopeRequest {
+                owner: self.owner.clone(),
+                reader_personality_instance_id: planner,
+                readable_personality_instance_ids: vec![visionary],
+            })
+            .await?;
 
         let (_goal_memory, active_goal) = self.activate_goal(visionary).await?;
         self.goal_id = Some(active_goal);
+        self.append_goal_assignment(active_goal, planner).await?;
 
         let mut ticks = 0_u32;
         while ticks < self.cfg.max_ticks {

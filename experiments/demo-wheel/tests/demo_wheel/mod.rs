@@ -5,7 +5,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use proxima_code::{ExecutionRequestV1, WorkspaceReviewV1, WorkspaceRunV1, register_repo};
+use proxima_code::{
+    ExecutionRequestV1, TestRequestV1, VerificationEvidenceV1, WorkspaceReviewV1, register_repo,
+};
 use proxima_core::auth::NoAuth;
 use proxima_core::harness::{HarnessAdapter, HarnessContext, HarnessProgram, ProviderTarget};
 use proxima_core::llm::{EmbeddingClient, LlmError};
@@ -374,6 +376,7 @@ struct FlowGraphSummary {
     personality_count: usize,
     goal_count: usize,
     execution_request_count: usize,
+    test_request_count: usize,
     workspace_run_count: usize,
     workspace_review_count: usize,
     verification_evidence_count: usize,
@@ -528,7 +531,7 @@ pub async fn run_goal_to_vision_document_from_env() -> DemoRunResult {
         DemoInterventionMode::Normal,
         DemoPlannerMode::VisionDocument,
         Some(DemoChallenge::SignalMatch),
-        Some(240),
+        Some(600),
     )
     .await
 }

@@ -33,10 +33,11 @@ use proxima_core::verbs::query::{
 };
 use proxima_core::verbs::subscribe::ChangeEventStream;
 use proxima_core::{
-    BindInferenceTierRequest, BindInferenceTierResponse, ChangeEvent, GoalId, InferenceTargetRow,
-    InferenceTierBindingRow, MasterTokenPersonality, MemoryId, ModelTier, Owner,
-    RegisterInferenceTargetRequest, RegisterInferenceTargetResponse, RemoveInferenceTargetRequest,
-    RemoveInferenceTargetResponse, SourceBatchId, Storage, StorageError, StorageHandle,
+    BindInferenceTierRequest, BindInferenceTierResponse, BlockedWakeCandidate, ChangeEvent, GoalId,
+    InferenceTargetRow, InferenceTierBindingRow, MasterTokenPersonality, MemoryDependency,
+    MemoryId, ModelTier, Owner, RegisterInferenceTargetRequest, RegisterInferenceTargetResponse,
+    RemoveInferenceTargetRequest, RemoveInferenceTargetResponse, SourceBatchId, Storage,
+    StorageError, StorageHandle,
 };
 use sqlx::PgPool;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
@@ -603,6 +604,79 @@ impl Storage for PgStorage {
         seq: uuid::Uuid,
     ) -> Result<Option<ChangeEventForWake>, StorageError> {
         verbs::wake_context::fetch_change_event_for_wake(&self.pool, owner, seq).await
+    }
+
+    async fn list_memory_dependencies(
+        &self,
+        owner: &Owner,
+        source_memory_id: MemoryId,
+    ) -> Result<Vec<MemoryDependency>, StorageError> {
+        verbs::consolidate::list_memory_dependencies(&self.pool, owner, source_memory_id).await
+    }
+
+    async fn has_successful_core_workspace_run_derived_from(
+        &self,
+        owner: &Owner,
+        source_memory_id: MemoryId,
+    ) -> Result<bool, StorageError> {
+        verbs::consolidate::has_successful_core_workspace_run_derived_from(
+            &self.pool,
+            owner,
+            source_memory_id,
+        )
+        .await
+    }
+
+    async fn has_satisfied_code_test_request(
+        &self,
+        owner: &Owner,
+        test_request_memory_id: MemoryId,
+    ) -> Result<bool, StorageError> {
+        verbs::consolidate::has_satisfied_code_test_request(
+            &self.pool,
+            owner,
+            test_request_memory_id,
+        )
+        .await
+    }
+
+    async fn upsert_blocked_wake_candidate(
+        &self,
+        candidate: &BlockedWakeCandidate,
+    ) -> Result<(), StorageError> {
+        verbs::consolidate::upsert_blocked_wake_candidate(&self.pool, candidate).await
+    }
+
+    async fn list_blocked_wake_candidates(
+        &self,
+        owner: &Owner,
+        personality_instance_id: PersonalityInstanceId,
+        limit: usize,
+    ) -> Result<Vec<BlockedWakeCandidate>, StorageError> {
+        verbs::consolidate::list_blocked_wake_candidates(
+            &self.pool,
+            owner,
+            personality_instance_id,
+            limit,
+        )
+        .await
+    }
+
+    async fn delete_blocked_wake_candidate(
+        &self,
+        owner: &Owner,
+        personality_instance_id: PersonalityInstanceId,
+        wake_entry_id: uuid::Uuid,
+        change_event_seq: uuid::Uuid,
+    ) -> Result<(), StorageError> {
+        verbs::consolidate::delete_blocked_wake_candidate(
+            &self.pool,
+            owner,
+            personality_instance_id,
+            wake_entry_id,
+            change_event_seq,
+        )
+        .await
     }
 
     async fn acquire_wake_lock(

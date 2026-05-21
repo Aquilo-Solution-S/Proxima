@@ -25,6 +25,24 @@ impl DemoWorld {
 
     pub(super) async fn demo_goal_graph_complete(&self) -> Result<bool, sqlx::Error> {
         let parent_achieved = self.goal_achieved_fact_exists().await?;
+        if self.cfg.planner_mode == DemoPlannerMode::Real {
+            let row = sqlx::query(
+                "SELECT
+                    (SELECT count(*) FROM proxima_code.execution_request_v1) AS execution_request_count,
+                    (SELECT count(*) FROM proxima_code.test_request_v1) AS test_request_count,
+                    (SELECT count(*) FROM proxima_core.workspace_run_v1) AS workspace_run_count,
+                    (SELECT count(*) FROM proxima_code.workspace_review_v1) AS workspace_review_count,
+                    (SELECT count(*) FROM proxima_code.verification_evidence_v1) AS verification_evidence_count",
+            )
+            .fetch_one(self.pg.pool())
+            .await?;
+            return Ok(parent_achieved
+                && row.try_get::<i64, _>("execution_request_count")? == 1
+                && row.try_get::<i64, _>("test_request_count")? == 1
+                && row.try_get::<i64, _>("workspace_run_count")? == 1
+                && row.try_get::<i64, _>("workspace_review_count")? == 1
+                && row.try_get::<i64, _>("verification_evidence_count")? >= 1);
+        }
         let graph = self.goal_graph_metrics().await?;
         Ok(graph.complete(parent_achieved, self.cfg.required_child_goal_count()))
     }
@@ -75,7 +93,7 @@ impl DemoWorld {
              ),
              child_runs AS (
                  SELECT DISTINCT wr.memory_id
-                   FROM proxima_code.workspace_run_v1 wr
+                   FROM proxima_core.workspace_run_v1 wr
                    JOIN proxima_core.edges e
                      ON e.source_kind = 'Fact'
                     AND e.source_memory_id = wr.memory_id
@@ -125,9 +143,7 @@ impl DemoWorld {
             .unwrap_or(&0);
         let review_verdicts = self.review_verdicts().await?;
         let request_flow_counts = self.request_flow_counts().await?;
-        let workspace_run_count = *output_sidecar_counts_by_schema
-            .get(WorkspaceRunV1::SCHEMA_ID)
-            .unwrap_or(&0);
+        let workspace_run_count = 0;
         let core_workspace_run_count = *output_sidecar_counts_by_schema
             .get(CoreWorkspaceRunV1::SCHEMA_ID)
             .unwrap_or(&0);
@@ -135,21 +151,49 @@ impl DemoWorld {
         let goal_graph = self.goal_graph_metrics().await?;
         let final_goal_state = self.final_goal_state().await?;
         let (git_diff_stats, final_changed_files) = self.git_diff_metrics().await?;
+        let dependency_edge_count = if self.cfg.planner_mode == DemoPlannerMode::VisionDocument {
+            self.dependency_edge_count().await?
+        } else {
+            0
+        };
+        let missing_local_asset_reference_count =
+            if self.cfg.planner_mode == DemoPlannerMode::VisionDocument {
+                self.missing_local_asset_reference_count().await?
+            } else {
+                0
+            };
+        let failed_verification_evidence_count =
+            if self.cfg.planner_mode == DemoPlannerMode::VisionDocument {
+                self.failed_verification_evidence_count().await?
+            } else {
+                0
+            };
         let deterministic_checks = if self.cfg.planner_mode == DemoPlannerMode::VisionDocument {
             vision_document_checks(
+                self.cfg.challenge,
                 vision_brief_count,
                 *output_sidecar_counts_by_schema
                     .get(ExecutionRequestV1::SCHEMA_ID)
+                    .unwrap_or(&0),
+                *output_sidecar_counts_by_schema
+                    .get(TestRequestV1::SCHEMA_ID)
+                    .unwrap_or(&0),
+                *output_sidecar_counts_by_schema
+                    .get(VerificationEvidenceV1::SCHEMA_ID)
                     .unwrap_or(&0),
                 workspace_run_count,
                 core_workspace_run_count,
                 &wake_invocation_count_by_role,
                 &git_diff_stats,
                 &final_changed_files,
+                dependency_edge_count,
+                missing_local_asset_reference_count,
+                failed_verification_evidence_count,
             )
         } else {
             deterministic_checks(
                 self.cfg.challenge,
+                self.cfg.planner_mode,
                 self.cfg.required_child_goal_count(),
                 goal_achieved_fact_exists,
                 &goal_graph,
@@ -161,11 +205,36 @@ impl DemoWorld {
         let deterministic_pass = deterministic_checks.values().all(|value| *value);
         let forced_continuation_checks = self.forced_continuation_checks().await?;
         let forced_continuation_pass = forced_continuation_checks.values().all(|value| *value);
-        let real_planner_checks = self.real_planner_checks().await?;
-        let real_planner_pass = real_planner_checks.values().all(|value| *value);
+        let correction_loop_count = self.correction_loop_count().await?;
+        let intervention_request_count = *output_sidecar_counts_by_schema
+            .get(InterventionRequestedV1::SCHEMA_ID)
+            .unwrap_or(&0);
         let intervention_decision_count = *output_sidecar_counts_by_schema
             .get(InterventionDecisionV1::SCHEMA_ID)
             .unwrap_or(&0);
+        let mut real_planner_checks = self.real_planner_checks().await?;
+        if self.cfg.planner_mode == DemoPlannerMode::Real {
+            real_planner_checks.insert(
+                "no_intervention_requests".into(),
+                intervention_request_count == 0,
+            );
+            real_planner_checks.insert(
+                "no_intervention_decisions".into(),
+                intervention_decision_count == 0,
+            );
+            real_planner_checks.insert("no_correction_loops".into(), correction_loop_count == 0);
+            real_planner_checks.insert(
+                "no_truncated_wakes".into(),
+                wake_invocations.iter().all(|row| row.status != "truncated"),
+            );
+            real_planner_checks.insert(
+                "no_failed_wakes".into(),
+                wake_invocations
+                    .iter()
+                    .all(|row| row.status == "succeeded" || row.status == "skipped"),
+            );
+        }
+        let real_planner_pass = real_planner_checks.values().all(|value| *value);
         let wake_failures = wake_invocations.iter().any(|row| {
             if row.status == "succeeded" || row.status == "skipped" {
                 return false;
@@ -174,7 +243,6 @@ impl DemoWorld {
                 || row.failure_reason.as_deref() != Some("max_rounds_reached")
                 || intervention_decision_count == 0
         });
-        let correction_loop_count = self.correction_loop_count().await?;
         let intervention_pass = ticks <= self.cfg.max_ticks
             && correction_loop_count <= self.cfg.max_correction_loops
             && !wake_failures;
@@ -366,10 +434,16 @@ impl DemoWorld {
         .await?;
 
         let fetch_handles = self.continuation_fetch_memory_handles().await?;
-        let decision_handle = fetch_handles.iter().any(|handle| handle == "N1");
-        let request_handle = fetch_handles.iter().any(|handle| handle == "N3");
-        let prior_trace_handle = fetch_handles.iter().any(|handle| handle == "N4");
-        let original_trigger_handle = fetch_handles.iter().any(|handle| handle == "N5");
+        let expected_handles = self.continuation_context_memory_handles().await?;
+        let fetched_expected = |key: &str| {
+            expected_handles
+                .get(key)
+                .is_some_and(|expected| fetch_handles.iter().any(|handle| handle == expected))
+        };
+        let decision_handle = fetched_expected("intervention_decision");
+        let request_handle = fetched_expected("intervention_request");
+        let prior_trace_handle = fetched_expected("prior_wake_trace");
+        let original_trigger_handle = fetched_expected("original_triggering_memory");
 
         let mut checks = BTreeMap::new();
         checks.insert("one_continue_decision".into(), continue_decision_count == 1);
@@ -419,111 +493,85 @@ impl DemoWorld {
         if self.cfg.planner_mode != DemoPlannerMode::Real {
             return Ok(checks);
         }
-        let Some(parent_goal) = self.goal_id else {
-            checks.insert("planner_created_child_goals".into(), false);
-            checks.insert("child_goal_titles_model_authored".into(), false);
-            checks.insert("execution_requests_from_child_goals".into(), false);
-            checks.insert("execution_requests_have_model_text".into(), false);
-            checks.insert("execution_request_keys_not_scripted".into(), false);
-            checks.insert(
-                "execution_requests_include_acceptance_criteria".into(),
-                false,
-            );
-            checks.insert("workspace_run_and_review_from_real_requests".into(), false);
-            return Ok(checks);
-        };
         let row = sqlx::query(
-            "WITH child_roots AS (
-                 SELECT gp.goal_id AS root_goal_id
-                   FROM proxima_core.goal_parents gp
-                  WHERE gp.parent_goal_id = $1
+            "WITH execution_requests AS (
+                 SELECT memory_id, title, instructions, request_key
+                   FROM proxima_code.execution_request_v1
              ),
-             child_activations AS (
-                 SELECT ga.memory_id, ga.goal_id, ga.title
-                   FROM proxima_goal.goal_activated_v1 ga
-                   JOIN child_roots cr ON cr.root_goal_id = ga.goal_id
-             ),
-             child_requests AS (
-                 SELECT DISTINCT er.memory_id, er.title, er.instructions, er.request_key
-                   FROM proxima_code.execution_request_v1 er
-                   JOIN proxima_core.edges e
-                     ON e.source_kind = 'Fact'
-                    AND e.source_memory_id = er.memory_id
-                    AND e.target_kind = 'Fact'
-                    AND e.target_memory_id IN (SELECT memory_id FROM child_activations)
-                    AND e.relation = 'core/derived-from'
-             ),
-             child_runs AS (
-                 SELECT DISTINCT wr.memory_id
-                   FROM proxima_code.workspace_run_v1 wr
-                   JOIN proxima_core.edges e
-                     ON e.source_kind = 'Fact'
-                    AND e.source_memory_id = wr.memory_id
-                    AND e.target_kind = 'Fact'
-                    AND e.target_memory_id IN (SELECT memory_id FROM child_requests)
-                    AND e.relation = 'core/derived-from'
+             test_requests AS (
+                 SELECT memory_id, title, instructions, test_key, criteria_json
+                   FROM proxima_code.test_request_v1
              )
              SELECT
-                (SELECT count(*) FROM child_activations) AS child_goal_count,
-                (SELECT count(*) FROM child_activations
-                  WHERE title = ANY($2)) AS scripted_child_title_count,
-                (SELECT count(*) FROM child_requests) AS execution_request_count,
-                (SELECT count(*) FROM child_requests
+                (SELECT count(*) FROM execution_requests) AS execution_request_count,
+                (SELECT count(*) FROM execution_requests
                   WHERE length(btrim(title)) > 0
                     AND length(btrim(instructions)) > 0) AS request_with_text_count,
-                (SELECT count(*) FROM child_requests
-                  WHERE request_key = ANY($3)) AS scripted_request_key_count,
-                (SELECT count(DISTINCT cr.memory_id)
-                   FROM child_requests cr
-                   JOIN proxima_code.acceptance_criteria_v1 ac
-                     ON ac.execution_request_memory_id = cr.memory_id) AS request_with_acceptance_count,
-                (SELECT count(*) FROM child_runs) AS workspace_run_count,
-                (SELECT count(*)
-                   FROM proxima_code.workspace_review_v1
-                  WHERE execution_request_memory_id IN (SELECT memory_id FROM child_requests)) AS workspace_review_count",
+                (SELECT count(*) FROM execution_requests
+                  WHERE request_key = ANY($1)) AS scripted_request_key_count,
+                (SELECT count(*) FROM test_requests) AS test_request_count,
+                (SELECT count(*) FROM test_requests
+                  WHERE length(btrim(title)) > 0
+                    AND length(btrim(instructions)) > 0
+                    AND jsonb_array_length(criteria_json) BETWEEN 2 AND 3) AS test_request_with_bounded_criteria_count,
+                (SELECT count(*) FROM proxima_core.edges
+                  WHERE relation = 'core/depends-on'
+                    AND source_kind = 'Fact'
+                    AND target_kind = 'Fact'
+                    AND source_memory_id IN (SELECT memory_id FROM test_requests)
+                    AND target_memory_id IN (SELECT memory_id FROM execution_requests)) AS test_depends_on_implementation_count,
+                (SELECT count(*) FROM proxima_core.workspace_run_v1) AS workspace_run_count,
+                (SELECT count(*) FROM proxima_code.verification_evidence_v1) AS verification_evidence_count,
+                (SELECT count(*) FROM proxima_code.verification_evidence_v1
+                  WHERE status = 'failed') AS failed_verification_evidence_count,
+                (SELECT count(*) FROM proxima_code.workspace_review_v1) AS workspace_review_count,
+                (SELECT count(*) FROM proxima_code.workspace_review_v1
+                  WHERE verdict = 'approved') AS approved_workspace_review_count",
         )
-        .bind(parent_goal.into_inner())
-        .bind(scripted_child_titles())
         .bind(scripted_request_keys())
         .fetch_one(self.pg.pool())
         .await?;
-        let required = self.cfg.required_child_goal_count();
-        let child_goal_count: i64 = row.try_get("child_goal_count")?;
-        let scripted_child_title_count: i64 = row.try_get("scripted_child_title_count")?;
         let execution_request_count: i64 = row.try_get("execution_request_count")?;
         let request_with_text_count: i64 = row.try_get("request_with_text_count")?;
         let scripted_request_key_count: i64 = row.try_get("scripted_request_key_count")?;
-        let request_with_acceptance_count: i64 = row.try_get("request_with_acceptance_count")?;
+        let test_request_count: i64 = row.try_get("test_request_count")?;
+        let test_request_with_bounded_criteria_count: i64 =
+            row.try_get("test_request_with_bounded_criteria_count")?;
+        let test_depends_on_implementation_count: i64 =
+            row.try_get("test_depends_on_implementation_count")?;
         let workspace_run_count: i64 = row.try_get("workspace_run_count")?;
+        let verification_evidence_count: i64 = row.try_get("verification_evidence_count")?;
+        let failed_verification_evidence_count: i64 =
+            row.try_get("failed_verification_evidence_count")?;
         let workspace_review_count: i64 = row.try_get("workspace_review_count")?;
+        let approved_workspace_review_count: i64 = row.try_get("approved_workspace_review_count")?;
 
-        checks.insert(
-            "planner_created_child_goals".into(),
-            child_goal_count >= required,
-        );
-        checks.insert(
-            "child_goal_titles_model_authored".into(),
-            child_goal_count >= required && scripted_child_title_count == 0,
-        );
-        checks.insert(
-            "execution_requests_from_child_goals".into(),
-            execution_request_count >= required,
-        );
+        checks.insert("planner_emitted_one_work_item".into(), execution_request_count == 1);
+        checks.insert("planner_emitted_one_final_test".into(), test_request_count == 1);
         checks.insert(
             "execution_requests_have_model_text".into(),
-            request_with_text_count >= required,
+            request_with_text_count == execution_request_count && execution_request_count == 1,
         );
         checks.insert(
             "execution_request_keys_not_scripted".into(),
             scripted_request_key_count == 0,
         );
         checks.insert(
-            "execution_requests_include_acceptance_criteria".into(),
-            request_with_acceptance_count >= required,
+            "final_test_has_bounded_criteria".into(),
+            test_request_with_bounded_criteria_count == 1,
         );
         checks.insert(
-            "workspace_run_and_review_from_real_requests".into(),
-            workspace_run_count >= required && workspace_review_count >= required,
+            "final_test_depends_on_implementation".into(),
+            test_depends_on_implementation_count == 1,
+        );
+        checks.insert("one_workspace_run".into(), workspace_run_count == 1);
+        checks.insert(
+            "final_verifier_emitted_evidence".into(),
+            verification_evidence_count >= 1 && failed_verification_evidence_count == 0,
+        );
+        checks.insert(
+            "one_approved_workspace_review".into(),
+            workspace_review_count == 1 && approved_workspace_review_count == 1,
         );
         Ok(checks)
     }
@@ -531,6 +579,63 @@ impl DemoWorld {
     async fn continuation_fetch_memory_handles(
         &self,
     ) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+        let records = self.continuation_trace_records().await?;
+        let mut handles = Vec::new();
+        for value in records {
+            if value.get("record").and_then(serde_json::Value::as_str) != Some("tool_call")
+                || value.get("tool_name").and_then(serde_json::Value::as_str)
+                    != Some("core/fetch_memory")
+            {
+                continue;
+            }
+            if let Some(memory) = value
+                .get("args")
+                .and_then(|args| args.get("memory"))
+                .and_then(serde_json::Value::as_str)
+            {
+                handles.push(memory.to_string());
+            }
+        }
+        Ok(handles)
+    }
+
+    async fn continuation_context_memory_handles(
+        &self,
+    ) -> Result<BTreeMap<String, String>, Box<dyn std::error::Error>> {
+        let records = self.continuation_trace_records().await?;
+        let mut handles = BTreeMap::new();
+        for value in records {
+            if value.get("record").and_then(serde_json::Value::as_str) != Some("prompt") {
+                continue;
+            }
+            let Some(user_seed) = value.get("user_seed").and_then(serde_json::Value::as_str) else {
+                continue;
+            };
+            let Some(continuation) = continuation_context_from_user_seed(user_seed) else {
+                continue;
+            };
+            for key in [
+                "intervention_decision",
+                "intervention_request",
+                "prior_wake_trace",
+                "original_triggering_memory",
+            ] {
+                if let Some(handle) = continuation
+                    .get(key)
+                    .and_then(|value| value.get("handle"))
+                    .and_then(serde_json::Value::as_str)
+                {
+                    handles.insert(key.to_string(), handle.to_string());
+                }
+            }
+            break;
+        }
+        Ok(handles)
+    }
+
+    async fn continuation_trace_records(
+        &self,
+    ) -> Result<Vec<serde_json::Value>, Box<dyn std::error::Error>> {
         let Some(invocation_id) = sqlx::query_scalar::<_, Uuid>(
             "SELECT invocation_id
              FROM proxima_core.personality_wake_invocations
@@ -555,29 +660,61 @@ impl DemoWorld {
         .bind(invocation_id)
         .fetch_all(self.pg.pool())
         .await?;
-        let mut handles = Vec::new();
+        let mut records = Vec::new();
         for row in rows {
             let body: Vec<u8> = row.try_get("body")?;
             for line in String::from_utf8_lossy(&body).lines() {
                 let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
                     continue;
                 };
-                if value.get("record").and_then(serde_json::Value::as_str) != Some("tool_call")
-                    || value.get("tool_name").and_then(serde_json::Value::as_str)
-                        != Some("core/fetch_memory")
-                {
-                    continue;
-                }
-                if let Some(memory) = value
-                    .get("args")
-                    .and_then(|args| args.get("memory"))
-                    .and_then(serde_json::Value::as_str)
-                {
-                    handles.push(memory.to_string());
+                records.push(value);
+            }
+        }
+        Ok(records)
+    }
+
+    async fn dependency_edge_count(&self) -> Result<i64, sqlx::Error> {
+        sqlx::query_scalar(
+            "SELECT count(*)
+             FROM proxima_core.edges
+             WHERE relation = 'core/depends-on'",
+        )
+        .fetch_one(self.pg.pool())
+        .await
+    }
+
+    async fn missing_local_asset_reference_count(
+        &self,
+    ) -> Result<usize, Box<dyn std::error::Error>> {
+        let Some(worktree) = self.latest_worktree().await? else {
+            return Ok(0);
+        };
+        let mut missing = 0usize;
+        for html_path in html_files_under(&worktree.path) {
+            let Ok(html) = std::fs::read_to_string(&html_path) else {
+                continue;
+            };
+            for reference in local_asset_refs(&html) {
+                let path = html_path
+                    .parent()
+                    .unwrap_or(worktree.path.as_path())
+                    .join(reference);
+                if !path.exists() {
+                    missing += 1;
                 }
             }
         }
-        Ok(handles)
+        Ok(missing)
+    }
+
+    async fn failed_verification_evidence_count(&self) -> Result<i64, sqlx::Error> {
+        sqlx::query_scalar(
+            "SELECT count(*)
+             FROM proxima_code.verification_evidence_v1
+             WHERE status = 'failed'",
+        )
+        .fetch_one(self.pg.pool())
+        .await
     }
 
     pub(super) async fn request_flow_counts(&self) -> Result<Vec<RequestFlowCount>, sqlx::Error> {
@@ -594,7 +731,7 @@ impl DemoWorld {
               AND e.target_kind = 'Fact'
               AND e.target_memory_id = er.memory_id
               AND e.relation = 'core/derived-from'
-             LEFT JOIN proxima_code.workspace_run_v1 wr
+             LEFT JOIN proxima_core.workspace_run_v1 wr
                ON wr.memory_id = e.source_memory_id
              LEFT JOIN proxima_code.workspace_review_v1 rv
                ON rv.execution_request_memory_id = er.memory_id
@@ -686,14 +823,18 @@ impl DemoWorld {
                 ExecutionRequestV1::SCHEMA_ID,
                 "proxima_code.execution_request_v1",
             ),
+            (TestRequestV1::SCHEMA_ID, "proxima_code.test_request_v1"),
             (
                 CoreWorkspaceRunV1::SCHEMA_ID,
                 "proxima_core.workspace_run_v1",
             ),
-            (WorkspaceRunV1::SCHEMA_ID, "proxima_code.workspace_run_v1"),
             (
                 WorkspaceReviewV1::SCHEMA_ID,
                 "proxima_code.workspace_review_v1",
+            ),
+            (
+                VerificationEvidenceV1::SCHEMA_ID,
+                "proxima_code.verification_evidence_v1",
             ),
             (
                 "proxima-goal/goal-achieved-v1",
@@ -751,12 +892,32 @@ impl DemoWorld {
     pub(super) async fn git_diff_metrics(
         &self,
     ) -> Result<(GitDiffStats, Vec<String>), Box<dyn std::error::Error>> {
+        if self.cfg.planner_mode == DemoPlannerMode::VisionDocument {
+            let mut stats = GitDiffStats::default();
+            let mut files = Vec::new();
+            for path in self.vision_document_worktree_paths() {
+                let (worktree_stats, worktree_files) = self.git_diff_metrics_for_path(&path)?;
+                stats.insertions = stats.insertions.saturating_add(worktree_stats.insertions);
+                stats.deletions = stats.deletions.saturating_add(worktree_stats.deletions);
+                files.extend(worktree_files);
+            }
+            files.sort();
+            files.dedup();
+            stats.files_changed = files.len() as u32;
+            return Ok((stats, files));
+        }
         let Some(worktree) = self.latest_worktree().await? else {
             return Ok((GitDiffStats::default(), Vec::new()));
         };
-        let path = worktree.path;
+        self.git_diff_metrics_for_path(&worktree.path)
+    }
+
+    fn git_diff_metrics_for_path(
+        &self,
+        path: &Path,
+    ) -> Result<(GitDiffStats, Vec<String>), Box<dyn std::error::Error>> {
         let base = "main";
-        let numstat = git_output(&path, &["diff", "--numstat", base])?;
+        let numstat = git_output(path, &["diff", "--numstat", base])?;
         let mut stats = GitDiffStats::default();
         let mut files = Vec::new();
         for line in numstat.lines() {
@@ -770,7 +931,7 @@ impl DemoWorld {
                 files.push(file.to_string());
             }
         }
-        for file in git_output(&path, &["ls-files", "--others", "--exclude-standard"])?
+        for file in git_output(path, &["ls-files", "--others", "--exclude-standard"])?
             .lines()
             .filter(|line| !line.is_empty())
         {
@@ -787,22 +948,24 @@ impl DemoWorld {
 
     pub(super) async fn latest_worktree(&self) -> Result<Option<WorktreeInfo>, sqlx::Error> {
         if self.cfg.planner_mode == DemoPlannerMode::VisionDocument {
-            let root = self.cfg.run_dir.join("core-worktrees");
-            if let Ok(entries) = std::fs::read_dir(root) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.join("VISION.md").is_file() {
-                        let branch_name = git_output(&path, &["branch", "--show-current"])
-                            .unwrap_or_else(|_| "unknown".into());
-                        return Ok(Some(WorktreeInfo { path, branch_name }));
-                    }
+            let mut fallback = None;
+            for path in self.vision_document_worktree_paths() {
+                let branch_name = git_output(&path, &["branch", "--show-current"])
+                    .unwrap_or_else(|_| "unknown".into());
+                if self.cfg.challenge.worktree_has_primary_output(&path) {
+                    return Ok(Some(WorktreeInfo { path, branch_name }));
+                }
+                if fallback.is_none()
+                    && (path.join("PLAN.md").is_file() || path.join("VISION.md").is_file())
+                {
+                    fallback = Some(WorktreeInfo { path, branch_name });
                 }
             }
-            return Ok(None);
+            return Ok(fallback);
         }
         let rows = sqlx::query(
             "SELECT worktree_path, branch_name
-             FROM proxima_code.workspace_run_v1
+             FROM proxima_core.workspace_run_v1
              ORDER BY memory_id DESC",
         )
         .fetch_all(self.pg.pool())
@@ -817,6 +980,33 @@ impl DemoWorld {
             }
         }
         Ok(None)
+    }
+
+    fn vision_document_worktree_paths(&self) -> Vec<PathBuf> {
+        let mut paths = Vec::new();
+        let mut stack: Vec<PathBuf> = self.vision_document_worktree_roots().into_iter().collect();
+        while let Some(path) = stack.pop() {
+            if path.join(".git").exists() {
+                paths.push(path);
+                continue;
+            }
+            if let Ok(entries) = std::fs::read_dir(&path) {
+                for entry in entries.flatten() {
+                    let child = entry.path();
+                    if child.is_dir() {
+                        stack.push(child);
+                    }
+                }
+            }
+        }
+        paths
+    }
+
+    fn vision_document_worktree_roots(&self) -> [PathBuf; 2] {
+        [
+            self.cfg.run_dir.join("core-worktrees"),
+            self.cfg.run_dir.join("worktrees"),
+        ]
     }
 
     pub(super) async fn run_read_only_reviewer(
@@ -917,5 +1107,109 @@ impl DemoWorld {
             merged_to_repo: self.cfg.repo_path.display().to_string(),
             merged_to_branch: "main".into(),
         })
+    }
+}
+
+fn continuation_context_from_user_seed(user_seed: &str) -> Option<serde_json::Value> {
+    let marker = "Continuation:\n";
+    let start = user_seed.find(marker)? + marker.len();
+    let rest = &user_seed[start..];
+    let section = rest.split("\n\n").next().unwrap_or(rest).trim();
+    serde_json::from_str(section).ok()
+}
+
+fn html_files_under(root: &Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(path) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(path) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if path.file_name().and_then(|name| name.to_str()) != Some(".git") {
+                    stack.push(path);
+                }
+            } else if path.extension().and_then(|ext| ext.to_str()) == Some("html") {
+                files.push(path);
+            }
+        }
+    }
+    files
+}
+
+fn local_asset_refs(html: &str) -> Vec<String> {
+    let mut refs = Vec::new();
+    for pattern in ["src=\"", "href=\"", "src='", "href='"] {
+        let quote = pattern.chars().last().unwrap_or('"');
+        let mut rest = html;
+        while let Some(index) = rest.find(pattern) {
+            let after = &rest[index + pattern.len()..];
+            let Some(end) = after.find(quote) else {
+                break;
+            };
+            let raw = after[..end].trim();
+            if is_local_asset_ref(raw) {
+                refs.push(
+                    raw.split(['?', '#'])
+                        .next()
+                        .unwrap_or(raw)
+                        .trim()
+                        .to_string(),
+                );
+            }
+            rest = &after[end + quote.len_utf8()..];
+        }
+    }
+    refs
+}
+
+fn is_local_asset_ref(value: &str) -> bool {
+    !value.is_empty()
+        && !value.starts_with('#')
+        && !value.starts_with('/')
+        && !value.starts_with("http://")
+        && !value.starts_with("https://")
+        && !value.starts_with("data:")
+        && !value.starts_with("mailto:")
+        && !value.starts_with("javascript:")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::continuation_context_from_user_seed;
+
+    #[test]
+    fn parses_continuation_context_section_from_prompt_seed() {
+        let seed = r#"Triggering Memory:
+{"memory":"F1"}
+
+Continuation:
+{
+  "intervention_decision": {
+    "handle": "F2"
+  },
+  "intervention_request": {
+    "handle": "F3"
+  },
+  "prior_wake_trace": {
+    "handle": "F4"
+  },
+  "original_triggering_memory": {
+    "handle": "F5"
+  }
+}
+
+Workspace Context:
+{"mode":"core_git_worktree"}"#;
+
+        let continuation =
+            continuation_context_from_user_seed(seed).expect("continuation section");
+
+        assert_eq!(continuation["intervention_decision"]["handle"], "F2");
+        assert_eq!(continuation["intervention_request"]["handle"], "F3");
+        assert_eq!(continuation["prior_wake_trace"]["handle"], "F4");
+        assert_eq!(continuation["original_triggering_memory"]["handle"], "F5");
     }
 }

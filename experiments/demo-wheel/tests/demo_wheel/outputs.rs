@@ -175,7 +175,7 @@ impl DemoWorld {
                              m.schema_id) AS label
              FROM proxima_core.memories m
              LEFT JOIN proxima_code.execution_request_v1 er USING (memory_id)
-             LEFT JOIN proxima_code.workspace_run_v1 wr USING (memory_id)
+             LEFT JOIN proxima_core.workspace_run_v1 wr USING (memory_id)
              LEFT JOIN proxima_code.workspace_review_v1 rv USING (memory_id)
              LEFT JOIN proxima_code.verification_evidence_v1 ve USING (memory_id)
              LEFT JOIN proxima_goal.goal_activated_v1 ga USING (memory_id)
@@ -382,10 +382,17 @@ impl DemoWorld {
                         && n.schema_id.as_deref() == Some(ExecutionRequestV1::SCHEMA_ID)
                 })
                 .count(),
+            test_request_count: nodes
+                .iter()
+                .filter(|n| {
+                    n.kind == "memory" && n.schema_id.as_deref() == Some(TestRequestV1::SCHEMA_ID)
+                })
+                .count(),
             workspace_run_count: nodes
                 .iter()
                 .filter(|n| {
-                    n.kind == "memory" && n.schema_id.as_deref() == Some(WorkspaceRunV1::SCHEMA_ID)
+                    n.kind == "memory"
+                        && n.schema_id.as_deref() == Some(CoreWorkspaceRunV1::SCHEMA_ID)
                 })
                 .count(),
             workspace_review_count: nodes

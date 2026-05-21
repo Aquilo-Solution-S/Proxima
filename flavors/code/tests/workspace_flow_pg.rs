@@ -2,15 +2,17 @@
 
 use std::path::{Path, PathBuf};
 
-use proxima_code::payloads::{WorkspaceDiffFile, WorkspaceDiffStat};
 use proxima_code::{
     ExecutionRequestV1, WorkspaceDecision, WorkspaceReviewFinding, WorkspaceReviewV1,
-    WorkspaceReviewVerdict, WorkspaceRunV1,
+    WorkspaceReviewVerdict,
 };
 use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
 use proxima_core::{
-    CORE_DERIVED_FROM_RELATION, EdgeAuthorshipKind, EntityKind, FactPayload, FlavorRegistry,
-    MemoryId, OrgId, Owner, Principal, SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId,
+    CORE_DERIVED_FROM_RELATION, CORE_WORKSPACE_RUN_OBJECT_SCHEMA, CORE_WORKSPACE_RUN_SOURCE_ID,
+    CORE_WORKSPACE_RUN_WHOLE_SCHEMA, CoreWorkspaceDiffFile as WorkspaceDiffFile,
+    CoreWorkspaceDiffStat as WorkspaceDiffStat, CoreWorkspaceRunV1, EdgeAuthorshipKind, EntityKind,
+    FactPayload, FlavorRegistry, MemoryId, OrgId, Owner, Principal, SchemaId, SchemaVersion,
+    SourceBatchId, SourceId, UserId,
 };
 use proxima_storage_pg::PgStorage;
 use proxima_storage_pg::verbs::edge_append::{EdgeDraft, append_edge_in_tx};
@@ -24,6 +26,43 @@ const WORKSPACE_REVIEW_SOURCE_ID: &str = "proxima-code/workspace-review";
 const WORKSPACE_REVIEW_OBJECT_SCHEMA: &str = "proxima-code/workspace-review-object-v1";
 const WORKSPACE_REVIEW_WHOLE_SCHEMA: &str = "proxima-code/workspace-review-whole-v1";
 const EXECUTION_REQUEST_SOURCE_ID: &str = "proxima-code/execution-request";
+
+fn core_workspace_run_payload(
+    wake_invocation_id: Uuid,
+    worktree: &Path,
+    branch_name: &str,
+    parent_sha: &str,
+    head_sha: &str,
+) -> CoreWorkspaceRunV1 {
+    CoreWorkspaceRunV1 {
+        wake_invocation_id,
+        wake_entry_id: Uuid::now_v7(),
+        personality_instance_id: Uuid::now_v7(),
+        binding_kind: "code_git_worktree".into(),
+        finalize: "commit_all_candidate".into(),
+        repo_path: worktree.to_string_lossy().to_string(),
+        base_ref: "main".into(),
+        worktree_path: worktree.to_string_lossy().to_string(),
+        branch_name: branch_name.into(),
+        parent_sha: parent_sha.into(),
+        head_sha: head_sha.into(),
+        committed: true,
+        diff_stat_json: WorkspaceDiffStat {
+            files_changed: 1,
+            insertions: 1,
+            deletions: 0,
+            files: vec![WorkspaceDiffFile {
+                path: "README.md".into(),
+                insertions: 1,
+                deletions: 0,
+            }],
+        },
+        exit_code: Some(0),
+        stdout_tail: Some("ok".into()),
+        stderr_tail: None,
+        duration_ms: Some(10),
+    }
+}
 
 async fn create_db(name: &str) -> Result<(), sqlx::Error> {
     let admin = std::env::var("PROXIMA_TEST_PG_URL").unwrap_or_else(|_| ADMIN_URL.into());
@@ -456,69 +495,54 @@ async fn seed_workspace_run(
     head_sha: &str,
 ) -> Result<(MemoryId, MemoryId), Box<dyn std::error::Error>> {
     let request = seed_execution_request(pg, owner, repo_id).await?;
-    let payload = WorkspaceRunV1 {
-        wake_invocation_id: Uuid::now_v7(),
-        repo_id,
-        target_branch: "main".into(),
-        worktree_path: worktree.to_string_lossy().to_string(),
-        branch_name: branch_name.into(),
-        parent_sha: parent_sha.into(),
-        head_sha: head_sha.into(),
-        diff_stat_json: WorkspaceDiffStat {
-            files_changed: 1,
-            insertions: 1,
-            deletions: 0,
-            files: vec![WorkspaceDiffFile {
-                path: "README.md".into(),
-                insertions: 1,
-                deletions: 0,
-            }],
-        },
-        exit_code: Some(0),
-        stdout_tail: Some("ok".into()),
-        stderr_tail: None,
-        duration_ms: Some(10),
-    };
+    let payload =
+        core_workspace_run_payload(Uuid::now_v7(), worktree, branch_name, parent_sha, head_sha);
     let mut payload_bytes = Vec::new();
     ciborium::ser::into_writer(&payload, &mut payload_bytes)?;
     let content_hash = blake3::hash(&payload_bytes);
     let observed_at = time::OffsetDateTime::now_utc();
     let draft = EventDraft {
-        source_id: SourceId::new(proxima_code::WORKSPACE_RUNNER_SOURCE_ID),
+        source_id: SourceId::new(CORE_WORKSPACE_RUN_SOURCE_ID),
         source_batch_id: SourceBatchId::new(Uuid::now_v7()),
         owner: owner.clone(),
-        schema_id: SchemaId::new(WorkspaceRunV1::SCHEMA_ID.into()),
-        schema_version: SchemaVersion::new(WorkspaceRunV1::SCHEMA_VERSION),
+        schema_id: SchemaId::new(CoreWorkspaceRunV1::SCHEMA_ID.into()),
+        schema_version: SchemaVersion::new(CoreWorkspaceRunV1::SCHEMA_VERSION),
         payload: payload_bytes,
         observed_at,
         occurred_at: observed_at,
         cited_object: CitedObjectHint {
-            schema_id: SchemaId::new(proxima_code::WORKSPACE_RUN_OBJECT_SCHEMA.into()),
+            schema_id: SchemaId::new(CORE_WORKSPACE_RUN_OBJECT_SCHEMA.into()),
             schema_version: SchemaVersion::new(1),
             content_hash: *content_hash.as_bytes(),
         },
         citation_mapping: CitationMappingHint {
-            schema_id: SchemaId::new(proxima_code::WORKSPACE_RUN_WHOLE_SCHEMA.into()),
+            schema_id: SchemaId::new(CORE_WORKSPACE_RUN_WHOLE_SCHEMA.into()),
             schema_version: SchemaVersion::new(1),
         },
     };
     let mut tx = pg.pool().begin().await?;
     let outcome = ingest_event_in_tx(&mut tx, &draft).await?;
     sqlx::query(
-        "INSERT INTO proxima_code.workspace_run_v1
-            (memory_id, wake_invocation_id, repo_id, target_branch, worktree_path,
-             branch_name, parent_sha, head_sha, diff_stat_json, exit_code,
+        "INSERT INTO proxima_core.workspace_run_v1
+            (memory_id, wake_invocation_id, wake_entry_id, personality_instance_id,
+             binding_kind, finalize, repo_path, base_ref, worktree_path,
+             branch_name, parent_sha, head_sha, committed, diff_stat_json, exit_code,
              stdout_tail, stderr_tail, duration_ms)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)",
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)",
     )
     .bind(outcome.memory_id.into_inner())
     .bind(payload.wake_invocation_id)
-    .bind(repo_id)
-    .bind(&payload.target_branch)
+    .bind(payload.wake_entry_id)
+    .bind(payload.personality_instance_id)
+    .bind(&payload.binding_kind)
+    .bind(&payload.finalize)
+    .bind(&payload.repo_path)
+    .bind(&payload.base_ref)
     .bind(&payload.worktree_path)
     .bind(&payload.branch_name)
     .bind(&payload.parent_sha)
     .bind(&payload.head_sha)
+    .bind(payload.committed)
     .bind(serde_json::to_value(&payload.diff_stat_json)?)
     .bind(payload.exit_code)
     .bind(payload.stdout_tail.as_deref())

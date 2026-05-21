@@ -40,16 +40,22 @@ pub fn pre_seed_wake_handles(ctx: &WakeTokenContext) -> PreSeededHandles {
 pub fn format_wake_context_preamble(
     seeded: &PreSeededHandles,
     triggering_schema_id: Option<&str>,
+    triggering_kind: &str,
 ) -> String {
+    let kind_clause = match triggering_kind {
+        "Fact" => "Fact memory",
+        "Abstraction" => "Abstraction memory",
+        "Perspective" => "Perspective memory",
+        _ => "memory",
+    };
     let schema_clause = triggering_schema_id
         .filter(|s| !s.is_empty())
-        .map(|s| format!("a `{s}` Fact"))
-        .unwrap_or_else(|| "a Fact".to_string());
+        .map(|s| format!("a `{s}` {kind_clause}"))
+        .unwrap_or_else(|| format!("a {kind_clause}"));
     format!(
         "You were woken by {triggering}, {schema_clause}. \
 Your current root perspective is {root}. You are {self_p}. \
-When emitting a memory, you may reference {triggering} for \
-the activated fact handle expected by Planner/Worker emit tools.\n\n",
+Use handles according to the kind labels in wake context and tool schemas.\n\n",
         triggering = seeded.triggering.as_str(),
         root = seeded.root_perspective.as_str(),
         self_p = seeded.self_instance.as_str(),
@@ -136,7 +142,7 @@ mod tests {
     fn preamble_uses_pre_seeded_handles() {
         let ctx = make_ctx();
         let seeded = pre_seed_wake_handles(&ctx);
-        let preamble = format_wake_context_preamble(&seeded, None);
+        let preamble = format_wake_context_preamble(&seeded, None, "Fact");
         assert!(preamble.contains(seeded.triggering.as_str()));
         assert!(preamble.contains(seeded.root_perspective.as_str()));
         assert!(preamble.contains(seeded.self_instance.as_str()));
@@ -147,16 +153,29 @@ mod tests {
         let ctx = make_ctx();
         let seeded = pre_seed_wake_handles(&ctx);
         let preamble =
-            format_wake_context_preamble(&seeded, Some("proxima-goal/goal-activated-v1"));
+            format_wake_context_preamble(&seeded, Some("proxima-goal/goal-activated-v1"), "Fact");
         assert!(preamble.contains("proxima-goal/goal-activated-v1"));
+    }
+
+    #[test]
+    fn preamble_uses_triggering_memory_kind() {
+        let ctx = make_ctx();
+        let seeded = pre_seed_wake_handles(&ctx);
+        let preamble = format_wake_context_preamble(
+            &seeded,
+            Some("proxima-intent/vision-brief-v1"),
+            "Abstraction",
+        );
+        assert!(preamble.contains("Abstraction memory"));
+        assert!(!preamble.contains("vision-brief-v1` Fact"));
     }
 
     #[test]
     fn preamble_omits_schema_clause_when_empty() {
         let ctx = make_ctx();
         let seeded = pre_seed_wake_handles(&ctx);
-        let with = format_wake_context_preamble(&seeded, Some(""));
-        let without = format_wake_context_preamble(&seeded, None);
+        let with = format_wake_context_preamble(&seeded, Some(""), "Fact");
+        let without = format_wake_context_preamble(&seeded, None, "Fact");
         assert_eq!(with, without);
     }
 
@@ -171,7 +190,7 @@ mod tests {
                 .assign_fact_memory(MemoryId::new(Uuid::now_v7()));
         }
         let seeded = pre_seed_wake_handles(&ctx);
-        let preamble = format_wake_context_preamble(&seeded, None);
+        let preamble = format_wake_context_preamble(&seeded, None, "Fact");
         assert!(preamble.contains(seeded.triggering.as_str()));
         assert_ne!(seeded.triggering.as_str(), "F1");
         assert!(!preamble.contains(" F1 "));
