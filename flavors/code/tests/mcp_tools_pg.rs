@@ -2,8 +2,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use proxima_code::mcp::{
-    CodeListReposTool, CodeOpenFileRevisionTool, CodeRegisterRepoTool, CodeSearchChunksTool,
-    CodeSearchCommitsTool,
+    CodeIngestHeadSnapshotTool, CodeListReposTool, CodeOpenFileRevisionTool, CodeRegisterRepoTool,
+    CodeSearchChunksTool, CodeSearchCommitsTool,
 };
 use proxima_code::{CodeChunkV1, CommitV1, FileRevisionV1, register_repo};
 use proxima_core::auth::{Credentials, NoAuth};
@@ -72,6 +72,54 @@ async fn register_repo_tool_registers_local_git_repo_idempotently()
     let repos = list["repos"].as_array().expect("repos");
     assert_eq!(repos.len(), 1);
     assert_eq!(repos[0]["repo_id"], result["repo"]["repo_id"]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn ingest_head_snapshot_tool_indexes_current_tree() -> Result<(), Box<dyn std::error::Error>>
+{
+    let Some(fixture) = TestDb::fresh().await? else {
+        return Ok(());
+    };
+    let owner = owner_fixture();
+    let registry = registry_for_mcp();
+    let temp = TempDir::new()?;
+    init_git_repo_with_commit(
+        temp.path(),
+        "src/lib.rs",
+        "pub fn proxima_snapshot_marker() -> u64 { 42 }\n",
+    )?;
+
+    let registered = run_tool::<CodeRegisterRepoTool>(
+        ctx(fixture.pg.pool().clone(), owner.clone(), registry.clone()),
+        json!({ "path": temp.path().to_string_lossy(), "display_name": "Snapshot Repo" }),
+    )
+    .await?;
+    let repo_handle = registered["repo"]["repo_id"].as_str().expect("repo_id");
+
+    let snapshot = run_tool::<CodeIngestHeadSnapshotTool>(
+        ctx(fixture.pg.pool().clone(), owner.clone(), registry.clone()),
+        json!({ "repo_handle": repo_handle }),
+    )
+    .await?;
+
+    assert_eq!(snapshot["repo"]["has_cursor"], true);
+    assert_eq!(snapshot["report"]["commits_emitted"], 0);
+    assert_eq!(snapshot["report"]["files_present_emitted"], 1);
+    assert!(
+        snapshot["report"]["chunks_emitted"]
+            .as_u64()
+            .expect("chunks_emitted")
+            >= 1
+    );
+
+    let chunks = run_tool::<CodeSearchChunksTool>(
+        ctx(fixture.pg.pool().clone(), owner, registry),
+        json!({ "query": "proxima_snapshot_marker", "repo_handle": repo_handle, "limit": 10 }),
+    )
+    .await?;
+    assert_eq!(chunks["matches"].as_array().expect("matches").len(), 1);
+    assert_eq!(chunks["matches"][0]["file_path"], "src/lib.rs");
     Ok(())
 }
 
@@ -631,6 +679,49 @@ fn registry_for_engine() -> FlavorRegistryFrozen {
         cbor_encoder: None,
     });
     FlavorRegistryFrozen::with_schemas(schemas)
+}
+
+fn init_git_repo_with_commit(
+    repo: &std::path::Path,
+    relative_path: &str,
+    contents: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    run_git(repo, &["init"])?;
+    let file_path = repo.join(relative_path);
+    if let Some(parent) = file_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&file_path, contents)?;
+    run_git(repo, &["add", "."])?;
+    run_git(
+        repo,
+        &[
+            "-c",
+            "user.name=Proxima Test",
+            "-c",
+            "user.email=proxima-test@example.com",
+            "commit",
+            "-m",
+            "initial snapshot",
+        ],
+    )?;
+    Ok(())
+}
+
+fn run_git(repo: &std::path::Path, args: &[&str]) -> Result<(), Box<dyn std::error::Error>> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(args)
+        .output()?;
+    if !output.status.success() {
+        return Err(format!(
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )
+        .into());
+    }
+    Ok(())
 }
 
 fn engine_for_test(pg: PgStorage, owner: Owner) -> Engine {

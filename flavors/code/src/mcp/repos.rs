@@ -5,9 +5,10 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::IndexReport;
 use crate::repos::{RepoRecord, RepoRegistryError};
 
-use super::sql::map_storage;
+use super::sql::{map_storage, resolve_repo_identifier};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CodeRegisterRepoArgs {
@@ -39,6 +40,22 @@ pub struct CodeListReposOutput {
     pub repos: Vec<RepoItem>,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CodeIngestHeadSnapshotArgs {
+    #[schemars(
+        description = "Repo handle returned by code_register_repo or code_list_repos, for example `R1`."
+    )]
+    pub repo_handle: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CodeIngestHeadSnapshotOutput {
+    pub repo: RepoItem,
+    pub head_commit_sha: String,
+    pub head_tree_sha: String,
+    pub report: IndexReportItem,
+}
+
 #[derive(Debug, Serialize)]
 pub struct RepoItem {
     pub repo_handle: String,
@@ -49,6 +66,17 @@ pub struct RepoItem {
     pub has_cursor: bool,
     pub last_polled_at: Option<String>,
     pub created_at: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct IndexReportItem {
+    pub commits_emitted: usize,
+    pub commits_replayed: usize,
+    pub files_present_emitted: usize,
+    pub files_tombstoned: usize,
+    pub chunks_emitted: usize,
+    pub chunks_reused: usize,
+    pub chunks_tombstoned: usize,
 }
 
 #[derive(Debug)]
@@ -100,6 +128,62 @@ impl McpTool for CodeRegisterRepoTool {
             Ok(CodeRegisterRepoOutput {
                 repo: repo_item(&ctx, record)?,
                 created: true,
+            })
+        })
+    }
+}
+
+#[derive(Debug)]
+pub struct CodeIngestHeadSnapshotTool;
+
+impl McpTool for CodeIngestHeadSnapshotTool {
+    const NAME: &'static str = "proxima-code/code_ingest_head_snapshot";
+    const DESCRIPTION: &'static str = "Ingest the current HEAD tree for one registered local Git repository and advance its cursor to HEAD. Does not walk commit history.";
+
+    type Args = CodeIngestHeadSnapshotArgs;
+    type Output = CodeIngestHeadSnapshotOutput;
+
+    fn call(
+        ctx: McpToolCtx,
+        args: CodeIngestHeadSnapshotArgs,
+    ) -> futures::future::BoxFuture<'static, Result<CodeIngestHeadSnapshotOutput, McpToolError>>
+    {
+        Box::pin(async move {
+            let repo_id = resolve_repo_identifier(&ctx, &args.repo_handle).await?;
+            let repo = crate::get_repo(&ctx.pool, &ctx.owner, repo_id)
+                .await
+                .map_err(map_repo_registry)?
+                .ok_or_else(|| McpToolError::InvalidInput(format!("repo not found: {repo_id}")))?;
+
+            let source = crate::LocalGitSource::new(
+                repo.repo_id,
+                PathBuf::from(repo.canonical_path.clone()),
+                ctx.owner.clone(),
+            );
+            let outcome = source
+                .run_head_snapshot(&ctx.pool)
+                .await
+                .map_err(map_index_error)?;
+            crate::update_cursor(
+                &ctx.pool,
+                &ctx.owner,
+                repo.repo_id,
+                outcome.cursor.as_bytes(),
+                time::OffsetDateTime::now_utc(),
+            )
+            .await
+            .map_err(map_repo_registry)?;
+
+            let repo = crate::get_repo(&ctx.pool, &ctx.owner, repo.repo_id)
+                .await
+                .map_err(map_repo_registry)?
+                .ok_or_else(|| McpToolError::InvalidInput(format!("repo not found: {repo_id}")))?;
+
+            Ok(CodeIngestHeadSnapshotOutput {
+                repo: repo_item(&ctx, repo)?,
+                head_commit_sha: outcome.head_sha,
+                head_tree_sha: outcome.head_tree_sha,
+                report: IndexReportItem::from(outcome.report),
             })
         })
     }
@@ -209,6 +293,24 @@ fn format_time(value: time::OffsetDateTime) -> Result<String, McpToolError> {
     value
         .format(&time::format_description::well_known::Rfc3339)
         .map_err(|err| McpToolError::Other(format!("format time: {err}")))
+}
+
+impl From<IndexReport> for IndexReportItem {
+    fn from(report: IndexReport) -> Self {
+        Self {
+            commits_emitted: report.commits_emitted,
+            commits_replayed: report.commits_replayed,
+            files_present_emitted: report.files_present_emitted,
+            files_tombstoned: report.files_tombstoned,
+            chunks_emitted: report.chunks_emitted,
+            chunks_reused: report.chunks_reused,
+            chunks_tombstoned: report.chunks_tombstoned,
+        }
+    }
+}
+
+fn map_index_error(error: crate::IndexError) -> McpToolError {
+    McpToolError::Other(error.to_string())
 }
 
 fn map_repo_registry(error: RepoRegistryError) -> McpToolError {

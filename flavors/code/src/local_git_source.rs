@@ -36,7 +36,7 @@
 
 mod git;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use proxima_core::{Cursor, MemoryId, Owner, SourceBatchId};
@@ -47,8 +47,9 @@ use self::git::{CommitInfo, WalkPlan};
 use crate::calls::extract_blob_callgraph;
 use crate::chunker::chunk_blob;
 use crate::ingest::{
-    CallEdgeDraft, IngestError, ingest_calls_edge, ingest_code_chunk, ingest_commit,
-    ingest_file_revision, lookup_present_chunk_memory_id_by_text, present_chunk_indexes,
+    CallEdgeDraft, IngestError, file_revision_heads, ingest_calls_edge, ingest_code_chunk,
+    ingest_commit, ingest_file_revision, lookup_present_chunk_memory_id_by_text,
+    present_chunk_indexes,
 };
 use crate::payloads::{CodeChunkV1, CommitV1, FileRevisionV1, FileState};
 
@@ -98,6 +99,15 @@ pub struct IngestProgress {
     pub commits_replayed: usize,
     pub chunks_emitted: usize,
     pub chunks_reused: usize,
+}
+
+/// Result of a current-tree snapshot ingest.
+#[derive(Debug, Clone)]
+pub struct HeadSnapshotOutcome {
+    pub report: IndexReport,
+    pub cursor: Cursor,
+    pub head_sha: String,
+    pub head_tree_sha: String,
 }
 
 /// Pull-mode source. One instance per repo; `repo_id` is stable
@@ -215,6 +225,72 @@ impl LocalGitSource {
         Ok((report, encode_cursor(&next)?))
     }
 
+    /// DB-aware current-state ingest. Reads the repository's HEAD tree
+    /// directly, emits file/chunk heads that differ from the current
+    /// indexed heads, tombstones indexed files that disappeared from
+    /// HEAD, and returns a cursor advanced to HEAD. It intentionally
+    /// emits no commit Facts and does not walk history.
+    pub async fn run_head_snapshot(
+        &self,
+        pool: &PgPool,
+    ) -> Result<HeadSnapshotOutcome, IndexError> {
+        let head_sha = git::head_sha(&self.repo_path)?;
+        let head_tree_sha = git::tree_sha(&self.repo_path, "HEAD")?;
+        let now = time::OffsetDateTime::now_utc();
+        let batch_id = SourceBatchId::new(Uuid::now_v7());
+        let head_files = git::ls_files(&self.repo_path, "HEAD")?;
+        let present_paths: HashSet<String> =
+            head_files.iter().map(|(path, _)| path.clone()).collect();
+        let prior_heads: HashMap<_, _> = file_revision_heads(pool, &self.owner, self.repo_id)
+            .await?
+            .into_iter()
+            .map(|head| (head.file_path.clone(), head))
+            .collect();
+
+        let mut report = IndexReport::default();
+        let mut chunked_this_poll = HashSet::new();
+        for (path, blob) in head_files {
+            let content_sha256: [u8; 32] = blake3::hash(&blob).into();
+            let already_current = prior_heads.get(&path).is_some_and(|head| {
+                head.state == FileState::Present && head.content_sha256 == content_sha256
+            });
+            if already_current {
+                continue;
+            }
+            self.ingest_present_blob(
+                pool,
+                &head_sha,
+                batch_id,
+                now,
+                &path,
+                &blob,
+                &mut report,
+                &mut chunked_this_poll,
+            )
+            .await?;
+        }
+
+        for (path, prior) in prior_heads {
+            if prior.state == FileState::Present && !present_paths.contains(&path) {
+                self.tombstone_deleted_path(pool, &head_sha, batch_id, now, &path, &mut report)
+                    .await?;
+            }
+        }
+
+        crate::ingest::close_local_git_batch(pool, &self.owner, batch_id).await?;
+        let cursor = encode_cursor(&CodeCursor {
+            last_commit_sha: Some(head_sha.clone()),
+            last_tree_sha: Some(head_tree_sha.clone()),
+        })?;
+
+        Ok(HeadSnapshotOutcome {
+            report,
+            cursor,
+            head_sha,
+            head_tree_sha,
+        })
+    }
+
     /// Single-commit ingest: one `source_batch_id`, one commit Fact,
     /// the commit's own tree diff materialised as file-revisions and
     /// chunks (or tombstones for deletions). Each call is the unit of
@@ -304,6 +380,34 @@ impl LocalGitSource {
         chunked_this_poll: &mut HashSet<[u8; 32]>,
     ) -> Result<(), IndexError> {
         let blob = git::cat_blob(&self.repo_path, &commit_info.sha, path)?;
+        self.ingest_present_blob(
+            pool,
+            &commit_info.sha,
+            batch_id,
+            now,
+            path,
+            &blob,
+            report,
+            chunked_this_poll,
+        )
+        .await
+    }
+
+    /// Emit one Present file revision and its chunk/call heads from an
+    /// already-loaded blob. Shared by commit replay and HEAD snapshot
+    /// ingestion.
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    async fn ingest_present_blob(
+        &self,
+        pool: &PgPool,
+        indexed_commit_sha: &str,
+        batch_id: SourceBatchId,
+        now: time::OffsetDateTime,
+        path: &str,
+        blob: &[u8],
+        report: &mut IndexReport,
+        chunked_this_poll: &mut HashSet<[u8; 32]>,
+    ) -> Result<(), IndexError> {
         let content_sha256: [u8; 32] = blake3::hash(&blob).into();
 
         let language = crate::chunker::detect_language(path)
@@ -315,7 +419,7 @@ impl LocalGitSource {
             language: language.clone(),
             content_sha256,
             size_bytes: blob.len() as u64,
-            indexed_commit_sha: commit_info.sha.clone(),
+            indexed_commit_sha: indexed_commit_sha.to_string(),
             state: FileState::Present,
         };
         ingest_file_revision(pool, &self.owner, batch_id, &rev_payload, now).await?;
