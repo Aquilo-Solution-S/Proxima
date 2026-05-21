@@ -1,48 +1,31 @@
-use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
 use proxima_core::{
-    EdgeAuthorshipKind, EntityKind, FactPayload, MemoryId, SchemaId, SchemaVersion, SourceBatchId,
-    SourceId, WorkspaceFinalizeInput, WorkspaceRunnerError,
+    CORE_WORKSPACE_RUN_SOURCE_ID, CoreWorkspaceRunV1, EdgeAuthorshipKind, EntityKind, MemoryId,
+    SourceBatchId, SourceId, WorkspaceFinalizeInput, WorkspaceRunnerError,
+    core_workspace_run_event_draft,
 };
 use proxima_storage_pg::verbs::edge_append::{EdgeDraft, append_edge_in_tx};
 use proxima_storage_pg::verbs::event_ingest::ingest_event_in_tx;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::payloads::WorkspaceRunV1;
-
-use super::{WORKSPACE_RUN_OBJECT_SCHEMA, WORKSPACE_RUN_WHOLE_SCHEMA, WORKSPACE_RUNNER_SOURCE_ID};
-
 #[allow(clippy::too_many_lines)]
 pub(super) async fn ingest_workspace_run(
     pool: &PgPool,
-    payload: &WorkspaceRunV1,
+    payload: &CoreWorkspaceRunV1,
     input: WorkspaceFinalizeInput<'_>,
 ) -> Result<MemoryId, WorkspaceRunnerError> {
     let mut payload_bytes = Vec::new();
     ciborium::ser::into_writer(payload, &mut payload_bytes).map_err(|err| {
         WorkspaceRunnerError::FinalizeFailed(format!("serialize workspace run: {err}"))
     })?;
-    let content_hash = blake3::hash(&payload_bytes);
     let observed_at = time::OffsetDateTime::now_utc();
-    let draft = EventDraft {
-        source_id: SourceId::new(WORKSPACE_RUNNER_SOURCE_ID),
-        source_batch_id: SourceBatchId::new(Uuid::now_v7()),
-        owner: input.owner.clone(),
-        schema_id: SchemaId::new(WorkspaceRunV1::SCHEMA_ID.into()),
-        schema_version: SchemaVersion::new(WorkspaceRunV1::SCHEMA_VERSION),
-        payload: payload_bytes,
+    let draft = core_workspace_run_event_draft(
+        input.owner.clone(),
+        &payload_bytes,
+        SourceBatchId::new(Uuid::now_v7()),
+        SourceId::new(CORE_WORKSPACE_RUN_SOURCE_ID.to_string()),
         observed_at,
-        occurred_at: observed_at,
-        cited_object: CitedObjectHint {
-            schema_id: SchemaId::new(WORKSPACE_RUN_OBJECT_SCHEMA.into()),
-            schema_version: SchemaVersion::new(1),
-            content_hash: *content_hash.as_bytes(),
-        },
-        citation_mapping: CitationMappingHint {
-            schema_id: SchemaId::new(WORKSPACE_RUN_WHOLE_SCHEMA.into()),
-            schema_version: SchemaVersion::new(1),
-        },
-    };
+    );
 
     let mut tx = pool
         .begin()
@@ -53,20 +36,26 @@ pub(super) async fn ingest_workspace_run(
         .map_err(|err| WorkspaceRunnerError::FinalizeFailed(format!("event ingest: {err}")))?;
     if !outcome.idempotent_replay {
         sqlx::query(
-            "INSERT INTO proxima_code.workspace_run_v1
-                (memory_id, wake_invocation_id, repo_id, target_branch,
-                 worktree_path, branch_name, parent_sha, head_sha,
-                 diff_stat_json, exit_code, stdout_tail, stderr_tail, duration_ms)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)",
+            "INSERT INTO proxima_core.workspace_run_v1
+                (memory_id, wake_invocation_id, wake_entry_id, personality_instance_id,
+                 binding_kind, finalize, repo_path, base_ref, worktree_path, branch_name,
+                 parent_sha, head_sha, committed, diff_stat_json,
+                 exit_code, stdout_tail, stderr_tail, duration_ms)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)",
         )
         .bind(outcome.memory_id.into_inner())
         .bind(payload.wake_invocation_id)
-        .bind(payload.repo_id)
-        .bind(&payload.target_branch)
+        .bind(payload.wake_entry_id)
+        .bind(payload.personality_instance_id)
+        .bind(&payload.binding_kind)
+        .bind(&payload.finalize)
+        .bind(&payload.repo_path)
+        .bind(&payload.base_ref)
         .bind(&payload.worktree_path)
         .bind(&payload.branch_name)
         .bind(&payload.parent_sha)
         .bind(&payload.head_sha)
+        .bind(payload.committed)
         .bind(
             serde_json::to_value(&payload.diff_stat_json).map_err(|err| {
                 WorkspaceRunnerError::FinalizeFailed(format!("serialize diff stat: {err}"))
@@ -108,7 +97,7 @@ pub(super) async fn ingest_workspace_run(
             target_kind: EntityKind::Fact,
             target_memory_id: Some(input.triggering_memory_id.into_inner()),
             target_goal_id: None,
-            authorship_kind: EdgeAuthorshipKind::EventSource,
+            authorship_kind: EdgeAuthorshipKind::Engine,
             authorship_owner_memory_id: None,
             owner: input.owner,
         };

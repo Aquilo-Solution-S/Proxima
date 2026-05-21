@@ -19,6 +19,7 @@
 
 use uuid::Uuid;
 
+use crate::BlockedWakeCandidate;
 use crate::MemoryId;
 use crate::Owner;
 use crate::engine::Engine;
@@ -39,6 +40,7 @@ use crate::wake::fire::{FireWakeEntryInput, fire_wake_entry};
 /// Bounds memory + worst-case round-trip latency; the next tick picks up
 /// where this one left off via the cursor.
 const CHANGE_EVENT_SCAN_LIMIT: usize = 256;
+const BLOCKED_WAKE_SCAN_LIMIT: usize = 256;
 const REPLAY_EVENT_LIMIT_DEFAULT: u16 = 256;
 const REPLAY_EVENT_LIMIT_MAX: u16 = 1000;
 const REPLAY_MAX_INVOCATIONS_DEFAULT: u16 = 1;
@@ -76,6 +78,8 @@ pub async fn dispatch_tick(engine: &Engine) -> Result<usize, ProtocolError> {
     // 2. For each personality, scan its event window and try every
     //    entry against every event.
     for group in groups {
+        fired += process_blocked_wake_candidates(engine, &group).await?;
+
         let events = engine
             .storage()
             .list_change_events_after(
@@ -131,6 +135,76 @@ pub async fn dispatch_tick(engine: &Engine) -> Result<usize, ProtocolError> {
         }
     }
 
+    Ok(fired)
+}
+
+async fn process_blocked_wake_candidates(
+    engine: &Engine,
+    group: &PersonalityGroup,
+) -> Result<usize, ProtocolError> {
+    let candidates = engine
+        .storage()
+        .list_blocked_wake_candidates(
+            &group.owner,
+            group.personality_instance_id,
+            BLOCKED_WAKE_SCAN_LIMIT,
+        )
+        .await
+        .map_err(|e| ProtocolError::internal(format!("list_blocked_wake_candidates: {e}")))?;
+    let mut fired = 0usize;
+    for candidate in candidates {
+        let Some(entry) = group
+            .entries
+            .iter()
+            .find(|entry| entry.wake_entry_id == candidate.wake_entry_id && entry.enabled)
+        else {
+            continue;
+        };
+        if !dependencies_satisfied(
+            engine,
+            group,
+            entry,
+            candidate.change_event_seq,
+            candidate.triggering_memory_id,
+        )
+        .await?
+        {
+            continue;
+        }
+        let Some(event) = engine
+            .storage()
+            .fetch_change_event_for_wake(&group.owner, candidate.change_event_seq)
+            .await
+            .map_err(|e| ProtocolError::internal(format!("fetch_change_event_for_wake: {e}")))?
+        else {
+            engine
+                .storage()
+                .delete_blocked_wake_candidate(
+                    &group.owner,
+                    group.personality_instance_id,
+                    candidate.wake_entry_id,
+                    candidate.change_event_seq,
+                )
+                .await
+                .map_err(|e| {
+                    ProtocolError::internal(format!("delete_blocked_wake_candidate: {e}"))
+                })?;
+            continue;
+        };
+        if fire_candidate(engine, group, entry, &event, candidate.triggering_memory_id).await? {
+            fired += 1;
+        }
+        engine
+            .storage()
+            .delete_blocked_wake_candidate(
+                &group.owner,
+                group.personality_instance_id,
+                candidate.wake_entry_id,
+                candidate.change_event_seq,
+            )
+            .await
+            .map_err(|e| ProtocolError::internal(format!("delete_blocked_wake_candidate: {e}")))?;
+    }
     Ok(fired)
 }
 
@@ -397,9 +471,94 @@ async fn prepare_wake_candidate(
     let Some(triggering_memory_id) = triggering_memory(event) else {
         return Ok(WakeCandidate::Skip);
     };
+    if !dependencies_satisfied(engine, group, entry, event.event.seq, triggering_memory_id).await? {
+        return Ok(WakeCandidate::Skip);
+    }
     Ok(WakeCandidate::Fire {
         triggering_memory_id,
     })
+}
+
+async fn dependencies_satisfied(
+    engine: &Engine,
+    group: &PersonalityGroup,
+    entry: &WakeEntryDraft,
+    change_event_seq: Uuid,
+    triggering_memory_id: MemoryId,
+) -> Result<bool, ProtocolError> {
+    let dependencies = engine
+        .storage()
+        .list_memory_dependencies(&group.owner, triggering_memory_id)
+        .await
+        .map_err(|e| ProtocolError::internal(format!("list_memory_dependencies: {e}")))?;
+    for dependency in dependencies {
+        let Some(rule) = engine
+            .registry()
+            .dependency_satisfaction_rule(dependency.dependency_schema_id.as_str())
+        else {
+            record_blocked_dependency(
+                engine,
+                group,
+                entry,
+                change_event_seq,
+                triggering_memory_id,
+                dependency.dependency_memory_id,
+                dependency.dependency_schema_id,
+                "missing_dependency_satisfaction_rule",
+            )
+            .await?;
+            return Ok(false);
+        };
+        let satisfied = rule
+            .is_satisfied(
+                engine.storage().as_ref(),
+                &group.owner,
+                dependency.dependency_memory_id,
+            )
+            .await
+            .map_err(|e| ProtocolError::internal(format!("dependency_satisfaction: {e}")))?;
+        if !satisfied {
+            record_blocked_dependency(
+                engine,
+                group,
+                entry,
+                change_event_seq,
+                triggering_memory_id,
+                dependency.dependency_memory_id,
+                dependency.dependency_schema_id,
+                "dependency_unsatisfied",
+            )
+            .await?;
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+async fn record_blocked_dependency(
+    engine: &Engine,
+    group: &PersonalityGroup,
+    entry: &WakeEntryDraft,
+    change_event_seq: Uuid,
+    triggering_memory_id: MemoryId,
+    dependency_memory_id: MemoryId,
+    dependency_schema_id: crate::SchemaId,
+    reason: &str,
+) -> Result<(), ProtocolError> {
+    engine
+        .storage()
+        .upsert_blocked_wake_candidate(&BlockedWakeCandidate {
+            owner: group.owner.clone(),
+            personality_instance_id: group.personality_instance_id,
+            wake_entry_id: entry.wake_entry_id,
+            change_event_seq,
+            triggering_memory_id,
+            dependency_memory_id,
+            dependency_schema_id,
+            reason: reason.to_string(),
+        })
+        .await
+        .map_err(|e| ProtocolError::internal(format!("upsert_blocked_wake_candidate: {e}")))
 }
 
 async fn fire_candidate(
@@ -765,7 +924,7 @@ mod tests {
             original_wake_entry,
             personality,
             WakeEntryTriggerKind::OnMemory,
-            "proxima-code/workspace-run-v1",
+            "proxima-core/workspace-run-v1",
             "Verifier",
             WakeEntryAuthoredBy::Any,
             1000,
@@ -821,7 +980,7 @@ mod tests {
             input.triggering_memory_id,
             original_triggering_memory.into_inner()
         );
-        assert_eq!(input.wake_entry.trigger_id, "proxima-code/workspace-run-v1");
+        assert_eq!(input.wake_entry.trigger_id, "proxima-core/workspace-run-v1");
         assert_eq!(input.wake_entry.max_rounds, 4);
         assert!(input.wake_entry.intervention_policy.is_none());
 

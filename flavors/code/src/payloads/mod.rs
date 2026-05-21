@@ -7,6 +7,7 @@ pub mod edge_calls;
 pub mod execution_request;
 pub mod file_revision;
 pub mod personality_self;
+pub mod test_request;
 pub mod verification_evidence;
 pub mod workspace;
 
@@ -92,10 +93,11 @@ pub use edge_calls::EdgeCallsV1;
 pub use execution_request::ExecutionRequestV1;
 pub use file_revision::{FileRevisionV1, FileState};
 pub use personality_self::{CodeCommitSummarizerSelfV1, CodeEngineerSelfV1};
+pub use test_request::TestRequestV1;
 pub use verification_evidence::{
     VerificationArtifactRefsV1, VerificationEvidenceStatus, VerificationEvidenceV1,
 };
 pub use workspace::{
-    WorkspaceDecision, WorkspaceDecisionV1, WorkspaceDiffFile, WorkspaceDiffStat,
-    WorkspaceReviewFinding, WorkspaceReviewV1, WorkspaceReviewVerdict, WorkspaceRunV1,
+    WorkspaceDecision, WorkspaceDecisionV1, WorkspaceReviewFinding, WorkspaceReviewV1,
+    WorkspaceReviewVerdict,
 };

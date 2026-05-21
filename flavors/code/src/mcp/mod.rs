@@ -13,7 +13,7 @@ pub mod workspace_review;
 
 pub use emit_execution_request::{
     CODE_HAS_ACCEPTANCE_CRITERIA_RELATION, CODE_TARGETS_EXECUTION_REQUEST_RELATION,
-    CodeEmitExecutionRequestTool, CodeRetryExecutionRequestTool,
+    CodeEmitExecutionPlanTool, CodeEmitExecutionRequestTool, CodeRetryExecutionRequestTool,
 };
 pub use goal_completion_status::CodeGoalCompletionStatusTool;
 pub use merge_workspace_run::CodeMergeWorkspaceRunTool;

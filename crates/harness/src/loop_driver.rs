@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use proxima_core::Engine;
@@ -26,6 +26,11 @@ use crate::trace::jsonl::JsonlBuffer;
 
 const PROMPT_RECORD: &str = "prompt";
 const TOOLS_SENT_RECORD: &str = "tools_sent";
+const PROVIDER_ROUND_MAX_ATTEMPTS: u32 = 4;
+const PROVIDER_RETRY_BASE_DELAY: Duration = Duration::from_secs(2);
+const PROVIDER_RETRY_MAX_DELAY: Duration = Duration::from_secs(30);
+const PROVIDER_RETRY_AFTER_MAX_DELAY: Duration = Duration::from_secs(90);
+const PROVIDER_REQUEST_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 #[derive(Clone)]
 pub struct HarnessLoop {
@@ -136,6 +141,7 @@ fn build_provider(target: &ProviderTarget) -> Box<dyn ProviderClient> {
             let mut client =
                 OpenAIResponsesClient::new(base_url.clone(), model_id.clone(), api_key.clone());
             client.reasoning_effort.clone_from(reasoning_effort);
+            client.request_timeout = PROVIDER_REQUEST_TIMEOUT;
             Box::new(client)
         }
         ProviderTarget::ChatGPTCodex {
@@ -150,6 +156,7 @@ fn build_provider(target: &ProviderTarget) -> Box<dyn ProviderClient> {
                 proxima_codex_auth::AuthDotJsonPath::from_explicit(auth_json.clone()),
             );
             client.reasoning_effort.clone_from(reasoning_effort);
+            client.request_timeout = PROVIDER_REQUEST_TIMEOUT;
             Box::new(client)
         }
     }
@@ -227,9 +234,15 @@ async fn run_loop(
             "round_idx": rounds_used,
         }));
 
-        let round = provider
-            .tool_round(&resolved.conversation, &resolved.tools, cancel.clone())
-            .await;
+        let round = provider_round_with_retries(
+            provider,
+            &resolved.conversation,
+            &resolved.tools,
+            cancel.clone(),
+            &mut jsonl,
+            rounds_used,
+        )
+        .await;
 
         match round {
             Ok(RoundResult::Final {
@@ -370,6 +383,77 @@ async fn run_loop(
         max_rounds,
         tool_call_count,
     ))
+}
+
+async fn provider_round_with_retries(
+    provider: &dyn ProviderClient,
+    conversation: &crate::conversation::Conversation,
+    tools: &[crate::conversation::ToolSpec],
+    cancel: CancellationToken,
+    jsonl: &mut JsonlBuffer,
+    round_idx: u32,
+) -> Result<RoundResult, ProviderError> {
+    let mut attempt = 1;
+    loop {
+        let result = provider
+            .tool_round(conversation, tools, cancel.clone())
+            .await;
+
+        match result {
+            Err(error)
+                if provider_error_is_retryable(&error)
+                    && attempt < PROVIDER_ROUND_MAX_ATTEMPTS
+                    && !cancel.is_cancelled() =>
+            {
+                let (class, message) = error_class_for(&error);
+                let delay = provider_retry_delay(&error, attempt);
+                jsonl.append(&json!({
+                    "record": "provider_retry",
+                    "round_idx": round_idx,
+                    "attempt": attempt,
+                    "next_attempt": attempt + 1,
+                    "class": format!("{class:?}"),
+                    "message": excerpt(&message, 1000),
+                    "delay_ms": duration_ms(delay),
+                }));
+                sleep_or_cancel(delay, cancel.clone()).await?;
+                attempt += 1;
+            }
+            other => return other,
+        }
+    }
+}
+
+async fn sleep_or_cancel(delay: Duration, cancel: CancellationToken) -> Result<(), ProviderError> {
+    tokio::select! {
+        () = tokio::time::sleep(delay) => Ok(()),
+        () = cancel.cancelled() => Err(ProviderError::Timeout),
+    }
+}
+
+fn provider_error_is_retryable(error: &ProviderError) -> bool {
+    matches!(
+        error,
+        ProviderError::RateLimited { .. }
+            | ProviderError::ServerError(_)
+            | ProviderError::Network(_)
+            | ProviderError::Timeout
+    )
+}
+
+fn provider_retry_delay(error: &ProviderError, failed_attempt: u32) -> Duration {
+    if let ProviderError::RateLimited {
+        retry_after: Some(retry_after),
+    } = error
+    {
+        return (*retry_after).min(PROVIDER_RETRY_AFTER_MAX_DELAY);
+    }
+
+    let exponent = failed_attempt.saturating_sub(1).min(8);
+    let multiplier = 1_u32 << exponent;
+    PROVIDER_RETRY_BASE_DELAY
+        .saturating_mul(multiplier)
+        .min(PROVIDER_RETRY_MAX_DELAY)
 }
 
 fn append_prompt_and_tools_records(
@@ -549,10 +633,58 @@ mod tests {
 
     use crate::conversation::{Conversation, ToolSpec};
     use crate::program::ResolvedProgram;
+    use crate::providers::ProviderError;
     use crate::tools::ToolBinding;
     use crate::trace::jsonl::JsonlBuffer;
 
-    use super::append_prompt_and_tools_records;
+    use super::{
+        PROVIDER_RETRY_AFTER_MAX_DELAY, PROVIDER_RETRY_BASE_DELAY, append_prompt_and_tools_records,
+        provider_error_is_retryable, provider_retry_delay,
+    };
+
+    #[test]
+    fn provider_retry_policy_is_transient_only() {
+        assert!(provider_error_is_retryable(&ProviderError::RateLimited {
+            retry_after: None
+        }));
+        assert!(provider_error_is_retryable(&ProviderError::ServerError(
+            "temporary upstream failure".into()
+        )));
+        assert!(provider_error_is_retryable(&ProviderError::Network(
+            "connection reset".into()
+        )));
+        assert!(provider_error_is_retryable(&ProviderError::Timeout));
+
+        assert!(!provider_error_is_retryable(&ProviderError::Auth));
+        assert!(!provider_error_is_retryable(&ProviderError::ContextLength));
+        assert!(!provider_error_is_retryable(
+            &ProviderError::InvalidRequest("bad request".into())
+        ));
+        assert!(!provider_error_is_retryable(&ProviderError::Deserialize(
+            "bad json".into()
+        )));
+    }
+
+    #[test]
+    fn provider_retry_delay_uses_backoff_and_bounded_retry_after() {
+        assert_eq!(
+            provider_retry_delay(&ProviderError::ServerError("temporary".into()), 1),
+            PROVIDER_RETRY_BASE_DELAY
+        );
+        assert_eq!(
+            provider_retry_delay(&ProviderError::Network("temporary".into()), 3),
+            Duration::from_secs(8)
+        );
+        assert_eq!(
+            provider_retry_delay(
+                &ProviderError::RateLimited {
+                    retry_after: Some(Duration::from_secs(600))
+                },
+                1,
+            ),
+            PROVIDER_RETRY_AFTER_MAX_DELAY
+        );
+    }
 
     #[test]
     fn prompt_and_tools_records_are_extractable_from_jsonl() {

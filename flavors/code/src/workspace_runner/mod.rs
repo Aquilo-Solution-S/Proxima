@@ -1,7 +1,8 @@
 //! Code-flavor workspace runner.
 //!
 //! Core owns only wake dispatch and the runner trait. This module owns
-//! repo, branch, worktree, and workspace-run Fact semantics.
+//! code repo, branch, and worktree preparation. Finalization emits the
+//! core workspace-run Fact.
 
 mod context;
 mod git;
@@ -15,10 +16,6 @@ use proxima_core::WorkspaceRunnerError;
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use uuid::Uuid;
-
-pub const WORKSPACE_RUNNER_SOURCE_ID: &str = "proxima-code/workspace-runner";
-pub const WORKSPACE_RUN_OBJECT_SCHEMA: &str = "proxima-code/workspace-run-object-v1";
-pub const WORKSPACE_RUN_WHOLE_SCHEMA: &str = "proxima-code/workspace-run-whole-v1";
 
 #[derive(Debug, Default, Clone)]
 pub struct CodeWorkspaceRunner {

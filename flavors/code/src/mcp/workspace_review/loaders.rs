@@ -3,16 +3,16 @@ use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
 
 use proxima_core::mcp::{McpToolCtx, McpToolError};
-use proxima_core::{EntityKind, MemoryId, relation::CORE_DERIVED_FROM_RELATION};
+use proxima_core::{
+    CoreWorkspaceRunV1, EntityKind, FactPayload, MemoryId, relation::CORE_DERIVED_FROM_RELATION,
+};
 
+use super::types::{LoadedWorkspaceDecision, LoadedWorkspaceReview};
+use crate::mcp::sql::{map_storage, owner_principal};
 use crate::payloads::{
     ExecutionRequestV1, WorkspaceDecision, WorkspaceDecisionV1, WorkspaceReviewV1,
     WorkspaceReviewVerdict,
 };
-use proxima_core::FactPayload;
-
-use super::types::{LoadedWorkspaceDecision, LoadedWorkspaceReview};
-use crate::mcp::sql::{map_storage, owner_principal};
 
 /// Load and validate a workspace run memory.
 ///
@@ -29,7 +29,7 @@ pub async fn load_workspace_run(
         "SELECT COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind,
                 m.schema_id, r.memory_id
          FROM proxima_core.memories m
-         LEFT JOIN proxima_code.workspace_run_v1 r USING (memory_id)
+         LEFT JOIN proxima_core.workspace_run_v1 r USING (memory_id)
          WHERE m.memory_id = $1
            AND m.owner_principal_kind = $2
            AND m.owner_principal_id = $3",
@@ -46,9 +46,9 @@ pub async fn load_workspace_run(
             memory_id.into_inner()
         )));
     };
-    if kind != EntityKind::Fact || schema_id != "proxima-code/workspace-run-v1" {
+    if kind != EntityKind::Fact || schema_id != CoreWorkspaceRunV1::SCHEMA_ID {
         return Err(McpToolError::InvalidInput(
-            "workspace_run_memory must be a proxima-code/workspace-run-v1 Fact".into(),
+            "workspace_run_memory must be a proxima-core/workspace-run-v1 Fact".into(),
         ));
     }
     if sidecar_memory_id.is_none() {

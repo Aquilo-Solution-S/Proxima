@@ -1,14 +1,14 @@
 use std::path::{Path, PathBuf};
 
 use proxima_core::{
-    FactPayload, MemoryId, WorkspaceFinalizeInput, WorkspacePrepareInput, WorkspacePreparedRun,
-    WorkspaceRunRecord, WorkspaceRunner, WorkspaceRunnerError,
+    CoreWorkspaceRunV1, FactPayload, MemoryId, WorkspaceFinalizeInput, WorkspacePrepareInput,
+    WorkspacePreparedRun, WorkspaceRunRecord, WorkspaceRunner, WorkspaceRunnerError,
 };
 use serde_json::json;
 
 use crate::payloads::{
-    ExecutionRequestV1, WorkspaceDecision, WorkspaceDecisionV1, WorkspaceReviewV1,
-    WorkspaceReviewVerdict, WorkspaceRunV1,
+    ExecutionRequestV1, TestRequestV1, WorkspaceDecision, WorkspaceDecisionV1, WorkspaceReviewV1,
+    WorkspaceReviewVerdict,
 };
 
 use super::context::{build_workspace_context, hydrate_workspace_tooling};
@@ -18,12 +18,14 @@ use super::git::{
 };
 use super::ingest::ingest_workspace_run;
 use super::loaders::{
-    goal_close_candidate, latest_review_verdict_for_request, load_acceptance_criteria_for_request,
-    load_continuation_workspace_run_for_request, load_decisions_for_request,
-    load_execution_request, load_execution_request_for_run, load_goal_context_for_request,
-    load_latest_rejected_review_for_run, load_latest_review_for_run, load_repo,
-    load_reviews_for_request, load_target_worker_personality_for_request,
-    load_verification_evidence_for_request, load_workspace_run, parse_payload,
+    CodeWorkspaceRun, goal_close_candidate, latest_review_verdict_for_request,
+    load_acceptance_criteria_for_request, load_continuation_workspace_run_for_request,
+    load_decisions_for_request, load_dependency_workspace_run_for_request, load_execution_request,
+    load_execution_request_for_run, load_execution_request_for_run_optional,
+    load_goal_context_for_request, load_latest_rejected_review_for_run, load_latest_review_for_run,
+    load_repo, load_reviews_for_request, load_target_worker_personality_for_request,
+    load_test_request, load_verification_evidence_for_request,
+    load_verification_evidence_for_test_request, load_workspace_run, parse_payload,
     repo_id_from_payload, request_has_direct_workspace_run, request_is_correction_request,
     veto_count_for_request,
 };
@@ -40,7 +42,8 @@ impl WorkspaceRunner for CodeWorkspaceRunner {
             | "proxima-code/commit-v1"
             | "proxima-code/file-revision-v1"
             | "proxima-code/code-chunk-v1" => self.prepare_execution_request(input).await,
-            WorkspaceRunV1::SCHEMA_ID => self.prepare_workspace_run_review(input).await,
+            TestRequestV1::SCHEMA_ID => self.prepare_test_request(input).await,
+            CoreWorkspaceRunV1::SCHEMA_ID => self.prepare_workspace_run_review(input).await,
             WorkspaceReviewV1::SCHEMA_ID => self.prepare_workspace_review_correction(input).await,
             WorkspaceDecisionV1::SCHEMA_ID => self.prepare_workspace_decision(input).await,
             other => Err(WorkspaceRunnerError::TriggerNotEligible(format!(
@@ -65,15 +68,18 @@ impl WorkspaceRunner for CodeWorkspaceRunner {
                 .map_err(|stderr| {
                     WorkspaceRunnerError::FinalizeFailed(format!("rev-parse HEAD: {stderr}"))
                 })?;
-        match &state.finalize_policy {
-            FinalizePolicy::EmitWorkspaceRun => {}
+        let mut committed = false;
+        let finalize = match &state.finalize_policy {
+            FinalizePolicy::EmitWorkspaceRun => "emit_workspace_run",
             FinalizePolicy::CommitAllCandidate => {
                 if let Some(committed_head) =
                     commit_all_candidate(worktree, input.triggering_memory_id, input.invocation_id)
                         .await?
                 {
                     head_sha = committed_head;
+                    committed = true;
                 }
+                "commit_all_candidate"
             }
             FinalizePolicy::InspectOnly {
                 head_sha: expected_head,
@@ -95,16 +101,21 @@ impl WorkspaceRunner for CodeWorkspaceRunner {
                     primary_memory_id: None,
                 });
             }
-        }
+        };
         let diff_stat = diff_stat(worktree, &state.parent_sha, &head_sha).await?;
-        let payload = WorkspaceRunV1 {
+        let payload = CoreWorkspaceRunV1 {
             wake_invocation_id: input.invocation_id,
-            repo_id: state.repo_id,
-            target_branch: state.target_branch,
+            wake_entry_id: input.wake_entry_id,
+            personality_instance_id: input.personality_instance_id.into_inner(),
+            binding_kind: "code_git_worktree".into(),
+            finalize: finalize.into(),
+            repo_path: state.canonical_path,
+            base_ref: state.target_branch,
             worktree_path: state.worktree_path,
             branch_name: state.branch_name,
             parent_sha: state.parent_sha,
             head_sha: head_sha.clone(),
+            committed,
             diff_stat_json: diff_stat,
             exit_code: input.outcome.exit_code,
             stdout_tail: input.outcome.stdout_tail.clone(),
@@ -139,11 +150,6 @@ impl CodeWorkspaceRunner {
                 WorkspaceReviewVerdict::Rejected => {}
             }
         }
-        if request_has_direct_workspace_run(pool, input.owner, input.triggering_memory_id).await? {
-            return Err(WorkspaceRunnerError::TriggerNotEligible(
-                "execution request already has a workspace run".into(),
-            ));
-        }
         if let Some(prior_run) = load_continuation_workspace_run_for_request(
             pool,
             input.owner,
@@ -151,8 +157,10 @@ impl CodeWorkspaceRunner {
         )
         .await?
         {
-            if !request_is_correction_request(pool, input.owner, input.triggering_memory_id).await?
-            {
+            let is_correction_request =
+                request_is_correction_request(pool, input.owner, input.triggering_memory_id)
+                    .await?;
+            if !input.is_continuation && !is_correction_request {
                 return Err(WorkspaceRunnerError::TriggerNotEligible(
                     "execution request already has a derived workspace run".into(),
                 ));
@@ -219,6 +227,114 @@ impl CodeWorkspaceRunner {
                 branch_name: prior_run.branch_name.clone(),
                 parent_sha: prior_run.parent_sha.clone(),
                 worktree_path: worktree_path.to_string_lossy().to_string(),
+                finalize_policy: FinalizePolicy::CommitAllCandidate,
+            };
+            let runner_state = serde_json::to_value(&state).map_err(|err| {
+                WorkspaceRunnerError::Internal(format!("serialize runner state: {err}"))
+            })?;
+            return Ok(WorkspacePreparedRun {
+                work_dir: worktree_path,
+                workspace_context: Some(workspace_context),
+                runner_state,
+            });
+        }
+        if request_has_direct_workspace_run(pool, input.owner, input.triggering_memory_id).await? {
+            return Err(WorkspaceRunnerError::TriggerNotEligible(
+                "execution request already has a workspace run".into(),
+            ));
+        }
+        if let Some(dependency_run) =
+            load_dependency_workspace_run_for_request(pool, input.owner, input.triggering_memory_id)
+                .await?
+        {
+            if dependency_run.repo_id != repo_id {
+                return Err(WorkspaceRunnerError::PrepareFailed(format!(
+                    "dependency workspace run repo {} does not match execution request repo {repo_id}",
+                    dependency_run.repo_id
+                )));
+            }
+            let mut repo = load_repo(pool, input.owner, repo_id).await?;
+            if repo.target_branch.is_none() {
+                repo.target_branch = Some(dependency_run.target_branch.clone());
+            }
+            let target_branch = repo.target_branch.clone().ok_or_else(|| {
+                WorkspaceRunnerError::PrepareFailed(format!("repo {repo_id} has no target_branch"))
+            })?;
+            let parent_sha = dependency_run.head_sha.clone();
+            let branch_name = format!("proxima/wake/{}", input.invocation_id);
+            let owner_component = owner_component(input.owner);
+            let worktree_path = self
+                .worktrees_root()
+                .join(owner_component)
+                .join(input.invocation_id.to_string());
+            if let Some(parent) = worktree_path.parent() {
+                tokio::fs::create_dir_all(parent).await.map_err(|err| {
+                    WorkspaceRunnerError::PrepareFailed(format!("create worktree parent: {err}"))
+                })?;
+            }
+            let worktree_arg = worktree_path.to_string_lossy().to_string();
+            git_output(
+                Path::new(&repo.canonical_path),
+                &[
+                    "worktree",
+                    "add",
+                    "-b",
+                    &branch_name,
+                    &worktree_arg,
+                    &parent_sha,
+                ],
+            )
+            .await
+            .map_err(|stderr| {
+                WorkspaceRunnerError::PrepareFailed(format!("dependency worktree add: {stderr}"))
+            })?;
+            let tooling = hydrate_workspace_tooling(
+                &worktree_path,
+                &self.pnpm_store_root(),
+                &self.pnpm_executable(),
+            )
+            .await;
+            let mut workspace_context = build_workspace_context(
+                &input,
+                repo_id,
+                &repo,
+                &target_branch,
+                &parent_sha,
+                &branch_name,
+                &worktree_path,
+                tooling,
+            )
+            .await?;
+            let acceptance_criteria =
+                load_acceptance_criteria_for_request(pool, input.owner, input.triggering_memory_id)
+                    .await?;
+            let verification_evidence = load_verification_evidence_for_request(
+                pool,
+                input.owner,
+                input.triggering_memory_id,
+            )
+            .await?;
+            if let Some(object) = workspace_context.as_object_mut() {
+                object.insert("mode".into(), json!("continue_from_dependency"));
+                object.insert("acceptance_criteria".into(), json!(acceptance_criteria));
+                object.insert("verification_evidence".into(), json!(verification_evidence));
+                object.insert(
+                    "dependency_from".into(),
+                    json!({
+                        "workspace_run_memory_id": dependency_run.memory_id.into_inner().to_string(),
+                        "worktree_path": dependency_run.worktree_path,
+                        "branch_name": dependency_run.branch_name,
+                        "head_sha": dependency_run.head_sha,
+                    }),
+                );
+            }
+            let state = PreparedState {
+                repo_id,
+                canonical_path: repo.canonical_path,
+                target_branch,
+                branch_name,
+                parent_sha,
+                worktree_path: worktree_arg,
                 finalize_policy: FinalizePolicy::CommitAllCandidate,
             };
             let runner_state = serde_json::to_value(&state).map_err(|err| {
@@ -332,25 +448,37 @@ impl CodeWorkspaceRunner {
         input: WorkspacePrepareInput<'_>,
     ) -> Result<WorkspacePreparedRun, WorkspaceRunnerError> {
         let pool = self.pool()?;
-        let run = parse_payload::<WorkspaceRunV1>(
-            input.triggering_memory_payload,
-            WorkspaceRunV1::SCHEMA_ID,
-        )?;
+        let run = load_workspace_run(pool, input.owner, input.triggering_memory_id).await?;
         let repo = load_repo(pool, input.owner, run.repo_id).await?;
         let worktree_path = PathBuf::from(&run.worktree_path);
         ensure_worktree_head(&worktree_path, &run.branch_name, &run.head_sha).await?;
         let original_request =
-            load_execution_request_for_run(pool, input.owner, input.triggering_memory_id).await?;
-        let active_goal =
-            load_goal_context_for_request(pool, input.owner, original_request.memory_id).await?;
-        let acceptance_criteria =
-            load_acceptance_criteria_for_request(pool, input.owner, original_request.memory_id)
+            load_execution_request_for_run_optional(pool, input.owner, input.triggering_memory_id)
                 .await?;
-        let verification_evidence =
-            load_verification_evidence_for_request(pool, input.owner, original_request.memory_id)
-                .await?;
-        let veto_count =
-            veto_count_for_request(pool, input.owner, original_request.memory_id).await?;
+        let (
+            original_request_json,
+            active_goal,
+            acceptance_criteria,
+            verification_evidence,
+            veto_count,
+        ) = if let Some(original_request) = original_request {
+            (
+                Some(original_request.to_json()),
+                load_goal_context_for_request(pool, input.owner, original_request.memory_id)
+                    .await?,
+                load_acceptance_criteria_for_request(pool, input.owner, original_request.memory_id)
+                    .await?,
+                load_verification_evidence_for_request(
+                    pool,
+                    input.owner,
+                    original_request.memory_id,
+                )
+                .await?,
+                veto_count_for_request(pool, input.owner, original_request.memory_id).await?,
+            )
+        } else {
+            (None, None, Vec::new(), Vec::new(), 0)
+        };
         let diff = build_review_diff_context(&worktree_path, &run).await?;
         let diff_range_to_head = format!("{}..HEAD", run.parent_sha);
         let diff_inspection_commands = vec![
@@ -369,7 +497,7 @@ impl CodeWorkspaceRunner {
             "parent_sha": run.parent_sha,
             "head_sha": run.head_sha,
             "workspace_run_memory_id": input.triggering_memory_id.into_inner().to_string(),
-            "original_request": original_request.to_json(),
+            "original_request": original_request_json,
             "active_goal": active_goal,
             "acceptance_criteria": acceptance_criteria,
             "verification_evidence": verification_evidence,
@@ -384,6 +512,81 @@ impl CodeWorkspaceRunner {
             },
             "veto_count": veto_count,
             "max_veto_rounds": crate::mcp::MAX_WORKSPACE_VETO_ROUNDS,
+        });
+        self.prepared_from_existing_run(&run, context).await
+    }
+
+    async fn prepare_test_request(
+        &self,
+        input: WorkspacePrepareInput<'_>,
+    ) -> Result<WorkspacePreparedRun, WorkspaceRunnerError> {
+        let pool = self.pool()?;
+        let test_request = load_test_request(pool, input.owner, input.triggering_memory_id).await?;
+        let run = load_dependency_workspace_run_for_request(
+            pool,
+            input.owner,
+            input.triggering_memory_id,
+        )
+        .await?
+        .ok_or_else(|| {
+            WorkspaceRunnerError::PrepareFailed(format!(
+                "test request has no successful dependency workspace run: {}",
+                input.triggering_memory_id.into_inner()
+            ))
+        })?;
+        if run.repo_id != test_request.payload.repo_id {
+            return Err(WorkspaceRunnerError::PrepareFailed(format!(
+                "dependency workspace run repo {} does not match test request repo {}",
+                run.repo_id, test_request.payload.repo_id
+            )));
+        }
+        let repo = load_repo(pool, input.owner, run.repo_id).await?;
+        let worktree_path = PathBuf::from(&run.worktree_path);
+        ensure_worktree_head(&worktree_path, &run.branch_name, &run.head_sha).await?;
+        let original_request =
+            load_execution_request_for_run_optional(pool, input.owner, run.memory_id).await?;
+        let original_request_json = original_request.as_ref().map(|request| request.to_json());
+        let original_acceptance_criteria = if let Some(original_request) = &original_request {
+            load_acceptance_criteria_for_request(pool, input.owner, original_request.memory_id)
+                .await?
+        } else {
+            Vec::new()
+        };
+        let test_evidence =
+            load_verification_evidence_for_test_request(pool, input.owner, test_request.memory_id)
+                .await?;
+        let diff = build_review_diff_context(&worktree_path, &run).await?;
+        let diff_range_to_head = format!("{}..HEAD", run.parent_sha);
+        let diff_inspection_commands = vec![
+            "git status --short".to_string(),
+            format!("git diff --stat {diff_range_to_head}"),
+            format!("git diff --name-only {diff_range_to_head}"),
+            format!("git diff --unified=80 {diff_range_to_head}"),
+        ];
+        let context = json!({
+            "mode": "execute_test_request",
+            "repo_id": run.repo_id.to_string(),
+            "canonical_path": repo.canonical_path,
+            "target_branch": run.target_branch,
+            "worktree_path": run.worktree_path,
+            "branch_name": run.branch_name,
+            "parent_sha": run.parent_sha,
+            "head_sha": run.head_sha,
+            "workspace_run_memory_id": run.memory_id.into_inner().to_string(),
+            "test_request": test_request.to_json(),
+            "test_criteria": test_request.payload.criteria,
+            "test_evidence": test_evidence,
+            "original_request": original_request_json,
+            "original_acceptance_criteria": original_acceptance_criteria,
+            "diff_stat": run.diff_stat_json,
+            "diff": diff,
+            "diff_inspection_commands": diff_inspection_commands,
+            "log_tails": {
+                "stdout_tail": run.stdout_tail,
+                "stderr_tail": run.stderr_tail,
+                "exit_code": run.exit_code,
+                "duration_ms": run.duration_ms,
+            },
         });
         self.prepared_from_existing_run(&run, context).await
     }
@@ -604,7 +807,7 @@ impl CodeWorkspaceRunner {
 
     async fn prepared_from_existing_run(
         &self,
-        run: &WorkspaceRunV1,
+        run: &CodeWorkspaceRun,
         workspace_context: serde_json::Value,
     ) -> Result<WorkspacePreparedRun, WorkspaceRunnerError> {
         let worktree_path = PathBuf::from(&run.worktree_path);

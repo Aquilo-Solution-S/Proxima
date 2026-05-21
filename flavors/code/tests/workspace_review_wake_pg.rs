@@ -5,13 +5,14 @@
 //! wake entries, and prove the Code registry accepts the review-loop
 //! workspace triggers.
 
-use proxima_code::{WorkspaceDecisionV1, WorkspaceReviewV1, WorkspaceRunV1, build_engine};
+use proxima_code::{WorkspaceDecisionV1, WorkspaceReviewV1, build_engine};
 use proxima_core::auth::NoAuth;
 use proxima_core::storage::Storage;
 use proxima_core::{
-    BindInferenceTierRequest, Credentials, FactPayload, InferenceTargetConfig, MistralChatConfig,
-    ModelTier, OrgId, Owner, Principal, RegisterInferenceTargetRequest, SetWakeEntriesRequest,
-    UserId, WakeEntryAuthoredBy, WakeEntryDraft, WakeEntryTriggerKind, WakeExecutionMode,
+    BindInferenceTierRequest, CoreWorkspaceRunV1, Credentials, FactPayload, InferenceTargetConfig,
+    MistralChatConfig, ModelTier, OrgId, Owner, Principal, RegisterInferenceTargetRequest,
+    SetWakeEntriesRequest, UserId, WakeEntryAuthoredBy, WakeEntryDraft, WakeEntryTriggerKind,
+    WakeExecutionMode,
 };
 use proxima_storage_pg::PgStorage;
 use sqlx::{Connection, Executor, PgConnection, Row};
@@ -146,7 +147,7 @@ async fn workspace_review_loop_wake_entries_validate() -> Result<(), Box<dyn std
 
         let verifier_wake = workspace_wake(
             verifier.instance_id,
-            WorkspaceRunV1::SCHEMA_ID,
+            CoreWorkspaceRunV1::SCHEMA_ID,
             "verify-workspace-run",
             vec!["proxima-workspace/shell".into()],
         )?;
@@ -210,7 +211,7 @@ async fn workspace_review_loop_wake_entries_validate() -> Result<(), Box<dyn std
             })
             .collect::<Result<_, _>>()?;
         assert!(persisted.iter().any(|(trigger, mode, tools)| {
-            trigger == WorkspaceRunV1::SCHEMA_ID
+            trigger == CoreWorkspaceRunV1::SCHEMA_ID
                 && *mode == WakeExecutionMode::Workspace
                 && tools == &vec!["proxima-workspace/shell".to_string()]
         }));

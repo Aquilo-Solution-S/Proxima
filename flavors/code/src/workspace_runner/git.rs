@@ -1,11 +1,11 @@
 use std::path::Path;
 use std::process::Stdio;
 
-use proxima_core::{Owner, WorkspaceRunnerError};
+use proxima_core::{
+    CoreWorkspaceDiffFile, CoreWorkspaceDiffStat, CoreWorkspaceRunV1, Owner, WorkspaceRunnerError,
+};
 use serde_json::json;
 use tokio::process::Command;
-
-use crate::payloads::{WorkspaceDiffFile, WorkspaceDiffStat, WorkspaceRunV1};
 
 const REVIEW_DIFF_MAX_BYTES: usize = 96 * 1024;
 
@@ -39,7 +39,7 @@ pub(super) async fn ensure_worktree_head(
 
 pub(super) async fn build_review_diff_context(
     worktree_path: &Path,
-    run: &WorkspaceRunV1,
+    run: &CoreWorkspaceRunV1,
 ) -> Result<serde_json::Value, WorkspaceRunnerError> {
     let range = format!("{}..{}", run.parent_sha, run.head_sha);
     let stat = git_output(worktree_path, &["diff", "--stat", &range])
@@ -147,7 +147,7 @@ pub(super) async fn diff_stat(
     worktree: &Path,
     parent_sha: &str,
     head_sha: &str,
-) -> Result<WorkspaceDiffStat, WorkspaceRunnerError> {
+) -> Result<CoreWorkspaceDiffStat, WorkspaceRunnerError> {
     let range = format!("{parent_sha}..{head_sha}");
     let raw = git_output(worktree, &["diff", "--numstat", &range])
         .await
@@ -166,13 +166,13 @@ pub(super) async fn diff_stat(
         let deleted_n = deleted.parse::<u64>().unwrap_or(0);
         insertions = insertions.saturating_add(added_n);
         deletions = deletions.saturating_add(deleted_n);
-        files.push(WorkspaceDiffFile {
+        files.push(CoreWorkspaceDiffFile {
             path,
             insertions: added_n,
             deletions: deleted_n,
         });
     }
-    Ok(WorkspaceDiffStat {
+    Ok(CoreWorkspaceDiffStat {
         files_changed: u64::try_from(files.len()).unwrap_or(u64::MAX),
         insertions,
         deletions,

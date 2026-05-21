@@ -1,9 +1,9 @@
 use std::str::FromStr;
 use uuid::Uuid;
 
-use crate::payloads::{
-    WorkspaceDecision, WorkspaceDiffStat, WorkspaceReviewFinding, WorkspaceReviewVerdict,
-};
+use proxima_core::CoreWorkspaceDiffStat;
+
+use crate::payloads::{WorkspaceDecision, WorkspaceReviewFinding, WorkspaceReviewVerdict};
 
 #[derive(Debug, Clone)]
 pub struct RepoRecord {
@@ -212,7 +212,7 @@ pub struct WorkspaceRunRecord {
     pub branch_name: String,
     pub parent_sha: String,
     pub head_sha: String,
-    pub diff_stat_json: WorkspaceDiffStat,
+    pub diff_stat_json: CoreWorkspaceDiffStat,
     pub exit_code: Option<i32>,
     pub stdout_tail: Option<String>,
     pub stderr_tail: Option<String>,

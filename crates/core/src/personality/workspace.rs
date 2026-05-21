@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::{MemoryId, Owner, RegisteredRelation};
+use crate::{MemoryId, Owner, PersonalityInstanceId, RegisteredRelation};
 
 /// Errors a runner can return from `prepare` or `finalize`.
 #[derive(Debug, Error)]
@@ -57,6 +57,11 @@ pub struct WorkspacePrepareInput<'a> {
     /// Typed payload for the triggering memory. Core passes it through
     /// unchanged; the flavor runner interprets its own fields.
     pub triggering_memory_payload: &'a serde_json::Value,
+    /// True when this prepare call is resuming a previously truncated
+    /// wake from an intervention decision. Runners use this to reuse
+    /// prior workspace state without treating the original run as a
+    /// duplicate.
+    pub is_continuation: bool,
     /// Provider-neutral capability allowlist for workspace-side
     /// tools. The harness exposes only these tool IDs to the provider.
     pub workspace_tool_palette: &'a [String],
@@ -92,6 +97,8 @@ pub struct WorkspaceRunRecord {
 pub struct WorkspaceFinalizeInput<'a> {
     pub owner: &'a Owner,
     pub invocation_id: Uuid,
+    pub wake_entry_id: Uuid,
+    pub personality_instance_id: PersonalityInstanceId,
     pub root_perspective_memory_id: MemoryId,
     pub triggering_memory_id: MemoryId,
     pub authored_relation: RegisteredRelation<'a>,

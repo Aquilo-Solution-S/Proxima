@@ -6,10 +6,9 @@ use proxima_code::mcp::{
     CodeEmitCorrectionExecutionRequestTool, CodeEmitVerificationEvidenceTool,
     CodeEmitWorkspaceReviewTool, CodeGoalCompletionStatusTool,
 };
-use proxima_code::payloads::WorkspaceDiffStat;
 use proxima_code::{
     AcceptanceCriteriaV1, AcceptanceCriterionV1, AcceptanceVerifierKind, AcceptanceVerifierSpecV1,
-    CommitV1, ExecutionRequestV1, WorkspaceDecision, WorkspaceReviewVerdict, WorkspaceRunV1,
+    CommitV1, ExecutionRequestV1, TestRequestV1, WorkspaceDecision, WorkspaceReviewVerdict,
 };
 use proxima_core::auth::NoAuth;
 use proxima_core::mcp::{McpAuthorContext, McpTool, McpToolCtx, OutputMode};
@@ -21,11 +20,13 @@ use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, Ev
 use proxima_core::verbs::query::MemoryStore;
 use proxima_core::verbs::schema::{PayloadKind, SchemaInfo};
 use proxima_core::{
-    BindInferenceTierRequest, CORE_AUTHORED_RELATION, CORE_DERIVED_FROM_RELATION,
-    EdgeAuthorshipKind, EntityKind, FactPayload, FlavorRegistry, FlavorRegistryFrozen,
-    InferenceTargetConfig, MemoryId, MistralChatConfig, ModelTier, OrgId, Owner, Principal,
-    RegisterInferenceTargetRequest, SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId,
-    WakeEntryAuthoredBy, WakeEntryTriggerKind,
+    BindInferenceTierRequest, CORE_AUTHORED_RELATION, CORE_DEPENDS_ON_RELATION,
+    CORE_DERIVED_FROM_RELATION, CORE_WORKSPACE_RUN_OBJECT_SCHEMA, CORE_WORKSPACE_RUN_SOURCE_ID,
+    CORE_WORKSPACE_RUN_WHOLE_SCHEMA, CoreWorkspaceDiffStat as WorkspaceDiffStat,
+    CoreWorkspaceRunV1, EdgeAuthorshipKind, EntityKind, FactPayload, FlavorRegistry,
+    FlavorRegistryFrozen, InferenceTargetConfig, MemoryId, MistralChatConfig, ModelTier, OrgId,
+    Owner, Principal, RegisterInferenceTargetRequest, SchemaId, SchemaVersion, SourceBatchId,
+    SourceId, UserId, WakeEntryAuthoredBy, WakeEntryTriggerKind,
 };
 use proxima_flavor_goal::tools::accept::{AcceptArgs, AcceptTool};
 use proxima_flavor_goal::tools::decompose::{ChildGoalInput, DecomposeArgs, DecomposeTool};
@@ -43,9 +44,9 @@ const ADMIN_URL: &str = "postgres://proxima:proxima@localhost/postgres";
 const EXECUTION_REQUEST_SOURCE_ID: &str = "proxima-code/execution-request";
 const EXECUTION_REQUEST_OBJECT_SCHEMA: &str = "proxima-code/execution-request-object-v1";
 const EXECUTION_REQUEST_WHOLE_SCHEMA: &str = "proxima-code/execution-request-whole-v1";
-const WORKSPACE_RUNNER_SOURCE_ID: &str = "proxima-code/workspace-runner";
-const WORKSPACE_RUN_OBJECT_SCHEMA: &str = "proxima-code/workspace-run-object-v1";
-const WORKSPACE_RUN_WHOLE_SCHEMA: &str = "proxima-code/workspace-run-whole-v1";
+const TEST_REQUEST_SOURCE_ID: &str = "proxima-code/test-request";
+const TEST_REQUEST_OBJECT_SCHEMA: &str = "proxima-code/test-request-object-v1";
+const TEST_REQUEST_WHOLE_SCHEMA: &str = "proxima-code/test-request-whole-v1";
 
 #[tokio::test]
 async fn emit_workspace_review_writes_review_and_edges() -> Result<(), Box<dyn std::error::Error>> {
@@ -282,6 +283,97 @@ async fn approved_review_requires_required_verification_evidence()
     )
     .await?;
     assert_eq!(approved["verdict"], "approved");
+    Ok(())
+}
+
+#[tokio::test]
+async fn emit_verification_evidence_satisfies_planned_test_request()
+-> Result<(), Box<dyn std::error::Error>> {
+    let Some(fixture) = TestDb::fresh().await? else {
+        return Ok(());
+    };
+    let owner = owner_fixture();
+    let registry = registry_for_mcp();
+    let root = root_perspective(&fixture.pg, &owner).await?;
+    let repo_id = Uuid::now_v7();
+    let request = seed_execution_request(
+        &fixture.pg,
+        &owner,
+        registry.as_ref(),
+        repo_id,
+        "planned-test-request",
+        "Implementation request",
+        "Change the workspace code.",
+        &[],
+    )
+    .await?;
+    let run = seed_workspace_run(&fixture.pg, &owner, registry.as_ref(), repo_id, request).await?;
+    let test_request =
+        seed_test_request(&fixture.pg, &owner, registry.as_ref(), repo_id, request).await?;
+
+    assert!(
+        !fixture
+            .pg
+            .has_satisfied_code_test_request(&owner, test_request)
+            .await?
+    );
+
+    let output = run_tool::<CodeEmitVerificationEvidenceTool>(
+        ctx(
+            fixture.pg.pool().clone(),
+            owner.clone(),
+            registry.clone(),
+            Some(root),
+            None,
+        ),
+        json!({
+            "workspace_run_memory": run.into_inner().to_string(),
+            "test_request_memory": test_request.into_inner().to_string(),
+            "criterion_key": "smoke",
+            "status": "passed",
+            "summary": "Smoke check passed.",
+            "artifact_refs": {"command": ["true"], "exit_code": 0},
+            "idempotency_key": "planned-test-evidence"
+        }),
+    )
+    .await?;
+
+    assert!(
+        output["handle"].as_str().is_some(),
+        "evidence output must include a memory handle"
+    );
+    let evidence_memory: Uuid = sqlx::query_scalar(
+        "SELECT memory_id
+         FROM proxima_code.verification_evidence_v1
+         WHERE workspace_run_memory_id = $1
+           AND criterion_key = 'smoke'
+         ORDER BY created_at DESC
+         LIMIT 1",
+    )
+    .bind(run.into_inner())
+    .fetch_one(fixture.pg.pool())
+    .await?;
+    let derived_to_test: i64 = sqlx::query_scalar(
+        "SELECT count(*)
+         FROM proxima_core.edges
+         WHERE relation = $1
+           AND source_kind = 'Fact'
+           AND source_memory_id = $2
+           AND target_kind = 'Fact'
+           AND target_memory_id = $3",
+    )
+    .bind(CORE_DERIVED_FROM_RELATION)
+    .bind(evidence_memory)
+    .bind(test_request.into_inner())
+    .fetch_one(fixture.pg.pool())
+    .await?;
+    assert_eq!(derived_to_test, 1);
+    assert!(
+        fixture
+            .pg
+            .has_satisfied_code_test_request(&owner, test_request)
+            .await?
+    );
     Ok(())
 }
 
@@ -1260,21 +1352,114 @@ async fn seed_execution_request(
     Ok(outcome.memory_id)
 }
 
-async fn seed_workspace_run(
+async fn seed_test_request(
     pg: &PgStorage,
     owner: &Owner,
     registry: &FlavorRegistryFrozen,
     repo_id: Uuid,
+    dependency: MemoryId,
+) -> Result<MemoryId, Box<dyn std::error::Error>> {
+    let payload = TestRequestV1 {
+        repo_id,
+        title: "Planned smoke test".into(),
+        instructions: "Verify the implemented work locally.".into(),
+        test_key: "planned-smoke-test".into(),
+        criteria: vec![AcceptanceCriterionV1 {
+            key: "smoke".into(),
+            description: "Smoke check passes".into(),
+            required: true,
+            verifier_kind: AcceptanceVerifierKind::Command,
+            verifier_spec: AcceptanceVerifierSpecV1 {
+                path: None,
+                command: Some(vec!["true".into()]),
+                pattern: None,
+                note: None,
+            },
+        }],
+    };
+    let mut payload_bytes = Vec::new();
+    ciborium::ser::into_writer(&payload, &mut payload_bytes)?;
+    let content_hash = blake3::hash(&payload_bytes);
+    let observed_at = time::OffsetDateTime::now_utc();
+    let draft = EventDraft {
+        source_id: SourceId::new(TEST_REQUEST_SOURCE_ID),
+        source_batch_id: SourceBatchId::new(Uuid::now_v7()),
+        owner: owner.clone(),
+        schema_id: SchemaId::new(TestRequestV1::SCHEMA_ID.into()),
+        schema_version: SchemaVersion::new(TestRequestV1::SCHEMA_VERSION),
+        payload: payload_bytes,
+        observed_at,
+        occurred_at: observed_at,
+        cited_object: CitedObjectHint {
+            schema_id: SchemaId::new(TEST_REQUEST_OBJECT_SCHEMA.into()),
+            schema_version: SchemaVersion::new(1),
+            content_hash: *content_hash.as_bytes(),
+        },
+        citation_mapping: CitationMappingHint {
+            schema_id: SchemaId::new(TEST_REQUEST_WHOLE_SCHEMA.into()),
+            schema_version: SchemaVersion::new(1),
+        },
+    };
+    let mut tx = pg.pool().begin().await?;
+    let outcome = ingest_event_in_tx(&mut tx, &draft).await?;
+    sqlx::query(
+        "INSERT INTO proxima_code.test_request_v1
+            (memory_id, repo_id, title, instructions, test_key, criteria_json)
+         VALUES ($1, $2, $3, $4, $5, $6)",
+    )
+    .bind(outcome.memory_id.into_inner())
+    .bind(payload.repo_id)
+    .bind(&payload.title)
+    .bind(&payload.instructions)
+    .bind(&payload.test_key)
+    .bind(serde_json::to_value(&payload.criteria)?)
+    .execute(&mut *tx)
+    .await?;
+    let relation = registry
+        .resolve_relation(CORE_DEPENDS_ON_RELATION)
+        .expect("core/depends-on registered");
+    append_edge_in_tx(
+        &mut tx,
+        &EdgeDraft {
+            edge_id: Uuid::now_v7(),
+            relation,
+            source_kind: EntityKind::Fact,
+            source_memory_id: Some(outcome.memory_id.into_inner()),
+            source_goal_id: None,
+            target_kind: EntityKind::Fact,
+            target_memory_id: Some(dependency.into_inner()),
+            target_goal_id: None,
+            authorship_kind: EdgeAuthorshipKind::ExternalAgent,
+            authorship_owner_memory_id: None,
+            owner,
+        },
+        None,
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(outcome.memory_id)
+}
+
+async fn seed_workspace_run(
+    pg: &PgStorage,
+    owner: &Owner,
+    registry: &FlavorRegistryFrozen,
+    _repo_id: Uuid,
     request: MemoryId,
 ) -> Result<MemoryId, Box<dyn std::error::Error>> {
-    let payload = WorkspaceRunV1 {
+    let payload = CoreWorkspaceRunV1 {
         wake_invocation_id: Uuid::now_v7(),
-        repo_id,
-        target_branch: "main".into(),
+        wake_entry_id: Uuid::now_v7(),
+        personality_instance_id: Uuid::now_v7(),
+        binding_kind: "code_git_worktree".into(),
+        finalize: "commit_all_candidate".into(),
+        repo_path: "/tmp/proxima-review-test".into(),
+        base_ref: "main".into(),
         worktree_path: "/tmp/proxima-review-test".into(),
         branch_name: format!("proxima/wake/{}", Uuid::now_v7()),
         parent_sha: "0000000".into(),
         head_sha: "1111111".into(),
+        committed: true,
         diff_stat_json: WorkspaceDiffStat {
             files_changed: 1,
             insertions: 3,
@@ -1291,41 +1476,47 @@ async fn seed_workspace_run(
     let content_hash = blake3::hash(&payload_bytes);
     let observed_at = time::OffsetDateTime::now_utc();
     let draft = EventDraft {
-        source_id: SourceId::new(WORKSPACE_RUNNER_SOURCE_ID),
+        source_id: SourceId::new(CORE_WORKSPACE_RUN_SOURCE_ID),
         source_batch_id: SourceBatchId::new(Uuid::now_v7()),
         owner: owner.clone(),
-        schema_id: SchemaId::new(WorkspaceRunV1::SCHEMA_ID.into()),
-        schema_version: SchemaVersion::new(WorkspaceRunV1::SCHEMA_VERSION),
+        schema_id: SchemaId::new(CoreWorkspaceRunV1::SCHEMA_ID.into()),
+        schema_version: SchemaVersion::new(CoreWorkspaceRunV1::SCHEMA_VERSION),
         payload: payload_bytes,
         observed_at,
         occurred_at: observed_at,
         cited_object: CitedObjectHint {
-            schema_id: SchemaId::new(WORKSPACE_RUN_OBJECT_SCHEMA.into()),
+            schema_id: SchemaId::new(CORE_WORKSPACE_RUN_OBJECT_SCHEMA.into()),
             schema_version: SchemaVersion::new(1),
             content_hash: *content_hash.as_bytes(),
         },
         citation_mapping: CitationMappingHint {
-            schema_id: SchemaId::new(WORKSPACE_RUN_WHOLE_SCHEMA.into()),
+            schema_id: SchemaId::new(CORE_WORKSPACE_RUN_WHOLE_SCHEMA.into()),
             schema_version: SchemaVersion::new(1),
         },
     };
     let mut tx = pg.pool().begin().await?;
     let outcome = ingest_event_in_tx(&mut tx, &draft).await?;
     sqlx::query(
-        "INSERT INTO proxima_code.workspace_run_v1
-            (memory_id, wake_invocation_id, repo_id, target_branch, worktree_path,
-             branch_name, parent_sha, head_sha, diff_stat_json, exit_code,
+        "INSERT INTO proxima_core.workspace_run_v1
+            (memory_id, wake_invocation_id, wake_entry_id, personality_instance_id,
+             binding_kind, finalize, repo_path, base_ref, worktree_path,
+             branch_name, parent_sha, head_sha, committed, diff_stat_json, exit_code,
              stdout_tail, stderr_tail, duration_ms)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)",
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)",
     )
     .bind(outcome.memory_id.into_inner())
     .bind(payload.wake_invocation_id)
-    .bind(repo_id)
-    .bind(&payload.target_branch)
+    .bind(payload.wake_entry_id)
+    .bind(payload.personality_instance_id)
+    .bind(&payload.binding_kind)
+    .bind(&payload.finalize)
+    .bind(&payload.repo_path)
+    .bind(&payload.base_ref)
     .bind(&payload.worktree_path)
     .bind(&payload.branch_name)
     .bind(&payload.parent_sha)
     .bind(&payload.head_sha)
+    .bind(payload.committed)
     .bind(serde_json::to_value(&payload.diff_stat_json)?)
     .bind(payload.exit_code)
     .bind(payload.stdout_tail.as_deref())

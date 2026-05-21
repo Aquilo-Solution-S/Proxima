@@ -7,9 +7,9 @@
 use crate::personality::workspace::WorkspaceRunner;
 use crate::verbs::schema::{FlavorRegistryFrozen, PayloadKind, PayloadValidatorEntry, SchemaInfo};
 use crate::{
-    AbstractionPayload, CitationMappingPayload, CitedObjectPayload, EdgePayload, FactPayload,
-    GoalPayload, McpCallFn, McpTool, McpToolDescriptor, McpToolError, PerspectivePayload,
-    RelationDescriptor, SchemaId, SchemaVersion, core_relation_descriptors,
+    AbstractionPayload, CitationMappingPayload, CitedObjectPayload, DependencySatisfactionRule,
+    EdgePayload, FactPayload, GoalPayload, McpCallFn, McpTool, McpToolDescriptor, McpToolError,
+    PerspectivePayload, RelationDescriptor, SchemaId, SchemaVersion, core_relation_descriptors,
 };
 
 use std::sync::Arc;
@@ -66,6 +66,7 @@ pub struct FlavorRegistry {
     /// Workspace-eligible trigger schemas. Core treats them as opaque
     /// flavor-qualified schema ids; flavor runners interpret payloads.
     workspace_triggers: Vec<String>,
+    dependency_satisfaction_rules: Vec<(String, Arc<dyn DependencySatisfactionRule>)>,
 }
 
 impl Default for FlavorRegistry {
@@ -78,6 +79,7 @@ impl Default for FlavorRegistry {
             flavors: Vec::new(),
             workspace_runners: Vec::new(),
             workspace_triggers: Vec::new(),
+            dependency_satisfaction_rules: Vec::new(),
         };
         // Substrate-shipped Fact schema for MCP-CRUD audit.
         registry.add_fact_schema::<crate::mcp::core_tools::PersonalityConfigChangedV1>();
@@ -312,6 +314,15 @@ impl FlavorRegistry {
         self.workspace_triggers.push(schema_id.into());
     }
 
+    pub fn add_dependency_satisfaction_rule(
+        &mut self,
+        schema_id: impl Into<String>,
+        rule: Arc<dyn DependencySatisfactionRule>,
+    ) {
+        self.dependency_satisfaction_rules
+            .push((schema_id.into(), rule));
+    }
+
     /// Register a `FlavorDescriptor`. Called once per
     /// `proxima_flavor!` invocation; freeze panics if the same
     /// `flavor_id` is added twice.
@@ -441,6 +452,14 @@ impl FlavorRegistry {
                 "duplicate workspace_trigger registration for schema {schema_id:?}",
             );
         }
+        let mut seen_dependency_rules: std::collections::HashSet<&str> =
+            std::collections::HashSet::new();
+        for (schema_id, _) in &self.dependency_satisfaction_rules {
+            assert!(
+                seen_dependency_rules.insert(schema_id.as_str()),
+                "duplicate dependency satisfaction rule for schema {schema_id:?}",
+            );
+        }
         FlavorRegistryFrozen::with_schemas_relations_validators(
             self.schemas,
             self.relations,
@@ -449,6 +468,7 @@ impl FlavorRegistry {
             self.flavors,
             self.workspace_runners,
             self.workspace_triggers,
+            self.dependency_satisfaction_rules,
         )
     }
 

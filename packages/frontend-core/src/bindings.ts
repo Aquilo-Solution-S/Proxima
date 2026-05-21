@@ -404,6 +404,19 @@ export type CommandError =
 	message: string,
 } };
 
+export type CoreWorkspaceDiffFile = {
+	path: string,
+	insertions: number,
+	deletions: number,
+};
+
+export type CoreWorkspaceDiffStat = {
+	files_changed: number,
+	insertions: number,
+	deletions: number,
+	files: CoreWorkspaceDiffFile[],
+};
+
 /**
  *  FE-facing projection of the engine `EdgeRow`. Drops `owner`,
  *  which the FE never reads (verified against
@@ -1121,19 +1134,6 @@ export type WorkspaceDecisionRecordTs = {
 	decided_by_owner_id: string,
 };
 
-export type WorkspaceDiffFile = {
-	path: string,
-	insertions: number,
-	deletions: number,
-};
-
-export type WorkspaceDiffStat = {
-	files_changed: number,
-	insertions: number,
-	deletions: number,
-	files: WorkspaceDiffFile[],
-};
-
 export type WorkspaceMergeOutcomeTs = {
 	run_memory_id: string,
 	decision_memory_id: string,
@@ -1185,7 +1185,7 @@ export type WorkspaceRunRecordTs = {
 	branch_name: string,
 	parent_sha: string,
 	head_sha: string,
-	diff_stat_json: WorkspaceDiffStat,
+	diff_stat_json: CoreWorkspaceDiffStat,
 	exit_code: number | null,
 	stdout_tail: string | null,
 	stderr_tail: string | null,

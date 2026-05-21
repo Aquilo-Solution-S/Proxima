@@ -78,11 +78,12 @@ pub async fn fire_wake_entry(
     }
 
     let sidecars = collect_sidecars(engine);
+    let wake_context_seq = wake_context_change_event_seq(&input);
     let wake_context = assemble_wake_context(
         engine.storage().as_ref(),
         &input.owner,
         input.personality_instance_id,
-        input.change_event_seq,
+        wake_context_seq,
         &sidecars,
     )
     .await?;
@@ -208,6 +209,7 @@ pub async fn fire_wake_entry(
                 input,
                 wake_token,
                 seeded_handles,
+                handles: handle_table,
                 wake_context,
                 resolved,
                 context_params,
@@ -313,6 +315,7 @@ struct WorkspaceModeState {
     input: FireWakeEntryInput,
     wake_token: Uuid,
     seeded_handles: crate::mcp::PreSeededHandles,
+    handles: Arc<HandleTable>,
     wake_context: WakeContext,
     resolved: ResolvedTarget,
     context_params: HashMap<String, serde_json::Value>,
@@ -345,6 +348,7 @@ async fn handle_workspace_mode(
         input,
         wake_token,
         seeded_handles,
+        handles,
         wake_context,
         resolved,
         mut context_params,
@@ -365,6 +369,7 @@ async fn handle_workspace_mode(
         triggering_memory_id: MemoryId::new(wake_context.triggering_memory.memory_id),
         triggering_memory_schema_id: input.wake_entry.trigger_id.as_str(),
         triggering_memory_payload: &wake_context.triggering_memory.typed_payload,
+        is_continuation: input.continuation.is_some(),
         workspace_tool_palette: &input.wake_entry.workspace_tool_palette,
     };
     let prepared_result = if let Some(binding) = input.wake_entry.workspace_binding.as_ref() {
@@ -401,7 +406,12 @@ async fn handle_workspace_mode(
     };
 
     if let Some(ws_ctx) = prepared.workspace_context.clone() {
-        context_params.insert("workspace_context".to_string(), ws_ctx);
+        let workspace_memory_classes =
+            load_payload_memory_classes(engine, &input.owner, &ws_ctx).await?;
+        context_params.insert(
+            "workspace_context".to_string(),
+            project_model_value(&ws_ctx, None, handles.as_ref(), &workspace_memory_classes),
+        );
     }
 
     let provider_target = match provider_target_from_config(&resolved.config) {
@@ -516,6 +526,15 @@ async fn handle_workspace_mode(
     Ok(true)
 }
 
+fn wake_context_change_event_seq(input: &FireWakeEntryInput) -> Uuid {
+    input
+        .continuation
+        .as_ref()
+        .map_or(input.change_event_seq, |continuation| {
+            continuation.original_change_event_seq
+        })
+}
+
 async fn prepare_legacy_workspace_runner(
     engine: &Engine,
     input: &FireWakeEntryInput,
@@ -610,6 +629,7 @@ async fn prepare_core_git_worktree(
     let workspace_context = json!({
         "mode": "core_git_worktree",
         "repo_path": repo.to_string_lossy(),
+        "repo_handle": repo.to_string_lossy(),
         "worktree_path": worktree_arg,
         "branch_name": branch_name,
         "base_ref": base_ref,
@@ -617,6 +637,7 @@ async fn prepare_core_git_worktree(
         "finalize": finalize.as_str(),
         "triggering_memory_schema_id": input.triggering_memory_schema_id,
         "triggering_memory_id": input.triggering_memory_id.into_inner().to_string(),
+        "is_continuation": input.is_continuation,
     });
     let runner_state = serde_json::to_value(state).map_err(|err| {
         WorkspaceRunnerError::Internal(format!("serialize core workspace state: {err}"))
@@ -846,6 +867,8 @@ async fn finalize_workspace_runner(
         .finalize(WorkspaceFinalizeInput {
             owner: &input.owner,
             invocation_id,
+            wake_entry_id: input.wake_entry.wake_entry_id,
+            personality_instance_id: input.personality_instance_id,
             root_perspective_memory_id: MemoryId::new(wake_context.root_perspective.memory_id),
             triggering_memory_id: MemoryId::new(wake_context.triggering_memory.memory_id),
             authored_relation,
@@ -913,6 +936,9 @@ async fn finalize_core_workspace_binding(
                         wake_context.root_perspective.memory_id,
                     ),
                     triggering_memory_id: MemoryId::new(wake_context.triggering_memory.memory_id),
+                    triggering_memory_kind: workspace_triggering_memory_kind(
+                        &wake_context.triggering_memory.kind,
+                    )?,
                     run,
                     source_batch_id: SourceBatchId::new(Uuid::now_v7()),
                     source_id: SourceId::new(CORE_WORKSPACE_RUN_SOURCE_ID.to_string()),
@@ -922,6 +948,17 @@ async fn finalize_core_workspace_binding(
                 .map_err(|err| format!("persist core workspace run: {err}"))?;
             Ok(())
         }
+    }
+}
+
+fn workspace_triggering_memory_kind(kind: &str) -> Result<crate::EntityKind, String> {
+    match kind {
+        "Fact" => Ok(crate::EntityKind::Fact),
+        "Abstraction" => Ok(crate::EntityKind::Abstraction),
+        "Perspective" => Ok(crate::EntityKind::Perspective),
+        other => Err(format!(
+            "unsupported workspace triggering memory kind: {other}"
+        )),
     }
 }
 
@@ -1103,7 +1140,11 @@ fn build_system_prompt(
     } else {
         Some(schema_id)
     };
-    let mut prompt = crate::wake::handles::format_wake_context_preamble(seeded, schema_arg);
+    let mut prompt = crate::wake::handles::format_wake_context_preamble(
+        seeded,
+        schema_arg,
+        wake_context.triggering_memory.kind.as_str(),
+    );
     if let Some(continuation) = continuation {
         prompt.push_str(&format_continuation_preamble(seeded, continuation));
     }
@@ -1116,22 +1157,23 @@ fn format_continuation_preamble(
     continuation: &super::input::FireWakeContinuation,
 ) -> String {
     format!(
-        "\nWake continuation context:\n\
+        "\nContinuation:\n\
          - This invocation continues a prior truncated wake. Use persisted Proxima state as the continuity source; provider chat session state is not available.\n\
-         - intervention_request_memory: {}\n\
-         - intervention_decision_memory: {}\n\
-         - wake_trace_memory: {}\n\
-         - original_triggering_memory: {}\n\
+         - Open these handles before acting:\n\
+         - continuation.intervention_decision.handle: {}\n\
+         - continuation.intervention_request.handle: {}\n\
+         - continuation.prior_wake_trace.handle: {}\n\
+         - continuation.original_triggering_memory.handle: {}\n\
          - granted_rounds: {}\n\
          - supervisor_rationale: {}\n\
          - Inspect the prior trace or lineage before repeating work.\n\n",
         seeded
-            .continuation_request
+            .continuation_decision
             .as_ref()
             .map(crate::mcp::Handle::as_str)
             .unwrap_or("<unavailable>"),
         seeded
-            .continuation_decision
+            .continuation_request
             .as_ref()
             .map(crate::mcp::Handle::as_str)
             .unwrap_or("<unavailable>"),
@@ -1404,7 +1446,7 @@ fn project_model_string(
     memory_classes: &HashMap<Uuid, MemoryHandleClass>,
 ) -> serde_json::Value {
     let Some(uuid) = Uuid::parse_str(raw).ok() else {
-        return serde_json::Value::String(raw.to_string());
+        return serde_json::Value::String(redact_uuid_substrings(raw));
     };
     let Some(key) = key else {
         return serde_json::Value::String("<opaque-uuid>".to_string());
@@ -1413,6 +1455,14 @@ fn project_model_string(
     if normalized == "goal_id" || normalized.ends_with("_goal_id") {
         return serde_json::Value::String(
             handles.assign_goal(GoalId::new(uuid)).as_str().to_string(),
+        );
+    }
+    if normalized == "repo_id" || normalized.ends_with("_repo_id") {
+        return serde_json::Value::String(
+            handles
+                .assign_flavor_object("code/repository", uuid, 'R')
+                .as_str()
+                .to_string(),
         );
     }
     if fact_memory_field(&normalized) {
@@ -1462,6 +1512,34 @@ fn project_model_string(
         );
     }
     serde_json::Value::String("<opaque-uuid>".to_string())
+}
+
+fn redact_uuid_substrings(raw: &str) -> String {
+    const UUID_LEN: usize = 36;
+    if raw.len() < UUID_LEN {
+        return raw.to_string();
+    }
+    let mut output = String::with_capacity(raw.len());
+    let mut cursor = 0;
+    while cursor < raw.len() {
+        let Some(remaining) = raw.get(cursor..) else {
+            break;
+        };
+        if remaining.len() >= UUID_LEN
+            && let Some(candidate) = raw.get(cursor..cursor + UUID_LEN)
+            && Uuid::parse_str(candidate).is_ok()
+        {
+            output.push_str("<opaque-uuid>");
+            cursor += UUID_LEN;
+            continue;
+        }
+        let Some(ch) = remaining.chars().next() else {
+            break;
+        };
+        output.push(ch);
+        cursor += ch.len_utf8();
+    }
+    output
 }
 
 fn fact_memory_field(normalized: &str) -> bool {
@@ -1736,13 +1814,36 @@ mod tests {
 
         assert!(preamble.contains("persisted Proxima state"));
         assert!(preamble.contains("provider chat session state is not available"));
-        assert!(preamble.contains("wake_trace_memory"));
-        assert!(preamble.contains("intervention_decision_memory"));
-        assert!(preamble.contains("original_triggering_memory"));
+        assert!(preamble.contains("continuation.intervention_decision.handle"));
+        assert!(preamble.contains("continuation.intervention_request.handle"));
+        assert!(preamble.contains("continuation.prior_wake_trace.handle"));
+        assert!(preamble.contains("continuation.original_triggering_memory.handle"));
         assert!(preamble.contains("granted_rounds: 3"));
         assert!(preamble.contains("supervisor_rationale: made progress"));
         assert!(!preamble.contains(&continuation.original_invocation_id.to_string()));
         assert!(!preamble.contains(&continuation.original_change_event_seq.to_string()));
+
+        let params = continuation_context_params(&seeded, &continuation);
+        assert_eq!(
+            params["intervention_decision"]["handle"],
+            seeded.continuation_decision.as_ref().unwrap().as_str()
+        );
+        assert_eq!(
+            params["intervention_request"]["handle"],
+            seeded.continuation_request.as_ref().unwrap().as_str()
+        );
+        assert_eq!(
+            params["prior_wake_trace"]["handle"],
+            seeded.continuation_wake_trace.as_ref().unwrap().as_str()
+        );
+        assert_eq!(
+            params["original_triggering_memory"]["handle"],
+            seeded
+                .continuation_original_triggering
+                .as_ref()
+                .unwrap()
+                .as_str()
+        );
     }
 
     #[test]
@@ -1764,7 +1865,7 @@ mod tests {
 
         assert_eq!(projected["goal_id"], "G1");
         assert_eq!(projected["goal_activated_memory_id"], "F1");
-        assert_eq!(projected["repo_id"], "<opaque-uuid>");
+        assert_eq!(projected["repo_id"], "R1");
         assert_eq!(
             handles
                 .resolve_goal("G1")
@@ -1778,6 +1879,12 @@ mod tests {
                 .expect("memory handle")
                 .into_inner(),
             memory_id
+        );
+        assert_eq!(
+            handles
+                .resolve_flavor_object("R1", "code/repository")
+                .expect("repo handle"),
+            repo_id
         );
     }
 
@@ -1809,5 +1916,73 @@ mod tests {
         assert_eq!(projected["context_memory_ids"][2], "P1");
         assert_eq!(projected["context_memory_ids_used"][0], "A1");
         assert_eq!(projected["unrelated_memory_id"], "<opaque-memory-uuid>");
+    }
+
+    #[test]
+    fn model_payload_projection_redacts_embedded_uuid_substrings() {
+        let handles = HandleTable::new();
+        let raw_uuid = Uuid::now_v7();
+        let projected = project_model_value(
+            &serde_json::json!({
+                "worktree_path": format!("/tmp/worktrees/{raw_uuid}/repo"),
+                "branch_name": format!("proxima/wake/{raw_uuid}"),
+            }),
+            None,
+            &handles,
+            &HashMap::new(),
+        );
+
+        assert_eq!(
+            projected["worktree_path"],
+            "/tmp/worktrees/<opaque-uuid>/repo"
+        );
+        assert_eq!(projected["branch_name"], "proxima/wake/<opaque-uuid>");
+    }
+
+    #[test]
+    fn continuation_wake_context_uses_original_change_event() {
+        let decision_event_seq = Uuid::from_u128(1);
+        let original_change_event_seq = Uuid::from_u128(2);
+        let input = FireWakeEntryInput {
+            owner: Owner {
+                principal: crate::Principal::User(crate::UserId::new(Uuid::from_u128(3))),
+                org_id: crate::OrgId::new(Uuid::from_u128(4)),
+            },
+            personality_instance_id: PersonalityInstanceId::new(Uuid::from_u128(5)),
+            wake_entry: crate::personality::WakeEntryRow {
+                wake_entry_id: Uuid::from_u128(6),
+                trigger_kind: crate::personality::WakeEntryTriggerKind::OnMemory,
+                trigger_id: "proxima-code/test-request-v1".into(),
+                label: "Tester".into(),
+                enabled: true,
+                execution_mode: WakeEntryExecutionMode::Workspace,
+                authored_by: crate::personality::WakeEntryAuthoredBy::Any,
+                probability_promille: 1000,
+                goal_scope: crate::personality::WakeEntryGoalScope::None,
+                instructions: "test".into(),
+                model_tier: crate::ModelTier::Standard,
+                inference_target_ref: None,
+                substrate_tool_palette: Vec::new(),
+                workspace_tool_palette: Vec::new(),
+                workspace_binding: None,
+                max_rounds: 4,
+                intervention_policy: None,
+                disabled_reason: None,
+            },
+            change_event_seq: decision_event_seq,
+            triggering_memory_id: Uuid::from_u128(7),
+            continuation: Some(crate::wake::fire::input::FireWakeContinuation {
+                intervention_decision_memory_id: MemoryId::new(Uuid::from_u128(8)),
+                intervention_request_memory_id: MemoryId::new(Uuid::from_u128(9)),
+                original_invocation_id: Uuid::from_u128(10),
+                original_change_event_seq,
+                wake_trace_memory_id: MemoryId::new(Uuid::from_u128(11)),
+                original_triggering_memory_id: MemoryId::new(Uuid::from_u128(12)),
+                grant_rounds: 4,
+                rationale: "continue".into(),
+            }),
+        };
+
+        assert_eq!(wake_context_change_event_seq(&input), original_change_event_seq);
     }
 }

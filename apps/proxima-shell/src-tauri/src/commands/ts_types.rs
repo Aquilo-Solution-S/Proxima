@@ -284,7 +284,7 @@ pub struct WorkspaceRunRecordTs {
     pub branch_name: String,
     pub parent_sha: String,
     pub head_sha: String,
-    pub diff_stat_json: proxima_code::payloads::WorkspaceDiffStat,
+    pub diff_stat_json: proxima_core::CoreWorkspaceDiffStat,
     pub exit_code: Option<i32>,
     pub stdout_tail: Option<String>,
     pub stderr_tail: Option<String>,

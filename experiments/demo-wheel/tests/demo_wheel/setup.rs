@@ -11,7 +11,7 @@ impl DemoWorld {
                     model_id: MODEL_ID.into(),
                     api_key_env: self.cfg.api_key_env.clone(),
                     temperature: Some(0.2),
-                    max_completion_tokens: Some(4096),
+                    max_completion_tokens: None,
                 }),
             })
             .await?;
@@ -109,6 +109,25 @@ impl DemoWorld {
         planner: PersonalityInstanceId,
         intervention_policy: InterventionPolicy,
     ) -> Result<(), Box<dyn std::error::Error>> {
+        let planner_tools = if matches!(
+            self.cfg.planner_mode,
+            DemoPlannerMode::Real | DemoPlannerMode::VisionDocument
+        ) {
+            vec![
+                "core/walk_lineage".into(),
+                "core/fetch_memory".into(),
+                "core/search_memories".into(),
+                "proxima-code/code_emit_execution_plan".into(),
+            ]
+        } else {
+            vec![
+                "core/walk_lineage".into(),
+                "core/fetch_memory".into(),
+                "core/search_memories".into(),
+                "proxima-goal/goal_decompose".into(),
+                "proxima-code/code_emit_execution_request".into(),
+            ]
+        };
         let mut vision_wake = WakeEntryDraft::new(
             Uuid::now_v7(),
             planner,
@@ -119,17 +138,16 @@ impl DemoWorld {
             1000,
             ModelTier::Standard,
             Some(TARGET_REF.into()),
-            vec![
-                "core/walk_lineage".into(),
-                "core/fetch_memory".into(),
-                "core/search_memories".into(),
-                "proxima-goal/goal_decompose".into(),
-                "proxima-code/code_emit_execution_request".into(),
-            ],
+            planner_tools,
             self.cfg.role_max_rounds.planner,
         )?;
         vision_wake.instructions =
-            planner_instruction(planner, self.cfg.challenge, self.cfg.planner_mode);
+            planner_instruction(
+                planner,
+                self.cfg.challenge,
+                self.cfg.planner_mode,
+                self.cfg.intervention_mode,
+            );
         vision_wake.intervention_policy = Some(intervention_policy.clone());
 
         let mut child_goal_wake = WakeEntryDraft::new(
@@ -150,16 +168,26 @@ impl DemoWorld {
         )?;
         child_goal_wake.goal_scope = WakeEntryGoalScope::TriggerGoalAssigned;
         child_goal_wake.instructions =
-            planner_instruction(planner, self.cfg.challenge, self.cfg.planner_mode);
+            planner_instruction(
+                planner,
+                self.cfg.challenge,
+                self.cfg.planner_mode,
+                self.cfg.intervention_mode,
+            );
         child_goal_wake.intervention_policy = Some(intervention_policy);
 
+        let entries = if self.cfg.planner_mode == DemoPlannerMode::Real {
+            vec![vision_wake]
+        } else {
+            vec![vision_wake, child_goal_wake]
+        };
         self.engine
             .set_wake_entries(
                 &Credentials::None,
                 &SetWakeEntriesRequest {
                     owner: self.owner.clone(),
                     personality_instance_id: planner,
-                    entries: vec![vision_wake, child_goal_wake],
+                    entries,
                 },
             )
             .await?;
@@ -202,6 +230,14 @@ impl DemoWorld {
         reviewer: PersonalityInstanceId,
         intervention_policy: InterventionPolicy,
     ) -> Result<(), Box<dyn std::error::Error>> {
+        let mut review_tools = vec![
+            "proxima-code/code_goal_completion_status".into(),
+            "proxima-goal/goal_mark_achieved".into(),
+            "proxima-code/code_emit_correction_execution_request".into(),
+        ];
+        if self.cfg.intervention_mode == DemoInterventionMode::ForceContinue {
+            review_tools.push("core/fetch_memory".into());
+        }
         let mut review_wake = WakeEntryDraft::new(
             Uuid::now_v7(),
             reviewer,
@@ -212,14 +248,10 @@ impl DemoWorld {
             1000,
             ModelTier::Deep,
             Some(TARGET_REF.into()),
-            vec![
-                "proxima-code/code_goal_completion_status".into(),
-                "proxima-goal/goal_mark_achieved".into(),
-                "proxima-code/code_emit_correction_execution_request".into(),
-            ],
+            review_tools,
             self.cfg.role_max_rounds.goal_reviewer,
         )?;
-        review_wake.instructions = goal_reviewer_instruction();
+        review_wake.instructions = goal_reviewer_instruction(self.cfg.intervention_mode);
         review_wake.intervention_policy = Some(intervention_policy);
 
         let mut target_validation_wake = WakeEntryDraft::new(

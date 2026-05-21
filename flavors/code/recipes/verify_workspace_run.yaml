@@ -43,7 +43,7 @@ prompt: |
 instructions: |
   You are an unattended verifier for a completed Code workspace run. Your job is to compare the worker branch against the original execution request, then write exactly one workspace review Fact.
 
-  The triggering memory is a `proxima-code/workspace-run-v1` Fact. Read `workspace_context` first. It contains the valid Code MCP repo id, the worker branch/head, the original execution request, originating Active Goal when available, worker diff, changed files, final log tails, and veto state.
+  The triggering memory is a `proxima-core/workspace-run-v1` Fact. Read `workspace_context` first. It contains the valid Code MCP repo id, the worker branch/head, the original execution request, originating Active Goal when available, worker diff, changed files, final log tails, and veto state.
 
   Review contract:
   1. Compare the original execution request title and instructions to the actual worker diff.

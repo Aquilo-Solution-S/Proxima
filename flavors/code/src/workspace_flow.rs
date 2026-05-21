@@ -70,9 +70,9 @@ pub async fn list_workspace_runs(
     let rows = sqlx::query(
         "SELECT r.memory_id,
                 r.wake_invocation_id,
-                r.repo_id,
+                req.repo_id,
                 req.title AS execution_request_title,
-                r.target_branch,
+                r.base_ref AS target_branch,
                 r.worktree_path,
                 r.branch_name,
                 r.parent_sha,
@@ -83,20 +83,20 @@ pub async fn list_workspace_runs(
                 r.stderr_tail,
                 r.duration_ms,
                 r.created_at
-         FROM proxima_code.workspace_run_v1 r
+         FROM proxima_core.workspace_run_v1 r
          JOIN proxima_core.memories m USING (memory_id)
-         LEFT JOIN proxima_core.edges request_edge
+         JOIN proxima_core.edges request_edge
            ON request_edge.owner_principal_kind = m.owner_principal_kind
           AND request_edge.owner_principal_id = m.owner_principal_id
           AND request_edge.relation = $4
           AND request_edge.source_kind = 'Fact'
           AND request_edge.source_memory_id = r.memory_id
           AND request_edge.target_kind = 'Fact'
-         LEFT JOIN proxima_code.execution_request_v1 req
+         JOIN proxima_code.execution_request_v1 req
            ON req.memory_id = request_edge.target_memory_id
          WHERE m.owner_principal_kind = $1
            AND m.owner_principal_id = $2
-           AND r.repo_id = $3
+           AND req.repo_id = $3
          ORDER BY r.created_at DESC, r.memory_id DESC
          LIMIT $5",
     )
@@ -344,9 +344,18 @@ async fn load_run(
 ) -> Result<LoadedRun, WorkspaceFlowError> {
     let (owner_kind, owner_principal_id, _) = owner_columns_pub(owner);
     let row = sqlx::query(
-        "SELECT r.repo_id, r.worktree_path, r.parent_sha, r.head_sha
-         FROM proxima_code.workspace_run_v1 r
+        "SELECT req.repo_id, r.worktree_path, r.parent_sha, r.head_sha
+         FROM proxima_core.workspace_run_v1 r
          JOIN proxima_core.memories m USING (memory_id)
+         JOIN proxima_core.edges request_edge
+           ON request_edge.owner_principal_kind = m.owner_principal_kind
+          AND request_edge.owner_principal_id = m.owner_principal_id
+          AND request_edge.relation = $4
+          AND request_edge.source_kind = 'Fact'
+          AND request_edge.source_memory_id = r.memory_id
+          AND request_edge.target_kind = 'Fact'
+         JOIN proxima_code.execution_request_v1 req
+           ON req.memory_id = request_edge.target_memory_id
          WHERE m.owner_principal_kind = $1
            AND m.owner_principal_id = $2
            AND r.memory_id = $3",
@@ -354,6 +363,7 @@ async fn load_run(
     .bind(owner_kind)
     .bind(owner_principal_id)
     .bind(run_memory_id.into_inner())
+    .bind(CORE_DERIVED_FROM_RELATION)
     .fetch_optional(pool)
     .await?;
     let Some(row) = row else {

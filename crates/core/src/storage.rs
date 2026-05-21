@@ -8,6 +8,7 @@ use std::sync::Arc;
 use crate::GoalId;
 use crate::Owner;
 use crate::SourceBatchId;
+use crate::dependency::{BlockedWakeCandidate, MemoryDependency};
 use crate::inference::{
     BindInferenceTierRequest, BindInferenceTierResponse, InferenceTargetRow,
     InferenceTierBindingRow, RegisterInferenceTargetRequest, RegisterInferenceTargetResponse,
@@ -480,6 +481,56 @@ pub trait Storage: Send + Sync {
         owner: &Owner,
         seq: uuid::Uuid,
     ) -> Result<Option<ChangeEventForWake>, StorageError>;
+
+    async fn list_memory_dependencies(
+        &self,
+        _owner: &Owner,
+        _source_memory_id: crate::MemoryId,
+    ) -> Result<Vec<MemoryDependency>, StorageError> {
+        Ok(Vec::new())
+    }
+
+    async fn has_successful_core_workspace_run_derived_from(
+        &self,
+        _owner: &Owner,
+        _source_memory_id: crate::MemoryId,
+    ) -> Result<bool, StorageError> {
+        Ok(false)
+    }
+
+    async fn has_satisfied_code_test_request(
+        &self,
+        _owner: &Owner,
+        _test_request_memory_id: crate::MemoryId,
+    ) -> Result<bool, StorageError> {
+        Ok(false)
+    }
+
+    async fn upsert_blocked_wake_candidate(
+        &self,
+        _candidate: &BlockedWakeCandidate,
+    ) -> Result<(), StorageError> {
+        Ok(())
+    }
+
+    async fn list_blocked_wake_candidates(
+        &self,
+        _owner: &Owner,
+        _personality_instance_id: PersonalityInstanceId,
+        _limit: usize,
+    ) -> Result<Vec<BlockedWakeCandidate>, StorageError> {
+        Ok(Vec::new())
+    }
+
+    async fn delete_blocked_wake_candidate(
+        &self,
+        _owner: &Owner,
+        _personality_instance_id: PersonalityInstanceId,
+        _wake_entry_id: uuid::Uuid,
+        _change_event_seq: uuid::Uuid,
+    ) -> Result<(), StorageError> {
+        Ok(())
+    }
 
     /// Per-(owner, type_id, instance_id) advisory lock spanning a wake
     /// run. Acquires `pg_advisory_xact_lock` on a stable bigint hash;

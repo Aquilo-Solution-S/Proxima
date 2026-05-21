@@ -13,11 +13,10 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use proxima_code::payloads::{WorkspaceDiffFile, WorkspaceDiffStat};
 use proxima_code::{
     CodeChunkV1, CommitV1, ExecutionRequestV1, FileRevisionV1, FileState, WorkspaceReviewFinding,
-    WorkspaceReviewV1, WorkspaceReviewVerdict, WorkspaceRunV1, build_engine_with,
-    ingest_code_chunk, ingest_commit, ingest_file_revision, register_repo,
+    WorkspaceReviewV1, WorkspaceReviewVerdict, build_engine_with, ingest_code_chunk, ingest_commit,
+    ingest_file_revision, register_repo,
 };
 use proxima_core::auth::NoAuth;
 use proxima_core::llm::{EmbeddingClient, LlmError};
@@ -28,11 +27,14 @@ use proxima_core::personality::{
 use proxima_core::storage::Storage;
 use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
 use proxima_core::{
-    BindInferenceTierRequest, CORE_DERIVED_FROM_RELATION, Credentials, EdgeAuthorshipKind,
-    EntityKind, FactPayload, FlavorRegistry, InferenceTargetConfig, MemoryId, MistralChatConfig,
-    ModelTier, OrgId, Owner, Principal, RegisterInferenceTargetRequest, SchemaId, SchemaVersion,
-    SourceBatchId, SourceId, UserId, WakeEntryAuthoredBy, WakeEntryGoalScope, WakeEntryTriggerKind,
-    WakeExecutionMode, WakeInvocationStatus, WakeTraceOutcomeKind,
+    BindInferenceTierRequest, CORE_DERIVED_FROM_RELATION, CORE_WORKSPACE_RUN_OBJECT_SCHEMA,
+    CORE_WORKSPACE_RUN_SOURCE_ID, CORE_WORKSPACE_RUN_WHOLE_SCHEMA,
+    CoreWorkspaceDiffFile as WorkspaceDiffFile, CoreWorkspaceDiffStat as WorkspaceDiffStat,
+    CoreWorkspaceRunV1, Credentials, EdgeAuthorshipKind, EntityKind, FactPayload, FlavorRegistry,
+    InferenceTargetConfig, MemoryId, MistralChatConfig, ModelTier, OrgId, Owner, Principal,
+    RegisterInferenceTargetRequest, SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId,
+    WakeEntryAuthoredBy, WakeEntryGoalScope, WakeEntryTriggerKind, WakeExecutionMode,
+    WakeInvocationStatus, WakeTraceOutcomeKind,
 };
 use proxima_harness::HarnessLoop;
 use proxima_mcp_server::McpToolHost;
@@ -1026,7 +1028,7 @@ async fn live_mistral_code_action_outputs() -> Result<(), Box<dyn std::error::Er
             .add_live_personality_wake(
                 "workspace reviewer",
                 WakeEntryTriggerKind::OnMemory,
-                WorkspaceRunV1::SCHEMA_ID,
+                CoreWorkspaceRunV1::SCHEMA_ID,
                 vec!["proxima-code/code_emit_workspace_review"],
                 workspace_review_instruction(),
                 WakeOptions {
@@ -1196,7 +1198,7 @@ async fn live_mistral_merge_tool_is_master_token_guarded() -> Result<(), Box<dyn
             .add_live_personality_wake(
                 "merge guard",
                 WakeEntryTriggerKind::OnMemory,
-                WorkspaceRunV1::SCHEMA_ID,
+                CoreWorkspaceRunV1::SCHEMA_ID,
                 vec!["proxima-code/code_merge_workspace_run"],
                 "Call proxima_code_code_merge_workspace_run with {\"workspace_run_memory\":\"F1\"}. Then stop.".into(),
                 WakeOptions {
@@ -1507,18 +1509,23 @@ async fn seed_workspace_run(
 
 async fn seed_workspace_run_event(
     world: &LiveWakeWorld,
-    repo_id: Uuid,
+    _repo_id: Uuid,
     repo_path: &Path,
     head_sha: &str,
 ) -> Result<MemoryId, Box<dyn std::error::Error>> {
-    let payload = WorkspaceRunV1 {
+    let payload = CoreWorkspaceRunV1 {
         wake_invocation_id: Uuid::now_v7(),
-        repo_id,
-        target_branch: "main".into(),
+        wake_entry_id: Uuid::now_v7(),
+        personality_instance_id: Uuid::now_v7(),
+        binding_kind: "code_git_worktree".into(),
+        finalize: "commit_all_candidate".into(),
+        repo_path: repo_path.to_string_lossy().to_string(),
+        base_ref: "main".into(),
         worktree_path: repo_path.to_string_lossy().to_string(),
         branch_name: "main".into(),
         parent_sha: head_sha.into(),
         head_sha: head_sha.into(),
+        committed: true,
         diff_stat_json: WorkspaceDiffStat {
             files_changed: 1,
             insertions: 1,
@@ -1537,29 +1544,35 @@ async fn seed_workspace_run_event(
     let sidecar_payload = payload.clone();
     ingest_fact_with_sidecar(
         world,
-        WorkspaceRunV1::SCHEMA_ID,
-        WorkspaceRunV1::SCHEMA_VERSION,
+        CoreWorkspaceRunV1::SCHEMA_ID,
+        CoreWorkspaceRunV1::SCHEMA_VERSION,
         &payload,
-        proxima_code::WORKSPACE_RUNNER_SOURCE_ID,
-        proxima_code::WORKSPACE_RUN_OBJECT_SCHEMA,
-        proxima_code::WORKSPACE_RUN_WHOLE_SCHEMA,
+        CORE_WORKSPACE_RUN_SOURCE_ID,
+        CORE_WORKSPACE_RUN_OBJECT_SCHEMA,
+        CORE_WORKSPACE_RUN_WHOLE_SCHEMA,
         |memory_id, tx| {
             Box::pin(async move {
                 sqlx::query(
-                    "INSERT INTO proxima_code.workspace_run_v1
-                        (memory_id, wake_invocation_id, repo_id, target_branch, worktree_path,
-                         branch_name, parent_sha, head_sha, diff_stat_json, exit_code,
+                    "INSERT INTO proxima_core.workspace_run_v1
+                        (memory_id, wake_invocation_id, wake_entry_id, personality_instance_id,
+                         binding_kind, finalize, repo_path, base_ref, worktree_path,
+                         branch_name, parent_sha, head_sha, committed, diff_stat_json, exit_code,
                          stdout_tail, stderr_tail, duration_ms)
-                     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)",
+                     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)",
                 )
                 .bind(memory_id.into_inner())
                 .bind(sidecar_payload.wake_invocation_id)
-                .bind(sidecar_payload.repo_id)
-                .bind(&sidecar_payload.target_branch)
+                .bind(sidecar_payload.wake_entry_id)
+                .bind(sidecar_payload.personality_instance_id)
+                .bind(&sidecar_payload.binding_kind)
+                .bind(&sidecar_payload.finalize)
+                .bind(&sidecar_payload.repo_path)
+                .bind(&sidecar_payload.base_ref)
                 .bind(&sidecar_payload.worktree_path)
                 .bind(&sidecar_payload.branch_name)
                 .bind(&sidecar_payload.parent_sha)
                 .bind(&sidecar_payload.head_sha)
+                .bind(sidecar_payload.committed)
                 .bind(serde_json::to_value(&sidecar_payload.diff_stat_json)?)
                 .bind(sidecar_payload.exit_code)
                 .bind(sidecar_payload.stdout_tail.as_deref())

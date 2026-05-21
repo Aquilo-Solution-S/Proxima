@@ -4,8 +4,8 @@
 //! docs/03-schema-registry.md.
 
 use crate::{
-    FlavorDescriptor, McpToolDescriptor, RegisteredRelation, RelationDescriptor, SchemaId,
-    SchemaVersion,
+    DependencySatisfactionRule, FlavorDescriptor, McpToolDescriptor, RegisteredRelation,
+    RelationDescriptor, SchemaId, SchemaVersion,
 };
 
 pub type PayloadValidator = fn(&serde_json::Value) -> Result<(), String>;
@@ -86,6 +86,7 @@ pub struct FlavorRegistryFrozen {
         std::sync::Arc<dyn crate::personality::workspace::WorkspaceRunner>,
     )>,
     workspace_triggers: Vec<String>,
+    dependency_satisfaction_rules: Vec<(String, std::sync::Arc<dyn DependencySatisfactionRule>)>,
 }
 
 impl FlavorRegistryFrozen {
@@ -106,6 +107,7 @@ impl FlavorRegistryFrozen {
             flavors: Vec::new(),
             workspace_runners: Vec::new(),
             workspace_triggers: Vec::new(),
+            dependency_satisfaction_rules: Vec::new(),
         }
     }
 
@@ -125,6 +127,7 @@ impl FlavorRegistryFrozen {
             flavors: Vec::new(),
             workspace_runners: Vec::new(),
             workspace_triggers: Vec::new(),
+            dependency_satisfaction_rules: Vec::new(),
         }
     }
 
@@ -140,6 +143,10 @@ impl FlavorRegistryFrozen {
             std::sync::Arc<dyn crate::personality::workspace::WorkspaceRunner>,
         )>,
         workspace_triggers: Vec<String>,
+        dependency_satisfaction_rules: Vec<(
+            String,
+            std::sync::Arc<dyn DependencySatisfactionRule>,
+        )>,
     ) -> Self {
         Self {
             schemas,
@@ -149,6 +156,7 @@ impl FlavorRegistryFrozen {
             flavors,
             workspace_runners,
             workspace_triggers,
+            dependency_satisfaction_rules,
         }
     }
 
@@ -208,6 +216,17 @@ impl FlavorRegistryFrozen {
     #[must_use]
     pub fn is_workspace_trigger(&self, schema_id: &str) -> bool {
         self.workspace_triggers.iter().any(|id| id == schema_id)
+    }
+
+    #[must_use]
+    pub fn dependency_satisfaction_rule(
+        &self,
+        schema_id: &str,
+    ) -> Option<std::sync::Arc<dyn DependencySatisfactionRule>> {
+        self.dependency_satisfaction_rules
+            .iter()
+            .find(|(id, _)| id == schema_id)
+            .map(|(_, rule)| rule.clone())
     }
 
     /// All `FlavorDescriptor`s registered through `proxima_flavor!`.
