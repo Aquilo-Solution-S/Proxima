@@ -48,8 +48,8 @@ pub(in crate::chat) fn render_thread_message(
             .format_perspective_memory(MemoryId::new(payload.target_self_perspective_memory_id)),
         sent_by_self_perspective: ctx
             .format_perspective_memory(MemoryId::new(payload.sent_by_self_perspective_memory_id)),
-        parent_message: payload
-            .parent_message_memory_id
+        parent: payload
+            .parent_memory_id
             .map(|id| ctx.format_fact_memory(MemoryId::new(id))),
         context_memories: payload
             .context_memory_ids

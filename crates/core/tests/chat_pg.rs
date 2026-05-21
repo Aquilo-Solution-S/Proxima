@@ -192,7 +192,7 @@ async fn chat_round_trip_and_coordination_context() -> Result<(), Box<dyn std::e
             target_personality: responder.instance_id.into_inner().to_string(),
             thread_key: "planning-discussion".into(),
             message: "Which tests do you require?".into(),
-            parent_message: None,
+            parent: None,
             context_memories: Vec::new(),
             context_goals: Vec::new(),
             idempotency_key: "message-1".into(),
@@ -304,7 +304,7 @@ async fn chat_message_requires_target_wake_entry() -> Result<(), Box<dyn std::er
             target_personality: silent.instance_id.into_inner().to_string(),
             thread_key: "missing-wake".into(),
             message: "Can you reply?".into(),
-            parent_message: None,
+            parent: None,
             context_memories: Vec::new(),
             context_goals: Vec::new(),
             idempotency_key: "missing-wake-message".into(),
@@ -384,7 +384,7 @@ async fn planning_round_is_observable_as_graph() -> Result<(), Box<dyn std::erro
             target_personality: tester.instance_id.into_inner().to_string(),
             thread_key: "meaningful-planning-round".into(),
             message: "Propose the required tests T1..Tn before implementation.".into(),
-            parent_message: None,
+            parent: None,
             context_memories: Vec::new(),
             context_goals: Vec::new(),
             idempotency_key: "planning-round-message".into(),
@@ -523,7 +523,7 @@ async fn planning_round_is_observable_as_graph() -> Result<(), Box<dyn std::erro
             target_personality: tester.instance_id.into_inner().to_string(),
             thread_key: "open-planning-round".into(),
             message: "Which acceptance item is still open?".into(),
-            parent_message: None,
+            parent: None,
             context_memories: Vec::new(),
             context_goals: Vec::new(),
             idempotency_key: "open-planning-message".into(),
@@ -631,7 +631,7 @@ async fn chat_lifecycle_compacts_continues_and_summarizes_without_llm()
             target_personality: mira.instance_id.into_inner().to_string(),
             thread_key: "mock-chat-lifecycle".into(),
             message: "Open chat: prove projection before wake wiring.".into(),
-            parent_message: None,
+            parent: None,
             context_memories: Vec::new(),
             context_goals: Vec::new(),
             idempotency_key: "chat-open-m1".into(),
@@ -686,7 +686,7 @@ async fn chat_lifecycle_compacts_continues_and_summarizes_without_llm()
             target_personality: mira.instance_id.into_inner().to_string(),
             thread_key: "mock-chat-lifecycle".into(),
             message: "Continue chat after compaction using exact new turns.".into(),
-            parent_message: Some(m1.handle.clone()),
+            parent: Some(r1.handle.clone()),
             context_memories: vec![compaction.to_string()],
             context_goals: Vec::new(),
             idempotency_key: "chat-continue-m2".into(),
@@ -710,7 +710,7 @@ async fn chat_lifecycle_compacts_continues_and_summarizes_without_llm()
             target_personality: mira.instance_id.into_inner().to_string(),
             thread_key: "mock-chat-lifecycle".into(),
             message: "Close chat and produce a durable final summary.".into(),
-            parent_message: Some(m2.handle.clone()),
+            parent: Some(r2.handle.clone()),
             context_memories: vec![compaction.to_string()],
             context_goals: Vec::new(),
             idempotency_key: "chat-close-m3".into(),
@@ -776,6 +776,14 @@ async fn chat_lifecycle_compacts_continues_and_summarizes_without_llm()
     assert_eq!(
         thread.messages[1].context_memories,
         vec![compaction.to_string()]
+    );
+    assert_eq!(
+        thread.messages[1].parent.as_deref(),
+        Some(r1.handle.as_str())
+    );
+    assert_eq!(
+        thread.messages[2].parent.as_deref(),
+        Some(r2.handle.as_str())
     );
     assert_eq!(
         thread.replies[1].context_memories_used,

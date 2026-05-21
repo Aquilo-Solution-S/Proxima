@@ -223,7 +223,7 @@ pub(super) async fn insert_message_sidecar(
         "INSERT INTO proxima_core.chat_message_v1
             (memory_id, thread_key, message, target_personality_instance_id,
              target_self_perspective_memory_id, sent_by_self_perspective_memory_id,
-             parent_message_memory_id, context_memory_ids, context_goal_ids,
+             parent_memory_id, context_memory_ids, context_goal_ids,
              idempotency_key, sent_at)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",
     )
@@ -233,7 +233,7 @@ pub(super) async fn insert_message_sidecar(
     .bind(payload.target_personality_instance_id)
     .bind(payload.target_self_perspective_memory_id)
     .bind(payload.sent_by_self_perspective_memory_id)
-    .bind(payload.parent_message_memory_id)
+    .bind(payload.parent_memory_id)
     .bind(&payload.context_memory_ids)
     .bind(&payload.context_goal_ids)
     .bind(&payload.idempotency_key)
