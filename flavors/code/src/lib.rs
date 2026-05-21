@@ -119,6 +119,8 @@ proxima_core::proxima_flavor! {
         ),
     ],
     mcp_tools = [
+        mcp::CodeListReposTool,
+        mcp::CodeRegisterRepoTool,
         mcp::CodeSearchChunksTool,
         mcp::CodeOpenFileRevisionTool,
         mcp::CodeSearchCommitsTool,
@@ -233,6 +235,8 @@ mod tests {
             .iter()
             .map(|tool| tool.name)
             .collect();
+        assert!(names.contains("proxima-code/code_list_repos"));
+        assert!(names.contains("proxima-code/code_register_repo"));
         assert!(names.contains("proxima-code/code_search_chunks"));
         assert!(names.contains("proxima-code/code_open_file_revision"));
         assert!(names.contains("proxima-code/code_search_commits"));

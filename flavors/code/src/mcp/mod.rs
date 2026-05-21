@@ -7,6 +7,7 @@ pub mod emit_execution_request;
 pub mod goal_completion_status;
 pub mod merge_workspace_run;
 pub mod open_file_revision;
+pub mod repos;
 pub mod search_chunks;
 pub mod search_commits;
 pub mod workspace_review;
@@ -18,6 +19,7 @@ pub use emit_execution_request::{
 pub use goal_completion_status::CodeGoalCompletionStatusTool;
 pub use merge_workspace_run::CodeMergeWorkspaceRunTool;
 pub use open_file_revision::CodeOpenFileRevisionTool;
+pub use repos::{CodeListReposTool, CodeRegisterRepoTool};
 pub use search_chunks::CodeSearchChunksTool;
 pub use search_commits::CodeSearchCommitsTool;
 pub use workspace_review::{
