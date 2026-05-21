@@ -1,9 +1,13 @@
 //! Engine smoke tests for the personality substrate.
 
+use std::sync::Arc;
+
+use async_trait::async_trait;
 use proxima_core::auth::NoAuth;
-use proxima_core::engine::Engine;
+use proxima_core::engine::{EmbeddingClientReloader, Engine};
 use proxima_core::error::ErrorCode;
 use proxima_core::ids::{OrgId, UserId};
+use proxima_core::llm::{EmbeddingClient, LlmError};
 use proxima_core::owner::{Owner, Principal};
 use proxima_core::verbs::query::{MemoryStore, QueryRequest};
 use proxima_core::verbs::schema::{FlavorRegistryFrozen, SchemaRequest};
@@ -28,6 +32,40 @@ fn boot_engine(principal: Principal, owner: Owner) -> Engine {
     )
 }
 
+#[derive(Debug)]
+struct FixedEmbeddingClient;
+
+#[async_trait]
+impl EmbeddingClient for FixedEmbeddingClient {
+    async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
+        Ok(vec![0.0; self.dim()])
+    }
+
+    fn model_id(&self) -> &str {
+        "test-embedding"
+    }
+
+    fn dim(&self) -> usize {
+        3
+    }
+}
+
+#[derive(Debug)]
+struct FixedEmbeddingReloader;
+
+impl EmbeddingClientReloader for FixedEmbeddingReloader {
+    fn reload<'a>(
+        &'a self,
+        _owner: &'a Owner,
+    ) -> futures::future::BoxFuture<'a, Result<Option<Arc<dyn EmbeddingClient>>, String>> {
+        Box::pin(async {
+            Ok(Some(
+                Arc::new(FixedEmbeddingClient) as Arc<dyn EmbeddingClient>
+            ))
+        })
+    }
+}
+
 #[test]
 fn schema_verb_returns_empty_registry() {
     let (principal, owner) = fresh_owner();
@@ -36,6 +74,27 @@ fn schema_verb_returns_empty_registry() {
     assert!(
         resp.schemas.is_empty(),
         "empty registry must list no schemas"
+    );
+}
+
+#[tokio::test]
+async fn reload_embedding_client_replaces_engine_slot() {
+    let (principal, owner) = fresh_owner();
+    let engine = boot_engine(principal, owner.clone())
+        .with_embedding_reloader(Arc::new(FixedEmbeddingReloader));
+
+    assert!(engine.embed_client().is_none());
+    let outcome = engine
+        .reload_embedding_client(&owner)
+        .await
+        .expect("reload hook must install client");
+
+    assert!(outcome.active);
+    assert_eq!(outcome.model_id.as_deref(), Some("test-embedding"));
+    assert_eq!(outcome.dim, Some(3));
+    assert_eq!(
+        engine.embed_client().expect("client installed").model_id(),
+        "test-embedding"
     );
 }
 

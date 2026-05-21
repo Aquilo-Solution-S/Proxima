@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use tokio::sync::{Mutex, RwLock};
 
-use super::{Engine, EngineMcpListener};
+use super::{EmbeddingClientReloader, Engine, EngineMcpListener};
 use crate::auth::AuthResolver;
 use crate::llm::{AnthropicClient, EmbeddingClient};
 use crate::storage::{NoopStorage, StorageHandle};
@@ -29,7 +29,8 @@ impl Engine {
             auth,
             storage: Arc::new(NoopStorage),
             anthropic: None,
-            embed: None,
+            embed: Arc::new(RwLock::new(None)),
+            embedding_reloader: None,
             dispatch_interval: DEFAULT_DISPATCH_INTERVAL,
             wake_token_ttl: DEFAULT_WAKE_TOKEN_TTL,
             mcp_listen_addr: DEFAULT_MCP_LISTEN_ADDR,
@@ -55,7 +56,13 @@ impl Engine {
 
     #[must_use]
     pub fn with_embed(mut self, embed: Arc<dyn EmbeddingClient>) -> Self {
-        self.embed = Some(embed);
+        self.embed = Arc::new(RwLock::new(Some(embed)));
+        self
+    }
+
+    #[must_use]
+    pub fn with_embedding_reloader(mut self, reloader: Arc<dyn EmbeddingClientReloader>) -> Self {
+        self.embedding_reloader = Some(reloader);
         self
     }
 

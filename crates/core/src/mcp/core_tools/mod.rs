@@ -16,6 +16,7 @@ pub mod update_wake_entry;
 pub mod wake_entry_input;
 
 pub mod bind_inference_tier;
+pub mod embedding_models;
 pub mod get_graph;
 pub mod get_personality;
 pub mod inquiry;
@@ -38,6 +39,10 @@ pub use add_wake_entry::AddWakeEntryTool;
 pub use approval::{EmitApprovalPolicyTool, EmitApprovalVoteTool, TryEmitApprovalDecisionTool};
 pub use audit::{AuditEmit, emit_personality_config_changed};
 pub use bind_inference_tier::BindInferenceTierTool;
+pub use embedding_models::{
+    ClearEmbeddingActiveTool, DeleteEmbeddingModelTool, GetEmbeddingActiveTool,
+    ListEmbeddingModelsTool, RegisterEmbeddingModelTool, SetEmbeddingActiveTool,
+};
 pub use get_graph::GetGraphTool;
 pub use get_personality::GetPersonalityTool;
 pub use inquiry::{
@@ -89,6 +94,12 @@ pub(crate) fn register_all(registry: &mut crate::FlavorRegistry) {
     registry.add_substrate_mcp_tool::<RegisterInferenceTargetTool>();
     registry.add_substrate_mcp_tool::<RemoveInferenceTargetTool>();
     registry.add_substrate_mcp_tool::<BindInferenceTierTool>();
+    registry.add_substrate_mcp_tool::<ListEmbeddingModelsTool>();
+    registry.add_substrate_mcp_tool::<GetEmbeddingActiveTool>();
+    registry.add_substrate_mcp_tool::<RegisterEmbeddingModelTool>();
+    registry.add_substrate_mcp_tool::<DeleteEmbeddingModelTool>();
+    registry.add_substrate_mcp_tool::<SetEmbeddingActiveTool>();
+    registry.add_substrate_mcp_tool::<ClearEmbeddingActiveTool>();
     registry.add_substrate_mcp_tool::<ListSubstrateToolsTool>();
     registry.add_substrate_mcp_tool::<ListWorkspaceToolsTool>();
     registry.add_substrate_mcp_tool::<ListSchemasTool>();

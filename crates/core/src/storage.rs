@@ -9,6 +9,7 @@ use crate::GoalId;
 use crate::Owner;
 use crate::SourceBatchId;
 use crate::dependency::{BlockedWakeCandidate, MemoryDependency};
+use crate::embedding_settings::{EmbeddingModelConfig, EmbeddingModelRef};
 use crate::inference::{
     BindInferenceTierRequest, BindInferenceTierResponse, InferenceTargetRow,
     InferenceTierBindingRow, RegisterInferenceTargetRequest, RegisterInferenceTargetResponse,
@@ -268,6 +269,54 @@ pub trait Storage: Send + Sync {
         &self,
         owner: &Owner,
     ) -> Result<Vec<InferenceTierBindingRow>, StorageError>;
+
+    /// Binary-wide embedding model settings.
+    async fn list_embedding_models(&self) -> Result<Vec<EmbeddingModelConfig>, StorageError> {
+        Err(StorageError::Internal(
+            "storage backend does not implement embedding model settings".into(),
+        ))
+    }
+
+    async fn get_embedding_active(&self) -> Result<Option<EmbeddingModelRef>, StorageError> {
+        Err(StorageError::Internal(
+            "storage backend does not implement embedding model settings".into(),
+        ))
+    }
+
+    async fn register_embedding_model(
+        &self,
+        _model: EmbeddingModelConfig,
+    ) -> Result<(), StorageError> {
+        Err(StorageError::Internal(
+            "storage backend does not implement embedding model settings".into(),
+        ))
+    }
+
+    async fn delete_embedding_model(
+        &self,
+        _vendor: &str,
+        _model_id: &str,
+    ) -> Result<bool, StorageError> {
+        Err(StorageError::Internal(
+            "storage backend does not implement embedding model settings".into(),
+        ))
+    }
+
+    async fn set_embedding_active(
+        &self,
+        _vendor: &str,
+        _model_id: &str,
+    ) -> Result<(), StorageError> {
+        Err(StorageError::Internal(
+            "storage backend does not implement embedding model settings".into(),
+        ))
+    }
+
+    async fn clear_embedding_active(&self) -> Result<bool, StorageError> {
+        Err(StorageError::Internal(
+            "storage backend does not implement embedding model settings".into(),
+        ))
+    }
 
     /// List configured personality instances for an owner. When
     /// `include_tombstoned` is `false` (the default for UI listings),

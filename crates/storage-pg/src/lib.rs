@@ -357,6 +357,58 @@ impl Storage for PgStorage {
             .map_err(settings_error_to_storage)
     }
 
+    async fn list_embedding_models(
+        &self,
+    ) -> Result<Vec<proxima_core::EmbeddingModelConfig>, StorageError> {
+        settings::list_embedding_models(&self.pool)
+            .await
+            .map(|rows| rows.into_iter().map(embedding_model_to_core).collect())
+            .map_err(settings_error_to_storage)
+    }
+
+    async fn get_embedding_active(
+        &self,
+    ) -> Result<Option<proxima_core::EmbeddingModelRef>, StorageError> {
+        settings::get_embedding_active(&self.pool)
+            .await
+            .map(|active| {
+                active
+                    .map(|(vendor, model_id)| proxima_core::EmbeddingModelRef { vendor, model_id })
+            })
+            .map_err(settings_error_to_storage)
+    }
+
+    async fn register_embedding_model(
+        &self,
+        model: proxima_core::EmbeddingModelConfig,
+    ) -> Result<(), StorageError> {
+        settings::register_embedding_model(&self.pool, embedding_model_from_core(model))
+            .await
+            .map_err(settings_error_to_storage)
+    }
+
+    async fn delete_embedding_model(
+        &self,
+        vendor: &str,
+        model_id: &str,
+    ) -> Result<bool, StorageError> {
+        settings::delete_embedding_model(&self.pool, vendor, model_id)
+            .await
+            .map_err(settings_error_to_storage)
+    }
+
+    async fn set_embedding_active(&self, vendor: &str, model_id: &str) -> Result<(), StorageError> {
+        settings::set_embedding_active(&self.pool, vendor, model_id)
+            .await
+            .map_err(settings_error_to_storage)
+    }
+
+    async fn clear_embedding_active(&self) -> Result<bool, StorageError> {
+        settings::clear_embedding_active(&self.pool)
+            .await
+            .map_err(settings_error_to_storage)
+    }
+
     async fn list_personality_instances(
         &self,
         owner: &Owner,
@@ -706,6 +758,28 @@ fn settings_error_to_storage(err: settings::SettingsError) -> StorageError {
                 "unknown embedding model {vendor:?}/{model_id:?}"
             ))
         }
+    }
+}
+
+fn embedding_model_to_core(model: settings::EmbeddingModel) -> proxima_core::EmbeddingModelConfig {
+    proxima_core::EmbeddingModelConfig {
+        vendor: model.vendor,
+        model_id: model.model_id,
+        base_url: model.base_url,
+        caps: model.caps,
+        secret_ref: model.secret_ref,
+    }
+}
+
+fn embedding_model_from_core(
+    model: proxima_core::EmbeddingModelConfig,
+) -> settings::EmbeddingModel {
+    settings::EmbeddingModel {
+        vendor: model.vendor,
+        model_id: model.model_id,
+        base_url: model.base_url,
+        caps: model.caps,
+        secret_ref: model.secret_ref,
     }
 }
 

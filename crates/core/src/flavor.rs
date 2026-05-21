@@ -729,7 +729,7 @@ mod tests {
     }
 
     #[test]
-    fn default_registry_includes_all_30_substrate_mcp_tools() {
+    fn default_registry_includes_all_36_substrate_mcp_tools() {
         let frozen = FlavorRegistry::new().freeze();
         let names: std::collections::HashSet<_> =
             frozen.list_mcp_tools().iter().map(|d| d.name).collect();
@@ -752,6 +752,12 @@ mod tests {
             "core/register_inference_target",
             "core/remove_inference_target",
             "core/bind_inference_tier",
+            "core/list_embedding_models",
+            "core/get_embedding_active",
+            "core/register_embedding_model",
+            "core/delete_embedding_model",
+            "core/set_embedding_active",
+            "core/clear_embedding_active",
             "core/list_substrate_tools",
             "core/list_workspace_tools",
             "core/list_schemas",
@@ -772,6 +778,6 @@ mod tests {
             !names.contains("core/emit_budget_decision"),
             "old intervention tool name must not remain registered"
         );
-        assert_eq!(names.len(), 30, "exactly 30 substrate tools registered");
+        assert_eq!(names.len(), 36, "exactly 36 substrate tools registered");
     }
 }
