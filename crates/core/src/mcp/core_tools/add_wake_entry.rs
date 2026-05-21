@@ -2,7 +2,7 @@
 
 use futures::future::BoxFuture;
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::mcp::core_tools::audit::{AuditEmit, emit_personality_config_changed};
 use crate::mcp::core_tools::payload::{
@@ -17,6 +17,7 @@ pub struct AddWakeEntryTool;
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct AddWakeEntryArgs {
     pub personality: String,
+    #[serde(deserialize_with = "deserialize_wake_entry_input")]
     pub entry: WakeEntryDraftInput,
 }
 
@@ -26,6 +27,17 @@ pub struct AddWakeEntryOutput {
     /// update_wake_entry, remove_wake_entry, or replay_wake_events.
     pub wake_entry: String,
     pub audit_emit_failed: Option<String>,
+}
+
+fn deserialize_wake_entry_input<'de, D>(deserializer: D) -> Result<WakeEntryDraftInput, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    if let Some(raw) = value.as_str() {
+        return serde_json::from_str(raw).map_err(serde::de::Error::custom);
+    }
+    serde_json::from_value(value).map_err(serde::de::Error::custom)
 }
 
 impl McpTool for AddWakeEntryTool {
@@ -92,5 +104,48 @@ impl McpTool for AddWakeEntryTool {
                 audit_emit_failed,
             })
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn add_wake_entry_accepts_object_entry() {
+        let args: AddWakeEntryArgs = serde_json::from_value(serde_json::json!({
+            "personality": "I1",
+            "entry": {
+                "trigger_kind": "on_memory",
+                "trigger_id": "core/chat-message-v1",
+                "label": "receive-chat-message",
+                "probability_promille": 1000,
+                "max_rounds": 2
+            }
+        }))
+        .expect("object entry");
+
+        assert_eq!(args.entry.trigger_id, "core/chat-message-v1");
+        assert_eq!(args.entry.max_rounds, 2);
+    }
+
+    #[test]
+    fn add_wake_entry_accepts_json_string_entry() {
+        let entry = serde_json::json!({
+            "trigger_kind": "on_memory",
+            "trigger_id": "core/chat-message-v1",
+            "label": "receive-chat-message",
+            "probability_promille": 1000,
+            "max_rounds": 2
+        })
+        .to_string();
+        let args: AddWakeEntryArgs = serde_json::from_value(serde_json::json!({
+            "personality": "I1",
+            "entry": entry
+        }))
+        .expect("string entry");
+
+        assert_eq!(args.entry.trigger_id, "core/chat-message-v1");
+        assert_eq!(args.entry.max_rounds, 2);
     }
 }

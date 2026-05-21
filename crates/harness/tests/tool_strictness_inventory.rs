@@ -150,6 +150,8 @@ fn writable_schema_generates_strict_emit_abstraction_wrapper() {
                 temperature: None,
                 max_completion_tokens: None,
                 reasoning_effort: None,
+
+                context_window_tokens: None,
             },
         },
         &bindings,
@@ -197,6 +199,8 @@ fn raw_emit_capability_is_not_provider_visible_without_projection() {
                 temperature: None,
                 max_completion_tokens: None,
                 reasoning_effort: None,
+
+                context_window_tokens: None,
             },
         },
         &bindings,

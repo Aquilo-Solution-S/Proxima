@@ -16,10 +16,10 @@ pub mod update_wake_entry;
 pub mod wake_entry_input;
 
 pub mod bind_inference_tier;
+pub mod chat;
 pub mod embedding_models;
 pub mod get_graph;
 pub mod get_personality;
-pub mod inquiry;
 pub mod instantiate_personality;
 pub mod list_edge_types;
 pub mod list_inference_targets;
@@ -29,6 +29,7 @@ pub mod list_read_scope;
 pub mod list_schemas;
 pub mod list_substrate_tools;
 pub mod list_wake_entries;
+pub mod list_wake_invocations;
 pub mod list_workspace_tools;
 pub mod register_inference_target;
 pub mod remove_inference_target;
@@ -39,15 +40,16 @@ pub use add_wake_entry::AddWakeEntryTool;
 pub use approval::{EmitApprovalPolicyTool, EmitApprovalVoteTool, TryEmitApprovalDecisionTool};
 pub use audit::{AuditEmit, emit_personality_config_changed};
 pub use bind_inference_tier::BindInferenceTierTool;
+pub use chat::{
+    CompactChatThreadTool, EmitChatMessageTool, EmitChatReplyTool, EndChatTool, GetChatThreadTool,
+    ListChatTargetsTool, RequestEndChatTool, StartChatTool,
+};
 pub use embedding_models::{
     ClearEmbeddingActiveTool, DeleteEmbeddingModelTool, GetEmbeddingActiveTool,
     ListEmbeddingModelsTool, RegisterEmbeddingModelTool, SetEmbeddingActiveTool,
 };
 pub use get_graph::GetGraphTool;
 pub use get_personality::GetPersonalityTool;
-pub use inquiry::{
-    EmitDirectedAnswerTool, EmitDirectedQuestionTool, GetInquiryThreadTool, ListInquiryTargetsTool,
-};
 pub use instantiate_personality::InstantiatePersonalityTool;
 pub use intervention::EmitInterventionDecisionTool;
 pub use list_edge_types::ListEdgeTypesTool;
@@ -58,6 +60,7 @@ pub use list_read_scope::ListReadScopeTool;
 pub use list_schemas::ListSchemasTool;
 pub use list_substrate_tools::ListSubstrateToolsTool;
 pub use list_wake_entries::ListWakeEntriesTool;
+pub use list_wake_invocations::{ListWakeInvocationsArgs, ListWakeInvocationsTool};
 pub use list_workspace_tools::ListWorkspaceToolsTool;
 pub use payload::{
     PersonalityConfigChangedCaller, PersonalityConfigChangedSubject, PersonalityConfigChangedV1,
@@ -82,6 +85,7 @@ pub(crate) fn register_all(registry: &mut crate::FlavorRegistry) {
     registry.add_substrate_mcp_tool::<InstantiatePersonalityTool>();
     registry.add_substrate_mcp_tool::<TombstonePersonalityTool>();
     registry.add_substrate_mcp_tool::<ListWakeEntriesTool>();
+    registry.add_substrate_mcp_tool::<ListWakeInvocationsTool>();
     registry.add_substrate_mcp_tool::<SetWakeEntriesTool>();
     registry.add_substrate_mcp_tool::<ListReadScopeTool>();
     registry.add_substrate_mcp_tool::<SetReadScopeTool>();
@@ -108,8 +112,12 @@ pub(crate) fn register_all(registry: &mut crate::FlavorRegistry) {
     registry.add_substrate_mcp_tool::<EmitApprovalVoteTool>();
     registry.add_substrate_mcp_tool::<TryEmitApprovalDecisionTool>();
     registry.add_substrate_mcp_tool::<EmitInterventionDecisionTool>();
-    registry.add_substrate_mcp_tool::<ListInquiryTargetsTool>();
-    registry.add_substrate_mcp_tool::<GetInquiryThreadTool>();
-    registry.add_substrate_mcp_tool::<EmitDirectedQuestionTool>();
-    registry.add_substrate_mcp_tool::<EmitDirectedAnswerTool>();
+    registry.add_substrate_mcp_tool::<ListChatTargetsTool>();
+    registry.add_substrate_mcp_tool::<GetChatThreadTool>();
+    registry.add_substrate_mcp_tool::<StartChatTool>();
+    registry.add_substrate_mcp_tool::<EmitChatMessageTool>();
+    registry.add_substrate_mcp_tool::<EmitChatReplyTool>();
+    registry.add_substrate_mcp_tool::<CompactChatThreadTool>();
+    registry.add_substrate_mcp_tool::<RequestEndChatTool>();
+    registry.add_substrate_mcp_tool::<EndChatTool>();
 }

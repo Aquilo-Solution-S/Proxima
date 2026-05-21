@@ -121,6 +121,8 @@ async fn workspace_review_loop_wake_entries_validate() -> Result<(), Box<dyn std
                 temperature: None,
                 max_completion_tokens: None,
                 reasoning_effort: None,
+
+                context_window_tokens: None,
             }),
         })
         .await?;

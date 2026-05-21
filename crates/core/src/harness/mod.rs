@@ -61,6 +61,7 @@ pub enum ProviderTarget {
         temperature: Option<f32>,
         max_completion_tokens: Option<u32>,
         reasoning_effort: Option<String>,
+        context_window_tokens: Option<u32>,
     },
     OpenAIChat {
         base_url: String,
@@ -68,17 +69,20 @@ pub enum ProviderTarget {
         api_key: String,
         temperature: Option<f32>,
         max_completion_tokens: Option<u32>,
+        context_window_tokens: Option<u32>,
     },
     OpenAIResponses {
         base_url: String,
         model_id: String,
         api_key: String,
         reasoning_effort: Option<String>,
+        context_window_tokens: Option<u32>,
     },
     ChatGPTCodex {
         base_url: String,
         model_id: String,
         reasoning_effort: Option<String>,
+        context_window_tokens: Option<u32>,
         /// `~/.codex/auth.json` location. The client constructs a fresh
         /// `CodexAuthResolver` per `tool_round` and pays the cost of a
         /// JSON read; refresh remains stateful in the file itself.

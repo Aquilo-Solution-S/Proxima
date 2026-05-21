@@ -2,6 +2,7 @@
 pub mod approval;
 pub mod auth;
 pub mod canonical_json;
+pub mod chat;
 pub mod citations;
 pub mod cursor;
 pub mod dependency;
@@ -12,7 +13,6 @@ pub mod flavor;
 pub mod harness;
 pub mod ids;
 pub mod inference;
-pub mod inquiry;
 pub mod intervention;
 pub mod llm;
 pub mod mcp;
@@ -32,6 +32,7 @@ pub mod workspace_run;
 pub use approval::*;
 pub use auth::*;
 pub use canonical_json::canonical_json;
+pub use chat::*;
 pub use citations::*;
 pub use cursor::*;
 pub use dependency::*;
@@ -47,7 +48,6 @@ pub use inference::{
     RegisterInferenceTargetRequest, RegisterInferenceTargetResponse, RemoveInferenceTargetRequest,
     RemoveInferenceTargetResponse,
 };
-pub use inquiry::*;
 pub use intervention::*;
 pub use llm::*;
 pub use mcp::{

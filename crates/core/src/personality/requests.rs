@@ -9,7 +9,7 @@
 
 use uuid::Uuid;
 
-use crate::Owner;
+use crate::{MemoryId, Owner};
 
 use super::drafts::WakeEntryDraft;
 use super::personality::PersonalityInstanceId;
@@ -78,6 +78,8 @@ pub struct ListWakeInvocationsRequest {
     pub owner: Owner,
     pub personality_instance_id: PersonalityInstanceId,
     pub wake_entry_id: Option<Uuid>,
+    pub triggering_memory_id: Option<MemoryId>,
+    pub change_event_seq: Option<Uuid>,
     pub limit: u16,
 }
 

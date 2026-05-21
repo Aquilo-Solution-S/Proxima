@@ -360,6 +360,8 @@ async fn configure_execution_worker(
             temperature: None,
             max_completion_tokens: None,
             reasoning_effort: None,
+
+            context_window_tokens: None,
         }),
     })
     .await?;
@@ -1032,6 +1034,8 @@ async fn accepted_goal_wakes_planner_and_emits_execution_request()
                 temperature: None,
                 max_completion_tokens: None,
                 reasoning_effort: None,
+
+                context_window_tokens: None,
             }),
         })
         .await?;

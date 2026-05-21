@@ -102,6 +102,8 @@ async fn codex_wake_round_completes_without_provider_not_yet_supported() {
             model_id: "gpt-5.5".into(),
             reasoning_effort: None,
             auth_json,
+
+            context_window_tokens: None,
         },
     };
     let ctx = HarnessContext {

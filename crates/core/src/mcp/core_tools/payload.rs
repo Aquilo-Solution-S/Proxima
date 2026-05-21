@@ -95,6 +95,7 @@ pub enum InferenceTargetConfigSnapshot {
         temperature: Option<f32>,
         max_completion_tokens: Option<u32>,
         reasoning_effort: Option<String>,
+        context_window_tokens: Option<u32>,
     },
     OpenAIChat {
         base_url: String,
@@ -102,18 +103,21 @@ pub enum InferenceTargetConfigSnapshot {
         api_key_env: String,
         temperature: Option<f32>,
         max_completion_tokens: Option<u32>,
+        context_window_tokens: Option<u32>,
     },
     OpenAIResponses {
         base_url: String,
         model_id: String,
         api_key_env: String,
         reasoning_effort: Option<String>,
+        context_window_tokens: Option<u32>,
     },
     #[serde(rename = "chatgpt_codex")]
     ChatGPTCodex {
         base_url: String,
         model_id: String,
         reasoning_effort: Option<String>,
+        context_window_tokens: Option<u32>,
     },
 }
 
@@ -127,6 +131,7 @@ impl From<&InferenceTargetConfig> for InferenceTargetConfigSnapshot {
                 temperature: cfg.temperature,
                 max_completion_tokens: cfg.max_completion_tokens,
                 reasoning_effort: cfg.reasoning_effort.clone(),
+                context_window_tokens: cfg.context_window_tokens,
             },
             InferenceTargetConfig::OpenAIChat(cfg) => Self::OpenAIChat {
                 base_url: cfg.base_url.clone(),
@@ -134,17 +139,20 @@ impl From<&InferenceTargetConfig> for InferenceTargetConfigSnapshot {
                 api_key_env: cfg.api_key_env.clone(),
                 temperature: cfg.temperature,
                 max_completion_tokens: cfg.max_completion_tokens,
+                context_window_tokens: cfg.context_window_tokens,
             },
             InferenceTargetConfig::OpenAIResponses(cfg) => Self::OpenAIResponses {
                 base_url: cfg.base_url.clone(),
                 model_id: cfg.model_id.clone(),
                 api_key_env: cfg.api_key_env.clone(),
                 reasoning_effort: cfg.reasoning_effort.clone(),
+                context_window_tokens: cfg.context_window_tokens,
             },
             InferenceTargetConfig::ChatGPTCodex(cfg) => Self::ChatGPTCodex {
                 base_url: cfg.base_url.clone(),
                 model_id: cfg.model_id.clone(),
                 reasoning_effort: cfg.reasoning_effort.clone(),
+                context_window_tokens: cfg.context_window_tokens,
             },
         }
     }

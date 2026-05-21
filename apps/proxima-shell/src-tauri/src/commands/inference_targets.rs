@@ -31,6 +31,7 @@ pub struct MistralChatConfigTs {
     pub temperature: Option<f32>,
     pub max_completion_tokens: Option<u32>,
     pub reasoning_effort: Option<String>,
+    pub context_window_tokens: Option<u32>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
@@ -40,6 +41,7 @@ pub struct OpenAIChatConfigTs {
     pub api_key_env: String,
     pub temperature: Option<f32>,
     pub max_completion_tokens: Option<u32>,
+    pub context_window_tokens: Option<u32>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
@@ -48,6 +50,7 @@ pub struct OpenAIResponsesConfigTs {
     pub model_id: String,
     pub api_key_env: String,
     pub reasoning_effort: Option<String>,
+    pub context_window_tokens: Option<u32>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
@@ -55,6 +58,7 @@ pub struct ChatGPTCodexConfigTs {
     pub base_url: String,
     pub model_id: String,
     pub reasoning_effort: Option<String>,
+    pub context_window_tokens: Option<u32>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
@@ -122,6 +126,7 @@ fn config_to_core(config: InferenceTargetConfigTs) -> InferenceTargetConfig {
                 temperature: config.temperature,
                 max_completion_tokens: config.max_completion_tokens,
                 reasoning_effort: config.reasoning_effort,
+                context_window_tokens: config.context_window_tokens,
             })
         }
         InferenceTargetConfigTs::OpenAIChat(config) => {
@@ -131,6 +136,7 @@ fn config_to_core(config: InferenceTargetConfigTs) -> InferenceTargetConfig {
                 api_key_env: config.api_key_env,
                 temperature: config.temperature,
                 max_completion_tokens: config.max_completion_tokens,
+                context_window_tokens: config.context_window_tokens,
             })
         }
         InferenceTargetConfigTs::OpenAIResponses(config) => {
@@ -139,6 +145,7 @@ fn config_to_core(config: InferenceTargetConfigTs) -> InferenceTargetConfig {
                 model_id: config.model_id,
                 api_key_env: config.api_key_env,
                 reasoning_effort: config.reasoning_effort,
+                context_window_tokens: config.context_window_tokens,
             })
         }
         InferenceTargetConfigTs::ChatGPTCodex(config) => {
@@ -146,6 +153,7 @@ fn config_to_core(config: InferenceTargetConfigTs) -> InferenceTargetConfig {
                 base_url: config.base_url,
                 model_id: config.model_id,
                 reasoning_effort: config.reasoning_effort,
+                context_window_tokens: config.context_window_tokens,
             })
         }
     }
@@ -161,6 +169,7 @@ fn config_from_core(config: &InferenceTargetConfig) -> InferenceTargetConfigTs {
                 temperature: config.temperature,
                 max_completion_tokens: config.max_completion_tokens,
                 reasoning_effort: config.reasoning_effort.clone(),
+                context_window_tokens: config.context_window_tokens,
             })
         }
         InferenceTargetConfig::OpenAIChat(config) => {
@@ -170,6 +179,7 @@ fn config_from_core(config: &InferenceTargetConfig) -> InferenceTargetConfigTs {
                 api_key_env: config.api_key_env.clone(),
                 temperature: config.temperature,
                 max_completion_tokens: config.max_completion_tokens,
+                context_window_tokens: config.context_window_tokens,
             })
         }
         InferenceTargetConfig::OpenAIResponses(config) => {
@@ -178,6 +188,7 @@ fn config_from_core(config: &InferenceTargetConfig) -> InferenceTargetConfigTs {
                 model_id: config.model_id.clone(),
                 api_key_env: config.api_key_env.clone(),
                 reasoning_effort: config.reasoning_effort.clone(),
+                context_window_tokens: config.context_window_tokens,
             })
         }
         InferenceTargetConfig::ChatGPTCodex(config) => {
@@ -185,6 +196,7 @@ fn config_from_core(config: &InferenceTargetConfig) -> InferenceTargetConfigTs {
                 base_url: config.base_url.clone(),
                 model_id: config.model_id.clone(),
                 reasoning_effort: config.reasoning_effort.clone(),
+                context_window_tokens: config.context_window_tokens,
             })
         }
     }

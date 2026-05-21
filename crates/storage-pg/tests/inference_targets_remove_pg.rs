@@ -17,6 +17,8 @@ fn request(owner: proxima_core::Owner, target_ref: &str) -> RegisterInferenceTar
             temperature: None,
             max_completion_tokens: None,
             reasoning_effort: None,
+
+            context_window_tokens: None,
         }),
     }
 }

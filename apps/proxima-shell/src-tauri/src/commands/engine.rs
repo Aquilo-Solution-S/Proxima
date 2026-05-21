@@ -164,6 +164,8 @@ pub struct ListWakeInvocationsTs {
     pub owner: Owner,
     pub personality_instance_id: String,
     pub wake_entry_id: Option<String>,
+    pub triggering_memory_id: Option<String>,
+    pub change_event_seq: Option<String>,
     pub limit: u16,
 }
 
@@ -429,11 +431,26 @@ pub async fn list_wake_invocations(
             .map(uuid::Uuid::parse_str)
             .transpose()
             .map_err(|e| ProtocolError::internal(format!("wake_entry_id: {e}")))?;
+        let triggering_memory_id = req
+            .triggering_memory_id
+            .as_deref()
+            .map(uuid::Uuid::parse_str)
+            .transpose()
+            .map_err(|e| ProtocolError::internal(format!("triggering_memory_id: {e}")))?
+            .map(MemoryId::new);
+        let change_event_seq = req
+            .change_event_seq
+            .as_deref()
+            .map(uuid::Uuid::parse_str)
+            .transpose()
+            .map_err(|e| ProtocolError::internal(format!("change_event_seq: {e}")))?;
         let rows = engine
             .list_wake_invocations(ListWakeInvocationsRequest {
                 owner: req.owner,
                 personality_instance_id: PersonalityInstanceId::new(instance_id),
                 wake_entry_id,
+                triggering_memory_id,
+                change_event_seq,
                 limit: req.limit,
             })
             .await?;

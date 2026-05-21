@@ -159,6 +159,7 @@ pub fn inference_config_to_proto(config: &InferenceTargetConfig) -> pb::Inferenc
             temperature: config.temperature,
             max_completion_tokens: config.max_completion_tokens,
             reasoning_effort: config.reasoning_effort.clone(),
+            context_window_tokens: config.context_window_tokens,
         }),
         InferenceTargetConfig::OpenAIChat(config) => Kind::OpenaiChat(pb::OpenAiChatConfig {
             base_url: config.base_url.clone(),
@@ -166,6 +167,7 @@ pub fn inference_config_to_proto(config: &InferenceTargetConfig) -> pb::Inferenc
             api_key_env: config.api_key_env.clone(),
             temperature: config.temperature,
             max_completion_tokens: config.max_completion_tokens,
+            context_window_tokens: config.context_window_tokens,
         }),
         InferenceTargetConfig::OpenAIResponses(config) => {
             Kind::OpenaiResponses(pb::OpenAiResponsesConfig {
@@ -173,12 +175,14 @@ pub fn inference_config_to_proto(config: &InferenceTargetConfig) -> pb::Inferenc
                 model_id: config.model_id.clone(),
                 api_key_env: config.api_key_env.clone(),
                 reasoning_effort: config.reasoning_effort.clone(),
+                context_window_tokens: config.context_window_tokens,
             })
         }
         InferenceTargetConfig::ChatGPTCodex(config) => Kind::ChatgptCodex(pb::ChatGptCodexConfig {
             base_url: config.base_url.clone(),
             model_id: config.model_id.clone(),
             reasoning_effort: config.reasoning_effort.clone(),
+            context_window_tokens: config.context_window_tokens,
         }),
     };
     pb::InferenceTargetConfig { kind: Some(kind) }
@@ -197,6 +201,7 @@ pub fn inference_config_from_proto(
                 temperature: config.temperature,
                 max_completion_tokens: config.max_completion_tokens,
                 reasoning_effort: config.reasoning_effort,
+                context_window_tokens: config.context_window_tokens,
             }))
         }
         Some(Kind::OpenaiChat(config)) => Ok(InferenceTargetConfig::OpenAIChat(OpenAIChatConfig {
@@ -205,6 +210,7 @@ pub fn inference_config_from_proto(
             api_key_env: config.api_key_env,
             temperature: config.temperature,
             max_completion_tokens: config.max_completion_tokens,
+            context_window_tokens: config.context_window_tokens,
         })),
         Some(Kind::OpenaiResponses(config)) => Ok(InferenceTargetConfig::OpenAIResponses(
             OpenAIResponsesConfig {
@@ -212,6 +218,7 @@ pub fn inference_config_from_proto(
                 model_id: config.model_id,
                 api_key_env: config.api_key_env,
                 reasoning_effort: config.reasoning_effort,
+                context_window_tokens: config.context_window_tokens,
             },
         )),
         Some(Kind::ChatgptCodex(config)) => {
@@ -219,6 +226,7 @@ pub fn inference_config_from_proto(
                 base_url: config.base_url,
                 model_id: config.model_id,
                 reasoning_effort: config.reasoning_effort,
+                context_window_tokens: config.context_window_tokens,
             }))
         }
         None => Err(Status::invalid_argument(

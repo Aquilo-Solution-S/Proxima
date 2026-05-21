@@ -2584,6 +2584,8 @@ async fn workspace_wake_emits_run_fact_and_edges() -> Result<(), Box<dyn std::er
                 temperature: None,
                 max_completion_tokens: None,
                 reasoning_effort: None,
+
+                context_window_tokens: None,
             }),
         })
         .await?;

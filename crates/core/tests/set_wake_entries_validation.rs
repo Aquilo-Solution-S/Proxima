@@ -602,6 +602,8 @@ async fn valid_target_calls_storage() {
                     temperature: None,
                     max_completion_tokens: None,
                     reasoning_effort: None,
+
+                    context_window_tokens: None,
                 },
             ),
             created_at: time::OffsetDateTime::UNIX_EPOCH,

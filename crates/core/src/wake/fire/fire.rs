@@ -41,7 +41,7 @@ use crate::workspace_run::{
 };
 use crate::{
     GoalId, InterventionRequestPersistInput, InterventionRequestedV1, MemoryId, Owner,
-    SourceBatchId, SourceId, inquiry,
+    SourceBatchId, SourceId, chat,
 };
 
 use super::finalize::{
@@ -1251,7 +1251,7 @@ async fn build_context_params(
             handles,
         ))?,
     );
-    let coordination_context = inquiry::build_wake_coordination_context(
+    let coordination_context = chat::build_wake_coordination_context(
         engine,
         &input.owner,
         input.personality_instance_id,
@@ -1340,12 +1340,12 @@ fn project_triggering_memory(
 }
 
 fn project_coordination_context(
-    context: &inquiry::WakeCoordinationContext,
+    context: &chat::WakeCoordinationContext,
     handles: &HandleTable,
 ) -> serde_json::Value {
     serde_json::json!({
-        "askable_personalities": context
-            .askable_personalities
+        "chat_targets": context
+            .chat_targets
             .iter()
             .map(|target| {
                 serde_json::json!({
@@ -1358,8 +1358,8 @@ fn project_coordination_context(
                         .assign_perspective_memory(MemoryId::new(target.root_perspective_memory_id))
                         .as_str()
                         .to_string(),
-                    "directed_question_wake_entries": target
-                        .directed_question_wake_entry_ids
+                    "chat_message_wake_entries": target
+                        .chat_message_wake_entry_ids
                         .iter()
                         .map(|id| handles.assign_wake_entry(*id).as_str().to_string())
                         .collect::<Vec<_>>(),
@@ -1384,10 +1384,7 @@ fn project_coordination_context(
     })
 }
 
-fn project_wake_path_node(
-    node: &inquiry::WakePathNode,
-    handles: &HandleTable,
-) -> serde_json::Value {
+fn project_wake_path_node(node: &chat::WakePathNode, handles: &HandleTable) -> serde_json::Value {
     serde_json::json!({
         "personality": handles
             .assign_personality(PersonalityInstanceId::new(node.personality_instance_id))
@@ -1554,8 +1551,8 @@ fn fact_memory_field(normalized: &str) -> bool {
             | "workspace_decision_memory_id"
             | "execution_request_memory_id"
             | "prior_execution_request_memory_id"
-            | "question_memory_id"
-            | "answer_memory_id"
+            | "message_memory_id"
+            | "reply_memory_id"
     )
 }
 
@@ -1983,6 +1980,9 @@ mod tests {
             }),
         };
 
-        assert_eq!(wake_context_change_event_seq(&input), original_change_event_seq);
+        assert_eq!(
+            wake_context_change_event_seq(&input),
+            original_change_event_seq
+        );
     }
 }
