@@ -254,17 +254,62 @@ fn common_candidates_sql(
     sidecars: &[&SchemaInfo],
     next_param: &mut usize,
 ) -> Result<String, StorageError> {
-    let mut sql = String::from("WITH candidates AS (SELECT m.memory_id, ");
-    sql.push_str(
-        "m.owner_principal_kind, m.owner_principal_id, \
-         COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind, m.schema_id, m.wake_chain_depth, ",
-    );
-    push_search_text_expr(&mut sql, sidecars, *next_param)?;
+    let sidecar_first_param = *next_param;
     *next_param += sidecars.len() * 2;
+    let schema_filter_param = req.schema_id.as_ref().map(|_| {
+        let param = *next_param;
+        *next_param += 1;
+        param
+    });
+    let reader_param = req.reader_personality_instance_id.map(|_| {
+        let param = *next_param;
+        *next_param += 1;
+        param
+    });
+
+    let mut sql = String::from("WITH candidates AS (");
+    push_candidate_branch_prefix(&mut sql);
+    sql.push_str("COALESCE(m.text, '') AS search_text FROM proxima_core.memories m");
+    push_base_memory_filters(&mut sql, req, schema_filter_param, reader_param);
+    sql.push_str(" AND NULLIF(m.text, '') IS NOT NULL");
+
+    for (idx, schema) in sidecars.iter().enumerate() {
+        let table = PgIdent::table(schema.sidecar_table.as_ref().unwrap())?;
+        let schema_param = sidecar_first_param + (idx * 2);
+        let version_param = schema_param + 1;
+        sql.push_str(" UNION ALL ");
+        push_candidate_branch_prefix(&mut sql);
+        write!(
+            sql,
+            "COALESCE(row_to_json(s)::text, '') AS search_text
+             FROM proxima_core.memories m
+             JOIN {table} s ON s.memory_id = m.memory_id",
+            table = table.as_str()
+        )
+        .expect("write to String is infallible");
+        push_sidecar_memory_filters(&mut sql, schema_param, version_param, reader_param);
+    }
+
+    sql.push(')');
+    Ok(sql)
+}
+
+fn push_candidate_branch_prefix(sql: &mut String) {
     sql.push_str(
-        " AS search_text
-         FROM proxima_core.memories m
-         WHERE m.owner_principal_kind = $1
+        "SELECT m.memory_id, m.owner_principal_kind, m.owner_principal_id, \
+         COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind, \
+         m.schema_id, m.wake_chain_depth, ",
+    );
+}
+
+fn push_base_memory_filters(
+    sql: &mut String,
+    req: &MemorySearchRequest,
+    schema_filter_param: Option<usize>,
+    reader_param: Option<usize>,
+) {
+    sql.push_str(
+        " WHERE m.owner_principal_kind = $1
            AND m.owner_principal_id = $2",
     );
     match req.kind {
@@ -274,60 +319,50 @@ fn common_candidates_sql(
         Some(EntityKind::Perspective) => sql.push_str(" AND m.kind = 'Perspective'"),
         Some(EntityKind::Goal) => sql.push_str(" AND false"),
     }
-    if req.schema_id.is_some() {
-        write!(sql, " AND m.schema_id = ${}", *next_param).expect("write to String is infallible");
-        *next_param += 1;
+    if let Some(param) = schema_filter_param {
+        write!(sql, " AND m.schema_id = ${param}").expect("write to String is infallible");
     }
-    if req.reader_personality_instance_id.is_some() {
+    push_reader_visibility_filter(sql, reader_param);
+}
+
+fn push_sidecar_memory_filters(
+    sql: &mut String,
+    schema_param: usize,
+    version_param: usize,
+    reader_param: Option<usize>,
+) {
+    write!(
+        sql,
+        " WHERE m.owner_principal_kind = $1
+           AND m.owner_principal_id = $2
+           AND m.schema_id = ${schema_param}
+           AND m.schema_version = ${version_param}
+           AND NULLIF(m.text, '') IS NULL"
+    )
+    .expect("write to String is infallible");
+    push_reader_visibility_filter(sql, reader_param);
+}
+
+fn push_reader_visibility_filter(sql: &mut String, reader_param: Option<usize>) {
+    if let Some(param) = reader_param {
         write!(
             sql,
             " AND (
                 m.kind IS NULL
-                OR m.personality_instance_id = ${}
+                OR m.personality_instance_id = ${param}
                 OR EXISTS (
                     SELECT 1
                       FROM proxima_core.read_scope_matrix r
                      WHERE r.owner_principal_kind = m.owner_principal_kind
                        AND r.owner_principal_id = m.owner_principal_id
                        AND r.owner_org_id = m.owner_org_id
-                       AND r.reader_personality_instance_id = ${}
+                       AND r.reader_personality_instance_id = ${param}
                        AND r.readable_personality_instance_id = m.personality_instance_id
                 )
-            )",
-            *next_param, *next_param
-        )
-        .expect("write to String is infallible");
-        *next_param += 1;
-    }
-    sql.push(')');
-    Ok(sql)
-}
-
-fn push_search_text_expr(
-    sql: &mut String,
-    sidecars: &[&SchemaInfo],
-    first_param: usize,
-) -> Result<(), StorageError> {
-    if sidecars.is_empty() {
-        sql.push_str("COALESCE(m.text, '')");
-        return Ok(());
-    }
-    sql.push_str("COALESCE(m.text, CASE");
-    for (idx, schema) in sidecars.iter().enumerate() {
-        let table = PgIdent::table(schema.sidecar_table.as_ref().unwrap())?;
-        let schema_param = first_param + (idx * 2);
-        let version_param = schema_param + 1;
-        write!(
-            sql,
-            " WHEN m.schema_id = ${schema_param} AND m.schema_version = ${version_param}
-              THEN COALESCE((SELECT row_to_json(s)::text FROM {table} s
-                             WHERE s.memory_id = m.memory_id), '')",
-            table = table.as_str()
+            )"
         )
         .expect("write to String is infallible");
     }
-    sql.push_str(" ELSE '' END, '')");
-    Ok(())
 }
 
 fn bind_common<'q>(
@@ -347,23 +382,34 @@ fn memory_sidecars<'a>(
     req: &MemorySearchRequest,
     schemas: &'a [SchemaInfo],
 ) -> Vec<&'a SchemaInfo> {
-    schemas
-        .iter()
-        .filter(|schema| {
-            schema.sidecar_table.is_some()
-                && matches!(
-                    schema.kind,
-                    PayloadKind::Fact | PayloadKind::Abstraction | PayloadKind::Perspective
-                )
-                && req
-                    .kind
-                    .is_none_or(|kind| schema.kind == payload_kind_for_entity_kind(kind))
-                && req
-                    .schema_id
-                    .as_ref()
-                    .is_none_or(|schema_id| schema.schema_id == *schema_id)
-        })
-        .collect()
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for schema in schemas {
+        if schema.sidecar_table.is_some()
+            && matches!(
+                schema.kind,
+                PayloadKind::Fact | PayloadKind::Abstraction | PayloadKind::Perspective
+            )
+            && req
+                .kind
+                .is_none_or(|kind| schema.kind == payload_kind_for_entity_kind(kind))
+            && req
+                .schema_id
+                .as_ref()
+                .is_none_or(|schema_id| schema.schema_id == *schema_id)
+        {
+            let key = (
+                schema.kind,
+                schema.schema_id.as_str().to_string(),
+                schema.schema_version.into_inner(),
+                schema.sidecar_table.as_ref().cloned(),
+            );
+            if seen.insert(key) {
+                out.push(schema);
+            }
+        }
+    }
+    out
 }
 
 fn payload_kind_for_entity_kind(kind: EntityKind) -> PayloadKind {
