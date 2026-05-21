@@ -313,6 +313,30 @@ enum GoalScope {
   GOAL_SCOPE_TRIGGER_GOAL_ASSIGNED = 2;
 }
 
+enum WorkspaceFinalize {
+  WORKSPACE_FINALIZE_UNSPECIFIED = 0;
+  WORKSPACE_FINALIZE_COMMIT_ALL = 1;
+  WORKSPACE_FINALIZE_LEAVE_DIRTY = 2;
+}
+
+message GitWorktreeWorkspaceBinding {
+  string repo_path = 1;
+  string base_ref = 2;
+  WorkspaceFinalize finalize = 3;
+  optional string worktrees_root = 4;
+}
+
+message RegisteredRunnerWorkspaceBinding {
+  string flavor_id = 1;
+}
+
+message WorkspaceBinding {
+  oneof kind {
+    GitWorktreeWorkspaceBinding git_worktree = 1;
+    RegisteredRunnerWorkspaceBinding registered_runner = 2;
+  }
+}
+
 message WakeEntry {
   string wake_entry_id = 1;
   TriggerKind trigger_kind = 2;
@@ -329,6 +353,7 @@ message WakeEntry {
   uint32 max_rounds = 14;
   optional string disabled_reason = 15;
   GoalScope goal_scope = 16;
+  optional WorkspaceBinding workspace_binding = 17;
 }
 
 message WakeEntryDraft {
@@ -345,6 +370,7 @@ message WakeEntryDraft {
   repeated string workspace_tool_palette = 12;
   uint32 max_rounds = 13;
   GoalScope goal_scope = 14;
+  optional WorkspaceBinding workspace_binding = 15;
 }
 
 message InferenceTarget {

@@ -100,6 +100,7 @@ Wake entry fields:
 pub struct WakeEntryDraft {
     pub substrate_tool_palette: Vec<String>,
     pub workspace_tool_palette: Vec<String>,
+    pub workspace_binding: Option<WakeWorkspaceBinding>,
     pub execution_mode: WakeExecutionMode,
     pub trigger_id: String,
 }
@@ -117,8 +118,13 @@ Workspace mode also requires:
 | Check | Source |
 |---|---|
 | `execution_mode == Workspace` implies `trigger_kind == OnMemory` | core validation |
-| `trigger_id` is workspace-eligible | `FlavorRegistryFrozen::is_workspace_trigger()` |
-| runner exists for the trigger flavor | `FlavorRegistryFrozen::workspace_runner(flavor_id)` at fire time |
+| `workspace_binding` is present | core validation |
+| `GitWorktree` binding | core git worktree prepare/finalize |
+| `RegisteredRunner { flavor_id }` binding | `FlavorRegistryFrozen::workspace_runner(flavor_id)` |
+| registered-runner `trigger_id` is workspace-eligible | `FlavorRegistryFrozen::is_workspace_trigger()` |
+
+No trigger-prefix fallback. A wake with `execution_mode == Workspace`
+and no binding is invalid.
 
 ## Invocation Flow
 

@@ -69,7 +69,7 @@ Supported keys:
 | `edge_schemas` | `EdgePayload` sidecar schemas for typed relations. |
 | `relations` | `RelationDescriptor` values. |
 | `mcp_tools` | Flavor MCP tools; tool names must use the flavor prefix. |
-| `workspace_runner` | Optional runner for workspace execution. |
+| `workspace_runner` | Optional runner selected by explicit wake `workspace_binding`. |
 | `workspace_triggers` | Optional schema ids that may wake the workspace runner. |
 
 Unknown keys are compile errors. Macro-registered schemas, relations,
@@ -205,7 +205,7 @@ per flavor id:
 
 1. Each schema, relation, MCP tool, and workspace trigger keeps its
    flavor prefix.
-2. Workspace runners are looked up by flavor id.
+2. Workspace runners are looked up by explicit wake `workspace_binding`.
 3. Cross-flavor reads obey owner/read-scope rules.
 4. Cross-flavor edges must use registered relation descriptors.
 5. Composite binaries do not introduce ad-hoc runtime vocabulary.

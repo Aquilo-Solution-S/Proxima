@@ -1,6 +1,6 @@
 //! Typed-error paths through the set_wake_entries validation pipeline.
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use proxima_core::inference::set_wake_entries::{SetWakeEntriesContext, set_wake_entries};
@@ -28,7 +28,8 @@ use proxima_core::{
     SidecarSpec, SourceBatchId, TombstonePersonalityRequest, TombstonePersonalityResponse, UserId,
     WakeDispatchEntryRow, WakeEntryAuthoredBy, WakeEntryDraft, WakeEntryTriggerKind,
     WakeExecutionMode, WakeInvocationFinalize, WakeInvocationStart, WakeInvocationStatus,
-    WakeWorkspaceBinding, WakeWorkspaceFinalize,
+    WakeWorkspaceBinding, WakeWorkspaceFinalize, WorkspaceFinalizeInput, WorkspacePrepareInput,
+    WorkspacePreparedRun, WorkspaceRunRecord, WorkspaceRunner, WorkspaceRunnerError,
 };
 use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize};
@@ -399,6 +400,33 @@ fn registry() -> proxima_core::FlavorRegistryFrozen {
     FlavorRegistry::new().freeze()
 }
 
+fn registry_with_workspace_runner() -> proxima_core::FlavorRegistryFrozen {
+    #[derive(Debug)]
+    struct ProbeRunner;
+
+    #[async_trait]
+    impl WorkspaceRunner for ProbeRunner {
+        async fn prepare(
+            &self,
+            _input: WorkspacePrepareInput<'_>,
+        ) -> Result<WorkspacePreparedRun, WorkspaceRunnerError> {
+            Err(WorkspaceRunnerError::Unimplemented)
+        }
+
+        async fn finalize(
+            &self,
+            _input: WorkspaceFinalizeInput<'_>,
+        ) -> Result<WorkspaceRunRecord, WorkspaceRunnerError> {
+            Err(WorkspaceRunnerError::Unimplemented)
+        }
+    }
+
+    let mut registry = FlavorRegistry::new();
+    registry.add_workspace_runner("probe", Arc::new(ProbeRunner));
+    registry.add_workspace_trigger("schema-a");
+    registry.freeze()
+}
+
 fn owner() -> Owner {
     Owner {
         principal: Principal::User(UserId::new(Uuid::nil())),
@@ -562,6 +590,22 @@ async fn substrate_tool_id_in_workspace_palette_is_rejected() {
 }
 
 #[tokio::test]
+async fn workspace_mode_requires_workspace_binding() {
+    let storage = FixtureStorage::default();
+    let registry = registry();
+    let ctx = SetWakeEntriesContext {
+        storage: &storage,
+        registry: &registry,
+    };
+    let mut draft = entry("schema-a");
+    draft.execution_mode = WakeExecutionMode::Workspace;
+    draft.workspace_tool_palette = vec!["core-workspace/text_editor".into()];
+    let err = set_wake_entries(&ctx, &req(vec![draft])).await.unwrap_err();
+    assert_eq!(err.code, ErrorCode::InvalidArgument);
+    assert!(err.message.contains("workspace_binding"));
+}
+
+#[tokio::test]
 async fn workspace_binding_allows_non_registry_workspace_trigger() {
     let storage = FixtureStorage::default();
     let registry = registry();
@@ -580,6 +624,44 @@ async fn workspace_binding_allows_non_registry_workspace_trigger() {
     });
     let err = set_wake_entries(&ctx, &req(vec![draft])).await.unwrap_err();
     assert_eq!(err.code, ErrorCode::TierUnbound);
+}
+
+#[tokio::test]
+async fn registered_runner_requires_registered_trigger() {
+    let storage = FixtureStorage::default();
+    let registry = registry_with_workspace_runner();
+    let ctx = SetWakeEntriesContext {
+        storage: &storage,
+        registry: &registry,
+    };
+    let mut draft = entry("unregistered-schema");
+    draft.execution_mode = WakeExecutionMode::Workspace;
+    draft.workspace_tool_palette = vec!["core-workspace/text_editor".into()];
+    draft.workspace_binding = Some(WakeWorkspaceBinding::RegisteredRunner {
+        flavor_id: "probe".into(),
+    });
+    let err = set_wake_entries(&ctx, &req(vec![draft])).await.unwrap_err();
+    assert_eq!(err.code, ErrorCode::InvalidArgument);
+    assert!(err.message.contains("trigger_id"));
+}
+
+#[tokio::test]
+async fn registered_runner_requires_registered_runner() {
+    let storage = FixtureStorage::default();
+    let registry = registry();
+    let ctx = SetWakeEntriesContext {
+        storage: &storage,
+        registry: &registry,
+    };
+    let mut draft = entry("schema-a");
+    draft.execution_mode = WakeExecutionMode::Workspace;
+    draft.workspace_tool_palette = vec!["core-workspace/text_editor".into()];
+    draft.workspace_binding = Some(WakeWorkspaceBinding::RegisteredRunner {
+        flavor_id: "missing".into(),
+    });
+    let err = set_wake_entries(&ctx, &req(vec![draft])).await.unwrap_err();
+    assert_eq!(err.code, ErrorCode::InvalidArgument);
+    assert!(err.message.contains("workspace_binding"));
 }
 
 #[tokio::test]

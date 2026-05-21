@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::McpTool;
 use crate::intervention::InterventionPolicy;
 use crate::mcp::{McpToolCtx, McpToolError};
-use crate::personality::PersonalityStatus;
+use crate::personality::{PersonalityStatus, WakeWorkspaceBinding};
 
 #[derive(Debug, Default)]
 pub struct GetPersonalityTool;
@@ -34,6 +34,7 @@ pub struct GetPersonalityWakeEntry {
     pub inference_target_ref: Option<String>,
     pub substrate_tool_palette: Vec<String>,
     pub workspace_tool_palette: Vec<String>,
+    pub workspace_binding: Option<WakeWorkspaceBinding>,
     pub execution_mode: String,
     pub authored_by: String,
     pub probability_promille: u16,
@@ -102,6 +103,7 @@ impl McpTool for GetPersonalityTool {
                     inference_target_ref: e.inference_target_ref,
                     substrate_tool_palette: e.substrate_tool_palette,
                     workspace_tool_palette: e.workspace_tool_palette,
+                    workspace_binding: e.workspace_binding,
                     execution_mode: format!("{:?}", e.execution_mode),
                     authored_by: format!("{:?}", e.authored_by),
                     probability_promille: e.probability_promille,

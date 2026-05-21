@@ -85,6 +85,7 @@ const entryToDraft = (
   inference_target_ref: entry.inference_target_ref,
   substrate_tool_palette: [...entry.substrate_tool_palette],
   workspace_tool_palette: [...entry.workspace_tool_palette],
+  workspace_binding: entry.workspace_binding,
   max_rounds: entry.max_rounds,
 });
 

@@ -8,6 +8,7 @@ use crate::storage::{Storage, StorageError};
 use crate::{
     FlavorRegistryFrozen, ModelTier, SchemaId, SchemaVersion, SetWakeEntriesRequest,
     SetWakeEntriesResponse, WakeEntryDraft, WakeEntryTriggerKind, WakeExecutionMode,
+    WakeWorkspaceBinding,
 };
 
 pub struct SetWakeEntriesContext<'a> {
@@ -19,27 +20,7 @@ pub async fn set_wake_entries(
     ctx: &SetWakeEntriesContext<'_>,
     req: &SetWakeEntriesRequest,
 ) -> Result<SetWakeEntriesResponse, ProtocolError> {
-    validate_unique_triggers(&req.entries)?;
-    for entry in &req.entries {
-        validate_entry_shape(entry)?;
-    }
-
-    let mut substrate_registered = ctx.registry.mcp_tool_ids();
-    substrate_registered.extend(
-        substrate_pack()
-            .iter()
-            .map(|tool| tool.tool_id().to_string()),
-    );
-    let workspace_registered = workspace_tool_ids();
-    for entry in &req.entries {
-        validate_palettes(
-            ctx.registry,
-            entry,
-            &substrate_registered,
-            &workspace_registered,
-        )?;
-        validate_workspace_trigger(ctx.registry, entry)?;
-    }
+    validate_wake_entries_static_config(ctx.registry, &req.entries)?;
 
     let owner_targets = ctx
         .storage
@@ -70,6 +51,33 @@ pub async fn set_wake_entries(
         .map_err(|err| map_set_wake_entries_storage_err(err, &req.entries))
 }
 
+pub fn validate_wake_entries_static_config(
+    registry: &FlavorRegistryFrozen,
+    entries: &[WakeEntryDraft],
+) -> Result<(), ProtocolError> {
+    validate_unique_triggers(entries)?;
+    for entry in entries {
+        validate_entry_shape(entry)?;
+    }
+    let mut substrate_registered = registry.mcp_tool_ids();
+    substrate_registered.extend(
+        substrate_pack()
+            .iter()
+            .map(|tool| tool.tool_id().to_string()),
+    );
+    let workspace_registered = workspace_tool_ids();
+    for entry in entries {
+        validate_palettes(
+            registry,
+            entry,
+            &substrate_registered,
+            &workspace_registered,
+        )?;
+        validate_workspace_trigger(registry, entry)?;
+    }
+    Ok(())
+}
+
 fn validate_workspace_trigger(
     registry: &FlavorRegistryFrozen,
     entry: &WakeEntryDraft,
@@ -89,14 +97,25 @@ fn validate_workspace_trigger(
             "workspace mode requires an on_memory trigger",
         ));
     }
-    if entry.workspace_binding.is_some() {
-        return Ok(());
-    }
-    if !registry.is_workspace_trigger(&entry.trigger_id) {
+    let Some(binding) = entry.workspace_binding.as_ref() else {
         return Err(ProtocolError::invalid_argument(
-            "trigger_id",
-            format!("not workspace-eligible: {}", entry.trigger_id),
+            "workspace_binding",
+            "workspace mode requires workspace_binding",
         ));
+    };
+    if let WakeWorkspaceBinding::RegisteredRunner { flavor_id } = binding {
+        if registry.workspace_runner(flavor_id).is_none() {
+            return Err(ProtocolError::invalid_argument(
+                "workspace_binding",
+                format!("workspace runner not registered: {flavor_id}"),
+            ));
+        }
+        if !registry.is_workspace_trigger(&entry.trigger_id) {
+            return Err(ProtocolError::invalid_argument(
+                "trigger_id",
+                format!("not workspace-eligible: {}", entry.trigger_id),
+            ));
+        }
     }
     Ok(())
 }

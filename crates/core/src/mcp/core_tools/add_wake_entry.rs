@@ -63,6 +63,7 @@ impl McpTool for AddWakeEntryTool {
             let new_id = new_draft.wake_entry_id;
             let new_trigger_kind = new_draft.trigger_kind;
             let new_trigger_id = new_draft.trigger_id.clone();
+            let registry = ctx.registry.clone();
 
             let mutator: crate::WakeEntriesMutator = Box::new(move |current| {
                 if current
@@ -76,6 +77,11 @@ impl McpTool for AddWakeEntryTool {
                 }
                 let mut next: Vec<_> = current.to_vec();
                 next.push(new_draft);
+                crate::inference::set_wake_entries::validate_wake_entries_static_config(
+                    registry.as_ref(),
+                    &next,
+                )
+                .map_err(|err| err.to_string())?;
                 Ok(next)
             });
             storage

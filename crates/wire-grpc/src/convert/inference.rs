@@ -4,7 +4,7 @@ use proxima_core::{
     ChatGPTCodexConfig, InferenceTargetConfig, InferenceTargetRow, InferenceTierBindingRow,
     MistralChatConfig, ModelTier, OpenAIChatConfig, OpenAIResponsesConfig, WakeEntryAuthoredBy,
     WakeEntryDraft, WakeEntryExecutionMode, WakeEntryGoalScope, WakeEntryRow, WakeEntryTriggerKind,
-    WakeExecutionMode,
+    WakeExecutionMode, WakeWorkspaceBinding, WakeWorkspaceFinalize,
 };
 use tonic::Status;
 
@@ -92,6 +92,73 @@ pub fn goal_scope_to_proto(scope: WakeEntryGoalScope) -> i32 {
     }
 }
 
+fn workspace_finalize_from_proto(value: i32) -> Result<WakeWorkspaceFinalize, Status> {
+    match pb::WorkspaceFinalize::try_from(value).unwrap_or(pb::WorkspaceFinalize::Unspecified) {
+        pb::WorkspaceFinalize::CommitAll => Ok(WakeWorkspaceFinalize::CommitAll),
+        pb::WorkspaceFinalize::LeaveDirty => Ok(WakeWorkspaceFinalize::LeaveDirty),
+        pb::WorkspaceFinalize::Unspecified => {
+            Err(Status::invalid_argument("workspace finalize is required"))
+        }
+    }
+}
+
+fn workspace_finalize_to_proto(value: WakeWorkspaceFinalize) -> i32 {
+    match value {
+        WakeWorkspaceFinalize::CommitAll => pb::WorkspaceFinalize::CommitAll as i32,
+        WakeWorkspaceFinalize::LeaveDirty => pb::WorkspaceFinalize::LeaveDirty as i32,
+    }
+}
+
+fn workspace_binding_from_proto(
+    binding: Option<pb::WorkspaceBinding>,
+) -> Result<Option<WakeWorkspaceBinding>, Status> {
+    let Some(binding) = binding else {
+        return Ok(None);
+    };
+    let Some(kind) = binding.kind else {
+        return Err(Status::invalid_argument(
+            "workspace binding kind is required",
+        ));
+    };
+    match kind {
+        pb::workspace_binding::Kind::GitWorktree(value) => {
+            Ok(Some(WakeWorkspaceBinding::GitWorktree {
+                repo_path: value.repo_path,
+                base_ref: value.base_ref,
+                finalize: workspace_finalize_from_proto(value.finalize)?,
+                worktrees_root: value.worktrees_root,
+            }))
+        }
+        pb::workspace_binding::Kind::RegisteredRunner(value) => {
+            Ok(Some(WakeWorkspaceBinding::RegisteredRunner {
+                flavor_id: value.flavor_id,
+            }))
+        }
+    }
+}
+
+fn workspace_binding_to_proto(binding: WakeWorkspaceBinding) -> pb::WorkspaceBinding {
+    let kind = match binding {
+        WakeWorkspaceBinding::GitWorktree {
+            repo_path,
+            base_ref,
+            finalize,
+            worktrees_root,
+        } => pb::workspace_binding::Kind::GitWorktree(pb::GitWorktreeWorkspaceBinding {
+            repo_path,
+            base_ref,
+            finalize: workspace_finalize_to_proto(finalize),
+            worktrees_root,
+        }),
+        WakeWorkspaceBinding::RegisteredRunner { flavor_id } => {
+            pb::workspace_binding::Kind::RegisteredRunner(pb::RegisteredRunnerWorkspaceBinding {
+                flavor_id,
+            })
+        }
+    };
+    pb::WorkspaceBinding { kind: Some(kind) }
+}
+
 pub fn wake_entry_to_proto(row: &WakeEntryRow) -> pb::WakeEntry {
     pb::WakeEntry {
         wake_entry_id: row.wake_entry_id.to_string(),
@@ -109,6 +176,10 @@ pub fn wake_entry_to_proto(row: &WakeEntryRow) -> pb::WakeEntry {
         max_rounds: u32::from(row.max_rounds),
         disabled_reason: row.disabled_reason.clone(),
         goal_scope: goal_scope_to_proto(row.goal_scope),
+        workspace_binding: row
+            .workspace_binding
+            .clone()
+            .map(workspace_binding_to_proto),
     }
 }
 
@@ -133,7 +204,7 @@ pub fn wake_entry_draft_from_proto(
         inference_target_ref: proto.inference_target_ref,
         substrate_tool_palette: proto.substrate_tool_palette,
         workspace_tool_palette: proto.workspace_tool_palette,
-        workspace_binding: None,
+        workspace_binding: workspace_binding_from_proto(proto.workspace_binding)?,
         max_rounds: u16::try_from(proto.max_rounds)
             .map_err(|_| Status::invalid_argument("max_rounds > u16::MAX"))?,
         intervention_policy: None,

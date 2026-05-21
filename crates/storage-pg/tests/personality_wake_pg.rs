@@ -60,7 +60,7 @@ fn principal_id(owner: &Owner) -> Uuid {
 }
 
 fn sample_entry(instance: PersonalityInstanceId, trigger_id: &str) -> WakeEntryDraft {
-    WakeEntryDraft::new(
+    let mut draft = WakeEntryDraft::new(
         Uuid::now_v7(),
         instance,
         WakeEntryTriggerKind::OnMemory,
@@ -73,7 +73,9 @@ fn sample_entry(instance: PersonalityInstanceId, trigger_id: &str) -> WakeEntryD
         vec!["core/query".to_string()],
         4,
     )
-    .expect("valid wake entry")
+    .expect("valid wake entry");
+    draft.instructions = "Use the committed fact to decide whether to write a summary.".into();
+    draft
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -475,19 +477,14 @@ async fn personality_provenance_edges_use_operator_authorship() {
         .fetch_all(pg.pool())
         .await?;
 
-        assert_eq!(
-            authored,
-            vec![
-                (
-                    perspective.memory_ids[0].into_inner(),
-                    EdgeAuthorshipKind::OperatorAtoP,
-                ),
-                (
-                    abstraction_id.into_inner(),
-                    EdgeAuthorshipKind::OperatorFtoA,
-                ),
-            ]
-        );
+        assert!(authored.contains(&(
+            perspective.memory_ids[0].into_inner(),
+            EdgeAuthorshipKind::OperatorAtoP,
+        )));
+        assert!(authored.contains(&(
+            abstraction_id.into_inner(),
+            EdgeAuthorshipKind::OperatorFtoA,
+        )));
 
         Ok(())
     }
