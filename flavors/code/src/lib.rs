@@ -22,7 +22,9 @@ pub use ingest::{
     TEST_REQUEST_WHOLE_SCHEMA, WORKSPACE_DECISION_OBJECT_SCHEMA, WORKSPACE_DECISION_WHOLE_SCHEMA,
     build_engine, build_engine_with, ingest_code_chunk, ingest_commit, ingest_file_revision,
 };
-pub use local_git_source::{IndexError, IndexReport, IngestProgress, LocalGitSource};
+pub use local_git_source::{
+    HeadSnapshotOutcome, IndexError, IndexReport, IngestProgress, LocalGitSource,
+};
 pub use mcp::CODE_REVIEWS_RELATION;
 pub use migrations::migrator;
 pub use payloads::{
@@ -121,6 +123,7 @@ proxima_core::proxima_flavor! {
     mcp_tools = [
         mcp::CodeListReposTool,
         mcp::CodeRegisterRepoTool,
+        mcp::CodeIngestHeadSnapshotTool,
         mcp::CodeSearchChunksTool,
         mcp::CodeOpenFileRevisionTool,
         mcp::CodeSearchCommitsTool,

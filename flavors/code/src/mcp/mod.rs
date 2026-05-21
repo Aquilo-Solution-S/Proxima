@@ -19,7 +19,7 @@ pub use emit_execution_request::{
 pub use goal_completion_status::CodeGoalCompletionStatusTool;
 pub use merge_workspace_run::CodeMergeWorkspaceRunTool;
 pub use open_file_revision::CodeOpenFileRevisionTool;
-pub use repos::{CodeListReposTool, CodeRegisterRepoTool};
+pub use repos::{CodeIngestHeadSnapshotTool, CodeListReposTool, CodeRegisterRepoTool};
 pub use search_chunks::CodeSearchChunksTool;
 pub use search_commits::CodeSearchCommitsTool;
 pub use workspace_review::{
