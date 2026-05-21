@@ -712,6 +712,7 @@ export type MistralChatConfigTs = {
 	api_key_env: string,
 	temperature: number | null,
 	max_completion_tokens: number | null,
+	reasoning_effort: string | null,
 };
 
 export type ModelId = string;
@@ -1209,4 +1210,3 @@ async function typedError<T, E>(result: Promise<T>): Promise<{ status: "ok"; dat
         return { status: "error", error: e as any };
     }
 }
-

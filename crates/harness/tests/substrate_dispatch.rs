@@ -74,6 +74,7 @@ fn empty_program(bindings: &[SubstrateToolBinding], workspace: bool) -> HarnessP
             api_key: "k".into(),
             temperature: None,
             max_completion_tokens: None,
+            reasoning_effort: None,
         },
     }
 }

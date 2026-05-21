@@ -3,8 +3,11 @@ import type { InferenceTargetConfigTs, ModelTierTs } from "../../bindings";
 export const TIERS: ModelTierTs[] = ["fast", "standard", "deep"];
 
 export const REASONING_EFFORTS = ["low", "medium", "high", "xhigh"] as const;
+export const MISTRAL_REASONING_EFFORTS = ["none", "high"] as const;
 
 export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
+export type MistralReasoningEffort =
+  (typeof MISTRAL_REASONING_EFFORTS)[number];
 
 export type InferenceTargetKind = InferenceTargetConfigTs["kind"];
 
@@ -43,6 +46,9 @@ export const configSummary = (config: InferenceTargetConfigTs): string => {
         config.max_completion_tokens === null
           ? null
           : `max ${config.max_completion_tokens}`,
+        config.kind === "mistral_chat" && config.reasoning_effort
+          ? `${config.reasoning_effort} reasoning`
+          : null,
       ].filter(Boolean);
       return details.join(" / ");
     }
@@ -69,6 +75,15 @@ export const configSummary = (config: InferenceTargetConfigTs): string => {
 export const configKey = (config: InferenceTargetConfigTs): string => {
   switch (config.kind) {
     case "mistral_chat":
+      return JSON.stringify([
+        config.kind,
+        config.base_url,
+        config.model_id,
+        config.api_key_env,
+        config.temperature ?? null,
+        config.max_completion_tokens ?? null,
+        config.reasoning_effort ?? null,
+      ]);
     case "openai_chat":
       return JSON.stringify([
         config.kind,
@@ -129,6 +144,7 @@ export const defaultConfigForKind = (
         api_key_env: placeholder.apiKeyEnv,
         temperature: null,
         max_completion_tokens: null,
+        reasoning_effort: null,
       };
     case "openai_chat":
       return {
@@ -191,6 +207,19 @@ export const draftFromConfig = (
 ): TargetDraft => {
   switch (config.kind) {
     case "mistral_chat":
+      return {
+        kind: config.kind,
+        baseUrl: config.base_url,
+        modelId: config.model_id,
+        apiKeyEnv: config.api_key_env,
+        temperature:
+          config.temperature === null ? "" : String(config.temperature),
+        maxCompletionTokens:
+          config.max_completion_tokens === null
+            ? ""
+            : String(config.max_completion_tokens),
+        reasoningEffort: config.reasoning_effort ?? "",
+      };
     case "openai_chat":
       return {
         kind: config.kind,
@@ -241,6 +270,7 @@ export const configFromDraft = (draft: TargetDraft): InferenceTargetConfigTs => 
         api_key_env: draft.apiKeyEnv.trim(),
         temperature: nullableFloat(draft.temperature),
         max_completion_tokens: nullableInt(draft.maxCompletionTokens),
+        reasoning_effort: nullableString(draft.reasoningEffort),
       };
     case "openai_chat":
       return {

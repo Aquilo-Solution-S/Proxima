@@ -87,6 +87,7 @@ async fn mistral_client_sends_strict_single_tool_policy() {
         api_key: "test".into(),
         temperature: Some(0.2),
         max_completion_tokens: Some(256),
+        reasoning_effort: Some("high".into()),
     };
 
     let result = client
@@ -116,6 +117,7 @@ async fn mistral_client_sends_strict_single_tool_policy() {
 
     let body = request_body.await.expect("captured request body");
     assert_eq!(body["tool_choice"], "auto");
+    assert_eq!(body["reasoning_effort"], "high");
     assert_eq!(body["parallel_tool_calls"], false);
     assert_eq!(body["tools"][0]["function"]["strict"], true);
     assert_eq!(

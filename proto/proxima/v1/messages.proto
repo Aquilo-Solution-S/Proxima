@@ -369,6 +369,7 @@ message MistralChatConfig {
   string api_key_env = 3;
   optional float temperature = 4;
   optional uint32 max_completion_tokens = 5;
+  optional string reasoning_effort = 6;
 }
 
 message OpenAIChatConfig {

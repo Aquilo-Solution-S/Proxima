@@ -158,6 +158,7 @@ pub fn inference_config_to_proto(config: &InferenceTargetConfig) -> pb::Inferenc
             api_key_env: config.api_key_env.clone(),
             temperature: config.temperature,
             max_completion_tokens: config.max_completion_tokens,
+            reasoning_effort: config.reasoning_effort.clone(),
         }),
         InferenceTargetConfig::OpenAIChat(config) => Kind::OpenaiChat(pb::OpenAiChatConfig {
             base_url: config.base_url.clone(),
@@ -195,6 +196,7 @@ pub fn inference_config_from_proto(
                 api_key_env: config.api_key_env,
                 temperature: config.temperature,
                 max_completion_tokens: config.max_completion_tokens,
+                reasoning_effort: config.reasoning_effort,
             }))
         }
         Some(Kind::OpenaiChat(config)) => Ok(InferenceTargetConfig::OpenAIChat(OpenAIChatConfig {

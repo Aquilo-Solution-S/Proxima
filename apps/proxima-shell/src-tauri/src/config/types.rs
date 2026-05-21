@@ -148,6 +148,7 @@ mod tests {
                             api_key_env: "MISTRAL_API_KEY".to_string(),
                             temperature: None,
                             max_completion_tokens: None,
+                            reasoning_effort: Some("high".to_string()),
                         },
                     ),
                 }],
@@ -200,6 +201,7 @@ mod tests {
                 api_key_env: "MISTRAL_API_KEY".to_string(),
                 temperature: Some(0.2),
                 max_completion_tokens: Some(2048),
+                reasoning_effort: Some("high".to_string()),
             }),
             "mistral_chat",
         );

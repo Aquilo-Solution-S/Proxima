@@ -2583,6 +2583,7 @@ async fn workspace_wake_emits_run_fact_and_edges() -> Result<(), Box<dyn std::er
                 api_key_env: "PATH".into(),
                 temperature: None,
                 max_completion_tokens: None,
+                reasoning_effort: None,
             }),
         })
         .await?;

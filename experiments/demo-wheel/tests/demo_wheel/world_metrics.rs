@@ -1037,6 +1037,7 @@ impl DemoWorld {
                         api_key: std::env::var(&self.cfg.api_key_env)?,
                         temperature: Some(0.0),
                         max_completion_tokens: Some(1024),
+                        reasoning_effort: Some("high".into()),
                     },
                 },
                 HarnessContext {

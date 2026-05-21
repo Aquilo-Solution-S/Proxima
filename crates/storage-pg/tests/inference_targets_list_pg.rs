@@ -25,6 +25,7 @@ async fn list_inference_targets_returns_owner_scoped_rows_in_order() {
                     api_key_env: "PATH".into(),
                     temperature: None,
                     max_completion_tokens: None,
+                    reasoning_effort: None,
                 }),
             };
             pg.register_inference_target(&req).await?;

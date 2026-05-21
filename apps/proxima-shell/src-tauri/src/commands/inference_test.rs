@@ -469,6 +469,7 @@ mod tests {
             api_key_env: "PROXIMA_TEST_PING_NO_KEY".into(),
             temperature: None,
             max_completion_tokens: None,
+            reasoning_effort: None,
         });
         let result = ping_target_with(&config, |_| None).await;
         let err = result.expect_err("must error when env unset");

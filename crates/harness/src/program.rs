@@ -244,6 +244,7 @@ mod tests {
                 api_key: "test".into(),
                 temperature: None,
                 max_completion_tokens: None,
+                reasoning_effort: None,
             },
         };
 

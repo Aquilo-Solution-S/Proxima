@@ -16,6 +16,7 @@ fn request(owner: proxima_core::Owner, target_ref: &str) -> RegisterInferenceTar
             api_key_env: "PATH".into(),
             temperature: None,
             max_completion_tokens: None,
+            reasoning_effort: None,
         }),
     }
 }

@@ -60,6 +60,7 @@ pub enum ProviderTarget {
         api_key: String,
         temperature: Option<f32>,
         max_completion_tokens: Option<u32>,
+        reasoning_effort: Option<String>,
     },
     OpenAIChat {
         base_url: String,

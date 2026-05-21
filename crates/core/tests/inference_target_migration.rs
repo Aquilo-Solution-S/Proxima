@@ -10,9 +10,11 @@ fn mistral_chat_variant_serializes_as_kind_mistral_chat() {
         api_key_env: "K".into(),
         temperature: None,
         max_completion_tokens: None,
+        reasoning_effort: Some("high".into()),
     });
     let value = serde_json::to_value(&config).unwrap();
     assert_eq!(value["kind"], "mistral_chat");
+    assert_eq!(value["reasoning_effort"], "high");
 }
 
 #[test]

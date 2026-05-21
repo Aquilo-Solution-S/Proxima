@@ -314,6 +314,7 @@ pub async fn seed_dispatch_fixture_with_match_and_engine(
                 api_key_env: "PATH".into(),
                 temperature: None,
                 max_completion_tokens: None,
+                reasoning_effort: None,
             }),
         })
         .await
