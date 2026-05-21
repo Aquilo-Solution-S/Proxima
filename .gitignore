@@ -19,6 +19,7 @@ dist/
 coverage/
 .turbo/
 .playwright-mcp/
+.local/
 .plans/
 apps/proxima-shell/perf-logs/*
 !apps/proxima-shell/perf-logs/.gitkeep

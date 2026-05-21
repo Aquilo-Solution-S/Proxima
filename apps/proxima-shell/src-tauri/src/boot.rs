@@ -1,10 +1,14 @@
 use std::sync::Arc;
 
+use futures_util::future::BoxFuture;
 use proxima_core::auth::NoAuth;
 use proxima_core::engine::EngineMcpListener;
 use proxima_core::llm::EmbeddingClient;
 use proxima_core::secrets::ResolverRegistry;
-use proxima_core::{Engine, FlavorRegistry, FlavorRegistryFrozen, OrgId, Owner, Principal, UserId};
+use proxima_core::{
+    EmbeddingClientReloader, Engine, FlavorRegistry, FlavorRegistryFrozen, OrgId, Owner, Principal,
+    UserId,
+};
 use proxima_llm_openai_compat::{OpenAiCompatConfig, OpenAiCompatEmbeddingClient};
 use proxima_mcp_server::{EngineHostedMcpListener, McpAuthStore, McpToolHost, default_allowlist};
 use proxima_storage_pg::PgStorage;
@@ -75,7 +79,10 @@ pub(crate) fn build_engine() -> (Engine, Arc<PgStorage>) {
             proxima_mcp_substrate::register(registry);
             proxima_flavor_goal::register(registry);
             proxima_flavor_intent::register(registry);
-        });
+        })
+        .with_embedding_reloader(Arc::new(ShellEmbeddingClientReloader {
+            pg: pg_for_settings.clone(),
+        }));
 
         (
             wire_consolidation_clients(engine, &pg_for_settings, &owner).await,
@@ -91,6 +98,35 @@ pub(crate) fn sentinel_owner() -> Owner {
     Owner {
         principal: Principal::User(UserId::new(Uuid::nil())),
         org_id: OrgId::new(Uuid::nil()),
+    }
+}
+
+#[derive(Debug)]
+struct ShellEmbeddingClientReloader {
+    pg: Arc<PgStorage>,
+}
+
+impl EmbeddingClientReloader for ShellEmbeddingClientReloader {
+    fn reload<'a>(
+        &'a self,
+        owner: &'a Owner,
+    ) -> BoxFuture<'a, Result<Option<Arc<dyn EmbeddingClient>>, String>> {
+        Box::pin(async move {
+            let cfg = crate::config::load_app_config(&self.pg, owner)
+                .await
+                .map_err(|e| e.to_string())?;
+            crate::config::validate_config(&cfg).map_err(|e| e.to_string())?;
+            if cfg.embedding.active.is_none() {
+                return Ok(None);
+            }
+            let embed = resolve_consolidation_clients(&cfg)?;
+            tracing::info!(
+                embed_model = embed.model_id(),
+                embed_dim = embed.dim(),
+                "embedding client hot-reloaded"
+            );
+            Ok(Some(Arc::new(embed) as Arc<dyn EmbeddingClient>))
+        })
     }
 }
 

@@ -13,6 +13,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use futures::future::BoxFuture;
 use tokio::sync::{Mutex, RwLock, watch};
 use tokio::task::JoinHandle;
 
@@ -41,7 +42,8 @@ pub struct Engine {
     auth: Box<dyn AuthResolver>,
     storage: StorageHandle,
     anthropic: Option<Arc<dyn AnthropicClient>>,
-    embed: Option<Arc<dyn EmbeddingClient>>,
+    embed: Arc<RwLock<Option<Arc<dyn EmbeddingClient>>>>,
+    embedding_reloader: Option<Arc<dyn EmbeddingClientReloader>>,
     pub(crate) dispatch_interval: Duration,
     pub(crate) wake_token_ttl: Duration,
     pub(crate) mcp_listen_addr: SocketAddr,
@@ -50,6 +52,20 @@ pub struct Engine {
     pub(crate) wake_token_store: Arc<WakeTokenStore>,
     pub(crate) target_adapter: Arc<RwLock<Option<Arc<dyn TargetAdapter>>>>,
     pub(crate) dispatch_tick_lock: Arc<Mutex<()>>,
+}
+
+pub trait EmbeddingClientReloader: Send + Sync + std::fmt::Debug {
+    fn reload<'a>(
+        &'a self,
+        owner: &'a Owner,
+    ) -> BoxFuture<'a, Result<Option<Arc<dyn EmbeddingClient>>, String>>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmbeddingReloadOutcome {
+    pub active: bool,
+    pub model_id: Option<String>,
+    pub dim: Option<usize>,
 }
 
 /// Owns the background tasks spawned by [`Engine::start`]. The engine
@@ -68,8 +84,8 @@ impl Engine {
     }
 
     #[must_use]
-    pub fn embed_client(&self) -> Option<&Arc<dyn EmbeddingClient>> {
-        self.embed.as_ref()
+    pub fn embed_client(&self) -> Option<Arc<dyn EmbeddingClient>> {
+        self.embed.try_read().ok().and_then(|slot| slot.clone())
     }
 
     #[must_use]
@@ -150,6 +166,30 @@ impl Engine {
             owner,
         )
         .await
+    }
+
+    pub async fn set_embed_client(&self, embed: Option<Arc<dyn EmbeddingClient>>) {
+        *self.embed.write().await = embed;
+    }
+
+    pub async fn reload_embedding_client(
+        &self,
+        owner: &Owner,
+    ) -> Result<EmbeddingReloadOutcome, ProtocolError> {
+        let reloader = self.embedding_reloader.as_ref().ok_or_else(|| {
+            ProtocolError::internal("embedding reload hook not wired into engine")
+        })?;
+        let embed = reloader
+            .reload(owner)
+            .await
+            .map_err(|e| ProtocolError::internal(format!("reload embedding client: {e}")))?;
+        let outcome = EmbeddingReloadOutcome {
+            active: embed.is_some(),
+            model_id: embed.as_ref().map(|client| client.model_id().to_string()),
+            dim: embed.as_ref().map(|client| client.dim()),
+        };
+        self.set_embed_client(embed).await;
+        Ok(outcome)
     }
 
     pub async fn set_wake_entries(

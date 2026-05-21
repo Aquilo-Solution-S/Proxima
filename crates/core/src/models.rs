@@ -112,7 +112,16 @@ impl LlmCaps {
 /// `matryoshka` indicates whether the model produces nested-prefix
 /// embeddings (caller may truncate without re-embedding).
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, specta::Type,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    serde::Serialize,
+    serde::Deserialize,
+    schemars::JsonSchema,
+    specta::Type,
 )]
 pub struct EmbedCaps {
     pub dim: u32,
