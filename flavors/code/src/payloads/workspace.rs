@@ -1,4 +1,7 @@
-use proxima_core::{FactPayload, proxima_schema_id};
+use proxima_core::{
+    FactPayload, SearchProjection, SearchProjectionColumnKind, SearchProjectionField,
+    proxima_schema_id,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -43,6 +46,21 @@ impl FactPayload for WorkspaceDecisionV1 {
 
     fn sidecar_table() -> &'static str {
         "proxima_code.workspace_decision_v1"
+    }
+
+    fn search_projection() -> Option<SearchProjection> {
+        Some(SearchProjection {
+            fields: &[
+                SearchProjectionField {
+                    column: "decision",
+                    kind: SearchProjectionColumnKind::Text,
+                },
+                SearchProjectionField {
+                    column: "reason_text",
+                    kind: SearchProjectionColumnKind::Text,
+                },
+            ],
+        })
     }
 
     fn render(&self) -> String {
@@ -111,6 +129,29 @@ impl FactPayload for WorkspaceReviewV1 {
 
     fn sidecar_table() -> &'static str {
         "proxima_code.workspace_review_v1"
+    }
+
+    fn search_projection() -> Option<SearchProjection> {
+        Some(SearchProjection {
+            fields: &[
+                SearchProjectionField {
+                    column: "verdict",
+                    kind: SearchProjectionColumnKind::Text,
+                },
+                SearchProjectionField {
+                    column: "summary",
+                    kind: SearchProjectionColumnKind::Text,
+                },
+                SearchProjectionField {
+                    column: "correction_instructions",
+                    kind: SearchProjectionColumnKind::Text,
+                },
+                SearchProjectionField {
+                    column: "verification_summary",
+                    kind: SearchProjectionColumnKind::Text,
+                },
+            ],
+        })
     }
 
     fn render(&self) -> String {

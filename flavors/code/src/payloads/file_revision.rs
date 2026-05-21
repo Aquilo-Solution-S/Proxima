@@ -1,4 +1,7 @@
-use proxima_core::{FactPayload, FactTombstone, proxima_schema_id};
+use proxima_core::{
+    FactPayload, FactTombstone, SearchProjection, SearchProjectionColumnKind,
+    SearchProjectionField, proxima_schema_id,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type, sqlx::Type)]
@@ -36,6 +39,24 @@ impl FactPayload for FileRevisionV1 {
         Some(FactTombstone {
             column: "state",
             value: "Tombstone",
+        })
+    }
+    fn search_projection() -> Option<SearchProjection> {
+        Some(SearchProjection {
+            fields: &[
+                SearchProjectionField {
+                    column: "file_path",
+                    kind: SearchProjectionColumnKind::Text,
+                },
+                SearchProjectionField {
+                    column: "language",
+                    kind: SearchProjectionColumnKind::Text,
+                },
+                SearchProjectionField {
+                    column: "indexed_commit_sha",
+                    kind: SearchProjectionColumnKind::Text,
+                },
+            ],
         })
     }
     fn render(&self) -> String {

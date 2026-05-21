@@ -1,4 +1,6 @@
-use proxima_core::FactPayload;
+use proxima_core::{
+    FactPayload, SearchProjection, SearchProjectionColumnKind, SearchProjectionField,
+};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
@@ -19,6 +21,15 @@ impl FactPayload for GoalProposedV1 {
 
     fn sidecar_table() -> &'static str {
         "proxima_goal.goal_proposed_v1"
+    }
+
+    fn search_projection() -> Option<SearchProjection> {
+        Some(SearchProjection {
+            fields: &[SearchProjectionField {
+                column: "title",
+                kind: SearchProjectionColumnKind::Text,
+            }],
+        })
     }
 }
 
@@ -43,6 +54,15 @@ impl FactPayload for GoalActivatedV1 {
     fn sidecar_table() -> &'static str {
         "proxima_goal.goal_activated_v1"
     }
+
+    fn search_projection() -> Option<SearchProjection> {
+        Some(SearchProjection {
+            fields: &[SearchProjectionField {
+                column: "title",
+                kind: SearchProjectionColumnKind::Text,
+            }],
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
@@ -65,5 +85,14 @@ impl FactPayload for GoalAchievedV1 {
 
     fn sidecar_table() -> &'static str {
         "proxima_goal.goal_achieved_v1"
+    }
+
+    fn search_projection() -> Option<SearchProjection> {
+        Some(SearchProjection {
+            fields: &[SearchProjectionField {
+                column: "title",
+                kind: SearchProjectionColumnKind::Text,
+            }],
+        })
     }
 }

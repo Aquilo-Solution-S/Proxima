@@ -1,4 +1,7 @@
-use proxima_core::{FactPayload, proxima_schema_id};
+use proxima_core::{
+    FactPayload, SearchProjection, SearchProjectionColumnKind, SearchProjectionField,
+    proxima_schema_id,
+};
 use schemars::JsonSchema;
 use serde::de::{MapAccess, Visitor, value::MapAccessDeserializer};
 use serde::{Deserialize, Deserializer, Serialize};
@@ -154,6 +157,25 @@ impl FactPayload for VerificationEvidenceV1 {
 
     fn sidecar_table() -> &'static str {
         "proxima_code.verification_evidence_v1"
+    }
+
+    fn search_projection() -> Option<SearchProjection> {
+        Some(SearchProjection {
+            fields: &[
+                SearchProjectionField {
+                    column: "criterion_key",
+                    kind: SearchProjectionColumnKind::Text,
+                },
+                SearchProjectionField {
+                    column: "status",
+                    kind: SearchProjectionColumnKind::Text,
+                },
+                SearchProjectionField {
+                    column: "summary",
+                    kind: SearchProjectionColumnKind::Text,
+                },
+            ],
+        })
     }
 
     fn render(&self) -> String {

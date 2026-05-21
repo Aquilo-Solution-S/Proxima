@@ -5,7 +5,10 @@ use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::{FactPayload, MemoryId, Owner, SourceBatchId, SourceId};
+use crate::{
+    FactPayload, MemoryId, Owner, SearchProjection, SearchProjectionColumnKind,
+    SearchProjectionField, SourceBatchId, SourceId,
+};
 use crate::{PersonalityInstanceId, SchemaId, SchemaVersion};
 
 pub const INTERVENTION_REQUESTED_SCHEMA_ID: &str = "core/intervention-requested-v1";
@@ -85,6 +88,15 @@ impl FactPayload for InterventionRequestedV1 {
         "proxima_core.intervention_requested_v1"
     }
 
+    fn search_projection() -> Option<SearchProjection> {
+        Some(SearchProjection {
+            fields: &[SearchProjectionField {
+                column: "progress_contract",
+                kind: SearchProjectionColumnKind::Text,
+            }],
+        })
+    }
+
     fn render(&self) -> String {
         format!(
             "Intervention requested: invocation {} used {}/{} rounds",
@@ -113,6 +125,21 @@ impl FactPayload for InterventionDecisionV1 {
 
     fn sidecar_table() -> &'static str {
         "proxima_core.intervention_decision_v1"
+    }
+
+    fn search_projection() -> Option<SearchProjection> {
+        Some(SearchProjection {
+            fields: &[
+                SearchProjectionField {
+                    column: "decision",
+                    kind: SearchProjectionColumnKind::Text,
+                },
+                SearchProjectionField {
+                    column: "rationale",
+                    kind: SearchProjectionColumnKind::Text,
+                },
+            ],
+        })
     }
 
     fn render(&self) -> String {

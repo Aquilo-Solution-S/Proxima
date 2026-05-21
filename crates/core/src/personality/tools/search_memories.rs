@@ -161,7 +161,7 @@ impl PersonalityTool for SearchMemoriesTool {
         let rows = ctx
             .engine
             .storage()
-            .search_memories(&req, ctx.engine.registry().list().as_slice())
+            .search_memories(&req, ctx.engine.registry().search_projections())
             .await
             .map_err(|e| ProtocolError::internal(format!("search_memories: {e}")))?;
         ctx.record_read(rows.iter().map(|row| (row.memory_id, row.wake_chain_depth)))

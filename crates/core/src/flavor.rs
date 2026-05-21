@@ -5,7 +5,10 @@
 //! See docs/08 §Registration mechanism.
 
 use crate::personality::workspace::WorkspaceRunner;
-use crate::verbs::schema::{FlavorRegistryFrozen, PayloadKind, PayloadValidatorEntry, SchemaInfo};
+use crate::verbs::schema::{
+    FlavorRegistryFrozen, MemorySearchProjection, MemorySearchProjectionField, PayloadKind,
+    PayloadValidatorEntry, SchemaInfo,
+};
 use crate::{
     AbstractionPayload, CitationMappingPayload, CitedObjectPayload, DependencySatisfactionRule,
     EdgePayload, FactPayload, GoalPayload, McpCallFn, McpTool, McpToolDescriptor, McpToolError,
@@ -54,6 +57,7 @@ pub enum FlavorProvenance {
 #[derive(Debug)]
 pub struct FlavorRegistry {
     schemas: Vec<SchemaInfo>,
+    search_projections: Vec<MemorySearchProjection>,
     relations: Vec<RelationDescriptor>,
     validators: Vec<PayloadValidatorEntry>,
     mcp_tools: Vec<McpToolDescriptor>,
@@ -73,6 +77,7 @@ impl Default for FlavorRegistry {
     fn default() -> Self {
         let mut registry = Self {
             schemas: Vec::new(),
+            search_projections: Vec::new(),
             relations: core_relation_descriptors(),
             validators: Vec::new(),
             mcp_tools: Vec::new(),
@@ -136,7 +141,7 @@ impl FlavorRegistry {
     }
 
     pub fn add_fact_schema<F: FactPayload>(&mut self) {
-        self.schemas.push(SchemaInfo {
+        let schema_info = SchemaInfo {
             schema_id: F::schema_id(),
             schema_version: SchemaVersion::new(F::SCHEMA_VERSION),
             kind: PayloadKind::Fact,
@@ -151,7 +156,13 @@ impl FlavorRegistry {
                 value: t.value.to_string(),
             }),
             cbor_encoder: Some(encode_payload_cbor::<F>),
-        });
+        };
+        maybe_add_search_projection(
+            &mut self.search_projections,
+            &schema_info,
+            F::search_projection(),
+        );
+        self.schemas.push(schema_info);
         self.validators.push(PayloadValidatorEntry {
             schema_id: F::schema_id(),
             schema_version: SchemaVersion::new(F::SCHEMA_VERSION),
@@ -162,7 +173,7 @@ impl FlavorRegistry {
     }
 
     pub fn add_abstraction_schema<A: AbstractionPayload>(&mut self) {
-        self.schemas.push(SchemaInfo {
+        let schema_info = SchemaInfo {
             schema_id: A::schema_id(),
             schema_version: SchemaVersion::new(A::SCHEMA_VERSION),
             kind: PayloadKind::Abstraction,
@@ -171,7 +182,13 @@ impl FlavorRegistry {
             natural_key_columns: vec![],
             tombstone: None,
             cbor_encoder: Some(encode_payload_cbor::<A>),
-        });
+        };
+        maybe_add_search_projection(
+            &mut self.search_projections,
+            &schema_info,
+            A::search_projection(),
+        );
+        self.schemas.push(schema_info);
         self.validators.push(PayloadValidatorEntry {
             schema_id: A::schema_id(),
             schema_version: SchemaVersion::new(A::SCHEMA_VERSION),
@@ -182,7 +199,7 @@ impl FlavorRegistry {
     }
 
     pub fn add_perspective_schema<P: PerspectivePayload>(&mut self) {
-        self.schemas.push(SchemaInfo {
+        let schema_info = SchemaInfo {
             schema_id: P::schema_id(),
             schema_version: SchemaVersion::new(P::SCHEMA_VERSION),
             kind: PayloadKind::Perspective,
@@ -191,7 +208,13 @@ impl FlavorRegistry {
             natural_key_columns: vec![],
             tombstone: None,
             cbor_encoder: Some(encode_payload_cbor::<P>),
-        });
+        };
+        maybe_add_search_projection(
+            &mut self.search_projections,
+            &schema_info,
+            P::search_projection(),
+        );
+        self.schemas.push(schema_info);
         self.validators.push(PayloadValidatorEntry {
             schema_id: P::schema_id(),
             schema_version: SchemaVersion::new(P::SCHEMA_VERSION),
@@ -467,6 +490,7 @@ impl FlavorRegistry {
         }
         FlavorRegistryFrozen::with_schemas_relations_validators(
             self.schemas,
+            self.search_projections,
             self.relations,
             self.validators,
             self.mcp_tools,
@@ -488,6 +512,36 @@ impl FlavorRegistry {
             );
         }
     }
+}
+
+fn maybe_add_search_projection(
+    out: &mut Vec<MemorySearchProjection>,
+    schema_info: &SchemaInfo,
+    projection: Option<crate::SearchProjection>,
+) {
+    let Some(projection) = projection else {
+        return;
+    };
+    if projection.fields.is_empty() {
+        return;
+    }
+    let Some(sidecar_table) = schema_info.sidecar_table.clone() else {
+        return;
+    };
+    out.push(MemorySearchProjection {
+        schema_id: schema_info.schema_id.clone(),
+        schema_version: schema_info.schema_version,
+        kind: schema_info.kind,
+        sidecar_table,
+        fields: projection
+            .fields
+            .iter()
+            .map(|field| MemorySearchProjectionField {
+                column: field.column.to_string(),
+                kind: field.kind,
+            })
+            .collect(),
+    });
 }
 
 fn describe_generated_schema_fields(schema: &mut serde_json::Value) {

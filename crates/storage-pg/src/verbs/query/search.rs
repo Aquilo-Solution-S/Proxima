@@ -2,9 +2,12 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 use proxima_core::verbs::query::{EntityKind, MemorySearchRequest, MemorySearchResult, SearchMode};
-use proxima_core::verbs::schema::{PayloadKind, SchemaInfo};
+use proxima_core::verbs::schema::{
+    MemorySearchProjection, MemorySearchProjectionField, PayloadKind,
+};
 use proxima_core::{
-    MemoryId, OwnerPrincipalKind, Principal, SchemaId, StorageError, WakeChainDepth,
+    MemoryId, OwnerPrincipalKind, Principal, SchemaId, SearchProjectionColumnKind, StorageError,
+    WakeChainDepth,
 };
 use sqlx::PgPool;
 
@@ -35,7 +38,7 @@ struct Candidate {
 pub(crate) async fn search_memories(
     pool: &PgPool,
     req: &MemorySearchRequest,
-    schemas: &[SchemaInfo],
+    projections: &[MemorySearchProjection],
 ) -> Result<Vec<MemorySearchResult>, StorageError> {
     if matches!(req.kind, Some(EntityKind::Goal)) || req.limit == 0 {
         return Ok(Vec::new());
@@ -45,13 +48,13 @@ pub(crate) async fn search_memories(
     let mut candidates = BTreeMap::<uuid::Uuid, Candidate>::new();
 
     if matches!(req.mode, SearchMode::Lexical | SearchMode::Hybrid) {
-        for row in run_lexical(pool, req, schemas, limit.saturating_mul(4)).await? {
+        for row in run_lexical(pool, req, projections, limit.saturating_mul(4)).await? {
             merge_row(&mut candidates, row);
         }
     }
 
     if matches!(req.mode, SearchMode::Semantic | SearchMode::Hybrid) {
-        for row in run_semantic(pool, req, schemas, limit.saturating_mul(4)).await? {
+        for row in run_semantic(pool, req, projections, limit.saturating_mul(4)).await? {
             merge_row(&mut candidates, row);
         }
     }
@@ -112,30 +115,48 @@ fn merge_row(candidates: &mut BTreeMap<uuid::Uuid, Candidate>, row: SearchRow) {
 async fn run_lexical(
     pool: &PgPool,
     req: &MemorySearchRequest,
-    schemas: &[SchemaInfo],
+    projections: &[MemorySearchProjection],
     limit: u32,
 ) -> Result<Vec<SearchRow>, StorageError> {
-    let sidecars = memory_sidecars(req, schemas);
+    let projections = memory_search_projections(req, projections);
     let mut next_param = 3;
-    let mut sql = common_candidates_sql(req, &sidecars, &mut next_param)?;
+    let mut sql = common_candidates_sql(req, &projections, &mut next_param)?;
     let query_param = next_param;
 
     write!(
         sql,
-        " SELECT c.memory_id, c.kind, c.schema_id,
+        " , indexed AS (
+              SELECT c.*,
+                     regexp_replace(
+                         regexp_replace(c.search_text, '[[:punct:]]+', ' ', 'g'),
+                         '\\m[[:alnum:]]{{255}}[[:alnum:]]+\\M',
+                         ' ',
+                         'g'
+                     ) AS index_text
+                FROM candidates c
+          )
+          SELECT c.memory_id, c.kind, c.schema_id,
                  left(c.search_text, 480) AS snippet,
                  GREATEST(
-                     LEAST(ts_rank_cd(to_tsvector('simple', c.search_text), q.tsq) * 10.0, 1.0),
+                     LEAST(ts_rank_cd(to_tsvector('simple', c.index_text), q.tsq) * 10.0, 1.0),
                      CASE WHEN lower(c.search_text) LIKE '%' || lower(${query_param}) || '%'
                           THEN 0.25 ELSE 0.0 END
                  )::real AS lexical_score,
                  0.0::real AS similarity_score,
                  c.wake_chain_depth
-          FROM candidates c,
-               (SELECT websearch_to_tsquery('simple', ${query_param}) AS tsq) q
+          FROM indexed c,
+               (SELECT websearch_to_tsquery(
+                   'simple',
+                   regexp_replace(
+                       regexp_replace(${query_param}, '[[:punct:]]+', ' ', 'g'),
+                       '\\m[[:alnum:]]{{255}}[[:alnum:]]+\\M',
+                       ' ',
+                       'g'
+                   )
+               ) AS tsq) q
           WHERE c.search_text <> ''
             AND (
-                to_tsvector('simple', c.search_text) @@ q.tsq
+                to_tsvector('simple', c.index_text) @@ q.tsq
                 OR lower(c.search_text) LIKE '%' || lower(${query_param}) || '%'
             )
           ORDER BY lexical_score DESC, c.memory_id DESC
@@ -145,9 +166,9 @@ async fn run_lexical(
     .expect("write to String is infallible");
 
     let mut q = bind_common(sqlx::query_as::<_, SearchRow>(&sql), req);
-    for schema in &sidecars {
-        q = q.bind(schema.schema_id.as_str().to_string());
-        q = q.bind(schema.schema_version.into_inner().cast_signed());
+    for projection in &projections {
+        q = q.bind(projection.schema_id.as_str().to_string());
+        q = q.bind(projection.schema_version.into_inner().cast_signed());
     }
     if let Some(schema_id) = &req.schema_id {
         q = q.bind(schema_id.as_str().to_string());
@@ -164,7 +185,7 @@ async fn run_lexical(
 async fn run_semantic(
     pool: &PgPool,
     req: &MemorySearchRequest,
-    schemas: &[SchemaInfo],
+    projections: &[MemorySearchProjection],
     limit: u32,
 ) -> Result<Vec<SearchRow>, StorageError> {
     let Some(query_embedding) = req.query_embedding.as_ref() else {
@@ -188,9 +209,9 @@ async fn run_semantic(
         ));
     }
 
-    let sidecars = memory_sidecars(req, schemas);
+    let projections = memory_search_projections(req, projections);
     let mut next_param = 3;
-    let mut sql = common_candidates_sql(req, &sidecars, &mut next_param)?;
+    let mut sql = common_candidates_sql(req, &projections, &mut next_param)?;
     let vec_param = next_param;
     next_param += 1;
     let model_param = next_param;
@@ -231,9 +252,9 @@ async fn run_semantic(
     .expect("write to String is infallible");
 
     let mut q = bind_common(sqlx::query_as::<_, SearchRow>(&sql), req);
-    for schema in &sidecars {
-        q = q.bind(schema.schema_id.as_str().to_string());
-        q = q.bind(schema.schema_version.into_inner().cast_signed());
+    for projection in &projections {
+        q = q.bind(projection.schema_id.as_str().to_string());
+        q = q.bind(projection.schema_version.into_inner().cast_signed());
     }
     if let Some(schema_id) = &req.schema_id {
         q = q.bind(schema_id.as_str().to_string());
@@ -251,11 +272,11 @@ async fn run_semantic(
 
 fn common_candidates_sql(
     req: &MemorySearchRequest,
-    sidecars: &[&SchemaInfo],
+    projections: &[&MemorySearchProjection],
     next_param: &mut usize,
 ) -> Result<String, StorageError> {
     let sidecar_first_param = *next_param;
-    *next_param += sidecars.len() * 2;
+    *next_param += projections.len() * 2;
     let schema_filter_param = req.schema_id.as_ref().map(|_| {
         let param = *next_param;
         *next_param += 1;
@@ -273,17 +294,19 @@ fn common_candidates_sql(
     push_base_memory_filters(&mut sql, req, schema_filter_param, reader_param);
     sql.push_str(" AND NULLIF(m.text, '') IS NOT NULL");
 
-    for (idx, schema) in sidecars.iter().enumerate() {
-        let table = PgIdent::table(schema.sidecar_table.as_ref().unwrap())?;
+    for (idx, projection) in projections.iter().enumerate() {
+        let table = PgIdent::table(&projection.sidecar_table)?;
+        let projection_expr = projection_search_expr(&projection.fields)?;
         let schema_param = sidecar_first_param + (idx * 2);
         let version_param = schema_param + 1;
         sql.push_str(" UNION ALL ");
         push_candidate_branch_prefix(&mut sql);
         write!(
             sql,
-            "COALESCE(row_to_json(s)::text, '') AS search_text
+            "NULLIF(concat_ws(' ', {projection_expr}), '') AS search_text
              FROM proxima_core.memories m
              JOIN {table} s ON s.memory_id = m.memory_id",
+            projection_expr = projection_expr,
             table = table.as_str()
         )
         .expect("write to String is infallible");
@@ -292,6 +315,23 @@ fn common_candidates_sql(
 
     sql.push(')');
     Ok(sql)
+}
+
+fn projection_search_expr(fields: &[MemorySearchProjectionField]) -> Result<String, StorageError> {
+    let mut expressions = Vec::with_capacity(fields.len());
+    for field in fields {
+        let column = PgIdent::column(&field.column)?;
+        let expression = match field.kind {
+            SearchProjectionColumnKind::Text => {
+                format!("NULLIF(s.{}::text, '')", column.as_str())
+            }
+            SearchProjectionColumnKind::TextArray => {
+                format!("NULLIF(array_to_string(s.{}, ' '), '')", column.as_str())
+            }
+        };
+        expressions.push(expression);
+    }
+    Ok(expressions.join(", "))
 }
 
 fn push_candidate_branch_prefix(sql: &mut String) {
@@ -336,8 +376,7 @@ fn push_sidecar_memory_filters(
         " WHERE m.owner_principal_kind = $1
            AND m.owner_principal_id = $2
            AND m.schema_id = ${schema_param}
-           AND m.schema_version = ${version_param}
-           AND NULLIF(m.text, '') IS NULL"
+           AND m.schema_version = ${version_param}"
     )
     .expect("write to String is infallible");
     push_reader_visibility_filter(sql, reader_param);
@@ -378,34 +417,32 @@ fn bind_common<'q>(
     q
 }
 
-fn memory_sidecars<'a>(
+fn memory_search_projections<'a>(
     req: &MemorySearchRequest,
-    schemas: &'a [SchemaInfo],
-) -> Vec<&'a SchemaInfo> {
+    projections: &'a [MemorySearchProjection],
+) -> Vec<&'a MemorySearchProjection> {
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
-    for schema in schemas {
-        if schema.sidecar_table.is_some()
-            && matches!(
-                schema.kind,
-                PayloadKind::Fact | PayloadKind::Abstraction | PayloadKind::Perspective
-            )
-            && req
-                .kind
-                .is_none_or(|kind| schema.kind == payload_kind_for_entity_kind(kind))
+    for projection in projections {
+        if matches!(
+            projection.kind,
+            PayloadKind::Fact | PayloadKind::Abstraction | PayloadKind::Perspective
+        ) && req
+            .kind
+            .is_none_or(|kind| projection.kind == payload_kind_for_entity_kind(kind))
             && req
                 .schema_id
                 .as_ref()
-                .is_none_or(|schema_id| schema.schema_id == *schema_id)
+                .is_none_or(|schema_id| projection.schema_id == *schema_id)
         {
             let key = (
-                schema.kind,
-                schema.schema_id.as_str().to_string(),
-                schema.schema_version.into_inner(),
-                schema.sidecar_table.as_ref().cloned(),
+                projection.kind,
+                projection.schema_id.as_str().to_string(),
+                projection.schema_version.into_inner(),
+                projection.sidecar_table.clone(),
             );
             if seen.insert(key) {
-                out.push(schema);
+                out.push(projection);
             }
         }
     }

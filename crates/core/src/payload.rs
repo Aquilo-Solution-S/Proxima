@@ -10,6 +10,23 @@
 
 use crate::{RelationClass, SchemaId};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SearchProjectionColumnKind {
+    Text,
+    TextArray,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct SearchProjectionField {
+    pub column: &'static str,
+    pub kind: SearchProjectionColumnKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SearchProjection {
+    pub fields: &'static [SearchProjectionField],
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FactTombstone {
     pub column: &'static str,
@@ -39,6 +56,12 @@ pub trait FactPayload: serde::Serialize + serde::de::DeserializeOwned + 'static 
     fn tombstone() -> Option<FactTombstone> {
         None
     }
+    /// Build-time lexical search projection. Only human-meaningful
+    /// text columns belong here; raw JSON, code bodies, logs, and
+    /// opaque ids stay out of `core/search_memories`.
+    fn search_projection() -> Option<SearchProjection> {
+        None
+    }
     fn json_schema() -> Option<serde_json::Value> {
         None
     }
@@ -53,6 +76,9 @@ pub trait AbstractionPayload: serde::Serialize + serde::de::DeserializeOwned + '
     /// See `FactPayload::SPECIAL_CATEGORY`.
     const SPECIAL_CATEGORY: bool = false;
     fn sidecar_table() -> &'static str;
+    fn search_projection() -> Option<SearchProjection> {
+        None
+    }
     fn json_schema() -> Option<serde_json::Value> {
         None
     }
@@ -67,6 +93,9 @@ pub trait PerspectivePayload: serde::Serialize + serde::de::DeserializeOwned + '
     /// See `FactPayload::SPECIAL_CATEGORY`.
     const SPECIAL_CATEGORY: bool = false;
     fn sidecar_table() -> &'static str;
+    fn search_projection() -> Option<SearchProjection> {
+        None
+    }
     fn json_schema() -> Option<serde_json::Value> {
         None
     }

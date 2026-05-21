@@ -13,7 +13,7 @@ use proxima_core::verbs::query::{
     MemoryLineageRequest, MemoryLineageResponse, MemorySearchRequest, MemorySearchResult,
     QueryRequest, QueryResponse,
 };
-use proxima_core::verbs::schema::SchemaInfo;
+use proxima_core::verbs::schema::{MemorySearchProjection, SchemaInfo};
 use proxima_core::verbs::subscribe::ChangeEventStream;
 use proxima_core::{
     AbstractionPayload, AbstractionRow, ActiveGoalSummary, BindInferenceTierRequest,
@@ -118,7 +118,7 @@ impl Storage for FixtureStorage {
     async fn search_memories(
         &self,
         _req: &MemorySearchRequest,
-        _schemas: &[SchemaInfo],
+        _projections: &[MemorySearchProjection],
     ) -> Result<Vec<MemorySearchResult>, StorageError> {
         Ok(Vec::new())
     }

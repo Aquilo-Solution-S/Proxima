@@ -163,7 +163,7 @@ async fn search_graph_semantic_or_hybrid(
                 embedding_dim: Some(embed.dim()),
                 reader_personality_instance_id: None,
             },
-            ctx.registry.list().as_slice(),
+            ctx.registry.search_projections(),
         )
         .await?;
     merge_semantic_candidates(&ctx, semantic_rows, &mut candidates).await?;
