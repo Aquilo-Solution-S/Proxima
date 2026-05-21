@@ -1,7 +1,8 @@
 use proxima_core::mcp::{McpTool, McpToolCtx, McpToolError};
 use proxima_core::verbs::goal_write::{GoalAuthorship, GoalDraft, GoalState, SystemOrigin};
 use proxima_core::{
-    EdgeAuthorshipKind, EdgeId, EntityKind, GoalId, MemoryId, OwnerPrincipalKind, ToolId,
+    EdgeAuthorshipKind, EdgeId, EntityKind, FactPayload, GoalId, MemoryId, OwnerPrincipalKind,
+    ToolId,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -10,6 +11,7 @@ use super::util::{
     EvidenceRef, append_lifecycle_derived_from_edges, emit_goal_achieved_fact, insert_goal_in_tx,
     insert_motivated_by_edges, load_goal_payload, map_storage, owner_columns, request_id,
 };
+use crate::payloads::GoalAchievedV1;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct MarkAchievedArgs {
@@ -53,6 +55,7 @@ impl McpTool for MarkAchievedTool {
     const NAME: &'static str = "proxima-goal/goal_mark_achieved";
     const DESCRIPTION: &'static str =
         "Mark the current Active Goal head as Achieved using supplied evidence.";
+    const PRODUCES_SCHEMA_IDS: &'static [&'static str] = &[GoalAchievedV1::SCHEMA_ID];
     type Args = MarkAchievedArgs;
     type Output = MarkAchievedOutput;
 

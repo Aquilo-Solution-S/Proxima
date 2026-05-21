@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, specta::Type, sqlx::Type,
 )]
+#[schemars(description = "Verifier category that determines how verifier_spec is interpreted.")]
 #[serde(rename_all = "snake_case")]
 #[sqlx(
     type_name = "proxima_code.acceptance_verifier_kind",
@@ -32,6 +33,7 @@ impl AcceptanceVerifierKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[schemars(description = "Structured verifier parameters for a selected verifier kind.")]
 pub struct AcceptanceVerifierSpecV1 {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(

@@ -2,7 +2,7 @@
 
 use proxima_core::mcp::{McpTool, McpToolCtx, McpToolError};
 use proxima_core::verbs::goal_write::{GoalAuthorship, GoalDraft, GoalState, SystemOrigin};
-use proxima_core::{EdgeAuthorshipKind, EdgeId, GoalId, MemoryId, ToolId};
+use proxima_core::{EdgeAuthorshipKind, EdgeId, FactPayload, GoalId, MemoryId, ToolId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -11,6 +11,7 @@ use super::util::{
     insert_goal_in_tx, insert_motivated_by_edges, map_storage, owner_columns,
     target_personality_root, validate_evidence_in_owner,
 };
+use crate::payloads::{GoalActivatedV1, GoalProposedV1};
 
 const MAX_CHILD_GOALS: usize = 50;
 
@@ -72,6 +73,8 @@ impl McpTool for DecomposeTool {
     const NAME: &'static str = "proxima-goal/goal_decompose";
     const DESCRIPTION: &'static str =
         "Decompose a current Active Goal into child Goals backed by goal_parents.";
+    const PRODUCES_SCHEMA_IDS: &'static [&'static str] =
+        &[GoalActivatedV1::SCHEMA_ID, GoalProposedV1::SCHEMA_ID];
 
     type Args = DecomposeArgs;
     type Output = DecomposeOutput;

@@ -1,6 +1,6 @@
 use proxima_core::mcp::{McpTool, McpToolCtx, McpToolError};
 use proxima_core::verbs::goal_write::{GoalAuthorship, GoalDraft, GoalState};
-use proxima_core::{EdgeAuthorshipKind, EdgeId, GoalId};
+use proxima_core::{EdgeAuthorshipKind, EdgeId, FactPayload, GoalId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -9,6 +9,7 @@ use super::util::{
     insert_motivated_by_edges, map_storage, request_id, target_personality_root,
     validate_evidence_in_owner,
 };
+use crate::payloads::GoalProposedV1;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ProposeArgs {
@@ -43,6 +44,7 @@ impl McpTool for ProposeTool {
     const NAME: &'static str = "proxima-goal/goal_propose";
     const DESCRIPTION: &'static str =
         "Propose a Goal with Fact or Abstraction evidence for user review.";
+    const PRODUCES_SCHEMA_IDS: &'static [&'static str] = &[GoalProposedV1::SCHEMA_ID];
     type Args = ProposeArgs;
     type Output = ProposeOutput;
 

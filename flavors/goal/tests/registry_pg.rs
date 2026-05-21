@@ -1,5 +1,5 @@
 use proxima_core::{CORE_DERIVED_FROM_RELATION, FlavorRegistry};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 #[test]
 fn goal_schemas_and_relations_register() {
@@ -45,4 +45,37 @@ fn goal_schemas_and_relations_register() {
     assert!(tool_names.contains("proxima-goal/goal_modify"));
     assert!(tool_names.contains("proxima-goal/goal_decline"));
     assert!(tool_names.contains("proxima-goal/goal_mark_achieved"));
+
+    let produced_by_tool: HashMap<_, _> = frozen
+        .list_mcp_tools()
+        .iter()
+        .map(|tool| (tool.name, tool.produces_schema_ids))
+        .collect();
+    assert_eq!(
+        produced_by_tool["proxima-goal/goal_propose"],
+        ["proxima-goal/goal-proposed-v1"]
+    );
+    assert_eq!(
+        produced_by_tool["proxima-goal/goal_accept"],
+        ["proxima-goal/goal-activated-v1"]
+    );
+    assert_eq!(
+        produced_by_tool["proxima-goal/goal_modify"],
+        ["proxima-goal/goal-activated-v1"]
+    );
+    assert_eq!(
+        produced_by_tool["proxima-goal/goal_decompose"],
+        [
+            "proxima-goal/goal-activated-v1",
+            "proxima-goal/goal-proposed-v1"
+        ]
+    );
+    assert_eq!(
+        produced_by_tool["proxima-goal/goal_decline"],
+        [] as [&str; 0]
+    );
+    assert_eq!(
+        produced_by_tool["proxima-goal/goal_mark_achieved"],
+        ["proxima-goal/goal-achieved-v1"]
+    );
 }
