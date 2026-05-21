@@ -1,4 +1,7 @@
-use proxima_core::{FactPayload, proxima_schema_id};
+use proxima_core::{
+    FactPayload, SearchProjection, SearchProjectionColumnKind, SearchProjectionField,
+    proxima_schema_id,
+};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
@@ -26,6 +29,28 @@ impl FactPayload for CommitV1 {
     const SCHEMA_VERSION: u32 = 1;
     fn sidecar_table() -> &'static str {
         "proxima_code.commit_v1"
+    }
+    fn search_projection() -> Option<SearchProjection> {
+        Some(SearchProjection {
+            fields: &[
+                SearchProjectionField {
+                    column: "sha",
+                    kind: SearchProjectionColumnKind::Text,
+                },
+                SearchProjectionField {
+                    column: "message",
+                    kind: SearchProjectionColumnKind::Text,
+                },
+                SearchProjectionField {
+                    column: "author_name",
+                    kind: SearchProjectionColumnKind::Text,
+                },
+                SearchProjectionField {
+                    column: "author_email",
+                    kind: SearchProjectionColumnKind::Text,
+                },
+            ],
+        })
     }
     fn render(&self) -> String {
         let short = self.sha.get(..7).unwrap_or(&self.sha);

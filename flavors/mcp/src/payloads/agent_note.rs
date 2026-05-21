@@ -1,4 +1,6 @@
-use proxima_core::FactPayload;
+use proxima_core::{
+    FactPayload, SearchProjection, SearchProjectionColumnKind, SearchProjectionField,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -20,5 +22,24 @@ impl FactPayload for AgentNoteV1 {
 
     fn sidecar_table() -> &'static str {
         "proxima_mcp.agent_note_v1"
+    }
+
+    fn search_projection() -> Option<SearchProjection> {
+        Some(SearchProjection {
+            fields: &[
+                SearchProjectionField {
+                    column: "title",
+                    kind: SearchProjectionColumnKind::Text,
+                },
+                SearchProjectionField {
+                    column: "body",
+                    kind: SearchProjectionColumnKind::Text,
+                },
+                SearchProjectionField {
+                    column: "tags",
+                    kind: SearchProjectionColumnKind::TextArray,
+                },
+            ],
+        })
     }
 }

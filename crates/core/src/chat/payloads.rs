@@ -2,7 +2,10 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
-use crate::{AbstractionPayload, FactPayload};
+use crate::{
+    AbstractionPayload, FactPayload, SearchProjection, SearchProjectionColumnKind,
+    SearchProjectionField,
+};
 
 pub const CHAT_STARTED_SCHEMA_ID: &str = "core/chat-started-v1";
 pub const CHAT_MESSAGE_SCHEMA_ID: &str = "core/chat-message-v1";
@@ -51,6 +54,15 @@ impl FactPayload for ChatStartedV1 {
         "proxima_core.chat_started_v1"
     }
 
+    fn search_projection() -> Option<SearchProjection> {
+        Some(SearchProjection {
+            fields: &[SearchProjectionField {
+                column: "title",
+                kind: SearchProjectionColumnKind::Text,
+            }],
+        })
+    }
+
     fn render(&self) -> String {
         match self.title.as_deref() {
             Some(title) => format!("Chat started: {title}"),
@@ -85,6 +97,15 @@ impl FactPayload for ChatMessageV1 {
         "proxima_core.chat_message_v1"
     }
 
+    fn search_projection() -> Option<SearchProjection> {
+        Some(SearchProjection {
+            fields: &[SearchProjectionField {
+                column: "message",
+                kind: SearchProjectionColumnKind::Text,
+            }],
+        })
+    }
+
     fn render(&self) -> String {
         format!("Chat message: {}", self.message)
     }
@@ -112,6 +133,15 @@ impl FactPayload for ChatReplyV1 {
         "proxima_core.chat_reply_v1"
     }
 
+    fn search_projection() -> Option<SearchProjection> {
+        Some(SearchProjection {
+            fields: &[SearchProjectionField {
+                column: "reply",
+                kind: SearchProjectionColumnKind::Text,
+            }],
+        })
+    }
+
     fn render(&self) -> String {
         "Chat reply".into()
     }
@@ -136,6 +166,15 @@ impl FactPayload for ChatEndRequestedV1 {
 
     fn sidecar_table() -> &'static str {
         "proxima_core.chat_end_requested_v1"
+    }
+
+    fn search_projection() -> Option<SearchProjection> {
+        Some(SearchProjection {
+            fields: &[SearchProjectionField {
+                column: "reason",
+                kind: SearchProjectionColumnKind::Text,
+            }],
+        })
     }
 
     fn render(&self) -> String {

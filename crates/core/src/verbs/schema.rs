@@ -5,7 +5,7 @@
 
 use crate::{
     DependencySatisfactionRule, FlavorDescriptor, McpToolDescriptor, RegisteredRelation,
-    RelationDescriptor, SchemaId, SchemaVersion,
+    RelationDescriptor, SchemaId, SchemaVersion, SearchProjectionColumnKind,
 };
 
 pub type PayloadValidator = fn(&serde_json::Value) -> Result<(), String>;
@@ -66,6 +66,21 @@ pub struct SchemaInfo {
     pub cbor_encoder: Option<PayloadCborEncoder>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct MemorySearchProjectionField {
+    pub column: String,
+    pub kind: SearchProjectionColumnKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemorySearchProjection {
+    pub schema_id: SchemaId,
+    pub schema_version: SchemaVersion,
+    pub kind: PayloadKind,
+    pub sidecar_table: String,
+    pub fields: Vec<MemorySearchProjectionField>,
+}
+
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct SchemaRequest;
 
@@ -77,6 +92,7 @@ pub struct SchemaResponse {
 #[derive(Debug, Clone, Default)]
 pub struct FlavorRegistryFrozen {
     schemas: Vec<SchemaInfo>,
+    search_projections: Vec<MemorySearchProjection>,
     relations: Vec<RelationDescriptor>,
     validators: Vec<PayloadValidatorEntry>,
     mcp_tools: Vec<McpToolDescriptor>,
@@ -101,6 +117,7 @@ impl FlavorRegistryFrozen {
     pub fn with_schemas(schemas: Vec<SchemaInfo>) -> Self {
         Self {
             schemas,
+            search_projections: Vec::new(),
             relations: Vec::new(),
             validators: Vec::new(),
             mcp_tools: Vec::new(),
@@ -121,6 +138,7 @@ impl FlavorRegistryFrozen {
     ) -> Self {
         Self {
             schemas,
+            search_projections: Vec::new(),
             relations,
             validators: Vec::new(),
             mcp_tools: Vec::new(),
@@ -134,6 +152,7 @@ impl FlavorRegistryFrozen {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn with_schemas_relations_validators(
         schemas: Vec<SchemaInfo>,
+        search_projections: Vec<MemorySearchProjection>,
         relations: Vec<RelationDescriptor>,
         validators: Vec<PayloadValidatorEntry>,
         mcp_tools: Vec<McpToolDescriptor>,
@@ -150,6 +169,7 @@ impl FlavorRegistryFrozen {
     ) -> Self {
         Self {
             schemas,
+            search_projections,
             relations,
             validators,
             mcp_tools,
@@ -167,6 +187,11 @@ impl FlavorRegistryFrozen {
     ) -> Self {
         self.schemas.extend(schemas);
         self
+    }
+
+    #[must_use]
+    pub fn search_projections(&self) -> &[MemorySearchProjection] {
+        &self.search_projections
     }
 
     #[must_use]

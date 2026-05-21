@@ -192,7 +192,7 @@ pub trait Storage: Send + Sync {
     async fn search_memories(
         &self,
         req: &crate::verbs::query::MemorySearchRequest,
-        schemas: &[crate::verbs::schema::SchemaInfo],
+        projections: &[crate::verbs::schema::MemorySearchProjection],
     ) -> Result<Vec<crate::verbs::query::MemorySearchResult>, StorageError>;
 
     /// Owner-scoped bounded walk over memory-only Provenance and
@@ -701,7 +701,7 @@ impl Storage for NoopStorage {
     async fn search_memories(
         &self,
         _req: &crate::verbs::query::MemorySearchRequest,
-        _schemas: &[crate::verbs::schema::SchemaInfo],
+        _projections: &[crate::verbs::schema::MemorySearchProjection],
     ) -> Result<Vec<crate::verbs::query::MemorySearchResult>, StorageError> {
         Ok(Vec::new())
     }

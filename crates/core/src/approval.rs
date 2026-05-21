@@ -11,7 +11,8 @@ use crate::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraf
 use crate::{
     CORE_HAS_APPROVAL_DECISION_RELATION, CORE_HAS_APPROVAL_POLICY_RELATION, CORE_VOTES_ON_RELATION,
     EdgeAuthorshipKind, EdgeId, EntityKind, FactPayload, MemoryId, Owner, OwnerPrincipalKind,
-    Principal, SchemaId, SchemaVersion, SourceBatchId, SourceId, StorageError,
+    Principal, SchemaId, SchemaVersion, SearchProjection, SearchProjectionColumnKind,
+    SearchProjectionField, SourceBatchId, SourceId, StorageError,
 };
 
 const APPROVAL_SOURCE_ID: &str = "core/approval";
@@ -185,6 +186,21 @@ impl FactPayload for ApprovalPolicyV1 {
         "proxima_core.approval_policy_v1"
     }
 
+    fn search_projection() -> Option<SearchProjection> {
+        Some(SearchProjection {
+            fields: &[
+                SearchProjectionField {
+                    column: "title",
+                    kind: SearchProjectionColumnKind::Text,
+                },
+                SearchProjectionField {
+                    column: "summary",
+                    kind: SearchProjectionColumnKind::Text,
+                },
+            ],
+        })
+    }
+
     fn render(&self) -> String {
         format!("Approval policy: {}", self.title)
     }
@@ -216,6 +232,21 @@ impl FactPayload for ApprovalVoteV1 {
 
     fn sidecar_table() -> &'static str {
         "proxima_core.approval_vote_v1"
+    }
+
+    fn search_projection() -> Option<SearchProjection> {
+        Some(SearchProjection {
+            fields: &[
+                SearchProjectionField {
+                    column: "verdict",
+                    kind: SearchProjectionColumnKind::Text,
+                },
+                SearchProjectionField {
+                    column: "rationale",
+                    kind: SearchProjectionColumnKind::Text,
+                },
+            ],
+        })
     }
 
     fn render(&self) -> String {
@@ -252,6 +283,21 @@ impl FactPayload for ApprovalDecisionV1 {
 
     fn sidecar_table() -> &'static str {
         "proxima_core.approval_decision_v1"
+    }
+
+    fn search_projection() -> Option<SearchProjection> {
+        Some(SearchProjection {
+            fields: &[
+                SearchProjectionField {
+                    column: "decision",
+                    kind: SearchProjectionColumnKind::Text,
+                },
+                SearchProjectionField {
+                    column: "reason",
+                    kind: SearchProjectionColumnKind::Text,
+                },
+            ],
+        })
     }
 
     fn render(&self) -> String {

@@ -272,9 +272,9 @@ impl Storage for PgStorage {
     async fn search_memories(
         &self,
         req: &MemorySearchRequest,
-        schemas: &[proxima_core::verbs::schema::SchemaInfo],
+        projections: &[proxima_core::verbs::schema::MemorySearchProjection],
     ) -> Result<Vec<MemorySearchResult>, StorageError> {
-        verbs::query::search_memories(&self.pool, req, schemas).await
+        verbs::query::search_memories(&self.pool, req, projections).await
     }
 
     async fn walk_memory_lineage(
