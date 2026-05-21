@@ -86,6 +86,8 @@ async fn continuation_invocation_can_share_original_wake_natural_key() {
                 owner,
                 personality_instance_id: instance_id,
                 wake_entry_id: Some(wake_entry_id),
+                triggering_memory_id: None,
+                change_event_seq: None,
                 limit: 10,
             })
             .await?;
@@ -543,6 +545,8 @@ async fn wake_invocation_carries_dispatch_columns() {
                 owner: owner.clone(),
                 personality_instance_id: instance_id,
                 wake_entry_id: Some(wake_entry_id),
+                triggering_memory_id: None,
+                change_event_seq: None,
                 limit: 10,
             })
             .await?;

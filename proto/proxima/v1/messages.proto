@@ -370,6 +370,7 @@ message MistralChatConfig {
   optional float temperature = 4;
   optional uint32 max_completion_tokens = 5;
   optional string reasoning_effort = 6;
+  optional uint32 context_window_tokens = 7;
 }
 
 message OpenAIChatConfig {
@@ -378,6 +379,7 @@ message OpenAIChatConfig {
   string api_key_env = 3;
   optional float temperature = 4;
   optional uint32 max_completion_tokens = 5;
+  optional uint32 context_window_tokens = 6;
 }
 
 message OpenAIResponsesConfig {
@@ -385,12 +387,14 @@ message OpenAIResponsesConfig {
   string model_id = 2;
   string api_key_env = 3;
   optional string reasoning_effort = 4;
+  optional uint32 context_window_tokens = 5;
 }
 
 message ChatGPTCodexConfig {
   string base_url = 1;
   string model_id = 2;
   optional string reasoning_effort = 3;
+  optional uint32 context_window_tokens = 4;
 }
 
 message InferenceTierBinding {

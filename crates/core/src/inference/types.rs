@@ -69,6 +69,7 @@ pub struct MistralChatConfig {
     pub temperature: Option<f32>,
     pub max_completion_tokens: Option<u32>,
     pub reasoning_effort: Option<String>,
+    pub context_window_tokens: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, specta::Type)]
@@ -78,6 +79,7 @@ pub struct OpenAIChatConfig {
     pub api_key_env: String,
     pub temperature: Option<f32>,
     pub max_completion_tokens: Option<u32>,
+    pub context_window_tokens: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, specta::Type)]
@@ -86,6 +88,7 @@ pub struct OpenAIResponsesConfig {
     pub model_id: String,
     pub api_key_env: String,
     pub reasoning_effort: Option<String>,
+    pub context_window_tokens: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, specta::Type)]
@@ -93,6 +96,7 @@ pub struct ChatGPTCodexConfig {
     pub base_url: String,
     pub model_id: String,
     pub reasoning_effort: Option<String>,
+    pub context_window_tokens: Option<u32>,
 }
 
 impl ChatGPTCodexConfig {
@@ -160,6 +164,7 @@ mod tests {
             base_url: ChatGPTCodexConfig::DEFAULT_BASE_URL.to_string(),
             model_id: "gpt-5.3-codex".to_string(),
             reasoning_effort: Some("medium".to_string()),
+            context_window_tokens: Some(272_000),
         });
 
         let json = serde_json::to_string(&original).unwrap();

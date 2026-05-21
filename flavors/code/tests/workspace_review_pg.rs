@@ -1609,6 +1609,8 @@ async fn configure_execution_worker(
             temperature: None,
             max_completion_tokens: None,
             reasoning_effort: None,
+
+            context_window_tokens: None,
         }),
     })
     .await?;

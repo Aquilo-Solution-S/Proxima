@@ -24,8 +24,9 @@ pub const CORE_DEPENDS_ON_RELATION: &str = "core/depends-on";
 pub const CORE_HAS_APPROVAL_POLICY_RELATION: &str = "core/has-approval-policy";
 pub const CORE_VOTES_ON_RELATION: &str = "core/votes-on";
 pub const CORE_HAS_APPROVAL_DECISION_RELATION: &str = "core/has-approval-decision";
-pub const CORE_RECEIVES_DIRECTED_QUESTION_RELATION: &str = "core/receives-directed-question";
-pub const CORE_ANSWERS_QUESTION_RELATION: &str = "core/answers-question";
+pub const CORE_RECEIVES_CHAT_MESSAGE_RELATION: &str = "core/receives-chat-message";
+pub const CORE_REPLIES_TO_MESSAGE_RELATION: &str = "core/replies-to-message";
+pub const CORE_RECEIVES_CHAT_END_REQUEST_RELATION: &str = "core/receives-chat-end-request";
 pub const CORE_RECEIVES_INTERVENTION_REQUEST_RELATION: &str = "core/receives-intervention-request";
 
 /// Closed substrate vocabulary for the abstract role an edge plays
@@ -562,16 +563,23 @@ pub fn core_relation_descriptors() -> Vec<RelationDescriptor> {
             AuthorshipKindMask::engine(),
         ),
         RelationDescriptor::substrate(
-            CORE_RECEIVES_DIRECTED_QUESTION_RELATION,
+            CORE_RECEIVES_CHAT_MESSAGE_RELATION,
             RelationClass::Structural,
             EntityKindMask::perspective(),
             EntityKindMask::fact(),
             AuthorshipKindMask::user().union(AuthorshipKindMask::external_agent()),
         ),
         RelationDescriptor::substrate(
-            CORE_ANSWERS_QUESTION_RELATION,
+            CORE_REPLIES_TO_MESSAGE_RELATION,
             RelationClass::Structural,
             EntityKindMask::fact(),
+            EntityKindMask::fact(),
+            AuthorshipKindMask::user().union(AuthorshipKindMask::external_agent()),
+        ),
+        RelationDescriptor::substrate(
+            CORE_RECEIVES_CHAT_END_REQUEST_RELATION,
+            RelationClass::Structural,
+            EntityKindMask::perspective(),
             EntityKindMask::fact(),
             AuthorshipKindMask::user().union(AuthorshipKindMask::external_agent()),
         ),

@@ -88,8 +88,13 @@ impl Default for FlavorRegistry {
         registry.add_fact_schema::<crate::approval::ApprovalDecisionV1>();
         registry.add_fact_schema::<crate::intervention::InterventionRequestedV1>();
         registry.add_fact_schema::<crate::intervention::InterventionDecisionV1>();
-        registry.add_fact_schema::<crate::inquiry::DirectedQuestionV1>();
-        registry.add_fact_schema::<crate::inquiry::DirectedAnswerV1>();
+        registry.add_fact_schema::<crate::chat::ChatStartedV1>();
+        registry.add_fact_schema::<crate::chat::ChatMessageV1>();
+        registry.add_fact_schema::<crate::chat::ChatReplyV1>();
+        registry.add_fact_schema::<crate::chat::ChatEndRequestedV1>();
+        registry.add_fact_schema::<crate::chat::ChatEndedV1>();
+        registry.add_abstraction_schema::<crate::chat::ChatCompactionV1>();
+        registry.add_abstraction_schema::<crate::chat::ChatSummaryV1>();
         registry.add_cited_object_schema::<crate::citations::UploadedBlobPayload>();
         registry.add_fact_schema::<crate::workspace_run::CoreWorkspaceRunV1>();
         registry.schemas.push(SchemaInfo {
@@ -729,7 +734,7 @@ mod tests {
     }
 
     #[test]
-    fn default_registry_includes_all_36_substrate_mcp_tools() {
+    fn default_registry_includes_all_41_substrate_mcp_tools() {
         let frozen = FlavorRegistry::new().freeze();
         let names: std::collections::HashSet<_> =
             frozen.list_mcp_tools().iter().map(|d| d.name).collect();
@@ -740,6 +745,7 @@ mod tests {
             "core/instantiate_personality",
             "core/tombstone_personality",
             "core/list_wake_entries",
+            "core/list_wake_invocations",
             "core/set_wake_entries",
             "core/list_read_scope",
             "core/set_read_scope",
@@ -766,10 +772,14 @@ mod tests {
             "core/emit_approval_vote",
             "core/try_emit_approval_decision",
             "core/emit_intervention_decision",
-            "core/list_inquiry_targets",
-            "core/get_inquiry_thread",
-            "core/emit_directed_question",
-            "core/emit_directed_answer",
+            "core/list_chat_targets",
+            "core/get_chat_thread",
+            "core/start_chat",
+            "core/emit_chat_message",
+            "core/emit_chat_reply",
+            "core/compact_chat_thread",
+            "core/request_end_chat",
+            "core/end_chat",
         ];
         for name in expected {
             assert!(names.contains(name), "missing tool {name}");
@@ -778,6 +788,6 @@ mod tests {
             !names.contains("core/emit_budget_decision"),
             "old intervention tool name must not remain registered"
         );
-        assert_eq!(names.len(), 36, "exactly 36 substrate tools registered");
+        assert_eq!(names.len(), 41, "exactly 41 substrate tools registered");
     }
 }

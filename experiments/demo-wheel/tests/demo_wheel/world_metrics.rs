@@ -544,10 +544,17 @@ impl DemoWorld {
         let failed_verification_evidence_count: i64 =
             row.try_get("failed_verification_evidence_count")?;
         let workspace_review_count: i64 = row.try_get("workspace_review_count")?;
-        let approved_workspace_review_count: i64 = row.try_get("approved_workspace_review_count")?;
+        let approved_workspace_review_count: i64 =
+            row.try_get("approved_workspace_review_count")?;
 
-        checks.insert("planner_emitted_one_work_item".into(), execution_request_count == 1);
-        checks.insert("planner_emitted_one_final_test".into(), test_request_count == 1);
+        checks.insert(
+            "planner_emitted_one_work_item".into(),
+            execution_request_count == 1,
+        );
+        checks.insert(
+            "planner_emitted_one_final_test".into(),
+            test_request_count == 1,
+        );
         checks.insert(
             "execution_requests_have_model_text".into(),
             request_with_text_count == execution_request_count && execution_request_count == 1,
@@ -1038,6 +1045,8 @@ impl DemoWorld {
                         temperature: Some(0.0),
                         max_completion_tokens: Some(1024),
                         reasoning_effort: Some("high".into()),
+
+                        context_window_tokens: None,
                     },
                 },
                 HarnessContext {
@@ -1205,8 +1214,7 @@ Continuation:
 Workspace Context:
 {"mode":"core_git_worktree"}"#;
 
-        let continuation =
-            continuation_context_from_user_seed(seed).expect("continuation section");
+        let continuation = continuation_context_from_user_seed(seed).expect("continuation section");
 
         assert_eq!(continuation["intervention_decision"]["handle"], "F2");
         assert_eq!(continuation["intervention_request"]["handle"], "F3");

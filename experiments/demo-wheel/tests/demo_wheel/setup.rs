@@ -13,6 +13,8 @@ impl DemoWorld {
                     temperature: Some(0.2),
                     max_completion_tokens: None,
                     reasoning_effort: None,
+
+                    context_window_tokens: None,
                 }),
             })
             .await?;
@@ -142,13 +144,12 @@ impl DemoWorld {
             planner_tools,
             self.cfg.role_max_rounds.planner,
         )?;
-        vision_wake.instructions =
-            planner_instruction(
-                planner,
-                self.cfg.challenge,
-                self.cfg.planner_mode,
-                self.cfg.intervention_mode,
-            );
+        vision_wake.instructions = planner_instruction(
+            planner,
+            self.cfg.challenge,
+            self.cfg.planner_mode,
+            self.cfg.intervention_mode,
+        );
         vision_wake.intervention_policy = Some(intervention_policy.clone());
 
         let mut child_goal_wake = WakeEntryDraft::new(
@@ -168,13 +169,12 @@ impl DemoWorld {
             self.cfg.role_max_rounds.planner,
         )?;
         child_goal_wake.goal_scope = WakeEntryGoalScope::TriggerGoalAssigned;
-        child_goal_wake.instructions =
-            planner_instruction(
-                planner,
-                self.cfg.challenge,
-                self.cfg.planner_mode,
-                self.cfg.intervention_mode,
-            );
+        child_goal_wake.instructions = planner_instruction(
+            planner,
+            self.cfg.challenge,
+            self.cfg.planner_mode,
+            self.cfg.intervention_mode,
+        );
         child_goal_wake.intervention_policy = Some(intervention_policy);
 
         let entries = if self.cfg.planner_mode == DemoPlannerMode::Real {

@@ -470,6 +470,8 @@ mod tests {
             temperature: None,
             max_completion_tokens: None,
             reasoning_effort: None,
+
+            context_window_tokens: None,
         });
         let result = ping_target_with(&config, |_| None).await;
         let err = result.expect_err("must error when env unset");
@@ -550,6 +552,8 @@ mod tests {
             base_url: server.uri(),
             model_id: "gpt-5.3-codex".to_string(),
             reasoning_effort: None,
+
+            context_window_tokens: None,
         };
         let auth = AuthDotJsonPath(codex_dir.join("auth.json"));
 

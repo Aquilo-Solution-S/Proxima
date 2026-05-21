@@ -111,6 +111,7 @@ fn build_provider(target: &ProviderTarget) -> Box<dyn ProviderClient> {
             temperature,
             max_completion_tokens,
             reasoning_effort,
+            ..
         } => Box::new(MistralChatClient {
             http: reqwest::Client::new(),
             base_url: base_url.clone(),
@@ -126,6 +127,7 @@ fn build_provider(target: &ProviderTarget) -> Box<dyn ProviderClient> {
             api_key,
             temperature,
             max_completion_tokens,
+            ..
         } => Box::new(OpenAIChatClient {
             http: reqwest::Client::new(),
             base_url: base_url.clone(),
@@ -139,6 +141,7 @@ fn build_provider(target: &ProviderTarget) -> Box<dyn ProviderClient> {
             model_id,
             api_key,
             reasoning_effort,
+            ..
         } => {
             let mut client =
                 OpenAIResponsesClient::new(base_url.clone(), model_id.clone(), api_key.clone());
@@ -151,6 +154,7 @@ fn build_provider(target: &ProviderTarget) -> Box<dyn ProviderClient> {
             model_id,
             reasoning_effort,
             auth_json,
+            ..
         } => {
             let mut client = ChatGPTCodexClient::new(
                 base_url.clone(),

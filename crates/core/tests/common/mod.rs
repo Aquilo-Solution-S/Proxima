@@ -315,6 +315,8 @@ pub async fn seed_dispatch_fixture_with_match_and_engine(
                 temperature: None,
                 max_completion_tokens: None,
                 reasoning_effort: None,
+
+                context_window_tokens: None,
             }),
         })
         .await

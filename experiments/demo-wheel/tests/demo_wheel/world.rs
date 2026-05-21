@@ -131,11 +131,12 @@ impl DemoWorld {
                 readable_personality_instance_ids: vec![visionary],
             })
             .await?;
-        let worker_substrate_tools = if self.cfg.intervention_mode == DemoInterventionMode::ForceContinue {
-            vec!["core/fetch_memory"]
-        } else {
-            Vec::new()
-        };
+        let worker_substrate_tools =
+            if self.cfg.intervention_mode == DemoInterventionMode::ForceContinue {
+                vec!["core/fetch_memory"]
+            } else {
+                Vec::new()
+            };
         self.set_single_wake(
             worker,
             "Worker",
@@ -371,11 +372,12 @@ impl DemoWorld {
             },
         )
         .await?;
-        let worker_substrate_tools = if self.cfg.intervention_mode == DemoInterventionMode::ForceContinue {
-            vec!["core/fetch_memory"]
-        } else {
-            Vec::new()
-        };
+        let worker_substrate_tools =
+            if self.cfg.intervention_mode == DemoInterventionMode::ForceContinue {
+                vec!["core/fetch_memory"]
+            } else {
+                Vec::new()
+            };
         self.set_single_wake(
             worker,
             "Worker",

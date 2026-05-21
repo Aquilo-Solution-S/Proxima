@@ -263,14 +263,26 @@ pub async fn list_wake_invocations(
                AND i.owner_org_id = $3
                AND i.personality_instance_id = $4
                AND ($5::uuid IS NULL OR i.wake_entry_id = $5)
+               AND ($6::uuid IS NULL OR i.change_event_seq = $6)
+               AND ($7::uuid IS NULL OR EXISTS (
+                    SELECT 1
+                      FROM proxima_core.change_event c
+                     WHERE c.owner_principal_kind = i.owner_principal_kind
+                       AND c.owner_principal_id = i.owner_principal_id
+                       AND c.owner_org_id = i.owner_org_id
+                       AND c.seq = i.change_event_seq
+                       AND c.entity_memory_id = $7
+               ))
              ORDER BY i.started_at DESC
-             LIMIT $6",
+             LIMIT $8",
     )
     .bind(owner_kind as OwnerPrincipalKind)
     .bind(owner_principal_id)
     .bind(owner_org_id)
     .bind(req.personality_instance_id.into_inner())
     .bind(req.wake_entry_id)
+    .bind(req.change_event_seq)
+    .bind(req.triggering_memory_id.map(|id| id.into_inner()))
     .bind(limit)
     .fetch_all(pool)
     .await

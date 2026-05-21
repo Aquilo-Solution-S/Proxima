@@ -213,6 +213,7 @@ pub fn provider_target_from_config(
             temperature: cfg.temperature,
             max_completion_tokens: cfg.max_completion_tokens,
             reasoning_effort: cfg.reasoning_effort.clone(),
+            context_window_tokens: cfg.context_window_tokens,
         }),
         crate::InferenceTargetConfig::OpenAIChat(cfg) => Ok(ProviderTarget::OpenAIChat {
             base_url: cfg.base_url.clone(),
@@ -220,12 +221,14 @@ pub fn provider_target_from_config(
             api_key: read_key(&cfg.api_key_env)?,
             temperature: cfg.temperature,
             max_completion_tokens: cfg.max_completion_tokens,
+            context_window_tokens: cfg.context_window_tokens,
         }),
         crate::InferenceTargetConfig::OpenAIResponses(cfg) => Ok(ProviderTarget::OpenAIResponses {
             base_url: cfg.base_url.clone(),
             model_id: cfg.model_id.clone(),
             api_key: read_key(&cfg.api_key_env)?,
             reasoning_effort: cfg.reasoning_effort.clone(),
+            context_window_tokens: cfg.context_window_tokens,
         }),
         crate::InferenceTargetConfig::ChatGPTCodex(cfg) => {
             let home = std::env::var_os("HOME").ok_or_else(|| {
@@ -238,6 +241,7 @@ pub fn provider_target_from_config(
                 base_url: cfg.base_url.clone(),
                 model_id: cfg.model_id.clone(),
                 reasoning_effort: cfg.reasoning_effort.clone(),
+                context_window_tokens: cfg.context_window_tokens,
                 auth_json,
             })
         }

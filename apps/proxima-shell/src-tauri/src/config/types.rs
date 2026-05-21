@@ -149,6 +149,8 @@ mod tests {
                             temperature: None,
                             max_completion_tokens: None,
                             reasoning_effort: Some("high".to_string()),
+
+                            context_window_tokens: None,
                         },
                     ),
                 }],
@@ -202,6 +204,8 @@ mod tests {
                 temperature: Some(0.2),
                 max_completion_tokens: Some(2048),
                 reasoning_effort: Some("high".to_string()),
+
+                context_window_tokens: None,
             }),
             "mistral_chat",
         );
@@ -212,6 +216,8 @@ mod tests {
                 api_key_env: "OPENAI_API_KEY".to_string(),
                 temperature: Some(0.1),
                 max_completion_tokens: Some(4096),
+
+                context_window_tokens: None,
             }),
             "openai_chat",
         );
@@ -222,6 +228,8 @@ mod tests {
                     model_id: "codex-mini-latest".to_string(),
                     api_key_env: "OPENAI_API_KEY".to_string(),
                     reasoning_effort: Some("medium".to_string()),
+
+                    context_window_tokens: None,
                 },
             ),
             "openai_responses",
@@ -231,6 +239,8 @@ mod tests {
                 base_url: "https://chatgpt.com/backend-api/codex".to_string(),
                 model_id: "gpt-5.3-codex".to_string(),
                 reasoning_effort: Some("medium".to_string()),
+
+                context_window_tokens: None,
             }),
             "chatgpt_codex",
         );

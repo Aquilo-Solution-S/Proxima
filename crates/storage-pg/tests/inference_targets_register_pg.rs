@@ -15,6 +15,8 @@ fn mistral_chat(model_id: &str, api_key_env: Option<&str>) -> InferenceTargetCon
         temperature: None,
         max_completion_tokens: None,
         reasoning_effort: None,
+
+        context_window_tokens: None,
     })
 }
 

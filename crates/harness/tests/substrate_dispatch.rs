@@ -75,6 +75,8 @@ fn empty_program(bindings: &[SubstrateToolBinding], workspace: bool) -> HarnessP
             temperature: None,
             max_completion_tokens: None,
             reasoning_effort: None,
+
+            context_window_tokens: None,
         },
     }
 }
