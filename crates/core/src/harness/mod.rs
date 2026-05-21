@@ -26,6 +26,13 @@ pub use tool_projection::{
     HarnessToolDispatch, HarnessToolProjection, ToolProjectionError, build_wake_tool_projection,
 };
 
+/// Reinject fulfillment instructions every N unfulfilled rounds.
+pub const FULFILLMENT_REMINDER_INTERVAL_ROUNDS: u32 = 4;
+/// Stop run-until wakes after this many unfulfilled rounds.
+pub const FULFILLMENT_STALL_ROUND_LIMIT: u32 = 16;
+/// Stop after the same tool returns the same recoverable error this many times.
+pub const TOOL_ERROR_STREAK_LIMIT: u32 = 3;
+
 /// Everything the dispatcher hands the harness for one wake invocation.
 #[derive(Debug, Clone)]
 pub struct HarnessProgram {

@@ -3,7 +3,7 @@
 
 use futures::future::BoxFuture;
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::McpTool;
 use crate::intervention::InterventionPolicy;
@@ -16,10 +16,30 @@ use crate::{
     ModelTier, WakeEntryAuthoredBy, WakeEntryGoalScope, WakeExecutionMode, WakeWorkspaceBinding,
 };
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PatchField<T> {
+    Unspecified,
+    Set(Option<T>),
+}
+
+impl<T> Default for PatchField<T> {
+    fn default() -> Self {
+        Self::Unspecified
+    }
+}
+
+fn deserialize_patch_field<'de, D, T>(deserializer: D) -> Result<PatchField<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(PatchField::Set)
+}
+
 #[derive(Debug, Default)]
 pub struct UpdateWakeEntryTool;
 
-#[derive(Debug, Default, Clone, Deserialize, Serialize, JsonSchema)]
+#[derive(Debug, Default, Clone, Deserialize, JsonSchema)]
 pub struct WakeEntryPatch {
     #[serde(default)]
     pub label: Option<String>,
@@ -37,8 +57,11 @@ pub struct WakeEntryPatch {
     pub substrate_tool_palette: Option<Vec<String>>,
     #[serde(default)]
     pub workspace_tool_palette: Option<Vec<String>>,
-    #[serde(default)]
-    pub workspace_binding: Option<Option<WakeWorkspaceBinding>>,
+    /// Field absent leaves the binding unchanged; `null` clears it;
+    /// an object sets a new binding.
+    #[serde(default, deserialize_with = "deserialize_patch_field")]
+    #[schemars(with = "Option<WakeWorkspaceBinding>")]
+    pub workspace_binding: PatchField<WakeWorkspaceBinding>,
     #[serde(default)]
     #[schemars(range(min = 0, max = 1000))]
     pub probability_promille: Option<u16>,
@@ -134,7 +157,7 @@ impl McpTool for UpdateWakeEntryTool {
                 if let Some(v) = patch.workspace_tool_palette {
                     entry.workspace_tool_palette = v;
                 }
-                if let Some(v) = patch.workspace_binding {
+                if let PatchField::Set(v) = patch.workspace_binding {
                     entry.workspace_binding = v;
                 }
                 if let Some(v) = patch.probability_promille {
@@ -187,5 +210,41 @@ impl McpTool for UpdateWakeEntryTool {
                 audit_emit_failed,
             })
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{PatchField, WakeEntryPatch};
+    use crate::{WakeWorkspaceBinding, WakeWorkspaceFinalize};
+
+    #[test]
+    fn workspace_binding_patch_distinguishes_absent_null_and_value() {
+        let absent: WakeEntryPatch =
+            serde_json::from_value(serde_json::json!({})).expect("absent binding patch parses");
+        assert!(matches!(absent.workspace_binding, PatchField::Unspecified));
+
+        let clear: WakeEntryPatch =
+            serde_json::from_value(serde_json::json!({ "workspace_binding": null }))
+                .expect("null binding patch parses");
+        assert!(matches!(clear.workspace_binding, PatchField::Set(None)));
+
+        let set: WakeEntryPatch = serde_json::from_value(serde_json::json!({
+            "workspace_binding": {
+                "kind": "git_worktree",
+                "repo_path": "/tmp/proxima",
+                "base_ref": "HEAD",
+                "finalize": "leave_dirty",
+                "worktrees_root": null
+            }
+        }))
+        .expect("object binding patch parses");
+        assert!(matches!(
+            set.workspace_binding,
+            PatchField::Set(Some(WakeWorkspaceBinding::GitWorktree {
+                finalize: WakeWorkspaceFinalize::LeaveDirty,
+                ..
+            }))
+        ));
     }
 }

@@ -6,7 +6,10 @@
 
 use serde::Serialize;
 
-use crate::harness::HarnessToolProjection;
+use crate::harness::{
+    FULFILLMENT_REMINDER_INTERVAL_ROUNDS, FULFILLMENT_STALL_ROUND_LIMIT, HarnessToolProjection,
+    TOOL_ERROR_STREAK_LIMIT,
+};
 use crate::mcp::{HandleTable, provider_safe_tool_name};
 use crate::personality::{WORKSPACE_TOOL_CATALOG, WakeEntryRow};
 
@@ -23,6 +26,7 @@ pub struct WakeContract {
     pub max_rounds: u16,
     pub handle_domains: WakeContractHandleDomains,
     pub tool_palettes: WakeContractToolPalettes,
+    pub fulfillment_contract: WakeContractFulfillment,
     pub resolved_tools: WakeContractResolvedTools,
 }
 
@@ -49,11 +53,24 @@ pub struct WakeContractResolvedTools {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct WakeContractFulfillment {
+    pub durable_result_required: bool,
+    pub run_until_enabled: bool,
+    pub satisfaction: String,
+    pub reminder_interval_rounds: u32,
+    pub stall_round_limit: u32,
+    pub tool_error_streak_limit: u32,
+    pub produced_schema_ids: Vec<String>,
+    pub instruction: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct WakeContractTool {
     pub palette_id: String,
     pub canonical_name: String,
     pub provider_name: String,
     pub description: String,
+    pub produces_schema_ids: Vec<String>,
 }
 
 #[must_use]
@@ -91,6 +108,7 @@ pub fn build_wake_contract(
             substrate_tool_palette: wake_entry.substrate_tool_palette.clone(),
             workspace_tool_palette: wake_entry.workspace_tool_palette.clone(),
         },
+        fulfillment_contract: build_fulfillment_contract(tool_projection),
         resolved_tools: WakeContractResolvedTools {
             substrate: resolve_substrate_tools(tool_projection),
             workspace: resolve_workspace_tools(&wake_entry.workspace_tool_palette),
@@ -106,8 +124,43 @@ fn resolve_substrate_tools(tool_projection: &[HarnessToolProjection]) -> Vec<Wak
             canonical_name: tool.canonical_name.clone(),
             provider_name: tool.provider_name.clone(),
             description: tool.description.clone(),
+            produces_schema_ids: tool.produces_schema_ids.clone(),
         })
         .collect()
+}
+
+fn build_fulfillment_contract(
+    tool_projection: &[HarnessToolProjection],
+) -> WakeContractFulfillment {
+    let mut produced_schema_ids = tool_projection
+        .iter()
+        .flat_map(|tool| tool.produces_schema_ids.iter().cloned())
+        .collect::<Vec<_>>();
+    produced_schema_ids.sort();
+    produced_schema_ids.dedup();
+    let durable_result_required = !produced_schema_ids.is_empty();
+    let instruction = if durable_result_required {
+        "Complete the wake by producing at least one durable result from produced_schema_ids when the task is resolved; stop after the required durable result unless wake instructions explicitly require a second linked artifact."
+    } else {
+        "No durable write tool is available in this wake; complete by returning a final answer or by using only read-only tools."
+    }
+    .to_string();
+
+    WakeContractFulfillment {
+        durable_result_required,
+        run_until_enabled: durable_result_required,
+        satisfaction: if durable_result_required {
+            "any_produced_schema"
+        } else {
+            "none"
+        }
+        .to_string(),
+        reminder_interval_rounds: FULFILLMENT_REMINDER_INTERVAL_ROUNDS,
+        stall_round_limit: FULFILLMENT_STALL_ROUND_LIMIT,
+        tool_error_streak_limit: TOOL_ERROR_STREAK_LIMIT,
+        produced_schema_ids,
+        instruction,
+    }
 }
 
 fn resolve_workspace_tools(palette: &[String]) -> Vec<WakeContractTool> {
@@ -127,6 +180,7 @@ fn resolve_workspace_tools(palette: &[String]) -> Vec<WakeContractTool> {
                 provider_name: provider_safe_tool_name(&canonical_name),
                 canonical_name,
                 description,
+                produces_schema_ids: Vec::new(),
             }
         })
         .collect()
@@ -183,6 +237,7 @@ mod tests {
             canonical_name: "core/fetch_memory".into(),
             provider_name: "core_fetch_memory".into(),
             description: "Fetch a memory".into(),
+            produces_schema_ids: Vec::new(),
             input_schema: serde_json::json!({ "type": "object", "properties": {} }),
             dispatch: HarnessToolDispatch::DirectSubstrate {
                 internal_canonical_name: "core/fetch_memory".into(),
@@ -222,6 +277,70 @@ mod tests {
             contract.resolved_tools.workspace[0].canonical_name,
             "workspace_shell"
         );
+        assert!(!contract.fulfillment_contract.durable_result_required);
+        assert!(!contract.fulfillment_contract.run_until_enabled);
+        assert_eq!(contract.fulfillment_contract.satisfaction, "none");
         assert!(contract.handle_domains.personality.contains("I*"));
+    }
+
+    #[test]
+    fn contract_lists_durable_fulfillment_schemas_from_projection() {
+        let wake_entry = WakeEntryRow {
+            wake_entry_id: Uuid::now_v7(),
+            trigger_kind: WakeEntryTriggerKind::OnMemory,
+            trigger_id: "proxima-test/fact-v1".into(),
+            label: "Reflect".into(),
+            enabled: true,
+            execution_mode: WakeEntryExecutionMode::SubstrateOnly,
+            authored_by: WakeEntryAuthoredBy::Other,
+            probability_promille: 1000,
+            goal_scope: WakeEntryGoalScope::None,
+            instructions: String::new(),
+            model_tier: ModelTier::Standard,
+            inference_target_ref: None,
+            substrate_tool_palette: vec![
+                "core/emit_abstraction::proxima-mcp/agent-derivation-v1::v1".into(),
+            ],
+            workspace_tool_palette: Vec::new(),
+            workspace_binding: None,
+            max_rounds: 4,
+            intervention_policy: None,
+            disabled_reason: None,
+        };
+        let projection = vec![HarnessToolProjection {
+            palette_id: "core/emit_abstraction::proxima-mcp/agent-derivation-v1::v1".into(),
+            canonical_name: "core/emit_abstraction::proxima-mcp/agent-derivation-v1::v1".into(),
+            provider_name: "core_emit_abstraction__proxima-mcp_agent-derivation-v1__v1".into(),
+            description: "Emit an abstraction".into(),
+            produces_schema_ids: vec!["proxima-mcp/agent-derivation-v1".into()],
+            input_schema: serde_json::json!({ "type": "object", "properties": {} }),
+            dispatch: HarnessToolDispatch::TypedEmit {
+                internal_canonical_name: "core/emit_abstraction".into(),
+                schema_id: "proxima-mcp/agent-derivation-v1".into(),
+                schema_version: 1,
+                payload_kind: crate::verbs::schema::PayloadKind::Abstraction,
+            },
+        }];
+        let handles = HandleTable::new();
+
+        let contract = build_wake_contract(&wake_entry, &projection, &handles);
+
+        assert!(contract.fulfillment_contract.durable_result_required);
+        assert!(contract.fulfillment_contract.run_until_enabled);
+        assert_eq!(
+            contract.fulfillment_contract.satisfaction,
+            "any_produced_schema"
+        );
+        assert_eq!(contract.fulfillment_contract.reminder_interval_rounds, 4);
+        assert_eq!(contract.fulfillment_contract.stall_round_limit, 16);
+        assert_eq!(contract.fulfillment_contract.tool_error_streak_limit, 3);
+        assert_eq!(
+            contract.fulfillment_contract.produced_schema_ids,
+            vec!["proxima-mcp/agent-derivation-v1"]
+        );
+        assert_eq!(
+            contract.resolved_tools.substrate[0].produces_schema_ids,
+            vec!["proxima-mcp/agent-derivation-v1"]
+        );
     }
 }

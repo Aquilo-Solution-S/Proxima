@@ -19,6 +19,7 @@ pub struct HarnessToolProjection {
     pub canonical_name: String,
     pub provider_name: String,
     pub description: String,
+    pub produces_schema_ids: Vec<String>,
     pub input_schema: Value,
     pub dispatch: HarnessToolDispatch,
 }
@@ -131,6 +132,7 @@ fn project_direct_tool(
             canonical_name: palette_id.to_string(),
             provider_name: provider_safe_tool_name(palette_id),
             description: tool.description().to_string(),
+            produces_schema_ids: Vec::new(),
             input_schema: tool.args_schema(),
             dispatch: HarnessToolDispatch::DirectSubstrate {
                 internal_canonical_name: palette_id.to_string(),
@@ -148,6 +150,11 @@ fn project_direct_tool(
             canonical_name: palette_id.to_string(),
             provider_name: provider_safe_tool_name(palette_id),
             description: tool.description.to_string(),
+            produces_schema_ids: tool
+                .produces_schema_ids
+                .iter()
+                .map(|schema_id| (*schema_id).to_string())
+                .collect(),
             input_schema: tool.args_schema.clone(),
             dispatch: HarnessToolDispatch::DirectSubstrate {
                 internal_canonical_name: palette_id.to_string(),
@@ -235,6 +242,7 @@ fn project_one_emit_tool(
         provider_name: provider_safe_tool_name(&canonical_name),
         canonical_name,
         description: typed_emit_description(kind, schema_id),
+        produces_schema_ids: vec![schema_id.to_string()],
         input_schema,
         dispatch: HarnessToolDispatch::TypedEmit {
             internal_canonical_name: internal_tool_id.to_string(),

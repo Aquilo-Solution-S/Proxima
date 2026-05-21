@@ -15,6 +15,8 @@ use crate::tools::{ToolBinding, workspace::WorkspaceToolName};
 pub struct ResolvedProgram {
     pub conversation: Conversation,
     pub tools: Vec<ToolSpec>,
+    /// Canonical tool name -> schema ids this tool can durably produce.
+    pub tool_productions: HashMap<String, Vec<String>>,
     /// Provider-safe name -> canonical name. The loop driver uses
     /// this to resolve `function.name` values from provider responses.
     pub reverse_map: HashMap<String, String>,
@@ -36,6 +38,7 @@ pub fn resolve(
 ) -> Result<ResolvedProgram, ProgramResolveError> {
     let user_seed = build_user_seed(&program);
     let mut tools = Vec::with_capacity(substrate_tools.len() + 3);
+    let mut tool_productions = HashMap::new();
     let mut reverse_map = HashMap::new();
     let mut bindings = HashMap::new();
     let substrate_by_name: HashMap<&str, &SubstrateToolBinding> = substrate_tools
@@ -48,6 +51,7 @@ pub fn resolve(
             projection,
             &substrate_by_name,
             &mut tools,
+            &mut tool_productions,
             &mut reverse_map,
             &mut bindings,
         )?;
@@ -66,6 +70,7 @@ pub fn resolve(
                 input_schema: name.input_schema(),
             });
             reverse_map.insert(provider_safe, canonical.clone());
+            tool_productions.insert(canonical.clone(), Vec::new());
             bindings.insert(canonical, ToolBinding::Workspace(name));
         }
     }
@@ -77,6 +82,7 @@ pub fn resolve(
             turns: Vec::new(),
         },
         tools,
+        tool_productions,
         reverse_map,
         bindings,
     })
@@ -101,6 +107,7 @@ fn push_projected_tool(
     projection: &HarnessToolProjection,
     substrate_by_name: &HashMap<&str, &SubstrateToolBinding>,
     tools: &mut Vec<ToolSpec>,
+    tool_productions: &mut HashMap<String, Vec<String>>,
     reverse_map: &mut HashMap<String, String>,
     bindings: &mut HashMap<String, ToolBinding>,
 ) -> Result<(), ProgramResolveError> {
@@ -115,6 +122,7 @@ fn push_projected_tool(
                     internal: internal_canonical_name.clone(),
                 })?;
             push_tool_spec(projection, tools, reverse_map);
+            push_tool_productions(projection, tool_productions);
             bindings.insert(
                 projection.canonical_name.clone(),
                 ToolBinding::Substrate((*internal).clone()),
@@ -133,6 +141,7 @@ fn push_projected_tool(
                     internal: internal_canonical_name.clone(),
                 })?;
             push_tool_spec(projection, tools, reverse_map);
+            push_tool_productions(projection, tool_productions);
             bindings.insert(
                 projection.canonical_name.clone(),
                 ToolBinding::TypedEmit {
@@ -146,6 +155,16 @@ fn push_projected_tool(
     }
 
     Ok(())
+}
+
+fn push_tool_productions(
+    projection: &HarnessToolProjection,
+    tool_productions: &mut HashMap<String, Vec<String>>,
+) {
+    tool_productions.insert(
+        projection.canonical_name.clone(),
+        projection.produces_schema_ids.clone(),
+    );
 }
 
 fn push_tool_spec(

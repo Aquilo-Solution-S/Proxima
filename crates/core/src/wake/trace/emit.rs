@@ -185,6 +185,7 @@ fn outcome_kind_typed(kind: HarnessOutcomeKind) -> WakeTraceOutcomeKind {
 fn finish_reason_str(reason: FinishReason) -> &'static str {
     match reason {
         FinishReason::Stop => "stop",
+        FinishReason::Fulfilled => "fulfilled",
         FinishReason::ToolCalls => "tool_calls",
         FinishReason::Length => "length",
         FinishReason::MaxRounds => "max_rounds",

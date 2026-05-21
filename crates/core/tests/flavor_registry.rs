@@ -28,6 +28,28 @@ fn update_wake_entry_patch_schema_is_object() {
             .is_some(),
         "patch schema should expose WakeEntryPatch fields: {patch:#}",
     );
+    let workspace_binding = patch
+        .pointer("/properties/workspace_binding")
+        .expect("patch schema should expose workspace_binding clear/set field");
+    let allows_null = workspace_binding
+        .pointer("/anyOf")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|items| {
+            items
+                .iter()
+                .any(|item| item.get("type") == Some(&serde_json::Value::String("null".into())))
+        })
+        || workspace_binding.get("type").is_some_and(|ty| match ty {
+            serde_json::Value::String(value) => value == "null",
+            serde_json::Value::Array(values) => {
+                values.iter().any(|value| value.as_str() == Some("null"))
+            }
+            _ => false,
+        });
+    assert!(
+        allows_null,
+        "workspace_binding patch schema must allow null to clear stored bindings: {workspace_binding:#}",
+    );
 }
 
 #[test]
