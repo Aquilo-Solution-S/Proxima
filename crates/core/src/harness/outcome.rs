@@ -15,6 +15,8 @@ pub enum HarnessOutcomeKind {
 pub enum FinishReason {
     /// Model emitted a final assistant message with no tool calls.
     Stop,
+    /// Harness observed the required durable fulfillment artifact.
+    Fulfilled,
     /// Model wants to call one or more tools.
     ToolCalls,
     /// Provider returned a completion-token length cap.
@@ -41,6 +43,7 @@ pub enum ErrorClass {
     InvocationTimeout,
     Cancelled,
     ToolErrorStreak,
+    FulfillmentStalled,
     ToolDispatchFatal,
 }
 
@@ -74,6 +77,7 @@ pub fn classify_outcome(
 
     match (finish_reason, error_class) {
         (F::Stop, E::None) => HarnessOutcomeKind::Succeeded,
+        (F::Fulfilled, E::None) => HarnessOutcomeKind::Succeeded,
         (F::Length, E::None) => HarnessOutcomeKind::Truncated,
         (F::MaxRounds, E::None) if max_rounds > 0 && rounds_used >= max_rounds => {
             HarnessOutcomeKind::Truncated
@@ -90,6 +94,7 @@ pub fn classify_outcome(
         (_, E::InvocationTimeout) => HarnessOutcomeKind::Failed,
         (_, E::Cancelled) => HarnessOutcomeKind::Failed,
         (_, E::ToolErrorStreak) => HarnessOutcomeKind::Failed,
+        (_, E::FulfillmentStalled) => HarnessOutcomeKind::Failed,
         (_, E::ToolDispatchFatal) => HarnessOutcomeKind::Failed,
     }
 }

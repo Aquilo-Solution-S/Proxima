@@ -9,6 +9,7 @@
 pub mod conversation;
 pub mod loop_driver;
 pub mod program;
+mod progress;
 pub mod providers;
 pub mod tools;
 pub mod trace;

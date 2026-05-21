@@ -27,6 +27,18 @@ fn final_round_succeeds() {
 }
 
 #[test]
+fn fulfilled_round_succeeds() {
+    case(
+        FinishReason::Fulfilled,
+        ErrorClass::None,
+        1,
+        0,
+        HarnessOutcomeKind::Succeeded,
+        "durable fulfillment observed",
+    );
+}
+
+#[test]
 fn length_cap_truncates() {
     case(
         FinishReason::Length,
@@ -179,6 +191,18 @@ fn workspace_tool_error_streak_fails() {
         30,
         HarnessOutcomeKind::Failed,
         "tool_error_streak",
+    );
+}
+
+#[test]
+fn fulfillment_stall_fails() {
+    case(
+        FinishReason::ToolCalls,
+        ErrorClass::FulfillmentStalled,
+        16,
+        0,
+        HarnessOutcomeKind::Failed,
+        "fulfillment stalled",
     );
 }
 

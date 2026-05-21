@@ -122,6 +122,7 @@ fn writable_schema_generates_strict_emit_abstraction_wrapper() {
                 canonical_name: wrapper_canonical.into(),
                 provider_name: "core_emit_abstraction__proxima-intent_vision-brief-v1__v1".into(),
                 description: "Emit one Abstraction memory.".into(),
+                produces_schema_ids: vec![schema_id.into()],
                 input_schema: json!({
                     "type": "object",
                     "additionalProperties": false,

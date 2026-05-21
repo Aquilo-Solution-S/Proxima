@@ -47,6 +47,7 @@ fn direct_projection(binding: &SubstrateToolBinding) -> HarnessToolProjection {
         canonical_name: binding.canonical_name.clone(),
         provider_name: proxima_core::mcp::provider_safe_tool_name(&binding.canonical_name),
         description: binding.description.clone(),
+        produces_schema_ids: Vec::new(),
         input_schema: binding.args_schema.clone(),
         dispatch: HarnessToolDispatch::DirectSubstrate {
             internal_canonical_name: binding.canonical_name.clone(),

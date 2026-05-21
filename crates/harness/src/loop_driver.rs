@@ -16,6 +16,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::conversation::{ToolResultStatus, ToolResultTurn, Turn};
 use crate::program::{ResolvedProgram, resolve};
+use crate::progress::FulfillmentProgress;
 use crate::providers::chatgpt_codex::ChatGPTCodexClient;
 use crate::providers::mistral_chat::MistralChatClient;
 use crate::providers::openai_chat::OpenAIChatClient;
@@ -236,20 +237,38 @@ async fn run_loop(
     append_prompt_and_tools_records(&mut jsonl, &resolved, &ctx, model_id, max_rounds);
 
     let user_seed_without_budget_notice = resolved.conversation.user_seed.clone();
+    let mut fulfillment = FulfillmentProgress::new(&resolved.tool_productions);
     let mut rounds_used = 0;
     let mut tool_call_count = 0;
 
     let (finish_reason, error_class, failure_reason) = loop {
+        if fulfillment.is_stalled_after(rounds_used) {
+            let reason = fulfillment.stall_reason();
+            jsonl.append(&json!({
+                "record": "fulfillment_stalled",
+                "rounds_used": rounds_used,
+                "required_schema_ids": fulfillment.required_schema_ids(),
+                "reason": reason,
+            }));
+            break (
+                FinishReason::ToolCalls,
+                ErrorClass::FulfillmentStalled,
+                Some(reason),
+            );
+        }
         if max_rounds > 0 && rounds_used >= max_rounds {
             break (FinishReason::MaxRounds, ErrorClass::None, None);
         }
 
         rounds_used += 1;
-        apply_round_budget_notice(
+        apply_runtime_notices(
             &mut resolved.conversation.user_seed,
             &user_seed_without_budget_notice,
             rounds_used,
             max_rounds,
+            fulfillment
+                .should_remind(rounds_used)
+                .then(|| fulfillment.reminder(rounds_used)),
             &mut jsonl,
         );
         jsonl.append(&json!({
@@ -282,6 +301,20 @@ async fn run_loop(
                     .conversation
                     .turns
                     .push(Turn::Assistant(raw_assistant));
+                if fulfillment.durable_required() {
+                    let reason = "fulfillment_required_but_model_stopped".to_string();
+                    jsonl.append(&json!({
+                        "record": "fulfillment_stalled",
+                        "round_idx": rounds_used,
+                        "required_schema_ids": fulfillment.required_schema_ids(),
+                        "reason": reason,
+                    }));
+                    break (
+                        FinishReason::Stop,
+                        ErrorClass::FulfillmentStalled,
+                        Some(reason),
+                    );
+                }
                 break (FinishReason::Stop, ErrorClass::None, None);
             }
             Ok(RoundResult::LengthCap {
@@ -366,7 +399,7 @@ async fn run_loop(
                         .push(Turn::ToolResult(ToolResultTurn {
                             call_id: call.call_id,
                             status,
-                            content,
+                            content: content.clone(),
                         }));
 
                     if let Some(message) = fatal {
@@ -380,6 +413,60 @@ async fn run_loop(
                             max_rounds,
                             tool_call_count,
                         ));
+                    }
+                    match status {
+                        ToolResultStatus::Ok => {
+                            fulfillment.note_success();
+                            if let Some(matched) = fulfillment.successful_tool_fulfills(&canonical)
+                            {
+                                jsonl.append(&json!({
+                                    "record": "fulfillment_satisfied",
+                                    "round_idx": rounds_used,
+                                    "tool_name": matched.tool_name,
+                                    "produced_schema_ids": matched.produced_schema_ids,
+                                }));
+                                return Ok(finish_outcome(
+                                    &mut jsonl,
+                                    started,
+                                    FinishReason::Fulfilled,
+                                    ErrorClass::None,
+                                    None,
+                                    rounds_used,
+                                    max_rounds,
+                                    tool_call_count,
+                                ));
+                            }
+                        }
+                        ToolResultStatus::Error => {
+                            let message = content
+                                .get("error")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or("tool_error");
+                            if let Some(streak) = fulfillment.note_tool_error(&canonical, message) {
+                                let reason = format!(
+                                    "tool_error_streak:{}:{}:{}",
+                                    streak.tool_name, streak.count, streak.message
+                                );
+                                jsonl.append(&json!({
+                                    "record": "tool_error_streak",
+                                    "round_idx": rounds_used,
+                                    "tool_name": streak.tool_name,
+                                    "count": streak.count,
+                                    "message": streak.message,
+                                    "reason": reason,
+                                }));
+                                return Ok(finish_outcome(
+                                    &mut jsonl,
+                                    started,
+                                    FinishReason::ToolCalls,
+                                    ErrorClass::ToolErrorStreak,
+                                    Some(reason),
+                                    rounds_used,
+                                    max_rounds,
+                                    tool_call_count,
+                                ));
+                            }
+                        }
                     }
                 }
             }
@@ -408,25 +495,38 @@ async fn run_loop(
     ))
 }
 
-fn apply_round_budget_notice(
+fn apply_runtime_notices(
     user_seed: &mut String,
     base_user_seed: &str,
     round_idx: u32,
     max_rounds: u32,
+    fulfillment_reminder: Option<String>,
     jsonl: &mut JsonlBuffer,
 ) {
-    let Some(notice) = round_budget_notice(round_idx, max_rounds) else {
+    let mut notices = Vec::new();
+    if let Some(notice) = round_budget_notice(round_idx, max_rounds) {
+        jsonl.append(&json!({
+            "record": "round_budget_notice",
+            "round_idx": round_idx,
+            "max_rounds": max_rounds,
+            "notice": notice,
+        }));
+        notices.push(notice);
+    }
+    if let Some(notice) = fulfillment_reminder {
+        jsonl.append(&json!({
+            "record": "fulfillment_reminder",
+            "round_idx": round_idx,
+            "notice": notice,
+        }));
+        notices.push(notice);
+    }
+    if notices.is_empty() {
         user_seed.clear();
         user_seed.push_str(base_user_seed);
         return;
-    };
-    *user_seed = format!("{base_user_seed}\n\n{notice}");
-    jsonl.append(&json!({
-        "record": "round_budget_notice",
-        "round_idx": round_idx,
-        "max_rounds": max_rounds,
-        "notice": notice,
-    }));
+    }
+    *user_seed = format!("{base_user_seed}\n\n{}", notices.join("\n\n"));
 }
 
 fn round_budget_notice(round_idx: u32, max_rounds: u32) -> Option<String> {
@@ -545,6 +645,11 @@ fn append_prompt_and_tools_records(
                     "canonical_name": &tool.canonical,
                     "provider_name": &tool.provider_safe,
                     "description": &tool.description,
+                    "produces_schema_ids": resolved
+                        .tool_productions
+                        .get(&tool.canonical)
+                        .cloned()
+                        .unwrap_or_default(),
                     "input_schema": &tool.input_schema,
                 })
             })
@@ -571,6 +676,8 @@ fn finish_outcome(
     jsonl.append(&json!({
         "record": "finish",
         "outcome_kind": format!("{kind:?}"),
+        "finish_reason": format!("{finish_reason:?}"),
+        "error_class": format!("{error_class:?}"),
         "failure_reason": failure_reason,
         "rounds_used": rounds_used,
         "total_duration_ms": duration,
@@ -778,6 +885,10 @@ mod tests {
                     }
                 }),
             }],
+            tool_productions: HashMap::from([(
+                "proxima-code/code_emit_execution_request".into(),
+                vec!["proxima-code/execution-request-v1".into()],
+            )]),
             reverse_map: HashMap::new(),
             bindings: HashMap::<String, ToolBinding>::new(),
         };
