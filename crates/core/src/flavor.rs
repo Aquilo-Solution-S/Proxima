@@ -373,6 +373,7 @@ impl FlavorRegistry {
         );
         let schema = schemars::schema_for!(T::Args);
         let mut args_schema = serde_json::to_value(schema).expect("JsonSchema must serialize");
+        inline_local_schema_refs(&mut args_schema);
         describe_generated_schema_fields(&mut args_schema);
         let call: McpCallFn = |ctx, args| {
             Box::pin(async move {
@@ -403,6 +404,7 @@ impl FlavorRegistry {
         );
         let schema = schemars::schema_for!(T::Args);
         let mut args_schema = serde_json::to_value(schema).expect("JsonSchema must serialize");
+        inline_local_schema_refs(&mut args_schema);
         describe_generated_schema_fields(&mut args_schema);
         let call: McpCallFn = |ctx, args| {
             Box::pin(async move {
@@ -542,6 +544,65 @@ fn maybe_add_search_projection(
             })
             .collect(),
     });
+}
+
+fn inline_local_schema_refs(schema: &mut serde_json::Value) {
+    let defs = schema
+        .get("$defs")
+        .and_then(serde_json::Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    if defs.is_empty() {
+        return;
+    }
+    inline_local_schema_refs_inner(schema, &defs, 0);
+    if let Some(object) = schema.as_object_mut() {
+        object.remove("$defs");
+    }
+}
+
+fn inline_local_schema_refs_inner(
+    schema: &mut serde_json::Value,
+    defs: &serde_json::Map<String, serde_json::Value>,
+    depth: u8,
+) {
+    if depth > 32 {
+        return;
+    }
+    match schema {
+        serde_json::Value::Object(object) => {
+            if let Some(ref_key) = object
+                .get("$ref")
+                .and_then(serde_json::Value::as_str)
+                .and_then(local_def_ref_key)
+                .map(str::to_string)
+                && let Some(def) = defs.get(&ref_key)
+            {
+                *schema = def.clone();
+                inline_local_schema_refs_inner(schema, defs, depth + 1);
+                return;
+            }
+            for (key, value) in object {
+                if key != "$defs" {
+                    inline_local_schema_refs_inner(value, defs, depth + 1);
+                }
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                inline_local_schema_refs_inner(item, defs, depth + 1);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn local_def_ref_key(reference: &str) -> Option<&str> {
+    let key = reference.strip_prefix("#/$defs/")?;
+    if key.contains("~0") || key.contains("~1") {
+        return None;
+    }
+    Some(key)
 }
 
 fn describe_generated_schema_fields(schema: &mut serde_json::Value) {
