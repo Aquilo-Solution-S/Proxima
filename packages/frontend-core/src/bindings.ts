@@ -1071,6 +1071,7 @@ export type WakeEntryDraftTs = {
 	inference_target_ref: string | null,
 	substrate_tool_palette: string[],
 	workspace_tool_palette: string[],
+	workspace_binding: WakeWorkspaceBindingTs | null,
 	max_rounds: number,
 };
 
@@ -1089,9 +1090,14 @@ export type WakeEntryTs = {
 	inference_target_ref: string | null,
 	substrate_tool_palette: string[],
 	workspace_tool_palette: string[],
+	workspace_binding: WakeWorkspaceBindingTs | null,
 	max_rounds: number,
 	disabled_reason: string | null,
 };
+
+export type WakeWorkspaceBindingTs = { kind: "git_worktree", repo_path: string, base_ref: string, finalize: WakeWorkspaceFinalizeTs, worktrees_root: string | null } | { kind: "registered_runner", flavor_id: string };
+
+export type WakeWorkspaceFinalizeTs = "commit_all" | "leave_dirty";
 
 export type WakeInvocationLogTs = {
 	log_seq: number,

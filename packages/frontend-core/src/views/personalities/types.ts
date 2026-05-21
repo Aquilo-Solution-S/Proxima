@@ -92,6 +92,7 @@ export const emptyDraft = (
   inference_target_ref: null,
   substrate_tool_palette: [],
   workspace_tool_palette: [],
+  workspace_binding: null,
   max_rounds: 16,
 });
 

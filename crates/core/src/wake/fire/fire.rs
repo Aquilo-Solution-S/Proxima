@@ -372,10 +372,11 @@ async fn handle_workspace_mode(
         is_continuation: input.continuation.is_some(),
         workspace_tool_palette: &input.wake_entry.workspace_tool_palette,
     };
-    let prepared_result = if let Some(binding) = input.wake_entry.workspace_binding.as_ref() {
-        prepare_core_workspace_binding(prepare_input, binding).await
-    } else {
-        prepare_legacy_workspace_runner(engine, &input, prepare_input).await
+    let prepared_result = match input.wake_entry.workspace_binding.as_ref() {
+        Some(binding) => prepare_workspace_binding(engine, prepare_input, binding).await,
+        None => Err(WorkspaceRunnerError::TriggerNotEligible(
+            "workspace_binding_required".into(),
+        )),
     };
     let prepared = match prepared_result {
         Ok(prepared) => prepared,
@@ -535,12 +536,11 @@ fn wake_context_change_event_seq(input: &FireWakeEntryInput) -> Uuid {
         })
 }
 
-async fn prepare_legacy_workspace_runner(
+async fn prepare_registered_workspace_runner(
     engine: &Engine,
-    input: &FireWakeEntryInput,
     prepare_input: WorkspacePrepareInput<'_>,
+    flavor_id: &str,
 ) -> Result<WorkspacePreparedRun, WorkspaceRunnerError> {
-    let flavor_id = input.wake_entry.trigger_id.split('/').next().unwrap_or("");
     let runner = engine
         .registry()
         .workspace_runner(flavor_id)
@@ -552,18 +552,19 @@ async fn prepare_legacy_workspace_runner(
 
     if !engine
         .registry()
-        .is_workspace_trigger(&input.wake_entry.trigger_id)
+        .is_workspace_trigger(prepare_input.triggering_memory_schema_id)
     {
         return Err(WorkspaceRunnerError::TriggerNotEligible(format!(
             "workspace_trigger_not_eligible:{}",
-            input.wake_entry.trigger_id
+            prepare_input.triggering_memory_schema_id
         )));
     }
 
     runner.prepare(prepare_input).await
 }
 
-async fn prepare_core_workspace_binding(
+async fn prepare_workspace_binding(
+    engine: &Engine,
     input: WorkspacePrepareInput<'_>,
     binding: &WakeWorkspaceBinding,
 ) -> Result<WorkspacePreparedRun, WorkspaceRunnerError> {
@@ -574,6 +575,9 @@ async fn prepare_core_workspace_binding(
             finalize,
             worktrees_root,
         } => prepare_core_git_worktree(input, repo_path, base_ref, *finalize, worktrees_root).await,
+        WakeWorkspaceBinding::RegisteredRunner { flavor_id } => {
+            prepare_registered_workspace_runner(engine, input, flavor_id).await
+        }
     }
 }
 
@@ -839,7 +843,10 @@ async fn finalize_workspace_runner(
     prepared: WorkspacePreparedRun,
     outcome: WorkspaceOutcome,
 ) -> Result<(), String> {
-    if input.wake_entry.workspace_binding.is_some() {
+    let Some(binding) = input.wake_entry.workspace_binding.as_ref() else {
+        return Err("workspace_binding_required".into());
+    };
+    if matches!(binding, WakeWorkspaceBinding::GitWorktree { .. }) {
         return finalize_core_workspace_binding(
             engine,
             input,
@@ -850,7 +857,9 @@ async fn finalize_workspace_runner(
         )
         .await;
     }
-    let flavor_id = input.wake_entry.trigger_id.split('/').next().unwrap_or("");
+    let WakeWorkspaceBinding::RegisteredRunner { flavor_id } = binding else {
+        unreachable!("all core workspace bindings handled above")
+    };
     let runner = engine
         .registry()
         .workspace_runner(flavor_id)

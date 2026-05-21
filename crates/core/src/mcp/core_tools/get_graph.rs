@@ -108,6 +108,7 @@ impl McpTool for GetGraphTool {
                             inference_target_ref: e.inference_target_ref,
                             substrate_tool_palette: e.substrate_tool_palette,
                             workspace_tool_palette: e.workspace_tool_palette,
+                            workspace_binding: e.workspace_binding,
                             execution_mode: format!("{:?}", e.execution_mode),
                             authored_by: format!("{:?}", e.authored_by),
                             probability_promille: e.probability_promille,

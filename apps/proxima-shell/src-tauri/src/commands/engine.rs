@@ -96,6 +96,27 @@ pub enum ExecutionModeTs {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
 #[serde(rename_all = "snake_case")]
+pub enum WakeWorkspaceFinalizeTs {
+    CommitAll,
+    LeaveDirty,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum WakeWorkspaceBindingTs {
+    GitWorktree {
+        repo_path: String,
+        base_ref: String,
+        finalize: WakeWorkspaceFinalizeTs,
+        worktrees_root: Option<String>,
+    },
+    RegisteredRunner {
+        flavor_id: String,
+    },
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
+#[serde(rename_all = "snake_case")]
 pub enum GoalScopeTs {
     None,
     TriggerGoalAssigned,
@@ -125,6 +146,7 @@ pub struct WakeEntryTs {
     pub inference_target_ref: Option<String>,
     pub substrate_tool_palette: Vec<String>,
     pub workspace_tool_palette: Vec<String>,
+    pub workspace_binding: Option<WakeWorkspaceBindingTs>,
     pub max_rounds: u16,
     pub disabled_reason: Option<String>,
 }
@@ -144,6 +166,7 @@ pub struct WakeEntryDraftTs {
     pub inference_target_ref: Option<String>,
     pub substrate_tool_palette: Vec<String>,
     pub workspace_tool_palette: Vec<String>,
+    pub workspace_binding: Option<WakeWorkspaceBindingTs>,
     pub max_rounds: u16,
 }
 
@@ -916,6 +939,7 @@ impl WakeEntryTs {
             inference_target_ref: row.inference_target_ref.clone(),
             substrate_tool_palette: row.substrate_tool_palette.clone(),
             workspace_tool_palette: row.workspace_tool_palette.clone(),
+            workspace_binding: row.workspace_binding.clone().map(workspace_binding_to_ts),
             max_rounds: row.max_rounds,
             disabled_reason: row.disabled_reason.clone(),
         }
@@ -981,6 +1005,64 @@ pub(crate) fn tier_to_ts(tier: proxima_core::ModelTier) -> ModelTierTs {
     }
 }
 
+fn workspace_finalize_from_ts(
+    finalize: WakeWorkspaceFinalizeTs,
+) -> proxima_core::WakeWorkspaceFinalize {
+    match finalize {
+        WakeWorkspaceFinalizeTs::CommitAll => proxima_core::WakeWorkspaceFinalize::CommitAll,
+        WakeWorkspaceFinalizeTs::LeaveDirty => proxima_core::WakeWorkspaceFinalize::LeaveDirty,
+    }
+}
+
+fn workspace_finalize_to_ts(
+    finalize: proxima_core::WakeWorkspaceFinalize,
+) -> WakeWorkspaceFinalizeTs {
+    match finalize {
+        proxima_core::WakeWorkspaceFinalize::CommitAll => WakeWorkspaceFinalizeTs::CommitAll,
+        proxima_core::WakeWorkspaceFinalize::LeaveDirty => WakeWorkspaceFinalizeTs::LeaveDirty,
+    }
+}
+
+fn workspace_binding_from_ts(
+    binding: WakeWorkspaceBindingTs,
+) -> proxima_core::WakeWorkspaceBinding {
+    match binding {
+        WakeWorkspaceBindingTs::GitWorktree {
+            repo_path,
+            base_ref,
+            finalize,
+            worktrees_root,
+        } => proxima_core::WakeWorkspaceBinding::GitWorktree {
+            repo_path,
+            base_ref,
+            finalize: workspace_finalize_from_ts(finalize),
+            worktrees_root,
+        },
+        WakeWorkspaceBindingTs::RegisteredRunner { flavor_id } => {
+            proxima_core::WakeWorkspaceBinding::RegisteredRunner { flavor_id }
+        }
+    }
+}
+
+fn workspace_binding_to_ts(binding: proxima_core::WakeWorkspaceBinding) -> WakeWorkspaceBindingTs {
+    match binding {
+        proxima_core::WakeWorkspaceBinding::GitWorktree {
+            repo_path,
+            base_ref,
+            finalize,
+            worktrees_root,
+        } => WakeWorkspaceBindingTs::GitWorktree {
+            repo_path,
+            base_ref,
+            finalize: workspace_finalize_to_ts(finalize),
+            worktrees_root,
+        },
+        proxima_core::WakeWorkspaceBinding::RegisteredRunner { flavor_id } => {
+            WakeWorkspaceBindingTs::RegisteredRunner { flavor_id }
+        }
+    }
+}
+
 fn draft_to_core(
     draft: WakeEntryDraftTs,
     personality_instance_id: PersonalityInstanceId,
@@ -1016,7 +1098,7 @@ fn draft_to_core(
         inference_target_ref: draft.inference_target_ref,
         substrate_tool_palette: draft.substrate_tool_palette,
         workspace_tool_palette: draft.workspace_tool_palette,
-        workspace_binding: None,
+        workspace_binding: draft.workspace_binding.map(workspace_binding_from_ts),
         max_rounds: draft.max_rounds,
         intervention_policy: None,
     }

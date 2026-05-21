@@ -224,6 +224,9 @@ pub enum WakeWorkspaceBinding {
         #[serde(default)]
         worktrees_root: Option<String>,
     },
+    RegisteredRunner {
+        flavor_id: String,
+    },
 }
 
 fn default_git_worktree_base_ref() -> String {

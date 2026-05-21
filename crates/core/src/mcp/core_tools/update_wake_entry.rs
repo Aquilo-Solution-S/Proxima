@@ -12,7 +12,9 @@ use crate::mcp::core_tools::payload::{
     PersonalityConfigChangeSnapshot, PersonalityConfigChangedSubject, PersonalityConfigChangedVerb,
 };
 use crate::mcp::{McpToolCtx, McpToolError};
-use crate::{ModelTier, WakeEntryAuthoredBy, WakeEntryGoalScope, WakeExecutionMode};
+use crate::{
+    ModelTier, WakeEntryAuthoredBy, WakeEntryGoalScope, WakeExecutionMode, WakeWorkspaceBinding,
+};
 
 #[derive(Debug, Default)]
 pub struct UpdateWakeEntryTool;
@@ -35,6 +37,8 @@ pub struct WakeEntryPatch {
     pub substrate_tool_palette: Option<Vec<String>>,
     #[serde(default)]
     pub workspace_tool_palette: Option<Vec<String>>,
+    #[serde(default)]
+    pub workspace_binding: Option<Option<WakeWorkspaceBinding>>,
     #[serde(default)]
     #[schemars(range(min = 0, max = 1000))]
     pub probability_promille: Option<u16>,
@@ -102,6 +106,7 @@ impl McpTool for UpdateWakeEntryTool {
                 })?;
 
             let patch = args.patch.clone();
+            let registry = ctx.registry.clone();
             let mutator: crate::WakeEntriesMutator = Box::new(move |current| {
                 let mut next: Vec<_> = current.to_vec();
                 let entry = next
@@ -129,6 +134,9 @@ impl McpTool for UpdateWakeEntryTool {
                 if let Some(v) = patch.workspace_tool_palette {
                     entry.workspace_tool_palette = v;
                 }
+                if let Some(v) = patch.workspace_binding {
+                    entry.workspace_binding = v;
+                }
                 if let Some(v) = patch.probability_promille {
                     entry.probability_promille = v;
                 }
@@ -147,6 +155,11 @@ impl McpTool for UpdateWakeEntryTool {
                 if let Some(v) = patch.goal_scope {
                     entry.goal_scope = v;
                 }
+                crate::inference::set_wake_entries::validate_wake_entries_static_config(
+                    registry.as_ref(),
+                    &next,
+                )
+                .map_err(|err| err.to_string())?;
                 Ok(next)
             });
             storage

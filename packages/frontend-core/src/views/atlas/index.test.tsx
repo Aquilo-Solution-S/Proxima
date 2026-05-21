@@ -158,6 +158,7 @@ const wakeEntry = () => ({
   inference_target_ref: null,
   substrate_tool_palette: [],
   workspace_tool_palette: [],
+  workspace_binding: null,
   max_rounds: 16,
   disabled_reason: null,
 });
@@ -796,6 +797,7 @@ describe("Atlas graph wiring", () => {
           inference_target_ref: null,
           substrate_tool_palette: [],
           workspace_tool_palette: [],
+          workspace_binding: null,
           max_rounds: 16,
           disabled_reason: null,
         },
