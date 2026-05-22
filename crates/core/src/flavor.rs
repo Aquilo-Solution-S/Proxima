@@ -54,23 +54,27 @@ pub enum FlavorProvenance {
     Local { workspace_path: String },
 }
 
+/// Mutable build-time registry. Flavors push into it during their
+/// `register()` call; `freeze` consumes it whole into a
+/// `FlavorRegistryFrozen` via `FlavorRegistryFrozen::from_registry`.
+/// Fields are `pub(crate)` so that constructor can destructure them.
 #[derive(Debug)]
 pub struct FlavorRegistry {
-    schemas: Vec<SchemaInfo>,
-    search_projections: Vec<MemorySearchProjection>,
-    relations: Vec<RelationDescriptor>,
-    validators: Vec<PayloadValidatorEntry>,
-    mcp_tools: Vec<McpToolDescriptor>,
-    flavors: Vec<FlavorDescriptor>,
+    pub(crate) schemas: Vec<SchemaInfo>,
+    pub(crate) search_projections: Vec<MemorySearchProjection>,
+    pub(crate) relations: Vec<RelationDescriptor>,
+    pub(crate) validators: Vec<PayloadValidatorEntry>,
+    pub(crate) mcp_tools: Vec<McpToolDescriptor>,
+    pub(crate) flavors: Vec<FlavorDescriptor>,
     /// Per-flavor workspace runner. Populated by
     /// `proxima_flavor! { workspace_runner = ... }`. Frozen into
     /// `FlavorRegistryFrozen.workspace_runners` and looked up by
     /// `wake/fire.rs` at fire time.
-    workspace_runners: Vec<(String, Arc<dyn WorkspaceRunner>)>,
+    pub(crate) workspace_runners: Vec<(String, Arc<dyn WorkspaceRunner>)>,
     /// Workspace-eligible trigger schemas. Core treats them as opaque
     /// flavor-qualified schema ids; flavor runners interpret payloads.
-    workspace_triggers: Vec<String>,
-    dependency_satisfaction_rules: Vec<(String, Arc<dyn DependencySatisfactionRule>)>,
+    pub(crate) workspace_triggers: Vec<String>,
+    pub(crate) dependency_satisfaction_rules: Vec<(String, Arc<dyn DependencySatisfactionRule>)>,
 }
 
 impl Default for FlavorRegistry {
@@ -498,17 +502,7 @@ impl FlavorRegistry {
                 "duplicate dependency satisfaction rule for schema {schema_id:?}",
             );
         }
-        FlavorRegistryFrozen::with_schemas_relations_validators(
-            self.schemas,
-            self.search_projections,
-            self.relations,
-            self.validators,
-            self.mcp_tools,
-            self.flavors,
-            self.workspace_runners,
-            self.workspace_triggers,
-            self.dependency_satisfaction_rules,
-        )
+        FlavorRegistryFrozen::from_registry(self)
     }
 
     /// Cross-check: every `FlavorDescriptor::flavor_id` is unique.

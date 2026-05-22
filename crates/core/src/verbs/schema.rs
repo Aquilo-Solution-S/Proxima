@@ -209,61 +209,53 @@ impl FlavorRegistryFrozen {
 
     /// Build-time / test-time constructor. The struct stays
     /// immutable on the public surface (no `register` method)
-    /// per AGENTS.md invariant 7.
+    /// per AGENTS.md invariant 7. `..Self::default()` leaves every
+    /// vocabulary field beyond `schemas` empty.
     #[must_use]
     pub fn with_schemas(schemas: Vec<SchemaInfo>) -> Self {
-        Self::with_schemas_relations_validators(
+        let index = FrozenIndex::build(&schemas, &[], &[]);
+        Self {
             schemas,
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-        )
+            index,
+            ..Self::default()
+        }
     }
 
     /// Build-time / test-time constructor that also seeds the
-    /// relation registry. Used by `FlavorRegistry::freeze` once
-    /// flavors have published their `RelationDescriptor`s.
+    /// relation registry.
     #[must_use]
     pub fn with_schemas_and_relations(
         schemas: Vec<SchemaInfo>,
         relations: Vec<RelationDescriptor>,
     ) -> Self {
-        Self::with_schemas_relations_validators(
+        let index = FrozenIndex::build(&schemas, &[], &relations);
+        Self {
             schemas,
-            Vec::new(),
             relations,
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-        )
+            index,
+            ..Self::default()
+        }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn with_schemas_relations_validators(
-        schemas: Vec<SchemaInfo>,
-        search_projections: Vec<MemorySearchProjection>,
-        relations: Vec<RelationDescriptor>,
-        validators: Vec<PayloadValidatorEntry>,
-        mcp_tools: Vec<McpToolDescriptor>,
-        flavors: Vec<FlavorDescriptor>,
-        workspace_runners: Vec<(
-            String,
-            std::sync::Arc<dyn crate::personality::workspace::WorkspaceRunner>,
-        )>,
-        workspace_triggers: Vec<String>,
-        dependency_satisfaction_rules: Vec<(
-            String,
-            std::sync::Arc<dyn DependencySatisfactionRule>,
-        )>,
-    ) -> Self {
+    /// Freeze a `FlavorRegistry` into its immutable, index-accelerated
+    /// form — the production constructor, called by
+    /// `FlavorRegistry::freeze`. Consumes the builder whole and rehomes
+    /// every vocabulary field. A new vocabulary kind is added in the
+    /// two struct definitions plus the destructure below, which the
+    /// compiler keeps exhaustive; the constructor signature never
+    /// widens.
+    pub(crate) fn from_registry(registry: crate::FlavorRegistry) -> Self {
+        let crate::FlavorRegistry {
+            schemas,
+            search_projections,
+            relations,
+            validators,
+            mcp_tools,
+            flavors,
+            workspace_runners,
+            workspace_triggers,
+            dependency_satisfaction_rules,
+        } = registry;
         let index = FrozenIndex::build(&schemas, &validators, &relations);
         Self {
             schemas,
@@ -281,24 +273,9 @@ impl FlavorRegistryFrozen {
 
     #[must_use]
     pub fn with_additional_schemas(
-        self,
+        mut self,
         schemas: impl IntoIterator<Item = SchemaInfo>,
     ) -> Self {
-        // Destructure and re-assemble so `FrozenIndex` is rebuilt over
-        // the extended schema list — a stale index would silently miss
-        // the appended schemas.
-        let Self {
-            schemas: mut existing,
-            search_projections,
-            relations,
-            validators,
-            mcp_tools,
-            flavors,
-            workspace_runners,
-            workspace_triggers,
-            dependency_satisfaction_rules,
-            index: _,
-        } = self;
         // This post-freeze path provides no way to attach a validator,
         // so it accepts only opaque schemas — a typed schema added here
         // would be silently unvalidated. Typed schemas go through
@@ -313,18 +290,11 @@ impl FlavorRegistryFrozen {
                 schema.schema_id.as_str(),
             );
         }
-        existing.extend(added);
-        Self::with_schemas_relations_validators(
-            existing,
-            search_projections,
-            relations,
-            validators,
-            mcp_tools,
-            flavors,
-            workspace_runners,
-            workspace_triggers,
-            dependency_satisfaction_rules,
-        )
+        self.schemas.extend(added);
+        // Rebuild the index over the extended schema list — a stale
+        // index would silently miss the appended schemas.
+        self.index = FrozenIndex::build(&self.schemas, &self.validators, &self.relations);
+        self
     }
 
     #[must_use]
