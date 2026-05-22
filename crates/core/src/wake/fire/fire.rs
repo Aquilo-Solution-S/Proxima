@@ -422,6 +422,7 @@ async fn handle_workspace_mode(
             return Ok(true);
         }
     };
+    let sandbox_spec = build_workspace_sandbox_spec(invocation_id_for_dispatch);
     let program = HarnessProgram {
         system_prompt: build_system_prompt(
             &wake_context,
@@ -435,7 +436,7 @@ async fn handle_workspace_mode(
         substrate_tool_palette: input.wake_entry.substrate_tool_palette.clone(),
         workspace_root: Some(prepared.work_dir.clone()),
         workspace_tool_palette: input.wake_entry.workspace_tool_palette.clone(),
-        workspace_sandbox: build_workspace_sandbox_spec(invocation_id_for_dispatch),
+        workspace_sandbox: sandbox_spec.clone(),
         max_rounds: u32::from(input.wake_entry.max_rounds),
         provider: provider_target,
     };
@@ -453,6 +454,13 @@ async fn handle_workspace_mode(
     };
 
     write_session_jsonl_to_disk(&session_log_path, &outcome_result).await;
+    let sandbox_evidence = collect_sandbox_evidence(
+        &session_log_path,
+        sandbox_spec.as_ref(),
+        invocation_id_for_dispatch,
+        &outcome_result,
+    )
+    .await;
     append_session_log_error_if_present(
         engine,
         &input,
@@ -486,6 +494,7 @@ async fn handle_workspace_mode(
         invocation_id_for_dispatch,
         prepared,
         workspace_outcome,
+        sandbox_evidence,
     )
     .await;
 
@@ -681,6 +690,8 @@ async fn finalize_pre_run_workspace(
         failure.invocation_id,
         failure.prepared,
         workspace_outcome,
+        // A pre-run failure produced no harness transcript or sandbox.
+        super::workspace::CoreSandboxEvidence::default(),
     )
     .await;
     engine.wake_token_store().revoke(failure.wake_token).await;
@@ -772,6 +783,56 @@ async fn write_session_jsonl_to_disk(
     if let Err(err) = tokio::fs::write(path, &bytes).await {
         tracing::warn!(error = %err, path = %path.display(), "failed to write worker-session.jsonl");
     }
+}
+
+/// Collect the per-wake observation evidence recorded on the `workspace_run`
+/// Fact: sandbox identity (derived from the spec core itself built) plus
+/// blake3 hashes addressing the on-disk transcript and egress network log.
+async fn collect_sandbox_evidence(
+    transcript_path: &std::path::Path,
+    sandbox_spec: Option<&crate::harness::WorkspaceSandboxSpec>,
+    invocation_id: Uuid,
+    outcome_result: &Result<crate::harness::HarnessOutcome, crate::harness::HarnessError>,
+) -> super::workspace::CoreSandboxEvidence {
+    let network_log = outcome_result
+        .as_ref()
+        .ok()
+        .and_then(|outcome| outcome.network_log.as_deref());
+    super::workspace::CoreSandboxEvidence {
+        sandbox_image: sandbox_spec.map(|spec| spec.image.clone()),
+        // Container name is deterministic from the invocation id — the same
+        // string `sandbox::container_name` builds in the harness.
+        sandbox_container: sandbox_spec.map(|_| format!("proxima-wake-{invocation_id}")),
+        transcript_blob_hash: hash_wake_transcript(transcript_path).await,
+        network_log_blob_hash: persist_network_log(transcript_path, network_log).await,
+    }
+}
+
+/// Read the on-disk wake transcript back and blake3-hash it. `None` when the
+/// file is unreadable — a missing artifact never fails the wake.
+async fn hash_wake_transcript(path: &std::path::Path) -> Option<String> {
+    match tokio::fs::read(path).await {
+        Ok(bytes) => Some(blake3::hash(&bytes).to_hex().to_string()),
+        Err(err) => {
+            tracing::warn!(error = %err, path = %path.display(), "wake transcript unreadable for hashing");
+            None
+        }
+    }
+}
+
+/// Write the proxy egress log to `network.log` beside the transcript and
+/// blake3-hash it. `None` for a host-mode wake (no log) or on write failure.
+async fn persist_network_log(
+    transcript_path: &std::path::Path,
+    network_log: Option<&str>,
+) -> Option<String> {
+    let log = network_log?;
+    let path = transcript_path.with_file_name("network.log");
+    if let Err(err) = tokio::fs::write(&path, log.as_bytes()).await {
+        tracing::warn!(error = %err, path = %path.display(), "failed to write wake network log");
+        return None;
+    }
+    Some(blake3::hash(log.as_bytes()).to_hex().to_string())
 }
 
 fn warn_if_failed(input: &FireWakeEntryInput, outcome: &WakeInvocationFinalizeOutcome) {
