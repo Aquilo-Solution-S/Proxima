@@ -1,6 +1,5 @@
 //! `workspace_shell`: bounded shell execution in a prepared workspace.
 
-use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
@@ -10,6 +9,7 @@ use serde_json::{Value, json};
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 
+use super::sandbox::{self, WorkspaceSandboxSession};
 use super::{WorkspaceCtx, WorkspaceToolError};
 
 const DEFAULT_TIMEOUT_MS: u32 = 30_000;
@@ -55,8 +55,7 @@ pub async fn run(args: Value, ctx: &WorkspaceCtx) -> Result<Value, WorkspaceTool
         .timeout_ms
         .unwrap_or(DEFAULT_TIMEOUT_MS)
         .min(MAX_TIMEOUT_MS);
-    let sandbox = ShellSandbox::from_env()?;
-    let exec = shell_exec_spec(&args.command, &ctx.workspace_root, &sandbox)?;
+    let exec = shell_exec_spec(&args.command, ctx);
 
     let mut cmd = Command::new(&exec.program);
     cmd.args(&exec.args)
@@ -119,55 +118,6 @@ pub async fn run(args: Value, ctx: &WorkspaceCtx) -> Result<Value, WorkspaceTool
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum ShellSandbox {
-    Host,
-    Docker(DockerSandbox),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct DockerSandbox {
-    docker: String,
-    image: String,
-    network: String,
-    memory: String,
-    cpus: String,
-    pids_limit: String,
-}
-
-impl ShellSandbox {
-    fn from_env() -> Result<Self, WorkspaceToolError> {
-        let mode = std::env::var("PROXIMA_WORKSPACE_SHELL_SANDBOX").unwrap_or_default();
-        match mode.as_str() {
-            "" | "host" => Ok(Self::Host),
-            "docker" => {
-                let image =
-                    std::env::var("PROXIMA_WORKSPACE_SHELL_DOCKER_IMAGE").map_err(|_| {
-                        WorkspaceToolError::InvalidArgs(
-                            "PROXIMA_WORKSPACE_SHELL_DOCKER_IMAGE is required when PROXIMA_WORKSPACE_SHELL_SANDBOX=docker".into(),
-                        )
-                    })?;
-                Ok(Self::Docker(DockerSandbox {
-                    docker: std::env::var("PROXIMA_WORKSPACE_SHELL_DOCKER_BIN")
-                        .unwrap_or_else(|_| "docker".into()),
-                    image,
-                    network: std::env::var("PROXIMA_WORKSPACE_SHELL_DOCKER_NETWORK")
-                        .unwrap_or_else(|_| "none".into()),
-                    memory: std::env::var("PROXIMA_WORKSPACE_SHELL_DOCKER_MEMORY")
-                        .unwrap_or_else(|_| "2g".into()),
-                    cpus: std::env::var("PROXIMA_WORKSPACE_SHELL_DOCKER_CPUS")
-                        .unwrap_or_else(|_| "2".into()),
-                    pids_limit: std::env::var("PROXIMA_WORKSPACE_SHELL_DOCKER_PIDS_LIMIT")
-                        .unwrap_or_else(|_| "256".into()),
-                }))
-            }
-            other => Err(WorkspaceToolError::InvalidArgs(format!(
-                "unsupported PROXIMA_WORKSPACE_SHELL_SANDBOX {other:?}; expected host or docker"
-            ))),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 struct ShellExecSpec {
     program: String,
     args: Vec<String>,
@@ -175,61 +125,38 @@ struct ShellExecSpec {
     sandbox_label: String,
 }
 
-fn shell_exec_spec(
-    command: &str,
-    workspace_root: &Path,
-    sandbox: &ShellSandbox,
-) -> Result<ShellExecSpec, WorkspaceToolError> {
-    match sandbox {
-        ShellSandbox::Host => Ok(ShellExecSpec {
+/// Build the exec spec for one shell command.
+///
+/// With a per-wake sandbox session the command runs via `docker exec` inside
+/// the wake's observation container. Without one — the host escape hatch,
+/// `PROXIMA_WORKSPACE_SANDBOX=host` — it runs as a host `bash -lc`. The
+/// per-command `docker run` path is gone: the per-wake session is the only
+/// docker signal, so there is no second source of truth.
+fn shell_exec_spec(command: &str, ctx: &WorkspaceCtx) -> ShellExecSpec {
+    match &ctx.sandbox_session {
+        Some(session) => docker_exec_spec(command, session),
+        None => ShellExecSpec {
             program: "bash".into(),
             args: vec!["-lc".into(), command.into()],
             env_allowlist: &["PATH", "HOME", "USER", "LANG", "TERM"],
             sandbox_label: "host".into(),
-        }),
-        ShellSandbox::Docker(config) => docker_exec_spec(command, workspace_root, config),
+        },
     }
 }
 
-fn docker_exec_spec(
-    command: &str,
-    workspace_root: &Path,
-    config: &DockerSandbox,
-) -> Result<ShellExecSpec, WorkspaceToolError> {
-    let root = workspace_root
-        .canonicalize()
-        .map_err(|err| WorkspaceToolError::Io(format!("canonicalize workspace root: {err}")))?;
-    let mount = bind_mount_arg(&root);
-    Ok(ShellExecSpec {
-        program: config.docker.clone(),
+/// `docker exec` into the running per-wake observation container.
+fn docker_exec_spec(command: &str, session: &WorkspaceSandboxSession) -> ShellExecSpec {
+    ShellExecSpec {
+        program: sandbox::docker_bin(),
         args: vec![
-            "run".into(),
-            "--rm".into(),
-            "--init".into(),
-            "--pull=never".into(),
-            "--network".into(),
-            config.network.clone(),
-            "--memory".into(),
-            config.memory.clone(),
-            "--cpus".into(),
-            config.cpus.clone(),
-            "--pids-limit".into(),
-            config.pids_limit.clone(),
-            "--security-opt".into(),
-            "no-new-privileges".into(),
-            "--cap-drop".into(),
-            "ALL".into(),
-            "--tmpfs".into(),
-            "/tmp:rw,nosuid,nodev,size=256m".into(),
+            "exec".into(),
+            "-w".into(),
+            WORKSPACE_MOUNT.into(),
             "-e".into(),
             "HOME=/tmp".into(),
             "-e".into(),
             "CI=true".into(),
-            "-v".into(),
-            mount,
-            "-w".into(),
-            WORKSPACE_MOUNT.into(),
-            config.image.clone(),
+            session.container_name.clone(),
             "bash".into(),
             "-lc".into(),
             command.into(),
@@ -243,12 +170,8 @@ fn docker_exec_spec(
             "DOCKER_CONTEXT",
             "DOCKER_CONFIG",
         ],
-        sandbox_label: format!("docker:{}", config.image),
-    })
-}
-
-fn bind_mount_arg(root: &PathBuf) -> String {
-    format!("{}:{WORKSPACE_MOUNT}:rw", root.display())
+        sandbox_label: format!("docker:{}", session.image),
+    }
 }
 
 struct CappedRead {
@@ -291,12 +214,28 @@ pub fn args_schema() -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::{DockerSandbox, ShellSandbox, WORKSPACE_MOUNT, docker_exec_spec, shell_exec_spec};
+    use super::{WORKSPACE_MOUNT, WorkspaceSandboxSession, shell_exec_spec};
+    use crate::tools::WorkspaceCtx;
+
+    fn ctx(session: Option<WorkspaceSandboxSession>) -> WorkspaceCtx {
+        WorkspaceCtx {
+            workspace_root: std::path::PathBuf::from("/tmp/x"),
+            sandbox_session: session,
+        }
+    }
+
+    fn session() -> WorkspaceSandboxSession {
+        WorkspaceSandboxSession {
+            container_name: "proxima-wake-abc".into(),
+            network_name: "proxima-wake-net-abc".into(),
+            image: "proxima-workspace-sandbox:local".into(),
+            label: "proxima.wake=abc".into(),
+        }
+    }
 
     #[test]
-    fn host_spec_runs_bash_lc_in_workspace() {
-        let root = tempfile::tempdir().unwrap();
-        let spec = shell_exec_spec("echo ok", root.path(), &ShellSandbox::Host).unwrap();
+    fn host_spec_runs_bash_lc_when_no_sandbox_session() {
+        let spec = shell_exec_spec("echo ok", &ctx(None));
 
         assert_eq!(spec.program, "bash");
         assert_eq!(spec.args, vec!["-lc", "echo ok"]);
@@ -304,48 +243,22 @@ mod tests {
     }
 
     #[test]
-    fn docker_spec_is_networkless_and_mounts_only_workspace() {
-        let root = tempfile::tempdir().unwrap();
-        let config = DockerSandbox {
-            docker: "docker".into(),
-            image: "proxima-sandbox:local".into(),
-            network: "none".into(),
-            memory: "3g".into(),
-            cpus: "4".into(),
-            pids_limit: "128".into(),
-        };
+    fn sandbox_spec_runs_docker_exec_into_the_wake_container() {
+        let spec = shell_exec_spec("cargo test", &ctx(Some(session())));
 
-        let spec = docker_exec_spec("cargo test", root.path(), &config).unwrap();
-
-        assert_eq!(spec.program, "docker");
-        assert_eq!(spec.sandbox_label, "docker:proxima-sandbox:local");
-        assert!(
-            spec.args
-                .windows(2)
-                .any(|pair| pair == ["--network", "none"])
-        );
-        assert!(
-            spec.args
-                .windows(2)
-                .any(|pair| pair == ["--pull=never", "--network"])
-        );
-        assert!(
-            spec.args
-                .windows(2)
-                .any(|pair| pair == ["--security-opt", "no-new-privileges"])
-        );
-        assert!(
-            spec.args
-                .windows(2)
-                .any(|pair| pair == ["--cap-drop", "ALL"])
-        );
-        assert!(spec.args.windows(2).any(|pair| pair[0] == "-v"
-            && pair[1].ends_with(&format!(":{WORKSPACE_MOUNT}:rw"))));
+        assert_eq!(spec.args.first().unwrap(), "exec");
+        assert_eq!(spec.sandbox_label, "docker:proxima-workspace-sandbox:local");
         assert!(
             spec.args
                 .windows(2)
                 .any(|pair| pair == ["-w", WORKSPACE_MOUNT])
         );
+        assert!(spec.args.contains(&"proxima-wake-abc".to_string()));
+        assert!(spec.args.windows(2).any(|pair| pair == ["bash", "-lc"]));
         assert_eq!(spec.args.last().unwrap(), "cargo test");
+        // The per-command `docker run` path is gone — exec into the
+        // already-running per-wake container, never spawn a fresh one.
+        assert!(!spec.args.iter().any(|arg| arg == "run"));
+        assert!(!spec.args.iter().any(|arg| arg == "--rm"));
     }
 }
