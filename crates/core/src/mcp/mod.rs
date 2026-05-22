@@ -5,6 +5,7 @@
 
 pub mod core_tools;
 pub mod handles;
+pub(crate) mod schema;
 
 pub use core_tools::{
     AuditEmit, PersonalityConfigChangedCaller, PersonalityConfigChangedSubject,
