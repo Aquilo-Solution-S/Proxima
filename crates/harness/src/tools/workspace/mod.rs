@@ -6,6 +6,7 @@ use serde_json::Value;
 use super::WorkspaceCtx;
 
 pub mod list_files;
+pub mod sandbox;
 pub mod shell;
 pub mod text_editor;
 

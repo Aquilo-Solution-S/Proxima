@@ -247,6 +247,7 @@ pub async fn fire_wake_entry(
         substrate_tool_palette: input.wake_entry.substrate_tool_palette.clone(),
         workspace_root: None,
         workspace_tool_palette: Vec::new(),
+        workspace_sandbox: None,
         max_rounds,
         provider: provider_target,
     };
@@ -434,6 +435,7 @@ async fn handle_workspace_mode(
         substrate_tool_palette: input.wake_entry.substrate_tool_palette.clone(),
         workspace_root: Some(prepared.work_dir.clone()),
         workspace_tool_palette: input.wake_entry.workspace_tool_palette.clone(),
+        workspace_sandbox: build_workspace_sandbox_spec(invocation_id_for_dispatch),
         max_rounds: u32::from(input.wake_entry.max_rounds),
         provider: provider_target,
     };
@@ -691,6 +693,37 @@ async fn finalize_pre_run_workspace(
     .await
 }
 
+/// Build the per-wake observation-sandbox spec when Docker sandbox mode is
+/// active (`PROXIMA_WORKSPACE_SANDBOX=docker`). `None` runs the wake's
+/// workspace tools on the host — the no-Docker dev escape hatch.
+///
+/// The container runs as the host uid/gid so the bind-mounted clone stays
+/// host-owned and host-side finalize sees no ownership split.
+fn build_workspace_sandbox_spec(
+    invocation_id: Uuid,
+) -> Option<crate::harness::WorkspaceSandboxSpec> {
+    if std::env::var("PROXIMA_WORKSPACE_SANDBOX").unwrap_or_default() != "docker" {
+        return None;
+    }
+    // SAFETY: `getuid`/`getgid` take no arguments, never fail, and have no
+    // preconditions — the libc contract is total.
+    let (uid, gid) = unsafe { (libc::getuid(), libc::getgid()) };
+    Some(crate::harness::WorkspaceSandboxSpec {
+        image: std::env::var("PROXIMA_WORKSPACE_SANDBOX_IMAGE")
+            .unwrap_or_else(|_| "proxima-workspace-sandbox:local".into()),
+        proxy_image: std::env::var("PROXIMA_WORKSPACE_SANDBOX_PROXY_IMAGE")
+            .unwrap_or_else(|_| "proxima-workspace-proxy:local".into()),
+        uid,
+        gid,
+        cache_volume: std::env::var("PROXIMA_WORKSPACE_SANDBOX_CACHE_VOLUME")
+            .unwrap_or_else(|_| "proxima-wake-cache".into()),
+        memory: std::env::var("PROXIMA_WORKSPACE_SANDBOX_MEMORY")
+            .ok()
+            .filter(|memory| !memory.is_empty()),
+        label: format!("proxima.wake={invocation_id}"),
+    })
+}
+
 fn provider_target_failure_reason(err: &ProviderTargetBuildError) -> String {
     match err {
         ProviderTargetBuildError::MissingCredentials { env } => {
@@ -831,6 +864,7 @@ async fn maybe_emit_intervention_request(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Owner;
 
     #[test]
     fn continuation_wake_context_uses_original_change_event() {

@@ -30,6 +30,7 @@ futures = { workspace = true }
 schemars = { workspace = true }
 specta = { workspace = true }
 reqwest = { workspace = true }
+libc = "0.2"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }

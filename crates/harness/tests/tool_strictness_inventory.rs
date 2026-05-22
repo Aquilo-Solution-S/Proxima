@@ -144,6 +144,7 @@ fn writable_schema_generates_strict_emit_abstraction_wrapper() {
             substrate_tool_palette: vec!["core/emit_abstraction".into()],
             workspace_root: None,
             workspace_tool_palette: Vec::new(),
+            workspace_sandbox: None,
             max_rounds: 4,
             provider: ProviderTarget::MistralChat {
                 base_url: "http://localhost".into(),
@@ -194,6 +195,7 @@ fn raw_emit_capability_is_not_provider_visible_without_projection() {
             substrate_tool_palette: vec!["core/emit_abstraction".into()],
             workspace_root: None,
             workspace_tool_palette: Vec::new(),
+            workspace_sandbox: None,
             max_rounds: 4,
             provider: ProviderTarget::MistralChat {
                 base_url: "http://localhost".into(),

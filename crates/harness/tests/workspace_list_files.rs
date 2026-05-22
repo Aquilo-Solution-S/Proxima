@@ -6,6 +6,7 @@ use tempfile::tempdir;
 fn ctx(root: std::path::PathBuf) -> WorkspaceCtx {
     WorkspaceCtx {
         workspace_root: root,
+        sandbox_session: None,
     }
 }
 

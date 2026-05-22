@@ -56,5 +56,11 @@ impl std::fmt::Debug for ToolBinding {
 /// Resolved environment for workspace-tool dispatch.
 #[derive(Debug, Clone)]
 pub struct WorkspaceCtx {
+    /// Host path of the prepared per-wake clone. `text_editor` / `list_files`
+    /// jail against this; `shell` uses it only as the docker-exec cwd.
     pub workspace_root: PathBuf,
+    /// `Some` when the wake runs inside a per-wake observation container;
+    /// `workspace_shell` then routes commands through `docker exec`. `None`
+    /// is the host escape hatch (`PROXIMA_WORKSPACE_SANDBOX=host`).
+    pub sandbox_session: Option<workspace::sandbox::WorkspaceSandboxSession>,
 }
