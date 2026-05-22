@@ -1,8 +1,6 @@
 //! `core/emit_abstraction` substrate tool — write an Abstraction memory
 //! with auto-wired Provenance + computed wake_chain_depth.
 
-use std::sync::OnceLock;
-
 use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -11,6 +9,7 @@ use super::shared::{
     PROMPT_VERSION, derive_text, emit_personality_memory, normalize_handle_refs_in_payload,
 };
 use crate::error::ProtocolError;
+use crate::mcp::schema::mcp_tool_schema;
 use crate::personality::{
     PersonalityMemoryDraft, PersonalityMemoryKind, PersonalityTool, PersonalityToolContext,
     PersonalityToolResult, authorization::authorize_emit,
@@ -42,14 +41,6 @@ pub struct EmitAbstractionArgs {
     pub text: Option<String>,
 }
 
-fn args_schema_value() -> &'static serde_json::Value {
-    static SCHEMA: OnceLock<serde_json::Value> = OnceLock::new();
-    SCHEMA.get_or_init(|| {
-        serde_json::to_value(schemars::schema_for!(EmitAbstractionArgs))
-            .expect("EmitAbstractionArgs schema serializes")
-    })
-}
-
 #[async_trait]
 impl PersonalityTool for EmitAbstractionTool {
     fn tool_id(&self) -> &'static str {
@@ -63,7 +54,7 @@ impl PersonalityTool for EmitAbstractionTool {
     }
 
     fn args_schema(&self) -> serde_json::Value {
-        args_schema_value().clone()
+        mcp_tool_schema::<EmitAbstractionArgs>()
     }
 
     async fn invoke(

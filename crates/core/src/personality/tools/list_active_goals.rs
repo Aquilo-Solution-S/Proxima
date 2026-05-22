@@ -1,13 +1,12 @@
 //! `core/list_active_goals` substrate tool — list active Goals linked to
 //! the personality's current Self-Perspective through `core/inspires`.
 
-use std::sync::OnceLock;
-
 use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::Deserialize;
 
 use crate::error::ProtocolError;
+use crate::mcp::schema::mcp_tool_schema;
 use crate::personality::{PersonalityTool, PersonalityToolContext, PersonalityToolResult};
 use crate::{GoalId, MemoryId};
 
@@ -26,14 +25,6 @@ pub struct ListActiveGoalsArgs {
 
 fn default_scope() -> String {
     "linked_to_self".into()
-}
-
-fn args_schema_value() -> &'static serde_json::Value {
-    static SCHEMA: OnceLock<serde_json::Value> = OnceLock::new();
-    SCHEMA.get_or_init(|| {
-        serde_json::to_value(schemars::schema_for!(ListActiveGoalsArgs))
-            .expect("ListActiveGoalsArgs schema serializes")
-    })
 }
 
 /// Triage-level summary of one active goal. Detail (text, schema_id,
@@ -56,7 +47,7 @@ impl PersonalityTool for ListActiveGoalsTool {
     }
 
     fn args_schema(&self) -> serde_json::Value {
-        args_schema_value().clone()
+        mcp_tool_schema::<ListActiveGoalsArgs>()
     }
 
     async fn invoke(
