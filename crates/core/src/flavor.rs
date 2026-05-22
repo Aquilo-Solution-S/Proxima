@@ -4,6 +4,7 @@
 //!
 //! See docs/08 §Registration mechanism.
 
+use crate::mcp::schema::mcp_tool_schema;
 use crate::personality::workspace::WorkspaceRunner;
 use crate::verbs::schema::{
     FlavorRegistryFrozen, MemorySearchProjection, MemorySearchProjectionField, PayloadKind,
@@ -383,10 +384,7 @@ impl FlavorRegistry {
             T::NAME,
             prefix,
         );
-        let schema = schemars::schema_for!(T::Args);
-        let mut args_schema = serde_json::to_value(schema).expect("JsonSchema must serialize");
-        inline_local_schema_refs(&mut args_schema);
-        describe_generated_schema_fields(&mut args_schema);
+        let args_schema = mcp_tool_schema::<T::Args>();
         let call: McpCallFn = |ctx, args| {
             Box::pin(async move {
                 let typed: T::Args = serde_json::from_value(args)
@@ -566,129 +564,6 @@ fn maybe_add_search_projection(
             })
             .collect(),
     });
-}
-
-fn inline_local_schema_refs(schema: &mut serde_json::Value) {
-    let defs = schema
-        .get("$defs")
-        .and_then(serde_json::Value::as_object)
-        .cloned()
-        .unwrap_or_default();
-    if defs.is_empty() {
-        return;
-    }
-    inline_local_schema_refs_inner(schema, &defs, 0);
-    if let Some(object) = schema.as_object_mut() {
-        object.remove("$defs");
-    }
-}
-
-fn inline_local_schema_refs_inner(
-    schema: &mut serde_json::Value,
-    defs: &serde_json::Map<String, serde_json::Value>,
-    depth: u8,
-) {
-    if depth > 32 {
-        return;
-    }
-    match schema {
-        serde_json::Value::Object(object) => {
-            if let Some(ref_key) = object
-                .get("$ref")
-                .and_then(serde_json::Value::as_str)
-                .and_then(local_def_ref_key)
-                .map(str::to_string)
-                && let Some(def) = defs.get(&ref_key)
-            {
-                *schema = def.clone();
-                inline_local_schema_refs_inner(schema, defs, depth + 1);
-                return;
-            }
-            for (key, value) in object {
-                if key != "$defs" {
-                    inline_local_schema_refs_inner(value, defs, depth + 1);
-                }
-            }
-        }
-        serde_json::Value::Array(items) => {
-            for item in items {
-                inline_local_schema_refs_inner(item, defs, depth + 1);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn local_def_ref_key(reference: &str) -> Option<&str> {
-    let key = reference.strip_prefix("#/$defs/")?;
-    if key.contains("~0") || key.contains("~1") {
-        return None;
-    }
-    Some(key)
-}
-
-fn describe_generated_schema_fields(schema: &mut serde_json::Value) {
-    let serde_json::Value::Object(object) = schema else {
-        return;
-    };
-
-    if let Some(properties) = object
-        .get_mut("properties")
-        .and_then(serde_json::Value::as_object_mut)
-    {
-        for (property_name, property_schema) in properties {
-            if property_schema
-                .get("description")
-                .and_then(serde_json::Value::as_str)
-                .is_none_or(|description| description.trim().is_empty())
-            {
-                let description = match property_name.as_str() {
-                    "schema_id" => Some(
-                        "Schema discriminator id selecting the typed payload variant for this object.",
-                    ),
-                    "body" => Some("Typed payload body for the selected schema_id variant."),
-                    _ => None,
-                };
-                if let (Some(description), Some(object)) =
-                    (description, property_schema.as_object_mut())
-                {
-                    object.insert(
-                        "description".to_string(),
-                        serde_json::Value::String(description.to_string()),
-                    );
-                }
-            }
-            describe_generated_schema_fields(property_schema);
-        }
-    }
-
-    for container_key in ["$defs", "definitions"] {
-        if let Some(defs) = object
-            .get_mut(container_key)
-            .and_then(serde_json::Value::as_object_mut)
-        {
-            for value in defs.values_mut() {
-                describe_generated_schema_fields(value);
-            }
-        }
-    }
-
-    for object_key in ["items", "additionalProperties"] {
-        if let Some(value) = object.get_mut(object_key) {
-            describe_generated_schema_fields(value);
-        }
-    }
-
-    for array_key in ["allOf", "anyOf", "oneOf", "prefixItems"] {
-        if let Some(values) = object
-            .get_mut(array_key)
-            .and_then(serde_json::Value::as_array_mut)
-        {
-            for value in values {
-                describe_generated_schema_fields(value);
-            }
-        }
-    }
 }
 
 fn validate_payload_type<T>(value: &serde_json::Value) -> Result<(), String>
