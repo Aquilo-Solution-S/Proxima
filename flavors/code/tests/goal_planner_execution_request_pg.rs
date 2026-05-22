@@ -178,6 +178,7 @@ impl TargetAdapter for ScriptedPlannerAdapter {
             tool_call_count: 2,
             jsonl_bytes: br#"{"record":"scripted-planner"}"#.to_vec(),
             jsonl_truncated: false,
+            network_log: None,
         })
     }
 }

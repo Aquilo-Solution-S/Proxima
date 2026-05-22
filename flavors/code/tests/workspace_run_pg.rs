@@ -99,6 +99,11 @@ impl WorkspaceRunV1 {
             stdout_tail: self.stdout_tail.clone(),
             stderr_tail: self.stderr_tail.clone(),
             duration_ms: self.duration_ms,
+            sandbox_image: None,
+            sandbox_container: None,
+            wake_branch: None,
+            transcript_blob_hash: None,
+            network_log_blob_hash: None,
         }
     }
 }
@@ -155,6 +160,7 @@ impl TargetAdapter for WorktreeWritingAdapter {
                 tool_call_count: 0,
                 jsonl_bytes: br#"{"record":"workspace-smoke"}"#.to_vec(),
                 jsonl_truncated: false,
+                network_log: None,
             }),
             Err(err) => Ok(target_failed(started, &err)),
         }
@@ -174,6 +180,7 @@ fn target_failed(started: Instant, err: &str) -> TargetOutcome {
         tool_call_count: 0,
         jsonl_bytes: format!(r#"{{"record":"workspace-smoke","error":{err:?}}}"#).into_bytes(),
         jsonl_truncated: false,
+        network_log: None,
     }
 }
 
