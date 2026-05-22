@@ -13,6 +13,7 @@ pub mod edge_append;
 pub(crate) mod event_history;
 pub mod event_ingest;
 pub(crate) mod goal_write;
+pub mod intervention;
 pub mod master_token_personality;
 pub mod persist_core_workspace_run;
 pub mod persist_intervention_request;

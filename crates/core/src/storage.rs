@@ -18,7 +18,7 @@ use crate::inference::{
 };
 use crate::intervention::{
     InterventionContinueCandidate, InterventionRequestPersistInput,
-    InterventionRequestPersistOutcome,
+    InterventionRequestPersistOutcome, InterventionStore,
 };
 use crate::personality::WakeEntryDraft;
 use crate::personality::{
@@ -69,7 +69,7 @@ pub struct MasterTokenPersonality {
 }
 
 #[async_trait::async_trait]
-pub trait Storage: ApprovalStore + Send + Sync {
+pub trait Storage: ApprovalStore + InterventionStore + Send + Sync {
     /// Atomic Fact materialization per docs/14 §EventIngest.
     /// Single transaction inserting cited_object, event,
     /// memory(Fact), citation_mapping, change_event. Replay
@@ -637,9 +637,11 @@ pub type StorageHandle = Arc<dyn Storage>;
 #[derive(Debug, Default, Clone)]
 pub struct NoopStorage;
 
-/// `NoopStorage` rejects all writes; the `ApprovalStore` default
-/// bodies (errors / empty reads) are exactly that behavior.
+/// `NoopStorage` rejects all writes; the `ApprovalStore` /
+/// `InterventionStore` default bodies (errors / empty reads) are
+/// exactly that behavior.
 impl ApprovalStore for NoopStorage {}
+impl InterventionStore for NoopStorage {}
 
 #[async_trait::async_trait]
 impl Storage for NoopStorage {
