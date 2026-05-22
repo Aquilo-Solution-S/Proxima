@@ -7,7 +7,8 @@ mod common;
 use common::{drop_db, fresh_pg, owner_fixture};
 use proxima_core::personality::{
     InstantiatePersonalityRequest, PersonalityInstanceId, PersonalityMemoryDraft,
-    PersonalityMemoryKind, PersonalityRef, PersonalityWriteRequest, SetWakeEntriesRequest,
+    PersonalityMemoryKind, PersonalityRef, PersonalityWriteRequest,
+    ROOT_PERSONALITY_PERSPECTIVE_SCHEMA_ID, SetWakeEntriesRequest, SidecarSpec,
     TombstonePersonalityRequest, WakeChainDepth, WakeEntryAuthoredBy, WakeEntryDraft,
     WakeEntryTriggerKind,
 };
@@ -379,9 +380,18 @@ fn memory_draft(
     label: &str,
     provenance: Vec<MemoryId>,
 ) -> PersonalityMemoryDraft {
+    memory_draft_with_schema(kind, "proxima-test/output-v1", label, provenance)
+}
+
+fn memory_draft_with_schema(
+    kind: PersonalityMemoryKind,
+    schema_id: &str,
+    label: &str,
+    provenance: Vec<MemoryId>,
+) -> PersonalityMemoryDraft {
     PersonalityMemoryDraft {
         kind,
-        schema_id: SchemaId::new("proxima-test/output-v1".into()),
+        schema_id: SchemaId::new(schema_id.into()),
         schema_version: SchemaVersion::new(1),
         text: label.into(),
         typed_payload: serde_json::json!({ "label": label }),
@@ -389,6 +399,154 @@ fn memory_draft(
         embedding: vec![0.1, 0.2, 0.3],
         embedding_model_id: "test-embed".into(),
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn load_perspective_heads_returns_current_same_personality_learned_heads() {
+    let Some((pg, db)) = fresh_pg().await else {
+        return;
+    };
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        pg.run_migrations().await?;
+        apply_personality_output_sidecar(pg.pool()).await?;
+
+        let owner = owner_fixture();
+        let seed = seed_test_personality(&pg, &owner).await?;
+        let sibling = seed_test_personality(&pg, &owner).await?;
+        let runtime = pg
+            .fetch_personality_runtime(&owner, seed.instance_id)
+            .await?
+            .expect("personality runtime row");
+        let root_id = runtime.current_root_perspective_memory_id;
+        let descriptors = core_relation_descriptors();
+        let resolve = |id: &str| {
+            let descriptor = descriptors
+                .iter()
+                .find(|descriptor| descriptor.relation == id)
+                .expect("relation registered");
+            RegisteredRelation {
+                descriptor,
+                payload_sidecar_table: None,
+            }
+        };
+        let provenance_relation = resolve(CORE_DERIVED_FROM_RELATION);
+        let supersedes_relation = resolve(CORE_SUPERSEDES_RELATION);
+        let authored_relation = resolve(CORE_AUTHORED_RELATION);
+
+        let instance = PersonalityRef::new(seed.instance_id);
+        let first = pg
+            .append_personality_memories(&PersonalityWriteRequest {
+                owner: owner.clone(),
+                instance: instance.clone(),
+                model_id: "test-model",
+                prompt_version: "test-v1",
+                provenance_relation,
+                supersedes_relation,
+                authored_relation,
+                current_root_perspective_memory_id: root_id,
+                wake_chain_depth: WakeChainDepth::new(1),
+                memories: &[memory_draft(
+                    PersonalityMemoryKind::Perspective,
+                    "old perspective",
+                    Vec::new(),
+                )],
+                sidecar_table: "proxima_test.personality_output_v1",
+            })
+            .await?;
+        let second = pg
+            .append_personality_memories(&PersonalityWriteRequest {
+                owner: owner.clone(),
+                instance: instance.clone(),
+                model_id: "test-model",
+                prompt_version: "test-v1",
+                provenance_relation,
+                supersedes_relation,
+                authored_relation,
+                current_root_perspective_memory_id: root_id,
+                wake_chain_depth: WakeChainDepth::new(2),
+                memories: &[memory_draft(
+                    PersonalityMemoryKind::Perspective,
+                    "current perspective",
+                    Vec::new(),
+                )],
+                sidecar_table: "proxima_test.personality_output_v1",
+            })
+            .await?;
+        pg.append_personality_memories(&PersonalityWriteRequest {
+            owner: owner.clone(),
+            instance: instance.clone(),
+            model_id: "test-model",
+            prompt_version: "test-v1",
+            provenance_relation,
+            supersedes_relation,
+            authored_relation,
+            current_root_perspective_memory_id: root_id,
+            wake_chain_depth: WakeChainDepth::new(3),
+            memories: &[memory_draft_with_schema(
+                PersonalityMemoryKind::Perspective,
+                "proxima-test/engineer-self-v1",
+                "legacy self perspective",
+                Vec::new(),
+            )],
+            sidecar_table: "proxima_test.personality_output_v1",
+        })
+        .await?;
+
+        let sibling_runtime = pg
+            .fetch_personality_runtime(&owner, sibling.instance_id)
+            .await?
+            .expect("sibling runtime row");
+        pg.append_personality_memories(&PersonalityWriteRequest {
+            owner: owner.clone(),
+            instance: PersonalityRef::new(sibling.instance_id),
+            model_id: "test-model",
+            prompt_version: "test-v1",
+            provenance_relation,
+            supersedes_relation,
+            authored_relation,
+            current_root_perspective_memory_id: sibling_runtime.current_root_perspective_memory_id,
+            wake_chain_depth: WakeChainDepth::new(1),
+            memories: &[memory_draft(
+                PersonalityMemoryKind::Perspective,
+                "sibling perspective",
+                Vec::new(),
+            )],
+            sidecar_table: "proxima_test.personality_output_v1",
+        })
+        .await?;
+
+        let sidecars = vec![
+            SidecarSpec {
+                schema_id: SchemaId::new("proxima-test/output-v1".into()),
+                sidecar_table: "proxima_test.personality_output_v1".into(),
+            },
+            SidecarSpec {
+                schema_id: SchemaId::new("proxima-test/engineer-self-v1".into()),
+                sidecar_table: "proxima_test.personality_output_v1".into(),
+            },
+            SidecarSpec {
+                schema_id: SchemaId::new(ROOT_PERSONALITY_PERSPECTIVE_SCHEMA_ID.into()),
+                sidecar_table: "proxima_core.root_personality_perspective_v1".into(),
+            },
+        ];
+
+        let heads = pg
+            .load_perspective_heads(&owner, seed.instance_id, root_id, &sidecars, 8)
+            .await?;
+
+        assert_eq!(heads.len(), 1);
+        assert_eq!(heads[0].memory_id, second.memory_ids[0]);
+        assert_eq!(heads[0].text.as_deref(), Some("current perspective"));
+        assert_ne!(heads[0].memory_id, first.memory_ids[0]);
+
+        Ok(())
+    }
+    .await;
+
+    drop(pg);
+    let _ = drop_db(&db).await;
+    result.expect("perspective heads should filter superseded, root, self, and sibling rows");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -498,6 +656,85 @@ async fn personality_provenance_edges_use_operator_authorship() {
     drop(pg);
     let _ = drop_db(&db).await;
     result.expect("personality provenance edge authorship must satisfy DB constraint");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn personality_provenance_skips_perspective_context_targets() {
+    let Some((pg, db)) = fresh_pg().await else {
+        return;
+    };
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        pg.run_migrations().await?;
+        apply_personality_output_sidecar(pg.pool()).await?;
+
+        let owner = owner_fixture();
+        let seed = seed_test_personality(&pg, &owner).await?;
+        let runtime = pg
+            .fetch_personality_runtime(&owner, seed.instance_id)
+            .await?
+            .expect("personality runtime row");
+        let root_id = runtime.current_root_perspective_memory_id;
+        let fact = pg.ingest_event_atomic(&fact_draft(owner.clone())).await?;
+        let descriptors = core_relation_descriptors();
+        let resolve = |id: &str| {
+            let descriptor = descriptors
+                .iter()
+                .find(|descriptor| descriptor.relation == id)
+                .expect("relation registered");
+            RegisteredRelation {
+                descriptor,
+                payload_sidecar_table: None,
+            }
+        };
+        let provenance_relation = resolve(CORE_DERIVED_FROM_RELATION);
+        let supersedes_relation = resolve(CORE_SUPERSEDES_RELATION);
+        let authored_relation = resolve(CORE_AUTHORED_RELATION);
+
+        let outcome = pg
+            .append_personality_memories(&PersonalityWriteRequest {
+                owner,
+                instance: PersonalityRef::new(seed.instance_id),
+                model_id: "test-model",
+                prompt_version: "test-v1",
+                provenance_relation,
+                supersedes_relation,
+                authored_relation,
+                current_root_perspective_memory_id: root_id,
+                wake_chain_depth: WakeChainDepth::new(1),
+                memories: &[memory_draft(
+                    PersonalityMemoryKind::Abstraction,
+                    "abstraction with perspective context",
+                    vec![fact.memory_id, root_id],
+                )],
+                sidecar_table: "proxima_test.personality_output_v1",
+            })
+            .await?;
+        let abstraction_id = outcome.memory_ids[0];
+
+        let derived_targets: Vec<(Uuid, EntityKind)> = sqlx::query_as(
+            "SELECT target_memory_id, target_kind
+             FROM proxima_core.edges
+             WHERE source_memory_id = $1
+               AND relation = 'core/derived-from'
+             ORDER BY target_kind",
+        )
+        .bind(abstraction_id.into_inner())
+        .fetch_all(pg.pool())
+        .await?;
+
+        assert_eq!(
+            derived_targets,
+            vec![(fact.memory_id.into_inner(), EntityKind::Fact)]
+        );
+
+        Ok(())
+    }
+    .await;
+
+    drop(pg);
+    let _ = drop_db(&db).await;
+    result.expect("personality provenance must treat Perspectives as context, not derived-from");
 }
 
 #[tokio::test(flavor = "multi_thread")]

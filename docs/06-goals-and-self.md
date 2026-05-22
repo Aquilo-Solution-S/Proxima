@@ -114,12 +114,17 @@ Runtime Self for one personality instance:
 ```
 Self(instance) =
   current_root_perspective(instance)
+  + active_perspective_heads(instance)
   + active_goals(current_root_perspective(instance))
 ```
 
 The self anchor is a Perspective memory row whose schema is declared by
 the personality flavor. Self evolution is Perspective supersession plus
 the instance's current-root pointer changing to the new head.
+
+`active_perspective_heads(instance)` is a bounded wake-context projection
+of same-personality, non-root Perspective heads. It excludes superseded
+rows and Self/root identity schemas.
 
 Self is never cached as:
 

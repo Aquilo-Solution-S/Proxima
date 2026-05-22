@@ -180,7 +180,52 @@ Workspace dispatch:
 | Runner | flavor-owned `WorkspaceRunner` prepares the worktree |
 | Palette | stored ids validated against the fixed workspace catalog |
 | Tooling | harness workspace tools are cwd-jailed to the prepared root |
+| Shell sandbox | `workspace_shell` runs host `bash -lc` by default; `PROXIMA_WORKSPACE_SHELL_SANDBOX=docker` routes it through Docker |
 | Finalize | runner records the run through ordinary storage writes |
+
+Docker shell sandbox:
+
+The container is a workspace command sandbox only. Proxima Shell,
+Engine, MCP listener, Postgres, model credentials, and embedding
+clients stay in the host process/runtime. The sandbox container receives
+only the prepared worktree and build/test toolchain.
+
+| Variable | Meaning |
+|---|---|
+| `PROXIMA_WORKSPACE_SHELL_SANDBOX=docker` | enable container-backed workspace shell |
+| `PROXIMA_WORKSPACE_SHELL_DOCKER_IMAGE` | required local image; Docker runs with `--pull=never` |
+| `PROXIMA_WORKSPACE_SHELL_DOCKER_NETWORK` | optional; default `none` |
+| `PROXIMA_WORKSPACE_SHELL_DOCKER_MEMORY` | optional; default `2g` |
+| `PROXIMA_WORKSPACE_SHELL_DOCKER_CPUS` | optional; default `2` |
+| `PROXIMA_WORKSPACE_SHELL_DOCKER_PIDS_LIMIT` | optional; default `256` |
+
+Local image:
+
+```sh
+scripts/build-workspace-shell-sandbox-image.sh proxima-workspace-sandbox:local
+```
+
+Container sandbox properties:
+
+| Boundary | Contract |
+|---|---|
+| Mounts | prepared workspace only, mounted at `/workspace` |
+| Cwd | `/workspace` |
+| Network | disabled by default |
+| Privilege | `--cap-drop ALL`, `--security-opt no-new-privileges` |
+| Host env | Docker CLI allowlist only; container receives `HOME=/tmp`, `CI=true` |
+
+Default image contents:
+
+| Tooling | Purpose |
+|---|---|
+| `bash`, `git` | command execution and repo inspection |
+| Rust toolchain | `cargo check`, `cargo test`, Rust edits |
+| Node + `pnpm` | frontend typecheck/build when a Goal explicitly needs it |
+| build libs | native Rust crate builds |
+
+Not included by default: Tauri GUI runtime, browser automation,
+Postgres server, MCP host, Ollama, or provider API keys.
 
 ## Persistence
 

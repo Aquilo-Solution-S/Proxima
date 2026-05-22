@@ -212,8 +212,7 @@ fn project_one_emit_tool(
     let schema_id_typed = crate::SchemaId::new(schema_id.to_string());
     let schema_version_typed = crate::SchemaVersion::new(schema_version);
     if registry
-        .lookup(&schema_id_typed, schema_version_typed)
-        .filter(|schema| schema.kind == kind)
+        .lookup_payload(&schema_id_typed, schema_version_typed, kind)
         .is_none()
     {
         return Err(ToolProjectionError::ScopedEmitSchemaNotRegistered {

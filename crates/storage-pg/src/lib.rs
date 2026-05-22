@@ -600,6 +600,25 @@ impl Storage for PgStorage {
         verbs::consolidate::load_abstraction_heads(&self.pool, owner, sidecars, limit).await
     }
 
+    async fn load_perspective_heads(
+        &self,
+        owner: &Owner,
+        instance: PersonalityInstanceId,
+        root_perspective_memory_id: proxima_core::MemoryId,
+        sidecars: &[SidecarSpec],
+        limit: usize,
+    ) -> Result<Vec<MemorySnapshot>, StorageError> {
+        verbs::consolidate::load_perspective_heads(
+            &self.pool,
+            owner,
+            instance,
+            root_perspective_memory_id,
+            sidecars,
+            limit,
+        )
+        .await
+    }
+
     async fn lookup_prior_personality_head(
         &self,
         owner: &Owner,

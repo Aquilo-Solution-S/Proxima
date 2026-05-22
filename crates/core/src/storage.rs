@@ -479,6 +479,15 @@ pub trait Storage: Send + Sync {
         limit: usize,
     ) -> Result<Vec<AbstractionRow>, StorageError>;
 
+    async fn load_perspective_heads(
+        &self,
+        owner: &Owner,
+        instance: PersonalityInstanceId,
+        root_perspective_memory_id: crate::MemoryId,
+        sidecars: &[SidecarSpec],
+        limit: usize,
+    ) -> Result<Vec<MemorySnapshot>, StorageError>;
+
     async fn lookup_prior_personality_head(
         &self,
         owner: &Owner,
@@ -915,6 +924,17 @@ impl Storage for NoopStorage {
         _sidecars: &[SidecarSpec],
         _limit: usize,
     ) -> Result<Vec<AbstractionRow>, StorageError> {
+        Ok(Vec::new())
+    }
+
+    async fn load_perspective_heads(
+        &self,
+        _owner: &Owner,
+        _instance: PersonalityInstanceId,
+        _root_perspective_memory_id: crate::MemoryId,
+        _sidecars: &[SidecarSpec],
+        _limit: usize,
+    ) -> Result<Vec<MemorySnapshot>, StorageError> {
         Ok(Vec::new())
     }
 

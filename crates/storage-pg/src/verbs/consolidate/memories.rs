@@ -1,6 +1,7 @@
 use proxima_core::personality::{
     AbstractionRow, FactRow, MemorySnapshot, PersonalityInstanceId, PersonalityRef,
-    PersonalityWriteOutcome, PersonalityWriteRequest, SidecarSpec, WakeChainDepth,
+    PersonalityWriteOutcome, PersonalityWriteRequest, ROOT_PERSONALITY_PERSPECTIVE_SCHEMA_ID,
+    SidecarSpec, WakeChainDepth,
 };
 use proxima_core::{
     EdgeAuthorshipKind, EntityKind, MemoryId, Owner, OwnerPrincipalKind, SchemaId, SchemaVersion,
@@ -131,6 +132,81 @@ pub async fn load_abstraction_heads(
                     text,
                     payload_json,
                     wake_chain_depth: WakeChainDepth::new(u16::try_from(depth).unwrap_or(0)),
+                },
+            ));
+        }
+    }
+    rows_all.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
+    Ok(rows_all
+        .into_iter()
+        .take(limit)
+        .map(|(_, _, row)| row)
+        .collect())
+}
+
+pub async fn load_perspective_heads(
+    pool: &PgPool,
+    owner: &Owner,
+    instance: PersonalityInstanceId,
+    root_perspective_memory_id: MemoryId,
+    sidecars: &[SidecarSpec],
+    limit: usize,
+) -> Result<Vec<MemorySnapshot>, StorageError> {
+    let (owner_kind, owner_principal_id, _owner_org_id) = owner_columns(owner);
+    let mut rows_all = Vec::new();
+    for spec in sidecars {
+        let sidecar = PgIdent::table(&spec.sidecar_table)?;
+        let sql = format!(
+            "SELECT m.memory_id, m.schema_version, m.text, row_to_json(s.*) AS payload,
+                    m.created_at, m.wake_chain_depth
+             FROM proxima_core.memories m
+             JOIN {sidecar} s ON s.memory_id = m.memory_id
+             WHERE m.owner_principal_kind = $1
+               AND m.owner_principal_id = $2
+               AND m.kind = 'Perspective'
+               AND m.schema_id = $3
+               AND m.personality_instance_id = $4
+               AND m.memory_id <> $5
+               AND m.schema_id <> $6
+               AND m.schema_id !~ '-self-v[0-9]+$'
+               AND NOT EXISTS (
+                    SELECT 1 FROM proxima_core.memories newer
+                    WHERE newer.supersedes = m.memory_id
+               )
+             ORDER BY m.created_at DESC, m.memory_id DESC
+             LIMIT $7",
+            sidecar = sidecar.as_str(),
+        );
+        let rows: Vec<(
+            uuid::Uuid,
+            i32,
+            Option<String>,
+            serde_json::Value,
+            time::OffsetDateTime,
+            i16,
+        )> = sqlx::query_as(&sql)
+            .bind(owner_kind)
+            .bind(owner_principal_id)
+            .bind(spec.schema_id.as_str())
+            .bind(instance.into_inner())
+            .bind(root_perspective_memory_id.into_inner())
+            .bind(ROOT_PERSONALITY_PERSPECTIVE_SCHEMA_ID)
+            .bind(i64::try_from(limit).unwrap_or(i64::MAX))
+            .fetch_all(pool)
+            .await
+            .map_err(map_err)?;
+        for (memory_id, schema_version, text, payload_json, created_at, depth) in rows {
+            rows_all.push((
+                created_at,
+                memory_id,
+                MemorySnapshot {
+                    memory_id: MemoryId::new(memory_id),
+                    kind: "Perspective".to_string(),
+                    schema_id: spec.schema_id.clone(),
+                    schema_version: SchemaVersion::new(u32::try_from(schema_version).unwrap_or(1)),
+                    text,
+                    wake_chain_depth: WakeChainDepth::new(u16::try_from(depth).unwrap_or(0)),
+                    payload_json,
                 },
             ));
         }
@@ -386,6 +462,9 @@ pub async fn append_personality_memories(
 
         for prov_id in &memory.provenance {
             let target_kind = memory_kind_for_provenance(&mut tx, *prov_id).await?;
+            if !should_append_personality_provenance_edge(target_kind) {
+                continue;
+            }
             let authorship_kind = provenance_edge_authorship_kind(memory.kind);
             let draft = EdgeDraft {
                 edge_id: uuid::Uuid::now_v7(),
@@ -458,6 +537,10 @@ pub async fn append_personality_memories(
 
     tx.commit().await.map_err(map_err)?;
     Ok(PersonalityWriteOutcome { memory_ids })
+}
+
+fn should_append_personality_provenance_edge(target_kind: EntityKind) -> bool {
+    target_kind != EntityKind::Perspective
 }
 
 fn provenance_edge_authorship_kind(

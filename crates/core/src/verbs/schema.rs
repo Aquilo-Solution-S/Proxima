@@ -321,6 +321,20 @@ impl FlavorRegistryFrozen {
             .find(|s| s.schema_id == *schema_id && s.schema_version == version)
     }
 
+    /// Lookup by `(schema_id, schema_version, kind)`. Required when one
+    /// typed payload is registered for multiple F/A/P layers.
+    #[must_use]
+    pub fn lookup_payload(
+        &self,
+        schema_id: &SchemaId,
+        version: SchemaVersion,
+        kind: PayloadKind,
+    ) -> Option<&SchemaInfo> {
+        self.schemas
+            .iter()
+            .find(|s| s.schema_id == *schema_id && s.schema_version == version && s.kind == kind)
+    }
+
     /// Validate a JSON payload against the build-time registered Rust
     /// payload type when the registry was produced by `FlavorRegistry`.
     /// Ad-hoc test registries may not carry validators; those still

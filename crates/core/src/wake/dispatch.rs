@@ -32,6 +32,7 @@ use crate::personality::{
     WakeEntryDraft, WakeEntryExecutionMode, WakeEntryGoalScope, WakeEntryRow, WakeEntryTriggerKind,
     WakeExecutionMode, WakeInvocationFinalize, WakeInvocationStatus,
 };
+use crate::verbs::schema::PayloadKind;
 use crate::wake::context::assemble_wake_context;
 use crate::wake::fire::input::FireWakeContinuation;
 use crate::wake::fire::{FireWakeEntryInput, fire_wake_entry};
@@ -779,6 +780,12 @@ fn collect_sidecars(engine: &Engine) -> Vec<SidecarSpec> {
         .registry()
         .list()
         .into_iter()
+        .filter(|s| {
+            matches!(
+                s.kind,
+                PayloadKind::Fact | PayloadKind::Abstraction | PayloadKind::Perspective
+            )
+        })
         .filter_map(|s| {
             s.sidecar_table.map(|table| SidecarSpec {
                 schema_id: s.schema_id,

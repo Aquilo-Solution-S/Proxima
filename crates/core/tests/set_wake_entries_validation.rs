@@ -22,7 +22,7 @@ use proxima_core::{
     InstantiatePersonalityResponse, ListReadScopeRequest, ListReadScopeResponse, MemoryId,
     MemorySnapshot, ModelTier, OrgId, Owner, PersonalityInstanceId, PersonalityInstanceRow,
     PersonalityRef, PersonalityRuntimeRow, PersonalityWriteOutcome, PersonalityWriteRequest,
-    Principal, RegisterInferenceTargetRequest, RegisterInferenceTargetResponse,
+    PerspectivePayload, Principal, RegisterInferenceTargetRequest, RegisterInferenceTargetResponse,
     RemoveInferenceTargetRequest, RemoveInferenceTargetResponse, RootPersonalityPerspectiveRow,
     SetReadScopeRequest, SetReadScopeResponse, SetWakeEntriesRequest, SetWakeEntriesResponse,
     SidecarSpec, SourceBatchId, TombstonePersonalityRequest, TombstonePersonalityResponse, UserId,
@@ -50,6 +50,37 @@ impl AbstractionPayload for TestBrief {
 
     fn json_schema() -> Option<serde_json::Value> {
         serde_json::to_value(schema_for!(TestBrief)).ok()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+struct TestSharedDerivation {
+    title: String,
+}
+
+impl AbstractionPayload for TestSharedDerivation {
+    const SCHEMA_ID: &'static str = "test/shared-derivation-v1";
+    const SCHEMA_VERSION: u32 = 1;
+
+    fn sidecar_table() -> &'static str {
+        "test.shared_derivation_abstraction_v1"
+    }
+
+    fn json_schema() -> Option<serde_json::Value> {
+        serde_json::to_value(schema_for!(TestSharedDerivation)).ok()
+    }
+}
+
+impl PerspectivePayload for TestSharedDerivation {
+    const SCHEMA_ID: &'static str = "test/shared-derivation-v1";
+    const SCHEMA_VERSION: u32 = 1;
+
+    fn sidecar_table() -> &'static str {
+        "test.shared_derivation_perspective_v1"
+    }
+
+    fn json_schema() -> Option<serde_json::Value> {
+        serde_json::to_value(schema_for!(TestSharedDerivation)).ok()
     }
 }
 
@@ -337,6 +368,17 @@ impl Storage for FixtureStorage {
         Ok(Vec::new())
     }
 
+    async fn load_perspective_heads(
+        &self,
+        _owner: &Owner,
+        _instance: PersonalityInstanceId,
+        _root_perspective_memory_id: MemoryId,
+        _sidecars: &[SidecarSpec],
+        _limit: usize,
+    ) -> Result<Vec<MemorySnapshot>, StorageError> {
+        Ok(Vec::new())
+    }
+
     async fn lookup_prior_personality_head(
         &self,
         _owner: &Owner,
@@ -542,6 +584,25 @@ async fn scoped_emit_tool_id_is_registered_for_wake_entries() {
     };
     let mut draft = entry("schema-a");
     draft.substrate_tool_palette = vec!["core/emit_abstraction::test/brief-v1::v1".into()];
+    let err = set_wake_entries(&ctx, &req(vec![draft])).await.unwrap_err();
+    assert_eq!(err.code, ErrorCode::TierUnbound);
+}
+
+#[tokio::test]
+async fn scoped_emit_tool_id_accepts_perspective_when_schema_id_is_shared() {
+    let storage = FixtureStorage::default();
+    let mut registry = FlavorRegistry::new();
+    registry.add_abstraction_schema::<TestSharedDerivation>();
+    registry.add_perspective_schema::<TestSharedDerivation>();
+    let registry = registry.freeze();
+    let ctx = SetWakeEntriesContext {
+        storage: &storage,
+        registry: &registry,
+    };
+    let mut draft = entry("schema-a");
+    draft.substrate_tool_palette =
+        vec!["core/emit_perspective::test/shared-derivation-v1::v1".into()];
+    draft.required_produced_schema_ids = vec!["test/shared-derivation-v1".into()];
     let err = set_wake_entries(&ctx, &req(vec![draft])).await.unwrap_err();
     assert_eq!(err.code, ErrorCode::TierUnbound);
 }

@@ -30,11 +30,12 @@ pub fn writeable_schemas_for_palette(engine: &Engine, palette: &[String]) -> Vec
         if let Ok(Some(scoped)) = parse_scoped_emit_tool_id(palette_id) {
             if engine
                 .registry()
-                .lookup(
+                .lookup_payload(
                     &crate::SchemaId::new(scoped.schema_id.clone()),
                     crate::SchemaVersion::new(scoped.schema_version),
+                    scoped.kind,
                 )
-                .is_some_and(|schema| schema.kind == scoped.kind)
+                .is_some()
             {
                 schema_ids.push(scoped.schema_id);
             }
@@ -118,6 +119,26 @@ mod tests {
                 tombstone: None,
                 cbor_encoder: None,
             },
+            SchemaInfo {
+                schema_id: SchemaId::new("test/shared-v1".to_string()),
+                schema_version: SchemaVersion::new(1),
+                kind: PayloadKind::Abstraction,
+                filter_keys: vec![],
+                sidecar_table: Some("test.shared_abstraction_v1".to_string()),
+                natural_key_columns: vec![],
+                tombstone: None,
+                cbor_encoder: None,
+            },
+            SchemaInfo {
+                schema_id: SchemaId::new("test/shared-v1".to_string()),
+                schema_version: SchemaVersion::new(1),
+                kind: PayloadKind::Perspective,
+                filter_keys: vec![],
+                sidecar_table: Some("test.shared_perspective_v1".to_string()),
+                natural_key_columns: vec![],
+                tombstone: None,
+                cbor_encoder: None,
+            },
         ];
         let relations = vec![RelationDescriptor::substrate(
             "test/related-to",
@@ -164,7 +185,13 @@ mod tests {
         let engine = engine_with_test_registry();
         let palette = vec!["core/emit_abstraction".to_string()];
         let schemas = writeable_schemas_for_palette(&engine, &palette);
-        assert_eq!(schemas, vec!["test/abstraction-v1".to_string()]);
+        assert_eq!(
+            schemas,
+            vec![
+                "test/abstraction-v1".to_string(),
+                "test/shared-v1".to_string()
+            ]
+        );
         assert!(writeable_relations_for_palette(&engine, &palette).is_empty());
     }
 
@@ -198,7 +225,22 @@ mod tests {
         let engine = engine_with_test_registry();
         let palette = vec!["core/emit_perspective".to_string()];
         let schemas = writeable_schemas_for_palette(&engine, &palette);
-        assert_eq!(schemas, vec!["test/perspective-v1".to_string()]);
+        assert_eq!(
+            schemas,
+            vec![
+                "test/perspective-v1".to_string(),
+                "test/shared-v1".to_string()
+            ]
+        );
+        assert!(writeable_relations_for_palette(&engine, &palette).is_empty());
+    }
+
+    #[test]
+    fn scoped_emit_perspective_returns_shared_schema_when_abstraction_registered_first() {
+        let engine = engine_with_test_registry();
+        let palette = vec!["core/emit_perspective::test/shared-v1::v1".to_string()];
+        let schemas = writeable_schemas_for_palette(&engine, &palette);
+        assert_eq!(schemas, vec!["test/shared-v1".to_string()]);
         assert!(writeable_relations_for_palette(&engine, &palette).is_empty());
     }
 

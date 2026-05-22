@@ -124,11 +124,12 @@ fn produced_schema_ids_for_palette(
         }
         if let Ok(Some(scoped)) = parse_scoped_emit_tool_id(palette_id) {
             if registry
-                .lookup(
+                .lookup_payload(
                     &SchemaId::new(scoped.schema_id.clone()),
                     SchemaVersion::new(scoped.schema_version),
+                    scoped.kind,
                 )
-                .is_some_and(|schema| schema.kind == scoped.kind)
+                .is_some()
             {
                 schema_ids.insert(scoped.schema_id);
             }
@@ -251,11 +252,12 @@ fn substrate_tool_registered(
     };
     substrate_registered.contains(scoped.base_tool_id)
         && registry
-            .lookup(
+            .lookup_payload(
                 &SchemaId::new(scoped.schema_id),
                 SchemaVersion::new(scoped.schema_version),
+                scoped.kind,
             )
-            .is_some_and(|schema| schema.kind == scoped.kind)
+            .is_some()
 }
 
 fn validate_target_or_tier(
