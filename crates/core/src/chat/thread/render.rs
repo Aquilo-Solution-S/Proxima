@@ -1,14 +1,5 @@
 use super::*;
 
-pub(in crate::chat) fn endpoint_in_thread(
-    endpoint: &Option<uuid::Uuid>,
-    thread_memory_ids: &[uuid::Uuid],
-) -> bool {
-    endpoint
-        .as_ref()
-        .is_some_and(|id| thread_memory_ids.contains(id))
-}
-
 pub(in crate::chat) fn render_thread_started(
     ctx: &McpToolCtx,
     started: LoadedStarted,
@@ -210,6 +201,14 @@ pub(in crate::chat) fn format_memory_from_class_map(
     Ok(ctx.format_memory_with_class(MemoryId::new(memory_id), class))
 }
 
+pub(in crate::chat) fn entity_kind_for_class(class: MemoryHandleClass) -> EntityKind {
+    match class {
+        MemoryHandleClass::Fact => EntityKind::Fact,
+        MemoryHandleClass::Abstraction => EntityKind::Abstraction,
+        MemoryHandleClass::Perspective => EntityKind::Perspective,
+    }
+}
+
 pub(in crate::chat) fn entity_kind_for_class_map(
     memory_classes: &HashMap<uuid::Uuid, MemoryHandleClass>,
     memory_id: uuid::Uuid,
@@ -219,11 +218,7 @@ pub(in crate::chat) fn entity_kind_for_class_map(
             "chat provenance memory class not found: {memory_id}"
         ))
     })?;
-    Ok(match class {
-        MemoryHandleClass::Fact => EntityKind::Fact,
-        MemoryHandleClass::Abstraction => EntityKind::Abstraction,
-        MemoryHandleClass::Perspective => EntityKind::Perspective,
-    })
+    Ok(entity_kind_for_class(class))
 }
 
 pub(in crate::chat) fn render_thread_policy(

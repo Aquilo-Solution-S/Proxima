@@ -158,163 +158,34 @@ pub(super) async fn load_message(
     ctx: &McpToolCtx,
     message_memory_id: MemoryId,
 ) -> Result<ChatMessageV1, McpToolError> {
-    let (owner_kind, owner_id, owner_org_id) = owner_columns(&ctx.owner);
-    let row: Option<(
-        String,
-        String,
-        uuid::Uuid,
-        uuid::Uuid,
-        uuid::Uuid,
-        Option<uuid::Uuid>,
-        Vec<uuid::Uuid>,
-        Vec<uuid::Uuid>,
-        String,
-        OffsetDateTime,
-    )> = sqlx::query_as(
-        "SELECT q.thread_key, q.message, q.target_personality_instance_id,
-                q.target_self_perspective_memory_id, q.sent_by_self_perspective_memory_id,
-                q.parent_memory_id, q.context_memory_ids, q.context_goal_ids,
-                q.idempotency_key, q.sent_at
-           FROM proxima_core.chat_message_v1 q
-           JOIN proxima_core.memories m USING (memory_id)
-          WHERE q.memory_id = $1
-            AND m.owner_principal_kind = $2
-            AND m.owner_principal_id = $3
-            AND m.owner_org_id = $4",
-    )
-    .bind(message_memory_id.into_inner())
-    .bind(owner_kind)
-    .bind(owner_id)
-    .bind(owner_org_id)
-    .fetch_optional(&ctx.pool)
-    .await
-    .map_err(map_sql)?;
-    let Some((
-        thread_key,
-        message,
-        target_personality_instance_id,
-        target_self_perspective_memory_id,
-        sent_by_self_perspective_memory_id,
-        parent_memory_id,
-        context_memory_ids,
-        context_goal_ids,
-        idempotency_key,
-        sent_at,
-    )) = row
-    else {
-        return Err(McpToolError::InvalidInput(
-            "chat message is not visible".into(),
-        ));
-    };
-    Ok(ChatMessageV1 {
-        thread_key,
-        message,
-        target_personality_instance_id,
-        target_self_perspective_memory_id,
-        sent_by_self_perspective_memory_id,
-        parent_memory_id,
-        context_memory_ids,
-        context_goal_ids,
-        idempotency_key,
-        sent_at,
-    })
+    chat_storage(ctx)?
+        .chat_load_message(&ctx.owner, message_memory_id)
+        .await?
+        .ok_or_else(|| McpToolError::InvalidInput("chat message is not visible".into()))
 }
 
 pub(super) async fn load_chat_parent_thread_key(
     ctx: &McpToolCtx,
     parent_memory_id: MemoryId,
 ) -> Result<String, McpToolError> {
-    let (owner_kind, owner_id, owner_org_id) = owner_columns(&ctx.owner);
-    let row: Option<(String,)> = sqlx::query_as(
-        "SELECT parent.thread_key
-           FROM (
-                 SELECT q.thread_key
-                   FROM proxima_core.chat_message_v1 q
-                   JOIN proxima_core.memories m USING (memory_id)
-                  WHERE q.memory_id = $1
-                    AND m.owner_principal_kind = $2
-                    AND m.owner_principal_id = $3
-                    AND m.owner_org_id = $4
-                 UNION ALL
-                 SELECT r.thread_key
-                   FROM proxima_core.chat_reply_v1 r
-                   JOIN proxima_core.memories m USING (memory_id)
-                  WHERE r.memory_id = $1
-                    AND m.owner_principal_kind = $2
-                    AND m.owner_principal_id = $3
-                    AND m.owner_org_id = $4
-                ) parent
-          LIMIT 1",
-    )
-    .bind(parent_memory_id.into_inner())
-    .bind(owner_kind)
-    .bind(owner_id)
-    .bind(owner_org_id)
-    .fetch_optional(&ctx.pool)
-    .await
-    .map_err(map_sql)?;
-    row.map(|(thread_key,)| thread_key).ok_or_else(|| {
-        McpToolError::InvalidInput(
-            "chat parent must be a visible chat message or chat reply Fact".into(),
-        )
-    })
+    chat_storage(ctx)?
+        .chat_parent_thread_key(&ctx.owner, parent_memory_id)
+        .await?
+        .ok_or_else(|| {
+            McpToolError::InvalidInput(
+                "chat parent must be a visible chat message or chat reply Fact".into(),
+            )
+        })
 }
 
 pub(super) async fn load_end_request(
     ctx: &McpToolCtx,
     request_memory_id: MemoryId,
 ) -> Result<ChatEndRequestedV1, McpToolError> {
-    let (owner_kind, owner_id, owner_org_id) = owner_columns(&ctx.owner);
-    let row: Option<(
-        String,
-        uuid::Uuid,
-        uuid::Uuid,
-        uuid::Uuid,
-        Option<String>,
-        String,
-        OffsetDateTime,
-    )> = sqlx::query_as(
-        "SELECT r.thread_key, r.target_personality_instance_id,
-                r.target_self_perspective_memory_id,
-                r.requested_by_self_perspective_memory_id, r.reason,
-                r.idempotency_key, r.requested_at
-           FROM proxima_core.chat_end_requested_v1 r
-           JOIN proxima_core.memories m USING (memory_id)
-          WHERE r.memory_id = $1
-            AND m.owner_principal_kind = $2
-            AND m.owner_principal_id = $3
-            AND m.owner_org_id = $4",
-    )
-    .bind(request_memory_id.into_inner())
-    .bind(owner_kind)
-    .bind(owner_id)
-    .bind(owner_org_id)
-    .fetch_optional(&ctx.pool)
-    .await
-    .map_err(map_sql)?;
-    let Some((
-        thread_key,
-        target_personality_instance_id,
-        target_self_perspective_memory_id,
-        requested_by_self_perspective_memory_id,
-        reason,
-        idempotency_key,
-        requested_at,
-    )) = row
-    else {
-        return Err(McpToolError::InvalidInput(
-            "chat end request is not visible".into(),
-        ));
-    };
-    Ok(ChatEndRequestedV1 {
-        thread_key,
-        target_personality_instance_id,
-        target_self_perspective_memory_id,
-        requested_by_self_perspective_memory_id,
-        reason,
-        idempotency_key,
-        requested_at,
-    })
+    chat_storage(ctx)?
+        .chat_load_end_request(&ctx.owner, request_memory_id)
+        .await?
+        .ok_or_else(|| McpToolError::InvalidInput("chat end request is not visible".into()))
 }
 
 pub(super) async fn load_started_target(
