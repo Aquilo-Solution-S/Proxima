@@ -2,7 +2,6 @@
 //! Provenance/Supersession lineage from a starting memory.
 
 use std::collections::HashMap;
-use std::sync::OnceLock;
 
 use async_trait::async_trait;
 use schemars::JsonSchema;
@@ -10,6 +9,7 @@ use serde::Deserialize;
 
 use crate::MemoryId;
 use crate::error::ProtocolError;
+use crate::mcp::schema::mcp_tool_schema;
 use crate::mcp::MemoryHandleClass;
 use crate::personality::{PersonalityTool, PersonalityToolContext, PersonalityToolResult};
 use crate::verbs::query::{MemoryLineageDirection, MemoryLineageRequest};
@@ -67,14 +67,6 @@ fn default_limit() -> u32 {
     50
 }
 
-fn args_schema_value() -> &'static serde_json::Value {
-    static SCHEMA: OnceLock<serde_json::Value> = OnceLock::new();
-    SCHEMA.get_or_init(|| {
-        serde_json::to_value(schemars::schema_for!(WalkLineageArgs))
-            .expect("WalkLineageArgs schema serializes")
-    })
-}
-
 #[async_trait]
 impl PersonalityTool for WalkLineageTool {
     fn tool_id(&self) -> &'static str {
@@ -88,7 +80,7 @@ impl PersonalityTool for WalkLineageTool {
     }
 
     fn args_schema(&self) -> serde_json::Value {
-        args_schema_value().clone()
+        mcp_tool_schema::<WalkLineageArgs>()
     }
 
     async fn invoke(
