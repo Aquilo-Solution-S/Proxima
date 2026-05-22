@@ -17,10 +17,24 @@ RUN apt-get update \
 
 RUN npm install -g pnpm
 
+# Build caches live on a persistent named volume mounted at /cache, outside
+# /workspace — so they survive across wakes and never land in the per-wake
+# clone (which would commit them onto the wake branch). The container runs as
+# an arbitrary host uid, so /cache must be world-writable for it to create
+# the cargo/pnpm subdirs.
+RUN mkdir -p /cache && chmod 777 /cache
+
+# A system-level git identity so commits work for any uid with no per-wake
+# `git config`; `safe.directory '*'` because the bind-mounted clone is owned
+# by the host uid, which git would otherwise refuse to operate on.
+RUN git config --system user.name "Proxima Wake" \
+    && git config --system user.email "wake@proxima.local" \
+    && git config --system --add safe.directory '*'
+
 ENV HOME=/tmp \
     CI=true \
-    CARGO_HOME=/workspace/.sandbox/cargo \
-    PNPM_HOME=/workspace/.sandbox/pnpm \
-    PATH=/workspace/.sandbox/pnpm:/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    CARGO_HOME=/cache/cargo \
+    PNPM_HOME=/cache/pnpm \
+    PATH=/cache/pnpm:/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 WORKDIR /workspace
