@@ -61,6 +61,11 @@ fn core_workspace_run_payload(
         stdout_tail: Some("ok".into()),
         stderr_tail: None,
         duration_ms: Some(10),
+        sandbox_image: None,
+        sandbox_container: None,
+        wake_branch: None,
+        transcript_blob_hash: None,
+        network_log_blob_hash: None,
     }
 }
 

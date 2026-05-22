@@ -121,6 +121,13 @@ impl WorkspaceRunner for CodeWorkspaceRunner {
             stdout_tail: input.outcome.stdout_tail.clone(),
             stderr_tail: input.outcome.stderr_tail.clone(),
             duration_ms: input.outcome.duration_ms,
+            // Code's registered runner uses worktrees, not the core
+            // observation sandbox — sandbox/transcript evidence is core-only.
+            sandbox_image: None,
+            sandbox_container: None,
+            wake_branch: None,
+            transcript_blob_hash: None,
+            network_log_blob_hash: None,
         };
         let memory_id = ingest_workspace_run(pool, &payload, input).await?;
         Ok(WorkspaceRunRecord {

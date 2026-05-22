@@ -245,6 +245,7 @@ impl TargetAdapter for MockAdapter {
             tool_call_count: 0,
             jsonl_bytes: b"{\"record\":\"test\"}\n".to_vec(),
             jsonl_truncated: false,
+            network_log: None,
         })
     }
 }

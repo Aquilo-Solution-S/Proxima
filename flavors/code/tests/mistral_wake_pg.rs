@@ -1543,6 +1543,11 @@ async fn seed_workspace_run_event(
         stdout_tail: Some("ok".into()),
         stderr_tail: None,
         duration_ms: Some(1),
+        sandbox_image: None,
+        sandbox_container: None,
+        wake_branch: None,
+        transcript_blob_hash: None,
+        network_log_blob_hash: None,
     };
     let sidecar_payload = payload.clone();
     ingest_fact_with_sidecar(

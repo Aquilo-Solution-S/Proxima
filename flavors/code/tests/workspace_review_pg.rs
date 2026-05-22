@@ -1460,6 +1460,11 @@ async fn seed_workspace_run(
         stdout_tail: Some("ok".into()),
         stderr_tail: None,
         duration_ms: Some(42),
+        sandbox_image: None,
+        sandbox_container: None,
+        wake_branch: None,
+        transcript_blob_hash: None,
+        network_log_blob_hash: None,
     };
     let mut payload_bytes = Vec::new();
     ciborium::ser::into_writer(&payload, &mut payload_bytes)?;

@@ -135,6 +135,7 @@ impl TargetAdapter for ScriptedExecutorAdapter {
             tool_call_count: 1,
             jsonl_bytes: br#"{"record":"scripted-executor"}"#.to_vec(),
             jsonl_truncated: false,
+            network_log: None,
         })
     }
 }
