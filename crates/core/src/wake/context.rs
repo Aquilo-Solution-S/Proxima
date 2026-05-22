@@ -1,8 +1,8 @@
-//! Wake context assembly — the four fixed parameters every wake
+//! Wake context assembly — the fixed parameters every wake
 //! receives (spec docs/superpowers/specs/2026-05-07 lines 285–306).
 //!
 //! No per-entry configuration, no DSL: every WakeEntry on every
-//! Personality gets the same four envelopes. The dispatcher attaches
+//! Personality gets the same envelopes. The dispatcher attaches
 //! them to `HarnessProgram::context_params`; wake-entry instructions
 //! reference whichever are relevant for the prompt.
 
@@ -11,15 +11,18 @@ use uuid::Uuid;
 
 use crate::error::ProtocolError;
 use crate::outbox::{ChangeEventKind, EntityRef};
-use crate::personality::{PersonalityInstanceId, SidecarSpec};
+use crate::personality::{MemorySnapshot, PersonalityInstanceId, SidecarSpec};
 use crate::storage::Storage;
 use crate::{MemoryId, Owner};
 
-/// The four fixed envelopes the dispatcher attaches to
+const ACTIVE_PERSPECTIVE_LIMIT: usize = 8;
+
+/// The fixed envelopes the dispatcher attaches to
 /// `HarnessProgram::context_params` for every wake.
 #[derive(Debug, Clone, Serialize)]
 pub struct WakeContext {
     pub root_perspective: RootPerspectiveEnvelope,
+    pub active_perspectives: Vec<ActivePerspectiveEnvelope>,
     pub active_goals: Vec<ActiveGoalEnvelope>,
     pub trigger_event: TriggerEventEnvelope,
     pub triggering_memory: TriggeringMemoryEnvelope,
@@ -35,6 +38,18 @@ pub struct RootPerspectiveEnvelope {
     pub display_name: String,
     pub purpose: String,
     pub system_prompt: String,
+}
+
+/// Current, same-personality learned Perspective head injected beside
+/// the Root Perspective. Root/self identity Perspectives are excluded;
+/// superseded rows are filtered by storage.
+#[derive(Debug, Clone, Serialize)]
+pub struct ActivePerspectiveEnvelope {
+    pub memory_id: Uuid,
+    pub schema_id: String,
+    pub schema_version: i32,
+    pub text: String,
+    pub wake_chain_depth: i32,
 }
 
 /// Triage envelope for one active Goal — `{ goal_id,
@@ -147,6 +162,24 @@ pub async fn assemble_wake_context(
         system_prompt,
     };
 
+    let active_perspective_rows = storage
+        .load_perspective_heads(
+            owner,
+            personality_instance_id,
+            root_memory_id,
+            sidecars,
+            ACTIVE_PERSPECTIVE_LIMIT,
+        )
+        .await
+        .map_err(|e| ProtocolError::internal(format!("load_perspective_heads: {e}")))?;
+
+    let active_perspectives = active_perspective_rows
+        .into_iter()
+        .filter(|row| !is_self_perspective_schema(row.schema_id.as_str()))
+        .take(ACTIVE_PERSPECTIVE_LIMIT)
+        .map(active_perspective_from_snapshot)
+        .collect();
+
     // Active Goals attached to this Root Perspective via core/inspires.
     // The list_active_goals query already filters supersession + state
     // forward to current Active heads. motivation_via is the path back
@@ -219,10 +252,34 @@ pub async fn assemble_wake_context(
 
     Ok(WakeContext {
         root_perspective,
+        active_perspectives,
         active_goals,
         trigger_event,
         triggering_memory,
     })
+}
+
+fn active_perspective_from_snapshot(row: MemorySnapshot) -> ActivePerspectiveEnvelope {
+    ActivePerspectiveEnvelope {
+        memory_id: row.memory_id.into_inner(),
+        schema_id: row.schema_id.into_inner(),
+        schema_version: i32::try_from(row.schema_version.into_inner()).unwrap_or(1),
+        text: row.text.unwrap_or_default(),
+        wake_chain_depth: i32::from(row.wake_chain_depth.into_inner()),
+    }
+}
+
+fn is_self_perspective_schema(schema_id: &str) -> bool {
+    if schema_id == crate::personality::ROOT_PERSONALITY_PERSPECTIVE_SCHEMA_ID {
+        return true;
+    }
+    let Some(name) = schema_id.rsplit('/').next() else {
+        return false;
+    };
+    let Some((_, version)) = name.rsplit_once("-self-v") else {
+        return false;
+    };
+    !version.is_empty() && version.chars().all(|c| c.is_ascii_digit())
 }
 
 /// Resolve a `ChangeEventKind` into the `(kind, schema_id, memory_id)`

@@ -195,6 +195,7 @@ fn build_user_seed(program: &HarnessProgram) -> String {
 
     for key in [
         "root_perspective",
+        "active_perspectives",
         "active_goals",
         "trigger_event",
         "triggering_memory",
@@ -277,6 +278,58 @@ mod tests {
         assert!(seed.contains("Coordination Context:"));
         assert!(seed.contains("Planner child-goal demo wake"));
         assert!(seed.contains("proxima-goal/goal_decompose"));
+    }
+
+    #[test]
+    fn user_seed_renders_active_perspectives_after_root() {
+        let program = proxima_core::harness::HarnessProgram {
+            system_prompt: "sys".into(),
+            instructions: "do the wake".into(),
+            context_params: HashMap::from([
+                (
+                    "root_perspective".into(),
+                    json!({
+                        "root_perspective": "P1",
+                        "display_name": "Mira"
+                    }),
+                ),
+                (
+                    "active_perspectives".into(),
+                    json!([
+                        {
+                            "perspective": "P2",
+                            "schema_id": "proxima-mcp/agent-derivation-v1",
+                            "text": "Inspect workspace evidence before proposing edits.",
+                            "truncated": false
+                        }
+                    ]),
+                ),
+            ]),
+            tool_projection: Vec::new(),
+            required_fulfillment_schema_ids: Vec::new(),
+            substrate_tool_palette: Vec::new(),
+            workspace_root: None,
+            workspace_tool_palette: Vec::new(),
+            max_rounds: 1,
+            provider: ProviderTarget::MistralChat {
+                base_url: "http://127.0.0.1:1".into(),
+                model_id: "test".into(),
+                api_key: "test".into(),
+                temperature: None,
+                max_completion_tokens: None,
+                reasoning_effort: None,
+                context_window_tokens: None,
+            },
+        };
+
+        let seed = build_user_seed(&program);
+        let root_idx = seed.find("Root Perspective:").expect("root section");
+        let perspective_idx = seed
+            .find("Active Perspectives:")
+            .expect("active perspectives section");
+
+        assert!(root_idx < perspective_idx);
+        assert!(seed.contains("Inspect workspace evidence before proposing edits."));
     }
 }
 

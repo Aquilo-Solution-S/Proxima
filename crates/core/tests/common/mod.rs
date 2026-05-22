@@ -91,6 +91,10 @@ pub async fn apply_wake_context_sidecars(pool: &sqlx::PgPool) -> sqlx::Result<()
          CREATE TABLE IF NOT EXISTS proxima_test.wake_context_fact_v1 ( \
              memory_id uuid PRIMARY KEY REFERENCES proxima_core.memories(memory_id), \
              label text NOT NULL \
+         ); \
+         CREATE TABLE IF NOT EXISTS proxima_test.wake_context_perspective_v1 ( \
+             memory_id uuid PRIMARY KEY REFERENCES proxima_core.memories(memory_id), \
+             label text NOT NULL \
          );",
     )
     .await

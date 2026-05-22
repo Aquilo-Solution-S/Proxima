@@ -1,7 +1,8 @@
 use proxima_core::{
-    AbstractionPayload, FlavorRegistry, SchemaId, SchemaVersion,
+    AbstractionPayload, FlavorRegistry, PerspectivePayload, SchemaId, SchemaVersion,
     harness::build_wake_tool_projection,
     mcp::{McpTool, McpToolCtx, McpToolError},
+    verbs::schema::PayloadKind,
 };
 use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize};
@@ -22,6 +23,37 @@ impl AbstractionPayload for TestBrief {
 
     fn json_schema() -> Option<serde_json::Value> {
         serde_json::to_value(schema_for!(TestBrief)).ok()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+struct TestSharedDerivation {
+    title: String,
+}
+
+impl AbstractionPayload for TestSharedDerivation {
+    const SCHEMA_ID: &'static str = "test/shared-derivation-v1";
+    const SCHEMA_VERSION: u32 = 1;
+
+    fn sidecar_table() -> &'static str {
+        "test.shared_derivation_abstraction_v1"
+    }
+
+    fn json_schema() -> Option<serde_json::Value> {
+        serde_json::to_value(schema_for!(TestSharedDerivation)).ok()
+    }
+}
+
+impl PerspectivePayload for TestSharedDerivation {
+    const SCHEMA_ID: &'static str = "test/shared-derivation-v1";
+    const SCHEMA_VERSION: u32 = 1;
+
+    fn sidecar_table() -> &'static str {
+        "test.shared_derivation_perspective_v1"
+    }
+
+    fn json_schema() -> Option<serde_json::Value> {
+        serde_json::to_value(schema_for!(TestSharedDerivation)).ok()
     }
 }
 
@@ -198,6 +230,68 @@ fn scoped_emit_abstraction_palette_projects_only_named_schema() {
             && schema_id == "test/brief-v1"
             && *schema_version == 1
     ));
+}
+
+#[test]
+fn scoped_emit_perspective_handles_schema_id_shared_with_abstraction() {
+    let mut registry = FlavorRegistry::new();
+    registry.add_abstraction_schema::<TestSharedDerivation>();
+    registry.add_perspective_schema::<TestSharedDerivation>();
+    let registry = registry.freeze();
+
+    let projection = build_wake_tool_projection(
+        &registry,
+        &["core/emit_perspective::test/shared-derivation-v1::v1".to_string()],
+    )
+    .expect("projection");
+
+    assert_eq!(projection.len(), 1);
+    assert_eq!(
+        projection[0].canonical_name,
+        "core/emit_perspective::test/shared-derivation-v1::v1"
+    );
+    assert_eq!(
+        projection[0].provider_name,
+        "core_emit_perspective__test_shared-derivation-v1__v1"
+    );
+    assert!(matches!(
+        &projection[0].dispatch,
+        proxima_core::harness::HarnessToolDispatch::TypedEmit {
+            internal_canonical_name,
+            schema_id,
+            schema_version,
+            payload_kind,
+        } if internal_canonical_name == "core/emit_perspective"
+            && schema_id == "test/shared-derivation-v1"
+            && *schema_version == 1
+            && *payload_kind == PayloadKind::Perspective
+    ));
+}
+
+#[test]
+fn broad_emit_perspective_handles_schema_id_shared_with_abstraction() {
+    let mut registry = FlavorRegistry::new();
+    registry.add_abstraction_schema::<TestSharedDerivation>();
+    registry.add_perspective_schema::<TestSharedDerivation>();
+    let registry = registry.freeze();
+
+    let projection = build_wake_tool_projection(&registry, &["core/emit_perspective".to_string()])
+        .expect("projection");
+
+    assert!(projection.iter().any(|tool| {
+        matches!(
+            &tool.dispatch,
+            proxima_core::harness::HarnessToolDispatch::TypedEmit {
+                internal_canonical_name,
+                schema_id,
+                schema_version,
+                payload_kind,
+            } if internal_canonical_name == "core/emit_perspective"
+                && schema_id == "test/shared-derivation-v1"
+                && *schema_version == 1
+                && *payload_kind == PayloadKind::Perspective
+        )
+    }));
 }
 
 #[test]

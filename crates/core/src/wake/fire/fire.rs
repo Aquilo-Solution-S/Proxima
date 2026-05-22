@@ -52,6 +52,8 @@ use super::input::{FireWakeEntryInput, per_invocation_timeout};
 use super::outcome::{WakeInvocationFinalizeOutcome, wake_outcome_from_harness_outcome};
 use super::resolve::{ResolvedTarget, collect_sidecars, resolve_target};
 
+const ACTIVE_PERSPECTIVE_TEXT_LIMIT: usize = 2_000;
+
 pub async fn fire_wake_entry(
     engine: &Engine,
     adapter: &dyn HarnessAdapter,
@@ -1240,6 +1242,10 @@ async fn build_context_params(
         project_root_perspective(wake_context, handles),
     );
     context_params.insert(
+        "active_perspectives".into(),
+        project_active_perspectives(wake_context, handles),
+    );
+    context_params.insert(
         "active_goals".into(),
         project_active_goals(wake_context, handles),
     );
@@ -1300,6 +1306,40 @@ fn project_root_perspective(
         "purpose": wake_context.root_perspective.purpose.as_str(),
         "system_prompt": wake_context.root_perspective.system_prompt.as_str(),
     })
+}
+
+fn project_active_perspectives(
+    wake_context: &WakeContext,
+    handles: &HandleTable,
+) -> serde_json::Value {
+    serde_json::Value::Array(
+        wake_context
+            .active_perspectives
+            .iter()
+            .map(|perspective| {
+                let (text, truncated) =
+                    truncate_context_text(&perspective.text, ACTIVE_PERSPECTIVE_TEXT_LIMIT);
+                serde_json::json!({
+                    "perspective": handles
+                        .assign_perspective_memory(MemoryId::new(perspective.memory_id))
+                        .as_str()
+                        .to_string(),
+                    "schema_id": perspective.schema_id.as_str(),
+                    "schema_version": perspective.schema_version,
+                    "text": text,
+                    "wake_chain_depth": perspective.wake_chain_depth,
+                    "truncated": truncated,
+                })
+            })
+            .collect(),
+    )
+}
+
+fn truncate_context_text(text: &str, max_chars: usize) -> (String, bool) {
+    let mut chars = text.chars();
+    let truncated: String = chars.by_ref().take(max_chars).collect();
+    let was_truncated = chars.next().is_some();
+    (truncated, was_truncated)
 }
 
 fn project_active_goals(wake_context: &WakeContext, handles: &HandleTable) -> serde_json::Value {

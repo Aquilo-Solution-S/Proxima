@@ -2,6 +2,7 @@
 
 use crate::engine::Engine;
 use crate::error::ProtocolError;
+use crate::verbs::schema::PayloadKind;
 use crate::{InferenceTargetConfig, InferenceTargetRow};
 
 use super::input::FireWakeEntryInput;
@@ -70,6 +71,12 @@ pub fn collect_sidecars(engine: &Engine) -> Vec<crate::personality::SidecarSpec>
         .registry()
         .list()
         .into_iter()
+        .filter(|s| {
+            matches!(
+                s.kind,
+                PayloadKind::Fact | PayloadKind::Abstraction | PayloadKind::Perspective
+            )
+        })
         .filter_map(|s| {
             s.sidecar_table
                 .map(|table| crate::personality::SidecarSpec {

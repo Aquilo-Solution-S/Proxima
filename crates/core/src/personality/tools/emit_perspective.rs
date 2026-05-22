@@ -91,8 +91,7 @@ impl PersonalityTool for EmitPerspectiveTool {
         let info = ctx
             .engine
             .registry()
-            .lookup(&schema_id, schema_version)
-            .filter(|s| s.kind == PayloadKind::Perspective)
+            .lookup_payload(&schema_id, schema_version, PayloadKind::Perspective)
             .ok_or_else(|| {
                 ProtocolError::internal(format!(
                     "schema {} v{} not registered as Perspective",

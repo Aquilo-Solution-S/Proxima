@@ -56,6 +56,12 @@ async fn harness_wake_persists_trace_fact_jsonl_and_provenance() {
             program.context_params["root_perspective"]["root_perspective"],
             "P1"
         );
+        assert!(
+            program.context_params["active_perspectives"]
+                .as_array()
+                .expect("active perspectives array")
+                .is_empty()
+        );
         assert_eq!(program.context_params["triggering_memory"]["memory"], "F1");
         for (key, value) in &program.context_params {
             assert!(
