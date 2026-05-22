@@ -1,9 +1,11 @@
 //! Wake fire submodule - split from the original fire.rs for improved compile times.
 
+pub mod context;
 pub mod finalize;
 pub mod input;
 pub mod outcome;
 pub mod resolve;
+pub mod workspace;
 
 #[allow(clippy::module_inception)]
 pub mod fire;
