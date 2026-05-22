@@ -23,6 +23,7 @@ use crate::providers::openai_chat::OpenAIChatClient;
 use crate::providers::openai_responses::OpenAIResponsesClient;
 use crate::providers::{ProviderClient, ProviderError, RoundResult};
 use crate::tools::workspace::dispatch as workspace_dispatch;
+use crate::tools::workspace::sandbox::{self, WorkspaceSandboxSession};
 use crate::tools::{ToolBinding, WorkspaceCtx};
 use crate::trace::jsonl::JsonlBuffer;
 
@@ -73,6 +74,7 @@ impl HarnessAdapter for HarnessLoop {
     ) -> Result<HarnessOutcome, HarnessError> {
         let max_rounds = program.max_rounds;
         let workspace_root = program.workspace_root.clone();
+        let workspace_sandbox = program.workspace_sandbox.clone();
         let provider_target = program.provider.clone();
         let model_id = model_id_for_log(&provider_target);
         let provider = build_provider(&provider_target);
@@ -83,16 +85,46 @@ impl HarnessAdapter for HarnessLoop {
         let resolved = resolve(program, &substrate_tools)
             .map_err(|err| HarnessError::Internal(format!("program_resolve:{err}")))?;
 
-        run_loop(
+        // Start the per-wake observation container before the model loop.
+        // A failed start fails the wake — there is no silent host fallback.
+        let invocation_id = ctx.invocation_id;
+        let sandbox_session = match (workspace_root.as_deref(), &workspace_sandbox) {
+            (Some(root), Some(spec)) => Some(
+                sandbox::start(spec, invocation_id, root)
+                    .await
+                    .map_err(|err| {
+                        HarnessError::Internal(format!("workspace_sandbox_start:{err}"))
+                    })?,
+            ),
+            _ => None,
+        };
+
+        let result = run_loop(
             self,
             &*provider,
             resolved,
             workspace_root,
+            sandbox_session.as_ref(),
             ctx,
             max_rounds,
             &model_id,
         )
-        .await
+        .await;
+
+        // Stop exactly once, on every `run_loop` exit path. A stop failure
+        // is logged but never masks the model outcome; the startup reaper
+        // sweeps any container left behind.
+        if let Some(session) = &sandbox_session
+            && let Err(err) = sandbox::stop(session).await
+        {
+            tracing::warn!(
+                error = %err,
+                container = %session.container_name,
+                "workspace sandbox stop failed; container left for the startup reaper"
+            );
+        }
+
+        result
     }
 }
 
@@ -205,6 +237,7 @@ fn resolve_substrate_tools(
 
 #[expect(
     clippy::too_many_lines,
+    clippy::too_many_arguments,
     reason = "wake loop state is clearer in one place"
 )]
 async fn run_loop(
@@ -212,6 +245,7 @@ async fn run_loop(
     provider: &dyn ProviderClient,
     mut resolved: ResolvedProgram,
     workspace_root: Option<std::path::PathBuf>,
+    sandbox_session: Option<&WorkspaceSandboxSession>,
     ctx: HarnessContext,
     max_rounds: u32,
     model_id: &str,
@@ -367,6 +401,7 @@ async fn run_loop(
                         &canonical,
                         call.arguments.clone(),
                         workspace_root.as_deref(),
+                        sandbox_session,
                         &ctx,
                         model_id,
                     )
@@ -708,12 +743,17 @@ enum DispatchOne {
     Unknown,
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "dispatch context is intentionally explicit"
+)]
 async fn dispatch_one(
     loop_: &HarnessLoop,
     resolved: &ResolvedProgram,
     canonical: &str,
     args: serde_json::Value,
     workspace_root: Option<&std::path::Path>,
+    sandbox_session: Option<&WorkspaceSandboxSession>,
     ctx: &HarnessContext,
     model_id: &str,
 ) -> DispatchOne {
@@ -756,6 +796,7 @@ async fn dispatch_one(
                 args,
                 &WorkspaceCtx {
                     workspace_root: root.to_path_buf(),
+                    sandbox_session: sandbox_session.cloned(),
                 },
             )
             .await

@@ -8,6 +8,7 @@ use tempfile::tempdir;
 fn ctx(root: PathBuf) -> WorkspaceCtx {
     WorkspaceCtx {
         workspace_root: root,
+        sandbox_session: None,
     }
 }
 

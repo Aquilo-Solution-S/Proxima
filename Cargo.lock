@@ -4271,6 +4271,7 @@ dependencies = [
  "ciborium",
  "futures",
  "futures-util",
+ "libc",
  "proxima-storage-pg",
  "reqwest 0.12.28",
  "schemars 1.2.1",
@@ -4342,6 +4343,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",
+ "tracing",
  "uuid",
 ]
 

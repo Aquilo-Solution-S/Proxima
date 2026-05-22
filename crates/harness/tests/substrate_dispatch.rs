@@ -69,6 +69,7 @@ fn empty_program(bindings: &[SubstrateToolBinding], workspace: bool) -> HarnessP
         } else {
             Vec::new()
         },
+        workspace_sandbox: None,
         max_rounds: 5,
         provider: ProviderTarget::MistralChat {
             base_url: "http://x".into(),

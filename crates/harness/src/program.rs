@@ -260,6 +260,7 @@ mod tests {
             substrate_tool_palette: Vec::new(),
             workspace_root: None,
             workspace_tool_palette: Vec::new(),
+            workspace_sandbox: None,
             max_rounds: 1,
             provider: ProviderTarget::MistralChat {
                 base_url: "http://127.0.0.1:1".into(),
@@ -310,6 +311,7 @@ mod tests {
             substrate_tool_palette: Vec::new(),
             workspace_root: None,
             workspace_tool_palette: Vec::new(),
+            workspace_sandbox: None,
             max_rounds: 1,
             provider: ProviderTarget::MistralChat {
                 base_url: "http://127.0.0.1:1".into(),

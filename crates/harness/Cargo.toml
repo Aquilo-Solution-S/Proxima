@@ -21,6 +21,8 @@ tokio-util = { workspace = true }
 reqwest = { workspace = true }
 schemars = { workspace = true }
 blake3 = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
 
 [dev-dependencies]
 futures = { workspace = true }
