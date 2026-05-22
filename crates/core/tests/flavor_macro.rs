@@ -94,29 +94,25 @@ fn flavor_macro_accepts_empty_goal_schemas() {
     );
 }
 
-// A FactPayload whose SCHEMA_ID is hard-coded (no proxima_schema_id!)
-// and uses the wrong crate prefix.
-#[derive(serde::Serialize, serde::Deserialize)]
-struct WrongPrefixFact;
-
-impl FactPayload for WrongPrefixFact {
-    const SCHEMA_ID: &'static str = "wrong-crate/bad";
-    const SCHEMA_VERSION: u32 = 1;
-    fn render(&self) -> String {
-        String::new()
-    }
-    fn sidecar_table() -> &'static str {
-        "fact_wrong"
-    }
-}
-
-// Use a separate module to avoid duplicate `register` symbol
+// A misprefixed *relation*. Schema / tool / trigger prefixes are now
+// compile-checked by a `const` assertion (so a misprefixed SCHEMA_ID
+// fails the build and cannot be expressed in a compiled test).
+// `relations` carry their prefix on a runtime `RelationDescriptor`
+// field, so that arm still asserts at `register` time — this test
+// covers the surviving runtime branch.
 mod nested {
-    use super::WrongPrefixFact;
-    use proxima_core::proxima_flavor;
+    use proxima_core::{
+        AuthorshipKindMask, EntityKindMask, RelationClass, RelationDescriptor, proxima_flavor,
+    };
     proxima_flavor! {
         name = "proxima-core",
-        fact_schemas = [ WrongPrefixFact ],
+        relations = [ RelationDescriptor::substrate(
+            "wrong-crate/bad",
+            RelationClass::Provenance,
+            EntityKindMask::all(),
+            EntityKindMask::all(),
+            AuthorshipKindMask::core(),
+        ) ],
     }
 }
 

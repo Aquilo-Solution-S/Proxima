@@ -492,6 +492,26 @@ impl FlavorRegistry {
     }
 }
 
+/// `const fn` byte-wise `str::starts_with` — used by `proxima_flavor!`
+/// to compile-check schema / tool / trigger prefixes. `str::starts_with`
+/// is not `const`, so the comparison is spelled out. See docs/08
+/// §Schema namespacing: prefix violations reachable from associated
+/// `const`s or literals are now caught at build time, not at `register`.
+pub const fn schema_id_has_prefix(id: &str, prefix: &str) -> bool {
+    let (id, prefix) = (id.as_bytes(), prefix.as_bytes());
+    if prefix.len() > id.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < prefix.len() {
+        if id[i] != prefix[i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
 fn maybe_add_search_projection(
     out: &mut Vec<MemorySearchProjection>,
     schema_info: &SchemaInfo,
@@ -668,6 +688,25 @@ where
 mod tests {
     use super::*;
     use crate::mcp::{McpToolCtx, McpToolError};
+
+    #[test]
+    fn schema_id_has_prefix_edge_cases() {
+        // Normal prefix match — the common case.
+        assert!(schema_id_has_prefix("proxima-code/commit", "proxima-code/"));
+        // Empty prefix is satisfied by anything.
+        assert!(schema_id_has_prefix("abc", ""));
+        // Prefix equal to the whole id.
+        assert!(schema_id_has_prefix("abc", "abc"));
+        // Prefix longer than the id never matches.
+        assert!(!schema_id_has_prefix("ab", "abc"));
+        // Plain mismatch.
+        assert!(!schema_id_has_prefix("wrong/x", "right/"));
+        // Truncated prefix — id is a prefix of the prefix, not vice versa.
+        assert!(!schema_id_has_prefix("proxima-cod", "proxima-code/"));
+        // Multibyte UTF-8: byte-wise comparison must still hold.
+        assert!(schema_id_has_prefix("schémä/x", "schémä/"));
+        assert!(!schema_id_has_prefix("sch", "schémä/"));
+    }
 
     struct Demo;
 
