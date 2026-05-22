@@ -123,41 +123,26 @@ impl McpTool for StartChatTool {
                 sent_at: now,
             };
 
-            let mut tx = ctx.pool.begin().await.map_err(map_sql)?;
-            let started_outcome = ingest_chat_fact(&mut tx, &ctx, &started_payload).await?;
-            let message_outcome = ingest_chat_fact(&mut tx, &ctx, &message_payload).await?;
-            let edge_id = if started_outcome.idempotent_replay || message_outcome.idempotent_replay
-            {
-                None
-            } else {
-                insert_started_sidecar(&mut tx, started_outcome.memory_id, &started_payload)
-                    .await?;
-                insert_message_sidecar(&mut tx, message_outcome.memory_id, &message_payload)
-                    .await?;
-                Some(
-                    append_edge(
-                        &mut tx,
-                        &ctx,
-                        CORE_RECEIVES_CHAT_MESSAGE_RELATION,
-                        EntityKind::Perspective,
-                        Some(target.root_perspective.into_inner()),
-                        None,
-                        EntityKind::Fact,
-                        Some(message_outcome.memory_id.into_inner()),
-                        None,
-                        edge_authorship_for_ctx(&ctx),
-                    )
-                    .await?,
+            let outcome = chat_storage(&ctx)?
+                .start_chat_atomic(
+                    &ctx.registry,
+                    &StartChatInput {
+                        owner: ctx.owner.clone(),
+                        started: started_payload,
+                        message: message_payload,
+                        edge_authorship: edge_authorship_for_ctx(&ctx),
+                        caller_self,
+                    },
                 )
-            };
-            tx.commit().await.map_err(map_sql)?;
+                .await?;
             Ok(StartChatOutput {
                 thread_key,
-                started: ctx.format_fact_memory(started_outcome.memory_id),
-                message: ctx.format_fact_memory(message_outcome.memory_id),
-                target_edge_handle: edge_id.map(|id| ctx.format_edge(EdgeId::new(id))),
-                idempotent_replay: started_outcome.idempotent_replay
-                    || message_outcome.idempotent_replay,
+                started: ctx.format_fact_memory(outcome.started_memory_id),
+                message: ctx.format_fact_memory(outcome.message_memory_id),
+                target_edge_handle: outcome
+                    .message_edge_id
+                    .map(|id| ctx.format_edge(EdgeId::new(id))),
+                idempotent_replay: outcome.idempotent_replay,
             })
         })
     }
@@ -252,32 +237,20 @@ impl McpTool for EmitChatMessageTool {
                 idempotency_key,
                 sent_at: OffsetDateTime::now_utc(),
             };
-            let mut tx = ctx.pool.begin().await.map_err(map_sql)?;
-            let outcome = ingest_chat_fact(&mut tx, &ctx, &payload).await?;
-            let edge_id = if outcome.idempotent_replay {
-                None
-            } else {
-                insert_message_sidecar(&mut tx, outcome.memory_id, &payload).await?;
-                Some(
-                    append_edge(
-                        &mut tx,
-                        &ctx,
-                        CORE_RECEIVES_CHAT_MESSAGE_RELATION,
-                        EntityKind::Perspective,
-                        Some(target.root_perspective.into_inner()),
-                        None,
-                        EntityKind::Fact,
-                        Some(outcome.memory_id.into_inner()),
-                        None,
-                        edge_authorship_for_ctx(&ctx),
-                    )
-                    .await?,
+            let outcome = chat_storage(&ctx)?
+                .emit_chat_message_atomic(
+                    &ctx.registry,
+                    &EmitChatMessageInput {
+                        owner: ctx.owner.clone(),
+                        message: payload,
+                        edge_authorship: edge_authorship_for_ctx(&ctx),
+                        caller_self,
+                    },
                 )
-            };
-            tx.commit().await.map_err(map_sql)?;
+                .await?;
             Ok(EmitChatMessageOutput {
                 handle: ctx.format_fact_memory(outcome.memory_id),
-                target_edge_handle: edge_id.map(|id| ctx.format_edge(EdgeId::new(id))),
+                target_edge_handle: outcome.edge_id.map(|id| ctx.format_edge(EdgeId::new(id))),
                 idempotent_replay: outcome.idempotent_replay,
             })
         })
@@ -354,32 +327,21 @@ impl McpTool for EmitChatReplyTool {
                 idempotency_key,
                 replied_at: OffsetDateTime::now_utc(),
             };
-            let mut tx = ctx.pool.begin().await.map_err(map_sql)?;
-            let outcome = ingest_chat_fact(&mut tx, &ctx, &payload).await?;
-            let edge_id = if outcome.idempotent_replay {
-                None
-            } else {
-                insert_reply_sidecar(&mut tx, outcome.memory_id, &payload).await?;
-                Some(
-                    append_edge(
-                        &mut tx,
-                        &ctx,
-                        CORE_REPLIES_TO_MESSAGE_RELATION,
-                        EntityKind::Fact,
-                        Some(outcome.memory_id.into_inner()),
-                        None,
-                        EntityKind::Fact,
-                        Some(message_memory_id.into_inner()),
-                        None,
-                        edge_authorship_for_ctx(&ctx),
-                    )
-                    .await?,
+            let outcome = chat_storage(&ctx)?
+                .emit_chat_reply_atomic(
+                    &ctx.registry,
+                    &EmitChatReplyInput {
+                        owner: ctx.owner.clone(),
+                        reply: payload,
+                        message_memory_id,
+                        edge_authorship: edge_authorship_for_ctx(&ctx),
+                        caller_self,
+                    },
                 )
-            };
-            tx.commit().await.map_err(map_sql)?;
+                .await?;
             Ok(EmitChatReplyOutput {
                 handle: ctx.format_fact_memory(outcome.memory_id),
-                reply_edge_handle: edge_id.map(|id| ctx.format_edge(EdgeId::new(id))),
+                reply_edge_handle: outcome.edge_id.map(|id| ctx.format_edge(EdgeId::new(id))),
                 idempotent_replay: outcome.idempotent_replay,
             })
         })
@@ -470,43 +432,40 @@ impl McpTool for CompactChatThreadTool {
                 idempotency_key,
                 compacted_at: now,
             };
-            let mut tx = ctx.pool.begin().await.map_err(map_sql)?;
-            let inserted =
-                insert_chat_compaction_abstraction(&mut tx, &ctx, compaction_memory_id, &payload)
-                    .await?;
-            let mut provenance_edge_handles = Vec::new();
-            if inserted {
-                let source_classes =
-                    load_memory_handle_classes(&ctx, &payload.included_memory_ids).await?;
-                for source in payload.included_memory_ids.iter().copied() {
-                    let target_kind = entity_kind_for_class_map(&source_classes, source)?;
-                    if target_kind == EntityKind::Perspective {
-                        return Err(McpToolError::InvalidInput(
-                            "source_memories for chat compaction cannot include Perspective memories"
-                                .into(),
-                        ));
-                    }
-                    let edge_id = append_edge(
-                        &mut tx,
-                        &ctx,
-                        CORE_DERIVED_FROM_RELATION,
-                        EntityKind::Abstraction,
-                        Some(compaction_memory_id),
-                        None,
-                        target_kind,
-                        Some(source),
-                        None,
-                        EdgeAuthorshipKind::ExternalAgent,
-                    )
-                    .await?;
-                    provenance_edge_handles.push(ctx.format_edge(EdgeId::new(edge_id)));
+            let source_classes =
+                load_memory_handle_classes(&ctx, &payload.included_memory_ids).await?;
+            let mut classified_sources = Vec::with_capacity(payload.included_memory_ids.len());
+            for source in payload.included_memory_ids.iter().copied() {
+                let target_kind = entity_kind_for_class_map(&source_classes, source)?;
+                if target_kind == EntityKind::Perspective {
+                    return Err(McpToolError::InvalidInput(
+                        "source_memories for chat compaction cannot include Perspective memories"
+                            .into(),
+                    ));
                 }
+                classified_sources.push((source, target_kind));
             }
-            tx.commit().await.map_err(map_sql)?;
+            let outcome = chat_storage(&ctx)?
+                .compact_chat_thread_atomic(
+                    &ctx.registry,
+                    &CompactChatThreadInput {
+                        owner: ctx.owner.clone(),
+                        model_id: ctx.author.model_id.clone(),
+                        compaction_memory_id,
+                        payload,
+                        classified_sources,
+                        caller_self,
+                    },
+                )
+                .await?;
             Ok(CompactChatThreadOutput {
                 compaction: ctx.format_abstraction_memory(MemoryId::new(compaction_memory_id)),
-                provenance_edge_handles,
-                idempotent_replay: !inserted,
+                provenance_edge_handles: outcome
+                    .edge_ids
+                    .into_iter()
+                    .map(|id| ctx.format_edge(EdgeId::new(id)))
+                    .collect(),
+                idempotent_replay: !outcome.inserted,
             })
         })
     }
@@ -588,32 +547,20 @@ impl McpTool for RequestEndChatTool {
                 idempotency_key,
                 requested_at: OffsetDateTime::now_utc(),
             };
-            let mut tx = ctx.pool.begin().await.map_err(map_sql)?;
-            let outcome = ingest_chat_fact(&mut tx, &ctx, &payload).await?;
-            let edge_id = if outcome.idempotent_replay {
-                None
-            } else {
-                insert_end_requested_sidecar(&mut tx, outcome.memory_id, &payload).await?;
-                Some(
-                    append_edge(
-                        &mut tx,
-                        &ctx,
-                        CORE_RECEIVES_CHAT_END_REQUEST_RELATION,
-                        EntityKind::Perspective,
-                        Some(target.root_perspective.into_inner()),
-                        None,
-                        EntityKind::Fact,
-                        Some(outcome.memory_id.into_inner()),
-                        None,
-                        edge_authorship_for_ctx(&ctx),
-                    )
-                    .await?,
+            let outcome = chat_storage(&ctx)?
+                .request_end_chat_atomic(
+                    &ctx.registry,
+                    &RequestEndChatInput {
+                        owner: ctx.owner.clone(),
+                        request: payload,
+                        edge_authorship: edge_authorship_for_ctx(&ctx),
+                        caller_self,
+                    },
                 )
-            };
-            tx.commit().await.map_err(map_sql)?;
+                .await?;
             Ok(RequestEndChatOutput {
                 handle: ctx.format_fact_memory(outcome.memory_id),
-                target_edge_handle: edge_id.map(|id| ctx.format_edge(EdgeId::new(id))),
+                target_edge_handle: outcome.edge_id.map(|id| ctx.format_edge(EdgeId::new(id))),
                 idempotent_replay: outcome.idempotent_replay,
             })
         })
@@ -712,12 +659,12 @@ impl McpTool for EndChatTool {
                 idempotency_key: idempotency_key.clone(),
                 ended_at: now,
             };
-            let mut tx = ctx.pool.begin().await.map_err(map_sql)?;
-            let ended_outcome = ingest_chat_fact(&mut tx, &ctx, &ended_payload).await?;
+            // `ended_memory_id` is filled in by `end_chat_atomic` once the
+            // chat-ended Fact is ingested; the nil here is a placeholder.
             let summary_payload = ChatSummaryV1 {
                 thread_key: request.thread_key,
                 request_memory_id: request_memory_id.into_inner(),
-                ended_memory_id: ended_outcome.memory_id.into_inner(),
+                ended_memory_id: uuid::Uuid::nil(),
                 summarized_by_personality_instance_id: caller_personality.into_inner(),
                 summarized_by_self_perspective_memory_id: caller_self.into_inner(),
                 summary: summary_text,
@@ -726,58 +673,37 @@ impl McpTool for EndChatTool {
                 idempotency_key,
                 summarized_at: now,
             };
-            let mut provenance_edge_handles = Vec::new();
-            if !ended_outcome.idempotent_replay {
-                insert_ended_sidecar(&mut tx, ended_outcome.memory_id, &ended_payload).await?;
-                let summary_inserted = insert_chat_summary_abstraction(
-                    &mut tx,
-                    &ctx,
-                    summary_memory_id,
-                    &summary_payload,
+            let mut to_classify = summary_payload.included_memory_ids.clone();
+            to_classify.push(request_memory_id.into_inner());
+            let classified_sources: Vec<(uuid::Uuid, EntityKind)> =
+                load_memory_handle_classes(&ctx, &to_classify)
+                    .await?
+                    .into_iter()
+                    .map(|(id, class)| (id, entity_kind_for_class(class)))
+                    .collect();
+            let outcome = chat_storage(&ctx)?
+                .end_chat_atomic(
+                    &ctx.registry,
+                    &EndChatInput {
+                        owner: ctx.owner.clone(),
+                        model_id: ctx.author.model_id.clone(),
+                        summary_memory_id,
+                        ended: ended_payload,
+                        summary: summary_payload,
+                        classified_sources,
+                        caller_self,
+                    },
                 )
                 .await?;
-                if summary_inserted {
-                    let mut sources = summary_payload.included_memory_ids.clone();
-                    sources.push(request_memory_id.into_inner());
-                    sources.push(ended_outcome.memory_id.into_inner());
-                    sources.sort_unstable();
-                    sources.dedup();
-                    let committed_sources: Vec<_> = sources
-                        .iter()
-                        .copied()
-                        .filter(|source| *source != ended_outcome.memory_id.into_inner())
-                        .collect();
-                    let source_classes =
-                        load_memory_handle_classes(&ctx, &committed_sources).await?;
-                    for source in sources {
-                        let target_kind = if source == ended_outcome.memory_id.into_inner() {
-                            EntityKind::Fact
-                        } else {
-                            entity_kind_for_class_map(&source_classes, source)?
-                        };
-                        let edge_id = append_edge(
-                            &mut tx,
-                            &ctx,
-                            CORE_DERIVED_FROM_RELATION,
-                            EntityKind::Abstraction,
-                            Some(summary_memory_id),
-                            None,
-                            target_kind,
-                            Some(source),
-                            None,
-                            EdgeAuthorshipKind::ExternalAgent,
-                        )
-                        .await?;
-                        provenance_edge_handles.push(ctx.format_edge(EdgeId::new(edge_id)));
-                    }
-                }
-            }
-            tx.commit().await.map_err(map_sql)?;
             Ok(EndChatOutput {
-                ended: ctx.format_fact_memory(ended_outcome.memory_id),
+                ended: ctx.format_fact_memory(outcome.ended_memory_id),
                 summary: ctx.format_abstraction_memory(MemoryId::new(summary_memory_id)),
-                provenance_edge_handles,
-                idempotent_replay: ended_outcome.idempotent_replay,
+                provenance_edge_handles: outcome
+                    .edge_ids
+                    .into_iter()
+                    .map(|id| ctx.format_edge(EdgeId::new(id)))
+                    .collect(),
+                idempotent_replay: outcome.ended_idempotent_replay,
             })
         })
     }

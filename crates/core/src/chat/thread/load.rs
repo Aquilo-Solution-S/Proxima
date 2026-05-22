@@ -1,111 +1,5 @@
 use super::*;
 
-#[derive(Clone)]
-pub(in crate::chat) struct LoadedStarted {
-    pub(in crate::chat) memory_id: MemoryId,
-    pub(in crate::chat) payload: ChatStartedV1,
-}
-
-#[derive(Clone)]
-pub(in crate::chat) struct LoadedMessage {
-    pub(in crate::chat) memory_id: MemoryId,
-    pub(in crate::chat) payload: ChatMessageV1,
-}
-
-#[derive(Clone)]
-pub(in crate::chat) struct LoadedReply {
-    pub(in crate::chat) memory_id: MemoryId,
-    pub(in crate::chat) payload: ChatReplyV1,
-}
-
-#[derive(Clone)]
-pub(in crate::chat) struct LoadedEndRequest {
-    pub(in crate::chat) memory_id: MemoryId,
-    pub(in crate::chat) payload: ChatEndRequestedV1,
-}
-
-#[derive(Clone)]
-pub(in crate::chat) struct LoadedEnded {
-    pub(in crate::chat) memory_id: MemoryId,
-    pub(in crate::chat) payload: ChatEndedV1,
-}
-
-#[derive(Clone)]
-pub(in crate::chat) struct LoadedCompaction {
-    pub(in crate::chat) memory_id: MemoryId,
-    pub(in crate::chat) payload: ChatCompactionV1,
-}
-
-#[derive(Clone)]
-pub(in crate::chat) struct LoadedSummary {
-    pub(in crate::chat) memory_id: MemoryId,
-    pub(in crate::chat) payload: ChatSummaryV1,
-}
-
-#[derive(Clone)]
-pub(in crate::chat) struct LoadedApprovalPolicy {
-    pub(in crate::chat) memory_id: MemoryId,
-    pub(in crate::chat) target_kind: ApprovalTargetKind,
-    pub(in crate::chat) target_memory_id: Option<uuid::Uuid>,
-    pub(in crate::chat) target_goal_id: Option<uuid::Uuid>,
-    pub(in crate::chat) title: String,
-    pub(in crate::chat) summary: String,
-    pub(in crate::chat) eligible_voters: Vec<ApprovalEligibleVoter>,
-    pub(in crate::chat) requirements: Vec<ApprovalRequirement>,
-    pub(in crate::chat) idempotency_key: String,
-    pub(in crate::chat) created_at: OffsetDateTime,
-}
-
-#[derive(Clone)]
-pub(in crate::chat) struct LoadedApprovalVote {
-    pub(in crate::chat) memory_id: MemoryId,
-    pub(in crate::chat) policy_memory_id: uuid::Uuid,
-    pub(in crate::chat) voter_key: String,
-    pub(in crate::chat) voter_kind: ApprovalVoterKind,
-    pub(in crate::chat) role: Option<String>,
-    pub(in crate::chat) personality_instance_id: Option<uuid::Uuid>,
-    pub(in crate::chat) self_perspective_memory_id: Option<uuid::Uuid>,
-    pub(in crate::chat) master_token_id: Option<uuid::Uuid>,
-    pub(in crate::chat) verdict: ApprovalVoteVerdict,
-    pub(in crate::chat) rationale: String,
-    pub(in crate::chat) idempotency_key: String,
-    pub(in crate::chat) voted_at: OffsetDateTime,
-}
-
-#[derive(Clone)]
-pub(in crate::chat) struct LoadedApprovalDecision {
-    pub(in crate::chat) memory_id: MemoryId,
-    pub(in crate::chat) policy_memory_id: uuid::Uuid,
-    pub(in crate::chat) target_kind: ApprovalTargetKind,
-    pub(in crate::chat) target_memory_id: Option<uuid::Uuid>,
-    pub(in crate::chat) target_goal_id: Option<uuid::Uuid>,
-    pub(in crate::chat) decision: ApprovalDecision,
-    pub(in crate::chat) reason: String,
-    pub(in crate::chat) counted_votes: Vec<ThreadApprovalCountedVoteRaw>,
-    pub(in crate::chat) idempotency_key: String,
-    pub(in crate::chat) decided_at: OffsetDateTime,
-}
-
-#[derive(Clone, Deserialize)]
-pub(in crate::chat) struct ThreadApprovalCountedVoteRaw {
-    pub(in crate::chat) vote_memory_id: uuid::Uuid,
-    pub(in crate::chat) voter_key: String,
-    pub(in crate::chat) verdict: ApprovalVoteVerdict,
-}
-
-pub(in crate::chat) struct LoadedThreadEdge {
-    pub(in crate::chat) edge_id: EdgeId,
-    pub(in crate::chat) relation: String,
-    pub(in crate::chat) source_kind: EntityKind,
-    pub(in crate::chat) source_memory_id: Option<uuid::Uuid>,
-    pub(in crate::chat) source_goal_id: Option<uuid::Uuid>,
-    pub(in crate::chat) target_kind: EntityKind,
-    pub(in crate::chat) target_memory_id: Option<uuid::Uuid>,
-    pub(in crate::chat) target_goal_id: Option<uuid::Uuid>,
-    pub(in crate::chat) authorship_kind: EdgeAuthorshipKind,
-    pub(in crate::chat) created_at: OffsetDateTime,
-}
-
 pub(in crate::chat) async fn load_chat_thread(
     ctx: &McpToolCtx,
     thread_key: String,
@@ -302,24 +196,9 @@ pub(in crate::chat) async fn thread_key_for_policy(
     ctx: &McpToolCtx,
     policy_memory_id: uuid::Uuid,
 ) -> Result<String, McpToolError> {
-    let (owner_kind, owner_id, owner_org_id) = owner_columns(&ctx.owner);
-    let target_memory_id: Option<Option<uuid::Uuid>> = sqlx::query_scalar(
-        "SELECT p.target_memory_id
-           FROM proxima_core.approval_policy_v1 p
-           JOIN proxima_core.memories m USING (memory_id)
-          WHERE p.memory_id = $1
-            AND p.target_kind = 'fact'
-            AND m.owner_principal_kind = $2
-            AND m.owner_principal_id = $3
-            AND m.owner_org_id = $4",
-    )
-    .bind(policy_memory_id)
-    .bind(owner_kind)
-    .bind(owner_id)
-    .bind(owner_org_id)
-    .fetch_optional(&ctx.pool)
-    .await
-    .map_err(map_sql)?;
+    let target_memory_id = chat_storage(ctx)?
+        .chat_policy_fact_target(&ctx.owner, policy_memory_id)
+        .await?;
     let Some(Some(target_memory_id)) = target_memory_id else {
         return Err(McpToolError::InvalidInput(
             "anchor is not a chat thread Fact".into(),
@@ -334,161 +213,25 @@ pub(in crate::chat) async fn policy_id_for_vote_or_decision(
     ctx: &McpToolCtx,
     memory_id: uuid::Uuid,
 ) -> Result<Option<uuid::Uuid>, McpToolError> {
-    let (owner_kind, owner_id, owner_org_id) = owner_columns(&ctx.owner);
-    sqlx::query_scalar(
-        "SELECT policy_memory_id
-           FROM proxima_core.approval_vote_v1 v
-           JOIN proxima_core.memories m USING (memory_id)
-          WHERE v.memory_id = $1
-            AND m.owner_principal_kind = $2
-            AND m.owner_principal_id = $3
-            AND m.owner_org_id = $4
-         UNION ALL
-         SELECT policy_memory_id
-           FROM proxima_core.approval_decision_v1 d
-           JOIN proxima_core.memories m USING (memory_id)
-          WHERE d.memory_id = $1
-            AND m.owner_principal_kind = $2
-            AND m.owner_principal_id = $3
-            AND m.owner_org_id = $4
-          LIMIT 1",
-    )
-    .bind(memory_id)
-    .bind(owner_kind)
-    .bind(owner_id)
-    .bind(owner_org_id)
-    .fetch_optional(&ctx.pool)
-    .await
-    .map_err(map_sql)
+    Ok(chat_storage(ctx)?
+        .chat_policy_id_for_vote_or_decision(&ctx.owner, memory_id)
+        .await?)
 }
 
 pub(in crate::chat) async fn thread_key_for_chat_memory(
     ctx: &McpToolCtx,
     memory_id: uuid::Uuid,
 ) -> Result<Option<String>, McpToolError> {
-    let (owner_kind, owner_id, owner_org_id) = owner_columns(&ctx.owner);
-    sqlx::query_scalar(
-        "SELECT s.thread_key
-           FROM proxima_core.chat_started_v1 s
-           JOIN proxima_core.memories m USING (memory_id)
-          WHERE s.memory_id = $1
-            AND m.owner_principal_kind = $2
-            AND m.owner_principal_id = $3
-            AND m.owner_org_id = $4
-         UNION ALL
-         SELECT q.thread_key
-           FROM proxima_core.chat_message_v1 q
-           JOIN proxima_core.memories m USING (memory_id)
-          WHERE q.memory_id = $1
-            AND m.owner_principal_kind = $2
-            AND m.owner_principal_id = $3
-            AND m.owner_org_id = $4
-         UNION ALL
-         SELECT a.thread_key
-           FROM proxima_core.chat_reply_v1 a
-           JOIN proxima_core.memories m USING (memory_id)
-          WHERE a.memory_id = $1
-            AND m.owner_principal_kind = $2
-            AND m.owner_principal_id = $3
-            AND m.owner_org_id = $4
-         UNION ALL
-         SELECT r.thread_key
-           FROM proxima_core.chat_end_requested_v1 r
-           JOIN proxima_core.memories m USING (memory_id)
-          WHERE r.memory_id = $1
-            AND m.owner_principal_kind = $2
-            AND m.owner_principal_id = $3
-            AND m.owner_org_id = $4
-         UNION ALL
-         SELECT e.thread_key
-           FROM proxima_core.chat_ended_v1 e
-           JOIN proxima_core.memories m USING (memory_id)
-          WHERE e.memory_id = $1
-            AND m.owner_principal_kind = $2
-            AND m.owner_principal_id = $3
-            AND m.owner_org_id = $4
-         UNION ALL
-         SELECT s.thread_key
-           FROM proxima_core.chat_summary_v1 s
-           JOIN proxima_core.memories m USING (memory_id)
-          WHERE s.memory_id = $1
-            AND m.owner_principal_kind = $2
-            AND m.owner_principal_id = $3
-            AND m.owner_org_id = $4
-         UNION ALL
-         SELECT c.thread_key
-           FROM proxima_core.chat_compaction_v1 c
-           JOIN proxima_core.memories m USING (memory_id)
-          WHERE c.memory_id = $1
-            AND m.owner_principal_kind = $2
-            AND m.owner_principal_id = $3
-            AND m.owner_org_id = $4
-          LIMIT 1",
-    )
-    .bind(memory_id)
-    .bind(owner_kind)
-    .bind(owner_id)
-    .bind(owner_org_id)
-    .fetch_optional(&ctx.pool)
-    .await
-    .map_err(map_sql)
+    Ok(chat_storage(ctx)?
+        .chat_thread_key_for_memory(&ctx.owner, memory_id)
+        .await?)
 }
 
 pub(in crate::chat) async fn load_thread_started(
     ctx: &McpToolCtx,
     thread_key: &str,
 ) -> Result<Option<LoadedStarted>, McpToolError> {
-    let (owner_kind, owner_id, owner_org_id) = owner_columns(&ctx.owner);
-    let row: Option<(
-        uuid::Uuid,
-        String,
-        uuid::Uuid,
-        uuid::Uuid,
-        uuid::Uuid,
-        Option<String>,
-        String,
-        OffsetDateTime,
-    )> = sqlx::query_as(
-        "SELECT s.memory_id, s.thread_key, s.started_by_self_perspective_memory_id,
-                s.target_personality_instance_id, s.target_self_perspective_memory_id,
-                s.title, s.idempotency_key, s.started_at
-           FROM proxima_core.chat_started_v1 s
-           JOIN proxima_core.memories m USING (memory_id)
-          WHERE s.thread_key = $1
-            AND m.owner_principal_kind = $2
-            AND m.owner_principal_id = $3
-            AND m.owner_org_id = $4
-          ORDER BY s.started_at ASC, s.memory_id ASC
-          LIMIT 1",
-    )
-    .bind(thread_key)
-    .bind(owner_kind)
-    .bind(owner_id)
-    .bind(owner_org_id)
-    .fetch_optional(&ctx.pool)
-    .await
-    .map_err(map_sql)?;
-    Ok(row.map(
-        |(
-            memory_id,
-            thread_key,
-            started_by_self_perspective_memory_id,
-            target_personality_instance_id,
-            target_self_perspective_memory_id,
-            title,
-            idempotency_key,
-            started_at,
-        )| LoadedStarted {
-            memory_id: MemoryId::new(memory_id),
-            payload: ChatStartedV1 {
-                thread_key,
-                started_by_self_perspective_memory_id,
-                target_personality_instance_id,
-                target_self_perspective_memory_id,
-                title,
-                idempotency_key,
-                started_at,
-            },
-        },
-    ))
+    Ok(chat_storage(ctx)?
+        .chat_thread_started(&ctx.owner, thread_key)
+        .await?)
 }
