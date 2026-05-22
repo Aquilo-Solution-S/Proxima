@@ -62,6 +62,9 @@ pub struct HarnessOutcome {
     /// CitedObject emitter.
     pub jsonl_bytes: Vec<u8>,
     pub jsonl_truncated: bool,
+    /// Per-wake egress proxy log (`docker logs` of the logging proxy).
+    /// `None` for host-mode wakes or when the sandbox carried no proxy.
+    pub network_log: Option<String>,
 }
 
 /// Exhaustive classifier over the spec's structural outcome rows.

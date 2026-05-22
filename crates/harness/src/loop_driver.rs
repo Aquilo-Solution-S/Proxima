@@ -111,20 +111,30 @@ impl HarnessAdapter for HarnessLoop {
         )
         .await;
 
-        // Stop exactly once, on every `run_loop` exit path. A stop failure
-        // is logged but never masks the model outcome; the startup reaper
-        // sweeps any container left behind.
-        if let Some(session) = &sandbox_session
-            && let Err(err) = sandbox::stop(session).await
+        // Stop exactly once, on every `run_loop` exit path. Teardown
+        // failures are logged but never mask the model outcome; the startup
+        // reaper sweeps whatever is left behind. The proxy's egress log is
+        // attached to the outcome for the wake-trace evidence record.
+        let stop_outcome = match &sandbox_session {
+            Some(session) => Some(sandbox::stop(session).await),
+            None => None,
+        };
+        if let Some(stop) = &stop_outcome
+            && let Some(err) = &stop.teardown_error
         {
             tracing::warn!(
                 error = %err,
-                container = %session.container_name,
-                "workspace sandbox stop failed; container left for the startup reaper"
+                "workspace sandbox teardown incomplete; startup reaper will sweep the remains"
             );
         }
 
-        result
+        match result {
+            Ok(mut outcome) => {
+                outcome.network_log = stop_outcome.map(|stop| stop.network_log);
+                Ok(outcome)
+            }
+            Err(err) => Err(err),
+        }
     }
 }
 
@@ -733,6 +743,8 @@ fn finish_outcome(
         tool_call_count,
         jsonl_bytes: snapshot.bytes,
         jsonl_truncated: snapshot.truncated,
+        // Attached by `HarnessLoop::run` after the sandbox is torn down.
+        network_log: None,
     }
 }
 

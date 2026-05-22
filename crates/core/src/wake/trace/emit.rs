@@ -58,6 +58,7 @@ pub async fn emit_trace_from_failed_preflight(
         tool_call_count: 0,
         jsonl_bytes: Vec::new(),
         jsonl_truncated: false,
+        network_log: None,
     };
     let persist = persist_input_from_outcome(
         input,
