@@ -10,6 +10,19 @@ fn update_wake_entry_patch_schema_is_object() {
         .find(|tool| tool.name == "core/update_wake_entry")
         .expect("core/update_wake_entry registered")
         .args_schema;
+    fn contains_key(value: &serde_json::Value, key: &str) -> bool {
+        match value {
+            serde_json::Value::Object(map) => {
+                map.contains_key(key) || map.values().any(|v| contains_key(v, key))
+            }
+            serde_json::Value::Array(items) => items.iter().any(|v| contains_key(v, key)),
+            _ => false,
+        }
+    }
+    assert!(
+        !contains_key(schema, "$defs"),
+        "update_wake_entry schema must be fully inlined, no $defs: {schema:#}",
+    );
     let patch = schema
         .pointer("/properties/patch")
         .expect("patch property schema present");
@@ -50,6 +63,38 @@ fn update_wake_entry_patch_schema_is_object() {
         allows_null,
         "workspace_binding patch schema must allow null to clear stored bindings: {workspace_binding:#}",
     );
+}
+
+/// Every registered MCP tool's argument schema must be fully inlined —
+/// no `$ref`, no `$defs` anywhere — so MCP clients that do not resolve
+/// references still render every field.
+#[test]
+fn all_mcp_tool_arg_schemas_are_ref_and_defs_free() {
+    fn contains_key(value: &serde_json::Value, key: &str) -> bool {
+        match value {
+            serde_json::Value::Object(map) => {
+                map.contains_key(key) || map.values().any(|v| contains_key(v, key))
+            }
+            serde_json::Value::Array(items) => items.iter().any(|v| contains_key(v, key)),
+            _ => false,
+        }
+    }
+
+    let frozen = FlavorRegistry::default().freeze();
+    for tool in frozen.list_mcp_tools() {
+        assert!(
+            !contains_key(&tool.args_schema, "$ref"),
+            "tool {} has a $ref in its argument schema: {:#}",
+            tool.name,
+            tool.args_schema,
+        );
+        assert!(
+            !contains_key(&tool.args_schema, "$defs"),
+            "tool {} has a $defs block in its argument schema: {:#}",
+            tool.name,
+            tool.args_schema,
+        );
+    }
 }
 
 #[test]
