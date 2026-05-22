@@ -83,16 +83,11 @@ pub(crate) fn schema_registry_with_config(
         TEST_REQUEST_OBJECT_SCHEMA,
         WORKSPACE_DECISION_OBJECT_SCHEMA,
     ] {
-        extra_schemas.push(SchemaInfo {
-            schema_id: SchemaId::new(cited.into()),
-            schema_version: SchemaVersion::new(1),
-            kind: PayloadKind::CitedObject,
-            filter_keys: vec![],
-            sidecar_table: None,
-            natural_key_columns: vec![],
-            tombstone: None,
-            cbor_encoder: None,
-        });
+        extra_schemas.push(SchemaInfo::opaque(
+            SchemaId::new(cited.into()),
+            SchemaVersion::new(1),
+            PayloadKind::CitedObject,
+        ));
     }
 
     // CitationMapping schemas — typed per fact-type.
@@ -104,16 +99,11 @@ pub(crate) fn schema_registry_with_config(
         TEST_REQUEST_WHOLE_SCHEMA,
         WORKSPACE_DECISION_WHOLE_SCHEMA,
     ] {
-        extra_schemas.push(SchemaInfo {
-            schema_id: SchemaId::new(mapping.into()),
-            schema_version: SchemaVersion::new(1),
-            kind: PayloadKind::CitationMapping,
-            filter_keys: vec![],
-            sidecar_table: None,
-            natural_key_columns: vec![],
-            tombstone: None,
-            cbor_encoder: None,
-        });
+        extra_schemas.push(SchemaInfo::opaque(
+            SchemaId::new(mapping.into()),
+            SchemaVersion::new(1),
+            PayloadKind::CitationMapping,
+        ));
     }
 
     flavor.with_additional_schemas(extra_schemas)

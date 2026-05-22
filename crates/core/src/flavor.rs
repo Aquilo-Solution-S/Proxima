@@ -102,30 +102,20 @@ impl Default for FlavorRegistry {
         registry.add_abstraction_schema::<crate::chat::ChatSummaryV1>();
         registry.add_cited_object_schema::<crate::citations::UploadedBlobPayload>();
         registry.add_fact_schema::<crate::workspace_run::CoreWorkspaceRunV1>();
-        registry.schemas.push(SchemaInfo {
-            schema_id: SchemaId::new(
-                crate::workspace_run::CORE_WORKSPACE_RUN_OBJECT_SCHEMA.to_string(),
-            ),
-            schema_version: SchemaVersion::new(1),
-            kind: PayloadKind::CitedObject,
-            filter_keys: vec![],
-            sidecar_table: None,
-            natural_key_columns: vec![],
-            tombstone: None,
-            cbor_encoder: None,
-        });
-        registry.schemas.push(SchemaInfo {
-            schema_id: SchemaId::new(
-                crate::workspace_run::CORE_WORKSPACE_RUN_WHOLE_SCHEMA.to_string(),
-            ),
-            schema_version: SchemaVersion::new(1),
-            kind: PayloadKind::CitationMapping,
-            filter_keys: vec![],
-            sidecar_table: None,
-            natural_key_columns: vec![],
-            tombstone: None,
-            cbor_encoder: None,
-        });
+        // Workspace-run citation nodes: a run cites its output blob
+        // (object) and the structural mapping (whole). Both are
+        // content-addressed and have no Rust payload type — opaque
+        // by construction.
+        registry.add_opaque_schema(
+            SchemaId::new(crate::workspace_run::CORE_WORKSPACE_RUN_OBJECT_SCHEMA.to_string()),
+            SchemaVersion::new(1),
+            PayloadKind::CitedObject,
+        );
+        registry.add_opaque_schema(
+            SchemaId::new(crate::workspace_run::CORE_WORKSPACE_RUN_WHOLE_SCHEMA.to_string()),
+            SchemaVersion::new(1),
+            PayloadKind::CitationMapping,
+        );
         registry.add_fact_schema::<crate::wake::trace::WakeTracePayload>();
         registry.add_cited_object_schema::<crate::wake::trace::WakeTraceJsonlPayload>();
         registry.add_citation_mapping_schema::<crate::wake::trace::WakeTraceCitationPayload>();
@@ -306,6 +296,26 @@ impl FlavorRegistry {
         );
     }
 
+    /// Register an *opaque* schema — one with no Rust payload type.
+    /// The blessed path for content-addressed `CitedObject`s and
+    /// structural `CitationMapping`s whose payload is an opaque blob;
+    /// it carries no validator, no CBOR encoder, and no JSON schema, so
+    /// `validate_payload` accepts any object payload for it.
+    ///
+    /// This is the *only* sanctioned way to register an untyped schema.
+    /// `freeze()` asserts every other schema is fully typed (matching
+    /// `cbor_encoder` and validator), so a validator dropped by mistake
+    /// fails the build rather than silently disabling validation.
+    pub fn add_opaque_schema(
+        &mut self,
+        schema_id: SchemaId,
+        schema_version: SchemaVersion,
+        kind: PayloadKind,
+    ) {
+        self.schemas
+            .push(SchemaInfo::opaque(schema_id, schema_version, kind));
+    }
+
     /// Register a relation. Substrate-only relations carry no
     /// `payload_schema`; typed relations point at a registered
     /// `EdgePayload` schema.
@@ -433,6 +443,28 @@ impl FlavorRegistry {
             }
         }
         self.assert_flavor_descriptors();
+        // Every schema is either typed (a `cbor_encoder` and a matching
+        // validator) or opaque (neither). A typed schema whose validator
+        // was dropped would make `validate_payload` silently accept any
+        // payload — catch the drift here, not at first write.
+        for schema in &self.schemas {
+            let has_validator = self.validators.iter().any(|v| {
+                v.schema_id == schema.schema_id
+                    && v.schema_version == schema.schema_version
+                    && v.kind == schema.kind
+            });
+            assert!(
+                schema.cbor_encoder.is_some() == has_validator,
+                "schema {:?} v{:?} {:?}: a typed schema needs both a \
+                 cbor_encoder and a validator, an opaque schema neither \
+                 — found cbor_encoder={}, validator={}",
+                schema.schema_id.as_str(),
+                schema.schema_version.into_inner(),
+                schema.kind,
+                schema.cbor_encoder.is_some(),
+                has_validator,
+            );
+        }
         let mut seen_tools = std::collections::HashSet::new();
         for tool in &self.mcp_tools {
             assert!(

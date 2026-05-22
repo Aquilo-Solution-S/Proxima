@@ -293,56 +293,31 @@ fn registry_with_runner(
         Arc::new(CodeWorkspaceRunner::new(pg.pool().clone()).with_worktrees_root(worktrees_root)),
     );
     registry.freeze().with_additional_schemas([
-        SchemaInfo {
-            schema_id: SchemaId::new(proxima_code::CODE_BLOB_SCHEMA.into()),
-            schema_version: SchemaVersion::new(1),
-            kind: PayloadKind::CitedObject,
-            filter_keys: vec![],
-            sidecar_table: None,
-            natural_key_columns: vec![],
-            tombstone: None,
-            cbor_encoder: None,
-        },
-        SchemaInfo {
-            schema_id: SchemaId::new(proxima_code::CODE_COMMIT_OBJECT_SCHEMA.into()),
-            schema_version: SchemaVersion::new(1),
-            kind: PayloadKind::CitedObject,
-            filter_keys: vec![],
-            sidecar_table: None,
-            natural_key_columns: vec![],
-            tombstone: None,
-            cbor_encoder: None,
-        },
-        SchemaInfo {
-            schema_id: SchemaId::new(CORE_WORKSPACE_RUN_OBJECT_SCHEMA.into()),
-            schema_version: SchemaVersion::new(1),
-            kind: PayloadKind::CitedObject,
-            filter_keys: vec![],
-            sidecar_table: None,
-            natural_key_columns: vec![],
-            tombstone: None,
-            cbor_encoder: None,
-        },
-        SchemaInfo {
-            schema_id: SchemaId::new(proxima_code::CODE_COMMIT_WHOLE_SCHEMA.into()),
-            schema_version: SchemaVersion::new(1),
-            kind: PayloadKind::CitationMapping,
-            filter_keys: vec![],
-            sidecar_table: None,
-            natural_key_columns: vec![],
-            tombstone: None,
-            cbor_encoder: None,
-        },
-        SchemaInfo {
-            schema_id: SchemaId::new(CORE_WORKSPACE_RUN_WHOLE_SCHEMA.into()),
-            schema_version: SchemaVersion::new(1),
-            kind: PayloadKind::CitationMapping,
-            filter_keys: vec![],
-            sidecar_table: None,
-            natural_key_columns: vec![],
-            tombstone: None,
-            cbor_encoder: None,
-        },
+        SchemaInfo::opaque(
+            SchemaId::new(proxima_code::CODE_BLOB_SCHEMA.into()),
+            SchemaVersion::new(1),
+            PayloadKind::CitedObject,
+        ),
+        SchemaInfo::opaque(
+            SchemaId::new(proxima_code::CODE_COMMIT_OBJECT_SCHEMA.into()),
+            SchemaVersion::new(1),
+            PayloadKind::CitedObject,
+        ),
+        SchemaInfo::opaque(
+            SchemaId::new(CORE_WORKSPACE_RUN_OBJECT_SCHEMA.into()),
+            SchemaVersion::new(1),
+            PayloadKind::CitedObject,
+        ),
+        SchemaInfo::opaque(
+            SchemaId::new(proxima_code::CODE_COMMIT_WHOLE_SCHEMA.into()),
+            SchemaVersion::new(1),
+            PayloadKind::CitationMapping,
+        ),
+        SchemaInfo::opaque(
+            SchemaId::new(CORE_WORKSPACE_RUN_WHOLE_SCHEMA.into()),
+            SchemaVersion::new(1),
+            PayloadKind::CitationMapping,
+        ),
     ])
 }
 

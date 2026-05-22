@@ -1096,26 +1096,16 @@ fn registry_for_engine() -> FlavorRegistryFrozen {
     let mut flavor = FlavorRegistry::new();
     proxima_code::register(&mut flavor);
     let mut schemas = flavor.freeze().list();
-    schemas.push(SchemaInfo {
-        schema_id: SchemaId::new("test/cited_blob".into()),
-        schema_version: SchemaVersion::new(1),
-        kind: PayloadKind::CitedObject,
-        filter_keys: vec![],
-        sidecar_table: None,
-        natural_key_columns: vec![],
-        tombstone: None,
-        cbor_encoder: None,
-    });
-    schemas.push(SchemaInfo {
-        schema_id: SchemaId::new("test/citation_blob".into()),
-        schema_version: SchemaVersion::new(1),
-        kind: PayloadKind::CitationMapping,
-        filter_keys: vec![],
-        sidecar_table: None,
-        natural_key_columns: vec![],
-        tombstone: None,
-        cbor_encoder: None,
-    });
+    schemas.push(SchemaInfo::opaque(
+        SchemaId::new("test/cited_blob".into()),
+        SchemaVersion::new(1),
+        PayloadKind::CitedObject,
+    ));
+    schemas.push(SchemaInfo::opaque(
+        SchemaId::new("test/citation_blob".into()),
+        SchemaVersion::new(1),
+        PayloadKind::CitationMapping,
+    ));
     FlavorRegistryFrozen::with_schemas(schemas)
 }
 

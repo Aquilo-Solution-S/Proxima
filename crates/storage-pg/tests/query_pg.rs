@@ -91,26 +91,16 @@ fn schemas_for_test() -> Vec<SchemaInfo> {
 
 fn schemas_for_personality_root_test() -> Vec<SchemaInfo> {
     let mut schemas = schemas_for_test();
-    schemas.push(SchemaInfo {
-        schema_id: SchemaId::new("proxima-code/engineer-self-v1".into()),
-        schema_version: SchemaVersion::new(1),
-        kind: PayloadKind::Perspective,
-        filter_keys: vec![],
-        sidecar_table: None,
-        natural_key_columns: vec![],
-        tombstone: None,
-        cbor_encoder: None,
-    });
-    schemas.push(SchemaInfo {
-        schema_id: SchemaId::new("test/development-perspective-v1".into()),
-        schema_version: SchemaVersion::new(1),
-        kind: PayloadKind::Perspective,
-        filter_keys: vec![],
-        sidecar_table: None,
-        natural_key_columns: vec![],
-        tombstone: None,
-        cbor_encoder: None,
-    });
+    schemas.push(SchemaInfo::opaque(
+        SchemaId::new("proxima-code/engineer-self-v1".into()),
+        SchemaVersion::new(1),
+        PayloadKind::Perspective,
+    ));
+    schemas.push(SchemaInfo::opaque(
+        SchemaId::new("test/development-perspective-v1".into()),
+        SchemaVersion::new(1),
+        PayloadKind::Perspective,
+    ));
     schemas
 }
 
