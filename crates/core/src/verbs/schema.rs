@@ -67,6 +67,36 @@ pub struct SchemaInfo {
     pub cbor_encoder: Option<PayloadCborEncoder>,
 }
 
+impl SchemaInfo {
+    /// Construct an *opaque* schema — one with no Rust payload type.
+    /// Used for content-addressed `CitedObject`s and structural
+    /// `CitationMapping`s whose payload is an opaque blob addressed by
+    /// content hash. An opaque schema carries no validator, no CBOR
+    /// encoder, no JSON schema, and no sidecar table.
+    ///
+    /// `cbor_encoder.is_none()` is the typed/opaque discriminant the
+    /// registry enforces: `FlavorRegistry::freeze` asserts every schema
+    /// either has both a `cbor_encoder` and a validator, or neither.
+    /// See docs/03 §Registry rules.
+    #[must_use]
+    pub fn opaque(
+        schema_id: SchemaId,
+        schema_version: SchemaVersion,
+        kind: PayloadKind,
+    ) -> Self {
+        Self {
+            schema_id,
+            schema_version,
+            kind,
+            filter_keys: Vec::new(),
+            sidecar_table: None,
+            natural_key_columns: Vec::new(),
+            tombstone: None,
+            cbor_encoder: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct MemorySearchProjectionField {
     pub column: String,
@@ -269,7 +299,21 @@ impl FlavorRegistryFrozen {
             dependency_satisfaction_rules,
             index: _,
         } = self;
-        existing.extend(schemas);
+        // This post-freeze path provides no way to attach a validator,
+        // so it accepts only opaque schemas — a typed schema added here
+        // would be silently unvalidated. Typed schemas go through
+        // `FlavorRegistry` before `freeze()`.
+        let added: Vec<SchemaInfo> = schemas.into_iter().collect();
+        for schema in &added {
+            assert!(
+                schema.cbor_encoder.is_none(),
+                "with_additional_schemas accepts only opaque schemas; \
+                 {:?} carries a cbor_encoder — register typed schemas \
+                 through FlavorRegistry before freeze()",
+                schema.schema_id.as_str(),
+            );
+        }
+        existing.extend(added);
         Self::with_schemas_relations_validators(
             existing,
             search_projections,

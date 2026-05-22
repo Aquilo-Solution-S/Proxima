@@ -28,6 +28,13 @@ Registry rules:
 | every write inserts the entity row and sidecar row atomically | no sidecar-less typed entity |
 | registry freezes at startup from linked flavors | no runtime schema registration |
 | schema evolution moves sidecar bytes only | entity identity and provenance stay fixed |
+| `CitedObject` / `CitationMapping` schemas may be *opaque* — content-addressed blobs with no Rust payload type | F/A/P/Goal/Edge are never opaque |
+
+An opaque schema is registered through `FlavorRegistry::add_opaque_schema`
+and carries no validator, no CBOR encoder, and no sidecar table; its
+payload is a blob addressed by content hash. `FlavorRegistry::freeze`
+asserts every other schema is fully typed — a validator dropped from a
+typed schema fails the build rather than silently disabling validation.
 
 Typed sidecars are what make A/P queryable beyond embeddings. Vector
 similarity is a query aid, not the schema surface (see
