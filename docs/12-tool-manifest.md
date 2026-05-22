@@ -204,43 +204,48 @@ Workspace dispatch:
 |---|---|
 | Runner | flavor-owned `WorkspaceRunner` prepares the worktree |
 | Palette | stored ids validated against the fixed workspace catalog |
-| Tooling | harness workspace tools are cwd-jailed to the prepared root |
-| Shell sandbox | `workspace_shell` runs host `bash -lc` by default; `PROXIMA_WORKSPACE_SHELL_SANDBOX=docker` routes it through Docker |
+| Tooling | `workspace_text_editor` / `workspace_list_files` are cwd-jailed to the prepared root via `jail_path` |
+| Shell sandbox | `workspace_shell` runs inside the per-wake observation container via `docker exec` when the sandbox is enabled; host `bash -lc` otherwise |
 | Finalize | runner records the run through ordinary storage writes |
 
-Docker shell sandbox:
+Per-wake observation sandbox:
 
-The container is a workspace command sandbox only. Proxima Shell,
-Engine, MCP listener, Postgres, model credentials, and embedding
-clients stay in the host process/runtime. The sandbox container receives
-only the prepared worktree and build/test toolchain.
+Each workspace wake runs inside one disposable Docker container — an
+observation instrument, not an adversarial jail. The container runs as the
+host uid/gid, bind-mounts a fresh `git clone` at `/workspace` and a
+persistent build cache at `/cache`, and idles on `sleep infinity` while
+`workspace_shell` enters it via `docker exec`. The container, its per-wake
+network, and the clone are discarded when the wake ends. Proxima Shell,
+Engine, MCP listener, Postgres, model credentials, and embedding clients all
+stay in the host process. Configuration and env keys:
+[10 §Workspace Observation Sandbox](10-configuration.md#workspace-observation-sandbox).
 
-| Variable | Meaning |
+Two-tier jail:
+
+| Tool | Jailed by |
 |---|---|
-| `PROXIMA_WORKSPACE_SHELL_SANDBOX=docker` | enable container-backed workspace shell |
-| `PROXIMA_WORKSPACE_SHELL_DOCKER_IMAGE` | required local image; Docker runs with `--pull=never` |
-| `PROXIMA_WORKSPACE_SHELL_DOCKER_NETWORK` | optional; default `none` |
-| `PROXIMA_WORKSPACE_SHELL_DOCKER_MEMORY` | optional; default `2g` |
-| `PROXIMA_WORKSPACE_SHELL_DOCKER_CPUS` | optional; default `2` |
-| `PROXIMA_WORKSPACE_SHELL_DOCKER_PIDS_LIMIT` | optional; default `256` |
+| `workspace_shell` | the container boundary — commands run inside it via `docker exec` |
+| `workspace_text_editor`, `workspace_list_files` | `jail_path`, host-side, against the prepared clone root |
 
-Local image:
+Because the container runs as the host uid, the host-side editor/list tools
+and the container shell operate as the same uid on the same files — there is
+no ownership split.
+
+Egress:
+
+The container sits on a per-wake `--internal` network; the only route to the
+web is a logging proxy that records every CONNECT and HTTP request line. That
+log is captured as wake evidence (see [07 §Workspace Run](07-storage.md)).
+
+Local images:
 
 ```sh
-scripts/build-workspace-shell-sandbox-image.sh proxima-workspace-sandbox:local
+scripts/build-workspace-shell-sandbox-image.sh
 ```
 
-Container sandbox properties:
+Builds both the sandbox container and the proxy image.
 
-| Boundary | Contract |
-|---|---|
-| Mounts | prepared workspace only, mounted at `/workspace` |
-| Cwd | `/workspace` |
-| Network | disabled by default |
-| Privilege | `--cap-drop ALL`, `--security-opt no-new-privileges` |
-| Host env | Docker CLI allowlist only; container receives `HOME=/tmp`, `CI=true` |
-
-Default image contents:
+Default sandbox image contents:
 
 | Tooling | Purpose |
 |---|---|
@@ -249,8 +254,9 @@ Default image contents:
 | Node + `pnpm` | frontend typecheck/build when a Goal explicitly needs it |
 | build libs | native Rust crate builds |
 
-Not included by default: Tauri GUI runtime, browser automation,
-Postgres server, MCP host, Ollama, or provider API keys.
+Not included: Tauri GUI runtime, browser automation, Postgres server, MCP
+host, Ollama, or provider API keys. No provider secrets reach the container —
+only `HTTP(S)_PROXY`, `HOME`, and `CI`.
 
 ## Persistence
 

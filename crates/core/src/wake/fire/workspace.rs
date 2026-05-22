@@ -424,11 +424,59 @@ pub(super) async fn finalize_core_git_clone(
     std::fs::remove_dir_all(staging)
         .map_err(|err| format!("remove staging clone {staging_arg}: {err}"))?;
 
+    // 5. GC backstop: bound the count of accumulated wake branches.
+    prune_wake_branches(repo).await;
+
     Ok(CoreGitWorkspaceFinalization {
         head_sha,
         committed,
         diff_stat,
     })
+}
+
+/// Keep the most recent N `proxima/wake/*` branches in the real repo,
+/// deleting older ones — a GC backstop so wake branches do not accumulate
+/// without bound. Branch *disposition* (keep / merge / discard) is a
+/// separate concern; this is only a count cap.
+///
+/// `PROXIMA_WAKE_BRANCH_KEEP` sets N (default 50). Best-effort: a failure
+/// is logged, never propagated — it must not fail an otherwise-good wake.
+pub(super) async fn prune_wake_branches(repo: &Path) {
+    let keep = std::env::var("PROXIMA_WAKE_BRANCH_KEEP")
+        .ok()
+        .and_then(|raw| raw.parse::<usize>().ok())
+        .unwrap_or(50);
+    let listed = git_output(
+        repo,
+        &[
+            "for-each-ref",
+            "--sort=-committerdate",
+            "--format=%(refname:short)",
+            "refs/heads/proxima/wake/",
+        ],
+    )
+    .await;
+    let branches = match listed {
+        Ok(branches) => branches,
+        Err(err) => {
+            tracing::warn!(error = %err, "wake branch retention: list failed");
+            return;
+        }
+    };
+    let stale: Vec<&str> = branches
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .skip(keep)
+        .collect();
+    if stale.is_empty() {
+        return;
+    }
+    let mut args = vec!["branch", "-D"];
+    args.extend(stale.iter().copied());
+    if let Err(err) = git_output(repo, &args).await {
+        tracing::warn!(error = %err, "wake branch retention: delete failed");
+    }
 }
 
 pub(super) fn parse_numstat(numstat: &str) -> CoreWorkspaceDiffStat {

@@ -24,6 +24,16 @@ const S3_ENV = {
   AWS_REGION: "us-east-1",
 };
 
+// Default workspace wakes to the per-wake observation sandbox. The images
+// are built below before `tauri dev` launches.
+const SANDBOX_IMAGE = "proxima-workspace-sandbox:local";
+const PROXY_IMAGE = "proxima-workspace-proxy:local";
+const SANDBOX_ENV = {
+  PROXIMA_WORKSPACE_SANDBOX: "docker",
+  PROXIMA_WORKSPACE_SANDBOX_IMAGE: SANDBOX_IMAGE,
+  PROXIMA_WORKSPACE_SANDBOX_PROXY_IMAGE: PROXY_IMAGE,
+};
+
 function timestamp() {
   const d = new Date();
   const p = (n) => String(n).padStart(2, "0");
@@ -59,6 +69,36 @@ async function main() {
     );
     process.exit(1);
   }
+
+  // Reap per-wake sandbox containers + networks orphaned by a prior crash.
+  // The observation container drops `--rm` (it idles on `sleep infinity`),
+  // so a crashed host needs this explicit sweep.
+  console.log("[perf-driver] reaping orphaned sandbox containers…");
+  const orphanContainers = spawnSync(
+    "docker",
+    ["ps", "-aq", "--filter", "label=proxima.wake"],
+    { encoding: "utf8" },
+  );
+  const orphanIds = (orphanContainers.stdout || "").split("\n").filter(Boolean);
+  if (orphanIds.length) {
+    spawnSync("docker", ["rm", "-f", ...orphanIds], { stdio: "inherit" });
+  }
+  const orphanNetworks = spawnSync(
+    "docker",
+    ["network", "ls", "-q", "--filter", "name=proxima-wake-net-"],
+    { encoding: "utf8" },
+  );
+  const orphanNetIds = (orphanNetworks.stdout || "").split("\n").filter(Boolean);
+  if (orphanNetIds.length) {
+    spawnSync("docker", ["network", "rm", ...orphanNetIds], { stdio: "inherit" });
+  }
+
+  console.log("[perf-driver] building workspace sandbox + proxy images…");
+  runOrDie("bash", [
+    join(REPO, "scripts/build-workspace-shell-sandbox-image.sh"),
+    SANDBOX_IMAGE,
+    PROXY_IMAGE,
+  ]);
 
   const session = timestamp();
   const sessionDir = join(PERF_LOGS, session);
@@ -101,6 +141,7 @@ async function main() {
     env: {
       ...process.env,
       ...S3_ENV,
+      ...SANDBOX_ENV,
       DATABASE_URL: DB_URL,
       PROXIMA_PERF_SESSION_DIR: sessionDir,
     },
