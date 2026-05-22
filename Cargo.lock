@@ -4287,26 +4287,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "proxima-demo-wheel"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "proxima-code",
- "proxima-core",
- "proxima-flavor-goal",
- "proxima-flavor-intent",
- "proxima-harness",
- "proxima-mcp-server",
- "proxima-storage-pg",
- "serde",
- "serde_json",
- "sqlx",
- "time",
- "tokio",
- "uuid",
-]
-
-[[package]]
 name = "proxima-flavor-goal"
 version = "0.1.0"
 dependencies = [
