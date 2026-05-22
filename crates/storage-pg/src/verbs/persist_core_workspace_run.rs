@@ -78,8 +78,11 @@ pub async fn persist_core_workspace_run_atomic(
             (memory_id, wake_invocation_id, wake_entry_id, personality_instance_id,
              binding_kind, finalize, repo_path, base_ref, worktree_path, branch_name,
              parent_sha, head_sha, committed, diff_stat_json,
-             exit_code, stdout_tail, stderr_tail, duration_ms)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+             exit_code, stdout_tail, stderr_tail, duration_ms,
+             sandbox_image, sandbox_container, wake_branch,
+             transcript_blob_hash, network_log_blob_hash)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,
+                 $19,$20,$21,$22,$23)
          ON CONFLICT (memory_id) DO NOTHING",
     )
     .bind(memory_id)
@@ -104,6 +107,11 @@ pub async fn persist_core_workspace_run_atomic(
     .bind(input.run.stdout_tail.as_deref())
     .bind(input.run.stderr_tail.as_deref())
     .bind(input.run.duration_ms.and_then(|v| i64::try_from(v).ok()))
+    .bind(input.run.sandbox_image.as_deref())
+    .bind(input.run.sandbox_container.as_deref())
+    .bind(input.run.wake_branch.as_deref())
+    .bind(input.run.transcript_blob_hash.as_deref())
+    .bind(input.run.network_log_blob_hash.as_deref())
     .execute(&mut *tx)
     .await
     .map_err(map_err)?;

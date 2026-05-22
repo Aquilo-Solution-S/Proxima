@@ -197,6 +197,7 @@ pub(super) async fn finalize_workspace_runner(
     invocation_id: Uuid,
     prepared: WorkspacePreparedRun,
     outcome: WorkspaceOutcome,
+    evidence: CoreSandboxEvidence,
 ) -> Result<(), String> {
     let Some(binding) = input.wake_entry.workspace_binding.as_ref() else {
         return Err("workspace_binding_required".into());
@@ -209,6 +210,7 @@ pub(super) async fn finalize_workspace_runner(
             invocation_id,
             prepared,
             outcome,
+            evidence,
         )
         .await;
     }
@@ -252,6 +254,17 @@ pub(super) struct CoreGitWorkspaceFinalization {
     pub diff_stat: CoreWorkspaceDiffStat,
 }
 
+/// Per-wake observation evidence the fire path collects once the harness
+/// returns — sandbox identity and on-disk artifact hashes — to record on
+/// the `workspace_run` Fact. Every field is `None` for a host-mode wake.
+#[derive(Debug, Clone, Default)]
+pub(super) struct CoreSandboxEvidence {
+    pub sandbox_image: Option<String>,
+    pub sandbox_container: Option<String>,
+    pub transcript_blob_hash: Option<String>,
+    pub network_log_blob_hash: Option<String>,
+}
+
 pub(super) async fn finalize_core_workspace_binding(
     engine: &Engine,
     input: &FireWakeEntryInput,
@@ -259,6 +272,7 @@ pub(super) async fn finalize_core_workspace_binding(
     invocation_id: Uuid,
     prepared: WorkspacePreparedRun,
     outcome: WorkspaceOutcome,
+    evidence: CoreSandboxEvidence,
 ) -> Result<(), String> {
     let state: CoreWorkspaceRunnerState = serde_json::from_value(prepared.runner_state)
         .map_err(|err| format!("decode core workspace state: {err}"))?;
@@ -290,7 +304,7 @@ pub(super) async fn finalize_core_workspace_binding(
                 // `CoreWorkspaceRunV1.worktree_path` / `parent_sha` field
                 // names are retained for now — Phase D renames the columns.
                 worktree_path: staging_dir,
-                branch_name: wake_branch,
+                branch_name: wake_branch.clone(),
                 parent_sha: base_sha,
                 head_sha: finalization.head_sha,
                 committed: finalization.committed,
@@ -299,6 +313,11 @@ pub(super) async fn finalize_core_workspace_binding(
                 stdout_tail: outcome.stdout_tail,
                 stderr_tail: outcome.stderr_tail,
                 duration_ms: outcome.duration_ms,
+                sandbox_image: evidence.sandbox_image,
+                sandbox_container: evidence.sandbox_container,
+                wake_branch: Some(wake_branch),
+                transcript_blob_hash: evidence.transcript_blob_hash,
+                network_log_blob_hash: evidence.network_log_blob_hash,
             };
             let observed_at = time::OffsetDateTime::now_utc();
             engine

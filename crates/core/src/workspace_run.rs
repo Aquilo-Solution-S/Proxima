@@ -47,6 +47,18 @@ pub struct CoreWorkspaceRunV1 {
     pub stdout_tail: Option<String>,
     pub stderr_tail: Option<String>,
     pub duration_ms: Option<u64>,
+    /// Observation-sandbox image the wake ran in. `None` for host-mode wakes.
+    pub sandbox_image: Option<String>,
+    /// Observation-sandbox container name (`proxima-wake-<invocation_id>`).
+    /// `None` for host-mode wakes.
+    pub sandbox_container: Option<String>,
+    /// Branch the wake's changes landed on (`proxima/wake/<invocation_id>`).
+    pub wake_branch: Option<String>,
+    /// blake3 hex of the on-disk wake transcript. `None` if it was unreadable.
+    pub transcript_blob_hash: Option<String>,
+    /// blake3 hex of the on-disk egress network log. `None` for host-mode
+    /// wakes or when the proxy produced no log.
+    pub network_log_blob_hash: Option<String>,
 }
 
 impl FactPayload for CoreWorkspaceRunV1 {
