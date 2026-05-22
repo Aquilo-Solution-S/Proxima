@@ -91,6 +91,8 @@ struct FixtureStorage {
     set_calls: Mutex<usize>,
 }
 
+impl proxima_core::ApprovalStore for FixtureStorage {}
+
 #[async_trait]
 impl Storage for FixtureStorage {
     async fn ingest_event_atomic(
