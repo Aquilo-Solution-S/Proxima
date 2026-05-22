@@ -7,6 +7,7 @@ use crate::{
     DependencySatisfactionRule, FlavorDescriptor, McpToolDescriptor, RegisteredRelation,
     RelationDescriptor, SchemaId, SchemaVersion, SearchProjectionColumnKind,
 };
+use std::collections::HashMap;
 
 pub type PayloadValidator = fn(&serde_json::Value) -> Result<(), String>;
 pub type PayloadCborEncoder = fn(&serde_json::Value) -> Result<Vec<u8>, String>;
@@ -89,6 +90,69 @@ pub struct SchemaResponse {
     pub schemas: Vec<SchemaInfo>,
 }
 
+/// Build-time lookup acceleration for `FlavorRegistryFrozen`. Each map
+/// stores the position of the *first* matching entry in the owning
+/// `Vec`, mirroring the `.iter().find()` first-wins semantics of the
+/// linear scans it replaces. The frozen `Vec`s are append-only, so a
+/// stored index never goes stale; `with_additional_schemas` rebuilds
+/// the whole index after extending `schemas`.
+///
+/// Only the collections that scale with *schema* count and sit on the
+/// EventIngest / GoalWrite / edge-write paths are indexed. `flavors`,
+/// `workspace_runners`, `workspace_triggers`, and
+/// `dependency_satisfaction_rules` scale with *flavor* count (bounded
+/// by linked crates) and stay linear scans — indexing a handful of
+/// entries would not earn its keep.
+#[derive(Debug, Clone, Default)]
+struct FrozenIndex {
+    /// `schemas` keyed by `(schema_id, version)`, kind-agnostic.
+    schema_by_id_version: HashMap<(SchemaId, SchemaVersion), usize>,
+    /// `schemas` keyed by `(schema_id, version, kind)` — required
+    /// because one payload type may register across F/A/P layers.
+    schema_by_id_version_kind: HashMap<(SchemaId, SchemaVersion, PayloadKind), usize>,
+    /// `validators` keyed by `(schema_id, version, kind)`.
+    validator_by_key: HashMap<(SchemaId, SchemaVersion, PayloadKind), usize>,
+    /// `relations` keyed by relation id.
+    relation_by_name: HashMap<String, usize>,
+}
+
+impl FrozenIndex {
+    fn build(
+        schemas: &[SchemaInfo],
+        validators: &[PayloadValidatorEntry],
+        relations: &[RelationDescriptor],
+    ) -> Self {
+        let mut index = Self::default();
+        for (position, schema) in schemas.iter().enumerate() {
+            index
+                .schema_by_id_version
+                .entry((schema.schema_id.clone(), schema.schema_version))
+                .or_insert(position);
+            index
+                .schema_by_id_version_kind
+                .entry((schema.schema_id.clone(), schema.schema_version, schema.kind))
+                .or_insert(position);
+        }
+        for (position, validator) in validators.iter().enumerate() {
+            index
+                .validator_by_key
+                .entry((
+                    validator.schema_id.clone(),
+                    validator.schema_version,
+                    validator.kind,
+                ))
+                .or_insert(position);
+        }
+        for (position, relation) in relations.iter().enumerate() {
+            index
+                .relation_by_name
+                .entry(relation.relation.clone())
+                .or_insert(position);
+        }
+        index
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct FlavorRegistryFrozen {
     schemas: Vec<SchemaInfo>,
@@ -103,6 +167,9 @@ pub struct FlavorRegistryFrozen {
     )>,
     workspace_triggers: Vec<String>,
     dependency_satisfaction_rules: Vec<(String, std::sync::Arc<dyn DependencySatisfactionRule>)>,
+    /// Lookup acceleration, rebuilt by every constructor. Not part of
+    /// the logical registry — derived purely from the `Vec`s above.
+    index: FrozenIndex,
 }
 
 impl FlavorRegistryFrozen {
@@ -115,17 +182,17 @@ impl FlavorRegistryFrozen {
     /// per AGENTS.md invariant 7.
     #[must_use]
     pub fn with_schemas(schemas: Vec<SchemaInfo>) -> Self {
-        Self {
+        Self::with_schemas_relations_validators(
             schemas,
-            search_projections: Vec::new(),
-            relations: Vec::new(),
-            validators: Vec::new(),
-            mcp_tools: Vec::new(),
-            flavors: Vec::new(),
-            workspace_runners: Vec::new(),
-            workspace_triggers: Vec::new(),
-            dependency_satisfaction_rules: Vec::new(),
-        }
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )
     }
 
     /// Build-time / test-time constructor that also seeds the
@@ -136,17 +203,17 @@ impl FlavorRegistryFrozen {
         schemas: Vec<SchemaInfo>,
         relations: Vec<RelationDescriptor>,
     ) -> Self {
-        Self {
+        Self::with_schemas_relations_validators(
             schemas,
-            search_projections: Vec::new(),
+            Vec::new(),
             relations,
-            validators: Vec::new(),
-            mcp_tools: Vec::new(),
-            flavors: Vec::new(),
-            workspace_runners: Vec::new(),
-            workspace_triggers: Vec::new(),
-            dependency_satisfaction_rules: Vec::new(),
-        }
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -167,6 +234,7 @@ impl FlavorRegistryFrozen {
             std::sync::Arc<dyn DependencySatisfactionRule>,
         )>,
     ) -> Self {
+        let index = FrozenIndex::build(&schemas, &validators, &relations);
         Self {
             schemas,
             search_projections,
@@ -177,16 +245,42 @@ impl FlavorRegistryFrozen {
             workspace_runners,
             workspace_triggers,
             dependency_satisfaction_rules,
+            index,
         }
     }
 
     #[must_use]
     pub fn with_additional_schemas(
-        mut self,
+        self,
         schemas: impl IntoIterator<Item = SchemaInfo>,
     ) -> Self {
-        self.schemas.extend(schemas);
-        self
+        // Destructure and re-assemble so `FrozenIndex` is rebuilt over
+        // the extended schema list — a stale index would silently miss
+        // the appended schemas.
+        let Self {
+            schemas: mut existing,
+            search_projections,
+            relations,
+            validators,
+            mcp_tools,
+            flavors,
+            workspace_runners,
+            workspace_triggers,
+            dependency_satisfaction_rules,
+            index: _,
+        } = self;
+        existing.extend(schemas);
+        Self::with_schemas_relations_validators(
+            existing,
+            search_projections,
+            relations,
+            validators,
+            mcp_tools,
+            flavors,
+            workspace_runners,
+            workspace_triggers,
+            dependency_satisfaction_rules,
+        )
     }
 
     #[must_use]
@@ -206,14 +300,11 @@ impl FlavorRegistryFrozen {
         schema_version: SchemaVersion,
         kind: PayloadKind,
     ) -> Option<&serde_json::Value> {
-        self.validators
-            .iter()
-            .find(|entry| {
-                entry.schema_id == *schema_id
-                    && entry.schema_version == schema_version
-                    && entry.kind == kind
-            })
-            .and_then(|entry| entry.json_schema.as_ref())
+        let position = *self
+            .index
+            .validator_by_key
+            .get(&(schema_id.clone(), schema_version, kind))?;
+        self.validators[position].json_schema.as_ref()
     }
 
     #[must_use]
@@ -283,7 +374,8 @@ impl FlavorRegistryFrozen {
     /// relation id (`"proxima-code/calls"`, etc.).
     #[must_use]
     pub fn lookup_relation(&self, relation: &str) -> Option<&RelationDescriptor> {
-        self.relations.iter().find(|r| r.relation == relation)
+        let position = *self.index.relation_by_name.get(relation)?;
+        Some(&self.relations[position])
     }
 
     /// Resolve a relation for an edge write. Typed relations also
@@ -293,17 +385,14 @@ impl FlavorRegistryFrozen {
     pub fn resolve_relation(&self, relation: &str) -> Option<RegisteredRelation<'_>> {
         let descriptor = self.lookup_relation(relation)?;
         let payload_sidecar_table = match &descriptor.payload_schema {
-            Some(payload_schema) => Some(
-                self.schemas
-                    .iter()
-                    .find(|s| {
-                        s.kind == PayloadKind::Edge
-                            && s.schema_id == payload_schema.schema_id
-                            && s.schema_version == payload_schema.schema_version
-                    })?
-                    .sidecar_table
-                    .as_deref()?,
-            ),
+            Some(payload_schema) => {
+                let position = *self.index.schema_by_id_version_kind.get(&(
+                    payload_schema.schema_id.clone(),
+                    payload_schema.schema_version,
+                    PayloadKind::Edge,
+                ))?;
+                Some(self.schemas[position].sidecar_table.as_deref()?)
+            }
             None => None,
         };
         Some(RegisteredRelation {
@@ -316,9 +405,11 @@ impl FlavorRegistryFrozen {
     /// EventIngest / GoalWrite to validate incoming payloads.
     #[must_use]
     pub fn lookup(&self, schema_id: &SchemaId, version: SchemaVersion) -> Option<&SchemaInfo> {
-        self.schemas
-            .iter()
-            .find(|s| s.schema_id == *schema_id && s.schema_version == version)
+        let position = *self
+            .index
+            .schema_by_id_version
+            .get(&(schema_id.clone(), version))?;
+        Some(&self.schemas[position])
     }
 
     /// Lookup by `(schema_id, schema_version, kind)`. Required when one
@@ -330,9 +421,11 @@ impl FlavorRegistryFrozen {
         version: SchemaVersion,
         kind: PayloadKind,
     ) -> Option<&SchemaInfo> {
-        self.schemas
-            .iter()
-            .find(|s| s.schema_id == *schema_id && s.schema_version == version && s.kind == kind)
+        let position = *self
+            .index
+            .schema_by_id_version_kind
+            .get(&(schema_id.clone(), version, kind))?;
+        Some(&self.schemas[position])
     }
 
     /// Validate a JSON payload against the build-time registered Rust
@@ -351,12 +444,12 @@ impl FlavorRegistryFrozen {
             return Err("typed payload must be a JSON object".into());
         }
 
-        if let Some(validator) = self
-            .validators
-            .iter()
-            .find(|v| v.schema_id == *schema_id && v.schema_version == version && v.kind == kind)
+        if let Some(&position) = self
+            .index
+            .validator_by_key
+            .get(&(schema_id.clone(), version, kind))
         {
-            (validator.validate)(payload)?;
+            (self.validators[position].validate)(payload)?;
         }
 
         Ok(())
