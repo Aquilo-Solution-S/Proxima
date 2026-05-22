@@ -228,6 +228,7 @@ mod tests {
         WorkspaceSandboxSession {
             container_name: "proxima-wake-abc".into(),
             network_name: "proxima-wake-net-abc".into(),
+            proxy_name: "proxima-wake-proxy-abc".into(),
             image: "proxima-workspace-sandbox:local".into(),
             label: "proxima.wake=abc".into(),
         }
