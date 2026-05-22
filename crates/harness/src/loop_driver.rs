@@ -88,16 +88,20 @@ impl HarnessAdapter for HarnessLoop {
         // Start the per-wake observation container before the model loop.
         // A failed start fails the wake — there is no silent host fallback.
         let invocation_id = ctx.invocation_id;
-        let sandbox_session = match (workspace_root.as_deref(), &workspace_sandbox) {
-            (Some(root), Some(spec)) => Some(
-                sandbox::start(spec, invocation_id, root)
-                    .await
-                    .map_err(|err| {
-                        HarnessError::Internal(format!("workspace_sandbox_start:{err}"))
-                    })?,
-            ),
-            _ => None,
-        };
+        // `_sandbox_permit` holds the concurrency slot for the whole wake;
+        // it releases when this function returns, after the sandbox stops.
+        let (sandbox_session, _sandbox_permit) =
+            match (workspace_root.as_deref(), &workspace_sandbox) {
+                (Some(root), Some(spec)) => {
+                    let (session, permit) = sandbox::start(spec, invocation_id, root)
+                        .await
+                        .map_err(|err| {
+                            HarnessError::Internal(format!("workspace_sandbox_start:{err}"))
+                        })?;
+                    (Some(session), Some(permit))
+                }
+                _ => (None, None),
+            };
 
         let result = run_loop(
             self,

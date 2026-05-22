@@ -14,15 +14,17 @@ pnpm --filter proxima-shell tauri:dev
 ```
 
 `tauri:dev` starts the desktop shell, brings up dev Postgres and MinIO
-via `docker-compose.dev.yml`, creates the local S3 bucket, and writes perf logs under
-`apps/proxima-shell/perf-logs/`.
+via `docker-compose.dev.yml`, creates the local S3 bucket, builds the
+workspace sandbox + proxy images, reaps any orphaned per-wake containers,
+and writes perf logs under `apps/proxima-shell/perf-logs/`. Workspace wakes
+then run inside a disposable per-wake observation container.
 
 ```sh
 PROXIMA_PERF=0 pnpm --filter proxima-shell tauri:dev
 ```
 
-Raw shell startup. No Docker, no perf capture. Uses the current
-`DATABASE_URL` and S3 env.
+Raw shell startup. No Docker, no perf capture, no sandbox — workspace wakes
+run on the host. Uses the current `DATABASE_URL` and S3 env.
 
 ```sh
 pnpm --filter proxima-shell dev --host 127.0.0.1

@@ -266,6 +266,37 @@ Credentials use the standard AWS SDK provider chain. Missing S3 config
 does not fail Shell boot; cited-blob commands fail typed at call time.
 Commands return presigned URLs only, never `bucket` or `object_key`.
 
+<a id="workspace-observation-sandbox"></a>
+## Workspace Observation Sandbox
+
+Every workspace wake can run inside a disposable per-wake Docker container —
+an observation instrument, not an adversarial jail. The container runs as the
+host uid/gid, bind-mounts a fresh `git clone` at `/workspace` and a persistent
+build cache at `/cache`, and reaches the web only through a per-wake logging
+proxy. This is deployment infrastructure, not per-Owner configuration.
+
+| Key | Required | Default |
+|---|---:|---|
+| `PROXIMA_WORKSPACE_SANDBOX` | no | `host` |
+| `PROXIMA_WORKSPACE_SANDBOX_IMAGE` | no | `proxima-workspace-sandbox:local` |
+| `PROXIMA_WORKSPACE_SANDBOX_PROXY_IMAGE` | no | `proxima-workspace-proxy:local` |
+| `PROXIMA_WORKSPACE_SANDBOX_CACHE_VOLUME` | no | `proxima-wake-cache` |
+| `PROXIMA_WORKSPACE_SANDBOX_MEMORY` | no | unbounded |
+| `PROXIMA_WORKSPACE_SANDBOX_MAX_CONCURRENT` | no | `3` |
+| `PROXIMA_WORKSPACE_SANDBOX_DOCKER_BIN` | no | `docker` |
+| `PROXIMA_WAKE_BRANCH_KEEP` | no | `50` |
+
+`PROXIMA_WORKSPACE_SANDBOX=docker` enables the sandbox; `host` (or unset) runs
+workspace tools directly on the host — the no-Docker dev escape hatch. A
+container that fails to start fails the wake; there is no silent host
+fallback. `MAX_CONCURRENT` caps simultaneous sandboxes so parallel builds do
+not thrash the host. `PROXIMA_WAKE_BRANCH_KEEP` bounds how many
+`proxima/wake/*` branches accumulate in the repo.
+
+No provider secrets are forwarded into the container: only `HTTP(S)_PROXY`,
+`HOME`, and `CI` reach it. The engine, MCP server, Postgres, and credentials
+all stay on the host.
+
 <a id="per-owner-credential-table"></a>
 ## Per-Owner Inference Tables
 

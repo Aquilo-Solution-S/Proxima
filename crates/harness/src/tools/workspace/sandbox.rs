@@ -15,13 +15,27 @@
 //! wake's network log (CONNECT-level metadata, no TLS interception).
 
 use std::path::Path;
+use std::sync::{Arc, LazyLock};
 
 use proxima_core::harness::WorkspaceSandboxSpec;
 use tokio::process::Command;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use uuid::Uuid;
 
-/// Port the per-wake logging proxy listens on (Phase C).
+/// Port the per-wake logging proxy listens on.
 const PROXY_PORT: u16 = 8888;
+
+/// Ceiling on concurrent observation sandboxes — N simultaneous full builds
+/// would thrash the host. `PROXIMA_WORKSPACE_SANDBOX_MAX_CONCURRENT` sets the
+/// limit (default 3); a permit is held for the whole container lifetime.
+static SANDBOX_SLOTS: LazyLock<Arc<Semaphore>> = LazyLock::new(|| {
+    let permits = std::env::var("PROXIMA_WORKSPACE_SANDBOX_MAX_CONCURRENT")
+        .ok()
+        .and_then(|raw| raw.parse::<usize>().ok())
+        .filter(|permits| *permits > 0)
+        .unwrap_or(3);
+    Arc::new(Semaphore::new(permits))
+});
 
 /// Handle to a running per-wake sandbox, threaded into `WorkspaceCtx` so
 /// `workspace_shell` can `docker exec` into the container.
@@ -239,6 +253,10 @@ async fn force_remove(container: Option<&str>, proxy: Option<&str>, network: &st
 /// logging proxy dual-homed onto it, then the idle observation container
 /// the shell tool will `docker exec` into.
 ///
+/// Blocks on a concurrency permit first; the returned `OwnedSemaphorePermit`
+/// must be held until the wake ends so the slot stays occupied for the
+/// container's whole lifetime.
+///
 /// # Errors
 ///
 /// Returns the docker failure detail when any step fails; partial state is
@@ -248,7 +266,14 @@ pub async fn start(
     spec: &WorkspaceSandboxSpec,
     invocation_id: Uuid,
     workspace_root: &Path,
-) -> Result<WorkspaceSandboxSession, String> {
+) -> Result<(WorkspaceSandboxSession, OwnedSemaphorePermit), String> {
+    // Hold a slot before touching docker so the ceiling bounds concurrent
+    // container *creation*, not just steady-state count.
+    let permit = Arc::clone(&SANDBOX_SLOTS)
+        .acquire_owned()
+        .await
+        .map_err(|err| format!("sandbox concurrency gate closed: {err}"))?;
+
     let container = container_name(invocation_id);
     let network = network_name(invocation_id);
     let proxy = proxy_name(invocation_id);
@@ -284,13 +309,16 @@ pub async fn start(
         return Err(err);
     }
 
-    Ok(WorkspaceSandboxSession {
-        container_name: container,
-        network_name: network,
-        proxy_name: proxy,
-        image: spec.image.clone(),
-        label: spec.label.clone(),
-    })
+    Ok((
+        WorkspaceSandboxSession {
+            container_name: container,
+            network_name: network,
+            proxy_name: proxy,
+            image: spec.image.clone(),
+            label: spec.label.clone(),
+        },
+        permit,
+    ))
 }
 
 /// Tear down the per-wake sandbox: capture the proxy's egress log, then
