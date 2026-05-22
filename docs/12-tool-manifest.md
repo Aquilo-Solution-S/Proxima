@@ -92,6 +92,31 @@ Prefix rules live in 08:
 relation validation remains the registry's build-time responsibility
 (see 08 §Freeze Guards).
 
+## Tool Schema Contract
+
+A tool's argument type *is* its schema. Shape, field descriptions,
+required/optional, and enum variants all derive from the Rust type via
+`schemars`. No code mutates the generated schema out of band.
+
+- Every MCP tool argument schema is produced by one function,
+  `mcp_tool_schema<T: JsonSchema>()` in `crates/core/src/mcp/schema.rs`.
+- The emitted schema is JSON Schema draft 2020-12 and **`$ref`-free /
+  `$defs`-free** — fully self-contained. This matters because some MCP
+  clients do not resolve `$ref`; an unresolved reference renders as a
+  blank field on those clients (the regression behind commit `37f209b`,
+  where `update_wake_entry`'s patch argument rendered as a bare `$ref`).
+- Field descriptions originate only from the Rust type — a `///`
+  doc-comment or `#[schemars(description = "...")]` at the field
+  definition. No code injects descriptions by field name.
+- A recursive tool argument type is a **registration error**. It cannot
+  be inlined into a finite `$ref`-free schema, so `mcp_tool_schema`
+  panics at startup, naming the type — consistent with the
+  schema-prefix and `freeze` panic model.
+- Tool *outputs* are advertised by registered-schema-id reference
+  (`McpToolDescriptor.produces_schema_ids`), resolved against the
+  `FlavorRegistry`. Outputs are not inline-generated: the registry's
+  payload schema is their single source of truth.
+
 ## Wake-Entry Selection
 
 Wake entry fields:
@@ -302,6 +327,7 @@ runtime enforcement. Owner-policy enforcement belongs to 13.
 - `claim`
 - `tool-classes`
 - `rust-surface`
+- `tool-schema-contract`
 - `wake-entry-selection`
 - `invocation-flow`
 - `persistence`
