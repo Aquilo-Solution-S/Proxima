@@ -332,12 +332,21 @@ struct WorkspaceModeState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum CoreWorkspaceRunnerState {
-    GitWorktree {
+    /// A per-wake full `git clone` of the repo. Unlike a linked worktree,
+    /// a clone has a real `.git` directory, so `git` functions inside a
+    /// container bind-mounting only the clone. Changes return to the real
+    /// repo as a fetched branch; the real working tree is never touched.
+    GitClone {
+        /// Canonical path of the real repository.
         repo_path: String,
-        worktree_path: String,
-        branch_name: String,
+        /// The disposable per-wake clone the harness runs against.
+        staging_dir: String,
+        /// `proxima/wake/<invocation_id>` — the branch changes land on.
+        wake_branch: String,
+        /// The ref the wake was based on (e.g. `HEAD`).
         base_ref: String,
-        parent_sha: String,
+        /// The resolved commit `base_ref` pointed at when the wake started.
+        base_sha: String,
         finalize: WakeWorkspaceFinalize,
     },
 }
@@ -578,70 +587,62 @@ async fn prepare_workspace_binding(
             base_ref,
             finalize,
             worktrees_root,
-        } => prepare_core_git_worktree(input, repo_path, base_ref, *finalize, worktrees_root).await,
+        } => prepare_core_git_clone(input, repo_path, base_ref, *finalize, worktrees_root).await,
         WakeWorkspaceBinding::RegisteredRunner { flavor_id } => {
             prepare_registered_workspace_runner(engine, input, flavor_id).await
         }
     }
 }
 
-async fn prepare_core_git_worktree(
+/// Prepare a disposable per-wake **full clone** of the repo.
+///
+/// A linked git worktree shares its parent's object store and its `.git`
+/// is only a pointer file — `git` does not work inside a container that
+/// bind-mounts the worktree alone. A `git clone --local` produces a real
+/// `.git` directory (hardlinked objects, near-instant, no network), so the
+/// clone is self-contained and container-portable.
+async fn prepare_core_git_clone(
     input: WorkspacePrepareInput<'_>,
     repo_path: &str,
     base_ref: &str,
     finalize: WakeWorkspaceFinalize,
-    worktrees_root: &Option<String>,
+    clones_root: &Option<String>,
 ) -> Result<WorkspacePreparedRun, WorkspaceRunnerError> {
     let repo = std::fs::canonicalize(repo_path).map_err(|err| {
         WorkspaceRunnerError::PrepareFailed(format!("canonicalize repo_path {repo_path}: {err}"))
     })?;
-    let parent_sha = git_output(&repo, &["rev-parse", base_ref])
+    let base_sha = git_output(&repo, &["rev-parse", base_ref])
         .await
         .map_err(|stderr| {
             WorkspaceRunnerError::PrepareFailed(format!("rev-parse {base_ref}: {stderr}"))
         })?;
-    let root = worktrees_root
+    let root = clones_root
         .as_ref()
         .map(PathBuf::from)
-        .unwrap_or_else(default_core_worktrees_root);
-    let worktree_path = root.join(input.invocation_id.to_string());
-    if let Some(parent) = worktree_path.parent() {
-        std::fs::create_dir_all(parent).map_err(|err| {
-            WorkspaceRunnerError::PrepareFailed(format!("create worktree parent: {err}"))
-        })?;
-    }
-    let branch_name = format!("proxima/wake/{}", input.invocation_id);
-    let worktree_arg = worktree_path.to_string_lossy().to_string();
-    git_output(
-        &repo,
-        &[
-            "worktree",
-            "add",
-            "-b",
-            &branch_name,
-            &worktree_arg,
-            &parent_sha,
-        ],
-    )
-    .await
-    .map_err(|stderr| WorkspaceRunnerError::PrepareFailed(format!("worktree add: {stderr}")))?;
+        .unwrap_or_else(default_core_wake_clones_root);
+    let staging_path = root.join(input.invocation_id.to_string());
+    let wake_branch = format!("proxima/wake/{}", input.invocation_id);
+    clone_repo_to_staging(&repo, &staging_path, &wake_branch, &base_sha)
+        .await
+        .map_err(WorkspaceRunnerError::PrepareFailed)?;
+    let staging_arg = staging_path.to_string_lossy().to_string();
 
-    let state = CoreWorkspaceRunnerState::GitWorktree {
+    let state = CoreWorkspaceRunnerState::GitClone {
         repo_path: repo.to_string_lossy().to_string(),
-        worktree_path: worktree_arg.clone(),
-        branch_name: branch_name.clone(),
+        staging_dir: staging_arg.clone(),
+        wake_branch: wake_branch.clone(),
         base_ref: base_ref.to_string(),
-        parent_sha: parent_sha.clone(),
+        base_sha: base_sha.clone(),
         finalize,
     };
     let workspace_context = json!({
-        "mode": "core_git_worktree",
+        "mode": "core_git_clone",
         "repo_path": repo.to_string_lossy(),
         "repo_handle": repo.to_string_lossy(),
-        "worktree_path": worktree_arg,
-        "branch_name": branch_name,
+        "staging_dir": staging_arg,
+        "wake_branch": wake_branch,
         "base_ref": base_ref,
-        "parent_sha": parent_sha,
+        "base_sha": base_sha,
         "finalize": finalize.as_str(),
         "triggering_memory_schema_id": input.triggering_memory_schema_id,
         "triggering_memory_id": input.triggering_memory_id.into_inner().to_string(),
@@ -651,17 +652,46 @@ async fn prepare_core_git_worktree(
         WorkspaceRunnerError::Internal(format!("serialize core workspace state: {err}"))
     })?;
     Ok(WorkspacePreparedRun {
-        work_dir: worktree_path,
+        work_dir: staging_path,
         workspace_context: Some(workspace_context),
         runner_state,
     })
 }
 
-fn default_core_worktrees_root() -> PathBuf {
+/// `git clone --local` the repo into a fresh `staging_path`, then position
+/// it on `wake_branch` at exactly `base_sha`.
+async fn clone_repo_to_staging(
+    repo: &Path,
+    staging_path: &Path,
+    wake_branch: &str,
+    base_sha: &str,
+) -> Result<(), String> {
+    if let Some(parent) = staging_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|err| format!("create staging parent: {err}"))?;
+    }
+    // `git clone` requires the target not to exist; clear any stale dir
+    // (e.g. a clone left behind by a crashed prior run).
+    if staging_path.exists() {
+        std::fs::remove_dir_all(staging_path)
+            .map_err(|err| format!("clear stale staging dir: {err}"))?;
+    }
+    let repo_arg = repo.to_string_lossy().to_string();
+    let staging_arg = staging_path.to_string_lossy().to_string();
+    git_output(repo, &["clone", "--local", &repo_arg, &staging_arg])
+        .await
+        .map_err(|stderr| format!("git clone --local: {stderr}"))?;
+    git_output(staging_path, &["checkout", "-B", wake_branch, base_sha])
+        .await
+        .map_err(|stderr| format!("git checkout -B {wake_branch}: {stderr}"))?;
+    Ok(())
+}
+
+fn default_core_wake_clones_root() -> PathBuf {
     std::env::var_os("HOME")
         .map_or_else(std::env::temp_dir, PathBuf::from)
         .join(".proxima")
-        .join("worktrees")
+        .join("wake-clones")
         .join("core")
 }
 
@@ -912,27 +942,35 @@ async fn finalize_core_workspace_binding(
     let state: CoreWorkspaceRunnerState = serde_json::from_value(prepared.runner_state)
         .map_err(|err| format!("decode core workspace state: {err}"))?;
     match state {
-        CoreWorkspaceRunnerState::GitWorktree {
+        CoreWorkspaceRunnerState::GitClone {
             repo_path,
-            worktree_path,
-            branch_name,
+            staging_dir,
+            wake_branch,
             base_ref,
-            parent_sha,
+            base_sha,
             finalize,
         } => {
-            let finalization =
-                finalize_core_git_worktree(&PathBuf::from(&worktree_path), finalize).await?;
+            let finalization = finalize_core_git_clone(
+                &PathBuf::from(&staging_dir),
+                &PathBuf::from(&repo_path),
+                &wake_branch,
+                &base_sha,
+                finalize,
+            )
+            .await?;
             let run = CoreWorkspaceRunV1 {
                 wake_invocation_id: invocation_id,
                 wake_entry_id: input.wake_entry.wake_entry_id,
                 personality_instance_id: input.personality_instance_id.into_inner(),
-                binding_kind: "git_worktree".to_string(),
+                binding_kind: "git_clone".to_string(),
                 finalize: finalize.as_str().to_string(),
                 repo_path,
                 base_ref,
-                worktree_path,
-                branch_name,
-                parent_sha,
+                // `CoreWorkspaceRunV1.worktree_path` / `parent_sha` field
+                // names are retained for now — Phase D renames the columns.
+                worktree_path: staging_dir,
+                branch_name: wake_branch,
+                parent_sha: base_sha,
                 head_sha: finalization.head_sha,
                 committed: finalization.committed,
                 diff_stat_json: finalization.diff_stat,
@@ -975,104 +1013,82 @@ fn workspace_triggering_memory_kind(kind: &str) -> Result<crate::EntityKind, Str
     }
 }
 
-async fn finalize_core_git_worktree(
-    worktree: &Path,
+/// Finalize a per-wake clone: commit its changes onto the wake branch,
+/// fetch that branch back into the real repo, then discard the clone.
+///
+/// `git fetch` moves commits, not uncommitted state, so a workspace wake
+/// always commits. The `finalize` mode no longer decides *whether* to
+/// commit — only how the commit is labelled: `LeaveDirty` marks it WIP.
+async fn finalize_core_git_clone(
+    staging: &Path,
+    repo: &Path,
+    wake_branch: &str,
+    base_sha: &str,
     finalize: WakeWorkspaceFinalize,
 ) -> Result<CoreGitWorkspaceFinalization, String> {
-    match finalize {
-        WakeWorkspaceFinalize::LeaveDirty => {
-            let diff_stat = dirty_worktree_diff_stat(worktree).await?;
-            let head_sha = git_output(worktree, &["rev-parse", "HEAD"])
-                .await
-                .map_err(|stderr| format!("git rev-parse HEAD: {stderr}"))?;
-            Ok(CoreGitWorkspaceFinalization {
-                head_sha,
-                committed: false,
-                diff_stat,
-            })
-        }
-        WakeWorkspaceFinalize::CommitAll => {
-            let status = git_output(worktree, &["status", "--porcelain"])
-                .await
-                .map_err(|stderr| format!("git status --porcelain: {stderr}"))?;
-            if status.trim().is_empty() {
-                let head_sha = git_output(worktree, &["rev-parse", "HEAD"])
-                    .await
-                    .map_err(|stderr| format!("git rev-parse HEAD: {stderr}"))?;
-                return Ok(CoreGitWorkspaceFinalization {
-                    head_sha,
-                    committed: false,
-                    diff_stat: CoreWorkspaceDiffStat {
-                        files_changed: 0,
-                        insertions: 0,
-                        deletions: 0,
-                        files: Vec::new(),
-                    },
-                });
-            }
-            git_output(worktree, &["add", "-A"])
-                .await
-                .map_err(|stderr| format!("git add -A: {stderr}"))?;
-            let diff_stat = cached_diff_stat(worktree).await?;
-            git_output(
-                worktree,
-                &[
-                    "-c",
-                    "user.name=Proxima Wake",
-                    "-c",
-                    "user.email=wake@proxima.local",
-                    "commit",
-                    "-m",
-                    "chore(proxima): record wake workspace changes",
-                ],
-            )
-            .await
-            .map_err(|stderr| format!("git commit: {stderr}"))?;
-            let head_sha = git_output(worktree, &["rev-parse", "HEAD"])
-                .await
-                .map_err(|stderr| format!("git rev-parse HEAD: {stderr}"))?;
-            Ok(CoreGitWorkspaceFinalization {
-                head_sha,
-                committed: true,
-                diff_stat,
-            })
-        }
-    }
-}
-
-async fn cached_diff_stat(worktree: &Path) -> Result<CoreWorkspaceDiffStat, String> {
-    let numstat = git_output(worktree, &["diff", "--cached", "--numstat", "HEAD"])
-        .await
-        .map_err(|stderr| format!("git diff --cached --numstat HEAD: {stderr}"))?;
-    Ok(parse_numstat(&numstat))
-}
-
-async fn dirty_worktree_diff_stat(worktree: &Path) -> Result<CoreWorkspaceDiffStat, String> {
-    let numstat = git_output(worktree, &["diff", "--numstat", "HEAD"])
-        .await
-        .map_err(|stderr| format!("git diff --numstat HEAD: {stderr}"))?;
-    let mut diff_stat = parse_numstat(&numstat);
-    let mut seen: HashSet<String> = diff_stat
-        .files
-        .iter()
-        .map(|file| file.path.clone())
-        .collect();
-    let status = git_output(worktree, &["status", "--porcelain"])
+    // 1. Commit any working-tree changes in the staging clone.
+    let status = git_output(staging, &["status", "--porcelain"])
         .await
         .map_err(|stderr| format!("git status --porcelain: {stderr}"))?;
-    for line in status.lines() {
-        if let Some(path) = status_path(line) {
-            if seen.insert(path.clone()) {
-                diff_stat.files.push(CoreWorkspaceDiffFile {
-                    path,
-                    insertions: 0,
-                    deletions: 0,
-                });
+    let committed = if status.trim().is_empty() {
+        false
+    } else {
+        git_output(staging, &["add", "-A"])
+            .await
+            .map_err(|stderr| format!("git add -A: {stderr}"))?;
+        let message = match finalize {
+            WakeWorkspaceFinalize::CommitAll => {
+                "chore(proxima): record wake workspace changes"
             }
-        }
-    }
-    diff_stat.files_changed = diff_stat.files.len() as u64;
-    Ok(diff_stat)
+            WakeWorkspaceFinalize::LeaveDirty => {
+                "chore(proxima): record wake workspace changes [WIP - leave_dirty]"
+            }
+        };
+        git_output(
+            staging,
+            &[
+                "-c",
+                "user.name=Proxima Wake",
+                "-c",
+                "user.email=wake@proxima.local",
+                "commit",
+                "-m",
+                message,
+            ],
+        )
+        .await
+        .map_err(|stderr| format!("git commit: {stderr}"))?;
+        true
+    };
+
+    // 2. Return the wake branch to the real repo. A clone has its own
+    //    object store, so unlike a worktree this fetch is required; the
+    //    real repo's working tree and current branch are untouched.
+    let staging_arg = staging.to_string_lossy().to_string();
+    let refspec = format!("{wake_branch}:refs/heads/{wake_branch}");
+    git_output(repo, &["fetch", staging_arg.as_str(), refspec.as_str()])
+        .await
+        .map_err(|stderr| format!("git fetch wake branch: {stderr}"))?;
+
+    // 3. Diff stat of the committed branch against its base, read from the
+    //    real repo now that the branch lives there.
+    let head_sha = git_output(repo, &["rev-parse", wake_branch])
+        .await
+        .map_err(|stderr| format!("git rev-parse {wake_branch}: {stderr}"))?;
+    let numstat = git_output(repo, &["diff", "--numstat", base_sha, wake_branch])
+        .await
+        .map_err(|stderr| format!("git diff --numstat {base_sha} {wake_branch}: {stderr}"))?;
+    let diff_stat = parse_numstat(&numstat);
+
+    // 4. Discard the disposable clone.
+    std::fs::remove_dir_all(staging)
+        .map_err(|err| format!("remove staging clone {staging_arg}: {err}"))?;
+
+    Ok(CoreGitWorkspaceFinalization {
+        head_sha,
+        committed,
+        diff_stat,
+    })
 }
 
 fn parse_numstat(numstat: &str) -> CoreWorkspaceDiffStat {
@@ -1100,18 +1116,6 @@ fn parse_numstat(numstat: &str) -> CoreWorkspaceDiffStat {
         deletions,
         files,
     }
-}
-
-fn status_path(line: &str) -> Option<String> {
-    let trimmed = line.get(3..)?.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    let path = trimmed
-        .split_once(" -> ")
-        .map_or(trimmed, |(_, renamed)| renamed)
-        .to_string();
-    Some(path)
 }
 
 async fn git_output(cwd: &Path, args: &[&str]) -> Result<String, String> {
@@ -2036,5 +2040,115 @@ mod tests {
             wake_context_change_event_seq(&input),
             original_change_event_seq
         );
+    }
+
+    /// Build a minimal real repo with one commit; returns `(repo_dir, base_sha)`.
+    async fn seed_repo(repo: &Path) -> String {
+        git_output(repo, &["init", "-q"]).await.unwrap();
+        git_output(repo, &["config", "user.name", "Test"])
+            .await
+            .unwrap();
+        git_output(repo, &["config", "user.email", "test@proxima.local"])
+            .await
+            .unwrap();
+        std::fs::write(repo.join("seed.txt"), "seed\n").unwrap();
+        git_output(repo, &["add", "-A"]).await.unwrap();
+        git_output(repo, &["commit", "-q", "-m", "seed"])
+            .await
+            .unwrap();
+        git_output(repo, &["rev-parse", "HEAD"]).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn wake_clone_returns_changes_as_branch_without_touching_real_repo() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        let base_sha = seed_repo(&repo).await;
+        let real_head_before = git_output(&repo, &["rev-parse", "HEAD"]).await.unwrap();
+        let branch = "proxima/wake/test";
+        let staging = tmp.path().join("wake-clones").join("test");
+
+        clone_repo_to_staging(&repo, &staging, branch, &base_sha)
+            .await
+            .unwrap();
+        // The clone is a real, self-contained repo positioned on the wake branch.
+        assert!(staging.join(".git").is_dir(), "clone has a real .git dir");
+        assert!(staging.join("seed.txt").is_file());
+        let staging_branch = git_output(&staging, &["rev-parse", "--abbrev-ref", "HEAD"])
+            .await
+            .unwrap();
+        assert_eq!(staging_branch, branch);
+
+        // The personality makes a change inside the clone.
+        std::fs::write(staging.join("wake.txt"), "wake output\n").unwrap();
+
+        let finalization =
+            finalize_core_git_clone(&staging, &repo, branch, &base_sha, WakeWorkspaceFinalize::CommitAll)
+                .await
+                .unwrap();
+
+        assert!(finalization.committed);
+        assert_eq!(finalization.diff_stat.files_changed, 1);
+        assert_eq!(finalization.diff_stat.files[0].path, "wake.txt");
+
+        // The wake branch landed in the real repo, pointing at the commit.
+        let fetched = git_output(&repo, &["rev-parse", branch]).await.unwrap();
+        assert_eq!(fetched, finalization.head_sha);
+
+        // The real repo's working tree and current branch are untouched.
+        assert!(!repo.join("wake.txt").exists(), "real working tree untouched");
+        let real_status = git_output(&repo, &["status", "--porcelain"]).await.unwrap();
+        assert!(real_status.is_empty(), "real repo working tree stays clean");
+        let real_head_after = git_output(&repo, &["rev-parse", "HEAD"]).await.unwrap();
+        assert_eq!(real_head_after, real_head_before, "real HEAD unmoved");
+
+        // The disposable clone is discarded.
+        assert!(!staging.exists(), "staging clone removed after finalize");
+    }
+
+    #[tokio::test]
+    async fn wake_clone_with_no_changes_reports_uncommitted() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        let base_sha = seed_repo(&repo).await;
+        let branch = "proxima/wake/empty";
+        let staging = tmp.path().join("clone");
+
+        clone_repo_to_staging(&repo, &staging, branch, &base_sha)
+            .await
+            .unwrap();
+        let finalization =
+            finalize_core_git_clone(&staging, &repo, branch, &base_sha, WakeWorkspaceFinalize::CommitAll)
+                .await
+                .unwrap();
+
+        assert!(!finalization.committed);
+        assert_eq!(finalization.head_sha, base_sha, "no commit, head stays at base");
+        assert_eq!(finalization.diff_stat.files_changed, 0);
+    }
+
+    #[tokio::test]
+    async fn wake_clone_leave_dirty_marks_commit_as_wip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        let base_sha = seed_repo(&repo).await;
+        let branch = "proxima/wake/wip";
+        let staging = tmp.path().join("clone");
+
+        clone_repo_to_staging(&repo, &staging, branch, &base_sha)
+            .await
+            .unwrap();
+        std::fs::write(staging.join("wake.txt"), "draft\n").unwrap();
+        finalize_core_git_clone(&staging, &repo, branch, &base_sha, WakeWorkspaceFinalize::LeaveDirty)
+            .await
+            .unwrap();
+
+        let subject = git_output(&repo, &["log", "-1", "--format=%s", branch])
+            .await
+            .unwrap();
+        assert!(subject.contains("WIP"), "leave_dirty commit subject marks WIP: {subject}");
     }
 }

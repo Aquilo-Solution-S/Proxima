@@ -188,6 +188,15 @@ impl WakeEntryExecutionMode {
     specta::Type,
     schemars::JsonSchema,
 )]
+/// How a workspace wake's changes are finalized.
+///
+/// Under the `GitWorktree` binding (now backed by a per-wake `git clone`),
+/// **both variants commit** — `git fetch` returns commits to the real repo,
+/// not uncommitted working-tree state, so a workspace wake always commits
+/// onto its `proxima/wake/<id>` branch. The variant only labels the commit:
+/// `CommitAll` writes a normal message, `LeaveDirty` marks it as WIP.
+/// `LeaveDirty` is retained for serde-compat with stored wake configs;
+/// branch *disposition* (keep / merge / discard) is a separate concern.
 #[serde(rename_all = "snake_case")]
 pub enum WakeWorkspaceFinalize {
     CommitAll,
