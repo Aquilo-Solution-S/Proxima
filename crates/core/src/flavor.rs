@@ -7,7 +7,7 @@
 use crate::personality::workspace::WorkspaceRunner;
 use crate::verbs::schema::{
     FlavorRegistryFrozen, MemorySearchProjection, MemorySearchProjectionField, PayloadKind,
-    PayloadValidatorEntry, SchemaInfo,
+    PayloadValidator, PayloadValidatorEntry, SchemaInfo,
 };
 use crate::{
     AbstractionPayload, CitationMappingPayload, CitedObjectPayload, DependencySatisfactionRule,
@@ -140,108 +140,112 @@ impl FlavorRegistry {
         Self::default()
     }
 
-    pub fn add_fact_schema<F: FactPayload>(&mut self) {
-        let schema_info = SchemaInfo {
-            schema_id: F::schema_id(),
-            schema_version: SchemaVersion::new(F::SCHEMA_VERSION),
-            kind: PayloadKind::Fact,
-            filter_keys: vec![],
-            sidecar_table: Some(F::sidecar_table().to_string()),
-            natural_key_columns: F::natural_key_columns()
-                .iter()
-                .map(|s| (*s).to_string())
-                .collect(),
-            tombstone: F::tombstone().map(|t| crate::verbs::schema::SchemaTombstone {
-                column: t.column.to_string(),
-                value: t.value.to_string(),
-            }),
-            cbor_encoder: Some(encode_payload_cbor::<F>),
-        };
+    /// Shared tail for the typed `add_*_schema` methods: records the
+    /// optional search projection, the `SchemaInfo`, and the payload
+    /// validator entry. Callers build the kind-specific `SchemaInfo`;
+    /// `schema_id` / `schema_version` / `kind` for the validator entry
+    /// are read back off it so they cannot drift from the schema.
+    fn register_schema(
+        &mut self,
+        schema_info: SchemaInfo,
+        search_projection: Option<crate::SearchProjection>,
+        validate: PayloadValidator,
+        json_schema: Option<serde_json::Value>,
+    ) {
         maybe_add_search_projection(
             &mut self.search_projections,
             &schema_info,
-            F::search_projection(),
+            search_projection,
         );
+        let schema_id = schema_info.schema_id.clone();
+        let schema_version = schema_info.schema_version;
+        let kind = schema_info.kind;
         self.schemas.push(schema_info);
         self.validators.push(PayloadValidatorEntry {
-            schema_id: F::schema_id(),
-            schema_version: SchemaVersion::new(F::SCHEMA_VERSION),
-            kind: PayloadKind::Fact,
-            validate: validate_payload_type::<F>,
-            json_schema: F::json_schema(),
+            schema_id,
+            schema_version,
+            kind,
+            validate,
+            json_schema,
         });
+    }
+
+    pub fn add_fact_schema<F: FactPayload>(&mut self) {
+        self.register_schema(
+            SchemaInfo {
+                schema_id: F::schema_id(),
+                schema_version: SchemaVersion::new(F::SCHEMA_VERSION),
+                kind: PayloadKind::Fact,
+                filter_keys: vec![],
+                sidecar_table: Some(F::sidecar_table().to_string()),
+                natural_key_columns: F::natural_key_columns()
+                    .iter()
+                    .map(|s| (*s).to_string())
+                    .collect(),
+                tombstone: F::tombstone().map(|t| crate::verbs::schema::SchemaTombstone {
+                    column: t.column.to_string(),
+                    value: t.value.to_string(),
+                }),
+                cbor_encoder: Some(encode_payload_cbor::<F>),
+            },
+            F::search_projection(),
+            validate_payload_type::<F>,
+            F::json_schema(),
+        );
     }
 
     pub fn add_abstraction_schema<A: AbstractionPayload>(&mut self) {
-        let schema_info = SchemaInfo {
-            schema_id: A::schema_id(),
-            schema_version: SchemaVersion::new(A::SCHEMA_VERSION),
-            kind: PayloadKind::Abstraction,
-            filter_keys: vec![],
-            sidecar_table: Some(A::sidecar_table().to_string()),
-            natural_key_columns: vec![],
-            tombstone: None,
-            cbor_encoder: Some(encode_payload_cbor::<A>),
-        };
-        maybe_add_search_projection(
-            &mut self.search_projections,
-            &schema_info,
+        self.register_schema(
+            SchemaInfo {
+                schema_id: A::schema_id(),
+                schema_version: SchemaVersion::new(A::SCHEMA_VERSION),
+                kind: PayloadKind::Abstraction,
+                filter_keys: vec![],
+                sidecar_table: Some(A::sidecar_table().to_string()),
+                natural_key_columns: vec![],
+                tombstone: None,
+                cbor_encoder: Some(encode_payload_cbor::<A>),
+            },
             A::search_projection(),
+            validate_payload_type::<A>,
+            A::json_schema(),
         );
-        self.schemas.push(schema_info);
-        self.validators.push(PayloadValidatorEntry {
-            schema_id: A::schema_id(),
-            schema_version: SchemaVersion::new(A::SCHEMA_VERSION),
-            kind: PayloadKind::Abstraction,
-            validate: validate_payload_type::<A>,
-            json_schema: A::json_schema(),
-        });
     }
 
     pub fn add_perspective_schema<P: PerspectivePayload>(&mut self) {
-        let schema_info = SchemaInfo {
-            schema_id: P::schema_id(),
-            schema_version: SchemaVersion::new(P::SCHEMA_VERSION),
-            kind: PayloadKind::Perspective,
-            filter_keys: vec![],
-            sidecar_table: Some(P::sidecar_table().to_string()),
-            natural_key_columns: vec![],
-            tombstone: None,
-            cbor_encoder: Some(encode_payload_cbor::<P>),
-        };
-        maybe_add_search_projection(
-            &mut self.search_projections,
-            &schema_info,
+        self.register_schema(
+            SchemaInfo {
+                schema_id: P::schema_id(),
+                schema_version: SchemaVersion::new(P::SCHEMA_VERSION),
+                kind: PayloadKind::Perspective,
+                filter_keys: vec![],
+                sidecar_table: Some(P::sidecar_table().to_string()),
+                natural_key_columns: vec![],
+                tombstone: None,
+                cbor_encoder: Some(encode_payload_cbor::<P>),
+            },
             P::search_projection(),
+            validate_payload_type::<P>,
+            P::json_schema(),
         );
-        self.schemas.push(schema_info);
-        self.validators.push(PayloadValidatorEntry {
-            schema_id: P::schema_id(),
-            schema_version: SchemaVersion::new(P::SCHEMA_VERSION),
-            kind: PayloadKind::Perspective,
-            validate: validate_payload_type::<P>,
-            json_schema: P::json_schema(),
-        });
     }
 
     pub fn add_goal_schema<G: GoalPayload>(&mut self) {
-        self.schemas.push(SchemaInfo {
-            schema_id: G::schema_id(),
-            schema_version: SchemaVersion::new(G::SCHEMA_VERSION),
-            kind: PayloadKind::Goal,
-            filter_keys: vec![],
-            sidecar_table: Some(G::sidecar_table().to_string()),
-            natural_key_columns: vec![],
-            tombstone: None,
-            cbor_encoder: Some(encode_payload_cbor::<G>),
-        });
-        self.validators.push(PayloadValidatorEntry {
-            schema_id: G::schema_id(),
-            schema_version: SchemaVersion::new(G::SCHEMA_VERSION),
-            kind: PayloadKind::Goal,
-            validate: validate_payload_type::<G>,
-            json_schema: G::json_schema(),
-        });
+        self.register_schema(
+            SchemaInfo {
+                schema_id: G::schema_id(),
+                schema_version: SchemaVersion::new(G::SCHEMA_VERSION),
+                kind: PayloadKind::Goal,
+                filter_keys: vec![],
+                sidecar_table: Some(G::sidecar_table().to_string()),
+                natural_key_columns: vec![],
+                tombstone: None,
+                cbor_encoder: Some(encode_payload_cbor::<G>),
+            },
+            None,
+            validate_payload_type::<G>,
+            G::json_schema(),
+        );
     }
 
     /// Register a typed `EdgePayload` schema. The descriptor that
@@ -249,63 +253,57 @@ impl FlavorRegistry {
     /// `add_relation`; the substrate cross-checks the linkage at
     /// `freeze()` time.
     pub fn add_edge_schema<E: EdgePayload>(&mut self) {
-        self.schemas.push(SchemaInfo {
-            schema_id: E::schema_id(),
-            schema_version: SchemaVersion::new(E::SCHEMA_VERSION),
-            kind: PayloadKind::Edge,
-            filter_keys: vec![],
-            sidecar_table: Some(E::sidecar_table().to_string()),
-            natural_key_columns: vec![],
-            tombstone: None,
-            cbor_encoder: Some(encode_payload_cbor::<E>),
-        });
-        self.validators.push(PayloadValidatorEntry {
-            schema_id: E::schema_id(),
-            schema_version: SchemaVersion::new(E::SCHEMA_VERSION),
-            kind: PayloadKind::Edge,
-            validate: validate_payload_type::<E>,
-            json_schema: E::json_schema(),
-        });
+        self.register_schema(
+            SchemaInfo {
+                schema_id: E::schema_id(),
+                schema_version: SchemaVersion::new(E::SCHEMA_VERSION),
+                kind: PayloadKind::Edge,
+                filter_keys: vec![],
+                sidecar_table: Some(E::sidecar_table().to_string()),
+                natural_key_columns: vec![],
+                tombstone: None,
+                cbor_encoder: Some(encode_payload_cbor::<E>),
+            },
+            None,
+            validate_payload_type::<E>,
+            E::json_schema(),
+        );
     }
 
     pub fn add_cited_object_schema<C: CitedObjectPayload>(&mut self) {
-        self.schemas.push(SchemaInfo {
-            schema_id: C::schema_id(),
-            schema_version: SchemaVersion::new(C::SCHEMA_VERSION),
-            kind: PayloadKind::CitedObject,
-            filter_keys: vec![],
-            sidecar_table: Some(C::sidecar_table().to_string()),
-            natural_key_columns: vec![],
-            tombstone: None,
-            cbor_encoder: Some(encode_payload_cbor::<C>),
-        });
-        self.validators.push(PayloadValidatorEntry {
-            schema_id: C::schema_id(),
-            schema_version: SchemaVersion::new(C::SCHEMA_VERSION),
-            kind: PayloadKind::CitedObject,
-            validate: validate_payload_type::<C>,
-            json_schema: C::json_schema(),
-        });
+        self.register_schema(
+            SchemaInfo {
+                schema_id: C::schema_id(),
+                schema_version: SchemaVersion::new(C::SCHEMA_VERSION),
+                kind: PayloadKind::CitedObject,
+                filter_keys: vec![],
+                sidecar_table: Some(C::sidecar_table().to_string()),
+                natural_key_columns: vec![],
+                tombstone: None,
+                cbor_encoder: Some(encode_payload_cbor::<C>),
+            },
+            None,
+            validate_payload_type::<C>,
+            C::json_schema(),
+        );
     }
 
     pub fn add_citation_mapping_schema<M: CitationMappingPayload>(&mut self) {
-        self.schemas.push(SchemaInfo {
-            schema_id: M::schema_id(),
-            schema_version: SchemaVersion::new(M::SCHEMA_VERSION),
-            kind: PayloadKind::CitationMapping,
-            filter_keys: vec![],
-            sidecar_table: Some(M::sidecar_table().to_string()),
-            natural_key_columns: vec![],
-            tombstone: None,
-            cbor_encoder: Some(encode_payload_cbor::<M>),
-        });
-        self.validators.push(PayloadValidatorEntry {
-            schema_id: M::schema_id(),
-            schema_version: SchemaVersion::new(M::SCHEMA_VERSION),
-            kind: PayloadKind::CitationMapping,
-            validate: validate_payload_type::<M>,
-            json_schema: M::json_schema(),
-        });
+        self.register_schema(
+            SchemaInfo {
+                schema_id: M::schema_id(),
+                schema_version: SchemaVersion::new(M::SCHEMA_VERSION),
+                kind: PayloadKind::CitationMapping,
+                filter_keys: vec![],
+                sidecar_table: Some(M::sidecar_table().to_string()),
+                natural_key_columns: vec![],
+                tombstone: None,
+                cbor_encoder: Some(encode_payload_cbor::<M>),
+            },
+            None,
+            validate_payload_type::<M>,
+            M::json_schema(),
+        );
     }
 
     /// Register a relation. Substrate-only relations carry no
@@ -367,7 +365,7 @@ impl FlavorRegistry {
         let prefix = format!("{expected_prefix}/");
         assert!(
             T::NAME.starts_with(&prefix),
-            "McpTool::NAME {:?} must start with flavor prefix {:?}",
+            "McpTool::NAME {:?} must start with prefix {:?}",
             T::NAME,
             prefix,
         );
@@ -395,32 +393,10 @@ impl FlavorRegistry {
     /// Register a substrate-shipped MCP tool. Asserts the name starts
     /// with `"core/"` (no flavor prefix). Used in `Default::default()`
     /// to wire the personality-config-CRUD tools into every composite
-    /// binary.
+    /// binary. Same registration path as `add_mcp_tool`, pinned to the
+    /// `core` prefix.
     pub(crate) fn add_substrate_mcp_tool<T: McpTool>(&mut self) {
-        assert!(
-            T::NAME.starts_with("core/"),
-            "substrate McpTool::NAME {:?} must start with 'core/'",
-            T::NAME,
-        );
-        let schema = schemars::schema_for!(T::Args);
-        let mut args_schema = serde_json::to_value(schema).expect("JsonSchema must serialize");
-        inline_local_schema_refs(&mut args_schema);
-        describe_generated_schema_fields(&mut args_schema);
-        let call: McpCallFn = |ctx, args| {
-            Box::pin(async move {
-                let typed: T::Args = serde_json::from_value(args)
-                    .map_err(|e| McpToolError::InvalidInput(e.to_string()))?;
-                let output = T::call(ctx, typed).await?;
-                serde_json::to_value(output).map_err(|e| McpToolError::InvalidInput(e.to_string()))
-            })
-        };
-        self.mcp_tools.push(McpToolDescriptor {
-            name: T::NAME,
-            description: T::DESCRIPTION,
-            produces_schema_ids: T::PRODUCES_SCHEMA_IDS,
-            args_schema,
-            call,
-        });
+        self.add_mcp_tool::<T>("core");
     }
 
     #[must_use]

@@ -79,3 +79,45 @@ fn goal_schemas_and_relations_register() {
         ["proxima-goal/goal-achieved-v1"]
     );
 }
+
+#[test]
+fn goal_payload_tool_schema_exposes_adjacent_tagged_object() {
+    let mut registry = FlavorRegistry::new();
+    proxima_flavor_goal::register(&mut registry);
+    let frozen = registry.freeze();
+
+    let propose = frozen
+        .list_mcp_tools()
+        .iter()
+        .find(|tool| tool.name == "proxima-goal/goal_propose")
+        .expect("goal_propose tool registered");
+
+    let payload = propose
+        .args_schema
+        .pointer("/properties/payload")
+        .expect("payload schema");
+    assert_eq!(
+        payload.pointer("/type").and_then(|v| v.as_str()),
+        Some("object")
+    );
+    assert_eq!(
+        payload
+            .pointer("/properties/schema_id/type")
+            .and_then(|v| v.as_str()),
+        Some("string")
+    );
+    assert_eq!(
+        payload
+            .pointer("/properties/body/type")
+            .and_then(|v| v.as_str()),
+        Some("object")
+    );
+    assert_eq!(
+        payload.pointer("/required"),
+        Some(&serde_json::json!(["schema_id", "body"]))
+    );
+    assert_ne!(
+        payload.pointer("/type").and_then(|v| v.as_str()),
+        Some("string")
+    );
+}

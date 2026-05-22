@@ -5,6 +5,8 @@
     clippy::needless_pass_by_value
 )]
 
+use std::borrow::Cow;
+
 use proxima_core::mcp::{McpToolCtx, McpToolError};
 use proxima_core::relation::{CORE_AUTHORED_RELATION, CORE_DERIVED_FROM_RELATION};
 use proxima_core::verbs::event_ingest::{
@@ -32,13 +34,68 @@ const LIFECYCLE_SOURCE_ID: &str = "proxima-goal/lifecycle";
 const LIFECYCLE_OBJECT_SCHEMA: &str = "proxima-goal/lifecycle-object-v1";
 const LIFECYCLE_CITATION_MAPPING_SCHEMA: &str = "proxima-goal/lifecycle-whole-v1";
 
-#[derive(Debug, Clone, serde::Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, serde::Deserialize)]
 #[serde(tag = "schema_id", content = "body")]
 pub enum GoalPayloadInput {
     #[serde(rename = "proxima-goal/simple-text-v1")]
     SimpleText(SimpleTextGoalBody),
     #[serde(rename = "proxima-goal/task-v1")]
     Task(TaskGoalBody),
+}
+
+impl schemars::JsonSchema for GoalPayloadInput {
+    fn inline_schema() -> bool {
+        true
+    }
+
+    fn schema_name() -> Cow<'static, str> {
+        Cow::Borrowed("GoalPayloadInput")
+    }
+
+    fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        serde_json::json!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "schema_id": {
+                    "type": "string",
+                    "enum": [
+                        SimpleTextGoalV1::SCHEMA_ID,
+                        TaskGoalV1::SCHEMA_ID
+                    ],
+                    "description": "Goal payload schema discriminator."
+                },
+                "body": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "description": "Typed Goal payload body for the selected schema_id.",
+                    "properties": {
+                        "title": {
+                            "type": "string",
+                            "description": "Goal title, 1 to 240 chars."
+                        },
+                        "text": {
+                            "type": "string",
+                            "description": "Goal text/body, 1 to 20000 chars."
+                        },
+                        "due_at": {
+                            "type": ["string", "null"],
+                            "description": "Optional RFC3339 due timestamp for proxima-goal/task-v1."
+                        },
+                        "priority": {
+                            "type": ["string", "null"],
+                            "enum": ["Low", "Medium", "High", null],
+                            "description": "Optional task priority for proxima-goal/task-v1."
+                        }
+                    },
+                    "required": ["title", "text"]
+                }
+            },
+            "required": ["schema_id", "body"]
+        })
+        .try_into()
+        .expect("GoalPayloadInput schema is valid JSON Schema")
+    }
 }
 
 #[derive(Debug, Clone, serde::Deserialize, schemars::JsonSchema)]

@@ -125,6 +125,25 @@ macro_rules! proxima_schema_id {
 ///
 #[macro_export]
 macro_rules! proxima_flavor {
+    // Internal: register one schema-kind list, asserting each
+    // `SCHEMA_ID` carries the flavor prefix. Collapses what were five
+    // byte-identical per-kind arms in the main rule below.
+    (@schemas $registry:ident $prefix:ident $trait:ident $add:ident [ $($ty:ty),* $(,)? ]) => {
+        $({
+            use $crate::$trait;
+            let id = <$ty as $trait>::SCHEMA_ID;
+            ::std::assert!(
+                id.starts_with($prefix),
+                ::std::concat!(
+                    ::std::stringify!($trait),
+                    " SCHEMA_ID {:?} does not start with crate prefix {:?}",
+                ),
+                id,
+                $prefix,
+            );
+            $registry.$add::<$ty>();
+        })*
+    };
     (
         name = $name:literal
         $(, display_name = $display_name:literal)?
@@ -163,66 +182,16 @@ macro_rules! proxima_flavor {
                     provenance: $crate::FlavorProvenance::Builtin,
                 });
             }
-            $($(
-                {
-                    use $crate::FactPayload;
-                    let id = <$fact as FactPayload>::SCHEMA_ID;
-                    assert!(
-                        id.starts_with(expected_prefix),
-                        "FactPayload SCHEMA_ID {:?} does not start with crate prefix {:?}",
-                        id, expected_prefix,
-                    );
-                    registry.add_fact_schema::<$fact>();
-                }
-            )*)?
-            $($(
-                {
-                    use $crate::AbstractionPayload;
-                    let id = <$abs as AbstractionPayload>::SCHEMA_ID;
-                    assert!(
-                        id.starts_with(expected_prefix),
-                        "AbstractionPayload SCHEMA_ID {:?} does not start with crate prefix {:?}",
-                        id, expected_prefix,
-                    );
-                    registry.add_abstraction_schema::<$abs>();
-                }
-            )*)?
-            $($(
-                {
-                    use $crate::PerspectivePayload;
-                    let id = <$persp as PerspectivePayload>::SCHEMA_ID;
-                    assert!(
-                        id.starts_with(expected_prefix),
-                        "PerspectivePayload SCHEMA_ID {:?} does not start with crate prefix {:?}",
-                        id, expected_prefix,
-                    );
-                    registry.add_perspective_schema::<$persp>();
-                }
-            )*)?
-            $($(
-                {
-                    use $crate::GoalPayload;
-                    let id = <$goal as GoalPayload>::SCHEMA_ID;
-                    assert!(
-                        id.starts_with(expected_prefix),
-                        "GoalPayload SCHEMA_ID {:?} does not start with crate prefix {:?}",
-                        id, expected_prefix,
-                    );
-                    registry.add_goal_schema::<$goal>();
-                }
-            )*)?
-            $($(
-                {
-                    use $crate::EdgePayload;
-                    let id = <$edge as EdgePayload>::SCHEMA_ID;
-                    assert!(
-                        id.starts_with(expected_prefix),
-                        "EdgePayload SCHEMA_ID {:?} does not start with crate prefix {:?}",
-                        id, expected_prefix,
-                    );
-                    registry.add_edge_schema::<$edge>();
-                }
-            )*)?
+            $($crate::proxima_flavor!(@schemas registry expected_prefix
+                FactPayload add_fact_schema [ $($fact),* ]);)?
+            $($crate::proxima_flavor!(@schemas registry expected_prefix
+                AbstractionPayload add_abstraction_schema [ $($abs),* ]);)?
+            $($crate::proxima_flavor!(@schemas registry expected_prefix
+                PerspectivePayload add_perspective_schema [ $($persp),* ]);)?
+            $($crate::proxima_flavor!(@schemas registry expected_prefix
+                GoalPayload add_goal_schema [ $($goal),* ]);)?
+            $($crate::proxima_flavor!(@schemas registry expected_prefix
+                EdgePayload add_edge_schema [ $($edge),* ]);)?
             $($(
                 {
                     let descriptor: $crate::RelationDescriptor = $rel;
