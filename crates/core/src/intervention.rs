@@ -5,9 +5,12 @@ use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
+use async_trait::async_trait;
+
+use crate::verbs::event_ingest::EventDraft;
 use crate::{
-    FactPayload, MemoryId, Owner, SearchProjection, SearchProjectionColumnKind,
-    SearchProjectionField, SourceBatchId, SourceId,
+    FactPayload, FlavorRegistryFrozen, MemoryId, Owner, SearchProjection,
+    SearchProjectionColumnKind, SearchProjectionField, SourceBatchId, SourceId, StorageError,
 };
 use crate::{PersonalityInstanceId, SchemaId, SchemaVersion};
 
@@ -240,5 +243,130 @@ pub fn intervention_decision_event_draft(
             schema_id: SchemaId::new(INTERVENTION_DECISION_WHOLE_SCHEMA.into()),
             schema_version: SchemaVersion::new(1),
         },
+    }
+}
+
+// ---------------------------------------------------------------------------
+// InterventionStore — the storage capability the intervention tool depends on.
+//
+// A supertrait of `Storage` (see `crate::storage`). All data access for the
+// `core/emit_intervention_decision` tool lives behind this trait; the Postgres
+// implementation is in `proxima-storage-pg`. The tool never touches a
+// `PgPool` — it builds typed payloads and hands them to these verbs. Default
+// method bodies keep non-Postgres `Storage` impls (test fakes, `NoopStorage`)
+// trivial.
+// ---------------------------------------------------------------------------
+
+/// An InterventionRequested Fact loaded for decision evaluation.
+#[derive(Debug, Clone)]
+pub struct LoadedInterventionRequest {
+    pub memory_id: MemoryId,
+    pub target_intervention_personality_instance_id: Uuid,
+    pub intervention_extension_rounds: i32,
+    pub intervention_hard_cap_rounds: i32,
+}
+
+/// Input to [`InterventionStore::emit_intervention_decision_atomic`].
+#[derive(Debug, Clone)]
+pub struct EmitInterventionDecisionInput {
+    pub owner: Owner,
+    pub payload: InterventionDecisionV1,
+    /// `Self` Perspective of the Wake Supervisor authoring the decision:
+    /// source of the `core/authored` edge and the authorship owner of
+    /// both provenance edges.
+    pub caller_self: MemoryId,
+}
+
+/// Outcome of [`InterventionStore::emit_intervention_decision_atomic`].
+#[derive(Debug, Clone)]
+pub struct InterventionDecisionEmitOutcome {
+    pub memory_id: MemoryId,
+    pub idempotent_replay: bool,
+}
+
+/// Build the `EventDraft` for an intervention-decision Fact: CBOR-encode
+/// the typed payload and wire the content-addressing schema ids. Pure
+/// (no I/O) — the storage verb calls this before opening its transaction.
+///
+/// # Errors
+///
+/// Returns `StorageError::Internal` if `payload` fails to CBOR-encode.
+pub fn intervention_decision_fact_event_draft(
+    owner: &Owner,
+    payload: &InterventionDecisionV1,
+) -> Result<EventDraft, StorageError> {
+    let mut payload_bytes = Vec::new();
+    ciborium::ser::into_writer(payload, &mut payload_bytes).map_err(|err| {
+        StorageError::Internal(format!("serialize intervention decision payload: {err}"))
+    })?;
+    Ok(intervention_decision_event_draft(
+        owner.clone(),
+        &payload_bytes,
+        SourceBatchId::new(Uuid::now_v7()),
+        SourceId::new(INTERVENTION_SOURCE_ID),
+        payload.decided_at,
+    ))
+}
+
+fn intervention_store_unimplemented(verb: &str) -> StorageError {
+    StorageError::Internal(format!(
+        "storage backend does not implement InterventionStore::{verb}"
+    ))
+}
+
+#[async_trait]
+pub trait InterventionStore: Send + Sync {
+    /// Load the InterventionRequested Fact backing `memory_id`, or `None`
+    /// when it is not an intervention request visible to `owner`.
+    async fn load_intervention_request(
+        &self,
+        _owner: &Owner,
+        _memory_id: MemoryId,
+    ) -> Result<Option<LoadedInterventionRequest>, StorageError> {
+        Ok(None)
+    }
+
+    /// Memory id of an intervention decision already emitted for
+    /// `(request, idempotency_key)`, enabling idempotent replay.
+    async fn existing_intervention_decision(
+        &self,
+        _owner: &Owner,
+        _intervention_request_memory_id: MemoryId,
+        _idempotency_key: &str,
+    ) -> Result<Option<MemoryId>, StorageError> {
+        Ok(None)
+    }
+
+    /// Whether `caller_self` is the active Wake Supervisor personality
+    /// `target_personality_instance_id` for `owner`.
+    async fn is_intervention_supervisor(
+        &self,
+        _owner: &Owner,
+        _caller_self: MemoryId,
+        _target_personality_instance_id: Uuid,
+    ) -> Result<bool, StorageError> {
+        Ok(false)
+    }
+
+    /// Sum of `grant_rounds` across prior `continue` decisions for the
+    /// request, used to enforce the intervention hard cap.
+    async fn prior_continue_grant_rounds(
+        &self,
+        _owner: &Owner,
+        _intervention_request_memory_id: MemoryId,
+    ) -> Result<i64, StorageError> {
+        Ok(0)
+    }
+
+    /// Atomically materialize an intervention-decision Fact, its sidecar
+    /// row, and the `core/authored` + `core/derived-from` provenance edges.
+    async fn emit_intervention_decision_atomic(
+        &self,
+        _registry: &FlavorRegistryFrozen,
+        _input: &EmitInterventionDecisionInput,
+    ) -> Result<InterventionDecisionEmitOutcome, StorageError> {
+        Err(intervention_store_unimplemented(
+            "emit_intervention_decision_atomic",
+        ))
     }
 }

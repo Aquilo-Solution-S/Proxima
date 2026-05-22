@@ -92,6 +92,7 @@ struct FixtureStorage {
 }
 
 impl proxima_core::ApprovalStore for FixtureStorage {}
+impl proxima_core::InterventionStore for FixtureStorage {}
 
 #[async_trait]
 impl Storage for FixtureStorage {
