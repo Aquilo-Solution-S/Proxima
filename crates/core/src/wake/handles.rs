@@ -163,11 +163,11 @@ mod tests {
         let seeded = pre_seed_wake_handles(&ctx);
         let preamble = format_wake_context_preamble(
             &seeded,
-            Some("proxima-intent/vision-brief-v1"),
+            Some("proxima-goal/goal-activated-v1"),
             "Abstraction",
         );
         assert!(preamble.contains("Abstraction memory"));
-        assert!(!preamble.contains("vision-brief-v1` Fact"));
+        assert!(!preamble.contains("goal-activated-v1` Fact"));
     }
 
     #[test]

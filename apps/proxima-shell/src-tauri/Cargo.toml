@@ -30,7 +30,6 @@ proxima-harness = { path = "../../../crates/harness" }
 proxima-storage-pg = { path = "../../../crates/storage-pg" }
 proxima-code = { path = "../../../flavors/code" }
 proxima-flavor-goal = { path = "../../../flavors/goal" }
-proxima-flavor-intent = { path = "../../../flavors/intent" }
 proxima-mcp-server = { path = "../../../crates/mcp-server" }
 proxima-mcp-substrate = { path = "../../../flavors/mcp" }
 proxima-llm-openai-compat = { path = "../../../crates/llm-openai-compat" }
