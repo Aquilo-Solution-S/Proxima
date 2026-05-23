@@ -10,7 +10,6 @@ pub mod outcome;
 pub mod tool_projection;
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -50,45 +49,10 @@ pub struct HarnessProgram {
     pub required_fulfillment_schema_ids: Vec<String>,
     /// Substrate + flavor tool ids from `WakeEntry.substrate_tool_palette`.
     pub substrate_tool_palette: Vec<String>,
-    /// Workspace-mode jail root. `None` for substrate-only wakes.
-    pub workspace_root: Option<PathBuf>,
-    /// Workspace tool ids allowed for this wake. Empty means no workspace
-    /// tools, even when a workspace root is present.
-    pub workspace_tool_palette: Vec<String>,
-    /// Per-wake observation-sandbox spec. `Some` puts the whole wake inside a
-    /// disposable Docker container; `None` runs workspace tools on the host
-    /// (the no-Docker dev escape hatch). Always `None` for substrate-only
-    /// wakes — only set when `workspace_root` is `Some`.
-    pub workspace_sandbox: Option<WorkspaceSandboxSpec>,
     /// Hard round cap. `0` means no model-imposed cap.
     pub max_rounds: u32,
     /// Resolved provider configuration.
     pub provider: ProviderTarget,
-}
-
-/// Per-wake observation-sandbox parameters.
-///
-/// The sandbox is an *observation instrument*, not an adversarial jail: it
-/// gives the personality maximum freedom inside one disposable container,
-/// contains the mess, and discards it. The container runs as the host
-/// uid/gid so bind-mounted clone files stay host-owned and host-side
-/// finalize operates on them without an ownership split.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct WorkspaceSandboxSpec {
-    /// Sandbox container image (carries build/test tooling).
-    pub image: String,
-    /// Logging forward-proxy image for the per-wake egress network.
-    pub proxy_image: String,
-    /// Host uid the container runs as.
-    pub uid: u32,
-    /// Host gid the container runs as.
-    pub gid: u32,
-    /// Named volume mounted at `/cache` for persistent build caches.
-    pub cache_volume: String,
-    /// Container memory limit, e.g. `"4g"`. `None` leaves it unbounded.
-    pub memory: Option<String>,
-    /// Docker label `proxima.wake=<invocation_id>` for orphan reaping.
-    pub label: String,
 }
 
 /// Resolved provider configuration after inference-target lookup.

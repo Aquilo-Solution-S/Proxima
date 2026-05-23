@@ -91,28 +91,6 @@ pub enum AuthoredByTs {
 #[serde(rename_all = "snake_case")]
 pub enum ExecutionModeTs {
     SubstrateOnly,
-    Workspace,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
-#[serde(rename_all = "snake_case")]
-pub enum WakeWorkspaceFinalizeTs {
-    CommitAll,
-    LeaveDirty,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum WakeWorkspaceBindingTs {
-    GitWorktree {
-        repo_path: String,
-        base_ref: String,
-        finalize: WakeWorkspaceFinalizeTs,
-        worktrees_root: Option<String>,
-    },
-    RegisteredRunner {
-        flavor_id: String,
-    },
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
@@ -145,8 +123,6 @@ pub struct WakeEntryTs {
     pub model_tier: ModelTierTs,
     pub inference_target_ref: Option<String>,
     pub substrate_tool_palette: Vec<String>,
-    pub workspace_tool_palette: Vec<String>,
-    pub workspace_binding: Option<WakeWorkspaceBindingTs>,
     pub required_produced_schema_ids: Vec<String>,
     pub max_rounds: u16,
     pub disabled_reason: Option<String>,
@@ -166,8 +142,6 @@ pub struct WakeEntryDraftTs {
     pub model_tier: ModelTierTs,
     pub inference_target_ref: Option<String>,
     pub substrate_tool_palette: Vec<String>,
-    pub workspace_tool_palette: Vec<String>,
-    pub workspace_binding: Option<WakeWorkspaceBindingTs>,
     pub required_produced_schema_ids: Vec<String>,
     pub max_rounds: u16,
 }
@@ -922,7 +896,6 @@ impl WakeEntryTs {
                 proxima_core::WakeEntryExecutionMode::SubstrateOnly => {
                     ExecutionModeTs::SubstrateOnly
                 }
-                proxima_core::WakeEntryExecutionMode::Workspace => ExecutionModeTs::Workspace,
             },
             authored_by: match row.authored_by {
                 proxima_core::WakeEntryAuthoredBy::Any => AuthoredByTs::Any,
@@ -940,8 +913,6 @@ impl WakeEntryTs {
             model_tier: tier_to_ts(row.model_tier),
             inference_target_ref: row.inference_target_ref.clone(),
             substrate_tool_palette: row.substrate_tool_palette.clone(),
-            workspace_tool_palette: row.workspace_tool_palette.clone(),
-            workspace_binding: row.workspace_binding.clone().map(workspace_binding_to_ts),
             required_produced_schema_ids: row.required_produced_schema_ids.clone(),
             max_rounds: row.max_rounds,
             disabled_reason: row.disabled_reason.clone(),
@@ -1008,64 +979,6 @@ pub(crate) fn tier_to_ts(tier: proxima_core::ModelTier) -> ModelTierTs {
     }
 }
 
-fn workspace_finalize_from_ts(
-    finalize: WakeWorkspaceFinalizeTs,
-) -> proxima_core::WakeWorkspaceFinalize {
-    match finalize {
-        WakeWorkspaceFinalizeTs::CommitAll => proxima_core::WakeWorkspaceFinalize::CommitAll,
-        WakeWorkspaceFinalizeTs::LeaveDirty => proxima_core::WakeWorkspaceFinalize::LeaveDirty,
-    }
-}
-
-fn workspace_finalize_to_ts(
-    finalize: proxima_core::WakeWorkspaceFinalize,
-) -> WakeWorkspaceFinalizeTs {
-    match finalize {
-        proxima_core::WakeWorkspaceFinalize::CommitAll => WakeWorkspaceFinalizeTs::CommitAll,
-        proxima_core::WakeWorkspaceFinalize::LeaveDirty => WakeWorkspaceFinalizeTs::LeaveDirty,
-    }
-}
-
-fn workspace_binding_from_ts(
-    binding: WakeWorkspaceBindingTs,
-) -> proxima_core::WakeWorkspaceBinding {
-    match binding {
-        WakeWorkspaceBindingTs::GitWorktree {
-            repo_path,
-            base_ref,
-            finalize,
-            worktrees_root,
-        } => proxima_core::WakeWorkspaceBinding::GitWorktree {
-            repo_path,
-            base_ref,
-            finalize: workspace_finalize_from_ts(finalize),
-            worktrees_root,
-        },
-        WakeWorkspaceBindingTs::RegisteredRunner { flavor_id } => {
-            proxima_core::WakeWorkspaceBinding::RegisteredRunner { flavor_id }
-        }
-    }
-}
-
-fn workspace_binding_to_ts(binding: proxima_core::WakeWorkspaceBinding) -> WakeWorkspaceBindingTs {
-    match binding {
-        proxima_core::WakeWorkspaceBinding::GitWorktree {
-            repo_path,
-            base_ref,
-            finalize,
-            worktrees_root,
-        } => WakeWorkspaceBindingTs::GitWorktree {
-            repo_path,
-            base_ref,
-            finalize: workspace_finalize_to_ts(finalize),
-            worktrees_root,
-        },
-        proxima_core::WakeWorkspaceBinding::RegisteredRunner { flavor_id } => {
-            WakeWorkspaceBindingTs::RegisteredRunner { flavor_id }
-        }
-    }
-}
-
 fn draft_to_core(
     draft: WakeEntryDraftTs,
     personality_instance_id: PersonalityInstanceId,
@@ -1082,7 +995,6 @@ fn draft_to_core(
         enabled: draft.enabled,
         execution_mode: match draft.execution_mode {
             ExecutionModeTs::SubstrateOnly => proxima_core::WakeExecutionMode::SubstrateOnly,
-            ExecutionModeTs::Workspace => proxima_core::WakeExecutionMode::Workspace,
         },
         authored_by: match draft.authored_by {
             AuthoredByTs::Any => proxima_core::WakeEntryAuthoredBy::Any,
@@ -1100,8 +1012,6 @@ fn draft_to_core(
         model_tier: tier_from_ts(draft.model_tier),
         inference_target_ref: draft.inference_target_ref,
         substrate_tool_palette: draft.substrate_tool_palette,
-        workspace_tool_palette: draft.workspace_tool_palette,
-        workspace_binding: draft.workspace_binding.map(workspace_binding_from_ts),
         required_produced_schema_ids: draft.required_produced_schema_ids,
         max_rounds: draft.max_rounds,
         intervention_policy: None,

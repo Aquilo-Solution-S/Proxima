@@ -128,9 +128,8 @@ pub struct SchemaResponse {
 /// the whole index after extending `schemas`.
 ///
 /// Only the collections that scale with *schema* count and sit on the
-/// EventIngest / GoalWrite / edge-write paths are indexed. `flavors`,
-/// `workspace_runners`, `workspace_triggers`, and
-/// `dependency_satisfaction_rules` scale with *flavor* count (bounded
+/// EventIngest / GoalWrite / edge-write paths are indexed. `flavors`
+/// and `dependency_satisfaction_rules` scale with *flavor* count (bounded
 /// by linked crates) and stay linear scans — indexing a handful of
 /// entries would not earn its keep.
 #[derive(Debug, Clone, Default)]
@@ -191,11 +190,6 @@ pub struct FlavorRegistryFrozen {
     validators: Vec<PayloadValidatorEntry>,
     mcp_tools: Vec<McpToolDescriptor>,
     flavors: Vec<FlavorDescriptor>,
-    workspace_runners: Vec<(
-        String,
-        std::sync::Arc<dyn crate::personality::workspace::WorkspaceRunner>,
-    )>,
-    workspace_triggers: Vec<String>,
     dependency_satisfaction_rules: Vec<(String, std::sync::Arc<dyn DependencySatisfactionRule>)>,
     /// Lookup acceleration, rebuilt by every constructor. Not part of
     /// the logical registry — derived purely from the `Vec`s above.
@@ -252,8 +246,6 @@ impl FlavorRegistryFrozen {
             validators,
             mcp_tools,
             flavors,
-            workspace_runners,
-            workspace_triggers,
             dependency_satisfaction_rules,
         } = registry;
         let index = FrozenIndex::build(&schemas, &validators, &relations);
@@ -264,8 +256,6 @@ impl FlavorRegistryFrozen {
             validators,
             mcp_tools,
             flavors,
-            workspace_runners,
-            workspace_triggers,
             dependency_satisfaction_rules,
             index,
         }
@@ -327,25 +317,6 @@ impl FlavorRegistryFrozen {
             .iter()
             .map(|tool| tool.name.to_string())
             .collect()
-    }
-
-    /// Lookup the workspace runner registered by the named flavor.
-    /// Returns `None` if the flavor either was not linked into the
-    /// composite binary or did not declare a workspace runner.
-    #[must_use]
-    pub fn workspace_runner(
-        &self,
-        flavor_id: &str,
-    ) -> Option<std::sync::Arc<dyn crate::personality::workspace::WorkspaceRunner>> {
-        self.workspace_runners
-            .iter()
-            .find(|(id, _)| id == flavor_id)
-            .map(|(_, runner)| runner.clone())
-    }
-
-    #[must_use]
-    pub fn is_workspace_trigger(&self, schema_id: &str) -> bool {
-        self.workspace_triggers.iter().any(|id| id == schema_id)
     }
 
     #[must_use]

@@ -15,7 +15,6 @@ pub mod rows;
 pub mod tool;
 pub mod tools;
 pub mod types;
-pub mod workspace;
 
 #[allow(clippy::module_inception)]
 pub mod personality;
@@ -24,15 +23,13 @@ pub mod personality;
 pub use personality::{
     MAX_WAKE_CHAIN_DEPTH, PersonalityInstanceId, PersonalityRef,
     ROOT_PERSONALITY_PERSPECTIVE_SCHEMA_ID, ROOT_PERSONALITY_PERSPECTIVE_SIDECAR_TABLE,
-    WORKSPACE_TOOL_CATALOG, workspace_tool_ids,
 };
 
 // Re-export from types submodule
 pub use types::{
     PersonalityMemoryKind, PersonalityStatus, WakeChainDepth, WakeEntryAuthoredBy,
     WakeEntryExecutionMode, WakeEntryGoalScope, WakeEntryTriggerKind, WakeExecutionMode,
-    WakeInvocationLogStatus, WakeInvocationStatus, WakeTraceOutcomeKind, WakeWorkspaceBinding,
-    WakeWorkspaceFinalize,
+    WakeInvocationLogStatus, WakeInvocationStatus, WakeTraceOutcomeKind,
 };
 
 // Re-export from drafts submodule

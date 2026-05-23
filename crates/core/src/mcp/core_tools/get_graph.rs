@@ -1,13 +1,13 @@
 //! `core/get_graph` — single-shot read of the owner's full personality
 //! graph plus the static catalogs that wake-entry config references.
 //!
-//! Composes the data that would otherwise require eight round trips
+//! Composes the data that would otherwise require seven round trips
 //! (list_personalities + get_personality per P, list_schemas,
-//! list_edge_types, list_substrate_tools, list_workspace_tools,
-//! list_inference_targets, list_inference_tier_bindings) into one atomic
-//! response. The personality projection mirrors `get_personality` and
-//! the catalog projections mirror their respective `list_*` tools so the
-//! shapes already familiar to the frontend stay intact.
+//! list_edge_types, list_substrate_tools, list_inference_targets,
+//! list_inference_tier_bindings) into one atomic response. The
+//! personality projection mirrors `get_personality` and the catalog
+//! projections mirror their respective `list_*` tools so the shapes
+//! already familiar to the frontend stay intact.
 
 use futures::future::BoxFuture;
 use schemars::JsonSchema;
@@ -23,7 +23,6 @@ use super::list_inference_targets::InferenceTargetItem;
 use super::list_inference_tier_bindings::InferenceTierBindingItem;
 use super::list_schemas::SchemaItem;
 use super::list_substrate_tools::SubstrateToolItem;
-use super::list_workspace_tools::WorkspaceToolItem;
 
 #[derive(Debug, Default)]
 pub struct GetGraphTool;
@@ -46,8 +45,6 @@ pub struct GetGraphOutput {
     pub edge_types: Vec<EdgeTypeItem>,
     /// Substrate-pack and flavor-registered MCP tool ids.
     pub substrate_tools: Vec<SubstrateToolItem>,
-    /// Workspace tool catalog (palette ids for workspace-mode wake entries).
-    pub workspace_tools: Vec<WorkspaceToolItem>,
     /// Inference targets registered for this owner.
     pub inference_targets: Vec<InferenceTargetItem>,
     /// Tier→target bindings for this owner.
@@ -69,8 +66,8 @@ fn kind_str(k: PayloadKind) -> &'static str {
 impl McpTool for GetGraphTool {
     const NAME: &'static str = "core/get_graph";
     const DESCRIPTION: &'static str = "Single-shot read of the owner's full personality graph plus the catalogs that wake-entry \
-         config references (schemas, edge types, substrate tools, workspace tools, inference \
-         targets, tier bindings). Use this in place of eight separate list_/get_ round trips when \
+         config references (schemas, edge types, substrate tools, inference \
+         targets, tier bindings). Use this in place of seven separate list_/get_ round trips when \
          rendering a graph view. Args: `{\"include_tombstoned\": false}` (default).";
     type Args = GetGraphArgs;
     type Output = GetGraphOutput;
@@ -107,8 +104,6 @@ impl McpTool for GetGraphTool {
                             model_tier: format!("{:?}", e.model_tier),
                             inference_target_ref: e.inference_target_ref,
                             substrate_tool_palette: e.substrate_tool_palette,
-                            workspace_tool_palette: e.workspace_tool_palette,
-                            workspace_binding: e.workspace_binding,
                             required_produced_schema_ids: e.required_produced_schema_ids,
                             execution_mode: format!("{:?}", e.execution_mode),
                             authored_by: format!("{:?}", e.authored_by),
@@ -172,14 +167,6 @@ impl McpTool for GetGraphTool {
                 });
             }
 
-            let workspace_tools = crate::personality::WORKSPACE_TOOL_CATALOG
-                .iter()
-                .map(|(id, desc)| WorkspaceToolItem {
-                    tool_id: (*id).to_string(),
-                    description: (*desc).to_string(),
-                })
-                .collect();
-
             let target_rows = storage
                 .list_inference_targets(&ctx.owner)
                 .await
@@ -209,7 +196,6 @@ impl McpTool for GetGraphTool {
                 schemas,
                 edge_types,
                 substrate_tools,
-                workspace_tools,
                 inference_targets,
                 inference_tier_bindings,
             })

@@ -10,8 +10,8 @@ use crate::harness::{
     FULFILLMENT_REMINDER_INTERVAL_ROUNDS, FULFILLMENT_STALL_ROUND_LIMIT, HarnessToolProjection,
     TOOL_ERROR_STREAK_LIMIT,
 };
-use crate::mcp::{HandleTable, provider_safe_tool_name};
-use crate::personality::{WORKSPACE_TOOL_CATALOG, WakeEntryRow};
+use crate::mcp::HandleTable;
+use crate::personality::WakeEntryRow;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct WakeContract {
@@ -43,13 +43,11 @@ pub struct WakeContractHandleDomains {
 #[derive(Debug, Clone, Serialize)]
 pub struct WakeContractToolPalettes {
     pub substrate_tool_palette: Vec<String>,
-    pub workspace_tool_palette: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct WakeContractResolvedTools {
     pub substrate: Vec<WakeContractTool>,
-    pub workspace: Vec<WakeContractTool>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -107,7 +105,6 @@ pub fn build_wake_contract(
         },
         tool_palettes: WakeContractToolPalettes {
             substrate_tool_palette: wake_entry.substrate_tool_palette.clone(),
-            workspace_tool_palette: wake_entry.workspace_tool_palette.clone(),
         },
         fulfillment_contract: build_fulfillment_contract(
             tool_projection,
@@ -115,7 +112,6 @@ pub fn build_wake_contract(
         ),
         resolved_tools: WakeContractResolvedTools {
             substrate: resolve_substrate_tools(tool_projection),
-            workspace: resolve_workspace_tools(&wake_entry.workspace_tool_palette),
         },
     }
 }
@@ -181,38 +177,6 @@ fn build_fulfillment_contract(
     }
 }
 
-fn resolve_workspace_tools(palette: &[String]) -> Vec<WakeContractTool> {
-    palette
-        .iter()
-        .map(|tool_id| {
-            let canonical_name = workspace_provider_tool_name(tool_id)
-                .unwrap_or(tool_id.as_str())
-                .to_string();
-            let description = WORKSPACE_TOOL_CATALOG
-                .iter()
-                .find(|(id, _)| id == tool_id)
-                .map(|(_, description)| (*description).to_string())
-                .unwrap_or_default();
-            WakeContractTool {
-                palette_id: tool_id.clone(),
-                provider_name: provider_safe_tool_name(&canonical_name),
-                canonical_name,
-                description,
-                produces_schema_ids: Vec::new(),
-            }
-        })
-        .collect()
-}
-
-fn workspace_provider_tool_name(tool_id: &str) -> Option<&'static str> {
-    match tool_id {
-        "proxima-workspace/shell" => Some("workspace_shell"),
-        "proxima-workspace/text_editor" => Some("workspace_text_editor"),
-        "proxima-workspace/list_files" => Some("workspace_list_files"),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use uuid::Uuid;
@@ -235,7 +199,7 @@ mod tests {
             trigger_id: "proxima-test/fact-v1".into(),
             label: "Planner child-goal demo wake".into(),
             enabled: true,
-            execution_mode: WakeEntryExecutionMode::Workspace,
+            execution_mode: WakeEntryExecutionMode::SubstrateOnly,
             authored_by: WakeEntryAuthoredBy::Other,
             probability_promille: 1000,
             goal_scope: WakeEntryGoalScope::TriggerGoalAssigned,
@@ -243,8 +207,6 @@ mod tests {
             model_tier: ModelTier::Standard,
             inference_target_ref: None,
             substrate_tool_palette: vec!["core/fetch_memory".into()],
-            workspace_tool_palette: vec!["proxima-workspace/shell".into()],
-            workspace_binding: None,
             required_produced_schema_ids: Vec::new(),
             max_rounds: 4,
             intervention_policy: None,
@@ -276,7 +238,7 @@ mod tests {
         assert_eq!(contract.label, "Planner child-goal demo wake");
         assert_eq!(contract.trigger_id, "proxima-test/fact-v1");
         assert_eq!(contract.trigger_schema_id, "proxima-test/fact-v1");
-        assert_eq!(contract.execution_mode, "workspace");
+        assert_eq!(contract.execution_mode, "substrate_only");
         assert_eq!(contract.authored_by, "other");
         assert_eq!(contract.goal_scope, "trigger_goal_assigned");
         assert_eq!(contract.max_rounds, 4);
@@ -285,16 +247,8 @@ mod tests {
             vec!["core/fetch_memory"]
         );
         assert_eq!(
-            contract.tool_palettes.workspace_tool_palette,
-            vec!["proxima-workspace/shell"]
-        );
-        assert_eq!(
             contract.resolved_tools.substrate[0].provider_name,
             "core_fetch_memory"
-        );
-        assert_eq!(
-            contract.resolved_tools.workspace[0].canonical_name,
-            "workspace_shell"
         );
         assert!(!contract.fulfillment_contract.durable_result_required);
         assert!(!contract.fulfillment_contract.run_until_enabled);
@@ -320,8 +274,6 @@ mod tests {
             substrate_tool_palette: vec![
                 "core/emit_abstraction::proxima-mcp/agent-derivation-v1::v1".into(),
             ],
-            workspace_tool_palette: Vec::new(),
-            workspace_binding: None,
             required_produced_schema_ids: Vec::new(),
             max_rounds: 4,
             intervention_policy: None,
@@ -386,8 +338,6 @@ mod tests {
             model_tier: ModelTier::Standard,
             inference_target_ref: None,
             substrate_tool_palette: vec!["test/intermediate".into(), "test/final".into()],
-            workspace_tool_palette: Vec::new(),
-            workspace_binding: None,
             required_produced_schema_ids: vec!["test/final-v1".into()],
             max_rounds: 0,
             intervention_policy: None,
@@ -398,8 +348,8 @@ mod tests {
                 palette_id: "test/intermediate".into(),
                 canonical_name: "test/intermediate".into(),
                 provider_name: "test_intermediate".into(),
-                description: "intermediate".into(),
-                produces_schema_ids: vec!["test/intermediate-v1".into()],
+                description: "An intermediate tool".into(),
+                produces_schema_ids: vec![],
                 input_schema: serde_json::json!({ "type": "object", "properties": {} }),
                 dispatch: HarnessToolDispatch::DirectSubstrate {
                     internal_canonical_name: "test/intermediate".into(),
@@ -409,7 +359,7 @@ mod tests {
                 palette_id: "test/final".into(),
                 canonical_name: "test/final".into(),
                 provider_name: "test_final".into(),
-                description: "final".into(),
+                description: "The final tool".into(),
                 produces_schema_ids: vec!["test/final-v1".into()],
                 input_schema: serde_json::json!({ "type": "object", "properties": {} }),
                 dispatch: HarnessToolDispatch::DirectSubstrate {
@@ -417,16 +367,14 @@ mod tests {
                 },
             },
         ];
+        let handles = HandleTable::new();
+        let contract = build_wake_contract(&wake_entry, &projection, &handles);
 
-        let contract = build_wake_contract(&wake_entry, &projection, &HandleTable::new());
-
+        assert!(contract.fulfillment_contract.durable_result_required);
+        assert!(contract.fulfillment_contract.run_until_enabled);
         assert_eq!(
             contract.fulfillment_contract.satisfaction,
             "any_required_produced_schema"
-        );
-        assert_eq!(
-            contract.fulfillment_contract.produced_schema_ids,
-            vec!["test/final-v1", "test/intermediate-v1"]
         );
         assert_eq!(
             contract.fulfillment_contract.required_produced_schema_ids,

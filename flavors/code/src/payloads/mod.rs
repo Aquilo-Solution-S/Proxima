@@ -9,7 +9,6 @@ pub mod file_revision;
 pub mod personality_self;
 pub mod test_request;
 pub mod verification_evidence;
-pub mod workspace;
 
 /// Serde adapter for 32-byte content hashes that round-trips through
 /// Postgres `bytea` (rendered as `"\xDEADBEEF..."` by `row_to_json`)
@@ -96,8 +95,4 @@ pub use personality_self::{CodeCommitSummarizerSelfV1, CodeEngineerSelfV1};
 pub use test_request::TestRequestV1;
 pub use verification_evidence::{
     VerificationArtifactRefsV1, VerificationEvidenceStatus, VerificationEvidenceV1,
-};
-pub use workspace::{
-    WorkspaceDecision, WorkspaceDecisionV1, WorkspaceReviewFinding, WorkspaceReviewV1,
-    WorkspaceReviewVerdict,
 };

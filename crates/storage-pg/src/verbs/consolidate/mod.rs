@@ -13,8 +13,7 @@ mod rows;
 mod wake_entries;
 
 pub use dependencies::{
-    delete_blocked_wake_candidate, has_satisfied_code_test_request,
-    has_successful_core_workspace_run_derived_from, list_blocked_wake_candidates,
+    delete_blocked_wake_candidate, has_satisfied_code_test_request, list_blocked_wake_candidates,
     list_memory_dependencies, upsert_blocked_wake_candidate,
 };
 pub use events::{list_change_events_after, list_change_events_for_replay};

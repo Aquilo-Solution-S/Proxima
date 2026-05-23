@@ -14,7 +14,7 @@ use crate::intervention::InterventionPolicy;
 use crate::outbox::ChangeEvent;
 use crate::personality::types::{
     PersonalityStatus, WakeChainDepth, WakeEntryAuthoredBy, WakeEntryExecutionMode,
-    WakeEntryGoalScope, WakeEntryTriggerKind, WakeWorkspaceBinding,
+    WakeEntryGoalScope, WakeEntryTriggerKind,
 };
 use crate::{MemoryId, Owner};
 
@@ -59,8 +59,6 @@ pub struct WakeEntryRow {
     pub model_tier: crate::ModelTier,
     pub inference_target_ref: Option<String>,
     pub substrate_tool_palette: Vec<String>,
-    pub workspace_tool_palette: Vec<String>,
-    pub workspace_binding: Option<WakeWorkspaceBinding>,
     pub required_produced_schema_ids: Vec<String>,
     pub max_rounds: u16,
     pub intervention_policy: Option<InterventionPolicy>,

@@ -13,7 +13,7 @@ use crate::error::ProtocolError;
 use crate::intervention::InterventionPolicy;
 use crate::personality::types::{
     PersonalityMemoryKind, WakeChainDepth, WakeEntryAuthoredBy, WakeEntryGoalScope,
-    WakeEntryTriggerKind, WakeExecutionMode, WakeWorkspaceBinding,
+    WakeEntryTriggerKind, WakeExecutionMode,
 };
 use crate::{MemoryId, ModelTier, Owner, RegisteredRelation, SchemaId, SchemaVersion};
 
@@ -35,8 +35,6 @@ pub struct WakeEntryDraft {
     pub model_tier: ModelTier,
     pub inference_target_ref: Option<String>,
     pub substrate_tool_palette: Vec<String>,
-    pub workspace_tool_palette: Vec<String>,
-    pub workspace_binding: Option<WakeWorkspaceBinding>,
     pub required_produced_schema_ids: Vec<String>,
     pub max_rounds: u16,
     pub intervention_policy: Option<InterventionPolicy>,
@@ -77,8 +75,6 @@ impl WakeEntryDraft {
             model_tier,
             inference_target_ref,
             substrate_tool_palette,
-            workspace_tool_palette: Vec::new(),
-            workspace_binding: None,
             required_produced_schema_ids: Vec::new(),
             max_rounds,
             intervention_policy: None,

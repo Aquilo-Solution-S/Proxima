@@ -12,11 +12,8 @@ use super::schemas::schema_registry_with_config;
 pub fn build_engine(storage: PgStorage, auth: Box<dyn proxima_core::auth::AuthResolver>) -> Engine {
     use proxima_core::verbs::query::MemoryStore;
 
-    let runner = Arc::new(crate::workspace_runner::CodeWorkspaceRunner::new(
-        storage.pool().clone(),
-    ));
     Engine::new(
-        schema_registry_with_config(|_| {}, Some(runner)),
+        schema_registry_with_config(|_| {}),
         MemoryStore::new(),
         auth,
     )
@@ -36,11 +33,8 @@ pub fn build_engine_with(
 ) -> Engine {
     use proxima_core::verbs::query::MemoryStore;
 
-    let runner = Arc::new(crate::workspace_runner::CodeWorkspaceRunner::new(
-        storage.pool().clone(),
-    ));
     Engine::new(
-        schema_registry_with_config(extra, Some(runner)),
+        schema_registry_with_config(extra),
         MemoryStore::new(),
         auth,
     )

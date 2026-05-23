@@ -12,8 +12,6 @@ pub mod migrations;
 pub mod payloads;
 pub mod repos;
 pub mod verification;
-pub mod workspace_flow;
-pub mod workspace_runner;
 
 pub use ingest::{
     CODE_BLOB_BYTE_RANGE_SCHEMA, CODE_BLOB_SCHEMA, CODE_BLOB_WHOLE_SCHEMA,
@@ -25,30 +23,20 @@ pub use ingest::{
 pub use local_git_source::{
     HeadSnapshotOutcome, IndexError, IndexReport, IngestProgress, LocalGitSource,
 };
-pub use mcp::CODE_REVIEWS_RELATION;
 pub use migrations::migrator;
 pub use payloads::{
     AcceptanceCriteriaV1, AcceptanceCriterionV1, AcceptanceVerifierKind, AcceptanceVerifierSpecV1,
     CodeChunkV1, CodeCommitSummarizerSelfV1, CodeDevelopmentPerspectiveV1, CodeEngineerSelfV1,
     CommitSummaryV1, CommitV1, EdgeCallsV1, ExecutionRequestV1, FileRevisionV1, FileState,
     TestRequestV1, VerificationArtifactRefsV1, VerificationEvidenceStatus, VerificationEvidenceV1,
-    WorkspaceDecision, WorkspaceDecisionV1, WorkspaceReviewFinding, WorkspaceReviewV1,
-    WorkspaceReviewVerdict,
 };
 
 pub use repos::{
     RepoEraseReceipt, RepoIngestionRun, RepoRecord, RepoRegistryError, RunStage, RunStatus,
-    StageCounters, WorkspaceDecisionRecord, WorkspaceMergeOutcome, WorkspaceReviewRecord,
-    WorkspaceRunDiff, WorkspaceRunRecord, advance_stage, begin_run, delete_repo, erase_repo,
-    get_active_run, get_repo, get_run, infer_missing_target_branch, list_repos, mark_failed,
-    mark_succeeded, register_repo, set_repo_target_branch, start_run, start_run_with_created,
-    sweep_orphaned_runs, update_cursor,
+    StageCounters, advance_stage, begin_run, delete_repo, erase_repo, get_active_run, get_repo,
+    get_run, infer_missing_target_branch, list_repos, mark_failed, mark_succeeded, register_repo,
+    set_repo_target_branch, start_run, start_run_with_created, sweep_orphaned_runs, update_cursor,
 };
-pub use workspace_flow::{
-    CODE_DECIDES_RELATION, WorkspaceFlowError, emit_workspace_decision, get_workspace_run_diff,
-    list_workspace_reviews, list_workspace_runs, merge_workspace_run,
-};
-
 use proxima_core::{
     AuthorshipKindMask, EntityKindMask, RelationClass, RelationDescriptor, SchemaId, SchemaRef,
     SchemaVersion,
@@ -64,8 +52,6 @@ proxima_core::proxima_flavor! {
         payloads::ExecutionRequestV1,
         payloads::TestRequestV1,
         payloads::AcceptanceCriteriaV1,
-        payloads::WorkspaceDecisionV1,
-        payloads::WorkspaceReviewV1,
         payloads::VerificationEvidenceV1,
     ],
     abstraction_schemas = [
@@ -99,25 +85,11 @@ proxima_core::proxima_flavor! {
             AuthorshipKindMask::external_agent(),
         ),
         RelationDescriptor::substrate(
-            mcp::workspace_review::CODE_REVIEWS_RELATION,
-            RelationClass::Provenance,
-            EntityKindMask::fact(),
-            EntityKindMask::fact(),
-            AuthorshipKindMask::external_agent(),
-        ),
-        RelationDescriptor::substrate(
             mcp::CODE_HAS_ACCEPTANCE_CRITERIA_RELATION,
             RelationClass::Provenance,
             EntityKindMask::fact(),
             EntityKindMask::fact(),
             AuthorshipKindMask::external_agent(),
-        ),
-        RelationDescriptor::substrate(
-            workspace_flow::CODE_DECIDES_RELATION,
-            RelationClass::Provenance,
-            EntityKindMask::fact(),
-            EntityKindMask::fact(),
-            AuthorshipKindMask::event_source(),
         ),
     ],
     mcp_tools = [
@@ -130,27 +102,8 @@ proxima_core::proxima_flavor! {
         mcp::CodeEmitExecutionRequestTool,
         mcp::CodeEmitExecutionPlanTool,
         mcp::CodeRetryExecutionRequestTool,
-        mcp::CodeEmitVerificationEvidenceTool,
-        mcp::CodeEmitWorkspaceReviewTool,
-        mcp::CodeEmitCorrectionExecutionRequestTool,
-        mcp::CodeGoalCompletionStatusTool,
-        mcp::CodeMergeWorkspaceRunTool,
-    ],
-    workspace_runner = workspace_runner::CodeWorkspaceRunner,
-    workspace_triggers = [
-        "proxima-code/commit-v1",
-        "proxima-code/file-revision-v1",
-        "proxima-code/code-chunk-v1",
-        "proxima-code/execution-request-v1",
-        "proxima-code/test-request-v1",
-        "proxima-code/acceptance-criteria-v1",
-        "proxima-core/workspace-run-v1",
-        "proxima-code/workspace-review-v1",
-        "proxima-code/verification-evidence-v1",
-        "proxima-code/workspace-decision-v1",
     ],
     dependency_satisfaction_rules = [
-        dependency::ExecutionRequestSatisfied,
         dependency::TestRequestSatisfied,
     ],
 }
@@ -176,9 +129,6 @@ mod tests {
         assert!(schema_ids.contains("proxima-code/execution-request-v1"));
         assert!(schema_ids.contains("proxima-code/test-request-v1"));
         assert!(schema_ids.contains("proxima-code/acceptance-criteria-v1"));
-        assert!(schema_ids.contains("proxima-core/workspace-run-v1"));
-        assert!(schema_ids.contains("proxima-code/workspace-decision-v1"));
-        assert!(schema_ids.contains("proxima-code/workspace-review-v1"));
         assert!(schema_ids.contains("proxima-code/verification-evidence-v1"));
         // Abstraction schemas
         assert!(schema_ids.contains("proxima-code/commit-summary-v1"));
@@ -194,9 +144,7 @@ mod tests {
         let relation_ids: HashSet<_> = relations.iter().map(|r| r.relation.as_str()).collect();
         assert!(relation_ids.contains("proxima-code/calls"));
         assert!(relation_ids.contains("proxima-code/targets-execution-request"));
-        assert!(relation_ids.contains("proxima-code/reviews"));
         assert!(relation_ids.contains("proxima-code/has-acceptance-criteria"));
-        assert!(relation_ids.contains("proxima-code/decides"));
         assert!(relation_ids.contains(CORE_DERIVED_FROM_RELATION));
 
         let calls = frozen
@@ -211,20 +159,6 @@ mod tests {
             .resolve_relation(CORE_DERIVED_FROM_RELATION)
             .expect("core provenance relation resolves");
         assert_eq!(derived_from.payload_sidecar_table, None);
-    }
-
-    #[test]
-    fn registry_contains_workspace_runner() {
-        let mut registry = proxima_core::FlavorRegistry::new();
-        super::register(&mut registry);
-        let frozen = registry.freeze();
-        assert!(
-            frozen.workspace_runner("proxima-code").is_some(),
-            "Code flavor should register a workspace runner",
-        );
-        assert!(frozen.is_workspace_trigger("proxima-core/workspace-run-v1"));
-        assert!(frozen.is_workspace_trigger("proxima-code/workspace-review-v1"));
-        assert!(frozen.is_workspace_trigger("proxima-code/workspace-decision-v1"));
     }
 
     #[test]
@@ -246,9 +180,5 @@ mod tests {
         assert!(names.contains("proxima-code/code_emit_execution_request"));
         assert!(names.contains("proxima-code/code_emit_execution_plan"));
         assert!(names.contains("proxima-code/code_retry_execution_request"));
-        assert!(names.contains("proxima-code/code_emit_verification_evidence"));
-        assert!(names.contains("proxima-code/code_emit_workspace_review"));
-        assert!(names.contains("proxima-code/code_emit_correction_execution_request"));
-        assert!(names.contains("proxima-code/code_goal_completion_status"));
     }
 }

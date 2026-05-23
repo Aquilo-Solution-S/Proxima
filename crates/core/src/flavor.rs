@@ -5,7 +5,6 @@
 //! See docs/08 §Registration mechanism.
 
 use crate::mcp::schema::mcp_tool_schema;
-use crate::personality::workspace::WorkspaceRunner;
 use crate::verbs::schema::{
     FlavorRegistryFrozen, MemorySearchProjection, MemorySearchProjectionField, PayloadKind,
     PayloadValidator, PayloadValidatorEntry, SchemaInfo,
@@ -67,14 +66,6 @@ pub struct FlavorRegistry {
     pub(crate) validators: Vec<PayloadValidatorEntry>,
     pub(crate) mcp_tools: Vec<McpToolDescriptor>,
     pub(crate) flavors: Vec<FlavorDescriptor>,
-    /// Per-flavor workspace runner. Populated by
-    /// `proxima_flavor! { workspace_runner = ... }`. Frozen into
-    /// `FlavorRegistryFrozen.workspace_runners` and looked up by
-    /// `wake/fire.rs` at fire time.
-    pub(crate) workspace_runners: Vec<(String, Arc<dyn WorkspaceRunner>)>,
-    /// Workspace-eligible trigger schemas. Core treats them as opaque
-    /// flavor-qualified schema ids; flavor runners interpret payloads.
-    pub(crate) workspace_triggers: Vec<String>,
     pub(crate) dependency_satisfaction_rules: Vec<(String, Arc<dyn DependencySatisfactionRule>)>,
 }
 
@@ -87,8 +78,6 @@ impl Default for FlavorRegistry {
             validators: Vec::new(),
             mcp_tools: Vec::new(),
             flavors: Vec::new(),
-            workspace_runners: Vec::new(),
-            workspace_triggers: Vec::new(),
             dependency_satisfaction_rules: Vec::new(),
         };
         // Substrate-shipped Fact schema for MCP-CRUD audit.
@@ -106,21 +95,6 @@ impl Default for FlavorRegistry {
         registry.add_abstraction_schema::<crate::chat::ChatCompactionV1>();
         registry.add_abstraction_schema::<crate::chat::ChatSummaryV1>();
         registry.add_cited_object_schema::<crate::citations::UploadedBlobPayload>();
-        registry.add_fact_schema::<crate::workspace_run::CoreWorkspaceRunV1>();
-        // Workspace-run citation nodes: a run cites its output blob
-        // (object) and the structural mapping (whole). Both are
-        // content-addressed and have no Rust payload type — opaque
-        // by construction.
-        registry.add_opaque_schema(
-            SchemaId::new(crate::workspace_run::CORE_WORKSPACE_RUN_OBJECT_SCHEMA.to_string()),
-            SchemaVersion::new(1),
-            PayloadKind::CitedObject,
-        );
-        registry.add_opaque_schema(
-            SchemaId::new(crate::workspace_run::CORE_WORKSPACE_RUN_WHOLE_SCHEMA.to_string()),
-            SchemaVersion::new(1),
-            PayloadKind::CitationMapping,
-        );
         registry.add_fact_schema::<crate::wake::trace::WakeTracePayload>();
         registry.add_cited_object_schema::<crate::wake::trace::WakeTraceJsonlPayload>();
         registry.add_citation_mapping_schema::<crate::wake::trace::WakeTraceCitationPayload>();
@@ -328,33 +302,6 @@ impl FlavorRegistry {
         self.relations.push(descriptor);
     }
 
-    /// Register a flavor's workspace runner. Called by
-    /// `proxima_flavor!` once per flavor (at most one runner per
-    /// flavor). Duplicate registration for the same flavor_id
-    /// panics at freeze time.
-    pub fn add_workspace_runner(
-        &mut self,
-        flavor_id: impl Into<String>,
-        runner: Arc<dyn WorkspaceRunner>,
-    ) {
-        self.workspace_runners.push((flavor_id.into(), runner));
-    }
-
-    pub fn replace_workspace_runner(
-        &mut self,
-        flavor_id: impl Into<String>,
-        runner: Arc<dyn WorkspaceRunner>,
-    ) {
-        let flavor_id = flavor_id.into();
-        self.workspace_runners
-            .retain(|(existing, _)| existing != &flavor_id);
-        self.workspace_runners.push((flavor_id, runner));
-    }
-
-    pub fn add_workspace_trigger(&mut self, schema_id: impl Into<String>) {
-        self.workspace_triggers.push(schema_id.into());
-    }
-
     pub fn add_dependency_satisfaction_rule(
         &mut self,
         schema_id: impl Into<String>,
@@ -473,23 +420,6 @@ impl FlavorRegistry {
                 seen_tools.insert(tool.name),
                 "duplicate McpTool name registered: {}",
                 tool.name,
-            );
-        }
-        // At most one workspace runner per flavor.
-        let mut seen_runner_flavors: std::collections::HashSet<&str> =
-            std::collections::HashSet::new();
-        for (flavor_id, _) in &self.workspace_runners {
-            assert!(
-                seen_runner_flavors.insert(flavor_id.as_str()),
-                "duplicate workspace_runner registration for flavor {flavor_id:?}",
-            );
-        }
-        let mut seen_workspace_triggers: std::collections::HashSet<&str> =
-            std::collections::HashSet::new();
-        for schema_id in &self.workspace_triggers {
-            assert!(
-                seen_workspace_triggers.insert(schema_id.as_str()),
-                "duplicate workspace_trigger registration for schema {schema_id:?}",
             );
         }
         let mut seen_dependency_rules: std::collections::HashSet<&str> =
@@ -669,88 +599,6 @@ mod tests {
     }
 
     #[test]
-    fn workspace_runner_round_trips_through_freeze() {
-        use crate::personality::workspace::{
-            WorkspaceFinalizeInput, WorkspacePrepareInput, WorkspacePreparedRun,
-            WorkspaceRunRecord, WorkspaceRunner, WorkspaceRunnerError,
-        };
-        use std::sync::Arc;
-
-        #[derive(Debug, Default)]
-        struct Probe;
-        #[async_trait::async_trait]
-        impl WorkspaceRunner for Probe {
-            async fn prepare(
-                &self,
-                _input: WorkspacePrepareInput<'_>,
-            ) -> Result<WorkspacePreparedRun, WorkspaceRunnerError> {
-                Err(WorkspaceRunnerError::Unimplemented)
-            }
-            async fn finalize(
-                &self,
-                _input: WorkspaceFinalizeInput<'_>,
-            ) -> Result<WorkspaceRunRecord, WorkspaceRunnerError> {
-                Err(WorkspaceRunnerError::Unimplemented)
-            }
-        }
-
-        let mut registry = FlavorRegistry::new();
-        registry.add_workspace_runner("probe-flavor", Arc::new(Probe));
-        let frozen = registry.freeze();
-
-        assert!(
-            frozen.workspace_runner("probe-flavor").is_some(),
-            "freeze should preserve registered runner",
-        );
-        assert!(
-            frozen.workspace_runner("missing-flavor").is_none(),
-            "missing flavor returns None",
-        );
-    }
-
-    #[test]
-    fn proxima_flavor_macro_registers_workspace_runner() {
-        // Inline macro invocation under a fixture module. No schemas
-        // means no per-schema prefix checks fire -- minimal test
-        // surface that exercises only the workspace_runner arm.
-        mod fixture {
-            use crate::personality::workspace::{
-                WorkspaceFinalizeInput, WorkspacePrepareInput, WorkspacePreparedRun,
-                WorkspaceRunRecord, WorkspaceRunner, WorkspaceRunnerError,
-            };
-
-            #[derive(Debug, Default)]
-            struct StubRunner;
-            #[async_trait::async_trait]
-            impl WorkspaceRunner for StubRunner {
-                async fn prepare(
-                    &self,
-                    _input: WorkspacePrepareInput<'_>,
-                ) -> Result<WorkspacePreparedRun, WorkspaceRunnerError> {
-                    Err(WorkspaceRunnerError::Unimplemented)
-                }
-                async fn finalize(
-                    &self,
-                    _input: WorkspaceFinalizeInput<'_>,
-                ) -> Result<WorkspaceRunRecord, WorkspaceRunnerError> {
-                    Err(WorkspaceRunnerError::Unimplemented)
-                }
-            }
-
-            crate::proxima_flavor! {
-                name = "macro-test-flavor",
-                workspace_runner = StubRunner,
-            }
-        }
-
-        let mut registry = FlavorRegistry::new();
-        fixture::register(&mut registry);
-        let frozen = registry.freeze();
-
-        assert!(frozen.workspace_runner("macro-test-flavor").is_some());
-    }
-
-    #[test]
     fn default_registry_includes_personality_config_changed_schema() {
         let frozen = FlavorRegistry::new().freeze();
         let info = frozen.lookup(
@@ -765,7 +613,7 @@ mod tests {
     }
 
     #[test]
-    fn default_registry_includes_all_41_substrate_mcp_tools() {
+    fn default_registry_includes_all_40_substrate_mcp_tools() {
         let frozen = FlavorRegistry::new().freeze();
         let names: std::collections::HashSet<_> =
             frozen.list_mcp_tools().iter().map(|d| d.name).collect();
@@ -796,7 +644,6 @@ mod tests {
             "core/set_embedding_active",
             "core/clear_embedding_active",
             "core/list_substrate_tools",
-            "core/list_workspace_tools",
             "core/list_schemas",
             "core/list_edge_types",
             "core/emit_approval_policy",
@@ -819,6 +666,6 @@ mod tests {
             !names.contains("core/emit_budget_decision"),
             "old intervention tool name must not remain registered"
         );
-        assert_eq!(names.len(), 41, "exactly 41 substrate tools registered");
+        assert_eq!(names.len(), 40, "exactly 40 substrate tools registered");
     }
 }

@@ -10,7 +10,7 @@ use crate::intervention::InterventionPolicy;
 use crate::mcp::{McpToolCtx, McpToolError};
 use crate::{
     ModelTier, PersonalityInstanceId, WakeEntryAuthoredBy, WakeEntryDraft, WakeEntryGoalScope,
-    WakeEntryTriggerKind, WakeExecutionMode, WakeWorkspaceBinding,
+    WakeEntryTriggerKind, WakeExecutionMode,
 };
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
@@ -40,10 +40,6 @@ pub struct WakeEntryDraftInput {
     pub inference_target_ref: Option<String>,
     #[serde(default)]
     pub substrate_tool_palette: Vec<String>,
-    #[serde(default)]
-    pub workspace_tool_palette: Vec<String>,
-    #[serde(default)]
-    pub workspace_binding: Option<WakeWorkspaceBinding>,
     #[serde(default)]
     pub required_produced_schema_ids: Vec<String>,
     #[schemars(range(min = 0))]
@@ -90,8 +86,6 @@ impl WakeEntryDraftInput {
             model_tier: self.model_tier,
             inference_target_ref: self.inference_target_ref,
             substrate_tool_palette: self.substrate_tool_palette,
-            workspace_tool_palette: self.workspace_tool_palette,
-            workspace_binding: self.workspace_binding,
             required_produced_schema_ids: self.required_produced_schema_ids,
             max_rounds: self.max_rounds,
             intervention_policy: self.intervention_policy,

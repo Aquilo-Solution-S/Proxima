@@ -33,7 +33,6 @@ export const commands = {
 	codexAuthStatus: () => typedError<CodexAuthStatusOutcomeTs, ProtocolError>(__TAURI_INVOKE("codex_auth_status")),
 	testInferenceTarget: (req: TestInferenceTargetTs) => typedError<TestInferenceTargetOutcomeTs, ProtocolError>(__TAURI_INVOKE("test_inference_target", { req })),
 	listMcpTools: () => typedError<McpToolTs[], ProtocolError>(__TAURI_INVOKE("list_mcp_tools")),
-	listWorkspaceTools: () => typedError<WorkspaceToolTs[], ProtocolError>(__TAURI_INVOKE("list_workspace_tools")),
 	listRelations: () => typedError<RelationTs[], ProtocolError>(__TAURI_INVOKE("list_relations")),
 	wakeEntryProduces: (substratePalette: string[]) => typedError<ProducesTs, ProtocolError>(__TAURI_INVOKE("wake_entry_produces", { substratePalette })),
 	/**
@@ -103,31 +102,6 @@ export const commands = {
 	 *  not resolve locally, `Storage` otherwise.
 	 */
 	codeSetRepoTargetBranch: (repoId: string, targetBranch: string | null) => typedError<RepoRecordTs, CommandError>(__TAURI_INVOKE("code_set_repo_target_branch", { repoId, targetBranch })),
-	/**
-	 *  # Errors
-	 *  `InvalidUuid` if `repo_id` doesn't parse, `Storage` otherwise.
-	 */
-	codeListWorkspaceRuns: (repoId: string, limit: number | null) => typedError<WorkspaceRunRecordTs[], CommandError>(__TAURI_INVOKE("code_list_workspace_runs", { repoId, limit })),
-	/**
-	 *  # Errors
-	 *  `InvalidUuid` if `run_memory_id` doesn't parse, `Storage` otherwise.
-	 */
-	codeListWorkspaceReviews: (runMemoryId: string) => typedError<WorkspaceReviewRecordTs[], CommandError>(__TAURI_INVOKE("code_list_workspace_reviews", { runMemoryId })),
-	/**
-	 *  # Errors
-	 *  `InvalidUuid` if `run_memory_id` doesn't parse, `Storage` otherwise.
-	 */
-	codeGetWorkspaceRunDiff: (runMemoryId: string) => typedError<WorkspaceRunDiffTs, CommandError>(__TAURI_INVOKE("code_get_workspace_run_diff", { runMemoryId })),
-	/**
-	 *  # Errors
-	 *  `InvalidUuid` if `run_memory_id` doesn't parse, `Storage` otherwise.
-	 */
-	codeDecideWorkspaceRun: (runMemoryId: string, decision: WorkspaceDecision, reason: string | null) => typedError<string, CommandError>(__TAURI_INVOKE("code_decide_workspace_run", { runMemoryId, decision, reason })),
-	/**
-	 *  # Errors
-	 *  `InvalidUuid` if `run_memory_id` doesn't parse, `Storage` otherwise.
-	 */
-	codeMergeWorkspaceRun: (runMemoryId: string) => typedError<WorkspaceMergeOutcomeTs, CommandError>(__TAURI_INVOKE("code_merge_workspace_run", { runMemoryId })),
 	/**
 	 *  # Errors
 	 *  `InvalidUuid` if `repo_id` doesn't parse, `Storage` otherwise.
@@ -227,6 +201,7 @@ export type ChatGPTCodexConfigTs = {
 	base_url: string,
 	model_id: string,
 	reasoning_effort: string | null,
+	context_window_tokens: number | null,
 };
 
 export type CitationMappingHint = {
@@ -404,19 +379,6 @@ export type CommandError =
 	message: string,
 } };
 
-export type CoreWorkspaceDiffFile = {
-	path: string,
-	insertions: number,
-	deletions: number,
-};
-
-export type CoreWorkspaceDiffStat = {
-	files_changed: number,
-	insertions: number,
-	deletions: number,
-	files: CoreWorkspaceDiffFile[],
-};
-
 /**
  *  FE-facing projection of the engine `EdgeRow`. Drops `owner`,
  *  which the FE never reads (verified against
@@ -515,7 +477,7 @@ export type EventIngestOutcome = {
 	idempotent_replay: boolean,
 };
 
-export type ExecutionModeTs = "substrate_only" | "workspace";
+export type ExecutionModeTs = "substrate_only";
 
 export type FieldEntry = {
 	cmd: string,
@@ -668,6 +630,8 @@ export type ListWakeInvocationsTs = {
 	owner: Owner,
 	personality_instance_id: string,
 	wake_entry_id: string | null,
+	triggering_memory_id: string | null,
+	change_event_seq: string | null,
 	limit: number,
 };
 
@@ -713,6 +677,7 @@ export type MistralChatConfigTs = {
 	temperature: number | null,
 	max_completion_tokens: number | null,
 	reasoning_effort: string | null,
+	context_window_tokens: number | null,
 };
 
 export type ModelId = string;
@@ -725,6 +690,7 @@ export type OpenAIChatConfigTs = {
 	api_key_env: string,
 	temperature: number | null,
 	max_completion_tokens: number | null,
+	context_window_tokens: number | null,
 };
 
 export type OpenAIResponsesConfigTs = {
@@ -732,6 +698,7 @@ export type OpenAIResponsesConfigTs = {
 	model_id: string,
 	api_key_env: string,
 	reasoning_effort: string | null,
+	context_window_tokens: number | null,
 };
 
 export type OperatorId = string;
@@ -772,8 +739,6 @@ export type PayloadTypesAnchor = PayloadTypesAnchor_Serialize | PayloadTypesAnch
 export type PayloadTypesAnchor_Deserialize = {
 	file_revision_v1: FileRevisionV1_Deserialize | null,
 	code_chunk_v1: CodeChunkV1 | null,
-	workspace_decision: WorkspaceDecision | null,
-	workspace_review_verdict: WorkspaceReviewVerdict | null,
 };
 
 /**
@@ -784,8 +749,6 @@ export type PayloadTypesAnchor_Deserialize = {
 export type PayloadTypesAnchor_Serialize = {
 	file_revision_v1: FileRevisionV1_Serialize | null,
 	code_chunk_v1: CodeChunkV1 | null,
-	workspace_decision: WorkspaceDecision | null,
-	workspace_review_verdict: WorkspaceReviewVerdict | null,
 };
 
 export type PerfEntry = {
@@ -1070,8 +1033,6 @@ export type WakeEntryDraftTs = {
 	model_tier: ModelTierTs,
 	inference_target_ref: string | null,
 	substrate_tool_palette: string[],
-	workspace_tool_palette: string[],
-	workspace_binding: WakeWorkspaceBindingTs | null,
 	required_produced_schema_ids: string[],
 	max_rounds: number,
 };
@@ -1090,16 +1051,10 @@ export type WakeEntryTs = {
 	model_tier: ModelTierTs,
 	inference_target_ref: string | null,
 	substrate_tool_palette: string[],
-	workspace_tool_palette: string[],
-	workspace_binding: WakeWorkspaceBindingTs | null,
 	required_produced_schema_ids: string[],
 	max_rounds: number,
 	disabled_reason: string | null,
 };
-
-export type WakeWorkspaceBindingTs = { kind: "git_worktree", repo_path: string, base_ref: string, finalize: WakeWorkspaceFinalizeTs, worktrees_root: string | null } | { kind: "registered_runner", flavor_id: string };
-
-export type WakeWorkspaceFinalizeTs = "commit_all" | "leave_dirty";
 
 export type WakeInvocationLogTs = {
 	log_seq: number,
@@ -1132,83 +1087,6 @@ export type WakeInvocationTs = {
 	logs: WakeInvocationLogTs[],
 };
 
-export type WorkspaceDecision = "rejected" | "retry_requested" | "accepted" | "merged";
-
-export type WorkspaceDecisionRecordTs = {
-	memory_id: string,
-	workspace_run_memory_id: string,
-	decision: WorkspaceDecision,
-	decided_at: string,
-	reason_text: string | null,
-	decided_by_owner_id: string,
-};
-
-export type WorkspaceMergeOutcomeTs = {
-	run_memory_id: string,
-	decision_memory_id: string,
-	repo_id: string,
-	target_branch: string,
-	old_target_sha: string,
-	new_target_sha: string,
-};
-
-export type WorkspaceReviewFinding = {
-	severity: string,
-	file_path: string | null,
-	line: number | null,
-	message: string,
-};
-
-export type WorkspaceReviewRecordTs = {
-	memory_id: string,
-	workspace_run_memory_id: string,
-	execution_request_memory_id: string,
-	verdict: WorkspaceReviewVerdict,
-	round_index: number,
-	summary: string,
-	findings: WorkspaceReviewFinding[],
-	correction_instructions: string | null,
-	verification_summary: string | null,
-	reviewed_at: string,
-	created_at: string,
-};
-
-export type WorkspaceReviewVerdict = "approved" | "rejected" | "needs_user";
-
-export type WorkspaceRunDiffTs = {
-	range: string,
-	stat: string,
-	files: string[],
-	patch: string,
-	patch_truncated: boolean,
-	max_patch_bytes: number,
-};
-
-export type WorkspaceRunRecordTs = {
-	memory_id: string,
-	wake_invocation_id: string,
-	repo_id: string,
-	execution_request_title: string | null,
-	target_branch: string,
-	worktree_path: string,
-	branch_name: string,
-	parent_sha: string,
-	head_sha: string,
-	diff_stat_json: CoreWorkspaceDiffStat,
-	exit_code: number | null,
-	stdout_tail: string | null,
-	stderr_tail: string | null,
-	duration_ms: number | null,
-	created_at: string,
-	latest_review: WorkspaceReviewRecordTs | null,
-	latest_decision: WorkspaceDecisionRecordTs | null,
-};
-
-export type WorkspaceToolTs = {
-	id: string,
-	description: string,
-};
-
 /* Tauri Specta runtime */
 async function typedError<T, E>(result: Promise<T>): Promise<{ status: "ok"; data: T } | { status: "error"; error: E }> {
     try {
@@ -1218,3 +1096,4 @@ async function typedError<T, E>(result: Promise<T>): Promise<{ status: "ok"; dat
         return { status: "error", error: e as any };
     }
 }
+

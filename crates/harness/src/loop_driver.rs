@@ -22,9 +22,7 @@ use crate::providers::mistral_chat::MistralChatClient;
 use crate::providers::openai_chat::OpenAIChatClient;
 use crate::providers::openai_responses::OpenAIResponsesClient;
 use crate::providers::{ProviderClient, ProviderError, RoundResult};
-use crate::tools::workspace::dispatch as workspace_dispatch;
-use crate::tools::workspace::sandbox::{self, WorkspaceSandboxSession};
-use crate::tools::{ToolBinding, WorkspaceCtx};
+use crate::tools::ToolBinding;
 use crate::trace::jsonl::JsonlBuffer;
 
 const PROMPT_RECORD: &str = "prompt";
@@ -73,8 +71,6 @@ impl HarnessAdapter for HarnessLoop {
         ctx: HarnessContext,
     ) -> Result<HarnessOutcome, HarnessError> {
         let max_rounds = program.max_rounds;
-        let workspace_root = program.workspace_root.clone();
-        let workspace_sandbox = program.workspace_sandbox.clone();
         let provider_target = program.provider.clone();
         let model_id = model_id_for_log(&provider_target);
         let provider = build_provider(&provider_target);
@@ -85,60 +81,17 @@ impl HarnessAdapter for HarnessLoop {
         let resolved = resolve(program, &substrate_tools)
             .map_err(|err| HarnessError::Internal(format!("program_resolve:{err}")))?;
 
-        // Start the per-wake observation container before the model loop.
-        // A failed start fails the wake — there is no silent host fallback.
-        let invocation_id = ctx.invocation_id;
-        // `_sandbox_permit` holds the concurrency slot for the whole wake;
-        // it releases when this function returns, after the sandbox stops.
-        let (sandbox_session, _sandbox_permit) =
-            match (workspace_root.as_deref(), &workspace_sandbox) {
-                (Some(root), Some(spec)) => {
-                    let (session, permit) = sandbox::start(spec, invocation_id, root)
-                        .await
-                        .map_err(|err| {
-                            HarnessError::Internal(format!("workspace_sandbox_start:{err}"))
-                        })?;
-                    (Some(session), Some(permit))
-                }
-                _ => (None, None),
-            };
-
         let result = run_loop(
             self,
             &*provider,
             resolved,
-            workspace_root,
-            sandbox_session.as_ref(),
             ctx,
             max_rounds,
             &model_id,
         )
         .await;
 
-        // Stop exactly once, on every `run_loop` exit path. Teardown
-        // failures are logged but never mask the model outcome; the startup
-        // reaper sweeps whatever is left behind. The proxy's egress log is
-        // attached to the outcome for the wake-trace evidence record.
-        let stop_outcome = match &sandbox_session {
-            Some(session) => Some(sandbox::stop(session).await),
-            None => None,
-        };
-        if let Some(stop) = &stop_outcome
-            && let Some(err) = &stop.teardown_error
-        {
-            tracing::warn!(
-                error = %err,
-                "workspace sandbox teardown incomplete; startup reaper will sweep the remains"
-            );
-        }
-
-        match result {
-            Ok(mut outcome) => {
-                outcome.network_log = stop_outcome.map(|stop| stop.network_log);
-                Ok(outcome)
-            }
-            Err(err) => Err(err),
-        }
+        result
     }
 }
 
@@ -258,8 +211,6 @@ async fn run_loop(
     loop_: &HarnessLoop,
     provider: &dyn ProviderClient,
     mut resolved: ResolvedProgram,
-    workspace_root: Option<std::path::PathBuf>,
-    sandbox_session: Option<&WorkspaceSandboxSession>,
     ctx: HarnessContext,
     max_rounds: u32,
     model_id: &str,
@@ -414,8 +365,6 @@ async fn run_loop(
                         &resolved,
                         &canonical,
                         call.arguments.clone(),
-                        workspace_root.as_deref(),
-                        sandbox_session,
                         &ctx,
                         model_id,
                     )
@@ -768,8 +717,6 @@ async fn dispatch_one(
     resolved: &ResolvedProgram,
     canonical: &str,
     args: serde_json::Value,
-    workspace_root: Option<&std::path::Path>,
-    sandbox_session: Option<&WorkspaceSandboxSession>,
     ctx: &HarnessContext,
     model_id: &str,
 ) -> DispatchOne {
@@ -799,26 +746,6 @@ async fn dispatch_one(
                 SubstrateDispatchResult::Ok(value) => DispatchOne::Ok(value),
                 SubstrateDispatchResult::Recoverable(message) => DispatchOne::Recoverable(message),
                 SubstrateDispatchResult::Fatal(message) => DispatchOne::Fatal(message),
-            }
-        }
-        Some(ToolBinding::Workspace(name)) => {
-            let Some(root) = workspace_root else {
-                return DispatchOne::Recoverable(
-                    "workspace tool called in non-workspace wake".to_string(),
-                );
-            };
-            match workspace_dispatch(
-                *name,
-                args,
-                &WorkspaceCtx {
-                    workspace_root: root.to_path_buf(),
-                    sandbox_session: sandbox_session.cloned(),
-                },
-            )
-            .await
-            {
-                Ok(value) => DispatchOne::Ok(value),
-                Err(error) => DispatchOne::Recoverable(error.to_string()),
             }
         }
         None => DispatchOne::Unknown,

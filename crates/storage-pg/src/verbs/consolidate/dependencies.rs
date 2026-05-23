@@ -45,37 +45,6 @@ pub async fn list_memory_dependencies(
         .collect())
 }
 
-pub async fn has_successful_core_workspace_run_derived_from(
-    pool: &PgPool,
-    owner: &Owner,
-    source_memory_id: MemoryId,
-) -> Result<bool, StorageError> {
-    let (owner_kind, owner_principal_id, _owner_org_id) = owner_columns(owner);
-    let exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS(
-             SELECT 1
-             FROM proxima_core.edges e
-             JOIN proxima_core.workspace_run_v1 r
-               ON r.memory_id = e.source_memory_id
-             JOIN proxima_core.personality_wake_invocations i
-               ON i.invocation_id = r.wake_invocation_id
-             WHERE e.owner_principal_kind = $1
-               AND e.owner_principal_id = $2
-               AND e.relation = 'core/derived-from'
-               AND e.source_kind = 'Fact'
-               AND e.target_memory_id = $3
-               AND i.status = 'succeeded'
-         )",
-    )
-    .bind(owner_kind)
-    .bind(owner_principal_id)
-    .bind(source_memory_id.into_inner())
-    .fetch_one(pool)
-    .await
-    .map_err(map_err)?;
-    Ok(exists)
-}
-
 pub async fn has_satisfied_code_test_request(
     pool: &PgPool,
     owner: &Owner,

@@ -99,8 +99,6 @@ async fn wake_token_audit_attributes_caller_personality() -> Result<(), Box<dyn 
             model_tier: ModelTier::Standard,
             inference_target_ref: None,
             substrate_tool_palette: vec![],
-            workspace_tool_palette: vec![],
-            workspace_binding: None,
             required_produced_schema_ids: vec![],
             max_rounds: 3,
             intervention_policy: None,

@@ -30,7 +30,6 @@ pub mod list_schemas;
 pub mod list_substrate_tools;
 pub mod list_wake_entries;
 pub mod list_wake_invocations;
-pub mod list_workspace_tools;
 pub mod register_inference_target;
 pub mod remove_inference_target;
 pub mod set_read_scope;
@@ -61,7 +60,6 @@ pub use list_schemas::ListSchemasTool;
 pub use list_substrate_tools::ListSubstrateToolsTool;
 pub use list_wake_entries::ListWakeEntriesTool;
 pub use list_wake_invocations::{ListWakeInvocationsArgs, ListWakeInvocationsTool};
-pub use list_workspace_tools::ListWorkspaceToolsTool;
 pub use payload::{
     PersonalityConfigChangedCaller, PersonalityConfigChangedSubject, PersonalityConfigChangedV1,
     PersonalityConfigChangedVerb,
@@ -105,7 +103,6 @@ pub(crate) fn register_all(registry: &mut crate::FlavorRegistry) {
     registry.add_substrate_mcp_tool::<SetEmbeddingActiveTool>();
     registry.add_substrate_mcp_tool::<ClearEmbeddingActiveTool>();
     registry.add_substrate_mcp_tool::<ListSubstrateToolsTool>();
-    registry.add_substrate_mcp_tool::<ListWorkspaceToolsTool>();
     registry.add_substrate_mcp_tool::<ListSchemasTool>();
     registry.add_substrate_mcp_tool::<ListEdgeTypesTool>();
     registry.add_substrate_mcp_tool::<EmitApprovalPolicyTool>();
