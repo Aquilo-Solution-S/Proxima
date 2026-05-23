@@ -55,7 +55,7 @@ fn direct_projection(binding: &SubstrateToolBinding) -> HarnessToolProjection {
     }
 }
 
-fn empty_program(bindings: &[SubstrateToolBinding], workspace: bool) -> HarnessProgram {
+fn empty_program(bindings: &[SubstrateToolBinding]) -> HarnessProgram {
     HarnessProgram {
         system_prompt: "sys".into(),
         instructions: "do".into(),
@@ -63,13 +63,6 @@ fn empty_program(bindings: &[SubstrateToolBinding], workspace: bool) -> HarnessP
         tool_projection: bindings.iter().map(direct_projection).collect(),
         required_fulfillment_schema_ids: Vec::new(),
         substrate_tool_palette: bindings.iter().map(|b| b.canonical_name.clone()).collect(),
-        workspace_root: workspace.then(|| std::path::PathBuf::from("/tmp/x")),
-        workspace_tool_palette: if workspace {
-            vec!["workspace_list_files".into()]
-        } else {
-            Vec::new()
-        },
-        workspace_sandbox: None,
         max_rounds: 5,
         provider: ProviderTarget::MistralChat {
             base_url: "http://x".into(),
@@ -87,7 +80,7 @@ fn empty_program(bindings: &[SubstrateToolBinding], workspace: bool) -> HarnessP
 #[test]
 fn provider_safe_names_reverse_map_back_to_canonical() {
     let bindings = vec![binding("core/fetch_memory")];
-    let program = empty_program(&bindings, false);
+    let program = empty_program(&bindings);
     let resolved = resolve(program, &bindings).expect("resolve");
     let spec = resolved
         .tools
@@ -105,7 +98,7 @@ fn provider_safe_names_reverse_map_back_to_canonical() {
 #[test]
 fn raw_emit_capability_is_not_provider_visible_without_projection() {
     let bindings = vec![binding("core/emit_abstraction")];
-    let mut program = empty_program(&bindings, false);
+    let mut program = empty_program(&bindings);
     program.tool_projection = Vec::new();
 
     let resolved = resolve(program, &bindings).expect("resolve");
@@ -116,25 +109,6 @@ fn raw_emit_capability_is_not_provider_visible_without_projection() {
             .iter()
             .any(|tool| tool.canonical == "core/emit_abstraction")
     );
-}
-
-#[test]
-fn workspace_palette_tools_appear_only_when_workspace_root_is_set() {
-    let without_workspace = resolve(empty_program(&[], false), &[]).expect("resolve");
-    assert!(
-        !without_workspace
-            .tools
-            .iter()
-            .any(|tool| tool.canonical.starts_with("workspace_"))
-    );
-
-    let with_workspace = resolve(empty_program(&[], true), &[]).expect("resolve");
-    let names: Vec<&str> = with_workspace
-        .tools
-        .iter()
-        .map(|tool| tool.canonical.as_str())
-        .collect();
-    assert_eq!(names, vec!["workspace_list_files"]);
 }
 
 #[tokio::test]
@@ -165,7 +139,7 @@ async fn bridge_inventory_includes_registry_and_personality_pack_tools() {
             args_schema: spec.args_schema,
         })
         .collect();
-    let resolved = resolve(empty_program(&bindings, false), &bindings).expect("resolve");
+    let resolved = resolve(empty_program(&bindings), &bindings).expect("resolve");
     let safe_names: Vec<&str> = resolved
         .tools
         .iter()

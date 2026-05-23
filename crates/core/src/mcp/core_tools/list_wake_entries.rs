@@ -8,7 +8,6 @@ use serde::{Deserialize, Serialize};
 use crate::McpTool;
 use crate::intervention::InterventionPolicy;
 use crate::mcp::{McpToolCtx, McpToolError};
-use crate::personality::WakeWorkspaceBinding;
 
 #[derive(Debug, Default)]
 pub struct ListWakeEntriesTool;
@@ -31,7 +30,6 @@ pub struct ListWakeEntriesItem {
     pub instructions: String,
     pub probability_promille: u16,
     pub goal_scope: String,
-    pub workspace_binding: Option<WakeWorkspaceBinding>,
     pub required_produced_schema_ids: Vec<String>,
     pub max_rounds: u16,
     pub intervention_policy: Option<InterventionPolicy>,
@@ -82,7 +80,6 @@ impl McpTool for ListWakeEntriesTool {
                     instructions: e.instructions,
                     probability_promille: e.probability_promille,
                     goal_scope: e.goal_scope.as_str().to_string(),
-                    workspace_binding: e.workspace_binding,
                     required_produced_schema_ids: e.required_produced_schema_ids,
                     max_rounds: e.max_rounds,
                     intervention_policy: e.intervention_policy,

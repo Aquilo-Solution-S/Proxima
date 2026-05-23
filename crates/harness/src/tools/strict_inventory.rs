@@ -8,7 +8,6 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::tools::strict_schema::{StrictSchemaError, StrictToolSchema};
-use crate::tools::workspace::WorkspaceToolName;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ToolInventoryRow {
@@ -46,25 +45,6 @@ impl ToolInventoryRow {
         }
     }
 
-    #[must_use]
-    pub fn workspace(tool: WorkspaceToolName) -> Self {
-        let canonical = tool.canonical().to_string();
-        let schema = tool.input_schema();
-        let strict_result = StrictToolSchema::from_schema(&schema);
-        let strict_error = strict_result.as_ref().err().map(strict_error);
-        let contains_unbounded_json = contains_unbounded_json(&schema);
-        Self {
-            canonical_name: canonical.clone(),
-            provider_safe_name: provider_safe_tool_name(&canonical),
-            source: "workspace",
-            schema_root_type: schema_root_type(&schema),
-            contains_unbounded_json,
-            strict_compatible: strict_result.is_ok(),
-            strict_error,
-            produces_schema_ids: Vec::new(),
-            dispatch_target: canonical,
-        }
-    }
 }
 
 #[must_use]
@@ -94,20 +74,6 @@ pub fn registry_tool_inventory_for_prefix(
             .filter(|tool| tool.name.starts_with(prefix))
             .map(|tool| ToolInventoryRow::registry(tool, source))
             .collect(),
-    )
-}
-
-#[must_use]
-pub fn workspace_tool_inventory() -> Vec<ToolInventoryRow> {
-    sorted_rows(
-        [
-            WorkspaceToolName::Shell,
-            WorkspaceToolName::TextEditor,
-            WorkspaceToolName::ListFiles,
-        ]
-        .into_iter()
-        .map(ToolInventoryRow::workspace)
-        .collect(),
     )
 }
 

@@ -297,7 +297,6 @@ enum AuthoredBy {
 enum ExecutionMode {
   EXECUTION_MODE_UNSPECIFIED = 0;
   EXECUTION_MODE_SUBSTRATE_ONLY = 1;
-  EXECUTION_MODE_WORKSPACE = 2;
 }
 
 enum ModelTierProto {
@@ -313,30 +312,6 @@ enum GoalScope {
   GOAL_SCOPE_TRIGGER_GOAL_ASSIGNED = 2;
 }
 
-enum WorkspaceFinalize {
-  WORKSPACE_FINALIZE_UNSPECIFIED = 0;
-  WORKSPACE_FINALIZE_COMMIT_ALL = 1;
-  WORKSPACE_FINALIZE_LEAVE_DIRTY = 2;
-}
-
-message GitWorktreeWorkspaceBinding {
-  string repo_path = 1;
-  string base_ref = 2;
-  WorkspaceFinalize finalize = 3;
-  optional string worktrees_root = 4;
-}
-
-message RegisteredRunnerWorkspaceBinding {
-  string flavor_id = 1;
-}
-
-message WorkspaceBinding {
-  oneof kind {
-    GitWorktreeWorkspaceBinding git_worktree = 1;
-    RegisteredRunnerWorkspaceBinding registered_runner = 2;
-  }
-}
-
 message WakeEntry {
   string wake_entry_id = 1;
   TriggerKind trigger_kind = 2;
@@ -349,11 +324,9 @@ message WakeEntry {
   ModelTierProto model_tier = 10;
   optional string inference_target_ref = 11;
   repeated string substrate_tool_palette = 12;
-  repeated string workspace_tool_palette = 13;
   uint32 max_rounds = 14;
   optional string disabled_reason = 15;
   GoalScope goal_scope = 16;
-  optional WorkspaceBinding workspace_binding = 17;
   repeated string required_produced_schema_ids = 18;
 }
 
@@ -368,10 +341,8 @@ message WakeEntryDraft {
   ModelTierProto model_tier = 9;
   optional string inference_target_ref = 10;
   repeated string substrate_tool_palette = 11;
-  repeated string workspace_tool_palette = 12;
   uint32 max_rounds = 13;
   GoalScope goal_scope = 14;
-  optional WorkspaceBinding workspace_binding = 15;
   repeated string required_produced_schema_ids = 16;
 }
 

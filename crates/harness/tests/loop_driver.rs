@@ -339,9 +339,6 @@ fn program_with_required(
         tool_projection,
         required_fulfillment_schema_ids,
         substrate_tool_palette,
-        workspace_root: None,
-        workspace_tool_palette: Vec::new(),
-        workspace_sandbox: None,
         max_rounds,
         provider: ProviderTarget::OpenAIChat {
             base_url,

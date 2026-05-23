@@ -27,7 +27,6 @@ pub mod secrets;
 pub mod storage;
 pub mod verbs;
 pub mod wake;
-pub mod workspace_run;
 
 pub use approval::*;
 pub use auth::*;
@@ -59,15 +58,10 @@ pub use outbox::*;
 pub use owner::*;
 pub use payload::*;
 pub use payload_contract::assert_no_serde_json_value_fields;
-pub use personality::workspace::{
-    WorkspaceFinalizeInput, WorkspaceOutcome, WorkspacePrepareInput, WorkspacePreparedRun,
-    WorkspaceRunRecord, WorkspaceRunner, WorkspaceRunnerError,
-};
 pub use personality::*;
 pub use relation::*;
 pub use secrets::*;
 pub use storage::*;
-pub use workspace_run::*;
 
 // Re-export verb modules for convenience.
 pub use verbs::*;
@@ -96,7 +90,7 @@ macro_rules! proxima_schema_id {
 /// schema / relation.
 ///
 /// Prefix enforcement is tiered. Schema, `mcp_tools`, and
-/// `workspace_triggers` prefixes resolve to associated `const`s or
+/// Prefix enforcement is tiered. Schema and `mcp_tools` prefixes resolve to associated `const`s or
 /// literals, so they are checked by a `const` assertion — a misprefix
 /// fails the build. `relations` and `dependency_satisfaction_rules`
 /// carry their prefix on a runtime expression (a `RelationDescriptor`
@@ -128,6 +122,7 @@ macro_rules! proxima_schema_id {
 ///         SchemaRef::new(SchemaId::new("proxima-code/calls".into()),
 ///                        SchemaVersion::new(1)),
 ///     ) ],
+///     mcp_tools = [ MyTool ],
 /// }
 /// ```
 ///
@@ -164,8 +159,6 @@ macro_rules! proxima_flavor {
         $(, edge_schemas = [ $($edge:ty),* $(,)? ])?
         $(, relations = [ $($rel:expr),* $(,)? ])?
         $(, mcp_tools = [ $($tool:ty),* $(,)? ])?
-        $(, workspace_runner = $workspace_runner:ty)?
-        $(, workspace_triggers = [ $($workspace_trigger_schema:literal),* $(,)? ])?
         $(, dependency_satisfaction_rules = [ $($dependency_rule:ty),* $(,)? ])?
         $(,)?
     ) => {
@@ -229,30 +222,6 @@ macro_rules! proxima_flavor {
                         ),
                     );
                     registry.add_mcp_tool::<$tool>($name);
-                }
-            )*)?
-            $(
-                {
-                    use $crate::WorkspaceRunner;
-                    let runner: ::std::sync::Arc<dyn WorkspaceRunner> =
-                        ::std::sync::Arc::new(<$workspace_runner as ::std::default::Default>::default());
-                    registry.add_workspace_runner($name, runner);
-                }
-            )?
-            $($(
-                {
-                    const _: () = ::std::assert!(
-                        $crate::schema_id_has_prefix(
-                            $workspace_trigger_schema, ::std::concat!($name, "/"),
-                        ) || $crate::schema_id_has_prefix(
-                            $workspace_trigger_schema, "proxima-core/",
-                        ),
-                        ::std::concat!(
-                            "workspace trigger schema ", $workspace_trigger_schema,
-                            " must start with \"", $name, "/\" or \"proxima-core/\"",
-                        ),
-                    );
-                    registry.add_workspace_trigger($workspace_trigger_schema);
                 }
             )*)?
             $($(

@@ -15,12 +15,6 @@ pub struct McpToolTs {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
-pub struct WorkspaceToolTs {
-    pub id: String,
-    pub description: String,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct RelationTs {
     pub relation_id: String,
     pub flavor_id: String,
@@ -60,21 +54,6 @@ pub async fn list_mcp_tools(
             }
         }));
         Ok(tools)
-    })
-    .await
-}
-
-#[tauri::command]
-#[specta::specta]
-pub async fn list_workspace_tools() -> Result<Vec<WorkspaceToolTs>, ProtocolError> {
-    crate::perf::ipc::record("list_workspace_tools", 0, async move {
-        Ok(proxima_core::personality::WORKSPACE_TOOL_CATALOG
-            .iter()
-            .map(|(id, desc)| WorkspaceToolTs {
-                id: (*id).to_string(),
-                description: (*desc).to_string(),
-            })
-            .collect())
     })
     .await
 }

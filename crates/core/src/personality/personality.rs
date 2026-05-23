@@ -20,43 +20,6 @@ pub const ROOT_PERSONALITY_PERSPECTIVE_SIDECAR_TABLE: &str =
 /// Maximum wake chain depth constant.
 pub const MAX_WAKE_CHAIN_DEPTH: u16 = 10;
 
-/// Canonical workspace tool catalog. `set_wake_entries` validates
-/// declared palettes against this list, and the harness builds its
-/// `HarnessProgram` from the palette so only listed tools reach the
-/// provider.
-pub const WORKSPACE_TOOL_CATALOG: &[(&str, &str)] = &[
-    (
-        "core-workspace/shell",
-        "Run shell commands in the workspace",
-    ),
-    (
-        "core-workspace/text_editor",
-        "View and edit files in the workspace",
-    ),
-    (
-        "core-workspace/list_files",
-        "List files and directories in the workspace",
-    ),
-    (
-        "proxima-workspace/shell",
-        "Run shell commands (build, test, git, package managers)",
-    ),
-    (
-        "proxima-workspace/text_editor",
-        "View and edit files in the workspace",
-    ),
-    ("proxima-workspace/list_files", "List files and directories"),
-];
-
-/// Returns the set of workspace tool IDs from the catalog.
-#[must_use]
-pub fn workspace_tool_ids() -> std::collections::HashSet<String> {
-    WORKSPACE_TOOL_CATALOG
-        .iter()
-        .map(|(id, _)| (*id).to_string())
-        .collect()
-}
-
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, specta::Type,
 )]

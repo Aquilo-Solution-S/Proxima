@@ -6,7 +6,6 @@ use crate::storage::StorageError;
 use crate::verbs::close_batch::CloseBatchOutcome;
 use crate::verbs::event_ingest::{EventDraft, EventIngestOutcome};
 use crate::verbs::persist_wake_trace::{WakeTracePersistInput, WakeTracePersistOutcome};
-use crate::workspace_run::{CoreWorkspaceRunPersistInput, CoreWorkspaceRunPersistOutcome};
 
 impl Engine {
     /// docs/14 §"EventIngest" — Owner-scoped write. Validates
@@ -80,17 +79,6 @@ impl Engine {
     ) -> Result<WakeTracePersistOutcome, StorageError> {
         self.storage
             .persist_wake_trace_atomic(&self.registry, &input)
-            .await
-    }
-
-    /// Internal wake path for core-owned workspace bindings. Callers have
-    /// already resolved wake-token authorization.
-    pub(crate) async fn persist_core_workspace_run_internal(
-        &self,
-        input: CoreWorkspaceRunPersistInput,
-    ) -> Result<CoreWorkspaceRunPersistOutcome, StorageError> {
-        self.storage
-            .persist_core_workspace_run_atomic(&self.registry, &input)
             .await
     }
 

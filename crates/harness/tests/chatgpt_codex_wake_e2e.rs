@@ -95,9 +95,6 @@ async fn codex_wake_round_completes_without_provider_not_yet_supported() {
         tool_projection: Vec::new(),
         required_fulfillment_schema_ids: Vec::new(),
         substrate_tool_palette: Vec::new(),
-        workspace_root: None,
-        workspace_tool_palette: Vec::new(),
-        workspace_sandbox: None,
         max_rounds: 1,
         provider: ProviderTarget::ChatGPTCodex {
             base_url,

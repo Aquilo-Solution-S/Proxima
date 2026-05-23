@@ -132,7 +132,6 @@ impl WakeEntryGoalScope {
 )]
 pub enum WakeExecutionMode {
     SubstrateOnly,
-    Workspace,
 }
 
 impl WakeExecutionMode {
@@ -140,7 +139,6 @@ impl WakeExecutionMode {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::SubstrateOnly => "substrate_only",
-            Self::Workspace => "workspace",
         }
     }
 }
@@ -164,7 +162,6 @@ impl WakeExecutionMode {
 )]
 pub enum WakeEntryExecutionMode {
     SubstrateOnly,
-    Workspace,
 }
 
 impl WakeEntryExecutionMode {
@@ -172,75 +169,11 @@ impl WakeEntryExecutionMode {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::SubstrateOnly => "substrate_only",
-            Self::Workspace => "workspace",
         }
     }
 }
 
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    serde::Serialize,
-    serde::Deserialize,
-    specta::Type,
-    schemars::JsonSchema,
-)]
-/// How a workspace wake's changes are finalized.
-///
-/// Under the `GitWorktree` binding (now backed by a per-wake `git clone`),
-/// **both variants commit** — `git fetch` returns commits to the real repo,
-/// not uncommitted working-tree state, so a workspace wake always commits
-/// onto its `proxima/wake/<id>` branch. The variant only labels the commit:
-/// `CommitAll` writes a normal message, `LeaveDirty` marks it as WIP.
-/// `LeaveDirty` is retained for serde-compat with stored wake configs;
-/// branch *disposition* (keep / merge / discard) is a separate concern.
-#[serde(rename_all = "snake_case")]
-pub enum WakeWorkspaceFinalize {
-    CommitAll,
-    LeaveDirty,
-}
 
-impl WakeWorkspaceFinalize {
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::CommitAll => "commit_all",
-            Self::LeaveDirty => "leave_dirty",
-        }
-    }
-}
-
-#[derive(
-    Debug,
-    Clone,
-    PartialEq,
-    Eq,
-    serde::Serialize,
-    serde::Deserialize,
-    specta::Type,
-    schemars::JsonSchema,
-)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum WakeWorkspaceBinding {
-    GitWorktree {
-        repo_path: String,
-        #[serde(default = "default_git_worktree_base_ref")]
-        base_ref: String,
-        finalize: WakeWorkspaceFinalize,
-        #[serde(default)]
-        worktrees_root: Option<String>,
-    },
-    RegisteredRunner {
-        flavor_id: String,
-    },
-}
-
-fn default_git_worktree_base_ref() -> String {
-    "HEAD".into()
-}
 
 #[derive(
     Debug,

@@ -7,10 +7,7 @@ use tauri::ipc::Channel;
 use uuid::Uuid;
 
 use super::repo_ingest::spawn_run_driver;
-use super::ts_types::{
-    RepoEraseReceiptTs, RepoIngestEventTs, RepoIngestionRunTs, RepoRecordTs,
-    WorkspaceMergeOutcomeTs, WorkspaceReviewRecordTs, WorkspaceRunDiffTs, WorkspaceRunRecordTs,
-};
+use super::ts_types::{RepoEraseReceiptTs, RepoIngestEventTs, RepoIngestionRunTs, RepoRecordTs};
 use crate::boot::sentinel_owner;
 use crate::command_error::CommandError;
 
@@ -95,133 +92,6 @@ pub async fn code_set_repo_target_branch(
             proxima_code::set_repo_target_branch(pg.pool(), &owner, uuid, target_branch.as_deref())
                 .await?;
         Ok(record.into())
-    })
-    .await
-}
-
-/// # Errors
-/// `InvalidUuid` if `repo_id` doesn't parse, `Storage` otherwise.
-#[tauri::command]
-#[specta::specta]
-pub async fn code_list_workspace_runs(
-    pg: State<'_, Arc<PgStorage>>,
-    repo_id: String,
-    limit: Option<u32>,
-) -> Result<Vec<WorkspaceRunRecordTs>, CommandError> {
-    let req_bytes = crate::perf::ipc::req_size(&(&repo_id, &limit));
-    crate::perf::ipc::record("code_list_workspace_runs", req_bytes, async move {
-        let owner = sentinel_owner();
-        let uuid =
-            Uuid::parse_str(&repo_id).map_err(|_| CommandError::InvalidUuid { value: repo_id })?;
-        let runs =
-            proxima_code::list_workspace_runs(pg.pool(), &owner, uuid, limit.unwrap_or(50)).await?;
-        Ok(runs.into_iter().map(Into::into).collect())
-    })
-    .await
-}
-
-/// # Errors
-/// `InvalidUuid` if `run_memory_id` doesn't parse, `Storage` otherwise.
-#[tauri::command]
-#[specta::specta]
-pub async fn code_list_workspace_reviews(
-    pg: State<'_, Arc<PgStorage>>,
-    run_memory_id: String,
-) -> Result<Vec<WorkspaceReviewRecordTs>, CommandError> {
-    let req_bytes = crate::perf::ipc::req_size(&run_memory_id);
-    crate::perf::ipc::record("code_list_workspace_reviews", req_bytes, async move {
-        let owner = sentinel_owner();
-        let uuid = Uuid::parse_str(&run_memory_id).map_err(|_| CommandError::InvalidUuid {
-            value: run_memory_id,
-        })?;
-        let reviews = proxima_code::list_workspace_reviews(
-            pg.pool(),
-            &owner,
-            proxima_core::MemoryId::new(uuid),
-        )
-        .await?;
-        Ok(reviews.into_iter().map(Into::into).collect())
-    })
-    .await
-}
-
-/// # Errors
-/// `InvalidUuid` if `run_memory_id` doesn't parse, `Storage` otherwise.
-#[tauri::command]
-#[specta::specta]
-pub async fn code_get_workspace_run_diff(
-    pg: State<'_, Arc<PgStorage>>,
-    run_memory_id: String,
-) -> Result<WorkspaceRunDiffTs, CommandError> {
-    let req_bytes = crate::perf::ipc::req_size(&run_memory_id);
-    crate::perf::ipc::record("code_get_workspace_run_diff", req_bytes, async move {
-        let owner = sentinel_owner();
-        let uuid = Uuid::parse_str(&run_memory_id).map_err(|_| CommandError::InvalidUuid {
-            value: run_memory_id,
-        })?;
-        let diff = proxima_code::get_workspace_run_diff(
-            pg.pool(),
-            &owner,
-            proxima_core::MemoryId::new(uuid),
-        )
-        .await?;
-        Ok(diff.into())
-    })
-    .await
-}
-
-/// # Errors
-/// `InvalidUuid` if `run_memory_id` doesn't parse, `Storage` otherwise.
-#[tauri::command]
-#[specta::specta]
-pub async fn code_decide_workspace_run(
-    pg: State<'_, Arc<PgStorage>>,
-    run_memory_id: String,
-    decision: proxima_code::WorkspaceDecision,
-    reason: Option<String>,
-) -> Result<String, CommandError> {
-    let req_bytes = crate::perf::ipc::req_size(&(&run_memory_id, &decision, &reason));
-    crate::perf::ipc::record("code_decide_workspace_run", req_bytes, async move {
-        if decision == proxima_code::WorkspaceDecision::Merged {
-            return Err(CommandError::Storage {
-                message: "merged decisions must be emitted through code_merge_workspace_run".into(),
-            });
-        }
-        let owner = sentinel_owner();
-        let uuid = Uuid::parse_str(&run_memory_id).map_err(|_| CommandError::InvalidUuid {
-            value: run_memory_id,
-        })?;
-        let memory_id = proxima_code::emit_workspace_decision(
-            pg.pool(),
-            &owner,
-            proxima_core::MemoryId::new(uuid),
-            decision,
-            reason.as_deref(),
-        )
-        .await?;
-        Ok(memory_id.into_inner().to_string())
-    })
-    .await
-}
-
-/// # Errors
-/// `InvalidUuid` if `run_memory_id` doesn't parse, `Storage` otherwise.
-#[tauri::command]
-#[specta::specta]
-pub async fn code_merge_workspace_run(
-    pg: State<'_, Arc<PgStorage>>,
-    run_memory_id: String,
-) -> Result<WorkspaceMergeOutcomeTs, CommandError> {
-    let req_bytes = crate::perf::ipc::req_size(&run_memory_id);
-    crate::perf::ipc::record("code_merge_workspace_run", req_bytes, async move {
-        let owner = sentinel_owner();
-        let uuid = Uuid::parse_str(&run_memory_id).map_err(|_| CommandError::InvalidUuid {
-            value: run_memory_id,
-        })?;
-        let outcome =
-            proxima_code::merge_workspace_run(pg.pool(), &owner, proxima_core::MemoryId::new(uuid))
-                .await?;
-        Ok(outcome.into())
     })
     .await
 }

@@ -704,7 +704,6 @@ fn wake_entry_draft_to_row(draft: &WakeEntryDraft) -> WakeEntryRow {
         enabled: draft.enabled,
         execution_mode: match draft.execution_mode {
             WakeExecutionMode::SubstrateOnly => WakeEntryExecutionMode::SubstrateOnly,
-            WakeExecutionMode::Workspace => WakeEntryExecutionMode::Workspace,
         },
         authored_by: draft.authored_by,
         probability_promille: draft.probability_promille,
@@ -712,8 +711,6 @@ fn wake_entry_draft_to_row(draft: &WakeEntryDraft) -> WakeEntryRow {
         model_tier: draft.model_tier,
         inference_target_ref: draft.inference_target_ref.clone(),
         substrate_tool_palette: draft.substrate_tool_palette.clone(),
-        workspace_tool_palette: draft.workspace_tool_palette.clone(),
-        workspace_binding: draft.workspace_binding.clone(),
         required_produced_schema_ids: draft.required_produced_schema_ids.clone(),
         max_rounds: draft.max_rounds,
         intervention_policy: draft.intervention_policy.clone(),
@@ -942,8 +939,7 @@ mod tests {
             10,
         )
         .expect("wake entry");
-        wake_entry.execution_mode = WakeExecutionMode::Workspace;
-        wake_entry.workspace_tool_palette = vec!["workspace_shell".into()];
+        wake_entry.execution_mode = WakeExecutionMode::SubstrateOnly;
 
         let group = PersonalityGroup {
             owner: owner.clone(),

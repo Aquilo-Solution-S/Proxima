@@ -6,10 +6,9 @@ use std::fmt::Write as _;
 use proxima_core::harness::{
     HarnessProgram, HarnessToolDispatch, HarnessToolProjection, SubstrateToolBinding,
 };
-use proxima_core::mcp::provider_safe_tool_name;
 
 use crate::conversation::{Conversation, ToolSpec};
-use crate::tools::{ToolBinding, workspace::WorkspaceToolName};
+use crate::tools::ToolBinding;
 
 #[derive(Debug)]
 pub struct ResolvedProgram {
@@ -29,8 +28,6 @@ pub struct ResolvedProgram {
 pub enum ProgramResolveError {
     #[error("projected tool {projected} requires missing internal tool {internal}")]
     MissingInternalTool { projected: String, internal: String },
-    #[error("unknown workspace tool: {0}")]
-    UnknownWorkspaceTool(String),
 }
 
 pub fn resolve(
@@ -58,24 +55,6 @@ pub fn resolve(
         )?;
     }
 
-    if program.workspace_root.is_some() {
-        for palette_id in &program.workspace_tool_palette {
-            let name = workspace_tool_from_palette_id(palette_id)
-                .ok_or_else(|| ProgramResolveError::UnknownWorkspaceTool(palette_id.clone()))?;
-            let canonical = name.canonical().to_string();
-            let provider_safe = provider_safe_tool_name(&canonical);
-            tools.push(ToolSpec {
-                canonical: canonical.clone(),
-                provider_safe: provider_safe.clone(),
-                description: name.description().to_string(),
-                input_schema: name.input_schema(),
-            });
-            reverse_map.insert(provider_safe, canonical.clone());
-            tool_productions.insert(canonical.clone(), Vec::new());
-            bindings.insert(canonical, ToolBinding::Workspace(name));
-        }
-    }
-
     Ok(ResolvedProgram {
         conversation: Conversation {
             system_prompt: program.system_prompt,
@@ -88,21 +67,6 @@ pub fn resolve(
         reverse_map,
         bindings,
     })
-}
-
-fn workspace_tool_from_palette_id(palette_id: &str) -> Option<WorkspaceToolName> {
-    match palette_id {
-        "workspace_shell" | "proxima-workspace/shell" | "core-workspace/shell" => {
-            Some(WorkspaceToolName::Shell)
-        }
-        "workspace_text_editor"
-        | "proxima-workspace/text_editor"
-        | "core-workspace/text_editor" => Some(WorkspaceToolName::TextEditor),
-        "workspace_list_files" | "proxima-workspace/list_files" | "core-workspace/list_files" => {
-            Some(WorkspaceToolName::ListFiles)
-        }
-        _ => WorkspaceToolName::from_canonical(palette_id),
-    }
 }
 
 fn push_projected_tool(
@@ -202,7 +166,6 @@ fn build_user_seed(program: &HarnessProgram) -> String {
         "wake_contract",
         "coordination_context",
         "continuation",
-        "workspace_context",
     ] {
         if let Some(value) = program.context_params.get(key) {
             let _ = write!(
@@ -239,8 +202,7 @@ mod tests {
                         "trigger_id": "proxima-goal/goal-activated-v1",
                         "execution_mode": "substrate_only",
                         "tool_palettes": {
-                            "substrate_tool_palette": ["proxima-goal/goal_decompose"],
-                            "workspace_tool_palette": []
+                            "substrate_tool_palette": ["proxima-goal/goal_decompose"]
                         }
                     }),
                 ),
@@ -258,9 +220,6 @@ mod tests {
             tool_projection: Vec::new(),
             required_fulfillment_schema_ids: Vec::new(),
             substrate_tool_palette: Vec::new(),
-            workspace_root: None,
-            workspace_tool_palette: Vec::new(),
-            workspace_sandbox: None,
             max_rounds: 1,
             provider: ProviderTarget::MistralChat {
                 base_url: "http://127.0.0.1:1".into(),
@@ -300,7 +259,7 @@ mod tests {
                         {
                             "perspective": "P2",
                             "schema_id": "proxima-mcp/agent-derivation-v1",
-                            "text": "Inspect workspace evidence before proposing edits.",
+                            "text": "Inspect evidence before proposing edits.",
                             "truncated": false
                         }
                     ]),
@@ -309,9 +268,6 @@ mod tests {
             tool_projection: Vec::new(),
             required_fulfillment_schema_ids: Vec::new(),
             substrate_tool_palette: Vec::new(),
-            workspace_root: None,
-            workspace_tool_palette: Vec::new(),
-            workspace_sandbox: None,
             max_rounds: 1,
             provider: ProviderTarget::MistralChat {
                 base_url: "http://127.0.0.1:1".into(),
@@ -331,7 +287,7 @@ mod tests {
             .expect("active perspectives section");
 
         assert!(root_idx < perspective_idx);
-        assert!(seed.contains("Inspect workspace evidence before proposing edits."));
+        assert!(seed.contains("Inspect evidence before proposing edits."));
     }
 }
 

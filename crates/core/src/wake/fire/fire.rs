@@ -1,6 +1,5 @@
 //! Per-entry wake fire path backed by the in-process harness.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -9,14 +8,11 @@ use uuid::Uuid;
 
 use crate::engine::Engine;
 use crate::error::ProtocolError;
-use crate::harness::{
-    HarnessAdapter, HarnessContext, HarnessProgram, HarnessToolProjection,
-    build_wake_tool_projection,
-};
+use crate::harness::{HarnessAdapter, HarnessContext, HarnessProgram, build_wake_tool_projection};
 use crate::mcp::{HandleTable, MemoryHandleClass, PreSeededHandles};
 use crate::personality::{
-    PersonalityInstanceId, WakeChainDepth, WakeEntryExecutionMode, WakeInvocationContinuation,
-    WakeInvocationLogStatus, WakeInvocationStart, WakeInvocationStatus,
+    PersonalityInstanceId, WakeChainDepth, WakeInvocationContinuation, WakeInvocationLogStatus,
+    WakeInvocationStart, WakeInvocationStatus,
 };
 use crate::verbs::persist_wake_trace::WakeTracePersistOutcome;
 use crate::wake::context::{WakeContext, assemble_wake_context};
@@ -37,7 +33,6 @@ use super::finalize::{
 use super::input::{FireWakeEntryInput, per_invocation_timeout};
 use super::outcome::{WakeInvocationFinalizeOutcome, wake_outcome_from_harness_outcome};
 use super::resolve::{ResolvedTarget, collect_sidecars, resolve_target};
-use super::workspace::finalize_workspace_runner;
 use super::context::{build_context_params, build_system_prompt};
 
 pub async fn fire_wake_entry(
@@ -186,31 +181,6 @@ pub async fn fire_wake_entry(
         }
     };
 
-    if matches!(
-        input.wake_entry.execution_mode,
-        WakeEntryExecutionMode::Workspace
-    ) {
-        return handle_workspace_mode(
-            engine,
-            adapter,
-            WorkspaceModeState {
-                input,
-                wake_token,
-                seeded_handles,
-                handles: handle_table,
-                wake_context,
-                resolved,
-                context_params,
-                tool_projection,
-                session_log_path,
-                invocation_id_for_dispatch,
-                invocation_timeout,
-                started_at,
-            },
-        )
-        .await;
-    }
-
     let provider_target = match provider_target_from_config(&resolved.config) {
         Ok(target) => target,
         Err(err) => {
@@ -245,9 +215,6 @@ pub async fn fire_wake_entry(
         tool_projection,
         required_fulfillment_schema_ids: input.wake_entry.required_produced_schema_ids.clone(),
         substrate_tool_palette: input.wake_entry.substrate_tool_palette.clone(),
-        workspace_root: None,
-        workspace_tool_palette: Vec::new(),
-        workspace_sandbox: None,
         max_rounds,
         provider: provider_target,
     };
@@ -288,224 +255,6 @@ pub async fn fire_wake_entry(
 
     let outcome = wake_outcome_from_harness_outcome(&input, outcome_result);
     warn_if_failed(&input, &outcome);
-    maybe_emit_intervention_request(
-        engine,
-        &input,
-        &wake_context,
-        invocation_id_for_dispatch,
-        trace_outcome.as_ref(),
-        &outcome,
-    )
-    .await;
-    finalize(engine, &input, invocation_id_for_dispatch, outcome).await?;
-    Ok(true)
-}
-
-struct WorkspaceModeState {
-    input: FireWakeEntryInput,
-    wake_token: Uuid,
-    seeded_handles: PreSeededHandles,
-    handles: Arc<HandleTable>,
-    wake_context: WakeContext,
-    resolved: ResolvedTarget,
-    context_params: HashMap<String, serde_json::Value>,
-    tool_projection: Vec<HarnessToolProjection>,
-    session_log_path: std::path::PathBuf,
-    invocation_id_for_dispatch: Uuid,
-    invocation_timeout: Duration,
-    started_at: time::OffsetDateTime,
-}
-
-async fn handle_workspace_mode(
-    engine: &Engine,
-    adapter: &dyn HarnessAdapter,
-    state: WorkspaceModeState,
-) -> Result<bool, ProtocolError> {
-    use super::workspace::prepare_workspace_binding;
-    use super::workspace::finalize_workspace_runner;
-    use crate::personality::workspace::WorkspaceOutcome;
-
-    let WorkspaceModeState {
-        input,
-        wake_token,
-        seeded_handles,
-        handles,
-        wake_context,
-        resolved,
-        mut context_params,
-        tool_projection,
-        session_log_path,
-        invocation_id_for_dispatch,
-        invocation_timeout,
-        started_at,
-    } = state;
-
-    let mcp_url = engine.mcp_url().unwrap_or_default();
-    let prepare_input = crate::personality::workspace::WorkspacePrepareInput {
-        invocation_id: invocation_id_for_dispatch,
-        owner: &input.owner,
-        wake_token,
-        mcp_url: &mcp_url,
-        root_perspective_memory_id: MemoryId::new(wake_context.root_perspective.memory_id),
-        triggering_memory_id: MemoryId::new(wake_context.triggering_memory.memory_id),
-        triggering_memory_schema_id: input.wake_entry.trigger_id.as_str(),
-        triggering_memory_payload: &wake_context.triggering_memory.typed_payload,
-        is_continuation: input.continuation.is_some(),
-        workspace_tool_palette: &input.wake_entry.workspace_tool_palette,
-    };
-    let prepared_result = match input.wake_entry.workspace_binding.as_ref() {
-        Some(binding) => prepare_workspace_binding(engine, prepare_input, binding).await,
-        None => Err(crate::personality::workspace::WorkspaceRunnerError::TriggerNotEligible(
-            "workspace_binding_required".into(),
-        )),
-    };
-    let prepared = match prepared_result {
-        Ok(prepared) => prepared,
-        Err(crate::personality::workspace::WorkspaceRunnerError::Unimplemented) => {
-            engine.wake_token_store().revoke(wake_token).await;
-            finalize(
-                engine,
-                &input,
-                invocation_id_for_dispatch,
-                WakeInvocationFinalizeOutcome::failed(
-                    "workspace_mode_not_yet_implemented".to_string(),
-                ),
-            )
-            .await?;
-            return Ok(true);
-        }
-        Err(err) => {
-            engine.wake_token_store().revoke(wake_token).await;
-            finalize(
-                engine,
-                &input,
-                invocation_id_for_dispatch,
-                WakeInvocationFinalizeOutcome::failed(format!("workspace_runner_prepare:{err}")),
-            )
-            .await?;
-            return Ok(true);
-        }
-    };
-
-    if let Some(ws_ctx) = prepared.workspace_context.clone() {
-        let workspace_memory_classes =
-            super::context::load_payload_memory_classes(engine, &input.owner, &ws_ctx).await?;
-        context_params.insert(
-            "workspace_context".to_string(),
-            super::context::project_model_value(&ws_ctx, None, handles.as_ref(), &workspace_memory_classes),
-        );
-    }
-
-    let provider_target = match provider_target_from_config(&resolved.config) {
-        Ok(target) => target,
-        Err(err) => {
-            let timing = TraceTiming {
-                started_at,
-                finished_at: time::OffsetDateTime::now_utc(),
-            };
-            let failure_reason = provider_target_failure_reason(&err);
-            let finalize_outcome = WakeInvocationFinalizeOutcome::failed(failure_reason);
-            finalize_pre_run_workspace(
-                engine,
-                &input,
-                &wake_context,
-                &resolved,
-                PreRunWorkspaceFailure {
-                    invocation_id: invocation_id_for_dispatch,
-                    wake_token,
-                    prepared,
-                    timing,
-                    finalize_outcome,
-                },
-            )
-            .await?;
-            return Ok(true);
-        }
-    };
-    let sandbox_spec = build_workspace_sandbox_spec(invocation_id_for_dispatch);
-    let program = HarnessProgram {
-        system_prompt: build_system_prompt(
-            &wake_context,
-            &seeded_handles,
-            input.continuation.as_ref(),
-        ),
-        instructions: input.wake_entry.instructions.clone(),
-        context_params,
-        tool_projection,
-        required_fulfillment_schema_ids: input.wake_entry.required_produced_schema_ids.clone(),
-        substrate_tool_palette: input.wake_entry.substrate_tool_palette.clone(),
-        workspace_root: Some(prepared.work_dir.clone()),
-        workspace_tool_palette: input.wake_entry.workspace_tool_palette.clone(),
-        workspace_sandbox: sandbox_spec.clone(),
-        max_rounds: u32::from(input.wake_entry.max_rounds),
-        provider: provider_target,
-    };
-    let hctx = harness_context(
-        &input,
-        &wake_context,
-        invocation_id_for_dispatch,
-        wake_token,
-        invocation_timeout,
-    );
-    let outcome_result = adapter.run(program, hctx).await;
-    let timing = TraceTiming {
-        started_at,
-        finished_at: time::OffsetDateTime::now_utc(),
-    };
-
-    write_session_jsonl_to_disk(&session_log_path, &outcome_result).await;
-    let sandbox_evidence = collect_sandbox_evidence(
-        &session_log_path,
-        sandbox_spec.as_ref(),
-        invocation_id_for_dispatch,
-        &outcome_result,
-    )
-    .await;
-    append_session_log_error_if_present(
-        engine,
-        &input,
-        invocation_id_for_dispatch,
-        &outcome_result,
-    )
-    .await;
-    let trace_outcome = emit_trace_from_outcome(
-        engine,
-        &input,
-        &wake_context,
-        &resolved,
-        invocation_id_for_dispatch,
-        &outcome_result,
-        timing,
-    )
-    .await
-    .ok();
-
-    let finalize_outcome = wake_outcome_from_harness_outcome(&input, outcome_result);
-    let workspace_outcome = WorkspaceOutcome {
-        exit_code: finalize_outcome.exit_code,
-        stdout_tail: finalize_outcome.stdout_tail.clone(),
-        stderr_tail: finalize_outcome.stderr_tail.clone(),
-        duration_ms: finalize_outcome.duration_ms,
-    };
-    let finalized = finalize_workspace_runner(
-        engine,
-        &input,
-        &wake_context,
-        invocation_id_for_dispatch,
-        prepared,
-        workspace_outcome,
-        sandbox_evidence,
-    )
-    .await;
-
-    engine.wake_token_store().revoke(wake_token).await;
-
-    let outcome = match finalized {
-        Ok(()) => finalize_outcome,
-        Err(err) => {
-            WakeInvocationFinalizeOutcome::failed(format!("workspace_runner_finalize:{err}"))
-        }
-    };
     maybe_emit_intervention_request(
         engine,
         &input,
@@ -618,14 +367,6 @@ struct StartedWakeFailure {
     failure_reason: String,
 }
 
-struct PreRunWorkspaceFailure {
-    invocation_id: Uuid,
-    wake_token: Uuid,
-    prepared: crate::personality::workspace::WorkspacePreparedRun,
-    timing: TraceTiming,
-    finalize_outcome: WakeInvocationFinalizeOutcome,
-}
-
 async fn finalize_failed_started_wake(
     engine: &Engine,
     input: &FireWakeEntryInput,
@@ -653,86 +394,6 @@ async fn finalize_failed_started_wake(
         WakeInvocationFinalizeOutcome::failed(failure.failure_reason),
     )
     .await
-}
-
-async fn finalize_pre_run_workspace(
-    engine: &Engine,
-    input: &FireWakeEntryInput,
-    wake_context: &WakeContext,
-    resolved: &ResolvedTarget,
-    failure: PreRunWorkspaceFailure,
-) -> Result<(), ProtocolError> {
-    emit_trace_from_failed_preflight(
-        engine,
-        input,
-        wake_context,
-        resolved,
-        failure.invocation_id,
-        failure.timing,
-        failure
-            .finalize_outcome
-            .failure_reason
-            .clone()
-            .unwrap_or_else(|| "pre_run_failure".to_string()),
-    )
-    .await
-    .ok();
-    let workspace_outcome = crate::personality::workspace::WorkspaceOutcome {
-        exit_code: failure.finalize_outcome.exit_code,
-        stdout_tail: failure.finalize_outcome.stdout_tail.clone(),
-        stderr_tail: failure.finalize_outcome.stderr_tail.clone(),
-        duration_ms: failure.finalize_outcome.duration_ms,
-    };
-    let _ = finalize_workspace_runner(
-        engine,
-        input,
-        wake_context,
-        failure.invocation_id,
-        failure.prepared,
-        workspace_outcome,
-        // A pre-run failure produced no harness transcript or sandbox.
-        super::workspace::CoreSandboxEvidence::default(),
-    )
-    .await;
-    engine.wake_token_store().revoke(failure.wake_token).await;
-    finalize(
-        engine,
-        input,
-        failure.invocation_id,
-        failure.finalize_outcome,
-    )
-    .await
-}
-
-/// Build the per-wake observation-sandbox spec when Docker sandbox mode is
-/// active (`PROXIMA_WORKSPACE_SANDBOX=docker`). `None` runs the wake's
-/// workspace tools on the host — the no-Docker dev escape hatch.
-///
-/// The container runs as the host uid/gid so the bind-mounted clone stays
-/// host-owned and host-side finalize sees no ownership split.
-fn build_workspace_sandbox_spec(
-    invocation_id: Uuid,
-) -> Option<crate::harness::WorkspaceSandboxSpec> {
-    if std::env::var("PROXIMA_WORKSPACE_SANDBOX").unwrap_or_default() != "docker" {
-        return None;
-    }
-    // SAFETY: `getuid`/`getgid` take no arguments, never fail, and have no
-    // preconditions — the libc contract is total.
-    let (uid, gid) = unsafe { (libc::getuid(), libc::getgid()) };
-    Some(crate::harness::WorkspaceSandboxSpec {
-        image: std::env::var("PROXIMA_WORKSPACE_SANDBOX_IMAGE")
-            .unwrap_or_else(|_| "proxima-workspace-sandbox:local".into()),
-        proxy_image: std::env::var("PROXIMA_WORKSPACE_SANDBOX_PROXY_IMAGE")
-            .unwrap_or_else(|_| "proxima-workspace-proxy:local".into()),
-        uid,
-        gid,
-        cache_volume: std::env::var("PROXIMA_WORKSPACE_SANDBOX_CACHE_VOLUME")
-            .unwrap_or_else(|_| "proxima-wake-cache".into()),
-        memory: std::env::var("PROXIMA_WORKSPACE_SANDBOX_MEMORY")
-            .ok()
-            .filter(|memory| !memory.is_empty()),
-        label: format!("proxima.wake={invocation_id}"),
-    })
 }
 
 fn provider_target_failure_reason(err: &ProviderTargetBuildError) -> String {
@@ -783,56 +444,6 @@ async fn write_session_jsonl_to_disk(
     if let Err(err) = tokio::fs::write(path, &bytes).await {
         tracing::warn!(error = %err, path = %path.display(), "failed to write worker-session.jsonl");
     }
-}
-
-/// Collect the per-wake observation evidence recorded on the `workspace_run`
-/// Fact: sandbox identity (derived from the spec core itself built) plus
-/// blake3 hashes addressing the on-disk transcript and egress network log.
-async fn collect_sandbox_evidence(
-    transcript_path: &std::path::Path,
-    sandbox_spec: Option<&crate::harness::WorkspaceSandboxSpec>,
-    invocation_id: Uuid,
-    outcome_result: &Result<crate::harness::HarnessOutcome, crate::harness::HarnessError>,
-) -> super::workspace::CoreSandboxEvidence {
-    let network_log = outcome_result
-        .as_ref()
-        .ok()
-        .and_then(|outcome| outcome.network_log.as_deref());
-    super::workspace::CoreSandboxEvidence {
-        sandbox_image: sandbox_spec.map(|spec| spec.image.clone()),
-        // Container name is deterministic from the invocation id — the same
-        // string `sandbox::container_name` builds in the harness.
-        sandbox_container: sandbox_spec.map(|_| format!("proxima-wake-{invocation_id}")),
-        transcript_blob_hash: hash_wake_transcript(transcript_path).await,
-        network_log_blob_hash: persist_network_log(transcript_path, network_log).await,
-    }
-}
-
-/// Read the on-disk wake transcript back and blake3-hash it. `None` when the
-/// file is unreadable — a missing artifact never fails the wake.
-async fn hash_wake_transcript(path: &std::path::Path) -> Option<String> {
-    match tokio::fs::read(path).await {
-        Ok(bytes) => Some(blake3::hash(&bytes).to_hex().to_string()),
-        Err(err) => {
-            tracing::warn!(error = %err, path = %path.display(), "wake transcript unreadable for hashing");
-            None
-        }
-    }
-}
-
-/// Write the proxy egress log to `network.log` beside the transcript and
-/// blake3-hash it. `None` for a host-mode wake (no log) or on write failure.
-async fn persist_network_log(
-    transcript_path: &std::path::Path,
-    network_log: Option<&str>,
-) -> Option<String> {
-    let log = network_log?;
-    let path = transcript_path.with_file_name("network.log");
-    if let Err(err) = tokio::fs::write(&path, log.as_bytes()).await {
-        tracing::warn!(error = %err, path = %path.display(), "failed to write wake network log");
-        return None;
-    }
-    Some(blake3::hash(log.as_bytes()).to_hex().to_string())
 }
 
 fn warn_if_failed(input: &FireWakeEntryInput, outcome: &WakeInvocationFinalizeOutcome) {
@@ -926,6 +537,7 @@ async fn maybe_emit_intervention_request(
 mod tests {
     use super::*;
     use crate::Owner;
+    use crate::personality::WakeEntryExecutionMode;
 
     #[test]
     fn continuation_wake_context_uses_original_change_event() {
@@ -943,7 +555,7 @@ mod tests {
                 trigger_id: "proxima-code/test-request-v1".into(),
                 label: "Tester".into(),
                 enabled: true,
-                execution_mode: WakeEntryExecutionMode::Workspace,
+                execution_mode: WakeEntryExecutionMode::SubstrateOnly,
                 authored_by: crate::personality::WakeEntryAuthoredBy::Any,
                 probability_promille: 1000,
                 goal_scope: crate::personality::WakeEntryGoalScope::None,
@@ -951,8 +563,6 @@ mod tests {
                 model_tier: crate::ModelTier::Standard,
                 inference_target_ref: None,
                 substrate_tool_palette: Vec::new(),
-                workspace_tool_palette: Vec::new(),
-                workspace_binding: None,
                 required_produced_schema_ids: Vec::new(),
                 max_rounds: 4,
                 intervention_policy: None,

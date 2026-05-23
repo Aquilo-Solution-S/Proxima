@@ -54,12 +54,11 @@ pub fn schema_registry() -> proxima_core::verbs::schema::FlavorRegistryFrozen {
 pub fn schema_registry_with(
     extra: impl FnOnce(&mut proxima_core::FlavorRegistry),
 ) -> proxima_core::verbs::schema::FlavorRegistryFrozen {
-    schema_registry_with_config(extra, None)
+    schema_registry_with_config(extra)
 }
 
 pub(crate) fn schema_registry_with_config(
     extra: impl FnOnce(&mut proxima_core::FlavorRegistry),
-    workspace_runner: Option<std::sync::Arc<dyn proxima_core::WorkspaceRunner>>,
 ) -> proxima_core::verbs::schema::FlavorRegistryFrozen {
     use proxima_core::verbs::schema::{PayloadKind, SchemaInfo};
     use proxima_core::{FlavorRegistry, SchemaId, SchemaVersion};
@@ -67,10 +66,6 @@ pub(crate) fn schema_registry_with_config(
     let mut flavor = FlavorRegistry::new();
     extra(&mut flavor);
     crate::register(&mut flavor);
-    if let Some(runner) = workspace_runner {
-        flavor.replace_workspace_runner("proxima-code", runner.clone());
-        flavor.replace_workspace_runner("proxima-core", runner);
-    }
     let flavor = flavor.freeze();
     let mut extra_schemas = Vec::new();
 
