@@ -4309,21 +4309,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "proxima-flavor-intent"
-version = "0.1.0"
-dependencies = [
- "proxima-core",
- "proxima-harness",
- "proxima-storage-pg",
- "schemars 1.2.1",
- "serde",
- "serde_json",
- "sqlx",
- "tokio",
- "uuid",
-]
-
-[[package]]
 name = "proxima-harness"
 version = "0.1.0"
 dependencies = [
@@ -4366,7 +4351,6 @@ version = "0.1.0"
 dependencies = [
  "proxima-core",
  "proxima-flavor-goal",
- "proxima-flavor-intent",
  "proxima-mcp-server",
  "proxima-mcp-substrate",
  "proxima-storage-pg",
@@ -4444,7 +4428,6 @@ dependencies = [
  "proxima-codex-auth",
  "proxima-core",
  "proxima-flavor-goal",
- "proxima-flavor-intent",
  "proxima-harness",
  "proxima-llm-openai-compat",
  "proxima-mcp-server",

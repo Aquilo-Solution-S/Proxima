@@ -71,17 +71,17 @@ mod tests {
     #[test]
     fn typed_emit_wrapper_reconstructs_internal_emit_args() {
         let wrapped = typed_emit_args(
-            "proxima-intent/vision-brief-v1",
+            "proxima-goal/goal-activated-v1",
             1,
             json!({
                 "goal_id": "G1",
                 "planner_directive": "Plan product-first.",
-                "text": "Vision brief"
+                "text": "Goal activated"
             }),
         )
         .unwrap();
 
-        assert_eq!(wrapped["schema_id"], "proxima-intent/vision-brief-v1");
+        assert_eq!(wrapped["schema_id"], "proxima-goal/goal-activated-v1");
         assert_eq!(wrapped["schema_version"], 1);
         assert_eq!(wrapped["payload"]["goal_id"], "G1");
         assert_eq!(
@@ -89,6 +89,6 @@ mod tests {
             "Plan product-first."
         );
         assert!(wrapped["payload"]["text"].is_null());
-        assert_eq!(wrapped["text"], "Vision brief");
+        assert_eq!(wrapped["text"], "Goal activated");
     }
 }

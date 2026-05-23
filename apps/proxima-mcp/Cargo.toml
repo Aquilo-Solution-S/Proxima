@@ -9,7 +9,6 @@ repository.workspace = true
 [dependencies]
 proxima-core = { path = "../../crates/core" }
 proxima-flavor-goal = { path = "../../flavors/goal" }
-proxima-flavor-intent = { path = "../../flavors/intent" }
 proxima-mcp-server = { path = "../../crates/mcp-server" }
 proxima-mcp-substrate = { path = "../../flavors/mcp" }
 proxima-storage-pg = { path = "../../crates/storage-pg" }
