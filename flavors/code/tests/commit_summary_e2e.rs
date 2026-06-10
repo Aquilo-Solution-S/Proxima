@@ -34,7 +34,7 @@ async fn create_db(name: &str) -> Result<(), sqlx::Error> {
 async fn drop_db(name: &str) -> Result<(), sqlx::Error> {
     let admin = std::env::var("PROXIMA_TEST_PG_URL").unwrap_or_else(|_| ADMIN_URL.into());
     let mut conn = PgConnection::connect(&admin).await?;
-    conn.execute(format!("DROP DATABASE IF EXISTS \"{name}\"").as_str())
+    conn.execute(format!("DROP DATABASE IF EXISTS \"{name}\" WITH (FORCE)").as_str())
         .await?;
     conn.close().await?;
     Ok(())

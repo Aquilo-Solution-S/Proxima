@@ -102,7 +102,10 @@ async fn remove_inference_target_blocked_by_tier_binding() {
             })
             .await
             .expect_err("should refuse target in use");
-        assert!(format!("{err}").to_lowercase().contains("in use"));
+        assert!(
+            format!("{err}").contains("still bound to tiers"),
+            "got {err}"
+        );
         Ok(())
     }
     .await;

@@ -103,7 +103,10 @@ async fn register_inference_target_conflict_when_body_differs() {
             .await
             .expect_err("should conflict");
         let msg = format!("{err}");
-        assert!(msg.to_lowercase().contains("conflict"), "got {msg}");
+        assert!(
+            msg.contains("already exists with a different body"),
+            "got {msg}"
+        );
         Ok(())
     }
     .await;
