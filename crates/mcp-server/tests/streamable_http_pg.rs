@@ -86,7 +86,10 @@ async fn streamable_http_initialize_list_and_remember() -> Result<(), Box<dyn st
         .as_str()
         .expect("text content");
     let output: serde_json::Value = serde_json::from_str(content)?;
-    assert!(output["handle"].as_str().expect("handle").starts_with('N'));
+    assert!(
+        output["handle"].as_str().expect("handle").starts_with('F'),
+        "remember mints a Fact handle, got: {output}"
+    );
 
     handle.abort();
     let _ = handle.await;
