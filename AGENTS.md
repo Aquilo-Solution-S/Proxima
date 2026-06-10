@@ -60,6 +60,8 @@ proxima/
 │   └── mcp/                 Rust MCP substrate flavor crate
 ├── examples/
 │   └── embedded-minimal/    canonical host-binary embedding example
+├── tools/
+│   └── dev-migrate/         headless substrate+flavor migration runner (dev DB bootstrap)
 ├── proto/                   Proxima v1 protobuf surface
 ├── docs/                    design source of truth
 ├── Cargo.toml               Rust workspace
@@ -227,7 +229,7 @@ breaks if these slip.
   Components include `core`, `frontend-core`, `proxima-shell`,
   `proxima-engine`, `proxima-code`, `proxima-mcp`, `storage-pg`,
   `wire-grpc`, `mcp-server`, `llm-openai-compat`, `flavors-code`,
-  `flavors-goal`, `flavors-mcp`, `examples`.
+  `flavors-goal`, `flavors-mcp`, `examples`, `tools`.
 - Body: bulleted list of concrete changes; preserve the *why* when
   the change is a decision, not a fix.
 - Co-authorship trailer for AI commits matches the parent CLAUDE.md

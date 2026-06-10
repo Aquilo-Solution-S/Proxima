@@ -4299,6 +4299,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "proxima-dev-migrate"
+version = "0.1.0"
+dependencies = [
+ "proxima-code",
+ "proxima-flavor-goal",
+ "proxima-mcp-substrate",
+ "proxima-storage-pg",
+ "tokio",
+]
+
+[[package]]
 name = "proxima-flavor-goal"
 version = "0.1.0"
 dependencies = [
