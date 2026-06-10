@@ -9,3 +9,4 @@ import Foundations.Prelude
 import Foundations.Owner
 import Foundations.Identity
 import Foundations.Memory
+import Foundations.Goals
