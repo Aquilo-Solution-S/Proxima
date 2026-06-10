@@ -10,3 +10,4 @@ import Foundations.Owner
 import Foundations.Identity
 import Foundations.Memory
 import Foundations.Goals
+import Foundations.Edges
