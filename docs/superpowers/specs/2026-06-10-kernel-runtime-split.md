@@ -96,8 +96,20 @@ D6. Sequencing vs Memophant v0.0.x seams (Zitadel AuthResolver,
   `PgStorage::run_migrations()` then each flavor's `migrator().run()`
   in sequence work correctly — but the CLI path for compile-time
   query validation on a blank DB requires applying flavor SQL by
-  hand first. Worth a look when D2 settles the migration-baseline
-  story (per-side `_sqlx_migrations` tables would dissolve it).
+  hand first. Interim workaround: `tools/dev-migrate` replays the
+  shell's boot sequence — substrate then code/mcp/goal flavor
+  migrators — headlessly, so `cargo sqlx prepare` works from a blank
+  DB. Build it with `SQLX_OFFLINE=true` first, then run the binary
+  with `DATABASE_URL` set (exporting the URL at compile time would
+  point `sqlx::query!` validation at the blank target). D2 remains
+  the real fix (per-side `_sqlx_migrations` tables would dissolve
+  the collision and retire the tool). Related discovery, fixed on
+  2026-06-10: the shared `_sqlx_migrations` table also caused a hard
+  version collision — substrate and code flavor both claimed
+  `20260523000010`, so the second migrator always failed with
+  `VersionMismatch` on fresh DBs; the flavor migration is renumbered
+  to `20260523000020`. Until D2, migration version numbers are a
+  single global namespace across substrate and all flavors.
 
 ## Non-goals
 

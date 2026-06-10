@@ -1,0 +1,22 @@
+[package]
+name = "proxima-dev-migrate"
+version = "0.1.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "dev-migrate"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+proxima-storage-pg = { path = "../../crates/storage-pg" }
+proxima-code = { path = "../../flavors/code" }
+proxima-mcp-substrate = { path = "../../flavors/mcp" }
+proxima-flavor-goal = { path = "../../flavors/goal" }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
