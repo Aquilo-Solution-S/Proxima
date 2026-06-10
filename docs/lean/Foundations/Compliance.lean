@@ -103,7 +103,7 @@ axiom erasure_removes_cognitive :
     (∀ g : Goal,   goal_owner g   ≠ o) ∧
     (∀ e : Edge,   edge_owner e   ≠ o)
 
-/-- CO-7'b / CO-19 / CO-29 — suppression SURVIVES erasure, carried
+/- CO-7'b / CO-19 / CO-29 — suppression SURVIVES erasure, carried
     structurally: `erasure_removes_cognitive` does not range over
     SuppressionEntry, and `suppression_blocks_reingest` above is
     deliberately NOT conditioned on `¬ erased o` — the re-ingest
