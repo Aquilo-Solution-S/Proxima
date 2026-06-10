@@ -19,6 +19,7 @@ async fn streamable_http_initialize_list_and_remember() -> Result<(), Box<dyn st
     let mut registry = FlavorRegistry::new();
     proxima_mcp_substrate::register(&mut registry);
     let server = McpToolHost::from_database_url(&database_url, nil_owner(), registry).await?;
+    proxima_mcp_substrate::migrator().run(server.pool()).await?;
     let store = Arc::new(WakeTokenStore::new(Duration::from_mins(1)));
     let token = store
         .mint(make_token_ctx(vec![
@@ -102,6 +103,7 @@ async fn missing_auth_returns_401() -> Result<(), Box<dyn std::error::Error>> {
     let mut registry = FlavorRegistry::new();
     proxima_mcp_substrate::register(&mut registry);
     let server = McpToolHost::from_database_url(&database_url, nil_owner(), registry).await?;
+    proxima_mcp_substrate::migrator().run(server.pool()).await?;
     let store = Arc::new(WakeTokenStore::new(Duration::from_mins(1)));
     let auth_store = Arc::new(McpAuthStore::new(store));
     let (handle, addr) = serve_streamable_http(
@@ -137,6 +139,7 @@ async fn disallowed_origin_returns_403_with_valid_token() -> Result<(), Box<dyn 
     let mut registry = FlavorRegistry::new();
     proxima_mcp_substrate::register(&mut registry);
     let server = McpToolHost::from_database_url(&database_url, nil_owner(), registry).await?;
+    proxima_mcp_substrate::migrator().run(server.pool()).await?;
     let store = Arc::new(WakeTokenStore::new(Duration::from_mins(1)));
     let auth_store = Arc::new(McpAuthStore::new(store));
     let token = uuid::Uuid::new_v4();
@@ -178,6 +181,7 @@ async fn local_master_token_lists_all_tools_without_origin()
     let mut registry = FlavorRegistry::new();
     proxima_mcp_substrate::register(&mut registry);
     let server = McpToolHost::from_database_url(&database_url, nil_owner(), registry).await?;
+    proxima_mcp_substrate::migrator().run(server.pool()).await?;
     let store = Arc::new(WakeTokenStore::new(Duration::from_mins(1)));
     let auth_store = Arc::new(McpAuthStore::new(store));
     let token = uuid::Uuid::new_v4();
@@ -229,6 +233,7 @@ async fn non_loopback_bind_refused_immediately() -> Result<(), Box<dyn std::erro
     let mut registry = FlavorRegistry::new();
     proxima_mcp_substrate::register(&mut registry);
     let server = McpToolHost::from_database_url(&database_url, nil_owner(), registry).await?;
+    proxima_mcp_substrate::migrator().run(server.pool()).await?;
     let bind: SocketAddr = "0.0.0.0:0".parse()?;
     let store = Arc::new(WakeTokenStore::new(Duration::from_mins(1)));
     let auth_store = Arc::new(McpAuthStore::new(store));
