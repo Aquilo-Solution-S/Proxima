@@ -26,7 +26,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 proxima-codex-auth = { path = "../../../crates/codex-auth" }
 proxima-core = { path = "../../../crates/core" }
-proxima-harness = { path = "../../../crates/harness" }
+proxima-harness = { path = "../../../crates/harness", features = ["chatgpt-codex"] }
 proxima-storage-pg = { path = "../../../crates/storage-pg" }
 proxima-code = { path = "../../../flavors/code" }
 proxima-flavor-goal = { path = "../../../flavors/goal" }

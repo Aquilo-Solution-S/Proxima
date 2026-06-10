@@ -1,3 +1,5 @@
+#![cfg(feature = "chatgpt-codex")]
+
 use std::path::PathBuf;
 
 use proxima_codex_auth::{AuthDotJsonPath, CodexAuthResolver, RefreshClient};

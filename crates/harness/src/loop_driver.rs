@@ -17,6 +17,7 @@ use tokio_util::sync::CancellationToken;
 use crate::conversation::{ToolResultStatus, ToolResultTurn, Turn};
 use crate::program::{ResolvedProgram, resolve};
 use crate::progress::FulfillmentProgress;
+#[cfg(feature = "chatgpt-codex")]
 use crate::providers::chatgpt_codex::ChatGPTCodexClient;
 use crate::providers::mistral_chat::MistralChatClient;
 use crate::providers::openai_chat::OpenAIChatClient;
@@ -151,6 +152,7 @@ fn build_provider(target: &ProviderTarget) -> Box<dyn ProviderClient> {
             client.request_timeout = PROVIDER_REQUEST_TIMEOUT;
             Box::new(client)
         }
+        #[cfg(feature = "chatgpt-codex")]
         ProviderTarget::ChatGPTCodex {
             base_url,
             model_id,
@@ -167,6 +169,10 @@ fn build_provider(target: &ProviderTarget) -> Box<dyn ProviderClient> {
             client.request_timeout = PROVIDER_REQUEST_TIMEOUT;
             Box::new(client)
         }
+        #[cfg(not(feature = "chatgpt-codex"))]
+        ProviderTarget::ChatGPTCodex { .. } => Box::new(crate::providers::UnavailableProvider {
+            feature: "chatgpt-codex",
+        }),
     }
 }
 
