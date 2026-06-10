@@ -111,6 +111,10 @@ pub struct TriggeringMemoryEnvelope {
 /// Returns `ProtocolError::NotFound` when the personality, root
 /// perspective sidecar, change event, or triggering memory row is
 /// absent. Returns `ProtocolError::Internal` for storage failures.
+#[expect(
+    clippy::too_many_lines,
+    reason = "linear envelope assembly over five sequential storage fetches"
+)]
 pub async fn assemble_wake_context(
     storage: &dyn Storage,
     owner: &Owner,
@@ -316,8 +320,7 @@ fn derive_event_descriptor(
             ..
         } => {
             let memory_id = match (target, source) {
-                (EntityRef::Memory(m), _) => *m,
-                (_, EntityRef::Memory(m)) => *m,
+                (EntityRef::Memory(m), _) | (_, EntityRef::Memory(m)) => *m,
                 (EntityRef::Goal(_), EntityRef::Goal(_)) => {
                     return Err(ProtocolError::not_found(
                         "trigger edge has no memory endpoint",

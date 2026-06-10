@@ -30,6 +30,12 @@ pub enum ProgramResolveError {
     MissingInternalTool { projected: String, internal: String },
 }
 
+/// Resolve a harness program against the substrate tool bindings.
+///
+/// # Errors
+///
+/// Returns `ProgramResolveError::MissingInternalTool` when a projected
+/// tool names an internal tool absent from `substrate_tools`.
 pub fn resolve(
     program: HarnessProgram,
     substrate_tools: &[SubstrateToolBinding],

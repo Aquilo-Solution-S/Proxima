@@ -24,15 +24,14 @@ use proxima_core::{
     CORE_HAS_APPROVAL_DECISION_RELATION, CORE_HAS_APPROVAL_POLICY_RELATION,
     CORE_RECEIVES_CHAT_END_REQUEST_RELATION, CORE_RECEIVES_CHAT_MESSAGE_RELATION,
     CORE_REPLIES_TO_MESSAGE_RELATION, CORE_VOTES_ON_RELATION, ChatCompactionV1, ChatEndRequestedV1,
-    ChatEndedV1, ChatMessageV1, ChatReplyV1, ChatStartedV1, ChatStore, ChatSummaryV1,
-    CompactChatThreadEmitOutcome, CompactChatThreadInput, EdgeAuthorshipKind, EdgeId,
-    EmitChatMessageInput, EmitChatReplyInput, EndChatEmitOutcome, EndChatInput, EntityKind,
+    ChatEndedV1, ChatFactEmitOutcome, ChatMessageV1, ChatReplyV1, ChatStartedV1, ChatStore,
+    ChatSummaryV1, CompactChatThreadEmitOutcome, CompactChatThreadInput, EdgeAuthorshipKind,
+    EdgeId, EmitChatMessageInput, EmitChatReplyInput, EndChatEmitOutcome, EndChatInput, EntityKind,
     ExistingChatEnd, FlavorRegistryFrozen, LoadedApprovalDecision, LoadedApprovalPolicy,
     LoadedApprovalVote, LoadedCompaction, LoadedEndRequest, LoadedEnded, LoadedMessage,
     LoadedReply, LoadedStarted, LoadedSummary, LoadedThreadEdge, MemoryId, MemoryOperatorKind,
     Owner, OwnerPrincipalKind, Principal, RequestEndChatInput, StartChatEmitOutcome,
-    StartChatInput, StorageError, ChatFactEmitOutcome, ThreadApprovalCountedVoteRaw,
-    chat_fact_event_draft,
+    StartChatInput, StorageError, ThreadApprovalCountedVoteRaw, chat_fact_event_draft,
 };
 use sqlx::{PgPool, Postgres, Transaction};
 use time::OffsetDateTime;
@@ -1595,16 +1594,18 @@ async fn chat_thread_edges(
     .map_err(map_err)?;
     Ok(rows
         .into_iter()
-        .filter(|(_, relation, _, source_memory_id, _, _, target_memory_id, _, _, _)| {
-            if relation == CORE_RECEIVES_CHAT_MESSAGE_RELATION
-                || relation == CORE_RECEIVES_CHAT_END_REQUEST_RELATION
-            {
-                endpoint_in_thread(*target_memory_id, thread_memory_ids)
-            } else {
-                endpoint_in_thread(*source_memory_id, thread_memory_ids)
-                    && endpoint_in_thread(*target_memory_id, thread_memory_ids)
-            }
-        })
+        .filter(
+            |(_, relation, _, source_memory_id, _, _, target_memory_id, _, _, _)| {
+                if relation == CORE_RECEIVES_CHAT_MESSAGE_RELATION
+                    || relation == CORE_RECEIVES_CHAT_END_REQUEST_RELATION
+                {
+                    endpoint_in_thread(*target_memory_id, thread_memory_ids)
+                } else {
+                    endpoint_in_thread(*source_memory_id, thread_memory_ids)
+                        && endpoint_in_thread(*target_memory_id, thread_memory_ids)
+                }
+            },
+        )
         .map(
             |(
                 edge_id,
@@ -1651,9 +1652,9 @@ async fn append_edge(
     authorship_kind: EdgeAuthorshipKind,
     authorship_owner: uuid::Uuid,
 ) -> Result<uuid::Uuid, StorageError> {
-    let relation = registry.resolve_relation(relation_id).ok_or_else(|| {
-        StorageError::Internal(format!("relation {relation_id} not registered"))
-    })?;
+    let relation = registry
+        .resolve_relation(relation_id)
+        .ok_or_else(|| StorageError::Internal(format!("relation {relation_id} not registered")))?;
     let edge_id = uuid::Uuid::now_v7();
     append_edge_in_tx(
         tx.as_mut(),
@@ -1995,8 +1996,7 @@ async fn start_chat_atomic(
     let mut tx = pool.begin().await.map_err(map_err)?;
     let started_outcome = ingest_event_in_tx(&mut tx, &started_draft).await?;
     let message_outcome = ingest_event_in_tx(&mut tx, &message_draft).await?;
-    let idempotent_replay =
-        started_outcome.idempotent_replay || message_outcome.idempotent_replay;
+    let idempotent_replay = started_outcome.idempotent_replay || message_outcome.idempotent_replay;
     let message_edge_id = if idempotent_replay {
         None
     } else {

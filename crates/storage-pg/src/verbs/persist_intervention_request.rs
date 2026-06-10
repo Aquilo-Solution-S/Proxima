@@ -12,6 +12,18 @@ use crate::error::map_err;
 use crate::verbs::edge_append::{EdgeDraft, append_edge_in_tx};
 use crate::verbs::event_ingest::ingest_event_in_tx;
 
+/// Persist an intervention request, its addressing edges, and the wake
+/// outbox row in one transaction.
+///
+/// # Errors
+///
+/// Returns `StorageError::ConstraintViolation` when edge endpoints violate
+/// the relation's kind masks, and `StorageError::Internal` for other sqlx
+/// failures.
+#[expect(
+    clippy::too_many_lines,
+    reason = "single atomic transaction script; splitting hides the commit boundary"
+)]
 pub async fn persist_intervention_requested_atomic(
     pool: &PgPool,
     registry: &FlavorRegistryFrozen,

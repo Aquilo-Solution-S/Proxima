@@ -16,6 +16,13 @@ pub struct ResolvedTarget {
 }
 
 /// Resolve the inference target for a wake entry.
+///
+/// # Errors
+///
+/// Returns `ProtocolError::TierUnbound` when no tier binding covers the
+/// entry's model tier, `ProtocolError::InferenceTargetMissing` when the
+/// chosen ref has no target row, and `ProtocolError::Internal` for
+/// storage failures.
 pub async fn resolve_target(
     engine: &Engine,
     input: &FireWakeEntryInput,

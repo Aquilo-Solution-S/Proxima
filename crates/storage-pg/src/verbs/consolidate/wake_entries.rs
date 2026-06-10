@@ -479,4 +479,3 @@ fn intervention_policy_from_parts(
         }
     })
 }
-

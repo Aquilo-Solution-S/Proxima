@@ -9,6 +9,10 @@ use super::{
     render_thread_summary, render_thread_vote,
 };
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "linear assemble-and-render of every thread item kind; no shared state worth extracting"
+)]
 pub(in crate::chat) async fn load_chat_thread(
     ctx: &McpToolCtx,
     thread_key: String,
@@ -116,16 +120,12 @@ pub(in crate::chat) async fn load_chat_thread(
 
     Ok(GetChatThreadOutput {
         thread_key,
-        started: started
-            .map(|started| render_thread_started(ctx, started))
-            .transpose()?,
+        started: started.map(|started| render_thread_started(ctx, started)),
         end_requests: end_requests
             .into_iter()
             .map(|request| render_thread_end_request(ctx, request))
-            .collect::<Result<_, _>>()?,
-        ended: ended
-            .map(|ended| render_thread_ended(ctx, ended))
-            .transpose()?,
+            .collect(),
+        ended: ended.map(|ended| render_thread_ended(ctx, ended)),
         compactions: compactions
             .into_iter()
             .map(|compaction| render_thread_compaction(ctx, compaction, &context_memory_classes))

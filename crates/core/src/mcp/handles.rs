@@ -214,6 +214,12 @@ impl HandleTable {
         )
     }
 
+    /// Assign (or return the existing) handle for `id` under the given class.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `id` was previously assigned with a different class, on
+    /// handle counter overflow, or if the handle table mutex is poisoned.
     pub fn assign_memory_with_class(&self, id: MemoryId, class: MemoryHandleClass) -> Handle {
         let mut inner = self.inner.lock().expect("handle table mutex poisoned");
         if let Some((existing_class, handle)) = inner.by_memory.get(&id) {
@@ -243,6 +249,11 @@ impl HandleTable {
         handle
     }
 
+    /// Look up the handle already assigned to `id`, if any.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the handle table mutex is poisoned.
     pub fn memory_handle(&self, id: MemoryId) -> Option<Handle> {
         self.inner
             .lock()
@@ -260,6 +271,12 @@ impl HandleTable {
         self.assign(EntityRef::Goal(id), 'G', |inner| &mut inner.goal_counter)
     }
 
+    /// Assign (or return the existing) handle for a flavor-owned object.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `prefix` is not ASCII uppercase, on handle counter
+    /// overflow, or if the handle table mutex is poisoned.
     pub fn assign_flavor_object(
         &self,
         kind: impl Into<String>,
@@ -312,6 +329,16 @@ impl HandleTable {
         handle
     }
 
+    /// Resolve a raw handle string to the entity it names.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ResolveError::Unknown` when `raw` is not a well-formed
+    /// handle or was never assigned by this table.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the handle table mutex is poisoned.
     pub fn resolve_entity(&self, raw: &str) -> Result<EntityRef, ResolveError> {
         if !is_valid_handle_shape(raw) {
             return Err(ResolveError::Unknown {
@@ -329,6 +356,12 @@ impl HandleTable {
             })
     }
 
+    /// Resolve a handle to a memory id of any class.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ResolveError::Unknown` for unassigned handles and
+    /// `ResolveError::WrongKind` when the handle names a non-memory entity.
     pub fn resolve_memory(&self, raw: &str) -> Result<MemoryId, ResolveError> {
         match self.resolve_entity(raw)? {
             EntityRef::Memory { id, .. } => Ok(id),
@@ -340,14 +373,32 @@ impl HandleTable {
         }
     }
 
+    /// Resolve a handle to a fact memory id.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ResolveError::Unknown` for unassigned handles and
+    /// `ResolveError::WrongKind` when the handle is not a fact memory.
     pub fn resolve_fact_memory(&self, raw: &str) -> Result<MemoryId, ResolveError> {
         self.resolve_memory_class(raw, MemoryHandleClass::Fact)
     }
 
+    /// Resolve a handle to an abstraction memory id.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ResolveError::Unknown` for unassigned handles and
+    /// `ResolveError::WrongKind` when the handle is not an abstraction memory.
     pub fn resolve_abstraction_memory(&self, raw: &str) -> Result<MemoryId, ResolveError> {
         self.resolve_memory_class(raw, MemoryHandleClass::Abstraction)
     }
 
+    /// Resolve a handle to a perspective memory id.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ResolveError::Unknown` for unassigned handles and
+    /// `ResolveError::WrongKind` when the handle is not a perspective memory.
     pub fn resolve_perspective_memory(&self, raw: &str) -> Result<MemoryId, ResolveError> {
         self.resolve_memory_class(raw, MemoryHandleClass::Perspective)
     }
@@ -367,6 +418,12 @@ impl HandleTable {
         }
     }
 
+    /// Resolve a handle to an edge id.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ResolveError::Unknown` for unassigned handles and
+    /// `ResolveError::WrongKind` when the handle names a non-edge entity.
     pub fn resolve_edge(&self, raw: &str) -> Result<EdgeId, ResolveError> {
         match self.resolve_entity(raw)? {
             EntityRef::Edge(id) => Ok(id),
@@ -378,6 +435,12 @@ impl HandleTable {
         }
     }
 
+    /// Resolve a handle to a goal id.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ResolveError::Unknown` for unassigned handles and
+    /// `ResolveError::WrongKind` when the handle names a non-goal entity.
     pub fn resolve_goal(&self, raw: &str) -> Result<GoalId, ResolveError> {
         match self.resolve_entity(raw)? {
             EntityRef::Goal(id) => Ok(id),
@@ -389,6 +452,13 @@ impl HandleTable {
         }
     }
 
+    /// Resolve a handle to a flavor object id of the given `kind`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ResolveError::Unknown` for unassigned handles and
+    /// `ResolveError::WrongKind` when the handle is not a flavor object
+    /// of `kind`.
     pub fn resolve_flavor_object(&self, raw: &str, kind: &str) -> Result<uuid::Uuid, ResolveError> {
         match self.resolve_entity(raw)? {
             EntityRef::FlavorObject {
@@ -405,6 +475,12 @@ impl HandleTable {
         }
     }
 
+    /// Resolve a handle to a personality instance id.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ResolveError::Unknown` for unassigned handles and
+    /// `ResolveError::WrongKind` when the handle names a non-personality entity.
     pub fn resolve_personality(&self, raw: &str) -> Result<PersonalityInstanceId, ResolveError> {
         match self.resolve_entity(raw)? {
             EntityRef::Personality(id) => Ok(id),
@@ -416,6 +492,12 @@ impl HandleTable {
         }
     }
 
+    /// Resolve a handle to a wake entry id.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ResolveError::Unknown` for unassigned handles and
+    /// `ResolveError::WrongKind` when the handle names a non-wake-entry entity.
     pub fn resolve_wake_entry(&self, raw: &str) -> Result<uuid::Uuid, ResolveError> {
         match self.resolve_entity(raw)? {
             EntityRef::WakeEntry(id) => Ok(id),

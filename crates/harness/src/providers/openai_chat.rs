@@ -5,7 +5,8 @@ use tokio_util::sync::CancellationToken;
 use crate::conversation::{Conversation, ToolSpec};
 
 use super::chat_completions_wire::{
-    ChatCompletionsRequestOptions, TokenLimitField, build_request, classify_and_parse,
+    ChatCompletionsRequestOptions, ChatCompletionsToolPolicy, TokenLimitField, build_request,
+    classify_and_parse,
 };
 use super::{ProviderClient, ProviderError, RoundResult};
 
@@ -34,7 +35,7 @@ impl ProviderClient for OpenAIChatClient {
                 max_completion_tokens: self.max_completion_tokens,
                 reasoning_effort: None,
                 token_limit_field: TokenLimitField::MaxCompletionTokens,
-                tool_policy: Default::default(),
+                tool_policy: ChatCompletionsToolPolicy::default(),
             },
             conversation,
             tools,

@@ -39,10 +39,10 @@ fn typed_emit_projections_describe_payload_fields() {
         ],
     )
     .expect("typed emit projection");
-    let schemas = projection
+    let schemas: Vec<_> = projection
         .into_iter()
         .map(|tool| (tool.canonical_name, tool.input_schema))
         .collect();
 
-    assert_tool_schemas_have_property_descriptions(schemas);
+    assert_tool_schemas_have_property_descriptions(&schemas);
 }

@@ -282,7 +282,10 @@ pub async fn list_wake_invocations(
     .bind(req.personality_instance_id.into_inner())
     .bind(req.wake_entry_id)
     .bind(req.change_event_seq)
-    .bind(req.triggering_memory_id.map(proxima_core::MemoryId::into_inner))
+    .bind(
+        req.triggering_memory_id
+            .map(proxima_core::MemoryId::into_inner),
+    )
     .bind(limit)
     .fetch_all(pool)
     .await

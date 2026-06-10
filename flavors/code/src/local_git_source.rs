@@ -408,7 +408,7 @@ impl LocalGitSource {
         report: &mut IndexReport,
         chunked_this_poll: &mut HashSet<[u8; 32]>,
     ) -> Result<(), IndexError> {
-        let content_sha256: [u8; 32] = blake3::hash(&blob).into();
+        let content_sha256: [u8; 32] = blake3::hash(blob).into();
 
         let language = crate::chunker::detect_language(path)
             .map(str::to_string)
@@ -434,7 +434,7 @@ impl LocalGitSource {
 
         // Re-chunk and tombstone any prior indexes that don't appear
         // in the new chunk batch (file content shrunk).
-        let chunks = chunk_blob(path, &blob);
+        let chunks = chunk_blob(path, blob);
         let new_indexes: HashSet<u32> = (0..chunks.len())
             .map(|i| u32::try_from(i).unwrap_or(u32::MAX))
             .collect();
@@ -452,7 +452,7 @@ impl LocalGitSource {
         // `calls.rs`). Each definition's byte range is then assigned
         // to whichever chunk contains it.
         let lang_static = crate::chunker::detect_language(path);
-        let (definitions, calls) = extract_blob_callgraph(lang_static, &blob);
+        let (definitions, calls) = extract_blob_callgraph(lang_static, blob);
 
         let mut file_chunks: Vec<ChunkInfo> = Vec::new();
         for (idx, chunk) in chunks.into_iter().enumerate() {

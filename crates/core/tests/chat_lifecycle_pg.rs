@@ -13,6 +13,7 @@ use uuid::Uuid;
 
 use chat_support::*;
 #[tokio::test]
+#[expect(clippy::too_many_lines, reason = "linear chat-lifecycle e2e fixture")]
 async fn list_wake_invocations_filters_by_triggering_chat_message()
 -> Result<(), Box<dyn std::error::Error>> {
     let Some((pg, db_name)) = fresh_pg().await else {
@@ -154,6 +155,7 @@ async fn list_wake_invocations_filters_by_triggering_chat_message()
 }
 
 #[tokio::test]
+#[expect(clippy::too_many_lines, reason = "linear chat-lifecycle e2e fixture")]
 async fn compact_chat_thread_writes_abstraction_and_can_be_context()
 -> Result<(), Box<dyn std::error::Error>> {
     let Some((pg, db_name)) = fresh_pg().await else {
@@ -280,6 +282,7 @@ async fn compact_chat_thread_writes_abstraction_and_can_be_context()
 }
 
 #[tokio::test]
+#[expect(clippy::too_many_lines, reason = "linear chat-lifecycle e2e fixture")]
 async fn end_chat_requires_target_and_writes_summary_abstraction()
 -> Result<(), Box<dyn std::error::Error>> {
     let Some((pg, db_name)) = fresh_pg().await else {

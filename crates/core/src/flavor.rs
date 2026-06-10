@@ -323,6 +323,11 @@ impl FlavorRegistry {
         &self.flavors
     }
 
+    /// Register a flavor-shipped MCP tool under `expected_prefix`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `T::NAME` does not start with `"<expected_prefix>/"`.
     pub fn add_mcp_tool<T: McpTool>(&mut self, expected_prefix: &str) {
         let prefix = format!("{expected_prefix}/");
         assert!(
@@ -358,6 +363,14 @@ impl FlavorRegistry {
         self.add_mcp_tool::<T>("core");
     }
 
+    /// Validate the registry and seal it for runtime use.
+    ///
+    /// # Panics
+    ///
+    /// Panics on registration inconsistencies caught at startup: invalid
+    /// relation masks, relations referencing an unregistered or
+    /// wrong-class `EdgePayload` schema, and duplicate ids across
+    /// registered flavors/schemas/tools.
     #[must_use]
     pub fn freeze(self) -> FlavorRegistryFrozen {
         // Cross-check: every typed relation's payload_schema must

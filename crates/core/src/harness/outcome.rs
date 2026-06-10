@@ -79,26 +79,28 @@ pub fn classify_outcome(
     use FinishReason as F;
 
     match (finish_reason, error_class) {
-        (F::Stop, E::None) => HarnessOutcomeKind::Succeeded,
-        (F::Fulfilled, E::None) => HarnessOutcomeKind::Succeeded,
+        (F::Stop | F::Fulfilled, E::None) => HarnessOutcomeKind::Succeeded,
         (F::Length, E::None) => HarnessOutcomeKind::Truncated,
         (F::MaxRounds, E::None) if max_rounds > 0 && rounds_used >= max_rounds => {
             HarnessOutcomeKind::Truncated
         }
-        (_, E::None) => HarnessOutcomeKind::Failed,
-        (_, E::Auth) => HarnessOutcomeKind::Failed,
-        (_, E::RateLimited) => HarnessOutcomeKind::Failed,
-        (_, E::ContextLength) => HarnessOutcomeKind::Failed,
-        (_, E::InvalidRequest) => HarnessOutcomeKind::Failed,
-        (_, E::ServerError) => HarnessOutcomeKind::Failed,
-        (_, E::Network) => HarnessOutcomeKind::Failed,
-        (_, E::Timeout) => HarnessOutcomeKind::Failed,
-        (_, E::Deserialize) => HarnessOutcomeKind::Failed,
-        (_, E::InvocationTimeout) => HarnessOutcomeKind::Failed,
-        (_, E::Cancelled) => HarnessOutcomeKind::Failed,
-        (_, E::ToolErrorStreak) => HarnessOutcomeKind::Failed,
-        (_, E::FulfillmentStalled) => HarnessOutcomeKind::Failed,
-        (_, E::ToolDispatchFatal) => HarnessOutcomeKind::Failed,
+        (
+            _,
+            E::None
+            | E::Auth
+            | E::RateLimited
+            | E::ContextLength
+            | E::InvalidRequest
+            | E::ServerError
+            | E::Network
+            | E::Timeout
+            | E::Deserialize
+            | E::InvocationTimeout
+            | E::Cancelled
+            | E::ToolErrorStreak
+            | E::FulfillmentStalled
+            | E::ToolDispatchFatal,
+        ) => HarnessOutcomeKind::Failed,
     }
 }
 

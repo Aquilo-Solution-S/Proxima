@@ -73,6 +73,10 @@ pub enum ModelTier {
     serde::Deserialize,
     specta::Type,
 )]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "orthogonal LLM capability flags"
+)]
 pub struct LlmCaps {
     pub tool_use: bool,
     pub json_mode: bool,

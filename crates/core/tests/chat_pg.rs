@@ -118,6 +118,7 @@ async fn start_chat_emits_started_fact_and_first_message() -> Result<(), Box<dyn
 }
 
 #[tokio::test]
+#[expect(clippy::too_many_lines, reason = "linear chat e2e fixture")]
 async fn chat_round_trip_and_coordination_context() -> Result<(), Box<dyn std::error::Error>> {
     let Some((pg, db_name)) = fresh_pg().await else {
         return Ok(());
@@ -320,6 +321,7 @@ async fn chat_message_requires_target_wake_entry() -> Result<(), Box<dyn std::er
 }
 
 #[tokio::test]
+#[expect(clippy::too_many_lines, reason = "linear chat e2e fixture")]
 async fn planning_round_is_observable_as_graph() -> Result<(), Box<dyn std::error::Error>> {
     let Some((pg, db_name)) = fresh_pg().await else {
         return Ok(());
@@ -585,6 +587,7 @@ async fn planning_round_is_observable_as_graph() -> Result<(), Box<dyn std::erro
 }
 
 #[tokio::test]
+#[expect(clippy::too_many_lines, reason = "linear chat e2e fixture")]
 async fn chat_lifecycle_compacts_continues_and_summarizes_without_llm()
 -> Result<(), Box<dyn std::error::Error>> {
     // This is deliberately no-LLM: chat turns use the real

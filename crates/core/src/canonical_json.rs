@@ -4,6 +4,10 @@
 ///
 /// Used for A2P `context_hash` material. This deliberately avoids
 /// relying on map insertion order from upstream serializers.
+///
+/// # Errors
+///
+/// Returns `serde_json::Error` if the value cannot be serialized.
 pub fn canonical_json<T: serde::Serialize>(value: &T) -> Result<String, serde_json::Error> {
     let v = serde_json::to_value(value)?;
     let mut out = String::new();

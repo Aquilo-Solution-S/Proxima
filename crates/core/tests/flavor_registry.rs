@@ -3,13 +3,6 @@ use proxima_core::verbs::schema::PayloadKind;
 
 #[test]
 fn update_wake_entry_patch_schema_is_object() {
-    let frozen = FlavorRegistry::default().freeze();
-    let schema = &frozen
-        .list_mcp_tools()
-        .iter()
-        .find(|tool| tool.name == "core/update_wake_entry")
-        .expect("core/update_wake_entry registered")
-        .args_schema;
     fn contains_key(value: &serde_json::Value, key: &str) -> bool {
         match value {
             serde_json::Value::Object(map) => {
@@ -19,6 +12,13 @@ fn update_wake_entry_patch_schema_is_object() {
             _ => false,
         }
     }
+    let frozen = FlavorRegistry::default().freeze();
+    let schema = &frozen
+        .list_mcp_tools()
+        .iter()
+        .find(|tool| tool.name == "core/update_wake_entry")
+        .expect("core/update_wake_entry registered")
+        .args_schema;
     assert!(
         !contains_key(schema, "$defs"),
         "update_wake_entry schema must be fully inlined, no $defs: {schema:#}",

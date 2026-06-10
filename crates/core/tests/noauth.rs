@@ -12,11 +12,11 @@ fn noauth_returns_fixed_owner() {
     };
 
     let resolver = NoAuth::new(principal.clone(), owner.clone());
-    let resolved = resolver.resolve(&Credentials::None).unwrap();
+    let outcome = resolver.resolve(&Credentials::None).unwrap();
 
-    assert_eq!(resolved.principal, principal);
+    assert_eq!(outcome.principal, principal);
     assert_eq!(
-        resolved.accessible_principals,
+        outcome.accessible_principals,
         HashSet::from([owner.principal])
     );
 }

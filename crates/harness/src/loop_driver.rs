@@ -82,17 +82,7 @@ impl HarnessAdapter for HarnessLoop {
         let resolved = resolve(program, &substrate_tools)
             .map_err(|err| HarnessError::Internal(format!("program_resolve:{err}")))?;
 
-        
-
-        run_loop(
-            self,
-            &*provider,
-            resolved,
-            ctx,
-            max_rounds,
-            &model_id,
-        )
-        .await
+        run_loop(self, &*provider, resolved, ctx, max_rounds, &model_id).await
     }
 }
 
@@ -210,7 +200,6 @@ fn resolve_substrate_tools(
 
 #[expect(
     clippy::too_many_lines,
-    clippy::too_many_arguments,
     reason = "wake loop state is clearer in one place"
 )]
 async fn run_loop(
@@ -714,10 +703,6 @@ enum DispatchOne {
     Unknown,
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "dispatch context is intentionally explicit"
-)]
 async fn dispatch_one(
     loop_: &HarnessLoop,
     resolved: &ResolvedProgram,

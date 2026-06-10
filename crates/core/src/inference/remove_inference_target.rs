@@ -2,6 +2,13 @@ use crate::error::ProtocolError;
 use crate::storage::{Storage, StorageError};
 use crate::{RemoveInferenceTargetRequest, RemoveInferenceTargetResponse};
 
+/// Remove an inference target by ref.
+///
+/// # Errors
+///
+/// Returns `ProtocolError::InvalidArgument` when `target_ref` is empty,
+/// `TargetInUse` when bindings or wake entries still reference it, and
+/// `Internal` for other storage failures.
 pub async fn remove_inference_target(
     storage: &dyn Storage,
     req: &RemoveInferenceTargetRequest,

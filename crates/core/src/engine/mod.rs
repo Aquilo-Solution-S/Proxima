@@ -108,6 +108,13 @@ impl Engine {
         }
     }
 
+    /// Owner-scoped registration of an inference target.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AuthRequired`/`Forbidden` from owner authorization,
+    /// `InvalidArgument` on request validation, `TargetRefConflict` when
+    /// the `target_ref` already exists, or `Internal` on storage failure.
     pub async fn register_inference_target(
         &self,
         creds: &Credentials,
@@ -121,6 +128,12 @@ impl Engine {
         .await
     }
 
+    /// Owner-scoped listing of registered inference targets.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AuthRequired`/`Forbidden` from owner authorization, or
+    /// `Internal` when storage listing fails.
     pub async fn list_inference_targets(
         &self,
         creds: &Credentials,
@@ -134,6 +147,13 @@ impl Engine {
         .await
     }
 
+    /// Owner-scoped removal of an inference target.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AuthRequired`/`Forbidden` from owner authorization,
+    /// `InvalidArgument` on request validation, `TargetInUse` when a tier
+    /// binding still references the target, or `Internal` on storage failure.
     pub async fn remove_inference_target(
         &self,
         creds: &Credentials,
@@ -147,6 +167,13 @@ impl Engine {
         .await
     }
 
+    /// Owner-scoped binding of a model tier to an inference target.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AuthRequired`/`Forbidden` from owner authorization,
+    /// `InvalidArgument` on request validation, `InferenceTargetMissing`
+    /// when the `target_ref` is unknown, or `Internal` on storage failure.
     pub async fn bind_inference_tier(
         &self,
         creds: &Credentials,
@@ -156,6 +183,12 @@ impl Engine {
         crate::inference::bind_inference_tier::bind_inference_tier(self.storage.as_ref(), req).await
     }
 
+    /// Owner-scoped listing of model-tier bindings.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AuthRequired`/`Forbidden` from owner authorization, or
+    /// `Internal` when storage listing fails.
     pub async fn list_inference_tier_bindings(
         &self,
         creds: &Credentials,
@@ -173,6 +206,13 @@ impl Engine {
         *self.embed.write().await = embed;
     }
 
+    /// Rebuilds the embedding client via the configured reload hook and
+    /// swaps it into the engine.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Internal` when no reload hook is wired into the engine or
+    /// when the hook's reload itself fails.
     pub async fn reload_embedding_client(
         &self,
         owner: &Owner,
@@ -193,6 +233,15 @@ impl Engine {
         Ok(outcome)
     }
 
+    /// Owner-scoped replacement of a personality instance's wake entries.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AuthRequired`/`Forbidden` from owner authorization;
+    /// `InvalidArgument`, `DuplicateTriggerInRequest`, `ToolNotRegistered`,
+    /// `InferenceTargetMissing`, or `TierUnbound` on request validation;
+    /// `NotFound` when the personality instance doesn't exist;
+    /// `TriggerConflict` or `Internal` from storage.
     pub async fn set_wake_entries(
         &self,
         creds: &Credentials,
@@ -339,7 +388,7 @@ impl std::fmt::Debug for Engine {
             .field("memories", &self.memories)
             .field("auth", &"<dyn AuthResolver>")
             .field("storage", &"<dyn Storage>")
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 

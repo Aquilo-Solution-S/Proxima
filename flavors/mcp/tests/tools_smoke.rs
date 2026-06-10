@@ -252,6 +252,10 @@ async fn search_graph_hybrid_returns_embedding_only_match() -> Result<(), Box<dy
 }
 
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "two-axis idempotency fixture: owner and kind dimensions in one linear script"
+)]
 async fn derive_scopes_idempotency_by_owner_and_kind() -> Result<(), Box<dyn std::error::Error>> {
     let Some(db_name) = create_db().await? else {
         return Ok(());

@@ -20,6 +20,14 @@ pub struct ScopedEmitToolIdError {
     pub reason: String,
 }
 
+/// Parse a schema-scoped emit palette id; `Ok(None)` means the id is
+/// not an emit-scoped id at all.
+///
+/// # Errors
+///
+/// Returns `ScopedEmitToolIdError` when an emit-prefixed id is malformed:
+/// missing the `::<schema_id>::v<version>` shape, empty schema id, or a
+/// non-integer version.
 pub fn parse_scoped_emit_tool_id(
     tool_id: &str,
 ) -> Result<Option<ScopedEmitToolId>, ScopedEmitToolIdError> {

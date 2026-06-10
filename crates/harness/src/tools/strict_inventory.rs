@@ -44,7 +44,6 @@ impl ToolInventoryRow {
             dispatch_target: tool.name.to_string(),
         }
     }
-
 }
 
 #[must_use]
@@ -93,8 +92,10 @@ pub fn render_inventory_checkpoint(
     out.push_str("| canonical_name | provider_safe_name | source | schema_root_type | contains_unbounded_json | strict_compatible | strict_error | produces_schema_ids | dispatch_target |\n");
     out.push_str("|---|---|---|---|---|---|---|---|---|\n");
     for row in rows {
-        out.push_str(&format!(
-            "| {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
+        use std::fmt::Write;
+        let _ = writeln!(
+            out,
+            "| {} | {} | {} | {} | {} | {} | {} | {} | {} |",
             cell(&row.canonical_name),
             cell(&row.provider_safe_name),
             row.source,
@@ -104,11 +105,15 @@ pub fn render_inventory_checkpoint(
             cell(row.strict_error.as_deref().unwrap_or("")),
             cell(&row.produces_schema_ids.join("<br>")),
             cell(&row.dispatch_target),
-        ));
+        );
     }
     out
 }
 
+/// # Panics
+///
+/// Panics when the rendered inventory differs from the checked-in
+/// checkpoint file at `path`.
 pub fn assert_inventory_checkpoint_is_current(
     rows: &[ToolInventoryRow],
     path: impl AsRef<Path>,
@@ -127,6 +132,9 @@ pub fn assert_inventory_checkpoint_is_current(
     );
 }
 
+/// # Panics
+///
+/// Panics when any row is not strict-schema compatible.
 pub fn assert_all_tools_strict_compatible(rows: &[ToolInventoryRow]) {
     let failures = rows
         .iter()
@@ -149,7 +157,11 @@ pub fn assert_all_tools_strict_compatible(rows: &[ToolInventoryRow]) {
     );
 }
 
-pub fn assert_tool_schemas_have_property_descriptions(schemas: Vec<(String, Value)>) {
+/// # Panics
+///
+/// Panics when any object property in a tool schema lacks a
+/// `description`.
+pub fn assert_tool_schemas_have_property_descriptions(schemas: &[(String, Value)]) {
     let failures = schemas
         .iter()
         .flat_map(|(name, schema)| {

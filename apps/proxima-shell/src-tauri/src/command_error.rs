@@ -206,4 +206,3 @@ impl From<proxima_code::RepoRegistryError> for CommandError {
         }
     }
 }
-

@@ -22,6 +22,15 @@ impl std::fmt::Debug for SetWakeEntriesContext<'_> {
     }
 }
 
+/// Validate and persist a personality's wake-entry set.
+///
+/// # Errors
+///
+/// Returns `ProtocolError::InvalidArgument` / `DuplicateTriggerInRequest` /
+/// `ToolNotRegistered` for malformed entries, `InferenceTargetMissing` or
+/// `TierUnbound` when the target/tier is unresolved, `NotFound` when the
+/// personality instance is absent, `TriggerConflict` on the active-trigger
+/// uniqueness constraint, and `Internal` for other storage failures.
 pub async fn set_wake_entries(
     ctx: &SetWakeEntriesContext<'_>,
     req: &SetWakeEntriesRequest,
@@ -57,6 +66,14 @@ pub async fn set_wake_entries(
         .map_err(|err| map_set_wake_entries_storage_err(err, &req.entries))
 }
 
+/// Run the storage-independent validations over a wake-entry set.
+///
+/// # Errors
+///
+/// Returns `ProtocolError::DuplicateTriggerInRequest` for repeated
+/// trigger pairs, `InvalidArgument` for malformed entry fields or
+/// unproducible `required_produced_schema_ids`, and `ToolNotRegistered`
+/// for unknown palette tool ids.
 pub fn validate_wake_entries_static_config(
     registry: &FlavorRegistryFrozen,
     entries: &[WakeEntryDraft],

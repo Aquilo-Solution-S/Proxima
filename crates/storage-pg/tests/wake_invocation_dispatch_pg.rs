@@ -225,6 +225,7 @@ struct ExpectedInterventionRequest {
     wake_trace_memory_id: Uuid,
 }
 
+#[expect(clippy::too_many_lines, reason = "verbatim sidecar seeding fixture")]
 async fn seed_intervention_continue_sidecars(
     pg: &proxima_storage_pg::PgStorage,
     owner: &Owner,

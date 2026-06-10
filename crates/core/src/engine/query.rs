@@ -26,6 +26,12 @@ impl Engine {
     /// registry before dispatch. Storage emits the per-NK head SQL
     /// when the field is `Some`; otherwise the existing
     /// `supersedes`-based head scan applies (A/P).
+    ///
+    /// # Errors
+    ///
+    /// Returns `AuthRequired` on resolver failure, `Forbidden` when the
+    /// principal cannot access `req.owner`, or `Internal` when the storage
+    /// query fails.
     pub async fn query(
         &self,
         creds: &Credentials,
@@ -55,6 +61,12 @@ impl Engine {
 
     /// docs/14 §"Subscribe" — Owner-scoped stream with optional
     /// `since` cursor for resume.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AuthRequired` on resolver failure, `Forbidden` when the
+    /// principal cannot access `req.owner`, or `Internal` when storage
+    /// fails to open the change stream.
     pub async fn subscribe(
         &self,
         creds: &Credentials,
@@ -78,6 +90,12 @@ impl Engine {
     /// docs/14 §"`EventHistory`" — Owner-scoped bounded change-event
     /// read. Same auth shape as `Query` / `Subscribe`. Server clamps
     /// `limit` to `MAX_EVENT_HISTORY_LIMIT`.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AuthRequired` on resolver failure, `Forbidden` when the
+    /// principal cannot access `req.owner`, or `Internal` when
+    /// `req.limit == 0` or the storage read fails.
     pub async fn event_history(
         &self,
         creds: &Credentials,

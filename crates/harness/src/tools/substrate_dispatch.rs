@@ -46,6 +46,11 @@ pub async fn dispatch(
     }
 }
 
+/// Wrap typed-emit tool arguments into the canonical emit envelope.
+///
+/// # Errors
+///
+/// Returns an error string when `args` is not a JSON object.
 pub fn typed_emit_args(schema_id: &str, schema_version: u32, args: Value) -> Result<Value, String> {
     let Value::Object(mut payload) = args else {
         return Err("typed emit wrapper arguments must be an object".to_string());

@@ -36,6 +36,9 @@ pub struct WakePathNode {
     pub produces_schema_ids: Vec<String>,
 }
 
+/// # Errors
+///
+/// Returns `StorageError` when personality instances cannot be listed.
 pub async fn build_wake_coordination_context(
     engine: &Engine,
     owner: &Owner,

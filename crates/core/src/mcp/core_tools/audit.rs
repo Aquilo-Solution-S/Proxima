@@ -177,7 +177,7 @@ mod tests {
         .await;
         match outcome {
             AuditEmit::Failed { reason } => {
-                assert!(reason.contains("storage unavailable"), "got {reason:?}")
+                assert!(reason.contains("storage unavailable"), "got {reason:?}");
             }
             AuditEmit::Ok => panic!("expected Failed without storage"),
         }

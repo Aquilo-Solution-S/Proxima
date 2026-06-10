@@ -110,8 +110,10 @@ impl McpTool for CodeRegisterRepoTool {
                 .as_deref()
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
-                .map(ToOwned::to_owned)
-                .unwrap_or_else(|| display_name_for_path(&canonical, &canonical_path));
+                .map_or_else(
+                    || display_name_for_path(&canonical, &canonical_path),
+                    ToOwned::to_owned,
+                );
             let repo_id = Uuid::now_v7();
             let record = crate::register_repo(
                 &ctx.pool,
@@ -163,7 +165,7 @@ impl McpTool for CodeIngestHeadSnapshotTool {
             let outcome = source
                 .run_head_snapshot(&ctx.pool)
                 .await
-                .map_err(map_index_error)?;
+                .map_err(|err| map_index_error(&err))?;
             crate::update_cursor(
                 &ctx.pool,
                 &ctx.owner,
@@ -269,10 +271,7 @@ async fn maybe_set_target_branch(
 }
 
 fn repo_item(ctx: &McpToolCtx, record: RepoRecord) -> Result<RepoItem, McpToolError> {
-    let last_polled_at = record
-        .last_polled_at
-        .map(|value| format_time(value))
-        .transpose()?;
+    let last_polled_at = record.last_polled_at.map(format_time).transpose()?;
     Ok(RepoItem {
         repo_handle: ctx.format_flavor_object(
             super::REPO_HANDLE_KIND,
@@ -309,7 +308,7 @@ impl From<IndexReport> for IndexReportItem {
     }
 }
 
-fn map_index_error(error: crate::IndexError) -> McpToolError {
+fn map_index_error(error: &crate::IndexError) -> McpToolError {
     McpToolError::Other(error.to_string())
 }
 
