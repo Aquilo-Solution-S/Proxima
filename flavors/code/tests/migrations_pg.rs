@@ -17,7 +17,7 @@ async fn create_db(name: &str) -> Result<(), sqlx::Error> {
 
 async fn drop_db(name: &str) -> Result<(), sqlx::Error> {
     let mut conn = PgConnection::connect(ADMIN_URL).await?;
-    conn.execute(format!("DROP DATABASE IF EXISTS \"{name}\"").as_str())
+    conn.execute(format!("DROP DATABASE IF EXISTS \"{name}\" WITH (FORCE)").as_str())
         .await?;
     conn.close().await?;
     Ok(())
@@ -40,10 +40,8 @@ async fn flavor_migrations_apply_to_fresh_db() {
             "file_revision_v1",
             "code_chunk_v1",
             "commit_summary_v1",
-            "workspace_decision_v1",
             "execution_request_v1",
             "test_request_v1",
-            "workspace_review_v1",
         ] {
             let row = sqlx::query(
                 "SELECT 1 AS ok FROM information_schema.tables
@@ -54,24 +52,25 @@ async fn flavor_migrations_apply_to_fresh_db() {
             .await?;
             assert!(row.is_some(), "expected table proxima_code.{table}");
         }
-        let old_run = sqlx::query(
-            "SELECT 1 AS ok FROM information_schema.tables
-             WHERE table_schema = 'proxima_code' AND table_name = 'workspace_run_v1'",
-        )
-        .fetch_optional(pg.pool())
-        .await?;
-        assert!(
-            old_run.is_none(),
-            "proxima_code.workspace_run_v1 should be dropped"
-        );
+        // The workspace-runner subsystem is gone (drop_workspace_mode /
+        // drop_workspace_review); its tables must not survive a fresh apply.
+        for dropped in [
+            "workspace_run_v1",
+            "workspace_decision_v1",
+            "workspace_review_v1",
+        ] {
+            let row = sqlx::query(
+                "SELECT 1 AS ok FROM information_schema.tables
+                 WHERE table_schema = 'proxima_code' AND table_name = $1",
+            )
+            .bind(dropped)
+            .fetch_optional(pg.pool())
+            .await?;
+            assert!(row.is_none(), "proxima_code.{dropped} should be dropped");
+        }
 
         // Verify the M5 core tables exist.
-        for table in [
-            "source_batch_f2a",
-            "edges",
-            "embeddings",
-            "workspace_run_v1",
-        ] {
+        for table in ["source_batch_f2a", "edges", "embeddings"] {
             let row = sqlx::query(
                 "SELECT 1 AS ok FROM information_schema.tables
                  WHERE table_schema = 'proxima_core' AND table_name = $1",
@@ -89,8 +88,6 @@ async fn flavor_migrations_apply_to_fresh_db() {
             ("repo_ingestion_runs", "stage"),
             ("file_revision_v1", "state"),
             ("code_chunk_v1", "state"),
-            ("workspace_decision_v1", "decision"),
-            ("workspace_review_v1", "verdict"),
         ] {
             assert_enum_column(pg.pool(), "proxima_code", table, column).await?;
         }
