@@ -123,9 +123,9 @@ async fn approval_target_kind(
 ) -> Result<Option<String>, StorageError> {
     let (owner_kind, owner_id, owner_org_id) = owner_columns(owner);
     if target.kind == ApprovalTargetKind::Goal {
-        let goal_id = target.goal_id.ok_or_else(|| {
-            StorageError::Internal("goal approval target missing goal_id".into())
-        })?;
+        let goal_id = target
+            .goal_id
+            .ok_or_else(|| StorageError::Internal("goal approval target missing goal_id".into()))?;
         let row: Option<uuid::Uuid> = sqlx::query_scalar(
             "SELECT goal_id FROM proxima_core.goals
              WHERE goal_id = $1
@@ -142,9 +142,9 @@ async fn approval_target_kind(
         .map_err(map_err)?;
         return Ok(row.map(|_| "goal".to_string()));
     }
-    let memory_id = target.memory_id.ok_or_else(|| {
-        StorageError::Internal("memory approval target missing memory_id".into())
-    })?;
+    let memory_id = target
+        .memory_id
+        .ok_or_else(|| StorageError::Internal("memory approval target missing memory_id".into()))?;
     let row: Option<(String,)> = sqlx::query_as(
         "SELECT CASE WHEN event_id IS NOT NULL THEN 'Fact' ELSE kind::text END
            FROM proxima_core.memories
@@ -460,9 +460,9 @@ async fn append_edge(
     authorship_kind: EdgeAuthorshipKind,
     authorship_owner: Option<MemoryId>,
 ) -> Result<uuid::Uuid, StorageError> {
-    let relation = registry.resolve_relation(relation_id).ok_or_else(|| {
-        StorageError::Internal(format!("relation {relation_id} not registered"))
-    })?;
+    let relation = registry
+        .resolve_relation(relation_id)
+        .ok_or_else(|| StorageError::Internal(format!("relation {relation_id} not registered")))?;
     let edge_id = uuid::Uuid::now_v7();
     append_edge_in_tx(
         tx.as_mut(),

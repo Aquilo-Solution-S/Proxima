@@ -72,6 +72,10 @@ impl McpTool for GetGraphTool {
     type Args = GetGraphArgs;
     type Output = GetGraphOutput;
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "single-shot aggregation over seven catalog reads; splitting obscures the one response shape"
+    )]
     fn call(
         ctx: McpToolCtx,
         args: GetGraphArgs,

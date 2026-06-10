@@ -82,6 +82,12 @@ pub trait SecretResolver: Send + Sync + std::fmt::Debug {
     /// Resolve the body portion (everything after `<scheme>:`) into
     /// bytes. The body is opaque to the registry — the resolver
     /// owns its parsing.
+    ///
+    /// # Errors
+    ///
+    /// Returns `SecretError::InvalidFormat` for a malformed body,
+    /// `SecretError::NotFound` when the secret is absent, and
+    /// `SecretError::ResolverFailed` for other resolver failures.
     fn resolve(&self, body: &str) -> Result<SecretBytes, SecretError>;
 }
 
@@ -142,6 +148,12 @@ impl ResolverRegistry {
     /// Resolve `secret_ref` of shape `<scheme>:<body>`. The first
     /// colon is the scheme/body separator; subsequent colons are
     /// part of `body` and parsed by the resolver.
+    ///
+    /// # Errors
+    ///
+    /// Returns `SecretError::InvalidFormat` when `secret_ref` lacks a
+    /// `<scheme>:` prefix, `SecretError::UnknownScheme` when no resolver
+    /// is registered for the scheme, plus whatever the resolver returns.
     pub fn resolve(&self, secret_ref: &str) -> Result<SecretBytes, SecretError> {
         let (scheme, body) = secret_ref
             .split_once(':')
@@ -168,7 +180,10 @@ impl ResolverRegistry {
 }
 
 #[cfg(test)]
-#[expect(unsafe_code, reason = "env::set_var is unsafe in edition 2024; tests use distinct var names")]
+#[expect(
+    unsafe_code,
+    reason = "env::set_var is unsafe in edition 2024; tests use distinct var names"
+)]
 mod tests {
     use super::*;
 

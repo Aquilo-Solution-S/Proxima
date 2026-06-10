@@ -10,6 +10,9 @@ use crate::personality::{
 use crate::storage::StorageError;
 
 impl Engine {
+    /// # Errors
+    ///
+    /// Returns `ProtocolError::Internal` when storage operations fail.
     pub async fn list_personality_instances(
         &self,
         owner: &Owner,
@@ -21,6 +24,10 @@ impl Engine {
             .map_err(|e| ProtocolError::internal(format!("list_personality_instances: {e}")))
     }
 
+    /// # Errors
+    ///
+    /// Returns `ProtocolError::NotFound` when the personality instance does not exist,
+    /// or `ProtocolError::Internal` for other storage errors.
     pub async fn tombstone_personality(
         &self,
         req: TombstonePersonalityRequest,
@@ -37,6 +44,10 @@ impl Engine {
             })
     }
 
+    /// # Errors
+    ///
+    /// Returns `ProtocolError::InvalidArgument` when `display_name` or `purpose` are empty,
+    /// or `ProtocolError::Internal` when storage operations fail.
     pub async fn instantiate_personality(
         &self,
         req: InstantiatePersonalityRequest,
@@ -59,6 +70,9 @@ impl Engine {
             .map_err(|e| ProtocolError::internal(format!("instantiate_personality: {e}")))
     }
 
+    /// # Errors
+    ///
+    /// Returns `ProtocolError::Internal` when storage operations fail.
     pub async fn list_wake_invocations(
         &self,
         req: ListWakeInvocationsRequest,
@@ -69,6 +83,9 @@ impl Engine {
             .map_err(|e| ProtocolError::internal(format!("list_wake_invocations: {e}")))
     }
 
+    /// # Errors
+    ///
+    /// Returns `ProtocolError::Internal` when storage operations fail.
     pub async fn append_wake_invocation_log(
         &self,
         log: &WakeInvocationLogDraft,
@@ -79,11 +96,17 @@ impl Engine {
             .map_err(|e| ProtocolError::internal(format!("append_wake_invocation_log: {e}")))
     }
 
+    /// # Errors
+    ///
+    /// Returns `ProtocolError::Internal` when the dispatcher tick fails.
     pub async fn run_dispatcher_tick(&self) -> Result<usize, ProtocolError> {
         let _guard = self.dispatch_tick_lock.lock().await;
         crate::wake::dispatch::dispatch_tick(self).await
     }
 
+    /// # Errors
+    ///
+    /// Returns `ProtocolError::Internal` when wake replay fails.
     pub async fn replay_missed_wakes(
         &self,
         req: ReplayWakeEventsRequest,

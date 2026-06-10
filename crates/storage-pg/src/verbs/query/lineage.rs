@@ -40,7 +40,9 @@ pub(crate) async fn walk_memory_lineage(
         Principal::Group(group) => (OwnerPrincipalKind::Group, group.into_inner()),
     };
 
-    let reader_id = req.reader_personality_instance_id.map(proxima_core::PersonalityInstanceId::into_inner);
+    let reader_id = req
+        .reader_personality_instance_id
+        .map(proxima_core::PersonalityInstanceId::into_inner);
 
     if !start_memory_visible(
         pool,

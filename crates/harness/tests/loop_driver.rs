@@ -88,7 +88,7 @@ async fn harness_stops_after_typed_emit_fulfills_required_schema() {
     let base_url = spawn_sequence(vec![tool_call_body(
         "call_emit",
         &provider_safe_tool_name(canonical),
-        json!({"title": "done"}),
+        &json!({"title": "done"}),
     )])
     .await;
     let loop_ = harness_loop(BridgeMode::Ok);
@@ -120,12 +120,12 @@ async fn harness_ignores_intermediate_producer_until_required_schema() {
         tool_call_body(
             "call_intermediate",
             &provider_safe_tool_name(intermediate),
-            json!({}),
+            &json!({}),
         ),
         tool_call_body(
             "call_final",
             &provider_safe_tool_name(final_tool),
-            json!({}),
+            &json!({}),
         ),
     ])
     .await;
@@ -159,9 +159,9 @@ async fn harness_ignores_intermediate_producer_until_required_schema() {
 async fn harness_fails_after_repeated_identical_tool_error() {
     let canonical = "test/failing_tool";
     let base_url = spawn_sequence(vec![
-        tool_call_body("call_1", &provider_safe_tool_name(canonical), json!({})),
-        tool_call_body("call_2", &provider_safe_tool_name(canonical), json!({})),
-        tool_call_body("call_3", &provider_safe_tool_name(canonical), json!({})),
+        tool_call_body("call_1", &provider_safe_tool_name(canonical), &json!({})),
+        tool_call_body("call_2", &provider_safe_tool_name(canonical), &json!({})),
+        tool_call_body("call_3", &provider_safe_tool_name(canonical), &json!({})),
     ])
     .await;
     let loop_ = harness_loop(BridgeMode::RecoverableError("same failure".into()));
@@ -198,7 +198,7 @@ async fn harness_fails_when_durable_fulfillment_stalls() {
             tool_call_body(
                 &format!("call_{idx}"),
                 &provider_safe_tool_name(read_only),
-                json!({"memory": "F1"}),
+                &json!({"memory": "F1"}),
             )
         })
         .collect();
@@ -387,7 +387,7 @@ fn direct_projection(canonical: &str, produces_schema_ids: Vec<String>) -> Harne
     }
 }
 
-fn tool_call_body(call_id: &str, tool_name: &str, args: serde_json::Value) -> String {
+fn tool_call_body(call_id: &str, tool_name: &str, args: &serde_json::Value) -> String {
     json!({
         "id": format!("chatcmpl_{call_id}"),
         "object": "chat.completion",

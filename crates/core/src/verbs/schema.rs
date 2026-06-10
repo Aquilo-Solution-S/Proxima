@@ -258,6 +258,13 @@ impl FlavorRegistryFrozen {
         }
     }
 
+    /// Append opaque schemas to an already-frozen registry.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any added schema carries a `cbor_encoder` — typed
+    /// schemas must be registered through `FlavorRegistry` before
+    /// `freeze()`.
     #[must_use]
     pub fn with_additional_schemas(
         mut self,
@@ -418,6 +425,11 @@ impl FlavorRegistryFrozen {
     /// Ad-hoc test registries may not carry validators; those still
     /// enforce the minimum F/A/P sidecar contract that payloads are
     /// JSON objects before storage casts them into sidecar rows.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error string when `payload` is not a JSON object or
+    /// when the registered validator rejects it.
     pub fn validate_payload(
         &self,
         schema_id: &SchemaId,

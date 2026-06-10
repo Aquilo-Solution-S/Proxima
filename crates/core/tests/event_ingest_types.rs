@@ -1,4 +1,4 @@
-//! Unit smoke for EventIngest types.
+//! Unit smoke for `EventIngest` types.
 
 use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
 use proxima_core::{

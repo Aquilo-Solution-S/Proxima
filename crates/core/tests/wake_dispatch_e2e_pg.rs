@@ -18,6 +18,10 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "linear e2e fixture: wake, trace, provenance"
+)]
 async fn harness_wake_persists_trace_fact_jsonl_and_provenance() {
     let Some(fixture) =
         common::seed_dispatch_fixture_with_match_and_engine(Duration::from_millis(100)).await
@@ -109,7 +113,10 @@ async fn harness_wake_persists_trace_fact_jsonl_and_provenance() {
         .fetch_one(fixture.pg.pg.pool())
         .await?;
         assert_eq!(jsonl.0, b"{\"record\":\"test\"}\n");
-        assert_eq!(jsonl.1, jsonl.0.len() as i64);
+        assert_eq!(
+            jsonl.1,
+            i64::try_from(jsonl.0.len()).expect("jsonl fixture fits i64")
+        );
 
         let authored: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM proxima_core.edges \

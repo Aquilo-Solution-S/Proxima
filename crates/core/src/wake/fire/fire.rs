@@ -35,6 +35,18 @@ use super::input::{FireWakeEntryInput, per_invocation_timeout};
 use super::outcome::{WakeInvocationFinalizeOutcome, wake_outcome_from_harness_outcome};
 use super::resolve::{ResolvedTarget, collect_sidecars, resolve_target};
 
+/// Fire a single wake entry: assemble context, run the in-process
+/// harness, and persist the invocation row, logs, and trace.
+///
+/// # Errors
+///
+/// Returns `ProtocolError::NotFound` when the change event is missing,
+/// `ProtocolError::TierUnbound` / `InferenceTargetMissing` from target
+/// resolution, and `ProtocolError::Internal` for storage failures.
+#[expect(
+    clippy::too_many_lines,
+    reason = "wake fire is a single linear transaction script"
+)]
 pub async fn fire_wake_entry(
     engine: &Engine,
     adapter: &dyn HarnessAdapter,

@@ -2,6 +2,13 @@ use crate::error::ProtocolError;
 use crate::storage::{Storage, StorageError};
 use crate::{BindInferenceTierRequest, BindInferenceTierResponse};
 
+/// Bind a model tier to an inference target ref.
+///
+/// # Errors
+///
+/// Returns `ProtocolError::InvalidArgument` when `target_ref` is empty,
+/// `InferenceTargetMissing` when the ref does not name a registered
+/// target, and `Internal` for other storage failures.
 pub async fn bind_inference_tier(
     storage: &dyn Storage,
     req: &BindInferenceTierRequest,

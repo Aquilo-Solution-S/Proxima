@@ -41,6 +41,12 @@ pub struct WakeEntryDraft {
 }
 
 impl WakeEntryDraft {
+    /// Build a draft with the v1 defaults for the unlisted fields.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ProtocolError::Internal` when `probability_promille`
+    /// exceeds 1000.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         wake_entry_id: Uuid,

@@ -212,6 +212,11 @@ async fn process_blocked_wake_candidates(
 /// Replay eligible events that are already behind normal dispatch
 /// cursors. This is an operator-driven repair path; it intentionally
 /// does not move `personality_wake_cursor`.
+///
+/// # Errors
+///
+/// Returns `ProtocolError::Internal` on storage failures, or when a
+/// candidate fires while no target adapter is installed.
 pub async fn replay_missed_wakes(
     engine: &Engine,
     req: ReplayWakeEventsRequest,
@@ -411,6 +416,10 @@ fn probability_roll(
             .as_u128()
             .rotate_left(17)
         ^ wake_entry_id.as_u128().rotate_left(47);
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "xor-fold of a u128 hash mix; truncation to u64 is the point"
+    )]
     let mut x = (mixed ^ (mixed >> 64)) as u64;
     x = x.wrapping_add(0x9E37_79B9_7F4A_7C15);
     x = (x ^ (x >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -536,6 +545,10 @@ async fn dependencies_satisfied(
     Ok(true)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "flat column list of the blocked-wake-candidate row being upserted"
+)]
 async fn record_blocked_dependency(
     engine: &Engine,
     group: &PersonalityGroup,

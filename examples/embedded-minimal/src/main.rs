@@ -7,8 +7,8 @@
 //!   4. stop via `stop_tx` and await the dispatch task.
 //!
 //! Run with the dev database:
-//!   docker compose -f docker-compose.dev.yml up -d
-//!   DATABASE_URL=... cargo run -p embedded-minimal
+//!   `docker compose -f docker-compose.dev.yml up -d`
+//!   `DATABASE_URL=... cargo run -p embedded-minimal`
 
 use std::sync::Arc;
 
@@ -33,13 +33,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         org_id: OrgId::new(Uuid::nil()),
     };
     let auth = NoAuth::new(owner.principal.clone(), owner);
-    let engine = Arc::new(Engine::compose(
-        Box::new(auth),
-        Arc::new(pg),
-        |registry| {
-            proxima_flavor_goal::register(registry);
-        },
-    ));
+    let engine = Arc::new(Engine::compose(Box::new(auth), Arc::new(pg), |registry| {
+        proxima_flavor_goal::register(registry);
+    }));
 
     // 3. Start. No MCP listener attached, so mcp_url stays None.
     let handle = engine.clone().start().await?;

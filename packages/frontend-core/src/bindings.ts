@@ -460,9 +460,9 @@ export type EventHistoryResponse = {
 };
 
 /**
- *  BLAKE3-32 ContentHash of (source_id, owner, payload).
- *  Per docs/07 §"ID types" — events use ContentHash for
- *  re-receipt dedup, not UUIDv7.
+ *  BLAKE3-32 `ContentHash` of (`source_id`, owner, payload).
+ *  Per docs/07 §"ID types" — events use `ContentHash` for
+ *  re-receipt dedup, not `UUIDv7`.
  */
 export type EventId = [number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number, number];
 
@@ -472,7 +472,7 @@ export type EventIngestOutcome = {
 	change_event_seq: string,
 	/**
 	 *  True iff the same `event_id` was already ingested.
-	 *  docs/14 §EventIngest: "replay is silently a no-op."
+	 *  docs/14 §`EventIngest`: "replay is silently a no-op."
 	 */
 	idempotent_replay: boolean,
 };
@@ -554,7 +554,7 @@ export type GoalWriteOutcome = {
 	change_event_seq: string,
 	/**
 	 *  True when the same `(owner, request_id)` existed and the
-	 *  body matched — see docs/14 §GoalWrite.
+	 *  body matched — see docs/14 §`GoalWrite`.
 	 */
 	idempotent_replay: boolean,
 };
@@ -708,8 +708,8 @@ export type OperatorKind = "AtoGoal";
 export type OrgId = string;
 
 /**
- *  Owner carries principal (access scope) and org_id (billing unit).
- *  org_id is NOT part of the access predicate (AGENTS.md invariant 4).
+ *  Owner carries principal (access scope) and `org_id` (billing unit).
+ *  `org_id` is NOT part of the access predicate (AGENTS.md invariant 4).
  */
 export type Owner = {
 	principal: Principal,
@@ -719,7 +719,7 @@ export type Owner = {
 export type PayloadKind = "Fact" | "Abstraction" | "Perspective" | "Goal" | 
 /**
  *  Typed sidecar for an edge row, keyed on `edge_id`. See
- *  `EdgePayload` (docs/03 §EdgePayload) and the relation registry
+ *  `EdgePayload` (docs/03 §`EdgePayload`) and the relation registry
  *  (docs/02 §"Relation registry").
  */
 "Edge" | "CitedObject" | "CitationMapping";
@@ -957,7 +957,7 @@ export type SetWakeEntriesTs = {
 };
 
 /**
- *  UUIDv7, declared by the source at emit time.
+ *  `UUIDv7`, declared by the source at emit time.
  *  See docs/01 §"The contract".
  */
 export type SourceBatchId = string;

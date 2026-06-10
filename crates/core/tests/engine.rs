@@ -41,7 +41,7 @@ impl EmbeddingClient for FixedEmbeddingClient {
         Ok(vec![0.0; self.dim()])
     }
 
-    fn model_id(&self) -> &str {
+    fn model_id(&self) -> &'static str {
         "test-embedding"
     }
 

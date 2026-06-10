@@ -10,9 +10,9 @@ use super::{
 pub(in crate::chat) fn render_thread_started(
     ctx: &McpToolCtx,
     started: LoadedStarted,
-) -> Result<ThreadStarted, McpToolError> {
+) -> ThreadStarted {
     let payload = started.payload;
-    Ok(ThreadStarted {
+    ThreadStarted {
         handle: ctx.format_fact_memory(started.memory_id),
         thread_key: payload.thread_key,
         started_by_self_perspective: ctx.format_perspective_memory(MemoryId::new(
@@ -26,7 +26,7 @@ pub(in crate::chat) fn render_thread_started(
         title: payload.title,
         idempotency_key: payload.idempotency_key,
         started_at: payload.started_at,
-    })
+    }
 }
 
 pub(in crate::chat) fn render_thread_message(
@@ -94,9 +94,9 @@ pub(in crate::chat) fn render_thread_reply(
 pub(in crate::chat) fn render_thread_end_request(
     ctx: &McpToolCtx,
     request: LoadedEndRequest,
-) -> Result<ThreadEndRequest, McpToolError> {
+) -> ThreadEndRequest {
     let payload = request.payload;
-    Ok(ThreadEndRequest {
+    ThreadEndRequest {
         handle: ctx.format_fact_memory(request.memory_id),
         thread_key: payload.thread_key,
         target_personality: ctx.format_personality(PersonalityInstanceId::new(
@@ -110,15 +110,12 @@ pub(in crate::chat) fn render_thread_end_request(
         reason: payload.reason,
         idempotency_key: payload.idempotency_key,
         requested_at: payload.requested_at,
-    })
+    }
 }
 
-pub(in crate::chat) fn render_thread_ended(
-    ctx: &McpToolCtx,
-    ended: LoadedEnded,
-) -> Result<ThreadEnded, McpToolError> {
+pub(in crate::chat) fn render_thread_ended(ctx: &McpToolCtx, ended: LoadedEnded) -> ThreadEnded {
     let payload = ended.payload;
-    Ok(ThreadEnded {
+    ThreadEnded {
         handle: ctx.format_fact_memory(ended.memory_id),
         thread_key: payload.thread_key,
         request: ctx.format_fact_memory(MemoryId::new(payload.request_memory_id)),
@@ -130,7 +127,7 @@ pub(in crate::chat) fn render_thread_ended(
         summary: ctx.format_abstraction_memory(MemoryId::new(payload.summary_memory_id)),
         idempotency_key: payload.idempotency_key,
         ended_at: payload.ended_at,
-    })
+    }
 }
 
 pub(in crate::chat) fn render_thread_compaction(
@@ -370,10 +367,9 @@ pub(in crate::chat) fn format_memory_by_approval_kind(
     memory_id: MemoryId,
 ) -> String {
     match kind {
-        ApprovalTargetKind::Fact => ctx.format_fact_memory(memory_id),
+        ApprovalTargetKind::Fact | ApprovalTargetKind::Goal => ctx.format_fact_memory(memory_id),
         ApprovalTargetKind::Abstraction => ctx.format_abstraction_memory(memory_id),
         ApprovalTargetKind::Perspective => ctx.format_perspective_memory(memory_id),
-        ApprovalTargetKind::Goal => ctx.format_fact_memory(memory_id),
     }
 }
 
@@ -383,9 +379,8 @@ pub(in crate::chat) fn format_memory_by_entity_kind(
     memory_id: MemoryId,
 ) -> String {
     match kind {
-        EntityKind::Fact => ctx.format_fact_memory(memory_id),
+        EntityKind::Fact | EntityKind::Goal => ctx.format_fact_memory(memory_id),
         EntityKind::Abstraction => ctx.format_abstraction_memory(memory_id),
         EntityKind::Perspective => ctx.format_perspective_memory(memory_id),
-        EntityKind::Goal => ctx.format_fact_memory(memory_id),
     }
 }

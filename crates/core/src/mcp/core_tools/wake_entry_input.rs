@@ -62,6 +62,11 @@ impl WakeEntryDraftInput {
     /// Resolve into a `WakeEntryDraft`. Allocates a fresh UUID when
     /// `wake_entry_id` is `None`; resolves through `ctx.resolve_wake_entry`
     /// otherwise so the call works in both `Handles` and `RawIds` modes.
+    ///
+    /// # Errors
+    ///
+    /// Propagates the `McpToolError` from `ctx.resolve_wake_entry` when
+    /// `wake_entry_id` is set but does not resolve.
     pub fn into_draft(
         self,
         ctx: &McpToolCtx,

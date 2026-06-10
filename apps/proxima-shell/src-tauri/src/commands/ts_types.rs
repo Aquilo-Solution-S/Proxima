@@ -203,4 +203,3 @@ impl From<proxima_code::RepoIngestionRun> for RepoIngestionRunTs {
         }
     }
 }
-

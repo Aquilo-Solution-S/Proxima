@@ -87,6 +87,10 @@ impl McpTool for DecomposeTool {
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "single decompose transaction: parent resolve, child emits, edges"
+)]
 pub async fn decompose_goal(
     ctx: McpToolCtx,
     args: DecomposeArgs,
@@ -220,7 +224,7 @@ async fn resolve_parent_goal_ref(
     value: &str,
 ) -> Result<GoalId, McpToolError> {
     match ctx.resolve_goal(value) {
-        Ok(goal_id) => return Ok(goal_id),
+        Ok(goal_id) => Ok(goal_id),
         Err(goal_err) => {
             let memory_id = ctx.resolve_fact_memory(value).map_err(|_| goal_err)?;
             let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(&ctx.owner);

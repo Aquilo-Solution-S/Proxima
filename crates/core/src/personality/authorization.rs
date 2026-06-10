@@ -10,6 +10,12 @@ pub enum AuthorizationError {
     OutsideWriteableSchemas { schema_id: String },
 }
 
+/// Check that a tool call names a tool inside the wake entry's palette.
+///
+/// # Errors
+///
+/// Returns `AuthorizationError::OutsidePalette` when `tool_id` matches
+/// no tool in the palette.
 pub fn authorize_tool_call(
     tool_id: &str,
     palette: &[Arc<dyn PersonalityTool>],
@@ -22,6 +28,12 @@ pub fn authorize_tool_call(
     })
 }
 
+/// Check that an emit targets a schema in the writeable set.
+///
+/// # Errors
+///
+/// Returns `AuthorizationError::OutsideWriteableSchemas` when
+/// `schema_id` is not in `writeable_schemas`.
 pub fn authorize_emit(
     schema_id: &str,
     writeable_schemas: &[String],

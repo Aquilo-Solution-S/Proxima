@@ -48,8 +48,8 @@ impl McpTool for ReplayWakeEventsTool {
                 .as_deref()
                 .map(|handle| ctx.resolve_wake_entry(handle))
                 .transpose()?;
-            let after_seq = parse_optional_uuid("after_seq", args.after_seq)?;
-            let until_seq = parse_optional_uuid("until_seq", args.until_seq)?;
+            let after_seq = parse_optional_uuid("after_seq", args.after_seq.as_deref())?;
+            let until_seq = parse_optional_uuid("until_seq", args.until_seq.as_deref())?;
             let engine = ctx
                 .engine()
                 .ok_or_else(|| McpToolError::Other("engine unavailable".into()))?;
@@ -70,9 +70,8 @@ impl McpTool for ReplayWakeEventsTool {
     }
 }
 
-fn parse_optional_uuid(field: &str, value: Option<String>) -> Result<Option<Uuid>, McpToolError> {
+fn parse_optional_uuid(field: &str, value: Option<&str>) -> Result<Option<Uuid>, McpToolError> {
     value
-        .as_deref()
         .map(|s| {
             Uuid::parse_str(s).map_err(|e| McpToolError::InvalidInput(format!("{field}: {e}")))
         })

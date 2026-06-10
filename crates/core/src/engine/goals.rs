@@ -9,6 +9,13 @@ impl Engine {
     /// docs/14 §"`GoalWrite`" — Owner-scoped write. Validates
     /// schema is registered as `PayloadKind::Goal` and delegates to
     /// storage.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ProtocolError::AuthRequired` when credentials are missing,
+    /// `ProtocolError::Forbidden` when the principal cannot access the owner,
+    /// `ProtocolError::UnknownSchema` when the schema is not registered or not a Goal,
+    /// or `ProtocolError::Internal` for storage failures.
     pub async fn write_goal(
         &self,
         creds: &Credentials,
@@ -42,6 +49,14 @@ impl Engine {
     /// docs/14 §"`GoalWrite`" — supersede path. Same auth and schema
     /// validation as `write_goal`, plus validates prior exists and
     /// belongs to the same owner.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ProtocolError::AuthRequired` when credentials are missing,
+    /// `ProtocolError::Forbidden` when the principal cannot access the owner,
+    /// `ProtocolError::UnknownSchema` when the schema is not registered or not a Goal,
+    /// `ProtocolError::NotFound` when the prior goal does not exist,
+    /// or `ProtocolError::Internal` for storage failures.
     pub async fn supersede_goal(
         &self,
         creds: &Credentials,

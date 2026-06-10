@@ -17,6 +17,11 @@ pub struct TraceTiming {
     pub finished_at: time::OffsetDateTime,
 }
 
+/// Persist a wake trace for a finished (or errored) harness invocation.
+///
+/// # Errors
+///
+/// Returns `StorageError` when the internal wake-trace persist write fails.
 pub async fn emit_trace_from_outcome(
     engine: &Engine,
     input: &FireWakeEntryInput,
@@ -37,6 +42,12 @@ pub async fn emit_trace_from_outcome(
     persist_wake_trace(engine, invocation_id, persist).await
 }
 
+/// Persist a synthetic `Failed` wake trace when preflight aborts before
+/// the harness runs.
+///
+/// # Errors
+///
+/// Returns `StorageError` when the internal wake-trace persist write fails.
 pub async fn emit_trace_from_failed_preflight(
     engine: &Engine,
     input: &FireWakeEntryInput,
@@ -131,6 +142,10 @@ fn persist_input_from_outcome(
     };
 
     let jsonl_content_hash = *blake3::hash(&jsonl_bytes).as_bytes();
+    #[expect(
+        clippy::naive_bytecount,
+        reason = "trace blobs are small and capped; not worth a bytecount dependency"
+    )]
     let jsonl_line_count = jsonl_bytes.iter().filter(|&&b| b == b'\n').count() as u64;
     let active_goal_ids = wake_context
         .active_goals
@@ -204,6 +219,12 @@ fn model_id(config: &crate::InferenceTargetConfig) -> String {
     }
 }
 
+/// Build the harness `ProviderTarget` from a stored inference-target config.
+///
+/// # Errors
+///
+/// Returns `ProviderTargetBuildError::MissingCredentials` when the
+/// configured API-key env var (or `HOME`, for the Codex variant) is unset.
 pub fn provider_target_from_config(
     config: &crate::InferenceTargetConfig,
 ) -> Result<ProviderTarget, ProviderTargetBuildError> {

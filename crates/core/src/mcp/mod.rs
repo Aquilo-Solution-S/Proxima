@@ -265,6 +265,11 @@ impl McpToolCtx {
         }
     }
 
+    /// Parse `raw` as a fact-memory reference under the active mode.
+    ///
+    /// # Errors
+    ///
+    /// See [`McpToolCtx::resolve_memory`].
     pub fn resolve_fact_memory(&self, raw: &str) -> Result<MemoryId, McpToolError> {
         match self.mode {
             OutputMode::Handles => self
@@ -278,6 +283,11 @@ impl McpToolCtx {
         }
     }
 
+    /// Parse `raw` as an abstraction-memory reference under the active mode.
+    ///
+    /// # Errors
+    ///
+    /// See [`McpToolCtx::resolve_memory`].
     pub fn resolve_abstraction_memory(&self, raw: &str) -> Result<MemoryId, McpToolError> {
         match self.mode {
             OutputMode::Handles => self
@@ -291,6 +301,11 @@ impl McpToolCtx {
         }
     }
 
+    /// Parse `raw` as a perspective-memory reference under the active mode.
+    ///
+    /// # Errors
+    ///
+    /// See [`McpToolCtx::resolve_memory`].
     pub fn resolve_perspective_memory(&self, raw: &str) -> Result<MemoryId, McpToolError> {
         match self.mode {
             OutputMode::Handles => self

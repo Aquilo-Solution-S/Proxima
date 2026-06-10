@@ -145,9 +145,7 @@ async fn spawn_capture_mock(
     tokio::spawn(async move {
         let (mut stream, _) = listener.accept().await.unwrap();
         let request = read_http_request(&mut stream).await;
-        let body = request
-            .split_once("\r\n\r\n")
-            .map_or("", |(_, body)| body);
+        let body = request.split_once("\r\n\r\n").map_or("", |(_, body)| body);
         let value = serde_json::from_str(body).unwrap_or_else(|e| {
             panic!("request body must be JSON: {e}; body was {body:?}");
         });

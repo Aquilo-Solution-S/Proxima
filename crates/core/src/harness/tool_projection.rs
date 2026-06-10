@@ -72,6 +72,13 @@ pub enum ToolProjectionError {
     },
 }
 
+/// Project a wake entry's tool palette into harness tool definitions.
+///
+/// # Errors
+///
+/// Returns a `ToolProjectionError` when a palette id is unknown or
+/// malformed, an emit schema is unregistered or unprojectable, or two
+/// tools collide on the same provider-facing name.
 pub fn build_wake_tool_projection(
     registry: &FlavorRegistryFrozen,
     palette: &[String],

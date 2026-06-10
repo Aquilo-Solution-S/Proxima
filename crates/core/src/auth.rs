@@ -33,6 +33,10 @@ pub enum AuthError {
 }
 
 pub trait AuthResolver: Send + Sync {
+    /// # Errors
+    ///
+    /// Returns `AuthError::AuthRequired` when credentials are missing,
+    /// or `AuthError::InvalidCredentials` when they are malformed.
     fn resolve(&self, creds: &Credentials) -> Result<Resolved, AuthError>;
 }
 

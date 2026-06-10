@@ -10,6 +10,13 @@ use crate::verbs::persist_wake_trace::{WakeTracePersistInput, WakeTracePersistOu
 impl Engine {
     /// docs/14 §"`EventIngest`" — Owner-scoped write. Validates
     /// schemas and delegates to storage.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AuthRequired` on resolver failure, `Forbidden` when the
+    /// principal cannot access `draft.owner`, `UnknownSchema` when any of
+    /// the three draft schemas isn't registered, or `Internal` when the
+    /// atomic ingest fails.
     pub async fn event_ingest(
         &self,
         creds: &Credentials,
@@ -52,6 +59,12 @@ impl Engine {
     /// Atomic wake-trace persistence. The storage layer writes the
     /// Fact, JSONL citation artifact, sidecars, and provenance edges
     /// in one transaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AuthRequired` on resolver failure, `Forbidden` when the
+    /// principal cannot access `input.owner`, or `Internal` when the
+    /// atomic persist fails.
     pub async fn persist_wake_trace(
         &self,
         creds: &Credentials,
@@ -96,7 +109,7 @@ impl Engine {
         &self,
         creds: &Credentials,
         owner: crate::Owner,
-        _source_batch_id: SourceBatchId,
+        source_batch_id: SourceBatchId,
     ) -> Result<CloseBatchOutcome, ProtocolError> {
         let resolved = self
             .auth
@@ -109,7 +122,7 @@ impl Engine {
         }
         let outcome = self
             .storage
-            .close_batch(&owner, _source_batch_id)
+            .close_batch(&owner, source_batch_id)
             .await
             .map_err(|e| match e {
                 StorageError::NotFound => ProtocolError::not_found("source batch not found"),

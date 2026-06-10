@@ -12,6 +12,11 @@ use super::input::FireWakeEntryInput;
 use super::outcome::WakeInvocationFinalizeOutcome;
 
 /// Finalize a wake invocation by writing the outcome to storage.
+///
+/// # Errors
+///
+/// Returns `ProtocolError::Internal` when the `finalize_wake_invocation`
+/// storage write fails.
 pub async fn finalize(
     engine: &Engine,
     input: &FireWakeEntryInput,

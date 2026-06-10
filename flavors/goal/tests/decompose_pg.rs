@@ -40,6 +40,10 @@ async fn active_parent(
 }
 
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "linear decompose e2e: children, parent links, assignments"
+)]
 async fn goal_decompose_writes_active_children_parent_links_and_assignments()
 -> Result<(), Box<dyn std::error::Error>> {
     let Some((pg, db_name)) = migrated().await else {

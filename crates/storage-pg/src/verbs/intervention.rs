@@ -13,9 +13,10 @@
 use async_trait::async_trait;
 use proxima_core::{
     CORE_AUTHORED_RELATION, CORE_DERIVED_FROM_RELATION, EdgeAuthorshipKind,
-    EmitInterventionDecisionInput, EntityKind, FlavorRegistryFrozen, InterventionDecisionEmitOutcome,
-    InterventionDecisionV1, InterventionStore, LoadedInterventionRequest, MemoryId, Owner,
-    OwnerPrincipalKind, Principal, StorageError, intervention_decision_fact_event_draft,
+    EmitInterventionDecisionInput, EntityKind, FlavorRegistryFrozen,
+    InterventionDecisionEmitOutcome, InterventionDecisionV1, InterventionStore,
+    LoadedInterventionRequest, MemoryId, Owner, OwnerPrincipalKind, Principal, StorageError,
+    intervention_decision_fact_event_draft,
 };
 use sqlx::{PgPool, Postgres, Transaction};
 
@@ -55,8 +56,13 @@ impl InterventionStore for PgStorage {
         caller_self: MemoryId,
         target_personality_instance_id: uuid::Uuid,
     ) -> Result<bool, StorageError> {
-        is_intervention_supervisor(self.pool(), owner, caller_self, target_personality_instance_id)
-            .await
+        is_intervention_supervisor(
+            self.pool(),
+            owner,
+            caller_self,
+            target_personality_instance_id,
+        )
+        .await
     }
 
     async fn prior_continue_grant_rounds(
@@ -261,9 +267,9 @@ async fn append_edge(
     target_memory_id: uuid::Uuid,
     authorship_owner: MemoryId,
 ) -> Result<(), StorageError> {
-    let relation = registry.resolve_relation(relation_id).ok_or_else(|| {
-        StorageError::Internal(format!("relation {relation_id} not registered"))
-    })?;
+    let relation = registry
+        .resolve_relation(relation_id)
+        .ok_or_else(|| StorageError::Internal(format!("relation {relation_id} not registered")))?;
     append_edge_in_tx(
         tx.as_mut(),
         &EdgeDraft {

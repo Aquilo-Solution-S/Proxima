@@ -41,6 +41,10 @@ async fn migrations_apply_to_fresh_db() {
 }
 
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "linear migration-replay fixture script"
+)]
 async fn intervention_rename_migrates_existing_budget_state_in_place() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
 
@@ -160,9 +164,13 @@ async fn intervention_rename_migrates_existing_budget_state_in_place() {
     result.expect("intervention rename migration test failed");
 }
 
-const FIXTURE_REQUEST_MEMORY_ID: Uuid = Uuid::from_u128(0x018f_0000_0000_7000_8000_000000000001);
-const FIXTURE_DECISION_MEMORY_ID: Uuid = Uuid::from_u128(0x018f_0000_0000_7000_8000_000000000002);
+const FIXTURE_REQUEST_MEMORY_ID: Uuid = Uuid::from_u128(0x018f_0000_0000_7000_8000_0000_0000_0001);
+const FIXTURE_DECISION_MEMORY_ID: Uuid = Uuid::from_u128(0x018f_0000_0000_7000_8000_0000_0000_0002);
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "verbatim pre-rename schema DDL fixture"
+)]
 async fn seed_pre_intervention_rename_schema(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
     sqlx::raw_sql(
         r"

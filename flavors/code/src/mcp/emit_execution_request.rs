@@ -78,18 +78,13 @@ pub struct CodeEmitExecutionRequestOutput {
     pub idempotent_replay: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[schemars(description = "Execution plan item category.")]
 #[serde(rename_all = "snake_case")]
 pub enum ExecutionPlanItemKind {
+    #[default]
     Implementation,
     Test,
-}
-
-impl Default for ExecutionPlanItemKind {
-    fn default() -> Self {
-        Self::Implementation
-    }
 }
 
 impl ExecutionPlanItemKind {
@@ -208,6 +203,10 @@ impl McpTool for CodeEmitExecutionRequestTool {
     type Args = CodeEmitExecutionRequestArgs;
     type Output = CodeEmitExecutionRequestOutput;
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "single emit transaction: goal gate, repo resolve, fact + edges"
+    )]
     fn call(
         ctx: McpToolCtx,
         args: CodeEmitExecutionRequestArgs,
