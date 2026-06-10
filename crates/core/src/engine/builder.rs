@@ -42,6 +42,25 @@ impl Engine {
         }
     }
 
+    /// One-call composite assembly: build a [`crate::FlavorRegistry`],
+    /// hand it to `register` for each linked flavor's `register` fn,
+    /// freeze it, and wire the engine over `auth` + `storage`. This is
+    /// the blessed embedding entry point for host binaries; chain
+    /// `with_*` builders on the result for MCP, providers, and tuning.
+    ///
+    /// Migrations are NOT run here — the host runs substrate and
+    /// per-flavor migrators against its pool before composing.
+    #[must_use]
+    pub fn compose(
+        auth: Box<dyn AuthResolver>,
+        storage: StorageHandle,
+        register: impl FnOnce(&mut crate::FlavorRegistry),
+    ) -> Self {
+        let mut registry = crate::FlavorRegistry::new();
+        register(&mut registry);
+        Self::new(registry.freeze(), MemoryStore::new(), auth).with_storage(storage)
+    }
+
     /// Get a reference to the schema registry.
     #[must_use]
     pub fn registry(&self) -> &FlavorRegistryFrozen {
@@ -117,5 +136,29 @@ impl Engine {
     pub fn with_target_adapter(mut self, adapter: Arc<dyn TargetAdapter>) -> Self {
         self.target_adapter = Arc::new(RwLock::new(Some(adapter)));
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use uuid::Uuid;
+
+    use super::Engine;
+    use crate::auth::NoAuth;
+    use crate::storage::NoopStorage;
+    use crate::{OrgId, Owner, Principal, UserId};
+
+    #[test]
+    fn compose_assembles_engine_over_registry_closure() {
+        let owner = Owner {
+            principal: Principal::User(UserId::new(Uuid::nil())),
+            org_id: OrgId::new(Uuid::nil()),
+        };
+        let auth = NoAuth::new(owner.principal.clone(), owner);
+        let engine = Engine::compose(Box::new(auth), Arc::new(NoopStorage), |_registry| {});
+        assert!(engine.mcp_url().is_none());
+        assert!(engine.embed_client().is_none());
     }
 }
