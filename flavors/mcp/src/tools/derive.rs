@@ -118,6 +118,33 @@ impl McpTool for DeriveTool {
 
             let source_kinds = load_source_kinds(&ctx.pool, &ctx.owner, &source_uuids).await?;
 
+            // Pre-validate provenance edge shapes against the relation's kind
+            // masks so layering failures surface as LayeringViolation instead
+            // of a storage constraint error from the edge append.
+            let relation = if source_uuids.is_empty() {
+                None
+            } else {
+                let relation = ctx
+                    .registry
+                    .resolve_relation(CORE_DERIVED_FROM_RELATION)
+                    .ok_or_else(|| {
+                        McpToolError::Other(format!(
+                            "relation {CORE_DERIVED_FROM_RELATION} not registered"
+                        ))
+                    })?;
+                for source_kind in &source_kinds {
+                    relation
+                        .descriptor
+                        .validate_edge_shape(
+                            args.kind.to_entity_kind().as_str(),
+                            memory_kind_for_edge(*source_kind).as_str(),
+                            EdgeAuthorshipKind::ExternalAgent.as_str(),
+                        )
+                        .map_err(McpToolError::LayeringViolation)?;
+                }
+                Some(relation)
+            };
+
             let key = args.idempotency_key.clone().unwrap_or_else(|| {
                 format!(
                     "{}:{}",
@@ -158,15 +185,9 @@ impl McpTool for DeriveTool {
                 .map_err(McpToolError::Storage)?;
 
             let mut provenance_edge_handles = Vec::new();
-            if !outcome.idempotent_replay {
-                let relation = ctx
-                    .registry
-                    .resolve_relation(CORE_DERIVED_FROM_RELATION)
-                    .ok_or_else(|| {
-                        McpToolError::Other(format!(
-                            "relation {CORE_DERIVED_FROM_RELATION} not registered"
-                        ))
-                    })?;
+            if !outcome.idempotent_replay
+                && let Some(relation) = relation
+            {
                 for (source_id, source_kind) in source_uuids.iter().zip(source_kinds) {
                     let edge_id = provenance_edge_id(memory_id, *source_id);
                     let edge_draft = EdgeDraft {

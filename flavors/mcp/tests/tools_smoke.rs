@@ -71,7 +71,8 @@ async fn remember_then_search_round_trip() -> Result<(), Box<dyn std::error::Err
         remembered["handle"]
             .as_str()
             .expect("handle")
-            .starts_with('N')
+            .starts_with('F'),
+        "remember mints a Fact handle, got: {remembered}"
     );
 
     let searched = call_tool(
@@ -303,7 +304,17 @@ async fn derive_scopes_idempotency_by_owner_and_kind() -> Result<(), Box<dyn std
     )
     .await?;
 
-    assert_ne!(a["uuid"], b["uuid"], "owner-a and owner-b must not collide");
+    let distinct_owner_memories: i64 = sqlx::query_scalar(
+        "SELECT count(DISTINCT memory_id) FROM proxima_mcp.agent_derivation_v1
+         WHERE idempotency_key = 'shared-key-collision'",
+    )
+    .fetch_one(pg.pool())
+    .await?;
+    assert_eq!(
+        distinct_owner_memories, 2,
+        "owner-a and owner-b must not collide"
+    );
+    assert_eq!(a["idempotent_replay"], json!(false));
     assert_eq!(b["idempotent_replay"], json!(false));
 
     let abstraction = call_tool(
@@ -338,10 +349,17 @@ async fn derive_scopes_idempotency_by_owner_and_kind() -> Result<(), Box<dyn std
         }),
     )
     .await?;
-    assert_ne!(
-        abstraction["uuid"], perspective["uuid"],
+    let distinct_kind_memories: i64 = sqlx::query_scalar(
+        "SELECT count(DISTINCT memory_id) FROM proxima_mcp.agent_derivation_v1
+         WHERE idempotency_key = 'kind-key-collision'",
+    )
+    .fetch_one(pg.pool())
+    .await?;
+    assert_eq!(
+        distinct_kind_memories, 2,
         "kind dimension must split memory_id"
     );
+    assert_eq!(abstraction["idempotent_replay"], json!(false));
     assert_eq!(perspective["idempotent_replay"], json!(false));
 
     drop(pg);
