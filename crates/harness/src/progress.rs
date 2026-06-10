@@ -97,7 +97,7 @@ impl FulfillmentProgress {
     pub fn should_remind(&self, round_idx: u32) -> bool {
         self.durable_required()
             && round_idx > 0
-            && round_idx % FULFILLMENT_REMINDER_INTERVAL_ROUNDS == 0
+            && round_idx.is_multiple_of(FULFILLMENT_REMINDER_INTERVAL_ROUNDS)
     }
 
     #[must_use]

@@ -52,7 +52,7 @@ pub enum StorageError {
     Internal(String),
 }
 
-/// Boxed closure for read-modify-write on WakeEntry rows.
+/// Boxed closure for read-modify-write on `WakeEntry` rows.
 pub type WakeEntriesMutator =
     Box<dyn FnOnce(&[WakeEntryDraft]) -> Result<Vec<WakeEntryDraft>, String> + Send + 'static>;
 
@@ -70,15 +70,15 @@ pub struct MasterTokenPersonality {
 
 #[async_trait::async_trait]
 pub trait Storage: ApprovalStore + InterventionStore + ChatStore + Send + Sync {
-    /// Atomic Fact materialization per docs/14 §EventIngest.
-    /// Single transaction inserting cited_object, event,
-    /// memory(Fact), citation_mapping, change_event. Replay
-    /// (event_id collision) returns the original outcome with
+    /// Atomic Fact materialization per docs/14 §`EventIngest`.
+    /// Single transaction inserting `cited_object`, event,
+    /// memory(Fact), `citation_mapping`, `change_event`. Replay
+    /// (`event_id` collision) returns the original outcome with
     /// `idempotent_replay = true`.
     ///
     /// # Errors
     ///
-    /// Constraint violations map to ConstraintViolation; sqlx
+    /// Constraint violations map to `ConstraintViolation`; sqlx
     /// failures map to Internal.
     async fn ingest_event_atomic(
         &self,
@@ -86,7 +86,7 @@ pub trait Storage: ApprovalStore + InterventionStore + ChatStore + Send + Sync {
     ) -> Result<EventIngestOutcome, StorageError>;
 
     /// Atomic wake-trace materialization. One transaction writes the
-    /// wake-trace Fact, JSONL CitedObject, CitationMapping, all three
+    /// wake-trace Fact, JSONL `CitedObject`, `CitationMapping`, all three
     /// sidecars, the entity change event, and authorship/provenance
     /// edges. Whole-verb replay returns the original ids with
     /// `idempotent_replay = true`.
@@ -96,7 +96,7 @@ pub trait Storage: ApprovalStore + InterventionStore + ChatStore + Send + Sync {
         input: &WakeTracePersistInput,
     ) -> Result<WakeTracePersistOutcome, StorageError>;
 
-    /// Atomic InterventionRequested Fact materialization plus routing edge.
+    /// Atomic `InterventionRequested` Fact materialization plus routing edge.
     async fn persist_intervention_requested_atomic(
         &self,
         _registry: &FlavorRegistryFrozen,
@@ -115,27 +115,27 @@ pub trait Storage: ApprovalStore + InterventionStore + ChatStore + Send + Sync {
         Ok(None)
     }
 
-    /// Atomic Goal write per docs/14 §GoalWrite.
-    /// Single transaction inserting goal, goal_parents,
-    /// change_event. Replay (request_id collision with same body)
+    /// Atomic Goal write per docs/14 §`GoalWrite`.
+    /// Single transaction inserting goal, `goal_parents`,
+    /// `change_event`. Replay (`request_id` collision with same body)
     /// returns the original outcome with `idempotent_replay = true`.
     ///
     /// # Errors
     ///
-    /// Constraint violations map to ConstraintViolation (including
-    /// idempotency_conflict: prefix for request_id reuse with
-    /// different body); NotFound if referenced parent missing;
+    /// Constraint violations map to `ConstraintViolation` (including
+    /// `idempotency_conflict`: prefix for `request_id` reuse with
+    /// different body); `NotFound` if referenced parent missing;
     /// sqlx failures map to Internal.
     async fn write_goal_atomic(&self, draft: &GoalDraft) -> Result<GoalWriteOutcome, StorageError>;
 
-    /// Atomic Goal supersede per docs/14 §GoalWrite.
+    /// Atomic Goal supersede per docs/14 §`GoalWrite`.
     /// Single transaction inserting new goal with supersedes=prior,
-    /// goal_parents, change_event. Replay check same as write_goal.
+    /// `goal_parents`, `change_event`. Replay check same as `write_goal`.
     ///
     /// # Errors
     ///
-    /// Same as write_goal_atomic, plus NotFound if prior goal
-    /// doesn't exist, ConstraintViolation if prior owner doesn't
+    /// Same as `write_goal_atomic`, plus `NotFound` if prior goal
+    /// doesn't exist, `ConstraintViolation` if prior owner doesn't
     /// match draft.owner.
     async fn supersede_goal_atomic(
         &self,
@@ -143,7 +143,7 @@ pub trait Storage: ApprovalStore + InterventionStore + ChatStore + Send + Sync {
         draft: &GoalDraft,
     ) -> Result<GoalWriteOutcome, StorageError>;
 
-    /// Returns an owner-filtered stream of ChangeEvents. If
+    /// Returns an owner-filtered stream of `ChangeEvents`. If
     /// `since` is `Some(seq)`, the stream begins by replaying
     /// rows whose `seq > since` and then attaches to live events.
     /// If `None`, the live stream begins immediately (no
@@ -160,7 +160,7 @@ pub trait Storage: ApprovalStore + InterventionStore + ChatStore + Send + Sync {
     /// Owner-scoped bounded read of `change_event` rows, newest-first.
     /// Server clamps `limit` to `MAX_EVENT_HISTORY_LIMIT`. When
     /// `before` is `Some(seq)`, returns rows with `seq < before`.
-    /// `seq_high_water` is the latest seq in the owner's change_event
+    /// `seq_high_water` is the latest seq in the owner's `change_event`
     /// log at read time (cursor for a follow-up Subscribe).
     async fn event_history(
         &self,
@@ -168,7 +168,7 @@ pub trait Storage: ApprovalStore + InterventionStore + ChatStore + Send + Sync {
     ) -> Result<EventHistoryResponse, StorageError>;
 
     /// Owner-scoped snapshot read of memories per docs/14 §"Query".
-    /// Returns MemoryRow substrate shape with payload bytes projected
+    /// Returns `MemoryRow` substrate shape with payload bytes projected
     /// from sidecar tables. `schemas` is the list of registered schemas
     /// with sidecar tables for dynamic JOIN construction.
     async fn query_memories(
@@ -195,7 +195,7 @@ pub trait Storage: ApprovalStore + InterventionStore + ChatStore + Send + Sync {
     /// Owner-scoped active Goal query for one personality Self-Perspective.
     /// Traverses `core/inspires` edges authored at proposal/attachment time,
     /// follows Goal supersession forward, and returns only current Active
-    /// heads. No GoalConnection sidecar is modeled.
+    /// heads. No `GoalConnection` sidecar is modeled.
     async fn list_active_goals(
         &self,
         owner: &Owner,
@@ -219,7 +219,7 @@ pub trait Storage: ApprovalStore + InterventionStore + ChatStore + Send + Sync {
         source_batch_id: SourceBatchId,
     ) -> Result<CloseBatchOutcome, StorageError>;
 
-    /// Register or replace an InferenceTarget. Idempotent on
+    /// Register or replace an `InferenceTarget`. Idempotent on
     /// `(owner, target_ref)` when the body matches; returns
     /// `target_ref_conflict` (mapped at the verb layer) if the body
     /// differs from the existing row.
@@ -233,7 +233,7 @@ pub trait Storage: ApprovalStore + InterventionStore + ChatStore + Send + Sync {
         owner: &Owner,
     ) -> Result<Vec<InferenceTargetRow>, StorageError>;
 
-    /// Remove an InferenceTarget. Returns `idempotent_replay = true` if
+    /// Remove an `InferenceTarget`. Returns `idempotent_replay = true` if
     /// the row was already absent. Returns `target_in_use` (mapped at
     /// the verb layer) if a tier binding or wake entry still references
     /// `target_ref`.
@@ -348,13 +348,13 @@ pub trait Storage: ApprovalStore + InterventionStore + ChatStore + Send + Sync {
         master_token_id: uuid::Uuid,
     ) -> Result<MasterTokenPersonality, StorageError>;
 
-    /// Replace active WakeEntry rows for one personality instance.
+    /// Replace active `WakeEntry` rows for one personality instance.
     async fn set_wake_entries(
         &self,
         req: &SetWakeEntriesRequest,
     ) -> Result<SetWakeEntriesResponse, StorageError>;
 
-    /// Transactional read-modify-write over a personality's WakeConfig.
+    /// Transactional read-modify-write over a personality's `WakeConfig`.
     /// Locks the personality row (SELECT FOR UPDATE), reads current active
     /// wake entries, applies the `mutate` closure, then replaces all entries
     /// atomically. Used by granular add/update/remove ops to serialise
@@ -380,7 +380,7 @@ pub trait Storage: ApprovalStore + InterventionStore + ChatStore + Send + Sync {
         req: &SetReadScopeRequest,
     ) -> Result<SetReadScopeResponse, StorageError>;
 
-    /// Active WakeEntry rows plus their cursor positions.
+    /// Active `WakeEntry` rows plus their cursor positions.
     async fn list_active_wake_entries(&self) -> Result<Vec<WakeDispatchEntryRow>, StorageError>;
 
     async fn list_change_events_after(
@@ -512,8 +512,8 @@ pub trait Storage: ApprovalStore + InterventionStore + ChatStore + Send + Sync {
         instance_id: PersonalityInstanceId,
     ) -> Result<Option<PersonalityRuntimeRow>, StorageError>;
 
-    /// Owner-scoped fetch of the root-perspective sidecar (display_name,
-    /// purpose) for a given memory_id. Used to populate the
+    /// Owner-scoped fetch of the root-perspective sidecar (`display_name`,
+    /// purpose) for a given `memory_id`. Used to populate the
     /// `root_perspective` field on the assembled `WakeContext`.
     async fn fetch_root_personality_perspective(
         &self,
@@ -572,7 +572,7 @@ pub trait Storage: ApprovalStore + InterventionStore + ChatStore + Send + Sync {
         Ok(())
     }
 
-    /// Per-(owner, type_id, instance_id) advisory lock spanning a wake
+    /// Per-(owner, `type_id`, `instance_id`) advisory lock spanning a wake
     /// run. Acquires `pg_advisory_xact_lock` on a stable bigint hash;
     /// the returned guard releases the lock when dropped.
     async fn acquire_wake_lock(

@@ -1,4 +1,4 @@
-//! `core/instantiate_personality` — wraps Engine::instantiate_personality
+//! `core/instantiate_personality` — wraps `Engine::instantiate_personality`
 //! and emits a `core/personality_config_changed_v1` Fact.
 
 use futures::future::BoxFuture;

@@ -34,56 +34,56 @@ use crate::{
 // ---------------------------------------------------------------------------
 
 /// A `core/chat-started-v1` Fact with its memory id.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct LoadedStarted {
     pub memory_id: MemoryId,
     pub payload: ChatStartedV1,
 }
 
 /// A `core/chat-message-v1` Fact with its memory id.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct LoadedMessage {
     pub memory_id: MemoryId,
     pub payload: ChatMessageV1,
 }
 
 /// A `core/chat-reply-v1` Fact with its memory id.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct LoadedReply {
     pub memory_id: MemoryId,
     pub payload: ChatReplyV1,
 }
 
 /// A `core/chat-end-requested-v1` Fact with its memory id.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct LoadedEndRequest {
     pub memory_id: MemoryId,
     pub payload: ChatEndRequestedV1,
 }
 
 /// A `core/chat-ended-v1` Fact with its memory id.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct LoadedEnded {
     pub memory_id: MemoryId,
     pub payload: ChatEndedV1,
 }
 
 /// A `core/chat-compaction-v1` Abstraction with its memory id.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct LoadedCompaction {
     pub memory_id: MemoryId,
     pub payload: ChatCompactionV1,
 }
 
 /// A `core/chat-summary-v1` Abstraction with its memory id.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct LoadedSummary {
     pub memory_id: MemoryId,
     pub payload: ChatSummaryV1,
 }
 
 /// An `approval_policy_v1` row projected for chat-thread rendering.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct LoadedApprovalPolicy {
     pub memory_id: MemoryId,
     pub target_kind: ApprovalTargetKind,
@@ -98,7 +98,7 @@ pub struct LoadedApprovalPolicy {
 }
 
 /// An `approval_vote_v1` row projected for chat-thread rendering.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct LoadedApprovalVote {
     pub memory_id: MemoryId,
     pub policy_memory_id: uuid::Uuid,
@@ -115,7 +115,7 @@ pub struct LoadedApprovalVote {
 }
 
 /// An `approval_decision_v1` row projected for chat-thread rendering.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct LoadedApprovalDecision {
     pub memory_id: MemoryId,
     pub policy_memory_id: uuid::Uuid,
@@ -130,7 +130,7 @@ pub struct LoadedApprovalDecision {
 }
 
 /// One counted vote inside an approval decision's `counted_votes_json`.
-#[derive(Clone, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize)]
 pub struct ThreadApprovalCountedVoteRaw {
     pub vote_memory_id: uuid::Uuid,
     pub voter_key: String,
@@ -138,7 +138,7 @@ pub struct ThreadApprovalCountedVoteRaw {
 }
 
 /// An `edges` row projected for chat-thread rendering.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct LoadedThreadEdge {
     pub edge_id: EdgeId,
     pub relation: String,
@@ -155,7 +155,7 @@ pub struct LoadedThreadEdge {
 /// The `core/chat-ended-v1` / `core/chat-summary-v1` pair already recorded
 /// for an end-chat request — the idempotent-replay short-circuit for
 /// `core/end_chat`.
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 pub struct ExistingChatEnd {
     pub ended_memory_id: MemoryId,
     pub summary_memory_id: MemoryId,
@@ -166,6 +166,7 @@ pub struct ExistingChatEnd {
 // ---------------------------------------------------------------------------
 
 /// Fully-resolved input for `core/start_chat`.
+#[derive(Debug)]
 pub struct StartChatInput {
     pub owner: Owner,
     pub started: ChatStartedV1,
@@ -175,6 +176,7 @@ pub struct StartChatInput {
 }
 
 /// Result of `start_chat_atomic`.
+#[derive(Debug)]
 pub struct StartChatEmitOutcome {
     pub started_memory_id: MemoryId,
     pub message_memory_id: MemoryId,
@@ -183,6 +185,7 @@ pub struct StartChatEmitOutcome {
 }
 
 /// Fully-resolved input for `core/emit_chat_message`.
+#[derive(Debug)]
 pub struct EmitChatMessageInput {
     pub owner: Owner,
     pub message: ChatMessageV1,
@@ -191,6 +194,7 @@ pub struct EmitChatMessageInput {
 }
 
 /// Fully-resolved input for `core/emit_chat_reply`.
+#[derive(Debug)]
 pub struct EmitChatReplyInput {
     pub owner: Owner,
     pub reply: ChatReplyV1,
@@ -200,6 +204,7 @@ pub struct EmitChatReplyInput {
 }
 
 /// Fully-resolved input for `core/request_end_chat`.
+#[derive(Debug)]
 pub struct RequestEndChatInput {
     pub owner: Owner,
     pub request: ChatEndRequestedV1,
@@ -209,6 +214,7 @@ pub struct RequestEndChatInput {
 
 /// Result of `emit_chat_message_atomic`, `emit_chat_reply_atomic`, and
 /// `request_end_chat_atomic` — a single Fact plus its addressing edge.
+#[derive(Debug)]
 pub struct ChatFactEmitOutcome {
     pub memory_id: MemoryId,
     pub edge_id: Option<uuid::Uuid>,
@@ -220,6 +226,7 @@ pub struct ChatFactEmitOutcome {
 /// `classified_sources` is `payload.included_memory_ids` paired with each
 /// memory's `EntityKind`, in order; Perspective sources are rejected by the
 /// tool before this input is built.
+#[derive(Debug)]
 pub struct CompactChatThreadInput {
     pub owner: Owner,
     pub model_id: String,
@@ -230,6 +237,7 @@ pub struct CompactChatThreadInput {
 }
 
 /// Result of `compact_chat_thread_atomic`.
+#[derive(Debug)]
 pub struct CompactChatThreadEmitOutcome {
     pub inserted: bool,
     pub edge_ids: Vec<uuid::Uuid>,
@@ -240,6 +248,7 @@ pub struct CompactChatThreadEmitOutcome {
 /// `classified_sources` covers `summary.included_memory_ids` and
 /// `ended.request_memory_id` (every provenance source except the
 /// chat-ended Fact, whose id is only known after ingest).
+#[derive(Debug)]
 pub struct EndChatInput {
     pub owner: Owner,
     pub model_id: String,
@@ -251,6 +260,7 @@ pub struct EndChatInput {
 }
 
 /// Result of `end_chat_atomic`.
+#[derive(Debug)]
 pub struct EndChatEmitOutcome {
     pub ended_memory_id: MemoryId,
     pub ended_idempotent_replay: bool,

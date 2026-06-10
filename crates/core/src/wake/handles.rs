@@ -8,6 +8,7 @@
 use crate::mcp::PreSeededHandles;
 use crate::wake::token_store::WakeTokenContext;
 
+#[must_use]
 pub fn pre_seed_wake_handles(ctx: &WakeTokenContext) -> PreSeededHandles {
     let triggering = ctx.handles.assign_memory_with_class(
         ctx.triggering_event_memory_id,
@@ -37,6 +38,7 @@ pub fn pre_seed_wake_handles(ctx: &WakeTokenContext) -> PreSeededHandles {
 /// The preamble is prepended to the personality's `system_prompt` by
 /// the wake bootstrap. It names the three handles the model can rely
 /// on being addressable in round 1.
+#[must_use]
 pub fn format_wake_context_preamble(
     seeded: &PreSeededHandles,
     triggering_schema_id: Option<&str>,
@@ -48,10 +50,10 @@ pub fn format_wake_context_preamble(
         "Perspective" => "Perspective memory",
         _ => "memory",
     };
-    let schema_clause = triggering_schema_id
-        .filter(|s| !s.is_empty())
-        .map(|s| format!("a `{s}` {kind_clause}"))
-        .unwrap_or_else(|| format!("a {kind_clause}"));
+    let schema_clause = triggering_schema_id.filter(|s| !s.is_empty()).map_or_else(
+        || format!("a {kind_clause}"),
+        |s| format!("a `{s}` {kind_clause}"),
+    );
     format!(
         "You were woken by {triggering}, {schema_clause}. \
 Your current root perspective is {root}. You are {self_p}. \

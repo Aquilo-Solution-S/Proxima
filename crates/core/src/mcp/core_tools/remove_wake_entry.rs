@@ -1,4 +1,4 @@
-//! `core/remove_wake_entry` — granular delete via Storage::set_wake_entries_within.
+//! `core/remove_wake_entry` — granular delete via `Storage::set_wake_entries_within`.
 
 use futures::future::BoxFuture;
 use schemars::JsonSchema;

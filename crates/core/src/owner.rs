@@ -4,8 +4,8 @@
 
 use crate::{GroupId, OrgId, UserId};
 
-/// Owner carries principal (access scope) and org_id (billing unit).
-/// org_id is NOT part of the access predicate (AGENTS.md invariant 4).
+/// Owner carries principal (access scope) and `org_id` (billing unit).
+/// `org_id` is NOT part of the access predicate (AGENTS.md invariant 4).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct Owner {
     pub principal: Principal,
@@ -21,7 +21,7 @@ pub enum Principal {
 /// Discriminant tag for `Principal`, mirrors the SQL enum
 /// `proxima_core.owner_principal_kind`. Storage rows split a
 /// `Principal` across two columns (`owner_principal_kind` +
-/// `owner_principal_id`); FromRow decoders read this tag.
+/// `owner_principal_id`); `FromRow` decoders read this tag.
 #[derive(
     Debug,
     Clone,

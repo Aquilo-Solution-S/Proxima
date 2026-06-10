@@ -1,6 +1,6 @@
-//! GoalWrite verb — typed surface only.
+//! `GoalWrite` verb — typed surface only.
 //!
-//! See docs/14-protocol-surface.md §"GoalWrite" and
+//! See docs/14-protocol-surface.md §"`GoalWrite`" and
 //! docs/06-goals-and-self.md §"Goal entity". The
 //! storage-side body lives in proxima-storage-pg.
 
@@ -124,6 +124,6 @@ pub struct GoalWriteOutcome {
     pub goal_id: GoalId,
     pub change_event_seq: uuid::Uuid,
     /// True when the same `(owner, request_id)` existed and the
-    /// body matched — see docs/14 §GoalWrite.
+    /// body matched — see docs/14 §`GoalWrite`.
     pub idempotent_replay: bool,
 }

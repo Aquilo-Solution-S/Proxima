@@ -1,5 +1,5 @@
 //! `core/update_wake_entry` — granular partial-fields update.
-//! trigger_kind/trigger_id are immutable; change them via remove + add.
+//! `trigger_kind/trigger_id` are immutable; change them via remove + add.
 
 use futures::future::BoxFuture;
 use schemars::JsonSchema;
@@ -182,4 +182,3 @@ impl McpTool for UpdateWakeEntryTool {
         })
     }
 }
-

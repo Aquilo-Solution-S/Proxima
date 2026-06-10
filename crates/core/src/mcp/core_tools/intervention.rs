@@ -97,7 +97,10 @@ impl McpTool for EmitInterventionDecisionTool {
             let redirect_personality_instance_id = args
                 .redirect_personality
                 .as_deref()
-                .map(|raw| ctx.resolve_personality(raw).map(|id| id.into_inner()))
+                .map(|raw| {
+                    ctx.resolve_personality(raw)
+                        .map(crate::personality::personality::PersonalityInstanceId::into_inner)
+                })
                 .transpose()?;
             let decision = args.decision;
             let payload = InterventionDecisionV1 {
@@ -191,9 +194,8 @@ async fn validate_decision_shape(
 /// `McpToolCtx::engine` is `None` only in test scaffolds without a wired
 /// engine; the intervention tool always requires one.
 fn require_storage(ctx: &McpToolCtx) -> Result<&dyn Storage, McpToolError> {
-    ctx.storage().ok_or_else(|| {
-        McpToolError::Other("intervention tools require an attached engine".into())
-    })
+    ctx.storage()
+        .ok_or_else(|| McpToolError::Other("intervention tools require an attached engine".into()))
 }
 
 #[cfg(test)]

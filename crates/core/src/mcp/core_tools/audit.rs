@@ -47,9 +47,9 @@ pub async fn emit_personality_config_changed(
     };
     let payload = PersonalityConfigChangedV1 {
         verb,
-        subject,
         before,
         after,
+        subject,
         caller,
     };
     match write_fact(ctx, &payload).await {

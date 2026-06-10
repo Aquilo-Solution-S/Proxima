@@ -26,6 +26,7 @@ use crate::wake::token_store::WakeTokenStore;
 /// `bound_addr` is the socket the kernel actually picked (especially
 /// useful when the host requested `127.0.0.1:0`). `join` is the
 /// transport task; `Engine::stop` aborts it.
+#[derive(Debug)]
 pub struct RunningMcpListener {
     pub bound_addr: SocketAddr,
     pub join: JoinHandle<()>,

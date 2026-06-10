@@ -37,7 +37,7 @@ fn make_ctx(owner: Owner) -> WakeTokenContext {
 
 #[tokio::test]
 async fn mint_then_resolve_returns_same_context() {
-    let store = WakeTokenStore::new(Duration::from_secs(60));
+    let store = WakeTokenStore::new(Duration::from_mins(1));
     let owner = make_owner();
     let ctx = make_ctx(owner.clone());
     let token = store.mint(ctx.clone()).await;
@@ -87,7 +87,7 @@ async fn resolve_cannot_renew_past_max_lifetime() {
 
 #[tokio::test]
 async fn revoke_removes_token() {
-    let store = WakeTokenStore::new(Duration::from_secs(60));
+    let store = WakeTokenStore::new(Duration::from_mins(1));
     let token = store.mint(make_ctx(make_owner())).await;
     assert!(store.resolve(token).await.is_some());
     store.revoke(token).await;
@@ -106,7 +106,7 @@ async fn sweep_expired_drops_old_tokens() {
 
 #[tokio::test]
 async fn unknown_token_resolves_none() {
-    let store = WakeTokenStore::new(Duration::from_secs(60));
+    let store = WakeTokenStore::new(Duration::from_mins(1));
     let bogus = Uuid::new_v4();
     assert!(store.resolve(bogus).await.is_none());
 }

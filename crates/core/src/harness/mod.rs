@@ -1,4 +1,4 @@
-//! HarnessAdapter: the seam between `fire_wake_entry` and the
+//! `HarnessAdapter`: the seam between `fire_wake_entry` and the
 //! in-process LLM loop that owns model calls plus tool dispatch.
 //!
 //! This module defines trait and value types only. The concrete loop

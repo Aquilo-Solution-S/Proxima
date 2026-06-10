@@ -145,7 +145,7 @@ pub struct PersonalityWriteRequest<'a> {
     /// "what has this Personality produced?" without falling back to
     /// the `personality_instance_id` row column.
     pub authored_relation: RegisteredRelation<'a>,
-    /// Snapshot of the Personality's Root Perspective memory_id taken
+    /// Snapshot of the Personality's Root Perspective `memory_id` taken
     /// at wake-context assembly time. Used as the `source_memory_id`
     /// of the auto-wired `core/authored` edge so the edge attributes
     /// to the perspective that was speaking during this wake, not

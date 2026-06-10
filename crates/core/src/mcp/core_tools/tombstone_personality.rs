@@ -1,4 +1,4 @@
-//! `core/tombstone_personality` — wraps Engine::tombstone_personality
+//! `core/tombstone_personality` — wraps `Engine::tombstone_personality`
 //! and emits an audit Fact.
 
 use futures::future::BoxFuture;

@@ -1,5 +1,5 @@
-//! EventHistory verb — bounded snapshot read of the change-event
-//! log for one Owner. See docs/14 §"EventHistory" and §"Cold-start
+//! `EventHistory` verb — bounded snapshot read of the change-event
+//! log for one Owner. See docs/14 §"`EventHistory`" and §"Cold-start
 //! stitching".
 
 use crate::{ChangeEvent, Owner};

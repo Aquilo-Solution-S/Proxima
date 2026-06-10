@@ -329,15 +329,14 @@ fn ensure_property_descriptions(properties: &mut Map<String, Value>) {
             .get("description")
             .and_then(Value::as_str)
             .is_none_or(|description| description.trim().is_empty())
+            && let Some(object) = schema.as_object_mut()
         {
-            if let Some(object) = schema.as_object_mut() {
-                object.insert(
-                    "description".to_string(),
-                    Value::String(format!(
-                        "Typed payload field `{key}` for this emitted memory."
-                    )),
-                );
-            }
+            object.insert(
+                "description".to_string(),
+                Value::String(format!(
+                    "Typed payload field `{key}` for this emitted memory."
+                )),
+            );
         }
         if let Some(nested) = schema.get_mut("properties").and_then(Value::as_object_mut) {
             ensure_property_descriptions(nested);

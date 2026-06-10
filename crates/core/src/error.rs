@@ -47,6 +47,7 @@ impl ProtocolError {
         }
     }
 
+    #[must_use]
     pub fn auth_required() -> Self {
         Self {
             code: ErrorCode::AuthRequired,

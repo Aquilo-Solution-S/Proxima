@@ -180,6 +180,19 @@ fn build_user_seed(program: &HarnessProgram) -> String {
     seed.trim_end().to_string()
 }
 
+fn snake_to_title(s: &str) -> String {
+    s.split('_')
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().chain(chars).collect::<String>(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -289,17 +302,4 @@ mod tests {
         assert!(root_idx < perspective_idx);
         assert!(seed.contains("Inspect evidence before proposing edits."));
     }
-}
-
-fn snake_to_title(s: &str) -> String {
-    s.split('_')
-        .map(|word| {
-            let mut chars = word.chars();
-            match chars.next() {
-                Some(first) => first.to_uppercase().chain(chars).collect::<String>(),
-                None => String::new(),
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
 }

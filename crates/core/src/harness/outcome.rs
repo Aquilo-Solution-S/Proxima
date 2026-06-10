@@ -59,7 +59,7 @@ pub struct HarnessOutcome {
     pub total_completion_tokens: Option<u64>,
     pub tool_call_count: u32,
     /// Capped in-memory JSONL bytes. Phase 8 hands these to the wake-trace
-    /// CitedObject emitter.
+    /// `CitedObject` emitter.
     pub jsonl_bytes: Vec<u8>,
     pub jsonl_truncated: bool,
     /// Per-wake egress proxy log (`docker logs` of the logging proxy).

@@ -64,14 +64,14 @@ impl McpTool for BindInferenceTierTool {
                 .bind_inference_tier(&Credentials::None, &req)
                 .await
                 .map_err(|e| McpToolError::Other(e.to_string()))?;
-            let subject_id = format!("{:?}::{}", tier, target_ref);
+            let subject_id = format!("{tier:?}::{target_ref}");
             let audit = emit_personality_config_changed(
                 &ctx,
                 PersonalityConfigChangedVerb::BindInferenceTier,
                 PersonalityConfigChangedSubject::TierBinding(subject_id),
                 None,
                 Some(PersonalityConfigChangeSnapshot::TierBinding {
-                    tier: format!("{:?}", tier),
+                    tier: format!("{tier:?}"),
                     target_ref: target_ref.clone(),
                 }),
             )

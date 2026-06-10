@@ -2,7 +2,7 @@
 //!
 //! Personalities are build-time flavor declarations. Runtime instances
 //! are addressed by `personality_instance_id` and point at a Root
-//! Perspective plus WakeEntry rows in storage.
+//! Perspective plus `WakeEntry` rows in storage.
 
 pub mod authorization;
 pub mod context;

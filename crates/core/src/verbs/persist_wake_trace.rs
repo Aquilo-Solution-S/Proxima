@@ -1,7 +1,7 @@
 //! `persist_wake_trace` verb typed surface.
 //!
-//! Atomic write of the wake-trace Fact, JSONL CitedObject,
-//! CitationMapping, sidecar payload rows, change event, and canonical
+//! Atomic write of the wake-trace Fact, JSONL `CitedObject`,
+//! `CitationMapping`, sidecar payload rows, change event, and canonical
 //! authorship/provenance edges. Storage implementation lives behind
 //! `Storage::persist_wake_trace_atomic` so core stays backend-neutral.
 
@@ -31,7 +31,7 @@ pub struct WakeTracePersistInput {
 
 impl WakeTracePersistInput {
     /// Whole-verb replay key. Distinct wake invocations with identical
-    /// JSONL share a CitedObject row, but they do not share this event id.
+    /// JSONL share a `CitedObject` row, but they do not share this event id.
     #[must_use]
     pub fn event_id(&self) -> EventId {
         let mut hasher = blake3::Hasher::new();

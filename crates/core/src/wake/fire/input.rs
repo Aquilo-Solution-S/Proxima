@@ -35,9 +35,10 @@ pub struct FireWakeEntryInput {
 /// Conservative: 120s per round + 90s startup. Adapter-side timeouts
 /// are the floor; the dispatcher's outer cancel signal is the ceiling.
 /// Phase 1e tunes this once Code-flavor wake entries have a measured p95.
+#[must_use]
 pub fn per_invocation_timeout(max_rounds: u32) -> Duration {
     if max_rounds == 0 {
-        return Duration::from_secs(24 * 60 * 60);
+        return Duration::from_hours(24);
     }
     Duration::from_secs(90 + u64::from(max_rounds) * 120)
 }

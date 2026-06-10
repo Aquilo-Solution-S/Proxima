@@ -1,4 +1,4 @@
-//! Settings-side InferenceTarget types and request/response envelopes.
+//! Settings-side `InferenceTarget` types and request/response envelopes.
 //!
 //! Storage holds these in `proxima_core.inference_targets` +
 //! `proxima_core.inference_tier_bindings`. Resolution at wake time

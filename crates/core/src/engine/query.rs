@@ -11,6 +11,7 @@ use crate::verbs::subscribe::{ChangeEventStream, SubscribeRequest};
 impl Engine {
     /// docs/14 §"Schema" — binary-scoped, unauthenticated by
     /// default. Owner is not consulted.
+    #[must_use]
     pub fn schema(&self, req: &SchemaRequest) -> SchemaResponse {
         self.registry.handle(req)
     }
@@ -74,7 +75,7 @@ impl Engine {
             .map_err(|e| ProtocolError::internal(e.to_string()))
     }
 
-    /// docs/14 §"EventHistory" — Owner-scoped bounded change-event
+    /// docs/14 §"`EventHistory`" — Owner-scoped bounded change-event
     /// read. Same auth shape as `Query` / `Subscribe`. Server clamps
     /// `limit` to `MAX_EVENT_HISTORY_LIMIT`.
     pub async fn event_history(

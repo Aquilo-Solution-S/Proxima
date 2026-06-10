@@ -9,6 +9,9 @@ repository.workspace = true
 [lib]
 name = "proxima_core"
 
+[lints]
+workspace = true
+
 [features]
 default = []
 test-fixtures = []

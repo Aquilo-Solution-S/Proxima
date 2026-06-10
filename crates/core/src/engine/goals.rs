@@ -6,8 +6,8 @@ use crate::verbs::goal_write::{GoalDraft, GoalWriteOutcome};
 use crate::verbs::schema::PayloadKind;
 
 impl Engine {
-    /// docs/14 §"GoalWrite" — Owner-scoped write. Validates
-    /// schema is registered as PayloadKind::Goal and delegates to
+    /// docs/14 §"`GoalWrite`" — Owner-scoped write. Validates
+    /// schema is registered as `PayloadKind::Goal` and delegates to
     /// storage.
     pub async fn write_goal(
         &self,
@@ -39,8 +39,8 @@ impl Engine {
             .map_err(map_storage_err_for_goal_write(&draft.request_id))
     }
 
-    /// docs/14 §"GoalWrite" — supersede path. Same auth and schema
-    /// validation as write_goal, plus validates prior exists and
+    /// docs/14 §"`GoalWrite`" — supersede path. Same auth and schema
+    /// validation as `write_goal`, plus validates prior exists and
     /// belongs to the same owner.
     pub async fn supersede_goal(
         &self,

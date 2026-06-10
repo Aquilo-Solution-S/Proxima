@@ -8,7 +8,7 @@ use crate::verbs::event_ingest::{EventDraft, EventIngestOutcome};
 use crate::verbs::persist_wake_trace::{WakeTracePersistInput, WakeTracePersistOutcome};
 
 impl Engine {
-    /// docs/14 §"EventIngest" — Owner-scoped write. Validates
+    /// docs/14 §"`EventIngest`" — Owner-scoped write. Validates
     /// schemas and delegates to storage.
     pub async fn event_ingest(
         &self,

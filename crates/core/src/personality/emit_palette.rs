@@ -57,10 +57,12 @@ pub fn parse_scoped_emit_tool_id(
     Ok(None)
 }
 
+#[must_use]
 pub fn scoped_emit_tool_id(base_tool_id: &str, schema_id: &str, schema_version: u32) -> String {
     format!("{base_tool_id}::{schema_id}::v{schema_version}")
 }
 
+#[must_use]
 pub fn broad_emit_kind(tool_id: &str) -> Option<PayloadKind> {
     match tool_id {
         EMIT_ABSTRACTION_TOOL_ID => Some(PayloadKind::Abstraction),
@@ -69,6 +71,7 @@ pub fn broad_emit_kind(tool_id: &str) -> Option<PayloadKind> {
     }
 }
 
+#[must_use]
 pub fn palette_authorizes_internal_tool(palette: &[String], internal_tool_id: &str) -> bool {
     palette.iter().any(|tool_id| {
         tool_id == internal_tool_id

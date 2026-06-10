@@ -40,7 +40,7 @@ pub(crate) async fn walk_memory_lineage(
         Principal::Group(group) => (OwnerPrincipalKind::Group, group.into_inner()),
     };
 
-    let reader_id = req.reader_personality_instance_id.map(|id| id.into_inner());
+    let reader_id = req.reader_personality_instance_id.map(proxima_core::PersonalityInstanceId::into_inner);
 
     if !start_memory_visible(
         pool,
@@ -129,7 +129,7 @@ async fn start_memory_visible(
     reader_id: Option<uuid::Uuid>,
 ) -> Result<bool, StorageError> {
     let present: Option<(uuid::Uuid,)> = sqlx::query_as(
-        r#"SELECT memory_id
+        r"SELECT memory_id
              FROM proxima_core.memories
              WHERE owner_principal_kind = $1
                AND owner_principal_id = $2
@@ -147,7 +147,7 @@ async fn start_memory_visible(
                           AND r.reader_personality_instance_id = $4
                           AND r.readable_personality_instance_id = memories.personality_instance_id
                    )
-               )"#,
+               )",
     )
     .bind(owner_kind)
     .bind(owner_principal_id)
@@ -192,7 +192,7 @@ async fn load_nodes(
     reader_id: Option<uuid::Uuid>,
 ) -> Result<Vec<NodeRow>, StorageError> {
     let rows: Vec<NodeRow> = sqlx::query_as(
-        r#"SELECT memory_id,
+        r"SELECT memory_id,
                   kind,
                   schema_id,
                   left(COALESCE(text, ''), 480) AS snippet,
@@ -214,7 +214,7 @@ async fn load_nodes(
                           AND r.reader_personality_instance_id = $4
                           AND r.readable_personality_instance_id = memories.personality_instance_id
                    )
-               )"#,
+               )",
     )
     .bind(owner_kind)
     .bind(owner_principal_id)

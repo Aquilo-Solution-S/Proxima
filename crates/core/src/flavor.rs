@@ -451,6 +451,7 @@ impl FlavorRegistry {
 /// is not `const`, so the comparison is spelled out. See docs/08
 /// §Schema namespacing: prefix violations reachable from associated
 /// `const`s or literals are now caught at build time, not at `register`.
+#[must_use]
 pub const fn schema_id_has_prefix(id: &str, prefix: &str) -> bool {
     let (id, prefix) = (id.as_bytes(), prefix.as_bytes());
     if prefix.len() > id.len() {

@@ -79,8 +79,8 @@ async fn intervention_continue_decision_writes_fact_sidecar_and_edges()
 }
 
 #[tokio::test]
-async fn intervention_decision_replays_on_idempotency_key()
--> Result<(), Box<dyn std::error::Error>> {
+async fn intervention_decision_replays_on_idempotency_key() -> Result<(), Box<dyn std::error::Error>>
+{
     let Some((pg, db_name)) = fresh_pg().await else {
         return Ok(());
     };

@@ -9,8 +9,8 @@ use serde::Deserialize;
 
 use crate::MemoryId;
 use crate::error::ProtocolError;
-use crate::mcp::schema::mcp_tool_schema;
 use crate::mcp::MemoryHandleClass;
+use crate::mcp::schema::mcp_tool_schema;
 use crate::personality::{PersonalityTool, PersonalityToolContext, PersonalityToolResult};
 use crate::verbs::query::{MemoryLineageDirection, MemoryLineageRequest};
 
@@ -173,7 +173,7 @@ impl PersonalityTool for WalkLineageTool {
 
         Ok(PersonalityToolResult::ok(serde_json::json!({
             "start": parsed.memory,
-            "direction": format!("{:?}", direction).to_lowercase(),
+            "direction": format!("{direction:?}").to_lowercase(),
             "nodes": nodes,
             "edges": edges,
             "truncated": response.truncated,

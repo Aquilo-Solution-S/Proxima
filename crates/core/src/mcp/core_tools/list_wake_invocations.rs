@@ -17,9 +17,9 @@ pub struct ListWakeInvocationsArgs {
     /// Optional `W`-handle. Filters to one wake entry when present.
     pub wake_entry: Option<String>,
     /// Optional triggering memory handle, usually a chat-message `F...`
-    /// handle. Filters through the ChangeEvent that caused the wake.
+    /// handle. Filters through the `ChangeEvent` that caused the wake.
     pub triggering_memory: Option<String>,
-    /// Optional raw ChangeEvent sequence UUID. Use when the trigger event
+    /// Optional raw `ChangeEvent` sequence UUID. Use when the trigger event
     /// is already known.
     pub change_event_seq: Option<String>,
     /// Maximum invocations to return. Omit or pass 0 for 20. Values above

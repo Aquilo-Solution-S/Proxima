@@ -1,5 +1,5 @@
-//! Engine composite — wires FlavorRegistryFrozen, MemoryStore, and
-//! an AuthResolver behind the typed verb surfaces of
+//! Engine composite — wires `FlavorRegistryFrozen`, `MemoryStore`, and
+//! an `AuthResolver` behind the typed verb surfaces of
 //! docs/14-protocol-surface.md.
 
 mod builder;
@@ -71,6 +71,7 @@ pub struct EmbeddingReloadOutcome {
 /// Owns the background tasks spawned by [`Engine::start`]. The engine
 /// keeps no copy — `start` returns the only handle so the caller is
 /// the single owner that can `stop()` it.
+#[derive(Debug)]
 pub struct EngineHandle {
     pub mcp_join: Option<JoinHandle<()>>,
     pub dispatch_join: JoinHandle<()>,

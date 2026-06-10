@@ -90,7 +90,9 @@ mod tests {
             "nested struct schema must be $defs-free: {schema:#}",
         );
         assert!(
-            schema.pointer("/properties/inner/properties/label").is_some(),
+            schema
+                .pointer("/properties/inner/properties/label")
+                .is_some(),
             "the inlined Inner subschema must expose its fields: {schema:#}",
         );
     }

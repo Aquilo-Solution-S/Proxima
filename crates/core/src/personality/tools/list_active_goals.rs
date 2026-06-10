@@ -27,7 +27,7 @@ fn default_scope() -> String {
     "linked_to_self".into()
 }
 
-/// Triage-level summary of one active goal. Detail (text, schema_id,
+/// Triage-level summary of one active goal. Detail (text, `schema_id`,
 /// payload) is reachable via `core/fetch_memory(goal_activated_memory_id)`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActiveGoalSummary {

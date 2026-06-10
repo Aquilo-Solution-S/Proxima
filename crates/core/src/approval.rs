@@ -495,7 +495,9 @@ pub trait ApprovalStore: Send + Sync {
         _registry: &FlavorRegistryFrozen,
         _input: &EmitApprovalDecisionInput,
     ) -> Result<ApprovalDecisionEmitOutcome, StorageError> {
-        Err(approval_store_unimplemented("emit_approval_decision_atomic"))
+        Err(approval_store_unimplemented(
+            "emit_approval_decision_atomic",
+        ))
     }
 }
 
@@ -678,7 +680,9 @@ impl McpTool for EmitApprovalVoteTool {
                 .await?;
             Ok(EmitApprovalVoteOutput {
                 handle: ctx.format_fact_memory(outcome.memory_id),
-                vote_edge_handle: outcome.vote_edge_id.map(|id| ctx.format_edge(EdgeId::new(id))),
+                vote_edge_handle: outcome
+                    .vote_edge_id
+                    .map(|id| ctx.format_edge(EdgeId::new(id))),
                 idempotent_replay: outcome.idempotent_replay,
             })
         })
@@ -1049,9 +1053,8 @@ async fn load_latest_votes(
 /// `McpToolCtx::engine` is `None` only in test scaffolds without a wired
 /// engine; the approval tools always require one.
 fn require_storage(ctx: &McpToolCtx) -> Result<&dyn Storage, McpToolError> {
-    ctx.storage().ok_or_else(|| {
-        McpToolError::Other("approval tools require an attached engine".into())
-    })
+    ctx.storage()
+        .ok_or_else(|| McpToolError::Other("approval tools require an attached engine".into()))
 }
 
 fn edge_authorship_for_ctx(ctx: &McpToolCtx) -> EdgeAuthorshipKind {
