@@ -111,10 +111,10 @@ with before/after counts.
 |---|---|---|
 | SR-1 | Registry frozen at startup, no runtime registration | axiom `registry_composition` (the law); THEOREM `registry_determined` |
 | SR-2 | Every memory payload schema-typed | accessor totality + `entities_use_registered_vocabulary` (merged) |
-| SR-8 | Schema ids flavor-qualified | axioms `schema_namespace` + `registry_namespace_discipline` |
+| SR-8 | Schema ids flavor-qualified | axiom `schema_namespace` + THEOREM `registry_namespace_discipline` |
 | SR-11/16 | Fact no text / A-P text required | axiom `text_iff_derived` |
 | SR-13 | Fact identity ≠ payload hash; UUIDv7 | axiom `memory_id_injective` + ST-22 comment |
-| SR-14/44 | Fact has no supersedes | axiom `facts_never_supersede` |
+| SR-14/44 | Fact has no supersedes | THEOREM `facts_never_supersede` |
 | SR-24 | relation_class closed, not flavor-extensible | inductive `RelationClass` (note: doc 03 does NOT enumerate classes — doc 02's five are authoritative; no contradiction, verified 2026-06-11 against doc 03 §EdgePayload verbatim) |
 | SR-25 | Edges immutable v1 | `Immutable Edge` |
 | SR-30..33 | special_category per schema, author-declared | axiom `schema_special_category : SchemaId → Bool` (domain shape) |
