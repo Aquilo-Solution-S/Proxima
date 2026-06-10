@@ -178,7 +178,7 @@ impl PersonalityTool for SearchMemoriesTool {
             .collect();
 
         Ok(PersonalityToolResult::ok(serde_json::json!({
-            "mode": format!("{:?}", mode).to_lowercase(),
+            "mode": format!("{mode:?}").to_lowercase(),
             "memories": memories,
         })))
     }

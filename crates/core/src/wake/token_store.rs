@@ -58,6 +58,7 @@ pub struct WakeTokenStore {
 }
 
 impl WakeTokenStore {
+    #[must_use]
     pub fn new(idle_ttl: Duration) -> Self {
         Self {
             idle_ttl,

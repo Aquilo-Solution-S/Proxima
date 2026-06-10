@@ -21,8 +21,7 @@ pub(super) fn derive_text(payload: &serde_json::Value) -> String {
         .or_else(|| payload.get("text"))
         .or_else(|| payload.get("title"))
         .and_then(|v| v.as_str())
-        .map(str::to_string)
-        .unwrap_or_else(|| payload.to_string())
+        .map_or_else(|| payload.to_string(), str::to_string)
 }
 
 pub(super) fn normalize_handle_refs_in_payload(

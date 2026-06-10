@@ -15,15 +15,15 @@ pub struct GetPersonalityTool;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct GetPersonalityArgs {
-    /// `I`-prefixed handle previously returned by list_personalities or
-    /// instantiate_personality.
+    /// `I`-prefixed handle previously returned by `list_personalities` or
+    /// `instantiate_personality`.
     pub personality: String,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct GetPersonalityWakeEntry {
-    /// `W`-prefixed handle. Pass as `wake_entry` to update_wake_entry,
-    /// remove_wake_entry, and replay_wake_events.
+    /// `W`-prefixed handle. Pass as `wake_entry` to `update_wake_entry`,
+    /// `remove_wake_entry`, and `replay_wake_events`.
     pub wake_entry: String,
     pub trigger_kind: String,
     pub trigger_id: String,

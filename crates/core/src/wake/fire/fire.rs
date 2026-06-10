@@ -22,10 +22,11 @@ use crate::wake::trace::emit::{
     emit_trace_from_outcome, provider_target_from_config,
 };
 use crate::{
-    GoalId, InterventionRequestPersistInput, InterventionRequestedV1, MemoryId,
-    SourceBatchId, SourceId,
+    GoalId, InterventionRequestPersistInput, InterventionRequestedV1, MemoryId, SourceBatchId,
+    SourceId,
 };
 
+use super::context::{build_context_params, build_system_prompt};
 use super::finalize::{
     append_session_artifact_log, append_session_log_error_if_present, finalize,
     wake_session_log_path,
@@ -33,7 +34,6 @@ use super::finalize::{
 use super::input::{FireWakeEntryInput, per_invocation_timeout};
 use super::outcome::{WakeInvocationFinalizeOutcome, wake_outcome_from_harness_outcome};
 use super::resolve::{ResolvedTarget, collect_sidecars, resolve_target};
-use super::context::{build_context_params, build_system_prompt};
 
 pub async fn fire_wake_entry(
     engine: &Engine,

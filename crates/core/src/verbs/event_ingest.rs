@@ -1,6 +1,6 @@
-//! EventIngest verb — typed surface only.
+//! `EventIngest` verb — typed surface only.
 //!
-//! See docs/14-protocol-surface.md §"EventIngest" and
+//! See docs/14-protocol-surface.md §"`EventIngest`" and
 //! docs/01-event-source.md §"Properties of an Event". The
 //! storage-side body lives in `proxima-storage-pg` (M2.4b).
 
@@ -38,8 +38,8 @@ pub struct EventDraft {
 }
 
 impl EventDraft {
-    /// Canonical event_id per docs/01: BLAKE3 of
-    /// source_id || owner_components || payload, separated by
+    /// Canonical `event_id` per docs/01: BLAKE3 of
+    /// `source_id` || `owner_components` || payload, separated by
     /// 0x00 bytes. Re-receipt of the same observation
     /// produces the same hash by construction.
     #[must_use]
@@ -68,6 +68,6 @@ pub struct EventIngestOutcome {
     pub memory_id: MemoryId,
     pub change_event_seq: Uuid,
     /// True iff the same `event_id` was already ingested.
-    /// docs/14 §EventIngest: "replay is silently a no-op."
+    /// docs/14 §`EventIngest`: "replay is silently a no-op."
     pub idempotent_replay: bool,
 }

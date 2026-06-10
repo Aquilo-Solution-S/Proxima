@@ -1,4 +1,4 @@
-//! Subscribe verb — async ChangeEvent stream scoped to one
+//! Subscribe verb — async `ChangeEvent` stream scoped to one
 //! Owner, with optional `since` cursor for resume. See
 //! docs/14-protocol-surface.md §"Subscribe".
 

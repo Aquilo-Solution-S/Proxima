@@ -1,5 +1,5 @@
 //! `core/emit_abstraction` substrate tool — write an Abstraction memory
-//! with auto-wired Provenance + computed wake_chain_depth.
+//! with auto-wired Provenance + computed `wake_chain_depth`.
 
 use async_trait::async_trait;
 use schemars::JsonSchema;
@@ -88,7 +88,7 @@ impl PersonalityTool for EmitAbstractionTool {
                 ))
             })?;
         let sidecar_table = info.sidecar_table.as_deref().ok_or_else(|| {
-            ProtocolError::internal(format!("schema {} has no sidecar", parsed.schema_id,))
+            ProtocolError::internal(format!("schema {} has no sidecar", parsed.schema_id))
         })?;
         normalize_handle_refs_in_payload(ctx, &mut parsed.payload);
         ctx.engine

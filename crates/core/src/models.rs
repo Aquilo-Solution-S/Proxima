@@ -20,7 +20,7 @@
 //! See docs/10 §Model tiers and §Capability vocabulary.
 
 /// Which HTTP API shape a runtime model client speaks. Independent
-/// of vendor: most non-Anthropic vendors expose the OpenAI dialect,
+/// of vendor: most non-Anthropic vendors expose the `OpenAI` dialect,
 /// so a runtime entry like
 /// `{vendor: "openrouter", dialect: OpenAI, model_id: "anthropic/..."}`
 /// is normal.

@@ -27,8 +27,8 @@ pub fn writeable_schemas_for_palette(engine: &Engine, palette: &[String]) -> Vec
             );
             continue;
         }
-        if let Ok(Some(scoped)) = parse_scoped_emit_tool_id(palette_id) {
-            if engine
+        if let Ok(Some(scoped)) = parse_scoped_emit_tool_id(palette_id)
+            && engine
                 .registry()
                 .lookup_payload(
                     &crate::SchemaId::new(scoped.schema_id.clone()),
@@ -36,9 +36,8 @@ pub fn writeable_schemas_for_palette(engine: &Engine, palette: &[String]) -> Vec
                     scoped.kind,
                 )
                 .is_some()
-            {
-                schema_ids.push(scoped.schema_id);
-            }
+        {
+            schema_ids.push(scoped.schema_id);
         }
     }
 

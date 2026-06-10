@@ -1,7 +1,7 @@
 //! Wake context assembly — the fixed parameters every wake
 //! receives (spec docs/superpowers/specs/2026-05-07 lines 285–306).
 //!
-//! No per-entry configuration, no DSL: every WakeEntry on every
+//! No per-entry configuration, no DSL: every `WakeEntry` on every
 //! Personality gets the same envelopes. The dispatcher attaches
 //! them to `HarnessProgram::context_params`; wake-entry instructions
 //! reference whichever are relevant for the prompt.
@@ -68,8 +68,8 @@ pub struct ActiveGoalEnvelope {
     pub motivation_via: Vec<Uuid>,
 }
 
-/// Spec line 293: ChangeEvent envelope (kind, sequence, schema_id,
-/// owner, author, wake_chain_depth).
+/// Spec line 293: `ChangeEvent` envelope (kind, sequence, `schema_id`,
+/// owner, author, `wake_chain_depth`).
 ///
 /// `change_event_seq` is `Uuid` (Phase 1a schema), not `i64`.
 #[derive(Debug, Clone, Serialize)]
@@ -82,7 +82,7 @@ pub struct TriggerEventEnvelope {
     pub wake_chain_depth: i32,
 }
 
-/// Spec line 294: the memory row the ChangeEvent points at, with its
+/// Spec line 294: the memory row the `ChangeEvent` points at, with its
 /// typed sidecar payload resolved.
 #[derive(Debug, Clone, Serialize)]
 pub struct TriggeringMemoryEnvelope {

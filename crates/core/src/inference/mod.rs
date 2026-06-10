@@ -1,4 +1,4 @@
-//! Settings-side InferenceTarget verbs + WakeEntry validation pipeline.
+//! Settings-side `InferenceTarget` verbs + `WakeEntry` validation pipeline.
 //!
 //! `InferenceTargetConfig` enumerates the providers the harness can
 //! drive (`MistralChat`, `OpenAIChat`, `OpenAIResponses`). This module

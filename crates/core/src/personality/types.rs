@@ -173,8 +173,6 @@ impl WakeEntryExecutionMode {
     }
 }
 
-
-
 #[derive(
     Debug,
     Clone,

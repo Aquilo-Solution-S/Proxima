@@ -108,6 +108,7 @@ pub fn wake_session_log_path(owner: &Owner, invocation_id: Uuid) -> PathBuf {
 }
 
 /// Generate the owner principal segment for paths.
+#[must_use]
 pub fn owner_principal_segment(owner: &Owner) -> String {
     match &owner.principal {
         crate::Principal::User(user) => format!("user-{}", user.into_inner()),

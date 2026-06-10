@@ -60,23 +60,19 @@ pub(super) fn format_continuation_preamble(
         seeded
             .continuation_decision
             .as_ref()
-            .map(crate::mcp::Handle::as_str)
-            .unwrap_or("<unavailable>"),
+            .map_or("<unavailable>", crate::mcp::Handle::as_str),
         seeded
             .continuation_request
             .as_ref()
-            .map(crate::mcp::Handle::as_str)
-            .unwrap_or("<unavailable>"),
+            .map_or("<unavailable>", crate::mcp::Handle::as_str),
         seeded
             .continuation_wake_trace
             .as_ref()
-            .map(crate::mcp::Handle::as_str)
-            .unwrap_or("<unavailable>"),
+            .map_or("<unavailable>", crate::mcp::Handle::as_str),
         seeded
             .continuation_original_triggering
             .as_ref()
-            .map(crate::mcp::Handle::as_str)
-            .unwrap_or("<unavailable>"),
+            .map_or("<unavailable>", crate::mcp::Handle::as_str),
         continuation.grant_rounds,
         continuation.rationale.trim(),
     )
@@ -551,7 +547,9 @@ pub(super) fn collect_generic_memory_ids(
                 return;
             };
             let normalized = normalize_reference_key(key);
-            if generic_memory_field(&normalized) && let Ok(uuid) = Uuid::parse_str(raw) {
+            if generic_memory_field(&normalized)
+                && let Ok(uuid) = Uuid::parse_str(raw)
+            {
                 ids.insert(uuid);
             }
         }

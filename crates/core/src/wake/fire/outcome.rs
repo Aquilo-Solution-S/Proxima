@@ -22,6 +22,7 @@ pub struct WakeInvocationFinalizeOutcome {
 
 impl WakeInvocationFinalizeOutcome {
     /// Create a failed outcome with the given reason.
+    #[must_use]
     pub fn failed(failure_reason: String) -> Self {
         Self {
             status: crate::personality::WakeInvocationStatus::Failed,
@@ -39,6 +40,7 @@ impl WakeInvocationFinalizeOutcome {
 }
 
 /// Convert a target outcome result to a wake invocation finalize outcome.
+#[must_use]
 pub fn wake_outcome_from_harness_outcome(
     input: &FireWakeEntryInput,
     outcome_result: Result<HarnessOutcome, HarnessError>,

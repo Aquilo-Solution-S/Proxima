@@ -165,7 +165,7 @@ const FIXTURE_DECISION_MEMORY_ID: Uuid = Uuid::from_u128(0x018f_0000_0000_7000_8
 
 async fn seed_pre_intervention_rename_schema(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
     sqlx::raw_sql(
-        r#"
+        r"
         CREATE SCHEMA proxima_core;
 
         CREATE TYPE proxima_core.budget_decision_kind AS ENUM (
@@ -302,7 +302,7 @@ async fn seed_pre_intervention_rename_schema(pool: &sqlx::PgPool) -> Result<(), 
         CREATE UNIQUE INDEX personality_wake_invocations_continuation_decision_uq
             ON proxima_core.personality_wake_invocations (continuation_budget_decision_memory_id)
             WHERE continuation_budget_decision_memory_id IS NOT NULL;
-        "#,
+        ",
     )
     .execute(pool)
     .await?;
@@ -318,7 +318,7 @@ async fn seed_pre_intervention_rename_schema(pool: &sqlx::PgPool) -> Result<(), 
     .await?;
 
     sqlx::raw_sql(
-        r#"
+        r"
         INSERT INTO proxima_core.events (event_id, source_id, schema_id)
         VALUES ('\x01', 'core/budget-review', 'core/budget-review-requested-v1'),
                ('\x02', 'core/budget-review', 'core/budget-decision-v1');
@@ -426,7 +426,7 @@ async fn seed_pre_intervention_rename_schema(pool: &sqlx::PgPool) -> Result<(), 
             '018f0000-0000-7000-8000-000000000002',
             '018f0000-0000-7000-8000-000000000071'
         );
-        "#,
+        ",
     )
     .execute(pool)
     .await?;

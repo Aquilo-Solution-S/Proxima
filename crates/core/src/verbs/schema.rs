@@ -30,7 +30,7 @@ pub enum PayloadKind {
     Perspective,
     Goal,
     /// Typed sidecar for an edge row, keyed on `edge_id`. See
-    /// `EdgePayload` (docs/03 §EdgePayload) and the relation registry
+    /// `EdgePayload` (docs/03 §`EdgePayload`) and the relation registry
     /// (docs/02 §"Relation registry").
     Edge,
     CitedObject,
@@ -79,11 +79,7 @@ impl SchemaInfo {
     /// either has both a `cbor_encoder` and a validator, or neither.
     /// See docs/03 §Registry rules.
     #[must_use]
-    pub fn opaque(
-        schema_id: SchemaId,
-        schema_version: SchemaVersion,
-        kind: PayloadKind,
-    ) -> Self {
+    pub fn opaque(schema_id: SchemaId, schema_version: SchemaVersion, kind: PayloadKind) -> Self {
         Self {
             schema_id,
             schema_version,
@@ -128,7 +124,7 @@ pub struct SchemaResponse {
 /// the whole index after extending `schemas`.
 ///
 /// Only the collections that scale with *schema* count and sit on the
-/// EventIngest / GoalWrite / edge-write paths are indexed. `flavors`
+/// `EventIngest` / `GoalWrite` / edge-write paths are indexed. `flavors`
 /// and `dependency_satisfaction_rules` scale with *flavor* count (bounded
 /// by linked crates) and stay linear scans — indexing a handful of
 /// entries would not earn its keep.
@@ -197,6 +193,7 @@ pub struct FlavorRegistryFrozen {
 }
 
 impl FlavorRegistryFrozen {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -304,10 +301,11 @@ impl FlavorRegistryFrozen {
         schema_version: SchemaVersion,
         kind: PayloadKind,
     ) -> Option<&serde_json::Value> {
-        let position = *self
-            .index
-            .validator_by_key
-            .get(&(schema_id.clone(), schema_version, kind))?;
+        let position =
+            *self
+                .index
+                .validator_by_key
+                .get(&(schema_id.clone(), schema_version, kind))?;
         self.validators[position].json_schema.as_ref()
     }
 
@@ -344,6 +342,7 @@ impl FlavorRegistryFrozen {
         self.flavors.iter().find(|f| f.flavor_id == flavor_id)
     }
 
+    #[must_use]
     pub fn list(&self) -> Vec<SchemaInfo> {
         self.schemas.clone()
     }
@@ -364,7 +363,7 @@ impl FlavorRegistryFrozen {
     }
 
     /// Resolve a relation for an edge write. Typed relations also
-    /// resolve their registered EdgePayload sidecar table; substrate
+    /// resolve their registered `EdgePayload` sidecar table; substrate
     /// relations return `payload_sidecar_table = None`.
     #[must_use]
     pub fn resolve_relation(&self, relation: &str) -> Option<RegisteredRelation<'_>> {
@@ -387,7 +386,7 @@ impl FlavorRegistryFrozen {
     }
 
     /// Lookup by `(schema_id, schema_version)`. Used by
-    /// EventIngest / GoalWrite to validate incoming payloads.
+    /// `EventIngest` / `GoalWrite` to validate incoming payloads.
     #[must_use]
     pub fn lookup(&self, schema_id: &SchemaId, version: SchemaVersion) -> Option<&SchemaInfo> {
         let position = *self
@@ -406,10 +405,11 @@ impl FlavorRegistryFrozen {
         version: SchemaVersion,
         kind: PayloadKind,
     ) -> Option<&SchemaInfo> {
-        let position = *self
-            .index
-            .schema_by_id_version_kind
-            .get(&(schema_id.clone(), version, kind))?;
+        let position =
+            *self
+                .index
+                .schema_by_id_version_kind
+                .get(&(schema_id.clone(), version, kind))?;
         Some(&self.schemas[position])
     }
 
@@ -429,10 +429,10 @@ impl FlavorRegistryFrozen {
             return Err("typed payload must be a JSON object".into());
         }
 
-        if let Some(&position) = self
-            .index
-            .validator_by_key
-            .get(&(schema_id.clone(), version, kind))
+        if let Some(&position) =
+            self.index
+                .validator_by_key
+                .get(&(schema_id.clone(), version, kind))
         {
             (self.validators[position].validate)(payload)?;
         }
@@ -509,6 +509,7 @@ impl FlavorRegistryFrozen {
             .collect()
     }
 
+    #[must_use]
     pub fn handle(&self, _req: &SchemaRequest) -> SchemaResponse {
         SchemaResponse {
             schemas: self.list(),

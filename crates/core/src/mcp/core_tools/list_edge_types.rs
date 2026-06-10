@@ -1,4 +1,4 @@
-//! `core/list_edge_types` — project FlavorRegistryFrozen relations.
+//! `core/list_edge_types` — project `FlavorRegistryFrozen` relations.
 
 use futures::future::BoxFuture;
 use schemars::JsonSchema;

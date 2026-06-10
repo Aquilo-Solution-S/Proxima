@@ -188,6 +188,7 @@ pub struct InterventionContinueCandidate {
     pub rationale: String,
 }
 
+#[must_use]
 pub fn intervention_request_event_draft(
     owner: Owner,
     payload: &[u8],
@@ -217,6 +218,7 @@ pub fn intervention_request_event_draft(
     }
 }
 
+#[must_use]
 pub fn intervention_decision_event_draft(
     owner: Owner,
     payload: &[u8],
@@ -257,7 +259,7 @@ pub fn intervention_decision_event_draft(
 // trivial.
 // ---------------------------------------------------------------------------
 
-/// An InterventionRequested Fact loaded for decision evaluation.
+/// An `InterventionRequested` Fact loaded for decision evaluation.
 #[derive(Debug, Clone)]
 pub struct LoadedInterventionRequest {
     pub memory_id: MemoryId,
@@ -316,7 +318,7 @@ fn intervention_store_unimplemented(verb: &str) -> StorageError {
 
 #[async_trait]
 pub trait InterventionStore: Send + Sync {
-    /// Load the InterventionRequested Fact backing `memory_id`, or `None`
+    /// Load the `InterventionRequested` Fact backing `memory_id`, or `None`
     /// when it is not an intervention request visible to `owner`.
     async fn load_intervention_request(
         &self,

@@ -14,10 +14,11 @@ use crate::wake::target_adapter::TargetAdapter;
 use crate::wake::token_store::WakeTokenStore;
 
 const DEFAULT_DISPATCH_INTERVAL: Duration = Duration::from_secs(1);
-const DEFAULT_WAKE_TOKEN_TTL: Duration = Duration::from_secs(300);
+const DEFAULT_WAKE_TOKEN_TTL: Duration = Duration::from_mins(5);
 const DEFAULT_MCP_LISTEN_ADDR: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
 
 impl Engine {
+    #[must_use]
     pub fn new(
         registry: FlavorRegistryFrozen,
         memories: MemoryStore,

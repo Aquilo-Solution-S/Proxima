@@ -1,5 +1,5 @@
 //! Typed `ChangeEvent` — what subscribers see when an
-//! EntityAppend or EdgeAppend lands. See docs/14
+//! `EntityAppend` or `EdgeAppend` lands. See docs/14
 //! §Subscribe and §Consistency.
 
 use uuid::Uuid;
@@ -64,7 +64,7 @@ pub enum MemoryOperatorKind {
 /// Discriminant tag for `ChangeEventKind`, mirrors the SQL enum
 /// `proxima_core.change_event_kind`. The rich `ChangeEventKind`
 /// carries payload; this tag is what the `change_event.kind` column
-/// stores and what FromRow decoders see.
+/// stores and what `FromRow` decoders see.
 #[derive(
     Debug,
     Clone,

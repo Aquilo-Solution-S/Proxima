@@ -202,6 +202,7 @@ impl QueryRequest {
     /// Builder for the common case: heads-only, no kind/schema
     /// filter. Pagination cursor lands when M2 introduces real
     /// data.
+    #[must_use]
     pub fn for_owner(owner: Owner) -> Self {
         Self {
             owner,
@@ -280,10 +281,12 @@ pub struct MemoryStore {
 }
 
 impl MemoryStore {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
+    #[must_use]
     pub fn query(&self, req: &QueryRequest) -> QueryResponse {
         let memories: Vec<MemoryRow> = self
             .memories

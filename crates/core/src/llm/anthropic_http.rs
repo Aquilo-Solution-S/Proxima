@@ -54,7 +54,7 @@ impl AnthropicHttpClient {
         deep_model: impl Into<String>,
     ) -> Result<Self, LlmError> {
         let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(60))
+            .timeout(Duration::from_mins(1))
             .build()
             .map_err(|e| LlmError::Internal(format!("reqwest builder: {e}")))?;
         Ok(Self {

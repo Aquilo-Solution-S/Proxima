@@ -2,9 +2,9 @@
 //! graph plus the static catalogs that wake-entry config references.
 //!
 //! Composes the data that would otherwise require seven round trips
-//! (list_personalities + get_personality per P, list_schemas,
-//! list_edge_types, list_substrate_tools, list_inference_targets,
-//! list_inference_tier_bindings) into one atomic response. The
+//! (`list_personalities` + `get_personality` per P, `list_schemas`,
+//! `list_edge_types`, `list_substrate_tools`, `list_inference_targets`,
+//! `list_inference_tier_bindings`) into one atomic response. The
 //! personality projection mirrors `get_personality` and the catalog
 //! projections mirror their respective `list_*` tools so the shapes
 //! already familiar to the frontend stay intact.
@@ -39,9 +39,9 @@ pub struct GetGraphOutput {
     /// Every personality the owner owns, fully expanded — same shape as
     /// `core/get_personality` output.
     pub personalities: Vec<GetPersonalityOutput>,
-    /// Static schema catalog from the frozen FlavorRegistry.
+    /// Static schema catalog from the frozen `FlavorRegistry`.
     pub schemas: Vec<SchemaItem>,
-    /// Static edge-type catalog from the frozen FlavorRegistry.
+    /// Static edge-type catalog from the frozen `FlavorRegistry`.
     pub edge_types: Vec<EdgeTypeItem>,
     /// Substrate-pack and flavor-registered MCP tool ids.
     pub substrate_tools: Vec<SubstrateToolItem>,

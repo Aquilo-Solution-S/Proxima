@@ -35,6 +35,7 @@ impl SecretBytes {
 
     /// UTF-8 view of the payload, if valid. Most v1 secrets are
     /// API-key strings, so this is the common access path.
+    #[must_use]
     pub fn as_str(&self) -> Option<&str> {
         std::str::from_utf8(&self.0).ok()
     }
@@ -167,6 +168,7 @@ impl ResolverRegistry {
 }
 
 #[cfg(test)]
+#[expect(unsafe_code, reason = "env::set_var is unsafe in edition 2024; tests use distinct var names")]
 mod tests {
     use super::*;
 

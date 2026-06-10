@@ -64,7 +64,7 @@ impl McpTool for SetReadScopeTool {
                     readable_personality_instance_ids: response
                         .readable_personality_instance_ids
                         .into_iter()
-                        .map(|id| id.into_inner())
+                        .map(crate::personality::personality::PersonalityInstanceId::into_inner)
                         .collect::<Vec<_>>(),
                 });
 
@@ -81,7 +81,7 @@ impl McpTool for SetReadScopeTool {
                 .iter()
                 .copied()
                 .filter(|id| *id != pid)
-                .map(|id| id.into_inner())
+                .map(crate::personality::personality::PersonalityInstanceId::into_inner)
                 .collect::<Vec<_>>();
             let after = PersonalityConfigChangeSnapshot::ReadScope {
                 readable_personality_instance_ids: after_ids,

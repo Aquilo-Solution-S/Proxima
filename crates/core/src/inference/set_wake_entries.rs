@@ -1,4 +1,4 @@
-//! WakeEntry write-time validation pipeline.
+//! `WakeEntry` write-time validation pipeline.
 
 use std::collections::HashSet;
 
@@ -13,6 +13,13 @@ use crate::{
 pub struct SetWakeEntriesContext<'a> {
     pub storage: &'a dyn Storage,
     pub registry: &'a FlavorRegistryFrozen,
+}
+
+impl std::fmt::Debug for SetWakeEntriesContext<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SetWakeEntriesContext")
+            .finish_non_exhaustive()
+    }
 }
 
 pub async fn set_wake_entries(
@@ -107,17 +114,16 @@ fn produced_schema_ids_for_palette(
             );
             continue;
         }
-        if let Ok(Some(scoped)) = parse_scoped_emit_tool_id(palette_id) {
-            if registry
+        if let Ok(Some(scoped)) = parse_scoped_emit_tool_id(palette_id)
+            && registry
                 .lookup_payload(
                     &SchemaId::new(scoped.schema_id.clone()),
                     SchemaVersion::new(scoped.schema_version),
                     scoped.kind,
                 )
                 .is_some()
-            {
-                schema_ids.insert(scoped.schema_id);
-            }
+        {
+            schema_ids.insert(scoped.schema_id);
         }
     }
     for tool in registry.list_mcp_tools() {
@@ -225,12 +231,8 @@ fn map_set_wake_entries_storage_err(
         {
             let first = entries.first();
             ProtocolError::trigger_conflict(
-                first
-                    .map(|entry| entry.trigger_kind.as_str())
-                    .unwrap_or("unknown"),
-                first
-                    .map(|entry| entry.trigger_id.as_str())
-                    .unwrap_or("unknown"),
+                first.map_or("unknown", |entry| entry.trigger_kind.as_str()),
+                first.map_or("unknown", |entry| entry.trigger_id.as_str()),
             )
         }
         other => ProtocolError::internal(other.to_string()),

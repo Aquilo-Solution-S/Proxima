@@ -8,7 +8,7 @@
 use uuid::Uuid;
 
 /// Canonical schema id for the Root-Perspective sidecar that backs every
-/// personality after Phase 2 Step 1. Stamped on the memory + change_event
+/// personality after Phase 2 Step 1. Stamped on the memory + `change_event`
 /// rows minted by `instantiate_personality`.
 pub const ROOT_PERSONALITY_PERSPECTIVE_SCHEMA_ID: &str =
     "proxima-core/root-personality-perspective-v1";

@@ -32,7 +32,7 @@ const PROVIDER_ROUND_MAX_ATTEMPTS: u32 = 4;
 const PROVIDER_RETRY_BASE_DELAY: Duration = Duration::from_secs(2);
 const PROVIDER_RETRY_MAX_DELAY: Duration = Duration::from_secs(30);
 const PROVIDER_RETRY_AFTER_MAX_DELAY: Duration = Duration::from_secs(90);
-const PROVIDER_REQUEST_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+const PROVIDER_REQUEST_TIMEOUT: Duration = Duration::from_mins(10);
 const FINISH_SOON_REMAINING_THRESHOLD: u32 = 3;
 
 #[derive(Clone)]
@@ -82,7 +82,9 @@ impl HarnessAdapter for HarnessLoop {
         let resolved = resolve(program, &substrate_tools)
             .map_err(|err| HarnessError::Internal(format!("program_resolve:{err}")))?;
 
-        let result = run_loop(
+        
+
+        run_loop(
             self,
             &*provider,
             resolved,
@@ -90,9 +92,7 @@ impl HarnessAdapter for HarnessLoop {
             max_rounds,
             &model_id,
         )
-        .await;
-
-        result
+        .await
     }
 }
 
@@ -837,7 +837,7 @@ mod tests {
         assert_eq!(
             provider_retry_delay(
                 &ProviderError::RateLimited {
-                    retry_after: Some(Duration::from_secs(600))
+                    retry_after: Some(Duration::from_mins(10))
                 },
                 1,
             ),

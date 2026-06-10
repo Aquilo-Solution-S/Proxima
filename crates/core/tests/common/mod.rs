@@ -275,7 +275,7 @@ pub struct DispatchEngineFixture {
 
 impl DispatchEngineFixture {
     /// PG-side count of invocation rows for this fixture's
-    /// (instance_id, wake_entry_id) pair. Independent of which
+    /// (`instance_id`, `wake_entry_id`) pair. Independent of which
     /// `change_event_seq` the dispatcher landed on, so tests that just
     /// want to confirm "the loop fired at least once" don't have to
     /// re-derive the seq.

@@ -1,4 +1,4 @@
-//! Auth resolver trait + NoAuth reference impl.
+//! Auth resolver trait + `NoAuth` reference impl.
 //!
 //! See docs/14-protocol-surface.md §"Auth model".
 
@@ -43,6 +43,7 @@ pub struct NoAuth {
 }
 
 impl NoAuth {
+    #[must_use]
     pub fn new(principal: Principal, owner: Owner) -> Self {
         Self {
             principal,

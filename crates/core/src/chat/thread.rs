@@ -1,4 +1,12 @@
-use super::*;
+use super::{
+    ApprovalDecision, ApprovalEligibleVoter, ApprovalRequirement, ApprovalTargetKind,
+    ApprovalVoteVerdict, ApprovalVoterKind, BoxFuture, Deserialize, EntityKind, GoalId, HashMap,
+    HashSet, JsonSchema, ListChatTargetsArgs, ListChatTargetsOutput, LoadedApprovalDecision,
+    LoadedApprovalPolicy, LoadedApprovalVote, LoadedCompaction, LoadedEndRequest, LoadedEnded,
+    LoadedMessage, LoadedReply, LoadedStarted, LoadedSummary, LoadedThreadEdge, McpTool,
+    McpToolCtx, McpToolError, MemoryHandleClass, MemoryId, OffsetDateTime, PersonalityInstanceId,
+    Serialize, chat_storage, list_chat_targets, load_memory_handle_classes, normalize_text,
+};
 
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct GetChatThreadArgs {
@@ -266,7 +274,7 @@ pub(super) use render::*;
 mod tests {
     use super::*;
     use crate::mcp::{HandleTable, McpAuthorContext, OutputMode};
-    use crate::{FlavorRegistry, OrgId, UserId};
+    use crate::{ChatMessageV1, ChatReplyV1, FlavorRegistry, OrgId, Owner, Principal, UserId};
     use std::sync::Arc;
 
     fn test_ctx(handles: Arc<HandleTable>) -> McpToolCtx {

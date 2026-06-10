@@ -74,7 +74,7 @@ pub use tombstone_personality::TombstonePersonalityTool;
 pub use update_wake_entry::{UpdateWakeEntryTool, WakeEntryPatch};
 pub use wake_entry_input::WakeEntryDraftInput;
 
-/// Register every substrate-shipped MCP tool into the FlavorRegistry.
+/// Register every substrate-shipped MCP tool into the `FlavorRegistry`.
 /// Called from `FlavorRegistry::default()`.
 pub(crate) fn register_all(registry: &mut crate::FlavorRegistry) {
     registry.add_substrate_mcp_tool::<ListPersonalitiesTool>();

@@ -1,4 +1,4 @@
-//! `core/list_schemas` — project FlavorRegistryFrozen schemas.
+//! `core/list_schemas` — project `FlavorRegistryFrozen` schemas.
 
 use futures::future::BoxFuture;
 use schemars::JsonSchema;
@@ -14,7 +14,7 @@ pub struct ListSchemasTool;
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct ListSchemasArgs {
     /// Optional filter. One of "Fact", "Abstraction", "Perspective",
-    /// "Goal", "Edge", "CitedObject", "CitationMapping". Omit to return all kinds.
+    /// "Goal", "Edge", "`CitedObject`", "`CitationMapping`". Omit to return all kinds.
     #[serde(default)]
     pub kind: Option<String>,
 }

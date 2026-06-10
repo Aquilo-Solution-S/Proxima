@@ -8,6 +8,7 @@ use crate::{InferenceTargetConfig, InferenceTargetRow};
 use super::input::FireWakeEntryInput;
 
 /// Resolved-target snapshot used to populate the invocation row + env.
+#[derive(Debug)]
 pub struct ResolvedTarget {
     pub target_ref: String,
     pub config_model_id: Option<String>,
@@ -19,24 +20,21 @@ pub async fn resolve_target(
     engine: &Engine,
     input: &FireWakeEntryInput,
 ) -> Result<ResolvedTarget, ProtocolError> {
-    let chosen_ref = match &input.wake_entry.inference_target_ref {
-        Some(r) => r.clone(),
-        None => {
-            let bindings = engine
-                .storage()
-                .list_inference_tier_bindings(&input.owner)
-                .await
-                .map_err(|e| {
-                    ProtocolError::internal(format!("list_inference_tier_bindings: {e}"))
-                })?;
-            bindings
-                .into_iter()
-                .find(|b| b.tier == input.wake_entry.model_tier)
-                .map(|b| b.target_ref)
-                .ok_or_else(|| {
-                    ProtocolError::tier_unbound(format!("{:?}", input.wake_entry.model_tier))
-                })?
-        }
+    let chosen_ref = if let Some(r) = &input.wake_entry.inference_target_ref {
+        r.clone()
+    } else {
+        let bindings = engine
+            .storage()
+            .list_inference_tier_bindings(&input.owner)
+            .await
+            .map_err(|e| ProtocolError::internal(format!("list_inference_tier_bindings: {e}")))?;
+        bindings
+            .into_iter()
+            .find(|b| b.tier == input.wake_entry.model_tier)
+            .map(|b| b.target_ref)
+            .ok_or_else(|| {
+                ProtocolError::tier_unbound(format!("{:?}", input.wake_entry.model_tier))
+            })?
     };
     let targets = engine
         .storage()
@@ -51,6 +49,7 @@ pub async fn resolve_target(
 }
 
 /// Decode an inference target row into a resolved target.
+#[must_use]
 pub fn decode_target(target_ref: String, row: InferenceTargetRow) -> ResolvedTarget {
     let config_model_id: Option<String> = match &row.config {
         InferenceTargetConfig::MistralChat(cfg) => Some(cfg.model_id.clone()),
@@ -66,6 +65,7 @@ pub fn decode_target(target_ref: String, row: InferenceTargetRow) -> ResolvedTar
 }
 
 /// Collect sidecar specs from the engine's registry.
+#[must_use]
 pub fn collect_sidecars(engine: &Engine) -> Vec<crate::personality::SidecarSpec> {
     engine
         .registry()

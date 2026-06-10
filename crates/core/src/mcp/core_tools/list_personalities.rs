@@ -21,8 +21,8 @@ pub struct ListPersonalitiesArgs {
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct ListPersonalitiesItem {
-    /// `I`-prefixed handle. Pass as `personality` to get_personality,
-    /// tombstone_personality, list_wake_entries, add_wake_entry, etc.
+    /// `I`-prefixed handle. Pass as `personality` to `get_personality`,
+    /// `tombstone_personality`, `list_wake_entries`, `add_wake_entry`, etc.
     pub personality: String,
     pub display_name: String,
     pub status: PersonalityStatus,

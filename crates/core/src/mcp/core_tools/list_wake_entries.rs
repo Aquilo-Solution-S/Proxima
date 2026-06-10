@@ -20,8 +20,8 @@ pub struct ListWakeEntriesArgs {
 
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct ListWakeEntriesItem {
-    /// `W`-prefixed handle. Pass as `wake_entry` to update_wake_entry,
-    /// remove_wake_entry, and replay_wake_events.
+    /// `W`-prefixed handle. Pass as `wake_entry` to `update_wake_entry`,
+    /// `remove_wake_entry`, and `replay_wake_events`.
     pub wake_entry: String,
     pub trigger_kind: String,
     pub trigger_id: String,

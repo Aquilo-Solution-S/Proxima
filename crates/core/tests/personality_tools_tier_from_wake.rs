@@ -1,5 +1,5 @@
 //! Phase 1d Task 10: substrate tools stamp memory provenance with the
-//! resolved InferenceTarget's `model_id`, sourced from the active
+//! resolved `InferenceTarget`'s `model_id`, sourced from the active
 //! `WakeTokenContext` rather than the static `ModelTier::Standard`
 //! placeholder that lived at `personality/tools/shared.rs:82` through
 //! the end of Phase 1c.

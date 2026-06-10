@@ -7,7 +7,7 @@
 //! schema for typed per-edge state.
 //!
 //! See docs/02 §"Relation registry" + §"Typed edge payloads" and
-//! docs/03 §EdgePayload.
+//! docs/03 §`EdgePayload`.
 //!
 //! `RelationClass` is closed by design: substrate-level traversal
 //! contracts (A→P retrieval, supersession bookkeeping, provenance
@@ -48,9 +48,9 @@ pub enum RelationClass {
     /// Engine-authored edges marking a re-derivation supersedes the
     /// prior head.
     Supersession,
-    /// PerspectiveLink — causa-proxima carrier (causal interpretation).
+    /// `PerspectiveLink` — causa-proxima carrier (causal interpretation).
     Causal,
-    /// PerspectiveLink — non-causal interpretation.
+    /// `PerspectiveLink` — non-causal interpretation.
     Interpretive,
 }
 

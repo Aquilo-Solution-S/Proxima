@@ -1,5 +1,5 @@
 //! `core/emit_perspective` substrate tool — write a Perspective memory
-//! with auto-wired Provenance + computed wake_chain_depth. Storage's
+//! with auto-wired Provenance + computed `wake_chain_depth`. Storage's
 //! `append_personality_memories` automatically links a `core/supersedes`
 //! edge against the prior personality head when one exists.
 

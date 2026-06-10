@@ -20,9 +20,9 @@ pub struct ReplayWakeEventsArgs {
     /// Optional `W`-handle. When omitted, all active wake entries on the
     /// personality are considered.
     pub wake_entry: Option<String>,
-    /// Exclusive lower bound change_event seq.
+    /// Exclusive lower bound `change_event` seq.
     pub after_seq: Option<String>,
-    /// Inclusive upper bound change_event seq.
+    /// Inclusive upper bound `change_event` seq.
     pub until_seq: Option<String>,
     /// Number of change events to scan. 0 or omitted uses the default.
     pub event_limit: Option<u16>,

@@ -1,4 +1,4 @@
-//! Phase 1d: assemble_wake_context returns the four fixed params (spec
+//! Phase 1d: `assemble_wake_context` returns the four fixed params (spec
 //! lines 285-306).
 
 mod common;

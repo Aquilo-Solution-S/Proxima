@@ -1,4 +1,4 @@
-//! `core/add_wake_entry` — granular append via Storage::set_wake_entries_within.
+//! `core/add_wake_entry` — granular append via `Storage::set_wake_entries_within`.
 
 use futures::future::BoxFuture;
 use schemars::JsonSchema;
@@ -24,7 +24,7 @@ pub struct AddWakeEntryArgs {
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct AddWakeEntryOutput {
     /// `W`-prefixed handle for the new entry. Pass as `wake_entry` to
-    /// update_wake_entry, remove_wake_entry, or replay_wake_events.
+    /// `update_wake_entry`, `remove_wake_entry`, or `replay_wake_events`.
     pub wake_entry: String,
     pub audit_emit_failed: Option<String>,
 }
@@ -71,8 +71,7 @@ impl McpTool for AddWakeEntryTool {
                     .any(|e| e.trigger_kind == new_trigger_kind && e.trigger_id == new_trigger_id)
                 {
                     return Err(format!(
-                        "wake entry with trigger ({:?}, {}) already exists",
-                        new_trigger_kind, new_trigger_id
+                        "wake entry with trigger ({new_trigger_kind:?}, {new_trigger_id}) already exists"
                     ));
                 }
                 let mut next: Vec<_> = current.to_vec();

@@ -28,7 +28,7 @@ pub struct PersonalityToolContext<'a> {
     /// Wake invocation bound by the MCP substrate handler after
     /// extracting the wake token from request extensions. Provenance-
     /// stamping substrate tools read `model_id` from here so the row
-    /// reflects the InferenceTarget that drove the wake instead of a
+    /// reflects the `InferenceTarget` that drove the wake instead of a
     /// static `Standard`-tier guess. `None` only in unit tests.
     pub wake_invocation: Option<&'a crate::wake::token_store::WakeTokenContext>,
     read_log: Arc<tokio::sync::Mutex<Vec<(MemoryId, WakeChainDepth)>>>,
