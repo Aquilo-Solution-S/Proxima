@@ -77,7 +77,7 @@ pub async fn create_db(name: &str) -> Result<(), sqlx::Error> {
 
 pub async fn drop_db(name: &str) -> Result<(), sqlx::Error> {
     let mut conn = PgConnection::connect(&admin_url()).await?;
-    conn.execute(format!("DROP DATABASE IF EXISTS \"{name}\"").as_str())
+    conn.execute(format!("DROP DATABASE IF EXISTS \"{name}\" WITH (FORCE)").as_str())
         .await?;
     conn.close().await?;
     Ok(())

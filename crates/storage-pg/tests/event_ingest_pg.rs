@@ -54,6 +54,8 @@ fn schemas_for_test() -> Vec<SchemaInfo> {
 }
 
 fn fresh_draft(owner: Owner) -> EventDraft {
+    // Event identity is blake3(source_id, owner, payload) — distinct
+    // events need distinct payloads, not just distinct batch ids.
     let now = time::OffsetDateTime::now_utc();
     EventDraft {
         source_id: SourceId::new("test/source"),
@@ -61,7 +63,7 @@ fn fresh_draft(owner: Owner) -> EventDraft {
         owner,
         schema_id: SchemaId::new("test/fact_blob".into()),
         schema_version: SchemaVersion::new(1),
-        payload: b"hello world".to_vec(),
+        payload: format!("hello world {}", Uuid::now_v7()).into_bytes(),
         observed_at: now,
         occurred_at: now,
         cited_object: CitedObjectHint {

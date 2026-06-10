@@ -6,7 +6,8 @@ use serde_json::json;
 #[tokio::test]
 async fn run_with_handle_serves_tools_list() -> Result<(), Box<dyn std::error::Error>> {
     let Ok(database_url) = std::env::var("DATABASE_URL") else {
-        panic!("DATABASE_URL must be set for tests");
+        eprintln!("skipping run_with_handle_serves_tools_list: DATABASE_URL not set");
+        return Ok(());
     };
     let cfg = proxima_mcp::McpConfig {
         database_url,
@@ -38,8 +39,14 @@ async fn run_with_handle_serves_tools_list() -> Result<(), Box<dyn std::error::E
         .iter()
         .filter_map(|tool| tool["name"].as_str())
         .collect();
-    assert!(names.contains(&"proxima-mcp/proxima_remember"));
-    assert!(names.contains(&"proxima-goal/goal_propose"));
+    assert!(
+        names.contains(&"proxima-mcp_proxima_remember"),
+        "got {names:?}"
+    );
+    assert!(
+        names.contains(&"proxima-goal_goal_propose"),
+        "got {names:?}"
+    );
 
     handle.abort();
     let _ = handle.await;
