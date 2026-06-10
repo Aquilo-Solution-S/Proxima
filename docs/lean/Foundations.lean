@@ -12,3 +12,4 @@ import Foundations.Memory
 import Foundations.Goals
 import Foundations.Edges
 import Foundations.Operators
+import Foundations.Citations
