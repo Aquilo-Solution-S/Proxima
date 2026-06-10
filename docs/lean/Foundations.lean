@@ -7,3 +7,4 @@ Load order is a DAG: Prelude < Owner < Identity < Memory < Goals
 
 import Foundations.Prelude
 import Foundations.Owner
+import Foundations.Identity
