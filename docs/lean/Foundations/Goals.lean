@@ -112,17 +112,28 @@ noncomputable instance : Supersedable Goal := ⟨goal_supersedes⟩
 -- Supersession constraints (doc 06 §Goal-Write API)
 -- ============================================================
 
-/-- GO-1 — prior and new Goal share Owner. -/
-axiom goal_supersession_same_owner :
+/-- GO-1 + GO-2 — the doc-06 §Goal-Write-API supersession-constraints
+    table, one axiom (merged, minimization pass): prior and new Goal
+    share Owner ("Same Owner"), and the prior→new state pair is
+    admitted ("Valid transition"). Every transition writes a new Goal
+    row (GO-5); no in-place mutation; compliance erasure is the only
+    delete path. -/
+axiom goal_supersession_constraints :
   ∀ g g' : Goal, goal_supersedes g = some g' →
-    goal_owner g = goal_owner g'
-
-/-- GO-2 — "Valid transition: prior state and new state pair is
-    admitted." Every transition writes a new Goal row (GO-5); no
-    in-place mutation; compliance erasure is the only delete path. -/
-axiom goal_supersession_admitted :
-  ∀ g g' : Goal, goal_supersedes g = some g' →
+    goal_owner g = goal_owner g' ∧
     goalTransitionAdmitted (goal_state g') (goal_state g)
+
+/-- GO-1 in its original shape — projection theorem. -/
+theorem goal_supersession_same_owner :
+    ∀ g g' : Goal, goal_supersedes g = some g' →
+      goal_owner g = goal_owner g' :=
+  fun g g' h => (goal_supersession_constraints g g' h).1
+
+/-- GO-2 in its original shape — projection theorem. -/
+theorem goal_supersession_admitted :
+    ∀ g g' : Goal, goal_supersedes g = some g' →
+      goalTransitionAdmitted (goal_state g') (goal_state g) :=
+  fun g g' h => (goal_supersession_constraints g g' h).2
 
 /-- GO-2b — "Current head: stale prior cannot be lifecycle head"
     (doc 06 §Goal-Write API). Timeless face: a Goal has at most one
@@ -137,8 +148,11 @@ axiom goal_supersession_prior_is_head :
 -- DAG (doc 06: "DAG position"; goal_parents)
 -- ============================================================
 
-/-- GO-4 — DAG parents stay within one Owner ("Cross-owner Goal
-    assignment and cross-owner evidence are rejected", §Scoping). -/
+/-- GO-4 — DAG parents stay within one Owner. Grounded on doc 04
+    §Isolation ("Owner is the access boundary. Cross-owner reads and
+    edges are invalid") — the parent relation is stored edge-like.
+    NOTE: doc 06 §Scoping does not list `parent_goal_ids`; kept by
+    decision `2026-06-11-goal-parents-owner-scope.md`. -/
 axiom goal_parents_same_owner :
   ∀ g p : Goal, p ∈ goal_parents g → goal_owner p = goal_owner g
 

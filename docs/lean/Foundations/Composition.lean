@@ -6,6 +6,18 @@ kernel by explicit decision (Heinrich, 2026-06-11). The substrate is
 the CENTER; applications attach as flavors; the core is total
 without any of them.
 
+Minimized trusted core (2026-06-11): the registry is DEFINED by its
+composition law — vocabulary = core ∪ the linked flavors'
+contributions (doc 08 §Registration Mechanism: created once,
+populated by each flavor's register(), frozen). Core-presence,
+flavor-determination (SR-1/CF-D "no runtime registration"), and
+namespace discipline are THEOREMS of that law plus the per-
+contributor namespacing axioms. An earlier `registry_determined`
+axiom asserted cross-binary determination keyed on version-free
+flavor-id sets — more than doc 08 states; the composition law
+carries the doc-true content and the determination follows
+pointwise.
+
 CF-G — payload opacity, the domainless trick: the kernel has NO
 accessor from SchemaRef into payload content. Domains exist for the
 kernel only as namespaced vocabulary. This absence is the
@@ -19,7 +31,7 @@ Foundations.Edges: flavors add relation ids, never classes.
 Excluded as Rust/build mechanics (→ COVERAGE.md): the
 `proxima_flavor!` macro surface (CF-8..19, CF-25), Cargo-derived
 metadata (CF-26..31), freeze-guard panic list (CF-47..53 — their
-kernel content is `registry_determined` + namespace discipline),
+kernel content is the composition law + namespace discipline),
 sidecar SQL mechanics (SR-35..41), tool catalogs (CF-36..42).
 -/
 
@@ -57,7 +69,33 @@ axiom schema_namespace   : SchemaId → FlavorId
 axiom relation_namespace : RelationId → FlavorId
 
 -- ============================================================
--- The registry (doc 08 §Registration Mechanism, doc 03 §Registry rules)
+-- Contributions — what core and each flavor bring
+-- ============================================================
+
+/-- CF-A — core's own vocabulary: a FIXED set, independent of any
+    flavor (doc 08: "Core owns the substrate. Flavor crates
+    contribute build-time vocabulary"). -/
+axiom core_vocabulary : Set SchemaId
+axiom core_relations  : Set RelationId
+
+/-- Each flavor's build-time contribution (what its `register()`
+    appends — doc 08 §Registration Mechanism), as a function of the
+    flavor id alone. -/
+axiom flavor_schemas   : FlavorId → Set SchemaId
+axiom flavor_relations : FlavorId → Set RelationId
+
+/-- Namespacing of contributions (CF-9/20..24, doc 08 §Macro Surface:
+    "Macro-registered schemas, relations, … must start with
+    name + '/'"; core schemas start with `core/`). One axiom, four
+    arms — the merged CF-B/CF-A-namespacing trusted statement. -/
+axiom contributions_namespaced :
+  (∀ s : SchemaId, s ∈ core_vocabulary → schema_namespace s = core_namespace) ∧
+  (∀ r : RelationId, r ∈ core_relations → relation_namespace r = core_namespace) ∧
+  (∀ (f : FlavorId) (s : SchemaId), s ∈ flavor_schemas f → schema_namespace s = f) ∧
+  (∀ (f : FlavorId) (r : RelationId), r ∈ flavor_relations f → relation_namespace r = f)
+
+-- ============================================================
+-- The registry and its composition law
 -- ============================================================
 
 /-- The build-time vocabulary of one composite binary: which flavors
@@ -68,46 +106,80 @@ axiom registry_flavors   : Registry → Set FlavorId
 axiom registry_schemas   : Registry → Set SchemaId
 axiom registry_relations : Registry → Set RelationId
 
-/-- CF-A — CORE INDEPENDENCE, the center-piece axiom. Core's
-    vocabulary is a fixed set, namespaced `core`, present in EVERY
-    registry regardless of which flavors are linked. The substrate
-    is total without any flavor; no flavor is load-bearing for the
-    core (doc 08: "Core owns the substrate. Flavor crates contribute
-    build-time vocabulary"). -/
-axiom core_vocabulary : Set SchemaId
-axiom core_relations  : Set RelationId
+/-- THE composition law (SR-1, CF-1..4): a registry's vocabulary is
+    EXACTLY core plus the linked flavors' contributions — nothing
+    else can add vocabulary (no runtime registration tier), and
+    nothing linked is dropped. -/
+axiom registry_composition :
+  ∀ reg : Registry,
+    (∀ s : SchemaId, s ∈ registry_schemas reg ↔
+      (s ∈ core_vocabulary ∨ ∃ f : FlavorId, f ∈ registry_flavors reg ∧ s ∈ flavor_schemas f)) ∧
+    (∀ r : RelationId, r ∈ registry_relations reg ↔
+      (r ∈ core_relations ∨ ∃ f : FlavorId, f ∈ registry_flavors reg ∧ r ∈ flavor_relations f))
 
-axiom core_vocabulary_namespaced :
-  ∀ s : SchemaId, s ∈ core_vocabulary → schema_namespace s = core_namespace
-
-axiom core_relations_namespaced :
-  ∀ r : RelationId, r ∈ core_relations → relation_namespace r = core_namespace
-
-axiom core_always_present :
-  ∀ (reg : Registry),
-    (∀ s : SchemaId, s ∈ core_vocabulary → s ∈ registry_schemas reg) ∧
-    (∀ r : RelationId, r ∈ core_relations → r ∈ registry_relations reg)
+/-- CF-A — CORE INDEPENDENCE: core's vocabulary is present in EVERY
+    registry regardless of which flavors are linked; the substrate is
+    total without any flavor. THEOREM of the composition law. -/
+theorem core_always_present :
+    ∀ (reg : Registry),
+      (∀ s : SchemaId, s ∈ core_vocabulary → s ∈ registry_schemas reg) ∧
+      (∀ r : RelationId, r ∈ core_relations → r ∈ registry_relations reg) := by
+  intro reg
+  obtain ⟨hs, hr⟩ := registry_composition reg
+  exact ⟨fun s h => (hs s).mpr (Or.inl h), fun r h => (hr r).mpr (Or.inl h)⟩
 
 /-- CF-B — namespace discipline (CF-20..24): every registered
-    schema/relation belongs to core or to a LINKED flavor. No
-    orphan vocabulary; no flavor smuggles ids under another's
-    prefix. -/
-axiom registry_namespace_discipline :
-  ∀ (reg : Registry),
-    (∀ s : SchemaId, s ∈ registry_schemas reg →
-      schema_namespace s = core_namespace ∨ schema_namespace s ∈ registry_flavors reg) ∧
-    (∀ r : RelationId, r ∈ registry_relations reg →
-      relation_namespace r = core_namespace ∨ relation_namespace r ∈ registry_flavors reg)
+    schema/relation belongs to core or to a LINKED flavor. THEOREM:
+    composition law + contribution namespacing. -/
+theorem registry_namespace_discipline :
+    ∀ (reg : Registry),
+      (∀ s : SchemaId, s ∈ registry_schemas reg →
+        schema_namespace s = core_namespace ∨ schema_namespace s ∈ registry_flavors reg) ∧
+      (∀ r : RelationId, r ∈ registry_relations reg →
+        relation_namespace r = core_namespace ∨ relation_namespace r ∈ registry_flavors reg) := by
+  intro reg
+  obtain ⟨hcs, hcr, hfs, hfr⟩ := contributions_namespaced
+  obtain ⟨hs, hr⟩ := registry_composition reg
+  constructor
+  · intro s hmem
+    rcases (hs s).mp hmem with h | ⟨f, hf, hsf⟩
+    · exact Or.inl (hcs s h)
+    · exact Or.inr (by rw [hfs f s hsf]; exact hf)
+  · intro r hmem
+    rcases (hr r).mp hmem with h | ⟨f, hf, hrf⟩
+    · exact Or.inl (hcr r h)
+    · exact Or.inr (by rw [hfr f r hrf]; exact hf)
 
-/-- CF-D — REGISTRY FROZEN (SR-1, CF-2/3): the vocabulary is a pure
-    function of the linked flavor set. Same flavors ⇒ same
-    vocabulary; nothing else (runtime, config, data) can vary it.
-    "No runtime registration tier." -/
-axiom registry_determined :
-  ∀ reg1 reg2 : Registry,
-    registry_flavors reg1 = registry_flavors reg2 →
-    registry_schemas reg1 = registry_schemas reg2 ∧
-    registry_relations reg1 = registry_relations reg2
+/-- CF-D — REGISTRY FROZEN / no runtime registration (SR-1, CF-2/3):
+    the vocabulary is a pure function of the linked flavor set.
+    THEOREM of the composition law, stated pointwise. -/
+theorem registry_determined :
+    ∀ reg1 reg2 : Registry,
+      (∀ f : FlavorId, f ∈ registry_flavors reg1 ↔ f ∈ registry_flavors reg2) →
+      (∀ s : SchemaId, s ∈ registry_schemas reg1 ↔ s ∈ registry_schemas reg2) ∧
+      (∀ r : RelationId, r ∈ registry_relations reg1 ↔ r ∈ registry_relations reg2) := by
+  intro reg1 reg2 hf
+  obtain ⟨hs1, hr1⟩ := registry_composition reg1
+  obtain ⟨hs2, hr2⟩ := registry_composition reg2
+  constructor
+  · intro s
+    rw [hs1 s, hs2 s]
+    constructor
+    · rintro (h | ⟨f, hmem, hc⟩)
+      · exact Or.inl h
+      · exact Or.inr ⟨f, (hf f).mp hmem, hc⟩
+    · rintro (h | ⟨f, hmem, hc⟩)
+      · exact Or.inl h
+      · exact Or.inr ⟨f, (hf f).mpr hmem, hc⟩
+  · intro r
+    rw [hr1 r, hr2 r]
+    constructor
+    · rintro (h | ⟨f, hmem, hc⟩)
+      · exact Or.inl h
+      · exact Or.inr ⟨f, (hf f).mp hmem, hc⟩
+    · rintro (h | ⟨f, hmem, hc⟩)
+      · exact Or.inl h
+      · exact Or.inr ⟨f, (hf f).mpr hmem, hc⟩
 
 -- ============================================================
 -- Entities use registered vocabulary (doc 02 §Relation Registry:
@@ -119,27 +191,22 @@ axiom registry_determined :
     hosts (CF-54/55). -/
 axiom active_registry : Registry
 
-/-- CF-E — every Memory, Goal, Event, and CitedObject is typed by a
-    registered schema; every Edge's relation is registered. -/
-axiom memories_use_registered_schemas :
-  ∀ m : Memory, schema_ref_id (memory_schema m) ∈ registry_schemas active_registry
+/-- CF-E — every schema-typed entity (Memory, Goal, Event,
+    CitedObject, CitationMapping) is typed by a registered schema,
+    and every Edge's relation is registered. One axiom, six arms —
+    the merged registration discipline (minimization pass). -/
+axiom entities_use_registered_vocabulary :
+  (∀ m : Memory, schema_ref_id (memory_schema m) ∈ registry_schemas active_registry) ∧
+  (∀ g : Goal, schema_ref_id (goal_schema g) ∈ registry_schemas active_registry) ∧
+  (∀ e : Event, schema_ref_id (event_schema e) ∈ registry_schemas active_registry) ∧
+  (∀ c : CitedObject, schema_ref_id (cited_object_schema c) ∈ registry_schemas active_registry) ∧
+  (∀ c : CitationMapping, schema_ref_id (citation_mapping_schema c) ∈ registry_schemas active_registry) ∧
+  (∀ e : Edge, edge_relation e ∈ registry_relations active_registry)
 
-axiom goals_use_registered_schemas :
-  ∀ g : Goal, schema_ref_id (goal_schema g) ∈ registry_schemas active_registry
-
-axiom events_use_registered_schemas :
-  ∀ e : Event, schema_ref_id (event_schema e) ∈ registry_schemas active_registry
-
-axiom edges_use_registered_relations :
-  ∀ e : Edge, edge_relation e ∈ registry_relations active_registry
-
-axiom cited_objects_use_registered_schemas :
-  ∀ c : CitedObject,
-    schema_ref_id (cited_object_schema c) ∈ registry_schemas active_registry
-
-axiom citation_mappings_use_registered_schemas :
-  ∀ c : CitationMapping,
-    schema_ref_id (citation_mapping_schema c) ∈ registry_schemas active_registry
+/-- ME-19 in its original shape — projection theorem. -/
+theorem edges_use_registered_relations :
+    ∀ e : Edge, edge_relation e ∈ registry_relations active_registry :=
+  entities_use_registered_vocabulary.2.2.2.2.2
 
 -- ============================================================
 -- Special-category flag (doc 03 §Special-category declaration)
