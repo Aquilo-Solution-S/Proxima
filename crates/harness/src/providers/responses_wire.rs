@@ -141,6 +141,7 @@ pub(super) async fn classify(resp: reqwest::Response) -> Result<RoundResult, Pro
     parse_success(&parsed, raw_output)
 }
 
+#[cfg(feature = "chatgpt-codex")]
 /// Accumulate an SSE response body into a `ResponsesBody`-shaped JSON
 /// `Value` that `parse_success` can consume.
 ///
@@ -214,6 +215,7 @@ pub(super) fn accumulate_sse(body: &str) -> Result<Value, ProviderError> {
     Ok(Value::Object(body_obj))
 }
 
+#[cfg(feature = "chatgpt-codex")]
 /// Classifier for an SSE-streamed Codex response. Mirrors `classify`'s
 /// status-code triage, then collects the body via `text()` and pipes
 /// through `accumulate_sse` + `parse_success`.
@@ -391,7 +393,7 @@ struct OutputContent {
     text: Option<String>,
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "chatgpt-codex"))]
 mod tests {
     use super::*;
 

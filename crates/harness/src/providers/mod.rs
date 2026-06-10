@@ -14,6 +14,7 @@ use crate::conversation::{AssistantTurn, Conversation, ToolCall, ToolSpec};
 // Vendor adapters in this same `providers/` directory access it via
 // `super::chat_completions_wire`. Do NOT change this to `pub mod`.
 mod chat_completions_wire;
+#[cfg(feature = "chatgpt-codex")]
 pub mod chatgpt_codex;
 pub mod mistral_chat;
 pub mod openai_chat;
@@ -54,6 +55,29 @@ pub enum RoundResult {
         partial_text: Option<String>,
         raw_assistant: AssistantTurn,
     },
+}
+
+/// Stand-in for a provider whose cargo feature was not compiled in.
+/// Construction always succeeds so `build_provider` stays infallible;
+/// the first round fails with a self-explanatory error instead.
+#[derive(Debug)]
+pub struct UnavailableProvider {
+    pub feature: &'static str,
+}
+
+#[async_trait]
+impl ProviderClient for UnavailableProvider {
+    async fn tool_round(
+        &self,
+        _conversation: &Conversation,
+        _tools: &[ToolSpec],
+        _cancel: CancellationToken,
+    ) -> Result<RoundResult, ProviderError> {
+        Err(ProviderError::InvalidRequest(format!(
+            "provider requires cargo feature `{}`, which this binary was built without",
+            self.feature
+        )))
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
