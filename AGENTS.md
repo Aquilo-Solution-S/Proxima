@@ -63,10 +63,21 @@ proxima/
 ├── tools/
 │   └── dev-migrate/         headless substrate+flavor migration runner (dev DB bootstrap)
 ├── proto/                   Proxima v1 protobuf surface
-├── docs/                    design source of truth
+├── docs/                    design rationale + commentary
+│   └── lean/                **Lean kernel — THE source of truth** (see below)
 ├── Cargo.toml               Rust workspace
 └── pnpm-workspace.yaml      frontend workspace
 ```
+
+## Kernel authority
+
+The Lean kernel at `docs/lean/Foundations/` is the source of truth for
+Proxima's domainless invariants (F/A/P layering, edges, operators, owner
+scoping, goals, citations, compliance, composition). The prose docs under
+`docs/*.md` are rationale and commentary. When code or docs disagree with the
+kernel, **the kernel wins** until renegotiated in writing. Check it with
+`cd docs/lean && lake build`; coverage of doc invariants is tracked in
+`docs/lean/COVERAGE.md`.
 
 ## Verification
 
