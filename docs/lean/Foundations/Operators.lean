@@ -223,6 +223,7 @@ axiom ftoa_batch_exclusive :
   ∀ m1 m2 : Memory,
     memory_kind m1 = .Abstraction → memory_kind m2 = .Abstraction →
     memory_owner m1 = memory_owner m2 →
+    memory_authoring_personality m1 = memory_authoring_personality m2 →
     memory_source_batch m1 ≠ none →
     memory_source_batch m1 = memory_source_batch m2 →
     memory_input_contract m1 = memory_input_contract m2 →

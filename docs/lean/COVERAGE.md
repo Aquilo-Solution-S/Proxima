@@ -19,7 +19,7 @@ with before/after counts.
 | ID | Invariant | Carrier |
 |---|---|---|
 | U-1 | Layering strict & irreversible; no lower-layer memory from higher layer | axiom `fact_iff_event` + `facts_only_from_sources` + `legalClasses` upward-False cells; header comments Memory.lean |
-| U-2 | Causal claims perspective-relative; no semantic/causal Fact→Fact; Perspective is locus of causal claims | `legalClasses` Fact→Fact cell (no Causal/Interpretive) + `perspective_link_shape`; Edges.lean header |
+| U-2 | Causal claims perspective-relative; no semantic/causal Fact→Fact; Perspective is locus of causal claims | `legalClasses` Fact→Fact cell (no Causal/Interpretive) + `operatorEdgeShape` PerspectiveLink arm; Edges.lean header |
 | U-3 | Dreaming = flavor-declared consolidation; no Dream entity/relation/pipeline | structural absence; Operators.lean header comment |
 | U-4 | Reality enters only through Event Sources | axiom `fact_iff_event` (with ME-1) |
 
@@ -27,11 +27,11 @@ with before/after counts.
 
 | ID | Invariant | Carrier |
 |---|---|---|
-| ES-1 | Group-principal Owner org denormalized from group org | axiom `owner_org_denormalized` |
+| ES-1 | Group-principal Owner org denormalized from group org | THEOREM `owner_org_denormalized` (Owner is a constrained subtype def) |
 | ES-2 | Visibility rule (principal-only) | def `visible` |
 | ES-3 | org_id never an access predicate | def `visible` (org absent) + comment |
 | ES-4 | event_id deterministic content hash of (source, owner, payload) | axiom `event_id_payload_determined` (kernel-visible projection) |
-| ES-5 | Batch id unique within (source, owner) | axiom `batch_unique_within_source_owner` |
+| ES-5 | Batch id unique within (source, owner) | excluded: per-scope engine validation with no kernel-observable face; F→A gate carries owner+personality dims (`ftoa_batch_exclusive`) — decision `2026-06-11-batch-id-scope.md` |
 | ES-6 | Every Fact traces to an Event Source, no exceptions | axiom `fact_iff_event` |
 | ES-7 | 1:1 event→Fact at engine boundary; no source-side aggregation | comment Identity.lean Event docstring; enforcement is membrane-contract (engine) |
 | ES-8 | Source must not abstract/interpret/cross-join/relevance-filter/persist | excluded: EventSource impl contract (doc 01 §must-not list); kernel carries the consequence via `facts_only_from_sources` |
@@ -50,15 +50,15 @@ with before/after counts.
 | ME-1 | Fact ⟷ carries source event | axiom `fact_iff_event` |
 | ME-2 | Fact owner = event owner | axiom `fact_event_owner` |
 | ME-3 | Text iff derived (Facts none; A/P always, immutable, authored) | axiom `text_iff_derived`; immutability of Text per `AppendOnly Memory` + comment |
-| ME-4 | Facts never supersede / never superseded | axiom `facts_never_supersede` |
-| ME-5a | Supersession same kind | axiom `supersession_same_kind` |
-| ME-5b | Supersession same owner | axiom `supersession_same_owner` |
+| ME-4 | Facts never supersede / never superseded | THEOREM `facts_never_supersede` (Edges.lean, via bridge + matrix) |
+| ME-5a | Supersession same kind | THEOREM `supersession_same_kind` (Edges.lean) |
+| ME-5b | Supersession same owner | THEOREM `supersession_same_owner` (Edges.lean, via edge scope) |
 | ME-6 | Authoring personality shares memory owner | axiom `authoring_personality_owner` |
 | ME-7 | Facts below read-scope matrix; A/P/Goal gated | defs `personality_may_read` (Memory) + `personality_may_read_goal` (Goals) + axiom `read_scope_diagonal` |
 | ME-8 | Matrix asymmetry valid; future-reads-only; direct retrieval only | structural absence of symmetry axiom + comment |
 | ME-9 | Edge scope single-owner | axiom `edge_scope_single_owner` |
-| ME-10 | ℓ(source) ≥ ℓ(target) for memory edges | axiom `edge_layer_rule` (also implied by ME-11 — minimization candidate) |
-| ME-11 | Class-legality matrix (9 cells) | def `legalClasses` + axiom `edge_class_legal` |
+| ME-10 | ℓ(source) ≥ ℓ(target) for memory edges | THEOREM `edge_layer_rule` (from the matrix's empty upward cells) |
+| ME-11 | Class-legality matrix (9 cells) | def `legalClasses` + THEOREM `edge_class_legal` (from mask axioms `edge_respects_mask` + `descriptor_masks_tighten_only`) + bridge axiom `supersession_pointer_is_edge` |
 | ME-12 | Supersession same endpoint shape (incl. Goal→Goal) | axiom `supersession_same_endpoint_shape` |
 | ME-13 | Edges immutable v1 | instances `Immutable Edge`, `AppendOnly Edge` |
 | ME-14 | Descriptor masks tighten, never relax | axioms `relation_endpoint_admitted`, `descriptor_masks_tighten_only`, `edge_respects_mask` |
@@ -66,21 +66,21 @@ with before/after counts.
 | ME-16 | Memory id is identity | axiom `memory_id_injective` |
 | ME-17 | Personality: parallel lineages per instance; substrate stores instances/wake | comment Memory.lean §Personality; runtime tables excluded (engine) |
 | ME-18 | Cross-personality supersession = explicit editorial gesture, never operator | excluded: write-path authorization (engine); lineage-scope default comment |
-| ME-19 | Relation registry: unregistered relations invalid | axiom `edges_use_registered_relations` (Composition) |
+| ME-19 | Relation registry: unregistered relations invalid | `entities_use_registered_vocabulary` (Composition) |
 | ME-20 | Core relations table (derived-from/supersedes/inspires/authored) | excluded: vocabulary content, not law — flavors/core register ids; classes pinned by `RelationClass` |
 
 ## 04 — Consolidation (CN)
 
 | ID | Invariant | Carrier |
 |---|---|---|
-| CN-1 | F→A edge shape | axiom `ftoa_edge_shape` |
-| CN-2 | A→P edge shape | axiom `atop_edge_shape` |
-| CN-3 | A→Goal evidence shape | axiom `atogoal_edge_shape` |
-| CN-4 | frame/PerspectiveLink shape | axiom `perspective_link_shape` |
+| CN-1 | F→A edge shape | def `operatorEdgeShape` + axiom `operator_edges_shaped`; full shape THEOREM `ftoa_edge_shape` |
+| CN-2 | A→P edge shape | same merged carrier; full shape THEOREM `atop_edge_shape` |
+| CN-3 | A→Goal evidence shape (Structural class) | `operatorEdgeShape` OperatorAtoGoal arm + `operator_edges_shaped` |
+| CN-4 | frame/PerspectiveLink shape | `operatorEdgeShape` PerspectiveLink arm + `operator_edges_shaped` |
 | CN-5 | No downward writes | axiom `facts_only_from_sources` (+ ME-1) |
-| CN-6 | Derived memories have provenance | axioms `abstraction_has_provenance`, `perspective_has_provenance` |
+| CN-6 | Derived memories have provenance | axiom `derived_has_provenance` (merged); per-kind shapes THEOREMs `abstraction_has_provenance`, `perspective_has_provenance` |
 | CN-7 | Cross-domain join is typed Abstraction | comment (shape carried by CN-6 + U-2 matrix) |
-| CN-8 | F→A batch-gate exclusivity per (input contract, operator, output schema) | axiom `ftoa_batch_exclusive` + `InputContract`/`memory_input_contract` (r1) |
+| CN-8 | F→A batch-gate exclusivity per (owner, personality, batch, input contract, operator, output schema) | axiom `ftoa_batch_exclusive`; personality dim per decision `2026-06-11-ftoa-gate-personality-scope.md` |
 | CN-9 | Atomic invocation (all-or-nothing outputs) | excluded: storage-layer transaction contract (same stance as WH event/projection atomicity) |
 | CN-10 | Retry/changed-prompt = new derivation, never mutation | `AppendOnly Memory` + comment Operators.lean |
 | CN-11 | Wake dispatcher loop, cursors, depth bound, runtime tables | excluded: engine runtime |
@@ -90,8 +90,8 @@ with before/after counts.
 
 | ID | Invariant | Carrier |
 |---|---|---|
-| GO-1 | Supersession same owner | axiom `goal_supersession_same_owner` |
-| GO-2 | Valid lifecycle transition | def `goalTransitionAdmitted` + axiom `goal_supersession_admitted` |
+| GO-1 | Supersession same owner | axiom `goal_supersession_constraints` (merged); projection THEOREM `goal_supersession_same_owner` |
+| GO-2 | Valid lifecycle transition | def `goalTransitionAdmitted` + merged axiom; projection THEOREM `goal_supersession_admitted` |
 | GO-3 | Goal DAG acyclic | inductive `goalAncestor` + axiom `goal_parents_acyclic` |
 | GO-4 | Parents same owner | axiom `goal_parents_same_owner` |
 | GO-5 | Every transition new row; no in-place mutation | `AppendOnly Goal` + `Supersedable Goal` |
@@ -109,8 +109,8 @@ with before/after counts.
 
 | ID | Invariant | Carrier |
 |---|---|---|
-| SR-1 | Registry frozen at startup, no runtime registration | axiom `registry_determined` |
-| SR-2 | Every memory payload schema-typed | accessor totality (`memory_schema : Memory → SchemaRef`) + `memories_use_registered_schemas` |
+| SR-1 | Registry frozen at startup, no runtime registration | axiom `registry_composition` (the law); THEOREM `registry_determined` |
+| SR-2 | Every memory payload schema-typed | accessor totality + `entities_use_registered_vocabulary` (merged) |
 | SR-8 | Schema ids flavor-qualified | axioms `schema_namespace` + `registry_namespace_discipline` |
 | SR-11/16 | Fact no text / A-P text required | axiom `text_iff_derived` |
 | SR-13 | Fact identity ≠ payload hash; UUIDv7 | axiom `memory_id_injective` + ST-22 comment |
@@ -134,15 +134,15 @@ cannot see payloads.
 
 | ID | Invariant | Carrier |
 |---|---|---|
-| CF-1 | Core owns substrate; flavors contribute build-time vocabulary | axioms `core_vocabulary`, `core_always_present` (CF-A) |
-| CF-2/3 | Build-time choice; no runtime registration tier | axiom `registry_determined` (CF-D) |
-| CF-20..24 | Namespace prefix discipline | axiom `registry_namespace_discipline` (CF-B) |
+| CF-1 | Core owns substrate; flavors contribute build-time vocabulary | axioms `core_vocabulary`/`flavor_schemas`/`registry_composition`; THEOREM `core_always_present` (CF-A) |
+| CF-2/3 | Build-time choice; no runtime registration tier | `registry_composition`; THEOREM `registry_determined` (CF-D) |
+| CF-20..24 | Namespace prefix discipline | axiom `contributions_namespaced`; THEOREM `registry_namespace_discipline` (CF-B) |
 | CF-49/50 essence | No cross-flavor collision | structural (identity carries namespace, CF-C comment) |
 | CF-54/55 | Composite binary = build artifact, not plugin host | axiom `active_registry` (one ambient registry) + comment |
 | CF-56 | No feature flags; linkage + register() | excluded: Rust mechanics; spirit = CF-D |
 | CF-57/58 | Registry ownership per flavor; prefixes kept in composite | CF-B + CF-C |
 | CF-60 | Cross-flavor reads obey owner/read-scope | axioms `edge_scope_single_owner`, def `personality_may_read` (already universal) |
-| CF-61 | Cross-flavor edges use registered descriptors | axiom `edges_use_registered_relations` |
+| CF-61 | Cross-flavor edges use registered descriptors | THEOREM `edges_use_registered_relations` (projection of `entities_use_registered_vocabulary`) |
 | CF-43..46 | Goal entity core-owned; flavor owns payload/tools | structural: Goal axioms live in kernel; payloads opaque |
 
 **CF exclusions:** CF-4..19, CF-25..42, CF-47..53, CF-59, CF-62 — macro
@@ -175,8 +175,8 @@ storage-layout mechanics.
 
 | ID | Invariant | Carrier |
 |---|---|---|
-| CI-1 | Fact-only citation | axiom `citation_iff_fact` |
-| CI-2 | Exactly one mapping per Fact; target is Fact; no orphans | axioms `citation_fact_is_fact`, `citation_points_back`, `citation_reverse_total`; THEOREM `citation_unique_per_fact` (proved, r1) |
+| CI-1 | Fact-only citation | axioms `citation_fact_is_fact` + `fact_has_citation`; THEOREM `citation_iff_fact` over the choice-def `memory_citation` |
+| CI-2 | Exactly one mapping per Fact; target is Fact; no orphans | axiom `citation_fact_injective`; THEOREMs `citation_points_back`, `citation_reverse_total`, `citation_unique_per_fact` |
 | CI-3 | A/P cite transitively via provenance | comment + CN-6 axioms |
 | CI-7/8 | Owner scoping; Fact owner = object owner | axiom `citation_owner_match` |
 | CI-9 | One object ↔ N mappings | structural absence of object-side restriction |
@@ -193,7 +193,7 @@ storage-layout mechanics.
 | CO-2/6 | Compliance out-of-band, never a Memory mutation | inductive `ComplianceOp` + header comment |
 | CO-3 | Scope = one Owner or Owner-scoped source object | constructor shapes of `ComplianceOp` |
 | CO-4/5 | Admin-authored; operator visibility diminished | excluded: authorization surface (engine/protocol) |
-| CO-7 | delete_owner removes cognitive, retains suppression+audit | axioms `erased`, `erasure_removes_cognitive`; suppression survival structural (see Compliance.lean comment) |
+| CO-7 | delete_owner removes cognitive, retains suppression+audit | axioms `erased`, `erasure_removes_cognitive` (Memory+Goal); THEOREM `erasure_removes_edges`; suppression survival structural |
 | CO-8 | delete_source_scope | constructor `DeleteSourceScope` (semantics engine-resolved per flavor — comment) |
 | CO-9/10 | Pause/resume semantics | axiom `paused` + comment (dispatch gate engine-enforced) |
 | CO-12/13/14 | Outcomes incl. refusal-is-valid | inductive `ComplianceOutcome` |
@@ -209,7 +209,7 @@ storage-layout mechanics.
 | GO-2b | Stale prior cannot be lifecycle head | axiom `goal_supersession_prior_is_head` |
 | GO-15 | Goal title/text core retrieval text | axioms `goal_title`, `goal_text` |
 | GO-16 | Operator-authored Goals carry authoring personality, owner-matched | axioms `goal_authoring_personality`, `goal_authoring_personality_owner` |
-| CI-17 | Cited objects / mappings schema-registered | axioms `cited_objects_use_registered_schemas`, `citation_mappings_use_registered_schemas` |
+| CI-17 | Cited objects / mappings schema-registered | `entities_use_registered_vocabulary` arms 4+5 |
 | ST-EdgeId | EventSource edges content-hash id vs UUIDv7 (AGENTS.md inv. 17) | inductive `EdgeId` sum + axiom `edge_id_authorship_split` (Edges.lean) — exclusion reversed after both reviewers + AGENTS.md elevated it |
 
 ## Minimization log
