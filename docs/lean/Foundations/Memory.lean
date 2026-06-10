@@ -102,31 +102,14 @@ axiom text_iff_derived :
 
 /-- The supersession pointer: `new_entity --core/supersedes-->
     old_entity`, append-only — modeled as an accessor on the NEW row.
-    Engine-side this is the `core/supersedes` edge; the kernel pins
-    the relational content here and the edge legality in
-    Foundations.Edges. -/
+    Engine-side this IS the `core/supersedes` edge; the bridge axiom
+    `supersession_pointer_is_edge` (Foundations.Edges) pins that
+    identification, and ME-4 (Facts never supersede), ME-5a (same
+    kind), ME-5b (same owner) are PROVED there from the edge matrix
+    and edge scope — minimization pass, 2026-06-11. -/
 axiom memory_supersedes : Memory → Option Memory
 
 noncomputable instance : Supersedable Memory := ⟨memory_supersedes⟩
-
-/-- ME-4 — "Facts never supersede and are never superseded"
-    (doc 02, verbatim). Both directions. -/
-axiom facts_never_supersede :
-  ∀ m m' : Memory, memory_supersedes m = some m' →
-    memory_kind m ≠ .Fact ∧ memory_kind m' ≠ .Fact
-
-/-- ME-5a — supersession endpoint kind must match (doc 02:
-    "Endpoint kind must match"; A→A, P→P). -/
-axiom supersession_same_kind :
-  ∀ m m' : Memory, memory_supersedes m = some m' →
-    memory_kind m = memory_kind m'
-
-/-- ME-5b — supersession stays within one Owner. Cross-personality
-    supersession is an explicit editorial gesture but never crosses
-    Owner scope (doc 02 §Edge Scope: all edges single-Owner). -/
-axiom supersession_same_owner :
-  ∀ m m' : Memory, memory_supersedes m = some m' →
-    memory_owner m = memory_owner m'
 
 -- ============================================================
 -- Personality (doc 02 §Personality)
@@ -171,9 +154,13 @@ axiom authoring_personality_owner :
     authored memories and provenance edges. -/
 axiom read_scope : Owner → PersonalityInstance → PersonalityInstance → Prop
 
-/-- Identity diagonal: M[p][p] = 1 (doc 02, verbatim). -/
+/-- Identity diagonal: M[p][p] = 1 (doc 02, verbatim) — scoped to the
+    Owner's own matrix: the doc defines M per Owner over THAT Owner's
+    instances; asserting the diagonal for foreign (o, p) pairs would
+    exceed the doc (minimization pass, weaken-overstrong). -/
 axiom read_scope_diagonal :
-  ∀ (o : Owner) (p : PersonalityInstance), read_scope o p p
+  ∀ (o : Owner) (p : PersonalityInstance),
+    personality_owner p = o → read_scope o p p
 
 /-- ME-7 — what personality `p` may retrieve, within one Owner:
     Facts unconditionally; A/P gated by the matrix against the

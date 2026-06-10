@@ -30,9 +30,23 @@ namespace Proxima
     commitment recorded here as commentary. -/
 axiom MemoryId : Type
 axiom GoalId   : Type
-axiom EdgeId   : Type
 axiom CitedObjectId      : Type
 axiom CitationMappingId  : Type
+
+/-- The two id representations of doc 07 §ID Types / AGENTS.md
+    invariant 17: deterministic content hashes vs fresh UUIDv7s.
+    Both opaque — the SPLIT is the invariant, not the encoding. -/
+axiom ContentHash : Type
+axiom EdgeUuid    : Type
+
+/-- EdgeId is a SUM (AGENTS.md invariant 17, doc 07 §ID Types):
+    EventSource-authored edges carry a deterministic content hash
+    (payload-derived structural edges are deduplicable); operator /
+    user / engine edges carry a fresh UUIDv7. The authorship coupling
+    is pinned in Foundations.Edges (`edge_id_authorship_split`). -/
+inductive EdgeId where
+  | sourceAuthored (h : ContentHash)
+  | authored       (u : EdgeUuid)
 
 /-- Deterministic content hash of `(source_id, owner, payload)`
     (doc 01 §Properties of an Event). A dedup key, NOT entity
@@ -100,13 +114,16 @@ axiom event_id_payload_determined :
   ∀ e1 e2 : Event, event_id e1 = event_id e2 →
     event_source e1 = event_source e2 ∧ event_owner e1 = event_owner e2
 
-/-- ES-5 — source batches group events from one Reality observation;
-    the engine validates batch-id uniqueness within `(source_id,
-    owner)` and rejects collisions (doc 01 §The contract, Q6). Kernel
-    face: a shared batch id implies shared source and owner. -/
-axiom batch_unique_within_source_owner :
-  ∀ e1 e2 : Event, event_batch e1 = event_batch e2 →
-    event_source e1 = event_source e2 ∧ event_owner e1 = event_owner e2
+/- ES-5 — batch-id uniqueness is scoped: "unique within (source_id,
+   owner)" (doc 01 §The contract Q6, doc 07 §ID Types, doc 04). An
+   earlier global-injectivity axiom here asserted MORE than the docs
+   (a shared batch id across different owners is doc-admitted: each
+   scope is collision-free, the per-scope engine validation accepts
+   both). Removed by the minimization pass — the scoped validation is
+   an engine check with no kernel-observable face; the F→A gate now
+   carries its own owner dimension (`ftoa_batch_exclusive`,
+   Foundations.Operators). Decision:
+   `docs/domain/decisions/2026-06-11-batch-id-scope.md`. -/
 
 -- ============================================================
 -- Embeddings — vector-store independence (doc 07 §Vector Store)

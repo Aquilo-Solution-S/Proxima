@@ -37,7 +37,7 @@ with before/after counts.
 | ES-8 | Source must not abstract/interpret/cross-join/relevance-filter/persist | excluded: EventSource impl contract (doc 01 §must-not list); kernel carries the consequence via `facts_only_from_sources` |
 | ES-9 | Compliance metadata: every source declares 4 fields; Facts inherit | excluded: engine registration totality (CO-39..45 rows); kernel keeps SourceId opaque |
 | ES-10 | Idempotency keys content-derived/opaque, never natural-person identifiers | comment Compliance.lean suppression docstring (CO-20) |
-| ES-11 | Facts' typing frozen at insert; engine does not migrate Facts across schema versions | `Immutable`-class instances + SR-51 row |
+| ES-11 | Facts' typing frozen at insert; engine does not migrate Facts across schema versions | `Immutable Memory`-stance via `AppendOnly Memory` + accessor totality (`memory_schema` fixed per row); migration mechanics excluded (SR-50..55 exclusion block) |
 | ES-12 | No `Principal.Org` variant; org-wide = `<org>-everyone` group | inductive `Principal` two-constructor shape |
 | ES-13 | Per-memory ACL (AccessGrant) is v2+, not v1 | structural absence + Owner.lean header comment |
 | ES-14 | Push vs pull is source-side implementation detail | excluded: engine |
@@ -210,10 +210,52 @@ storage-layout mechanics.
 | GO-15 | Goal title/text core retrieval text | axioms `goal_title`, `goal_text` |
 | GO-16 | Operator-authored Goals carry authoring personality, owner-matched | axioms `goal_authoring_personality`, `goal_authoring_personality_owner` |
 | CI-17 | Cited objects / mappings schema-registered | axioms `cited_objects_use_registered_schemas`, `citation_mappings_use_registered_schemas` |
-| ST-EdgeId | EventSource edges content-hash id vs UUIDv7 | excluded: id REPRESENTATION below opacity boundary; insert-only + authorship vocabulary carried; dedup semantics kernel-modeled only for Events where idempotency is load-bearing (ES-4) |
+| ST-EdgeId | EventSource edges content-hash id vs UUIDv7 (AGENTS.md inv. 17) | inductive `EdgeId` sum + axiom `edge_id_authorship_split` (Edges.lean) — exclusion reversed after both reviewers + AGENTS.md elevated it |
 
 ## Minimization log
 
-(updated by the axiom-minimization pass)
+**Pass 1 (2026-06-11, workflow: 9 analyzers + adversarial verify, 25
+proposals, 23 verified):** post-r1 count 151 axioms → **132 axioms + 23
+theorems**, lake-build green. Of the 132, ~60 are primitive declarations
+(opaque Types + accessors); the rest are invariants.
 
-- Baseline: 134 axioms.
+Implemented reductions:
+- Owner → constructive subtype def (`Owner`, `owner_principal`, `owner_org`
+  defs); ES-1 `owner_org_denormalized` PROVED. −4 axioms.
+- Edges: descriptor masks are now the primitive layer; `edge_class_legal`
+  (ME-11) and `edge_layer_rule` (ME-10) PROVED from them.
+- Memory supersession: `supersession_pointer_is_edge` bridge axiom (doc 02
+  verbatim: the pointer IS the core/supersedes edge); ME-4, ME-5a, ME-5b
+  PROVED from the matrix + edge scope. Net −2.
+- Operators: CN-1..4 merged into `operatorEdgeShape` def + ONE axiom; CN-1/2
+  full shapes (target kinds) PROVED via `provenance_pins_target`. CN-6 merged
+  to `derived_has_provenance`; per-kind shapes PROVED. Net −5.
+- Citations: Fact-side pointer `memory_citation` is now a choice-based DEF;
+  primitives are `citation_fact_is_fact` + `fact_has_citation` +
+  `citation_fact_injective`; CI-1, CI-2a, CI-2c PROVED. Net −2.
+- Goals: GO-1+GO-2 merged into `goal_supersession_constraints`; projections
+  PROVED. −1.
+- Compliance: `suppression_owner` REMOVED (doc 13 retains the opaque key
+  only — entry carries no Owner; ES-4 makes key-matching scope-matching);
+  erasure Edge conjunct PROVED (`erasure_removes_edges`). −2.
+- Composition: registry restructured around the composition law
+  (`registry_composition` + `flavor_schemas`/`flavor_relations` +
+  `contributions_namespaced`); `core_always_present`,
+  `registry_namespace_discipline`, `registry_determined` (pointwise) PROVED.
+  Six registration axioms merged into `entities_use_registered_vocabulary`.
+  Net −5, and the over-strong cross-binary determination axiom is gone.
+
+Over-strength corrections (doc-fidelity, flagged in decisions/):
+- `batch_unique_within_source_owner` REMOVED (global injectivity exceeded the
+  docs' scoped uniqueness); `ftoa_batch_exclusive` owner-conditioned →
+  `decisions/2026-06-11-batch-id-scope.md`.
+- `read_scope_diagonal` scoped to the Owner's own instances.
+- `goal_parents_same_owner` KEPT, re-cited to doc 04 §Isolation →
+  `decisions/2026-06-11-goal-parents-owner-scope.md`.
+
+Additions forced by review (both reviewers + AGENTS.md invariant 17):
+- `EdgeId` is now the ContentHash/UUIDv7 SUM with `edge_id_authorship_split`
+  (Edges.lean) — supersedes the r1 ST-EdgeId exclusion row.
+
+Rejected by adversarial verify: 2 proposals (one stale, one inverse of an
+already-landed r1 fix).

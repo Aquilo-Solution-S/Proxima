@@ -7,6 +7,13 @@ NEVER cite directly — their bibliography is the transitive closure
 through provenance edges down to Facts (CI-3, and CN-6 supplies the
 edges).
 
+Minimized trusted core (2026-06-11): the Fact↔mapping relation is
+stored ONCE — `citation_fact` (the mapping-side FK) is primitive;
+the Fact-side pointer `memory_citation` is a noncomputable DEF via
+choice, and CI-1/CI-2a/CI-2c are PROVED. Doc 11 treats the pointer
+and the FK as one relation kept consistent by the engine; the kernel
+now encodes exactly one.
+
 CI-12/13 — edges do not cite (no citation accessor on Edge; see
 Foundations.Edges). CI-14 — operator reproducibility (model id,
 prompt version, personality) is inline row metadata, not citation.
@@ -55,53 +62,88 @@ axiom citation_mapping_id_injective :
 instance : Immutable CitationMapping := ⟨⟩
 instance : AppendOnly CitationMapping := ⟨⟩
 
-/-- The Fact-side pointer (`Memory.citation_mapping_id`). -/
-axiom memory_citation : Memory → Option CitationMapping
-
 -- ============================================================
--- The Fact-only rule (doc 11 §Three-layer model)
+-- The Fact-only rule (doc 11 §Three-layer model) — trusted core
 -- ============================================================
-
-/-- CI-1 — THE citation axiom: a memory carries a citation IFF it is
-    a Fact. "NOT NULL for Fact, absent on Abstraction and
-    Perspective" — both directions. -/
-axiom citation_iff_fact :
-  ∀ m : Memory, (memory_citation m).isSome ↔ memory_kind m = .Fact
 
 /-- CI-1b — a mapping's target IS a Fact: no mapping may point at an
     Abstraction or Perspective (doc 11 §Three-layer model). -/
 axiom citation_fact_is_fact :
   ∀ c : CitationMapping, memory_kind (citation_fact c) = .Fact
 
-/-- CI-2a — the pointer and the mapping agree: a Fact's citation maps
-    that Fact. -/
-axiom citation_points_back :
-  ∀ (m : Memory) (c : CitationMapping),
-    memory_citation m = some c → citation_fact c = m
+/-- CI-1a — every Fact has a mapping ("NOT NULL for Fact"). -/
+axiom fact_has_citation :
+  ∀ m : Memory, memory_kind m = .Fact →
+    ∃ c : CitationMapping, citation_fact c = m
 
-/-- CI-2c — no orphan mappings: every mapping is reachable from its
-    Fact's pointer (with `citation_iff_fact`, the Fact-side pointer
-    and the mapping table are two views of one relation). -/
-axiom citation_reverse_total :
-  ∀ c : CitationMapping, memory_citation (citation_fact c) = some c
-
-/-- CI-2b — exactly one mapping per Fact (UNIQUE (memory_id)):
+/-- CI-2b — at most one mapping per Fact (UNIQUE (memory_id)):
     one Fact ↔ one CitationMapping ↔ one CitedObject. One CitedObject
     may serve N mappings for N Facts (CI-9) — nothing restricts the
-    object side, and that absence is the spec.
-
-    A THEOREM, not an axiom: derivable from reverse totality. The
-    minimization discipline — redundant invariants are proved, the
-    trusted core stays small. -/
-theorem citation_unique_per_fact :
+    object side, and that absence is the spec. -/
+axiom citation_fact_injective :
   ∀ c1 c2 : CitationMapping,
-    citation_fact c1 = citation_fact c2 → c1 = c2 := by
-  intro c1 c2 h
-  have h1 := citation_reverse_total c1
-  have h2 := citation_reverse_total c2
-  rw [h] at h1
-  rw [h1] at h2
-  exact Option.some.inj h2
+    citation_fact c1 = citation_fact c2 → c1 = c2
+
+-- ============================================================
+-- The Fact-side pointer — a DEF, with CI-1/2a/2c as THEOREMS
+-- ============================================================
+
+open Classical in
+/-- `Memory.citation_mapping_id` — the Fact-side pointer, DEFINED
+    from the mapping-side relation (one relation, stored once). -/
+noncomputable def memory_citation (m : Memory) : Option CitationMapping :=
+  if h : ∃ c : CitationMapping, citation_fact c = m
+  then some h.choose
+  else none
+
+/-- CI-1 — a memory carries a citation IFF it is a Fact. THEOREM. -/
+theorem citation_iff_fact :
+    ∀ m : Memory, (memory_citation m).isSome ↔ memory_kind m = .Fact := by
+  intro m
+  constructor
+  · intro h
+    unfold memory_citation at h
+    by_cases hex : ∃ c : CitationMapping, citation_fact c = m
+    · obtain ⟨c, hc⟩ := hex
+      rw [← hc]
+      exact citation_fact_is_fact c
+    · rw [dif_neg hex] at h
+      exact (nomatch h)
+  · intro h
+    have hex := fact_has_citation m h
+    unfold memory_citation
+    rw [dif_pos hex]
+    rfl
+
+/-- CI-2a — the pointer and the mapping agree. THEOREM. -/
+theorem citation_points_back :
+    ∀ (m : Memory) (c : CitationMapping),
+      memory_citation m = some c → citation_fact c = m := by
+  intro m c h
+  unfold memory_citation at h
+  by_cases hex : ∃ c' : CitationMapping, citation_fact c' = m
+  · rw [dif_pos hex] at h
+    have := hex.choose_spec
+    rw [Option.some.inj h] at this
+    exact this
+  · rw [dif_neg hex] at h
+    exact (nomatch h)
+
+/-- CI-2c — no orphan mappings: every mapping is reachable from its
+    Fact's pointer. THEOREM (uniqueness collapses choice onto c). -/
+theorem citation_reverse_total :
+    ∀ c : CitationMapping, memory_citation (citation_fact c) = some c := by
+  intro c
+  have hex : ∃ c' : CitationMapping, citation_fact c' = citation_fact c := ⟨c, rfl⟩
+  unfold memory_citation
+  rw [dif_pos hex]
+  exact congrArg some (citation_fact_injective _ _ hex.choose_spec)
+
+/-- CI-2b in its r1 name — alias theorem. -/
+theorem citation_unique_per_fact :
+    ∀ c1 c2 : CitationMapping,
+      citation_fact c1 = citation_fact c2 → c1 = c2 :=
+  citation_fact_injective
 
 -- ============================================================
 -- Owner scoping (doc 11 §Owner scoping)
