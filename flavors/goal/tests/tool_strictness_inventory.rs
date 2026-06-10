@@ -39,14 +39,14 @@ fn goal_wake_visible_tools_describe_object_properties() {
     proxima_flavor_goal::register(&mut registry);
     let registry = registry.freeze();
 
-    let schemas = registry
+    let schemas: Vec<_> = registry
         .list_mcp_tools()
         .iter()
         .filter(|tool| tool.name.starts_with("proxima-goal/"))
         .map(|tool| (tool.name.to_string(), tool.args_schema.clone()))
         .collect();
 
-    assert_tool_schemas_have_property_descriptions(schemas);
+    assert_tool_schemas_have_property_descriptions(&schemas);
 }
 
 #[test]
@@ -61,16 +61,14 @@ fn decompose_handle_fields_explain_domains() {
         .expect("goal decompose tool");
 
     let parent_goal = description_at(&tool.args_schema, "/properties/parent_goal");
-    assert!(parent_goal.contains("G"), "{parent_goal}");
+    assert!(parent_goal.contains('G'), "{parent_goal}");
 
     let target_personality = description_at(&tool.args_schema, "/properties/target_personality");
-    assert!(target_personality.contains("I"), "{target_personality}");
+    assert!(target_personality.contains('I'), "{target_personality}");
 }
 
 fn checkpoint_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .join(".plans/checkpoints/2026-05-19-proxima-goal-tool-inventory.md")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/checkpoints/tool-inventory.md")
 }
 
 fn description_at<'a>(schema: &'a serde_json::Value, pointer: &str) -> &'a str {

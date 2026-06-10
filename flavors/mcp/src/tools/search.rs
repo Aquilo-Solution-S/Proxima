@@ -18,13 +18,15 @@ pub struct SearchGraphArgs {
         description = "Optional maximum number of graph matches. Omit or null for 12; values above 50 are clamped."
     )]
     pub limit: Option<u32>,
-    #[schemars(description = "Optional search mode. Omit or null for lexical search.")]
-    pub mode: Option<SearchGraphMode>,
+    #[serde(default)]
+    #[schemars(description = "Search mode. Omit for lexical search.")]
+    pub mode: SearchGraphMode,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, Default, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum SearchGraphMode {
+    #[default]
     Lexical,
     Semantic,
     Hybrid,
@@ -77,7 +79,7 @@ impl McpTool for SearchGraphTool {
                 ));
             }
             let limit = args.limit.unwrap_or(12).min(50);
-            let mode = args.mode.unwrap_or(SearchGraphMode::Lexical);
+            let mode = args.mode;
             if matches!(mode, SearchGraphMode::Lexical) {
                 return search_graph_lexical(ctx, query, limit).await;
             }

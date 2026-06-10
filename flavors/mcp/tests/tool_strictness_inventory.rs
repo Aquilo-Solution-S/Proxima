@@ -39,18 +39,16 @@ fn mcp_wake_visible_tools_describe_object_properties() {
     proxima_mcp_substrate::register(&mut registry);
     let registry = registry.freeze();
 
-    let schemas = registry
+    let schemas: Vec<_> = registry
         .list_mcp_tools()
         .iter()
         .filter(|tool| tool.name.starts_with("proxima-mcp/"))
         .map(|tool| (tool.name.to_string(), tool.args_schema.clone()))
         .collect();
 
-    assert_tool_schemas_have_property_descriptions(schemas);
+    assert_tool_schemas_have_property_descriptions(&schemas);
 }
 
 fn checkpoint_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .join(".plans/checkpoints/2026-05-19-proxima-mcp-tool-inventory.md")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/checkpoints/tool-inventory.md")
 }
