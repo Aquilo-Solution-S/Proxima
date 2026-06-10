@@ -1,0 +1,5 @@
+name = "foundations"
+defaultTargets = ["Foundations"]
+
+[[lean_lib]]
+name = "Foundations"
