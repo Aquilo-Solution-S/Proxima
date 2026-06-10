@@ -14,3 +14,4 @@ import Foundations.Edges
 import Foundations.Operators
 import Foundations.Citations
 import Foundations.Compliance
+import Foundations.Composition
