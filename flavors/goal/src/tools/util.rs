@@ -84,7 +84,7 @@ impl schemars::JsonSchema for GoalPayloadInput {
                         },
                         "priority": {
                             "type": ["string", "null"],
-                            "enum": ["Low", "Medium", "High", null],
+                            "enum": ["Low", "Medium", "High"],
                             "description": "Optional task priority for proxima-goal/task-v1."
                         }
                     },
