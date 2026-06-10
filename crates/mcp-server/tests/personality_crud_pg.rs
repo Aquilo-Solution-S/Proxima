@@ -9,9 +9,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use common::{create_db, drop_db, initialize, initialized, post_rpc};
+use proxima_core::auth::NoAuth;
 use proxima_core::wake::token_store::WakeTokenStore;
-use proxima_core::{FlavorRegistry, OrgId, Owner, Principal, UserId};
+use proxima_core::{Engine, FlavorRegistry, OrgId, Owner, Principal, UserId};
 use proxima_mcp_server::{McpAuthStore, McpToolHost, default_allowlist, serve_streamable_http};
+use proxima_storage_pg::PgStorage;
 use serde_json::{Value, json};
 
 #[tokio::test(flavor = "multi_thread")]
@@ -42,7 +44,7 @@ async fn discovery_to_mutation_smoke() -> Result<(), Box<dyn std::error::Error>>
         // tools/call returns { "result": { "content": [{ "type":"text", "text": "<json>" }] } }
         let text = resp["result"]["content"][0]["text"]
             .as_str()
-            .expect("content[0].text exists");
+            .unwrap_or_else(|| panic!("content[0].text exists; full response: {resp}"));
         Ok(serde_json::from_str(text)?)
     }
 
@@ -54,9 +56,22 @@ async fn discovery_to_mutation_smoke() -> Result<(), Box<dyn std::error::Error>>
         principal: Principal::User(UserId::new(uuid::Uuid::now_v7())),
         org_id: OrgId::new(uuid::Uuid::now_v7()),
     };
-    let registry = FlavorRegistry::new();
-    let server = McpToolHost::from_database_url(&database_url, owner.clone(), registry).await?;
-    proxima_mcp_substrate::migrator().run(server.pool()).await?;
+    // The personality CRUD core tools dispatch through an attached engine,
+    // so wire one over the same PG storage (Engine::compose embedding shape).
+    let pg = PgStorage::connect(&database_url).await?;
+    pg.run_migrations().await?;
+    let resolver = NoAuth::new(owner.principal.clone(), owner.clone());
+    let engine = Arc::new(Engine::compose(
+        Box::new(resolver),
+        Arc::new(pg.clone()),
+        |_| {},
+    ));
+    let server = McpToolHost::from_pool(
+        pg.pool().clone(),
+        owner.clone(),
+        Arc::new(FlavorRegistry::new().freeze()),
+    )
+    .with_engine(engine);
     let store = Arc::new(WakeTokenStore::new(Duration::from_mins(5)));
     let auth_store = Arc::new(McpAuthStore::new(store));
     let master_token = uuid::Uuid::now_v7();
@@ -112,10 +127,12 @@ async fn discovery_to_mutation_smoke() -> Result<(), Box<dyn std::error::Error>>
         json!({ "display_name": "TestSubject", "purpose": "smoke test" }),
     )
     .await?;
+    // Master-token calls run in OutputMode::RawIds (handles are minted only
+    // for wake-dispatched model contexts), so the id is a raw UUID.
     let p_handle = inst["personality"].as_str().expect("P handle").to_string();
     assert!(
-        p_handle.starts_with('P'),
-        "P-prefixed handle, got {p_handle}"
+        uuid::Uuid::parse_str(&p_handle).is_ok(),
+        "raw personality id under master token, got {p_handle}"
     );
 
     // 4. Read-after-write: list_personalities returns it.
