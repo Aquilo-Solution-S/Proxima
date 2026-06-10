@@ -84,6 +84,24 @@ axiom goal_supersedes : Goal → Option Goal
 axiom goal_parents    : Goal → Set Goal
 axiom goal_authorship : Goal → GoalAuthorship
 
+/-- Core retrieval/render text (doc 06 Goal row fields: "`title`,
+    `text` | core retrieval/render text"). Total — every Goal carries
+    both; payload stays opaque. -/
+axiom goal_title : Goal → Text
+axiom goal_text  : Goal → Text
+
+/-- The personality instance whose A→Goal operator authored this Goal
+    row, if operator-authored (doc 04: A→Goal runs under Π). `none`
+    for direct User/External writes. Needed because the read-scope
+    matrix gates GOALS too (doc 02 §Read-scope Matrix: "self may read
+    other's A/P/Goals"). -/
+axiom goal_authoring_personality : Goal → Option PersonalityInstance
+
+axiom goal_authoring_personality_owner :
+  ∀ (g : Goal) (p : PersonalityInstance),
+    goal_authoring_personality g = some p →
+    personality_owner p = goal_owner g
+
 axiom goal_id_injective :
   ∀ g1 g2 : Goal, goal_id g1 = goal_id g2 → g1 = g2
 
@@ -105,6 +123,15 @@ axiom goal_supersession_same_owner :
 axiom goal_supersession_admitted :
   ∀ g g' : Goal, goal_supersedes g = some g' →
     goalTransitionAdmitted (goal_state g') (goal_state g)
+
+/-- GO-2b — "Current head: stale prior cannot be lifecycle head"
+    (doc 06 §Goal-Write API). Timeless face: a Goal has at most one
+    successor — two rows superseding the same prior would mean one of
+    them superseded a stale (non-head) row. -/
+axiom goal_supersession_prior_is_head :
+  ∀ g1 g2 g' : Goal,
+    goal_supersedes g1 = some g' → goal_supersedes g2 = some g' →
+    g1 = g2
 
 -- ============================================================
 -- DAG (doc 06: "DAG position"; goal_parents)
@@ -134,8 +161,28 @@ def goalIsHead (g : Goal) : Prop :=
   ¬ ∃ g' : Goal, goal_supersedes g' = some g
 
 /-- GO-8 — G_active(owner) = current Goal heads where state = Active
-    (doc 06, verbatim). A query, not an entity. -/
+    (doc 06 §Goal Entity, verbatim). A query, not an entity.
+
+    NOTE the deliberate duality (decision
+    `docs/domain/decisions/2026-06-11-active-goals-two-queries.md`):
+    doc 06 also defines an INSTANCE-scoped `active_goals(instance)`
+    (§Goal Assignment) that filters by `core/inspires` assignment to
+    the current Self-Perspective. That query needs the named
+    `core/inspires` relation constant; the kernel models relation
+    CLASSES and shapes, not named relation ids, so the instance query
+    stays engine-level. The two queries are different scopes of the
+    same head/Active filter — not a contradiction. -/
 def activeGoals (o : Owner) : Set Goal :=
   fun g => goal_owner g = o ∧ goal_state g = .Active ∧ goalIsHead g
+
+/-- ME-7 for Goals — the read-scope matrix gates Goal retrieval
+    exactly as it gates A/P (doc 02 §Read-scope Matrix). Facts have
+    no Goal analogue; operator-authored Goals are gated against their
+    authoring instance, direct writes are substrate-visible. -/
+def personality_may_read_goal (p : PersonalityInstance) (g : Goal) : Prop :=
+  personality_owner p = goal_owner g ∧
+  (match goal_authoring_personality g with
+   | some author => read_scope (goal_owner g) p author
+   | none        => True)
 
 end Proxima

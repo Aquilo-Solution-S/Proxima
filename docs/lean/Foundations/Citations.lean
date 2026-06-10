@@ -29,8 +29,12 @@ namespace Proxima
     (owner, schema_id, content_hash) — hash stays engine-level; the
     kernel keeps identity + owner + schema). Insert-only (ST-7). -/
 axiom CitedObject : Type
+axiom cited_object_id     : CitedObject → CitedObjectId
 axiom cited_object_owner  : CitedObject → Owner
 axiom cited_object_schema : CitedObject → SchemaRef
+
+axiom cited_object_id_injective :
+  ∀ c1 c2 : CitedObject, cited_object_id c1 = cited_object_id c2 → c1 = c2
 
 instance : Immutable CitedObject := ⟨⟩
 instance : AppendOnly CitedObject := ⟨⟩
@@ -39,8 +43,14 @@ instance : AppendOnly CitedObject := ⟨⟩
     location/range metadata (page, paragraph, bbox, …) typed by the
     flavor — payload opaque here. Insert-only (ST-8). -/
 axiom CitationMapping : Type
+axiom citation_mapping_id     : CitationMapping → CitationMappingId
+axiom citation_mapping_schema : CitationMapping → SchemaRef
 axiom citation_fact   : CitationMapping → Memory
 axiom citation_object : CitationMapping → CitedObject
+
+axiom citation_mapping_id_injective :
+  ∀ c1 c2 : CitationMapping,
+    citation_mapping_id c1 = citation_mapping_id c2 → c1 = c2
 
 instance : Immutable CitationMapping := ⟨⟩
 instance : AppendOnly CitationMapping := ⟨⟩
@@ -58,19 +68,40 @@ axiom memory_citation : Memory → Option CitationMapping
 axiom citation_iff_fact :
   ∀ m : Memory, (memory_citation m).isSome ↔ memory_kind m = .Fact
 
+/-- CI-1b — a mapping's target IS a Fact: no mapping may point at an
+    Abstraction or Perspective (doc 11 §Three-layer model). -/
+axiom citation_fact_is_fact :
+  ∀ c : CitationMapping, memory_kind (citation_fact c) = .Fact
+
 /-- CI-2a — the pointer and the mapping agree: a Fact's citation maps
     that Fact. -/
 axiom citation_points_back :
   ∀ (m : Memory) (c : CitationMapping),
     memory_citation m = some c → citation_fact c = m
 
+/-- CI-2c — no orphan mappings: every mapping is reachable from its
+    Fact's pointer (with `citation_iff_fact`, the Fact-side pointer
+    and the mapping table are two views of one relation). -/
+axiom citation_reverse_total :
+  ∀ c : CitationMapping, memory_citation (citation_fact c) = some c
+
 /-- CI-2b — exactly one mapping per Fact (UNIQUE (memory_id)):
     one Fact ↔ one CitationMapping ↔ one CitedObject. One CitedObject
-    may serve N mappings for N Facts (CI-9) — no axiom restricts the
-    object side, and that absence is the spec. -/
-axiom citation_unique_per_fact :
+    may serve N mappings for N Facts (CI-9) — nothing restricts the
+    object side, and that absence is the spec.
+
+    A THEOREM, not an axiom: derivable from reverse totality. The
+    minimization discipline — redundant invariants are proved, the
+    trusted core stays small. -/
+theorem citation_unique_per_fact :
   ∀ c1 c2 : CitationMapping,
-    citation_fact c1 = citation_fact c2 → c1 = c2
+    citation_fact c1 = citation_fact c2 → c1 = c2 := by
+  intro c1 c2 h
+  have h1 := citation_reverse_total c1
+  have h2 := citation_reverse_total c2
+  rw [h] at h1
+  rw [h1] at h2
+  exact Option.some.inj h2
 
 -- ============================================================
 -- Owner scoping (doc 11 §Owner scoping)

@@ -31,6 +31,8 @@ namespace Proxima
 axiom MemoryId : Type
 axiom GoalId   : Type
 axiom EdgeId   : Type
+axiom CitedObjectId      : Type
+axiom CitationMappingId  : Type
 
 /-- Deterministic content hash of `(source_id, owner, payload)`
     (doc 01 §Properties of an Event). A dedup key, NOT entity
@@ -116,9 +118,18 @@ axiom batch_unique_within_source_owner :
     invariant — entity writes never block on embedding; embeddings can
     be rebuilt or dropped without mutating entities; multiple models
     coexist. Re-embedding writes a new row (`Immutable Embedding`);
-    the entity row does not change. -/
+    the entity row does not change.
+
+    Embeddings may point at Facts, Abstractions, Perspectives, AND
+    Goals (doc 07 §Vector Store) — hence the id-sum target. Edges are
+    never embedded as relations: similarity is query-time evidence and
+    never authors graph edges (doc 07, grounding U-2). -/
+inductive EmbeddingTarget where
+  | memory (id : MemoryId)
+  | goal   (id : GoalId)
+
 axiom Embedding : Type
-axiom embedding_entity : Embedding → MemoryId
+axiom embedding_target : Embedding → EmbeddingTarget
 
 instance : Immutable Embedding := ⟨⟩
 
