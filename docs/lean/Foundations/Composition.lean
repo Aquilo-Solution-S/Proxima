@@ -29,6 +29,7 @@ import Foundations.Identity
 import Foundations.Memory
 import Foundations.Goals
 import Foundations.Edges
+import Foundations.Citations
 
 namespace Proxima
 
@@ -131,6 +132,14 @@ axiom events_use_registered_schemas :
 
 axiom edges_use_registered_relations :
   ∀ e : Edge, edge_relation e ∈ registry_relations active_registry
+
+axiom cited_objects_use_registered_schemas :
+  ∀ c : CitedObject,
+    schema_ref_id (cited_object_schema c) ∈ registry_schemas active_registry
+
+axiom citation_mappings_use_registered_schemas :
+  ∀ c : CitationMapping,
+    schema_ref_id (citation_mapping_schema c) ∈ registry_schemas active_registry
 
 -- ============================================================
 -- Special-category flag (doc 03 §Special-category declaration)

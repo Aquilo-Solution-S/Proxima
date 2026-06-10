@@ -54,7 +54,7 @@ with before/after counts.
 | ME-5a | Supersession same kind | axiom `supersession_same_kind` |
 | ME-5b | Supersession same owner | axiom `supersession_same_owner` |
 | ME-6 | Authoring personality shares memory owner | axiom `authoring_personality_owner` |
-| ME-7 | Facts below read-scope matrix; A/P/Goal gated | def `personality_may_read` + axiom `read_scope_diagonal` |
+| ME-7 | Facts below read-scope matrix; A/P/Goal gated | defs `personality_may_read` (Memory) + `personality_may_read_goal` (Goals) + axiom `read_scope_diagonal` |
 | ME-8 | Matrix asymmetry valid; future-reads-only; direct retrieval only | structural absence of symmetry axiom + comment |
 | ME-9 | Edge scope single-owner | axiom `edge_scope_single_owner` |
 | ME-10 | ℓ(source) ≥ ℓ(target) for memory edges | axiom `edge_layer_rule` (also implied by ME-11 — minimization candidate) |
@@ -80,7 +80,7 @@ with before/after counts.
 | CN-5 | No downward writes | axiom `facts_only_from_sources` (+ ME-1) |
 | CN-6 | Derived memories have provenance | axioms `abstraction_has_provenance`, `perspective_has_provenance` |
 | CN-7 | Cross-domain join is typed Abstraction | comment (shape carried by CN-6 + U-2 matrix) |
-| CN-8 | F→A batch-gate exclusivity | axiom `ftoa_batch_exclusive` |
+| CN-8 | F→A batch-gate exclusivity per (input contract, operator, output schema) | axiom `ftoa_batch_exclusive` + `InputContract`/`memory_input_contract` (r1) |
 | CN-9 | Atomic invocation (all-or-nothing outputs) | excluded: storage-layer transaction contract (same stance as WH event/projection atomicity) |
 | CN-10 | Retry/changed-prompt = new derivation, never mutation | `AppendOnly Memory` + comment Operators.lean |
 | CN-11 | Wake dispatcher loop, cursors, depth bound, runtime tables | excluded: engine runtime |
@@ -101,7 +101,7 @@ with before/after counts.
 | GO-9 | Goal id is identity | axiom `goal_id_injective` |
 | GO-10 | Authorship vocabulary | inductive `GoalAuthorship` |
 | GO-11 | GoalWrite protocol (request_id idempotency, conflict detection, stream visibility) | excluded: protocol surface (doc 14 out of scope per spec) |
-| GO-12 | Assignment = core/inspires edge Goal→Self-Perspective; no GoalConnection sidecar | excluded: relation-vocabulary content (ME-20 stance); endpoint legality carried by descriptor masks (ME-14) |
+| GO-12 | Assignment = core/inspires edge Goal→Self-Perspective; instance-scoped active_goals query | shape via descriptor masks (ME-14); traversal query engine-level per decision `2026-06-11-active-goals-two-queries.md` |
 | GO-13 | Goal-scoped wake policy; planner-first | excluded: engine runtime |
 | GO-14 | Cross-owner assignment/evidence rejected | axioms `edge_scope_single_owner` + `goal_parents_same_owner` |
 
@@ -157,13 +157,13 @@ ontology content is CF-A/B/C/D above.
 | ST-1..4 | Fresh ids; immutable identity; supersession = new row | `memory_id_injective`, `goal_id_injective`, classes `Immutable`/`Supersedable` |
 | ST-5 | Edges insert-only | `Immutable Edge`, `AppendOnly Edge` |
 | ST-6 | EventId deterministic; duplicate = replay | axiom `event_id_payload_determined` |
-| ST-7/8 | CitedObject/CitationMapping insert-only, one mapping per Fact | `Immutable` instances + `citation_unique_per_fact` |
+| ST-7/8 | CitedObject/CitationMapping ids, insert-only, one mapping per Fact | `cited_object_id_injective`, `citation_mapping_id_injective`, `Immutable` instances + theorem `citation_unique_per_fact` |
 | ST-9 | Owner three-part scope | `Owner` accessors (principal, org) |
 | ST-10 | Cross-owner edges/evidence rejected | axiom `edge_scope_single_owner` |
 | ST-11 | INSERT-only cognitive lifecycle | class `AppendOnly` + instances |
 | ST-13 | Only compliance erasure deletes | Compliance.lean (`erased`, `erasure_removes_cognitive`) |
 | ST-14 | Stateful current-state = head query, never replacement | comment + SR-43 row |
-| ST-15..17 | Vector-store independence | axiom `Embedding`/`embedding_entity` shape + `Immutable Embedding`; absence of Memory→Embedding accessor |
+| ST-15..17 | Vector-store independence (targets F/A/P AND Goals) | `EmbeddingTarget` sum + `embedding_target` + `Immutable Embedding`; absence of entity→Embedding accessor |
 | ST-22/23 | Content hash = dedup key not identity; collision semantics | comments on `EventId` + `event_id_payload_determined` |
 | ST-26 | Supersession logical; current state = query | defs `goalIsHead`/`activeGoals` pattern + comment |
 
@@ -176,7 +176,7 @@ storage-layout mechanics.
 | ID | Invariant | Carrier |
 |---|---|---|
 | CI-1 | Fact-only citation | axiom `citation_iff_fact` |
-| CI-2 | Exactly one mapping per Fact | axioms `citation_points_back`, `citation_unique_per_fact` |
+| CI-2 | Exactly one mapping per Fact; target is Fact; no orphans | axioms `citation_fact_is_fact`, `citation_points_back`, `citation_reverse_total`; THEOREM `citation_unique_per_fact` (proved, r1) |
 | CI-3 | A/P cite transitively via provenance | comment + CN-6 axioms |
 | CI-7/8 | Owner scoping; Fact owner = object owner | axiom `citation_owner_match` |
 | CI-9 | One object ↔ N mappings | structural absence of object-side restriction |
@@ -201,6 +201,16 @@ storage-layout mechanics.
 | CO-17/18 | Suppression blocks re-ingest | axiom `suppression_blocks_reingest` |
 | CO-19/29 | Suppression/audit survive erasure indefinitely | structural (unconditional quantification; Compliance.lean comment) |
 | CO-11, CO-21..28, CO-30..58 | Export, audit content, side effects, vocabulary fields, owner policy, GDPR mappings | excluded: controller/engine obligations and legal commentary; ES-9/ES-10 rows carry the kernel-relevant faces |
+
+### r1 additions (codex review, 2026-06-11)
+
+| ID | Invariant | Carrier |
+|---|---|---|
+| GO-2b | Stale prior cannot be lifecycle head | axiom `goal_supersession_prior_is_head` |
+| GO-15 | Goal title/text core retrieval text | axioms `goal_title`, `goal_text` |
+| GO-16 | Operator-authored Goals carry authoring personality, owner-matched | axioms `goal_authoring_personality`, `goal_authoring_personality_owner` |
+| CI-17 | Cited objects / mappings schema-registered | axioms `cited_objects_use_registered_schemas`, `citation_mappings_use_registered_schemas` |
+| ST-EdgeId | EventSource edges content-hash id vs UUIDv7 | excluded: id REPRESENTATION below opacity boundary; insert-only + authorship vocabulary carried; dedup semantics kernel-modeled only for Events where idempotency is load-bearing (ES-4) |
 
 ## Minimization log
 

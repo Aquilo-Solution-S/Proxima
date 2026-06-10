@@ -67,12 +67,14 @@ axiom atop_edge_shape :
     (∃ ms : Memory, edge_source e = .memory ms ∧ memory_kind ms = .Perspective) ∧
     (∃ mt : Memory, edge_target e = .memory mt ∧ memory_kind mt = .Abstraction)
 
-/-- CN-3 — A→Goal evidence: an OperatorAtoGoal-authored edge runs from
-    a Goal to its Fact/Abstraction evidence (doc 06 §Goal Flavor
-    Boundary: `Goal --motivated-by--> Fact | Abstraction`; never to a
+/-- CN-3 — A→Goal evidence: an OperatorAtoGoal-authored edge is
+    Structural-class from a Goal to its Fact/Abstraction evidence
+    (doc 02 §Relation Registry: `proxima-goal/motivated-by` |
+    `Structural` | Goal → Fact / Abstraction; never to a
     Perspective). -/
 axiom atogoal_edge_shape :
   ∀ e : Edge, edge_authorship e = .OperatorAtoGoal →
+    relation_class (edge_relation e) = .Structural ∧
     (∃ g : Goal, edge_source e = .goal g) ∧
     (∃ mt : Memory, edge_target e = .memory mt ∧ memory_kind mt ≠ .Perspective)
 
@@ -123,17 +125,26 @@ axiom OperatorId : Type
 axiom memory_operator : Memory → Option OperatorId
 axiom memory_source_batch : Memory → Option SourceBatchId
 
-/-- F→A exclusivity: "One completed row means the same operator
-    cannot emit the same output Abstraction schema for the same
-    source-batch input contract again" (doc 04). Kernel face: two
-    Abstractions from the same batch, same operator, same output
-    schema are the same memory. Multiple operators on one batch, or
-    one operator with distinct output schemas, stay legal. -/
+/-- The F→A input contract: the Fact-schema set the gate row keys on
+    (doc 04 §Source-batch lifecycle: "Fact schema set | input
+    contract"). Opaque — its content is a set of SchemaRefs
+    engine-side; the kernel needs only its identity as a gate
+    dimension. -/
+axiom InputContract : Type
+axiom memory_input_contract : Memory → Option InputContract
+
+/-- F→A exclusivity, per doc 04 §Phase 2: "Exclusive per (input
+    contract, operator id, output Abstraction schema)" within one
+    source batch. Kernel face: two Abstractions agreeing on ALL FOUR
+    gate dimensions are the same memory. The same operator may emit a
+    new row when the input contract OR output schema differs;
+    multiple operators on one batch stay legal. -/
 axiom ftoa_batch_exclusive :
   ∀ m1 m2 : Memory,
     memory_kind m1 = .Abstraction → memory_kind m2 = .Abstraction →
     memory_source_batch m1 ≠ none →
     memory_source_batch m1 = memory_source_batch m2 →
+    memory_input_contract m1 = memory_input_contract m2 →
     memory_operator m1 = memory_operator m2 →
     memory_schema m1 = memory_schema m2 →
     m1 = m2
