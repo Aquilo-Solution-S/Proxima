@@ -54,6 +54,11 @@ impl McpToolHost {
     /// # Errors
     ///
     /// Returns storage or migration failures.
+    ///
+    /// Runs only the substrate migrations. Flavor sidecar migrations
+    /// (including proxima-mcp-substrate's agent-note tables) are the
+    /// composing host's responsibility — run each linked flavor's
+    /// `migrator()` before serving tool calls.
     pub async fn from_database_url(
         database_url: &str,
         owner: Owner,
@@ -61,7 +66,6 @@ impl McpToolHost {
     ) -> Result<Self, crate::McpServerError> {
         let pg = proxima_storage_pg::PgStorage::connect(database_url).await?;
         pg.run_migrations().await?;
-        proxima_mcp_substrate::migrator().run(pg.pool()).await?;
         Ok(Self::from_pool(
             pg.pool().clone(),
             owner,

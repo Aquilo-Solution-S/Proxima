@@ -41,8 +41,8 @@ pub(crate) fn build_engine() -> (Engine, Arc<PgStorage>) {
             .expect("failed to run proxima-code flavor migrations");
         // Substrate migrations run before the engine is built so the
         // engine's snapshot path can LEFT-JOIN agent-note sidecars when
-        // the Atlas inspects MCP-authored memories. The MCP listener's
-        // own migrator() call is now redundant but harmless (idempotent).
+        // the Atlas inspects MCP-authored memories. Flavor migrations
+        // are composition's job — the MCP listener no longer self-migrates.
         proxima_mcp_substrate::migrator()
             .run(pg.pool())
             .await

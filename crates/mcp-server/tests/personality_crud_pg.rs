@@ -56,6 +56,7 @@ async fn discovery_to_mutation_smoke() -> Result<(), Box<dyn std::error::Error>>
     };
     let registry = FlavorRegistry::new();
     let server = McpToolHost::from_database_url(&database_url, owner.clone(), registry).await?;
+    proxima_mcp_substrate::migrator().run(server.pool()).await?;
     let store = Arc::new(WakeTokenStore::new(Duration::from_mins(5)));
     let auth_store = Arc::new(McpAuthStore::new(store));
     let master_token = uuid::Uuid::now_v7();
