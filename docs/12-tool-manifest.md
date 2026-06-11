@@ -184,7 +184,7 @@ Substrate MCP dispatch:
 | Step | Contract |
 |---|---|
 | Auth | wake-token or master-token context |
-| Owner | from auth context; `org_id` is not the access predicate |
+| Owner | from auth context; Owner = principal, org is a billing annotation only (doc 01) |
 | Args | JSON decoded into `McpTool::Args` |
 | Output | serialized `McpTool::Output` |
 | Handles | wake-token calls use `OutputMode::Handles`; master-token calls use raw ids |
