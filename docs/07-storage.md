@@ -61,17 +61,19 @@ superseding Facts.
 
 ## Owner Columns
 
-Rows that carry an `Owner` store the same three-part scope:
+Rows that carry an `Owner` store two identity columns plus a billing
+annotation:
 
 | Column | Meaning |
 |---|---|
 | `owner_principal_kind` | `User` or `Group` |
 | `owner_principal_id` | matching UserId or GroupId |
-| `owner_org_id` | OrgId for grouping and display |
+| `owner_org_id` | OrgId — engine billing/quota annotation; NOT part of Owner identity (doc 01 §Owner, renegotiated 2026-06-11) |
 
-Access predicates use principal kind + principal id. `org_id` is not in
-the access predicate. Cross-owner edges and cross-owner evidence are
-rejected.
+Access predicates use principal kind + principal id. Identity
+comparisons (operator gates, edge scoping, dedup keys) compare
+principal only — `owner_org_id` appears in no uniqueness key and no
+predicate. Cross-owner edges and cross-owner evidence are rejected.
 
 <a id="storage-layout"></a>
 

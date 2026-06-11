@@ -27,9 +27,9 @@ with before/after counts.
 
 | ID | Invariant | Carrier |
 |---|---|---|
-| ES-1 | Group-principal Owner org denormalized from group org | THEOREM `owner_org_denormalized` (Owner is a constrained subtype def) |
+| ES-1 | Group org → billing annotation on group-owned rows | excluded: org demoted to engine — decision `2026-06-11-org-out-of-kernel.md`; `owner_org_id` is engine billing metadata with no kernel face (was THEOREM `owner_org_denormalized` when Owner carried org) |
 | ES-2 | Visibility rule (principal-only) | def `visible` |
-| ES-3 | org_id never an access predicate | def `visible` (org absent) + comment |
+| ES-3 | org never enters access or identity | structural: org absent from the kernel entirely (`Owner := Principal`) — decision `2026-06-11-org-out-of-kernel.md` |
 | ES-4 | event_id deterministic content hash of (source, owner, payload) | axiom `event_id_payload_determined` (kernel-visible projection) |
 | ES-5 | Batch id unique within (source, owner) | excluded: per-scope engine validation with no kernel-observable face; F→A gate carries owner+personality dims (`ftoa_batch_exclusive`) — decision `2026-06-11-batch-id-scope.md` |
 | ES-6 | Every Fact traces to an Event Source, no exceptions | axiom `fact_iff_event` |
@@ -158,7 +158,7 @@ ontology content is CF-A/B/C/D above.
 | ST-5 | Edges insert-only | `Immutable Edge`, `AppendOnly Edge` |
 | ST-6 | EventId deterministic; duplicate = replay | axiom `event_id_payload_determined` |
 | ST-7/8 | CitedObject/CitationMapping ids, insert-only, one mapping per Fact | `cited_object_id_injective`, `citation_mapping_id_injective`, `Immutable` instances + theorem `citation_unique_per_fact` |
-| ST-9 | Owner three-part scope | `Owner` accessors (principal, org) |
+| ST-9 | Owner identity columns (principal kind + id); `owner_org_id` billing annotation | `Owner := Principal` + `owner_principal`; org column is engine-only — decision `2026-06-11-org-out-of-kernel.md` |
 | ST-10 | Cross-owner edges/evidence rejected | axiom `edge_scope_single_owner` |
 | ST-11 | INSERT-only cognitive lifecycle | class `AppendOnly` + instances |
 | ST-13 | Only compliance erasure deletes | Compliance.lean (`erased`, `erasure_removes_cognitive`) |
@@ -222,6 +222,9 @@ theorems**, lake-build green. Of the 132, ~60 are primitive declarations
 Implemented reductions:
 - Owner → constructive subtype def (`Owner`, `owner_principal`, `owner_org`
   defs); ES-1 `owner_org_denormalized` PROVED. −4 axioms.
+  *(Superseded 2026-06-11 morning review: org demoted to engine entirely,
+  `Owner := Principal`, `OrgId`/`group_org` removed, ES-1 dissolves —
+  130 axioms; decision `2026-06-11-org-out-of-kernel.md`.)*
 - Edges: descriptor masks are now the primitive layer; `edge_class_legal`
   (ME-11) and `edge_layer_rule` (ME-10) PROVED from them.
 - Memory supersession: `supersession_pointer_is_edge` bridge axiom (doc 02

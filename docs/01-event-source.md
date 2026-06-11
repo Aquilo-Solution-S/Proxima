@@ -8,28 +8,32 @@ Every Fact in the system traces back to an Event Source. No exceptions.
 
 ## Owner — scoping primitive
 
-Every Event, Memory, and Goal carries an `Owner`. Two distinct
-concerns: **principal** = access scope; **org_id** = billing unit
-(measured for data usage / quota).
+Every Event, Memory, and Goal carries an `Owner`: the access scope.
+Ontologically, Owner IS the principal — there is nothing else in it.
 
 ```rust
-struct Owner {
-    principal: Principal,       // access scope
-    org_id:    OrgId,           // billing unit
-}
-
-enum Principal {
+enum Owner {                    // = Principal
     User(UserId),               // personal — only that user sees it
     Group(GroupId),             // group-shared — group members see it
 }
 ```
 
-Used identically across components 01 / 02 / 05 / 06. Storage: three
-columns (`owner_principal_kind`, `owner_principal_id`, `owner_org_id`);
-`owner_principal_kind` is a SQL enum. Schemas ([03](03-schema-registry.md))
-are binary-scoped (per [03 §Scoping](03-schema-registry.md#scoping-one-namespace-per-binary)).
+**Organizations are not an ontology concept** (renegotiated
+2026-06-11 — decision `domain/decisions/2026-06-11-org-out-of-kernel.md`;
+previously `Owner` was a `{ principal, org_id }` record). Billing /
+quota attribution (`org_id`) is engine metadata annotated on storage
+rows. It never enters access, and it never enters **identity**:
+operator gates, edge scoping, and dedup keys compare principals, never
+org. The same user under two orgs is one identity, not two.
 
-Access rule (`org_id` never enters):
+Used identically across components 01 / 02 / 05 / 06. Storage: two
+identity columns (`owner_principal_kind`, `owner_principal_id`), plus
+the engine-side billing annotation `owner_org_id` (not part of any
+identity comparison); `owner_principal_kind` is a SQL enum. Schemas
+([03](03-schema-registry.md)) are binary-scoped (per
+[03 §Scoping](03-schema-registry.md#scoping-one-namespace-per-binary)).
+
+Access rule (org does not exist at this layer):
 
 ```
 visible(m, requester) iff
@@ -42,9 +46,9 @@ alongside org membership.
 
 v1 constraints:
 
-- Group lives in one org: `group.org_id` set at creation; a memory's
-  `owner.org_id` is denormalised from `group.org_id` when principal is
-  `Group`. Cross-org groups deferred (v2+).
+- Group lives in one org: `group.org_id` set at creation — a
+  usermanager fact the engine uses to fill the `owner_org_id` billing
+  annotation on group-owned rows. Cross-org groups deferred (v2+).
 - "Org-wide visible" expressed as a default `<org>-everyone` group
   whose membership auto-syncs with org membership. No `Principal::Org`
   variant.
@@ -255,10 +259,10 @@ extends the same `proxima.config.toml` and is specified in
 [10](10-configuration.md).
 
 For example, a shared Forgejo crawler for org-AQS emits with
-`principal = Group(org_AQS_everyone)`, `org_id = org_AQS`; a personal
-Telegram source emits with `principal = User(u)`, `org_id =
-u.personal_org`. Sources may also override owner per-event when the
-observation context demands it.
+`owner = Group(org_AQS_everyone)` (billing annotation `org_AQS`,
+derived from the group's org); a personal Telegram source emits with
+`owner = User(u)` (billed to `u.personal_org`). Sources may also
+override owner per-event when the observation context demands it.
 
 ```toml
 # proxima.config.toml
@@ -270,7 +274,9 @@ auth_secret = "..."
 
 [sources.default_owner]
 principal = { group = "org_AQS_everyone" }
-org_id    = "org_AQS"
+# billing annotation derived from the group's org (org_AQS); user
+# principals bill to the user's personal org. No explicit org field —
+# org is not part of Owner.
 
 # see §Compliance metadata
 [sources.compliance]

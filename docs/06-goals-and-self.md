@@ -244,7 +244,8 @@ Owner is per row.
 | Lifecycle Fact | same Owner as Goal write |
 
 Cross-owner Goal assignment and cross-owner evidence are rejected.
-`org_id` is not an access predicate.
+Owner means principal — org is a billing annotation, not part of
+Owner (doc 01 §Owner, renegotiated 2026-06-11).
 
 ## Authorship
 
