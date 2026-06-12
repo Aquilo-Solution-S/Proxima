@@ -96,6 +96,25 @@ Use the smallest relevant check:
 Frontend dev server: `pnpm --filter proxima-shell dev --host 127.0.0.1`.
 If port `1420` is occupied, Vite will choose another port.
 
+## Delegated agents (Codex / Vibe execution runs)
+
+Rules for non-interactive agents executing a scoped brief in this repo:
+
+- Lint gates are workspace-level and non-negotiable: `warnings = "deny"`,
+  `clippy::pedantic = deny`. Code is not done until
+  `cargo clippy --workspace --all-targets` is clean.
+- Tests: per-package `cargo test -p <crate> --lib` plus named
+  integration targets; PG-gated tests (e.g. `--test boot_pg`) need the
+  local dev Postgres and may be skipped when it is absent — say so.
+- Never commit; the orchestrator reviews the diff and commits.
+- Never weaken, delete, or `#[ignore]` a test assertion to get green —
+  restructure the implementation instead.
+- In git-worktree checkouts the index lives outside your write
+  boundary: no `git add`/`git mv`/`git rm`. Use plain `mv`/`cp`/`rm`;
+  rename detection happens at commit time.
+- Rust 2024, let-chains available; match surrounding style (see the
+  Verification table above for the smallest relevant check).
+
 ## MCP — engine query surface for agents
 
 While `proxima-shell` runs, the engine exposes a Streamable HTTP MCP
