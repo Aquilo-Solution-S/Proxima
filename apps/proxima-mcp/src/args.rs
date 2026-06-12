@@ -4,6 +4,7 @@ use proxima_core::{OrgId, Owner, Principal, UserId};
 use uuid::Uuid;
 
 pub const DEFAULT_BIND: &str = "127.0.0.1:31415";
+pub const DEFAULT_DATABASE_URL: &str = "postgres://postgres@localhost/proxima_dev";
 
 pub const USAGE: &str = "\
 Usage: proxima-mcp [OPTIONS]
@@ -13,12 +14,12 @@ Proxima Streamable HTTP MCP server.
 Required:
   --owner-user <UUID>      Fixed owner principal
   --owner-org  <UUID>      Fixed org id
+  --master-token <UUID>    Local bearer token (or PROXIMA_MCP_MASTER_TOKEN);
+                           clients send Authorization: Bearer pxm_<token>
 
 Optional:
   --database-url <URL>     Postgres URL (defaults to DATABASE_URL or proxima_dev)
   --bind <ADDR:PORT>       Bind address (default: 127.0.0.1:31415; loopback only)
-  --master-token <UUID>    Long-lived local bearer token (or PROXIMA_MCP_MASTER_TOKEN);
-                           clients send Authorization: Bearer pxm_<token>
   -h, --help               Print this message
 
 Endpoint:
@@ -103,8 +104,7 @@ pub fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<McpConfig, 
         owner_user.ok_or_else(|| ArgsError::Invalid("--owner-user required".into()))?;
     let owner_org = owner_org.ok_or_else(|| ArgsError::Invalid("--owner-org required".into()))?;
     let database_url = database_url.unwrap_or_else(|| {
-        std::env::var("DATABASE_URL")
-            .unwrap_or_else(|_| "postgres://postgres@localhost/proxima_dev".to_string())
+        std::env::var("DATABASE_URL").unwrap_or_else(|_| DEFAULT_DATABASE_URL.to_string())
     });
     let bind = match bind {
         Some(bind) => bind,
