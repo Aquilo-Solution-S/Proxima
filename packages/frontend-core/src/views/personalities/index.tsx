@@ -26,7 +26,6 @@ import {
   type TombstonePersonalityTs,
   type WakeEntryDraftTs,
   type WakeInvocationTs,
-  type WorkspaceToolTs,
 } from "../../bindings";
 import { sentinelOwner } from "../../graph-store";
 import { PersonalityCanvas } from "./canvas";
@@ -59,7 +58,6 @@ export type PersonalityCommandClient = {
     req: TombstonePersonalityTs,
   ) => CommandResult<TombstonePersonalityOutcomeTs>;
   listMcpTools: () => CommandResult<McpToolTs[]>;
-  listWorkspaceTools: () => CommandResult<WorkspaceToolTs[]>;
   listRelations: () => CommandResult<RelationTs[]>;
   wakeEntryProduces: (
     substratePalette: string[],
@@ -84,8 +82,6 @@ const entryToDraft = (
   model_tier: entry.model_tier,
   inference_target_ref: entry.inference_target_ref,
   substrate_tool_palette: [...entry.substrate_tool_palette],
-  workspace_tool_palette: [...entry.workspace_tool_palette],
-  workspace_binding: entry.workspace_binding,
   required_produced_schema_ids: [...entry.required_produced_schema_ids],
   max_rounds: entry.max_rounds,
 });
@@ -93,7 +89,6 @@ const entryToDraft = (
 const cloneDraft = (draft: WakeEntryDraftTs): WakeEntryDraftTs => ({
   ...draft,
   substrate_tool_palette: [...draft.substrate_tool_palette],
-  workspace_tool_palette: [...draft.workspace_tool_palette],
   required_produced_schema_ids: [...draft.required_produced_schema_ids],
 });
 
@@ -118,9 +113,6 @@ export const PersonalitiesView: Component<{
     string | null
   >(null);
   const [mcpTools, setMcpTools] = createSignal<McpToolTs[] | null>(null);
-  const [workspaceTools, setWorkspaceTools] = createSignal<
-    WorkspaceToolTs[] | null
-  >(null);
   const [relations, setRelations] = createSignal<RelationTs[] | null>(null);
   const [toolsError, setToolsError] = createSignal<string | null>(null);
   const [wakeInvocations, setWakeInvocations] = createSignal<
@@ -134,13 +126,11 @@ export const PersonalitiesView: Component<{
   const refreshTools = async () => {
     setToolsError(null);
     try {
-      const [substrate, workspace, rels] = await Promise.all([
+      const [substrate, rels] = await Promise.all([
         unwrap(client.listMcpTools()),
-        unwrap(client.listWorkspaceTools()),
         unwrap(client.listRelations()),
       ]);
       setMcpTools(substrate);
-      setWorkspaceTools(workspace);
       setRelations(rels);
     } catch (err) {
       setToolsError(errorMessage(err));
@@ -193,6 +183,8 @@ export const PersonalitiesView: Component<{
           owner,
           personality_instance_id: scope.personalityInstanceId,
           wake_entry_id: scope.wakeEntryId,
+          triggering_memory_id: null,
+          change_event_seq: null,
           limit: 20,
         }),
       );
@@ -495,7 +487,6 @@ export const PersonalitiesView: Component<{
           saving={saving()}
           error={creating() ? null : error()}
           mcpTools={mcpTools()}
-          workspaceTools={workspaceTools()}
           relations={relations()}
           toolsError={toolsError()}
           wakeInvocations={wakeInvocations()}

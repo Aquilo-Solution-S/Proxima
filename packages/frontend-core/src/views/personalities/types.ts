@@ -70,10 +70,7 @@ export interface CanvasModel {
 
 export const TRIGGER_KINDS: TriggerKindTs[] = ["on_memory", "on_edge"];
 export const AUTHORED_BY: AuthoredByTs[] = ["any", "self_author", "other"];
-export const EXECUTION_MODES: ExecutionModeTs[] = [
-  "substrate_only",
-  "workspace",
-];
+export const EXECUTION_MODES: ExecutionModeTs[] = ["substrate_only"];
 export const MODEL_TIERS: ModelTierTs[] = ["fast", "standard", "deep"];
 
 export const emptyDraft = (
@@ -91,8 +88,6 @@ export const emptyDraft = (
   model_tier: "standard",
   inference_target_ref: null,
   substrate_tool_palette: [],
-  workspace_tool_palette: [],
-  workspace_binding: null,
   required_produced_schema_ids: [],
   max_rounds: 16,
 });
