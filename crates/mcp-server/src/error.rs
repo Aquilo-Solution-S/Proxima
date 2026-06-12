@@ -12,4 +12,6 @@ pub enum McpServerError {
     Migration(#[from] sqlx::migrate::MigrateError),
     #[error("axum: {0}")]
     Axum(String),
+    #[error("invalid origin: {0}")]
+    InvalidOrigin(String),
 }
