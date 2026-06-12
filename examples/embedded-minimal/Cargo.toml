@@ -1,0 +1,24 @@
+[package]
+name = "embedded-minimal"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+proxima-core = { path = "../../crates/core" }
+proxima-embed = { path = "../../crates/embed" }
+ciborium = { workspace = true }
+blake3 = { workspace = true }
+sqlx = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+specta = { workspace = true }
+time = { workspace = true }
+tokio = { workspace = true }
+uuid = { workspace = true }

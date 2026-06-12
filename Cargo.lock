@@ -1777,6 +1777,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4ef6b89e5b37196644d8796de5268852ff179b44e96276cf4290264843743bb7"
 
 [[package]]
+name = "embedded-minimal"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "ciborium",
+ "proxima-core",
+ "proxima-embed",
+ "serde",
+ "serde_json",
+ "specta",
+ "sqlx",
+ "time",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "endi"
 version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4319,6 +4336,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "proxima-embed"
+version = "0.1.0"
+dependencies = [
+ "proxima-blob-s3",
+ "proxima-core",
+ "proxima-flavor-goal",
+ "proxima-storage-pg",
+ "sqlx",
+ "thiserror 2.0.18",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "proxima-flavor-goal"
 version = "0.1.0"
 dependencies = [
@@ -4455,6 +4486,7 @@ dependencies = [
  "futures-util",
  "hex",
  "keyring-core",
+ "proxima-blob-s3",
  "proxima-code",
  "proxima-codex-auth",
  "proxima-core",
