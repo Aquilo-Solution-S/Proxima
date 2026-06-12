@@ -8,7 +8,7 @@ repository.workspace = true
 
 [dependencies]
 proxima-core = { path = "../../crates/core" }
-proxima-embed = { path = "../../crates/embed" }
+proxima = { path = "../../crates/proxima" }
 proxima-flavor-goal = { path = "../../flavors/goal" }
 proxima-mcp-server = { path = "../../crates/mcp-server" }
 proxima-agent-memory = { path = "../../flavors/agent-memory" }

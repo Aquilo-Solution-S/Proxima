@@ -12,7 +12,7 @@ workspace = true
 
 [dependencies]
 proxima-core = { path = "../../crates/core" }
-proxima-embed = { path = "../../crates/embed" }
+proxima = { path = "../../crates/proxima" }
 ciborium = { workspace = true }
 blake3 = { workspace = true }
 sqlx = { workspace = true }

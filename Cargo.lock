@@ -1782,8 +1782,8 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "ciborium",
+ "proxima",
  "proxima-core",
- "proxima-embed",
  "serde",
  "serde_json",
  "specta",
@@ -4232,6 +4232,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "proxima"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "http 1.4.0",
+ "proxima-blob-s3",
+ "proxima-core",
+ "proxima-flavor-goal",
+ "proxima-storage-pg",
+ "sqlx",
+ "thiserror 2.0.18",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "proxima-agent-memory"
 version = "0.1.0"
 dependencies = [
@@ -4348,26 +4364,12 @@ dependencies = [
 name = "proxima-dev-migrate"
 version = "0.1.0"
 dependencies = [
+ "proxima",
  "proxima-agent-memory",
  "proxima-code",
- "proxima-embed",
  "proxima-flavor-goal",
  "proxima-storage-pg",
  "tokio",
-]
-
-[[package]]
-name = "proxima-embed"
-version = "0.1.0"
-dependencies = [
- "proxima-blob-s3",
- "proxima-core",
- "proxima-flavor-goal",
- "proxima-storage-pg",
- "sqlx",
- "thiserror 2.0.18",
- "tokio",
- "uuid",
 ]
 
 [[package]]
@@ -4432,9 +4434,9 @@ dependencies = [
 name = "proxima-mcp"
 version = "0.1.0"
 dependencies = [
+ "proxima",
  "proxima-agent-memory",
  "proxima-core",
- "proxima-embed",
  "proxima-flavor-goal",
  "proxima-mcp-server",
  "proxima-storage-pg",
@@ -4488,12 +4490,12 @@ dependencies = [
  "futures-util",
  "hex",
  "keyring-core",
+ "proxima",
  "proxima-agent-memory",
  "proxima-blob-s3",
  "proxima-code",
  "proxima-codex-auth",
  "proxima-core",
- "proxima-embed",
  "proxima-flavor-goal",
  "proxima-harness",
  "proxima-llm-openai-compat",

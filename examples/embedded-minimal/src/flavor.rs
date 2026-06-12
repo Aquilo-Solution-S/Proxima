@@ -1,10 +1,10 @@
 //! Example out-of-tree flavor: one Fact schema for "a document was filed".
 
+use proxima::{FlavorBundle, NamedMigrator};
 use proxima_core::{
     FactPayload, FlavorRegistry, SearchProjection, SearchProjectionColumnKind,
     SearchProjectionField,
 };
-use proxima_embed::{FlavorBundle, NamedMigrator};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
