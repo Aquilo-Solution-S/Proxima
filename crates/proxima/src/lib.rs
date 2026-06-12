@@ -8,16 +8,23 @@
 //! must set `ignore_missing(true)`, and host tables must stay out of
 //! the `proxima_core` / per-flavor schemas.
 
+mod app;
 mod bundle;
 mod config;
 mod migrations;
+mod runtime;
+mod runtime_config;
 
+pub use app::{AppContext, AppInfo, Authz, FlavorApp};
 pub use bundle::FlavorBundle;
 pub use config::EmbedConfig;
 pub use migrations::{
     MigrationError, MigrationRunReport, MigrationVersion, NamedMigrator,
     run_core_and_flavor_migrations,
 };
+pub use proxima_mcp_server::McpAuthContext;
+pub use runtime::{BuiltProxima, Proxima, RunningProxima, layered_router, run};
+pub use runtime_config::{McpSettings, ProximaError, RuntimeBuilder, RuntimeConfig, RuntimeParts};
 
 use std::sync::Arc;
 

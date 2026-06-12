@@ -40,6 +40,24 @@ pnpm --filter proxima-shell build
 pnpm --filter proxima-shell perf:down
 ```
 
+## Embedding Proxima
+
+Host apps use the `proxima` framework facade:
+
+```rust
+proxima::run::<App>().await?;
+
+Proxima::<App>::app()
+    .from_env()
+    .authenticator(auth)
+    .run()
+    .await?;
+```
+
+Use [`examples/embedded-minimal`](examples/embedded-minimal) as the
+wiring template. Runtime env/default semantics live in
+[`crates/proxima`](crates/proxima).
+
 Design source of truth:
 
 - [`docs/universe.md`](docs/universe.md) — origin doc. Ontology, the Spinning
