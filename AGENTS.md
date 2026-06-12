@@ -41,17 +41,19 @@ explicit request.
 ```
 proxima/
 ├── apps/
-│   ├── proxima-engine/      Rust engine binary
-│   ├── proxima-code/        Rust code-flavor binary
 │   ├── proxima-mcp/         Rust headless MCP host binary (substrate + goal)
 │   └── proxima-shell/       Solid + Vite + Tauri 2 shell
 │       └── src-tauri/       Tauri Rust crate
 ├── crates/
+│   ├── blob-s3/             Rust S3 cited-blob service crate
+│   ├── codex-auth/          Rust ChatGPT Codex auth resolver crate
 │   ├── core/                Rust lib crate `proxima-core`
+│   ├── embed/               Rust host-binary embedding facade crate
+│   ├── harness/             Rust wake harness / provider loop crate
+│   ├── llm-openai-compat/   Rust OpenAI-compatible model client crate
 │   ├── mcp-server/          Rust MCP HTTP listener crate (`proxima_mcp_server`)
 │   ├── storage-pg/          Rust Postgres storage crate
-│   ├── wire-grpc/           Rust gRPC wire crate
-│   └── llm-openai-compat/   Rust OpenAI-compatible model client crate
+│   └── wire-grpc/           Rust gRPC wire crate
 ├── packages/
 │   └── frontend-core/       npm package `@proxima/core`
 ├── flavors/
@@ -238,9 +240,9 @@ breaks if these slip.
 - Code subject: `feat(<component>): <summary>` /
   `fix(<component>): <summary>` / `chore(<component>): <summary>`.
   Components include `core`, `frontend-core`, `proxima-shell`,
-  `proxima-engine`, `proxima-code`, `proxima-mcp`, `storage-pg`,
-  `wire-grpc`, `mcp-server`, `llm-openai-compat`, `flavors-code`,
-  `flavors-goal`, `flavors-mcp`, `examples`, `tools`.
+  `proxima-mcp`, `storage-pg`, `wire-grpc`, `mcp-server`,
+  `llm-openai-compat`, `blob-s3`, `codex-auth`, `embed`, `harness`,
+  `flavors-code`, `flavors-goal`, `flavors-mcp`, `examples`, `tools`.
 - Body: bulleted list of concrete changes; preserve the *why* when
   the change is a decision, not a fix.
 - Co-authorship trailer for AI commits matches the parent CLAUDE.md

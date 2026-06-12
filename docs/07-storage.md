@@ -184,27 +184,6 @@ is explicitly defined as a content hash.
 No conflict-resolution protocol is attached to deterministic re-receipt.
 The same source payload means the same observation.
 
-<a id="wake-artifacts-on-disk"></a>
-
-## Wake Artifacts On Disk
-
-A workspace wake produces two large artifacts: the harness transcript
-(JSONL) and, when the observation sandbox is enabled, the egress proxy's
-network log. Both are written to local disk under
-`~/.proxima/wake-runs/<principal>/<invocation_id>/` —
-`worker-session.jsonl` and `network.log`.
-
-The `workspace_run_v1` Fact sidecar stays small: it records only the
-blake3 hex hashes (`transcript_blob_hash`, `network_log_blob_hash`) that
-address those files, alongside the sandbox image / container / wake branch.
-The `workspace_run` row remains an immutable Fact observation; the bulk
-bytes live beside it on disk.
-
-The hash columns are backend-agnostic. v1 is a single-machine embedded
-engine, so local disk is durable, retrievable storage; a hosted or
-multi-machine deployment can move the artifacts to object storage with no
-schema change — the hash still addresses them.
-
 <a id="time-partitioning"></a>
 
 ## Time Partitioning

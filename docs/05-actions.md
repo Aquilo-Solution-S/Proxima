@@ -64,9 +64,9 @@ Tools are effect adapters.
 | A/P writes | operator/wake output protocol only; tools do not bypass 04 |
 | Failure | failed attempts are Facts when the source/tool schema models them |
 
-Current v1 tool execution is internal MCP / personality / workspace
-dispatch. External HTTP/WASM body transports are deferred. That
-execution detail is not an action ontology.
+Current v1 tool execution is internal MCP / personality dispatch.
+External HTTP/WASM body transports are deferred. That execution detail
+is not an action ontology.
 
 ## Effect on Reality
 
