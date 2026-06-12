@@ -4458,7 +4458,10 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "axum",
+ "futures-util",
  "http 1.4.0",
+ "http-body 1.0.1",
+ "http-body-util",
  "proxima-agent-memory",
  "proxima-core",
  "proxima-storage-pg",

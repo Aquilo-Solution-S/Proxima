@@ -38,6 +38,8 @@ schemars = { version = "1", features = ["uuid1", "preserve_order"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
 http = "1"
+http-body = "1"
+http-body-util = "0.1"
 tokio-util = "0.7"
 tower = "0.5"
 hex = "0.4"
