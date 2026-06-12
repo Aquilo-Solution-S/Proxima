@@ -4,11 +4,9 @@ use std::sync::Arc;
 
 use proxima_core::mcp::{HandleTable, McpAuthorContext, McpToolCtx, OutputMode};
 use proxima_core::{AuthPath, AuthzContext, FlavorRegistry, OrgId, Owner, Principal, UserId};
+pub use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
 use proxima_storage_pg::PgStorage;
-use sqlx::{Connection, Executor, PgConnection};
 use uuid::Uuid;
-
-const ADMIN_URL: &str = "postgres://proxima:proxima@localhost/proxima";
 
 pub fn owner_fixture() -> Owner {
     Owner {
@@ -25,11 +23,11 @@ pub fn other_owner_fixture() -> Owner {
 }
 
 pub async fn fresh_pg() -> Option<(PgStorage, String)> {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = unique_db_name("proxima_test");
     if let Err(e) = create_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
-    let url = format!("postgres://proxima:proxima@localhost/{db_name}");
+    let url = db_url(&db_name);
     match PgStorage::connect(&url).await {
         Ok(pg) => Some((pg, db_name)),
         Err(err) => {
@@ -37,22 +35,6 @@ pub async fn fresh_pg() -> Option<(PgStorage, String)> {
             panic!("PG required for tests but unavailable: {err}");
         }
     }
-}
-
-pub async fn create_db(name: &str) -> Result<(), sqlx::Error> {
-    let mut conn = PgConnection::connect(ADMIN_URL).await?;
-    conn.execute(format!("CREATE DATABASE \"{name}\"").as_str())
-        .await?;
-    conn.close().await?;
-    Ok(())
-}
-
-pub async fn drop_db(name: &str) -> Result<(), sqlx::Error> {
-    let mut conn = PgConnection::connect(ADMIN_URL).await?;
-    conn.execute(format!("DROP DATABASE IF EXISTS \"{name}\" WITH (FORCE)").as_str())
-        .await?;
-    conn.close().await?;
-    Ok(())
 }
 
 pub async fn migrated() -> Option<(PgStorage, String)> {

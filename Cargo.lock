@@ -4242,6 +4242,7 @@ dependencies = [
  "proxima-core",
  "proxima-flavor-goal",
  "proxima-mcp-server",
+ "proxima-pg-testkit",
  "proxima-storage-pg",
  "sqlx",
  "thiserror 2.0.18",
@@ -4262,6 +4263,7 @@ dependencies = [
  "futures",
  "proxima-core",
  "proxima-harness",
+ "proxima-pg-testkit",
  "proxima-storage-pg",
  "schemars 1.2.1",
  "serde",
@@ -4281,6 +4283,7 @@ dependencies = [
  "blake3",
  "hex",
  "proxima-core",
+ "proxima-pg-testkit",
  "proxima-storage-pg",
  "serde",
  "sha2 0.10.9",
@@ -4305,6 +4308,7 @@ dependencies = [
  "proxima-flavor-goal",
  "proxima-harness",
  "proxima-mcp-server",
+ "proxima-pg-testkit",
  "proxima-storage-pg",
  "schemars 1.2.1",
  "serde",
@@ -4350,6 +4354,7 @@ dependencies = [
  "futures",
  "futures-util",
  "libc",
+ "proxima-pg-testkit",
  "proxima-storage-pg",
  "reqwest 0.12.28",
  "schemars 1.2.1",
@@ -4387,6 +4392,7 @@ dependencies = [
  "proxima-core",
  "proxima-harness",
  "proxima-mcp-server",
+ "proxima-pg-testkit",
  "proxima-storage-pg",
  "schemars 1.2.1",
  "serde",
@@ -4464,6 +4470,7 @@ dependencies = [
  "http-body-util",
  "proxima-agent-memory",
  "proxima-core",
+ "proxima-pg-testkit",
  "proxima-storage-pg",
  "reqwest 0.12.28",
  "rmcp",
@@ -4475,6 +4482,16 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tower",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "proxima-pg-testkit"
+version = "0.1.0"
+dependencies = [
+ "sqlx",
+ "tokio",
  "tracing",
  "uuid",
 ]
@@ -4542,6 +4559,7 @@ dependencies = [
  "futures-util",
  "proxima-agent-memory",
  "proxima-core",
+ "proxima-pg-testkit",
  "serde",
  "serde_json",
  "sqlx",

@@ -15,38 +15,14 @@ use proxima_core::llm::scripted::{ScriptedAnthropicClient, ScriptedTurn};
 use proxima_core::llm::{EmbeddingClient, LlmError};
 use proxima_core::personality::InstantiatePersonalityRequest;
 use proxima_core::{OrgId, Owner, Principal, SourceBatchId, UserId};
+use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
 use proxima_storage_pg::PgStorage;
-use sqlx::{Connection, Executor, PgConnection};
 use uuid::Uuid;
 
-const ADMIN_URL: &str = "postgres://proxima:proxima@localhost/postgres";
-
-async fn create_db(name: &str) -> Result<(), sqlx::Error> {
-    let admin = std::env::var("PROXIMA_TEST_PG_URL").unwrap_or_else(|_| ADMIN_URL.into());
-    let mut conn = PgConnection::connect(&admin).await?;
-    conn.execute(format!("CREATE DATABASE \"{name}\"").as_str())
-        .await?;
-    conn.close().await?;
-    Ok(())
-}
-
-async fn drop_db(name: &str) -> Result<(), sqlx::Error> {
-    let admin = std::env::var("PROXIMA_TEST_PG_URL").unwrap_or_else(|_| ADMIN_URL.into());
-    let mut conn = PgConnection::connect(&admin).await?;
-    conn.execute(format!("DROP DATABASE IF EXISTS \"{name}\" WITH (FORCE)").as_str())
-        .await?;
-    conn.close().await?;
-    Ok(())
-}
-
 async fn migrated_db() -> Option<(String, PgStorage)> {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = unique_db_name("proxima_test");
     create_db(&db_name).await.expect("PG required for tests");
-    let admin = std::env::var("PROXIMA_TEST_PG_URL").unwrap_or_else(|_| ADMIN_URL.into());
-    let url = match admin.rfind('/') {
-        Some(idx) => format!("{}/{}", &admin[..idx], db_name),
-        None => format!("{admin}/{db_name}"),
-    };
+    let url = db_url(&db_name);
     let pg = PgStorage::connect(&url).await.expect("connect test db");
     pg.run_migrations().await.expect("core migrations");
     migrator().run(pg.pool()).await.expect("code migrations");

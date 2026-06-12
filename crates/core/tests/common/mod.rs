@@ -22,27 +22,10 @@ use proxima_core::{
     OrgId, Owner, Principal, RegisterInferenceTargetRequest, SchemaId, SchemaVersion,
     SourceBatchId, SourceId, StorageHandle, UserId, WakeEntryAuthoredBy, WakeEntryTriggerKind,
 };
+pub use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
 use proxima_storage_pg::PgStorage;
-use sqlx::{Connection, Executor, PgConnection, Row};
+use sqlx::{Executor, Row};
 use uuid::Uuid;
-
-/// Override via `PROXIMA_TEST_PG_URL` (e.g. the `docker-compose.dev.yml`
-/// PG: `postgres://proxima:proxima@localhost/proxima`). The default
-/// targets a peer-auth local PG with a `postgres` superuser, matching
-/// the `proxima-storage-pg` test harness.
-const DEFAULT_ADMIN_URL: &str = "postgres://proxima:proxima@localhost/proxima";
-
-pub fn admin_url() -> String {
-    std::env::var("PROXIMA_TEST_PG_URL").unwrap_or_else(|_| DEFAULT_ADMIN_URL.into())
-}
-
-pub fn db_url(name: &str) -> String {
-    let admin = admin_url();
-    match admin.rfind('/') {
-        Some(idx) => format!("{}/{}", &admin[..idx], name),
-        None => format!("{admin}/{name}"),
-    }
-}
 
 pub fn owner_fixture() -> Owner {
     Owner {
@@ -52,7 +35,7 @@ pub fn owner_fixture() -> Owner {
 }
 
 pub async fn fresh_pg() -> Option<(PgStorage, String)> {
-    let db_name = format!("proxima_core_test_{}", Uuid::now_v7().simple());
+    let db_name = unique_db_name("proxima_core_test");
     if let Err(e) = create_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
@@ -64,22 +47,6 @@ pub async fn fresh_pg() -> Option<(PgStorage, String)> {
             panic!("PG required for tests but unavailable: {err}");
         }
     }
-}
-
-pub async fn create_db(name: &str) -> Result<(), sqlx::Error> {
-    let mut conn = PgConnection::connect(&admin_url()).await?;
-    conn.execute(format!("CREATE DATABASE \"{name}\"").as_str())
-        .await?;
-    conn.close().await?;
-    Ok(())
-}
-
-pub async fn drop_db(name: &str) -> Result<(), sqlx::Error> {
-    let mut conn = PgConnection::connect(&admin_url()).await?;
-    conn.execute(format!("DROP DATABASE IF EXISTS \"{name}\" WITH (FORCE)").as_str())
-        .await?;
-    conn.close().await?;
-    Ok(())
 }
 
 /// Apply the test sidecar table for the wake-context fixture's

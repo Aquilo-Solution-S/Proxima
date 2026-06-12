@@ -7,7 +7,7 @@ mod common;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 
-use common::{create_db, drop_db, initialize, initialized, post_rpc};
+use common::{create_db, db_url, drop_db, initialize, initialized, post_rpc};
 use proxima_core::{Engine, FlavorRegistry, OrgId, Owner, Principal, UserId};
 use proxima_mcp_server::{McpEdgeAuth, McpToolHost, default_allowlist, serve_streamable_http};
 use proxima_storage_pg::PgStorage;
@@ -48,7 +48,7 @@ async fn discovery_to_mutation_smoke() -> Result<(), Box<dyn std::error::Error>>
     let Some(db_name) = create_db().await? else {
         return Ok(());
     };
-    let database_url = format!("postgres://proxima:proxima@localhost/{db_name}");
+    let database_url = db_url(&db_name);
     let owner = Owner {
         principal: Principal::User(UserId::new(uuid::Uuid::now_v7())),
         org_id: OrgId::new(uuid::Uuid::now_v7()),

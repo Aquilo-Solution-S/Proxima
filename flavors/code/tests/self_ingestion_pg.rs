@@ -18,29 +18,11 @@ use proxima_core::verbs::subscribe::SubscribeRequest;
 use proxima_core::{
     ChangeEventKind, Cursor, EntityKind, OrgId, Owner, Principal, SchemaId, UserId,
 };
+use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
 use proxima_storage_pg::PgStorage;
-use sqlx::{Connection, Executor, PgConnection};
 use tempfile::TempDir;
 use tokio_stream::StreamExt;
 use uuid::Uuid;
-
-const ADMIN_URL: &str = "postgres://proxima:proxima@localhost/proxima";
-
-async fn create_db(name: &str) -> Result<(), sqlx::Error> {
-    let mut conn = PgConnection::connect(ADMIN_URL).await?;
-    conn.execute(format!("CREATE DATABASE \"{name}\"").as_str())
-        .await?;
-    conn.close().await?;
-    Ok(())
-}
-
-async fn drop_db(name: &str) -> Result<(), sqlx::Error> {
-    let mut conn = PgConnection::connect(ADMIN_URL).await?;
-    conn.execute(format!("DROP DATABASE IF EXISTS \"{name}\" WITH (FORCE)").as_str())
-        .await?;
-    conn.close().await?;
-    Ok(())
-}
 
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -132,9 +114,9 @@ async fn count_commit_v1_facts(pool: &sqlx::PgPool, owner: &Owner, repo_id: Uuid
 
 #[tokio::test]
 async fn self_ingestion_streams_proxima_main() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = unique_db_name("proxima_test");
     create_db(&db_name).await.expect("PG required for tests");
-    let url = format!("postgres://proxima:proxima@localhost/{db_name}");
+    let url = db_url(&db_name);
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;

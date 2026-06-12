@@ -9,10 +9,8 @@ use proxima_core::{
     AuthPath, AuthzContext, EntityKind, FlavorRegistry, McpToolError, OrgId, Owner,
     OwnerPrincipalKind, Principal, UserId,
 };
+use proxima_pg_testkit::{db_url, drop_db, unique_db_name};
 use serde_json::json;
-use sqlx::{Connection, Executor, PgConnection};
-
-const ADMIN_URL: &str = "postgres://proxima:proxima@localhost/proxima";
 
 #[derive(Debug)]
 struct FixedEmbedding;
@@ -37,10 +35,7 @@ async fn remember_then_search_round_trip() -> Result<(), Box<dyn std::error::Err
     let Some(db_name) = create_db().await? else {
         return Ok(());
     };
-    let pg = proxima_storage_pg::PgStorage::connect(&format!(
-        "postgres://proxima:proxima@localhost/{db_name}"
-    ))
-    .await?;
+    let pg = proxima_storage_pg::PgStorage::connect(&db_url(&db_name)).await?;
     pg.run_migrations().await?;
     proxima_agent_memory::migrator().run(pg.pool()).await?;
 
@@ -100,10 +95,7 @@ async fn link_rejects_direct_fact_to_fact_interpretation() -> Result<(), Box<dyn
     let Some(db_name) = create_db().await? else {
         return Ok(());
     };
-    let pg = proxima_storage_pg::PgStorage::connect(&format!(
-        "postgres://proxima:proxima@localhost/{db_name}"
-    ))
-    .await?;
+    let pg = proxima_storage_pg::PgStorage::connect(&db_url(&db_name)).await?;
     pg.run_migrations().await?;
     proxima_agent_memory::migrator().run(pg.pool()).await?;
 
@@ -176,10 +168,7 @@ async fn search_graph_hybrid_returns_embedding_only_match() -> Result<(), Box<dy
     let Some(db_name) = create_db().await? else {
         return Ok(());
     };
-    let pg = proxima_storage_pg::PgStorage::connect(&format!(
-        "postgres://proxima:proxima@localhost/{db_name}"
-    ))
-    .await?;
+    let pg = proxima_storage_pg::PgStorage::connect(&db_url(&db_name)).await?;
     pg.run_migrations().await?;
     proxima_agent_memory::migrator().run(pg.pool()).await?;
 
@@ -255,10 +244,7 @@ async fn derive_scopes_idempotency_by_owner_and_kind() -> Result<(), Box<dyn std
     let Some(db_name) = create_db().await? else {
         return Ok(());
     };
-    let pg = proxima_storage_pg::PgStorage::connect(&format!(
-        "postgres://proxima:proxima@localhost/{db_name}"
-    ))
-    .await?;
+    let pg = proxima_storage_pg::PgStorage::connect(&db_url(&db_name)).await?;
     pg.run_migrations().await?;
     proxima_agent_memory::migrator().run(pg.pool()).await?;
 
@@ -371,10 +357,7 @@ async fn derive_rejects_upward_provenance() -> Result<(), Box<dyn std::error::Er
     let Some(db_name) = create_db().await? else {
         return Ok(());
     };
-    let pg = proxima_storage_pg::PgStorage::connect(&format!(
-        "postgres://proxima:proxima@localhost/{db_name}"
-    ))
-    .await?;
+    let pg = proxima_storage_pg::PgStorage::connect(&db_url(&db_name)).await?;
     pg.run_migrations().await?;
     proxima_agent_memory::migrator().run(pg.pool()).await?;
 
@@ -521,20 +504,9 @@ fn author_ctx() -> McpAuthorContext {
 }
 
 async fn create_db() -> Result<Option<String>, Box<dyn std::error::Error>> {
-    let db_name = format!("proxima_test_{}", uuid::Uuid::now_v7().simple());
-    let Ok(mut conn) = PgConnection::connect(ADMIN_URL).await else {
-        panic!("PG required for tests but admin connect failed");
-    };
-    conn.execute(format!("CREATE DATABASE \"{db_name}\"").as_str())
-        .await?;
-    conn.close().await?;
+    let db_name = unique_db_name("proxima_test");
+    proxima_pg_testkit::create_db(&db_name)
+        .await
+        .expect("PG required for tests but admin connect failed");
     Ok(Some(db_name))
-}
-
-async fn drop_db(name: &str) -> Result<(), sqlx::Error> {
-    let mut conn = PgConnection::connect(ADMIN_URL).await?;
-    conn.execute(format!("DROP DATABASE IF EXISTS \"{name}\" WITH (FORCE)").as_str())
-        .await?;
-    conn.close().await?;
-    Ok(())
 }
