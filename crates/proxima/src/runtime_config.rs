@@ -47,6 +47,24 @@ impl std::fmt::Debug for RuntimeBuilder {
 
 impl RuntimeBuilder {
     #[must_use]
+    pub(crate) fn merge_over(self, base: Self) -> Self {
+        Self {
+            database_url: self.database_url.or(base.database_url),
+            s3: self.s3.or(base.s3),
+            owner: self.owner.or(base.owner),
+            org_id: self.org_id.or(base.org_id),
+            mcp_enabled: self.mcp_enabled || base.mcp_enabled,
+            mcp_bind: self.mcp_bind.or(base.mcp_bind),
+            expose_network: self.expose_network.or(base.expose_network),
+            allowed_origins: self.allowed_origins.or(base.allowed_origins),
+            insecure_single_owner: self.insecure_single_owner || base.insecure_single_owner,
+            authenticator: self.authenticator.or(base.authenticator),
+            embed_client: self.embed_client.or(base.embed_client),
+            anthropic: self.anthropic.or(base.anthropic),
+        }
+    }
+
+    #[must_use]
     pub fn database_url(mut self, database_url: impl Into<String>) -> Self {
         self.database_url = Some(database_url.into());
         self
@@ -560,5 +578,32 @@ mod tests {
             .unwrap();
 
         assert_eq!(config.mcp.unwrap().bind, default_mcp_bind());
+    }
+
+    #[test]
+    fn merge_over_prefers_self_options_and_ors_flags() {
+        let base = RuntimeBuilder::default()
+            .database_url("postgres://base/proxima")
+            .owner(owner(uuid::Uuid::now_v7()))
+            .mcp_bind(addr([127, 0, 0, 1]));
+        let overlay = RuntimeBuilder::default()
+            .database_url("postgres://overlay/proxima")
+            .allowed_origins(vec!["https://overlay.test".to_string()])
+            .allow_insecure_single_owner();
+
+        let merged = overlay.merge_over(base);
+
+        assert_eq!(
+            merged.database_url.as_deref(),
+            Some("postgres://overlay/proxima")
+        );
+        assert!(merged.owner.is_some());
+        assert!(merged.mcp_enabled);
+        assert!(merged.mcp_bind.is_some());
+        assert_eq!(
+            merged.allowed_origins.as_deref(),
+            Some(["https://overlay.test".to_string()].as_slice())
+        );
+        assert!(merged.insecure_single_owner);
     }
 }
