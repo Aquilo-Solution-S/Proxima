@@ -1,0 +1,29 @@
+[package]
+name = "proxima-blob-s3"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+aws-config = { workspace = true }
+aws-sdk-s3 = { workspace = true }
+proxima-core = { path = "../core" }
+sqlx = { workspace = true }
+time = { workspace = true }
+uuid = { workspace = true }
+thiserror = { workspace = true }
+specta = { workspace = true }
+serde = { workspace = true }
+blake3 = { workspace = true }
+hex = { workspace = true }
+sha2 = { workspace = true }
+tokio = { workspace = true, features = ["io-util"] }
+
+[dev-dependencies]
+proxima-storage-pg = { path = "../storage-pg" }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
