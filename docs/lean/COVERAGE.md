@@ -146,9 +146,9 @@ cannot see payloads.
 | CF-43..46 | Goal entity core-owned; flavor owns payload/tools | structural: Goal axioms live in kernel; payloads opaque |
 
 **CF exclusions:** CF-4..19, CF-25..42, CF-47..53, CF-59, CF-62 — macro
-surface, Cargo metadata, freeze-guard panics, tool packs, wake-entry
-validation, workspace runners. Reason: Rust composition mechanics; their
-ontology content is CF-A/B/C/D above.
+surface, Cargo metadata, freeze-guard panics, tool packs, and wake-entry
+validation. Reason: Rust composition mechanics; their ontology content is
+CF-A/B/C/D above.
 
 ## 07 — Storage (ST) — in-kernel rows
 

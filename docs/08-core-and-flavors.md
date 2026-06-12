@@ -27,8 +27,6 @@ flavor crate
   typed EdgePayload schemas
   relation descriptors
   MCP tools
-  optional workspace runner
-  optional workspace trigger schemas
   optional frontend package
 
 composite binary
@@ -69,11 +67,11 @@ Supported keys:
 | `edge_schemas` | `EdgePayload` sidecar schemas for typed relations. |
 | `relations` | `RelationDescriptor` values. |
 | `mcp_tools` | Flavor MCP tools; tool names must use the flavor prefix. |
-| `workspace_runner` | Optional runner selected by explicit wake `workspace_binding`. |
-| `workspace_triggers` | Optional schema ids that may wake the workspace runner. |
+| `dependency_satisfaction_rules` | Build-time dependency rules for flavor schemas. |
 
 Unknown keys are compile errors. Macro-registered schemas, relations,
-MCP tools, and workspace triggers must start with `name + "/"`.
+MCP tools, and dependency rules must start with `name + "/"`, except
+dependency rules may target `proxima-core/` schemas.
 
 <a id="schema-namespacing"></a>
 ## Schema Namespacing
@@ -85,7 +83,6 @@ Flavor-owned ids use `flavor_id/local_name`.
 | Schema ids | Flavor schemas start with `flavor_id + "/"`; core schemas start with `core/`. |
 | Relation ids | Flavor relations start with `flavor_id + "/"`; core relations start with `core/`. |
 | MCP tool names | Flavor MCP tools start with `flavor_id + "/"`; substrate MCP tools start with `core/`. |
-| Workspace triggers | Trigger schema ids start with the flavor prefix. |
 
 `proxima_schema_id!("x")` expands to `CARGO_PKG_NAME + "/x"`.
 
@@ -116,15 +113,14 @@ PersonalityInstance
   inference tier / target binding
   wake entries
   substrate tool palette
-  workspace tool palette
 ```
 
 There is no flavor-owned runtime personality trait. A flavor may provide
-payload schemas, MCP tools, workspace runner behavior, and frontend
-rendering, but personality instances remain substrate rows.
+payload schemas, MCP tools, dependency rules, and frontend rendering, but
+personality instances remain substrate rows.
 
 Wake entries, not flavors, choose trigger schema, goal scope, model tier,
-tool palettes, instructions, and execution mode.
+tool palette, instructions, and execution mode.
 
 ## Substrate Tool Pack
 
@@ -142,10 +138,9 @@ Substrate MCP config tools are separate `core/*` MCP tools registered by
 core, including personality CRUD, wake-entry CRUD, inference binding, and
 schema/edge/tool listing.
 
-Flavor MCP tools extend the MCP catalog. Workspace tools are separate
-`proxima-workspace/*` tools. Wake-entry validation checks palettes against
-the substrate personality tool pack, registered MCP tools, and the
-workspace tool catalog.
+Flavor MCP tools extend the MCP catalog. Wake-entry validation checks
+palettes against the substrate personality tool pack and registered MCP
+tools.
 
 Core exposes no generic `create_edge` personality tool. Relation creation
 is relation-specific because typed relations require descriptor masks and
@@ -172,11 +167,10 @@ Goal creation uses flavor tools, not a substrate `emit_goal` tool.
 2. Typed relations whose payload schema is not a registered Edge schema.
 3. Duplicate `FlavorDescriptor::flavor_id`.
 4. Duplicate MCP tool names.
-5. Duplicate workspace runner registration for one flavor id.
-6. Duplicate workspace trigger schema ids.
+5. Duplicate dependency satisfaction rules for one schema id.
 
 Prefix violations in macro-registered schemas, relations, MCP tools, and
-workspace triggers panic during registration before freeze.
+dependency rules panic during registration before freeze.
 
 <a id="inclusion"></a>
 ## Inclusion
@@ -203,9 +197,8 @@ There is no feature-flag matrix for partial flavor inclusion.
 Composite binaries may combine flavors, but registry ownership remains
 per flavor id:
 
-1. Each schema, relation, MCP tool, and workspace trigger keeps its
-   flavor prefix.
-2. Workspace runners are looked up by explicit wake `workspace_binding`.
-3. Cross-flavor reads obey owner/read-scope rules.
-4. Cross-flavor edges must use registered relation descriptors.
-5. Composite binaries do not introduce ad-hoc runtime vocabulary.
+1. Each schema, relation, MCP tool, and dependency rule keeps its flavor
+   prefix.
+2. Cross-flavor reads obey owner/read-scope rules.
+3. Cross-flavor edges must use registered relation descriptors.
+4. Composite binaries do not introduce ad-hoc runtime vocabulary.

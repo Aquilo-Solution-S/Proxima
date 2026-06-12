@@ -2,7 +2,6 @@ import "./styles.css";
 import { For, Show, createSignal, type Component } from "solid-js";
 import { Dynamic } from "solid-js/web";
 import { ReposPanel } from "./repos-panel";
-import { RunsPanel } from "./runs-panel";
 
 interface SubTab {
   id: string;
@@ -12,7 +11,6 @@ interface SubTab {
 
 const SUB_TABS: SubTab[] = [
   { id: "repos", label: "Repos", component: ReposPanel },
-  { id: "runs", label: "Runs", component: RunsPanel },
 ];
 
 export const CodeView: Component = () => {

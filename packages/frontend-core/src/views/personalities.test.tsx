@@ -654,7 +654,7 @@ describe("PersonalitiesView", () => {
     });
   });
 
-  it("hides the workspace tool picker when execution_mode is substrate_only", async () => {
+  it("renders only the substrate tool palette for v1 wake entries", async () => {
     const row = instance();
     const { client } = mockClient([row]);
 
@@ -670,7 +670,6 @@ describe("PersonalitiesView", () => {
     });
 
     expect(screen.queryByText("Workspace tool palette")).toBeNull();
-    expect(screen.queryByText("proxima-workspace/shell")).toBeNull();
   });
 
   it("preserves inspector scroll position when runtime fields change", async () => {
