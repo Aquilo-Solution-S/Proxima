@@ -2,9 +2,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use proxima_codex_auth::AuthDotJsonPath;
-use proxima_core::auth::Credentials;
 use proxima_core::error::ProtocolError;
-use proxima_core::{ChatGPTCodexConfig, Engine, InferenceTargetConfig, Owner};
+use proxima_core::{AuthzContext, ChatGPTCodexConfig, Engine, InferenceTargetConfig, Owner};
 use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderName, HeaderValue};
 use serde_json::json;
 use tauri::State;
@@ -414,11 +413,10 @@ pub async fn ping_target(config: &InferenceTargetConfig) -> Result<u32, PingErro
 #[specta::specta]
 pub async fn test_inference_target(
     engine: State<'_, Arc<Engine>>,
+    authz: State<'_, AuthzContext>,
     req: TestInferenceTargetTs,
 ) -> Result<TestInferenceTargetOutcomeTs, ProtocolError> {
-    let rows = engine
-        .list_inference_targets(&Credentials::None, &req.owner)
-        .await?;
+    let rows = engine.list_inference_targets(&authz, &req.owner).await?;
     let row = rows
         .iter()
         .find(|row| row.target_ref == req.target_ref)

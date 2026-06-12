@@ -209,25 +209,30 @@ export type CitationMappingHint = {
 	schema_version: SchemaVersion,
 };
 
+// Tauri/TS-compatible cited-blob read URL response.
 export type CitedBlobReadUrlOutcomeTs = {
 	read_url: string,
 	expires_at: string,
 };
 
+// Tauri/TS-compatible cited-blob read URL request.
 export type CitedBlobReadUrlTs = {
 	owner: Owner,
 	cited_object_id: string,
 };
 
+// Tauri/TS-compatible cited-blob abort response.
 export type CitedBlobUploadAbortOutcomeTs = {
 	aborted: boolean,
 };
 
+// Tauri/TS-compatible cited-blob abort request.
 export type CitedBlobUploadAbortTs = {
 	owner: Owner,
 	upload_id: string,
 };
 
+// Tauri/TS-compatible cited-blob completion response.
 export type CitedBlobUploadCompleteOutcomeTs = {
 	cited_object_id: string,
 	schema: string,
@@ -239,11 +244,13 @@ export type CitedBlobUploadCompleteOutcomeTs = {
 	idempotent_replay: boolean,
 };
 
+// Tauri/TS-compatible cited-blob completion request.
 export type CitedBlobUploadCompleteTs = {
 	owner: Owner,
 	upload_id: string,
 };
 
+// Tauri/TS-compatible cited-blob upload preparation response.
 export type CitedBlobUploadPrepareOutcomeTs = {
 	upload_id: string,
 	upload_url: string,
@@ -251,6 +258,7 @@ export type CitedBlobUploadPrepareOutcomeTs = {
 	headers: PresignedHeaderTs[],
 };
 
+// Tauri/TS-compatible cited-blob upload request.
 export type CitedBlobUploadPrepareTs = {
 	owner: Owner,
 	filename: string,
@@ -781,6 +789,7 @@ export type PersonalityRootFilter =
  */
 "IncludeInactive";
 
+// Header required by a presigned upload.
 export type PresignedHeaderTs = {
 	name: string,
 	value: string,

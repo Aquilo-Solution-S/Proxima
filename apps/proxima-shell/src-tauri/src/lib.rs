@@ -100,6 +100,7 @@ pub fn run() {
         }
         Err(err) => tracing::warn!("MCP master token unavailable at boot: {err}"),
     }
+    let session_authz = commands::session_authz(&owner);
     let (mcp_listener, mcp_addr, mcp_tool_host) = tauri::async_runtime::block_on(async {
         boot::build_mcp_listener(pg.pool().clone(), owner, mcp_auth_store.clone())
     })
@@ -127,6 +128,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(engine)
+        .manage(session_authz)
         .manage(pg)
         .manage(mcp_auth_store)
         .manage(repo_ingest_hub::RepoIngestHub::new())

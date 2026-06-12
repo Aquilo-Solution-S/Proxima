@@ -1549,20 +1549,22 @@ mod tests {
     use std::sync::Arc;
 
     use proxima_core::mcp::{HandleTable, McpAuthorContext, OutputMode};
-    use proxima_core::{FlavorRegistry, GroupId, OrgId, Owner, Principal};
+    use proxima_core::{AuthPath, AuthzContext, FlavorRegistry, GroupId, OrgId, Owner, Principal};
     use sqlx::postgres::PgPoolOptions;
 
     use super::*;
 
     fn test_ctx(handles: Arc<HandleTable>) -> McpToolCtx {
+        let owner = Owner {
+            principal: Principal::Group(GroupId::new(Uuid::now_v7())),
+            org_id: OrgId::new(Uuid::now_v7()),
+        };
         McpToolCtx {
             pool: PgPoolOptions::new()
                 .connect_lazy("postgres://proxima:proxima@localhost/proxima")
                 .expect("lazy pool"),
-            owner: Owner {
-                principal: Principal::Group(GroupId::new(Uuid::now_v7())),
-                org_id: OrgId::new(Uuid::now_v7()),
-            },
+            owner: owner.clone(),
+            authz: AuthzContext::single_owner(&owner, AuthPath::System),
             handles: Some(handles),
             mode: OutputMode::Handles,
             registry: Arc::new(FlavorRegistry::new().freeze()),

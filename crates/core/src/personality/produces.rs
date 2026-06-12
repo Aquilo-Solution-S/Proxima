@@ -61,9 +61,7 @@ pub fn writeable_relations_for_palette(_engine: &Engine, _palette: &[String]) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::auth::NoAuth;
-    use crate::ids::{OrgId, SchemaId, SchemaVersion, UserId};
-    use crate::owner::{Owner, Principal};
+    use crate::ids::{SchemaId, SchemaVersion};
     use crate::relation::{RelationClass, RelationDescriptor};
     use crate::verbs::query::MemoryStore;
     use crate::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaInfo};
@@ -147,29 +145,13 @@ mod tests {
             crate::AuthorshipKindMask::engine(),
         )];
         let registry = FlavorRegistryFrozen::with_schemas_and_relations(schemas, relations);
-        let owner = Owner {
-            principal: Principal::User(UserId::new(uuid::Uuid::from_u128(1))),
-            org_id: OrgId::new(uuid::Uuid::from_u128(2)),
-        };
-        Engine::new(
-            registry,
-            MemoryStore::new(),
-            Box::new(NoAuth::new(owner.principal.clone(), owner)),
-        )
+        Engine::new(registry, MemoryStore::new())
     }
 
     fn engine_with_test_tool_registry() -> Engine {
         let mut registry = crate::FlavorRegistry::new();
         registry.add_mcp_tool::<TestFactTool>("test");
-        let owner = Owner {
-            principal: Principal::User(UserId::new(uuid::Uuid::from_u128(1))),
-            org_id: OrgId::new(uuid::Uuid::from_u128(2)),
-        };
-        Engine::new(
-            registry.freeze(),
-            MemoryStore::new(),
-            Box::new(NoAuth::new(owner.principal.clone(), owner)),
-        )
+        Engine::new(registry.freeze(), MemoryStore::new())
     }
 
     #[test]

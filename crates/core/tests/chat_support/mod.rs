@@ -2,13 +2,12 @@
 
 use std::sync::Arc;
 
-use proxima_core::auth::NoAuth;
 use proxima_core::mcp::McpAuthorContext;
 use proxima_core::verbs::query::MemoryStore;
 use proxima_core::{
-    Engine, FlavorRegistry, McpToolCtx, MemoryId, ModelTier, OutputMode, Owner, OwnerPrincipalKind,
-    Principal, RelationClass, WakeEntryAuthoredBy, WakeEntryDraft, WakeEntryExecutionMode,
-    WakeEntryRow, WakeEntryTriggerKind,
+    AuthPath, AuthzContext, Engine, FlavorRegistry, McpToolCtx, MemoryId, ModelTier, OutputMode,
+    Owner, OwnerPrincipalKind, Principal, RelationClass, WakeEntryAuthoredBy, WakeEntryDraft,
+    WakeEntryExecutionMode, WakeEntryRow, WakeEntryTriggerKind,
 };
 use uuid::Uuid;
 
@@ -151,10 +150,12 @@ pub fn ctx(
     caller_self_perspective: MemoryId,
 ) -> McpToolCtx {
     let registry = Arc::new(FlavorRegistry::new().freeze());
-    let engine = engine(pg, owner.clone());
+    let engine = engine(pg);
+    let authz = AuthzContext::single_owner(&owner, AuthPath::System);
     McpToolCtx {
         pool: pg.pool().clone(),
         owner,
+        authz,
         handles: None,
         mode: OutputMode::RawIds,
         registry,
@@ -170,11 +171,7 @@ pub fn ctx(
     }
 }
 
-pub fn engine(pg: &proxima_storage_pg::PgStorage, owner: proxima_core::Owner) -> Engine {
-    Engine::new(
-        FlavorRegistry::new().freeze(),
-        MemoryStore::new(),
-        Box::new(NoAuth::new(owner.principal.clone(), owner)),
-    )
-    .with_storage(pg.clone().into_handle())
+pub fn engine(pg: &proxima_storage_pg::PgStorage) -> Engine {
+    Engine::new(FlavorRegistry::new().freeze(), MemoryStore::new())
+        .with_storage(pg.clone().into_handle())
 }

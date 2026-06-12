@@ -6,7 +6,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::McpTool;
 use crate::RemoveInferenceTargetRequest;
-use crate::auth::Credentials;
 use crate::mcp::core_tools::audit::{AuditEmit, emit_personality_config_changed};
 use crate::mcp::core_tools::payload::{
     PersonalityConfigChangeSnapshot, PersonalityConfigChangedSubject, PersonalityConfigChangedVerb,
@@ -47,7 +46,7 @@ impl McpTool for RemoveInferenceTargetTool {
                 target_ref: target_ref.clone(),
             };
             let resp = engine
-                .remove_inference_target(&Credentials::None, &req)
+                .remove_inference_target(&ctx.authz, &req)
                 .await
                 .map_err(|e| McpToolError::Other(e.to_string()))?;
             let audit = emit_personality_config_changed(

@@ -4,11 +4,11 @@
 
 use std::sync::Arc;
 
-use proxima_core::auth::NoAuth;
 use proxima_core::engine::Engine;
 use proxima_core::owner::Principal;
 use proxima_core::verbs::query::MemoryStore;
 use proxima_core::verbs::schema::FlavorRegistryFrozen;
+use proxima_core::{AuthPath, AuthzContext};
 use proxima_core::{OrgId, Owner, UserId};
 use tonic::Request;
 use uuid::Uuid;
@@ -26,12 +26,8 @@ fn fresh_owner() -> Owner {
     }
 }
 
-fn build_engine(owner: Owner) -> Engine {
-    Engine::new(
-        FlavorRegistryFrozen::new(),
-        MemoryStore::new(),
-        Box::new(NoAuth::new(owner.principal.clone(), owner)),
-    )
+fn build_engine() -> Engine {
+    Engine::new(FlavorRegistryFrozen::new(), MemoryStore::new())
 }
 
 fn pb_owner(owner: &Owner) -> pb::Owner {
@@ -52,7 +48,8 @@ fn pb_owner(owner: &Owner) -> pb::Owner {
 #[tokio::test]
 async fn schema_returns_empty_registry() {
     let owner = fresh_owner();
-    let server = EngineGrpcServer::new(Arc::new(build_engine(owner)));
+    let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+    let server = EngineGrpcServer::new(Arc::new(build_engine()), authz);
 
     let resp = EngineTrait::schema(&server, Request::new(SchemaRequest {}))
         .await
@@ -65,7 +62,8 @@ async fn schema_returns_empty_registry() {
 #[tokio::test]
 async fn query_returns_empty_memories_for_fresh_owner() {
     let owner = fresh_owner();
-    let server = EngineGrpcServer::new(Arc::new(build_engine(owner.clone())));
+    let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+    let server = EngineGrpcServer::new(Arc::new(build_engine()), authz);
 
     let req = Request::new(QueryRequest {
         owner: Some(pb_owner(&owner)),
@@ -84,7 +82,8 @@ async fn query_returns_empty_memories_for_fresh_owner() {
 #[tokio::test]
 async fn missing_owner_yields_invalid_argument_not_internal() {
     let owner = fresh_owner();
-    let server = EngineGrpcServer::new(Arc::new(build_engine(owner)));
+    let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+    let server = EngineGrpcServer::new(Arc::new(build_engine()), authz);
 
     let req = Request::new(QueryRequest {
         owner: None,

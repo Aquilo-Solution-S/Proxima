@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use futures_util::future::BoxFuture;
-use proxima_core::auth::NoAuth;
 use proxima_core::engine::EngineMcpListener;
 use proxima_core::llm::EmbeddingClient;
 use proxima_core::secrets::ResolverRegistry;
@@ -65,11 +64,10 @@ pub(crate) fn build_engine() -> (Engine, Arc<PgStorage>) {
             .expect("failed to start outbox listener");
 
         let pg_for_settings = Arc::new(pg.clone());
-        let auth = NoAuth::new(owner.principal.clone(), owner.clone());
         // Compose substrate + code into the engine's schema registry so
         // Settings → Schemas surfaces both flavors and the Atlas
         // inspector can decode agent-note sidecars.
-        let engine = proxima_code::build_engine_with(pg, Box::new(auth), |registry| {
+        let engine = proxima_code::build_engine_with(pg, |registry| {
             proxima_mcp_substrate::register(registry);
             proxima_flavor_goal::register(registry);
         })

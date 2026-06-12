@@ -20,6 +20,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use futures::future::BoxFuture;
 
+use crate::authz::AuthzContext;
 use crate::{
     EdgeId, GoalId, MemoryId, Owner, PersonalityInstanceId, verbs::schema::FlavorRegistryFrozen,
 };
@@ -94,6 +95,10 @@ pub enum OutputMode {
 pub struct McpToolCtx {
     pub pool: sqlx::PgPool,
     pub owner: Owner,
+    /// Caller's authorization context, threaded from the transport
+    /// edge. Tools pass this to engine verbs — never a substituted
+    /// engine identity (privilege-escalation guard).
+    pub authz: AuthzContext,
     /// `Some` for wake-dispatched calls (table provided by the wake);
     /// `None` for master-token / unauthenticated calls. Must be `Some`
     /// when `mode == OutputMode::Handles`.
@@ -504,7 +509,7 @@ mod tests {
 #[cfg(test)]
 mod ctx_engine_tests {
     use super::*;
-    use crate::auth::NoAuth;
+    use crate::AuthPath;
     use crate::verbs::query::MemoryStore;
     use crate::{Engine, FlavorRegistry, OrgId, Owner, Principal, UserId};
     use std::sync::Arc;
@@ -519,6 +524,7 @@ mod ctx_engine_tests {
         let ctx = McpToolCtx {
             pool,
             owner: owner.clone(),
+            authz: AuthzContext::single_owner(&owner, AuthPath::System),
             handles: Some(Arc::new(HandleTable::new())),
             mode: OutputMode::Handles,
             registry: Arc::new(FlavorRegistry::new().freeze()),
@@ -542,16 +548,15 @@ mod ctx_engine_tests {
             principal: Principal::User(UserId::new(uuid::Uuid::now_v7())),
             org_id: OrgId::new(uuid::Uuid::now_v7()),
         };
-        let resolver = NoAuth::new(owner.principal.clone(), owner.clone());
         let engine = Arc::new(Engine::new(
             FlavorRegistry::new().freeze(),
             MemoryStore::new(),
-            Box::new(resolver),
         ));
         let pool = sqlx::PgPool::connect_lazy("postgres://x/x").expect("lazy");
         let ctx = McpToolCtx {
             pool,
-            owner,
+            owner: owner.clone(),
+            authz: AuthzContext::single_owner(&owner, AuthPath::System),
             handles: Some(Arc::new(HandleTable::new())),
             mode: OutputMode::Handles,
             registry: Arc::new(FlavorRegistry::new().freeze()),

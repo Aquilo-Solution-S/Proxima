@@ -7,8 +7,8 @@ use proxima_core::personality::{
     writeable_schemas_for_palette,
 };
 use proxima_core::{
-    Engine, FlavorRegistry, FlavorRegistryFrozen, Owner, WakeInvocationLogDraft,
-    WakeInvocationLogStatus,
+    AuthPath, AuthzContext, Engine, FlavorRegistry, FlavorRegistryFrozen, Owner,
+    WakeInvocationLogDraft, WakeInvocationLogStatus,
 };
 
 use crate::auth::McpAuthContext;
@@ -101,6 +101,15 @@ impl McpToolHost {
         owner: Option<Owner>,
         auth: Option<&McpAuthContext>,
     ) -> McpToolCtx {
+        let owner = owner.unwrap_or_else(|| self.owner.clone());
+        // Wire requests always carry Some(auth): the security
+        // middleware 401s unauthenticated requests before dispatch.
+        // The None arm exists for in-crate test scaffolds that call
+        // the tool host directly.
+        let authz = auth.map_or_else(
+            || AuthzContext::single_owner(&owner, AuthPath::System),
+            |a| a.authz.clone(),
+        );
         let (handles, mode) = match auth.and_then(|a| a.wake.as_ref()) {
             Some(wake) => (Some(wake.handles.clone()), OutputMode::Handles),
             None => (None, OutputMode::RawIds),
@@ -108,7 +117,8 @@ impl McpToolHost {
         let master_token_id = auth.and_then(|c| c.master_token_id);
         McpToolCtx {
             pool: self.pool.clone(),
-            owner: owner.unwrap_or_else(|| self.owner.clone()),
+            owner,
+            authz,
             handles,
             mode,
             registry: self.registry.clone(),

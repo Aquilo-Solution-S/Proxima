@@ -19,7 +19,6 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use proxima_core::auth::NoAuth;
 use proxima_core::llm::{AnthropicClient, LlmError, MessagesRequest, MessagesResponse};
 use proxima_core::personality::{PersonalityInstanceId, PersonalityToolContext};
 use proxima_core::verbs::query::MemoryStore;
@@ -49,15 +48,7 @@ impl AnthropicClient for StubAnthropic {
 }
 
 fn engine() -> Engine {
-    let owner = Owner {
-        principal: Principal::User(UserId::new(uuid::Uuid::now_v7())),
-        org_id: OrgId::new(uuid::Uuid::now_v7()),
-    };
-    Engine::new(
-        FlavorRegistry::new().freeze(),
-        MemoryStore::new(),
-        Box::new(NoAuth::new(owner.principal.clone(), owner.clone())),
-    )
+    Engine::new(FlavorRegistry::new().freeze(), MemoryStore::new())
 }
 
 fn owner() -> Owner {

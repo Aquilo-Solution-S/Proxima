@@ -5,7 +5,6 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::McpTool;
-use crate::auth::Credentials;
 use crate::mcp::core_tools::audit::{AuditEmit, emit_personality_config_changed};
 use crate::mcp::core_tools::payload::{
     InferenceTargetConfigSnapshot, PersonalityConfigChangeSnapshot,
@@ -57,7 +56,7 @@ impl McpTool for RegisterInferenceTargetTool {
                 config,
             };
             let resp = engine
-                .register_inference_target(&Credentials::None, &req)
+                .register_inference_target(&ctx.authz, &req)
                 .await
                 .map_err(|e| McpToolError::Other(e.to_string()))?;
             let audit = emit_personality_config_changed(

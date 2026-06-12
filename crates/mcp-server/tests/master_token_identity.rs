@@ -8,7 +8,6 @@ mod common;
 use std::sync::Arc;
 
 use common::{create_db, drop_db};
-use proxima_core::auth::NoAuth;
 use proxima_core::mcp::McpAuthorContext;
 use proxima_core::storage::Storage;
 use proxima_core::verbs::query::MemoryStore;
@@ -34,14 +33,9 @@ async fn master_token_call_mints_per_token_self_perspective()
 
     // Build an Engine wired with the live PG storage so the call_tool
     // ensure step can reach the master-token verb.
-    let resolver = NoAuth::new(owner.principal.clone(), owner.clone());
     let engine = Arc::new(
-        Engine::new(
-            FlavorRegistry::new().freeze(),
-            MemoryStore::new(),
-            Box::new(resolver),
-        )
-        .with_storage(Arc::new(pg.clone())),
+        Engine::new(FlavorRegistry::new().freeze(), MemoryStore::new())
+            .with_storage(Arc::new(pg.clone())),
     );
 
     // Build McpToolHost from pool (mirrors personality_crud_e2e_pg.rs pattern).

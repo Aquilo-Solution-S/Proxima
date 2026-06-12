@@ -8,7 +8,6 @@ mod common;
 
 use common::{drop_db, migrated, owner_fixture};
 use proxima_core::EdgeAuthorshipKind;
-use proxima_core::auth::NoAuth;
 use proxima_core::mcp::{HandleTable, McpAuthorContext, McpToolCtx, OutputMode};
 use proxima_core::storage::Storage;
 use proxima_core::verbs::query::MemoryStore;
@@ -29,9 +28,8 @@ async fn mcp_server_for_owner(
 
     let mut engine_registry = FlavorRegistry::new();
     proxima_flavor_goal::register(&mut engine_registry);
-    let auth = NoAuth::new(owner.principal.clone(), owner.clone());
     let engine = Arc::new(
-        Engine::new(engine_registry.freeze(), MemoryStore::new(), Box::new(auth))
+        Engine::new(engine_registry.freeze(), MemoryStore::new())
             .with_storage(Arc::new(pg.clone())),
     );
     let server = McpToolHost::from_pool(pg.pool().clone(), owner.clone(), server_registry)
@@ -127,6 +125,10 @@ async fn master_token_propose_creates_inspires_edge_to_per_token_self_perspectiv
         let ctx = McpToolCtx {
             pool: pg.pool().clone(),
             owner: owner.clone(),
+            authz: proxima_core::AuthzContext::single_owner(
+                &owner,
+                proxima_core::AuthPath::MasterDev,
+            ),
             handles: Some(Arc::new(HandleTable::new())),
             mode: OutputMode::Handles,
             registry: Arc::new(registry.freeze()),

@@ -1,32 +1,14 @@
-//! Auth resolver trait + `NoAuth` reference impl.
+//! Credential material consumed by the host [`Authenticator`](crate::Authenticator).
 //!
 //! See docs/14-protocol-surface.md §"Auth model".
 
-use std::collections::HashSet;
-
-use crate::{Owner, Principal};
-
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Credentials {
-    None,
     /// Engine-minted wake token — distinct wire scheme; never host material.
     WakeToken(uuid::Uuid),
     /// Host token material, opaque to core; interpreted only by the
     /// host-provided `Authenticator`.
     Bearer(String),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Resolved {
-    pub principal: Principal,
-    pub accessible_principals: HashSet<Principal>,
-}
-
-impl Resolved {
-    #[must_use]
-    pub fn can_access_owner(&self, owner: &Owner) -> bool {
-        self.accessible_principals.contains(&owner.principal)
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -35,39 +17,4 @@ pub enum AuthError {
     AuthRequired,
     #[error("invalid credentials")]
     InvalidCredentials,
-}
-
-pub trait AuthResolver: Send + Sync {
-    /// # Errors
-    ///
-    /// Returns `AuthError::AuthRequired` when credentials are missing,
-    /// or `AuthError::InvalidCredentials` when they are malformed.
-    fn resolve(&self, creds: &Credentials) -> Result<Resolved, AuthError>;
-}
-
-#[derive(Debug, Clone)]
-pub struct NoAuth {
-    principal: Principal,
-    owner_principal: Principal,
-}
-
-impl NoAuth {
-    #[must_use]
-    pub fn new(principal: Principal, owner: Owner) -> Self {
-        Self {
-            principal,
-            owner_principal: owner.principal,
-        }
-    }
-}
-
-impl AuthResolver for NoAuth {
-    fn resolve(&self, _creds: &Credentials) -> Result<Resolved, AuthError> {
-        let mut principals = HashSet::with_capacity(1);
-        principals.insert(self.owner_principal.clone());
-        Ok(Resolved {
-            principal: self.principal.clone(),
-            accessible_principals: principals,
-        })
-    }
 }

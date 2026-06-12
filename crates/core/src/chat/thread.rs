@@ -274,16 +274,21 @@ pub(super) use render::*;
 mod tests {
     use super::*;
     use crate::mcp::{HandleTable, McpAuthorContext, OutputMode};
-    use crate::{ChatMessageV1, ChatReplyV1, FlavorRegistry, OrgId, Owner, Principal, UserId};
+    use crate::{
+        AuthPath, AuthzContext, ChatMessageV1, ChatReplyV1, FlavorRegistry, OrgId, Owner,
+        Principal, UserId,
+    };
     use std::sync::Arc;
 
     fn test_ctx(handles: Arc<HandleTable>) -> McpToolCtx {
+        let owner = Owner {
+            principal: Principal::User(UserId::new(uuid::Uuid::now_v7())),
+            org_id: OrgId::new(uuid::Uuid::now_v7()),
+        };
         McpToolCtx {
             pool: sqlx::PgPool::connect_lazy("postgres://x/x").expect("lazy pool"),
-            owner: Owner {
-                principal: Principal::User(UserId::new(uuid::Uuid::now_v7())),
-                org_id: OrgId::new(uuid::Uuid::now_v7()),
-            },
+            owner: owner.clone(),
+            authz: AuthzContext::single_owner(&owner, AuthPath::System),
             handles: Some(handles),
             mode: OutputMode::Handles,
             registry: Arc::new(FlavorRegistry::new().freeze()),

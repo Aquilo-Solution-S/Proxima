@@ -10,7 +10,6 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use proxima_code::{build_engine_with, migrator, register_repo};
-use proxima_core::auth::NoAuth;
 use proxima_core::llm::scripted::{ScriptedAnthropicClient, ScriptedTurn};
 use proxima_core::llm::{EmbeddingClient, LlmError};
 use proxima_core::personality::{InstantiatePersonalityRequest, PersonalityInstanceId};
@@ -196,13 +195,9 @@ async fn inspires_edge_targets_only_intended_engineer_instance() {
         // accept its inert personality row but won't author commit-fact events
         // until needed.
         let scripted = Arc::new(ScriptedAnthropicClient::new(vec![ScriptedTurn::end_turn()]));
-        let engine = build_engine_with(
-            pg.clone(),
-            Box::new(NoAuth::new(owner.principal.clone(), owner.clone())),
-            |_registry| {},
-        )
-        .with_anthropic(scripted)
-        .with_embed(Arc::new(FakeEmbedding));
+        let engine = build_engine_with(pg.clone(), |_registry| {})
+            .with_anthropic(scripted)
+            .with_embed(Arc::new(FakeEmbedding));
 
         // Provision Alice + Bob (two engineer instances).
         let alice = engine
@@ -235,13 +230,9 @@ async fn inspires_edge_targets_only_intended_engineer_instance() {
         let scripted = Arc::new(ScriptedAnthropicClient::new(
             (0..6).map(|_| ScriptedTurn::end_turn()).collect(),
         ));
-        let engine = build_engine_with(
-            pg.clone(),
-            Box::new(NoAuth::new(owner.principal.clone(), owner.clone())),
-            |_registry| {},
-        )
-        .with_anthropic(scripted)
-        .with_embed(Arc::new(FakeEmbedding));
+        let engine = build_engine_with(pg.clone(), |_registry| {})
+            .with_anthropic(scripted)
+            .with_embed(Arc::new(FakeEmbedding));
         let fired = engine.run_dispatcher_tick().await?;
         assert_eq!(fired, 0, "Phase-1a dispatcher is still a no-op stub");
 

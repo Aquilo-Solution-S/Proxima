@@ -5,7 +5,6 @@ mod common;
 use common::{create_db, db_url, drop_db};
 use std::sync::Arc;
 
-use proxima_core::auth::{Credentials, NoAuth};
 use proxima_core::engine::Engine;
 use proxima_core::error::ErrorCode;
 use proxima_core::storage::Storage;
@@ -96,22 +95,23 @@ async fn event_ingest_writes_fact_and_change_event() {
         };
 
         let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
-        let engine = Engine::new(
-            registry,
-            MemoryStore::new(),
-            Box::new(NoAuth::new(Principal::User(user), owner.clone())),
-        )
-        .with_storage(storage);
+        let engine = Engine::new(registry, MemoryStore::new()).with_storage(storage);
 
         let draft = fresh_draft(owner.clone());
 
         let outcome = engine
-            .event_ingest(&Credentials::None, draft.clone())
+            .event_ingest(
+                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                draft.clone(),
+            )
             .await?;
         assert!(!outcome.idempotent_replay);
 
         let replay = engine
-            .event_ingest(&Credentials::None, draft.clone())
+            .event_ingest(
+                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                draft.clone(),
+            )
             .await?;
         assert!(replay.idempotent_replay);
         assert_eq!(replay.memory_id, outcome.memory_id);
@@ -120,7 +120,10 @@ async fn event_ingest_writes_fact_and_change_event() {
         let mut bad = draft.clone();
         bad.schema_id = SchemaId::new("test/unregistered".into());
         let err = engine
-            .event_ingest(&Credentials::None, bad)
+            .event_ingest(
+                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                bad,
+            )
             .await
             .unwrap_err();
         assert_eq!(err.code, ErrorCode::UnknownSchema);
@@ -167,18 +170,19 @@ async fn list_change_events_for_replay_respects_bounds_and_owner() {
         };
 
         let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
-        let engine = Engine::new(
-            registry,
-            MemoryStore::new(),
-            Box::new(NoAuth::new(Principal::User(user), owner.clone())),
-        )
-        .with_storage(storage);
+        let engine = Engine::new(registry, MemoryStore::new()).with_storage(storage);
 
         let first = engine
-            .event_ingest(&Credentials::None, fresh_draft(owner.clone()))
+            .event_ingest(
+                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                fresh_draft(owner.clone()),
+            )
             .await?;
         let second = engine
-            .event_ingest(&Credentials::None, fresh_draft(owner.clone()))
+            .event_ingest(
+                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                fresh_draft(owner.clone()),
+            )
             .await?;
         pg.ingest_event_atomic(&fresh_draft(other_owner.clone()))
             .await?;

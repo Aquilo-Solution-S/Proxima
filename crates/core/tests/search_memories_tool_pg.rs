@@ -4,7 +4,6 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use common::{drop_db, fresh_pg, owner_fixture};
-use proxima_core::auth::NoAuth;
 use proxima_core::llm::{EmbeddingClient, LlmError};
 use proxima_core::personality::{
     PersonalityInstanceId, PersonalityTool, PersonalityToolContext, substrate_pack,
@@ -44,13 +43,9 @@ async fn search_memories_returns_handles_and_records_read_log()
     let owner = owner_fixture();
     let memory_id =
         insert_embedded_memory(&pg, &owner, "semantic-only memory", [1.0, 0.0, 0.0]).await?;
-    let engine = Engine::new(
-        FlavorRegistry::new().freeze(),
-        MemoryStore::new(),
-        Box::new(NoAuth::new(owner.principal.clone(), owner.clone())),
-    )
-    .with_storage(pg.clone().into_handle())
-    .with_embed(Arc::new(FixedEmbedding));
+    let engine = Engine::new(FlavorRegistry::new().freeze(), MemoryStore::new())
+        .with_storage(pg.clone().into_handle())
+        .with_embed(Arc::new(FixedEmbedding));
     let tool = substrate_pack()
         .iter()
         .find(|tool| tool.tool_id() == "core/search_memories")

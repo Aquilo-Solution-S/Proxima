@@ -1,14 +1,13 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use proxima_core::McpToolError;
-use proxima_core::auth::NoAuth;
 use proxima_core::engine::Engine;
 use proxima_core::llm::{EmbeddingClient, LlmError};
 use proxima_core::mcp::{HandleTable, McpAuthorContext, McpToolCtx, OutputMode};
 use proxima_core::verbs::query::MemoryStore;
 use proxima_core::{
-    EntityKind, FlavorRegistry, OrgId, Owner, OwnerPrincipalKind, Principal, UserId,
+    AuthPath, AuthzContext, EntityKind, FlavorRegistry, McpToolError, OrgId, Owner,
+    OwnerPrincipalKind, Principal, UserId,
 };
 use serde_json::json;
 use sqlx::{Connection, Executor, PgConnection};
@@ -225,13 +224,9 @@ async fn search_graph_hybrid_returns_embedding_only_match() -> Result<(), Box<dy
     assert!(lexical["matches"].as_array().expect("matches").is_empty());
 
     let engine = Arc::new(
-        Engine::new(
-            frozen_inner,
-            MemoryStore::new(),
-            Box::new(NoAuth::new(owner.principal.clone(), owner.clone())),
-        )
-        .with_storage(pg.clone().into_handle())
-        .with_embed(Arc::new(FixedEmbedding)),
+        Engine::new(frozen_inner, MemoryStore::new())
+            .with_storage(pg.clone().into_handle())
+            .with_embed(Arc::new(FixedEmbedding)),
     );
     let hybrid = call_tool_with_engine(
         pg.pool(),
@@ -468,6 +463,7 @@ async fn call_tool_with_engine(
         McpToolCtx {
             pool: pool.clone(),
             owner: owner.clone(),
+            authz: AuthzContext::single_owner(owner, AuthPath::System),
             handles: Some(handles.clone()),
             mode: OutputMode::Handles,
             registry: registry.clone(),

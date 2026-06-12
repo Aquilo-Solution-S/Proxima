@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use proxima_core::mcp::{HandleTable, McpAuthorContext, McpToolCtx, OutputMode};
-use proxima_core::{FlavorRegistry, OrgId, Owner, Principal, UserId};
+use proxima_core::{AuthPath, AuthzContext, FlavorRegistry, OrgId, Owner, Principal, UserId};
 use proxima_storage_pg::PgStorage;
 use sqlx::{Connection, Executor, PgConnection};
 use uuid::Uuid;
@@ -73,9 +73,11 @@ pub async fn migrated() -> Option<(PgStorage, String)> {
 pub fn ctx(pg: &PgStorage, owner: Owner) -> McpToolCtx {
     let mut registry = FlavorRegistry::new();
     proxima_flavor_goal::register(&mut registry);
+    let authz = AuthzContext::single_owner(&owner, AuthPath::System);
     McpToolCtx {
         pool: pg.pool().clone(),
         owner,
+        authz,
         handles: Some(Arc::new(HandleTable::new())),
         mode: OutputMode::Handles,
         registry: Arc::new(registry.freeze()),

@@ -8,7 +8,6 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use proxima_core::auth::NoAuth;
 use proxima_core::engine::Engine;
 use proxima_core::llm::{AnthropicClient, EmbeddingClient, LlmError};
 use proxima_core::personality::InstantiatePersonalityResponse;
@@ -193,15 +192,11 @@ pub fn build_test_engine(pg: PgStorage, anthropic: Arc<dyn AnthropicClient>) -> 
     registry.add_perspective_schema::<TestPersonalitySelfV1>();
     registry.add_abstraction_schema::<TestAbstractionV1>();
     let frozen = registry.freeze();
-    let principal: Principal = owner.principal.clone();
-    Engine::new(
-        frozen,
-        MemoryStore::new(),
-        Box::new(NoAuth::new(principal, owner)),
-    )
-    .with_storage(Arc::new(pg))
-    .with_anthropic(anthropic)
-    .with_embed(Arc::new(FakeEmbedding { dim: 8 }))
+    let _principal: Principal = owner.principal.clone();
+    Engine::new(frozen, MemoryStore::new())
+        .with_storage(Arc::new(pg))
+        .with_anthropic(anthropic)
+        .with_embed(Arc::new(FakeEmbedding { dim: 8 }))
 }
 
 /// Instantiate the test personality + return its instance id.

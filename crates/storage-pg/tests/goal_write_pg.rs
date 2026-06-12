@@ -5,7 +5,6 @@ mod common;
 use common::{create_db, db_url, drop_db};
 use std::sync::Arc;
 
-use proxima_core::auth::{Credentials, NoAuth};
 use proxima_core::engine::Engine;
 use proxima_core::error::ErrorCode;
 use proxima_core::storage::Storage;
@@ -91,17 +90,17 @@ async fn goal_write_writes_goal_and_change_event() {
         };
 
         let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
-        let engine = Engine::new(
-            registry,
-            MemoryStore::new(),
-            Box::new(NoAuth::new(Principal::User(user), owner.clone())),
-        )
-        .with_storage(storage);
+        let engine = Engine::new(registry, MemoryStore::new()).with_storage(storage);
 
         let draft = fresh_draft(&owner, "req-1".to_string());
 
         // Happy path: write_goal with User authorship.
-        let outcome = engine.write_goal(&Credentials::None, draft.clone()).await?;
+        let outcome = engine
+            .write_goal(
+                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                draft.clone(),
+            )
+            .await?;
         assert!(!outcome.idempotent_replay);
 
         let payload: Vec<u8> =
@@ -112,7 +111,12 @@ async fn goal_write_writes_goal_and_change_event() {
         assert_eq!(payload, draft.payload);
 
         // Idempotent replay with same request_id and body.
-        let replay = engine.write_goal(&Credentials::None, draft.clone()).await?;
+        let replay = engine
+            .write_goal(
+                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                draft.clone(),
+            )
+            .await?;
         assert!(replay.idempotent_replay);
         assert_eq!(replay.goal_id, outcome.goal_id);
 
@@ -120,7 +124,10 @@ async fn goal_write_writes_goal_and_change_event() {
         let mut mutated = draft.clone();
         mutated.text = "Different text".to_string();
         let err = engine
-            .write_goal(&Credentials::None, mutated)
+            .write_goal(
+                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                mutated,
+            )
             .await
             .unwrap_err();
         assert_eq!(err.code, ErrorCode::IdempotencyConflict);
@@ -129,7 +136,10 @@ async fn goal_write_writes_goal_and_change_event() {
         let mut mutated_payload = draft.clone();
         mutated_payload.payload = b"different payload".to_vec();
         let err = engine
-            .write_goal(&Credentials::None, mutated_payload)
+            .write_goal(
+                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                mutated_payload,
+            )
             .await
             .unwrap_err();
         assert_eq!(err.code, ErrorCode::IdempotencyConflict);
@@ -138,7 +148,10 @@ async fn goal_write_writes_goal_and_change_event() {
         let mut bad_schema = draft.clone();
         bad_schema.schema_id = SchemaId::new("test/fact_blob".into());
         let err = engine
-            .write_goal(&Credentials::None, bad_schema)
+            .write_goal(
+                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                bad_schema,
+            )
             .await
             .unwrap_err();
         assert_eq!(err.code, ErrorCode::UnknownSchema);
@@ -181,16 +194,16 @@ async fn goal_supersede_writes_new_goal() {
         };
 
         let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
-        let engine = Engine::new(
-            registry,
-            MemoryStore::new(),
-            Box::new(NoAuth::new(Principal::User(user), owner.clone())),
-        )
-        .with_storage(storage);
+        let engine = Engine::new(registry, MemoryStore::new()).with_storage(storage);
 
         // Write initial goal.
         let draft = fresh_draft(&owner, "req-1".to_string());
-        let outcome = engine.write_goal(&Credentials::None, draft.clone()).await?;
+        let outcome = engine
+            .write_goal(
+                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                draft.clone(),
+            )
+            .await?;
         let prior_goal_id = outcome.goal_id;
 
         // Supersede with Paused state.
@@ -209,7 +222,11 @@ async fn goal_supersede_writes_new_goal() {
         };
 
         let supersede_outcome = engine
-            .supersede_goal(&Credentials::None, prior_goal_id, supersede_draft.clone())
+            .supersede_goal(
+                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                prior_goal_id,
+                supersede_draft.clone(),
+            )
             .await?;
         assert!(!supersede_outcome.idempotent_replay);
         assert_ne!(supersede_outcome.goal_id, prior_goal_id);
@@ -231,14 +248,18 @@ async fn goal_supersede_writes_new_goal() {
 
         // Idempotent replay of supersede.
         let replay = engine
-            .supersede_goal(&Credentials::None, prior_goal_id, supersede_draft.clone())
+            .supersede_goal(
+                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                prior_goal_id,
+                supersede_draft.clone(),
+            )
             .await?;
         assert!(replay.idempotent_replay);
         assert_eq!(replay.goal_id, supersede_outcome.goal_id);
 
         let direct_prior = engine
             .write_goal(
-                &Credentials::None,
+                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
                 fresh_draft(&owner, "req-direct-prior".to_string()),
             )
             .await?;
@@ -246,7 +267,10 @@ async fn goal_supersede_writes_new_goal() {
         direct_draft.text = "Direct supersede".to_string();
         direct_draft.supersedes_goal_id = Some(direct_prior.goal_id);
         let direct = engine
-            .write_goal(&Credentials::None, direct_draft.clone())
+            .write_goal(
+                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                direct_draft.clone(),
+            )
             .await?;
         let direct_supersedes: Option<Uuid> =
             sqlx::query_scalar("SELECT supersedes FROM proxima_core.goals WHERE goal_id = $1")
@@ -293,21 +317,26 @@ async fn goal_write_with_parent() {
         };
 
         let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
-        let engine = Engine::new(
-            registry,
-            MemoryStore::new(),
-            Box::new(NoAuth::new(Principal::User(user), owner.clone())),
-        )
-        .with_storage(storage);
+        let engine = Engine::new(registry, MemoryStore::new()).with_storage(storage);
 
         // Write parent goal.
         let parent_draft = fresh_draft(&owner, "req-parent".to_string());
-        let parent_outcome = engine.write_goal(&Credentials::None, parent_draft).await?;
+        let parent_outcome = engine
+            .write_goal(
+                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                parent_draft,
+            )
+            .await?;
         let parent_id = parent_outcome.goal_id;
 
         // Write child goal with parent.
         let child_draft = draft_with_parent(&owner, "req-child".to_string(), parent_id);
-        let child_outcome = engine.write_goal(&Credentials::None, child_draft).await?;
+        let child_outcome = engine
+            .write_goal(
+                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                child_draft,
+            )
+            .await?;
         assert!(!child_outcome.idempotent_replay);
 
         // Verify goal_parents row exists.

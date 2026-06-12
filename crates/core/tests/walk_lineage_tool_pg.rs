@@ -3,7 +3,6 @@ mod common;
 use std::sync::Arc;
 
 use common::{drop_db, fresh_pg, owner_fixture};
-use proxima_core::auth::NoAuth;
 use proxima_core::personality::{PersonalityInstanceId, PersonalityTool, PersonalityToolContext};
 use proxima_core::verbs::query::MemoryStore;
 use proxima_core::{
@@ -33,12 +32,8 @@ async fn walk_lineage_returns_handles_and_records_read_log()
     )
     .await?;
 
-    let engine = Engine::new(
-        FlavorRegistry::new().freeze(),
-        MemoryStore::new(),
-        Box::new(NoAuth::new(owner.principal.clone(), owner.clone())),
-    )
-    .with_storage(pg.clone().into_handle());
+    let engine = Engine::new(FlavorRegistry::new().freeze(), MemoryStore::new())
+        .with_storage(pg.clone().into_handle());
     let tool = proxima_core::personality::substrate_pack()
         .iter()
         .find(|tool| tool.tool_id() == "core/walk_lineage")

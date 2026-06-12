@@ -5,7 +5,6 @@ mod common;
 use common::{create_db, db_url, drop_db};
 use std::sync::Arc;
 
-use proxima_core::auth::{Credentials, NoAuth};
 use proxima_core::engine::Engine;
 use proxima_core::storage::Storage;
 use proxima_core::verbs::event_history::EventHistoryRequest;
@@ -76,14 +75,9 @@ fn fresh_event_draft(owner: Owner, payload: Vec<u8>) -> EventDraft {
     }
 }
 
-fn build_engine(storage: Arc<dyn Storage>, owner: Owner, principal: Principal) -> Engine {
+fn build_engine(storage: Arc<dyn Storage>, _owner: Owner, _principal: Principal) -> Engine {
     let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
-    Engine::new(
-        registry,
-        MemoryStore::new(),
-        Box::new(NoAuth::new(principal, owner)),
-    )
-    .with_storage(storage)
+    Engine::new(registry, MemoryStore::new()).with_storage(storage)
 }
 
 #[tokio::test]
@@ -110,22 +104,23 @@ async fn event_history_returns_owner_scoped_newest_first() {
         };
         let engine1 = build_engine(storage.clone(), owner1.clone(), Principal::User(user1));
         let engine2 = build_engine(storage, owner2.clone(), Principal::User(user2));
+        let authz1 =
+            proxima_core::AuthzContext::single_owner(&owner1, proxima_core::AuthPath::System);
+        let authz2 =
+            proxima_core::AuthzContext::single_owner(&owner2, proxima_core::AuthPath::System);
 
         for body in [b"a".to_vec(), b"b".to_vec(), b"c".to_vec()] {
             engine1
-                .event_ingest(&Credentials::None, fresh_event_draft(owner1.clone(), body))
+                .event_ingest(&authz1, fresh_event_draft(owner1.clone(), body))
                 .await?;
         }
         engine2
-            .event_ingest(
-                &Credentials::None,
-                fresh_event_draft(owner2.clone(), b"z".to_vec()),
-            )
+            .event_ingest(&authz2, fresh_event_draft(owner2.clone(), b"z".to_vec()))
             .await?;
 
         let resp1 = engine1
             .event_history(
-                &Credentials::None,
+                &authz1,
                 &EventHistoryRequest {
                     owner: owner1.clone(),
                     limit: 100,
@@ -146,7 +141,7 @@ async fn event_history_returns_owner_scoped_newest_first() {
 
         let resp2 = engine2
             .event_history(
-                &Credentials::None,
+                &authz2,
                 &EventHistoryRequest {
                     owner: owner2.clone(),
                     limit: 100,
@@ -158,7 +153,7 @@ async fn event_history_returns_owner_scoped_newest_first() {
 
         let page1 = engine1
             .event_history(
-                &Credentials::None,
+                &authz1,
                 &EventHistoryRequest {
                     owner: owner1.clone(),
                     limit: 2,
@@ -170,7 +165,7 @@ async fn event_history_returns_owner_scoped_newest_first() {
 
         let page2 = engine1
             .event_history(
-                &Credentials::None,
+                &authz1,
                 &EventHistoryRequest {
                     owner: owner1,
                     limit: 2,

@@ -5,7 +5,6 @@ use std::time::Duration;
 use tokio::sync::{Mutex, RwLock};
 
 use super::{EmbeddingClientReloader, Engine, EngineMcpListener};
-use crate::auth::AuthResolver;
 use crate::llm::{AnthropicClient, EmbeddingClient};
 use crate::storage::{NoopStorage, StorageHandle};
 use crate::verbs::query::MemoryStore;
@@ -19,15 +18,10 @@ const DEFAULT_MCP_LISTEN_ADDR: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr:
 
 impl Engine {
     #[must_use]
-    pub fn new(
-        registry: FlavorRegistryFrozen,
-        memories: MemoryStore,
-        auth: Box<dyn AuthResolver>,
-    ) -> Self {
+    pub fn new(registry: FlavorRegistryFrozen, memories: MemoryStore) -> Self {
         Self {
             registry,
             memories,
-            auth,
             storage: Arc::new(NoopStorage),
             anthropic: None,
             embed: Arc::new(RwLock::new(None)),
@@ -45,21 +39,20 @@ impl Engine {
 
     /// One-call composite assembly: build a [`crate::FlavorRegistry`],
     /// hand it to `register` for each linked flavor's `register` fn,
-    /// freeze it, and wire the engine over `auth` + `storage`. This is
-    /// the blessed embedding entry point for host binaries; chain
-    /// `with_*` builders on the result for MCP, providers, and tuning.
+    /// freeze it, and wire the engine over `storage`. Authentication lives
+    /// at the transport edge; chain `with_*` builders on the result for MCP,
+    /// providers, and tuning.
     ///
     /// Migrations are NOT run here — the host runs substrate and
     /// per-flavor migrators against its pool before composing.
     #[must_use]
     pub fn compose(
-        auth: Box<dyn AuthResolver>,
         storage: StorageHandle,
         register: impl FnOnce(&mut crate::FlavorRegistry),
     ) -> Self {
         let mut registry = crate::FlavorRegistry::new();
         register(&mut registry);
-        Self::new(registry.freeze(), MemoryStore::new(), auth).with_storage(storage)
+        Self::new(registry.freeze(), MemoryStore::new()).with_storage(storage)
     }
 
     /// Get a reference to the schema registry.
@@ -144,21 +137,12 @@ impl Engine {
 mod tests {
     use std::sync::Arc;
 
-    use uuid::Uuid;
-
     use super::Engine;
-    use crate::auth::NoAuth;
     use crate::storage::NoopStorage;
-    use crate::{OrgId, Owner, Principal, UserId};
 
     #[test]
     fn compose_assembles_engine_over_registry_closure() {
-        let owner = Owner {
-            principal: Principal::User(UserId::new(Uuid::nil())),
-            org_id: OrgId::new(Uuid::nil()),
-        };
-        let auth = NoAuth::new(owner.principal.clone(), owner);
-        let engine = Engine::compose(Box::new(auth), Arc::new(NoopStorage), |_registry| {});
+        let engine = Engine::compose(Arc::new(NoopStorage), |_registry| {});
         assert!(engine.mcp_url().is_none());
         assert!(engine.embed_client().is_none());
     }

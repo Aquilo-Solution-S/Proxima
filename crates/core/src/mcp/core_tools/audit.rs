@@ -133,7 +133,9 @@ mod tests {
     use super::*;
     use crate::mcp::HandleTable;
     use crate::mcp::OutputMode;
-    use crate::{FlavorRegistry, McpAuthorContext, OrgId, Owner, Principal, UserId};
+    use crate::{
+        AuthPath, AuthzContext, FlavorRegistry, McpAuthorContext, OrgId, Owner, Principal, UserId,
+    };
     use std::sync::Arc;
 
     fn fake_owner() -> Owner {
@@ -145,9 +147,11 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_caller_returns_failed_when_no_storage() {
+        let owner = fake_owner();
         let ctx = McpToolCtx {
             pool: sqlx::PgPool::connect_lazy("postgres://placeholder/db").expect("lazy connect"),
-            owner: fake_owner(),
+            owner: owner.clone(),
+            authz: AuthzContext::single_owner(&owner, AuthPath::System),
             handles: Some(Arc::new(HandleTable::new())),
             mode: OutputMode::Handles,
             registry: Arc::new(FlavorRegistry::new().freeze()),
@@ -189,19 +193,17 @@ mod tests {
         // the new resolver fails fast since the MCP server is contract-bound
         // to populate this field.
         use crate::Engine;
-        use crate::auth::NoAuth;
         use crate::verbs::query::MemoryStore;
 
         let owner = fake_owner();
-        let resolver = NoAuth::new(owner.principal.clone(), owner.clone());
         let engine = std::sync::Arc::new(Engine::new(
             FlavorRegistry::new().freeze(),
             MemoryStore::new(),
-            Box::new(resolver),
         ));
         let ctx = McpToolCtx {
             pool: sqlx::PgPool::connect_lazy("postgres://placeholder/db").expect("lazy connect"),
-            owner,
+            owner: owner.clone(),
+            authz: AuthzContext::single_owner(&owner, AuthPath::System),
             handles: Some(Arc::new(HandleTable::new())),
             mode: OutputMode::Handles,
             registry: Arc::new(FlavorRegistry::new().freeze()),

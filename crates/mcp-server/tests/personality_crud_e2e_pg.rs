@@ -6,16 +6,15 @@ mod common;
 use std::sync::Arc;
 
 use common::{create_db, drop_db};
-use proxima_core::auth::NoAuth;
 use proxima_core::mcp::core_tools::add_wake_entry::AddWakeEntryTool;
 use proxima_core::mcp::core_tools::wake_entry_input::WakeEntryDraftInput;
 use proxima_core::mcp::{HandleTable, McpAuthorContext, McpToolCtx, OutputMode};
 use proxima_core::storage::Storage;
 use proxima_core::verbs::query::MemoryStore;
 use proxima_core::{
-    Engine, FlavorRegistry, InstantiatePersonalityRequest, McpTool, ModelTier, OrgId, Owner,
-    Principal, UserId, WakeEntryAuthoredBy, WakeEntryGoalScope, WakeEntryTriggerKind,
-    WakeExecutionMode,
+    AuthPath, AuthzContext, Engine, FlavorRegistry, InstantiatePersonalityRequest, McpTool,
+    ModelTier, OrgId, Owner, Principal, UserId, WakeEntryAuthoredBy, WakeEntryGoalScope,
+    WakeEntryTriggerKind, WakeExecutionMode,
 };
 use proxima_storage_pg::PgStorage;
 
@@ -50,14 +49,9 @@ async fn wake_token_audit_attributes_caller_personality() -> Result<(), Box<dyn 
     let root_memory_id = row.current_root_perspective_memory_id;
 
     // Build an Engine wired with the live PG storage so ctx.storage() works.
-    let resolver = NoAuth::new(owner.principal.clone(), owner.clone());
     let engine = Arc::new(
-        Engine::new(
-            FlavorRegistry::new().freeze(),
-            MemoryStore::new(),
-            Box::new(resolver),
-        )
-        .with_storage(Arc::new(pg.clone())),
+        Engine::new(FlavorRegistry::new().freeze(), MemoryStore::new())
+            .with_storage(Arc::new(pg.clone())),
     );
 
     // Construct an McpToolCtx pretending we're a wake invocation on this personality.
@@ -65,6 +59,7 @@ async fn wake_token_audit_attributes_caller_personality() -> Result<(), Box<dyn 
     let ctx = McpToolCtx {
         pool,
         owner: owner.clone(),
+        authz: AuthzContext::single_owner(&owner, AuthPath::System),
         handles: Some(Arc::new(HandleTable::new())),
         mode: OutputMode::Handles,
         registry: Arc::new(FlavorRegistry::new().freeze()),

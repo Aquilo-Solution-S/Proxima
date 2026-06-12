@@ -1,5 +1,5 @@
 use super::Engine;
-use crate::auth::Credentials;
+use crate::authz::{AuthzContext, Role};
 use crate::error::ProtocolError;
 use crate::verbs::event_history::{
     EventHistoryRequest, EventHistoryResponse, MAX_EVENT_HISTORY_LIMIT,
@@ -17,8 +17,8 @@ impl Engine {
     }
 
     /// docs/14 §"Query" — Owner-scoped. Caller passes the
-    /// transport-extracted credentials; engine resolves and
-    /// gates `req.owner.principal ∈ resolved.accessible_principals`.
+    /// transport-extracted authorization context; engine gates owner
+    /// access and graph-read capability.
     ///
     /// For heads-only requests targeting a stateful Fact schema (one
     /// whose `FactPayload::natural_key_columns()` is non-empty), the
@@ -29,23 +29,14 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `AuthRequired` on resolver failure, `Forbidden` when the
-    /// principal cannot access `req.owner`, or `Internal` when the storage
-    /// query fails.
+    /// Returns `Forbidden` when the context cannot access `req.owner` or
+    /// lacks the graph-read role, or `Internal` when the storage query fails.
     pub async fn query(
         &self,
-        creds: &Credentials,
+        authz: &AuthzContext,
         req: &QueryRequest,
     ) -> Result<QueryResponse, ProtocolError> {
-        let resolved = self
-            .auth
-            .resolve(creds)
-            .map_err(|_| ProtocolError::auth_required())?;
-        if !resolved.can_access_owner(&req.owner) {
-            return Err(ProtocolError::forbidden(
-                "principal cannot access requested owner",
-            ));
-        }
+        super::authorize(authz, &req.owner, Role::GraphRead)?;
         let mut effective = req.clone();
         if effective.stateful_heads.is_empty() {
             effective.stateful_heads = match effective.schema_id.as_ref() {
@@ -64,23 +55,15 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `AuthRequired` on resolver failure, `Forbidden` when the
-    /// principal cannot access `req.owner`, or `Internal` when storage
-    /// fails to open the change stream.
+    /// Returns `Forbidden` when the context cannot access `req.owner` or
+    /// lacks the graph-read role, or `Internal` when storage fails to open
+    /// the change stream.
     pub async fn subscribe(
         &self,
-        creds: &Credentials,
+        authz: &AuthzContext,
         req: SubscribeRequest,
     ) -> Result<ChangeEventStream, ProtocolError> {
-        let resolved = self
-            .auth
-            .resolve(creds)
-            .map_err(|_| ProtocolError::auth_required())?;
-        if !resolved.can_access_owner(&req.owner) {
-            return Err(ProtocolError::forbidden(
-                "principal cannot access requested owner",
-            ));
-        }
+        super::authorize(authz, &req.owner, Role::GraphRead)?;
         self.storage
             .subscribe_changes(&req.owner, req.since)
             .await
@@ -93,23 +76,15 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `AuthRequired` on resolver failure, `Forbidden` when the
-    /// principal cannot access `req.owner`, or `Internal` when
-    /// `req.limit == 0` or the storage read fails.
+    /// Returns `Forbidden` when the context cannot access `req.owner` or
+    /// lacks the graph-read role, or `Internal` when `req.limit == 0` or
+    /// the storage read fails.
     pub async fn event_history(
         &self,
-        creds: &Credentials,
+        authz: &AuthzContext,
         req: &EventHistoryRequest,
     ) -> Result<EventHistoryResponse, ProtocolError> {
-        let resolved = self
-            .auth
-            .resolve(creds)
-            .map_err(|_| ProtocolError::auth_required())?;
-        if !resolved.can_access_owner(&req.owner) {
-            return Err(ProtocolError::forbidden(
-                "principal cannot access requested owner",
-            ));
-        }
+        super::authorize(authz, &req.owner, Role::GraphRead)?;
         if req.limit == 0 {
             return Err(ProtocolError::internal("EventHistory.limit must be > 0"));
         }

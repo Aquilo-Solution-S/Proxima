@@ -1,10 +1,9 @@
 use std::sync::Arc;
 
-use proxima_core::auth::Credentials;
 use proxima_core::error::ProtocolError;
 use proxima_core::{
-    BindInferenceTierRequest, Engine, InferenceTargetConfig, Owner, RegisterInferenceTargetRequest,
-    RemoveInferenceTargetRequest,
+    AuthzContext, BindInferenceTierRequest, Engine, InferenceTargetConfig, Owner,
+    RegisterInferenceTargetRequest, RemoveInferenceTargetRequest,
 };
 use tauri::State;
 use time::format_description::well_known::Rfc3339;
@@ -206,6 +205,7 @@ fn config_from_core(config: &InferenceTargetConfig) -> InferenceTargetConfigTs {
 #[specta::specta]
 pub async fn register_inference_target(
     engine: State<'_, Arc<Engine>>,
+    authz: State<'_, AuthzContext>,
     req: RegisterInferenceTargetTs,
 ) -> Result<RegisterInferenceTargetOutcomeTs, ProtocolError> {
     let req_bytes = crate::perf::ipc::req_size(&req);
@@ -215,9 +215,7 @@ pub async fn register_inference_target(
             target_ref: req.target_ref,
             config: config_to_core(req.config),
         };
-        let out = engine
-            .register_inference_target(&Credentials::None, &core_req)
-            .await?;
+        let out = engine.register_inference_target(&authz, &core_req).await?;
         Ok(RegisterInferenceTargetOutcomeTs {
             target_ref: out.target_ref,
             idempotent_replay: out.idempotent_replay,
@@ -230,13 +228,12 @@ pub async fn register_inference_target(
 #[specta::specta]
 pub async fn list_inference_targets(
     engine: State<'_, Arc<Engine>>,
+    authz: State<'_, AuthzContext>,
     req: ListInferenceTargetsTs,
 ) -> Result<Vec<InferenceTargetTs>, ProtocolError> {
     let req_bytes = crate::perf::ipc::req_size(&req);
     crate::perf::ipc::record("list_inference_targets", req_bytes, async move {
-        let rows = engine
-            .list_inference_targets(&Credentials::None, &req.owner)
-            .await?;
+        let rows = engine.list_inference_targets(&authz, &req.owner).await?;
         rows.iter()
             .map(|row| {
                 Ok(InferenceTargetTs {
@@ -261,6 +258,7 @@ pub async fn list_inference_targets(
 #[specta::specta]
 pub async fn remove_inference_target(
     engine: State<'_, Arc<Engine>>,
+    authz: State<'_, AuthzContext>,
     req: RemoveInferenceTargetTs,
 ) -> Result<RemoveInferenceTargetOutcomeTs, ProtocolError> {
     let req_bytes = crate::perf::ipc::req_size(&req);
@@ -269,9 +267,7 @@ pub async fn remove_inference_target(
             owner: req.owner,
             target_ref: req.target_ref,
         };
-        let out = engine
-            .remove_inference_target(&Credentials::None, &core_req)
-            .await?;
+        let out = engine.remove_inference_target(&authz, &core_req).await?;
         Ok(RemoveInferenceTargetOutcomeTs {
             idempotent_replay: out.idempotent_replay,
         })
@@ -283,6 +279,7 @@ pub async fn remove_inference_target(
 #[specta::specta]
 pub async fn bind_inference_tier(
     engine: State<'_, Arc<Engine>>,
+    authz: State<'_, AuthzContext>,
     req: BindInferenceTierTs,
 ) -> Result<(), ProtocolError> {
     let req_bytes = crate::perf::ipc::req_size(&req);
@@ -292,9 +289,7 @@ pub async fn bind_inference_tier(
             tier: tier_from_ts(req.tier),
             target_ref: req.target_ref,
         };
-        engine
-            .bind_inference_tier(&Credentials::None, &core_req)
-            .await?;
+        engine.bind_inference_tier(&authz, &core_req).await?;
         Ok(())
     })
     .await
@@ -304,12 +299,13 @@ pub async fn bind_inference_tier(
 #[specta::specta]
 pub async fn list_inference_tier_bindings(
     engine: State<'_, Arc<Engine>>,
+    authz: State<'_, AuthzContext>,
     req: ListInferenceTierBindingsTs,
 ) -> Result<Vec<InferenceTierBindingTs>, ProtocolError> {
     let req_bytes = crate::perf::ipc::req_size(&req);
     crate::perf::ipc::record("list_inference_tier_bindings", req_bytes, async move {
         let rows = engine
-            .list_inference_tier_bindings(&Credentials::None, &req.owner)
+            .list_inference_tier_bindings(&authz, &req.owner)
             .await?;
         Ok(rows
             .iter()

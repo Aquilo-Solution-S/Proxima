@@ -6,7 +6,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use common::{create_db, db_url, drop_db};
-use proxima_core::auth::{Credentials, NoAuth};
 use proxima_core::engine::Engine;
 use proxima_core::storage::Storage;
 use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
@@ -106,14 +105,9 @@ fn fresh_goal_draft(owner: &Owner, request_id: String) -> GoalDraft {
     }
 }
 
-fn build_engine(storage: Arc<dyn Storage>, owner: Owner, principal: Principal) -> Engine {
+fn build_engine(storage: Arc<dyn Storage>, _owner: Owner, _principal: Principal) -> Engine {
     let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
-    Engine::new(
-        registry,
-        MemoryStore::new(),
-        Box::new(NoAuth::new(principal, owner)),
-    )
-    .with_storage(storage)
+    Engine::new(registry, MemoryStore::new()).with_storage(storage)
 }
 
 #[tokio::test]
@@ -142,12 +136,20 @@ async fn subscribe_fresh_no_since_live_ingest() {
             owner: owner.clone(),
             since: None,
         };
-        let mut stream = engine.subscribe(&Credentials::None, req).await?;
+        let mut stream = engine
+            .subscribe(
+                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                req,
+            )
+            .await?;
 
         // Ingest a Fact.
         let draft = fresh_event_draft(owner.clone());
         let outcome = engine
-            .event_ingest(&Credentials::None, draft.clone())
+            .event_ingest(
+                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                draft.clone(),
+            )
             .await?;
 
         // Pull one item from the stream with a 3s timeout.
@@ -209,13 +211,19 @@ async fn subscribe_resume_with_since_mid() {
         // Ingest event A.
         let draft_a = fresh_event_draft(owner.clone());
         let outcome_a = engine
-            .event_ingest(&Credentials::None, draft_a.clone())
+            .event_ingest(
+                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                draft_a.clone(),
+            )
             .await?;
 
         // Ingest event B (a Goal write).
         let draft_b = fresh_goal_draft(&owner, "req-1".to_string());
         let outcome_b = engine
-            .write_goal(&Credentials::None, draft_b.clone())
+            .write_goal(
+                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                draft_b.clone(),
+            )
             .await?;
 
         // Subscribe with since: Some(A.change_event_seq).
@@ -223,7 +231,12 @@ async fn subscribe_resume_with_since_mid() {
             owner: owner.clone(),
             since: Some(outcome_a.change_event_seq),
         };
-        let mut stream = engine.subscribe(&Credentials::None, req).await?;
+        let mut stream = engine
+            .subscribe(
+                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                req,
+            )
+            .await?;
 
         // Pull one item with a 3s timeout. Assert it's the Goal — A is
         // gone (it's at-or-before the cursor).
@@ -242,7 +255,10 @@ async fn subscribe_resume_with_since_mid() {
         // Ingest event C (another Fact).
         let draft_c = fresh_event_draft(owner.clone());
         let outcome_c = engine
-            .event_ingest(&Credentials::None, draft_c.clone())
+            .event_ingest(
+                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                draft_c.clone(),
+            )
             .await?;
 
         // Pull next item; assert C.
@@ -301,18 +317,29 @@ async fn subscribe_owner_isolation() {
             owner: owner1.clone(),
             since: None,
         };
-        let mut stream = engine1.subscribe(&Credentials::None, req).await?;
+        let mut stream = engine1
+            .subscribe(
+                &proxima_core::AuthzContext::single_owner(&owner1, proxima_core::AuthPath::System),
+                req,
+            )
+            .await?;
 
         // Owner1 ingest — should land on the stream.
         let draft1 = fresh_event_draft(owner1.clone());
         let outcome1 = engine1
-            .event_ingest(&Credentials::None, draft1.clone())
+            .event_ingest(
+                &proxima_core::AuthzContext::single_owner(&owner1, proxima_core::AuthPath::System),
+                draft1.clone(),
+            )
             .await?;
 
         // Owner2 ingest — must NOT land on Owner1's stream (filter drops it).
         let draft2 = fresh_event_draft(owner2.clone());
         let _ = engine2
-            .event_ingest(&Credentials::None, draft2.clone())
+            .event_ingest(
+                &proxima_core::AuthzContext::single_owner(&owner2, proxima_core::AuthPath::System),
+                draft2.clone(),
+            )
             .await?;
 
         // First pull: Owner1's event.

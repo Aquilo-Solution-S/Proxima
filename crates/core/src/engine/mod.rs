@@ -1,6 +1,5 @@
-//! Engine composite — wires `FlavorRegistryFrozen`, `MemoryStore`, and
-//! an `AuthResolver` behind the typed verb surfaces of
-//! docs/14-protocol-surface.md.
+//! Engine composite — wires `FlavorRegistryFrozen` and `MemoryStore`
+//! behind the typed verb surfaces of docs/14-protocol-surface.md.
 
 mod builder;
 mod dispatcher;
@@ -17,8 +16,7 @@ use futures::future::BoxFuture;
 use tokio::sync::{Mutex, RwLock, watch};
 use tokio::task::JoinHandle;
 
-use crate::auth::AuthResolver;
-use crate::auth::Credentials;
+use crate::authz::{AuthzContext, Role};
 use crate::error::ProtocolError;
 use crate::llm::{AnthropicClient, EmbeddingClient};
 use crate::storage::{StorageError, StorageHandle};
@@ -39,7 +37,6 @@ pub struct Engine {
     registry: FlavorRegistryFrozen,
     // TODO(M3.B): remove MemoryStore
     memories: MemoryStore,
-    auth: Box<dyn AuthResolver>,
     storage: StorageHandle,
     anthropic: Option<Arc<dyn AnthropicClient>>,
     embed: Arc<RwLock<Option<Arc<dyn EmbeddingClient>>>>,
@@ -94,33 +91,20 @@ impl Engine {
         self.anthropic.as_ref()
     }
 
-    fn authorize_owner(&self, creds: &Credentials, owner: &Owner) -> Result<(), ProtocolError> {
-        let resolved = self
-            .auth
-            .resolve(creds)
-            .map_err(|_| ProtocolError::auth_required())?;
-        if resolved.can_access_owner(owner) {
-            Ok(())
-        } else {
-            Err(ProtocolError::forbidden(
-                "principal cannot access requested owner",
-            ))
-        }
-    }
-
     /// Owner-scoped registration of an inference target.
     ///
     /// # Errors
     ///
-    /// Returns `AuthRequired`/`Forbidden` from owner authorization,
-    /// `InvalidArgument` on request validation, `TargetRefConflict` when
-    /// the `target_ref` already exists, or `Internal` on storage failure.
+    /// Returns `Forbidden` when the context cannot access `req.owner` or
+    /// lacks the admin role, `InvalidArgument` on request validation,
+    /// `TargetRefConflict` when the `target_ref` already exists, or
+    /// `Internal` on storage failure.
     pub async fn register_inference_target(
         &self,
-        creds: &Credentials,
+        authz: &AuthzContext,
         req: &RegisterInferenceTargetRequest,
     ) -> Result<RegisterInferenceTargetResponse, ProtocolError> {
-        self.authorize_owner(creds, &req.owner)?;
+        authorize(authz, &req.owner, Role::Admin)?;
         crate::inference::register_inference_target::register_inference_target(
             self.storage.as_ref(),
             req,
@@ -132,14 +116,14 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `AuthRequired`/`Forbidden` from owner authorization, or
-    /// `Internal` when storage listing fails.
+    /// Returns `Forbidden` when the context cannot access `owner` or lacks
+    /// the admin role, or `Internal` when storage listing fails.
     pub async fn list_inference_targets(
         &self,
-        creds: &Credentials,
+        authz: &AuthzContext,
         owner: &Owner,
     ) -> Result<Vec<InferenceTargetRow>, ProtocolError> {
-        self.authorize_owner(creds, owner)?;
+        authorize(authz, owner, Role::Admin)?;
         crate::inference::list_inference_targets::list_inference_targets(
             self.storage.as_ref(),
             owner,
@@ -151,15 +135,16 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `AuthRequired`/`Forbidden` from owner authorization,
-    /// `InvalidArgument` on request validation, `TargetInUse` when a tier
-    /// binding still references the target, or `Internal` on storage failure.
+    /// Returns `Forbidden` when the context cannot access `req.owner` or
+    /// lacks the admin role, `InvalidArgument` on request validation,
+    /// `TargetInUse` when a tier binding still references the target, or
+    /// `Internal` on storage failure.
     pub async fn remove_inference_target(
         &self,
-        creds: &Credentials,
+        authz: &AuthzContext,
         req: &RemoveInferenceTargetRequest,
     ) -> Result<RemoveInferenceTargetResponse, ProtocolError> {
-        self.authorize_owner(creds, &req.owner)?;
+        authorize(authz, &req.owner, Role::Admin)?;
         crate::inference::remove_inference_target::remove_inference_target(
             self.storage.as_ref(),
             req,
@@ -171,15 +156,16 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `AuthRequired`/`Forbidden` from owner authorization,
-    /// `InvalidArgument` on request validation, `InferenceTargetMissing`
-    /// when the `target_ref` is unknown, or `Internal` on storage failure.
+    /// Returns `Forbidden` when the context cannot access `req.owner` or
+    /// lacks the admin role, `InvalidArgument` on request validation,
+    /// `InferenceTargetMissing` when the `target_ref` is unknown, or
+    /// `Internal` on storage failure.
     pub async fn bind_inference_tier(
         &self,
-        creds: &Credentials,
+        authz: &AuthzContext,
         req: &BindInferenceTierRequest,
     ) -> Result<BindInferenceTierResponse, ProtocolError> {
-        self.authorize_owner(creds, &req.owner)?;
+        authorize(authz, &req.owner, Role::Admin)?;
         crate::inference::bind_inference_tier::bind_inference_tier(self.storage.as_ref(), req).await
     }
 
@@ -187,14 +173,14 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `AuthRequired`/`Forbidden` from owner authorization, or
-    /// `Internal` when storage listing fails.
+    /// Returns `Forbidden` when the context cannot access `owner` or lacks
+    /// the admin role, or `Internal` when storage listing fails.
     pub async fn list_inference_tier_bindings(
         &self,
-        creds: &Credentials,
+        authz: &AuthzContext,
         owner: &Owner,
     ) -> Result<Vec<InferenceTierBindingRow>, ProtocolError> {
-        self.authorize_owner(creds, owner)?;
+        authorize(authz, owner, Role::Admin)?;
         crate::inference::list_inference_tier_bindings::list_inference_tier_bindings(
             self.storage.as_ref(),
             owner,
@@ -237,17 +223,18 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `AuthRequired`/`Forbidden` from owner authorization;
-    /// `InvalidArgument`, `DuplicateTriggerInRequest`, `ToolNotRegistered`,
+    /// Returns `Forbidden` when the context cannot access `req.owner` or
+    /// lacks the admin role; `InvalidArgument`,
+    /// `DuplicateTriggerInRequest`, `ToolNotRegistered`,
     /// `InferenceTargetMissing`, or `TierUnbound` on request validation;
     /// `NotFound` when the personality instance doesn't exist;
     /// `TriggerConflict` or `Internal` from storage.
     pub async fn set_wake_entries(
         &self,
-        creds: &Credentials,
+        authz: &AuthzContext,
         req: &SetWakeEntriesRequest,
     ) -> Result<SetWakeEntriesResponse, ProtocolError> {
-        self.authorize_owner(creds, &req.owner)?;
+        authorize(authz, &req.owner, Role::Admin)?;
         let ctx = crate::inference::set_wake_entries::SetWakeEntriesContext {
             storage: self.storage.as_ref(),
             registry: self.registry(),
@@ -386,10 +373,25 @@ impl std::fmt::Debug for Engine {
         f.debug_struct("Engine")
             .field("registry", &self.registry)
             .field("memories", &self.memories)
-            .field("auth", &"<dyn AuthResolver>")
             .field("storage", &"<dyn Storage>")
             .finish_non_exhaustive()
     }
+}
+
+pub(super) fn authorize(
+    authz: &AuthzContext,
+    owner: &Owner,
+    role: Role,
+) -> Result<(), ProtocolError> {
+    if !authz.identity.can_access_owner(owner) {
+        return Err(ProtocolError::forbidden(
+            "principal cannot access requested owner",
+        ));
+    }
+    if !authz.capabilities.roles.has(role) {
+        return Err(ProtocolError::forbidden(role.denied_message()));
+    }
+    Ok(())
 }
 
 pub(super) fn map_storage_err_for_goal_write(

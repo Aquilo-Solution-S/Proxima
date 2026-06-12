@@ -10,16 +10,16 @@ mod common;
 use std::sync::Arc;
 
 use common::{drop_db, fresh_pg, owner_fixture};
-use proxima_core::auth::NoAuth;
 use proxima_core::mcp::McpAuthorContext;
 use proxima_core::mcp::core_tools::intervention::{
     EmitInterventionDecisionArgs, EmitInterventionDecisionTool,
 };
 use proxima_core::verbs::query::MemoryStore;
 use proxima_core::{
-    Engine, FlavorRegistry, INTERVENTION_SOURCE_ID, InstantiatePersonalityRequest,
-    InterventionDecisionKind, InterventionRequestedV1, McpTool, McpToolCtx, MemoryId, OutputMode,
-    Owner, SourceBatchId, SourceId, Storage, intervention_request_event_draft,
+    AuthPath, AuthzContext, Engine, FlavorRegistry, INTERVENTION_SOURCE_ID,
+    InstantiatePersonalityRequest, InterventionDecisionKind, InterventionRequestedV1, McpTool,
+    McpToolCtx, MemoryId, OutputMode, Owner, SourceBatchId, SourceId, Storage,
+    intervention_request_event_draft,
 };
 use uuid::Uuid;
 
@@ -253,15 +253,13 @@ fn ctx(
     caller_self_perspective: Option<MemoryId>,
 ) -> McpToolCtx {
     let registry = Arc::new(FlavorRegistry::new().freeze());
-    let engine = Engine::new(
-        (*registry).clone(),
-        MemoryStore::new(),
-        Box::new(NoAuth::new(owner.principal.clone(), owner.clone())),
-    )
-    .with_storage(pg.clone().into_handle());
+    let engine =
+        Engine::new((*registry).clone(), MemoryStore::new()).with_storage(pg.clone().into_handle());
+    let authz = AuthzContext::single_owner(&owner, AuthPath::System);
     McpToolCtx {
         pool: pg.pool().clone(),
         owner,
+        authz,
         handles: None,
         mode: OutputMode::RawIds,
         registry,

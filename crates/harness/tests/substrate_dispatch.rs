@@ -3,7 +3,6 @@ use std::sync::Arc;
 use std::collections::HashMap;
 
 use futures::future::BoxFuture;
-use proxima_core::auth::NoAuth;
 use proxima_core::harness::{
     HarnessProgram, HarnessToolDispatch, HarnessToolProjection, ProviderTarget,
     SubstrateToolBinding,
@@ -192,7 +191,6 @@ async fn bridge_defaults_caller_self_perspective_for_wake_calls() {
     let engine = Arc::new(Engine::new(
         FlavorRegistry::new().freeze(),
         MemoryStore::new(),
-        Box::new(NoAuth::new(owner.principal.clone(), owner.clone())),
     ));
     let pool = sqlx::PgPool::connect_lazy("postgres://placeholder/db").expect("lazy pool");
     let host = McpToolHost::from_pool(pool, owner.clone(), frozen).with_engine(engine.clone());

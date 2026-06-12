@@ -9,7 +9,6 @@ use std::time::Instant;
 
 use async_trait::async_trait;
 use proxima_code::{CodeDevelopmentPerspectiveV1, build_engine_with};
-use proxima_core::auth::NoAuth;
 use proxima_core::harness::{ErrorClass, FinishReason};
 use proxima_core::llm::{EmbeddingClient, LlmError};
 use proxima_core::mcp::McpAuthorContext;
@@ -205,12 +204,8 @@ async fn goal_activated_fact_wakes_substrate_executor_and_emits_perspective()
         let owner = test_owner();
 
         let engine = Arc::new(
-            build_engine_with(
-                pg.clone(),
-                Box::new(NoAuth::new(owner.principal.clone(), owner.clone())),
-                proxima_flavor_goal::register,
-            )
-            .with_embed(Arc::new(FakeEmbedding)),
+            build_engine_with(pg.clone(), proxima_flavor_goal::register)
+                .with_embed(Arc::new(FakeEmbedding)),
         );
         engine
             .set_mcp_url("http://127.0.0.1:1/mcp".to_string())
