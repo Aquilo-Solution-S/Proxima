@@ -1,11 +1,38 @@
 use proxima::{
-    EmbedConfig, NamedMigrator, ProximaBuilder, company_owner, run_core_and_flavor_migrations,
+    AppInfo, EmbedConfig, FlavorApp, FlavorBundle, NamedMigrator, Proxima, ProximaBuilder,
+    company_owner, run_core_and_flavor_migrations,
 };
+use proxima_core::FlavorRegistry;
 use proxima_storage_pg::PgStorage;
 use sqlx::{Connection, Executor, PgConnection};
 use uuid::Uuid;
 
 const ADMIN_URL: &str = "postgres://proxima:proxima@localhost/proxima";
+
+struct GoalTestApp;
+
+impl FlavorBundle for GoalTestApp {
+    fn register(registry: &mut FlavorRegistry) {
+        proxima_flavor_goal::register(registry);
+    }
+
+    fn migrators() -> Vec<NamedMigrator> {
+        vec![NamedMigrator::new(
+            "proxima-flavor-goal",
+            proxima_flavor_goal::migrator(),
+        )]
+    }
+}
+
+impl FlavorApp for GoalTestApp {
+    fn app_info() -> AppInfo {
+        AppInfo {
+            id: "goal-test",
+            title: "Goal Test",
+            version: "1",
+        }
+    }
+}
 
 #[tokio::test]
 async fn boots_engine_with_goal_flavor_on_fresh_db() {
@@ -73,6 +100,38 @@ async fn migration_facade_runs_goal_flavor_idempotently() {
 
     let _ = drop_db(&db_name).await;
     result.expect("migration facade integration test failed");
+}
+
+#[tokio::test]
+async fn facade_run_binds_loopback_mcp_and_sets_engine_url() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    create_db(&db_name).await.expect("PG required for tests");
+    let db_url = db_url(&db_name);
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let running = Proxima::<GoalTestApp>::app()
+            .database_url(db_url)
+            .owner(company_owner(Uuid::now_v7()))
+            .allow_insecure_single_owner()
+            .with_mcp()
+            .mcp_bind("127.0.0.1:0".parse()?)
+            .run()
+            .await?;
+
+        let addr = running.mcp_addr.expect("mcp bound");
+        assert!(addr.ip().is_loopback());
+        let expected_url = format!("http://{addr}/mcp");
+        assert_eq!(
+            running.engine.mcp_url().as_deref(),
+            Some(expected_url.as_str())
+        );
+        running.shutdown().await;
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("facade run integration test failed");
 }
 
 fn db_url(name: &str) -> String {

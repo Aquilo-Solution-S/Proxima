@@ -4235,15 +4235,20 @@ dependencies = [
 name = "proxima"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "axum",
  "http 1.4.0",
  "proxima-blob-s3",
  "proxima-core",
  "proxima-flavor-goal",
+ "proxima-mcp-server",
  "proxima-storage-pg",
  "sqlx",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-util",
+ "tower",
+ "tracing",
  "uuid",
 ]
 
