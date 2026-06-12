@@ -1,9 +1,9 @@
-//! Headless embedded host: boot engine from env, ingest one Fact,
-//! query it back. The wiring template for real host apps.
+//! Headless embedded host: one-line facade boot from env, ingest one
+//! Fact, query it back. The host wiring template for `FlavorApp`s.
 
 mod flavor;
 
-use proxima::{EmbedConfig, ProximaBuilder, company_owner};
+use proxima::Proxima;
 use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
 use proxima_core::verbs::query::{EntityKind, QueryRequest, QueryResponse};
 use proxima_core::{
@@ -14,17 +14,14 @@ const CORE_CITATION_SCHEMA_ID: &str = "proxima-core/wake-trace-citation-v1";
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let config = EmbedConfig::from_env()?;
-    let org: uuid::Uuid = std::env::var("PROXIMA_ORG_ID")
-        .unwrap_or_else(|_| uuid::Uuid::nil().to_string())
-        .parse()?;
-    let owner = company_owner(org);
-
-    let booted = ProximaBuilder::new(config, owner.clone())
-        .bundle::<flavor::EmbeddedMinimalFlavor>()
-        .boot()
+    let booted = Proxima::<flavor::EmbeddedMinimalFlavor>::app()
+        .from_env()
+        .allow_insecure_single_owner()
+        .run()
         .await?;
-    let authz = embedded_authz(&owner);
+    let authz = booted
+        .single_owner_authz()
+        .expect("insecure single-owner mode is enabled");
 
     let payload = flavor::DocumentFiledV1 {
         source_path: "/example/intake/r-2026-0001.pdf".into(),
@@ -37,7 +34,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let draft = EventDraft {
         source_id: SourceId::new("embedded-minimal/host"),
         source_batch_id: SourceBatchId::new(uuid::Uuid::now_v7()),
-        owner: owner.clone(),
+        owner: booted.owner.clone(),
         schema_id: SchemaId::new(flavor::DocumentFiledV1::SCHEMA_ID.into()),
         schema_version: SchemaVersion::new(flavor::DocumentFiledV1::SCHEMA_VERSION),
         payload: payload_bytes,
@@ -59,18 +56,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let response = booted
         .engine
-        .query(&authz, &query_for_schema(&owner))
+        .query(&authz, &query_for_schema(&booted.owner))
         .await?;
     println!("query returned {} rows", row_count(&response));
 
-    booted.engine.stop(booted.handle).await;
+    booted.shutdown().await;
     Ok(())
-}
-
-/// Explicit insecure single-owner opt-in: this host is the only
-/// principal; all verb calls run as the trusted in-process owner.
-fn embedded_authz(owner: &proxima_core::Owner) -> proxima_core::AuthzContext {
-    proxima_core::AuthzContext::single_owner(owner, proxima_core::AuthPath::System)
 }
 
 fn query_for_schema(owner: &proxima_core::Owner) -> QueryRequest {
