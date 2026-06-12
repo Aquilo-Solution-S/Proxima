@@ -18,6 +18,6 @@ workspace = true
 proxima-embed = { path = "../../crates/embed" }
 proxima-storage-pg = { path = "../../crates/storage-pg" }
 proxima-code = { path = "../../flavors/code" }
-proxima-mcp-substrate = { path = "../../flavors/mcp" }
+proxima-agent-memory = { path = "../../flavors/agent-memory" }
 proxima-flavor-goal = { path = "../../flavors/goal" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

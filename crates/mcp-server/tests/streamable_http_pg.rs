@@ -17,13 +17,13 @@ async fn streamable_http_initialize_list_and_remember() -> Result<(), Box<dyn st
     };
     let database_url = format!("postgres://proxima:proxima@localhost/{db_name}");
     let mut registry = FlavorRegistry::new();
-    proxima_mcp_substrate::register(&mut registry);
+    proxima_agent_memory::register(&mut registry);
     let server = McpToolHost::from_database_url(&database_url, nil_owner(), registry).await?;
-    proxima_mcp_substrate::migrator().run(server.pool()).await?;
+    proxima_agent_memory::migrator().run(server.pool()).await?;
     let store = Arc::new(WakeTokenStore::new(Duration::from_mins(1)));
     let token = store
         .mint(make_token_ctx(vec![
-            "proxima-mcp/proxima_remember".into(),
+            "proxima-agent-memory/proxima_remember".into(),
             "core/fetch_memory".into(),
         ]))
         .await;
@@ -57,7 +57,7 @@ async fn streamable_http_initialize_list_and_remember() -> Result<(), Box<dyn st
         .filter_map(|tool| tool["name"].as_str())
         .collect();
     assert!(
-        names.contains(&"proxima-mcp_proxima_remember"),
+        names.contains(&"proxima-agent-memory_proxima_remember"),
         "got {names:?}"
     );
     assert!(names.contains(&"core_fetch_memory"), "got {names:?}");
@@ -72,7 +72,7 @@ async fn streamable_http_initialize_list_and_remember() -> Result<(), Box<dyn st
             "id": 3,
             "method": "tools/call",
             "params": {
-                "name": "proxima-mcp_proxima_remember",
+                "name": "proxima-agent-memory_proxima_remember",
                 "arguments": {
                     "title": "mcp streamable test",
                     "body": "HTTP transport remembers notes.",
@@ -104,9 +104,9 @@ async fn missing_auth_returns_401() -> Result<(), Box<dyn std::error::Error>> {
     };
     let database_url = format!("postgres://proxima:proxima@localhost/{db_name}");
     let mut registry = FlavorRegistry::new();
-    proxima_mcp_substrate::register(&mut registry);
+    proxima_agent_memory::register(&mut registry);
     let server = McpToolHost::from_database_url(&database_url, nil_owner(), registry).await?;
-    proxima_mcp_substrate::migrator().run(server.pool()).await?;
+    proxima_agent_memory::migrator().run(server.pool()).await?;
     let auth_store = Arc::new(McpEdgeAuth::headless());
     let (handle, addr) = serve_streamable_http(
         SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0),
@@ -139,9 +139,9 @@ async fn disallowed_origin_returns_403_with_valid_token() -> Result<(), Box<dyn 
     };
     let database_url = format!("postgres://proxima:proxima@localhost/{db_name}");
     let mut registry = FlavorRegistry::new();
-    proxima_mcp_substrate::register(&mut registry);
+    proxima_agent_memory::register(&mut registry);
     let server = McpToolHost::from_database_url(&database_url, nil_owner(), registry).await?;
-    proxima_mcp_substrate::migrator().run(server.pool()).await?;
+    proxima_agent_memory::migrator().run(server.pool()).await?;
     let auth_store = Arc::new(McpEdgeAuth::headless());
     let token = uuid::Uuid::new_v4();
     auth_store
@@ -180,9 +180,9 @@ async fn local_master_token_lists_all_tools_without_origin()
     };
     let database_url = format!("postgres://proxima:proxima@localhost/{db_name}");
     let mut registry = FlavorRegistry::new();
-    proxima_mcp_substrate::register(&mut registry);
+    proxima_agent_memory::register(&mut registry);
     let server = McpToolHost::from_database_url(&database_url, nil_owner(), registry).await?;
-    proxima_mcp_substrate::migrator().run(server.pool()).await?;
+    proxima_agent_memory::migrator().run(server.pool()).await?;
     let auth_store = Arc::new(McpEdgeAuth::headless());
     let token = uuid::Uuid::new_v4();
     auth_store
@@ -215,7 +215,7 @@ async fn local_master_token_lists_all_tools_without_origin()
         .iter()
         .filter_map(|tool| tool["name"].as_str())
         .collect();
-    assert!(names.contains(&"proxima-mcp_proxima_remember"));
+    assert!(names.contains(&"proxima-agent-memory_proxima_remember"));
     assert!(!names.contains(&"core_fetch_memory"));
 
     handle.abort();
@@ -231,9 +231,9 @@ async fn non_loopback_bind_refused_immediately() -> Result<(), Box<dyn std::erro
     };
     let database_url = format!("postgres://proxima:proxima@localhost/{db_name}");
     let mut registry = FlavorRegistry::new();
-    proxima_mcp_substrate::register(&mut registry);
+    proxima_agent_memory::register(&mut registry);
     let server = McpToolHost::from_database_url(&database_url, nil_owner(), registry).await?;
-    proxima_mcp_substrate::migrator().run(server.pool()).await?;
+    proxima_agent_memory::migrator().run(server.pool()).await?;
     let bind: SocketAddr = "0.0.0.0:0".parse()?;
     let auth_store = Arc::new(McpEdgeAuth::headless());
     let err = serve_streamable_http(bind, server, default_allowlist(), auth_store)

@@ -1,5 +1,5 @@
 {
-  "name": "@proxima/flavor-mcp",
+  "name": "@proxima/flavor-agent-memory",
   "version": "0.1.0",
   "type": "module",
   "main": "src/index.ts",

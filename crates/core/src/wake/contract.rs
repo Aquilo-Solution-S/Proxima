@@ -272,7 +272,7 @@ mod tests {
             model_tier: ModelTier::Standard,
             inference_target_ref: None,
             substrate_tool_palette: vec![
-                "core/emit_abstraction::proxima-mcp/agent-derivation-v1::v1".into(),
+                "core/emit_abstraction::proxima-agent-memory/agent-derivation-v1::v1".into(),
             ],
             required_produced_schema_ids: Vec::new(),
             max_rounds: 4,
@@ -280,15 +280,18 @@ mod tests {
             disabled_reason: None,
         };
         let projection = vec![HarnessToolProjection {
-            palette_id: "core/emit_abstraction::proxima-mcp/agent-derivation-v1::v1".into(),
-            canonical_name: "core/emit_abstraction::proxima-mcp/agent-derivation-v1::v1".into(),
-            provider_name: "core_emit_abstraction__proxima-mcp_agent-derivation-v1__v1".into(),
+            palette_id: "core/emit_abstraction::proxima-agent-memory/agent-derivation-v1::v1"
+                .into(),
+            canonical_name: "core/emit_abstraction::proxima-agent-memory/agent-derivation-v1::v1"
+                .into(),
+            provider_name: "core_emit_abstraction__proxima-agent-memory_agent-derivation-v1__v1"
+                .into(),
             description: "Emit an abstraction".into(),
-            produces_schema_ids: vec!["proxima-mcp/agent-derivation-v1".into()],
+            produces_schema_ids: vec!["proxima-agent-memory/agent-derivation-v1".into()],
             input_schema: serde_json::json!({ "type": "object", "properties": {} }),
             dispatch: HarnessToolDispatch::TypedEmit {
                 internal_canonical_name: "core/emit_abstraction".into(),
-                schema_id: "proxima-mcp/agent-derivation-v1".into(),
+                schema_id: "proxima-agent-memory/agent-derivation-v1".into(),
                 schema_version: 1,
                 payload_kind: crate::verbs::schema::PayloadKind::Abstraction,
             },
@@ -308,7 +311,7 @@ mod tests {
         assert_eq!(contract.fulfillment_contract.tool_error_streak_limit, 3);
         assert_eq!(
             contract.fulfillment_contract.produced_schema_ids,
-            vec!["proxima-mcp/agent-derivation-v1"]
+            vec!["proxima-agent-memory/agent-derivation-v1"]
         );
         assert!(
             contract
@@ -318,7 +321,7 @@ mod tests {
         );
         assert_eq!(
             contract.resolved_tools.substrate[0].produces_schema_ids,
-            vec!["proxima-mcp/agent-derivation-v1"]
+            vec!["proxima-agent-memory/agent-derivation-v1"]
         );
     }
 

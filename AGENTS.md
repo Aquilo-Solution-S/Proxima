@@ -41,7 +41,7 @@ explicit request.
 ```
 proxima/
 ├── apps/
-│   ├── proxima-mcp/         Rust headless MCP host binary (substrate + goal)
+│   ├── proxima-mcp/         Rust headless MCP host binary (agent-memory + goal)
 │   └── proxima-shell/       Solid + Vite + Tauri 2 shell
 │       └── src-tauri/       Tauri Rust crate
 ├── crates/
@@ -59,7 +59,7 @@ proxima/
 ├── flavors/
 │   ├── code/                Rust code flavor crate
 │   ├── goal/                Rust goal flavor crate
-│   └── mcp/                 Rust MCP substrate flavor crate
+│   └── agent-memory/        Rust agent-memory substrate flavor crate
 ├── examples/
 │   └── embedded-minimal/    canonical host-binary embedding example
 ├── tools/
@@ -242,7 +242,7 @@ breaks if these slip.
   Components include `core`, `frontend-core`, `proxima-shell`,
   `proxima-mcp`, `storage-pg`, `wire-grpc`, `mcp-server`,
   `llm-openai-compat`, `blob-s3`, `codex-auth`, `embed`, `harness`,
-  `flavors-code`, `flavors-goal`, `flavors-mcp`, `examples`, `tools`.
+  `flavors-code`, `flavors-goal`, `flavors-agent-memory`, `examples`, `tools`.
 - Body: bulleted list of concrete changes; preserve the *why* when
   the change is a decision, not a fix.
 - Co-authorship trailer for AI commits matches the parent CLAUDE.md

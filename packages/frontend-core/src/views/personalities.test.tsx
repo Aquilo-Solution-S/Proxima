@@ -88,7 +88,7 @@ const wakeInvocation = (
       log_seq: 1,
       at: "2026-05-09 07:38:47 UTC",
       phase: "tool_call",
-      tool_id: "proxima-mcp/proxima_derive",
+      tool_id: "proxima-agent-memory/proxima_derive",
       status: "failed",
       duration_ms: 120,
       message_tail: "tool failed",
@@ -313,7 +313,7 @@ describe("PersonalitiesView", () => {
     });
     expect(screen.getByText("Error: harness failed")).toBeTruthy();
     expect(screen.getByText("stderr tail")).toBeTruthy();
-    expect(screen.getByText("proxima-mcp/proxima_derive")).toBeTruthy();
+    expect(screen.getByText("proxima-agent-memory/proxima_derive")).toBeTruthy();
   });
 
   it("creates a personality through the create dialog", async () => {

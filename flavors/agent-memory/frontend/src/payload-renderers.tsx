@@ -8,7 +8,7 @@ import type { PayloadCodec, Renderer } from "@proxima/core/hub";
 
 type PayloadRecord = Record<string, unknown>;
 
-export const mcpPayloadCodec: PayloadCodec<unknown> = {
+export const agentMemoryPayloadCodec: PayloadCodec<unknown> = {
   decode(bytes: Uint8Array): unknown {
     return decode(bytes);
   },
@@ -47,21 +47,21 @@ const Field: Component<{ label: string; children: JSX.Element }> = (props) => (
 const PayloadShell: Component<{ title: string; children: JSX.Element }> = (
   props,
 ) => (
-  <div class="mcp-payload">
-    <div class="mcp-payload-title">{props.title}</div>
+  <div class="agent-memory-payload">
+    <div class="agent-memory-payload-title">{props.title}</div>
     {props.children}
   </div>
 );
 
 const PayloadGrid: Component<{ children: JSX.Element }> = (props) => (
-  <dl class="payload-grid mcp-payload-grid">{props.children}</dl>
+  <dl class="payload-grid agent-memory-payload-grid">{props.children}</dl>
 );
 
 const Tags: Component<{ tags: string[] }> = (props) => (
   <Show when={props.tags.length > 0}>
-    <div class="mcp-payload-tags">
+    <div class="agent-memory-payload-tags">
       <For each={props.tags}>
-        {(tag) => <span class="mcp-payload-tag">{tag}</span>}
+        {(tag) => <span class="agent-memory-payload-tag">{tag}</span>}
       </For>
     </div>
   </Show>
@@ -69,18 +69,18 @@ const Tags: Component<{ tags: string[] }> = (props) => (
 
 const Body: Component<{ text: string }> = (props) => (
   <Show when={props.text.length > 0}>
-    <p class="mcp-payload-body">{props.text}</p>
+    <p class="agent-memory-payload-body">{props.text}</p>
   </Show>
 );
 
 const Confidence: Component<{ value: number }> = (props) => {
   const pct = () => Math.max(0, Math.min(100, props.value));
   return (
-    <div class="mcp-payload-confidence">
+    <div class="agent-memory-payload-confidence">
       <span>{pct()}%</span>
-      <span class="mcp-payload-confidence-bar">
+      <span class="agent-memory-payload-confidence-bar">
         <span
-          class="mcp-payload-confidence-fill"
+          class="agent-memory-payload-confidence-fill"
           style={{ width: `${pct()}%` }}
         />
       </span>
@@ -150,8 +150,8 @@ const renderer = (
   render: (props) => render(props.payload, props.memory),
 });
 
-export const mcpRenderers: Record<string, Renderer<unknown>> = {
-  "proxima-mcp/agent-note-v1": renderer(renderAgentNote),
-  "proxima-mcp/agent-derivation-v1": renderer(renderAgentDerivation),
-  "proxima-mcp/agent-link-v1": renderer(renderAgentLink),
+export const agentMemoryRenderers: Record<string, Renderer<unknown>> = {
+  "proxima-agent-memory/agent-note-v1": renderer(renderAgentNote),
+  "proxima-agent-memory/agent-derivation-v1": renderer(renderAgentDerivation),
+  "proxima-agent-memory/agent-link-v1": renderer(renderAgentLink),
 };

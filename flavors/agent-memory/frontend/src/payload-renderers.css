@@ -1,11 +1,11 @@
-.mcp-payload {
+.agent-memory-payload {
   display: flex;
   flex-direction: column;
   gap: 9px;
   min-width: 0;
 }
 
-.mcp-payload-title {
+.agent-memory-payload-title {
   font-family: var(--sans);
   font-size: 13px;
   line-height: 1.35;
@@ -13,7 +13,7 @@
   overflow-wrap: anywhere;
 }
 
-.mcp-payload-body {
+.agent-memory-payload-body {
   margin: 0;
   font-family: var(--serif);
   font-size: 12px;
@@ -23,12 +23,12 @@
   overflow-wrap: anywhere;
 }
 
-.mcp-payload-grid {
+.agent-memory-payload-grid {
   border-top: 1px dashed var(--rule);
   padding-top: 8px;
 }
 
-.mcp-payload-grid dt {
+.agent-memory-payload-grid dt {
   font-family: var(--mono);
   font-size: 9px;
   color: var(--ink-40);
@@ -36,7 +36,7 @@
   letter-spacing: 0.08em;
 }
 
-.mcp-payload-grid dd {
+.agent-memory-payload-grid dd {
   margin: 0;
   min-width: 0;
   font-family: var(--mono);
@@ -46,13 +46,13 @@
   overflow-wrap: anywhere;
 }
 
-.mcp-payload-tags {
+.agent-memory-payload-tags {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
 }
 
-.mcp-payload-tag {
+.agent-memory-payload-tag {
   font-family: var(--mono);
   font-size: 9px;
   letter-spacing: 0.04em;
@@ -62,7 +62,7 @@
   border-radius: 9px;
 }
 
-.mcp-payload-confidence {
+.agent-memory-payload-confidence {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -71,7 +71,7 @@
   color: var(--ink-70);
 }
 
-.mcp-payload-confidence-bar {
+.agent-memory-payload-confidence-bar {
   flex: 1;
   height: 4px;
   background: var(--rule);
@@ -79,7 +79,7 @@
   overflow: hidden;
 }
 
-.mcp-payload-confidence-fill {
+.agent-memory-payload-confidence-fill {
   height: 100%;
   background: var(--ink-60);
 }

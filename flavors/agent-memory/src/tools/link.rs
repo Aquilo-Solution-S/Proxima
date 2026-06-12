@@ -42,7 +42,7 @@ pub struct LinkOutput {
 pub struct LinkTool;
 
 impl McpTool for LinkTool {
-    const NAME: &'static str = "proxima-mcp/proxima_link";
+    const NAME: &'static str = "proxima-agent-memory/proxima_link";
     const DESCRIPTION: &'static str =
         "Author a typed agent-link-refers-to edge between two memory handles.";
     type Args = LinkArgs;

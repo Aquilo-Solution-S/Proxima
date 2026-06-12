@@ -18,7 +18,7 @@ Binding ADR for connection-via-lifecycle:
   pipeline is the MCP mirror of that operator family; both write the
   same shape.
 - Reference GoalPayload schemas + relations + tools naturally cluster
-  into a flavor. Putting them in `flavors/mcp/` would conflate
+  into a flavor. Putting them in `flavors/agent-memory/` would conflate
   "substrate primitives" with "intentional-layer primitives." Putting
   schema-aware tools in core would re-open invariant 8 ("flavor crate is
   the unit of inclusion").
@@ -86,7 +86,7 @@ Closed gaps:
 | Layer | Crate | Owns |
 |---|---|---|
 | Core | `crates/core/`, `crates/storage-pg/` | Goal entity, `GoalState`, `GoalAuthorship`, `GoalPayload` trait, `GoalWrite` verb |
-| Substrate flavor | `flavors/mcp/` | Substrate primitives only — `proxima_remember` / `_derive` / `_link` / `_search_graph` / `_open`. **No Goal-specific tools.** |
+| Substrate flavor | `flavors/agent-memory/` | Substrate primitives only — `proxima_remember` / `_derive` / `_link` / `_search_graph` / `_open`. **No Goal-specific tools.** |
 | Goal flavor | `flavors/goal/` *(new)* | `MotivatedBy` (+ future `Blocks`, `Refines`) RelationDescriptors; reference GoalPayload schemas; MCP tools `goal_propose` and (optional) `goal_accept` / `goal_modify` / `goal_decline`; flavor migrations |
 | Code flavor | `flavors/code/` | Unchanged in v1; can register `code_refactor_goal` payload later |
 | Frontend | `flavors/goal/frontend/` *(new pnpm workspace member `@proxima/flavor-goal`)* | Typed payload renderers; propose-card with evidence chips; Proposed inbox view; flavor `init()` calling the frontend-core registration hooks |

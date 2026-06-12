@@ -56,14 +56,14 @@ pub async fn run_with_handle(
     run_core_and_flavor_migrations(
         &pg,
         [
-            NamedMigrator::new("proxima-mcp-substrate", proxima_mcp_substrate::migrator()),
+            NamedMigrator::new("proxima-agent-memory", proxima_agent_memory::migrator()),
             NamedMigrator::new("proxima-flavor-goal", proxima_flavor_goal::migrator()),
         ],
     )
     .await?;
 
     let mut registry = FlavorRegistry::new();
-    proxima_mcp_substrate::register(&mut registry);
+    proxima_agent_memory::register(&mut registry);
     proxima_flavor_goal::register(&mut registry);
     let server = McpToolHost::from_pool(
         pg.pool().clone(),

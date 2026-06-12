@@ -27,7 +27,7 @@ tracing = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
-proxima-mcp-substrate = { path = "../../flavors/mcp" }
+proxima-agent-memory = { path = "../../flavors/agent-memory" }
 reqwest = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
 tower = { version = "0.5", features = ["util"] }

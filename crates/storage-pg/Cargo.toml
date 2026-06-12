@@ -29,7 +29,7 @@ workspace = true
 
 [dev-dependencies]
 proxima-core = { path = "../core", features = ["test-fixtures"] }
-proxima-mcp-substrate = { path = "../../flavors/mcp" }
+proxima-agent-memory = { path = "../../flavors/agent-memory" }
 serde = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 time = { workspace = true }

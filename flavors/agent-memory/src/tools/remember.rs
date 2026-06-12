@@ -9,9 +9,9 @@ use crate::AgentNoteV1;
 
 use super::util::{map_storage, normalize_tags};
 
-const SOURCE_ID: &str = "proxima-mcp/agent";
-const NOTE_CITED_OBJECT_SCHEMA: &str = "proxima-mcp/agent-note-object-v1";
-const NOTE_CITATION_MAPPING_SCHEMA: &str = "proxima-mcp/agent-note-whole-v1";
+const SOURCE_ID: &str = "proxima-agent-memory/agent";
+const NOTE_CITED_OBJECT_SCHEMA: &str = "proxima-agent-memory/agent-note-object-v1";
+const NOTE_CITATION_MAPPING_SCHEMA: &str = "proxima-agent-memory/agent-note-whole-v1";
 const NOTE_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
     0x91, 0x3e, 0xa1, 0x4c, 0x12, 0x9b, 0x4f, 0xa1, 0x86, 0x2c, 0xb7, 0x2e, 0x18, 0x5d, 0xc7, 0x77,
 ]);
@@ -43,7 +43,7 @@ pub struct RememberOutput {
 pub struct RememberTool;
 
 impl McpTool for RememberTool {
-    const NAME: &'static str = "proxima-mcp/proxima_remember";
+    const NAME: &'static str = "proxima-agent-memory/proxima_remember";
     const DESCRIPTION: &'static str =
         "Append an agent-observed Fact. Optional idempotency_key makes replay stable.";
     type Args = RememberArgs;
@@ -110,7 +110,7 @@ impl McpTool for RememberTool {
                 .map_err(McpToolError::Storage)?;
             if !outcome.idempotent_replay {
                 sqlx::query(
-                    "INSERT INTO proxima_mcp.agent_note_v1
+                    "INSERT INTO proxima_agent_memory.agent_note_v1
                        (memory_id, note_id, title, body, tags, idempotency_key)
                      VALUES ($1, $2, $3, $4, $5, $6)",
                 )

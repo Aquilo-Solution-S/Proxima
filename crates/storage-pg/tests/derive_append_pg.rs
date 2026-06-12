@@ -13,20 +13,20 @@ async fn external_agent_abstraction_persists_with_replay() -> Result<(), Box<dyn
 
     let result = async {
         pg.run_migrations().await?;
-        proxima_mcp_substrate::migrator().run(pg.pool()).await?;
+        proxima_agent_memory::migrator().run(pg.pool()).await?;
         let owner = owner_fixture();
         let memory_id = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, b"derive-test-1");
         let draft = DerivedDraft {
             memory_id,
             owner,
             kind: EntityKind::Abstraction,
-            schema_id: SchemaId::new("proxima-mcp/agent-derivation-v1".into()),
+            schema_id: SchemaId::new("proxima-agent-memory/agent-derivation-v1".into()),
             schema_version: SchemaVersion::new(1),
             text: "the agent view".into(),
             operator_kind: MemoryOperatorKind::ExternalAgent,
             model_id: "claude-opus-4.7",
             prompt_version: "mcp-agent-v1",
-            sidecar_table: Some("proxima_mcp.agent_derivation_v1"),
+            sidecar_table: Some("proxima_agent_memory.agent_derivation_v1"),
             sidecar_payload: Some(serde_json::json!({
                 "title": "x",
                 "body": "the agent view",
@@ -51,7 +51,7 @@ async fn external_agent_abstraction_persists_with_replay() -> Result<(), Box<dyn
         assert!(replay.idempotent_replay);
 
         let row_count: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM proxima_mcp.agent_derivation_v1 WHERE memory_id = $1",
+            "SELECT count(*) FROM proxima_agent_memory.agent_derivation_v1 WHERE memory_id = $1",
         )
         .bind(memory_id)
         .fetch_one(pg.pool())
@@ -73,19 +73,19 @@ async fn external_agent_perspective_persists() -> Result<(), Box<dyn std::error:
 
     let result = async {
         pg.run_migrations().await?;
-        proxima_mcp_substrate::migrator().run(pg.pool()).await?;
+        proxima_agent_memory::migrator().run(pg.pool()).await?;
         let memory_id = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, b"derive-test-2");
         let draft = DerivedDraft {
             memory_id,
             owner: owner_fixture(),
             kind: EntityKind::Perspective,
-            schema_id: SchemaId::new("proxima-mcp/agent-derivation-v1".into()),
+            schema_id: SchemaId::new("proxima-agent-memory/agent-derivation-v1".into()),
             schema_version: SchemaVersion::new(1),
             text: "perspective body".into(),
             operator_kind: MemoryOperatorKind::ExternalAgent,
             model_id: "claude-opus-4.7",
             prompt_version: "mcp-agent-v1",
-            sidecar_table: Some("proxima_mcp.agent_derivation_v1"),
+            sidecar_table: Some("proxima_agent_memory.agent_derivation_v1"),
             sidecar_payload: Some(serde_json::json!({
                 "title": "p",
                 "body": "perspective body",

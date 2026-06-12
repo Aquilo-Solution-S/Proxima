@@ -19,7 +19,7 @@ pub fn build_engine(storage: PgStorage) -> Engine {
 
 /// Build an `Engine` whose schema registry layers `extra` flavor
 /// registrations *before* `proxima_code::register`. Tauri Shell uses
-/// this to add substrate (`proxima_mcp_substrate::register`) so the
+/// this to add substrate (`proxima_agent_memory::register`) so the
 /// engine's snapshot path joins agent-note sidecars; headless code
 /// callers keep using `build_engine` to stay substrate-free.
 /// Authentication lives at the transport edge.

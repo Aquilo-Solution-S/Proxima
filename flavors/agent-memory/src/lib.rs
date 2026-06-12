@@ -1,4 +1,4 @@
-//! Substrate MCP flavor — agent-authored Facts, A/P rows, and edges.
+//! Agent-memory flavor — agent-authored Facts, A/P rows, and edges.
 
 pub mod migrations;
 pub mod payloads;
@@ -12,11 +12,11 @@ use proxima_core::{
     SchemaVersion,
 };
 
-pub const AGENT_LINK_RELATION: &str = "proxima-mcp/agent-link-refers-to";
+pub const AGENT_LINK_RELATION: &str = "proxima-agent-memory/agent-link-refers-to";
 
 proxima_core::proxima_flavor! {
-    name = "proxima-mcp",
-    display_name = "MCP",
+    name = "proxima-agent-memory",
+    display_name = "Agent Memory",
     fact_schemas = [
         payloads::AgentNoteV1,
     ],
@@ -34,7 +34,7 @@ proxima_core::proxima_flavor! {
             AGENT_LINK_RELATION,
             RelationClass::Interpretive,
             SchemaRef::new(
-                SchemaId::new("proxima-mcp/agent-link-v1".into()),
+                SchemaId::new("proxima-agent-memory/agent-link-v1".into()),
                 SchemaVersion::new(1),
             ),
             EntityKindMask::abstraction_perspective(),

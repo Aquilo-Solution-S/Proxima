@@ -61,7 +61,7 @@ pub struct NeighborEdge {
 pub struct SearchGraphTool;
 
 impl McpTool for SearchGraphTool {
-    const NAME: &'static str = "proxima-mcp/proxima_search_graph";
+    const NAME: &'static str = "proxima-agent-memory/proxima_search_graph";
     const DESCRIPTION: &'static str =
         "Search agent-authored notes and derivations. Returns session handles.";
     type Args = SearchGraphArgs;
@@ -323,8 +323,8 @@ async fn load_graph_payloads(
                 COALESCE(n.body, d.body) AS body,
                 COALESCE(n.tags, d.tags) AS tags
          FROM proxima_core.memories m
-         LEFT JOIN proxima_mcp.agent_note_v1 n USING (memory_id)
-         LEFT JOIN proxima_mcp.agent_derivation_v1 d USING (memory_id)
+         LEFT JOIN proxima_agent_memory.agent_note_v1 n USING (memory_id)
+         LEFT JOIN proxima_agent_memory.agent_derivation_v1 d USING (memory_id)
          WHERE m.owner_principal_kind = $1
            AND m.owner_principal_id = $2
            AND m.memory_id = ANY($3::uuid[])",
@@ -358,7 +358,7 @@ FROM (
            ts_rank_cd(to_tsvector('simple', a.title || ' ' || a.body), q.tsq) AS score,
            a.tags
     FROM q, proxima_core.memories m
-    JOIN proxima_mcp.agent_note_v1 a USING (memory_id)
+    JOIN proxima_agent_memory.agent_note_v1 a USING (memory_id)
     WHERE m.owner_principal_kind = $1
       AND m.owner_principal_id = $2
       AND m.kind IS NULL
@@ -372,7 +372,7 @@ FROM (
            ts_rank_cd(to_tsvector('simple', d.title || ' ' || d.body), q.tsq),
            d.tags
     FROM q, proxima_core.memories m
-    JOIN proxima_mcp.agent_derivation_v1 d USING (memory_id)
+    JOIN proxima_agent_memory.agent_derivation_v1 d USING (memory_id)
     WHERE m.owner_principal_kind = $1
       AND m.owner_principal_id = $2
       AND m.kind IN ('Abstraction', 'Perspective')
@@ -488,7 +488,7 @@ pub struct OpenOutput {
 pub struct OpenTool;
 
 impl McpTool for OpenTool {
-    const NAME: &'static str = "proxima-mcp/proxima_open";
+    const NAME: &'static str = "proxima-agent-memory/proxima_open";
     const DESCRIPTION: &'static str = "Resolve a memory handle to its payload and neighbor edges.";
     type Args = OpenArgs;
     type Output = OpenOutput;
@@ -531,8 +531,8 @@ SELECT m.kind, m.schema_id,
        COALESCE(n.body, d.body) AS body,
        COALESCE(n.tags, d.tags) AS tags
 FROM proxima_core.memories m
-LEFT JOIN proxima_mcp.agent_note_v1 n USING (memory_id)
-LEFT JOIN proxima_mcp.agent_derivation_v1 d USING (memory_id)
+LEFT JOIN proxima_agent_memory.agent_note_v1 n USING (memory_id)
+LEFT JOIN proxima_agent_memory.agent_derivation_v1 d USING (memory_id)
 WHERE m.memory_id = $1
   AND m.owner_principal_kind = $2
   AND m.owner_principal_id = $3
