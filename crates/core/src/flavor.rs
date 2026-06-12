@@ -427,6 +427,24 @@ impl FlavorRegistry {
                 has_validator,
             );
         }
+        let mut seen_schemas = std::collections::HashSet::new();
+        for schema in &self.schemas {
+            assert!(
+                seen_schemas.insert((schema.schema_id.clone(), schema.schema_version, schema.kind)),
+                "duplicate schema registered: {:?} v{:?} {:?}",
+                schema.schema_id.as_str(),
+                schema.schema_version.into_inner(),
+                schema.kind,
+            );
+        }
+        let mut seen_relations = std::collections::HashSet::new();
+        for rel in &self.relations {
+            assert!(
+                seen_relations.insert(rel.relation.clone()),
+                "duplicate RelationDescriptor registered: {:?}",
+                rel.relation,
+            );
+        }
         let mut seen_tools = std::collections::HashSet::new();
         for tool in &self.mcp_tools {
             assert!(
@@ -585,6 +603,28 @@ mod tests {
         registry.add_mcp_tool::<Demo>("proxima-test");
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| registry.freeze()));
         assert!(result.is_err(), "freeze must panic on duplicate tool names");
+    }
+
+    #[test]
+    #[should_panic(expected = "duplicate schema registered")]
+    fn freeze_rejects_duplicate_schema_keys() {
+        let mut registry = FlavorRegistry::new();
+        let schema_id = SchemaId::new("proxima-test/duplicate".to_string());
+        registry.add_opaque_schema(schema_id.clone(), SchemaVersion::new(1), PayloadKind::Fact);
+        registry.add_opaque_schema(schema_id, SchemaVersion::new(1), PayloadKind::Fact);
+        let _ = registry.freeze();
+    }
+
+    #[test]
+    #[should_panic(expected = "duplicate RelationDescriptor registered")]
+    fn freeze_rejects_duplicate_relation_names() {
+        let mut registry = FlavorRegistry::new();
+        let duplicate_core_relation = core_relation_descriptors()
+            .into_iter()
+            .next()
+            .expect("core relation descriptors are seeded");
+        registry.add_relation(duplicate_core_relation);
+        let _ = registry.freeze();
     }
 
     #[test]
