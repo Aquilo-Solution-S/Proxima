@@ -88,8 +88,9 @@ pub fn run() {
 
     let (engine, pg) = boot::build_engine();
     let wake_token_store = engine.wake_token_store();
-    let mcp_auth_store =
-        std::sync::Arc::new(proxima_mcp_server::McpAuthStore::new(wake_token_store));
+    let mcp_auth_store = std::sync::Arc::new(proxima_mcp_server::McpEdgeAuth::engine_hosted(
+        wake_token_store,
+    ));
     let owner = boot::sentinel_owner();
     match mcp::load_or_create_master_token(&owner) {
         Ok(token) => {
@@ -100,7 +101,7 @@ pub fn run() {
         Err(err) => tracing::warn!("MCP master token unavailable at boot: {err}"),
     }
     let (mcp_listener, mcp_addr, mcp_tool_host) = tauri::async_runtime::block_on(async {
-        boot::build_mcp_listener(pg.pool().clone(), owner, mcp_auth_store.clone()).await
+        boot::build_mcp_listener(pg.pool().clone(), owner, mcp_auth_store.clone())
     })
     .expect("failed to build Shell MCP listener");
     let engine = std::sync::Arc::new(

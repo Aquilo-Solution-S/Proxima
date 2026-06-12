@@ -26,7 +26,7 @@ use proxima_core::{
     InferenceTargetConfig, MistralChatConfig, ModelTier, OrgId, Owner, PerspectivePayload,
     Principal, RegisterInferenceTargetRequest, UserId, WakeEntryAuthoredBy, WakeEntryTriggerKind,
 };
-use proxima_mcp_server::{McpAuthStore, McpToolHost};
+use proxima_mcp_server::{McpEdgeAuth, McpToolHost};
 use proxima_storage_pg::PgStorage;
 use sqlx::{Connection, Executor, PgConnection, Row};
 use uuid::Uuid;
@@ -56,14 +56,14 @@ impl EmbeddingClient for FakeEmbedding {
 #[derive(Debug, Clone)]
 struct ScriptedExecutorAdapter {
     server: McpToolHost,
-    auth_store: Arc<McpAuthStore>,
+    auth_store: Arc<McpEdgeAuth>,
 }
 
 impl ScriptedExecutorAdapter {
     async fn emit_perspective(&self, ctx: TargetContext) -> Result<(), String> {
         let auth = self
             .auth_store
-            .resolve(ctx.wake_token)
+            .resolve(&format!("pxw_{}", ctx.wake_token))
             .await
             .ok_or_else(|| "wake token did not resolve".to_string())?;
         let output = self
@@ -225,13 +225,13 @@ async fn goal_activated_fact_wakes_substrate_executor_and_emits_perspective()
             Arc::new(server_registry.freeze()),
         )
         .with_engine(engine.clone());
-        let auth_store = Arc::new(McpAuthStore::new(engine.wake_token_store()));
+        let auth_store = Arc::new(McpEdgeAuth::engine_hosted(engine.wake_token_store()));
         let master_token = Uuid::now_v7();
         auth_store
             .replace_local_master_token(master_token, owner.clone())
             .await;
         let master_auth = auth_store
-            .resolve(master_token)
+            .resolve(&format!("pxm_{master_token}"))
             .await
             .expect("master token resolves");
         engine

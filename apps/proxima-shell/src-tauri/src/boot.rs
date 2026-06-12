@@ -9,8 +9,9 @@ use proxima_core::{
     EmbeddingClientReloader, Engine, FlavorRegistry, FlavorRegistryFrozen, OrgId, Owner, Principal,
     UserId,
 };
+use proxima_embed::{NamedMigrator, run_core_and_flavor_migrations};
 use proxima_llm_openai_compat::{OpenAiCompatConfig, OpenAiCompatEmbeddingClient};
-use proxima_mcp_server::{EngineHostedMcpListener, McpAuthStore, McpToolHost, default_allowlist};
+use proxima_mcp_server::{EngineHostedMcpListener, McpEdgeAuth, McpToolHost, default_allowlist};
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
 
@@ -34,23 +35,20 @@ pub(crate) fn build_engine() -> (Engine, Arc<PgStorage>) {
         let pg = PgStorage::connect(&url)
             .await
             .expect("failed to connect to Postgres; check DATABASE_URL");
-        pg.run_migrations().await.expect("failed to run migrations");
-        proxima_code::migrator()
-            .run(pg.pool())
-            .await
-            .expect("failed to run proxima-code flavor migrations");
         // Substrate migrations run before the engine is built so the
         // engine's snapshot path can LEFT-JOIN agent-note sidecars when
         // the Atlas inspects MCP-authored memories. Flavor migrations
         // are composition's job — the MCP listener no longer self-migrates.
-        proxima_mcp_substrate::migrator()
-            .run(pg.pool())
-            .await
-            .expect("failed to run proxima-mcp-substrate flavor migrations");
-        proxima_flavor_goal::migrator()
-            .run(pg.pool())
-            .await
-            .expect("failed to run proxima-goal flavor migrations");
+        run_core_and_flavor_migrations(
+            &pg,
+            [
+                NamedMigrator::new("proxima-code", proxima_code::migrator()),
+                NamedMigrator::new("proxima-mcp-substrate", proxima_mcp_substrate::migrator()),
+                NamedMigrator::new("proxima-flavor-goal", proxima_flavor_goal::migrator()),
+            ],
+        )
+        .await
+        .expect("failed to run core + flavor migrations");
 
         // Single-writer invariant (docs/09 §Embedded engine mode): any
         // queued/running run at boot is a prior-process orphan whose
@@ -264,13 +262,13 @@ fn resolve_optional_secret(
 /// Returns bind, migration, or transport setup failures. Shell callers
 /// log and continue without MCP.
 ///
-/// `auth_store` must wrap the same wake-token store the engine's
+/// `auth` must wrap the same wake-token store the engine's
 /// dispatcher mints into ([`Engine::wake_token_store`]) and may also
 /// carry Shell-local master tokens for user-configured MCP clients.
-pub(crate) async fn build_mcp_listener(
+pub(crate) fn build_mcp_listener(
     pool: sqlx::PgPool,
     owner: Owner,
-    auth_store: Arc<McpAuthStore>,
+    auth: Arc<McpEdgeAuth>,
 ) -> Result<
     (
         Arc<dyn EngineMcpListener>,
@@ -288,9 +286,6 @@ pub(crate) async fn build_mcp_listener(
         ))
     })?;
 
-    proxima_mcp_substrate::migrator().run(&pool).await?;
-    proxima_flavor_goal::migrator().run(&pool).await?;
-
     let mut registry = FlavorRegistry::new();
     proxima_mcp_substrate::register(&mut registry);
     proxima_flavor_goal::register(&mut registry);
@@ -298,10 +293,10 @@ pub(crate) async fn build_mcp_listener(
     let frozen: Arc<FlavorRegistryFrozen> = Arc::new(registry.freeze());
     let server = McpToolHost::from_pool(pool, owner, frozen);
     Ok((
-        Arc::new(EngineHostedMcpListener::with_auth_store(
+        Arc::new(EngineHostedMcpListener::with_edge_auth(
             server.clone(),
             default_allowlist(),
-            auth_store,
+            auth,
         )),
         bind,
         server,

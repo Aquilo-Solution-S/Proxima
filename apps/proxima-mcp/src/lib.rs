@@ -2,11 +2,12 @@ pub mod args;
 
 pub use args::{ArgsError, McpConfig, USAGE, parse_args};
 pub use proxima_mcp_server::{
-    McpAuthStore, McpServerError, McpToolHost, ToolInvocationError, default_allowlist,
+    McpEdgeAuth, McpServerError, McpToolHost, ToolInvocationError, default_allowlist,
     serve_streamable_http,
 };
 
 use proxima_core::FlavorRegistry;
+use proxima_embed::{NamedMigrator, run_core_and_flavor_migrations};
 
 /// # Errors
 ///
@@ -52,15 +53,14 @@ pub async fn run_with_handle(
     let pg = proxima_storage_pg::PgStorage::connect(&config.database_url)
         .await
         .map_err(McpServerError::from)?;
-    pg.run_migrations().await.map_err(McpServerError::from)?;
-    proxima_mcp_substrate::migrator()
-        .run(pg.pool())
-        .await
-        .map_err(McpServerError::from)?;
-    proxima_flavor_goal::migrator()
-        .run(pg.pool())
-        .await
-        .map_err(McpServerError::from)?;
+    run_core_and_flavor_migrations(
+        &pg,
+        [
+            NamedMigrator::new("proxima-mcp-substrate", proxima_mcp_substrate::migrator()),
+            NamedMigrator::new("proxima-flavor-goal", proxima_flavor_goal::migrator()),
+        ],
+    )
+    .await?;
 
     let mut registry = FlavorRegistry::new();
     proxima_mcp_substrate::register(&mut registry);
@@ -70,22 +70,21 @@ pub async fn run_with_handle(
         config.owner.clone(),
         std::sync::Arc::new(registry.freeze()),
     );
-    let wake_token_store = std::sync::Arc::new(
-        proxima_core::wake::token_store::WakeTokenStore::new(std::time::Duration::from_mins(5)),
-    );
-    let auth_store = std::sync::Arc::new(McpAuthStore::new(wake_token_store));
+    let edge_auth = std::sync::Arc::new(McpEdgeAuth::headless());
     if let Some(token) = config.master_token {
-        auth_store
+        edge_auth
             .replace_local_master_token(token, config.owner.clone())
             .await;
     }
-    Ok(serve_streamable_http(config.bind, server, default_allowlist(), auth_store).await?)
+    Ok(serve_streamable_http(config.bind, server, default_allowlist(), edge_auth).await?)
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum CliError {
     #[error(transparent)]
     Args(#[from] ArgsError),
+    #[error(transparent)]
+    Migration(#[from] proxima_embed::MigrationError),
     #[error(transparent)]
     Server(#[from] McpServerError),
     #[error("transport: {0}")]

@@ -6,7 +6,6 @@
 mod common;
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use common::{create_db, drop_db};
 use proxima_core::auth::NoAuth;
@@ -14,7 +13,7 @@ use proxima_core::mcp::McpAuthorContext;
 use proxima_core::storage::Storage;
 use proxima_core::verbs::query::MemoryStore;
 use proxima_core::{Engine, FlavorRegistry, OrgId, Owner, Principal, UserId};
-use proxima_mcp_server::{McpAuthStore, McpToolHost, McpToolScope};
+use proxima_mcp_server::McpToolHost;
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
 
@@ -53,19 +52,20 @@ async fn master_token_call_mints_per_token_self_perspective()
     )
     .with_engine(engine.clone());
 
-    // Set up McpAuthStore and register the master token.
-    let auth_store = McpAuthStore::new(Arc::new(
-        proxima_core::wake::token_store::WakeTokenStore::new(Duration::from_mins(5)),
-    ));
+    // Set up MCP edge auth and register the master token.
+    let auth_store = proxima_mcp_server::McpEdgeAuth::headless();
     let token = Uuid::now_v7();
     auth_store
         .replace_local_master_token(token, owner.clone())
         .await;
 
     // Resolve the auth context for this token.
-    let auth = auth_store.resolve(token).await.expect("token resolves");
+    let auth = auth_store
+        .resolve(&format!("pxm_{token}"))
+        .await
+        .expect("token resolves");
     assert_eq!(auth.master_token_id, Some(token));
-    assert!(matches!(auth.scope, McpToolScope::All));
+    assert!(auth.authz.capabilities.tool_scope.allows("anything"));
 
     // Build the author context with caller_self_perspective = None so the
     // ensure step (not the test) populates it.

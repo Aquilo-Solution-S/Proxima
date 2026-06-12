@@ -11,7 +11,7 @@ pub mod security;
 mod server;
 mod transport;
 
-pub use auth::{McpAuthContext, McpAuthStore, McpToolScope};
+pub use auth::{MASTER_TOKEN_PREFIX, McpAuthContext, McpEdgeAuth, WAKE_TOKEN_PREFIX};
 pub use engine_listener::EngineHostedMcpListener;
 pub use error::McpServerError;
 pub use handler::DynamicHandler;

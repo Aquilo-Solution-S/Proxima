@@ -15,9 +15,8 @@ use proxima_core::verbs::query::MemoryStore;
 use proxima_core::{Engine, FlavorRegistry, McpTool};
 use proxima_flavor_goal::tools::propose::{ProposeArgs, ProposeTool};
 use proxima_flavor_goal::tools::util::{GoalPayloadInput, SimpleTextGoalBody};
-use proxima_mcp_server::{McpAuthContext, McpAuthStore, McpToolHost};
+use proxima_mcp_server::{McpAuthContext, McpEdgeAuth, McpToolHost};
 use std::sync::Arc;
-use std::time::Duration;
 use uuid::Uuid;
 
 async fn mcp_server_for_owner(
@@ -37,14 +36,15 @@ async fn mcp_server_for_owner(
     );
     let server = McpToolHost::from_pool(pg.pool().clone(), owner.clone(), server_registry)
         .with_engine(engine);
-    let auth_store = McpAuthStore::new(Arc::new(
-        proxima_core::wake::token_store::WakeTokenStore::new(Duration::from_mins(5)),
-    ));
+    let auth_store = McpEdgeAuth::headless();
     let token = Uuid::now_v7();
     auth_store
         .replace_local_master_token(token, owner.clone())
         .await;
-    let auth_ctx = auth_store.resolve(token).await.expect("token resolves");
+    let auth_ctx = auth_store
+        .resolve(&format!("pxm_{token}"))
+        .await
+        .expect("token resolves");
     Ok((server, auth_ctx, token))
 }
 

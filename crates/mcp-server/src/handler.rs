@@ -17,8 +17,9 @@ use rmcp::model::{
 };
 use rmcp::service::{MaybeSendFuture, RequestContext, RoleServer};
 
-use crate::auth::{McpAuthContext, McpToolScope};
+use crate::auth::McpAuthContext;
 use crate::server::McpToolHost;
+use proxima_core::ToolScope;
 
 #[derive(Clone, Debug)]
 pub struct DynamicHandler {
@@ -39,7 +40,7 @@ impl ServerHandler for DynamicHandler {
         context: RequestContext<RoleServer>,
     ) -> impl Future<Output = Result<ListToolsResult, ErrorData>> + MaybeSendFuture + '_ {
         let auth = auth_context(&context);
-        let scope = auth.as_ref().map(|ctx| &ctx.scope);
+        let scope = auth.as_ref().map(|ctx| &ctx.authz.capabilities.tool_scope);
         let mut tools: Vec<Tool> = self
             .server
             .registry()
@@ -101,7 +102,10 @@ impl ServerHandler for DynamicHandler {
             let request_name = request.name.to_string();
             let canonical_name =
                 canonical_tool_name(&server, &request_name).unwrap_or_else(|| request_name.clone());
-            if !scope_allows(auth.as_ref().map(|ctx| &ctx.scope), &canonical_name) {
+            if !scope_allows(
+                auth.as_ref().map(|ctx| &ctx.authz.capabilities.tool_scope),
+                &canonical_name,
+            ) {
                 return Err(ErrorData::invalid_request(
                     format!("tool {} not authorized for this MCP token", request.name),
                     None,
@@ -159,7 +163,7 @@ fn auth_context(context: &RequestContext<RoleServer>) -> Option<McpAuthContext> 
     Some(ctx.clone())
 }
 
-fn scope_allows(scope: Option<&McpToolScope>, name: &str) -> bool {
+fn scope_allows(scope: Option<&ToolScope>, name: &str) -> bool {
     match scope {
         Some(scope) => scope.allows(name),
         // No auth context bound to the request — preserve direct handler

@@ -22,7 +22,7 @@ async fn run_with_handle_serves_tools_list() -> Result<(), Box<dyn std::error::E
     let (handle, addr) = proxima_mcp::run_with_handle(cfg).await?;
     let client = reqwest::Client::new();
     let url = format!("http://{addr}/mcp");
-    let bearer = format!("Bearer {}", uuid::Uuid::nil());
+    let bearer = format!("Bearer pxm_{}", uuid::Uuid::nil());
     let session_id = initialize(&client, &url, &bearer).await?;
     initialized(&client, &url, &session_id, &bearer).await?;
     let body = post_rpc(

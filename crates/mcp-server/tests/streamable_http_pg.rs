@@ -7,7 +7,7 @@ mod common;
 use common::{create_db, drop_db, initialize, initialized, post_rpc};
 use proxima_core::FlavorRegistry;
 use proxima_core::wake::token_store::WakeTokenStore;
-use proxima_mcp_server::{McpAuthStore, McpToolHost, default_allowlist, serve_streamable_http};
+use proxima_mcp_server::{McpEdgeAuth, McpToolHost, default_allowlist, serve_streamable_http};
 use serde_json::json;
 
 #[tokio::test]
@@ -27,7 +27,7 @@ async fn streamable_http_initialize_list_and_remember() -> Result<(), Box<dyn st
             "core/fetch_memory".into(),
         ]))
         .await;
-    let auth_store = Arc::new(McpAuthStore::new(store));
+    let auth_store = Arc::new(McpEdgeAuth::engine_hosted(store));
     let (handle, addr) = serve_streamable_http(
         SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0),
         server,
@@ -38,7 +38,7 @@ async fn streamable_http_initialize_list_and_remember() -> Result<(), Box<dyn st
 
     let client = reqwest::Client::new();
     let url = format!("http://{addr}/mcp");
-    let bearer = format!("Bearer {token}");
+    let bearer = format!("Bearer pxw_{token}");
     let session_id = initialize(&client, &url, &bearer).await?;
     initialized(&client, &url, &session_id, &bearer).await?;
 
@@ -107,8 +107,7 @@ async fn missing_auth_returns_401() -> Result<(), Box<dyn std::error::Error>> {
     proxima_mcp_substrate::register(&mut registry);
     let server = McpToolHost::from_database_url(&database_url, nil_owner(), registry).await?;
     proxima_mcp_substrate::migrator().run(server.pool()).await?;
-    let store = Arc::new(WakeTokenStore::new(Duration::from_mins(1)));
-    let auth_store = Arc::new(McpAuthStore::new(store));
+    let auth_store = Arc::new(McpEdgeAuth::headless());
     let (handle, addr) = serve_streamable_http(
         SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0),
         server,
@@ -143,8 +142,7 @@ async fn disallowed_origin_returns_403_with_valid_token() -> Result<(), Box<dyn 
     proxima_mcp_substrate::register(&mut registry);
     let server = McpToolHost::from_database_url(&database_url, nil_owner(), registry).await?;
     proxima_mcp_substrate::migrator().run(server.pool()).await?;
-    let store = Arc::new(WakeTokenStore::new(Duration::from_mins(1)));
-    let auth_store = Arc::new(McpAuthStore::new(store));
+    let auth_store = Arc::new(McpEdgeAuth::headless());
     let token = uuid::Uuid::new_v4();
     auth_store
         .replace_local_master_token(token, nil_owner())
@@ -160,7 +158,7 @@ async fn disallowed_origin_returns_403_with_valid_token() -> Result<(), Box<dyn 
     let response = reqwest::Client::new()
         .post(format!("http://{addr}/mcp"))
         .header("Origin", "https://example.invalid")
-        .header("Authorization", format!("Bearer {token}"))
+        .header("Authorization", format!("Bearer pxm_{token}"))
         .header("Content-Type", "application/json")
         .header("Accept", "application/json, text/event-stream")
         .json(&json!({"jsonrpc": "2.0", "id": 1, "method": "ping"}))
@@ -185,8 +183,7 @@ async fn local_master_token_lists_all_tools_without_origin()
     proxima_mcp_substrate::register(&mut registry);
     let server = McpToolHost::from_database_url(&database_url, nil_owner(), registry).await?;
     proxima_mcp_substrate::migrator().run(server.pool()).await?;
-    let store = Arc::new(WakeTokenStore::new(Duration::from_mins(1)));
-    let auth_store = Arc::new(McpAuthStore::new(store));
+    let auth_store = Arc::new(McpEdgeAuth::headless());
     let token = uuid::Uuid::new_v4();
     auth_store
         .replace_local_master_token(token, nil_owner())
@@ -201,7 +198,7 @@ async fn local_master_token_lists_all_tools_without_origin()
 
     let client = reqwest::Client::new();
     let url = format!("http://{addr}/mcp");
-    let bearer = format!("Bearer {token}");
+    let bearer = format!("Bearer pxm_{token}");
     let session_id = initialize_without_origin(&client, &url, &bearer).await?;
     initialized_without_origin(&client, &url, &session_id, &bearer).await?;
     let list = post_rpc_without_origin(
@@ -238,8 +235,7 @@ async fn non_loopback_bind_refused_immediately() -> Result<(), Box<dyn std::erro
     let server = McpToolHost::from_database_url(&database_url, nil_owner(), registry).await?;
     proxima_mcp_substrate::migrator().run(server.pool()).await?;
     let bind: SocketAddr = "0.0.0.0:0".parse()?;
-    let store = Arc::new(WakeTokenStore::new(Duration::from_mins(1)));
-    let auth_store = Arc::new(McpAuthStore::new(store));
+    let auth_store = Arc::new(McpEdgeAuth::headless());
     let err = serve_streamable_http(bind, server, default_allowlist(), auth_store)
         .await
         .expect_err("must refuse non-loopback");

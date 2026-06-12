@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use proxima_mcp_server::McpAuthStore;
+use proxima_mcp_server::McpEdgeAuth;
 use tauri::State;
 use uuid::Uuid;
 
@@ -22,7 +22,7 @@ pub struct McpConnectionTs {
 #[specta::specta]
 pub async fn mcp_connection_get(
     listener: State<'_, Option<McpListenerHandle>>,
-    auth_store: State<'_, Arc<McpAuthStore>>,
+    auth_store: State<'_, Arc<McpEdgeAuth>>,
 ) -> Result<McpConnectionTs, CommandError> {
     let owner = sentinel_owner();
     let token = load_or_create_master_token(&owner).map_err(CommandError::secret_store)?;
@@ -36,7 +36,7 @@ pub async fn mcp_connection_get(
 #[specta::specta]
 pub async fn mcp_master_token_rotate(
     listener: State<'_, Option<McpListenerHandle>>,
-    auth_store: State<'_, Arc<McpAuthStore>>,
+    auth_store: State<'_, Arc<McpEdgeAuth>>,
 ) -> Result<McpConnectionTs, CommandError> {
     let owner = sentinel_owner();
     let token = rotate_master_token(&owner).map_err(CommandError::secret_store)?;
@@ -45,10 +45,12 @@ pub async fn mcp_master_token_rotate(
 }
 
 fn connection_payload(listener: Option<&McpListenerHandle>, token: Uuid) -> McpConnectionTs {
+    let wire_token = format!("pxm_{token}");
+    let authorization_header = format!("Bearer {wire_token}");
     McpConnectionTs {
         url: listener.map(McpListenerHandle::url),
-        token: token.to_string(),
-        authorization_header: format!("Bearer {token}"),
+        token: wire_token,
+        authorization_header,
         listening: listener.is_some(),
     }
 }
