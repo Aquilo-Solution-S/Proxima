@@ -4232,6 +4232,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "proxima-agent-memory"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "blake3",
+ "ciborium",
+ "futures",
+ "proxima-core",
+ "proxima-harness",
+ "proxima-storage-pg",
+ "schemars 1.2.1",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "time",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "proxima-blob-s3"
 version = "0.1.0"
 dependencies = [
@@ -4328,10 +4348,10 @@ dependencies = [
 name = "proxima-dev-migrate"
 version = "0.1.0"
 dependencies = [
+ "proxima-agent-memory",
  "proxima-code",
  "proxima-embed",
  "proxima-flavor-goal",
- "proxima-mcp-substrate",
  "proxima-storage-pg",
  "tokio",
 ]
@@ -4412,11 +4432,11 @@ dependencies = [
 name = "proxima-mcp"
 version = "0.1.0"
 dependencies = [
+ "proxima-agent-memory",
  "proxima-core",
  "proxima-embed",
  "proxima-flavor-goal",
  "proxima-mcp-server",
- "proxima-mcp-substrate",
  "proxima-storage-pg",
  "reqwest 0.12.28",
  "serde",
@@ -4435,8 +4455,8 @@ dependencies = [
  "async-trait",
  "axum",
  "http 1.4.0",
+ "proxima-agent-memory",
  "proxima-core",
- "proxima-mcp-substrate",
  "proxima-storage-pg",
  "reqwest 0.12.28",
  "rmcp",
@@ -4449,26 +4469,6 @@ dependencies = [
  "tokio-util",
  "tower",
  "tracing",
- "uuid",
-]
-
-[[package]]
-name = "proxima-mcp-substrate"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "blake3",
- "ciborium",
- "futures",
- "proxima-core",
- "proxima-harness",
- "proxima-storage-pg",
- "schemars 1.2.1",
- "serde",
- "serde_json",
- "sqlx",
- "time",
- "tokio",
  "uuid",
 ]
 
@@ -4488,6 +4488,7 @@ dependencies = [
  "futures-util",
  "hex",
  "keyring-core",
+ "proxima-agent-memory",
  "proxima-blob-s3",
  "proxima-code",
  "proxima-codex-auth",
@@ -4497,7 +4498,6 @@ dependencies = [
  "proxima-harness",
  "proxima-llm-openai-compat",
  "proxima-mcp-server",
- "proxima-mcp-substrate",
  "proxima-storage-pg",
  "reqwest 0.12.28",
  "serde",
@@ -4533,8 +4533,8 @@ dependencies = [
  "blake3",
  "ciborium",
  "futures-util",
+ "proxima-agent-memory",
  "proxima-core",
- "proxima-mcp-substrate",
  "serde",
  "serde_json",
  "sqlx",

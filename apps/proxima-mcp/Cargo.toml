@@ -11,7 +11,7 @@ proxima-core = { path = "../../crates/core" }
 proxima-embed = { path = "../../crates/embed" }
 proxima-flavor-goal = { path = "../../flavors/goal" }
 proxima-mcp-server = { path = "../../crates/mcp-server" }
-proxima-mcp-substrate = { path = "../../flavors/mcp" }
+proxima-agent-memory = { path = "../../flavors/agent-memory" }
 proxima-storage-pg = { path = "../../crates/storage-pg" }
 serde = { workspace = true }
 serde_json = { workspace = true }

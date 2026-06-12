@@ -79,7 +79,7 @@ pub struct DeriveOutput {
 pub struct DeriveTool;
 
 impl McpTool for DeriveTool {
-    const NAME: &'static str = "proxima-mcp/proxima_derive";
+    const NAME: &'static str = "proxima-agent-memory/proxima_derive";
     const DESCRIPTION: &'static str =
         "Author an Abstraction or Perspective derived from existing memory handles.";
     type Args = DeriveArgs;
@@ -175,7 +175,7 @@ impl McpTool for DeriveTool {
                 operator_kind: proxima_core::MemoryOperatorKind::ExternalAgent,
                 model_id: &args.model_id,
                 prompt_version: "mcp-agent-v1",
-                sidecar_table: Some("proxima_mcp.agent_derivation_v1"),
+                sidecar_table: Some("proxima_agent_memory.agent_derivation_v1"),
                 sidecar_payload: Some(sidecar),
             };
 

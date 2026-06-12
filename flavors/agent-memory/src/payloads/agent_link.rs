@@ -8,11 +8,11 @@ pub struct AgentLinkV1 {
 }
 
 impl EdgePayload for AgentLinkV1 {
-    const SCHEMA_ID: &'static str = "proxima-mcp/agent-link-v1";
+    const SCHEMA_ID: &'static str = "proxima-agent-memory/agent-link-v1";
     const SCHEMA_VERSION: u32 = 1;
     const RELATION_CLASS: RelationClass = RelationClass::Structural;
 
     fn sidecar_table() -> &'static str {
-        "proxima_mcp.agent_link_v1"
+        "proxima_agent_memory.agent_link_v1"
     }
 }

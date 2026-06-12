@@ -16,7 +16,7 @@ defined here.
 | Engine access | Tauri IPC over embedded `Arc<Engine>` | JS calls generated Tauri command bindings; Rust handlers call engine verbs in-process. |
 | Command bindings | `packages/frontend-core/src/bindings.ts` | Generated from the Tauri/Specta Rust command surface; do not edit by hand. |
 | Core frontend package | `@proxima/core` | Shell primitives, hub, graph/filter stores, Tauri client, substrate views. |
-| Flavor frontend packages | `@proxima/flavor-code`, `@proxima/flavor-goal`, `@proxima/flavor-mcp` | Payload codecs/renderers/editors/styles/views registered at Shell startup. |
+| Flavor frontend packages | `@proxima/flavor-code`, `@proxima/flavor-goal`, `@proxima/flavor-agent-memory` | Payload codecs/renderers/editors/styles/views registered at Shell startup. |
 | Payload bytes | CBOR | Decoded by registered flavor codecs; unknown payloads surface metadata/decode fallback. |
 | State | In-memory `createGraphStore()` | Built from `Schema` + `Query` + `EventHistory` + `Subscribe`; no durable frontend replica. |
 
@@ -136,7 +136,7 @@ plus flavor frontend packages.
 | `apps/proxima-shell` | Product app, substrate view list, settings panels, Tauri host, flavor init call. |
 | `@proxima/flavor-code` | Code payload codecs/renderers, code relation styles, code shell view, styles. |
 | `@proxima/flavor-goal` | Goal proposal renderers/editors and goal relation styles. |
-| `@proxima/flavor-mcp` | MCP substrate renderers and relation styles. |
+| `@proxima/flavor-agent-memory` | Agent-memory payload renderers and relation styles. |
 
 Startup path:
 
@@ -144,7 +144,7 @@ Startup path:
 apps/proxima-shell/src/flavors.ts
   initCode()
   initGoal()
-  initMcp()
+  initAgentMemory()
 
 apps/proxima-shell/src/App.tsx
   initFlavors()
@@ -272,7 +272,7 @@ apps/proxima-shell/src-tauri/src/boot.rs
   PgStorage::connect(DATABASE_URL)
   proxima_embed::run_core_and_flavor_migrations
   build proxima-code engine
-  register mcp-substrate + goal flavors
+  register agent-memory + goal flavors
   host MCP listener
 ```
 

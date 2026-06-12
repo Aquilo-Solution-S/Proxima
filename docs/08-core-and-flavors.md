@@ -178,9 +178,9 @@ dependency rules panic during registration before freeze.
 Flavor crate = inclusion unit. Composite binary = build artifact.
 
 ```
-proxima-mcp       = substrate + goal
+proxima-mcp       = substrate + agent-memory + goal
 proxima-code      = substrate + code
-proxima-shell     = substrate + code + goal + mcp
+proxima-shell     = substrate + code + goal + agent-memory
 ```
 
 Composite binaries are not plugin hosts.

@@ -277,7 +277,7 @@ mod tests {
                     json!([
                         {
                             "perspective": "P2",
-                            "schema_id": "proxima-mcp/agent-derivation-v1",
+                            "schema_id": "proxima-agent-memory/agent-derivation-v1",
                             "text": "Inspect evidence before proposing edits.",
                             "truncated": false
                         }

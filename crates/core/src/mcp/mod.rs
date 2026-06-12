@@ -499,8 +499,8 @@ mod tests {
             "core_emit_abstraction"
         );
         assert_eq!(
-            provider_safe_tool_name("proxima-mcp/proxima_remember"),
-            "proxima-mcp_proxima_remember"
+            provider_safe_tool_name("proxima-agent-memory/proxima_remember"),
+            "proxima-agent-memory_proxima_remember"
         );
         assert_eq!(provider_safe_tool_name("a..b"), "a._b");
     }

@@ -19,9 +19,9 @@ importers:
       '@proxima/flavor-goal':
         specifier: workspace:*
         version: link:../../flavors/goal/frontend
-      '@proxima/flavor-mcp':
+      '@proxima/flavor-agent-memory':
         specifier: workspace:*
-        version: link:../../flavors/mcp/frontend
+        version: link:../../flavors/agent-memory/frontend
       '@tauri-apps/api':
         specifier: ^2
         version: 2.11.0
@@ -113,7 +113,7 @@ importers:
         specifier: ^4.1.5
         version: 4.1.5(jsdom@29.1.1)(vite@8.0.13)
 
-  flavors/mcp/frontend:
+  flavors/agent-memory/frontend:
     dependencies:
       '@proxima/core':
         specifier: workspace:*

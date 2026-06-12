@@ -13,7 +13,7 @@ pub struct AgentNoteV1 {
 }
 
 impl FactPayload for AgentNoteV1 {
-    const SCHEMA_ID: &'static str = "proxima-mcp/agent-note-v1";
+    const SCHEMA_ID: &'static str = "proxima-agent-memory/agent-note-v1";
     const SCHEMA_VERSION: u32 = 1;
 
     fn render(&self) -> String {
@@ -21,7 +21,7 @@ impl FactPayload for AgentNoteV1 {
     }
 
     fn sidecar_table() -> &'static str {
-        "proxima_mcp.agent_note_v1"
+        "proxima_agent_memory.agent_note_v1"
     }
 
     fn search_projection() -> Option<SearchProjection> {

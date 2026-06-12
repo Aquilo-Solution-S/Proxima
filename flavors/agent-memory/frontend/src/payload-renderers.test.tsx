@@ -40,7 +40,7 @@ describe("mcp payload renderers", () => {
       tags: ["mcp", "bringup"],
     };
     const row = memory(
-      "proxima-mcp/agent-note-v1",
+      "proxima-agent-memory/agent-note-v1",
       "Fact",
       Array.from(encode(payload)),
     );
@@ -76,7 +76,7 @@ describe("mcp payload renderers", () => {
       client_version: "1.0.0",
     };
     const row = memory(
-      "proxima-mcp/agent-derivation-v1",
+      "proxima-agent-memory/agent-derivation-v1",
       "Abstraction",
       Array.from(encode(payload)),
     );
@@ -98,7 +98,7 @@ describe("mcp payload renderers", () => {
     const hub = createHub([]);
     const payload = { reason: "Same MCP bringup session.", confidence: 90 };
     const row = memory(
-      "proxima-mcp/agent-link-v1",
+      "proxima-agent-memory/agent-link-v1",
       "Fact",
       Array.from(encode(payload)),
     );

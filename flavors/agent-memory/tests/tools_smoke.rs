@@ -42,10 +42,10 @@ async fn remember_then_search_round_trip() -> Result<(), Box<dyn std::error::Err
     ))
     .await?;
     pg.run_migrations().await?;
-    proxima_mcp_substrate::migrator().run(pg.pool()).await?;
+    proxima_agent_memory::migrator().run(pg.pool()).await?;
 
     let mut registry = FlavorRegistry::new();
-    proxima_mcp_substrate::register(&mut registry);
+    proxima_agent_memory::register(&mut registry);
     let frozen = Arc::new(registry.freeze());
     let owner = nil_owner();
     let handles = Arc::new(HandleTable::new());
@@ -57,7 +57,7 @@ async fn remember_then_search_round_trip() -> Result<(), Box<dyn std::error::Err
         &handles,
         &frozen,
         author.clone(),
-        "proxima-mcp/proxima_remember",
+        "proxima-agent-memory/proxima_remember",
         json!({
             "title": "Atlas edges",
             "body": "Edges must be loaded from the visible node set.",
@@ -80,7 +80,7 @@ async fn remember_then_search_round_trip() -> Result<(), Box<dyn std::error::Err
         &handles,
         &frozen,
         author,
-        "proxima-mcp/proxima_search_graph",
+        "proxima-agent-memory/proxima_search_graph",
         json!({"query": "atlas edges", "limit": 5}),
     )
     .await?;
@@ -105,10 +105,10 @@ async fn link_rejects_direct_fact_to_fact_interpretation() -> Result<(), Box<dyn
     ))
     .await?;
     pg.run_migrations().await?;
-    proxima_mcp_substrate::migrator().run(pg.pool()).await?;
+    proxima_agent_memory::migrator().run(pg.pool()).await?;
 
     let mut registry = FlavorRegistry::new();
-    proxima_mcp_substrate::register(&mut registry);
+    proxima_agent_memory::register(&mut registry);
     let frozen = Arc::new(registry.freeze());
     let owner = nil_owner();
     let handles = Arc::new(HandleTable::new());
@@ -120,7 +120,7 @@ async fn link_rejects_direct_fact_to_fact_interpretation() -> Result<(), Box<dyn
         &handles,
         &frozen,
         author.clone(),
-        "proxima-mcp/proxima_remember",
+        "proxima-agent-memory/proxima_remember",
         json!({
             "title": "First fact",
             "body": "A remembered observation.",
@@ -134,7 +134,7 @@ async fn link_rejects_direct_fact_to_fact_interpretation() -> Result<(), Box<dyn
         &handles,
         &frozen,
         author.clone(),
-        "proxima-mcp/proxima_remember",
+        "proxima-agent-memory/proxima_remember",
         json!({
             "title": "Second fact",
             "body": "Another remembered observation.",
@@ -149,7 +149,7 @@ async fn link_rejects_direct_fact_to_fact_interpretation() -> Result<(), Box<dyn
         &handles,
         &frozen,
         author,
-        "proxima-mcp/proxima_link",
+        "proxima-agent-memory/proxima_link",
         json!({
             "source": first["handle"],
             "target": second["handle"],
@@ -181,10 +181,10 @@ async fn search_graph_hybrid_returns_embedding_only_match() -> Result<(), Box<dy
     ))
     .await?;
     pg.run_migrations().await?;
-    proxima_mcp_substrate::migrator().run(pg.pool()).await?;
+    proxima_agent_memory::migrator().run(pg.pool()).await?;
 
     let mut registry = FlavorRegistry::new();
-    proxima_mcp_substrate::register(&mut registry);
+    proxima_agent_memory::register(&mut registry);
     let frozen_inner = registry.freeze();
     let frozen = Arc::new(frozen_inner.clone());
     let owner = nil_owner();
@@ -197,7 +197,7 @@ async fn search_graph_hybrid_returns_embedding_only_match() -> Result<(), Box<dy
         &handles,
         &frozen,
         author.clone(),
-        "proxima-mcp/proxima_remember",
+        "proxima-agent-memory/proxima_remember",
         json!({
             "title": "Operational note",
             "body": "This body deliberately omits the query token.",
@@ -217,7 +217,7 @@ async fn search_graph_hybrid_returns_embedding_only_match() -> Result<(), Box<dy
         &handles,
         &frozen,
         author.clone(),
-        "proxima-mcp/proxima_search_graph",
+        "proxima-agent-memory/proxima_search_graph",
         json!({"query": "galaxy", "limit": 5}),
     )
     .await?;
@@ -235,7 +235,7 @@ async fn search_graph_hybrid_returns_embedding_only_match() -> Result<(), Box<dy
         &frozen,
         author,
         Some(engine),
-        "proxima-mcp/proxima_search_graph",
+        "proxima-agent-memory/proxima_search_graph",
         json!({"query": "galaxy", "mode": "hybrid", "limit": 5}),
     )
     .await?;
@@ -260,10 +260,10 @@ async fn derive_scopes_idempotency_by_owner_and_kind() -> Result<(), Box<dyn std
     ))
     .await?;
     pg.run_migrations().await?;
-    proxima_mcp_substrate::migrator().run(pg.pool()).await?;
+    proxima_agent_memory::migrator().run(pg.pool()).await?;
 
     let mut registry = FlavorRegistry::new();
-    proxima_mcp_substrate::register(&mut registry);
+    proxima_agent_memory::register(&mut registry);
     let frozen = Arc::new(registry.freeze());
     let frozen_b = frozen.clone();
     let owner_a = nil_owner();
@@ -288,7 +288,7 @@ async fn derive_scopes_idempotency_by_owner_and_kind() -> Result<(), Box<dyn std
         &Arc::new(HandleTable::new()),
         &frozen,
         author_ctx(),
-        "proxima-mcp/proxima_derive",
+        "proxima-agent-memory/proxima_derive",
         shared_args(),
     )
     .await?;
@@ -298,13 +298,13 @@ async fn derive_scopes_idempotency_by_owner_and_kind() -> Result<(), Box<dyn std
         &Arc::new(HandleTable::new()),
         &frozen,
         author_ctx(),
-        "proxima-mcp/proxima_derive",
+        "proxima-agent-memory/proxima_derive",
         shared_args(),
     )
     .await?;
 
     let distinct_owner_memories: i64 = sqlx::query_scalar(
-        "SELECT count(DISTINCT memory_id) FROM proxima_mcp.agent_derivation_v1
+        "SELECT count(DISTINCT memory_id) FROM proxima_agent_memory.agent_derivation_v1
          WHERE idempotency_key = 'shared-key-collision'",
     )
     .fetch_one(pg.pool())
@@ -322,7 +322,7 @@ async fn derive_scopes_idempotency_by_owner_and_kind() -> Result<(), Box<dyn std
         &Arc::new(HandleTable::new()),
         &frozen,
         author_ctx(),
-        "proxima-mcp/proxima_derive",
+        "proxima-agent-memory/proxima_derive",
         json!({
             "kind": "Abstraction",
             "title": "Same key, A vs P",
@@ -338,7 +338,7 @@ async fn derive_scopes_idempotency_by_owner_and_kind() -> Result<(), Box<dyn std
         &Arc::new(HandleTable::new()),
         &frozen_b,
         author_ctx(),
-        "proxima-mcp/proxima_derive",
+        "proxima-agent-memory/proxima_derive",
         json!({
             "kind": "Perspective",
             "title": "Same key, A vs P",
@@ -349,7 +349,7 @@ async fn derive_scopes_idempotency_by_owner_and_kind() -> Result<(), Box<dyn std
     )
     .await?;
     let distinct_kind_memories: i64 = sqlx::query_scalar(
-        "SELECT count(DISTINCT memory_id) FROM proxima_mcp.agent_derivation_v1
+        "SELECT count(DISTINCT memory_id) FROM proxima_agent_memory.agent_derivation_v1
          WHERE idempotency_key = 'kind-key-collision'",
     )
     .fetch_one(pg.pool())
@@ -376,10 +376,10 @@ async fn derive_rejects_upward_provenance() -> Result<(), Box<dyn std::error::Er
     ))
     .await?;
     pg.run_migrations().await?;
-    proxima_mcp_substrate::migrator().run(pg.pool()).await?;
+    proxima_agent_memory::migrator().run(pg.pool()).await?;
 
     let mut registry = FlavorRegistry::new();
-    proxima_mcp_substrate::register(&mut registry);
+    proxima_agent_memory::register(&mut registry);
     let frozen = Arc::new(registry.freeze());
     let owner = nil_owner();
     let handles = Arc::new(HandleTable::new());
@@ -391,7 +391,7 @@ async fn derive_rejects_upward_provenance() -> Result<(), Box<dyn std::error::Er
         &handles,
         &frozen,
         author.clone(),
-        "proxima-mcp/proxima_derive",
+        "proxima-agent-memory/proxima_derive",
         json!({
             "kind": "Perspective",
             "title": "Top-layer perspective",
@@ -409,7 +409,7 @@ async fn derive_rejects_upward_provenance() -> Result<(), Box<dyn std::error::Er
         &handles,
         &frozen,
         author,
-        "proxima-mcp/proxima_derive",
+        "proxima-agent-memory/proxima_derive",
         json!({
             "kind": "Abstraction",
             "title": "Should fail",

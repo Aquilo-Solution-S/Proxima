@@ -56,7 +56,7 @@ impl McpToolHost {
     /// Returns storage or migration failures.
     ///
     /// Runs only the substrate migrations. Flavor sidecar migrations
-    /// (including proxima-mcp-substrate's agent-note tables) are the
+    /// (including proxima-agent-memory's agent-note tables) are the
     /// composing host's responsibility — run each linked flavor's
     /// `migrator()` before serving tool calls.
     pub async fn from_database_url(

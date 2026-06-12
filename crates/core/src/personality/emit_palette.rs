@@ -103,13 +103,14 @@ mod tests {
 
     #[test]
     fn parses_schema_scoped_emit_tool_id() {
-        let parsed =
-            parse_scoped_emit_tool_id("core/emit_abstraction::proxima-mcp/agent-derivation-v1::v1")
-                .expect("valid")
-                .expect("scoped");
+        let parsed = parse_scoped_emit_tool_id(
+            "core/emit_abstraction::proxima-agent-memory/agent-derivation-v1::v1",
+        )
+        .expect("valid")
+        .expect("scoped");
 
         assert_eq!(parsed.base_tool_id, EMIT_ABSTRACTION_TOOL_ID);
-        assert_eq!(parsed.schema_id, "proxima-mcp/agent-derivation-v1");
+        assert_eq!(parsed.schema_id, "proxima-agent-memory/agent-derivation-v1");
         assert_eq!(parsed.schema_version, 1);
         assert_eq!(parsed.kind, PayloadKind::Abstraction);
     }

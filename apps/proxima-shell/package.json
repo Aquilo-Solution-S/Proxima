@@ -25,7 +25,7 @@
     "@proxima/core": "workspace:*",
     "@proxima/flavor-code": "workspace:*",
     "@proxima/flavor-goal": "workspace:*",
-    "@proxima/flavor-mcp": "workspace:*"
+    "@proxima/flavor-agent-memory": "workspace:*"
   },
   "devDependencies": {
     "typescript": "~6.0.3",

@@ -520,7 +520,7 @@ async fn wake_invocation_carries_dispatch_columns() {
             wake_entry_id,
             change_event_seq,
             phase: "tool_call".to_string(),
-            tool_id: Some("proxima-mcp/proxima_derive".to_string()),
+            tool_id: Some("proxima-agent-memory/proxima_derive".to_string()),
             status: WakeInvocationLogStatus::Failed,
             duration_ms: Some(77),
             message_tail: Some("tool failed".to_string()),
@@ -557,7 +557,7 @@ async fn wake_invocation_carries_dispatch_columns() {
         assert_eq!(listed[0].logs.len(), 2);
         assert_eq!(
             listed[0].logs[0].tool_id.as_deref(),
-            Some("proxima-mcp/proxima_derive")
+            Some("proxima-agent-memory/proxima_derive")
         );
         assert_eq!(
             listed[0].logs[0].message_tail.as_deref(),

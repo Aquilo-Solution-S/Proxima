@@ -30,7 +30,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         &pg,
         [
             NamedMigrator::new("proxima-code", proxima_code::migrator()),
-            NamedMigrator::new("proxima-mcp-substrate", proxima_mcp_substrate::migrator()),
+            NamedMigrator::new("proxima-agent-memory", proxima_agent_memory::migrator()),
             NamedMigrator::new("proxima-flavor-goal", proxima_flavor_goal::migrator()),
         ],
     )

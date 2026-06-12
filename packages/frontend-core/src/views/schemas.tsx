@@ -93,7 +93,7 @@ const schemaFlavor = (schema: SchemaInfo, hub: Hub): string => {
 };
 
 /// Display name for a flavor key. Production flavor keys mirror the
-/// schema-id namespace (`proxima-code`, `proxima-mcp`); the
+/// schema-id namespace (`proxima-code`, `proxima-agent-memory`); the
 /// `proxima-` prefix is signal-free at the UI layer, so strip it for
 /// headings while keeping the canonical key everywhere else.
 const formatFlavorLabel = (flavor: string): string =>
