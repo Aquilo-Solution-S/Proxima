@@ -23,7 +23,9 @@ pub use migrations::{
     run_core_and_flavor_migrations,
 };
 pub use proxima_mcp_server::McpAuthContext;
-pub use runtime::{BuiltProxima, Proxima, RunningProxima, layered_router, run};
+pub use runtime::{
+    BuiltProxima, Proxima, RunningProxima, layered_router, layered_router_with_revalidation, run,
+};
 pub use runtime_config::{McpSettings, ProximaError, RuntimeBuilder, RuntimeConfig, RuntimeParts};
 
 use std::sync::Arc;

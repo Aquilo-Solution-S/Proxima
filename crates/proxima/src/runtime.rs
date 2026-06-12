@@ -8,10 +8,12 @@ use axum::body::Body;
 use axum::extract::Request;
 use axum::response::IntoResponse;
 use proxima_blob_s3::{CitedBlobStore, S3RuntimeConfig};
-use proxima_core::{AnthropicClient, AuthPath, Authenticator, AuthzContext, EmbeddingClient};
+use proxima_core::{
+    AnthropicClient, AuthPath, Authenticator, AuthzContext, EmbeddingClient, RevalidationConfig,
+};
 use proxima_core::{Engine, EngineHandle, Owner};
 use proxima_mcp_server::{
-    McpEdgeAuth, McpToolHost, OriginAllowlist, assert_loopback, default_allowlist, mcp_auth_layer,
+    McpEdgeAuth, McpToolHost, OriginAllowlist, assert_loopback, default_allowlist,
     streamable_http_service,
 };
 use sqlx::PgPool;
@@ -110,6 +112,18 @@ impl<A: FlavorApp + 'static> Proxima<A> {
     #[must_use]
     pub fn allowed_origins(mut self, allowed_origins: Vec<String>) -> Self {
         self.overlay = self.overlay.allowed_origins(allowed_origins);
+        self
+    }
+
+    #[must_use]
+    pub fn stream_max_lifetime(mut self, duration: std::time::Duration) -> Self {
+        self.overlay = self.overlay.stream_max_lifetime(duration);
+        self
+    }
+
+    #[must_use]
+    pub fn epoch_check_interval(mut self, duration: std::time::Duration) -> Self {
+        self.overlay = self.overlay.epoch_check_interval(duration);
         self
     }
 
@@ -357,10 +371,35 @@ where
     S::Response: IntoResponse,
     S::Future: Send + 'static,
 {
+    layered_router_with_revalidation(
+        mcp_service,
+        app_router,
+        edge_auth,
+        allowlist,
+        RevalidationConfig::default(),
+    )
+}
+
+pub fn layered_router_with_revalidation<S>(
+    mcp_service: S,
+    app_router: Router,
+    edge_auth: Arc<McpEdgeAuth>,
+    allowlist: OriginAllowlist,
+    revalidation: RevalidationConfig,
+) -> Router
+where
+    S: Service<Request<Body>, Error = Infallible> + Clone + Send + Sync + 'static,
+    S::Response: IntoResponse,
+    S::Future: Send + 'static,
+{
     Router::new()
         .nest_service("/mcp", mcp_service)
         .merge(app_router)
-        .layer(mcp_auth_layer(edge_auth, allowlist))
+        .layer(proxima_mcp_server::mcp_auth_layer_with_config(
+            edge_auth,
+            allowlist,
+            revalidation,
+        ))
 }
 
 async fn boot_app<A: FlavorApp + 'static>(
@@ -420,7 +459,13 @@ async fn build_router<A: FlavorApp>(
             owner,
         },
     );
-    layered_router(mcp_service, app_router, edge_auth, allowlist)
+    layered_router_with_revalidation(
+        mcp_service,
+        app_router,
+        edge_auth,
+        allowlist,
+        config.stream_revalidation,
+    )
 }
 
 fn resolve_allowlist(config: &crate::RuntimeConfig) -> Result<OriginAllowlist, ProximaError> {

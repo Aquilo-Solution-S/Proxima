@@ -9,7 +9,7 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 
-use proxima_core::{AuthzContext, Engine};
+use proxima_core::{Authenticator, AuthzContext, Engine, RevalidationConfig, revalidate_stream};
 
 use crate::convert::refs::{owner_from_proto, owner_to_proto};
 use crate::convert::{
@@ -34,10 +34,21 @@ use crate::pb::{
 };
 
 /// gRPC server wrapper for the Engine.
-#[derive(Debug)]
 pub struct EngineGrpcServer {
     engine: Arc<Engine>,
     authz: AuthzContext,
+    authenticator: Option<Arc<dyn Authenticator>>,
+    revalidation: RevalidationConfig,
+}
+
+impl std::fmt::Debug for EngineGrpcServer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EngineGrpcServer")
+            .field("authz", &self.authz)
+            .field("has_authenticator", &self.authenticator.is_some())
+            .field("revalidation", &self.revalidation)
+            .finish_non_exhaustive()
+    }
 }
 
 impl EngineGrpcServer {
@@ -47,7 +58,24 @@ impl EngineGrpcServer {
     /// this transport performs no per-RPC identity extraction.
     #[must_use]
     pub fn new(engine: Arc<Engine>, authz: AuthzContext) -> Self {
-        Self { engine, authz }
+        Self {
+            engine,
+            authz,
+            authenticator: None,
+            revalidation: RevalidationConfig::default(),
+        }
+    }
+
+    #[must_use]
+    pub fn with_authenticator(mut self, authenticator: Arc<dyn Authenticator>) -> Self {
+        self.authenticator = Some(authenticator);
+        self
+    }
+
+    #[must_use]
+    pub fn with_revalidation_config(mut self, revalidation: RevalidationConfig) -> Self {
+        self.revalidation = revalidation;
+        self
     }
 }
 
@@ -78,6 +106,12 @@ impl EngineTrait for EngineGrpcServer {
             .subscribe(&self.authz, req)
             .await
             .map_err(protocol_error_to_status)?;
+        let stream = revalidate_stream(
+            stream,
+            self.authz.identity.clone(),
+            self.authenticator.clone(),
+            self.revalidation,
+        );
 
         // Create a bounded channel for backpressure
         let (tx, rx) = mpsc::channel(64);

@@ -177,6 +177,12 @@ impl McpEdgeAuth {
         }
     }
 
+    pub(crate) fn host_authenticator(&self) -> Option<Arc<dyn Authenticator>> {
+        self.host
+            .as_ref()
+            .map(|(authenticator, _owner)| authenticator.clone())
+    }
+
     async fn resolve_wake(&self, token: Uuid) -> Option<McpAuthContext> {
         let wake = self.wake_tokens.as_ref()?.resolve(token).await?;
         Some(McpAuthContext::for_wake(wake))
