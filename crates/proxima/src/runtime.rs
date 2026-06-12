@@ -78,6 +78,12 @@ impl<A: FlavorApp + 'static> Proxima<A> {
     }
 
     #[must_use]
+    pub fn master_token(mut self, master_token: impl Into<String>) -> Self {
+        self.overlay = self.overlay.master_token(master_token);
+        self
+    }
+
+    #[must_use]
     pub fn authenticator(mut self, authenticator: Arc<dyn Authenticator>) -> Self {
         self.overlay = self.overlay.authenticator(authenticator);
         self
@@ -141,15 +147,18 @@ impl<A: FlavorApp + 'static> Proxima<A> {
         let cancel = CancellationToken::new();
 
         let service = if let Some(allowlist) = allowlist {
-            Some(build_router::<A>(
-                &booted.engine,
-                booted.pool.clone(),
-                booted.blobs.clone(),
-                booted.owner.clone(),
-                parts.authenticator,
-                allowlist,
-                &cancel,
-            ))
+            Some(
+                build_router::<A>(
+                    &booted.engine,
+                    booted.pool.clone(),
+                    booted.blobs.clone(),
+                    parts.authenticator,
+                    allowlist,
+                    &cancel,
+                    &config,
+                )
+                .await,
+            )
         } else {
             None
         };
@@ -190,11 +199,12 @@ impl<A: FlavorApp + 'static> Proxima<A> {
                 &booted.engine,
                 booted.pool.clone(),
                 booted.blobs.clone(),
-                booted.owner.clone(),
                 parts.authenticator,
                 allowlist,
                 &cancel,
-            );
+                &config,
+            )
+            .await;
             let listener = tokio::net::TcpListener::bind(mcp.bind)
                 .await
                 .map_err(|err| ProximaError::Mcp(err.to_string()))?;
@@ -374,18 +384,24 @@ async fn boot_app<A: FlavorApp + 'static>(
     builder.boot().await.map_err(Into::into)
 }
 
-fn build_router<A: FlavorApp>(
+async fn build_router<A: FlavorApp>(
     engine: &Arc<Engine>,
     pool: PgPool,
     blobs: Option<CitedBlobStore>,
-    owner: Owner,
     authenticator: Option<Arc<dyn Authenticator>>,
     allowlist: OriginAllowlist,
     cancel: &CancellationToken,
+    config: &crate::RuntimeConfig,
 ) -> Router {
+    let owner = config.owner.clone();
     let mut edge_auth = McpEdgeAuth::engine_hosted(engine.wake_token_store());
     if let Some(authenticator) = authenticator {
         edge_auth = edge_auth.with_host(authenticator, owner.clone());
+    }
+    if let Some(token) = config.master_token {
+        edge_auth
+            .replace_local_master_token(token, owner.clone())
+            .await;
     }
     let edge_auth = Arc::new(edge_auth);
     let mcp_host = McpToolHost::from_pool(
