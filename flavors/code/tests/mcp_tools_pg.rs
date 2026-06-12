@@ -16,13 +16,12 @@ use proxima_core::{
     AbstractionPayload, AuthPath, AuthzContext, FactPayload, FlavorRegistry, FlavorRegistryFrozen,
     OrgId, Owner, Principal, SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId,
 };
+use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
 use proxima_storage_pg::PgStorage;
 use serde_json::json;
-use sqlx::{Connection, Executor, PgConnection, PgPool};
+use sqlx::PgPool;
 use tempfile::TempDir;
 use uuid::Uuid;
-
-const ADMIN_URL: &str = "postgres://proxima:proxima@localhost/proxima";
 
 #[tokio::test]
 async fn register_repo_tool_registers_local_git_repo_idempotently()
@@ -591,11 +590,10 @@ struct TestDb {
 
 impl TestDb {
     async fn fresh() -> Result<Option<Self>, Box<dyn std::error::Error>> {
-        let name = format!("proxima_test_{}", Uuid::now_v7().simple());
+        let name = unique_db_name("proxima_test");
         create_db(&name).await.expect("PG required for tests");
         let setup: Result<PgStorage, Box<dyn std::error::Error>> = async {
-            let pg =
-                PgStorage::connect(&format!("postgres://proxima:proxima@localhost/{name}")).await?;
+            let pg = PgStorage::connect(&db_url(&name)).await?;
             pg.run_migrations().await?;
             proxima_code::migrator().run(pg.pool()).await?;
             Ok(pg)
@@ -624,22 +622,6 @@ impl Drop for TestDb {
         .join()
         .expect("drop db thread");
     }
-}
-
-async fn create_db(name: &str) -> Result<(), sqlx::Error> {
-    let mut conn = PgConnection::connect(ADMIN_URL).await?;
-    conn.execute(format!("CREATE DATABASE \"{name}\"").as_str())
-        .await?;
-    conn.close().await?;
-    Ok(())
-}
-
-async fn drop_db(name: &str) -> Result<(), sqlx::Error> {
-    let mut conn = PgConnection::connect(ADMIN_URL).await?;
-    conn.execute(format!("DROP DATABASE IF EXISTS \"{name}\" WITH (FORCE)").as_str())
-        .await?;
-    conn.close().await?;
-    Ok(())
 }
 
 fn owner_fixture() -> Owner {

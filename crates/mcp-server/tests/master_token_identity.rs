@@ -7,7 +7,7 @@ mod common;
 
 use std::sync::Arc;
 
-use common::{create_db, drop_db};
+use common::{create_db, db_url, drop_db};
 use proxima_core::mcp::McpAuthorContext;
 use proxima_core::storage::Storage;
 use proxima_core::verbs::query::MemoryStore;
@@ -22,7 +22,7 @@ async fn master_token_call_mints_per_token_self_perspective()
     let Some(db_name) = create_db().await? else {
         return Ok(());
     };
-    let database_url = format!("postgres://proxima:proxima@localhost/{db_name}");
+    let database_url = db_url(&db_name);
     let pg = PgStorage::connect(&database_url).await?;
     pg.run_migrations().await?;
 
@@ -124,7 +124,7 @@ async fn distinct_master_tokens_resolve_to_distinct_identities()
     let Some(db_name) = create_db().await? else {
         return Ok(());
     };
-    let database_url = format!("postgres://proxima:proxima@localhost/{db_name}");
+    let database_url = db_url(&db_name);
     let pg = PgStorage::connect(&database_url).await?;
     pg.run_migrations().await?;
 
