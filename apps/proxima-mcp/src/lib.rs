@@ -6,8 +6,8 @@ pub use proxima_mcp_server::{
     serve_streamable_http,
 };
 
+use proxima::{NamedMigrator, run_core_and_flavor_migrations};
 use proxima_core::FlavorRegistry;
-use proxima_embed::{NamedMigrator, run_core_and_flavor_migrations};
 
 /// # Errors
 ///
@@ -84,7 +84,7 @@ pub enum CliError {
     #[error(transparent)]
     Args(#[from] ArgsError),
     #[error(transparent)]
-    Migration(#[from] proxima_embed::MigrationError),
+    Migration(#[from] proxima::MigrationError),
     #[error(transparent)]
     Server(#[from] McpServerError),
     #[error("transport: {0}")]

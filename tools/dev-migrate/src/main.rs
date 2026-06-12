@@ -17,7 +17,7 @@
 //!
 //! Afterwards `cargo sqlx prepare --workspace` has every schema it needs.
 
-use proxima_embed::{NamedMigrator, run_core_and_flavor_migrations};
+use proxima::{NamedMigrator, run_core_and_flavor_migrations};
 use proxima_storage_pg::PgStorage;
 
 #[tokio::main]
