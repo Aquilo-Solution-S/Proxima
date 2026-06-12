@@ -23,6 +23,33 @@ Not runtime configurable: schema ids, payload types, relation
 descriptors, prompts, tool definitions, source types, wake-filter kinds,
 and personality type registration.
 
+<a id="framework-facade-host-app-boot"></a>
+## Framework facade (host-app boot)
+
+```rust
+Proxima::<App>::app().from_env().authenticator(auth).run().await?;
+```
+
+| Env var | Meaning |
+|---|---|
+| `DATABASE_URL` | Postgres connection for core tables. |
+| `PROXIMA_ORG_ID` | Host-app Owner org id when no explicit Owner is supplied. |
+| `PROXIMA_MCP_BIND` | MCP socket address; enables the listener when set. |
+| `PROXIMA_EXPOSE_NETWORK` | Network exposure gate for non-loopback hosts. |
+| `PROXIMA_ALLOWED_ORIGINS` | Comma-separated MCP origin allowlist. |
+| `PROXIMA_S3_BUCKET` | Enables cited-blob S3 storage. |
+| `PROXIMA_S3_REGION` | S3 region for cited-blob storage. |
+| `PROXIMA_S3_ENDPOINT_URL` | Optional S3-compatible endpoint URL. |
+| `PROXIMA_S3_FORCE_PATH_STYLE` | S3 path-style addressing flag. |
+| `PROXIMA_S3_UPLOAD_TTL_SECONDS` | Presigned upload URL TTL. |
+| `PROXIMA_S3_READ_TTL_SECONDS` | Presigned read URL TTL. |
+
+Defaults, precedence (`configure < env < explicit`), and the
+fail-closed network matrix are specified by `crates/proxima` rustdoc:
+[`RuntimeBuilder`](../crates/proxima/src/runtime_config.rs),
+[`RuntimeConfig::validate`](../crates/proxima/src/runtime_config.rs),
+and [`Proxima<A>`](../crates/proxima/src/runtime.rs).
+
 <a id="config-file"></a>
 ## Config File
 

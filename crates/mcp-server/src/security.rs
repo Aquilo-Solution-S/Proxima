@@ -30,11 +30,29 @@ enum PortMatch {
 }
 
 impl OriginAllowlist {
+    /// # Panics
+    ///
+    /// Panics when a static pattern is empty, `"*"`, or unparseable.
     #[must_use]
     pub fn new(patterns: impl IntoIterator<Item = &'static str>) -> Self {
-        Self {
-            patterns: patterns.into_iter().map(parse_pattern).collect(),
-        }
+        Self::parse(patterns).expect("static origin pattern must parse")
+    }
+
+    /// # Errors
+    ///
+    /// Returns `InvalidOrigin` when an entry is empty, `"*"`, or not a
+    /// concrete origin pattern.
+    pub fn parse<I, S>(patterns: I) -> Result<Self, McpServerError>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        Ok(Self {
+            patterns: patterns
+                .into_iter()
+                .map(|pattern| parse_pattern(pattern.as_ref()))
+                .collect::<Result<Vec<_>, _>>()?,
+        })
     }
 
     #[must_use]
@@ -160,13 +178,26 @@ fn extract_bearer(request: &Request) -> Option<String> {
     Some(raw.strip_prefix("Bearer ")?.trim().to_string())
 }
 
-fn parse_pattern(value: &'static str) -> OriginPattern {
-    let parsed = parse_origin(value).expect("static origin pattern must parse");
-    OriginPattern {
+fn parse_pattern(value: &str) -> Result<OriginPattern, McpServerError> {
+    let pattern = value.trim();
+    if pattern.is_empty() || pattern == "*" {
+        return Err(invalid_origin(value));
+    }
+    let Some(parsed) = parse_origin(pattern) else {
+        return Err(invalid_origin(value));
+    };
+    if parsed.scheme.is_empty() || parsed.host.is_empty() {
+        return Err(invalid_origin(value));
+    }
+    Ok(OriginPattern {
         scheme: parsed.scheme,
         host: parsed.host,
         port: parsed.port,
-    }
+    })
+}
+
+fn invalid_origin(value: &str) -> McpServerError {
+    McpServerError::InvalidOrigin(format!("origin pattern {value:?}"))
 }
 
 struct ParsedOrigin {
@@ -200,4 +231,54 @@ fn parse_origin(value: &str) -> Option<ParsedOrigin> {
         host,
         port,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::OriginAllowlist;
+    use crate::McpServerError;
+
+    #[test]
+    fn parse_valid_patterns_round_trips_into_origins() {
+        let allowlist =
+            OriginAllowlist::parse(["http://LOCALHOST", "https://example.com:8443"]).unwrap();
+
+        assert_eq!(
+            allowlist.origins(),
+            vec![
+                "http://localhost".to_string(),
+                "https://example.com:8443".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_rejects_star() {
+        assert_invalid_origin("*");
+    }
+
+    #[test]
+    fn parse_rejects_garbage() {
+        assert_invalid_origin("not an origin");
+    }
+
+    #[test]
+    fn parse_rejects_empty_entry() {
+        assert_invalid_origin("  ");
+    }
+
+    #[test]
+    fn parse_empty_list_allows_nothing() {
+        let allowlist = OriginAllowlist::parse(std::iter::empty::<&str>()).unwrap();
+
+        assert!(allowlist.origins().is_empty());
+    }
+
+    fn assert_invalid_origin(pattern: &str) {
+        let err = OriginAllowlist::parse([pattern]).unwrap_err();
+        let McpServerError::InvalidOrigin(message) = err else {
+            panic!("expected invalid origin");
+        };
+        assert!(message.contains(pattern));
+    }
 }
