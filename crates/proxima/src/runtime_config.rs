@@ -16,6 +16,7 @@ pub struct RuntimeBuilder {
     s3: Option<S3RuntimeConfig>,
     owner: Option<Owner>,
     org_id: Option<uuid::Uuid>,
+    master_token: Option<String>,
     mcp_enabled: bool,
     mcp_bind: Option<SocketAddr>,
     expose_network: Option<bool>,
@@ -33,6 +34,7 @@ impl std::fmt::Debug for RuntimeBuilder {
             .field("s3", &self.s3)
             .field("owner", &self.owner)
             .field("org_id", &self.org_id)
+            .field("has_master_token", &self.master_token.is_some())
             .field("mcp_enabled", &self.mcp_enabled)
             .field("mcp_bind", &self.mcp_bind)
             .field("expose_network", &self.expose_network)
@@ -53,6 +55,7 @@ impl RuntimeBuilder {
             s3: self.s3.or(base.s3),
             owner: self.owner.or(base.owner),
             org_id: self.org_id.or(base.org_id),
+            master_token: self.master_token.or(base.master_token),
             mcp_enabled: self.mcp_enabled || base.mcp_enabled,
             mcp_bind: self.mcp_bind.or(base.mcp_bind),
             expose_network: self.expose_network.or(base.expose_network),
@@ -85,6 +88,12 @@ impl RuntimeBuilder {
     #[must_use]
     pub fn org_id(mut self, org_id: uuid::Uuid) -> Self {
         self.org_id = Some(org_id);
+        self
+    }
+
+    #[must_use]
+    pub fn master_token(mut self, master_token: impl Into<String>) -> Self {
+        self.master_token = Some(master_token.into());
         self
     }
 
@@ -170,6 +179,9 @@ impl RuntimeBuilder {
                 })
                 .transpose()?;
         }
+        if self.master_token.is_none() {
+            self.master_token = lookup("PROXIMA_MCP_MASTER_TOKEN");
+        }
         if self.mcp_bind.is_none()
             && let Some(raw) = lookup("PROXIMA_MCP_BIND")
         {
@@ -218,6 +230,10 @@ impl RuntimeBuilder {
         } else {
             None
         };
+        let master_token = self
+            .master_token
+            .map(|raw| parse_master_token(&raw))
+            .transpose()?;
         let parts = RuntimeParts {
             authenticator: self.authenticator,
             embed_client: self.embed_client,
@@ -227,6 +243,7 @@ impl RuntimeBuilder {
             database_url,
             s3: self.s3,
             owner,
+            master_token,
             mcp,
             expose_network: self.expose_network.unwrap_or(false),
             allowed_origins: self.allowed_origins.unwrap_or_default(),
@@ -244,6 +261,7 @@ pub struct RuntimeConfig {
     pub database_url: String,
     pub s3: Option<S3RuntimeConfig>,
     pub owner: Owner,
+    pub master_token: Option<uuid::Uuid>,
     pub mcp: Option<McpSettings>,
     pub expose_network: bool,
     pub allowed_origins: Vec<String>,
@@ -258,6 +276,12 @@ impl RuntimeConfig {
     ///
     /// Returns `ProximaError::Security` when transport exposure is unsafe.
     pub fn validate(&self) -> Result<(), ProximaError> {
+        if self.master_token.is_some() && self.expose_network {
+            return Err(ProximaError::Security(
+                "master tokens are loopback-only and cannot expose network transports".into(),
+            ));
+        }
+
         let Some(mcp) = &self.mcp else {
             return Ok(());
         };
@@ -292,9 +316,12 @@ impl RuntimeConfig {
                 "non-exposed MCP bind must be loopback".into(),
             ));
         }
-        if !self.has_host_authenticator && !self.insecure_single_owner {
+        if !self.has_host_authenticator
+            && !self.insecure_single_owner
+            && self.master_token.is_none()
+        {
             return Err(ProximaError::Security(
-                "MCP requires a host authenticator or insecure single-owner mode".into(),
+                "MCP requires a host authenticator, insecure single-owner mode, --master-token, or PROXIMA_MCP_MASTER_TOKEN".into(),
             ));
         }
 
@@ -365,6 +392,17 @@ fn parse_allowed_origins(raw: &str) -> Vec<String> {
         .collect()
 }
 
+fn parse_master_token(raw: &str) -> Result<uuid::Uuid, ProximaError> {
+    let trimmed = raw.trim();
+    let bare = trimmed.strip_prefix("pxm_").unwrap_or(trimmed);
+    bare.parse().map_err(|_| {
+        ProximaError::Config(
+            "PROXIMA_MCP_MASTER_TOKEN / --master-token must be a UUID with optional pxm_ prefix"
+                .into(),
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::net::{IpAddr, Ipv4Addr};
@@ -394,6 +432,7 @@ mod tests {
             database_url: "postgres://localhost/proxima".to_string(),
             s3: None,
             owner: company_owner(uuid::Uuid::now_v7()),
+            master_token: None,
             mcp: mcp.map(|bind| McpSettings { bind }),
             expose_network: false,
             allowed_origins: Vec::new(),
@@ -433,6 +472,26 @@ mod tests {
 
         let err = config.validate().unwrap_err();
         assert!(err.to_string().contains("MCP requires"));
+    }
+
+    #[test]
+    fn validate_master_token_satisfies_loopback_mcp_auth_requirement() {
+        let mut config = base_config(Some(addr([127, 0, 0, 1])));
+        config.has_host_authenticator = false;
+        config.master_token = Some(uuid::Uuid::now_v7());
+
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn validate_master_token_cannot_expose_network() {
+        let mut config = base_config(Some(addr([127, 0, 0, 1])));
+        config.master_token = Some(uuid::Uuid::now_v7());
+        config.expose_network = true;
+        config.allowed_origins = vec!["https://app.test".to_string()];
+
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("loopback-only"));
     }
 
     #[test]
@@ -515,6 +574,53 @@ mod tests {
             .unwrap();
 
         assert_eq!(config.owner, company_owner(org_id));
+    }
+
+    #[test]
+    fn master_token_env_fills_unset_and_accepts_wire_prefix() {
+        let token = uuid::Uuid::now_v7();
+        let token_raw = format!("pxm_{token}");
+        let (config, _) = RuntimeBuilder::default()
+            .database_url("postgres://localhost/proxima")
+            .owner(owner(uuid::Uuid::now_v7()))
+            .with_mcp()
+            .apply_lookup(lookup(&[("PROXIMA_MCP_MASTER_TOKEN", &token_raw)]))
+            .unwrap()
+            .resolve()
+            .unwrap();
+
+        assert_eq!(config.master_token, Some(token));
+    }
+
+    #[test]
+    fn explicit_master_token_wins_over_env() {
+        let explicit = uuid::Uuid::now_v7();
+        let env = uuid::Uuid::now_v7();
+        let env_raw = env.to_string();
+        let (config, _) = RuntimeBuilder::default()
+            .database_url("postgres://localhost/proxima")
+            .owner(owner(uuid::Uuid::now_v7()))
+            .with_mcp()
+            .master_token(explicit.to_string())
+            .apply_lookup(lookup(&[("PROXIMA_MCP_MASTER_TOKEN", &env_raw)]))
+            .unwrap()
+            .resolve()
+            .unwrap();
+
+        assert_eq!(config.master_token, Some(explicit));
+    }
+
+    #[test]
+    fn malformed_master_token_errors() {
+        let err = RuntimeBuilder::default()
+            .database_url("postgres://localhost/proxima")
+            .owner(owner(uuid::Uuid::now_v7()))
+            .with_mcp()
+            .master_token("not-a-uuid")
+            .resolve()
+            .unwrap_err();
+
+        assert!(err.to_string().contains("PROXIMA_MCP_MASTER_TOKEN"));
     }
 
     #[test]
