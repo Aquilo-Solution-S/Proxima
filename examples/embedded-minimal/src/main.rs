@@ -22,7 +22,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let owner = company_owner(org);
 
     let booted = ProximaBuilder::new(config, owner.clone())
-        .flavor(flavor::register, Some(flavor::migrator()))
+        .bundle::<flavor::EmbeddedMinimalFlavor>()
         .boot()
         .await?;
 

@@ -60,6 +60,17 @@ use outbox::BROADCAST_CAPACITY;
 /// dev DB created locally via `createdb proxima_dev`.
 pub const DEFAULT_DATABASE_URL: &str = "postgres://postgres@localhost/proxima_dev";
 
+/// Embedded core migration set under `crates/storage-pg/migrations/`.
+///
+/// `ignore_missing = true` is load-bearing when the same database also
+/// records flavor migrations in `SQLx`'s default `_sqlx_migrations` table.
+#[must_use]
+pub fn core_migrator() -> sqlx::migrate::Migrator {
+    let mut migrator = sqlx::migrate!("./migrations");
+    migrator.set_ignore_missing(true);
+    migrator
+}
+
 #[derive(Debug, Clone)]
 pub struct PgStorage {
     pool: PgPool,
@@ -173,9 +184,8 @@ impl PgStorage {
     /// migration failure (broken file, conflict with the
     /// recorded checksum, etc.).
     pub async fn run_migrations(&self) -> Result<(), StorageError> {
-        let mut m = sqlx::migrate!("./migrations");
-        m.set_ignore_missing(true);
-        m.run(&self.pool)
+        core_migrator()
+            .run(&self.pool)
             .await
             .map_err(|e| StorageError::Internal(e.to_string()))?;
         Ok(())

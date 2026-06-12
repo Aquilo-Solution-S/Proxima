@@ -10,9 +10,14 @@
 
 mod bundle;
 mod config;
+mod migrations;
 
 pub use bundle::FlavorBundle;
 pub use config::EmbedConfig;
+pub use migrations::{
+    MigrationError, MigrationRunReport, MigrationVersion, NamedMigrator,
+    run_core_and_flavor_migrations,
+};
 
 use std::sync::Arc;
 
@@ -43,7 +48,7 @@ pub struct ProximaBuilder {
     config: EmbedConfig,
     owner: Owner,
     registers: Vec<RegisterFn>,
-    migrators: Vec<sqlx::migrate::Migrator>,
+    migrators: Vec<NamedMigrator>,
     embed_client: Option<Arc<dyn EmbeddingClient>>,
     anthropic: Option<Arc<dyn AnthropicClient>>,
 }
@@ -97,12 +102,25 @@ impl ProximaBuilder {
     /// Link one flavor: its `register` fn and optionally its migrator.
     #[must_use]
     pub fn flavor(
+        self,
+        register: impl FnOnce(&mut FlavorRegistry) + Send + 'static,
+        migrator: Option<sqlx::migrate::Migrator>,
+    ) -> Self {
+        self.flavor_named("inline-flavor", register, migrator)
+    }
+
+    /// Link one named flavor: its `register` fn and optionally its
+    /// migrator. Prefer the flavor id as `source`, e.g. `proxima-code`.
+    #[must_use]
+    pub fn flavor_named(
         mut self,
+        source: &'static str,
         register: impl FnOnce(&mut FlavorRegistry) + Send + 'static,
         migrator: Option<sqlx::migrate::Migrator>,
     ) -> Self {
         self.registers.push(Box::new(register));
-        self.migrators.extend(migrator);
+        self.migrators
+            .extend(migrator.map(|migrator| NamedMigrator::new(source, migrator)));
         self
     }
 
@@ -141,16 +159,9 @@ impl ProximaBuilder {
         let pg = PgStorage::connect(&self.config.database_url)
             .await
             .map_err(|e| EmbedError::Storage(e.to_string()))?;
-        pg.run_migrations()
+        run_core_and_flavor_migrations(&pg, self.migrators)
             .await
             .map_err(|e| EmbedError::Storage(e.to_string()))?;
-        for mut migrator in self.migrators {
-            migrator.set_ignore_missing(true);
-            migrator
-                .run(pg.pool())
-                .await
-                .map_err(|e| EmbedError::Storage(e.to_string()))?;
-        }
 
         let auth = NoAuth::new(self.owner.principal.clone(), self.owner.clone());
         let registers = self.registers;

@@ -4,11 +4,13 @@
 
 use proxima_core::FlavorRegistry;
 
+use crate::NamedMigrator;
+
 pub trait FlavorBundle {
     fn register(registry: &mut FlavorRegistry);
     /// By-value, order-preserving. The facade force-sets
     /// `ignore_missing(true)` on every returned migrator at boot.
-    fn migrators() -> Vec<sqlx::migrate::Migrator>;
+    fn migrators() -> Vec<NamedMigrator>;
 }
 
 macro_rules! impl_flavor_bundle_tuple {
@@ -18,7 +20,7 @@ macro_rules! impl_flavor_bundle_tuple {
                 $($name::register(registry);)+
             }
 
-            fn migrators() -> Vec<sqlx::migrate::Migrator> {
+            fn migrators() -> Vec<NamedMigrator> {
                 let mut out = Vec::new();
                 $(out.extend($name::migrators());)+
                 out
@@ -44,6 +46,7 @@ mod tests {
     use sqlx::migrate::{Migration, MigrationType, Migrator};
 
     use super::FlavorBundle;
+    use crate::NamedMigrator;
 
     mod alpha {
         proxima_core::proxima_flavor! {
@@ -79,8 +82,8 @@ mod tests {
             alpha::register(registry);
         }
 
-        fn migrators() -> Vec<Migrator> {
-            vec![migrator(&[1, 2])]
+        fn migrators() -> Vec<NamedMigrator> {
+            vec![NamedMigrator::new("alpha", migrator(&[1, 2]))]
         }
     }
 
@@ -89,8 +92,8 @@ mod tests {
             beta::register(registry);
         }
 
-        fn migrators() -> Vec<Migrator> {
-            vec![migrator(&[3])]
+        fn migrators() -> Vec<NamedMigrator> {
+            vec![NamedMigrator::new("beta", migrator(&[3]))]
         }
     }
 
@@ -139,7 +142,12 @@ mod tests {
         let migrators = <(AlphaBundle, BetaBundle) as FlavorBundle>::migrators();
         let versions: Vec<_> = migrators
             .iter()
-            .flat_map(|migrator| migrator.iter().map(|migration| migration.version))
+            .flat_map(|migrator| {
+                migrator
+                    .migrator()
+                    .iter()
+                    .map(|migration| migration.version)
+            })
             .collect();
 
         assert_eq!(versions, [1, 2, 3]);

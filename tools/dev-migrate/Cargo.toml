@@ -15,6 +15,7 @@ path = "src/main.rs"
 workspace = true
 
 [dependencies]
+proxima-embed = { path = "../../crates/embed" }
 proxima-storage-pg = { path = "../../crates/storage-pg" }
 proxima-code = { path = "../../flavors/code" }
 proxima-mcp-substrate = { path = "../../flavors/mcp" }

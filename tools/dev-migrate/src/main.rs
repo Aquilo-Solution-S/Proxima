@@ -3,8 +3,9 @@
 //!
 //! `sqlx migrate run` cannot do this: the substrate and flavor migrators
 //! share one `_sqlx_migrations` table, so the CLI fails with
-//! `VersionMissing` on the second source. Sequential `Migrator::run` calls
-//! are version-disjoint and idempotent, which is exactly what this bin does.
+//! `VersionMissing` on the second source. This bin delegates to the same
+//! framework facade used by embedded hosts: core first, then flavors in
+//! composition order, with duplicate migration versions rejected up front.
 //!
 //! Usage (two steps — exporting `DATABASE_URL` at compile time would point
 //! the workspace's `sqlx::query!` validation at the still-blank target DB):
@@ -16,6 +17,7 @@
 //!
 //! Afterwards `cargo sqlx prepare --workspace` has every schema it needs.
 
+use proxima_embed::{NamedMigrator, run_core_and_flavor_migrations};
 use proxima_storage_pg::PgStorage;
 
 #[tokio::main]
@@ -24,13 +26,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         |_| "DATABASE_URL must be set, e.g. postgres://proxima:proxima@localhost/proxima",
     )?;
     let pg = PgStorage::connect(&url).await?;
-    pg.run_migrations().await?;
-    println!("substrate migrations applied");
-    proxima_code::migrator().run(pg.pool()).await?;
-    println!("proxima-code flavor migrations applied");
-    proxima_mcp_substrate::migrator().run(pg.pool()).await?;
-    println!("proxima-mcp-substrate flavor migrations applied");
-    proxima_flavor_goal::migrator().run(pg.pool()).await?;
-    println!("proxima-flavor-goal flavor migrations applied");
+    let report = run_core_and_flavor_migrations(
+        &pg,
+        [
+            NamedMigrator::new("proxima-code", proxima_code::migrator()),
+            NamedMigrator::new("proxima-mcp-substrate", proxima_mcp_substrate::migrator()),
+            NamedMigrator::new("proxima-flavor-goal", proxima_flavor_goal::migrator()),
+        ],
+    )
+    .await?;
+    for source in report.sources {
+        println!("{source} migrations applied");
+    }
     Ok(())
 }
