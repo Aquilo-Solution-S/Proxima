@@ -270,7 +270,7 @@ Boot path:
 ```
 apps/proxima-shell/src-tauri/src/boot.rs
   PgStorage::connect(DATABASE_URL)
-  run core + flavor migrations
+  proxima_embed::run_core_and_flavor_migrations
   build proxima-code engine
   register mcp-substrate + goal flavors
   host MCP listener

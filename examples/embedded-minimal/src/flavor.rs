@@ -1,8 +1,10 @@
 //! Example out-of-tree flavor: one Fact schema for "a document was filed".
 
 use proxima_core::{
-    FactPayload, SearchProjection, SearchProjectionColumnKind, SearchProjectionField,
+    FactPayload, FlavorRegistry, SearchProjection, SearchProjectionColumnKind,
+    SearchProjectionField,
 };
+use proxima_embed::{FlavorBundle, NamedMigrator};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
@@ -50,4 +52,16 @@ pub fn migrator() -> sqlx::migrate::Migrator {
     let mut migrator = sqlx::migrate!("./migrations");
     migrator.set_ignore_missing(true);
     migrator
+}
+
+pub struct EmbeddedMinimalFlavor;
+
+impl FlavorBundle for EmbeddedMinimalFlavor {
+    fn register(registry: &mut FlavorRegistry) {
+        self::register(registry);
+    }
+
+    fn migrators() -> Vec<NamedMigrator> {
+        vec![NamedMigrator::new("embedded-minimal", migrator())]
+    }
 }

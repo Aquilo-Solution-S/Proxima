@@ -4329,6 +4329,7 @@ name = "proxima-dev-migrate"
 version = "0.1.0"
 dependencies = [
  "proxima-code",
+ "proxima-embed",
  "proxima-flavor-goal",
  "proxima-mcp-substrate",
  "proxima-storage-pg",
@@ -4412,6 +4413,7 @@ name = "proxima-mcp"
 version = "0.1.0"
 dependencies = [
  "proxima-core",
+ "proxima-embed",
  "proxima-flavor-goal",
  "proxima-mcp-server",
  "proxima-mcp-substrate",
@@ -4490,6 +4492,7 @@ dependencies = [
  "proxima-code",
  "proxima-codex-auth",
  "proxima-core",
+ "proxima-embed",
  "proxima-flavor-goal",
  "proxima-harness",
  "proxima-llm-openai-compat",
