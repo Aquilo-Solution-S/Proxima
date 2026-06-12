@@ -9,6 +9,11 @@ use crate::{Owner, Principal};
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Credentials {
     None,
+    /// Engine-minted wake token — distinct wire scheme; never host material.
+    WakeToken(uuid::Uuid),
+    /// Host token material, opaque to core; interpreted only by the
+    /// host-provided `Authenticator`.
+    Bearer(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

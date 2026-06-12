@@ -1,6 +1,7 @@
 //! Proxima engine core.
 pub mod approval;
 pub mod auth;
+pub mod authz;
 pub mod canonical_json;
 pub mod chat;
 pub mod citations;
@@ -30,6 +31,7 @@ pub mod wake;
 
 pub use approval::*;
 pub use auth::*;
+pub use authz::*;
 pub use canonical_json::canonical_json;
 pub use chat::*;
 pub use citations::*;
