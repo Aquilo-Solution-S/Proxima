@@ -3,12 +3,12 @@
 
 mod flavor;
 
+use proxima::{EmbedConfig, ProximaBuilder, company_owner};
 use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
 use proxima_core::verbs::query::{EntityKind, QueryRequest, QueryResponse};
 use proxima_core::{
     FactPayload, SchemaId, SchemaVersion, SourceBatchId, SourceId, UPLOADED_BLOB_SCHEMA_ID,
 };
-use proxima_embed::{EmbedConfig, ProximaBuilder, company_owner};
 
 const CORE_CITATION_SCHEMA_ID: &str = "proxima-core/wake-trace-citation-v1";
 

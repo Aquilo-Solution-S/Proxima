@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use futures_util::future::BoxFuture;
+use proxima::{NamedMigrator, run_core_and_flavor_migrations};
 use proxima_core::engine::EngineMcpListener;
 use proxima_core::llm::EmbeddingClient;
 use proxima_core::secrets::ResolverRegistry;
@@ -8,7 +9,6 @@ use proxima_core::{
     EmbeddingClientReloader, Engine, FlavorRegistry, FlavorRegistryFrozen, OrgId, Owner, Principal,
     UserId,
 };
-use proxima_embed::{NamedMigrator, run_core_and_flavor_migrations};
 use proxima_llm_openai_compat::{OpenAiCompatConfig, OpenAiCompatEmbeddingClient};
 use proxima_mcp_server::{EngineHostedMcpListener, McpEdgeAuth, McpToolHost, default_allowlist};
 use proxima_storage_pg::PgStorage;
