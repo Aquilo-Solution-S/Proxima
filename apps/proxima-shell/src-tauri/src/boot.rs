@@ -255,6 +255,9 @@ fn resolve_optional_secret(
     Ok(Some(value.to_string()))
 }
 
+/// Legacy pre-facade path: superseded by the `proxima` crate's
+/// single-listener facade (`Proxima<A>`) and slated for migration.
+///
 /// # Errors
 ///
 /// Returns bind, migration, or transport setup failures. Shell callers
