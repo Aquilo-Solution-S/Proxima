@@ -50,7 +50,7 @@ mod tests {
 
     mod alpha {
         proxima_core::proxima_flavor! {
-            name = "proxima-embed-test-alpha",
+            name = "proxima-test-alpha",
             fact_schemas = [],
             abstraction_schemas = [],
             perspective_schemas = [],
@@ -63,7 +63,7 @@ mod tests {
 
     mod beta {
         proxima_core::proxima_flavor! {
-            name = "proxima-embed-test-beta",
+            name = "proxima-test-beta",
             fact_schemas = [],
             abstraction_schemas = [],
             perspective_schemas = [],
@@ -128,12 +128,12 @@ mod tests {
             .map(|flavor| flavor.flavor_id.as_str())
             .collect();
 
-        assert!(frozen.flavor("proxima-embed-test-alpha").is_some());
-        assert!(frozen.flavor("proxima-embed-test-beta").is_some());
+        assert!(frozen.flavor("proxima-test-alpha").is_some());
+        assert!(frozen.flavor("proxima-test-beta").is_some());
         assert!(
             flavor_ids
                 .windows(2)
-                .any(|ids| ids == ["proxima-embed-test-alpha", "proxima-embed-test-beta"])
+                .any(|ids| ids == ["proxima-test-alpha", "proxima-test-beta"])
         );
     }
 

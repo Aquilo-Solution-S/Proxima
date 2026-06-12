@@ -1,4 +1,4 @@
-use proxima_embed::{
+use proxima::{
     EmbedConfig, NamedMigrator, ProximaBuilder, company_owner, run_core_and_flavor_migrations,
 };
 use proxima_storage_pg::PgStorage;
@@ -9,7 +9,7 @@ const ADMIN_URL: &str = "postgres://proxima:proxima@localhost/proxima";
 
 #[tokio::test]
 async fn boots_engine_with_goal_flavor_on_fresh_db() {
-    let db_name = format!("proxima_embed_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     create_db(&db_name).await.expect("PG required for tests");
     let db_url = db_url(&db_name);
 
@@ -43,7 +43,7 @@ async fn boots_engine_with_goal_flavor_on_fresh_db() {
 
 #[tokio::test]
 async fn migration_facade_runs_goal_flavor_idempotently() {
-    let db_name = format!("proxima_embed_test_{}", Uuid::now_v7().simple());
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     create_db(&db_name).await.expect("PG required for tests");
     let db_url = db_url(&db_name);
 

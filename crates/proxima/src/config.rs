@@ -37,39 +37,50 @@ impl EmbedConfig {
     pub fn from_lookup(lookup: impl Fn(&str) -> Option<String>) -> Result<Self, EmbedError> {
         let database_url = lookup("DATABASE_URL")
             .ok_or_else(|| EmbedError::Config("DATABASE_URL is required".into()))?;
-        let s3 = if lookup("PROXIMA_S3_BUCKET").is_some() {
-            Some(S3RuntimeConfig {
-                bucket: lookup("PROXIMA_S3_BUCKET")
-                    .ok_or_else(|| EmbedError::Config("PROXIMA_S3_BUCKET is required".into()))?,
-                region: lookup("PROXIMA_S3_REGION").ok_or_else(|| {
-                    EmbedError::Config(
-                        "PROXIMA_S3_REGION is required with PROXIMA_S3_BUCKET".into(),
-                    )
-                })?,
-                endpoint_url: lookup("PROXIMA_S3_ENDPOINT_URL"),
-                force_path_style: parse_bool(&lookup, "PROXIMA_S3_FORCE_PATH_STYLE")?,
-                upload_ttl_seconds: parse_ttl(
-                    &lookup,
-                    "PROXIMA_S3_UPLOAD_TTL_SECONDS",
-                    DEFAULT_UPLOAD_TTL_SECONDS,
-                )?,
-                read_ttl_seconds: parse_ttl(
-                    &lookup,
-                    "PROXIMA_S3_READ_TTL_SECONDS",
-                    DEFAULT_READ_TTL_SECONDS,
-                )?,
-            })
-        } else {
-            None
-        };
+        let s3 = s3_from_lookup(&lookup)?;
         Ok(Self { database_url, s3 })
     }
 }
 
-fn parse_bool(lookup: &impl Fn(&str) -> Option<String>, key: &str) -> Result<bool, EmbedError> {
+pub(crate) fn s3_from_lookup(
+    lookup: &impl Fn(&str) -> Option<String>,
+) -> Result<Option<S3RuntimeConfig>, EmbedError> {
+    if lookup("PROXIMA_S3_BUCKET").is_none() {
+        return Ok(None);
+    }
+
+    Ok(Some(S3RuntimeConfig {
+        bucket: lookup("PROXIMA_S3_BUCKET")
+            .ok_or_else(|| EmbedError::Config("PROXIMA_S3_BUCKET is required".into()))?,
+        region: lookup("PROXIMA_S3_REGION").ok_or_else(|| {
+            EmbedError::Config("PROXIMA_S3_REGION is required with PROXIMA_S3_BUCKET".into())
+        })?,
+        endpoint_url: lookup("PROXIMA_S3_ENDPOINT_URL"),
+        force_path_style: parse_bool(lookup, "PROXIMA_S3_FORCE_PATH_STYLE")?,
+        upload_ttl_seconds: parse_ttl(
+            lookup,
+            "PROXIMA_S3_UPLOAD_TTL_SECONDS",
+            DEFAULT_UPLOAD_TTL_SECONDS,
+        )?,
+        read_ttl_seconds: parse_ttl(
+            lookup,
+            "PROXIMA_S3_READ_TTL_SECONDS",
+            DEFAULT_READ_TTL_SECONDS,
+        )?,
+    }))
+}
+
+pub(crate) fn parse_bool(
+    lookup: &impl Fn(&str) -> Option<String>,
+    key: &str,
+) -> Result<bool, EmbedError> {
     let Some(raw) = lookup(key) else {
         return Ok(false);
     };
+    parse_bool_value(key, &raw)
+}
+
+pub(crate) fn parse_bool_value(key: &str, raw: &str) -> Result<bool, EmbedError> {
     match raw.to_ascii_lowercase().as_str() {
         "1" | "true" | "yes" | "on" => Ok(true),
         "0" | "false" | "no" | "off" => Ok(false),
