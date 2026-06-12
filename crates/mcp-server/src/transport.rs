@@ -22,7 +22,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::McpServerError;
-use crate::auth::McpAuthStore;
+use crate::auth::McpEdgeAuth;
 use crate::handler::DynamicHandler;
 use crate::security::{OriginAllowlist, assert_loopback, mcp_auth_layer};
 use crate::server::McpToolHost;
@@ -31,13 +31,13 @@ use crate::server::McpToolHost;
 ///
 /// Returns loopback validation, TCP bind, or HTTP server failures.
 ///
-/// `auth_store` is required so each MCP request can be matched against
-/// either an in-flight wake invocation or a Shell-local master token.
+/// `auth` is required so each MCP request can be matched against a
+/// typed wake token, Shell-local master token, or host bearer path.
 pub async fn serve_streamable_http(
     addr: SocketAddr,
     server: McpToolHost,
     allowlist: OriginAllowlist,
-    auth_store: Arc<McpAuthStore>,
+    auth: Arc<McpEdgeAuth>,
 ) -> Result<(JoinHandle<Result<(), McpServerError>>, SocketAddr), McpServerError> {
     assert_loopback(&addr)?;
 
@@ -62,7 +62,7 @@ pub async fn serve_streamable_http(
     let app = axum::Router::new()
         .nest_service("/mcp", service)
         .layer(middleware::from_fn(perf_recorder))
-        .layer(mcp_auth_layer(auth_store, allowlist));
+        .layer(mcp_auth_layer(auth, allowlist));
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     let bound_addr = listener.local_addr()?;

@@ -17,7 +17,8 @@ Required:
 Optional:
   --database-url <URL>     Postgres URL (defaults to DATABASE_URL or proxima_dev)
   --bind <ADDR:PORT>       Bind address (default: 127.0.0.1:31415; loopback only)
-  --master-token <UUID>    Long-lived local bearer token (or PROXIMA_MCP_MASTER_TOKEN)
+  --master-token <UUID>    Long-lived local bearer token (or PROXIMA_MCP_MASTER_TOKEN);
+                           clients send Authorization: Bearer pxm_<token>
   -h, --help               Print this message
 
 Endpoint:
@@ -79,7 +80,7 @@ pub fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<McpConfig, 
                     "--owner-user" => owner_user = Some(Uuid::parse_str(&value)?),
                     "--owner-org" => owner_org = Some(Uuid::parse_str(&value)?),
                     "--database-url" => database_url = Some(value),
-                    "--master-token" => master_token = Some(Uuid::parse_str(&value)?),
+                    "--master-token" => master_token = Some(parse_master_token(&value)?),
                     "--bind" => {
                         let parsed: SocketAddr = value.parse().map_err(|err| {
                             ArgsError::Invalid(format!("invalid --bind {value:?}: {err}"))
@@ -115,7 +116,7 @@ pub fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<McpConfig, 
         Some(token) => Some(token),
         None => std::env::var("PROXIMA_MCP_MASTER_TOKEN")
             .ok()
-            .map(|raw| Uuid::parse_str(raw.trim()))
+            .map(|raw| parse_master_token(&raw))
             .transpose()?,
     };
 
@@ -128,6 +129,12 @@ pub fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<McpConfig, 
         bind,
         master_token,
     })
+}
+
+fn parse_master_token(raw: &str) -> Result<Uuid, uuid::Error> {
+    let trimmed = raw.trim();
+    let bare = trimmed.strip_prefix("pxm_").unwrap_or(trimmed);
+    Uuid::parse_str(bare)
 }
 
 #[cfg(test)]
@@ -162,6 +169,20 @@ mod tests {
         .expect("valid args");
         assert_eq!(cfg.database_url, "postgres://x/y");
         assert_eq!(cfg.bind.to_string(), DEFAULT_BIND);
+        assert_eq!(cfg.master_token, Some(uuid::Uuid::nil()));
+    }
+
+    #[test]
+    fn master_token_accepts_wire_prefix() {
+        let cfg = parse_args([
+            "--owner-user".into(),
+            uuid::Uuid::nil().to_string(),
+            "--owner-org".into(),
+            uuid::Uuid::nil().to_string(),
+            "--master-token".into(),
+            "pxm_00000000-0000-0000-0000-000000000000".into(),
+        ])
+        .expect("valid args");
         assert_eq!(cfg.master_token, Some(uuid::Uuid::nil()));
     }
 

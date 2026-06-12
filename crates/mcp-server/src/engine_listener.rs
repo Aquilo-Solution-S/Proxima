@@ -15,7 +15,7 @@ use proxima_core::engine::{EngineMcpListener, RunningMcpListener};
 use proxima_core::error::ProtocolError;
 use proxima_core::wake::token_store::WakeTokenStore;
 
-use crate::auth::McpAuthStore;
+use crate::auth::McpEdgeAuth;
 use crate::security::OriginAllowlist;
 use crate::server::McpToolHost;
 use crate::transport::serve_streamable_http;
@@ -27,7 +27,7 @@ use crate::transport::serve_streamable_http;
 pub struct EngineHostedMcpListener {
     server: McpToolHost,
     allowlist: OriginAllowlist,
-    auth_store: Option<Arc<McpAuthStore>>,
+    auth: Option<Arc<McpEdgeAuth>>,
 }
 
 impl EngineHostedMcpListener {
@@ -36,20 +36,20 @@ impl EngineHostedMcpListener {
         Self {
             server,
             allowlist,
-            auth_store: None,
+            auth: None,
         }
     }
 
     #[must_use]
-    pub fn with_auth_store(
+    pub fn with_edge_auth(
         server: McpToolHost,
         allowlist: OriginAllowlist,
-        auth_store: Arc<McpAuthStore>,
+        auth: Arc<McpEdgeAuth>,
     ) -> Self {
         Self {
             server,
             allowlist,
-            auth_store: Some(auth_store),
+            auth: Some(auth),
         }
     }
 }
@@ -62,15 +62,15 @@ impl EngineMcpListener for EngineHostedMcpListener {
         wake_token_store: Arc<WakeTokenStore>,
         engine: Arc<Engine>,
     ) -> Result<RunningMcpListener, ProtocolError> {
-        let auth_store = self
-            .auth_store
+        let auth = self
+            .auth
             .clone()
-            .unwrap_or_else(|| Arc::new(McpAuthStore::new(wake_token_store)));
+            .unwrap_or_else(|| Arc::new(McpEdgeAuth::engine_hosted(wake_token_store)));
         let (join, bound_addr) = serve_streamable_http(
             addr,
             self.server.clone().with_engine(engine),
             self.allowlist.clone(),
-            auth_store,
+            auth,
         )
         .await
         .map_err(|e| ProtocolError::internal(format!("mcp listener start: {e}")))?;

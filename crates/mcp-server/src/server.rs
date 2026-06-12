@@ -324,13 +324,7 @@ impl proxima_core::mcp::HarnessSubstrateBridge for McpToolHost {
             author.caller_self_perspective = Some(wake.current_root_perspective_memory_id);
         }
 
-        let auth = crate::auth::McpAuthContext {
-            owner: wake.owner.clone(),
-            scope: crate::auth::McpToolScope::Palette(wake.palette.clone()),
-            model_id: Some(wake.model_id.clone()),
-            wake: Some(wake),
-            master_token_id: None,
-        };
+        let auth = crate::auth::McpAuthContext::for_wake(wake);
 
         self.call_tool(&call.canonical_name, call.args, author, Some(auth))
             .await
@@ -500,7 +494,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::auth::{McpAuthContext, McpToolScope};
+    use crate::auth::McpAuthContext;
     use proxima_core::mcp::{HarnessSubstrateBridge, McpAuthorContext};
     use proxima_core::{AbstractionPayload, FlavorRegistry, OrgId, Owner, Principal, UserId};
 
@@ -568,13 +562,7 @@ mod tests {
     }
 
     fn master_token_auth(owner: Owner, token: uuid::Uuid) -> McpAuthContext {
-        McpAuthContext {
-            owner,
-            scope: McpToolScope::All,
-            model_id: None,
-            wake: None,
-            master_token_id: Some(token),
-        }
+        McpAuthContext::for_master(token, owner)
     }
 
     #[tokio::test]
@@ -677,13 +665,7 @@ mod tests {
             read_log: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             handles: wake_handles.clone(),
         };
-        let auth = McpAuthContext {
-            owner: owner.clone(),
-            scope: McpToolScope::All,
-            model_id: Some("test/model".into()),
-            wake: Some(wake),
-            master_token_id: None,
-        };
+        let auth = McpAuthContext::for_wake(wake);
 
         let ctx = server.ctx_for(author, None, Some(&auth));
         assert_eq!(ctx.mode, OutputMode::Handles);

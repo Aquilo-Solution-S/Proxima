@@ -6,13 +6,11 @@ mod common;
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
-use std::time::Duration;
 
 use common::{create_db, drop_db, initialize, initialized, post_rpc};
 use proxima_core::auth::NoAuth;
-use proxima_core::wake::token_store::WakeTokenStore;
 use proxima_core::{Engine, FlavorRegistry, OrgId, Owner, Principal, UserId};
-use proxima_mcp_server::{McpAuthStore, McpToolHost, default_allowlist, serve_streamable_http};
+use proxima_mcp_server::{McpEdgeAuth, McpToolHost, default_allowlist, serve_streamable_http};
 use proxima_storage_pg::PgStorage;
 use serde_json::{Value, json};
 
@@ -72,8 +70,7 @@ async fn discovery_to_mutation_smoke() -> Result<(), Box<dyn std::error::Error>>
         Arc::new(FlavorRegistry::new().freeze()),
     )
     .with_engine(engine);
-    let store = Arc::new(WakeTokenStore::new(Duration::from_mins(5)));
-    let auth_store = Arc::new(McpAuthStore::new(store));
+    let auth_store = Arc::new(McpEdgeAuth::headless());
     let master_token = uuid::Uuid::now_v7();
     auth_store
         .replace_local_master_token(master_token, owner.clone())
@@ -89,7 +86,7 @@ async fn discovery_to_mutation_smoke() -> Result<(), Box<dyn std::error::Error>>
 
     let client = reqwest::Client::new();
     let url = format!("http://{addr}/mcp");
-    let bearer = format!("Bearer {master_token}");
+    let bearer = format!("Bearer pxm_{master_token}");
     let session = initialize(&client, &url, &bearer).await?;
     initialized(&client, &url, &session, &bearer).await?;
 

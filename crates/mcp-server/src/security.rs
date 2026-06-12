@@ -7,10 +7,9 @@ use axum::middleware::{self, FromFnLayer, Next};
 use axum::response::{IntoResponse, Response};
 use http::HeaderMap;
 use http::header::{AUTHORIZATION, ORIGIN};
-use uuid::Uuid;
 
 use crate::McpServerError;
-use crate::auth::McpAuthStore;
+use crate::auth::McpEdgeAuth;
 
 #[derive(Clone, Debug)]
 pub struct OriginAllowlist {
@@ -109,19 +108,21 @@ pub type McpAuthLayer = FromFnLayer<
 
 #[derive(Clone, Debug)]
 pub struct McpAuthLayerState {
-    store: Arc<McpAuthStore>,
+    auth: Arc<McpEdgeAuth>,
     allowlist: OriginAllowlist,
 }
 
-/// Bearer-token middleware that resolves `Authorization: Bearer <uuid>`
-/// against the MCP auth store and injects the resolved context into
-/// request extensions. Missing or unknown tokens short-circuit with
-/// HTTP 401. A present but disallowed `Origin` short-circuits with 403;
+/// Bearer-token middleware that resolves
+/// `Authorization: Bearer <wire-token>` via MCP edge auth and injects
+/// the resolved context into request extensions. Wire tokens are
+/// `pxw_<uuid>` wake tokens, `pxm_<uuid>` local master tokens, or host
+/// bearer material. Missing or unknown tokens short-circuit with HTTP
+/// 401. A present but disallowed `Origin` short-circuits with 403;
 /// missing `Origin` is allowed after bearer auth for native CLI clients.
 ///
 /// Returns a [`McpAuthLayer`] (alias of [`FromFnLayer`]) so
 /// callers apply it directly with [`axum::Router::layer`].
-pub fn mcp_auth_layer(store: Arc<McpAuthStore>, allowlist: OriginAllowlist) -> McpAuthLayer {
+pub fn mcp_auth_layer(auth: Arc<McpEdgeAuth>, allowlist: OriginAllowlist) -> McpAuthLayer {
     fn dispatch(
         state: State<McpAuthLayerState>,
         request: Request,
@@ -130,7 +131,7 @@ pub fn mcp_auth_layer(store: Arc<McpAuthStore>, allowlist: OriginAllowlist) -> M
         Box::pin(mcp_auth(state, request, next))
     }
     middleware::from_fn_with_state(
-        McpAuthLayerState { store, allowlist },
+        McpAuthLayerState { auth, allowlist },
         dispatch as fn(_, _, _) -> _,
     )
 }
@@ -143,7 +144,7 @@ async fn mcp_auth(
     let Some(token) = extract_bearer(&request) else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
-    let Some(ctx) = state.store.resolve(token).await else {
+    let Some(ctx) = state.auth.resolve(&token).await else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
     if request.headers().contains_key(ORIGIN) && !state.allowlist.allows(request.headers()) {
@@ -153,11 +154,10 @@ async fn mcp_auth(
     next.run(request).await
 }
 
-fn extract_bearer(request: &Request) -> Option<Uuid> {
+fn extract_bearer(request: &Request) -> Option<String> {
     let header_value = request.headers().get(AUTHORIZATION)?;
     let raw = header_value.to_str().ok()?;
-    let token = raw.strip_prefix("Bearer ")?.trim();
-    Uuid::parse_str(token).ok()
+    Some(raw.strip_prefix("Bearer ")?.trim().to_string())
 }
 
 fn parse_pattern(value: &'static str) -> OriginPattern {
