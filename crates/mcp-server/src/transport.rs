@@ -27,6 +27,26 @@ use crate::handler::DynamicHandler;
 use crate::security::{OriginAllowlist, assert_loopback, mcp_auth_layer};
 use crate::server::McpToolHost;
 
+#[must_use]
+pub fn streamable_http_service(
+    server: McpToolHost,
+    allowlist: &OriginAllowlist,
+    cancel: &CancellationToken,
+) -> StreamableHttpService<DynamicHandler, LocalSessionManager> {
+    let config = StreamableHttpServerConfig::default()
+        .with_allowed_origins(allowlist.origins())
+        .with_cancellation_token(cancel.child_token());
+    StreamableHttpService::new(
+        move || {
+            Ok(DynamicHandler {
+                server: server.clone(),
+            })
+        },
+        Arc::default(),
+        config,
+    )
+}
+
 /// # Errors
 ///
 /// Returns loopback validation, TCP bind, or HTTP server failures.
@@ -42,19 +62,7 @@ pub async fn serve_streamable_http(
     assert_loopback(&addr)?;
 
     let cancellation_token = CancellationToken::new();
-    let config = StreamableHttpServerConfig::default()
-        .with_allowed_origins(allowlist.origins())
-        .with_cancellation_token(cancellation_token.child_token());
-    let service: StreamableHttpService<DynamicHandler, LocalSessionManager> =
-        StreamableHttpService::new(
-            move || {
-                Ok(DynamicHandler {
-                    server: server.clone(),
-                })
-            },
-            Arc::default(),
-            config,
-        );
+    let service = streamable_http_service(server, &allowlist, &cancellation_token);
     // Layer order is bottom-up: auth runs first, then perf recording, then
     // the rmcp service. The auth guard also validates any present Origin;
     // native CLI clients commonly omit Origin, which is allowed after a

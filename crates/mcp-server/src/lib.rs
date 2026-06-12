@@ -19,4 +19,4 @@ pub use security::{
     McpAuthLayer, OriginAllowlist, assert_loopback, default_allowlist, mcp_auth_layer,
 };
 pub use server::{McpToolHost, ToolInvocationError};
-pub use transport::serve_streamable_http;
+pub use transport::{serve_streamable_http, streamable_http_service};
