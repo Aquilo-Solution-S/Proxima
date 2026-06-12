@@ -1,6 +1,6 @@
 //! Example out-of-tree flavor: one Fact schema for "a document was filed".
 
-use proxima::{FlavorBundle, NamedMigrator};
+use proxima::{AppInfo, FlavorApp, FlavorBundle, NamedMigrator};
 use proxima_core::{
     FactPayload, FlavorRegistry, SearchProjection, SearchProjectionColumnKind,
     SearchProjectionField,
@@ -63,5 +63,15 @@ impl FlavorBundle for EmbeddedMinimalFlavor {
 
     fn migrators() -> Vec<NamedMigrator> {
         vec![NamedMigrator::new("embedded-minimal", migrator())]
+    }
+}
+
+impl FlavorApp for EmbeddedMinimalFlavor {
+    fn app_info() -> AppInfo {
+        AppInfo {
+            id: "embedded-minimal",
+            title: "Embedded Minimal Example",
+            version: "0.1.0",
+        }
     }
 }
