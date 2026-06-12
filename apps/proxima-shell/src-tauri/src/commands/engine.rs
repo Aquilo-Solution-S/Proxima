@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use futures_util::StreamExt;
-use proxima_core::auth::Credentials;
 use proxima_core::error::ProtocolError;
 use proxima_core::verbs::event_history::{EventHistoryRequest, EventHistoryResponse};
 use proxima_core::verbs::event_ingest::{
@@ -15,10 +14,10 @@ use proxima_core::verbs::query::{
 use proxima_core::verbs::schema::{SchemaRequest, SchemaResponse};
 use proxima_core::verbs::subscribe::SubscribeRequest;
 use proxima_core::{
-    CORE_INSPIRES_RELATION, ChangeEvent, EdgeAuthorshipKind, Engine, EntityKind, EntityRef,
-    FactPayload, GoalId, ListWakeInvocationsRequest, MemoryId, Owner, OwnerPrincipalKind,
-    PersonalityInstanceId, PersonalityInstanceRow, SchemaId, SchemaVersion, SourceBatchId,
-    SourceId, WakeInvocationLogRow, WakeInvocationRow,
+    AuthzContext, CORE_INSPIRES_RELATION, ChangeEvent, EdgeAuthorshipKind, Engine, EntityKind,
+    EntityRef, FactPayload, GoalId, ListWakeInvocationsRequest, MemoryId, Owner,
+    OwnerPrincipalKind, PersonalityInstanceId, PersonalityInstanceRow, SchemaId, SchemaVersion,
+    SourceBatchId, SourceId, WakeInvocationLogRow, WakeInvocationRow,
 };
 use proxima_flavor_goal::GoalActivatedV1;
 use proxima_storage_pg::PgStorage;
@@ -302,14 +301,12 @@ impl From<EngineQueryResponse> for QueryResponse {
 #[specta::specta]
 pub async fn query(
     engine: State<'_, Arc<Engine>>,
+    authz: State<'_, AuthzContext>,
     req: QueryRequest,
 ) -> Result<QueryResponse, ProtocolError> {
     let req_bytes = crate::perf::ipc::req_size(&req);
     crate::perf::ipc::record("query", req_bytes, async move {
-        engine
-            .query(&Credentials::None, &req)
-            .await
-            .map(QueryResponse::from)
+        engine.query(&authz, &req).await.map(QueryResponse::from)
     })
     .await
 }
@@ -318,11 +315,12 @@ pub async fn query(
 #[specta::specta]
 pub async fn event_history(
     engine: State<'_, Arc<Engine>>,
+    authz: State<'_, AuthzContext>,
     req: EventHistoryRequest,
 ) -> Result<EventHistoryResponse, ProtocolError> {
     let req_bytes = crate::perf::ipc::req_size(&req);
     crate::perf::ipc::record("event_history", req_bytes, async move {
-        engine.event_history(&Credentials::None, &req).await
+        engine.event_history(&authz, &req).await
     })
     .await
 }
@@ -331,11 +329,12 @@ pub async fn event_history(
 #[specta::specta]
 pub async fn event_ingest(
     engine: State<'_, Arc<Engine>>,
+    authz: State<'_, AuthzContext>,
     draft: EventDraft,
 ) -> Result<EventIngestOutcome, ProtocolError> {
     let req_bytes = crate::perf::ipc::req_size(&draft);
     crate::perf::ipc::record("event_ingest", req_bytes, async move {
-        engine.event_ingest(&Credentials::None, draft).await
+        engine.event_ingest(&authz, draft).await
     })
     .await
 }
@@ -344,11 +343,12 @@ pub async fn event_ingest(
 #[specta::specta]
 pub async fn goal_write(
     engine: State<'_, Arc<Engine>>,
+    authz: State<'_, AuthzContext>,
     draft: GoalDraft,
 ) -> Result<GoalWriteOutcome, ProtocolError> {
     let req_bytes = crate::perf::ipc::req_size(&draft);
     crate::perf::ipc::record("goal_write", req_bytes, async move {
-        engine.write_goal(&Credentials::None, draft).await
+        engine.write_goal(&authz, draft).await
     })
     .await
 }
@@ -484,6 +484,7 @@ pub async fn instantiate_personality(
 #[specta::specta]
 pub async fn set_wake_entries(
     engine: State<'_, Arc<Engine>>,
+    authz: State<'_, AuthzContext>,
     req: SetWakeEntriesTs,
 ) -> Result<SetWakeEntriesOutcomeTs, ProtocolError> {
     let req_bytes = crate::perf::ipc::req_size(&req);
@@ -500,9 +501,7 @@ pub async fn set_wake_entries(
                 .map(|draft| draft_to_core(draft, personality_instance_id))
                 .collect(),
         };
-        let out = engine
-            .set_wake_entries(&Credentials::None, &core_req)
-            .await?;
+        let out = engine.set_wake_entries(&authz, &core_req).await?;
         Ok(SetWakeEntriesOutcomeTs {
             active_entries: out.active_entries,
         })
@@ -544,10 +543,11 @@ pub async fn tombstone_personality(
 #[specta::specta]
 pub async fn subscribe(
     engine: State<'_, Arc<Engine>>,
+    authz: State<'_, AuthzContext>,
     req: SubscribeRequest,
     on_event: Channel<ChangeEvent>,
 ) -> Result<(), ProtocolError> {
-    let stream = engine.subscribe(&Credentials::None, req).await?;
+    let stream = engine.subscribe(&authz, req).await?;
     tokio::spawn(async move {
         let mut inbound = stream;
         while let Some(event) = inbound.next().await {

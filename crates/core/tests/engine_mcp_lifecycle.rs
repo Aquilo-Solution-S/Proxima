@@ -14,15 +14,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use proxima_core::auth::NoAuth;
 use proxima_core::engine::{Engine, EngineMcpListener, RunningMcpListener};
 use proxima_core::error::ProtocolError;
-use proxima_core::ids::{OrgId, UserId};
-use proxima_core::owner::{Owner, Principal};
 use proxima_core::verbs::query::MemoryStore;
 use proxima_core::verbs::schema::FlavorRegistryFrozen;
 use proxima_core::wake::token_store::WakeTokenStore;
-use uuid::Uuid;
 
 /// Test stub: bind a loopback TCP listener so the OS hands us a real
 /// ephemeral port, spawn an accept loop that ignores connections,
@@ -59,20 +55,9 @@ fn make_test_engine() -> Engine {
 }
 
 fn make_test_engine_with_dispatch_interval(dispatch_interval: Duration) -> Engine {
-    let user = UserId::new(Uuid::now_v7());
-    let principal = Principal::User(user);
-    let owner = Owner {
-        principal: principal.clone(),
-        org_id: OrgId::new(Uuid::now_v7()),
-    };
-    let resolver = NoAuth::new(principal, owner);
-    Engine::new(
-        FlavorRegistryFrozen::new(),
-        MemoryStore::new(),
-        Box::new(resolver),
-    )
-    .with_dispatch_interval(dispatch_interval)
-    .with_mcp_listener(Arc::new(StubListener))
+    Engine::new(FlavorRegistryFrozen::new(), MemoryStore::new())
+        .with_dispatch_interval(dispatch_interval)
+        .with_mcp_listener(Arc::new(StubListener))
 }
 
 #[tokio::test]
@@ -100,20 +85,9 @@ async fn engine_start_without_listener_leaves_url_none() {
     // Same engine but without `with_mcp_listener` — start should
     // still succeed and dispatcher still ticks; only the URL is
     // absent. Mirrors the headless-CLI path that doesn't host MCP.
-    let user = UserId::new(Uuid::now_v7());
-    let principal = Principal::User(user);
-    let owner = Owner {
-        principal: principal.clone(),
-        org_id: OrgId::new(Uuid::now_v7()),
-    };
-    let resolver = NoAuth::new(principal, owner);
     let engine = Arc::new(
-        Engine::new(
-            FlavorRegistryFrozen::new(),
-            MemoryStore::new(),
-            Box::new(resolver),
-        )
-        .with_dispatch_interval(Duration::from_millis(200)),
+        Engine::new(FlavorRegistryFrozen::new(), MemoryStore::new())
+            .with_dispatch_interval(Duration::from_millis(200)),
     );
 
     let handle = engine.clone().start().await.expect("start");

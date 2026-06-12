@@ -4,7 +4,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use proxima_core::auth::NoAuth;
 use proxima_core::harness::{
     ErrorClass, FinishReason, HarnessAdapter, HarnessContext, HarnessOutcomeKind, HarnessProgram,
     HarnessToolDispatch, HarnessToolProjection, ProviderTarget,
@@ -277,11 +276,9 @@ impl HarnessSubstrateBridge for TestBridge {
 }
 
 fn harness_loop(mode: BridgeMode) -> HarnessLoop {
-    let owner = owner();
     let engine = Arc::new(Engine::new(
         FlavorRegistry::new().freeze(),
         MemoryStore::new(),
-        Box::new(NoAuth::new(owner.principal.clone(), owner)),
     ));
     HarnessLoop {
         engine,

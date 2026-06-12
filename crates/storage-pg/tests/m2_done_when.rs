@@ -9,7 +9,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::StreamExt;
-use proxima_core::auth::{Credentials, NoAuth};
 use proxima_core::engine::Engine;
 use proxima_core::storage::Storage;
 use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
@@ -107,11 +106,10 @@ fn fresh_goal_draft(owner: &Owner, request_id: &str, text: &str) -> GoalDraft {
     }
 }
 
-fn build_engine(storage: Arc<dyn Storage>, owner: Owner, principal: Principal) -> Engine {
+fn build_engine(storage: Arc<dyn Storage>, _owner: Owner, _principal: Principal) -> Engine {
     Engine::new(
         FlavorRegistryFrozen::with_schemas(schemas_for_test()),
         MemoryStore::new(),
-        Box::new(NoAuth::new(principal, owner)),
     )
     .with_storage(storage)
 }
@@ -143,19 +141,19 @@ async fn m2_done_when_resume_with_last_seq() {
         // Phase 1: write Facts and Goals before any subscriber attaches.
         let f1 = engine
             .event_ingest(
-                &Credentials::None,
+                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
                 fresh_event_draft(owner.clone(), b"f1", 1),
             )
             .await?;
         let g1 = engine
             .write_goal(
-                &Credentials::None,
+                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
                 fresh_goal_draft(&owner, "req-g1", "g1 text"),
             )
             .await?;
         let f2 = engine
             .event_ingest(
-                &Credentials::None,
+                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
                 fresh_event_draft(owner.clone(), b"f2", 2),
             )
             .await?;
@@ -169,7 +167,7 @@ async fn m2_done_when_resume_with_last_seq() {
         // Phase 2: subscribe with since=None — backfill should yield exactly f1, g1, f2.
         let mut stream = engine
             .subscribe(
-                &Credentials::None,
+                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
                 SubscribeRequest {
                     owner: owner.clone(),
                     since: None,
@@ -199,13 +197,13 @@ async fn m2_done_when_resume_with_last_seq() {
         // Phase 4: while disconnected, write more events.
         let f3 = engine
             .event_ingest(
-                &Credentials::None,
+                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
                 fresh_event_draft(owner.clone(), b"f3", 3),
             )
             .await?;
         let g2 = engine
             .write_goal(
-                &Credentials::None,
+                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
                 fresh_goal_draft(&owner, "req-g2", "g2 text"),
             )
             .await?;
@@ -217,7 +215,7 @@ async fn m2_done_when_resume_with_last_seq() {
         // Phase 5: reconnect with since=last_seq.
         let mut stream = engine
             .subscribe(
-                &Credentials::None,
+                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
                 SubscribeRequest {
                     owner: owner.clone(),
                     since: Some(last_seq),

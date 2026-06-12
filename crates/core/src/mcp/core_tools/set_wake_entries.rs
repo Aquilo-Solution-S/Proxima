@@ -6,7 +6,6 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::SetWakeEntriesRequest;
-use crate::auth::Credentials;
 use crate::mcp::core_tools::audit::{AuditEmit, emit_personality_config_changed};
 use crate::mcp::core_tools::payload::{
     PersonalityConfigChangeSnapshot, PersonalityConfigChangedSubject, PersonalityConfigChangedVerb,
@@ -77,7 +76,7 @@ impl McpTool for SetWakeEntriesTool {
                 entries: drafts.clone(),
             };
             let resp = engine
-                .set_wake_entries(&Credentials::None, &req)
+                .set_wake_entries(&ctx.authz, &req)
                 .await
                 .map_err(|e| McpToolError::Other(e.to_string()))?;
 

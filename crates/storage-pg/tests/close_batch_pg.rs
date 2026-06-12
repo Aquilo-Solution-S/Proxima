@@ -6,7 +6,6 @@
 mod common;
 
 use common::{create_db, db_url, drop_db};
-use proxima_core::auth::{Credentials, NoAuth};
 use proxima_core::engine::Engine;
 use proxima_core::error::ErrorCode;
 use proxima_core::storage::Storage;
@@ -103,38 +102,53 @@ async fn close_batch_idempotent_and_owner_scoped() {
         let engine_a = Engine::new(
             FlavorRegistryFrozen::with_schemas(schemas_for_test()),
             MemoryStore::new(),
-            Box::new(NoAuth::new(Principal::User(user_a), owner_a.clone())),
         )
         .with_storage(storage.clone());
         let engine_b = Engine::new(
             FlavorRegistryFrozen::with_schemas(schemas_for_test()),
             MemoryStore::new(),
-            Box::new(NoAuth::new(Principal::User(user_b), owner_b.clone())),
         )
         .with_storage(storage);
 
         // Open a batch by ingesting one event under owner A.
         let batch_id = SourceBatchId::new(Uuid::now_v7());
         let draft = fresh_draft(owner_a.clone(), batch_id);
-        engine_a.event_ingest(&Credentials::None, draft).await?;
+        engine_a
+            .event_ingest(
+                &proxima_core::AuthzContext::single_owner(&owner_a, proxima_core::AuthPath::System),
+                draft,
+            )
+            .await?;
 
         // Initial close.
         let outcome = engine_a
-            .close_batch(&Credentials::None, owner_a.clone(), batch_id)
+            .close_batch(
+                &proxima_core::AuthzContext::single_owner(&owner_a, proxima_core::AuthPath::System),
+                owner_a.clone(),
+                batch_id,
+            )
             .await?;
         assert!(!outcome.already_closed);
         let first_closed_at = outcome.closed_at;
 
         // Re-close — idempotent, same closed_at, already_closed=true.
         let replay = engine_a
-            .close_batch(&Credentials::None, owner_a.clone(), batch_id)
+            .close_batch(
+                &proxima_core::AuthzContext::single_owner(&owner_a, proxima_core::AuthPath::System),
+                owner_a.clone(),
+                batch_id,
+            )
             .await?;
         assert!(replay.already_closed);
         assert_eq!(replay.closed_at, first_closed_at);
 
         // Cross-owner: B sees the batch as NotFound (information leak guard).
         let cross = engine_b
-            .close_batch(&Credentials::None, owner_b.clone(), batch_id)
+            .close_batch(
+                &proxima_core::AuthzContext::single_owner(&owner_b, proxima_core::AuthPath::System),
+                owner_b.clone(),
+                batch_id,
+            )
             .await
             .unwrap_err();
         assert_eq!(cross.code, ErrorCode::NotFound);
@@ -142,7 +156,11 @@ async fn close_batch_idempotent_and_owner_scoped() {
         // Unknown batch under correct owner: NotFound.
         let nope = SourceBatchId::new(Uuid::now_v7());
         let missing = engine_a
-            .close_batch(&Credentials::None, owner_a.clone(), nope)
+            .close_batch(
+                &proxima_core::AuthzContext::single_owner(&owner_a, proxima_core::AuthPath::System),
+                owner_a.clone(),
+                nope,
+            )
             .await
             .unwrap_err();
         assert_eq!(missing.code, ErrorCode::NotFound);

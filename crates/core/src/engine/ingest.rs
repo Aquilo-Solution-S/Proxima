@@ -1,6 +1,6 @@
 use super::Engine;
 use crate::SourceBatchId;
-use crate::auth::Credentials;
+use crate::authz::{AuthzContext, Role};
 use crate::error::ProtocolError;
 use crate::storage::StorageError;
 use crate::verbs::close_batch::CloseBatchOutcome;
@@ -13,24 +13,16 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `AuthRequired` on resolver failure, `Forbidden` when the
-    /// principal cannot access `draft.owner`, `UnknownSchema` when any of
-    /// the three draft schemas isn't registered, or `Internal` when the
-    /// atomic ingest fails.
+    /// Returns `Forbidden` when the context cannot access `draft.owner` or
+    /// lacks the source-ingest role, `UnknownSchema` when any of the three
+    /// draft schemas isn't registered, or `Internal` when the atomic ingest
+    /// fails.
     pub async fn event_ingest(
         &self,
-        creds: &Credentials,
+        authz: &AuthzContext,
         draft: EventDraft,
     ) -> Result<EventIngestOutcome, ProtocolError> {
-        let resolved = self
-            .auth
-            .resolve(creds)
-            .map_err(|_| ProtocolError::auth_required())?;
-        if !resolved.can_access_owner(&draft.owner) {
-            return Err(ProtocolError::forbidden(
-                "principal cannot access requested owner",
-            ));
-        }
+        super::authorize(authz, &draft.owner, Role::SourceIngest)?;
         // Three schema validations: fact, cited_object, citation_mapping.
         for (sid, ver) in [
             (&draft.schema_id, draft.schema_version),
@@ -62,23 +54,15 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `AuthRequired` on resolver failure, `Forbidden` when the
-    /// principal cannot access `input.owner`, or `Internal` when the
-    /// atomic persist fails.
+    /// Returns `Forbidden` when the context cannot access `input.owner` or
+    /// lacks the graph-write role, or `Internal` when the atomic persist
+    /// fails.
     pub async fn persist_wake_trace(
         &self,
-        creds: &Credentials,
+        authz: &AuthzContext,
         input: WakeTracePersistInput,
     ) -> Result<WakeTracePersistOutcome, ProtocolError> {
-        let resolved = self
-            .auth
-            .resolve(creds)
-            .map_err(|_| ProtocolError::auth_required())?;
-        if !resolved.can_access_owner(&input.owner) {
-            return Err(ProtocolError::forbidden(
-                "principal cannot access requested owner",
-            ));
-        }
+        super::authorize(authz, &input.owner, Role::GraphWrite)?;
         self.persist_wake_trace_internal(input)
             .await
             .map_err(|e| ProtocolError::internal(e.to_string()))
@@ -103,23 +87,15 @@ impl Engine {
     /// # Errors
     ///
     /// Returns `NotFound` when the batch doesn't exist or belongs to a
-    /// different owner; `Forbidden` when the principal cannot access
-    /// `owner`; `AuthRequired` on resolver failure.
+    /// different owner; `Forbidden` when the context cannot access `owner`
+    /// or lacks the source-ingest role.
     pub async fn close_batch(
         &self,
-        creds: &Credentials,
+        authz: &AuthzContext,
         owner: crate::Owner,
         source_batch_id: SourceBatchId,
     ) -> Result<CloseBatchOutcome, ProtocolError> {
-        let resolved = self
-            .auth
-            .resolve(creds)
-            .map_err(|_| ProtocolError::auth_required())?;
-        if !resolved.can_access_owner(&owner) {
-            return Err(ProtocolError::forbidden(
-                "principal cannot access requested owner",
-            ));
-        }
+        super::authorize(authz, &owner, Role::SourceIngest)?;
         let outcome = self
             .storage
             .close_batch(&owner, source_batch_id)

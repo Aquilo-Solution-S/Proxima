@@ -7,7 +7,6 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use proxima_core::auth::NoAuth;
 use proxima_core::engine::Engine;
 use proxima_core::personality::{
     InstantiatePersonalityRequest, PersonalityInstanceId, SetWakeEntriesRequest, WakeEntryDraft,
@@ -361,18 +360,12 @@ pub async fn seed_dispatch_fixture_with_match_and_engine(
         .expect("set wake entries");
 
     // 3. Engine wired with live PG handle and mock harness adapter.
-    let principal = owner.principal.clone();
-    let resolver = NoAuth::new(principal, owner.clone());
     let mock = MockAdapter::new();
     let engine = Arc::new(
-        Engine::new(
-            FlavorRegistry::default().freeze(),
-            MemoryStore::new(),
-            Box::new(resolver),
-        )
-        .with_storage(storage.clone())
-        .with_target_adapter(Arc::new(mock.clone()) as Arc<dyn TargetAdapter>)
-        .with_dispatch_interval(dispatch_interval),
+        Engine::new(FlavorRegistry::default().freeze(), MemoryStore::new())
+            .with_storage(storage.clone())
+            .with_target_adapter(Arc::new(mock.clone()) as Arc<dyn TargetAdapter>)
+            .with_dispatch_interval(dispatch_interval),
     );
     // `fire_wake_entry` reads `mcp_url()` and refuses to fire without
     // one. The fixture deliberately does NOT attach an MCP listener

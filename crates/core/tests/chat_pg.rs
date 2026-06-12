@@ -244,7 +244,7 @@ async fn chat_round_trip_and_coordination_context() -> Result<(), Box<dyn std::e
     .await?;
     assert_eq!(relation_rows, 2);
 
-    let engine = engine(&pg, owner.clone());
+    let engine = engine(&pg);
     let coordination = build_wake_coordination_context(
         &engine,
         &owner,

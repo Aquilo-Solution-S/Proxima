@@ -3,7 +3,6 @@
 
 mod flavor;
 
-use proxima_core::auth::Credentials;
 use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
 use proxima_core::verbs::query::{EntityKind, QueryRequest, QueryResponse};
 use proxima_core::{
@@ -25,6 +24,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .bundle::<flavor::EmbeddedMinimalFlavor>()
         .boot()
         .await?;
+    let authz = embedded_authz(&owner);
 
     let payload = flavor::DocumentFiledV1 {
         source_path: "/example/intake/r-2026-0001.pdf".into(),
@@ -54,15 +54,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         },
     };
 
-    let outcome = booted
-        .engine
-        .event_ingest(&embedded_credentials(), draft)
-        .await?;
+    let outcome = booted.engine.event_ingest(&authz, draft).await?;
     println!("ingested: {outcome:?}");
 
     let response = booted
         .engine
-        .query(&embedded_credentials(), &query_for_schema(&owner))
+        .query(&authz, &query_for_schema(&owner))
         .await?;
     println!("query returned {} rows", row_count(&response));
 
@@ -70,8 +67,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn embedded_credentials() -> Credentials {
-    Credentials::None
+/// Explicit insecure single-owner opt-in: this host is the only
+/// principal; all verb calls run as the trusted in-process owner.
+fn embedded_authz(owner: &proxima_core::Owner) -> proxima_core::AuthzContext {
+    proxima_core::AuthzContext::single_owner(owner, proxima_core::AuthPath::System)
 }
 
 fn query_for_schema(owner: &proxima_core::Owner) -> QueryRequest {

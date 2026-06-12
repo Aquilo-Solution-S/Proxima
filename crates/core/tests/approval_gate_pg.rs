@@ -3,17 +3,17 @@ mod common;
 use std::sync::Arc;
 
 use common::{drop_db, fresh_pg, owner_fixture};
-use proxima_core::auth::NoAuth;
 use proxima_core::mcp::McpAuthorContext;
 use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
 use proxima_core::verbs::goal_write::{GoalAuthorship, GoalDraft, GoalState};
 use proxima_core::verbs::query::MemoryStore;
 use proxima_core::{
     ApprovalDecision, ApprovalEligibleVoter, ApprovalRequirement, ApprovalRequirementKind,
-    ApprovalTargetKind, ApprovalVoteVerdict, ApprovalVoterKind, EmitApprovalPolicyTool,
-    EmitApprovalVoteTool, Engine, FlavorRegistry, McpTool, McpToolCtx, MemoryId, OrgId, OutputMode,
-    Owner, OwnerPrincipalKind, Principal, SchemaId, SchemaVersion, SourceBatchId, SourceId,
-    Storage, TryEmitApprovalDecisionOutput, TryEmitApprovalDecisionTool, UserId,
+    ApprovalTargetKind, ApprovalVoteVerdict, ApprovalVoterKind, AuthPath, AuthzContext,
+    EmitApprovalPolicyTool, EmitApprovalVoteTool, Engine, FlavorRegistry, McpTool, McpToolCtx,
+    MemoryId, OrgId, OutputMode, Owner, OwnerPrincipalKind, Principal, SchemaId, SchemaVersion,
+    SourceBatchId, SourceId, Storage, TryEmitApprovalDecisionOutput, TryEmitApprovalDecisionTool,
+    UserId,
 };
 use uuid::Uuid;
 
@@ -410,15 +410,13 @@ fn ctx(
     master_token_id: Option<Uuid>,
 ) -> McpToolCtx {
     let registry = Arc::new(FlavorRegistry::new().freeze());
-    let engine = Engine::new(
-        (*registry).clone(),
-        MemoryStore::new(),
-        Box::new(NoAuth::new(owner.principal.clone(), owner.clone())),
-    )
-    .with_storage(pg.clone().into_handle());
+    let engine =
+        Engine::new((*registry).clone(), MemoryStore::new()).with_storage(pg.clone().into_handle());
+    let authz = AuthzContext::single_owner(&owner, AuthPath::System);
     McpToolCtx {
         pool: pg.pool().clone(),
         owner,
+        authz,
         handles: None,
         mode: OutputMode::RawIds,
         registry,

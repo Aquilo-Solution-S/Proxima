@@ -19,7 +19,6 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use proxima_code::{CommitSummaryV1, CommitV1, build_engine_with, ingest_commit, register_repo};
-use proxima_core::auth::NoAuth;
 use proxima_core::llm::{EmbeddingClient, LlmError};
 use proxima_core::personality::tools::EmitAbstractionTool;
 use proxima_core::personality::{
@@ -115,12 +114,8 @@ async fn emit_abstraction_writes_core_authored_edge_from_root_perspective() {
         )
         .await?;
 
-        let engine = build_engine_with(
-            pg.clone(),
-            Box::new(NoAuth::new(owner.principal.clone(), owner.clone())),
-            |_registry| {},
-        )
-        .with_embed(Arc::new(FakeEmbedding));
+        let engine =
+            build_engine_with(pg.clone(), |_registry| {}).with_embed(Arc::new(FakeEmbedding));
 
         let inst = engine
             .instantiate_personality(InstantiatePersonalityRequest {

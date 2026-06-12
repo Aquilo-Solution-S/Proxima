@@ -6,7 +6,6 @@ use proxima_code::mcp::{
     CodeSearchChunksTool, CodeSearchCommitsTool,
 };
 use proxima_code::{CodeChunkV1, CommitV1, FileRevisionV1, register_repo};
-use proxima_core::auth::{Credentials, NoAuth};
 use proxima_core::engine::Engine;
 use proxima_core::mcp::{HandleTable, McpAuthorContext, McpTool, McpToolCtx, OutputMode};
 use proxima_core::storage::Storage;
@@ -14,8 +13,8 @@ use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, Ev
 use proxima_core::verbs::query::MemoryStore;
 use proxima_core::verbs::schema::{PayloadKind, SchemaInfo};
 use proxima_core::{
-    AbstractionPayload, FactPayload, FlavorRegistry, FlavorRegistryFrozen, OrgId, Owner, Principal,
-    SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId,
+    AbstractionPayload, AuthPath, AuthzContext, FactPayload, FlavorRegistry, FlavorRegistryFrozen,
+    OrgId, Owner, Principal, SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId,
 };
 use proxima_storage_pg::PgStorage;
 use serde_json::json;
@@ -129,7 +128,7 @@ async fn search_chunks_returns_only_head_per_nk() -> Result<(), Box<dyn std::err
         return Ok(());
     };
     let owner = owner_fixture();
-    let engine = engine_for_test(fixture.pg.clone(), owner.clone());
+    let engine = engine_for_test(fixture.pg.clone());
     let registry = registry_for_mcp();
     let repo_id = Uuid::now_v7();
 
@@ -179,7 +178,7 @@ async fn search_chunks_excludes_chunk_when_head_is_tombstone()
         return Ok(());
     };
     let owner = owner_fixture();
-    let engine = engine_for_test(fixture.pg.clone(), owner.clone());
+    let engine = engine_for_test(fixture.pg.clone());
     let registry = registry_for_mcp();
     let repo_id = Uuid::now_v7();
 
@@ -225,7 +224,7 @@ async fn search_chunks_includes_calls_edges_when_present() -> Result<(), Box<dyn
         return Ok(());
     };
     let owner = owner_fixture();
-    let engine = engine_for_test(fixture.pg.clone(), owner.clone());
+    let engine = engine_for_test(fixture.pg.clone());
     let registry = registry_for_mcp();
     let repo_id = Uuid::now_v7();
 
@@ -270,7 +269,7 @@ async fn search_chunks_supports_exact_substring_and_chunk_type_filter()
         return Ok(());
     };
     let owner = owner_fixture();
-    let engine = engine_for_test(fixture.pg.clone(), owner.clone());
+    let engine = engine_for_test(fixture.pg.clone());
     let registry = registry_for_mcp();
     let repo_id = Uuid::now_v7();
 
@@ -338,7 +337,7 @@ async fn open_file_revision_returns_head_with_chunks() -> Result<(), Box<dyn std
         return Ok(());
     };
     let owner = owner_fixture();
-    let engine = engine_for_test(fixture.pg.clone(), owner.clone());
+    let engine = engine_for_test(fixture.pg.clone());
     let registry = registry_for_mcp();
     let repo_id = Uuid::now_v7();
 
@@ -440,7 +439,7 @@ async fn open_file_revision_accepts_raw_repo_uuid() -> Result<(), Box<dyn std::e
         return Ok(());
     };
     let owner = owner_fixture();
-    let engine = engine_for_test(fixture.pg.clone(), owner.clone());
+    let engine = engine_for_test(fixture.pg.clone());
     let registry = registry_for_mcp();
     let repo_id = Uuid::now_v7();
 
@@ -471,7 +470,7 @@ async fn open_file_revision_accepts_unambiguous_repo_display_name()
         return Ok(());
     };
     let owner = owner_fixture();
-    let engine = engine_for_test(fixture.pg.clone(), owner.clone());
+    let engine = engine_for_test(fixture.pg.clone());
     let registry = registry_for_mcp();
     let repo_id = Uuid::now_v7();
     register_repo(
@@ -510,7 +509,7 @@ async fn search_commits_unions_commit_and_summary_legs() -> Result<(), Box<dyn s
         return Ok(());
     };
     let owner = owner_fixture();
-    let engine = engine_for_test(fixture.pg.clone(), owner.clone());
+    let engine = engine_for_test(fixture.pg.clone());
     let registry = registry_for_mcp();
     let repo_id = Uuid::now_v7();
 
@@ -564,9 +563,11 @@ async fn run_tool<T: McpTool>(
 }
 
 fn ctx(pool: PgPool, owner: Owner, registry: Arc<FlavorRegistryFrozen>) -> McpToolCtx {
+    let authz = AuthzContext::single_owner(&owner, AuthPath::System);
     McpToolCtx {
         pool,
         owner,
+        authz,
         handles: Some(Arc::new(HandleTable::new())),
         mode: OutputMode::Handles,
         registry,
@@ -714,15 +715,9 @@ fn run_git(repo: &std::path::Path, args: &[&str]) -> Result<(), Box<dyn std::err
     Ok(())
 }
 
-fn engine_for_test(pg: PgStorage, owner: Owner) -> Engine {
-    let principal = owner.principal.clone();
+fn engine_for_test(pg: PgStorage) -> Engine {
     let storage: Arc<dyn Storage> = Arc::new(pg);
-    Engine::new(
-        registry_for_engine(),
-        MemoryStore::new(),
-        Box::new(NoAuth::new(principal, owner)),
-    )
-    .with_storage(storage)
+    Engine::new(registry_for_engine(), MemoryStore::new()).with_storage(storage)
 }
 
 fn fact_draft(owner: Owner, schema_id: &str, payload: &[u8]) -> EventDraft {
@@ -755,7 +750,10 @@ async fn fact_memory(
     payload: &[u8],
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
     Ok(engine
-        .event_ingest(&Credentials::None, fact_draft(owner, schema_id, payload))
+        .event_ingest(
+            &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+            fact_draft(owner, schema_id, payload),
+        )
         .await?
         .memory_id
         .into_inner())

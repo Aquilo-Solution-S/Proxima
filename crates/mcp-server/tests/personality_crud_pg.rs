@@ -8,7 +8,6 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 
 use common::{create_db, drop_db, initialize, initialized, post_rpc};
-use proxima_core::auth::NoAuth;
 use proxima_core::{Engine, FlavorRegistry, OrgId, Owner, Principal, UserId};
 use proxima_mcp_server::{McpEdgeAuth, McpToolHost, default_allowlist, serve_streamable_http};
 use proxima_storage_pg::PgStorage;
@@ -58,12 +57,7 @@ async fn discovery_to_mutation_smoke() -> Result<(), Box<dyn std::error::Error>>
     // so wire one over the same PG storage (Engine::compose embedding shape).
     let pg = PgStorage::connect(&database_url).await?;
     pg.run_migrations().await?;
-    let resolver = NoAuth::new(owner.principal.clone(), owner.clone());
-    let engine = Arc::new(Engine::compose(
-        Box::new(resolver),
-        Arc::new(pg.clone()),
-        |_| {},
-    ));
+    let engine = Arc::new(Engine::compose(Arc::new(pg.clone()), |_| {}));
     let server = McpToolHost::from_pool(
         pg.pool().clone(),
         owner.clone(),

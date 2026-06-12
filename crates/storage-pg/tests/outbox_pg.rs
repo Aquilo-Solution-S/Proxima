@@ -6,7 +6,6 @@ use common::{create_db, db_url, drop_db};
 use std::sync::Arc;
 use std::time::Duration;
 
-use proxima_core::auth::{Credentials, NoAuth};
 use proxima_core::engine::Engine;
 use proxima_core::storage::Storage;
 use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
@@ -124,19 +123,17 @@ async fn outbox_publishes_entity_append_for_fact() {
         };
 
         let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
-        let engine = Engine::new(
-            registry,
-            MemoryStore::new(),
-            Box::new(NoAuth::new(Principal::User(user), owner.clone())),
-        )
-        .with_storage(storage);
+        let engine = Engine::new(registry, MemoryStore::new()).with_storage(storage);
 
         let mut rx = pg.changes();
 
         // Ingest an event — should produce a ChangeEvent.
         let draft = fresh_event_draft(owner.clone());
         let outcome = engine
-            .event_ingest(&Credentials::None, draft.clone())
+            .event_ingest(
+                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                draft.clone(),
+            )
             .await?;
         assert!(!outcome.idempotent_replay);
 
@@ -193,18 +190,18 @@ async fn outbox_publishes_entity_append_for_goal() {
         };
 
         let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
-        let engine = Engine::new(
-            registry,
-            MemoryStore::new(),
-            Box::new(NoAuth::new(Principal::User(user), owner.clone())),
-        )
-        .with_storage(storage);
+        let engine = Engine::new(registry, MemoryStore::new()).with_storage(storage);
 
         let mut rx = pg.changes();
 
         // Write a goal — should produce a ChangeEvent.
         let draft = fresh_goal_draft(&owner, "req-1".to_string());
-        let outcome = engine.write_goal(&Credentials::None, draft.clone()).await?;
+        let outcome = engine
+            .write_goal(
+                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                draft.clone(),
+            )
+            .await?;
         assert!(!outcome.idempotent_replay);
 
         // Wait for the ChangeEvent to arrive.
@@ -260,19 +257,17 @@ async fn outbox_publishes_fact_then_goal() {
         };
 
         let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
-        let engine = Engine::new(
-            registry,
-            MemoryStore::new(),
-            Box::new(NoAuth::new(Principal::User(user), owner.clone())),
-        )
-        .with_storage(storage);
+        let engine = Engine::new(registry, MemoryStore::new()).with_storage(storage);
 
         let mut rx = pg.changes();
 
         // Ingest an event.
         let event_draft = fresh_event_draft(owner.clone());
         let event_outcome = engine
-            .event_ingest(&Credentials::None, event_draft.clone())
+            .event_ingest(
+                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                event_draft.clone(),
+            )
             .await?;
 
         // Receive first ChangeEvent (Fact).
@@ -288,7 +283,10 @@ async fn outbox_publishes_fact_then_goal() {
         // Write a goal.
         let goal_draft = fresh_goal_draft(&owner, "req-1".to_string());
         let goal_outcome = engine
-            .write_goal(&Credentials::None, goal_draft.clone())
+            .write_goal(
+                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                goal_draft.clone(),
+            )
             .await?;
 
         // Receive second ChangeEvent (Goal).

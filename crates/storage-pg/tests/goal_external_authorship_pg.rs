@@ -8,7 +8,6 @@ mod common;
 use common::{create_db, db_url, drop_db};
 use std::sync::Arc;
 
-use proxima_core::auth::{Credentials, NoAuth};
 use proxima_core::engine::Engine;
 use proxima_core::storage::Storage;
 use proxima_core::verbs::goal_write::{GoalAuthorship, GoalAuthorshipKind, GoalDraft, GoalState};
@@ -65,17 +64,12 @@ async fn external_authorship_admitted_at_proposed_seed_only() {
         };
 
         let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
-        let engine = Engine::new(
-            registry,
-            MemoryStore::new(),
-            Box::new(NoAuth::new(Principal::User(user), owner.clone())),
-        )
-        .with_storage(storage);
+        let engine = Engine::new(registry, MemoryStore::new()).with_storage(storage);
 
         // Proposed seed under External: allowed end-to-end through the verb.
         let proposed = engine
             .write_goal(
-                &Credentials::None,
+                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
                 external_draft(&owner, GoalState::Proposed, "req-proposed"),
             )
             .await?;
@@ -92,7 +86,7 @@ async fn external_authorship_admitted_at_proposed_seed_only() {
         // Active seed under External: trigger rejects.
         let err = engine
             .write_goal(
-                &Credentials::None,
+                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
                 external_draft(&owner, GoalState::Active, "req-active"),
             )
             .await
@@ -106,7 +100,7 @@ async fn external_authorship_admitted_at_proposed_seed_only() {
         // into Rejected, regardless of authorship).
         let err = engine
             .write_goal(
-                &Credentials::None,
+                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
                 external_draft(&owner, GoalState::Rejected, "req-rejected"),
             )
             .await

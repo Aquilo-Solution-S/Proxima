@@ -9,8 +9,7 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status};
 
-use proxima_core::Engine;
-use proxima_core::auth::Credentials;
+use proxima_core::{AuthzContext, Engine};
 
 use crate::convert::refs::{owner_from_proto, owner_to_proto};
 use crate::convert::{
@@ -38,13 +37,17 @@ use crate::pb::{
 #[derive(Debug)]
 pub struct EngineGrpcServer {
     engine: Arc<Engine>,
+    authz: AuthzContext,
 }
 
 impl EngineGrpcServer {
-    /// Create a new gRPC server wrapping the given engine.
+    /// Create a new dev-only gRPC server wrapping the given engine.
+    ///
+    /// The caller supplies the trusted local authorization context;
+    /// this transport performs no per-RPC identity extraction.
     #[must_use]
-    pub fn new(engine: Arc<Engine>) -> Self {
-        Self { engine }
+    pub fn new(engine: Arc<Engine>, authz: AuthzContext) -> Self {
+        Self { engine, authz }
     }
 }
 
@@ -57,7 +60,7 @@ impl EngineTrait for EngineGrpcServer {
         let req = query_request_from_proto(request.into_inner())?;
         let response = self
             .engine
-            .query(&Credentials::None, &req)
+            .query(&self.authz, &req)
             .await
             .map_err(protocol_error_to_status)?;
         Ok(Response::new(query_response_to_proto(&response)))
@@ -72,7 +75,7 @@ impl EngineTrait for EngineGrpcServer {
         let req = subscribe_request_from_proto(request.into_inner())?;
         let stream = self
             .engine
-            .subscribe(&Credentials::None, req)
+            .subscribe(&self.authz, req)
             .await
             .map_err(protocol_error_to_status)?;
 
@@ -107,7 +110,7 @@ impl EngineTrait for EngineGrpcServer {
         let req = goal_write_request_from_proto(request.into_inner())?;
         let response = self
             .engine
-            .write_goal(&Credentials::None, req)
+            .write_goal(&self.authz, req)
             .await
             .map_err(protocol_error_to_status)?;
         Ok(Response::new(goal_write_response_to_proto(&response)))
@@ -120,7 +123,7 @@ impl EngineTrait for EngineGrpcServer {
         let req = event_history_request_from_proto(request.into_inner())?;
         let response = self
             .engine
-            .event_history(&Credentials::None, &req)
+            .event_history(&self.authz, &req)
             .await
             .map_err(protocol_error_to_status)?;
         event_history_response_to_proto(&response).map(Response::new)
@@ -133,7 +136,7 @@ impl EngineTrait for EngineGrpcServer {
         let req = event_ingest_request_from_proto(request.into_inner())?;
         let response = self
             .engine
-            .event_ingest(&Credentials::None, req)
+            .event_ingest(&self.authz, req)
             .await
             .map_err(protocol_error_to_status)?;
         Ok(Response::new(event_ingest_response_to_proto(&response)))
@@ -195,7 +198,7 @@ impl EngineTrait for EngineGrpcServer {
         let out = self
             .engine
             .set_wake_entries(
-                &Credentials::None,
+                &self.authz,
                 &proxima_core::SetWakeEntriesRequest {
                     owner,
                     personality_instance_id,
@@ -225,7 +228,7 @@ impl EngineTrait for EngineGrpcServer {
         let out = self
             .engine
             .register_inference_target(
-                &Credentials::None,
+                &self.authz,
                 &proxima_core::RegisterInferenceTargetRequest {
                     owner,
                     target_ref: pb.target_ref,
@@ -251,7 +254,7 @@ impl EngineTrait for EngineGrpcServer {
         )?;
         let rows = self
             .engine
-            .list_inference_targets(&Credentials::None, &owner)
+            .list_inference_targets(&self.authz, &owner)
             .await
             .map_err(protocol_error_to_status)?;
         Ok(Response::new(ListInferenceTargetsResponse {
@@ -271,7 +274,7 @@ impl EngineTrait for EngineGrpcServer {
         let out = self
             .engine
             .remove_inference_target(
-                &Credentials::None,
+                &self.authz,
                 &proxima_core::RemoveInferenceTargetRequest {
                     owner,
                     target_ref: pb.target_ref,
@@ -295,7 +298,7 @@ impl EngineTrait for EngineGrpcServer {
         )?;
         self.engine
             .bind_inference_tier(
-                &Credentials::None,
+                &self.authz,
                 &proxima_core::BindInferenceTierRequest {
                     owner,
                     tier: tier_from_proto(pb.tier)?,
@@ -318,7 +321,7 @@ impl EngineTrait for EngineGrpcServer {
         )?;
         let rows = self
             .engine
-            .list_inference_tier_bindings(&Credentials::None, &owner)
+            .list_inference_tier_bindings(&self.authz, &owner)
             .await
             .map_err(protocol_error_to_status)?;
         Ok(Response::new(ListInferenceTierBindingsResponse {

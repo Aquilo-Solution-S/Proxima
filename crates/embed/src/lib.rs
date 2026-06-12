@@ -22,7 +22,6 @@ pub use migrations::{
 use std::sync::Arc;
 
 use proxima_blob_s3::CitedBlobStore;
-use proxima_core::auth::NoAuth;
 use proxima_core::llm::{AnthropicClient, EmbeddingClient};
 use proxima_core::{Engine, EngineHandle, FlavorRegistry, GroupId, OrgId, Owner, Principal};
 use proxima_storage_pg::PgStorage;
@@ -163,9 +162,8 @@ impl ProximaBuilder {
             .await
             .map_err(|e| EmbedError::Storage(e.to_string()))?;
 
-        let auth = NoAuth::new(self.owner.principal.clone(), self.owner.clone());
         let registers = self.registers;
-        let mut engine = Engine::compose(Box::new(auth), Arc::new(pg.clone()), move |registry| {
+        let mut engine = Engine::compose(Arc::new(pg.clone()), move |registry| {
             for register in registers {
                 register(registry);
             }

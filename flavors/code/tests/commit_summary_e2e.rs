@@ -11,7 +11,6 @@ use async_trait::async_trait;
 use proxima_code::{
     CommitSummaryV1, CommitV1, build_engine_with, ingest_commit, migrator, register_repo,
 };
-use proxima_core::auth::NoAuth;
 use proxima_core::llm::scripted::{ScriptedAnthropicClient, ScriptedTurn};
 use proxima_core::llm::{EmbeddingClient, LlmError};
 use proxima_core::personality::InstantiatePersonalityRequest;
@@ -91,13 +90,9 @@ async fn commit_summary_e2e_produces_abstraction_with_correct_provenance() {
         // Build engine; instantiate the commit-summary personality;
         // ingest a commit; run dispatcher tick.
         let scripted = Arc::new(ScriptedAnthropicClient::new(vec![ScriptedTurn::end_turn()]));
-        let engine = build_engine_with(
-            pg.clone(),
-            Box::new(NoAuth::new(owner.principal.clone(), owner.clone())),
-            |_registry| {},
-        )
-        .with_anthropic(scripted.clone())
-        .with_embed(Arc::new(FakeEmbedding));
+        let engine = build_engine_with(pg.clone(), |_registry| {})
+            .with_anthropic(scripted.clone())
+            .with_embed(Arc::new(FakeEmbedding));
         let inst = engine
             .instantiate_personality(InstantiatePersonalityRequest {
                 owner: owner.clone(),
@@ -152,13 +147,9 @@ async fn commit_summary_e2e_produces_abstraction_with_correct_provenance() {
             ),
             ScriptedTurn::end_turn(),
         ]));
-        let engine = build_engine_with(
-            pg.clone(),
-            Box::new(NoAuth::new(owner.principal.clone(), owner.clone())),
-            |_registry| {},
-        )
-        .with_anthropic(scripted)
-        .with_embed(Arc::new(FakeEmbedding));
+        let engine = build_engine_with(pg.clone(), |_registry| {})
+            .with_anthropic(scripted)
+            .with_embed(Arc::new(FakeEmbedding));
 
         let fired = engine.run_dispatcher_tick().await?;
         assert_eq!(fired, 0, "Phase-1a dispatcher is still a no-op stub");

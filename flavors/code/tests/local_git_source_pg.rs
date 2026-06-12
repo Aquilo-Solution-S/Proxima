@@ -19,7 +19,6 @@ use std::process::Command;
 use proxima_code::{
     CodeChunkV1, FileRevisionV1, FileState, LocalGitSource, build_engine, migrator,
 };
-use proxima_core::auth::{Credentials, NoAuth};
 use proxima_core::verbs::query::{PersonalityRootFilter, QueryRequest, SupersessionStatus};
 use proxima_core::{FactPayload, OrgId, Owner, Principal, SchemaId, SchemaVersion, UserId};
 use proxima_storage_pg::PgStorage;
@@ -192,10 +191,7 @@ async fn local_git_source_full_cycle() {
             org_id: OrgId::new(Uuid::now_v7()),
         };
 
-        let engine = build_engine(
-            pg.clone(),
-            Box::new(NoAuth::new(Principal::User(user), owner.clone())),
-        );
+        let engine = build_engine(pg.clone());
 
         // Phase 1 — initial index.
         let repo = fixture_repo();
@@ -262,7 +258,12 @@ async fn local_git_source_full_cycle() {
             edge_ids: Vec::new(),
             stateful_heads: Vec::new(),
         };
-        let resp = engine.query(&Credentials::None, &q).await?;
+        let resp = engine
+            .query(
+                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                &q,
+            )
+            .await?;
         assert_eq!(
             i64::try_from(resp.memories.len()).unwrap(),
             chunks_after_initial,
@@ -329,7 +330,12 @@ async fn local_git_source_full_cycle() {
             edge_ids: Vec::new(),
             stateful_heads: Vec::new(),
         };
-        let resp_all = engine.query(&Credentials::None, &q_all).await?;
+        let resp_all = engine
+            .query(
+                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                &q_all,
+            )
+            .await?;
         // 3 initial revisions + 1 mutation = 4
         assert!(
             resp_all.memories.len() >= 4,
@@ -431,10 +437,7 @@ async fn polyglot_markdown_emits_file_revision_and_fallback_chunks() {
             principal: Principal::User(user),
             org_id: OrgId::new(Uuid::now_v7()),
         };
-        let _engine = build_engine(
-            pg.clone(),
-            Box::new(NoAuth::new(Principal::User(user), owner.clone())),
-        );
+        let _engine = build_engine(pg.clone());
 
         let dir = TempDir::new()?;
         git(dir.path(), &["init", "-q", "-b", "main"]);

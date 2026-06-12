@@ -3,14 +3,15 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use proxima_core::auth::NoAuth;
 use proxima_core::engine::{EmbeddingClientReloader, Engine};
 use proxima_core::error::ErrorCode;
-use proxima_core::ids::{OrgId, UserId};
+use proxima_core::ids::{OrgId, SourceBatchId, UserId};
 use proxima_core::llm::{EmbeddingClient, LlmError};
 use proxima_core::owner::{Owner, Principal};
+use proxima_core::verbs::event_history::EventHistoryRequest;
 use proxima_core::verbs::query::{MemoryStore, QueryRequest};
 use proxima_core::verbs::schema::{FlavorRegistryFrozen, SchemaRequest};
+use proxima_core::{AuthPath, AuthzContext, RoleSet};
 use uuid::Uuid;
 
 fn fresh_owner() -> (Principal, Owner) {
@@ -24,12 +25,8 @@ fn fresh_owner() -> (Principal, Owner) {
 }
 
 fn boot_engine(principal: Principal, owner: Owner) -> Engine {
-    let resolver = NoAuth::new(principal, owner);
-    Engine::new(
-        FlavorRegistryFrozen::new(),
-        MemoryStore::new(),
-        Box::new(resolver),
-    )
+    let _ = (principal, owner);
+    Engine::new(FlavorRegistryFrozen::new(), MemoryStore::new())
 }
 
 #[derive(Debug)]
@@ -102,14 +99,12 @@ async fn reload_embedding_client_replaces_engine_slot() {
 async fn query_verb_returns_empty_for_configured_owner() {
     let (principal, owner) = fresh_owner();
     let engine = boot_engine(principal, owner.clone());
+    let authz = AuthzContext::single_owner(&owner, AuthPath::System);
 
     let resp = engine
-        .query(
-            &proxima_core::Credentials::None,
-            &QueryRequest::for_owner(owner),
-        )
+        .query(&authz, &QueryRequest::for_owner(owner))
         .await
-        .expect("NoAuth single-owner query must succeed");
+        .expect("single-owner query must succeed");
 
     assert!(resp.memories.is_empty());
     assert!(
@@ -122,6 +117,7 @@ async fn query_verb_returns_empty_for_configured_owner() {
 async fn query_verb_allows_same_principal_with_different_org() {
     let (principal, configured) = fresh_owner();
     let engine = boot_engine(principal, configured.clone());
+    let authz = AuthzContext::single_owner(&configured, AuthPath::System);
     let same_principal_different_org = Owner {
         principal: configured.principal,
         org_id: OrgId::new(Uuid::now_v7()),
@@ -129,7 +125,7 @@ async fn query_verb_allows_same_principal_with_different_org() {
 
     let resp = engine
         .query(
-            &proxima_core::Credentials::None,
+            &authz,
             &QueryRequest::for_owner(same_principal_different_org),
         )
         .await
@@ -141,14 +137,12 @@ async fn query_verb_allows_same_principal_with_different_org() {
 #[tokio::test]
 async fn query_verb_rejects_foreign_owner_with_forbidden() {
     let (principal, configured) = fresh_owner();
-    let engine = boot_engine(principal, configured);
+    let engine = boot_engine(principal, configured.clone());
+    let authz = AuthzContext::single_owner(&configured, AuthPath::System);
     let (_, foreign) = fresh_owner();
 
     let err = engine
-        .query(
-            &proxima_core::Credentials::None,
-            &QueryRequest::for_owner(foreign),
-        )
+        .query(&authz, &QueryRequest::for_owner(foreign))
         .await
         .expect_err("foreign owner must be rejected");
     assert_eq!(err.code, ErrorCode::Forbidden);
@@ -173,4 +167,53 @@ async fn tombstone_personality_rejects_noop_storage_write() {
         .await
         .expect_err("NoopStorage rejects writes");
     assert_eq!(err.code, ErrorCode::Internal);
+}
+
+#[tokio::test]
+async fn wake_shaped_context_denied_ingest_and_admin_but_not_goal_write() {
+    let (principal, owner) = fresh_owner();
+    let engine = boot_engine(principal, owner.clone());
+    let mut authz = AuthzContext::single_owner(&owner, AuthPath::Wake);
+    authz.capabilities.roles = RoleSet {
+        graph_read: true,
+        graph_write: true,
+        source_ingest: false,
+        admin: false,
+    };
+
+    let ingest_err = engine
+        .close_batch(&authz, owner.clone(), SourceBatchId::new(Uuid::now_v7()))
+        .await
+        .expect_err("wake context must not close batches");
+    assert!(
+        ingest_err
+            .to_string()
+            .contains("requires source_ingest role")
+    );
+
+    let admin_err = engine
+        .list_inference_targets(&authz, &owner)
+        .await
+        .expect_err("wake context must not touch config verbs");
+    assert!(admin_err.to_string().contains("requires admin role"));
+}
+
+#[tokio::test]
+async fn cross_owner_context_is_forbidden_on_graph_read() {
+    let (principal, owner_a) = fresh_owner();
+    let engine = boot_engine(principal, owner_a.clone());
+    let (_, owner_b) = fresh_owner();
+    let authz = AuthzContext::single_owner(&owner_a, AuthPath::System);
+    let err = engine
+        .event_history(
+            &authz,
+            &EventHistoryRequest {
+                owner: owner_b,
+                limit: 1,
+                before: None,
+            },
+        )
+        .await
+        .expect_err("cross-owner access must be forbidden");
+    assert!(err.to_string().contains("cannot access requested owner"));
 }

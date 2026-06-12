@@ -6,7 +6,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use proxima_core::auth::NoAuth;
 use proxima_core::harness::{
     HarnessAdapter, HarnessContext, HarnessOutcomeKind, HarnessProgram, ProviderTarget,
 };
@@ -82,7 +81,6 @@ async fn codex_wake_round_completes_without_provider_not_yet_supported() {
     let engine = Arc::new(Engine::new(
         FlavorRegistry::new().freeze(),
         MemoryStore::new(),
-        Box::new(NoAuth::new(owner.principal.clone(), owner.clone())),
     ));
     let loop_ = HarnessLoop {
         engine,

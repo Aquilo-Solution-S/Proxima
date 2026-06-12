@@ -14,7 +14,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use proxima_code::{CodeChunkV1, CommitV1, FileRevisionV1, FileState};
-use proxima_core::auth::{Credentials, NoAuth};
 use proxima_core::engine::Engine;
 use proxima_core::storage::Storage;
 use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
@@ -139,8 +138,9 @@ async fn seed_file_revision_state(
     state: FileState,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
     // 1. EventIngest creates the memories row + supporting plumbing.
+    let authz = proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System);
     let draft = fresh_draft(owner, FileRevisionV1::SCHEMA_ID, seed);
-    let outcome = engine.event_ingest(&Credentials::None, draft).await?;
+    let outcome = engine.event_ingest(&authz, draft).await?;
     let memory_id = outcome.memory_id.into_inner();
 
     // 2. Sidecar insert under (repo_id, file_path).
@@ -174,8 +174,9 @@ async fn seed_code_chunk_state(
     seed: &[u8],
     state: FileState,
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
+    let authz = proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System);
     let draft = fresh_draft(owner, CodeChunkV1::SCHEMA_ID, seed);
-    let outcome = engine.event_ingest(&Credentials::None, draft).await?;
+    let outcome = engine.event_ingest(&authz, draft).await?;
     let memory_id = outcome.memory_id.into_inner();
     sqlx::query(
         "INSERT INTO proxima_code.code_chunk_v1 \
@@ -240,14 +241,9 @@ async fn heads_only_returns_latest_per_natural_key() {
         proxima_code::migrator().run(pg.pool()).await?;
 
         let storage: Arc<dyn Storage> = Arc::new(pg.clone());
-        let (user, owner) = make_owner();
+        let (_user, owner) = make_owner();
 
-        let engine = Engine::new(
-            registry_for_test(),
-            MemoryStore::new(),
-            Box::new(NoAuth::new(Principal::User(user), owner.clone())),
-        )
-        .with_storage(storage);
+        let engine = Engine::new(registry_for_test(), MemoryStore::new()).with_storage(storage);
 
         let repo_id = Uuid::now_v7();
 
@@ -310,7 +306,12 @@ async fn heads_only_returns_latest_per_natural_key() {
             edge_ids: Vec::new(),
             stateful_heads: Vec::new(),
         };
-        let resp = engine.query(&Credentials::None, &req).await?;
+        let resp = engine
+            .query(
+                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                &req,
+            )
+            .await?;
 
         // Two heads: latest of NK_a (=r3) + sole row of NK_b (=r_b).
         assert_eq!(
@@ -342,7 +343,12 @@ async fn heads_only_returns_latest_per_natural_key() {
             edge_ids: Vec::new(),
             stateful_heads: Vec::new(),
         };
-        let resp_all = engine.query(&Credentials::None, &req_all).await?;
+        let resp_all = engine
+            .query(
+                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                &req_all,
+            )
+            .await?;
         assert_eq!(
             resp_all.memories.len(),
             4,
@@ -372,19 +378,22 @@ async fn heads_only_no_op_for_stateless_fact_schema() {
         proxima_code::migrator().run(pg.pool()).await?;
 
         let storage: Arc<dyn Storage> = Arc::new(pg.clone());
-        let (user, owner) = make_owner();
+        let (_user, owner) = make_owner();
 
-        let engine = Engine::new(
-            registry_for_test(),
-            MemoryStore::new(),
-            Box::new(NoAuth::new(Principal::User(user), owner.clone())),
-        )
-        .with_storage(storage);
+        let engine = Engine::new(registry_for_test(), MemoryStore::new()).with_storage(storage);
 
         // Two distinct commit Facts.
         for payload in [b"c1" as &[u8], b"c2"] {
             let draft = fresh_draft(owner.clone(), CommitV1::SCHEMA_ID, payload);
-            engine.event_ingest(&Credentials::None, draft).await?;
+            engine
+                .event_ingest(
+                    &proxima_core::AuthzContext::single_owner(
+                        &owner,
+                        proxima_core::AuthPath::System,
+                    ),
+                    draft,
+                )
+                .await?;
         }
 
         let req = QueryRequest {
@@ -401,7 +410,12 @@ async fn heads_only_no_op_for_stateless_fact_schema() {
             edge_ids: Vec::new(),
             stateful_heads: Vec::new(),
         };
-        let resp = engine.query(&Credentials::None, &req).await?;
+        let resp = engine
+            .query(
+                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                &req,
+            )
+            .await?;
         assert_eq!(
             resp.memories.len(),
             2,
@@ -427,13 +441,8 @@ async fn owner_snapshot_heads_only_folds_all_stateful_fact_schemas() {
         pg.run_migrations().await?;
         proxima_code::migrator().run(pg.pool()).await?;
         let storage: Arc<dyn Storage> = Arc::new(pg.clone());
-        let (user, owner) = make_owner();
-        let engine = Engine::new(
-            registry_for_test(),
-            MemoryStore::new(),
-            Box::new(NoAuth::new(Principal::User(user), owner.clone())),
-        )
-        .with_storage(storage);
+        let (_user, owner) = make_owner();
+        let engine = Engine::new(registry_for_test(), MemoryStore::new()).with_storage(storage);
         let repo_id = Uuid::now_v7();
 
         let a_v1 = seed_file_revision_state(
@@ -483,7 +492,12 @@ async fn owner_snapshot_heads_only_folds_all_stateful_fact_schemas() {
 
         let mut req = QueryRequest::for_owner(owner.clone());
         req.limit = 100;
-        let resp = engine.query(&Credentials::None, &req).await?;
+        let resp = engine
+            .query(
+                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                &req,
+            )
+            .await?;
         let ids = resp
             .memories
             .iter()
@@ -512,13 +526,10 @@ async fn present_only_excludes_tombstone_head_without_reviving_previous_present(
         pg.run_migrations().await?;
         proxima_code::migrator().run(pg.pool()).await?;
         let storage: Arc<dyn Storage> = Arc::new(pg.clone());
-        let (user, owner) = make_owner();
-        let engine = Engine::new(
-            registry_for_test(),
-            MemoryStore::new(),
-            Box::new(NoAuth::new(Principal::User(user), owner.clone())),
-        )
-        .with_storage(storage);
+        let (_user, owner) = make_owner();
+        let authz =
+            proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System);
+        let engine = Engine::new(registry_for_test(), MemoryStore::new()).with_storage(storage);
         let repo_id = Uuid::now_v7();
 
         let present = seed_file_revision_state(
@@ -546,7 +557,7 @@ async fn present_only_excludes_tombstone_head_without_reviving_previous_present(
         let mut req = QueryRequest::for_owner(owner.clone());
         req.schema_id = Some(SchemaId::new(FileRevisionV1::SCHEMA_ID.into()));
         req.limit = 100;
-        let resp = engine.query(&Credentials::None, &req).await?;
+        let resp = engine.query(&authz, &req).await?;
         let ids = resp
             .memories
             .iter()
@@ -562,7 +573,7 @@ async fn present_only_excludes_tombstone_head_without_reviving_previous_present(
         );
 
         req.tombstones = TombstoneFilter::IncludeTombstoned;
-        let resp = engine.query(&Credentials::None, &req).await?;
+        let resp = engine.query(&authz, &req).await?;
         assert_eq!(
             resp.memories
                 .iter()
@@ -572,7 +583,7 @@ async fn present_only_excludes_tombstone_head_without_reviving_previous_present(
         );
 
         req.supersession = SupersessionStatus::IncludeSuperseded;
-        let resp = engine.query(&Credentials::None, &req).await?;
+        let resp = engine.query(&authz, &req).await?;
         let ids = resp
             .memories
             .iter()
@@ -582,7 +593,7 @@ async fn present_only_excludes_tombstone_head_without_reviving_previous_present(
         assert!(ids.contains(&tombstone));
 
         req.tombstones = TombstoneFilter::PresentOnly;
-        let resp = engine.query(&Credentials::None, &req).await?;
+        let resp = engine.query(&authz, &req).await?;
         let ids = resp
             .memories
             .iter()
@@ -615,13 +626,8 @@ async fn present_only_snapshot_excludes_edges_to_tombstoned_heads() {
         pg.run_migrations().await?;
         proxima_code::migrator().run(pg.pool()).await?;
         let storage: Arc<dyn Storage> = Arc::new(pg.clone());
-        let (user, owner) = make_owner();
-        let engine = Engine::new(
-            registry_for_test(),
-            MemoryStore::new(),
-            Box::new(NoAuth::new(Principal::User(user), owner.clone())),
-        )
-        .with_storage(storage);
+        let (_user, owner) = make_owner();
+        let engine = Engine::new(registry_for_test(), MemoryStore::new()).with_storage(storage);
         let repo_id = Uuid::now_v7();
         let active = seed_file_revision_state(
             pg.pool(),
@@ -647,13 +653,23 @@ async fn present_only_snapshot_excludes_edges_to_tombstoned_heads() {
 
         let mut req = QueryRequest::for_owner(owner.clone());
         req.limit = 100;
-        let resp = engine.query(&Credentials::None, &req).await?;
+        let resp = engine
+            .query(
+                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                &req,
+            )
+            .await?;
         assert!(resp.memories.iter().any(|m| m.id.into_inner() == active));
         assert!(!resp.memories.iter().any(|m| m.id.into_inner() == deleted));
         assert!(!resp.edges.iter().any(|e| e.id == edge_id));
 
         req.tombstones = TombstoneFilter::IncludeTombstoned;
-        let resp = engine.query(&Credentials::None, &req).await?;
+        let resp = engine
+            .query(
+                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                &req,
+            )
+            .await?;
         assert!(resp.memories.iter().any(|m| m.id.into_inner() == deleted));
         assert!(resp.edges.iter().any(|e| e.id == edge_id));
         Ok(())
@@ -675,13 +691,8 @@ async fn present_only_edge_id_hydration_excludes_edges_with_hidden_endpoint() {
         pg.run_migrations().await?;
         proxima_code::migrator().run(pg.pool()).await?;
         let storage: Arc<dyn Storage> = Arc::new(pg.clone());
-        let (user, owner) = make_owner();
-        let engine = Engine::new(
-            registry_for_test(),
-            MemoryStore::new(),
-            Box::new(NoAuth::new(Principal::User(user), owner.clone())),
-        )
-        .with_storage(storage);
+        let (_user, owner) = make_owner();
+        let engine = Engine::new(registry_for_test(), MemoryStore::new()).with_storage(storage);
         let repo_id = Uuid::now_v7();
         let active = seed_file_revision_state(
             pg.pool(),
@@ -708,11 +719,21 @@ async fn present_only_edge_id_hydration_excludes_edges_with_hidden_endpoint() {
         let mut req = QueryRequest::for_owner(owner.clone());
         req.edge_ids = vec![edge_id];
         req.limit = 1;
-        let resp = engine.query(&Credentials::None, &req).await?;
+        let resp = engine
+            .query(
+                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                &req,
+            )
+            .await?;
         assert!(resp.edges.is_empty());
 
         req.tombstones = TombstoneFilter::IncludeTombstoned;
-        let resp = engine.query(&Credentials::None, &req).await?;
+        let resp = engine
+            .query(
+                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                &req,
+            )
+            .await?;
         assert_eq!(resp.edges.len(), 1);
         Ok(())
     }

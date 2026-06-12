@@ -170,7 +170,7 @@ impl McpTool for ListWakeInvocationsTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::auth::NoAuth;
+    use crate::authz::{AuthPath, AuthzContext};
     use crate::mcp::{HandleTable, OutputMode};
     use crate::verbs::query::MemoryStore;
     use crate::{Engine, FlavorRegistry, McpAuthorContext, OrgId, Owner, Principal, UserId};
@@ -182,15 +182,14 @@ mod tests {
             principal: Principal::User(UserId::new(uuid::Uuid::now_v7())),
             org_id: OrgId::new(uuid::Uuid::now_v7()),
         };
-        let resolver = NoAuth::new(owner.principal.clone(), owner.clone());
         let engine = Arc::new(Engine::new(
             FlavorRegistry::new().freeze(),
             MemoryStore::new(),
-            Box::new(resolver),
         ));
         let ctx = McpToolCtx {
             pool: sqlx::PgPool::connect_lazy("postgres://x/x").expect("lazy"),
-            owner,
+            owner: owner.clone(),
+            authz: AuthzContext::single_owner(&owner, AuthPath::System),
             handles: Some(Arc::new(HandleTable::new())),
             mode: OutputMode::Handles,
             registry: Arc::new(FlavorRegistry::new().freeze()),

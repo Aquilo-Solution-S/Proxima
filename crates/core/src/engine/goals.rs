@@ -1,6 +1,6 @@
 use super::{Engine, map_storage_err_for_goal_write};
 use crate::GoalId;
-use crate::auth::Credentials;
+use crate::authz::{AuthzContext, Role};
 use crate::error::ProtocolError;
 use crate::verbs::goal_write::{GoalDraft, GoalWriteOutcome};
 use crate::verbs::schema::PayloadKind;
@@ -12,24 +12,16 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `ProtocolError::AuthRequired` when credentials are missing,
-    /// `ProtocolError::Forbidden` when the principal cannot access the owner,
-    /// `ProtocolError::UnknownSchema` when the schema is not registered or not a Goal,
-    /// or `ProtocolError::Internal` for storage failures.
+    /// Returns `ProtocolError::Forbidden` when the context cannot access
+    /// the owner or lacks the graph-write role, `ProtocolError::UnknownSchema`
+    /// when the schema is not registered or not a Goal, or
+    /// `ProtocolError::Internal` for storage failures.
     pub async fn write_goal(
         &self,
-        creds: &Credentials,
+        authz: &AuthzContext,
         draft: GoalDraft,
     ) -> Result<GoalWriteOutcome, ProtocolError> {
-        let resolved = self
-            .auth
-            .resolve(creds)
-            .map_err(|_| ProtocolError::auth_required())?;
-        if !resolved.can_access_owner(&draft.owner) {
-            return Err(ProtocolError::forbidden(
-                "principal cannot access requested owner",
-            ));
-        }
+        super::authorize(authz, &draft.owner, Role::GraphWrite)?;
         // Validate goal schema is registered AND has PayloadKind::Goal.
         match self.registry.lookup(&draft.schema_id, draft.schema_version) {
             Some(info) if info.kind == PayloadKind::Goal => {}
@@ -52,26 +44,18 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `ProtocolError::AuthRequired` when credentials are missing,
-    /// `ProtocolError::Forbidden` when the principal cannot access the owner,
-    /// `ProtocolError::UnknownSchema` when the schema is not registered or not a Goal,
-    /// `ProtocolError::NotFound` when the prior goal does not exist,
-    /// or `ProtocolError::Internal` for storage failures.
+    /// Returns `ProtocolError::Forbidden` when the context cannot access
+    /// the owner or lacks the graph-write role, `ProtocolError::UnknownSchema`
+    /// when the schema is not registered or not a Goal,
+    /// `ProtocolError::NotFound` when the prior goal does not exist, or
+    /// `ProtocolError::Internal` for storage failures.
     pub async fn supersede_goal(
         &self,
-        creds: &Credentials,
+        authz: &AuthzContext,
         prior: GoalId,
         draft: GoalDraft,
     ) -> Result<GoalWriteOutcome, ProtocolError> {
-        let resolved = self
-            .auth
-            .resolve(creds)
-            .map_err(|_| ProtocolError::auth_required())?;
-        if !resolved.can_access_owner(&draft.owner) {
-            return Err(ProtocolError::forbidden(
-                "principal cannot access requested owner",
-            ));
-        }
+        super::authorize(authz, &draft.owner, Role::GraphWrite)?;
         // Validate goal schema is registered AND has PayloadKind::Goal.
         match self.registry.lookup(&draft.schema_id, draft.schema_version) {
             Some(info) if info.kind == PayloadKind::Goal => {}

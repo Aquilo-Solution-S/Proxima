@@ -13,6 +13,15 @@ pub use ts_types::{IndexReportTs, IngestProgressTs, RepoIngestEventTs};
 
 use tauri_specta::{Builder, collect_commands};
 
+/// Local-session authorization for IPC commands, minted once at boot
+/// for the shell's owner and managed in Tauri state. Commands take it
+/// as `State<'_, AuthzContext>`, so a request claiming a different
+/// owner is `Forbidden` by the engine's owner gate (same behavior the
+/// engine-composed resolver enforced before the verb migration).
+pub(crate) fn session_authz(owner: &proxima_core::Owner) -> proxima_core::AuthzContext {
+    proxima_core::AuthzContext::single_owner(owner, proxima_core::AuthPath::System)
+}
+
 pub(crate) fn specta_builder() -> Builder<tauri::Wry> {
     Builder::<tauri::Wry>::new().commands(collect_commands![
         // existing wire-protocol commands

@@ -13,7 +13,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use proxima_code::{LocalGitSource, build_engine, migrator};
-use proxima_core::auth::{Credentials, NoAuth};
 use proxima_core::storage::Storage;
 use proxima_core::verbs::subscribe::SubscribeRequest;
 use proxima_core::{
@@ -149,10 +148,7 @@ async fn self_ingestion_streams_proxima_main() {
             org_id: OrgId::new(Uuid::now_v7()),
         };
 
-        let engine = build_engine(
-            pg.clone(),
-            Box::new(NoAuth::new(Principal::User(user), owner.clone())),
-        );
+        let engine = build_engine(pg.clone());
         let _arc_storage: Arc<dyn Storage> = Arc::new(pg.clone());
 
         // Clone Proxima itself into a tmpdir.
@@ -187,7 +183,7 @@ async fn self_ingestion_streams_proxima_main() {
         let commit_schema = proxima_core::SchemaId::new("proxima-code/commit-v1".into());
         let query_resp = engine
             .query(
-                &Credentials::None,
+                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
                 &proxima_core::verbs::query::QueryRequest {
                     owner: owner.clone(),
                     entity_kind: Some(proxima_core::verbs::query::EntityKind::Fact),
@@ -240,7 +236,7 @@ async fn self_ingestion_streams_proxima_main() {
         // per commit.
         let unfiltered = engine
             .query(
-                &Credentials::None,
+                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
                 &proxima_core::verbs::query::QueryRequest {
                     owner: owner.clone(),
                     entity_kind: Some(proxima_core::verbs::query::EntityKind::Fact),
@@ -289,7 +285,12 @@ async fn self_ingestion_streams_proxima_main() {
             owner: owner.clone(),
             since: None,
         };
-        let mut stream = engine.subscribe(&Credentials::None, sub_req).await?;
+        let mut stream = engine
+            .subscribe(
+                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
+                sub_req,
+            )
+            .await?;
 
         // Append a new empty commit on main.
         run(Command::new("git").arg("-C").arg(&clone_path).args([
