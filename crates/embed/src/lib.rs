@@ -8,8 +8,10 @@
 //! must set `ignore_missing(true)`, and host tables must stay out of
 //! the `proxima_core` / per-flavor schemas.
 
+mod bundle;
 mod config;
 
+pub use bundle::FlavorBundle;
 pub use config::EmbedConfig;
 
 use std::sync::Arc;
@@ -101,6 +103,14 @@ impl ProximaBuilder {
     ) -> Self {
         self.registers.push(Box::new(register));
         self.migrators.extend(migrator);
+        self
+    }
+
+    /// Link a statically-composed flavor bundle (single flavor or tuple).
+    #[must_use]
+    pub fn bundle<B: FlavorBundle + 'static>(mut self) -> Self {
+        self.registers.push(Box::new(B::register));
+        self.migrators.extend(B::migrators());
         self
     }
 
