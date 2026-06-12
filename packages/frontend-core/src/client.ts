@@ -34,7 +34,6 @@ import type {
   SubscribeRequest,
   TestInferenceTargetOutcomeTs,
   TestInferenceTargetTs,
-  WorkspaceToolTs,
 } from "./bindings";
 
 export interface Subscription {
@@ -80,7 +79,6 @@ export interface EngineClient {
     req: TestInferenceTargetTs,
   ): Promise<TestInferenceTargetOutcomeTs>;
   listMcpTools(): Promise<McpToolTs[]>;
-  listWorkspaceTools(): Promise<WorkspaceToolTs[]>;
   listRelations(): Promise<RelationTs[]>;
   wakeEntryProduces(substratePalette: string[]): Promise<ProducesTs>;
 }

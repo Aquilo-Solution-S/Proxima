@@ -41,6 +41,18 @@ export const TargetDraftEditor: Component<{
         }
       />
 
+      <label for={id("context-window-tokens")}>context_window_tokens</label>
+      <input
+        id={id("context-window-tokens")}
+        type="number"
+        min="1"
+        step="1"
+        value={props.draft.contextWindowTokens}
+        onInput={(event) =>
+          props.onUpdate({ contextWindowTokens: event.currentTarget.value })
+        }
+      />
+
       <Show when={!isChatGptCodex()}>
         <label for={id("api-key-env")}>api_key_env</label>
         <input

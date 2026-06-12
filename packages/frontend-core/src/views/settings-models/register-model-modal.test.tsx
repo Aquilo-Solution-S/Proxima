@@ -30,8 +30,12 @@ describe("RegisterModelModal", () => {
     ));
     const baseUrl = screen.getByLabelText("base_url") as HTMLInputElement;
     const env = screen.getByLabelText("api_key_env") as HTMLInputElement;
+    const contextWindow = screen.getByLabelText(
+      "context_window_tokens",
+    ) as HTMLInputElement;
     expect(baseUrl.value).toBe("https://api.mistral.ai");
     expect(env.value).toBe("MISTRAL_API_KEY");
+    expect(contextWindow.value).toBe("");
   });
 
   it("switches placeholders when the user picks openai_chat", () => {
@@ -89,6 +93,9 @@ describe("RegisterModelModal", () => {
     fireEvent.input(screen.getByLabelText("model_id"), {
       target: { value: "mistral-medium-latest" },
     });
+    fireEvent.input(screen.getByLabelText("context_window_tokens"), {
+      target: { value: "128000" },
+    });
     fireEvent.click(screen.getByRole("button", { name: /register/i }));
     await waitFor(() =>
       expect(c.registerInferenceTarget).toHaveBeenCalledWith({
@@ -99,6 +106,7 @@ describe("RegisterModelModal", () => {
           base_url: "https://api.mistral.ai",
           model_id: "mistral-medium-latest",
           api_key_env: "MISTRAL_API_KEY",
+          context_window_tokens: 128000,
         }),
       }),
     );

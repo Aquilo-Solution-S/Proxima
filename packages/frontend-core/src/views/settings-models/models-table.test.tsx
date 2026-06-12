@@ -20,6 +20,7 @@ const fastTarget: InferenceTargetTs = {
     temperature: null,
     max_completion_tokens: null,
     reasoning_effort: null,
+    context_window_tokens: null,
   },
   created_at: "2026-05-12T00:00:00Z",
   updated_at: "2026-05-12T00:00:00Z",
@@ -34,6 +35,7 @@ const deepTarget: InferenceTargetTs = {
     model_id: "gpt-5.5",
     api_key_env: "OPENAI_API_KEY",
     reasoning_effort: "high",
+    context_window_tokens: null,
   },
 };
 

@@ -36,7 +36,6 @@ import {
   type SubscribeRequest,
   type TestInferenceTargetOutcomeTs,
   type TestInferenceTargetTs,
-  type WorkspaceToolTs,
 } from "./bindings";
 import type { EngineClient, Subscription } from "./client";
 
@@ -188,10 +187,6 @@ export class TauriEngineClient implements EngineClient {
 
   async listMcpTools(): Promise<McpToolTs[]> {
     return unwrap(commands.listMcpTools(), "list_mcp_tools");
-  }
-
-  async listWorkspaceTools(): Promise<WorkspaceToolTs[]> {
-    return unwrap(commands.listWorkspaceTools(), "list_workspace_tools");
   }
 
   async listRelations(): Promise<RelationTs[]> {

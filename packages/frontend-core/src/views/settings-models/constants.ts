@@ -46,6 +46,9 @@ export const configSummary = (config: InferenceTargetConfigTs): string => {
         config.max_completion_tokens === null
           ? null
           : `max ${config.max_completion_tokens}`,
+        config.context_window_tokens === null
+          ? null
+          : `ctx ${config.context_window_tokens}`,
         config.kind === "mistral_chat" && config.reasoning_effort
           ? `${config.reasoning_effort} reasoning`
           : null,
@@ -57,6 +60,9 @@ export const configSummary = (config: InferenceTargetConfigTs): string => {
         config.base_url,
         config.model_id,
         config.api_key_env,
+        config.context_window_tokens === null
+          ? null
+          : `ctx ${config.context_window_tokens}`,
         config.reasoning_effort ? `${config.reasoning_effort} reasoning` : null,
       ].filter(Boolean);
       return details.join(" / ");
@@ -65,6 +71,9 @@ export const configSummary = (config: InferenceTargetConfigTs): string => {
       const details = [
         config.base_url,
         config.model_id,
+        config.context_window_tokens === null
+          ? null
+          : `ctx ${config.context_window_tokens}`,
         config.reasoning_effort ? `${config.reasoning_effort} reasoning` : null,
       ].filter(Boolean);
       return details.join(" / ");
@@ -83,6 +92,7 @@ export const configKey = (config: InferenceTargetConfigTs): string => {
         config.temperature ?? null,
         config.max_completion_tokens ?? null,
         config.reasoning_effort ?? null,
+        config.context_window_tokens ?? null,
       ]);
     case "openai_chat":
       return JSON.stringify([
@@ -92,6 +102,7 @@ export const configKey = (config: InferenceTargetConfigTs): string => {
         config.api_key_env,
         config.temperature ?? null,
         config.max_completion_tokens ?? null,
+        config.context_window_tokens ?? null,
       ]);
     case "openai_responses":
       return JSON.stringify([
@@ -100,6 +111,7 @@ export const configKey = (config: InferenceTargetConfigTs): string => {
         config.model_id,
         config.api_key_env,
         config.reasoning_effort ?? null,
+        config.context_window_tokens ?? null,
       ]);
     case "chatgpt_codex":
       return JSON.stringify([
@@ -107,6 +119,7 @@ export const configKey = (config: InferenceTargetConfigTs): string => {
         config.base_url,
         config.model_id,
         config.reasoning_effort ?? null,
+        config.context_window_tokens ?? null,
       ]);
   }
 };
@@ -145,6 +158,7 @@ export const defaultConfigForKind = (
         temperature: null,
         max_completion_tokens: null,
         reasoning_effort: null,
+        context_window_tokens: null,
       };
     case "openai_chat":
       return {
@@ -154,6 +168,7 @@ export const defaultConfigForKind = (
         api_key_env: placeholder.apiKeyEnv,
         temperature: null,
         max_completion_tokens: null,
+        context_window_tokens: null,
       };
     case "openai_responses":
       return {
@@ -162,6 +177,7 @@ export const defaultConfigForKind = (
         model_id: "",
         api_key_env: placeholder.apiKeyEnv,
         reasoning_effort: null,
+        context_window_tokens: null,
       };
     case "chatgpt_codex":
       return {
@@ -169,6 +185,7 @@ export const defaultConfigForKind = (
         base_url: placeholder.baseUrl,
         model_id: "gpt-5.3-codex",
         reasoning_effort: null,
+        context_window_tokens: null,
       };
   }
 };
@@ -200,6 +217,7 @@ export interface TargetDraft {
   temperature: string;
   maxCompletionTokens: string;
   reasoningEffort: string;
+  contextWindowTokens: string;
 }
 
 export const draftFromConfig = (
@@ -219,6 +237,10 @@ export const draftFromConfig = (
             ? ""
             : String(config.max_completion_tokens),
         reasoningEffort: config.reasoning_effort ?? "",
+        contextWindowTokens:
+          config.context_window_tokens === null
+            ? ""
+            : String(config.context_window_tokens),
       };
     case "openai_chat":
       return {
@@ -233,6 +255,10 @@ export const draftFromConfig = (
             ? ""
             : String(config.max_completion_tokens),
         reasoningEffort: "",
+        contextWindowTokens:
+          config.context_window_tokens === null
+            ? ""
+            : String(config.context_window_tokens),
       };
     case "openai_responses":
       return {
@@ -243,6 +269,10 @@ export const draftFromConfig = (
         temperature: "",
         maxCompletionTokens: "",
         reasoningEffort: config.reasoning_effort ?? "",
+        contextWindowTokens:
+          config.context_window_tokens === null
+            ? ""
+            : String(config.context_window_tokens),
       };
     case "chatgpt_codex":
       return {
@@ -253,6 +283,10 @@ export const draftFromConfig = (
         temperature: "",
         maxCompletionTokens: "",
         reasoningEffort: config.reasoning_effort ?? "",
+        contextWindowTokens:
+          config.context_window_tokens === null
+            ? ""
+            : String(config.context_window_tokens),
       };
   }
 };
@@ -271,6 +305,7 @@ export const configFromDraft = (draft: TargetDraft): InferenceTargetConfigTs => 
         temperature: nullableFloat(draft.temperature),
         max_completion_tokens: nullableInt(draft.maxCompletionTokens),
         reasoning_effort: nullableString(draft.reasoningEffort),
+        context_window_tokens: nullableInt(draft.contextWindowTokens),
       };
     case "openai_chat":
       return {
@@ -280,6 +315,7 @@ export const configFromDraft = (draft: TargetDraft): InferenceTargetConfigTs => 
         api_key_env: draft.apiKeyEnv.trim(),
         temperature: nullableFloat(draft.temperature),
         max_completion_tokens: nullableInt(draft.maxCompletionTokens),
+        context_window_tokens: nullableInt(draft.contextWindowTokens),
       };
     case "openai_responses":
       return {
@@ -288,6 +324,7 @@ export const configFromDraft = (draft: TargetDraft): InferenceTargetConfigTs => 
         model_id: draft.modelId.trim(),
         api_key_env: draft.apiKeyEnv.trim(),
         reasoning_effort: nullableString(draft.reasoningEffort),
+        context_window_tokens: nullableInt(draft.contextWindowTokens),
       };
     case "chatgpt_codex":
       return {
@@ -295,6 +332,7 @@ export const configFromDraft = (draft: TargetDraft): InferenceTargetConfigTs => 
         base_url: draft.baseUrl.trim(),
         model_id: draft.modelId.trim(),
         reasoning_effort: nullableString(draft.reasoningEffort),
+        context_window_tokens: nullableInt(draft.contextWindowTokens),
       };
   }
 };

@@ -15,7 +15,6 @@ import type {
   TombstonePersonalityOutcomeTs,
   WakeEntryTs,
   WakeInvocationTs,
-  WorkspaceToolTs,
 } from "../bindings";
 import { sentinelOwner } from "../graph-store";
 import {
@@ -46,8 +45,6 @@ const wakeEntry = (overrides: Partial<WakeEntryTs> = {}): WakeEntryTs => ({
   model_tier: "standard",
   inference_target_ref: null,
   substrate_tool_palette: [],
-  workspace_tool_palette: [],
-  workspace_binding: null,
   required_produced_schema_ids: [],
   max_rounds: 4,
   disabled_reason: null,
@@ -147,16 +144,6 @@ const mockClient = (
       },
     ]),
   );
-  const listWorkspaceTools = vi.fn(() =>
-    ok<WorkspaceToolTs[]>([
-      { id: "proxima-workspace/shell", description: "Run shell commands" },
-      {
-        id: "proxima-workspace/text_editor",
-        description: "View and edit files",
-      },
-      { id: "proxima-workspace/list_files", description: "List directories" },
-    ]),
-  );
   const listRelations = vi.fn(() =>
     ok<RelationTs[]>([
       {
@@ -185,7 +172,6 @@ const mockClient = (
       setWakeEntries,
       tombstonePersonality,
       listMcpTools,
-      listWorkspaceTools,
       listRelations,
       wakeEntryProduces,
       listWakeInvocations,
@@ -195,7 +181,6 @@ const mockClient = (
     setWakeEntries,
     tombstonePersonality,
     listMcpTools,
-    listWorkspaceTools,
     listRelations,
     wakeEntryProduces,
     listWakeInvocations,
@@ -313,6 +298,8 @@ describe("PersonalitiesView", () => {
         owner,
         personality_instance_id: "018f0000-0000-7000-8000-000000000001",
         wake_entry_id: null,
+        triggering_memory_id: null,
+        change_event_seq: null,
         limit: 20,
       });
     });
@@ -458,8 +445,6 @@ describe("PersonalitiesView", () => {
             model_tier: "standard",
             inference_target_ref: null,
             substrate_tool_palette: [],
-            workspace_tool_palette: [],
-            workspace_binding: null,
             required_produced_schema_ids: [],
             max_rounds: 4,
           },
@@ -688,37 +673,6 @@ describe("PersonalitiesView", () => {
     expect(screen.queryByText("proxima-workspace/shell")).toBeNull();
   });
 
-  it("shows the workspace tool picker after switching execution_mode to workspace", async () => {
-    const row = instance();
-    const { client } = mockClient([row]);
-
-    render(() => <PersonalitiesView client={client} owner={owner} />);
-
-    await selectPersonality("Engineer");
-    await selectEntry("react-to-commit");
-
-    const runtimeSummary = await waitFor(() => {
-      const node = screen.getByText("Runtime");
-      if (!(node instanceof HTMLElement)) {
-        throw new Error("runtime section not rendered");
-      }
-      return node;
-    });
-    fireEvent.click(runtimeSummary);
-
-    const executionSelect = await waitFor(() =>
-      screen.getByDisplayValue("Substrate only"),
-    );
-    fireEvent.change(executionSelect, { target: { value: "workspace" } });
-
-    await waitFor(() => {
-      expect(screen.getByText("Workspace tool palette")).toBeTruthy();
-      expect(
-        screen.getByRole("button", { name: /Workspace tool palette/ }),
-      ).toBeTruthy();
-    });
-  });
-
   it("preserves inspector scroll position when runtime fields change", async () => {
     const row = instance();
     const { client } = mockClient([row]);
@@ -745,63 +699,6 @@ describe("PersonalitiesView", () => {
 
     await waitFor(() => {
       expect(section.scrollTop).toBe(160);
-    });
-  });
-
-  it("preserves workspace_tool_palette when toggling execution_mode back to substrate_only", async () => {
-    const row = instance({
-      wake_entries: [
-        wakeEntry({
-          execution_mode: "workspace",
-          workspace_tool_palette: ["proxima-workspace/shell"],
-        }),
-      ],
-    });
-    const { client, setWakeEntries } = mockClient([row]);
-
-    render(() => <PersonalitiesView client={client} owner={owner} />);
-
-    await selectPersonality("Engineer");
-    await selectEntry("react-to-commit");
-
-    await waitFor(() => {
-      expect(screen.getByText("Workspace tool palette")).toBeTruthy();
-    });
-
-    const runtimeSummary = screen.getByText("Runtime");
-    fireEvent.click(runtimeSummary);
-
-    const executionSelect = screen.getByDisplayValue("Workspace");
-    fireEvent.change(executionSelect, { target: { value: "substrate_only" } });
-
-    await waitFor(() => {
-      expect(screen.queryByText("Workspace tool palette")).toBeNull();
-    });
-
-    fireEvent.change(executionSelect, { target: { value: "workspace" } });
-
-    fireEvent.click(
-      await screen.findByRole("button", { name: /Workspace tool palette/ }),
-    );
-    await waitFor(() => {
-      expect(
-        (
-          screen.getByRole("checkbox", {
-            name: /proxima-workspace\/shell/,
-          }) as HTMLInputElement
-        ).checked,
-      ).toBe(true);
-    });
-
-    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
-    await waitFor(() => {
-      expect(setWakeEntries).toHaveBeenCalled();
-      const sent = setWakeEntries.mock.calls[0][0].entries[0];
-      expect(sent.workspace_tool_palette).toEqual([
-        "proxima-workspace/shell",
-      ]);
-      expect(sent.execution_mode).toBe("workspace");
     });
   });
 

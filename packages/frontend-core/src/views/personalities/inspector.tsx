@@ -15,7 +15,6 @@ import type {
   TriggerKindTs,
   WakeEntryDraftTs,
   WakeInvocationTs,
-  WorkspaceToolTs,
 } from "../../bindings";
 import { Mono } from "../../primitives";
 import { registeredPayloadRenderers } from "../../registry";
@@ -75,8 +74,6 @@ const executionModeLabel = (mode: ExecutionModeTs): string => {
   switch (mode) {
     case "substrate_only":
       return "Substrate only";
-    case "workspace":
-      return "Workspace";
   }
 };
 
@@ -109,7 +106,6 @@ interface InspectorProps {
   saving: boolean;
   error: string | null;
   mcpTools: McpToolTs[] | null;
-  workspaceTools: WorkspaceToolTs[] | null;
   relations: RelationTs[] | null;
   toolsError: string | null;
   wakeInvocations: WakeInvocationTs[] | null;
@@ -228,7 +224,6 @@ export const Inspector: Component<InspectorProps> = (props) => {
               (props.selection as { entry_index: number }).entry_index
             }
             mcpTools={props.mcpTools}
-            workspaceTools={props.workspaceTools}
             relations={props.relations}
             toolsError={props.toolsError}
             wakeInvocations={props.wakeInvocations}
@@ -415,7 +410,6 @@ const WakeEntryDetail: Component<{
   draft: WakeEntryDraftTs;
   entryIndex: number;
   mcpTools: McpToolTs[] | null;
-  workspaceTools: WorkspaceToolTs[] | null;
   relations: RelationTs[] | null;
   toolsError: string | null;
   onUpdate: (mutate: (draft: WakeEntryDraftTs) => void) => void;
@@ -627,18 +621,6 @@ const WakeEntryDetail: Component<{
               })
             }
           />
-          <Show when={props.draft.execution_mode === "workspace"}>
-            <WorkspaceToolPicker
-              selected={props.draft.workspace_tool_palette}
-              tools={props.workspaceTools}
-              error={props.toolsError}
-              onChange={(toolIds) =>
-                props.onUpdate((draft) => {
-                  draft.workspace_tool_palette = toolIds;
-                })
-              }
-            />
-          </Show>
         </div>
       </details>
 
@@ -890,44 +872,6 @@ const SubstrateToolPicker: Component<{
       error={props.error}
       loadingLabel="Loading tools..."
       emptyLabel="No MCP tools registered in this build."
-      onChange={props.onChange}
-    />
-  );
-};
-
-const WorkspaceToolPicker: Component<{
-  selected: string[];
-  tools: WorkspaceToolTs[] | null;
-  error: string | null;
-  onChange: (toolIds: string[]) => void;
-}> = (props) => {
-  const options = createMemo<ToolPaletteOption[] | null>(() => {
-    if (!props.tools) return null;
-    const known = new Set((props.tools ?? []).map((t) => t.id));
-    return [
-      ...props.tools.map((tool) => ({
-        id: tool.id,
-        description: tool.description,
-      })),
-      ...props.selected
-        .filter((id) => !known.has(id))
-        .map((id) => ({
-          id,
-          description: "(unknown)",
-          orphan: true,
-        })),
-    ];
-  });
-
-  return (
-    <ToolPaletteSelect
-      label="Workspace tool palette"
-      hint="Filesystem and process tools available when running in workspace mode."
-      selected={props.selected}
-      options={options()}
-      error={props.error}
-      loadingLabel="Loading tools..."
-      emptyLabel="No workspace tools registered in this build."
       onChange={props.onChange}
     />
   );
