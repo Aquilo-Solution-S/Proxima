@@ -375,44 +375,32 @@ pub fn event_ingest_request_from_proto(
         .schema
         .ok_or_else(|| Status::invalid_argument("missing schema"))?;
 
-    let cited_object = pb
-        .cited_object
-        .map(|c| {
+    let citation = match (pb.cited_object, pb.citation_mapping) {
+        (Some(c), Some(m)) => {
             let schema = c
                 .schema
                 .ok_or_else(|| Status::invalid_argument("missing cited_object schema"))?;
-            Result::<_, Status>::Ok(proxima_core::verbs::event_ingest::CitedObjectHint {
+            let object = proxima_core::verbs::event_ingest::CitedObjectHint {
                 schema_id: SchemaId::new(schema.schema_id.clone()),
                 schema_version: SchemaVersion::new(schema.schema_version),
                 content_hash: c
                     .content_hash
                     .try_into()
                     .map_err(|_| Status::invalid_argument("invalid content_hash length"))?,
-            })
-        })
-        .transpose()?
-        .unwrap_or_else(|| proxima_core::verbs::event_ingest::CitedObjectHint {
-            schema_id: SchemaId::new(String::new()),
-            schema_version: SchemaVersion::new(0),
-            content_hash: [0; 32],
-        });
-
-    let citation_mapping = pb
-        .citation_mapping
-        .map(|c| {
-            let schema = c
+            };
+            let schema = m
                 .schema
                 .ok_or_else(|| Status::invalid_argument("missing citation_mapping schema"))?;
-            Result::<_, Status>::Ok(proxima_core::verbs::event_ingest::CitationMappingHint {
+            let mapping = proxima_core::verbs::event_ingest::CitationMappingHint {
                 schema_id: SchemaId::new(schema.schema_id.clone()),
                 schema_version: SchemaVersion::new(schema.schema_version),
-            })
-        })
-        .transpose()?
-        .unwrap_or_else(|| proxima_core::verbs::event_ingest::CitationMappingHint {
-            schema_id: SchemaId::new(String::new()),
-            schema_version: SchemaVersion::new(0),
-        });
+            };
+            Some(proxima_core::verbs::event_ingest::Citation { object, mapping })
+        }
+        (None, None) => None,
+        (None, Some(_)) => return Err(Status::invalid_argument("missing cited_object")),
+        (Some(_), None) => return Err(Status::invalid_argument("missing citation_mapping")),
+    };
 
     Ok(proxima_core::verbs::event_ingest::EventDraft {
         source_id: SourceId::new(pb.source_id.clone()),
@@ -427,8 +415,7 @@ pub fn event_ingest_request_from_proto(
         payload: pb.payload.clone(),
         observed_at: timestamp_from_proto(pb.observed_at)?,
         occurred_at: timestamp_from_proto(pb.occurred_at)?,
-        cited_object,
-        citation_mapping,
+        citation,
     })
 }
 

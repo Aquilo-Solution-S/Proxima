@@ -204,6 +204,11 @@ export type ChatGPTCodexConfigTs = {
 	context_window_tokens: number | null,
 };
 
+export type Citation = {
+	object: CitedObjectHint,
+	mapping: CitationMappingHint,
+};
+
 export type CitationMappingHint = {
 	schema_id: SchemaId,
 	schema_version: SchemaVersion,
@@ -452,8 +457,7 @@ export type EventDraft = {
 	payload: number[],
 	observed_at: string,
 	occurred_at: string,
-	cited_object: CitedObjectHint,
-	citation_mapping: CitationMappingHint,
+	citation: Citation | null,
 };
 
 export type EventHistoryRequest = {

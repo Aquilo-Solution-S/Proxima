@@ -15,7 +15,9 @@ use proxima_core::relation::{
     core_relation_descriptors,
 };
 use proxima_core::storage::Storage;
-use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
+use proxima_core::verbs::event_ingest::{
+    Citation, CitationMappingHint, CitedObjectHint, EventDraft,
+};
 use proxima_core::{
     EntityKind, MemoryId, ModelTier, Owner, Principal, RegisteredRelation, RelationClass, SchemaId,
     SchemaVersion, SourceBatchId, SourceId, WakeEntryGoalScope,
@@ -367,15 +369,17 @@ fn fact_draft(owner: Owner) -> EventDraft {
         payload: b"fact".to_vec(),
         observed_at: now,
         occurred_at: now,
-        cited_object: CitedObjectHint {
-            schema_id: SchemaId::new("proxima-test/cited-v1".into()),
-            schema_version: SchemaVersion::new(1),
-            content_hash: [9u8; 32],
-        },
-        citation_mapping: CitationMappingHint {
-            schema_id: SchemaId::new("proxima-test/citation-v1".into()),
-            schema_version: SchemaVersion::new(1),
-        },
+        citation: Some(Citation {
+            object: CitedObjectHint {
+                schema_id: SchemaId::new("proxima-test/cited-v1".into()),
+                schema_version: SchemaVersion::new(1),
+                content_hash: [9u8; 32],
+            },
+            mapping: CitationMappingHint {
+                schema_id: SchemaId::new("proxima-test/citation-v1".into()),
+                schema_version: SchemaVersion::new(1),
+            },
+        }),
     }
 }
 

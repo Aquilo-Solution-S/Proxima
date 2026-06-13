@@ -23,7 +23,7 @@ use crate::approval::{
     ApprovalDecision, ApprovalEligibleVoter, ApprovalRequirement, ApprovalTargetKind,
     ApprovalVoteVerdict, ApprovalVoterKind,
 };
-use crate::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
+use crate::verbs::event_ingest::{Citation, CitationMappingHint, CitedObjectHint, EventDraft};
 use crate::{
     EdgeAuthorshipKind, EdgeId, EntityKind, FactPayload, FlavorRegistryFrozen, MemoryId, Owner,
     SchemaId, SchemaVersion, SourceBatchId, SourceId, StorageError,
@@ -316,15 +316,17 @@ pub fn chat_fact_event_draft<F: FactPayload + serde::Serialize>(
         payload: payload_bytes,
         observed_at: now,
         occurred_at: now,
-        cited_object: CitedObjectHint {
-            schema_id: SchemaId::new(object_schema.into()),
-            schema_version: SchemaVersion::new(1),
-            content_hash: *content_hash.as_bytes(),
-        },
-        citation_mapping: CitationMappingHint {
-            schema_id: SchemaId::new(whole_schema.into()),
-            schema_version: SchemaVersion::new(1),
-        },
+        citation: Some(Citation {
+            object: CitedObjectHint {
+                schema_id: SchemaId::new(object_schema.into()),
+                schema_version: SchemaVersion::new(1),
+                content_hash: *content_hash.as_bytes(),
+            },
+            mapping: CitationMappingHint {
+                schema_id: SchemaId::new(whole_schema.into()),
+                schema_version: SchemaVersion::new(1),
+            },
+        }),
     })
 }
 

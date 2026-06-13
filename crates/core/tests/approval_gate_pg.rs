@@ -4,7 +4,9 @@ use std::sync::Arc;
 
 use common::{drop_db, fresh_pg, owner_fixture};
 use proxima_core::mcp::McpAuthorContext;
-use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
+use proxima_core::verbs::event_ingest::{
+    Citation, CitationMappingHint, CitedObjectHint, EventDraft,
+};
 use proxima_core::verbs::goal_write::{GoalAuthorship, GoalDraft, GoalState};
 use proxima_core::verbs::query::MemoryStore;
 use proxima_core::{
@@ -451,15 +453,17 @@ async fn insert_fact(
         payload,
         observed_at: now,
         occurred_at: now,
-        cited_object: CitedObjectHint {
-            schema_id: SchemaId::new("test/approval-object-v1".into()),
-            schema_version: SchemaVersion::new(1),
-            content_hash: *blake3::hash(label.as_bytes()).as_bytes(),
-        },
-        citation_mapping: CitationMappingHint {
-            schema_id: SchemaId::new("test/approval-whole-v1".into()),
-            schema_version: SchemaVersion::new(1),
-        },
+        citation: Some(Citation {
+            object: CitedObjectHint {
+                schema_id: SchemaId::new("test/approval-object-v1".into()),
+                schema_version: SchemaVersion::new(1),
+                content_hash: *blake3::hash(label.as_bytes()).as_bytes(),
+            },
+            mapping: CitationMappingHint {
+                schema_id: SchemaId::new("test/approval-whole-v1".into()),
+                schema_version: SchemaVersion::new(1),
+            },
+        }),
     };
     Ok(pg.ingest_event_atomic(&draft).await?.memory_id.into_inner())
 }

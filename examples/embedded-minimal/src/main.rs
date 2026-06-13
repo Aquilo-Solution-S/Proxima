@@ -4,7 +4,9 @@
 mod flavor;
 
 use proxima::Proxima;
-use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
+use proxima_core::verbs::event_ingest::{
+    Citation, CitationMappingHint, CitedObjectHint, EventDraft,
+};
 use proxima_core::verbs::query::{EntityKind, QueryRequest, QueryResponse};
 use proxima_core::{
     FactPayload, SchemaId, SchemaVersion, SourceBatchId, SourceId, UPLOADED_BLOB_SCHEMA_ID,
@@ -41,15 +43,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         payload: payload_bytes,
         observed_at: now,
         occurred_at: now,
-        cited_object: CitedObjectHint {
-            schema_id: SchemaId::new(UPLOADED_BLOB_SCHEMA_ID.into()),
-            schema_version: SchemaVersion::new(1),
-            content_hash,
-        },
-        citation_mapping: CitationMappingHint {
-            schema_id: SchemaId::new(CORE_CITATION_SCHEMA_ID.into()),
-            schema_version: SchemaVersion::new(1),
-        },
+        citation: Some(Citation {
+            object: CitedObjectHint {
+                schema_id: SchemaId::new(UPLOADED_BLOB_SCHEMA_ID.into()),
+                schema_version: SchemaVersion::new(1),
+                content_hash,
+            },
+            mapping: CitationMappingHint {
+                schema_id: SchemaId::new(CORE_CITATION_SCHEMA_ID.into()),
+                schema_version: SchemaVersion::new(1),
+            },
+        }),
     };
 
     let outcome = booted.engine.event_ingest(&authz, draft).await?;
