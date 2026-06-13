@@ -4313,7 +4313,6 @@ dependencies = [
  "schemars 1.2.1",
  "serde",
  "serde_json",
- "sha2 0.10.9",
  "specta",
  "sqlx",
  "tempfile",
@@ -4321,8 +4320,6 @@ dependencies = [
  "time",
  "tokio",
  "tokio-stream",
- "toml 0.8.2",
- "tracing",
  "tree-sitter",
  "tree-sitter-rust",
  "tree-sitter-typescript",
@@ -4353,7 +4350,6 @@ dependencies = [
  "ciborium",
  "futures",
  "futures-util",
- "libc",
  "proxima-pg-testkit",
  "proxima-storage-pg",
  "reqwest 0.12.28",
@@ -4362,7 +4358,6 @@ dependencies = [
  "serde_json",
  "specta",
  "sqlx",
- "tempfile",
  "thiserror 2.0.18",
  "time",
  "tokio",
@@ -4424,7 +4419,6 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",
- "tracing",
  "uuid",
 ]
 
@@ -4437,8 +4431,6 @@ dependencies = [
  "reqwest 0.12.28",
  "serde",
  "serde_json",
- "thiserror 2.0.18",
- "tracing",
 ]
 
 [[package]]
@@ -4502,15 +4494,12 @@ version = "0.1.0"
 dependencies = [
  "apple-native-keyring-store",
  "async-trait",
- "aws-config",
- "aws-sdk-s3",
  "base64 0.22.1",
  "blake3",
  "ciborium",
  "dbus-secret-service-keyring-store",
  "dotenvy",
  "futures-util",
- "hex",
  "keyring-core",
  "proxima",
  "proxima-agent-memory",
@@ -4539,7 +4528,6 @@ dependencies = [
  "thiserror 2.0.18",
  "time",
  "tokio",
- "tokio-stream",
  "toml 1.1.2+spec-1.1.0",
  "tracing",
  "tracing-chrome",
