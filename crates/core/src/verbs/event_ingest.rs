@@ -24,6 +24,12 @@ pub struct CitationMappingHint {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
+pub struct Citation {
+    pub object: CitedObjectHint,
+    pub mapping: CitationMappingHint,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct EventDraft {
     pub source_id: SourceId,
     pub source_batch_id: SourceBatchId,
@@ -36,8 +42,7 @@ pub struct EventDraft {
     pub payload: Vec<u8>,
     pub observed_at: time::OffsetDateTime,
     pub occurred_at: time::OffsetDateTime,
-    pub cited_object: CitedObjectHint,
-    pub citation_mapping: CitationMappingHint,
+    pub citation: Option<Citation>,
 }
 
 /// Proof that an event ingest passed authorization + schema

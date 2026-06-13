@@ -297,7 +297,9 @@ async fn ingest_fact_memory(
     schema_id: &str,
     payload: &[u8],
 ) -> Result<MemoryId, Box<dyn std::error::Error>> {
-    use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
+    use proxima_core::verbs::event_ingest::{
+        Citation, CitationMappingHint, CitedObjectHint, EventDraft,
+    };
 
     let now = time::OffsetDateTime::now_utc();
     let outcome = pg
@@ -311,15 +313,17 @@ async fn ingest_fact_memory(
             payload: payload.to_vec(),
             observed_at: now,
             occurred_at: now,
-            cited_object: CitedObjectHint {
-                schema_id: SchemaId::new("test/search-object-v1".into()),
-                schema_version: SchemaVersion::new(1),
-                content_hash: *blake3::hash(payload).as_bytes(),
-            },
-            citation_mapping: CitationMappingHint {
-                schema_id: SchemaId::new("test/search-whole-v1".into()),
-                schema_version: SchemaVersion::new(1),
-            },
+            citation: Some(Citation {
+                object: CitedObjectHint {
+                    schema_id: SchemaId::new("test/search-object-v1".into()),
+                    schema_version: SchemaVersion::new(1),
+                    content_hash: *blake3::hash(payload).as_bytes(),
+                },
+                mapping: CitationMappingHint {
+                    schema_id: SchemaId::new("test/search-whole-v1".into()),
+                    schema_version: SchemaVersion::new(1),
+                },
+            }),
         })
         .await?;
     Ok(outcome.memory_id)

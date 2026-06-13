@@ -6,7 +6,9 @@ use std::sync::Arc;
 use proxima_core::engine::Engine;
 use proxima_core::error::ErrorCode;
 use proxima_core::storage::Storage;
-use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
+use proxima_core::verbs::event_ingest::{
+    Citation, CitationMappingHint, CitedObjectHint, EventDraft,
+};
 use proxima_core::verbs::query::MemoryStore;
 use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaInfo};
 use proxima_core::{
@@ -64,15 +66,17 @@ fn fresh_draft(owner: Owner) -> EventDraft {
         payload: format!("hello world {}", Uuid::now_v7()).into_bytes(),
         observed_at: now,
         occurred_at: now,
-        cited_object: CitedObjectHint {
-            schema_id: SchemaId::new("test/cited_blob".into()),
-            schema_version: SchemaVersion::new(1),
-            content_hash: [42u8; 32],
-        },
-        citation_mapping: CitationMappingHint {
-            schema_id: SchemaId::new("test/citation_blob".into()),
-            schema_version: SchemaVersion::new(1),
-        },
+        citation: Some(Citation {
+            object: CitedObjectHint {
+                schema_id: SchemaId::new("test/cited_blob".into()),
+                schema_version: SchemaVersion::new(1),
+                content_hash: [42u8; 32],
+            },
+            mapping: CitationMappingHint {
+                schema_id: SchemaId::new("test/citation_blob".into()),
+                schema_version: SchemaVersion::new(1),
+            },
+        }),
     }
 }
 

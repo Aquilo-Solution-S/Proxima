@@ -1,5 +1,7 @@
 use proxima_core::mcp::{McpTool, McpToolCtx, McpToolError};
-use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
+use proxima_core::verbs::event_ingest::{
+    Citation, CitationMappingHint, CitedObjectHint, EventDraft,
+};
 use proxima_core::{FactPayload, SchemaId, SchemaVersion, SourceBatchId, SourceId};
 use proxima_storage_pg::verbs::event_ingest::ingest_event_in_tx;
 use schemars::JsonSchema;
@@ -94,15 +96,17 @@ impl McpTool for RememberTool {
                 payload: payload_bytes,
                 observed_at,
                 occurred_at: observed_at,
-                cited_object: CitedObjectHint {
-                    schema_id: SchemaId::new(NOTE_CITED_OBJECT_SCHEMA.into()),
-                    schema_version: SchemaVersion::new(1),
-                    content_hash: *blake3::hash(body.as_bytes()).as_bytes(),
-                },
-                citation_mapping: CitationMappingHint {
-                    schema_id: SchemaId::new(NOTE_CITATION_MAPPING_SCHEMA.into()),
-                    schema_version: SchemaVersion::new(1),
-                },
+                citation: Some(Citation {
+                    object: CitedObjectHint {
+                        schema_id: SchemaId::new(NOTE_CITED_OBJECT_SCHEMA.into()),
+                        schema_version: SchemaVersion::new(1),
+                        content_hash: *blake3::hash(body.as_bytes()).as_bytes(),
+                    },
+                    mapping: CitationMappingHint {
+                        schema_id: SchemaId::new(NOTE_CITATION_MAPPING_SCHEMA.into()),
+                        schema_version: SchemaVersion::new(1),
+                    },
+                }),
             };
 
             let mut tx = ctx.pool.begin().await.map_err(map_storage)?;

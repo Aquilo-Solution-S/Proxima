@@ -1,4 +1,5 @@
 use super::Engine;
+use crate::SchemaVersion;
 use crate::authz::{AuthzContext, Role};
 use crate::error::ProtocolError;
 use crate::storage::StorageError;
@@ -14,9 +15,9 @@ impl Engine {
     /// # Errors
     ///
     /// Returns `Forbidden` when the context cannot access `draft.principal` or
-    /// lacks the source-ingest role, `UnknownSchema` when any of the three
-    /// draft schemas isn't registered, or `Internal` when the atomic ingest
-    /// fails.
+    /// lacks the source-ingest role, `UnknownSchema` when the Fact schema or
+    /// provided citation schemas are not registered, or `Internal` when the
+    /// atomic ingest fails.
     pub async fn event_ingest(
         &self,
         authz: &AuthzContext,
@@ -37,8 +38,8 @@ impl Engine {
     /// # Errors
     ///
     /// Returns `Forbidden` when the context cannot access `draft.principal`
-    /// or lacks `role`, or `UnknownSchema` when any of the three draft
-    /// schemas isn't registered.
+    /// or lacks `role`, or `UnknownSchema` when the Fact schema or provided
+    /// citation schemas are not registered.
     pub fn authorize_event_ingest(
         &self,
         authz: &AuthzContext,
@@ -48,26 +49,32 @@ impl Engine {
         super::authorize(authz, &draft.principal, role)?;
         let owner = authz.scoped_owner(draft.principal.clone());
         draft.stamp_owner(owner);
-        // Three schema validations: fact, cited_object, citation_mapping.
-        for (sid, ver) in [
-            (&draft.schema_id, draft.schema_version),
-            (
-                &draft.cited_object.schema_id,
-                draft.cited_object.schema_version,
-            ),
-            (
-                &draft.citation_mapping.schema_id,
-                draft.citation_mapping.schema_version,
-            ),
-        ] {
-            if self.registry.lookup(sid, ver).is_none() {
-                return Err(ProtocolError::unknown_schema(
-                    sid.as_str(),
-                    ver.into_inner(),
-                ));
-            }
+        self.ensure_event_ingest_schema(&draft.schema_id, draft.schema_version)?;
+        if let Some(citation) = &draft.citation {
+            self.ensure_event_ingest_schema(
+                &citation.object.schema_id,
+                citation.object.schema_version,
+            )?;
+            self.ensure_event_ingest_schema(
+                &citation.mapping.schema_id,
+                citation.mapping.schema_version,
+            )?;
         }
         Ok(AuthorizedEventIngest::new(draft))
+    }
+
+    fn ensure_event_ingest_schema(
+        &self,
+        schema_id: &crate::SchemaId,
+        schema_version: SchemaVersion,
+    ) -> Result<(), ProtocolError> {
+        if self.registry.lookup(schema_id, schema_version).is_none() {
+            return Err(ProtocolError::unknown_schema(
+                schema_id.as_str(),
+                schema_version.into_inner(),
+            ));
+        }
+        Ok(())
     }
 
     /// Atomic wake-trace persistence. The storage layer writes the
