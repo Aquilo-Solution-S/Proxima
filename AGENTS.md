@@ -93,6 +93,10 @@ Use the smallest relevant check:
 | Shell frontend | `pnpm --filter proxima-shell typecheck` |
 | Shell build | `pnpm --filter proxima-shell build` |
 
+`cargo nextest run` is the fast path for the Rust suite; `cargo test`
+still works as fallback. PG tests clone a pre-migrated template DB.
+Single-test selection: `cargo nextest run -E 'test(<name>)'`.
+
 Frontend dev server: `pnpm --filter proxima-shell dev --host 127.0.0.1`.
 If port `1420` is occupied, Vite will choose another port.
 
