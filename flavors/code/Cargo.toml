@@ -22,13 +22,11 @@ uuid = { workspace = true }
 time = { workspace = true }
 blake3 = { workspace = true }
 hex = { workspace = true }
-sha2 = { workspace = true }
 tree-sitter = { workspace = true }
 tree-sitter-rust = { workspace = true }
 tree-sitter-typescript = { workspace = true }
 sqlx = { workspace = true }
 thiserror = { workspace = true }
-tracing = { workspace = true }
 specta = { workspace = true }
 tokio = { workspace = true, features = ["fs", "process"] }
 
@@ -41,7 +39,6 @@ proxima-pg-testkit = { path = "../../crates/pg-testkit" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "fs", "process"] }
 tokio-stream = { workspace = true }
 tempfile = "3"
-toml = "0.8"
 
 [lints]
 workspace = true
