@@ -1,8 +1,6 @@
 //! Register / replace `InferenceTarget` rows.
 
-mod common;
-
-use common::{drop_db, fresh_pg, owner_fixture};
+use crate::common::{drop_db, fresh_pg, owner_fixture};
 use proxima_core::{
     InferenceTargetConfig, MistralChatConfig, RegisterInferenceTargetRequest, Storage,
 };

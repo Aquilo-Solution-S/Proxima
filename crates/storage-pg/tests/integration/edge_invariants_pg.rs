@@ -1,6 +1,4 @@
-mod common;
-
-use common::personality::{
+use crate::common::personality::{
     TEST_ABSTRACTION_SCHEMA, TEST_PERSPECTIVE_SCHEMA, apply_test_schemas, ingest_other_fact,
     ingest_test_fact,
 };
@@ -103,7 +101,7 @@ async fn insert_memory_edge(
 
 #[tokio::test]
 async fn trigger_rejects_upward_edges_and_semantic_fact_to_fact() {
-    let Some((pg, db_name)) = common::fresh_pg().await else {
+    let Some((pg, db_name)) = crate::common::fresh_pg().await else {
         return;
     };
 
@@ -111,7 +109,7 @@ async fn trigger_rejects_upward_edges_and_semantic_fact_to_fact() {
         pg.run_migrations().await?;
         apply_test_schemas(pg.pool()).await?;
 
-        let owner = common::owner_fixture();
+        let owner = crate::common::owner_fixture();
         let fact_a = ingest_test_fact(&pg, &owner, "a").await;
         let fact_b = ingest_test_fact(&pg, &owner, "b").await;
         let perspective = insert_derived_memory(&pg, &owner, EntityKind::Perspective).await?;
@@ -156,13 +154,13 @@ async fn trigger_rejects_upward_edges_and_semantic_fact_to_fact() {
     }
     .await;
 
-    let _ = common::drop_db(&db_name).await;
+    let _ = crate::common::drop_db(&db_name).await;
     result.expect("edge invariant trigger rejects invalid edge shapes");
 }
 
 #[tokio::test]
 async fn trigger_rejects_endpoint_kind_and_owner_mismatch() {
-    let Some((pg, db_name)) = common::fresh_pg().await else {
+    let Some((pg, db_name)) = crate::common::fresh_pg().await else {
         return;
     };
 
@@ -170,7 +168,7 @@ async fn trigger_rejects_endpoint_kind_and_owner_mismatch() {
         pg.run_migrations().await?;
         apply_test_schemas(pg.pool()).await?;
 
-        let owner = common::owner_fixture();
+        let owner = crate::common::owner_fixture();
         let other = other_owner();
         let fact = ingest_test_fact(&pg, &owner, "a").await;
         let other_fact = ingest_test_fact(&pg, &other, "b").await;
@@ -204,13 +202,13 @@ async fn trigger_rejects_endpoint_kind_and_owner_mismatch() {
     }
     .await;
 
-    let _ = common::drop_db(&db_name).await;
+    let _ = crate::common::drop_db(&db_name).await;
     result.expect("edge invariant trigger rejects endpoint lies and cross-owner edges");
 }
 
 #[tokio::test]
 async fn trigger_allows_cross_domain_fact_set_abstraction() {
-    let Some((pg, db_name)) = common::fresh_pg().await else {
+    let Some((pg, db_name)) = crate::common::fresh_pg().await else {
         return;
     };
 
@@ -218,7 +216,7 @@ async fn trigger_allows_cross_domain_fact_set_abstraction() {
         pg.run_migrations().await?;
         apply_test_schemas(pg.pool()).await?;
 
-        let owner = common::owner_fixture();
+        let owner = crate::common::owner_fixture();
         let fact_a = ingest_test_fact(&pg, &owner, "a").await;
         let fact_b = ingest_other_fact(&pg, &owner, "b").await;
         let abstraction = insert_derived_memory(&pg, &owner, EntityKind::Abstraction).await?;
@@ -247,6 +245,6 @@ async fn trigger_allows_cross_domain_fact_set_abstraction() {
     }
     .await;
 
-    let _ = common::drop_db(&db_name).await;
+    let _ = crate::common::drop_db(&db_name).await;
     result.expect("cross-domain facts may be connected through an Abstraction");
 }

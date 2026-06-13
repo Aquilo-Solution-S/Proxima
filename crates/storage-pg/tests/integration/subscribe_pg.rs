@@ -1,11 +1,9 @@
 //! End-to-end subscribe verb test against a transient PG database.
 
-mod common;
-
 use std::sync::Arc;
 use std::time::Duration;
 
-use common::{create_db, db_url, drop_db};
+use crate::common::{create_db, db_url, drop_db};
 use proxima_core::engine::Engine;
 use proxima_core::storage::Storage;
 use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};

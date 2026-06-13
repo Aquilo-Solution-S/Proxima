@@ -3,9 +3,7 @@
 //! Covers: open-then-close, idempotent re-close, cross-owner reject,
 //! `NotFound` for unknown batches.
 
-mod common;
-
-use common::{create_db, db_url, drop_db};
+use crate::common::{create_db, db_url, drop_db};
 use proxima_core::engine::Engine;
 use proxima_core::error::ErrorCode;
 use proxima_core::storage::Storage;

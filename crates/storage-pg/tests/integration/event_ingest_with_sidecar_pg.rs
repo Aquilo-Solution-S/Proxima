@@ -1,11 +1,9 @@
 //! Auth-gated `EventIngest` plus caller-owned sidecar transaction tests.
 
-mod common;
-
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use common::{drop_db, fresh_pg, owner_fixture};
+use crate::common::{drop_db, fresh_pg, owner_fixture};
 use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
 use proxima_core::verbs::query::MemoryStore;
 use proxima_core::verbs::schema::{PayloadKind, SchemaInfo};

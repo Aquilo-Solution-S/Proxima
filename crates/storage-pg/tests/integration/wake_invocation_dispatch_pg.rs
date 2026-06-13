@@ -1,10 +1,8 @@
 //! Phase 1d: Wake invocation dispatch columns survive INSERT/UPDATE
 //! roundtrip via the storage trait.
 
-mod common;
-
-use common::personality::ingest_test_fact;
-use common::{drop_db, fresh_pg, owner_fixture};
+use crate::common::personality::ingest_test_fact;
+use crate::common::{drop_db, fresh_pg, owner_fixture};
 use proxima_core::personality::{
     InstantiatePersonalityRequest, ListWakeInvocationsRequest, PersonalityInstanceId,
     SetWakeEntriesRequest, WakeEntryAuthoredBy, WakeEntryDraft, WakeEntryTriggerKind,

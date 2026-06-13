@@ -2,9 +2,7 @@
 
 #![allow(clippy::too_many_lines)]
 
-mod common;
-
-use common::{drop_db, fresh_pg, owner_fixture};
+use crate::common::{drop_db, fresh_pg, owner_fixture};
 use proxima_core::personality::{
     InstantiatePersonalityRequest, PersonalityInstanceId, PersonalityMemoryDraft,
     PersonalityMemoryKind, PersonalityRef, PersonalityWriteRequest,
