@@ -1,9 +1,62 @@
--- Baseline migration for the proxima_core schema. Generated with
--- `pg_dump --schema-only --no-owner --no-privileges --no-comments -n proxima_core`
--- and sanitized (psql session directives stripped).
--- Squashed from pre-2026-05-16 migration history; do not edit by hand.
+-- Proxima core schema — v0.0.1 single init.
+-- Squashed 2026-06-13 from 15 dev migrations; proven byte-equivalent to applying
+-- them in order (pg_dump --schema-only diff). Regenerate from a migrated DB if the
+-- schema changes — do not hand-edit.
 
 CREATE SCHEMA proxima_core;
+
+
+--
+-- Name: approval_decision; Type: TYPE; Schema: proxima_core; Owner: -
+--
+
+CREATE TYPE proxima_core.approval_decision AS ENUM (
+    'approved',
+    'blocked'
+);
+
+
+--
+-- Name: approval_requirement_kind; Type: TYPE; Schema: proxima_core; Owner: -
+--
+
+CREATE TYPE proxima_core.approval_requirement_kind AS ENUM (
+    'all_of_voters',
+    'role_quorum'
+);
+
+
+--
+-- Name: approval_target_kind; Type: TYPE; Schema: proxima_core; Owner: -
+--
+
+CREATE TYPE proxima_core.approval_target_kind AS ENUM (
+    'fact',
+    'abstraction',
+    'perspective',
+    'goal'
+);
+
+
+--
+-- Name: approval_vote_verdict; Type: TYPE; Schema: proxima_core; Owner: -
+--
+
+CREATE TYPE proxima_core.approval_vote_verdict AS ENUM (
+    'approved',
+    'request_changes',
+    'abstain'
+);
+
+
+--
+-- Name: approval_voter_kind; Type: TYPE; Schema: proxima_core; Owner: -
+--
+
+CREATE TYPE proxima_core.approval_voter_kind AS ENUM (
+    'personality',
+    'shell_author'
+);
 
 
 --
@@ -113,6 +166,19 @@ CREATE TYPE proxima_core.inference_target_kind AS ENUM (
 
 
 --
+-- Name: intervention_decision_kind; Type: TYPE; Schema: proxima_core; Owner: -
+--
+
+CREATE TYPE proxima_core.intervention_decision_kind AS ENUM (
+    'continue',
+    'stop',
+    'redirect',
+    'decompose',
+    'accept_terminal'
+);
+
+
+--
 -- Name: memory_operator_kind; Type: TYPE; Schema: proxima_core; Owner: -
 --
 
@@ -185,8 +251,7 @@ CREATE TYPE proxima_core.wake_authored_by AS ENUM (
 --
 
 CREATE TYPE proxima_core.wake_execution_mode AS ENUM (
-    'substrate_only',
-    'workspace'
+    'substrate_only'
 );
 
 
@@ -505,7 +570,9 @@ END;
 $$;
 
 
+SET default_tablespace = '';
 
+SET default_table_access_method = heap;
 
 --
 -- Name: a2p_invocations; Type: TABLE; Schema: proxima_core; Owner: -
@@ -526,6 +593,96 @@ CREATE TABLE proxima_core.a2p_invocations (
     CONSTRAINT a2p_invocations_context_hash_chk CHECK ((octet_length(context_hash) = 32)),
     CONSTRAINT a2p_invocations_input_hash_chk CHECK ((octet_length(input_hash) = 32)),
     CONSTRAINT a2p_invocations_wake_chain_depth_check CHECK ((wake_chain_depth >= 0))
+);
+
+
+--
+-- Name: approval_decision_v1; Type: TABLE; Schema: proxima_core; Owner: -
+--
+
+CREATE TABLE proxima_core.approval_decision_v1 (
+    memory_id uuid NOT NULL,
+    policy_memory_id uuid NOT NULL,
+    target_kind proxima_core.approval_target_kind NOT NULL,
+    target_memory_id uuid,
+    target_goal_id uuid,
+    decision proxima_core.approval_decision NOT NULL,
+    reason text NOT NULL,
+    counted_votes_json jsonb NOT NULL,
+    idempotency_key text NOT NULL,
+    decided_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT approval_decision_v1_idempotency_key_chk CHECK (((char_length(idempotency_key) >= 1) AND (char_length(idempotency_key) <= 240))),
+    CONSTRAINT approval_decision_v1_reason_chk CHECK (((char_length(reason) >= 1) AND (char_length(reason) <= 4000))),
+    CONSTRAINT approval_decision_v1_target_chk CHECK ((((target_kind = 'goal'::proxima_core.approval_target_kind) AND (target_memory_id IS NULL) AND (target_goal_id IS NOT NULL)) OR ((target_kind <> 'goal'::proxima_core.approval_target_kind) AND (target_memory_id IS NOT NULL) AND (target_goal_id IS NULL))))
+);
+
+
+--
+-- Name: approval_policy_v1; Type: TABLE; Schema: proxima_core; Owner: -
+--
+
+CREATE TABLE proxima_core.approval_policy_v1 (
+    memory_id uuid NOT NULL,
+    target_kind proxima_core.approval_target_kind NOT NULL,
+    target_memory_id uuid,
+    target_goal_id uuid,
+    title text NOT NULL,
+    summary text NOT NULL,
+    eligible_voters_json jsonb NOT NULL,
+    requirements_json jsonb NOT NULL,
+    idempotency_key text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT approval_policy_v1_idempotency_key_chk CHECK (((char_length(idempotency_key) >= 1) AND (char_length(idempotency_key) <= 240))),
+    CONSTRAINT approval_policy_v1_summary_chk CHECK (((char_length(summary) >= 1) AND (char_length(summary) <= 4000))),
+    CONSTRAINT approval_policy_v1_target_chk CHECK ((((target_kind = 'goal'::proxima_core.approval_target_kind) AND (target_memory_id IS NULL) AND (target_goal_id IS NOT NULL)) OR ((target_kind <> 'goal'::proxima_core.approval_target_kind) AND (target_memory_id IS NOT NULL) AND (target_goal_id IS NULL)))),
+    CONSTRAINT approval_policy_v1_title_chk CHECK (((char_length(title) >= 1) AND (char_length(title) <= 300)))
+);
+
+
+--
+-- Name: approval_vote_v1; Type: TABLE; Schema: proxima_core; Owner: -
+--
+
+CREATE TABLE proxima_core.approval_vote_v1 (
+    memory_id uuid NOT NULL,
+    policy_memory_id uuid NOT NULL,
+    voter_key text NOT NULL,
+    voter_kind proxima_core.approval_voter_kind NOT NULL,
+    role text,
+    personality_instance_id uuid,
+    self_perspective_memory_id uuid,
+    master_token_id uuid,
+    verdict proxima_core.approval_vote_verdict NOT NULL,
+    rationale text NOT NULL,
+    idempotency_key text NOT NULL,
+    voted_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT approval_vote_v1_idempotency_key_chk CHECK (((char_length(idempotency_key) >= 1) AND (char_length(idempotency_key) <= 240))),
+    CONSTRAINT approval_vote_v1_rationale_chk CHECK (((char_length(rationale) >= 1) AND (char_length(rationale) <= 4000))),
+    CONSTRAINT approval_vote_v1_role_chk CHECK (((role IS NULL) OR ((char_length(role) >= 1) AND (char_length(role) <= 120)))),
+    CONSTRAINT approval_vote_v1_voter_key_chk CHECK (((char_length(voter_key) >= 1) AND (char_length(voter_key) <= 120))),
+    CONSTRAINT approval_vote_v1_voter_shape_chk CHECK ((((voter_kind = 'personality'::proxima_core.approval_voter_kind) AND (personality_instance_id IS NOT NULL) AND (self_perspective_memory_id IS NOT NULL) AND (master_token_id IS NULL)) OR ((voter_kind = 'shell_author'::proxima_core.approval_voter_kind) AND (personality_instance_id IS NULL) AND (self_perspective_memory_id IS NOT NULL) AND (master_token_id IS NOT NULL))))
+);
+
+
+--
+-- Name: blocked_wake_candidates; Type: TABLE; Schema: proxima_core; Owner: -
+--
+
+CREATE TABLE proxima_core.blocked_wake_candidates (
+    owner_principal_kind proxima_core.owner_principal_kind NOT NULL,
+    owner_principal_id uuid NOT NULL,
+    owner_org_id uuid NOT NULL,
+    personality_instance_id uuid NOT NULL,
+    wake_entry_id uuid NOT NULL,
+    change_event_seq uuid NOT NULL,
+    triggering_memory_id uuid NOT NULL,
+    dependency_memory_id uuid NOT NULL,
+    dependency_schema_id text NOT NULL,
+    reason text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT blocked_wake_candidates_dependency_schema_chk CHECK ((char_length(dependency_schema_id) >= 1)),
+    CONSTRAINT blocked_wake_candidates_reason_chk CHECK ((char_length(reason) >= 1))
 );
 
 
@@ -556,6 +713,146 @@ CREATE TABLE proxima_core.change_event (
     edge_target_goal_id uuid,
     entity_personality_instance_id uuid,
     wake_chain_depth smallint DEFAULT 0 NOT NULL
+);
+
+
+--
+-- Name: chat_compaction_v1; Type: TABLE; Schema: proxima_core; Owner: -
+--
+
+CREATE TABLE proxima_core.chat_compaction_v1 (
+    memory_id uuid NOT NULL,
+    thread_key text NOT NULL,
+    compacted_by_personality_instance_id uuid NOT NULL,
+    compacted_by_self_perspective_memory_id uuid NOT NULL,
+    summary text NOT NULL,
+    included_memory_ids uuid[] DEFAULT '{}'::uuid[] NOT NULL,
+    context_memory_ids_used uuid[] DEFAULT '{}'::uuid[] NOT NULL,
+    idempotency_key text NOT NULL,
+    compacted_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT chat_compaction_v1_idempotency_key_chk CHECK (((char_length(idempotency_key) >= 1) AND (char_length(idempotency_key) <= 240))),
+    CONSTRAINT chat_compaction_v1_summary_chk CHECK (((char_length(summary) >= 1) AND (char_length(summary) <= 20000))),
+    CONSTRAINT chat_compaction_v1_thread_key_chk CHECK (((char_length(thread_key) >= 1) AND (char_length(thread_key) <= 240)))
+);
+
+
+--
+-- Name: chat_end_requested_v1; Type: TABLE; Schema: proxima_core; Owner: -
+--
+
+CREATE TABLE proxima_core.chat_end_requested_v1 (
+    memory_id uuid NOT NULL,
+    thread_key text NOT NULL,
+    target_personality_instance_id uuid NOT NULL,
+    target_self_perspective_memory_id uuid NOT NULL,
+    requested_by_self_perspective_memory_id uuid NOT NULL,
+    reason text,
+    idempotency_key text NOT NULL,
+    requested_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT chat_end_requested_v1_idempotency_key_chk CHECK (((char_length(idempotency_key) >= 1) AND (char_length(idempotency_key) <= 240))),
+    CONSTRAINT chat_end_requested_v1_reason_chk CHECK (((reason IS NULL) OR ((char_length(reason) >= 1) AND (char_length(reason) <= 4000)))),
+    CONSTRAINT chat_end_requested_v1_thread_key_chk CHECK (((char_length(thread_key) >= 1) AND (char_length(thread_key) <= 240)))
+);
+
+
+--
+-- Name: chat_ended_v1; Type: TABLE; Schema: proxima_core; Owner: -
+--
+
+CREATE TABLE proxima_core.chat_ended_v1 (
+    memory_id uuid NOT NULL,
+    thread_key text NOT NULL,
+    request_memory_id uuid NOT NULL,
+    ended_by_personality_instance_id uuid NOT NULL,
+    ended_by_self_perspective_memory_id uuid NOT NULL,
+    summary_memory_id uuid NOT NULL,
+    idempotency_key text NOT NULL,
+    ended_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT chat_ended_v1_idempotency_key_chk CHECK (((char_length(idempotency_key) >= 1) AND (char_length(idempotency_key) <= 240))),
+    CONSTRAINT chat_ended_v1_thread_key_chk CHECK (((char_length(thread_key) >= 1) AND (char_length(thread_key) <= 240)))
+);
+
+
+--
+-- Name: chat_message_v1; Type: TABLE; Schema: proxima_core; Owner: -
+--
+
+CREATE TABLE proxima_core.chat_message_v1 (
+    memory_id uuid NOT NULL,
+    thread_key text NOT NULL,
+    message text NOT NULL,
+    target_personality_instance_id uuid NOT NULL,
+    target_self_perspective_memory_id uuid NOT NULL,
+    sent_by_self_perspective_memory_id uuid NOT NULL,
+    parent_memory_id uuid,
+    context_memory_ids uuid[] DEFAULT '{}'::uuid[] NOT NULL,
+    context_goal_ids uuid[] DEFAULT '{}'::uuid[] NOT NULL,
+    idempotency_key text NOT NULL,
+    sent_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT chat_message_v1_idempotency_key_chk CHECK (((char_length(idempotency_key) >= 1) AND (char_length(idempotency_key) <= 240))),
+    CONSTRAINT chat_message_v1_message_chk CHECK (((char_length(message) >= 1) AND (char_length(message) <= 8000))),
+    CONSTRAINT chat_message_v1_thread_key_chk CHECK (((char_length(thread_key) >= 1) AND (char_length(thread_key) <= 240)))
+);
+
+
+--
+-- Name: chat_reply_v1; Type: TABLE; Schema: proxima_core; Owner: -
+--
+
+CREATE TABLE proxima_core.chat_reply_v1 (
+    memory_id uuid NOT NULL,
+    message_memory_id uuid NOT NULL,
+    thread_key text NOT NULL,
+    reply text NOT NULL,
+    replied_by_personality_instance_id uuid NOT NULL,
+    replied_by_self_perspective_memory_id uuid NOT NULL,
+    context_memory_ids_used uuid[] DEFAULT '{}'::uuid[] NOT NULL,
+    idempotency_key text NOT NULL,
+    replied_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT chat_reply_v1_idempotency_key_chk CHECK (((char_length(idempotency_key) >= 1) AND (char_length(idempotency_key) <= 240))),
+    CONSTRAINT chat_reply_v1_reply_chk CHECK (((char_length(reply) >= 1) AND (char_length(reply) <= 12000))),
+    CONSTRAINT chat_reply_v1_thread_key_chk CHECK (((char_length(thread_key) >= 1) AND (char_length(thread_key) <= 240)))
+);
+
+
+--
+-- Name: chat_started_v1; Type: TABLE; Schema: proxima_core; Owner: -
+--
+
+CREATE TABLE proxima_core.chat_started_v1 (
+    memory_id uuid NOT NULL,
+    thread_key text NOT NULL,
+    started_by_self_perspective_memory_id uuid NOT NULL,
+    target_personality_instance_id uuid NOT NULL,
+    target_self_perspective_memory_id uuid NOT NULL,
+    title text,
+    idempotency_key text NOT NULL,
+    started_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT chat_started_v1_idempotency_key_chk CHECK (((char_length(idempotency_key) >= 1) AND (char_length(idempotency_key) <= 240))),
+    CONSTRAINT chat_started_v1_thread_key_chk CHECK (((char_length(thread_key) >= 1) AND (char_length(thread_key) <= 240))),
+    CONSTRAINT chat_started_v1_title_chk CHECK (((title IS NULL) OR ((char_length(title) >= 1) AND (char_length(title) <= 240))))
+);
+
+
+--
+-- Name: chat_summary_v1; Type: TABLE; Schema: proxima_core; Owner: -
+--
+
+CREATE TABLE proxima_core.chat_summary_v1 (
+    memory_id uuid NOT NULL,
+    thread_key text NOT NULL,
+    request_memory_id uuid NOT NULL,
+    ended_memory_id uuid NOT NULL,
+    summarized_by_personality_instance_id uuid NOT NULL,
+    summarized_by_self_perspective_memory_id uuid NOT NULL,
+    summary text NOT NULL,
+    included_memory_ids uuid[] DEFAULT '{}'::uuid[] NOT NULL,
+    context_memory_ids_used uuid[] DEFAULT '{}'::uuid[] NOT NULL,
+    idempotency_key text NOT NULL,
+    summarized_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT chat_summary_v1_idempotency_key_chk CHECK (((char_length(idempotency_key) >= 1) AND (char_length(idempotency_key) <= 240))),
+    CONSTRAINT chat_summary_v1_summary_chk CHECK (((char_length(summary) >= 1) AND (char_length(summary) <= 20000))),
+    CONSTRAINT chat_summary_v1_thread_key_chk CHECK (((char_length(thread_key) >= 1) AND (char_length(thread_key) <= 240)))
 );
 
 
@@ -825,6 +1122,53 @@ CREATE TABLE proxima_core.inference_tier_bindings (
 
 
 --
+-- Name: intervention_decision_v1; Type: TABLE; Schema: proxima_core; Owner: -
+--
+
+CREATE TABLE proxima_core.intervention_decision_v1 (
+    memory_id uuid NOT NULL,
+    intervention_request_memory_id uuid NOT NULL,
+    decision proxima_core.intervention_decision_kind NOT NULL,
+    grant_rounds integer,
+    redirect_personality_instance_id uuid,
+    rationale text NOT NULL,
+    decided_at timestamp with time zone DEFAULT now() NOT NULL,
+    idempotency_key text NOT NULL,
+    CONSTRAINT intervention_decision_idempotency_key_chk CHECK ((length(idempotency_key) > 0)),
+    CONSTRAINT intervention_decision_rationale_chk CHECK ((length(rationale) > 0)),
+    CONSTRAINT intervention_decision_rounds_chk CHECK (((grant_rounds IS NULL) OR (grant_rounds >= 0)))
+);
+
+
+--
+-- Name: intervention_requested_v1; Type: TABLE; Schema: proxima_core; Owner: -
+--
+
+CREATE TABLE proxima_core.intervention_requested_v1 (
+    memory_id uuid NOT NULL,
+    original_invocation_id uuid NOT NULL,
+    original_wake_entry_id uuid NOT NULL,
+    original_personality_instance_id uuid NOT NULL,
+    original_change_event_seq uuid NOT NULL,
+    triggering_memory_id uuid NOT NULL,
+    wake_trace_memory_id uuid NOT NULL,
+    target_intervention_personality_instance_id uuid NOT NULL,
+    max_rounds integer NOT NULL,
+    rounds_used integer NOT NULL,
+    intervention_extension_rounds integer NOT NULL,
+    intervention_hard_cap_rounds integer NOT NULL,
+    continued_rounds_used integer DEFAULT 0 NOT NULL,
+    active_goal_ids uuid[] DEFAULT '{}'::uuid[] NOT NULL,
+    progress_contract text NOT NULL,
+    requested_at timestamp with time zone DEFAULT now() NOT NULL,
+    idempotency_key text NOT NULL,
+    CONSTRAINT intervention_requested_idempotency_key_chk CHECK ((length(idempotency_key) > 0)),
+    CONSTRAINT intervention_requested_progress_contract_chk CHECK ((length(progress_contract) > 0)),
+    CONSTRAINT intervention_requested_rounds_chk CHECK (((max_rounds >= 0) AND (rounds_used >= 0) AND (intervention_extension_rounds > 0) AND (intervention_hard_cap_rounds >= intervention_extension_rounds) AND (continued_rounds_used >= 0)))
+);
+
+
+--
 -- Name: master_token_personality; Type: TABLE; Schema: proxima_core; Owner: -
 --
 
@@ -935,7 +1279,6 @@ CREATE TABLE proxima_core.personality_wake_entries (
     model_tier proxima_core.model_tier DEFAULT 'standard'::proxima_core.model_tier NOT NULL,
     inference_target_ref text,
     substrate_tool_palette text[] DEFAULT '{}'::text[] NOT NULL,
-    workspace_tool_palette text[] DEFAULT '{}'::text[] NOT NULL,
     max_rounds integer DEFAULT 4 NOT NULL,
     disabled_reason text,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
@@ -943,6 +1286,13 @@ CREATE TABLE proxima_core.personality_wake_entries (
     tombstoned_at timestamp with time zone,
     goal_scope proxima_core.wake_goal_scope DEFAULT 'none'::proxima_core.wake_goal_scope NOT NULL,
     instructions text DEFAULT ''::text NOT NULL,
+    intervention_personality_instance_id uuid,
+    intervention_extension_rounds integer DEFAULT 0 NOT NULL,
+    intervention_hard_cap_rounds integer DEFAULT 0 NOT NULL,
+    intervention_progress_contract text DEFAULT ''::text NOT NULL,
+    required_produced_schema_ids text[] DEFAULT '{}'::text[] NOT NULL,
+    CONSTRAINT personality_wake_entries_intervention_policy_chk CHECK ((((intervention_personality_instance_id IS NULL) AND (intervention_extension_rounds = 0) AND (intervention_hard_cap_rounds = 0) AND (intervention_progress_contract = ''::text)) OR ((intervention_personality_instance_id IS NOT NULL) AND (intervention_extension_rounds > 0) AND (intervention_hard_cap_rounds >= intervention_extension_rounds) AND (length(intervention_progress_contract) > 0)))),
+    CONSTRAINT personality_wake_entries_intervention_rounds_chk CHECK (((intervention_extension_rounds >= 0) AND (intervention_hard_cap_rounds >= 0))),
     CONSTRAINT personality_wake_entries_probability_chk CHECK (((probability_promille >= 0) AND (probability_promille <= 1000))),
     CONSTRAINT personality_wake_entries_rounds_chk CHECK ((max_rounds >= 0))
 );
@@ -966,6 +1316,7 @@ CREATE TABLE proxima_core.personality_wake_invocation_logs (
     status proxima_core.wake_invocation_log_status NOT NULL,
     duration_ms bigint,
     message_tail text,
+    invocation_id uuid NOT NULL,
     CONSTRAINT personality_wake_invocation_logs_duration_ms_check CHECK (((duration_ms IS NULL) OR (duration_ms >= 0)))
 );
 
@@ -1015,9 +1366,27 @@ CREATE TABLE proxima_core.personality_wake_invocations (
     stderr_tail text,
     stdout_truncated boolean DEFAULT false NOT NULL,
     stderr_truncated boolean DEFAULT false NOT NULL,
+    invocation_id uuid NOT NULL,
+    continuation_intervention_decision_memory_id uuid,
+    continuation_original_invocation_id uuid,
     CONSTRAINT personality_wake_invocations_cost_chk CHECK ((cost_usd >= (0)::numeric)),
     CONSTRAINT personality_wake_invocations_duration_ms_check CHECK (((duration_ms IS NULL) OR (duration_ms >= 0))),
     CONSTRAINT personality_wake_invocations_turn_count_chk CHECK ((turn_count >= 0))
+);
+
+
+--
+-- Name: read_scope_matrix; Type: TABLE; Schema: proxima_core; Owner: -
+--
+
+CREATE TABLE proxima_core.read_scope_matrix (
+    owner_principal_kind proxima_core.owner_principal_kind NOT NULL,
+    owner_principal_id uuid NOT NULL,
+    owner_org_id uuid NOT NULL,
+    reader_personality_instance_id uuid NOT NULL,
+    readable_personality_instance_id uuid NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT read_scope_matrix_no_identity_chk CHECK ((reader_personality_instance_id <> readable_personality_instance_id))
 );
 
 
@@ -1106,11 +1475,99 @@ ALTER TABLE ONLY proxima_core.a2p_invocations
 
 
 --
+-- Name: approval_decision_v1 approval_decision_v1_pkey; Type: CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.approval_decision_v1
+    ADD CONSTRAINT approval_decision_v1_pkey PRIMARY KEY (memory_id);
+
+
+--
+-- Name: approval_policy_v1 approval_policy_v1_pkey; Type: CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.approval_policy_v1
+    ADD CONSTRAINT approval_policy_v1_pkey PRIMARY KEY (memory_id);
+
+
+--
+-- Name: approval_vote_v1 approval_vote_v1_pkey; Type: CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.approval_vote_v1
+    ADD CONSTRAINT approval_vote_v1_pkey PRIMARY KEY (memory_id);
+
+
+--
+-- Name: blocked_wake_candidates blocked_wake_candidates_pkey; Type: CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.blocked_wake_candidates
+    ADD CONSTRAINT blocked_wake_candidates_pkey PRIMARY KEY (owner_principal_kind, owner_principal_id, owner_org_id, personality_instance_id, wake_entry_id, change_event_seq);
+
+
+--
 -- Name: change_event change_event_pkey; Type: CONSTRAINT; Schema: proxima_core; Owner: -
 --
 
 ALTER TABLE ONLY proxima_core.change_event
     ADD CONSTRAINT change_event_pkey PRIMARY KEY (seq);
+
+
+--
+-- Name: chat_compaction_v1 chat_compaction_v1_pkey; Type: CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.chat_compaction_v1
+    ADD CONSTRAINT chat_compaction_v1_pkey PRIMARY KEY (memory_id);
+
+
+--
+-- Name: chat_end_requested_v1 chat_end_requested_v1_pkey; Type: CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.chat_end_requested_v1
+    ADD CONSTRAINT chat_end_requested_v1_pkey PRIMARY KEY (memory_id);
+
+
+--
+-- Name: chat_ended_v1 chat_ended_v1_pkey; Type: CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.chat_ended_v1
+    ADD CONSTRAINT chat_ended_v1_pkey PRIMARY KEY (memory_id);
+
+
+--
+-- Name: chat_message_v1 chat_message_v1_pkey; Type: CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.chat_message_v1
+    ADD CONSTRAINT chat_message_v1_pkey PRIMARY KEY (memory_id);
+
+
+--
+-- Name: chat_reply_v1 chat_reply_v1_pkey; Type: CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.chat_reply_v1
+    ADD CONSTRAINT chat_reply_v1_pkey PRIMARY KEY (memory_id);
+
+
+--
+-- Name: chat_started_v1 chat_started_v1_pkey; Type: CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.chat_started_v1
+    ADD CONSTRAINT chat_started_v1_pkey PRIMARY KEY (memory_id);
+
+
+--
+-- Name: chat_summary_v1 chat_summary_v1_pkey; Type: CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.chat_summary_v1
+    ADD CONSTRAINT chat_summary_v1_pkey PRIMARY KEY (memory_id);
 
 
 --
@@ -1266,6 +1723,22 @@ ALTER TABLE ONLY proxima_core.inference_tier_bindings
 
 
 --
+-- Name: intervention_decision_v1 intervention_decision_v1_pkey; Type: CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.intervention_decision_v1
+    ADD CONSTRAINT intervention_decision_v1_pkey PRIMARY KEY (memory_id);
+
+
+--
+-- Name: intervention_requested_v1 intervention_requested_v1_pkey; Type: CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.intervention_requested_v1
+    ADD CONSTRAINT intervention_requested_v1_pkey PRIMARY KEY (memory_id);
+
+
+--
 -- Name: master_token_personality master_token_personality_pkey; Type: CONSTRAINT; Schema: proxima_core; Owner: -
 --
 
@@ -1342,7 +1815,15 @@ ALTER TABLE ONLY proxima_core.personality_wake_invocation_logs
 --
 
 ALTER TABLE ONLY proxima_core.personality_wake_invocations
-    ADD CONSTRAINT personality_wake_invocations_pkey PRIMARY KEY (owner_principal_kind, owner_principal_id, owner_org_id, personality_instance_id, wake_entry_id, change_event_seq);
+    ADD CONSTRAINT personality_wake_invocations_pkey PRIMARY KEY (invocation_id);
+
+
+--
+-- Name: read_scope_matrix read_scope_matrix_pkey; Type: CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.read_scope_matrix
+    ADD CONSTRAINT read_scope_matrix_pkey PRIMARY KEY (owner_principal_kind, owner_principal_id, owner_org_id, reader_personality_instance_id, readable_personality_instance_id);
 
 
 --
@@ -1386,6 +1867,13 @@ ALTER TABLE ONLY proxima_core.wake_trace_v1
 
 
 --
+-- Name: blocked_wake_candidates_scan_idx; Type: INDEX; Schema: proxima_core; Owner: -
+--
+
+CREATE INDEX blocked_wake_candidates_scan_idx ON proxima_core.blocked_wake_candidates USING btree (owner_principal_kind, owner_principal_id, owner_org_id, personality_instance_id, updated_at);
+
+
+--
 -- Name: cited_object_uploads_pending_expiry_idx; Type: INDEX; Schema: proxima_core; Owner: -
 --
 
@@ -1414,10 +1902,108 @@ CREATE INDEX idx_a2p_invocations_owner_run ON proxima_core.a2p_invocations USING
 
 
 --
+-- Name: idx_approval_decision_v1_policy; Type: INDEX; Schema: proxima_core; Owner: -
+--
+
+CREATE INDEX idx_approval_decision_v1_policy ON proxima_core.approval_decision_v1 USING btree (policy_memory_id, decided_at DESC);
+
+
+--
+-- Name: idx_approval_policy_v1_target_goal; Type: INDEX; Schema: proxima_core; Owner: -
+--
+
+CREATE INDEX idx_approval_policy_v1_target_goal ON proxima_core.approval_policy_v1 USING btree (target_goal_id);
+
+
+--
+-- Name: idx_approval_policy_v1_target_memory; Type: INDEX; Schema: proxima_core; Owner: -
+--
+
+CREATE INDEX idx_approval_policy_v1_target_memory ON proxima_core.approval_policy_v1 USING btree (target_memory_id);
+
+
+--
+-- Name: idx_approval_vote_v1_policy_latest; Type: INDEX; Schema: proxima_core; Owner: -
+--
+
+CREATE INDEX idx_approval_vote_v1_policy_latest ON proxima_core.approval_vote_v1 USING btree (policy_memory_id, voter_key, voted_at DESC, memory_id DESC);
+
+
+--
 -- Name: idx_change_event_owner_seq; Type: INDEX; Schema: proxima_core; Owner: -
 --
 
 CREATE INDEX idx_change_event_owner_seq ON proxima_core.change_event USING btree (owner_principal_kind, owner_principal_id, seq);
+
+
+--
+-- Name: idx_chat_compaction_v1_thread; Type: INDEX; Schema: proxima_core; Owner: -
+--
+
+CREATE INDEX idx_chat_compaction_v1_thread ON proxima_core.chat_compaction_v1 USING btree (thread_key, compacted_at DESC);
+
+
+--
+-- Name: idx_chat_end_requested_v1_target; Type: INDEX; Schema: proxima_core; Owner: -
+--
+
+CREATE INDEX idx_chat_end_requested_v1_target ON proxima_core.chat_end_requested_v1 USING btree (target_personality_instance_id, requested_at DESC);
+
+
+--
+-- Name: idx_chat_end_requested_v1_thread; Type: INDEX; Schema: proxima_core; Owner: -
+--
+
+CREATE INDEX idx_chat_end_requested_v1_thread ON proxima_core.chat_end_requested_v1 USING btree (thread_key, requested_at DESC);
+
+
+--
+-- Name: idx_chat_ended_v1_thread; Type: INDEX; Schema: proxima_core; Owner: -
+--
+
+CREATE UNIQUE INDEX idx_chat_ended_v1_thread ON proxima_core.chat_ended_v1 USING btree (thread_key);
+
+
+--
+-- Name: idx_chat_message_v1_target; Type: INDEX; Schema: proxima_core; Owner: -
+--
+
+CREATE INDEX idx_chat_message_v1_target ON proxima_core.chat_message_v1 USING btree (target_personality_instance_id, sent_at DESC);
+
+
+--
+-- Name: idx_chat_message_v1_thread; Type: INDEX; Schema: proxima_core; Owner: -
+--
+
+CREATE INDEX idx_chat_message_v1_thread ON proxima_core.chat_message_v1 USING btree (thread_key, sent_at DESC);
+
+
+--
+-- Name: idx_chat_reply_v1_message; Type: INDEX; Schema: proxima_core; Owner: -
+--
+
+CREATE INDEX idx_chat_reply_v1_message ON proxima_core.chat_reply_v1 USING btree (message_memory_id, replied_at DESC);
+
+
+--
+-- Name: idx_chat_started_v1_thread; Type: INDEX; Schema: proxima_core; Owner: -
+--
+
+CREATE INDEX idx_chat_started_v1_thread ON proxima_core.chat_started_v1 USING btree (thread_key, started_at DESC);
+
+
+--
+-- Name: idx_chat_summary_v1_request; Type: INDEX; Schema: proxima_core; Owner: -
+--
+
+CREATE INDEX idx_chat_summary_v1_request ON proxima_core.chat_summary_v1 USING btree (request_memory_id);
+
+
+--
+-- Name: idx_chat_summary_v1_thread; Type: INDEX; Schema: proxima_core; Owner: -
+--
+
+CREATE INDEX idx_chat_summary_v1_thread ON proxima_core.chat_summary_v1 USING btree (thread_key, summarized_at DESC);
 
 
 --
@@ -1554,10 +2140,45 @@ CREATE INDEX idx_personality_config_changed_v1_verb ON proxima_core.personality_
 
 
 --
+-- Name: idx_read_scope_matrix_readable; Type: INDEX; Schema: proxima_core; Owner: -
+--
+
+CREATE INDEX idx_read_scope_matrix_readable ON proxima_core.read_scope_matrix USING btree (owner_principal_kind, owner_principal_id, owner_org_id, readable_personality_instance_id);
+
+
+--
 -- Name: idx_source_batches_owner; Type: INDEX; Schema: proxima_core; Owner: -
 --
 
 CREATE INDEX idx_source_batches_owner ON proxima_core.source_batches USING btree (owner_principal_kind, owner_principal_id, owner_org_id);
+
+
+--
+-- Name: intervention_decision_idempotency_uq; Type: INDEX; Schema: proxima_core; Owner: -
+--
+
+CREATE UNIQUE INDEX intervention_decision_idempotency_uq ON proxima_core.intervention_decision_v1 USING btree (intervention_request_memory_id, idempotency_key);
+
+
+--
+-- Name: intervention_decision_request_idx; Type: INDEX; Schema: proxima_core; Owner: -
+--
+
+CREATE INDEX intervention_decision_request_idx ON proxima_core.intervention_decision_v1 USING btree (intervention_request_memory_id);
+
+
+--
+-- Name: intervention_requested_invocation_uq; Type: INDEX; Schema: proxima_core; Owner: -
+--
+
+CREATE UNIQUE INDEX intervention_requested_invocation_uq ON proxima_core.intervention_requested_v1 USING btree (original_invocation_id);
+
+
+--
+-- Name: intervention_requested_target_idx; Type: INDEX; Schema: proxima_core; Owner: -
+--
+
+CREATE INDEX intervention_requested_target_idx ON proxima_core.intervention_requested_v1 USING btree (target_intervention_personality_instance_id);
 
 
 --
@@ -1575,6 +2196,13 @@ CREATE INDEX personality_wake_entries_trigger_idx ON proxima_core.personality_wa
 
 
 --
+-- Name: personality_wake_invocation_logs_invocation_id_idx; Type: INDEX; Schema: proxima_core; Owner: -
+--
+
+CREATE INDEX personality_wake_invocation_logs_invocation_id_idx ON proxima_core.personality_wake_invocation_logs USING btree (invocation_id, log_seq);
+
+
+--
 -- Name: personality_wake_invocation_logs_invocation_idx; Type: INDEX; Schema: proxima_core; Owner: -
 --
 
@@ -1582,10 +2210,24 @@ CREATE INDEX personality_wake_invocation_logs_invocation_idx ON proxima_core.per
 
 
 --
+-- Name: personality_wake_invocations_continuation_intervention_decision; Type: INDEX; Schema: proxima_core; Owner: -
+--
+
+CREATE UNIQUE INDEX personality_wake_invocations_continuation_intervention_decision ON proxima_core.personality_wake_invocations USING btree (continuation_intervention_decision_memory_id) WHERE (continuation_intervention_decision_memory_id IS NOT NULL);
+
+
+--
 -- Name: personality_wake_invocations_instance_started_idx; Type: INDEX; Schema: proxima_core; Owner: -
 --
 
 CREATE INDEX personality_wake_invocations_instance_started_idx ON proxima_core.personality_wake_invocations USING btree (owner_principal_kind, owner_principal_id, owner_org_id, personality_instance_id, started_at DESC);
+
+
+--
+-- Name: personality_wake_invocations_normal_uq; Type: INDEX; Schema: proxima_core; Owner: -
+--
+
+CREATE UNIQUE INDEX personality_wake_invocations_normal_uq ON proxima_core.personality_wake_invocations USING btree (owner_principal_kind, owner_principal_id, owner_org_id, personality_instance_id, wake_entry_id, change_event_seq) WHERE (continuation_intervention_decision_memory_id IS NULL);
 
 
 --
@@ -1632,6 +2274,158 @@ ALTER TABLE ONLY proxima_core.a2p_invocations
 
 
 --
+-- Name: approval_decision_v1 approval_decision_v1_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.approval_decision_v1
+    ADD CONSTRAINT approval_decision_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memories(memory_id);
+
+
+--
+-- Name: approval_decision_v1 approval_decision_v1_policy_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.approval_decision_v1
+    ADD CONSTRAINT approval_decision_v1_policy_memory_id_fkey FOREIGN KEY (policy_memory_id) REFERENCES proxima_core.memories(memory_id);
+
+
+--
+-- Name: approval_decision_v1 approval_decision_v1_target_goal_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.approval_decision_v1
+    ADD CONSTRAINT approval_decision_v1_target_goal_id_fkey FOREIGN KEY (target_goal_id) REFERENCES proxima_core.goals(goal_id);
+
+
+--
+-- Name: approval_decision_v1 approval_decision_v1_target_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.approval_decision_v1
+    ADD CONSTRAINT approval_decision_v1_target_memory_id_fkey FOREIGN KEY (target_memory_id) REFERENCES proxima_core.memories(memory_id);
+
+
+--
+-- Name: approval_policy_v1 approval_policy_v1_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.approval_policy_v1
+    ADD CONSTRAINT approval_policy_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memories(memory_id);
+
+
+--
+-- Name: approval_policy_v1 approval_policy_v1_target_goal_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.approval_policy_v1
+    ADD CONSTRAINT approval_policy_v1_target_goal_id_fkey FOREIGN KEY (target_goal_id) REFERENCES proxima_core.goals(goal_id);
+
+
+--
+-- Name: approval_policy_v1 approval_policy_v1_target_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.approval_policy_v1
+    ADD CONSTRAINT approval_policy_v1_target_memory_id_fkey FOREIGN KEY (target_memory_id) REFERENCES proxima_core.memories(memory_id);
+
+
+--
+-- Name: approval_vote_v1 approval_vote_v1_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.approval_vote_v1
+    ADD CONSTRAINT approval_vote_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memories(memory_id);
+
+
+--
+-- Name: approval_vote_v1 approval_vote_v1_policy_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.approval_vote_v1
+    ADD CONSTRAINT approval_vote_v1_policy_memory_id_fkey FOREIGN KEY (policy_memory_id) REFERENCES proxima_core.memories(memory_id);
+
+
+--
+-- Name: approval_vote_v1 approval_vote_v1_self_perspective_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.approval_vote_v1
+    ADD CONSTRAINT approval_vote_v1_self_perspective_memory_id_fkey FOREIGN KEY (self_perspective_memory_id) REFERENCES proxima_core.memories(memory_id);
+
+
+--
+-- Name: blocked_wake_candidates blocked_wake_candidates_change_event_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.blocked_wake_candidates
+    ADD CONSTRAINT blocked_wake_candidates_change_event_fkey FOREIGN KEY (change_event_seq) REFERENCES proxima_core.change_event(seq) ON DELETE CASCADE;
+
+
+--
+-- Name: blocked_wake_candidates blocked_wake_candidates_dependency_memory_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.blocked_wake_candidates
+    ADD CONSTRAINT blocked_wake_candidates_dependency_memory_fkey FOREIGN KEY (dependency_memory_id) REFERENCES proxima_core.memories(memory_id) ON DELETE CASCADE;
+
+
+--
+-- Name: blocked_wake_candidates blocked_wake_candidates_triggering_memory_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.blocked_wake_candidates
+    ADD CONSTRAINT blocked_wake_candidates_triggering_memory_fkey FOREIGN KEY (triggering_memory_id) REFERENCES proxima_core.memories(memory_id) ON DELETE CASCADE;
+
+
+--
+-- Name: blocked_wake_candidates blocked_wake_candidates_wake_entry_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.blocked_wake_candidates
+    ADD CONSTRAINT blocked_wake_candidates_wake_entry_fkey FOREIGN KEY (owner_principal_kind, owner_principal_id, owner_org_id, personality_instance_id, wake_entry_id) REFERENCES proxima_core.personality_wake_entries(owner_principal_kind, owner_principal_id, owner_org_id, personality_instance_id, wake_entry_id) ON DELETE CASCADE;
+
+
+--
+-- Name: intervention_decision_v1 budget_decision_v1_budget_request_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.intervention_decision_v1
+    ADD CONSTRAINT budget_decision_v1_budget_request_memory_id_fkey FOREIGN KEY (intervention_request_memory_id) REFERENCES proxima_core.memories(memory_id);
+
+
+--
+-- Name: intervention_decision_v1 budget_decision_v1_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.intervention_decision_v1
+    ADD CONSTRAINT budget_decision_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memories(memory_id);
+
+
+--
+-- Name: intervention_requested_v1 budget_review_requested_v1_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.intervention_requested_v1
+    ADD CONSTRAINT budget_review_requested_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memories(memory_id);
+
+
+--
+-- Name: intervention_requested_v1 budget_review_requested_v1_triggering_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.intervention_requested_v1
+    ADD CONSTRAINT budget_review_requested_v1_triggering_memory_id_fkey FOREIGN KEY (triggering_memory_id) REFERENCES proxima_core.memories(memory_id);
+
+
+--
+-- Name: intervention_requested_v1 budget_review_requested_v1_wake_trace_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.intervention_requested_v1
+    ADD CONSTRAINT budget_review_requested_v1_wake_trace_memory_id_fkey FOREIGN KEY (wake_trace_memory_id) REFERENCES proxima_core.memories(memory_id);
+
+
+--
 -- Name: change_event change_event_entity_goal_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
 --
 
@@ -1645,6 +2439,246 @@ ALTER TABLE ONLY proxima_core.change_event
 
 ALTER TABLE ONLY proxima_core.change_event
     ADD CONSTRAINT change_event_entity_memory_id_fkey FOREIGN KEY (entity_memory_id) REFERENCES proxima_core.memories(memory_id);
+
+
+--
+-- Name: chat_compaction_v1 chat_compaction_v1_compacted_by_personality_instance_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.chat_compaction_v1
+    ADD CONSTRAINT chat_compaction_v1_compacted_by_personality_instance_id_fkey FOREIGN KEY (compacted_by_personality_instance_id) REFERENCES proxima_core.personality(personality_instance_id);
+
+
+--
+-- Name: chat_compaction_v1 chat_compaction_v1_compacted_by_self_perspective_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.chat_compaction_v1
+    ADD CONSTRAINT chat_compaction_v1_compacted_by_self_perspective_memory_id_fkey FOREIGN KEY (compacted_by_self_perspective_memory_id) REFERENCES proxima_core.memories(memory_id);
+
+
+--
+-- Name: chat_compaction_v1 chat_compaction_v1_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.chat_compaction_v1
+    ADD CONSTRAINT chat_compaction_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memories(memory_id);
+
+
+--
+-- Name: chat_end_requested_v1 chat_end_requested_v1_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.chat_end_requested_v1
+    ADD CONSTRAINT chat_end_requested_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memories(memory_id);
+
+
+--
+-- Name: chat_end_requested_v1 chat_end_requested_v1_requested_by_self_perspective_memory_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.chat_end_requested_v1
+    ADD CONSTRAINT chat_end_requested_v1_requested_by_self_perspective_memory_fkey FOREIGN KEY (requested_by_self_perspective_memory_id) REFERENCES proxima_core.memories(memory_id);
+
+
+--
+-- Name: chat_end_requested_v1 chat_end_requested_v1_target_personality_instance_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.chat_end_requested_v1
+    ADD CONSTRAINT chat_end_requested_v1_target_personality_instance_id_fkey FOREIGN KEY (target_personality_instance_id) REFERENCES proxima_core.personality(personality_instance_id);
+
+
+--
+-- Name: chat_end_requested_v1 chat_end_requested_v1_target_self_perspective_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.chat_end_requested_v1
+    ADD CONSTRAINT chat_end_requested_v1_target_self_perspective_memory_id_fkey FOREIGN KEY (target_self_perspective_memory_id) REFERENCES proxima_core.memories(memory_id);
+
+
+--
+-- Name: chat_ended_v1 chat_ended_v1_ended_by_personality_instance_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.chat_ended_v1
+    ADD CONSTRAINT chat_ended_v1_ended_by_personality_instance_id_fkey FOREIGN KEY (ended_by_personality_instance_id) REFERENCES proxima_core.personality(personality_instance_id);
+
+
+--
+-- Name: chat_ended_v1 chat_ended_v1_ended_by_self_perspective_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.chat_ended_v1
+    ADD CONSTRAINT chat_ended_v1_ended_by_self_perspective_memory_id_fkey FOREIGN KEY (ended_by_self_perspective_memory_id) REFERENCES proxima_core.memories(memory_id);
+
+
+--
+-- Name: chat_ended_v1 chat_ended_v1_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.chat_ended_v1
+    ADD CONSTRAINT chat_ended_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memories(memory_id);
+
+
+--
+-- Name: chat_ended_v1 chat_ended_v1_request_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.chat_ended_v1
+    ADD CONSTRAINT chat_ended_v1_request_memory_id_fkey FOREIGN KEY (request_memory_id) REFERENCES proxima_core.memories(memory_id);
+
+
+--
+-- Name: chat_ended_v1 chat_ended_v1_summary_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.chat_ended_v1
+    ADD CONSTRAINT chat_ended_v1_summary_memory_id_fkey FOREIGN KEY (summary_memory_id) REFERENCES proxima_core.memories(memory_id) DEFERRABLE INITIALLY DEFERRED;
+
+
+--
+-- Name: chat_message_v1 chat_message_v1_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.chat_message_v1
+    ADD CONSTRAINT chat_message_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memories(memory_id);
+
+
+--
+-- Name: chat_message_v1 chat_message_v1_parent_message_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.chat_message_v1
+    ADD CONSTRAINT chat_message_v1_parent_message_memory_id_fkey FOREIGN KEY (parent_memory_id) REFERENCES proxima_core.memories(memory_id);
+
+
+--
+-- Name: chat_message_v1 chat_message_v1_sent_by_self_perspective_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.chat_message_v1
+    ADD CONSTRAINT chat_message_v1_sent_by_self_perspective_memory_id_fkey FOREIGN KEY (sent_by_self_perspective_memory_id) REFERENCES proxima_core.memories(memory_id);
+
+
+--
+-- Name: chat_message_v1 chat_message_v1_target_personality_instance_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.chat_message_v1
+    ADD CONSTRAINT chat_message_v1_target_personality_instance_id_fkey FOREIGN KEY (target_personality_instance_id) REFERENCES proxima_core.personality(personality_instance_id);
+
+
+--
+-- Name: chat_message_v1 chat_message_v1_target_self_perspective_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.chat_message_v1
+    ADD CONSTRAINT chat_message_v1_target_self_perspective_memory_id_fkey FOREIGN KEY (target_self_perspective_memory_id) REFERENCES proxima_core.memories(memory_id);
+
+
+--
+-- Name: chat_reply_v1 chat_reply_v1_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.chat_reply_v1
+    ADD CONSTRAINT chat_reply_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memories(memory_id);
+
+
+--
+-- Name: chat_reply_v1 chat_reply_v1_message_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.chat_reply_v1
+    ADD CONSTRAINT chat_reply_v1_message_memory_id_fkey FOREIGN KEY (message_memory_id) REFERENCES proxima_core.memories(memory_id);
+
+
+--
+-- Name: chat_reply_v1 chat_reply_v1_replied_by_personality_instance_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.chat_reply_v1
+    ADD CONSTRAINT chat_reply_v1_replied_by_personality_instance_id_fkey FOREIGN KEY (replied_by_personality_instance_id) REFERENCES proxima_core.personality(personality_instance_id);
+
+
+--
+-- Name: chat_reply_v1 chat_reply_v1_replied_by_self_perspective_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.chat_reply_v1
+    ADD CONSTRAINT chat_reply_v1_replied_by_self_perspective_memory_id_fkey FOREIGN KEY (replied_by_self_perspective_memory_id) REFERENCES proxima_core.memories(memory_id);
+
+
+--
+-- Name: chat_started_v1 chat_started_v1_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.chat_started_v1
+    ADD CONSTRAINT chat_started_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memories(memory_id);
+
+
+--
+-- Name: chat_started_v1 chat_started_v1_started_by_self_perspective_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.chat_started_v1
+    ADD CONSTRAINT chat_started_v1_started_by_self_perspective_memory_id_fkey FOREIGN KEY (started_by_self_perspective_memory_id) REFERENCES proxima_core.memories(memory_id);
+
+
+--
+-- Name: chat_started_v1 chat_started_v1_target_personality_instance_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.chat_started_v1
+    ADD CONSTRAINT chat_started_v1_target_personality_instance_id_fkey FOREIGN KEY (target_personality_instance_id) REFERENCES proxima_core.personality(personality_instance_id);
+
+
+--
+-- Name: chat_started_v1 chat_started_v1_target_self_perspective_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.chat_started_v1
+    ADD CONSTRAINT chat_started_v1_target_self_perspective_memory_id_fkey FOREIGN KEY (target_self_perspective_memory_id) REFERENCES proxima_core.memories(memory_id);
+
+
+--
+-- Name: chat_summary_v1 chat_summary_v1_ended_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.chat_summary_v1
+    ADD CONSTRAINT chat_summary_v1_ended_memory_id_fkey FOREIGN KEY (ended_memory_id) REFERENCES proxima_core.memories(memory_id);
+
+
+--
+-- Name: chat_summary_v1 chat_summary_v1_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.chat_summary_v1
+    ADD CONSTRAINT chat_summary_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memories(memory_id);
+
+
+--
+-- Name: chat_summary_v1 chat_summary_v1_request_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.chat_summary_v1
+    ADD CONSTRAINT chat_summary_v1_request_memory_id_fkey FOREIGN KEY (request_memory_id) REFERENCES proxima_core.memories(memory_id);
+
+
+--
+-- Name: chat_summary_v1 chat_summary_v1_summarized_by_personality_instance_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.chat_summary_v1
+    ADD CONSTRAINT chat_summary_v1_summarized_by_personality_instance_id_fkey FOREIGN KEY (summarized_by_personality_instance_id) REFERENCES proxima_core.personality(personality_instance_id);
+
+
+--
+-- Name: chat_summary_v1 chat_summary_v1_summarized_by_self_perspective_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.chat_summary_v1
+    ADD CONSTRAINT chat_summary_v1_summarized_by_self_perspective_memory_id_fkey FOREIGN KEY (summarized_by_self_perspective_memory_id) REFERENCES proxima_core.memories(memory_id);
 
 
 --
@@ -1848,11 +2882,19 @@ ALTER TABLE ONLY proxima_core.personality_wake_entries
 
 
 --
--- Name: personality_wake_invocation_logs personality_wake_invocation_l_owner_principal_kind_owner_p_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+-- Name: personality_wake_invocation_logs personality_wake_invocation_logs_invocation_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
 --
 
 ALTER TABLE ONLY proxima_core.personality_wake_invocation_logs
-    ADD CONSTRAINT personality_wake_invocation_l_owner_principal_kind_owner_p_fkey FOREIGN KEY (owner_principal_kind, owner_principal_id, owner_org_id, personality_instance_id, wake_entry_id, change_event_seq) REFERENCES proxima_core.personality_wake_invocations(owner_principal_kind, owner_principal_id, owner_org_id, personality_instance_id, wake_entry_id, change_event_seq) ON DELETE CASCADE;
+    ADD CONSTRAINT personality_wake_invocation_logs_invocation_fkey FOREIGN KEY (invocation_id) REFERENCES proxima_core.personality_wake_invocations(invocation_id) ON DELETE CASCADE;
+
+
+--
+-- Name: personality_wake_invocations personality_wake_invocations_continuation_intervention_decision; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.personality_wake_invocations
+    ADD CONSTRAINT personality_wake_invocations_continuation_intervention_decision FOREIGN KEY (continuation_intervention_decision_memory_id) REFERENCES proxima_core.memories(memory_id);
 
 
 --
@@ -1861,6 +2903,22 @@ ALTER TABLE ONLY proxima_core.personality_wake_invocation_logs
 
 ALTER TABLE ONLY proxima_core.personality_wake_invocations
     ADD CONSTRAINT personality_wake_invocations_owner_principal_kind_owner_pr_fkey FOREIGN KEY (owner_principal_kind, owner_principal_id, owner_org_id, personality_instance_id, wake_entry_id) REFERENCES proxima_core.personality_wake_entries(owner_principal_kind, owner_principal_id, owner_org_id, personality_instance_id, wake_entry_id);
+
+
+--
+-- Name: read_scope_matrix read_scope_matrix_owner_principal_kind_owner_principal_id__fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.read_scope_matrix
+    ADD CONSTRAINT read_scope_matrix_owner_principal_kind_owner_principal_id__fkey FOREIGN KEY (owner_principal_kind, owner_principal_id, owner_org_id, reader_personality_instance_id) REFERENCES proxima_core.personality(owner_principal_kind, owner_principal_id, owner_org_id, personality_instance_id);
+
+
+--
+-- Name: read_scope_matrix read_scope_matrix_owner_principal_kind_owner_principal_id_fkey1; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.read_scope_matrix
+    ADD CONSTRAINT read_scope_matrix_owner_principal_kind_owner_principal_id_fkey1 FOREIGN KEY (owner_principal_kind, owner_principal_id, owner_org_id, readable_personality_instance_id) REFERENCES proxima_core.personality(owner_principal_kind, owner_principal_id, owner_org_id, personality_instance_id);
 
 
 --
@@ -1896,4 +2954,6 @@ ALTER TABLE ONLY proxima_core.wake_trace_v1
 
 
 --
+-- PostgreSQL database dump complete
 --
+
