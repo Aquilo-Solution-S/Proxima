@@ -1,0 +1,10 @@
+[profile.default]
+# PG tests clone one DB per test and each `PgStorage` pool opens up to
+# 10 connections. Keep 8 * 10 under the local max_connections=100 headroom;
+# raise this cap only when the dev PG max_connections setting is raised.
+test-threads = 8
+retries = 0
+failure-output = "immediate-final"
+success-output = "never"
+status-level = "fail"
+final-status-level = "fail"
