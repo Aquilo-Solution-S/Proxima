@@ -175,7 +175,7 @@ storage-layout mechanics.
 
 | ID | Invariant | Carrier |
 |---|---|---|
-| CI-1 | Fact-only citation | axioms `citation_fact_is_fact` + `fact_has_citation`; THEOREM `citation_iff_fact` over the choice-def `memory_citation` |
+| CI-1 | Fact-only citation (citation ⇒ Fact; OPTIONAL on Facts since 2026-06-13) | axiom `citation_fact_is_fact`; THEOREM `citation_implies_fact` over the choice-def `memory_citation` |
 | CI-2 | Exactly one mapping per Fact; target is Fact; no orphans | axiom `citation_fact_injective`; THEOREMs `citation_points_back`, `citation_reverse_total`, `citation_unique_per_fact` |
 | CI-3 | A/P cite transitively via provenance | comment + CN-6 axioms |
 | CI-7/8 | Owner scoping; Fact owner = object owner | axiom `citation_owner_match` |
@@ -234,8 +234,9 @@ Implemented reductions:
   full shapes (target kinds) PROVED via `provenance_pins_target`. CN-6 merged
   to `derived_has_provenance`; per-kind shapes PROVED. Net −5.
 - Citations: Fact-side pointer `memory_citation` is now a choice-based DEF;
-  primitives are `citation_fact_is_fact` + `fact_has_citation` +
-  `citation_fact_injective`; CI-1, CI-2a, CI-2c PROVED. Net −2.
+  primitives are `citation_fact_is_fact` + `citation_fact_injective`;
+  CI-1 (citation ⇒ Fact; `fact_has_citation` retired 2026-06-13 — citations
+  optional on Facts), CI-2a, CI-2c PROVED.
 - Goals: GO-1+GO-2 merged into `goal_supersession_constraints`; projections
   PROVED. −1.
 - Compliance: `suppression_owner` REMOVED (doc 13 retains the opaque key
