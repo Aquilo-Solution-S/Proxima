@@ -203,7 +203,7 @@ async fn apply_goal_activated_sidecar(pool: &sqlx::PgPool) -> sqlx::Result<()> {
          );",
     )
     .await
-        .map(|_| ())
+    .map(|_| ())
 }
 
 async fn insert_dummy_fact_refs(
@@ -295,8 +295,7 @@ async fn insert_goal_activated_fact(
     // Minimal Fact-shaped memory row (requires event_id + citation_mapping_id
     // per the variant check). Insert dummy events/citation rows just so the
     // FK + CHECK constraints accept the row.
-    let (event_id, citation_mapping_id) =
-        insert_dummy_fact_refs(&mut tx, owner, memory_id).await?;
+    let (event_id, citation_mapping_id) = insert_dummy_fact_refs(&mut tx, owner, memory_id).await?;
     sqlx::query(
         "INSERT INTO proxima_core.memories
             (memory_id, owner_principal_kind, owner_principal_id, owner_org_id,
