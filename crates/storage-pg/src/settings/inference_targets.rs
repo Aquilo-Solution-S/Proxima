@@ -22,7 +22,8 @@ pub async fn register_inference_target(
     pool: &PgPool,
     req: &RegisterInferenceTargetRequest,
 ) -> Result<RegisterInferenceTargetResponse, SettingsError> {
-    let (owner_kind, owner_principal_id, owner_org_id) = owner_triple(&req.owner);
+    let owner = req.owner();
+    let (owner_kind, owner_principal_id, owner_org_id) = owner_triple(&owner);
     let kind = req.config.kind();
     let config_json = serde_json::to_value(&req.config).map_err(SettingsError::Json)?;
 
@@ -125,7 +126,8 @@ pub async fn remove_inference_target(
     pool: &PgPool,
     req: &RemoveInferenceTargetRequest,
 ) -> Result<RemoveInferenceTargetResponse, SettingsError> {
-    let (owner_kind, owner_principal_id, owner_org_id) = owner_triple(&req.owner);
+    let owner = req.owner();
+    let (owner_kind, owner_principal_id, owner_org_id) = owner_triple(&owner);
 
     let tiers = sqlx::query_scalar!(
         r#"SELECT tier AS "tier: ModelTier"
@@ -205,7 +207,8 @@ pub async fn bind_inference_tier(
     pool: &PgPool,
     req: &BindInferenceTierRequest,
 ) -> Result<BindInferenceTierResponse, SettingsError> {
-    let (owner_kind, owner_principal_id, owner_org_id) = owner_triple(&req.owner);
+    let owner = req.owner();
+    let (owner_kind, owner_principal_id, owner_org_id) = owner_triple(&owner);
     sqlx::query!(
         r#"INSERT INTO proxima_core.inference_tier_bindings
             (owner_principal_kind, owner_principal_id, owner_org_id, tier, target_ref)

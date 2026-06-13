@@ -45,7 +45,8 @@ async fn seed_test_personality(
 ) -> Result<proxima_core::InstantiatePersonalityResponse, Box<dyn std::error::Error>> {
     let response = pg
         .instantiate_personality(&InstantiatePersonalityRequest {
-            owner: owner.clone(),
+            principal: owner.principal.clone(),
+            org_id: Some(owner.org_id),
             display_name: "Engineer A".into(),
             purpose: "exercise wake storage".into(),
         })
@@ -229,7 +230,8 @@ async fn personality_wake_storage_round_trip() {
 
         let first = sample_entry(instance, "proxima-test/fact-v1");
         pg.set_wake_entries(&SetWakeEntriesRequest {
-            owner: owner.clone(),
+            principal: owner.principal.clone(),
+            org_id: Some(owner.org_id),
             personality_instance_id: instance,
             entries: vec![first],
         })
@@ -237,7 +239,8 @@ async fn personality_wake_storage_round_trip() {
         let mut replacement = sample_entry(instance, "proxima-goal/goal-activated-v1");
         replacement.goal_scope = WakeEntryGoalScope::TriggerGoalAssigned;
         pg.set_wake_entries(&SetWakeEntriesRequest {
-            owner: owner.clone(),
+            principal: owner.principal.clone(),
+            org_id: Some(owner.org_id),
             personality_instance_id: instance,
             entries: vec![replacement.clone()],
         })
@@ -296,7 +299,8 @@ async fn personality_wake_storage_round_trip() {
 
         let res = pg
             .tombstone_personality(&TombstonePersonalityRequest {
-                owner,
+                principal: owner.principal,
+                org_id: Some(owner.org_id),
                 personality_instance_id: instance,
             })
             .await?;
@@ -324,7 +328,8 @@ async fn list_personality_instances_populates_wake_entries() {
         entry.required_produced_schema_ids = vec!["test/final-v1".into()];
 
         pg.set_wake_entries(&SetWakeEntriesRequest {
-            owner: owner.clone(),
+            principal: owner.principal.clone(),
+            org_id: Some(owner.org_id),
             personality_instance_id: response.instance_id,
             entries: vec![entry],
         })
@@ -357,7 +362,8 @@ fn fact_draft(owner: Owner) -> EventDraft {
     EventDraft {
         source_id: SourceId::new("proxima-test/source"),
         source_batch_id: SourceBatchId::new(Uuid::now_v7()),
-        owner,
+        principal: owner.principal,
+        org_id: Some(owner.org_id),
         schema_id: SchemaId::new("proxima-test/fact-v1".into()),
         schema_version: SchemaVersion::new(1),
         payload: b"fact".to_vec(),

@@ -36,10 +36,11 @@ pub async fn set_wake_entries(
     req: &SetWakeEntriesRequest,
 ) -> Result<SetWakeEntriesResponse, ProtocolError> {
     validate_wake_entries_static_config(ctx.registry, &req.entries)?;
+    let owner = req.owner();
 
     let owner_targets = ctx
         .storage
-        .list_inference_targets(&req.owner)
+        .list_inference_targets(&owner)
         .await
         .map_err(|err| ProtocolError::internal(err.to_string()))?;
     let owner_target_refs: HashSet<&str> = owner_targets
@@ -48,7 +49,7 @@ pub async fn set_wake_entries(
         .collect();
     let owner_tier_bindings = ctx
         .storage
-        .list_inference_tier_bindings(&req.owner)
+        .list_inference_tier_bindings(&owner)
         .await
         .map_err(|err| ProtocolError::internal(err.to_string()))?;
     let bound_tiers: HashSet<ModelTier> = owner_tier_bindings

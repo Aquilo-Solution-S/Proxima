@@ -30,18 +30,14 @@ fn build_engine() -> Engine {
     Engine::new(FlavorRegistryFrozen::new(), MemoryStore::new())
 }
 
-fn pb_owner(owner: &Owner) -> pb::Owner {
-    let principal = match &owner.principal {
+fn pb_principal(principal: &Principal) -> pb::Principal {
+    match principal {
         Principal::User(u) => pb::Principal {
             kind: Some(pb::principal::Kind::UserId(u.into_inner().to_string())),
         },
         Principal::Group(g) => pb::Principal {
             kind: Some(pb::principal::Kind::GroupId(g.into_inner().to_string())),
         },
-    };
-    pb::Owner {
-        principal: Some(principal),
-        org_id: owner.org_id.into_inner().to_string(),
     }
 }
 
@@ -66,7 +62,7 @@ async fn query_returns_empty_memories_for_fresh_owner() {
     let server = EngineGrpcServer::new(Arc::new(build_engine()), authz);
 
     let req = Request::new(QueryRequest {
-        owner: Some(pb_owner(&owner)),
+        principal: Some(pb_principal(&owner.principal)),
         filter: Some(ReadFilter::default()),
         pagination: Some(ReadPagination { limit: 0 }),
     });
@@ -86,7 +82,7 @@ async fn missing_owner_yields_invalid_argument_not_internal() {
     let server = EngineGrpcServer::new(Arc::new(build_engine()), authz);
 
     let req = Request::new(QueryRequest {
-        owner: None,
+        principal: None,
         filter: Some(ReadFilter::default()),
         pagination: Some(ReadPagination::default()),
     });

@@ -570,7 +570,8 @@ async fn insert_test_goal(
 ) -> Result<GoalId, proxima_core::StorageError> {
     let outcome = pg
         .write_goal_atomic(&GoalDraft {
-            owner: owner.clone(),
+            principal: owner.principal.clone(),
+            org_id: Some(owner.org_id),
             schema_id: SchemaId::new("proxima-test/goal-v1".into()),
             schema_version: SchemaVersion::new(1),
             title: title.into(),

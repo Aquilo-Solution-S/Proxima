@@ -1211,7 +1211,8 @@ pub(super) async fn ingest_execution_request(
     let draft = EventDraft {
         source_id: SourceId::new(EXECUTION_REQUEST_SOURCE_ID),
         source_batch_id: SourceBatchId::new(Uuid::now_v7()),
-        owner: ctx.owner.clone(),
+        principal: ctx.owner.principal.clone(),
+        org_id: Some(ctx.owner.org_id),
         schema_id: SchemaId::new(ExecutionRequestV1::SCHEMA_ID.into()),
         schema_version: SchemaVersion::new(ExecutionRequestV1::SCHEMA_VERSION),
         payload: payload_bytes,
@@ -1266,7 +1267,8 @@ pub(super) async fn ingest_acceptance_criteria(
     let draft = EventDraft {
         source_id: SourceId::new(ACCEPTANCE_CRITERIA_SOURCE_ID),
         source_batch_id: SourceBatchId::new(Uuid::now_v7()),
-        owner: ctx.owner.clone(),
+        principal: ctx.owner.principal.clone(),
+        org_id: Some(ctx.owner.org_id),
         schema_id: SchemaId::new(AcceptanceCriteriaV1::SCHEMA_ID.into()),
         schema_version: SchemaVersion::new(AcceptanceCriteriaV1::SCHEMA_VERSION),
         payload: payload_bytes,
@@ -1322,7 +1324,8 @@ pub(super) async fn ingest_test_request(
     let draft = EventDraft {
         source_id: SourceId::new(TEST_REQUEST_SOURCE_ID),
         source_batch_id: SourceBatchId::new(Uuid::now_v7()),
-        owner: ctx.owner.clone(),
+        principal: ctx.owner.principal.clone(),
+        org_id: Some(ctx.owner.org_id),
         schema_id: SchemaId::new(TestRequestV1::SCHEMA_ID.into()),
         schema_version: SchemaVersion::new(TestRequestV1::SCHEMA_VERSION),
         payload: payload_bytes,

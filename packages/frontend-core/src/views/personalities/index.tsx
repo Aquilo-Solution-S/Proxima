@@ -180,7 +180,7 @@ export const PersonalitiesView: Component<{
     try {
       const rows = await unwrap(
         client.listWakeInvocations({
-          owner,
+          principal: owner.principal,
           personality_instance_id: scope.personalityInstanceId,
           wake_entry_id: scope.wakeEntryId,
           triggering_memory_id: null,
@@ -205,7 +205,7 @@ export const PersonalitiesView: Component<{
     try {
       const rows = await unwrap(
         client.listPersonalityInstances({
-          owner,
+          principal: owner.principal,
           include_tombstoned: false,
         }),
       );
@@ -300,7 +300,7 @@ export const PersonalitiesView: Component<{
       for (const [instanceId, entries] of drafts()) {
         await unwrap(
           client.setWakeEntries({
-            owner,
+            principal: owner.principal,
             personality_instance_id: instanceId,
             entries,
           }),
@@ -320,7 +320,7 @@ export const PersonalitiesView: Component<{
     try {
       await unwrap(
         client.tombstonePersonality({
-          owner: instance.owner,
+          principal: instance.owner.principal,
           personality_instance_id: instance.personality_instance_id,
         }),
       );
@@ -361,7 +361,7 @@ export const PersonalitiesView: Component<{
     try {
       await unwrap(
         client.instantiatePersonality({
-          owner,
+          principal: owner.principal,
           display_name: displayName,
           purpose,
         }),

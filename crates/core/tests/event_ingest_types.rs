@@ -1,9 +1,7 @@
 //! Unit smoke for `EventIngest` types.
 
 use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
-use proxima_core::{
-    OrgId, Owner, Principal, SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId,
-};
+use proxima_core::{OrgId, Principal, SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId};
 use uuid::Uuid;
 
 fn fresh_draft() -> EventDraft {
@@ -12,10 +10,8 @@ fn fresh_draft() -> EventDraft {
     EventDraft {
         source_id: SourceId::new("test/source"),
         source_batch_id: SourceBatchId::new(Uuid::now_v7()),
-        owner: Owner {
-            principal: Principal::User(user),
-            org_id: OrgId::new(Uuid::now_v7()),
-        },
+        principal: Principal::User(user),
+        org_id: Some(OrgId::new(Uuid::now_v7())),
         schema_id: SchemaId::new("test/fact_blob".to_string()),
         schema_version: SchemaVersion::new(1),
         payload: b"hello".to_vec(),

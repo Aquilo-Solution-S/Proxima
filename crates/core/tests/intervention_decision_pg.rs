@@ -161,7 +161,8 @@ async fn instantiate_supervisor(
 ) -> Result<(Uuid, MemoryId), Box<dyn std::error::Error>> {
     let personality = pg
         .instantiate_personality(&InstantiatePersonalityRequest {
-            owner: owner.clone(),
+            principal: owner.principal.clone(),
+            org_id: Some(owner.org_id),
             display_name: "Wake Supervisor".into(),
             purpose: "Decide on intervention requests".into(),
         })
@@ -208,7 +209,7 @@ async fn insert_intervention_request(
     ciborium::ser::into_writer(&request, &mut payload)?;
     let outcome = pg
         .ingest_event_atomic(&intervention_request_event_draft(
-            owner.clone(),
+            owner,
             &payload,
             SourceBatchId::new(Uuid::now_v7()),
             SourceId::new(INTERVENTION_SOURCE_ID),

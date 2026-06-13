@@ -107,7 +107,7 @@ impl PersonalityTool for WalkLineageTool {
 
         let direction = MemoryLineageDirection::from(parsed.direction);
         let req = MemoryLineageRequest {
-            owner: ctx.owner.clone(),
+            principal: ctx.owner.principal.clone(),
             start_memory_id: start,
             direction,
             depth: parsed.depth.clamp(1, 8),

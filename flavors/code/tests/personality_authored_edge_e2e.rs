@@ -27,8 +27,8 @@ use proxima_core::personality::{
 use proxima_core::storage::Storage;
 use proxima_core::wake::token_store::WakeTokenContext;
 use proxima_core::{
-    AbstractionPayload, EntityKind, HandleTable, MemoryId, OrgId, Owner, Principal, RelationClass,
-    SourceBatchId, UserId, WakeChainDepth,
+    AbstractionPayload, AuthPath, AuthzContext, EntityKind, HandleTable, MemoryId, OrgId, Owner,
+    Principal, RelationClass, SourceBatchId, UserId, WakeChainDepth,
 };
 use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
 use proxima_storage_pg::PgStorage;
@@ -93,12 +93,17 @@ async fn emit_abstraction_writes_core_authored_edge_from_root_perspective() {
         let engine =
             build_engine_with(pg.clone(), |_registry| {}).with_embed(Arc::new(FakeEmbedding));
 
+        let authz = AuthzContext::single_owner(&owner, AuthPath::System);
         let inst = engine
-            .instantiate_personality(InstantiatePersonalityRequest {
-                owner: owner.clone(),
-                display_name: "Slice-3 Engineer".into(),
-                purpose: "Drive the substrate-tool emit path".into(),
-            })
+            .instantiate_personality(
+                &authz,
+                InstantiatePersonalityRequest {
+                    principal: owner.principal.clone(),
+                    org_id: None,
+                    display_name: "Slice-3 Engineer".into(),
+                    purpose: "Drive the substrate-tool emit path".into(),
+                },
+            )
             .await?;
         let runtime = pg
             .fetch_personality_runtime(&owner, inst.instance_id)

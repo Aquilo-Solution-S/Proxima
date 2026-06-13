@@ -32,7 +32,8 @@ fn schemas_for_test() -> Vec<SchemaInfo> {
 
 fn external_draft(owner: &Owner, state: GoalState, request_id: &str) -> GoalDraft {
     GoalDraft {
-        owner: owner.clone(),
+        principal: owner.principal.clone(),
+        org_id: Some(owner.org_id),
         schema_id: SchemaId::new("test/goal_blob".into()),
         schema_version: SchemaVersion::new(1),
         title: "Test goal".to_string(),

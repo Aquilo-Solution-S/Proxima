@@ -6,7 +6,6 @@
 use std::sync::Arc;
 
 use crate::GoalId;
-use crate::Owner;
 use crate::SourceBatchId;
 use crate::approval::ApprovalStore;
 use crate::chat::ChatStore;
@@ -39,6 +38,7 @@ use crate::verbs::goal_write::{GoalDraft, GoalWriteOutcome};
 use crate::verbs::persist_wake_trace::{WakeTracePersistInput, WakeTracePersistOutcome};
 use crate::verbs::schema::FlavorRegistryFrozen;
 use crate::verbs::subscribe::ChangeEventStream;
+use crate::{Owner, Principal};
 
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum StorageError {
@@ -153,7 +153,7 @@ pub trait Storage: ApprovalStore + InterventionStore + ChatStore + Send + Sync {
     /// dedupe by `seq`. The server does NOT dedupe.
     async fn subscribe_changes(
         &self,
-        owner: &crate::Owner,
+        principal: &Principal,
         since: Option<uuid::Uuid>,
     ) -> Result<ChangeEventStream, StorageError>;
 
@@ -198,7 +198,7 @@ pub trait Storage: ApprovalStore + InterventionStore + ChatStore + Send + Sync {
     /// heads. No `GoalConnection` sidecar is modeled.
     async fn list_active_goals(
         &self,
-        owner: &Owner,
+        principal: &Principal,
         self_perspective_memory_id: crate::MemoryId,
         limit: usize,
     ) -> Result<Vec<ActiveGoalSummary>, StorageError>;
@@ -215,7 +215,7 @@ pub trait Storage: ApprovalStore + InterventionStore + ChatStore + Send + Sync {
     /// different owner. sqlx failures map to `Internal`.
     async fn close_batch(
         &self,
-        owner: &Owner,
+        principal: &Principal,
         source_batch_id: SourceBatchId,
     ) -> Result<CloseBatchOutcome, StorageError>;
 
@@ -667,7 +667,7 @@ impl Storage for NoopStorage {
 
     async fn subscribe_changes(
         &self,
-        _owner: &Owner,
+        _principal: &Principal,
         _since: Option<uuid::Uuid>,
     ) -> Result<ChangeEventStream, StorageError> {
         Ok(Box::pin(futures_util::stream::empty()))
@@ -717,7 +717,7 @@ impl Storage for NoopStorage {
 
     async fn list_active_goals(
         &self,
-        _owner: &Owner,
+        _principal: &Principal,
         _self_perspective_memory_id: crate::MemoryId,
         _limit: usize,
     ) -> Result<Vec<ActiveGoalSummary>, StorageError> {
@@ -726,7 +726,7 @@ impl Storage for NoopStorage {
 
     async fn close_batch(
         &self,
-        _owner: &Owner,
+        _principal: &Principal,
         _source_batch_id: SourceBatchId,
     ) -> Result<CloseBatchOutcome, StorageError> {
         Err(StorageError::Internal("NoopStorage rejects writes".into()))

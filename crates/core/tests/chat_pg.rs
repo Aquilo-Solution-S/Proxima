@@ -23,14 +23,16 @@ async fn start_chat_emits_started_fact_and_first_message() -> Result<(), Box<dyn
     let owner = owner_fixture();
     let shell = pg
         .instantiate_personality(&proxima_core::InstantiatePersonalityRequest {
-            owner: owner.clone(),
+            principal: owner.principal.clone(),
+            org_id: Some(owner.org_id),
             display_name: "Shell".into(),
             purpose: "Start chats".into(),
         })
         .await?;
     let mira = pg
         .instantiate_personality(&proxima_core::InstantiatePersonalityRequest {
-            owner: owner.clone(),
+            principal: owner.principal.clone(),
+            org_id: Some(owner.org_id),
             display_name: "Mira".into(),
             purpose: "Receive chat messages".into(),
         })
@@ -39,7 +41,8 @@ async fn start_chat_emits_started_fact_and_first_message() -> Result<(), Box<dyn
     let shell_self = self_perspective(&rows, shell.instance_id);
 
     pg.set_wake_entries(&SetWakeEntriesRequest {
-        owner: owner.clone(),
+        principal: owner.principal.clone(),
+        org_id: Some(owner.org_id),
         personality_instance_id: mira.instance_id,
         entries: vec![wake(
             mira.instance_id,
@@ -127,14 +130,16 @@ async fn chat_round_trip_and_coordination_context() -> Result<(), Box<dyn std::e
     let owner = owner_fixture();
     let planner = pg
         .instantiate_personality(&proxima_core::InstantiatePersonalityRequest {
-            owner: owner.clone(),
+            principal: owner.principal.clone(),
+            org_id: Some(owner.org_id),
             display_name: "Planner".into(),
             purpose: "Ask implementation messages".into(),
         })
         .await?;
     let responder = pg
         .instantiate_personality(&proxima_core::InstantiatePersonalityRequest {
-            owner: owner.clone(),
+            principal: owner.principal.clone(),
+            org_id: Some(owner.org_id),
             display_name: "Testing Engineer".into(),
             purpose: "Reply test-design messages".into(),
         })
@@ -164,13 +169,15 @@ async fn chat_round_trip_and_coordination_context() -> Result<(), Box<dyn std::e
         vec!["core/emit_chat_reply".into()],
     );
     pg.set_wake_entries(&SetWakeEntriesRequest {
-        owner: owner.clone(),
+        principal: owner.principal.clone(),
+        org_id: Some(owner.org_id),
         personality_instance_id: planner.instance_id,
         entries: vec![planner_wake.clone()],
     })
     .await?;
     pg.set_wake_entries(&SetWakeEntriesRequest {
-        owner: owner.clone(),
+        principal: owner.principal.clone(),
+        org_id: Some(owner.org_id),
         personality_instance_id: responder.instance_id,
         entries: vec![responder_wake],
     })
@@ -280,14 +287,16 @@ async fn chat_message_requires_target_wake_entry() -> Result<(), Box<dyn std::er
     let owner = owner_fixture();
     let planner = pg
         .instantiate_personality(&proxima_core::InstantiatePersonalityRequest {
-            owner: owner.clone(),
+            principal: owner.principal.clone(),
+            org_id: Some(owner.org_id),
             display_name: "Planner".into(),
             purpose: "Ask messages".into(),
         })
         .await?;
     let silent = pg
         .instantiate_personality(&proxima_core::InstantiatePersonalityRequest {
-            owner: owner.clone(),
+            principal: owner.principal.clone(),
+            org_id: Some(owner.org_id),
             display_name: "Silent".into(),
             purpose: "No chat wake".into(),
         })
@@ -330,21 +339,24 @@ async fn planning_round_is_observable_as_graph() -> Result<(), Box<dyn std::erro
     let owner = owner_fixture();
     let planner = pg
         .instantiate_personality(&proxima_core::InstantiatePersonalityRequest {
-            owner: owner.clone(),
+            principal: owner.principal.clone(),
+            org_id: Some(owner.org_id),
             display_name: "Master Planner".into(),
             purpose: "Coordinate planning rounds".into(),
         })
         .await?;
     let tester = pg
         .instantiate_personality(&proxima_core::InstantiatePersonalityRequest {
-            owner: owner.clone(),
+            principal: owner.principal.clone(),
+            org_id: Some(owner.org_id),
             display_name: "Testing Engineer".into(),
             purpose: "Define acceptance tests".into(),
         })
         .await?;
     let decider = pg
         .instantiate_personality(&proxima_core::InstantiatePersonalityRequest {
-            owner: owner.clone(),
+            principal: owner.principal.clone(),
+            org_id: Some(owner.org_id),
             display_name: "Decider".into(),
             purpose: "Approve complete plans".into(),
         })
@@ -355,7 +367,8 @@ async fn planning_round_is_observable_as_graph() -> Result<(), Box<dyn std::erro
     let decider_self = self_perspective(&rows, decider.instance_id);
 
     pg.set_wake_entries(&SetWakeEntriesRequest {
-        owner: owner.clone(),
+        principal: owner.principal.clone(),
+        org_id: Some(owner.org_id),
         personality_instance_id: planner.instance_id,
         entries: vec![wake(
             planner.instance_id,
@@ -369,7 +382,8 @@ async fn planning_round_is_observable_as_graph() -> Result<(), Box<dyn std::erro
     })
     .await?;
     pg.set_wake_entries(&SetWakeEntriesRequest {
-        owner: owner.clone(),
+        principal: owner.principal.clone(),
+        org_id: Some(owner.org_id),
         personality_instance_id: tester.instance_id,
         entries: vec![wake(
             tester.instance_id,
@@ -600,14 +614,16 @@ async fn chat_lifecycle_compacts_continues_and_summarizes_without_llm()
     let owner = owner_fixture();
     let shell = pg
         .instantiate_personality(&proxima_core::InstantiatePersonalityRequest {
-            owner: owner.clone(),
+            principal: owner.principal.clone(),
+            org_id: Some(owner.org_id),
             display_name: "Shell".into(),
             purpose: "Open and drive graph-native chat".into(),
         })
         .await?;
     let mira = pg
         .instantiate_personality(&proxima_core::InstantiatePersonalityRequest {
-            owner: owner.clone(),
+            principal: owner.principal.clone(),
+            org_id: Some(owner.org_id),
             display_name: "Mira".into(),
             purpose: "Reply chat messages without autonomous action".into(),
         })
@@ -617,7 +633,8 @@ async fn chat_lifecycle_compacts_continues_and_summarizes_without_llm()
     let mira_self = self_perspective(&rows, mira.instance_id);
 
     pg.set_wake_entries(&SetWakeEntriesRequest {
-        owner: owner.clone(),
+        principal: owner.principal.clone(),
+        org_id: Some(owner.org_id),
         personality_instance_id: mira.instance_id,
         entries: vec![wake(
             mira.instance_id,

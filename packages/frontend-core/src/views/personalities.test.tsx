@@ -295,7 +295,7 @@ describe("PersonalitiesView", () => {
 
     await waitFor(() => {
       expect(listWakeInvocations).toHaveBeenCalledWith({
-        owner,
+        principal: owner.principal,
         personality_instance_id: "018f0000-0000-7000-8000-000000000001",
         wake_entry_id: null,
         triggering_memory_id: null,
@@ -344,7 +344,7 @@ describe("PersonalitiesView", () => {
 
     await waitFor(() => {
       expect(instantiatePersonality).toHaveBeenCalledWith({
-        owner,
+        principal: owner.principal,
         display_name: "Alice",
         purpose: "Test",
       });
@@ -429,7 +429,7 @@ describe("PersonalitiesView", () => {
 
     await waitFor(() => {
       expect(setWakeEntries).toHaveBeenCalledWith({
-        owner,
+        principal: owner.principal,
         personality_instance_id: row.personality_instance_id,
         entries: [
           {
@@ -541,7 +541,7 @@ describe("PersonalitiesView", () => {
 
     await waitFor(() => {
       expect(tombstonePersonality).toHaveBeenCalledWith({
-        owner,
+        principal: owner.principal,
         personality_instance_id: row.personality_instance_id,
       });
     });

@@ -154,7 +154,7 @@ export const FullSurface: Component<{ hub: Hub }> = (props) => {
     setDecliningId(proposal.id);
     setRequestsError(null);
     const draft: GoalDraft = {
-      owner: proposal.owner,
+      principal: proposal.owner.principal,
       schema_id: proposal.schema_id,
       schema_version: proposal.schema_version,
       title: proposal.title,

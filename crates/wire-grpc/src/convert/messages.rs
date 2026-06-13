@@ -24,8 +24,8 @@ use crate::pb::{
 use super::primitives::{timestamp_from_proto, uuid_from_proto, uuid_to_proto};
 use super::refs::{
     entity_kind_from_proto, entity_ref_to_proto, goal_state_from_proto, operator_kind_from_proto,
-    operator_kind_to_proto, outbox_entity_kind_to_memory_kind, owner_from_proto, owner_to_proto,
-    schema_ref_to_proto,
+    operator_kind_to_proto, outbox_entity_kind_to_memory_kind, owner_to_proto,
+    principal_from_proto, schema_ref_to_proto,
 };
 use super::rows::{
     edge_to_proto, goal_to_proto, memory_to_proto, relation_descriptor_to_proto,
@@ -228,9 +228,9 @@ pub fn query_request_from_proto(
     };
 
     Ok(proxima_core::verbs::query::QueryRequest {
-        owner: owner_from_proto(
-            pb.owner
-                .ok_or_else(|| Status::invalid_argument("missing owner"))?,
+        principal: principal_from_proto(
+            pb.principal
+                .ok_or_else(|| Status::invalid_argument("missing principal"))?,
         )?,
         entity_kind,
         schema_id,
@@ -270,9 +270,9 @@ pub fn subscribe_request_from_proto(
     let _filter = pb.filter.unwrap_or_default();
 
     Ok(proxima_core::verbs::subscribe::SubscribeRequest {
-        owner: owner_from_proto(
-            pb.owner
-                .ok_or_else(|| Status::invalid_argument("missing owner"))?,
+        principal: principal_from_proto(
+            pb.principal
+                .ok_or_else(|| Status::invalid_argument("missing principal"))?,
         )?,
         since,
     })
@@ -286,9 +286,9 @@ pub fn event_history_request_from_proto(
     pb: pb::EventHistoryRequest,
 ) -> Result<proxima_core::verbs::event_history::EventHistoryRequest, Status> {
     Ok(proxima_core::verbs::event_history::EventHistoryRequest {
-        owner: owner_from_proto(
-            pb.owner
-                .ok_or_else(|| Status::invalid_argument("missing owner"))?,
+        principal: principal_from_proto(
+            pb.principal
+                .ok_or_else(|| Status::invalid_argument("missing principal"))?,
         )?,
         limit: pb.limit,
         before: pb.before.map(|s| uuid_from_proto(&s)).transpose()?,
@@ -332,11 +332,12 @@ pub fn goal_write_request_from_proto(pb: GoalWriteRequest) -> Result<GoalDraft, 
         .collect();
 
     Ok(GoalDraft {
-        owner: owner_from_proto(
-            pb.owner
+        principal: principal_from_proto(
+            pb.principal
                 .clone()
-                .ok_or_else(|| Status::invalid_argument("missing owner"))?,
+                .ok_or_else(|| Status::invalid_argument("missing principal"))?,
         )?,
+        org_id: None,
         schema_id: SchemaId::new(schema_ref.schema_id.clone()),
         schema_version: SchemaVersion::new(schema_ref.schema_version),
         title: pb.title.clone(),
@@ -416,10 +417,11 @@ pub fn event_ingest_request_from_proto(
     Ok(proxima_core::verbs::event_ingest::EventDraft {
         source_id: SourceId::new(pb.source_id.clone()),
         source_batch_id: SourceBatchId::new(uuid_from_proto(&pb.source_batch_id)?),
-        owner: owner_from_proto(
-            pb.owner
-                .ok_or_else(|| Status::invalid_argument("missing owner"))?,
+        principal: principal_from_proto(
+            pb.principal
+                .ok_or_else(|| Status::invalid_argument("missing principal"))?,
         )?,
+        org_id: None,
         schema_id: SchemaId::new(schema_ref.schema_id.clone()),
         schema_version: SchemaVersion::new(schema_ref.schema_version),
         payload: pb.payload.clone(),
@@ -463,24 +465,22 @@ pub fn schema_response_to_proto(
 
 #[cfg(test)]
 mod tests {
+    use crate::convert::refs::principal_to_proto;
+
     use proxima_core::verbs::query::TombstoneFilter;
-    use proxima_core::{OrgId, Owner, Principal, UserId};
+    use proxima_core::{Principal, UserId};
     use uuid::Uuid;
 
     use super::*;
 
-    fn owner_proto() -> pb::Owner {
-        let owner = Owner {
-            principal: Principal::User(UserId::new(Uuid::now_v7())),
-            org_id: OrgId::new(Uuid::now_v7()),
-        };
-        owner_to_proto(&owner)
+    fn principal_proto() -> pb::Principal {
+        principal_to_proto(&Principal::User(UserId::new(Uuid::now_v7())))
     }
 
     #[test]
     fn query_unspecified_tombstones_defaults_to_present_only() {
         let core = query_request_from_proto(pb::QueryRequest {
-            owner: Some(owner_proto()),
+            principal: Some(principal_proto()),
             filter: Some(pb::ReadFilter {
                 entity_kind: None,
                 schema_id: None,

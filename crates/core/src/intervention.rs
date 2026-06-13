@@ -190,7 +190,7 @@ pub struct InterventionContinueCandidate {
 
 #[must_use]
 pub fn intervention_request_event_draft(
-    owner: Owner,
+    owner: &Owner,
     payload: &[u8],
     source_batch_id: SourceBatchId,
     source_id: SourceId,
@@ -200,7 +200,8 @@ pub fn intervention_request_event_draft(
     crate::verbs::event_ingest::EventDraft {
         source_id,
         source_batch_id,
-        owner,
+        principal: owner.principal.clone(),
+        org_id: Some(owner.org_id),
         schema_id: SchemaId::new(INTERVENTION_REQUESTED_SCHEMA_ID.into()),
         schema_version: SchemaVersion::new(1),
         payload: payload.to_vec(),
@@ -220,7 +221,7 @@ pub fn intervention_request_event_draft(
 
 #[must_use]
 pub fn intervention_decision_event_draft(
-    owner: Owner,
+    owner: &Owner,
     payload: &[u8],
     source_batch_id: SourceBatchId,
     source_id: SourceId,
@@ -230,7 +231,8 @@ pub fn intervention_decision_event_draft(
     crate::verbs::event_ingest::EventDraft {
         source_id,
         source_batch_id,
-        owner,
+        principal: owner.principal.clone(),
+        org_id: Some(owner.org_id),
         schema_id: SchemaId::new(INTERVENTION_DECISION_SCHEMA_ID.into()),
         schema_version: SchemaVersion::new(1),
         payload: payload.to_vec(),
@@ -302,7 +304,7 @@ pub fn intervention_decision_fact_event_draft(
         StorageError::Internal(format!("serialize intervention decision payload: {err}"))
     })?;
     Ok(intervention_decision_event_draft(
-        owner.clone(),
+        owner,
         &payload_bytes,
         SourceBatchId::new(Uuid::now_v7()),
         SourceId::new(INTERVENTION_SOURCE_ID),

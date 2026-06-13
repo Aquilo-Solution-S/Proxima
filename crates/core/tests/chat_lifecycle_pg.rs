@@ -23,14 +23,16 @@ async fn list_wake_invocations_filters_by_triggering_chat_message()
     let owner = owner_fixture();
     let shell = pg
         .instantiate_personality(&proxima_core::InstantiatePersonalityRequest {
-            owner: owner.clone(),
+            principal: owner.principal.clone(),
+            org_id: Some(owner.org_id),
             display_name: "Shell".into(),
             purpose: "Drive chat".into(),
         })
         .await?;
     let mira = pg
         .instantiate_personality(&proxima_core::InstantiatePersonalityRequest {
-            owner: owner.clone(),
+            principal: owner.principal.clone(),
+            org_id: Some(owner.org_id),
             display_name: "Mira".into(),
             purpose: "Reply to chat".into(),
         })
@@ -45,7 +47,8 @@ async fn list_wake_invocations_filters_by_triggering_chat_message()
         vec!["core/emit_chat_reply".into()],
     );
     pg.set_wake_entries(&SetWakeEntriesRequest {
-        owner: owner.clone(),
+        principal: owner.principal.clone(),
+        org_id: Some(owner.org_id),
         personality_instance_id: mira.instance_id,
         entries: vec![mira_wake.clone()],
     })
@@ -165,14 +168,16 @@ async fn compact_chat_thread_writes_abstraction_and_can_be_context()
     let owner = owner_fixture();
     let shell = pg
         .instantiate_personality(&proxima_core::InstantiatePersonalityRequest {
-            owner: owner.clone(),
+            principal: owner.principal.clone(),
+            org_id: Some(owner.org_id),
             display_name: "Shell".into(),
             purpose: "Compact chat threads".into(),
         })
         .await?;
     let mira = pg
         .instantiate_personality(&proxima_core::InstantiatePersonalityRequest {
-            owner: owner.clone(),
+            principal: owner.principal.clone(),
+            org_id: Some(owner.org_id),
             display_name: "Mira".into(),
             purpose: "Reply before compaction".into(),
         })
@@ -182,7 +187,8 @@ async fn compact_chat_thread_writes_abstraction_and_can_be_context()
     let mira_self = self_perspective(&rows, mira.instance_id);
 
     pg.set_wake_entries(&SetWakeEntriesRequest {
-        owner: owner.clone(),
+        principal: owner.principal.clone(),
+        org_id: Some(owner.org_id),
         personality_instance_id: mira.instance_id,
         entries: vec![wake(
             mira.instance_id,
@@ -292,14 +298,16 @@ async fn end_chat_requires_target_and_writes_summary_abstraction()
     let owner = owner_fixture();
     let shell = pg
         .instantiate_personality(&proxima_core::InstantiatePersonalityRequest {
-            owner: owner.clone(),
+            principal: owner.principal.clone(),
+            org_id: Some(owner.org_id),
             display_name: "Shell".into(),
             purpose: "Request chat closure".into(),
         })
         .await?;
     let mira = pg
         .instantiate_personality(&proxima_core::InstantiatePersonalityRequest {
-            owner: owner.clone(),
+            principal: owner.principal.clone(),
+            org_id: Some(owner.org_id),
             display_name: "Mira".into(),
             purpose: "Summarize ended chats".into(),
         })
@@ -309,7 +317,8 @@ async fn end_chat_requires_target_and_writes_summary_abstraction()
     let mira_self = self_perspective(&rows, mira.instance_id);
 
     pg.set_wake_entries(&SetWakeEntriesRequest {
-        owner: owner.clone(),
+        principal: owner.principal.clone(),
+        org_id: Some(owner.org_id),
         personality_instance_id: mira.instance_id,
         entries: vec![
             wake(

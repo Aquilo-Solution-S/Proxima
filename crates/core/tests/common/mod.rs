@@ -102,7 +102,8 @@ pub async fn seed_wake_context_fixture()
     // `proxima_core.root_personality_perspective_v1` sidecar directly.
     let response = pg
         .instantiate_personality(&InstantiatePersonalityRequest {
-            owner: owner.clone(),
+            principal: owner.principal.clone(),
+            org_id: Some(owner.org_id),
             display_name: "Engineer Test Personality".into(),
             purpose: "exercise wake-context assembly with a non-empty system prompt".into(),
         })
@@ -119,7 +120,8 @@ pub async fn seed_wake_context_fixture()
     let draft = EventDraft {
         source_id: SourceId::new("proxima-test/wake-context-source"),
         source_batch_id: SourceBatchId::new(Uuid::now_v7()),
-        owner: owner.clone(),
+        principal: owner.principal.clone(),
+        org_id: Some(owner.org_id),
         schema_id: SchemaId::new("proxima-test/wake-context-fact-v1".into()),
         schema_version: SchemaVersion::new(1),
         payload,
@@ -277,7 +279,8 @@ pub async fn seed_dispatch_fixture_with_match_and_engine(
     let target_ref = "test/local-cli";
     storage
         .register_inference_target(&RegisterInferenceTargetRequest {
-            owner: owner.clone(),
+            principal: owner.principal.clone(),
+            org_id: Some(owner.org_id),
             target_ref: target_ref.into(),
             config: InferenceTargetConfig::MistralChat(MistralChatConfig {
                 base_url: "http://127.0.0.1:9".into(),
@@ -294,7 +297,8 @@ pub async fn seed_dispatch_fixture_with_match_and_engine(
         .expect("register target");
     storage
         .bind_inference_tier(&BindInferenceTierRequest {
-            owner: owner.clone(),
+            principal: owner.principal.clone(),
+            org_id: Some(owner.org_id),
             tier: ModelTier::Standard,
             target_ref: target_ref.into(),
         })
@@ -319,7 +323,8 @@ pub async fn seed_dispatch_fixture_with_match_and_engine(
     .expect("build wake entry");
     storage
         .set_wake_entries(&SetWakeEntriesRequest {
-            owner: owner.clone(),
+            principal: owner.principal.clone(),
+            org_id: Some(owner.org_id),
             personality_instance_id: instance_id,
             entries: vec![wake_entry],
         })

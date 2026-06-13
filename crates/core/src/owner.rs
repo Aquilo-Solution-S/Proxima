@@ -4,8 +4,13 @@
 
 use crate::{GroupId, OrgId, UserId};
 
-/// Owner carries principal (access scope) and `org_id` (billing unit).
-/// `org_id` is NOT part of the access predicate (AGENTS.md invariant 4).
+/// Storage/row annotation assembled from an [`AuthzContext`](crate::AuthzContext).
+///
+/// Public request surfaces carry [`Principal`], not `Owner`. The verb layer
+/// checks that principal against the caller identity, then stamps `org_id`
+/// from auth context to reconstruct this pair for rows, storage drafts, wake
+/// internals, and stable hash inputs. `org_id` is NOT part of the access
+/// predicate (AGENTS.md invariant 4).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct Owner {
     pub principal: Principal,

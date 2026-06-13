@@ -235,7 +235,8 @@ pub async fn list_wake_invocations(
     pool: &PgPool,
     req: &ListWakeInvocationsRequest,
 ) -> Result<Vec<WakeInvocationRow>, StorageError> {
-    let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(&req.owner);
+    let owner = req.owner();
+    let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(&owner);
     let limit = i64::from(req.limit.clamp(1, 100));
     let rows = sqlx::query(
         r"SELECT i.owner_principal_kind,

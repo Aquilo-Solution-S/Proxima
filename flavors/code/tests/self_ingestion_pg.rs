@@ -167,7 +167,7 @@ async fn self_ingestion_streams_proxima_main() {
             .query(
                 &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
                 &proxima_core::verbs::query::QueryRequest {
-                    owner: owner.clone(),
+                    principal: owner.principal.clone(),
                     entity_kind: Some(proxima_core::verbs::query::EntityKind::Fact),
                     schema_id: Some(commit_schema.clone()),
                     supersession: proxima_core::verbs::query::SupersessionStatus::IncludeSuperseded,
@@ -220,7 +220,7 @@ async fn self_ingestion_streams_proxima_main() {
             .query(
                 &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
                 &proxima_core::verbs::query::QueryRequest {
-                    owner: owner.clone(),
+                    principal: owner.principal.clone(),
                     entity_kind: Some(proxima_core::verbs::query::EntityKind::Fact),
                     schema_id: None,
                     supersession: proxima_core::verbs::query::SupersessionStatus::IncludeSuperseded,
@@ -264,7 +264,7 @@ async fn self_ingestion_streams_proxima_main() {
 
         // Phase 2 — live streaming. Open Subscribe BEFORE the new commit.
         let sub_req = SubscribeRequest {
-            owner: owner.clone(),
+            principal: owner.principal.clone(),
             since: None,
         };
         let mut stream = engine

@@ -25,6 +25,7 @@ async fn walk_memory_lineage_follows_provenance_and_supersession_by_owner()
     let old = insert_memory(&pg, &owner, "old abstraction", 1).await?;
     let new = insert_memory(&pg, &owner, "new abstraction", 2).await?;
     let perspective = insert_memory(&pg, &owner, "perspective", 3).await?;
+    let other_old = insert_memory(&pg, &other_owner, "other owner old", 5).await?;
     let other = insert_memory(&pg, &other_owner, "other owner", 4).await?;
 
     insert_edge(
@@ -49,7 +50,7 @@ async fn walk_memory_lineage_follows_provenance_and_supersession_by_owner()
         &pg,
         &other_owner,
         other,
-        old,
+        other_old,
         "other/derived-from",
         RelationClass::Provenance,
     )
@@ -57,7 +58,7 @@ async fn walk_memory_lineage_follows_provenance_and_supersession_by_owner()
 
     let ancestors = pg
         .walk_memory_lineage(&MemoryLineageRequest {
-            owner: owner.clone(),
+            principal: owner.principal.clone(),
             start_memory_id: MemoryId::new(perspective),
             direction: MemoryLineageDirection::Ancestors,
             depth: 3,
@@ -82,7 +83,7 @@ async fn walk_memory_lineage_follows_provenance_and_supersession_by_owner()
 
     let descendants = pg
         .walk_memory_lineage(&MemoryLineageRequest {
-            owner,
+            principal: owner.principal,
             start_memory_id: MemoryId::new(old),
             direction: MemoryLineageDirection::Descendants,
             depth: 3,

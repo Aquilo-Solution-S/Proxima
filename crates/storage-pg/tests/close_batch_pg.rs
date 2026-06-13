@@ -59,7 +59,8 @@ fn fresh_draft(owner: Owner, source_batch_id: SourceBatchId) -> EventDraft {
     EventDraft {
         source_id: SourceId::new("test/source"),
         source_batch_id,
-        owner,
+        principal: owner.principal,
+        org_id: Some(owner.org_id),
         schema_id: SchemaId::new("test/fact_blob".into()),
         schema_version: SchemaVersion::new(1),
         payload: format!("payload-{}", Uuid::now_v7()).into_bytes(),
@@ -124,7 +125,7 @@ async fn close_batch_idempotent_and_owner_scoped() {
         let outcome = engine_a
             .close_batch(
                 &proxima_core::AuthzContext::single_owner(&owner_a, proxima_core::AuthPath::System),
-                owner_a.clone(),
+                owner_a.principal.clone(),
                 batch_id,
             )
             .await?;
@@ -135,7 +136,7 @@ async fn close_batch_idempotent_and_owner_scoped() {
         let replay = engine_a
             .close_batch(
                 &proxima_core::AuthzContext::single_owner(&owner_a, proxima_core::AuthPath::System),
-                owner_a.clone(),
+                owner_a.principal.clone(),
                 batch_id,
             )
             .await?;
@@ -146,7 +147,7 @@ async fn close_batch_idempotent_and_owner_scoped() {
         let cross = engine_b
             .close_batch(
                 &proxima_core::AuthzContext::single_owner(&owner_b, proxima_core::AuthPath::System),
-                owner_b.clone(),
+                owner_b.principal.clone(),
                 batch_id,
             )
             .await
@@ -158,7 +159,7 @@ async fn close_batch_idempotent_and_owner_scoped() {
         let missing = engine_a
             .close_batch(
                 &proxima_core::AuthzContext::single_owner(&owner_a, proxima_core::AuthPath::System),
-                owner_a.clone(),
+                owner_a.principal.clone(),
                 nope,
             )
             .await

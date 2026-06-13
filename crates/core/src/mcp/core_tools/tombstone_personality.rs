@@ -62,11 +62,12 @@ impl McpTool for TombstonePersonalityTool {
                 wake_entry_count: Some(r.wake_entries.len()),
             });
             let req = TombstonePersonalityRequest {
-                owner: ctx.owner.clone(),
+                principal: ctx.owner.principal.clone(),
+                org_id: None,
                 personality_instance_id: pid,
             };
             let resp = engine
-                .tombstone_personality(req)
+                .tombstone_personality(&ctx.authz, req)
                 .await
                 .map_err(|e| McpToolError::Other(e.to_string()))?;
             let audit = emit_personality_config_changed(

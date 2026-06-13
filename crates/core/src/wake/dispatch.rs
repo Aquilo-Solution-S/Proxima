@@ -221,6 +221,7 @@ pub async fn replay_missed_wakes(
     engine: &Engine,
     req: ReplayWakeEventsRequest,
 ) -> Result<ReplayWakeEventsOutcome, ProtocolError> {
+    let owner = req.owner();
     let event_limit = clamp_limit(
         req.event_limit,
         REPLAY_EVENT_LIMIT_DEFAULT,
@@ -240,7 +241,7 @@ pub async fn replay_missed_wakes(
     let entries: Vec<_> = rows
         .into_iter()
         .filter(|row| {
-            row.owner == req.owner
+            row.owner == owner
                 && row.personality_instance_id == req.personality_instance_id
                 && req
                     .wake_entry_id
@@ -249,15 +250,7 @@ pub async fn replay_missed_wakes(
         .collect();
 
     if entries.is_empty() {
-        return Ok(ReplayWakeEventsOutcome {
-            considered_events: 0,
-            eligible_events: 0,
-            started_invocations: 0,
-            already_recorded: 0,
-            skipped: 0,
-            complete: true,
-            next_after_seq: req.after_seq,
-        });
+        return Ok(empty_replay_outcome(req.after_seq));
     }
 
     let mut groups = group_by_personality(entries);
@@ -267,7 +260,7 @@ pub async fn replay_missed_wakes(
     let after = req.after_seq.unwrap_or_else(Uuid::nil);
     let events = engine
         .storage()
-        .list_change_events_for_replay(&req.owner, after, req.until_seq, usize::from(event_limit))
+        .list_change_events_for_replay(&owner, after, req.until_seq, usize::from(event_limit))
         .await
         .map_err(|e| ProtocolError::internal(format!("list_change_events_for_replay: {e}")))?;
 
@@ -329,6 +322,18 @@ pub async fn replay_missed_wakes(
 
 fn clamp_limit(value: u16, default: u16, max: u16) -> u16 {
     if value == 0 { default } else { value.min(max) }
+}
+
+fn empty_replay_outcome(after_seq: Option<Uuid>) -> ReplayWakeEventsOutcome {
+    ReplayWakeEventsOutcome {
+        considered_events: 0,
+        eligible_events: 0,
+        started_invocations: 0,
+        already_recorded: 0,
+        skipped: 0,
+        complete: true,
+        next_after_seq: after_seq,
+    }
 }
 
 /// One personality's worth of dispatch state — the cursor row joined

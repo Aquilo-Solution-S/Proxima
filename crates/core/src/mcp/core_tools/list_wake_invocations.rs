@@ -109,14 +109,18 @@ impl McpTool for ListWakeInvocationsTool {
                 Some(limit) => limit,
             };
             let rows = engine
-                .list_wake_invocations(ListWakeInvocationsRequest {
-                    owner: ctx.owner.clone(),
-                    personality_instance_id,
-                    wake_entry_id,
-                    triggering_memory_id,
-                    change_event_seq,
-                    limit,
-                })
+                .list_wake_invocations(
+                    &ctx.authz,
+                    ListWakeInvocationsRequest {
+                        principal: ctx.owner.principal.clone(),
+                        org_id: None,
+                        personality_instance_id,
+                        wake_entry_id,
+                        triggering_memory_id,
+                        change_event_seq,
+                        limit,
+                    },
+                )
                 .await
                 .map_err(|e| McpToolError::Other(e.to_string()))?;
 

@@ -42,7 +42,8 @@ impl McpTool for RemoveInferenceTargetTool {
                 .ok_or_else(|| McpToolError::Other("engine unavailable".into()))?;
             let target_ref = args.target_ref.clone();
             let req = RemoveInferenceTargetRequest {
-                owner: ctx.owner.clone(),
+                principal: ctx.owner.principal.clone(),
+                org_id: None,
                 target_ref: target_ref.clone(),
             };
             let resp = engine

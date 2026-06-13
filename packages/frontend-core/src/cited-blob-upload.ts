@@ -1,6 +1,7 @@
 import {
   commands as tauriCommands,
   type CitedBlobUploadAbortOutcomeTs,
+  type CitedBlobUploadAbortTs,
   type CitedBlobUploadCompleteOutcomeTs,
   type CitedBlobUploadCompleteTs,
   type CitedBlobUploadPrepareOutcomeTs,
@@ -20,10 +21,9 @@ export type CitedBlobUploadCommands = {
   citedBlobUploadComplete: (
     req: CitedBlobUploadCompleteTs,
   ) => Promise<CommandResult<CitedBlobUploadCompleteOutcomeTs>>;
-  citedBlobUploadAbort: (req: {
-    owner: Owner;
-    upload_id: string;
-  }) => Promise<CommandResult<CitedBlobUploadAbortOutcomeTs>>;
+  citedBlobUploadAbort: (
+    req: CitedBlobUploadAbortTs,
+  ) => Promise<CommandResult<CitedBlobUploadAbortOutcomeTs>>;
 };
 
 export type CitedBlobUploadInput = {
@@ -43,9 +43,10 @@ export async function uploadCitedBlob({
   commands = tauriCommands,
   fetchImpl = fetch,
 }: CitedBlobUploadInput): Promise<CitedBlobUploadCompleteOutcomeTs> {
+  const principal = owner.principal;
   const prepared = await unwrap(
     commands.citedBlobUploadPrepare({
-      owner,
+      principal,
       filename,
       mime: mime || blob.type || "application/octet-stream",
       byte_len: blob.size,
@@ -68,14 +69,14 @@ export async function uploadCitedBlob({
     }
     return await unwrap(
       commands.citedBlobUploadComplete({
-        owner,
+        principal,
         upload_id: prepared.upload_id,
       }),
       "cited_blob_upload_complete",
     );
   } catch (error) {
     await commands
-      .citedBlobUploadAbort({ owner, upload_id: prepared.upload_id })
+      .citedBlobUploadAbort({ principal, upload_id: prepared.upload_id })
       .catch(() => undefined);
     throw error;
   }

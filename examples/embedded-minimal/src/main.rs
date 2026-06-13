@@ -34,7 +34,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let draft = EventDraft {
         source_id: SourceId::new("embedded-minimal/host"),
         source_batch_id: SourceBatchId::new(uuid::Uuid::now_v7()),
-        owner: booted.owner.clone(),
+        principal: booted.owner.principal.clone(),
+        org_id: Some(booted.owner.org_id),
         schema_id: SchemaId::new(flavor::DocumentFiledV1::SCHEMA_ID.into()),
         schema_version: SchemaVersion::new(flavor::DocumentFiledV1::SCHEMA_VERSION),
         payload: payload_bytes,
@@ -65,7 +66,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn query_for_schema(owner: &proxima_core::Owner) -> QueryRequest {
-    let mut req = QueryRequest::for_owner(owner.clone());
+    let mut req = QueryRequest::for_principal(owner.principal.clone());
     req.entity_kind = Some(EntityKind::Fact);
     req.schema_id = Some(SchemaId::new(flavor::DocumentFiledV1::SCHEMA_ID.into()));
     req.limit = 10;

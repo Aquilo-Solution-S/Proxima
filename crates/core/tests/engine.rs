@@ -102,7 +102,10 @@ async fn query_verb_returns_empty_for_configured_owner() {
     let authz = AuthzContext::single_owner(&owner, AuthPath::System);
 
     let resp = engine
-        .query(&authz, &QueryRequest::for_owner(owner))
+        .query(
+            &authz,
+            &QueryRequest::for_principal(owner.principal.clone()),
+        )
         .await
         .expect("single-owner query must succeed");
 
@@ -126,7 +129,7 @@ async fn query_verb_allows_same_principal_with_different_org() {
     let resp = engine
         .query(
             &authz,
-            &QueryRequest::for_owner(same_principal_different_org),
+            &QueryRequest::for_principal(same_principal_different_org.principal.clone()),
         )
         .await
         .expect("access is scoped by principal, not org_id");
@@ -142,7 +145,10 @@ async fn query_verb_rejects_foreign_owner_with_forbidden() {
     let (_, foreign) = fresh_owner();
 
     let err = engine
-        .query(&authz, &QueryRequest::for_owner(foreign))
+        .query(
+            &authz,
+            &QueryRequest::for_principal(foreign.principal.clone()),
+        )
         .await
         .expect_err("foreign owner must be rejected");
     assert_eq!(err.code, ErrorCode::Forbidden);
@@ -159,11 +165,16 @@ async fn dispatcher_tick_is_noop_without_wake_configs() {
 async fn tombstone_personality_rejects_noop_storage_write() {
     let (principal, owner) = fresh_owner();
     let engine = boot_engine(principal, owner.clone());
+    let authz = AuthzContext::single_owner(&owner, AuthPath::System);
     let err = engine
-        .tombstone_personality(proxima_core::TombstonePersonalityRequest {
-            owner,
-            personality_instance_id: proxima_core::PersonalityInstanceId::new(Uuid::now_v7()),
-        })
+        .tombstone_personality(
+            &authz,
+            proxima_core::TombstonePersonalityRequest {
+                principal: owner.principal.clone(),
+                org_id: None,
+                personality_instance_id: proxima_core::PersonalityInstanceId::new(Uuid::now_v7()),
+            },
+        )
         .await
         .expect_err("NoopStorage rejects writes");
     assert_eq!(err.code, ErrorCode::Internal);
@@ -182,7 +193,11 @@ async fn wake_shaped_context_denied_ingest_and_admin_but_not_goal_write() {
     };
 
     let ingest_err = engine
-        .close_batch(&authz, owner.clone(), SourceBatchId::new(Uuid::now_v7()))
+        .close_batch(
+            &authz,
+            owner.principal.clone(),
+            SourceBatchId::new(Uuid::now_v7()),
+        )
         .await
         .expect_err("wake context must not close batches");
     assert!(
@@ -192,7 +207,7 @@ async fn wake_shaped_context_denied_ingest_and_admin_but_not_goal_write() {
     );
 
     let admin_err = engine
-        .list_inference_targets(&authz, &owner)
+        .list_inference_targets(&authz, &owner.principal)
         .await
         .expect_err("wake context must not touch config verbs");
     assert!(admin_err.to_string().contains("requires admin role"));
@@ -208,12 +223,15 @@ async fn cross_owner_context_is_forbidden_on_graph_read() {
         .event_history(
             &authz,
             &EventHistoryRequest {
-                owner: owner_b,
+                principal: owner_b.principal,
                 limit: 1,
                 before: None,
             },
         )
         .await
         .expect_err("cross-owner access must be forbidden");
-    assert!(err.to_string().contains("cannot access requested owner"));
+    assert!(
+        err.to_string()
+            .contains("principal cannot access requested principal")
+    );
 }

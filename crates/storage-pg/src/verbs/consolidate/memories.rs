@@ -316,12 +316,11 @@ async fn memory_visible_to_reader(
     let allowed: Option<(i32,)> = sqlx::query_as(
         "SELECT 1
            FROM proxima_core.read_scope_matrix r
-           JOIN proxima_core.memories m
-             ON m.owner_principal_kind = r.owner_principal_kind
-            AND m.owner_principal_id = r.owner_principal_id
-            AND m.owner_org_id = r.owner_org_id
-            AND m.memory_id = $5
-          WHERE r.owner_principal_kind = $1
+	          JOIN proxima_core.memories m
+	            ON m.owner_principal_kind = r.owner_principal_kind
+	           AND m.owner_principal_id = r.owner_principal_id
+	           AND m.memory_id = $5
+	         WHERE r.owner_principal_kind = $1
             AND r.owner_principal_id = $2
             AND r.reader_personality_instance_id = $3
             AND r.readable_personality_instance_id = $4",

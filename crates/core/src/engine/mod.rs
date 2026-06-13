@@ -26,7 +26,7 @@ use crate::wake::target_adapter::TargetAdapter;
 use crate::wake::token_store::WakeTokenStore;
 use crate::{
     BindInferenceTierRequest, BindInferenceTierResponse, InferenceTargetRow,
-    InferenceTierBindingRow, Owner, RegisterInferenceTargetRequest,
+    InferenceTierBindingRow, Owner, Principal, RegisterInferenceTargetRequest,
     RegisterInferenceTargetResponse, RemoveInferenceTargetRequest, RemoveInferenceTargetResponse,
     SetWakeEntriesRequest, SetWakeEntriesResponse,
 };
@@ -95,7 +95,7 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when the context cannot access `req.owner` or
+    /// Returns `Forbidden` when the context cannot access `req.principal` or
     /// lacks the admin role, `InvalidArgument` on request validation,
     /// `TargetRefConflict` when the `target_ref` already exists, or
     /// `Internal` on storage failure.
@@ -104,10 +104,12 @@ impl Engine {
         authz: &AuthzContext,
         req: &RegisterInferenceTargetRequest,
     ) -> Result<RegisterInferenceTargetResponse, ProtocolError> {
-        authorize(authz, &req.owner, Role::Admin)?;
+        authorize(authz, &req.principal, Role::Admin)?;
+        let mut effective = req.clone();
+        effective.stamp_owner(authz.scoped_owner(req.principal.clone()));
         crate::inference::register_inference_target::register_inference_target(
             self.storage.as_ref(),
-            req,
+            &effective,
         )
         .await
     }
@@ -116,17 +118,18 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when the context cannot access `owner` or lacks
+    /// Returns `Forbidden` when the context cannot access `principal` or lacks
     /// the admin role, or `Internal` when storage listing fails.
     pub async fn list_inference_targets(
         &self,
         authz: &AuthzContext,
-        owner: &Owner,
+        principal: &Principal,
     ) -> Result<Vec<InferenceTargetRow>, ProtocolError> {
-        authorize(authz, owner, Role::Admin)?;
+        authorize(authz, principal, Role::Admin)?;
+        let owner = authz.scoped_owner(principal.clone());
         crate::inference::list_inference_targets::list_inference_targets(
             self.storage.as_ref(),
-            owner,
+            &owner,
         )
         .await
     }
@@ -135,7 +138,7 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when the context cannot access `req.owner` or
+    /// Returns `Forbidden` when the context cannot access `req.principal` or
     /// lacks the admin role, `InvalidArgument` on request validation,
     /// `TargetInUse` when a tier binding still references the target, or
     /// `Internal` on storage failure.
@@ -144,10 +147,12 @@ impl Engine {
         authz: &AuthzContext,
         req: &RemoveInferenceTargetRequest,
     ) -> Result<RemoveInferenceTargetResponse, ProtocolError> {
-        authorize(authz, &req.owner, Role::Admin)?;
+        authorize(authz, &req.principal, Role::Admin)?;
+        let mut effective = req.clone();
+        effective.stamp_owner(authz.scoped_owner(req.principal.clone()));
         crate::inference::remove_inference_target::remove_inference_target(
             self.storage.as_ref(),
-            req,
+            &effective,
         )
         .await
     }
@@ -156,7 +161,7 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when the context cannot access `req.owner` or
+    /// Returns `Forbidden` when the context cannot access `req.principal` or
     /// lacks the admin role, `InvalidArgument` on request validation,
     /// `InferenceTargetMissing` when the `target_ref` is unknown, or
     /// `Internal` on storage failure.
@@ -165,25 +170,32 @@ impl Engine {
         authz: &AuthzContext,
         req: &BindInferenceTierRequest,
     ) -> Result<BindInferenceTierResponse, ProtocolError> {
-        authorize(authz, &req.owner, Role::Admin)?;
-        crate::inference::bind_inference_tier::bind_inference_tier(self.storage.as_ref(), req).await
+        authorize(authz, &req.principal, Role::Admin)?;
+        let mut effective = req.clone();
+        effective.stamp_owner(authz.scoped_owner(req.principal.clone()));
+        crate::inference::bind_inference_tier::bind_inference_tier(
+            self.storage.as_ref(),
+            &effective,
+        )
+        .await
     }
 
     /// Owner-scoped listing of model-tier bindings.
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when the context cannot access `owner` or lacks
+    /// Returns `Forbidden` when the context cannot access `principal` or lacks
     /// the admin role, or `Internal` when storage listing fails.
     pub async fn list_inference_tier_bindings(
         &self,
         authz: &AuthzContext,
-        owner: &Owner,
+        principal: &Principal,
     ) -> Result<Vec<InferenceTierBindingRow>, ProtocolError> {
-        authorize(authz, owner, Role::Admin)?;
+        authorize(authz, principal, Role::Admin)?;
+        let owner = authz.scoped_owner(principal.clone());
         crate::inference::list_inference_tier_bindings::list_inference_tier_bindings(
             self.storage.as_ref(),
-            owner,
+            &owner,
         )
         .await
     }
@@ -223,7 +235,7 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when the context cannot access `req.owner` or
+    /// Returns `Forbidden` when the context cannot access `req.principal` or
     /// lacks the admin role; `InvalidArgument`,
     /// `DuplicateTriggerInRequest`, `ToolNotRegistered`,
     /// `InferenceTargetMissing`, or `TierUnbound` on request validation;
@@ -234,12 +246,14 @@ impl Engine {
         authz: &AuthzContext,
         req: &SetWakeEntriesRequest,
     ) -> Result<SetWakeEntriesResponse, ProtocolError> {
-        authorize(authz, &req.owner, Role::Admin)?;
+        authorize(authz, &req.principal, Role::Admin)?;
+        let mut effective = req.clone();
+        effective.stamp_owner(authz.scoped_owner(req.principal.clone()));
         let ctx = crate::inference::set_wake_entries::SetWakeEntriesContext {
             storage: self.storage.as_ref(),
             registry: self.registry(),
         };
-        crate::inference::set_wake_entries::set_wake_entries(&ctx, req).await
+        crate::inference::set_wake_entries::set_wake_entries(&ctx, &effective).await
     }
 
     /// Bound MCP URL after [`Engine::start`] succeeds. `None` before
@@ -380,12 +394,12 @@ impl std::fmt::Debug for Engine {
 
 pub(super) fn authorize(
     authz: &AuthzContext,
-    owner: &Owner,
+    principal: &Principal,
     role: Role,
 ) -> Result<(), ProtocolError> {
-    if !authz.identity.can_access_owner(owner) {
+    if !authz.identity.can_access_principal(principal) {
         return Err(ProtocolError::forbidden(
-            "principal cannot access requested owner",
+            "principal cannot access requested principal",
         ));
     }
     if !authz.capabilities.roles.has(role) {

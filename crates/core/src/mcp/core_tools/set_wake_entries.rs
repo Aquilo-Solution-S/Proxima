@@ -71,7 +71,8 @@ impl McpTool for SetWakeEntriesTool {
                 .collect::<Result<Vec<_>, _>>()?;
 
             let req = SetWakeEntriesRequest {
-                owner: ctx.owner.clone(),
+                principal: ctx.owner.principal.clone(),
+                org_id: None,
                 personality_instance_id: pid,
                 entries: drafts.clone(),
             };

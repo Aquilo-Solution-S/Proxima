@@ -289,7 +289,7 @@ async fn seed_continue_decision_graph(
     ciborium::ser::into_writer(&request, &mut request_payload)?;
     let request_outcome = pg
         .ingest_event_atomic(&intervention_request_event_draft(
-            owner.clone(),
+            owner,
             &request_payload,
             SourceBatchId::new(Uuid::now_v7()),
             SourceId::new(INTERVENTION_SOURCE_ID),
@@ -339,7 +339,7 @@ async fn seed_continue_decision_graph(
     ciborium::ser::into_writer(&decision, &mut decision_payload)?;
     let decision_outcome = pg
         .ingest_event_atomic(&intervention_decision_event_draft(
-            owner.clone(),
+            owner,
             &decision_payload,
             SourceBatchId::new(Uuid::now_v7()),
             SourceId::new(INTERVENTION_SOURCE_ID),

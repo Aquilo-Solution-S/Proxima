@@ -58,7 +58,7 @@ export const RegisterModelModal: Component<Props> = (props) => {
     }
     try {
       await props.client.registerInferenceTarget({
-        owner: props.owner,
+        principal: props.owner.principal,
         target_ref: ref,
         config: configFromDraft(draft()),
       });

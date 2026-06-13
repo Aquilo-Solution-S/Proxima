@@ -31,7 +31,8 @@ async fn register_inference_target_inserts_new_row() {
         let owner = owner_fixture();
 
         let req = RegisterInferenceTargetRequest {
-            owner: owner.clone(),
+            principal: owner.principal.clone(),
+            org_id: Some(owner.org_id),
             target_ref: "primary".into(),
             config: mistral_chat("mistral-medium-3.5", Some("MISTRAL_API_KEY")),
         };
@@ -61,7 +62,8 @@ async fn register_inference_target_idempotent_when_body_matches() {
         pg.run_migrations().await?;
         let owner = owner_fixture();
         let req = RegisterInferenceTargetRequest {
-            owner,
+            principal: owner.principal,
+            org_id: Some(owner.org_id),
             target_ref: "primary".into(),
             config: mistral_chat("mistral-medium-3.5", None),
         };
@@ -87,14 +89,16 @@ async fn register_inference_target_conflict_when_body_differs() {
         pg.run_migrations().await?;
         let owner = owner_fixture();
         let req_a = RegisterInferenceTargetRequest {
-            owner: owner.clone(),
+            principal: owner.principal.clone(),
+            org_id: Some(owner.org_id),
             target_ref: "primary".into(),
             config: mistral_chat("mistral-medium-3.5", None),
         };
         let _ = pg.register_inference_target(&req_a).await?;
 
         let req_b = RegisterInferenceTargetRequest {
-            owner,
+            principal: owner.principal,
+            org_id: Some(owner.org_id),
             target_ref: "primary".into(),
             config: mistral_chat("mistral-small", None),
         };

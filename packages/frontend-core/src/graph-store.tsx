@@ -117,7 +117,7 @@ const snapshotReq = (
   owner: Owner,
   tombstones: TombstoneFilter = "PresentOnly",
 ): QueryRequest => ({
-  owner,
+  principal: owner.principal,
   entity_kind: null,
   schema_id: null,
   supersession: "HeadsOnly",
@@ -390,7 +390,11 @@ export function createGraphStore(
     const [schemaResp, queryResp, historyResp] = await Promise.all([
       client.schema(),
       client.query(snapshotReq(owner)),
-      client.eventHistory({ owner, limit: HISTORY_SEED_LIMIT, before: null }),
+      client.eventHistory({
+        principal: owner.principal,
+        limit: HISTORY_SEED_LIMIT,
+        before: null,
+      }),
     ]);
     activeMemoryIdByNaturalKey = new Map();
     naturalKeyByMemoryId = new Map();
@@ -422,7 +426,7 @@ export function createGraphStore(
     applyResponse(queryResp);
     subscription?.unsubscribe();
     subscription = await client.subscribe(
-      { owner, since: state().seqHighWater },
+      { principal: owner.principal, since: state().seqHighWater },
       handleEvent,
     );
     setState((prev) => ({ ...prev, streamStatus: "live" }));

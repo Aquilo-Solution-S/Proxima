@@ -78,7 +78,8 @@ async fn prepare_then_complete_then_read_roundtrip() {
 
     let prepared = store
         .prepare_upload(CitedBlobUploadPrepareTs {
-            owner: owner.clone(),
+            principal: owner.principal.clone(),
+            org_id: Some(owner.org_id),
             filename: "test.pdf".into(),
             mime: "application/pdf".into(),
             byte_len: body.len() as u64,
@@ -99,14 +100,16 @@ async fn prepare_then_complete_then_read_roundtrip() {
 
     let completed = store
         .complete_upload(CitedBlobUploadCompleteTs {
-            owner: owner.clone(),
+            principal: owner.principal.clone(),
+            org_id: Some(owner.org_id),
             upload_id: prepared.upload_id,
         })
         .await
         .expect("complete");
     let url = store
         .read_url(CitedBlobReadUrlTs {
-            owner,
+            principal: owner.principal,
+            org_id: Some(owner.org_id),
             cited_object_id: completed.cited_object_id.clone(),
         })
         .await
