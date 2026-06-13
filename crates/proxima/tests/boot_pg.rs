@@ -3,11 +3,9 @@ use proxima::{
     company_owner, run_core_and_flavor_migrations,
 };
 use proxima_core::FlavorRegistry;
+use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
 use proxima_storage_pg::PgStorage;
-use sqlx::{Connection, Executor, PgConnection};
 use uuid::Uuid;
-
-const ADMIN_URL: &str = "postgres://proxima:proxima@localhost/proxima";
 
 struct GoalTestApp;
 
@@ -36,7 +34,7 @@ impl FlavorApp for GoalTestApp {
 
 #[tokio::test]
 async fn boots_engine_with_goal_flavor_on_fresh_db() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = unique_db_name("proxima_test");
     create_db(&db_name).await.expect("PG required for tests");
     let db_url = db_url(&db_name);
 
@@ -70,7 +68,7 @@ async fn boots_engine_with_goal_flavor_on_fresh_db() {
 
 #[tokio::test]
 async fn migration_facade_runs_goal_flavor_idempotently() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = unique_db_name("proxima_test");
     create_db(&db_name).await.expect("PG required for tests");
     let db_url = db_url(&db_name);
 
@@ -104,7 +102,7 @@ async fn migration_facade_runs_goal_flavor_idempotently() {
 
 #[tokio::test]
 async fn facade_run_binds_loopback_mcp_and_sets_engine_url() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = unique_db_name("proxima_test");
     create_db(&db_name).await.expect("PG required for tests");
     let db_url = db_url(&db_name);
 
@@ -132,27 +130,4 @@ async fn facade_run_binds_loopback_mcp_and_sets_engine_url() {
 
     let _ = drop_db(&db_name).await;
     result.expect("facade run integration test failed");
-}
-
-fn db_url(name: &str) -> String {
-    match ADMIN_URL.rfind('/') {
-        Some(idx) => format!("{}/{name}", &ADMIN_URL[..idx]),
-        None => format!("{ADMIN_URL}/{name}"),
-    }
-}
-
-async fn create_db(name: &str) -> Result<(), sqlx::Error> {
-    let mut conn = PgConnection::connect(ADMIN_URL).await?;
-    conn.execute(format!("CREATE DATABASE \"{name}\"").as_str())
-        .await?;
-    conn.close().await?;
-    Ok(())
-}
-
-async fn drop_db(name: &str) -> Result<(), sqlx::Error> {
-    let mut conn = PgConnection::connect(ADMIN_URL).await?;
-    conn.execute(format!("DROP DATABASE IF EXISTS \"{name}\" WITH (FORCE)").as_str())
-        .await?;
-    conn.close().await?;
-    Ok(())
 }

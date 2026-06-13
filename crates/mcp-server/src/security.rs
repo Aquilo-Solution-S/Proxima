@@ -1,12 +1,18 @@
 use std::net::SocketAddr;
+use std::pin::Pin;
 use std::sync::Arc;
 
+use axum::body::Body;
 use axum::extract::{Request, State};
 use axum::http::StatusCode;
 use axum::middleware::{self, FromFnLayer, Next};
 use axum::response::{IntoResponse, Response};
+use futures_util::Stream;
 use http::HeaderMap;
 use http::header::{AUTHORIZATION, ORIGIN};
+use http_body::{Body as HttpBody, Frame};
+use http_body_util::{BodyStream, StreamBody};
+use proxima_core::{AuthPath, Authenticator, Identity, RevalidationConfig, revalidate_stream};
 
 use crate::McpServerError;
 use crate::auth::McpEdgeAuth;
@@ -128,6 +134,7 @@ pub type McpAuthLayer = FromFnLayer<
 pub struct McpAuthLayerState {
     auth: Arc<McpEdgeAuth>,
     allowlist: OriginAllowlist,
+    revalidation: RevalidationConfig,
 }
 
 /// Bearer-token middleware that resolves
@@ -141,6 +148,15 @@ pub struct McpAuthLayerState {
 /// Returns a [`McpAuthLayer`] (alias of [`FromFnLayer`]) so
 /// callers apply it directly with [`axum::Router::layer`].
 pub fn mcp_auth_layer(auth: Arc<McpEdgeAuth>, allowlist: OriginAllowlist) -> McpAuthLayer {
+    mcp_auth_layer_with_config(auth, allowlist, RevalidationConfig::default())
+}
+
+/// Bearer-token middleware with explicit stream revalidation config.
+pub fn mcp_auth_layer_with_config(
+    auth: Arc<McpEdgeAuth>,
+    allowlist: OriginAllowlist,
+    revalidation: RevalidationConfig,
+) -> McpAuthLayer {
     fn dispatch(
         state: State<McpAuthLayerState>,
         request: Request,
@@ -149,7 +165,11 @@ pub fn mcp_auth_layer(auth: Arc<McpEdgeAuth>, allowlist: OriginAllowlist) -> Mcp
         Box::pin(mcp_auth(state, request, next))
     }
     middleware::from_fn_with_state(
-        McpAuthLayerState { auth, allowlist },
+        McpAuthLayerState {
+            auth,
+            allowlist,
+            revalidation,
+        },
         dispatch as fn(_, _, _) -> _,
     )
 }
@@ -168,8 +188,99 @@ async fn mcp_auth(
     if request.headers().contains_key(ORIGIN) && !state.allowlist.allows(request.headers()) {
         return (StatusCode::FORBIDDEN, "origin not allowed").into_response();
     }
+    let identity = ctx.authz.identity.clone();
+    let epoch_source = if ctx.authz.auth_path == AuthPath::HostBearer {
+        state.auth.host_authenticator()
+    } else {
+        None
+    };
     request.extensions_mut().insert(ctx);
-    next.run(request).await
+    revalidate_response(
+        next.run(request).await,
+        identity,
+        epoch_source,
+        state.revalidation,
+    )
+}
+
+fn revalidate_response(
+    response: Response,
+    identity: Identity,
+    authenticator: Option<Arc<dyn Authenticator>>,
+    config: RevalidationConfig,
+) -> Response {
+    response.map(|body| Body::new(RevalidatedBody::new(body, identity, authenticator, config)))
+}
+
+type FrameStream<D, E> = Pin<Box<dyn Stream<Item = Result<Frame<D>, E>> + Send>>;
+type RevalidatedInner<D, E> = Pin<Box<StreamBody<FrameStream<D, E>>>>;
+
+struct RevalidatedBody<B>
+where
+    B: HttpBody + Send + 'static,
+    B::Data: Send + 'static,
+    B::Error: Send + 'static,
+{
+    inner: RevalidatedInner<B::Data, B::Error>,
+}
+
+impl<B> RevalidatedBody<B>
+where
+    B: HttpBody + Send + 'static,
+    B::Data: Send + 'static,
+    B::Error: Send + 'static,
+{
+    fn new(
+        body: B,
+        identity: Identity,
+        authenticator: Option<Arc<dyn Authenticator>>,
+        config: RevalidationConfig,
+    ) -> Self {
+        Self {
+            inner: Box::pin(StreamBody::new(revalidate_stream(
+                BodyStream::new(body),
+                identity,
+                authenticator,
+                config,
+            ))),
+        }
+    }
+}
+
+impl<B> std::fmt::Debug for RevalidatedBody<B>
+where
+    B: HttpBody + Send + 'static,
+    B::Data: Send + 'static,
+    B::Error: Send + 'static,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RevalidatedBody").finish_non_exhaustive()
+    }
+}
+
+impl<B> HttpBody for RevalidatedBody<B>
+where
+    B: HttpBody + Send + 'static,
+    B::Data: Send + 'static,
+    B::Error: Send + 'static,
+{
+    type Data = B::Data;
+    type Error = B::Error;
+
+    fn poll_frame(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        self.inner.as_mut().poll_frame(cx)
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.inner.is_end_stream()
+    }
+
+    fn size_hint(&self) -> http_body::SizeHint {
+        HttpBody::size_hint(&self.inner)
+    }
 }
 
 fn extract_bearer(request: &Request) -> Option<String> {
@@ -235,7 +346,23 @@ fn parse_origin(value: &str) -> Option<ParsedOrigin> {
 
 #[cfg(test)]
 mod tests {
-    use super::OriginAllowlist;
+    use std::collections::HashSet;
+    use std::convert::Infallible;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{Duration, SystemTime};
+
+    use async_trait::async_trait;
+    use axum::body::{Body, Bytes, to_bytes};
+    use futures_util::stream;
+    use proxima_core::{
+        AuthError, Authenticator, AuthzContext, Credentials, Identity, Principal,
+        RevalidationConfig, UserId,
+    };
+    use tokio::sync::mpsc;
+    use tokio::time;
+
+    use super::{OriginAllowlist, RevalidatedBody};
     use crate::McpServerError;
 
     #[test]
@@ -280,5 +407,136 @@ mod tests {
             panic!("expected invalid origin");
         };
         assert!(message.contains(pattern));
+    }
+
+    fn identity(expires_at: Option<SystemTime>, auth_epoch: u64) -> Identity {
+        let principal = Principal::User(UserId::new(uuid::Uuid::now_v7()));
+        let mut accessible_principals = HashSet::with_capacity(1);
+        accessible_principals.insert(principal.clone());
+        Identity {
+            principal,
+            accessible_principals,
+            expires_at,
+            auth_epoch,
+        }
+    }
+
+    fn receiver_body(receiver: mpsc::UnboundedReceiver<Result<Bytes, Infallible>>) -> Body {
+        Body::from_stream(stream::unfold(receiver, |mut receiver| async {
+            receiver.recv().await.map(|item| (item, receiver))
+        }))
+    }
+
+    fn collect_revalidated(
+        body: Body,
+        identity: Identity,
+        authenticator: Option<Arc<dyn Authenticator>>,
+        config: RevalidationConfig,
+    ) -> tokio::task::JoinHandle<Bytes> {
+        tokio::spawn(async move {
+            to_bytes(
+                Body::new(RevalidatedBody::new(body, identity, authenticator, config)),
+                usize::MAX,
+            )
+            .await
+            .expect("body collection succeeds")
+        })
+    }
+
+    #[derive(Debug, Default)]
+    struct EpochAuthenticator {
+        epoch: AtomicU64,
+    }
+
+    #[async_trait]
+    impl Authenticator for EpochAuthenticator {
+        async fn authenticate(&self, _creds: &Credentials) -> Result<AuthzContext, AuthError> {
+            Err(AuthError::AuthRequired)
+        }
+
+        async fn current_auth_epoch(&self, _principal: &Principal) -> u64 {
+            self.epoch.load(Ordering::SeqCst)
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn revalidated_body_expiry_ends_active_body() {
+        let config = RevalidationConfig {
+            max_stream_lifetime: Duration::from_mins(1),
+            epoch_check_interval: Duration::from_secs(5),
+        };
+        let (sender, receiver) = mpsc::unbounded_channel();
+        sender
+            .send(Ok(Bytes::from_static(b"before-expiry")))
+            .expect("receiver is alive");
+        let task = collect_revalidated(
+            receiver_body(receiver),
+            identity(Some(SystemTime::now() + Duration::from_secs(2)), 0),
+            None,
+            config,
+        );
+
+        tokio::task::yield_now().await;
+        time::advance(Duration::from_secs(2)).await;
+
+        assert_eq!(task.await.unwrap(), Bytes::from_static(b"before-expiry"));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn revalidated_body_epoch_bump_ends_within_interval() {
+        let config = RevalidationConfig {
+            max_stream_lifetime: Duration::from_mins(1),
+            epoch_check_interval: Duration::from_secs(5),
+        };
+        let authenticator = Arc::new(EpochAuthenticator::default());
+        let (_sender, receiver) = mpsc::unbounded_channel();
+        let task = collect_revalidated(
+            receiver_body(receiver),
+            identity(None, 0),
+            Some(authenticator.clone()),
+            config,
+        );
+
+        tokio::task::yield_now().await;
+        authenticator.epoch.store(1, Ordering::SeqCst);
+        time::advance(Duration::from_secs(5)).await;
+
+        assert!(task.await.unwrap().is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn revalidated_body_max_lifetime_ends_active_body() {
+        let config = RevalidationConfig {
+            max_stream_lifetime: Duration::from_secs(3),
+            epoch_check_interval: Duration::from_secs(5),
+        };
+        let (_sender, receiver) = mpsc::unbounded_channel();
+        let task = collect_revalidated(receiver_body(receiver), identity(None, 0), None, config);
+
+        tokio::task::yield_now().await;
+        time::advance(Duration::from_secs(3)).await;
+
+        assert!(task.await.unwrap().is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn revalidated_body_leaves_short_response_unchanged() {
+        let config = RevalidationConfig {
+            max_stream_lifetime: Duration::from_mins(1),
+            epoch_check_interval: Duration::from_secs(5),
+        };
+        let bytes = to_bytes(
+            Body::new(RevalidatedBody::new(
+                Body::from("short"),
+                identity(None, 0),
+                None,
+                config,
+            )),
+            usize::MAX,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(bytes, Bytes::from_static(b"short"));
     }
 }

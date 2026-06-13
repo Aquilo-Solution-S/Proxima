@@ -7,18 +7,16 @@ use proxima_blob_s3::{
     S3RuntimeConfig,
 };
 use proxima_core::{OrgId, Owner, Principal, UserId};
+use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
 use proxima_storage_pg::PgStorage;
-use sqlx::{Connection, Executor, PgConnection};
 use uuid::Uuid;
 
-const ADMIN_URL: &str = "postgres://proxima:proxima@localhost/proxima";
-
 async fn fresh_pool() -> (sqlx::PgPool, String) {
-    let db_name = format!("proxima_blob_s3_test_{}", Uuid::now_v7().simple());
+    let db_name = unique_db_name("proxima_blob_s3_test");
     if let Err(e) = create_db(&db_name).await {
         panic!("PG required for tests but admin connect failed: {e}");
     }
-    let url = format!("postgres://proxima:proxima@localhost/{db_name}");
+    let url = db_url(&db_name);
     let pg = PgStorage::connect(&url)
         .await
         .unwrap_or_else(|err| panic!("PG required for tests but unavailable: {err}"));
@@ -27,22 +25,6 @@ async fn fresh_pool() -> (sqlx::PgPool, String) {
         panic!("migration failed: {err}");
     }
     (pg.pool().clone(), db_name)
-}
-
-async fn create_db(name: &str) -> Result<(), sqlx::Error> {
-    let mut conn = PgConnection::connect(ADMIN_URL).await?;
-    conn.execute(format!("CREATE DATABASE \"{name}\"").as_str())
-        .await?;
-    conn.close().await?;
-    Ok(())
-}
-
-async fn drop_db(name: &str) -> Result<(), sqlx::Error> {
-    let mut conn = PgConnection::connect(ADMIN_URL).await?;
-    conn.execute(format!("DROP DATABASE IF EXISTS \"{name}\" WITH (FORCE)").as_str())
-        .await?;
-    conn.close().await?;
-    Ok(())
 }
 
 fn s3_config_for_dev() -> S3RuntimeConfig {

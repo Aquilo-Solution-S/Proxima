@@ -1,6 +1,6 @@
 use std::process::ExitCode;
 
-#[tokio::main(flavor = "current_thread")]
+#[tokio::main]
 async fn main() -> ExitCode {
     match proxima_mcp::run(std::env::args().skip(1)).await {
         Ok(()) => ExitCode::SUCCESS,

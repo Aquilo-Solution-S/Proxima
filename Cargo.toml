@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/core", "crates/harness", "crates/mcp-server", "apps/proxima-mcp", "flavors/code", "flavors/agent-memory", "flavors/goal", "crates/llm-openai-compat", "apps/proxima-shell/src-tauri", "crates/storage-pg", "crates/wire-grpc", "crates/codex-auth", "crates/blob-s3", "crates/proxima", "examples/embedded-minimal", "tools/dev-migrate"]
+members = ["crates/core", "crates/harness", "crates/mcp-server", "apps/proxima-mcp", "flavors/code", "flavors/agent-memory", "flavors/goal", "crates/llm-openai-compat", "apps/proxima-shell/src-tauri", "crates/storage-pg", "crates/wire-grpc", "crates/codex-auth", "crates/blob-s3", "crates/proxima", "crates/pg-testkit", "examples/embedded-minimal", "tools/dev-migrate"]
 
 [workspace.package]
 edition = "2024"
@@ -38,6 +38,8 @@ schemars = { version = "1", features = ["uuid1", "preserve_order"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
 http = "1"
+http-body = "1"
+http-body-util = "0.1"
 tokio-util = "0.7"
 tower = "0.5"
 hex = "0.4"

@@ -1,8 +1,9 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use proxima_blob_s3::S3RuntimeConfig;
-use proxima_core::{AnthropicClient, Authenticator, EmbeddingClient, Owner};
+use proxima_core::{AnthropicClient, Authenticator, EmbeddingClient, Owner, RevalidationConfig};
 
 use crate::config::{parse_bool_value, s3_from_lookup};
 use crate::{EmbedError, company_owner};
@@ -16,10 +17,13 @@ pub struct RuntimeBuilder {
     s3: Option<S3RuntimeConfig>,
     owner: Option<Owner>,
     org_id: Option<uuid::Uuid>,
+    master_token: Option<String>,
     mcp_enabled: bool,
     mcp_bind: Option<SocketAddr>,
     expose_network: Option<bool>,
     allowed_origins: Option<Vec<String>>,
+    stream_max_lifetime: Option<Duration>,
+    epoch_check_interval: Option<Duration>,
     insecure_single_owner: bool,
     authenticator: Option<Arc<dyn Authenticator>>,
     embed_client: Option<Arc<dyn EmbeddingClient>>,
@@ -33,10 +37,13 @@ impl std::fmt::Debug for RuntimeBuilder {
             .field("s3", &self.s3)
             .field("owner", &self.owner)
             .field("org_id", &self.org_id)
+            .field("has_master_token", &self.master_token.is_some())
             .field("mcp_enabled", &self.mcp_enabled)
             .field("mcp_bind", &self.mcp_bind)
             .field("expose_network", &self.expose_network)
             .field("allowed_origins", &self.allowed_origins)
+            .field("stream_max_lifetime", &self.stream_max_lifetime)
+            .field("epoch_check_interval", &self.epoch_check_interval)
             .field("insecure_single_owner", &self.insecure_single_owner)
             .field("has_authenticator", &self.authenticator.is_some())
             .field("has_embed_client", &self.embed_client.is_some())
@@ -53,10 +60,13 @@ impl RuntimeBuilder {
             s3: self.s3.or(base.s3),
             owner: self.owner.or(base.owner),
             org_id: self.org_id.or(base.org_id),
+            master_token: self.master_token.or(base.master_token),
             mcp_enabled: self.mcp_enabled || base.mcp_enabled,
             mcp_bind: self.mcp_bind.or(base.mcp_bind),
             expose_network: self.expose_network.or(base.expose_network),
             allowed_origins: self.allowed_origins.or(base.allowed_origins),
+            stream_max_lifetime: self.stream_max_lifetime.or(base.stream_max_lifetime),
+            epoch_check_interval: self.epoch_check_interval.or(base.epoch_check_interval),
             insecure_single_owner: self.insecure_single_owner || base.insecure_single_owner,
             authenticator: self.authenticator.or(base.authenticator),
             embed_client: self.embed_client.or(base.embed_client),
@@ -89,6 +99,12 @@ impl RuntimeBuilder {
     }
 
     #[must_use]
+    pub fn master_token(mut self, master_token: impl Into<String>) -> Self {
+        self.master_token = Some(master_token.into());
+        self
+    }
+
+    #[must_use]
     pub fn with_mcp(mut self) -> Self {
         self.mcp_enabled = true;
         self
@@ -110,6 +126,26 @@ impl RuntimeBuilder {
     #[must_use]
     pub fn allowed_origins(mut self, allowed_origins: Vec<String>) -> Self {
         self.allowed_origins = Some(allowed_origins);
+        self
+    }
+
+    /// Set the max authenticated stream lifetime.
+    ///
+    /// The environment equivalent is `PROXIMA_STREAM_MAX_LIFETIME`,
+    /// parsed as integer seconds.
+    #[must_use]
+    pub fn stream_max_lifetime(mut self, duration: Duration) -> Self {
+        self.stream_max_lifetime = Some(duration);
+        self
+    }
+
+    /// Set the host-auth epoch polling interval for authenticated streams.
+    ///
+    /// The environment equivalent is `PROXIMA_STREAM_EPOCH_INTERVAL`,
+    /// parsed as integer seconds.
+    #[must_use]
+    pub fn epoch_check_interval(mut self, duration: Duration) -> Self {
+        self.epoch_check_interval = Some(duration);
         self
     }
 
@@ -170,6 +206,9 @@ impl RuntimeBuilder {
                 })
                 .transpose()?;
         }
+        if self.master_token.is_none() {
+            self.master_token = lookup("PROXIMA_MCP_MASTER_TOKEN");
+        }
         if self.mcp_bind.is_none()
             && let Some(raw) = lookup("PROXIMA_MCP_BIND")
         {
@@ -188,6 +227,16 @@ impl RuntimeBuilder {
         if self.allowed_origins.is_none() {
             self.allowed_origins =
                 lookup("PROXIMA_ALLOWED_ORIGINS").map(|raw| parse_allowed_origins(&raw));
+        }
+        if self.stream_max_lifetime.is_none() {
+            self.stream_max_lifetime = lookup("PROXIMA_STREAM_MAX_LIFETIME")
+                .map(|raw| parse_duration_seconds("PROXIMA_STREAM_MAX_LIFETIME", &raw))
+                .transpose()?;
+        }
+        if self.epoch_check_interval.is_none() {
+            self.epoch_check_interval = lookup("PROXIMA_STREAM_EPOCH_INTERVAL")
+                .map(|raw| parse_duration_seconds("PROXIMA_STREAM_EPOCH_INTERVAL", &raw))
+                .transpose()?;
         }
         Ok(self)
     }
@@ -218,6 +267,20 @@ impl RuntimeBuilder {
         } else {
             None
         };
+        let master_token = self
+            .master_token
+            .map(|raw| parse_master_token(&raw))
+            .transpose()?;
+        let default_revalidation = RevalidationConfig::default();
+        let stream_revalidation = RevalidationConfig {
+            max_stream_lifetime: self
+                .stream_max_lifetime
+                .unwrap_or(default_revalidation.max_stream_lifetime),
+            epoch_check_interval: self
+                .epoch_check_interval
+                .unwrap_or(default_revalidation.epoch_check_interval),
+        };
+        validate_revalidation_config(stream_revalidation)?;
         let parts = RuntimeParts {
             authenticator: self.authenticator,
             embed_client: self.embed_client,
@@ -227,9 +290,11 @@ impl RuntimeBuilder {
             database_url,
             s3: self.s3,
             owner,
+            master_token,
             mcp,
             expose_network: self.expose_network.unwrap_or(false),
             allowed_origins: self.allowed_origins.unwrap_or_default(),
+            stream_revalidation,
             insecure_single_owner: self.insecure_single_owner,
             has_host_authenticator: parts.authenticator.is_some(),
         };
@@ -244,9 +309,11 @@ pub struct RuntimeConfig {
     pub database_url: String,
     pub s3: Option<S3RuntimeConfig>,
     pub owner: Owner,
+    pub master_token: Option<uuid::Uuid>,
     pub mcp: Option<McpSettings>,
     pub expose_network: bool,
     pub allowed_origins: Vec<String>,
+    pub stream_revalidation: RevalidationConfig,
     pub insecure_single_owner: bool,
     pub has_host_authenticator: bool,
 }
@@ -258,6 +325,12 @@ impl RuntimeConfig {
     ///
     /// Returns `ProximaError::Security` when transport exposure is unsafe.
     pub fn validate(&self) -> Result<(), ProximaError> {
+        if self.master_token.is_some() && self.expose_network {
+            return Err(ProximaError::Security(
+                "master tokens are loopback-only and cannot expose network transports".into(),
+            ));
+        }
+
         let Some(mcp) = &self.mcp else {
             return Ok(());
         };
@@ -292,9 +365,12 @@ impl RuntimeConfig {
                 "non-exposed MCP bind must be loopback".into(),
             ));
         }
-        if !self.has_host_authenticator && !self.insecure_single_owner {
+        if !self.has_host_authenticator
+            && !self.insecure_single_owner
+            && self.master_token.is_none()
+        {
             return Err(ProximaError::Security(
-                "MCP requires a host authenticator or insecure single-owner mode".into(),
+                "MCP requires a host authenticator, insecure single-owner mode, --master-token, or PROXIMA_MCP_MASTER_TOKEN".into(),
             ));
         }
 
@@ -365,6 +441,39 @@ fn parse_allowed_origins(raw: &str) -> Vec<String> {
         .collect()
 }
 
+fn parse_master_token(raw: &str) -> Result<uuid::Uuid, ProximaError> {
+    let trimmed = raw.trim();
+    let bare = trimmed.strip_prefix("pxm_").unwrap_or(trimmed);
+    bare.parse().map_err(|_| {
+        ProximaError::Config(
+            "PROXIMA_MCP_MASTER_TOKEN / --master-token must be a UUID with optional pxm_ prefix"
+                .into(),
+        )
+    })
+}
+
+fn parse_duration_seconds(key: &str, raw: &str) -> Result<Duration, ProximaError> {
+    let trimmed = raw.trim();
+    let seconds = trimmed
+        .parse::<u64>()
+        .map_err(|_| ProximaError::Config(format!("{key} must be integer seconds, got {raw:?}")))?;
+    Ok(Duration::from_secs(seconds))
+}
+
+fn validate_revalidation_config(config: RevalidationConfig) -> Result<(), ProximaError> {
+    if config.max_stream_lifetime.is_zero() {
+        return Err(ProximaError::Config(
+            "stream max lifetime must be greater than 0 seconds".into(),
+        ));
+    }
+    if config.epoch_check_interval.is_zero() {
+        return Err(ProximaError::Config(
+            "stream epoch check interval must be greater than 0 seconds".into(),
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::net::{IpAddr, Ipv4Addr};
@@ -394,9 +503,11 @@ mod tests {
             database_url: "postgres://localhost/proxima".to_string(),
             s3: None,
             owner: company_owner(uuid::Uuid::now_v7()),
+            master_token: None,
             mcp: mcp.map(|bind| McpSettings { bind }),
             expose_network: false,
             allowed_origins: Vec::new(),
+            stream_revalidation: RevalidationConfig::default(),
             insecure_single_owner: false,
             has_host_authenticator: true,
         }
@@ -433,6 +544,26 @@ mod tests {
 
         let err = config.validate().unwrap_err();
         assert!(err.to_string().contains("MCP requires"));
+    }
+
+    #[test]
+    fn validate_master_token_satisfies_loopback_mcp_auth_requirement() {
+        let mut config = base_config(Some(addr([127, 0, 0, 1])));
+        config.has_host_authenticator = false;
+        config.master_token = Some(uuid::Uuid::now_v7());
+
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn validate_master_token_cannot_expose_network() {
+        let mut config = base_config(Some(addr([127, 0, 0, 1])));
+        config.master_token = Some(uuid::Uuid::now_v7());
+        config.expose_network = true;
+        config.allowed_origins = vec!["https://app.test".to_string()];
+
+        let err = config.validate().unwrap_err();
+        assert!(err.to_string().contains("loopback-only"));
     }
 
     #[test]
@@ -518,6 +649,53 @@ mod tests {
     }
 
     #[test]
+    fn master_token_env_fills_unset_and_accepts_wire_prefix() {
+        let token = uuid::Uuid::now_v7();
+        let token_raw = format!("pxm_{token}");
+        let (config, _) = RuntimeBuilder::default()
+            .database_url("postgres://localhost/proxima")
+            .owner(owner(uuid::Uuid::now_v7()))
+            .with_mcp()
+            .apply_lookup(lookup(&[("PROXIMA_MCP_MASTER_TOKEN", &token_raw)]))
+            .unwrap()
+            .resolve()
+            .unwrap();
+
+        assert_eq!(config.master_token, Some(token));
+    }
+
+    #[test]
+    fn explicit_master_token_wins_over_env() {
+        let explicit = uuid::Uuid::now_v7();
+        let env = uuid::Uuid::now_v7();
+        let env_raw = env.to_string();
+        let (config, _) = RuntimeBuilder::default()
+            .database_url("postgres://localhost/proxima")
+            .owner(owner(uuid::Uuid::now_v7()))
+            .with_mcp()
+            .master_token(explicit.to_string())
+            .apply_lookup(lookup(&[("PROXIMA_MCP_MASTER_TOKEN", &env_raw)]))
+            .unwrap()
+            .resolve()
+            .unwrap();
+
+        assert_eq!(config.master_token, Some(explicit));
+    }
+
+    #[test]
+    fn malformed_master_token_errors() {
+        let err = RuntimeBuilder::default()
+            .database_url("postgres://localhost/proxima")
+            .owner(owner(uuid::Uuid::now_v7()))
+            .with_mcp()
+            .master_token("not-a-uuid")
+            .resolve()
+            .unwrap_err();
+
+        assert!(err.to_string().contains("PROXIMA_MCP_MASTER_TOKEN"));
+    }
+
+    #[test]
     fn explicit_owner_wins_over_org_id_env() {
         let explicit = owner(uuid::Uuid::now_v7());
         let env_org = uuid::Uuid::now_v7();
@@ -559,6 +737,52 @@ mod tests {
     }
 
     #[test]
+    fn stream_revalidation_env_parses_integer_seconds() {
+        let (config, _) = RuntimeBuilder::default()
+            .database_url("postgres://localhost/proxima")
+            .owner(owner(uuid::Uuid::now_v7()))
+            .apply_lookup(lookup(&[
+                ("PROXIMA_STREAM_MAX_LIFETIME", "7"),
+                ("PROXIMA_STREAM_EPOCH_INTERVAL", "2"),
+            ]))
+            .unwrap()
+            .resolve()
+            .unwrap();
+
+        assert_eq!(
+            config.stream_revalidation.max_stream_lifetime,
+            Duration::from_secs(7)
+        );
+        assert_eq!(
+            config.stream_revalidation.epoch_check_interval,
+            Duration::from_secs(2)
+        );
+    }
+
+    #[test]
+    fn stream_revalidation_zero_duration_rejected_at_resolve() {
+        let err = RuntimeBuilder::default()
+            .database_url("postgres://localhost/proxima")
+            .owner(owner(uuid::Uuid::now_v7()))
+            .stream_max_lifetime(Duration::ZERO)
+            .resolve()
+            .unwrap_err();
+
+        assert!(err.to_string().contains("greater than 0"));
+    }
+
+    #[test]
+    fn stream_revalidation_defaults_when_unset() {
+        let (config, _) = RuntimeBuilder::default()
+            .database_url("postgres://localhost/proxima")
+            .owner(owner(uuid::Uuid::now_v7()))
+            .resolve()
+            .unwrap();
+
+        assert_eq!(config.stream_revalidation, RevalidationConfig::default());
+    }
+
+    #[test]
     fn malformed_mcp_bind_errors() {
         let err = RuntimeBuilder::default()
             .apply_lookup(lookup(&[("PROXIMA_MCP_BIND", "not-a-socket")]))
@@ -589,6 +813,7 @@ mod tests {
         let overlay = RuntimeBuilder::default()
             .database_url("postgres://overlay/proxima")
             .allowed_origins(vec!["https://overlay.test".to_string()])
+            .stream_max_lifetime(Duration::from_secs(12))
             .allow_insecure_single_owner();
 
         let merged = overlay.merge_over(base);
@@ -604,6 +829,7 @@ mod tests {
             merged.allowed_origins.as_deref(),
             Some(["https://overlay.test".to_string()].as_slice())
         );
+        assert_eq!(merged.stream_max_lifetime, Some(Duration::from_secs(12)));
         assert!(merged.insecure_single_owner);
     }
 }

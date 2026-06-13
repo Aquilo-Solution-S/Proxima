@@ -36,7 +36,8 @@ reqwest = { workspace = true }
 libc = "0.2"
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "test-util"] }
 tempfile = "3"
 proxima-storage-pg = { path = "../storage-pg" }
+proxima-pg-testkit = { path = "../pg-testkit" }
 sqlx = { workspace = true }

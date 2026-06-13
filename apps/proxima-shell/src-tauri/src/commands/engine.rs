@@ -16,8 +16,9 @@ use proxima_core::verbs::subscribe::SubscribeRequest;
 use proxima_core::{
     AuthzContext, CORE_INSPIRES_RELATION, ChangeEvent, EdgeAuthorshipKind, Engine, EntityKind,
     EntityRef, FactPayload, GoalId, ListWakeInvocationsRequest, MemoryId, Owner,
-    OwnerPrincipalKind, PersonalityInstanceId, PersonalityInstanceRow, SchemaId, SchemaVersion,
-    SourceBatchId, SourceId, WakeInvocationLogRow, WakeInvocationRow,
+    OwnerPrincipalKind, PersonalityInstanceId, PersonalityInstanceRow, RevalidationConfig,
+    SchemaId, SchemaVersion, SourceBatchId, SourceId, WakeInvocationLogRow, WakeInvocationRow,
+    revalidate_stream,
 };
 use proxima_flavor_goal::GoalActivatedV1;
 use proxima_storage_pg::PgStorage;
@@ -548,6 +549,12 @@ pub async fn subscribe(
     on_event: Channel<ChangeEvent>,
 ) -> Result<(), ProtocolError> {
     let stream = engine.subscribe(&authz, req).await?;
+    let stream = revalidate_stream(
+        stream,
+        authz.identity.clone(),
+        None,
+        RevalidationConfig::default(),
+    );
     tokio::spawn(async move {
         let mut inbound = stream;
         while let Some(event) = inbound.next().await {

@@ -1,17 +1,51 @@
 pub mod args;
 
-pub use args::{ArgsError, McpConfig, USAGE, parse_args};
-pub use proxima_mcp_server::{
-    McpEdgeAuth, McpServerError, McpToolHost, ToolInvocationError, default_allowlist,
-    serve_streamable_http,
-};
+pub use args::{ArgsError, DEFAULT_BIND, DEFAULT_DATABASE_URL, McpConfig, USAGE, parse_args};
 
-use proxima::{NamedMigrator, run_core_and_flavor_migrations};
+use proxima::{
+    AppInfo, FlavorApp, FlavorBundle, NamedMigrator, Proxima, ProximaError, RunningProxima,
+    RuntimeBuilder,
+};
 use proxima_core::FlavorRegistry;
+
+#[derive(Debug)]
+pub struct ProximaMcpApp;
+
+impl FlavorBundle for ProximaMcpApp {
+    fn register(registry: &mut FlavorRegistry) {
+        proxima_agent_memory::register(registry);
+        proxima_flavor_goal::register(registry);
+    }
+
+    fn migrators() -> Vec<NamedMigrator> {
+        vec![
+            NamedMigrator::new("proxima-agent-memory", proxima_agent_memory::migrator()),
+            NamedMigrator::new("proxima-flavor-goal", proxima_flavor_goal::migrator()),
+        ]
+    }
+}
+
+impl FlavorApp for ProximaMcpApp {
+    fn app_info() -> AppInfo {
+        AppInfo {
+            id: "proxima-mcp",
+            title: "Proxima MCP",
+            version: env!("CARGO_PKG_VERSION"),
+        }
+    }
+
+    fn configure(builder: RuntimeBuilder) -> RuntimeBuilder {
+        builder.database_url(DEFAULT_DATABASE_URL).mcp_bind(
+            DEFAULT_BIND
+                .parse()
+                .expect("DEFAULT_BIND must be a valid SocketAddr"),
+        )
+    }
+}
 
 /// # Errors
 ///
-/// Returns argument, storage, migration, or MCP transport failures.
+/// Returns argument, facade boot, or MCP transport failures.
 pub async fn run<I: IntoIterator<Item = String>>(args: I) -> Result<(), CliError> {
     let config = parse_args(args)?;
     // rmcp 1.6 logs idle-session keep-alive expiry and the resulting
@@ -30,53 +64,32 @@ pub async fn run<I: IntoIterator<Item = String>>(args: I) -> Result<(), CliError
         .try_init()
         .ok();
 
-    let (handle, addr) = run_with_handle(config).await?;
+    let running = run_with_handle(config).await?;
+    let addr = running
+        .mcp_addr
+        .ok_or_else(|| CliError::Runtime(ProximaError::Mcp("MCP listener disabled".into())))?;
     tracing::info!(addr = %addr, "proxima-mcp listening; POST http://{addr}/mcp");
-    handle
-        .await
-        .map_err(|err| CliError::Transport(err.to_string()))??;
+    if let Some(server) = running.server {
+        server
+            .await
+            .map_err(|err| CliError::Transport(err.to_string()))?;
+    }
     Ok(())
 }
 
 /// # Errors
 ///
-/// Returns argument, storage, migration, bind, or transport failures.
-pub async fn run_with_handle(
-    config: McpConfig,
-) -> Result<
-    (
-        tokio::task::JoinHandle<Result<(), McpServerError>>,
-        std::net::SocketAddr,
-    ),
-    CliError,
-> {
-    let pg = proxima_storage_pg::PgStorage::connect(&config.database_url)
-        .await
-        .map_err(McpServerError::from)?;
-    run_core_and_flavor_migrations(
-        &pg,
-        [
-            NamedMigrator::new("proxima-agent-memory", proxima_agent_memory::migrator()),
-            NamedMigrator::new("proxima-flavor-goal", proxima_flavor_goal::migrator()),
-        ],
-    )
-    .await?;
-
-    let mut registry = FlavorRegistry::new();
-    proxima_agent_memory::register(&mut registry);
-    proxima_flavor_goal::register(&mut registry);
-    let server = McpToolHost::from_pool(
-        pg.pool().clone(),
-        config.owner.clone(),
-        std::sync::Arc::new(registry.freeze()),
-    );
-    let edge_auth = std::sync::Arc::new(McpEdgeAuth::headless());
+/// Returns facade config, storage, migration, engine, bind, or transport failures.
+pub async fn run_with_handle(config: McpConfig) -> Result<RunningProxima, CliError> {
+    let mut app = Proxima::<ProximaMcpApp>::app()
+        .from_env()
+        .database_url(config.database_url)
+        .owner(config.owner)
+        .mcp_bind(config.bind);
     if let Some(token) = config.master_token {
-        edge_auth
-            .replace_local_master_token(token, config.owner.clone())
-            .await;
+        app = app.master_token(token.to_string());
     }
-    Ok(serve_streamable_http(config.bind, server, default_allowlist(), edge_auth).await?)
+    app.run().await.map_err(Into::into)
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -84,9 +97,7 @@ pub enum CliError {
     #[error(transparent)]
     Args(#[from] ArgsError),
     #[error(transparent)]
-    Migration(#[from] proxima::MigrationError),
-    #[error(transparent)]
-    Server(#[from] McpServerError),
+    Runtime(#[from] ProximaError),
     #[error("transport: {0}")]
     Transport(String),
 }

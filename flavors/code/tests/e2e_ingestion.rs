@@ -9,33 +9,15 @@ use proxima_code::{
     mark_failed, mark_succeeded, migrator, register_repo, start_run, sweep_orphaned_runs,
 };
 use proxima_core::{Cursor, OrgId, Owner, Principal, UserId};
+use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
 use proxima_storage_pg::PgStorage;
-use sqlx::{Connection, Executor, PgConnection};
 use tempfile::TempDir;
 use uuid::Uuid;
 
-const ADMIN_URL: &str = "postgres://proxima:proxima@localhost/proxima";
-
-async fn create_db(name: &str) -> Result<(), sqlx::Error> {
-    let mut conn = PgConnection::connect(ADMIN_URL).await?;
-    conn.execute(format!("CREATE DATABASE \"{name}\"").as_str())
-        .await?;
-    conn.close().await?;
-    Ok(())
-}
-
-async fn drop_db(name: &str) -> Result<(), sqlx::Error> {
-    let mut conn = PgConnection::connect(ADMIN_URL).await?;
-    conn.execute(format!("DROP DATABASE IF EXISTS \"{name}\" WITH (FORCE)").as_str())
-        .await?;
-    conn.close().await?;
-    Ok(())
-}
-
 async fn migrated_db() -> Option<(String, PgStorage)> {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = unique_db_name("proxima_test");
     create_db(&db_name).await.expect("PG required for tests");
-    let url = format!("postgres://proxima:proxima@localhost/{db_name}");
+    let url = db_url(&db_name);
     let pg = PgStorage::connect(&url).await.expect("connect test db");
     pg.run_migrations().await.expect("core migrations");
     migrator().run(pg.pool()).await.expect("code migrations");
