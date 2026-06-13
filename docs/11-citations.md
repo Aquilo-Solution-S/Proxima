@@ -24,9 +24,10 @@ A / P    no citation_mapping_id; citations accumulate transitively
 - **CitationMapping** — the typed annotation pointing one Memory at one
   CitedObject (page, paragraph, bbox, message id, time range, …).
   Typed-per-domain via `CitationMappingPayload`.
-- **Memory.citation_mapping_id** — `NOT NULL` for Fact, absent on
-  Abstraction and Perspective. Each Fact cites one artefact via one
-  mapping.
+- **Memory.citation_mapping_id** — OPTIONAL for Fact (a Fact may cite or
+  not, as of 2026-06-13 — Facts are the event stream; citations are
+  optional outside-proofs), absent on Abstraction and Perspective. A cited
+  Fact cites one artefact via one mapping.
 
 A/P never cite an artefact directly. "What grounds this Perspective?"
 is `chain(p)` over `Provenance` edges → Facts → their CitationMappings

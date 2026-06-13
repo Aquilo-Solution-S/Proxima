@@ -2,8 +2,9 @@
 Proxima Foundations — Citations
 
 Bibliographic provenance is artefact-only and Fact-only (doc 11).
-The three-layer model: Facts cite; Abstractions and Perspectives
-NEVER cite directly — their bibliography is the transitive closure
+The three-layer model: only Facts may cite (OPTIONAL as of 2026-06-13);
+Abstractions and Perspectives NEVER cite directly — their bibliography
+is the transitive closure
 through provenance edges down to Facts (CI-3, and CN-6 supplies the
 edges).
 
@@ -71,10 +72,11 @@ instance : AppendOnly CitationMapping := ⟨⟩
 axiom citation_fact_is_fact :
   ∀ c : CitationMapping, memory_kind (citation_fact c) = .Fact
 
-/-- CI-1a — every Fact has a mapping ("NOT NULL for Fact"). -/
-axiom fact_has_citation :
-  ∀ m : Memory, memory_kind m = .Fact →
-    ∃ c : CitationMapping, citation_fact c = m
+-- CI-1a RETIRED 2026-06-13 — citations are OPTIONAL on Facts. A Fact may
+-- carry no citation (Facts are the event stream; citations are optional
+-- outside-proofs). The former axiom `fact_has_citation` ("every Fact has a
+-- mapping / NOT NULL for Fact") no longer holds; `memories_variant_chk` was
+-- relaxed to match. Only the citation ⇒ Fact direction survives (CI-1).
 
 /-- CI-2b — at most one mapping per Fact (UNIQUE (memory_id)):
     one Fact ↔ one CitationMapping ↔ one CitedObject. One CitedObject
@@ -96,24 +98,20 @@ noncomputable def memory_citation (m : Memory) : Option CitationMapping :=
   then some h.choose
   else none
 
-/-- CI-1 — a memory carries a citation IFF it is a Fact. THEOREM. -/
-theorem citation_iff_fact :
-    ∀ m : Memory, (memory_citation m).isSome ↔ memory_kind m = .Fact := by
-  intro m
-  constructor
-  · intro h
-    unfold memory_citation at h
-    by_cases hex : ∃ c : CitationMapping, citation_fact c = m
-    · obtain ⟨c, hc⟩ := hex
-      rw [← hc]
-      exact citation_fact_is_fact c
-    · rw [dif_neg hex] at h
-      exact (nomatch h)
-  · intro h
-    have hex := fact_has_citation m h
-    unfold memory_citation
-    rw [dif_pos hex]
-    rfl
+/-- CI-1 — only a Fact may carry a citation (citation ⇒ Fact). THEOREM.
+    Citations are OPTIONAL on Facts as of 2026-06-13, so the reverse
+    implication (Fact ⇒ has citation) no longer holds; this weakened from
+    an `↔` (which relied on the retired `fact_has_citation`) to a `→`. -/
+theorem citation_implies_fact :
+    ∀ m : Memory, (memory_citation m).isSome → memory_kind m = .Fact := by
+  intro m h
+  unfold memory_citation at h
+  by_cases hex : ∃ c : CitationMapping, citation_fact c = m
+  · obtain ⟨c, hc⟩ := hex
+    rw [← hc]
+    exact citation_fact_is_fact c
+  · rw [dif_neg hex] at h
+    exact (nomatch h)
 
 /-- CI-2a — the pointer and the mapping agree. THEOREM. -/
 theorem citation_points_back :
