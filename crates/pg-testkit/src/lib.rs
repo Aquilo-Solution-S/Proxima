@@ -1,6 +1,8 @@
+use std::future::Future;
 use std::time::Duration;
 
-use sqlx::{Connection, Executor, PgConnection};
+use sqlx::postgres::PgPoolOptions;
+use sqlx::{Connection, Executor, PgConnection, PgPool};
 use uuid::Uuid;
 
 const DEFAULT_ADMIN_URL: &str = "postgres://proxima:proxima@localhost/proxima";
@@ -39,6 +41,108 @@ pub async fn create_db(name: &str) -> Result<(), sqlx::Error> {
     Ok(())
 }
 
+/// Ensure a pre-migrated template database exists.
+///
+/// Serialized by a session-scoped advisory lock on the admin DB. `build`
+/// runs only when `template` did not already exist, against a
+/// max-one-connection pool to the newly created template database.
+///
+/// # Errors
+///
+/// Returns admin connection/query errors, template creation errors,
+/// template connection errors, or errors returned by `build`.
+pub async fn ensure_template<F, Fut>(template: &str, build: F) -> Result<(), sqlx::Error>
+where
+    F: FnOnce(PgPool) -> Fut,
+    Fut: Future<Output = Result<(), sqlx::Error>>,
+{
+    let mut conn = PgConnection::connect(&admin_url()).await?;
+    let lock_key = advisory_lock_key(template);
+
+    sqlx::query("SELECT pg_advisory_lock($1)")
+        .bind(lock_key)
+        .execute(&mut conn)
+        .await?;
+
+    let result = async {
+        let exists = sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1)",
+        )
+        .bind(template)
+        .fetch_one(&mut conn)
+        .await?;
+
+        if exists {
+            return Ok(());
+        }
+
+        conn.execute(format!("CREATE DATABASE {}", quoted_ident(template)).as_str())
+            .await?;
+
+        let pool = PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&db_url(template))
+            .await?;
+        let build_result = build(pool.clone()).await;
+        pool.close().await;
+        build_result
+    }
+    .await;
+
+    let unlock_result = sqlx::query("SELECT pg_advisory_unlock($1)")
+        .bind(lock_key)
+        .execute(&mut conn)
+        .await;
+    let close_result = conn.close().await;
+
+    result?;
+    unlock_result?;
+    close_result?;
+
+    Ok(())
+}
+
+/// Create a unique database cloned from `template`.
+///
+/// Retries the transient `55006` source-template-accessed error raised
+/// when concurrent test processes clone the same template.
+///
+/// # Errors
+///
+/// Returns admin connection errors, non-retryable `CREATE DATABASE`
+/// errors, or the last retryable error after retries are exhausted.
+pub async fn create_db_from_template(prefix: &str, template: &str) -> Result<String, sqlx::Error> {
+    let name = unique_db_name(prefix);
+    let mut conn = PgConnection::connect(&admin_url()).await?;
+    let statement = format!(
+        "CREATE DATABASE {} TEMPLATE {}",
+        quoted_ident(&name),
+        quoted_ident(template)
+    );
+    let mut last_error = None;
+
+    for _ in 0..DROP_RETRIES {
+        match conn.execute(statement.as_str()).await {
+            Ok(_) => {
+                conn.close().await?;
+                return Ok(name);
+            }
+            Err(err) if is_sqlstate(&err, SQLSTATE_DATABASE_ACCESSED) => {
+                last_error = Some(err);
+                tokio::time::sleep(DROP_RETRY_DELAY).await;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+
+    let _ = conn.close().await;
+    Err(last_error.unwrap_or_else(|| {
+        sqlx::Error::Protocol(
+            "create_db_from_template exhausted retries with no recorded error".into(),
+        )
+    }))
+}
+
 /// # Errors
 ///
 /// Returns database connection errors, `ALLOW_CONNECTIONS` errors,
@@ -60,6 +164,21 @@ pub async fn drop_db(name: &str) -> Result<(), sqlx::Error> {
     }
 
     for _ in 0..DROP_RETRIES {
+        // Terminate any lingering backends on the target DB (e.g. a detached
+        // outbox-publisher task still holding a LISTEN connection) before
+        // dropping. ALLOW_CONNECTIONS is already false, so a terminated
+        // backend cannot reconnect. Without this, a no-FORCE DROP DATABASE
+        // BLOCKS ~11s per attempt before erroring "is being accessed by other
+        // users", so the retry loop turns teardown into minutes. Termination
+        // is async, so the retry loop still covers the brief exit window.
+        let _ = sqlx::query(
+            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity \
+             WHERE datname = $1::name AND pid <> pg_backend_pid()",
+        )
+        .bind(name)
+        .execute(&mut conn)
+        .await;
+
         match conn
             .execute(format!("DROP DATABASE IF EXISTS {quoted_name}").as_str())
             .await
@@ -87,6 +206,19 @@ fn quoted_ident(input: &str) -> String {
     format!("\"{}\"", input.replace('"', "\"\""))
 }
 
+fn advisory_lock_key(input: &str) -> i64 {
+    const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+    let mut hash = FNV_OFFSET_BASIS;
+    for byte in input.bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+
+    i64::from_be_bytes(hash.to_be_bytes())
+}
+
 fn is_drop_retryable(err: &sqlx::Error) -> bool {
     match err {
         sqlx::Error::Database(db_err) => db_err
@@ -109,7 +241,7 @@ fn is_sqlstate(err: &sqlx::Error, expected: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_drop_retryable_sqlstate, quoted_ident, unique_db_name};
+    use super::{advisory_lock_key, is_drop_retryable_sqlstate, quoted_ident, unique_db_name};
 
     #[test]
     fn unique_db_name_uses_prefix_and_simple_uuidv7() {
@@ -129,5 +261,13 @@ mod tests {
         assert!(is_drop_retryable_sqlstate("55006"));
         assert!(!is_drop_retryable_sqlstate("42501"));
         assert!(!is_drop_retryable_sqlstate("42P04"));
+    }
+
+    #[test]
+    fn advisory_lock_key_is_deterministic() {
+        assert_eq!(
+            advisory_lock_key("proxima_tmpl_core_abc"),
+            advisory_lock_key("proxima_tmpl_core_abc")
+        );
     }
 }
