@@ -26,6 +26,7 @@ use proxima_core::verbs::close_batch::CloseBatchOutcome;
 use proxima_core::verbs::event_history::{EventHistoryRequest, EventHistoryResponse};
 use proxima_core::verbs::event_ingest::{EventDraft, EventIngestOutcome};
 use proxima_core::verbs::goal_write::{GoalDraft, GoalWriteOutcome};
+use proxima_core::verbs::persist_mcp_call::{McpCallLogInput, McpCallLogOutcome};
 use proxima_core::verbs::persist_wake_trace::{WakeTracePersistInput, WakeTracePersistOutcome};
 use proxima_core::verbs::query::{
     MemoryLineageRequest, MemoryLineageResponse, MemorySearchRequest, MemorySearchResult,
@@ -207,6 +208,13 @@ impl Storage for PgStorage {
         input: &WakeTracePersistInput,
     ) -> Result<WakeTracePersistOutcome, StorageError> {
         verbs::persist_wake_trace::persist_wake_trace_atomic(&self.pool, registry, input).await
+    }
+
+    async fn persist_mcp_call_atomic(
+        &self,
+        input: &McpCallLogInput,
+    ) -> Result<McpCallLogOutcome, StorageError> {
+        verbs::persist_mcp_call::persist_mcp_call_atomic(&self.pool, input).await
     }
 
     async fn persist_intervention_requested_atomic(

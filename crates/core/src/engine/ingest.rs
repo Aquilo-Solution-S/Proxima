@@ -5,6 +5,7 @@ use crate::error::ProtocolError;
 use crate::storage::StorageError;
 use crate::verbs::close_batch::CloseBatchOutcome;
 use crate::verbs::event_ingest::{AuthorizedEventIngest, EventDraft, EventIngestOutcome};
+use crate::verbs::persist_mcp_call::{McpCallLogInput, McpCallLogOutcome};
 use crate::verbs::persist_wake_trace::{WakeTracePersistInput, WakeTracePersistOutcome};
 use crate::{Principal, SourceBatchId};
 
@@ -106,6 +107,18 @@ impl Engine {
         self.storage
             .persist_wake_trace_atomic(&self.registry, &input)
             .await
+    }
+
+    /// Internal bookkeeping path for host-owned MCP activity logs.
+    ///
+    /// # Errors
+    ///
+    /// Propagates storage failures unchanged.
+    pub async fn persist_mcp_call(
+        &self,
+        input: McpCallLogInput,
+    ) -> Result<McpCallLogOutcome, StorageError> {
+        self.storage.persist_mcp_call_atomic(&input).await
     }
 
     /// docs/01 §"The contract" — Owner-scoped, idempotent batch close.

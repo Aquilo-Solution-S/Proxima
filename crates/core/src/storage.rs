@@ -35,6 +35,7 @@ use crate::verbs::close_batch::CloseBatchOutcome;
 use crate::verbs::event_history::{EventHistoryRequest, EventHistoryResponse};
 use crate::verbs::event_ingest::{EventDraft, EventIngestOutcome};
 use crate::verbs::goal_write::{GoalDraft, GoalWriteOutcome};
+use crate::verbs::persist_mcp_call::{McpCallLogInput, McpCallLogOutcome};
 use crate::verbs::persist_wake_trace::{WakeTracePersistInput, WakeTracePersistOutcome};
 use crate::verbs::schema::FlavorRegistryFrozen;
 use crate::verbs::subscribe::ChangeEventStream;
@@ -95,6 +96,15 @@ pub trait Storage: ApprovalStore + InterventionStore + ChatStore + Send + Sync {
         registry: &FlavorRegistryFrozen,
         input: &WakeTracePersistInput,
     ) -> Result<WakeTracePersistOutcome, StorageError>;
+
+    /// Atomic MCP-call activity materialization. One transaction writes
+    /// the call Fact, inline I/O `CitedObject`, `CitationMapping`, typed
+    /// sidecars, and entity change event. Whole-verb replay returns the
+    /// original ids with `idempotent_replay = true`.
+    async fn persist_mcp_call_atomic(
+        &self,
+        input: &McpCallLogInput,
+    ) -> Result<McpCallLogOutcome, StorageError>;
 
     /// Atomic `InterventionRequested` Fact materialization plus routing edge.
     async fn persist_intervention_requested_atomic(
@@ -639,6 +649,13 @@ impl Storage for NoopStorage {
         _registry: &FlavorRegistryFrozen,
         _input: &WakeTracePersistInput,
     ) -> Result<WakeTracePersistOutcome, StorageError> {
+        Err(StorageError::Internal("NoopStorage rejects writes".into()))
+    }
+
+    async fn persist_mcp_call_atomic(
+        &self,
+        _input: &McpCallLogInput,
+    ) -> Result<McpCallLogOutcome, StorageError> {
         Err(StorageError::Internal("NoopStorage rejects writes".into()))
     }
 

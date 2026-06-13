@@ -98,6 +98,10 @@ impl Default for FlavorRegistry {
         registry.add_fact_schema::<crate::wake::trace::WakeTracePayload>();
         registry.add_cited_object_schema::<crate::wake::trace::WakeTraceJsonlPayload>();
         registry.add_citation_mapping_schema::<crate::wake::trace::WakeTraceCitationPayload>();
+        registry.add_fact_schema::<crate::verbs::persist_mcp_call::McpCallLoggedV1>();
+        registry.add_cited_object_schema::<crate::verbs::persist_mcp_call::McpCallIoV1>();
+        registry
+            .add_citation_mapping_schema::<crate::verbs::persist_mcp_call::McpCallIoCitationV1>();
         crate::mcp::core_tools::register_all(&mut registry);
         registry
     }
