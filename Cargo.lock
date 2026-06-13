@@ -4244,6 +4244,7 @@ dependencies = [
  "proxima-mcp-server",
  "proxima-pg-testkit",
  "proxima-storage-pg",
+ "serde_json",
  "sqlx",
  "thiserror 2.0.18",
  "tokio",

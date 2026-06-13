@@ -9,7 +9,8 @@ use axum::extract::Request;
 use axum::response::IntoResponse;
 use proxima_blob_s3::{CitedBlobStore, S3RuntimeConfig};
 use proxima_core::{
-    AnthropicClient, AuthPath, Authenticator, AuthzContext, EmbeddingClient, RevalidationConfig,
+    AnthropicClient, AuthPath, Authenticator, AuthzContext, EmbeddingClient, FlavorRegistryFrozen,
+    RevalidationConfig,
 };
 use proxima_core::{Engine, EngineHandle, Owner};
 use proxima_mcp_server::{
@@ -21,7 +22,9 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tower::Service;
 
-use crate::{AppContext, EmbedConfig, FlavorApp, ProximaBuilder, ProximaError, RuntimeBuilder};
+use crate::{
+    AppContext, CoreMcpTools, EmbedConfig, FlavorApp, ProximaBuilder, ProximaError, RuntimeBuilder,
+};
 
 /// Application runtime facade.
 pub struct Proxima<A: FlavorApp> {
@@ -182,6 +185,7 @@ impl<A: FlavorApp + 'static> Proxima<A> {
             engine: booted.engine,
             handle: booted.handle,
             pool: booted.pool,
+            registry: booted.registry,
             blobs: booted.blobs,
             owner: booted.owner,
             cancel,
@@ -249,6 +253,7 @@ impl<A: FlavorApp + 'static> Proxima<A> {
             engine: booted.engine,
             handle: booted.handle,
             pool: booted.pool,
+            registry: booted.registry,
             blobs: booted.blobs,
             owner: booted.owner,
             mcp_addr,
@@ -276,6 +281,7 @@ pub struct BuiltProxima {
     pub engine: Arc<Engine>,
     pub handle: EngineHandle,
     pub pool: PgPool,
+    pub registry: Arc<FlavorRegistryFrozen>,
     pub blobs: Option<CitedBlobStore>,
     pub owner: Owner,
     pub cancel: CancellationToken,
@@ -292,6 +298,16 @@ impl BuiltProxima {
     pub fn single_owner_authz(&self) -> Option<AuthzContext> {
         self.insecure_single_owner
             .then(|| AuthzContext::single_owner(&self.owner, AuthPath::System))
+    }
+
+    #[must_use]
+    pub fn core_mcp_tools(&self) -> CoreMcpTools {
+        CoreMcpTools::new(
+            self.pool.clone(),
+            self.owner.clone(),
+            self.registry.clone(),
+            self.engine.clone(),
+        )
     }
 }
 
@@ -312,6 +328,7 @@ pub struct RunningProxima {
     pub engine: Arc<Engine>,
     pub handle: EngineHandle,
     pub pool: PgPool,
+    pub registry: Arc<FlavorRegistryFrozen>,
     pub blobs: Option<CitedBlobStore>,
     pub owner: Owner,
     pub mcp_addr: Option<SocketAddr>,
