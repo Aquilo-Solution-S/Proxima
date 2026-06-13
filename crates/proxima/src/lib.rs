@@ -11,6 +11,7 @@
 mod app;
 mod bundle;
 mod config;
+mod core_mcp;
 mod migrations;
 mod runtime;
 mod runtime_config;
@@ -18,16 +19,17 @@ mod runtime_config;
 pub use app::{AppContext, AppInfo, Authz, FlavorApp};
 pub use bundle::FlavorBundle;
 pub use config::EmbedConfig;
+pub use core_mcp::{CoreMcpError, CoreMcpTools, CoreToolInfo};
 pub use migrations::{
     MigrationError, MigrationRunReport, MigrationVersion, NamedMigrator,
     run_core_and_flavor_migrations,
 };
 pub use proxima_core::verbs::schema::PayloadKind;
 pub use proxima_core::{
-    AbstractionPayload, AuthPath, AuthzContext, Engine, EngineHandle, FactPayload, FlavorRegistry,
-    GoalPayload, McpCallLogInput, McpCallLogOutcome, PerspectivePayload, Role, SchemaId,
-    SchemaVersion, SearchProjection, SearchProjectionColumnKind, SearchProjectionField,
-    StorageError, proxima_flavor,
+    AbstractionPayload, AuthPath, AuthzContext, CapabilitySet, Engine, EngineHandle, FactPayload,
+    FlavorRegistry, GoalPayload, GroupId, Identity, McpCallLogInput, McpCallLogOutcome, OrgId,
+    Owner, PerspectivePayload, Principal, Role, RoleSet, SchemaId, SchemaVersion, SearchProjection,
+    SearchProjectionColumnKind, SearchProjectionField, StorageError, ToolScope, proxima_flavor,
 };
 pub use proxima_mcp_server::McpAuthContext;
 pub use proxima_storage_pg::verbs::event_ingest::{ingest_fact, ingest_fact_in_tx};
@@ -40,7 +42,6 @@ use std::sync::Arc;
 
 use proxima_blob_s3::CitedBlobStore;
 use proxima_core::llm::{AnthropicClient, EmbeddingClient};
-use proxima_core::{GroupId, OrgId, Owner, Principal};
 use proxima_storage_pg::PgStorage;
 use sqlx::PgPool;
 
@@ -99,6 +100,7 @@ pub struct EmbeddedProxima {
     pub engine: Arc<Engine>,
     pub handle: EngineHandle,
     pub pool: PgPool,
+    pub registry: Arc<proxima_core::FlavorRegistryFrozen>,
     pub blobs: Option<CitedBlobStore>,
     pub owner: Owner,
 }
@@ -211,6 +213,7 @@ impl ProximaBuilder {
             .await
             .map_err(|e| EmbedError::Engine(e.to_string()))?;
         let pool = pg.pool().clone();
+        let registry = Arc::new(engine.registry().clone());
         let blobs = self
             .config
             .s3
@@ -219,6 +222,7 @@ impl ProximaBuilder {
             engine,
             handle,
             pool,
+            registry,
             blobs,
             owner: self.owner,
         })

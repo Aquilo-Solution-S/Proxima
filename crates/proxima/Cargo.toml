@@ -17,6 +17,7 @@ proxima-mcp-server = { path = "../mcp-server" }
 axum = { workspace = true }
 http = { workspace = true }
 sqlx = { workspace = true }
+serde_json = { workspace = true }
 tokio = { workspace = true, features = ["net"] }
 tokio-util = { workspace = true }
 tower = { workspace = true }
