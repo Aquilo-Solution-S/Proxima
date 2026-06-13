@@ -4,6 +4,7 @@ use futures::future::BoxFuture;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::authz::Role;
 use crate::mcp::{McpToolCtx, McpToolError};
 use crate::{EmbeddingModelConfig, EmbeddingModelRef, McpTool};
 
@@ -100,6 +101,8 @@ impl McpTool for RegisterEmbeddingModelTool {
         args: RegisterEmbeddingModelArgs,
     ) -> BoxFuture<'static, Result<RegisterEmbeddingModelOutput, McpToolError>> {
         Box::pin(async move {
+            crate::engine::authorize(&ctx.authz, &ctx.owner.principal, Role::Admin)
+                .map_err(|e| McpToolError::Other(e.to_string()))?;
             let model_ref = EmbeddingModelRef {
                 vendor: args.model.vendor.clone(),
                 model_id: args.model.model_id.clone(),
@@ -142,6 +145,8 @@ impl McpTool for DeleteEmbeddingModelTool {
         args: DeleteEmbeddingModelArgs,
     ) -> BoxFuture<'static, Result<DeleteEmbeddingModelOutput, McpToolError>> {
         Box::pin(async move {
+            crate::engine::authorize(&ctx.authz, &ctx.owner.principal, Role::Admin)
+                .map_err(|e| McpToolError::Other(e.to_string()))?;
             let storage = ctx
                 .storage()
                 .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;
@@ -197,6 +202,8 @@ impl McpTool for SetEmbeddingActiveTool {
         args: SetEmbeddingActiveArgs,
     ) -> BoxFuture<'static, Result<SetEmbeddingActiveOutput, McpToolError>> {
         Box::pin(async move {
+            crate::engine::authorize(&ctx.authz, &ctx.owner.principal, Role::Admin)
+                .map_err(|e| McpToolError::Other(e.to_string()))?;
             ctx.storage()
                 .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?
                 .set_embedding_active(&args.vendor, &args.model_id)
@@ -239,6 +246,8 @@ impl McpTool for ClearEmbeddingActiveTool {
         _args: ClearEmbeddingActiveArgs,
     ) -> BoxFuture<'static, Result<ClearEmbeddingActiveOutput, McpToolError>> {
         Box::pin(async move {
+            crate::engine::authorize(&ctx.authz, &ctx.owner.principal, Role::Admin)
+                .map_err(|e| McpToolError::Other(e.to_string()))?;
             let cleared = ctx
                 .storage()
                 .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?
