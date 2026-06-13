@@ -392,7 +392,7 @@ impl std::fmt::Debug for Engine {
     }
 }
 
-pub(super) fn authorize(
+pub(crate) fn authorize(
     authz: &AuthzContext,
     principal: &Principal,
     role: Role,

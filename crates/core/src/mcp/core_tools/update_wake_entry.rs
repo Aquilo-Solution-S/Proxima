@@ -6,6 +6,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::McpTool;
+use crate::authz::Role;
 use crate::intervention::InterventionPolicy;
 use crate::mcp::core_tools::audit::{AuditEmit, emit_personality_config_changed};
 use crate::mcp::core_tools::payload::{
@@ -79,6 +80,8 @@ impl McpTool for UpdateWakeEntryTool {
         args: UpdateWakeEntryArgs,
     ) -> BoxFuture<'static, Result<UpdateWakeEntryOutput, McpToolError>> {
         Box::pin(async move {
+            crate::engine::authorize(&ctx.authz, &ctx.owner.principal, Role::Admin)
+                .map_err(|e| McpToolError::Other(e.to_string()))?;
             let wid = ctx.resolve_wake_entry(&args.wake_entry)?;
             let storage = ctx
                 .storage()
