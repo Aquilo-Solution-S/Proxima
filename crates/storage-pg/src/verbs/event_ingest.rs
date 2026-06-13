@@ -10,11 +10,17 @@
 //! atomically with the Fact materialization (M3.B.5+). The pool-level
 //! [`ingest_event_atomic`] is a thin wrapper that opens its own tx.
 
+use std::future::Future;
+use std::pin::Pin;
+
 use proxima_core::verbs::event_ingest::{EventDraft, EventIngestOutcome};
-use proxima_core::{OwnerPrincipalKind, Principal, StorageError};
+use proxima_core::{AuthorizedEventIngest, OwnerPrincipalKind, Principal, StorageError};
 use sqlx::{PgPool, Postgres, Transaction};
 
 use crate::error::map_err;
+
+pub type EventIngestSidecarFuture<'t> =
+    Pin<Box<dyn Future<Output = Result<(), StorageError>> + Send + 't>>;
 
 /// Pool-scoped `EventIngest`. Opens its own transaction; commits on
 /// success.
@@ -32,6 +38,34 @@ pub async fn ingest_event_atomic(
         .await
         .map_err(|e| StorageError::Internal(e.to_string()))?;
     let outcome = ingest_event_in_tx(&mut tx, draft).await?;
+    tx.commit().await.map_err(map_err)?;
+    Ok(outcome)
+}
+
+/// Pool-scoped gated `EventIngest` with a caller-owned typed sidecar
+/// insert. Opens its own transaction; commits only after the Fact and
+/// sidecar both succeed.
+///
+/// # Errors
+///
+/// Returns storage errors from Fact materialization, sidecar insertion,
+/// or transaction commit. A sidecar error rolls back the transaction.
+pub async fn event_ingest_with_sidecar_atomic<F>(
+    pool: &PgPool,
+    authorized: &AuthorizedEventIngest,
+    sidecar: F,
+) -> Result<EventIngestOutcome, StorageError>
+where
+    F: for<'t> FnOnce(
+        &'t mut Transaction<'_, Postgres>,
+        &'t EventIngestOutcome,
+    ) -> EventIngestSidecarFuture<'t>,
+{
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| StorageError::Internal(e.to_string()))?;
+    let outcome = ingest_event_with_sidecar_in_tx(&mut tx, authorized, sidecar).await?;
     tx.commit().await.map_err(map_err)?;
     Ok(outcome)
 }
@@ -224,4 +258,31 @@ pub async fn ingest_event_in_tx(
         change_event_seq: change_seq,
         idempotent_replay: false,
     })
+}
+
+/// Run gated `EventIngest` plus a typed sidecar insert inside an
+/// already-open transaction. The witness proves the draft passed core
+/// authorization, owner stamping, and schema validation before storage
+/// saw it.
+///
+/// # Errors
+///
+/// Returns storage errors from Fact materialization or sidecar
+/// insertion. The caller owns transaction rollback/commit.
+pub async fn ingest_event_with_sidecar_in_tx<F>(
+    tx: &mut Transaction<'_, Postgres>,
+    authorized: &AuthorizedEventIngest,
+    sidecar: F,
+) -> Result<EventIngestOutcome, StorageError>
+where
+    F: for<'t> FnOnce(
+        &'t mut Transaction<'_, Postgres>,
+        &'t EventIngestOutcome,
+    ) -> EventIngestSidecarFuture<'t>,
+{
+    let outcome = ingest_event_in_tx(tx, authorized.draft()).await?;
+    if !outcome.idempotent_replay {
+        sidecar(tx, &outcome).await?;
+    }
+    Ok(outcome)
 }

@@ -40,6 +40,26 @@ pub struct EventDraft {
     pub citation_mapping: CitationMappingHint,
 }
 
+/// Proof that an event ingest passed authorization + schema
+/// validation and had its owner stamped from the authz context.
+/// The only constructor is `Engine::authorize_event_ingest`, so a
+/// caller cannot reach the sidecar-ingest primitive below the gate.
+#[derive(Debug)]
+pub struct AuthorizedEventIngest {
+    draft: EventDraft,
+}
+
+impl AuthorizedEventIngest {
+    pub(crate) fn new(draft: EventDraft) -> Self {
+        Self { draft }
+    }
+
+    #[must_use]
+    pub fn draft(&self) -> &EventDraft {
+        &self.draft
+    }
+}
+
 impl EventDraft {
     /// Reconstructs the storage `Owner` after verb-layer stamping.
     ///

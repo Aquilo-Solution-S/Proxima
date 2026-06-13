@@ -3,7 +3,7 @@ use crate::authz::{AuthzContext, Role};
 use crate::error::ProtocolError;
 use crate::storage::StorageError;
 use crate::verbs::close_batch::CloseBatchOutcome;
-use crate::verbs::event_ingest::{EventDraft, EventIngestOutcome};
+use crate::verbs::event_ingest::{AuthorizedEventIngest, EventDraft, EventIngestOutcome};
 use crate::verbs::persist_wake_trace::{WakeTracePersistInput, WakeTracePersistOutcome};
 use crate::{Principal, SourceBatchId};
 
@@ -20,9 +20,32 @@ impl Engine {
     pub async fn event_ingest(
         &self,
         authz: &AuthzContext,
-        mut draft: EventDraft,
+        draft: EventDraft,
     ) -> Result<EventIngestOutcome, ProtocolError> {
-        super::authorize(authz, &draft.principal, Role::SourceIngest)?;
+        let authorized = self.authorize_event_ingest(authz, Role::SourceIngest, draft)?;
+        self.storage
+            .ingest_event_atomic(authorized.draft())
+            .await
+            .map_err(|e| ProtocolError::internal(e.to_string()))
+    }
+
+    /// Authorize + schema-validate + owner-stamp an event ingest,
+    /// returning a witness required by the sidecar-ingest primitive.
+    /// Does NOT write. `role` is the role the caller's operation
+    /// requires.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Forbidden` when the context cannot access `draft.principal`
+    /// or lacks `role`, or `UnknownSchema` when any of the three draft
+    /// schemas isn't registered.
+    pub fn authorize_event_ingest(
+        &self,
+        authz: &AuthzContext,
+        role: Role,
+        mut draft: EventDraft,
+    ) -> Result<AuthorizedEventIngest, ProtocolError> {
+        super::authorize(authz, &draft.principal, role)?;
         let owner = authz.scoped_owner(draft.principal.clone());
         draft.stamp_owner(owner);
         // Three schema validations: fact, cited_object, citation_mapping.
@@ -44,10 +67,7 @@ impl Engine {
                 ));
             }
         }
-        self.storage
-            .ingest_event_atomic(&draft)
-            .await
-            .map_err(|e| ProtocolError::internal(e.to_string()))
+        Ok(AuthorizedEventIngest::new(draft))
     }
 
     /// Atomic wake-trace persistence. The storage layer writes the
