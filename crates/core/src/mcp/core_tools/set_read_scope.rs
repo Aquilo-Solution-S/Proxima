@@ -5,6 +5,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::SetReadScopeRequest;
+use crate::authz::Role;
 use crate::mcp::core_tools::audit::{AuditEmit, emit_personality_config_changed};
 use crate::mcp::core_tools::payload::{
     PersonalityConfigChangeSnapshot, PersonalityConfigChangedSubject, PersonalityConfigChangedVerb,
@@ -43,6 +44,8 @@ impl McpTool for SetReadScopeTool {
         args: SetReadScopeArgs,
     ) -> BoxFuture<'static, Result<SetReadScopeOutput, McpToolError>> {
         Box::pin(async move {
+            crate::engine::authorize(&ctx.authz, &ctx.owner.principal, Role::Admin)
+                .map_err(|e| McpToolError::Other(e.to_string()))?;
             let pid = ctx.resolve_personality(&args.personality)?;
             let readable_ids = args
                 .readable_personalities
