@@ -24,9 +24,10 @@ pub use migrations::{
 };
 pub use proxima_core::verbs::schema::PayloadKind;
 pub use proxima_core::{
-    AbstractionPayload, AuthPath, AuthzContext, FactPayload, FlavorRegistry, GoalPayload,
-    PerspectivePayload, Role, SchemaId, SchemaVersion, SearchProjection,
-    SearchProjectionColumnKind, SearchProjectionField, proxima_flavor,
+    AbstractionPayload, AuthPath, AuthzContext, Engine, EngineHandle, FactPayload, FlavorRegistry,
+    GoalPayload, McpCallLogInput, McpCallLogOutcome, PerspectivePayload, Role, SchemaId,
+    SchemaVersion, SearchProjection, SearchProjectionColumnKind, SearchProjectionField,
+    StorageError, proxima_flavor,
 };
 pub use proxima_mcp_server::McpAuthContext;
 pub use proxima_storage_pg::verbs::event_ingest::{ingest_fact, ingest_fact_in_tx};
@@ -39,7 +40,7 @@ use std::sync::Arc;
 
 use proxima_blob_s3::CitedBlobStore;
 use proxima_core::llm::{AnthropicClient, EmbeddingClient};
-use proxima_core::{Engine, EngineHandle, GroupId, OrgId, Owner, Principal};
+use proxima_core::{GroupId, OrgId, Owner, Principal};
 use proxima_storage_pg::PgStorage;
 use sqlx::PgPool;
 
@@ -54,6 +55,18 @@ pub fn company_owner(org: uuid::Uuid) -> Owner {
         principal: Principal::Group(GroupId::new(org)),
         org_id: OrgId::new(org),
     }
+}
+
+/// Persist one host-observed MCP tool call through an embedded engine.
+///
+/// # Errors
+///
+/// Propagates the storage error returned by the engine-side primitive.
+pub async fn log_mcp_call(
+    engine: &Engine,
+    input: McpCallLogInput,
+) -> Result<McpCallLogOutcome, StorageError> {
+    engine.persist_mcp_call(input).await
 }
 
 type RegisterFn = Box<dyn FnOnce(&mut FlavorRegistry) + Send>;

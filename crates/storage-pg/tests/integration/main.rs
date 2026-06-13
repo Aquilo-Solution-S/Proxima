@@ -1,7 +1,7 @@
 //! Consolidated storage-pg integration tests (single linked binary).
 
-mod common;
 mod close_batch_pg;
+mod common;
 mod connect;
 mod derive_append_pg;
 mod edge_invariants_pg;
@@ -22,6 +22,7 @@ mod m2_done_when;
 mod master_token_personality_pg;
 mod migrations;
 mod outbox_pg;
+mod persist_mcp_call;
 mod persist_wake_trace;
 mod personality_wake_pg;
 mod query_pg;
