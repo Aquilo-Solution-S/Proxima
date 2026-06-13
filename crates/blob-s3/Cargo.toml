@@ -25,5 +25,6 @@ sha2 = { workspace = true }
 tokio = { workspace = true, features = ["io-util"] }
 
 [dev-dependencies]
+proxima-pg-testkit = { path = "../pg-testkit" }
 proxima-storage-pg = { path = "../storage-pg" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

@@ -19,7 +19,8 @@ async fn run_with_handle_serves_tools_list() -> Result<(), Box<dyn std::error::E
         master_token: Some(uuid::Uuid::nil()),
     };
 
-    let (handle, addr) = proxima_mcp::run_with_handle(cfg).await?;
+    let running = proxima_mcp::run_with_handle(cfg).await?;
+    let addr = running.mcp_addr.ok_or("missing MCP listener address")?;
     let client = reqwest::Client::new();
     let url = format!("http://{addr}/mcp");
     let bearer = format!("Bearer pxm_{}", uuid::Uuid::nil());
@@ -48,8 +49,7 @@ async fn run_with_handle_serves_tools_list() -> Result<(), Box<dyn std::error::E
         "got {names:?}"
     );
 
-    handle.abort();
-    let _ = handle.await;
+    running.shutdown().await;
     Ok(())
 }
 

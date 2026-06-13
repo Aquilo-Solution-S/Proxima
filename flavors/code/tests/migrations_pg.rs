@@ -1,33 +1,14 @@
 //! Apply core + flavor migrations to a fresh DB and verify the
 //! current `proxima_code` schema shape.
 
+use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
 use proxima_storage_pg::PgStorage;
-use sqlx::{Connection, Executor, PgConnection};
-use uuid::Uuid;
-
-const ADMIN_URL: &str = "postgres://proxima:proxima@localhost/proxima";
-
-async fn create_db(name: &str) -> Result<(), sqlx::Error> {
-    let mut conn = PgConnection::connect(ADMIN_URL).await?;
-    conn.execute(format!("CREATE DATABASE \"{name}\"").as_str())
-        .await?;
-    conn.close().await?;
-    Ok(())
-}
-
-async fn drop_db(name: &str) -> Result<(), sqlx::Error> {
-    let mut conn = PgConnection::connect(ADMIN_URL).await?;
-    conn.execute(format!("DROP DATABASE IF EXISTS \"{name}\" WITH (FORCE)").as_str())
-        .await?;
-    conn.close().await?;
-    Ok(())
-}
 
 #[tokio::test]
 async fn flavor_migrations_apply_to_fresh_db() {
-    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    let db_name = unique_db_name("proxima_test");
     create_db(&db_name).await.expect("PG required for tests");
-    let url = format!("postgres://proxima:proxima@localhost/{db_name}");
+    let url = db_url(&db_name);
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;

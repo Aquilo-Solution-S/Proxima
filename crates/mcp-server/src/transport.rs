@@ -15,6 +15,7 @@ use axum::body::Body;
 use axum::extract::Request;
 use axum::middleware::{self, Next};
 use axum::response::Response;
+use proxima_core::RevalidationConfig;
 use rmcp::transport::streamable_http_server::{
     StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
 };
@@ -24,7 +25,7 @@ use tokio_util::sync::CancellationToken;
 use crate::McpServerError;
 use crate::auth::McpEdgeAuth;
 use crate::handler::DynamicHandler;
-use crate::security::{OriginAllowlist, assert_loopback, mcp_auth_layer};
+use crate::security::{OriginAllowlist, assert_loopback, mcp_auth_layer_with_config};
 use crate::server::McpToolHost;
 
 #[must_use]
@@ -59,6 +60,26 @@ pub async fn serve_streamable_http(
     allowlist: OriginAllowlist,
     auth: Arc<McpEdgeAuth>,
 ) -> Result<(JoinHandle<Result<(), McpServerError>>, SocketAddr), McpServerError> {
+    serve_streamable_http_with_revalidation(
+        addr,
+        server,
+        allowlist,
+        auth,
+        RevalidationConfig::default(),
+    )
+    .await
+}
+
+/// # Errors
+///
+/// Returns loopback validation, TCP bind, or HTTP server failures.
+pub async fn serve_streamable_http_with_revalidation(
+    addr: SocketAddr,
+    server: McpToolHost,
+    allowlist: OriginAllowlist,
+    auth: Arc<McpEdgeAuth>,
+    revalidation: RevalidationConfig,
+) -> Result<(JoinHandle<Result<(), McpServerError>>, SocketAddr), McpServerError> {
     assert_loopback(&addr)?;
 
     let cancellation_token = CancellationToken::new();
@@ -70,7 +91,7 @@ pub async fn serve_streamable_http(
     let app = axum::Router::new()
         .nest_service("/mcp", service)
         .layer(middleware::from_fn(perf_recorder))
-        .layer(mcp_auth_layer(auth, allowlist));
+        .layer(mcp_auth_layer_with_config(auth, allowlist, revalidation));
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     let bound_addr = listener.local_addr()?;

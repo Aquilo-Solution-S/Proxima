@@ -8,10 +8,12 @@ use axum::body::Body;
 use axum::extract::Request;
 use axum::response::IntoResponse;
 use proxima_blob_s3::{CitedBlobStore, S3RuntimeConfig};
-use proxima_core::{AnthropicClient, AuthPath, Authenticator, AuthzContext, EmbeddingClient};
+use proxima_core::{
+    AnthropicClient, AuthPath, Authenticator, AuthzContext, EmbeddingClient, RevalidationConfig,
+};
 use proxima_core::{Engine, EngineHandle, Owner};
 use proxima_mcp_server::{
-    McpEdgeAuth, McpToolHost, OriginAllowlist, assert_loopback, default_allowlist, mcp_auth_layer,
+    McpEdgeAuth, McpToolHost, OriginAllowlist, assert_loopback, default_allowlist,
     streamable_http_service,
 };
 use sqlx::PgPool;
@@ -78,6 +80,12 @@ impl<A: FlavorApp + 'static> Proxima<A> {
     }
 
     #[must_use]
+    pub fn master_token(mut self, master_token: impl Into<String>) -> Self {
+        self.overlay = self.overlay.master_token(master_token);
+        self
+    }
+
+    #[must_use]
     pub fn authenticator(mut self, authenticator: Arc<dyn Authenticator>) -> Self {
         self.overlay = self.overlay.authenticator(authenticator);
         self
@@ -104,6 +112,18 @@ impl<A: FlavorApp + 'static> Proxima<A> {
     #[must_use]
     pub fn allowed_origins(mut self, allowed_origins: Vec<String>) -> Self {
         self.overlay = self.overlay.allowed_origins(allowed_origins);
+        self
+    }
+
+    #[must_use]
+    pub fn stream_max_lifetime(mut self, duration: std::time::Duration) -> Self {
+        self.overlay = self.overlay.stream_max_lifetime(duration);
+        self
+    }
+
+    #[must_use]
+    pub fn epoch_check_interval(mut self, duration: std::time::Duration) -> Self {
+        self.overlay = self.overlay.epoch_check_interval(duration);
         self
     }
 
@@ -141,15 +161,18 @@ impl<A: FlavorApp + 'static> Proxima<A> {
         let cancel = CancellationToken::new();
 
         let service = if let Some(allowlist) = allowlist {
-            Some(build_router::<A>(
-                &booted.engine,
-                booted.pool.clone(),
-                booted.blobs.clone(),
-                booted.owner.clone(),
-                parts.authenticator,
-                allowlist,
-                &cancel,
-            ))
+            Some(
+                build_router::<A>(
+                    &booted.engine,
+                    booted.pool.clone(),
+                    booted.blobs.clone(),
+                    parts.authenticator,
+                    allowlist,
+                    &cancel,
+                    &config,
+                )
+                .await,
+            )
         } else {
             None
         };
@@ -190,11 +213,12 @@ impl<A: FlavorApp + 'static> Proxima<A> {
                 &booted.engine,
                 booted.pool.clone(),
                 booted.blobs.clone(),
-                booted.owner.clone(),
                 parts.authenticator,
                 allowlist,
                 &cancel,
-            );
+                &config,
+            )
+            .await;
             let listener = tokio::net::TcpListener::bind(mcp.bind)
                 .await
                 .map_err(|err| ProximaError::Mcp(err.to_string()))?;
@@ -347,10 +371,35 @@ where
     S::Response: IntoResponse,
     S::Future: Send + 'static,
 {
+    layered_router_with_revalidation(
+        mcp_service,
+        app_router,
+        edge_auth,
+        allowlist,
+        RevalidationConfig::default(),
+    )
+}
+
+pub fn layered_router_with_revalidation<S>(
+    mcp_service: S,
+    app_router: Router,
+    edge_auth: Arc<McpEdgeAuth>,
+    allowlist: OriginAllowlist,
+    revalidation: RevalidationConfig,
+) -> Router
+where
+    S: Service<Request<Body>, Error = Infallible> + Clone + Send + Sync + 'static,
+    S::Response: IntoResponse,
+    S::Future: Send + 'static,
+{
     Router::new()
         .nest_service("/mcp", mcp_service)
         .merge(app_router)
-        .layer(mcp_auth_layer(edge_auth, allowlist))
+        .layer(proxima_mcp_server::mcp_auth_layer_with_config(
+            edge_auth,
+            allowlist,
+            revalidation,
+        ))
 }
 
 async fn boot_app<A: FlavorApp + 'static>(
@@ -374,18 +423,24 @@ async fn boot_app<A: FlavorApp + 'static>(
     builder.boot().await.map_err(Into::into)
 }
 
-fn build_router<A: FlavorApp>(
+async fn build_router<A: FlavorApp>(
     engine: &Arc<Engine>,
     pool: PgPool,
     blobs: Option<CitedBlobStore>,
-    owner: Owner,
     authenticator: Option<Arc<dyn Authenticator>>,
     allowlist: OriginAllowlist,
     cancel: &CancellationToken,
+    config: &crate::RuntimeConfig,
 ) -> Router {
+    let owner = config.owner.clone();
     let mut edge_auth = McpEdgeAuth::engine_hosted(engine.wake_token_store());
     if let Some(authenticator) = authenticator {
         edge_auth = edge_auth.with_host(authenticator, owner.clone());
+    }
+    if let Some(token) = config.master_token {
+        edge_auth
+            .replace_local_master_token(token, owner.clone())
+            .await;
     }
     let edge_auth = Arc::new(edge_auth);
     let mcp_host = McpToolHost::from_pool(
@@ -404,7 +459,13 @@ fn build_router<A: FlavorApp>(
             owner,
         },
     );
-    layered_router(mcp_service, app_router, edge_auth, allowlist)
+    layered_router_with_revalidation(
+        mcp_service,
+        app_router,
+        edge_auth,
+        allowlist,
+        config.stream_revalidation,
+    )
 }
 
 fn resolve_allowlist(config: &crate::RuntimeConfig) -> Result<OriginAllowlist, ProximaError> {

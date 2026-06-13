@@ -47,15 +47,6 @@ impl ProtocolError {
         }
     }
 
-    #[must_use]
-    pub fn auth_required() -> Self {
-        Self {
-            code: ErrorCode::AuthRequired,
-            message: "authentication required".into(),
-            request_id: None,
-        }
-    }
-
     pub fn unknown_schema(schema_id: impl AsRef<str>, version: u32) -> Self {
         Self {
             code: ErrorCode::UnknownSchema,

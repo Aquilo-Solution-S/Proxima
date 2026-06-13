@@ -1,12 +1,10 @@
 //! Shared test helpers for mcp-server integration tests.
 
+pub use proxima_pg_testkit::{db_url, drop_db};
 use serde_json::json;
-use sqlx::{Connection, Executor, PgConnection};
 
 use proxima_core::wake::token_store::WakeTokenContext;
 use proxima_core::{HandleTable, OrgId, Owner, Principal, UserId};
-
-const ADMIN_URL: &str = "postgres://proxima:proxima@localhost/proxima";
 
 /// Returns a nil owner for token tests.
 #[allow(dead_code)]
@@ -145,22 +143,9 @@ pub async fn sse_json(
 /// Create a fresh test database. Returns None if Postgres is unreachable.
 #[allow(dead_code)]
 pub async fn create_db() -> Result<Option<String>, Box<dyn std::error::Error>> {
-    let db_name = format!("proxima_test_{}", uuid::Uuid::now_v7().simple());
-    let mut conn = PgConnection::connect(ADMIN_URL)
+    let db_name = proxima_pg_testkit::unique_db_name("proxima_test");
+    proxima_pg_testkit::create_db(&db_name)
         .await
         .expect("PG required for tests");
-    conn.execute(format!("CREATE DATABASE \"{db_name}\"").as_str())
-        .await?;
-    conn.close().await?;
     Ok(Some(db_name))
-}
-
-/// Drop a test database.
-#[allow(dead_code)]
-pub async fn drop_db(name: &str) -> Result<(), sqlx::Error> {
-    let mut conn = PgConnection::connect(ADMIN_URL).await?;
-    conn.execute(format!("DROP DATABASE IF EXISTS \"{name}\" WITH (FORCE)").as_str())
-        .await?;
-    conn.close().await?;
-    Ok(())
 }

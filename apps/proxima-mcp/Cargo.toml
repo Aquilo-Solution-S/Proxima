@@ -10,11 +10,7 @@ repository.workspace = true
 proxima-core = { path = "../../crates/core" }
 proxima = { path = "../../crates/proxima" }
 proxima-flavor-goal = { path = "../../flavors/goal" }
-proxima-mcp-server = { path = "../../crates/mcp-server" }
 proxima-agent-memory = { path = "../../flavors/agent-memory" }
-proxima-storage-pg = { path = "../../crates/storage-pg" }
-serde = { workspace = true }
-serde_json = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 uuid = { workspace = true }
 thiserror = { workspace = true }
@@ -23,6 +19,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
 reqwest = { workspace = true }
+serde_json = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
 
 [lints]
