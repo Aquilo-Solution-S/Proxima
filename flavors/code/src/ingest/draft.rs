@@ -1,4 +1,6 @@
-use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
+use proxima_core::verbs::event_ingest::{
+    Citation as EventCitation, CitationMappingHint, CitedObjectHint, EventDraft,
+};
 use proxima_core::{Owner, SchemaId, SchemaVersion, SourceBatchId, SourceId};
 
 use super::IngestError;
@@ -36,14 +38,16 @@ pub(super) fn make_draft<P: serde::Serialize>(
         payload: bytes,
         observed_at,
         occurred_at: observed_at,
-        cited_object: CitedObjectHint {
-            schema_id: SchemaId::new(citation.cited_object_schema.into()),
-            schema_version: SchemaVersion::new(1),
-            content_hash: citation.content_hash,
-        },
-        citation_mapping: CitationMappingHint {
-            schema_id: SchemaId::new(citation.mapping_schema.into()),
-            schema_version: SchemaVersion::new(1),
-        },
+        citation: Some(EventCitation {
+            object: CitedObjectHint {
+                schema_id: SchemaId::new(citation.cited_object_schema.into()),
+                schema_version: SchemaVersion::new(1),
+                content_hash: citation.content_hash,
+            },
+            mapping: CitationMappingHint {
+                schema_id: SchemaId::new(citation.mapping_schema.into()),
+                schema_version: SchemaVersion::new(1),
+            },
+        }),
     })
 }

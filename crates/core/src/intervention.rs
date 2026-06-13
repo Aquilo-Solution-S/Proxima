@@ -207,15 +207,17 @@ pub fn intervention_request_event_draft(
         payload: payload.to_vec(),
         observed_at,
         occurred_at: observed_at,
-        cited_object: crate::verbs::event_ingest::CitedObjectHint {
-            schema_id: SchemaId::new(INTERVENTION_REQUESTED_OBJECT_SCHEMA.into()),
-            schema_version: SchemaVersion::new(1),
-            content_hash: *content_hash.as_bytes(),
-        },
-        citation_mapping: crate::verbs::event_ingest::CitationMappingHint {
-            schema_id: SchemaId::new(INTERVENTION_REQUESTED_WHOLE_SCHEMA.into()),
-            schema_version: SchemaVersion::new(1),
-        },
+        citation: Some(crate::verbs::event_ingest::Citation {
+            object: crate::verbs::event_ingest::CitedObjectHint {
+                schema_id: SchemaId::new(INTERVENTION_REQUESTED_OBJECT_SCHEMA.into()),
+                schema_version: SchemaVersion::new(1),
+                content_hash: *content_hash.as_bytes(),
+            },
+            mapping: crate::verbs::event_ingest::CitationMappingHint {
+                schema_id: SchemaId::new(INTERVENTION_REQUESTED_WHOLE_SCHEMA.into()),
+                schema_version: SchemaVersion::new(1),
+            },
+        }),
     }
 }
 
@@ -238,15 +240,17 @@ pub fn intervention_decision_event_draft(
         payload: payload.to_vec(),
         observed_at,
         occurred_at: observed_at,
-        cited_object: crate::verbs::event_ingest::CitedObjectHint {
-            schema_id: SchemaId::new(INTERVENTION_DECISION_OBJECT_SCHEMA.into()),
-            schema_version: SchemaVersion::new(1),
-            content_hash: *content_hash.as_bytes(),
-        },
-        citation_mapping: crate::verbs::event_ingest::CitationMappingHint {
-            schema_id: SchemaId::new(INTERVENTION_DECISION_WHOLE_SCHEMA.into()),
-            schema_version: SchemaVersion::new(1),
-        },
+        citation: Some(crate::verbs::event_ingest::Citation {
+            object: crate::verbs::event_ingest::CitedObjectHint {
+                schema_id: SchemaId::new(INTERVENTION_DECISION_OBJECT_SCHEMA.into()),
+                schema_version: SchemaVersion::new(1),
+                content_hash: *content_hash.as_bytes(),
+            },
+            mapping: crate::verbs::event_ingest::CitationMappingHint {
+                schema_id: SchemaId::new(INTERVENTION_DECISION_WHOLE_SCHEMA.into()),
+                schema_version: SchemaVersion::new(1),
+            },
+        }),
     }
 }
 

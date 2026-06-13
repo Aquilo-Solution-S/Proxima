@@ -4,7 +4,7 @@ use futures_util::StreamExt;
 use proxima_core::error::ProtocolError;
 use proxima_core::verbs::event_history::{EventHistoryRequest, EventHistoryResponse};
 use proxima_core::verbs::event_ingest::{
-    CitationMappingHint, CitedObjectHint, EventDraft, EventIngestOutcome,
+    Citation, CitationMappingHint, CitedObjectHint, EventDraft, EventIngestOutcome,
 };
 use proxima_core::verbs::goal_write::{GoalDraft, GoalWriteOutcome};
 use proxima_core::verbs::query::{
@@ -863,15 +863,17 @@ async fn ingest_goal_activated_fact(
         payload: payload_bytes,
         observed_at,
         occurred_at: observed_at,
-        cited_object: CitedObjectHint {
-            schema_id: SchemaId::new(GOAL_LIFECYCLE_OBJECT_SCHEMA.into()),
-            schema_version: SchemaVersion::new(1),
-            content_hash: *content_hash.as_bytes(),
-        },
-        citation_mapping: CitationMappingHint {
-            schema_id: SchemaId::new(GOAL_LIFECYCLE_CITATION_MAPPING_SCHEMA.into()),
-            schema_version: SchemaVersion::new(1),
-        },
+        citation: Some(Citation {
+            object: CitedObjectHint {
+                schema_id: SchemaId::new(GOAL_LIFECYCLE_OBJECT_SCHEMA.into()),
+                schema_version: SchemaVersion::new(1),
+                content_hash: *content_hash.as_bytes(),
+            },
+            mapping: CitationMappingHint {
+                schema_id: SchemaId::new(GOAL_LIFECYCLE_CITATION_MAPPING_SCHEMA.into()),
+                schema_version: SchemaVersion::new(1),
+            },
+        }),
     };
     let authorized = engine.authorize_event_ingest(authz, Role::GraphWrite, draft)?;
     let goal_id = payload.goal_id;

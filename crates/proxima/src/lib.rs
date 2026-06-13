@@ -22,7 +22,14 @@ pub use migrations::{
     MigrationError, MigrationRunReport, MigrationVersion, NamedMigrator,
     run_core_and_flavor_migrations,
 };
+pub use proxima_core::verbs::schema::PayloadKind;
+pub use proxima_core::{
+    AbstractionPayload, AuthPath, AuthzContext, FactPayload, FlavorRegistry, GoalPayload,
+    PerspectivePayload, Role, SchemaId, SchemaVersion, SearchProjection,
+    SearchProjectionColumnKind, SearchProjectionField, proxima_flavor,
+};
 pub use proxima_mcp_server::McpAuthContext;
+pub use proxima_storage_pg::verbs::event_ingest::{ingest_fact, ingest_fact_in_tx};
 pub use runtime::{
     BuiltProxima, Proxima, RunningProxima, layered_router, layered_router_with_revalidation, run,
 };
@@ -32,7 +39,7 @@ use std::sync::Arc;
 
 use proxima_blob_s3::CitedBlobStore;
 use proxima_core::llm::{AnthropicClient, EmbeddingClient};
-use proxima_core::{Engine, EngineHandle, FlavorRegistry, GroupId, OrgId, Owner, Principal};
+use proxima_core::{Engine, EngineHandle, GroupId, OrgId, Owner, Principal};
 use proxima_storage_pg::PgStorage;
 use sqlx::PgPool;
 

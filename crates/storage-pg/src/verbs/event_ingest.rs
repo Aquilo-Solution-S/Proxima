@@ -1,5 +1,5 @@
-//! `EventIngest` verb — atomic insert of `cited_object`, `source_batch`,
-//! `event`, `memory`, `citation_mapping`, and `change_event` rows.
+//! `EventIngest` verb — atomic insert of optional citation rows,
+//! `source_batch`, `event`, `memory`, and `change_event` rows.
 //!
 //! Replay is detected by the `(event_id)` unique on `memories`; the
 //! caller observes `idempotent_replay = true` and the original
@@ -14,7 +14,10 @@ use std::future::Future;
 use std::pin::Pin;
 
 use proxima_core::verbs::event_ingest::{EventDraft, EventIngestOutcome};
-use proxima_core::{AuthorizedEventIngest, OwnerPrincipalKind, Principal, StorageError};
+use proxima_core::{
+    AuthorizedEventIngest, AuthzContext, Engine, FactPayload, OwnerPrincipalKind, Principal, Role,
+    SchemaVersion, SourceBatchId, SourceId, StorageError,
+};
 use sqlx::{PgPool, Postgres, Transaction};
 
 use crate::error::map_err;
@@ -66,6 +69,81 @@ where
         .await
         .map_err(|e| StorageError::Internal(e.to_string()))?;
     let outcome = ingest_event_with_sidecar_in_tx(&mut tx, authorized, sidecar).await?;
+    tx.commit().await.map_err(map_err)?;
+    Ok(outcome)
+}
+
+/// Build an uncited Fact draft from a typed payload, authorize it, and
+/// materialize it plus the caller-owned sidecar inside an existing tx.
+///
+/// # Errors
+///
+/// Returns storage errors from CBOR serialization, authorization/schema
+/// validation, Fact materialization, or sidecar insertion.
+pub async fn ingest_fact_in_tx<P, F>(
+    tx: &mut Transaction<'_, Postgres>,
+    engine: &Engine,
+    authz: &AuthzContext,
+    role: Role,
+    payload: &P,
+    sidecar: F,
+) -> Result<EventIngestOutcome, StorageError>
+where
+    P: FactPayload,
+    F: for<'t> FnOnce(
+        &'t mut Transaction<'_, Postgres>,
+        &'t EventIngestOutcome,
+    ) -> EventIngestSidecarFuture<'t>,
+{
+    let mut payload_bytes = Vec::new();
+    ciborium::ser::into_writer(payload, &mut payload_bytes)
+        .map_err(|e| StorageError::Internal(e.to_string()))?;
+    let now = time::OffsetDateTime::now_utc();
+    let draft = EventDraft {
+        source_id: SourceId::new("proxima/fact"),
+        source_batch_id: SourceBatchId::new(uuid::Uuid::now_v7()),
+        principal: authz.identity.principal.clone(),
+        org_id: None,
+        schema_id: P::schema_id(),
+        schema_version: SchemaVersion::new(P::SCHEMA_VERSION),
+        payload: payload_bytes,
+        observed_at: now,
+        occurred_at: now,
+        citation: None,
+    };
+    let authorized = engine
+        .authorize_event_ingest(authz, role, draft)
+        .map_err(|e| StorageError::Internal(e.to_string()))?;
+    ingest_event_with_sidecar_in_tx(tx, &authorized, sidecar).await
+}
+
+/// Pool-scoped uncited Fact ingest helper. Opens its own transaction;
+/// commits only after the Fact and sidecar both succeed.
+///
+/// # Errors
+///
+/// Returns storage errors from transaction setup, Fact ingest, sidecar
+/// insertion, or transaction commit.
+pub async fn ingest_fact<P, F>(
+    pool: &PgPool,
+    engine: &Engine,
+    authz: &AuthzContext,
+    role: Role,
+    payload: &P,
+    sidecar: F,
+) -> Result<EventIngestOutcome, StorageError>
+where
+    P: FactPayload,
+    F: for<'t> FnOnce(
+        &'t mut Transaction<'_, Postgres>,
+        &'t EventIngestOutcome,
+    ) -> EventIngestSidecarFuture<'t>,
+{
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| StorageError::Internal(e.to_string()))?;
+    let outcome = ingest_fact_in_tx(&mut tx, engine, authz, role, payload, sidecar).await?;
     tx.commit().await.map_err(map_err)?;
     Ok(outcome)
 }
@@ -124,13 +202,14 @@ pub async fn ingest_event_in_tx(
     // Generate ids inside the tx; UUIDv7 carries time so seq
     // is monotonic-ish even across concurrent writers.
     let memory_id = uuid::Uuid::now_v7();
-    let citation_mapping_id = uuid::Uuid::now_v7();
-    let cited_object_id_new = uuid::Uuid::now_v7();
     let change_seq = uuid::Uuid::now_v7();
 
-    // 1. cited_object — idempotent on the UNIQUE.
-    let cited_id: uuid::Uuid = sqlx::query_scalar!(
-        r#"INSERT INTO proxima_core.cited_objects
+    // 1. cited_object — optional; idempotent on the UNIQUE when present.
+    let citation_refs = if let Some(citation) = &draft.citation {
+        let citation_mapping_id = uuid::Uuid::now_v7();
+        let cited_object_id_new = uuid::Uuid::now_v7();
+        let cited_id: uuid::Uuid = sqlx::query_scalar!(
+            r#"INSERT INTO proxima_core.cited_objects
             (cited_object_id, schema_id, owner_principal_kind,
              owner_principal_id, owner_org_id, content_hash)
          VALUES ($1, $2, $3, $4, $5, $6)
@@ -138,16 +217,23 @@ pub async fn ingest_event_in_tx(
                       owner_org_id, schema_id, content_hash)
          DO UPDATE SET schema_id = EXCLUDED.schema_id
          RETURNING cited_object_id"#,
-        cited_object_id_new,
-        draft.cited_object.schema_id.as_str(),
-        owner_kind as OwnerPrincipalKind,
-        owner_principal_id,
-        owner_org_id,
-        &draft.cited_object.content_hash[..],
-    )
-    .fetch_one(&mut **tx)
-    .await
-    .map_err(map_err)?;
+            cited_object_id_new,
+            citation.object.schema_id.as_str(),
+            owner_kind as OwnerPrincipalKind,
+            owner_principal_id,
+            owner_org_id,
+            &citation.object.content_hash[..],
+        )
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(map_err)?;
+        Some((citation, citation_mapping_id, cited_id))
+    } else {
+        None
+    };
+    let citation_mapping_id = citation_refs
+        .as_ref()
+        .map(|(_, citation_mapping_id, _)| *citation_mapping_id);
 
     // 2. source_batch upsert (idempotent on PK). Must come before
     //    event insert due to FK from events.source_batch_id.
@@ -191,7 +277,7 @@ pub async fn ingest_event_in_tx(
     .await
     .map_err(map_err)?;
 
-    // 4. memory (Fact) — citation_mapping_id FK is deferred.
+    // 4. memory (Fact) — citation_mapping_id FK is deferred when present.
     //    External-fact authorship: nil-uuid on personality_instance_id marks non-personality authoring.
     sqlx::query!(
         r#"INSERT INTO proxima_core.memories
@@ -213,24 +299,26 @@ pub async fn ingest_event_in_tx(
     .await
     .map_err(map_err)?;
 
-    // 5. citation_mapping — memory_id FK is deferred.
-    sqlx::query!(
-        r#"INSERT INTO proxima_core.citation_mappings
+    // 5. citation_mapping — optional; memory_id FK is deferred when present.
+    if let Some((citation, citation_mapping_id, cited_id)) = citation_refs {
+        sqlx::query!(
+            r#"INSERT INTO proxima_core.citation_mappings
             (citation_mapping_id, schema_id, memory_id,
              cited_object_id, owner_principal_kind,
              owner_principal_id, owner_org_id)
          VALUES ($1, $2, $3, $4, $5, $6, $7)"#,
-        citation_mapping_id,
-        draft.citation_mapping.schema_id.as_str(),
-        memory_id,
-        cited_id,
-        owner_kind as OwnerPrincipalKind,
-        owner_principal_id,
-        owner_org_id,
-    )
-    .execute(&mut **tx)
-    .await
-    .map_err(map_err)?;
+            citation_mapping_id,
+            citation.mapping.schema_id.as_str(),
+            memory_id,
+            cited_id,
+            owner_kind as OwnerPrincipalKind,
+            owner_principal_id,
+            owner_org_id,
+        )
+        .execute(&mut **tx)
+        .await
+        .map_err(map_err)?;
+    }
 
     // 6. change_event (EntityAppend / Fact).
     sqlx::query!(
