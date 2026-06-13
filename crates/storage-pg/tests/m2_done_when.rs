@@ -72,7 +72,8 @@ fn fresh_event_draft(owner: Owner, payload: &[u8], cited_marker: u8) -> EventDra
     EventDraft {
         source_id: SourceId::new("test/source"),
         source_batch_id: SourceBatchId::new(Uuid::now_v7()),
-        owner,
+        principal: owner.principal,
+        org_id: Some(owner.org_id),
         schema_id: SchemaId::new("test/fact_blob".into()),
         schema_version: SchemaVersion::new(1),
         payload: payload.to_vec(),
@@ -92,7 +93,8 @@ fn fresh_event_draft(owner: Owner, payload: &[u8], cited_marker: u8) -> EventDra
 
 fn fresh_goal_draft(owner: &Owner, request_id: &str, text: &str) -> GoalDraft {
     GoalDraft {
-        owner: owner.clone(),
+        principal: owner.principal.clone(),
+        org_id: Some(owner.org_id),
         schema_id: SchemaId::new("test/goal_blob".into()),
         schema_version: SchemaVersion::new(1),
         title: "Test goal".to_string(),
@@ -169,7 +171,7 @@ async fn m2_done_when_resume_with_last_seq() {
             .subscribe(
                 &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
                 SubscribeRequest {
-                    owner: owner.clone(),
+                    principal: owner.principal.clone(),
                     since: None,
                 },
             )
@@ -217,7 +219,7 @@ async fn m2_done_when_resume_with_last_seq() {
             .subscribe(
                 &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
                 SubscribeRequest {
-                    owner: owner.clone(),
+                    principal: owner.principal.clone(),
                     since: Some(last_seq),
                 },
             )

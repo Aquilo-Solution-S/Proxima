@@ -45,7 +45,8 @@ async fn replace_wake_entries_in_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     req: &SetWakeEntriesRequest,
 ) -> Result<SetWakeEntriesResponse, StorageError> {
-    let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(&req.owner);
+    let owner = req.owner();
+    let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(&owner);
     let result = sqlx::query(
         "UPDATE proxima_core.personality_wake_entries
          SET tombstoned_at = now(), updated_at = now()
@@ -85,7 +86,7 @@ async fn replace_wake_entries_in_tx(
     }
 
     for entry in &req.entries {
-        upsert_wake_entry(tx, &req.owner, entry).await?;
+        upsert_wake_entry(tx, &owner, entry).await?;
     }
     Ok(SetWakeEntriesResponse {
         active_entries: u32::try_from(req.entries.len()).unwrap_or(u32::MAX),
@@ -198,7 +199,8 @@ pub async fn set_wake_entries_within(
     let new_entries = mutate(&current).map_err(StorageError::Internal)?;
 
     let req = SetWakeEntriesRequest {
-        owner: owner.clone(),
+        principal: owner.principal.clone(),
+        org_id: Some(owner.org_id),
         personality_instance_id,
         entries: new_entries,
     };
@@ -211,7 +213,8 @@ pub async fn tombstone_personality(
     pool: &PgPool,
     req: &proxima_core::TombstonePersonalityRequest,
 ) -> Result<proxima_core::TombstonePersonalityResponse, StorageError> {
-    let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(&req.owner);
+    let owner = req.owner();
+    let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(&owner);
     let mut tx = pool.begin().await.map_err(map_err)?;
 
     let result = sqlx::query(

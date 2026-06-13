@@ -55,7 +55,8 @@ impl McpTool for BindInferenceTierTool {
             };
             let target_ref = args.target_ref.clone();
             let req = BindInferenceTierRequest {
-                owner: ctx.owner.clone(),
+                principal: ctx.owner.principal.clone(),
+                org_id: None,
                 tier,
                 target_ref: target_ref.clone(),
             };

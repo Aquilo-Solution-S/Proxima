@@ -55,7 +55,8 @@ impl McpTool for SetReadScopeTool {
 
             let before = storage
                 .list_read_scope(&crate::ListReadScopeRequest {
-                    owner: ctx.owner.clone(),
+                    principal: ctx.owner.principal.clone(),
+                    org_id: Some(ctx.owner.org_id),
                     reader_personality_instance_id: pid,
                 })
                 .await
@@ -70,7 +71,8 @@ impl McpTool for SetReadScopeTool {
 
             let response = storage
                 .set_read_scope(&SetReadScopeRequest {
-                    owner: ctx.owner.clone(),
+                    principal: ctx.owner.principal.clone(),
+                    org_id: Some(ctx.owner.org_id),
                     reader_personality_instance_id: pid,
                     readable_personality_instance_ids: readable_ids.clone(),
                 })

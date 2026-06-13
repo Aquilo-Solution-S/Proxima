@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use proxima_core::error::ProtocolError;
 use proxima_core::{
-    AuthzContext, BindInferenceTierRequest, Engine, InferenceTargetConfig, Owner,
+    AuthzContext, BindInferenceTierRequest, Engine, InferenceTargetConfig, Principal,
     RegisterInferenceTargetRequest, RemoveInferenceTargetRequest,
 };
 use tauri::State;
@@ -76,7 +76,7 @@ pub struct InferenceTierBindingTs {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct RegisterInferenceTargetTs {
-    pub owner: Owner,
+    pub principal: Principal,
     pub target_ref: String,
     pub config: InferenceTargetConfigTs,
 }
@@ -89,12 +89,12 @@ pub struct RegisterInferenceTargetOutcomeTs {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct ListInferenceTargetsTs {
-    pub owner: Owner,
+    pub principal: Principal,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct RemoveInferenceTargetTs {
-    pub owner: Owner,
+    pub principal: Principal,
     pub target_ref: String,
 }
 
@@ -105,14 +105,14 @@ pub struct RemoveInferenceTargetOutcomeTs {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct BindInferenceTierTs {
-    pub owner: Owner,
+    pub principal: Principal,
     pub tier: ModelTierTs,
     pub target_ref: String,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct ListInferenceTierBindingsTs {
-    pub owner: Owner,
+    pub principal: Principal,
 }
 
 fn config_to_core(config: InferenceTargetConfigTs) -> InferenceTargetConfig {
@@ -211,7 +211,8 @@ pub async fn register_inference_target(
     let req_bytes = crate::perf::ipc::req_size(&req);
     crate::perf::ipc::record("register_inference_target", req_bytes, async move {
         let core_req = RegisterInferenceTargetRequest {
-            owner: req.owner,
+            principal: req.principal,
+            org_id: None,
             target_ref: req.target_ref,
             config: config_to_core(req.config),
         };
@@ -233,7 +234,9 @@ pub async fn list_inference_targets(
 ) -> Result<Vec<InferenceTargetTs>, ProtocolError> {
     let req_bytes = crate::perf::ipc::req_size(&req);
     crate::perf::ipc::record("list_inference_targets", req_bytes, async move {
-        let rows = engine.list_inference_targets(&authz, &req.owner).await?;
+        let rows = engine
+            .list_inference_targets(&authz, &req.principal)
+            .await?;
         rows.iter()
             .map(|row| {
                 Ok(InferenceTargetTs {
@@ -264,7 +267,8 @@ pub async fn remove_inference_target(
     let req_bytes = crate::perf::ipc::req_size(&req);
     crate::perf::ipc::record("remove_inference_target", req_bytes, async move {
         let core_req = RemoveInferenceTargetRequest {
-            owner: req.owner,
+            principal: req.principal,
+            org_id: None,
             target_ref: req.target_ref,
         };
         let out = engine.remove_inference_target(&authz, &core_req).await?;
@@ -285,7 +289,8 @@ pub async fn bind_inference_tier(
     let req_bytes = crate::perf::ipc::req_size(&req);
     crate::perf::ipc::record("bind_inference_tier", req_bytes, async move {
         let core_req = BindInferenceTierRequest {
-            owner: req.owner,
+            principal: req.principal,
+            org_id: None,
             tier: tier_from_ts(req.tier),
             target_ref: req.target_ref,
         };
@@ -305,7 +310,7 @@ pub async fn list_inference_tier_bindings(
     let req_bytes = crate::perf::ipc::req_size(&req);
     crate::perf::ipc::record("list_inference_tier_bindings", req_bytes, async move {
         let rows = engine
-            .list_inference_tier_bindings(&authz, &req.owner)
+            .list_inference_tier_bindings(&authz, &req.principal)
             .await?;
         Ok(rows
             .iter()

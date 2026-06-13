@@ -34,7 +34,8 @@ async fn wake_token_audit_attributes_caller_personality() -> Result<(), Box<dyn 
     };
     let inst = pg
         .instantiate_personality(&InstantiatePersonalityRequest {
-            owner: owner.clone(),
+            principal: owner.principal.clone(),
+            org_id: Some(owner.org_id),
             display_name: "caller".into(),
             purpose: "self-evolution test".into(),
         })

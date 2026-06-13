@@ -392,12 +392,11 @@ fn push_reader_visibility_filter(sql: &mut String, reader_param: Option<usize>) 
                 OR EXISTS (
                     SELECT 1
                       FROM proxima_core.read_scope_matrix r
-                     WHERE r.owner_principal_kind = m.owner_principal_kind
-                       AND r.owner_principal_id = m.owner_principal_id
-                       AND r.owner_org_id = m.owner_org_id
-                       AND r.reader_personality_instance_id = ${param}
-                       AND r.readable_personality_instance_id = m.personality_instance_id
-                )
+	                     WHERE r.owner_principal_kind = m.owner_principal_kind
+	                       AND r.owner_principal_id = m.owner_principal_id
+	                       AND r.reader_personality_instance_id = ${param}
+	                       AND r.readable_personality_instance_id = m.personality_instance_id
+	                )
             )"
         )
         .expect("write to String is infallible");
@@ -408,7 +407,7 @@ fn bind_common<'q>(
     mut q: sqlx::query::QueryAs<'q, sqlx::Postgres, SearchRow, sqlx::postgres::PgArguments>,
     req: &'q MemorySearchRequest,
 ) -> sqlx::query::QueryAs<'q, sqlx::Postgres, SearchRow, sqlx::postgres::PgArguments> {
-    let (owner_kind, owner_principal_id) = match &req.owner.principal {
+    let (owner_kind, owner_principal_id) = match &req.principal {
         Principal::User(user) => (OwnerPrincipalKind::User, user.into_inner()),
         Principal::Group(group) => (OwnerPrincipalKind::Group, group.into_inner()),
     };

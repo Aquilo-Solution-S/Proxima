@@ -309,7 +309,8 @@ pub fn chat_fact_event_draft<F: FactPayload + serde::Serialize>(
     Ok(EventDraft {
         source_id: SourceId::new(CHAT_SOURCE_ID),
         source_batch_id: SourceBatchId::new(uuid::Uuid::now_v7()),
-        owner: owner.clone(),
+        principal: owner.principal.clone(),
+        org_id: Some(owner.org_id),
         schema_id: SchemaId::new(F::SCHEMA_ID.into()),
         schema_version: SchemaVersion::new(F::SCHEMA_VERSION),
         payload: payload_bytes,

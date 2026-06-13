@@ -29,7 +29,7 @@ pub(crate) async fn query_memories(
     req: &QueryRequest,
     schemas: &[SchemaInfo],
 ) -> Result<QueryResponse, StorageError> {
-    let (owner_kind, owner_principal_id) = match &req.owner.principal {
+    let (owner_kind, owner_principal_id) = match &req.principal {
         Principal::User(u) => (OwnerPrincipalKind::User, u.into_inner()),
         Principal::Group(g) => (OwnerPrincipalKind::Group, g.into_inner()),
     };

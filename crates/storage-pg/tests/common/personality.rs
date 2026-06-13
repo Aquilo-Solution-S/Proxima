@@ -14,7 +14,7 @@ use proxima_core::personality::InstantiatePersonalityResponse;
 use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
 use proxima_core::verbs::query::MemoryStore;
 use proxima_core::{
-    AbstractionPayload, FlavorDescriptor, FlavorProvenance, FlavorRegistry,
+    AbstractionPayload, AuthPath, AuthzContext, FlavorDescriptor, FlavorProvenance, FlavorRegistry,
     InstantiatePersonalityRequest, Owner, PerspectivePayload, ProtocolError, SchemaId,
     SchemaVersion, SourceBatchId, SourceId,
 };
@@ -205,11 +205,15 @@ pub async fn instantiate_test_personality(
     owner: &Owner,
 ) -> Result<InstantiatePersonalityResponse, ProtocolError> {
     engine
-        .instantiate_personality(InstantiatePersonalityRequest {
-            owner: owner.clone(),
-            display_name: "Test Personality".into(),
-            purpose: "test".into(),
-        })
+        .instantiate_personality(
+            &AuthzContext::single_owner(owner, AuthPath::System),
+            InstantiatePersonalityRequest {
+                principal: owner.principal.clone(),
+                org_id: None,
+                display_name: "Test Personality".into(),
+                purpose: "test".into(),
+            },
+        )
         .await
 }
 
@@ -225,7 +229,8 @@ pub async fn ingest_test_fact(pg: &PgStorage, owner: &Owner, label: &str) -> Mem
     let draft = EventDraft {
         source_id: SourceId::new(TEST_SOURCE_ID),
         source_batch_id: SourceBatchId::new(Uuid::now_v7()),
-        owner: owner.clone(),
+        principal: owner.principal.clone(),
+        org_id: Some(owner.org_id),
         schema_id: SchemaId::new(TEST_FACT_SCHEMA.into()),
         schema_version: SchemaVersion::new(1),
         payload,
@@ -261,7 +266,8 @@ pub async fn ingest_other_fact(pg: &PgStorage, owner: &Owner, label: &str) -> Me
     let draft = EventDraft {
         source_id: SourceId::new(TEST_SOURCE_ID),
         source_batch_id: SourceBatchId::new(Uuid::now_v7()),
-        owner: owner.clone(),
+        principal: owner.principal.clone(),
+        org_id: Some(owner.org_id),
         schema_id: SchemaId::new(TEST_OTHER_FACT_SCHEMA.into()),
         schema_version: SchemaVersion::new(1),
         payload,

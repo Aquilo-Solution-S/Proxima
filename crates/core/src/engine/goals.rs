@@ -19,9 +19,11 @@ impl Engine {
     pub async fn write_goal(
         &self,
         authz: &AuthzContext,
-        draft: GoalDraft,
+        mut draft: GoalDraft,
     ) -> Result<GoalWriteOutcome, ProtocolError> {
-        super::authorize(authz, &draft.owner, Role::GraphWrite)?;
+        super::authorize(authz, &draft.principal, Role::GraphWrite)?;
+        let owner = authz.scoped_owner(draft.principal.clone());
+        draft.stamp_owner(owner);
         // Validate goal schema is registered AND has PayloadKind::Goal.
         match self.registry.lookup(&draft.schema_id, draft.schema_version) {
             Some(info) if info.kind == PayloadKind::Goal => {}
@@ -53,9 +55,11 @@ impl Engine {
         &self,
         authz: &AuthzContext,
         prior: GoalId,
-        draft: GoalDraft,
+        mut draft: GoalDraft,
     ) -> Result<GoalWriteOutcome, ProtocolError> {
-        super::authorize(authz, &draft.owner, Role::GraphWrite)?;
+        super::authorize(authz, &draft.principal, Role::GraphWrite)?;
+        let owner = authz.scoped_owner(draft.principal.clone());
+        draft.stamp_owner(owner);
         // Validate goal schema is registered AND has PayloadKind::Goal.
         match self.registry.lookup(&draft.schema_id, draft.schema_version) {
             Some(info) if info.kind == PayloadKind::Goal => {}

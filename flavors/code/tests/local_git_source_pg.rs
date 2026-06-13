@@ -228,7 +228,7 @@ async fn local_git_source_full_cycle() {
         // Heads-only chunk Query through the Engine — the path that
         // matters for downstream consumers.
         let q = QueryRequest {
-            owner: owner.clone(),
+            principal: owner.principal.clone(),
             entity_kind: None,
             schema_id: Some(SchemaId::new(CodeChunkV1::SCHEMA_ID.into())),
             supersession: SupersessionStatus::HeadsOnly,
@@ -300,7 +300,7 @@ async fn local_git_source_full_cycle() {
 
         // Old revision still exists as history (IncludeSuperseded view).
         let q_all = QueryRequest {
-            owner: owner.clone(),
+            principal: owner.principal.clone(),
             entity_kind: None,
             schema_id: Some(SchemaId::new(FileRevisionV1::SCHEMA_ID.into())),
             supersession: SupersessionStatus::IncludeSuperseded,

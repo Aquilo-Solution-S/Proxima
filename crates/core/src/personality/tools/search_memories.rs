@@ -122,7 +122,7 @@ impl PersonalityTool for SearchMemoriesTool {
 
         let mode = SearchMode::from(parsed.mode);
         let mut req = MemorySearchRequest {
-            owner: ctx.owner.clone(),
+            principal: ctx.owner.principal.clone(),
             query: query.to_string(),
             mode,
             limit: parsed.limit.clamp(1, 50),

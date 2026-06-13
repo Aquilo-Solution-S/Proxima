@@ -87,7 +87,8 @@ impl McpTool for RememberTool {
             let draft = EventDraft {
                 source_id: SourceId::new(SOURCE_ID),
                 source_batch_id: SourceBatchId::new(uuid::Uuid::now_v7()),
-                owner: ctx.owner.clone(),
+                principal: ctx.owner.principal.clone(),
+                org_id: Some(ctx.owner.org_id),
                 schema_id: SchemaId::new(AgentNoteV1::SCHEMA_ID.into()),
                 schema_version: SchemaVersion::new(AgentNoteV1::SCHEMA_VERSION),
                 payload: payload_bytes,

@@ -52,12 +52,13 @@ pub async fn ingest_event_in_tx(
 ) -> Result<EventIngestOutcome, StorageError> {
     let event_id = draft.event_id();
     let event_id_bytes = event_id.into_inner();
+    let owner = draft.owner();
 
-    let (owner_kind, owner_principal_id) = match &draft.owner.principal {
+    let (owner_kind, owner_principal_id) = match &owner.principal {
         Principal::User(u) => (OwnerPrincipalKind::User, u.into_inner()),
         Principal::Group(g) => (OwnerPrincipalKind::Group, g.into_inner()),
     };
-    let owner_org_id = draft.owner.org_id.into_inner();
+    let owner_org_id = owner.org_id.into_inner();
 
     // Replay check.
     let existing = sqlx::query_scalar!(

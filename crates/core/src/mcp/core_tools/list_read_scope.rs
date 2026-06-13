@@ -43,7 +43,8 @@ impl McpTool for ListReadScopeTool {
                 .ok_or_else(|| McpToolError::Other("engine storage unavailable".into()))?;
             let response = storage
                 .list_read_scope(&ListReadScopeRequest {
-                    owner: ctx.owner.clone(),
+                    principal: ctx.owner.principal.clone(),
+                    org_id: Some(ctx.owner.org_id),
                     reader_personality_instance_id: pid,
                 })
                 .await

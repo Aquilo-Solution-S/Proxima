@@ -74,7 +74,7 @@ export const ModelsTable: Component<Props> = (props) => {
     setError(null);
     try {
       await props.client.bindInferenceTier({
-        owner: props.owner,
+        principal: props.owner.principal,
         tier,
         target_ref: targetRef,
       });
@@ -89,7 +89,7 @@ export const ModelsTable: Component<Props> = (props) => {
     setError(null);
     try {
       await props.client.removeInferenceTarget({
-        owner: props.owner,
+        principal: props.owner.principal,
         target_ref: targetRef,
       });
       props.refetchTargets();
@@ -158,7 +158,7 @@ export const ModelsTable: Component<Props> = (props) => {
     setError(null);
     try {
       const out = await props.client.testInferenceTarget({
-        owner: props.owner,
+        principal: props.owner.principal,
         target_ref: targetRef,
       });
       setTestResults((prev) => {

@@ -50,6 +50,7 @@ fn self_scoped_identity(owner: &Owner) -> Identity {
     accessible.insert(owner.principal.clone());
     Identity {
         principal: owner.principal.clone(),
+        org_id: owner.org_id,
         accessible_principals: accessible,
         // Wake-store TTL / master rotation govern today; stream
         // expiry lands with the revalidation slice.
@@ -202,11 +203,11 @@ impl McpEdgeAuth {
         if authz.auth_path != AuthPath::HostBearer {
             return None;
         }
-        if !authz.identity.can_access_owner(owner) {
+        if !authz.identity.can_access_principal(&owner.principal) {
             return None;
         }
         Some(McpAuthContext {
-            owner: owner.clone(),
+            owner: authz.scoped_owner(owner.principal.clone()),
             authz,
             model_id: None,
             wake: None,
@@ -355,6 +356,7 @@ mod tests {
         let authz = AuthzContext {
             identity: Identity {
                 principal: owner.principal.clone(),
+                org_id: owner.org_id,
                 accessible_principals: accessible,
                 expires_at: None,
                 auth_epoch: 0,
@@ -381,6 +383,7 @@ mod tests {
             let authz = AuthzContext {
                 identity: Identity {
                     principal: owner.principal.clone(),
+                    org_id: owner.org_id,
                     accessible_principals: accessible,
                     expires_at: None,
                     auth_epoch: 0,
@@ -406,6 +409,7 @@ mod tests {
         let authz = AuthzContext {
             identity: Identity {
                 principal: stranger.principal.clone(),
+                org_id: stranger.org_id,
                 accessible_principals: accessible,
                 expires_at: None,
                 auth_epoch: 0,
@@ -426,6 +430,7 @@ mod tests {
         let authz = AuthzContext {
             identity: Identity {
                 principal: owner.principal.clone(),
+                org_id: owner.org_id,
                 accessible_principals: accessible,
                 expires_at: None,
                 auth_epoch: 0,

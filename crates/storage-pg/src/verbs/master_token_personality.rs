@@ -96,7 +96,8 @@ async fn mint_under_lock(
     }
 
     let req = InstantiatePersonalityRequest {
-        owner: owner.clone(),
+        principal: owner.principal.clone(),
+        org_id: Some(owner.org_id),
         display_name: SHELL_AUTHOR_DISPLAY_NAME.into(),
         purpose: SHELL_AUTHOR_PURPOSE.into(),
     };

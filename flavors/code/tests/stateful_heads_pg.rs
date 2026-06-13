@@ -73,7 +73,8 @@ fn fresh_draft(owner: Owner, schema: &str, payload: &[u8]) -> EventDraft {
     EventDraft {
         source_id: SourceId::new("test/source"),
         source_batch_id: SourceBatchId::new(Uuid::now_v7()),
-        owner,
+        principal: owner.principal,
+        org_id: Some(owner.org_id),
         schema_id: SchemaId::new(schema.into()),
         schema_version: SchemaVersion::new(1),
         payload: payload.to_vec(),
@@ -276,7 +277,7 @@ async fn heads_only_returns_latest_per_natural_key() {
         // Heads-only query — engine populates stateful_heads from the
         // registered NK columns on FileRevisionV1.
         let req = QueryRequest {
-            owner: owner.clone(),
+            principal: owner.principal.clone(),
             entity_kind: None,
             schema_id: Some(SchemaId::new(FileRevisionV1::SCHEMA_ID.into())),
             supersession: SupersessionStatus::HeadsOnly,
@@ -313,7 +314,7 @@ async fn heads_only_returns_latest_per_natural_key() {
 
         // IncludeSuperseded — all 4 rows visible.
         let req_all = QueryRequest {
-            owner: owner.clone(),
+            principal: owner.principal.clone(),
             entity_kind: None,
             schema_id: Some(SchemaId::new(FileRevisionV1::SCHEMA_ID.into())),
             supersession: SupersessionStatus::IncludeSuperseded,
@@ -380,7 +381,7 @@ async fn heads_only_no_op_for_stateless_fact_schema() {
         }
 
         let req = QueryRequest {
-            owner: owner.clone(),
+            principal: owner.principal.clone(),
             entity_kind: None,
             schema_id: Some(SchemaId::new(CommitV1::SCHEMA_ID.into())),
             supersession: SupersessionStatus::HeadsOnly,
@@ -473,7 +474,7 @@ async fn owner_snapshot_heads_only_folds_all_stateful_fact_schemas() {
         )
         .await?;
 
-        let mut req = QueryRequest::for_owner(owner.clone());
+        let mut req = QueryRequest::for_principal(owner.principal.clone());
         req.limit = 100;
         let resp = engine
             .query(
@@ -537,7 +538,7 @@ async fn present_only_excludes_tombstone_head_without_reviving_previous_present(
         )
         .await?;
 
-        let mut req = QueryRequest::for_owner(owner.clone());
+        let mut req = QueryRequest::for_principal(owner.principal.clone());
         req.schema_id = Some(SchemaId::new(FileRevisionV1::SCHEMA_ID.into()));
         req.limit = 100;
         let resp = engine.query(&authz, &req).await?;
@@ -634,7 +635,7 @@ async fn present_only_snapshot_excludes_edges_to_tombstoned_heads() {
         .await?;
         let edge_id = insert_memory_edge(pg.pool(), &owner, active, deleted).await?;
 
-        let mut req = QueryRequest::for_owner(owner.clone());
+        let mut req = QueryRequest::for_principal(owner.principal.clone());
         req.limit = 100;
         let resp = engine
             .query(
@@ -699,7 +700,7 @@ async fn present_only_edge_id_hydration_excludes_edges_with_hidden_endpoint() {
         .await?;
         let edge_id = insert_memory_edge(pg.pool(), &owner, active, deleted).await?;
 
-        let mut req = QueryRequest::for_owner(owner.clone());
+        let mut req = QueryRequest::for_principal(owner.principal.clone());
         req.edge_ids = vec![edge_id];
         req.limit = 1;
         let resp = engine

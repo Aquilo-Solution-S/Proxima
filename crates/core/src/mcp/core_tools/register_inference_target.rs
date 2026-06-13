@@ -51,7 +51,8 @@ impl McpTool for RegisterInferenceTargetTool {
                 .map_err(|e| McpToolError::InvalidInput(format!("config: {e}")))?;
             let audit_config = InferenceTargetConfigSnapshot::from(&config);
             let req = RegisterInferenceTargetRequest {
-                owner: ctx.owner.clone(),
+                principal: ctx.owner.principal.clone(),
+                org_id: None,
                 target_ref: target_ref.clone(),
                 config,
             };

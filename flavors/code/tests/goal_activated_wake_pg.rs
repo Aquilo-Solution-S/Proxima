@@ -21,9 +21,10 @@ use proxima_core::wake::target_adapter::{
     TargetOutcomeKind,
 };
 use proxima_core::{
-    BindInferenceTierRequest, CORE_AUTHORED_RELATION, CORE_DERIVED_FROM_RELATION,
-    InferenceTargetConfig, MistralChatConfig, ModelTier, OrgId, Owner, PerspectivePayload,
-    Principal, RegisterInferenceTargetRequest, UserId, WakeEntryAuthoredBy, WakeEntryTriggerKind,
+    AuthPath, AuthzContext, BindInferenceTierRequest, CORE_AUTHORED_RELATION,
+    CORE_DERIVED_FROM_RELATION, InferenceTargetConfig, MistralChatConfig, ModelTier, OrgId, Owner,
+    PerspectivePayload, Principal, RegisterInferenceTargetRequest, UserId, WakeEntryAuthoredBy,
+    WakeEntryTriggerKind,
 };
 use proxima_mcp_server::{McpEdgeAuth, McpToolHost};
 use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
@@ -210,8 +211,10 @@ async fn goal_activated_fact_wakes_substrate_executor_and_emits_perspective()
             }))
             .await;
 
+        let authz = AuthzContext::single_owner(&owner, AuthPath::System);
         pg.register_inference_target(&RegisterInferenceTargetRequest {
-            owner: owner.clone(),
+            principal: owner.principal.clone(),
+            org_id: Some(owner.org_id),
             target_ref: "test/scripted-executor".into(),
             config: InferenceTargetConfig::MistralChat(MistralChatConfig {
                 base_url: "http://127.0.0.1:9".into(),
@@ -226,18 +229,23 @@ async fn goal_activated_fact_wakes_substrate_executor_and_emits_perspective()
         })
         .await?;
         pg.bind_inference_tier(&BindInferenceTierRequest {
-            owner: owner.clone(),
+            principal: owner.principal.clone(),
+            org_id: Some(owner.org_id),
             tier: ModelTier::Standard,
             target_ref: "test/scripted-executor".into(),
         })
         .await?;
 
         let executor = engine
-            .instantiate_personality(InstantiatePersonalityRequest {
-                owner: owner.clone(),
-                display_name: "M2 Executor".into(),
-                purpose: "Smoke-test goal activation wake plumbing".into(),
-            })
+            .instantiate_personality(
+                &authz,
+                InstantiatePersonalityRequest {
+                    principal: owner.principal.clone(),
+                    org_id: None,
+                    display_name: "M2 Executor".into(),
+                    purpose: "Smoke-test goal activation wake plumbing".into(),
+                },
+            )
             .await?;
         let wake_entry = WakeEntryDraft::new(
             Uuid::now_v7(),
@@ -253,7 +261,8 @@ async fn goal_activated_fact_wakes_substrate_executor_and_emits_perspective()
             1,
         )?;
         pg.set_wake_entries(&SetWakeEntriesRequest {
-            owner: owner.clone(),
+            principal: owner.principal.clone(),
+            org_id: Some(owner.org_id),
             personality_instance_id: executor.instance_id,
             entries: vec![wake_entry.clone()],
         })

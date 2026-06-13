@@ -17,12 +17,13 @@ use futures_util::Stream;
 use tokio::time::{Instant, Interval, Sleep};
 
 use crate::auth::{AuthError, Credentials};
-use crate::{Owner, Principal};
+use crate::{OrgId, Owner, Principal};
 
 /// WHO: the authorization currency for owner scoping.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Identity {
     pub principal: Principal,
+    pub org_id: OrgId,
     pub accessible_principals: HashSet<Principal>,
     /// Streams terminate past this; `None` = no expiry.
     pub expires_at: Option<SystemTime>,
@@ -32,8 +33,8 @@ pub struct Identity {
 
 impl Identity {
     #[must_use]
-    pub fn can_access_owner(&self, owner: &Owner) -> bool {
-        self.accessible_principals.contains(&owner.principal)
+    pub fn can_access_principal(&self, principal: &Principal) -> bool {
+        self.accessible_principals.contains(principal)
     }
 }
 
@@ -153,6 +154,14 @@ pub struct AuthzContext {
 }
 
 impl AuthzContext {
+    #[must_use]
+    pub fn scoped_owner(&self, principal: Principal) -> Owner {
+        Owner {
+            principal,
+            org_id: self.identity.org_id,
+        }
+    }
+
     /// Self-scoped, full-capability context for trusted in-process
     /// surfaces: the desktop shell's IPC commands, embedded
     /// single-owner hosts, the dev-only gRPC service, and tests.
@@ -166,6 +175,7 @@ impl AuthzContext {
         Self {
             identity: Identity {
                 principal: owner.principal.clone(),
+                org_id: owner.org_id,
                 accessible_principals: principals,
                 expires_at: None,
                 auth_epoch: 0,
@@ -380,6 +390,7 @@ mod tests {
         accessible_principals.insert(principal.clone());
         Identity {
             principal,
+            org_id: OrgId::new(uuid::Uuid::nil()),
             accessible_principals,
             expires_at,
             auth_epoch,
@@ -426,7 +437,7 @@ mod tests {
         let ctx = AuthzContext::single_owner(&o, AuthPath::System);
 
         assert_eq!(ctx.auth_path, AuthPath::System);
-        assert!(ctx.identity.can_access_owner(&o));
+        assert!(ctx.identity.can_access_principal(&o.principal));
         assert!(ctx.capabilities.roles.has(Role::Admin));
         assert!(ctx.identity.expires_at.is_none());
     }

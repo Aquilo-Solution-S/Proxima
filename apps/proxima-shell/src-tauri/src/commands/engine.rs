@@ -16,9 +16,9 @@ use proxima_core::verbs::subscribe::SubscribeRequest;
 use proxima_core::{
     AuthzContext, CORE_INSPIRES_RELATION, ChangeEvent, EdgeAuthorshipKind, Engine, EntityKind,
     EntityRef, FactPayload, GoalId, ListWakeInvocationsRequest, MemoryId, Owner,
-    OwnerPrincipalKind, PersonalityInstanceId, PersonalityInstanceRow, RevalidationConfig,
-    SchemaId, SchemaVersion, SourceBatchId, SourceId, WakeInvocationLogRow, WakeInvocationRow,
-    revalidate_stream,
+    OwnerPrincipalKind, PersonalityInstanceId, PersonalityInstanceRow, Principal,
+    RevalidationConfig, Role, SchemaId, SchemaVersion, SourceBatchId, SourceId,
+    WakeInvocationLogRow, WakeInvocationRow, revalidate_stream,
 };
 use proxima_flavor_goal::GoalActivatedV1;
 use proxima_storage_pg::PgStorage;
@@ -33,7 +33,7 @@ const GOAL_LIFECYCLE_CITATION_MAPPING_SCHEMA: &str = "proxima-goal/lifecycle-who
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct InstantiatePersonalityTs {
-    pub owner: Owner,
+    pub principal: Principal,
     pub display_name: String,
     pub purpose: String,
 }
@@ -45,14 +45,14 @@ pub struct InstantiatePersonalityOutcomeTs {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct ListPersonalityInstancesTs {
-    pub owner: Owner,
+    pub principal: Principal,
     #[serde(default)]
     pub include_tombstoned: bool,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct TombstonePersonalityTs {
-    pub owner: Owner,
+    pub principal: Principal,
     pub personality_instance_id: String,
 }
 
@@ -148,7 +148,7 @@ pub struct WakeEntryDraftTs {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct SetWakeEntriesTs {
-    pub owner: Owner,
+    pub principal: Principal,
     pub personality_instance_id: String,
     pub entries: Vec<WakeEntryDraftTs>,
 }
@@ -160,7 +160,7 @@ pub struct SetWakeEntriesOutcomeTs {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct ListWakeInvocationsTs {
-    pub owner: Owner,
+    pub principal: Principal,
     pub personality_instance_id: String,
     pub wake_entry_id: Option<String>,
     pub triggering_memory_id: Option<String>,
@@ -170,7 +170,7 @@ pub struct ListWakeInvocationsTs {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct GoalReactivateTs {
-    pub owner: Owner,
+    pub principal: Principal,
     pub goal_id: String,
     pub target_personality_id: Option<String>,
 }
@@ -217,6 +217,22 @@ pub async fn schema(engine: State<'_, Arc<Engine>>) -> Result<SchemaResponse, Pr
         async move { Ok(engine.schema(&SchemaRequest)) },
     )
     .await
+}
+
+fn authorize_scoped_owner(
+    authz: &AuthzContext,
+    principal: Principal,
+    role: Role,
+) -> Result<Owner, ProtocolError> {
+    if !authz.identity.can_access_principal(&principal) {
+        return Err(ProtocolError::forbidden(
+            "principal cannot access requested principal",
+        ));
+    }
+    if !authz.capabilities.roles.has(role) {
+        return Err(ProtocolError::forbidden(role.denied_message()));
+    }
+    Ok(authz.scoped_owner(principal))
 }
 
 /// FE-facing projection of the engine `MemoryRow`. v1 keeps the
@@ -358,11 +374,13 @@ pub async fn goal_write(
 #[specta::specta]
 pub async fn goal_reactivate(
     engine: State<'_, Arc<Engine>>,
+    authz: State<'_, AuthzContext>,
     pg: State<'_, Arc<PgStorage>>,
     req: GoalReactivateTs,
 ) -> Result<EventIngestOutcome, ProtocolError> {
     let req_bytes = crate::perf::ipc::req_size(&req);
     crate::perf::ipc::record("goal_reactivate", req_bytes, async move {
+        let owner = authorize_scoped_owner(&authz, req.principal, Role::GraphWrite)?;
         let goal_id = uuid::Uuid::parse_str(&req.goal_id)
             .map_err(|e| ProtocolError::invalid_argument("goal_id", e.to_string()))?;
         let mut tx = pg
@@ -371,11 +389,11 @@ pub async fn goal_reactivate(
             .await
             .map_err(|e| ProtocolError::internal(e.to_string()))?;
         let (schema_id, title, evidence_count) =
-            active_goal_activation_input(&mut tx, &req.owner, GoalId::new(goal_id)).await?;
+            active_goal_activation_input(&mut tx, &owner, GoalId::new(goal_id)).await?;
         ensure_goal_planner_assignment(
             &engine,
             &mut tx,
-            &req.owner,
+            &owner,
             goal_id,
             req.target_personality_id.as_deref(),
         )
@@ -388,7 +406,7 @@ pub async fn goal_reactivate(
             accepted_at: activated_at,
             evidence_count,
         };
-        let outcome = ingest_goal_activated_fact(&mut tx, &req.owner, &payload).await?;
+        let outcome = ingest_goal_activated_fact(&mut tx, &owner, &payload).await?;
         tx.commit()
             .await
             .map_err(|e| ProtocolError::internal(e.to_string()))?;
@@ -401,12 +419,13 @@ pub async fn goal_reactivate(
 #[specta::specta]
 pub async fn list_personality_instances(
     engine: State<'_, Arc<Engine>>,
+    authz: State<'_, AuthzContext>,
     req: ListPersonalityInstancesTs,
 ) -> Result<Vec<PersonalityInstanceTs>, ProtocolError> {
     let req_bytes = crate::perf::ipc::req_size(&req);
     crate::perf::ipc::record("list_personality_instances", req_bytes, async move {
         let rows = engine
-            .list_personality_instances(&req.owner, req.include_tombstoned)
+            .list_personality_instances(&authz, &req.principal, req.include_tombstoned)
             .await?;
         rows.into_iter()
             .map(|row| Ok::<_, ProtocolError>(PersonalityInstanceTs::from_row(row)))
@@ -419,6 +438,7 @@ pub async fn list_personality_instances(
 #[specta::specta]
 pub async fn list_wake_invocations(
     engine: State<'_, Arc<Engine>>,
+    authz: State<'_, AuthzContext>,
     req: ListWakeInvocationsTs,
 ) -> Result<Vec<WakeInvocationTs>, ProtocolError> {
     let req_bytes = crate::perf::ipc::req_size(&req);
@@ -445,14 +465,18 @@ pub async fn list_wake_invocations(
             .transpose()
             .map_err(|e| ProtocolError::internal(format!("change_event_seq: {e}")))?;
         let rows = engine
-            .list_wake_invocations(ListWakeInvocationsRequest {
-                owner: req.owner,
-                personality_instance_id: PersonalityInstanceId::new(instance_id),
-                wake_entry_id,
-                triggering_memory_id,
-                change_event_seq,
-                limit: req.limit,
-            })
+            .list_wake_invocations(
+                &authz,
+                ListWakeInvocationsRequest {
+                    principal: req.principal,
+                    org_id: None,
+                    personality_instance_id: PersonalityInstanceId::new(instance_id),
+                    wake_entry_id,
+                    triggering_memory_id,
+                    change_event_seq,
+                    limit: req.limit,
+                },
+            )
             .await?;
         Ok(rows.into_iter().map(WakeInvocationTs::from_row).collect())
     })
@@ -463,16 +487,21 @@ pub async fn list_wake_invocations(
 #[specta::specta]
 pub async fn instantiate_personality(
     engine: State<'_, Arc<Engine>>,
+    authz: State<'_, AuthzContext>,
     req: InstantiatePersonalityTs,
 ) -> Result<InstantiatePersonalityOutcomeTs, ProtocolError> {
     let req_bytes = crate::perf::ipc::req_size(&req);
     crate::perf::ipc::record("instantiate_personality", req_bytes, async move {
         let out = engine
-            .instantiate_personality(proxima_core::InstantiatePersonalityRequest {
-                owner: req.owner,
-                display_name: req.display_name,
-                purpose: req.purpose,
-            })
+            .instantiate_personality(
+                &authz,
+                proxima_core::InstantiatePersonalityRequest {
+                    principal: req.principal,
+                    org_id: None,
+                    display_name: req.display_name,
+                    purpose: req.purpose,
+                },
+            )
             .await?;
         Ok(InstantiatePersonalityOutcomeTs {
             instance_id: out.instance_id.into_inner().to_string(),
@@ -494,7 +523,8 @@ pub async fn set_wake_entries(
             .map_err(|e| ProtocolError::internal(format!("personality_instance_id: {e}")))?;
         let personality_instance_id = PersonalityInstanceId::new(instance_id);
         let core_req = proxima_core::SetWakeEntriesRequest {
-            owner: req.owner,
+            principal: req.principal,
+            org_id: None,
             personality_instance_id,
             entries: req
                 .entries
@@ -514,6 +544,7 @@ pub async fn set_wake_entries(
 #[specta::specta]
 pub async fn tombstone_personality(
     engine: State<'_, Arc<Engine>>,
+    authz: State<'_, AuthzContext>,
     req: TombstonePersonalityTs,
 ) -> Result<TombstonePersonalityOutcomeTs, ProtocolError> {
     let req_bytes = crate::perf::ipc::req_size(&req);
@@ -521,10 +552,14 @@ pub async fn tombstone_personality(
         let instance_id = uuid::Uuid::parse_str(&req.personality_instance_id)
             .map_err(|e| ProtocolError::internal(format!("personality_instance_id: {e}")))?;
         let out = engine
-            .tombstone_personality(proxima_core::TombstonePersonalityRequest {
-                owner: req.owner,
-                personality_instance_id: PersonalityInstanceId::new(instance_id),
-            })
+            .tombstone_personality(
+                &authz,
+                proxima_core::TombstonePersonalityRequest {
+                    principal: req.principal,
+                    org_id: None,
+                    personality_instance_id: PersonalityInstanceId::new(instance_id),
+                },
+            )
             .await?;
         Ok(TombstonePersonalityOutcomeTs {
             status: out.status,
@@ -818,7 +853,8 @@ async fn ingest_goal_activated_fact(
     let draft = EventDraft {
         source_id: SourceId::new(GOAL_LIFECYCLE_SOURCE_ID),
         source_batch_id: SourceBatchId::new(uuid::Uuid::now_v7()),
-        owner: owner.clone(),
+        principal: owner.principal.clone(),
+        org_id: Some(owner.org_id),
         schema_id: SchemaId::new(GoalActivatedV1::SCHEMA_ID.into()),
         schema_version: SchemaVersion::new(GoalActivatedV1::SCHEMA_VERSION),
         payload: payload_bytes,

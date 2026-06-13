@@ -166,7 +166,8 @@ pub async fn instantiate_personality(
     pool: &PgPool,
     req: &InstantiatePersonalityRequest,
 ) -> Result<InstantiatePersonalityResponse, StorageError> {
-    let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(&req.owner);
+    let owner = req.owner();
+    let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(&owner);
     let instance_id = uuid::Uuid::now_v7();
     let memory_id = uuid::Uuid::now_v7();
     let mut tx = pool.begin().await.map_err(map_err)?;

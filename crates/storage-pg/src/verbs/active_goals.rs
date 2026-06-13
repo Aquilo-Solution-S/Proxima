@@ -1,15 +1,15 @@
 use proxima_core::personality::ActiveGoalSummary;
 use proxima_core::verbs::goal_write::GoalState;
-use proxima_core::{GoalId, MemoryId, Owner, OwnerPrincipalKind, Principal, StorageError};
+use proxima_core::{GoalId, MemoryId, OwnerPrincipalKind, Principal, StorageError};
 use sqlx::PgPool;
 
 pub(crate) async fn list_active_goals(
     pool: &PgPool,
-    owner: &Owner,
+    principal: &Principal,
     self_perspective_memory_id: MemoryId,
     limit: usize,
 ) -> Result<Vec<ActiveGoalSummary>, StorageError> {
-    let (owner_kind, owner_principal_id) = owner_columns(owner);
+    let (owner_kind, owner_principal_id) = owner_columns(principal);
 
     // The goal-activated lifecycle Fact lives in the proxima-goal flavor's
     // sidecar schema. Probe for it so the substrate degrades gracefully
@@ -117,8 +117,8 @@ struct ActiveGoalRow {
     goal_activated_memory_id: Option<uuid::Uuid>,
 }
 
-fn owner_columns(owner: &Owner) -> (OwnerPrincipalKind, uuid::Uuid) {
-    match &owner.principal {
+fn owner_columns(principal: &Principal) -> (OwnerPrincipalKind, uuid::Uuid) {
+    match principal {
         Principal::User(user) => (OwnerPrincipalKind::User, user.into_inner()),
         Principal::Group(group) => (OwnerPrincipalKind::Group, group.into_inner()),
     }

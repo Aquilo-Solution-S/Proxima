@@ -57,7 +57,8 @@ impl McpTool for ProposeTool {
             let mut tx = ctx.pool.begin().await.map_err(map_storage)?;
             let evidence = validate_evidence_in_owner(&mut tx, &ctx, &args.evidence).await?;
             let draft = GoalDraft {
-                owner: ctx.owner.clone(),
+                principal: ctx.owner.principal.clone(),
+                org_id: Some(ctx.owner.org_id),
                 schema_id: encoded.schema_id.clone(),
                 schema_version: encoded.schema_version,
                 title: encoded.title.clone(),

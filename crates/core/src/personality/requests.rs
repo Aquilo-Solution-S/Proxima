@@ -9,16 +9,39 @@
 
 use uuid::Uuid;
 
-use crate::{MemoryId, Owner};
+use crate::{MemoryId, OrgId, Owner, Principal};
 
 use super::drafts::WakeEntryDraft;
 use super::personality::PersonalityInstanceId;
 
 #[derive(Debug, Clone)]
 pub struct InstantiatePersonalityRequest {
-    pub owner: Owner,
+    pub principal: Principal,
+    pub org_id: Option<OrgId>,
     pub display_name: String,
     pub purpose: String,
+}
+
+impl InstantiatePersonalityRequest {
+    /// Reconstructs the storage `Owner` after verb-layer stamping.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `stamp_owner` has not populated `org_id` before storage or hash use.
+    #[must_use]
+    pub fn owner(&self) -> Owner {
+        Owner {
+            principal: self.principal.clone(),
+            org_id: self
+                .org_id
+                .expect("InstantiatePersonalityRequest org_id must be stamped before storage use"),
+        }
+    }
+
+    pub fn stamp_owner(&mut self, stamped: Owner) {
+        self.principal = stamped.principal;
+        self.org_id = Some(stamped.org_id);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
@@ -28,9 +51,32 @@ pub struct InstantiatePersonalityResponse {
 
 #[derive(Debug, Clone)]
 pub struct SetWakeEntriesRequest {
-    pub owner: Owner,
+    pub principal: Principal,
+    pub org_id: Option<OrgId>,
     pub personality_instance_id: PersonalityInstanceId,
     pub entries: Vec<WakeEntryDraft>,
+}
+
+impl SetWakeEntriesRequest {
+    /// Reconstructs the storage `Owner` after verb-layer stamping.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `stamp_owner` has not populated `org_id` before storage or hash use.
+    #[must_use]
+    pub fn owner(&self) -> Owner {
+        Owner {
+            principal: self.principal.clone(),
+            org_id: self
+                .org_id
+                .expect("SetWakeEntriesRequest org_id must be stamped before storage use"),
+        }
+    }
+
+    pub fn stamp_owner(&mut self, stamped: Owner) {
+        self.principal = stamped.principal;
+        self.org_id = Some(stamped.org_id);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
@@ -40,8 +86,31 @@ pub struct SetWakeEntriesResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ListReadScopeRequest {
-    pub owner: Owner,
+    pub principal: Principal,
+    pub org_id: Option<OrgId>,
     pub reader_personality_instance_id: PersonalityInstanceId,
+}
+
+impl ListReadScopeRequest {
+    /// Reconstructs the storage `Owner` after verb-layer stamping.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `stamp_owner` has not populated `org_id` before storage or hash use.
+    #[must_use]
+    pub fn owner(&self) -> Owner {
+        Owner {
+            principal: self.principal.clone(),
+            org_id: self
+                .org_id
+                .expect("ListReadScopeRequest org_id must be stamped before storage use"),
+        }
+    }
+
+    pub fn stamp_owner(&mut self, stamped: Owner) {
+        self.principal = stamped.principal;
+        self.org_id = Some(stamped.org_id);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
@@ -51,9 +120,32 @@ pub struct ListReadScopeResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SetReadScopeRequest {
-    pub owner: Owner,
+    pub principal: Principal,
+    pub org_id: Option<OrgId>,
     pub reader_personality_instance_id: PersonalityInstanceId,
     pub readable_personality_instance_ids: Vec<PersonalityInstanceId>,
+}
+
+impl SetReadScopeRequest {
+    /// Reconstructs the storage `Owner` after verb-layer stamping.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `stamp_owner` has not populated `org_id` before storage or hash use.
+    #[must_use]
+    pub fn owner(&self) -> Owner {
+        Owner {
+            principal: self.principal.clone(),
+            org_id: self
+                .org_id
+                .expect("SetReadScopeRequest org_id must be stamped before storage use"),
+        }
+    }
+
+    pub fn stamp_owner(&mut self, stamped: Owner) {
+        self.principal = stamped.principal;
+        self.org_id = Some(stamped.org_id);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
@@ -63,8 +155,31 @@ pub struct SetReadScopeResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TombstonePersonalityRequest {
-    pub owner: Owner,
+    pub principal: Principal,
+    pub org_id: Option<OrgId>,
     pub personality_instance_id: PersonalityInstanceId,
+}
+
+impl TombstonePersonalityRequest {
+    /// Reconstructs the storage `Owner` after verb-layer stamping.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `stamp_owner` has not populated `org_id` before storage or hash use.
+    #[must_use]
+    pub fn owner(&self) -> Owner {
+        Owner {
+            principal: self.principal.clone(),
+            org_id: self
+                .org_id
+                .expect("TombstonePersonalityRequest org_id must be stamped before storage use"),
+        }
+    }
+
+    pub fn stamp_owner(&mut self, stamped: Owner) {
+        self.principal = stamped.principal;
+        self.org_id = Some(stamped.org_id);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
@@ -75,7 +190,8 @@ pub struct TombstonePersonalityResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ListWakeInvocationsRequest {
-    pub owner: Owner,
+    pub principal: Principal,
+    pub org_id: Option<OrgId>,
     pub personality_instance_id: PersonalityInstanceId,
     pub wake_entry_id: Option<Uuid>,
     pub triggering_memory_id: Option<MemoryId>,
@@ -83,15 +199,60 @@ pub struct ListWakeInvocationsRequest {
     pub limit: u16,
 }
 
+impl ListWakeInvocationsRequest {
+    /// Reconstructs the storage `Owner` after verb-layer stamping.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `stamp_owner` has not populated `org_id` before storage or hash use.
+    #[must_use]
+    pub fn owner(&self) -> Owner {
+        Owner {
+            principal: self.principal.clone(),
+            org_id: self
+                .org_id
+                .expect("ListWakeInvocationsRequest org_id must be stamped before storage use"),
+        }
+    }
+
+    pub fn stamp_owner(&mut self, stamped: Owner) {
+        self.principal = stamped.principal;
+        self.org_id = Some(stamped.org_id);
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReplayWakeEventsRequest {
-    pub owner: Owner,
+    pub principal: Principal,
+    pub org_id: Option<OrgId>,
     pub personality_instance_id: PersonalityInstanceId,
     pub wake_entry_id: Option<Uuid>,
     pub after_seq: Option<Uuid>,
     pub until_seq: Option<Uuid>,
     pub event_limit: u16,
     pub max_invocations: u16,
+}
+
+impl ReplayWakeEventsRequest {
+    /// Reconstructs the storage `Owner` after verb-layer stamping.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `stamp_owner` has not populated `org_id` before storage or hash use.
+    #[must_use]
+    pub fn owner(&self) -> Owner {
+        Owner {
+            principal: self.principal.clone(),
+            org_id: self
+                .org_id
+                .expect("ReplayWakeEventsRequest org_id must be stamped before storage use"),
+        }
+    }
+
+    pub fn stamp_owner(&mut self, stamped: Owner) {
+        self.principal = stamped.principal;
+        self.org_id = Some(stamped.org_id);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]

@@ -16,7 +16,7 @@ export async function loadEmb(): Promise<EmbeddingModelRecord[]> {
 export async function loadInferenceTargets(
   owner: Owner,
 ): Promise<InferenceTargetTs[]> {
-  const r = await commands.listInferenceTargets({ owner });
+  const r = await commands.listInferenceTargets({ principal: owner.principal });
   if (r.status === "error") throw r.error;
   return r.data;
 }
@@ -24,7 +24,9 @@ export async function loadInferenceTargets(
 export async function loadInferenceTierBindings(
   owner: Owner,
 ): Promise<InferenceTierBindingTs[]> {
-  const r = await commands.listInferenceTierBindings({ owner });
+  const r = await commands.listInferenceTierBindings({
+    principal: owner.principal,
+  });
   if (r.status === "error") throw r.error;
   return r.data;
 }

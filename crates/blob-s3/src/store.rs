@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use aws_sdk_s3::presigning::PresigningConfig;
-use proxima_core::{Owner, OwnerPrincipalKind, Principal, UPLOADED_BLOB_SCHEMA_ID};
+use proxima_core::{OrgId, Owner, OwnerPrincipalKind, Principal, UPLOADED_BLOB_SCHEMA_ID};
 use sha2::{Digest, Sha256};
 use sqlx::Row;
 use time::OffsetDateTime;
@@ -15,7 +15,10 @@ use crate::error::BlobError;
 /// Tauri/TS-compatible cited-blob upload request.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct CitedBlobUploadPrepareTs {
-    pub owner: Owner,
+    pub principal: Principal,
+    #[serde(skip)]
+    #[specta(skip)]
+    pub org_id: Option<OrgId>,
     pub filename: String,
     pub mime: String,
     pub byte_len: u64,
@@ -40,7 +43,10 @@ pub struct PresignedHeaderTs {
 /// Tauri/TS-compatible cited-blob completion request.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct CitedBlobUploadCompleteTs {
-    pub owner: Owner,
+    pub principal: Principal,
+    #[serde(skip)]
+    #[specta(skip)]
+    pub org_id: Option<OrgId>,
     pub upload_id: String,
 }
 
@@ -60,7 +66,10 @@ pub struct CitedBlobUploadCompleteOutcomeTs {
 /// Tauri/TS-compatible cited-blob abort request.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct CitedBlobUploadAbortTs {
-    pub owner: Owner,
+    pub principal: Principal,
+    #[serde(skip)]
+    #[specta(skip)]
+    pub org_id: Option<OrgId>,
     pub upload_id: String,
 }
 
@@ -73,7 +82,10 @@ pub struct CitedBlobUploadAbortOutcomeTs {
 /// Tauri/TS-compatible cited-blob read URL request.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct CitedBlobReadUrlTs {
-    pub owner: Owner,
+    pub principal: Principal,
+    #[serde(skip)]
+    #[specta(skip)]
+    pub org_id: Option<OrgId>,
     pub cited_object_id: String,
 }
 
@@ -82,6 +94,82 @@ pub struct CitedBlobReadUrlTs {
 pub struct CitedBlobReadUrlOutcomeTs {
     pub read_url: String,
     pub expires_at: String,
+}
+
+fn request_owner(principal: &Principal, org_id: Option<OrgId>, name: &str) -> Owner {
+    Owner {
+        principal: principal.clone(),
+        org_id: org_id
+            .unwrap_or_else(|| panic!("{name} org_id must be stamped before storage/hash use")),
+    }
+}
+
+impl CitedBlobUploadPrepareTs {
+    /// Reconstructs the storage `Owner` after verb-layer stamping.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `stamp_owner` has not populated `org_id` before storage or hash use.
+    #[must_use]
+    pub fn owner(&self) -> Owner {
+        request_owner(&self.principal, self.org_id, "CitedBlobUploadPrepareTs")
+    }
+
+    pub fn stamp_owner(&mut self, stamped: Owner) {
+        self.principal = stamped.principal;
+        self.org_id = Some(stamped.org_id);
+    }
+}
+
+impl CitedBlobUploadCompleteTs {
+    /// Reconstructs the storage `Owner` after verb-layer stamping.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `stamp_owner` has not populated `org_id` before storage or hash use.
+    #[must_use]
+    pub fn owner(&self) -> Owner {
+        request_owner(&self.principal, self.org_id, "CitedBlobUploadCompleteTs")
+    }
+
+    pub fn stamp_owner(&mut self, stamped: Owner) {
+        self.principal = stamped.principal;
+        self.org_id = Some(stamped.org_id);
+    }
+}
+
+impl CitedBlobUploadAbortTs {
+    /// Reconstructs the storage `Owner` after verb-layer stamping.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `stamp_owner` has not populated `org_id` before storage or hash use.
+    #[must_use]
+    pub fn owner(&self) -> Owner {
+        request_owner(&self.principal, self.org_id, "CitedBlobUploadAbortTs")
+    }
+
+    pub fn stamp_owner(&mut self, stamped: Owner) {
+        self.principal = stamped.principal;
+        self.org_id = Some(stamped.org_id);
+    }
+}
+
+impl CitedBlobReadUrlTs {
+    /// Reconstructs the storage `Owner` after verb-layer stamping.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `stamp_owner` has not populated `org_id` before storage or hash use.
+    #[must_use]
+    pub fn owner(&self) -> Owner {
+        request_owner(&self.principal, self.org_id, "CitedBlobReadUrlTs")
+    }
+
+    pub fn stamp_owner(&mut self, stamped: Owner) {
+        self.principal = stamped.principal;
+        self.org_id = Some(stamped.org_id);
+    }
 }
 
 /// Cited-blob upload/read service over one Postgres pool and one
@@ -109,8 +197,9 @@ impl CitedBlobStore {
         req: CitedBlobUploadPrepareTs,
     ) -> Result<CitedBlobUploadPrepareOutcomeTs, BlobError> {
         validate_prepare(&req)?;
+        let owner = req.owner();
         let upload_id = Uuid::now_v7();
-        let owner_hash = owner_hash_hex(&req.owner);
+        let owner_hash = owner_hash_hex(&owner);
         let object_key = pending_object_key(&owner_hash, upload_id);
         let expires_at = OffsetDateTime::now_utc()
             + time::Duration::seconds(
@@ -126,7 +215,7 @@ impl CitedBlobStore {
             .await
             .map_err(|e| BlobError::S3(format!("prepare upload URL failed: {e}")))?;
 
-        let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(&req.owner);
+        let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(&owner);
         sqlx::query(
             "INSERT INTO proxima_core.cited_object_uploads \
                 (owner_principal_kind, owner_principal_id, owner_org_id, upload_id, \
@@ -178,8 +267,9 @@ impl CitedBlobStore {
         &self,
         req: CitedBlobUploadCompleteTs,
     ) -> Result<CitedBlobUploadCompleteOutcomeTs, BlobError> {
+        let owner = req.owner();
         let upload_id = parse_uuid(&req.upload_id)?;
-        let row = load_upload(&self.pool, &req.owner, upload_id).await?;
+        let row = load_upload(&self.pool, &owner, upload_id).await?;
         match row.status.as_str() {
             "completed" => {
                 let Some(cited_object_id) = row.cited_object_id else {
@@ -187,7 +277,7 @@ impl CitedBlobStore {
                         "completed upload is missing cited_object_id".into(),
                     ));
                 };
-                return load_completed_blob(&self.pool, &req.owner, cited_object_id, true).await;
+                return load_completed_blob(&self.pool, &owner, cited_object_id, true).await;
             }
             "aborted" => {
                 return Err(BlobError::State("upload is aborted".into()));
@@ -201,7 +291,7 @@ impl CitedBlobStore {
             }
         }
         if row.expires_at < OffsetDateTime::now_utc() {
-            mark_upload_expired(&self.pool, &req.owner, upload_id).await?;
+            mark_upload_expired(&self.pool, &owner, upload_id).await?;
             return Err(BlobError::State("upload is expired".into()));
         }
 
@@ -223,7 +313,7 @@ impl CitedBlobStore {
         }
 
         let streamed = Box::pin(hash_uploaded_object(object.body, row.expected_byte_len)).await?;
-        let owner_hash = owner_hash_hex(&req.owner);
+        let owner_hash = owner_hash_hex(&owner);
         let canonical_key = canonical_object_key(&owner_hash, &streamed.blake3_hex);
         let copy_source = format!("{}/{}", row.bucket, row.object_key);
         let copy_result = client
@@ -249,7 +339,7 @@ impl CitedBlobStore {
 
         let completed = persist_completed_blob(
             &self.pool,
-            &req.owner,
+            &owner,
             upload_id,
             &row,
             &canonical_key,
@@ -259,7 +349,7 @@ impl CitedBlobStore {
         .await?;
         load_completed_blob(
             &self.pool,
-            &req.owner,
+            &owner,
             completed.cited_object_id,
             completed.idempotent_replay,
         )
@@ -275,8 +365,9 @@ impl CitedBlobStore {
         &self,
         req: CitedBlobUploadAbortTs,
     ) -> Result<CitedBlobUploadAbortOutcomeTs, BlobError> {
+        let owner = req.owner();
         let upload_id = parse_uuid(&req.upload_id)?;
-        let row = load_upload(&self.pool, &req.owner, upload_id).await?;
+        let row = load_upload(&self.pool, &owner, upload_id).await?;
         if row.status == "completed" {
             return Ok(CitedBlobUploadAbortOutcomeTs { aborted: false });
         }
@@ -293,7 +384,7 @@ impl CitedBlobStore {
             .await
             .map_err(|e| BlobError::S3(format!("delete pending upload failed: {e}")))?;
 
-        let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(&req.owner);
+        let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(&owner);
         sqlx::query(
             "UPDATE proxima_core.cited_object_uploads \
                 SET status = 'aborted', aborted_at = now() \
@@ -323,8 +414,9 @@ impl CitedBlobStore {
         &self,
         req: CitedBlobReadUrlTs,
     ) -> Result<CitedBlobReadUrlOutcomeTs, BlobError> {
+        let owner = req.owner();
         let cited_object_id = parse_uuid(&req.cited_object_id)?;
-        let row = load_blob_location(&self.pool, &req.owner, cited_object_id).await?;
+        let row = load_blob_location(&self.pool, &owner, cited_object_id).await?;
         let client = self.config.client().await?;
         let expires_at = OffsetDateTime::now_utc()
             + time::Duration::seconds(

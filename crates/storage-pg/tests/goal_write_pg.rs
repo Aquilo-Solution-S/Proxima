@@ -42,7 +42,8 @@ fn schemas_for_test() -> Vec<SchemaInfo> {
 
 fn fresh_draft(owner: &Owner, request_id: String) -> GoalDraft {
     GoalDraft {
-        owner: owner.clone(),
+        principal: owner.principal.clone(),
+        org_id: Some(owner.org_id),
         schema_id: SchemaId::new("test/goal_blob".into()),
         schema_version: SchemaVersion::new(1),
         title: "Test goal".to_string(),
@@ -58,7 +59,8 @@ fn fresh_draft(owner: &Owner, request_id: String) -> GoalDraft {
 
 fn draft_with_parent(owner: &Owner, request_id: String, parent: GoalId) -> GoalDraft {
     GoalDraft {
-        owner: owner.clone(),
+        principal: owner.principal.clone(),
+        org_id: Some(owner.org_id),
         schema_id: SchemaId::new("test/goal_blob".into()),
         schema_version: SchemaVersion::new(1),
         title: "Test goal".to_string(),
@@ -177,6 +179,7 @@ async fn goal_write_writes_goal_and_change_event() {
 }
 
 #[tokio::test]
+#[expect(clippy::too_many_lines, reason = "linear supersession storage fixture")]
 async fn goal_supersede_writes_new_goal() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     create_db(&db_name).await.expect("PG required for tests");
@@ -208,7 +211,8 @@ async fn goal_supersede_writes_new_goal() {
 
         // Supersede with Paused state.
         let supersede_draft = GoalDraft {
-            owner: owner.clone(),
+            principal: owner.principal.clone(),
+            org_id: Some(owner.org_id),
             schema_id: SchemaId::new("test/goal_blob".into()),
             schema_version: SchemaVersion::new(1),
             title: "Test goal".to_string(),
