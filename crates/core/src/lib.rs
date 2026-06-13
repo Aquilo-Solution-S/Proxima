@@ -64,6 +64,7 @@ pub use secrets::*;
 pub use storage::*;
 
 // Re-export verb modules for convenience.
+pub use verbs::event_ingest::{AuthorizedEventIngest, EventDraft, EventIngestOutcome};
 pub use verbs::*;
 
 // Re-export subscribe types explicitly for external use.

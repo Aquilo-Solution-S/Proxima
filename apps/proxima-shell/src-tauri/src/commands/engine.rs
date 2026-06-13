@@ -17,13 +17,13 @@ use proxima_core::{
     AuthzContext, CORE_INSPIRES_RELATION, ChangeEvent, EdgeAuthorshipKind, Engine, EntityKind,
     EntityRef, FactPayload, GoalId, ListWakeInvocationsRequest, MemoryId, Owner,
     OwnerPrincipalKind, PersonalityInstanceId, PersonalityInstanceRow, Principal,
-    RevalidationConfig, Role, SchemaId, SchemaVersion, SourceBatchId, SourceId,
+    RevalidationConfig, Role, SchemaId, SchemaVersion, SourceBatchId, SourceId, StorageError,
     WakeInvocationLogRow, WakeInvocationRow, revalidate_stream,
 };
 use proxima_flavor_goal::GoalActivatedV1;
 use proxima_storage_pg::PgStorage;
 use proxima_storage_pg::verbs::edge_append::{EdgeDraft, append_edge_in_tx};
-use proxima_storage_pg::verbs::event_ingest::ingest_event_in_tx;
+use proxima_storage_pg::verbs::event_ingest::ingest_event_with_sidecar_in_tx;
 use tauri::State;
 use tauri::ipc::Channel;
 
@@ -406,7 +406,8 @@ pub async fn goal_reactivate(
             accepted_at: activated_at,
             evidence_count,
         };
-        let outcome = ingest_goal_activated_fact(&mut tx, &owner, &payload).await?;
+        let outcome =
+            ingest_goal_activated_fact(&engine, &authz, &mut tx, &owner, &payload).await?;
         tx.commit()
             .await
             .map_err(|e| ProtocolError::internal(e.to_string()))?;
@@ -841,6 +842,8 @@ async fn goal_inspires_target(
 }
 
 async fn ingest_goal_activated_fact(
+    engine: &Engine,
+    authz: &AuthzContext,
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     owner: &Owner,
     payload: &GoalActivatedV1,
@@ -870,26 +873,33 @@ async fn ingest_goal_activated_fact(
             schema_version: SchemaVersion::new(1),
         },
     };
-    let outcome = ingest_event_in_tx(tx, &draft)
-        .await
-        .map_err(|e| ProtocolError::internal(e.to_string()))?;
-    if !outcome.idempotent_replay {
-        sqlx::query(
-            "INSERT INTO proxima_goal.goal_activated_v1
-                (memory_id, goal_id, schema_id, title, accepted_at, evidence_count)
-             VALUES ($1, $2, $3, $4, $5, $6)",
-        )
-        .bind(outcome.memory_id.into_inner())
-        .bind(payload.goal_id)
-        .bind(&payload.schema_id)
-        .bind(&payload.title)
-        .bind(payload.accepted_at)
-        .bind(i32::try_from(payload.evidence_count).unwrap_or(i32::MAX))
-        .execute(&mut **tx)
-        .await
-        .map_err(|e| ProtocolError::internal(e.to_string()))?;
-    }
-    Ok(outcome)
+    let authorized = engine.authorize_event_ingest(authz, Role::GraphWrite, draft)?;
+    let goal_id = payload.goal_id;
+    let schema_id = payload.schema_id.clone();
+    let title = payload.title.clone();
+    let accepted_at = payload.accepted_at;
+    let evidence_count = i32::try_from(payload.evidence_count).unwrap_or(i32::MAX);
+    ingest_event_with_sidecar_in_tx(tx, &authorized, |tx, outcome| {
+        Box::pin(async move {
+            sqlx::query(
+                "INSERT INTO proxima_goal.goal_activated_v1
+                    (memory_id, goal_id, schema_id, title, accepted_at, evidence_count)
+                 VALUES ($1, $2, $3, $4, $5, $6)",
+            )
+            .bind(outcome.memory_id.into_inner())
+            .bind(goal_id)
+            .bind(schema_id)
+            .bind(title)
+            .bind(accepted_at)
+            .bind(evidence_count)
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| StorageError::Internal(e.to_string()))?;
+            Ok(())
+        })
+    })
+    .await
+    .map_err(|e| ProtocolError::internal(e.to_string()))
 }
 
 fn owner_columns(owner: &Owner) -> (OwnerPrincipalKind, uuid::Uuid, uuid::Uuid) {
