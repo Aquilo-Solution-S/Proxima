@@ -1,8 +1,6 @@
 //! PG coverage for `set_wake_entries_within` R-M-W primitive.
 
-mod common;
-
-use common::{drop_db, fresh_pg};
+use crate::common::{drop_db, fresh_pg};
 use proxima_core::storage::Storage;
 use proxima_core::{
     InstantiatePersonalityRequest, ModelTier, OrgId, Owner, Principal, UserId, WakeEntryAuthoredBy,

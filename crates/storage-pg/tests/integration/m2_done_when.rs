@@ -2,9 +2,7 @@
 //! > connection, reconnects with `last_seq`, and observes no
 //! > missed or duplicated events.
 
-mod common;
-
-use common::{create_db, db_url, drop_db};
+use crate::common::{create_db, db_url, drop_db};
 use std::sync::Arc;
 use std::time::Duration;
 

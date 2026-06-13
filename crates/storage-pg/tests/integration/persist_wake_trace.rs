@@ -1,8 +1,6 @@
 //! Integration tests for the `persist_wake_trace` verb.
 
-mod common;
-
-use common::personality::{TEST_PERSPECTIVE_SCHEMA, apply_test_schemas, ingest_test_fact};
+use crate::common::personality::{TEST_PERSPECTIVE_SCHEMA, apply_test_schemas, ingest_test_fact};
 use proxima_core::flavor::FlavorRegistry;
 use proxima_core::verbs::goal_write::{GoalAuthorship, GoalDraft, GoalState};
 use proxima_core::verbs::persist_wake_trace::WakeTracePersistInput;
@@ -18,7 +16,7 @@ const WAKE_TRACE_JSONL_SCHEMA: &str = "proxima-core/wake-trace-jsonl-v1";
 
 #[tokio::test]
 async fn persist_writes_fact_jsonl_citation_sidecars_and_authored_edge() {
-    let Some((pg, db_name)) = common::fresh_pg().await else {
+    let Some((pg, db_name)) = crate::common::fresh_pg().await else {
         return;
     };
 
@@ -26,7 +24,7 @@ async fn persist_writes_fact_jsonl_citation_sidecars_and_authored_edge() {
         pg.run_migrations().await?;
         apply_test_schemas(pg.pool()).await?;
 
-        let owner = common::owner_fixture();
+        let owner = crate::common::owner_fixture();
         let registry = FlavorRegistry::default().freeze();
         let personality_instance_id = Uuid::now_v7();
         let root_p = insert_test_perspective_memory(pg.pool(), &owner).await?;
@@ -108,13 +106,13 @@ async fn persist_writes_fact_jsonl_citation_sidecars_and_authored_edge() {
     }
     .await;
 
-    let _ = common::drop_db(&db_name).await;
+    let _ = crate::common::drop_db(&db_name).await;
     result.expect("persist wake trace writes required rows");
 }
 
 #[tokio::test]
 async fn active_goal_ids_emit_goal_kind_edges_targeting_goal_id() {
-    let Some((pg, db_name)) = common::fresh_pg().await else {
+    let Some((pg, db_name)) = crate::common::fresh_pg().await else {
         return;
     };
 
@@ -122,7 +120,7 @@ async fn active_goal_ids_emit_goal_kind_edges_targeting_goal_id() {
         pg.run_migrations().await?;
         apply_test_schemas(pg.pool()).await?;
 
-        let owner = common::owner_fixture();
+        let owner = crate::common::owner_fixture();
         let registry = FlavorRegistry::default().freeze();
         let goal_a = insert_test_goal(&pg, &owner, "goal-a").await?;
         let goal_b = insert_test_goal(&pg, &owner, "goal-b").await?;
@@ -161,13 +159,13 @@ async fn active_goal_ids_emit_goal_kind_edges_targeting_goal_id() {
     }
     .await;
 
-    let _ = common::drop_db(&db_name).await;
+    let _ = crate::common::drop_db(&db_name).await;
     result.expect("goal provenance edges target Goal entities");
 }
 
 #[tokio::test]
 async fn idempotent_replay_returns_same_ids() {
-    let Some((pg, db_name)) = common::fresh_pg().await else {
+    let Some((pg, db_name)) = crate::common::fresh_pg().await else {
         return;
     };
 
@@ -175,7 +173,7 @@ async fn idempotent_replay_returns_same_ids() {
         pg.run_migrations().await?;
         apply_test_schemas(pg.pool()).await?;
 
-        let owner = common::owner_fixture();
+        let owner = crate::common::owner_fixture();
         let registry = FlavorRegistry::default().freeze();
         let root_p = insert_test_perspective_memory(pg.pool(), &owner).await?;
         let trigger = ingest_test_fact(&pg, &owner, "trigger").await;
@@ -208,13 +206,13 @@ async fn idempotent_replay_returns_same_ids() {
     }
     .await;
 
-    let _ = common::drop_db(&db_name).await;
+    let _ = crate::common::drop_db(&db_name).await;
     result.expect("idempotent replay returns existing ids");
 }
 
 #[tokio::test]
 async fn distinct_invocations_with_identical_jsonl_do_not_collapse() {
-    let Some((pg, db_name)) = common::fresh_pg().await else {
+    let Some((pg, db_name)) = crate::common::fresh_pg().await else {
         return;
     };
 
@@ -222,7 +220,7 @@ async fn distinct_invocations_with_identical_jsonl_do_not_collapse() {
         pg.run_migrations().await?;
         apply_test_schemas(pg.pool()).await?;
 
-        let owner = common::owner_fixture();
+        let owner = crate::common::owner_fixture();
         let registry = FlavorRegistry::default().freeze();
         let root_p = insert_test_perspective_memory(pg.pool(), &owner).await?;
         let trigger = ingest_test_fact(&pg, &owner, "trigger").await;
@@ -261,13 +259,13 @@ async fn distinct_invocations_with_identical_jsonl_do_not_collapse() {
     }
     .await;
 
-    let _ = common::drop_db(&db_name).await;
+    let _ = crate::common::drop_db(&db_name).await;
     result.expect("same JSONL across invocations shares only cited object");
 }
 
 #[tokio::test]
 async fn rejects_jsonl_content_hash_mismatch_before_writing_trace_rows() {
-    let Some((pg, db_name)) = common::fresh_pg().await else {
+    let Some((pg, db_name)) = crate::common::fresh_pg().await else {
         return;
     };
 
@@ -275,7 +273,7 @@ async fn rejects_jsonl_content_hash_mismatch_before_writing_trace_rows() {
         pg.run_migrations().await?;
         apply_test_schemas(pg.pool()).await?;
 
-        let owner = common::owner_fixture();
+        let owner = crate::common::owner_fixture();
         let registry = FlavorRegistry::default().freeze();
         let root_p = insert_test_perspective_memory(pg.pool(), &owner).await?;
         let trigger = ingest_test_fact(&pg, &owner, "trigger").await;
@@ -314,13 +312,13 @@ async fn rejects_jsonl_content_hash_mismatch_before_writing_trace_rows() {
     }
     .await;
 
-    let _ = common::drop_db(&db_name).await;
+    let _ = crate::common::drop_db(&db_name).await;
     result.expect("JSONL hash mismatch rejected before trace writes");
 }
 
 #[tokio::test]
 async fn rejects_root_perspective_crossing_owner_boundary() {
-    let Some((pg, db_name)) = common::fresh_pg().await else {
+    let Some((pg, db_name)) = crate::common::fresh_pg().await else {
         return;
     };
 
@@ -328,7 +326,7 @@ async fn rejects_root_perspective_crossing_owner_boundary() {
         pg.run_migrations().await?;
         apply_test_schemas(pg.pool()).await?;
 
-        let owner = common::owner_fixture();
+        let owner = crate::common::owner_fixture();
         let other_owner = other_owner_fixture();
         let registry = FlavorRegistry::default().freeze();
         let other_root_p = insert_test_perspective_memory(pg.pool(), &other_owner).await?;
@@ -360,13 +358,13 @@ async fn rejects_root_perspective_crossing_owner_boundary() {
     }
     .await;
 
-    let _ = common::drop_db(&db_name).await;
+    let _ = crate::common::drop_db(&db_name).await;
     result.expect("cross-owner root perspective rejected");
 }
 
 #[tokio::test]
 async fn rejects_active_goal_crossing_owner_boundary() {
-    let Some((pg, db_name)) = common::fresh_pg().await else {
+    let Some((pg, db_name)) = crate::common::fresh_pg().await else {
         return;
     };
 
@@ -374,7 +372,7 @@ async fn rejects_active_goal_crossing_owner_boundary() {
         pg.run_migrations().await?;
         apply_test_schemas(pg.pool()).await?;
 
-        let owner = common::owner_fixture();
+        let owner = crate::common::owner_fixture();
         let other_owner = other_owner_fixture();
         let registry = FlavorRegistry::default().freeze();
         let other_goal = insert_test_goal(&pg, &other_owner, "other-goal").await?;
@@ -408,13 +406,13 @@ async fn rejects_active_goal_crossing_owner_boundary() {
     }
     .await;
 
-    let _ = common::drop_db(&db_name).await;
+    let _ = crate::common::drop_db(&db_name).await;
     result.expect("cross-owner active goal rejected");
 }
 
 #[tokio::test]
 async fn rejects_source_batch_id_collision_across_owner_or_source() {
-    let Some((pg, db_name)) = common::fresh_pg().await else {
+    let Some((pg, db_name)) = crate::common::fresh_pg().await else {
         return;
     };
 
@@ -422,7 +420,7 @@ async fn rejects_source_batch_id_collision_across_owner_or_source() {
         pg.run_migrations().await?;
         apply_test_schemas(pg.pool()).await?;
 
-        let owner = common::owner_fixture();
+        let owner = crate::common::owner_fixture();
         let other_owner = other_owner_fixture();
         let registry = FlavorRegistry::default().freeze();
         let root_p = insert_test_perspective_memory(pg.pool(), &owner).await?;
@@ -453,7 +451,7 @@ async fn rejects_source_batch_id_collision_across_owner_or_source() {
     }
     .await;
 
-    let _ = common::drop_db(&db_name).await;
+    let _ = crate::common::drop_db(&db_name).await;
     result.expect("source batch collision rejected");
 }
 

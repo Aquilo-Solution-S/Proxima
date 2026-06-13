@@ -2,9 +2,7 @@
 //! tables exist, drop the DB. Requires admin access to a
 //! local PG cluster (<postgres://postgres@localhost>).
 
-mod common;
-
-use common::{create_db, db_url, drop_db};
+use crate::common::{create_db, db_url, drop_db};
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
 

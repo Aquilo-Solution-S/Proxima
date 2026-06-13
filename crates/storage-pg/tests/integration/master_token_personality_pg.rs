@@ -1,7 +1,5 @@
 //! PG coverage for the per-master-token shell-author identity.
-mod common;
-
-use common::{drop_db, fresh_pg};
+use crate::common::{drop_db, fresh_pg};
 use proxima_core::storage::Storage;
 use proxima_core::{OrgId, Owner, Principal, UserId};
 use std::sync::Arc;

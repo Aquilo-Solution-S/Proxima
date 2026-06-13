@@ -1,6 +1,4 @@
-mod common;
-
-use common::{drop_db, fresh_pg, owner_fixture};
+use crate::common::{drop_db, fresh_pg, owner_fixture};
 use proxima_core::{EntityKind, MemoryOperatorKind, SchemaId, SchemaVersion};
 use proxima_storage_pg::verbs::derive_append::{DerivedDraft, append_derived_in_tx};
 

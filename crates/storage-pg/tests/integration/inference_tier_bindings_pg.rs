@@ -1,6 +1,4 @@
-mod common;
-
-use common::{drop_db, fresh_pg, owner_fixture};
+use crate::common::{drop_db, fresh_pg, owner_fixture};
 use proxima_core::{
     BindInferenceTierRequest, InferenceTargetConfig, MistralChatConfig, ModelTier,
     RegisterInferenceTargetRequest, Storage,

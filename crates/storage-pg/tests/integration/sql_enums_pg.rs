@@ -1,8 +1,6 @@
-mod common;
-
 #[tokio::test]
 async fn core_closed_vocab_columns_use_sql_enums() -> Result<(), Box<dyn std::error::Error>> {
-    let Some((pg, db_name)) = common::fresh_pg().await else {
+    let Some((pg, db_name)) = crate::common::fresh_pg().await else {
         return Ok(());
     };
 
@@ -56,7 +54,7 @@ async fn core_closed_vocab_columns_use_sql_enums() -> Result<(), Box<dyn std::er
     }
     .await;
 
-    let _ = common::drop_db(&db_name).await;
+    let _ = crate::common::drop_db(&db_name).await;
     result
 }
 

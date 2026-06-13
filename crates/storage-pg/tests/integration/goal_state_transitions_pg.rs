@@ -1,6 +1,4 @@
-mod common;
-
-use common::{drop_db, fresh_pg, owner_fixture};
+use crate::common::{drop_db, fresh_pg, owner_fixture};
 use proxima_core::verbs::goal_write::GoalAuthorshipKind::{External, System, User};
 use proxima_core::verbs::goal_write::GoalState::{
     Abandoned, Achieved, Active, Paused, Proposed, Rejected,

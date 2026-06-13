@@ -1,6 +1,4 @@
-mod common;
-
-use common::{drop_db, fresh_pg, owner_fixture};
+use crate::common::{drop_db, fresh_pg, owner_fixture};
 
 #[tokio::test]
 async fn external_agent_operator_kind_is_admitted() -> Result<(), Box<dyn std::error::Error>> {

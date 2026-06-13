@@ -1,8 +1,6 @@
 //! End-to-end outbox publisher test against a transient PG database.
 
-mod common;
-
-use common::{create_db, db_url, drop_db};
+use crate::common::{create_db, db_url, drop_db};
 use std::sync::Arc;
 use std::time::Duration;
 
