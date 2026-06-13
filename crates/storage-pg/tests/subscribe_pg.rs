@@ -71,7 +71,8 @@ fn fresh_event_draft(owner: Owner) -> EventDraft {
     EventDraft {
         source_id: SourceId::new("test/source"),
         source_batch_id: SourceBatchId::new(Uuid::now_v7()),
-        owner,
+        principal: owner.principal,
+        org_id: Some(owner.org_id),
         schema_id: SchemaId::new("test/fact_blob".into()),
         schema_version: SchemaVersion::new(1),
         payload: b"hello world".to_vec(),
@@ -91,7 +92,8 @@ fn fresh_event_draft(owner: Owner) -> EventDraft {
 
 fn fresh_goal_draft(owner: &Owner, request_id: String) -> GoalDraft {
     GoalDraft {
-        owner: owner.clone(),
+        principal: owner.principal.clone(),
+        org_id: Some(owner.org_id),
         schema_id: SchemaId::new("test/goal_blob".into()),
         schema_version: SchemaVersion::new(1),
         title: "Test goal".to_string(),
@@ -133,7 +135,7 @@ async fn subscribe_fresh_no_since_live_ingest() {
 
         // Subscribe with no since cursor.
         let req = SubscribeRequest {
-            owner: owner.clone(),
+            principal: owner.principal.clone(),
             since: None,
         };
         let mut stream = engine
@@ -228,7 +230,7 @@ async fn subscribe_resume_with_since_mid() {
 
         // Subscribe with since: Some(A.change_event_seq).
         let req = SubscribeRequest {
-            owner: owner.clone(),
+            principal: owner.principal.clone(),
             since: Some(outcome_a.change_event_seq),
         };
         let mut stream = engine
@@ -314,7 +316,7 @@ async fn subscribe_owner_isolation() {
         // Subscribe as Owner1 BEFORE any ingest, so backfill is empty and
         // the test isolates the live-side owner filter.
         let req = SubscribeRequest {
-            owner: owner1.clone(),
+            principal: owner1.principal.clone(),
             since: None,
         };
         let mut stream = engine1

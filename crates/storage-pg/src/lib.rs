@@ -35,9 +35,9 @@ use proxima_core::verbs::subscribe::ChangeEventStream;
 use proxima_core::{
     BindInferenceTierRequest, BindInferenceTierResponse, BlockedWakeCandidate, ChangeEvent, GoalId,
     InferenceTargetRow, InferenceTierBindingRow, MasterTokenPersonality, MemoryDependency,
-    MemoryId, ModelTier, Owner, RegisterInferenceTargetRequest, RegisterInferenceTargetResponse,
-    RemoveInferenceTargetRequest, RemoveInferenceTargetResponse, SourceBatchId, Storage,
-    StorageError, StorageHandle,
+    MemoryId, ModelTier, Owner, Principal, RegisterInferenceTargetRequest,
+    RegisterInferenceTargetResponse, RemoveInferenceTargetRequest, RemoveInferenceTargetResponse,
+    SourceBatchId, Storage, StorageError, StorageHandle,
 };
 use sqlx::PgPool;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
@@ -247,10 +247,10 @@ impl Storage for PgStorage {
 
     async fn subscribe_changes(
         &self,
-        owner: &Owner,
+        principal: &Principal,
         since: Option<uuid::Uuid>,
     ) -> Result<ChangeEventStream, StorageError> {
-        verbs::subscribe::subscribe_changes(&self.pool, &self.tx, owner, since).await
+        verbs::subscribe::subscribe_changes(&self.pool, &self.tx, principal, since).await
     }
 
     async fn event_history(
@@ -285,20 +285,25 @@ impl Storage for PgStorage {
 
     async fn list_active_goals(
         &self,
-        owner: &Owner,
+        principal: &Principal,
         self_perspective_memory_id: MemoryId,
         limit: usize,
     ) -> Result<Vec<ActiveGoalSummary>, StorageError> {
-        verbs::active_goals::list_active_goals(&self.pool, owner, self_perspective_memory_id, limit)
-            .await
+        verbs::active_goals::list_active_goals(
+            &self.pool,
+            principal,
+            self_perspective_memory_id,
+            limit,
+        )
+        .await
     }
 
     async fn close_batch(
         &self,
-        owner: &Owner,
+        principal: &Principal,
         source_batch_id: SourceBatchId,
     ) -> Result<CloseBatchOutcome, StorageError> {
-        verbs::close_batch::close_batch(&self.pool, owner, source_batch_id).await
+        verbs::close_batch::close_batch(&self.pool, principal, source_batch_id).await
     }
 
     async fn register_inference_target(

@@ -37,7 +37,8 @@ fn draft(
     request_id: &str,
 ) -> GoalDraft {
     GoalDraft {
-        owner: owner.clone(),
+        principal: owner.principal.clone(),
+        org_id: Some(owner.org_id),
         schema_id: SchemaId::new("test/goal".into()),
         schema_version: SchemaVersion::new(1),
         title: request_id.into(),
@@ -170,7 +171,7 @@ async fn list_active_goals_follows_inspires_and_goal_supersession()
         let active_b = write_goal(&pg, &other, GoalState::Active, None, "b-active").await?;
         link_goal_to_self(&pg, &other, active_b, self_b).await?;
 
-        let goals_a = pg.list_active_goals(&owner, self_a, 100).await?;
+        let goals_a = pg.list_active_goals(&owner.principal, self_a, 100).await?;
         assert_eq!(goals_a.len(), 1);
         assert_eq!(goals_a[0].goal_id, active_a);
         assert_eq!(goals_a[0].title, "a-active");
@@ -178,7 +179,7 @@ async fn list_active_goals_follows_inspires_and_goal_supersession()
         // wasn't migrated) — the substrate query degrades to None.
         assert!(goals_a[0].goal_activated_memory_id.is_none());
 
-        let goals_b = pg.list_active_goals(&other, self_b, 100).await?;
+        let goals_b = pg.list_active_goals(&other.principal, self_b, 100).await?;
         assert_eq!(goals_b.len(), 1);
         assert_eq!(goals_b[0].goal_id, active_b);
         Ok::<(), Box<dyn std::error::Error>>(())
@@ -202,7 +203,83 @@ async fn apply_goal_activated_sidecar(pool: &sqlx::PgPool) -> sqlx::Result<()> {
          );",
     )
     .await
-    .map(|_| ())
+        .map(|_| ())
+}
+
+async fn insert_dummy_fact_refs(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    owner: &Owner,
+    memory_id: Uuid,
+) -> Result<(Vec<u8>, Uuid), Box<dyn std::error::Error>> {
+    let (owner_kind, owner_principal_id, owner_org_id) = owner_parts(owner);
+    let event_id = Uuid::now_v7().as_bytes().to_vec();
+    let source_id = "proxima-test/source";
+    let source_batch_id = Uuid::now_v7();
+    let now = time::OffsetDateTime::now_utc();
+    sqlx::query(
+        "INSERT INTO proxima_core.source_batches
+            (id, owner_principal_kind, owner_principal_id, owner_org_id,
+             source_id)
+         VALUES ($1, $2, $3, $4, $5)",
+    )
+    .bind(source_batch_id)
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(owner_org_id)
+    .bind(source_id)
+    .execute(&mut **tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO proxima_core.events
+            (event_id, owner_principal_kind, owner_principal_id, owner_org_id,
+             source_batch_id, source_id, schema_id, schema_version,
+             observed_at, occurred_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+    )
+    .bind(&event_id)
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(owner_org_id)
+    .bind(source_batch_id)
+    .bind(source_id)
+    .bind("proxima-goal/goal-activated-v1")
+    .bind(1_i32)
+    .bind(now)
+    .bind(now)
+    .execute(&mut **tx)
+    .await?;
+    let citation_mapping_id = Uuid::now_v7();
+    let cited_object_id = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO proxima_core.cited_objects
+            (cited_object_id, schema_id, owner_principal_kind,
+             owner_principal_id, owner_org_id, content_hash)
+         VALUES ($1, $2, $3, $4, $5, $6)",
+    )
+    .bind(cited_object_id)
+    .bind("proxima-test/cited-object-v1")
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(owner_org_id)
+    .bind(vec![0u8; 32])
+    .execute(&mut **tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO proxima_core.citation_mappings
+            (citation_mapping_id, schema_id, memory_id, cited_object_id,
+             owner_principal_kind, owner_principal_id, owner_org_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)",
+    )
+    .bind(citation_mapping_id)
+    .bind("proxima-test/citation-mapping-v1")
+    .bind(memory_id)
+    .bind(cited_object_id)
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(owner_org_id)
+    .execute(&mut **tx)
+    .await?;
+    Ok((event_id, citation_mapping_id))
 }
 
 async fn insert_goal_activated_fact(
@@ -218,67 +295,15 @@ async fn insert_goal_activated_fact(
     // Minimal Fact-shaped memory row (requires event_id + citation_mapping_id
     // per the variant check). Insert dummy events/citation rows just so the
     // FK + CHECK constraints accept the row.
-    let event_id = Uuid::now_v7().as_bytes().to_vec();
-    let source_id = Uuid::now_v7();
-    let source_batch_id = Uuid::now_v7();
-    sqlx::query(
-        "INSERT INTO proxima_core.source_batches
-            (id, owner_principal_kind, owner_principal_id, owner_org_id,
-             source_id)
-         VALUES ($1, $2, $3, $4, $5)",
-    )
-    .bind(source_batch_id)
-    .bind(owner_kind)
-    .bind(owner_principal_id)
-    .bind(owner_org_id)
-    .bind("proxima-test/source")
-    .execute(&mut *tx)
-    .await?;
-    // NOTE: This helper has schema drift downstream (the events insert
-    // below uses columns no longer in the schema). It's a pre-existing
-    // breakage unrelated to the typed-enum migration; fixing it is out
-    // of scope. The remaining cargo-test failure on
-    // `list_active_goals_surfaces_goal_activated_memory_when_present`
-    // is the surface.
-    sqlx::query(
-        "INSERT INTO proxima_core.events
-            (event_id, owner_principal_kind, owner_principal_id, owner_org_id,
-             source_batch_id, source_id, source_id_text, payload, schema_id,
-             schema_version, wake_chain_depth)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
-    )
-    .bind(&event_id)
-    .bind(owner_kind)
-    .bind(owner_principal_id)
-    .bind(owner_org_id)
-    .bind(source_batch_id)
-    .bind(source_id)
-    .bind("proxima-test/source")
-    .bind(b"{}".as_slice())
-    .bind("proxima-goal/goal-activated-v1")
-    .bind(1_i32)
-    .bind(0_i32)
-    .execute(&mut *tx)
-    .await?;
-    let citation_mapping_id = Uuid::now_v7();
-    sqlx::query(
-        "INSERT INTO proxima_core.citation_mappings
-            (citation_mapping_id, owner_principal_kind, owner_principal_id,
-             owner_org_id, content_sha256)
-         VALUES ($1, $2, $3, $4, $5)",
-    )
-    .bind(citation_mapping_id)
-    .bind(owner_kind)
-    .bind(owner_principal_id)
-    .bind(owner_org_id)
-    .bind(vec![0u8; 32])
-    .execute(&mut *tx)
-    .await?;
+    let (event_id, citation_mapping_id) =
+        insert_dummy_fact_refs(&mut tx, owner, memory_id).await?;
     sqlx::query(
         "INSERT INTO proxima_core.memories
             (memory_id, owner_principal_kind, owner_principal_id, owner_org_id,
-             schema_id, schema_version, event_id, citation_mapping_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+             schema_id, schema_version, event_id, citation_mapping_id,
+             personality_instance_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8,
+                 '00000000-0000-0000-0000-000000000000'::uuid)",
     )
     .bind(memory_id)
     .bind(owner_kind)
@@ -287,15 +312,6 @@ async fn insert_goal_activated_fact(
     .bind("proxima-goal/goal-activated-v1")
     .bind(1_i32)
     .bind(&event_id)
-    .bind(citation_mapping_id)
-    .execute(&mut *tx)
-    .await?;
-    sqlx::query(
-        "UPDATE proxima_core.citation_mappings
-            SET memory_id = $1
-          WHERE citation_mapping_id = $2",
-    )
-    .bind(memory_id)
     .bind(citation_mapping_id)
     .execute(&mut *tx)
     .await?;
@@ -336,7 +352,7 @@ async fn list_active_goals_surfaces_goal_activated_memory_when_present()
         let active = write_goal(&pg, &owner, GoalState::Active, Some(proposed), "p-active").await?;
         let activated_memory = insert_goal_activated_fact(&pg, &owner, active, "p-active").await?;
 
-        let goals = pg.list_active_goals(&owner, self_a, 100).await?;
+        let goals = pg.list_active_goals(&owner.principal, self_a, 100).await?;
         assert_eq!(goals.len(), 1);
         assert_eq!(goals[0].goal_id, active);
         assert_eq!(goals[0].goal_activated_memory_id, Some(activated_memory));

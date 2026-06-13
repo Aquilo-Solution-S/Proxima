@@ -356,7 +356,7 @@ mod tests {
     use axum::body::{Body, Bytes, to_bytes};
     use futures_util::stream;
     use proxima_core::{
-        AuthError, Authenticator, AuthzContext, Credentials, Identity, Principal,
+        AuthError, Authenticator, AuthzContext, Credentials, Identity, OrgId, Principal,
         RevalidationConfig, UserId,
     };
     use tokio::sync::mpsc;
@@ -415,6 +415,7 @@ mod tests {
         accessible_principals.insert(principal.clone());
         Identity {
             principal,
+            org_id: OrgId::new(uuid::Uuid::nil()),
             accessible_principals,
             expires_at,
             auth_epoch,

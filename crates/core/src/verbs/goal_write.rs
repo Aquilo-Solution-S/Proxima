@@ -5,8 +5,8 @@
 //! storage-side body lives in proxima-storage-pg.
 
 use crate::{
-    GoalId, ModelId, OperatorId, Owner, PersonalityInstanceId, PromptVersion, SchemaId,
-    SchemaVersion, ToolId,
+    GoalId, ModelId, OperatorId, OrgId, Owner, PersonalityInstanceId, Principal, PromptVersion,
+    SchemaId, SchemaVersion, ToolId,
 };
 
 #[derive(
@@ -106,7 +106,10 @@ pub enum GoalAuthorship {
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct GoalDraft {
-    pub owner: Owner,
+    pub principal: Principal,
+    #[serde(skip)]
+    #[specta(skip)]
+    pub org_id: Option<OrgId>,
     pub schema_id: SchemaId,
     pub schema_version: SchemaVersion,
     pub title: String,
@@ -117,6 +120,28 @@ pub struct GoalDraft {
     pub supersedes_goal_id: Option<GoalId>,
     pub authorship: GoalAuthorship,
     pub request_id: String,
+}
+
+impl GoalDraft {
+    /// Reconstructs the storage `Owner` after verb-layer stamping.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `stamp_owner` has not populated `org_id` before storage or hash use.
+    #[must_use]
+    pub fn owner(&self) -> Owner {
+        Owner {
+            principal: self.principal.clone(),
+            org_id: self
+                .org_id
+                .expect("GoalDraft org_id must be stamped before storage use"),
+        }
+    }
+
+    pub fn stamp_owner(&mut self, stamped: Owner) {
+        self.principal = stamped.principal;
+        self.org_id = Some(stamped.org_id);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]

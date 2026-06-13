@@ -5,7 +5,7 @@
 //! reads them through `Storage::list_inference_targets` /
 //! `list_inference_tier_bindings`.
 
-use crate::{ModelTier, Owner};
+use crate::{ModelTier, OrgId, Owner, Principal};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, specta::Type)]
@@ -112,9 +112,33 @@ pub struct InferenceTierBindingRow {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RegisterInferenceTargetRequest {
-    pub owner: Owner,
+    pub principal: Principal,
+    #[serde(skip)]
+    pub org_id: Option<OrgId>,
     pub target_ref: String,
     pub config: InferenceTargetConfig,
+}
+
+impl RegisterInferenceTargetRequest {
+    /// Reconstructs the storage `Owner` after verb-layer stamping.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `stamp_owner` has not populated `org_id` before storage or hash use.
+    #[must_use]
+    pub fn owner(&self) -> Owner {
+        Owner {
+            principal: self.principal.clone(),
+            org_id: self
+                .org_id
+                .expect("RegisterInferenceTargetRequest org_id must be stamped before storage use"),
+        }
+    }
+
+    pub fn stamp_owner(&mut self, stamped: Owner) {
+        self.principal = stamped.principal;
+        self.org_id = Some(stamped.org_id);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -125,13 +149,61 @@ pub struct RegisterInferenceTargetResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ListInferenceTargetsRequest {
-    pub owner: Owner,
+    pub principal: Principal,
+    #[serde(skip)]
+    pub org_id: Option<OrgId>,
+}
+
+impl ListInferenceTargetsRequest {
+    /// Reconstructs the storage `Owner` after verb-layer stamping.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `stamp_owner` has not populated `org_id` before storage or hash use.
+    #[must_use]
+    pub fn owner(&self) -> Owner {
+        Owner {
+            principal: self.principal.clone(),
+            org_id: self
+                .org_id
+                .expect("ListInferenceTargetsRequest org_id must be stamped before storage use"),
+        }
+    }
+
+    pub fn stamp_owner(&mut self, stamped: Owner) {
+        self.principal = stamped.principal;
+        self.org_id = Some(stamped.org_id);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoveInferenceTargetRequest {
-    pub owner: Owner,
+    pub principal: Principal,
+    #[serde(skip)]
+    pub org_id: Option<OrgId>,
     pub target_ref: String,
+}
+
+impl RemoveInferenceTargetRequest {
+    /// Reconstructs the storage `Owner` after verb-layer stamping.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `stamp_owner` has not populated `org_id` before storage or hash use.
+    #[must_use]
+    pub fn owner(&self) -> Owner {
+        Owner {
+            principal: self.principal.clone(),
+            org_id: self
+                .org_id
+                .expect("RemoveInferenceTargetRequest org_id must be stamped before storage use"),
+        }
+    }
+
+    pub fn stamp_owner(&mut self, stamped: Owner) {
+        self.principal = stamped.principal;
+        self.org_id = Some(stamped.org_id);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -141,9 +213,33 @@ pub struct RemoveInferenceTargetResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BindInferenceTierRequest {
-    pub owner: Owner,
+    pub principal: Principal,
+    #[serde(skip)]
+    pub org_id: Option<OrgId>,
     pub tier: ModelTier,
     pub target_ref: String,
+}
+
+impl BindInferenceTierRequest {
+    /// Reconstructs the storage `Owner` after verb-layer stamping.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `stamp_owner` has not populated `org_id` before storage or hash use.
+    #[must_use]
+    pub fn owner(&self) -> Owner {
+        Owner {
+            principal: self.principal.clone(),
+            org_id: self
+                .org_id
+                .expect("BindInferenceTierRequest org_id must be stamped before storage use"),
+        }
+    }
+
+    pub fn stamp_owner(&mut self, stamped: Owner) {
+        self.principal = stamped.principal;
+        self.org_id = Some(stamped.org_id);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -151,7 +247,31 @@ pub struct BindInferenceTierResponse {}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ListInferenceTierBindingsRequest {
-    pub owner: Owner,
+    pub principal: Principal,
+    #[serde(skip)]
+    pub org_id: Option<OrgId>,
+}
+
+impl ListInferenceTierBindingsRequest {
+    /// Reconstructs the storage `Owner` after verb-layer stamping.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `stamp_owner` has not populated `org_id` before storage or hash use.
+    #[must_use]
+    pub fn owner(&self) -> Owner {
+        Owner {
+            principal: self.principal.clone(),
+            org_id: self.org_id.expect(
+                "ListInferenceTierBindingsRequest org_id must be stamped before storage use",
+            ),
+        }
+    }
+
+    pub fn stamp_owner(&mut self, stamped: Owner) {
+        self.principal = stamped.principal;
+        self.org_id = Some(stamped.org_id);
+    }
 }
 
 #[cfg(test)]

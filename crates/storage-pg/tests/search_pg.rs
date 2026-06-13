@@ -33,7 +33,7 @@ async fn semantic_search_ranks_nearest_vector_and_isolates_owner()
     let rows = pg
         .search_memories(
             &MemorySearchRequest {
-                owner: owner.clone(),
+                principal: owner.principal.clone(),
                 query: "semantic query".into(),
                 mode: SearchMode::Semantic,
                 limit: 10,
@@ -306,7 +306,8 @@ async fn ingest_fact_memory(
         .ingest_event_atomic(&EventDraft {
             source_id: SourceId::new("test/search"),
             source_batch_id: SourceBatchId::new(Uuid::now_v7()),
-            owner: owner.clone(),
+            principal: owner.principal.clone(),
+            org_id: Some(owner.org_id),
             schema_id: SchemaId::new(schema_id.to_string()),
             schema_version: SchemaVersion::new(1),
             payload: payload.to_vec(),
@@ -328,7 +329,7 @@ async fn ingest_fact_memory(
 
 fn lexical_request(owner: &Owner, query: &str) -> MemorySearchRequest {
     MemorySearchRequest {
-        owner: owner.clone(),
+        principal: owner.principal.clone(),
         query: query.into(),
         mode: SearchMode::Lexical,
         limit: 10,

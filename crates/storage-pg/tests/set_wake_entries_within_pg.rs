@@ -49,7 +49,8 @@ async fn set_wake_entries_within_appends_one() -> Result<(), Box<dyn std::error:
     };
     let inst = pg
         .instantiate_personality(&InstantiatePersonalityRequest {
-            owner: owner.clone(),
+            principal: owner.principal.clone(),
+            org_id: Some(owner.org_id),
             display_name: "test".into(),
             purpose: "rmw fixture".into(),
         })
@@ -95,7 +96,8 @@ async fn set_wake_entries_within_preserves_carried_entry_id()
     };
     let inst = pg
         .instantiate_personality(&InstantiatePersonalityRequest {
-            owner: owner.clone(),
+            principal: owner.principal.clone(),
+            org_id: Some(owner.org_id),
             display_name: "test".into(),
             purpose: "rmw fixture".into(),
         })

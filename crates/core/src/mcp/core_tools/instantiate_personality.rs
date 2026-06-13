@@ -55,12 +55,13 @@ impl McpTool for InstantiatePersonalityTool {
                 .engine()
                 .ok_or_else(|| McpToolError::Other("engine unavailable".into()))?;
             let req = InstantiatePersonalityRequest {
-                owner: ctx.owner.clone(),
+                principal: ctx.owner.principal.clone(),
+                org_id: None,
                 display_name: display_name.clone(),
                 purpose: purpose.clone(),
             };
             let resp = engine
-                .instantiate_personality(req)
+                .instantiate_personality(&ctx.authz, req)
                 .await
                 .map_err(|e| McpToolError::Other(e.to_string()))?;
             let after = PersonalityConfigChangeSnapshot::Personality {

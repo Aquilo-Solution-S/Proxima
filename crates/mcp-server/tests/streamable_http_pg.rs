@@ -336,6 +336,7 @@ impl TestHostAuth {
         accessible_principals.insert(self.owner.principal.clone());
         Identity {
             principal: self.owner.principal.clone(),
+            org_id: self.owner.org_id,
             accessible_principals,
             expires_at: self.ttl.map(|ttl| std::time::SystemTime::now() + ttl),
             auth_epoch: self.epoch.load(Ordering::SeqCst),

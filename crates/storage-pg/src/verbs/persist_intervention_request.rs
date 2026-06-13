@@ -77,7 +77,7 @@ pub async fn persist_intervention_requested_atomic(
     ciborium::ser::into_writer(&input.request, &mut payload_bytes)
         .map_err(|err| StorageError::Internal(format!("serialize intervention request: {err}")))?;
     let draft = intervention_request_event_draft(
-        input.owner.clone(),
+        &input.owner,
         &payload_bytes,
         input.source_batch_id,
         input.source_id.clone(),

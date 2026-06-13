@@ -29,14 +29,14 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when the context cannot access `req.owner` or
+    /// Returns `Forbidden` when the context cannot access `req.principal` or
     /// lacks the graph-read role, or `Internal` when the storage query fails.
     pub async fn query(
         &self,
         authz: &AuthzContext,
         req: &QueryRequest,
     ) -> Result<QueryResponse, ProtocolError> {
-        super::authorize(authz, &req.owner, Role::GraphRead)?;
+        super::authorize(authz, &req.principal, Role::GraphRead)?;
         let mut effective = req.clone();
         if effective.stateful_heads.is_empty() {
             effective.stateful_heads = match effective.schema_id.as_ref() {
@@ -55,7 +55,7 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when the context cannot access `req.owner` or
+    /// Returns `Forbidden` when the context cannot access `req.principal` or
     /// lacks the graph-read role, or `Internal` when storage fails to open
     /// the change stream.
     pub async fn subscribe(
@@ -63,9 +63,9 @@ impl Engine {
         authz: &AuthzContext,
         req: SubscribeRequest,
     ) -> Result<ChangeEventStream, ProtocolError> {
-        super::authorize(authz, &req.owner, Role::GraphRead)?;
+        super::authorize(authz, &req.principal, Role::GraphRead)?;
         self.storage
-            .subscribe_changes(&req.owner, req.since)
+            .subscribe_changes(&req.principal, req.since)
             .await
             .map_err(|e| ProtocolError::internal(e.to_string()))
     }
@@ -76,7 +76,7 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when the context cannot access `req.owner` or
+    /// Returns `Forbidden` when the context cannot access `req.principal` or
     /// lacks the graph-read role, or `Internal` when `req.limit == 0` or
     /// the storage read fails.
     pub async fn event_history(
@@ -84,7 +84,7 @@ impl Engine {
         authz: &AuthzContext,
         req: &EventHistoryRequest,
     ) -> Result<EventHistoryResponse, ProtocolError> {
-        super::authorize(authz, &req.owner, Role::GraphRead)?;
+        super::authorize(authz, &req.principal, Role::GraphRead)?;
         if req.limit == 0 {
             return Err(ProtocolError::internal("EventHistory.limit must be > 0"));
         }

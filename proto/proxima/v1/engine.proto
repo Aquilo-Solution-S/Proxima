@@ -117,7 +117,7 @@ message ReadPagination {
 // ---------------------------------------------------------------------------
 
 message QueryRequest {
-  Owner owner                       = 1;
+  Principal principal               = 1;
   ReadFilter filter                 = 2;
   ReadPagination pagination         = 3;
 }
@@ -136,7 +136,7 @@ message QueryResponse {
 // ---------------------------------------------------------------------------
 
 message SubscribeRequest {
-  Owner owner                       = 1;
+  Principal principal               = 1;
   // Resume cursor — server returns events with `seq > since`.
   // Absent = "from the beginning of the change log".
   // Distinct from `ReadPagination`: this is a per-stream resume
@@ -152,7 +152,7 @@ message SubscribeRequest {
 // ---------------------------------------------------------------------------
 
 message EventHistoryRequest {
-  Owner owner                       = 1;
+  Principal principal               = 1;
   // 1..=1000. Server clamps; 0 is rejected as INVALID.
   uint32 limit                      = 2;
   // Cursor: server returns events with `seq < before`. Absent =
@@ -172,7 +172,7 @@ message EventHistoryResponse {
 // ---------------------------------------------------------------------------
 
 message GoalWriteRequest {
-  Owner owner                       = 1;
+  Principal principal               = 1;
   SchemaRef schema                  = 2;
   string text                       = 3;
   GoalState state                   = 4;
@@ -194,7 +194,7 @@ message GoalWriteRequest {
 message GoalWriteResponse {
   string goal_id                    = 1;
   string change_event_seq           = 2;  // Uuid7 textual
-  // True iff `(owner, request_id)` already existed and the body
+  // True iff `(principal, org_id, request_id)` already existed and the body
   // matched (docs/14 §GoalWrite).
   bool idempotent_replay            = 3;
 }
@@ -206,7 +206,7 @@ message GoalWriteResponse {
 message EventIngestRequest {
   string source_id                  = 1;
   string source_batch_id            = 2;  // Uuid7 textual, declared by source
-  Owner owner                       = 3;
+  Principal principal               = 3;
   SchemaRef schema                  = 4;
   bytes payload                     = 5;
   // Per docs/01. JSON wire shape is RFC3339 (proto3 canonical mapping
@@ -227,7 +227,7 @@ message CitationMappingHint {
 }
 
 message EventIngestResponse {
-  // BLAKE3-32 of (source_id, owner, payload) — server-computed per
+  // BLAKE3-32 of (source_id, stamped owner, payload) — server-computed per
   // docs/01.
   bytes event_id                    = 1;
   string memory_id                  = 2;
@@ -253,7 +253,7 @@ message SchemaResponse {
 // ---------------------------------------------------------------------------
 
 message InstantiatePersonalityRequest {
-  Owner owner = 1;
+  Principal principal = 1;
   // Root Perspective fields written by the create-personality form.
   string display_name = 2;
   string purpose = 3;
@@ -264,7 +264,7 @@ message InstantiatePersonalityResponse {
 }
 
 message SetWakeEntriesRequest {
-  Owner owner = 1;
+  Principal principal = 1;
   string personality_instance_id = 3;  // UUID
   repeated WakeEntryDraft entries = 4;
 }
@@ -274,7 +274,7 @@ message SetWakeEntriesResponse {
 }
 
 message RegisterInferenceTargetRequest {
-  Owner owner = 1;
+  Principal principal = 1;
   string target_ref = 2;
   InferenceTargetConfig config = 3;
 }
@@ -285,7 +285,7 @@ message RegisterInferenceTargetResponse {
 }
 
 message ListInferenceTargetsRequest {
-  Owner owner = 1;
+  Principal principal = 1;
 }
 
 message ListInferenceTargetsResponse {
@@ -293,7 +293,7 @@ message ListInferenceTargetsResponse {
 }
 
 message RemoveInferenceTargetRequest {
-  Owner owner = 1;
+  Principal principal = 1;
   string target_ref = 2;
 }
 
@@ -302,7 +302,7 @@ message RemoveInferenceTargetResponse {
 }
 
 message BindInferenceTierRequest {
-  Owner owner = 1;
+  Principal principal = 1;
   ModelTierProto tier = 2;
   string target_ref = 3;
 }
@@ -310,7 +310,7 @@ message BindInferenceTierRequest {
 message BindInferenceTierResponse {}
 
 message ListInferenceTierBindingsRequest {
-  Owner owner = 1;
+  Principal principal = 1;
 }
 
 message ListInferenceTierBindingsResponse {
@@ -318,7 +318,7 @@ message ListInferenceTierBindingsResponse {
 }
 
 message ListPersonalityInstancesRequest {
-  Owner owner = 1;
+  Principal principal = 1;
   // When false (default), tombstoned instances are filtered out.
   bool include_tombstoned = 3;
 }
@@ -340,7 +340,7 @@ message PersonalityInstance {
 }
 
 message TombstonePersonalityRequest {
-  Owner owner = 1;
+  Principal principal = 1;
   string personality_instance_id = 3;  // UUID
 }
 

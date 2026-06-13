@@ -11,7 +11,7 @@ use tonic::{Request, Response, Status};
 
 use proxima_core::{Authenticator, AuthzContext, Engine, RevalidationConfig, revalidate_stream};
 
-use crate::convert::refs::{owner_from_proto, owner_to_proto};
+use crate::convert::refs::{owner_to_proto, principal_from_proto};
 use crate::convert::{
     change_event_to_proto, event_history_request_from_proto, event_history_response_to_proto,
     event_ingest_request_from_proto, event_ingest_response_to_proto, goal_write_request_from_proto,
@@ -195,17 +195,21 @@ impl EngineTrait for EngineGrpcServer {
         request: Request<InstantiatePersonalityRequest>,
     ) -> Result<Response<InstantiatePersonalityResponse>, Status> {
         let pb = request.into_inner();
-        let owner = owner_from_proto(
-            pb.owner
-                .ok_or_else(|| Status::invalid_argument("missing owner"))?,
+        let principal = principal_from_proto(
+            pb.principal
+                .ok_or_else(|| Status::invalid_argument("missing principal"))?,
         )?;
         let out = self
             .engine
-            .instantiate_personality(proxima_core::InstantiatePersonalityRequest {
-                owner,
-                display_name: pb.display_name,
-                purpose: pb.purpose,
-            })
+            .instantiate_personality(
+                &self.authz,
+                proxima_core::InstantiatePersonalityRequest {
+                    principal,
+                    org_id: None,
+                    display_name: pb.display_name,
+                    purpose: pb.purpose,
+                },
+            )
             .await
             .map_err(protocol_error_to_status)?;
         Ok(Response::new(InstantiatePersonalityResponse {
@@ -218,9 +222,9 @@ impl EngineTrait for EngineGrpcServer {
         request: Request<SetWakeEntriesRequest>,
     ) -> Result<Response<SetWakeEntriesResponse>, Status> {
         let pb = request.into_inner();
-        let owner = owner_from_proto(
-            pb.owner
-                .ok_or_else(|| Status::invalid_argument("missing owner"))?,
+        let principal = principal_from_proto(
+            pb.principal
+                .ok_or_else(|| Status::invalid_argument("missing principal"))?,
         )?;
         let personality_instance_id =
             proxima_core::PersonalityInstanceId::new(uuid_from_str(&pb.personality_instance_id)?);
@@ -234,7 +238,8 @@ impl EngineTrait for EngineGrpcServer {
             .set_wake_entries(
                 &self.authz,
                 &proxima_core::SetWakeEntriesRequest {
-                    owner,
+                    principal,
+                    org_id: None,
                     personality_instance_id,
                     entries,
                 },
@@ -251,9 +256,9 @@ impl EngineTrait for EngineGrpcServer {
         request: Request<RegisterInferenceTargetRequest>,
     ) -> Result<Response<RegisterInferenceTargetResponse>, Status> {
         let pb = request.into_inner();
-        let owner = owner_from_proto(
-            pb.owner
-                .ok_or_else(|| Status::invalid_argument("missing owner"))?,
+        let principal = principal_from_proto(
+            pb.principal
+                .ok_or_else(|| Status::invalid_argument("missing principal"))?,
         )?;
         let config = inference_config_from_proto(
             pb.config
@@ -264,7 +269,8 @@ impl EngineTrait for EngineGrpcServer {
             .register_inference_target(
                 &self.authz,
                 &proxima_core::RegisterInferenceTargetRequest {
-                    owner,
+                    principal,
+                    org_id: None,
                     target_ref: pb.target_ref,
                     config,
                 },
@@ -282,13 +288,13 @@ impl EngineTrait for EngineGrpcServer {
         request: Request<ListInferenceTargetsRequest>,
     ) -> Result<Response<ListInferenceTargetsResponse>, Status> {
         let pb = request.into_inner();
-        let owner = owner_from_proto(
-            pb.owner
-                .ok_or_else(|| Status::invalid_argument("missing owner"))?,
+        let principal = principal_from_proto(
+            pb.principal
+                .ok_or_else(|| Status::invalid_argument("missing principal"))?,
         )?;
         let rows = self
             .engine
-            .list_inference_targets(&self.authz, &owner)
+            .list_inference_targets(&self.authz, &principal)
             .await
             .map_err(protocol_error_to_status)?;
         Ok(Response::new(ListInferenceTargetsResponse {
@@ -301,16 +307,17 @@ impl EngineTrait for EngineGrpcServer {
         request: Request<RemoveInferenceTargetRequest>,
     ) -> Result<Response<RemoveInferenceTargetResponse>, Status> {
         let pb = request.into_inner();
-        let owner = owner_from_proto(
-            pb.owner
-                .ok_or_else(|| Status::invalid_argument("missing owner"))?,
+        let principal = principal_from_proto(
+            pb.principal
+                .ok_or_else(|| Status::invalid_argument("missing principal"))?,
         )?;
         let out = self
             .engine
             .remove_inference_target(
                 &self.authz,
                 &proxima_core::RemoveInferenceTargetRequest {
-                    owner,
+                    principal,
+                    org_id: None,
                     target_ref: pb.target_ref,
                 },
             )
@@ -326,15 +333,16 @@ impl EngineTrait for EngineGrpcServer {
         request: Request<BindInferenceTierRequest>,
     ) -> Result<Response<BindInferenceTierResponse>, Status> {
         let pb = request.into_inner();
-        let owner = owner_from_proto(
-            pb.owner
-                .ok_or_else(|| Status::invalid_argument("missing owner"))?,
+        let principal = principal_from_proto(
+            pb.principal
+                .ok_or_else(|| Status::invalid_argument("missing principal"))?,
         )?;
         self.engine
             .bind_inference_tier(
                 &self.authz,
                 &proxima_core::BindInferenceTierRequest {
-                    owner,
+                    principal,
+                    org_id: None,
                     tier: tier_from_proto(pb.tier)?,
                     target_ref: pb.target_ref,
                 },
@@ -349,13 +357,13 @@ impl EngineTrait for EngineGrpcServer {
         request: Request<ListInferenceTierBindingsRequest>,
     ) -> Result<Response<ListInferenceTierBindingsResponse>, Status> {
         let pb = request.into_inner();
-        let owner = owner_from_proto(
-            pb.owner
-                .ok_or_else(|| Status::invalid_argument("missing owner"))?,
+        let principal = principal_from_proto(
+            pb.principal
+                .ok_or_else(|| Status::invalid_argument("missing principal"))?,
         )?;
         let rows = self
             .engine
-            .list_inference_tier_bindings(&self.authz, &owner)
+            .list_inference_tier_bindings(&self.authz, &principal)
             .await
             .map_err(protocol_error_to_status)?;
         Ok(Response::new(ListInferenceTierBindingsResponse {
@@ -368,13 +376,13 @@ impl EngineTrait for EngineGrpcServer {
         request: Request<ListPersonalityInstancesRequest>,
     ) -> Result<Response<ListPersonalityInstancesResponse>, Status> {
         let pb = request.into_inner();
-        let owner = owner_from_proto(
-            pb.owner
-                .ok_or_else(|| Status::invalid_argument("missing owner"))?,
+        let principal = principal_from_proto(
+            pb.principal
+                .ok_or_else(|| Status::invalid_argument("missing principal"))?,
         )?;
         let rows = self
             .engine
-            .list_personality_instances(&owner, pb.include_tombstoned)
+            .list_personality_instances(&self.authz, &principal, pb.include_tombstoned)
             .await
             .map_err(protocol_error_to_status)?;
         let instances = rows
@@ -391,17 +399,21 @@ impl EngineTrait for EngineGrpcServer {
         request: Request<TombstonePersonalityRequest>,
     ) -> Result<Response<TombstonePersonalityResponse>, Status> {
         let pb = request.into_inner();
-        let owner = owner_from_proto(
-            pb.owner
-                .ok_or_else(|| Status::invalid_argument("missing owner"))?,
+        let principal = principal_from_proto(
+            pb.principal
+                .ok_or_else(|| Status::invalid_argument("missing principal"))?,
         )?;
         let instance_id = uuid_from_str(&pb.personality_instance_id)?;
         let out = self
             .engine
-            .tombstone_personality(proxima_core::TombstonePersonalityRequest {
-                owner,
-                personality_instance_id: proxima_core::PersonalityInstanceId::new(instance_id),
-            })
+            .tombstone_personality(
+                &self.authz,
+                proxima_core::TombstonePersonalityRequest {
+                    principal,
+                    org_id: None,
+                    personality_instance_id: proxima_core::PersonalityInstanceId::new(instance_id),
+                },
+            )
             .await
             .map_err(protocol_error_to_status)?;
         Ok(Response::new(TombstonePersonalityResponse {

@@ -5,7 +5,7 @@
 //! between backfill and live attachment.
 
 use proxima_core::verbs::subscribe::ChangeEventStream;
-use proxima_core::{ChangeEvent, Owner, OwnerPrincipalKind, Principal, StorageError};
+use proxima_core::{ChangeEvent, OwnerPrincipalKind, Principal, StorageError};
 use sqlx::PgPool;
 use tokio::sync::broadcast;
 
@@ -14,7 +14,7 @@ use crate::outbox::hydrate_change_event;
 pub(crate) async fn subscribe_changes(
     pool: &PgPool,
     tx: &broadcast::Sender<ChangeEvent>,
-    owner: &Owner,
+    principal: &Principal,
     since: Option<uuid::Uuid>,
 ) -> Result<ChangeEventStream, StorageError> {
     use futures_util::StreamExt;
@@ -25,7 +25,7 @@ pub(crate) async fn subscribe_changes(
 
     // 2. Backfill: SELECT change_event seqs matching this owner
     //    with seq > since (or all if None), ORDER BY seq ASC.
-    let (owner_kind, owner_principal_id) = match &owner.principal {
+    let (owner_kind, owner_principal_id) = match principal {
         Principal::User(u) => (OwnerPrincipalKind::User, u.into_inner()),
         Principal::Group(g) => (OwnerPrincipalKind::Group, g.into_inner()),
     };
@@ -68,7 +68,7 @@ pub(crate) async fn subscribe_changes(
     let live = BroadcastStream::new(rx).filter_map(|res| async { res.ok() });
 
     // 5. Concatenate backfill + live, filter by Owner principal.
-    let owner_principal = owner.principal.clone();
+    let owner_principal = principal.clone();
     let combined = futures_util::stream::iter(backfill)
         .chain(live)
         .filter(move |ce| {

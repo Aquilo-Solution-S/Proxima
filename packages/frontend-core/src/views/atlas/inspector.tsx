@@ -62,7 +62,7 @@ const plannerCandidatesForOwner = async (
   owner: Owner,
 ): Promise<PlannerCandidate[]> => {
   const result = await commands.listPersonalityInstances({
-    owner,
+    principal: owner.principal,
     include_tombstoned: false,
   });
   if (result.status === "error") {
@@ -629,7 +629,7 @@ export const Inspector: Component<{
         setReactivateState("running");
         setReactivateError(null);
         const result = await commands.goalReactivate({
-          owner: goal.owner,
+          principal: goal.owner.principal,
           goal_id: goal.id,
           target_personality_id: target,
         });

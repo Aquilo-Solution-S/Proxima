@@ -18,7 +18,8 @@ async fn read_scope_replace_lists_explicit_non_identity_grants()
     let owner = owner_fixture();
     let reader = pg
         .instantiate_personality(&InstantiatePersonalityRequest {
-            owner: owner.clone(),
+            principal: owner.principal.clone(),
+            org_id: Some(owner.org_id),
             display_name: "Reader".into(),
             purpose: "read scope test".into(),
         })
@@ -26,7 +27,8 @@ async fn read_scope_replace_lists_explicit_non_identity_grants()
         .instance_id;
     let readable = pg
         .instantiate_personality(&InstantiatePersonalityRequest {
-            owner: owner.clone(),
+            principal: owner.principal.clone(),
+            org_id: Some(owner.org_id),
             display_name: "Readable".into(),
             purpose: "read scope test".into(),
         })
@@ -35,7 +37,8 @@ async fn read_scope_replace_lists_explicit_non_identity_grants()
 
     let set = pg
         .set_read_scope(&SetReadScopeRequest {
-            owner: owner.clone(),
+            principal: owner.principal.clone(),
+            org_id: Some(owner.org_id),
             reader_personality_instance_id: reader,
             readable_personality_instance_ids: vec![reader, readable, readable],
         })
@@ -44,7 +47,8 @@ async fn read_scope_replace_lists_explicit_non_identity_grants()
 
     let listed = pg
         .list_read_scope(&ListReadScopeRequest {
-            owner,
+            principal: owner.principal,
+            org_id: Some(owner.org_id),
             reader_personality_instance_id: reader,
         })
         .await?;

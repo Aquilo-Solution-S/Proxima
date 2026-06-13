@@ -14,7 +14,7 @@ use proxima_code::{
 use proxima_core::llm::scripted::{ScriptedAnthropicClient, ScriptedTurn};
 use proxima_core::llm::{EmbeddingClient, LlmError};
 use proxima_core::personality::InstantiatePersonalityRequest;
-use proxima_core::{OrgId, Owner, Principal, SourceBatchId, UserId};
+use proxima_core::{AuthPath, AuthzContext, OrgId, Owner, Principal, SourceBatchId, UserId};
 use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
@@ -60,6 +60,7 @@ async fn commit_summary_e2e_produces_abstraction_with_correct_provenance() {
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = test_owner();
+        let authz = AuthzContext::single_owner(&owner, AuthPath::System);
         let repo_id = Uuid::now_v7();
         register_repo(pg.pool(), &owner, repo_id, "/tmp/commit-summary-e2e", "e2e").await?;
 
@@ -70,11 +71,15 @@ async fn commit_summary_e2e_produces_abstraction_with_correct_provenance() {
             .with_anthropic(scripted.clone())
             .with_embed(Arc::new(FakeEmbedding));
         let inst = engine
-            .instantiate_personality(InstantiatePersonalityRequest {
-                owner: owner.clone(),
-                display_name: "Commit Summarizer".into(),
-                purpose: "Summarize commits as Abstractions".into(),
-            })
+            .instantiate_personality(
+                &authz,
+                InstantiatePersonalityRequest {
+                    principal: owner.principal.clone(),
+                    org_id: None,
+                    display_name: "Commit Summarizer".into(),
+                    purpose: "Summarize commits as Abstractions".into(),
+                },
+            )
             .await?;
 
         // Ingest the commit AFTER instantiating so the cursor (parked

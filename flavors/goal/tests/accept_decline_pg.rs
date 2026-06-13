@@ -143,7 +143,7 @@ async fn assert_query_contains_lifecycle_authorship(
     proposed_fact_id: MemoryId,
     activated_fact_id: MemoryId,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut req = QueryRequest::for_owner(owner);
+    let mut req = QueryRequest::for_principal(owner.principal.clone());
     req.limit = 100;
     let response = pg
         .query_memories(&req, ctx.registry.list().as_slice())

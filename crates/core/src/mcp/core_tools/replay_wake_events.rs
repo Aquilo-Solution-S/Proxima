@@ -55,15 +55,19 @@ impl McpTool for ReplayWakeEventsTool {
                 .ok_or_else(|| McpToolError::Other("engine unavailable".into()))?;
 
             engine
-                .replay_missed_wakes(ReplayWakeEventsRequest {
-                    owner: ctx.owner.clone(),
-                    personality_instance_id,
-                    wake_entry_id,
-                    after_seq,
-                    until_seq,
-                    event_limit: args.event_limit.unwrap_or(0),
-                    max_invocations: args.max_invocations.unwrap_or(0),
-                })
+                .replay_missed_wakes(
+                    &ctx.authz,
+                    ReplayWakeEventsRequest {
+                        principal: ctx.owner.principal.clone(),
+                        org_id: None,
+                        personality_instance_id,
+                        wake_entry_id,
+                        after_seq,
+                        until_seq,
+                        event_limit: args.event_limit.unwrap_or(0),
+                        max_invocations: args.max_invocations.unwrap_or(0),
+                    },
+                )
                 .await
                 .map_err(|e| McpToolError::Other(e.to_string()))
         })

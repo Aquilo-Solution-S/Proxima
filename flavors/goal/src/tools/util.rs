@@ -774,7 +774,8 @@ where
     let draft = EventDraft {
         source_id: SourceId::new(LIFECYCLE_SOURCE_ID),
         source_batch_id: SourceBatchId::new(uuid::Uuid::now_v7()),
-        owner: ctx.owner.clone(),
+        principal: ctx.owner.principal.clone(),
+        org_id: Some(ctx.owner.org_id),
         schema_id: SchemaId::new(T::SCHEMA_ID.into()),
         schema_version: SchemaVersion::new(T::SCHEMA_VERSION),
         payload: payload_bytes,

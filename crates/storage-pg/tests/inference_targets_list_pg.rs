@@ -17,7 +17,8 @@ async fn list_inference_targets_returns_owner_scoped_rows_in_order() {
 
         for slug in ["zeta", "alpha", "kappa"] {
             let req = RegisterInferenceTargetRequest {
-                owner: owner.clone(),
+                principal: owner.principal.clone(),
+                org_id: Some(owner.org_id),
                 target_ref: slug.into(),
                 config: InferenceTargetConfig::MistralChat(MistralChatConfig {
                     base_url: "http://127.0.0.1:9".into(),

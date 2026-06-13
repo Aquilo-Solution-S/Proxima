@@ -22,11 +22,12 @@ pub(crate) async fn write_goal_atomic(
     pool: &PgPool,
     draft: &GoalDraft,
 ) -> Result<GoalWriteOutcome, StorageError> {
-    let (owner_kind, owner_principal_id) = match &draft.owner.principal {
+    let owner = draft.owner();
+    let (owner_kind, owner_principal_id) = match &owner.principal {
         Principal::User(u) => (OwnerPrincipalKind::User, u.into_inner()),
         Principal::Group(g) => (OwnerPrincipalKind::Group, g.into_inner()),
     };
-    let owner_org_id = draft.owner.org_id.into_inner();
+    let owner_org_id = owner.org_id.into_inner();
 
     let mut tx = pool
         .begin()
@@ -149,11 +150,12 @@ pub(crate) async fn supersede_goal_atomic(
         ));
     }
 
-    let (owner_kind, owner_principal_id) = match &draft.owner.principal {
+    let owner = draft.owner();
+    let (owner_kind, owner_principal_id) = match &owner.principal {
         Principal::User(u) => (OwnerPrincipalKind::User, u.into_inner()),
         Principal::Group(g) => (OwnerPrincipalKind::Group, g.into_inner()),
     };
-    let owner_org_id = draft.owner.org_id.into_inner();
+    let owner_org_id = owner.org_id.into_inner();
 
     let mut tx = pool
         .begin()
@@ -270,11 +272,12 @@ async fn insert_goal_row(
     goal_id: uuid::Uuid,
     supersedes: Option<uuid::Uuid>,
 ) -> Result<(), StorageError> {
-    let (owner_kind, owner_principal_id) = match &draft.owner.principal {
+    let owner = draft.owner();
+    let (owner_kind, owner_principal_id) = match &owner.principal {
         Principal::User(u) => (OwnerPrincipalKind::User, u.into_inner()),
         Principal::Group(g) => (OwnerPrincipalKind::Group, g.into_inner()),
     };
-    let owner_org_id = draft.owner.org_id.into_inner();
+    let owner_org_id = owner.org_id.into_inner();
 
     let authorship = authorship_columns(&draft.authorship);
 
@@ -373,11 +376,12 @@ async fn insert_goal_change_event(
     change_seq: uuid::Uuid,
     supersedes_goal_id: Option<uuid::Uuid>,
 ) -> Result<(), StorageError> {
-    let (owner_kind, owner_principal_id) = match &draft.owner.principal {
+    let owner = draft.owner();
+    let (owner_kind, owner_principal_id) = match &owner.principal {
         Principal::User(u) => (OwnerPrincipalKind::User, u.into_inner()),
         Principal::Group(g) => (OwnerPrincipalKind::Group, g.into_inner()),
     };
-    let owner_org_id = draft.owner.org_id.into_inner();
+    let owner_org_id = owner.org_id.into_inner();
 
     match supersedes_goal_id {
         None => {

@@ -57,7 +57,8 @@ fn fresh_event_draft(owner: Owner, payload: Vec<u8>) -> EventDraft {
     EventDraft {
         source_id: SourceId::new("test/source"),
         source_batch_id: SourceBatchId::new(Uuid::now_v7()),
-        owner,
+        principal: owner.principal,
+        org_id: Some(owner.org_id),
         schema_id: SchemaId::new("test/fact_blob".into()),
         schema_version: SchemaVersion::new(1),
         payload,
@@ -122,7 +123,7 @@ async fn event_history_returns_owner_scoped_newest_first() {
             .event_history(
                 &authz1,
                 &EventHistoryRequest {
-                    owner: owner1.clone(),
+                    principal: owner1.principal.clone(),
                     limit: 100,
                     before: None,
                 },
@@ -143,7 +144,7 @@ async fn event_history_returns_owner_scoped_newest_first() {
             .event_history(
                 &authz2,
                 &EventHistoryRequest {
-                    owner: owner2.clone(),
+                    principal: owner2.principal.clone(),
                     limit: 100,
                     before: None,
                 },
@@ -155,7 +156,7 @@ async fn event_history_returns_owner_scoped_newest_first() {
             .event_history(
                 &authz1,
                 &EventHistoryRequest {
-                    owner: owner1.clone(),
+                    principal: owner1.principal.clone(),
                     limit: 2,
                     before: None,
                 },
@@ -167,7 +168,7 @@ async fn event_history_returns_owner_scoped_newest_first() {
             .event_history(
                 &authz1,
                 &EventHistoryRequest {
-                    owner: owner1,
+                    principal: owner1.principal,
                     limit: 2,
                     before: Some(page1.events[1].seq),
                 },

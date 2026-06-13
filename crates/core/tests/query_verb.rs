@@ -11,7 +11,7 @@ fn empty_store_returns_empty_response() {
         org_id: OrgId::new(Uuid::now_v7()),
     };
     let store = MemoryStore::new();
-    let resp = store.query(&QueryRequest::for_owner(owner));
+    let resp = store.query(&QueryRequest::for_principal(owner.principal.clone()));
     assert!(resp.memories.is_empty());
     assert!(resp.seq_high_water.is_none());
 }
@@ -22,7 +22,7 @@ fn query_request_defaults_to_present_only() {
         principal: Principal::User(UserId::new(Uuid::now_v7())),
         org_id: OrgId::new(Uuid::now_v7()),
     };
-    let req = QueryRequest::for_owner(owner);
+    let req = QueryRequest::for_principal(owner.principal.clone());
     assert_eq!(req.supersession, SupersessionStatus::HeadsOnly);
     assert_eq!(req.tombstones, TombstoneFilter::PresentOnly);
     assert_eq!(

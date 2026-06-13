@@ -6,7 +6,7 @@ import { LoadingSurface } from "../primitives";
 const NIL_UUID = "00000000-0000-0000-0000-000000000000";
 
 const NOOP_QUERY: QueryRequest = {
-  owner: { principal: { User: NIL_UUID }, org_id: NIL_UUID },
+  principal: { User: NIL_UUID },
   entity_kind: null,
   schema_id: null,
   supersession: "HeadsOnly",
