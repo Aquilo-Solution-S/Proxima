@@ -3,14 +3,19 @@
 <a id="decision"></a>
 ## Decision
 
-Core owns the substrate. Flavor crates contribute build-time vocabulary.
-Composite binaries choose flavor crates at build time and freeze the
-registry at startup.
+Core is the Rust runtime framework core. It owns graph contracts,
+build-time flavor registry, protocol verbs, wake/personality runtime,
+substrate MCP tools, inference config types, and storage traits. Flavor
+crates contribute build-time vocabulary. Composite binaries choose flavor
+crates at build time and freeze the registry at startup.
+
+The formal kernel is `docs/lean/Foundations/`, not the Rust crate
+boundary.
 
 ## Boundary
 
 ```
-core
+runtime framework core (`proxima-core`)
   ids, Owner, Memory / Goal / Edge contracts
   F/A/P and Goal payload traits
   relation descriptor validation
@@ -180,7 +185,7 @@ Flavor crate = inclusion unit. Composite binary = build artifact.
 ```
 proxima-mcp       = substrate + agent-memory + goal
 proxima-code      = substrate + code
-proxima-shell     = substrate + code + goal + agent-memory
+proxima-shell     = dev/reference inspector over substrate + code + goal + agent-memory
 ```
 
 Composite binaries are not plugin hosts.

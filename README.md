@@ -6,6 +6,10 @@ Actions that originate from us are indistinguishable from external factors—the
 
 The system is designed in a way to be typesafe at compile time while maintaining a lot of flexibility by providing the possibility to create your own flavors. The word flavor was specifically choosen since domains are mostly defined by certain paradigmas and norms, but your perspective is something personal, like your taste, therefore flavor seemed better to me.
 
+Proxima is the memory/retrieval substrate for agentic systems. It does not compete with Codex, Claude, or other agent harnesses; it gives those harnesses durable typed memory, provenance, owner-scoped retrieval, and app-specific flavor composition.
+
+Users write their own app. The app owns the product, UX, domain workflow, auth boundary, and flavor composition. Proxima is the kernel/foundation underneath it: durable memory, retrieval, provenance, schema discipline, and runtime invariants.
+
 ## Start
 
 ```sh
@@ -16,6 +20,10 @@ pnpm --filter proxima-shell tauri:dev
 `tauri:dev` starts the desktop shell, brings up dev Postgres and MinIO
 via `docker-compose.dev.yml`, creates the local S3 bucket, and writes perf
 logs under `apps/proxima-shell/perf-logs/`.
+
+`apps/proxima-shell` is the dev/reference inspector for graph, schema,
+settings, boot, and perf behavior. It is not the product surface for apps
+built on Proxima.
 
 ```sh
 PROXIMA_PERF=0 pnpm --filter proxima-shell tauri:dev
@@ -30,7 +38,9 @@ cargo run -p proxima-mcp -- --owner-user <uuid> --owner-org <uuid>
 ```
 
 Frontend-only Vite dev server. Headless MCP server at
-`http://127.0.0.1:31415/mcp`.
+`http://127.0.0.1:31415/mcp`. Agent-harness users use
+[`apps/proxima-mcp`](apps/proxima-mcp) or embed
+[`crates/mcp-server`](crates/mcp-server).
 
 ```sh
 cargo check --workspace
@@ -40,9 +50,17 @@ pnpm --filter proxima-shell build
 pnpm --filter proxima-shell perf:down
 ```
 
+## What `proxima-core` Means
+
+proxima-core is the Rust runtime framework core: the domainless graph contracts, build-time flavor registry, protocol verbs, wake/personality runtime, MCP tool substrate, inference config types, and storage traits. Applications normally embed it through the `proxima` crate and add domains via flavor crates.
+
+The formal kernel is [`docs/lean/Foundations`](docs/lean/Foundations):
+the invariant spec and proof surface, not the Rust crate boundary.
+
 ## Embedding Proxima
 
-Host apps use the `proxima` framework facade:
+Host apps use the `proxima` framework facade rather than assembling
+`proxima-core` directly:
 
 ```rust
 proxima::run::<App>().await?;
@@ -91,7 +109,7 @@ Design source of truth:
   (separate schema, separate lifecycle, no FK from entity to
   embedding).
 - [`docs/08-core-and-flavors.md`](docs/08-core-and-flavors.md) —
-  bare-core / flavor layering. Schemas, tools, sources, prompts,
+  runtime framework core / flavor layering. Schemas, tools, sources, prompts,
   and operators register at implementation time from flavor
   crates; only *instance* config is runtime. Flavors live under
   `flavors/<name>/`; multi-domain deployments compose via a
