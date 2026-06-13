@@ -22,7 +22,7 @@ use crate::mcp::core_tools::payload::{
     PersonalityConfigChangeSnapshot, PersonalityConfigChangedCaller,
     PersonalityConfigChangedSubject, PersonalityConfigChangedV1, PersonalityConfigChangedVerb,
 };
-use crate::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
+use crate::verbs::event_ingest::{Citation, CitationMappingHint, CitedObjectHint, EventDraft};
 use crate::{FactPayload, SchemaId, SchemaVersion, SourceBatchId, SourceId};
 
 /// Outcome of an audit-emit attempt. Tools surface `Failed` as a
@@ -112,15 +112,17 @@ async fn write_fact(ctx: &McpToolCtx, payload: &PersonalityConfigChangedV1) -> R
         payload: payload_bytes,
         observed_at,
         occurred_at: observed_at,
-        cited_object: CitedObjectHint {
-            schema_id: SchemaId::new("core/personality_config_changed_object_v1".into()),
-            schema_version: SchemaVersion::new(1),
-            content_hash: *body_hash.as_bytes(),
-        },
-        citation_mapping: CitationMappingHint {
-            schema_id: SchemaId::new("core/personality_config_changed_whole_v1".into()),
-            schema_version: SchemaVersion::new(1),
-        },
+        citation: Some(Citation {
+            object: CitedObjectHint {
+                schema_id: SchemaId::new("core/personality_config_changed_object_v1".into()),
+                schema_version: SchemaVersion::new(1),
+                content_hash: *body_hash.as_bytes(),
+            },
+            mapping: CitationMappingHint {
+                schema_id: SchemaId::new("core/personality_config_changed_whole_v1".into()),
+                schema_version: SchemaVersion::new(1),
+            },
+        }),
     };
     storage
         .ingest_event_atomic(&draft)

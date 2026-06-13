@@ -1,6 +1,8 @@
 //! Unit smoke for `EventIngest` types.
 
-use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
+use proxima_core::verbs::event_ingest::{
+    Citation, CitationMappingHint, CitedObjectHint, EventDraft,
+};
 use proxima_core::{OrgId, Principal, SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId};
 use uuid::Uuid;
 
@@ -17,15 +19,17 @@ fn fresh_draft() -> EventDraft {
         payload: b"hello".to_vec(),
         observed_at: now,
         occurred_at: now,
-        cited_object: CitedObjectHint {
-            schema_id: SchemaId::new("test/cited_blob".to_string()),
-            schema_version: SchemaVersion::new(1),
-            content_hash: [0u8; 32],
-        },
-        citation_mapping: CitationMappingHint {
-            schema_id: SchemaId::new("test/citation_blob".to_string()),
-            schema_version: SchemaVersion::new(1),
-        },
+        citation: Some(Citation {
+            object: CitedObjectHint {
+                schema_id: SchemaId::new("test/cited_blob".to_string()),
+                schema_version: SchemaVersion::new(1),
+                content_hash: [0u8; 32],
+            },
+            mapping: CitationMappingHint {
+                schema_id: SchemaId::new("test/citation_blob".to_string()),
+                schema_version: SchemaVersion::new(1),
+            },
+        }),
     }
 }
 
@@ -44,4 +48,13 @@ fn event_id_changes_with_payload() {
     draft.payload = b"different".to_vec();
     let h2 = draft.event_id();
     assert_ne!(h1, h2);
+}
+
+#[test]
+fn event_id_ignores_citation() {
+    let mut draft = fresh_draft();
+    let h1 = draft.event_id();
+    draft.citation = None;
+    let h2 = draft.event_id();
+    assert_eq!(h1, h2);
 }

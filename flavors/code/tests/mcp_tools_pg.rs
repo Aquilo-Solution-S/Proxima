@@ -9,7 +9,9 @@ use proxima_code::{CodeChunkV1, CommitV1, FileRevisionV1, register_repo};
 use proxima_core::engine::Engine;
 use proxima_core::mcp::{HandleTable, McpAuthorContext, McpTool, McpToolCtx, OutputMode};
 use proxima_core::storage::Storage;
-use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
+use proxima_core::verbs::event_ingest::{
+    Citation, CitationMappingHint, CitedObjectHint, EventDraft,
+};
 use proxima_core::verbs::query::MemoryStore;
 use proxima_core::verbs::schema::{PayloadKind, SchemaInfo};
 use proxima_core::{
@@ -714,15 +716,17 @@ fn fact_draft(owner: Owner, schema_id: &str, payload: &[u8]) -> EventDraft {
         payload: payload.to_vec(),
         observed_at: now,
         occurred_at: now,
-        cited_object: CitedObjectHint {
-            schema_id: SchemaId::new("test/cited_blob".into()),
-            schema_version: SchemaVersion::new(1),
-            content_hash: blake3::hash(payload).into(),
-        },
-        citation_mapping: CitationMappingHint {
-            schema_id: SchemaId::new("test/citation_blob".into()),
-            schema_version: SchemaVersion::new(1),
-        },
+        citation: Some(Citation {
+            object: CitedObjectHint {
+                schema_id: SchemaId::new("test/cited_blob".into()),
+                schema_version: SchemaVersion::new(1),
+                content_hash: blake3::hash(payload).into(),
+            },
+            mapping: CitationMappingHint {
+                schema_id: SchemaId::new("test/citation_blob".into()),
+                schema_version: SchemaVersion::new(1),
+            },
+        }),
     }
 }
 

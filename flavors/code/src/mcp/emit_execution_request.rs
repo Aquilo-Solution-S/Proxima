@@ -5,7 +5,9 @@ use proxima_core::personality::{PersonalityInstanceId, PersonalityStatus};
 use proxima_core::relation::{
     CORE_AUTHORED_RELATION, CORE_DEPENDS_ON_RELATION, CORE_DERIVED_FROM_RELATION,
 };
-use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
+use proxima_core::verbs::event_ingest::{
+    Citation, CitationMappingHint, CitedObjectHint, EventDraft,
+};
 use proxima_core::{
     EdgeAuthorshipKind, EdgeId, EntityKind, FactPayload, MemoryId, SchemaId, SchemaVersion,
     SourceBatchId, SourceId,
@@ -1218,15 +1220,17 @@ pub(super) async fn ingest_execution_request(
         payload: payload_bytes,
         observed_at,
         occurred_at: observed_at,
-        cited_object: CitedObjectHint {
-            schema_id: SchemaId::new(EXECUTION_REQUEST_OBJECT_SCHEMA.into()),
-            schema_version: SchemaVersion::new(1),
-            content_hash: *content_hash.as_bytes(),
-        },
-        citation_mapping: CitationMappingHint {
-            schema_id: SchemaId::new(EXECUTION_REQUEST_WHOLE_SCHEMA.into()),
-            schema_version: SchemaVersion::new(1),
-        },
+        citation: Some(Citation {
+            object: CitedObjectHint {
+                schema_id: SchemaId::new(EXECUTION_REQUEST_OBJECT_SCHEMA.into()),
+                schema_version: SchemaVersion::new(1),
+                content_hash: *content_hash.as_bytes(),
+            },
+            mapping: CitationMappingHint {
+                schema_id: SchemaId::new(EXECUTION_REQUEST_WHOLE_SCHEMA.into()),
+                schema_version: SchemaVersion::new(1),
+            },
+        }),
     };
     ingest_event_in_tx(tx, &draft)
         .await
@@ -1274,15 +1278,17 @@ pub(super) async fn ingest_acceptance_criteria(
         payload: payload_bytes,
         observed_at,
         occurred_at: observed_at,
-        cited_object: CitedObjectHint {
-            schema_id: SchemaId::new(ACCEPTANCE_CRITERIA_OBJECT_SCHEMA.into()),
-            schema_version: SchemaVersion::new(1),
-            content_hash: *content_hash.as_bytes(),
-        },
-        citation_mapping: CitationMappingHint {
-            schema_id: SchemaId::new(ACCEPTANCE_CRITERIA_WHOLE_SCHEMA.into()),
-            schema_version: SchemaVersion::new(1),
-        },
+        citation: Some(Citation {
+            object: CitedObjectHint {
+                schema_id: SchemaId::new(ACCEPTANCE_CRITERIA_OBJECT_SCHEMA.into()),
+                schema_version: SchemaVersion::new(1),
+                content_hash: *content_hash.as_bytes(),
+            },
+            mapping: CitationMappingHint {
+                schema_id: SchemaId::new(ACCEPTANCE_CRITERIA_WHOLE_SCHEMA.into()),
+                schema_version: SchemaVersion::new(1),
+            },
+        }),
     };
     ingest_event_in_tx(tx, &draft)
         .await
@@ -1331,15 +1337,17 @@ pub(super) async fn ingest_test_request(
         payload: payload_bytes,
         observed_at,
         occurred_at: observed_at,
-        cited_object: CitedObjectHint {
-            schema_id: SchemaId::new(TEST_REQUEST_OBJECT_SCHEMA.into()),
-            schema_version: SchemaVersion::new(1),
-            content_hash: *content_hash.as_bytes(),
-        },
-        citation_mapping: CitationMappingHint {
-            schema_id: SchemaId::new(TEST_REQUEST_WHOLE_SCHEMA.into()),
-            schema_version: SchemaVersion::new(1),
-        },
+        citation: Some(Citation {
+            object: CitedObjectHint {
+                schema_id: SchemaId::new(TEST_REQUEST_OBJECT_SCHEMA.into()),
+                schema_version: SchemaVersion::new(1),
+                content_hash: *content_hash.as_bytes(),
+            },
+            mapping: CitationMappingHint {
+                schema_id: SchemaId::new(TEST_REQUEST_WHOLE_SCHEMA.into()),
+                schema_version: SchemaVersion::new(1),
+            },
+        }),
     };
     ingest_event_in_tx(tx, &draft)
         .await

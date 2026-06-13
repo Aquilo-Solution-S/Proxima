@@ -4,22 +4,47 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::common::{drop_db, fresh_pg, owner_fixture};
-use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
+use proxima_core::verbs::event_ingest::{
+    Citation, CitationMappingHint, CitedObjectHint, EventDraft,
+};
 use proxima_core::verbs::query::MemoryStore;
 use proxima_core::verbs::schema::{PayloadKind, SchemaInfo};
 use proxima_core::{
-    AuthPath, AuthzContext, CapabilitySet, Engine, ErrorCode, FlavorRegistryFrozen, Identity,
-    Owner, Role, RoleSet, SchemaId, SchemaVersion, SourceBatchId, SourceId, Storage, StorageError,
-    ToolScope,
+    AuthPath, AuthzContext, CapabilitySet, Engine, ErrorCode, FactPayload, FlavorRegistryFrozen,
+    Identity, Owner, Role, RoleSet, SchemaId, SchemaVersion, SourceBatchId, SourceId, Storage,
+    StorageError, ToolScope,
 };
-use proxima_storage_pg::verbs::event_ingest::event_ingest_with_sidecar_atomic;
+use proxima_storage_pg::verbs::event_ingest::{event_ingest_with_sidecar_atomic, ingest_fact};
 use uuid::Uuid;
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct UncitedFactPayload {
+    note: String,
+}
+
+impl FactPayload for UncitedFactPayload {
+    const SCHEMA_ID: &'static str = "test/uncited_fact";
+    const SCHEMA_VERSION: u32 = 1;
+
+    fn render(&self) -> String {
+        self.note.clone()
+    }
+
+    fn sidecar_table() -> &'static str {
+        "public.uncited_fact_sidecar"
+    }
+}
 
 fn schemas_for_test() -> Vec<SchemaInfo> {
     vec![
         SchemaInfo::opaque(
             SchemaId::new("test/sidecar_fact".into()),
             SchemaVersion::new(1),
+            PayloadKind::Fact,
+        ),
+        SchemaInfo::opaque(
+            SchemaId::new(UncitedFactPayload::SCHEMA_ID.into()),
+            SchemaVersion::new(UncitedFactPayload::SCHEMA_VERSION),
             PayloadKind::Fact,
         ),
         SchemaInfo::opaque(
@@ -49,15 +74,17 @@ fn fresh_draft(owner: &Owner) -> EventDraft {
         payload,
         observed_at: now,
         occurred_at: now,
-        cited_object: CitedObjectHint {
-            schema_id: SchemaId::new("test/sidecar_cited".into()),
-            schema_version: SchemaVersion::new(1),
-            content_hash: *content_hash.as_bytes(),
-        },
-        citation_mapping: CitationMappingHint {
-            schema_id: SchemaId::new("test/sidecar_citation".into()),
-            schema_version: SchemaVersion::new(1),
-        },
+        citation: Some(Citation {
+            object: CitedObjectHint {
+                schema_id: SchemaId::new("test/sidecar_cited".into()),
+                schema_version: SchemaVersion::new(1),
+                content_hash: *content_hash.as_bytes(),
+            },
+            mapping: CitationMappingHint {
+                schema_id: SchemaId::new("test/sidecar_citation".into()),
+                schema_version: SchemaVersion::new(1),
+            },
+        }),
     }
 }
 
@@ -162,6 +189,95 @@ async fn sidecar_failure_rolls_back_fact() -> Result<(), Box<dyn std::error::Err
 
     assert!(err.to_string().contains("boom"));
     assert_eq!(event_row_counts(pg.pool(), event_id).await?, (0, 0));
+
+    drop(engine);
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn ingest_fact_writes_uncited_fact_and_sidecar() -> Result<(), Box<dyn std::error::Error>> {
+    let Some((pg, db_name)) = fresh_pg().await else {
+        return Ok(());
+    };
+    pg.run_migrations().await?;
+    sqlx::query(
+        "CREATE TABLE public.uncited_fact_sidecar (
+            memory_id uuid PRIMARY KEY,
+            note text NOT NULL
+        )",
+    )
+    .execute(pg.pool())
+    .await?;
+
+    let owner = owner_fixture();
+    let engine = engine_for(&pg);
+    let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+    let payload = UncitedFactPayload {
+        note: format!("uncited fact {}", Uuid::now_v7()),
+    };
+    let sidecar_note = payload.note.clone();
+
+    let outcome = ingest_fact(
+        pg.pool(),
+        &engine,
+        &authz,
+        Role::SourceIngest,
+        &payload,
+        move |tx, outcome| {
+            Box::pin(async move {
+                sqlx::query(
+                    "INSERT INTO public.uncited_fact_sidecar (memory_id, note)
+                     VALUES ($1, $2)",
+                )
+                .bind(outcome.memory_id.into_inner())
+                .bind(sidecar_note)
+                .execute(&mut **tx)
+                .await
+                .map_err(|e| StorageError::Internal(e.to_string()))?;
+                Ok(())
+            })
+        },
+    )
+    .await?;
+
+    let citation_mapping_id = sqlx::query_scalar::<_, Option<Uuid>>(
+        "SELECT citation_mapping_id
+           FROM proxima_core.memories
+          WHERE memory_id = $1",
+    )
+    .bind(outcome.memory_id.into_inner())
+    .fetch_one(pg.pool())
+    .await?;
+    assert!(citation_mapping_id.is_none());
+
+    let cited_objects =
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM proxima_core.cited_objects")
+            .fetch_one(pg.pool())
+            .await?;
+    let citation_mappings = sqlx::query_scalar::<_, i64>(
+        "SELECT count(*)
+           FROM proxima_core.citation_mappings
+          WHERE memory_id = $1",
+    )
+    .bind(outcome.memory_id.into_inner())
+    .fetch_one(pg.pool())
+    .await?;
+    let sidecars = sqlx::query_scalar::<_, i64>(
+        "SELECT count(*)
+           FROM public.uncited_fact_sidecar
+          WHERE memory_id = $1
+            AND note = $2",
+    )
+    .bind(outcome.memory_id.into_inner())
+    .bind(&payload.note)
+    .fetch_one(pg.pool())
+    .await?;
+
+    assert_eq!(cited_objects, 0);
+    assert_eq!(citation_mappings, 0);
+    assert_eq!(sidecars, 1);
 
     drop(engine);
     drop(pg);

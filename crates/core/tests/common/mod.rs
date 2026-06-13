@@ -12,7 +12,9 @@ use proxima_core::personality::{
     InstantiatePersonalityRequest, PersonalityInstanceId, SetWakeEntriesRequest, WakeEntryDraft,
 };
 use proxima_core::storage::Storage;
-use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
+use proxima_core::verbs::event_ingest::{
+    Citation, CitationMappingHint, CitedObjectHint, EventDraft,
+};
 use proxima_core::verbs::query::MemoryStore;
 use proxima_core::wake::target_adapter::{
     TargetAdapter, TargetAdapterError, TargetInvocation, TargetOutcome, TargetOutcomeKind,
@@ -161,15 +163,17 @@ pub async fn seed_wake_context_fixture()
         payload,
         observed_at: now,
         occurred_at: now,
-        cited_object: CitedObjectHint {
-            schema_id: SchemaId::new("proxima-test/wake-context-cited-v1".into()),
-            schema_version: SchemaVersion::new(1),
-            content_hash: rand_content_hash(),
-        },
-        citation_mapping: CitationMappingHint {
-            schema_id: SchemaId::new("proxima-test/wake-context-citation-v1".into()),
-            schema_version: SchemaVersion::new(1),
-        },
+        citation: Some(Citation {
+            object: CitedObjectHint {
+                schema_id: SchemaId::new("proxima-test/wake-context-cited-v1".into()),
+                schema_version: SchemaVersion::new(1),
+                content_hash: rand_content_hash(),
+            },
+            mapping: CitationMappingHint {
+                schema_id: SchemaId::new("proxima-test/wake-context-citation-v1".into()),
+                schema_version: SchemaVersion::new(1),
+            },
+        }),
     };
     let outcome = pg.ingest_event_atomic(&draft).await.ok()?;
 

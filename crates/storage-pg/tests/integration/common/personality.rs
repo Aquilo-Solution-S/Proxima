@@ -11,7 +11,9 @@ use async_trait::async_trait;
 use proxima_core::engine::Engine;
 use proxima_core::llm::{AnthropicClient, EmbeddingClient, LlmError};
 use proxima_core::personality::InstantiatePersonalityResponse;
-use proxima_core::verbs::event_ingest::{CitationMappingHint, CitedObjectHint, EventDraft};
+use proxima_core::verbs::event_ingest::{
+    Citation, CitationMappingHint, CitedObjectHint, EventDraft,
+};
 use proxima_core::verbs::query::MemoryStore;
 use proxima_core::{
     AbstractionPayload, AuthPath, AuthzContext, FlavorDescriptor, FlavorProvenance, FlavorRegistry,
@@ -236,15 +238,17 @@ pub async fn ingest_test_fact(pg: &PgStorage, owner: &Owner, label: &str) -> Mem
         payload,
         observed_at: now,
         occurred_at: now,
-        cited_object: CitedObjectHint {
-            schema_id: SchemaId::new("proxima-test/cited-v1".into()),
-            schema_version: SchemaVersion::new(1),
-            content_hash: rand_content_hash(),
-        },
-        citation_mapping: CitationMappingHint {
-            schema_id: SchemaId::new("proxima-test/citation-v1".into()),
-            schema_version: SchemaVersion::new(1),
-        },
+        citation: Some(Citation {
+            object: CitedObjectHint {
+                schema_id: SchemaId::new("proxima-test/cited-v1".into()),
+                schema_version: SchemaVersion::new(1),
+                content_hash: rand_content_hash(),
+            },
+            mapping: CitationMappingHint {
+                schema_id: SchemaId::new("proxima-test/citation-v1".into()),
+                schema_version: SchemaVersion::new(1),
+            },
+        }),
     };
     let outcome = pg
         .ingest_event_atomic(&draft)
@@ -273,15 +277,17 @@ pub async fn ingest_other_fact(pg: &PgStorage, owner: &Owner, label: &str) -> Me
         payload,
         observed_at: now,
         occurred_at: now,
-        cited_object: CitedObjectHint {
-            schema_id: SchemaId::new("proxima-test/cited-v1".into()),
-            schema_version: SchemaVersion::new(1),
-            content_hash: rand_content_hash(),
-        },
-        citation_mapping: CitationMappingHint {
-            schema_id: SchemaId::new("proxima-test/citation-v1".into()),
-            schema_version: SchemaVersion::new(1),
-        },
+        citation: Some(Citation {
+            object: CitedObjectHint {
+                schema_id: SchemaId::new("proxima-test/cited-v1".into()),
+                schema_version: SchemaVersion::new(1),
+                content_hash: rand_content_hash(),
+            },
+            mapping: CitationMappingHint {
+                schema_id: SchemaId::new("proxima-test/citation-v1".into()),
+                schema_version: SchemaVersion::new(1),
+            },
+        }),
     };
     let outcome = pg
         .ingest_event_atomic(&draft)
