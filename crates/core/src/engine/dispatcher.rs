@@ -1,5 +1,6 @@
 use super::Engine;
-use crate::Owner;
+use crate::Principal;
+use crate::authz::{AuthzContext, Role};
 use crate::error::ProtocolError;
 use crate::personality::{
     InstantiatePersonalityRequest, InstantiatePersonalityResponse, ListWakeInvocationsRequest,
@@ -15,11 +16,14 @@ impl Engine {
     /// Returns `ProtocolError::Internal` when storage operations fail.
     pub async fn list_personality_instances(
         &self,
-        owner: &Owner,
+        authz: &AuthzContext,
+        principal: &Principal,
         include_tombstoned: bool,
     ) -> Result<Vec<PersonalityInstanceRow>, ProtocolError> {
+        super::authorize(authz, principal, Role::Admin)?;
+        let owner = authz.scoped_owner(principal.clone());
         self.storage
-            .list_personality_instances(owner, include_tombstoned)
+            .list_personality_instances(&owner, include_tombstoned)
             .await
             .map_err(|e| ProtocolError::internal(format!("list_personality_instances: {e}")))
     }
@@ -30,8 +34,11 @@ impl Engine {
     /// or `ProtocolError::Internal` for other storage errors.
     pub async fn tombstone_personality(
         &self,
-        req: TombstonePersonalityRequest,
+        authz: &AuthzContext,
+        mut req: TombstonePersonalityRequest,
     ) -> Result<TombstonePersonalityResponse, ProtocolError> {
+        super::authorize(authz, &req.principal, Role::Admin)?;
+        req.stamp_owner(authz.scoped_owner(req.principal.clone()));
         self.storage
             .tombstone_personality(&req)
             .await
@@ -50,8 +57,11 @@ impl Engine {
     /// or `ProtocolError::Internal` when storage operations fail.
     pub async fn instantiate_personality(
         &self,
-        req: InstantiatePersonalityRequest,
+        authz: &AuthzContext,
+        mut req: InstantiatePersonalityRequest,
     ) -> Result<InstantiatePersonalityResponse, ProtocolError> {
+        super::authorize(authz, &req.principal, Role::Admin)?;
+        req.stamp_owner(authz.scoped_owner(req.principal.clone()));
         if req.display_name.trim().is_empty() {
             return Err(ProtocolError::invalid_argument(
                 "display_name",
@@ -75,8 +85,11 @@ impl Engine {
     /// Returns `ProtocolError::Internal` when storage operations fail.
     pub async fn list_wake_invocations(
         &self,
-        req: ListWakeInvocationsRequest,
+        authz: &AuthzContext,
+        mut req: ListWakeInvocationsRequest,
     ) -> Result<Vec<WakeInvocationRow>, ProtocolError> {
+        super::authorize(authz, &req.principal, Role::Admin)?;
+        req.stamp_owner(authz.scoped_owner(req.principal.clone()));
         self.storage
             .list_wake_invocations(&req)
             .await
@@ -109,8 +122,11 @@ impl Engine {
     /// Returns `ProtocolError::Internal` when wake replay fails.
     pub async fn replay_missed_wakes(
         &self,
-        req: ReplayWakeEventsRequest,
+        authz: &AuthzContext,
+        mut req: ReplayWakeEventsRequest,
     ) -> Result<ReplayWakeEventsOutcome, ProtocolError> {
+        super::authorize(authz, &req.principal, Role::Admin)?;
+        req.stamp_owner(authz.scoped_owner(req.principal.clone()));
         let _guard = self.dispatch_tick_lock.lock().await;
         crate::wake::dispatch::replay_missed_wakes(self, req).await
     }

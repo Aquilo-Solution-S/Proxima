@@ -7,11 +7,11 @@ use std::pin::Pin;
 use futures_util::Stream;
 use uuid::Uuid;
 
-use crate::{ChangeEvent, Owner};
+use crate::{ChangeEvent, Principal};
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct SubscribeRequest {
-    pub owner: Owner,
+    pub principal: Principal,
     /// Resume cursor. Server returns events with `seq > since`.
     /// `None` means "from the beginning of the change log".
     pub since: Option<Uuid>,

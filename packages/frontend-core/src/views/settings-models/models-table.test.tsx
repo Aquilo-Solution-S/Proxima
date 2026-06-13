@@ -144,7 +144,7 @@ describe("ModelsTable", () => {
     fireEvent.click(radio);
     await waitFor(() =>
       expect(c.bindInferenceTier).toHaveBeenCalledWith({
-        owner,
+        principal: owner.principal,
         tier: "standard",
         target_ref: "my-deep",
       }),
@@ -276,7 +276,7 @@ describe("ModelsTable", () => {
     fireEvent.click(screen.getByRole("button", { name: /test my-fast/i }));
     await waitFor(() =>
       expect(c.testInferenceTarget).toHaveBeenCalledWith({
-        owner,
+        principal: owner.principal,
         target_ref: "my-fast",
       }),
     );

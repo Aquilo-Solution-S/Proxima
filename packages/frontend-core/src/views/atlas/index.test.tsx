@@ -848,7 +848,7 @@ describe("Atlas graph wiring", () => {
 
     await waitFor(() => expect(goalReactivateMock).toHaveBeenCalledTimes(1));
     expect(goalReactivateMock).toHaveBeenCalledWith({
-      owner,
+      principal: owner.principal,
       goal_id: row.id,
       target_personality_id: planner.personality_instance_id,
     });
@@ -964,7 +964,7 @@ describe("Atlas graph wiring", () => {
     await waitFor(() => expect(goalWriteMock).toHaveBeenCalledOnce());
     await waitFor(() => expect(goalReactivateMock).toHaveBeenCalledOnce());
     expect(goalReactivateMock).toHaveBeenCalledWith({
-      owner,
+      principal: owner.principal,
       goal_id: "019dfa50-0000-7000-8000-000000000301",
       target_personality_id: target.personality_instance_id,
     });

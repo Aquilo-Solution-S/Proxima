@@ -123,7 +123,8 @@ pub async fn mark_achieved(
     let payload = load_goal_payload(&mut tx, prior_goal_id).await?;
     let encoded = payload.encode(&ctx.registry)?;
     let draft = GoalDraft {
-        owner: ctx.owner.clone(),
+        principal: ctx.owner.principal.clone(),
+        org_id: Some(ctx.owner.org_id),
         schema_id: encoded.schema_id.clone(),
         schema_version: encoded.schema_version,
         title: encoded.title.clone(),

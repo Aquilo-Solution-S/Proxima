@@ -517,7 +517,7 @@ pub(super) async fn load_payload_memory_classes(
     if ids.is_empty() {
         return Ok(HashMap::new());
     }
-    let mut req = QueryRequest::for_owner(owner.clone());
+    let mut req = QueryRequest::for_principal(owner.principal.clone());
     req.memory_ids = ids.into_iter().map(MemoryId::new).collect();
     req.limit = u32::try_from(req.memory_ids.len()).unwrap_or(u32::MAX);
     req.include_payloads = false;

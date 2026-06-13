@@ -114,7 +114,8 @@ async fn approval_gate_supports_abstraction_and_goal_targets()
     let abstraction = insert_abstraction(&pg, &owner).await?;
     let goal = pg
         .write_goal_atomic(&GoalDraft {
-            owner: owner.clone(),
+            principal: owner.principal.clone(),
+            org_id: Some(owner.org_id),
             schema_id: SchemaId::new("test/approval-goal".into()),
             schema_version: SchemaVersion::new(1),
             title: "Goal".into(),
@@ -268,7 +269,8 @@ async fn personality_vote_requires_matching_self_perspective()
     let owner = owner_fixture();
     let personality = pg
         .instantiate_personality(&proxima_core::InstantiatePersonalityRequest {
-            owner: owner.clone(),
+            principal: owner.principal.clone(),
+            org_id: Some(owner.org_id),
             display_name: "Reviewer".into(),
             purpose: "Vote on approval gates".into(),
         })
@@ -442,7 +444,8 @@ async fn insert_fact(
     let draft = EventDraft {
         source_id: SourceId::new("test/approval"),
         source_batch_id: SourceBatchId::new(Uuid::now_v7()),
-        owner: owner.clone(),
+        principal: owner.principal.clone(),
+        org_id: Some(owner.org_id),
         schema_id: SchemaId::new("test/approval-fact-v1".into()),
         schema_version: SchemaVersion::new(1),
         payload,

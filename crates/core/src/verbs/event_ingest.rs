@@ -7,7 +7,7 @@
 use uuid::Uuid;
 
 use crate::{
-    EventId, MemoryId, Owner, Principal, SchemaId, SchemaVersion, SourceBatchId, SourceId,
+    EventId, MemoryId, OrgId, Owner, Principal, SchemaId, SchemaVersion, SourceBatchId, SourceId,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
@@ -27,7 +27,10 @@ pub struct CitationMappingHint {
 pub struct EventDraft {
     pub source_id: SourceId,
     pub source_batch_id: SourceBatchId,
-    pub owner: Owner,
+    pub principal: Principal,
+    #[serde(skip)]
+    #[specta(skip)]
+    pub org_id: Option<OrgId>,
     pub schema_id: SchemaId,
     pub schema_version: SchemaVersion,
     pub payload: Vec<u8>,
@@ -38,16 +41,37 @@ pub struct EventDraft {
 }
 
 impl EventDraft {
+    /// Reconstructs the storage `Owner` after verb-layer stamping.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `stamp_owner` has not populated `org_id` before storage or hash use.
+    #[must_use]
+    pub fn owner(&self) -> Owner {
+        Owner {
+            principal: self.principal.clone(),
+            org_id: self
+                .org_id
+                .expect("EventDraft org_id must be stamped before storage/hash use"),
+        }
+    }
+
+    pub fn stamp_owner(&mut self, stamped: Owner) {
+        self.principal = stamped.principal;
+        self.org_id = Some(stamped.org_id);
+    }
+
     /// Canonical `event_id` per docs/01: BLAKE3 of
     /// `source_id` || `owner_components` || payload, separated by
     /// 0x00 bytes. Re-receipt of the same observation
     /// produces the same hash by construction.
     #[must_use]
     pub fn event_id(&self) -> EventId {
+        let owner = self.owner();
         let mut hasher = blake3::Hasher::new();
         hasher.update(self.source_id.as_str().as_bytes());
         hasher.update(b"\x00");
-        let (kind, id) = match &self.owner.principal {
+        let (kind, id) = match &owner.principal {
             Principal::User(u) => ("User", u.into_inner()),
             Principal::Group(g) => ("Group", g.into_inner()),
         };
@@ -55,7 +79,7 @@ impl EventDraft {
         hasher.update(b"\x00");
         hasher.update(id.as_bytes());
         hasher.update(b"\x00");
-        hasher.update(self.owner.org_id.into_inner().as_bytes());
+        hasher.update(owner.org_id.into_inner().as_bytes());
         hasher.update(b"\x00");
         hasher.update(&self.payload);
         EventId::new(*hasher.finalize().as_bytes())

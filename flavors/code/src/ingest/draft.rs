@@ -29,7 +29,8 @@ pub(super) fn make_draft<P: serde::Serialize>(
     Ok(EventDraft {
         source_id: SourceId::new(LOCAL_GIT_SOURCE_ID),
         source_batch_id,
-        owner: owner.clone(),
+        principal: owner.principal.clone(),
+        org_id: Some(owner.org_id),
         schema_id: SchemaId::new(schema_id.into()),
         schema_version: SchemaVersion::new(1),
         payload: bytes,

@@ -278,12 +278,12 @@ describe("GoalDialog", () => {
     await waitFor(() => expect(mocks.goalWrite).toHaveBeenCalledOnce());
     await waitFor(() => expect(mocks.goalReactivate).toHaveBeenCalledTimes(2));
     expect(mocks.goalReactivate).toHaveBeenNthCalledWith(1, {
-      owner,
+      principal: owner.principal,
       goal_id: "00000000-0000-0000-0000-0000000000aa",
       target_personality_id: planner.personality_instance_id,
     });
     expect(mocks.goalReactivate).toHaveBeenNthCalledWith(2, {
-      owner,
+      principal: owner.principal,
       goal_id: "00000000-0000-0000-0000-0000000000aa",
       target_personality_id: executor.personality_instance_id,
     });
@@ -356,7 +356,7 @@ describe("GoalDialog", () => {
     await waitFor(() => expect(mocks.goalReactivate).toHaveBeenCalledTimes(3));
     expect(mocks.goalWrite).toHaveBeenCalledOnce();
     expect(mocks.goalReactivate).toHaveBeenNthCalledWith(3, {
-      owner,
+      principal: owner.principal,
       goal_id: "00000000-0000-0000-0000-0000000000aa",
       target_personality_id: executor.personality_instance_id,
     });

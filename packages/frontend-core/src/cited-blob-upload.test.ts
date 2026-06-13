@@ -52,7 +52,7 @@ describe("uploadCitedBlob", () => {
     });
 
     expect(api.citedBlobUploadPrepare).toHaveBeenCalledWith({
-      owner,
+      principal: owner.principal,
       filename: "note.txt",
       mime: "text/plain",
       byte_len: 5,
@@ -65,7 +65,7 @@ describe("uploadCitedBlob", () => {
       }),
     );
     expect(api.citedBlobUploadComplete).toHaveBeenCalledWith({
-      owner,
+      principal: owner.principal,
       upload_id: "019e2de0-c4e7-7e9e-8f22-94fd25fbfa12",
     });
     expect(api.citedBlobUploadAbort).not.toHaveBeenCalled();
@@ -87,7 +87,7 @@ describe("uploadCitedBlob", () => {
     ).rejects.toThrow("HTTP 503");
 
     expect(api.citedBlobUploadAbort).toHaveBeenCalledWith({
-      owner,
+      principal: owner.principal,
       upload_id: "019e2de0-c4e7-7e9e-8f22-94fd25fbfa12",
     });
     expect(api.citedBlobUploadComplete).not.toHaveBeenCalled();

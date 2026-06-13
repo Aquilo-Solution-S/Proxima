@@ -17,10 +17,10 @@ export const SettingsModelsPanel: Component = () => {
   const [embeddingModels, { refetch: refetchEmb }] = createResource(loadEmb);
   const [active, { refetch: refetchActive }] = createResource(loadActive);
   const [targets, { refetch: refetchTargets }] = createResource(async () =>
-    client.listInferenceTargets({ owner }),
+    client.listInferenceTargets({ principal: owner.principal }),
   );
   const [bindings, { refetch: refetchBindings }] = createResource(async () =>
-    client.listInferenceTierBindings({ owner }),
+    client.listInferenceTierBindings({ principal: owner.principal }),
   );
 
   const existingRefs = () =>

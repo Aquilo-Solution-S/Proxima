@@ -154,7 +154,7 @@ async fn search_graph_semantic_or_hybrid(
     let semantic_rows = storage
         .search_memories(
             &MemorySearchRequest {
-                owner: ctx.owner.clone(),
+                principal: ctx.owner.principal.clone(),
                 query: query.to_string(),
                 mode: SearchMode::Semantic,
                 limit: limit.saturating_mul(4),

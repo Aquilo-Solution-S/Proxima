@@ -99,7 +99,7 @@ describe("RegisterModelModal", () => {
     fireEvent.click(screen.getByRole("button", { name: /register/i }));
     await waitFor(() =>
       expect(c.registerInferenceTarget).toHaveBeenCalledWith({
-        owner,
+        principal: owner.principal,
         target_ref: "my-new",
         config: expect.objectContaining({
           kind: "mistral_chat",

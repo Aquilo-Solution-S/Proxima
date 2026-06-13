@@ -8,7 +8,8 @@ use proxima_core::{
 
 fn request(owner: proxima_core::Owner, target_ref: &str) -> RegisterInferenceTargetRequest {
     RegisterInferenceTargetRequest {
-        owner,
+        principal: owner.principal,
+        org_id: Some(owner.org_id),
         target_ref: target_ref.into(),
         config: InferenceTargetConfig::MistralChat(MistralChatConfig {
             base_url: "http://127.0.0.1:9".into(),
@@ -37,7 +38,8 @@ async fn remove_inference_target_succeeds_when_unreferenced() {
 
         let out = pg
             .remove_inference_target(&RemoveInferenceTargetRequest {
-                owner: owner.clone(),
+                principal: owner.principal.clone(),
+                org_id: Some(owner.org_id),
                 target_ref: "tmp".into(),
             })
             .await?;
@@ -63,7 +65,8 @@ async fn remove_inference_target_idempotent_when_absent() {
         let owner = owner_fixture();
         let out = pg
             .remove_inference_target(&RemoveInferenceTargetRequest {
-                owner,
+                principal: owner.principal,
+                org_id: Some(owner.org_id),
                 target_ref: "nonexistent".into(),
             })
             .await?;
@@ -89,7 +92,8 @@ async fn remove_inference_target_blocked_by_tier_binding() {
         pg.register_inference_target(&request(owner.clone(), "fast-target"))
             .await?;
         pg.bind_inference_tier(&BindInferenceTierRequest {
-            owner: owner.clone(),
+            principal: owner.principal.clone(),
+            org_id: Some(owner.org_id),
             tier: ModelTier::Fast,
             target_ref: "fast-target".into(),
         })
@@ -97,7 +101,8 @@ async fn remove_inference_target_blocked_by_tier_binding() {
 
         let err = pg
             .remove_inference_target(&RemoveInferenceTargetRequest {
-                owner,
+                principal: owner.principal,
+                org_id: Some(owner.org_id),
                 target_ref: "fast-target".into(),
             })
             .await

@@ -13,7 +13,9 @@ use proxima_code::{build_engine_with, migrator, register_repo};
 use proxima_core::llm::scripted::{ScriptedAnthropicClient, ScriptedTurn};
 use proxima_core::llm::{EmbeddingClient, LlmError};
 use proxima_core::personality::{InstantiatePersonalityRequest, PersonalityInstanceId};
-use proxima_core::{CORE_INSPIRES_RELATION, OrgId, Owner, Principal, UserId};
+use proxima_core::{
+    AuthPath, AuthzContext, CORE_INSPIRES_RELATION, OrgId, Owner, Principal, UserId,
+};
 use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
@@ -170,6 +172,7 @@ async fn inspires_edge_targets_only_intended_engineer_instance() {
         // personality is also registered (proxima_flavor!), so we
         // accept its inert personality row but won't author commit-fact events
         // until needed.
+        let authz = AuthzContext::single_owner(&owner, AuthPath::System);
         let scripted = Arc::new(ScriptedAnthropicClient::new(vec![ScriptedTurn::end_turn()]));
         let engine = build_engine_with(pg.clone(), |_registry| {})
             .with_anthropic(scripted)
@@ -177,18 +180,26 @@ async fn inspires_edge_targets_only_intended_engineer_instance() {
 
         // Provision Alice + Bob (two engineer instances).
         let alice = engine
-            .instantiate_personality(InstantiatePersonalityRequest {
-                owner: owner.clone(),
-                display_name: "Alice".into(),
-                purpose: "develop perspectives on code changes".into(),
-            })
+            .instantiate_personality(
+                &authz,
+                InstantiatePersonalityRequest {
+                    principal: owner.principal.clone(),
+                    org_id: None,
+                    display_name: "Alice".into(),
+                    purpose: "develop perspectives on code changes".into(),
+                },
+            )
             .await?;
         let bob = engine
-            .instantiate_personality(InstantiatePersonalityRequest {
-                owner: owner.clone(),
-                display_name: "Bob".into(),
-                purpose: "develop perspectives on code changes".into(),
-            })
+            .instantiate_personality(
+                &authz,
+                InstantiatePersonalityRequest {
+                    principal: owner.principal.clone(),
+                    org_id: None,
+                    display_name: "Bob".into(),
+                    purpose: "develop perspectives on code changes".into(),
+                },
+            )
             .await?;
         let alice_self = self_perspective_for(&pg, alice.instance_id).await?;
         let bob_self = self_perspective_for(&pg, bob.instance_id).await?;

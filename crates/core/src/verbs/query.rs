@@ -9,7 +9,7 @@ use crate::outbox::EntityRef;
 use crate::personality::PersonalityInstanceId;
 use crate::verbs::goal_write::GoalState;
 use crate::verbs::schema::SchemaTombstone;
-use crate::{GoalId, MemoryId, Owner, SchemaId, SchemaVersion};
+use crate::{GoalId, MemoryId, Owner, Principal, SchemaId, SchemaVersion};
 
 /// Re-export the canonical `EntityKind` from `outbox` so query
 /// callers don't need a second import path. The duplicate
@@ -44,7 +44,7 @@ fn default_search_mode() -> SearchMode {
 /// metadata before dispatching to storage.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct MemorySearchRequest {
-    pub owner: Owner,
+    pub principal: Principal,
     pub query: String,
     #[serde(default = "default_search_mode")]
     pub mode: SearchMode,
@@ -81,7 +81,7 @@ pub enum MemoryLineageDirection {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoryLineageRequest {
-    pub owner: Owner,
+    pub principal: Principal,
     pub start_memory_id: MemoryId,
     pub direction: MemoryLineageDirection,
     pub depth: u8,
@@ -171,7 +171,7 @@ pub struct StatefulHeadsFilter {
 /// registers a sidecar (M3+).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct QueryRequest {
-    pub owner: Owner,
+    pub principal: Principal,
     pub entity_kind: Option<EntityKind>,
     pub schema_id: Option<SchemaId>,
     pub supersession: SupersessionStatus,
@@ -203,9 +203,9 @@ impl QueryRequest {
     /// filter. Pagination cursor lands when M2 introduces real
     /// data.
     #[must_use]
-    pub fn for_owner(owner: Owner) -> Self {
+    pub fn for_principal(principal: Principal) -> Self {
         Self {
-            owner,
+            principal,
             entity_kind: None,
             schema_id: None,
             supersession: SupersessionStatus::HeadsOnly,
@@ -291,7 +291,7 @@ impl MemoryStore {
         let memories: Vec<MemoryRow> = self
             .memories
             .iter()
-            .filter(|m| m.owner.principal == req.owner.principal)
+            .filter(|m| m.owner.principal == req.principal)
             .filter(|m| req.entity_kind.is_none_or(|k| m.kind == k))
             .filter(|m| req.schema_id.as_ref().is_none_or(|s| &m.schema_id == s))
             .take(req.limit as usize)

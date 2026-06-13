@@ -83,7 +83,8 @@ async fn continuation_invocation_can_share_original_wake_natural_key() {
 
         let listed = pg
             .list_wake_invocations(&ListWakeInvocationsRequest {
-                owner,
+                principal: owner.principal,
+                org_id: Some(owner.org_id),
                 personality_instance_id: instance_id,
                 wake_entry_id: Some(wake_entry_id),
                 triggering_memory_id: None,
@@ -187,7 +188,8 @@ async fn seed_personality_with_entry(
 ) -> Result<(PersonalityInstanceId, Uuid), Box<dyn std::error::Error>> {
     let response = pg
         .instantiate_personality(&InstantiatePersonalityRequest {
-            owner: owner.clone(),
+            principal: owner.principal.clone(),
+            org_id: Some(owner.org_id),
             display_name: "Engineer A".into(),
             purpose: "exercise wake invocation dispatch columns".into(),
         })
@@ -208,7 +210,8 @@ async fn seed_personality_with_entry(
     .expect("valid wake entry");
     let wake_entry_id = entry.wake_entry_id;
     pg.set_wake_entries(&SetWakeEntriesRequest {
-        owner: owner.clone(),
+        principal: owner.principal.clone(),
+        org_id: Some(owner.org_id),
         personality_instance_id: response.instance_id,
         entries: vec![entry],
     })
@@ -257,7 +260,7 @@ async fn seed_intervention_continue_sidecars(
     ciborium::ser::into_writer(&request, &mut request_payload)?;
     let request_outcome = pg
         .ingest_event_atomic(&intervention_request_event_draft(
-            owner.clone(),
+            owner,
             &request_payload,
             SourceBatchId::new(Uuid::now_v7()),
             SourceId::new(INTERVENTION_SOURCE_ID),
@@ -307,7 +310,7 @@ async fn seed_intervention_continue_sidecars(
     ciborium::ser::into_writer(&decision, &mut decision_payload)?;
     let decision_outcome = pg
         .ingest_event_atomic(&intervention_decision_event_draft(
-            owner.clone(),
+            owner,
             &decision_payload,
             SourceBatchId::new(Uuid::now_v7()),
             SourceId::new(INTERVENTION_SOURCE_ID),
@@ -543,7 +546,8 @@ async fn wake_invocation_carries_dispatch_columns() {
         .await?;
         let listed = pg
             .list_wake_invocations(&ListWakeInvocationsRequest {
-                owner: owner.clone(),
+                principal: owner.principal.clone(),
+                org_id: Some(owner.org_id),
                 personality_instance_id: instance_id,
                 wake_entry_id: Some(wake_entry_id),
                 triggering_memory_id: None,

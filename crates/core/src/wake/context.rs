@@ -190,7 +190,7 @@ pub async fn assemble_wake_context(
     // to the personality, which (with the v1 direct-edge schema) is
     // simply the root perspective memory id.
     let active_goal_rows = storage
-        .list_active_goals(owner, root_memory_id, 100)
+        .list_active_goals(&owner.principal, root_memory_id, 100)
         .await
         .map_err(|e| ProtocolError::internal(format!("list_active_goals: {e}")))?;
 

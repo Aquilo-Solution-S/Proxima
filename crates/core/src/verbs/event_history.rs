@@ -2,13 +2,13 @@
 //! log for one Owner. See docs/14 §"`EventHistory`" and §"Cold-start
 //! stitching".
 
-use crate::{ChangeEvent, Owner};
+use crate::{ChangeEvent, Principal};
 
 pub const MAX_EVENT_HISTORY_LIMIT: u32 = 1000;
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct EventHistoryRequest {
-    pub owner: Owner,
+    pub principal: Principal,
     pub limit: u32,
     pub before: Option<uuid::Uuid>,
 }

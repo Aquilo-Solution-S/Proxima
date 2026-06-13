@@ -69,7 +69,8 @@ fn fresh_event_draft(owner: Owner) -> EventDraft {
     EventDraft {
         source_id: SourceId::new("test/source"),
         source_batch_id: SourceBatchId::new(Uuid::now_v7()),
-        owner,
+        principal: owner.principal,
+        org_id: Some(owner.org_id),
         schema_id: SchemaId::new("test/fact_blob".into()),
         schema_version: SchemaVersion::new(1),
         payload: b"hello world".to_vec(),
@@ -89,7 +90,8 @@ fn fresh_event_draft(owner: Owner) -> EventDraft {
 
 fn fresh_goal_draft(owner: &Owner, request_id: String) -> GoalDraft {
     GoalDraft {
-        owner: owner.clone(),
+        principal: owner.principal.clone(),
+        org_id: Some(owner.org_id),
         schema_id: SchemaId::new("test/goal_blob".into()),
         schema_version: SchemaVersion::new(1),
         title: "Test goal".to_string(),

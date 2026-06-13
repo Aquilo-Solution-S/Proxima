@@ -58,7 +58,11 @@ impl PersonalityTool for ListActiveGoalsTool {
         let goals = ctx
             .engine
             .storage()
-            .list_active_goals(ctx.owner, ctx.current_root_perspective_memory_id, 100)
+            .list_active_goals(
+                &ctx.owner.principal,
+                ctx.current_root_perspective_memory_id,
+                100,
+            )
             .await
             .map_err(|e| ProtocolError::internal(e.to_string()))?;
         let goals_payload: Vec<serde_json::Value> = goals

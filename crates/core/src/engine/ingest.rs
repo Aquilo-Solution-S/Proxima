@@ -1,11 +1,11 @@
 use super::Engine;
-use crate::SourceBatchId;
 use crate::authz::{AuthzContext, Role};
 use crate::error::ProtocolError;
 use crate::storage::StorageError;
 use crate::verbs::close_batch::CloseBatchOutcome;
 use crate::verbs::event_ingest::{EventDraft, EventIngestOutcome};
 use crate::verbs::persist_wake_trace::{WakeTracePersistInput, WakeTracePersistOutcome};
+use crate::{Principal, SourceBatchId};
 
 impl Engine {
     /// docs/14 §"`EventIngest`" — Owner-scoped write. Validates
@@ -13,16 +13,18 @@ impl Engine {
     ///
     /// # Errors
     ///
-    /// Returns `Forbidden` when the context cannot access `draft.owner` or
+    /// Returns `Forbidden` when the context cannot access `draft.principal` or
     /// lacks the source-ingest role, `UnknownSchema` when any of the three
     /// draft schemas isn't registered, or `Internal` when the atomic ingest
     /// fails.
     pub async fn event_ingest(
         &self,
         authz: &AuthzContext,
-        draft: EventDraft,
+        mut draft: EventDraft,
     ) -> Result<EventIngestOutcome, ProtocolError> {
-        super::authorize(authz, &draft.owner, Role::SourceIngest)?;
+        super::authorize(authz, &draft.principal, Role::SourceIngest)?;
+        let owner = authz.scoped_owner(draft.principal.clone());
+        draft.stamp_owner(owner);
         // Three schema validations: fact, cited_object, citation_mapping.
         for (sid, ver) in [
             (&draft.schema_id, draft.schema_version),
@@ -62,7 +64,7 @@ impl Engine {
         authz: &AuthzContext,
         input: WakeTracePersistInput,
     ) -> Result<WakeTracePersistOutcome, ProtocolError> {
-        super::authorize(authz, &input.owner, Role::GraphWrite)?;
+        super::authorize(authz, &input.owner.principal, Role::GraphWrite)?;
         self.persist_wake_trace_internal(input)
             .await
             .map_err(|e| ProtocolError::internal(e.to_string()))
@@ -92,13 +94,13 @@ impl Engine {
     pub async fn close_batch(
         &self,
         authz: &AuthzContext,
-        owner: crate::Owner,
+        principal: Principal,
         source_batch_id: SourceBatchId,
     ) -> Result<CloseBatchOutcome, ProtocolError> {
-        super::authorize(authz, &owner, Role::SourceIngest)?;
+        super::authorize(authz, &principal, Role::SourceIngest)?;
         let outcome = self
             .storage
-            .close_batch(&owner, source_batch_id)
+            .close_batch(&principal, source_batch_id)
             .await
             .map_err(|e| match e {
                 StorageError::NotFound => ProtocolError::not_found("source batch not found"),

@@ -11,7 +11,7 @@
 //! event here once a consumer needs the live signal.
 
 use proxima_core::verbs::close_batch::CloseBatchOutcome;
-use proxima_core::{Owner, OwnerPrincipalKind, Principal, SourceBatchId, StorageError};
+use proxima_core::{OwnerPrincipalKind, Principal, SourceBatchId, StorageError};
 use sqlx::PgPool;
 
 use crate::error::map_err;
@@ -22,10 +22,10 @@ use crate::error::map_err;
 /// `Internal` on sqlx failure.
 pub async fn close_batch(
     pool: &PgPool,
-    owner: &Owner,
+    principal: &Principal,
     source_batch_id: SourceBatchId,
 ) -> Result<CloseBatchOutcome, StorageError> {
-    let (owner_kind, owner_principal_id) = match &owner.principal {
+    let (owner_kind, owner_principal_id) = match principal {
         Principal::User(u) => (OwnerPrincipalKind::User, u.into_inner()),
         Principal::Group(g) => (OwnerPrincipalKind::Group, g.into_inner()),
     };

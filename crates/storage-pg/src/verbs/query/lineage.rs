@@ -35,7 +35,7 @@ pub(crate) async fn walk_memory_lineage(
 ) -> Result<MemoryLineageResponse, StorageError> {
     let limit = req.limit.min(200);
     let depth = req.depth.min(8);
-    let (owner_kind, owner_principal_id) = match &req.owner.principal {
+    let (owner_kind, owner_principal_id) = match &req.principal {
         Principal::User(user) => (OwnerPrincipalKind::User, user.into_inner()),
         Principal::Group(group) => (OwnerPrincipalKind::Group, group.into_inner()),
     };
@@ -143,12 +143,11 @@ async fn start_memory_visible(
                    OR EXISTS (
                        SELECT 1
                          FROM proxima_core.read_scope_matrix r
-                        WHERE r.owner_principal_kind = memories.owner_principal_kind
-                          AND r.owner_principal_id = memories.owner_principal_id
-                          AND r.owner_org_id = memories.owner_org_id
-                          AND r.reader_personality_instance_id = $4
-                          AND r.readable_personality_instance_id = memories.personality_instance_id
-                   )
+	                        WHERE r.owner_principal_kind = memories.owner_principal_kind
+	                          AND r.owner_principal_id = memories.owner_principal_id
+	                          AND r.reader_personality_instance_id = $4
+	                          AND r.readable_personality_instance_id = memories.personality_instance_id
+	                   )
                )",
     )
     .bind(owner_kind)
@@ -210,12 +209,11 @@ async fn load_nodes(
                    OR EXISTS (
                        SELECT 1
                          FROM proxima_core.read_scope_matrix r
-                        WHERE r.owner_principal_kind = memories.owner_principal_kind
-                          AND r.owner_principal_id = memories.owner_principal_id
-                          AND r.owner_org_id = memories.owner_org_id
-                          AND r.reader_personality_instance_id = $4
-                          AND r.readable_personality_instance_id = memories.personality_instance_id
-                   )
+	                        WHERE r.owner_principal_kind = memories.owner_principal_kind
+	                          AND r.owner_principal_id = memories.owner_principal_id
+	                          AND r.reader_personality_instance_id = $4
+	                          AND r.readable_personality_instance_id = memories.personality_instance_id
+	                   )
                )",
     )
     .bind(owner_kind)
@@ -263,12 +261,11 @@ WITH RECURSIVE walk AS (
                      OR EXISTS (
                          SELECT 1
                            FROM proxima_core.read_scope_matrix r
-                          WHERE r.owner_principal_kind = m.owner_principal_kind
-                            AND r.owner_principal_id = m.owner_principal_id
-                            AND r.owner_org_id = m.owner_org_id
-                            AND r.reader_personality_instance_id = $6
-                            AND r.readable_personality_instance_id = m.personality_instance_id
-                     )
+	                          WHERE r.owner_principal_kind = m.owner_principal_kind
+	                            AND r.owner_principal_id = m.owner_principal_id
+	                            AND r.reader_personality_instance_id = $6
+	                            AND r.readable_personality_instance_id = m.personality_instance_id
+	                     )
                  )
           )
       )
@@ -301,12 +298,11 @@ WITH RECURSIVE walk AS (
                      OR EXISTS (
                          SELECT 1
                            FROM proxima_core.read_scope_matrix r
-                          WHERE r.owner_principal_kind = m.owner_principal_kind
-                            AND r.owner_principal_id = m.owner_principal_id
-                            AND r.owner_org_id = m.owner_org_id
-                            AND r.reader_personality_instance_id = $6
-                            AND r.readable_personality_instance_id = m.personality_instance_id
-                     )
+	                          WHERE r.owner_principal_kind = m.owner_principal_kind
+	                            AND r.owner_principal_id = m.owner_principal_id
+	                            AND r.reader_personality_instance_id = $6
+	                            AND r.readable_personality_instance_id = m.personality_instance_id
+	                     )
                  )
           )
       )
@@ -345,12 +341,11 @@ WITH RECURSIVE walk AS (
                      OR EXISTS (
                          SELECT 1
                            FROM proxima_core.read_scope_matrix r
-                          WHERE r.owner_principal_kind = m.owner_principal_kind
-                            AND r.owner_principal_id = m.owner_principal_id
-                            AND r.owner_org_id = m.owner_org_id
-                            AND r.reader_personality_instance_id = $6
-                            AND r.readable_personality_instance_id = m.personality_instance_id
-                     )
+	                          WHERE r.owner_principal_kind = m.owner_principal_kind
+	                            AND r.owner_principal_id = m.owner_principal_id
+	                            AND r.reader_personality_instance_id = $6
+	                            AND r.readable_personality_instance_id = m.personality_instance_id
+	                     )
                  )
           )
       )
@@ -383,12 +378,11 @@ WITH RECURSIVE walk AS (
                      OR EXISTS (
                          SELECT 1
                            FROM proxima_core.read_scope_matrix r
-                          WHERE r.owner_principal_kind = m.owner_principal_kind
-                            AND r.owner_principal_id = m.owner_principal_id
-                            AND r.owner_org_id = m.owner_org_id
-                            AND r.reader_personality_instance_id = $6
-                            AND r.readable_personality_instance_id = m.personality_instance_id
-                     )
+	                          WHERE r.owner_principal_kind = m.owner_principal_kind
+	                            AND r.owner_principal_id = m.owner_principal_id
+	                            AND r.reader_personality_instance_id = $6
+	                            AND r.readable_personality_instance_id = m.personality_instance_id
+	                     )
                  )
           )
       )

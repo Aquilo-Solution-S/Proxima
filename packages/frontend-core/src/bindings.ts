@@ -162,7 +162,7 @@ export const commands = {
 export type AuthoredByTs = "any" | "self_author" | "other";
 
 export type BindInferenceTierTs = {
-	owner: Owner,
+	principal: Principal,
 	tier: ModelTierTs,
 	target_ref: string,
 };
@@ -217,7 +217,7 @@ export type CitedBlobReadUrlOutcomeTs = {
 
 // Tauri/TS-compatible cited-blob read URL request.
 export type CitedBlobReadUrlTs = {
-	owner: Owner,
+	principal: Principal,
 	cited_object_id: string,
 };
 
@@ -228,7 +228,7 @@ export type CitedBlobUploadAbortOutcomeTs = {
 
 // Tauri/TS-compatible cited-blob abort request.
 export type CitedBlobUploadAbortTs = {
-	owner: Owner,
+	principal: Principal,
 	upload_id: string,
 };
 
@@ -246,7 +246,7 @@ export type CitedBlobUploadCompleteOutcomeTs = {
 
 // Tauri/TS-compatible cited-blob completion request.
 export type CitedBlobUploadCompleteTs = {
-	owner: Owner,
+	principal: Principal,
 	upload_id: string,
 };
 
@@ -260,7 +260,7 @@ export type CitedBlobUploadPrepareOutcomeTs = {
 
 // Tauri/TS-compatible cited-blob upload request.
 export type CitedBlobUploadPrepareTs = {
-	owner: Owner,
+	principal: Principal,
 	filename: string,
 	mime: string,
 	byte_len: number,
@@ -446,7 +446,7 @@ export type ErrorCode = "AuthRequired" | "Forbidden" | "UnknownSchema" | "Alread
 export type EventDraft = {
 	source_id: SourceId,
 	source_batch_id: SourceBatchId,
-	owner: Owner,
+	principal: Principal,
 	schema_id: SchemaId,
 	schema_version: SchemaVersion,
 	payload: number[],
@@ -457,7 +457,7 @@ export type EventDraft = {
 };
 
 export type EventHistoryRequest = {
-	owner: Owner,
+	principal: Principal,
 	limit: number,
 	before: string | null,
 };
@@ -519,7 +519,7 @@ export type FileState = "Present" | "Tombstone";
 export type GoalAuthorship = "User" | { System: SystemOrigin } | "External";
 
 export type GoalDraft = {
-	owner: Owner,
+	principal: Principal,
 	schema_id: SchemaId,
 	schema_version: SchemaVersion,
 	title: string,
@@ -535,7 +535,7 @@ export type GoalDraft = {
 export type GoalId = string;
 
 export type GoalReactivateTs = {
-	owner: Owner,
+	principal: Principal,
 	goal_id: string,
 	target_personality_id: string | null,
 };
@@ -616,26 +616,26 @@ export type InstantiatePersonalityOutcomeTs = {
 };
 
 export type InstantiatePersonalityTs = {
-	owner: Owner,
+	principal: Principal,
 	display_name: string,
 	purpose: string,
 };
 
 export type ListInferenceTargetsTs = {
-	owner: Owner,
+	principal: Principal,
 };
 
 export type ListInferenceTierBindingsTs = {
-	owner: Owner,
+	principal: Principal,
 };
 
 export type ListPersonalityInstancesTs = {
-	owner: Owner,
+	principal: Principal,
 	include_tombstoned?: boolean,
 };
 
 export type ListWakeInvocationsTs = {
-	owner: Owner,
+	principal: Principal,
 	personality_instance_id: string,
 	wake_entry_id: string | null,
 	triggering_memory_id: string | null,
@@ -716,8 +716,13 @@ export type OperatorKind = "AtoGoal";
 export type OrgId = string;
 
 /**
- *  Owner carries principal (access scope) and `org_id` (billing unit).
- *  `org_id` is NOT part of the access predicate (AGENTS.md invariant 4).
+ *  Storage/row annotation assembled from an [`AuthzContext`](crate::AuthzContext).
+ * 
+ *  Public request surfaces carry [`Principal`], not `Owner`. The verb layer
+ *  checks that principal against the caller identity, then stamps `org_id`
+ *  from auth context to reconstruct this pair for rows, storage drafts, wake
+ *  internals, and stable hash inputs. `org_id` is NOT part of the access
+ *  predicate (AGENTS.md invariant 4).
  */
 export type Owner = {
 	principal: Principal,
@@ -816,7 +821,7 @@ export type ProtocolError = {
  *  registers a sidecar (M3+).
  */
 export type QueryRequest = {
-	owner: Owner,
+	principal: Principal,
 	entity_kind: EntityKind | null,
 	schema_id: SchemaId | null,
 	supersession: SupersessionStatus,
@@ -847,7 +852,7 @@ export type RegisterInferenceTargetOutcomeTs = {
 };
 
 export type RegisterInferenceTargetTs = {
-	owner: Owner,
+	principal: Principal,
 	target_ref: string,
 	config: InferenceTargetConfigTs,
 };
@@ -864,7 +869,7 @@ export type RemoveInferenceTargetOutcomeTs = {
 };
 
 export type RemoveInferenceTargetTs = {
-	owner: Owner,
+	principal: Principal,
 	target_ref: string,
 };
 
@@ -960,7 +965,7 @@ export type SetWakeEntriesOutcomeTs = {
 };
 
 export type SetWakeEntriesTs = {
-	owner: Owner,
+	principal: Principal,
 	personality_instance_id: string,
 	entries: WakeEntryDraftTs[],
 };
@@ -975,7 +980,7 @@ export type SourceBatchId = string;
 export type SourceId = string;
 
 export type SubscribeRequest = {
-	owner: Owner,
+	principal: Principal,
 	/**
 	 *  Resume cursor. Server returns events with `seq > since`.
 	 *  `None` means "from the beginning of the change log".
@@ -1007,7 +1012,7 @@ export type TestInferenceTargetOutcomeTs = {
 };
 
 export type TestInferenceTargetTs = {
-	owner: Owner,
+	principal: Principal,
 	target_ref: string,
 };
 
@@ -1019,7 +1024,7 @@ export type TombstonePersonalityOutcomeTs = {
 };
 
 export type TombstonePersonalityTs = {
-	owner: Owner,
+	principal: Principal,
 	personality_instance_id: string,
 };
 

@@ -40,38 +40,43 @@ pub fn schema_ref_to_proto(core: &CoreSchemaRef) -> PbSchemaRef {
 // ---------------------------------------------------------------------------
 
 pub fn owner_from_proto(pb: PbOwner) -> Result<Owner, Status> {
-    let principal = match pb
-        .principal
-        .ok_or_else(|| Status::invalid_argument("missing principal"))?
-    {
-        PbPrincipal {
-            kind: Some(pb::principal::Kind::UserId(s)),
-        } => CorePrincipal::User(UserId::new(uuid_from_proto(&s)?)),
-        PbPrincipal {
-            kind: Some(pb::principal::Kind::GroupId(s)),
-        } => CorePrincipal::Group(GroupId::new(uuid_from_proto(&s)?)),
-        PbPrincipal { kind: None } => {
-            return Err(Status::invalid_argument("principal kind is none"));
-        }
-    };
+    let principal = principal_from_proto(
+        pb.principal
+            .ok_or_else(|| Status::invalid_argument("missing principal"))?,
+    )?;
     Ok(Owner {
         principal,
         org_id: OrgId::new(uuid_from_proto(&pb.org_id)?),
     })
 }
 
+pub fn principal_from_proto(pb: PbPrincipal) -> Result<CorePrincipal, Status> {
+    match pb {
+        PbPrincipal {
+            kind: Some(pb::principal::Kind::UserId(s)),
+        } => Ok(CorePrincipal::User(UserId::new(uuid_from_proto(&s)?))),
+        PbPrincipal {
+            kind: Some(pb::principal::Kind::GroupId(s)),
+        } => Ok(CorePrincipal::Group(GroupId::new(uuid_from_proto(&s)?))),
+        PbPrincipal { kind: None } => Err(Status::invalid_argument("principal kind is none")),
+    }
+}
+
 pub fn owner_to_proto(core: &Owner) -> PbOwner {
-    let principal = match &core.principal {
+    PbOwner {
+        principal: Some(principal_to_proto(&core.principal)),
+        org_id: uuid_to_proto(core.org_id.into_inner()),
+    }
+}
+
+pub fn principal_to_proto(core: &CorePrincipal) -> PbPrincipal {
+    match core {
         CorePrincipal::User(u) => PbPrincipal {
             kind: Some(pb::principal::Kind::UserId(uuid_to_proto(u.into_inner()))),
         },
         CorePrincipal::Group(g) => PbPrincipal {
             kind: Some(pb::principal::Kind::GroupId(uuid_to_proto(g.into_inner()))),
         },
-    };
-    PbOwner {
-        principal: Some(principal),
-        org_id: uuid_to_proto(core.org_id.into_inner()),
     }
 }
 

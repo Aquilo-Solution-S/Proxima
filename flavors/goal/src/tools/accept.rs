@@ -81,7 +81,8 @@ pub async fn accept_goal(
         None => outgoing_motivated_by_evidence(&mut tx, &ctx, proposal_id).await?,
     };
     let draft = GoalDraft {
-        owner: ctx.owner.clone(),
+        principal: ctx.owner.principal.clone(),
+        org_id: Some(ctx.owner.org_id),
         schema_id: encoded.schema_id.clone(),
         schema_version: encoded.schema_version,
         title: encoded.title.clone(),

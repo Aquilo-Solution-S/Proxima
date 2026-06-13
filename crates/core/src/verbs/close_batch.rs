@@ -10,11 +10,11 @@
 //! the existing `closed_at`. Cross-owner closes return `NotFound` to
 //! avoid information leak.
 
-use crate::{Owner, SourceBatchId};
+use crate::{Principal, SourceBatchId};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CloseBatchRequest {
-    pub owner: Owner,
+    pub principal: Principal,
     pub source_batch_id: SourceBatchId,
 }
 

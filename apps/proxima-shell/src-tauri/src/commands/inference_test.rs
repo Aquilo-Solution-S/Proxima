@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use proxima_codex_auth::AuthDotJsonPath;
 use proxima_core::error::ProtocolError;
-use proxima_core::{AuthzContext, ChatGPTCodexConfig, Engine, InferenceTargetConfig, Owner};
+use proxima_core::{AuthzContext, ChatGPTCodexConfig, Engine, InferenceTargetConfig, Principal};
 use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderName, HeaderValue};
 use serde_json::json;
 use tauri::State;
@@ -81,7 +81,7 @@ pub async fn codex_auth_status() -> Result<CodexAuthStatusOutcomeTs, ProtocolErr
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
 pub struct TestInferenceTargetTs {
-    pub owner: Owner,
+    pub principal: Principal,
     pub target_ref: String,
 }
 
@@ -416,7 +416,9 @@ pub async fn test_inference_target(
     authz: State<'_, AuthzContext>,
     req: TestInferenceTargetTs,
 ) -> Result<TestInferenceTargetOutcomeTs, ProtocolError> {
-    let rows = engine.list_inference_targets(&authz, &req.owner).await?;
+    let rows = engine
+        .list_inference_targets(&authz, &req.principal)
+        .await?;
     let row = rows
         .iter()
         .find(|row| row.target_ref == req.target_ref)

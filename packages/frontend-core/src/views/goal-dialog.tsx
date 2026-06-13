@@ -145,7 +145,10 @@ export const GoalDialog: Component<GoalDialogProps> = (props) => {
     setPersonalitiesLoading(true);
     setAssignmentLoadError(null);
     void commands
-      .listPersonalityInstances({ owner, include_tombstoned: false })
+      .listPersonalityInstances({
+        principal: owner.principal,
+        include_tombstoned: false,
+      })
       .then((result) => {
         if (result.status === "error") {
           setAssignable([]);
@@ -194,7 +197,7 @@ export const GoalDialog: Component<GoalDialogProps> = (props) => {
     const failed: string[] = [];
     for (const targetId of targetIds) {
       const result = await commands.goalReactivate({
-        owner,
+        principal: owner.principal,
         goal_id: goalId,
         target_personality_id: targetId,
       });
@@ -235,7 +238,7 @@ export const GoalDialog: Component<GoalDialogProps> = (props) => {
       let goalId = createdGoalId();
       if (goalId === null) {
         const draft: GoalDraft = {
-          owner,
+          principal: owner.principal,
           schema_id: editor.schemaId,
           schema_version: editor.schemaVersion,
           title: title(),

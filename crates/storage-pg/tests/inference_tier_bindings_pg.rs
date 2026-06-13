@@ -12,7 +12,8 @@ async fn register(
     target_ref: &str,
 ) -> Result<(), proxima_core::StorageError> {
     pg.register_inference_target(&RegisterInferenceTargetRequest {
-        owner: owner.clone(),
+        principal: owner.principal.clone(),
+        org_id: Some(owner.org_id),
         target_ref: target_ref.into(),
         config: InferenceTargetConfig::MistralChat(MistralChatConfig {
             base_url: "http://127.0.0.1:9".into(),
@@ -41,7 +42,8 @@ async fn bind_unbind_tier_round_trip() {
         register(&pg, &owner, "t1").await?;
 
         pg.bind_inference_tier(&BindInferenceTierRequest {
-            owner: owner.clone(),
+            principal: owner.principal.clone(),
+            org_id: Some(owner.org_id),
             tier: ModelTier::Standard,
             target_ref: "t1".into(),
         })
@@ -77,13 +79,15 @@ async fn bind_inference_tier_upserts_existing_binding() {
         register(&pg, &owner, "b").await?;
 
         pg.bind_inference_tier(&BindInferenceTierRequest {
-            owner: owner.clone(),
+            principal: owner.principal.clone(),
+            org_id: Some(owner.org_id),
             tier: ModelTier::Fast,
             target_ref: "a".into(),
         })
         .await?;
         pg.bind_inference_tier(&BindInferenceTierRequest {
-            owner: owner.clone(),
+            principal: owner.principal.clone(),
+            org_id: Some(owner.org_id),
             tier: ModelTier::Fast,
             target_ref: "b".into(),
         })
