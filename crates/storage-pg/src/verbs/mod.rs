@@ -6,7 +6,6 @@
 
 pub(crate) mod active_goals;
 pub mod approval;
-pub mod chat;
 pub mod close_batch;
 pub mod consolidate;
 pub mod derive_append;
