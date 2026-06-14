@@ -67,6 +67,7 @@ async fn wake_token_audit_attributes_caller_personality() -> Result<(), Box<dyn 
             model_id: "test".into(),
             client_name: "test".into(),
             client_version: "0".into(),
+            personality_instance_id: None,
             caller_self_perspective: Some(root_memory_id),
         },
         caller_self_perspective: Some(root_memory_id),

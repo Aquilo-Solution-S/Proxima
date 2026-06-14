@@ -776,6 +776,7 @@ where
         source_batch_id: SourceBatchId::new(uuid::Uuid::now_v7()),
         principal: ctx.owner.principal.clone(),
         org_id: Some(ctx.owner.org_id),
+        author_personality_instance_id: None,
         schema_id: SchemaId::new(T::SCHEMA_ID.into()),
         schema_version: SchemaVersion::new(T::SCHEMA_VERSION),
         payload: payload_bytes,

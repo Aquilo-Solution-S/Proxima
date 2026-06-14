@@ -38,6 +38,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         source_batch_id: SourceBatchId::new(uuid::Uuid::now_v7()),
         principal: booted.owner.principal.clone(),
         org_id: Some(booted.owner.org_id),
+        author_personality_instance_id: None,
         schema_id: SchemaId::new(flavor::DocumentFiledV1::SCHEMA_ID.into()),
         schema_version: SchemaVersion::new(flavor::DocumentFiledV1::SCHEMA_VERSION),
         payload: payload_bytes,

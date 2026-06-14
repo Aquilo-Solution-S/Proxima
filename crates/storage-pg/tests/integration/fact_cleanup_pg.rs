@@ -62,6 +62,7 @@ fn fresh_draft_with_content_hash(owner: Owner, content_hash: [u8; 32]) -> EventD
         source_batch_id: SourceBatchId::new(Uuid::now_v7()),
         principal: owner.principal,
         org_id: Some(owner.org_id),
+        author_personality_instance_id: None,
         schema_id: SchemaId::new("test/cleanup-fact-v1".into()),
         schema_version: SchemaVersion::new(1),
         payload: format!("cleanup {}", Uuid::now_v7()).into_bytes(),

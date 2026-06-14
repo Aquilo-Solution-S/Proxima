@@ -33,6 +33,7 @@ pub(super) fn make_draft<P: serde::Serialize>(
         source_batch_id,
         principal: owner.principal.clone(),
         org_id: Some(owner.org_id),
+        author_personality_instance_id: None,
         schema_id: SchemaId::new(schema_id.into()),
         schema_version: SchemaVersion::new(1),
         payload: bytes,

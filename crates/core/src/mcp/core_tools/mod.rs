@@ -16,6 +16,7 @@ pub mod wake_entry_input;
 
 pub mod get_fact_retention;
 pub mod get_graph;
+pub mod get_memory;
 pub mod get_personality;
 pub mod instantiate_personality;
 pub mod list_edge_types;
@@ -27,6 +28,7 @@ pub mod list_wake_entries;
 pub mod set_fact_retention;
 pub mod set_read_scope;
 pub mod tombstone_personality;
+pub mod walk_memory_lineage;
 
 pub use add_wake_entry::AddWakeEntryTool;
 pub use audit::{AuditEmit, emit_personality_config_changed};
@@ -34,6 +36,7 @@ pub use cleanup_facts::CleanupFactsTool;
 pub use clear_fact_retention::ClearFactRetentionTool;
 pub use get_fact_retention::GetFactRetentionTool;
 pub use get_graph::GetGraphTool;
+pub use get_memory::GetMemoryTool;
 pub use get_personality::GetPersonalityTool;
 pub use instantiate_personality::InstantiatePersonalityTool;
 pub use list_edge_types::ListEdgeTypesTool;
@@ -53,6 +56,7 @@ pub use set_wake_entries::SetWakeEntriesTool;
 pub use tombstone_personality::TombstonePersonalityTool;
 pub use update_wake_entry::{UpdateWakeEntryTool, WakeEntryPatch};
 pub use wake_entry_input::WakeEntryDraftInput;
+pub use walk_memory_lineage::WalkMemoryLineageTool;
 
 /// Register every substrate-shipped MCP tool into the `FlavorRegistry`.
 /// Called from `FlavorRegistry::default()`.
@@ -60,6 +64,8 @@ pub(crate) fn register_all(registry: &mut crate::FlavorRegistry) {
     registry.add_substrate_mcp_tool::<ListPersonalitiesTool>();
     registry.add_substrate_mcp_tool::<GetPersonalityTool>();
     registry.add_substrate_mcp_tool::<GetGraphTool>();
+    registry.add_substrate_mcp_tool::<GetMemoryTool>();
+    registry.add_substrate_mcp_tool::<WalkMemoryLineageTool>();
     registry.add_substrate_mcp_tool::<InstantiatePersonalityTool>();
     registry.add_substrate_mcp_tool::<TombstonePersonalityTool>();
     registry.add_substrate_mcp_tool::<ListWakeEntriesTool>();

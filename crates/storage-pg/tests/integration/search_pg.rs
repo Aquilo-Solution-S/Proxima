@@ -5,8 +5,8 @@ use proxima_core::verbs::schema::{
     MemorySearchProjection, MemorySearchProjectionField, PayloadKind,
 };
 use proxima_core::{
-    MemoryId, OrgId, Owner, OwnerPrincipalKind, Principal, SchemaId, SchemaVersion,
-    SearchProjectionColumnKind, SourceBatchId, SourceId, Storage, UserId,
+    MemoryId, OrgId, Owner, OwnerPrincipalKind, PersonalityInstanceId, Principal, SchemaId,
+    SchemaVersion, SearchProjectionColumnKind, SourceBatchId, SourceId, Storage, UserId,
 };
 use uuid::Uuid;
 
@@ -112,6 +112,76 @@ async fn lexical_search_ignores_unprojected_code_chunk_text()
 }
 
 #[tokio::test]
+async fn search_projects_authoring_personality_and_nil_as_none()
+-> Result<(), Box<dyn std::error::Error>> {
+    let Some((pg, db_name)) = fresh_pg().await else {
+        return Ok(());
+    };
+    pg.run_migrations().await?;
+
+    let owner = owner_fixture();
+    let author = PersonalityInstanceId::new(Uuid::now_v7());
+    let authored = insert_text_memory(
+        &pg,
+        &owner,
+        "authored attribution needle",
+        Some(author.into_inner()),
+    )
+    .await?;
+    let nil_authored = insert_text_memory(&pg, &owner, "nil attribution needle", None).await?;
+
+    let authored_rows = pg
+        .search_memories(
+            &MemorySearchRequest {
+                principal: owner.principal.clone(),
+                query: "authored attribution".into(),
+                mode: SearchMode::Lexical,
+                limit: 10,
+                kind: Some(EntityKind::Abstraction),
+                schema_id: Some(SchemaId::new("test/search-attribution-v1".into())),
+                query_embedding: None,
+                embedding_model_id: None,
+                embedding_dim: None,
+                reader_personality_instance_id: None,
+            },
+            &[],
+        )
+        .await?;
+    let authored_row = authored_rows
+        .iter()
+        .find(|row| row.memory_id.into_inner() == authored)
+        .expect("authored row");
+    assert_eq!(authored_row.authoring_personality_instance_id, Some(author));
+
+    let nil_rows = pg
+        .search_memories(
+            &MemorySearchRequest {
+                principal: owner.principal.clone(),
+                query: "nil attribution".into(),
+                mode: SearchMode::Lexical,
+                limit: 10,
+                kind: Some(EntityKind::Abstraction),
+                schema_id: Some(SchemaId::new("test/search-attribution-v1".into())),
+                query_embedding: None,
+                embedding_model_id: None,
+                embedding_dim: None,
+                reader_personality_instance_id: None,
+            },
+            &[],
+        )
+        .await?;
+    let nil_row = nil_rows
+        .iter()
+        .find(|row| row.memory_id.into_inner() == nil_authored)
+        .expect("nil-author row");
+    assert_eq!(nil_row.authoring_personality_instance_id, None);
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn lexical_search_ignores_sidecar_without_projection()
 -> Result<(), Box<dyn std::error::Error>> {
     let Some((pg, db_name)) = fresh_pg().await else {
@@ -193,6 +263,38 @@ async fn insert_embedded_memory(
     Ok(memory_id)
 }
 
+async fn insert_text_memory(
+    pg: &proxima_storage_pg::PgStorage,
+    owner: &Owner,
+    text: &str,
+    personality_instance_id: Option<Uuid>,
+) -> Result<Uuid, Box<dyn std::error::Error>> {
+    let memory_id = Uuid::now_v7();
+    let owner_kind = OwnerPrincipalKind::of(&owner.principal);
+    let owner_principal_id = match &owner.principal {
+        Principal::User(user) => user.into_inner(),
+        Principal::Group(group) => group.into_inner(),
+    };
+    sqlx::query(
+        "INSERT INTO proxima_core.memories
+            (memory_id, owner_principal_kind, owner_principal_id, owner_org_id,
+             schema_id, schema_version, kind, text, operator_kind, model_id,
+             prompt_version, personality_instance_id, wake_chain_depth)
+         VALUES ($1, $2, $3, $4, 'test/search-attribution-v1', 1,
+                 'Abstraction', $5, 'Wake', 'test-model', 'test-v1',
+                 COALESCE($6, '00000000-0000-0000-0000-000000000000'::uuid), 2)",
+    )
+    .bind(memory_id)
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(owner.org_id.into_inner())
+    .bind(text)
+    .bind(personality_instance_id)
+    .execute(pg.pool())
+    .await?;
+    Ok(memory_id)
+}
+
 async fn ingest_fact_memory(
     pg: &proxima_storage_pg::PgStorage,
     owner: &Owner,
@@ -210,6 +312,7 @@ async fn ingest_fact_memory(
             source_batch_id: SourceBatchId::new(Uuid::now_v7()),
             principal: owner.principal.clone(),
             org_id: Some(owner.org_id),
+            author_personality_instance_id: None,
             schema_id: SchemaId::new(schema_id.to_string()),
             schema_version: SchemaVersion::new(1),
             payload: payload.to_vec(),

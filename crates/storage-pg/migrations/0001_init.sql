@@ -689,6 +689,21 @@ CREATE TABLE proxima_core.master_token_personality (
 
 
 --
+-- Name: subject_personality; Type: TABLE; Schema: proxima_core; Owner: -
+--
+
+CREATE TABLE proxima_core.subject_personality (
+    owner_principal_kind proxima_core.owner_principal_kind NOT NULL,
+    owner_principal_id uuid NOT NULL,
+    owner_org_id uuid NOT NULL,
+    subject_principal_kind proxima_core.owner_principal_kind NOT NULL,
+    subject_principal_id uuid NOT NULL,
+    personality_instance_id uuid NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
 -- Name: memories; Type: TABLE; Schema: proxima_core; Owner: -
 --
 
@@ -977,6 +992,14 @@ ALTER TABLE ONLY proxima_core.goals
 
 ALTER TABLE ONLY proxima_core.master_token_personality
     ADD CONSTRAINT master_token_personality_pkey PRIMARY KEY (master_token_id, owner_principal_kind, owner_principal_id, owner_org_id);
+
+
+--
+-- Name: subject_personality subject_personality_pkey; Type: CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.subject_personality
+    ADD CONSTRAINT subject_personality_pkey PRIMARY KEY (subject_principal_kind, subject_principal_id, owner_principal_kind, owner_principal_id, owner_org_id);
 
 
 --
@@ -1426,6 +1449,14 @@ ALTER TABLE ONLY proxima_core.goals
 
 ALTER TABLE ONLY proxima_core.master_token_personality
     ADD CONSTRAINT master_token_personality_personality_instance_id_fkey FOREIGN KEY (personality_instance_id) REFERENCES proxima_core.personality(personality_instance_id);
+
+
+--
+-- Name: subject_personality subject_personality_personality_instance_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.subject_personality
+    ADD CONSTRAINT subject_personality_personality_instance_id_fkey FOREIGN KEY (personality_instance_id) REFERENCES proxima_core.personality(personality_instance_id);
 
 
 --

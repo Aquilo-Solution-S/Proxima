@@ -17,4 +17,5 @@ pub(crate) mod goal_write;
 pub mod master_token_personality;
 pub mod persist_mcp_call;
 pub(crate) mod query;
+pub mod subject_personality;
 pub(crate) mod subscribe;
