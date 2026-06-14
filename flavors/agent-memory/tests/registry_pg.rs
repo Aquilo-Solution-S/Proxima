@@ -10,6 +10,7 @@ fn substrate_schemas_register() {
     let schemas = frozen.list();
     let schema_ids: HashSet<_> = schemas.iter().map(|s| s.schema_id.as_str()).collect();
     assert!(schema_ids.contains("proxima-agent-memory/agent-note-v1"));
+    assert!(schema_ids.contains("proxima-agent-memory/utterance-v1"));
     assert!(schema_ids.contains("proxima-agent-memory/agent-derivation-v1"));
     assert!(schema_ids.contains("proxima-agent-memory/agent-link-v1"));
 
