@@ -48,8 +48,7 @@ proxima/
 │   ├── mcp-server/          Rust MCP HTTP listener crate (`proxima_mcp_server`)
 │   ├── pg-testkit/          Rust Postgres test helper crate
 │   ├── proxima/             Rust framework facade crate
-│   ├── storage-pg/          Rust Postgres storage crate
-│   └── wire-grpc/           Rust gRPC wire crate
+│   └── storage-pg/          Rust Postgres storage crate
 ├── flavors/
 │   ├── code/                Rust code flavor crate
 │   ├── goal/                Rust goal flavor crate
@@ -58,7 +57,6 @@ proxima/
 │   └── embedded-minimal/    canonical host-binary embedding example
 ├── tools/
 │   └── dev-migrate/         headless substrate+flavor migration runner (dev DB bootstrap)
-├── proto/                   Proxima v1 protobuf surface
 ├── docs/                    design rationale + commentary
 │   └── lean/                **Lean kernel — THE source of truth** (see below)
 └── Cargo.toml               Rust workspace
@@ -248,9 +246,9 @@ breaks if these slip.
   `docs(02): close Q3 strict layering`.
 - Code subject: `feat(<component>): <summary>` /
   `fix(<component>): <summary>` / `chore(<component>): <summary>`.
-  Components include `core`, `proxima-mcp`, `storage-pg`, `wire-grpc`,
-  `mcp-server`, `llm-openai-compat`, `blob-s3`, `proxima`, `pg-testkit`,
-  `flavors-code`, `flavors-goal`, `flavors-agent-memory`, `examples`, `tools`.
+  Components include `core`, `proxima-mcp`, `storage-pg`, `mcp-server`,
+  `llm-openai-compat`, `blob-s3`, `proxima`, `pg-testkit`, `flavors-code`,
+  `flavors-goal`, `flavors-agent-memory`, `examples`, `tools`.
 - Body: bulleted list of concrete changes; preserve the *why* when
   the change is a decision, not a fix.
 - Co-authorship trailer for AI commits matches the parent CLAUDE.md
