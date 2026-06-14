@@ -58,6 +58,7 @@ pub struct MemorySearchResult {
     pub memory_id: MemoryId,
     pub kind: EntityKind,
     pub schema_id: SchemaId,
+    pub authoring_personality_instance_id: Option<PersonalityInstanceId>,
     pub snippet: String,
     pub score: f32,
     pub lexical_score: f32,

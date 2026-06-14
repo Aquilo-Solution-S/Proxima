@@ -106,6 +106,7 @@ impl CoreMcpTools {
             model_id: model_id.clone().unwrap_or_else(|| "unknown".to_string()),
             client_name: "host".into(),
             client_version: "0".into(),
+            personality_instance_id: None,
             caller_self_perspective: None,
         };
         let auth = McpAuthContext {

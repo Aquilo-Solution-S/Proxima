@@ -118,13 +118,10 @@ async fn discovery_to_mutation_smoke() -> Result<(), Box<dyn std::error::Error>>
         json!({ "display_name": "TestSubject", "purpose": "smoke test" }),
     )
     .await?;
-    // Master-token calls run in OutputMode::RawIds (handles are minted only
-    // for wake-dispatched model contexts), so the id is a raw UUID.
+    // Master-token wire calls use typed prefixed ids; handles are minted
+    // only for wake-dispatched model contexts.
     let p_handle = inst["personality"].as_str().expect("P handle").to_string();
-    assert!(
-        uuid::Uuid::parse_str(&p_handle).is_ok(),
-        "raw personality id under master token, got {p_handle}"
-    );
+    assert_prefixed_uuid(&p_handle, "I");
 
     // 4. Read-after-write: list_personalities returns it.
     let list = call_tool(
@@ -178,4 +175,10 @@ async fn discovery_to_mutation_smoke() -> Result<(), Box<dyn std::error::Error>>
     let _ = handle.await;
     drop_db(&db_name).await?;
     Ok(())
+}
+
+fn assert_prefixed_uuid(raw: &str, expected_prefix: &str) {
+    let (prefix, uuid_part) = raw.split_once(':').expect("prefixed uuid");
+    assert_eq!(prefix, expected_prefix);
+    uuid::Uuid::parse_str(uuid_part).expect("uuid body");
 }

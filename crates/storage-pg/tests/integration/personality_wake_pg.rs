@@ -370,6 +370,7 @@ fn fact_draft(owner: Owner) -> EventDraft {
         source_batch_id: SourceBatchId::new(Uuid::now_v7()),
         principal: owner.principal,
         org_id: Some(owner.org_id),
+        author_personality_instance_id: None,
         schema_id: SchemaId::new("proxima-test/fact-v1".into()),
         schema_version: SchemaVersion::new(1),
         payload: b"fact".to_vec(),

@@ -1,0 +1,159 @@
+mod common;
+
+use std::sync::Arc;
+
+use common::{create_db, db_url, drop_db};
+use proxima_core::mcp::McpAuthorContext;
+use proxima_core::verbs::query::MemoryStore;
+use proxima_core::{
+    Engine, FlavorRegistry, OrgId, Owner, OwnerPrincipalKind, Principal, RelationClass, UserId,
+};
+use proxima_mcp_server::McpToolHost;
+use proxima_storage_pg::PgStorage;
+use serde_json::json;
+
+#[tokio::test]
+async fn core_read_tools_return_prefixed_ids_and_author() -> Result<(), Box<dyn std::error::Error>>
+{
+    let Some(db_name) = create_db().await? else {
+        return Ok(());
+    };
+    let database_url = db_url(&db_name);
+    let pg = PgStorage::connect(&database_url).await?;
+    pg.run_migrations().await?;
+
+    let owner = Owner {
+        principal: Principal::User(UserId::new(uuid::Uuid::now_v7())),
+        org_id: OrgId::new(uuid::Uuid::now_v7()),
+    };
+    let author = uuid::Uuid::now_v7();
+    let source = insert_memory(&pg, &owner, "source lineage memory", Some(author)).await?;
+    let derived = insert_memory(&pg, &owner, "derived lineage memory", Some(author)).await?;
+    let edge = insert_edge(&pg, &owner, derived, source).await?;
+
+    let registry = FlavorRegistry::new().freeze();
+    let engine = Arc::new(
+        Engine::new(registry.clone(), MemoryStore::new()).with_storage(pg.clone().into_handle()),
+    );
+    let server = McpToolHost::from_pool(pg.pool().clone(), owner.clone(), Arc::new(registry))
+        .with_engine(engine);
+
+    let fetched = server
+        .call_tool(
+            "core/get_memory",
+            json!({"memory": format!("A:{derived}")}),
+            author_ctx(),
+            None,
+        )
+        .await?;
+    assert_eq!(fetched["memory"], format!("A:{derived}"));
+    assert_eq!(fetched["kind"], "Abstraction");
+    assert_eq!(
+        fetched["authoring_personality_instance_id"],
+        format!("I:{author}")
+    );
+
+    let lineage = server
+        .call_tool(
+            "core/walk_memory_lineage",
+            json!({"memory": format!("A:{derived}"), "direction": "ancestors", "depth": 1}),
+            author_ctx(),
+            None,
+        )
+        .await?;
+    assert_eq!(lineage["start"], format!("A:{derived}"));
+    assert!(
+        lineage["nodes"]
+            .as_array()
+            .expect("nodes")
+            .iter()
+            .any(|node| node["memory"] == format!("A:{source}"))
+    );
+    assert_eq!(lineage["edges"][0]["edge"], format!("E:{edge}"));
+    assert_eq!(lineage["edges"][0]["source"], format!("A:{derived}"));
+    assert_eq!(lineage["edges"][0]["target"], format!("A:{source}"));
+
+    drop(server);
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
+async fn insert_memory(
+    pg: &PgStorage,
+    owner: &Owner,
+    text: &str,
+    personality_instance_id: Option<uuid::Uuid>,
+) -> Result<uuid::Uuid, Box<dyn std::error::Error>> {
+    let memory_id = uuid::Uuid::now_v7();
+    let owner_kind = OwnerPrincipalKind::of(&owner.principal);
+    let owner_principal_id = match &owner.principal {
+        Principal::User(user) => user.into_inner(),
+        Principal::Group(group) => group.into_inner(),
+    };
+    sqlx::query(
+        "INSERT INTO proxima_core.memories
+            (memory_id, owner_principal_kind, owner_principal_id, owner_org_id,
+             schema_id, schema_version, kind, text, operator_kind, model_id,
+             prompt_version, personality_instance_id, wake_chain_depth)
+         VALUES ($1, $2, $3, $4, 'test/core-read-v1', 1, 'Abstraction',
+                 $5, 'Wake', 'test-model', 'test-v1',
+                 COALESCE($6, '00000000-0000-0000-0000-000000000000'::uuid), 0)",
+    )
+    .bind(memory_id)
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(owner.org_id.into_inner())
+    .bind(text)
+    .bind(personality_instance_id)
+    .execute(pg.pool())
+    .await?;
+    Ok(memory_id)
+}
+
+async fn insert_edge(
+    pg: &PgStorage,
+    owner: &Owner,
+    source: uuid::Uuid,
+    target: uuid::Uuid,
+) -> Result<uuid::Uuid, Box<dyn std::error::Error>> {
+    let edge_id = uuid::Uuid::now_v7();
+    let owner_kind = OwnerPrincipalKind::of(&owner.principal);
+    let owner_principal_id = match &owner.principal {
+        Principal::User(user) => user.into_inner(),
+        Principal::Group(group) => group.into_inner(),
+    };
+    sqlx::query(
+        "INSERT INTO proxima_core.edges
+            (edge_id, relation, relation_class,
+             source_kind, source_memory_id, source_goal_id,
+             target_kind, target_memory_id, target_goal_id,
+             authorship_kind, authorship_owner_memory_id,
+             owner_principal_kind, owner_principal_id, owner_org_id)
+         VALUES ($1, 'core/derived-from', $2,
+                 'Abstraction', $3, NULL,
+                 'Abstraction', $4, NULL,
+                 'Engine', NULL,
+                 $5, $6, $7)",
+    )
+    .bind(edge_id)
+    .bind(RelationClass::Provenance)
+    .bind(source)
+    .bind(target)
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(owner.org_id.into_inner())
+    .execute(pg.pool())
+    .await?;
+    Ok(edge_id)
+}
+
+fn author_ctx() -> McpAuthorContext {
+    McpAuthorContext {
+        model_id: "codex-test".into(),
+        client_name: "codex".into(),
+        client_version: "1".into(),
+        personality_instance_id: None,
+        caller_self_perspective: None,
+    }
+}

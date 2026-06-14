@@ -54,6 +54,7 @@ async fn propose_accept_via_mcp(
         model_id: "test-model".into(),
         client_name: "test".into(),
         client_version: "1".into(),
+        personality_instance_id: None,
         caller_self_perspective: None,
     };
     let proposed = server
@@ -136,6 +137,7 @@ async fn master_token_propose_creates_inspires_edge_to_per_token_self_perspectiv
                 model_id: "test".into(),
                 client_name: "test".into(),
                 client_version: "0".into(),
+                personality_instance_id: None,
                 caller_self_perspective: Some(identity.self_perspective_memory_id),
             },
             caller_self_perspective: Some(identity.self_perspective_memory_id),

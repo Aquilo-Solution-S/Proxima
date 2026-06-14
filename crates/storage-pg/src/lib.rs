@@ -309,6 +309,14 @@ impl Storage for PgStorage {
         .await
     }
 
+    async fn ensure_subject_personality(
+        &self,
+        owner: &Owner,
+        subject: &Principal,
+    ) -> Result<MasterTokenPersonality, StorageError> {
+        verbs::subject_personality::ensure_subject_personality(&self.pool, owner, subject).await
+    }
+
     async fn set_wake_entries(
         &self,
         req: &SetWakeEntriesRequest,

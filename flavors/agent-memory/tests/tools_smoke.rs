@@ -6,8 +6,8 @@ use proxima_core::llm::{EmbeddingClient, LlmError};
 use proxima_core::mcp::{HandleTable, McpAuthorContext, McpToolCtx, OutputMode};
 use proxima_core::verbs::query::MemoryStore;
 use proxima_core::{
-    AuthPath, AuthzContext, EntityKind, FlavorRegistry, McpToolError, OrgId, Owner,
-    OwnerPrincipalKind, Principal, UserId,
+    AuthPath, AuthzContext, EntityKind, FlavorRegistry, McpToolError, MemoryId, OrgId, Owner,
+    OwnerPrincipalKind, PersonalityInstanceId, Principal, UserId,
 };
 use proxima_pg_testkit::{db_url, drop_db, unique_db_name};
 use serde_json::json;
@@ -236,6 +236,108 @@ async fn search_graph_hybrid_returns_embedding_only_match() -> Result<(), Box<dy
 }
 
 #[tokio::test]
+async fn prefixed_search_and_open_emit_author_and_keep_company_shared_visibility()
+-> Result<(), Box<dyn std::error::Error>> {
+    let Some(db_name) = create_db().await? else {
+        return Ok(());
+    };
+    let pg = proxima_storage_pg::PgStorage::connect(&db_url(&db_name)).await?;
+    pg.run_migrations().await?;
+    proxima_agent_memory::migrator().run(pg.pool()).await?;
+
+    let mut registry = FlavorRegistry::new();
+    proxima_agent_memory::register(&mut registry);
+    let frozen = Arc::new(registry.freeze());
+    let owner = nil_owner();
+    let personality_a = PersonalityInstanceId::new(uuid::Uuid::now_v7());
+    let personality_b_root = MemoryId::new(uuid::Uuid::now_v7());
+    // Author a Fact AS personality_a via the real remember path (T3 stamps
+    // ctx.author.personality_instance_id into memories.personality_instance_id).
+    let authored_handle = call_tool_prefixed(
+        pg.pool(),
+        &owner,
+        &frozen,
+        author_ctx().with_personality(personality_a),
+        "proxima-agent-memory/proxima_remember",
+        json!({
+            "title": "Company shared author",
+            "body": "Company shared alpha needle.",
+            "tags": ["company-shared"],
+            "idempotency_key": "company-shared-alpha"
+        }),
+    )
+    .await?["handle"]
+        .as_str()
+        .expect("remember handle")
+        .to_string();
+    let nil_handle = call_tool_prefixed(
+        pg.pool(),
+        &owner,
+        &frozen,
+        author_ctx(),
+        "proxima-agent-memory/proxima_remember",
+        json!({
+            "title": "Nil author",
+            "body": "Company shared beta needle.",
+            "tags": ["company-shared"],
+            "idempotency_key": "company-shared-beta"
+        }),
+    )
+    .await?["handle"]
+        .as_str()
+        .expect("remember handle")
+        .to_string();
+
+    let search = call_tool_prefixed(
+        pg.pool(),
+        &owner,
+        &frozen,
+        author_ctx().with_self_perspective(personality_b_root),
+        "proxima-agent-memory/proxima_search_graph",
+        json!({"query": "alpha needle", "limit": 5}),
+    )
+    .await?;
+    assert_eq!(search["matches"][0]["handle"], authored_handle);
+    assert_eq!(
+        search["matches"][0]["authoring_personality_instance_id"],
+        format!("I:{}", personality_a.into_inner())
+    );
+
+    let opened = call_tool_prefixed(
+        pg.pool(),
+        &owner,
+        &frozen,
+        author_ctx().with_self_perspective(personality_b_root),
+        "proxima-agent-memory/proxima_open",
+        json!({"handle": authored_handle.clone()}),
+    )
+    .await?;
+    assert_eq!(
+        opened["authoring_personality_instance_id"],
+        format!("I:{}", personality_a.into_inner())
+    );
+
+    let nil_opened = call_tool_prefixed(
+        pg.pool(),
+        &owner,
+        &frozen,
+        author_ctx().with_self_perspective(personality_b_root),
+        "proxima-agent-memory/proxima_open",
+        json!({"handle": nil_handle}),
+    )
+    .await?;
+    assert!(
+        nil_opened
+            .get("authoring_personality_instance_id")
+            .is_none()
+    );
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
+#[tokio::test]
 #[expect(
     clippy::too_many_lines,
     reason = "two-axis idempotency fixture: owner and kind dimensions in one linear script"
@@ -426,6 +528,38 @@ async fn call_tool(
     call_tool_with_engine(pool, owner, handles, registry, author, None, name, args).await
 }
 
+async fn call_tool_prefixed(
+    pool: &sqlx::PgPool,
+    owner: &Owner,
+    registry: &Arc<proxima_core::FlavorRegistryFrozen>,
+    author: McpAuthorContext,
+    name: &str,
+    args: serde_json::Value,
+) -> Result<serde_json::Value, proxima_core::McpToolError> {
+    let descriptor = registry
+        .list_mcp_tools()
+        .iter()
+        .find(|tool| tool.name == name)
+        .expect("registered tool");
+    let caller_self_perspective = author.caller_self_perspective;
+    (descriptor.call)(
+        McpToolCtx {
+            pool: pool.clone(),
+            owner: owner.clone(),
+            authz: AuthzContext::single_owner(owner, AuthPath::System),
+            handles: None,
+            mode: OutputMode::PrefixedIds,
+            registry: registry.clone(),
+            author,
+            caller_self_perspective,
+            master_token_id: None,
+            engine: None,
+        },
+        args,
+    )
+    .await
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn call_tool_with_engine(
     pool: &sqlx::PgPool,
@@ -499,7 +633,24 @@ fn author_ctx() -> McpAuthorContext {
         model_id: "codex-test".into(),
         client_name: "codex".into(),
         client_version: "1".into(),
+        personality_instance_id: None,
         caller_self_perspective: None,
+    }
+}
+
+trait AuthorCtxExt {
+    fn with_self_perspective(self, memory_id: MemoryId) -> Self;
+    fn with_personality(self, personality: PersonalityInstanceId) -> Self;
+}
+
+impl AuthorCtxExt for McpAuthorContext {
+    fn with_self_perspective(mut self, memory_id: MemoryId) -> Self {
+        self.caller_self_perspective = Some(memory_id);
+        self
+    }
+    fn with_personality(mut self, personality: PersonalityInstanceId) -> Self {
+        self.personality_instance_id = Some(personality);
+        self
     }
 }
 
