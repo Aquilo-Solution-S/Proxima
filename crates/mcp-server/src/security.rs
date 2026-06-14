@@ -286,7 +286,23 @@ where
 fn extract_bearer(request: &Request) -> Option<String> {
     let header_value = request.headers().get(AUTHORIZATION)?;
     let raw = header_value.to_str().ok()?;
-    Some(raw.strip_prefix("Bearer ")?.trim().to_string())
+    Some(strip_bearer_scheme(raw)?.to_string())
+}
+
+/// Strip the `Bearer` auth scheme, returning the trimmed credential.
+///
+/// RFC 9110 §11.1 / RFC 6750 §2.1: the scheme token is
+/// case-insensitive, so a spec-compliant `bearer <token>` must be
+/// accepted alongside `Bearer <token>`. Matching is ASCII-only; the
+/// whitespace contract is unchanged from the original (a single space
+/// after the scheme), and an empty credential fails closed to `None`.
+fn strip_bearer_scheme(raw: &str) -> Option<&str> {
+    let (scheme, token) = raw.split_once(' ')?;
+    if !scheme.eq_ignore_ascii_case("bearer") {
+        return None;
+    }
+    let token = token.trim();
+    (!token.is_empty()).then_some(token)
 }
 
 fn parse_pattern(value: &str) -> Result<OriginPattern, McpServerError> {
@@ -399,6 +415,23 @@ mod tests {
         let allowlist = OriginAllowlist::parse(std::iter::empty::<&str>()).unwrap();
 
         assert!(allowlist.origins().is_empty());
+    }
+
+    #[test]
+    fn strip_bearer_scheme_is_case_insensitive_per_rfc() {
+        use super::strip_bearer_scheme;
+        // RFC 9110 §11.1: the scheme token is case-insensitive.
+        assert_eq!(strip_bearer_scheme("Bearer tok"), Some("tok"));
+        assert_eq!(strip_bearer_scheme("bearer tok"), Some("tok"));
+        assert_eq!(strip_bearer_scheme("BEARER tok"), Some("tok"));
+        assert_eq!(strip_bearer_scheme("BeArEr tok"), Some("tok"));
+        // Extra space between scheme and credential is tolerated.
+        assert_eq!(strip_bearer_scheme("Bearer   tok"), Some("tok"));
+        // Non-bearer schemes and empty credentials fail closed.
+        assert_eq!(strip_bearer_scheme("Basic tok"), None);
+        assert_eq!(strip_bearer_scheme("tok"), None);
+        assert_eq!(strip_bearer_scheme("Bearer "), None);
+        assert_eq!(strip_bearer_scheme("Bearer    "), None);
     }
 
     fn assert_invalid_origin(pattern: &str) {
