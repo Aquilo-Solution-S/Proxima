@@ -5,12 +5,20 @@
 
 use crate::{
     DependencySatisfactionRule, FlavorDescriptor, McpToolDescriptor, RegisteredRelation,
-    RelationDescriptor, SchemaId, SchemaVersion, SearchProjectionColumnKind,
+    RelationDescriptor, SchemaId, SchemaVersion, SearchProjectionColumnKind, StorageError,
 };
+use futures::future::BoxFuture;
+use sqlx::{Postgres, Transaction};
 use std::collections::HashMap;
+use uuid::Uuid;
 
 pub type PayloadValidator = fn(&serde_json::Value) -> Result<(), String>;
 pub type PayloadCborEncoder = fn(&serde_json::Value) -> Result<Vec<u8>, String>;
+pub type SidecarInserter = for<'t> fn(
+    &'t mut Transaction<'_, Postgres>,
+    Uuid,
+    &'t [u8],
+) -> BoxFuture<'t, Result<(), StorageError>>;
 
 #[derive(Debug, Clone)]
 pub(crate) struct PayloadValidatorEntry {
@@ -48,8 +56,8 @@ pub struct SchemaInfo {
     pub kind: PayloadKind,
     pub filter_keys: Vec<String>,
     /// Sidecar table identifier (qualified, e.g. `proxima_code.code_chunk_v1`)
-    /// when the payload trait declares one; `None` for `CitedObject` and
-    /// `CitationMapping` payloads which don't participate in F/A/P queries.
+    /// when the payload trait declares one, including typed `CitedObject` and
+    /// `CitationMapping` sidecars. `None` only for opaque schemas.
     pub sidecar_table: Option<String>,
     /// Natural-key columns for stateful Fact schemas (docs/03 §Stateful
     /// Fact schemas). Empty for stateless / non-Fact schemas. Drives the
@@ -62,6 +70,14 @@ pub struct SchemaInfo {
     /// Schema responses.
     #[serde(skip)]
     pub cbor_encoder: Option<PayloadCborEncoder>,
+    /// Build-time typed sidecar inserter for inline citation writes.
+    /// Function pointer is process-local only; not serialized on
+    /// Schema responses.
+    #[serde(skip)]
+    pub sidecar_inserter: Option<SidecarInserter>,
+    /// `CitedObjectPayload` schema id accepted by a `CitationMappingPayload`.
+    /// Populated only for citation-mapping schemas.
+    pub cited_object_schema: Option<SchemaId>,
 }
 
 impl SchemaInfo {
@@ -86,6 +102,8 @@ impl SchemaInfo {
             natural_key_columns: Vec::new(),
             tombstone: None,
             cbor_encoder: None,
+            sidecar_inserter: None,
+            cited_object_schema: None,
         }
     }
 }
@@ -274,9 +292,9 @@ impl FlavorRegistryFrozen {
         let added: Vec<SchemaInfo> = schemas.into_iter().collect();
         for schema in &added {
             assert!(
-                schema.cbor_encoder.is_none(),
+                schema.cbor_encoder.is_none() && schema.sidecar_inserter.is_none(),
                 "with_additional_schemas accepts only opaque schemas; \
-                 {:?} carries a cbor_encoder — register typed schemas \
+                 {:?} carries typed process-local functions — register typed schemas \
                  through FlavorRegistry before freeze()",
                 schema.schema_id.as_str(),
             );
