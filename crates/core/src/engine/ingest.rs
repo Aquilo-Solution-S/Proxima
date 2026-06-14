@@ -90,13 +90,13 @@ impl Engine {
         let owner = authz.scoped_owner(draft.principal.clone());
         draft.stamp_owner(owner);
 
-        self.validate_cbor_payload(
-            &draft.schema_id,
-            draft.schema_version,
-            PayloadKind::Fact,
-            &draft.payload,
-            "fact.payload",
-        )?;
+        // Validate the Fact only by schema-existence, matching
+        // `authorize_event_ingest`. The Fact payload is built from a
+        // trusted typed struct, and CBOR->JSON revalidation cannot
+        // represent binary fields (e.g. a Uuid serializes to a CBOR
+        // byte string). The untrusted inputs are the citation payloads
+        // (agent-supplied JSON), which stay fully validated below.
+        self.ensure_event_ingest_schema(&draft.schema_id, draft.schema_version)?;
         let cited_object_info = self.validate_cbor_payload(
             &cited_object.schema_id,
             cited_object.schema_version,
