@@ -1,6 +1,10 @@
 use proxima_core::mcp::{McpTool, McpToolCtx, McpToolError};
-use proxima_core::verbs::goal_write::{GoalAuthorship, GoalDraft, GoalState};
-use proxima_core::{EdgeAuthorshipKind, EdgeId, FactPayload, GoalId};
+use proxima_core::verbs::goal_write::{
+    GoalAuthorship, GoalDraft, GoalState, OperatorKind, SystemOrigin,
+};
+use proxima_core::{
+    EdgeAuthorshipKind, EdgeId, FactPayload, GoalId, ModelId, OperatorId, PromptVersion,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -56,6 +60,16 @@ impl McpTool for ProposeTool {
             let encoded = args.payload.encode(&ctx.registry)?;
             let mut tx = ctx.pool.begin().await.map_err(map_storage)?;
             let evidence = validate_evidence_in_owner(&mut tx, &ctx, &args.evidence).await?;
+            let authorship = match ctx.author.personality_instance_id {
+                Some(personality_instance_id) => GoalAuthorship::System(SystemOrigin::Operator {
+                    operator_id: OperatorId::new(uuid::Uuid::now_v7()),
+                    operator_kind: OperatorKind::AtoGoal,
+                    model_id: ModelId::new(ctx.author.model_id.clone()),
+                    prompt_version: PromptVersion::new("external-agent"),
+                    personality_instance_id,
+                }),
+                None => GoalAuthorship::External,
+            };
             let draft = GoalDraft {
                 principal: ctx.owner.principal.clone(),
                 org_id: Some(ctx.owner.org_id),
@@ -67,7 +81,7 @@ impl McpTool for ProposeTool {
                 state: GoalState::Proposed,
                 parent_goal_ids: Vec::new(),
                 supersedes_goal_id: None,
-                authorship: GoalAuthorship::External,
+                authorship,
                 request_id: request_id("goal_propose", args.idempotency_key),
             };
             let goal_id = insert_goal_in_tx(&mut tx, &ctx, &draft, &encoded).await?;

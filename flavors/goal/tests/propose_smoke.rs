@@ -4,11 +4,25 @@ use common::{
     ctx, drop_db, insert_abstraction, insert_self_perspective, migrated, other_owner_fixture,
     owner_fixture,
 };
-use proxima_core::EdgeAuthorshipKind;
 use proxima_core::mcp::McpTool;
-use proxima_core::verbs::goal_write::{GoalAuthorshipKind, GoalState};
+use proxima_core::verbs::goal_write::{
+    GoalAuthorshipKind, GoalAuthorshipOrigin, GoalState, OperatorKind,
+};
+use proxima_core::{EdgeAuthorshipKind, PersonalityInstanceId};
 use proxima_flavor_goal::tools::propose::{ProposeArgs, ProposeTool};
 use proxima_flavor_goal::tools::util::{GoalPayloadInput, SimpleTextGoalBody};
+
+#[derive(Debug, sqlx::FromRow)]
+struct GoalAuthorshipRow {
+    authorship_kind: GoalAuthorshipKind,
+    authorship_origin: Option<GoalAuthorshipOrigin>,
+    authorship_operator_id: Option<uuid::Uuid>,
+    operator_kind: Option<OperatorKind>,
+    model_id: Option<String>,
+    prompt_version: Option<String>,
+    personality_instance_id: Option<uuid::Uuid>,
+    authorship_tool_id: Option<String>,
+}
 
 #[tokio::test]
 async fn propose_writes_goal_and_motivated_by_atomically() -> Result<(), Box<dyn std::error::Error>>
@@ -83,6 +97,67 @@ async fn propose_writes_goal_and_motivated_by_atomically() -> Result<(), Box<dyn
         .fetch_one(pg.pool())
         .await?;
         assert_eq!(authored_count, 0);
+        Ok::<(), Box<dyn std::error::Error>>(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result
+}
+
+#[tokio::test]
+async fn propose_with_author_personality_persists_system_operator_authorship()
+-> Result<(), Box<dyn std::error::Error>> {
+    let Some((pg, db_name)) = migrated().await else {
+        return Ok(());
+    };
+
+    let result = async {
+        let owner = owner_fixture();
+        let mut ctx = ctx(&pg, owner);
+        let personality_id = PersonalityInstanceId::new(uuid::Uuid::now_v7());
+        ctx.author.personality_instance_id = Some(personality_id);
+
+        let outcome = ProposeTool::call(
+            ctx.clone(),
+            ProposeArgs {
+                payload: GoalPayloadInput::SimpleText(SimpleTextGoalBody {
+                    title: "attribute proposed goal".into(),
+                    text: "attribute proposed goal".into(),
+                }),
+                evidence: Vec::new(),
+                target_personality: None,
+                idempotency_key: Some("proposal-with-author-personality".into()),
+            },
+        )
+        .await?;
+        let goal_id = ctx
+            .resolve_goal(&outcome.handle)
+            .expect("goal handle resolves")
+            .into_inner();
+
+        let row: GoalAuthorshipRow = sqlx::query_as(
+            "SELECT authorship_kind, authorship_origin, authorship_operator_id,
+                    operator_kind, model_id, prompt_version, personality_instance_id,
+                    authorship_tool_id
+               FROM proxima_core.goals
+              WHERE goal_id = $1",
+        )
+        .bind(goal_id)
+        .fetch_one(pg.pool())
+        .await?;
+
+        assert_eq!(row.authorship_kind, GoalAuthorshipKind::System);
+        assert_eq!(row.authorship_origin, Some(GoalAuthorshipOrigin::Operator));
+        assert!(row.authorship_operator_id.is_some());
+        assert_eq!(row.operator_kind, Some(OperatorKind::AtoGoal));
+        assert_eq!(row.model_id.as_deref(), Some("test-model"));
+        assert_eq!(row.prompt_version.as_deref(), Some("external-agent"));
+        assert_eq!(
+            row.personality_instance_id,
+            Some(personality_id.into_inner())
+        );
+        assert_eq!(row.authorship_tool_id, None);
         Ok::<(), Box<dyn std::error::Error>>(())
     }
     .await;
