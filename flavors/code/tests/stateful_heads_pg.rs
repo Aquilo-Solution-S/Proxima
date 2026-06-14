@@ -46,32 +46,18 @@ fn registry_for_test() -> FlavorRegistryFrozen {
     // schemas that EventIngest needs.
     let mut flavor = FlavorRegistry::new();
     proxima_code::register(&mut flavor);
-    let mut frozen = flavor.freeze().list();
-    frozen.push(SchemaInfo {
-        schema_id: SchemaId::new("test/cited_blob".into()),
-        schema_version: SchemaVersion::new(1),
-        kind: PayloadKind::CitedObject,
-        filter_keys: vec![],
-        sidecar_table: None,
-        natural_key_columns: vec![],
-        tombstone: None,
-        json_encoder: None,
-        sidecar_inserter: None,
-        cited_object_schema: None,
-    });
-    frozen.push(SchemaInfo {
-        schema_id: SchemaId::new("test/citation_blob".into()),
-        schema_version: SchemaVersion::new(1),
-        kind: PayloadKind::CitationMapping,
-        filter_keys: vec![],
-        sidecar_table: None,
-        natural_key_columns: vec![],
-        tombstone: None,
-        json_encoder: None,
-        sidecar_inserter: None,
-        cited_object_schema: None,
-    });
-    FlavorRegistryFrozen::with_schemas(frozen)
+    flavor.freeze().with_additional_schemas([
+        SchemaInfo::opaque(
+            SchemaId::new("test/cited_blob".into()),
+            SchemaVersion::new(1),
+            PayloadKind::CitedObject,
+        ),
+        SchemaInfo::opaque(
+            SchemaId::new("test/citation_blob".into()),
+            SchemaVersion::new(1),
+            PayloadKind::CitationMapping,
+        ),
+    ])
 }
 
 fn fresh_draft(owner: Owner, schema: &str, payload: &[u8]) -> EventDraft {
