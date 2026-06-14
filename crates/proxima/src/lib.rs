@@ -33,7 +33,10 @@ pub use proxima_core::{
     SearchProjectionColumnKind, SearchProjectionField, StorageError, ToolScope, proxima_flavor,
 };
 pub use proxima_mcp_server::McpAuthContext;
-pub use proxima_storage_pg::verbs::event_ingest::{ingest_fact, ingest_fact_in_tx};
+pub use proxima_storage_pg::verbs::event_ingest::{
+    ingest_fact, ingest_fact_in_tx, ingest_fact_with_citation_atomic,
+    ingest_fact_with_citation_in_tx,
+};
 pub use runtime::{
     BuiltProxima, Proxima, RunningProxima, layered_router, layered_router_with_revalidation, run,
 };

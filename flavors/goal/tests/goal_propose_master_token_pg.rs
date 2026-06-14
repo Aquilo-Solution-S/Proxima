@@ -2,7 +2,7 @@
 //!
 //! When the caller supplies an explicit `caller_self_perspective`, the
 //! Goal's `core/inspires` edge targets it verbatim. When the caller
-//! supplies none, a subject-authorized call (auth_path MasterDev) is
+//! supplies none, a subject-authorized call (`auth_path` `MasterDev`) is
 //! reconciled onto the SUBJECT personality's root Self-Perspective —
 //! the same personality that stamps the writes — superseding the old
 //! per-token master-token shell-author model.
@@ -258,7 +258,9 @@ async fn mcp_propose_accept_emits_lifecycle_facts_authored_by_subject_self()
         // personality's Self-Perspective, not the per-token master-token
         // one. ensure_subject_personality is idempotent, so this resolves
         // the same personality the call created.
-        let identity = pg.ensure_subject_personality(&owner, &owner.principal).await?;
+        let identity = pg
+            .ensure_subject_personality(&owner, &owner.principal)
+            .await?;
         let authored_count: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM proxima_core.edges
               WHERE relation = 'core/authored'

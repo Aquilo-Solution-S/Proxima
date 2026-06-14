@@ -5,7 +5,7 @@ pub mod payloads;
 pub mod tools;
 
 pub use migrations::migrator;
-pub use payloads::{AgentDerivationV1, AgentLinkV1, AgentNoteV1};
+pub use payloads::{AgentDerivationV1, AgentLinkV1, AgentNoteV1, Speaker, UtteranceV1};
 
 use proxima_core::{
     AuthorshipKindMask, EntityKindMask, RelationClass, RelationDescriptor, SchemaId, SchemaRef,
@@ -19,6 +19,7 @@ proxima_core::proxima_flavor! {
     display_name = "Agent Memory",
     fact_schemas = [
         payloads::AgentNoteV1,
+        payloads::UtteranceV1,
     ],
     abstraction_schemas = [
         payloads::AgentDerivationV1,
@@ -46,6 +47,7 @@ proxima_core::proxima_flavor! {
         tools::search::SearchGraphTool,
         tools::search::OpenTool,
         tools::remember::RememberTool,
+        tools::record_utterance::RecordUtteranceTool,
         tools::derive::DeriveTool,
         tools::link::LinkTool,
     ],
