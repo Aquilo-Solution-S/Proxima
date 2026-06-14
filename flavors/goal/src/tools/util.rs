@@ -13,7 +13,7 @@ use proxima_core::verbs::event_ingest::{
     Citation, CitationMappingHint, CitedObjectHint, EventDraft, EventIngestOutcome,
 };
 use proxima_core::verbs::goal_write::{
-    GoalAuthorship, GoalAuthorshipKind, GoalAuthorshipOrigin, GoalDraft, SystemOrigin,
+    GoalAuthorship, GoalAuthorshipKind, GoalAuthorshipOrigin, GoalDraft, OperatorKind, SystemOrigin,
 };
 use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{
@@ -390,6 +390,69 @@ pub struct EvidenceRef {
     pub target_goal_id: Option<uuid::Uuid>,
 }
 
+#[derive(Debug)]
+struct GoalAuthorshipColumns {
+    authorship_kind: GoalAuthorshipKind,
+    authorship_origin: Option<GoalAuthorshipOrigin>,
+    authorship_operator_id: Option<uuid::Uuid>,
+    authorship_tool_id: Option<String>,
+    operator_kind: Option<OperatorKind>,
+    model_id: Option<String>,
+    prompt_version: Option<String>,
+    personality_instance_id: Option<uuid::Uuid>,
+}
+
+fn goal_authorship_columns(authorship: &GoalAuthorship) -> GoalAuthorshipColumns {
+    match authorship {
+        GoalAuthorship::User => GoalAuthorshipColumns {
+            authorship_kind: GoalAuthorshipKind::User,
+            authorship_origin: None,
+            authorship_operator_id: None,
+            authorship_tool_id: None,
+            operator_kind: None,
+            model_id: None,
+            prompt_version: None,
+            personality_instance_id: None,
+        },
+        GoalAuthorship::External => GoalAuthorshipColumns {
+            authorship_kind: GoalAuthorshipKind::External,
+            authorship_origin: None,
+            authorship_operator_id: None,
+            authorship_tool_id: None,
+            operator_kind: None,
+            model_id: None,
+            prompt_version: None,
+            personality_instance_id: None,
+        },
+        GoalAuthorship::System(SystemOrigin::Tool { tool_id }) => GoalAuthorshipColumns {
+            authorship_kind: GoalAuthorshipKind::System,
+            authorship_origin: Some(GoalAuthorshipOrigin::Tool),
+            authorship_operator_id: None,
+            authorship_tool_id: Some(tool_id.as_str().to_string()),
+            operator_kind: None,
+            model_id: None,
+            prompt_version: None,
+            personality_instance_id: None,
+        },
+        GoalAuthorship::System(SystemOrigin::Operator {
+            operator_id,
+            operator_kind,
+            model_id,
+            prompt_version,
+            personality_instance_id,
+        }) => GoalAuthorshipColumns {
+            authorship_kind: GoalAuthorshipKind::System,
+            authorship_origin: Some(GoalAuthorshipOrigin::Operator),
+            authorship_operator_id: Some(operator_id.into_inner()),
+            authorship_tool_id: None,
+            operator_kind: Some(*operator_kind),
+            model_id: Some(model_id.as_str().to_string()),
+            prompt_version: Some(prompt_version.as_str().to_string()),
+            personality_instance_id: Some(personality_instance_id.into_inner()),
+        },
+    }
+}
+
 pub async fn insert_goal_in_tx(
     tx: &mut sqlx::PgConnection,
     ctx: &McpToolCtx,
@@ -398,31 +461,17 @@ pub async fn insert_goal_in_tx(
 ) -> Result<uuid::Uuid, McpToolError> {
     let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(&ctx.owner);
     let goal_id = uuid::Uuid::now_v7();
-    let (authorship_kind, authorship_origin, authorship_tool_id): (
-        GoalAuthorshipKind,
-        Option<GoalAuthorshipOrigin>,
-        Option<String>,
-    ) = match &draft.authorship {
-        GoalAuthorship::User => (GoalAuthorshipKind::User, None, None),
-        GoalAuthorship::External => (GoalAuthorshipKind::External, None, None),
-        GoalAuthorship::System(SystemOrigin::Tool { tool_id }) => (
-            GoalAuthorshipKind::System,
-            Some(GoalAuthorshipOrigin::Tool),
-            Some(tool_id.as_str().to_string()),
-        ),
-        GoalAuthorship::System(SystemOrigin::Operator { .. }) => {
-            return Err(McpToolError::InvalidInput(
-                "goal MCP tools do not write System/Operator-authored goals".into(),
-            ));
-        }
-    };
+    let authorship = goal_authorship_columns(&draft.authorship);
 
     sqlx::query!(
         r#"INSERT INTO proxima_core.goals
             (goal_id, schema_id, schema_version, owner_principal_kind,
              owner_principal_id, owner_org_id, title, text, payload, state, supersedes,
-             authorship_kind, authorship_origin, authorship_tool_id, request_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)"#,
+             authorship_kind, authorship_origin, authorship_operator_id,
+             authorship_tool_id, operator_kind, model_id, prompt_version,
+             personality_instance_id, request_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+                 $12, $13, $14, $15, $16, $17, $18, $19, $20)"#,
         goal_id,
         draft.schema_id.as_str(),
         draft.schema_version.into_inner().cast_signed(),
@@ -434,9 +483,14 @@ pub async fn insert_goal_in_tx(
         &draft.payload,
         draft.state as _,
         draft.supersedes_goal_id.map(GoalId::into_inner),
-        authorship_kind as GoalAuthorshipKind,
-        authorship_origin as Option<GoalAuthorshipOrigin>,
-        authorship_tool_id,
+        authorship.authorship_kind as GoalAuthorshipKind,
+        authorship.authorship_origin as Option<GoalAuthorshipOrigin>,
+        authorship.authorship_operator_id,
+        authorship.authorship_tool_id,
+        authorship.operator_kind as Option<OperatorKind>,
+        authorship.model_id,
+        authorship.prompt_version,
+        authorship.personality_instance_id,
         &draft.request_id,
     )
     .execute(&mut *tx)
