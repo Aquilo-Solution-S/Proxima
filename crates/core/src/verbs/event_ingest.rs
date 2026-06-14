@@ -36,7 +36,6 @@ pub struct InlineCitedObjectDraft {
     pub schema_id: SchemaId,
     pub schema_version: SchemaVersion,
     pub payload_bytes: Vec<u8>,
-    pub content_hash: [u8; 32],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

@@ -137,7 +137,6 @@ fn cited_object() -> InlineCitedObjectDraft {
         schema_id: TestCitedObject::schema_id(),
         schema_version: SchemaVersion::new(TestCitedObject::SCHEMA_VERSION),
         payload_bytes: cbor(&payload),
-        content_hash: payload.idempotency_key(),
     }
 }
 
@@ -171,6 +170,28 @@ fn authorize_fact_with_citation_rejects_kind_mismatch() {
         .expect_err("Fact schema must not authorize as a CitedObject schema");
 
     assert_eq!(err.code, ErrorCode::UnknownSchema);
+}
+
+#[test]
+fn authorize_fact_with_citation_derives_cited_object_content_hash() {
+    let owner = owner();
+    let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+    let expected = TestCitedObject {
+        body: "object".to_string(),
+    }
+    .idempotency_key();
+
+    let authorized = engine()
+        .authorize_fact_with_citation(
+            &authz,
+            Role::SourceIngest,
+            draft(&owner),
+            cited_object(),
+            mapping(TestCitationMapping::schema_id()),
+        )
+        .expect("registered cited object payload must authorize");
+
+    assert_eq!(authorized.cited_object().content_hash(), &expected);
 }
 
 #[test]

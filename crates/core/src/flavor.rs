@@ -6,8 +6,8 @@
 
 use crate::mcp::schema::mcp_tool_schema;
 use crate::verbs::schema::{
-    FlavorRegistryFrozen, MemorySearchProjection, MemorySearchProjectionField, PayloadKind,
-    PayloadValidator, PayloadValidatorEntry, SchemaInfo,
+    CitedObjectContentHasherEntry, FlavorRegistryFrozen, MemorySearchProjection,
+    MemorySearchProjectionField, PayloadKind, PayloadValidator, PayloadValidatorEntry, SchemaInfo,
 };
 use crate::{
     AbstractionPayload, CitationMappingPayload, CitedObjectPayload, DependencySatisfactionRule,
@@ -66,6 +66,7 @@ pub struct FlavorRegistry {
     pub(crate) search_projections: Vec<MemorySearchProjection>,
     pub(crate) relations: Vec<RelationDescriptor>,
     pub(crate) validators: Vec<PayloadValidatorEntry>,
+    pub(crate) cited_object_content_hashers: Vec<CitedObjectContentHasherEntry>,
     pub(crate) mcp_tools: Vec<McpToolDescriptor>,
     pub(crate) flavors: Vec<FlavorDescriptor>,
     pub(crate) dependency_satisfaction_rules: Vec<(String, Arc<dyn DependencySatisfactionRule>)>,
@@ -78,6 +79,7 @@ impl Default for FlavorRegistry {
             search_projections: Vec::new(),
             relations: core_relation_descriptors(),
             validators: Vec::new(),
+            cited_object_content_hashers: Vec::new(),
             mcp_tools: Vec::new(),
             flavors: Vec::new(),
             dependency_satisfaction_rules: Vec::new(),
@@ -258,6 +260,12 @@ impl FlavorRegistry {
             validate_payload_type::<C>,
             C::json_schema(),
         );
+        self.cited_object_content_hashers
+            .push(CitedObjectContentHasherEntry {
+                schema_id: C::schema_id(),
+                schema_version: SchemaVersion::new(C::SCHEMA_VERSION),
+                hash: content_hash_cited_object_payload::<C>,
+            });
     }
 
     pub fn add_citation_mapping_schema<M: CitationMappingPayload>(&mut self) {
@@ -573,6 +581,16 @@ where
         let payload = decode_payload_cbor::<C>(payload_bytes, C::SCHEMA_ID)?;
         payload.sidecar_insert(tx, sidecar_row_id).await
     })
+}
+
+fn content_hash_cited_object_payload<C>(
+    payload_bytes: &[u8],
+) -> Result<[u8; 32], crate::StorageError>
+where
+    C: CitedObjectPayload,
+{
+    let payload = decode_payload_cbor::<C>(payload_bytes, C::SCHEMA_ID)?;
+    Ok(payload.idempotency_key())
 }
 
 fn insert_citation_mapping_sidecar<'t, M>(
