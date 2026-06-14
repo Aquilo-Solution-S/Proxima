@@ -265,13 +265,14 @@ pub trait Storage: Send + Sync {
     /// Clear the owner-scoped Fact-retention duration.
     async fn clear_fact_retention(&self, owner: &Owner) -> Result<bool, StorageError>;
 
-    /// Hard-erase due Facts for `owner` and tombstone direct derived
-    /// memory dependents.
+    /// Hard-erase due Facts for `owner`, tombstone transitive derived
+    /// memory dependents, and erase orphaned citation backing rows.
     async fn cleanup_due_facts(
         &self,
         owner: &Owner,
         fact_sidecar_tables: &[String],
         citation_mapping_sidecar_tables: &[String],
+        cited_object_sidecar_tables: &[String],
     ) -> Result<CleanupDueFactsOutcome, StorageError>;
 
     /// Active `WakeEntry` rows plus their cursor positions.
@@ -552,6 +553,7 @@ impl Storage for NoopStorage {
         _owner: &Owner,
         _fact_sidecar_tables: &[String],
         _citation_mapping_sidecar_tables: &[String],
+        _cited_object_sidecar_tables: &[String],
     ) -> Result<CleanupDueFactsOutcome, StorageError> {
         Err(StorageError::Internal("NoopStorage rejects writes".into()))
     }

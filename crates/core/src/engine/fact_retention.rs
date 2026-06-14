@@ -78,8 +78,8 @@ impl Engine {
             .map_err(|e| ProtocolError::internal(format!("clear_fact_retention: {e}")))
     }
 
-    /// Hard-erase due Facts and tombstone their direct derived
-    /// memory dependents.
+    /// Hard-erase due Facts, tombstone their transitive derived
+    /// memory dependents, and erase orphaned citation backing rows.
     ///
     /// # Errors
     ///
@@ -95,11 +95,14 @@ impl Engine {
         let fact_sidecar_tables = sidecar_tables(self.registry.schemas(), PayloadKind::Fact);
         let citation_mapping_sidecar_tables =
             sidecar_tables(self.registry.schemas(), PayloadKind::CitationMapping);
+        let cited_object_sidecar_tables =
+            sidecar_tables(self.registry.schemas(), PayloadKind::CitedObject);
         self.storage
             .cleanup_due_facts(
                 &owner,
                 &fact_sidecar_tables,
                 &citation_mapping_sidecar_tables,
+                &cited_object_sidecar_tables,
             )
             .await
             .map_err(|e| ProtocolError::internal(format!("cleanup_due_facts: {e}")))
