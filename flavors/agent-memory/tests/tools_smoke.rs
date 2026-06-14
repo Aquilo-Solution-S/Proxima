@@ -251,22 +251,42 @@ async fn prefixed_search_and_open_emit_author_and_keep_company_shared_visibility
     let owner = nil_owner();
     let personality_a = PersonalityInstanceId::new(uuid::Uuid::now_v7());
     let personality_b_root = MemoryId::new(uuid::Uuid::now_v7());
-    let authored = insert_agent_note(
+    // Author a Fact AS personality_a via the real remember path (T3 stamps
+    // ctx.author.personality_instance_id into memories.personality_instance_id).
+    let authored_handle = call_tool_prefixed(
         pg.pool(),
         &owner,
-        "Company shared author",
-        "Company shared alpha needle.",
-        Some(personality_a.into_inner()),
+        &frozen,
+        author_ctx().with_personality(personality_a),
+        "proxima-agent-memory/proxima_remember",
+        json!({
+            "title": "Company shared author",
+            "body": "Company shared alpha needle.",
+            "tags": ["company-shared"],
+            "idempotency_key": "company-shared-alpha"
+        }),
     )
-    .await?;
-    let nil_authored = insert_agent_note(
+    .await?["handle"]
+        .as_str()
+        .expect("remember handle")
+        .to_string();
+    let nil_handle = call_tool_prefixed(
         pg.pool(),
         &owner,
-        "Nil author",
-        "Company shared beta needle.",
-        None,
+        &frozen,
+        author_ctx(),
+        "proxima-agent-memory/proxima_remember",
+        json!({
+            "title": "Nil author",
+            "body": "Company shared beta needle.",
+            "tags": ["company-shared"],
+            "idempotency_key": "company-shared-beta"
+        }),
     )
-    .await?;
+    .await?["handle"]
+        .as_str()
+        .expect("remember handle")
+        .to_string();
 
     let search = call_tool_prefixed(
         pg.pool(),
@@ -277,7 +297,7 @@ async fn prefixed_search_and_open_emit_author_and_keep_company_shared_visibility
         json!({"query": "alpha needle", "limit": 5}),
     )
     .await?;
-    assert_eq!(search["matches"][0]["handle"], format!("F:{authored}"));
+    assert_eq!(search["matches"][0]["handle"], authored_handle);
     assert_eq!(
         search["matches"][0]["authoring_personality_instance_id"],
         format!("I:{}", personality_a.into_inner())
@@ -289,7 +309,7 @@ async fn prefixed_search_and_open_emit_author_and_keep_company_shared_visibility
         &frozen,
         author_ctx().with_self_perspective(personality_b_root),
         "proxima-agent-memory/proxima_open",
-        json!({"handle": format!("F:{authored}")}),
+        json!({"handle": authored_handle.clone()}),
     )
     .await?;
     assert_eq!(
@@ -303,7 +323,7 @@ async fn prefixed_search_and_open_emit_author_and_keep_company_shared_visibility
         &frozen,
         author_ctx().with_self_perspective(personality_b_root),
         "proxima-agent-memory/proxima_open",
-        json!({"handle": format!("F:{nil_authored}")}),
+        json!({"handle": nil_handle}),
     )
     .await?;
     assert!(
@@ -601,50 +621,6 @@ async fn insert_embedding(
     .map(|_| ())
 }
 
-async fn insert_agent_note(
-    pool: &sqlx::PgPool,
-    owner: &Owner,
-    title: &str,
-    body: &str,
-    personality_instance_id: Option<uuid::Uuid>,
-) -> Result<uuid::Uuid, sqlx::Error> {
-    let memory_id = uuid::Uuid::now_v7();
-    let owner_kind = OwnerPrincipalKind::of(&owner.principal);
-    let owner_principal_id = match &owner.principal {
-        Principal::User(user) => user.into_inner(),
-        Principal::Group(group) => group.into_inner(),
-    };
-    sqlx::query(
-        "INSERT INTO proxima_core.memories
-            (memory_id, owner_principal_kind, owner_principal_id, owner_org_id,
-             schema_id, schema_version, kind, text, personality_instance_id,
-             wake_chain_depth)
-         VALUES ($1, $2, $3, $4, 'proxima-agent-memory/agent-note-v1', 1,
-                 NULL, $5,
-                 COALESCE($6, '00000000-0000-0000-0000-000000000000'::uuid), 0)",
-    )
-    .bind(memory_id)
-    .bind(owner_kind)
-    .bind(owner_principal_id)
-    .bind(owner.org_id.into_inner())
-    .bind(format!("{title}\n{body}"))
-    .bind(personality_instance_id)
-    .execute(pool)
-    .await?;
-    sqlx::query(
-        "INSERT INTO proxima_agent_memory.agent_note_v1
-            (memory_id, title, body, tags, idempotency_key)
-         VALUES ($1, $2, $3, ARRAY[]::text[], $4)",
-    )
-    .bind(memory_id)
-    .bind(title)
-    .bind(body)
-    .bind(format!("direct-{memory_id}"))
-    .execute(pool)
-    .await?;
-    Ok(memory_id)
-}
-
 fn nil_owner() -> Owner {
     Owner {
         principal: Principal::User(UserId::new(uuid::Uuid::nil())),
@@ -664,11 +640,16 @@ fn author_ctx() -> McpAuthorContext {
 
 trait AuthorCtxExt {
     fn with_self_perspective(self, memory_id: MemoryId) -> Self;
+    fn with_personality(self, personality: PersonalityInstanceId) -> Self;
 }
 
 impl AuthorCtxExt for McpAuthorContext {
     fn with_self_perspective(mut self, memory_id: MemoryId) -> Self {
         self.caller_self_perspective = Some(memory_id);
+        self
+    }
+    fn with_personality(mut self, personality: PersonalityInstanceId) -> Self {
+        self.personality_instance_id = Some(personality);
         self
     }
 }
