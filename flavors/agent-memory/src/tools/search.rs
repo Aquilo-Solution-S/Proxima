@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use proxima_core::mcp::{McpTool, McpToolCtx, McpToolError};
 use proxima_core::verbs::query::{MemorySearchRequest, MemorySearchResult, SearchMode};
-use proxima_core::{EdgeId, MemoryId};
+use proxima_core::{EdgeId, MemoryId, PersonalityInstanceId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -43,6 +43,8 @@ pub struct GraphMatch {
     pub handle: String,
     pub kind: String,
     pub schema_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub authoring_personality_instance_id: Option<String>,
     pub title: String,
     pub snippet: String,
     pub score: f32,
@@ -112,6 +114,10 @@ async fn search_graph_lexical(
             handle: format_memory_by_kind(&ctx, MemoryId::new(row.memory_id), row.kind),
             kind: row.kind.as_str().to_string(),
             schema_id: row.schema_id,
+            authoring_personality_instance_id: format_authoring_personality(
+                &ctx,
+                decode_personality(row.authoring_personality_instance_id),
+            ),
             title: row.title,
             snippet: row.snippet,
             score: row.score,
@@ -185,6 +191,9 @@ async fn merge_lexical_candidates(
                 memory_id: row.memory_id,
                 kind: row.kind.as_str().to_string(),
                 schema_id: row.schema_id,
+                authoring_personality_instance_id: decode_personality(
+                    row.authoring_personality_instance_id,
+                ),
                 title: row.title,
                 snippet: row.snippet,
                 tags: row.tags,
@@ -215,6 +224,7 @@ async fn merge_semantic_candidates(
                 memory_id,
                 kind: memory_kind_for_edge(Some(row.kind)).as_str().to_string(),
                 schema_id: row.schema_id.as_str().to_string(),
+                authoring_personality_instance_id: row.authoring_personality_instance_id,
                 title: payload
                     .and_then(|p| p.title.clone())
                     .unwrap_or_else(|| row.schema_id.as_str().to_string()),
@@ -257,6 +267,10 @@ async fn graph_output_from_candidates(
             handle: format_memory_by_kind_label(ctx, MemoryId::new(row.memory_id), &row.kind),
             kind: row.kind,
             schema_id: row.schema_id,
+            authoring_personality_instance_id: format_authoring_personality(
+                ctx,
+                row.authoring_personality_instance_id,
+            ),
             title: row.title,
             snippet: row.snippet,
             score,
@@ -292,6 +306,7 @@ struct GraphCandidate {
     memory_id: uuid::Uuid,
     kind: String,
     schema_id: String,
+    authoring_personality_instance_id: Option<PersonalityInstanceId>,
     title: String,
     snippet: String,
     tags: Vec<String>,
@@ -353,6 +368,7 @@ FROM (
     SELECT m.memory_id,
            'Fact'::proxima_core.entity_kind AS kind,
            m.schema_id,
+           m.personality_instance_id AS authoring_personality_instance_id,
            a.title,
            left(a.body, 480) AS snippet,
            ts_rank_cd(to_tsvector('simple', a.title || ' ' || a.body), q.tsq) AS score,
@@ -367,6 +383,7 @@ FROM (
     SELECT m.memory_id,
            m.kind,
            m.schema_id,
+           m.personality_instance_id AS authoring_personality_instance_id,
            d.title,
            left(d.body, 480),
            ts_rank_cd(to_tsvector('simple', d.title || ' ' || d.body), q.tsq),
@@ -387,6 +404,7 @@ struct SearchRow {
     memory_id: uuid::Uuid,
     kind: proxima_core::EntityKind,
     schema_id: String,
+    authoring_personality_instance_id: Option<uuid::Uuid>,
     title: String,
     snippet: String,
     score: f32,
@@ -473,11 +491,26 @@ fn format_memory_by_kind_label(ctx: &McpToolCtx, memory_id: MemoryId, kind: &str
     }
 }
 
+fn decode_personality(instance_id: Option<uuid::Uuid>) -> Option<PersonalityInstanceId> {
+    instance_id
+        .filter(|id| !id.is_nil())
+        .map(PersonalityInstanceId::new)
+}
+
+fn format_authoring_personality(
+    ctx: &McpToolCtx,
+    instance_id: Option<PersonalityInstanceId>,
+) -> Option<String> {
+    instance_id.map(|id| ctx.format_personality(id))
+}
+
 #[derive(Debug, Serialize)]
 pub struct OpenOutput {
     pub handle: String,
     pub kind: String,
     pub schema_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub authoring_personality_instance_id: Option<String>,
     pub title: Option<String>,
     pub body: Option<String>,
     pub tags: Vec<String>,
@@ -516,6 +549,10 @@ impl McpTool for OpenTool {
                 handle: args.handle,
                 kind: memory_kind_for_edge(row.kind).as_str().to_string(),
                 schema_id: row.schema_id,
+                authoring_personality_instance_id: format_authoring_personality(
+                    &ctx,
+                    decode_personality(row.authoring_personality_instance_id),
+                ),
                 title: row.title,
                 body: row.body,
                 tags: row.tags.unwrap_or_default(),
@@ -526,7 +563,7 @@ impl McpTool for OpenTool {
 }
 
 const OPEN_SQL: &str = r"
-SELECT m.kind, m.schema_id,
+SELECT m.kind, m.schema_id, m.personality_instance_id AS authoring_personality_instance_id,
        COALESCE(n.title, d.title) AS title,
        COALESCE(n.body, d.body) AS body,
        COALESCE(n.tags, d.tags) AS tags
@@ -542,6 +579,7 @@ WHERE m.memory_id = $1
 struct OpenRow {
     kind: Option<proxima_core::EntityKind>,
     schema_id: String,
+    authoring_personality_instance_id: Option<uuid::Uuid>,
     title: Option<String>,
     body: Option<String>,
     tags: Option<Vec<String>>,

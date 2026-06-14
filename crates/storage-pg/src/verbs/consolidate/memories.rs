@@ -210,6 +210,7 @@ pub async fn load_perspective_heads(
                     kind: "Perspective".to_string(),
                     schema_id: spec.schema_id.clone(),
                     schema_version: SchemaVersion::new(u32::try_from(schema_version).unwrap_or(1)),
+                    authoring_personality_instance_id: Some(instance),
                     text,
                     wake_chain_depth: WakeChainDepth::new(u16::try_from(depth).unwrap_or(0)),
                     payload_json,
@@ -292,10 +293,17 @@ pub async fn load_memory_by_id(
         kind: kind_str,
         schema_id: SchemaId::new(schema_id),
         schema_version: SchemaVersion::new(u32::try_from(schema_version).unwrap_or(1)),
+        authoring_personality_instance_id: decode_personality(personality_instance_id),
         text,
         wake_chain_depth: WakeChainDepth::new(u16::try_from(depth).unwrap_or(0)),
         payload_json,
     }))
+}
+
+fn decode_personality(instance_id: Option<uuid::Uuid>) -> Option<PersonalityInstanceId> {
+    instance_id
+        .filter(|id| !id.is_nil())
+        .map(PersonalityInstanceId::new)
 }
 
 async fn memory_visible_to_reader(

@@ -223,6 +223,8 @@ async fn local_master_token_lists_all_tools_without_origin()
         .filter_map(|tool| tool["name"].as_str())
         .collect();
     assert!(names.contains(&"proxima-agent-memory_proxima_remember"));
+    assert!(names.contains(&"core_get_memory"));
+    assert!(names.contains(&"core_walk_memory_lineage"));
     assert!(!names.contains(&"core_fetch_memory"));
 
     handle.abort();
