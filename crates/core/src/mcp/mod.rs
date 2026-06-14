@@ -545,8 +545,8 @@ mod tests {
         assert_eq!(provider_safe_tool_name("a..b"), "a._b");
     }
 
-    #[test]
-    fn prefixed_ids_round_trip_through_ctx_helpers() {
+    #[tokio::test]
+    async fn prefixed_ids_round_trip_through_ctx_helpers() {
         let ctx = prefixed_ctx();
         let fact = MemoryId::new(uuid::Uuid::now_v7());
         let abstraction = MemoryId::new(uuid::Uuid::now_v7());
@@ -604,8 +604,8 @@ mod tests {
         assert_eq!(ctx.resolve_wake_entry(&wake_ref).expect("wake"), wake);
     }
 
-    #[test]
-    fn prefixed_ids_ctx_rejects_wrong_class() {
+    #[tokio::test]
+    async fn prefixed_ids_ctx_rejects_wrong_class() {
         let ctx = prefixed_ctx();
         let fact = ctx.format_fact_memory(MemoryId::new(uuid::Uuid::now_v7()));
         let err = ctx.resolve_goal(&fact).unwrap_err();
