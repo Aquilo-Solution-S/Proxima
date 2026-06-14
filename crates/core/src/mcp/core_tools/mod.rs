@@ -13,7 +13,6 @@ pub mod set_wake_entries;
 pub mod update_wake_entry;
 pub mod wake_entry_input;
 
-pub mod chat;
 pub mod get_graph;
 pub mod get_personality;
 pub mod instantiate_personality;
@@ -29,10 +28,6 @@ pub mod tombstone_personality;
 pub use add_wake_entry::AddWakeEntryTool;
 pub use approval::{EmitApprovalPolicyTool, EmitApprovalVoteTool, TryEmitApprovalDecisionTool};
 pub use audit::{AuditEmit, emit_personality_config_changed};
-pub use chat::{
-    CompactChatThreadTool, EmitChatMessageTool, EmitChatReplyTool, EndChatTool, GetChatThreadTool,
-    ListChatTargetsTool, RequestEndChatTool, StartChatTool,
-};
 pub use get_graph::GetGraphTool;
 pub use get_personality::GetPersonalityTool;
 pub use instantiate_personality::InstantiatePersonalityTool;
@@ -74,12 +69,4 @@ pub(crate) fn register_all(registry: &mut crate::FlavorRegistry) {
     registry.add_substrate_mcp_tool::<EmitApprovalPolicyTool>();
     registry.add_substrate_mcp_tool::<EmitApprovalVoteTool>();
     registry.add_substrate_mcp_tool::<TryEmitApprovalDecisionTool>();
-    registry.add_substrate_mcp_tool::<ListChatTargetsTool>();
-    registry.add_substrate_mcp_tool::<GetChatThreadTool>();
-    registry.add_substrate_mcp_tool::<StartChatTool>();
-    registry.add_substrate_mcp_tool::<EmitChatMessageTool>();
-    registry.add_substrate_mcp_tool::<EmitChatReplyTool>();
-    registry.add_substrate_mcp_tool::<CompactChatThreadTool>();
-    registry.add_substrate_mcp_tool::<RequestEndChatTool>();
-    registry.add_substrate_mcp_tool::<EndChatTool>();
 }

@@ -120,22 +120,22 @@ mod tests {
             "personality": "I1",
             "entry": {
                 "trigger_kind": "on_memory",
-                "trigger_id": "core/chat-message-v1",
-                "label": "receive-chat-message",
+                "trigger_id": "core/personality_config_changed_v1",
+                "label": "observe-personality-config",
                 "probability_promille": 1000
             }
         }))
         .expect("object entry");
 
-        assert_eq!(args.entry.trigger_id, "core/chat-message-v1");
+        assert_eq!(args.entry.trigger_id, "core/personality_config_changed_v1");
     }
 
     #[test]
     fn add_wake_entry_accepts_json_string_entry() {
         let entry = serde_json::json!({
             "trigger_kind": "on_memory",
-            "trigger_id": "core/chat-message-v1",
-            "label": "receive-chat-message",
+            "trigger_id": "core/personality_config_changed_v1",
+            "label": "observe-personality-config",
             "probability_promille": 1000
         })
         .to_string();
@@ -145,6 +145,6 @@ mod tests {
         }))
         .expect("string entry");
 
-        assert_eq!(args.entry.trigger_id, "core/chat-message-v1");
+        assert_eq!(args.entry.trigger_id, "core/personality_config_changed_v1");
     }
 }

@@ -2,7 +2,6 @@
 pub mod approval;
 pub mod auth;
 pub mod authz;
-pub mod chat;
 pub mod citations;
 pub mod cursor;
 pub mod dependency;
@@ -27,7 +26,6 @@ pub mod wake;
 pub use approval::*;
 pub use auth::*;
 pub use authz::*;
-pub use chat::*;
 pub use citations::*;
 pub use cursor::*;
 pub use dependency::*;

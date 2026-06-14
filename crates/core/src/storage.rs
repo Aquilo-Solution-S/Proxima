@@ -8,7 +8,6 @@ use std::sync::Arc;
 use crate::GoalId;
 use crate::SourceBatchId;
 use crate::approval::ApprovalStore;
-use crate::chat::ChatStore;
 use crate::dependency::MemoryDependency;
 use crate::personality::WakeEntryDraft;
 use crate::personality::{
@@ -56,7 +55,7 @@ pub struct MasterTokenPersonality {
 }
 
 #[async_trait::async_trait]
-pub trait Storage: ApprovalStore + ChatStore + Send + Sync {
+pub trait Storage: ApprovalStore + Send + Sync {
     /// Atomic Fact materialization per docs/14 §`EventIngest`.
     /// Single transaction inserting `cited_object`, event,
     /// memory(Fact), `citation_mapping`, `change_event`. Replay
@@ -352,10 +351,9 @@ pub type StorageHandle = Arc<dyn Storage>;
 #[derive(Debug, Default, Clone)]
 pub struct NoopStorage;
 
-/// `NoopStorage` rejects all writes; the `ApprovalStore` / `ChatStore`
-/// default bodies (errors / empty reads) are exactly that behavior.
+/// `NoopStorage` rejects all writes; the `ApprovalStore` default bodies
+/// (errors / empty reads) are exactly that behavior.
 impl ApprovalStore for NoopStorage {}
-impl ChatStore for NoopStorage {}
 
 #[async_trait::async_trait]
 impl Storage for NoopStorage {

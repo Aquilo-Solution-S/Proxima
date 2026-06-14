@@ -5,7 +5,7 @@ use proxima_core::verbs::schema::{
     MemorySearchProjection, MemorySearchProjectionField, PayloadKind,
 };
 use proxima_core::{
-    FlavorRegistry, MemoryId, OrgId, Owner, OwnerPrincipalKind, Principal, SchemaId, SchemaVersion,
+    MemoryId, OrgId, Owner, OwnerPrincipalKind, Principal, SchemaId, SchemaVersion,
     SearchProjectionColumnKind, SourceBatchId, SourceId, Storage, UserId,
 };
 use uuid::Uuid;
@@ -52,53 +52,6 @@ async fn semantic_search_ranks_nearest_vector_and_isolates_owner()
     );
     assert!(rows.iter().any(|row| row.memory_id.into_inner() == far));
     assert!(!rows.iter().any(|row| row.memory_id.into_inner() == other));
-
-    drop(pg);
-    drop_db(&db_name).await?;
-    Ok(())
-}
-
-#[tokio::test]
-async fn lexical_search_uses_declared_chat_message_projection()
--> Result<(), Box<dyn std::error::Error>> {
-    let Some((pg, db_name)) = fresh_pg().await else {
-        return Ok(());
-    };
-    pg.run_migrations().await?;
-
-    let owner = owner_fixture();
-    let self_memory_id = insert_text_memory(&pg, &owner, "test/personality-self", "Mira").await?;
-    let personality_id = insert_personality(&pg, &owner, self_memory_id).await?;
-    let message_id =
-        ingest_fact_memory(&pg, &owner, "core/chat-message-v1", b"chat-message").await?;
-    sqlx::query(
-        "INSERT INTO proxima_core.chat_message_v1
-            (memory_id, thread_key, message, target_personality_instance_id,
-             target_self_perspective_memory_id, sent_by_self_perspective_memory_id,
-             context_memory_ids, context_goal_ids, idempotency_key)
-         VALUES ($1, 'thread-1', 'drift query reached Mira', $2, $3, $3,
-                 '{}'::uuid[], '{}'::uuid[], 'idem-chat-message')",
-    )
-    .bind(message_id.into_inner())
-    .bind(personality_id)
-    .bind(self_memory_id.into_inner())
-    .execute(pg.pool())
-    .await?;
-
-    let registry = FlavorRegistry::new().freeze();
-    let rows = pg
-        .search_memories(
-            &lexical_request(&owner, "drift Mira"),
-            registry.search_projections(),
-        )
-        .await?;
-
-    assert_eq!(
-        rows.first().map(|row| row.memory_id),
-        Some(message_id),
-        "{rows:#?}"
-    );
-    assert!(rows[0].snippet.contains("drift query reached Mira"));
 
     drop(pg);
     drop_db(&db_name).await?;
@@ -240,57 +193,6 @@ async fn insert_embedded_memory(
     Ok(memory_id)
 }
 
-async fn insert_text_memory(
-    pg: &proxima_storage_pg::PgStorage,
-    owner: &Owner,
-    schema_id: &str,
-    text: &str,
-) -> Result<MemoryId, Box<dyn std::error::Error>> {
-    let memory_id = Uuid::now_v7();
-    let (owner_kind, owner_principal_id) = owner_parts(owner);
-    sqlx::query(
-        "INSERT INTO proxima_core.memories
-            (memory_id, owner_principal_kind, owner_principal_id, owner_org_id,
-             schema_id, schema_version, kind, text, operator_kind, model_id,
-             prompt_version, personality_instance_id, wake_chain_depth)
-         VALUES ($1, $2, $3, $4, $5, 1, 'Perspective', $6, 'Wake',
-                 'test-model', 'test-v1',
-                 '00000000-0000-0000-0000-000000000000'::uuid, 0)",
-    )
-    .bind(memory_id)
-    .bind(owner_kind)
-    .bind(owner_principal_id)
-    .bind(owner.org_id.into_inner())
-    .bind(schema_id)
-    .bind(text)
-    .execute(pg.pool())
-    .await?;
-    Ok(MemoryId::new(memory_id))
-}
-
-async fn insert_personality(
-    pg: &proxima_storage_pg::PgStorage,
-    owner: &Owner,
-    self_memory_id: MemoryId,
-) -> Result<Uuid, Box<dyn std::error::Error>> {
-    let personality_id = Uuid::now_v7();
-    let (owner_kind, owner_principal_id) = owner_parts(owner);
-    sqlx::query(
-        "INSERT INTO proxima_core.personality
-            (owner_principal_kind, owner_principal_id, owner_org_id,
-             personality_instance_id, current_root_perspective_memory_id)
-         VALUES ($1, $2, $3, $4, $5)",
-    )
-    .bind(owner_kind)
-    .bind(owner_principal_id)
-    .bind(owner.org_id.into_inner())
-    .bind(personality_id)
-    .bind(self_memory_id.into_inner())
-    .execute(pg.pool())
-    .await?;
-    Ok(personality_id)
-}
-
 async fn ingest_fact_memory(
     pg: &proxima_storage_pg::PgStorage,
     owner: &Owner,
@@ -365,14 +267,4 @@ fn code_chunk_projection() -> MemorySearchProjection {
             },
         ],
     }
-}
-
-fn owner_parts(owner: &Owner) -> (OwnerPrincipalKind, Uuid) {
-    (
-        OwnerPrincipalKind::of(&owner.principal),
-        match &owner.principal {
-            Principal::User(user) => user.into_inner(),
-            Principal::Group(group) => group.into_inner(),
-        },
-    )
 }

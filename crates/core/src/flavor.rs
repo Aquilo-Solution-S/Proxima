@@ -85,13 +85,6 @@ impl Default for FlavorRegistry {
         registry.add_fact_schema::<crate::approval::ApprovalPolicyV1>();
         registry.add_fact_schema::<crate::approval::ApprovalVoteV1>();
         registry.add_fact_schema::<crate::approval::ApprovalDecisionV1>();
-        registry.add_fact_schema::<crate::chat::ChatStartedV1>();
-        registry.add_fact_schema::<crate::chat::ChatMessageV1>();
-        registry.add_fact_schema::<crate::chat::ChatReplyV1>();
-        registry.add_fact_schema::<crate::chat::ChatEndRequestedV1>();
-        registry.add_fact_schema::<crate::chat::ChatEndedV1>();
-        registry.add_abstraction_schema::<crate::chat::ChatCompactionV1>();
-        registry.add_abstraction_schema::<crate::chat::ChatSummaryV1>();
         registry.add_cited_object_schema::<crate::citations::UploadedBlobPayload>();
         registry.add_fact_schema::<crate::verbs::persist_mcp_call::McpCallLoggedV1>();
         registry.add_cited_object_schema::<crate::verbs::persist_mcp_call::McpCallIoV1>();
@@ -666,7 +659,7 @@ mod tests {
     }
 
     #[test]
-    fn default_registry_includes_all_26_substrate_mcp_tools() {
+    fn default_registry_includes_all_18_substrate_mcp_tools() {
         let frozen = FlavorRegistry::new().freeze();
         let names: std::collections::HashSet<_> =
             frozen.list_mcp_tools().iter().map(|d| d.name).collect();
@@ -689,14 +682,6 @@ mod tests {
             "core/emit_approval_policy",
             "core/emit_approval_vote",
             "core/try_emit_approval_decision",
-            "core/list_chat_targets",
-            "core/get_chat_thread",
-            "core/start_chat",
-            "core/emit_chat_message",
-            "core/emit_chat_reply",
-            "core/compact_chat_thread",
-            "core/request_end_chat",
-            "core/end_chat",
         ];
         for name in expected {
             assert!(names.contains(name), "missing tool {name}");
@@ -705,6 +690,6 @@ mod tests {
             !names.contains("core/emit_budget_decision"),
             "retired tool name must not remain registered"
         );
-        assert_eq!(names.len(), 26, "exactly 26 substrate tools registered");
+        assert_eq!(names.len(), 18, "exactly 18 substrate tools registered");
     }
 }
