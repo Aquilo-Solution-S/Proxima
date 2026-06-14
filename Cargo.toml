@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/core", "crates/mcp-server", "apps/proxima-mcp", "flavors/code", "flavors/agent-memory", "flavors/goal", "crates/llm-openai-compat", "crates/storage-pg", "crates/wire-grpc", "crates/blob-s3", "crates/proxima", "crates/pg-testkit", "examples/embedded-minimal", "tools/dev-migrate"]
+members = ["crates/core", "crates/mcp-server", "apps/proxima-mcp", "flavors/code", "flavors/agent-memory", "flavors/goal", "crates/llm-openai-compat", "crates/storage-pg", "crates/blob-s3", "crates/proxima", "crates/pg-testkit", "examples/embedded-minimal", "tools/dev-migrate"]
 
 [workspace.package]
 edition = "2024"
@@ -54,11 +54,6 @@ aws-sdk-s3 = "1"
 tree-sitter = "0.25"
 tree-sitter-rust = "0.24"
 tree-sitter-typescript = "0.23"
-
-# gRPC wire layer
-tonic = { version = "0.14", default-features = false, features = ["codegen", "router", "server", "transport"] }
-prost = "0.14"
-prost-types = "0.14"
 
 # OS-native keychain access for secret_ref resolution (S1.c).
 # Library split: keyring-core holds the API surface; per-OS store
