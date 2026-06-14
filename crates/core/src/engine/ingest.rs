@@ -77,16 +77,31 @@ impl Engine {
         Ok(())
     }
 
-    /// Internal bookkeeping path for host-owned MCP activity logs.
+    /// Owner-scoped write of a host-observed MCP activity log.
+    ///
+    /// Authorizes the caller against the log's Owner and derives the
+    /// stamped org from the authenticated identity — never trusting a
+    /// caller-supplied org — mirroring [`Self::event_ingest`]. The
+    /// per-user actor (`actor_oid` / `actor_upn`) is recorded as Fact
+    /// data; the graph Owner is what gets authorized here.
     ///
     /// # Errors
     ///
-    /// Propagates storage failures unchanged.
+    /// Returns `Forbidden` when `authz` cannot access the log Owner or
+    /// lacks the source-ingest role, or `Internal` when the atomic write
+    /// fails.
     pub async fn persist_mcp_call(
         &self,
-        input: McpCallLogInput,
-    ) -> Result<McpCallLogOutcome, StorageError> {
-        self.storage.persist_mcp_call_atomic(&input).await
+        authz: &AuthzContext,
+        mut input: McpCallLogInput,
+    ) -> Result<McpCallLogOutcome, ProtocolError> {
+        let owner = authz.scoped_owner(input.owner.principal.clone());
+        super::authorize(authz, &owner.principal, Role::SourceIngest)?;
+        input.owner = owner;
+        self.storage
+            .persist_mcp_call_atomic(&input)
+            .await
+            .map_err(|e| ProtocolError::internal(e.to_string()))
     }
 
     /// docs/01 §"The contract" — Owner-scoped, idempotent batch close.
