@@ -95,9 +95,6 @@ impl Default for FlavorRegistry {
         registry.add_abstraction_schema::<crate::chat::ChatCompactionV1>();
         registry.add_abstraction_schema::<crate::chat::ChatSummaryV1>();
         registry.add_cited_object_schema::<crate::citations::UploadedBlobPayload>();
-        registry.add_fact_schema::<crate::wake::trace::WakeTracePayload>();
-        registry.add_cited_object_schema::<crate::wake::trace::WakeTraceJsonlPayload>();
-        registry.add_citation_mapping_schema::<crate::wake::trace::WakeTraceCitationPayload>();
         registry.add_fact_schema::<crate::verbs::persist_mcp_call::McpCallLoggedV1>();
         registry.add_cited_object_schema::<crate::verbs::persist_mcp_call::McpCallIoV1>();
         registry
@@ -671,7 +668,7 @@ mod tests {
     }
 
     #[test]
-    fn default_registry_includes_all_40_substrate_mcp_tools() {
+    fn default_registry_includes_all_38_substrate_mcp_tools() {
         let frozen = FlavorRegistry::new().freeze();
         let names: std::collections::HashSet<_> =
             frozen.list_mcp_tools().iter().map(|d| d.name).collect();
@@ -682,14 +679,12 @@ mod tests {
             "core/instantiate_personality",
             "core/tombstone_personality",
             "core/list_wake_entries",
-            "core/list_wake_invocations",
             "core/set_wake_entries",
             "core/list_read_scope",
             "core/set_read_scope",
             "core/add_wake_entry",
             "core/update_wake_entry",
             "core/remove_wake_entry",
-            "core/replay_wake_events",
             "core/list_inference_targets",
             "core/list_inference_tier_bindings",
             "core/register_inference_target",
@@ -724,6 +719,6 @@ mod tests {
             !names.contains("core/emit_budget_decision"),
             "old intervention tool name must not remain registered"
         );
-        assert_eq!(names.len(), 40, "exactly 40 substrate tools registered");
+        assert_eq!(names.len(), 38, "exactly 38 substrate tools registered");
     }
 }

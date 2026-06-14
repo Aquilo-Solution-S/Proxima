@@ -57,7 +57,7 @@ async fn boots_engine_with_goal_flavor_on_fresh_db() {
             booted.engine.registry().flavor("proxima-goal").is_some(),
             "goal flavor registered"
         );
-        booted.engine.stop(booted.handle).await;
+        booted.engine.stop(booted.handle);
         Ok(())
     }
     .await;

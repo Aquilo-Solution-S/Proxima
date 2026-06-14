@@ -23,7 +23,7 @@ pub struct GetPersonalityArgs {
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct GetPersonalityWakeEntry {
     /// `W`-prefixed handle. Pass as `wake_entry` to `update_wake_entry`,
-    /// `remove_wake_entry`, and `replay_wake_events`.
+    /// `remove_wake_entry`.
     pub wake_entry: String,
     pub trigger_kind: String,
     pub trigger_id: String,
@@ -59,7 +59,7 @@ impl McpTool for GetPersonalityTool {
     const DESCRIPTION: &'static str = "Read one personality with all wake entries. Args: \
          `{\"personality\": \"I1\"}` where the value is an I-handle from list_personalities. Each wake \
          entry in the response carries a `wake_entry` field (W-handle) — pass that to update_wake_entry, \
-         remove_wake_entry, or replay_wake_events.";
+         remove_wake_entry.";
     type Args = GetPersonalityArgs;
     type Output = GetPersonalityOutput;
 

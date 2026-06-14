@@ -289,9 +289,9 @@ pub struct BuiltProxima {
 }
 
 impl BuiltProxima {
-    pub async fn shutdown(self) {
+    pub fn shutdown(self) {
         self.cancel.cancel();
-        self.engine.stop(self.handle).await;
+        self.engine.stop(self.handle);
     }
 
     #[must_use]
@@ -345,7 +345,7 @@ impl RunningProxima {
         {
             tracing::warn!(error = %err, "proxima facade server join failed");
         }
-        self.engine.stop(self.handle).await;
+        self.engine.stop(self.handle);
     }
 
     #[must_use]
@@ -450,7 +450,7 @@ async fn build_router<A: FlavorApp>(
     config: &crate::RuntimeConfig,
 ) -> Router {
     let owner = config.owner.clone();
-    let mut edge_auth = McpEdgeAuth::engine_hosted(engine.wake_token_store());
+    let mut edge_auth = McpEdgeAuth::headless();
     if let Some(authenticator) = authenticator {
         edge_auth = edge_auth.with_host(authenticator, owner.clone());
     }

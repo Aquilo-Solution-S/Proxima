@@ -13,7 +13,6 @@ use async_trait::async_trait;
 use proxima_core::Engine;
 use proxima_core::engine::{EngineMcpListener, RunningMcpListener};
 use proxima_core::error::ProtocolError;
-use proxima_core::wake::token_store::WakeTokenStore;
 
 use crate::auth::McpEdgeAuth;
 use crate::security::OriginAllowlist;
@@ -59,13 +58,12 @@ impl EngineMcpListener for EngineHostedMcpListener {
     async fn start(
         &self,
         addr: SocketAddr,
-        wake_token_store: Arc<WakeTokenStore>,
         engine: Arc<Engine>,
     ) -> Result<RunningMcpListener, ProtocolError> {
         let auth = self
             .auth
             .clone()
-            .unwrap_or_else(|| Arc::new(McpEdgeAuth::engine_hosted(wake_token_store)));
+            .unwrap_or_else(|| Arc::new(McpEdgeAuth::headless()));
         let (join, bound_addr) = serve_streamable_http(
             addr,
             self.server.clone().with_engine(engine),

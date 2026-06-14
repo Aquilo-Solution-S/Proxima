@@ -21,7 +21,7 @@ pub struct ListWakeEntriesArgs {
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct ListWakeEntriesItem {
     /// `W`-prefixed handle. Pass as `wake_entry` to `update_wake_entry`,
-    /// `remove_wake_entry`, and `replay_wake_events`.
+    /// `remove_wake_entry`.
     pub wake_entry: String,
     pub trigger_kind: String,
     pub trigger_id: String,
@@ -45,7 +45,7 @@ impl McpTool for ListWakeEntriesTool {
     const DESCRIPTION: &'static str = "List wake entries on one personality. Args: \
          `{\"personality\": \"I1\"}`. Each item carries a `wake_entry` field (W-handle) — pass that \
          value as the `wake_entry` argument to update_wake_entry, remove_wake_entry, or \
-         replay_wake_events. Use core/get_personality for the full per-entry payload.";
+         remove_wake_entry. Use core/get_personality for the full per-entry payload.";
     type Args = ListWakeEntriesArgs;
     type Output = ListWakeEntriesOutput;
 

@@ -3,8 +3,7 @@
 use crate::common::personality::{TEST_PERSPECTIVE_SCHEMA, apply_test_schemas, ingest_test_fact};
 use proxima_core::flavor::FlavorRegistry;
 use proxima_core::verbs::goal_write::{GoalAuthorship, GoalDraft, GoalState};
-use proxima_core::verbs::persist_wake_trace::WakeTracePersistInput;
-use proxima_core::wake::trace::WakeTracePayload;
+use proxima_core::verbs::persist_wake_trace::{WakeTracePayload, WakeTracePersistInput};
 use proxima_core::{
     EntityKind, GoalId, MemoryId, OrgId, Owner, OwnerPrincipalKind, Principal, SchemaId,
     SchemaVersion, SourceBatchId, SourceId, Storage, StorageError, UserId, WakeTraceOutcomeKind,

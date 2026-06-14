@@ -19,13 +19,13 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use proxima_code::{CommitSummaryV1, CommitV1, build_engine_with, ingest_commit, register_repo};
+use proxima_core::llm::scripted::ScriptedAnthropicClient;
 use proxima_core::llm::{EmbeddingClient, LlmError};
 use proxima_core::personality::tools::EmitAbstractionTool;
 use proxima_core::personality::{
     InstantiatePersonalityRequest, PersonalityTool, PersonalityToolContext,
 };
 use proxima_core::storage::Storage;
-use proxima_core::wake::token_store::WakeTokenContext;
 use proxima_core::{
     AbstractionPayload, AuthPath, AuthzContext, EntityKind, HandleTable, MemoryId, OrgId, Owner,
     Principal, RelationClass, SourceBatchId, UserId, WakeChainDepth,
@@ -90,8 +90,9 @@ async fn emit_abstraction_writes_core_authored_edge_from_root_perspective() {
         )
         .await?;
 
-        let engine =
-            build_engine_with(pg.clone(), |_registry| {}).with_embed(Arc::new(FakeEmbedding));
+        let engine = build_engine_with(pg.clone(), |_registry| {})
+            .with_anthropic(Arc::new(ScriptedAnthropicClient::new(Vec::new())))
+            .with_embed(Arc::new(FakeEmbedding));
 
         let authz = AuthzContext::single_owner(&owner, AuthPath::System);
         let inst = engine
@@ -137,23 +138,7 @@ async fn emit_abstraction_writes_core_authored_edge_from_root_perspective() {
         let palette: Vec<Arc<dyn PersonalityTool>> = Vec::new();
         let writeable_schemas =
             vec![<CommitSummaryV1 as AbstractionPayload>::SCHEMA_ID.to_string()];
-        let wake = WakeTokenContext {
-            invocation_id: Uuid::now_v7(),
-            personality_instance_id: inst.instance_id.into_inner(),
-            wake_entry_id: Uuid::now_v7(),
-            change_event_seq: Uuid::now_v7(),
-            owner: owner.clone(),
-            palette: vec!["core/emit_abstraction".into()],
-            model_id: "test/slice-3-model".into(),
-            max_rounds: 4,
-            current_root_perspective_memory_id: root_id,
-            current_root_perspective_memory_class: proxima_core::MemoryHandleClass::Perspective,
-            triggering_event_memory_id: commit_memory_id,
-            triggering_event_memory_class: proxima_core::MemoryHandleClass::Fact,
-            triggering_event_depth: WakeChainDepth::new(0),
-            read_log: Arc::new(tokio::sync::Mutex::new(Vec::new())),
-            handles: Arc::new(HandleTable::new()),
-        };
+        let handles = Arc::new(HandleTable::new());
         let ctx = PersonalityToolContext::new(
             &engine,
             &owner,
@@ -165,9 +150,8 @@ async fn emit_abstraction_writes_core_authored_edge_from_root_perspective() {
             writeable_schemas,
             Vec::new(),
             &palette,
-            wake.handles.clone(),
-        )
-        .with_wake_invocation(&wake);
+            handles.clone(),
+        );
 
         let tool = EmitAbstractionTool;
         let args = serde_json::json!({
@@ -192,8 +176,7 @@ async fn emit_abstraction_writes_core_authored_edge_from_root_perspective() {
             .get("memory")
             .and_then(serde_json::Value::as_str)
             .expect("emit returns memory handle");
-        let new_memory_id: Uuid = wake
-            .handles
+        let new_memory_id: Uuid = handles
             .resolve_memory(memory_handle)
             .expect("emitted memory handle resolves")
             .into_inner();

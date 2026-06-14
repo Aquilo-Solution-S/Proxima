@@ -1,8 +1,6 @@
-//! End-to-end: when an `core/inspires` edge points at a specific
-//! engineer instance's `self-Perspective`, ONLY that instance wakes.
-//! Two engineer instances are provisioned (Alice + Bob); the test
-//! authors an inspires edge targeting Alice's self-Perspective and
-//! asserts only Alice's `wake_invocation` row is created.
+//! End-to-end: when a `core/inspires` edge points at a specific
+//! engineer instance's `self-Perspective`, the edge targets only that
+//! root perspective. Wake execution is external to Proxima.
 
 #![allow(clippy::too_many_lines, clippy::unnecessary_literal_bound)]
 
@@ -10,7 +8,6 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use proxima_code::{build_engine_with, migrator, register_repo};
-use proxima_core::llm::scripted::{ScriptedAnthropicClient, ScriptedTurn};
 use proxima_core::llm::{EmbeddingClient, LlmError};
 use proxima_core::personality::{InstantiatePersonalityRequest, PersonalityInstanceId};
 use proxima_core::{
@@ -173,10 +170,8 @@ async fn inspires_edge_targets_only_intended_engineer_instance() {
         // accept its inert personality row but won't author commit-fact events
         // until needed.
         let authz = AuthzContext::single_owner(&owner, AuthPath::System);
-        let scripted = Arc::new(ScriptedAnthropicClient::new(vec![ScriptedTurn::end_turn()]));
-        let engine = build_engine_with(pg.clone(), |_registry| {})
-            .with_anthropic(scripted)
-            .with_embed(Arc::new(FakeEmbedding));
+        let engine =
+            build_engine_with(pg.clone(), |_registry| {}).with_embed(Arc::new(FakeEmbedding));
 
         // Provision Alice + Bob (two engineer instances).
         let alice = engine
@@ -210,52 +205,19 @@ async fn inspires_edge_targets_only_intended_engineer_instance() {
         let goal_id = seed_active_goal(&pg, &owner).await?;
         author_inspires_edge(&pg, &owner, goal_id, alice_self).await?;
 
-        // Run dispatcher with enough turns for both engineer wakes to
-        // complete (each emits end_turn). Plus 1 for the commit-summary
-        // wake on the commit-fact (default cursor was set before the
-        // ingest, so it'll fire too).
-        let scripted = Arc::new(ScriptedAnthropicClient::new(
-            (0..6).map(|_| ScriptedTurn::end_turn()).collect(),
-        ));
-        let engine = build_engine_with(pg.clone(), |_registry| {})
-            .with_anthropic(scripted)
-            .with_embed(Arc::new(FakeEmbedding));
-        let fired = engine.run_dispatcher_tick().await?;
-        assert_eq!(fired, 0, "Phase-1a dispatcher is still a no-op stub");
-
-        // Assert: while the dispatcher is a stub, no instance records a
-        // wake invocation. Targeted wake execution is the next plan.
-        let alice_count: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM proxima_core.personality_wake_invocations w
-             JOIN proxima_core.change_event e ON e.seq = w.change_event_seq
-             WHERE w.personality_instance_id = $1
-               AND e.kind = 'EdgeAppend'
-               AND e.edge_relation = $2",
+        let target: Uuid = sqlx::query_scalar(
+            "SELECT edge_target_memory_id
+             FROM proxima_core.change_event
+             WHERE kind = 'EdgeAppend'
+               AND edge_relation = $1
+               AND edge_source_goal_id = $2",
         )
-        .bind(alice.instance_id.into_inner())
         .bind(CORE_INSPIRES_RELATION)
+        .bind(goal_id)
         .fetch_one(pg.pool())
         .await?;
-        let bob_count: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM proxima_core.personality_wake_invocations w
-             JOIN proxima_core.change_event e ON e.seq = w.change_event_seq
-             WHERE w.personality_instance_id = $1
-               AND e.kind = 'EdgeAppend'
-               AND e.edge_relation = $2",
-        )
-        .bind(bob.instance_id.into_inner())
-        .bind(CORE_INSPIRES_RELATION)
-        .fetch_one(pg.pool())
-        .await?;
-
-        assert_eq!(
-            alice_count, 0,
-            "Alice must not wake until dispatcher execution lands"
-        );
-        assert_eq!(
-            bob_count, 0,
-            "Bob must NOT wake on an inspires edge that targets Alice"
-        );
+        assert_eq!(target, alice_self);
+        assert_ne!(target, bob_self);
 
         Ok(())
     }

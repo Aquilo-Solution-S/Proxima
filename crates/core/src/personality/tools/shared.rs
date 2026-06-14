@@ -126,15 +126,11 @@ pub(super) async fn emit_personality_memory(
         .registry()
         .resolve_relation(CORE_AUTHORED_RELATION)
         .ok_or_else(|| ProtocolError::internal("missing core authored relation"))?;
-    let model_id = if let Some(wake) = ctx.wake_invocation {
-        wake.model_id.clone()
-    } else {
-        let anthropic = ctx
-            .engine
-            .anthropic()
-            .ok_or_else(|| ProtocolError::internal("anthropic client not wired into engine"))?;
-        model_id_from_wake_invocation(ctx, anthropic.as_ref())
-    };
+    let anthropic = ctx
+        .engine
+        .anthropic()
+        .ok_or_else(|| ProtocolError::internal("anthropic client not wired into engine"))?;
+    let model_id = model_id_from_personality_context(anthropic.as_ref());
     let instance = PersonalityRef::new(ctx.instance_id);
     let req = PersonalityWriteRequest {
         owner: ctx.owner.clone(),
@@ -163,19 +159,9 @@ pub(super) async fn emit_personality_memory(
 }
 
 /// Resolve the `model_id` for stamping provenance on memories emitted
-/// from a substrate tool. When a wake invocation is bound to the tool
-/// context, we use the resolved `InferenceTarget.model_id` that drove
-/// the wake — that is the canonical record of which model authored the
-/// memory. The legacy admin-tool path (no wake context bound) falls
-/// back to the engine's Standard-tier Anthropic model so the row's
-/// `model_id` column is never null.
-pub fn model_id_from_wake_invocation(
-    ctx: &PersonalityToolContext<'_>,
-    anthropic: &dyn crate::llm::AnthropicClient,
-) -> String {
-    if let Some(w) = ctx.wake_invocation {
-        return w.model_id.clone();
-    }
+/// from a substrate tool. The in-process wake runtime is gone, so this
+/// uses the engine's Standard-tier Anthropic model.
+pub fn model_id_from_personality_context(anthropic: &dyn crate::llm::AnthropicClient) -> String {
     anthropic
         .model_id_for(crate::ModelTier::Standard)
         .to_string()

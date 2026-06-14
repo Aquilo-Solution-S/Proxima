@@ -116,7 +116,7 @@ async fn facade_lists_and_dispatches_core_mcp_tools() {
             .await;
         assert!(matches!(unknown, Err(CoreMcpError::NotFound(tool)) if tool == "core/not_a_tool"));
 
-        built.shutdown().await;
+        built.shutdown();
         Ok(())
     }
     .await;

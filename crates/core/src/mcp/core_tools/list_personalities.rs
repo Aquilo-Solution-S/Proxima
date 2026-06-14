@@ -40,7 +40,7 @@ impl McpTool for ListPersonalitiesTool {
     const DESCRIPTION: &'static str = "List personality instances for the authenticated owner. Each item \
          carries a `personality` field (I-prefixed handle) — pass that value as the `personality` argument \
          to get_personality, tombstone_personality, list_wake_entries, add_wake_entry, set_wake_entries, \
-         and replay_wake_events.";
+         and remove_wake_entry.";
     type Args = ListPersonalitiesArgs;
     type Output = ListPersonalitiesOutput;
 

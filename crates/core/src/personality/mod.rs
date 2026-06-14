@@ -56,9 +56,9 @@ pub use invocation::{
 // Re-export from requests submodule
 pub use requests::{
     InstantiatePersonalityRequest, InstantiatePersonalityResponse, ListReadScopeRequest,
-    ListReadScopeResponse, ListWakeInvocationsRequest, ReplayWakeEventsOutcome,
-    ReplayWakeEventsRequest, SetReadScopeRequest, SetReadScopeResponse, SetWakeEntriesRequest,
-    SetWakeEntriesResponse, TombstonePersonalityRequest, TombstonePersonalityResponse,
+    ListReadScopeResponse, ListWakeInvocationsRequest, SetReadScopeRequest, SetReadScopeResponse,
+    SetWakeEntriesRequest, SetWakeEntriesResponse, TombstonePersonalityRequest,
+    TombstonePersonalityResponse,
 };
 
 // Re-export from tool submodule
@@ -74,9 +74,6 @@ pub use emit_palette::{
     scoped_emit_tool_id,
 };
 
-// Re-export from tools submodule
-#[doc(hidden)]
-pub use tools::__test_only_model_id_from_wake_invocation;
 pub use tools::{ActiveGoalSummary, substrate_pack};
 
 #[cfg(test)]

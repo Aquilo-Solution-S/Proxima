@@ -7,7 +7,6 @@ mod common;
 
 use async_trait::async_trait;
 use common::{create_db, db_url, drop_db, initialize, initialized, post_rpc};
-use proxima_core::wake::token_store::WakeTokenStore;
 use proxima_core::{
     AuthError, AuthPath, Authenticator, AuthzContext, CapabilitySet, Credentials, FlavorRegistry,
     Identity, Owner, RevalidationConfig,
@@ -29,14 +28,11 @@ async fn streamable_http_initialize_list_and_remember() -> Result<(), Box<dyn st
     proxima_agent_memory::register(&mut registry);
     let server = McpToolHost::from_database_url(&database_url, nil_owner(), registry).await?;
     proxima_agent_memory::migrator().run(server.pool()).await?;
-    let store = Arc::new(WakeTokenStore::new(Duration::from_mins(1)));
-    let token = store
-        .mint(make_token_ctx(vec![
-            "proxima-agent-memory/proxima_remember".into(),
-            "core/fetch_memory".into(),
-        ]))
+    let auth_store = Arc::new(McpEdgeAuth::headless());
+    let token = uuid::Uuid::new_v4();
+    auth_store
+        .replace_local_master_token(token, nil_owner())
         .await;
-    let auth_store = Arc::new(McpEdgeAuth::engine_hosted(store));
     let (handle, addr) = serve_streamable_http(
         SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 0),
         server,
@@ -47,7 +43,7 @@ async fn streamable_http_initialize_list_and_remember() -> Result<(), Box<dyn st
 
     let client = reqwest::Client::new();
     let url = format!("http://{addr}/mcp");
-    let bearer = format!("Bearer pxw_{token}");
+    let bearer = format!("Bearer pxm_{token}");
     let session_id = initialize(&client, &url, &bearer).await?;
     initialized(&client, &url, &session_id, &bearer).await?;
 
@@ -69,7 +65,6 @@ async fn streamable_http_initialize_list_and_remember() -> Result<(), Box<dyn st
         names.contains(&"proxima-agent-memory_proxima_remember"),
         "got {names:?}"
     );
-    assert!(names.contains(&"core_fetch_memory"), "got {names:?}");
 
     let remembered = post_rpc(
         &client,
@@ -95,10 +90,7 @@ async fn streamable_http_initialize_list_and_remember() -> Result<(), Box<dyn st
         .as_str()
         .expect("text content");
     let output: serde_json::Value = serde_json::from_str(content)?;
-    assert!(
-        output["handle"].as_str().expect("handle").starts_with('F'),
-        "remember mints a Fact handle, got: {output}"
-    );
+    uuid::Uuid::parse_str(output["handle"].as_str().expect("handle"))?;
 
     handle.abort();
     let _ = handle.await;
@@ -309,7 +301,7 @@ async fn host_bearer_sse_get_closes_after_epoch_bump() -> Result<(), Box<dyn std
     Ok(())
 }
 
-use common::{make_token_ctx, nil_owner};
+use common::nil_owner;
 
 #[derive(Debug)]
 struct TestHostAuth {
@@ -353,7 +345,7 @@ impl Authenticator for TestHostAuth {
                 capabilities: CapabilitySet::all(),
                 auth_path: AuthPath::HostBearer,
             }),
-            _ => Err(AuthError::InvalidCredentials),
+            Credentials::Bearer(_) => Err(AuthError::InvalidCredentials),
         }
     }
 

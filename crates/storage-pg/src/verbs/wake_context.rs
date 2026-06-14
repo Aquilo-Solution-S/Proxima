@@ -1,6 +1,5 @@
-//! Phase 1d: thin SELECTs that feed `assemble_wake_context` in
-//! `proxima_core::wake::context`. Each function maps 1:1 onto a
-//! `Storage` trait method.
+//! Thin SELECTs left for the deferred wake-storage cleanup. Each
+//! function maps 1:1 onto a `Storage` trait method.
 
 use proxima_core::personality::{
     ChangeEventForWake, PersonalityInstanceId, PersonalityRuntimeRow, PersonalityStatus,

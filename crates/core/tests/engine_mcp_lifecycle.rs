@@ -1,6 +1,6 @@
 //! Phase 1d: `Engine::start` exposes the bound MCP URL after start;
-//! `mcp_url()` is `None` before start; `Engine::stop` cancels the
-//! dispatcher and aborts the MCP listener task.
+//! `mcp_url()` is `None` before start; `Engine::stop` aborts the MCP
+//! listener task.
 //!
 //! The MCP listener is wired via the `EngineMcpListener` trait so
 //! `proxima-core` need not depend on `proxima-mcp-server` (that
@@ -11,14 +11,12 @@
 
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Duration;
 
 use async_trait::async_trait;
 use proxima_core::engine::{Engine, EngineMcpListener, RunningMcpListener};
 use proxima_core::error::ProtocolError;
 use proxima_core::verbs::query::MemoryStore;
 use proxima_core::verbs::schema::FlavorRegistryFrozen;
-use proxima_core::wake::token_store::WakeTokenStore;
 
 /// Test stub: bind a loopback TCP listener so the OS hands us a real
 /// ephemeral port, spawn an accept loop that ignores connections,
@@ -31,7 +29,6 @@ impl EngineMcpListener for StubListener {
     async fn start(
         &self,
         addr: SocketAddr,
-        _wake_token_store: Arc<WakeTokenStore>,
         _engine: Arc<Engine>,
     ) -> Result<RunningMcpListener, ProtocolError> {
         let listener = tokio::net::TcpListener::bind(addr)
@@ -51,12 +48,7 @@ impl EngineMcpListener for StubListener {
 }
 
 fn make_test_engine() -> Engine {
-    make_test_engine_with_dispatch_interval(Duration::from_millis(200))
-}
-
-fn make_test_engine_with_dispatch_interval(dispatch_interval: Duration) -> Engine {
     Engine::new(FlavorRegistryFrozen::new(), MemoryStore::new())
-        .with_dispatch_interval(dispatch_interval)
         .with_mcp_listener(Arc::new(StubListener))
 }
 
@@ -77,20 +69,14 @@ async fn engine_start_exposes_mcp_url_then_stop_cancels() {
     );
     assert!(url.ends_with("/mcp"), "url {url} should end with /mcp");
 
-    engine.stop(handle).await;
+    engine.stop(handle);
 }
 
 #[tokio::test]
 async fn engine_start_without_listener_leaves_url_none() {
-    // Same engine but without `with_mcp_listener` — start should
-    // still succeed and dispatcher still ticks; only the URL is
-    // absent. Mirrors the headless-CLI path that doesn't host MCP.
-    let engine = Arc::new(
-        Engine::new(FlavorRegistryFrozen::new(), MemoryStore::new())
-            .with_dispatch_interval(Duration::from_millis(200)),
-    );
+    let engine = Arc::new(Engine::new(FlavorRegistryFrozen::new(), MemoryStore::new()));
 
     let handle = engine.clone().start().await.expect("start");
     assert!(engine.mcp_url().is_none(), "no listener -> no url");
-    engine.stop(handle).await;
+    engine.stop(handle);
 }

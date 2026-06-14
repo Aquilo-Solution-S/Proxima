@@ -25,7 +25,7 @@ pub struct AddWakeEntryArgs {
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct AddWakeEntryOutput {
     /// `W`-prefixed handle for the new entry. Pass as `wake_entry` to
-    /// `update_wake_entry`, `remove_wake_entry`, or `replay_wake_events`.
+    /// `update_wake_entry` or `remove_wake_entry`.
     pub wake_entry: String,
     pub audit_emit_failed: Option<String>,
 }

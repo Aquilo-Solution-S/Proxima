@@ -1,7 +1,5 @@
-//! End-to-end: an ingested commit Fact wakes the
-//! `proxima-code/commit-summary-v1` personality, which calls
-//! `core/fetch_memory` to read the commit and `core/emit_abstraction`
-//! to produce a `proxima-code/commit-summary-v1` Abstraction.
+//! End-to-end: an ingested commit Fact is stored without invoking the
+//! removed in-process wake dispatcher.
 
 #![allow(clippy::too_many_lines, clippy::unnecessary_literal_bound)]
 
@@ -11,7 +9,6 @@ use async_trait::async_trait;
 use proxima_code::{
     CommitSummaryV1, CommitV1, build_engine_with, ingest_commit, migrator, register_repo,
 };
-use proxima_core::llm::scripted::{ScriptedAnthropicClient, ScriptedTurn};
 use proxima_core::llm::{EmbeddingClient, LlmError};
 use proxima_core::personality::InstantiatePersonalityRequest;
 use proxima_core::{AuthPath, AuthzContext, OrgId, Owner, Principal, SourceBatchId, UserId};
@@ -64,12 +61,8 @@ async fn commit_summary_e2e_produces_abstraction_with_correct_provenance() {
         let repo_id = Uuid::now_v7();
         register_repo(pg.pool(), &owner, repo_id, "/tmp/commit-summary-e2e", "e2e").await?;
 
-        // Build engine; instantiate the commit-summary personality;
-        // ingest a commit; run dispatcher tick.
-        let scripted = Arc::new(ScriptedAnthropicClient::new(vec![ScriptedTurn::end_turn()]));
-        let engine = build_engine_with(pg.clone(), |_registry| {})
-            .with_anthropic(scripted.clone())
-            .with_embed(Arc::new(FakeEmbedding));
+        let engine =
+            build_engine_with(pg.clone(), |_registry| {}).with_embed(Arc::new(FakeEmbedding));
         let inst = engine
             .instantiate_personality(
                 &authz,
@@ -107,34 +100,6 @@ async fn commit_summary_e2e_produces_abstraction_with_correct_provenance() {
         .await?;
         let commit_memory_id = commit_outcome.memory_id;
 
-        // Re-script Anthropic with the actual fetch + emit calls. We
-        // can't mutate the engine's anthropic in place; rebuild it.
-        // N1 = triggering (commit) memory, pre-seeded before round 1.
-        let scripted = Arc::new(ScriptedAnthropicClient::new(vec![
-            ScriptedTurn::tool_use("core/fetch_memory", serde_json::json!({"memory": "F1"})),
-            ScriptedTurn::tool_use(
-                "core/emit_abstraction",
-                serde_json::json!({
-                    "schema_id": <CommitSummaryV1 as proxima_core::AbstractionPayload>::SCHEMA_ID,
-                    "schema_version": 1,
-                    "payload": {
-                        "repo_id": repo_id,
-                        "commit_sha": commit_payload.sha,
-                        "summary": "Adds foo for the unit tests.",
-                        "key_files": ["src/foo.rs"],
-                        "change_kind": "feature",
-                    },
-                }),
-            ),
-            ScriptedTurn::end_turn(),
-        ]));
-        let engine = build_engine_with(pg.clone(), |_registry| {})
-            .with_anthropic(scripted)
-            .with_embed(Arc::new(FakeEmbedding));
-
-        let fired = engine.run_dispatcher_tick().await?;
-        assert_eq!(fired, 0, "Phase-1a dispatcher is still a no-op stub");
-
         let summary_count: i64 = sqlx::query_scalar(
             "SELECT count(*)
              FROM proxima_core.memories m
@@ -146,7 +111,7 @@ async fn commit_summary_e2e_produces_abstraction_with_correct_provenance() {
         .await?;
         assert_eq!(
             summary_count, 0,
-            "wake execution moves to the next dispatcher plan"
+            "commit ingest must not run wake execution"
         );
 
         let _ = inst;

@@ -10,7 +10,6 @@ pub mod embedding_settings;
 pub mod engine;
 pub mod error;
 pub mod flavor;
-pub mod harness;
 pub mod ids;
 pub mod inference;
 pub mod intervention;
