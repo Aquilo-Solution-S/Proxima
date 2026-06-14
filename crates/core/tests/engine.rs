@@ -11,7 +11,7 @@ use proxima_core::owner::{Owner, Principal};
 use proxima_core::verbs::event_history::EventHistoryRequest;
 use proxima_core::verbs::query::{MemoryStore, QueryRequest};
 use proxima_core::verbs::schema::{FlavorRegistryFrozen, SchemaRequest};
-use proxima_core::{AuthPath, AuthzContext, RoleSet};
+use proxima_core::{AuthPath, AuthzContext, McpCallLogInput, RoleSet};
 use uuid::Uuid;
 
 fn fresh_owner() -> (Principal, Owner) {
@@ -227,4 +227,67 @@ async fn cross_owner_context_is_forbidden_on_graph_read() {
         err.to_string()
             .contains("principal cannot access requested principal")
     );
+}
+
+fn sample_mcp_input(owner: &Owner) -> McpCallLogInput {
+    McpCallLogInput {
+        owner: owner.clone(),
+        actor_oid: "oid-1".into(),
+        actor_upn: "agent@example.com".into(),
+        tool_name: "core/search_memories".into(),
+        ok: true,
+        error: None,
+        latency_ms: 42,
+        io_body: b"{}".to_vec(),
+        io_byte_len_original: 2,
+        io_truncated: false,
+        observed_at: time::OffsetDateTime::UNIX_EPOCH,
+        occurred_at: time::OffsetDateTime::UNIX_EPOCH,
+    }
+}
+
+#[tokio::test]
+async fn persist_mcp_call_rejects_owner_the_context_cannot_access() {
+    let (principal, owner) = fresh_owner();
+    let engine = boot_engine(principal, owner.clone());
+    // A context scoped to a different owner must not write the log,
+    // even though the caller supplied `owner` in the input.
+    let (_, stranger_owner) = fresh_owner();
+    let stranger = AuthzContext::single_owner(&stranger_owner, AuthPath::System);
+
+    let err = engine
+        .persist_mcp_call(&stranger, sample_mcp_input(&owner))
+        .await
+        .expect_err("foreign owner must be rejected");
+    assert_eq!(err.code, ErrorCode::Forbidden);
+}
+
+#[tokio::test]
+async fn persist_mcp_call_rejects_context_without_source_ingest_role() {
+    let (principal, owner) = fresh_owner();
+    let engine = boot_engine(principal, owner.clone());
+    // Right owner, but no source-ingest role.
+    let mut authz = AuthzContext::single_owner(&owner, AuthPath::System);
+    authz.capabilities.roles = RoleSet::none();
+
+    let err = engine
+        .persist_mcp_call(&authz, sample_mcp_input(&owner))
+        .await
+        .expect_err("missing source-ingest role must be rejected");
+    assert_eq!(err.code, ErrorCode::Forbidden);
+}
+
+#[tokio::test]
+async fn persist_mcp_call_authorized_context_clears_the_gate() {
+    let (principal, owner) = fresh_owner();
+    let engine = boot_engine(principal, owner.clone());
+    let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+    // A context that clears the authz gate reaches storage; NoopStorage
+    // then rejects the write with Internal — distinguishing "gate
+    // opened" from "gate blocked" (Forbidden).
+    let err = engine
+        .persist_mcp_call(&authz, sample_mcp_input(&owner))
+        .await
+        .expect_err("NoopStorage rejects writes");
+    assert_eq!(err.code, ErrorCode::Internal);
 }

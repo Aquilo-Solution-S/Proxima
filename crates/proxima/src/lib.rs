@@ -24,6 +24,7 @@ pub use migrations::{
     MigrationError, MigrationRunReport, MigrationVersion, NamedMigrator,
     run_core_and_flavor_migrations,
 };
+pub use proxima_core::error::ProtocolError;
 pub use proxima_core::verbs::schema::PayloadKind;
 pub use proxima_core::{
     AbstractionPayload, AuthPath, AuthzContext, CapabilitySet, Engine, EngineHandle, FactPayload,
@@ -60,14 +61,20 @@ pub fn company_owner(org: uuid::Uuid) -> Owner {
 
 /// Persist one host-observed MCP tool call through an embedded engine.
 ///
+/// `authz` is the authenticated context of the served MCP call (the
+/// host already holds it from dispatch); the engine authorizes the log
+/// Owner against it rather than trusting a caller-supplied org.
+///
 /// # Errors
 ///
-/// Propagates the storage error returned by the engine-side primitive.
+/// Returns `Forbidden` when `authz` cannot access the log Owner or lacks
+/// the source-ingest role, or `Internal` on storage failure.
 pub async fn log_mcp_call(
     engine: &Engine,
+    authz: &AuthzContext,
     input: McpCallLogInput,
-) -> Result<McpCallLogOutcome, StorageError> {
-    engine.persist_mcp_call(input).await
+) -> Result<McpCallLogOutcome, ProtocolError> {
+    engine.persist_mcp_call(authz, input).await
 }
 
 type RegisterFn = Box<dyn FnOnce(&mut FlavorRegistry) + Send>;
