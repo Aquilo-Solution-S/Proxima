@@ -18,6 +18,7 @@ fn fresh_draft() -> EventDraft {
         schema_id: SchemaId::new("test/fact_blob".to_string()),
         schema_version: SchemaVersion::new(1),
         payload: b"hello".to_vec(),
+        rendered_text: None,
         observed_at: now,
         occurred_at: now,
         citation: Some(Citation {

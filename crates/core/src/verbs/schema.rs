@@ -15,6 +15,7 @@ use uuid::Uuid;
 pub type PayloadValidator = fn(&serde_json::Value) -> Result<(), String>;
 pub type PayloadJsonEncoder = fn(&serde_json::Value) -> Result<Vec<u8>, String>;
 pub type CitedObjectContentHasher = fn(&[u8]) -> Result<[u8; 32], StorageError>;
+pub type FactRenderer = fn(&[u8]) -> Result<String, StorageError>;
 pub type SidecarInserter = for<'t> fn(
     &'t mut Transaction<'_, Postgres>,
     Uuid,
@@ -35,6 +36,13 @@ pub(crate) struct CitedObjectContentHasherEntry {
     pub schema_id: SchemaId,
     pub schema_version: SchemaVersion,
     pub hash: CitedObjectContentHasher,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct FactRendererEntry {
+    pub schema_id: SchemaId,
+    pub schema_version: SchemaVersion,
+    pub render: FactRenderer,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -162,6 +170,8 @@ struct FrozenIndex {
     validator_by_key: HashMap<(SchemaId, SchemaVersion, PayloadKind), usize>,
     /// Cited-object content hashers keyed by `(schema_id, version)`.
     cited_object_content_hasher_by_key: HashMap<(SchemaId, SchemaVersion), usize>,
+    /// Fact payload renderers keyed by `(schema_id, version)`.
+    fact_renderer_by_key: HashMap<(SchemaId, SchemaVersion), usize>,
     /// `relations` keyed by relation id.
     relation_by_name: HashMap<String, usize>,
 }
@@ -171,6 +181,7 @@ impl FrozenIndex {
         schemas: &[SchemaInfo],
         validators: &[PayloadValidatorEntry],
         cited_object_content_hashers: &[CitedObjectContentHasherEntry],
+        fact_renderers: &[FactRendererEntry],
         relations: &[RelationDescriptor],
     ) -> Self {
         let mut index = Self::default();
@@ -200,6 +211,12 @@ impl FrozenIndex {
                 .entry((hasher.schema_id.clone(), hasher.schema_version))
                 .or_insert(position);
         }
+        for (position, renderer) in fact_renderers.iter().enumerate() {
+            index
+                .fact_renderer_by_key
+                .entry((renderer.schema_id.clone(), renderer.schema_version))
+                .or_insert(position);
+        }
         for (position, relation) in relations.iter().enumerate() {
             index
                 .relation_by_name
@@ -217,6 +234,7 @@ pub struct FlavorRegistryFrozen {
     relations: Vec<RelationDescriptor>,
     validators: Vec<PayloadValidatorEntry>,
     cited_object_content_hashers: Vec<CitedObjectContentHasherEntry>,
+    fact_renderers: Vec<FactRendererEntry>,
     mcp_tools: Vec<McpToolDescriptor>,
     flavors: Vec<FlavorDescriptor>,
     dependency_satisfaction_rules: Vec<(String, std::sync::Arc<dyn DependencySatisfactionRule>)>,
@@ -237,7 +255,7 @@ impl FlavorRegistryFrozen {
     /// vocabulary field beyond `schemas` empty.
     #[must_use]
     pub fn with_schemas(schemas: Vec<SchemaInfo>) -> Self {
-        let index = FrozenIndex::build(&schemas, &[], &[], &[]);
+        let index = FrozenIndex::build(&schemas, &[], &[], &[], &[]);
         Self {
             schemas,
             index,
@@ -252,7 +270,7 @@ impl FlavorRegistryFrozen {
         schemas: Vec<SchemaInfo>,
         relations: Vec<RelationDescriptor>,
     ) -> Self {
-        let index = FrozenIndex::build(&schemas, &[], &[], &relations);
+        let index = FrozenIndex::build(&schemas, &[], &[], &[], &relations);
         Self {
             schemas,
             relations,
@@ -275,6 +293,7 @@ impl FlavorRegistryFrozen {
             relations,
             validators,
             cited_object_content_hashers,
+            fact_renderers,
             mcp_tools,
             flavors,
             dependency_satisfaction_rules,
@@ -283,6 +302,7 @@ impl FlavorRegistryFrozen {
             &schemas,
             &validators,
             &cited_object_content_hashers,
+            &fact_renderers,
             &relations,
         );
         Self {
@@ -291,6 +311,7 @@ impl FlavorRegistryFrozen {
             relations,
             validators,
             cited_object_content_hashers,
+            fact_renderers,
             mcp_tools,
             flavors,
             dependency_satisfaction_rules,
@@ -331,6 +352,7 @@ impl FlavorRegistryFrozen {
             &self.schemas,
             &self.validators,
             &self.cited_object_content_hashers,
+            &self.fact_renderers,
             &self.relations,
         );
         self
@@ -536,6 +558,42 @@ impl FlavorRegistryFrozen {
             )));
         };
         (self.cited_object_content_hashers[position].hash)(payload_bytes)
+    }
+
+    /// Render typed Fact payload bytes through the build-time registered
+    /// `FactPayload::render` implementation.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StorageError::Internal` when the schema is unknown, is
+    /// not registered as `PayloadKind::Fact`, has no typed renderer, or
+    /// the payload bytes fail to decode as the registered JSON type.
+    pub fn render_fact_payload(
+        &self,
+        schema_id: &SchemaId,
+        schema_version: SchemaVersion,
+        payload_bytes: &[u8],
+    ) -> Result<String, StorageError> {
+        let Some(&position) = self
+            .index
+            .fact_renderer_by_key
+            .get(&(schema_id.clone(), schema_version))
+        else {
+            let reason = if self
+                .lookup_payload(schema_id, schema_version, PayloadKind::Fact)
+                .is_some()
+            {
+                "has no typed renderer"
+            } else {
+                "is not a registered Fact schema"
+            };
+            return Err(StorageError::Internal(format!(
+                "Fact schema {} v{} {reason}",
+                schema_id.as_str(),
+                schema_version.into_inner(),
+            )));
+        };
+        (self.fact_renderers[position].render)(payload_bytes)
     }
 
     /// Resolve the head-by-natural-key filter for a stateful Fact

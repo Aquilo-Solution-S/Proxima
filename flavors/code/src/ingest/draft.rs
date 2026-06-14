@@ -36,6 +36,7 @@ pub(super) fn make_draft<P: serde::Serialize>(
         schema_id: SchemaId::new(schema_id.into()),
         schema_version: SchemaVersion::new(1),
         payload: bytes,
+        rendered_text: None,
         observed_at,
         occurred_at: observed_at,
         citation: Some(EventCitation {

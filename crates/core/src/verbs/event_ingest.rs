@@ -57,6 +57,8 @@ pub struct EventDraft {
     pub schema_id: SchemaId,
     pub schema_version: SchemaVersion,
     pub payload: Vec<u8>,
+    #[serde(default, skip)]
+    pub rendered_text: Option<String>,
     pub observed_at: time::OffsetDateTime,
     pub occurred_at: time::OffsetDateTime,
     pub citation: Option<Citation>,
@@ -306,6 +308,7 @@ mod tests {
             schema_id: SchemaId::new("test/fact".to_string()),
             schema_version: SchemaVersion::new(1),
             payload,
+            rendered_text: None,
             observed_at: now,
             occurred_at: now,
             citation: None,

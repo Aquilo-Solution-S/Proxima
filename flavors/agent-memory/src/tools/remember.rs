@@ -113,6 +113,7 @@ impl McpTool for RememberTool {
                 schema_id: SchemaId::new(AgentNoteV1::SCHEMA_ID.into()),
                 schema_version: SchemaVersion::new(AgentNoteV1::SCHEMA_VERSION),
                 payload: payload_bytes,
+                rendered_text: None,
                 observed_at,
                 occurred_at: observed_at,
                 citation: None,
@@ -159,12 +160,27 @@ impl McpTool for RememberTool {
                 .map_err(McpToolError::Storage)?
             };
             tx.commit().await.map_err(map_storage)?;
+            ensure_fact_embedding_best_effort(engine, &ctx.owner, &outcome).await;
 
             Ok(RememberOutput {
                 handle: ctx.format_fact_memory(outcome.memory_id),
                 idempotent_replay: outcome.idempotent_replay,
             })
         })
+    }
+}
+
+async fn ensure_fact_embedding_best_effort(
+    engine: &proxima_core::Engine,
+    owner: &proxima_core::Owner,
+    outcome: &EventIngestOutcome,
+) {
+    if let Err(err) = engine.ensure_fact_embedding(owner, outcome.memory_id).await {
+        tracing::warn!(
+            memory_id = %outcome.memory_id.into_inner(),
+            error = %err,
+            "best-effort Fact embedding failed after proxima_remember",
+        );
     }
 }
 
