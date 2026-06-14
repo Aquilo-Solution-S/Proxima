@@ -224,6 +224,17 @@ pub trait Storage: Send + Sync {
         master_token_id: uuid::Uuid,
     ) -> Result<MasterTokenPersonality, StorageError>;
 
+    /// Ensure a per-subject personality exists for the
+    /// `(owner, subject principal)` pair. Idempotent: returns the
+    /// existing identity on replay, or mints a fresh personality with a
+    /// Root Perspective and a row in
+    /// `proxima_core.subject_personality`.
+    async fn ensure_subject_personality(
+        &self,
+        owner: &Owner,
+        subject: &Principal,
+    ) -> Result<MasterTokenPersonality, StorageError>;
+
     /// Replace active `WakeEntry` rows for one personality instance.
     async fn set_wake_entries(
         &self,
@@ -497,6 +508,16 @@ impl Storage for NoopStorage {
     ) -> Result<MasterTokenPersonality, StorageError> {
         Err(StorageError::Internal(
             "mock: ensure_master_token_personality not stubbed".into(),
+        ))
+    }
+
+    async fn ensure_subject_personality(
+        &self,
+        _owner: &Owner,
+        _subject: &Principal,
+    ) -> Result<MasterTokenPersonality, StorageError> {
+        Err(StorageError::Internal(
+            "mock: ensure_subject_personality not stubbed".into(),
         ))
     }
 

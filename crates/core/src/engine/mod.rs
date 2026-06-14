@@ -184,6 +184,22 @@ impl Engine {
             .await
     }
 
+    /// Upsert the personality for `subject` under `owner`. Delegates to
+    /// [`Storage::ensure_subject_personality`].
+    ///
+    /// # Errors
+    ///
+    /// Propagates storage failures unchanged.
+    pub async fn ensure_subject_personality(
+        &self,
+        owner: &Owner,
+        subject: &Principal,
+    ) -> Result<crate::storage::MasterTokenPersonality, StorageError> {
+        self.storage
+            .ensure_subject_personality(owner, subject)
+            .await
+    }
+
     /// Spawn the MCP listener if attached.
     ///
     /// Returns an [`EngineHandle`] the caller passes to
