@@ -90,12 +90,18 @@ async fn streamable_http_initialize_list_and_remember() -> Result<(), Box<dyn st
         .as_str()
         .expect("text content");
     let output: serde_json::Value = serde_json::from_str(content)?;
-    uuid::Uuid::parse_str(output["handle"].as_str().expect("handle"))?;
+    assert_prefixed_uuid(output["handle"].as_str().expect("handle"), "F");
 
     handle.abort();
     let _ = handle.await;
     drop_db(&db_name).await?;
     Ok(())
+}
+
+fn assert_prefixed_uuid(raw: &str, expected_prefix: &str) {
+    let (prefix, uuid_part) = raw.split_once(':').expect("prefixed uuid");
+    assert_eq!(prefix, expected_prefix);
+    uuid::Uuid::parse_str(uuid_part).expect("uuid body");
 }
 
 #[tokio::test]
