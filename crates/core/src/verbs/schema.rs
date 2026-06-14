@@ -561,6 +561,40 @@ impl FlavorRegistryFrozen {
     }
 
     /// Render typed Fact payload bytes through the build-time registered
+    /// `FactPayload::render` implementation when one exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StorageError::Internal` when the schema is unknown, is
+    /// not registered as `PayloadKind::Fact`, or the payload bytes fail
+    /// to decode as the registered JSON type.
+    pub fn try_render_fact_payload(
+        &self,
+        schema_id: &SchemaId,
+        schema_version: SchemaVersion,
+        payload_bytes: &[u8],
+    ) -> Result<Option<String>, StorageError> {
+        let Some(&position) = self
+            .index
+            .fact_renderer_by_key
+            .get(&(schema_id.clone(), schema_version))
+        else {
+            if self
+                .lookup_payload(schema_id, schema_version, PayloadKind::Fact)
+                .is_some()
+            {
+                return Ok(None);
+            }
+            return Err(StorageError::Internal(format!(
+                "Fact schema {} v{} is not a registered Fact schema",
+                schema_id.as_str(),
+                schema_version.into_inner(),
+            )));
+        };
+        (self.fact_renderers[position].render)(payload_bytes).map(Some)
+    }
+
+    /// Render typed Fact payload bytes through the build-time registered
     /// `FactPayload::render` implementation.
     ///
     /// # Errors
@@ -574,26 +608,14 @@ impl FlavorRegistryFrozen {
         schema_version: SchemaVersion,
         payload_bytes: &[u8],
     ) -> Result<String, StorageError> {
-        let Some(&position) = self
-            .index
-            .fact_renderer_by_key
-            .get(&(schema_id.clone(), schema_version))
-        else {
-            let reason = if self
-                .lookup_payload(schema_id, schema_version, PayloadKind::Fact)
-                .is_some()
-            {
-                "has no typed renderer"
-            } else {
-                "is not a registered Fact schema"
-            };
-            return Err(StorageError::Internal(format!(
-                "Fact schema {} v{} {reason}",
-                schema_id.as_str(),
-                schema_version.into_inner(),
-            )));
-        };
-        (self.fact_renderers[position].render)(payload_bytes)
+        self.try_render_fact_payload(schema_id, schema_version, payload_bytes)?
+            .ok_or_else(|| {
+                StorageError::Internal(format!(
+                    "Fact schema {} v{} has no typed renderer",
+                    schema_id.as_str(),
+                    schema_version.into_inner(),
+                ))
+            })
     }
 
     /// Resolve the head-by-natural-key filter for a stateful Fact
