@@ -1,14 +1,6 @@
 //! Engine-wide error envelope per docs/14 §"Error envelope".
 
-#[derive(
-    Debug,
-    Clone,
-    PartialEq,
-    Eq,
-    thiserror::Error,
-    serde::Serialize,
-    serde::Deserialize,
-)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error, serde::Serialize, serde::Deserialize)]
 #[error("{code:?}: {message}")]
 pub struct ProtocolError {
     pub code: ErrorCode,

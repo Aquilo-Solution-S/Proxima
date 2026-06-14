@@ -4,9 +4,7 @@
 
 use uuid::Uuid;
 
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct UserId(Uuid);
 
 impl UserId {
@@ -21,9 +19,7 @@ impl UserId {
     }
 }
 
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct GroupId(Uuid);
 
 impl GroupId {
@@ -38,9 +34,7 @@ impl GroupId {
     }
 }
 
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct OrgId(Uuid);
 
 impl OrgId {
@@ -55,9 +49,7 @@ impl OrgId {
     }
 }
 
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct MemoryId(Uuid);
 
 impl MemoryId {
@@ -72,9 +64,7 @@ impl MemoryId {
     }
 }
 
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct GoalId(Uuid);
 
 impl GoalId {
@@ -89,9 +79,7 @@ impl GoalId {
     }
 }
 
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct EdgeId(Uuid);
 
 impl EdgeId {
@@ -126,9 +114,7 @@ impl SchemaId {
     }
 }
 
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct SchemaVersion(u32);
 
 impl SchemaVersion {
@@ -146,9 +132,7 @@ impl SchemaVersion {
 /// BLAKE3-32 `ContentHash` of (`source_id`, owner, payload).
 /// Per docs/07 §"ID types" — events use `ContentHash` for
 /// re-receipt dedup, not `UUIDv7`.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct EventId([u8; 32]);
 
 impl EventId {
@@ -170,9 +154,7 @@ impl EventId {
 
 /// `UUIDv7`, declared by the source at emit time.
 /// See docs/01 §"The contract".
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct SourceBatchId(uuid::Uuid);
 
 impl SourceBatchId {
@@ -209,9 +191,7 @@ impl SourceId {
 
 // M2.5 — GoalWrite verb newtypes.
 
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct OperatorId(uuid::Uuid);
 
 impl OperatorId {

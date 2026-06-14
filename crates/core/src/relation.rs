@@ -67,15 +67,7 @@ impl RelationClass {
 /// `crates/storage-pg/migrations/20260516000010_baseline.sql` for the
 /// canonical variant set.
 #[derive(
-    Clone,
-    Copy,
-    Debug,
-    PartialEq,
-    Eq,
-    Hash,
-    serde::Serialize,
-    serde::Deserialize,
-    sqlx::Type,
+    Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, sqlx::Type,
 )]
 #[sqlx(type_name = "proxima_core.edge_authorship_kind")]
 pub enum EdgeAuthorshipKind {

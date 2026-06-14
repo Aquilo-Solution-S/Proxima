@@ -20,9 +20,7 @@ pub const ROOT_PERSONALITY_PERSPECTIVE_SIDECAR_TABLE: &str =
 /// Maximum wake chain depth constant.
 pub const MAX_WAKE_CHAIN_DEPTH: u16 = 10;
 
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct PersonalityInstanceId(Uuid);
 
 impl PersonalityInstanceId {
