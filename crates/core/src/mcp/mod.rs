@@ -11,7 +11,10 @@ pub use core_tools::{
     AuditEmit, PersonalityConfigChangedCaller, PersonalityConfigChangedSubject,
     PersonalityConfigChangedV1, PersonalityConfigChangedVerb, emit_personality_config_changed,
 };
-pub use handles::{EntityKind, EntityRef, Handle, HandleTable, MemoryHandleClass, ResolveError};
+pub use handles::{
+    EntityKind, EntityRef, Handle, HandleTable, MemoryHandleClass, PrefixedUuidClass,
+    PrefixedUuidError, ResolveError, format_prefixed_uuid, parse_prefixed_uuid,
+};
 
 use std::sync::Arc;
 
@@ -37,10 +40,14 @@ pub struct McpAuthorContext {
 ///   strings (`F1`, `A1`, `P1`, `G7`, …) against a `HandleTable`.
 /// - `RawIds`: master-token / human-facing. Emits/parses raw UUID
 ///   strings. No `HandleTable` is consulted.
+/// - `PrefixedIds`: wire-facing. Emits/parses typed `F:<uuid>`,
+///   `A:<uuid>`, `P:<uuid>`, `G:<uuid>`, `I:<uuid>`, `E:<uuid>`,
+///   and `W:<uuid>` strings. No `HandleTable` is consulted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputMode {
     Handles,
     RawIds,
+    PrefixedIds,
 }
 
 #[derive(Clone)]
@@ -123,6 +130,9 @@ impl McpToolCtx {
                 .as_str()
                 .to_string(),
             OutputMode::RawIds => id.into_inner().to_string(),
+            OutputMode::PrefixedIds => {
+                format_prefixed_uuid(id.into_inner(), PrefixedUuidClass::Fact)
+            }
         }
     }
 
@@ -135,6 +145,9 @@ impl McpToolCtx {
                 .as_str()
                 .to_string(),
             OutputMode::RawIds => id.into_inner().to_string(),
+            OutputMode::PrefixedIds => {
+                format_prefixed_uuid(id.into_inner(), PrefixedUuidClass::Abstraction)
+            }
         }
     }
 
@@ -147,6 +160,9 @@ impl McpToolCtx {
                 .as_str()
                 .to_string(),
             OutputMode::RawIds => id.into_inner().to_string(),
+            OutputMode::PrefixedIds => {
+                format_prefixed_uuid(id.into_inner(), PrefixedUuidClass::Perspective)
+            }
         }
     }
 
@@ -155,6 +171,9 @@ impl McpToolCtx {
         match self.mode {
             OutputMode::Handles => self.handle_table().assign_goal(id).as_str().to_string(),
             OutputMode::RawIds => id.into_inner().to_string(),
+            OutputMode::PrefixedIds => {
+                format_prefixed_uuid(id.into_inner(), PrefixedUuidClass::Goal)
+            }
         }
     }
 
@@ -163,6 +182,9 @@ impl McpToolCtx {
         match self.mode {
             OutputMode::Handles => self.handle_table().assign_edge(id).as_str().to_string(),
             OutputMode::RawIds => id.into_inner().to_string(),
+            OutputMode::PrefixedIds => {
+                format_prefixed_uuid(id.into_inner(), PrefixedUuidClass::Edge)
+            }
         }
     }
 
@@ -175,6 +197,9 @@ impl McpToolCtx {
                 .as_str()
                 .to_string(),
             OutputMode::RawIds => id.into_inner().to_string(),
+            OutputMode::PrefixedIds => {
+                format_prefixed_uuid(id.into_inner(), PrefixedUuidClass::Personality)
+            }
         }
     }
 
@@ -187,6 +212,7 @@ impl McpToolCtx {
                 .as_str()
                 .to_string(),
             OutputMode::RawIds => id.to_string(),
+            OutputMode::PrefixedIds => format_prefixed_uuid(id, PrefixedUuidClass::WakeEntry),
         }
     }
 
@@ -199,6 +225,7 @@ impl McpToolCtx {
                 .as_str()
                 .to_string(),
             OutputMode::RawIds => id.to_string(),
+            OutputMode::PrefixedIds => format!("{prefix}:{id}"),
         }
     }
 
@@ -219,6 +246,7 @@ impl McpToolCtx {
                 .parse::<uuid::Uuid>()
                 .map(MemoryId::new)
                 .map_err(|e| McpToolError::InvalidInput(format!("not a uuid: {e}"))),
+            OutputMode::PrefixedIds => parse_any_prefixed_memory_uuid(raw).map(MemoryId::new),
         }
     }
 
@@ -237,6 +265,9 @@ impl McpToolCtx {
                 .parse::<uuid::Uuid>()
                 .map(MemoryId::new)
                 .map_err(|e| McpToolError::InvalidInput(format!("not a uuid: {e}"))),
+            OutputMode::PrefixedIds => parse_prefixed_uuid(raw, PrefixedUuidClass::Fact)
+                .map(MemoryId::new)
+                .map_err(|e| McpToolError::InvalidInput(e.to_string())),
         }
     }
 
@@ -255,6 +286,9 @@ impl McpToolCtx {
                 .parse::<uuid::Uuid>()
                 .map(MemoryId::new)
                 .map_err(|e| McpToolError::InvalidInput(format!("not a uuid: {e}"))),
+            OutputMode::PrefixedIds => parse_prefixed_uuid(raw, PrefixedUuidClass::Abstraction)
+                .map(MemoryId::new)
+                .map_err(|e| McpToolError::InvalidInput(e.to_string())),
         }
     }
 
@@ -273,6 +307,9 @@ impl McpToolCtx {
                 .parse::<uuid::Uuid>()
                 .map(MemoryId::new)
                 .map_err(|e| McpToolError::InvalidInput(format!("not a uuid: {e}"))),
+            OutputMode::PrefixedIds => parse_prefixed_uuid(raw, PrefixedUuidClass::Perspective)
+                .map(MemoryId::new)
+                .map_err(|e| McpToolError::InvalidInput(e.to_string())),
         }
     }
 
@@ -291,6 +328,9 @@ impl McpToolCtx {
                 .parse::<uuid::Uuid>()
                 .map(GoalId::new)
                 .map_err(|e| McpToolError::InvalidInput(format!("not a uuid: {e}"))),
+            OutputMode::PrefixedIds => parse_prefixed_uuid(raw, PrefixedUuidClass::Goal)
+                .map(GoalId::new)
+                .map_err(|e| McpToolError::InvalidInput(e.to_string())),
         }
     }
 
@@ -309,6 +349,9 @@ impl McpToolCtx {
                 .parse::<uuid::Uuid>()
                 .map(EdgeId::new)
                 .map_err(|e| McpToolError::InvalidInput(format!("not a uuid: {e}"))),
+            OutputMode::PrefixedIds => parse_prefixed_uuid(raw, PrefixedUuidClass::Edge)
+                .map(EdgeId::new)
+                .map_err(|e| McpToolError::InvalidInput(e.to_string())),
         }
     }
 
@@ -327,6 +370,9 @@ impl McpToolCtx {
                 .parse::<uuid::Uuid>()
                 .map(PersonalityInstanceId::new)
                 .map_err(|e| McpToolError::InvalidInput(format!("not a uuid: {e}"))),
+            OutputMode::PrefixedIds => parse_prefixed_uuid(raw, PrefixedUuidClass::Personality)
+                .map(PersonalityInstanceId::new)
+                .map_err(|e| McpToolError::InvalidInput(e.to_string())),
         }
     }
 
@@ -344,6 +390,8 @@ impl McpToolCtx {
             OutputMode::RawIds => raw
                 .parse::<uuid::Uuid>()
                 .map_err(|e| McpToolError::InvalidInput(format!("not a uuid: {e}"))),
+            OutputMode::PrefixedIds => parse_prefixed_uuid(raw, PrefixedUuidClass::WakeEntry)
+                .map_err(|e| McpToolError::InvalidInput(e.to_string())),
         }
     }
 
@@ -362,8 +410,45 @@ impl McpToolCtx {
             OutputMode::RawIds => raw
                 .parse::<uuid::Uuid>()
                 .map_err(|e| McpToolError::InvalidInput(format!("not a uuid: {e}"))),
+            OutputMode::PrefixedIds => parse_flavor_prefixed_uuid(raw),
         }
     }
+}
+
+fn parse_any_prefixed_memory_uuid(raw: &str) -> Result<uuid::Uuid, McpToolError> {
+    let class = match raw.split_once(':').map(|(prefix, _)| prefix) {
+        Some("F") => PrefixedUuidClass::Fact,
+        Some("A") => PrefixedUuidClass::Abstraction,
+        Some("P") => PrefixedUuidClass::Perspective,
+        Some(prefix) => {
+            return Err(McpToolError::InvalidInput(format!(
+                "expected memory id prefix F, A, or P; got '{prefix}' in '{raw}'"
+            )));
+        }
+        None => {
+            return Err(McpToolError::InvalidInput(format!(
+                "malformed memory id '{raw}': expected F:<uuid>, A:<uuid>, or P:<uuid>"
+            )));
+        }
+    };
+    parse_prefixed_uuid(raw, class).map_err(|e| McpToolError::InvalidInput(e.to_string()))
+}
+
+fn parse_flavor_prefixed_uuid(raw: &str) -> Result<uuid::Uuid, McpToolError> {
+    let Some((prefix, uuid_part)) = raw.split_once(':') else {
+        return Err(McpToolError::InvalidInput(format!(
+            "malformed flavor object id '{raw}': expected <prefix>:<uuid>"
+        )));
+    };
+    let mut chars = prefix.chars();
+    if !matches!(chars.next(), Some(c) if c.is_ascii_uppercase()) || chars.next().is_some() {
+        return Err(McpToolError::InvalidInput(format!(
+            "malformed flavor object id '{raw}': prefix must be one ASCII uppercase letter"
+        )));
+    }
+    uuid_part
+        .parse::<uuid::Uuid>()
+        .map_err(|e| McpToolError::InvalidInput(format!("not a uuid: {e}")))
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -442,7 +527,10 @@ pub fn provider_safe_tool_name(canonical: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::provider_safe_tool_name;
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::{AuthPath, FlavorRegistry, OrgId, Owner, Principal, UserId};
 
     #[test]
     fn provider_safe_tool_name_replaces_runner_invalid_separators() {
@@ -455,6 +543,106 @@ mod tests {
             "proxima-agent-memory_proxima_remember"
         );
         assert_eq!(provider_safe_tool_name("a..b"), "a._b");
+    }
+
+    #[test]
+    fn prefixed_ids_round_trip_through_ctx_helpers() {
+        let ctx = prefixed_ctx();
+        let fact = MemoryId::new(uuid::Uuid::now_v7());
+        let abstraction = MemoryId::new(uuid::Uuid::now_v7());
+        let perspective = MemoryId::new(uuid::Uuid::now_v7());
+        let goal = GoalId::new(uuid::Uuid::now_v7());
+        let personality = PersonalityInstanceId::new(uuid::Uuid::now_v7());
+        let edge = EdgeId::new(uuid::Uuid::now_v7());
+        let wake = uuid::Uuid::now_v7();
+
+        let fact_ref = ctx.format_fact_memory(fact);
+        let abstraction_ref = ctx.format_abstraction_memory(abstraction);
+        let perspective_ref = ctx.format_perspective_memory(perspective);
+        let goal_ref = ctx.format_goal(goal);
+        let personality_ref = ctx.format_personality(personality);
+        let edge_ref = ctx.format_edge(edge);
+        let wake_ref = ctx.format_wake_entry(wake);
+
+        assert_prefixed_uuid(&fact_ref, 'F');
+        assert_prefixed_uuid(&abstraction_ref, 'A');
+        assert_prefixed_uuid(&perspective_ref, 'P');
+        assert_prefixed_uuid(&goal_ref, 'G');
+        assert_prefixed_uuid(&personality_ref, 'I');
+        assert_prefixed_uuid(&edge_ref, 'E');
+        assert_prefixed_uuid(&wake_ref, 'W');
+
+        assert_eq!(ctx.resolve_fact_memory(&fact_ref).expect("fact"), fact);
+        assert_eq!(
+            ctx.resolve_abstraction_memory(&abstraction_ref)
+                .expect("abstraction"),
+            abstraction
+        );
+        assert_eq!(
+            ctx.resolve_perspective_memory(&perspective_ref)
+                .expect("perspective"),
+            perspective
+        );
+        assert_eq!(ctx.resolve_memory(&fact_ref).expect("any fact"), fact);
+        assert_eq!(
+            ctx.resolve_memory(&abstraction_ref)
+                .expect("any abstraction"),
+            abstraction
+        );
+        assert_eq!(
+            ctx.resolve_memory(&perspective_ref)
+                .expect("any perspective"),
+            perspective
+        );
+        assert_eq!(ctx.resolve_goal(&goal_ref).expect("goal"), goal);
+        assert_eq!(
+            ctx.resolve_personality(&personality_ref)
+                .expect("personality"),
+            personality
+        );
+        assert_eq!(ctx.resolve_edge(&edge_ref).expect("edge"), edge);
+        assert_eq!(ctx.resolve_wake_entry(&wake_ref).expect("wake"), wake);
+    }
+
+    #[test]
+    fn prefixed_ids_ctx_rejects_wrong_class() {
+        let ctx = prefixed_ctx();
+        let fact = ctx.format_fact_memory(MemoryId::new(uuid::Uuid::now_v7()));
+        let err = ctx.resolve_goal(&fact).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("expected Goal id"), "message: {msg}");
+        assert!(msg.contains("got prefix 'F'"), "message: {msg}");
+    }
+
+    fn prefixed_ctx() -> McpToolCtx {
+        let owner = Owner {
+            principal: Principal::User(UserId::new(uuid::Uuid::now_v7())),
+            org_id: OrgId::new(uuid::Uuid::now_v7()),
+        };
+        McpToolCtx {
+            pool: sqlx::PgPool::connect_lazy("postgres://x/x").expect("lazy"),
+            owner: owner.clone(),
+            authz: AuthzContext::single_owner(&owner, AuthPath::System),
+            handles: None,
+            mode: OutputMode::PrefixedIds,
+            registry: Arc::new(FlavorRegistry::new().freeze()),
+            author: McpAuthorContext {
+                model_id: "t".into(),
+                client_name: "t".into(),
+                client_version: "0".into(),
+                caller_self_perspective: None,
+            },
+            caller_self_perspective: None,
+            master_token_id: None,
+            engine: None,
+        }
+    }
+
+    fn assert_prefixed_uuid(raw: &str, expected_prefix: char) {
+        let (prefix, uuid_part) = raw.split_once(':').expect("prefixed uuid");
+        let mut expected = [0; 4];
+        assert_eq!(prefix, expected_prefix.encode_utf8(&mut expected));
+        uuid::Uuid::parse_str(uuid_part).expect("uuid body");
     }
 }
 

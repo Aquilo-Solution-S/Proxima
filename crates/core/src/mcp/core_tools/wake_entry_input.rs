@@ -40,7 +40,7 @@ fn default_enabled() -> bool {
 impl WakeEntryDraftInput {
     /// Resolve into a `WakeEntryDraft`. Allocates a fresh UUID when
     /// `wake_entry_id` is `None`; resolves through `ctx.resolve_wake_entry`
-    /// otherwise so the call works in both `Handles` and `RawIds` modes.
+    /// otherwise so the call works in `Handles`, `RawIds`, and prefixed-id modes.
     ///
     /// # Errors
     ///
