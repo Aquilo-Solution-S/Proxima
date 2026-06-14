@@ -1,4 +1,6 @@
-use proxima_core::verbs::persist_wake_trace::{WakeTracePersistInput, WakeTracePersistOutcome};
+use proxima_core::verbs::persist_wake_trace::{
+    WakeTracePayload, WakeTracePersistInput, WakeTracePersistOutcome,
+};
 use proxima_core::{GoalId, MemoryId, OrgId, Owner, Principal, SourceBatchId, SourceId, UserId};
 use uuid::Uuid;
 
@@ -47,9 +49,9 @@ fn test_owner() -> Owner {
     }
 }
 
-fn sample_wake_trace() -> proxima_core::wake::trace::WakeTracePayload {
+fn sample_wake_trace() -> WakeTracePayload {
     let now = time::OffsetDateTime::now_utc();
-    proxima_core::wake::trace::WakeTracePayload {
+    WakeTracePayload {
         invocation_id: Uuid::now_v7(),
         wake_entry_id: Uuid::now_v7(),
         personality_instance_id: Uuid::now_v7(),

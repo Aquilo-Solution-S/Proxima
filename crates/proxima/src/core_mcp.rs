@@ -97,7 +97,6 @@ impl CoreMcpTools {
             owner: owner.clone(),
             authz,
             model_id,
-            wake: None,
             master_token_id: None,
         };
 

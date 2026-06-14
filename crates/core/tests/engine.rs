@@ -155,13 +155,6 @@ async fn query_verb_rejects_foreign_owner_with_forbidden() {
 }
 
 #[tokio::test]
-async fn dispatcher_tick_is_noop_without_wake_configs() {
-    let (principal, owner) = fresh_owner();
-    let engine = boot_engine(principal, owner);
-    assert_eq!(engine.run_dispatcher_tick().await.unwrap(), 0);
-}
-
-#[tokio::test]
 async fn tombstone_personality_rejects_noop_storage_write() {
     let (principal, owner) = fresh_owner();
     let engine = boot_engine(principal, owner.clone());

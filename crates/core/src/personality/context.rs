@@ -25,12 +25,6 @@ pub struct PersonalityToolContext<'a> {
     pub writeable_schemas: Vec<String>,
     pub writeable_relations: Vec<String>,
     pub palette: &'a [Arc<dyn PersonalityTool>],
-    /// Wake invocation bound by the MCP substrate handler after
-    /// extracting the wake token from request extensions. Provenance-
-    /// stamping substrate tools read `model_id` from here so the row
-    /// reflects the `InferenceTarget` that drove the wake instead of a
-    /// static `Standard`-tier guess. `None` only in unit tests.
-    pub wake_invocation: Option<&'a crate::wake::token_store::WakeTokenContext>,
     read_log: Arc<tokio::sync::Mutex<Vec<(MemoryId, WakeChainDepth)>>>,
     /// Per-wake handle table. In production this is
     /// `wake.handles.clone()`. In unit tests without a wake it is a
@@ -66,22 +60,9 @@ impl<'a> PersonalityToolContext<'a> {
             writeable_schemas,
             writeable_relations,
             palette,
-            wake_invocation: None,
             read_log: Arc::new(tokio::sync::Mutex::new(Vec::new())),
             handles,
         }
-    }
-
-    /// Bind the active `WakeTokenContext` for the duration of this tool
-    /// dispatch. The MCP handler calls this after extracting the wake
-    /// token from request extensions.
-    #[must_use]
-    pub fn with_wake_invocation(
-        mut self,
-        wake_invocation: &'a crate::wake::token_store::WakeTokenContext,
-    ) -> Self {
-        self.wake_invocation = Some(wake_invocation);
-        self
     }
 
     #[must_use]

@@ -40,7 +40,7 @@ impl Authenticator for StubHostAuth {
                 &self.owner,
                 AuthPath::HostBearer,
             )),
-            _ => Err(AuthError::InvalidCredentials),
+            Credentials::Bearer(_) => Err(AuthError::InvalidCredentials),
         }
     }
 }

@@ -3,8 +3,7 @@
 pub use proxima_pg_testkit::{db_url, drop_db};
 use serde_json::json;
 
-use proxima_core::wake::token_store::WakeTokenContext;
-use proxima_core::{HandleTable, OrgId, Owner, Principal, UserId};
+use proxima_core::{OrgId, Owner, Principal, UserId};
 
 /// Returns a nil owner for token tests.
 #[allow(dead_code)]
@@ -12,28 +11,6 @@ pub fn nil_owner() -> Owner {
     Owner {
         principal: Principal::User(UserId::new(uuid::Uuid::nil())),
         org_id: OrgId::new(uuid::Uuid::nil()),
-    }
-}
-
-/// Creates a `WakeTokenContext` with the given palette.
-#[allow(dead_code)]
-pub fn make_token_ctx(palette: Vec<String>) -> WakeTokenContext {
-    WakeTokenContext {
-        invocation_id: uuid::Uuid::new_v4(),
-        personality_instance_id: uuid::Uuid::new_v4(),
-        wake_entry_id: uuid::Uuid::new_v4(),
-        change_event_seq: uuid::Uuid::new_v4(),
-        owner: nil_owner(),
-        palette,
-        model_id: "anthropic/claude-3-5-sonnet".into(),
-        max_rounds: 4,
-        current_root_perspective_memory_id: proxima_core::MemoryId::new(uuid::Uuid::now_v7()),
-        current_root_perspective_memory_class: proxima_core::MemoryHandleClass::Perspective,
-        triggering_event_memory_id: proxima_core::MemoryId::new(uuid::Uuid::now_v7()),
-        triggering_event_memory_class: proxima_core::MemoryHandleClass::Fact,
-        triggering_event_depth: proxima_core::WakeChainDepth::new(0),
-        read_log: std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new())),
-        handles: std::sync::Arc::new(HandleTable::new()),
     }
 }
 

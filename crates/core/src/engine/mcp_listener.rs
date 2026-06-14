@@ -7,10 +7,9 @@
 //! the engine via [`crate::engine::Engine::with_mcp_listener`].
 //!
 //! [`Engine::start`](crate::engine::Engine::start) calls
-//! [`EngineMcpListener::start`] with the engine's [`WakeTokenStore`]
-//! so the listener's auth layer matches the same store the dispatcher
-//! mints into. Without a listener attached, `Engine::start` skips
-//! the MCP step and `mcp_url()` stays `None`.
+//! [`EngineMcpListener::start`] with the engine. Without a listener
+//! attached, `Engine::start` skips the MCP step and `mcp_url()` stays
+//! `None`.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -19,7 +18,6 @@ use async_trait::async_trait;
 use tokio::task::JoinHandle;
 
 use crate::error::ProtocolError;
-use crate::wake::token_store::WakeTokenStore;
 
 /// A bound, serving MCP listener owned by the engine.
 ///
@@ -39,7 +37,6 @@ pub trait EngineMcpListener: Send + Sync {
     async fn start(
         &self,
         addr: SocketAddr,
-        wake_token_store: Arc<WakeTokenStore>,
         engine: Arc<crate::Engine>,
     ) -> Result<RunningMcpListener, ProtocolError>;
 }

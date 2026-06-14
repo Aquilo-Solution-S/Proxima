@@ -5,7 +5,6 @@
 //! - `SetWakeEntriesRequest/Response` - Configure wake entries
 //! - `TombstonePersonalityRequest/Response` - Delete a personality
 //! - `ListWakeInvocationsRequest` - List wake invocations
-//! - `ReplayWakeEventsRequest/Outcome` - Replay wake events
 
 use uuid::Uuid;
 
@@ -219,49 +218,4 @@ impl ListWakeInvocationsRequest {
         self.principal = stamped.principal;
         self.org_id = Some(stamped.org_id);
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ReplayWakeEventsRequest {
-    pub principal: Principal,
-    pub org_id: Option<OrgId>,
-    pub personality_instance_id: PersonalityInstanceId,
-    pub wake_entry_id: Option<Uuid>,
-    pub after_seq: Option<Uuid>,
-    pub until_seq: Option<Uuid>,
-    pub event_limit: u16,
-    pub max_invocations: u16,
-}
-
-impl ReplayWakeEventsRequest {
-    /// Reconstructs the storage `Owner` after verb-layer stamping.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `stamp_owner` has not populated `org_id` before storage or hash use.
-    #[must_use]
-    pub fn owner(&self) -> Owner {
-        Owner {
-            principal: self.principal.clone(),
-            org_id: self
-                .org_id
-                .expect("ReplayWakeEventsRequest org_id must be stamped before storage use"),
-        }
-    }
-
-    pub fn stamp_owner(&mut self, stamped: Owner) {
-        self.principal = stamped.principal;
-        self.org_id = Some(stamped.org_id);
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
-pub struct ReplayWakeEventsOutcome {
-    pub considered_events: u32,
-    pub eligible_events: u32,
-    pub started_invocations: u32,
-    pub already_recorded: u32,
-    pub skipped: u32,
-    pub complete: bool,
-    pub next_after_seq: Option<Uuid>,
 }

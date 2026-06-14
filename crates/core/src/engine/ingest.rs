@@ -147,11 +147,6 @@ impl Engine {
                 other => ProtocolError::internal(other.to_string()),
             })?;
 
-        // Wake personalities after a new batch closes. Dispatcher
-        // cursors and invocation rows provide idempotency.
-        if !outcome.already_closed {
-            let _ = self.run_dispatcher_tick().await?;
-        }
         Ok(outcome)
     }
 }

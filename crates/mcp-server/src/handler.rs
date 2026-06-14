@@ -41,7 +41,7 @@ impl ServerHandler for DynamicHandler {
     ) -> impl Future<Output = Result<ListToolsResult, ErrorData>> + MaybeSendFuture + '_ {
         let auth = auth_context(&context);
         let scope = auth.as_ref().map(|ctx| &ctx.authz.capabilities.tool_scope);
-        let mut tools: Vec<Tool> = self
+        let tools: Vec<Tool> = self
             .server
             .registry()
             .list_mcp_tools()
@@ -55,21 +55,6 @@ impl ServerHandler for DynamicHandler {
                 )
             })
             .collect();
-        if auth.as_ref().and_then(|ctx| ctx.wake.as_ref()).is_some() {
-            tools.extend(
-                self.server
-                    .substrate_tools()
-                    .iter()
-                    .filter(|tool| scope_allows(scope, tool.tool_id()))
-                    .map(|tool| {
-                        Tool::new(
-                            Cow::Owned(provider_safe_tool_name(tool.tool_id())),
-                            Cow::Borrowed(tool.description()),
-                            Arc::new(rmcp::model::object(tool.args_schema())),
-                        )
-                    }),
-            );
-        }
         std::future::ready(Ok(ListToolsResult {
             tools,
             ..Default::default()
@@ -138,19 +123,12 @@ fn canonical_tool_name(server: &McpToolHost, request_name: &str) -> Option<Strin
         .iter()
         .find(|descriptor| tool_name_matches(descriptor.name, request_name))
         .map(|descriptor| descriptor.name.to_string())
-        .or_else(|| {
-            server
-                .substrate_tools()
-                .iter()
-                .find(|tool| tool_name_matches(tool.tool_id(), request_name))
-                .map(|tool| tool.tool_id().to_string())
-        })
 }
 
 /// Resolve the token scope from the request auth context. Returns `None`
 /// when no token-bearing layer ran ahead of rmcp (direct handler tests).
-/// Wake tokens carry a palette scope; local master tokens carry all-tools
-/// scope.
+/// Local master tokens carry all-tools scope; host-bearer tokens carry
+/// the host-provided scope.
 ///
 /// rmcp's `StreamableHttpService` injects [`http::request::Parts`] into
 /// the rmcp request extensions, and our `mcp_auth_layer` inserts
@@ -183,13 +161,7 @@ fn author_from_args(
         .or_else(|| auth.and_then(|ctx| ctx.model_id.as_deref()))
         .unwrap_or("unknown")
         .to_string();
-    let caller_self_perspective = caller_self_perspective_from_args(args)?.or_else(|| {
-        auth.and_then(|ctx| {
-            ctx.wake
-                .as_ref()
-                .map(|wake| wake.current_root_perspective_memory_id)
-        })
-    });
+    let caller_self_perspective = caller_self_perspective_from_args(args)?;
     Ok(McpAuthorContext {
         model_id,
         client_name: "unknown".into(),

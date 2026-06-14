@@ -10,7 +10,6 @@ pub mod audit;
 pub mod intervention;
 pub mod payload;
 pub mod remove_wake_entry;
-pub mod replay_wake_events;
 pub mod set_wake_entries;
 pub mod update_wake_entry;
 pub mod wake_entry_input;
@@ -29,7 +28,6 @@ pub mod list_read_scope;
 pub mod list_schemas;
 pub mod list_substrate_tools;
 pub mod list_wake_entries;
-pub mod list_wake_invocations;
 pub mod register_inference_target;
 pub mod remove_inference_target;
 pub mod set_read_scope;
@@ -59,7 +57,6 @@ pub use list_read_scope::ListReadScopeTool;
 pub use list_schemas::ListSchemasTool;
 pub use list_substrate_tools::ListSubstrateToolsTool;
 pub use list_wake_entries::ListWakeEntriesTool;
-pub use list_wake_invocations::{ListWakeInvocationsArgs, ListWakeInvocationsTool};
 pub use payload::{
     PersonalityConfigChangedCaller, PersonalityConfigChangedSubject, PersonalityConfigChangedV1,
     PersonalityConfigChangedVerb,
@@ -67,7 +64,6 @@ pub use payload::{
 pub use register_inference_target::RegisterInferenceTargetTool;
 pub use remove_inference_target::RemoveInferenceTargetTool;
 pub use remove_wake_entry::RemoveWakeEntryTool;
-pub use replay_wake_events::ReplayWakeEventsTool;
 pub use set_read_scope::SetReadScopeTool;
 pub use set_wake_entries::SetWakeEntriesTool;
 pub use tombstone_personality::TombstonePersonalityTool;
@@ -83,14 +79,12 @@ pub(crate) fn register_all(registry: &mut crate::FlavorRegistry) {
     registry.add_substrate_mcp_tool::<InstantiatePersonalityTool>();
     registry.add_substrate_mcp_tool::<TombstonePersonalityTool>();
     registry.add_substrate_mcp_tool::<ListWakeEntriesTool>();
-    registry.add_substrate_mcp_tool::<ListWakeInvocationsTool>();
     registry.add_substrate_mcp_tool::<SetWakeEntriesTool>();
     registry.add_substrate_mcp_tool::<ListReadScopeTool>();
     registry.add_substrate_mcp_tool::<SetReadScopeTool>();
     registry.add_substrate_mcp_tool::<AddWakeEntryTool>();
     registry.add_substrate_mcp_tool::<UpdateWakeEntryTool>();
     registry.add_substrate_mcp_tool::<RemoveWakeEntryTool>();
-    registry.add_substrate_mcp_tool::<ReplayWakeEventsTool>();
     registry.add_substrate_mcp_tool::<ListInferenceTargetsTool>();
     registry.add_substrate_mcp_tool::<ListInferenceTierBindingsTool>();
     registry.add_substrate_mcp_tool::<RegisterInferenceTargetTool>();
