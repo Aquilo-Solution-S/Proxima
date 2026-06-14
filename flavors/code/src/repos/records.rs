@@ -28,16 +28,7 @@ pub struct RepoEraseReceipt {
     pub repo_record_deleted: bool,
 }
 
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    serde::Serialize,
-    serde::Deserialize,
-    sqlx::Type,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, sqlx::Type)]
 #[serde(rename_all = "snake_case")]
 #[sqlx(
     type_name = "proxima_code.repo_ingestion_run_status",
@@ -76,16 +67,7 @@ impl FromStr for RunStatus {
     }
 }
 
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    serde::Serialize,
-    serde::Deserialize,
-    sqlx::Type,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, sqlx::Type)]
 #[serde(rename_all = "snake_case")]
 #[sqlx(
     type_name = "proxima_code.repo_ingestion_run_stage",

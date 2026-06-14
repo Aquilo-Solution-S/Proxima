@@ -28,15 +28,7 @@ pub enum Principal {
 /// `Principal` across two columns (`owner_principal_kind` +
 /// `owner_principal_id`); `FromRow` decoders read this tag.
 #[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    Hash,
-    serde::Serialize,
-    serde::Deserialize,
-    sqlx::Type,
+    Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, sqlx::Type,
 )]
 #[sqlx(type_name = "proxima_core.owner_principal_kind")]
 pub enum OwnerPrincipalKind {

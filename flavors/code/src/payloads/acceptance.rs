@@ -2,9 +2,7 @@ use proxima_core::{FactPayload, proxima_schema_id};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, sqlx::Type,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, sqlx::Type)]
 #[schemars(description = "Verifier category that determines how verifier_spec is interpreted.")]
 #[serde(rename_all = "snake_case")]
 #[sqlx(

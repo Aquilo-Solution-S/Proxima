@@ -22,9 +22,7 @@
 /// so a runtime entry like
 /// `{vendor: "openrouter", dialect: OpenAI, model_id: "anthropic/..."}`
 /// is normal.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Dialect {
     Anthropic,
@@ -36,15 +34,7 @@ pub enum Dialect {
 /// registration; hosts validate that the selected model's claimed caps
 /// satisfy the union of operator `requires`.
 #[derive(
-    Debug,
-    Clone,
-    Copy,
-    Default,
-    PartialEq,
-    Eq,
-    Hash,
-    serde::Serialize,
-    serde::Deserialize,
+    Debug, Clone, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
 )]
 #[expect(
     clippy::struct_excessive_bools,
