@@ -80,7 +80,7 @@ impl McpToolHost {
     /// Build a per-call `McpToolCtx` derived from the auth regime.
     ///
     /// Master-token, host-bearer, and unauthenticated test calls receive
-    /// no handle table and `OutputMode::RawIds`.
+    /// no handle table and `OutputMode::PrefixedIds`.
     #[must_use]
     pub fn ctx_for(
         &self,
@@ -104,7 +104,7 @@ impl McpToolHost {
             owner,
             authz,
             handles: None,
-            mode: OutputMode::RawIds,
+            mode: OutputMode::PrefixedIds,
             registry: self.registry.clone(),
             caller_self_perspective: author.caller_self_perspective,
             master_token_id,
@@ -218,7 +218,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ctx_for_threads_master_token_id_in_raw_ids_mode() {
+    async fn ctx_for_threads_master_token_id_in_prefixed_ids_mode() {
         let server = make_server();
         let author = McpAuthorContext {
             model_id: "test-model".into(),
@@ -231,12 +231,12 @@ mod tests {
 
         let ctx = server.ctx_for(author.clone(), None, Some(&auth));
         assert_eq!(ctx.master_token_id, Some(token));
-        assert_eq!(ctx.mode, OutputMode::RawIds);
+        assert_eq!(ctx.mode, OutputMode::PrefixedIds);
         assert!(ctx.handles.is_none());
 
         let ctx_no_auth = server.ctx_for(author, None, None);
         assert_eq!(ctx_no_auth.master_token_id, None);
-        assert_eq!(ctx_no_auth.mode, OutputMode::RawIds);
+        assert_eq!(ctx_no_auth.mode, OutputMode::PrefixedIds);
         assert!(ctx_no_auth.handles.is_none());
     }
 }
