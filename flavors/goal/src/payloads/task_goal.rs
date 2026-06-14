@@ -8,7 +8,6 @@ use proxima_core::GoalPayload;
     Eq,
     serde::Serialize,
     serde::Deserialize,
-    specta::Type,
     sqlx::Type,
 )]
 #[sqlx(type_name = "proxima_goal.task_priority")]
@@ -18,7 +17,7 @@ pub enum TaskPriority {
     High,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TaskGoalV1 {
     // RFC 3339 explicit so storage projections via Postgres
     // `row_to_json(sidecar)` deserialize cleanly. Without this, time's

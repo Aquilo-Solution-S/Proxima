@@ -36,7 +36,6 @@ pub struct RepoEraseReceipt {
     Eq,
     serde::Serialize,
     serde::Deserialize,
-    specta::Type,
     sqlx::Type,
 )]
 #[serde(rename_all = "snake_case")]
@@ -85,7 +84,6 @@ impl FromStr for RunStatus {
     Eq,
     serde::Serialize,
     serde::Deserialize,
-    specta::Type,
     sqlx::Type,
 )]
 #[serde(rename_all = "snake_case")]
@@ -132,7 +130,7 @@ impl FromStr for RunStage {
     }
 }
 
-#[derive(Debug, Clone, serde::Serialize, specta::Type)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct RepoIngestionRun {
     pub run_id: Uuid,
     pub repo_id: Uuid,

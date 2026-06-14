@@ -11,13 +11,13 @@ use crate::{GroupId, OrgId, UserId};
 /// from auth context to reconstruct this pair for rows, storage drafts, wake
 /// internals, and stable hash inputs. `org_id` is NOT part of the access
 /// predicate (AGENTS.md invariant 4).
-#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, specta::Type)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct Owner {
     pub principal: Principal,
     pub org_id: OrgId,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, specta::Type)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Principal {
     User(UserId),
     Group(GroupId),
@@ -36,7 +36,6 @@ pub enum Principal {
     Hash,
     serde::Serialize,
     serde::Deserialize,
-    specta::Type,
     sqlx::Type,
 )]
 #[sqlx(type_name = "proxima_core.owner_principal_kind")]

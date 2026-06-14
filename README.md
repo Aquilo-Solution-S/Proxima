@@ -13,41 +13,15 @@ Users write their own app. The app owns the product, UX, domain workflow, auth b
 ## Start
 
 ```sh
-pnpm install
-pnpm --filter proxima-shell tauri:dev
-```
-
-`tauri:dev` starts the desktop shell, brings up dev Postgres and MinIO
-via `docker-compose.dev.yml`, creates the local S3 bucket, and writes perf
-logs under `apps/proxima-shell/perf-logs/`.
-
-`apps/proxima-shell` is the dev/reference inspector for graph, schema,
-settings, boot, and perf behavior. It is not the product surface for apps
-built on Proxima.
-
-```sh
-PROXIMA_PERF=0 pnpm --filter proxima-shell tauri:dev
-```
-
-Raw shell startup. No Docker or perf capture. Uses the current
-`DATABASE_URL` and S3 env.
-
-```sh
-pnpm --filter proxima-shell dev --host 127.0.0.1
 cargo run -p proxima-mcp -- --owner-user <uuid> --owner-org <uuid>
 ```
 
-Frontend-only Vite dev server. Headless MCP server at
-`http://127.0.0.1:31415/mcp`. Agent-harness users use
+Headless MCP server at `http://127.0.0.1:31415/mcp`. Agent-harness users use
 [`apps/proxima-mcp`](apps/proxima-mcp) or embed
 [`crates/mcp-server`](crates/mcp-server).
 
 ```sh
 cargo check --workspace
-pnpm --filter @proxima/core typecheck
-pnpm --filter proxima-shell typecheck
-pnpm --filter proxima-shell build
-pnpm --filter proxima-shell perf:down
 ```
 
 ## What `proxima-core` Means
@@ -115,11 +89,6 @@ Design source of truth:
   `flavors/<name>/`; multi-domain deployments compose via a
   composite crate. No feature flags — the flavor crate is the unit
   of inclusion.
-- [`docs/09-frontend.md`](docs/09-frontend.md) — frontend & client
-  model. Tauri 2 + Solid Shell; embedded Tauri IPC over `Arc<Engine>`;
-  generated Tauri/Specta bindings in `@proxima/core`; in-memory
-  graph store over `Schema` / `Query` / `EventHistory` / `Subscribe`;
-  flavor-owned frontend packages registered at Shell startup.
 - [`docs/10-configuration.md`](docs/10-configuration.md) — runtime
   config surface: Owner-scoped inference targets and tier bindings;
   wake-entry model routing; env/Codex auth resolution; binary-wide
@@ -138,13 +107,11 @@ Design source of truth:
   EventHistory / GoalWrite / EventIngest / Schema), owner-scoped,
   transport-agnostic; decider, operators, and tool registry stay
   inside the binary.
-- [`docs/dev-perf.md`](docs/dev-perf.md) — dev-time perf instrumentation:
-  per-session artifact layout under `apps/proxima-shell/perf-logs/`,
-  IPC / MCP / engine / Postgres capture, opt-out via `PROXIMA_PERF=0`.
+- [`docs/dev-perf.md`](docs/dev-perf.md) — perf reducer fixture format.
 
 ## Implementation commitment
 
-Rust. Frontend is the only non-Rust component.
+Rust.
 
 Each deployment is a single binary. The engine, event sources,
 actuator interface, memory store, and consolidation operators all

@@ -4,7 +4,7 @@ use proxima_core::{
 };
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecutionRequestV1 {
     pub repo_id: uuid::Uuid,
     pub title: String,

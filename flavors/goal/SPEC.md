@@ -37,26 +37,6 @@ Binding ADR for connection-via-lifecycle:
 - Direct semantic Fact-to-Fact linking. Cross-domain evidence synthesis goes
   through a typed Abstraction, then Perspective/Goal framing.
 
-## Prerequisite
-
-The **frontend flavor co-location migration** (separate plan in
-`.plans/`) lands first. It:
-
-- Moves existing Code + MCP frontend slices from
-  `packages/frontend-core/src/flavors/` to `flavors/<name>/frontend/`
-  (matching the `flavors/*/frontend` workspace pattern already declared
-  in `pnpm-workspace.yaml`).
-- Adds extension hooks to `packages/frontend-core/`:
-  `registerPayloadRenderer`, `registerEdgeStyle`,
-  `registerShellView`.
-- Establishes the shell's flavor-init composition pattern (each linked
-  flavor's frontend bundle exports `init()`; shell calls them at
-  startup).
-
-This spec assumes that work is done — Goal's frontend slice ships at
-`flavors/goal/frontend/` from day 1 using the registration hooks.
-frontend-core gains no Goal-specific code.
-
 ## Current state in the codebase (audited 2026-05-06)
 
 These already exist and are reused as-is:
@@ -89,8 +69,6 @@ Closed gaps:
 | Substrate flavor | `flavors/agent-memory/` | Substrate primitives only — `proxima_remember` / `_derive` / `_link` / `_search_graph` / `_open`. **No Goal-specific tools.** |
 | Goal flavor | `flavors/goal/` *(new)* | `MotivatedBy` (+ future `Blocks`, `Refines`) RelationDescriptors; reference GoalPayload schemas; MCP tools `goal_propose` and (optional) `goal_accept` / `goal_modify` / `goal_decline`; flavor migrations |
 | Code flavor | `flavors/code/` | Unchanged in v1; can register `code_refactor_goal` payload later |
-| Frontend | `flavors/goal/frontend/` *(new pnpm workspace member `@proxima/flavor-goal`)* | Typed payload renderers; propose-card with evidence chips; Proposed inbox view; flavor `init()` calling the frontend-core registration hooks |
-
 Invariants preserved: 1, 7, 8, 11, 12, 13, 16, 20.
 
 ### Lifecycle (state machine, extending existing `GoalState`)
@@ -413,53 +391,6 @@ evidence manually).
 | `External` authorship resolves to authenticated MCP session's agent_id | already wired by `external_agent_authorship.sql`; extend to Goal writes |
 | Payload `schema_id` ∈ registered GoalPayload schemas | engine (new — depends on `GoalPayload` trait landing) |
 
-## Frontend UX
-
-### Inbox view (new top-level shell route)
-
-Lives at `flavors/goal/frontend/src/views/inbox/`; registered with the
-shell via `registerShellView` from the Goal flavor's `init()`. Sibling
-of Atlas. Owner-scoped via existing `Subscribe` stream filtered on
-`EntityKind::Goal ∧ state=Proposed`.
-
-Per-row card:
-```
-┌───────────────────────────────────────────────────────────────┐
-│ <typed payload renderer>                                      │
-│                                                               │
-│ Why · [chip] [chip] [chip]   …each = A or F id                │
-│                                                               │
-│        [ Accept ]  [ Modify ]  [ Decline ]                    │
-└───────────────────────────────────────────────────────────────┘
-```
-
-- Chip click/hover → `proxima_open` to preview evidence inline.
-- `Modify` expands an inline editor exposing **both** the typed payload
-  form and the evidence chip strip (chips become removable, plus an
-  "add evidence" affordance via entity picker). On save → Accept path
-  with edited payload + edited evidence.
-- Empty-evidence proposals render with no chip strip — gap is visible.
-
-### Atlas additions
-
-Atlas itself stays in frontend-core. The Goal flavor's `init()` calls
-`registerEdgeStyle` for `goal/motivated-by` and per-state node styling
-hooks for Goal kinds — no edits to frontend-core's Atlas source.
-
-- Goal node styling by state:
-  - `Proposed` — dashed outline
-  - `Active` — solid fill
-  - `Paused` — solid fill, reduced opacity
-  - `Achieved` — solid fill, success accent
-  - `Abandoned` / `Rejected` — greyed
-- `MotivatedBy` edges rendered with the typed-edge style (per typed-goals
-  memory).
-
-### Goal CRUD (existing path)
-
-`New Goal` button → typed payload form → writes Active under
-`User` authorship directly via `GoalWrite`. No proposal involved.
-
 ## Testing
 
 | File | Covers |
@@ -470,8 +401,6 @@ hooks for Goal kinds — no edits to frontend-core's Atlas source.
 | `flavors/goal/tests/propose_smoke.rs` | `goal_propose` writes Goal + MotivatedBy atomically; rejects evidence in another Owner; rejects unregistered payload schema |
 | `flavors/goal/tests/accept_decline_pg.rs` | Accept supersedes + re-emits MotivatedBy; Decline is terminal; Modify edits payload + evidence then accepts |
 | `apps/proxima-mcp/tests/end_to_end.rs` (extend) | MCP `goal_propose` round-trip emits `ChangeEvent` |
-| `flavors/goal/frontend/src/views/inbox/index.test.tsx` | Inbox renders Proposed rows; Accept/Modify/Decline call right write paths |
-| `flavors/goal/frontend/src/renderers/payload-renderers.test.tsx` | Typed payload rendering for `simple_text_goal`, `task_goal` |
 
 ## Migration / rollout sequence
 
@@ -489,16 +418,9 @@ Order matters: prerequisites land first.
 5. **Extend `external_agent_authorship` wiring** to Goal writes.
 6. **`flavors/goal/` crate**: scaffold + `MotivatedBy` descriptor +
    reference payload schemas + tests.
-7. **Wire `flavors/goal/`** into `apps/proxima-shell/` composite binary
-   (per doc 13 composite discipline).
-8. **MCP `goal_propose` tool** (then optional `goal_accept` / `_modify`
+7. **MCP `goal_propose` tool** (then optional `goal_accept` / `_modify`
    / `_decline`).
-9. **`flavors/goal/frontend/` package**: payload renderers + Inbox view +
-   flavor `init()` registering payload renderers, edge styles, and the
-   shell view via the hooks shipped by the prerequisite migration.
-10. **Wire `@proxima/flavor-goal` `init()`** into the shell's flavor
-    composition entrypoint.
-11. **E2E smoke**: agent proposes → user accepts/declines from Inbox.
+8. **E2E smoke**: agent proposes → user accepts/declines.
 
 ## Open questions for plan-time decisions
 

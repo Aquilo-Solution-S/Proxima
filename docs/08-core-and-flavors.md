@@ -185,7 +185,6 @@ Flavor crate = inclusion unit. Composite binary = build artifact.
 ```
 proxima-mcp       = substrate + agent-memory + goal
 proxima-code      = substrate + code
-proxima-shell     = dev/reference inspector over substrate + code + goal + agent-memory
 ```
 
 Composite binaries are not plugin hosts.

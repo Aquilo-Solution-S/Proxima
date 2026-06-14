@@ -11,7 +11,7 @@ use crate::payloads::file_revision::FileState;
 /// parent `file-revision-v1` Fact, keyed by blob content hash) — no
 /// embedded `MemoryId` parent FK in the payload. See docs/11
 /// §"Three-layer model".
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CodeChunkV1 {
     pub repo_id: uuid::Uuid,
     pub file_path: String,

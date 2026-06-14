@@ -20,7 +20,6 @@ use crate::outbox::EntityKind;
     Hash,
     serde::Serialize,
     serde::Deserialize,
-    specta::Type,
 )]
 pub struct WakeChainDepth(u16);
 
@@ -55,7 +54,6 @@ impl WakeChainDepth {
     Hash,
     serde::Serialize,
     serde::Deserialize,
-    specta::Type,
     schemars::JsonSchema,
     sqlx::Type,
 )]
@@ -89,7 +87,6 @@ impl WakeEntryTriggerKind {
     Default,
     serde::Serialize,
     serde::Deserialize,
-    specta::Type,
     schemars::JsonSchema,
     sqlx::Type,
 )]
@@ -119,7 +116,6 @@ impl WakeEntryGoalScope {
     Eq,
     serde::Serialize,
     serde::Deserialize,
-    specta::Type,
     Default,
     schemars::JsonSchema,
     sqlx::Type,

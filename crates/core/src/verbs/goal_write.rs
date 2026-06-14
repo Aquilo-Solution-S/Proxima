@@ -17,7 +17,6 @@ use crate::{
     Eq,
     serde::Serialize,
     serde::Deserialize,
-    specta::Type,
     sqlx::Type,
 )]
 #[sqlx(type_name = "proxima_core.goal_state")]
@@ -38,7 +37,6 @@ pub enum GoalState {
     Eq,
     serde::Serialize,
     serde::Deserialize,
-    specta::Type,
     sqlx::Type,
 )]
 #[sqlx(type_name = "proxima_core.goal_operator_kind")]
@@ -55,7 +53,6 @@ pub enum OperatorKind {
     Eq,
     serde::Serialize,
     serde::Deserialize,
-    specta::Type,
     sqlx::Type,
 )]
 #[sqlx(type_name = "proxima_core.goal_authorship_kind")]
@@ -74,7 +71,6 @@ pub enum GoalAuthorshipKind {
     Eq,
     serde::Serialize,
     serde::Deserialize,
-    specta::Type,
     sqlx::Type,
 )]
 #[sqlx(type_name = "proxima_core.goal_authorship_origin")]
@@ -83,7 +79,7 @@ pub enum GoalAuthorshipOrigin {
     Tool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SystemOrigin {
     Operator {
         operator_id: OperatorId,
@@ -97,18 +93,17 @@ pub enum SystemOrigin {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum GoalAuthorship {
     User,
     System(SystemOrigin),
     External,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct GoalDraft {
     pub principal: Principal,
     #[serde(skip)]
-    #[specta(skip)]
     pub org_id: Option<OrgId>,
     pub schema_id: SchemaId,
     pub schema_version: SchemaVersion,
@@ -144,7 +139,7 @@ impl GoalDraft {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct GoalWriteOutcome {
     pub goal_id: GoalId,
     pub change_event_seq: uuid::Uuid,

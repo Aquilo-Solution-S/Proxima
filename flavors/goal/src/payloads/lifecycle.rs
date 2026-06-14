@@ -4,7 +4,7 @@ use proxima_core::{
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GoalProposedV1 {
     pub goal_id: uuid::Uuid,
     pub schema_id: String,
@@ -33,7 +33,7 @@ impl FactPayload for GoalProposedV1 {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GoalActivatedV1 {
     pub goal_id: uuid::Uuid,
     pub schema_id: String,
@@ -65,7 +65,7 @@ impl FactPayload for GoalActivatedV1 {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GoalAchievedV1 {
     pub goal_id: uuid::Uuid,
     pub schema_id: String,

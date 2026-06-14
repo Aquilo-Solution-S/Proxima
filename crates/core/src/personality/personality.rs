@@ -21,7 +21,7 @@ pub const ROOT_PERSONALITY_PERSPECTIVE_SIDECAR_TABLE: &str =
 pub const MAX_WAKE_CHAIN_DEPTH: u16 = 10;
 
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, specta::Type,
+    Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
 )]
 pub struct PersonalityInstanceId(Uuid);
 
@@ -37,7 +37,7 @@ impl PersonalityInstanceId {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct PersonalityRef {
     pub personality_instance_id: PersonalityInstanceId,
 }

@@ -15,7 +15,6 @@ use crate::{GoalId, MemoryId, Owner, SchemaId, SchemaVersion};
     Hash,
     serde::Serialize,
     serde::Deserialize,
-    specta::Type,
     sqlx::Type,
 )]
 #[sqlx(type_name = "proxima_core.entity_kind")]
@@ -50,7 +49,6 @@ impl EntityKind {
     Hash,
     serde::Serialize,
     serde::Deserialize,
-    specta::Type,
     sqlx::Type,
 )]
 #[sqlx(type_name = "proxima_core.memory_operator_kind")]
@@ -74,7 +72,6 @@ pub enum MemoryOperatorKind {
     Hash,
     serde::Serialize,
     serde::Deserialize,
-    specta::Type,
     sqlx::Type,
 )]
 #[sqlx(type_name = "proxima_core.change_event_kind")]
@@ -86,14 +83,14 @@ pub enum ChangeEventKindTag {
 /// Endpoint of an Edge or supersedes target. Sum type matching
 /// `change_event` columns: a memory or a goal.
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, specta::Type,
+    Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
 )]
 pub enum EntityRef {
     Memory(MemoryId),
     Goal(GoalId),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ChangeEventKind {
     EntityAppend {
         entity_kind: EntityKind,
@@ -110,7 +107,7 @@ pub enum ChangeEventKind {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ChangeEvent {
     pub seq: Uuid,
     pub owner: Owner,

@@ -8,13 +8,13 @@ use crate::payloads::{
     VerificationArtifactRefsV1, VerificationEvidenceStatus, VerificationEvidenceV1,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BrowserAssertion {
     pub selector: String,
     pub expected_text: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DeterministicCheck {
     FileExists {

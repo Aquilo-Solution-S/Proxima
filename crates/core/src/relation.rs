@@ -75,7 +75,6 @@ impl RelationClass {
     Hash,
     serde::Serialize,
     serde::Deserialize,
-    specta::Type,
     sqlx::Type,
 )]
 #[sqlx(type_name = "proxima_core.edge_authorship_kind")]

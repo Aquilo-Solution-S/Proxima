@@ -31,7 +31,6 @@ tracing = { workspace = true }
 futures-util = { workspace = true }
 futures = { workspace = true }
 schemars = { workspace = true }
-specta = { workspace = true }
 reqwest = { workspace = true }
 
 [dev-dependencies]
