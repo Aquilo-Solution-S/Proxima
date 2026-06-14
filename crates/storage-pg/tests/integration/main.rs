@@ -26,4 +26,5 @@ mod read_scope_pg;
 mod search_pg;
 mod set_wake_entries_within_pg;
 mod sql_enums_pg;
+mod subject_personality_pg;
 mod subscribe_pg;
