@@ -1206,8 +1206,7 @@ CREATE TABLE proxima_core.memories (
     wake_chain_depth smallint DEFAULT 0 NOT NULL,
     CONSTRAINT memories_kind_values_chk CHECK (((kind IS NULL) OR (kind = ANY (ARRAY['Abstraction'::proxima_core.entity_kind, 'Perspective'::proxima_core.entity_kind])))),
     CONSTRAINT memories_schema_version_positive_chk CHECK ((schema_version > 0)),
-    -- Citations are optional on Facts as of 2026-06-13.
-    CONSTRAINT memories_variant_chk CHECK ((((event_id IS NOT NULL) AND (kind IS NULL) AND (text IS NULL) AND (operator_kind IS NULL) AND (model_id IS NULL) AND (prompt_version IS NULL) AND (supersedes IS NULL)) OR ((kind IS NOT NULL) AND (text IS NOT NULL) AND (operator_kind IS NOT NULL) AND (model_id IS NOT NULL) AND (prompt_version IS NOT NULL) AND (event_id IS NULL) AND (citation_mapping_id IS NULL)))),
+    CONSTRAINT memories_variant_chk CHECK ((((event_id IS NOT NULL) AND (citation_mapping_id IS NOT NULL) AND (kind IS NULL) AND (text IS NULL) AND (operator_kind IS NULL) AND (model_id IS NULL) AND (prompt_version IS NULL) AND (supersedes IS NULL)) OR ((kind IS NOT NULL) AND (text IS NOT NULL) AND (operator_kind IS NOT NULL) AND (model_id IS NOT NULL) AND (prompt_version IS NOT NULL) AND (event_id IS NULL) AND (citation_mapping_id IS NULL)))),
     CONSTRAINT memories_wake_chain_depth_chk CHECK ((wake_chain_depth >= 0))
 );
 
@@ -2957,3 +2956,4 @@ ALTER TABLE ONLY proxima_core.wake_trace_v1
 --
 -- PostgreSQL database dump complete
 --
+
