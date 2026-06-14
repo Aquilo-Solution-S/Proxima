@@ -21,9 +21,6 @@ pub const CORE_SUPERSEDES_RELATION: &str = "core/supersedes";
 pub const CORE_INSPIRES_RELATION: &str = "core/inspires";
 pub const CORE_AUTHORED_RELATION: &str = "core/authored";
 pub const CORE_DEPENDS_ON_RELATION: &str = "core/depends-on";
-pub const CORE_HAS_APPROVAL_POLICY_RELATION: &str = "core/has-approval-policy";
-pub const CORE_VOTES_ON_RELATION: &str = "core/votes-on";
-pub const CORE_HAS_APPROVAL_DECISION_RELATION: &str = "core/has-approval-decision";
 
 /// Closed substrate vocabulary for the abstract role an edge plays
 /// in A/P traversal. The five variants below are the only edge
@@ -536,27 +533,6 @@ pub fn core_relation_descriptors() -> Vec<RelationDescriptor> {
             EntityKindMask::memory(),
             EntityKindMask::memory(),
             AuthorshipKindMask::engine().union(AuthorshipKindMask::external_agent()),
-        ),
-        RelationDescriptor::substrate(
-            CORE_HAS_APPROVAL_POLICY_RELATION,
-            RelationClass::Structural,
-            EntityKindMask::all(),
-            EntityKindMask::fact(),
-            AuthorshipKindMask::user().union(AuthorshipKindMask::external_agent()),
-        ),
-        RelationDescriptor::substrate(
-            CORE_VOTES_ON_RELATION,
-            RelationClass::Structural,
-            EntityKindMask::fact(),
-            EntityKindMask::fact(),
-            AuthorshipKindMask::user().union(AuthorshipKindMask::external_agent()),
-        ),
-        RelationDescriptor::substrate(
-            CORE_HAS_APPROVAL_DECISION_RELATION,
-            RelationClass::Structural,
-            EntityKindMask::all(),
-            EntityKindMask::fact(),
-            AuthorshipKindMask::engine(),
         ),
     ]
 }

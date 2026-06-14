@@ -24,7 +24,6 @@ async fn core_closed_vocab_columns_use_sql_enums() -> Result<(), Box<dyn std::er
             ("personality_wake_entries", "trigger_kind"),
             ("personality_wake_entries", "authored_by"),
             ("personality_wake_entries", "goal_scope"),
-            ("personality_wake_invocations", "status"),
         ] {
             assert_enum_column(pg.pool(), "proxima_core", table, column).await?;
         }

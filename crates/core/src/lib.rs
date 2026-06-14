@@ -1,5 +1,4 @@
 //! Proxima engine core.
-pub mod approval;
 pub mod auth;
 pub mod authz;
 pub mod citations;
@@ -23,7 +22,6 @@ pub mod storage;
 pub mod verbs;
 pub mod wake;
 
-pub use approval::*;
 pub use auth::*;
 pub use authz::*;
 pub use citations::*;

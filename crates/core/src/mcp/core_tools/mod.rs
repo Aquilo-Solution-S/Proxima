@@ -5,7 +5,6 @@
 //! See docs/superpowers/specs/2026-05-10-personality-mcp-crud-design.md.
 
 pub mod add_wake_entry;
-pub mod approval;
 pub mod audit;
 pub mod payload;
 pub mod remove_wake_entry;
@@ -26,7 +25,6 @@ pub mod set_read_scope;
 pub mod tombstone_personality;
 
 pub use add_wake_entry::AddWakeEntryTool;
-pub use approval::{EmitApprovalPolicyTool, EmitApprovalVoteTool, TryEmitApprovalDecisionTool};
 pub use audit::{AuditEmit, emit_personality_config_changed};
 pub use get_graph::GetGraphTool;
 pub use get_personality::GetPersonalityTool;
@@ -66,7 +64,4 @@ pub(crate) fn register_all(registry: &mut crate::FlavorRegistry) {
     registry.add_substrate_mcp_tool::<ListSubstrateToolsTool>();
     registry.add_substrate_mcp_tool::<ListSchemasTool>();
     registry.add_substrate_mcp_tool::<ListEdgeTypesTool>();
-    registry.add_substrate_mcp_tool::<EmitApprovalPolicyTool>();
-    registry.add_substrate_mcp_tool::<EmitApprovalVoteTool>();
-    registry.add_substrate_mcp_tool::<TryEmitApprovalDecisionTool>();
 }

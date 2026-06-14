@@ -5,7 +5,6 @@
 //! impl in `lib.rs` is a thin delegation layer over these.
 
 pub(crate) mod active_goals;
-pub mod approval;
 pub mod close_batch;
 pub mod consolidate;
 pub mod derive_append;
