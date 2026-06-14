@@ -82,9 +82,6 @@ impl Default for FlavorRegistry {
         };
         // Substrate-shipped Fact schema for MCP-CRUD audit.
         registry.add_fact_schema::<crate::mcp::core_tools::PersonalityConfigChangedV1>();
-        registry.add_fact_schema::<crate::approval::ApprovalPolicyV1>();
-        registry.add_fact_schema::<crate::approval::ApprovalVoteV1>();
-        registry.add_fact_schema::<crate::approval::ApprovalDecisionV1>();
         registry.add_cited_object_schema::<crate::citations::UploadedBlobPayload>();
         registry.add_fact_schema::<crate::verbs::persist_mcp_call::McpCallLoggedV1>();
         registry.add_cited_object_schema::<crate::verbs::persist_mcp_call::McpCallIoV1>();
@@ -659,7 +656,7 @@ mod tests {
     }
 
     #[test]
-    fn default_registry_includes_all_18_substrate_mcp_tools() {
+    fn default_registry_includes_all_15_substrate_mcp_tools() {
         let frozen = FlavorRegistry::new().freeze();
         let names: std::collections::HashSet<_> =
             frozen.list_mcp_tools().iter().map(|d| d.name).collect();
@@ -679,9 +676,6 @@ mod tests {
             "core/list_substrate_tools",
             "core/list_schemas",
             "core/list_edge_types",
-            "core/emit_approval_policy",
-            "core/emit_approval_vote",
-            "core/try_emit_approval_decision",
         ];
         for name in expected {
             assert!(names.contains(name), "missing tool {name}");
@@ -690,6 +684,6 @@ mod tests {
             !names.contains("core/emit_budget_decision"),
             "retired tool name must not remain registered"
         );
-        assert_eq!(names.len(), 18, "exactly 18 substrate tools registered");
+        assert_eq!(names.len(), 15, "exactly 15 substrate tools registered");
     }
 }

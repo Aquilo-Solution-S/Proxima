@@ -7,7 +7,6 @@ use std::sync::Arc;
 
 use crate::GoalId;
 use crate::SourceBatchId;
-use crate::approval::ApprovalStore;
 use crate::dependency::MemoryDependency;
 use crate::personality::WakeEntryDraft;
 use crate::personality::{
@@ -55,7 +54,7 @@ pub struct MasterTokenPersonality {
 }
 
 #[async_trait::async_trait]
-pub trait Storage: ApprovalStore + Send + Sync {
+pub trait Storage: Send + Sync {
     /// Atomic Fact materialization per docs/14 §`EventIngest`.
     /// Single transaction inserting `cited_object`, event,
     /// memory(Fact), `citation_mapping`, `change_event`. Replay
@@ -350,10 +349,6 @@ pub type StorageHandle = Arc<dyn Storage>;
 /// demo path and by tests that don't want PG.
 #[derive(Debug, Default, Clone)]
 pub struct NoopStorage;
-
-/// `NoopStorage` rejects all writes; the `ApprovalStore` default bodies
-/// (errors / empty reads) are exactly that behavior.
-impl ApprovalStore for NoopStorage {}
 
 #[async_trait::async_trait]
 impl Storage for NoopStorage {
