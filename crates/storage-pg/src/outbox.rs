@@ -20,6 +20,7 @@ const BACKFILL_BATCH: i64 = 1000;
 
 pub(crate) type ReadySignal = oneshot::Sender<Result<(), StorageError>>;
 
+#[derive(Debug, sqlx::FromRow)]
 struct ChangeEventRow {
     seq: Uuid,
     owner_principal_kind: OwnerPrincipalKind,
@@ -41,6 +42,7 @@ struct ChangeEventRow {
     edge_target_goal_id: Option<Uuid>,
     entity_personality_instance_id: Option<Uuid>,
     wake_chain_depth: i16,
+    entity_memory_present: bool,
 }
 
 /// Hydrate a single `change_event` row into a typed `ChangeEvent`.
@@ -52,12 +54,12 @@ pub(crate) async fn hydrate_change_event(
     pool: &sqlx::PgPool,
     seq: Uuid,
 ) -> Result<Option<ChangeEvent>, StorageError> {
-    let row = sqlx::query!(
-        r#"SELECT seq,
-                  owner_principal_kind AS "owner_principal_kind: OwnerPrincipalKind",
+    let row = sqlx::query_as::<_, ChangeEventRow>(
+        r"SELECT seq,
+                  owner_principal_kind,
                   owner_principal_id, owner_org_id,
-                  kind AS "kind: ChangeEventKindTag",
-                  entity_kind AS "entity_kind: EntityKind",
+                  kind,
+                  entity_kind,
                   entity_memory_id, entity_goal_id,
                   entity_schema_id, entity_schema_version,
                   supersedes_memory_id, supersedes_goal_id,
@@ -65,38 +67,24 @@ pub(crate) async fn hydrate_change_event(
                   edge_source_memory_id, edge_source_goal_id,
                   edge_target_memory_id, edge_target_goal_id,
                   entity_personality_instance_id,
-                  wake_chain_depth
-             FROM proxima_core.change_event WHERE seq = $1"#,
-        seq,
+                  wake_chain_depth,
+                  (
+                      entity_memory_id IS NULL
+                      OR EXISTS (
+                          SELECT 1
+                            FROM proxima_core.memories m
+                           WHERE m.memory_id = change_event.entity_memory_id
+                             AND m.tombstoned_at IS NULL
+                      )
+                  ) AS entity_memory_present
+             FROM proxima_core.change_event WHERE seq = $1",
     )
+    .bind(seq)
     .fetch_optional(pool)
     .await
     .map_err(|e| StorageError::Internal(e.to_string()))?;
 
-    row.map(|r| ChangeEventRow {
-        seq: r.seq,
-        owner_principal_kind: r.owner_principal_kind,
-        owner_principal_id: r.owner_principal_id,
-        owner_org_id: r.owner_org_id,
-        kind: r.kind,
-        entity_kind: r.entity_kind,
-        entity_memory_id: r.entity_memory_id,
-        entity_goal_id: r.entity_goal_id,
-        entity_schema_id: r.entity_schema_id,
-        entity_schema_version: r.entity_schema_version,
-        supersedes_memory_id: r.supersedes_memory_id,
-        supersedes_goal_id: r.supersedes_goal_id,
-        edge_id: r.edge_id,
-        edge_relation: r.edge_relation,
-        edge_source_memory_id: r.edge_source_memory_id,
-        edge_source_goal_id: r.edge_source_goal_id,
-        edge_target_memory_id: r.edge_target_memory_id,
-        edge_target_goal_id: r.edge_target_goal_id,
-        entity_personality_instance_id: r.entity_personality_instance_id,
-        wake_chain_depth: r.wake_chain_depth,
-    })
-    .map(decode_change_event_row)
-    .transpose()
+    row.as_ref().map(decode_change_event_row).transpose()
 }
 
 /// Batched hydrate. Returns events ordered by `seq DESC`; the caller
@@ -108,12 +96,12 @@ pub(crate) async fn hydrate_change_events_batch(
     if seqs.is_empty() {
         return Ok(Vec::new());
     }
-    let rows = sqlx::query!(
-        r#"SELECT seq,
-                  owner_principal_kind AS "owner_principal_kind: OwnerPrincipalKind",
+    let rows = sqlx::query_as::<_, ChangeEventRow>(
+        r"SELECT seq,
+                  owner_principal_kind,
                   owner_principal_id, owner_org_id,
-                  kind AS "kind: ChangeEventKindTag",
-                  entity_kind AS "entity_kind: EntityKind",
+                  kind,
+                  entity_kind,
                   entity_memory_id, entity_goal_id,
                   entity_schema_id, entity_schema_version,
                   supersedes_memory_id, supersedes_goal_id,
@@ -121,43 +109,28 @@ pub(crate) async fn hydrate_change_events_batch(
                   edge_source_memory_id, edge_source_goal_id,
                   edge_target_memory_id, edge_target_goal_id,
                   entity_personality_instance_id,
-                  wake_chain_depth
+                  wake_chain_depth,
+                  (
+                      entity_memory_id IS NULL
+                      OR EXISTS (
+                          SELECT 1
+                            FROM proxima_core.memories m
+                           WHERE m.memory_id = change_event.entity_memory_id
+                             AND m.tombstoned_at IS NULL
+                      )
+                  ) AS entity_memory_present
              FROM proxima_core.change_event
-             WHERE seq = ANY($1::uuid[]) ORDER BY seq DESC"#,
-        seqs,
+             WHERE seq = ANY($1::uuid[]) ORDER BY seq DESC",
     )
+    .bind(seqs)
     .fetch_all(pool)
     .await
     .map_err(|e| StorageError::Internal(e.to_string()))?;
 
-    rows.into_iter()
-        .map(|r| ChangeEventRow {
-            seq: r.seq,
-            owner_principal_kind: r.owner_principal_kind,
-            owner_principal_id: r.owner_principal_id,
-            owner_org_id: r.owner_org_id,
-            kind: r.kind,
-            entity_kind: r.entity_kind,
-            entity_memory_id: r.entity_memory_id,
-            entity_goal_id: r.entity_goal_id,
-            entity_schema_id: r.entity_schema_id,
-            entity_schema_version: r.entity_schema_version,
-            supersedes_memory_id: r.supersedes_memory_id,
-            supersedes_goal_id: r.supersedes_goal_id,
-            edge_id: r.edge_id,
-            edge_relation: r.edge_relation,
-            edge_source_memory_id: r.edge_source_memory_id,
-            edge_source_goal_id: r.edge_source_goal_id,
-            edge_target_memory_id: r.edge_target_memory_id,
-            edge_target_goal_id: r.edge_target_goal_id,
-            entity_personality_instance_id: r.entity_personality_instance_id,
-            wake_chain_depth: r.wake_chain_depth,
-        })
-        .map(decode_change_event_row)
-        .collect()
+    rows.iter().map(decode_change_event_row).collect()
 }
 
-fn decode_change_event_row(row: ChangeEventRow) -> Result<ChangeEvent, StorageError> {
+fn decode_change_event_row(row: &ChangeEventRow) -> Result<ChangeEvent, StorageError> {
     let owner = Owner {
         principal: row.owner_principal_kind.with_uuid(row.owner_principal_id),
         org_id: OrgId::new(row.owner_org_id),
@@ -167,62 +140,9 @@ fn decode_change_event_row(row: ChangeEventRow) -> Result<ChangeEvent, StorageEr
     let wake_chain_depth = u16::try_from(row.wake_chain_depth).unwrap_or(0);
 
     let kind = match row.kind {
-        ChangeEventKindTag::EdgeAppend => {
-            let edge_id = row
-                .edge_id
-                .ok_or_else(|| StorageError::Internal("missing edge_id".into()))?;
-            let relation = row
-                .edge_relation
-                .ok_or_else(|| StorageError::Internal("missing edge_relation".into()))?;
-            let source = decode_entity_ref(row.edge_source_memory_id, row.edge_source_goal_id)?;
-            let target = decode_entity_ref(row.edge_target_memory_id, row.edge_target_goal_id)?;
-            ChangeEventKind::EdgeAppend {
-                edge_id,
-                relation,
-                source,
-                target,
-            }
-        }
-        ChangeEventKindTag::EntityAppend => {
-            let entity_kind = row
-                .entity_kind
-                .ok_or_else(|| StorageError::Internal("missing entity_kind".into()))?;
-            let entity = match (row.entity_memory_id, row.entity_goal_id) {
-                (Some(m), None) => EntityRef::Memory(MemoryId::new(m)),
-                (None, Some(g)) => EntityRef::Goal(GoalId::new(g)),
-                (Some(_), Some(_)) | (None, None) => {
-                    return Err(StorageError::Internal(
-                        "change_event entity columns violate CHECK constraint".into(),
-                    ));
-                }
-            };
-            let schema_id = SchemaId::new(
-                row.entity_schema_id
-                    .ok_or_else(|| StorageError::Internal("missing entity_schema_id".into()))?,
-            );
-            let schema_version = SchemaVersion::new(
-                row.entity_schema_version
-                    .ok_or_else(|| StorageError::Internal("missing entity_schema_version".into()))?
-                    .cast_unsigned(),
-            );
-            let supersedes = match (row.supersedes_memory_id, row.supersedes_goal_id) {
-                (Some(m), None) => Some(EntityRef::Memory(MemoryId::new(m))),
-                (None, Some(g)) => Some(EntityRef::Goal(GoalId::new(g))),
-                (None, None) => None,
-                (Some(_), Some(_)) => {
-                    return Err(StorageError::Internal(
-                        "change_event supersedes columns violate CHECK constraint".into(),
-                    ));
-                }
-            };
-            ChangeEventKind::EntityAppend {
-                entity_kind,
-                entity,
-                schema_id,
-                schema_version,
-                supersedes,
-            }
-        }
+        ChangeEventKindTag::EdgeAppend => decode_edge_append(row)?,
+        ChangeEventKindTag::EntityAppend => decode_entity_append_or_absent_delete(row)?,
+        ChangeEventKindTag::EntityDelete => decode_entity_delete(row)?,
     };
 
     Ok(ChangeEvent {
@@ -231,6 +151,104 @@ fn decode_change_event_row(row: ChangeEventRow) -> Result<ChangeEvent, StorageEr
         kind,
         authoring_personality_instance_id: authoring_instance,
         wake_chain_depth,
+    })
+}
+
+fn decode_edge_append(row: &ChangeEventRow) -> Result<ChangeEventKind, StorageError> {
+    let edge_id = row
+        .edge_id
+        .ok_or_else(|| StorageError::Internal("missing edge_id".into()))?;
+    let relation = row
+        .edge_relation
+        .clone()
+        .ok_or_else(|| StorageError::Internal("missing edge_relation".into()))?;
+    let source = decode_entity_ref(row.edge_source_memory_id, row.edge_source_goal_id)?;
+    let target = decode_entity_ref(row.edge_target_memory_id, row.edge_target_goal_id)?;
+    Ok(ChangeEventKind::EdgeAppend {
+        edge_id,
+        relation,
+        source,
+        target,
+    })
+}
+
+fn decode_entity_append_or_absent_delete(
+    row: &ChangeEventRow,
+) -> Result<ChangeEventKind, StorageError> {
+    let entity = decode_entity_event(row)?;
+    if matches!(entity.entity, EntityRef::Memory(_)) && !row.entity_memory_present {
+        return Ok(ChangeEventKind::EntityDelete {
+            entity_kind: entity.kind,
+            entity: entity.entity,
+            schema_id: entity.schema_id,
+            schema_version: entity.schema_version,
+        });
+    }
+    let supersedes = match (row.supersedes_memory_id, row.supersedes_goal_id) {
+        (Some(m), None) => Some(EntityRef::Memory(MemoryId::new(m))),
+        (None, Some(g)) => Some(EntityRef::Goal(GoalId::new(g))),
+        (None, None) => None,
+        (Some(_), Some(_)) => {
+            return Err(StorageError::Internal(
+                "change_event supersedes columns violate CHECK constraint".into(),
+            ));
+        }
+    };
+    Ok(ChangeEventKind::EntityAppend {
+        entity_kind: entity.kind,
+        entity: entity.entity,
+        schema_id: entity.schema_id,
+        schema_version: entity.schema_version,
+        supersedes,
+    })
+}
+
+fn decode_entity_delete(row: &ChangeEventRow) -> Result<ChangeEventKind, StorageError> {
+    let entity = decode_entity_event(row)?;
+    Ok(ChangeEventKind::EntityDelete {
+        entity_kind: entity.kind,
+        entity: entity.entity,
+        schema_id: entity.schema_id,
+        schema_version: entity.schema_version,
+    })
+}
+
+#[derive(Debug)]
+struct EntityEvent {
+    kind: EntityKind,
+    entity: EntityRef,
+    schema_id: SchemaId,
+    schema_version: SchemaVersion,
+}
+
+fn decode_entity_event(row: &ChangeEventRow) -> Result<EntityEvent, StorageError> {
+    let kind = row
+        .entity_kind
+        .ok_or_else(|| StorageError::Internal("missing entity_kind".into()))?;
+    let entity = match (row.entity_memory_id, row.entity_goal_id) {
+        (Some(m), None) => EntityRef::Memory(MemoryId::new(m)),
+        (None, Some(g)) => EntityRef::Goal(GoalId::new(g)),
+        (Some(_), Some(_)) | (None, None) => {
+            return Err(StorageError::Internal(
+                "change_event entity columns violate CHECK constraint".into(),
+            ));
+        }
+    };
+    let schema_id = SchemaId::new(
+        row.entity_schema_id
+            .clone()
+            .ok_or_else(|| StorageError::Internal("missing entity_schema_id".into()))?,
+    );
+    let schema_version = SchemaVersion::new(
+        row.entity_schema_version
+            .ok_or_else(|| StorageError::Internal("missing entity_schema_version".into()))?
+            .cast_unsigned(),
+    );
+    Ok(EntityEvent {
+        kind,
+        entity,
+        schema_id,
+        schema_version,
     })
 }
 

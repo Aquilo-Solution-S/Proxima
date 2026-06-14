@@ -4,10 +4,11 @@ use proxima_core::{AuthzContext, Engine, FlavorRegistryFrozen, McpAuthorContext,
 use proxima_mcp_server::{McpAuthContext, McpToolHost, ToolInvocationError};
 use sqlx::PgPool;
 
-const FACT_RETENTION_TOOL_NAMES: [&str; 3] = [
+const FACT_RETENTION_TOOL_NAMES: [&str; 4] = [
     "core/get_fact_retention",
     "core/set_fact_retention",
     "core/clear_fact_retention",
+    "core/cleanup_facts",
 ];
 
 /// Facade handle for listing and dispatching the composed engine MCP tools

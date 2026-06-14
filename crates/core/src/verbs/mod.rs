@@ -3,6 +3,7 @@
 pub mod close_batch;
 pub mod event_history;
 pub mod event_ingest;
+pub mod fact_cleanup;
 pub mod goal_write;
 pub mod persist_mcp_call;
 pub mod query;

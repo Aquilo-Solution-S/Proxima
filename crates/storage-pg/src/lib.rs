@@ -22,6 +22,7 @@ use proxima_core::personality::{
 use proxima_core::verbs::close_batch::CloseBatchOutcome;
 use proxima_core::verbs::event_history::{EventHistoryRequest, EventHistoryResponse};
 use proxima_core::verbs::event_ingest::{EventDraft, EventIngestOutcome};
+use proxima_core::verbs::fact_cleanup::CleanupDueFactsOutcome;
 use proxima_core::verbs::goal_write::{GoalDraft, GoalWriteOutcome};
 use proxima_core::verbs::persist_mcp_call::{McpCallLogInput, McpCallLogOutcome};
 use proxima_core::verbs::query::{
@@ -354,6 +355,21 @@ impl Storage for PgStorage {
 
     async fn clear_fact_retention(&self, owner: &Owner) -> Result<bool, StorageError> {
         verbs::fact_retention::clear_fact_retention(&self.pool, owner).await
+    }
+
+    async fn cleanup_due_facts(
+        &self,
+        owner: &Owner,
+        fact_sidecar_tables: &[String],
+        citation_mapping_sidecar_tables: &[String],
+    ) -> Result<CleanupDueFactsOutcome, StorageError> {
+        verbs::fact_cleanup::cleanup_due_facts(
+            &self.pool,
+            owner,
+            fact_sidecar_tables,
+            citation_mapping_sidecar_tables,
+        )
+        .await
     }
 
     async fn list_active_wake_entries(&self) -> Result<Vec<WakeDispatchEntryRow>, StorageError> {

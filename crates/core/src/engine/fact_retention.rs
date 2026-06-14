@@ -2,6 +2,8 @@ use super::Engine;
 use crate::authz::{AuthzContext, Role};
 use crate::error::ProtocolError;
 use crate::owner::Owner;
+use crate::verbs::fact_cleanup::CleanupDueFactsOutcome;
+use crate::verbs::schema::PayloadKind;
 
 fn retention_seconds_to_i64(seconds: u64) -> Result<i64, ProtocolError> {
     if seconds == 0 {
@@ -75,4 +77,42 @@ impl Engine {
             .await
             .map_err(|e| ProtocolError::internal(format!("clear_fact_retention: {e}")))
     }
+
+    /// Hard-erase due Facts and tombstone their direct derived
+    /// memory dependents.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Forbidden` when the context cannot access `owner` or
+    /// lacks `Admin`, and `Internal` for storage failures.
+    pub async fn cleanup_due_facts(
+        &self,
+        authz: &AuthzContext,
+        owner: &Owner,
+    ) -> Result<CleanupDueFactsOutcome, ProtocolError> {
+        super::authorize(authz, &owner.principal, Role::Admin)?;
+        let owner = authz.scoped_owner(owner.principal.clone());
+        let fact_sidecar_tables = sidecar_tables(self.registry.schemas(), PayloadKind::Fact);
+        let citation_mapping_sidecar_tables =
+            sidecar_tables(self.registry.schemas(), PayloadKind::CitationMapping);
+        self.storage
+            .cleanup_due_facts(
+                &owner,
+                &fact_sidecar_tables,
+                &citation_mapping_sidecar_tables,
+            )
+            .await
+            .map_err(|e| ProtocolError::internal(format!("cleanup_due_facts: {e}")))
+    }
+}
+
+fn sidecar_tables(schemas: &[crate::verbs::schema::SchemaInfo], kind: PayloadKind) -> Vec<String> {
+    let mut tables = schemas
+        .iter()
+        .filter(|schema| schema.kind == kind)
+        .filter_map(|schema| schema.sidecar_table.clone())
+        .collect::<Vec<_>>();
+    tables.sort();
+    tables.dedup();
+    tables
 }

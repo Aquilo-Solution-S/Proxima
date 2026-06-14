@@ -6,6 +6,7 @@
 
 pub mod add_wake_entry;
 pub mod audit;
+pub mod cleanup_facts;
 pub mod clear_fact_retention;
 pub mod payload;
 pub mod remove_wake_entry;
@@ -29,6 +30,7 @@ pub mod tombstone_personality;
 
 pub use add_wake_entry::AddWakeEntryTool;
 pub use audit::{AuditEmit, emit_personality_config_changed};
+pub use cleanup_facts::CleanupFactsTool;
 pub use clear_fact_retention::ClearFactRetentionTool;
 pub use get_fact_retention::GetFactRetentionTool;
 pub use get_graph::GetGraphTool;
@@ -67,6 +69,7 @@ pub(crate) fn register_all(registry: &mut crate::FlavorRegistry) {
     registry.add_substrate_mcp_tool::<GetFactRetentionTool>();
     registry.add_substrate_mcp_tool::<SetFactRetentionTool>();
     registry.add_substrate_mcp_tool::<ClearFactRetentionTool>();
+    registry.add_substrate_mcp_tool::<CleanupFactsTool>();
     registry.add_substrate_mcp_tool::<AddWakeEntryTool>();
     registry.add_substrate_mcp_tool::<UpdateWakeEntryTool>();
     registry.add_substrate_mcp_tool::<RemoveWakeEntryTool>();

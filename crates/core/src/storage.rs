@@ -20,6 +20,7 @@ use crate::personality::{
 use crate::verbs::close_batch::CloseBatchOutcome;
 use crate::verbs::event_history::{EventHistoryRequest, EventHistoryResponse};
 use crate::verbs::event_ingest::{EventDraft, EventIngestOutcome};
+use crate::verbs::fact_cleanup::CleanupDueFactsOutcome;
 use crate::verbs::goal_write::{GoalDraft, GoalWriteOutcome};
 use crate::verbs::persist_mcp_call::{McpCallLogInput, McpCallLogOutcome};
 use crate::verbs::subscribe::ChangeEventStream;
@@ -263,6 +264,15 @@ pub trait Storage: Send + Sync {
 
     /// Clear the owner-scoped Fact-retention duration.
     async fn clear_fact_retention(&self, owner: &Owner) -> Result<bool, StorageError>;
+
+    /// Hard-erase due Facts for `owner` and tombstone direct derived
+    /// memory dependents.
+    async fn cleanup_due_facts(
+        &self,
+        owner: &Owner,
+        fact_sidecar_tables: &[String],
+        citation_mapping_sidecar_tables: &[String],
+    ) -> Result<CleanupDueFactsOutcome, StorageError>;
 
     /// Active `WakeEntry` rows plus their cursor positions.
     async fn list_active_wake_entries(&self) -> Result<Vec<WakeDispatchEntryRow>, StorageError>;
@@ -534,6 +544,15 @@ impl Storage for NoopStorage {
     }
 
     async fn clear_fact_retention(&self, _owner: &Owner) -> Result<bool, StorageError> {
+        Err(StorageError::Internal("NoopStorage rejects writes".into()))
+    }
+
+    async fn cleanup_due_facts(
+        &self,
+        _owner: &Owner,
+        _fact_sidecar_tables: &[String],
+        _citation_mapping_sidecar_tables: &[String],
+    ) -> Result<CleanupDueFactsOutcome, StorageError> {
         Err(StorageError::Internal("NoopStorage rejects writes".into()))
     }
 

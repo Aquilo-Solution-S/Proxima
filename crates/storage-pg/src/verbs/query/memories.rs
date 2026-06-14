@@ -182,7 +182,11 @@ pub(crate) async fn query_memories(
         .expect("write to String is infallible");
     }
 
-    sql.push_str(" WHERE m.owner_principal_kind = $1 AND m.owner_principal_id = $2");
+    sql.push_str(
+        " WHERE m.owner_principal_kind = $1 \
+          AND m.owner_principal_id = $2 \
+          AND m.tombstoned_at IS NULL",
+    );
 
     match req.entity_kind {
         None => {}
@@ -209,7 +213,8 @@ pub(crate) async fn query_memories(
         if stateful.is_empty() {
             sql.push_str(
                 " AND NOT EXISTS (SELECT 1 FROM proxima_core.memories m2 \
-                                  WHERE m2.supersedes = m.memory_id)",
+                                  WHERE m2.supersedes = m.memory_id \
+                                    AND m2.tombstoned_at IS NULL)",
             );
         } else {
             sql.push_str(" AND (");
@@ -223,7 +228,8 @@ pub(crate) async fn query_memories(
             push_not_stateful_match(&mut sql, &stateful_params);
             sql.push_str(
                 " AND NOT EXISTS (SELECT 1 FROM proxima_core.memories m2 \
-                                  WHERE m2.supersedes = m.memory_id))",
+                                  WHERE m2.supersedes = m.memory_id \
+                                    AND m2.tombstoned_at IS NULL))",
             );
             sql.push(')');
         }
@@ -361,7 +367,11 @@ async fn query_visible_memory_ids(
         .expect("write to String is infallible");
     }
 
-    sql.push_str(" WHERE m.owner_principal_kind = $1 AND m.owner_principal_id = $2");
+    sql.push_str(
+        " WHERE m.owner_principal_kind = $1 \
+          AND m.owner_principal_id = $2 \
+          AND m.tombstoned_at IS NULL",
+    );
     sql.push_str(" AND m.memory_id = ANY($3::uuid[])");
     let mut next_param = 4;
     let schema = schema_id_filter.as_ref().map(|_| {
@@ -410,7 +420,8 @@ async fn query_visible_memory_ids(
         if stateful.is_empty() {
             sql.push_str(
                 " AND NOT EXISTS (SELECT 1 FROM proxima_core.memories m2 \
-                                  WHERE m2.supersedes = m.memory_id)",
+                                  WHERE m2.supersedes = m.memory_id \
+                                    AND m2.tombstoned_at IS NULL)",
             );
         } else {
             sql.push_str(" AND (");
@@ -424,7 +435,8 @@ async fn query_visible_memory_ids(
             push_not_stateful_match(&mut sql, &stateful_params);
             sql.push_str(
                 " AND NOT EXISTS (SELECT 1 FROM proxima_core.memories m2 \
-                                  WHERE m2.supersedes = m.memory_id))",
+                                  WHERE m2.supersedes = m.memory_id \
+                                    AND m2.tombstoned_at IS NULL))",
             );
             sql.push(')');
         }
@@ -594,6 +606,7 @@ fn push_stateful_head_branch(
               AND m2.schema_version = m.schema_version \
               AND m2.owner_principal_kind = m.owner_principal_kind \
               AND m2.owner_principal_id = m.owner_principal_id \
+              AND m2.tombstoned_at IS NULL \
               AND {nk_pairs} \
               AND m2.created_at > m.created_at \
           ))",

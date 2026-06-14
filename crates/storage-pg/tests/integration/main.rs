@@ -9,6 +9,7 @@ mod event_history_pg;
 mod event_ingest_pg;
 mod event_ingest_with_sidecar_pg;
 mod external_agent_constraint_pg;
+mod fact_cleanup_pg;
 mod goal_external_authorship_pg;
 mod goal_state_transitions_pg;
 mod goal_write_pg;

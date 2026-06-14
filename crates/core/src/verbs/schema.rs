@@ -21,9 +21,7 @@ pub(crate) struct PayloadValidatorEntry {
     pub json_schema: Option<serde_json::Value>,
 }
 
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum PayloadKind {
     Fact,
     Abstraction,
@@ -293,6 +291,11 @@ impl FlavorRegistryFrozen {
     #[must_use]
     pub fn search_projections(&self) -> &[MemorySearchProjection] {
         &self.search_projections
+    }
+
+    #[must_use]
+    pub fn schemas(&self) -> &[SchemaInfo] {
+        &self.schemas
     }
 
     #[must_use]

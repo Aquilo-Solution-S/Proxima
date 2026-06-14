@@ -55,9 +55,10 @@ pub async fn persist_mcp_call_in_tx(
                   m.citation_mapping_id,
                   cm.cited_object_id
              FROM proxima_core.memories m
-             JOIN proxima_core.citation_mappings cm
-               ON cm.citation_mapping_id = m.citation_mapping_id
-             WHERE m.event_id = $1",
+	             JOIN proxima_core.citation_mappings cm
+	               ON cm.citation_mapping_id = m.citation_mapping_id
+	             WHERE m.event_id = $1
+	               AND m.tombstoned_at IS NULL",
     )
     .bind(&event_id_bytes[..])
     .fetch_optional(tx.as_mut())
