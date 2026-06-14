@@ -163,6 +163,15 @@ pub fn change_event_to_proto(core: &ChangeEvent) -> Result<PbChangeEvent, Status
             source: Some(entity_ref_to_proto(*source)),
             target: Some(entity_ref_to_proto(*target)),
         }),
+        // EntityDelete (tombstone/erase change events) has no proto
+        // representation yet — the gRPC wire is a deferred contract. Fail
+        // closed with a clear status rather than panicking, until a proto
+        // Delete message lands. Pre-existing gap, surfaced by a workspace build.
+        ChangeEventKind::EntityDelete { .. } => {
+            return Err(Status::unimplemented(
+                "EntityDelete change events are not yet representable over gRPC",
+            ));
+        }
     };
     Ok(PbChangeEvent {
         seq: uuid_to_proto(core.seq),
