@@ -15,7 +15,9 @@ use crate::{
     PerspectivePayload, RelationDescriptor, SchemaId, SchemaVersion, core_relation_descriptors,
 };
 
+use sqlx::{Postgres, Transaction};
 use std::sync::Arc;
+use uuid::Uuid;
 
 /// Structured per-flavor metadata. Populated by `proxima_flavor!` at
 /// macro-expansion time so the `package_version` and `author` fields
@@ -145,6 +147,8 @@ impl FlavorRegistry {
                     value: t.value.to_string(),
                 }),
                 cbor_encoder: Some(encode_payload_cbor::<F>),
+                sidecar_inserter: None,
+                cited_object_schema: None,
             },
             F::search_projection(),
             validate_payload_type::<F>,
@@ -163,6 +167,8 @@ impl FlavorRegistry {
                 natural_key_columns: vec![],
                 tombstone: None,
                 cbor_encoder: Some(encode_payload_cbor::<A>),
+                sidecar_inserter: None,
+                cited_object_schema: None,
             },
             A::search_projection(),
             validate_payload_type::<A>,
@@ -181,6 +187,8 @@ impl FlavorRegistry {
                 natural_key_columns: vec![],
                 tombstone: None,
                 cbor_encoder: Some(encode_payload_cbor::<P>),
+                sidecar_inserter: None,
+                cited_object_schema: None,
             },
             P::search_projection(),
             validate_payload_type::<P>,
@@ -199,6 +207,8 @@ impl FlavorRegistry {
                 natural_key_columns: vec![],
                 tombstone: None,
                 cbor_encoder: Some(encode_payload_cbor::<G>),
+                sidecar_inserter: None,
+                cited_object_schema: None,
             },
             None,
             validate_payload_type::<G>,
@@ -221,6 +231,8 @@ impl FlavorRegistry {
                 natural_key_columns: vec![],
                 tombstone: None,
                 cbor_encoder: Some(encode_payload_cbor::<E>),
+                sidecar_inserter: None,
+                cited_object_schema: None,
             },
             None,
             validate_payload_type::<E>,
@@ -239,6 +251,8 @@ impl FlavorRegistry {
                 natural_key_columns: vec![],
                 tombstone: None,
                 cbor_encoder: Some(encode_payload_cbor::<C>),
+                sidecar_inserter: Some(insert_cited_object_sidecar::<C>),
+                cited_object_schema: None,
             },
             None,
             validate_payload_type::<C>,
@@ -257,6 +271,8 @@ impl FlavorRegistry {
                 natural_key_columns: vec![],
                 tombstone: None,
                 cbor_encoder: Some(encode_payload_cbor::<M>),
+                sidecar_inserter: Some(insert_citation_mapping_sidecar::<M>),
+                cited_object_schema: Some(M::cited_object_schema()),
             },
             None,
             validate_payload_type::<M>,
@@ -534,6 +550,43 @@ where
     let mut bytes = Vec::new();
     ciborium::ser::into_writer(&typed, &mut bytes).map_err(|e| e.to_string())?;
     Ok(bytes)
+}
+
+fn decode_payload_cbor<T>(bytes: &[u8], schema_id: &str) -> Result<T, crate::StorageError>
+where
+    T: serde::de::DeserializeOwned,
+{
+    ciborium::de::from_reader(std::io::Cursor::new(bytes)).map_err(|e| {
+        crate::StorageError::Internal(format!("decode sidecar payload {schema_id}: {e}"))
+    })
+}
+
+fn insert_cited_object_sidecar<'t, C>(
+    tx: &'t mut Transaction<'_, Postgres>,
+    sidecar_row_id: Uuid,
+    payload_bytes: &'t [u8],
+) -> futures::future::BoxFuture<'t, Result<(), crate::StorageError>>
+where
+    C: CitedObjectPayload,
+{
+    Box::pin(async move {
+        let payload = decode_payload_cbor::<C>(payload_bytes, C::SCHEMA_ID)?;
+        payload.sidecar_insert(tx, sidecar_row_id).await
+    })
+}
+
+fn insert_citation_mapping_sidecar<'t, M>(
+    tx: &'t mut Transaction<'_, Postgres>,
+    sidecar_row_id: Uuid,
+    payload_bytes: &'t [u8],
+) -> futures::future::BoxFuture<'t, Result<(), crate::StorageError>>
+where
+    M: CitationMappingPayload,
+{
+    Box::pin(async move {
+        let payload = decode_payload_cbor::<M>(payload_bytes, M::SCHEMA_ID)?;
+        payload.sidecar_insert(tx, sidecar_row_id).await
+    })
 }
 
 #[cfg(test)]
