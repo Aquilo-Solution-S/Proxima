@@ -1,19 +1,23 @@
 use proxima_core::mcp::{McpTool, McpToolCtx, McpToolError};
 use proxima_core::verbs::event_ingest::{
-    Citation, CitationMappingHint, CitedObjectHint, EventDraft,
+    EventDraft, InlineCitationMappingDraft, InlineCitedObjectDraft,
 };
-use proxima_core::{FactPayload, SchemaId, SchemaVersion, SourceBatchId, SourceId};
-use proxima_storage_pg::verbs::event_ingest::ingest_event_in_tx;
+use proxima_core::{
+    EventIngestOutcome, FactPayload, Role, SchemaId, SchemaVersion, SourceBatchId, SourceId,
+    StorageError,
+};
+use proxima_storage_pg::verbs::event_ingest::{
+    ingest_event_with_sidecar_in_tx, ingest_fact_with_citation_in_tx,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use sqlx::{Postgres, Transaction};
 
 use crate::AgentNoteV1;
 
 use super::util::{map_storage, normalize_tags};
 
 const SOURCE_ID: &str = "proxima-agent-memory/agent";
-const NOTE_CITED_OBJECT_SCHEMA: &str = "proxima-agent-memory/agent-note-object-v1";
-const NOTE_CITATION_MAPPING_SCHEMA: &str = "proxima-agent-memory/agent-note-whole-v1";
 const NOTE_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
     0x91, 0x3e, 0xa1, 0x4c, 0x12, 0x9b, 0x4f, 0xa1, 0x86, 0x2c, 0xb7, 0x2e, 0x18, 0x5d, 0xc7, 0x77,
 ]);
@@ -33,6 +37,19 @@ pub struct RememberArgs {
         description = "Optional stable idempotency key for replay-safe Fact creation. Omit or null for a fresh Fact."
     )]
     pub idempotency_key: Option<String>,
+    #[serde(default)]
+    #[schemars(description = "Optional typed inline citation for an external artifact.")]
+    pub citation: Option<RememberCitation>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct RememberCitation {
+    pub object_schema_id: String,
+    pub object_schema_version: u32,
+    pub object_payload: serde_json::Value,
+    pub mapping_schema_id: String,
+    pub mapping_schema_version: u32,
+    pub mapping_payload: serde_json::Value,
 }
 
 #[derive(Debug, Serialize)]
@@ -97,39 +114,50 @@ impl McpTool for RememberTool {
                 payload: payload_bytes,
                 observed_at,
                 occurred_at: observed_at,
-                citation: Some(Citation {
-                    object: CitedObjectHint {
-                        schema_id: SchemaId::new(NOTE_CITED_OBJECT_SCHEMA.into()),
-                        schema_version: SchemaVersion::new(1),
-                        content_hash: *blake3::hash(body.as_bytes()).as_bytes(),
-                    },
-                    mapping: CitationMappingHint {
-                        schema_id: SchemaId::new(NOTE_CITATION_MAPPING_SCHEMA.into()),
-                        schema_version: SchemaVersion::new(1),
-                    },
-                }),
+                citation: None,
             };
 
+            let engine = ctx
+                .engine
+                .as_ref()
+                .ok_or_else(|| McpToolError::InvalidInput("engine required".into()))?;
             let mut tx = ctx.pool.begin().await.map_err(map_storage)?;
-            let outcome = ingest_event_in_tx(&mut tx, &draft)
+            let sidecar = payload.clone();
+            let outcome = if let Some(citation) = args.citation {
+                let cited_object = InlineCitedObjectDraft {
+                    schema_id: SchemaId::new(citation.object_schema_id),
+                    schema_version: SchemaVersion::new(citation.object_schema_version),
+                    payload_bytes: encode_json_cbor(&citation.object_payload)?,
+                };
+                let mapping = InlineCitationMappingDraft {
+                    schema_id: SchemaId::new(citation.mapping_schema_id),
+                    schema_version: SchemaVersion::new(citation.mapping_schema_version),
+                    payload_bytes: encode_json_cbor(&citation.mapping_payload)?,
+                };
+                let authorized = engine
+                    .authorize_fact_with_citation(
+                        &ctx.authz,
+                        Role::GraphWrite,
+                        draft,
+                        cited_object,
+                        mapping,
+                    )
+                    .map_err(|err| McpToolError::Other(err.to_string()))?;
+                ingest_fact_with_citation_in_tx(&mut tx, &authorized, |tx, outcome| {
+                    Box::pin(async move { insert_agent_note_sidecar(tx, outcome, &sidecar).await })
+                })
                 .await
-                .map_err(McpToolError::Storage)?;
-            if !outcome.idempotent_replay {
-                sqlx::query(
-                    "INSERT INTO proxima_agent_memory.agent_note_v1
-                       (memory_id, note_id, title, body, tags, idempotency_key)
-                     VALUES ($1, $2, $3, $4, $5, $6)",
-                )
-                .bind(outcome.memory_id.into_inner())
-                .bind(payload.note_id)
-                .bind(&payload.title)
-                .bind(&payload.body)
-                .bind(&payload.tags)
-                .bind(&payload.idempotency_key)
-                .execute(&mut *tx)
+                .map_err(McpToolError::Storage)?
+            } else {
+                let authorized = engine
+                    .authorize_event_ingest(&ctx.authz, Role::GraphWrite, draft)
+                    .map_err(|err| McpToolError::Other(err.to_string()))?;
+                ingest_event_with_sidecar_in_tx(&mut tx, &authorized, |tx, outcome| {
+                    Box::pin(async move { insert_agent_note_sidecar(tx, outcome, &sidecar).await })
+                })
                 .await
-                .map_err(map_storage)?;
-            }
+                .map_err(McpToolError::Storage)?
+            };
             tx.commit().await.map_err(map_storage)?;
 
             Ok(RememberOutput {
@@ -138,4 +166,33 @@ impl McpTool for RememberTool {
             })
         })
     }
+}
+
+fn encode_json_cbor(value: &serde_json::Value) -> Result<Vec<u8>, McpToolError> {
+    let mut bytes = Vec::new();
+    ciborium::ser::into_writer(value, &mut bytes)
+        .map_err(|err| McpToolError::InvalidInput(err.to_string()))?;
+    Ok(bytes)
+}
+
+async fn insert_agent_note_sidecar(
+    tx: &mut Transaction<'_, Postgres>,
+    outcome: &EventIngestOutcome,
+    payload: &AgentNoteV1,
+) -> Result<(), StorageError> {
+    sqlx::query(
+        "INSERT INTO proxima_agent_memory.agent_note_v1
+           (memory_id, note_id, title, body, tags, idempotency_key)
+         VALUES ($1, $2, $3, $4, $5, $6)",
+    )
+    .bind(outcome.memory_id.into_inner())
+    .bind(payload.note_id)
+    .bind(&payload.title)
+    .bind(&payload.body)
+    .bind(&payload.tags)
+    .bind(&payload.idempotency_key)
+    .execute(&mut **tx)
+    .await
+    .map_err(|err| StorageError::Internal(err.to_string()))?;
+    Ok(())
 }

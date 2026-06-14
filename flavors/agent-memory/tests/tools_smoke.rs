@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::{future::Future, pin::Pin};
 
 use async_trait::async_trait;
 use proxima_core::engine::Engine;
@@ -6,14 +7,105 @@ use proxima_core::llm::{EmbeddingClient, LlmError};
 use proxima_core::mcp::{HandleTable, McpAuthorContext, McpToolCtx, OutputMode};
 use proxima_core::verbs::query::MemoryStore;
 use proxima_core::{
-    AuthPath, AuthzContext, EntityKind, FlavorRegistry, McpToolError, MemoryId, OrgId, Owner,
-    OwnerPrincipalKind, PersonalityInstanceId, Principal, UserId,
+    AuthPath, AuthzContext, CitationMappingPayload, CitedObjectPayload, EntityKind, FlavorRegistry,
+    FlavorRegistryFrozen, McpToolError, MemoryId, OrgId, Owner, OwnerPrincipalKind,
+    PersonalityInstanceId, Principal, SchemaId, StorageError, UserId,
 };
 use proxima_pg_testkit::{db_url, drop_db, unique_db_name};
 use serde_json::json;
 
 #[derive(Debug)]
 struct FixedEmbedding;
+
+type SidecarFuture<'t> = Pin<Box<dyn Future<Output = Result<(), StorageError>> + Send + 't>>;
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct RememberTestCitedObject {
+    artifact_id: String,
+    locator: String,
+}
+
+impl CitedObjectPayload for RememberTestCitedObject {
+    const SCHEMA_ID: &'static str = "test/remember-cited-object-v1";
+    const SCHEMA_VERSION: u32 = 1;
+
+    fn sidecar_table() -> &'static str {
+        "public.remember_test_cited_object_v1"
+    }
+
+    fn idempotency_key(&self) -> [u8; 32] {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(self.artifact_id.as_bytes());
+        hasher.update(b"\0");
+        hasher.update(self.locator.as_bytes());
+        *hasher.finalize().as_bytes()
+    }
+
+    fn sidecar_insert<'t>(
+        &'t self,
+        tx: &'t mut sqlx::Transaction<'_, sqlx::Postgres>,
+        sidecar_row_id: uuid::Uuid,
+    ) -> SidecarFuture<'t> {
+        Box::pin(async move {
+            sqlx::query(
+                "INSERT INTO public.remember_test_cited_object_v1
+                    (cited_object_id, artifact_id, locator)
+                 VALUES ($1, $2, $3)
+                 ON CONFLICT (cited_object_id) DO NOTHING",
+            )
+            .bind(sidecar_row_id)
+            .bind(&self.artifact_id)
+            .bind(&self.locator)
+            .execute(&mut **tx)
+            .await
+            .map_err(|err| StorageError::Internal(err.to_string()))?;
+            Ok(())
+        })
+    }
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct RememberTestCitationMapping {
+    section: String,
+    byte_start: i32,
+    byte_end: i32,
+}
+
+impl CitationMappingPayload for RememberTestCitationMapping {
+    const SCHEMA_ID: &'static str = "test/remember-citation-mapping-v1";
+    const SCHEMA_VERSION: u32 = 1;
+
+    fn sidecar_table() -> &'static str {
+        "public.remember_test_citation_mapping_v1"
+    }
+
+    fn cited_object_schema() -> SchemaId {
+        RememberTestCitedObject::schema_id()
+    }
+
+    fn sidecar_insert<'t>(
+        &'t self,
+        tx: &'t mut sqlx::Transaction<'_, sqlx::Postgres>,
+        sidecar_row_id: uuid::Uuid,
+    ) -> SidecarFuture<'t> {
+        Box::pin(async move {
+            sqlx::query(
+                "INSERT INTO public.remember_test_citation_mapping_v1
+                    (citation_mapping_id, section, byte_start, byte_end)
+                 VALUES ($1, $2, $3, $4)
+                 ON CONFLICT (citation_mapping_id) DO NOTHING",
+            )
+            .bind(sidecar_row_id)
+            .bind(&self.section)
+            .bind(self.byte_start)
+            .bind(self.byte_end)
+            .execute(&mut **tx)
+            .await
+            .map_err(|err| StorageError::Internal(err.to_string()))?;
+            Ok(())
+        })
+    }
+}
 
 #[async_trait]
 impl EmbeddingClient for FixedEmbedding {
@@ -82,6 +174,144 @@ async fn remember_then_search_round_trip() -> Result<(), Box<dyn std::error::Err
     assert_eq!(
         searched["matches"][0]["handle"], remembered["handle"],
         "search should reuse the session handle"
+    );
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
+#[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "PG integration fixture validates cited and uncited remember rows in one transaction shape"
+)]
+async fn remember_cited_and_uncited_persist_personality_and_citation_rows()
+-> Result<(), Box<dyn std::error::Error>> {
+    let Some(db_name) = create_db().await? else {
+        return Ok(());
+    };
+    let pg = proxima_storage_pg::PgStorage::connect(&db_url(&db_name)).await?;
+    pg.run_migrations().await?;
+    proxima_agent_memory::migrator().run(pg.pool()).await?;
+    create_remember_citation_sidecars(pg.pool()).await?;
+
+    let frozen = registry_with_remember_test_citation();
+    let owner = nil_owner();
+    let handles = Arc::new(HandleTable::new());
+    let personality = PersonalityInstanceId::new(uuid::Uuid::now_v7());
+    let author = author_ctx().with_personality(personality);
+
+    let cited = call_tool(
+        pg.pool(),
+        &owner,
+        &handles,
+        &frozen,
+        author.clone(),
+        "proxima-agent-memory/proxima_remember",
+        json!({
+            "title": "Cited remembered note",
+            "body": "This note cites a typed test artifact.",
+            "tags": ["citation"],
+            "idempotency_key": "remember-cited-test-note",
+            "citation": {
+                "object_schema_id": RememberTestCitedObject::SCHEMA_ID,
+                "object_schema_version": RememberTestCitedObject::SCHEMA_VERSION,
+                "object_payload": {
+                    "artifact_id": "sharepoint-test-item",
+                    "locator": "https://example.invalid/sites/test/doc"
+                },
+                "mapping_schema_id": RememberTestCitationMapping::SCHEMA_ID,
+                "mapping_schema_version": RememberTestCitationMapping::SCHEMA_VERSION,
+                "mapping_payload": {
+                    "section": "body",
+                    "byte_start": 0,
+                    "byte_end": 12
+                }
+            }
+        }),
+    )
+    .await?;
+    let uncited = call_tool(
+        pg.pool(),
+        &owner,
+        &handles,
+        &frozen,
+        author,
+        "proxima-agent-memory/proxima_remember",
+        json!({
+            "title": "Uncited remembered note",
+            "body": "This note has no citation.",
+            "tags": ["citation"],
+            "idempotency_key": "remember-uncited-test-note"
+        }),
+    )
+    .await?;
+
+    let cited_memory_id = handles
+        .resolve_memory(cited["handle"].as_str().expect("cited handle"))?
+        .into_inner();
+    let uncited_memory_id = handles
+        .resolve_memory(uncited["handle"].as_str().expect("uncited handle"))?
+        .into_inner();
+
+    let cited_row: (Option<uuid::Uuid>, uuid::Uuid) = sqlx::query_as(
+        "SELECT citation_mapping_id, personality_instance_id
+         FROM proxima_core.memories
+         WHERE memory_id = $1",
+    )
+    .bind(cited_memory_id)
+    .fetch_one(pg.pool())
+    .await?;
+    assert!(
+        cited_row.0.is_some(),
+        "cited remember must attach citation_mapping_id"
+    );
+    assert_eq!(cited_row.1, personality.into_inner());
+
+    let uncited_row: (Option<uuid::Uuid>, uuid::Uuid) = sqlx::query_as(
+        "SELECT citation_mapping_id, personality_instance_id
+         FROM proxima_core.memories
+         WHERE memory_id = $1",
+    )
+    .bind(uncited_memory_id)
+    .fetch_one(pg.pool())
+    .await?;
+    assert!(
+        uncited_row.0.is_none(),
+        "uncited remember must remain a plain Fact"
+    );
+    assert_eq!(uncited_row.1, personality.into_inner());
+
+    let cited_sidecar_count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM proxima_agent_memory.agent_note_v1 WHERE memory_id = $1",
+    )
+    .bind(cited_memory_id)
+    .fetch_one(pg.pool())
+    .await?;
+    let uncited_sidecar_count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM proxima_agent_memory.agent_note_v1 WHERE memory_id = $1",
+    )
+    .bind(uncited_memory_id)
+    .fetch_one(pg.pool())
+    .await?;
+    assert_eq!(cited_sidecar_count, 1);
+    assert_eq!(uncited_sidecar_count, 1);
+    assert_eq!(
+        count_rows(pg.pool(), "proxima_core.cited_objects").await?,
+        1
+    );
+    assert_eq!(
+        count_rows(pg.pool(), "public.remember_test_cited_object_v1").await?,
+        1
+    );
+    assert_eq!(
+        count_rows(pg.pool(), "proxima_core.citation_mappings").await?,
+        1
+    );
+    assert_eq!(
+        count_rows(pg.pool(), "public.remember_test_citation_mapping_v1").await?,
+        1
     );
 
     drop(pg);
@@ -525,7 +755,17 @@ async fn call_tool(
     name: &str,
     args: serde_json::Value,
 ) -> Result<serde_json::Value, proxima_core::McpToolError> {
-    call_tool_with_engine(pool, owner, handles, registry, author, None, name, args).await
+    call_tool_with_engine(
+        pool,
+        owner,
+        handles,
+        registry,
+        author,
+        Some(engine_for_registry(registry)),
+        name,
+        args,
+    )
+    .await
 }
 
 async fn call_tool_prefixed(
@@ -553,7 +793,7 @@ async fn call_tool_prefixed(
             author,
             caller_self_perspective,
             master_token_id: None,
-            engine: None,
+            engine: Some(engine_for_registry(registry)),
         },
         args,
     )
@@ -660,4 +900,44 @@ async fn create_db() -> Result<Option<String>, Box<dyn std::error::Error>> {
         .await
         .expect("PG required for tests but admin connect failed");
     Ok(Some(db_name))
+}
+
+fn engine_for_registry(registry: &Arc<FlavorRegistryFrozen>) -> Arc<Engine> {
+    Arc::new(Engine::new((**registry).clone(), MemoryStore::new()))
+}
+
+fn registry_with_remember_test_citation() -> Arc<FlavorRegistryFrozen> {
+    let mut registry = FlavorRegistry::new();
+    proxima_agent_memory::register(&mut registry);
+    registry.add_cited_object_schema::<RememberTestCitedObject>();
+    registry.add_citation_mapping_schema::<RememberTestCitationMapping>();
+    Arc::new(registry.freeze())
+}
+
+async fn create_remember_citation_sidecars(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "CREATE TABLE public.remember_test_cited_object_v1 (
+            cited_object_id uuid PRIMARY KEY,
+            artifact_id text NOT NULL,
+            locator text NOT NULL
+        )",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE TABLE public.remember_test_citation_mapping_v1 (
+            citation_mapping_id uuid PRIMARY KEY,
+            section text NOT NULL,
+            byte_start integer NOT NULL,
+            byte_end integer NOT NULL
+        )",
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+async fn count_rows(pool: &sqlx::PgPool, table: &str) -> Result<i64, sqlx::Error> {
+    let sql = format!("SELECT count(*) FROM {table}");
+    sqlx::query_scalar(&sql).fetch_one(pool).await
 }
