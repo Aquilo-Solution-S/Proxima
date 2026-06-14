@@ -149,9 +149,11 @@ impl McpToolHost {
     ) -> Result<serde_json::Value, ToolInvocationError> {
         // M0: For master-token calls without an explicit caller_self_perspective,
         // ensure the per-token shell-author personality and default the field
-        // to its Self-Perspective. Wake-token calls already carry
-        // caller_self_perspective; explicit override args still win.
+        // to its Self-Perspective. Subject-authorized calls below resolve
+        // the subject personality and become authoritative unless the caller
+        // supplied an explicit Self-Perspective.
         let mut author = author;
+        let caller_supplied_self = author.caller_self_perspective.is_some();
         let master_token_id = auth.as_ref().and_then(|c| c.master_token_id);
         if author.caller_self_perspective.is_none()
             && let (Some(token_id), Some(engine), Some(auth_ctx)) =
@@ -177,6 +179,9 @@ impl McpToolHost {
                 .await
                 .map_err(|err| ToolInvocationError::Tool(McpToolError::Other(err.to_string())))?;
             author.personality_instance_id = Some(identity.instance_id);
+            if !caller_supplied_self {
+                author.caller_self_perspective = Some(identity.self_perspective_memory_id);
+            }
         }
 
         if let Some(descriptor) = self
