@@ -144,12 +144,23 @@ fn auth_context(context: &RequestContext<RoleServer>) -> Option<McpAuthContext> 
 fn scope_allows(scope: Option<&ToolScope>, name: &str) -> bool {
     match scope {
         Some(scope) => scope.allows(name),
-        // No auth context bound to the request — preserve direct handler
-        // tests. Token-required posture is enforced one layer up by
-        // `mcp_auth_layer` whenever the HTTP transport wires it in.
-        None => true,
+        // No auth context bound to the request. In release builds this
+        // means the request bypassed `mcp_auth_layer` (which 401s before
+        // dispatch) — fail closed rather than expose the full tool
+        // surface. Direct handler tests run without the layer, so the
+        // test arm stays permissive; it is compiled out of release.
+        None => UNAUTHENTICATED_SCOPE_ALLOWS,
     }
 }
+
+/// Whether a request that carries no bound auth context may see or call
+/// a tool. Release: `false` (fail closed — a missing `mcp_auth_layer` is
+/// a regression, not a no-auth grant). Test: `true` (direct-handler
+/// ergonomics). The split makes the permissive arm un-shippable.
+#[cfg(not(test))]
+const UNAUTHENTICATED_SCOPE_ALLOWS: bool = false;
+#[cfg(test)]
+const UNAUTHENTICATED_SCOPE_ALLOWS: bool = true;
 
 fn author_from_args(
     args: &serde_json::Value,

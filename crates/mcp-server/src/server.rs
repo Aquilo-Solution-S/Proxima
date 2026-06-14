@@ -1,7 +1,9 @@
 use std::sync::Arc;
 
+#[cfg(test)]
+use proxima_core::AuthPath;
 use proxima_core::mcp::{McpAuthorContext, McpToolCtx, McpToolError, OutputMode};
-use proxima_core::{AuthPath, AuthzContext, Engine, FlavorRegistry, FlavorRegistryFrozen, Owner};
+use proxima_core::{AuthzContext, Engine, FlavorRegistry, FlavorRegistryFrozen, Owner};
 
 use crate::auth::McpAuthContext;
 
@@ -87,14 +89,15 @@ impl McpToolHost {
         auth: Option<&McpAuthContext>,
     ) -> McpToolCtx {
         let owner = owner.unwrap_or_else(|| self.owner.clone());
-        // Wire requests always carry Some(auth): the security
-        // middleware 401s unauthenticated requests before dispatch.
-        // The None arm exists for in-crate test scaffolds that call
-        // the tool host directly.
-        let authz = auth.map_or_else(
-            || AuthzContext::single_owner(&owner, AuthPath::System),
-            |a| a.authz.clone(),
-        );
+        // Wire requests always carry Some(auth): `mcp_auth_layer` 401s
+        // unauthenticated requests before dispatch, and the facade always
+        // passes Some(authz). A None here is either an in-crate test
+        // scaffold (test builds) or a transport that nested `/mcp` without
+        // the auth layer (a regression) — see `unauthenticated_authz`.
+        let authz = match auth {
+            Some(a) => a.authz.clone(),
+            None => Self::unauthenticated_authz(&owner),
+        };
         let master_token_id = auth.and_then(|c| c.master_token_id);
         McpToolCtx {
             pool: self.pool.clone(),
@@ -108,6 +111,29 @@ impl McpToolHost {
             author,
             engine: self.engine.clone(),
         }
+    }
+
+    /// Authz for a host call that arrived without a bound
+    /// `McpAuthContext`.
+    ///
+    /// Release builds never legitimately reach this: the wire path is
+    /// gated by `mcp_auth_layer` (401 before dispatch) and the facade
+    /// always passes `Some(authz)`. If a future transport nests `/mcp`
+    /// without the auth layer and dispatches here, fail closed with a
+    /// zero-capability context instead of minting System admin. The
+    /// permissive test arm below is compiled out of release builds, so
+    /// the admin fallback cannot silently return.
+    #[cfg(not(test))]
+    fn unauthenticated_authz(owner: &Owner) -> AuthzContext {
+        AuthzContext::denied(owner)
+    }
+
+    /// Test scaffolds call the host directly without an auth layer and
+    /// rely on a full single-owner context. Compiled out of release
+    /// builds (see the release arm above).
+    #[cfg(test)]
+    fn unauthenticated_authz(owner: &Owner) -> AuthzContext {
+        AuthzContext::single_owner(owner, AuthPath::System)
     }
 
     /// # Errors

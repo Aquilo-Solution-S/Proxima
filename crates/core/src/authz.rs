@@ -144,6 +144,9 @@ pub enum AuthPath {
     Wake,
     MasterDev,
     System,
+    /// Fail-closed sentinel for a context that carries no real
+    /// credentials (see [`AuthzContext::denied`]).
+    Denied,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -182,6 +185,31 @@ impl AuthzContext {
             },
             capabilities: CapabilitySet::all(),
             auth_path,
+        }
+    }
+
+    /// Fail-closed, zero-capability context. Carries the owner's
+    /// identity for audit but grants no roles, an empty tool palette,
+    /// and no accessible principals — every capability check and every
+    /// owner-scope check denies. The dual of [`Self::single_owner`]:
+    /// minted where a request reaches dispatch without authenticated
+    /// credentials in a posture that must never serve them as trusted
+    /// (e.g. the MCP host's release-build unauthenticated arm).
+    #[must_use]
+    pub fn denied(owner: &Owner) -> Self {
+        Self {
+            identity: Identity {
+                principal: owner.principal.clone(),
+                org_id: owner.org_id,
+                accessible_principals: HashSet::new(),
+                expires_at: None,
+                auth_epoch: 0,
+            },
+            capabilities: CapabilitySet {
+                tool_scope: ToolScope::Palette(Vec::new()),
+                roles: RoleSet::none(),
+            },
+            auth_path: AuthPath::Denied,
         }
     }
 }
@@ -440,6 +468,24 @@ mod tests {
         assert!(ctx.identity.can_access_principal(&o.principal));
         assert!(ctx.capabilities.roles.has(Role::Admin));
         assert!(ctx.identity.expires_at.is_none());
+    }
+
+    #[test]
+    fn denied_context_grants_nothing() {
+        let o = owner();
+        let ctx = AuthzContext::denied(&o);
+
+        assert_eq!(ctx.auth_path, AuthPath::Denied);
+        // No accessible principals — owner-scope checks deny, including
+        // the owner's own principal.
+        assert!(!ctx.identity.can_access_principal(&o.principal));
+        // No roles.
+        assert!(!ctx.capabilities.roles.has(Role::GraphRead));
+        assert!(!ctx.capabilities.roles.has(Role::GraphWrite));
+        assert!(!ctx.capabilities.roles.has(Role::SourceIngest));
+        assert!(!ctx.capabilities.roles.has(Role::Admin));
+        // Empty palette — no tool is allowed.
+        assert!(!ctx.capabilities.tool_scope.allows("core/fetch_memory"));
     }
 
     #[test]
