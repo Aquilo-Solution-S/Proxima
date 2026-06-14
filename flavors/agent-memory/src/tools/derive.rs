@@ -201,7 +201,9 @@ impl McpTool for DeriveTool {
                         target_memory_id: Some(*source_id),
                         target_goal_id: None,
                         authorship_kind: EdgeAuthorshipKind::ExternalAgent,
-                        authorship_owner_memory_id: None,
+                        authorship_owner_memory_id: ctx
+                            .caller_self_perspective
+                            .map(MemoryId::into_inner),
                         owner: &ctx.owner,
                     };
                     append_edge_in_tx(&mut tx, &edge_draft, None)

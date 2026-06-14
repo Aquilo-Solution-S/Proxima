@@ -1,8 +1,11 @@
-//! M0 acceptance: a master-token-driven `goal_propose` creates a
-//! core/inspires edge from the new Goal to the per-token shell-author's
-//! Self-Perspective. This is the v0.1.0 acceptance criterion for M0
-//! per docs/superpowers/specs/2026-05-10-spinning-wheel-proof-roadmap.md
-//! §M0.
+//! Master-token-driven `goal_propose`/lifecycle Self-Perspective wiring.
+//!
+//! When the caller supplies an explicit `caller_self_perspective`, the
+//! Goal's `core/inspires` edge targets it verbatim. When the caller
+//! supplies none, a subject-authorized call (auth_path MasterDev) is
+//! reconciled onto the SUBJECT personality's root Self-Perspective —
+//! the same personality that stamps the writes — superseding the old
+//! per-token master-token shell-author model.
 
 mod common;
 
@@ -210,7 +213,7 @@ async fn master_token_propose_creates_inspires_edge_to_per_token_self_perspectiv
 }
 
 #[tokio::test]
-async fn mcp_propose_accept_emits_lifecycle_facts_authored_by_master_token_self()
+async fn mcp_propose_accept_emits_lifecycle_facts_authored_by_subject_self()
 -> Result<(), Box<dyn std::error::Error>> {
     let Some((pg, db_name)) = migrated().await else {
         return Ok(());
@@ -218,7 +221,7 @@ async fn mcp_propose_accept_emits_lifecycle_facts_authored_by_master_token_self(
 
     let result = async {
         let owner = owner_fixture();
-        let (server, auth_ctx, token) = mcp_server_for_owner(&pg, &owner).await?;
+        let (server, auth_ctx, _token) = mcp_server_for_owner(&pg, &owner).await?;
         propose_accept_via_mcp(&server, &auth_ctx).await?;
 
         let proposal_id: uuid::Uuid = sqlx::query_scalar(
@@ -250,7 +253,12 @@ async fn mcp_propose_accept_emits_lifecycle_facts_authored_by_master_token_self(
         .fetch_one(pg.pool())
         .await?;
 
-        let identity = pg.ensure_master_token_personality(&owner, token).await?;
+        // Post-reconciliation: a subject-authorized call (here the local
+        // master token, auth_path MasterDev) authors via the SUBJECT
+        // personality's Self-Perspective, not the per-token master-token
+        // one. ensure_subject_personality is idempotent, so this resolves
+        // the same personality the call created.
+        let identity = pg.ensure_subject_personality(&owner, &owner.principal).await?;
         let authored_count: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM proxima_core.edges
               WHERE relation = 'core/authored'
@@ -261,7 +269,10 @@ async fn mcp_propose_accept_emits_lifecycle_facts_authored_by_master_token_self(
         .bind(vec![proposed_fact_id, activated_fact_id])
         .fetch_one(pg.pool())
         .await?;
-        assert_eq!(authored_count, 2);
+        assert_eq!(
+            authored_count, 2,
+            "lifecycle facts must be authored by the reconciled subject Self-Perspective"
+        );
 
         Ok::<_, Box<dyn std::error::Error>>(())
     }

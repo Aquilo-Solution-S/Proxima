@@ -1,5 +1,5 @@
 use proxima_core::mcp::{McpTool, McpToolCtx, McpToolError};
-use proxima_core::{EdgeAuthorshipKind, EdgeId};
+use proxima_core::{EdgeAuthorshipKind, EdgeId, MemoryId};
 use proxima_storage_pg::verbs::edge_append::{EdgeDraft, append_edge_in_tx};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -95,7 +95,7 @@ impl McpTool for LinkTool {
                 target_memory_id: Some(target_id),
                 target_goal_id: None,
                 authorship_kind: EdgeAuthorshipKind::ExternalAgent,
-                authorship_owner_memory_id: None,
+                authorship_owner_memory_id: ctx.caller_self_perspective.map(MemoryId::into_inner),
                 owner: &ctx.owner,
             };
             let mut tx = ctx.pool.begin().await.map_err(map_storage)?;
