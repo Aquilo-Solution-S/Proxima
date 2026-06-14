@@ -61,6 +61,7 @@ fn fresh_draft(owner: Owner) -> EventDraft {
         source_batch_id: SourceBatchId::new(Uuid::now_v7()),
         principal: owner.principal,
         org_id: Some(owner.org_id),
+        author_personality_instance_id: None,
         schema_id: SchemaId::new("test/fact_blob".into()),
         schema_version: SchemaVersion::new(1),
         payload: format!("hello world {}", Uuid::now_v7()).into_bytes(),
@@ -149,6 +150,77 @@ async fn event_ingest_writes_fact_and_change_event() {
 
     let _ = drop_db(&db_name).await;
     result.expect("event_ingest_pg test failed");
+}
+
+#[tokio::test]
+async fn event_ingest_stamps_fact_author_without_change_event_author() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    create_db(&db_name).await.expect("PG required for tests");
+    let url = db_url(&db_name);
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+
+        let owner = Owner {
+            principal: Principal::User(UserId::new(Uuid::now_v7())),
+            org_id: OrgId::new(Uuid::now_v7()),
+        };
+        let subject = owner.principal.clone();
+        let personality = pg.ensure_subject_personality(&owner, &subject).await?;
+
+        let mut authored = fresh_draft(owner.clone());
+        authored.author_personality_instance_id = Some(personality.instance_id);
+        let authored_outcome = pg.ingest_event_atomic(&authored).await?;
+
+        let stamped: Uuid = sqlx::query_scalar(
+            "SELECT personality_instance_id
+             FROM proxima_core.memories
+             WHERE memory_id = $1",
+        )
+        .bind(authored_outcome.memory_id.into_inner())
+        .fetch_one(pg.pool())
+        .await?;
+        assert_eq!(stamped, personality.instance_id.into_inner());
+        assert_ne!(stamped, Uuid::nil());
+
+        let authored_change_author: Option<Uuid> = sqlx::query_scalar(
+            "SELECT entity_personality_instance_id
+             FROM proxima_core.change_event
+             WHERE seq = $1",
+        )
+        .bind(authored_outcome.change_event_seq)
+        .fetch_one(pg.pool())
+        .await?;
+        assert_eq!(authored_change_author, None);
+
+        let system_outcome = pg.ingest_event_atomic(&fresh_draft(owner)).await?;
+        let system_stamped: Uuid = sqlx::query_scalar(
+            "SELECT personality_instance_id
+             FROM proxima_core.memories
+             WHERE memory_id = $1",
+        )
+        .bind(system_outcome.memory_id.into_inner())
+        .fetch_one(pg.pool())
+        .await?;
+        assert_eq!(system_stamped, Uuid::nil());
+
+        let system_change_author: Option<Uuid> = sqlx::query_scalar(
+            "SELECT entity_personality_instance_id
+             FROM proxima_core.change_event
+             WHERE seq = $1",
+        )
+        .bind(system_outcome.change_event_seq)
+        .fetch_one(pg.pool())
+        .await?;
+        assert_eq!(system_change_author, None);
+
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("event_ingest author stamping test failed");
 }
 
 #[tokio::test]

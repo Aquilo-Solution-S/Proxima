@@ -30,6 +30,7 @@ pub struct McpAuthorContext {
     pub model_id: String,
     pub client_name: String,
     pub client_version: String,
+    pub personality_instance_id: Option<PersonalityInstanceId>,
     pub caller_self_perspective: Option<MemoryId>,
 }
 
@@ -630,6 +631,7 @@ mod tests {
                 model_id: "t".into(),
                 client_name: "t".into(),
                 client_version: "0".into(),
+                personality_instance_id: None,
                 caller_self_perspective: None,
             },
             caller_self_perspective: None,
@@ -672,6 +674,7 @@ mod ctx_engine_tests {
                 model_id: "t".into(),
                 client_name: "t".into(),
                 client_version: "0".into(),
+                personality_instance_id: None,
                 caller_self_perspective: None,
             },
             caller_self_perspective: None,
@@ -704,6 +707,7 @@ mod ctx_engine_tests {
                 model_id: "t".into(),
                 client_name: "t".into(),
                 client_version: "0".into(),
+                personality_instance_id: None,
                 caller_self_perspective: None,
             },
             caller_self_perspective: None,
