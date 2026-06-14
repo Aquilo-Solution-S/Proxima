@@ -147,7 +147,7 @@ Physical shape source of truth:
 | columns and constraints | `crates/storage-pg/migrations/` |
 | storage write semantics | `crates/storage-pg/src/` |
 | typed ids and payload traits | `crates/core/src/` |
-| wire projection | `14-protocol-surface.md` and `crates/wire-grpc/` |
+| protocol contract | `14-protocol-surface.md` |
 
 <a id="append-only"></a>
 
