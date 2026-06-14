@@ -56,6 +56,8 @@ fn registry_for_test() -> FlavorRegistryFrozen {
         natural_key_columns: vec![],
         tombstone: None,
         cbor_encoder: None,
+        sidecar_inserter: None,
+        cited_object_schema: None,
     });
     frozen.push(SchemaInfo {
         schema_id: SchemaId::new("test/citation_blob".into()),
@@ -66,6 +68,8 @@ fn registry_for_test() -> FlavorRegistryFrozen {
         natural_key_columns: vec![],
         tombstone: None,
         cbor_encoder: None,
+        sidecar_inserter: None,
+        cited_object_schema: None,
     });
     FlavorRegistryFrozen::with_schemas(frozen)
 }

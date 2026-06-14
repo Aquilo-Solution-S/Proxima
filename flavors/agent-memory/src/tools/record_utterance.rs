@@ -1,0 +1,126 @@
+use proxima_core::mcp::{McpTool, McpToolCtx, McpToolError};
+use proxima_core::verbs::event_ingest::EventDraft;
+use proxima_core::{FactPayload, Role, SchemaId, SchemaVersion, SourceBatchId, SourceId};
+use proxima_storage_pg::verbs::event_ingest::ingest_event_with_sidecar_in_tx;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+use crate::{Speaker, UtteranceV1};
+
+use super::util::map_storage;
+
+const SOURCE_ID: &str = "proxima-agent-memory/conversation";
+const UTTERANCE_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
+    0x23, 0xa5, 0x64, 0x58, 0x2b, 0x71, 0x49, 0x29, 0x8b, 0x7d, 0xb9, 0x49, 0xd2, 0x52, 0xe2, 0x11,
+]);
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct RecordUtteranceArgs {
+    pub speaker: Speaker,
+    pub conversation_id: String,
+    pub text: String,
+    pub idempotency_key: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RecordUtteranceOutput {
+    pub handle: String,
+    pub idempotent_replay: bool,
+}
+
+#[derive(Debug)]
+pub struct RecordUtteranceTool;
+
+impl McpTool for RecordUtteranceTool {
+    const NAME: &'static str = "proxima-agent-memory/proxima_record_utterance";
+    const DESCRIPTION: &'static str =
+        "Append one conversation utterance as a personality-authored Fact.";
+    type Args = RecordUtteranceArgs;
+    type Output = RecordUtteranceOutput;
+
+    fn call(
+        ctx: McpToolCtx,
+        args: RecordUtteranceArgs,
+    ) -> futures::future::BoxFuture<'static, Result<RecordUtteranceOutput, McpToolError>> {
+        Box::pin(async move {
+            let conversation_id = args.conversation_id.trim();
+            if conversation_id.is_empty() {
+                return Err(McpToolError::InvalidInput(
+                    "conversation_id must be non-empty".into(),
+                ));
+            }
+            let text = args.text.trim();
+            if text.is_empty() || text.chars().count() > 20_000 {
+                return Err(McpToolError::InvalidInput(
+                    "text must be 1..=20000 chars".into(),
+                ));
+            }
+
+            let payload = UtteranceV1 {
+                speaker: args.speaker,
+                conversation_id: conversation_id.to_string(),
+                text: text.to_string(),
+            };
+            let mut payload_bytes = Vec::new();
+            ciborium::ser::into_writer(&payload, &mut payload_bytes)
+                .map_err(|err| McpToolError::InvalidInput(err.to_string()))?;
+            let source_instance_id = args
+                .idempotency_key
+                .as_deref()
+                .map_or_else(uuid::Uuid::now_v7, |key| {
+                    uuid::Uuid::new_v5(&UTTERANCE_NAMESPACE, key.as_bytes())
+                });
+            let source_id = format!("{SOURCE_ID}/{source_instance_id}");
+
+            let observed_at = time::OffsetDateTime::now_utc();
+            let draft = EventDraft {
+                source_id: SourceId::new(source_id),
+                source_batch_id: SourceBatchId::new(uuid::Uuid::now_v7()),
+                principal: ctx.owner.principal.clone(),
+                org_id: Some(ctx.owner.org_id),
+                author_personality_instance_id: ctx.author.personality_instance_id,
+                schema_id: SchemaId::new(UtteranceV1::SCHEMA_ID.into()),
+                schema_version: SchemaVersion::new(UtteranceV1::SCHEMA_VERSION),
+                payload: payload_bytes,
+                observed_at,
+                occurred_at: observed_at,
+                citation: None,
+            };
+
+            let engine = ctx
+                .engine
+                .as_ref()
+                .ok_or_else(|| McpToolError::InvalidInput("engine required".into()))?;
+            let authorized = engine
+                .authorize_event_ingest(&ctx.authz, Role::GraphWrite, draft)
+                .map_err(|err| McpToolError::Other(err.to_string()))?;
+            let mut tx = ctx.pool.begin().await.map_err(map_storage)?;
+            let sidecar = payload.clone();
+            let outcome = ingest_event_with_sidecar_in_tx(&mut tx, &authorized, |tx, outcome| {
+                Box::pin(async move {
+                    sqlx::query(
+                        "INSERT INTO proxima_agent_memory.utterance_v1
+                           (memory_id, speaker, conversation_id, text)
+                         VALUES ($1, $2, $3, $4)",
+                    )
+                    .bind(outcome.memory_id.into_inner())
+                    .bind(sidecar.speaker.as_str())
+                    .bind(&sidecar.conversation_id)
+                    .bind(&sidecar.text)
+                    .execute(&mut **tx)
+                    .await
+                    .map_err(|err| proxima_core::StorageError::Internal(err.to_string()))?;
+                    Ok(())
+                })
+            })
+            .await
+            .map_err(McpToolError::Storage)?;
+            tx.commit().await.map_err(map_storage)?;
+
+            Ok(RecordUtteranceOutput {
+                handle: ctx.format_fact_memory(outcome.memory_id),
+                idempotent_replay: outcome.idempotent_replay,
+            })
+        })
+    }
+}

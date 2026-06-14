@@ -30,6 +30,8 @@ fn schemas_for_test() -> Vec<SchemaInfo> {
             natural_key_columns: vec![],
             tombstone: None,
             cbor_encoder: None,
+            sidecar_inserter: None,
+            cited_object_schema: None,
         },
         SchemaInfo {
             schema_id: SchemaId::new("test/cited_blob".into()),
@@ -40,6 +42,8 @@ fn schemas_for_test() -> Vec<SchemaInfo> {
             natural_key_columns: vec![],
             tombstone: None,
             cbor_encoder: None,
+            sidecar_inserter: None,
+            cited_object_schema: None,
         },
         SchemaInfo {
             schema_id: SchemaId::new("test/citation_blob".into()),
@@ -50,6 +54,8 @@ fn schemas_for_test() -> Vec<SchemaInfo> {
             natural_key_columns: vec![],
             tombstone: None,
             cbor_encoder: None,
+            sidecar_inserter: None,
+            cited_object_schema: None,
         },
         SchemaInfo {
             schema_id: SchemaId::new("test/goal_blob".into()),
@@ -60,6 +66,8 @@ fn schemas_for_test() -> Vec<SchemaInfo> {
             natural_key_columns: vec![],
             tombstone: None,
             cbor_encoder: None,
+            sidecar_inserter: None,
+            cited_object_schema: None,
         },
     ]
 }

@@ -6,6 +6,7 @@
 
 use uuid::Uuid;
 
+use crate::verbs::schema::SidecarInserter;
 use crate::{
     EventId, MemoryId, OrgId, Owner, PersonalityInstanceId, Principal, SchemaId, SchemaVersion,
     SourceBatchId, SourceId,
@@ -28,6 +29,20 @@ pub struct CitationMappingHint {
 pub struct Citation {
     pub object: CitedObjectHint,
     pub mapping: CitationMappingHint,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct InlineCitedObjectDraft {
+    pub schema_id: SchemaId,
+    pub schema_version: SchemaVersion,
+    pub payload_bytes: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct InlineCitationMappingDraft {
+    pub schema_id: SchemaId,
+    pub schema_version: SchemaVersion,
+    pub payload_bytes: Vec<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -64,6 +79,149 @@ impl AuthorizedEventIngest {
     #[must_use]
     pub fn draft(&self) -> &EventDraft {
         &self.draft
+    }
+}
+
+#[derive(Debug)]
+pub struct AuthorizedInlineCitedObject {
+    schema_id: SchemaId,
+    schema_version: SchemaVersion,
+    content_hash: [u8; 32],
+    payload_bytes: Vec<u8>,
+    sidecar_inserter_fn: SidecarInserter,
+}
+
+impl AuthorizedInlineCitedObject {
+    pub(crate) fn new(
+        schema_id: SchemaId,
+        schema_version: SchemaVersion,
+        content_hash: [u8; 32],
+        payload_bytes: Vec<u8>,
+        sidecar_inserter_fn: SidecarInserter,
+    ) -> Self {
+        Self {
+            schema_id,
+            schema_version,
+            content_hash,
+            payload_bytes,
+            sidecar_inserter_fn,
+        }
+    }
+
+    #[must_use]
+    pub fn schema_id(&self) -> &SchemaId {
+        &self.schema_id
+    }
+
+    #[must_use]
+    pub const fn schema_version(&self) -> SchemaVersion {
+        self.schema_version
+    }
+
+    #[must_use]
+    pub const fn content_hash(&self) -> &[u8; 32] {
+        &self.content_hash
+    }
+
+    #[must_use]
+    pub fn payload_bytes(&self) -> &[u8] {
+        &self.payload_bytes
+    }
+
+    #[must_use]
+    pub const fn sidecar_inserter_fn(&self) -> SidecarInserter {
+        self.sidecar_inserter_fn
+    }
+}
+
+#[derive(Debug)]
+pub struct AuthorizedInlineCitationMapping {
+    schema_id: SchemaId,
+    schema_version: SchemaVersion,
+    payload_bytes: Vec<u8>,
+    sidecar_inserter_fn: SidecarInserter,
+}
+
+impl AuthorizedInlineCitationMapping {
+    pub(crate) fn new(
+        schema_id: SchemaId,
+        schema_version: SchemaVersion,
+        payload_bytes: Vec<u8>,
+        sidecar_inserter_fn: SidecarInserter,
+    ) -> Self {
+        Self {
+            schema_id,
+            schema_version,
+            payload_bytes,
+            sidecar_inserter_fn,
+        }
+    }
+
+    #[must_use]
+    pub fn schema_id(&self) -> &SchemaId {
+        &self.schema_id
+    }
+
+    #[must_use]
+    pub const fn schema_version(&self) -> SchemaVersion {
+        self.schema_version
+    }
+
+    #[must_use]
+    pub fn payload_bytes(&self) -> &[u8] {
+        &self.payload_bytes
+    }
+
+    #[must_use]
+    pub const fn sidecar_inserter_fn(&self) -> SidecarInserter {
+        self.sidecar_inserter_fn
+    }
+}
+
+/// Proof that a Fact ingest and its inline citation payloads passed
+/// authorization, kind-specific schema validation, and citation
+/// mapping target validation.
+#[derive(Debug)]
+pub struct AuthorizedFactWithCitation {
+    draft: EventDraft,
+    cited_object: AuthorizedInlineCitedObject,
+    mapping: AuthorizedInlineCitationMapping,
+    author_personality_instance_id: Option<PersonalityInstanceId>,
+}
+
+impl AuthorizedFactWithCitation {
+    pub(crate) fn new(
+        draft: EventDraft,
+        cited_object: AuthorizedInlineCitedObject,
+        mapping: AuthorizedInlineCitationMapping,
+    ) -> Self {
+        let author_personality_instance_id = draft.author_personality_instance_id;
+        Self {
+            draft,
+            cited_object,
+            mapping,
+            author_personality_instance_id,
+        }
+    }
+
+    #[must_use]
+    pub fn draft(&self) -> &EventDraft {
+        &self.draft
+    }
+
+    #[must_use]
+    pub const fn cited_object(&self) -> &AuthorizedInlineCitedObject {
+        &self.cited_object
+    }
+
+    #[must_use]
+    pub const fn mapping(&self) -> &AuthorizedInlineCitationMapping {
+        &self.mapping
+    }
+
+    #[must_use]
+    pub const fn author_personality_instance_id(&self) -> Option<PersonalityInstanceId> {
+        self.author_personality_instance_id
     }
 }
 
