@@ -4,7 +4,7 @@ use proxima_core::verbs::event_ingest::{
 };
 use proxima_core::{
     EventIngestOutcome, FactPayload, Role, SchemaId, SchemaVersion, SourceBatchId, SourceId,
-    StorageError,
+    StorageError, canonical_json_bytes,
 };
 use proxima_storage_pg::verbs::event_ingest::{
     ingest_event_with_sidecar_in_tx, ingest_fact_with_citation_in_tx,
@@ -99,9 +99,10 @@ impl McpTool for RememberTool {
                 tags,
                 idempotency_key: args.idempotency_key,
             };
-            let mut payload_bytes = Vec::new();
-            ciborium::ser::into_writer(&payload, &mut payload_bytes)
+            let sidecar = payload.clone();
+            let payload_value = serde_json::to_value(payload)
                 .map_err(|err| McpToolError::InvalidInput(err.to_string()))?;
+            let payload_bytes = canonical_json_bytes(&payload_value);
             let observed_at = time::OffsetDateTime::now_utc();
             let draft = EventDraft {
                 source_id: SourceId::new(SOURCE_ID),
@@ -122,17 +123,16 @@ impl McpTool for RememberTool {
                 .as_ref()
                 .ok_or_else(|| McpToolError::InvalidInput("engine required".into()))?;
             let mut tx = ctx.pool.begin().await.map_err(map_storage)?;
-            let sidecar = payload.clone();
             let outcome = if let Some(citation) = args.citation {
                 let cited_object = InlineCitedObjectDraft {
                     schema_id: SchemaId::new(citation.object_schema_id),
                     schema_version: SchemaVersion::new(citation.object_schema_version),
-                    payload_bytes: encode_json_cbor(&citation.object_payload)?,
+                    payload_bytes: encode_json_payload(&citation.object_payload),
                 };
                 let mapping = InlineCitationMappingDraft {
                     schema_id: SchemaId::new(citation.mapping_schema_id),
                     schema_version: SchemaVersion::new(citation.mapping_schema_version),
-                    payload_bytes: encode_json_cbor(&citation.mapping_payload)?,
+                    payload_bytes: encode_json_payload(&citation.mapping_payload),
                 };
                 let authorized = engine
                     .authorize_fact_with_citation(
@@ -168,11 +168,8 @@ impl McpTool for RememberTool {
     }
 }
 
-fn encode_json_cbor(value: &serde_json::Value) -> Result<Vec<u8>, McpToolError> {
-    let mut bytes = Vec::new();
-    ciborium::ser::into_writer(value, &mut bytes)
-        .map_err(|err| McpToolError::InvalidInput(err.to_string()))?;
-    Ok(bytes)
+fn encode_json_payload(value: &serde_json::Value) -> Vec<u8> {
+    canonical_json_bytes(value)
 }
 
 async fn insert_agent_note_sidecar(

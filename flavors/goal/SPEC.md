@@ -47,7 +47,7 @@ These already exist and are reused as-is:
 | `GoalAuthorship { User, System(SystemOrigin), External }` | `crates/core/src/verbs/goal_write.rs:41` | `External` variant already wired; no new authorship type needed |
 | `OperatorKind::AtoGoal` | same file:21 | Confirms A→Goal as an existing operator-kind reservation |
 | `GoalDraft { …, payload, supersedes_goal_id, parent_goal_ids, authorship, request_id, … }` | same file:48 | Write shape supports proposal supersession and typed payload bytes |
-| `GoalRow { …, state, supersedes, payload: Vec<u8>, … }` | `crates/core/src/verbs/query.rs:97` | Read shape already carries `supersedes` and `payload` (CBOR sidecar bytes) |
+| `GoalRow { …, state, supersedes, payload: Vec<u8>, … }` | `crates/core/src/verbs/query.rs:97` | Read shape already carries `supersedes` and `payload` (JSON sidecar bytes) |
 | `goals.state` text column + `goals.supersedes` uuid column | `crates/storage-pg/src/verbs/query/rows.rs:156` | DB columns already present; migration only needs to extend the `state` CHECK + add transition trigger |
 | `external_agent_authorship` migration | `crates/storage-pg/migrations/20260506000030_external_agent_authorship.sql` | Already wires External authorship for memory writes; extend to Goal writes |
 
@@ -151,7 +151,7 @@ pub struct GoalDraft {
     pub schema_version:      SchemaVersion,
     pub title:               String,                // core label
     pub text:                String,                // core body
-    pub payload:             Vec<u8>,               // NEW — CBOR sidecar bytes
+    pub payload:             Vec<u8>,               // NEW - JSON sidecar bytes
     pub state:               GoalState,
     pub parent_goal_ids:     Vec<GoalId>,
     pub supersedes_goal_id:  Option<GoalId>,        // NEW — supersession write path
@@ -163,7 +163,7 @@ pub struct GoalDraft {
 pub trait GoalPayload: 'static {
     const SCHEMA_ID: SchemaId;
     const SCHEMA_VERSION: SchemaVersion;
-    fn encode(&self) -> Vec<u8>;          // CBOR
+    fn encode(&self) -> Vec<u8>;          // JSON
     fn decode(bytes: &[u8]) -> Result<Self, DecodeError> where Self: Sized;
 }
 ```
