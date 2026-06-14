@@ -210,6 +210,7 @@ async fn ingest_fact_memory(
             source_batch_id: SourceBatchId::new(Uuid::now_v7()),
             principal: owner.principal.clone(),
             org_id: Some(owner.org_id),
+            author_personality_instance_id: None,
             schema_id: SchemaId::new(schema_id.to_string()),
             schema_version: SchemaVersion::new(1),
             payload: payload.to_vec(),

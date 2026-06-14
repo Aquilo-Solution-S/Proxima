@@ -52,6 +52,7 @@ fn ctx(owner: &Owner, pg: &proxima_storage_pg::PgStorage, authz: AuthzContext) -
             model_id: "test-model".into(),
             client_name: "test-client".into(),
             client_version: "0".into(),
+            personality_instance_id: None,
             caller_self_perspective: None,
         },
         caller_self_perspective: None,

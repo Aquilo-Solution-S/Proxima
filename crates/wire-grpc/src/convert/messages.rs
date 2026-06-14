@@ -419,6 +419,7 @@ pub fn event_ingest_request_from_proto(
                 .ok_or_else(|| Status::invalid_argument("missing principal"))?,
         )?,
         org_id: None,
+        author_personality_instance_id: None,
         schema_id: SchemaId::new(schema_ref.schema_id.clone()),
         schema_version: SchemaVersion::new(schema_ref.schema_version),
         payload: pb.payload.clone(),

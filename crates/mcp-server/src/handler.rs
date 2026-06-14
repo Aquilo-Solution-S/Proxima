@@ -177,6 +177,7 @@ fn author_from_args(
         model_id,
         client_name: "unknown".into(),
         client_version: "0".into(),
+        personality_instance_id: None,
         caller_self_perspective,
     })
 }

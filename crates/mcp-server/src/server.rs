@@ -3,6 +3,7 @@ use std::sync::Arc;
 #[cfg(test)]
 use proxima_core::AuthPath;
 use proxima_core::mcp::{McpAuthorContext, McpToolCtx, McpToolError, OutputMode};
+use proxima_core::verbs::query::MemoryStore;
 use proxima_core::{AuthzContext, Engine, FlavorRegistry, FlavorRegistryFrozen, Owner};
 
 use crate::auth::McpAuthContext;
@@ -60,11 +61,11 @@ impl McpToolHost {
     ) -> Result<Self, crate::McpServerError> {
         let pg = proxima_storage_pg::PgStorage::connect(database_url).await?;
         pg.run_migrations().await?;
-        Ok(Self::from_pool(
-            pg.pool().clone(),
-            owner,
-            Arc::new(registry.freeze()),
-        ))
+        let frozen = registry.freeze();
+        let engine = Arc::new(
+            Engine::new(frozen.clone(), MemoryStore::new()).with_storage(Arc::new(pg.clone())),
+        );
+        Ok(Self::from_pool(pg.pool().clone(), owner, Arc::new(frozen)).with_engine(engine))
     }
 
     #[must_use]
@@ -163,6 +164,21 @@ impl McpToolHost {
             author.caller_self_perspective = Some(identity.self_perspective_memory_id);
         }
 
+        if let (Some(engine), Some(auth_ctx)) = (self.engine.as_ref(), auth.as_ref())
+            && matches!(
+                auth_ctx.authz.auth_path,
+                proxima_core::AuthPath::HostBearer
+                    | proxima_core::AuthPath::Wake
+                    | proxima_core::AuthPath::MasterDev
+            )
+        {
+            let identity = engine
+                .ensure_subject_personality(&auth_ctx.owner, &auth_ctx.authz.identity.principal)
+                .await
+                .map_err(|err| ToolInvocationError::Tool(McpToolError::Other(err.to_string())))?;
+            author.personality_instance_id = Some(identity.instance_id);
+        }
+
         if let Some(descriptor) = self
             .registry
             .list_mcp_tools()
@@ -224,6 +240,7 @@ mod tests {
             model_id: "test-model".into(),
             client_name: "test-client".into(),
             client_version: "0.1.0".into(),
+            personality_instance_id: None,
             caller_self_perspective: None,
         };
         let token = uuid::Uuid::now_v7();
