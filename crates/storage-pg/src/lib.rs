@@ -344,6 +344,18 @@ impl Storage for PgStorage {
         verbs::consolidate::set_read_scope(&self.pool, req).await
     }
 
+    async fn upsert_fact_retention(&self, owner: &Owner, seconds: i64) -> Result<(), StorageError> {
+        verbs::fact_retention::upsert_fact_retention(&self.pool, owner, seconds).await
+    }
+
+    async fn get_fact_retention(&self, owner: &Owner) -> Result<Option<i64>, StorageError> {
+        verbs::fact_retention::get_fact_retention(&self.pool, owner).await
+    }
+
+    async fn clear_fact_retention(&self, owner: &Owner) -> Result<bool, StorageError> {
+        verbs::fact_retention::clear_fact_retention(&self.pool, owner).await
+    }
+
     async fn list_active_wake_entries(&self) -> Result<Vec<WakeDispatchEntryRow>, StorageError> {
         verbs::consolidate::list_active_wake_entries(&self.pool).await
     }

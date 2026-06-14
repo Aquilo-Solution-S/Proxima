@@ -11,6 +11,7 @@ pub mod derive_append;
 pub mod edge_append;
 pub(crate) mod event_history;
 pub mod event_ingest;
+pub mod fact_retention;
 pub(crate) mod goal_write;
 pub mod master_token_personality;
 pub mod persist_mcp_call;

@@ -291,3 +291,80 @@ async fn persist_mcp_call_authorized_context_clears_the_gate() {
         .expect_err("NoopStorage rejects writes");
     assert_eq!(err.code, ErrorCode::Internal);
 }
+
+#[tokio::test]
+async fn fact_retention_rejects_owner_the_context_cannot_access() {
+    let (principal, owner) = fresh_owner();
+    let engine = boot_engine(principal, owner.clone());
+    let (_, stranger_owner) = fresh_owner();
+    let stranger = AuthzContext::single_owner(&stranger_owner, AuthPath::System);
+
+    let err = engine
+        .set_fact_retention(&stranger, &owner, 86_400)
+        .await
+        .expect_err("foreign owner must be rejected");
+    assert_eq!(err.code, ErrorCode::Forbidden);
+
+    let err = engine
+        .get_fact_retention(&stranger, &owner)
+        .await
+        .expect_err("foreign owner must be rejected");
+    assert_eq!(err.code, ErrorCode::Forbidden);
+
+    let err = engine
+        .clear_fact_retention(&stranger, &owner)
+        .await
+        .expect_err("foreign owner must be rejected");
+    assert_eq!(err.code, ErrorCode::Forbidden);
+}
+
+#[tokio::test]
+async fn fact_retention_rejects_context_without_admin_role() {
+    let (principal, owner) = fresh_owner();
+    let engine = boot_engine(principal, owner.clone());
+    let mut authz = AuthzContext::single_owner(&owner, AuthPath::System);
+    authz.capabilities.roles = RoleSet::none();
+
+    let err = engine
+        .set_fact_retention(&authz, &owner, 86_400)
+        .await
+        .expect_err("missing admin role must be rejected");
+    assert_eq!(err.code, ErrorCode::Forbidden);
+
+    let err = engine
+        .get_fact_retention(&authz, &owner)
+        .await
+        .expect_err("missing admin role must be rejected");
+    assert_eq!(err.code, ErrorCode::Forbidden);
+
+    let err = engine
+        .clear_fact_retention(&authz, &owner)
+        .await
+        .expect_err("missing admin role must be rejected");
+    assert_eq!(err.code, ErrorCode::Forbidden);
+}
+
+#[tokio::test]
+async fn fact_retention_authorized_context_clears_the_gate() {
+    let (principal, owner) = fresh_owner();
+    let engine = boot_engine(principal, owner.clone());
+    let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+
+    let err = engine
+        .set_fact_retention(&authz, &owner, 86_400)
+        .await
+        .expect_err("NoopStorage rejects writes");
+    assert_eq!(err.code, ErrorCode::Internal);
+
+    let err = engine
+        .get_fact_retention(&authz, &owner)
+        .await
+        .expect_err("NoopStorage rejects writes");
+    assert_eq!(err.code, ErrorCode::Internal);
+
+    let err = engine
+        .clear_fact_retention(&authz, &owner)
+        .await
+        .expect_err("NoopStorage rejects writes");
+    assert_eq!(err.code, ErrorCode::Internal);
+}

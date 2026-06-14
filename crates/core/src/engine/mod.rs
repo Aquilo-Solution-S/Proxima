@@ -2,6 +2,7 @@
 //! behind the typed verb surfaces of docs/14-protocol-surface.md.
 
 mod builder;
+mod fact_retention;
 mod goals;
 mod ingest;
 pub mod mcp_listener;

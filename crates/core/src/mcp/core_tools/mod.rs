@@ -6,12 +6,14 @@
 
 pub mod add_wake_entry;
 pub mod audit;
+pub mod clear_fact_retention;
 pub mod payload;
 pub mod remove_wake_entry;
 pub mod set_wake_entries;
 pub mod update_wake_entry;
 pub mod wake_entry_input;
 
+pub mod get_fact_retention;
 pub mod get_graph;
 pub mod get_personality;
 pub mod instantiate_personality;
@@ -21,11 +23,14 @@ pub mod list_read_scope;
 pub mod list_schemas;
 pub mod list_substrate_tools;
 pub mod list_wake_entries;
+pub mod set_fact_retention;
 pub mod set_read_scope;
 pub mod tombstone_personality;
 
 pub use add_wake_entry::AddWakeEntryTool;
 pub use audit::{AuditEmit, emit_personality_config_changed};
+pub use clear_fact_retention::ClearFactRetentionTool;
+pub use get_fact_retention::GetFactRetentionTool;
 pub use get_graph::GetGraphTool;
 pub use get_personality::GetPersonalityTool;
 pub use instantiate_personality::InstantiatePersonalityTool;
@@ -40,6 +45,7 @@ pub use payload::{
     PersonalityConfigChangedVerb,
 };
 pub use remove_wake_entry::RemoveWakeEntryTool;
+pub use set_fact_retention::SetFactRetentionTool;
 pub use set_read_scope::SetReadScopeTool;
 pub use set_wake_entries::SetWakeEntriesTool;
 pub use tombstone_personality::TombstonePersonalityTool;
@@ -58,6 +64,9 @@ pub(crate) fn register_all(registry: &mut crate::FlavorRegistry) {
     registry.add_substrate_mcp_tool::<SetWakeEntriesTool>();
     registry.add_substrate_mcp_tool::<ListReadScopeTool>();
     registry.add_substrate_mcp_tool::<SetReadScopeTool>();
+    registry.add_substrate_mcp_tool::<GetFactRetentionTool>();
+    registry.add_substrate_mcp_tool::<SetFactRetentionTool>();
+    registry.add_substrate_mcp_tool::<ClearFactRetentionTool>();
     registry.add_substrate_mcp_tool::<AddWakeEntryTool>();
     registry.add_substrate_mcp_tool::<UpdateWakeEntryTool>();
     registry.add_substrate_mcp_tool::<RemoveWakeEntryTool>();
