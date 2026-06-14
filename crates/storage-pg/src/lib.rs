@@ -13,30 +13,26 @@ use std::time::Duration;
 
 use proxima_core::personality::{
     AbstractionRow, ActiveGoalSummary, ChangeEventForWake, InstantiatePersonalityRequest,
-    InstantiatePersonalityResponse, ListReadScopeRequest, ListReadScopeResponse,
-    ListWakeInvocationsRequest, MemorySnapshot, PersonalityInstanceId, PersonalityInstanceRow,
-    PersonalityRef, PersonalityRuntimeRow, PersonalityWriteOutcome, PersonalityWriteRequest,
-    RootPersonalityPerspectiveRow, SetReadScopeRequest, SetReadScopeResponse,
-    SetWakeEntriesRequest, SetWakeEntriesResponse, SidecarSpec, TombstonePersonalityRequest,
-    TombstonePersonalityResponse, WakeDispatchEntryRow, WakeInvocationFinalize,
-    WakeInvocationLogDraft, WakeInvocationRow, WakeInvocationStart, WakeInvocationStatus,
+    InstantiatePersonalityResponse, ListReadScopeRequest, ListReadScopeResponse, MemorySnapshot,
+    PersonalityInstanceId, PersonalityInstanceRow, PersonalityRef, PersonalityWriteOutcome,
+    PersonalityWriteRequest, SetReadScopeRequest, SetReadScopeResponse, SetWakeEntriesRequest,
+    SetWakeEntriesResponse, SidecarSpec, TombstonePersonalityRequest, TombstonePersonalityResponse,
+    WakeDispatchEntryRow,
 };
-use proxima_core::storage::WakeLockGuard;
 use proxima_core::verbs::close_batch::CloseBatchOutcome;
 use proxima_core::verbs::event_history::{EventHistoryRequest, EventHistoryResponse};
 use proxima_core::verbs::event_ingest::{EventDraft, EventIngestOutcome};
 use proxima_core::verbs::goal_write::{GoalDraft, GoalWriteOutcome};
 use proxima_core::verbs::persist_mcp_call::{McpCallLogInput, McpCallLogOutcome};
-use proxima_core::verbs::persist_wake_trace::{WakeTracePersistInput, WakeTracePersistOutcome};
 use proxima_core::verbs::query::{
     MemoryLineageRequest, MemoryLineageResponse, MemorySearchRequest, MemorySearchResult,
     QueryRequest, QueryResponse,
 };
 use proxima_core::verbs::subscribe::ChangeEventStream;
 use proxima_core::{
-    BindInferenceTierRequest, BindInferenceTierResponse, BlockedWakeCandidate, ChangeEvent, GoalId,
-    InferenceTargetRow, InferenceTierBindingRow, MasterTokenPersonality, MemoryDependency,
-    MemoryId, ModelTier, Owner, Principal, RegisterInferenceTargetRequest,
+    BindInferenceTierRequest, BindInferenceTierResponse, ChangeEvent, GoalId, InferenceTargetRow,
+    InferenceTierBindingRow, MasterTokenPersonality, MemoryDependency, MemoryId, ModelTier, Owner,
+    Principal, RegisterInferenceTargetRequest,
     RegisterInferenceTargetResponse, RemoveInferenceTargetRequest, RemoveInferenceTargetResponse,
     SourceBatchId, Storage, StorageError, StorageHandle,
 };
@@ -47,7 +43,6 @@ use tokio::sync::broadcast;
 mod authorship;
 mod error;
 pub mod outbox;
-mod personality_locks;
 mod pg_ident;
 pub mod query {
     pub use crate::verbs::query::MAX_SNAPSHOT_EDGES;
@@ -200,14 +195,6 @@ impl Storage for PgStorage {
         draft: &EventDraft,
     ) -> Result<EventIngestOutcome, StorageError> {
         verbs::event_ingest::ingest_event_atomic(&self.pool, draft).await
-    }
-
-    async fn persist_wake_trace_atomic(
-        &self,
-        registry: &proxima_core::FlavorRegistryFrozen,
-        input: &WakeTracePersistInput,
-    ) -> Result<WakeTracePersistOutcome, StorageError> {
-        verbs::persist_wake_trace::persist_wake_trace_atomic(&self.pool, registry, input).await
     }
 
     async fn persist_mcp_call_atomic(
@@ -516,84 +503,6 @@ impl Storage for PgStorage {
             .await
     }
 
-    async fn advance_wake_cursor(
-        &self,
-        owner: &Owner,
-        instance: PersonalityInstanceId,
-        last_considered_seq: uuid::Uuid,
-    ) -> Result<(), StorageError> {
-        verbs::consolidate::advance_wake_cursor(&self.pool, owner, instance, last_considered_seq)
-            .await
-    }
-
-    async fn try_begin_wake_invocation(
-        &self,
-        owner: &Owner,
-        instance: PersonalityInstanceId,
-        wake_entry_id: uuid::Uuid,
-        change_event_seq: uuid::Uuid,
-    ) -> Result<bool, StorageError> {
-        verbs::consolidate::try_begin_wake_invocation(
-            &self.pool,
-            owner,
-            instance,
-            wake_entry_id,
-            change_event_seq,
-        )
-        .await
-    }
-
-    async fn start_wake_invocation(
-        &self,
-        start: &WakeInvocationStart,
-    ) -> Result<bool, StorageError> {
-        verbs::consolidate::start_wake_invocation(&self.pool, start).await
-    }
-
-    async fn finish_wake_invocation(
-        &self,
-        owner: &Owner,
-        instance: PersonalityInstanceId,
-        wake_entry_id: uuid::Uuid,
-        change_event_seq: uuid::Uuid,
-        status: WakeInvocationStatus,
-        turn_count: u16,
-        cost_usd: f64,
-    ) -> Result<(), StorageError> {
-        verbs::consolidate::finish_wake_invocation(
-            &self.pool,
-            owner,
-            instance,
-            wake_entry_id,
-            change_event_seq,
-            status,
-            turn_count,
-            cost_usd,
-        )
-        .await
-    }
-
-    async fn finalize_wake_invocation(
-        &self,
-        finalize: &WakeInvocationFinalize,
-    ) -> Result<(), StorageError> {
-        verbs::consolidate::finalize_wake_invocation(&self.pool, finalize).await
-    }
-
-    async fn append_wake_invocation_log(
-        &self,
-        log: &WakeInvocationLogDraft,
-    ) -> Result<(), StorageError> {
-        verbs::consolidate::append_wake_invocation_log(&self.pool, log).await
-    }
-
-    async fn list_wake_invocations(
-        &self,
-        req: &ListWakeInvocationsRequest,
-    ) -> Result<Vec<WakeInvocationRow>, StorageError> {
-        verbs::consolidate::list_wake_invocations(&self.pool, req).await
-    }
-
     async fn load_memory_batch_facts(
         &self,
         owner: &Owner,
@@ -665,30 +574,6 @@ impl Storage for PgStorage {
         .await
     }
 
-    async fn fetch_personality_runtime(
-        &self,
-        owner: &Owner,
-        instance_id: PersonalityInstanceId,
-    ) -> Result<Option<PersonalityRuntimeRow>, StorageError> {
-        verbs::wake_context::fetch_personality_runtime(&self.pool, owner, instance_id).await
-    }
-
-    async fn fetch_root_personality_perspective(
-        &self,
-        owner: &Owner,
-        memory_id: proxima_core::MemoryId,
-    ) -> Result<Option<RootPersonalityPerspectiveRow>, StorageError> {
-        verbs::wake_context::fetch_root_personality_perspective(&self.pool, owner, memory_id).await
-    }
-
-    async fn fetch_change_event_for_wake(
-        &self,
-        owner: &Owner,
-        seq: uuid::Uuid,
-    ) -> Result<Option<ChangeEventForWake>, StorageError> {
-        verbs::wake_context::fetch_change_event_for_wake(&self.pool, owner, seq).await
-    }
-
     async fn list_memory_dependencies(
         &self,
         owner: &Owner,
@@ -710,52 +595,6 @@ impl Storage for PgStorage {
         .await
     }
 
-    async fn upsert_blocked_wake_candidate(
-        &self,
-        candidate: &BlockedWakeCandidate,
-    ) -> Result<(), StorageError> {
-        verbs::consolidate::upsert_blocked_wake_candidate(&self.pool, candidate).await
-    }
-
-    async fn list_blocked_wake_candidates(
-        &self,
-        owner: &Owner,
-        personality_instance_id: PersonalityInstanceId,
-        limit: usize,
-    ) -> Result<Vec<BlockedWakeCandidate>, StorageError> {
-        verbs::consolidate::list_blocked_wake_candidates(
-            &self.pool,
-            owner,
-            personality_instance_id,
-            limit,
-        )
-        .await
-    }
-
-    async fn delete_blocked_wake_candidate(
-        &self,
-        owner: &Owner,
-        personality_instance_id: PersonalityInstanceId,
-        wake_entry_id: uuid::Uuid,
-        change_event_seq: uuid::Uuid,
-    ) -> Result<(), StorageError> {
-        verbs::consolidate::delete_blocked_wake_candidate(
-            &self.pool,
-            owner,
-            personality_instance_id,
-            wake_entry_id,
-            change_event_seq,
-        )
-        .await
-    }
-
-    async fn acquire_wake_lock(
-        &self,
-        owner: &Owner,
-        instance: &PersonalityRef,
-    ) -> Result<WakeLockGuard, StorageError> {
-        personality_locks::acquire_wake_lock(&self.pool, owner, instance).await
-    }
 }
 
 fn settings_error_to_storage(err: settings::SettingsError) -> StorageError {

@@ -4,11 +4,8 @@
 //! - `InstantiatePersonalityRequest/Response` - Create a new personality
 //! - `SetWakeEntriesRequest/Response` - Configure wake entries
 //! - `TombstonePersonalityRequest/Response` - Delete a personality
-//! - `ListWakeInvocationsRequest` - List wake invocations
 
-use uuid::Uuid;
-
-use crate::{MemoryId, OrgId, Owner, Principal};
+use crate::{OrgId, Owner, Principal};
 
 use super::drafts::WakeEntryDraft;
 use super::personality::PersonalityInstanceId;
@@ -185,37 +182,4 @@ impl TombstonePersonalityRequest {
 pub struct TombstonePersonalityResponse {
     pub status: String,
     pub idempotent_replay: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ListWakeInvocationsRequest {
-    pub principal: Principal,
-    pub org_id: Option<OrgId>,
-    pub personality_instance_id: PersonalityInstanceId,
-    pub wake_entry_id: Option<Uuid>,
-    pub triggering_memory_id: Option<MemoryId>,
-    pub change_event_seq: Option<Uuid>,
-    pub limit: u16,
-}
-
-impl ListWakeInvocationsRequest {
-    /// Reconstructs the storage `Owner` after verb-layer stamping.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `stamp_owner` has not populated `org_id` before storage or hash use.
-    #[must_use]
-    pub fn owner(&self) -> Owner {
-        Owner {
-            principal: self.principal.clone(),
-            org_id: self
-                .org_id
-                .expect("ListWakeInvocationsRequest org_id must be stamped before storage use"),
-        }
-    }
-
-    pub fn stamp_owner(&mut self, stamped: Owner) {
-        self.principal = stamped.principal;
-        self.org_id = Some(stamped.org_id);
-    }
 }

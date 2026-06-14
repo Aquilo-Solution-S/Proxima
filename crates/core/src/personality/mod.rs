@@ -8,7 +8,6 @@ pub mod authorization;
 pub mod context;
 pub mod drafts;
 pub mod emit_palette;
-pub mod invocation;
 pub mod produces;
 pub mod requests;
 pub mod rows;
@@ -29,7 +28,6 @@ pub use personality::{
 pub use types::{
     PersonalityMemoryKind, PersonalityStatus, WakeChainDepth, WakeEntryAuthoredBy,
     WakeEntryExecutionMode, WakeEntryGoalScope, WakeEntryTriggerKind, WakeExecutionMode,
-    WakeInvocationLogStatus, WakeInvocationStatus, WakeTraceOutcomeKind,
 };
 
 // Re-export from drafts submodule
@@ -40,25 +38,17 @@ pub use drafts::{
 
 // Re-export from rows submodule
 pub use rows::{
-    ChangeEventForWake, PersonalityInstanceRow, PersonalityRuntimeRow,
-    RootPersonalityPerspectiveRow, WakeDispatchEntryRow, WakeEntryRow,
+    ChangeEventForWake, PersonalityInstanceRow, WakeDispatchEntryRow, WakeEntryRow,
 };
 
 // Re-export from context submodule
 pub use context::PersonalityToolContext;
 
-// Re-export from invocation submodule
-pub use invocation::{
-    WakeInvocationContinuation, WakeInvocationFinalize, WakeInvocationLogDraft,
-    WakeInvocationLogRow, WakeInvocationRow, WakeInvocationStart,
-};
-
 // Re-export from requests submodule
 pub use requests::{
     InstantiatePersonalityRequest, InstantiatePersonalityResponse, ListReadScopeRequest,
-    ListReadScopeResponse, ListWakeInvocationsRequest, SetReadScopeRequest, SetReadScopeResponse,
-    SetWakeEntriesRequest, SetWakeEntriesResponse, TombstonePersonalityRequest,
-    TombstonePersonalityResponse,
+    ListReadScopeResponse, SetReadScopeRequest, SetReadScopeResponse, SetWakeEntriesRequest,
+    SetWakeEntriesResponse, TombstonePersonalityRequest, TombstonePersonalityResponse,
 };
 
 // Re-export from tool submodule

@@ -9,7 +9,7 @@ use crate::GoalId;
 use crate::SourceBatchId;
 use crate::approval::ApprovalStore;
 use crate::chat::ChatStore;
-use crate::dependency::{BlockedWakeCandidate, MemoryDependency};
+use crate::dependency::MemoryDependency;
 use crate::embedding_settings::{EmbeddingModelConfig, EmbeddingModelRef};
 use crate::inference::{
     BindInferenceTierRequest, BindInferenceTierResponse, InferenceTargetRow,
@@ -24,19 +24,16 @@ use crate::personality::WakeEntryDraft;
 use crate::personality::{
     AbstractionRow, ActiveGoalSummary, ChangeEventForWake, InstantiatePersonalityRequest,
     InstantiatePersonalityResponse, ListReadScopeRequest, ListReadScopeResponse,
-    ListWakeInvocationsRequest, MemorySnapshot, PersonalityInstanceId, PersonalityInstanceRow,
-    PersonalityRef, PersonalityRuntimeRow, PersonalityWriteOutcome, PersonalityWriteRequest,
-    RootPersonalityPerspectiveRow, SetReadScopeRequest, SetReadScopeResponse,
+    MemorySnapshot, PersonalityInstanceId, PersonalityInstanceRow, PersonalityRef,
+    PersonalityWriteOutcome, PersonalityWriteRequest, SetReadScopeRequest, SetReadScopeResponse,
     SetWakeEntriesRequest, SetWakeEntriesResponse, SidecarSpec, TombstonePersonalityRequest,
-    TombstonePersonalityResponse, WakeDispatchEntryRow, WakeInvocationFinalize,
-    WakeInvocationLogDraft, WakeInvocationRow, WakeInvocationStart, WakeInvocationStatus,
+    TombstonePersonalityResponse, WakeDispatchEntryRow,
 };
 use crate::verbs::close_batch::CloseBatchOutcome;
 use crate::verbs::event_history::{EventHistoryRequest, EventHistoryResponse};
 use crate::verbs::event_ingest::{EventDraft, EventIngestOutcome};
 use crate::verbs::goal_write::{GoalDraft, GoalWriteOutcome};
 use crate::verbs::persist_mcp_call::{McpCallLogInput, McpCallLogOutcome};
-use crate::verbs::persist_wake_trace::{WakeTracePersistInput, WakeTracePersistOutcome};
 use crate::verbs::schema::FlavorRegistryFrozen;
 use crate::verbs::subscribe::ChangeEventStream;
 use crate::{Owner, Principal};
@@ -85,17 +82,6 @@ pub trait Storage: ApprovalStore + InterventionStore + ChatStore + Send + Sync {
         &self,
         draft: &EventDraft,
     ) -> Result<EventIngestOutcome, StorageError>;
-
-    /// Atomic wake-trace materialization. One transaction writes the
-    /// wake-trace Fact, JSONL `CitedObject`, `CitationMapping`, all three
-    /// sidecars, the entity change event, and authorship/provenance
-    /// edges. Whole-verb replay returns the original ids with
-    /// `idempotent_replay = true`.
-    async fn persist_wake_trace_atomic(
-        &self,
-        registry: &FlavorRegistryFrozen,
-        input: &WakeTracePersistInput,
-    ) -> Result<WakeTracePersistOutcome, StorageError>;
 
     /// Atomic MCP-call activity materialization. One transaction writes
     /// the call Fact, inline I/O `CitedObject`, `CitationMapping`, typed
@@ -414,57 +400,6 @@ pub trait Storage: ApprovalStore + InterventionStore + ChatStore + Send + Sync {
             .collect())
     }
 
-    async fn advance_wake_cursor(
-        &self,
-        owner: &Owner,
-        instance: PersonalityInstanceId,
-        last_considered_seq: uuid::Uuid,
-    ) -> Result<(), StorageError>;
-
-    async fn try_begin_wake_invocation(
-        &self,
-        owner: &Owner,
-        instance: PersonalityInstanceId,
-        wake_entry_id: uuid::Uuid,
-        change_event_seq: uuid::Uuid,
-    ) -> Result<bool, StorageError>;
-
-    async fn start_wake_invocation(
-        &self,
-        start: &WakeInvocationStart,
-    ) -> Result<bool, StorageError>;
-
-    #[allow(clippy::too_many_arguments)]
-    async fn finish_wake_invocation(
-        &self,
-        owner: &Owner,
-        instance: PersonalityInstanceId,
-        wake_entry_id: uuid::Uuid,
-        change_event_seq: uuid::Uuid,
-        status: WakeInvocationStatus,
-        turn_count: u16,
-        cost_usd: f64,
-    ) -> Result<(), StorageError>;
-
-    async fn finalize_wake_invocation(
-        &self,
-        finalize: &WakeInvocationFinalize,
-    ) -> Result<(), StorageError>;
-
-    async fn append_wake_invocation_log(
-        &self,
-        _log: &WakeInvocationLogDraft,
-    ) -> Result<(), StorageError> {
-        Ok(())
-    }
-
-    async fn list_wake_invocations(
-        &self,
-        _req: &ListWakeInvocationsRequest,
-    ) -> Result<Vec<WakeInvocationRow>, StorageError> {
-        Ok(Vec::new())
-    }
-
     async fn load_memory_batch_facts(
         &self,
         owner: &Owner,
@@ -512,34 +447,6 @@ pub trait Storage: ApprovalStore + InterventionStore + ChatStore + Send + Sync {
         sidecars: &[SidecarSpec],
     ) -> Result<Option<MemorySnapshot>, StorageError>;
 
-    /// Owner-scoped fetch of one personality runtime row by instance id.
-    /// Returns the personality row plus its current root-perspective memory
-    /// id and display name. Used by the wake-context assembler so the
-    /// engine reads the freshest root perspective per wake.
-    async fn fetch_personality_runtime(
-        &self,
-        owner: &Owner,
-        instance_id: PersonalityInstanceId,
-    ) -> Result<Option<PersonalityRuntimeRow>, StorageError>;
-
-    /// Owner-scoped fetch of the root-perspective sidecar (`display_name`,
-    /// purpose) for a given `memory_id`. Used to populate the
-    /// `root_perspective` field on the assembled `WakeContext`.
-    async fn fetch_root_personality_perspective(
-        &self,
-        owner: &Owner,
-        memory_id: crate::MemoryId,
-    ) -> Result<Option<RootPersonalityPerspectiveRow>, StorageError>;
-
-    /// Owner-scoped fetch of one change event by `seq` plus the personality
-    /// authorship and wake-chain depth columns the wake-context assembler
-    /// needs. Returns `None` when no row matches.
-    async fn fetch_change_event_for_wake(
-        &self,
-        owner: &Owner,
-        seq: uuid::Uuid,
-    ) -> Result<Option<ChangeEventForWake>, StorageError>;
-
     async fn list_memory_dependencies(
         &self,
         _owner: &Owner,
@@ -556,69 +463,6 @@ pub trait Storage: ApprovalStore + InterventionStore + ChatStore + Send + Sync {
         Ok(false)
     }
 
-    async fn upsert_blocked_wake_candidate(
-        &self,
-        _candidate: &BlockedWakeCandidate,
-    ) -> Result<(), StorageError> {
-        Ok(())
-    }
-
-    async fn list_blocked_wake_candidates(
-        &self,
-        _owner: &Owner,
-        _personality_instance_id: PersonalityInstanceId,
-        _limit: usize,
-    ) -> Result<Vec<BlockedWakeCandidate>, StorageError> {
-        Ok(Vec::new())
-    }
-
-    async fn delete_blocked_wake_candidate(
-        &self,
-        _owner: &Owner,
-        _personality_instance_id: PersonalityInstanceId,
-        _wake_entry_id: uuid::Uuid,
-        _change_event_seq: uuid::Uuid,
-    ) -> Result<(), StorageError> {
-        Ok(())
-    }
-
-    /// Per-(owner, `type_id`, `instance_id`) advisory lock spanning a wake
-    /// run. Acquires `pg_advisory_xact_lock` on a stable bigint hash;
-    /// the returned guard releases the lock when dropped.
-    async fn acquire_wake_lock(
-        &self,
-        owner: &Owner,
-        instance: &PersonalityRef,
-    ) -> Result<WakeLockGuard, StorageError>;
-}
-
-/// RAII guard for the advisory lock held during a wake run. Storage
-/// backends that don't model real locking return a no-op guard.
-pub struct WakeLockGuard {
-    pub release: Option<Box<dyn FnOnce() + Send + Sync>>,
-}
-
-impl std::fmt::Debug for WakeLockGuard {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("WakeLockGuard")
-            .field("released", &self.release.is_none())
-            .finish()
-    }
-}
-
-impl WakeLockGuard {
-    #[must_use]
-    pub fn noop() -> Self {
-        Self { release: None }
-    }
-}
-
-impl Drop for WakeLockGuard {
-    fn drop(&mut self) {
-        if let Some(release) = self.release.take() {
-            release();
-        }
-    }
 }
 
 pub type StorageHandle = Arc<dyn Storage>;
@@ -641,14 +485,6 @@ impl Storage for NoopStorage {
         &self,
         _draft: &EventDraft,
     ) -> Result<EventIngestOutcome, StorageError> {
-        Err(StorageError::Internal("NoopStorage rejects writes".into()))
-    }
-
-    async fn persist_wake_trace_atomic(
-        &self,
-        _registry: &FlavorRegistryFrozen,
-        _input: &WakeTracePersistInput,
-    ) -> Result<WakeTracePersistOutcome, StorageError> {
         Err(StorageError::Internal("NoopStorage rejects writes".into()))
     }
 
@@ -869,52 +705,6 @@ impl Storage for NoopStorage {
         Ok(Vec::new())
     }
 
-    async fn advance_wake_cursor(
-        &self,
-        _owner: &Owner,
-        _instance: PersonalityInstanceId,
-        _last_considered_seq: uuid::Uuid,
-    ) -> Result<(), StorageError> {
-        Ok(())
-    }
-
-    async fn try_begin_wake_invocation(
-        &self,
-        _owner: &Owner,
-        _instance: PersonalityInstanceId,
-        _wake_entry_id: uuid::Uuid,
-        _change_event_seq: uuid::Uuid,
-    ) -> Result<bool, StorageError> {
-        Ok(false)
-    }
-
-    async fn start_wake_invocation(
-        &self,
-        _start: &WakeInvocationStart,
-    ) -> Result<bool, StorageError> {
-        Ok(false)
-    }
-
-    async fn finish_wake_invocation(
-        &self,
-        _owner: &Owner,
-        _instance: PersonalityInstanceId,
-        _wake_entry_id: uuid::Uuid,
-        _change_event_seq: uuid::Uuid,
-        _status: WakeInvocationStatus,
-        _turn_count: u16,
-        _cost_usd: f64,
-    ) -> Result<(), StorageError> {
-        Ok(())
-    }
-
-    async fn finalize_wake_invocation(
-        &self,
-        _finalize: &WakeInvocationFinalize,
-    ) -> Result<(), StorageError> {
-        Ok(())
-    }
-
     async fn load_memory_batch_facts(
         &self,
         _owner: &Owner,
@@ -970,35 +760,4 @@ impl Storage for NoopStorage {
         Ok(None)
     }
 
-    async fn fetch_personality_runtime(
-        &self,
-        _owner: &Owner,
-        _instance_id: PersonalityInstanceId,
-    ) -> Result<Option<PersonalityRuntimeRow>, StorageError> {
-        Ok(None)
-    }
-
-    async fn fetch_root_personality_perspective(
-        &self,
-        _owner: &Owner,
-        _memory_id: crate::MemoryId,
-    ) -> Result<Option<RootPersonalityPerspectiveRow>, StorageError> {
-        Ok(None)
-    }
-
-    async fn fetch_change_event_for_wake(
-        &self,
-        _owner: &Owner,
-        _seq: uuid::Uuid,
-    ) -> Result<Option<ChangeEventForWake>, StorageError> {
-        Ok(None)
-    }
-
-    async fn acquire_wake_lock(
-        &self,
-        _owner: &Owner,
-        _instance: &PersonalityRef,
-    ) -> Result<WakeLockGuard, StorageError> {
-        Ok(WakeLockGuard::noop())
-    }
 }

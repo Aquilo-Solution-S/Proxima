@@ -80,6 +80,21 @@ fn sample_entry(instance: PersonalityInstanceId, trigger_id: &str) -> WakeEntryD
     draft
 }
 
+async fn current_root_perspective_memory_id(
+    pg: &proxima_storage_pg::PgStorage,
+    instance: PersonalityInstanceId,
+) -> Result<MemoryId, Box<dyn std::error::Error>> {
+    let memory_id: Uuid = sqlx::query_scalar(
+        "SELECT current_root_perspective_memory_id
+         FROM proxima_core.personality
+         WHERE personality_instance_id = $1",
+    )
+    .bind(instance.into_inner())
+    .fetch_one(pg.pool())
+    .await?;
+    Ok(MemoryId::new(memory_id))
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn personality_wake_schema_replaces_legacy_tables() {
     let Some((pg, db)) = fresh_pg().await else {
@@ -102,7 +117,6 @@ async fn personality_wake_schema_replaces_legacy_tables() {
             "root_personality_perspective_v1",
             "personality_wake_entries",
             "personality_wake_cursor",
-            "personality_wake_invocations",
         ];
         for table in expected {
             let count: i64 = sqlx::query_scalar(
@@ -128,8 +142,7 @@ async fn personality_wake_schema_replaces_legacy_tables() {
                    'a2p_invocations',
                    'personality',
                    'personality_wake_entries',
-                   'personality_wake_cursor',
-                   'personality_wake_invocations'
+                   'personality_wake_cursor'
                )
                AND column_name = $1",
         )
@@ -267,36 +280,6 @@ async fn personality_wake_storage_round_trip() {
         .await?;
         assert_eq!(goal_scope, WakeEntryGoalScope::TriggerGoalAssigned);
 
-        let seq = Uuid::now_v7();
-        pg.advance_wake_cursor(&owner, instance, seq).await?;
-        let stored: Uuid = sqlx::query_scalar(
-            "SELECT last_considered_seq FROM proxima_core.personality_wake_cursor
-             WHERE personality_instance_id = $1",
-        )
-        .bind(instance.into_inner())
-        .fetch_one(pg.pool())
-        .await?;
-        assert_eq!(stored, seq);
-
-        assert!(
-            pg.try_begin_wake_invocation(&owner, instance, replacement.wake_entry_id, seq)
-                .await?
-        );
-        assert!(
-            !pg.try_begin_wake_invocation(&owner, instance, replacement.wake_entry_id, seq)
-                .await?
-        );
-        pg.finish_wake_invocation(
-            &owner,
-            instance,
-            replacement.wake_entry_id,
-            seq,
-            proxima_core::WakeInvocationStatus::Truncated,
-            4,
-            0.125,
-        )
-        .await?;
-
         let res = pg
             .tombstone_personality(&TombstonePersonalityRequest {
                 principal: owner.principal,
@@ -422,11 +405,7 @@ async fn load_perspective_heads_returns_current_same_personality_learned_heads()
         let owner = owner_fixture();
         let seed = seed_test_personality(&pg, &owner).await?;
         let sibling = seed_test_personality(&pg, &owner).await?;
-        let runtime = pg
-            .fetch_personality_runtime(&owner, seed.instance_id)
-            .await?
-            .expect("personality runtime row");
-        let root_id = runtime.current_root_perspective_memory_id;
+        let root_id = current_root_perspective_memory_id(&pg, seed.instance_id).await?;
         let descriptors = core_relation_descriptors();
         let resolve = |id: &str| {
             let descriptor = descriptors
@@ -501,10 +480,7 @@ async fn load_perspective_heads_returns_current_same_personality_learned_heads()
         })
         .await?;
 
-        let sibling_runtime = pg
-            .fetch_personality_runtime(&owner, sibling.instance_id)
-            .await?
-            .expect("sibling runtime row");
+        let sibling_root_id = current_root_perspective_memory_id(&pg, sibling.instance_id).await?;
         pg.append_personality_memories(&PersonalityWriteRequest {
             owner: owner.clone(),
             instance: PersonalityRef::new(sibling.instance_id),
@@ -513,7 +489,7 @@ async fn load_perspective_heads_returns_current_same_personality_learned_heads()
             provenance_relation,
             supersedes_relation,
             authored_relation,
-            current_root_perspective_memory_id: sibling_runtime.current_root_perspective_memory_id,
+            current_root_perspective_memory_id: sibling_root_id,
             wake_chain_depth: WakeChainDepth::new(1),
             memories: &[memory_draft(
                 PersonalityMemoryKind::Perspective,
@@ -569,11 +545,7 @@ async fn personality_provenance_edges_use_operator_authorship() {
 
         let owner = owner_fixture();
         let seed = seed_test_personality(&pg, &owner).await?;
-        let runtime = pg
-            .fetch_personality_runtime(&owner, seed.instance_id)
-            .await?
-            .expect("personality runtime row");
-        let root_id = runtime.current_root_perspective_memory_id;
+        let root_id = current_root_perspective_memory_id(&pg, seed.instance_id).await?;
         let fact = pg.ingest_event_atomic(&fact_draft(owner.clone())).await?;
         let descriptors = core_relation_descriptors();
         let resolve = |id: &str| {
@@ -678,11 +650,7 @@ async fn personality_provenance_skips_perspective_context_targets() {
 
         let owner = owner_fixture();
         let seed = seed_test_personality(&pg, &owner).await?;
-        let runtime = pg
-            .fetch_personality_runtime(&owner, seed.instance_id)
-            .await?
-            .expect("personality runtime row");
-        let root_id = runtime.current_root_perspective_memory_id;
+        let root_id = current_root_perspective_memory_id(&pg, seed.instance_id).await?;
         let fact = pg.ingest_event_atomic(&fact_draft(owner.clone())).await?;
         let descriptors = core_relation_descriptors();
         let resolve = |id: &str| {
@@ -757,11 +725,7 @@ async fn personality_authored_edge_links_root_to_emitted_memory() {
 
         let owner = owner_fixture();
         let seed = seed_test_personality(&pg, &owner).await?;
-        let runtime = pg
-            .fetch_personality_runtime(&owner, seed.instance_id)
-            .await?
-            .expect("personality runtime row");
-        let root_id = runtime.current_root_perspective_memory_id;
+        let root_id = current_root_perspective_memory_id(&pg, seed.instance_id).await?;
         let fact = pg.ingest_event_atomic(&fact_draft(owner.clone())).await?;
         let descriptors = core_relation_descriptors();
         let resolve = |id: &str| {
