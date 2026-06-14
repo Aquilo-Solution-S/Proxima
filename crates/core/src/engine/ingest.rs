@@ -11,7 +11,7 @@ use crate::verbs::event_ingest::{
 };
 use crate::verbs::persist_mcp_call::{McpCallLogInput, McpCallLogOutcome};
 use crate::verbs::schema::{PayloadKind, SchemaInfo};
-use crate::{Principal, SourceBatchId};
+use crate::{MemoryId, Owner, Principal, SourceBatchId};
 
 impl Engine {
     /// docs/14 §"`EventIngest`" — Owner-scoped write. Validates
@@ -29,10 +29,20 @@ impl Engine {
         draft: EventDraft,
     ) -> Result<EventIngestOutcome, ProtocolError> {
         let authorized = self.authorize_event_ingest(authz, Role::SourceIngest, draft)?;
-        self.storage
+        let owner = authorized.draft().owner();
+        let outcome = self
+            .storage
             .ingest_event_atomic(authorized.draft())
             .await
-            .map_err(|e| ProtocolError::internal(e.to_string()))
+            .map_err(|e| ProtocolError::internal(e.to_string()))?;
+        if let Err(err) = self.ensure_fact_embedding(&owner, outcome.memory_id).await {
+            tracing::warn!(
+                memory_id = %outcome.memory_id.into_inner(),
+                error = %err,
+                "best-effort Fact embedding failed after event ingest",
+            );
+        }
+        Ok(outcome)
     }
 
     /// Authorize + schema-validate + owner-stamp an event ingest,
@@ -54,7 +64,8 @@ impl Engine {
         super::authorize(authz, &draft.principal, role)?;
         let owner = authz.scoped_owner(draft.principal.clone());
         draft.stamp_owner(owner);
-        self.ensure_event_ingest_schema(&draft.schema_id, draft.schema_version)?;
+        self.ensure_fact_schema(&draft.schema_id, draft.schema_version)?;
+        draft.rendered_text = Some(self.render_fact_text(&draft)?);
         if let Some(citation) = &draft.citation {
             self.ensure_event_ingest_schema(
                 &citation.object.schema_id,
@@ -94,7 +105,8 @@ impl Engine {
         // `authorize_event_ingest`. The Fact payload is built from a
         // trusted typed struct. The untrusted citation payloads are
         // agent-supplied JSON, so they stay fully validated below.
-        self.ensure_event_ingest_schema(&draft.schema_id, draft.schema_version)?;
+        self.ensure_fact_schema(&draft.schema_id, draft.schema_version)?;
+        draft.rendered_text = Some(self.render_fact_text(&draft)?);
         let cited_object_info = self.validate_json_payload(
             &cited_object.schema_id,
             cited_object.schema_version,
@@ -177,6 +189,99 @@ impl Engine {
             ));
         }
         Ok(())
+    }
+
+    fn ensure_fact_schema(
+        &self,
+        schema_id: &crate::SchemaId,
+        schema_version: SchemaVersion,
+    ) -> Result<(), ProtocolError> {
+        if self
+            .registry
+            .lookup_payload(schema_id, schema_version, PayloadKind::Fact)
+            .is_none()
+        {
+            return Err(ProtocolError::unknown_schema(
+                schema_id.as_str(),
+                schema_version.into_inner(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn render_fact_text(&self, draft: &EventDraft) -> Result<String, ProtocolError> {
+        self.registry
+            .render_fact_payload(&draft.schema_id, draft.schema_version, &draft.payload)
+            .map_err(|e| ProtocolError::internal(e.to_string()))
+    }
+
+    /// Best-effort Fact embedding. Missing text or missing embedding
+    /// client is a no-op; storage/LLM failures are returned to callers
+    /// that explicitly requested embedding/backfill.
+    ///
+    /// # Errors
+    ///
+    /// Returns storage errors from text load/upsert, `Internal` for
+    /// embedding client failures, and `ConstraintViolation` when the
+    /// client returns a vector whose length differs from `dim()`.
+    pub async fn ensure_fact_embedding(
+        &self,
+        owner: &Owner,
+        memory_id: MemoryId,
+    ) -> Result<(), StorageError> {
+        let Some(text) = self.storage.load_fact_text(owner, memory_id).await? else {
+            return Ok(());
+        };
+        let Some(client) = self.embed_client() else {
+            return Ok(());
+        };
+        let embedding = client
+            .embed(&text)
+            .await
+            .map_err(|e| StorageError::Internal(format!("embed Fact text: {e}")))?;
+        if embedding.len() != client.dim() {
+            return Err(StorageError::ConstraintViolation(format!(
+                "embedding dim mismatch: client dim {} but vector len {}",
+                client.dim(),
+                embedding.len(),
+            )));
+        }
+        self.storage
+            .upsert_fact_embedding(
+                owner,
+                memory_id,
+                client.model_id(),
+                client.dim(),
+                &embedding,
+            )
+            .await
+    }
+
+    /// Owner-scoped, idempotent backfill of missing Fact embeddings for
+    /// the current embedding client's model id.
+    ///
+    /// # Errors
+    ///
+    /// Returns storage errors from listing/upserting or `Internal` for
+    /// embedding client failures.
+    pub async fn backfill_fact_embeddings(
+        &self,
+        owner: &Owner,
+        limit: usize,
+    ) -> Result<usize, StorageError> {
+        let Some(client) = self.embed_client() else {
+            return Ok(0);
+        };
+        let missing = self
+            .storage
+            .list_facts_missing_embedding(owner, client.model_id(), limit)
+            .await?;
+        let mut count = 0;
+        for memory_id in missing {
+            self.ensure_fact_embedding(owner, memory_id).await?;
+            count += 1;
+        }
+        Ok(count)
     }
 
     fn validate_json_payload<'a>(

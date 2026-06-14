@@ -374,6 +374,7 @@ fn fact_draft(owner: Owner) -> EventDraft {
         schema_id: SchemaId::new("proxima-test/fact-v1".into()),
         schema_version: SchemaVersion::new(1),
         payload: b"fact".to_vec(),
+        rendered_text: None,
         observed_at: now,
         occurred_at: now,
         citation: Some(Citation {

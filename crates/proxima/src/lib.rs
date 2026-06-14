@@ -37,6 +37,9 @@ pub use proxima_storage_pg::verbs::event_ingest::{
     ingest_fact, ingest_fact_in_tx, ingest_fact_with_citation_atomic,
     ingest_fact_with_citation_in_tx,
 };
+pub use proxima_storage_pg::verbs::fact_embeddings::{
+    list_facts_missing_embedding, load_fact_text, load_fact_text_in_tx, upsert_fact_embedding,
+};
 pub use runtime::{
     BuiltProxima, Proxima, RunningProxima, layered_router, layered_router_with_revalidation, run,
 };

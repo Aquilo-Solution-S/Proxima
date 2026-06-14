@@ -69,6 +69,7 @@ fn fresh_event_draft(owner: Owner, payload: Vec<u8>) -> EventDraft {
         schema_id: SchemaId::new("test/fact_blob".into()),
         schema_version: SchemaVersion::new(1),
         payload,
+        rendered_text: None,
         observed_at: now,
         occurred_at: now,
         citation: Some(Citation {

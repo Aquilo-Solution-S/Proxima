@@ -316,6 +316,7 @@ async fn ingest_fact_memory(
             schema_id: SchemaId::new(schema_id.to_string()),
             schema_version: SchemaVersion::new(1),
             payload: payload.to_vec(),
+            rendered_text: None,
             observed_at: now,
             occurred_at: now,
             citation: Some(Citation {

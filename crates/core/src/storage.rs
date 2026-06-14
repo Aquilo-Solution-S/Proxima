@@ -71,6 +71,35 @@ pub trait Storage: Send + Sync {
         draft: &EventDraft,
     ) -> Result<EventIngestOutcome, StorageError>;
 
+    /// Owner-scoped read of stored Fact render text. Returns `None` when
+    /// the row is absent, non-Fact, belongs to another owner, or has no
+    /// rendered text yet.
+    async fn load_fact_text(
+        &self,
+        owner: &Owner,
+        memory_id: crate::MemoryId,
+    ) -> Result<Option<String>, StorageError>;
+
+    /// Owner-scoped idempotent upsert of one Fact embedding row for the
+    /// `(Fact, memory_id, 1, model_id)` natural key.
+    async fn upsert_fact_embedding(
+        &self,
+        owner: &Owner,
+        memory_id: crate::MemoryId,
+        model_id: &str,
+        dim: usize,
+        vec: &[f32],
+    ) -> Result<(), StorageError>;
+
+    /// Owner-scoped list of Facts with stored text and no embedding row
+    /// for `model_id`.
+    async fn list_facts_missing_embedding(
+        &self,
+        owner: &Owner,
+        model_id: &str,
+        limit: usize,
+    ) -> Result<Vec<crate::MemoryId>, StorageError>;
+
     /// Atomic MCP-call activity materialization. One transaction writes
     /// the call Fact, inline I/O `CitedObject`, `CitationMapping`, typed
     /// sidecars, and entity change event. Whole-verb replay returns the
@@ -395,6 +424,34 @@ impl Storage for NoopStorage {
         _input: &McpCallLogInput,
     ) -> Result<McpCallLogOutcome, StorageError> {
         Err(StorageError::Internal("NoopStorage rejects writes".into()))
+    }
+
+    async fn load_fact_text(
+        &self,
+        _owner: &Owner,
+        _memory_id: crate::MemoryId,
+    ) -> Result<Option<String>, StorageError> {
+        Ok(None)
+    }
+
+    async fn upsert_fact_embedding(
+        &self,
+        _owner: &Owner,
+        _memory_id: crate::MemoryId,
+        _model_id: &str,
+        _dim: usize,
+        _vec: &[f32],
+    ) -> Result<(), StorageError> {
+        Ok(())
+    }
+
+    async fn list_facts_missing_embedding(
+        &self,
+        _owner: &Owner,
+        _model_id: &str,
+        _limit: usize,
+    ) -> Result<Vec<crate::MemoryId>, StorageError> {
+        Ok(Vec::new())
     }
 
     async fn write_goal_atomic(
