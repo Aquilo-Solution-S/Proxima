@@ -29,8 +29,7 @@ pub struct ListSubstrateToolsOutput {
 
 impl McpTool for ListSubstrateToolsTool {
     const NAME: &'static str = "core/list_substrate_tools";
-    const DESCRIPTION: &'static str =
-        "List tool ids accepted in WakeEntryDraftInput.substrate_tool_palette.";
+    const DESCRIPTION: &'static str = "List substrate and flavor-registered tool ids.";
     type Args = ListSubstrateToolsArgs;
     type Output = ListSubstrateToolsOutput;
 

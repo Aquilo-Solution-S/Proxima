@@ -3,8 +3,8 @@
 use crate::common::{drop_db, fresh_pg};
 use proxima_core::storage::Storage;
 use proxima_core::{
-    InstantiatePersonalityRequest, ModelTier, OrgId, Owner, Principal, UserId, WakeEntryAuthoredBy,
-    WakeEntryDraft, WakeEntryTriggerKind, WakeExecutionMode,
+    InstantiatePersonalityRequest, OrgId, Owner, Principal, UserId, WakeEntryAuthoredBy,
+    WakeEntryDraft, WakeEntryTriggerKind,
 };
 use uuid::Uuid;
 
@@ -20,17 +20,10 @@ fn wake_entry(
         trigger_id: trigger_id.to_string(),
         label: label.to_string(),
         enabled: true,
-        execution_mode: WakeExecutionMode::SubstrateOnly,
         authored_by: WakeEntryAuthoredBy::Any,
         probability_promille: 1000,
         goal_scope: proxima_core::WakeEntryGoalScope::None,
         instructions: String::new(),
-        model_tier: ModelTier::Standard,
-        inference_target_ref: None,
-        substrate_tool_palette: vec![],
-        required_produced_schema_ids: Vec::new(),
-        max_rounds: 3,
-        intervention_policy: None,
     }
 }
 

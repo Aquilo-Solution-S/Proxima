@@ -154,31 +154,6 @@ pub async fn remove_inference_target(
         )));
     }
 
-    let wake_entries = sqlx::query_scalar!(
-        r#"SELECT wake_entry_id::text AS "wake_entry_id!"
-             FROM proxima_core.personality_wake_entries
-             WHERE owner_principal_kind = $1
-               AND owner_principal_id = $2
-               AND owner_org_id = $3
-               AND inference_target_ref = $4
-               AND tombstoned_at IS NULL"#,
-        owner_kind as OwnerPrincipalKind,
-        owner_principal_id,
-        owner_org_id,
-        &req.target_ref,
-    )
-    .fetch_all(pool)
-    .await
-    .map_err(SettingsError::Database)?;
-
-    if !wake_entries.is_empty() {
-        return Err(SettingsError::InUse(format!(
-            "target `{}` still pinned by wake entries: {}",
-            req.target_ref,
-            wake_entries.join(", ")
-        )));
-    }
-
     let result = sqlx::query!(
         r#"DELETE FROM proxima_core.inference_targets
              WHERE owner_principal_kind = $1

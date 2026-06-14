@@ -1,10 +1,9 @@
-use proxima_core::intervention::InterventionPolicy;
 use proxima_core::personality::{
     PersonalityInstanceId, PersonalityStatus, SetWakeEntriesRequest, SetWakeEntriesResponse,
     WakeDispatchEntryRow, WakeEntryAuthoredBy, WakeEntryDraft, WakeEntryGoalScope,
-    WakeEntryTriggerKind, WakeExecutionMode,
+    WakeEntryTriggerKind,
 };
-use proxima_core::{MemoryId, ModelTier, Owner, OwnerPrincipalKind, StorageError};
+use proxima_core::{MemoryId, Owner, OwnerPrincipalKind, StorageError};
 use sqlx::{PgPool, Row};
 
 use super::parse::owner_from_parts;
@@ -25,20 +24,10 @@ struct WakeEntryJoinRow {
     trigger_id: String,
     label: String,
     enabled: bool,
-    execution_mode: WakeExecutionMode,
     authored_by: WakeEntryAuthoredBy,
     probability_promille: i32,
     goal_scope: WakeEntryGoalScope,
     instructions: String,
-    model_tier: ModelTier,
-    inference_target_ref: Option<String>,
-    substrate_tool_palette: Vec<String>,
-    required_produced_schema_ids: Vec<String>,
-    max_rounds: i32,
-    intervention_personality_instance_id: Option<uuid::Uuid>,
-    intervention_extension_rounds: i32,
-    intervention_hard_cap_rounds: i32,
-    intervention_progress_contract: String,
 }
 
 async fn replace_wake_entries_in_tx(
@@ -111,11 +100,7 @@ async fn read_wake_entries_in_tx(
     let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(owner);
     let rows = sqlx::query(
         "SELECT wake_entry_id, trigger_kind, trigger_id, label, enabled,
-                execution_mode, authored_by, probability_promille, goal_scope,
-                instructions, model_tier, inference_target_ref, substrate_tool_palette,
-                required_produced_schema_ids,
-                max_rounds, intervention_personality_instance_id,
-                intervention_extension_rounds, intervention_hard_cap_rounds, intervention_progress_contract
+                authored_by, probability_promille, goal_scope, instructions
          FROM proxima_core.personality_wake_entries
          WHERE owner_principal_kind = $1
            AND owner_principal_id = $2
@@ -141,23 +126,11 @@ async fn read_wake_entries_in_tx(
             trigger_id: row.get("trigger_id"),
             label: row.get("label"),
             enabled: row.get("enabled"),
-            execution_mode: row.get("execution_mode"),
             authored_by: row.get("authored_by"),
             probability_promille: u16::try_from(row.get::<i32, _>("probability_promille"))
                 .unwrap_or(0),
             goal_scope: row.get("goal_scope"),
             instructions: row.get("instructions"),
-            model_tier: row.get("model_tier"),
-            inference_target_ref: row.get("inference_target_ref"),
-            substrate_tool_palette: row.get("substrate_tool_palette"),
-            required_produced_schema_ids: row.get("required_produced_schema_ids"),
-            max_rounds: u16::try_from(row.get::<i32, _>("max_rounds")).unwrap_or(1),
-            intervention_policy: intervention_policy_from_parts(
-                row.get("intervention_personality_instance_id"),
-                row.get::<i32, _>("intervention_extension_rounds"),
-                row.get::<i32, _>("intervention_hard_cap_rounds"),
-                row.get("intervention_progress_contract"),
-            ),
         });
     }
     Ok(out)
@@ -290,20 +263,10 @@ pub async fn list_active_wake_entries(
                 e.trigger_id,
                 e.label,
                 e.enabled,
-                e.execution_mode,
                 e.authored_by,
                 e.probability_promille,
                 e.goal_scope,
-                e.instructions,
-                e.model_tier,
-                e.inference_target_ref,
-                e.substrate_tool_palette,
-                e.required_produced_schema_ids,
-                e.max_rounds,
-                e.intervention_personality_instance_id,
-                e.intervention_extension_rounds,
-                e.intervention_hard_cap_rounds,
-                e.intervention_progress_contract
+                e.instructions
          FROM proxima_core.personality p
          JOIN proxima_core.personality_wake_cursor cur
            ON cur.owner_principal_kind = p.owner_principal_kind
@@ -347,22 +310,10 @@ pub async fn list_active_wake_entries(
                     trigger_id: row.trigger_id,
                     label: row.label,
                     enabled: row.enabled,
-                    execution_mode: row.execution_mode,
                     authored_by: row.authored_by,
                     probability_promille: u16::try_from(row.probability_promille).unwrap_or(0),
                     goal_scope: row.goal_scope,
                     instructions: row.instructions,
-                    model_tier: row.model_tier,
-                    inference_target_ref: row.inference_target_ref,
-                    substrate_tool_palette: row.substrate_tool_palette,
-                    required_produced_schema_ids: row.required_produced_schema_ids,
-                    max_rounds: u16::try_from(row.max_rounds).unwrap_or(1),
-                    intervention_policy: intervention_policy_from_parts(
-                        row.intervention_personality_instance_id,
-                        row.intervention_extension_rounds,
-                        row.intervention_hard_cap_rounds,
-                        row.intervention_progress_contract,
-                    ),
                 },
             })
         })
@@ -379,15 +330,10 @@ async fn upsert_wake_entry(
         "INSERT INTO proxima_core.personality_wake_entries
             (owner_principal_kind, owner_principal_id, owner_org_id,
              personality_instance_id, wake_entry_id, trigger_kind, trigger_id,
-             label, enabled, execution_mode, authored_by, probability_promille,
-             goal_scope, instructions, model_tier, inference_target_ref,
-             substrate_tool_palette,
-             required_produced_schema_ids, max_rounds,
-             intervention_personality_instance_id, intervention_extension_rounds,
-             intervention_hard_cap_rounds, intervention_progress_contract)
+             label, enabled, authored_by, probability_promille, goal_scope,
+             instructions)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
-                 $12, $13, $14, $15, $16, $17, $18, $19,
-                 $20, $21, $22, $23)
+                 $12, $13)
          ON CONFLICT (
              owner_principal_kind,
              owner_principal_id,
@@ -399,20 +345,10 @@ async fn upsert_wake_entry(
              trigger_id = EXCLUDED.trigger_id,
              label = EXCLUDED.label,
              enabled = EXCLUDED.enabled,
-             execution_mode = EXCLUDED.execution_mode,
              authored_by = EXCLUDED.authored_by,
              probability_promille = EXCLUDED.probability_promille,
              goal_scope = EXCLUDED.goal_scope,
              instructions = EXCLUDED.instructions,
-             model_tier = EXCLUDED.model_tier,
-             inference_target_ref = EXCLUDED.inference_target_ref,
-             substrate_tool_palette = EXCLUDED.substrate_tool_palette,
-             required_produced_schema_ids = EXCLUDED.required_produced_schema_ids,
-             max_rounds = EXCLUDED.max_rounds,
-             intervention_personality_instance_id = EXCLUDED.intervention_personality_instance_id,
-             intervention_extension_rounds = EXCLUDED.intervention_extension_rounds,
-             intervention_hard_cap_rounds = EXCLUDED.intervention_hard_cap_rounds,
-             intervention_progress_contract = EXCLUDED.intervention_progress_contract,
              disabled_reason = NULL,
              tombstoned_at = NULL,
              updated_at = now()",
@@ -426,59 +362,12 @@ async fn upsert_wake_entry(
     .bind(&entry.trigger_id)
     .bind(&entry.label)
     .bind(entry.enabled)
-    .bind(entry.execution_mode)
     .bind(entry.authored_by)
     .bind(i32::from(entry.probability_promille))
     .bind(entry.goal_scope)
     .bind(&entry.instructions)
-    .bind(entry.model_tier)
-    .bind(&entry.inference_target_ref)
-    .bind(&entry.substrate_tool_palette)
-    .bind(&entry.required_produced_schema_ids)
-    .bind(i32::from(entry.max_rounds))
-    .bind(
-        entry
-            .intervention_policy
-            .as_ref()
-            .map(|policy| policy.intervention_personality_instance_id),
-    )
-    .bind(
-        entry
-            .intervention_policy
-            .as_ref()
-            .map_or(0, |policy| i32::from(policy.intervention_extension_rounds)),
-    )
-    .bind(
-        entry
-            .intervention_policy
-            .as_ref()
-            .map_or(0, |policy| i32::from(policy.intervention_hard_cap_rounds)),
-    )
-    .bind(
-        entry
-            .intervention_policy
-            .as_ref()
-            .map_or("", |policy| policy.intervention_progress_contract.as_str()),
-    )
     .execute(&mut **tx)
     .await
     .map_err(map_err)?;
     Ok(())
-}
-
-fn intervention_policy_from_parts(
-    intervention_personality_instance_id: Option<uuid::Uuid>,
-    intervention_extension_rounds: i32,
-    intervention_hard_cap_rounds: i32,
-    intervention_progress_contract: String,
-) -> Option<InterventionPolicy> {
-    intervention_personality_instance_id.map(|intervention_personality_instance_id| {
-        InterventionPolicy {
-            intervention_personality_instance_id,
-            intervention_extension_rounds: u16::try_from(intervention_extension_rounds)
-                .unwrap_or(0),
-            intervention_hard_cap_rounds: u16::try_from(intervention_hard_cap_rounds).unwrap_or(0),
-            intervention_progress_contract,
-        }
-    })
 }

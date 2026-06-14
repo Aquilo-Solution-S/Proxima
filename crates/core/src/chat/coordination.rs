@@ -1,7 +1,6 @@
 use super::{
     Engine, HashSet, Owner, PersonalityInstanceId, PersonalityStatus, Serialize, StorageError,
     WakeEntryRow, WakeEntryTriggerKind, is_enabled_chat_message_wake,
-    writeable_schemas_for_palette,
 };
 
 #[derive(Debug, Clone, Serialize)]
@@ -85,10 +84,7 @@ pub async fn build_wake_coordination_context(
                 wake_entry_id: entry.wake_entry_id,
                 wake_entry_label: entry.label.clone(),
                 trigger_schema_id: entry.trigger_id.clone(),
-                produces_schema_ids: writeable_schemas_for_palette(
-                    engine,
-                    &entry.substrate_tool_palette,
-                ),
+                produces_schema_ids: Vec::new(),
             };
             if row.personality_instance_id == current_personality
                 && entry.wake_entry_id == current_wake_entry.wake_entry_id
@@ -106,10 +102,7 @@ pub async fn build_wake_coordination_context(
         wake_entry_id: current_wake_entry.wake_entry_id,
         wake_entry_label: current_wake_entry.label.clone(),
         trigger_schema_id: current_wake_entry.trigger_id.clone(),
-        produces_schema_ids: writeable_schemas_for_palette(
-            engine,
-            &current_wake_entry.substrate_tool_palette,
-        ),
+        produces_schema_ids: Vec::new(),
     });
     let current_produces: HashSet<_> = current.produces_schema_ids.iter().cloned().collect();
     let upstream = all_nodes

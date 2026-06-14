@@ -19,7 +19,7 @@ use proxima_core::verbs::event_ingest::{
     Citation, CitationMappingHint, CitedObjectHint, EventDraft,
 };
 use proxima_core::{
-    EntityKind, MemoryId, ModelTier, Owner, Principal, RegisteredRelation, RelationClass, SchemaId,
+    EntityKind, MemoryId, Owner, Principal, RegisteredRelation, RelationClass, SchemaId,
     SchemaVersion, SourceBatchId, SourceId, WakeEntryGoalScope,
 };
 use sqlx::Executor;
@@ -70,10 +70,6 @@ fn sample_entry(instance: PersonalityInstanceId, trigger_id: &str) -> WakeEntryD
         "on_test_fact",
         WakeEntryAuthoredBy::Any,
         250,
-        ModelTier::Fast,
-        Some("local-cli:codex-spark".to_string()),
-        vec!["core/query".to_string()],
-        4,
     )
     .expect("valid wake entry");
     draft.instructions = "Use the committed fact to decide whether to write a summary.".into();
@@ -129,6 +125,38 @@ async fn personality_wake_schema_replaces_legacy_tables() {
             .await?;
             assert_eq!(count, 1, "{table} must exist");
         }
+
+        let wake_columns: Vec<String> = sqlx::query_scalar(
+            "SELECT column_name
+             FROM information_schema.columns
+             WHERE table_schema = 'proxima_core'
+               AND table_name = 'personality_wake_entries'
+             ORDER BY ordinal_position",
+        )
+        .fetch_all(pg.pool())
+        .await?;
+        assert_eq!(
+            wake_columns,
+            vec![
+                "owner_principal_kind",
+                "owner_principal_id",
+                "owner_org_id",
+                "personality_instance_id",
+                "wake_entry_id",
+                "trigger_kind",
+                "trigger_id",
+                "label",
+                "enabled",
+                "authored_by",
+                "probability_promille",
+                "disabled_reason",
+                "created_at",
+                "updated_at",
+                "tombstoned_at",
+                "goal_scope",
+                "instructions",
+            ],
+        );
 
         let retired_column = ["personality", "type", "id"].join("_");
         let type_columns: i64 = sqlx::query_scalar(
@@ -186,9 +214,9 @@ async fn personality_wake_schema_enforces_root_sidecar_and_promille() {
             "INSERT INTO proxima_core.personality_wake_entries
                 (owner_principal_kind, owner_principal_id, owner_org_id,
                  personality_instance_id, wake_entry_id, trigger_kind, trigger_id,
-                 label, authored_by, probability_promille, model_tier)
+                 label, authored_by, probability_promille)
              VALUES ('User', $1, $2, $3, $4, 'on_memory', 'proxima-test/fact-v1',
-                     'bad', 'any', 1001, 'fast')",
+                     'bad', 'any', 1001)",
         )
         .bind(principal_id(&owner))
         .bind(owner.org_id.into_inner())
@@ -307,8 +335,7 @@ async fn list_personality_instances_populates_wake_entries() {
         pg.run_migrations().await?;
         let owner = owner_fixture();
         let response = seed_test_personality(&pg, &owner).await?;
-        let mut entry = sample_entry(response.instance_id, "proxima-test/fact-v1");
-        entry.required_produced_schema_ids = vec!["test/final-v1".into()];
+        let entry = sample_entry(response.instance_id, "proxima-test/fact-v1");
 
         pg.set_wake_entries(&SetWakeEntriesRequest {
             principal: owner.principal.clone(),
@@ -326,10 +353,6 @@ async fn list_personality_instances_populates_wake_entries() {
         assert_eq!(
             rows[0].wake_entries[0].instructions,
             "Use the committed fact to decide whether to write a summary."
-        );
-        assert_eq!(
-            rows[0].wake_entries[0].required_produced_schema_ids,
-            vec!["test/final-v1"]
         );
         Ok(())
     }

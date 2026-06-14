@@ -66,8 +66,6 @@ impl McpTool for AddWakeEntryTool {
             let new_id = new_draft.wake_entry_id;
             let new_trigger_kind = new_draft.trigger_kind;
             let new_trigger_id = new_draft.trigger_id.clone();
-            let registry = ctx.registry.clone();
-
             let mutator: crate::WakeEntriesMutator = Box::new(move |current| {
                 if current
                     .iter()
@@ -79,11 +77,8 @@ impl McpTool for AddWakeEntryTool {
                 }
                 let mut next: Vec<_> = current.to_vec();
                 next.push(new_draft);
-                crate::inference::set_wake_entries::validate_wake_entries_static_config(
-                    registry.as_ref(),
-                    &next,
-                )
-                .map_err(|err| err.to_string())?;
+                crate::personality::validate_wake_entries_detect_config(&next)
+                    .map_err(|err| err.to_string())?;
                 Ok(next)
             });
             storage
@@ -127,14 +122,12 @@ mod tests {
                 "trigger_kind": "on_memory",
                 "trigger_id": "core/chat-message-v1",
                 "label": "receive-chat-message",
-                "probability_promille": 1000,
-                "max_rounds": 2
+                "probability_promille": 1000
             }
         }))
         .expect("object entry");
 
         assert_eq!(args.entry.trigger_id, "core/chat-message-v1");
-        assert_eq!(args.entry.max_rounds, 2);
     }
 
     #[test]
@@ -143,8 +136,7 @@ mod tests {
             "trigger_kind": "on_memory",
             "trigger_id": "core/chat-message-v1",
             "label": "receive-chat-message",
-            "probability_promille": 1000,
-            "max_rounds": 2
+            "probability_promille": 1000
         })
         .to_string();
         let args: AddWakeEntryArgs = serde_json::from_value(serde_json::json!({
@@ -154,6 +146,5 @@ mod tests {
         .expect("string entry");
 
         assert_eq!(args.entry.trigger_id, "core/chat-message-v1");
-        assert_eq!(args.entry.max_rounds, 2);
     }
 }

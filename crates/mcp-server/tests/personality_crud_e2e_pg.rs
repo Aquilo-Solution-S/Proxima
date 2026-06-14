@@ -12,9 +12,8 @@ use proxima_core::mcp::{HandleTable, McpAuthorContext, McpToolCtx, OutputMode};
 use proxima_core::storage::Storage;
 use proxima_core::verbs::query::MemoryStore;
 use proxima_core::{
-    AuthPath, AuthzContext, Engine, FlavorRegistry, InstantiatePersonalityRequest, McpTool,
-    ModelTier, OrgId, Owner, Principal, UserId, WakeEntryAuthoredBy, WakeEntryGoalScope,
-    WakeEntryTriggerKind, WakeExecutionMode,
+    AuthPath, AuthzContext, Engine, FlavorRegistry, InstantiatePersonalityRequest, McpTool, OrgId,
+    Owner, Principal, UserId, WakeEntryAuthoredBy, WakeEntryGoalScope, WakeEntryTriggerKind,
 };
 use proxima_storage_pg::PgStorage;
 
@@ -87,17 +86,10 @@ async fn wake_token_audit_attributes_caller_personality() -> Result<(), Box<dyn 
             trigger_id: "core/personality_config_changed_v1".into(),
             label: "self-evolution".into(),
             enabled: true,
-            execution_mode: WakeExecutionMode::SubstrateOnly,
             authored_by: WakeEntryAuthoredBy::Any,
             probability_promille: 1000,
             goal_scope: WakeEntryGoalScope::None,
             instructions: String::new(),
-            model_tier: ModelTier::Standard,
-            inference_target_ref: None,
-            substrate_tool_palette: vec![],
-            required_produced_schema_ids: vec![],
-            max_rounds: 3,
-            intervention_policy: None,
         },
     };
     let _out = AddWakeEntryTool::call(ctx, args).await?;

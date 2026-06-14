@@ -105,16 +105,9 @@ impl McpTool for GetGraphTool {
                             label: e.label,
                             enabled: e.enabled,
                             instructions: e.instructions,
-                            model_tier: format!("{:?}", e.model_tier),
-                            inference_target_ref: e.inference_target_ref,
-                            substrate_tool_palette: e.substrate_tool_palette,
-                            required_produced_schema_ids: e.required_produced_schema_ids,
-                            execution_mode: format!("{:?}", e.execution_mode),
                             authored_by: format!("{:?}", e.authored_by),
                             probability_promille: e.probability_promille,
                             goal_scope: e.goal_scope.as_str().to_string(),
-                            max_rounds: e.max_rounds,
-                            intervention_policy: e.intervention_policy,
                             disabled_reason: e.disabled_reason,
                         })
                         .collect();

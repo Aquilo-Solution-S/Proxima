@@ -6,11 +6,10 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::intervention::InterventionPolicy;
 use crate::mcp::{McpToolCtx, McpToolError};
 use crate::{
-    ModelTier, PersonalityInstanceId, WakeEntryAuthoredBy, WakeEntryDraft, WakeEntryGoalScope,
-    WakeEntryTriggerKind, WakeExecutionMode,
+    PersonalityInstanceId, WakeEntryAuthoredBy, WakeEntryDraft, WakeEntryGoalScope,
+    WakeEntryTriggerKind,
 };
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
@@ -24,8 +23,6 @@ pub struct WakeEntryDraftInput {
     pub label: String,
     #[serde(default = "default_enabled")]
     pub enabled: bool,
-    #[serde(default = "default_execution_mode")]
-    pub execution_mode: WakeExecutionMode,
     #[serde(default)]
     pub authored_by: WakeEntryAuthoredBy,
     #[schemars(range(min = 0, max = 1000))]
@@ -34,28 +31,10 @@ pub struct WakeEntryDraftInput {
     pub goal_scope: WakeEntryGoalScope,
     #[serde(default)]
     pub instructions: String,
-    #[serde(default = "default_model_tier")]
-    pub model_tier: ModelTier,
-    #[serde(default)]
-    pub inference_target_ref: Option<String>,
-    #[serde(default)]
-    pub substrate_tool_palette: Vec<String>,
-    #[serde(default)]
-    pub required_produced_schema_ids: Vec<String>,
-    #[schemars(range(min = 0))]
-    pub max_rounds: u16,
-    #[serde(default)]
-    pub intervention_policy: Option<InterventionPolicy>,
 }
 
 fn default_enabled() -> bool {
     true
-}
-fn default_execution_mode() -> WakeExecutionMode {
-    WakeExecutionMode::SubstrateOnly
-}
-fn default_model_tier() -> ModelTier {
-    ModelTier::Standard
 }
 
 impl WakeEntryDraftInput {
@@ -83,17 +62,10 @@ impl WakeEntryDraftInput {
             trigger_id: self.trigger_id,
             label: self.label,
             enabled: self.enabled,
-            execution_mode: self.execution_mode,
             authored_by: self.authored_by,
             probability_promille: self.probability_promille,
             goal_scope: self.goal_scope,
             instructions: self.instructions,
-            model_tier: self.model_tier,
-            inference_target_ref: self.inference_target_ref,
-            substrate_tool_palette: self.substrate_tool_palette,
-            required_produced_schema_ids: self.required_produced_schema_ids,
-            max_rounds: self.max_rounds,
-            intervention_policy: self.intervention_policy,
         })
     }
 }

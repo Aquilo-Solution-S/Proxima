@@ -8,11 +8,10 @@
 
 use uuid::Uuid;
 
-use crate::intervention::InterventionPolicy;
 use crate::outbox::ChangeEvent;
 use crate::personality::types::{
-    PersonalityStatus, WakeChainDepth, WakeEntryAuthoredBy, WakeEntryExecutionMode,
-    WakeEntryGoalScope, WakeEntryTriggerKind,
+    PersonalityStatus, WakeChainDepth, WakeEntryAuthoredBy, WakeEntryGoalScope,
+    WakeEntryTriggerKind,
 };
 use crate::{MemoryId, Owner};
 
@@ -26,17 +25,10 @@ pub struct WakeEntryRow {
     pub trigger_id: String,
     pub label: String,
     pub enabled: bool,
-    pub execution_mode: WakeEntryExecutionMode,
     pub authored_by: WakeEntryAuthoredBy,
     pub probability_promille: u16,
     pub goal_scope: WakeEntryGoalScope,
     pub instructions: String,
-    pub model_tier: crate::ModelTier,
-    pub inference_target_ref: Option<String>,
-    pub substrate_tool_palette: Vec<String>,
-    pub required_produced_schema_ids: Vec<String>,
-    pub max_rounds: u16,
-    pub intervention_policy: Option<InterventionPolicy>,
     pub disabled_reason: Option<String>,
 }
 
