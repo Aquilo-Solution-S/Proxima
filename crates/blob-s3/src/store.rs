@@ -13,11 +13,10 @@ use crate::config::S3RuntimeConfig;
 use crate::error::BlobError;
 
 /// Tauri/TS-compatible cited-blob upload request.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CitedBlobUploadPrepareTs {
     pub principal: Principal,
     #[serde(skip)]
-    #[specta(skip)]
     pub org_id: Option<OrgId>,
     pub filename: String,
     pub mime: String,
@@ -25,7 +24,7 @@ pub struct CitedBlobUploadPrepareTs {
 }
 
 /// Tauri/TS-compatible cited-blob upload preparation response.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CitedBlobUploadPrepareOutcomeTs {
     pub upload_id: String,
     pub upload_url: String,
@@ -34,24 +33,23 @@ pub struct CitedBlobUploadPrepareOutcomeTs {
 }
 
 /// Header required by a presigned upload.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PresignedHeaderTs {
     pub name: String,
     pub value: String,
 }
 
 /// Tauri/TS-compatible cited-blob completion request.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CitedBlobUploadCompleteTs {
     pub principal: Principal,
     #[serde(skip)]
-    #[specta(skip)]
     pub org_id: Option<OrgId>,
     pub upload_id: String,
 }
 
 /// Tauri/TS-compatible cited-blob completion response.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CitedBlobUploadCompleteOutcomeTs {
     pub cited_object_id: String,
     pub schema: String,
@@ -64,33 +62,31 @@ pub struct CitedBlobUploadCompleteOutcomeTs {
 }
 
 /// Tauri/TS-compatible cited-blob abort request.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CitedBlobUploadAbortTs {
     pub principal: Principal,
     #[serde(skip)]
-    #[specta(skip)]
     pub org_id: Option<OrgId>,
     pub upload_id: String,
 }
 
 /// Tauri/TS-compatible cited-blob abort response.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CitedBlobUploadAbortOutcomeTs {
     pub aborted: bool,
 }
 
 /// Tauri/TS-compatible cited-blob read URL request.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CitedBlobReadUrlTs {
     pub principal: Principal,
     #[serde(skip)]
-    #[specta(skip)]
     pub org_id: Option<OrgId>,
     pub cited_object_id: String,
 }
 
 /// Tauri/TS-compatible cited-blob read URL response.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CitedBlobReadUrlOutcomeTs {
     pub read_url: String,
     pub expires_at: String,

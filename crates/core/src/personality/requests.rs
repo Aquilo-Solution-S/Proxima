@@ -40,7 +40,7 @@ impl InstantiatePersonalityRequest {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct InstantiatePersonalityResponse {
     pub instance_id: PersonalityInstanceId,
 }
@@ -75,7 +75,7 @@ impl SetWakeEntriesRequest {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SetWakeEntriesResponse {
     pub active_entries: u32,
 }
@@ -109,7 +109,7 @@ impl ListReadScopeRequest {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ListReadScopeResponse {
     pub readable_personality_instance_ids: Vec<PersonalityInstanceId>,
 }
@@ -144,7 +144,7 @@ impl SetReadScopeRequest {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SetReadScopeResponse {
     pub readable_count: u32,
 }
@@ -178,7 +178,7 @@ impl TombstonePersonalityRequest {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TombstonePersonalityResponse {
     pub status: String,
     pub idempotent_replay: bool,

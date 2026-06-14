@@ -4,21 +4,20 @@ use proxima_core::{
 };
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type, sqlx::Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
 #[sqlx(type_name = "proxima_code.file_state")]
 pub enum FileState {
     Present,
     Tombstone,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileRevisionV1 {
     pub repo_id: uuid::Uuid,
     pub file_path: String,
     pub language: Option<String>,
     // Hex-encoded under JSON (round-trips through Postgres `bytea`
     // via `row_to_json`); raw bytes under binary formats.
-    #[specta(type = String)]
     #[serde(with = "crate::payloads::content_hash_serde")]
     pub content_sha256: [u8; 32],
     pub size_bytes: u64,

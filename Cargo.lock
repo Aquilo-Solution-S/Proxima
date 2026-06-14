@@ -3,12 +3,6 @@
 version = 4
 
 [[package]]
-name = "Inflector"
-version = "0.11.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fe438c63458706e03479442743baae6c88256498e6431708f6dfc520a26515d3"
-
-[[package]]
 name = "aho-corasick"
 version = "1.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1102,7 +1096,6 @@ dependencies = [
  "proxima-core",
  "serde",
  "serde_json",
- "specta",
  "sqlx",
  "time",
  "tokio",
@@ -2406,7 +2399,6 @@ dependencies = [
  "proxima-storage-pg",
  "serde",
  "sha2 0.10.9",
- "specta",
  "sqlx",
  "thiserror",
  "time",
@@ -2431,7 +2423,6 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
- "specta",
  "sqlx",
  "tempfile",
  "thiserror",
@@ -2459,7 +2450,6 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
- "specta",
  "sqlx",
  "thiserror",
  "time",
@@ -2494,7 +2484,6 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
- "specta",
  "sqlx",
  "time",
  "tokio",
@@ -3337,30 +3326,6 @@ checksum = "3a766e1110788c36f4fa1c2b71b387a7815aa65f88ce0229841826633d93723e"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "specta"
-version = "2.0.0-rc.24"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f320c7dd82008b6958f43f6257c95319c407d1c17ade43686e50ea520c28bb26"
-dependencies = [
- "rustc_version",
- "specta-macros",
- "time",
- "uuid",
-]
-
-[[package]]
-name = "specta-macros"
-version = "2.0.0-rc.24"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "153f185d0051a64d81977bab5012809d5c9d9db8792406a0997352e05494f711"
-dependencies = [
- "Inflector",
- "proc-macro2",
- "quote",
- "syn",
 ]
 
 [[package]]

@@ -10,32 +10,31 @@ use crate::{
     EventId, MemoryId, OrgId, Owner, Principal, SchemaId, SchemaVersion, SourceBatchId, SourceId,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CitedObjectHint {
     pub schema_id: SchemaId,
     pub schema_version: SchemaVersion,
     pub content_hash: [u8; 32],
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CitationMappingHint {
     pub schema_id: SchemaId,
     pub schema_version: SchemaVersion,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Citation {
     pub object: CitedObjectHint,
     pub mapping: CitationMappingHint,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct EventDraft {
     pub source_id: SourceId,
     pub source_batch_id: SourceBatchId,
     pub principal: Principal,
     #[serde(skip)]
-    #[specta(skip)]
     pub org_id: Option<OrgId>,
     pub schema_id: SchemaId,
     pub schema_version: SchemaVersion,
@@ -111,7 +110,7 @@ impl EventDraft {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct EventIngestOutcome {
     pub event_id: EventId,
     pub memory_id: MemoryId,

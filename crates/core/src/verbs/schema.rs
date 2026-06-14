@@ -22,7 +22,7 @@ pub(crate) struct PayloadValidatorEntry {
 }
 
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, specta::Type,
+    Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
 )]
 pub enum PayloadKind {
     Fact,
@@ -37,13 +37,13 @@ pub enum PayloadKind {
     CitationMapping,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SchemaTombstone {
     pub column: String,
     pub value: String,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SchemaInfo {
     pub schema_id: SchemaId,
     pub schema_version: SchemaVersion,
@@ -63,7 +63,6 @@ pub struct SchemaInfo {
     /// Function pointer is process-local only; not serialized on
     /// Schema responses.
     #[serde(skip)]
-    #[specta(skip)]
     pub cbor_encoder: Option<PayloadCborEncoder>,
 }
 
@@ -108,10 +107,10 @@ pub struct MemorySearchProjection {
     pub fields: Vec<MemorySearchProjectionField>,
 }
 
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, specta::Type)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct SchemaRequest;
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, specta::Type)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SchemaResponse {
     pub schemas: Vec<SchemaInfo>,
 }

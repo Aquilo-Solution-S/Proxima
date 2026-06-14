@@ -22,7 +22,7 @@ use std::sync::Arc;
 /// reflect the calling crate's `Cargo.toml`.
 ///
 /// One descriptor per `proxima_flavor!` invocation.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FlavorDescriptor {
     /// Crate prefix used by `proxima_flavor! { name = ... }` —
     /// e.g. `"proxima-code"`. Schemas, relations, personalities, and
@@ -46,7 +46,7 @@ pub struct FlavorDescriptor {
 
 /// Where the flavor came from. Reserved cases are out-of-scope for
 /// v1 and do not imply dynamic flavor loading.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum FlavorProvenance {
     Builtin,

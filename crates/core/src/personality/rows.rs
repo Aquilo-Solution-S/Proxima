@@ -18,7 +18,7 @@ use crate::{MemoryId, Owner};
 use super::drafts::WakeEntryDraft;
 use super::personality::PersonalityInstanceId;
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct WakeEntryRow {
     pub wake_entry_id: Uuid,
     pub trigger_kind: WakeEntryTriggerKind,

@@ -14,7 +14,7 @@ use crate::{GoalId, MemoryId, Owner, Principal, SchemaId, SchemaVersion};
 /// Re-export the canonical `EntityKind` from `outbox` so query
 /// callers don't need a second import path. The duplicate
 /// definition that lived here pre-M6.5 produced two identical
-/// types; specta's type-name uniqueness check caught it.
+/// types.
 pub use crate::outbox::EntityKind;
 
 #[derive(
@@ -26,7 +26,6 @@ pub use crate::outbox::EntityKind;
     serde::Serialize,
     serde::Deserialize,
     schemars::JsonSchema,
-    specta::Type,
 )]
 #[serde(rename_all = "lowercase")]
 pub enum SearchMode {
@@ -42,7 +41,7 @@ fn default_search_mode() -> SearchMode {
 /// Owner-scoped memory search. Semantic modes require the engine/tool
 /// layer to populate the query embedding and active embedding-space
 /// metadata before dispatching to storage.
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, specta::Type)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MemorySearchRequest {
     pub principal: Principal,
     pub query: String,
@@ -61,7 +60,7 @@ pub struct MemorySearchRequest {
     pub reader_personality_instance_id: Option<PersonalityInstanceId>,
 }
 
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, specta::Type)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MemorySearchResult {
     pub memory_id: MemoryId,
     pub kind: EntityKind,
@@ -73,7 +72,7 @@ pub struct MemorySearchResult {
     pub wake_chain_depth: crate::WakeChainDepth,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum MemoryLineageDirection {
     Ancestors,
     Descendants,
@@ -116,7 +115,7 @@ pub struct MemoryLineageResponse {
     pub truncated: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SupersessionStatus {
     /// Heads only — exclude rows that are superseded.
     HeadsOnly,
@@ -124,7 +123,7 @@ pub enum SupersessionStatus {
     IncludeSuperseded,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum TombstoneFilter {
     PresentOnly,
     IncludeTombstoned,
@@ -134,7 +133,7 @@ fn default_tombstone_filter() -> TombstoneFilter {
     TombstoneFilter::PresentOnly
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum PersonalityRootFilter {
     /// Include only active root/self Perspective rows. Non-root
     /// Perspectives are unaffected.
@@ -169,7 +168,7 @@ pub struct StatefulHeadsFilter {
 /// One core-generic Query request. Flavor-typed filters
 /// per docs/14 §"Query" land when the first flavor crate
 /// registers a sidecar (M3+).
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct QueryRequest {
     pub principal: Principal,
     pub entity_kind: Option<EntityKind>,
@@ -223,7 +222,7 @@ impl QueryRequest {
 
 /// Snapshot of a memory row. Goal rows have their own shape
 /// (M2+); not modelled here.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MemoryRow {
     pub id: MemoryId,
     pub kind: EntityKind,
@@ -237,7 +236,7 @@ pub struct MemoryRow {
     pub payload: Vec<u8>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct GoalRow {
     pub id: GoalId,
     pub schema_id: SchemaId,
@@ -251,7 +250,7 @@ pub struct GoalRow {
     pub payload: Vec<u8>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct EdgeRow {
     pub id: uuid::Uuid,
     pub relation: String,
@@ -262,7 +261,7 @@ pub struct EdgeRow {
     pub payload: Vec<u8>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct QueryResponse {
     pub memories: Vec<MemoryRow>,
     pub goals: Vec<GoalRow>,

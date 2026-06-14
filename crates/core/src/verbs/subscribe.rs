@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 use crate::{ChangeEvent, Principal};
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SubscribeRequest {
     pub principal: Principal,
     /// Resume cursor. Server returns events with `seq > since`.

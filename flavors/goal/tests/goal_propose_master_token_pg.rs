@@ -148,7 +148,7 @@ async fn master_token_propose_creates_inspires_edge_to_per_token_self_perspectiv
             ProposeArgs {
                 payload: GoalPayloadInput::SimpleText(SimpleTextGoalBody {
                     title: "rename unwrap helper".into(),
-                    text: "Rename `unwrap` in tauri-client.ts to `unwrapTauri`.".into(),
+                    text: "Rename `unwrap` in client.rs to `unwrap_result`.".into(),
                 }),
                 evidence: vec![],
                 target_personality: None,

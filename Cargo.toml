@@ -60,21 +60,8 @@ tonic = { version = "0.14", default-features = false, features = ["codegen", "ro
 prost = "0.14"
 prost-types = "0.14"
 
-# tauri 2 desktop shell
-tauri = { version = "2", features = [] }
-tauri-build = { version = "2", features = [] }
-tauri-plugin-opener = "2"
-tauri-plugin-dialog = "2"
-
 # OS-native keychain access for secret_ref resolution (S1.c).
 # Library split: keyring-core holds the API surface; per-OS store
 # crates live in shell hosts as cfg(target_os) deps and are
 # wired via `keyring_core::set_default_store(...)` at boot.
 keyring-core = "1"
-
-# specta — Rust→TS type bridge for tauri-specta. Source-of-truth
-# stays Rust traits; TS bindings are codegen artefacts. See
-# docs/09 §Generation pipeline.
-specta = { version = "=2.0.0-rc.24", features = ["derive", "uuid", "time"] }
-specta-typescript = "=0.0.11"
-tauri-specta = { version = "=2.0.0-rc.24", features = ["derive", "typescript"] }

@@ -1,6 +1,6 @@
 use proxima_core::GoalPayload;
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SimpleTextGoalV1 {}
 
 impl GoalPayload for SimpleTextGoalV1 {

@@ -8,7 +8,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use std::fmt;
 
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, specta::Type, sqlx::Type,
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, sqlx::Type,
 )]
 #[schemars(description = "Verification status for a criterion.")]
 #[serde(rename_all = "snake_case")]

@@ -23,7 +23,7 @@
 /// `{vendor: "openrouter", dialect: OpenAI, model_id: "anthropic/..."}`
 /// is normal.
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, specta::Type,
+    Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
 )]
 #[serde(rename_all = "snake_case")]
 pub enum Dialect {
@@ -45,7 +45,6 @@ pub enum Dialect {
     Hash,
     serde::Serialize,
     serde::Deserialize,
-    specta::Type,
 )]
 #[expect(
     clippy::struct_excessive_bools,
@@ -99,7 +98,6 @@ impl LlmCaps {
     serde::Serialize,
     serde::Deserialize,
     schemars::JsonSchema,
-    specta::Type,
 )]
 pub struct EmbedCaps {
     pub dim: u32,

@@ -6,8 +6,8 @@ easy to break.
 
 ## State of the repo
 
-**Implementation phase.** The design lives in `docs/`; Rust crates and
-the Solid/Tauri frontend have landed. Do not treat README's old
+**Implementation phase.** The design lives in `docs/`; Rust crates have
+landed. Do not treat README's old
 "no code yet" wording as authoritative.
 
 Code work is expected when the prompt asks for it. Keep edits scoped to
@@ -28,34 +28,28 @@ explicit request.
 | `docs/06-goals-and-self.md` | Goal entity (DAG, supersession); Self as pure query |
 | `docs/07-storage.md` | IDs, identity rules, append-only, vector store independence |
 | `docs/08-core-and-flavors.md` | Bare core / flavor layering, no-feature-flags |
-| `docs/09-frontend.md` | Current Tauri 2 + Solid frontend contract; embedded IPC, graph store, flavor package composition |
 | `docs/10-configuration.md` | Owner-scoped inference targets/tier bindings; env/Codex auth; binary-wide embedding settings |
 | `docs/11-citations.md` | `CitedObject` / `CitationMapping` traits; bibliographic provenance, Fact-only citation rule |
 | `docs/12-tool-manifest.md` | T1 (runtime, schema-consuming) vs T2 (build-time flavors) tool tiers |
 | `docs/13-compliance.md` | Compliance primitives: owner deletion, source-scope deletion, pause/resume, export, suppression, audit |
 | `docs/14-protocol-surface.md` | Engine's contract to clients: six verbs (Query / Subscribe / EventHistory / GoalWrite / EventIngest / Schema), owner-scoped, transport-agnostic |
-| `docs/dev-perf.md` | Dev-time perf instrumentation: per-session artifact layout under `apps/proxima-shell/perf-logs/` |
+| `docs/dev-perf.md` | Perf reducer fixture format |
 
 ## Workspace layout
 
 ```
 proxima/
 ├── apps/
-│   ├── proxima-mcp/         Rust headless MCP host binary (agent-memory + goal)
-│   └── proxima-shell/       Solid + Vite + Tauri 2 shell
-│       └── src-tauri/       Tauri Rust crate
+│   └── proxima-mcp/         Rust headless MCP host binary (agent-memory + goal)
 ├── crates/
 │   ├── blob-s3/             Rust S3 cited-blob service crate
-│   ├── codex-auth/          Rust ChatGPT Codex auth resolver crate
 │   ├── core/                Rust lib crate `proxima-core`
-│   ├── embed/               Rust host-binary embedding facade crate
-│   ├── harness/             Rust wake harness / provider loop crate
 │   ├── llm-openai-compat/   Rust OpenAI-compatible model client crate
 │   ├── mcp-server/          Rust MCP HTTP listener crate (`proxima_mcp_server`)
+│   ├── pg-testkit/          Rust Postgres test helper crate
+│   ├── proxima/             Rust framework facade crate
 │   ├── storage-pg/          Rust Postgres storage crate
 │   └── wire-grpc/           Rust gRPC wire crate
-├── packages/
-│   └── frontend-core/       npm package `@proxima/core`
 ├── flavors/
 │   ├── code/                Rust code flavor crate
 │   ├── goal/                Rust goal flavor crate
@@ -67,8 +61,7 @@ proxima/
 ├── proto/                   Proxima v1 protobuf surface
 ├── docs/                    design rationale + commentary
 │   └── lean/                **Lean kernel — THE source of truth** (see below)
-├── Cargo.toml               Rust workspace
-└── pnpm-workspace.yaml      frontend workspace
+└── Cargo.toml               Rust workspace
 ```
 
 ## Kernel authority
@@ -89,16 +82,10 @@ Use the smallest relevant check:
 |---|---|
 | Rust workspace | `cargo check --workspace` |
 | Rust lint | `cargo clippy --workspace --all-targets` |
-| Core frontend | `pnpm --filter @proxima/core typecheck` |
-| Shell frontend | `pnpm --filter proxima-shell typecheck` |
-| Shell build | `pnpm --filter proxima-shell build` |
 
 `cargo nextest run` is the fast path for the Rust suite; `cargo test`
 still works as fallback. PG tests clone a pre-migrated template DB.
 Single-test selection: `cargo nextest run -E 'test(<name>)'`.
-
-Frontend dev server: `pnpm --filter proxima-shell dev --host 127.0.0.1`.
-If port `1420` is occupied, Vite will choose another port.
 
 ## Delegated agents (Codex / Vibe execution runs)
 
@@ -121,9 +108,8 @@ Rules for non-interactive agents executing a scoped brief in this repo:
 
 ## MCP — engine query surface for agents
 
-While `proxima-shell` runs, the engine exposes a Streamable HTTP MCP
-server (default `http://localhost:31415/mcp`). Headless:
-`cargo run -p proxima-mcp`. Client config and port override:
+`cargo run -p proxima-mcp` exposes a Streamable HTTP MCP server
+(default `http://localhost:31415/mcp`). Client config and port override:
 [README §Connecting Your Coding Agent To Proxima](README.md#connecting-your-coding-agent-to-proxima).
 
 Tools available to attached agents:
@@ -262,9 +248,8 @@ breaks if these slip.
   `docs(02): close Q3 strict layering`.
 - Code subject: `feat(<component>): <summary>` /
   `fix(<component>): <summary>` / `chore(<component>): <summary>`.
-  Components include `core`, `frontend-core`, `proxima-shell`,
-  `proxima-mcp`, `storage-pg`, `wire-grpc`, `mcp-server`,
-  `llm-openai-compat`, `blob-s3`, `codex-auth`, `embed`, `harness`,
+  Components include `core`, `proxima-mcp`, `storage-pg`, `wire-grpc`,
+  `mcp-server`, `llm-openai-compat`, `blob-s3`, `proxima`, `pg-testkit`,
   `flavors-code`, `flavors-goal`, `flavors-agent-memory`, `examples`, `tools`.
 - Body: bulleted list of concrete changes; preserve the *why* when
   the change is a decision, not a fix.

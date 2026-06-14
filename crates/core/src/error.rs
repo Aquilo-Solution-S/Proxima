@@ -8,7 +8,6 @@
     thiserror::Error,
     serde::Serialize,
     serde::Deserialize,
-    specta::Type,
 )]
 #[error("{code:?}: {message}")]
 pub struct ProtocolError {
@@ -19,7 +18,7 @@ pub struct ProtocolError {
 
 /// Subset of docs/14's `ErrorCode` exercised in M1. Additional
 /// variants land with the verbs that raise them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ErrorCode {
     AuthRequired,
     Forbidden,
