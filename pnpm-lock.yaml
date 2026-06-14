@@ -8,45 +8,33 @@ importers:
 
   .: {}
 
-  apps/proxima-shell:
+  flavors/agent-memory/frontend:
     dependencies:
       '@proxima/core':
         specifier: workspace:*
-        version: link:../../packages/frontend-core
-      '@proxima/flavor-code':
-        specifier: workspace:*
-        version: link:../../flavors/code/frontend
-      '@proxima/flavor-goal':
-        specifier: workspace:*
-        version: link:../../flavors/goal/frontend
-      '@proxima/flavor-agent-memory':
-        specifier: workspace:*
-        version: link:../../flavors/agent-memory/frontend
-      '@tauri-apps/api':
-        specifier: ^2
-        version: 2.11.0
-      '@tauri-apps/plugin-dialog':
-        specifier: ^2
-        version: 2.7.1
-      '@tauri-apps/plugin-opener':
-        specifier: ^2
-        version: 2.5.4
+        version: link:../../../packages/frontend-core
+      cbor-x:
+        specifier: ^1.6.4
+        version: 1.6.4
       solid-js:
         specifier: ^1.9.3
         version: 1.9.12
     devDependencies:
-      '@tauri-apps/cli':
-        specifier: ^2
-        version: 2.11.0
+      '@solidjs/testing-library':
+        specifier: ^0.8.10
+        version: 0.8.10(solid-js@1.9.12)
+      jsdom:
+        specifier: ^29.1.1
+        version: 29.1.1
       typescript:
         specifier: ~6.0.3
         version: 6.0.3
-      vite:
-        specifier: ^8.0.13
-        version: 8.0.13
       vite-plugin-solid:
-        specifier: ^2.11.0
+        specifier: ^2.11.12
         version: 2.11.12(solid-js@1.9.12)(vite@8.0.13)
+      vitest:
+        specifier: ^4.1.5
+        version: 4.1.5(jsdom@29.1.1)(vite@8.0.13)
 
   flavors/code/frontend:
     dependencies:
@@ -86,34 +74,6 @@ importers:
         version: 4.1.5(jsdom@29.1.1)(vite@8.0.13)
 
   flavors/goal/frontend:
-    dependencies:
-      '@proxima/core':
-        specifier: workspace:*
-        version: link:../../../packages/frontend-core
-      cbor-x:
-        specifier: ^1.6.4
-        version: 1.6.4
-      solid-js:
-        specifier: ^1.9.3
-        version: 1.9.12
-    devDependencies:
-      '@solidjs/testing-library':
-        specifier: ^0.8.10
-        version: 0.8.10(solid-js@1.9.12)
-      jsdom:
-        specifier: ^29.1.1
-        version: 29.1.1
-      typescript:
-        specifier: ~6.0.3
-        version: 6.0.3
-      vite-plugin-solid:
-        specifier: ^2.11.12
-        version: 2.11.12(solid-js@1.9.12)(vite@8.0.13)
-      vitest:
-        specifier: ^4.1.5
-        version: 4.1.5(jsdom@29.1.1)(vite@8.0.13)
-
-  flavors/agent-memory/frontend:
     dependencies:
       '@proxima/core':
         specifier: workspace:*
