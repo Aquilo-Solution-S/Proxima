@@ -4,6 +4,12 @@ use proxima_core::{AuthzContext, Engine, FlavorRegistryFrozen, McpAuthorContext,
 use proxima_mcp_server::{McpAuthContext, McpToolHost, ToolInvocationError};
 use sqlx::PgPool;
 
+const FACT_RETENTION_TOOL_NAMES: [&str; 3] = [
+    "core/get_fact_retention",
+    "core/set_fact_retention",
+    "core/clear_fact_retention",
+];
+
 /// Facade handle for listing and dispatching the composed engine MCP tools
 /// from an embedding host's own authenticated endpoint.
 #[derive(Clone, Debug)]
@@ -50,7 +56,8 @@ impl CoreMcpTools {
     /// dispatch.
     #[must_use]
     pub fn list_core_tools(&self) -> Vec<CoreToolInfo> {
-        self.host
+        let tools = self
+            .host
             .registry()
             .list_mcp_tools()
             .iter()
@@ -59,7 +66,14 @@ impl CoreMcpTools {
                 description: descriptor.description.to_string(),
                 args_schema: descriptor.args_schema.clone(),
             })
-            .collect()
+            .collect::<Vec<_>>();
+        debug_assert!(
+            FACT_RETENTION_TOOL_NAMES
+                .iter()
+                .all(|name| tools.iter().any(|tool| tool.name == *name)),
+            "fact-retention tools must be present in CoreMcpTools"
+        );
+        tools
     }
 
     /// Dispatch one registered core/flavor MCP tool under caller-supplied

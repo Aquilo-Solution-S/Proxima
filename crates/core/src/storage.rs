@@ -255,6 +255,15 @@ pub trait Storage: Send + Sync {
         req: &SetReadScopeRequest,
     ) -> Result<SetReadScopeResponse, StorageError>;
 
+    /// Upsert the owner-scoped Fact-retention duration, in seconds.
+    async fn upsert_fact_retention(&self, owner: &Owner, seconds: i64) -> Result<(), StorageError>;
+
+    /// Read the owner-scoped Fact-retention duration, in seconds.
+    async fn get_fact_retention(&self, owner: &Owner) -> Result<Option<i64>, StorageError>;
+
+    /// Clear the owner-scoped Fact-retention duration.
+    async fn clear_fact_retention(&self, owner: &Owner) -> Result<bool, StorageError>;
+
     /// Active `WakeEntry` rows plus their cursor positions.
     async fn list_active_wake_entries(&self) -> Result<Vec<WakeDispatchEntryRow>, StorageError>;
 
@@ -509,6 +518,22 @@ impl Storage for NoopStorage {
         &self,
         _req: &SetReadScopeRequest,
     ) -> Result<SetReadScopeResponse, StorageError> {
+        Err(StorageError::Internal("NoopStorage rejects writes".into()))
+    }
+
+    async fn upsert_fact_retention(
+        &self,
+        _owner: &Owner,
+        _seconds: i64,
+    ) -> Result<(), StorageError> {
+        Err(StorageError::Internal("NoopStorage rejects writes".into()))
+    }
+
+    async fn get_fact_retention(&self, _owner: &Owner) -> Result<Option<i64>, StorageError> {
+        Err(StorageError::Internal("NoopStorage rejects writes".into()))
+    }
+
+    async fn clear_fact_retention(&self, _owner: &Owner) -> Result<bool, StorageError> {
         Err(StorageError::Internal("NoopStorage rejects writes".into()))
     }
 
