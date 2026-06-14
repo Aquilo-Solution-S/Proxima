@@ -6,12 +6,10 @@ pub mod chat;
 pub mod citations;
 pub mod cursor;
 pub mod dependency;
-pub mod embedding_settings;
 pub mod engine;
 pub mod error;
 pub mod flavor;
 pub mod ids;
-pub mod intervention;
 pub mod llm;
 pub mod mcp;
 pub mod models;
@@ -33,12 +31,10 @@ pub use chat::*;
 pub use citations::*;
 pub use cursor::*;
 pub use dependency::*;
-pub use embedding_settings::*;
 pub use engine::*;
 pub use error::*;
 pub use flavor::*;
 pub use ids::*;
-pub use intervention::*;
 pub use llm::*;
 pub use mcp::{
     Handle, HandleTable, McpAuthorContext, McpCallFn, McpTool, McpToolCtx, McpToolDescriptor,

@@ -4,11 +4,10 @@ use proxima_core::personality::{
     SidecarSpec, WakeChainDepth,
 };
 use proxima_core::{
-    CORE_DERIVED_FROM_RELATION, EdgeAuthorshipKind, EntityKind, InterventionContinueCandidate,
-    MemoryId, Owner, OwnerPrincipalKind, SchemaId, SchemaVersion, StorageError,
+    EdgeAuthorshipKind, EntityKind, MemoryId, Owner, OwnerPrincipalKind, SchemaId, SchemaVersion,
+    StorageError,
 };
 use sqlx::PgPool;
-use sqlx::Row;
 
 use super::rows::owner_columns;
 use crate::error::map_err;
@@ -367,76 +366,6 @@ pub async fn lookup_prior_personality_head(
     .await
     .map_err(map_err)?;
     Ok(row.map(|(id,)| MemoryId::new(id)))
-}
-
-pub async fn load_intervention_continue_candidate(
-    pool: &PgPool,
-    owner: &Owner,
-    decision_memory_id: MemoryId,
-) -> Result<Option<InterventionContinueCandidate>, StorageError> {
-    let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(owner);
-    let row = sqlx::query(
-        r"SELECT d.memory_id AS decision_memory_id,
-                  d.intervention_request_memory_id,
-                  r.original_invocation_id,
-                  r.original_wake_entry_id,
-                  r.original_personality_instance_id,
-                  r.original_change_event_seq,
-                  r.triggering_memory_id,
-                  r.wake_trace_memory_id,
-                  d.grant_rounds,
-                  d.rationale
-             FROM proxima_core.intervention_decision_v1 d
-             JOIN proxima_core.memories dm
-               ON dm.memory_id = d.memory_id
-             JOIN proxima_core.intervention_requested_v1 r
-               ON r.memory_id = d.intervention_request_memory_id
-             JOIN proxima_core.edges e
-               ON e.relation = $5
-              AND e.source_memory_id = d.memory_id
-              AND e.target_memory_id = r.memory_id
-              AND e.owner_principal_kind = dm.owner_principal_kind
-              AND e.owner_principal_id = dm.owner_principal_id
-              AND e.owner_org_id = dm.owner_org_id
-            WHERE d.memory_id = $1
-              AND d.decision = 'continue'
-              AND d.grant_rounds IS NOT NULL
-              AND dm.owner_principal_kind = $2
-              AND dm.owner_principal_id = $3
-              AND dm.owner_org_id = $4",
-    )
-    .bind(decision_memory_id.into_inner())
-    .bind(owner_kind as OwnerPrincipalKind)
-    .bind(owner_principal_id)
-    .bind(owner_org_id)
-    .bind(CORE_DERIVED_FROM_RELATION)
-    .fetch_optional(pool)
-    .await
-    .map_err(map_err)?;
-
-    row.map(|row| {
-        let grant_rounds = row
-            .get::<i32, _>("grant_rounds")
-            .try_into()
-            .map_err(|_| StorageError::Internal("grant_rounds outside u16 range".into()))?;
-        Ok(InterventionContinueCandidate {
-            intervention_decision_memory_id: MemoryId::new(row.get("decision_memory_id")),
-            intervention_request_memory_id: MemoryId::new(
-                row.get("intervention_request_memory_id"),
-            ),
-            original_invocation_id: row.get("original_invocation_id"),
-            original_wake_entry_id: row.get("original_wake_entry_id"),
-            original_personality_instance_id: PersonalityInstanceId::new(
-                row.get("original_personality_instance_id"),
-            ),
-            original_change_event_seq: row.get("original_change_event_seq"),
-            original_triggering_memory_id: MemoryId::new(row.get("triggering_memory_id")),
-            wake_trace_memory_id: MemoryId::new(row.get("wake_trace_memory_id")),
-            grant_rounds,
-            rationale: row.get("rationale"),
-        })
-    })
-    .transpose()
 }
 
 #[allow(clippy::too_many_lines)]

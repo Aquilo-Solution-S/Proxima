@@ -1,6 +1,6 @@
 //! `ChatStore` — Postgres data access for the `core/*chat*` MCP tools.
 //!
-//! Like `ApprovalStore` and `InterventionStore`, `ChatStore` is its own
+//! Like `ApprovalStore`, `ChatStore` is its own
 //! capability trait, so its `PgStorage` impl lives here next to the verb
 //! bodies. `proxima-core`'s chat tools call these through `Storage`'s
 //! supertrait bound.

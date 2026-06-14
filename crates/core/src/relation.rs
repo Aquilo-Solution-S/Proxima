@@ -27,7 +27,6 @@ pub const CORE_HAS_APPROVAL_DECISION_RELATION: &str = "core/has-approval-decisio
 pub const CORE_RECEIVES_CHAT_MESSAGE_RELATION: &str = "core/receives-chat-message";
 pub const CORE_REPLIES_TO_MESSAGE_RELATION: &str = "core/replies-to-message";
 pub const CORE_RECEIVES_CHAT_END_REQUEST_RELATION: &str = "core/receives-chat-end-request";
-pub const CORE_RECEIVES_INTERVENTION_REQUEST_RELATION: &str = "core/receives-intervention-request";
 
 /// Closed substrate vocabulary for the abstract role an edge plays
 /// in A/P traversal. The five variants below are the only edge
@@ -582,13 +581,6 @@ pub fn core_relation_descriptors() -> Vec<RelationDescriptor> {
             EntityKindMask::perspective(),
             EntityKindMask::fact(),
             AuthorshipKindMask::user().union(AuthorshipKindMask::external_agent()),
-        ),
-        RelationDescriptor::substrate(
-            CORE_RECEIVES_INTERVENTION_REQUEST_RELATION,
-            RelationClass::Structural,
-            EntityKindMask::perspective(),
-            EntityKindMask::fact(),
-            AuthorshipKindMask::engine(),
         ),
     ]
 }

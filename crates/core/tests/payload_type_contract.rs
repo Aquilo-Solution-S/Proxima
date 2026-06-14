@@ -10,7 +10,6 @@ fn payload_modules_do_not_use_serde_json_value_fields() {
         root.join("crates/core/src/citations.rs"),
         root.join("crates/core/src/chat.rs"),
         root.join("crates/core/src/chat/payloads.rs"),
-        root.join("crates/core/src/intervention.rs"),
         root.join("crates/core/src/mcp/core_tools/payload.rs"),
         root.join("crates/core/src/wake/trace/mod.rs"),
     ]);

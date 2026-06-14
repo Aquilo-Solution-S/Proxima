@@ -1,6 +1,6 @@
 //! `ChatStore` — Postgres data-access contract for the chat tools.
 //!
-//! Like `ApprovalStore` and `InterventionStore`, `ChatStore` is a focused
+//! Like `ApprovalStore`, `ChatStore` is a focused
 //! capability trait declared as a supertrait of [`crate::Storage`]. The
 //! chat tools in `proxima-core` reach storage through it; the `PgStorage`
 //! impl lives in `proxima-storage-pg::verbs::chat`.
