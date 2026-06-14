@@ -8,7 +8,7 @@
 //! `const SCHEMA_ID: SchemaId = ...` shape: that requires
 //! const-construction of `String`, which Rust does not allow.
 
-use crate::{RelationClass, SchemaId};
+use crate::{RelationClass, SchemaId, StorageError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SearchProjectionColumnKind {
@@ -170,7 +170,9 @@ pub trait EdgePayload: serde::Serialize + serde::de::DeserializeOwned + 'static 
 /// queries; the sidecar stores the artifact body, while the core row
 /// stores ownership and a content-addressed hash. See docs/11
 /// §"Trait families".
-pub trait CitedObjectPayload: serde::Serialize + serde::de::DeserializeOwned + 'static {
+pub trait CitedObjectPayload:
+    serde::Serialize + serde::de::DeserializeOwned + Send + Sync + 'static
+{
     const SCHEMA_ID: &'static str;
     const SCHEMA_VERSION: u32;
     /// See `FactPayload::SPECIAL_CATEGORY`.
@@ -189,13 +191,31 @@ pub trait CitedObjectPayload: serde::Serialize + serde::de::DeserializeOwned + '
     /// the same artifact for the same Owner deduplicates the
     /// `cited_objects` row via `(owner, schema_id, content_hash)`.
     fn idempotency_key(&self) -> [u8; 32];
+
+    fn sidecar_insert<'t>(
+        &'t self,
+        _tx: &'t mut sqlx::Transaction<'_, sqlx::Postgres>,
+        _sidecar_row_id: uuid::Uuid,
+    ) -> futures::future::BoxFuture<'t, Result<(), StorageError>> {
+        Box::pin(async move { Err(Self::missing_inline_sidecar_inserter_error()) })
+    }
+
+    #[must_use]
+    fn missing_inline_sidecar_inserter_error() -> StorageError {
+        StorageError::Internal(format!(
+            "schema {} has no inline sidecar inserter",
+            Self::SCHEMA_ID,
+        ))
+    }
 }
 
 /// Typed payload for a `citation_mappings` row, keyed on
 /// `citation_mapping_id`. Citation mappings pin exactly one Memory
 /// to exactly one `CitedObject`; the sidecar stores extra mapping
 /// metadata such as byte ranges. See docs/11 §"Trait families".
-pub trait CitationMappingPayload: serde::Serialize + serde::de::DeserializeOwned + 'static {
+pub trait CitationMappingPayload:
+    serde::Serialize + serde::de::DeserializeOwned + Send + Sync + 'static
+{
     const SCHEMA_ID: &'static str;
     const SCHEMA_VERSION: u32;
     /// See `FactPayload::SPECIAL_CATEGORY`.
@@ -213,4 +233,20 @@ pub trait CitationMappingPayload: serde::Serialize + serde::de::DeserializeOwned
     /// Schema id of the `CitedObjectPayload` this mapping is allowed
     /// to annotate.
     fn cited_object_schema() -> SchemaId;
+
+    fn sidecar_insert<'t>(
+        &'t self,
+        _tx: &'t mut sqlx::Transaction<'_, sqlx::Postgres>,
+        _sidecar_row_id: uuid::Uuid,
+    ) -> futures::future::BoxFuture<'t, Result<(), StorageError>> {
+        Box::pin(async move { Err(Self::missing_inline_sidecar_inserter_error()) })
+    }
+
+    #[must_use]
+    fn missing_inline_sidecar_inserter_error() -> StorageError {
+        StorageError::Internal(format!(
+            "schema {} has no inline sidecar inserter",
+            Self::SCHEMA_ID,
+        ))
+    }
 }
