@@ -14,6 +14,7 @@ use uuid::Uuid;
 
 pub type PayloadValidator = fn(&serde_json::Value) -> Result<(), String>;
 pub type PayloadCborEncoder = fn(&serde_json::Value) -> Result<Vec<u8>, String>;
+pub type CitedObjectContentHasher = fn(&[u8]) -> Result<[u8; 32], StorageError>;
 pub type SidecarInserter = for<'t> fn(
     &'t mut Transaction<'_, Postgres>,
     Uuid,
@@ -27,6 +28,13 @@ pub(crate) struct PayloadValidatorEntry {
     pub kind: PayloadKind,
     pub validate: PayloadValidator,
     pub json_schema: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct CitedObjectContentHasherEntry {
+    pub schema_id: SchemaId,
+    pub schema_version: SchemaVersion,
+    pub hash: CitedObjectContentHasher,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -152,6 +160,8 @@ struct FrozenIndex {
     schema_by_id_version_kind: HashMap<(SchemaId, SchemaVersion, PayloadKind), usize>,
     /// `validators` keyed by `(schema_id, version, kind)`.
     validator_by_key: HashMap<(SchemaId, SchemaVersion, PayloadKind), usize>,
+    /// Cited-object content hashers keyed by `(schema_id, version)`.
+    cited_object_content_hasher_by_key: HashMap<(SchemaId, SchemaVersion), usize>,
     /// `relations` keyed by relation id.
     relation_by_name: HashMap<String, usize>,
 }
@@ -160,6 +170,7 @@ impl FrozenIndex {
     fn build(
         schemas: &[SchemaInfo],
         validators: &[PayloadValidatorEntry],
+        cited_object_content_hashers: &[CitedObjectContentHasherEntry],
         relations: &[RelationDescriptor],
     ) -> Self {
         let mut index = Self::default();
@@ -183,6 +194,12 @@ impl FrozenIndex {
                 ))
                 .or_insert(position);
         }
+        for (position, hasher) in cited_object_content_hashers.iter().enumerate() {
+            index
+                .cited_object_content_hasher_by_key
+                .entry((hasher.schema_id.clone(), hasher.schema_version))
+                .or_insert(position);
+        }
         for (position, relation) in relations.iter().enumerate() {
             index
                 .relation_by_name
@@ -199,6 +216,7 @@ pub struct FlavorRegistryFrozen {
     search_projections: Vec<MemorySearchProjection>,
     relations: Vec<RelationDescriptor>,
     validators: Vec<PayloadValidatorEntry>,
+    cited_object_content_hashers: Vec<CitedObjectContentHasherEntry>,
     mcp_tools: Vec<McpToolDescriptor>,
     flavors: Vec<FlavorDescriptor>,
     dependency_satisfaction_rules: Vec<(String, std::sync::Arc<dyn DependencySatisfactionRule>)>,
@@ -219,7 +237,7 @@ impl FlavorRegistryFrozen {
     /// vocabulary field beyond `schemas` empty.
     #[must_use]
     pub fn with_schemas(schemas: Vec<SchemaInfo>) -> Self {
-        let index = FrozenIndex::build(&schemas, &[], &[]);
+        let index = FrozenIndex::build(&schemas, &[], &[], &[]);
         Self {
             schemas,
             index,
@@ -234,7 +252,7 @@ impl FlavorRegistryFrozen {
         schemas: Vec<SchemaInfo>,
         relations: Vec<RelationDescriptor>,
     ) -> Self {
-        let index = FrozenIndex::build(&schemas, &[], &relations);
+        let index = FrozenIndex::build(&schemas, &[], &[], &relations);
         Self {
             schemas,
             relations,
@@ -256,16 +274,23 @@ impl FlavorRegistryFrozen {
             search_projections,
             relations,
             validators,
+            cited_object_content_hashers,
             mcp_tools,
             flavors,
             dependency_satisfaction_rules,
         } = registry;
-        let index = FrozenIndex::build(&schemas, &validators, &relations);
+        let index = FrozenIndex::build(
+            &schemas,
+            &validators,
+            &cited_object_content_hashers,
+            &relations,
+        );
         Self {
             schemas,
             search_projections,
             relations,
             validators,
+            cited_object_content_hashers,
             mcp_tools,
             flavors,
             dependency_satisfaction_rules,
@@ -302,7 +327,12 @@ impl FlavorRegistryFrozen {
         self.schemas.extend(added);
         // Rebuild the index over the extended schema list — a stale
         // index would silently miss the appended schemas.
-        self.index = FrozenIndex::build(&self.schemas, &self.validators, &self.relations);
+        self.index = FrozenIndex::build(
+            &self.schemas,
+            &self.validators,
+            &self.cited_object_content_hashers,
+            &self.relations,
+        );
         self
     }
 
@@ -470,6 +500,42 @@ impl FlavorRegistryFrozen {
         }
 
         Ok(())
+    }
+
+    /// Compute a typed cited-object content hash through the frozen
+    /// registry.
+    ///
+    /// # Errors
+    ///
+    /// Returns `StorageError::Internal` when the schema is unknown, is
+    /// not registered as `PayloadKind::CitedObject`, or has no typed
+    /// content hasher.
+    pub fn content_hash_for(
+        &self,
+        schema_id: &SchemaId,
+        schema_version: SchemaVersion,
+        payload_bytes: &[u8],
+    ) -> Result<[u8; 32], StorageError> {
+        let Some(&position) = self
+            .index
+            .cited_object_content_hasher_by_key
+            .get(&(schema_id.clone(), schema_version))
+        else {
+            let reason = if self
+                .lookup_payload(schema_id, schema_version, PayloadKind::CitedObject)
+                .is_some()
+            {
+                "has no typed content hasher"
+            } else {
+                "is not a registered cited-object schema"
+            };
+            return Err(StorageError::Internal(format!(
+                "cited object schema {} v{} {reason}",
+                schema_id.as_str(),
+                schema_version.into_inner(),
+            )));
+        };
+        (self.cited_object_content_hashers[position].hash)(payload_bytes)
     }
 
     /// Resolve the head-by-natural-key filter for a stateful Fact

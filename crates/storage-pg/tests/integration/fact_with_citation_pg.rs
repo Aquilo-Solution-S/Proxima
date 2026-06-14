@@ -157,7 +157,6 @@ fn cited_object() -> InlineCitedObjectDraft {
         schema_id: TestCitedObject::schema_id(),
         schema_version: SchemaVersion::new(TestCitedObject::SCHEMA_VERSION),
         payload_bytes: cbor(&payload),
-        content_hash: payload.idempotency_key(),
     }
 }
 
@@ -230,6 +229,12 @@ async fn fact_with_inline_citation_writes_rows_and_reuses_cited_object()
             cited_object(),
             citation_mapping(5, 9),
         )?;
+        let expected_content_hash = TestCitedObject {
+            body: "same cited body".to_string(),
+        }
+        .idempotency_key();
+        assert_eq!(first.cited_object().content_hash(), &expected_content_hash);
+        assert_eq!(second.cited_object().content_hash(), &expected_content_hash);
 
         let first_note = "first fact".to_string();
         let first_outcome =

@@ -140,13 +140,21 @@ impl Engine {
                 mapping.schema_version.into_inner(),
             ))
         })?;
+        let content_hash = self
+            .registry
+            .content_hash_for(
+                &cited_object.schema_id,
+                cited_object.schema_version,
+                &cited_object.payload_bytes,
+            )
+            .map_err(|e| ProtocolError::internal(e.to_string()))?;
 
         Ok(AuthorizedFactWithCitation::new(
             draft,
             AuthorizedInlineCitedObject::new(
                 cited_object.schema_id,
                 cited_object.schema_version,
-                cited_object.content_hash,
+                content_hash,
                 cited_object.payload_bytes,
                 cited_object_sidecar_inserter,
             ),
