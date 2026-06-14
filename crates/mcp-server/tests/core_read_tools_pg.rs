@@ -153,6 +153,7 @@ fn author_ctx() -> McpAuthorContext {
         model_id: "codex-test".into(),
         client_name: "codex".into(),
         client_version: "1".into(),
+        personality_instance_id: None,
         caller_self_perspective: None,
     }
 }
