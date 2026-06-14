@@ -9,7 +9,7 @@ use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{
     AuthPath, AuthzContext, CitationMappingPayload, CitedObjectPayload, FactPayload,
     FlavorRegistry, OrgId, Owner, Principal, Role, SchemaId, SchemaVersion, SourceBatchId,
-    SourceId, UserId,
+    SourceId, UserId, canonical_json_bytes,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -88,10 +88,9 @@ impl CitationMappingPayload for MismatchedCitationMapping {
     }
 }
 
-fn cbor<T: Serialize>(value: &T) -> Vec<u8> {
-    let mut bytes = Vec::new();
-    ciborium::ser::into_writer(value, &mut bytes).expect("test payload serializes as CBOR");
-    bytes
+fn json<T: Serialize>(value: &T) -> Vec<u8> {
+    let value = serde_json::to_value(value).expect("test payload serializes as JSON");
+    canonical_json_bytes(&value)
 }
 
 fn owner() -> Owner {
@@ -120,7 +119,7 @@ fn draft(owner: &Owner) -> EventDraft {
         author_personality_instance_id: None,
         schema_id: TestFact::schema_id(),
         schema_version: SchemaVersion::new(TestFact::SCHEMA_VERSION),
-        payload: cbor(&TestFact {
+        payload: json(&TestFact {
             value: "fact".to_string(),
         }),
         observed_at: now,
@@ -136,7 +135,7 @@ fn cited_object() -> InlineCitedObjectDraft {
     InlineCitedObjectDraft {
         schema_id: TestCitedObject::schema_id(),
         schema_version: SchemaVersion::new(TestCitedObject::SCHEMA_VERSION),
-        payload_bytes: cbor(&payload),
+        payload_bytes: json(&payload),
     }
 }
 
@@ -144,7 +143,7 @@ fn mapping(schema_id: SchemaId) -> InlineCitationMappingDraft {
     InlineCitationMappingDraft {
         schema_id,
         schema_version: SchemaVersion::new(1),
-        payload_bytes: cbor(&TestCitationMapping {
+        payload_bytes: json(&TestCitationMapping {
             byte_start: 0,
             byte_end: 6,
         }),

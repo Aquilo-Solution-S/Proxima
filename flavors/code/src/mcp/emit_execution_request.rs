@@ -10,7 +10,7 @@ use proxima_core::verbs::event_ingest::{
 };
 use proxima_core::{
     EdgeAuthorshipKind, EdgeId, EntityKind, FactPayload, MemoryId, SchemaId, SchemaVersion,
-    SourceBatchId, SourceId,
+    SourceBatchId, SourceId, canonical_json_bytes,
 };
 use proxima_storage_pg::verbs::edge_append::{EdgeDraft, append_edge_in_tx};
 use proxima_storage_pg::verbs::event_ingest::ingest_event_in_tx;
@@ -1205,9 +1205,7 @@ pub(super) async fn ingest_execution_request(
     ctx: &McpToolCtx,
     payload: &ExecutionRequestV1,
 ) -> Result<proxima_core::verbs::event_ingest::EventIngestOutcome, McpToolError> {
-    let mut payload_bytes = Vec::new();
-    ciborium::ser::into_writer(payload, &mut payload_bytes)
-        .map_err(|err| McpToolError::InvalidInput(err.to_string()))?;
+    let payload_bytes = encode_payload_json(payload)?;
     let content_hash = blake3::hash(&payload_bytes);
     let observed_at = time::OffsetDateTime::now_utc();
     let draft = EventDraft {
@@ -1238,6 +1236,15 @@ pub(super) async fn ingest_execution_request(
         .map_err(McpToolError::Storage)
 }
 
+fn encode_payload_json<T>(payload: &T) -> Result<Vec<u8>, McpToolError>
+where
+    T: Serialize,
+{
+    let value =
+        serde_json::to_value(payload).map_err(|err| McpToolError::InvalidInput(err.to_string()))?;
+    Ok(canonical_json_bytes(&value))
+}
+
 pub(super) async fn insert_sidecar(
     tx: &mut Transaction<'_, Postgres>,
     memory_id: MemoryId,
@@ -1264,9 +1271,7 @@ pub(super) async fn ingest_acceptance_criteria(
     ctx: &McpToolCtx,
     payload: &AcceptanceCriteriaV1,
 ) -> Result<proxima_core::verbs::event_ingest::EventIngestOutcome, McpToolError> {
-    let mut payload_bytes = Vec::new();
-    ciborium::ser::into_writer(payload, &mut payload_bytes)
-        .map_err(|err| McpToolError::InvalidInput(err.to_string()))?;
+    let payload_bytes = encode_payload_json(payload)?;
     let content_hash = blake3::hash(&payload_bytes);
     let observed_at = time::OffsetDateTime::now_utc();
     let draft = EventDraft {
@@ -1324,9 +1329,7 @@ pub(super) async fn ingest_test_request(
     ctx: &McpToolCtx,
     payload: &TestRequestV1,
 ) -> Result<proxima_core::verbs::event_ingest::EventIngestOutcome, McpToolError> {
-    let mut payload_bytes = Vec::new();
-    ciborium::ser::into_writer(payload, &mut payload_bytes)
-        .map_err(|err| McpToolError::InvalidInput(err.to_string()))?;
+    let payload_bytes = encode_payload_json(payload)?;
     let content_hash = blake3::hash(&payload_bytes);
     let observed_at = time::OffsetDateTime::now_utc();
     let draft = EventDraft {

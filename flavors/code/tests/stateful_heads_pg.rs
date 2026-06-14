@@ -55,7 +55,7 @@ fn registry_for_test() -> FlavorRegistryFrozen {
         sidecar_table: None,
         natural_key_columns: vec![],
         tombstone: None,
-        cbor_encoder: None,
+        json_encoder: None,
         sidecar_inserter: None,
         cited_object_schema: None,
     });
@@ -67,7 +67,7 @@ fn registry_for_test() -> FlavorRegistryFrozen {
         sidecar_table: None,
         natural_key_columns: vec![],
         tombstone: None,
-        cbor_encoder: None,
+        json_encoder: None,
         sidecar_inserter: None,
         cited_object_schema: None,
     });

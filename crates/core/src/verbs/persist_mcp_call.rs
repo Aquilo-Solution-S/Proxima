@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 use crate::{
     CitationMappingPayload, CitedObjectPayload, EventId, FactPayload, MemoryId, Owner, Principal,
-    SchemaId, SchemaVersion, SourceId, proxima_schema_id,
+    SchemaId, SchemaVersion, SourceId, canonical_json_bytes, proxima_schema_id,
 };
 
 pub const MCP_CALL_FACT_SCHEMA: &str = proxima_schema_id!("mcp-call-logged-v1");
@@ -63,9 +63,9 @@ impl McpCallLogInput {
     ///
     /// Returns a serialization error if the typed Fact payload cannot
     /// be encoded for the event hash.
-    pub fn event_id(&self) -> Result<EventId, ciborium::ser::Error<std::io::Error>> {
-        let mut payload = Vec::new();
-        ciborium::ser::into_writer(&self.payload(), &mut payload)?;
+    pub fn event_id(&self) -> Result<EventId, serde_json::Error> {
+        let payload = serde_json::to_value(self.payload())?;
+        let payload = canonical_json_bytes(&payload);
 
         let mut hasher = blake3::Hasher::new();
         hasher.update(SourceId::new(MCP_CALL_SOURCE_ID).as_str().as_bytes());

@@ -13,7 +13,6 @@ name = "proxima_flavor_goal"
 proxima-core = { path = "../../crates/core" }
 proxima-storage-pg = { path = "../../crates/storage-pg" }
 blake3 = { workspace = true }
-ciborium = { workspace = true }
 futures = { workspace = true }
 schemars = { workspace = true }
 serde = { workspace = true }

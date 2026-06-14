@@ -19,7 +19,7 @@ use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{
     EdgeAuthorshipKind, EntityKind, FactPayload, GoalId, GoalPayload, MemoryId, Owner,
     OwnerPrincipalKind, PersonalityInstanceId, Principal, SchemaId, SchemaVersion, SourceBatchId,
-    SourceId, StorageError,
+    SourceId, StorageError, canonical_json_bytes,
 };
 use proxima_storage_pg::verbs::edge_append::{EdgeDraft, append_edge_in_tx};
 use proxima_storage_pg::verbs::event_ingest::ingest_event_in_tx;
@@ -165,8 +165,7 @@ impl GoalPayloadInput {
                         "simple text goal text must be 1..=20000 chars".into(),
                     ));
                 }
-                let payload = SimpleTextGoalV1 {};
-                let value = serde_json::to_value(&payload)
+                let value = serde_json::to_value(SimpleTextGoalV1 {})
                     .map_err(|err| McpToolError::InvalidInput(err.to_string()))?;
                 validate_payload(
                     registry,
@@ -174,9 +173,7 @@ impl GoalPayloadInput {
                     SimpleTextGoalV1::SCHEMA_VERSION,
                     &value,
                 )?;
-                let mut bytes = Vec::new();
-                ciborium::ser::into_writer(&payload, &mut bytes)
-                    .map_err(|err| McpToolError::InvalidInput(err.to_string()))?;
+                let bytes = canonical_json_bytes(&value);
                 Ok(EncodedGoalPayload {
                     schema_id: SchemaId::new(SimpleTextGoalV1::SCHEMA_ID.into()),
                     schema_version: SchemaVersion::new(SimpleTextGoalV1::SCHEMA_VERSION),
@@ -211,8 +208,7 @@ impl GoalPayloadInput {
                     .transpose()
                     .map_err(|err| McpToolError::InvalidInput(format!("invalid due_at: {err}")))?;
                 let priority = body.priority.map(Into::into);
-                let payload = TaskGoalV1 { due_at, priority };
-                let value = serde_json::to_value(&payload)
+                let value = serde_json::to_value(TaskGoalV1 { due_at, priority })
                     .map_err(|err| McpToolError::InvalidInput(err.to_string()))?;
                 validate_payload(
                     registry,
@@ -220,9 +216,7 @@ impl GoalPayloadInput {
                     TaskGoalV1::SCHEMA_VERSION,
                     &value,
                 )?;
-                let mut bytes = Vec::new();
-                ciborium::ser::into_writer(&payload, &mut bytes)
-                    .map_err(|err| McpToolError::InvalidInput(err.to_string()))?;
+                let bytes = canonical_json_bytes(&value);
                 Ok(EncodedGoalPayload {
                     schema_id: SchemaId::new(TaskGoalV1::SCHEMA_ID.into()),
                     schema_version: SchemaVersion::new(TaskGoalV1::SCHEMA_VERSION),
@@ -754,7 +748,7 @@ pub async fn load_goal_payload(
     .map_err(map_storage)?;
     match row.schema_id.as_str() {
         SimpleTextGoalV1::SCHEMA_ID => {
-            let _: SimpleTextGoalV1 = ciborium::de::from_reader(&row.payload[..])
+            let _: SimpleTextGoalV1 = serde_json::from_slice(&row.payload)
                 .map_err(|err| McpToolError::InvalidInput(err.to_string()))?;
             Ok(GoalPayloadInput::SimpleText(SimpleTextGoalBody {
                 title: row.title,
@@ -762,7 +756,7 @@ pub async fn load_goal_payload(
             }))
         }
         TaskGoalV1::SCHEMA_ID => {
-            let payload: TaskGoalV1 = ciborium::de::from_reader(&row.payload[..])
+            let payload: TaskGoalV1 = serde_json::from_slice(&row.payload)
                 .map_err(|err| McpToolError::InvalidInput(err.to_string()))?;
             Ok(GoalPayloadInput::Task(TaskGoalBody {
                 title: row.title,
@@ -820,9 +814,7 @@ where
     let value =
         serde_json::to_value(payload).map_err(|err| McpToolError::InvalidInput(err.to_string()))?;
     validate_fact_payload(ctx, T::SCHEMA_ID, T::SCHEMA_VERSION, &value)?;
-    let mut payload_bytes = Vec::new();
-    ciborium::ser::into_writer(payload, &mut payload_bytes)
-        .map_err(|err| McpToolError::InvalidInput(err.to_string()))?;
+    let payload_bytes = canonical_json_bytes(&value);
     let content_hash = blake3::hash(&payload_bytes);
     let observed_at = time::OffsetDateTime::now_utc();
     let draft = EventDraft {

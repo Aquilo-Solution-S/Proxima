@@ -8,7 +8,7 @@ use proxima_core::verbs::query::MemoryStore;
 use proxima_core::{
     AuthPath, AuthzContext, CitationMappingPayload, CitedObjectPayload, Engine, FactPayload,
     FlavorRegistry, Owner, PersonalityInstanceId, Role, SchemaId, SchemaVersion, SourceBatchId,
-    SourceId, StorageError,
+    SourceId, StorageError, canonical_json_bytes,
 };
 use proxima_storage_pg::verbs::event_ingest::{
     ingest_fact_with_citation_atomic, ingest_fact_with_citation_in_tx,
@@ -116,10 +116,9 @@ impl CitationMappingPayload for TestCitationMapping {
     }
 }
 
-fn cbor<T: serde::Serialize>(value: &T) -> Vec<u8> {
-    let mut bytes = Vec::new();
-    ciborium::ser::into_writer(value, &mut bytes).expect("test payload serializes as CBOR");
-    bytes
+fn json<T: serde::Serialize>(value: &T) -> Vec<u8> {
+    let value = serde_json::to_value(value).expect("test payload serializes as JSON");
+    canonical_json_bytes(&value)
 }
 
 fn engine() -> Engine {
@@ -140,7 +139,7 @@ fn draft(owner: &Owner, note: &str, author: Option<PersonalityInstanceId>) -> Ev
         author_personality_instance_id: author,
         schema_id: TestFact::schema_id(),
         schema_version: SchemaVersion::new(TestFact::SCHEMA_VERSION),
-        payload: cbor(&TestFact {
+        payload: json(&TestFact {
             note: note.to_string(),
         }),
         observed_at: now,
@@ -156,7 +155,7 @@ fn cited_object() -> InlineCitedObjectDraft {
     InlineCitedObjectDraft {
         schema_id: TestCitedObject::schema_id(),
         schema_version: SchemaVersion::new(TestCitedObject::SCHEMA_VERSION),
-        payload_bytes: cbor(&payload),
+        payload_bytes: json(&payload),
     }
 }
 
@@ -164,7 +163,7 @@ fn citation_mapping(byte_start: i32, byte_end: i32) -> InlineCitationMappingDraf
     InlineCitationMappingDraft {
         schema_id: TestCitationMapping::schema_id(),
         schema_version: SchemaVersion::new(TestCitationMapping::SCHEMA_VERSION),
-        payload_bytes: cbor(&TestCitationMapping {
+        payload_bytes: json(&TestCitationMapping {
             byte_start,
             byte_end,
         }),

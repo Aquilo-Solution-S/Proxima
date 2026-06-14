@@ -67,7 +67,7 @@ async fn propose_writes_goal_and_motivated_by_atomically() -> Result<(), Box<dyn
         assert_eq!(goal.1, GoalAuthorshipKind::External);
         assert_eq!(goal.2, "ship goal flavor");
         assert_eq!(goal.3, "ship goal flavor");
-        let _: proxima_flavor_goal::SimpleTextGoalV1 = ciborium::de::from_reader(&goal.4[..])?;
+        let _: proxima_flavor_goal::SimpleTextGoalV1 = serde_json::from_slice(&goal.4)?;
 
         let edge_count: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM proxima_core.edges

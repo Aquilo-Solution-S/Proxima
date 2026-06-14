@@ -561,7 +561,7 @@ async fn modify_uses_supplied_payload() -> Result<(), Box<dyn std::error::Error>
         .await?;
         assert_eq!(row.0, "rewritten");
         assert_eq!(row.1, "rewritten");
-        let _: proxima_flavor_goal::SimpleTextGoalV1 = ciborium::de::from_reader(&row.2[..])?;
+        let _: proxima_flavor_goal::SimpleTextGoalV1 = serde_json::from_slice(&row.2)?;
         Ok::<(), Box<dyn std::error::Error>>(())
     }
     .await;
