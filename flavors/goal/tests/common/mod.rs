@@ -67,6 +67,7 @@ pub fn ctx(pg: &PgStorage, owner: Owner) -> McpToolCtx {
             model_id: "test-model".into(),
             client_name: "test".into(),
             client_version: "1".into(),
+            personality_instance_id: None,
             caller_self_perspective: None,
         },
         caller_self_perspective: None,

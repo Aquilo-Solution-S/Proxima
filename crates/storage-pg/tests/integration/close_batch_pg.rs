@@ -61,6 +61,7 @@ fn fresh_draft(owner: Owner, source_batch_id: SourceBatchId) -> EventDraft {
         source_batch_id,
         principal: owner.principal,
         org_id: Some(owner.org_id),
+        author_personality_instance_id: None,
         schema_id: SchemaId::new("test/fact_blob".into()),
         schema_version: SchemaVersion::new(1),
         payload: format!("payload-{}", Uuid::now_v7()).into_bytes(),

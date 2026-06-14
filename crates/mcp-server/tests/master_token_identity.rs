@@ -67,6 +67,7 @@ async fn master_token_call_mints_per_token_self_perspective()
         model_id: "test".into(),
         client_name: "test".into(),
         client_version: "0".into(),
+        personality_instance_id: None,
         caller_self_perspective: None,
     };
 
@@ -97,6 +98,14 @@ async fn master_token_call_mints_per_token_self_perspective()
     assert_eq!(
         mapping_count, 1,
         "call_tool ensure step should have minted exactly one master_token_personality row"
+    );
+    let subject_mapping_count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM proxima_core.subject_personality")
+            .fetch_one(&pool)
+            .await?;
+    assert_eq!(
+        subject_mapping_count, 1,
+        "call_tool should also mint the per-subject author personality"
     );
 
     // Verify: storage now has a per-token shell-author personality for this

@@ -137,6 +137,7 @@ mod tests {
                 model_id: "t".into(),
                 client_name: "t".into(),
                 client_version: "0".into(),
+                personality_instance_id: None,
                 caller_self_perspective: None,
             },
             caller_self_perspective: None,
