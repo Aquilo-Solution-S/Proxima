@@ -85,8 +85,6 @@ impl Default for FlavorRegistry {
         registry.add_fact_schema::<crate::approval::ApprovalPolicyV1>();
         registry.add_fact_schema::<crate::approval::ApprovalVoteV1>();
         registry.add_fact_schema::<crate::approval::ApprovalDecisionV1>();
-        registry.add_fact_schema::<crate::intervention::InterventionRequestedV1>();
-        registry.add_fact_schema::<crate::intervention::InterventionDecisionV1>();
         registry.add_fact_schema::<crate::chat::ChatStartedV1>();
         registry.add_fact_schema::<crate::chat::ChatMessageV1>();
         registry.add_fact_schema::<crate::chat::ChatReplyV1>();
@@ -668,7 +666,7 @@ mod tests {
     }
 
     #[test]
-    fn default_registry_includes_all_33_substrate_mcp_tools() {
+    fn default_registry_includes_all_26_substrate_mcp_tools() {
         let frozen = FlavorRegistry::new().freeze();
         let names: std::collections::HashSet<_> =
             frozen.list_mcp_tools().iter().map(|d| d.name).collect();
@@ -685,19 +683,12 @@ mod tests {
             "core/add_wake_entry",
             "core/update_wake_entry",
             "core/remove_wake_entry",
-            "core/list_embedding_models",
-            "core/get_embedding_active",
-            "core/register_embedding_model",
-            "core/delete_embedding_model",
-            "core/set_embedding_active",
-            "core/clear_embedding_active",
             "core/list_substrate_tools",
             "core/list_schemas",
             "core/list_edge_types",
             "core/emit_approval_policy",
             "core/emit_approval_vote",
             "core/try_emit_approval_decision",
-            "core/emit_intervention_decision",
             "core/list_chat_targets",
             "core/get_chat_thread",
             "core/start_chat",
@@ -712,8 +703,8 @@ mod tests {
         }
         assert!(
             !names.contains("core/emit_budget_decision"),
-            "old intervention tool name must not remain registered"
+            "retired tool name must not remain registered"
         );
-        assert_eq!(names.len(), 33, "exactly 33 substrate tools registered");
+        assert_eq!(names.len(), 26, "exactly 26 substrate tools registered");
     }
 }

@@ -5,11 +5,6 @@ use std::sync::Arc;
 use common::{drop_db, fresh_pg, owner_fixture};
 use proxima_core::authz::{AuthPath, AuthzContext, CapabilitySet, RoleSet, ToolScope};
 use proxima_core::mcp::core_tools::add_wake_entry::{AddWakeEntryArgs, AddWakeEntryTool};
-use proxima_core::mcp::core_tools::embedding_models::{
-    ClearEmbeddingActiveArgs, ClearEmbeddingActiveTool, DeleteEmbeddingModelArgs,
-    DeleteEmbeddingModelTool, RegisterEmbeddingModelArgs, RegisterEmbeddingModelTool,
-    SetEmbeddingActiveArgs, SetEmbeddingActiveTool,
-};
 use proxima_core::mcp::core_tools::remove_wake_entry::{RemoveWakeEntryArgs, RemoveWakeEntryTool};
 use proxima_core::mcp::core_tools::set_read_scope::{SetReadScopeArgs, SetReadScopeTool};
 use proxima_core::mcp::core_tools::update_wake_entry::{
@@ -17,15 +12,14 @@ use proxima_core::mcp::core_tools::update_wake_entry::{
 };
 use proxima_core::mcp::core_tools::wake_entry_input::WakeEntryDraftInput;
 use proxima_core::mcp::{McpAuthorContext, McpTool, McpToolCtx, OutputMode};
-use proxima_core::models::EmbedCaps;
 use proxima_core::personality::{
     InstantiatePersonalityRequest, ListReadScopeRequest, SetWakeEntriesRequest,
 };
 use proxima_core::storage::Storage;
 use proxima_core::verbs::query::MemoryStore;
 use proxima_core::{
-    EmbeddingModelConfig, EmbeddingModelRef, Engine, FlavorRegistry, Owner, PersonalityInstanceId,
-    WakeEntryAuthoredBy, WakeEntryDraft, WakeEntryTriggerKind,
+    Engine, FlavorRegistry, Owner, PersonalityInstanceId, WakeEntryAuthoredBy, WakeEntryDraft,
+    WakeEntryTriggerKind,
 };
 use uuid::Uuid;
 
@@ -118,31 +112,6 @@ async fn wake_labels(
 
 fn assert_admin_denied(err: &proxima_core::mcp::McpToolError) {
     assert!(err.to_string().contains("requires admin role"));
-}
-
-fn embedding_model(vendor: &str, model_id: &str) -> EmbeddingModelConfig {
-    EmbeddingModelConfig {
-        vendor: vendor.into(),
-        model_id: model_id.into(),
-        base_url: format!("https://{vendor}.example.test/v1"),
-        caps: EmbedCaps {
-            dim: 3,
-            matryoshka: false,
-        },
-        secret_ref: None,
-    }
-}
-
-async fn embedding_models(
-    pg: &proxima_storage_pg::PgStorage,
-) -> Result<Vec<EmbeddingModelConfig>, proxima_core::storage::StorageError> {
-    Storage::list_embedding_models(pg).await
-}
-
-async fn embedding_active(
-    pg: &proxima_storage_pg::PgStorage,
-) -> Result<Option<EmbeddingModelRef>, proxima_core::storage::StorageError> {
-    Storage::get_embedding_active(pg).await
 }
 
 #[tokio::test]
@@ -358,203 +327,6 @@ async fn set_read_scope_requires_admin_and_preserves_storage_on_denial()
         .readable_personality_instance_ids,
         vec![readable]
     );
-
-    drop(pg);
-    drop_db(&db_name).await?;
-    Ok(())
-}
-
-#[tokio::test]
-async fn register_embedding_model_requires_admin_and_preserves_storage_on_denial()
--> Result<(), Box<dyn std::error::Error>> {
-    let Some((pg, db_name)) = fresh_pg().await else {
-        return Ok(());
-    };
-    pg.run_migrations().await?;
-    let owner = owner_fixture();
-    let denied_model = embedding_model("denied-register", "embed-small");
-
-    let err = RegisterEmbeddingModelTool::call(
-        ctx(&owner, &pg, non_admin_authz(&owner)),
-        RegisterEmbeddingModelArgs {
-            model: denied_model.clone(),
-        },
-    )
-    .await
-    .expect_err("non-admin register_embedding_model must be denied");
-    assert_admin_denied(&err);
-    assert!(embedding_models(&pg).await?.is_empty());
-    assert_eq!(embedding_active(&pg).await?, None);
-
-    let admin_model = embedding_model("admin-register", "embed-small");
-    let output = RegisterEmbeddingModelTool::call(
-        ctx(
-            &owner,
-            &pg,
-            AuthzContext::single_owner(&owner, AuthPath::System),
-        ),
-        RegisterEmbeddingModelArgs {
-            model: admin_model.clone(),
-        },
-    )
-    .await?;
-    assert_eq!(
-        output.model,
-        EmbeddingModelRef {
-            vendor: admin_model.vendor.clone(),
-            model_id: admin_model.model_id.clone(),
-        }
-    );
-    assert_eq!(embedding_models(&pg).await?, vec![admin_model]);
-    assert_eq!(embedding_active(&pg).await?, None);
-
-    drop(pg);
-    drop_db(&db_name).await?;
-    Ok(())
-}
-
-#[tokio::test]
-async fn delete_embedding_model_requires_admin_and_preserves_storage_on_denial()
--> Result<(), Box<dyn std::error::Error>> {
-    let Some((pg, db_name)) = fresh_pg().await else {
-        return Ok(());
-    };
-    pg.run_migrations().await?;
-    let owner = owner_fixture();
-    let model = embedding_model("delete-gate", "embed-small");
-    let active = EmbeddingModelRef {
-        vendor: model.vendor.clone(),
-        model_id: model.model_id.clone(),
-    };
-    Storage::register_embedding_model(&pg, model.clone()).await?;
-    Storage::set_embedding_active(&pg, &model.vendor, &model.model_id).await?;
-
-    let err = DeleteEmbeddingModelTool::call(
-        ctx(&owner, &pg, non_admin_authz(&owner)),
-        DeleteEmbeddingModelArgs {
-            vendor: model.vendor.clone(),
-            model_id: model.model_id.clone(),
-        },
-    )
-    .await
-    .expect_err("non-admin delete_embedding_model must be denied");
-    assert_admin_denied(&err);
-    assert_eq!(embedding_models(&pg).await?, vec![model.clone()]);
-    assert_eq!(embedding_active(&pg).await?, Some(active));
-
-    let output = DeleteEmbeddingModelTool::call(
-        ctx(
-            &owner,
-            &pg,
-            AuthzContext::single_owner(&owner, AuthPath::System),
-        ),
-        DeleteEmbeddingModelArgs {
-            vendor: model.vendor,
-            model_id: model.model_id,
-        },
-    )
-    .await?;
-    assert!(output.deleted);
-    assert!(embedding_models(&pg).await?.is_empty());
-    assert_eq!(embedding_active(&pg).await?, None);
-
-    drop(pg);
-    drop_db(&db_name).await?;
-    Ok(())
-}
-
-#[tokio::test]
-async fn set_embedding_active_requires_admin_and_preserves_storage_on_denial()
--> Result<(), Box<dyn std::error::Error>> {
-    let Some((pg, db_name)) = fresh_pg().await else {
-        return Ok(());
-    };
-    pg.run_migrations().await?;
-    let owner = owner_fixture();
-    let original = embedding_model("set-gate", "original");
-    let replacement = embedding_model("set-gate", "replacement");
-    let original_active = EmbeddingModelRef {
-        vendor: original.vendor.clone(),
-        model_id: original.model_id.clone(),
-    };
-    let replacement_active = EmbeddingModelRef {
-        vendor: replacement.vendor.clone(),
-        model_id: replacement.model_id.clone(),
-    };
-    Storage::register_embedding_model(&pg, original.clone()).await?;
-    Storage::register_embedding_model(&pg, replacement.clone()).await?;
-    Storage::set_embedding_active(&pg, &original.vendor, &original.model_id).await?;
-
-    let err = SetEmbeddingActiveTool::call(
-        ctx(&owner, &pg, non_admin_authz(&owner)),
-        SetEmbeddingActiveArgs {
-            vendor: replacement.vendor.clone(),
-            model_id: replacement.model_id.clone(),
-        },
-    )
-    .await
-    .expect_err("non-admin set_embedding_active must be denied");
-    assert_admin_denied(&err);
-    assert_eq!(embedding_models(&pg).await?, vec![original, replacement]);
-    assert_eq!(embedding_active(&pg).await?, Some(original_active));
-
-    let output = SetEmbeddingActiveTool::call(
-        ctx(
-            &owner,
-            &pg,
-            AuthzContext::single_owner(&owner, AuthPath::System),
-        ),
-        SetEmbeddingActiveArgs {
-            vendor: replacement_active.vendor.clone(),
-            model_id: replacement_active.model_id.clone(),
-        },
-    )
-    .await?;
-    assert_eq!(output.active, replacement_active);
-    assert_eq!(embedding_active(&pg).await?, Some(replacement_active));
-
-    drop(pg);
-    drop_db(&db_name).await?;
-    Ok(())
-}
-
-#[tokio::test]
-async fn clear_embedding_active_requires_admin_and_preserves_storage_on_denial()
--> Result<(), Box<dyn std::error::Error>> {
-    let Some((pg, db_name)) = fresh_pg().await else {
-        return Ok(());
-    };
-    pg.run_migrations().await?;
-    let owner = owner_fixture();
-    let model = embedding_model("clear-gate", "embed-small");
-    let active = EmbeddingModelRef {
-        vendor: model.vendor.clone(),
-        model_id: model.model_id.clone(),
-    };
-    Storage::register_embedding_model(&pg, model.clone()).await?;
-    Storage::set_embedding_active(&pg, &model.vendor, &model.model_id).await?;
-
-    let err = ClearEmbeddingActiveTool::call(
-        ctx(&owner, &pg, non_admin_authz(&owner)),
-        ClearEmbeddingActiveArgs::default(),
-    )
-    .await
-    .expect_err("non-admin clear_embedding_active must be denied");
-    assert_admin_denied(&err);
-    assert_eq!(embedding_models(&pg).await?, vec![model]);
-    assert_eq!(embedding_active(&pg).await?, Some(active));
-
-    let output = ClearEmbeddingActiveTool::call(
-        ctx(
-            &owner,
-            &pg,
-            AuthzContext::single_owner(&owner, AuthPath::System),
-        ),
-        ClearEmbeddingActiveArgs::default(),
-    )
-    .await?;
-    assert!(output.cleared);
-    assert_eq!(embedding_active(&pg).await?, None);
 
     drop(pg);
     drop_db(&db_name).await?;

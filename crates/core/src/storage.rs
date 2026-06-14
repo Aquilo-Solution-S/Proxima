@@ -10,11 +10,6 @@ use crate::SourceBatchId;
 use crate::approval::ApprovalStore;
 use crate::chat::ChatStore;
 use crate::dependency::MemoryDependency;
-use crate::embedding_settings::{EmbeddingModelConfig, EmbeddingModelRef};
-use crate::intervention::{
-    InterventionContinueCandidate, InterventionRequestPersistInput,
-    InterventionRequestPersistOutcome, InterventionStore,
-};
 use crate::personality::WakeEntryDraft;
 use crate::personality::{
     AbstractionRow, ActiveGoalSummary, ChangeEventForWake, InstantiatePersonalityRequest,
@@ -29,7 +24,6 @@ use crate::verbs::event_history::{EventHistoryRequest, EventHistoryResponse};
 use crate::verbs::event_ingest::{EventDraft, EventIngestOutcome};
 use crate::verbs::goal_write::{GoalDraft, GoalWriteOutcome};
 use crate::verbs::persist_mcp_call::{McpCallLogInput, McpCallLogOutcome};
-use crate::verbs::schema::FlavorRegistryFrozen;
 use crate::verbs::subscribe::ChangeEventStream;
 use crate::{Owner, Principal};
 
@@ -62,7 +56,7 @@ pub struct MasterTokenPersonality {
 }
 
 #[async_trait::async_trait]
-pub trait Storage: ApprovalStore + InterventionStore + ChatStore + Send + Sync {
+pub trait Storage: ApprovalStore + ChatStore + Send + Sync {
     /// Atomic Fact materialization per docs/14 §`EventIngest`.
     /// Single transaction inserting `cited_object`, event,
     /// memory(Fact), `citation_mapping`, `change_event`. Replay
@@ -86,25 +80,6 @@ pub trait Storage: ApprovalStore + InterventionStore + ChatStore + Send + Sync {
         &self,
         input: &McpCallLogInput,
     ) -> Result<McpCallLogOutcome, StorageError>;
-
-    /// Atomic `InterventionRequested` Fact materialization plus routing edge.
-    async fn persist_intervention_requested_atomic(
-        &self,
-        _registry: &FlavorRegistryFrozen,
-        _input: &InterventionRequestPersistInput,
-    ) -> Result<InterventionRequestPersistOutcome, StorageError> {
-        Err(StorageError::Internal(
-            "storage backend does not implement intervention request persistence".into(),
-        ))
-    }
-
-    async fn load_intervention_continue_candidate(
-        &self,
-        _owner: &Owner,
-        _decision_memory_id: crate::MemoryId,
-    ) -> Result<Option<InterventionContinueCandidate>, StorageError> {
-        Ok(None)
-    }
 
     /// Atomic Goal write per docs/14 §`GoalWrite`.
     /// Single transaction inserting goal, `goal_parents`,
@@ -209,54 +184,6 @@ pub trait Storage: ApprovalStore + InterventionStore + ChatStore + Send + Sync {
         principal: &Principal,
         source_batch_id: SourceBatchId,
     ) -> Result<CloseBatchOutcome, StorageError>;
-
-    /// Binary-wide embedding model settings.
-    async fn list_embedding_models(&self) -> Result<Vec<EmbeddingModelConfig>, StorageError> {
-        Err(StorageError::Internal(
-            "storage backend does not implement embedding model settings".into(),
-        ))
-    }
-
-    async fn get_embedding_active(&self) -> Result<Option<EmbeddingModelRef>, StorageError> {
-        Err(StorageError::Internal(
-            "storage backend does not implement embedding model settings".into(),
-        ))
-    }
-
-    async fn register_embedding_model(
-        &self,
-        _model: EmbeddingModelConfig,
-    ) -> Result<(), StorageError> {
-        Err(StorageError::Internal(
-            "storage backend does not implement embedding model settings".into(),
-        ))
-    }
-
-    async fn delete_embedding_model(
-        &self,
-        _vendor: &str,
-        _model_id: &str,
-    ) -> Result<bool, StorageError> {
-        Err(StorageError::Internal(
-            "storage backend does not implement embedding model settings".into(),
-        ))
-    }
-
-    async fn set_embedding_active(
-        &self,
-        _vendor: &str,
-        _model_id: &str,
-    ) -> Result<(), StorageError> {
-        Err(StorageError::Internal(
-            "storage backend does not implement embedding model settings".into(),
-        ))
-    }
-
-    async fn clear_embedding_active(&self) -> Result<bool, StorageError> {
-        Err(StorageError::Internal(
-            "storage backend does not implement embedding model settings".into(),
-        ))
-    }
 
     /// List configured personality instances for an owner. When
     /// `include_tombstoned` is `false` (the default for UI listings),
@@ -425,11 +352,9 @@ pub type StorageHandle = Arc<dyn Storage>;
 #[derive(Debug, Default, Clone)]
 pub struct NoopStorage;
 
-/// `NoopStorage` rejects all writes; the `ApprovalStore` /
-/// `InterventionStore` / `ChatStore` default bodies (errors / empty
-/// reads) are exactly that behavior.
+/// `NoopStorage` rejects all writes; the `ApprovalStore` / `ChatStore`
+/// default bodies (errors / empty reads) are exactly that behavior.
 impl ApprovalStore for NoopStorage {}
-impl InterventionStore for NoopStorage {}
 impl ChatStore for NoopStorage {}
 
 #[async_trait::async_trait]
@@ -445,14 +370,6 @@ impl Storage for NoopStorage {
         &self,
         _input: &McpCallLogInput,
     ) -> Result<McpCallLogOutcome, StorageError> {
-        Err(StorageError::Internal("NoopStorage rejects writes".into()))
-    }
-
-    async fn persist_intervention_requested_atomic(
-        &self,
-        _registry: &FlavorRegistryFrozen,
-        _input: &InterventionRequestPersistInput,
-    ) -> Result<InterventionRequestPersistOutcome, StorageError> {
         Err(StorageError::Internal("NoopStorage rejects writes".into()))
     }
 

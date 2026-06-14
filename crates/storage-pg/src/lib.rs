@@ -44,7 +44,6 @@ mod pg_ident;
 pub mod query {
     pub use crate::verbs::query::MAX_SNAPSHOT_EDGES;
 }
-pub mod settings;
 pub mod verbs;
 
 use outbox::BROADCAST_CAPACITY;
@@ -201,30 +200,6 @@ impl Storage for PgStorage {
         verbs::persist_mcp_call::persist_mcp_call_atomic(&self.pool, input).await
     }
 
-    async fn persist_intervention_requested_atomic(
-        &self,
-        registry: &proxima_core::FlavorRegistryFrozen,
-        input: &proxima_core::InterventionRequestPersistInput,
-    ) -> Result<proxima_core::InterventionRequestPersistOutcome, StorageError> {
-        verbs::persist_intervention_request::persist_intervention_requested_atomic(
-            &self.pool, registry, input,
-        )
-        .await
-    }
-
-    async fn load_intervention_continue_candidate(
-        &self,
-        owner: &Owner,
-        decision_memory_id: MemoryId,
-    ) -> Result<Option<proxima_core::InterventionContinueCandidate>, StorageError> {
-        verbs::consolidate::load_intervention_continue_candidate(
-            &self.pool,
-            owner,
-            decision_memory_id,
-        )
-        .await
-    }
-
     async fn write_goal_atomic(&self, draft: &GoalDraft) -> Result<GoalWriteOutcome, StorageError> {
         verbs::goal_write::write_goal_atomic(&self.pool, draft).await
     }
@@ -296,58 +271,6 @@ impl Storage for PgStorage {
         source_batch_id: SourceBatchId,
     ) -> Result<CloseBatchOutcome, StorageError> {
         verbs::close_batch::close_batch(&self.pool, principal, source_batch_id).await
-    }
-
-    async fn list_embedding_models(
-        &self,
-    ) -> Result<Vec<proxima_core::EmbeddingModelConfig>, StorageError> {
-        settings::list_embedding_models(&self.pool)
-            .await
-            .map(|rows| rows.into_iter().map(embedding_model_to_core).collect())
-            .map_err(settings_error_to_storage)
-    }
-
-    async fn get_embedding_active(
-        &self,
-    ) -> Result<Option<proxima_core::EmbeddingModelRef>, StorageError> {
-        settings::get_embedding_active(&self.pool)
-            .await
-            .map(|active| {
-                active
-                    .map(|(vendor, model_id)| proxima_core::EmbeddingModelRef { vendor, model_id })
-            })
-            .map_err(settings_error_to_storage)
-    }
-
-    async fn register_embedding_model(
-        &self,
-        model: proxima_core::EmbeddingModelConfig,
-    ) -> Result<(), StorageError> {
-        settings::register_embedding_model(&self.pool, embedding_model_from_core(model))
-            .await
-            .map_err(settings_error_to_storage)
-    }
-
-    async fn delete_embedding_model(
-        &self,
-        vendor: &str,
-        model_id: &str,
-    ) -> Result<bool, StorageError> {
-        settings::delete_embedding_model(&self.pool, vendor, model_id)
-            .await
-            .map_err(settings_error_to_storage)
-    }
-
-    async fn set_embedding_active(&self, vendor: &str, model_id: &str) -> Result<(), StorageError> {
-        settings::set_embedding_active(&self.pool, vendor, model_id)
-            .await
-            .map_err(settings_error_to_storage)
-    }
-
-    async fn clear_embedding_active(&self) -> Result<bool, StorageError> {
-        settings::clear_embedding_active(&self.pool)
-            .await
-            .map_err(settings_error_to_storage)
     }
 
     async fn list_personality_instances(
@@ -535,100 +458,5 @@ impl Storage for PgStorage {
             test_request_memory_id,
         )
         .await
-    }
-}
-
-fn settings_error_to_storage(err: settings::SettingsError) -> StorageError {
-    match err {
-        settings::SettingsError::Invariant(msg) => StorageError::ConstraintViolation(msg),
-        settings::SettingsError::Database(err) => crate::error::map_err(err),
-        settings::SettingsError::DuplicateEmbeddingModel { vendor, model_id } => {
-            StorageError::ConstraintViolation(format!(
-                "duplicate embedding model {vendor:?}/{model_id:?}"
-            ))
-        }
-        settings::SettingsError::UnknownEmbeddingModel { vendor, model_id } => {
-            StorageError::ConstraintViolation(format!(
-                "unknown embedding model {vendor:?}/{model_id:?}"
-            ))
-        }
-    }
-}
-
-fn embedding_model_to_core(model: settings::EmbeddingModel) -> proxima_core::EmbeddingModelConfig {
-    proxima_core::EmbeddingModelConfig {
-        vendor: model.vendor,
-        model_id: model.model_id,
-        base_url: model.base_url,
-        caps: model.caps,
-        secret_ref: model.secret_ref,
-    }
-}
-
-fn embedding_model_from_core(
-    model: proxima_core::EmbeddingModelConfig,
-) -> settings::EmbeddingModel {
-    settings::EmbeddingModel {
-        vendor: model.vendor,
-        model_id: model.model_id,
-        base_url: model.base_url,
-        caps: model.caps,
-        secret_ref: model.secret_ref,
-    }
-}
-
-/// Settings registration — see [`mod@settings`] for shape.
-impl PgStorage {
-    /// # Errors
-    /// `SettingsError::Database` for connectivity failures.
-    pub async fn list_embedding_models(
-        &self,
-    ) -> Result<Vec<settings::EmbeddingModel>, settings::SettingsError> {
-        settings::list_embedding_models(&self.pool).await
-    }
-
-    /// # Errors
-    /// `SettingsError::Database` for connectivity failures.
-    pub async fn get_embedding_active(
-        &self,
-    ) -> Result<Option<(String, String)>, settings::SettingsError> {
-        settings::get_embedding_active(&self.pool).await
-    }
-
-    /// # Errors
-    /// `SettingsError::Database` for connectivity failures.
-    /// `SettingsError::DuplicateEmbeddingModel` if (vendor, `model_id`) already exists.
-    pub async fn register_embedding_model(
-        &self,
-        m: settings::EmbeddingModel,
-    ) -> Result<(), settings::SettingsError> {
-        settings::register_embedding_model(&self.pool, m).await
-    }
-
-    /// # Errors
-    /// `SettingsError::Database` for connectivity failures.
-    pub async fn delete_embedding_model(
-        &self,
-        vendor: &str,
-        model_id: &str,
-    ) -> Result<bool, settings::SettingsError> {
-        settings::delete_embedding_model(&self.pool, vendor, model_id).await
-    }
-
-    /// # Errors
-    /// `SettingsError::Database` for connectivity failures.
-    /// `SettingsError::UnknownEmbeddingModel` if (vendor, `model_id`) is not registered.
-    pub async fn set_embedding_active(
-        &self,
-        vendor: &str,
-        model_id: &str,
-    ) -> Result<(), settings::SettingsError> {
-        settings::set_embedding_active(&self.pool, vendor, model_id).await
-    }
-
-    /// # Errors
-    /// `SettingsError::Database` for connectivity failures.
-    pub async fn clear_embedding_active(&self) -> Result<bool, settings::SettingsError> {
-        settings::clear_embedding_active(&self.pool).await
     }
 }

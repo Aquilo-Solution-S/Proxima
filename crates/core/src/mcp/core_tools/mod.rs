@@ -7,7 +7,6 @@
 pub mod add_wake_entry;
 pub mod approval;
 pub mod audit;
-pub mod intervention;
 pub mod payload;
 pub mod remove_wake_entry;
 pub mod set_wake_entries;
@@ -15,7 +14,6 @@ pub mod update_wake_entry;
 pub mod wake_entry_input;
 
 pub mod chat;
-pub mod embedding_models;
 pub mod get_graph;
 pub mod get_personality;
 pub mod instantiate_personality;
@@ -35,14 +33,9 @@ pub use chat::{
     CompactChatThreadTool, EmitChatMessageTool, EmitChatReplyTool, EndChatTool, GetChatThreadTool,
     ListChatTargetsTool, RequestEndChatTool, StartChatTool,
 };
-pub use embedding_models::{
-    ClearEmbeddingActiveTool, DeleteEmbeddingModelTool, GetEmbeddingActiveTool,
-    ListEmbeddingModelsTool, RegisterEmbeddingModelTool, SetEmbeddingActiveTool,
-};
 pub use get_graph::GetGraphTool;
 pub use get_personality::GetPersonalityTool;
 pub use instantiate_personality::InstantiatePersonalityTool;
-pub use intervention::EmitInterventionDecisionTool;
 pub use list_edge_types::ListEdgeTypesTool;
 pub use list_personalities::ListPersonalitiesTool;
 pub use list_read_scope::ListReadScopeTool;
@@ -75,19 +68,12 @@ pub(crate) fn register_all(registry: &mut crate::FlavorRegistry) {
     registry.add_substrate_mcp_tool::<AddWakeEntryTool>();
     registry.add_substrate_mcp_tool::<UpdateWakeEntryTool>();
     registry.add_substrate_mcp_tool::<RemoveWakeEntryTool>();
-    registry.add_substrate_mcp_tool::<ListEmbeddingModelsTool>();
-    registry.add_substrate_mcp_tool::<GetEmbeddingActiveTool>();
-    registry.add_substrate_mcp_tool::<RegisterEmbeddingModelTool>();
-    registry.add_substrate_mcp_tool::<DeleteEmbeddingModelTool>();
-    registry.add_substrate_mcp_tool::<SetEmbeddingActiveTool>();
-    registry.add_substrate_mcp_tool::<ClearEmbeddingActiveTool>();
     registry.add_substrate_mcp_tool::<ListSubstrateToolsTool>();
     registry.add_substrate_mcp_tool::<ListSchemasTool>();
     registry.add_substrate_mcp_tool::<ListEdgeTypesTool>();
     registry.add_substrate_mcp_tool::<EmitApprovalPolicyTool>();
     registry.add_substrate_mcp_tool::<EmitApprovalVoteTool>();
     registry.add_substrate_mcp_tool::<TryEmitApprovalDecisionTool>();
-    registry.add_substrate_mcp_tool::<EmitInterventionDecisionTool>();
     registry.add_substrate_mcp_tool::<ListChatTargetsTool>();
     registry.add_substrate_mcp_tool::<GetChatThreadTool>();
     registry.add_substrate_mcp_tool::<StartChatTool>();
