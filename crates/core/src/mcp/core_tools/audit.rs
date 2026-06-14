@@ -111,6 +111,7 @@ async fn write_fact(ctx: &McpToolCtx, payload: &PersonalityConfigChangedV1) -> R
         schema_id: SchemaId::new(PersonalityConfigChangedV1::SCHEMA_ID.into()),
         schema_version: SchemaVersion::new(PersonalityConfigChangedV1::SCHEMA_VERSION),
         payload: payload_bytes,
+        rendered_text: None,
         observed_at,
         occurred_at: observed_at,
         citation: Some(Citation {

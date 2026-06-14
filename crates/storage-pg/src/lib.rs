@@ -194,6 +194,42 @@ impl Storage for PgStorage {
         verbs::event_ingest::ingest_event_atomic(&self.pool, draft).await
     }
 
+    async fn load_fact_text(
+        &self,
+        owner: &Owner,
+        memory_id: MemoryId,
+    ) -> Result<Option<String>, StorageError> {
+        verbs::fact_embeddings::load_fact_text(&self.pool, owner, memory_id).await
+    }
+
+    async fn upsert_fact_embedding(
+        &self,
+        owner: &Owner,
+        memory_id: MemoryId,
+        model_id: &str,
+        dim: usize,
+        vec: &[f32],
+    ) -> Result<(), StorageError> {
+        let mut tx = self.pool.begin().await.map_err(|err| {
+            StorageError::Internal(format!("begin Fact embedding upsert tx: {err}"))
+        })?;
+        verbs::fact_embeddings::upsert_fact_embedding(
+            &mut tx, owner, memory_id, model_id, dim, vec,
+        )
+        .await?;
+        tx.commit().await.map_err(crate::error::map_err)
+    }
+
+    async fn list_facts_missing_embedding(
+        &self,
+        owner: &Owner,
+        model_id: &str,
+        limit: usize,
+    ) -> Result<Vec<MemoryId>, StorageError> {
+        verbs::fact_embeddings::list_facts_missing_embedding(&self.pool, owner, model_id, limit)
+            .await
+    }
+
     async fn persist_mcp_call_atomic(
         &self,
         input: &McpCallLogInput,

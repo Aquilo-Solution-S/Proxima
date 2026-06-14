@@ -85,6 +85,7 @@ fn fresh_draft(owner: Owner, schema: &str, payload: &[u8]) -> EventDraft {
         schema_id: SchemaId::new(schema.into()),
         schema_version: SchemaVersion::new(1),
         payload: payload.to_vec(),
+        rendered_text: None,
         observed_at: now,
         occurred_at: now,
         citation: Some(Citation {

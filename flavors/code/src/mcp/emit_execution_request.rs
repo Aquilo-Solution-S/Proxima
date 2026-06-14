@@ -1217,6 +1217,7 @@ pub(super) async fn ingest_execution_request(
         schema_id: SchemaId::new(ExecutionRequestV1::SCHEMA_ID.into()),
         schema_version: SchemaVersion::new(ExecutionRequestV1::SCHEMA_VERSION),
         payload: payload_bytes,
+        rendered_text: None,
         observed_at,
         occurred_at: observed_at,
         citation: Some(Citation {
@@ -1283,6 +1284,7 @@ pub(super) async fn ingest_acceptance_criteria(
         schema_id: SchemaId::new(AcceptanceCriteriaV1::SCHEMA_ID.into()),
         schema_version: SchemaVersion::new(AcceptanceCriteriaV1::SCHEMA_VERSION),
         payload: payload_bytes,
+        rendered_text: None,
         observed_at,
         occurred_at: observed_at,
         citation: Some(Citation {
@@ -1341,6 +1343,7 @@ pub(super) async fn ingest_test_request(
         schema_id: SchemaId::new(TestRequestV1::SCHEMA_ID.into()),
         schema_version: SchemaVersion::new(TestRequestV1::SCHEMA_VERSION),
         payload: payload_bytes,
+        rendered_text: None,
         observed_at,
         occurred_at: observed_at,
         citation: Some(Citation {

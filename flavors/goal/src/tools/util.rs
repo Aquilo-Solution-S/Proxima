@@ -826,6 +826,7 @@ where
         schema_id: SchemaId::new(T::SCHEMA_ID.into()),
         schema_version: SchemaVersion::new(T::SCHEMA_VERSION),
         payload: payload_bytes,
+        rendered_text: None,
         observed_at,
         occurred_at: observed_at,
         citation: Some(Citation {

@@ -122,6 +122,7 @@ fn draft(owner: &Owner) -> EventDraft {
         payload: json(&TestFact {
             value: "fact".to_string(),
         }),
+        rendered_text: None,
         observed_at: now,
         occurred_at: now,
         citation: None,
