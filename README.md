@@ -90,9 +90,9 @@ Design source of truth:
   composite crate. No feature flags — the flavor crate is the unit
   of inclusion.
 - [`docs/10-configuration.md`](docs/10-configuration.md) — runtime
-  config surface: Owner-scoped inference targets and tier bindings;
-  wake-entry model routing; env/Codex auth resolution; binary-wide
-  embedding model and active selection.
+  config surface: Postgres / MCP-endpoint / S3 env, MCP authentication
+  modes, and an optional host-injected embedding client for retrieval.
+  Proxima hosts no model loop — no inference targets or tiers.
 - [`docs/11-citations.md`](docs/11-citations.md) — `CitedObject` /
   `CitationMapping` traits; bibliographic provenance; Fact-only
   citation rule.
@@ -105,8 +105,8 @@ Design source of truth:
 - [`docs/14-protocol-surface.md`](docs/14-protocol-surface.md) —
   the engine's contract to clients. Six verbs (Query / Subscribe /
   EventHistory / GoalWrite / EventIngest / Schema), owner-scoped,
-  transport-agnostic; decider, operators, and tool registry stay
-  inside the binary.
+  transport-agnostic; operators and tool registry stay inside the
+  binary.
 - [`docs/dev-perf.md`](docs/dev-perf.md) — perf reducer fixture format.
 
 ## Implementation commitment

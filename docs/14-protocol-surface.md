@@ -215,7 +215,6 @@ Current RPCs outside the six graph verbs:
 | Family | RPCs | Contract |
 |---|---|---|
 | personality lifecycle | `InstantiatePersonality`, `SetWakeEntries`, `ListPersonalityInstances`, `TombstonePersonality` | mutate runtime personality config and wake entries; not graph verbs |
-| inference config | `RegisterInferenceTarget`, `ListInferenceTargets`, `RemoveInferenceTarget`, `BindInferenceTier`, `ListInferenceTierBindings` | owner-scoped model target and tier binding config (see [10](10-configuration.md)) |
 
 `InstantiatePersonality` writes the root self-Perspective and emits
 one Perspective `EntityAppend`. Other personality config mutations do
@@ -314,8 +313,8 @@ Current contract:
 
 ## Out of Scope
 
-- Transport/framing/serialization choices: [09](09-frontend.md).
-- Shell graph store, hydration, and generated bindings: [09](09-frontend.md).
+- Client transport/framing/serialization and any UI graph store: the
+  consumer's concern, built over this surface — Proxima ships no frontend.
 - Runtime registration of schemas/tools/sources/flavors.
 - Local-first durable replica and offline write queue.
 - Compliance operation implementation details: [13](13-compliance.md).
@@ -330,8 +329,7 @@ Current contract:
 - Goal entity and GoalWrite: [06](06-goals-and-self.md).
 - Storage and `change_event`: [07](07-storage.md).
 - Flavor composition: [08](08-core-and-flavors.md).
-- Frontend/client transport: [09](09-frontend.md).
-- Inference config: [10](10-configuration.md).
+- Runtime configuration: [10](10-configuration.md).
 - Compliance primitives: [13](13-compliance.md).
 
 ## Anchors
