@@ -6,8 +6,6 @@
 
 use async_trait::async_trait;
 
-use crate::ModelTier;
-
 pub mod anthropic_http;
 #[cfg(any(test, feature = "test-fixtures"))]
 pub mod scripted;
@@ -108,7 +106,7 @@ pub trait AnthropicClient: Send + Sync + std::fmt::Debug {
     async fn messages_create(&self, request: MessagesRequest)
     -> Result<MessagesResponse, LlmError>;
 
-    fn model_id_for(&self, tier: ModelTier) -> &str;
+    fn model_id(&self) -> &str;
 }
 
 /// Embedding client surface. Concrete impls live outside core.
@@ -118,37 +116,4 @@ pub trait EmbeddingClient: Send + Sync + std::fmt::Debug {
 
     fn model_id(&self) -> &str;
     fn dim(&self) -> usize;
-}
-
-#[must_use]
-pub const fn pricing(tier: ModelTier) -> TokenPricing {
-    match tier {
-        ModelTier::Fast => TokenPricing {
-            input_per_million_usd: 0.25,
-            output_per_million_usd: 1.25,
-        },
-        ModelTier::Standard => TokenPricing {
-            input_per_million_usd: 3.0,
-            output_per_million_usd: 15.0,
-        },
-        ModelTier::Deep => TokenPricing {
-            input_per_million_usd: 15.0,
-            output_per_million_usd: 75.0,
-        },
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct TokenPricing {
-    pub input_per_million_usd: f64,
-    pub output_per_million_usd: f64,
-}
-
-impl TokenPricing {
-    #[must_use]
-    pub fn cost_usd(self, usage: Usage) -> f64 {
-        (f64::from(usage.input_tokens) * self.input_per_million_usd
-            + f64::from(usage.output_tokens) * self.output_per_million_usd)
-            / 1_000_000.0
-    }
 }

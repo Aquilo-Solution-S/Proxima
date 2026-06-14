@@ -200,7 +200,7 @@ async fn wake_shaped_context_denied_ingest_and_admin_but_not_goal_write() {
     );
 
     let admin_err = engine
-        .list_inference_targets(&authz, &owner.principal)
+        .list_personality_instances(&authz, &owner.principal, false)
         .await
         .expect_err("wake context must not touch config verbs");
     assert!(admin_err.to_string().contains("requires admin role"));

@@ -4,7 +4,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{FactPayload, InferenceTargetConfig};
+use crate::FactPayload;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -15,9 +15,6 @@ pub enum PersonalityConfigChangedVerb {
     AddWakeEntry,
     UpdateWakeEntry,
     RemoveWakeEntry,
-    RegisterInferenceTarget,
-    RemoveInferenceTarget,
-    BindInferenceTier,
     SetReadScope,
 }
 
@@ -26,8 +23,6 @@ pub enum PersonalityConfigChangedVerb {
 pub enum PersonalityConfigChangedSubject {
     Personality(uuid::Uuid),
     WakeEntry(uuid::Uuid),
-    InferenceTarget(String),
-    TierBinding(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -75,87 +70,6 @@ pub enum PersonalityConfigChangeSnapshot {
     ReadScope {
         readable_personality_instance_ids: Vec<uuid::Uuid>,
     },
-    TierBinding {
-        tier: String,
-        target_ref: String,
-    },
-    InferenceTarget {
-        config: InferenceTargetConfigSnapshot,
-    },
-    RemovedInferenceTarget,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case", tag = "kind")]
-pub enum InferenceTargetConfigSnapshot {
-    MistralChat {
-        base_url: String,
-        model_id: String,
-        api_key_env: String,
-        temperature: Option<f32>,
-        max_completion_tokens: Option<u32>,
-        reasoning_effort: Option<String>,
-        context_window_tokens: Option<u32>,
-    },
-    OpenAIChat {
-        base_url: String,
-        model_id: String,
-        api_key_env: String,
-        temperature: Option<f32>,
-        max_completion_tokens: Option<u32>,
-        context_window_tokens: Option<u32>,
-    },
-    OpenAIResponses {
-        base_url: String,
-        model_id: String,
-        api_key_env: String,
-        reasoning_effort: Option<String>,
-        context_window_tokens: Option<u32>,
-    },
-    #[serde(rename = "chatgpt_codex")]
-    ChatGPTCodex {
-        base_url: String,
-        model_id: String,
-        reasoning_effort: Option<String>,
-        context_window_tokens: Option<u32>,
-    },
-}
-
-impl From<&InferenceTargetConfig> for InferenceTargetConfigSnapshot {
-    fn from(config: &InferenceTargetConfig) -> Self {
-        match config {
-            InferenceTargetConfig::MistralChat(cfg) => Self::MistralChat {
-                base_url: cfg.base_url.clone(),
-                model_id: cfg.model_id.clone(),
-                api_key_env: cfg.api_key_env.clone(),
-                temperature: cfg.temperature,
-                max_completion_tokens: cfg.max_completion_tokens,
-                reasoning_effort: cfg.reasoning_effort.clone(),
-                context_window_tokens: cfg.context_window_tokens,
-            },
-            InferenceTargetConfig::OpenAIChat(cfg) => Self::OpenAIChat {
-                base_url: cfg.base_url.clone(),
-                model_id: cfg.model_id.clone(),
-                api_key_env: cfg.api_key_env.clone(),
-                temperature: cfg.temperature,
-                max_completion_tokens: cfg.max_completion_tokens,
-                context_window_tokens: cfg.context_window_tokens,
-            },
-            InferenceTargetConfig::OpenAIResponses(cfg) => Self::OpenAIResponses {
-                base_url: cfg.base_url.clone(),
-                model_id: cfg.model_id.clone(),
-                api_key_env: cfg.api_key_env.clone(),
-                reasoning_effort: cfg.reasoning_effort.clone(),
-                context_window_tokens: cfg.context_window_tokens,
-            },
-            InferenceTargetConfig::ChatGPTCodex(cfg) => Self::ChatGPTCodex {
-                base_url: cfg.base_url.clone(),
-                model_id: cfg.model_id.clone(),
-                reasoning_effort: cfg.reasoning_effort.clone(),
-                context_window_tokens: cfg.context_window_tokens,
-            },
-        }
-    }
 }
 
 impl FactPayload for PersonalityConfigChangedV1 {

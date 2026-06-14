@@ -30,10 +30,7 @@ use proxima_core::verbs::query::{
 };
 use proxima_core::verbs::subscribe::ChangeEventStream;
 use proxima_core::{
-    BindInferenceTierRequest, BindInferenceTierResponse, ChangeEvent, GoalId, InferenceTargetRow,
-    InferenceTierBindingRow, MasterTokenPersonality, MemoryDependency, MemoryId, ModelTier, Owner,
-    Principal, RegisterInferenceTargetRequest,
-    RegisterInferenceTargetResponse, RemoveInferenceTargetRequest, RemoveInferenceTargetResponse,
+    ChangeEvent, GoalId, MasterTokenPersonality, MemoryDependency, MemoryId, Owner, Principal,
     SourceBatchId, Storage, StorageError, StorageHandle,
 };
 use sqlx::PgPool;
@@ -301,61 +298,6 @@ impl Storage for PgStorage {
         verbs::close_batch::close_batch(&self.pool, principal, source_batch_id).await
     }
 
-    async fn register_inference_target(
-        &self,
-        req: &RegisterInferenceTargetRequest,
-    ) -> Result<RegisterInferenceTargetResponse, StorageError> {
-        settings::register_inference_target(&self.pool, req)
-            .await
-            .map_err(settings_error_to_storage)
-    }
-
-    async fn list_inference_targets(
-        &self,
-        owner: &Owner,
-    ) -> Result<Vec<InferenceTargetRow>, StorageError> {
-        settings::list_inference_targets(&self.pool, owner)
-            .await
-            .map_err(settings_error_to_storage)
-    }
-
-    async fn remove_inference_target(
-        &self,
-        req: &RemoveInferenceTargetRequest,
-    ) -> Result<RemoveInferenceTargetResponse, StorageError> {
-        settings::remove_inference_target(&self.pool, req)
-            .await
-            .map_err(settings_error_to_storage)
-    }
-
-    async fn bind_inference_tier(
-        &self,
-        req: &BindInferenceTierRequest,
-    ) -> Result<BindInferenceTierResponse, StorageError> {
-        settings::bind_inference_tier(&self.pool, req)
-            .await
-            .map_err(settings_error_to_storage)
-    }
-
-    async fn unbind_inference_tier(
-        &self,
-        owner: &Owner,
-        tier: ModelTier,
-    ) -> Result<(), StorageError> {
-        settings::unbind_inference_tier(&self.pool, owner, tier)
-            .await
-            .map_err(settings_error_to_storage)
-    }
-
-    async fn list_inference_tier_bindings(
-        &self,
-        owner: &Owner,
-    ) -> Result<Vec<InferenceTierBindingRow>, StorageError> {
-        settings::list_inference_tier_bindings(&self.pool, owner)
-            .await
-            .map_err(settings_error_to_storage)
-    }
-
     async fn list_embedding_models(
         &self,
     ) -> Result<Vec<proxima_core::EmbeddingModelConfig>, StorageError> {
@@ -594,17 +536,12 @@ impl Storage for PgStorage {
         )
         .await
     }
-
 }
 
 fn settings_error_to_storage(err: settings::SettingsError) -> StorageError {
     match err {
-        settings::SettingsError::Conflict(msg) | settings::SettingsError::InUse(msg) => {
-            StorageError::ConstraintViolation(msg)
-        }
         settings::SettingsError::Invariant(msg) => StorageError::ConstraintViolation(msg),
         settings::SettingsError::Database(err) => crate::error::map_err(err),
-        settings::SettingsError::Json(err) => StorageError::Internal(err.to_string()),
         settings::SettingsError::DuplicateEmbeddingModel { vendor, model_id } => {
             StorageError::ConstraintViolation(format!(
                 "duplicate embedding model {vendor:?}/{model_id:?}"

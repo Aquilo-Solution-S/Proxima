@@ -16,16 +16,12 @@ pub fn protocol_error_to_status(err: ProtocolError) -> Status {
         CoreErrorCode::UnknownSchema => tonic::Code::InvalidArgument,
         CoreErrorCode::AlreadyIngested
         | CoreErrorCode::IdempotencyConflict
-        | CoreErrorCode::TargetRefConflict
         | CoreErrorCode::TriggerConflict => tonic::Code::AlreadyExists,
         CoreErrorCode::NotFound => tonic::Code::NotFound,
         CoreErrorCode::InvalidArgument | CoreErrorCode::DuplicateTriggerInRequest => {
             tonic::Code::InvalidArgument
         }
-        CoreErrorCode::ToolNotRegistered
-        | CoreErrorCode::InferenceTargetMissing
-        | CoreErrorCode::TierUnbound
-        | CoreErrorCode::TargetInUse => tonic::Code::FailedPrecondition,
+        CoreErrorCode::ToolNotRegistered => tonic::Code::FailedPrecondition,
         CoreErrorCode::Internal => tonic::Code::Internal,
     };
 
@@ -55,10 +51,6 @@ fn pb_error_code_from_core(code: CoreErrorCode) -> PbErrorCode {
         CoreErrorCode::NotFound => PbErrorCode::NotFound,
         CoreErrorCode::InvalidArgument => PbErrorCode::InvalidArgument,
         CoreErrorCode::ToolNotRegistered => PbErrorCode::ToolNotRegistered,
-        CoreErrorCode::InferenceTargetMissing => PbErrorCode::InferenceTargetMissing,
-        CoreErrorCode::TierUnbound => PbErrorCode::TierUnbound,
-        CoreErrorCode::TargetRefConflict => PbErrorCode::TargetRefConflict,
-        CoreErrorCode::TargetInUse => PbErrorCode::TargetInUse,
         CoreErrorCode::TriggerConflict => PbErrorCode::TriggerConflict,
         CoreErrorCode::DuplicateTriggerInRequest => PbErrorCode::DuplicateTriggerInRequest,
         CoreErrorCode::Internal => PbErrorCode::Internal,

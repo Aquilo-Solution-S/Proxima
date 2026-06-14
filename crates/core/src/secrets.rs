@@ -2,8 +2,7 @@
 //!
 //! Embedding model registration (docs/10 §Embedding model: one per binary)
 //! stores optional credentials as `secret_ref` URIs of shape
-//! `<scheme>:<body>`. Current chat inference targets use `api_key_env`
-//! names or provider-specific auth.
+//! `<scheme>:<body>`.
 //! Schemes for v1:
 //!
 //! - `env:NAME` — process environment variable lookup

@@ -5,7 +5,6 @@ use std::sync::Mutex;
 
 use async_trait::async_trait;
 
-use crate::ModelTier;
 use crate::llm::{
     AnthropicClient, ContentBlock, LlmError, MessageRole, MessagesRequest, MessagesResponse, Usage,
 };
@@ -101,7 +100,7 @@ impl AnthropicClient for ScriptedAnthropicClient {
         }
     }
 
-    fn model_id_for(&self, _tier: ModelTier) -> &str {
+    fn model_id(&self) -> &str {
         &self.model_id
     }
 }

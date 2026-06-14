@@ -11,7 +11,6 @@ pub mod engine;
 pub mod error;
 pub mod flavor;
 pub mod ids;
-pub mod inference;
 pub mod intervention;
 pub mod llm;
 pub mod mcp;
@@ -39,13 +38,6 @@ pub use engine::*;
 pub use error::*;
 pub use flavor::*;
 pub use ids::*;
-pub use inference::{
-    BindInferenceTierRequest, BindInferenceTierResponse, ChatGPTCodexConfig, InferenceTargetConfig,
-    InferenceTargetKind, InferenceTargetRow, InferenceTierBindingRow, ListInferenceTargetsRequest,
-    ListInferenceTierBindingsRequest, MistralChatConfig, OpenAIChatConfig, OpenAIResponsesConfig,
-    RegisterInferenceTargetRequest, RegisterInferenceTargetResponse, RemoveInferenceTargetRequest,
-    RemoveInferenceTargetResponse,
-};
 pub use intervention::*;
 pub use llm::*;
 pub use mcp::{

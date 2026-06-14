@@ -1,10 +1,9 @@
 //! `core/get_graph` — single-shot read of the owner's full personality
 //! graph plus the static catalogs that wake-entry config references.
 //!
-//! Composes the data that would otherwise require seven round trips
+//! Composes the data that would otherwise require five round trips
 //! (`list_personalities` + `get_personality` per P, `list_schemas`,
-//! `list_edge_types`, `list_substrate_tools`, `list_inference_targets`,
-//! `list_inference_tier_bindings`) into one atomic response. The
+//! `list_edge_types`, `list_substrate_tools`) into one atomic response. The
 //! personality projection mirrors `get_personality` and the catalog
 //! projections mirror their respective `list_*` tools so the shapes
 //! already familiar to the frontend stay intact.
@@ -19,8 +18,6 @@ use crate::verbs::schema::PayloadKind;
 
 use super::get_personality::{GetPersonalityOutput, GetPersonalityWakeEntry};
 use super::list_edge_types::EdgeTypeItem;
-use super::list_inference_targets::InferenceTargetItem;
-use super::list_inference_tier_bindings::InferenceTierBindingItem;
 use super::list_schemas::SchemaItem;
 use super::list_substrate_tools::SubstrateToolItem;
 
@@ -45,10 +42,6 @@ pub struct GetGraphOutput {
     pub edge_types: Vec<EdgeTypeItem>,
     /// Substrate-pack and flavor-registered MCP tool ids.
     pub substrate_tools: Vec<SubstrateToolItem>,
-    /// Inference targets registered for this owner.
-    pub inference_targets: Vec<InferenceTargetItem>,
-    /// Tier→target bindings for this owner.
-    pub inference_tier_bindings: Vec<InferenceTierBindingItem>,
 }
 
 fn kind_str(k: PayloadKind) -> &'static str {
@@ -66,16 +59,11 @@ fn kind_str(k: PayloadKind) -> &'static str {
 impl McpTool for GetGraphTool {
     const NAME: &'static str = "core/get_graph";
     const DESCRIPTION: &'static str = "Single-shot read of the owner's full personality graph plus the catalogs that wake-entry \
-         config references (schemas, edge types, substrate tools, inference \
-         targets, tier bindings). Use this in place of seven separate list_/get_ round trips when \
+         config references (schemas, edge types, substrate tools). Use this in place of five separate list_/get_ round trips when \
          rendering a graph view. Args: `{\"include_tombstoned\": false}` (default).";
     type Args = GetGraphArgs;
     type Output = GetGraphOutput;
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "single-shot aggregation over seven catalog reads; splitting obscures the one response shape"
-    )]
     fn call(
         ctx: McpToolCtx,
         args: GetGraphArgs,
@@ -164,37 +152,11 @@ impl McpTool for GetGraphTool {
                 });
             }
 
-            let target_rows = storage
-                .list_inference_targets(&ctx.owner)
-                .await
-                .map_err(McpToolError::Storage)?;
-            let inference_targets = target_rows
-                .into_iter()
-                .map(|row| InferenceTargetItem {
-                    target_ref: row.target_ref,
-                    config: serde_json::to_value(&row.config).unwrap_or(serde_json::Value::Null),
-                })
-                .collect();
-
-            let binding_rows = storage
-                .list_inference_tier_bindings(&ctx.owner)
-                .await
-                .map_err(McpToolError::Storage)?;
-            let inference_tier_bindings = binding_rows
-                .into_iter()
-                .map(|row| InferenceTierBindingItem {
-                    tier: format!("{:?}", row.tier),
-                    target_ref: row.target_ref,
-                })
-                .collect();
-
             Ok(GetGraphOutput {
                 personalities,
                 schemas,
                 edge_types,
                 substrate_tools,
-                inference_targets,
-                inference_tier_bindings,
             })
         })
     }
