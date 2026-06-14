@@ -57,7 +57,7 @@ pub(crate) async fn query_memories(
 
     // Build payload projection: for each F/A/P schema with a sidecar
     // table, LEFT JOIN the sidecar and emit a CASE expression that
-    // picks the matching row value for CBOR encoding.
+    // picks the matching row value for JSON encoding.
     //
     // Edge sidecars are keyed on `edge_id`, not `memory_id` — they
     // don't participate in memory queries. Goal sidecars don't either:

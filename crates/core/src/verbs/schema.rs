@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use uuid::Uuid;
 
 pub type PayloadValidator = fn(&serde_json::Value) -> Result<(), String>;
-pub type PayloadCborEncoder = fn(&serde_json::Value) -> Result<Vec<u8>, String>;
+pub type PayloadJsonEncoder = fn(&serde_json::Value) -> Result<Vec<u8>, String>;
 pub type CitedObjectContentHasher = fn(&[u8]) -> Result<[u8; 32], StorageError>;
 pub type SidecarInserter = for<'t> fn(
     &'t mut Transaction<'_, Postgres>,
@@ -73,11 +73,11 @@ pub struct SchemaInfo {
     pub natural_key_columns: Vec<String>,
     /// Build-time tombstone discriminator for stateful Fact schemas.
     pub tombstone: Option<SchemaTombstone>,
-    /// Build-time typed encoder for read-path CBOR projection.
+    /// Build-time typed encoder for read-path canonical JSON projection.
     /// Function pointer is process-local only; not serialized on
     /// Schema responses.
     #[serde(skip)]
-    pub cbor_encoder: Option<PayloadCborEncoder>,
+    pub json_encoder: Option<PayloadJsonEncoder>,
     /// Build-time typed sidecar inserter for inline citation writes.
     /// Function pointer is process-local only; not serialized on
     /// Schema responses.
@@ -92,12 +92,12 @@ impl SchemaInfo {
     /// Construct an *opaque* schema — one with no Rust payload type.
     /// Used for content-addressed `CitedObject`s and structural
     /// `CitationMapping`s whose payload is an opaque blob addressed by
-    /// content hash. An opaque schema carries no validator, no CBOR
+    /// content hash. An opaque schema carries no validator, no JSON
     /// encoder, no JSON schema, and no sidecar table.
     ///
-    /// `cbor_encoder.is_none()` is the typed/opaque discriminant the
+    /// `json_encoder.is_none()` is the typed/opaque discriminant the
     /// registry enforces: `FlavorRegistry::freeze` asserts every schema
-    /// either has both a `cbor_encoder` and a validator, or neither.
+    /// either has both a `json_encoder` and a validator, or neither.
     /// See docs/03 §Registry rules.
     #[must_use]
     pub fn opaque(schema_id: SchemaId, schema_version: SchemaVersion, kind: PayloadKind) -> Self {
@@ -109,7 +109,7 @@ impl SchemaInfo {
             sidecar_table: None,
             natural_key_columns: Vec::new(),
             tombstone: None,
-            cbor_encoder: None,
+            json_encoder: None,
             sidecar_inserter: None,
             cited_object_schema: None,
         }
@@ -302,7 +302,7 @@ impl FlavorRegistryFrozen {
     ///
     /// # Panics
     ///
-    /// Panics if any added schema carries a `cbor_encoder` — typed
+    /// Panics if any added schema carries a `json_encoder` — typed
     /// schemas must be registered through `FlavorRegistry` before
     /// `freeze()`.
     #[must_use]
@@ -317,7 +317,7 @@ impl FlavorRegistryFrozen {
         let added: Vec<SchemaInfo> = schemas.into_iter().collect();
         for schema in &added {
             assert!(
-                schema.cbor_encoder.is_none() && schema.sidecar_inserter.is_none(),
+                schema.json_encoder.is_none() && schema.sidecar_inserter.is_none(),
                 "with_additional_schemas accepts only opaque schemas; \
                  {:?} carries typed process-local functions — register typed schemas \
                  through FlavorRegistry before freeze()",

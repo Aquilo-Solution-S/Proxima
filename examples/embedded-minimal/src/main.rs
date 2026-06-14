@@ -10,6 +10,7 @@ use proxima_core::verbs::event_ingest::{
 use proxima_core::verbs::query::{EntityKind, QueryRequest, QueryResponse};
 use proxima_core::{
     FactPayload, SchemaId, SchemaVersion, SourceBatchId, SourceId, UPLOADED_BLOB_SCHEMA_ID,
+    canonical_json_bytes,
 };
 
 const CORE_CITATION_SCHEMA_ID: &str = "proxima-core/wake-trace-citation-v1";
@@ -29,8 +30,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         source_path: "/example/intake/r-2026-0001.pdf".into(),
         title: "Example invoice".into(),
     };
-    let mut payload_bytes = Vec::new();
-    ciborium::ser::into_writer(&payload, &mut payload_bytes)?;
+    let payload_value = serde_json::to_value(payload)?;
+    let payload_bytes = canonical_json_bytes(&payload_value);
     let content_hash = blake3_hash(&payload_bytes);
     let now = time::OffsetDateTime::now_utc();
     let draft = EventDraft {

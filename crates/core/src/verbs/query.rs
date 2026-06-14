@@ -223,7 +223,7 @@ pub struct MemoryRow {
     pub schema_id: SchemaId,
     pub schema_version: SchemaVersion,
     pub owner: Owner,
-    /// CBOR projection of the sidecar row, populated by storage at read
+    /// Canonical JSON projection of the sidecar row, populated by storage at read
     /// time. Empty when the schema has no sidecar or when an
     /// identity-only query mode is added.
     /// Wire-only field — never persisted (docs/07).

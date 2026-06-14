@@ -24,10 +24,10 @@ pub(super) fn memory_row_from_db(
 
     let schema_id = SchemaId::new(r.schema_id);
     let schema_version = SchemaVersion::new(schema_version);
-    let cbor_encoder = schemas
+    let json_encoder = schemas
         .iter()
         .find(|s| s.schema_id == schema_id && s.schema_version == schema_version)
-        .and_then(|s| s.cbor_encoder);
+        .and_then(|s| s.json_encoder);
 
     Ok(MemoryRow {
         id: MemoryId::new(r.memory_id),
@@ -38,26 +38,23 @@ pub(super) fn memory_row_from_db(
         payload: r
             .payload_json
             .as_deref()
-            .map(|text| json_text_to_cbor(text, cbor_encoder))
+            .map(|text| json_text_to_payload(text, json_encoder))
             .transpose()?
             .unwrap_or_default(),
     })
 }
 
-fn json_text_to_cbor(
+fn json_text_to_payload(
     text: &str,
-    encoder: Option<proxima_core::verbs::schema::PayloadCborEncoder>,
+    encoder: Option<proxima_core::verbs::schema::PayloadJsonEncoder>,
 ) -> Result<Vec<u8>, StorageError> {
     let value: serde_json::Value = serde_json::from_str(text)
         .map_err(|e| StorageError::Internal(format!("invalid payload JSON projection: {e}")))?;
     if let Some(encode) = encoder {
         return encode(&value)
-            .map_err(|e| StorageError::Internal(format!("CBOR payload encode failed: {e}")));
+            .map_err(|e| StorageError::Internal(format!("JSON payload encode failed: {e}")));
     }
-    let mut bytes = Vec::new();
-    ciborium::ser::into_writer(&value, &mut bytes)
-        .map_err(|e| StorageError::Internal(format!("CBOR payload encode failed: {e}")))?;
-    Ok(bytes)
+    Ok(proxima_core::canonical_json_bytes(&value))
 }
 
 pub(super) fn goal_row_from_db(r: GoalRowDb) -> Result<GoalRow, StorageError> {

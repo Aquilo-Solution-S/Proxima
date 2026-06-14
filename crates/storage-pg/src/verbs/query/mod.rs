@@ -12,7 +12,7 @@
 //!
 //! Payload projection: for each schema with a sidecar table, we
 //! LEFT JOIN the sidecar, project the row into a typed JSON value,
-//! then encode the wire payload as CBOR bytes.
+//! then encode the wire payload as canonical JSON bytes.
 
 mod edges;
 mod goals;

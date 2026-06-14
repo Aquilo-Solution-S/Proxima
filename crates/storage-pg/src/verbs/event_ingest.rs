@@ -107,7 +107,7 @@ where
 ///
 /// # Errors
 ///
-/// Returns storage errors from CBOR serialization, authorization/schema
+/// Returns storage errors from JSON serialization, authorization/schema
 /// validation, Fact materialization, or sidecar insertion.
 pub async fn ingest_fact_in_tx<P, F>(
     tx: &mut Transaction<'_, Postgres>,
@@ -124,9 +124,9 @@ where
         &'t EventIngestOutcome,
     ) -> EventIngestSidecarFuture<'t>,
 {
-    let mut payload_bytes = Vec::new();
-    ciborium::ser::into_writer(payload, &mut payload_bytes)
-        .map_err(|e| StorageError::Internal(e.to_string()))?;
+    let payload_value =
+        serde_json::to_value(payload).map_err(|e| StorageError::Internal(e.to_string()))?;
+    let payload_bytes = proxima_core::canonical_json_bytes(&payload_value);
     let now = time::OffsetDateTime::now_utc();
     let draft = EventDraft {
         source_id: SourceId::new("proxima/fact"),

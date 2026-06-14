@@ -25,7 +25,6 @@ thiserror = { workspace = true }
 tokio = { workspace = true, features = ["process", "time"] }
 async-trait = { workspace = true }
 blake3 = { workspace = true }
-ciborium = { workspace = true }
 time = { workspace = true }
 tracing = { workspace = true }
 futures-util = { workspace = true }

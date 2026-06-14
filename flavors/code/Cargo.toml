@@ -13,7 +13,6 @@ name = "proxima_code"
 proxima-core = { path = "../../crates/core" }
 proxima-storage-pg = { path = "../../crates/storage-pg" }
 async-trait = { workspace = true }
-ciborium = { workspace = true }
 futures = { workspace = true }
 schemars = { workspace = true }
 serde = { workspace = true }

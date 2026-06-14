@@ -76,7 +76,7 @@ impl Engine {
     /// Returns `Forbidden` when the context cannot access `draft.principal`,
     /// lacks `role`, or the citation mapping targets a different cited-object
     /// schema; `UnknownSchema` when any schema is absent for the required kind;
-    /// `InvalidArgument` when CBOR payload validation fails; or `Internal` when
+    /// `InvalidArgument` when JSON payload validation fails; or `Internal` when
     /// a registered citation schema has no sidecar inserter.
     pub fn authorize_fact_with_citation(
         &self,
@@ -92,19 +92,17 @@ impl Engine {
 
         // Validate the Fact only by schema-existence, matching
         // `authorize_event_ingest`. The Fact payload is built from a
-        // trusted typed struct, and CBOR->JSON revalidation cannot
-        // represent binary fields (e.g. a Uuid serializes to a CBOR
-        // byte string). The untrusted inputs are the citation payloads
-        // (agent-supplied JSON), which stay fully validated below.
+        // trusted typed struct. The untrusted citation payloads are
+        // agent-supplied JSON, so they stay fully validated below.
         self.ensure_event_ingest_schema(&draft.schema_id, draft.schema_version)?;
-        let cited_object_info = self.validate_cbor_payload(
+        let cited_object_info = self.validate_json_payload(
             &cited_object.schema_id,
             cited_object.schema_version,
             PayloadKind::CitedObject,
             &cited_object.payload_bytes,
             "cited_object.payload_bytes",
         )?;
-        let mapping_info = self.validate_cbor_payload(
+        let mapping_info = self.validate_json_payload(
             &mapping.schema_id,
             mapping.schema_version,
             PayloadKind::CitationMapping,
@@ -181,7 +179,7 @@ impl Engine {
         Ok(())
     }
 
-    fn validate_cbor_payload<'a>(
+    fn validate_json_payload<'a>(
         &'a self,
         schema_id: &crate::SchemaId,
         schema_version: SchemaVersion,
@@ -195,10 +193,9 @@ impl Engine {
             .ok_or_else(|| {
                 ProtocolError::unknown_schema(schema_id.as_str(), schema_version.into_inner())
             })?;
-        let payload: serde_json::Value =
-            ciborium::de::from_reader(std::io::Cursor::new(payload_bytes)).map_err(|e| {
-                ProtocolError::invalid_argument(field, format!("invalid CBOR payload: {e}"))
-            })?;
+        let payload: serde_json::Value = serde_json::from_slice(payload_bytes).map_err(|e| {
+            ProtocolError::invalid_argument(field, format!("invalid JSON payload: {e}"))
+        })?;
         self.registry
             .validate_payload(schema_id, schema_version, kind, &payload)
             .map_err(|e| ProtocolError::invalid_argument(field, e))?;
