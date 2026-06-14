@@ -1,8 +1,8 @@
 //! External-agent Derived memory append verb.
 
 use proxima_core::{
-    EntityKind, MemoryId, MemoryOperatorKind, Owner, OwnerPrincipalKind, Principal, SchemaId,
-    SchemaVersion, StorageError,
+    EntityKind, MemoryId, MemoryOperatorKind, Owner, OwnerPrincipalKind, PersonalityInstanceId,
+    Principal, SchemaId, SchemaVersion, StorageError,
 };
 use sqlx::{Postgres, Transaction};
 
@@ -14,6 +14,7 @@ pub struct DerivedDraft<'a> {
     pub memory_id: uuid::Uuid,
     pub owner: Owner,
     pub kind: EntityKind,
+    pub author_personality_instance_id: Option<PersonalityInstanceId>,
     pub schema_id: SchemaId,
     pub schema_version: SchemaVersion,
     pub text: String,
@@ -40,6 +41,9 @@ pub async fn append_derived_in_tx(
     draft: &DerivedDraft<'_>,
 ) -> Result<DerivedOutcome, StorageError> {
     let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(&draft.owner);
+    let author_personality_instance_id = draft
+        .author_personality_instance_id
+        .map_or_else(uuid::Uuid::nil, PersonalityInstanceId::into_inner);
 
     let inserted: Option<(uuid::Uuid,)> = sqlx::query_as(
         "INSERT INTO proxima_core.memories
@@ -62,7 +66,7 @@ pub async fn append_derived_in_tx(
     .bind(draft.operator_kind)
     .bind(draft.model_id)
     .bind(draft.prompt_version)
-    .bind(uuid::Uuid::nil())
+    .bind(author_personality_instance_id)
     .fetch_optional(&mut **tx)
     .await
     .map_err(map_err)?;
@@ -97,8 +101,8 @@ pub async fn append_derived_in_tx(
         "INSERT INTO proxima_core.change_event
             (seq, owner_principal_kind, owner_principal_id, owner_org_id,
              kind, entity_kind, entity_memory_id, entity_schema_id, entity_schema_version,
-             entity_personality_instance_id, wake_chain_depth)
-         VALUES ($1, $2, $3, $4, 'EntityAppend', $5, $6, $7, $8, $9, 0)",
+             wake_chain_depth)
+         VALUES ($1, $2, $3, $4, 'EntityAppend', $5, $6, $7, $8, 0)",
     )
     .bind(seq)
     .bind(owner_kind)
@@ -108,7 +112,6 @@ pub async fn append_derived_in_tx(
     .bind(draft.memory_id)
     .bind(draft.schema_id.as_str())
     .bind(i32::try_from(draft.schema_version.into_inner()).unwrap_or(1))
-    .bind(uuid::Uuid::nil())
     .execute(&mut **tx)
     .await
     .map_err(map_err)?;

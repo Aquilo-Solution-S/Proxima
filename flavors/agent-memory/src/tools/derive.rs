@@ -169,6 +169,7 @@ impl McpTool for DeriveTool {
                 memory_id,
                 owner: ctx.owner.clone(),
                 kind: args.kind.to_entity_kind(),
+                author_personality_instance_id: ctx.author.personality_instance_id,
                 schema_id: SchemaId::new(AgentDerivationV1::SCHEMA_ID.into()),
                 schema_version: SchemaVersion::new(AgentDerivationV1::SCHEMA_VERSION),
                 text: body.to_string(),
