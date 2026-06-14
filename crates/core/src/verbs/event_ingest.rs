@@ -280,3 +280,59 @@ pub struct EventIngestOutcome {
     /// docs/14 §`EventIngest`: "replay is silently a no-op."
     pub idempotent_replay: bool,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::EventDraft;
+    use crate::{
+        OrgId, Principal, SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId,
+        canonical_json_bytes,
+    };
+    use serde_json::json;
+    use uuid::Uuid;
+
+    fn draft(payload: Vec<u8>) -> EventDraft {
+        let now = time::OffsetDateTime::UNIX_EPOCH;
+        EventDraft {
+            source_id: SourceId::new("test/source"),
+            source_batch_id: SourceBatchId::new(Uuid::nil()),
+            principal: Principal::User(UserId::new(
+                Uuid::parse_str("018f0f4e-6b45-7c00-9bb5-b89b28d9c0a1").expect("uuid literal"),
+            )),
+            org_id: Some(OrgId::new(
+                Uuid::parse_str("018f0f4e-6b45-7c00-9bb5-b89b28d9c0a2").expect("uuid literal"),
+            )),
+            author_personality_instance_id: None,
+            schema_id: SchemaId::new("test/fact".to_string()),
+            schema_version: SchemaVersion::new(1),
+            payload,
+            observed_at: now,
+            occurred_at: now,
+            citation: None,
+        }
+    }
+
+    #[test]
+    fn key_permuted_json_payloads_reencode_to_same_event_id() {
+        let left = json!({
+            "z": {
+                "b": 2,
+                "a": 1
+            },
+            "a": "same"
+        });
+        let right = json!({
+            "a": "same",
+            "z": {
+                "a": 1,
+                "b": 2
+            }
+        });
+
+        let left = draft(canonical_json_bytes(&left));
+        let right = draft(canonical_json_bytes(&right));
+
+        assert_eq!(left.payload, right.payload);
+        assert_eq!(left.event_id(), right.event_id());
+    }
+}

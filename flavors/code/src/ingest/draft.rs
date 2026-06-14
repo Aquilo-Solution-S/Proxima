@@ -1,7 +1,7 @@
 use proxima_core::verbs::event_ingest::{
     Citation as EventCitation, CitationMappingHint, CitedObjectHint, EventDraft,
 };
-use proxima_core::{Owner, SchemaId, SchemaVersion, SourceBatchId, SourceId};
+use proxima_core::{Owner, SchemaId, SchemaVersion, SourceBatchId, SourceId, canonical_json_bytes};
 
 use super::IngestError;
 use super::schemas::LOCAL_GIT_SOURCE_ID;
@@ -25,9 +25,8 @@ pub(super) fn make_draft<P: serde::Serialize>(
     citation: Citation,
     observed_at: time::OffsetDateTime,
 ) -> Result<EventDraft, IngestError> {
-    let mut bytes = Vec::new();
-    ciborium::ser::into_writer(payload, &mut bytes)
-        .map_err(|e| IngestError::Serialize(e.to_string()))?;
+    let value = serde_json::to_value(payload).map_err(|e| IngestError::Serialize(e.to_string()))?;
+    let bytes = canonical_json_bytes(&value);
     Ok(EventDraft {
         source_id: SourceId::new(LOCAL_GIT_SOURCE_ID),
         source_batch_id,

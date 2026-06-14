@@ -13,7 +13,6 @@ workspace = true
 [dependencies]
 proxima-core = { path = "../../crates/core" }
 proxima = { path = "../../crates/proxima" }
-ciborium = { workspace = true }
 blake3 = { workspace = true }
 sqlx = { workspace = true }
 serde = { workspace = true }

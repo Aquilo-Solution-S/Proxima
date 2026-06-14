@@ -17,7 +17,6 @@ tokio = { workspace = true }
 thiserror = { workspace = true }
 uuid = { workspace = true }
 async-trait = { workspace = true }
-ciborium = { workspace = true }
 tracing = { workspace = true }
 futures-util = { workspace = true }
 tokio-stream = { workspace = true }

@@ -23,7 +23,7 @@ use crate::mcp::core_tools::payload::{
     PersonalityConfigChangedSubject, PersonalityConfigChangedV1, PersonalityConfigChangedVerb,
 };
 use crate::verbs::event_ingest::{Citation, CitationMappingHint, CitedObjectHint, EventDraft};
-use crate::{FactPayload, SchemaId, SchemaVersion, SourceBatchId, SourceId};
+use crate::{FactPayload, SchemaId, SchemaVersion, SourceBatchId, SourceId, canonical_json_bytes};
 
 /// Outcome of an audit-emit attempt. Tools surface `Failed` as a
 /// non-fatal warning attached to their successful response (the verb
@@ -97,8 +97,8 @@ async fn write_fact(ctx: &McpToolCtx, payload: &PersonalityConfigChangedV1) -> R
         .storage()
         .ok_or_else(|| "engine storage unavailable".to_string())?;
 
-    let mut payload_bytes = Vec::new();
-    ciborium::ser::into_writer(&payload, &mut payload_bytes).map_err(|e| e.to_string())?;
+    let payload_value = serde_json::to_value(payload).map_err(|e| e.to_string())?;
+    let payload_bytes = canonical_json_bytes(&payload_value);
     let body_hash = blake3::hash(&payload_bytes);
     let observed_at = OffsetDateTime::now_utc();
 

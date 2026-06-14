@@ -1,6 +1,8 @@
 use proxima_core::mcp::{McpTool, McpToolCtx, McpToolError};
 use proxima_core::verbs::event_ingest::EventDraft;
-use proxima_core::{FactPayload, Role, SchemaId, SchemaVersion, SourceBatchId, SourceId};
+use proxima_core::{
+    FactPayload, Role, SchemaId, SchemaVersion, SourceBatchId, SourceId, canonical_json_bytes,
+};
 use proxima_storage_pg::verbs::event_ingest::ingest_event_with_sidecar_in_tx;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -61,9 +63,10 @@ impl McpTool for RecordUtteranceTool {
                 conversation_id: conversation_id.to_string(),
                 text: text.to_string(),
             };
-            let mut payload_bytes = Vec::new();
-            ciborium::ser::into_writer(&payload, &mut payload_bytes)
+            let sidecar = payload.clone();
+            let payload_value = serde_json::to_value(payload)
                 .map_err(|err| McpToolError::InvalidInput(err.to_string()))?;
+            let payload_bytes = canonical_json_bytes(&payload_value);
             let source_instance_id = args
                 .idempotency_key
                 .as_deref()
@@ -95,7 +98,6 @@ impl McpTool for RecordUtteranceTool {
                 .authorize_event_ingest(&ctx.authz, Role::GraphWrite, draft)
                 .map_err(|err| McpToolError::Other(err.to_string()))?;
             let mut tx = ctx.pool.begin().await.map_err(map_storage)?;
-            let sidecar = payload.clone();
             let outcome = ingest_event_with_sidecar_in_tx(&mut tx, &authorized, |tx, outcome| {
                 Box::pin(async move {
                     sqlx::query(

@@ -148,7 +148,7 @@ impl FlavorRegistry {
                     column: t.column.to_string(),
                     value: t.value.to_string(),
                 }),
-                cbor_encoder: Some(encode_payload_cbor::<F>),
+                json_encoder: Some(encode_payload_json::<F>),
                 sidecar_inserter: None,
                 cited_object_schema: None,
             },
@@ -168,7 +168,7 @@ impl FlavorRegistry {
                 sidecar_table: Some(A::sidecar_table().to_string()),
                 natural_key_columns: vec![],
                 tombstone: None,
-                cbor_encoder: Some(encode_payload_cbor::<A>),
+                json_encoder: Some(encode_payload_json::<A>),
                 sidecar_inserter: None,
                 cited_object_schema: None,
             },
@@ -188,7 +188,7 @@ impl FlavorRegistry {
                 sidecar_table: Some(P::sidecar_table().to_string()),
                 natural_key_columns: vec![],
                 tombstone: None,
-                cbor_encoder: Some(encode_payload_cbor::<P>),
+                json_encoder: Some(encode_payload_json::<P>),
                 sidecar_inserter: None,
                 cited_object_schema: None,
             },
@@ -208,7 +208,7 @@ impl FlavorRegistry {
                 sidecar_table: Some(G::sidecar_table().to_string()),
                 natural_key_columns: vec![],
                 tombstone: None,
-                cbor_encoder: Some(encode_payload_cbor::<G>),
+                json_encoder: Some(encode_payload_json::<G>),
                 sidecar_inserter: None,
                 cited_object_schema: None,
             },
@@ -232,7 +232,7 @@ impl FlavorRegistry {
                 sidecar_table: Some(E::sidecar_table().to_string()),
                 natural_key_columns: vec![],
                 tombstone: None,
-                cbor_encoder: Some(encode_payload_cbor::<E>),
+                json_encoder: Some(encode_payload_json::<E>),
                 sidecar_inserter: None,
                 cited_object_schema: None,
             },
@@ -252,7 +252,7 @@ impl FlavorRegistry {
                 sidecar_table: Some(C::sidecar_table().to_string()),
                 natural_key_columns: vec![],
                 tombstone: None,
-                cbor_encoder: Some(encode_payload_cbor::<C>),
+                json_encoder: Some(encode_payload_json::<C>),
                 sidecar_inserter: Some(insert_cited_object_sidecar::<C>),
                 cited_object_schema: None,
             },
@@ -278,7 +278,7 @@ impl FlavorRegistry {
                 sidecar_table: Some(M::sidecar_table().to_string()),
                 natural_key_columns: vec![],
                 tombstone: None,
-                cbor_encoder: Some(encode_payload_cbor::<M>),
+                json_encoder: Some(encode_payload_json::<M>),
                 sidecar_inserter: Some(insert_citation_mapping_sidecar::<M>),
                 cited_object_schema: Some(M::cited_object_schema()),
             },
@@ -291,12 +291,12 @@ impl FlavorRegistry {
     /// Register an *opaque* schema — one with no Rust payload type.
     /// The blessed path for content-addressed `CitedObject`s and
     /// structural `CitationMapping`s whose payload is an opaque blob;
-    /// it carries no validator, no CBOR encoder, and no JSON schema, so
+    /// it carries no validator, no JSON encoder, and no JSON schema, so
     /// `validate_payload` accepts any object payload for it.
     ///
     /// This is the *only* sanctioned way to register an untyped schema.
     /// `freeze()` asserts every other schema is fully typed (matching
-    /// `cbor_encoder` and validator), so a validator dropped by mistake
+    /// `json_encoder` and validator), so a validator dropped by mistake
     /// fails the build rather than silently disabling validation.
     pub fn add_opaque_schema(
         &mut self,
@@ -418,7 +418,7 @@ impl FlavorRegistry {
             }
         }
         self.assert_flavor_descriptors();
-        // Every schema is either typed (a `cbor_encoder` and a matching
+        // Every schema is either typed (a `json_encoder` and a matching
         // validator) or opaque (neither). A typed schema whose validator
         // was dropped would make `validate_payload` silently accept any
         // payload — catch the drift here, not at first write.
@@ -429,14 +429,14 @@ impl FlavorRegistry {
                     && v.kind == schema.kind
             });
             assert!(
-                schema.cbor_encoder.is_some() == has_validator,
+                schema.json_encoder.is_some() == has_validator,
                 "schema {:?} v{:?} {:?}: a typed schema needs both a \
-                 cbor_encoder and a validator, an opaque schema neither \
-                 — found cbor_encoder={}, validator={}",
+                 json_encoder and a validator, an opaque schema neither \
+                 - found json_encoder={}, validator={}",
                 schema.schema_id.as_str(),
                 schema.schema_version.into_inner(),
                 schema.kind,
-                schema.cbor_encoder.is_some(),
+                schema.json_encoder.is_some(),
                 has_validator,
             );
         }
@@ -550,21 +550,20 @@ where
         .map_err(|e| e.to_string())
 }
 
-fn encode_payload_cbor<T>(value: &serde_json::Value) -> Result<Vec<u8>, String>
+fn encode_payload_json<T>(value: &serde_json::Value) -> Result<Vec<u8>, String>
 where
     T: serde::Serialize + serde::de::DeserializeOwned,
 {
     let typed = serde_json::from_value::<T>(value.clone()).map_err(|e| e.to_string())?;
-    let mut bytes = Vec::new();
-    ciborium::ser::into_writer(&typed, &mut bytes).map_err(|e| e.to_string())?;
-    Ok(bytes)
+    let value = serde_json::to_value(typed).map_err(|e| e.to_string())?;
+    Ok(crate::canonical_json_bytes(&value))
 }
 
-fn decode_payload_cbor<T>(bytes: &[u8], schema_id: &str) -> Result<T, crate::StorageError>
+fn decode_payload_json<T>(bytes: &[u8], schema_id: &str) -> Result<T, crate::StorageError>
 where
     T: serde::de::DeserializeOwned,
 {
-    ciborium::de::from_reader(std::io::Cursor::new(bytes)).map_err(|e| {
+    serde_json::from_slice(bytes).map_err(|e| {
         crate::StorageError::Internal(format!("decode sidecar payload {schema_id}: {e}"))
     })
 }
@@ -578,7 +577,7 @@ where
     C: CitedObjectPayload,
 {
     Box::pin(async move {
-        let payload = decode_payload_cbor::<C>(payload_bytes, C::SCHEMA_ID)?;
+        let payload = decode_payload_json::<C>(payload_bytes, C::SCHEMA_ID)?;
         payload.sidecar_insert(tx, sidecar_row_id).await
     })
 }
@@ -589,7 +588,7 @@ fn content_hash_cited_object_payload<C>(
 where
     C: CitedObjectPayload,
 {
-    let payload = decode_payload_cbor::<C>(payload_bytes, C::SCHEMA_ID)?;
+    let payload = decode_payload_json::<C>(payload_bytes, C::SCHEMA_ID)?;
     Ok(payload.idempotency_key())
 }
 
@@ -602,7 +601,7 @@ where
     M: CitationMappingPayload,
 {
     Box::pin(async move {
-        let payload = decode_payload_cbor::<M>(payload_bytes, M::SCHEMA_ID)?;
+        let payload = decode_payload_json::<M>(payload_bytes, M::SCHEMA_ID)?;
         payload.sidecar_insert(tx, sidecar_row_id).await
     })
 }
