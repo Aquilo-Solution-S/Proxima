@@ -6,7 +6,6 @@ use crate::storage::StorageError;
 use crate::verbs::close_batch::CloseBatchOutcome;
 use crate::verbs::event_ingest::{AuthorizedEventIngest, EventDraft, EventIngestOutcome};
 use crate::verbs::persist_mcp_call::{McpCallLogInput, McpCallLogOutcome};
-use crate::verbs::persist_wake_trace::{WakeTracePersistInput, WakeTracePersistOutcome};
 use crate::{Principal, SourceBatchId};
 
 impl Engine {
@@ -76,37 +75,6 @@ impl Engine {
             ));
         }
         Ok(())
-    }
-
-    /// Atomic wake-trace persistence. The storage layer writes the
-    /// Fact, JSONL citation artifact, sidecars, and provenance edges
-    /// in one transaction.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Forbidden` when the context cannot access `input.owner` or
-    /// lacks the graph-write role, or `Internal` when the atomic persist
-    /// fails.
-    pub async fn persist_wake_trace(
-        &self,
-        authz: &AuthzContext,
-        input: WakeTracePersistInput,
-    ) -> Result<WakeTracePersistOutcome, ProtocolError> {
-        super::authorize(authz, &input.owner.principal, Role::GraphWrite)?;
-        self.persist_wake_trace_internal(input)
-            .await
-            .map_err(|e| ProtocolError::internal(e.to_string()))
-    }
-
-    /// Internal wake path. Callers have already resolved wake-token
-    /// authorization.
-    pub(crate) async fn persist_wake_trace_internal(
-        &self,
-        input: WakeTracePersistInput,
-    ) -> Result<WakeTracePersistOutcome, StorageError> {
-        self.storage
-            .persist_wake_trace_atomic(&self.registry, &input)
-            .await
     }
 
     /// Internal bookkeeping path for host-owned MCP activity logs.

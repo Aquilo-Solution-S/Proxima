@@ -5,7 +5,6 @@ pub mod event_history;
 pub mod event_ingest;
 pub mod goal_write;
 pub mod persist_mcp_call;
-pub mod persist_wake_trace;
 pub mod query;
 pub mod schema;
 pub mod subscribe;

@@ -25,7 +25,6 @@ use proxima_core::personality::tools::EmitAbstractionTool;
 use proxima_core::personality::{
     InstantiatePersonalityRequest, PersonalityTool, PersonalityToolContext,
 };
-use proxima_core::storage::Storage;
 use proxima_core::{
     AbstractionPayload, AuthPath, AuthzContext, EntityKind, HandleTable, MemoryId, OrgId, Owner,
     Principal, RelationClass, SourceBatchId, UserId, WakeChainDepth,
@@ -54,6 +53,21 @@ fn test_owner() -> Owner {
         principal: Principal::User(UserId::new(Uuid::now_v7())),
         org_id: OrgId::new(Uuid::now_v7()),
     }
+}
+
+async fn current_root_perspective_memory_id(
+    pg: &PgStorage,
+    instance_id: proxima_core::PersonalityInstanceId,
+) -> Result<MemoryId, Box<dyn std::error::Error>> {
+    let memory_id: Uuid = sqlx::query_scalar(
+        "SELECT current_root_perspective_memory_id
+         FROM proxima_core.personality
+         WHERE personality_instance_id = $1",
+    )
+    .bind(instance_id.into_inner())
+    .fetch_one(pg.pool())
+    .await?;
+    Ok(MemoryId::new(memory_id))
 }
 
 #[derive(Debug)]
@@ -106,11 +120,7 @@ async fn emit_abstraction_writes_core_authored_edge_from_root_perspective() {
                 },
             )
             .await?;
-        let runtime = pg
-            .fetch_personality_runtime(&owner, inst.instance_id)
-            .await?
-            .expect("personality runtime row");
-        let root_id: MemoryId = runtime.current_root_perspective_memory_id;
+        let root_id = current_root_perspective_memory_id(&pg, inst.instance_id).await?;
 
         let now = time::OffsetDateTime::now_utc();
         let commit_payload = CommitV1 {
