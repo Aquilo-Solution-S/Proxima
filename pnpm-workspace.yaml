@@ -1,4 +1,3 @@
 packages:
   - "packages/frontend-core"
-  - "apps/proxima-shell"
   - "flavors/*/frontend"

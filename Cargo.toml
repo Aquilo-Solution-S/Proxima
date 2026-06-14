@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/core", "crates/harness", "crates/mcp-server", "apps/proxima-mcp", "flavors/code", "flavors/agent-memory", "flavors/goal", "crates/llm-openai-compat", "apps/proxima-shell/src-tauri", "crates/storage-pg", "crates/wire-grpc", "crates/codex-auth", "crates/blob-s3", "crates/proxima", "crates/pg-testkit", "examples/embedded-minimal", "tools/dev-migrate"]
+members = ["crates/core", "crates/mcp-server", "apps/proxima-mcp", "flavors/code", "flavors/agent-memory", "flavors/goal", "crates/llm-openai-compat", "crates/storage-pg", "crates/wire-grpc", "crates/blob-s3", "crates/proxima", "crates/pg-testkit", "examples/embedded-minimal", "tools/dev-migrate"]
 
 [workspace.package]
 edition = "2024"
@@ -68,7 +68,7 @@ tauri-plugin-dialog = "2"
 
 # OS-native keychain access for secret_ref resolution (S1.c).
 # Library split: keyring-core holds the API surface; per-OS store
-# crates live in proxima-shell as cfg(target_os) deps and are
+# crates live in shell hosts as cfg(target_os) deps and are
 # wired via `keyring_core::set_default_store(...)` at boot.
 keyring-core = "1"
 

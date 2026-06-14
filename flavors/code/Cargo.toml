@@ -32,7 +32,6 @@ tokio = { workspace = true, features = ["fs", "process"] }
 
 [dev-dependencies]
 proxima-flavor-goal = { path = "../goal" }
-proxima-harness = { path = "../../crates/harness" }
 proxima-mcp-server = { path = "../../crates/mcp-server" }
 proxima-core = { path = "../../crates/core", features = ["test-fixtures"] }
 proxima-pg-testkit = { path = "../../crates/pg-testkit" }
