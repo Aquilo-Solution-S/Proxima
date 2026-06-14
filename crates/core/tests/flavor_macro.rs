@@ -2,7 +2,10 @@
 //! macros in M3.A.1.
 
 use proxima_core::verbs::schema::PayloadKind;
-use proxima_core::{FactPayload, FlavorRegistry, GoalPayload, proxima_flavor, proxima_schema_id};
+use proxima_core::{
+    CitationMappingPayload, CitedObjectPayload, FactPayload, FlavorRegistry, GoalPayload, SchemaId,
+    proxima_flavor, proxima_schema_id,
+};
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct TestFactV1 {
@@ -37,10 +40,49 @@ impl GoalPayload for TestGoalV1 {
     }
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+struct TestCitedObjectV1 {
+    body: Vec<u8>,
+}
+
+impl CitedObjectPayload for TestCitedObjectV1 {
+    const SCHEMA_ID: &'static str = proxima_schema_id!("test-cited-object");
+    const SCHEMA_VERSION: u32 = 1;
+
+    fn sidecar_table() -> &'static str {
+        "cited_object_test_v1"
+    }
+
+    fn idempotency_key(&self) -> [u8; 32] {
+        *blake3::hash(&self.body).as_bytes()
+    }
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct TestCitationMappingV1 {
+    start: u64,
+    end: u64,
+}
+
+impl CitationMappingPayload for TestCitationMappingV1 {
+    const SCHEMA_ID: &'static str = proxima_schema_id!("test-citation-mapping");
+    const SCHEMA_VERSION: u32 = 1;
+
+    fn sidecar_table() -> &'static str {
+        "citation_mapping_test_v1"
+    }
+
+    fn cited_object_schema() -> SchemaId {
+        TestCitedObjectV1::schema_id()
+    }
+}
+
 proxima_flavor! {
     name = "proxima-core",
     fact_schemas = [ TestFactV1 ],
     goal_schemas = [ TestGoalV1 ],
+    cited_object_schemas = [ TestCitedObjectV1 ],
+    citation_mapping_schemas = [ TestCitationMappingV1 ],
 }
 
 #[test]
@@ -51,7 +93,10 @@ fn flavor_macro_registers_fact_schema() {
     let schemas = frozen.list();
     let macro_schemas: Vec<_> = schemas
         .iter()
-        .filter(|s| s.schema_id.as_str().starts_with("proxima-core/test-"))
+        .filter(|s| {
+            matches!(s.kind, PayloadKind::Fact | PayloadKind::Goal)
+                && s.schema_id.as_str().starts_with("proxima-core/test-")
+        })
         .collect();
     assert_eq!(macro_schemas.len(), 2);
     assert_eq!(
@@ -66,6 +111,27 @@ fn flavor_macro_registers_fact_schema() {
     );
     assert_eq!(macro_schemas[1].schema_version.into_inner(), 1);
     assert_eq!(macro_schemas[1].kind, PayloadKind::Goal);
+}
+
+#[test]
+fn flavor_macro_registers_citation_schemas() {
+    let mut registry = FlavorRegistry::new();
+    register(&mut registry);
+    let frozen = registry.freeze();
+    let schemas = frozen.list();
+    let cited_schema = schemas
+        .iter()
+        .find(|s| s.schema_id.as_str() == "proxima-core/test-cited-object")
+        .expect("cited object schema registered");
+    assert_eq!(cited_schema.schema_version.into_inner(), 1);
+    assert_eq!(cited_schema.kind, PayloadKind::CitedObject);
+
+    let citation_mapping_schema = schemas
+        .iter()
+        .find(|s| s.schema_id.as_str() == "proxima-core/test-citation-mapping")
+        .expect("citation mapping schema registered");
+    assert_eq!(citation_mapping_schema.schema_version.into_inner(), 1);
+    assert_eq!(citation_mapping_schema.kind, PayloadKind::CitationMapping);
 }
 
 mod empty_goal_schemas {
