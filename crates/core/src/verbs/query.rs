@@ -66,6 +66,14 @@ pub struct MemorySearchResult {
     pub wake_chain_depth: crate::WakeChainDepth,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct FactCitationReadback {
+    pub citation_mapping_id: uuid::Uuid,
+    pub mapping_schema_id: SchemaId,
+    pub cited_object_id: uuid::Uuid,
+    pub cited_object_schema_id: SchemaId,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum MemoryLineageDirection {
     Ancestors,

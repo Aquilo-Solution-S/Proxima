@@ -179,6 +179,23 @@ pub trait Storage: Send + Sync {
         projections: &[crate::verbs::schema::MemorySearchProjection],
     ) -> Result<Vec<crate::verbs::query::MemorySearchResult>, StorageError>;
 
+    /// Owner-scoped read-back of Fact rows whose citation mapping points at
+    /// one cited object.
+    async fn facts_citing_object(
+        &self,
+        owner: &Owner,
+        cited_object_id: uuid::Uuid,
+        sidecars: &[SidecarSpec],
+    ) -> Result<Vec<crate::personality::MemorySnapshot>, StorageError>;
+
+    /// Owner-scoped inverse read-back from one Fact to its citation mapping
+    /// and cited object, if present.
+    async fn citation_of_fact(
+        &self,
+        owner: &Owner,
+        fact_memory_id: crate::MemoryId,
+    ) -> Result<Option<crate::verbs::query::FactCitationReadback>, StorageError>;
+
     /// Owner-scoped bounded walk over memory-only Provenance and
     /// Supersession edges. Does not traverse Goals or write edges.
     async fn walk_memory_lineage(
@@ -506,6 +523,23 @@ impl Storage for NoopStorage {
         _projections: &[crate::verbs::schema::MemorySearchProjection],
     ) -> Result<Vec<crate::verbs::query::MemorySearchResult>, StorageError> {
         Ok(Vec::new())
+    }
+
+    async fn facts_citing_object(
+        &self,
+        _owner: &Owner,
+        _cited_object_id: uuid::Uuid,
+        _sidecars: &[SidecarSpec],
+    ) -> Result<Vec<crate::personality::MemorySnapshot>, StorageError> {
+        Ok(Vec::new())
+    }
+
+    async fn citation_of_fact(
+        &self,
+        _owner: &Owner,
+        _fact_memory_id: crate::MemoryId,
+    ) -> Result<Option<crate::verbs::query::FactCitationReadback>, StorageError> {
+        Ok(None)
     }
 
     async fn walk_memory_lineage(
