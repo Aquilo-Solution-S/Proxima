@@ -26,6 +26,8 @@ fn stateful_filters_for_schema_returns_all_versions() {
                 value: "Tombstone".into(),
             }),
             cbor_encoder: None,
+            sidecar_inserter: None,
+            cited_object_schema: None,
         },
         SchemaInfo {
             schema_id: schema_id.clone(),
@@ -39,6 +41,8 @@ fn stateful_filters_for_schema_returns_all_versions() {
                 value: "Tombstone".into(),
             }),
             cbor_encoder: None,
+            sidecar_inserter: None,
+            cited_object_schema: None,
         },
         SchemaInfo {
             schema_id: SchemaId::new("test/stateless".into()),
@@ -49,6 +53,8 @@ fn stateful_filters_for_schema_returns_all_versions() {
             natural_key_columns: vec![],
             tombstone: None,
             cbor_encoder: None,
+            sidecar_inserter: None,
+            cited_object_schema: None,
         },
     ]);
 

@@ -105,6 +105,8 @@ mod tests {
                 natural_key_columns: vec![],
                 tombstone: None,
                 cbor_encoder: None,
+                sidecar_inserter: None,
+                cited_object_schema: None,
             },
             SchemaInfo {
                 schema_id: SchemaId::new("test/perspective-v1".to_string()),
@@ -115,6 +117,8 @@ mod tests {
                 natural_key_columns: vec![],
                 tombstone: None,
                 cbor_encoder: None,
+                sidecar_inserter: None,
+                cited_object_schema: None,
             },
             SchemaInfo {
                 schema_id: SchemaId::new("test/shared-v1".to_string()),
@@ -125,6 +129,8 @@ mod tests {
                 natural_key_columns: vec![],
                 tombstone: None,
                 cbor_encoder: None,
+                sidecar_inserter: None,
+                cited_object_schema: None,
             },
             SchemaInfo {
                 schema_id: SchemaId::new("test/shared-v1".to_string()),
@@ -135,6 +141,8 @@ mod tests {
                 natural_key_columns: vec![],
                 tombstone: None,
                 cbor_encoder: None,
+                sidecar_inserter: None,
+                cited_object_schema: None,
             },
         ];
         let relations = vec![RelationDescriptor::substrate(
