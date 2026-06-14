@@ -24,8 +24,8 @@ use proxima_core::personality::{
 use proxima_core::storage::Storage;
 use proxima_core::verbs::query::MemoryStore;
 use proxima_core::{
-    EmbeddingModelConfig, EmbeddingModelRef, Engine, FlavorRegistry, ModelTier, Owner,
-    PersonalityInstanceId, WakeEntryAuthoredBy, WakeEntryDraft, WakeEntryTriggerKind,
+    EmbeddingModelConfig, EmbeddingModelRef, Engine, FlavorRegistry, Owner, PersonalityInstanceId,
+    WakeEntryAuthoredBy, WakeEntryDraft, WakeEntryTriggerKind,
 };
 use uuid::Uuid;
 
@@ -96,10 +96,6 @@ fn wake_entry(
         label,
         WakeEntryAuthoredBy::Any,
         1000,
-        ModelTier::Standard,
-        None,
-        Vec::new(),
-        1,
     )
     .expect("valid wake entry")
 }
@@ -167,17 +163,10 @@ async fn add_wake_entry_requires_admin_and_preserves_storage_on_denial()
             trigger_id: "test/add-denied".into(),
             label: "blocked-add".into(),
             enabled: true,
-            execution_mode: proxima_core::WakeExecutionMode::SubstrateOnly,
             authored_by: WakeEntryAuthoredBy::Any,
             probability_promille: 1000,
             goal_scope: proxima_core::WakeEntryGoalScope::None,
             instructions: String::new(),
-            model_tier: ModelTier::Standard,
-            inference_target_ref: None,
-            substrate_tool_palette: Vec::new(),
-            required_produced_schema_ids: Vec::new(),
-            max_rounds: 1,
-            intervention_policy: None,
         },
     };
 
@@ -195,17 +184,10 @@ async fn add_wake_entry_requires_admin_and_preserves_storage_on_denial()
             trigger_id: "test/add-admin".into(),
             label: "admin-add".into(),
             enabled: true,
-            execution_mode: proxima_core::WakeExecutionMode::SubstrateOnly,
             authored_by: WakeEntryAuthoredBy::Any,
             probability_promille: 1000,
             goal_scope: proxima_core::WakeEntryGoalScope::None,
             instructions: String::new(),
-            model_tier: ModelTier::Standard,
-            inference_target_ref: None,
-            substrate_tool_palette: Vec::new(),
-            required_produced_schema_ids: Vec::new(),
-            max_rounds: 1,
-            intervention_policy: None,
         },
     };
     AddWakeEntryTool::call(

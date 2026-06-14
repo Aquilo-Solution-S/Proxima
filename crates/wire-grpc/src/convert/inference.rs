@@ -3,8 +3,7 @@
 use proxima_core::{
     ChatGPTCodexConfig, InferenceTargetConfig, InferenceTargetRow, InferenceTierBindingRow,
     MistralChatConfig, ModelTier, OpenAIChatConfig, OpenAIResponsesConfig, WakeEntryAuthoredBy,
-    WakeEntryDraft, WakeEntryExecutionMode, WakeEntryGoalScope, WakeEntryRow, WakeEntryTriggerKind,
-    WakeExecutionMode,
+    WakeEntryDraft, WakeEntryGoalScope, WakeEntryRow, WakeEntryTriggerKind,
 };
 use tonic::Status;
 
@@ -61,21 +60,6 @@ pub fn authored_by_to_proto(authored_by: WakeEntryAuthoredBy) -> i32 {
     }
 }
 
-pub fn execution_mode_from_proto(mode: i32) -> Result<WakeExecutionMode, Status> {
-    match pb::ExecutionMode::try_from(mode).unwrap_or(pb::ExecutionMode::Unspecified) {
-        pb::ExecutionMode::SubstrateOnly => Ok(WakeExecutionMode::SubstrateOnly),
-        pb::ExecutionMode::Unspecified => {
-            Err(Status::invalid_argument("execution_mode must be set"))
-        }
-    }
-}
-
-pub fn execution_mode_to_proto(mode: WakeEntryExecutionMode) -> i32 {
-    match mode {
-        WakeEntryExecutionMode::SubstrateOnly => pb::ExecutionMode::SubstrateOnly as i32,
-    }
-}
-
 pub fn goal_scope_from_proto(scope: i32) -> Result<WakeEntryGoalScope, Status> {
     match pb::GoalScope::try_from(scope).unwrap_or(pb::GoalScope::Unspecified) {
         pb::GoalScope::None | pb::GoalScope::Unspecified => Ok(WakeEntryGoalScope::None),
@@ -97,16 +81,10 @@ pub fn wake_entry_to_proto(row: &WakeEntryRow) -> pb::WakeEntry {
         trigger_id: row.trigger_id.clone(),
         label: row.label.clone(),
         enabled: row.enabled,
-        execution_mode: execution_mode_to_proto(row.execution_mode),
         authored_by: authored_by_to_proto(row.authored_by),
         probability_promille: u32::from(row.probability_promille),
-        model_tier: tier_to_proto(row.model_tier),
-        inference_target_ref: row.inference_target_ref.clone(),
-        substrate_tool_palette: row.substrate_tool_palette.clone(),
-        max_rounds: u32::from(row.max_rounds),
         disabled_reason: row.disabled_reason.clone(),
         goal_scope: goal_scope_to_proto(row.goal_scope),
-        required_produced_schema_ids: row.required_produced_schema_ids.clone(),
     }
 }
 
@@ -121,19 +99,11 @@ pub fn wake_entry_draft_from_proto(
         trigger_id: proto.trigger_id,
         label: proto.label,
         enabled: proto.enabled,
-        execution_mode: execution_mode_from_proto(proto.execution_mode)?,
         authored_by: authored_by_from_proto(proto.authored_by)?,
         probability_promille: u16::try_from(proto.probability_promille)
             .map_err(|_| Status::invalid_argument("probability_promille > u16::MAX"))?,
         goal_scope: goal_scope_from_proto(proto.goal_scope)?,
         instructions: String::new(),
-        model_tier: tier_from_proto(proto.model_tier)?,
-        inference_target_ref: proto.inference_target_ref,
-        substrate_tool_palette: proto.substrate_tool_palette,
-        required_produced_schema_ids: proto.required_produced_schema_ids,
-        max_rounds: u16::try_from(proto.max_rounds)
-            .map_err(|_| Status::invalid_argument("max_rounds > u16::MAX"))?,
-        intervention_policy: None,
     })
 }
 

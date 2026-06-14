@@ -14,6 +14,7 @@ pub mod rows;
 pub mod tool;
 pub mod tools;
 pub mod types;
+pub mod wake_validation;
 
 #[allow(clippy::module_inception)]
 pub mod personality;
@@ -27,7 +28,7 @@ pub use personality::{
 // Re-export from types submodule
 pub use types::{
     PersonalityMemoryKind, PersonalityStatus, WakeChainDepth, WakeEntryAuthoredBy,
-    WakeEntryExecutionMode, WakeEntryGoalScope, WakeEntryTriggerKind, WakeExecutionMode,
+    WakeEntryGoalScope, WakeEntryTriggerKind,
 };
 
 // Re-export from drafts submodule
@@ -37,9 +38,7 @@ pub use drafts::{
 };
 
 // Re-export from rows submodule
-pub use rows::{
-    ChangeEventForWake, PersonalityInstanceRow, WakeDispatchEntryRow, WakeEntryRow,
-};
+pub use rows::{ChangeEventForWake, PersonalityInstanceRow, WakeDispatchEntryRow, WakeEntryRow};
 
 // Re-export from context submodule
 pub use context::PersonalityToolContext;
@@ -65,13 +64,12 @@ pub use emit_palette::{
 };
 
 pub use tools::{ActiveGoalSummary, substrate_pack};
+pub use wake_validation::validate_wake_entries_detect_config;
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use uuid::Uuid;
-
-    use crate::ModelTier;
 
     #[test]
     fn wake_entry_accepts_promille_probability() {
@@ -83,20 +81,11 @@ mod tests {
             "on_test_fact",
             WakeEntryAuthoredBy::Any,
             250,
-            ModelTier::Fast,
-            Some("local-cli:codex-spark".to_string()),
-            vec!["core/query".to_string()],
-            4,
         )
         .unwrap();
         assert_eq!(entry.trigger_kind, WakeEntryTriggerKind::OnMemory);
         assert_eq!(entry.trigger_id, "proxima-test/fact-v1");
         assert_eq!(entry.probability_promille, 250);
-        assert_eq!(entry.model_tier, ModelTier::Fast);
-        assert_eq!(
-            entry.inference_target_ref.as_deref(),
-            Some("local-cli:codex-spark")
-        );
     }
 
     #[test]
@@ -109,10 +98,6 @@ mod tests {
             "on_test_fact",
             WakeEntryAuthoredBy::Any,
             1001,
-            ModelTier::Standard,
-            None,
-            Vec::new(),
-            4,
         )
         .unwrap_err();
         assert!(err.to_string().contains("probability_promille"));

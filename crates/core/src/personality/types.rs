@@ -4,8 +4,6 @@
 //! - `WakeChainDepth` - Depth tracking for wake chains
 //! - `WakeEntryTriggerKind` - What triggers a wake entry
 //! - `WakeEntryGoalScope` - Goal scoping for wake entries
-//! - `WakeExecutionMode` - Execution mode for wake entries
-//! - `WakeEntryExecutionMode` - Execution mode variant
 //! - `WakeEntryAuthoredBy` - Who authored a wake entry
 //! - `PersonalityMemoryKind` - Kind of personality memory
 
@@ -109,65 +107,6 @@ impl WakeEntryGoalScope {
         match self {
             Self::None => "none",
             Self::TriggerGoalAssigned => "trigger_goal_assigned",
-        }
-    }
-}
-
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    serde::Serialize,
-    serde::Deserialize,
-    schemars::JsonSchema,
-    sqlx::Type,
-)]
-#[serde(rename_all = "snake_case")]
-#[sqlx(
-    type_name = "proxima_core.wake_execution_mode",
-    rename_all = "snake_case"
-)]
-pub enum WakeExecutionMode {
-    SubstrateOnly,
-}
-
-impl WakeExecutionMode {
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::SubstrateOnly => "substrate_only",
-        }
-    }
-}
-
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    serde::Serialize,
-    serde::Deserialize,
-    specta::Type,
-    schemars::JsonSchema,
-    sqlx::Type,
-)]
-#[serde(rename_all = "snake_case")]
-#[sqlx(
-    type_name = "proxima_core.wake_execution_mode",
-    rename_all = "snake_case"
-)]
-pub enum WakeEntryExecutionMode {
-    SubstrateOnly,
-}
-
-impl WakeEntryExecutionMode {
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::SubstrateOnly => "substrate_only",
         }
     }
 }

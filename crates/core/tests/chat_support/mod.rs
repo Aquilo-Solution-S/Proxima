@@ -5,9 +5,9 @@ use std::sync::Arc;
 use proxima_core::mcp::McpAuthorContext;
 use proxima_core::verbs::query::MemoryStore;
 use proxima_core::{
-    AuthPath, AuthzContext, Engine, FlavorRegistry, McpToolCtx, MemoryId, ModelTier, OutputMode,
-    Owner, OwnerPrincipalKind, Principal, RelationClass, WakeEntryAuthoredBy, WakeEntryDraft,
-    WakeEntryExecutionMode, WakeEntryRow, WakeEntryTriggerKind,
+    AuthPath, AuthzContext, Engine, FlavorRegistry, McpToolCtx, MemoryId, OutputMode, Owner,
+    OwnerPrincipalKind, Principal, RelationClass, WakeEntryAuthoredBy, WakeEntryDraft,
+    WakeEntryRow, WakeEntryTriggerKind,
 };
 use uuid::Uuid;
 
@@ -15,7 +15,7 @@ pub fn wake(
     personality_instance_id: proxima_core::PersonalityInstanceId,
     trigger_id: &str,
     label: &str,
-    substrate_tool_palette: Vec<String>,
+    _palette: Vec<String>,
 ) -> WakeEntryDraft {
     WakeEntryDraft::new(
         Uuid::now_v7(),
@@ -25,10 +25,6 @@ pub fn wake(
         label,
         WakeEntryAuthoredBy::Any,
         1000,
-        ModelTier::Standard,
-        None,
-        substrate_tool_palette,
-        4,
     )
     .expect("wake draft")
 }
@@ -40,17 +36,10 @@ pub fn wake_row(draft: &WakeEntryDraft) -> WakeEntryRow {
         trigger_id: draft.trigger_id.clone(),
         label: draft.label.clone(),
         enabled: draft.enabled,
-        execution_mode: WakeEntryExecutionMode::SubstrateOnly,
         authored_by: draft.authored_by,
         probability_promille: draft.probability_promille,
         goal_scope: draft.goal_scope,
         instructions: draft.instructions.clone(),
-        model_tier: draft.model_tier,
-        inference_target_ref: draft.inference_target_ref.clone(),
-        substrate_tool_palette: draft.substrate_tool_palette.clone(),
-        required_produced_schema_ids: draft.required_produced_schema_ids.clone(),
-        max_rounds: draft.max_rounds,
-        intervention_policy: draft.intervention_policy.clone(),
         disabled_reason: None,
     }
 }

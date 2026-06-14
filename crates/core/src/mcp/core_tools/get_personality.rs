@@ -6,7 +6,6 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::McpTool;
-use crate::intervention::InterventionPolicy;
 use crate::mcp::{McpToolCtx, McpToolError};
 use crate::personality::PersonalityStatus;
 
@@ -30,16 +29,9 @@ pub struct GetPersonalityWakeEntry {
     pub label: String,
     pub enabled: bool,
     pub instructions: String,
-    pub model_tier: String,
-    pub inference_target_ref: Option<String>,
-    pub substrate_tool_palette: Vec<String>,
-    pub required_produced_schema_ids: Vec<String>,
-    pub execution_mode: String,
     pub authored_by: String,
     pub probability_promille: u16,
     pub goal_scope: String,
-    pub max_rounds: u16,
-    pub intervention_policy: Option<InterventionPolicy>,
     pub disabled_reason: Option<String>,
 }
 
@@ -98,16 +90,9 @@ impl McpTool for GetPersonalityTool {
                     label: e.label,
                     enabled: e.enabled,
                     instructions: e.instructions,
-                    model_tier: format!("{:?}", e.model_tier),
-                    inference_target_ref: e.inference_target_ref,
-                    substrate_tool_palette: e.substrate_tool_palette,
-                    required_produced_schema_ids: e.required_produced_schema_ids,
-                    execution_mode: format!("{:?}", e.execution_mode),
                     authored_by: format!("{:?}", e.authored_by),
                     probability_promille: e.probability_promille,
                     goal_scope: e.goal_scope.as_str().to_string(),
-                    max_rounds: e.max_rounds,
-                    intervention_policy: e.intervention_policy,
                     disabled_reason: e.disabled_reason,
                 })
                 .collect();

@@ -12,7 +12,6 @@ use crate::approval::{
 use crate::mcp::{McpTool, McpToolCtx, McpToolError, MemoryHandleClass};
 use crate::personality::{
     PersonalityInstanceId, PersonalityStatus, WakeEntryRow, WakeEntryTriggerKind,
-    writeable_schemas_for_palette,
 };
 use crate::{
     AbstractionPayload, EdgeAuthorshipKind, EdgeId, Engine, EntityKind, FactPayload, GoalId,

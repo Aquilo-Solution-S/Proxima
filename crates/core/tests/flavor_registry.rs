@@ -35,9 +35,7 @@ fn update_wake_entry_patch_schema_is_object() {
         "patch schema must be inline for MCP clients that do not resolve refs: {patch:#}",
     );
     assert!(
-        patch
-            .pointer("/properties/substrate_tool_palette")
-            .is_some(),
+        patch.pointer("/properties/probability_promille").is_some(),
         "patch schema should expose WakeEntryPatch fields: {patch:#}",
     );
 }

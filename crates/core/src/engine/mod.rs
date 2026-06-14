@@ -25,7 +25,7 @@ use crate::{
     BindInferenceTierRequest, BindInferenceTierResponse, InferenceTargetRow,
     InferenceTierBindingRow, Owner, Principal, RegisterInferenceTargetRequest,
     RegisterInferenceTargetResponse, RemoveInferenceTargetRequest, RemoveInferenceTargetResponse,
-    SetWakeEntriesRequest, SetWakeEntriesResponse,
+    SetWakeEntriesRequest, SetWakeEntriesResponse, WakeEntryDraft,
 };
 
 pub use mcp_listener::{EngineMcpListener, RunningMcpListener};
@@ -63,6 +63,25 @@ pub struct EmbeddingReloadOutcome {
 #[derive(Debug)]
 pub struct EngineHandle {
     pub mcp_join: Option<JoinHandle<()>>,
+}
+
+fn map_set_wake_entries_storage_err(
+    err: StorageError,
+    entries: &[WakeEntryDraft],
+) -> ProtocolError {
+    match err {
+        StorageError::NotFound => ProtocolError::not_found("personality instance not found"),
+        StorageError::ConstraintViolation(msg)
+            if msg.contains("personality_wake_entries_active_trigger_uq") =>
+        {
+            let first = entries.first();
+            ProtocolError::trigger_conflict(
+                first.map_or("unknown", |entry| entry.trigger_kind.as_str()),
+                first.map_or("unknown", |entry| entry.trigger_id.as_str()),
+            )
+        }
+        other => ProtocolError::internal(other.to_string()),
+    }
 }
 
 impl Engine {
@@ -227,10 +246,9 @@ impl Engine {
     ///
     /// Returns `Forbidden` when the context cannot access `req.principal` or
     /// lacks the admin role; `InvalidArgument`,
-    /// `DuplicateTriggerInRequest`, `ToolNotRegistered`,
-    /// `InferenceTargetMissing`, or `TierUnbound` on request validation;
-    /// `NotFound` when the personality instance doesn't exist;
-    /// `TriggerConflict` or `Internal` from storage.
+    /// `DuplicateTriggerInRequest` on request validation; `NotFound`
+    /// when the personality instance doesn't exist; `TriggerConflict`
+    /// or `Internal` from storage.
     pub async fn set_wake_entries(
         &self,
         authz: &AuthzContext,
@@ -239,11 +257,11 @@ impl Engine {
         authorize(authz, &req.principal, Role::Admin)?;
         let mut effective = req.clone();
         effective.stamp_owner(authz.scoped_owner(req.principal.clone()));
-        let ctx = crate::inference::set_wake_entries::SetWakeEntriesContext {
-            storage: self.storage.as_ref(),
-            registry: self.registry(),
-        };
-        crate::inference::set_wake_entries::set_wake_entries(&ctx, &effective).await
+        crate::personality::validate_wake_entries_detect_config(&effective.entries)?;
+        self.storage
+            .set_wake_entries(&effective)
+            .await
+            .map_err(|err| map_set_wake_entries_storage_err(err, &effective.entries))
     }
 
     /// Bound MCP URL after [`Engine::start`] succeeds. `None` before

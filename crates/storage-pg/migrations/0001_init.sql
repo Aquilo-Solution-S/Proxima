@@ -1273,28 +1273,15 @@ CREATE TABLE proxima_core.personality_wake_entries (
     trigger_id text NOT NULL,
     label text NOT NULL,
     enabled boolean DEFAULT true NOT NULL,
-    execution_mode proxima_core.wake_execution_mode DEFAULT 'substrate_only'::proxima_core.wake_execution_mode NOT NULL,
     authored_by proxima_core.wake_authored_by DEFAULT 'any'::proxima_core.wake_authored_by NOT NULL,
     probability_promille integer DEFAULT 1000 NOT NULL,
-    model_tier proxima_core.model_tier DEFAULT 'standard'::proxima_core.model_tier NOT NULL,
-    inference_target_ref text,
-    substrate_tool_palette text[] DEFAULT '{}'::text[] NOT NULL,
-    max_rounds integer DEFAULT 4 NOT NULL,
     disabled_reason text,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     tombstoned_at timestamp with time zone,
     goal_scope proxima_core.wake_goal_scope DEFAULT 'none'::proxima_core.wake_goal_scope NOT NULL,
     instructions text DEFAULT ''::text NOT NULL,
-    intervention_personality_instance_id uuid,
-    intervention_extension_rounds integer DEFAULT 0 NOT NULL,
-    intervention_hard_cap_rounds integer DEFAULT 0 NOT NULL,
-    intervention_progress_contract text DEFAULT ''::text NOT NULL,
-    required_produced_schema_ids text[] DEFAULT '{}'::text[] NOT NULL,
-    CONSTRAINT personality_wake_entries_intervention_policy_chk CHECK ((((intervention_personality_instance_id IS NULL) AND (intervention_extension_rounds = 0) AND (intervention_hard_cap_rounds = 0) AND (intervention_progress_contract = ''::text)) OR ((intervention_personality_instance_id IS NOT NULL) AND (intervention_extension_rounds > 0) AND (intervention_hard_cap_rounds >= intervention_extension_rounds) AND (length(intervention_progress_contract) > 0)))),
-    CONSTRAINT personality_wake_entries_intervention_rounds_chk CHECK (((intervention_extension_rounds >= 0) AND (intervention_hard_cap_rounds >= 0))),
-    CONSTRAINT personality_wake_entries_probability_chk CHECK (((probability_promille >= 0) AND (probability_promille <= 1000))),
-    CONSTRAINT personality_wake_entries_rounds_chk CHECK ((max_rounds >= 0))
+    CONSTRAINT personality_wake_entries_probability_chk CHECK (((probability_promille >= 0) AND (probability_promille <= 1000)))
 );
 
 
@@ -2956,4 +2943,3 @@ ALTER TABLE ONLY proxima_core.wake_trace_v1
 --
 -- PostgreSQL database dump complete
 --
-

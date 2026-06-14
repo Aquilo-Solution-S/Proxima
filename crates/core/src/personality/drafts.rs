@@ -10,12 +10,11 @@
 use uuid::Uuid;
 
 use crate::error::ProtocolError;
-use crate::intervention::InterventionPolicy;
 use crate::personality::types::{
     PersonalityMemoryKind, WakeChainDepth, WakeEntryAuthoredBy, WakeEntryGoalScope,
-    WakeEntryTriggerKind, WakeExecutionMode,
+    WakeEntryTriggerKind,
 };
-use crate::{MemoryId, ModelTier, Owner, RegisteredRelation, SchemaId, SchemaVersion};
+use crate::{MemoryId, Owner, RegisteredRelation, SchemaId, SchemaVersion};
 
 use super::personality::{PersonalityInstanceId, PersonalityRef};
 
@@ -27,17 +26,10 @@ pub struct WakeEntryDraft {
     pub trigger_id: String,
     pub label: String,
     pub enabled: bool,
-    pub execution_mode: WakeExecutionMode,
     pub authored_by: WakeEntryAuthoredBy,
     pub probability_promille: u16,
     pub goal_scope: WakeEntryGoalScope,
     pub instructions: String,
-    pub model_tier: ModelTier,
-    pub inference_target_ref: Option<String>,
-    pub substrate_tool_palette: Vec<String>,
-    pub required_produced_schema_ids: Vec<String>,
-    pub max_rounds: u16,
-    pub intervention_policy: Option<InterventionPolicy>,
 }
 
 impl WakeEntryDraft {
@@ -47,7 +39,6 @@ impl WakeEntryDraft {
     ///
     /// Returns `ProtocolError::Internal` when `probability_promille`
     /// exceeds 1000.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         wake_entry_id: Uuid,
         personality_instance_id: PersonalityInstanceId,
@@ -56,10 +47,6 @@ impl WakeEntryDraft {
         label: impl Into<String>,
         authored_by: WakeEntryAuthoredBy,
         probability_promille: u16,
-        model_tier: ModelTier,
-        inference_target_ref: Option<String>,
-        substrate_tool_palette: Vec<String>,
-        max_rounds: u16,
     ) -> Result<Self, ProtocolError> {
         if probability_promille > 1000 {
             return Err(ProtocolError::internal(
@@ -73,17 +60,10 @@ impl WakeEntryDraft {
             trigger_id: trigger_id.into(),
             label: label.into(),
             enabled: true,
-            execution_mode: WakeExecutionMode::SubstrateOnly,
             authored_by,
             probability_promille,
             goal_scope: WakeEntryGoalScope::None,
             instructions: String::new(),
-            model_tier,
-            inference_target_ref,
-            substrate_tool_palette,
-            required_produced_schema_ids: Vec::new(),
-            max_rounds,
-            intervention_policy: None,
         })
     }
 }

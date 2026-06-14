@@ -1,11 +1,9 @@
-use proxima_core::intervention::InterventionPolicy;
 use proxima_core::personality::{
     InstantiatePersonalityRequest, InstantiatePersonalityResponse, PersonalityInstanceId,
     PersonalityInstanceRow, PersonalityStatus, ROOT_PERSONALITY_PERSPECTIVE_SCHEMA_ID,
-    WakeEntryAuthoredBy, WakeEntryExecutionMode, WakeEntryGoalScope, WakeEntryRow,
-    WakeEntryTriggerKind,
+    WakeEntryAuthoredBy, WakeEntryGoalScope, WakeEntryRow, WakeEntryTriggerKind,
 };
-use proxima_core::{MemoryId, ModelTier, Owner, OwnerPrincipalKind, StorageError};
+use proxima_core::{MemoryId, Owner, OwnerPrincipalKind, StorageError};
 use sqlx::PgPool;
 
 use super::rows::owner_columns;
@@ -46,18 +44,10 @@ pub async fn list_personality_instances(
                 wake_entry_id,
                 trigger_kind,
                 trigger_id, label, enabled,
-                execution_mode,
                 authored_by,
                 probability_promille,
                 goal_scope,
                 instructions,
-                model_tier,
-                inference_target_ref, substrate_tool_palette,
-                required_produced_schema_ids, max_rounds,
-                intervention_personality_instance_id,
-                intervention_extension_rounds,
-                intervention_hard_cap_rounds,
-                intervention_progress_contract,
                 disabled_reason
            FROM proxima_core.personality_wake_entries
            WHERE owner_principal_kind = $1
@@ -85,22 +75,10 @@ pub async fn list_personality_instances(
             trigger_id: row.trigger_id,
             label: row.label,
             enabled: row.enabled,
-            execution_mode: row.execution_mode,
             authored_by: row.authored_by,
             probability_promille: u16::try_from(row.probability_promille).unwrap_or(0),
             goal_scope: row.goal_scope,
             instructions: row.instructions,
-            model_tier: row.model_tier,
-            inference_target_ref: row.inference_target_ref,
-            substrate_tool_palette: row.substrate_tool_palette,
-            required_produced_schema_ids: row.required_produced_schema_ids,
-            max_rounds: u16::try_from(row.max_rounds).unwrap_or(1),
-            intervention_policy: intervention_policy_from_parts(
-                row.intervention_personality_instance_id,
-                row.intervention_extension_rounds,
-                row.intervention_hard_cap_rounds,
-                row.intervention_progress_contract,
-            ),
             disabled_reason: row.disabled_reason,
         });
     }
@@ -128,38 +106,11 @@ struct WakeEntryProjectionRow {
     trigger_id: String,
     label: String,
     enabled: bool,
-    execution_mode: WakeEntryExecutionMode,
     authored_by: WakeEntryAuthoredBy,
     probability_promille: i32,
     goal_scope: WakeEntryGoalScope,
     instructions: String,
-    model_tier: ModelTier,
-    inference_target_ref: Option<String>,
-    substrate_tool_palette: Vec<String>,
-    required_produced_schema_ids: Vec<String>,
-    max_rounds: i32,
-    intervention_personality_instance_id: Option<uuid::Uuid>,
-    intervention_extension_rounds: i32,
-    intervention_hard_cap_rounds: i32,
-    intervention_progress_contract: String,
     disabled_reason: Option<String>,
-}
-
-fn intervention_policy_from_parts(
-    intervention_personality_instance_id: Option<uuid::Uuid>,
-    intervention_extension_rounds: i32,
-    intervention_hard_cap_rounds: i32,
-    intervention_progress_contract: String,
-) -> Option<InterventionPolicy> {
-    intervention_personality_instance_id.map(|intervention_personality_instance_id| {
-        InterventionPolicy {
-            intervention_personality_instance_id,
-            intervention_extension_rounds: u16::try_from(intervention_extension_rounds)
-                .unwrap_or(0),
-            intervention_hard_cap_rounds: u16::try_from(intervention_hard_cap_rounds).unwrap_or(0),
-            intervention_progress_contract,
-        }
-    })
 }
 
 pub async fn instantiate_personality(
