@@ -26,8 +26,8 @@ use proxima_core::verbs::fact_cleanup::CleanupDueFactsOutcome;
 use proxima_core::verbs::goal_write::{GoalDraft, GoalWriteOutcome};
 use proxima_core::verbs::persist_mcp_call::{McpCallLogInput, McpCallLogOutcome};
 use proxima_core::verbs::query::{
-    MemoryLineageRequest, MemoryLineageResponse, MemorySearchRequest, MemorySearchResult,
-    QueryRequest, QueryResponse,
+    FactCitationReadback, MemoryLineageRequest, MemoryLineageResponse, MemorySearchRequest,
+    MemorySearchResult, QueryRequest, QueryResponse,
 };
 use proxima_core::verbs::subscribe::ChangeEventStream;
 use proxima_core::{
@@ -278,6 +278,23 @@ impl Storage for PgStorage {
         projections: &[proxima_core::verbs::schema::MemorySearchProjection],
     ) -> Result<Vec<MemorySearchResult>, StorageError> {
         verbs::query::search_memories(&self.pool, req, projections).await
+    }
+
+    async fn facts_citing_object(
+        &self,
+        owner: &Owner,
+        cited_object_id: uuid::Uuid,
+        sidecars: &[SidecarSpec],
+    ) -> Result<Vec<MemorySnapshot>, StorageError> {
+        verbs::query::facts_citing_object(&self.pool, owner, cited_object_id, sidecars).await
+    }
+
+    async fn citation_of_fact(
+        &self,
+        owner: &Owner,
+        fact_memory_id: MemoryId,
+    ) -> Result<Option<FactCitationReadback>, StorageError> {
+        verbs::query::citation_of_fact(&self.pool, owner, fact_memory_id).await
     }
 
     async fn walk_memory_lineage(

@@ -6,10 +6,14 @@
 
 pub mod add_wake_entry;
 pub mod audit;
+pub mod citation_of_fact;
 pub mod cleanup_facts;
 pub mod clear_fact_retention;
+pub mod facts_citing_object;
+pub mod fetch_memory;
 pub mod payload;
 pub mod remove_wake_entry;
+pub mod search_memories;
 pub mod set_wake_entries;
 pub mod update_wake_entry;
 pub mod wake_entry_input;
@@ -32,8 +36,11 @@ pub mod walk_memory_lineage;
 
 pub use add_wake_entry::AddWakeEntryTool;
 pub use audit::{AuditEmit, emit_personality_config_changed};
+pub use citation_of_fact::CitationOfFactTool;
 pub use cleanup_facts::CleanupFactsTool;
 pub use clear_fact_retention::ClearFactRetentionTool;
+pub use facts_citing_object::FactsCitingObjectTool;
+pub use fetch_memory::FetchMemoryTool;
 pub use get_fact_retention::GetFactRetentionTool;
 pub use get_graph::GetGraphTool;
 pub use get_memory::GetMemoryTool;
@@ -50,6 +57,7 @@ pub use payload::{
     PersonalityConfigChangedVerb,
 };
 pub use remove_wake_entry::RemoveWakeEntryTool;
+pub use search_memories::SearchMemoriesTool;
 pub use set_fact_retention::SetFactRetentionTool;
 pub use set_read_scope::SetReadScopeTool;
 pub use set_wake_entries::SetWakeEntriesTool;
@@ -65,6 +73,10 @@ pub(crate) fn register_all(registry: &mut crate::FlavorRegistry) {
     registry.add_substrate_mcp_tool::<GetPersonalityTool>();
     registry.add_substrate_mcp_tool::<GetGraphTool>();
     registry.add_substrate_mcp_tool::<GetMemoryTool>();
+    registry.add_substrate_mcp_tool::<FetchMemoryTool>();
+    registry.add_substrate_mcp_tool::<SearchMemoriesTool>();
+    registry.add_substrate_mcp_tool::<FactsCitingObjectTool>();
+    registry.add_substrate_mcp_tool::<CitationOfFactTool>();
     registry.add_substrate_mcp_tool::<WalkMemoryLineageTool>();
     registry.add_substrate_mcp_tool::<InstantiatePersonalityTool>();
     registry.add_substrate_mcp_tool::<TombstonePersonalityTool>();
