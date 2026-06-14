@@ -3,25 +3,37 @@
 Current runtime configuration contract. Build-time registration owns
 schemas, relations, prompts, tools, source types, wake filters, and
 personality types (see [08](08-core-and-flavors.md)). Runtime config
-selects concrete inference targets, tier bindings, embedding endpoint,
-credentials, and deployment-level artefact storage.
+selects the Postgres connection, the MCP endpoint and its authentication,
+deployment-level artefact storage, and an optional host-injected
+embedding client for retrieval.
+
+Proxima hosts no model loop. It does not register inference targets,
+model tiers, or LLM credentials — external harnesses own model
+selection. The only LLM-adjacent runtime knob is the embedding client a
+host injects for vector retrieval.
 
 <a id="scope"></a>
 ## Scope
 
 | Surface | Scope | Current contract |
 |---|---|---|
-| Chat inference target | per Owner | `target_ref -> InferenceTargetConfig` |
-| Chat tier binding | per Owner | `ModelTier -> target_ref` |
-| Wake entry routing | per Owner | optional `inference_target_ref`, else `model_tier` |
-| Embedding model | binary-wide | registered `(vendor, model_id)` rows |
-| Active embedding model | binary-wide | singleton `(vendor, model_id)` |
+| Postgres connection | binary-wide | `DATABASE_URL` |
+| Owner org id | binary-wide default | `PROXIMA_ORG_ID` (when no explicit Owner) |
+| MCP endpoint | binary-wide | bind addr, network exposure, origin allowlist |
+| MCP authentication | per request | host `Authenticator`, master token, or insecure single-owner |
+| Embedding client | binary-wide | optional `Arc<dyn EmbeddingClient>` injected at boot |
 | Large artefact S3 storage | binary-wide | process env + AWS SDK credential chain |
-| EventSource credentials | per source instance | source-owned, not LLM-owned |
+| EventSource credentials | per source instance | source-owned, not engine-owned |
 
 Not runtime configurable: schema ids, payload types, relation
 descriptors, prompts, tool definitions, source types, wake-filter kinds,
 and personality type registration.
+
+Wake **config** (a personality's detect rule — trigger schema_id +
+authored_by, probability, read-scope, target) is per-personality data,
+edited through the core MCP wake-config tools, not an env/boot surface.
+See [08](08-core-and-flavors.md) and the protocol surface
+[14](14-protocol-surface.md).
 
 <a id="framework-facade-host-app-boot"></a>
 ## Framework facade (host-app boot)
@@ -32,11 +44,14 @@ Proxima::<App>::app().from_env().authenticator(auth).run().await?;
 
 | Env var | Meaning |
 |---|---|
-| `DATABASE_URL` | Postgres connection for core tables. |
+| `DATABASE_URL` | Postgres connection for core tables (`proxima_core` schema). |
 | `PROXIMA_ORG_ID` | Host-app Owner org id when no explicit Owner is supplied. |
 | `PROXIMA_MCP_BIND` | MCP socket address; enables the listener when set. |
-| `PROXIMA_EXPOSE_NETWORK` | Network exposure gate for non-loopback hosts. |
+| `PROXIMA_MCP_MASTER_TOKEN` | Master bearer token for MCP when no host authenticator is wired. |
+| `PROXIMA_EXPOSE_NETWORK` | Network exposure gate for non-loopback binds. |
 | `PROXIMA_ALLOWED_ORIGINS` | Comma-separated MCP origin allowlist. |
+| `PROXIMA_STREAM_MAX_LIFETIME` | Max lifetime (seconds) of a subscribe stream. |
+| `PROXIMA_STREAM_EPOCH_INTERVAL` | Stream epoch re-check interval (seconds). |
 | `PROXIMA_S3_BUCKET` | Enables cited-blob S3 storage. |
 | `PROXIMA_S3_REGION` | S3 region for cited-blob storage. |
 | `PROXIMA_S3_ENDPOINT_URL` | Optional S3-compatible endpoint URL. |
@@ -44,270 +59,81 @@ Proxima::<App>::app().from_env().authenticator(auth).run().await?;
 | `PROXIMA_S3_UPLOAD_TTL_SECONDS` | Presigned upload URL TTL. |
 | `PROXIMA_S3_READ_TTL_SECONDS` | Presigned read URL TTL. |
 
-Defaults, precedence (`configure < env < explicit`), and the
-fail-closed network matrix are specified by `crates/proxima` rustdoc:
+Builder methods override env per field. Defaults, precedence
+(`configure < env < explicit`), and the fail-closed network/auth matrix
+are specified by `crates/proxima` rustdoc:
 [`RuntimeBuilder`](../crates/proxima/src/runtime_config.rs),
 [`RuntimeConfig::validate`](../crates/proxima/src/runtime_config.rs),
-and [`Proxima<A>`](../crates/proxima/src/runtime.rs).
+[`EmbedConfig`](../crates/proxima/src/config.rs), and
+[`Proxima<A>`](../crates/proxima/src/runtime.rs).
 
-<a id="config-file"></a>
-## Config File
+<a id="mcp-endpoint-and-auth"></a>
+## MCP Endpoint and Authentication
 
-`AppConfig` is the Shell settings DTO for import/export/readback. The
-authoritative runtime source is Postgres settings tables:
+The Streamable HTTP MCP listener turns on when `PROXIMA_MCP_BIND` (or
+`with_mcp()` / `mcp_bind(..)`) is set. A non-loopback bind requires
+`PROXIMA_EXPOSE_NETWORK`. `validate()` fails closed unless one auth mode
+is present:
 
-| Table | Scope |
-|---|---|
-| `proxima_core.inference_targets` | per Owner |
-| `proxima_core.inference_tier_bindings` | per Owner |
-| `proxima_core.embedding_models` | binary-wide |
-| `proxima_core.embedding_active` | binary-wide singleton |
-
-Representative TOML shape:
-
-```toml
-[inference.inference_tier_bindings]
-fast = "local-fast"
-standard = "standard-chat"
-deep = "codex-deep"
-
-[[inference.targets]]
-target_ref = "standard-chat"
-
-[inference.targets.config]
-kind = "openai_responses"
-base_url = "https://api.openai.com/v1"
-model_id = "gpt-5.2"
-api_key_env = "OPENAI_API_KEY"
-reasoning_effort = "medium"
-
-[[inference.targets]]
-target_ref = "mistral-code"
-
-[inference.targets.config]
-kind = "mistral_chat"
-base_url = "https://api.mistral.ai"
-model_id = "mistral-medium-3-5"
-api_key_env = "MISTRAL_API_KEY"
-reasoning_effort = "high"
-
-[[inference.targets]]
-target_ref = "codex-deep"
-
-[inference.targets.config]
-kind = "chatgpt_codex"
-base_url = "https://chatgpt.com/backend-api/codex"
-model_id = "gpt-5.3-codex"
-reasoning_effort = "high"
-
-[[embedding.models]]
-vendor = "openai"
-model_id = "text-embedding-3-small"
-base_url = "https://api.openai.com/v1"
-secret_ref = "keychain:proxima:openai_api_key"
-caps = { dim = 1536, matryoshka = true }
-
-[embedding.active]
-vendor = "openai"
-model_id = "text-embedding-3-small"
-```
-
-The TOML format is private to Shell/settings. The Engine protocol does
-not expose this file as a wire contract.
-
-<a id="capability-vocabulary"></a>
-## Capability Vocabulary
-
-Core owns the vocabulary:
-
-```rust
-pub enum ModelTier { Fast, Standard, Deep }
-
-pub struct LlmCaps {
-    pub tool_use: bool,
-    pub json_mode: bool,
-    pub long_context: bool,
-    pub vision: bool,
-}
-
-pub struct EmbedCaps {
-    pub dim: u32,
-    pub matryoshka: bool,
-}
-```
-
-`LlmCaps` and `EmbedCaps` are core vocabulary, not flavor-extensible
-runtime keys. Current chat routing stores target configs and tier
-bindings; it does not yet enforce `LlmCaps` satisfaction when a target
-is written.
-
-<a id="model-registration"></a>
-## Model Registration
-
-Current chat target shape:
-
-```rust
-pub struct InferenceTargetRow {
-    pub owner: Owner,
-    pub target_ref: String,
-    pub config: InferenceTargetConfig,
-}
-
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum InferenceTargetConfig {
-    MistralChat(MistralChatConfig),
-    OpenAIChat(OpenAIChatConfig),
-    OpenAIResponses(OpenAIResponsesConfig),
-    ChatGPTCodex(ChatGPTCodexConfig),
-}
-```
-
-Target refs are per Owner. `register_inference_target` is idempotent
-for identical config and rejects config conflicts for an existing
-`target_ref`. Deletion is rejected while a target is bound to a tier or
-referenced by a wake entry.
-
-Current variants:
-
-| Variant | Credential source | Reasoning knob |
+| Mode | How | Identity model |
 |---|---|---|
-| `mistral_chat` | `api_key_env` env-var name | optional top-level `reasoning_effort`; Mistral API values: `high`, `none` |
-| `openai_chat` | `api_key_env` env-var name | none |
-| `openai_responses` | `api_key_env` env-var name | optional `reasoning_effort` |
-| `chatgpt_codex` | `~/.codex/auth.json` | optional `reasoning_effort` |
+| Host `Authenticator` | `.authenticator(Arc<dyn Authenticator>)` | per-user actor resolved from the bearer (e.g. tenant JWT) over a shared company graph |
+| Master token | `--master-token` / `PROXIMA_MCP_MASTER_TOKEN` | single trusted bearer for the configured Owner |
+| Insecure single-owner | `.allow_insecure_single_owner()` | dev only; no auth, one Owner |
 
-`api_key_env` is an environment variable name, not a secret value and
-not a `secret_ref`.
+Origins are gated by `PROXIMA_ALLOWED_ORIGINS`. Secrets are never
+streamed to clients.
 
-<a id="model-tiers"></a>
-## Model Tiers
+<a id="embedding-client"></a>
+## Embedding Client
 
-`ModelTier` is core-fixed:
+Embedding-for-retrieval is the only LLM call Proxima makes, and the
+client is **host-injected**, not configured by Proxima:
 
-| Tier | Intent |
-|---|---|
-| `Fast` | cheap, low-latency work |
-| `Standard` | default general work |
-| `Deep` | expensive reasoning that compounds |
+```rust
+builder.embed_client(client: Arc<dyn EmbeddingClient>)
+```
 
-Wake entries carry `model_tier`. Dispatch resolves:
+Proxima holds no embedding-model registry and no active-model singleton —
+those tables and their config tools were removed. The host wires its own
+provider (e.g. via `crates/llm-openai-compat`, whose Ollama/OpenAI
+clients read their own env) and is responsible for keeping vector
+dimensions consistent: vector rows are shared infrastructure, so a
+binary uses one embedding space and changing it may require re-embedding.
+If no client is injected, semantic search modes are unavailable; lexical
+paths still work.
 
-1. If `wake_entry.inference_target_ref` is set, use that target.
-2. Otherwise resolve `wake_entry.model_tier` through
-   `inference_tier_bindings`.
-3. If the target or binding is missing, fail closed before the LLM call.
-
-There is no automatic fallback, downgrade, or upgrade.
-
-<a id="personality-declaration"></a>
-## Personality Declaration
-
-Personality type registration remains build-time (see
-[08 §Registration mechanism](08-core-and-flavors.md#registration-mechanism)).
-Current LLM routing is wake-entry owned: each stored wake entry carries
-`model_tier`, optional `inference_target_ref`, tool palettes, execution
-mode, and max rounds. This keeps runtime routing mutable without making
-personality types runtime-registered.
-
-<a id="caps-validation-at-credential-write"></a>
-## Caps Validation At Credential Write
-
-Deferred. Current code persists inference target configs and validates
-referential integrity. It does not compute the union of personality
-requirements per tier and does not reject a target because of `LlmCaps`
-at credential write.
-
-<a id="fallback-policy"></a>
-## Fallback Policy
-
-Current policy: strict only.
-
-| Missing state | Result |
-|---|---|
-| pinned `inference_target_ref` missing | dispatch error |
-| tier has no binding | dispatch error |
-| bound target missing | dispatch error |
-| provider credentials missing | pre-run error |
-
-No fallback target is selected implicitly.
-
-<a id="embedding-model-one-per-binary"></a>
-## Embedding Model: One Per Binary
-
-Embeddings are binary-wide, not per Owner. The graph has one active
-embedding model because vector rows are shared infrastructure, not
-Owner policy. Per-Owner embedding models would make vector dimensions
-and nearest-neighbor semantics tenant-dependent inside one binary.
-
-`embedding_models` is keyed by `(vendor, model_id)`.
-`embedding_active` is a singleton row pointing at one registered model.
-
-<a id="composite-embedding-selection"></a>
-## Composite Embedding Selection
-
-Composite binaries still choose exactly one active embedding model at
-runtime. Flavor crates may declare operators that consume embeddings,
-but they do not own a separate embedding registry. Changing embedding
-model is a binary-level operational decision and may require
-re-embedding.
-
-<a id="dispatcher-concurrency"></a>
-## Dispatcher Concurrency
-
-Deferred as runtime config. Current wake entries carry `max_rounds`; the
-dispatcher resolves one provider target per fired wake and executes with
-that target. No documented operator-concurrency config surface is
-implemented here.
-
-<a id="llm-credential-resolution"></a>
-## LLM Credential Resolution
-
-Resolution is variant-specific:
-
-| Variant | Resolution |
-|---|---|
-| `mistral_chat` | read env var named by `api_key_env` |
-| `openai_chat` | read env var named by `api_key_env` |
-| `openai_responses` | read env var named by `api_key_env` |
-| `chatgpt_codex` | read ChatGPT Codex auth from `~/.codex/auth.json` |
-
-Missing credentials produce a provider-target error before execution.
-Secrets are not streamed to clients.
+`EmbedCaps { dim, matryoshka }` and `LlmCaps { tool_use, json_mode,
+long_context, vision }` remain core vocabulary types but are not a
+runtime-config surface here.
 
 <a id="large-artefact-s3"></a>
 ## Large Artefact S3
 
 Large cited-object storage is deployment infrastructure, not per-Owner
-configuration.
+configuration. Resolved by `EmbedConfig`/`S3RuntimeConfig` from env:
 
 | Key | Required | Default |
 |---|---:|---|
-| `PROXIMA_S3_BUCKET` | yes | - |
-| `PROXIMA_S3_REGION` | yes | - |
+| `PROXIMA_S3_BUCKET` | yes (enables S3) | - |
+| `PROXIMA_S3_REGION` | with bucket | - |
 | `PROXIMA_S3_ENDPOINT_URL` | no | AWS region endpoint |
 | `PROXIMA_S3_FORCE_PATH_STYLE` | no | `false` |
 | `PROXIMA_S3_UPLOAD_TTL_SECONDS` | no | `900` |
 | `PROXIMA_S3_READ_TTL_SECONDS` | no | `300` |
 
 Credentials use the standard AWS SDK provider chain. Missing S3 config
-does not fail Shell boot; cited-blob commands fail typed at call time.
-Commands return presigned URLs only, never `bucket` or `object_key`.
+does not fail boot; cited-blob commands fail typed at call time. Commands
+return presigned URLs only, never `bucket` or `object_key`.
 
-<a id="per-owner-credential-table"></a>
-## Per-Owner Inference Tables
+<a id="owner-scoping"></a>
+## Owner Scoping
 
-Inference targets and tier bindings are Owner-scoped rows. This is
-credential and routing ownership, not memory access control. Owner
-access control remains per-row on graph data (see
-[01 §Owner](01-event-source.md#owner--scoping-primitive)).
-
-Embedding settings are explicitly excluded from this per-Owner surface.
-
-<a id="price-book"></a>
-## Price Book
-
-Deferred. No current runtime price-book table participates in routing.
-Cost policy is expressed by binding wake tiers to target refs.
+Owner access control is per-row on graph data (see
+[01 §Owner](01-event-source.md#owner--scoping-primitive)). Runtime config
+selects the binary's default Owner org (`PROXIMA_ORG_ID`) and, under a
+host `Authenticator`, resolves a per-request actor from the bearer. There
+is no per-Owner inference/credential table — that surface was removed.
 
 <a id="bootstrap"></a>
 ## Bootstrap
@@ -315,29 +141,30 @@ Cost policy is expressed by binding wake tiers to target refs.
 Boot sequence:
 
 1. Build-time registries are linked into the binary.
-2. Migrations create settings tables.
-3. Shell reads Owner-scoped inference settings for the sentinel Owner.
-4. Shell reads binary-wide embedding settings.
-5. Wake dispatch fails closed if a fired wake cannot resolve a target.
-6. Embedding client wiring is skipped if no active embedding model is
-   configured.
+2. `RuntimeBuilder` resolves config (`configure < env < explicit`) and
+   `validate()` fails closed on a missing Owner or an unauthenticated
+   exposed MCP bind.
+3. Migrations create core tables.
+4. The embedding client, if injected, is wired; otherwise semantic search
+   is disabled.
+5. The MCP listener starts when a bind is configured.
 
 <a id="deployment-shapes"></a>
 ## Deployment Shapes
 
 | Shape | Config source |
 |---|---|
-| Embedded desktop Shell | Tauri settings commands over local Engine/Postgres |
-| Headless MCP host | Postgres settings tables plus process env/Codex auth |
-| Hosted deployment | provisioned settings rows plus deployment secrets |
+| Embedded host app | host builds `Proxima<App>` programmatically over a local Engine/Postgres; injects its own authenticator + embedding client |
+| Headless MCP host | process env (`apps/proxima-mcp`) + master token or host authenticator |
+| Hosted deployment | provisioned env/secrets + tenant authenticator |
 
-The same Engine contract applies: build-time types, runtime target
-instances.
+The same Engine contract applies in every shape: build-time types,
+runtime endpoint instances.
 
 <a id="what-this-doc-is-not"></a>
 ## What This Doc Is Not
 
 Not a protocol spec (see [14](14-protocol-surface.md)). Not a storage
 schema source of truth (see migrations and [07](07-storage.md)). Not a
-frontend UX spec (see [09](09-frontend.md)). Not a source-instance
-contract (see [01](01-event-source.md)).
+source-instance contract (see [01](01-event-source.md)). Proxima ships no
+frontend — any UI is the consumer's, built over the MCP surface.

@@ -100,7 +100,7 @@ Prompts live with the flavor operators that use them.
 |---|---|
 | Core | dispatcher, template interface, registry validation, write protocol |
 | Flavor | prompt text, operator code, retrieval policy, write allow-list |
-| Runtime config | model-tier binding, concurrency, credential references |
+| Runtime config | host-injected embedding client (retrieval), Postgres connection |
 
 Core stores prompt version references on outputs. Core does not ship
 domain prompts and does not accept runtime prompt registration.
