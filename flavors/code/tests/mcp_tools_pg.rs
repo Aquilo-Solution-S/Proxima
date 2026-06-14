@@ -643,18 +643,18 @@ fn registry_for_mcp() -> Arc<FlavorRegistryFrozen> {
 fn registry_for_engine() -> FlavorRegistryFrozen {
     let mut flavor = FlavorRegistry::new();
     proxima_code::register(&mut flavor);
-    let mut schemas = flavor.freeze().list();
-    schemas.push(SchemaInfo::opaque(
-        SchemaId::new("test/cited_blob".into()),
-        SchemaVersion::new(1),
-        PayloadKind::CitedObject,
-    ));
-    schemas.push(SchemaInfo::opaque(
-        SchemaId::new("test/citation_blob".into()),
-        SchemaVersion::new(1),
-        PayloadKind::CitationMapping,
-    ));
-    FlavorRegistryFrozen::with_schemas(schemas)
+    flavor.freeze().with_additional_schemas([
+        SchemaInfo::opaque(
+            SchemaId::new("test/cited_blob".into()),
+            SchemaVersion::new(1),
+            PayloadKind::CitedObject,
+        ),
+        SchemaInfo::opaque(
+            SchemaId::new("test/citation_blob".into()),
+            SchemaVersion::new(1),
+            PayloadKind::CitationMapping,
+        ),
+    ])
 }
 
 fn init_git_repo_with_commit(

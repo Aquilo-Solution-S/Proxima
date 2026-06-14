@@ -65,7 +65,7 @@ impl Engine {
         let owner = authz.scoped_owner(draft.principal.clone());
         draft.stamp_owner(owner);
         self.ensure_fact_schema(&draft.schema_id, draft.schema_version)?;
-        draft.rendered_text = Some(self.render_fact_text(&draft)?);
+        draft.rendered_text = self.render_fact_text(&draft)?;
         if let Some(citation) = &draft.citation {
             self.ensure_event_ingest_schema(
                 &citation.object.schema_id,
@@ -106,7 +106,7 @@ impl Engine {
         // trusted typed struct. The untrusted citation payloads are
         // agent-supplied JSON, so they stay fully validated below.
         self.ensure_fact_schema(&draft.schema_id, draft.schema_version)?;
-        draft.rendered_text = Some(self.render_fact_text(&draft)?);
+        draft.rendered_text = self.render_fact_text(&draft)?;
         let cited_object_info = self.validate_json_payload(
             &cited_object.schema_id,
             cited_object.schema_version,
@@ -209,9 +209,9 @@ impl Engine {
         Ok(())
     }
 
-    fn render_fact_text(&self, draft: &EventDraft) -> Result<String, ProtocolError> {
+    fn render_fact_text(&self, draft: &EventDraft) -> Result<Option<String>, ProtocolError> {
         self.registry
-            .render_fact_payload(&draft.schema_id, draft.schema_version, &draft.payload)
+            .try_render_fact_payload(&draft.schema_id, draft.schema_version, &draft.payload)
             .map_err(|e| ProtocolError::internal(e.to_string()))
     }
 
