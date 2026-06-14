@@ -83,6 +83,7 @@ pub struct MemorySnapshot {
     pub kind: String,
     pub schema_id: SchemaId,
     pub schema_version: SchemaVersion,
+    pub authoring_personality_instance_id: Option<super::PersonalityInstanceId>,
     pub text: Option<String>,
     pub wake_chain_depth: WakeChainDepth,
     pub payload_json: serde_json::Value,

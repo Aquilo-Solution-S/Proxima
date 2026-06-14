@@ -6,22 +6,42 @@ use proxima_core::verbs::schema::{
     MemorySearchProjection, MemorySearchProjectionField, PayloadKind,
 };
 use proxima_core::{
-    MemoryId, OwnerPrincipalKind, Principal, SchemaId, SearchProjectionColumnKind, StorageError,
-    WakeChainDepth,
+    MemoryId, OwnerPrincipalKind, PersonalityInstanceId, Principal, SchemaId,
+    SearchProjectionColumnKind, StorageError, WakeChainDepth,
 };
 use sqlx::PgPool;
 
 use crate::pg_ident::PgIdent;
 
-#[derive(Debug, sqlx::FromRow)]
+#[derive(Debug)]
 struct SearchRow {
     memory_id: uuid::Uuid,
     kind: EntityKind,
     schema_id: String,
+    authoring_personality_instance_id: Option<PersonalityInstanceId>,
     snippet: String,
     lexical_score: f32,
     similarity_score: f32,
     wake_chain_depth: i16,
+}
+
+impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for SearchRow {
+    fn from_row(row: &'r sqlx::postgres::PgRow) -> Result<Self, sqlx::Error> {
+        use sqlx::Row as _;
+
+        Ok(Self {
+            memory_id: row.try_get("memory_id")?,
+            kind: row.try_get("kind")?,
+            schema_id: row.try_get("schema_id")?,
+            authoring_personality_instance_id: decode_personality(
+                row.try_get("authoring_personality_instance_id")?,
+            ),
+            snippet: row.try_get("snippet")?,
+            lexical_score: row.try_get("lexical_score")?,
+            similarity_score: row.try_get("similarity_score")?,
+            wake_chain_depth: row.try_get("wake_chain_depth")?,
+        })
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -29,6 +49,7 @@ struct Candidate {
     memory_id: uuid::Uuid,
     kind: EntityKind,
     schema_id: SchemaId,
+    authoring_personality_instance_id: Option<PersonalityInstanceId>,
     snippet: String,
     lexical_score: f32,
     similarity_score: f32,
@@ -73,6 +94,7 @@ pub(crate) async fn search_memories(
                 memory_id: MemoryId::new(candidate.memory_id),
                 kind: candidate.kind,
                 schema_id: candidate.schema_id,
+                authoring_personality_instance_id: candidate.authoring_personality_instance_id,
                 snippet: candidate.snippet,
                 score,
                 lexical_score: candidate.lexical_score,
@@ -98,6 +120,7 @@ fn merge_row(candidates: &mut BTreeMap<uuid::Uuid, Candidate>, row: SearchRow) {
             memory_id: row.memory_id,
             kind: row.kind,
             schema_id: SchemaId::new(row.schema_id.clone()),
+            authoring_personality_instance_id: row.authoring_personality_instance_id,
             snippet: row.snippet.clone(),
             lexical_score: 0.0,
             similarity_score: 0.0,
@@ -135,7 +158,7 @@ async fn run_lexical(
                      ) AS index_text
                 FROM candidates c
           )
-          SELECT c.memory_id, c.kind, c.schema_id,
+          SELECT c.memory_id, c.kind, c.schema_id, c.authoring_personality_instance_id,
                  left(c.search_text, 480) AS snippet,
                  GREATEST(
                      LEAST(ts_rank_cd(to_tsvector('simple', c.index_text), q.tsq) * 10.0, 1.0),
@@ -220,7 +243,7 @@ async fn run_semantic(
 
     write!(
         sql,
-        " SELECT c.memory_id, c.kind, c.schema_id,
+        " SELECT c.memory_id, c.kind, c.schema_id, c.authoring_personality_instance_id,
                  left(c.search_text, 480) AS snippet,
                  0.0::real AS lexical_score,
                  GREATEST(0.0, sim.similarity)::real AS similarity_score,
@@ -338,8 +361,15 @@ fn push_candidate_branch_prefix(sql: &mut String) {
     sql.push_str(
         "SELECT m.memory_id, m.owner_principal_kind, m.owner_principal_id, \
          COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind, \
-         m.schema_id, m.wake_chain_depth, ",
+         m.schema_id, m.personality_instance_id AS authoring_personality_instance_id, \
+         m.wake_chain_depth, ",
     );
+}
+
+fn decode_personality(instance_id: Option<uuid::Uuid>) -> Option<PersonalityInstanceId> {
+    instance_id
+        .filter(|id| !id.is_nil())
+        .map(PersonalityInstanceId::new)
 }
 
 fn push_base_memory_filters(
