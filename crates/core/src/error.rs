@@ -29,10 +29,6 @@ pub enum ErrorCode {
     NotFound,
     InvalidArgument,
     ToolNotRegistered,
-    InferenceTargetMissing,
-    TierUnbound,
-    TargetRefConflict,
-    TargetInUse,
     TriggerConflict,
     DuplicateTriggerInRequest,
     Internal,
@@ -94,42 +90,6 @@ impl ProtocolError {
         Self {
             code: ErrorCode::ToolNotRegistered,
             message: format!("tool not registered: {}", tool_id.as_ref()),
-            request_id: None,
-        }
-    }
-
-    pub fn inference_target_missing(target_ref: impl AsRef<str>) -> Self {
-        Self {
-            code: ErrorCode::InferenceTargetMissing,
-            message: format!("inference target missing: {}", target_ref.as_ref()),
-            request_id: None,
-        }
-    }
-
-    pub fn tier_unbound(tier: impl AsRef<str>) -> Self {
-        Self {
-            code: ErrorCode::TierUnbound,
-            message: format!("inference tier unbound: {}", tier.as_ref()),
-            request_id: None,
-        }
-    }
-
-    pub fn target_ref_conflict(target_ref: impl AsRef<str>) -> Self {
-        Self {
-            code: ErrorCode::TargetRefConflict,
-            message: format!("target_ref conflict: {}", target_ref.as_ref()),
-            request_id: None,
-        }
-    }
-
-    pub fn target_in_use(target_ref: impl AsRef<str>, dependents: &[String]) -> Self {
-        Self {
-            code: ErrorCode::TargetInUse,
-            message: format!(
-                "target_ref in use: {}; dependents: {}",
-                target_ref.as_ref(),
-                dependents.join(", ")
-            ),
             request_id: None,
         }
     }

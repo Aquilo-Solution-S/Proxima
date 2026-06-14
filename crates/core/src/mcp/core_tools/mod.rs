@@ -14,29 +14,23 @@ pub mod set_wake_entries;
 pub mod update_wake_entry;
 pub mod wake_entry_input;
 
-pub mod bind_inference_tier;
 pub mod chat;
 pub mod embedding_models;
 pub mod get_graph;
 pub mod get_personality;
 pub mod instantiate_personality;
 pub mod list_edge_types;
-pub mod list_inference_targets;
-pub mod list_inference_tier_bindings;
 pub mod list_personalities;
 pub mod list_read_scope;
 pub mod list_schemas;
 pub mod list_substrate_tools;
 pub mod list_wake_entries;
-pub mod register_inference_target;
-pub mod remove_inference_target;
 pub mod set_read_scope;
 pub mod tombstone_personality;
 
 pub use add_wake_entry::AddWakeEntryTool;
 pub use approval::{EmitApprovalPolicyTool, EmitApprovalVoteTool, TryEmitApprovalDecisionTool};
 pub use audit::{AuditEmit, emit_personality_config_changed};
-pub use bind_inference_tier::BindInferenceTierTool;
 pub use chat::{
     CompactChatThreadTool, EmitChatMessageTool, EmitChatReplyTool, EndChatTool, GetChatThreadTool,
     ListChatTargetsTool, RequestEndChatTool, StartChatTool,
@@ -50,8 +44,6 @@ pub use get_personality::GetPersonalityTool;
 pub use instantiate_personality::InstantiatePersonalityTool;
 pub use intervention::EmitInterventionDecisionTool;
 pub use list_edge_types::ListEdgeTypesTool;
-pub use list_inference_targets::ListInferenceTargetsTool;
-pub use list_inference_tier_bindings::ListInferenceTierBindingsTool;
 pub use list_personalities::ListPersonalitiesTool;
 pub use list_read_scope::ListReadScopeTool;
 pub use list_schemas::ListSchemasTool;
@@ -61,8 +53,6 @@ pub use payload::{
     PersonalityConfigChangedCaller, PersonalityConfigChangedSubject, PersonalityConfigChangedV1,
     PersonalityConfigChangedVerb,
 };
-pub use register_inference_target::RegisterInferenceTargetTool;
-pub use remove_inference_target::RemoveInferenceTargetTool;
 pub use remove_wake_entry::RemoveWakeEntryTool;
 pub use set_read_scope::SetReadScopeTool;
 pub use set_wake_entries::SetWakeEntriesTool;
@@ -85,11 +75,6 @@ pub(crate) fn register_all(registry: &mut crate::FlavorRegistry) {
     registry.add_substrate_mcp_tool::<AddWakeEntryTool>();
     registry.add_substrate_mcp_tool::<UpdateWakeEntryTool>();
     registry.add_substrate_mcp_tool::<RemoveWakeEntryTool>();
-    registry.add_substrate_mcp_tool::<ListInferenceTargetsTool>();
-    registry.add_substrate_mcp_tool::<ListInferenceTierBindingsTool>();
-    registry.add_substrate_mcp_tool::<RegisterInferenceTargetTool>();
-    registry.add_substrate_mcp_tool::<RemoveInferenceTargetTool>();
-    registry.add_substrate_mcp_tool::<BindInferenceTierTool>();
     registry.add_substrate_mcp_tool::<ListEmbeddingModelsTool>();
     registry.add_substrate_mcp_tool::<GetEmbeddingActiveTool>();
     registry.add_substrate_mcp_tool::<RegisterEmbeddingModelTool>();

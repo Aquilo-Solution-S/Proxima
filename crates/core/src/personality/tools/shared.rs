@@ -159,10 +159,7 @@ pub(super) async fn emit_personality_memory(
 }
 
 /// Resolve the `model_id` for stamping provenance on memories emitted
-/// from a substrate tool. The in-process wake runtime is gone, so this
-/// uses the engine's Standard-tier Anthropic model.
+/// from a substrate tool.
 pub fn model_id_from_personality_context(anthropic: &dyn crate::llm::AnthropicClient) -> String {
-    anthropic
-        .model_id_for(crate::ModelTier::Standard)
-        .to_string()
+    anthropic.model_id().to_string()
 }

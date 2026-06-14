@@ -1,11 +1,11 @@
-//! Build-time capability vocabulary for LLM + embedding routing.
+//! Build-time capability vocabulary for LLM + embedding clients.
 //!
 //! Build-time declares **what** capabilities exist and **which** an
 //! operator requires. It does **not** declare specific
-//! `(vendor, model_id)` pairs — those are runtime configuration,
-//! not flavor authorship. New models plug in at runtime by
-//! declaring their caps; runtime validation gates mismatches against
-//! the operator-declared `requires`.
+//! `(vendor, model_id)` pairs — those are host configuration, not
+//! flavor authorship. New models plug in by declaring their caps;
+//! validation gates mismatches against the operator-declared
+//! `requires`.
 //!
 //! The contract:
 //!
@@ -14,10 +14,8 @@
 //! - `Dialect` enumerates the HTTP API shapes a runtime client
 //!   speaks; `vendor` (e.g. `"ollama"`, `"openai"`) lives only at
 //!   runtime config.
-//! - `ModelTier` is the routing class operators declare; the
-//!   tier→`(vendor, model_id)` binding is runtime.
 //!
-//! See docs/10 §Model tiers and §Capability vocabulary.
+//! See docs/10 §Capability vocabulary.
 
 /// Which HTTP API shape a runtime model client speaks. Independent
 /// of vendor: most non-Anthropic vendors expose the `OpenAI` dialect,
@@ -34,33 +32,9 @@ pub enum Dialect {
     OpenAI,
 }
 
-/// Coarse routing class for operator declarations. Substrate-fixed —
-/// expansion is a substrate PR per docs/10 §Model tiers.
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    Hash,
-    serde::Serialize,
-    serde::Deserialize,
-    specta::Type,
-    schemars::JsonSchema,
-    sqlx::Type,
-)]
-#[serde(rename_all = "snake_case")]
-#[sqlx(type_name = "proxima_core.model_tier", rename_all = "snake_case")]
-pub enum ModelTier {
-    Fast,
-    Standard,
-    Deep,
-}
-
 /// LLM capability axes. Operators declare a `requires: LlmCaps` at
-/// registration; runtime config binds a `(vendor, model_id)` to a
-/// tier and validates that the bound model's claimed caps satisfy
-/// the union of operator `requires` for that tier.
+/// registration; hosts validate that the selected model's claimed caps
+/// satisfy the union of operator `requires`.
 #[derive(
     Debug,
     Clone,
@@ -145,16 +119,6 @@ mod tests {
 
         let s = serde_json::to_string(&Dialect::Anthropic).unwrap();
         assert_eq!(s, "\"anthropic\"");
-    }
-
-    #[test]
-    fn model_tier_serde_lowercase() {
-        assert_eq!(serde_json::to_string(&ModelTier::Fast).unwrap(), "\"fast\"");
-        assert_eq!(
-            serde_json::to_string(&ModelTier::Standard).unwrap(),
-            "\"standard\""
-        );
-        assert_eq!(serde_json::to_string(&ModelTier::Deep).unwrap(), "\"deep\"");
     }
 
     #[test]

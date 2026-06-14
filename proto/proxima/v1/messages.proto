@@ -19,8 +19,6 @@ syntax = "proto3";
 
 package proxima.v1;
 
-import "google/protobuf/timestamp.proto";
-
 // ---------------------------------------------------------------------------
 // IDs and primitives
 // ---------------------------------------------------------------------------
@@ -278,7 +276,7 @@ message FlavorProvenance {
 }
 
 // ---------------------------------------------------------------------------
-// WakeEntry + inference settings
+// WakeEntry
 // ---------------------------------------------------------------------------
 
 enum TriggerKind {
@@ -297,13 +295,6 @@ enum AuthoredBy {
 enum ExecutionMode {
   EXECUTION_MODE_UNSPECIFIED = 0;
   EXECUTION_MODE_SUBSTRATE_ONLY = 1;
-}
-
-enum ModelTierProto {
-  MODEL_TIER_PROTO_UNSPECIFIED = 0;
-  MODEL_TIER_PROTO_FAST = 1;
-  MODEL_TIER_PROTO_STANDARD = 2;
-  MODEL_TIER_PROTO_DEEP = 3;
 }
 
 enum GoalScope {
@@ -332,61 +323,6 @@ message WakeEntryDraft {
   AuthoredBy authored_by = 6;
   uint32 probability_promille = 7;
   GoalScope goal_scope = 14;
-}
-
-message InferenceTarget {
-  string target_ref = 1;
-  InferenceTargetConfig config = 2;
-  google.protobuf.Timestamp created_at = 3;
-  google.protobuf.Timestamp updated_at = 4;
-}
-
-message InferenceTargetConfig {
-  oneof kind {
-    MistralChatConfig mistral_chat = 1;
-    OpenAIChatConfig openai_chat = 2;
-    OpenAIResponsesConfig openai_responses = 3;
-    ChatGPTCodexConfig chatgpt_codex = 4;
-  }
-}
-
-message MistralChatConfig {
-  string base_url = 1;
-  string model_id = 2;
-  string api_key_env = 3;
-  optional float temperature = 4;
-  optional uint32 max_completion_tokens = 5;
-  optional string reasoning_effort = 6;
-  optional uint32 context_window_tokens = 7;
-}
-
-message OpenAIChatConfig {
-  string base_url = 1;
-  string model_id = 2;
-  string api_key_env = 3;
-  optional float temperature = 4;
-  optional uint32 max_completion_tokens = 5;
-  optional uint32 context_window_tokens = 6;
-}
-
-message OpenAIResponsesConfig {
-  string base_url = 1;
-  string model_id = 2;
-  string api_key_env = 3;
-  optional string reasoning_effort = 4;
-  optional uint32 context_window_tokens = 5;
-}
-
-message ChatGPTCodexConfig {
-  string base_url = 1;
-  string model_id = 2;
-  optional string reasoning_effort = 3;
-  optional uint32 context_window_tokens = 4;
-}
-
-message InferenceTierBinding {
-  ModelTierProto tier = 1;
-  string target_ref = 2;
 }
 
 // ---------------------------------------------------------------------------
@@ -484,8 +420,5 @@ enum ErrorCode {
   ERROR_CODE_DUPLICATE_TRIGGER_IN_REQUEST = 15;
   ERROR_CODE_TRIGGER_CONFLICT = 16;
   ERROR_CODE_TOOL_NOT_REGISTERED = 17;
-  ERROR_CODE_INFERENCE_TARGET_MISSING = 18;
-  ERROR_CODE_TIER_UNBOUND = 19;
-  ERROR_CODE_TARGET_REF_CONFLICT = 20;
-  ERROR_CODE_TARGET_IN_USE = 21;
+  reserved 18 to 21;
 }

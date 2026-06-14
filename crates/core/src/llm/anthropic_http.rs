@@ -4,7 +4,6 @@ use async_trait::async_trait;
 use reqwest::header::CONTENT_TYPE;
 
 use super::{AnthropicClient, LlmError, MessagesRequest, MessagesResponse};
-use crate::ModelTier;
 
 const DEFAULT_ANTHROPIC_BASE_URL: &str = "https://api.anthropic.com";
 const DEFAULT_ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -14,9 +13,7 @@ pub struct AnthropicHttpClient {
     client: reqwest::Client,
     base_url: String,
     api_key: String,
-    fast_model: String,
-    standard_model: String,
-    deep_model: String,
+    model_id: String,
 }
 
 impl AnthropicHttpClient {
@@ -25,19 +22,8 @@ impl AnthropicHttpClient {
     /// # Errors
     ///
     /// Returns [`LlmError::Internal`] if the HTTP client cannot be built.
-    pub fn new(
-        api_key: impl Into<String>,
-        fast_model: impl Into<String>,
-        standard_model: impl Into<String>,
-        deep_model: impl Into<String>,
-    ) -> Result<Self, LlmError> {
-        Self::with_base_url(
-            DEFAULT_ANTHROPIC_BASE_URL,
-            api_key,
-            fast_model,
-            standard_model,
-            deep_model,
-        )
+    pub fn new(api_key: impl Into<String>, model_id: impl Into<String>) -> Result<Self, LlmError> {
+        Self::with_base_url(DEFAULT_ANTHROPIC_BASE_URL, api_key, model_id)
     }
 
     /// Build a native Anthropic messages client with an alternate base
@@ -49,9 +35,7 @@ impl AnthropicHttpClient {
     pub fn with_base_url(
         base_url: impl Into<String>,
         api_key: impl Into<String>,
-        fast_model: impl Into<String>,
-        standard_model: impl Into<String>,
-        deep_model: impl Into<String>,
+        model_id: impl Into<String>,
     ) -> Result<Self, LlmError> {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_mins(1))
@@ -61,9 +45,7 @@ impl AnthropicHttpClient {
             client,
             base_url: base_url.into(),
             api_key: api_key.into(),
-            fast_model: fast_model.into(),
-            standard_model: standard_model.into(),
-            deep_model: deep_model.into(),
+            model_id: model_id.into(),
         })
     }
 }
@@ -99,11 +81,7 @@ impl AnthropicClient for AnthropicHttpClient {
             .map_err(|e| LlmError::Llm(format!("decode Anthropic messages response: {e}")))
     }
 
-    fn model_id_for(&self, tier: ModelTier) -> &str {
-        match tier {
-            ModelTier::Fast => &self.fast_model,
-            ModelTier::Standard => &self.standard_model,
-            ModelTier::Deep => &self.deep_model,
-        }
+    fn model_id(&self) -> &str {
+        &self.model_id
     }
 }

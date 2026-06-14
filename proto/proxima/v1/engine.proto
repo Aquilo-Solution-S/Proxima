@@ -55,12 +55,6 @@ service Engine {
   // Idempotent on the per-(instance, trigger) UNIQUE key.
   rpc SetWakeEntries (SetWakeEntriesRequest) returns (SetWakeEntriesResponse);
 
-  rpc RegisterInferenceTarget (RegisterInferenceTargetRequest) returns (RegisterInferenceTargetResponse);
-  rpc ListInferenceTargets (ListInferenceTargetsRequest) returns (ListInferenceTargetsResponse);
-  rpc RemoveInferenceTarget (RemoveInferenceTargetRequest) returns (RemoveInferenceTargetResponse);
-  rpc BindInferenceTier (BindInferenceTierRequest) returns (BindInferenceTierResponse);
-  rpc ListInferenceTierBindings (ListInferenceTierBindingsRequest) returns (ListInferenceTierBindingsResponse);
-
   // List runtime personality instances for an owner.
   rpc ListPersonalityInstances (ListPersonalityInstancesRequest) returns (ListPersonalityInstancesResponse);
 
@@ -271,50 +265,6 @@ message SetWakeEntriesRequest {
 
 message SetWakeEntriesResponse {
   uint32 active_entries = 1;
-}
-
-message RegisterInferenceTargetRequest {
-  Principal principal = 1;
-  string target_ref = 2;
-  InferenceTargetConfig config = 3;
-}
-
-message RegisterInferenceTargetResponse {
-  string target_ref = 1;
-  bool idempotent_replay = 2;
-}
-
-message ListInferenceTargetsRequest {
-  Principal principal = 1;
-}
-
-message ListInferenceTargetsResponse {
-  repeated InferenceTarget targets = 1;
-}
-
-message RemoveInferenceTargetRequest {
-  Principal principal = 1;
-  string target_ref = 2;
-}
-
-message RemoveInferenceTargetResponse {
-  bool idempotent_replay = 1;
-}
-
-message BindInferenceTierRequest {
-  Principal principal = 1;
-  ModelTierProto tier = 2;
-  string target_ref = 3;
-}
-
-message BindInferenceTierResponse {}
-
-message ListInferenceTierBindingsRequest {
-  Principal principal = 1;
-}
-
-message ListInferenceTierBindingsResponse {
-  repeated InferenceTierBinding bindings = 1;
 }
 
 message ListPersonalityInstancesRequest {

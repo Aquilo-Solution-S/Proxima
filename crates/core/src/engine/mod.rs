@@ -21,12 +21,7 @@ use crate::llm::{AnthropicClient, EmbeddingClient};
 use crate::storage::{StorageError, StorageHandle};
 use crate::verbs::query::MemoryStore;
 use crate::verbs::schema::FlavorRegistryFrozen;
-use crate::{
-    BindInferenceTierRequest, BindInferenceTierResponse, InferenceTargetRow,
-    InferenceTierBindingRow, Owner, Principal, RegisterInferenceTargetRequest,
-    RegisterInferenceTargetResponse, RemoveInferenceTargetRequest, RemoveInferenceTargetResponse,
-    SetWakeEntriesRequest, SetWakeEntriesResponse, WakeEntryDraft,
-};
+use crate::{Owner, Principal, SetWakeEntriesRequest, SetWakeEntriesResponse, WakeEntryDraft};
 
 pub use mcp_listener::{EngineMcpListener, RunningMcpListener};
 
@@ -98,115 +93,6 @@ impl Engine {
     #[must_use]
     pub(crate) fn anthropic(&self) -> Option<&Arc<dyn AnthropicClient>> {
         self.anthropic.as_ref()
-    }
-
-    /// Owner-scoped registration of an inference target.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Forbidden` when the context cannot access `req.principal` or
-    /// lacks the admin role, `InvalidArgument` on request validation,
-    /// `TargetRefConflict` when the `target_ref` already exists, or
-    /// `Internal` on storage failure.
-    pub async fn register_inference_target(
-        &self,
-        authz: &AuthzContext,
-        req: &RegisterInferenceTargetRequest,
-    ) -> Result<RegisterInferenceTargetResponse, ProtocolError> {
-        authorize(authz, &req.principal, Role::Admin)?;
-        let mut effective = req.clone();
-        effective.stamp_owner(authz.scoped_owner(req.principal.clone()));
-        crate::inference::register_inference_target::register_inference_target(
-            self.storage.as_ref(),
-            &effective,
-        )
-        .await
-    }
-
-    /// Owner-scoped listing of registered inference targets.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Forbidden` when the context cannot access `principal` or lacks
-    /// the admin role, or `Internal` when storage listing fails.
-    pub async fn list_inference_targets(
-        &self,
-        authz: &AuthzContext,
-        principal: &Principal,
-    ) -> Result<Vec<InferenceTargetRow>, ProtocolError> {
-        authorize(authz, principal, Role::Admin)?;
-        let owner = authz.scoped_owner(principal.clone());
-        crate::inference::list_inference_targets::list_inference_targets(
-            self.storage.as_ref(),
-            &owner,
-        )
-        .await
-    }
-
-    /// Owner-scoped removal of an inference target.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Forbidden` when the context cannot access `req.principal` or
-    /// lacks the admin role, `InvalidArgument` on request validation,
-    /// `TargetInUse` when a tier binding still references the target, or
-    /// `Internal` on storage failure.
-    pub async fn remove_inference_target(
-        &self,
-        authz: &AuthzContext,
-        req: &RemoveInferenceTargetRequest,
-    ) -> Result<RemoveInferenceTargetResponse, ProtocolError> {
-        authorize(authz, &req.principal, Role::Admin)?;
-        let mut effective = req.clone();
-        effective.stamp_owner(authz.scoped_owner(req.principal.clone()));
-        crate::inference::remove_inference_target::remove_inference_target(
-            self.storage.as_ref(),
-            &effective,
-        )
-        .await
-    }
-
-    /// Owner-scoped binding of a model tier to an inference target.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Forbidden` when the context cannot access `req.principal` or
-    /// lacks the admin role, `InvalidArgument` on request validation,
-    /// `InferenceTargetMissing` when the `target_ref` is unknown, or
-    /// `Internal` on storage failure.
-    pub async fn bind_inference_tier(
-        &self,
-        authz: &AuthzContext,
-        req: &BindInferenceTierRequest,
-    ) -> Result<BindInferenceTierResponse, ProtocolError> {
-        authorize(authz, &req.principal, Role::Admin)?;
-        let mut effective = req.clone();
-        effective.stamp_owner(authz.scoped_owner(req.principal.clone()));
-        crate::inference::bind_inference_tier::bind_inference_tier(
-            self.storage.as_ref(),
-            &effective,
-        )
-        .await
-    }
-
-    /// Owner-scoped listing of model-tier bindings.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Forbidden` when the context cannot access `principal` or lacks
-    /// the admin role, or `Internal` when storage listing fails.
-    pub async fn list_inference_tier_bindings(
-        &self,
-        authz: &AuthzContext,
-        principal: &Principal,
-    ) -> Result<Vec<InferenceTierBindingRow>, ProtocolError> {
-        authorize(authz, principal, Role::Admin)?;
-        let owner = authz.scoped_owner(principal.clone());
-        crate::inference::list_inference_tier_bindings::list_inference_tier_bindings(
-            self.storage.as_ref(),
-            &owner,
-        )
-        .await
     }
 
     pub async fn set_embed_client(&self, embed: Option<Arc<dyn EmbeddingClient>>) {

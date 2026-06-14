@@ -15,22 +15,18 @@ use crate::convert::refs::{owner_to_proto, principal_from_proto};
 use crate::convert::{
     change_event_to_proto, event_history_request_from_proto, event_history_response_to_proto,
     event_ingest_request_from_proto, event_ingest_response_to_proto, goal_write_request_from_proto,
-    goal_write_response_to_proto, inference_config_from_proto, inference_target_to_proto,
-    protocol_error_to_status, query_request_from_proto, query_response_to_proto,
-    schema_request_from_proto, schema_response_to_proto, subscribe_request_from_proto,
-    tier_binding_to_proto, tier_from_proto, wake_entry_draft_from_proto, wake_entry_to_proto,
+    goal_write_response_to_proto, protocol_error_to_status, query_request_from_proto,
+    query_response_to_proto, schema_request_from_proto, schema_response_to_proto,
+    subscribe_request_from_proto, wake_entry_draft_from_proto, wake_entry_to_proto,
 };
 use crate::pb::{
-    BindInferenceTierRequest, BindInferenceTierResponse, ChangeEvent, EventHistoryRequest,
-    EventHistoryResponse, EventIngestRequest, EventIngestResponse, GoalWriteRequest,
-    GoalWriteResponse, InstantiatePersonalityRequest, InstantiatePersonalityResponse,
-    ListInferenceTargetsRequest, ListInferenceTargetsResponse, ListInferenceTierBindingsRequest,
-    ListInferenceTierBindingsResponse, ListPersonalityInstancesRequest,
+    ChangeEvent, EventHistoryRequest, EventHistoryResponse, EventIngestRequest,
+    EventIngestResponse, GoalWriteRequest, GoalWriteResponse, InstantiatePersonalityRequest,
+    InstantiatePersonalityResponse, ListPersonalityInstancesRequest,
     ListPersonalityInstancesResponse, PersonalityInstance, QueryRequest, QueryResponse,
-    RegisterInferenceTargetRequest, RegisterInferenceTargetResponse, RemoveInferenceTargetRequest,
-    RemoveInferenceTargetResponse, SchemaRequest, SchemaResponse, SetWakeEntriesRequest,
-    SetWakeEntriesResponse, SubscribeRequest, TombstonePersonalityRequest,
-    TombstonePersonalityResponse, engine_server::Engine as EngineTrait,
+    SchemaRequest, SchemaResponse, SetWakeEntriesRequest, SetWakeEntriesResponse, SubscribeRequest,
+    TombstonePersonalityRequest, TombstonePersonalityResponse,
+    engine_server::Engine as EngineTrait,
 };
 
 /// gRPC server wrapper for the Engine.
@@ -248,126 +244,6 @@ impl EngineTrait for EngineGrpcServer {
             .map_err(protocol_error_to_status)?;
         Ok(Response::new(SetWakeEntriesResponse {
             active_entries: out.active_entries,
-        }))
-    }
-
-    async fn register_inference_target(
-        &self,
-        request: Request<RegisterInferenceTargetRequest>,
-    ) -> Result<Response<RegisterInferenceTargetResponse>, Status> {
-        let pb = request.into_inner();
-        let principal = principal_from_proto(
-            pb.principal
-                .ok_or_else(|| Status::invalid_argument("missing principal"))?,
-        )?;
-        let config = inference_config_from_proto(
-            pb.config
-                .ok_or_else(|| Status::invalid_argument("missing config"))?,
-        )?;
-        let out = self
-            .engine
-            .register_inference_target(
-                &self.authz,
-                &proxima_core::RegisterInferenceTargetRequest {
-                    principal,
-                    org_id: None,
-                    target_ref: pb.target_ref,
-                    config,
-                },
-            )
-            .await
-            .map_err(protocol_error_to_status)?;
-        Ok(Response::new(RegisterInferenceTargetResponse {
-            target_ref: out.target_ref,
-            idempotent_replay: out.idempotent_replay,
-        }))
-    }
-
-    async fn list_inference_targets(
-        &self,
-        request: Request<ListInferenceTargetsRequest>,
-    ) -> Result<Response<ListInferenceTargetsResponse>, Status> {
-        let pb = request.into_inner();
-        let principal = principal_from_proto(
-            pb.principal
-                .ok_or_else(|| Status::invalid_argument("missing principal"))?,
-        )?;
-        let rows = self
-            .engine
-            .list_inference_targets(&self.authz, &principal)
-            .await
-            .map_err(protocol_error_to_status)?;
-        Ok(Response::new(ListInferenceTargetsResponse {
-            targets: rows.iter().map(inference_target_to_proto).collect(),
-        }))
-    }
-
-    async fn remove_inference_target(
-        &self,
-        request: Request<RemoveInferenceTargetRequest>,
-    ) -> Result<Response<RemoveInferenceTargetResponse>, Status> {
-        let pb = request.into_inner();
-        let principal = principal_from_proto(
-            pb.principal
-                .ok_or_else(|| Status::invalid_argument("missing principal"))?,
-        )?;
-        let out = self
-            .engine
-            .remove_inference_target(
-                &self.authz,
-                &proxima_core::RemoveInferenceTargetRequest {
-                    principal,
-                    org_id: None,
-                    target_ref: pb.target_ref,
-                },
-            )
-            .await
-            .map_err(protocol_error_to_status)?;
-        Ok(Response::new(RemoveInferenceTargetResponse {
-            idempotent_replay: out.idempotent_replay,
-        }))
-    }
-
-    async fn bind_inference_tier(
-        &self,
-        request: Request<BindInferenceTierRequest>,
-    ) -> Result<Response<BindInferenceTierResponse>, Status> {
-        let pb = request.into_inner();
-        let principal = principal_from_proto(
-            pb.principal
-                .ok_or_else(|| Status::invalid_argument("missing principal"))?,
-        )?;
-        self.engine
-            .bind_inference_tier(
-                &self.authz,
-                &proxima_core::BindInferenceTierRequest {
-                    principal,
-                    org_id: None,
-                    tier: tier_from_proto(pb.tier)?,
-                    target_ref: pb.target_ref,
-                },
-            )
-            .await
-            .map_err(protocol_error_to_status)?;
-        Ok(Response::new(BindInferenceTierResponse {}))
-    }
-
-    async fn list_inference_tier_bindings(
-        &self,
-        request: Request<ListInferenceTierBindingsRequest>,
-    ) -> Result<Response<ListInferenceTierBindingsResponse>, Status> {
-        let pb = request.into_inner();
-        let principal = principal_from_proto(
-            pb.principal
-                .ok_or_else(|| Status::invalid_argument("missing principal"))?,
-        )?;
-        let rows = self
-            .engine
-            .list_inference_tier_bindings(&self.authz, &principal)
-            .await
-            .map_err(protocol_error_to_status)?;
-        Ok(Response::new(ListInferenceTierBindingsResponse {
-            bindings: rows.iter().map(tier_binding_to_proto).collect(),
         }))
     }
 
