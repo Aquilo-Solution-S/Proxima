@@ -163,7 +163,9 @@ async fn outbox_publishes_entity_append_for_fact() {
                 assert_eq!(*schema_version, draft.schema_version);
                 assert!(supersedes.is_none());
             }
-            ChangeEventKind::EdgeAppend { .. } => panic!("expected EntityAppend"),
+            ChangeEventKind::EntityDelete { .. } | ChangeEventKind::EdgeAppend { .. } => {
+                panic!("expected EntityAppend");
+            }
         }
 
         Ok(())
@@ -230,7 +232,9 @@ async fn outbox_publishes_entity_append_for_goal() {
                 assert_eq!(*schema_version, draft.schema_version);
                 assert!(supersedes.is_none());
             }
-            ChangeEventKind::EdgeAppend { .. } => panic!("expected EntityAppend"),
+            ChangeEventKind::EntityDelete { .. } | ChangeEventKind::EdgeAppend { .. } => {
+                panic!("expected EntityAppend");
+            }
         }
 
         Ok(())
@@ -281,7 +285,9 @@ async fn outbox_publishes_fact_then_goal() {
             ChangeEventKind::EntityAppend { entity_kind, .. } => {
                 assert_eq!(*entity_kind, EntityKind::Fact);
             }
-            ChangeEventKind::EdgeAppend { .. } => panic!("expected EntityAppend"),
+            ChangeEventKind::EntityDelete { .. } | ChangeEventKind::EdgeAppend { .. } => {
+                panic!("expected EntityAppend");
+            }
         }
 
         // Write a goal.
@@ -300,7 +306,9 @@ async fn outbox_publishes_fact_then_goal() {
             ChangeEventKind::EntityAppend { entity_kind, .. } => {
                 assert_eq!(*entity_kind, EntityKind::Goal);
             }
-            ChangeEventKind::EdgeAppend { .. } => panic!("expected EntityAppend"),
+            ChangeEventKind::EntityDelete { .. } | ChangeEventKind::EdgeAppend { .. } => {
+                panic!("expected EntityAppend");
+            }
         }
 
         Ok(())

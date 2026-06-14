@@ -350,7 +350,8 @@ fn push_base_memory_filters(
 ) {
     sql.push_str(
         " WHERE m.owner_principal_kind = $1
-           AND m.owner_principal_id = $2",
+           AND m.owner_principal_id = $2
+           AND m.tombstoned_at IS NULL",
     );
     match req.kind {
         None => {}
@@ -375,6 +376,7 @@ fn push_sidecar_memory_filters(
         sql,
         " WHERE m.owner_principal_kind = $1
            AND m.owner_principal_id = $2
+           AND m.tombstoned_at IS NULL
            AND m.schema_id = ${schema_param}
            AND m.schema_version = ${version_param}"
     )

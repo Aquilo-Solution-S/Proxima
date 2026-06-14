@@ -1,5 +1,5 @@
 //! Typed `ChangeEvent` — what subscribers see when an
-//! `EntityAppend` or `EdgeAppend` lands. See docs/14
+//! `EntityAppend`, `EntityDelete`, or `EdgeAppend` lands. See docs/14
 //! §Subscribe and §Consistency.
 
 use uuid::Uuid;
@@ -7,15 +7,7 @@ use uuid::Uuid;
 use crate::{GoalId, MemoryId, Owner, SchemaId, SchemaVersion};
 
 #[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    Hash,
-    serde::Serialize,
-    serde::Deserialize,
-    sqlx::Type,
+    Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, sqlx::Type,
 )]
 #[sqlx(type_name = "proxima_core.entity_kind")]
 pub enum EntityKind {
@@ -41,15 +33,7 @@ impl EntityKind {
 /// that produced a derived memory (Abstraction / Perspective) and is also
 /// stored on Goal authorship rows. Variants match the SQL enum labels.
 #[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    Hash,
-    serde::Serialize,
-    serde::Deserialize,
-    sqlx::Type,
+    Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, sqlx::Type,
 )]
 #[sqlx(type_name = "proxima_core.memory_operator_kind")]
 pub enum MemoryOperatorKind {
@@ -64,27 +48,18 @@ pub enum MemoryOperatorKind {
 /// carries payload; this tag is what the `change_event.kind` column
 /// stores and what `FromRow` decoders see.
 #[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    Hash,
-    serde::Serialize,
-    serde::Deserialize,
-    sqlx::Type,
+    Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, sqlx::Type,
 )]
 #[sqlx(type_name = "proxima_core.change_event_kind")]
 pub enum ChangeEventKindTag {
     EntityAppend,
+    EntityDelete,
     EdgeAppend,
 }
 
 /// Endpoint of an Edge or supersedes target. Sum type matching
 /// `change_event` columns: a memory or a goal.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum EntityRef {
     Memory(MemoryId),
     Goal(GoalId),
@@ -98,6 +73,12 @@ pub enum ChangeEventKind {
         schema_id: SchemaId,
         schema_version: SchemaVersion,
         supersedes: Option<EntityRef>,
+    },
+    EntityDelete {
+        entity_kind: EntityKind,
+        entity: EntityRef,
+        schema_id: SchemaId,
+        schema_version: SchemaVersion,
     },
     EdgeAppend {
         edge_id: Uuid,

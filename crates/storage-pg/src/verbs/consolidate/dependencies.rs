@@ -17,9 +17,10 @@ pub async fn list_memory_dependencies(
         "SELECT e.target_memory_id, m.schema_id
          FROM proxima_core.edges e
          JOIN proxima_core.memories m
-           ON m.memory_id = e.target_memory_id
-          AND m.owner_principal_kind = e.owner_principal_kind
-          AND m.owner_principal_id = e.owner_principal_id
+	           ON m.memory_id = e.target_memory_id
+	          AND m.owner_principal_kind = e.owner_principal_kind
+	          AND m.owner_principal_id = e.owner_principal_id
+	          AND m.tombstoned_at IS NULL
          WHERE e.owner_principal_kind = $1
            AND e.owner_principal_id = $2
            AND e.relation = $3
@@ -54,12 +55,13 @@ pub async fn has_satisfied_code_test_request(
         "WITH required AS (
              SELECT criterion->>'key' AS criterion_key
              FROM proxima_code.test_request_v1 t
-             JOIN proxima_core.memories mt
-               ON mt.memory_id = t.memory_id
+	             JOIN proxima_core.memories mt
+	               ON mt.memory_id = t.memory_id
              CROSS JOIN jsonb_array_elements(t.criteria_json) criterion
              WHERE t.memory_id = $3
-               AND mt.owner_principal_kind = $1
-               AND mt.owner_principal_id = $2
+	               AND mt.owner_principal_kind = $1
+	               AND mt.owner_principal_id = $2
+	               AND mt.tombstoned_at IS NULL
                AND COALESCE((criterion->>'required')::boolean, false)
          ),
          evidence AS (
@@ -67,10 +69,11 @@ pub async fn has_satisfied_code_test_request(
              FROM proxima_core.edges e
              JOIN proxima_code.verification_evidence_v1 v
                ON v.memory_id = e.source_memory_id
-             JOIN proxima_core.memories mv
-               ON mv.memory_id = v.memory_id
-              AND mv.owner_principal_kind = e.owner_principal_kind
-              AND mv.owner_principal_id = e.owner_principal_id
+	             JOIN proxima_core.memories mv
+	               ON mv.memory_id = v.memory_id
+	              AND mv.owner_principal_kind = e.owner_principal_kind
+	              AND mv.owner_principal_id = e.owner_principal_id
+	              AND mv.tombstoned_at IS NULL
              WHERE e.owner_principal_kind = $1
                AND e.owner_principal_id = $2
                AND e.relation = 'core/derived-from'

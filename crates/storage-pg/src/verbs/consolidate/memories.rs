@@ -24,7 +24,8 @@ pub async fn load_memory_batch_facts(
         "SELECT e.source_batch_id
          FROM proxima_core.memories m
          JOIN proxima_core.events e ON e.event_id = m.event_id
-         WHERE m.memory_id = $1",
+         WHERE m.memory_id = $1
+           AND m.tombstoned_at IS NULL",
     )
     .bind(memory_id.into_inner())
     .fetch_optional(pool)
@@ -54,7 +55,8 @@ async fn load_batch_facts_by_id(
              WHERE e.source_batch_id = $1
                AND m.owner_principal_kind = $2
                AND m.owner_principal_id = $3
-               AND m.schema_id = $4",
+               AND m.schema_id = $4
+               AND m.tombstoned_at IS NULL",
             sidecar = sidecar.as_str(),
         );
         let rows: Vec<(uuid::Uuid, i32, serde_json::Value, i16)> = sqlx::query_as(&sql)
@@ -98,9 +100,11 @@ pub async fn load_abstraction_heads(
                AND m.owner_principal_id = $2
                AND m.kind = 'Abstraction'
                AND m.schema_id = $3
+               AND m.tombstoned_at IS NULL
                AND NOT EXISTS (
                     SELECT 1 FROM proxima_core.memories newer
                     WHERE newer.supersedes = m.memory_id
+                      AND newer.tombstoned_at IS NULL
                )
              ORDER BY m.created_at DESC, m.memory_id DESC
              LIMIT $4",
@@ -169,9 +173,11 @@ pub async fn load_perspective_heads(
                AND m.memory_id <> $5
                AND m.schema_id <> $6
                AND m.schema_id !~ '-self-v[0-9]+$'
+               AND m.tombstoned_at IS NULL
                AND NOT EXISTS (
                     SELECT 1 FROM proxima_core.memories newer
                     WHERE newer.supersedes = m.memory_id
+                      AND newer.tombstoned_at IS NULL
                )
              ORDER BY m.created_at DESC, m.memory_id DESC
              LIMIT $7",
@@ -239,7 +245,8 @@ pub async fn load_memory_by_id(
          FROM proxima_core.memories
          WHERE memory_id = $1
            AND owner_principal_kind = $2
-           AND owner_principal_id = $3",
+           AND owner_principal_id = $3
+           AND tombstoned_at IS NULL",
     )
     .bind(memory_id.into_inner())
     .bind(owner_kind)
@@ -316,10 +323,11 @@ async fn memory_visible_to_reader(
     let allowed: Option<(i32,)> = sqlx::query_as(
         "SELECT 1
            FROM proxima_core.read_scope_matrix r
-	          JOIN proxima_core.memories m
-	            ON m.owner_principal_kind = r.owner_principal_kind
-	           AND m.owner_principal_id = r.owner_principal_id
-	           AND m.memory_id = $5
+		          JOIN proxima_core.memories m
+		            ON m.owner_principal_kind = r.owner_principal_kind
+		           AND m.owner_principal_id = r.owner_principal_id
+		           AND m.memory_id = $5
+		           AND m.tombstoned_at IS NULL
 	         WHERE r.owner_principal_kind = $1
             AND r.owner_principal_id = $2
             AND r.reader_personality_instance_id = $3
@@ -351,9 +359,11 @@ pub async fn lookup_prior_personality_head(
            AND schema_id = $3
            AND personality_instance_id = $4
            AND kind = 'Perspective'
+           AND tombstoned_at IS NULL
            AND NOT EXISTS (
                 SELECT 1 FROM proxima_core.memories newer
                 WHERE newer.supersedes = memories.memory_id
+                  AND newer.tombstoned_at IS NULL
            )
          ORDER BY created_at DESC
          LIMIT 1",
@@ -556,11 +566,14 @@ async fn memory_kind_for_provenance(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     memory_id: MemoryId,
 ) -> Result<EntityKind, StorageError> {
-    let row: Option<(Option<EntityKind>,)> =
-        sqlx::query_as("SELECT kind FROM proxima_core.memories WHERE memory_id = $1")
-            .bind(memory_id.into_inner())
-            .fetch_optional(&mut **tx)
-            .await
-            .map_err(map_err)?;
+    let row: Option<(Option<EntityKind>,)> = sqlx::query_as(
+        "SELECT kind FROM proxima_core.memories
+             WHERE memory_id = $1
+               AND tombstoned_at IS NULL",
+    )
+    .bind(memory_id.into_inner())
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(map_err)?;
     Ok(row.and_then(|(kind,)| kind).unwrap_or(EntityKind::Fact))
 }

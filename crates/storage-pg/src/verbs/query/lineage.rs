@@ -136,6 +136,7 @@ async fn start_memory_visible(
              WHERE owner_principal_kind = $1
                AND owner_principal_id = $2
                AND memory_id = $3
+               AND tombstoned_at IS NULL
                AND (
                    $4::uuid IS NULL
                    OR kind IS NULL
@@ -202,6 +203,7 @@ async fn load_nodes(
              WHERE owner_principal_kind = $1
                AND owner_principal_id = $2
                AND memory_id = ANY($3::uuid[])
+               AND tombstoned_at IS NULL
                AND (
                    $4::uuid IS NULL
                    OR kind IS NULL
@@ -247,27 +249,26 @@ WITH RECURSIVE walk AS (
       AND e.source_memory_id = $3
       AND e.target_memory_id IS NOT NULL
       AND e.relation_class IN ('Provenance', 'Supersession')
-      AND (
-          $6::uuid IS NULL
-          OR EXISTS (
-              SELECT 1
-                FROM proxima_core.memories m
-               WHERE m.memory_id = e.target_memory_id
-                 AND m.owner_principal_kind = e.owner_principal_kind
-                 AND m.owner_principal_id = e.owner_principal_id
-                 AND (
-                     m.kind IS NULL
-                     OR m.personality_instance_id = $6
-                     OR EXISTS (
-                         SELECT 1
-                           FROM proxima_core.read_scope_matrix r
-	                          WHERE r.owner_principal_kind = m.owner_principal_kind
-	                            AND r.owner_principal_id = m.owner_principal_id
-	                            AND r.reader_personality_instance_id = $6
-	                            AND r.readable_personality_instance_id = m.personality_instance_id
-	                     )
-                 )
-          )
+      AND EXISTS (
+          SELECT 1
+            FROM proxima_core.memories m
+           WHERE m.memory_id = e.target_memory_id
+             AND m.owner_principal_kind = e.owner_principal_kind
+             AND m.owner_principal_id = e.owner_principal_id
+             AND m.tombstoned_at IS NULL
+             AND (
+                 $6::uuid IS NULL
+                 OR m.kind IS NULL
+                 OR m.personality_instance_id = $6
+                 OR EXISTS (
+                     SELECT 1
+                       FROM proxima_core.read_scope_matrix r
+	                      WHERE r.owner_principal_kind = m.owner_principal_kind
+	                        AND r.owner_principal_id = m.owner_principal_id
+	                        AND r.reader_personality_instance_id = $6
+	                        AND r.readable_personality_instance_id = m.personality_instance_id
+	                 )
+             )
       )
     UNION ALL
     SELECT w.distance + 1,
@@ -284,27 +285,26 @@ WITH RECURSIVE walk AS (
      AND e.relation_class IN ('Provenance', 'Supersession')
     WHERE w.distance < $4
       AND NOT e.target_memory_id = ANY(w.path)
-      AND (
-          $6::uuid IS NULL
-          OR EXISTS (
-              SELECT 1
-                FROM proxima_core.memories m
-               WHERE m.memory_id = e.target_memory_id
-                 AND m.owner_principal_kind = e.owner_principal_kind
-                 AND m.owner_principal_id = e.owner_principal_id
-                 AND (
-                     m.kind IS NULL
-                     OR m.personality_instance_id = $6
-                     OR EXISTS (
-                         SELECT 1
-                           FROM proxima_core.read_scope_matrix r
-	                          WHERE r.owner_principal_kind = m.owner_principal_kind
-	                            AND r.owner_principal_id = m.owner_principal_id
-	                            AND r.reader_personality_instance_id = $6
-	                            AND r.readable_personality_instance_id = m.personality_instance_id
-	                     )
-                 )
-          )
+      AND EXISTS (
+          SELECT 1
+            FROM proxima_core.memories m
+           WHERE m.memory_id = e.target_memory_id
+             AND m.owner_principal_kind = e.owner_principal_kind
+             AND m.owner_principal_id = e.owner_principal_id
+             AND m.tombstoned_at IS NULL
+             AND (
+                 $6::uuid IS NULL
+                 OR m.kind IS NULL
+                 OR m.personality_instance_id = $6
+                 OR EXISTS (
+                     SELECT 1
+                       FROM proxima_core.read_scope_matrix r
+	                      WHERE r.owner_principal_kind = m.owner_principal_kind
+	                        AND r.owner_principal_id = m.owner_principal_id
+	                        AND r.reader_personality_instance_id = $6
+	                        AND r.readable_personality_instance_id = m.personality_instance_id
+	                 )
+             )
       )
 )
 SELECT distance, edge_id, relation, relation_class,
@@ -327,27 +327,26 @@ WITH RECURSIVE walk AS (
       AND e.target_memory_id = $3
       AND e.source_memory_id IS NOT NULL
       AND e.relation_class IN ('Provenance', 'Supersession')
-      AND (
-          $6::uuid IS NULL
-          OR EXISTS (
-              SELECT 1
-                FROM proxima_core.memories m
-               WHERE m.memory_id = e.source_memory_id
-                 AND m.owner_principal_kind = e.owner_principal_kind
-                 AND m.owner_principal_id = e.owner_principal_id
-                 AND (
-                     m.kind IS NULL
-                     OR m.personality_instance_id = $6
-                     OR EXISTS (
-                         SELECT 1
-                           FROM proxima_core.read_scope_matrix r
-	                          WHERE r.owner_principal_kind = m.owner_principal_kind
-	                            AND r.owner_principal_id = m.owner_principal_id
-	                            AND r.reader_personality_instance_id = $6
-	                            AND r.readable_personality_instance_id = m.personality_instance_id
-	                     )
-                 )
-          )
+      AND EXISTS (
+          SELECT 1
+            FROM proxima_core.memories m
+           WHERE m.memory_id = e.source_memory_id
+             AND m.owner_principal_kind = e.owner_principal_kind
+             AND m.owner_principal_id = e.owner_principal_id
+             AND m.tombstoned_at IS NULL
+             AND (
+                 $6::uuid IS NULL
+                 OR m.kind IS NULL
+                 OR m.personality_instance_id = $6
+                 OR EXISTS (
+                     SELECT 1
+                       FROM proxima_core.read_scope_matrix r
+	                      WHERE r.owner_principal_kind = m.owner_principal_kind
+	                        AND r.owner_principal_id = m.owner_principal_id
+	                        AND r.reader_personality_instance_id = $6
+	                        AND r.readable_personality_instance_id = m.personality_instance_id
+	                 )
+             )
       )
     UNION ALL
     SELECT w.distance + 1,
@@ -364,27 +363,26 @@ WITH RECURSIVE walk AS (
      AND e.relation_class IN ('Provenance', 'Supersession')
     WHERE w.distance < $4
       AND NOT e.source_memory_id = ANY(w.path)
-      AND (
-          $6::uuid IS NULL
-          OR EXISTS (
-              SELECT 1
-                FROM proxima_core.memories m
-               WHERE m.memory_id = e.source_memory_id
-                 AND m.owner_principal_kind = e.owner_principal_kind
-                 AND m.owner_principal_id = e.owner_principal_id
-                 AND (
-                     m.kind IS NULL
-                     OR m.personality_instance_id = $6
-                     OR EXISTS (
-                         SELECT 1
-                           FROM proxima_core.read_scope_matrix r
-	                          WHERE r.owner_principal_kind = m.owner_principal_kind
-	                            AND r.owner_principal_id = m.owner_principal_id
-	                            AND r.reader_personality_instance_id = $6
-	                            AND r.readable_personality_instance_id = m.personality_instance_id
-	                     )
-                 )
-          )
+      AND EXISTS (
+          SELECT 1
+            FROM proxima_core.memories m
+           WHERE m.memory_id = e.source_memory_id
+             AND m.owner_principal_kind = e.owner_principal_kind
+             AND m.owner_principal_id = e.owner_principal_id
+             AND m.tombstoned_at IS NULL
+             AND (
+                 $6::uuid IS NULL
+                 OR m.kind IS NULL
+                 OR m.personality_instance_id = $6
+                 OR EXISTS (
+                     SELECT 1
+                       FROM proxima_core.read_scope_matrix r
+	                      WHERE r.owner_principal_kind = m.owner_principal_kind
+	                        AND r.owner_principal_id = m.owner_principal_id
+	                        AND r.reader_personality_instance_id = $6
+	                        AND r.readable_personality_instance_id = m.personality_instance_id
+	                 )
+             )
       )
 )
 SELECT distance, edge_id, relation, relation_class,

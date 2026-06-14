@@ -1,5 +1,5 @@
 use proxima_core::{Owner, StorageError};
-use sqlx::PgPool;
+use sqlx::{PgPool, Postgres, Transaction};
 
 use crate::error::map_err;
 use crate::verbs::consolidate::owner_columns;
@@ -52,6 +52,26 @@ pub async fn get_fact_retention(pool: &PgPool, owner: &Owner) -> Result<Option<i
     .bind(owner_principal_id)
     .bind(owner_org_id)
     .fetch_optional(pool)
+    .await
+    .map_err(map_err)
+}
+
+pub(crate) async fn get_fact_retention_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    owner: &Owner,
+) -> Result<Option<i64>, StorageError> {
+    let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(owner);
+    sqlx::query_scalar(
+        "SELECT retention_seconds
+           FROM proxima_core.owner_fact_retention
+          WHERE owner_principal_kind = $1
+            AND owner_principal_id = $2
+            AND owner_org_id = $3",
+    )
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(owner_org_id)
+    .fetch_optional(&mut **tx)
     .await
     .map_err(map_err)
 }

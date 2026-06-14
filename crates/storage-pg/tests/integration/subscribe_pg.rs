@@ -180,7 +180,9 @@ async fn subscribe_fresh_no_since_live_ingest() {
                 assert_eq!(*schema_version, draft.schema_version);
                 assert!(supersedes.is_none());
             }
-            ChangeEventKind::EdgeAppend { .. } => panic!("expected EntityAppend"),
+            ChangeEventKind::EntityDelete { .. } | ChangeEventKind::EdgeAppend { .. } => {
+                panic!("expected EntityAppend");
+            }
         }
 
         Ok(())
@@ -253,7 +255,9 @@ async fn subscribe_resume_with_since_mid() {
             ChangeEventKind::EntityAppend { entity_kind, .. } => {
                 assert_eq!(*entity_kind, EntityKind::Goal);
             }
-            ChangeEventKind::EdgeAppend { .. } => panic!("expected EntityAppend"),
+            ChangeEventKind::EntityDelete { .. } | ChangeEventKind::EdgeAppend { .. } => {
+                panic!("expected EntityAppend");
+            }
         }
 
         // Ingest event C (another Fact).
@@ -275,7 +279,9 @@ async fn subscribe_resume_with_since_mid() {
             ChangeEventKind::EntityAppend { entity_kind, .. } => {
                 assert_eq!(*entity_kind, EntityKind::Fact);
             }
-            ChangeEventKind::EdgeAppend { .. } => panic!("expected EntityAppend"),
+            ChangeEventKind::EntityDelete { .. } | ChangeEventKind::EdgeAppend { .. } => {
+                panic!("expected EntityAppend");
+            }
         }
 
         Ok(())

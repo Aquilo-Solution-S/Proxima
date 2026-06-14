@@ -173,10 +173,12 @@ pub async fn ingest_event_in_tx(
     let owner_org_id = owner.org_id.into_inner();
 
     // Replay check.
-    let existing = sqlx::query_scalar!(
-        r#"SELECT memory_id FROM proxima_core.memories WHERE event_id = $1"#,
-        &event_id_bytes[..],
+    let existing = sqlx::query_scalar::<_, uuid::Uuid>(
+        r"SELECT memory_id FROM proxima_core.memories
+           WHERE event_id = $1
+             AND tombstoned_at IS NULL",
     )
+    .bind(&event_id_bytes[..])
     .fetch_optional(&mut **tx)
     .await
     .map_err(map_err)?;
