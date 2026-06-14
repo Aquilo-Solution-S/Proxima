@@ -777,6 +777,10 @@ mod tests {
             "core/list_schemas",
             "core/list_edge_types",
             "core/get_memory",
+            "core/fetch_memory",
+            "core/search_memories",
+            "core/facts_citing_object",
+            "core/citation_of_fact",
             "core/walk_memory_lineage",
         ];
         for name in expected {
@@ -786,6 +790,6 @@ mod tests {
             !names.contains("core/emit_budget_decision"),
             "retired tool name must not remain registered"
         );
-        assert_eq!(names.len(), 21, "exactly 21 substrate tools registered");
+        assert_eq!(names.len(), 25, "exactly 25 substrate tools registered");
     }
 }
