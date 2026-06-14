@@ -85,6 +85,7 @@ impl McpTool for RecordUtteranceTool {
                 schema_id: SchemaId::new(UtteranceV1::SCHEMA_ID.into()),
                 schema_version: SchemaVersion::new(UtteranceV1::SCHEMA_VERSION),
                 payload: payload_bytes,
+                rendered_text: None,
                 observed_at,
                 occurred_at: observed_at,
                 citation: None,
@@ -118,6 +119,16 @@ impl McpTool for RecordUtteranceTool {
             .await
             .map_err(McpToolError::Storage)?;
             tx.commit().await.map_err(map_storage)?;
+            if let Err(err) = engine
+                .ensure_fact_embedding(&ctx.owner, outcome.memory_id)
+                .await
+            {
+                tracing::warn!(
+                    memory_id = %outcome.memory_id.into_inner(),
+                    error = %err,
+                    "best-effort Fact embedding failed after proxima_record_utterance",
+                );
+            }
 
             Ok(RecordUtteranceOutput {
                 handle: ctx.format_fact_memory(outcome.memory_id),

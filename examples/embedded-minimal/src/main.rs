@@ -43,6 +43,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         schema_id: SchemaId::new(flavor::DocumentFiledV1::SCHEMA_ID.into()),
         schema_version: SchemaVersion::new(flavor::DocumentFiledV1::SCHEMA_VERSION),
         payload: payload_bytes,
+        rendered_text: None,
         observed_at: now,
         occurred_at: now,
         citation: Some(Citation {

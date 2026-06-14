@@ -73,6 +73,7 @@ fn fresh_draft(owner: &Owner) -> EventDraft {
         schema_id: SchemaId::new("test/sidecar_fact".into()),
         schema_version: SchemaVersion::new(1),
         payload,
+        rendered_text: None,
         observed_at: now,
         occurred_at: now,
         citation: Some(Citation {

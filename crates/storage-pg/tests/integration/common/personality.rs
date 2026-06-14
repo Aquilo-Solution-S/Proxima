@@ -237,6 +237,7 @@ pub async fn ingest_test_fact(pg: &PgStorage, owner: &Owner, label: &str) -> Mem
         schema_id: SchemaId::new(TEST_FACT_SCHEMA.into()),
         schema_version: SchemaVersion::new(1),
         payload,
+        rendered_text: None,
         observed_at: now,
         occurred_at: now,
         citation: Some(Citation {
@@ -277,6 +278,7 @@ pub async fn ingest_other_fact(pg: &PgStorage, owner: &Owner, label: &str) -> Me
         schema_id: SchemaId::new(TEST_OTHER_FACT_SCHEMA.into()),
         schema_version: SchemaVersion::new(1),
         payload,
+        rendered_text: None,
         observed_at: now,
         occurred_at: now,
         citation: Some(Citation {

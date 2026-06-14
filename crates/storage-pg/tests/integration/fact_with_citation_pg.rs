@@ -142,6 +142,7 @@ fn draft(owner: &Owner, note: &str, author: Option<PersonalityInstanceId>) -> Ev
         payload: json(&TestFact {
             note: note.to_string(),
         }),
+        rendered_text: None,
         observed_at: now,
         occurred_at: now,
         citation: None,

@@ -71,6 +71,7 @@ fn fresh_draft(owner: Owner) -> EventDraft {
         schema_id: SchemaId::new("test/fact_blob".into()),
         schema_version: SchemaVersion::new(1),
         payload: format!("hello world {}", Uuid::now_v7()).into_bytes(),
+        rendered_text: None,
         observed_at: now,
         occurred_at: now,
         citation: Some(Citation {

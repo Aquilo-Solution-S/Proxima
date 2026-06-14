@@ -66,6 +66,7 @@ fn fresh_draft_with_content_hash(owner: Owner, content_hash: [u8; 32]) -> EventD
         schema_id: SchemaId::new("test/cleanup-fact-v1".into()),
         schema_version: SchemaVersion::new(1),
         payload: format!("cleanup {}", Uuid::now_v7()).into_bytes(),
+        rendered_text: None,
         observed_at: now,
         occurred_at: now,
         citation: Some(Citation {

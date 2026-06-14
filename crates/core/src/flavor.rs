@@ -6,7 +6,7 @@
 
 use crate::mcp::schema::mcp_tool_schema;
 use crate::verbs::schema::{
-    CitedObjectContentHasherEntry, FlavorRegistryFrozen, MemorySearchProjection,
+    CitedObjectContentHasherEntry, FactRendererEntry, FlavorRegistryFrozen, MemorySearchProjection,
     MemorySearchProjectionField, PayloadKind, PayloadValidator, PayloadValidatorEntry, SchemaInfo,
 };
 use crate::{
@@ -67,6 +67,7 @@ pub struct FlavorRegistry {
     pub(crate) relations: Vec<RelationDescriptor>,
     pub(crate) validators: Vec<PayloadValidatorEntry>,
     pub(crate) cited_object_content_hashers: Vec<CitedObjectContentHasherEntry>,
+    pub(crate) fact_renderers: Vec<FactRendererEntry>,
     pub(crate) mcp_tools: Vec<McpToolDescriptor>,
     pub(crate) flavors: Vec<FlavorDescriptor>,
     pub(crate) dependency_satisfaction_rules: Vec<(String, Arc<dyn DependencySatisfactionRule>)>,
@@ -80,6 +81,7 @@ impl Default for FlavorRegistry {
             relations: core_relation_descriptors(),
             validators: Vec::new(),
             cited_object_content_hashers: Vec::new(),
+            fact_renderers: Vec::new(),
             mcp_tools: Vec::new(),
             flavors: Vec::new(),
             dependency_satisfaction_rules: Vec::new(),
@@ -156,6 +158,11 @@ impl FlavorRegistry {
             validate_payload_type::<F>,
             F::json_schema(),
         );
+        self.fact_renderers.push(FactRendererEntry {
+            schema_id: F::schema_id(),
+            schema_version: SchemaVersion::new(F::SCHEMA_VERSION),
+            render: render_fact_payload::<F>,
+        });
     }
 
     pub fn add_abstraction_schema<A: AbstractionPayload>(&mut self) {
@@ -428,6 +435,9 @@ impl FlavorRegistry {
                     && v.schema_version == schema.schema_version
                     && v.kind == schema.kind
             });
+            let has_fact_renderer = self.fact_renderers.iter().any(|r| {
+                r.schema_id == schema.schema_id && r.schema_version == schema.schema_version
+            });
             assert!(
                 schema.json_encoder.is_some() == has_validator,
                 "schema {:?} v{:?} {:?}: a typed schema needs both a \
@@ -439,6 +449,14 @@ impl FlavorRegistry {
                 schema.json_encoder.is_some(),
                 has_validator,
             );
+            if schema.kind == PayloadKind::Fact && schema.json_encoder.is_some() {
+                assert!(
+                    has_fact_renderer,
+                    "Fact schema {:?} v{:?} has no typed renderer",
+                    schema.schema_id.as_str(),
+                    schema.schema_version.into_inner(),
+                );
+            }
         }
         let mut seen_schemas = std::collections::HashSet::new();
         for schema in &self.schemas {
@@ -590,6 +608,14 @@ where
 {
     let payload = decode_payload_json::<C>(payload_bytes, C::SCHEMA_ID)?;
     Ok(payload.idempotency_key())
+}
+
+fn render_fact_payload<F>(payload_bytes: &[u8]) -> Result<String, crate::StorageError>
+where
+    F: FactPayload,
+{
+    let payload = decode_payload_json::<F>(payload_bytes, F::SCHEMA_ID)?;
+    Ok(payload.render())
 }
 
 fn insert_citation_mapping_sidecar<'t, M>(

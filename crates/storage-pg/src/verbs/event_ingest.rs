@@ -137,6 +137,7 @@ where
         schema_id: P::schema_id(),
         schema_version: SchemaVersion::new(P::SCHEMA_VERSION),
         payload: payload_bytes,
+        rendered_text: None,
         observed_at: now,
         occurred_at: now,
         citation: None,
@@ -320,9 +321,9 @@ pub async fn ingest_event_in_tx(
         r"INSERT INTO proxima_core.memories
             (memory_id, owner_principal_kind, owner_principal_id,
              owner_org_id, schema_id, schema_version, event_id, citation_mapping_id,
-             personality_instance_id)
+             text, personality_instance_id)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8,
-                 $9)",
+                 $9, $10)",
     )
     .bind(memory_id)
     .bind(owner_kind)
@@ -332,6 +333,7 @@ pub async fn ingest_event_in_tx(
     .bind(draft.schema_version.into_inner().cast_signed())
     .bind(&event_id_bytes[..])
     .bind(citation_mapping_id)
+    .bind(draft.rendered_text.as_deref())
     .bind(author_personality_instance_id)
     .execute(&mut **tx)
     .await
@@ -520,8 +522,8 @@ where
         r"INSERT INTO proxima_core.memories
             (memory_id, owner_principal_kind, owner_principal_id,
              owner_org_id, schema_id, schema_version, event_id, citation_mapping_id,
-             personality_instance_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+             text, personality_instance_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
     )
     .bind(memory_id)
     .bind(owner_kind)
@@ -531,6 +533,7 @@ where
     .bind(draft.schema_version.into_inner().cast_signed())
     .bind(&event_id_bytes[..])
     .bind(citation_mapping_id)
+    .bind(draft.rendered_text.as_deref())
     .bind(author_personality_instance_id)
     .execute(tx.as_mut())
     .await
