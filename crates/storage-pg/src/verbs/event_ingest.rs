@@ -104,6 +104,7 @@ where
         source_batch_id: SourceBatchId::new(uuid::Uuid::now_v7()),
         principal: authz.identity.principal.clone(),
         org_id: None,
+        author_personality_instance_id: None,
         schema_id: P::schema_id(),
         schema_version: SchemaVersion::new(P::SCHEMA_VERSION),
         payload: payload_bytes,
@@ -279,24 +280,30 @@ pub async fn ingest_event_in_tx(
     .await
     .map_err(map_err)?;
 
+    let author_personality_instance_id = draft.author_personality_instance_id.map_or_else(
+        uuid::Uuid::nil,
+        proxima_core::PersonalityInstanceId::into_inner,
+    );
+
     // 4. memory (Fact) — citation_mapping_id FK is deferred when present.
-    //    External-fact authorship: nil-uuid on personality_instance_id marks non-personality authoring.
-    sqlx::query!(
-        r#"INSERT INTO proxima_core.memories
+    //    Nil marks non-personality authoring.
+    sqlx::query(
+        r"INSERT INTO proxima_core.memories
             (memory_id, owner_principal_kind, owner_principal_id,
              owner_org_id, schema_id, schema_version, event_id, citation_mapping_id,
              personality_instance_id)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8,
-                 '00000000-0000-0000-0000-000000000000'::uuid)"#,
-        memory_id,
-        owner_kind as OwnerPrincipalKind,
-        owner_principal_id,
-        owner_org_id,
-        draft.schema_id.as_str(),
-        draft.schema_version.into_inner().cast_signed(),
-        &event_id_bytes[..],
-        citation_mapping_id,
+                 $9)",
     )
+    .bind(memory_id)
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(owner_org_id)
+    .bind(draft.schema_id.as_str())
+    .bind(draft.schema_version.into_inner().cast_signed())
+    .bind(&event_id_bytes[..])
+    .bind(citation_mapping_id)
+    .bind(author_personality_instance_id)
     .execute(&mut **tx)
     .await
     .map_err(map_err)?;

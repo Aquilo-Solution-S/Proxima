@@ -59,6 +59,7 @@ fn fresh_event_draft(owner: Owner, payload: Vec<u8>) -> EventDraft {
         source_batch_id: SourceBatchId::new(Uuid::now_v7()),
         principal: owner.principal,
         org_id: Some(owner.org_id),
+        author_personality_instance_id: None,
         schema_id: SchemaId::new("test/fact_blob".into()),
         schema_version: SchemaVersion::new(1),
         payload,

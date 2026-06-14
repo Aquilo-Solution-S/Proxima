@@ -91,6 +91,7 @@ impl McpTool for RememberTool {
                 source_batch_id: SourceBatchId::new(uuid::Uuid::now_v7()),
                 principal: ctx.owner.principal.clone(),
                 org_id: Some(ctx.owner.org_id),
+                author_personality_instance_id: ctx.author.personality_instance_id,
                 schema_id: SchemaId::new(AgentNoteV1::SCHEMA_ID.into()),
                 schema_version: SchemaVersion::new(AgentNoteV1::SCHEMA_VERSION),
                 payload: payload_bytes,

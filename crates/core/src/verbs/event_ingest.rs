@@ -7,7 +7,8 @@
 use uuid::Uuid;
 
 use crate::{
-    EventId, MemoryId, OrgId, Owner, Principal, SchemaId, SchemaVersion, SourceBatchId, SourceId,
+    EventId, MemoryId, OrgId, Owner, PersonalityInstanceId, Principal, SchemaId, SchemaVersion,
+    SourceBatchId, SourceId,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -36,6 +37,8 @@ pub struct EventDraft {
     pub principal: Principal,
     #[serde(skip)]
     pub org_id: Option<OrgId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author_personality_instance_id: Option<PersonalityInstanceId>,
     pub schema_id: SchemaId,
     pub schema_version: SchemaVersion,
     pub payload: Vec<u8>,

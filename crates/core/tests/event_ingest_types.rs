@@ -14,6 +14,7 @@ fn fresh_draft() -> EventDraft {
         source_batch_id: SourceBatchId::new(Uuid::now_v7()),
         principal: Principal::User(user),
         org_id: Some(OrgId::new(Uuid::now_v7())),
+        author_personality_instance_id: None,
         schema_id: SchemaId::new("test/fact_blob".to_string()),
         schema_version: SchemaVersion::new(1),
         payload: b"hello".to_vec(),
