@@ -72,7 +72,8 @@ macro_rules! proxima_schema_id {
 
 /// Build-time registration macro. v1 subset — supports
 /// `fact_schemas`, `abstraction_schemas`, `perspective_schemas`,
-/// `goal_schemas`, `edge_schemas`, `relations`, `mcp_tools`.
+/// `goal_schemas`, `edge_schemas`, `cited_object_schemas`,
+/// `citation_mapping_schemas`, `relations`, `mcp_tools`.
 /// Expands to a
 /// `pub fn register(registry: &mut FlavorRegistry)` that adds each
 /// schema / relation.
@@ -104,6 +105,8 @@ macro_rules! proxima_schema_id {
 ///     name = "proxima-code",
 ///     fact_schemas = [ CommitV1, FileChangeV1 ],
 ///     edge_schemas = [ EdgeCallsV1 ],
+///     cited_object_schemas = [ SourceFileV1 ],
+///     citation_mapping_schemas = [ SourceFileSpanV1 ],
 ///     relations = [ RelationDescriptor::typed(
 ///         "proxima-code/calls",
 ///         RelationClass::Structural,
@@ -145,6 +148,8 @@ macro_rules! proxima_flavor {
         $(, perspective_schemas = [ $($persp:ty),* $(,)? ])?
         $(, goal_schemas = [ $($goal:ty),* $(,)? ])?
         $(, edge_schemas = [ $($edge:ty),* $(,)? ])?
+        $(, cited_object_schemas = [ $($cited:ty),* $(,)? ])?
+        $(, citation_mapping_schemas = [ $($citemap:ty),* $(,)? ])?
         $(, relations = [ $($rel:expr),* $(,)? ])?
         $(, mcp_tools = [ $($tool:ty),* $(,)? ])?
         $(, dependency_satisfaction_rules = [ $($dependency_rule:ty),* $(,)? ])?
@@ -186,6 +191,10 @@ macro_rules! proxima_flavor {
                 GoalPayload add_goal_schema [ $($goal),* ]);)?
             $($crate::proxima_flavor!(@schemas registry $name
                 EdgePayload add_edge_schema [ $($edge),* ]);)?
+            $($crate::proxima_flavor!(@schemas registry $name
+                CitedObjectPayload add_cited_object_schema [ $($cited),* ]);)?
+            $($crate::proxima_flavor!(@schemas registry $name
+                CitationMappingPayload add_citation_mapping_schema [ $($citemap),* ]);)?
             $($(
                 {
                     let descriptor: $crate::RelationDescriptor = $rel;
