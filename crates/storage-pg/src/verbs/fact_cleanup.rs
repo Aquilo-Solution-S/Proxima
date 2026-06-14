@@ -1,6 +1,6 @@
 //! Owner Fact-retention sweep.
 
-use proxima_core::verbs::fact_cleanup::CleanupDueFactsOutcome;
+use proxima_core::verbs::fact_cleanup::{CleanupDueFactsOutcome, OrphanedS3Blob};
 use proxima_core::{EntityKind, Owner, OwnerPrincipalKind, StorageError};
 use sqlx::{Postgres, Transaction};
 use uuid::Uuid;
@@ -26,6 +26,12 @@ struct TombstonedDerivativeRow {
     schema_version: i32,
 }
 
+#[derive(Debug, sqlx::FromRow)]
+struct OrphanedS3BlobRow {
+    bucket: String,
+    object_key: String,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct OwnerColumns {
     kind: OwnerPrincipalKind,
@@ -41,7 +47,7 @@ struct DeleteEntityEvent<'a> {
     schema_version: i32,
 }
 
-/// Hard-erase due Facts and tombstone their direct Provenance dependents.
+/// Hard-erase due Facts and tombstone their transitive Provenance dependents.
 ///
 /// # Errors
 ///
@@ -51,6 +57,7 @@ pub async fn cleanup_due_facts(
     owner: &Owner,
     fact_sidecar_tables: &[String],
     citation_mapping_sidecar_tables: &[String],
+    cited_object_sidecar_tables: &[String],
 ) -> Result<CleanupDueFactsOutcome, StorageError> {
     let mut tx = pool.begin().await.map_err(map_err)?;
     let outcome = cleanup_due_facts_in_tx(
@@ -58,6 +65,7 @@ pub async fn cleanup_due_facts(
         owner,
         fact_sidecar_tables,
         citation_mapping_sidecar_tables,
+        cited_object_sidecar_tables,
     )
     .await?;
     tx.commit().await.map_err(map_err)?;
@@ -69,12 +77,10 @@ async fn cleanup_due_facts_in_tx(
     owner: &Owner,
     fact_sidecar_tables: &[String],
     citation_mapping_sidecar_tables: &[String],
+    cited_object_sidecar_tables: &[String],
 ) -> Result<CleanupDueFactsOutcome, StorageError> {
     let Some(retention_seconds) = get_fact_retention_in_tx(tx, owner).await? else {
-        return Ok(CleanupDueFactsOutcome {
-            facts_erased: 0,
-            derivatives_tombstoned: 0,
-        });
+        return Ok(empty_outcome());
     };
 
     let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(owner);
@@ -104,14 +110,12 @@ async fn cleanup_due_facts_in_tx(
     .map_err(map_err)?;
 
     if due.is_empty() {
-        return Ok(CleanupDueFactsOutcome {
-            facts_erased: 0,
-            derivatives_tombstoned: 0,
-        });
+        return Ok(empty_outcome());
     }
 
     let due_memory_ids = due.iter().map(|row| row.memory_id).collect::<Vec<_>>();
-    let tombstoned = tombstone_direct_derivatives(
+    let candidate_cited_object_ids = candidate_cited_object_ids(tx, &due_memory_ids).await?;
+    let tombstoned = tombstone_transitive_derivatives(
         tx,
         owner_kind,
         owner_principal_id,
@@ -158,14 +162,28 @@ async fn cleanup_due_facts_in_tx(
     delete_fact_sidecars(tx, fact_sidecar_tables, &due_memory_ids).await?;
     delete_citation_mapping_sidecars(tx, citation_mapping_sidecar_tables, &due_memory_ids).await?;
     delete_fact_core_rows(tx, &due).await?;
+    let (cited_objects_erased, orphaned_s3_blobs) =
+        garbage_collect_cited_objects(tx, cited_object_sidecar_tables, &candidate_cited_object_ids)
+            .await?;
 
     Ok(CleanupDueFactsOutcome {
         facts_erased: u64::try_from(due.len()).unwrap_or(u64::MAX),
         derivatives_tombstoned: u64::try_from(tombstoned.len()).unwrap_or(u64::MAX),
+        cited_objects_erased,
+        orphaned_s3_blobs,
     })
 }
 
-async fn tombstone_direct_derivatives(
+fn empty_outcome() -> CleanupDueFactsOutcome {
+    CleanupDueFactsOutcome {
+        facts_erased: 0,
+        derivatives_tombstoned: 0,
+        cited_objects_erased: 0,
+        orphaned_s3_blobs: Vec::new(),
+    }
+}
+
+async fn tombstone_transitive_derivatives(
     tx: &mut Transaction<'_, Postgres>,
     owner_kind: OwnerPrincipalKind,
     owner_principal_id: Uuid,
@@ -173,18 +191,33 @@ async fn tombstone_direct_derivatives(
     due_memory_ids: &[Uuid],
 ) -> Result<Vec<TombstonedDerivativeRow>, StorageError> {
     sqlx::query_as(
-        "UPDATE proxima_core.memories m
+        "WITH RECURSIVE descendants(memory_id) AS (
+             SELECT e.source_memory_id
+               FROM proxima_core.edges e
+              WHERE e.owner_principal_kind = $1
+                AND e.owner_principal_id = $2
+                AND e.owner_org_id = $3
+                AND e.relation_class = 'Provenance'
+                AND e.target_memory_id = ANY($4::uuid[])
+                AND e.source_memory_id IS NOT NULL
+             UNION
+             SELECT e.source_memory_id
+               FROM descendants d
+               JOIN proxima_core.edges e
+                 ON e.owner_principal_kind = $1
+                AND e.owner_principal_id = $2
+                AND e.owner_org_id = $3
+                AND e.relation_class = 'Provenance'
+                AND e.target_memory_id = d.memory_id
+                AND e.source_memory_id IS NOT NULL
+         )
+         UPDATE proxima_core.memories m
             SET tombstoned_at = now()
-           FROM proxima_core.edges e
-          WHERE e.owner_principal_kind = $1
-            AND e.owner_principal_id = $2
-            AND e.owner_org_id = $3
-            AND e.relation_class = 'Provenance'
-            AND e.target_memory_id = ANY($4::uuid[])
-            AND e.source_memory_id = m.memory_id
-            AND m.owner_principal_kind = e.owner_principal_kind
-            AND m.owner_principal_id = e.owner_principal_id
-            AND m.owner_org_id = e.owner_org_id
+           FROM descendants d
+          WHERE m.memory_id = d.memory_id
+            AND m.owner_principal_kind = $1
+            AND m.owner_principal_id = $2
+            AND m.owner_org_id = $3
             AND m.kind IS NOT NULL
             AND m.tombstoned_at IS NULL
           RETURNING m.memory_id, m.kind, m.schema_id, m.schema_version",
@@ -300,6 +333,125 @@ async fn delete_citation_mapping_sidecars(
             .map_err(map_err)?;
     }
     Ok(())
+}
+
+async fn candidate_cited_object_ids(
+    tx: &mut Transaction<'_, Postgres>,
+    due_memory_ids: &[Uuid],
+) -> Result<Vec<Uuid>, StorageError> {
+    sqlx::query_scalar(
+        "SELECT DISTINCT cited_object_id
+           FROM proxima_core.citation_mappings
+          WHERE memory_id = ANY($1::uuid[])",
+    )
+    .bind(due_memory_ids)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(map_err)
+}
+
+async fn orphaned_cited_object_ids(
+    tx: &mut Transaction<'_, Postgres>,
+    candidate_cited_object_ids: &[Uuid],
+) -> Result<Vec<Uuid>, StorageError> {
+    if candidate_cited_object_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    sqlx::query_scalar(
+        "SELECT candidate.cited_object_id
+           FROM unnest($1::uuid[]) AS candidate(cited_object_id)
+          WHERE NOT EXISTS (
+                    SELECT 1
+                      FROM proxima_core.citation_mappings cm
+                     WHERE cm.cited_object_id = candidate.cited_object_id
+                )
+            AND NOT EXISTS (
+                    SELECT 1
+                      FROM proxima_core.cited_object_uploads upload
+                     WHERE upload.cited_object_id = candidate.cited_object_id
+                )",
+    )
+    .bind(candidate_cited_object_ids)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(map_err)
+}
+
+async fn orphaned_s3_blobs(
+    tx: &mut Transaction<'_, Postgres>,
+    orphaned_cited_object_ids: &[Uuid],
+) -> Result<Vec<OrphanedS3Blob>, StorageError> {
+    if orphaned_cited_object_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let rows: Vec<OrphanedS3BlobRow> = sqlx::query_as(
+        "SELECT bucket, object_key
+           FROM proxima_core.cited_uploaded_blob_v1
+          WHERE cited_object_id = ANY($1::uuid[])
+          ORDER BY bucket ASC, object_key ASC",
+    )
+    .bind(orphaned_cited_object_ids)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(map_err)?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| OrphanedS3Blob {
+            bucket: row.bucket,
+            object_key: row.object_key,
+        })
+        .collect())
+}
+
+async fn garbage_collect_cited_objects(
+    tx: &mut Transaction<'_, Postgres>,
+    cited_object_sidecar_tables: &[String],
+    candidate_cited_object_ids: &[Uuid],
+) -> Result<(u64, Vec<OrphanedS3Blob>), StorageError> {
+    let orphaned_cited_object_ids =
+        orphaned_cited_object_ids(tx, candidate_cited_object_ids).await?;
+    let orphaned_s3_blobs = orphaned_s3_blobs(tx, &orphaned_cited_object_ids).await?;
+    let cited_objects_erased =
+        delete_orphaned_cited_objects(tx, cited_object_sidecar_tables, &orphaned_cited_object_ids)
+            .await?;
+    Ok((cited_objects_erased, orphaned_s3_blobs))
+}
+
+async fn delete_orphaned_cited_objects(
+    tx: &mut Transaction<'_, Postgres>,
+    cited_object_sidecar_tables: &[String],
+    orphaned_cited_object_ids: &[Uuid],
+) -> Result<u64, StorageError> {
+    if orphaned_cited_object_ids.is_empty() {
+        return Ok(0);
+    }
+
+    for table in cited_object_sidecar_tables {
+        let table = PgIdent::table(table)?;
+        let sql = format!(
+            "DELETE FROM {table} WHERE cited_object_id = ANY($1::uuid[])",
+            table = table.as_str(),
+        );
+        sqlx::query(&sql)
+            .bind(orphaned_cited_object_ids)
+            .execute(&mut **tx)
+            .await
+            .map_err(map_err)?;
+    }
+
+    let deleted = sqlx::query(
+        "DELETE FROM proxima_core.cited_objects
+          WHERE cited_object_id = ANY($1::uuid[])",
+    )
+    .bind(orphaned_cited_object_ids)
+    .execute(&mut **tx)
+    .await
+    .map_err(map_err)?;
+
+    Ok(deleted.rows_affected())
 }
 
 async fn delete_fact_core_rows(

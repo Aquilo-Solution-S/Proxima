@@ -362,12 +362,14 @@ impl Storage for PgStorage {
         owner: &Owner,
         fact_sidecar_tables: &[String],
         citation_mapping_sidecar_tables: &[String],
+        cited_object_sidecar_tables: &[String],
     ) -> Result<CleanupDueFactsOutcome, StorageError> {
         verbs::fact_cleanup::cleanup_due_facts(
             &self.pool,
             owner,
             fact_sidecar_tables,
             citation_mapping_sidecar_tables,
+            cited_object_sidecar_tables,
         )
         .await
     }
