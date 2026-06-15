@@ -293,7 +293,7 @@ impl Engine {
         Ok(count)
     }
 
-    fn validate_json_payload<'a>(
+    pub(super) fn validate_json_payload<'a>(
         &'a self,
         schema_id: &crate::SchemaId,
         schema_version: SchemaVersion,

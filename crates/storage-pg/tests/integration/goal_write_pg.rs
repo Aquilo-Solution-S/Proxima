@@ -50,7 +50,7 @@ fn fresh_draft(owner: &Owner, request_id: String) -> GoalDraft {
         schema_version: SchemaVersion::new(1),
         title: "Test goal".to_string(),
         text: "Test goal text".to_string(),
-        payload: b"test goal payload".to_vec(),
+        payload: br#"{"goal":"fresh"}"#.to_vec(),
         state: GoalState::Active,
         parent_goal_ids: vec![],
         supersedes_goal_id: None,
@@ -67,7 +67,7 @@ fn draft_with_parent(owner: &Owner, request_id: String, parent: GoalId) -> GoalD
         schema_version: SchemaVersion::new(1),
         title: "Test goal".to_string(),
         text: "Test goal with parent".to_string(),
-        payload: b"test child goal payload".to_vec(),
+        payload: br#"{"goal":"child"}"#.to_vec(),
         state: GoalState::Active,
         parent_goal_ids: vec![parent],
         supersedes_goal_id: None,
@@ -138,7 +138,7 @@ async fn goal_write_writes_goal_and_change_event() {
 
         // Idempotency conflict: same request_id but different payload.
         let mut mutated_payload = draft.clone();
-        mutated_payload.payload = b"different payload".to_vec();
+        mutated_payload.payload = br#"{"goal":"different"}"#.to_vec();
         let err = engine
             .write_goal(
                 &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
@@ -219,7 +219,7 @@ async fn goal_supersede_writes_new_goal() {
             schema_version: SchemaVersion::new(1),
             title: "Test goal".to_string(),
             text: "Updated goal text".to_string(),
-            payload: b"updated goal payload".to_vec(),
+            payload: br#"{"goal":"updated"}"#.to_vec(),
             state: GoalState::Paused,
             parent_goal_ids: vec![],
             supersedes_goal_id: None,
@@ -372,4 +372,62 @@ async fn goal_write_with_parent() {
 
     let _ = drop_db(&db_name).await;
     result.expect("goal_write_with_parent_pg test failed");
+}
+
+/// Both layers reject a goal payload that is empty or not a JSON object:
+/// the engine `write_goal` guard (symmetric with EventIngest) and the
+/// `goals_payload_nonempty_chk` DB constraint as the last line of defense.
+#[tokio::test]
+async fn goal_write_rejects_empty_or_non_object_payload() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    create_db(&db_name).await.expect("PG required for tests");
+    let url = db_url(&db_name);
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let storage: Arc<dyn Storage> = Arc::new(pg.clone());
+
+        let owner = Owner {
+            principal: Principal::User(UserId::new(Uuid::now_v7())),
+            org_id: OrgId::new(Uuid::now_v7()),
+        };
+        let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
+        let engine = Engine::new(registry, MemoryStore::new()).with_storage(storage);
+        let authz =
+            proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System);
+
+        // Engine guard: a zero-byte payload is rejected as InvalidArgument.
+        let mut empty = fresh_draft(&owner, "req-empty".to_string());
+        empty.payload = Vec::new();
+        let err = engine.write_goal(&authz, empty).await.unwrap_err();
+        assert_eq!(err.code, ErrorCode::InvalidArgument);
+
+        // Engine guard: valid JSON that is not an object is rejected too.
+        let mut scalar = fresh_draft(&owner, "req-scalar".to_string());
+        scalar.payload = b"123".to_vec();
+        let err = engine.write_goal(&authz, scalar).await.unwrap_err();
+        assert_eq!(err.code, ErrorCode::InvalidArgument);
+
+        // Nothing reached storage.
+        let goals: (i64,) = sqlx::query_as("SELECT count(*)::bigint FROM proxima_core.goals")
+            .fetch_one(pg.pool())
+            .await?;
+        assert_eq!(goals.0, 0);
+
+        // Last line of defense: the storage verb bypasses the engine guard,
+        // but goals_payload_nonempty_chk still rejects a zero-byte payload.
+        let mut raw = fresh_draft(&owner, "req-raw".to_string());
+        raw.payload = Vec::new();
+        assert!(
+            pg.write_goal_atomic(&raw).await.is_err(),
+            "DB CHECK must reject a zero-byte payload"
+        );
+
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("goal_write empty-payload rejection test failed");
 }

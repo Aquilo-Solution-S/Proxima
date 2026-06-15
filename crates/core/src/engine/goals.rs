@@ -24,16 +24,17 @@ impl Engine {
         super::authorize(authz, &draft.principal, Role::GraphWrite)?;
         let owner = authz.scoped_owner(draft.principal.clone());
         draft.stamp_owner(owner);
-        // Validate goal schema is registered AND has PayloadKind::Goal.
-        match self.registry.lookup(&draft.schema_id, draft.schema_version) {
-            Some(info) if info.kind == PayloadKind::Goal => {}
-            _ => {
-                return Err(ProtocolError::unknown_schema(
-                    draft.schema_id.as_str(),
-                    draft.schema_version.into_inner(),
-                ));
-            }
-        }
+        // Validate the schema is a registered Goal AND the payload decodes and
+        // passes the registered validator — symmetric with EventIngest. Only
+        // the schema *kind* was checked before, so an empty / non-object goal
+        // payload was written unvalidated.
+        self.validate_json_payload(
+            &draft.schema_id,
+            draft.schema_version,
+            PayloadKind::Goal,
+            &draft.payload,
+            "payload",
+        )?;
         self.storage
             .write_goal_atomic(&draft)
             .await
@@ -60,16 +61,14 @@ impl Engine {
         super::authorize(authz, &draft.principal, Role::GraphWrite)?;
         let owner = authz.scoped_owner(draft.principal.clone());
         draft.stamp_owner(owner);
-        // Validate goal schema is registered AND has PayloadKind::Goal.
-        match self.registry.lookup(&draft.schema_id, draft.schema_version) {
-            Some(info) if info.kind == PayloadKind::Goal => {}
-            _ => {
-                return Err(ProtocolError::unknown_schema(
-                    draft.schema_id.as_str(),
-                    draft.schema_version.into_inner(),
-                ));
-            }
-        }
+        // Same schema + payload validation as `write_goal`.
+        self.validate_json_payload(
+            &draft.schema_id,
+            draft.schema_version,
+            PayloadKind::Goal,
+            &draft.payload,
+            "payload",
+        )?;
         self.storage
             .supersede_goal_atomic(prior, &draft)
             .await
