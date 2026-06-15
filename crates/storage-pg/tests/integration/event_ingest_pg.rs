@@ -292,3 +292,61 @@ async fn list_change_events_for_replay_respects_bounds_and_owner() {
     let _ = drop_db(&db_name).await;
     result.expect("replay scan bounds failed");
 }
+
+/// The change_event pull scopes by principal, not the `(principal, org)`
+/// triple — matching the memories read path (`query_owner_scope_ignores_org_id`)
+/// and the event-history scan. A harness polling with a divergent `org_id`
+/// must still see its events; org_id is a denormalized tag, not a scope filter.
+#[tokio::test]
+async fn list_change_events_after_scopes_by_principal_ignoring_org_id() {
+    let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
+    create_db(&db_name).await.expect("PG required for tests");
+    let url = db_url(&db_name);
+
+    let result: Result<(), Box<dyn std::error::Error>> = async {
+        let pg = PgStorage::connect(&url).await?;
+        pg.run_migrations().await?;
+        let storage: Arc<dyn Storage> = Arc::new(pg.clone());
+
+        let principal = Principal::User(UserId::new(Uuid::now_v7()));
+        let stored_owner = Owner {
+            principal: principal.clone(),
+            org_id: OrgId::new(Uuid::now_v7()),
+        };
+        let requested_owner = Owner {
+            principal: principal.clone(),
+            org_id: OrgId::new(Uuid::now_v7()),
+        };
+
+        let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
+        let engine = Engine::new(registry, MemoryStore::new()).with_storage(storage);
+
+        let ingested = engine
+            .event_ingest(
+                &proxima_core::AuthzContext::single_owner(
+                    &stored_owner,
+                    proxima_core::AuthPath::System,
+                ),
+                fresh_draft(stored_owner.clone()),
+            )
+            .await?;
+
+        // Pull with a different org_id under the same principal: the event is
+        // still returned, and its stored owner carries the original org_id.
+        let rows = pg
+            .list_change_events_after(&requested_owner, Uuid::nil(), 10)
+            .await?;
+        assert_eq!(
+            rows.len(),
+            1,
+            "pull must ignore org_id and scope by principal"
+        );
+        assert_eq!(rows[0].event.seq, ingested.change_event_seq);
+        assert_eq!(rows[0].event.owner, stored_owner);
+        Ok(())
+    }
+    .await;
+
+    let _ = drop_db(&db_name).await;
+    result.expect("change_event pull principal-scoping failed");
+}
