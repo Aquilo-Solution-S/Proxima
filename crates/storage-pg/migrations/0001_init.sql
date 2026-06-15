@@ -2,10 +2,12 @@
 -- Squashed 2026-06-15 from the full dev migration history; then hand-edited
 -- 2026-06-15 to drop (a) the change_event outbox notify trigger + function
 -- (the LISTEN/NOTIFY push path was retired — change_event is now a pull-only
--- log) and (b) the citation_mcp_call_io_v1 table + its pkey/fkey (a pure-link
+-- log), (b) the citation_mcp_call_io_v1 table + its pkey/fkey (a pure-link
 -- citation mapping carries no sidecar; the citation_mappings row is the whole
--- mapping). Prefer regenerating from a migrated DB (pg_dump --schema-only) for
--- broad schema changes; targeted object drops like the above may be hand-applied.
+-- mapping), and (c) the events.payload_ref column (vestigial — never written
+-- or read; the payload lives in the schema sidecar, not a ref). Prefer
+-- regenerating from a migrated DB (pg_dump --schema-only) for broad schema
+-- changes; targeted object drops like the above may be hand-applied.
 
 CREATE SCHEMA proxima_core;
 
@@ -609,8 +611,7 @@ CREATE TABLE proxima_core.events (
     schema_id text NOT NULL,
     schema_version integer NOT NULL,
     observed_at timestamp with time zone NOT NULL,
-    occurred_at timestamp with time zone NOT NULL,
-    payload_ref uuid
+    occurred_at timestamp with time zone NOT NULL
 );
 
 
