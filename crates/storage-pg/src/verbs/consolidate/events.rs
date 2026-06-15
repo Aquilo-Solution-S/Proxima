@@ -12,19 +12,21 @@ pub async fn list_change_events_after(
     after: uuid::Uuid,
     limit: usize,
 ) -> Result<Vec<ChangeEventForWake>, StorageError> {
-    let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(owner);
+    // Owner scope is the principal, matching every other owner-scoped read
+    // (memories, event history, seq high-water). `owner_org_id` is a
+    // denormalized tag, not a scope dimension; filtering on it here would let a
+    // harness polling with a divergent org_id silently miss wake events.
+    let (owner_kind, owner_principal_id, _) = owner_columns(owner);
     let rows = sqlx::query!(
         r#"SELECT seq, entity_personality_instance_id, wake_chain_depth
              FROM proxima_core.change_event
              WHERE owner_principal_kind = $1
                AND owner_principal_id = $2
-               AND owner_org_id = $3
-               AND seq > $4
+               AND seq > $3
              ORDER BY seq ASC
-             LIMIT $5"#,
+             LIMIT $4"#,
         owner_kind as OwnerPrincipalKind,
         owner_principal_id,
-        owner_org_id,
         after,
         i64::try_from(limit).unwrap_or(i64::MAX),
     )
@@ -57,20 +59,19 @@ pub async fn list_change_events_for_replay(
     until: Option<uuid::Uuid>,
     limit: usize,
 ) -> Result<Vec<ChangeEventForWake>, StorageError> {
-    let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(owner);
+    // Owner scope is the principal; see `list_change_events_after`.
+    let (owner_kind, owner_principal_id, _) = owner_columns(owner);
     let rows = sqlx::query!(
         r#"SELECT seq, entity_personality_instance_id, wake_chain_depth
              FROM proxima_core.change_event
              WHERE owner_principal_kind = $1
                AND owner_principal_id = $2
-               AND owner_org_id = $3
-               AND seq > $4
-               AND ($5::uuid IS NULL OR seq <= $5)
+               AND seq > $3
+               AND ($4::uuid IS NULL OR seq <= $4)
              ORDER BY seq ASC
-             LIMIT $6"#,
+             LIMIT $5"#,
         owner_kind as OwnerPrincipalKind,
         owner_principal_id,
-        owner_org_id,
         after,
         until,
         i64::try_from(limit).unwrap_or(i64::MAX),

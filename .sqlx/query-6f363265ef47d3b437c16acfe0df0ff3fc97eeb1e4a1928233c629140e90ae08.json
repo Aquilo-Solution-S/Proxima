@@ -1,15 +1,20 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT entity_personality_instance_id, wake_chain_depth\n             FROM proxima_core.change_event\n             WHERE owner_principal_kind = $1\n               AND owner_principal_id = $2\n               AND owner_org_id = $3\n               AND seq = $4",
+  "query": "SELECT seq, entity_personality_instance_id, wake_chain_depth\n             FROM proxima_core.change_event\n             WHERE owner_principal_kind = $1\n               AND owner_principal_id = $2\n               AND seq > $3\n             ORDER BY seq ASC\n             LIMIT $4",
   "describe": {
     "columns": [
       {
         "ordinal": 0,
-        "name": "entity_personality_instance_id",
+        "name": "seq",
         "type_info": "Uuid"
       },
       {
         "ordinal": 1,
+        "name": "entity_personality_instance_id",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 2,
         "name": "wake_chain_depth",
         "type_info": "Int2"
       }
@@ -29,13 +34,14 @@
         },
         "Uuid",
         "Uuid",
-        "Uuid"
+        "Int8"
       ]
     },
     "nullable": [
+      false,
       true,
       false
     ]
   },
-  "hash": "fa23e30610a0151d9994fe81e4cf30abedd8cdfc37924b2824e443fef0b61e25"
+  "hash": "6f363265ef47d3b437c16acfe0df0ff3fc97eeb1e4a1928233c629140e90ae08"
 }
