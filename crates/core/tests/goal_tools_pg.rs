@@ -75,7 +75,9 @@ async fn goal_set_tool_creates_active_goal() -> TestResult {
 async fn goal_lifecycle_tool_chain() -> TestResult {
     with_harness(|harness| {
         Box::pin(async move {
-            let evidence = harness.seed_evidence_memory("evidence for achievement").await?;
+            let evidence = harness
+                .seed_evidence_memory("evidence for achievement")
+                .await?;
             let active = harness
                 .call::<GoalSetTool>(goal_set_args(
                     "Lifecycle chain goal",
@@ -123,7 +125,10 @@ async fn goal_lifecycle_tool_chain() -> TestResult {
             )
             .await?;
             assert_eq!(superseding_count(harness.pg.pool(), achieved_id).await?, 0);
-            assert_eq!(count_goal_achieved_for(harness.pg.pool(), achieved_id).await?, 1);
+            assert_eq!(
+                count_goal_achieved_for(harness.pg.pool(), achieved_id).await?,
+                1
+            );
             assert_eq!(
                 count_motivated_by_edge(harness.pg.pool(), achieved_id, evidence.id).await?,
                 1,
@@ -468,10 +473,7 @@ async fn count_goal_activated(pool: &sqlx::PgPool) -> Result<i64, sqlx::Error> {
         .await
 }
 
-async fn count_goal_achieved_for(
-    pool: &sqlx::PgPool,
-    goal_id: GoalId,
-) -> Result<i64, sqlx::Error> {
+async fn count_goal_achieved_for(pool: &sqlx::PgPool, goal_id: GoalId) -> Result<i64, sqlx::Error> {
     sqlx::query_scalar(
         "SELECT count(*)::bigint
            FROM proxima_core.goal_achieved_v1
