@@ -5,7 +5,6 @@ use std::sync::Arc;
 
 use proxima_core::llm::{EMBEDDING_DIM, EMBEDDING_JOB_MAX_ATTEMPTS, EmbeddingClient, LlmError};
 use proxima_core::verbs::event_ingest::EventDraft;
-use proxima_core::verbs::query::MemoryStore;
 use proxima_core::{
     AuthPath, AuthzContext, FactPayload, FlavorRegistry, Owner, SchemaVersion, SourceBatchId,
     SourceId, Storage,
@@ -63,8 +62,7 @@ fn engine_for(
 ) -> proxima_core::Engine {
     let mut registry = FlavorRegistry::new();
     registry.add_fact_schema::<TestFactV1>();
-    let engine = proxima_core::Engine::new(registry.freeze(), MemoryStore::new())
-        .with_storage(pg.into_handle());
+    let engine = proxima_core::Engine::new(registry.freeze()).with_storage(pg.into_handle());
     if let Some(embed) = embed {
         engine.with_embed(embed)
     } else {

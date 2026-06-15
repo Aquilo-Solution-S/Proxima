@@ -11,7 +11,7 @@ use proxima_core::verbs::event_ingest::{
 };
 use proxima_core::verbs::goal_write::{GoalAuthorshipKind, GoalState};
 use proxima_core::verbs::query::{
-    EntityKind, MemoryStore, PersonalityRootFilter, QueryRequest, SupersessionStatus,
+    EntityKind, PersonalityRootFilter, QueryRequest, SupersessionStatus,
 };
 use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaInfo};
 use proxima_core::{
@@ -354,7 +354,7 @@ async fn query_returns_stored_schema_version() {
         };
 
         let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
-        let engine = Engine::new(registry, MemoryStore::new()).with_storage(storage);
+        let engine = Engine::new(registry).with_storage(storage);
 
         let mut draft = fresh_draft(owner.clone());
         draft.schema_id = SchemaId::new("test/fact_blob_v2".into());
@@ -406,7 +406,7 @@ async fn query_active_only_filters_inactive_personality_roots() {
         };
 
         let registry = FlavorRegistryFrozen::with_schemas(schemas_for_personality_root_test());
-        let engine = Engine::new(registry, MemoryStore::new()).with_storage(storage);
+        let engine = Engine::new(registry).with_storage(storage);
 
         let active_root = insert_perspective_memory(
             &pg,
@@ -506,7 +506,7 @@ async fn query_returns_fact_rows() {
         };
 
         let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
-        let engine = Engine::new(registry, MemoryStore::new()).with_storage(storage);
+        let engine = Engine::new(registry).with_storage(storage);
 
         // Ingest two distinct Facts.
         let draft1 = fresh_draft(owner.clone());
@@ -576,7 +576,7 @@ async fn query_returns_all_edges_between_returned_nodes_even_when_edge_count_exc
             org_id: OrgId::new(Uuid::now_v7()),
         };
         let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
-        let engine = Engine::new(registry, MemoryStore::new()).with_storage(storage);
+        let engine = Engine::new(registry).with_storage(storage);
 
         let first = engine
             .event_ingest(
@@ -645,7 +645,7 @@ async fn query_excludes_edges_with_endpoint_outside_returned_node_window() {
             org_id: OrgId::new(Uuid::now_v7()),
         };
         let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
-        let engine = Engine::new(registry, MemoryStore::new()).with_storage(storage);
+        let engine = Engine::new(registry).with_storage(storage);
 
         let outside = engine
             .event_ingest(
@@ -730,7 +730,7 @@ async fn query_edge_id_hydration_returns_requested_edge_without_visible_nodes() 
             org_id: OrgId::new(Uuid::now_v7()),
         };
         let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
-        let engine = Engine::new(registry, MemoryStore::new()).with_storage(storage);
+        let engine = Engine::new(registry).with_storage(storage);
 
         let a = engine
             .event_ingest(
@@ -791,7 +791,7 @@ async fn query_caps_snapshot_edges_at_max_snapshot_edges() {
             org_id: OrgId::new(Uuid::now_v7()),
         };
         let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
-        let engine = Engine::new(registry, MemoryStore::new()).with_storage(storage);
+        let engine = Engine::new(registry).with_storage(storage);
 
         let a = engine
             .event_ingest(
@@ -860,7 +860,7 @@ async fn query_owner_scope_ignores_org_id() {
         };
 
         let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
-        let engine = Engine::new(registry, MemoryStore::new()).with_storage(storage);
+        let engine = Engine::new(registry).with_storage(storage);
 
         let draft = fresh_draft(stored_owner.clone());
         let outcome = engine
@@ -913,7 +913,7 @@ async fn query_filter_abstraction_returns_empty() {
         };
 
         let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
-        let engine = Engine::new(registry, MemoryStore::new()).with_storage(storage);
+        let engine = Engine::new(registry).with_storage(storage);
 
         // Ingest a Fact.
         let draft = fresh_draft(owner.clone());
@@ -974,7 +974,7 @@ async fn query_goals_filter_by_schema_id() {
         };
 
         let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
-        let engine = Engine::new(registry, MemoryStore::new()).with_storage(storage);
+        let engine = Engine::new(registry).with_storage(storage);
         let authz =
             proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System);
 
@@ -1074,7 +1074,7 @@ async fn query_returns_stored_goal_schema_version() {
         };
 
         let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
-        let engine = Engine::new(registry, MemoryStore::new()).with_storage(storage);
+        let engine = Engine::new(registry).with_storage(storage);
 
         // Seed a goal under schema_version=2.
         seed_goal(
@@ -1127,7 +1127,7 @@ async fn query_filter_nonexistent_schema_returns_empty() {
         };
 
         let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
-        let engine = Engine::new(registry, MemoryStore::new()).with_storage(storage);
+        let engine = Engine::new(registry).with_storage(storage);
 
         // Ingest a Fact.
         let draft = fresh_draft(owner.clone());

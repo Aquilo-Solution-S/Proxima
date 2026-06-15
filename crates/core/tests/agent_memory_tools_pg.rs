@@ -8,7 +8,6 @@ use common::{drop_db, fresh_pg};
 use proxima_core::engine::Engine;
 use proxima_core::llm::{EMBEDDING_DIM, EmbeddingClient, LlmError};
 use proxima_core::mcp::{HandleTable, McpAuthorContext, McpToolCtx, OutputMode};
-use proxima_core::verbs::query::MemoryStore;
 use proxima_core::{
     AuthPath, AuthzContext, CitationMappingPayload, CitedObjectPayload, FlavorRegistry,
     FlavorRegistryFrozen, McpToolError, MemoryId, OrgId, Owner, PersonalityInstanceId, Principal,
@@ -972,7 +971,7 @@ fn engine_for_registry(
     pg: &proxima_storage_pg::PgStorage,
 ) -> Arc<Engine> {
     Arc::new(
-        Engine::new((**registry).clone(), MemoryStore::new())
+        Engine::new((**registry).clone())
             .with_storage(pg.clone().into_handle())
             .with_embed(Arc::new(FixedEmbedding)),
     )

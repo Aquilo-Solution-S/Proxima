@@ -7,7 +7,6 @@ use common::{drop_db, fresh_pg};
 use proxima_core::engine::Engine;
 use proxima_core::llm::{EMBEDDING_DIM, EmbeddingClient, LlmError};
 use proxima_core::mcp::{HandleTable, McpAuthorContext, McpToolCtx, OutputMode};
-use proxima_core::verbs::query::MemoryStore;
 use proxima_core::{
     AuthPath, AuthzContext, FlavorRegistry, OrgId, Owner, PersonalityInstanceId, Principal, UserId,
 };
@@ -48,7 +47,7 @@ async fn record_utterance_stamps_personality_and_sidecar() -> Result<(), Box<dyn
     };
     let personality = PersonalityInstanceId::new(uuid::Uuid::now_v7());
     let engine = Arc::new(
-        Engine::new(frozen_inner, MemoryStore::new())
+        Engine::new(frozen_inner)
             .with_storage(pg.clone().into_handle())
             .with_embed(Arc::new(FixedEmbedding)),
     );

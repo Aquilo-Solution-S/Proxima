@@ -644,7 +644,6 @@ mod tests {
 mod ctx_engine_tests {
     use super::*;
     use crate::AuthPath;
-    use crate::verbs::query::MemoryStore;
     use crate::{Engine, FlavorRegistry, OrgId, Owner, Principal, UserId};
     use std::sync::Arc;
 
@@ -683,10 +682,7 @@ mod ctx_engine_tests {
             principal: Principal::User(UserId::new(uuid::Uuid::now_v7())),
             org_id: OrgId::new(uuid::Uuid::now_v7()),
         };
-        let engine = Arc::new(Engine::new(
-            FlavorRegistry::new().freeze(),
-            MemoryStore::new(),
-        ));
+        let engine = Arc::new(Engine::new(FlavorRegistry::new().freeze()));
         let pool = sqlx::PgPool::connect_lazy("postgres://x/x").expect("lazy");
         let ctx = McpToolCtx {
             pool,

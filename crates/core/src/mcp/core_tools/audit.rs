@@ -200,13 +200,9 @@ mod tests {
         // the new resolver fails fast since the MCP server is contract-bound
         // to populate this field.
         use crate::Engine;
-        use crate::verbs::query::MemoryStore;
 
         let owner = fake_owner();
-        let engine = std::sync::Arc::new(Engine::new(
-            FlavorRegistry::new().freeze(),
-            MemoryStore::new(),
-        ));
+        let engine = std::sync::Arc::new(Engine::new(FlavorRegistry::new().freeze()));
         let ctx = McpToolCtx {
             pool: sqlx::PgPool::connect_lazy("postgres://placeholder/db").expect("lazy connect"),
             owner: owner.clone(),

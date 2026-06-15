@@ -7,7 +7,6 @@ use common::{create_db, db_url, drop_db};
 use proxima_core::llm::{EMBEDDING_DIM, EmbeddingClient, LlmError};
 use proxima_core::mcp::{McpAuthorContext, PrefixedUuidClass, parse_prefixed_uuid};
 use proxima_core::storage::Storage;
-use proxima_core::verbs::query::MemoryStore;
 use proxima_core::{
     AuthPath, AuthzContext, Engine, FlavorRegistry, OrgId, Owner, Principal, UserId,
 };
@@ -58,7 +57,7 @@ async fn host_bearer_agent_memory_edges_attribute_to_subject_self_perspective()
     let registry = FlavorRegistry::new();
     let frozen = registry.freeze();
     let engine = Arc::new(
-        Engine::new(frozen.clone(), MemoryStore::new())
+        Engine::new(frozen.clone())
             .with_storage(pg.clone().into_handle())
             .with_embed(Arc::new(FixedEmbedding)),
     );

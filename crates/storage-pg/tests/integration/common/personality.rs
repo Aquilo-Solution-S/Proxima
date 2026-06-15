@@ -14,7 +14,6 @@ use proxima_core::personality::InstantiatePersonalityResponse;
 use proxima_core::verbs::event_ingest::{
     Citation, CitationMappingHint, CitedObjectHint, EventDraft,
 };
-use proxima_core::verbs::query::MemoryStore;
 use proxima_core::{
     AbstractionPayload, AuthPath, AuthzContext, FlavorDescriptor, FlavorProvenance, FlavorRegistry,
     InstantiatePersonalityRequest, Owner, PerspectivePayload, ProtocolError, SchemaId,
@@ -195,7 +194,7 @@ pub fn build_test_engine(pg: PgStorage, anthropic: Arc<dyn AnthropicClient>) -> 
     registry.add_abstraction_schema::<TestAbstractionV1>();
     let frozen = registry.freeze();
     let _principal: Principal = owner.principal.clone();
-    Engine::new(frozen, MemoryStore::new())
+    Engine::new(frozen)
         .with_storage(Arc::new(pg))
         .with_anthropic(anthropic)
         .with_embed(Arc::new(FakeEmbedding { dim: EMBEDDING_DIM }))

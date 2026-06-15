@@ -6,7 +6,6 @@ use async_trait::async_trait;
 use common::{drop_db, fresh_pg, owner_fixture};
 use proxima_core::llm::{EMBEDDING_DIM, EmbeddingClient, LlmError};
 use proxima_core::verbs::event_ingest::EventDraft;
-use proxima_core::verbs::query::MemoryStore;
 use proxima_core::{
     AbstractionPayload, AuthPath, AuthorshipKindMask, AuthzContext, EdgeAuthorshipKind, EntityKind,
     EntityKindMask, FactPayload, FlavorRegistry, MemoryId, MemoryOperatorKind, Owner,
@@ -114,7 +113,7 @@ async fn engine_author_derived_writes_memory_edge_and_embedding()
         EntityKindMask::abstraction(),
         AuthorshipKindMask::external_agent(),
     ));
-    let engine = proxima_core::Engine::new(registry.freeze(), MemoryStore::new())
+    let engine = proxima_core::Engine::new(registry.freeze())
         .with_storage(pg.clone().into_handle())
         .with_embed(Arc::new(FixedEmbeddingClient));
     let relation = engine
@@ -241,7 +240,7 @@ async fn ingest_event_with_sidecar_writes_fact_and_note_sidecar()
 
     let owner = owner_fixture();
     let registry = FlavorRegistry::new();
-    let engine = proxima_core::Engine::new(registry.freeze(), MemoryStore::new());
+    let engine = proxima_core::Engine::new(registry.freeze());
     let authz = AuthzContext::single_owner(&owner, AuthPath::System);
     let note = AgentNoteV1 {
         note_id: Uuid::now_v7(),

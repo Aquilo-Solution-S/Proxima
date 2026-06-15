@@ -1,5 +1,5 @@
-//! Engine composite — wires `FlavorRegistryFrozen` and `MemoryStore`
-//! behind the typed verb surfaces of docs/14-protocol-surface.md.
+//! Engine composite — wires `FlavorRegistryFrozen` behind the typed
+//! verb surfaces of docs/14-protocol-surface.md.
 
 mod builder;
 mod fact_retention;
@@ -20,7 +20,6 @@ use crate::authz::{AuthzContext, Role};
 use crate::error::ProtocolError;
 use crate::llm::{AnthropicClient, EmbeddingClient};
 use crate::storage::{StorageError, StorageHandle};
-use crate::verbs::query::MemoryStore;
 use crate::verbs::schema::FlavorRegistryFrozen;
 use crate::{Owner, Principal, SetWakeEntriesRequest, SetWakeEntriesResponse, WakeEntryDraft};
 
@@ -30,8 +29,6 @@ pub use memory_authoring::{AuthorDerivedEdgeInput, AuthorDerivedRequestInput};
 
 pub struct Engine {
     registry: FlavorRegistryFrozen,
-    // TODO(M3.B): remove MemoryStore
-    memories: MemoryStore,
     storage: StorageHandle,
     anthropic: Option<Arc<dyn AnthropicClient>>,
     embed: Arc<RwLock<Option<Arc<dyn EmbeddingClient>>>>,
@@ -91,11 +88,6 @@ impl Engine {
     #[must_use]
     pub fn embed_client(&self) -> Option<Arc<dyn EmbeddingClient>> {
         self.embed.try_read().ok().and_then(|slot| slot.clone())
-    }
-
-    #[must_use]
-    pub(crate) fn anthropic(&self) -> Option<&Arc<dyn AnthropicClient>> {
-        self.anthropic.as_ref()
     }
 
     pub async fn set_embed_client(&self, embed: Option<Arc<dyn EmbeddingClient>>) {
@@ -238,7 +230,6 @@ impl std::fmt::Debug for Engine {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Engine")
             .field("registry", &self.registry)
-            .field("memories", &self.memories)
             .field("storage", &"<dyn Storage>")
             .finish_non_exhaustive()
     }
