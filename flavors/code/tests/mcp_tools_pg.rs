@@ -3,11 +3,17 @@ use std::time::Duration;
 
 use proxima_code::mcp::{
     CodeIngestHeadSnapshotTool, CodeListReposTool, CodeOpenFileRevisionTool, CodeRegisterRepoTool,
-    CodeSearchChunksTool, CodeSearchCommitsTool,
+    CodeRetryExecutionRequestTool, CodeSearchChunksTool, CodeSearchCommitsTool,
 };
-use proxima_code::{CodeChunkV1, CommitV1, FileRevisionV1, register_repo};
+use proxima_code::{CodeChunkV1, CommitV1, ExecutionRequestV1, FileRevisionV1, register_repo};
 use proxima_core::engine::Engine;
-use proxima_core::mcp::{HandleTable, McpAuthorContext, McpTool, McpToolCtx, OutputMode};
+use proxima_core::mcp::{
+    HandleTable, McpAuthorContext, McpTool, McpToolCtx, McpToolError, OutputMode,
+};
+use proxima_core::personality::{
+    InstantiatePersonalityRequest, InstantiatePersonalityResponse, PersonalityInstanceId,
+    SetWakeEntriesRequest, WakeEntryAuthoredBy, WakeEntryDraft, WakeEntryTriggerKind,
+};
 use proxima_core::storage::Storage;
 use proxima_core::verbs::event_ingest::{
     Citation, CitationMappingHint, CitedObjectHint, EventDraft,
@@ -16,7 +22,7 @@ use proxima_core::verbs::query::MemoryStore;
 use proxima_core::verbs::schema::{PayloadKind, SchemaInfo};
 use proxima_core::{
     AbstractionPayload, AuthPath, AuthzContext, FactPayload, FlavorRegistry, FlavorRegistryFrozen,
-    OrgId, Owner, Principal, SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId,
+    MemoryId, OrgId, Owner, Principal, SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId,
 };
 use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
 use proxima_storage_pg::PgStorage;
@@ -554,6 +560,151 @@ async fn search_commits_unions_commit_and_summary_legs() -> Result<(), Box<dyn s
     Ok(())
 }
 
+#[tokio::test]
+async fn retry_execution_request_succeeds_with_target_execution_wake_entry()
+-> Result<(), Box<dyn std::error::Error>> {
+    let Some(fixture) = TestDb::fresh().await? else {
+        return Ok(());
+    };
+    let owner = owner_fixture();
+    let engine = engine_for_test(fixture.pg.clone());
+    let registry = registry_for_mcp();
+    let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+
+    // Shell-author (master-token) identity is the retry author.
+    let master_token = Uuid::now_v7();
+    let shell = fixture
+        .pg
+        .ensure_master_token_personality(&owner, master_token)
+        .await?;
+
+    // A prior execution-request Fact + sidecar to retry.
+    let repo_id = Uuid::now_v7();
+    let prior = ingest_execution_request_fixture(
+        fixture.pg.pool(),
+        &engine,
+        owner.clone(),
+        repo_id,
+        "prior",
+    )
+    .await?;
+
+    // Target worker WITH an enabled on_memory wake entry for execution-request-v1.
+    let target = instantiate_worker(&engine, &authz, &owner, "Retry Worker").await?;
+    grant_execution_wake(&engine, &authz, &owner, target.instance_id).await?;
+
+    let result = run_tool::<CodeRetryExecutionRequestTool>(
+        shell_ctx(
+            fixture.pg.pool().clone(),
+            owner.clone(),
+            registry,
+            master_token,
+            shell.self_perspective_memory_id,
+        ),
+        json!({
+            "prior_execution_request": format!("F:{prior}"),
+            "target_personality": format!("I:{}", target.instance_id.into_inner()),
+            "idempotency_key": "retry-1",
+        }),
+    )
+    .await?;
+
+    assert_eq!(result["idempotent_replay"], false);
+    assert!(
+        result["handle"].as_str().expect("handle").starts_with("F:"),
+        "new request is a Fact handle"
+    );
+    assert!(
+        result["target_edge_handle"]
+            .as_str()
+            .expect("target edge")
+            .starts_with("E:"),
+        "retry assigns the worker via a target edge"
+    );
+    assert!(
+        result["authored_edge_handle"].as_str().is_some(),
+        "shell author edge present"
+    );
+
+    // The retry request actually landed under its idempotency key.
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM proxima_code.execution_request_v1
+         WHERE repo_id = $1 AND request_key = $2",
+    )
+    .bind(repo_id)
+    .bind("retry-1")
+    .fetch_one(fixture.pg.pool())
+    .await?;
+    assert_eq!(count, 1, "retry request row persisted");
+    Ok(())
+}
+
+#[tokio::test]
+async fn retry_execution_request_rejects_target_without_execution_wake_entry()
+-> Result<(), Box<dyn std::error::Error>> {
+    let Some(fixture) = TestDb::fresh().await? else {
+        return Ok(());
+    };
+    let owner = owner_fixture();
+    let engine = engine_for_test(fixture.pg.clone());
+    let registry = registry_for_mcp();
+    let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+
+    let master_token = Uuid::now_v7();
+    let shell = fixture
+        .pg
+        .ensure_master_token_personality(&owner, master_token)
+        .await?;
+
+    let repo_id = Uuid::now_v7();
+    let prior = ingest_execution_request_fixture(
+        fixture.pg.pool(),
+        &engine,
+        owner.clone(),
+        repo_id,
+        "prior",
+    )
+    .await?;
+
+    // Active target worker but NO execution-request wake entry — the gate must reject.
+    let target = instantiate_worker(&engine, &authz, &owner, "Idle Worker").await?;
+
+    let ctx = shell_ctx(
+        fixture.pg.pool().clone(),
+        owner.clone(),
+        registry,
+        master_token,
+        shell.self_perspective_memory_id,
+    );
+    let args: <CodeRetryExecutionRequestTool as McpTool>::Args = serde_json::from_value(json!({
+        "prior_execution_request": format!("F:{prior}"),
+        "target_personality": format!("I:{}", target.instance_id.into_inner()),
+        "idempotency_key": "retry-1",
+    }))?;
+    let err = CodeRetryExecutionRequestTool::call(ctx, args)
+        .await
+        .expect_err("missing wake entry must reject the retry");
+    match err {
+        McpToolError::InvalidInput(message) => assert!(
+            message.contains("no enabled wake entry"),
+            "unexpected message: {message}"
+        ),
+        other => panic!("expected InvalidInput, got {other:?}"),
+    }
+
+    // Nothing was authored for the rejected retry.
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM proxima_code.execution_request_v1
+         WHERE repo_id = $1 AND request_key = $2",
+    )
+    .bind(repo_id)
+    .bind("retry-1")
+    .fetch_one(fixture.pg.pool())
+    .await?;
+    assert_eq!(count, 0, "rejected retry left no request row");
+    Ok(())
+}
+
 async fn run_tool<T: McpTool>(
     ctx: McpToolCtx,
     args: serde_json::Value,
@@ -583,6 +734,117 @@ fn ctx(pool: PgPool, owner: Owner, registry: Arc<FlavorRegistryFrozen>) -> McpTo
         master_token_id: None,
         engine: None,
     }
+}
+
+/// Master-token shell-author context: `PrefixedIds` wire ids, no handle
+/// table, a master-token id, and a `caller_self_perspective` — the shape
+/// `McpToolHost` builds for `code_retry_execution_request` callers.
+fn shell_ctx(
+    pool: PgPool,
+    owner: Owner,
+    registry: Arc<FlavorRegistryFrozen>,
+    master_token_id: Uuid,
+    caller_self_perspective: MemoryId,
+) -> McpToolCtx {
+    let authz = AuthzContext::single_owner(&owner, AuthPath::System);
+    McpToolCtx {
+        pool,
+        owner,
+        authz,
+        handles: None,
+        mode: OutputMode::PrefixedIds,
+        registry,
+        author: McpAuthorContext {
+            model_id: "test/0".into(),
+            client_name: "test".into(),
+            client_version: "0".into(),
+            personality_instance_id: None,
+            caller_self_perspective: Some(caller_self_perspective),
+        },
+        caller_self_perspective: Some(caller_self_perspective),
+        master_token_id: Some(master_token_id),
+        engine: None,
+    }
+}
+
+async fn instantiate_worker(
+    engine: &Engine,
+    authz: &AuthzContext,
+    owner: &Owner,
+    display_name: &str,
+) -> Result<InstantiatePersonalityResponse, Box<dyn std::error::Error>> {
+    Ok(engine
+        .instantiate_personality(
+            authz,
+            InstantiatePersonalityRequest {
+                principal: owner.principal.clone(),
+                org_id: None,
+                display_name: display_name.into(),
+            },
+        )
+        .await?)
+}
+
+/// Give `instance` an enabled `on_memory` wake entry for
+/// execution-request-v1 — the gate `validate_target_execution_wake`
+/// requires before a retry can be assigned.
+async fn grant_execution_wake(
+    engine: &Engine,
+    authz: &AuthzContext,
+    owner: &Owner,
+    instance: PersonalityInstanceId,
+) -> Result<(), Box<dyn std::error::Error>> {
+    engine
+        .set_wake_entries(
+            authz,
+            &SetWakeEntriesRequest {
+                principal: owner.principal.clone(),
+                org_id: None,
+                personality_instance_id: instance,
+                entries: vec![WakeEntryDraft::new(
+                    Uuid::now_v7(),
+                    instance,
+                    WakeEntryTriggerKind::OnMemory,
+                    ExecutionRequestV1::SCHEMA_ID,
+                    "execution-request wake",
+                    WakeEntryAuthoredBy::Any,
+                    1000,
+                )?],
+            },
+        )
+        .await?;
+    Ok(())
+}
+
+/// Mint a prior execution-request Fact + sidecar row that a retry targets.
+async fn ingest_execution_request_fixture(
+    pool: &PgPool,
+    engine: &Engine,
+    owner: Owner,
+    repo_id: Uuid,
+    request_key: &str,
+) -> Result<Uuid, Box<dyn std::error::Error>> {
+    let payload = format!("execution-request:{repo_id}:{request_key}");
+    let memory_id = fact_memory(
+        engine,
+        owner,
+        ExecutionRequestV1::SCHEMA_ID,
+        payload.as_bytes(),
+    )
+    .await?;
+    sqlx::query(
+        "INSERT INTO proxima_code.execution_request_v1
+            (memory_id, repo_id, title, instructions, request_key)
+         VALUES ($1, $2, $3, $4, $5)",
+    )
+    .bind(memory_id)
+    .bind(repo_id)
+    .bind("Prior execution request")
+    .bind("Implement the prior request; this run is being retried.")
+    .bind(request_key)
+    .execute(pool)
+    .await?;
+    Ok(memory_id)
 }
 
 #[derive(Debug)]

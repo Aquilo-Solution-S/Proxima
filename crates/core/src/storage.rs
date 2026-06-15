@@ -245,10 +245,8 @@ pub trait Storage: Send + Sync {
     /// Ensure a per-master-token shell-author personality exists for
     /// the `(owner, master_token_id)` pair. Idempotent: returns the
     /// existing identity on replay, or mints a fresh personality with
-    /// `display_name = "shell-author"`,
-    /// `purpose = "Per-master-token MCP client identity"`, an empty
-    /// `WakeConfig`, and a row in
-    /// `proxima_core.master_token_personality`.
+    /// `display_name = "shell-author"`, an empty `WakeConfig`, and a row
+    /// in `proxima_core.master_token_personality`.
     async fn ensure_master_token_personality(
         &self,
         owner: &Owner,
