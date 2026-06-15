@@ -1113,6 +1113,13 @@ ALTER TABLE ONLY proxima_core.subject_personality
 
 
 --
+-- Name: cited_object_uploads_cited_object_id_idx; Type: INDEX; Schema: proxima_core; Owner: -
+--
+
+CREATE INDEX cited_object_uploads_cited_object_id_idx ON proxima_core.cited_object_uploads USING btree (cited_object_id);
+
+
+--
 -- Name: cited_object_uploads_pending_expiry_idx; Type: INDEX; Schema: proxima_core; Owner: -
 --
 
@@ -1155,10 +1162,24 @@ CREATE INDEX idx_citation_mappings_memory_id ON proxima_core.citation_mappings U
 
 
 --
+-- Name: idx_edges_authorship_owner; Type: INDEX; Schema: proxima_core; Owner: -
+--
+
+CREATE INDEX idx_edges_authorship_owner ON proxima_core.edges USING btree (authorship_owner_memory_id) WHERE (authorship_owner_memory_id IS NOT NULL);
+
+
+--
 -- Name: idx_edges_owner; Type: INDEX; Schema: proxima_core; Owner: -
 --
 
 CREATE INDEX idx_edges_owner ON proxima_core.edges USING btree (owner_principal_kind, owner_principal_id, owner_org_id);
+
+
+--
+-- Name: idx_edges_provenance_target; Type: INDEX; Schema: proxima_core; Owner: -
+--
+
+CREATE INDEX idx_edges_provenance_target ON proxima_core.edges USING btree (target_memory_id) WHERE (relation_class = 'Provenance'::proxima_core.relation_class);
 
 
 --
@@ -1243,6 +1264,13 @@ CREATE INDEX idx_memories_owner_kind ON proxima_core.memories USING btree (owner
 --
 
 CREATE INDEX idx_memories_personality_instance ON proxima_core.memories USING btree (personality_instance_id);
+
+
+--
+-- Name: idx_memories_retention_due; Type: INDEX; Schema: proxima_core; Owner: -
+--
+
+CREATE INDEX idx_memories_retention_due ON proxima_core.memories USING btree (owner_principal_kind, owner_principal_id, owner_org_id, created_at) WHERE ((event_id IS NOT NULL) AND (citation_mapping_id IS NOT NULL) AND (tombstoned_at IS NULL));
 
 
 --
