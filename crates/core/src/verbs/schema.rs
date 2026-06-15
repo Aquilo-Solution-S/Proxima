@@ -149,6 +149,7 @@ pub struct MemorySearchProjection {
     pub kind: PayloadKind,
     pub sidecar_table: String,
     pub fields: Vec<MemorySearchProjectionField>,
+    pub tag_column: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]

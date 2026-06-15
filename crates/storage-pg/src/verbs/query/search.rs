@@ -2,7 +2,9 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 use proxima_core::llm::EMBEDDING_DIM;
-use proxima_core::verbs::query::{EntityKind, MemorySearchRequest, MemorySearchResult, SearchMode};
+use proxima_core::verbs::query::{
+    EntityKind, MemorySearchRequest, MemorySearchResult, SearchMode, SearchOrder, TagMatch,
+};
 use proxima_core::verbs::schema::{
     MemorySearchProjection, MemorySearchProjectionField, PayloadKind,
 };
@@ -20,6 +22,7 @@ struct SearchRow {
     kind: EntityKind,
     schema_id: String,
     authoring_personality_instance_id: Option<PersonalityInstanceId>,
+    created_at: time::OffsetDateTime,
     snippet: String,
     lexical_score: f32,
     similarity_score: f32,
@@ -37,6 +40,7 @@ impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for SearchRow {
             authoring_personality_instance_id: decode_personality(
                 row.try_get("authoring_personality_instance_id")?,
             ),
+            created_at: row.try_get("created_at")?,
             snippet: row.try_get("snippet")?,
             lexical_score: row.try_get("lexical_score")?,
             similarity_score: row.try_get("similarity_score")?,
@@ -51,10 +55,20 @@ struct Candidate {
     kind: EntityKind,
     schema_id: SchemaId,
     authoring_personality_instance_id: Option<PersonalityInstanceId>,
+    created_at: time::OffsetDateTime,
     snippet: String,
     lexical_score: f32,
     similarity_score: f32,
     wake_chain_depth: WakeChainDepth,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CandidateFilterParams {
+    schema_filter: Option<usize>,
+    reader: Option<usize>,
+    since: Option<usize>,
+    until: Option<usize>,
+    tags: Option<usize>,
 }
 
 pub(crate) async fn search_memories(
@@ -96,6 +110,7 @@ pub(crate) async fn search_memories(
                 kind: candidate.kind,
                 schema_id: candidate.schema_id,
                 authoring_personality_instance_id: candidate.authoring_personality_instance_id,
+                created_at: candidate.created_at,
                 snippet: candidate.snippet,
                 score,
                 lexical_score: candidate.lexical_score,
@@ -105,11 +120,18 @@ pub(crate) async fn search_memories(
         })
         .collect();
 
-    results.sort_by(|a, b| {
-        b.score
-            .total_cmp(&a.score)
-            .then_with(|| b.memory_id.into_inner().cmp(&a.memory_id.into_inner()))
-    });
+    match req.order {
+        SearchOrder::Relevance => results.sort_by(|a, b| {
+            b.score
+                .total_cmp(&a.score)
+                .then_with(|| b.memory_id.into_inner().cmp(&a.memory_id.into_inner()))
+        }),
+        SearchOrder::Recency => results.sort_by(|a, b| {
+            b.created_at
+                .cmp(&a.created_at)
+                .then_with(|| b.memory_id.into_inner().cmp(&a.memory_id.into_inner()))
+        }),
+    }
     results.truncate(usize::try_from(limit).unwrap_or(50));
     Ok(results)
 }
@@ -122,6 +144,7 @@ fn merge_row(candidates: &mut BTreeMap<uuid::Uuid, Candidate>, row: SearchRow) {
             kind: row.kind,
             schema_id: SchemaId::new(row.schema_id.clone()),
             authoring_personality_instance_id: row.authoring_personality_instance_id,
+            created_at: row.created_at,
             snippet: row.snippet.clone(),
             lexical_score: 0.0,
             similarity_score: 0.0,
@@ -146,6 +169,7 @@ async fn run_lexical(
     let mut next_param = 3;
     let mut sql = common_candidates_sql(req, &projections, &mut next_param)?;
     let query_param = next_param;
+    let order_by = branch_order_by(req, "lexical_score");
 
     write!(
         sql,
@@ -160,6 +184,7 @@ async fn run_lexical(
                 FROM candidates c
           )
           SELECT c.memory_id, c.kind, c.schema_id, c.authoring_personality_instance_id,
+                 c.created_at,
                  left(c.search_text, 480) AS snippet,
                  GREATEST(
                      LEAST(ts_rank_cd(to_tsvector('simple', c.index_text), q.tsq) * 10.0, 1.0),
@@ -183,9 +208,10 @@ async fn run_lexical(
                 to_tsvector('simple', c.index_text) @@ q.tsq
                 OR lower(c.search_text) LIKE '%' || lower(${query_param}) || '%'
             )
-          ORDER BY lexical_score DESC, c.memory_id DESC
+          ORDER BY {order_by}
           LIMIT {}",
-        u64::from(limit)
+        u64::from(limit),
+        order_by = order_by
     )
     .expect("write to String is infallible");
 
@@ -194,12 +220,7 @@ async fn run_lexical(
         q = q.bind(projection.schema_id.as_str().to_string());
         q = q.bind(projection.schema_version.into_inner().cast_signed());
     }
-    if let Some(schema_id) = &req.schema_id {
-        q = q.bind(schema_id.as_str().to_string());
-    }
-    if let Some(reader) = req.reader_personality_instance_id {
-        q = q.bind(reader.into_inner());
-    }
+    q = bind_filter_params(q, req);
     q = q.bind(req.query.clone());
     q.fetch_all(pool)
         .await
@@ -233,10 +254,12 @@ async fn run_semantic(
     let mut sql = common_candidates_sql(req, &projections, &mut next_param)?;
     let vec_param = next_param;
     let model_param = next_param + 1;
+    let order_by = branch_order_by(req, "similarity_score");
 
     write!(
         sql,
         " SELECT c.memory_id, c.kind, c.schema_id, c.authoring_personality_instance_id,
+                 c.created_at,
                  left(c.search_text, 480) AS snippet,
                  0.0::real AS lexical_score,
                  CASE
@@ -252,9 +275,10 @@ async fn run_semantic(
            AND e.owner_principal_id = c.owner_principal_id
            AND e.embedding_version = 1
            AND e.model_id = ${model_param}
-          ORDER BY similarity_score DESC, c.memory_id DESC
+          ORDER BY {order_by}
           LIMIT {}",
-        u64::from(limit)
+        u64::from(limit),
+        order_by = order_by
     )
     .expect("write to String is infallible");
 
@@ -263,12 +287,7 @@ async fn run_semantic(
         q = q.bind(projection.schema_id.as_str().to_string());
         q = q.bind(projection.schema_version.into_inner().cast_signed());
     }
-    if let Some(schema_id) = &req.schema_id {
-        q = q.bind(schema_id.as_str().to_string());
-    }
-    if let Some(reader) = req.reader_personality_instance_id {
-        q = q.bind(reader.into_inner());
-    }
+    q = bind_filter_params(q, req);
     q = q.bind(crate::pgvector::literal(query_embedding));
     q = q.bind(model_id.clone());
     q.fetch_all(pool)
@@ -293,30 +312,66 @@ fn common_candidates_sql(
         *next_param += 1;
         param
     });
+    let since_param = req.since.map(|_| {
+        let param = *next_param;
+        *next_param += 1;
+        param
+    });
+    let until_param = req.until.map(|_| {
+        let param = *next_param;
+        *next_param += 1;
+        param
+    });
+    let tags_param = (!req.tags.is_empty()).then(|| {
+        let param = *next_param;
+        *next_param += 1;
+        param
+    });
+    let filters = CandidateFilterParams {
+        schema_filter: schema_filter_param,
+        reader: reader_param,
+        since: since_param,
+        until: until_param,
+        tags: tags_param,
+    };
 
     let mut sql = String::from("WITH candidates AS (");
     push_candidate_branch_prefix(&mut sql);
-    sql.push_str("COALESCE(m.text, '') AS search_text FROM proxima_core.memories m");
-    push_base_memory_filters(&mut sql, req, schema_filter_param, reader_param);
+    sql.push_str(
+        "NULL::text[] AS tags, COALESCE(m.text, '') AS search_text \
+         FROM proxima_core.memories m",
+    );
+    push_base_memory_filters(&mut sql, req, filters);
     sql.push_str(" AND NULLIF(m.text, '') IS NOT NULL");
 
     for (idx, projection) in projections.iter().enumerate() {
         let table = PgIdent::table(&projection.sidecar_table)?;
         let projection_expr = projection_search_expr(&projection.fields)?;
+        let tag_expr = projection_tag_expr(projection)?;
         let schema_param = sidecar_first_param + (idx * 2);
         let version_param = schema_param + 1;
         sql.push_str(" UNION ALL ");
         push_candidate_branch_prefix(&mut sql);
         write!(
             sql,
-            "NULLIF(concat_ws(' ', {projection_expr}), '') AS search_text
+            "{tag_expr} AS tags,
+             NULLIF(concat_ws(' ', {projection_expr}), '') AS search_text
              FROM proxima_core.memories m
              JOIN {table} s ON s.memory_id = m.memory_id",
+            tag_expr = tag_expr.as_str(),
             projection_expr = projection_expr,
             table = table.as_str()
         )
         .expect("write to String is infallible");
-        push_sidecar_memory_filters(&mut sql, schema_param, version_param, reader_param);
+        push_sidecar_memory_filters(
+            &mut sql,
+            req,
+            projection.kind,
+            schema_param,
+            version_param,
+            filters,
+            &tag_expr,
+        );
     }
 
     sql.push(')');
@@ -340,12 +395,20 @@ fn projection_search_expr(fields: &[MemorySearchProjectionField]) -> Result<Stri
     Ok(expressions.join(", "))
 }
 
+fn projection_tag_expr(projection: &MemorySearchProjection) -> Result<String, StorageError> {
+    let Some(tag_column) = &projection.tag_column else {
+        return Ok("NULL::text[]".to_string());
+    };
+    let column = PgIdent::column(tag_column)?;
+    Ok(format!("s.{}", column.as_str()))
+}
+
 fn push_candidate_branch_prefix(sql: &mut String) {
     sql.push_str(
         "SELECT m.memory_id, m.owner_principal_kind, m.owner_principal_id, \
          COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind, \
          m.schema_id, m.personality_instance_id AS authoring_personality_instance_id, \
-         m.wake_chain_depth, ",
+         m.wake_chain_depth, m.created_at, ",
     );
 }
 
@@ -358,8 +421,7 @@ fn decode_personality(instance_id: Option<uuid::Uuid>) -> Option<PersonalityInst
 fn push_base_memory_filters(
     sql: &mut String,
     req: &MemorySearchRequest,
-    schema_filter_param: Option<usize>,
-    reader_param: Option<usize>,
+    filters: CandidateFilterParams,
 ) {
     sql.push_str(
         " WHERE m.owner_principal_kind = $1
@@ -373,17 +435,22 @@ fn push_base_memory_filters(
         Some(EntityKind::Perspective) => sql.push_str(" AND m.kind = 'Perspective'"),
         Some(EntityKind::Goal) => sql.push_str(" AND false"),
     }
-    if let Some(param) = schema_filter_param {
+    if let Some(param) = filters.schema_filter {
         write!(sql, " AND m.schema_id = ${param}").expect("write to String is infallible");
     }
-    push_reader_visibility_filter(sql, reader_param);
+    push_time_filters(sql, filters);
+    push_tag_filter(sql, req, filters.tags, "NULL::text[]");
+    push_reader_visibility_filter(sql, filters.reader);
 }
 
 fn push_sidecar_memory_filters(
     sql: &mut String,
+    req: &MemorySearchRequest,
+    kind: PayloadKind,
     schema_param: usize,
     version_param: usize,
-    reader_param: Option<usize>,
+    filters: CandidateFilterParams,
+    tag_expr: &str,
 ) {
     write!(
         sql,
@@ -394,7 +461,47 @@ fn push_sidecar_memory_filters(
            AND m.schema_version = ${version_param}"
     )
     .expect("write to String is infallible");
-    push_reader_visibility_filter(sql, reader_param);
+    push_payload_kind_filter(sql, kind);
+    push_time_filters(sql, filters);
+    push_tag_filter(sql, req, filters.tags, tag_expr);
+    push_reader_visibility_filter(sql, filters.reader);
+}
+
+fn push_payload_kind_filter(sql: &mut String, kind: PayloadKind) {
+    match kind {
+        PayloadKind::Fact => sql.push_str(" AND m.kind IS NULL"),
+        PayloadKind::Abstraction => sql.push_str(" AND m.kind = 'Abstraction'"),
+        PayloadKind::Perspective => sql.push_str(" AND m.kind = 'Perspective'"),
+        PayloadKind::Goal
+        | PayloadKind::Edge
+        | PayloadKind::CitedObject
+        | PayloadKind::CitationMapping => sql.push_str(" AND false"),
+    }
+}
+
+fn push_time_filters(sql: &mut String, filters: CandidateFilterParams) {
+    if let Some(param) = filters.since {
+        write!(sql, " AND m.created_at >= ${param}").expect("write to String is infallible");
+    }
+    if let Some(param) = filters.until {
+        write!(sql, " AND m.created_at <= ${param}").expect("write to String is infallible");
+    }
+}
+
+fn push_tag_filter(
+    sql: &mut String,
+    req: &MemorySearchRequest,
+    tag_param: Option<usize>,
+    tag_expr: &str,
+) {
+    let Some(param) = tag_param else {
+        return;
+    };
+    let op = match req.tag_match {
+        TagMatch::Any => "&&",
+        TagMatch::All => "@>",
+    };
+    write!(sql, " AND {tag_expr} {op} ${param}::text[]").expect("write to String is infallible");
 }
 
 fn push_reader_visibility_filter(sql: &mut String, reader_param: Option<usize>) {
@@ -418,6 +525,13 @@ fn push_reader_visibility_filter(sql: &mut String, reader_param: Option<usize>) 
     }
 }
 
+fn branch_order_by(req: &MemorySearchRequest, relevance_score_column: &str) -> String {
+    match req.order {
+        SearchOrder::Relevance => format!("{relevance_score_column} DESC, c.memory_id DESC"),
+        SearchOrder::Recency => "c.created_at DESC, c.memory_id DESC".to_string(),
+    }
+}
+
 fn bind_common<'q>(
     mut q: sqlx::query::QueryAs<'q, sqlx::Postgres, SearchRow, sqlx::postgres::PgArguments>,
     req: &'q MemorySearchRequest,
@@ -428,6 +542,28 @@ fn bind_common<'q>(
     };
     q = q.bind(owner_kind);
     q = q.bind(owner_principal_id);
+    q
+}
+
+fn bind_filter_params<'q>(
+    mut q: sqlx::query::QueryAs<'q, sqlx::Postgres, SearchRow, sqlx::postgres::PgArguments>,
+    req: &'q MemorySearchRequest,
+) -> sqlx::query::QueryAs<'q, sqlx::Postgres, SearchRow, sqlx::postgres::PgArguments> {
+    if let Some(schema_id) = &req.schema_id {
+        q = q.bind(schema_id.as_str().to_string());
+    }
+    if let Some(reader) = req.reader_personality_instance_id {
+        q = q.bind(reader.into_inner());
+    }
+    if let Some(since) = req.since {
+        q = q.bind(since);
+    }
+    if let Some(until) = req.until {
+        q = q.bind(until);
+    }
+    if !req.tags.is_empty() {
+        q = q.bind(req.tags.clone());
+    }
     q
 }
 

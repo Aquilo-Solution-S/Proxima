@@ -4,12 +4,13 @@
 use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::Deserialize;
+use time::format_description::well_known::Rfc3339;
 
 use crate::SchemaId;
 use crate::error::ProtocolError;
 use crate::mcp::schema::mcp_tool_schema;
 use crate::personality::{PersonalityTool, PersonalityToolContext, PersonalityToolResult};
-use crate::verbs::query::{EntityKind, MemorySearchRequest, SearchMode};
+use crate::verbs::query::{EntityKind, MemorySearchRequest, SearchMode, SearchOrder, TagMatch};
 
 #[derive(Debug, Default)]
 pub struct SearchMemoriesTool;
@@ -80,6 +81,21 @@ pub struct SearchMemoriesArgs {
         description = "Optional schema_id filter, for example `proxima-code/commit-v1`. Omit or null for all schemas."
     )]
     pub schema_id: Option<String>,
+    #[serde(default)]
+    #[schemars(description = "Optional exact tag filter. Empty means no tag filter.")]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    #[schemars(description = "Tag filter mode: any or all. Defaults to any.")]
+    pub tag_match: TagMatch,
+    #[serde(default)]
+    #[schemars(description = "Optional inclusive lower created_at bound as an RFC3339 timestamp.")]
+    pub since: Option<String>,
+    #[serde(default)]
+    #[schemars(description = "Optional inclusive upper created_at bound as an RFC3339 timestamp.")]
+    pub until: Option<String>,
+    #[serde(default)]
+    #[schemars(description = "Result ordering: relevance or recency. Defaults to relevance.")]
+    pub order: SearchOrder,
 }
 
 #[async_trait]
@@ -121,6 +137,22 @@ impl PersonalityTool for SearchMemoriesTool {
         }
 
         let mode = SearchMode::from(parsed.mode);
+        let since = match parse_rfc3339(parsed.since.as_deref(), "since") {
+            Ok(value) => value,
+            Err(message) => {
+                return Ok(PersonalityToolResult::error(serde_json::json!({
+                    "error": message,
+                })));
+            }
+        };
+        let until = match parse_rfc3339(parsed.until.as_deref(), "until") {
+            Ok(value) => value,
+            Err(message) => {
+                return Ok(PersonalityToolResult::error(serde_json::json!({
+                    "error": message,
+                })));
+            }
+        };
         let mut req = MemorySearchRequest {
             principal: ctx.owner.principal.clone(),
             query: query.to_string(),
@@ -128,6 +160,11 @@ impl PersonalityTool for SearchMemoriesTool {
             limit: parsed.limit.clamp(1, 50),
             kind: parsed.kind.map(EntityKind::from),
             schema_id: parsed.schema_id.map(SchemaId::new),
+            tags: parsed.tags,
+            tag_match: parsed.tag_match,
+            since,
+            until,
+            order: parsed.order,
             query_embedding: None,
             embedding_model_id: None,
             reader_personality_instance_id: Some(ctx.instance_id),
@@ -166,6 +203,7 @@ impl PersonalityTool for SearchMemoriesTool {
                     "memory": handle.as_str(),
                     "kind": format!("{:?}", row.kind),
                     "schema_id": row.schema_id.as_str(),
+                    "created_at": format_rfc3339(row.created_at),
                     "snippet": row.snippet,
                     "score": row.score,
                     "lexical_score": row.lexical_score,
@@ -180,4 +218,18 @@ impl PersonalityTool for SearchMemoriesTool {
             "memories": memories,
         })))
     }
+}
+
+fn parse_rfc3339(raw: Option<&str>, field: &str) -> Result<Option<time::OffsetDateTime>, String> {
+    raw.map(|value| {
+        time::OffsetDateTime::parse(value, &Rfc3339)
+            .map_err(|err| format!("{field} must be an RFC3339 timestamp: {err}"))
+    })
+    .transpose()
+}
+
+fn format_rfc3339(value: time::OffsetDateTime) -> String {
+    value
+        .format(&Rfc3339)
+        .expect("OffsetDateTime formats as RFC3339")
 }

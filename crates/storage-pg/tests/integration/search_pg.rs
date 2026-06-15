@@ -1,7 +1,9 @@
 use crate::common::{drop_db, fresh_pg, owner_fixture};
 
 use proxima_core::llm::EMBEDDING_DIM;
-use proxima_core::verbs::query::{EntityKind, MemorySearchRequest, SearchMode};
+use proxima_core::verbs::query::{
+    EntityKind, MemorySearchRequest, SearchMode, SearchOrder, TagMatch,
+};
 use proxima_core::verbs::schema::{
     MemorySearchProjection, MemorySearchProjectionField, PayloadKind,
 };
@@ -38,6 +40,11 @@ async fn semantic_search_ranks_nearest_vector_and_isolates_owner()
                 limit: 10,
                 kind: Some(EntityKind::Abstraction),
                 schema_id: Some(SchemaId::new("test/search-abstraction-v1".into())),
+                tags: Vec::new(),
+                tag_match: TagMatch::Any,
+                since: None,
+                until: None,
+                order: SearchOrder::Relevance,
                 query_embedding: Some(padded_embedding([1.0, 0.0, 0.0])),
                 embedding_model_id: Some("test-embed".into()),
                 reader_personality_instance_id: None,
@@ -210,6 +217,11 @@ async fn search_projects_authoring_personality_and_nil_as_none()
                 limit: 10,
                 kind: Some(EntityKind::Abstraction),
                 schema_id: Some(SchemaId::new("test/search-attribution-v1".into())),
+                tags: Vec::new(),
+                tag_match: TagMatch::Any,
+                since: None,
+                until: None,
+                order: SearchOrder::Relevance,
                 query_embedding: None,
                 embedding_model_id: None,
                 reader_personality_instance_id: None,
@@ -232,6 +244,11 @@ async fn search_projects_authoring_personality_and_nil_as_none()
                 limit: 10,
                 kind: Some(EntityKind::Abstraction),
                 schema_id: Some(SchemaId::new("test/search-attribution-v1".into())),
+                tags: Vec::new(),
+                tag_match: TagMatch::Any,
+                since: None,
+                until: None,
+                order: SearchOrder::Relevance,
                 query_embedding: None,
                 embedding_model_id: None,
                 reader_personality_instance_id: None,
@@ -286,6 +303,326 @@ async fn lexical_search_ignores_sidecar_without_projection()
     drop(pg);
     drop_db(&db_name).await?;
     Ok(())
+}
+
+#[tokio::test]
+async fn search_filters_tags_across_modes_and_excludes_untagged()
+-> Result<(), Box<dyn std::error::Error>> {
+    let Some((pg, db_name)) = fresh_pg().await else {
+        return Ok(());
+    };
+    pg.run_migrations().await?;
+    create_tagged_search_sidecars(pg.pool()).await?;
+
+    let owner = owner_fixture();
+    let now = time::OffsetDateTime::from_unix_timestamp(1_700_000_000)?;
+    let target = insert_tagged_abstraction(
+        &pg,
+        &owner,
+        TaggedAbstractionInsert {
+            memory_id: Uuid::from_u128(11),
+            title: "Tagged focus",
+            body: "tagged filter needle target",
+            tags: &["blue", "focus"],
+            created_at: now,
+            embedding: Some([1.0, 0.0, 0.0]),
+        },
+    )
+    .await?;
+    let blue_only = insert_tagged_abstraction(
+        &pg,
+        &owner,
+        TaggedAbstractionInsert {
+            memory_id: Uuid::from_u128(12),
+            title: "Tagged blue",
+            body: "tagged filter needle blue",
+            tags: &["blue"],
+            created_at: now + time::Duration::seconds(1),
+            embedding: Some([0.0, 1.0, 0.0]),
+        },
+    )
+    .await?;
+    let empty_tags = insert_tagged_abstraction(
+        &pg,
+        &owner,
+        TaggedAbstractionInsert {
+            memory_id: Uuid::from_u128(13),
+            title: "Tagged empty",
+            body: "tagged filter needle empty",
+            tags: &[],
+            created_at: now + time::Duration::seconds(2),
+            embedding: Some([1.0, 0.0, 0.0]),
+        },
+    )
+    .await?;
+    let unprojected = insert_text_memory(
+        &pg,
+        &owner,
+        "tagged filter needle unprojected",
+        Some(Uuid::nil()),
+    )
+    .await?;
+    let projections = vec![tagged_abstraction_projection()];
+
+    let mut any_req = tagged_search_request(&owner, "tagged filter", SearchMode::Lexical);
+    any_req.schema_id = None;
+    any_req.tags = vec!["blue".into(), "focus".into()];
+    any_req.tag_match = TagMatch::Any;
+    let rows = pg.search_memories(&any_req, &projections).await?;
+    let ids: Vec<_> = rows.iter().map(|row| row.memory_id).collect();
+    assert!(ids.contains(&target), "{rows:#?}");
+    assert!(ids.contains(&blue_only), "{rows:#?}");
+    assert!(!ids.contains(&empty_tags), "{rows:#?}");
+    assert!(
+        !ids.contains(&MemoryId::new(unprojected)),
+        "untagged base memory matched tag filter: {rows:#?}"
+    );
+
+    let mut all_req = tagged_search_request(&owner, "tagged filter", SearchMode::Lexical);
+    all_req.schema_id = None;
+    all_req.tags = vec!["blue".into(), "focus".into()];
+    all_req.tag_match = TagMatch::All;
+    let rows = pg.search_memories(&all_req, &projections).await?;
+    assert_eq!(
+        rows.iter().map(|row| row.memory_id).collect::<Vec<_>>(),
+        vec![target]
+    );
+
+    let mut semantic_req = tagged_search_request(&owner, "semantic query", SearchMode::Semantic);
+    semantic_req.schema_id = None;
+    semantic_req.tags = vec!["focus".into()];
+    semantic_req.query_embedding = Some(padded_embedding([1.0, 0.0, 0.0]));
+    semantic_req.embedding_model_id = Some("test-embed".into());
+    let rows = pg.search_memories(&semantic_req, &projections).await?;
+    assert_eq!(rows.first().map(|row| row.memory_id), Some(target));
+
+    let mut hybrid_req = tagged_search_request(&owner, "semantic query", SearchMode::Hybrid);
+    hybrid_req.schema_id = None;
+    hybrid_req.tags = vec!["focus".into()];
+    hybrid_req.query_embedding = Some(padded_embedding([1.0, 0.0, 0.0]));
+    hybrid_req.embedding_model_id = Some("test-embed".into());
+    let rows = pg.search_memories(&hybrid_req, &projections).await?;
+    assert_eq!(rows.first().map(|row| row.memory_id), Some(target));
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn search_filters_created_at_range_and_populates_created_at()
+-> Result<(), Box<dyn std::error::Error>> {
+    let Some((pg, db_name)) = fresh_pg().await else {
+        return Ok(());
+    };
+    pg.run_migrations().await?;
+    create_tagged_search_sidecars(pg.pool()).await?;
+
+    let owner = owner_fixture();
+    let base = time::OffsetDateTime::from_unix_timestamp(1_700_010_000)?;
+    let old = insert_tagged_abstraction(
+        &pg,
+        &owner,
+        TaggedAbstractionInsert {
+            memory_id: Uuid::from_u128(21),
+            title: "Time old",
+            body: "time range needle",
+            tags: &["time"],
+            created_at: base - time::Duration::days(2),
+            embedding: None,
+        },
+    )
+    .await?;
+    let middle = insert_tagged_abstraction(
+        &pg,
+        &owner,
+        TaggedAbstractionInsert {
+            memory_id: Uuid::from_u128(22),
+            title: "Time middle",
+            body: "time range needle",
+            tags: &["time"],
+            created_at: base,
+            embedding: None,
+        },
+    )
+    .await?;
+    let new = insert_tagged_abstraction(
+        &pg,
+        &owner,
+        TaggedAbstractionInsert {
+            memory_id: Uuid::from_u128(23),
+            title: "Time new",
+            body: "time range needle",
+            tags: &["time"],
+            created_at: base + time::Duration::days(2),
+            embedding: None,
+        },
+    )
+    .await?;
+
+    let mut req = tagged_search_request(&owner, "time range", SearchMode::Lexical);
+    req.since = Some(base - time::Duration::hours(1));
+    req.until = Some(base + time::Duration::hours(1));
+    let rows = pg
+        .search_memories(&req, &[tagged_abstraction_projection()])
+        .await?;
+
+    assert_eq!(
+        rows.iter().map(|row| row.memory_id).collect::<Vec<_>>(),
+        vec![middle]
+    );
+    assert_eq!(rows[0].created_at.unix_timestamp(), base.unix_timestamp());
+    assert!(!rows.iter().any(|row| row.memory_id == old));
+    assert!(!rows.iter().any(|row| row.memory_id == new));
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn search_order_recency_sorts_matching_candidates_newest_first()
+-> Result<(), Box<dyn std::error::Error>> {
+    let Some((pg, db_name)) = fresh_pg().await else {
+        return Ok(());
+    };
+    pg.run_migrations().await?;
+    create_tagged_search_sidecars(pg.pool()).await?;
+
+    let owner = owner_fixture();
+    let base = time::OffsetDateTime::from_unix_timestamp(1_700_020_000)?;
+    let newer = insert_tagged_abstraction(
+        &pg,
+        &owner,
+        TaggedAbstractionInsert {
+            memory_id: Uuid::from_u128(31),
+            title: "Recency same",
+            body: "recency ordering needle",
+            tags: &["recency"],
+            created_at: base + time::Duration::days(1),
+            embedding: None,
+        },
+    )
+    .await?;
+    let older = insert_tagged_abstraction(
+        &pg,
+        &owner,
+        TaggedAbstractionInsert {
+            memory_id: Uuid::from_u128(32),
+            title: "Recency same",
+            body: "recency ordering needle",
+            tags: &["recency"],
+            created_at: base - time::Duration::days(1),
+            embedding: None,
+        },
+    )
+    .await?;
+    let projection = tagged_abstraction_projection();
+
+    let relevance_req = tagged_search_request(&owner, "recency ordering", SearchMode::Lexical);
+    let rows = pg
+        .search_memories(&relevance_req, std::slice::from_ref(&projection))
+        .await?;
+    assert_eq!(
+        rows.iter().map(|row| row.memory_id).collect::<Vec<_>>(),
+        vec![older, newer],
+        "relevance keeps score then memory_id ordering"
+    );
+
+    let mut recency_req = tagged_search_request(&owner, "recency ordering", SearchMode::Lexical);
+    recency_req.order = SearchOrder::Recency;
+    let rows = pg.search_memories(&recency_req, &[projection]).await?;
+    assert_eq!(
+        rows.iter().map(|row| row.memory_id).collect::<Vec<_>>(),
+        vec![newer, older]
+    );
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
+#[derive(Debug)]
+struct TaggedAbstractionInsert<'a> {
+    memory_id: Uuid,
+    title: &'a str,
+    body: &'a str,
+    tags: &'a [&'a str],
+    created_at: time::OffsetDateTime,
+    embedding: Option<[f32; 3]>,
+}
+
+async fn create_tagged_search_sidecars(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
+    sqlx::query("CREATE SCHEMA IF NOT EXISTS proxima_test")
+        .execute(pool)
+        .await?;
+    sqlx::query(
+        "CREATE TABLE proxima_test.tagged_abstraction_v1 (
+             memory_id uuid PRIMARY KEY REFERENCES proxima_core.memories(memory_id),
+             title text NOT NULL,
+             body text NOT NULL,
+             tags text[] NOT NULL
+         )",
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+async fn insert_tagged_abstraction(
+    pg: &proxima_storage_pg::PgStorage,
+    owner: &Owner,
+    input: TaggedAbstractionInsert<'_>,
+) -> Result<MemoryId, Box<dyn std::error::Error>> {
+    let owner_kind = OwnerPrincipalKind::of(&owner.principal);
+    let owner_principal_id = match &owner.principal {
+        Principal::User(user) => user.into_inner(),
+        Principal::Group(group) => group.into_inner(),
+    };
+    sqlx::query(
+        "INSERT INTO proxima_core.memories
+            (memory_id, owner_principal_kind, owner_principal_id, owner_org_id,
+             schema_id, schema_version, created_at, kind, text, operator_kind,
+             model_id, prompt_version, personality_instance_id, wake_chain_depth)
+         VALUES ($1, $2, $3, $4, 'proxima-test/tagged-abstraction-v1', 1,
+                 $5, 'Abstraction', $6, 'Wake', 'test-model', 'test-v1',
+                 '00000000-0000-0000-0000-000000000000'::uuid, 2)",
+    )
+    .bind(input.memory_id)
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(owner.org_id.into_inner())
+    .bind(input.created_at)
+    .bind(input.body)
+    .execute(pg.pool())
+    .await?;
+    let tags: Vec<String> = input.tags.iter().map(|tag| (*tag).to_string()).collect();
+    sqlx::query(
+        "INSERT INTO proxima_test.tagged_abstraction_v1 (memory_id, title, body, tags)
+         VALUES ($1, $2, $3, $4)",
+    )
+    .bind(input.memory_id)
+    .bind(input.title)
+    .bind(input.body)
+    .bind(tags)
+    .execute(pg.pool())
+    .await?;
+    if let Some(embedding) = input.embedding {
+        sqlx::query(
+            "INSERT INTO proxima_core.embeddings
+                (entity_kind, entity_id, embedding_version, model_id, vec,
+                 owner_principal_kind, owner_principal_id, owner_org_id)
+             VALUES ('Abstraction', $1, 1, 'test-embed', $2::vector, $3, $4, $5)",
+        )
+        .bind(input.memory_id)
+        .bind(vector_literal(&padded_embedding(embedding)))
+        .bind(owner_kind)
+        .bind(owner_principal_id)
+        .bind(owner.org_id.into_inner())
+        .execute(pg.pool())
+        .await?;
+    }
+    Ok(MemoryId::new(input.memory_id))
 }
 
 async fn insert_embedded_memory(
@@ -425,6 +762,11 @@ fn lexical_request(owner: &Owner, query: &str) -> MemorySearchRequest {
         limit: 10,
         kind: Some(EntityKind::Fact),
         schema_id: None,
+        tags: Vec::new(),
+        tag_match: TagMatch::Any,
+        since: None,
+        until: None,
+        order: SearchOrder::Relevance,
         query_embedding: None,
         embedding_model_id: None,
         reader_personality_instance_id: None,
@@ -439,8 +781,32 @@ fn semantic_request(owner: &Owner, query_embedding: Vec<f32>) -> MemorySearchReq
         limit: 10,
         kind: Some(EntityKind::Abstraction),
         schema_id: Some(SchemaId::new("test/search-abstraction-v1".into())),
+        tags: Vec::new(),
+        tag_match: TagMatch::Any,
+        since: None,
+        until: None,
+        order: SearchOrder::Relevance,
         query_embedding: Some(query_embedding),
         embedding_model_id: Some("test-embed".into()),
+        reader_personality_instance_id: None,
+    }
+}
+
+fn tagged_search_request(owner: &Owner, query: &str, mode: SearchMode) -> MemorySearchRequest {
+    MemorySearchRequest {
+        principal: owner.principal.clone(),
+        query: query.into(),
+        mode,
+        limit: 10,
+        kind: Some(EntityKind::Abstraction),
+        schema_id: Some(SchemaId::new("proxima-test/tagged-abstraction-v1".into())),
+        tags: Vec::new(),
+        tag_match: TagMatch::Any,
+        since: None,
+        until: None,
+        order: SearchOrder::Relevance,
+        query_embedding: None,
+        embedding_model_id: None,
         reader_personality_instance_id: None,
     }
 }
@@ -499,5 +865,30 @@ fn code_chunk_projection() -> MemorySearchProjection {
                 kind: SearchProjectionColumnKind::Text,
             },
         ],
+        tag_column: None,
+    }
+}
+
+fn tagged_abstraction_projection() -> MemorySearchProjection {
+    MemorySearchProjection {
+        schema_id: SchemaId::new("proxima-test/tagged-abstraction-v1".into()),
+        schema_version: SchemaVersion::new(1),
+        kind: PayloadKind::Abstraction,
+        sidecar_table: "proxima_test.tagged_abstraction_v1".into(),
+        fields: vec![
+            MemorySearchProjectionField {
+                column: "title".into(),
+                kind: SearchProjectionColumnKind::Text,
+            },
+            MemorySearchProjectionField {
+                column: "body".into(),
+                kind: SearchProjectionColumnKind::Text,
+            },
+            MemorySearchProjectionField {
+                column: "tags".into(),
+                kind: SearchProjectionColumnKind::TextArray,
+            },
+        ],
+        tag_column: Some("tags".into()),
     }
 }

@@ -36,6 +36,7 @@ impl FactPayload for ExecutionRequestV1 {
                     kind: SearchProjectionColumnKind::Text,
                 },
             ],
+            tag_column: None,
         })
     }
 

@@ -1312,6 +1312,13 @@ CREATE INDEX idx_memories_owner_kind ON proxima_core.memories USING btree (owner
 
 
 --
+-- Name: memories owner-created lookup; Type: INDEX; Schema: proxima_core; Owner: -
+--
+
+CREATE INDEX idx_memories_owner_created ON proxima_core.memories USING btree (owner_principal_kind, owner_principal_id, created_at);
+
+
+--
 -- Name: idx_memories_personality_instance; Type: INDEX; Schema: proxima_core; Owner: -
 --
 

@@ -38,6 +38,7 @@ impl FactPayload for AgentNoteV1 {
                     kind: SearchProjectionColumnKind::TextArray,
                 },
             ],
+            tag_column: Some("tags".to_string()),
         })
     }
 }
