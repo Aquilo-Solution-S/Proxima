@@ -17,8 +17,8 @@ pub use ingest::{
     CODE_BLOB_BYTE_RANGE_SCHEMA, CODE_BLOB_SCHEMA, CODE_BLOB_WHOLE_SCHEMA,
     CODE_COMMIT_OBJECT_SCHEMA, CODE_COMMIT_WHOLE_SCHEMA, EXECUTION_REQUEST_OBJECT_SCHEMA,
     EXECUTION_REQUEST_WHOLE_SCHEMA, IngestError, LOCAL_GIT_SOURCE_ID, TEST_REQUEST_OBJECT_SCHEMA,
-    TEST_REQUEST_WHOLE_SCHEMA, WORKSPACE_DECISION_OBJECT_SCHEMA, WORKSPACE_DECISION_WHOLE_SCHEMA,
-    build_engine, build_engine_with, ingest_code_chunk, ingest_commit, ingest_file_revision,
+    TEST_REQUEST_WHOLE_SCHEMA, build_engine, build_engine_with, ingest_code_chunk, ingest_commit,
+    ingest_file_revision,
 };
 pub use local_git_source::{
     HeadSnapshotOutcome, IndexError, IndexReport, IngestProgress, LocalGitSource,

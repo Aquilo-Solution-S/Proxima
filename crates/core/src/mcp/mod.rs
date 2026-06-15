@@ -109,11 +109,6 @@ impl McpToolCtx {
     }
 
     #[must_use]
-    pub fn format_memory(&self, id: MemoryId) -> String {
-        self.format_fact_memory(id)
-    }
-
-    #[must_use]
     pub fn format_memory_with_class(&self, id: MemoryId, class: MemoryHandleClass) -> String {
         match class {
             MemoryHandleClass::Fact => self.format_fact_memory(id),

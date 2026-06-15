@@ -108,11 +108,6 @@ impl EntityKindMask {
     const GOAL: u8 = 0b1000;
 
     #[must_use]
-    pub const fn empty() -> Self {
-        Self(0)
-    }
-
-    #[must_use]
     pub const fn fact() -> Self {
         Self(Self::FACT)
     }
@@ -204,11 +199,6 @@ impl AuthorshipKindMask {
     const EXTERNAL_AGENT: u16 = 0b1000_0000;
 
     #[must_use]
-    pub const fn empty() -> Self {
-        Self(0)
-    }
-
-    #[must_use]
     pub const fn event_source() -> Self {
         Self(Self::EVENT_SOURCE)
     }
@@ -256,20 +246,6 @@ impl AuthorshipKindMask {
     #[must_use]
     pub const fn core() -> Self {
         Self(Self::USER | Self::ENGINE)
-    }
-
-    #[must_use]
-    pub const fn all() -> Self {
-        Self(
-            Self::EVENT_SOURCE
-                | Self::OPERATOR_F_TO_A
-                | Self::OPERATOR_A_TO_P
-                | Self::OPERATOR_A_TO_GOAL
-                | Self::PERSPECTIVE_LINK
-                | Self::USER
-                | Self::ENGINE
-                | Self::EXTERNAL_AGENT,
-        )
     }
 
     #[must_use]
