@@ -1,6 +1,8 @@
-//! Typed `ChangeEvent` — what subscribers see when an
-//! `EntityAppend`, `EntityDelete`, or `EdgeAppend` lands. See docs/14
-//! §Subscribe and §Consistency.
+//! Typed `ChangeEvent` — the hydrated form of a `change_event` row
+//! (`EntityAppend`, `EntityDelete`, or `EdgeAppend`), returned by the
+//! pull reads (`EventHistory` / `list_change_events_*`). The LISTEN/NOTIFY
+//! Subscribe push path was retired — `change_event` is a pull-only log.
+//! See docs/14 §`EventHistory` and §Consistency.
 
 use uuid::Uuid;
 

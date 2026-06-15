@@ -2,6 +2,7 @@
 pub mod auth;
 pub mod authz;
 pub mod canonical_json;
+pub mod change_event;
 pub mod citations;
 pub mod cursor;
 pub mod dependency;
@@ -12,7 +13,6 @@ pub mod ids;
 pub mod llm;
 pub mod mcp;
 pub mod models;
-pub mod outbox;
 pub mod owner;
 pub mod payload;
 pub mod payload_contract;
@@ -26,6 +26,7 @@ pub mod wake;
 pub use auth::*;
 pub use authz::*;
 pub use canonical_json::canonical_json_bytes;
+pub use change_event::*;
 pub use citations::*;
 pub use cursor::*;
 pub use dependency::*;
@@ -40,7 +41,6 @@ pub use mcp::{
     format_prefixed_uuid, parse_prefixed_uuid,
 };
 pub use models::*;
-pub use outbox::*;
 pub use owner::*;
 pub use payload::*;
 pub use payload_contract::assert_no_serde_json_value_fields;

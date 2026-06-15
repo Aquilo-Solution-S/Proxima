@@ -5,17 +5,17 @@
 
 use uuid::Uuid;
 
-use crate::outbox::EntityRef;
+use crate::change_event::EntityRef;
 use crate::personality::PersonalityInstanceId;
 use crate::verbs::goal_write::GoalState;
 use crate::verbs::schema::SchemaTombstone;
 use crate::{GoalId, MemoryId, Owner, Principal, SchemaId, SchemaVersion};
 
-/// Re-export the canonical `EntityKind` from `outbox` so query
+/// Re-export the canonical `EntityKind` from `change_event` so query
 /// callers don't need a second import path. The duplicate
 /// definition that lived here pre-M6.5 produced two identical
 /// types.
-pub use crate::outbox::EntityKind;
+pub use crate::change_event::EntityKind;
 
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,

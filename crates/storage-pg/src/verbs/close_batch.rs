@@ -7,8 +7,8 @@
 //! leak.
 //!
 //! v1 emits no `change_event` for batch-closed; M5's F→A operator
-//! reads `closed_at` directly off `source_batches`. We add an outbox
-//! event here once a consumer needs the live signal.
+//! reads `closed_at` directly off `source_batches`. We add a
+//! `change_event` here once a consumer needs the live signal.
 
 use proxima_core::verbs::close_batch::CloseBatchOutcome;
 use proxima_core::{OwnerPrincipalKind, Principal, SourceBatchId, StorageError};

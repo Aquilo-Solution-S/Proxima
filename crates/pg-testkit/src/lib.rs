@@ -164,8 +164,8 @@ pub async fn drop_db(name: &str) -> Result<(), sqlx::Error> {
     }
 
     for _ in 0..DROP_RETRIES {
-        // Terminate any lingering backends on the target DB (e.g. a detached
-        // outbox-publisher task still holding a LISTEN connection) before
+        // Terminate any lingering backends on the target DB (e.g. a pooled
+        // connection a test hasn't dropped yet) before
         // dropping. ALLOW_CONNECTIONS is already false, so a terminated
         // backend cannot reconnect. Without this, a no-FORCE DROP DATABASE
         // BLOCKS ~11s per attempt before erroring "is being accessed by other
