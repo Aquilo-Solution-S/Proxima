@@ -6,7 +6,6 @@ mod dependencies;
 mod events;
 mod instances;
 mod memories;
-mod parse;
 mod read_scope;
 mod rows;
 mod wake_entries;
@@ -20,6 +19,4 @@ pub use memories::{
 };
 pub use read_scope::{list_read_scope, set_read_scope};
 pub(crate) use rows::owner_columns;
-pub use wake_entries::{
-    list_active_wake_entries, set_wake_entries, set_wake_entries_within, tombstone_personality,
-};
+pub use wake_entries::{set_wake_entries, set_wake_entries_within, tombstone_personality};

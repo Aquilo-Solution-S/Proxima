@@ -1,34 +1,12 @@
 use proxima_core::personality::{
     PersonalityInstanceId, PersonalityStatus, SetWakeEntriesRequest, SetWakeEntriesResponse,
-    WakeDispatchEntryRow, WakeEntryAuthoredBy, WakeEntryDraft, WakeEntryGoalScope,
-    WakeEntryTriggerKind,
+    WakeEntryDraft,
 };
-use proxima_core::{MemoryId, Owner, OwnerPrincipalKind, StorageError};
+use proxima_core::{Owner, StorageError};
 use sqlx::{PgPool, Row};
 
-use super::parse::owner_from_parts;
 use super::rows::owner_columns;
 use crate::error::map_err;
-
-#[derive(sqlx::FromRow)]
-struct WakeEntryJoinRow {
-    owner_principal_kind: OwnerPrincipalKind,
-    owner_principal_id: uuid::Uuid,
-    owner_org_id: uuid::Uuid,
-    personality_instance_id: uuid::Uuid,
-    current_root_perspective_memory_id: uuid::Uuid,
-    max_wake_chain_depth: i32,
-    last_considered_seq: uuid::Uuid,
-    wake_entry_id: uuid::Uuid,
-    trigger_kind: WakeEntryTriggerKind,
-    trigger_id: String,
-    label: String,
-    enabled: bool,
-    authored_by: WakeEntryAuthoredBy,
-    probability_promille: i32,
-    goal_scope: WakeEntryGoalScope,
-    instructions: String,
-}
 
 async fn replace_wake_entries_in_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
@@ -245,79 +223,6 @@ pub async fn tombstone_personality(
         }
         None => Err(StorageError::NotFound),
     }
-}
-
-pub async fn list_active_wake_entries(
-    pool: &PgPool,
-) -> Result<Vec<WakeDispatchEntryRow>, StorageError> {
-    let rows: Vec<WakeEntryJoinRow> = sqlx::query_as(
-        "SELECT p.owner_principal_kind,
-                p.owner_principal_id,
-                p.owner_org_id,
-                p.personality_instance_id,
-                p.current_root_perspective_memory_id,
-                p.max_wake_chain_depth,
-                cur.last_considered_seq,
-                e.wake_entry_id,
-                e.trigger_kind,
-                e.trigger_id,
-                e.label,
-                e.enabled,
-                e.authored_by,
-                e.probability_promille,
-                e.goal_scope,
-                e.instructions
-         FROM proxima_core.personality p
-         JOIN proxima_core.personality_wake_cursor cur
-           ON cur.owner_principal_kind = p.owner_principal_kind
-          AND cur.owner_principal_id = p.owner_principal_id
-          AND cur.owner_org_id = p.owner_org_id
-          AND cur.personality_instance_id = p.personality_instance_id
-         JOIN proxima_core.personality_wake_entries e
-           ON e.owner_principal_kind = p.owner_principal_kind
-          AND e.owner_principal_id = p.owner_principal_id
-          AND e.owner_org_id = p.owner_org_id
-          AND e.personality_instance_id = p.personality_instance_id
-         WHERE p.status = 'active'
-           AND e.enabled
-           AND e.tombstoned_at IS NULL
-         ORDER BY p.owner_principal_kind, p.owner_principal_id, p.personality_instance_id, e.created_at",
-    )
-    .fetch_all(pool)
-    .await
-    .map_err(map_err)?;
-
-    rows.into_iter()
-        .map(|row| {
-            Ok(WakeDispatchEntryRow {
-                owner: owner_from_parts(
-                    row.owner_principal_kind,
-                    row.owner_principal_id,
-                    row.owner_org_id,
-                ),
-                personality_instance_id: PersonalityInstanceId::new(row.personality_instance_id),
-                current_root_perspective_memory_id: MemoryId::new(
-                    row.current_root_perspective_memory_id,
-                ),
-                max_wake_chain_depth: u16::try_from(row.max_wake_chain_depth).unwrap_or(0),
-                last_considered_seq: row.last_considered_seq,
-                wake_entry: WakeEntryDraft {
-                    wake_entry_id: row.wake_entry_id,
-                    personality_instance_id: PersonalityInstanceId::new(
-                        row.personality_instance_id,
-                    ),
-                    trigger_kind: row.trigger_kind,
-                    trigger_id: row.trigger_id,
-                    label: row.label,
-                    enabled: row.enabled,
-                    authored_by: row.authored_by,
-                    probability_promille: u16::try_from(row.probability_promille).unwrap_or(0),
-                    goal_scope: row.goal_scope,
-                    instructions: row.instructions,
-                },
-            })
-        })
-        .collect()
 }
 
 async fn upsert_wake_entry(

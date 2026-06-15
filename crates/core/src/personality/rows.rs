@@ -3,7 +3,6 @@
 //! This module contains database row types for personality-related data:
 //! - `PersonalityInstanceRow` - Full personality instance row
 //! - `WakeEntryRow` - Wake entry configuration row
-//! - `WakeDispatchEntryRow` - Wake dispatch entry row
 //! - `ChangeEventForWake` - Change event with wake context
 
 use uuid::Uuid;
@@ -15,7 +14,6 @@ use crate::personality::types::{
 };
 use crate::{MemoryId, Owner};
 
-use super::drafts::WakeEntryDraft;
 use super::personality::PersonalityInstanceId;
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -40,16 +38,6 @@ pub struct PersonalityInstanceRow {
     pub display_name: String,
     pub status: PersonalityStatus,
     pub wake_entries: Vec<WakeEntryRow>,
-}
-
-#[derive(Debug, Clone)]
-pub struct WakeDispatchEntryRow {
-    pub owner: Owner,
-    pub personality_instance_id: PersonalityInstanceId,
-    pub current_root_perspective_memory_id: MemoryId,
-    pub max_wake_chain_depth: u16,
-    pub last_considered_seq: Uuid,
-    pub wake_entry: WakeEntryDraft,
 }
 
 #[derive(Debug, Clone)]
