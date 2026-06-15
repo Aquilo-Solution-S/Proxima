@@ -4,7 +4,6 @@ use crate::common::{drop_db, fresh_pg, owner_fixture};
 use proxima_core::verbs::event_ingest::{
     EventDraft, InlineCitationMappingDraft, InlineCitedObjectDraft,
 };
-use proxima_core::verbs::query::MemoryStore;
 use proxima_core::{
     AuthPath, AuthzContext, CitationMappingPayload, CitedObjectPayload, Engine, FactPayload,
     FlavorRegistry, Owner, PersonalityInstanceId, Role, SchemaId, SchemaVersion, SourceBatchId,
@@ -126,7 +125,7 @@ fn engine() -> Engine {
     registry.add_fact_schema::<TestFact>();
     registry.add_cited_object_schema::<TestCitedObject>();
     registry.add_citation_mapping_schema::<TestCitationMapping>();
-    Engine::new(registry.freeze(), MemoryStore::new())
+    Engine::new(registry.freeze())
 }
 
 fn draft(owner: &Owner, note: &str, author: Option<PersonalityInstanceId>) -> EventDraft {

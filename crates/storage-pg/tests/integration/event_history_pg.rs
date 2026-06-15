@@ -9,7 +9,6 @@ use proxima_core::verbs::event_history::EventHistoryRequest;
 use proxima_core::verbs::event_ingest::{
     Citation, CitationMappingHint, CitedObjectHint, EventDraft,
 };
-use proxima_core::verbs::query::MemoryStore;
 use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaInfo};
 use proxima_core::{
     OrgId, Owner, Principal, SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId,
@@ -88,7 +87,7 @@ fn fresh_event_draft(owner: Owner, payload: Vec<u8>) -> EventDraft {
 
 fn build_engine(storage: Arc<dyn Storage>, _owner: Owner, _principal: Principal) -> Engine {
     let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
-    Engine::new(registry, MemoryStore::new()).with_storage(storage)
+    Engine::new(registry).with_storage(storage)
 }
 
 #[tokio::test]

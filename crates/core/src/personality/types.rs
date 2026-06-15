@@ -124,17 +124,6 @@ pub enum WakeEntryAuthoredBy {
     Other,
 }
 
-impl WakeEntryAuthoredBy {
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Any => "any",
-            Self::SelfAuthor => "self",
-            Self::Other => "other",
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PersonalityMemoryKind {
     Abstraction,
@@ -142,14 +131,6 @@ pub enum PersonalityMemoryKind {
 }
 
 impl PersonalityMemoryKind {
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Abstraction => "Abstraction",
-            Self::Perspective => "Perspective",
-        }
-    }
-
     #[must_use]
     pub const fn entity_kind(self) -> EntityKind {
         match self {

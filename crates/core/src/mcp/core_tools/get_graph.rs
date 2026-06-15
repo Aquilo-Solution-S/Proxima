@@ -40,7 +40,7 @@ pub struct GetGraphOutput {
     pub schemas: Vec<SchemaItem>,
     /// Static edge-type catalog from the frozen `FlavorRegistry`.
     pub edge_types: Vec<EdgeTypeItem>,
-    /// Substrate-pack and flavor-registered MCP tool ids.
+    /// Dispatchable substrate and flavor-registered MCP tool ids.
     pub substrate_tools: Vec<SubstrateToolItem>,
 }
 
@@ -129,27 +129,24 @@ impl McpTool for GetGraphTool {
                 })
                 .collect();
 
-            let mut substrate_tools = Vec::new();
-            for tool in crate::personality::substrate_pack() {
-                substrate_tools.push(SubstrateToolItem {
-                    tool_id: tool.tool_id().to_string(),
-                    source: "substrate".into(),
-                    description: tool.description().to_string(),
-                });
-            }
-            for desc in ctx.registry.list_mcp_tools() {
-                let source = if desc.name.starts_with("core/") {
-                    "substrate".into()
-                } else {
-                    let flavor = desc.name.split('/').next().unwrap_or("flavor");
-                    format!("flavor:{flavor}")
-                };
-                substrate_tools.push(SubstrateToolItem {
-                    tool_id: desc.name.to_string(),
-                    source,
-                    description: desc.description.to_string(),
-                });
-            }
+            let substrate_tools = ctx
+                .registry
+                .list_mcp_tools()
+                .iter()
+                .map(|desc| {
+                    let source = if desc.name.starts_with("core/") {
+                        "substrate".into()
+                    } else {
+                        let flavor = desc.name.split('/').next().unwrap_or("flavor");
+                        format!("flavor:{flavor}")
+                    };
+                    SubstrateToolItem {
+                        tool_id: desc.name.to_string(),
+                        source,
+                        description: desc.description.to_string(),
+                    }
+                })
+                .collect();
 
             Ok(GetGraphOutput {
                 personalities,
