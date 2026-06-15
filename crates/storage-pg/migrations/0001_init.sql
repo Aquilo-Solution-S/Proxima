@@ -1,7 +1,7 @@
 -- Proxima core schema — v0.0.1 single init.
--- Squashed 2026-06-13 from 15 dev migrations; proven byte-equivalent to applying
--- them in order (pg_dump --schema-only diff). Regenerate from a migrated DB if the
--- schema changes — do not hand-edit.
+-- Squashed 2026-06-15 from the full dev migration history; proven byte-equivalent
+-- to applying every migration in order (pg_dump --schema-only diff). Regenerate
+-- from a migrated DB if the schema changes — do not hand-edit.
 
 CREATE SCHEMA proxima_core;
 
@@ -12,7 +12,8 @@ CREATE SCHEMA proxima_core;
 
 CREATE TYPE proxima_core.change_event_kind AS ENUM (
     'EntityAppend',
-    'EdgeAppend'
+    'EdgeAppend',
+    'EntityDelete'
 );
 
 
@@ -443,28 +444,6 @@ SET default_tablespace = '';
 SET default_table_access_method = heap;
 
 --
--- Name: a2p_invocations; Type: TABLE; Schema: proxima_core; Owner: -
---
-
-CREATE TABLE proxima_core.a2p_invocations (
-    owner_principal_kind proxima_core.owner_principal_kind NOT NULL,
-    owner_principal_id uuid NOT NULL,
-    operator_id text NOT NULL,
-    prompt_version text NOT NULL,
-    model_id text NOT NULL,
-    context_hash bytea NOT NULL,
-    input_hash bytea NOT NULL,
-    head_memory_id uuid,
-    run_at timestamp with time zone DEFAULT now() NOT NULL,
-    personality_instance_id uuid NOT NULL,
-    wake_chain_depth smallint DEFAULT 0 NOT NULL,
-    CONSTRAINT a2p_invocations_context_hash_chk CHECK ((octet_length(context_hash) = 32)),
-    CONSTRAINT a2p_invocations_input_hash_chk CHECK ((octet_length(input_hash) = 32)),
-    CONSTRAINT a2p_invocations_wake_chain_depth_check CHECK ((wake_chain_depth >= 0))
-);
-
-
---
 -- Name: change_event; Type: TABLE; Schema: proxima_core; Owner: -
 --
 
@@ -507,6 +486,28 @@ CREATE TABLE proxima_core.citation_mappings (
     owner_principal_id uuid NOT NULL,
     owner_org_id uuid NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- Name: citation_mcp_call_io_v1; Type: TABLE; Schema: proxima_core; Owner: -
+--
+
+CREATE TABLE proxima_core.citation_mcp_call_io_v1 (
+    citation_mapping_id uuid NOT NULL
+);
+
+
+--
+-- Name: cited_mcp_call_io_v1; Type: TABLE; Schema: proxima_core; Owner: -
+--
+
+CREATE TABLE proxima_core.cited_mcp_call_io_v1 (
+    cited_object_id uuid NOT NULL,
+    byte_len bigint NOT NULL,
+    truncated boolean NOT NULL,
+    body bytea NOT NULL,
+    CONSTRAINT cited_mcp_call_io_v1_byte_len_chk CHECK ((byte_len >= 0))
 );
 
 
@@ -689,17 +690,23 @@ CREATE TABLE proxima_core.master_token_personality (
 
 
 --
--- Name: subject_personality; Type: TABLE; Schema: proxima_core; Owner: -
+-- Name: mcp_call_logged_v1; Type: TABLE; Schema: proxima_core; Owner: -
 --
 
-CREATE TABLE proxima_core.subject_personality (
-    owner_principal_kind proxima_core.owner_principal_kind NOT NULL,
-    owner_principal_id uuid NOT NULL,
-    owner_org_id uuid NOT NULL,
-    subject_principal_kind proxima_core.owner_principal_kind NOT NULL,
-    subject_principal_id uuid NOT NULL,
-    personality_instance_id uuid NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
+CREATE TABLE proxima_core.mcp_call_logged_v1 (
+    memory_id uuid NOT NULL,
+    tool_name text NOT NULL,
+    actor_oid text NOT NULL,
+    actor_upn text NOT NULL,
+    ok boolean NOT NULL,
+    error text,
+    latency_ms integer NOT NULL,
+    io_byte_len bigint NOT NULL,
+    io_truncated boolean NOT NULL,
+    io_content_hash bytea NOT NULL,
+    CONSTRAINT mcp_call_logged_v1_io_byte_len_chk CHECK ((io_byte_len >= 0)),
+    CONSTRAINT mcp_call_logged_v1_io_content_hash_len_chk CHECK ((octet_length(io_content_hash) = 32)),
+    CONSTRAINT mcp_call_logged_v1_latency_ms_chk CHECK ((latency_ms >= 0))
 );
 
 
@@ -725,10 +732,25 @@ CREATE TABLE proxima_core.memories (
     schema_version integer NOT NULL,
     personality_instance_id uuid NOT NULL,
     wake_chain_depth smallint DEFAULT 0 NOT NULL,
+    tombstoned_at timestamp with time zone,
     CONSTRAINT memories_kind_values_chk CHECK (((kind IS NULL) OR (kind = ANY (ARRAY['Abstraction'::proxima_core.entity_kind, 'Perspective'::proxima_core.entity_kind])))),
     CONSTRAINT memories_schema_version_positive_chk CHECK ((schema_version > 0)),
-    CONSTRAINT memories_variant_chk CHECK ((((event_id IS NOT NULL) AND (citation_mapping_id IS NOT NULL) AND (kind IS NULL) AND (text IS NULL) AND (operator_kind IS NULL) AND (model_id IS NULL) AND (prompt_version IS NULL) AND (supersedes IS NULL)) OR ((kind IS NOT NULL) AND (text IS NOT NULL) AND (operator_kind IS NOT NULL) AND (model_id IS NOT NULL) AND (prompt_version IS NOT NULL) AND (event_id IS NULL) AND (citation_mapping_id IS NULL)))),
+    CONSTRAINT memories_variant_chk CHECK ((((event_id IS NOT NULL) AND (kind IS NULL) AND (operator_kind IS NULL) AND (model_id IS NULL) AND (prompt_version IS NULL) AND (supersedes IS NULL)) OR ((kind IS NOT NULL) AND (text IS NOT NULL) AND (operator_kind IS NOT NULL) AND (model_id IS NOT NULL) AND (prompt_version IS NOT NULL) AND (event_id IS NULL) AND (citation_mapping_id IS NULL)))),
     CONSTRAINT memories_wake_chain_depth_chk CHECK ((wake_chain_depth >= 0))
+);
+
+
+--
+-- Name: owner_fact_retention; Type: TABLE; Schema: proxima_core; Owner: -
+--
+
+CREATE TABLE proxima_core.owner_fact_retention (
+    owner_principal_kind proxima_core.owner_principal_kind NOT NULL,
+    owner_principal_id uuid NOT NULL,
+    owner_org_id uuid NOT NULL,
+    retention_seconds bigint NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    CONSTRAINT owner_fact_retention_retention_seconds_check CHECK ((retention_seconds > 0))
 );
 
 
@@ -867,11 +889,18 @@ CREATE TABLE proxima_core.source_batches (
 
 
 --
--- Name: a2p_invocations a2p_invocations_pkey; Type: CONSTRAINT; Schema: proxima_core; Owner: -
+-- Name: subject_personality; Type: TABLE; Schema: proxima_core; Owner: -
 --
 
-ALTER TABLE ONLY proxima_core.a2p_invocations
-    ADD CONSTRAINT a2p_invocations_pkey PRIMARY KEY (owner_principal_kind, owner_principal_id, operator_id, prompt_version, model_id, personality_instance_id, context_hash, input_hash);
+CREATE TABLE proxima_core.subject_personality (
+    owner_principal_kind proxima_core.owner_principal_kind NOT NULL,
+    owner_principal_id uuid NOT NULL,
+    owner_org_id uuid NOT NULL,
+    subject_principal_kind proxima_core.owner_principal_kind NOT NULL,
+    subject_principal_id uuid NOT NULL,
+    personality_instance_id uuid NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
 
 
 --
@@ -896,6 +925,22 @@ ALTER TABLE ONLY proxima_core.citation_mappings
 
 ALTER TABLE ONLY proxima_core.citation_mappings
     ADD CONSTRAINT citation_mappings_pkey PRIMARY KEY (citation_mapping_id);
+
+
+--
+-- Name: citation_mcp_call_io_v1 citation_mcp_call_io_v1_pkey; Type: CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.citation_mcp_call_io_v1
+    ADD CONSTRAINT citation_mcp_call_io_v1_pkey PRIMARY KEY (citation_mapping_id);
+
+
+--
+-- Name: cited_mcp_call_io_v1 cited_mcp_call_io_v1_pkey; Type: CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.cited_mcp_call_io_v1
+    ADD CONSTRAINT cited_mcp_call_io_v1_pkey PRIMARY KEY (cited_object_id);
 
 
 --
@@ -995,11 +1040,11 @@ ALTER TABLE ONLY proxima_core.master_token_personality
 
 
 --
--- Name: subject_personality subject_personality_pkey; Type: CONSTRAINT; Schema: proxima_core; Owner: -
+-- Name: mcp_call_logged_v1 mcp_call_logged_v1_pkey; Type: CONSTRAINT; Schema: proxima_core; Owner: -
 --
 
-ALTER TABLE ONLY proxima_core.subject_personality
-    ADD CONSTRAINT subject_personality_pkey PRIMARY KEY (subject_principal_kind, subject_principal_id, owner_principal_kind, owner_principal_id, owner_org_id);
+ALTER TABLE ONLY proxima_core.mcp_call_logged_v1
+    ADD CONSTRAINT mcp_call_logged_v1_pkey PRIMARY KEY (memory_id);
 
 
 --
@@ -1016,6 +1061,14 @@ ALTER TABLE ONLY proxima_core.memories
 
 ALTER TABLE ONLY proxima_core.memories
     ADD CONSTRAINT memories_pkey PRIMARY KEY (memory_id);
+
+
+--
+-- Name: owner_fact_retention owner_fact_retention_pkey; Type: CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.owner_fact_retention
+    ADD CONSTRAINT owner_fact_retention_pkey PRIMARY KEY (owner_principal_kind, owner_principal_id, owner_org_id);
 
 
 --
@@ -1099,6 +1152,14 @@ ALTER TABLE ONLY proxima_core.source_batches
 
 
 --
+-- Name: subject_personality subject_personality_pkey; Type: CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.subject_personality
+    ADD CONSTRAINT subject_personality_pkey PRIMARY KEY (subject_principal_kind, subject_principal_id, owner_principal_kind, owner_principal_id, owner_org_id);
+
+
+--
 -- Name: cited_object_uploads_pending_expiry_idx; Type: INDEX; Schema: proxima_core; Owner: -
 --
 
@@ -1117,13 +1178,6 @@ CREATE INDEX cited_object_uploads_upload_id_idx ON proxima_core.cited_object_upl
 --
 
 CREATE INDEX goals_proposed_inbox_idx ON proxima_core.goals USING btree (owner_principal_kind, owner_principal_id, owner_org_id, created_at DESC) WHERE (state = 'Proposed'::proxima_core.goal_state);
-
-
---
--- Name: idx_a2p_invocations_owner_run; Type: INDEX; Schema: proxima_core; Owner: -
---
-
-CREATE INDEX idx_a2p_invocations_owner_run ON proxima_core.a2p_invocations USING btree (owner_principal_kind, owner_principal_id, run_at DESC);
 
 
 --
@@ -1316,27 +1370,11 @@ CREATE TRIGGER goals_transition_check BEFORE INSERT ON proxima_core.goals FOR EA
 
 
 --
--- Name: a2p_invocations a2p_invocations_head_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
---
-
-ALTER TABLE ONLY proxima_core.a2p_invocations
-    ADD CONSTRAINT a2p_invocations_head_memory_id_fkey FOREIGN KEY (head_memory_id) REFERENCES proxima_core.memories(memory_id);
-
-
---
 -- Name: change_event change_event_entity_goal_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
 --
 
 ALTER TABLE ONLY proxima_core.change_event
     ADD CONSTRAINT change_event_entity_goal_id_fkey FOREIGN KEY (entity_goal_id) REFERENCES proxima_core.goals(goal_id);
-
-
---
--- Name: change_event change_event_entity_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
---
-
-ALTER TABLE ONLY proxima_core.change_event
-    ADD CONSTRAINT change_event_entity_memory_id_fkey FOREIGN KEY (entity_memory_id) REFERENCES proxima_core.memories(memory_id);
 
 
 --
@@ -1353,6 +1391,22 @@ ALTER TABLE ONLY proxima_core.citation_mappings
 
 ALTER TABLE ONLY proxima_core.citation_mappings
     ADD CONSTRAINT citation_mappings_memory_fk FOREIGN KEY (memory_id) REFERENCES proxima_core.memories(memory_id) DEFERRABLE INITIALLY DEFERRED;
+
+
+--
+-- Name: citation_mcp_call_io_v1 citation_mcp_call_io_v1_citation_mapping_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.citation_mcp_call_io_v1
+    ADD CONSTRAINT citation_mcp_call_io_v1_citation_mapping_id_fkey FOREIGN KEY (citation_mapping_id) REFERENCES proxima_core.citation_mappings(citation_mapping_id);
+
+
+--
+-- Name: cited_mcp_call_io_v1 cited_mcp_call_io_v1_cited_object_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.cited_mcp_call_io_v1
+    ADD CONSTRAINT cited_mcp_call_io_v1_cited_object_id_fkey FOREIGN KEY (cited_object_id) REFERENCES proxima_core.cited_objects(cited_object_id);
 
 
 --
@@ -1452,11 +1506,11 @@ ALTER TABLE ONLY proxima_core.master_token_personality
 
 
 --
--- Name: subject_personality subject_personality_personality_instance_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+-- Name: mcp_call_logged_v1 mcp_call_logged_v1_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
 --
 
-ALTER TABLE ONLY proxima_core.subject_personality
-    ADD CONSTRAINT subject_personality_personality_instance_id_fkey FOREIGN KEY (personality_instance_id) REFERENCES proxima_core.personality(personality_instance_id);
+ALTER TABLE ONLY proxima_core.mcp_call_logged_v1
+    ADD CONSTRAINT mcp_call_logged_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memories(memory_id);
 
 
 --
@@ -1556,5 +1610,14 @@ ALTER TABLE ONLY proxima_core.source_batch_f2a
 
 
 --
+-- Name: subject_personality subject_personality_personality_instance_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.subject_personality
+    ADD CONSTRAINT subject_personality_personality_instance_id_fkey FOREIGN KEY (personality_instance_id) REFERENCES proxima_core.personality(personality_instance_id);
+
+
+--
 -- PostgreSQL database dump complete
 --
+

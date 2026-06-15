@@ -167,7 +167,6 @@ async fn personality_wake_schema_replaces_legacy_tables() {
                    'change_event',
                    'goals',
                    'source_batch_f2a',
-                   'a2p_invocations',
                    'personality',
                    'personality_wake_entries',
                    'personality_wake_cursor'
