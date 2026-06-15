@@ -70,6 +70,14 @@ async fn put_object_via_sdk(config: &S3RuntimeConfig, key: &str, body: &'static 
 
 #[tokio::test]
 async fn prepare_then_complete_then_read_roundtrip() {
+    // Opt-in integration test: needs a reachable S3/MinIO target. Skip
+    // (rather than panic) when PROXIMA_S3_* is unset so the default
+    // `cargo test --workspace` is green without standing up MinIO.
+    if !S3RuntimeConfig::present_in_env() {
+        eprintln!("skipped: PROXIMA_S3_* unset (set PROXIMA_S3_BUCKET/REGION + run MinIO to enable)");
+        return;
+    }
+
     let (pool, db_name) = fresh_pool().await;
     let config = s3_config_for_dev();
     let store = CitedBlobStore::new(pool.clone(), config.clone());
