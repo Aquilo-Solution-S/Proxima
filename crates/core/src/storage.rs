@@ -96,6 +96,16 @@ pub struct AuthorDerivedOutcome {
     pub edge_count: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmbeddingJobClaim {
+    pub owner: Owner,
+    pub entity_kind: EntityKind,
+    pub entity_id: MemoryId,
+    pub model_id: String,
+    pub embedding_version: i32,
+    pub attempts: i32,
+}
+
 #[async_trait::async_trait]
 pub trait Storage: Send + Sync {
     /// Atomic Fact materialization per docs/14 §`EventIngest`.
@@ -142,6 +152,37 @@ pub trait Storage: Send + Sync {
         model_id: &str,
         limit: usize,
     ) -> Result<Vec<crate::MemoryId>, StorageError>;
+
+    /// Atomically claim up to `limit` pending Fact embedding jobs for
+    /// `model_id`, oldest-first. Implementations must use row locks
+    /// with `SKIP LOCKED` so concurrent host drainers do not claim the
+    /// same job.
+    async fn claim_pending_embedding_jobs(
+        &self,
+        model_id: &str,
+        limit: i64,
+    ) -> Result<Vec<EmbeddingJobClaim>, StorageError>;
+
+    /// Mark a claimed embedding job complete. The embedding row is the
+    /// durable success record, so completed jobs are deleted.
+    async fn complete_embedding_job(&self, claim: &EmbeddingJobClaim) -> Result<(), StorageError>;
+
+    /// Mark a claimed embedding job failed for this attempt, resetting
+    /// it to `pending` until the retry cap is reached.
+    async fn fail_embedding_job(
+        &self,
+        claim: &EmbeddingJobClaim,
+        error: &str,
+    ) -> Result<(), StorageError>;
+
+    /// Owner-scoped bounded enqueue of pending jobs for Facts with
+    /// stored text and no current-model embedding row.
+    async fn enqueue_missing_embedding_jobs(
+        &self,
+        owner: &Owner,
+        model_id: &str,
+        limit: i64,
+    ) -> Result<u64, StorageError>;
 
     /// Atomic MCP-call activity materialization. One transaction writes
     /// the call Fact, inline I/O `CitedObject`, `CitationMapping`, typed
@@ -557,6 +598,35 @@ impl Storage for NoopStorage {
         _limit: usize,
     ) -> Result<Vec<crate::MemoryId>, StorageError> {
         Ok(Vec::new())
+    }
+
+    async fn claim_pending_embedding_jobs(
+        &self,
+        _model_id: &str,
+        _limit: i64,
+    ) -> Result<Vec<EmbeddingJobClaim>, StorageError> {
+        Err(StorageError::Internal("NoopStorage rejects writes".into()))
+    }
+
+    async fn complete_embedding_job(&self, _claim: &EmbeddingJobClaim) -> Result<(), StorageError> {
+        Err(StorageError::Internal("NoopStorage rejects writes".into()))
+    }
+
+    async fn fail_embedding_job(
+        &self,
+        _claim: &EmbeddingJobClaim,
+        _error: &str,
+    ) -> Result<(), StorageError> {
+        Err(StorageError::Internal("NoopStorage rejects writes".into()))
+    }
+
+    async fn enqueue_missing_embedding_jobs(
+        &self,
+        _owner: &Owner,
+        _model_id: &str,
+        _limit: i64,
+    ) -> Result<u64, StorageError> {
+        Err(StorageError::Internal("NoopStorage rejects writes".into()))
     }
 
     async fn write_goal_atomic(

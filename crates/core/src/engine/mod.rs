@@ -25,6 +25,7 @@ use crate::verbs::query::MemoryStore;
 use crate::verbs::schema::FlavorRegistryFrozen;
 use crate::{Owner, Principal, SetWakeEntriesRequest, SetWakeEntriesResponse, WakeEntryDraft};
 
+pub use ingest::EmbeddingDrainOutcome;
 pub use mcp_listener::{EngineMcpListener, RunningMcpListener};
 pub use memory_authoring::{AuthorDerivedEdgeInput, AuthorDerivedRequestInput};
 

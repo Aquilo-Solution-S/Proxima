@@ -11,7 +11,13 @@ use crate::verbs::event_ingest::{
 };
 use crate::verbs::persist_mcp_call::{McpCallLogInput, McpCallLogOutcome};
 use crate::verbs::schema::{PayloadKind, SchemaInfo};
-use crate::{MemoryId, Owner, Principal, SourceBatchId};
+use crate::{EntityKind, MemoryId, Owner, Principal, SourceBatchId};
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct EmbeddingDrainOutcome {
+    pub processed: usize,
+    pub failed: usize,
+}
 
 impl Engine {
     /// docs/14 §"`EventIngest`" — Owner-scoped write. Validates
@@ -260,13 +266,12 @@ impl Engine {
             .await
     }
 
-    /// Owner-scoped, idempotent backfill of missing Fact embeddings for
-    /// the current embedding client's model id.
+    /// Owner-scoped, idempotent backfill enqueue for missing Fact
+    /// embeddings under the current embedding client's model id.
     ///
     /// # Errors
     ///
-    /// Returns storage errors from listing/upserting or `Internal` for
-    /// embedding client failures.
+    /// Returns storage errors from enqueueing missing jobs.
     pub async fn backfill_fact_embeddings(
         &self,
         owner: &Owner,
@@ -275,16 +280,63 @@ impl Engine {
         let Some(client) = self.embed_client() else {
             return Ok(0);
         };
-        let missing = self
+        let limit = i64::try_from(limit)
+            .map_err(|_| StorageError::ConstraintViolation("limit too large".into()))?;
+        let enqueued = self
             .storage
-            .list_facts_missing_embedding(owner, client.model_id(), limit)
+            .enqueue_missing_embedding_jobs(owner, client.model_id(), limit)
             .await?;
-        let mut count = 0;
-        for memory_id in missing {
-            self.ensure_fact_embedding(owner, memory_id).await?;
-            count += 1;
+        usize::try_from(enqueued)
+            .map_err(|_| StorageError::Internal("enqueued count does not fit usize".into()))
+    }
+
+    /// Host-invoked sweep that drains durable pending Fact embedding jobs
+    /// for the currently active embedding model. This method does not
+    /// spawn a worker, timer, or model decision loop; the caller controls
+    /// invocation and `limit`.
+    ///
+    /// # Errors
+    ///
+    /// Returns storage errors from claiming or final job-state writes.
+    /// Per-job embedding failures are recorded on their job rows and
+    /// counted in the returned outcome.
+    pub async fn drain_embedding_jobs(
+        &self,
+        limit: usize,
+    ) -> Result<EmbeddingDrainOutcome, StorageError> {
+        let Some(client) = self.embed_client() else {
+            return Ok(EmbeddingDrainOutcome::default());
+        };
+        let limit = i64::try_from(limit)
+            .map_err(|_| StorageError::ConstraintViolation("limit too large".into()))?;
+        let claims = self
+            .storage
+            .claim_pending_embedding_jobs(client.model_id(), limit)
+            .await?;
+        let mut outcome = EmbeddingDrainOutcome::default();
+        for claim in claims {
+            outcome.processed += 1;
+            if claim.entity_kind != EntityKind::Fact {
+                outcome.failed += 1;
+                self.storage
+                    .fail_embedding_job(&claim, "embedding jobs are only valid for Facts")
+                    .await?;
+                continue;
+            }
+            match self
+                .ensure_fact_embedding(&claim.owner, claim.entity_id)
+                .await
+            {
+                Ok(()) => self.storage.complete_embedding_job(&claim).await?,
+                Err(err) => {
+                    outcome.failed += 1;
+                    self.storage
+                        .fail_embedding_job(&claim, &err.to_string())
+                        .await?;
+                }
+            }
         }
-        Ok(count)
+        Ok(outcome)
     }
 
     pub(super) fn validate_json_payload<'a>(

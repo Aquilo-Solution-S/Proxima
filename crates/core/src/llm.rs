@@ -110,6 +110,7 @@ pub trait AnthropicClient: Send + Sync + std::fmt::Debug {
 }
 
 pub const EMBEDDING_DIM: usize = 1024;
+pub const EMBEDDING_JOB_MAX_ATTEMPTS: i32 = 5;
 
 /// Embedding client surface. Concrete impls live outside core.
 #[async_trait]

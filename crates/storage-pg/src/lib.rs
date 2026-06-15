@@ -31,9 +31,9 @@ use proxima_core::verbs::query::{
     MemorySearchResult, QueryRequest, QueryResponse,
 };
 use proxima_core::{
-    AuthorDerivedOutcome, AuthorDerivedRequest, DerivedEdgeSpec, GoalId, MasterTokenPersonality,
-    MemoryDependency, MemoryId, Owner, Principal, SourceBatchId, Storage, StorageError,
-    StorageHandle,
+    AuthorDerivedOutcome, AuthorDerivedRequest, DerivedEdgeSpec, EmbeddingJobClaim, GoalId,
+    MasterTokenPersonality, MemoryDependency, MemoryId, Owner, Principal, SourceBatchId, Storage,
+    StorageError, StorageHandle,
 };
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::{PgPool, Postgres, Transaction};
@@ -224,6 +224,36 @@ impl Storage for PgStorage {
         limit: usize,
     ) -> Result<Vec<MemoryId>, StorageError> {
         verbs::fact_embeddings::list_facts_missing_embedding(&self.pool, owner, model_id, limit)
+            .await
+    }
+
+    async fn claim_pending_embedding_jobs(
+        &self,
+        model_id: &str,
+        limit: i64,
+    ) -> Result<Vec<EmbeddingJobClaim>, StorageError> {
+        verbs::fact_embeddings::claim_pending_embedding_jobs(&self.pool, model_id, limit).await
+    }
+
+    async fn complete_embedding_job(&self, claim: &EmbeddingJobClaim) -> Result<(), StorageError> {
+        verbs::fact_embeddings::complete_embedding_job(&self.pool, claim).await
+    }
+
+    async fn fail_embedding_job(
+        &self,
+        claim: &EmbeddingJobClaim,
+        error: &str,
+    ) -> Result<(), StorageError> {
+        verbs::fact_embeddings::fail_embedding_job(&self.pool, claim, error).await
+    }
+
+    async fn enqueue_missing_embedding_jobs(
+        &self,
+        owner: &Owner,
+        model_id: &str,
+        limit: i64,
+    ) -> Result<u64, StorageError> {
+        verbs::fact_embeddings::enqueue_missing_embedding_jobs(&self.pool, owner, model_id, limit)
             .await
     }
 
