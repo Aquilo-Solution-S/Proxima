@@ -15,7 +15,6 @@ use proxima_core::mcp::core_tools::{
     GoalDecomposeTool, GoalMarkAchievedTool, GoalModifyTool, GoalSetTool, GoalTransitionTool,
 };
 use proxima_core::mcp::{HandleTable, McpAuthorContext, McpToolCtx, OutputMode};
-use proxima_core::verbs::query::MemoryStore;
 use proxima_core::{
     AuthPath, AuthzContext, EntityKind, FlavorRegistry, FlavorRegistryFrozen, GoalId, McpTool,
     McpToolError, MemoryId, MemoryOperatorKind, OrgId, Owner, OwnerPrincipalKind,
@@ -651,8 +650,5 @@ fn engine_for_registry(
     registry: &Arc<FlavorRegistryFrozen>,
     pg: &proxima_storage_pg::PgStorage,
 ) -> Arc<Engine> {
-    Arc::new(
-        Engine::new((**registry).clone(), MemoryStore::new())
-            .with_storage(pg.clone().into_handle()),
-    )
+    Arc::new(Engine::new((**registry).clone()).with_storage(pg.clone().into_handle()))
 }

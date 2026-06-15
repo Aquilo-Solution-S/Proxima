@@ -9,7 +9,7 @@ use proxima_core::ids::{OrgId, SourceBatchId, UserId};
 use proxima_core::llm::{EMBEDDING_DIM, EmbeddingClient, LlmError};
 use proxima_core::owner::{Owner, Principal};
 use proxima_core::verbs::event_history::EventHistoryRequest;
-use proxima_core::verbs::query::{MemoryStore, QueryRequest};
+use proxima_core::verbs::query::QueryRequest;
 use proxima_core::verbs::schema::{FlavorRegistryFrozen, SchemaRequest};
 use proxima_core::{AuthPath, AuthzContext, McpCallLogInput, RoleSet};
 use uuid::Uuid;
@@ -26,7 +26,7 @@ fn fresh_owner() -> (Principal, Owner) {
 
 fn boot_engine(principal: Principal, owner: Owner) -> Engine {
     let _ = (principal, owner);
-    Engine::new(FlavorRegistryFrozen::new(), MemoryStore::new())
+    Engine::new(FlavorRegistryFrozen::new())
 }
 
 #[derive(Debug)]

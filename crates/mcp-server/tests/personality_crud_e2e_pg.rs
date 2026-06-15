@@ -10,7 +10,6 @@ use proxima_core::mcp::core_tools::add_wake_entry::AddWakeEntryTool;
 use proxima_core::mcp::core_tools::wake_entry_input::WakeEntryDraftInput;
 use proxima_core::mcp::{HandleTable, McpAuthorContext, McpToolCtx, OutputMode};
 use proxima_core::storage::Storage;
-use proxima_core::verbs::query::MemoryStore;
 use proxima_core::{
     AuthPath, AuthzContext, Engine, FlavorRegistry, InstantiatePersonalityRequest, McpTool, OrgId,
     Owner, Principal, UserId, WakeEntryAuthoredBy, WakeEntryGoalScope, WakeEntryTriggerKind,
@@ -48,10 +47,8 @@ async fn wake_token_audit_attributes_caller_personality() -> Result<(), Box<dyn 
     let root_memory_id = row.current_root_perspective_memory_id;
 
     // Build an Engine wired with the live PG storage so ctx.storage() works.
-    let engine = Arc::new(
-        Engine::new(FlavorRegistry::new().freeze(), MemoryStore::new())
-            .with_storage(Arc::new(pg.clone())),
-    );
+    let engine =
+        Arc::new(Engine::new(FlavorRegistry::new().freeze()).with_storage(Arc::new(pg.clone())));
 
     // Construct an McpToolCtx pretending we're a wake invocation on this personality.
     let pool = pg.pool().clone();

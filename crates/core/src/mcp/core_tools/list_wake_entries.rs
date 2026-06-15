@@ -89,7 +89,6 @@ mod tests {
     use crate::authz::{AuthPath, AuthzContext};
     use crate::mcp::HandleTable;
     use crate::mcp::OutputMode;
-    use crate::verbs::query::MemoryStore;
     use crate::{Engine, FlavorRegistry, McpAuthorContext, OrgId, Owner, Principal, UserId};
     use std::sync::Arc;
 
@@ -99,10 +98,7 @@ mod tests {
             principal: Principal::User(UserId::new(uuid::Uuid::now_v7())),
             org_id: OrgId::new(uuid::Uuid::now_v7()),
         };
-        let engine = Arc::new(Engine::new(
-            FlavorRegistry::new().freeze(),
-            MemoryStore::new(),
-        ));
+        let engine = Arc::new(Engine::new(FlavorRegistry::new().freeze()));
         let ctx = McpToolCtx {
             pool: sqlx::PgPool::connect_lazy("postgres://x/x").expect("lazy"),
             owner: owner.clone(),

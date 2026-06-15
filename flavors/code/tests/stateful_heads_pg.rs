@@ -20,7 +20,7 @@ use proxima_core::verbs::event_ingest::{
     Citation, CitationMappingHint, CitedObjectHint, EventDraft,
 };
 use proxima_core::verbs::query::{
-    MemoryStore, PersonalityRootFilter, QueryRequest, SupersessionStatus, TombstoneFilter,
+    PersonalityRootFilter, QueryRequest, SupersessionStatus, TombstoneFilter,
 };
 use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaInfo, SchemaTombstone};
 use proxima_core::{
@@ -223,7 +223,7 @@ async fn heads_only_returns_latest_per_natural_key() {
         let storage: Arc<dyn Storage> = Arc::new(pg.clone());
         let (_user, owner) = make_owner();
 
-        let engine = Engine::new(registry_for_test(), MemoryStore::new()).with_storage(storage);
+        let engine = Engine::new(registry_for_test()).with_storage(storage);
 
         let repo_id = Uuid::now_v7();
 
@@ -360,7 +360,7 @@ async fn heads_only_no_op_for_stateless_fact_schema() {
         let storage: Arc<dyn Storage> = Arc::new(pg.clone());
         let (_user, owner) = make_owner();
 
-        let engine = Engine::new(registry_for_test(), MemoryStore::new()).with_storage(storage);
+        let engine = Engine::new(registry_for_test()).with_storage(storage);
 
         // Two distinct commit Facts.
         for payload in [b"c1" as &[u8], b"c2"] {
@@ -422,7 +422,7 @@ async fn owner_snapshot_heads_only_folds_all_stateful_fact_schemas() {
         proxima_code::migrator().run(pg.pool()).await?;
         let storage: Arc<dyn Storage> = Arc::new(pg.clone());
         let (_user, owner) = make_owner();
-        let engine = Engine::new(registry_for_test(), MemoryStore::new()).with_storage(storage);
+        let engine = Engine::new(registry_for_test()).with_storage(storage);
         let repo_id = Uuid::now_v7();
 
         let a_v1 = seed_file_revision_state(
@@ -509,7 +509,7 @@ async fn present_only_excludes_tombstone_head_without_reviving_previous_present(
         let (_user, owner) = make_owner();
         let authz =
             proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System);
-        let engine = Engine::new(registry_for_test(), MemoryStore::new()).with_storage(storage);
+        let engine = Engine::new(registry_for_test()).with_storage(storage);
         let repo_id = Uuid::now_v7();
 
         let present = seed_file_revision_state(
@@ -607,7 +607,7 @@ async fn present_only_snapshot_excludes_edges_to_tombstoned_heads() {
         proxima_code::migrator().run(pg.pool()).await?;
         let storage: Arc<dyn Storage> = Arc::new(pg.clone());
         let (_user, owner) = make_owner();
-        let engine = Engine::new(registry_for_test(), MemoryStore::new()).with_storage(storage);
+        let engine = Engine::new(registry_for_test()).with_storage(storage);
         let repo_id = Uuid::now_v7();
         let active = seed_file_revision_state(
             pg.pool(),
@@ -672,7 +672,7 @@ async fn present_only_edge_id_hydration_excludes_edges_with_hidden_endpoint() {
         proxima_code::migrator().run(pg.pool()).await?;
         let storage: Arc<dyn Storage> = Arc::new(pg.clone());
         let (_user, owner) = make_owner();
-        let engine = Engine::new(registry_for_test(), MemoryStore::new()).with_storage(storage);
+        let engine = Engine::new(registry_for_test()).with_storage(storage);
         let repo_id = Uuid::now_v7();
         let active = seed_file_revision_state(
             pg.pool(),

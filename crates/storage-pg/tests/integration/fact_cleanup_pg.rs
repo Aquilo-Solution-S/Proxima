@@ -7,9 +7,7 @@ use proxima_core::llm::EMBEDDING_DIM;
 use proxima_core::verbs::event_ingest::{
     Citation, CitationMappingHint, CitedObjectHint, EventDraft,
 };
-use proxima_core::verbs::query::{
-    MemoryLineageDirection, MemoryLineageRequest, MemoryStore, QueryRequest,
-};
+use proxima_core::verbs::query::{MemoryLineageDirection, MemoryLineageRequest, QueryRequest};
 use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaInfo};
 use proxima_core::{
     AuthPath, AuthzContext, EntityKind, MemoryId, Owner, OwnerPrincipalKind, Principal, SchemaId,
@@ -104,7 +102,7 @@ async fn cleanup_due_facts_erases_fact_and_tombstones_direct_derivative()
     let authz = AuthzContext::single_owner(&owner, AuthPath::System);
     let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
     let storage: Arc<dyn Storage> = Arc::new(pg.clone());
-    let engine = Engine::new(registry, MemoryStore::new()).with_storage(storage);
+    let engine = Engine::new(registry).with_storage(storage);
 
     let ingest = engine
         .event_ingest(&authz, fresh_draft(owner.clone()))
@@ -166,7 +164,7 @@ async fn cleanup_due_facts_tombstones_transitive_derivatives()
     let authz = AuthzContext::single_owner(&owner, AuthPath::System);
     let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
     let storage: Arc<dyn Storage> = Arc::new(pg.clone());
-    let engine = Engine::new(registry, MemoryStore::new()).with_storage(storage);
+    let engine = Engine::new(registry).with_storage(storage);
 
     let ingest = engine
         .event_ingest(&authz, fresh_draft(owner.clone()))
@@ -214,7 +212,7 @@ async fn cleanup_due_facts_aggressively_tombstones_multi_support_derivative()
     let authz = AuthzContext::single_owner(&owner, AuthPath::System);
     let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
     let storage: Arc<dyn Storage> = Arc::new(pg.clone());
-    let engine = Engine::new(registry, MemoryStore::new()).with_storage(storage);
+    let engine = Engine::new(registry).with_storage(storage);
 
     let due_fact = engine
         .event_ingest(
@@ -268,7 +266,7 @@ async fn cleanup_due_facts_garbage_collects_cited_objects_by_reference_count()
     let authz = AuthzContext::single_owner(&owner, AuthPath::System);
     let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
     let storage: Arc<dyn Storage> = Arc::new(pg.clone());
-    let engine = Engine::new(registry, MemoryStore::new()).with_storage(storage);
+    let engine = Engine::new(registry).with_storage(storage);
 
     let first = engine
         .event_ingest(&authz, fresh_draft(owner.clone()))
@@ -314,7 +312,7 @@ async fn cleanup_due_facts_deletes_cited_object_sidecars_and_surfaces_s3_refs()
     let authz = AuthzContext::single_owner(&owner, AuthPath::System);
     let registry = FlavorRegistryFrozen::with_schemas(schemas_for_uploaded_blob_gc_test());
     let storage: Arc<dyn Storage> = Arc::new(pg.clone());
-    let engine = Engine::new(registry, MemoryStore::new()).with_storage(storage);
+    let engine = Engine::new(registry).with_storage(storage);
 
     let ingest = engine
         .event_ingest(&authz, fresh_draft(owner.clone()))

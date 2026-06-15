@@ -4,7 +4,6 @@ use proxima_core::storage::StorageError;
 use proxima_core::verbs::event_ingest::{
     EventDraft, InlineCitationMappingDraft, InlineCitedObjectDraft,
 };
-use proxima_core::verbs::query::MemoryStore;
 use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{
     AuthPath, AuthzContext, CitationMappingPayload, CitedObjectPayload, FactPayload,
@@ -106,7 +105,7 @@ fn engine() -> Engine {
     registry.add_cited_object_schema::<TestCitedObject>();
     registry.add_citation_mapping_schema::<TestCitationMapping>();
     registry.add_citation_mapping_schema::<MismatchedCitationMapping>();
-    Engine::new(registry.freeze(), MemoryStore::new())
+    Engine::new(registry.freeze())
 }
 
 fn draft(owner: &Owner) -> EventDraft {
