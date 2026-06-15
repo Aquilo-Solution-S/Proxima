@@ -26,7 +26,7 @@ Endpoint:
   http://127.0.0.1:31415/mcp
 
 Tools:
-  core/search_graph
+  core/search_memories
   core/open
   core/remember
   core/derive

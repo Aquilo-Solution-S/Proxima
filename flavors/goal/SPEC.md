@@ -66,7 +66,7 @@ Closed gaps:
 | Layer | Crate | Owns |
 |---|---|---|
 | Core | `crates/core/`, `crates/storage-pg/` | Goal entity, `GoalState`, `GoalAuthorship`, `GoalPayload` trait, `GoalWrite` verb |
-| Substrate flavor | `flavors/agent-memory/` | Substrate primitives only — `proxima_remember` / `_derive` / `_link` / `_search_graph` / `_open`. **No Goal-specific tools.** |
+| Substrate flavor | `flavors/agent-memory/` | Substrate primitives only — `proxima_remember` / `_derive` / `_link` / `_search_memories` / `_open`. **No Goal-specific tools.** |
 | Goal flavor | `flavors/goal/` *(new)* | `MotivatedBy` (+ future `Blocks`, `Refines`) RelationDescriptors; reference GoalPayload schemas; MCP tools `goal_propose` and (optional) `goal_accept` / `goal_modify` / `goal_decline`; flavor migrations |
 | Code flavor | `flavors/code/` | Unchanged in v1; can register `code_refactor_goal` payload later |
 Invariants preserved: 1, 7, 8, 11, 12, 13, 16, 20.
