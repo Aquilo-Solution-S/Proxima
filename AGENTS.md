@@ -114,7 +114,7 @@ Tools available to attached agents:
 
 | Tier | Tools |
 |---|---|
-| Substrate (always) | `proxima_search_graph`, `proxima_open`, `proxima_remember`, `proxima_derive`, `proxima_link` |
+| Substrate (always) | `proxima_search_memories`, `proxima_open`, `proxima_remember`, `proxima_derive`, `proxima_link` |
 | Code flavor | `code_search_chunks`, `code_search_commits`, `code_open_file_revision` |
 | Goal flavor | `goal_propose`, `goal_accept`, `goal_decline`, `goal_modify` |
 

@@ -159,20 +159,50 @@ async fn remember_then_search_round_trip() -> Result<(), Box<dyn std::error::Err
         "remember mints a Fact handle, got: {remembered}"
     );
 
+    let derived = call_tool(
+        &pg,
+        &owner,
+        &handles,
+        &frozen,
+        author.clone(),
+        "core/derive",
+        json!({
+            "kind": "Abstraction",
+            "title": "Atlas edge summary",
+            "body": "Visible node set edges should surface beside search results.",
+            "tags": ["atlas-derived"],
+            "source_handles": [remembered["handle"].clone()],
+            "model_id": "codex-test",
+            "idempotency_key": "tools-smoke-atlas-edge-derived"
+        }),
+    )
+    .await?;
+
     let searched = call_tool(
         &pg,
         &owner,
         &handles,
         &frozen,
         author,
-        "core/search_graph",
-        json!({"query": "atlas edges", "limit": 5}),
+        "core/search_memories",
+        json!({
+            "query": "atlas edges",
+            "mode": "lexical",
+            "limit": 5,
+            "kind": "Fact"
+        }),
     )
     .await?;
     assert_eq!(
-        searched["matches"][0]["handle"], remembered["handle"],
+        searched["memories"][0]["memory"], remembered["handle"],
         "search should reuse the session handle"
     );
+    assert_eq!(searched["memories"][0]["tags"], json!(["atlas"]));
+    assert_eq!(
+        searched["neighbor_edges"][0]["target"], remembered["handle"],
+        "search should include neighbor edges touching matched memories"
+    );
+    assert_eq!(searched["neighbor_edges"][0]["source"], derived["handle"]);
 
     drop(pg);
     drop_db(&db_name).await?;
@@ -382,8 +412,8 @@ async fn link_rejects_direct_fact_to_fact_interpretation() -> Result<(), Box<dyn
 }
 
 #[tokio::test]
-async fn search_graph_hybrid_returns_embedding_only_match() -> Result<(), Box<dyn std::error::Error>>
-{
+async fn search_memories_hybrid_returns_embedding_only_match()
+-> Result<(), Box<dyn std::error::Error>> {
     let Some((pg, db_name)) = fresh_pg().await else {
         return Ok(());
     };
@@ -416,11 +446,11 @@ async fn search_graph_hybrid_returns_embedding_only_match() -> Result<(), Box<dy
         &handles,
         &frozen,
         author.clone(),
-        "core/search_graph",
-        json!({"query": "galaxy", "limit": 5}),
+        "core/search_memories",
+        json!({"query": "galaxy", "mode": "lexical", "limit": 5}),
     )
     .await?;
-    assert!(lexical["matches"].as_array().expect("matches").is_empty());
+    assert!(lexical["memories"].as_array().expect("memories").is_empty());
 
     let engine = Arc::new(
         Engine::new(frozen_inner, MemoryStore::new())
@@ -434,11 +464,12 @@ async fn search_graph_hybrid_returns_embedding_only_match() -> Result<(), Box<dy
         &frozen,
         author,
         Some(engine),
-        "core/search_graph",
+        "core/search_memories",
         json!({"query": "galaxy", "mode": "hybrid", "limit": 5}),
     )
     .await?;
-    assert_eq!(hybrid["matches"][0]["handle"], remembered["handle"]);
+    assert_eq!(hybrid["memories"][0]["memory"], remembered["handle"]);
+    assert_eq!(hybrid["memories"][0]["tags"], json!(["hybrid"]));
 
     drop(pg);
     drop_db(&db_name).await?;
@@ -499,13 +530,13 @@ async fn prefixed_search_and_open_emit_author_and_keep_company_shared_visibility
         &owner,
         &frozen,
         author_ctx().with_self_perspective(personality_b_root),
-        "core/search_graph",
-        json!({"query": "alpha needle", "limit": 5}),
+        "core/search_memories",
+        json!({"query": "alpha needle", "mode": "lexical", "limit": 5}),
     )
     .await?;
-    assert_eq!(search["matches"][0]["handle"], authored_handle);
+    assert_eq!(search["memories"][0]["memory"], authored_handle);
     assert_eq!(
-        search["matches"][0]["authoring_personality_instance_id"],
+        search["memories"][0]["authoring_personality_instance_id"],
         format!("I:{}", personality_a.into_inner())
     );
 

@@ -8,6 +8,8 @@ use crate::mcp::{McpToolCtx, McpToolError};
 use crate::verbs::query::{EntityKind, MemorySearchRequest, SearchMode};
 use crate::{McpTool, SchemaId};
 
+use super::memory::search::{NeighborEdge, load_graph_payloads, neighbor_edges};
+
 #[derive(Debug, Default)]
 pub struct SearchMemoriesTool;
 
@@ -35,6 +37,10 @@ fn default_mode() -> SearchMemoriesMode {
 
 fn default_limit() -> u32 {
     8
+}
+
+fn default_include_neighbor_edges() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
@@ -82,12 +88,18 @@ pub struct SearchMemoriesArgs {
         description = "Optional reader personality id/handle for Abstraction/Perspective visibility. Omit for no-reader owner-visible semantics."
     )]
     pub reader_personality: Option<String>,
+    #[serde(default = "default_include_neighbor_edges")]
+    #[schemars(
+        description = "Include neighbor edges touching matched memories. Defaults to true; set false for lean results."
+    )]
+    pub include_neighbor_edges: bool,
 }
 
 #[derive(Debug, Serialize)]
 pub struct SearchMemoriesOutput {
     pub mode: String,
     pub memories: Vec<SearchMemoryOutput>,
+    pub neighbor_edges: Vec<NeighborEdge>,
 }
 
 #[derive(Debug, Serialize)]
@@ -102,6 +114,7 @@ pub struct SearchMemoryOutput {
     pub lexical_score: f32,
     pub similarity_score: f32,
     pub wake_chain_depth: u16,
+    pub tags: Vec<String>,
 }
 
 impl McpTool for SearchMemoriesTool {
@@ -164,9 +177,20 @@ impl McpTool for SearchMemoriesTool {
             let rows = storage
                 .search_memories(&req, ctx.registry.search_projections())
                 .await?;
+            let memory_ids: Vec<_> = rows.iter().map(|row| row.memory_id.into_inner()).collect();
+            let payloads = load_graph_payloads(&ctx, &memory_ids).await?;
+            let neighbor_edges = if args.include_neighbor_edges {
+                neighbor_edges(&ctx, &memory_ids).await?
+            } else {
+                Vec::new()
+            };
             let memories = rows
                 .into_iter()
                 .map(|row| {
+                    let tags = payloads
+                        .get(&row.memory_id.into_inner())
+                        .and_then(|payload| payload.tags.clone())
+                        .unwrap_or_default();
                     let class = super::get_memory::memory_class(row.kind.as_str())?;
                     Ok(SearchMemoryOutput {
                         memory: ctx.format_memory_with_class(row.memory_id, class),
@@ -182,6 +206,7 @@ impl McpTool for SearchMemoriesTool {
                         lexical_score: row.lexical_score,
                         similarity_score: row.similarity_score,
                         wake_chain_depth: row.wake_chain_depth.into_inner(),
+                        tags,
                     })
                 })
                 .collect::<Result<Vec<_>, McpToolError>>()?;
@@ -189,6 +214,7 @@ impl McpTool for SearchMemoriesTool {
             Ok(SearchMemoriesOutput {
                 mode: format!("{mode:?}").to_lowercase(),
                 memories,
+                neighbor_edges,
             })
         })
     }

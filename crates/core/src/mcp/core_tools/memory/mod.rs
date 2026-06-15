@@ -9,4 +9,4 @@ pub use derive::DeriveTool;
 pub use link::LinkTool;
 pub use record_utterance::RecordUtteranceTool;
 pub use remember::RememberTool;
-pub use search::{OpenTool, SearchGraphTool};
+pub use search::OpenTool;
