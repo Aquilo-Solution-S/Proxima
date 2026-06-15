@@ -6,49 +6,16 @@
 
 use std::sync::Arc;
 
-use async_trait::async_trait;
-use proxima_code::{build_engine_with, migrator, register_repo};
-use proxima_core::llm::{EmbeddingClient, LlmError};
+mod common;
+
+use common::{migrated_db, test_owner};
+use proxima_code::{build_engine_with, register_repo};
 use proxima_core::personality::{InstantiatePersonalityRequest, PersonalityInstanceId};
-use proxima_core::{
-    AuthPath, AuthzContext, CORE_INSPIRES_RELATION, OrgId, Owner, Principal, UserId,
-};
-use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
+use proxima_core::test_fixtures::ConstantEmbedding;
+use proxima_core::{AuthPath, AuthzContext, CORE_INSPIRES_RELATION, Owner, Principal};
+use proxima_pg_testkit::drop_db;
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
-
-async fn migrated_db() -> Option<(String, PgStorage)> {
-    let db_name = unique_db_name("proxima_test");
-    create_db(&db_name).await.expect("PG required for tests");
-    let url = db_url(&db_name);
-    let pg = PgStorage::connect(&url).await.expect("connect test db");
-    pg.run_migrations().await.expect("core migrations");
-    migrator().run(pg.pool()).await.expect("code migrations");
-    Some((db_name, pg))
-}
-
-fn test_owner() -> Owner {
-    Owner {
-        principal: Principal::User(UserId::new(Uuid::now_v7())),
-        org_id: OrgId::new(Uuid::now_v7()),
-    }
-}
-
-#[derive(Debug)]
-struct FakeEmbedding;
-
-#[async_trait]
-impl EmbeddingClient for FakeEmbedding {
-    async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
-        Ok(vec![0.0; 8])
-    }
-    fn model_id(&self) -> &str {
-        "fake-embed"
-    }
-    fn dim(&self) -> usize {
-        8
-    }
-}
 
 async fn author_inspires_edge(
     pg: &PgStorage,
@@ -155,9 +122,7 @@ async fn self_perspective_for(
 
 #[tokio::test(flavor = "multi_thread")]
 async fn inspires_edge_targets_only_intended_engineer_instance() {
-    let Some((db, pg)) = migrated_db().await else {
-        return;
-    };
+    let (db, pg) = migrated_db().await;
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = test_owner();
@@ -170,8 +135,8 @@ async fn inspires_edge_targets_only_intended_engineer_instance() {
         // accept its inert personality row but won't author commit-fact events
         // until needed.
         let authz = AuthzContext::single_owner(&owner, AuthPath::System);
-        let engine =
-            build_engine_with(pg.clone(), |_registry| {}).with_embed(Arc::new(FakeEmbedding));
+        let engine = build_engine_with(pg.clone(), |_registry| {})
+            .with_embed(Arc::new(ConstantEmbedding::zero("fake-embed")));
 
         // Provision Alice + Bob (two engineer instances).
         let alice = engine

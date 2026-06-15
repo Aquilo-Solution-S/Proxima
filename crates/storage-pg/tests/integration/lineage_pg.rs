@@ -9,9 +9,7 @@ use uuid::Uuid;
 #[tokio::test]
 async fn walk_memory_lineage_follows_provenance_and_supersession_by_owner()
 -> Result<(), Box<dyn std::error::Error>> {
-    let Some((pg, db_name)) = fresh_pg().await else {
-        return Ok(());
-    };
+    let (pg, db_name) = fresh_pg().await;
     pg.run_migrations().await?;
 
     let owner = owner_fixture();

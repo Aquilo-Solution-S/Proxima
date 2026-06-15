@@ -1,10 +1,10 @@
-use proxima_code::{CommitV1, TestRequestV1, erase_repo, migrator, register_repo};
+mod common;
+
+use common::{migrated_db, test_owner};
+use proxima_code::{CommitV1, TestRequestV1, erase_repo, register_repo};
 use proxima_core::verbs::schema::{PayloadKind, SchemaInfo};
-use proxima_core::{
-    FactPayload, OrgId, Owner, OwnerPrincipalKind, Principal, SchemaId, SchemaVersion, UserId,
-};
-use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
-use proxima_storage_pg::PgStorage;
+use proxima_core::{FactPayload, Owner, OwnerPrincipalKind, Principal, SchemaId, SchemaVersion};
+use proxima_pg_testkit::drop_db;
 use uuid::Uuid;
 
 fn owner_principal(owner: &Owner) -> (OwnerPrincipalKind, Uuid) {
@@ -120,19 +120,10 @@ async fn count_rows(pool: &sqlx::PgPool, sql: &str, id: Uuid) -> Result<i64, sql
 
 #[tokio::test]
 async fn erase_repo_deletes_registry_discovered_fact_sidecars() {
-    let db_name = unique_db_name("proxima_test");
-    create_db(&db_name).await.expect("PG required for tests");
-    let url = db_url(&db_name);
+    let (db_name, pg) = migrated_db().await;
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_migrations().await?;
-        migrator().run(pg.pool()).await?;
-
-        let owner = Owner {
-            principal: Principal::User(UserId::new(Uuid::now_v7())),
-            org_id: OrgId::new(Uuid::now_v7()),
-        };
+        let owner = test_owner();
         let repo_id = Uuid::now_v7();
         register_repo(
             pg.pool(),

@@ -115,9 +115,7 @@ fn assert_admin_denied(err: &proxima_core::mcp::McpToolError) {
 #[tokio::test]
 async fn add_wake_entry_requires_admin_and_preserves_storage_on_denial()
 -> Result<(), Box<dyn std::error::Error>> {
-    let Some((pg, db_name)) = fresh_pg().await else {
-        return Ok(());
-    };
+    let (pg, db_name) = fresh_pg().await;
     pg.run_migrations().await?;
     let owner = owner_fixture();
     let pid = instantiate(&pg, &owner, "add gate").await?;
@@ -176,9 +174,7 @@ async fn add_wake_entry_requires_admin_and_preserves_storage_on_denial()
 #[tokio::test]
 async fn update_wake_entry_requires_admin_and_preserves_storage_on_denial()
 -> Result<(), Box<dyn std::error::Error>> {
-    let Some((pg, db_name)) = fresh_pg().await else {
-        return Ok(());
-    };
+    let (pg, db_name) = fresh_pg().await;
     pg.run_migrations().await?;
     let owner = owner_fixture();
     let pid = instantiate(&pg, &owner, "update gate").await?;
@@ -230,9 +226,7 @@ async fn update_wake_entry_requires_admin_and_preserves_storage_on_denial()
 #[tokio::test]
 async fn remove_wake_entry_requires_admin_and_preserves_storage_on_denial()
 -> Result<(), Box<dyn std::error::Error>> {
-    let Some((pg, db_name)) = fresh_pg().await else {
-        return Ok(());
-    };
+    let (pg, db_name) = fresh_pg().await;
     pg.run_migrations().await?;
     let owner = owner_fixture();
     let pid = instantiate(&pg, &owner, "remove gate").await?;
@@ -276,9 +270,7 @@ async fn remove_wake_entry_requires_admin_and_preserves_storage_on_denial()
 #[tokio::test]
 async fn set_read_scope_requires_admin_and_preserves_storage_on_denial()
 -> Result<(), Box<dyn std::error::Error>> {
-    let Some((pg, db_name)) = fresh_pg().await else {
-        return Ok(());
-    };
+    let (pg, db_name) = fresh_pg().await;
     pg.run_migrations().await?;
     let owner = owner_fixture();
     let reader = instantiate(&pg, &owner, "reader").await?;

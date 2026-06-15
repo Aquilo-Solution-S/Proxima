@@ -6,7 +6,7 @@ use proxima_blob_s3::{
     CitedBlobReadUrlTs, CitedBlobStore, CitedBlobUploadCompleteTs, CitedBlobUploadPrepareTs,
     S3RuntimeConfig,
 };
-use proxima_core::{OrgId, Owner, Principal, UserId};
+use proxima_core::test_fixtures::owner_fixture;
 use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
@@ -39,13 +39,6 @@ fn s3_config_for_dev() -> S3RuntimeConfig {
     }
 }
 
-fn owner_fixture() -> Owner {
-    Owner {
-        principal: Principal::User(UserId::new(Uuid::now_v7())),
-        org_id: OrgId::new(Uuid::now_v7()),
-    }
-}
-
 async fn put_object_via_sdk(config: &S3RuntimeConfig, key: &str, body: &'static [u8]) {
     let mut loader =
         aws_config::defaults(BehaviorVersion::latest()).region(Region::new(config.region.clone()));
@@ -74,7 +67,9 @@ async fn prepare_then_complete_then_read_roundtrip() {
     // (rather than panic) when PROXIMA_S3_* is unset so the default
     // `cargo test --workspace` is green without standing up MinIO.
     if !S3RuntimeConfig::present_in_env() {
-        eprintln!("skipped: PROXIMA_S3_* unset (set PROXIMA_S3_BUCKET/REGION + run MinIO to enable)");
+        eprintln!(
+            "skipped: PROXIMA_S3_* unset (set PROXIMA_S3_BUCKET/REGION + run MinIO to enable)"
+        );
         return;
     }
 

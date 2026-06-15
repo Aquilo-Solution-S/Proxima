@@ -13,42 +13,16 @@
 //! 5. Polyglot file (Markdown): file-revision-v1 head Present; chunk
 //!    output is fallback (chunk_type="file"), still indexed.
 
-use std::path::Path;
-use std::process::Command;
+mod common;
 
-use proxima_code::{
-    CodeChunkV1, FileRevisionV1, FileState, LocalGitSource, build_engine, migrator,
-};
+use common::{git, migrated_db, test_owner, write_file};
+use proxima_code::{CodeChunkV1, FileRevisionV1, FileState, LocalGitSource, build_engine};
 use proxima_core::verbs::query::{PersonalityRootFilter, QueryRequest, SupersessionStatus};
-use proxima_core::{FactPayload, OrgId, Owner, Principal, SchemaId, SchemaVersion, UserId};
-use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
-use proxima_storage_pg::PgStorage;
+use proxima_core::{FactPayload, Owner, Principal, SchemaId, SchemaVersion};
+use proxima_pg_testkit::drop_db;
 use sqlx::Row;
 use tempfile::TempDir;
 use uuid::Uuid;
-
-fn git(repo: &Path, args: &[&str]) {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(repo)
-        .args(args)
-        .output()
-        .expect("git command");
-    assert!(
-        out.status.success(),
-        "git {:?} failed: {}",
-        args,
-        String::from_utf8_lossy(&out.stderr)
-    );
-}
-
-fn write_file(repo: &Path, path: &str, contents: &str) {
-    let full = repo.join(path);
-    if let Some(parent) = full.parent() {
-        std::fs::create_dir_all(parent).expect("create parent dir");
-    }
-    std::fs::write(&full, contents).expect("write file");
-}
 
 fn fixture_repo() -> TempDir {
     let dir = TempDir::new().expect("tempdir");
@@ -159,20 +133,10 @@ async fn fetch_file_revision_state(
 
 #[tokio::test]
 async fn local_git_source_full_cycle() {
-    let db_name = unique_db_name("proxima_test");
-    create_db(&db_name).await.expect("PG required for tests");
-    let url = db_url(&db_name);
+    let (db_name, pg) = migrated_db().await;
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_migrations().await?;
-        migrator().run(pg.pool()).await?;
-
-        let user = UserId::new(Uuid::now_v7());
-        let owner = Owner {
-            principal: Principal::User(user),
-            org_id: OrgId::new(Uuid::now_v7()),
-        };
+        let owner = test_owner();
 
         let engine = build_engine(pg.clone());
 
@@ -406,20 +370,10 @@ async fn local_git_source_full_cycle() {
 async fn polyglot_markdown_emits_file_revision_and_fallback_chunks() {
     // Subset of the above: tighter assertion on FileState::Present
     // for a markdown-only fixture.
-    let db_name = unique_db_name("proxima_test");
-    create_db(&db_name).await.expect("PG required for tests");
-    let url = db_url(&db_name);
+    let (db_name, pg) = migrated_db().await;
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_migrations().await?;
-        migrator().run(pg.pool()).await?;
-
-        let user = UserId::new(Uuid::now_v7());
-        let owner = Owner {
-            principal: Principal::User(user),
-            org_id: OrgId::new(Uuid::now_v7()),
-        };
+        let owner = test_owner();
         let _engine = build_engine(pg.clone());
 
         let dir = TempDir::new()?;
