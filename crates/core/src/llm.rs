@@ -1,14 +1,6 @@
-//! Model-client contracts used by personality dispatch.
-//!
-//! The substrate owns the typed Anthropic message vocabulary for
-//! wake tool loops. Runtime model implementations live outside core,
-//! except for the thin Anthropic HTTP client in [`anthropic_http`].
+//! Model-client contracts used by substrate provenance.
 
 use async_trait::async_trait;
-
-pub mod anthropic_http;
-#[cfg(any(test, feature = "test-fixtures"))]
-pub mod scripted;
 
 #[derive(Debug, thiserror::Error)]
 pub enum LlmError {
@@ -22,90 +14,7 @@ pub enum LlmError {
     Internal(String),
 }
 
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct MessagesRequest {
-    pub model: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub system: Option<String>,
-    pub messages: Vec<Message>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub tools: Vec<ToolDefinition>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tool_choice: Option<ToolChoice>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_tokens: Option<u32>,
-}
-
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct MessagesResponse {
-    pub id: String,
-    pub model: String,
-    pub role: MessageRole,
-    pub stop_reason: Option<String>,
-    pub content: Vec<ContentBlock>,
-    pub usage: Usage,
-}
-
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct Message {
-    pub role: MessageRole,
-    pub content: Vec<ContentBlock>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum MessageRole {
-    User,
-    Assistant,
-}
-
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum ContentBlock {
-    Text {
-        text: String,
-    },
-    ToolUse {
-        id: String,
-        name: String,
-        input: serde_json::Value,
-    },
-    ToolResult {
-        tool_use_id: String,
-        content: serde_json::Value,
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        is_error: bool,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct ToolDefinition {
-    pub name: String,
-    pub description: String,
-    pub input_schema: serde_json::Value,
-}
-
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum ToolChoice {
-    Auto,
-    Any,
-    Tool { name: String },
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct Usage {
-    #[serde(default)]
-    pub input_tokens: u32,
-    #[serde(default)]
-    pub output_tokens: u32,
-}
-
-#[async_trait]
 pub trait AnthropicClient: Send + Sync + std::fmt::Debug {
-    async fn messages_create(&self, request: MessagesRequest)
-    -> Result<MessagesResponse, LlmError>;
-
     fn model_id(&self) -> &str;
 }
 
