@@ -4,7 +4,7 @@ use proxima_core::{MemoryId, Owner, SchemaId, StorageError};
 use sqlx::PgPool;
 
 use crate::error::map_err;
-use crate::verbs::consolidate::{load_memory_by_id, owner_columns};
+use crate::verbs::consolidate::load_memory_by_id;
 
 pub(crate) async fn facts_citing_object(
     pool: &PgPool,
@@ -12,7 +12,7 @@ pub(crate) async fn facts_citing_object(
     cited_object_id: uuid::Uuid,
     sidecars: &[SidecarSpec],
 ) -> Result<Vec<MemorySnapshot>, StorageError> {
-    let (owner_kind, owner_principal_id, _owner_org_id) = owner_columns(owner);
+    let (owner_kind, owner_principal_id, _owner_org_id) = owner.columns();
     let memory_ids: Vec<uuid::Uuid> = sqlx::query_scalar(
         "SELECT m.memory_id
            FROM proxima_core.memories m
@@ -54,7 +54,7 @@ pub(crate) async fn citation_of_fact(
     owner: &Owner,
     fact_memory_id: MemoryId,
 ) -> Result<Option<FactCitationReadback>, StorageError> {
-    let (owner_kind, owner_principal_id, _owner_org_id) = owner_columns(owner);
+    let (owner_kind, owner_principal_id, _owner_org_id) = owner.columns();
     let row: Option<(uuid::Uuid, String, uuid::Uuid, String)> = sqlx::query_as(
         "SELECT cm.citation_mapping_id,
                 cm.schema_id AS mapping_schema_id,

@@ -5,7 +5,6 @@ use proxima_core::personality::{
 use proxima_core::{Owner, StorageError};
 use sqlx::{PgPool, Row};
 
-use super::rows::owner_columns;
 use crate::error::map_err;
 
 async fn replace_wake_entries_in_tx(
@@ -13,7 +12,7 @@ async fn replace_wake_entries_in_tx(
     req: &SetWakeEntriesRequest,
 ) -> Result<SetWakeEntriesResponse, StorageError> {
     let owner = req.owner();
-    let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(&owner);
+    let (owner_kind, owner_principal_id, owner_org_id) = owner.columns();
     let result = sqlx::query(
         "UPDATE proxima_core.personality_wake_entries
          SET tombstoned_at = now(), updated_at = now()
@@ -75,7 +74,7 @@ async fn read_wake_entries_in_tx(
     owner: &Owner,
     pid: PersonalityInstanceId,
 ) -> Result<Vec<WakeEntryDraft>, StorageError> {
-    let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(owner);
+    let (owner_kind, owner_principal_id, owner_org_id) = owner.columns();
     let rows = sqlx::query(
         "SELECT wake_entry_id, trigger_kind, trigger_id, label, enabled,
                 authored_by, probability_promille, goal_scope, instructions
@@ -120,7 +119,7 @@ pub async fn set_wake_entries_within(
     personality_instance_id: PersonalityInstanceId,
     mutate: proxima_core::WakeEntriesMutator,
 ) -> Result<SetWakeEntriesResponse, StorageError> {
-    let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(owner);
+    let (owner_kind, owner_principal_id, owner_org_id) = owner.columns();
     let mut tx = pool.begin().await.map_err(map_err)?;
 
     // Lock the personality row to serialise concurrent granular ops.
@@ -165,7 +164,7 @@ pub async fn tombstone_personality(
     req: &proxima_core::TombstonePersonalityRequest,
 ) -> Result<proxima_core::TombstonePersonalityResponse, StorageError> {
     let owner = req.owner();
-    let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(&owner);
+    let (owner_kind, owner_principal_id, owner_org_id) = owner.columns();
     let mut tx = pool.begin().await.map_err(map_err)?;
 
     let result = sqlx::query(
@@ -230,7 +229,7 @@ async fn upsert_wake_entry(
     owner: &Owner,
     entry: &WakeEntryDraft,
 ) -> Result<(), StorageError> {
-    let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(owner);
+    let (owner_kind, owner_principal_id, owner_org_id) = owner.columns();
     sqlx::query(
         "INSERT INTO proxima_core.personality_wake_entries
             (owner_principal_kind, owner_principal_id, owner_org_id,

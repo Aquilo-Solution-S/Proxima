@@ -259,15 +259,12 @@ impl EventDraft {
         let mut hasher = blake3::Hasher::new();
         hasher.update(self.source_id.as_str().as_bytes());
         hasher.update(b"\x00");
-        let (kind, id) = match &owner.principal {
-            Principal::User(u) => ("User", u.into_inner()),
-            Principal::Group(g) => ("Group", g.into_inner()),
-        };
-        hasher.update(kind.as_bytes());
+        let (kind, id, org_id) = owner.columns();
+        hasher.update(kind.as_str().as_bytes());
         hasher.update(b"\x00");
         hasher.update(id.as_bytes());
         hasher.update(b"\x00");
-        hasher.update(owner.org_id.into_inner().as_bytes());
+        hasher.update(org_id.as_bytes());
         hasher.update(b"\x00");
         hasher.update(&self.payload);
         EventId::new(*hasher.finalize().as_bytes())

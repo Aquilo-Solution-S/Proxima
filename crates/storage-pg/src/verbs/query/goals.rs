@@ -4,6 +4,8 @@ use proxima_core::verbs::query::{GoalRow, QueryRequest, SupersessionStatus};
 use proxima_core::{OwnerPrincipalKind, StorageError};
 use sqlx::PgPool;
 
+use crate::error::internal;
+
 use super::rows::{GoalRowDb, goal_row_from_db};
 
 pub(super) async fn query_goals(
@@ -63,9 +65,6 @@ pub(super) async fn query_goals(
     if !goal_ids.is_empty() {
         q = q.bind(goal_ids);
     }
-    let rows = q
-        .fetch_all(pool)
-        .await
-        .map_err(|e| StorageError::Internal(e.to_string()))?;
+    let rows = q.fetch_all(pool).await.map_err(internal)?;
     rows.into_iter().map(goal_row_from_db).collect()
 }
