@@ -9,11 +9,12 @@ use proxima_core::verbs::schema::{
     MemorySearchProjection, MemorySearchProjectionField, PayloadKind,
 };
 use proxima_core::{
-    MemoryId, OwnerPrincipalKind, PersonalityInstanceId, Principal, SchemaId,
-    SearchProjectionColumnKind, StorageError, WakeChainDepth,
+    MemoryId, PersonalityInstanceId, SchemaId, SearchProjectionColumnKind, StorageError,
+    WakeChainDepth,
 };
 use sqlx::PgPool;
 
+use crate::error::internal;
 use crate::pg_ident::PgIdent;
 
 #[derive(Debug)]
@@ -222,9 +223,7 @@ async fn run_lexical(
     }
     q = bind_filter_params(q, req);
     q = q.bind(req.query.clone());
-    q.fetch_all(pool)
-        .await
-        .map_err(|e| StorageError::Internal(e.to_string()))
+    q.fetch_all(pool).await.map_err(internal)
 }
 
 async fn run_semantic(
@@ -290,9 +289,7 @@ async fn run_semantic(
     q = bind_filter_params(q, req);
     q = q.bind(crate::pgvector::literal(query_embedding));
     q = q.bind(model_id.clone());
-    q.fetch_all(pool)
-        .await
-        .map_err(|e| StorageError::Internal(e.to_string()))
+    q.fetch_all(pool).await.map_err(internal)
 }
 
 fn common_candidates_sql(
@@ -536,10 +533,7 @@ fn bind_common<'q>(
     mut q: sqlx::query::QueryAs<'q, sqlx::Postgres, SearchRow, sqlx::postgres::PgArguments>,
     req: &'q MemorySearchRequest,
 ) -> sqlx::query::QueryAs<'q, sqlx::Postgres, SearchRow, sqlx::postgres::PgArguments> {
-    let (owner_kind, owner_principal_id) = match &req.principal {
-        Principal::User(user) => (OwnerPrincipalKind::User, user.into_inner()),
-        Principal::Group(group) => (OwnerPrincipalKind::Group, group.into_inner()),
-    };
+    let (owner_kind, owner_principal_id) = req.principal.columns();
     q = q.bind(owner_kind);
     q = q.bind(owner_principal_id);
     q

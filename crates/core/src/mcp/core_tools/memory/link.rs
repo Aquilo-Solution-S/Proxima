@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{AGENT_LINK_RELATION, AgentLinkV1};
 
-use super::util::{map_storage, memory_kind_for_edge, owner_columns};
+use super::util::{map_storage, memory_kind_for_edge};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct LinkArgs {
@@ -112,7 +112,7 @@ async fn load_kind(
     ctx: &McpToolCtx,
     memory_id: uuid::Uuid,
 ) -> Result<Option<crate::EntityKind>, McpToolError> {
-    let (owner_kind, owner_principal_id, _) = owner_columns(&ctx.owner);
+    let (owner_kind, owner_principal_id, _) = ctx.owner.columns();
     sqlx::query_scalar(
         "SELECT kind
          FROM proxima_core.memories
@@ -134,7 +134,7 @@ async fn load_latest_link_edge_id(
     source_id: uuid::Uuid,
     target_id: uuid::Uuid,
 ) -> Result<uuid::Uuid, McpToolError> {
-    let (owner_kind, owner_principal_id, _) = owner_columns(&ctx.owner);
+    let (owner_kind, owner_principal_id, _) = ctx.owner.columns();
     sqlx::query_scalar(
         "SELECT edge_id
          FROM proxima_core.edges

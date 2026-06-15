@@ -23,6 +23,36 @@ pub enum Principal {
     Group(GroupId),
 }
 
+impl Principal {
+    #[must_use]
+    pub fn columns(&self) -> (OwnerPrincipalKind, uuid::Uuid) {
+        match self {
+            Self::User(user) => (OwnerPrincipalKind::User, user.into_inner()),
+            Self::Group(group) => (OwnerPrincipalKind::Group, group.into_inner()),
+        }
+    }
+}
+
+impl Owner {
+    #[must_use]
+    pub fn columns(&self) -> (OwnerPrincipalKind, uuid::Uuid, uuid::Uuid) {
+        let (kind, principal_id) = self.principal.columns();
+        (kind, principal_id, self.org_id.into_inner())
+    }
+
+    #[must_use]
+    pub fn with_uuid(
+        principal_kind: OwnerPrincipalKind,
+        principal_id: uuid::Uuid,
+        org_id: uuid::Uuid,
+    ) -> Self {
+        Self {
+            principal: principal_kind.with_uuid(principal_id),
+            org_id: OrgId::new(org_id),
+        }
+    }
+}
+
 /// Discriminant tag for `Principal`, mirrors the SQL enum
 /// `proxima_core.owner_principal_kind`. Storage rows split a
 /// `Principal` across two columns (`owner_principal_kind` +

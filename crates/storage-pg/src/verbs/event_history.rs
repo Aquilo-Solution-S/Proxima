@@ -4,20 +4,18 @@
 use proxima_core::verbs::event_history::{
     EventHistoryRequest, EventHistoryResponse, MAX_EVENT_HISTORY_LIMIT,
 };
-use proxima_core::{ChangeEvent, OwnerPrincipalKind, Principal, StorageError};
+use proxima_core::{ChangeEvent, OwnerPrincipalKind, StorageError};
 use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::change_event::hydrate_change_events_batch;
+use crate::error::internal;
 
 pub(crate) async fn event_history(
     pool: &PgPool,
     req: &EventHistoryRequest,
 ) -> Result<EventHistoryResponse, StorageError> {
-    let (owner_kind, owner_principal_id) = match &req.principal {
-        Principal::User(u) => (OwnerPrincipalKind::User, u.into_inner()),
-        Principal::Group(g) => (OwnerPrincipalKind::Group, g.into_inner()),
-    };
+    let (owner_kind, owner_principal_id) = req.principal.columns();
     let limit = i64::from(req.limit.min(MAX_EVENT_HISTORY_LIMIT));
 
     let seqs: Vec<Uuid> = match req.before {
@@ -33,7 +31,7 @@ pub(crate) async fn event_history(
         )
         .fetch_all(pool)
         .await
-        .map_err(|e| StorageError::Internal(e.to_string()))?,
+        .map_err(internal)?,
         None => sqlx::query_scalar!(
             r#"SELECT seq FROM proxima_core.change_event
                  WHERE owner_principal_kind = $1 AND owner_principal_id = $2
@@ -44,7 +42,7 @@ pub(crate) async fn event_history(
         )
         .fetch_all(pool)
         .await
-        .map_err(|e| StorageError::Internal(e.to_string()))?,
+        .map_err(internal)?,
     };
 
     let events: Vec<ChangeEvent> = hydrate_change_events_batch(pool, &seqs).await?;
@@ -58,7 +56,7 @@ pub(crate) async fn event_history(
     )
     .fetch_optional(pool)
     .await
-    .map_err(|e| StorageError::Internal(e.to_string()))?;
+    .map_err(internal)?;
 
     Ok(EventHistoryResponse {
         events,

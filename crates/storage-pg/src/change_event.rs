@@ -5,9 +5,11 @@
 
 use proxima_core::{
     ChangeEvent, ChangeEventKind, ChangeEventKindTag, EntityKind, EntityRef, GoalId, MemoryId,
-    OrgId, Owner, OwnerPrincipalKind, SchemaId, SchemaVersion, StorageError,
+    Owner, OwnerPrincipalKind, SchemaId, SchemaVersion, StorageError,
 };
 use uuid::Uuid;
+
+use crate::error::internal;
 
 #[derive(Debug, sqlx::FromRow)]
 struct ChangeEventRow {
@@ -71,7 +73,7 @@ pub(crate) async fn hydrate_change_event(
     .bind(seq)
     .fetch_optional(pool)
     .await
-    .map_err(|e| StorageError::Internal(e.to_string()))?;
+    .map_err(internal)?;
 
     row.as_ref().map(decode_change_event_row).transpose()
 }
@@ -114,16 +116,17 @@ pub(crate) async fn hydrate_change_events_batch(
     .bind(seqs)
     .fetch_all(pool)
     .await
-    .map_err(|e| StorageError::Internal(e.to_string()))?;
+    .map_err(internal)?;
 
     rows.iter().map(decode_change_event_row).collect()
 }
 
 fn decode_change_event_row(row: &ChangeEventRow) -> Result<ChangeEvent, StorageError> {
-    let owner = Owner {
-        principal: row.owner_principal_kind.with_uuid(row.owner_principal_id),
-        org_id: OrgId::new(row.owner_org_id),
-    };
+    let owner = Owner::with_uuid(
+        row.owner_principal_kind,
+        row.owner_principal_id,
+        row.owner_org_id,
+    );
 
     let authoring_instance = decode_personality(row.entity_personality_instance_id);
     let wake_chain_depth = u16::try_from(row.wake_chain_depth).unwrap_or(0);

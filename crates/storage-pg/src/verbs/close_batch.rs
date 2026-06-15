@@ -25,10 +25,7 @@ pub async fn close_batch(
     principal: &Principal,
     source_batch_id: SourceBatchId,
 ) -> Result<CloseBatchOutcome, StorageError> {
-    let (owner_kind, owner_principal_id) = match principal {
-        Principal::User(u) => (OwnerPrincipalKind::User, u.into_inner()),
-        Principal::Group(g) => (OwnerPrincipalKind::Group, g.into_inner()),
-    };
+    let (owner_kind, owner_principal_id) = principal.columns();
     let batch_id = source_batch_id.into_inner();
 
     // Read current closed_at under owner scope.

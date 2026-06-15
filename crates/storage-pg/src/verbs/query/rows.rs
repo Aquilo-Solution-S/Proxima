@@ -4,11 +4,11 @@ use proxima_core::verbs::goal_write::GoalState;
 use proxima_core::verbs::query::{EdgeRow, GoalRow, MemoryRow, StatefulHeadsFilter};
 use proxima_core::verbs::schema::SchemaInfo;
 use proxima_core::{
-    GoalId, GroupId, MemoryId, OrgId, Owner, OwnerPrincipalKind, Principal, SchemaId,
-    SchemaVersion, StorageError, UserId,
+    GoalId, MemoryId, Owner, OwnerPrincipalKind, SchemaId, SchemaVersion, StorageError,
 };
 use sqlx::PgPool;
 
+use crate::error::internal;
 use crate::pg_ident::PgIdent;
 
 pub(super) fn memory_row_from_db(
@@ -111,13 +111,7 @@ fn owner_from_parts(
     principal_id: uuid::Uuid,
     org_id: uuid::Uuid,
 ) -> Owner {
-    Owner {
-        principal: match kind {
-            OwnerPrincipalKind::User => Principal::User(UserId::new(principal_id)),
-            OwnerPrincipalKind::Group => Principal::Group(GroupId::new(principal_id)),
-        },
-        org_id: OrgId::new(org_id),
-    }
+    Owner::with_uuid(kind, principal_id, org_id)
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -176,7 +170,7 @@ pub(super) async fn read_seq_high_water(
     .bind(owner_principal_id)
     .fetch_optional(pool)
     .await
-    .map_err(|e| StorageError::Internal(e.to_string()))?;
+    .map_err(internal)?;
     Ok(row.map(|(v,)| v))
 }
 
