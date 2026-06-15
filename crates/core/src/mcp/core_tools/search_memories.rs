@@ -3,9 +3,10 @@
 use futures::future::BoxFuture;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use time::format_description::well_known::Rfc3339;
 
 use crate::mcp::{McpToolCtx, McpToolError};
-use crate::verbs::query::{EntityKind, MemorySearchRequest, SearchMode};
+use crate::verbs::query::{EntityKind, MemorySearchRequest, SearchMode, SearchOrder, TagMatch};
 use crate::{McpTool, SchemaId};
 
 use super::memory::search::{NeighborEdge, load_graph_payloads, neighbor_edges};
@@ -84,6 +85,21 @@ pub struct SearchMemoriesArgs {
     #[schemars(description = "Optional schema_id filter. Omit or null for all schemas.")]
     pub schema_id: Option<String>,
     #[serde(default)]
+    #[schemars(description = "Optional exact tag filter. Empty means no tag filter.")]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    #[schemars(description = "Tag filter mode: any or all. Defaults to any.")]
+    pub tag_match: TagMatch,
+    #[serde(default)]
+    #[schemars(description = "Optional inclusive lower created_at bound as an RFC3339 timestamp.")]
+    pub since: Option<String>,
+    #[serde(default)]
+    #[schemars(description = "Optional inclusive upper created_at bound as an RFC3339 timestamp.")]
+    pub until: Option<String>,
+    #[serde(default)]
+    #[schemars(description = "Result ordering: relevance or recency. Defaults to relevance.")]
+    pub order: SearchOrder,
+    #[serde(default)]
     #[schemars(
         description = "Optional reader personality id/handle for Abstraction/Perspective visibility. Omit for no-reader owner-visible semantics."
     )]
@@ -109,6 +125,7 @@ pub struct SearchMemoryOutput {
     pub schema_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub authoring_personality_instance_id: Option<String>,
+    pub created_at: String,
     pub snippet: String,
     pub score: f32,
     pub lexical_score: f32,
@@ -136,6 +153,8 @@ impl McpTool for SearchMemoriesTool {
             }
 
             let mode = SearchMode::from(args.mode);
+            let since = parse_rfc3339(args.since.as_deref(), "since")?;
+            let until = parse_rfc3339(args.until.as_deref(), "until")?;
             let reader = args
                 .reader_personality
                 .as_deref()
@@ -148,6 +167,11 @@ impl McpTool for SearchMemoriesTool {
                 limit: args.limit.clamp(1, 50),
                 kind: args.kind.map(EntityKind::from),
                 schema_id: args.schema_id.map(SchemaId::new),
+                tags: args.tags,
+                tag_match: args.tag_match,
+                since,
+                until,
+                order: args.order,
                 query_embedding: None,
                 embedding_model_id: None,
                 reader_personality_instance_id: reader,
@@ -199,6 +223,7 @@ impl McpTool for SearchMemoriesTool {
                                 &ctx,
                                 row.authoring_personality_instance_id,
                             ),
+                        created_at: format_rfc3339(row.created_at)?,
                         snippet: row.snippet,
                         score: row.score,
                         lexical_score: row.lexical_score,
@@ -216,4 +241,22 @@ impl McpTool for SearchMemoriesTool {
             })
         })
     }
+}
+
+fn parse_rfc3339(
+    raw: Option<&str>,
+    field: &str,
+) -> Result<Option<time::OffsetDateTime>, McpToolError> {
+    raw.map(|value| {
+        time::OffsetDateTime::parse(value, &Rfc3339).map_err(|err| {
+            McpToolError::InvalidInput(format!("{field} must be an RFC3339 timestamp: {err}"))
+        })
+    })
+    .transpose()
+}
+
+fn format_rfc3339(value: time::OffsetDateTime) -> Result<String, McpToolError> {
+    value
+        .format(&Rfc3339)
+        .map_err(|err| McpToolError::Other(format!("format created_at: {err}")))
 }

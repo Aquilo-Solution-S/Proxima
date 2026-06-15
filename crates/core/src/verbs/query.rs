@@ -31,6 +31,42 @@ fn default_search_mode() -> SearchMode {
     SearchMode::Hybrid
 }
 
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    schemars::JsonSchema,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum TagMatch {
+    #[default]
+    Any,
+    All,
+}
+
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    schemars::JsonSchema,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum SearchOrder {
+    #[default]
+    Relevance,
+    Recency,
+}
+
 /// Owner-scoped memory search. Semantic modes require the engine/tool
 /// layer to populate the query embedding and active embedding-space
 /// metadata before dispatching to storage.
@@ -43,6 +79,16 @@ pub struct MemorySearchRequest {
     pub limit: u32,
     pub kind: Option<EntityKind>,
     pub schema_id: Option<SchemaId>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub tag_match: TagMatch,
+    #[serde(default)]
+    pub since: Option<time::OffsetDateTime>,
+    #[serde(default)]
+    pub until: Option<time::OffsetDateTime>,
+    #[serde(default)]
+    pub order: SearchOrder,
     #[serde(skip)]
     pub query_embedding: Option<Vec<f32>>,
     #[serde(skip)]
@@ -57,6 +103,7 @@ pub struct MemorySearchResult {
     pub kind: EntityKind,
     pub schema_id: SchemaId,
     pub authoring_personality_instance_id: Option<PersonalityInstanceId>,
+    pub created_at: time::OffsetDateTime,
     pub snippet: String,
     pub score: f32,
     pub lexical_score: f32,

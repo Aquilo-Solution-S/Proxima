@@ -567,6 +567,7 @@ fn maybe_add_search_projection(
                 kind: field.kind,
             })
             .collect(),
+        tag_column: projection.tag_column,
     });
 }
 

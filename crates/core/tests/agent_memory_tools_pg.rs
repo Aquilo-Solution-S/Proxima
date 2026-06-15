@@ -15,6 +15,7 @@ use proxima_core::{
     SchemaId, StorageError, UserId,
 };
 use serde_json::json;
+use time::format_description::well_known::Rfc3339;
 
 #[derive(Debug)]
 struct FixedEmbedding;
@@ -189,13 +190,17 @@ async fn remember_then_search_round_trip() -> Result<(), Box<dyn std::error::Err
         &owner,
         &handles,
         &frozen,
-        author,
+        author.clone(),
         "core/search_memories",
         json!({
             "query": "atlas edges",
             "mode": "lexical",
             "limit": 5,
-            "kind": "Fact"
+            "kind": "Fact",
+            "tags": ["atlas"],
+            "tag_match": "all",
+            "since": "1970-01-01T00:00:00Z",
+            "order": "recency"
         }),
     )
     .await?;
@@ -204,11 +209,17 @@ async fn remember_then_search_round_trip() -> Result<(), Box<dyn std::error::Err
         "search should reuse the session handle"
     );
     assert_eq!(searched["memories"][0]["tags"], json!(["atlas"]));
+    let created_at = searched["memories"][0]["created_at"]
+        .as_str()
+        .expect("created_at");
+    time::OffsetDateTime::parse(created_at, &Rfc3339)?;
     assert_eq!(
         searched["neighbor_edges"][0]["target"], remembered["handle"],
         "search should include neighbor edges touching matched memories"
     );
     assert_eq!(searched["neighbor_edges"][0]["source"], derived["handle"]);
+
+    assert_search_since_rejects_invalid_timestamp(&pg, &owner, &handles, &frozen, author).await;
 
     drop(pg);
     drop_db(&db_name).await?;
@@ -829,6 +840,32 @@ async fn call_tool(
         args,
     )
     .await
+}
+
+async fn assert_search_since_rejects_invalid_timestamp(
+    pg: &proxima_storage_pg::PgStorage,
+    owner: &Owner,
+    handles: &Arc<HandleTable>,
+    registry: &Arc<proxima_core::FlavorRegistryFrozen>,
+    author: McpAuthorContext,
+) {
+    let invalid_since = call_tool(
+        pg,
+        owner,
+        handles,
+        registry,
+        author,
+        "core/search_memories",
+        json!({
+            "query": "atlas edges",
+            "since": "not-a-timestamp"
+        }),
+    )
+    .await;
+    match invalid_since {
+        Err(McpToolError::InvalidInput(message)) => assert!(message.contains("since")),
+        other => panic!("expected InvalidInput for invalid since, got {other:?}"),
+    }
 }
 
 async fn call_tool_prefixed(

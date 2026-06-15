@@ -22,9 +22,10 @@ pub struct SearchProjectionField {
     pub kind: SearchProjectionColumnKind,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SearchProjection {
     pub fields: &'static [SearchProjectionField],
+    pub tag_column: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -29,6 +29,7 @@ impl FactPayload for GoalProposedV1 {
                 column: "title",
                 kind: SearchProjectionColumnKind::Text,
             }],
+            tag_column: None,
         })
     }
 }
@@ -61,6 +62,7 @@ impl FactPayload for GoalActivatedV1 {
                 column: "title",
                 kind: SearchProjectionColumnKind::Text,
             }],
+            tag_column: None,
         })
     }
 }
@@ -93,6 +95,7 @@ impl FactPayload for GoalAchievedV1 {
                 column: "title",
                 kind: SearchProjectionColumnKind::Text,
             }],
+            tag_column: None,
         })
     }
 }

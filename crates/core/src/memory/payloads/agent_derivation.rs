@@ -1,4 +1,7 @@
-use crate::{AbstractionPayload, PerspectivePayload};
+use crate::{
+    AbstractionPayload, PerspectivePayload, SearchProjection, SearchProjectionColumnKind,
+    SearchProjectionField,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -22,6 +25,10 @@ impl AbstractionPayload for AgentDerivationV1 {
         "proxima_core.agent_derivation_v1"
     }
 
+    fn search_projection() -> Option<SearchProjection> {
+        Some(agent_derivation_search_projection())
+    }
+
     fn json_schema() -> Option<serde_json::Value> {
         Some(
             serde_json::to_value(schemars::schema_for!(Self))
@@ -38,10 +45,34 @@ impl PerspectivePayload for AgentDerivationV1 {
         "proxima_core.agent_derivation_v1"
     }
 
+    fn search_projection() -> Option<SearchProjection> {
+        Some(agent_derivation_search_projection())
+    }
+
     fn json_schema() -> Option<serde_json::Value> {
         Some(
             serde_json::to_value(schemars::schema_for!(Self))
                 .expect("AgentDerivationV1 schema serializes"),
         )
+    }
+}
+
+fn agent_derivation_search_projection() -> SearchProjection {
+    SearchProjection {
+        fields: &[
+            SearchProjectionField {
+                column: "title",
+                kind: SearchProjectionColumnKind::Text,
+            },
+            SearchProjectionField {
+                column: "body",
+                kind: SearchProjectionColumnKind::Text,
+            },
+            SearchProjectionField {
+                column: "tags",
+                kind: SearchProjectionColumnKind::TextArray,
+            },
+        ],
+        tag_column: Some("tags".to_string()),
     }
 }

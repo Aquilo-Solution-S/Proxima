@@ -56,6 +56,7 @@ impl FactPayload for FileRevisionV1 {
                     kind: SearchProjectionColumnKind::Text,
                 },
             ],
+            tag_column: None,
         })
     }
     fn render(&self) -> String {
