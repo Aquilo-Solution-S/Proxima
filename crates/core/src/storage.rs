@@ -383,6 +383,7 @@ pub trait Storage: Send + Sync {
         &self,
         owner: &Owner,
         fact_sidecar_tables: &[String],
+        edge_sidecar_tables: &[String],
         citation_mapping_sidecar_tables: &[String],
         cited_object_sidecar_tables: &[String],
     ) -> Result<CleanupDueFactsOutcome, StorageError>;
@@ -737,6 +738,7 @@ impl Storage for NoopStorage {
         &self,
         _owner: &Owner,
         _fact_sidecar_tables: &[String],
+        _edge_sidecar_tables: &[String],
         _citation_mapping_sidecar_tables: &[String],
         _cited_object_sidecar_tables: &[String],
     ) -> Result<CleanupDueFactsOutcome, StorageError> {

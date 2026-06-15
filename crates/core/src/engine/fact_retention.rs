@@ -93,6 +93,7 @@ impl Engine {
         super::authorize(authz, &owner.principal, Role::Admin)?;
         let owner = authz.scoped_owner(owner.principal.clone());
         let fact_sidecar_tables = sidecar_tables(self.registry.schemas(), PayloadKind::Fact);
+        let edge_sidecar_tables = sidecar_tables(self.registry.schemas(), PayloadKind::Edge);
         let citation_mapping_sidecar_tables =
             sidecar_tables(self.registry.schemas(), PayloadKind::CitationMapping);
         let cited_object_sidecar_tables =
@@ -101,6 +102,7 @@ impl Engine {
             .cleanup_due_facts(
                 &owner,
                 &fact_sidecar_tables,
+                &edge_sidecar_tables,
                 &citation_mapping_sidecar_tables,
                 &cited_object_sidecar_tables,
             )

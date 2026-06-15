@@ -15,6 +15,7 @@ pub mod fact_cleanup;
 pub mod fact_embeddings;
 pub mod fact_retention;
 pub(crate) mod goal_write;
+pub mod hard_delete;
 pub mod master_token_personality;
 pub mod persist_mcp_call;
 pub(crate) mod query;

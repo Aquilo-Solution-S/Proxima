@@ -17,6 +17,13 @@ use proxima_core::{
 use uuid::Uuid;
 
 fn schemas_for_test() -> Vec<SchemaInfo> {
+    let mut edge_schema = SchemaInfo::opaque(
+        SchemaId::new("test/cleanup-edge-v1".into()),
+        SchemaVersion::new(1),
+        PayloadKind::Edge,
+    );
+    edge_schema.sidecar_table = Some("proxima_core.agent_link_v1".into());
+
     vec![
         SchemaInfo::opaque(
             SchemaId::new("test/cleanup-fact-v1".into()),
@@ -38,6 +45,7 @@ fn schemas_for_test() -> Vec<SchemaInfo> {
             SchemaVersion::new(1),
             PayloadKind::Abstraction,
         ),
+        edge_schema,
     ]
 }
 
@@ -121,6 +129,8 @@ async fn cleanup_due_facts_erases_fact_and_tombstones_direct_derivative()
     .await?;
 
     let derivative_id = insert_direct_derivative(&pg, &owner, fact_id).await?;
+    let provenance_edge_id = edge_id_between(&pg, derivative_id, fact_id).await?;
+    insert_agent_link_sidecar(&pg, provenance_edge_id).await?;
 
     engine.set_fact_retention(&authz, &owner, 60).await?;
     let cleanup = engine.cleanup_due_facts(&authz, &owner).await?;
@@ -129,6 +139,7 @@ async fn cleanup_due_facts_erases_fact_and_tombstones_direct_derivative()
 
     assert_fact_erased(&pg, fact_id, &event_id, citation_mapping_id).await?;
     assert_derivative_tombstoned(&pg, derivative_id).await?;
+    assert_agent_link_sidecar_erased(&pg, provenance_edge_id).await?;
     assert_entity_delete_emitted(&pg, fact_id).await?;
     assert_entity_delete_emitted(&pg, derivative_id).await?;
     assert_tombstoned_derivative_filtered(&pg, &engine, &authz, &owner, derivative_id).await?;
@@ -441,6 +452,22 @@ async fn assert_uploaded_blob_sidecar_erased(
     Ok(())
 }
 
+async fn assert_agent_link_sidecar_erased(
+    pg: &proxima_storage_pg::PgStorage,
+    edge_id: Uuid,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(*)::bigint
+           FROM proxima_core.agent_link_v1
+          WHERE edge_id = $1",
+    )
+    .bind(edge_id)
+    .fetch_one(pg.pool())
+    .await?;
+    assert_eq!(count, 0);
+    Ok(())
+}
+
 async fn assert_entity_delete_emitted(
     pg: &proxima_storage_pg::PgStorage,
     memory_id: Uuid,
@@ -543,6 +570,38 @@ async fn insert_uploaded_blob_sidecar(
     .execute(pg.pool())
     .await?;
     Ok(())
+}
+
+async fn insert_agent_link_sidecar(
+    pg: &proxima_storage_pg::PgStorage,
+    edge_id: Uuid,
+) -> Result<(), Box<dyn std::error::Error>> {
+    sqlx::query(
+        "INSERT INTO proxima_core.agent_link_v1 (edge_id, reason, confidence)
+         VALUES ($1, 'cleanup test edge sidecar', 100)",
+    )
+    .bind(edge_id)
+    .execute(pg.pool())
+    .await?;
+    Ok(())
+}
+
+async fn edge_id_between(
+    pg: &proxima_storage_pg::PgStorage,
+    source_memory_id: Uuid,
+    target_memory_id: Uuid,
+) -> Result<Uuid, Box<dyn std::error::Error>> {
+    let edge_id = sqlx::query_scalar(
+        "SELECT edge_id
+           FROM proxima_core.edges
+          WHERE source_memory_id = $1
+            AND target_memory_id = $2",
+    )
+    .bind(source_memory_id)
+    .bind(target_memory_id)
+    .fetch_one(pg.pool())
+    .await?;
+    Ok(edge_id)
 }
 
 async fn insert_direct_derivative(
