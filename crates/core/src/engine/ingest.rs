@@ -143,13 +143,9 @@ impl Engine {
                     cited_object.schema_version.into_inner(),
                 ))
             })?;
-        let mapping_sidecar_inserter = mapping_info.sidecar_inserter.ok_or_else(|| {
-            ProtocolError::internal(format!(
-                "citation mapping schema {} v{} has no sidecar inserter",
-                mapping.schema_id.as_str(),
-                mapping.schema_version.into_inner(),
-            ))
-        })?;
+        // A pure-link mapping has no sidecar inserter — that's legal, so
+        // pass the Option through rather than erroring on absence.
+        let mapping_sidecar_inserter = mapping_info.sidecar_inserter;
         let content_hash = self
             .registry
             .content_hash_for(

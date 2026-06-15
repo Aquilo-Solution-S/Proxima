@@ -75,8 +75,8 @@ impl CitationMappingPayload for RememberTestCitationMapping {
     const SCHEMA_ID: &'static str = "test/remember-citation-mapping-v1";
     const SCHEMA_VERSION: u32 = 1;
 
-    fn sidecar_table() -> &'static str {
-        "public.remember_test_citation_mapping_v1"
+    fn sidecar_table() -> Option<&'static str> {
+        Some("public.remember_test_citation_mapping_v1")
     }
 
     fn cited_object_schema() -> SchemaId {

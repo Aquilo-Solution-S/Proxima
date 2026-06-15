@@ -63,15 +63,8 @@ async fn persist_writes_fact_inline_io_citation_and_change_event() {
         .await?;
         assert_eq!(cm.0, outcome.fact_memory_id.into_inner());
         assert_eq!(cm.1, outcome.cited_object_id);
-
-        let citation_sidecar: (i64,) = sqlx::query_as(
-            "SELECT COUNT(*) FROM proxima_core.citation_mcp_call_io_v1 \
-             WHERE citation_mapping_id = $1",
-        )
-        .bind(outcome.citation_mapping_id)
-        .fetch_one(pg.pool())
-        .await?;
-        assert_eq!(citation_sidecar.0, 1);
+        // The mcp-call-io citation is a pure link — the citation_mappings
+        // row above is the whole mapping; there is no sidecar table.
 
         let change_event: (i64,) = sqlx::query_as(
             "SELECT COUNT(*) FROM proxima_core.change_event \

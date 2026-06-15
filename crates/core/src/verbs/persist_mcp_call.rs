@@ -151,9 +151,8 @@ impl CitationMappingPayload for McpCallIoCitationV1 {
     const SCHEMA_ID: &'static str = MCP_CALL_CITATION_SCHEMA;
     const SCHEMA_VERSION: u32 = 1;
 
-    fn sidecar_table() -> &'static str {
-        "proxima_core.citation_mcp_call_io_v1"
-    }
+    // Pure link — no sidecar table (uses the trait default `None`). The
+    // citation_mappings row carries the whole mapping.
 
     fn cited_object_schema() -> SchemaId {
         SchemaId::new(MCP_CALL_IO_SCHEMA.to_string())

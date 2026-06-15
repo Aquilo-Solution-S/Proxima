@@ -211,8 +211,12 @@ pub trait CitedObjectPayload:
 
 /// Typed payload for a `citation_mappings` row, keyed on
 /// `citation_mapping_id`. Citation mappings pin exactly one Memory
-/// to exactly one `CitedObject`; the sidecar stores extra mapping
-/// metadata such as byte ranges. See docs/11 §"Trait families".
+/// to exactly one `CitedObject`. The link itself — memory, cited
+/// object, owner, schema — lives in the generic `citation_mappings`
+/// table; a sidecar is **optional**, needed only when the mapping
+/// carries schema-specific metadata such as byte ranges. A fieldless
+/// mapping (a pure link, the common case) returns `None` and gets no
+/// sidecar table. See docs/11 §"Trait families".
 pub trait CitationMappingPayload:
     serde::Serialize + serde::de::DeserializeOwned + Send + Sync + 'static
 {
@@ -220,7 +224,13 @@ pub trait CitationMappingPayload:
     const SCHEMA_VERSION: u32;
     /// See `FactPayload::SPECIAL_CATEGORY`.
     const SPECIAL_CATEGORY: bool = false;
-    fn sidecar_table() -> &'static str;
+    /// Sidecar table for this mapping's schema-specific metadata, or
+    /// `None` when the mapping is a pure link with no extra columns.
+    /// Returning `None` means no sidecar row is written and no table is
+    /// required — don't mint an empty table just to satisfy the trait.
+    fn sidecar_table() -> Option<&'static str> {
+        None
+    }
     #[must_use]
     fn json_schema() -> Option<serde_json::Value> {
         None

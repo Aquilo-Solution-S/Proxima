@@ -68,8 +68,8 @@ impl CitationMappingPayload for TestCitationMappingV1 {
     const SCHEMA_ID: &'static str = proxima_schema_id!("test-citation-mapping");
     const SCHEMA_VERSION: u32 = 1;
 
-    fn sidecar_table() -> &'static str {
-        "citation_mapping_test_v1"
+    fn sidecar_table() -> Option<&'static str> {
+        Some("citation_mapping_test_v1")
     }
 
     fn cited_object_schema() -> SchemaId {

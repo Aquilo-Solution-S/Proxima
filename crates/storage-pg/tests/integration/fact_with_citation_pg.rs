@@ -85,8 +85,8 @@ impl CitationMappingPayload for TestCitationMapping {
     const SCHEMA_ID: &'static str = "test/inline-citation-mapping";
     const SCHEMA_VERSION: u32 = 1;
 
-    fn sidecar_table() -> &'static str {
-        "public.inline_citation_mapping_sidecar"
+    fn sidecar_table() -> Option<&'static str> {
+        Some("public.inline_citation_mapping_sidecar")
     }
 
     fn cited_object_schema() -> SchemaId {

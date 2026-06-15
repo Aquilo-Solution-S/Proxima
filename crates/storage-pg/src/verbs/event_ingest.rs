@@ -565,7 +565,11 @@ where
     .await
     .map_err(map_err)?;
 
-    (mapping.sidecar_inserter_fn())(tx, citation_mapping_id, mapping.payload_bytes()).await?;
+    // A pure-link mapping has no sidecar — the link is fully captured by
+    // the citation_mappings row above, so there's nothing more to write.
+    if let Some(insert_sidecar) = mapping.sidecar_inserter_fn() {
+        insert_sidecar(tx, citation_mapping_id, mapping.payload_bytes()).await?;
+    }
 
     sqlx::query(
         r"INSERT INTO proxima_core.change_event
