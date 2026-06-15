@@ -11,7 +11,7 @@ use crate::pg_ident::PgIdent;
 
 #[derive(Debug)]
 pub struct HardDeleteSet {
-    /// (entity_kind, memory_id) — embeddings are deleted by BOTH columns
+    /// `(entity_kind, memory_id)` — embeddings are deleted by BOTH columns
     /// to avoid cross-kind UUID collisions in the polymorphic embeddings PK.
     pub memories: Vec<(EntityKind, Uuid)>,
     /// Edge rows to delete. Edge-keyed sidecars are deleted first.
@@ -36,6 +36,12 @@ pub struct HardDeleteCounts {
     pub events: u64,
 }
 
+/// Fan-out hard deletion of memory/edge/event rows and their registered
+/// sidecars, returning per-table deleted counts.
+///
+/// # Errors
+///
+/// Returns storage errors from any of the underlying row deletions.
 pub async fn execute_hard_delete(
     tx: &mut Transaction<'_, Postgres>,
     set: &HardDeleteSet,

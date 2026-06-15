@@ -75,6 +75,9 @@ pub async fn cleanup_due_facts(
     Ok(outcome)
 }
 
+// Pre-existing length (>100 lines) from the road-to-v1 shared-hard-delete
+// refactor; this is a linear orchestration sequence, kept whole for clarity.
+#[allow(clippy::too_many_lines)]
 async fn cleanup_due_facts_in_tx(
     tx: &mut Transaction<'_, Postgres>,
     owner: &Owner,
