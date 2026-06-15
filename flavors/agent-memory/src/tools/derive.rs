@@ -178,6 +178,8 @@ impl McpTool for DeriveTool {
                 prompt_version: "mcp-agent-v1",
                 sidecar_table: Some("proxima_agent_memory.agent_derivation_v1"),
                 sidecar_payload: Some(sidecar),
+                embedding: None,
+                embedding_model_id: None,
             };
 
             let mut tx = ctx.pool.begin().await.map_err(map_storage)?;

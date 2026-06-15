@@ -20,7 +20,9 @@ use proxima_core::personality::{
 };
 use proxima_core::verbs::close_batch::CloseBatchOutcome;
 use proxima_core::verbs::event_history::{EventHistoryRequest, EventHistoryResponse};
-use proxima_core::verbs::event_ingest::{EventDraft, EventIngestOutcome};
+use proxima_core::verbs::event_ingest::{
+    AuthorizedEventIngest, AuthorizedFactWithCitation, EventDraft, EventIngestOutcome,
+};
 use proxima_core::verbs::fact_cleanup::CleanupDueFactsOutcome;
 use proxima_core::verbs::goal_write::{GoalDraft, GoalWriteOutcome};
 use proxima_core::verbs::persist_mcp_call::{McpCallLogInput, McpCallLogOutcome};
@@ -29,11 +31,12 @@ use proxima_core::verbs::query::{
     MemorySearchResult, QueryRequest, QueryResponse,
 };
 use proxima_core::{
-    GoalId, MasterTokenPersonality, MemoryDependency, MemoryId, Owner, Principal, SourceBatchId,
-    Storage, StorageError, StorageHandle,
+    AuthorDerivedOutcome, AuthorDerivedRequest, DerivedEdgeSpec, GoalId, MasterTokenPersonality,
+    MemoryDependency, MemoryId, Owner, Principal, SourceBatchId, Storage, StorageError,
+    StorageHandle,
 };
-use sqlx::PgPool;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+use sqlx::{PgPool, Postgres, Transaction};
 
 mod authorship;
 mod change_event;
@@ -136,6 +139,47 @@ impl PgStorage {
     }
 }
 
+async fn insert_generic_memory_sidecar(
+    tx: &mut Transaction<'_, Postgres>,
+    memory_id: MemoryId,
+    sidecar_table: &str,
+    sidecar_payload: &serde_json::Value,
+) -> Result<(), StorageError> {
+    let table = pg_ident::PgIdent::table(sidecar_table)?
+        .as_str()
+        .to_string();
+    let sql = format!(
+        "INSERT INTO {table}
+         SELECT * FROM jsonb_populate_record(
+             NULL::{table},
+             ($1::jsonb || jsonb_build_object('memory_id', $2::uuid))
+         )",
+    );
+    sqlx::query(&sql)
+        .bind(sidecar_payload)
+        .bind(memory_id.into_inner())
+        .execute(&mut **tx)
+        .await
+        .map_err(crate::error::map_err)?;
+    Ok(())
+}
+
+fn edge_draft_from_spec<'a>(edge: &'a DerivedEdgeSpec<'a>) -> verbs::edge_append::EdgeDraft<'a> {
+    verbs::edge_append::EdgeDraft {
+        edge_id: uuid::Uuid::now_v7(),
+        relation: edge.relation,
+        source_kind: edge.source_kind,
+        source_memory_id: Some(edge.source_memory_id.into_inner()),
+        source_goal_id: None,
+        target_kind: edge.target_kind,
+        target_memory_id: Some(edge.target_memory_id.into_inner()),
+        target_goal_id: None,
+        authorship_kind: edge.authorship_kind,
+        authorship_owner_memory_id: edge.authorship_owner_memory_id.map(MemoryId::into_inner),
+        owner: edge.owner,
+    }
+}
+
 #[async_trait::async_trait]
 impl Storage for PgStorage {
     async fn ingest_event_atomic(
@@ -186,6 +230,113 @@ impl Storage for PgStorage {
         input: &McpCallLogInput,
     ) -> Result<McpCallLogOutcome, StorageError> {
         verbs::persist_mcp_call::persist_mcp_call_atomic(&self.pool, input).await
+    }
+
+    async fn ingest_event_with_sidecar(
+        &self,
+        authorized: &AuthorizedEventIngest,
+        sidecar_table: &str,
+        sidecar_payload: &serde_json::Value,
+    ) -> Result<EventIngestOutcome, StorageError> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| StorageError::Internal(e.to_string()))?;
+        let table = sidecar_table.to_string();
+        let payload = sidecar_payload.clone();
+        let outcome = verbs::event_ingest::ingest_event_with_sidecar_in_tx(
+            &mut tx,
+            authorized,
+            move |tx, outcome| {
+                Box::pin(async move {
+                    insert_generic_memory_sidecar(tx, outcome.memory_id, &table, &payload).await
+                })
+            },
+        )
+        .await?;
+        tx.commit().await.map_err(crate::error::map_err)?;
+        Ok(outcome)
+    }
+
+    async fn ingest_fact_with_citation_and_sidecar(
+        &self,
+        authorized: &AuthorizedFactWithCitation,
+        sidecar_table: &str,
+        sidecar_payload: &serde_json::Value,
+    ) -> Result<EventIngestOutcome, StorageError> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| StorageError::Internal(e.to_string()))?;
+        let table = sidecar_table.to_string();
+        let payload = sidecar_payload.clone();
+        let outcome = verbs::event_ingest::ingest_fact_with_citation_in_tx(
+            &mut tx,
+            authorized,
+            move |tx, outcome| {
+                Box::pin(async move {
+                    insert_generic_memory_sidecar(tx, outcome.memory_id, &table, &payload).await
+                })
+            },
+        )
+        .await?;
+        tx.commit().await.map_err(crate::error::map_err)?;
+        Ok(outcome)
+    }
+
+    async fn author_derived(
+        &self,
+        req: &AuthorDerivedRequest<'_>,
+    ) -> Result<AuthorDerivedOutcome, StorageError> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| StorageError::Internal(e.to_string()))?;
+        let draft = verbs::derive_append::DerivedDraft {
+            memory_id: req.memory_id.into_inner(),
+            owner: req.owner.clone(),
+            kind: req.kind,
+            author_personality_instance_id: req.author_personality_instance_id,
+            schema_id: req.schema_id.clone(),
+            schema_version: req.schema_version,
+            text: req.text.clone(),
+            operator_kind: req.operator_kind,
+            model_id: req.model_id,
+            prompt_version: req.prompt_version,
+            sidecar_table: Some(req.sidecar_table),
+            sidecar_payload: Some(req.sidecar_payload.clone()),
+            embedding: req.embedding.clone(),
+            embedding_model_id: req.embedding_model_id,
+        };
+        let outcome = verbs::derive_append::append_derived_in_tx(&mut tx, &draft).await?;
+        let mut edge_count = 0;
+        if !outcome.idempotent_replay {
+            for edge in req.edges {
+                let draft = edge_draft_from_spec(edge);
+                verbs::edge_append::append_edge_in_tx(&mut tx, &draft, None).await?;
+                edge_count += 1;
+            }
+        }
+        tx.commit().await.map_err(crate::error::map_err)?;
+        Ok(AuthorDerivedOutcome {
+            memory_id: outcome.memory_id,
+            idempotent_replay: outcome.idempotent_replay,
+            edge_count,
+        })
+    }
+
+    async fn append_memory_edge(&self, edge: &DerivedEdgeSpec<'_>) -> Result<(), StorageError> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| StorageError::Internal(e.to_string()))?;
+        let draft = edge_draft_from_spec(edge);
+        verbs::edge_append::append_edge_in_tx(&mut tx, &draft, None).await?;
+        tx.commit().await.map_err(crate::error::map_err)
     }
 
     async fn write_goal_atomic(&self, draft: &GoalDraft) -> Result<GoalWriteOutcome, StorageError> {

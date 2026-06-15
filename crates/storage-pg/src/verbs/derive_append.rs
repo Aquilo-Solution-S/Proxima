@@ -23,6 +23,8 @@ pub struct DerivedDraft<'a> {
     pub prompt_version: &'a str,
     pub sidecar_table: Option<&'a str>,
     pub sidecar_payload: Option<serde_json::Value>,
+    pub embedding: Option<Vec<f32>>,
+    pub embedding_model_id: Option<&'a str>,
 }
 
 #[derive(Debug, Clone)]
@@ -94,6 +96,30 @@ pub async fn append_derived_in_tx(
             .execute(&mut **tx)
             .await
             .map_err(map_err)?;
+    }
+
+    if let (Some(embedding), Some(embedding_model_id)) =
+        (&draft.embedding, draft.embedding_model_id)
+    {
+        let dim = i32::try_from(embedding.len())
+            .map_err(|_| StorageError::ConstraintViolation("embedding dim too large".into()))?;
+        sqlx::query(
+            "INSERT INTO proxima_core.embeddings
+                (entity_kind, entity_id, embedding_version, model_id, vec, dim,
+                 owner_principal_kind, owner_principal_id, owner_org_id)
+             VALUES ($1, $2, 1, $3, $4, $5, $6, $7, $8)",
+        )
+        .bind(draft.kind)
+        .bind(draft.memory_id)
+        .bind(embedding_model_id)
+        .bind(embedding)
+        .bind(dim)
+        .bind(owner_kind)
+        .bind(owner_principal_id)
+        .bind(owner_org_id)
+        .execute(&mut **tx)
+        .await
+        .map_err(map_err)?;
     }
 
     let seq = uuid::Uuid::now_v7();
