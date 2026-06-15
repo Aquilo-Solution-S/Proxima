@@ -968,7 +968,6 @@ pub(super) async fn validate_target_execution_wake(
                AND personality_instance_id = $3
                AND tombstoned_at IS NULL
                AND enabled
-               AND execution_mode = 'workspace'
                AND trigger_kind = 'on_memory'
                AND trigger_id = $4
          )",
@@ -982,7 +981,7 @@ pub(super) async fn validate_target_execution_wake(
     .map_err(map_storage)?;
     if !exists {
         return Err(McpToolError::InvalidInput(
-            "target_personality has no enabled workspace wake entry for proxima-code/execution-request-v1"
+            "target_personality has no enabled wake entry for proxima-code/execution-request-v1"
                 .into(),
         ));
     }
