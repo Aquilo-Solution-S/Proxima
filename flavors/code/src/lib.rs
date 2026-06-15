@@ -11,7 +11,6 @@ pub mod mcp;
 pub mod migrations;
 pub mod payloads;
 pub mod repos;
-pub mod verification;
 
 pub use ingest::{
     CODE_BLOB_BYTE_RANGE_SCHEMA, CODE_BLOB_SCHEMA, CODE_BLOB_WHOLE_SCHEMA,
@@ -28,7 +27,7 @@ pub use payloads::{
     AcceptanceCriteriaV1, AcceptanceCriterionV1, AcceptanceVerifierKind, AcceptanceVerifierSpecV1,
     CodeChunkV1, CodeCommitSummarizerSelfV1, CodeDevelopmentPerspectiveV1, CodeEngineerSelfV1,
     CommitSummaryV1, CommitV1, EdgeCallsV1, ExecutionRequestV1, FileRevisionV1, FileState,
-    TestRequestV1, VerificationArtifactRefsV1, VerificationEvidenceStatus, VerificationEvidenceV1,
+    TestRequestV1,
 };
 
 use proxima_core::{
@@ -52,7 +51,6 @@ proxima_core::proxima_flavor! {
         payloads::ExecutionRequestV1,
         payloads::TestRequestV1,
         payloads::AcceptanceCriteriaV1,
-        payloads::VerificationEvidenceV1,
     ],
     abstraction_schemas = [
         payloads::CommitSummaryV1,
@@ -129,7 +127,6 @@ mod tests {
         assert!(schema_ids.contains("proxima-code/execution-request-v1"));
         assert!(schema_ids.contains("proxima-code/test-request-v1"));
         assert!(schema_ids.contains("proxima-code/acceptance-criteria-v1"));
-        assert!(schema_ids.contains("proxima-code/verification-evidence-v1"));
         // Abstraction schemas
         assert!(schema_ids.contains("proxima-code/commit-summary-v1"));
         // Perspective schemas

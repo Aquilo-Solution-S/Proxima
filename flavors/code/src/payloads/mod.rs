@@ -8,7 +8,6 @@ pub mod execution_request;
 pub mod file_revision;
 pub mod personality_self;
 pub mod test_request;
-pub mod verification_evidence;
 
 /// Serde adapter for 32-byte content hashes that round-trips through
 /// Postgres `bytea` (rendered as `"\xDEADBEEF..."` by `row_to_json`)
@@ -93,6 +92,3 @@ pub use execution_request::ExecutionRequestV1;
 pub use file_revision::{FileRevisionV1, FileState};
 pub use personality_self::{CodeCommitSummarizerSelfV1, CodeEngineerSelfV1};
 pub use test_request::TestRequestV1;
-pub use verification_evidence::{
-    VerificationArtifactRefsV1, VerificationEvidenceStatus, VerificationEvidenceV1,
-};
