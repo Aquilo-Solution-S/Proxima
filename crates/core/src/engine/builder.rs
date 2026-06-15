@@ -6,17 +6,15 @@ use tokio::sync::RwLock;
 use super::{EmbeddingClientReloader, Engine, EngineMcpListener};
 use crate::llm::{AnthropicClient, EmbeddingClient};
 use crate::storage::{NoopStorage, StorageHandle};
-use crate::verbs::query::MemoryStore;
 use crate::verbs::schema::FlavorRegistryFrozen;
 
 const DEFAULT_MCP_LISTEN_ADDR: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
 
 impl Engine {
     #[must_use]
-    pub fn new(registry: FlavorRegistryFrozen, memories: MemoryStore) -> Self {
+    pub fn new(registry: FlavorRegistryFrozen) -> Self {
         Self {
             registry,
-            memories,
             storage: Arc::new(NoopStorage),
             anthropic: None,
             embed: Arc::new(RwLock::new(None)),
@@ -42,7 +40,7 @@ impl Engine {
     ) -> Self {
         let mut registry = crate::FlavorRegistry::new();
         register(&mut registry);
-        Self::new(registry.freeze(), MemoryStore::new()).with_storage(storage)
+        Self::new(registry.freeze()).with_storage(storage)
     }
 
     /// Get a reference to the schema registry.

@@ -3,7 +3,7 @@
 use proxima_core::llm::EMBEDDING_DIM;
 use proxima_core::{
     EntityKind, MemoryId, MemoryOperatorKind, Owner, OwnerPrincipalKind, PersonalityInstanceId,
-    Principal, SchemaId, SchemaVersion, StorageError,
+    SchemaId, SchemaVersion, StorageError,
 };
 use sqlx::{Postgres, Transaction};
 
@@ -43,7 +43,7 @@ pub async fn append_derived_in_tx(
     tx: &mut Transaction<'_, Postgres>,
     draft: &DerivedDraft<'_>,
 ) -> Result<DerivedOutcome, StorageError> {
-    let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(&draft.owner);
+    let (owner_kind, owner_principal_id, owner_org_id) = draft.owner.columns();
     let author_personality_instance_id = draft
         .author_personality_instance_id
         .map_or_else(uuid::Uuid::nil, PersonalityInstanceId::into_inner);
@@ -161,13 +161,4 @@ async fn insert_embedding_in_tx(
     .await
     .map_err(map_err)?;
     Ok(())
-}
-
-fn owner_columns(owner: &Owner) -> (OwnerPrincipalKind, uuid::Uuid, uuid::Uuid) {
-    let kind = OwnerPrincipalKind::of(&owner.principal);
-    let principal_id = match &owner.principal {
-        Principal::User(u) => u.into_inner(),
-        Principal::Group(g) => g.into_inner(),
-    };
-    (kind, principal_id, owner.org_id.into_inner())
 }

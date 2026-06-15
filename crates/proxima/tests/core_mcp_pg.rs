@@ -1,12 +1,11 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use proxima::{
-    AppInfo, AuthPath, AuthzContext, CapabilitySet, CoreMcpError, FlavorApp, FlavorBundle,
-    Identity, NamedMigrator, Proxima, RoleSet, ToolScope, company_owner,
+    AppInfo, AuthPath, AuthzContext, CapabilitySet, CoreMcpError, CoreMcpTools, FlavorApp,
+    FlavorBundle, Identity, NamedMigrator, Proxima, RoleSet, ToolScope, company_owner,
 };
-use proxima_core::llm::{EMBEDDING_DIM, EmbeddingClient, LlmError};
+use proxima_core::test_fixtures::ConstantEmbedding;
 use proxima_core::{
     CitationMappingPayload, CitedObjectPayload, FlavorRegistry, MemoryId, Owner, SchemaId,
     StorageError,
@@ -17,28 +16,8 @@ use uuid::Uuid;
 struct EmptyApp;
 struct AgentMemoryApp;
 
-#[derive(Debug)]
-struct FixedEmbedding;
-
-#[async_trait]
-impl EmbeddingClient for FixedEmbedding {
-    async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
-        Ok(padded_embedding([1.0, 0.0, 0.0]))
-    }
-
-    fn model_id(&self) -> &'static str {
-        "test-embed"
-    }
-
-    fn dim(&self) -> usize {
-        EMBEDDING_DIM
-    }
-}
-
-fn padded_embedding(prefix: [f32; 3]) -> Vec<f32> {
-    let mut embedding = vec![0.0; EMBEDDING_DIM];
-    embedding[..prefix.len()].copy_from_slice(&prefix);
-    embedding
+fn test_embedding() -> Arc<ConstantEmbedding> {
+    Arc::new(ConstantEmbedding::prefixed("test-embed", &[1.0, 0.0, 0.0]))
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -183,6 +162,18 @@ fn host_authz(owner: &Owner, tool_scope: ToolScope) -> AuthzContext {
     }
 }
 
+async fn call_test_model_tool(
+    tools: &CoreMcpTools,
+    authz: AuthzContext,
+    owner: Owner,
+    name: &str,
+    args: serde_json::Value,
+) -> Result<serde_json::Value, CoreMcpError> {
+    tools
+        .call_core_tool(authz, owner, Some("test-model".to_string()), name, args)
+        .await
+}
+
 #[tokio::test]
 async fn facade_lists_and_dispatches_core_mcp_tools() {
     let db_name = unique_db_name("proxima_core_mcp");
@@ -212,15 +203,14 @@ async fn facade_lists_and_dispatches_core_mcp_tools() {
             "known core tool has a non-empty args schema"
         );
 
-        let output = tools
-            .call_core_tool(
-                host_authz(&owner, ToolScope::All),
-                owner.clone(),
-                Some("test-model".to_string()),
-                "core/list_personalities",
-                serde_json::json!({}),
-            )
-            .await?;
+        let output = call_test_model_tool(
+            &tools,
+            host_authz(&owner, ToolScope::All),
+            owner.clone(),
+            "core/list_personalities",
+            serde_json::json!({}),
+        )
+        .await?;
         assert!(
             output.get("personalities").is_some(),
             "read tool returns its JSON payload"
@@ -268,7 +258,7 @@ async fn facade_core_search_memories_finds_remembered_fact_lexical_and_semantic(
         let built = Proxima::<AgentMemoryApp>::app()
             .database_url(db_url)
             .owner(owner.clone())
-            .embed_client(Arc::new(FixedEmbedding))
+            .embed_client(test_embedding())
             .build()
             .await?;
         let tools = built.core_mcp_tools();
@@ -303,61 +293,60 @@ async fn facade_core_search_memories_finds_remembered_fact_lexical_and_semantic(
         assert!(substrate_tool_ids.contains("core/facts_citing_object"));
         assert!(substrate_tool_ids.contains("core/citation_of_fact"));
 
-        let remembered = tools
-            .call_core_tool(
-                authz.clone(),
-                owner.clone(),
-                Some("test-model".to_string()),
-                "core/remember",
-                serde_json::json!({
-                    "title": "Retrieval surface",
-                    "body": "hybrid substrate keyword needle",
-                    "tags": ["retrieval"],
-                    "idempotency_key": "facade-core-search-memory"
-                }),
-            )
-            .await?;
+        let remembered = call_test_model_tool(
+            &tools,
+            authz.clone(),
+            owner.clone(),
+            "core/remember",
+            serde_json::json!({
+                "title": "Retrieval surface",
+                "body": "hybrid substrate keyword needle",
+                "tags": ["retrieval"],
+                "idempotency_key": "facade-core-search-memory"
+            }),
+        )
+        .await?;
         let memory = remembered["handle"].as_str().expect("remembered handle");
         ensure_fact_embedding_for_handle(&built.engine, &owner, memory).await?;
 
-        let lexical = tools
-            .search_memories(
-                authz.clone(),
-                owner.clone(),
-                Some("test-model".to_string()),
-                serde_json::json!({
-                    "query": "keyword needle",
-                    "mode": "lexical",
-                    "kind": "Fact",
-                    "limit": 5
-                }),
-            )
-            .await?;
+        let lexical = call_test_model_tool(
+            &tools,
+            authz.clone(),
+            owner.clone(),
+            "core/search_memories",
+            serde_json::json!({
+                "query": "keyword needle",
+                "mode": "lexical",
+                "kind": "Fact",
+                "limit": 5
+            }),
+        )
+        .await?;
         assert_eq!(lexical["memories"][0]["memory"], memory);
 
-        let semantic = tools
-            .search_memories(
-                authz.clone(),
-                owner.clone(),
-                Some("test-model".to_string()),
-                serde_json::json!({
-                    "query": "unrelated semantic query",
-                    "mode": "semantic",
-                    "kind": "Fact",
-                    "limit": 5
-                }),
-            )
-            .await?;
+        let semantic = call_test_model_tool(
+            &tools,
+            authz.clone(),
+            owner.clone(),
+            "core/search_memories",
+            serde_json::json!({
+                "query": "unrelated semantic query",
+                "mode": "semantic",
+                "kind": "Fact",
+                "limit": 5
+            }),
+        )
+        .await?;
         assert_eq!(semantic["memories"][0]["memory"], memory);
 
-        let fetched = tools
-            .fetch_memory(
-                authz,
-                owner.clone(),
-                Some("test-model".to_string()),
-                serde_json::json!({ "memory": memory }),
-            )
-            .await?;
+        let fetched = call_test_model_tool(
+            &tools,
+            authz,
+            owner.clone(),
+            "core/fetch_memory",
+            serde_json::json!({ "memory": memory }),
+        )
+        .await?;
         assert_eq!(fetched["memory"], memory);
 
         built.shutdown();
@@ -381,35 +370,34 @@ async fn facade_core_citation_readback_is_owner_scoped() {
         let built = Proxima::<AgentMemoryApp>::app()
             .database_url(db_url)
             .owner(owner.clone())
-            .embed_client(Arc::new(FixedEmbedding))
+            .embed_client(test_embedding())
             .build()
             .await?;
         create_citation_sidecars(&built.pool).await?;
         let tools = built.core_mcp_tools();
         let authz = host_authz(&owner, ToolScope::All);
 
-        let remembered = tools
-            .call_core_tool(
-                authz.clone(),
-                owner.clone(),
-                Some("test-model".to_string()),
-                "core/remember",
-                serde_json::json!({
-                    "title": "Cited retrieval",
-                    "body": "Fact cites external object.",
-                    "tags": ["citation"],
-                    "idempotency_key": "facade-core-citation-memory",
-                    "citation": {
-                        "object_schema_id": TestCitedObject::SCHEMA_ID,
-                        "object_schema_version": TestCitedObject::SCHEMA_VERSION,
-                        "object_payload": { "locator": "artifact://facade/core-citation" },
-                        "mapping_schema_id": TestCitationMapping::SCHEMA_ID,
-                        "mapping_schema_version": TestCitationMapping::SCHEMA_VERSION,
-                        "mapping_payload": { "section": "body" }
-                    }
-                }),
-            )
-            .await?;
+        let remembered = call_test_model_tool(
+            &tools,
+            authz.clone(),
+            owner.clone(),
+            "core/remember",
+            serde_json::json!({
+                "title": "Cited retrieval",
+                "body": "Fact cites external object.",
+                "tags": ["citation"],
+                "idempotency_key": "facade-core-citation-memory",
+                "citation": {
+                    "object_schema_id": TestCitedObject::SCHEMA_ID,
+                    "object_schema_version": TestCitedObject::SCHEMA_VERSION,
+                    "object_payload": { "locator": "artifact://facade/core-citation" },
+                    "mapping_schema_id": TestCitationMapping::SCHEMA_ID,
+                    "mapping_schema_version": TestCitationMapping::SCHEMA_VERSION,
+                    "mapping_payload": { "section": "body" }
+                }
+            }),
+        )
+        .await?;
         let memory = remembered["handle"].as_str().expect("remembered handle");
         let fact_id = memory
             .strip_prefix("F:")
@@ -424,24 +412,24 @@ async fn facade_core_citation_readback_is_owner_scoped() {
         .fetch_one(&built.pool)
         .await?;
 
-        let citing = tools
-            .facts_citing_object(
-                authz.clone(),
-                owner.clone(),
-                Some("test-model".to_string()),
-                serde_json::json!({ "cited_object_id": cited_object_id.to_string() }),
-            )
-            .await?;
+        let citing = call_test_model_tool(
+            &tools,
+            authz.clone(),
+            owner.clone(),
+            "core/facts_citing_object",
+            serde_json::json!({ "cited_object_id": cited_object_id.to_string() }),
+        )
+        .await?;
         assert_eq!(citing["facts"][0]["memory"], memory);
 
-        let citation = tools
-            .citation_of_fact(
-                authz.clone(),
-                owner.clone(),
-                Some("test-model".to_string()),
-                serde_json::json!({ "fact": memory }),
-            )
-            .await?;
+        let citation = call_test_model_tool(
+            &tools,
+            authz.clone(),
+            owner.clone(),
+            "core/citation_of_fact",
+            serde_json::json!({ "fact": memory }),
+        )
+        .await?;
         assert_eq!(
             citation["citation"]["cited_object_id"],
             cited_object_id.to_string()
@@ -451,14 +439,14 @@ async fn facade_core_citation_readback_is_owner_scoped() {
             TestCitationMapping::SCHEMA_ID
         );
 
-        let cross_owner = tools
-            .facts_citing_object(
-                host_authz(&other_owner, ToolScope::All),
-                other_owner,
-                Some("test-model".to_string()),
-                serde_json::json!({ "cited_object_id": cited_object_id.to_string() }),
-            )
-            .await?;
+        let cross_owner = call_test_model_tool(
+            &tools,
+            host_authz(&other_owner, ToolScope::All),
+            other_owner,
+            "core/facts_citing_object",
+            serde_json::json!({ "cited_object_id": cited_object_id.to_string() }),
+        )
+        .await?;
         assert!(cross_owner["facts"].as_array().expect("facts").is_empty());
 
         built.shutdown();

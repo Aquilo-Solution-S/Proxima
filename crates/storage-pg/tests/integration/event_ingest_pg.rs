@@ -9,7 +9,6 @@ use proxima_core::storage::Storage;
 use proxima_core::verbs::event_ingest::{
     Citation, CitationMappingHint, CitedObjectHint, EventDraft,
 };
-use proxima_core::verbs::query::MemoryStore;
 use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaInfo};
 use proxima_core::{
     OrgId, Owner, Principal, SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId,
@@ -106,7 +105,7 @@ async fn event_ingest_writes_fact_and_change_event() {
         };
 
         let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
-        let engine = Engine::new(registry, MemoryStore::new()).with_storage(storage);
+        let engine = Engine::new(registry).with_storage(storage);
 
         let draft = fresh_draft(owner.clone());
 
@@ -252,7 +251,7 @@ async fn list_change_events_for_replay_respects_bounds_and_owner() {
         };
 
         let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
-        let engine = Engine::new(registry, MemoryStore::new()).with_storage(storage);
+        let engine = Engine::new(registry).with_storage(storage);
 
         let first = engine
             .event_ingest(
@@ -319,7 +318,7 @@ async fn list_change_events_after_scopes_by_principal_ignoring_org_id() {
         };
 
         let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
-        let engine = Engine::new(registry, MemoryStore::new()).with_storage(storage);
+        let engine = Engine::new(registry).with_storage(storage);
 
         let ingested = engine
             .event_ingest(

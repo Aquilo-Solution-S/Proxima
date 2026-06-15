@@ -3,7 +3,6 @@ use std::sync::Arc;
 #[cfg(test)]
 use proxima_core::AuthPath;
 use proxima_core::mcp::{McpAuthorContext, McpToolCtx, McpToolError, OutputMode};
-use proxima_core::verbs::query::MemoryStore;
 use proxima_core::{AuthzContext, Engine, FlavorRegistry, FlavorRegistryFrozen, Owner};
 
 use crate::auth::McpAuthContext;
@@ -62,9 +61,7 @@ impl McpToolHost {
         let pg = proxima_storage_pg::PgStorage::connect(database_url).await?;
         pg.run_migrations().await?;
         let frozen = registry.freeze();
-        let engine = Arc::new(
-            Engine::new(frozen.clone(), MemoryStore::new()).with_storage(Arc::new(pg.clone())),
-        );
+        let engine = Arc::new(Engine::new(frozen.clone()).with_storage(Arc::new(pg.clone())));
         Ok(Self::from_pool(pg.pool().clone(), owner, Arc::new(frozen)).with_engine(engine))
     }
 
@@ -169,9 +166,7 @@ impl McpToolHost {
         if let (Some(engine), Some(auth_ctx)) = (self.engine.as_ref(), auth.as_ref())
             && matches!(
                 auth_ctx.authz.auth_path,
-                proxima_core::AuthPath::HostBearer
-                    | proxima_core::AuthPath::Wake
-                    | proxima_core::AuthPath::MasterDev
+                proxima_core::AuthPath::HostBearer | proxima_core::AuthPath::MasterDev
             )
         {
             let identity = engine

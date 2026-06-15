@@ -19,9 +19,7 @@ fn owner_parts(owner: &Owner) -> (OwnerPrincipalKind, Uuid, Uuid) {
 
 #[tokio::test]
 async fn check_rejects_undecodable_change_event_rows() {
-    let Some((pg, db_name)) = crate::common::fresh_pg().await else {
-        return;
-    };
+    let (pg, db_name) = crate::common::fresh_pg().await;
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         pg.run_migrations().await?;

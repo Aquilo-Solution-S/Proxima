@@ -4,7 +4,6 @@ use std::sync::Arc;
 
 use common::{create_db, db_url, drop_db};
 use proxima_core::mcp::McpAuthorContext;
-use proxima_core::verbs::query::MemoryStore;
 use proxima_core::{
     Engine, FlavorRegistry, OrgId, Owner, OwnerPrincipalKind, Principal, RelationClass, UserId,
 };
@@ -15,9 +14,7 @@ use serde_json::json;
 #[tokio::test]
 async fn core_read_tools_return_prefixed_ids_and_author() -> Result<(), Box<dyn std::error::Error>>
 {
-    let Some(db_name) = create_db().await? else {
-        return Ok(());
-    };
+    let db_name = create_db().await?;
     let database_url = db_url(&db_name);
     let pg = PgStorage::connect(&database_url).await?;
     pg.run_migrations().await?;
@@ -32,9 +29,7 @@ async fn core_read_tools_return_prefixed_ids_and_author() -> Result<(), Box<dyn 
     let edge = insert_edge(&pg, &owner, derived, source).await?;
 
     let registry = FlavorRegistry::new().freeze();
-    let engine = Arc::new(
-        Engine::new(registry.clone(), MemoryStore::new()).with_storage(pg.clone().into_handle()),
-    );
+    let engine = Arc::new(Engine::new(registry.clone()).with_storage(pg.clone().into_handle()));
     let server = McpToolHost::from_pool(pg.pool().clone(), owner.clone(), Arc::new(registry))
         .with_engine(engine);
 

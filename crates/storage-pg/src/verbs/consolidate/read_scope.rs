@@ -7,7 +7,6 @@ use proxima_core::personality::{
 use proxima_core::{OwnerPrincipalKind, StorageError};
 use sqlx::PgPool;
 
-use super::rows::owner_columns;
 use crate::error::map_err;
 
 pub async fn list_read_scope(
@@ -15,7 +14,7 @@ pub async fn list_read_scope(
     req: &ListReadScopeRequest,
 ) -> Result<ListReadScopeResponse, StorageError> {
     let owner = req.owner();
-    let (owner_kind, owner_principal_id, _owner_org_id) = owner_columns(&owner);
+    let (owner_kind, owner_principal_id, _owner_org_id) = owner.columns();
     ensure_active_personality(
         pool,
         owner_kind,
@@ -52,7 +51,7 @@ pub async fn set_read_scope(
     req: &SetReadScopeRequest,
 ) -> Result<SetReadScopeResponse, StorageError> {
     let owner = req.owner();
-    let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(&owner);
+    let (owner_kind, owner_principal_id, owner_org_id) = owner.columns();
     let reader_id = req.reader_personality_instance_id.into_inner();
     let readable_ids: Vec<_> = req
         .readable_personality_instance_ids

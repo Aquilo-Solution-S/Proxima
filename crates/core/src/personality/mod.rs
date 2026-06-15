@@ -4,15 +4,9 @@
 //! are addressed by `personality_instance_id` and point at a Root
 //! Perspective plus `WakeEntry` rows in storage.
 
-pub mod authorization;
-pub mod context;
 pub mod drafts;
-pub mod emit_palette;
-pub mod produces;
 pub mod requests;
 pub mod rows;
-pub mod tool;
-pub mod tools;
 pub mod types;
 pub mod wake_validation;
 
@@ -38,10 +32,7 @@ pub use drafts::{
 };
 
 // Re-export from rows submodule
-pub use rows::{ChangeEventForWake, PersonalityInstanceRow, WakeEntryRow};
-
-// Re-export from context submodule
-pub use context::PersonalityToolContext;
+pub use rows::{ActiveGoalSummary, ChangeEventForWake, PersonalityInstanceRow, WakeEntryRow};
 
 // Re-export from requests submodule
 pub use requests::{
@@ -50,20 +41,6 @@ pub use requests::{
     SetWakeEntriesResponse, TombstonePersonalityRequest, TombstonePersonalityResponse,
 };
 
-// Re-export from tool submodule
-pub use tool::{PersonalityTool, PersonalityToolResult};
-
-// Re-export from produces submodule
-pub use produces::{writeable_relations_for_palette, writeable_schemas_for_palette};
-
-// Re-export from emit_palette submodule
-pub use emit_palette::{
-    EMIT_ABSTRACTION_TOOL_ID, EMIT_PERSPECTIVE_TOOL_ID, ScopedEmitToolId, ScopedEmitToolIdError,
-    broad_emit_kind, palette_authorizes_internal_tool, parse_scoped_emit_tool_id,
-    scoped_emit_tool_id,
-};
-
-pub use tools::{ActiveGoalSummary, substrate_pack};
 pub use wake_validation::validate_wake_entries_detect_config;
 
 #[cfg(test)]

@@ -4,11 +4,11 @@ use proxima_core::verbs::persist_mcp_call::{
     MCP_CALL_CITATION_SCHEMA, MCP_CALL_FACT_SCHEMA, MCP_CALL_IO_SCHEMA, MCP_CALL_SOURCE_ID,
     McpCallLogInput, McpCallLogOutcome,
 };
-use proxima_core::{MemoryId, OwnerPrincipalKind, Principal, StorageError};
+use proxima_core::{MemoryId, StorageError};
 use sqlx::{PgPool, Postgres, Transaction};
 use uuid::Uuid;
 
-use crate::error::map_err;
+use crate::error::{internal, map_err};
 
 /// Persist one MCP call log in a new transaction.
 ///
@@ -19,10 +19,7 @@ pub async fn persist_mcp_call_atomic(
     pool: &PgPool,
     input: &McpCallLogInput,
 ) -> Result<McpCallLogOutcome, StorageError> {
-    let mut tx = pool
-        .begin()
-        .await
-        .map_err(|e| StorageError::Internal(e.to_string()))?;
+    let mut tx = pool.begin().await.map_err(internal)?;
     let outcome = persist_mcp_call_in_tx(&mut tx, input).await?;
     tx.commit().await.map_err(map_err)?;
     Ok(outcome)
@@ -39,16 +36,10 @@ pub async fn persist_mcp_call_in_tx(
     input: &McpCallLogInput,
 ) -> Result<McpCallLogOutcome, StorageError> {
     let io_content_hash = input.io_content_hash();
-    let event_id = input
-        .event_id()
-        .map_err(|e| StorageError::Internal(e.to_string()))?;
+    let event_id = input.event_id().map_err(internal)?;
     let event_id_bytes = event_id.into_inner();
 
-    let (owner_kind, owner_principal_id) = match &input.owner.principal {
-        Principal::User(u) => (OwnerPrincipalKind::User, u.into_inner()),
-        Principal::Group(g) => (OwnerPrincipalKind::Group, g.into_inner()),
-    };
-    let owner_org_id = input.owner.org_id.into_inner();
+    let (owner_kind, owner_principal_id, owner_org_id) = input.owner.columns();
 
     let existing = sqlx::query_as::<_, (Uuid, Uuid, Uuid)>(
         r"SELECT m.memory_id,

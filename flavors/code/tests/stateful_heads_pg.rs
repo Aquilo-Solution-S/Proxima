@@ -13,6 +13,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+mod common;
+
+use common::migrated_db;
 use proxima_code::{CodeChunkV1, CommitV1, FileRevisionV1, FileState};
 use proxima_core::engine::Engine;
 use proxima_core::storage::Storage;
@@ -20,15 +23,14 @@ use proxima_core::verbs::event_ingest::{
     Citation, CitationMappingHint, CitedObjectHint, EventDraft,
 };
 use proxima_core::verbs::query::{
-    MemoryStore, PersonalityRootFilter, QueryRequest, SupersessionStatus, TombstoneFilter,
+    PersonalityRootFilter, QueryRequest, SupersessionStatus, TombstoneFilter,
 };
 use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaInfo, SchemaTombstone};
 use proxima_core::{
     CORE_DERIVED_FROM_RELATION, FactPayload, FlavorRegistry, OrgId, Owner, Principal, SchemaId,
     SchemaVersion, SourceBatchId, SourceId, UserId,
 };
-use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
-use proxima_storage_pg::PgStorage;
+use proxima_pg_testkit::drop_db;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -211,19 +213,13 @@ async fn insert_memory_edge(
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn heads_only_returns_latest_per_natural_key() {
-    let db_name = unique_db_name("proxima_test");
-    create_db(&db_name).await.expect("PG required for tests");
-    let url = db_url(&db_name);
+    let (db_name, pg) = migrated_db().await;
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_migrations().await?;
-        proxima_code::migrator().run(pg.pool()).await?;
-
         let storage: Arc<dyn Storage> = Arc::new(pg.clone());
         let (_user, owner) = make_owner();
 
-        let engine = Engine::new(registry_for_test(), MemoryStore::new()).with_storage(storage);
+        let engine = Engine::new(registry_for_test()).with_storage(storage);
 
         let repo_id = Uuid::now_v7();
 
@@ -348,19 +344,13 @@ async fn heads_only_no_op_for_stateless_fact_schema() {
     // commit-v1 has no NK columns — heads-only should fall through to the
     // A/P-style supersedes scan, which (since Facts have no supersedes)
     // returns every row.
-    let db_name = unique_db_name("proxima_test");
-    create_db(&db_name).await.expect("PG required for tests");
-    let url = db_url(&db_name);
+    let (db_name, pg) = migrated_db().await;
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_migrations().await?;
-        proxima_code::migrator().run(pg.pool()).await?;
-
         let storage: Arc<dyn Storage> = Arc::new(pg.clone());
         let (_user, owner) = make_owner();
 
-        let engine = Engine::new(registry_for_test(), MemoryStore::new()).with_storage(storage);
+        let engine = Engine::new(registry_for_test()).with_storage(storage);
 
         // Two distinct commit Facts.
         for payload in [b"c1" as &[u8], b"c2"] {
@@ -412,17 +402,12 @@ async fn heads_only_no_op_for_stateless_fact_schema() {
 
 #[tokio::test]
 async fn owner_snapshot_heads_only_folds_all_stateful_fact_schemas() {
-    let db_name = unique_db_name("proxima_test");
-    create_db(&db_name).await.expect("PG required for tests");
-    let url = db_url(&db_name);
+    let (db_name, pg) = migrated_db().await;
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_migrations().await?;
-        proxima_code::migrator().run(pg.pool()).await?;
         let storage: Arc<dyn Storage> = Arc::new(pg.clone());
         let (_user, owner) = make_owner();
-        let engine = Engine::new(registry_for_test(), MemoryStore::new()).with_storage(storage);
+        let engine = Engine::new(registry_for_test()).with_storage(storage);
         let repo_id = Uuid::now_v7();
 
         let a_v1 = seed_file_revision_state(
@@ -497,19 +482,14 @@ async fn owner_snapshot_heads_only_folds_all_stateful_fact_schemas() {
 
 #[tokio::test]
 async fn present_only_excludes_tombstone_head_without_reviving_previous_present() {
-    let db_name = unique_db_name("proxima_test");
-    create_db(&db_name).await.expect("PG required for tests");
-    let url = db_url(&db_name);
+    let (db_name, pg) = migrated_db().await;
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_migrations().await?;
-        proxima_code::migrator().run(pg.pool()).await?;
         let storage: Arc<dyn Storage> = Arc::new(pg.clone());
         let (_user, owner) = make_owner();
         let authz =
             proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System);
-        let engine = Engine::new(registry_for_test(), MemoryStore::new()).with_storage(storage);
+        let engine = Engine::new(registry_for_test()).with_storage(storage);
         let repo_id = Uuid::now_v7();
 
         let present = seed_file_revision_state(
@@ -597,17 +577,12 @@ async fn present_only_excludes_tombstone_head_without_reviving_previous_present(
 
 #[tokio::test]
 async fn present_only_snapshot_excludes_edges_to_tombstoned_heads() {
-    let db_name = unique_db_name("proxima_test");
-    create_db(&db_name).await.expect("PG required for tests");
-    let url = db_url(&db_name);
+    let (db_name, pg) = migrated_db().await;
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_migrations().await?;
-        proxima_code::migrator().run(pg.pool()).await?;
         let storage: Arc<dyn Storage> = Arc::new(pg.clone());
         let (_user, owner) = make_owner();
-        let engine = Engine::new(registry_for_test(), MemoryStore::new()).with_storage(storage);
+        let engine = Engine::new(registry_for_test()).with_storage(storage);
         let repo_id = Uuid::now_v7();
         let active = seed_file_revision_state(
             pg.pool(),
@@ -662,17 +637,12 @@ async fn present_only_snapshot_excludes_edges_to_tombstoned_heads() {
 
 #[tokio::test]
 async fn present_only_edge_id_hydration_excludes_edges_with_hidden_endpoint() {
-    let db_name = unique_db_name("proxima_test");
-    create_db(&db_name).await.expect("PG required for tests");
-    let url = db_url(&db_name);
+    let (db_name, pg) = migrated_db().await;
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_migrations().await?;
-        proxima_code::migrator().run(pg.pool()).await?;
         let storage: Arc<dyn Storage> = Arc::new(pg.clone());
         let (_user, owner) = make_owner();
-        let engine = Engine::new(registry_for_test(), MemoryStore::new()).with_storage(storage);
+        let engine = Engine::new(registry_for_test()).with_storage(storage);
         let repo_id = Uuid::now_v7();
         let active = seed_file_revision_state(
             pg.pool(),

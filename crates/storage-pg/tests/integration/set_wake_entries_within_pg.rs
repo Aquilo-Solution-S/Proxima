@@ -29,9 +29,7 @@ fn wake_entry(
 
 #[tokio::test(flavor = "multi_thread")]
 async fn set_wake_entries_within_appends_one() -> Result<(), Box<dyn std::error::Error>> {
-    let Some((pg, db)) = fresh_pg().await else {
-        return Ok(());
-    };
+    let (pg, db) = fresh_pg().await;
     pg.run_migrations().await?;
 
     let owner = Owner {
@@ -75,9 +73,7 @@ async fn set_wake_entries_within_appends_one() -> Result<(), Box<dyn std::error:
 #[tokio::test(flavor = "multi_thread")]
 async fn set_wake_entries_within_preserves_carried_entry_id()
 -> Result<(), Box<dyn std::error::Error>> {
-    let Some((pg, db)) = fresh_pg().await else {
-        return Ok(());
-    };
+    let (pg, db) = fresh_pg().await;
     pg.run_migrations().await?;
 
     let owner = Owner {

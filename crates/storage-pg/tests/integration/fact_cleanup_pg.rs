@@ -7,9 +7,7 @@ use proxima_core::llm::EMBEDDING_DIM;
 use proxima_core::verbs::event_ingest::{
     Citation, CitationMappingHint, CitedObjectHint, EventDraft,
 };
-use proxima_core::verbs::query::{
-    MemoryLineageDirection, MemoryLineageRequest, MemoryStore, QueryRequest,
-};
+use proxima_core::verbs::query::{MemoryLineageDirection, MemoryLineageRequest, QueryRequest};
 use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaInfo};
 use proxima_core::{
     AuthPath, AuthzContext, EntityKind, MemoryId, Owner, OwnerPrincipalKind, Principal, SchemaId,
@@ -95,16 +93,14 @@ fn fresh_draft_with_content_hash(owner: Owner, content_hash: [u8; 32]) -> EventD
 #[tokio::test]
 async fn cleanup_due_facts_erases_fact_and_tombstones_direct_derivative()
 -> Result<(), Box<dyn std::error::Error>> {
-    let Some((pg, db_name)) = fresh_pg().await else {
-        return Ok(());
-    };
+    let (pg, db_name) = fresh_pg().await;
     pg.run_migrations().await?;
 
     let owner = owner_fixture();
     let authz = AuthzContext::single_owner(&owner, AuthPath::System);
     let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
     let storage: Arc<dyn Storage> = Arc::new(pg.clone());
-    let engine = Engine::new(registry, MemoryStore::new()).with_storage(storage);
+    let engine = Engine::new(registry).with_storage(storage);
 
     let ingest = engine
         .event_ingest(&authz, fresh_draft(owner.clone()))
@@ -157,16 +153,14 @@ async fn cleanup_due_facts_erases_fact_and_tombstones_direct_derivative()
 #[tokio::test]
 async fn cleanup_due_facts_tombstones_transitive_derivatives()
 -> Result<(), Box<dyn std::error::Error>> {
-    let Some((pg, db_name)) = fresh_pg().await else {
-        return Ok(());
-    };
+    let (pg, db_name) = fresh_pg().await;
     pg.run_migrations().await?;
 
     let owner = owner_fixture();
     let authz = AuthzContext::single_owner(&owner, AuthPath::System);
     let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
     let storage: Arc<dyn Storage> = Arc::new(pg.clone());
-    let engine = Engine::new(registry, MemoryStore::new()).with_storage(storage);
+    let engine = Engine::new(registry).with_storage(storage);
 
     let ingest = engine
         .event_ingest(&authz, fresh_draft(owner.clone()))
@@ -205,16 +199,14 @@ async fn cleanup_due_facts_tombstones_transitive_derivatives()
 #[tokio::test]
 async fn cleanup_due_facts_aggressively_tombstones_multi_support_derivative()
 -> Result<(), Box<dyn std::error::Error>> {
-    let Some((pg, db_name)) = fresh_pg().await else {
-        return Ok(());
-    };
+    let (pg, db_name) = fresh_pg().await;
     pg.run_migrations().await?;
 
     let owner = owner_fixture();
     let authz = AuthzContext::single_owner(&owner, AuthPath::System);
     let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
     let storage: Arc<dyn Storage> = Arc::new(pg.clone());
-    let engine = Engine::new(registry, MemoryStore::new()).with_storage(storage);
+    let engine = Engine::new(registry).with_storage(storage);
 
     let due_fact = engine
         .event_ingest(
@@ -259,16 +251,14 @@ async fn cleanup_due_facts_aggressively_tombstones_multi_support_derivative()
 #[tokio::test]
 async fn cleanup_due_facts_garbage_collects_cited_objects_by_reference_count()
 -> Result<(), Box<dyn std::error::Error>> {
-    let Some((pg, db_name)) = fresh_pg().await else {
-        return Ok(());
-    };
+    let (pg, db_name) = fresh_pg().await;
     pg.run_migrations().await?;
 
     let owner = owner_fixture();
     let authz = AuthzContext::single_owner(&owner, AuthPath::System);
     let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
     let storage: Arc<dyn Storage> = Arc::new(pg.clone());
-    let engine = Engine::new(registry, MemoryStore::new()).with_storage(storage);
+    let engine = Engine::new(registry).with_storage(storage);
 
     let first = engine
         .event_ingest(&authz, fresh_draft(owner.clone()))
@@ -305,16 +295,14 @@ async fn cleanup_due_facts_garbage_collects_cited_objects_by_reference_count()
 #[tokio::test]
 async fn cleanup_due_facts_deletes_cited_object_sidecars_and_surfaces_s3_refs()
 -> Result<(), Box<dyn std::error::Error>> {
-    let Some((pg, db_name)) = fresh_pg().await else {
-        return Ok(());
-    };
+    let (pg, db_name) = fresh_pg().await;
     pg.run_migrations().await?;
 
     let owner = owner_fixture();
     let authz = AuthzContext::single_owner(&owner, AuthPath::System);
     let registry = FlavorRegistryFrozen::with_schemas(schemas_for_uploaded_blob_gc_test());
     let storage: Arc<dyn Storage> = Arc::new(pg.clone());
-    let engine = Engine::new(registry, MemoryStore::new()).with_storage(storage);
+    let engine = Engine::new(registry).with_storage(storage);
 
     let ingest = engine
         .event_ingest(&authz, fresh_draft(owner.clone()))

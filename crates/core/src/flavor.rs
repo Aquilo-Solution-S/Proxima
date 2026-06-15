@@ -42,8 +42,8 @@ pub struct FlavorDescriptor {
     /// is empty.
     pub author: Option<String>,
     /// How this flavor was loaded into the binary. v1 is always
-    /// `Builtin`; other variants are wire-compatible reserved values,
-    /// not a runtime registration contract.
+    /// `Builtin`; the other variants are inert forward-compat
+    /// placeholders, not a runtime registration contract.
     pub provenance: FlavorProvenance,
 }
 

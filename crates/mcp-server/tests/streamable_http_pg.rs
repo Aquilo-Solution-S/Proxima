@@ -20,9 +20,7 @@ use tokio::task::JoinHandle;
 
 #[tokio::test]
 async fn streamable_http_initialize_list_and_remember() -> Result<(), Box<dyn std::error::Error>> {
-    let Some(db_name) = create_db().await? else {
-        return Ok(());
-    };
+    let db_name = create_db().await?;
     let database_url = db_url(&db_name);
     let registry = FlavorRegistry::new();
     let server = McpToolHost::from_database_url(&database_url, nil_owner(), registry).await?;
@@ -101,9 +99,7 @@ fn assert_prefixed_uuid(raw: &str, expected_prefix: &str) {
 
 #[tokio::test]
 async fn missing_auth_returns_401() -> Result<(), Box<dyn std::error::Error>> {
-    let Some(db_name) = create_db().await? else {
-        return Ok(());
-    };
+    let db_name = create_db().await?;
     let database_url = db_url(&db_name);
     let registry = FlavorRegistry::new();
     let server = McpToolHost::from_database_url(&database_url, nil_owner(), registry).await?;
@@ -134,9 +130,7 @@ async fn missing_auth_returns_401() -> Result<(), Box<dyn std::error::Error>> {
 #[tokio::test]
 async fn disallowed_origin_returns_403_with_valid_token() -> Result<(), Box<dyn std::error::Error>>
 {
-    let Some(db_name) = create_db().await? else {
-        return Ok(());
-    };
+    let db_name = create_db().await?;
     let database_url = db_url(&db_name);
     let registry = FlavorRegistry::new();
     let server = McpToolHost::from_database_url(&database_url, nil_owner(), registry).await?;
@@ -173,9 +167,7 @@ async fn disallowed_origin_returns_403_with_valid_token() -> Result<(), Box<dyn 
 #[tokio::test]
 async fn local_master_token_lists_all_tools_without_origin()
 -> Result<(), Box<dyn std::error::Error>> {
-    let Some(db_name) = create_db().await? else {
-        return Ok(());
-    };
+    let db_name = create_db().await?;
     let database_url = db_url(&db_name);
     let registry = FlavorRegistry::new();
     let server = McpToolHost::from_database_url(&database_url, nil_owner(), registry).await?;
@@ -227,9 +219,7 @@ async fn local_master_token_lists_all_tools_without_origin()
 
 #[tokio::test]
 async fn non_loopback_bind_refused_immediately() -> Result<(), Box<dyn std::error::Error>> {
-    let Some(db_name) = create_db().await? else {
-        return Ok(());
-    };
+    let db_name = create_db().await?;
     let database_url = db_url(&db_name);
     let registry = FlavorRegistry::new();
     let server = McpToolHost::from_database_url(&database_url, nil_owner(), registry).await?;
@@ -249,11 +239,8 @@ async fn non_loopback_bind_refused_immediately() -> Result<(), Box<dyn std::erro
 #[tokio::test]
 async fn host_bearer_sse_get_closes_at_identity_expiry() -> Result<(), Box<dyn std::error::Error>> {
     let auth = Arc::new(TestHostAuth::new(nil_owner(), Some(Duration::from_secs(2))));
-    let Some((handle, addr, db_name)) =
-        start_host_auth_server(auth, RevalidationConfig::default()).await?
-    else {
-        return Ok(());
-    };
+    let (handle, addr, db_name) =
+        start_host_auth_server(auth, RevalidationConfig::default()).await?;
     let client = reqwest::Client::new();
     let url = format!("http://{addr}/mcp");
     let bearer = "Bearer host-token";
@@ -278,9 +265,7 @@ async fn host_bearer_sse_get_closes_after_epoch_bump() -> Result<(), Box<dyn std
         max_stream_lifetime: Duration::from_secs(30),
         epoch_check_interval: Duration::from_millis(200),
     };
-    let Some((handle, addr, db_name)) = start_host_auth_server(auth.clone(), config).await? else {
-        return Ok(());
-    };
+    let (handle, addr, db_name) = start_host_auth_server(auth.clone(), config).await?;
     let client = reqwest::Client::new();
     let url = format!("http://{addr}/mcp");
     let bearer = "Bearer host-token";
@@ -361,10 +346,8 @@ type HostServer = (
 async fn start_host_auth_server(
     authenticator: Arc<TestHostAuth>,
     revalidation: RevalidationConfig,
-) -> Result<Option<HostServer>, Box<dyn std::error::Error>> {
-    let Some(db_name) = create_db().await? else {
-        return Ok(None);
-    };
+) -> Result<HostServer, Box<dyn std::error::Error>> {
+    let db_name = create_db().await?;
     let database_url = db_url(&db_name);
     let registry = FlavorRegistry::new();
     let server = McpToolHost::from_database_url(&database_url, nil_owner(), registry).await?;
@@ -377,7 +360,7 @@ async fn start_host_auth_server(
         revalidation,
     )
     .await?;
-    Ok(Some((handle, addr, db_name)))
+    Ok((handle, addr, db_name))
 }
 
 async fn open_standalone_sse(

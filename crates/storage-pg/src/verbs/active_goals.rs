@@ -1,7 +1,9 @@
 use proxima_core::personality::ActiveGoalSummary;
 use proxima_core::verbs::goal_write::GoalState;
-use proxima_core::{GoalId, MemoryId, OwnerPrincipalKind, Principal, StorageError};
+use proxima_core::{GoalId, MemoryId, Principal, StorageError};
 use sqlx::PgPool;
+
+use crate::error::internal;
 
 pub(crate) async fn list_active_goals(
     pool: &PgPool,
@@ -9,7 +11,7 @@ pub(crate) async fn list_active_goals(
     self_perspective_memory_id: MemoryId,
     limit: usize,
 ) -> Result<Vec<ActiveGoalSummary>, StorageError> {
-    let (owner_kind, owner_principal_id) = owner_columns(principal);
+    let (owner_kind, owner_principal_id) = principal.columns();
 
     let sql = "WITH RECURSIVE linked_goals(goal_id) AS (
              SELECT e.source_goal_id
@@ -53,7 +55,7 @@ pub(crate) async fn list_active_goals(
         .bind(i64::try_from(limit).unwrap_or(i64::MAX))
         .fetch_all(pool)
         .await
-        .map_err(|e| StorageError::Internal(e.to_string()))?;
+        .map_err(internal)?;
 
     Ok(rows
         .into_iter()
@@ -70,11 +72,4 @@ struct ActiveGoalRow {
     goal_id: uuid::Uuid,
     title: String,
     goal_activated_memory_id: Option<uuid::Uuid>,
-}
-
-fn owner_columns(principal: &Principal) -> (OwnerPrincipalKind, uuid::Uuid) {
-    match principal {
-        Principal::User(user) => (OwnerPrincipalKind::User, user.into_inner()),
-        Principal::Group(group) => (OwnerPrincipalKind::Group, group.into_inner()),
-    }
 }

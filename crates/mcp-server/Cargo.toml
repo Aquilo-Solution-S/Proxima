@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+publish = false
 
 [lib]
 name = "proxima_mcp_server"
@@ -30,6 +31,7 @@ tracing = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
+proxima-core = { path = "../core", features = ["test-fixtures"] }
 proxima-pg-testkit = { path = "../pg-testkit" }
 reqwest = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }

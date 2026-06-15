@@ -1,5 +1,5 @@
 //! Bootstrap a blank Postgres with the substrate schema and every in-repo
-//! flavor sidecar, in the same order the desktop shell boots them.
+//! flavor sidecar, in the same order a composite host boots them.
 //!
 //! `sqlx migrate run` cannot do this: the substrate and flavor migrators
 //! share one `_sqlx_migrations` table, so the CLI fails with

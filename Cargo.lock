@@ -2263,7 +2263,6 @@ dependencies = [
  "futures-util",
  "proxima-pg-testkit",
  "proxima-storage-pg",
- "reqwest",
  "schemars",
  "serde",
  "serde_json",
