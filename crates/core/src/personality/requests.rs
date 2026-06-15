@@ -15,7 +15,6 @@ pub struct InstantiatePersonalityRequest {
     pub principal: Principal,
     pub org_id: Option<OrgId>,
     pub display_name: String,
-    pub purpose: String,
 }
 
 impl InstantiatePersonalityRequest {

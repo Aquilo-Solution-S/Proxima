@@ -52,8 +52,6 @@ pub enum PersonalityConfigChangeSnapshot {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         display_name: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        purpose: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
         status: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         wake_entry_count: Option<usize>,
@@ -100,7 +98,6 @@ mod tests {
             after: Some(PersonalityConfigChangeSnapshot::Personality {
                 personality_instance_id: None,
                 display_name: Some("Engineer".into()),
-                purpose: None,
                 status: None,
                 wake_entry_count: None,
             }),

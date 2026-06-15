@@ -179,7 +179,6 @@ mod tests {
             Some(PersonalityConfigChangeSnapshot::Personality {
                 personality_instance_id: None,
                 display_name: None,
-                purpose: None,
                 status: None,
                 wake_entry_count: None,
             }),
@@ -232,7 +231,6 @@ mod tests {
             Some(PersonalityConfigChangeSnapshot::Personality {
                 personality_instance_id: None,
                 display_name: None,
-                purpose: None,
                 status: None,
                 wake_entry_count: None,
             }),

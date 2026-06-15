@@ -213,7 +213,6 @@ pub async fn instantiate_test_personality(
                 principal: owner.principal.clone(),
                 org_id: None,
                 display_name: "Test Personality".into(),
-                purpose: "test".into(),
             },
         )
         .await

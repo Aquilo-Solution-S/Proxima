@@ -57,7 +57,6 @@ impl McpTool for TombstonePersonalityTool {
             let before = before_row.map(|r| PersonalityConfigChangeSnapshot::Personality {
                 personality_instance_id: Some(r.personality_instance_id.into_inner()),
                 display_name: Some(r.display_name.clone()),
-                purpose: None,
                 status: Some(r.status.as_str().to_string()),
                 wake_entry_count: Some(r.wake_entries.len()),
             });

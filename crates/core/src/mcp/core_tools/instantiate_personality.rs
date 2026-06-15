@@ -19,7 +19,6 @@ pub struct InstantiatePersonalityTool;
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct InstantiatePersonalityArgs {
     pub display_name: String,
-    pub purpose: String,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -44,12 +43,8 @@ impl McpTool for InstantiatePersonalityTool {
     ) -> BoxFuture<'static, Result<InstantiatePersonalityOutput, McpToolError>> {
         Box::pin(async move {
             let display_name = args.display_name.trim().to_string();
-            let purpose = args.purpose.trim().to_string();
             if display_name.is_empty() {
                 return Err(McpToolError::InvalidInput("display_name is empty".into()));
-            }
-            if purpose.is_empty() {
-                return Err(McpToolError::InvalidInput("purpose is empty".into()));
             }
             let engine = ctx
                 .engine()
@@ -58,7 +53,6 @@ impl McpTool for InstantiatePersonalityTool {
                 principal: ctx.owner.principal.clone(),
                 org_id: None,
                 display_name: display_name.clone(),
-                purpose: purpose.clone(),
             };
             let resp = engine
                 .instantiate_personality(&ctx.authz, req)
@@ -67,7 +61,6 @@ impl McpTool for InstantiatePersonalityTool {
             let after = PersonalityConfigChangeSnapshot::Personality {
                 personality_instance_id: Some(resp.instance_id.into_inner()),
                 display_name: Some(display_name),
-                purpose: Some(purpose),
                 status: None,
                 wake_entry_count: None,
             };

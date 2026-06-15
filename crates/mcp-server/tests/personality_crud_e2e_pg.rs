@@ -36,7 +36,6 @@ async fn wake_token_audit_attributes_caller_personality() -> Result<(), Box<dyn 
             principal: owner.principal.clone(),
             org_id: Some(owner.org_id),
             display_name: "caller".into(),
-            purpose: "self-evolution test".into(),
         })
         .await?;
 

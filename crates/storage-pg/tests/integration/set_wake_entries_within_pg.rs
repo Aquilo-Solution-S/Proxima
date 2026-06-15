@@ -43,7 +43,6 @@ async fn set_wake_entries_within_appends_one() -> Result<(), Box<dyn std::error:
             principal: owner.principal.clone(),
             org_id: Some(owner.org_id),
             display_name: "test".into(),
-            purpose: "rmw fixture".into(),
         })
         .await?;
 
@@ -90,7 +89,6 @@ async fn set_wake_entries_within_preserves_carried_entry_id()
             principal: owner.principal.clone(),
             org_id: Some(owner.org_id),
             display_name: "test".into(),
-            purpose: "rmw fixture".into(),
         })
         .await?;
 

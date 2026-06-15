@@ -52,9 +52,8 @@ impl Engine {
 
     /// # Errors
     ///
-    /// Returns `ProtocolError::InvalidArgument` when `display_name` or
-    /// `purpose` are empty, or `ProtocolError::Internal` when storage
-    /// operations fail.
+    /// Returns `ProtocolError::InvalidArgument` when `display_name` is
+    /// empty, or `ProtocolError::Internal` when storage operations fail.
     pub async fn instantiate_personality(
         &self,
         authz: &AuthzContext,
@@ -65,12 +64,6 @@ impl Engine {
         if req.display_name.trim().is_empty() {
             return Err(ProtocolError::invalid_argument(
                 "display_name",
-                "must not be empty",
-            ));
-        }
-        if req.purpose.trim().is_empty() {
-            return Err(ProtocolError::invalid_argument(
-                "purpose",
                 "must not be empty",
             ));
         }

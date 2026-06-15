@@ -71,7 +71,6 @@ async fn instantiate(
             principal: owner.principal.clone(),
             org_id: Some(owner.org_id),
             display_name: display_name.into(),
-            purpose: "admin-gate regression fixture".into(),
         })
         .await?;
     Ok(response.instance_id)

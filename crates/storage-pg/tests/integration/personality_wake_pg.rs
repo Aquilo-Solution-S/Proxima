@@ -5,9 +5,8 @@
 use crate::common::{drop_db, fresh_pg, owner_fixture};
 use proxima_core::personality::{
     InstantiatePersonalityRequest, PersonalityInstanceId, PersonalityMemoryDraft,
-    PersonalityMemoryKind, PersonalityRef, PersonalityWriteRequest,
-    ROOT_PERSONALITY_PERSPECTIVE_SCHEMA_ID, SetWakeEntriesRequest, SidecarSpec,
-    TombstonePersonalityRequest, WakeChainDepth, WakeEntryAuthoredBy, WakeEntryDraft,
+    PersonalityMemoryKind, PersonalityRef, PersonalityWriteRequest, SetWakeEntriesRequest,
+    SidecarSpec, TombstonePersonalityRequest, WakeChainDepth, WakeEntryAuthoredBy, WakeEntryDraft,
     WakeEntryTriggerKind,
 };
 use proxima_core::relation::{
@@ -48,7 +47,6 @@ async fn seed_test_personality(
             principal: owner.principal.clone(),
             org_id: Some(owner.org_id),
             display_name: "Engineer A".into(),
-            purpose: "exercise wake storage".into(),
         })
         .await?;
     Ok(response)
@@ -110,7 +108,6 @@ async fn personality_wake_schema_replaces_legacy_tables() {
 
         let expected = [
             "personality",
-            "root_personality_perspective_v1",
             "personality_wake_entries",
             "personality_wake_cursor",
         ];
@@ -186,7 +183,7 @@ async fn personality_wake_schema_replaces_legacy_tables() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn personality_wake_schema_enforces_root_sidecar_and_promille() {
+async fn personality_wake_schema_enforces_promille() {
     let Some((pg, db)) = fresh_pg().await else {
         return;
     };
@@ -195,16 +192,6 @@ async fn personality_wake_schema_enforces_root_sidecar_and_promille() {
         pg.run_migrations().await?;
         let owner = owner_fixture();
         let response = seed_test_personality(&pg, &owner).await?;
-
-        let columns: Vec<String> = sqlx::query_scalar(
-            "SELECT column_name FROM information_schema.columns
-             WHERE table_schema = 'proxima_core'
-               AND table_name = 'root_personality_perspective_v1'
-             ORDER BY ordinal_position",
-        )
-        .fetch_all(pg.pool())
-        .await?;
-        assert_eq!(columns, vec!["memory_id", "display_name", "purpose"]);
 
         let mut entry = sample_entry(response.instance_id, "proxima-test/fact-v1");
         entry.instructions = "Use the committed fact to decide whether to write a summary.".into();
@@ -523,6 +510,10 @@ async fn load_perspective_heads_returns_current_same_personality_learned_heads()
         })
         .await?;
 
+        // The root self-perspective has no registered schema/sidecar, so it
+        // never appears in a spec list; it is excluded from perspective heads
+        // by `memory_id <> root` + the supersession filter, not by a schema
+        // clause.
         let sidecars = vec![
             SidecarSpec {
                 schema_id: SchemaId::new("proxima-test/output-v1".into()),
@@ -531,10 +522,6 @@ async fn load_perspective_heads_returns_current_same_personality_learned_heads()
             SidecarSpec {
                 schema_id: SchemaId::new("proxima-test/engineer-self-v1".into()),
                 sidecar_table: "proxima_test.personality_output_v1".into(),
-            },
-            SidecarSpec {
-                schema_id: SchemaId::new(ROOT_PERSONALITY_PERSPECTIVE_SCHEMA_ID.into()),
-                sidecar_table: "proxima_core.root_personality_perspective_v1".into(),
             },
         ];
 
@@ -553,7 +540,7 @@ async fn load_perspective_heads_returns_current_same_personality_learned_heads()
 
     drop(pg);
     let _ = drop_db(&db).await;
-    result.expect("perspective heads should filter superseded, root, self, and sibling rows");
+    result.expect("perspective heads should filter superseded, self, and sibling rows");
 }
 
 #[tokio::test(flavor = "multi_thread")]

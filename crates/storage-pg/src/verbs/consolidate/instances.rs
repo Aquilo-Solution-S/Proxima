@@ -143,18 +143,6 @@ pub async fn instantiate_personality(
     .await
     .map_err(map_err)?;
 
-    sqlx::query!(
-        r#"INSERT INTO proxima_core.root_personality_perspective_v1
-            (memory_id, display_name, purpose)
-         VALUES ($1, $2, $3)"#,
-        memory_id,
-        &req.display_name,
-        &req.purpose,
-    )
-    .execute(&mut *tx)
-    .await
-    .map_err(map_err)?;
-
     let change_seq = uuid::Uuid::now_v7();
     sqlx::query!(
         r#"INSERT INTO proxima_core.change_event

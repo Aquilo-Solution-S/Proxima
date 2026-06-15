@@ -1,7 +1,6 @@
 use proxima_core::personality::{
     AbstractionRow, FactRow, MemorySnapshot, PersonalityInstanceId, PersonalityRef,
-    PersonalityWriteOutcome, PersonalityWriteRequest, ROOT_PERSONALITY_PERSPECTIVE_SCHEMA_ID,
-    SidecarSpec, WakeChainDepth,
+    PersonalityWriteOutcome, PersonalityWriteRequest, SidecarSpec, WakeChainDepth,
 };
 use proxima_core::{
     EdgeAuthorshipKind, EntityKind, MemoryId, Owner, OwnerPrincipalKind, SchemaId, SchemaVersion,
@@ -171,7 +170,6 @@ pub async fn load_perspective_heads(
                AND m.schema_id = $3
                AND m.personality_instance_id = $4
                AND m.memory_id <> $5
-               AND m.schema_id <> $6
                AND m.schema_id !~ '-self-v[0-9]+$'
                AND m.tombstoned_at IS NULL
                AND NOT EXISTS (
@@ -180,7 +178,7 @@ pub async fn load_perspective_heads(
                       AND newer.tombstoned_at IS NULL
                )
              ORDER BY m.created_at DESC, m.memory_id DESC
-             LIMIT $7",
+             LIMIT $6",
             sidecar = sidecar.as_str(),
         );
         let rows: Vec<(
@@ -196,7 +194,6 @@ pub async fn load_perspective_heads(
             .bind(spec.schema_id.as_str())
             .bind(instance.into_inner())
             .bind(root_perspective_memory_id.into_inner())
-            .bind(ROOT_PERSONALITY_PERSPECTIVE_SCHEMA_ID)
             .bind(i64::try_from(limit).unwrap_or(i64::MAX))
             .fetch_all(pool)
             .await

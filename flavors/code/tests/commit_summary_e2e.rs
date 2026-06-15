@@ -70,7 +70,6 @@ async fn commit_summary_e2e_produces_abstraction_with_correct_provenance() {
                     principal: owner.principal.clone(),
                     org_id: None,
                     display_name: "Commit Summarizer".into(),
-                    purpose: "Summarize commits as Abstractions".into(),
                 },
             )
             .await?;
