@@ -5,9 +5,11 @@ use proxima_core::verbs::query::{
     MemoryLineageResponse,
 };
 use proxima_core::{
-    MemoryId, OwnerPrincipalKind, Principal, RelationClass, SchemaId, StorageError, WakeChainDepth,
+    MemoryId, OwnerPrincipalKind, RelationClass, SchemaId, StorageError, WakeChainDepth,
 };
 use sqlx::PgPool;
+
+use crate::error::internal;
 
 #[derive(Debug, sqlx::FromRow)]
 struct EdgeWalkRow {
@@ -35,10 +37,7 @@ pub(crate) async fn walk_memory_lineage(
 ) -> Result<MemoryLineageResponse, StorageError> {
     let limit = req.limit.min(200);
     let depth = req.depth.min(8);
-    let (owner_kind, owner_principal_id) = match &req.principal {
-        Principal::User(user) => (OwnerPrincipalKind::User, user.into_inner()),
-        Principal::Group(group) => (OwnerPrincipalKind::Group, group.into_inner()),
-    };
+    let (owner_kind, owner_principal_id) = req.principal.columns();
 
     let reader_id = req
         .reader_personality_instance_id
@@ -157,7 +156,7 @@ async fn start_memory_visible(
     .bind(reader_id)
     .fetch_optional(pool)
     .await
-    .map_err(|e| StorageError::Internal(e.to_string()))?;
+    .map_err(internal)?;
     Ok(present.is_some())
 }
 
@@ -183,7 +182,7 @@ async fn walk_edges(
         .bind(reader_id)
         .fetch_all(pool)
         .await
-        .map_err(|e| StorageError::Internal(e.to_string()))
+        .map_err(internal)
 }
 
 async fn load_nodes(
@@ -224,7 +223,7 @@ async fn load_nodes(
     .bind(reader_id)
     .fetch_all(pool)
     .await
-    .map_err(|e| StorageError::Internal(e.to_string()))?;
+    .map_err(internal)?;
 
     let expected: BTreeSet<_> = memory_ids.iter().copied().collect();
     let actual: BTreeSet<_> = rows.iter().map(|row: &NodeRow| row.memory_id).collect();

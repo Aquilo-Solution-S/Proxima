@@ -9,7 +9,6 @@ use proxima_core::{
 };
 use sqlx::PgPool;
 
-use super::rows::owner_columns;
 use crate::error::map_err;
 use crate::pg_ident::PgIdent;
 use crate::verbs::edge_append::{EdgeDraft, append_edge_in_tx};
@@ -43,7 +42,7 @@ async fn load_batch_facts_by_id(
     batch_id: uuid::Uuid,
     sidecars: &[SidecarSpec],
 ) -> Result<Vec<FactRow>, StorageError> {
-    let (owner_kind, owner_principal_id, _owner_org_id) = owner_columns(owner);
+    let (owner_kind, owner_principal_id, _owner_org_id) = owner.columns();
     let mut out = Vec::new();
     for spec in sidecars {
         let sidecar = PgIdent::table(&spec.sidecar_table)?;
@@ -87,7 +86,7 @@ pub async fn load_abstraction_heads(
     sidecars: &[SidecarSpec],
     limit: usize,
 ) -> Result<Vec<AbstractionRow>, StorageError> {
-    let (owner_kind, owner_principal_id, _owner_org_id) = owner_columns(owner);
+    let (owner_kind, owner_principal_id, _owner_org_id) = owner.columns();
     let mut rows_all = Vec::new();
     for spec in sidecars {
         let sidecar = PgIdent::table(&spec.sidecar_table)?;
@@ -156,7 +155,7 @@ pub async fn load_perspective_heads(
     sidecars: &[SidecarSpec],
     limit: usize,
 ) -> Result<Vec<MemorySnapshot>, StorageError> {
-    let (owner_kind, owner_principal_id, _owner_org_id) = owner_columns(owner);
+    let (owner_kind, owner_principal_id, _owner_org_id) = owner.columns();
     let mut rows_all = Vec::new();
     for spec in sidecars {
         let sidecar = PgIdent::table(&spec.sidecar_table)?;
@@ -231,7 +230,7 @@ pub async fn load_memory_by_id(
     reader_personality_instance_id: Option<PersonalityInstanceId>,
     sidecars: &[SidecarSpec],
 ) -> Result<Option<MemorySnapshot>, StorageError> {
-    let (owner_kind, owner_principal_id, _owner_org_id) = owner_columns(owner);
+    let (owner_kind, owner_principal_id, _owner_org_id) = owner.columns();
     let head: Option<(
         Option<EntityKind>,
         String,
@@ -356,7 +355,7 @@ pub async fn lookup_prior_personality_head(
     instance: &PersonalityRef,
     schema_id: &SchemaId,
 ) -> Result<Option<MemoryId>, StorageError> {
-    let (owner_kind, owner_principal_id, _owner_org_id) = owner_columns(owner);
+    let (owner_kind, owner_principal_id, _owner_org_id) = owner.columns();
     let row: Option<(uuid::Uuid,)> = sqlx::query_as(
         "SELECT memory_id
          FROM proxima_core.memories
@@ -395,7 +394,7 @@ pub async fn append_personality_memories(
         });
     }
     let output_sidecar_table = PgIdent::table(req.sidecar_table)?;
-    let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(&req.owner);
+    let (owner_kind, owner_principal_id, owner_org_id) = req.owner.columns();
     let mut tx = pool.begin().await.map_err(map_err)?;
     let mut memory_ids = Vec::with_capacity(req.memories.len());
 

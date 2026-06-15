@@ -7,9 +7,7 @@
 //!
 //! Used by M5.5 typed F-layer edges (e.g. `proxima-code/calls`).
 
-use proxima_core::{
-    EdgeAuthorshipKind, EntityKind, Owner, OwnerPrincipalKind, RegisteredRelation, StorageError,
-};
+use proxima_core::{EdgeAuthorshipKind, EntityKind, Owner, RegisteredRelation, StorageError};
 
 use crate::error::map_err;
 use crate::pg_ident::PgIdent;
@@ -42,7 +40,7 @@ pub async fn append_edge_in_tx(
     draft: &EdgeDraft<'_>,
     payload: Option<&serde_json::Value>,
 ) -> Result<(), StorageError> {
-    let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(draft.owner);
+    let (owner_kind, owner_principal_id, owner_org_id) = draft.owner.columns();
     let descriptor = draft.relation.descriptor;
     let sidecar_table = draft.relation.payload_sidecar_table;
     match (sidecar_table, payload) {
@@ -145,12 +143,4 @@ pub async fn append_edge_in_tx(
     .map_err(map_err)?;
 
     Ok(())
-}
-
-fn owner_columns(owner: &Owner) -> (OwnerPrincipalKind, uuid::Uuid, uuid::Uuid) {
-    let (kind, principal_id) = match &owner.principal {
-        proxima_core::Principal::User(u) => (OwnerPrincipalKind::User, u.into_inner()),
-        proxima_core::Principal::Group(g) => (OwnerPrincipalKind::Group, g.into_inner()),
-    };
-    (kind, principal_id, owner.org_id.into_inner())
 }

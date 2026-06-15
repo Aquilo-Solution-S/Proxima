@@ -435,10 +435,7 @@ async fn personality_root(
     ctx: &McpToolCtx,
     instance_id: PersonalityInstanceId,
 ) -> Result<MemoryId, McpToolError> {
-    let (owner_kind, owner_id) = match &ctx.owner.principal {
-        crate::Principal::User(user) => (crate::OwnerPrincipalKind::User, user.into_inner()),
-        crate::Principal::Group(group) => (crate::OwnerPrincipalKind::Group, group.into_inner()),
-    };
+    let (owner_kind, owner_id) = ctx.owner.principal.columns();
     let row: Option<(uuid::Uuid,)> = sqlx::query_as(
         "SELECT current_root_perspective_memory_id
            FROM proxima_core.personality

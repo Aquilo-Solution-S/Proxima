@@ -6,7 +6,6 @@ use proxima_core::personality::{
 use proxima_core::{MemoryId, Owner, OwnerPrincipalKind, StorageError};
 use sqlx::PgPool;
 
-use super::rows::owner_columns;
 use crate::error::map_err;
 
 pub async fn list_personality_instances(
@@ -14,7 +13,7 @@ pub async fn list_personality_instances(
     owner: &Owner,
     include_tombstoned: bool,
 ) -> Result<Vec<PersonalityInstanceRow>, StorageError> {
-    let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(owner);
+    let (owner_kind, owner_principal_id, owner_org_id) = owner.columns();
     let rows: Vec<(uuid::Uuid, uuid::Uuid, String, PersonalityStatus)> = sqlx::query_as(
         "SELECT p.personality_instance_id,
                 p.current_root_perspective_memory_id,
@@ -116,7 +115,7 @@ pub async fn instantiate_personality(
     req: &InstantiatePersonalityRequest,
 ) -> Result<InstantiatePersonalityResponse, StorageError> {
     let owner = req.owner();
-    let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(&owner);
+    let (owner_kind, owner_principal_id, owner_org_id) = owner.columns();
     let instance_id = uuid::Uuid::now_v7();
     let memory_id = uuid::Uuid::now_v7();
     let mut tx = pool.begin().await.map_err(map_err)?;
