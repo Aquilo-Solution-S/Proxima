@@ -30,8 +30,8 @@ async fn persist_writes_fact_inline_io_citation_and_change_event() {
                 .await?;
         assert_eq!(n_facts.0, 1);
 
-        let fact: (String, String, bool, i32, Vec<u8>) = sqlx::query_as(
-            "SELECT tool_name, actor_upn, ok, latency_ms, io_content_hash \
+        let fact: (String, String, bool, i32) = sqlx::query_as(
+            "SELECT tool_name, actor_upn, ok, latency_ms \
              FROM proxima_core.mcp_call_logged_v1 WHERE memory_id = $1",
         )
         .bind(outcome.fact_memory_id.into_inner())
@@ -41,7 +41,6 @@ async fn persist_writes_fact_inline_io_citation_and_change_event() {
         assert_eq!(fact.1, "agent@example.com");
         assert!(fact.2);
         assert_eq!(fact.3, 42);
-        assert_eq!(fact.4.as_slice(), input.io_content_hash());
 
         let cited: (Vec<u8>, i64, bool) = sqlx::query_as(
             "SELECT body, byte_len, truncated FROM proxima_core.cited_mcp_call_io_v1 \

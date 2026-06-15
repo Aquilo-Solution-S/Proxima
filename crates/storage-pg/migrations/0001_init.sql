@@ -742,9 +742,7 @@ CREATE TABLE proxima_core.mcp_call_logged_v1 (
     latency_ms integer NOT NULL,
     io_byte_len bigint NOT NULL,
     io_truncated boolean NOT NULL,
-    io_content_hash bytea NOT NULL,
     CONSTRAINT mcp_call_logged_v1_io_byte_len_chk CHECK ((io_byte_len >= 0)),
-    CONSTRAINT mcp_call_logged_v1_io_content_hash_len_chk CHECK ((octet_length(io_content_hash) = 32)),
     CONSTRAINT mcp_call_logged_v1_latency_ms_chk CHECK ((latency_ms >= 0))
 );
 
