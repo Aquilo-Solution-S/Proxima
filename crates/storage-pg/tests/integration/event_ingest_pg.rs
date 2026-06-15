@@ -293,10 +293,10 @@ async fn list_change_events_for_replay_respects_bounds_and_owner() {
     result.expect("replay scan bounds failed");
 }
 
-/// The change_event pull scopes by principal, not the `(principal, org)`
+/// The `change_event` pull scopes by principal, not the `(principal, org)`
 /// triple — matching the memories read path (`query_owner_scope_ignores_org_id`)
 /// and the event-history scan. A harness polling with a divergent `org_id`
-/// must still see its events; org_id is a denormalized tag, not a scope filter.
+/// must still see its events; `org_id` is a denormalized tag, not a scope filter.
 #[tokio::test]
 async fn list_change_events_after_scopes_by_principal_ignoring_org_id() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());

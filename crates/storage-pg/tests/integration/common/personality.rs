@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use proxima_core::engine::Engine;
-use proxima_core::llm::{AnthropicClient, EmbeddingClient, LlmError};
+use proxima_core::llm::{AnthropicClient, EMBEDDING_DIM, EmbeddingClient, LlmError};
 use proxima_core::personality::InstantiatePersonalityResponse;
 use proxima_core::verbs::event_ingest::{
     Citation, CitationMappingHint, CitedObjectHint, EventDraft,
@@ -198,7 +198,7 @@ pub fn build_test_engine(pg: PgStorage, anthropic: Arc<dyn AnthropicClient>) -> 
     Engine::new(frozen, MemoryStore::new())
         .with_storage(Arc::new(pg))
         .with_anthropic(anthropic)
-        .with_embed(Arc::new(FakeEmbedding { dim: 8 }))
+        .with_embed(Arc::new(FakeEmbedding { dim: EMBEDDING_DIM }))
 }
 
 /// Instantiate the test personality + return its instance id.

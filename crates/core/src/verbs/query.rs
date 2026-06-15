@@ -48,8 +48,6 @@ pub struct MemorySearchRequest {
     #[serde(skip)]
     pub embedding_model_id: Option<String>,
     #[serde(skip)]
-    pub embedding_dim: Option<usize>,
-    #[serde(skip)]
     pub reader_personality_instance_id: Option<PersonalityInstanceId>,
 }
 

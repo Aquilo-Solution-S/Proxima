@@ -1,3 +1,4 @@
+use proxima_core::llm::EMBEDDING_DIM;
 use proxima_core::{EntityKind, MemoryId, Owner, OwnerPrincipalKind, Principal, StorageError};
 use sqlx::{PgPool, Postgres, Transaction};
 
@@ -75,8 +76,9 @@ pub async fn load_fact_text_in_tx(
 ///
 /// # Errors
 ///
-/// Returns `ConstraintViolation` when `dim` is too large for Postgres
-/// `integer`, otherwise maps SQL failures through the shared mapper.
+/// Returns `ConstraintViolation` when `dim` or `vec.len()` do not match
+/// the fixed embedding width, otherwise maps SQL failures through the
+/// shared mapper.
 pub async fn upsert_fact_embedding(
     tx: &mut Transaction<'_, Postgres>,
     owner: &Owner,
@@ -86,17 +88,20 @@ pub async fn upsert_fact_embedding(
     vec: &[f32],
 ) -> Result<(), StorageError> {
     let (owner_kind, owner_principal_id, owner_org_id) = owner_parts(owner);
-    let dim = i32::try_from(dim)
-        .map_err(|_| StorageError::ConstraintViolation("embedding dim too large".into()))?;
+    if dim != EMBEDDING_DIM || vec.len() != EMBEDDING_DIM {
+        return Err(StorageError::ConstraintViolation(
+            "embedding length must be 1024".into(),
+        ));
+    }
+    let vec_literal = crate::pgvector::literal(vec);
     sqlx::query(
         "INSERT INTO proxima_core.embeddings
-            (entity_kind, entity_id, embedding_version, model_id, vec, dim,
+            (entity_kind, entity_id, embedding_version, model_id, vec,
              owner_principal_kind, owner_principal_id, owner_org_id)
-         VALUES ($1, $2, 1, $3, $4, $5, $6, $7, $8)
+         VALUES ($1, $2, 1, $3, $4::vector, $5, $6, $7)
          ON CONFLICT (entity_kind, entity_id, embedding_version, model_id)
          DO UPDATE SET
              vec = EXCLUDED.vec,
-             dim = EXCLUDED.dim,
              owner_principal_kind = EXCLUDED.owner_principal_kind,
              owner_principal_id = EXCLUDED.owner_principal_id,
              owner_org_id = EXCLUDED.owner_org_id",
@@ -104,8 +109,7 @@ pub async fn upsert_fact_embedding(
     .bind(EntityKind::Fact)
     .bind(memory_id.into_inner())
     .bind(model_id)
-    .bind(vec)
-    .bind(dim)
+    .bind(vec_literal)
     .bind(owner_kind)
     .bind(owner_principal_id)
     .bind(owner_org_id)

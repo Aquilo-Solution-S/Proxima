@@ -6,7 +6,7 @@ mod common;
 use async_trait::async_trait;
 use common::{drop_db, fresh_pg};
 use proxima_core::engine::Engine;
-use proxima_core::llm::{EmbeddingClient, LlmError};
+use proxima_core::llm::{EMBEDDING_DIM, EmbeddingClient, LlmError};
 use proxima_core::mcp::{HandleTable, McpAuthorContext, McpToolCtx, OutputMode};
 use proxima_core::verbs::query::MemoryStore;
 use proxima_core::{
@@ -112,7 +112,7 @@ impl CitationMappingPayload for RememberTestCitationMapping {
 #[async_trait]
 impl EmbeddingClient for FixedEmbedding {
     async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
-        Ok(vec![1.0, 0.0, 0.0])
+        Ok(padded_embedding([1.0, 0.0, 0.0]))
     }
 
     fn model_id(&self) -> &'static str {
@@ -120,8 +120,14 @@ impl EmbeddingClient for FixedEmbedding {
     }
 
     fn dim(&self) -> usize {
-        3
+        EMBEDDING_DIM
     }
+}
+
+fn padded_embedding(prefix: [f32; 3]) -> Vec<f32> {
+    let mut embedding = vec![0.0; EMBEDDING_DIM];
+    embedding[..prefix.len()].copy_from_slice(&prefix);
+    embedding
 }
 
 #[tokio::test]
@@ -575,10 +581,6 @@ async fn prefixed_search_and_open_emit_author_and_keep_company_shared_visibility
 }
 
 #[tokio::test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "two-axis idempotency fixture: owner and kind dimensions in one linear script"
-)]
 async fn derive_scopes_idempotency_by_owner_and_kind() -> Result<(), Box<dyn std::error::Error>> {
     let Some((pg, db_name)) = fresh_pg().await else {
         return Ok(());

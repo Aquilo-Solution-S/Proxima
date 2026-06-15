@@ -1,5 +1,6 @@
 //! External-agent Derived memory append verb.
 
+use proxima_core::llm::EMBEDDING_DIM;
 use proxima_core::{
     EntityKind, MemoryId, MemoryOperatorKind, Owner, OwnerPrincipalKind, PersonalityInstanceId,
     Principal, SchemaId, SchemaVersion, StorageError,
@@ -98,29 +99,7 @@ pub async fn append_derived_in_tx(
             .map_err(map_err)?;
     }
 
-    if let (Some(embedding), Some(embedding_model_id)) =
-        (&draft.embedding, draft.embedding_model_id)
-    {
-        let dim = i32::try_from(embedding.len())
-            .map_err(|_| StorageError::ConstraintViolation("embedding dim too large".into()))?;
-        sqlx::query(
-            "INSERT INTO proxima_core.embeddings
-                (entity_kind, entity_id, embedding_version, model_id, vec, dim,
-                 owner_principal_kind, owner_principal_id, owner_org_id)
-             VALUES ($1, $2, 1, $3, $4, $5, $6, $7, $8)",
-        )
-        .bind(draft.kind)
-        .bind(draft.memory_id)
-        .bind(embedding_model_id)
-        .bind(embedding)
-        .bind(dim)
-        .bind(owner_kind)
-        .bind(owner_principal_id)
-        .bind(owner_org_id)
-        .execute(&mut **tx)
-        .await
-        .map_err(map_err)?;
-    }
+    insert_embedding_in_tx(tx, draft, owner_kind, owner_principal_id, owner_org_id).await?;
 
     let seq = uuid::Uuid::now_v7();
     sqlx::query(
@@ -146,6 +125,42 @@ pub async fn append_derived_in_tx(
         memory_id: MemoryId::new(draft.memory_id),
         idempotent_replay: false,
     })
+}
+
+async fn insert_embedding_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    draft: &DerivedDraft<'_>,
+    owner_kind: OwnerPrincipalKind,
+    owner_principal_id: uuid::Uuid,
+    owner_org_id: uuid::Uuid,
+) -> Result<(), StorageError> {
+    let (Some(embedding), Some(embedding_model_id)) = (&draft.embedding, draft.embedding_model_id)
+    else {
+        return Ok(());
+    };
+    if embedding.len() != EMBEDDING_DIM {
+        return Err(StorageError::ConstraintViolation(
+            "embedding length must be 1024".into(),
+        ));
+    }
+    let vec_literal = crate::pgvector::literal(embedding);
+    sqlx::query(
+        "INSERT INTO proxima_core.embeddings
+            (entity_kind, entity_id, embedding_version, model_id, vec,
+             owner_principal_kind, owner_principal_id, owner_org_id)
+         VALUES ($1, $2, 1, $3, $4::vector, $5, $6, $7)",
+    )
+    .bind(draft.kind)
+    .bind(draft.memory_id)
+    .bind(embedding_model_id)
+    .bind(vec_literal)
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(owner_org_id)
+    .execute(&mut **tx)
+    .await
+    .map_err(map_err)?;
+    Ok(())
 }
 
 fn owner_columns(owner: &Owner) -> (OwnerPrincipalKind, uuid::Uuid, uuid::Uuid) {

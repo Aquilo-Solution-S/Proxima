@@ -20,7 +20,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use proxima_code::{CommitSummaryV1, CommitV1, build_engine_with, ingest_commit, register_repo};
 use proxima_core::llm::scripted::ScriptedAnthropicClient;
-use proxima_core::llm::{EmbeddingClient, LlmError};
+use proxima_core::llm::{EMBEDDING_DIM, EmbeddingClient, LlmError};
 use proxima_core::personality::tools::EmitAbstractionTool;
 use proxima_core::personality::{
     InstantiatePersonalityRequest, PersonalityTool, PersonalityToolContext,
@@ -76,13 +76,13 @@ struct FakeEmbedding;
 #[async_trait]
 impl EmbeddingClient for FakeEmbedding {
     async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
-        Ok(vec![0.0; 8])
+        Ok(vec![0.0; EMBEDDING_DIM])
     }
     fn model_id(&self) -> &str {
         "fake-embed"
     }
     fn dim(&self) -> usize {
-        8
+        EMBEDDING_DIM
     }
 }
 

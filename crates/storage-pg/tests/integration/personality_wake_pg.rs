@@ -3,6 +3,7 @@
 #![allow(clippy::too_many_lines)]
 
 use crate::common::{drop_db, fresh_pg, owner_fixture};
+use proxima_core::llm::EMBEDDING_DIM;
 use proxima_core::personality::{
     InstantiatePersonalityRequest, PersonalityInstanceId, PersonalityMemoryDraft,
     PersonalityMemoryKind, PersonalityRef, PersonalityWriteRequest, SetWakeEntriesRequest,
@@ -391,9 +392,15 @@ fn memory_draft_with_schema(
         text: label.into(),
         typed_payload: serde_json::json!({ "label": label }),
         provenance,
-        embedding: vec![0.1, 0.2, 0.3],
+        embedding: padded_embedding([0.1, 0.2, 0.3]),
         embedding_model_id: "test-embed".into(),
     }
+}
+
+fn padded_embedding(prefix: [f32; 3]) -> Vec<f32> {
+    let mut embedding = vec![0.0; EMBEDDING_DIM];
+    embedding[..prefix.len()].copy_from_slice(&prefix);
+    embedding
 }
 
 #[tokio::test(flavor = "multi_thread")]

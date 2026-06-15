@@ -235,6 +235,7 @@ pub trait CitationMappingPayload:
     /// `None` when the mapping is a pure link with no extra columns.
     /// Returning `None` means no sidecar row is written and no table is
     /// required — don't mint an empty table just to satisfy the trait.
+    #[must_use]
     fn sidecar_table() -> Option<&'static str> {
         None
     }

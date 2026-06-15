@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use proxima_core::llm::{EmbeddingClient, LlmError};
+use proxima_core::llm::{EMBEDDING_DIM, EmbeddingClient, LlmError};
 use proxima_core::verbs::event_ingest::EventDraft;
 use proxima_core::verbs::query::MemoryStore;
 use proxima_core::{
@@ -21,7 +21,7 @@ struct StubEmbedding;
 #[async_trait::async_trait]
 impl EmbeddingClient for StubEmbedding {
     async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
-        Ok(vec![0.25, 0.5, 0.75])
+        Ok(padded_embedding([0.25, 0.5, 0.75]))
     }
 
     fn model_id(&self) -> &'static str {
@@ -29,8 +29,14 @@ impl EmbeddingClient for StubEmbedding {
     }
 
     fn dim(&self) -> usize {
-        3
+        EMBEDDING_DIM
     }
+}
+
+fn padded_embedding(prefix: [f32; 3]) -> Vec<f32> {
+    let mut embedding = vec![0.0; EMBEDDING_DIM];
+    embedding[..prefix.len()].copy_from_slice(&prefix);
+    embedding
 }
 
 fn engine_for(

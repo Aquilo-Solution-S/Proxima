@@ -42,6 +42,7 @@ mod authorship;
 mod change_event;
 mod error;
 mod pg_ident;
+mod pgvector;
 pub mod query {
     pub use crate::verbs::query::MAX_SNAPSHOT_EDGES;
 }

@@ -6,7 +6,7 @@ use proxima::{
     AppInfo, AuthPath, AuthzContext, CapabilitySet, CoreMcpError, FlavorApp, FlavorBundle,
     Identity, NamedMigrator, Proxima, RoleSet, ToolScope, company_owner,
 };
-use proxima_core::llm::{EmbeddingClient, LlmError};
+use proxima_core::llm::{EMBEDDING_DIM, EmbeddingClient, LlmError};
 use proxima_core::{
     CitationMappingPayload, CitedObjectPayload, FlavorRegistry, Owner, SchemaId, StorageError,
 };
@@ -22,7 +22,7 @@ struct FixedEmbedding;
 #[async_trait]
 impl EmbeddingClient for FixedEmbedding {
     async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
-        Ok(vec![1.0, 0.0, 0.0])
+        Ok(padded_embedding([1.0, 0.0, 0.0]))
     }
 
     fn model_id(&self) -> &'static str {
@@ -30,8 +30,14 @@ impl EmbeddingClient for FixedEmbedding {
     }
 
     fn dim(&self) -> usize {
-        3
+        EMBEDDING_DIM
     }
+}
+
+fn padded_embedding(prefix: [f32; 3]) -> Vec<f32> {
+    let mut embedding = vec![0.0; EMBEDDING_DIM];
+    embedding[..prefix.len()].copy_from_slice(&prefix);
+    embedding
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
