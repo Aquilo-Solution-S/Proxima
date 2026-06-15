@@ -49,17 +49,13 @@ fn calls_edge_natural_key(
     target_memory_id: uuid::Uuid,
     callsite_byte_start_in_source_chunk: u32,
 ) -> Vec<u8> {
-    use proxima_core::Principal;
     let mut k = Vec::with_capacity(128);
-    let (kind, principal_id) = match &owner.principal {
-        Principal::User(u) => ("User", u.into_inner()),
-        Principal::Group(g) => ("Group", g.into_inner()),
-    };
-    k.extend_from_slice(kind.as_bytes());
+    let (kind, principal_id, org_id) = owner.columns();
+    k.extend_from_slice(kind.as_str().as_bytes());
     k.push(0);
     k.extend_from_slice(principal_id.as_bytes());
     k.push(0);
-    k.extend_from_slice(owner.org_id.into_inner().as_bytes());
+    k.extend_from_slice(org_id.as_bytes());
     k.push(0);
     k.extend_from_slice(b"proxima-code/calls");
     k.push(0);

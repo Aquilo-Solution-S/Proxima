@@ -16,12 +16,11 @@ use std::pin::Pin;
 use proxima_core::verbs::event_ingest::{EventDraft, EventIngestOutcome};
 use proxima_core::{
     AuthorizedEventIngest, AuthorizedFactWithCitation, AuthzContext, Engine, EntityKind,
-    FactPayload, OwnerPrincipalKind, Principal, Role, SchemaVersion, SourceBatchId, SourceId,
-    StorageError,
+    FactPayload, OwnerPrincipalKind, Role, SchemaVersion, SourceBatchId, SourceId, StorageError,
 };
 use sqlx::{PgPool, Postgres, Transaction};
 
-use crate::error::map_err;
+use crate::error::{internal, map_err};
 
 pub type EventIngestSidecarFuture<'t> =
     Pin<Box<dyn Future<Output = Result<(), StorageError>> + Send + 't>>;
@@ -38,10 +37,7 @@ pub async fn ingest_event_atomic(
     draft: &EventDraft,
     embedding_model_id: Option<&str>,
 ) -> Result<EventIngestOutcome, StorageError> {
-    let mut tx = pool
-        .begin()
-        .await
-        .map_err(|e| StorageError::Internal(e.to_string()))?;
+    let mut tx = pool.begin().await.map_err(internal)?;
     let outcome = ingest_event_in_tx(&mut tx, draft, embedding_model_id).await?;
     tx.commit().await.map_err(map_err)?;
     Ok(outcome)
@@ -67,10 +63,7 @@ where
         &'t EventIngestOutcome,
     ) -> EventIngestSidecarFuture<'t>,
 {
-    let mut tx = pool
-        .begin()
-        .await
-        .map_err(|e| StorageError::Internal(e.to_string()))?;
+    let mut tx = pool.begin().await.map_err(internal)?;
     let outcome =
         ingest_event_with_sidecar_in_tx(&mut tx, authorized, embedding_model_id, sidecar).await?;
     tx.commit().await.map_err(map_err)?;
@@ -98,10 +91,7 @@ where
         &'t EventIngestOutcome,
     ) -> EventIngestSidecarFuture<'t>,
 {
-    let mut tx = pool
-        .begin()
-        .await
-        .map_err(|e| StorageError::Internal(e.to_string()))?;
+    let mut tx = pool.begin().await.map_err(internal)?;
     let outcome =
         ingest_fact_with_citation_in_tx(&mut tx, authorized, embedding_model_id, fact_sidecar)
             .await?;
@@ -131,8 +121,7 @@ where
         &'t EventIngestOutcome,
     ) -> EventIngestSidecarFuture<'t>,
 {
-    let payload_value =
-        serde_json::to_value(payload).map_err(|e| StorageError::Internal(e.to_string()))?;
+    let payload_value = serde_json::to_value(payload).map_err(internal)?;
     let payload_bytes = proxima_core::canonical_json_bytes(&payload_value);
     let now = time::OffsetDateTime::now_utc();
     let draft = EventDraft {
@@ -151,7 +140,7 @@ where
     };
     let authorized = engine
         .authorize_event_ingest(authz, role, draft)
-        .map_err(|e| StorageError::Internal(e.to_string()))?;
+        .map_err(internal)?;
     let embedding_client = engine.embed_client();
     let embedding_model_id = embedding_client.as_ref().map(|client| client.model_id());
     ingest_event_with_sidecar_in_tx(tx, &authorized, embedding_model_id, sidecar).await
@@ -179,10 +168,7 @@ where
         &'t EventIngestOutcome,
     ) -> EventIngestSidecarFuture<'t>,
 {
-    let mut tx = pool
-        .begin()
-        .await
-        .map_err(|e| StorageError::Internal(e.to_string()))?;
+    let mut tx = pool.begin().await.map_err(internal)?;
     let outcome = ingest_fact_in_tx(&mut tx, engine, authz, role, payload, sidecar).await?;
     tx.commit().await.map_err(map_err)?;
     Ok(outcome)
@@ -207,11 +193,7 @@ pub async fn ingest_event_in_tx(
     let event_id_bytes = event_id.into_inner();
     let owner = draft.owner();
 
-    let (owner_kind, owner_principal_id) = match &owner.principal {
-        Principal::User(u) => (OwnerPrincipalKind::User, u.into_inner()),
-        Principal::Group(g) => (OwnerPrincipalKind::Group, g.into_inner()),
-    };
-    let owner_org_id = owner.org_id.into_inner();
+    let (owner_kind, owner_principal_id, owner_org_id) = owner.columns();
 
     // Replay check.
     let existing = sqlx::query_scalar::<_, uuid::Uuid>(
@@ -438,11 +420,7 @@ where
     let cited_object = authorized.cited_object();
     let mapping = authorized.mapping();
 
-    let (owner_kind, owner_principal_id) = match &owner.principal {
-        Principal::User(u) => (OwnerPrincipalKind::User, u.into_inner()),
-        Principal::Group(g) => (OwnerPrincipalKind::Group, g.into_inner()),
-    };
-    let owner_org_id = owner.org_id.into_inner();
+    let (owner_kind, owner_principal_id, owner_org_id) = owner.columns();
 
     let existing = sqlx::query_scalar::<_, uuid::Uuid>(
         r"SELECT memory_id FROM proxima_core.memories

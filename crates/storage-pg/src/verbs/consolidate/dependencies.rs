@@ -5,14 +5,12 @@ use sqlx::{PgPool, Row};
 
 use crate::error::map_err;
 
-use super::rows::owner_columns;
-
 pub async fn list_memory_dependencies(
     pool: &PgPool,
     owner: &Owner,
     source_memory_id: MemoryId,
 ) -> Result<Vec<MemoryDependency>, StorageError> {
-    let (owner_kind, owner_principal_id, _owner_org_id) = owner_columns(owner);
+    let (owner_kind, owner_principal_id, _owner_org_id) = owner.columns();
     let rows = sqlx::query(
         "SELECT e.target_memory_id, m.schema_id
          FROM proxima_core.edges e
@@ -50,7 +48,7 @@ pub async fn has_satisfied_code_test_request(
     owner: &Owner,
     test_request_memory_id: MemoryId,
 ) -> Result<bool, StorageError> {
-    let (owner_kind, owner_principal_id, _owner_org_id) = owner_columns(owner);
+    let (owner_kind, owner_principal_id, _owner_org_id) = owner.columns();
     let satisfied: bool = sqlx::query_scalar(
         "WITH required AS (
              SELECT criterion->>'key' AS criterion_key

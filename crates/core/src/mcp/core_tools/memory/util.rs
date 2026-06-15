@@ -1,15 +1,7 @@
-use crate::{McpToolError, Owner, OwnerPrincipalKind, Principal};
+use crate::{McpToolError, Owner, OwnerPrincipalKind};
 
 pub fn owner_principal(owner: &Owner) -> (OwnerPrincipalKind, uuid::Uuid) {
-    match &owner.principal {
-        Principal::User(u) => (OwnerPrincipalKind::User, u.into_inner()),
-        Principal::Group(g) => (OwnerPrincipalKind::Group, g.into_inner()),
-    }
-}
-
-pub fn owner_columns(owner: &Owner) -> (OwnerPrincipalKind, uuid::Uuid, uuid::Uuid) {
-    let (kind, principal_id) = owner_principal(owner);
-    (kind, principal_id, owner.org_id.into_inner())
+    owner.principal.columns()
 }
 
 #[allow(clippy::needless_pass_by_value)]

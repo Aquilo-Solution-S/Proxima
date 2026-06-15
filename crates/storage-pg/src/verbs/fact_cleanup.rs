@@ -7,7 +7,6 @@ use uuid::Uuid;
 
 use crate::error::map_err;
 use crate::pg_ident::PgIdent;
-use crate::verbs::consolidate::owner_columns;
 use crate::verbs::fact_retention::get_fact_retention_in_tx;
 use crate::verbs::hard_delete::{HardDeleteSet, HardDeleteSidecars, execute_hard_delete};
 
@@ -90,7 +89,7 @@ async fn cleanup_due_facts_in_tx(
         return Ok(empty_outcome());
     };
 
-    let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(owner);
+    let (owner_kind, owner_principal_id, owner_org_id) = owner.columns();
     let owner_columns = OwnerColumns {
         kind: owner_kind,
         principal_id: owner_principal_id,

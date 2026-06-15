@@ -17,13 +17,13 @@ use proxima_core::verbs::goal_write::{
 use proxima_core::verbs::schema::PayloadKind;
 use proxima_core::{
     EdgeAuthorshipKind, EntityKind, FactPayload, GoalId, MemoryId, Owner, OwnerPrincipalKind,
-    Principal, RegisteredRelation, SchemaId, SchemaVersion, SourceBatchId, SourceId, StorageError,
+    RegisteredRelation, SchemaId, SchemaVersion, SourceBatchId, SourceId, StorageError,
     canonical_json_bytes,
 };
 use sqlx::{PgPool, Postgres, Transaction};
 
 use crate::authorship::{AuthorshipColumns, authorship_columns};
-use crate::error::map_err;
+use crate::error::{internal, map_err};
 use crate::verbs::edge_append::{EdgeDraft, append_edge_in_tx};
 use crate::verbs::event_ingest::ingest_event_in_tx;
 
@@ -104,10 +104,7 @@ pub(crate) async fn create_goal_atomic(
     pool: &PgPool,
     req: &CreateGoalAtomicRequest<'_>,
 ) -> Result<GoalWriteOutcome, StorageError> {
-    let mut tx = pool
-        .begin()
-        .await
-        .map_err(|e| StorageError::Internal(e.to_string()))?;
+    let mut tx = pool.begin().await.map_err(internal)?;
     let evidence = validate_evidence_in_owner(&mut tx, &req.draft.owner(), &req.evidence).await?;
     let inserted = insert_or_replay_goal(&mut tx, &req.draft, None, req.context).await?;
     let outcome = if inserted.idempotent_replay {
@@ -191,10 +188,7 @@ pub(crate) async fn transition_goal_atomic(
             "use achieve_goal_atomic for Achieved transitions".into(),
         ));
     }
-    let mut tx = pool
-        .begin()
-        .await
-        .map_err(|e| StorageError::Internal(e.to_string()))?;
+    let mut tx = pool.begin().await.map_err(internal)?;
     let prior = load_prior_goal(&mut tx, &req.owner, req.prior_goal_id).await?;
     let draft = draft_from_stored(
         &req.owner,
@@ -221,10 +215,7 @@ pub(crate) async fn achieve_goal_atomic(
             "achievement evidence must be nonempty".into(),
         ));
     }
-    let mut tx = pool
-        .begin()
-        .await
-        .map_err(|e| StorageError::Internal(e.to_string()))?;
+    let mut tx = pool.begin().await.map_err(internal)?;
     let evidence = validate_evidence_in_owner(&mut tx, &req.owner, &req.evidence).await?;
     let prior = load_prior_goal(&mut tx, &req.owner, req.prior_goal_id).await?;
     let draft = draft_from_stored(
@@ -302,10 +293,7 @@ pub(crate) async fn modify_goal_atomic(
     pool: &PgPool,
     req: &ModifyGoalAtomicRequest<'_>,
 ) -> Result<GoalWriteOutcome, StorageError> {
-    let mut tx = pool
-        .begin()
-        .await
-        .map_err(|e| StorageError::Internal(e.to_string()))?;
+    let mut tx = pool.begin().await.map_err(internal)?;
     let evidence = match &req.evidence {
         Some(evidence) => validate_evidence_in_owner(&mut tx, &req.owner, evidence).await?,
         None => outgoing_motivated_by_evidence(&mut tx, &req.owner, req.prior_goal_id).await?,
@@ -381,10 +369,7 @@ pub(crate) async fn decompose_goal_atomic(
     pool: &PgPool,
     req: &DecomposeGoalAtomicRequest<'_>,
 ) -> Result<DecomposeGoalOutcome, StorageError> {
-    let mut tx = pool
-        .begin()
-        .await
-        .map_err(|e| StorageError::Internal(e.to_string()))?;
+    let mut tx = pool.begin().await.map_err(internal)?;
     validate_active_head(&mut tx, &req.owner, req.parent_goal_id).await?;
 
     let mut children = Vec::with_capacity(req.children.len());
@@ -470,7 +455,7 @@ async fn insert_or_replay_goal(
 ) -> Result<InsertedGoal, StorageError> {
     validate_goal_payload(context, draft)?;
     let owner = draft.owner();
-    let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(&owner);
+    let (owner_kind, owner_principal_id, owner_org_id) = owner.columns();
     let existing: Option<ExistingGoalRow> = sqlx::query_as(
         "SELECT g.goal_id, ce.seq
            FROM proxima_core.goals g
@@ -628,7 +613,7 @@ async fn insert_goal_row(
     supersedes: Option<GoalId>,
 ) -> Result<(), StorageError> {
     let owner = draft.owner();
-    let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(&owner);
+    let (owner_kind, owner_principal_id, owner_org_id) = owner.columns();
     let authorship = authorship_columns(&draft.authorship);
     sqlx::query(
         "INSERT INTO proxima_core.goals
@@ -705,7 +690,7 @@ async fn insert_goal_change_event(
     supersedes_goal_id: Option<GoalId>,
 ) -> Result<(), StorageError> {
     let owner = draft.owner();
-    let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(&owner);
+    let (owner_kind, owner_principal_id, owner_org_id) = owner.columns();
     sqlx::query(
         "INSERT INTO proxima_core.change_event
             (seq, owner_principal_kind, owner_principal_id, owner_org_id,
@@ -732,7 +717,7 @@ async fn load_prior_goal(
     owner: &Owner,
     goal_id: GoalId,
 ) -> Result<StoredGoal, StorageError> {
-    let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(owner);
+    let (owner_kind, owner_principal_id, owner_org_id) = owner.columns();
     let row: Option<StoredGoalRow> = sqlx::query_as(
         "SELECT schema_id, schema_version, title, text, payload, state
            FROM proxima_core.goals
@@ -784,7 +769,7 @@ async fn validate_parent_owner(
     owner: &Owner,
     parent_id: GoalId,
 ) -> Result<(), StorageError> {
-    let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(owner);
+    let (owner_kind, owner_principal_id, owner_org_id) = owner.columns();
     let exists: bool = sqlx::query_scalar(
         "SELECT EXISTS (
              SELECT 1
@@ -822,7 +807,7 @@ async fn validate_active_head(
             "parent_goal must be Active".into(),
         ));
     }
-    let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(owner);
+    let (owner_kind, owner_principal_id, owner_org_id) = owner.columns();
     let newer_exists: bool = sqlx::query_scalar(
         "SELECT EXISTS (
              SELECT 1
@@ -920,7 +905,7 @@ async fn validate_evidence_in_owner(
     owner: &Owner,
     evidence: &[GoalEvidenceRef],
 ) -> Result<Vec<EvidenceTarget>, StorageError> {
-    let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(owner);
+    let (owner_kind, owner_principal_id, owner_org_id) = owner.columns();
     let mut out = Vec::with_capacity(evidence.len());
     for item in evidence {
         let row: Option<EvidenceRow> = sqlx::query_as(
@@ -964,7 +949,7 @@ async fn outgoing_motivated_by_evidence(
     owner: &Owner,
     goal_id: GoalId,
 ) -> Result<Vec<EvidenceTarget>, StorageError> {
-    let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(owner);
+    let (owner_kind, owner_principal_id, owner_org_id) = owner.columns();
     let rows: Vec<(EntityKind, uuid::Uuid)> = sqlx::query_as(
         "SELECT target_kind, target_memory_id
            FROM proxima_core.edges
@@ -1043,8 +1028,7 @@ async fn ingest_lifecycle_fact<T>(
 where
     T: FactPayload,
 {
-    let value =
-        serde_json::to_value(payload).map_err(|err| StorageError::Internal(err.to_string()))?;
+    let value = serde_json::to_value(payload).map_err(internal)?;
     context
         .registry
         .validate_payload(
@@ -1086,8 +1070,7 @@ async fn insert_lifecycle_sidecar<T>(
 where
     T: FactPayload,
 {
-    let value =
-        serde_json::to_value(payload).map_err(|err| StorageError::Internal(err.to_string()))?;
+    let value = serde_json::to_value(payload).map_err(internal)?;
     let goal_id = value
         .get("goal_id")
         .and_then(serde_json::Value::as_str)
@@ -1364,12 +1347,4 @@ fn resolve_relation<'a>(
     context.registry.resolve_relation(relation).ok_or_else(|| {
         StorageError::Internal(format!("relation {relation} not registered in goal atom"))
     })
-}
-
-fn owner_columns(owner: &Owner) -> (OwnerPrincipalKind, uuid::Uuid, uuid::Uuid) {
-    let (kind, principal_id) = match &owner.principal {
-        Principal::User(u) => (OwnerPrincipalKind::User, u.into_inner()),
-        Principal::Group(g) => (OwnerPrincipalKind::Group, g.into_inner()),
-    };
-    (kind, principal_id, owner.org_id.into_inner())
 }

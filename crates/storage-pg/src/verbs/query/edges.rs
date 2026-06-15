@@ -1,6 +1,9 @@
 use proxima_core::verbs::query::{EdgeRow, QueryRequest};
+use proxima_core::verbs::schema::SchemaInfo;
 use proxima_core::{OwnerPrincipalKind, StorageError};
 use sqlx::PgPool;
+
+use crate::error::internal;
 
 use super::memories::visible_ids_for;
 use super::rows::{EdgeRowDb, edge_row_from_db};
@@ -16,13 +19,22 @@ pub(super) async fn query_edges(
     owner_principal_id: uuid::Uuid,
     visible_memory_ids: &[uuid::Uuid],
     visible_goal_ids: &[uuid::Uuid],
+    schemas: &[SchemaInfo],
 ) -> Result<Vec<EdgeRow>, StorageError> {
     let edge_ids = req.edge_ids.clone();
     let id_hydration =
         !req.memory_ids.is_empty() || !req.goal_ids.is_empty() || !req.edge_ids.is_empty();
 
     if !edge_ids.is_empty() {
-        return query_edges_by_id(pool, req, &edge_ids, owner_kind, owner_principal_id).await;
+        return query_edges_by_id(
+            pool,
+            req,
+            &edge_ids,
+            owner_kind,
+            owner_principal_id,
+            schemas,
+        )
+        .await;
     }
     // Focused identity and entity-kind queries should not return graph
     // closure as a side effect. Atlas uses entity_kind = None to opt in.
@@ -48,6 +60,7 @@ async fn query_edges_by_id(
     edge_ids: &[uuid::Uuid],
     owner_kind: OwnerPrincipalKind,
     owner_principal_id: uuid::Uuid,
+    schemas: &[SchemaInfo],
 ) -> Result<Vec<EdgeRow>, StorageError> {
     let rows = sqlx::query_as::<_, EdgeRowDb>(
         "SELECT edge_id, relation, relation_class, source_memory_id, source_goal_id, \
@@ -66,7 +79,7 @@ async fn query_edges_by_id(
     .bind(i64::from(req.limit))
     .fetch_all(pool)
     .await
-    .map_err(|e| StorageError::Internal(e.to_string()))?;
+    .map_err(internal)?;
     let endpoint_memory_ids = rows
         .iter()
         .flat_map(|row| [row.source_memory_id, row.target_memory_id])
@@ -84,6 +97,7 @@ async fn query_edges_by_id(
         owner_principal_id,
         &endpoint_memory_ids,
         &endpoint_goal_ids,
+        schemas,
     )
     .await?;
     rows.into_iter()
@@ -146,6 +160,6 @@ async fn query_edges_between_visible_nodes(
     .bind(i64::try_from(MAX_SNAPSHOT_EDGES).expect("MAX_SNAPSHOT_EDGES fits in i64"))
     .fetch_all(pool)
     .await
-    .map_err(|e| StorageError::Internal(e.to_string()))?;
+    .map_err(internal)?;
     rows.into_iter().map(edge_row_from_db).collect()
 }

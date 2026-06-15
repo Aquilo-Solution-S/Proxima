@@ -1,4 +1,3 @@
-use super::owner_columns;
 use super::records::{RepoEraseReceipt, RepoRecord, RepoRegistryError};
 use super::rows::RepoRow;
 use proxima_core::verbs::schema::{PayloadKind, SchemaInfo};
@@ -17,7 +16,7 @@ pub async fn list_repos(
     pool: &PgPool,
     owner: &Owner,
 ) -> Result<Vec<RepoRecord>, RepoRegistryError> {
-    let (kind, principal_id, org_id) = owner_columns(owner);
+    let (kind, principal_id, org_id) = owner.columns();
 
     let rows = sqlx::query_as::<_, RepoRow>(
         "SELECT repo_id, canonical_path, display_name, target_branch, last_cursor, last_polled_at, created_at \
@@ -49,7 +48,7 @@ pub async fn register_repo(
     canonical_path: &str,
     display_name: &str,
 ) -> Result<RepoRecord, RepoRegistryError> {
-    let (kind, principal_id, org_id) = owner_columns(owner);
+    let (kind, principal_id, org_id) = owner.columns();
     let target_branch = detect_target_branch(canonical_path);
 
     let row = sqlx::query_as::<_, RepoRow>(
@@ -162,7 +161,7 @@ pub async fn delete_repo(
     owner: &Owner,
     repo_id: Uuid,
 ) -> Result<bool, RepoRegistryError> {
-    let (kind, principal_id, org_id) = owner_columns(owner);
+    let (kind, principal_id, org_id) = owner.columns();
 
     let result = sqlx::query(
         "DELETE FROM proxima_code.repos \
@@ -199,7 +198,7 @@ pub async fn erase_repo(
     repo_id: Uuid,
     schemas: &[SchemaInfo],
 ) -> Result<RepoEraseReceipt, RepoRegistryError> {
-    let (kind, principal_id, org_id) = owner_columns(owner);
+    let (kind, principal_id, org_id) = owner.columns();
     let mut tx = pool.begin().await?;
 
     let exists: Option<(Uuid,)> = sqlx::query_as(
@@ -521,7 +520,7 @@ pub async fn get_repo(
     owner: &Owner,
     repo_id: Uuid,
 ) -> Result<Option<RepoRecord>, RepoRegistryError> {
-    let (kind, principal_id, org_id) = owner_columns(owner);
+    let (kind, principal_id, org_id) = owner.columns();
 
     let row = sqlx::query_as::<_, RepoRow>(
         "SELECT repo_id, canonical_path, display_name, target_branch, last_cursor, last_polled_at, created_at \
@@ -547,7 +546,7 @@ async fn update_target_branch(
     repo_id: Uuid,
     target_branch: Option<&str>,
 ) -> Result<RepoRecord, RepoRegistryError> {
-    let (kind, principal_id, org_id) = owner_columns(owner);
+    let (kind, principal_id, org_id) = owner.columns();
     let row = sqlx::query_as::<_, RepoRow>(
         "UPDATE proxima_code.repos \
          SET target_branch = $5 \
@@ -628,7 +627,7 @@ pub async fn update_cursor(
     cursor_bytes: &[u8],
     polled_at: time::OffsetDateTime,
 ) -> Result<(), RepoRegistryError> {
-    let (kind, principal_id, org_id) = owner_columns(owner);
+    let (kind, principal_id, org_id) = owner.columns();
 
     sqlx::query(
         "UPDATE proxima_code.repos \

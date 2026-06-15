@@ -8,9 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::AgentDerivationV1;
 
-use super::util::{
-    map_storage, memory_kind_for_edge, normalize_tags, owner_columns, owner_principal,
-};
+use super::util::{map_storage, memory_kind_for_edge, normalize_tags, owner_principal};
 
 const DERIVED_NAMESPACE: uuid::Uuid = uuid::Uuid::from_bytes([
     0x9d, 0xc1, 0x37, 0x10, 0x4f, 0xa6, 0x4c, 0x4e, 0x95, 0x73, 0xc8, 0x18, 0x9d, 0xfb, 0xa7, 0x40,
@@ -247,7 +245,7 @@ async fn load_source_kinds(
 }
 
 fn derived_memory_id(owner: &crate::Owner, kind: &str, key: &str) -> uuid::Uuid {
-    let (principal_kind, principal_id, org_id) = owner_columns(owner);
+    let (principal_kind, principal_id, org_id) = owner.columns();
     let mut buf = Vec::with_capacity(96 + key.len());
     buf.extend_from_slice(principal_kind.as_str().as_bytes());
     buf.push(0);
