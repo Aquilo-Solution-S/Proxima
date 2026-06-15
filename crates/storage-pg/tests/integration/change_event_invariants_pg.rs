@@ -1,7 +1,7 @@
 //! DB-level guard tests for `change_event` endpoint invariants.
 //!
 //! `change_event_endpoint_chk` enforces the same "exactly one of
-//! memory_id/goal_id per endpoint" rule (plus not-null companions) that
+//! `memory_id/goal_id` per endpoint" rule (plus not-null companions) that
 //! the pull-read decode in `change_event.rs` relies on, so a raw INSERT
 //! cannot persist an undecodable row. Mirrors the edges endpoint CHECKs.
 

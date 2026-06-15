@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use common::{drop_db, fresh_pg, owner_fixture};
-use proxima_core::llm::{EmbeddingClient, LlmError};
+use proxima_core::llm::{EMBEDDING_DIM, EmbeddingClient, LlmError};
 use proxima_core::personality::{
     PersonalityInstanceId, PersonalityTool, PersonalityToolContext, substrate_pack,
 };
@@ -20,7 +20,7 @@ struct FixedEmbedding;
 #[async_trait]
 impl EmbeddingClient for FixedEmbedding {
     async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
-        Ok(vec![1.0, 0.0, 0.0])
+        Ok(padded_embedding([1.0, 0.0, 0.0]))
     }
 
     fn model_id(&self) -> &'static str {
@@ -28,8 +28,27 @@ impl EmbeddingClient for FixedEmbedding {
     }
 
     fn dim(&self) -> usize {
-        3
+        EMBEDDING_DIM
     }
+}
+
+fn padded_embedding(prefix: [f32; 3]) -> Vec<f32> {
+    let mut embedding = vec![0.0; EMBEDDING_DIM];
+    embedding[..prefix.len()].copy_from_slice(&prefix);
+    embedding
+}
+
+fn vector_literal(vec: &[f32]) -> String {
+    let mut out = String::with_capacity(vec.len().saturating_mul(8).saturating_add(2));
+    out.push('[');
+    for (idx, value) in vec.iter().enumerate() {
+        if idx > 0 {
+            out.push(',');
+        }
+        out.push_str(&value.to_string());
+    }
+    out.push(']');
+    out
 }
 
 #[tokio::test]
@@ -120,12 +139,12 @@ async fn insert_embedded_memory(
     .await?;
     sqlx::query(
         "INSERT INTO proxima_core.embeddings
-            (entity_kind, entity_id, embedding_version, model_id, vec, dim,
+            (entity_kind, entity_id, embedding_version, model_id, vec,
              owner_principal_kind, owner_principal_id, owner_org_id)
-         VALUES ('Abstraction', $1, 1, 'test-embed', $2, 3, $3, $4, $5)",
+         VALUES ('Abstraction', $1, 1, 'test-embed', $2::vector, $3, $4, $5)",
     )
     .bind(memory_id)
-    .bind(Vec::from(embedding))
+    .bind(vector_literal(&padded_embedding(embedding)))
     .bind(owner_kind)
     .bind(owner_principal_id)
     .bind(owner.org_id.into_inner())

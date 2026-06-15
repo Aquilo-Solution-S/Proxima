@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
+use proxima_core::llm::EMBEDDING_DIM;
 use proxima_core::verbs::query::{EntityKind, MemorySearchRequest, MemorySearchResult, SearchMode};
 use proxima_core::verbs::schema::{
     MemorySearchProjection, MemorySearchProjectionField, PayloadKind,
@@ -221,14 +222,9 @@ async fn run_semantic(
             "semantic search requires embedding_model_id".into(),
         ));
     };
-    let Some(dim) = req.embedding_dim else {
+    if query_embedding.len() != EMBEDDING_DIM {
         return Err(StorageError::ConstraintViolation(
-            "semantic search requires embedding_dim".into(),
-        ));
-    };
-    if query_embedding.len() != dim {
-        return Err(StorageError::ConstraintViolation(
-            "semantic search embedding length must match embedding_dim".into(),
+            "semantic search embedding length must be 1024".into(),
         ));
     }
 
@@ -236,17 +232,17 @@ async fn run_semantic(
     let mut next_param = 3;
     let mut sql = common_candidates_sql(req, &projections, &mut next_param)?;
     let vec_param = next_param;
-    next_param += 1;
-    let model_param = next_param;
-    next_param += 1;
-    let dim_param = next_param;
+    let model_param = next_param + 1;
 
     write!(
         sql,
         " SELECT c.memory_id, c.kind, c.schema_id, c.authoring_personality_instance_id,
                  left(c.search_text, 480) AS snippet,
                  0.0::real AS lexical_score,
-                 GREATEST(0.0, sim.similarity)::real AS similarity_score,
+                 CASE
+                     WHEN (1 - (e.vec <=> ${vec_param}::vector)) = 'NaN'::float8 THEN 0.0
+                     ELSE GREATEST(0.0, (1 - (e.vec <=> ${vec_param}::vector)))
+                 END::real AS similarity_score,
                  c.wake_chain_depth
           FROM candidates c
           JOIN proxima_core.embeddings e
@@ -256,18 +252,6 @@ async fn run_semantic(
            AND e.owner_principal_id = c.owner_principal_id
            AND e.embedding_version = 1
            AND e.model_id = ${model_param}
-           AND e.dim = ${dim_param}
-          CROSS JOIN LATERAL (
-              SELECT COALESCE(
-                  SUM(pair.ev * pair.qv)
-                  / NULLIF(
-                      sqrt(SUM(pair.ev * pair.ev)) * sqrt(SUM(pair.qv * pair.qv)),
-                      0.0
-                  ),
-                  0.0
-              )::real AS similarity
-              FROM unnest(e.vec, ${vec_param}::real[]) AS pair(ev, qv)
-          ) sim
           ORDER BY similarity_score DESC, c.memory_id DESC
           LIMIT {}",
         u64::from(limit)
@@ -285,9 +269,8 @@ async fn run_semantic(
     if let Some(reader) = req.reader_personality_instance_id {
         q = q.bind(reader.into_inner());
     }
-    q = q.bind(query_embedding.clone());
+    q = q.bind(crate::pgvector::literal(query_embedding));
     q = q.bind(model_id.clone());
-    q = q.bind(i32::try_from(dim).unwrap_or(i32::MAX));
     q.fetch_all(pool)
         .await
         .map_err(|e| StorageError::Internal(e.to_string()))

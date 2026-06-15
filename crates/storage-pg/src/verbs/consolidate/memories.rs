@@ -1,3 +1,4 @@
+use proxima_core::llm::EMBEDDING_DIM;
 use proxima_core::personality::{
     AbstractionRow, FactRow, MemorySnapshot, PersonalityInstanceId, PersonalityRef,
     PersonalityWriteOutcome, PersonalityWriteRequest, SidecarSpec, WakeChainDepth,
@@ -528,19 +529,22 @@ pub async fn append_personality_memories(
         };
         append_edge_in_tx(&mut tx, &authored, None).await?;
 
-        let dim = i32::try_from(memory.embedding.len())
-            .map_err(|_| StorageError::ConstraintViolation("embedding dim too large".into()))?;
+        if memory.embedding.len() != EMBEDDING_DIM {
+            return Err(StorageError::ConstraintViolation(
+                "embedding length must be 1024".into(),
+            ));
+        }
+        let vec_literal = crate::pgvector::literal(&memory.embedding);
         sqlx::query(
             "INSERT INTO proxima_core.embeddings
-                (entity_kind, entity_id, embedding_version, model_id, vec, dim,
+                (entity_kind, entity_id, embedding_version, model_id, vec,
                  owner_principal_kind, owner_principal_id, owner_org_id)
-             VALUES ($1, $2, 1, $3, $4, $5, $6, $7, $8)",
+             VALUES ($1, $2, 1, $3, $4::vector, $5, $6, $7)",
         )
         .bind(memory.kind.entity_kind())
         .bind(memory_id)
         .bind(&memory.embedding_model_id)
-        .bind(&memory.embedding)
-        .bind(dim)
+        .bind(vec_literal)
         .bind(owner_kind)
         .bind(owner_principal_id)
         .bind(owner_org_id)

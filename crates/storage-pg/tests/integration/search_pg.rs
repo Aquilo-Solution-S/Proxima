@@ -1,5 +1,6 @@
 use crate::common::{drop_db, fresh_pg, owner_fixture};
 
+use proxima_core::llm::EMBEDDING_DIM;
 use proxima_core::verbs::query::{EntityKind, MemorySearchRequest, SearchMode};
 use proxima_core::verbs::schema::{
     MemorySearchProjection, MemorySearchProjectionField, PayloadKind,
@@ -37,9 +38,8 @@ async fn semantic_search_ranks_nearest_vector_and_isolates_owner()
                 limit: 10,
                 kind: Some(EntityKind::Abstraction),
                 schema_id: Some(SchemaId::new("test/search-abstraction-v1".into())),
-                query_embedding: Some(vec![1.0, 0.0, 0.0]),
+                query_embedding: Some(padded_embedding([1.0, 0.0, 0.0])),
                 embedding_model_id: Some("test-embed".into()),
-                embedding_dim: Some(3),
                 reader_personality_instance_id: None,
             },
             &[],
@@ -52,6 +52,77 @@ async fn semantic_search_ranks_nearest_vector_and_isolates_owner()
     );
     assert!(rows.iter().any(|row| row.memory_id.into_inner() == far));
     assert!(!rows.iter().any(|row| row.memory_id.into_inner() == other));
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn semantic_search_matches_pgvector_cosine_and_clamps_zero_query()
+-> Result<(), Box<dyn std::error::Error>> {
+    let Some((pg, db_name)) = fresh_pg().await else {
+        return Ok(());
+    };
+    pg.run_migrations().await?;
+
+    let owner = owner_fixture();
+    let east_vec = padded_embedding([1.0, 0.0, 0.0]);
+    let north_vec = padded_embedding([0.0, 1.0, 0.0]);
+    let diagonal_vec = padded_embedding([0.5, 0.5, 0.0]);
+    let query_vec = padded_embedding([1.0, 0.2, 0.0]);
+
+    let east = insert_embedded_memory_with_vec(&pg, &owner, "east", &east_vec).await?;
+    let north = insert_embedded_memory_with_vec(&pg, &owner, "north", &north_vec).await?;
+    let diagonal = insert_embedded_memory_with_vec(&pg, &owner, "diagonal", &diagonal_vec).await?;
+
+    let indexdef: Option<String> = sqlx::query_scalar(
+        "SELECT indexdef
+           FROM pg_indexes
+          WHERE schemaname = 'proxima_core'
+            AND tablename = 'embeddings'
+            AND indexname = 'idx_embeddings_vec_hnsw'",
+    )
+    .fetch_optional(pg.pool())
+    .await?;
+    let indexdef = indexdef.expect("HNSW index exists");
+    assert!(indexdef.contains("USING hnsw"), "{indexdef}");
+
+    let rows = pg
+        .search_memories(&semantic_request(&owner, query_vec.clone()), &[])
+        .await?;
+
+    let mut expected = [
+        (east, brute_cosine(&east_vec, &query_vec)),
+        (north, brute_cosine(&north_vec, &query_vec)),
+        (diagonal, brute_cosine(&diagonal_vec, &query_vec)),
+    ];
+    expected.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| b.0.cmp(&a.0)));
+
+    let actual: Vec<_> = rows
+        .iter()
+        .map(|row| (row.memory_id.into_inner(), row.similarity_score))
+        .collect();
+    assert_eq!(
+        actual.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+        expected.iter().map(|(id, _)| *id).collect::<Vec<_>>()
+    );
+    for ((_, actual_score), (_, expected_score)) in actual.iter().zip(expected.iter()) {
+        assert!(
+            (actual_score - expected_score).abs() <= 1.0e-4,
+            "actual {actual_score} expected {expected_score}"
+        );
+    }
+
+    let zero_rows = pg
+        .search_memories(&semantic_request(&owner, vec![0.0; EMBEDDING_DIM]), &[])
+        .await?;
+    assert!(
+        zero_rows
+            .iter()
+            .all(|row| row.similarity_score.abs() <= f32::EPSILON),
+        "{zero_rows:#?}"
+    );
 
     drop(pg);
     drop_db(&db_name).await?;
@@ -141,7 +212,6 @@ async fn search_projects_authoring_personality_and_nil_as_none()
                 schema_id: Some(SchemaId::new("test/search-attribution-v1".into())),
                 query_embedding: None,
                 embedding_model_id: None,
-                embedding_dim: None,
                 reader_personality_instance_id: None,
             },
             &[],
@@ -164,7 +234,6 @@ async fn search_projects_authoring_personality_and_nil_as_none()
                 schema_id: Some(SchemaId::new("test/search-attribution-v1".into())),
                 query_embedding: None,
                 embedding_model_id: None,
-                embedding_dim: None,
                 reader_personality_instance_id: None,
             },
             &[],
@@ -225,6 +294,16 @@ async fn insert_embedded_memory(
     text: &str,
     embedding: [f32; 3],
 ) -> Result<Uuid, Box<dyn std::error::Error>> {
+    let embedding = padded_embedding(embedding);
+    insert_embedded_memory_with_vec(pg, owner, text, &embedding).await
+}
+
+async fn insert_embedded_memory_with_vec(
+    pg: &proxima_storage_pg::PgStorage,
+    owner: &Owner,
+    text: &str,
+    embedding: &[f32],
+) -> Result<Uuid, Box<dyn std::error::Error>> {
     let memory_id = Uuid::now_v7();
     let owner_kind = OwnerPrincipalKind::of(&owner.principal);
     let owner_principal_id = match &owner.principal {
@@ -249,12 +328,12 @@ async fn insert_embedded_memory(
     .await?;
     sqlx::query(
         "INSERT INTO proxima_core.embeddings
-            (entity_kind, entity_id, embedding_version, model_id, vec, dim,
+            (entity_kind, entity_id, embedding_version, model_id, vec,
              owner_principal_kind, owner_principal_id, owner_org_id)
-         VALUES ('Abstraction', $1, 1, 'test-embed', $2, 3, $3, $4, $5)",
+         VALUES ('Abstraction', $1, 1, 'test-embed', $2::vector, $3, $4, $5)",
     )
     .bind(memory_id)
-    .bind(Vec::from(embedding))
+    .bind(vector_literal(embedding))
     .bind(owner_kind)
     .bind(owner_principal_id)
     .bind(owner.org_id.into_inner())
@@ -345,8 +424,55 @@ fn lexical_request(owner: &Owner, query: &str) -> MemorySearchRequest {
         schema_id: None,
         query_embedding: None,
         embedding_model_id: None,
-        embedding_dim: None,
         reader_personality_instance_id: None,
+    }
+}
+
+fn semantic_request(owner: &Owner, query_embedding: Vec<f32>) -> MemorySearchRequest {
+    MemorySearchRequest {
+        principal: owner.principal.clone(),
+        query: "semantic query".into(),
+        mode: SearchMode::Semantic,
+        limit: 10,
+        kind: Some(EntityKind::Abstraction),
+        schema_id: Some(SchemaId::new("test/search-abstraction-v1".into())),
+        query_embedding: Some(query_embedding),
+        embedding_model_id: Some("test-embed".into()),
+        reader_personality_instance_id: None,
+    }
+}
+
+fn padded_embedding(prefix: [f32; 3]) -> Vec<f32> {
+    let mut embedding = vec![0.0; EMBEDDING_DIM];
+    embedding[..prefix.len()].copy_from_slice(&prefix);
+    embedding
+}
+
+fn vector_literal(vec: &[f32]) -> String {
+    let mut out = String::with_capacity(vec.len().saturating_mul(8).saturating_add(2));
+    out.push('[');
+    for (idx, value) in vec.iter().enumerate() {
+        if idx > 0 {
+            out.push(',');
+        }
+        out.push_str(&value.to_string());
+    }
+    out.push(']');
+    out
+}
+
+fn brute_cosine(stored: &[f32], query: &[f32]) -> f32 {
+    let dot: f32 = stored
+        .iter()
+        .zip(query.iter())
+        .map(|(stored, query)| stored * query)
+        .sum();
+    let stored_norm = stored.iter().map(|value| value * value).sum::<f32>().sqrt();
+    let query_norm = query.iter().map(|value| value * value).sum::<f32>().sqrt();
+    if stored_norm <= f32::EPSILON || query_norm <= f32::EPSILON {
+        0.0
+    } else {
+        (dot / (stored_norm * query_norm)).max(0.0)
     }
 }
 

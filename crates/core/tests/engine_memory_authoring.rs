@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use common::{drop_db, fresh_pg, owner_fixture};
-use proxima_core::llm::{EmbeddingClient, LlmError};
+use proxima_core::llm::{EMBEDDING_DIM, EmbeddingClient, LlmError};
 use proxima_core::verbs::event_ingest::EventDraft;
 use proxima_core::verbs::query::MemoryStore;
 use proxima_core::{
@@ -21,17 +21,36 @@ struct FixedEmbeddingClient;
 
 #[async_trait]
 impl EmbeddingClient for FixedEmbeddingClient {
-    async fn embed(&self, text: &str) -> Result<Vec<f32>, LlmError> {
-        Ok(vec![text.len() as f32, 1.0, 2.0])
+    async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
+        Ok(padded_embedding([12.0, 1.0, 2.0]))
     }
 
-    fn model_id(&self) -> &str {
+    fn model_id(&self) -> &'static str {
         "test-embed"
     }
 
     fn dim(&self) -> usize {
-        3
+        EMBEDDING_DIM
     }
+}
+
+fn padded_embedding(prefix: [f32; 3]) -> Vec<f32> {
+    let mut embedding = vec![0.0; EMBEDDING_DIM];
+    embedding[..prefix.len()].copy_from_slice(&prefix);
+    embedding
+}
+
+fn vector_literal(vec: &[f32]) -> String {
+    let mut out = String::with_capacity(vec.len().saturating_mul(8).saturating_add(2));
+    out.push('[');
+    for (idx, value) in vec.iter().enumerate() {
+        if idx > 0 {
+            out.push(',');
+        }
+        out.push_str(&value.to_string());
+    }
+    out.push(']');
+    out
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -178,21 +197,38 @@ async fn engine_author_derived_writes_memory_edge_and_embedding()
     assert_eq!(edge_row.2, source_abstraction.into_inner());
     assert_eq!(edge_row.3, Some(source_abstraction.into_inner()));
 
-    let embedding_row: (String, Vec<f32>, i32) = sqlx::query_as(
-        "SELECT model_id, vec, dim
-           FROM proxima_core.embeddings
-          WHERE entity_kind = 'Abstraction' AND entity_id = $1",
-    )
-    .bind(memory_id)
-    .fetch_one(pg.pool())
-    .await?;
-    assert_eq!(embedding_row.0, "test-embed");
-    assert_eq!(embedding_row.1, vec![12.0, 1.0, 2.0]);
-    assert_eq!(embedding_row.2, 3);
+    assert_embedding_row(pg.pool(), memory_id).await?;
 
     drop(engine);
     drop(pg);
     drop_db(&db_name).await?;
+    Ok(())
+}
+
+async fn assert_embedding_row(
+    pool: &sqlx::PgPool,
+    memory_id: Uuid,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let expected_embedding = padded_embedding([12.0, 1.0, 2.0]);
+    let embedding_row: (String, i32, f64) = sqlx::query_as(
+        "SELECT model_id, vector_dims(vec), 1 - (vec <=> $2::vector)
+           FROM proxima_core.embeddings
+          WHERE entity_kind = 'Abstraction' AND entity_id = $1",
+    )
+    .bind(memory_id)
+    .bind(vector_literal(&expected_embedding))
+    .fetch_one(pool)
+    .await?;
+    assert_eq!(embedding_row.0, "test-embed");
+    assert_eq!(
+        embedding_row.1,
+        i32::try_from(EMBEDDING_DIM).expect("embedding dim fits i32")
+    );
+    assert!(
+        (embedding_row.2 - 1.0).abs() <= 1.0e-6,
+        "expected identical vector cosine, got {}",
+        embedding_row.2
+    );
     Ok(())
 }
 

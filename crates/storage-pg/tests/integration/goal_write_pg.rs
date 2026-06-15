@@ -375,7 +375,7 @@ async fn goal_write_with_parent() {
 }
 
 /// Both layers reject a goal payload that is empty or not a JSON object:
-/// the engine `write_goal` guard (symmetric with EventIngest) and the
+/// the engine `write_goal` guard (symmetric with `EventIngest`) and the
 /// `goals_payload_nonempty_chk` DB constraint as the last line of defense.
 #[tokio::test]
 async fn goal_write_rejects_empty_or_non_object_payload() {

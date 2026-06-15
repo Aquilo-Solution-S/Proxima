@@ -220,6 +220,19 @@ Embeddings may point at Facts, Abstractions, Perspectives, and Goals.
 Edges are not embedded as relations. Similarity is query-time evidence;
 it never authors graph edges (02 §Why this layering).
 
+Postgres implementation:
+
+| Surface | Contract |
+|---|---|
+| extension | `CREATE EXTENSION IF NOT EXISTS vector`; local/CI DBs inherit pgvector 0.8.0 from `template1` |
+| column | `proxima_core.embeddings.vec vector(1024)` |
+| dimension | fixed 1024 (`mistral-embed`); no `dim` column |
+| key | `(entity_kind, entity_id, embedding_version, model_id)` |
+| Fact write | `ON CONFLICT ... DO UPDATE` refreshes vector + Owner columns |
+| derived write | memory row + typed sidecar + embedding row in one transaction |
+| index | `idx_embeddings_vec_hnsw` using `hnsw (vec vector_cosine_ops)` |
+| ranking | bind `'[...]'::vector`; score `1 - (vec <=> query)`; zero-vector NaN score clamps to `0.0` |
+
 <a id="consequences-of-append-only"></a>
 
 ## Consequences Of Append-Only

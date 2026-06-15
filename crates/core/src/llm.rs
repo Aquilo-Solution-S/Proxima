@@ -109,6 +109,8 @@ pub trait AnthropicClient: Send + Sync + std::fmt::Debug {
     fn model_id(&self) -> &str;
 }
 
+pub const EMBEDDING_DIM: usize = 1024;
+
 /// Embedding client surface. Concrete impls live outside core.
 #[async_trait]
 pub trait EmbeddingClient: Send + Sync + std::fmt::Debug {

@@ -22,6 +22,8 @@
 -- Prefer regenerating from a migrated DB (pg_dump --schema-only) for broad schema
 -- changes; targeted object drops like the above may be hand-applied.
 
+CREATE EXTENSION IF NOT EXISTS vector;
+
 CREATE SCHEMA proxima_core;
 
 
@@ -636,8 +638,7 @@ CREATE TABLE proxima_core.embeddings (
     entity_id uuid NOT NULL,
     embedding_version integer DEFAULT 1 NOT NULL,
     model_id text NOT NULL,
-    vec real[] NOT NULL,
-    dim integer NOT NULL,
+    vec vector(1024) NOT NULL,
     owner_principal_kind proxima_core.owner_principal_kind NOT NULL,
     owner_principal_id uuid NOT NULL,
     owner_org_id uuid NOT NULL,
@@ -1206,6 +1207,13 @@ CREATE INDEX idx_edges_target_memory ON proxima_core.edges USING btree (target_m
 --
 
 CREATE INDEX idx_embeddings_owner ON proxima_core.embeddings USING btree (owner_principal_kind, owner_principal_id, owner_org_id);
+
+
+--
+-- Name: idx_embeddings_vec_hnsw; Type: INDEX; Schema: proxima_core; Owner: -
+--
+
+CREATE INDEX idx_embeddings_vec_hnsw ON proxima_core.embeddings USING hnsw (vec vector_cosine_ops);
 
 
 --

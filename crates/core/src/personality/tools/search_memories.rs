@@ -130,7 +130,6 @@ impl PersonalityTool for SearchMemoriesTool {
             schema_id: parsed.schema_id.map(SchemaId::new),
             query_embedding: None,
             embedding_model_id: None,
-            embedding_dim: None,
             reader_personality_instance_id: Some(ctx.instance_id),
         };
 
@@ -146,7 +145,6 @@ impl PersonalityTool for SearchMemoriesTool {
                     .map_err(|e| ProtocolError::internal(format!("embed query: {e}")))?,
             );
             req.embedding_model_id = Some(embed.model_id().to_string());
-            req.embedding_dim = Some(embed.dim());
         }
 
         let rows = ctx

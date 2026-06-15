@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use proxima_core::engine::{EmbeddingClientReloader, Engine};
 use proxima_core::error::ErrorCode;
 use proxima_core::ids::{OrgId, SourceBatchId, UserId};
-use proxima_core::llm::{EmbeddingClient, LlmError};
+use proxima_core::llm::{EMBEDDING_DIM, EmbeddingClient, LlmError};
 use proxima_core::owner::{Owner, Principal};
 use proxima_core::verbs::event_history::EventHistoryRequest;
 use proxima_core::verbs::query::{MemoryStore, QueryRequest};
@@ -43,7 +43,7 @@ impl EmbeddingClient for FixedEmbeddingClient {
     }
 
     fn dim(&self) -> usize {
-        3
+        EMBEDDING_DIM
     }
 }
 
@@ -88,7 +88,7 @@ async fn reload_embedding_client_replaces_engine_slot() {
 
     assert!(outcome.active);
     assert_eq!(outcome.model_id.as_deref(), Some("test-embedding"));
-    assert_eq!(outcome.dim, Some(3));
+    assert_eq!(outcome.dim, Some(EMBEDDING_DIM));
     assert_eq!(
         engine.embed_client().expect("client installed").model_id(),
         "test-embedding"
