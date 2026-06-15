@@ -19,8 +19,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use proxima_code::{CommitSummaryV1, CommitV1, build_engine_with, ingest_commit, register_repo};
-use proxima_core::llm::scripted::ScriptedAnthropicClient;
-use proxima_core::llm::{EMBEDDING_DIM, EmbeddingClient, LlmError};
+use proxima_core::llm::{AnthropicClient, EMBEDDING_DIM, EmbeddingClient, LlmError};
 use proxima_core::personality::tools::EmitAbstractionTool;
 use proxima_core::personality::{
     InstantiatePersonalityRequest, PersonalityTool, PersonalityToolContext,
@@ -73,6 +72,15 @@ async fn current_root_perspective_memory_id(
 #[derive(Debug)]
 struct FakeEmbedding;
 
+#[derive(Debug)]
+struct FakeAnthropic;
+
+impl AnthropicClient for FakeAnthropic {
+    fn model_id(&self) -> &str {
+        "fake-anthropic"
+    }
+}
+
 #[async_trait]
 impl EmbeddingClient for FakeEmbedding {
     async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
@@ -105,7 +113,7 @@ async fn emit_abstraction_writes_core_authored_edge_from_root_perspective() {
         .await?;
 
         let engine = build_engine_with(pg.clone(), |_registry| {})
-            .with_anthropic(Arc::new(ScriptedAnthropicClient::new(Vec::new())))
+            .with_anthropic(Arc::new(FakeAnthropic))
             .with_embed(Arc::new(FakeEmbedding));
 
         let authz = AuthzContext::single_owner(&owner, AuthPath::System);
