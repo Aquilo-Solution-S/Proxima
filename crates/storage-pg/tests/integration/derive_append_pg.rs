@@ -35,6 +35,8 @@ fn agent_draft(
             "client_name": "codex",
             "client_version": "1",
         })),
+        embedding: None,
+        embedding_model_id: None,
     }
 }
 

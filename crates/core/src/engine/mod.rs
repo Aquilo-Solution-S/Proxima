@@ -6,6 +6,7 @@ mod fact_retention;
 mod goals;
 mod ingest;
 pub mod mcp_listener;
+mod memory_authoring;
 mod personality;
 mod query;
 
@@ -25,6 +26,7 @@ use crate::verbs::schema::FlavorRegistryFrozen;
 use crate::{Owner, Principal, SetWakeEntriesRequest, SetWakeEntriesResponse, WakeEntryDraft};
 
 pub use mcp_listener::{EngineMcpListener, RunningMcpListener};
+pub use memory_authoring::{AuthorDerivedEdgeInput, AuthorDerivedRequestInput};
 
 pub struct Engine {
     registry: FlavorRegistryFrozen,

@@ -18,11 +18,16 @@ use crate::personality::{
 };
 use crate::verbs::close_batch::CloseBatchOutcome;
 use crate::verbs::event_history::{EventHistoryRequest, EventHistoryResponse};
-use crate::verbs::event_ingest::{EventDraft, EventIngestOutcome};
+use crate::verbs::event_ingest::{
+    AuthorizedEventIngest, AuthorizedFactWithCitation, EventDraft, EventIngestOutcome,
+};
 use crate::verbs::fact_cleanup::CleanupDueFactsOutcome;
 use crate::verbs::goal_write::{GoalDraft, GoalWriteOutcome};
 use crate::verbs::persist_mcp_call::{McpCallLogInput, McpCallLogOutcome};
-use crate::{Owner, Principal};
+use crate::{
+    EdgeAuthorshipKind, EntityKind, MemoryId, MemoryOperatorKind, Owner, Principal,
+    RegisteredRelation, SchemaId, SchemaVersion,
+};
 
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum StorageError {
@@ -50,6 +55,44 @@ pub type WakeEntriesMutator =
 pub struct MasterTokenPersonality {
     pub instance_id: crate::PersonalityInstanceId,
     pub self_perspective_memory_id: crate::MemoryId,
+}
+
+#[derive(Debug, Clone)]
+pub struct DerivedEdgeSpec<'a> {
+    pub owner: &'a Owner,
+    pub relation: RegisteredRelation<'a>,
+    pub source_kind: EntityKind,
+    pub source_memory_id: MemoryId,
+    pub target_kind: EntityKind,
+    pub target_memory_id: MemoryId,
+    pub authorship_kind: EdgeAuthorshipKind,
+    pub authorship_owner_memory_id: Option<MemoryId>,
+}
+
+#[derive(Debug)]
+pub struct AuthorDerivedRequest<'a> {
+    pub memory_id: MemoryId,
+    pub owner: Owner,
+    pub kind: EntityKind,
+    pub text: String,
+    pub schema_id: SchemaId,
+    pub schema_version: SchemaVersion,
+    pub operator_kind: MemoryOperatorKind,
+    pub model_id: &'a str,
+    pub prompt_version: &'a str,
+    pub author_personality_instance_id: Option<PersonalityInstanceId>,
+    pub sidecar_table: &'a str,
+    pub sidecar_payload: serde_json::Value,
+    pub embedding: Option<Vec<f32>>,
+    pub embedding_model_id: Option<&'a str>,
+    pub edges: &'a [DerivedEdgeSpec<'a>],
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthorDerivedOutcome {
+    pub memory_id: MemoryId,
+    pub idempotent_replay: bool,
+    pub edge_count: usize,
 }
 
 #[async_trait::async_trait]
@@ -106,6 +149,35 @@ pub trait Storage: Send + Sync {
         &self,
         input: &McpCallLogInput,
     ) -> Result<McpCallLogOutcome, StorageError>;
+
+    /// Atomic Fact materialization for already-authorized `EventIngest`
+    /// plus one data-driven typed sidecar row.
+    async fn ingest_event_with_sidecar(
+        &self,
+        authorized: &AuthorizedEventIngest,
+        sidecar_table: &str,
+        sidecar_payload: &serde_json::Value,
+    ) -> Result<EventIngestOutcome, StorageError>;
+
+    /// Atomic Fact + Citation materialization for an already-authorized
+    /// inline-citation write plus one data-driven Fact sidecar row.
+    async fn ingest_fact_with_citation_and_sidecar(
+        &self,
+        authorized: &AuthorizedFactWithCitation,
+        sidecar_table: &str,
+        sidecar_payload: &serde_json::Value,
+    ) -> Result<EventIngestOutcome, StorageError>;
+
+    /// Atomic derived Memory authoring: Memory row, typed sidecar,
+    /// optional embedding row, and already-resolved edge specs.
+    async fn author_derived(
+        &self,
+        req: &AuthorDerivedRequest<'_>,
+    ) -> Result<AuthorDerivedOutcome, StorageError>;
+
+    /// Atomic single memory-edge authoring for already-resolved relation
+    /// specs.
+    async fn append_memory_edge(&self, edge: &DerivedEdgeSpec<'_>) -> Result<(), StorageError>;
 
     /// Atomic Goal write per docs/14 §`GoalWrite`.
     /// Single transaction inserting goal, `goal_parents`,
@@ -419,6 +491,35 @@ impl Storage for NoopStorage {
         &self,
         _input: &McpCallLogInput,
     ) -> Result<McpCallLogOutcome, StorageError> {
+        Err(StorageError::Internal("NoopStorage rejects writes".into()))
+    }
+
+    async fn ingest_event_with_sidecar(
+        &self,
+        _authorized: &AuthorizedEventIngest,
+        _sidecar_table: &str,
+        _sidecar_payload: &serde_json::Value,
+    ) -> Result<EventIngestOutcome, StorageError> {
+        Err(StorageError::Internal("NoopStorage rejects writes".into()))
+    }
+
+    async fn ingest_fact_with_citation_and_sidecar(
+        &self,
+        _authorized: &AuthorizedFactWithCitation,
+        _sidecar_table: &str,
+        _sidecar_payload: &serde_json::Value,
+    ) -> Result<EventIngestOutcome, StorageError> {
+        Err(StorageError::Internal("NoopStorage rejects writes".into()))
+    }
+
+    async fn author_derived(
+        &self,
+        _req: &AuthorDerivedRequest<'_>,
+    ) -> Result<AuthorDerivedOutcome, StorageError> {
+        Err(StorageError::Internal("NoopStorage rejects writes".into()))
+    }
+
+    async fn append_memory_edge(&self, _edge: &DerivedEdgeSpec<'_>) -> Result<(), StorageError> {
         Err(StorageError::Internal("NoopStorage rejects writes".into()))
     }
 
