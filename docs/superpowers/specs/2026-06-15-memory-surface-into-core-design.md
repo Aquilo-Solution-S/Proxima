@@ -1,177 +1,191 @@
-# 2026-06-15 — Memory surface into Core (promote + unify) — Spec A
+# 2026-06-15 — Memory surface into Core (engine-verb abstraction) — Spec A
 
-- **Status:** design — decisions resolved 2026-06-15; pending implementation plan
+- **Status:** design — revised 2026-06-15 after the cdx plan review. **Approach:
+  Option B (engine-verb abstraction)**, chosen for long-term cleanliness on
+  greenfield. Pending plan rewrite + re-review.
 - **Branch:** `agent-memory-recall-findability` (off `road-to-v1`)
 - **Scope owner:** Heinrich
 - **Spec B (follow-on, blocked on this):**
-  `2026-06-15-agent-memory-recall-findability-design.md` — recall findability,
-  rebased onto the canonical core surface this spec produces.
+  `2026-06-15-agent-memory-recall-findability-design.md`.
 - **Related:** `docs/02-memory.md`, `docs/08-core-and-flavors.md`,
   `docs/14-protocol-surface.md`, memories `project_brain_hub_contraction`,
-  `project_substrate_first_goal`, `project_flavor_marketplace`,
-  `project_no_uuids_in_model_context`, `project_strassberger_migration_strategy`.
+  `project_substrate_first_goal`, `project_no_uuids_in_model_context`,
+  `project_strassberger_migration_strategy`, `project_flavor_marketplace`.
 
 ## Problem
 
 There are **two overlapping agent-memory surfaces**:
 
-- **Core primitives** (already in `crates/core`): `core/emit_abstraction`,
+- **Core primitives** (in `crates/core`): `core/emit_abstraction`,
   `core/emit_perspective`, `core/search_memories`, `core/walk_memory_lineage`,
-  `core/facts_citing_object`, `Engine::ensure_fact_embedding`
-  (`crates/core/src/flavor.rs:791-794`, `crates/core/src/mcp/core_tools/`).
-- **The `agent-memory` flavor** (`flavors/agent-memory/`, separate crate
-  `proxima-agent-memory`, separate schema `proxima_agent_memory`): a parallel
-  ergonomic layer — `proxima_remember`, `proxima_derive`, `proxima_link`,
-  `proxima_search_graph`, `proxima_open`, `record_utterance`.
+  `core/facts_citing_object`, `Engine::ensure_fact_embedding`.
+- **The `agent-memory` flavor** (`flavors/agent-memory/`, crate
+  `proxima-agent-memory`, schema `proxima_agent_memory`): a parallel layer —
+  `proxima_remember`, `proxima_derive`, `proxima_link`, `proxima_search_graph`,
+  `proxima_open`, `record_utterance`.
 
-These do the same job two ways (e.g. `proxima_search_graph` vs
-`core/search_memories`; `proxima_derive` vs `core/emit_*`), with subtle
-behavioral divergence (derive doesn't embed; emit does — see Spec B). The
-flavor is **mis-filed**: generic agent long-term memory is *substrate*, not a
-domain flavor. The brain-hub contraction defines Proxima as exactly this —
-memory + per-agent history + personality config. Domain flavors (Code, the
-invoice flavor) are the real flavors; agent-memory is core.
+They do the same job two ways, with behavioral divergence (derive doesn't
+embed; emit does). Generic agent long-term memory is **substrate**, not a
+domain flavor — it is exactly what the brain-hub contraction defines Proxima as
+(memory + per-agent history + personality config). This spec makes the memory
+surface core and collapses the two into one canonical palette.
 
-This spec promotes the agent-memory surface into core and collapses the two
-surfaces into **one canonical core memory palette**. It is a
-relocation + dedup + naming change — **no new retrieval features** (those are
-Spec B).
+## Why not a simple crate-fold (cdx plan review, verified)
+
+The agent-memory MCP tools call `proxima_storage_pg::verbs::*` **directly** at
+runtime (`derive.rs:6`, `remember.rs:9`, `link.rs:3`, `record_utterance.rs:6`).
+`proxima-storage-pg` depends on `proxima-core`; core has storage-pg only as a
+**dev-dependency** (`crates/core/Cargo.toml:35-37`). Moving these tools into
+`crates/core` would require a runtime `core → storage-pg` dependency → a
+**dependency cycle**. The tools live in a flavor crate *because* flavor crates
+may depend on both core and storage-pg; core may not.
+
+That direct tool→storage coupling is the actual smell, and core already shows
+the clean alternative: `emit_abstraction`/`emit_perspective` author A/P
+**through the Engine** (`ctx.engine` + `emit_personality_memory`, embedding
+transactionally) and import **no** storage-pg
+(`crates/core/src/personality/tools/emit_abstraction.rs:107-127`). The
+agent-memory tools are the un-migrated legacy.
+
+## Decision: Option B — engine-verb abstraction
+
+Lift memory authoring into **core Engine verbs** (storage-pg implements behind
+the Engine's storage handle, exactly as the emit path already does). The MCP
+tools become **thin, core-resident, and call Engine verbs** instead of
+storage-pg. This makes the Engine the single authority over every memory write,
+removes the cycle, makes storage swappable behind the Engine (matters for the
+future pluggable vector store, `docs/07`), and lets the tools be `core/*` with
+**no namespace special-casing**.
 
 ## Goal & non-goals
 
-**Goal:** one canonical, handle-based core memory tool surface; the
-`proxima_agent_memory` schema and tools live in core; the substrate/flavor line
-is sharpened (substrate = core memory; flavors = domain). Behavior-preserving
-except where two surfaces are deduped to one.
+**Goal:** one canonical, handle-based, **`core/*`** memory tool surface; all
+memory authoring flows through core Engine verbs; the `proxima_agent_memory`
+schema lives in `proxima_core`; the `proxima-agent-memory` crate is deleted.
 
-**Non-goals (Spec B, or out entirely):**
+**Non-goals (Spec B, or out entirely):** pgvector/HNSW, durable embedding-jobs
+for the async Fact paths, read-scope-matrix fix, new search filters
+(tags/time/order), recency lever. Any change to graph semantics, F/A/P
+layering, citation model. New domain flavors.
 
-- Embed-on-derive, pgvector/HNSW, durable embedding jobs, read-scope-matrix
-  fix, new search filters (tags/time/order), recency lever. All Spec B.
-- Any change to graph semantics, F/A/P layering, citation model.
-- New domain flavors.
-
-## Decisions settled (at brainstorm)
-
-- **Agent-memory → Core**, as substrate (not a reference flavor).
-- **Two specs**, this one first.
-- **Handle-based I/O is canonical** for the unified surface (no UUIDs in model
-  context, per `project_no_uuids_in_model_context`). Where a core/* tool is
-  UUID-based today, the canonical tool is handle-based.
+(Note: **embed-on-derive is now in scope here** — the new derive Engine verb
+embeds like emit — so it leaves Spec B.)
 
 ## Design
 
-### Crate & module
+### Engine verb layer
 
-Fold `flavors/agent-memory/src/*` into `crates/core` (alongside the existing
-`crates/core/src/mcp/core_tools/`), and **delete the `proxima-agent-memory`
-crate**. Core already hosts the equivalent tools, so a sibling crate adds no
-isolation value and forces the awkward flavor-composition dance for what is
-substrate.
+Introduce/confirm core Engine verbs for memory authoring, each writing its
+memory row + typed sidecar (+ embedding where applicable) in **one
+transaction**, following `emit_personality_memory`:
 
-→ *Open decision #3: fold directly into `crates/core` (recommended) vs. a new
-core-owned `crates/memory` crate that core depends on (more separable, more
-churn).*
+| MCP tool (thin, core) | Engine verb it calls | Notes |
+|---|---|---|
+| `core/remember` | `Engine::ingest_fact_with_sidecar` | Fact + note sidecar. A sidecar-carrying ingest verb may already exist (`Engine::event_ingest_with_sidecar`, added for Strassberger — confirm in plan). Embedding for the async Fact path stays best-effort here; durable jobs are Spec B. |
+| `core/record_utterance` | same ingest verb | utterance sidecar |
+| `core/derive` | `Engine::author_derived` (new) | `ExternalAgent`-authored A/P + provenance edges; **embeds in-tx** (mirrors emit). Subsumes Spec B's embed-on-derive. |
+| `core/link` | `Engine::append_edge` (new/confirm) | edge author |
+| `core/search_graph` | `Engine::search_memories` (exists) | absorbs `core/search_memories`'s `kind`/`schema`/`reader` params; hybrid + neighbor edges + sidecar-aware |
+| `core/open` | a point-read engine accessor | payload + neighbor edges |
+| `core/trace` | `Engine::walk_memory_lineage` (exists) | handle-fronted lineage |
+
+storage-pg gains/keeps the concrete implementations (`append_derived_in_tx`,
+`append_edge_in_tx`, ingest-with-sidecar); the Engine calls them via the
+storage handle it already holds. The MCP tool crate imports **core only**.
+
+### Tool dedup & naming
+
+One palette, `core/*` (existing prefix policy; `add_substrate_mcp_tool` pins
+`core`, `flavor.rs:392` — no change needed). `core/search_memories` and
+`core/walk_memory_lineage` are subsumed by `core/search_graph` / `core/trace`.
+**Display tool names change** (`proxima-agent-memory/proxima_remember` →
+`core/remember`, etc.) — an accepted **breaking MCP API change** pre-v1; update
+the asserting tests (`apps/proxima-mcp/tests/end_to_end.rs`,
+`crates/mcp-server/tests/streamable_http_pg.rs`).
+
+**Greenfield: rename the legacy ids clean.** No data and no external consumer
+depend on these ids, so drop the `proxima-agent-memory/*` prefix → `core/*`:
+schema ids (`core/agent-note-v1`, `core/agent-derivation-v1`,
+`core/utterance-v1`, `core/agent-link-v1`), relation (`core/agent-link-refers-to`),
+source ids (`core/agent`, `core/conversation`). This removes the only reason the
+cutover looked complex — afterward `proxima_agent_memory`/`proxima-agent-memory`
+appear nowhere.
 
 ### Schema relocation
 
-Move `proxima_agent_memory.{agent_note_v1, agent_derivation_v1}` and their GIN
-search indexes (`idx_agent_note_v1_search`, `idx_agent_derivation_v1_search`)
-into `proxima_core`, folded into `crates/storage-pg/migrations/0001_init.sql`;
-drop `flavors/agent-memory/migrations/`. **Window-sensitive and cheap right
-now:** migrations were just squashed to a single `0001`, and the Strassberger
-rollout is a fresh-DB cutover (no data migration; SharePoint is SoR, PG is a
-rebuildable mirror — `project_strassberger_migration_strategy`). Relocating
-before any prod data exists avoids a data migration later.
-
-### Tool-surface unification
-
-Collapse to one canonical palette. Proposed mapping (old → canonical):
-
-| Capability | Today (two ways) | Canonical | Note |
-|---|---|---|---|
-| Append agent Fact | `proxima_remember` | keep (`remember`) | No core equivalent; `core/emit_*` are A/P only. |
-| Chat utterance Fact | `record_utterance` | keep | Agent-memory specific; stays. |
-| Author A/P | `proxima_derive` **and** `core/emit_abstraction`/`emit_perspective` | **one ergonomic handle-based author** | The overlap. See open decision #1. |
-| Search memories | `proxima_search_graph` **and** `core/search_memories` | `proxima_search_graph` absorbs it | Richer (hybrid + neighbor edges + sidecar-aware); inherits `core/search_memories`'s `kind`/`schema`/`reader` filters. `core/search_memories` removed. |
-| Lineage | `core/walk_memory_lineage` | one handle-based lineage tool | Converge; Spec B's `proxima_trace` is just this, renamed/handle-fronted. |
-| Open by handle | `proxima_open` | keep | No core equivalent. |
-| Author edge | `proxima_link` | keep | Ergonomic wrapper over edge append. |
-| Citation lookup | `core/facts_citing_object` | keep (handle-fronted) | |
-
-→ *Open decision #1 (the crux): how to dedup A/P authoring.* `proxima_derive`
-is `ExternalAgent`-authored, handle-based, takes `source_handles` + `model_id`;
-`core/emit_*` are personality-operator-authored and embed transactionally
-(`crates/storage-pg/src/verbs/consolidate/memories.rs:534`). Options: (a) one
-unified author tool with an authorship param; (b) keep both but make their
-roles explicit and non-overlapping (derive = external-agent MCP authoring;
-emit = internal consolidation authoring) and ensure derive reuses emit's
-transactional embed path (this hands Spec B its fix for free). **Recommend
-(b).**
-
-→ *Open decision #2: tool namespace.* Pick one — `proxima_*` (current
-agent-memory style, product-branded) or `core/*` (current core style). Mixed is
-the status quo we're removing. **Recommend `proxima_*`** for the
-agent-facing palette (it's the product surface an external harness sees) with
-internal/admin tools staying `core/*`.
+Move `proxima_agent_memory.{agent_note_v1, agent_derivation_v1, utterance_v1,
+agent_link sidecar}` + their indexes (note: `utterance_v1` has **no** index —
+only table/PK/FK) into `proxima_core`. **Migration caveat (cdx):** SQLx tracks
+applied migrations, so editing `0001_init.sql` only reaches **fresh** DBs. That
+is correct here — pre-v1, fresh-DB cutover, no applied prod `0001`
+(`project_strassberger_migration_strategy`). If any environment already has
+`0001` applied, use a new `0002_*` instead. Drop `flavors/agent-memory/migrations/`.
 
 ### Handle-based I/O
 
-The canonical tools take and return handles (`F:`/`A:`/`P:`/`G:`/`E:` prefixed
-ids or session handles), not raw UUIDs. Where unification pulls a UUID-based
-`core/*` tool into the palette (search_memories filters, walk_memory_lineage),
-its inputs/outputs convert to handles via the existing `HandleTable` /
-prefixed-id machinery (`crates/core/src/mcp/handles.rs`).
+Canonical tools take/return handles (prefixed ids / session handles), not raw
+UUIDs (`project_no_uuids_in_model_context`); the subsumed UUID-based tools
+(`search_memories`, `walk_memory_lineage`) get handle-fronted via the existing
+`HandleTable` (`crates/core/src/mcp/handles.rs`).
+
+## Constraints from review (apply throughout)
+
+- **Greenfield: wholesale move, verify the end state.** No incremental
+  backward-compatible steps, re-export shims, or atomic-cutover choreography to
+  keep intermediate commits green — do the move and gate on a final green
+  `cargo build --workspace` + `cargo test --workspace`. (The engine verbs land
+  first only because the tools depend on them, not for incremental safety.)
+- **Delegated execution:** per `AGENTS.md`, a delegated worktree agent must
+  **not** `git add`/commit — the plan's steps express verification, not commits;
+  the human/orchestrator commits.
+- **Tool count:** core default registry asserts a substrate-tool count
+  (`flavor.rs:769-803`, currently 25). Net = **+7 added** (`core/remember`,
+  `core/record_utterance`, `core/derive`, `core/link`, `core/search_graph`,
+  `core/open`, `core/trace`) **−2 removed** (`core/search_memories`,
+  `core/walk_memory_lineage`) → **30**. Confirm the exact number by running the
+  registration test (whether `emit_*` sit inside this count or are registered
+  separately changes nothing about the +7/−2 delta).
+
+## Consumer / composition impact
+
+Rewire every `proxima_agent_memory` / `proxima-agent-memory` reference:
+`apps/proxima-mcp` (register + migrator + `args.rs` help text + `end_to_end`
+tests, `apps/proxima-mcp/src/lib.rs:16-24`), `tools/dev-migrate`
+(`src/main.rs:29-35`, `Cargo.toml`), test deps in `crates/proxima`,
+`crates/mcp-server`, `crates/storage-pg`, and Strassberger `Apps/backend`
+(cross-repo follow-up; uses no agent-memory retrieval in prod → near-zero
+functional impact). Agent-memory is composed into every binary by default once
+it is core.
 
 ## Invariants preserved
 
-- No change to graph semantics, F/A/P layering, append-only, owner scope,
-  citation model, read-scope matrix behavior (Spec B changes the last).
-- This is structural: same writes, same reads, fewer/renamed tools, relocated
-  storage. Behavior-preserving except the intentional surface dedup.
-
-## Consumer impact
-
-Strassberger (`Apps/backend`) deps on the `proxima-agent-memory` crate
-(`backend/Cargo.toml`) but uses no agent-memory retrieval in production (its
-reads go through its own invoice-flavor sidecar views). Blast radius: a
-dependency rename (`proxima-agent-memory` → core) + any direct type imports.
-Pre-v1, near-zero functional impact. Flag in the rollout checklist.
-
-## Rollout
-
-1. Schema fold into `0001_init.sql`; drop the flavor migration.
-2. Move tool modules into core; delete the crate; rewire composing binaries
-   (`crates/proxima`, `crates/mcp-server`) and tests.
-3. Apply the surface dedup (open decisions #1/#2) and handle-fronting.
-4. Update Strassberger's dependency.
+- Append-only; owner scope; F/A/P layering; citation model; read-scope behavior
+  (Spec B changes read-scope). Engine becomes the single memory-write authority.
+- Same writes/reads; the changes are structural (verb layer + relocation) plus
+  the one behavioral addition (derive embeds).
 
 ## Testing strategy
 
-- The existing agent-memory tests move into core and **stay green unchanged**
-  (behavior-preserving is the bar). pg-testkit / TCP PG.
-- Tool-surface tests assert the canonical palette (the dedup removed the
-  duplicates; remaining tools resolve and round-trip handles).
-- Full workspace build + test suite green; no orphaned references to
-  `proxima_agent_memory` / `proxima-agent-memory`.
+- The moved agent-memory tests stay green **after** their imports, tool names,
+  and asserted schema ids are updated to the new `core/*` values. pg-testkit /
+  TCP PG.
+- New: `derive` writes an embeddings row in the same tx (the behavioral delta).
+- Registration test updated (list + count = 29). Full workspace build + test
+  green; `grep proxima_agent_memory` → none anywhere (crates/, apps/, tools/, docs/).
 
 ## Resolved decisions (2026-06-15)
 
-1. **A/P authoring dedup — keep both with non-overlapping roles.**
-   `proxima_derive` = external-agent MCP authoring (`ExternalAgent`,
-   handle-based, `source_handles`); `core/emit_*` = internal consolidation
-   authoring. **`proxima_derive` reuses emit's transactional embed path**
-   (`crates/storage-pg/src/verbs/consolidate/memories.rs:534`) — which is
-   exactly Spec B's embed-on-derive fix, so it lands here as a side effect of
-   unification.
-2. **Tool namespace — `proxima_*`** for the agent-facing memory palette (it's
-   the product surface a harness sees); `core/*` reserved for internal/admin.
-3. **Crate placement — fold directly into `crates/core`** (delete the
-   `proxima-agent-memory` crate); core already hosts the equivalents.
-4. **Framework model — no marketplace.** Agent-memory is **substrate**, not a
-   reference flavor. Proxima is a framework: `core` + flavor *crates* composed
-   into an app; there is no flavor/tool marketplace and no runtime registration.
-   This supersedes the old marketplace framing (memories
-   [[project_flavor_marketplace]] / [[project_tool_marketplace]] updated to
-   RETIRED). Domain flavors (Code, invoice) stay flavors; generic agent memory
-   is core.
+1. **Approach — Option B (engine-verb abstraction)**, chosen for long-term
+   cleanliness (greenfield; effort is not the metric). Tools call Engine verbs,
+   not storage-pg; storage swappable behind the Engine; no cycle.
+2. **Namespace — `core/*`** (supersedes the earlier `proxima_*` pick, which
+   only made sense while these were a separate flavor palette). One uniform
+   prefix, no special-casing.
+3. **A/P authoring — keep both roles:** `core/derive` = `ExternalAgent` MCP
+   authoring (embeds in-tx via the new Engine verb); `core/emit_*` = internal
+   consolidation authoring. Subsumes Spec B's embed-on-derive.
+4. **Framework model — no marketplace.** Agent-memory is substrate; Proxima is
+   a framework (core + flavor crates composed into an app); no marketplace, no
+   runtime registration. Supersedes [[project_flavor_marketplace]] /
+   [[project_tool_marketplace]] (RETIRED). Domain flavors (Code, invoice) stay
+   flavors; generic agent memory is core.
