@@ -38,7 +38,7 @@ fn external_draft(owner: &Owner, state: GoalState, request_id: &str) -> GoalDraf
         schema_version: SchemaVersion::new(1),
         title: "Test goal".to_string(),
         text: "external-authored goal".to_string(),
-        payload: b"external payload".to_vec(),
+        payload: br#"{"goal":"external"}"#.to_vec(),
         state,
         parent_goal_ids: vec![],
         supersedes_goal_id: None,

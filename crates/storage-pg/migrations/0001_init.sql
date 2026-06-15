@@ -697,16 +697,21 @@ CREATE TABLE proxima_core.goals (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     request_id text NOT NULL,
     schema_version integer NOT NULL,
-    payload bytea DEFAULT '\x'::bytea NOT NULL,
+    payload bytea NOT NULL,
     title text NOT NULL,
     personality_instance_id uuid,
     CONSTRAINT goals_authorship_shape_chk CHECK ((((authorship_kind = 'User'::proxima_core.goal_authorship_kind) AND (authorship_origin IS NULL) AND (authorship_operator_id IS NULL) AND (authorship_tool_id IS NULL) AND (operator_kind IS NULL) AND (model_id IS NULL) AND (prompt_version IS NULL) AND (personality_instance_id IS NULL)) OR ((authorship_kind = 'System'::proxima_core.goal_authorship_kind) AND (authorship_origin = 'Operator'::proxima_core.goal_authorship_origin) AND (authorship_operator_id IS NOT NULL) AND (operator_kind IS NOT NULL) AND (model_id IS NOT NULL) AND (prompt_version IS NOT NULL) AND (personality_instance_id IS NOT NULL) AND (authorship_tool_id IS NULL)) OR ((authorship_kind = 'System'::proxima_core.goal_authorship_kind) AND (authorship_origin = 'Tool'::proxima_core.goal_authorship_origin) AND (authorship_tool_id IS NOT NULL) AND (authorship_operator_id IS NULL) AND (operator_kind IS NULL) AND (model_id IS NULL) AND (prompt_version IS NULL) AND (personality_instance_id IS NULL)) OR ((authorship_kind = 'External'::proxima_core.goal_authorship_kind) AND (authorship_origin IS NULL) AND (authorship_operator_id IS NULL) AND (authorship_tool_id IS NULL) AND (operator_kind IS NULL) AND (model_id IS NULL) AND (prompt_version IS NULL) AND (personality_instance_id IS NULL)))),
-    CONSTRAINT goals_schema_version_positive_chk CHECK ((schema_version > 0))
+    CONSTRAINT goals_schema_version_positive_chk CHECK ((schema_version > 0)),
+    CONSTRAINT goals_payload_nonempty_chk CHECK ((octet_length(payload) > 0))
 );
 
 
 COMMENT ON TABLE proxima_core.goals IS
   'The Goal node kind (desired end-states), kept out of memories because it carries a lifecycle (state), an authorship model (authorship_kind: User/System/External), and a parent DAG (goal_parents). System goals are operator-derived via the AtoGoal operator (Abstraction -> Goal). See docs/06-goals-and-self.md.';
+
+
+COMMENT ON CONSTRAINT goals_payload_nonempty_chk ON proxima_core.goals IS
+  'Defense-in-depth against zero-byte payloads. Every registered Goal schema encodes to a non-empty canonical-JSON object (the smallest, SimpleTextGoalV1, is "{}"). Engine GoalWrite validates the payload against its schema (crates/core/src/engine/goals.rs); this CHECK is the last line of defense if a zero-byte payload reaches storage by another path. Replaces the former DEFAULT ''\x'' which silently admitted empty payloads.';
 
 
 --

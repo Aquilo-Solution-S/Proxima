@@ -37,10 +37,10 @@ async fn insert_goal(
     sqlx::query_scalar(
         "INSERT INTO proxima_core.goals
             (goal_id, schema_id, schema_version, owner_principal_kind,
-             owner_principal_id, owner_org_id, title, text, state, supersedes,
+             owner_principal_id, owner_org_id, title, text, payload, state, supersedes,
              authorship_kind, authorship_origin, authorship_tool_id, request_id)
-         VALUES ($1, 'test/goal_blob', 1, $2, $3, $4, 'goal', 'goal', $5, $6,
-                 $7, $8, $9, $10)
+         VALUES ($1, 'test/goal_blob', 1, $2, $3, $4, 'goal', 'goal',
+                 convert_to('{}', 'UTF8'), $5, $6, $7, $8, $9, $10)
          RETURNING goal_id",
     )
     .bind(goal_id)
