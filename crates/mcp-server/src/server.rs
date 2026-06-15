@@ -169,9 +169,7 @@ impl McpToolHost {
         if let (Some(engine), Some(auth_ctx)) = (self.engine.as_ref(), auth.as_ref())
             && matches!(
                 auth_ctx.authz.auth_path,
-                proxima_core::AuthPath::HostBearer
-                    | proxima_core::AuthPath::Wake
-                    | proxima_core::AuthPath::MasterDev
+                proxima_core::AuthPath::HostBearer | proxima_core::AuthPath::MasterDev
             )
         {
             let identity = engine

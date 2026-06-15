@@ -21,8 +21,7 @@ pub use bundle::FlavorBundle;
 pub use config::EmbedConfig;
 pub use core_mcp::{CoreMcpError, CoreMcpTools, CoreToolInfo};
 pub use migrations::{
-    MigrationError, MigrationRunReport, MigrationVersion, NamedMigrator,
-    run_core_and_flavor_migrations,
+    MigrationError, MigrationRunReport, NamedMigrator, run_core_and_flavor_migrations,
 };
 pub use proxima_core::error::ProtocolError;
 pub use proxima_core::verbs::schema::PayloadKind;
