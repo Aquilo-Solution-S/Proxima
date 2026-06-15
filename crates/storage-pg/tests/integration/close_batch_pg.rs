@@ -10,7 +10,6 @@ use proxima_core::storage::Storage;
 use proxima_core::verbs::event_ingest::{
     Citation, CitationMappingHint, CitedObjectHint, EventDraft,
 };
-use proxima_core::verbs::query::MemoryStore;
 use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaInfo};
 use proxima_core::{
     OrgId, Owner, Principal, SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId,
@@ -110,16 +109,10 @@ async fn close_batch_idempotent_and_owner_scoped() {
             org_id: OrgId::new(Uuid::now_v7()),
         };
 
-        let engine_a = Engine::new(
-            FlavorRegistryFrozen::with_schemas(schemas_for_test()),
-            MemoryStore::new(),
-        )
-        .with_storage(storage.clone());
-        let engine_b = Engine::new(
-            FlavorRegistryFrozen::with_schemas(schemas_for_test()),
-            MemoryStore::new(),
-        )
-        .with_storage(storage);
+        let engine_a = Engine::new(FlavorRegistryFrozen::with_schemas(schemas_for_test()))
+            .with_storage(storage.clone());
+        let engine_b = Engine::new(FlavorRegistryFrozen::with_schemas(schemas_for_test()))
+            .with_storage(storage);
 
         // Open a batch by ingesting one event under owner A.
         let batch_id = SourceBatchId::new(Uuid::now_v7());

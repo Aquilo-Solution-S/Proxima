@@ -51,7 +51,7 @@ Production rules:
 | F→A | `2^F × Π → A` | Facts become a typed Abstraction. Cross-domain input is legal only when the output schema is an explicit cross-domain Abstraction. |
 | A→P | `2^A × Π → P` | Abstractions become a typed Perspective under the active personality instance. |
 | frame | `P × A_cross → Edge` | Perspective may frame a cross-domain Abstraction. Facts stay unchanged. |
-| A→Goal | `2^A × Π → Goal` | Goal flavor may derive / update Goals from visible evidence (see 06). |
+| A→Goal | `2^A × Π → Goal` | Core derives / updates Goals from visible evidence (see 06). |
 
 `Π` = active personality instance. Runtime identity is
 `personality_instance_id`; type-level behavior comes from the registered

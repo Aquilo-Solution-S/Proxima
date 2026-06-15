@@ -32,8 +32,8 @@ pub async fn ensure_subject_personality(
     owner: &Owner,
     subject: &Principal,
 ) -> Result<MasterTokenPersonality, StorageError> {
-    let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(owner);
-    let (subject_kind, subject_principal_id) = principal_columns(subject);
+    let (owner_kind, owner_principal_id, owner_org_id) = owner.columns();
+    let (subject_kind, subject_principal_id) = subject.columns();
 
     // Fast path: lock-free read. Hits on every call after the first.
     if let Some(found) = lookup_pool(
@@ -232,16 +232,4 @@ fn lock_key(org_id: Uuid, subject_kind: OwnerPrincipalKind, subject_id: Uuid) ->
         .try_into()
         .expect("blake3 hash is 32 bytes");
     i64::from_le_bytes(bytes)
-}
-
-fn owner_columns(owner: &Owner) -> (OwnerPrincipalKind, Uuid, Uuid) {
-    let (kind, principal_id) = principal_columns(&owner.principal);
-    (kind, principal_id, owner.org_id.into_inner())
-}
-
-fn principal_columns(principal: &Principal) -> (OwnerPrincipalKind, Uuid) {
-    match principal {
-        Principal::User(u) => (OwnerPrincipalKind::User, u.into_inner()),
-        Principal::Group(g) => (OwnerPrincipalKind::Group, g.into_inner()),
-    }
 }

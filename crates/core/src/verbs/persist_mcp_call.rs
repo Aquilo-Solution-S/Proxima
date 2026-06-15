@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
-    CitationMappingPayload, CitedObjectPayload, EventId, FactPayload, MemoryId, Owner, Principal,
-    SchemaId, SchemaVersion, SourceId, canonical_json_bytes, proxima_schema_id,
+    CitationMappingPayload, CitedObjectPayload, EventId, FactPayload, MemoryId, Owner, SchemaId,
+    SchemaVersion, SourceId, canonical_json_bytes, proxima_schema_id,
 };
 
 pub const MCP_CALL_FACT_SCHEMA: &str = proxima_schema_id!("mcp-call-logged-v1");
@@ -70,15 +70,12 @@ impl McpCallLogInput {
         let mut hasher = blake3::Hasher::new();
         hasher.update(SourceId::new(MCP_CALL_SOURCE_ID).as_str().as_bytes());
         hasher.update(b"\0");
-        let (kind, id) = match &self.owner.principal {
-            Principal::User(u) => ("User", u.into_inner()),
-            Principal::Group(g) => ("Group", g.into_inner()),
-        };
-        hasher.update(kind.as_bytes());
+        let (kind, id, org_id) = self.owner.columns();
+        hasher.update(kind.as_str().as_bytes());
         hasher.update(b"\0");
         hasher.update(id.as_bytes());
         hasher.update(b"\0");
-        hasher.update(self.owner.org_id.into_inner().as_bytes());
+        hasher.update(org_id.as_bytes());
         hasher.update(b"\0");
         hasher.update(&payload);
         hasher.update(b"\0");

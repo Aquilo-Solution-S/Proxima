@@ -1,4 +1,11 @@
 //! Canonical JSON byte writer for transient payload identity.
+//!
+//! Deterministic, sorted-key bytes for content-addressed identity (e.g.
+//! operator idempotency keys). `serde_json` has no stable sorted-key
+//! output — its `preserve_order` feature does the opposite (preserves
+//! insertion order) — so this small, fully-tested writer owns those
+//! bytes rather than pulling a heavier external JCS crate. Arrays keep
+//! input order; primitive/number formatting delegates to `serde_json`.
 
 /// Serialize a JSON value with recursively sorted object keys.
 ///

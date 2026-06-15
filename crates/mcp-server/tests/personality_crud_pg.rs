@@ -45,9 +45,7 @@ async fn discovery_to_mutation_smoke() -> Result<(), Box<dyn std::error::Error>>
         Ok(serde_json::from_str(text)?)
     }
 
-    let Some(db_name) = create_db().await? else {
-        return Ok(());
-    };
+    let db_name = create_db().await?;
     let database_url = db_url(&db_name);
     let owner = Owner {
         principal: Principal::User(UserId::new(uuid::Uuid::now_v7())),
@@ -84,7 +82,7 @@ async fn discovery_to_mutation_smoke() -> Result<(), Box<dyn std::error::Error>>
     let session = initialize(&client, &url, &bearer).await?;
     initialized(&client, &url, &session, &bearer).await?;
 
-    // 1. Discovery: list_substrate_tools includes substrate-pack + MCP CRUD.
+    // 1. Discovery: list_substrate_tools includes dispatchable MCP CRUD.
     let tools = call_tool(
         &client,
         &url,

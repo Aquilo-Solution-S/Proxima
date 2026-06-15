@@ -3,15 +3,13 @@
 pub use proxima_pg_testkit::{db_url, drop_db};
 use serde_json::json;
 
-use proxima_core::{OrgId, Owner, Principal, UserId};
+use proxima_core::Owner;
+use proxima_core::test_fixtures::owner_fixture;
 
 /// Returns a nil owner for token tests.
 #[allow(dead_code)]
 pub fn nil_owner() -> Owner {
-    Owner {
-        principal: Principal::User(UserId::new(uuid::Uuid::nil())),
-        org_id: OrgId::new(uuid::Uuid::nil()),
-    }
+    owner_fixture()
 }
 
 /// MCP initialize request. Returns the `session_id`.
@@ -117,12 +115,12 @@ pub async fn sse_json(
     Err(format!("missing JSON SSE data in {text:?}").into())
 }
 
-/// Create a fresh test database. Returns None if Postgres is unreachable.
+/// Create a fresh test database.
 #[allow(dead_code)]
-pub async fn create_db() -> Result<Option<String>, Box<dyn std::error::Error>> {
+pub async fn create_db() -> Result<String, Box<dyn std::error::Error>> {
     let db_name = proxima_pg_testkit::unique_db_name("proxima_test");
     proxima_pg_testkit::create_db(&db_name)
         .await
         .expect("PG required for tests");
-    Ok(Some(db_name))
+    Ok(db_name)
 }

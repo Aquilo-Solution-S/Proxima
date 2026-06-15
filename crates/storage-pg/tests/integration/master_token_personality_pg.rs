@@ -7,9 +7,7 @@ use uuid::Uuid;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn ensure_master_token_personality_is_idempotent() -> Result<(), Box<dyn std::error::Error>> {
-    let Some((pg, db)) = fresh_pg().await else {
-        return Ok(());
-    };
+    let (pg, db) = fresh_pg().await;
     pg.run_migrations().await?;
     let owner = Owner {
         principal: Principal::User(UserId::new(Uuid::now_v7())),
@@ -28,9 +26,7 @@ async fn ensure_master_token_personality_is_idempotent() -> Result<(), Box<dyn s
 #[tokio::test(flavor = "multi_thread")]
 async fn distinct_tokens_resolve_to_distinct_personalities()
 -> Result<(), Box<dyn std::error::Error>> {
-    let Some((pg, db)) = fresh_pg().await else {
-        return Ok(());
-    };
+    let (pg, db) = fresh_pg().await;
     pg.run_migrations().await?;
     let owner = Owner {
         principal: Principal::User(UserId::new(Uuid::now_v7())),
@@ -60,9 +56,7 @@ async fn concurrent_callers_resolve_to_single_personality() -> Result<(), Box<dy
 {
     const N: usize = 16;
 
-    let Some((pg, db)) = fresh_pg().await else {
-        return Ok(());
-    };
+    let (pg, db) = fresh_pg().await;
     pg.run_migrations().await?;
     let owner = Owner {
         principal: Principal::User(UserId::new(Uuid::now_v7())),

@@ -2,7 +2,6 @@ use proxima_core::{Owner, StorageError};
 use sqlx::{PgPool, Postgres, Transaction};
 
 use crate::error::map_err;
-use crate::verbs::consolidate::owner_columns;
 
 /// Upsert the owner-scoped Fact-retention duration.
 ///
@@ -14,7 +13,7 @@ pub async fn upsert_fact_retention(
     owner: &Owner,
     seconds: i64,
 ) -> Result<(), StorageError> {
-    let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(owner);
+    let (owner_kind, owner_principal_id, owner_org_id) = owner.columns();
     sqlx::query(
         "INSERT INTO proxima_core.owner_fact_retention
             (owner_principal_kind, owner_principal_id, owner_org_id, retention_seconds)
@@ -40,7 +39,7 @@ pub async fn upsert_fact_retention(
 ///
 /// Returns `StorageError::Internal` for SQL failures.
 pub async fn get_fact_retention(pool: &PgPool, owner: &Owner) -> Result<Option<i64>, StorageError> {
-    let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(owner);
+    let (owner_kind, owner_principal_id, owner_org_id) = owner.columns();
     sqlx::query_scalar(
         "SELECT retention_seconds
            FROM proxima_core.owner_fact_retention
@@ -60,7 +59,7 @@ pub(crate) async fn get_fact_retention_in_tx(
     tx: &mut Transaction<'_, Postgres>,
     owner: &Owner,
 ) -> Result<Option<i64>, StorageError> {
-    let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(owner);
+    let (owner_kind, owner_principal_id, owner_org_id) = owner.columns();
     sqlx::query_scalar(
         "SELECT retention_seconds
            FROM proxima_core.owner_fact_retention
@@ -82,7 +81,7 @@ pub(crate) async fn get_fact_retention_in_tx(
 ///
 /// Returns `StorageError::Internal` for SQL failures.
 pub async fn clear_fact_retention(pool: &PgPool, owner: &Owner) -> Result<bool, StorageError> {
-    let (owner_kind, owner_principal_id, owner_org_id) = owner_columns(owner);
+    let (owner_kind, owner_principal_id, owner_org_id) = owner.columns();
     let result = sqlx::query(
         "DELETE FROM proxima_core.owner_fact_retention
           WHERE owner_principal_kind = $1

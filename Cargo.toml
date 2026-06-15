@@ -20,7 +20,6 @@ module_name_repetitions = "allow"
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-toml = "1"
 uuid = { version = "1", features = ["v4", "v5", "v7", "serde"] }
 thiserror = "2"
 tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "macros", "sync"] }
@@ -43,19 +42,12 @@ tokio-util = "0.7"
 tower = "0.5"
 hex = "0.4"
 sha2 = "0.10"
-base64 = "0.22"
 aws-config = "1"
 aws-sdk-s3 = "1"
 
 # tree-sitter deps for code flavor (Rust + TypeScript).
-# Version trio verified to build together on rust 1.95 + edition 2024:
+# Version trio verified to build together on rust 1.96 + edition 2024:
 # tree-sitter 0.25, tree-sitter-rust 0.24, tree-sitter-typescript 0.23.
 tree-sitter = "0.25"
 tree-sitter-rust = "0.24"
 tree-sitter-typescript = "0.23"
-
-# OS-native keychain access for secret_ref resolution (S1.c).
-# Library split: keyring-core holds the API surface; per-OS store
-# crates live in shell hosts as cfg(target_os) deps and are
-# wired via `keyring_core::set_default_store(...)` at boot.
-keyring-core = "1"

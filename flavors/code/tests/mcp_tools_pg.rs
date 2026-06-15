@@ -1,6 +1,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+mod common;
+
+use common::{TestDb, test_owner as owner_fixture};
 use proxima_code::mcp::{
     CodeIngestHeadSnapshotTool, CodeListReposTool, CodeOpenFileRevisionTool, CodeRegisterRepoTool,
     CodeRetryExecutionRequestTool, CodeSearchChunksTool, CodeSearchCommitsTool,
@@ -18,13 +21,11 @@ use proxima_core::storage::Storage;
 use proxima_core::verbs::event_ingest::{
     Citation, CitationMappingHint, CitedObjectHint, EventDraft,
 };
-use proxima_core::verbs::query::MemoryStore;
 use proxima_core::verbs::schema::{PayloadKind, SchemaInfo};
 use proxima_core::{
     AbstractionPayload, AuthPath, AuthzContext, FactPayload, FlavorRegistry, FlavorRegistryFrozen,
-    MemoryId, OrgId, Owner, Principal, SchemaId, SchemaVersion, SourceBatchId, SourceId, UserId,
+    MemoryId, Owner, Principal, SchemaId, SchemaVersion, SourceBatchId, SourceId,
 };
-use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
 use proxima_storage_pg::PgStorage;
 use serde_json::json;
 use sqlx::PgPool;
@@ -34,9 +35,7 @@ use uuid::Uuid;
 #[tokio::test]
 async fn register_repo_tool_registers_local_git_repo_idempotently()
 -> Result<(), Box<dyn std::error::Error>> {
-    let Some(fixture) = TestDb::fresh().await? else {
-        return Ok(());
-    };
+    let fixture = TestDb::fresh().await;
     let owner = owner_fixture();
     let registry = registry_for_mcp();
     let temp = TempDir::new()?;
@@ -84,9 +83,7 @@ async fn register_repo_tool_registers_local_git_repo_idempotently()
 #[tokio::test]
 async fn ingest_head_snapshot_tool_indexes_current_tree() -> Result<(), Box<dyn std::error::Error>>
 {
-    let Some(fixture) = TestDb::fresh().await? else {
-        return Ok(());
-    };
+    let fixture = TestDb::fresh().await;
     let owner = owner_fixture();
     let registry = registry_for_mcp();
     let temp = TempDir::new()?;
@@ -131,9 +128,7 @@ async fn ingest_head_snapshot_tool_indexes_current_tree() -> Result<(), Box<dyn 
 
 #[tokio::test]
 async fn search_chunks_returns_only_head_per_nk() -> Result<(), Box<dyn std::error::Error>> {
-    let Some(fixture) = TestDb::fresh().await? else {
-        return Ok(());
-    };
+    let fixture = TestDb::fresh().await;
     let owner = owner_fixture();
     let engine = engine_for_test(fixture.pg.clone());
     let registry = registry_for_mcp();
@@ -181,9 +176,7 @@ async fn search_chunks_returns_only_head_per_nk() -> Result<(), Box<dyn std::err
 #[tokio::test]
 async fn search_chunks_excludes_chunk_when_head_is_tombstone()
 -> Result<(), Box<dyn std::error::Error>> {
-    let Some(fixture) = TestDb::fresh().await? else {
-        return Ok(());
-    };
+    let fixture = TestDb::fresh().await;
     let owner = owner_fixture();
     let engine = engine_for_test(fixture.pg.clone());
     let registry = registry_for_mcp();
@@ -227,9 +220,7 @@ async fn search_chunks_excludes_chunk_when_head_is_tombstone()
 #[tokio::test]
 async fn search_chunks_includes_calls_edges_when_present() -> Result<(), Box<dyn std::error::Error>>
 {
-    let Some(fixture) = TestDb::fresh().await? else {
-        return Ok(());
-    };
+    let fixture = TestDb::fresh().await;
     let owner = owner_fixture();
     let engine = engine_for_test(fixture.pg.clone());
     let registry = registry_for_mcp();
@@ -272,9 +263,7 @@ async fn search_chunks_includes_calls_edges_when_present() -> Result<(), Box<dyn
 #[tokio::test]
 async fn search_chunks_supports_exact_substring_and_chunk_type_filter()
 -> Result<(), Box<dyn std::error::Error>> {
-    let Some(fixture) = TestDb::fresh().await? else {
-        return Ok(());
-    };
+    let fixture = TestDb::fresh().await;
     let owner = owner_fixture();
     let engine = engine_for_test(fixture.pg.clone());
     let registry = registry_for_mcp();
@@ -340,9 +329,7 @@ async fn search_chunks_supports_exact_substring_and_chunk_type_filter()
 
 #[tokio::test]
 async fn open_file_revision_returns_head_with_chunks() -> Result<(), Box<dyn std::error::Error>> {
-    let Some(fixture) = TestDb::fresh().await? else {
-        return Ok(());
-    };
+    let fixture = TestDb::fresh().await;
     let owner = owner_fixture();
     let engine = engine_for_test(fixture.pg.clone());
     let registry = registry_for_mcp();
@@ -442,9 +429,7 @@ async fn open_file_revision_returns_head_with_chunks() -> Result<(), Box<dyn std
 
 #[tokio::test]
 async fn open_file_revision_accepts_raw_repo_uuid() -> Result<(), Box<dyn std::error::Error>> {
-    let Some(fixture) = TestDb::fresh().await? else {
-        return Ok(());
-    };
+    let fixture = TestDb::fresh().await;
     let owner = owner_fixture();
     let engine = engine_for_test(fixture.pg.clone());
     let registry = registry_for_mcp();
@@ -473,9 +458,7 @@ async fn open_file_revision_accepts_raw_repo_uuid() -> Result<(), Box<dyn std::e
 #[tokio::test]
 async fn open_file_revision_accepts_unambiguous_repo_display_name()
 -> Result<(), Box<dyn std::error::Error>> {
-    let Some(fixture) = TestDb::fresh().await? else {
-        return Ok(());
-    };
+    let fixture = TestDb::fresh().await;
     let owner = owner_fixture();
     let engine = engine_for_test(fixture.pg.clone());
     let registry = registry_for_mcp();
@@ -512,9 +495,7 @@ async fn open_file_revision_accepts_unambiguous_repo_display_name()
 
 #[tokio::test]
 async fn search_commits_unions_commit_and_summary_legs() -> Result<(), Box<dyn std::error::Error>> {
-    let Some(fixture) = TestDb::fresh().await? else {
-        return Ok(());
-    };
+    let fixture = TestDb::fresh().await;
     let owner = owner_fixture();
     let engine = engine_for_test(fixture.pg.clone());
     let registry = registry_for_mcp();
@@ -563,9 +544,7 @@ async fn search_commits_unions_commit_and_summary_legs() -> Result<(), Box<dyn s
 #[tokio::test]
 async fn retry_execution_request_succeeds_with_target_execution_wake_entry()
 -> Result<(), Box<dyn std::error::Error>> {
-    let Some(fixture) = TestDb::fresh().await? else {
-        return Ok(());
-    };
+    let fixture = TestDb::fresh().await;
     let owner = owner_fixture();
     let engine = engine_for_test(fixture.pg.clone());
     let registry = registry_for_mcp();
@@ -642,9 +621,7 @@ async fn retry_execution_request_succeeds_with_target_execution_wake_entry()
 #[tokio::test]
 async fn retry_execution_request_rejects_target_without_execution_wake_entry()
 -> Result<(), Box<dyn std::error::Error>> {
-    let Some(fixture) = TestDb::fresh().await? else {
-        return Ok(());
-    };
+    let fixture = TestDb::fresh().await;
     let owner = owner_fixture();
     let engine = engine_for_test(fixture.pg.clone());
     let registry = registry_for_mcp();
@@ -847,55 +824,6 @@ async fn ingest_execution_request_fixture(
     Ok(memory_id)
 }
 
-#[derive(Debug)]
-struct TestDb {
-    name: String,
-    pg: PgStorage,
-}
-
-impl TestDb {
-    async fn fresh() -> Result<Option<Self>, Box<dyn std::error::Error>> {
-        let name = unique_db_name("proxima_test");
-        create_db(&name).await.expect("PG required for tests");
-        let setup: Result<PgStorage, Box<dyn std::error::Error>> = async {
-            let pg = PgStorage::connect(&db_url(&name)).await?;
-            pg.run_migrations().await?;
-            proxima_code::migrator().run(pg.pool()).await?;
-            Ok(pg)
-        }
-        .await;
-
-        match setup {
-            Ok(pg) => Ok(Some(Self { name, pg })),
-            Err(error) => {
-                let _ = drop_db(&name).await;
-                Err(error)
-            }
-        }
-    }
-}
-
-impl Drop for TestDb {
-    fn drop(&mut self) {
-        let name = self.name.clone();
-        std::thread::spawn(move || {
-            let runtime = tokio::runtime::Runtime::new().expect("drop runtime");
-            runtime.block_on(async {
-                let _ = drop_db(&name).await;
-            });
-        })
-        .join()
-        .expect("drop db thread");
-    }
-}
-
-fn owner_fixture() -> Owner {
-    Owner {
-        principal: Principal::User(UserId::new(Uuid::now_v7())),
-        org_id: OrgId::new(Uuid::now_v7()),
-    }
-}
-
 fn registry_for_mcp() -> Arc<FlavorRegistryFrozen> {
     let mut registry = FlavorRegistry::new();
     proxima_code::register(&mut registry);
@@ -964,7 +892,7 @@ fn run_git(repo: &std::path::Path, args: &[&str]) -> Result<(), Box<dyn std::err
 
 fn engine_for_test(pg: PgStorage) -> Engine {
     let storage: Arc<dyn Storage> = Arc::new(pg);
-    Engine::new(registry_for_engine(), MemoryStore::new()).with_storage(storage)
+    Engine::new(registry_for_engine()).with_storage(storage)
 }
 
 fn fact_draft(owner: Owner, schema_id: &str, payload: &[u8]) -> EventDraft {

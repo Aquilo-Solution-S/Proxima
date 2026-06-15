@@ -125,9 +125,7 @@ async fn link_goal_to_self(
 #[tokio::test]
 async fn list_active_goals_follows_inspires_and_goal_supersession()
 -> Result<(), Box<dyn std::error::Error>> {
-    let Some((pg, db_name)) = fresh_pg().await else {
-        return Ok(());
-    };
+    let (pg, db_name) = fresh_pg().await;
 
     let result = async {
         pg.run_migrations().await?;
@@ -304,9 +302,7 @@ async fn insert_goal_activated_fact(
 #[tokio::test]
 async fn list_active_goals_surfaces_goal_activated_memory_when_present()
 -> Result<(), Box<dyn std::error::Error>> {
-    let Some((pg, db_name)) = fresh_pg().await else {
-        return Ok(());
-    };
+    let (pg, db_name) = fresh_pg().await;
 
     let result = async {
         pg.run_migrations().await?;

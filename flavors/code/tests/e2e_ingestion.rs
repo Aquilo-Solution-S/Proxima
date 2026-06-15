@@ -1,35 +1,18 @@
 #![allow(clippy::doc_markdown, clippy::too_many_lines)]
 
 use std::fmt::Write as _;
-use std::path::Path;
-use std::process::Command;
 
+mod common;
+
+use common::{git, migrated_db, test_owner, write_file};
 use proxima_code::{
     LocalGitSource, RunStage, RunStatus, StageCounters, advance_stage, begin_run, get_active_run,
-    mark_failed, mark_succeeded, migrator, register_repo, start_run, sweep_orphaned_runs,
+    mark_failed, mark_succeeded, register_repo, start_run, sweep_orphaned_runs,
 };
-use proxima_core::{Cursor, OrgId, Owner, Principal, UserId};
-use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
-use proxima_storage_pg::PgStorage;
+use proxima_core::{Cursor, Owner, Principal};
+use proxima_pg_testkit::drop_db;
 use tempfile::TempDir;
 use uuid::Uuid;
-
-async fn migrated_db() -> Option<(String, PgStorage)> {
-    let db_name = unique_db_name("proxima_test");
-    create_db(&db_name).await.expect("PG required for tests");
-    let url = db_url(&db_name);
-    let pg = PgStorage::connect(&url).await.expect("connect test db");
-    pg.run_migrations().await.expect("core migrations");
-    migrator().run(pg.pool()).await.expect("code migrations");
-    Some((db_name, pg))
-}
-
-fn test_owner() -> Owner {
-    Owner {
-        principal: Principal::User(UserId::new(Uuid::now_v7())),
-        org_id: OrgId::new(Uuid::now_v7()),
-    }
-}
 
 fn owner_cols(owner: &Owner) -> (proxima_core::OwnerPrincipalKind, Uuid, Uuid) {
     let kind = proxima_core::OwnerPrincipalKind::of(&owner.principal);
@@ -44,28 +27,6 @@ async fn register_test_repo(pool: &sqlx::PgPool, owner: &Owner, repo_id: Uuid) {
     register_repo(pool, owner, repo_id, "/tmp/proxima-e2e", "proxima-e2e")
         .await
         .expect("register repo");
-}
-
-fn git(repo: &Path, args: &[&str]) {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(repo)
-        .args(args)
-        .output()
-        .expect("git command");
-    assert!(
-        out.status.success(),
-        "git {args:?} failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-}
-
-fn write_file(repo: &Path, path: &str, contents: &str) {
-    let full = repo.join(path);
-    if let Some(parent) = full.parent() {
-        std::fs::create_dir_all(parent).expect("create parent");
-    }
-    std::fs::write(full, contents).expect("write file");
 }
 
 fn make_tiny_repo() -> TempDir {
@@ -97,9 +58,7 @@ fn make_tiny_repo() -> TempDir {
 
 #[tokio::test]
 async fn start_run_returns_active_row_on_duplicate() {
-    let Some((db_name, pg)) = migrated_db().await else {
-        return;
-    };
+    let (db_name, pg) = migrated_db().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = test_owner();
         let repo_id = Uuid::now_v7();
@@ -118,9 +77,7 @@ async fn start_run_returns_active_row_on_duplicate() {
 
 #[tokio::test]
 async fn run_transitions_and_failure_persist() {
-    let Some((db_name, pg)) = migrated_db().await else {
-        return;
-    };
+    let (db_name, pg) = migrated_db().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = test_owner();
         let repo_id = Uuid::now_v7();
@@ -155,9 +112,7 @@ async fn run_transitions_and_failure_persist() {
 
 #[tokio::test]
 async fn sweep_retires_orphans_and_unblocks_start_run() {
-    let Some((db_name, pg)) = migrated_db().await else {
-        return;
-    };
+    let (db_name, pg) = migrated_db().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = test_owner();
         let queued_repo = Uuid::now_v7();
@@ -232,9 +187,7 @@ async fn sweep_retires_orphans_and_unblocks_start_run() {
 
 #[tokio::test]
 async fn local_ingestion_lands_facts_citations_edges_and_replays_idempotently() {
-    let Some((db_name, pg)) = migrated_db().await else {
-        return;
-    };
+    let (db_name, pg) = migrated_db().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = test_owner();
         let repo = make_tiny_repo();
@@ -346,9 +299,7 @@ async fn local_ingestion_lands_facts_citations_edges_and_replays_idempotently() 
 
 #[tokio::test]
 async fn limited_local_ingestion_advances_one_commit_per_poll() {
-    let Some((db_name, pg)) = migrated_db().await else {
-        return;
-    };
+    let (db_name, pg) = migrated_db().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = test_owner();
         let repo = make_tiny_repo();

@@ -7,9 +7,10 @@ use proxima_core::verbs::query::{
     TombstoneFilter,
 };
 use proxima_core::verbs::schema::{PayloadKind, SchemaInfo};
-use proxima_core::{OwnerPrincipalKind, Principal, StorageError};
+use proxima_core::{OwnerPrincipalKind, StorageError};
 use sqlx::PgPool;
 
+use crate::error::internal;
 use crate::pg_ident::PgIdent;
 
 use super::edges::query_edges;
@@ -29,10 +30,7 @@ pub(crate) async fn query_memories(
     req: &QueryRequest,
     schemas: &[SchemaInfo],
 ) -> Result<QueryResponse, StorageError> {
-    let (owner_kind, owner_principal_id) = match &req.principal {
-        Principal::User(u) => (OwnerPrincipalKind::User, u.into_inner()),
-        Principal::Group(g) => (OwnerPrincipalKind::Group, g.into_inner()),
-    };
+    let (owner_kind, owner_principal_id) = req.principal.columns();
     let id_hydration =
         !req.memory_ids.is_empty() || !req.goal_ids.is_empty() || !req.edge_ids.is_empty();
     let schema_id_filter = req.schema_id.as_ref().map(|s| s.as_str().to_string());
@@ -98,25 +96,7 @@ pub(crate) async fn query_memories(
         next_param += 1;
         param
     });
-    let stateful_params: Vec<StatefulSqlParams> = stateful
-        .iter()
-        .map(|sf| {
-            let schema = next_param;
-            next_param += 1;
-            let version = next_param;
-            next_param += 1;
-            let tombstone = sf.tombstone.as_ref().map(|_| {
-                let param = next_param;
-                next_param += 1;
-                param
-            });
-            StatefulSqlParams {
-                schema,
-                version,
-                tombstone,
-            }
-        })
-        .collect();
+    let stateful_params = allocate_stateful_params(&stateful, &mut next_param);
     let root_schema_ids_param = (!root_schema_ids.is_empty()).then(|| {
         let param = next_param;
         next_param += 1;
@@ -188,55 +168,20 @@ pub(crate) async fn query_memories(
           AND m.tombstoned_at IS NULL",
     );
 
-    match req.entity_kind {
-        None => {}
-        Some(EntityKind::Fact) => {
-            sql.push_str(" AND m.event_id IS NOT NULL AND m.kind IS NULL");
-        }
-        Some(EntityKind::Abstraction) => sql.push_str(" AND m.kind = 'Abstraction'"),
-        Some(EntityKind::Perspective) => sql.push_str(" AND m.kind = 'Perspective'"),
-        Some(EntityKind::Goal) => unreachable!(),
-    }
-
-    if schema_id_filter.is_some() {
-        write!(sql, " AND m.schema_id = ${}", schema.unwrap())
-            .expect("write to String is infallible");
-    }
-
     if let Some(param) = memory_ids_param {
         write!(sql, " AND m.memory_id = ANY(${param})").expect("write to String is infallible");
     } else if id_hydration {
         sql.push_str(" AND false");
     }
 
-    if matches!(req.supersession, SupersessionStatus::HeadsOnly) {
-        if stateful.is_empty() {
-            sql.push_str(
-                " AND NOT EXISTS (SELECT 1 FROM proxima_core.memories m2 \
-                                  WHERE m2.supersedes = m.memory_id \
-                                    AND m2.tombstoned_at IS NULL)",
-            );
-        } else {
-            sql.push_str(" AND (");
-            for (idx, sf) in stateful.iter().enumerate() {
-                if idx > 0 {
-                    sql.push_str(" OR ");
-                }
-                push_stateful_head_branch(&mut sql, idx, sf, &stateful_params[idx]);
-            }
-            sql.push_str(" OR (");
-            push_not_stateful_match(&mut sql, &stateful_params);
-            sql.push_str(
-                " AND NOT EXISTS (SELECT 1 FROM proxima_core.memories m2 \
-                                  WHERE m2.supersedes = m.memory_id \
-                                    AND m2.tombstoned_at IS NULL))",
-            );
-            sql.push(')');
-        }
-    }
-
-    push_active_root_filter(&mut sql, root_schema_ids_param);
-    push_tombstone_exclusion(&mut sql, req, &stateful, &stateful_params);
+    push_heads_predicate(
+        &mut sql,
+        req,
+        schema,
+        &stateful,
+        &stateful_params,
+        root_schema_ids_param,
+    );
 
     sql.push_str(" ORDER BY m.created_at DESC LIMIT ");
     sql.push_str(&u64::from(req.limit).to_string());
@@ -250,14 +195,7 @@ pub(crate) async fn query_memories(
     if !memory_ids.is_empty() {
         q = q.bind(memory_ids);
     }
-    for (sf, params) in stateful.iter().zip(stateful_params.iter()) {
-        let _ = params;
-        q = q.bind(sf.schema_id.as_str().to_string());
-        q = q.bind(sf.schema_version.into_inner().cast_signed());
-        if let Some(tombstone) = &sf.tombstone {
-            q = q.bind(tombstone.value.clone());
-        }
-    }
+    q = bind_stateful_filters(q, &stateful);
     if !root_schema_ids.is_empty() {
         q = q.bind(root_schema_ids);
     }
@@ -269,10 +207,7 @@ pub(crate) async fn query_memories(
         q = q.bind(schema.schema_version.into_inner().cast_signed());
     }
 
-    let rows: Vec<MemoryRowDb> = q
-        .fetch_all(pool)
-        .await
-        .map_err(|e| StorageError::Internal(e.to_string()))?;
+    let rows: Vec<MemoryRowDb> = q.fetch_all(pool).await.map_err(internal)?;
 
     let memories: Vec<MemoryRow> = rows
         .into_iter()
@@ -301,6 +236,7 @@ pub(crate) async fn query_memories(
         owner_principal_id,
         &visible_memory_ids,
         &visible_goal_ids,
+        schemas,
     )
     .await?;
     let seq_high_water = read_seq_high_water(pool, owner_kind, owner_principal_id).await?;
@@ -320,6 +256,7 @@ pub(super) async fn visible_ids_for(
     owner_principal_id: uuid::Uuid,
     candidate_memory_ids: &[uuid::Uuid],
     candidate_goal_ids: &[uuid::Uuid],
+    schemas: &[SchemaInfo],
 ) -> Result<(HashSet<uuid::Uuid>, HashSet<uuid::Uuid>), StorageError> {
     let memory_ids = query_visible_memory_ids(
         pool,
@@ -327,6 +264,7 @@ pub(super) async fn visible_ids_for(
         owner_kind,
         owner_principal_id,
         candidate_memory_ids,
+        schemas,
     )
     .await?;
     let goal_ids = query_visible_goal_ids(
@@ -340,19 +278,19 @@ pub(super) async fn visible_ids_for(
     Ok((memory_ids, goal_ids))
 }
 
-#[allow(clippy::too_many_lines)]
 async fn query_visible_memory_ids(
     pool: &PgPool,
     req: &QueryRequest,
     owner_kind: OwnerPrincipalKind,
     owner_principal_id: uuid::Uuid,
     candidate_memory_ids: &[uuid::Uuid],
+    schemas: &[SchemaInfo],
 ) -> Result<HashSet<uuid::Uuid>, StorageError> {
     if candidate_memory_ids.is_empty() || matches!(req.entity_kind, Some(EntityKind::Goal)) {
         return Ok(HashSet::new());
     }
     let stateful = validated_stateful_filters(req)?;
-    let root_schema_ids = active_root_schema_ids(req, &[]);
+    let root_schema_ids = active_root_schema_ids(req, schemas);
     let schema_id_filter = req.schema_id.as_ref().map(|s| s.as_str().to_string());
 
     let mut sql = String::from("SELECT m.memory_id FROM proxima_core.memories m");
@@ -379,70 +317,21 @@ async fn query_visible_memory_ids(
         next_param += 1;
         param
     });
-    let stateful_params: Vec<StatefulSqlParams> = stateful
-        .iter()
-        .map(|sf| {
-            let schema = next_param;
-            next_param += 1;
-            let version = next_param;
-            next_param += 1;
-            let tombstone = sf.tombstone.as_ref().map(|_| {
-                let param = next_param;
-                next_param += 1;
-                param
-            });
-            StatefulSqlParams {
-                schema,
-                version,
-                tombstone,
-            }
-        })
-        .collect();
+    let stateful_params = allocate_stateful_params(&stateful, &mut next_param);
     let root_schema_ids_param = (!root_schema_ids.is_empty()).then(|| {
         let param = next_param;
         next_param += 1;
         param
     });
 
-    match req.entity_kind {
-        None => {}
-        Some(EntityKind::Fact) => {
-            sql.push_str(" AND m.event_id IS NOT NULL AND m.kind IS NULL");
-        }
-        Some(EntityKind::Abstraction) => sql.push_str(" AND m.kind = 'Abstraction'"),
-        Some(EntityKind::Perspective) => sql.push_str(" AND m.kind = 'Perspective'"),
-        Some(EntityKind::Goal) => unreachable!(),
-    }
-    if let Some(param) = schema {
-        write!(sql, " AND m.schema_id = ${param}").expect("write to String is infallible");
-    }
-    if matches!(req.supersession, SupersessionStatus::HeadsOnly) {
-        if stateful.is_empty() {
-            sql.push_str(
-                " AND NOT EXISTS (SELECT 1 FROM proxima_core.memories m2 \
-                                  WHERE m2.supersedes = m.memory_id \
-                                    AND m2.tombstoned_at IS NULL)",
-            );
-        } else {
-            sql.push_str(" AND (");
-            for (idx, sf) in stateful.iter().enumerate() {
-                if idx > 0 {
-                    sql.push_str(" OR ");
-                }
-                push_stateful_head_branch(&mut sql, idx, sf, &stateful_params[idx]);
-            }
-            sql.push_str(" OR (");
-            push_not_stateful_match(&mut sql, &stateful_params);
-            sql.push_str(
-                " AND NOT EXISTS (SELECT 1 FROM proxima_core.memories m2 \
-                                  WHERE m2.supersedes = m.memory_id \
-                                    AND m2.tombstoned_at IS NULL))",
-            );
-            sql.push(')');
-        }
-    }
-    push_active_root_filter(&mut sql, root_schema_ids_param);
-    push_tombstone_exclusion(&mut sql, req, &stateful, &stateful_params);
+    push_heads_predicate(
+        &mut sql,
+        req,
+        schema,
+        &stateful,
+        &stateful_params,
+        root_schema_ids_param,
+    );
 
     let mut q = sqlx::query_as::<_, (uuid::Uuid,)>(&sql)
         .bind(owner_kind)
@@ -451,20 +340,11 @@ async fn query_visible_memory_ids(
     if let Some(sid) = &schema_id_filter {
         q = q.bind(sid.clone());
     }
-    for sf in &stateful {
-        q = q.bind(sf.schema_id.as_str().to_string());
-        q = q.bind(sf.schema_version.into_inner().cast_signed());
-        if let Some(tombstone) = &sf.tombstone {
-            q = q.bind(tombstone.value.clone());
-        }
-    }
+    q = bind_stateful_filters(q, &stateful);
     if !root_schema_ids.is_empty() {
         q = q.bind(root_schema_ids);
     }
-    let rows = q
-        .fetch_all(pool)
-        .await
-        .map_err(|e| StorageError::Internal(e.to_string()))?;
+    let rows = q.fetch_all(pool).await.map_err(internal)?;
     Ok(rows.into_iter().map(|(id,)| id).collect())
 }
 
@@ -506,10 +386,7 @@ async fn query_visible_goal_ids(
     if let Some(sid) = schema_id_filter {
         q = q.bind(sid);
     }
-    let rows = q
-        .fetch_all(pool)
-        .await
-        .map_err(|e| StorageError::Internal(e.to_string()))?;
+    let rows = q.fetch_all(pool).await.map_err(internal)?;
     Ok(rows.into_iter().map(|(id,)| id).collect())
 }
 
@@ -520,6 +397,45 @@ fn validated_stateful_filters(
         .iter()
         .map(validate_stateful_filter)
         .collect()
+}
+
+fn allocate_stateful_params(
+    stateful: &[&proxima_core::verbs::query::StatefulHeadsFilter],
+    next_param: &mut usize,
+) -> Vec<StatefulSqlParams> {
+    stateful
+        .iter()
+        .map(|sf| {
+            let schema = *next_param;
+            *next_param += 1;
+            let version = *next_param;
+            *next_param += 1;
+            let tombstone = sf.tombstone.as_ref().map(|_| {
+                let param = *next_param;
+                *next_param += 1;
+                param
+            });
+            StatefulSqlParams {
+                schema,
+                version,
+                tombstone,
+            }
+        })
+        .collect()
+}
+
+fn bind_stateful_filters<'q, O>(
+    mut q: sqlx::query::QueryAs<'q, sqlx::Postgres, O, sqlx::postgres::PgArguments>,
+    stateful: &[&proxima_core::verbs::query::StatefulHeadsFilter],
+) -> sqlx::query::QueryAs<'q, sqlx::Postgres, O, sqlx::postgres::PgArguments> {
+    for sf in stateful {
+        q = q.bind(sf.schema_id.as_str().to_string());
+        q = q.bind(sf.schema_version.into_inner().cast_signed());
+        if let Some(tombstone) = &sf.tombstone {
+            q = q.bind(tombstone.value.clone());
+        }
+    }
+    q
 }
 
 fn active_root_schema_ids(req: &QueryRequest, schemas: &[SchemaInfo]) -> Vec<String> {
@@ -533,12 +449,6 @@ fn active_root_schema_ids(req: &QueryRequest, schemas: &[SchemaInfo]) -> Vec<Str
         {
             ids.insert(schema.schema_id.as_str().to_string());
         }
-    }
-    if schemas.is_empty() {
-        ids.extend([
-            "proxima-code/commit-summarizer-self-v1".to_string(),
-            "proxima-code/engineer-self-v1".to_string(),
-        ]);
     }
     ids.into_iter().collect()
 }
@@ -571,6 +481,55 @@ fn push_active_root_filter(sql: &mut String, root_schema_ids_param: Option<usize
           ))",
     )
     .expect("write to String is infallible");
+}
+
+fn push_heads_predicate(
+    sql: &mut String,
+    req: &QueryRequest,
+    schema: Option<usize>,
+    stateful: &[&proxima_core::verbs::query::StatefulHeadsFilter],
+    stateful_params: &[StatefulSqlParams],
+    root_schema_ids_param: Option<usize>,
+) {
+    match req.entity_kind {
+        None => {}
+        Some(EntityKind::Fact) => {
+            sql.push_str(" AND m.event_id IS NOT NULL AND m.kind IS NULL");
+        }
+        Some(EntityKind::Abstraction) => sql.push_str(" AND m.kind = 'Abstraction'"),
+        Some(EntityKind::Perspective) => sql.push_str(" AND m.kind = 'Perspective'"),
+        Some(EntityKind::Goal) => unreachable!(),
+    }
+    if let Some(param) = schema {
+        write!(sql, " AND m.schema_id = ${param}").expect("write to String is infallible");
+    }
+    if matches!(req.supersession, SupersessionStatus::HeadsOnly) {
+        if stateful.is_empty() {
+            sql.push_str(
+                " AND NOT EXISTS (SELECT 1 FROM proxima_core.memories m2 \
+                                  WHERE m2.supersedes = m.memory_id \
+                                    AND m2.tombstoned_at IS NULL)",
+            );
+        } else {
+            sql.push_str(" AND (");
+            for (idx, sf) in stateful.iter().enumerate() {
+                if idx > 0 {
+                    sql.push_str(" OR ");
+                }
+                push_stateful_head_branch(sql, idx, sf, &stateful_params[idx]);
+            }
+            sql.push_str(" OR (");
+            push_not_stateful_match(sql, stateful_params);
+            sql.push_str(
+                " AND NOT EXISTS (SELECT 1 FROM proxima_core.memories m2 \
+                                  WHERE m2.supersedes = m.memory_id \
+                                    AND m2.tombstoned_at IS NULL))",
+            );
+            sql.push(')');
+        }
+    }
+    push_active_root_filter(sql, root_schema_ids_param);
+    push_tombstone_exclusion(sql, req, stateful, stateful_params);
 }
 
 fn stateful_alias(idx: usize) -> String {

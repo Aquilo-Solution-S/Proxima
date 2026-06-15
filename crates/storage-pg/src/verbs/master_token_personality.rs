@@ -19,7 +19,7 @@
 
 use proxima_core::{
     InstantiatePersonalityRequest, MasterTokenPersonality, MemoryId, Owner, OwnerPrincipalKind,
-    PersonalityInstanceId, Principal, StorageError,
+    PersonalityInstanceId, StorageError,
 };
 use sqlx::{PgConnection, PgPool};
 use uuid::Uuid;
@@ -42,7 +42,7 @@ pub async fn ensure_master_token_personality(
     owner: &Owner,
     master_token_id: Uuid,
 ) -> Result<MasterTokenPersonality, StorageError> {
-    let (kind, principal_id, org_id) = owner_columns(owner);
+    let (kind, principal_id, org_id) = owner.columns();
 
     // Fast path: lock-free read. Hits on every call after the first.
     if let Some(found) = lookup_pool(pool, master_token_id, kind, principal_id, org_id).await? {
@@ -218,12 +218,4 @@ fn lock_key(org_id: Uuid, master_token_id: Uuid) -> i64 {
         .try_into()
         .expect("blake3 hash is 32 bytes");
     i64::from_le_bytes(bytes)
-}
-
-fn owner_columns(owner: &Owner) -> (OwnerPrincipalKind, Uuid, Uuid) {
-    let (kind, principal_id) = match &owner.principal {
-        Principal::User(u) => (OwnerPrincipalKind::User, u.into_inner()),
-        Principal::Group(g) => (OwnerPrincipalKind::Group, g.into_inner()),
-    };
-    (kind, principal_id, owner.org_id.into_inner())
 }

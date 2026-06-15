@@ -1,13 +1,11 @@
-//! OpenAI-compatible HTTP `EmbeddingClient` impls.
+//! OpenAI-compatible HTTP `EmbeddingClient` impls — the reference
+//! embedding adapter a host injects into the substrate (see docs/10).
+//! Proxima ships no embedding client of its own; this crate is the
+//! canonical one. Native Ollama helpers are included as a
+//! local-development option.
 //!
-//! Substrate operator JSON-mode dispatch was retired in favor of the
-//! Anthropic structured tool-call loop, so this crate is now an
-//! embedding-only adapter. Native Ollama helpers remain for the CLI's
-//! local-development path.
-//!
-//! v1 keeps the surface minimal. No retries; failures bubble up as
-//! `LlmError::Embed`. Retries land alongside the dispatcher's worker
-//! pool.
+//! The surface is intentionally minimal. No retries; failures bubble up
+//! as `LlmError::Embed`.
 
 use std::time::Duration;
 

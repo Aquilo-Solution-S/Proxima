@@ -7,7 +7,6 @@ use crate::common::{drop_db, fresh_pg, owner_fixture};
 use proxima_core::verbs::event_ingest::{
     Citation, CitationMappingHint, CitedObjectHint, EventDraft,
 };
-use proxima_core::verbs::query::MemoryStore;
 use proxima_core::verbs::schema::{PayloadKind, SchemaInfo};
 use proxima_core::{
     AuthPath, AuthzContext, CapabilitySet, Engine, ErrorCode, FactPayload, FlavorRegistryFrozen,
@@ -116,11 +115,7 @@ fn reduced_authz(owner: &Owner) -> AuthzContext {
 
 fn engine_for(pg: &proxima_storage_pg::PgStorage) -> Engine {
     let storage: Arc<dyn Storage> = Arc::new(pg.clone());
-    Engine::new(
-        FlavorRegistryFrozen::with_schemas(schemas_for_test()),
-        MemoryStore::new(),
-    )
-    .with_storage(storage)
+    Engine::new(FlavorRegistryFrozen::with_schemas(schemas_for_test())).with_storage(storage)
 }
 
 async fn event_row_counts(
@@ -151,9 +146,7 @@ async fn embedding_job_count(pool: &sqlx::PgPool) -> Result<i64, sqlx::Error> {
 
 #[tokio::test]
 async fn authz_rejection_writes_nothing() -> Result<(), Box<dyn std::error::Error>> {
-    let Some((pg, db_name)) = fresh_pg().await else {
-        return Ok(());
-    };
+    let (pg, db_name) = fresh_pg().await;
     pg.run_migrations().await?;
     let owner = owner_fixture();
     let engine = engine_for(&pg);
@@ -175,9 +168,7 @@ async fn authz_rejection_writes_nothing() -> Result<(), Box<dyn std::error::Erro
 
 #[tokio::test]
 async fn sidecar_failure_rolls_back_fact() -> Result<(), Box<dyn std::error::Error>> {
-    let Some((pg, db_name)) = fresh_pg().await else {
-        return Ok(());
-    };
+    let (pg, db_name) = fresh_pg().await;
     pg.run_migrations().await?;
     let owner = owner_fixture();
     let engine = engine_for(&pg);
@@ -210,9 +201,7 @@ async fn sidecar_failure_rolls_back_fact() -> Result<(), Box<dyn std::error::Err
 
 #[tokio::test]
 async fn ingest_fact_writes_uncited_fact_and_sidecar() -> Result<(), Box<dyn std::error::Error>> {
-    let Some((pg, db_name)) = fresh_pg().await else {
-        return Ok(());
-    };
+    let (pg, db_name) = fresh_pg().await;
     pg.run_migrations().await?;
     sqlx::query(
         "CREATE TABLE public.uncited_fact_sidecar (

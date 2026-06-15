@@ -2,11 +2,9 @@ mod common;
 
 use std::sync::Arc;
 
-use async_trait::async_trait;
-use common::{drop_db, fresh_pg, owner_fixture};
-use proxima_core::llm::{EMBEDDING_DIM, EmbeddingClient, LlmError};
+use common::{ConstantEmbedding, drop_db, fresh_pg, owner_fixture};
+use proxima_core::llm::EMBEDDING_DIM;
 use proxima_core::verbs::event_ingest::EventDraft;
-use proxima_core::verbs::query::MemoryStore;
 use proxima_core::{
     AbstractionPayload, AuthPath, AuthorshipKindMask, AuthzContext, EdgeAuthorshipKind, EntityKind,
     EntityKindMask, FactPayload, FlavorRegistry, MemoryId, MemoryOperatorKind, Owner,
@@ -15,24 +13,6 @@ use proxima_core::{
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-
-#[derive(Debug)]
-struct FixedEmbeddingClient;
-
-#[async_trait]
-impl EmbeddingClient for FixedEmbeddingClient {
-    async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
-        Ok(padded_embedding([12.0, 1.0, 2.0]))
-    }
-
-    fn model_id(&self) -> &'static str {
-        "test-embed"
-    }
-
-    fn dim(&self) -> usize {
-        EMBEDDING_DIM
-    }
-}
 
 fn padded_embedding(prefix: [f32; 3]) -> Vec<f32> {
     let mut embedding = vec![0.0; EMBEDDING_DIM];
@@ -99,9 +79,7 @@ impl AbstractionPayload for AgentDerivationV1 {
 #[tokio::test]
 async fn engine_author_derived_writes_memory_edge_and_embedding()
 -> Result<(), Box<dyn std::error::Error>> {
-    let Some((pg, db_name)) = fresh_pg().await else {
-        return Ok(());
-    };
+    let (pg, db_name) = fresh_pg().await;
 
     let owner = owner_fixture();
     let source_abstraction = insert_source_abstraction(&pg, &owner).await?;
@@ -114,9 +92,12 @@ async fn engine_author_derived_writes_memory_edge_and_embedding()
         EntityKindMask::abstraction(),
         AuthorshipKindMask::external_agent(),
     ));
-    let engine = proxima_core::Engine::new(registry.freeze(), MemoryStore::new())
+    let engine = proxima_core::Engine::new(registry.freeze())
         .with_storage(pg.clone().into_handle())
-        .with_embed(Arc::new(FixedEmbeddingClient));
+        .with_embed(Arc::new(ConstantEmbedding::prefixed(
+            "test-embed",
+            &[12.0, 1.0, 2.0],
+        )));
     let relation = engine
         .registry()
         .resolve_relation("test/derived-from-abstraction")
@@ -235,13 +216,11 @@ async fn assert_embedding_row(
 #[tokio::test]
 async fn ingest_event_with_sidecar_writes_fact_and_note_sidecar()
 -> Result<(), Box<dyn std::error::Error>> {
-    let Some((pg, db_name)) = fresh_pg().await else {
-        return Ok(());
-    };
+    let (pg, db_name) = fresh_pg().await;
 
     let owner = owner_fixture();
     let registry = FlavorRegistry::new();
-    let engine = proxima_core::Engine::new(registry.freeze(), MemoryStore::new());
+    let engine = proxima_core::Engine::new(registry.freeze());
     let authz = AuthzContext::single_owner(&owner, AuthPath::System);
     let note = AgentNoteV1 {
         note_id: Uuid::now_v7(),

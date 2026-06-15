@@ -2,6 +2,10 @@
 
 use proxima_core::StorageError;
 
+pub(crate) fn internal(e: impl std::fmt::Display) -> StorageError {
+    StorageError::Internal(e.to_string())
+}
+
 #[allow(clippy::needless_pass_by_value)]
 pub(crate) fn map_err(e: sqlx::Error) -> StorageError {
     use sqlx::Error;

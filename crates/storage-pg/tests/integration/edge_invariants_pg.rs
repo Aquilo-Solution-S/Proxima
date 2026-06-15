@@ -101,9 +101,7 @@ async fn insert_memory_edge(
 
 #[tokio::test]
 async fn trigger_rejects_upward_edges_and_semantic_fact_to_fact() {
-    let Some((pg, db_name)) = crate::common::fresh_pg().await else {
-        return;
-    };
+    let (pg, db_name) = crate::common::fresh_pg().await;
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         pg.run_migrations().await?;
@@ -160,9 +158,7 @@ async fn trigger_rejects_upward_edges_and_semantic_fact_to_fact() {
 
 #[tokio::test]
 async fn trigger_rejects_endpoint_kind_and_owner_mismatch() {
-    let Some((pg, db_name)) = crate::common::fresh_pg().await else {
-        return;
-    };
+    let (pg, db_name) = crate::common::fresh_pg().await;
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         pg.run_migrations().await?;
@@ -208,9 +204,7 @@ async fn trigger_rejects_endpoint_kind_and_owner_mismatch() {
 
 #[tokio::test]
 async fn trigger_allows_cross_domain_fact_set_abstraction() {
-    let Some((pg, db_name)) = crate::common::fresh_pg().await else {
-        return;
-    };
+    let (pg, db_name) = crate::common::fresh_pg().await;
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         pg.run_migrations().await?;

@@ -9,9 +9,7 @@ use uuid::Uuid;
 #[tokio::test(flavor = "multi_thread")]
 async fn ensure_subject_personality_is_idempotent_and_mints_roots()
 -> Result<(), Box<dyn std::error::Error>> {
-    let Some((pg, db)) = fresh_pg().await else {
-        return Ok(());
-    };
+    let (pg, db) = fresh_pg().await;
     pg.run_migrations().await?;
     let owner = Owner {
         principal: Principal::User(UserId::new(Uuid::now_v7())),

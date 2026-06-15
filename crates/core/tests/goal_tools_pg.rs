@@ -4,7 +4,7 @@ use std::{future::Future, pin::Pin, sync::Arc};
 
 mod common;
 
-use common::{drop_db, fresh_pg};
+use common::{drop_db, fresh_pg, owner_fixture};
 use proxima_core::engine::Engine;
 use proxima_core::goal::relations::CORE_MOTIVATED_BY_RELATION;
 use proxima_core::mcp::core_tools::goal::{
@@ -15,11 +15,10 @@ use proxima_core::mcp::core_tools::{
     GoalDecomposeTool, GoalMarkAchievedTool, GoalModifyTool, GoalSetTool, GoalTransitionTool,
 };
 use proxima_core::mcp::{HandleTable, McpAuthorContext, McpToolCtx, OutputMode};
-use proxima_core::verbs::query::MemoryStore;
 use proxima_core::{
     AuthPath, AuthzContext, EntityKind, FlavorRegistry, FlavorRegistryFrozen, GoalId, McpTool,
-    McpToolError, MemoryId, MemoryOperatorKind, OrgId, Owner, OwnerPrincipalKind,
-    PersonalityInstanceId, PersonalityStatus, Principal, UserId,
+    McpToolError, MemoryId, MemoryOperatorKind, Owner, OwnerPrincipalKind, PersonalityInstanceId,
+    PersonalityStatus, Principal,
 };
 use serde_json::json;
 use uuid::Uuid;
@@ -246,9 +245,7 @@ async fn with_harness<F>(test: F) -> TestResult
 where
     F: for<'a> FnOnce(&'a ToolHarness) -> BoxTestFuture<'a>,
 {
-    let (pg, db_name) = fresh_pg()
-        .await
-        .expect("PG required for goal MCP tool tests");
+    let (pg, db_name) = fresh_pg().await;
     let result = async {
         let harness = ToolHarness::new(pg).await?;
         test(&harness).await
@@ -605,10 +602,7 @@ async fn assert_goal_state_supersedes(
 }
 
 fn nil_owner() -> Owner {
-    Owner {
-        principal: Principal::User(UserId::new(Uuid::nil())),
-        org_id: OrgId::new(Uuid::nil()),
-    }
+    owner_fixture()
 }
 
 fn owner_parts(owner: &Owner) -> (OwnerPrincipalKind, Uuid, Uuid) {
@@ -651,8 +645,5 @@ fn engine_for_registry(
     registry: &Arc<FlavorRegistryFrozen>,
     pg: &proxima_storage_pg::PgStorage,
 ) -> Arc<Engine> {
-    Arc::new(
-        Engine::new((**registry).clone(), MemoryStore::new())
-            .with_storage(pg.clone().into_handle()),
-    )
+    Arc::new(Engine::new((**registry).clone()).with_storage(pg.clone().into_handle()))
 }

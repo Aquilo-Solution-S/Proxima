@@ -1,4 +1,4 @@
-use proxima_core::{MemoryId, Owner, OwnerPrincipalKind};
+use proxima_core::{MemoryId, Owner};
 use sqlx::PgPool;
 
 use crate::payloads::FileState;
@@ -22,13 +22,7 @@ pub async fn file_revision_heads(
     owner: &Owner,
     repo_id: uuid::Uuid,
 ) -> Result<Vec<FileRevisionHead>, IngestError> {
-    use proxima_core::Principal;
-    let kind = OwnerPrincipalKind::of(&owner.principal);
-    let principal_id = match &owner.principal {
-        Principal::User(u) => u.into_inner(),
-        Principal::Group(g) => g.into_inner(),
-    };
-    let org_id = owner.org_id.into_inner();
+    let (kind, principal_id, org_id) = owner.columns();
 
     // DISTINCT ON over (file_path) ordered by created_at DESC picks
     // the latest revision per NK in a single index scan. Replaces a
@@ -82,13 +76,7 @@ pub async fn present_chunk_indexes(
     repo_id: uuid::Uuid,
     file_path: &str,
 ) -> Result<Vec<u32>, IngestError> {
-    use proxima_core::Principal;
-    let kind = OwnerPrincipalKind::of(&owner.principal);
-    let principal_id = match &owner.principal {
-        Principal::User(u) => u.into_inner(),
-        Principal::Group(g) => g.into_inner(),
-    };
-    let org_id = owner.org_id.into_inner();
+    let (kind, principal_id, org_id) = owner.columns();
 
     // DISTINCT ON per (chunk_index) finds the latest head per NK in a
     // single pass; we then filter to Present so tombstoned-latest
@@ -153,13 +141,7 @@ pub async fn lookup_present_chunk_memory_id_by_text(
     chunk_index: u32,
     text_to_match: &str,
 ) -> Result<Option<MemoryId>, IngestError> {
-    use proxima_core::Principal;
-    let kind = OwnerPrincipalKind::of(&owner.principal);
-    let principal_id = match &owner.principal {
-        Principal::User(u) => u.into_inner(),
-        Principal::Group(g) => g.into_inner(),
-    };
-    let org_id = owner.org_id.into_inner();
+    let (kind, principal_id, org_id) = owner.columns();
 
     // NK is fully constrained (repo_id + file_path + chunk_index),
     // so the latest row is just ORDER BY created_at DESC LIMIT 1. The

@@ -7,6 +7,8 @@
 //! `PgStorage` struct, connection lifecycle, and migration runner,
 //! then delegates each `Storage` trait method to its per-verb
 //! implementation.
+#[cfg(feature = "test-fixtures")]
+extern crate self as proxima_storage_pg;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -41,6 +43,8 @@ use proxima_core::{
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::{PgPool, Postgres, Transaction};
 
+use crate::error::internal;
+
 mod authorship;
 mod change_event;
 mod error;
@@ -49,6 +53,8 @@ mod pgvector;
 pub mod query {
     pub use crate::verbs::query::MAX_SNAPSHOT_EDGES;
 }
+#[cfg(feature = "test-fixtures")]
+pub mod test_fixtures;
 pub mod verbs;
 
 /// Default DB URL when `DATABASE_URL` is unset. Matches the
@@ -135,10 +141,7 @@ impl PgStorage {
     /// migration failure (broken file, conflict with the
     /// recorded checksum, etc.).
     pub async fn run_migrations(&self) -> Result<(), StorageError> {
-        core_migrator()
-            .run(&self.pool)
-            .await
-            .map_err(|e| StorageError::Internal(e.to_string()))?;
+        core_migrator().run(&self.pool).await.map_err(internal)?;
         Ok(())
     }
 }
@@ -274,11 +277,7 @@ impl Storage for PgStorage {
         sidecar_payload: &serde_json::Value,
         embedding_model_id: Option<&str>,
     ) -> Result<EventIngestOutcome, StorageError> {
-        let mut tx = self
-            .pool
-            .begin()
-            .await
-            .map_err(|e| StorageError::Internal(e.to_string()))?;
+        let mut tx = self.pool.begin().await.map_err(internal)?;
         let table = sidecar_table.to_string();
         let payload = sidecar_payload.clone();
         let outcome = verbs::event_ingest::ingest_event_with_sidecar_in_tx(
@@ -303,11 +302,7 @@ impl Storage for PgStorage {
         sidecar_payload: &serde_json::Value,
         embedding_model_id: Option<&str>,
     ) -> Result<EventIngestOutcome, StorageError> {
-        let mut tx = self
-            .pool
-            .begin()
-            .await
-            .map_err(|e| StorageError::Internal(e.to_string()))?;
+        let mut tx = self.pool.begin().await.map_err(internal)?;
         let table = sidecar_table.to_string();
         let payload = sidecar_payload.clone();
         let outcome = verbs::event_ingest::ingest_fact_with_citation_in_tx(
@@ -329,11 +324,7 @@ impl Storage for PgStorage {
         &self,
         req: &AuthorDerivedRequest<'_>,
     ) -> Result<AuthorDerivedOutcome, StorageError> {
-        let mut tx = self
-            .pool
-            .begin()
-            .await
-            .map_err(|e| StorageError::Internal(e.to_string()))?;
+        let mut tx = self.pool.begin().await.map_err(internal)?;
         let draft = verbs::derive_append::DerivedDraft {
             memory_id: req.memory_id.into_inner(),
             owner: req.owner.clone(),
@@ -368,11 +359,7 @@ impl Storage for PgStorage {
     }
 
     async fn append_memory_edge(&self, edge: &DerivedEdgeSpec<'_>) -> Result<(), StorageError> {
-        let mut tx = self
-            .pool
-            .begin()
-            .await
-            .map_err(|e| StorageError::Internal(e.to_string()))?;
+        let mut tx = self.pool.begin().await.map_err(internal)?;
         let draft = edge_draft_from_spec(edge);
         verbs::edge_append::append_edge_in_tx(&mut tx, &draft, edge.edge_payload).await?;
         tx.commit().await.map_err(crate::error::map_err)

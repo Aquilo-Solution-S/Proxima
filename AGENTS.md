@@ -32,7 +32,7 @@ explicit request.
 | `docs/11-citations.md` | `CitedObject` / `CitationMapping` traits; bibliographic provenance, Fact-only citation rule |
 | `docs/12-tool-manifest.md` | T1 (runtime, schema-consuming) vs T2 (build-time flavors) tool tiers |
 | `docs/13-compliance.md` | Compliance primitives: owner deletion, source-scope deletion, pause/resume, export, suppression, audit |
-| `docs/14-protocol-surface.md` | Engine's contract to clients: six verbs (Query / Subscribe / EventHistory / GoalWrite / EventIngest / Schema), owner-scoped, transport-agnostic |
+| `docs/14-protocol-surface.md` | Engine's contract to clients: five verbs (Query / EventHistory / GoalWrite / EventIngest / Schema), owner-scoped, transport-agnostic |
 | `docs/dev-perf.md` | Perf reducer fixture format |
 
 ## Workspace layout
@@ -50,8 +50,7 @@ proxima/
 │   ├── proxima/             Rust framework facade crate
 │   └── storage-pg/          Rust Postgres storage crate
 ├── flavors/
-│   ├── code/                Rust code flavor crate
-│   └── goal/                Rust goal flavor crate
+│   └── code/                Rust code flavor crate
 ├── examples/
 │   └── embedded-minimal/    canonical host-binary embedding example
 ├── tools/
@@ -113,9 +112,8 @@ Tools available to attached agents:
 
 | Tier | Tools |
 |---|---|
-| Substrate (always) | `core/remember`, `core/record_utterance`, `core/derive`, `core/link`, `core/search_memories`, `core/open`, `core/walk_memory_lineage` |
-| Code flavor | `code_search_chunks`, `code_search_commits`, `code_open_file_revision` |
-| Goal flavor | `goal_propose`, `goal_accept`, `goal_decline`, `goal_modify` |
+| Substrate (always) | ~35 build-time-registered tools across memory, goals, personality, wake-config, read-scope, fact-retention, citations, and introspection. `core/list_substrate_tools` returns the authoritative live list. Key writes: `core/remember`, `core/record_utterance`, `core/derive`, `core/link`, `core/goal_set`. |
+| Code flavor | Repo registration, chunk/commit search, file-revision open, execution-request emit — registered only when the `proxima-code` flavor is composed in. (The `proxima-mcp` reference host registers no flavors: its surface is Substrate-only.) |
 
 Proxima self-ingests its own commits and chunks, so the graph holds
 this repo's causal chain. Prefer MCP queries over re-greppping when
@@ -248,7 +246,7 @@ breaks if these slip.
   `fix(<component>): <summary>` / `chore(<component>): <summary>`.
   Components include `core`, `proxima-mcp`, `storage-pg`, `mcp-server`,
   `llm-openai-compat`, `blob-s3`, `proxima`, `pg-testkit`, `flavors-code`,
-  `flavors-goal`, `examples`, `tools`.
+  `examples`, `tools`.
 - Body: bulleted list of concrete changes; preserve the *why* when
   the change is a decision, not a fix.
 - Co-authorship trailer for AI commits matches the parent CLAUDE.md

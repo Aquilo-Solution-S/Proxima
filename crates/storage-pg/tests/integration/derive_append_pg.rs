@@ -43,9 +43,7 @@ fn agent_draft(
 #[tokio::test]
 async fn external_agent_abstraction_persists_with_replay() -> Result<(), Box<dyn std::error::Error>>
 {
-    let Some((pg, db_name)) = fresh_pg().await else {
-        return Ok(());
-    };
+    let (pg, db_name) = fresh_pg().await;
 
     let result = async {
         pg.run_migrations().await?;
@@ -88,9 +86,7 @@ async fn external_agent_abstraction_persists_with_replay() -> Result<(), Box<dyn
 
 #[tokio::test]
 async fn external_agent_perspective_persists() -> Result<(), Box<dyn std::error::Error>> {
-    let Some((pg, db_name)) = fresh_pg().await else {
-        return Ok(());
-    };
+    let (pg, db_name) = fresh_pg().await;
 
     let result = async {
         pg.run_migrations().await?;
@@ -123,9 +119,7 @@ async fn external_agent_perspective_persists() -> Result<(), Box<dyn std::error:
 #[tokio::test]
 async fn external_agent_abstraction_stamps_author_without_change_event_author()
 -> Result<(), Box<dyn std::error::Error>> {
-    let Some((pg, db_name)) = fresh_pg().await else {
-        return Ok(());
-    };
+    let (pg, db_name) = fresh_pg().await;
 
     let result = async {
         pg.run_migrations().await?;

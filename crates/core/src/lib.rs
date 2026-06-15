@@ -1,4 +1,7 @@
 //! Proxima engine core.
+#[cfg(feature = "test-fixtures")]
+extern crate self as proxima_core;
+
 pub mod auth;
 pub mod authz;
 pub mod canonical_json;
@@ -22,8 +25,9 @@ pub mod personality;
 pub mod relation;
 pub mod secrets;
 pub mod storage;
+#[cfg(feature = "test-fixtures")]
+pub mod test_fixtures;
 pub mod verbs;
-pub mod wake;
 
 pub use auth::*;
 pub use authz::*;

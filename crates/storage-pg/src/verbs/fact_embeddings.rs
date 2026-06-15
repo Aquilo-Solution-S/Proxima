@@ -1,18 +1,13 @@
 use proxima_core::llm::{EMBEDDING_DIM, EMBEDDING_JOB_MAX_ATTEMPTS};
 use proxima_core::{
-    EmbeddingJobClaim, EntityKind, MemoryId, OrgId, Owner, OwnerPrincipalKind, Principal,
-    StorageError,
+    EmbeddingJobClaim, EntityKind, MemoryId, Owner, OwnerPrincipalKind, StorageError,
 };
 use sqlx::{PgPool, Postgres, Transaction};
 
 use crate::error::map_err;
 
 fn owner_parts(owner: &Owner) -> (OwnerPrincipalKind, uuid::Uuid, uuid::Uuid) {
-    let (owner_kind, owner_principal_id) = match &owner.principal {
-        Principal::User(user) => (OwnerPrincipalKind::User, user.into_inner()),
-        Principal::Group(group) => (OwnerPrincipalKind::Group, group.into_inner()),
-    };
-    (owner_kind, owner_principal_id, owner.org_id.into_inner())
+    owner.columns()
 }
 
 #[derive(sqlx::FromRow)]
@@ -30,10 +25,11 @@ struct EmbeddingJobClaimRow {
 impl From<EmbeddingJobClaimRow> for EmbeddingJobClaim {
     fn from(row: EmbeddingJobClaimRow) -> Self {
         Self {
-            owner: Owner {
-                principal: row.owner_principal_kind.with_uuid(row.owner_principal_id),
-                org_id: OrgId::new(row.owner_org_id),
-            },
+            owner: Owner::with_uuid(
+                row.owner_principal_kind,
+                row.owner_principal_id,
+                row.owner_org_id,
+            ),
             entity_kind: row.entity_kind,
             entity_id: MemoryId::new(row.entity_id),
             model_id: row.model_id,

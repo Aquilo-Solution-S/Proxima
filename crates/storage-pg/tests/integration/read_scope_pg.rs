@@ -8,9 +8,7 @@ use proxima_core::personality::{
 #[tokio::test]
 async fn read_scope_replace_lists_explicit_non_identity_grants()
 -> Result<(), Box<dyn std::error::Error>> {
-    let Some((pg, db_name)) = fresh_pg().await else {
-        return Ok(());
-    };
+    let (pg, db_name) = fresh_pg().await;
     pg.run_migrations().await?;
 
     let owner = owner_fixture();

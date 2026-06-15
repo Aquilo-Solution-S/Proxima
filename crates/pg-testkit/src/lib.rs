@@ -10,6 +10,8 @@ const DROP_RETRIES: usize = 25;
 const DROP_RETRY_DELAY: Duration = Duration::from_millis(200);
 const SQLSTATE_DATABASE_ACCESSED: &str = "55006";
 const SQLSTATE_UNDEFINED_DATABASE: &str = "3D000";
+pub const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+pub const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 
 #[must_use]
 pub fn admin_url() -> String {
@@ -28,6 +30,20 @@ pub fn db_url(name: &str) -> String {
 #[must_use]
 pub fn unique_db_name(prefix: &str) -> String {
     format!("{}_{}", prefix, Uuid::now_v7().simple())
+}
+
+#[must_use]
+pub fn fnv1a64_extend(mut hash: u64, bytes: &[u8]) -> u64 {
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash
+}
+
+#[must_use]
+pub fn fnv1a64(bytes: &[u8]) -> u64 {
+    fnv1a64_extend(FNV_OFFSET_BASIS, bytes)
 }
 
 /// # Errors
@@ -207,15 +223,7 @@ fn quoted_ident(input: &str) -> String {
 }
 
 fn advisory_lock_key(input: &str) -> i64 {
-    const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
-    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
-
-    let mut hash = FNV_OFFSET_BASIS;
-    for byte in input.bytes() {
-        hash ^= u64::from(byte);
-        hash = hash.wrapping_mul(FNV_PRIME);
-    }
-
+    let hash = fnv1a64(input.as_bytes());
     i64::from_be_bytes(hash.to_be_bytes())
 }
 

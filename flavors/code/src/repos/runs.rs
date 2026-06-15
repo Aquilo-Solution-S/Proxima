@@ -1,4 +1,3 @@
-use super::owner_columns;
 use super::records::{RepoIngestionRun, RepoRegistryError, RunStage, RunStatus, StageCounters};
 use super::rows::RunRow;
 use proxima_core::Owner;
@@ -27,7 +26,7 @@ pub async fn start_run_with_created(
     owner: &Owner,
     repo_id: Uuid,
 ) -> Result<(RepoIngestionRun, bool), RepoRegistryError> {
-    let (kind, principal_id, org_id) = owner_columns(owner);
+    let (kind, principal_id, org_id) = owner.columns();
     let new_run_id = Uuid::now_v7();
 
     let inserted = sqlx::query_as::<_, RunRow>(
@@ -71,7 +70,7 @@ pub async fn get_active_run(
     owner: &Owner,
     repo_id: Uuid,
 ) -> Result<Option<RepoIngestionRun>, RepoRegistryError> {
-    let (kind, principal_id, org_id) = owner_columns(owner);
+    let (kind, principal_id, org_id) = owner.columns();
     let row = sqlx::query_as::<_, RunRow>(
         "SELECT run_id, repo_id, status, stage, \
                 commits_emitted, files_emitted, chunks_emitted, chunks_reused, \
