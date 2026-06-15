@@ -26,7 +26,7 @@ Registry rules:
 | `(schema_id, schema_version, kind)` identifies one payload shape | no untyped Memory payload |
 | every registered schema declares a qualified sidecar table | no inferred table naming |
 | every write inserts the entity row and sidecar row atomically | no sidecar-less typed entity |
-| registry freezes at startup from linked flavors | no runtime schema registration |
+| registry freezes at startup from core plus linked flavors | no runtime schema registration |
 | schema evolution moves sidecar bytes only | entity identity and provenance stay fixed |
 | `CitedObject` / `CitationMapping` schemas may be *opaque* — content-addressed blobs with no Rust payload type | F/A/P/Goal/Edge are never opaque |
 
@@ -42,10 +42,10 @@ similarity is a query aid, not the schema surface (see
 
 ## Scoping: one namespace per binary
 
-Namespace = flat union of schemas registered by the flavors linked into
-the binary.
+Namespace = flat union of core schemas plus schemas registered by the
+flavors linked into the binary.
 
-Schema ids are flavor-qualified:
+Schema ids are qualified by their owning registry namespace:
 
 | Flavor crate | Short id | Registered schema id |
 |---|---|---|
@@ -53,10 +53,10 @@ Schema ids are flavor-qualified:
 | `proxima-code` | `commit-summary-v1` | `proxima-code/commit-summary-v1` |
 | `core` | `agent-derivation-v1` | `core/agent-derivation-v1` |
 
-`proxima_flavor!` owns the prefix discipline (see
-[08 §Macro Surface](08-core-and-flavors.md#macro-surface)).
-Authors provide the short id; the flavor namespace prevents cross-flavor
-collisions inside one composite binary.
+`core/` is reserved for substrate schemas. `proxima_flavor!` owns flavor
+prefix discipline (see [08 §Macro Surface](08-core-and-flavors.md#macro-surface)).
+Authors provide the short id; the namespace prevents collisions inside
+one composite binary.
 
 User/domain variation belongs in payload fields, not schema-id forks.
 
@@ -71,7 +71,7 @@ Required registry metadata:
 
 | Field | Meaning |
 |---|---|
-| `schema_id` | stable flavor-qualified id |
+| `schema_id` | stable qualified id |
 | `schema_version` | monotonic version for that id |
 | `kind` | closed `PayloadKind` |
 | `sidecar_table` | qualified SQL table, e.g. `proxima_code.commit_v1` |
@@ -244,7 +244,7 @@ Rules:
 
 | Rule | Consequence |
 |---|---|
-| sidecar table is flavor-owned SQL | schema crate owns migrations |
+| sidecar table is core- or flavor-owned SQL | owning crate owns migrations |
 | table name must be schema-qualified | `proxima_code.commit_v1`, not `commit_v1` |
 | table name must equal registry metadata | query planner joins declared tables |
 | one sidecar table per `(kind, schema_id, schema_version)` | no mixed-version table |

@@ -20,6 +20,27 @@ operational RPCs.
 
 No runtime schema/source/tool/flavor registration surface exists.
 
+## Core Memory MCP Tools
+
+Agent long-term memory is core substrate. The MCP tools are thin callers
+of Engine verbs; storage stays behind the Engine. The substrate tool
+count is 30.
+
+Canonical substrate memory tools:
+
+| Tool | Contract |
+|---|---|
+| `core/remember` | write agent-authored Fact |
+| `core/record_utterance` | write utterance Fact |
+| `core/derive` | write agent-authored Abstraction |
+| `core/link` | write registered relation edge |
+| `core/search_memories` | search memories; may include neighbor edges and per-result tags |
+| `core/open` | hydrate memory by id |
+| `core/walk_memory_lineage` | traverse provenance / supersession lineage |
+
+Graph search is unified into `core/search_memories`; there is no
+separate graph-search tool.
+
 ## The six verbs
 
 Semantic graph/client contract:

@@ -5,9 +5,15 @@
 
 Core is the Rust runtime framework core. It owns graph contracts,
 build-time flavor registry, protocol verbs, wake/personality runtime,
-substrate MCP tools, inference config types, and storage traits. Flavor
-crates contribute build-time vocabulary. Composite binaries choose flavor
-crates at build time and freeze the registry at startup.
+agent long-term memory substrate, substrate MCP tools, inference config
+types, and storage traits. Flavor crates contribute build-time
+vocabulary. Composite binaries choose flavor crates at build time and
+freeze the registry at startup.
+
+Proxima is a framework: core plus linked flavor crates composed into an
+app. Generic agent memory is core substrate; domain vocabularies such as
+code and goal remain flavors. There is no external flavor/tool catalog
+and no runtime registration.
 
 The formal kernel is `docs/lean/Foundations/`, not the Rust crate
 boundary.
@@ -21,6 +27,7 @@ runtime framework core (`proxima-core`)
   relation descriptor validation
   frozen registry
   storage traits
+  agent long-term memory sidecars + tools
   wake dispatcher
   personality runtime rows + wake-entry contracts
   substrate personality tools
@@ -52,8 +59,8 @@ flavor's generated `register(&mut FlavorRegistry)`, then calls
 `freeze()`. Freeze-time failure is startup failure.
 
 Core registers substrate schemas, core relation descriptors, and
-substrate MCP config tools in the default registry. Flavor crates append
-their own descriptors through `proxima_flavor!`.
+substrate MCP memory/config tools in the default registry. Flavor crates
+append their own descriptors through `proxima_flavor!`.
 
 <a id="macro-surface"></a>
 ## Macro Surface
@@ -183,11 +190,11 @@ dependency rules panic during registration before freeze.
 Flavor crate = inclusion unit. Composite binary = build artifact.
 
 ```
-proxima-mcp       = substrate + agent-memory + goal
+proxima-mcp       = substrate + goal
 proxima-code      = substrate + code
 ```
 
-Composite binaries are not plugin hosts.
+Composite binaries are framework apps, not plugin hosts.
 
 <a id="no-feature-flags"></a>
 ## No Feature Flags
