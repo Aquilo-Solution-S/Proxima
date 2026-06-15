@@ -1,8 +1,8 @@
 # 14 — Protocol Surface
 
 Transport-agnostic engine contract. 14 owns verb semantics,
-change-stream semantics, consistency, auth, and error shape. 09 owns
-client transport, Shell bindings, stream framing, and UI state.
+change-log semantics, consistency, auth, and error shape. 09 owns
+client transport, Shell bindings, and UI state.
 
 ## Scope
 
@@ -16,7 +16,7 @@ operational RPCs.
 | graph verbs | current | cognitive graph reads/writes/events |
 | operational/config RPCs | current | runtime personality config |
 | compliance admin operations | design intent | compliance primitives in [13](13-compliance.md), admin surface deferred |
-| operators / wake / tools / LLM calls | internal | clients observe committed graph effects as `ChangeEvent`s |
+| operators / wake / tools / LLM calls | internal | clients read committed graph effects from the `change_event` pull log |
 
 No runtime schema/source/tool/flavor registration surface exists.
 
@@ -43,12 +43,18 @@ separate graph-search tool.
 
 ## The verbs
 
-Semantic graph/client contract. Five current verbs; the live-push
-`Subscribe` stream was **retired** — `change_event` is now a pull-only
-durable log (replay via `EventHistory`; the harness wake path reads
-events after a seq cursor). The `### Subscribe`, `## Cursor & Resume`,
-and `## Cold-Start Stitching` sections below still describe the retired
-push model and are pending a pull-only rewrite.
+Semantic graph/client contract. Five current verbs. The live-push
+`Subscribe` stream has been **retired and removed from code** — there is
+no outbox, `LISTEN`/`NOTIFY`, or server-push transport. `change_event`
+is now a durable, owner-scoped, seq-ordered **pull log** (see
+[§Change Log](#change-log--pull-only)).
+
+> **Pending surface.** The only engine-exposed reader of `change_event`
+> today is `EventHistory` (backward, bounded). The forward seq-cursor
+> poll a harness wake loop needs exists only at the storage layer
+> (`Storage::list_change_events_after`) — not yet wrapped by an engine
+> verb, and **no MCP tool reads events**. A client-facing forward poll
+> (e.g. `core/list_events?since=<seq>`) is the missing piece.
 
 | Verb | Direction | Idempotency | Scope | Current status |
 |---|---|---|---|---|
@@ -57,14 +63,14 @@ push model and are pending a pull-only rewrite.
 | `GoalWrite` | client -> engine, sync | `request_id` | Owner | current |
 | `EventIngest` | source -> engine, sync | `event_id` | Owner | current |
 | `Schema` | client -> engine, sync | yes | binary | current |
-| `Subscribe` | engine -> client, stream | n/a | Owner | **retired** (pull-only) |
+| `Subscribe` | (removed) | n/a | Owner | **retired** — `change_event` is a pull log |
 
 These five current verbs are the cognitive graph surface. Operational/config
 RPCs below are not graph verbs.
 
 ## Owner-scoping — the primary axis
 
-Every graph read, write, ingest, and subscribe names exactly one
+Every graph read, write, ingest, and event poll names exactly one
 `Owner` (see [01](01-event-source.md#owner--scoping-primitive)).
 Dispatch verifies caller access to that Owner.
 
@@ -72,7 +78,7 @@ Dispatch verifies caller access to that Owner.
 |---|---|
 | single-tenant | one accessible Owner |
 | multi-tenant | same calls, different Owner per call |
-| multi-owner streams | one `Subscribe` stream per Owner |
+| multi-owner event reads | one `EventHistory` / poll call per Owner |
 | cross-owner graph data | not exposed by protocol |
 
 ## Graph Verbs
@@ -95,32 +101,8 @@ Owner-scoped snapshot read of memories, goals, and edges.
 | flavor-typed filters | design intent; advertised/validated only when implemented by a linked flavor |
 | edge traversal / time range | deferred |
 
-Returns rows plus `seq_high_water`. Clients use the watermark as the
-`Subscribe(since)` cursor for cold-start stitching.
-
-### Subscribe
-
-Owner-scoped server-push stream of identity-only `ChangeEvent`s.
-Current core request shape is `owner + since`; gRPC may carry a
-`ReadFilter`, but current conversion does not enforce it.
-
-| Field | Contract |
-|---|---|
-| `seq` | server-generated UUIDv7 cursor |
-| `owner` | event Owner |
-| `EntityAppend` | Fact / Abstraction / Perspective / Goal identity, schema, optional supersedes |
-| `EdgeAppend` | edge identity, relation, source, target |
-| authoring metadata | optional personality instance and wake-chain depth |
-
-Rules:
-
-- No payload bytes on the stream. Hydration is a follow-up `Query`.
-- No `EntityRemoved` or `EntityMutated`; append-only deltas only.
-- `supersedes` is valid for A/P/Goal, never for Facts.
-- Stateful Fact projections stream as repeated `EntityAppend`s under
-  the same schema/natural key; readers fold with `Query`.
-- Subscribe-side filtering beyond owner/since is deferred until the
-  engine enforces the same axes advertised to clients.
+Returns rows plus `seq_high_water`. Clients persist the watermark as
+the seq cursor for a subsequent forward poll of `change_event`.
 
 ### EventHistory
 
@@ -135,7 +117,10 @@ Owner-scoped bounded read of `change_event`, newest-first.
 | return order | newest-first |
 | `seq_high_water` | latest owner event seq at read time |
 
-No `after` cursor. Live resume is `Subscribe`.
+No `after` cursor — this verb is backward-only. Forward replay (events
+with `seq > cursor`) exists at the storage layer
+(`Storage::list_change_events_after`) but is not yet wrapped by an
+engine verb or exposed over MCP.
 
 ### GoalWrite
 
@@ -148,7 +133,7 @@ Owner-scoped append or supersession of a Goal row (see
 | request id | `(Owner, request_id)` idempotency key |
 | replay | same body returns prior `GoalId`; different body returns conflict |
 | supersession | prior goal must be same Owner and current head |
-| stream | success commits a Goal `EntityAppend` in the outbox |
+| log | success commits the Goal row and its `change_event` row |
 
 ### EventIngest
 
@@ -160,7 +145,7 @@ sources and in-app sources.
 | event id | server-computed content hash of source, Owner, payload |
 | replay | duplicate event id returns prior outcome / no new Fact |
 | commit | returns after Fact and structural edges are committed |
-| stream | success commits corresponding `ChangeEvent`s |
+| log | success commits the corresponding `change_event` rows |
 | auth | user or source credential, depending on source type |
 
 ### Schema
@@ -176,76 +161,71 @@ Binary-scoped registry introspection.
 Schema is structural metadata. Deployments may expose it without
 auth or gate it like any other call.
 
-## Cursor & Resume
+## Change Log — Pull-Only
 
-`seq` is a server-generated UUIDv7 cursor. Servers return events with
-`seq > since`.
+`change_event` is a durable, append-only, owner-scoped log. Each row
+carries a server-generated UUIDv7 `seq` that doubles as the cursor.
+There is no push transport, no ack protocol, and no per-client server
+cursor state — clients poll.
+
+Forward poll (events after a cursor):
 
 ```
 client persists last_seq it processed
-on reconnect:
-    Subscribe(owner, since = last_seq)
-    client dedupes by seq
+on wake / reconnect:
+    read events where seq > last_seq, ascending   # Storage::list_change_events_after
+    process in order; persist the new high-water seq
 ```
 
-No ack protocol. No per-client server cursor state. Delivery is
-at-least-once with client dedup.
+This is the harness wake path. It is exposed today only as the
+`Storage::list_change_events_after` trait method; the forward poll is
+not yet an engine verb or an MCP tool (see the pending-surface note in
+[§The verbs](#the-verbs)). `EventHistory` is the backward-only,
+engine-exposed counterpart.
 
-## Cold-Start Stitching — Query -> Subscribe
-
-Snapshot-only seed:
+Cold-start stitching — seed from a snapshot, then poll forward:
 
 ```
 1. snapshot, hwm = Query(owner, filters)
 2. apply snapshot
-3. Subscribe(owner, since = hwm)
-4. hydrate streamed identities with Query
+3. read change_event where seq > hwm            # forward poll
+4. hydrate identities with Query
 ```
 
-Any event committed after `hwm` arrives via `Subscribe`; events at or
-before `hwm` are represented in the snapshot.
+Events committed after `hwm` are read by the poll; events at or before
+`hwm` are already represented in the snapshot. A history-rail variant
+seeds recent context with `EventHistory(owner, limit = N)` before the
+first forward poll.
 
-History rail seed:
-
-```
-1. (snapshot, hwm_q), (events, hwm_e) = parallel(
-       Query(owner, filters),
-       EventHistory(owner, limit = N, before = None))
-2. apply snapshot
-3. seed event log with events
-4. Subscribe(owner, since = max(hwm_q, hwm_e))
-5. dedupe live events by seq
-```
-
-## Consistency — Strong Write -> Stream
+## Consistency — Strong Write -> Log
 
 Graph writes commit entity/edge rows and corresponding
 `change_event` rows in one storage transaction.
 
 | Property | Contract |
 |---|---|
-| atomic write/event | no committed graph row without outbox row |
-| write return | `GoalWrite` / `EventIngest` success means event is committed |
-| delivery | at-least-once; clients dedupe by `seq` |
-| replay | `EventHistory` reads the same protocol outbox |
-| broker | none required for v1; Postgres tailing is sufficient |
+| atomic write/event | no committed graph row without its `change_event` row |
+| write return | `GoalWrite` / `EventIngest` success means the event is committed and durably readable |
+| read | a committed event is visible to any subsequent forward poll / `EventHistory` read |
+| replay | `EventHistory` and the forward poll read the same `change_event` log |
+| broker | none; `change_event` is a pull log — no tailing broker or push delivery |
 
-`change_event` is the protocol outbox and replay log (see
+`change_event` is the durable pull log (see
 [07](07-storage.md#core-tables--abstract)). Compliance audit is
 separate (see [13](13-compliance.md#audit-log)).
 
 ## Operational / Config RPCs
 
-Current RPCs outside the six graph verbs:
+Current RPCs outside the five graph verbs:
 
 | Family | RPCs | Contract |
 |---|---|---|
 | personality lifecycle | `InstantiatePersonality`, `SetWakeEntries`, `ListPersonalityInstances`, `TombstonePersonality` | mutate runtime personality config and wake entries; not graph verbs |
 
-`InstantiatePersonality` writes the root self-Perspective and emits
-one Perspective `EntityAppend`. Other personality config mutations do
-not emit cognitive `ChangeEvent`s; personality list UIs refresh with
-the list RPC, not by folding `Subscribe`.
+`InstantiatePersonality` writes the root self-Perspective and commits
+one Perspective `change_event` row. Other personality config mutations
+do not emit cognitive `change_event`s; personality list UIs refresh
+with the list RPC, not by polling the event log.
 
 ### Personality Lifecycle
 
@@ -291,7 +271,7 @@ access.
 
 | Principal | Access |
 |---|---|
-| user | `Query`, `Subscribe`, `EventHistory`, `GoalWrite`; in-app `EventIngest` when acting as a source |
+| user | `Query`, `EventHistory`, `GoalWrite`; in-app `EventIngest` when acting as a source |
 | source | `EventIngest` for the registered source |
 | admin/controller | operational/config RPCs and future compliance admin operations |
 
@@ -317,9 +297,6 @@ not-found/state, tool/inference config, and internal errors. Docs must
 not require a code variant until it exists in `crates/core/src/error.rs`
 or the owning wire surface.
 
-On `Subscribe`, errors terminate the stream through the transport
-error path.
-
 ## EventSource Registration
 
 EventSources register at startup from linked flavor crates, same
@@ -333,7 +310,7 @@ Current contract:
 | Concern | Rule |
 |---|---|
 | sync reads | clients request smaller `limit`s |
-| streams | reconnect with `since`; dedupe by `seq` |
+| event polls | read after the last `seq`; bounded `limit` per call |
 | per-stream server buffer policy | deferred |
 | broker/offline queue | deferred |
 
@@ -361,18 +338,16 @@ Current contract:
 ## Anchors
 
 - `scope`
-- `the-six-verbs`
+- `the-verbs`
 - `owner-scoping--the-primary-axis`
 - `graph-verbs`
 - `query`
-- `subscribe`
 - `eventhistory`
 - `goalwrite`
 - `eventingest`
 - `schema`
-- `cursor--resume`
-- `cold-start-stitching--query---subscribe`
-- `consistency--strong-write---stream`
+- `change-log--pull-only`
+- `consistency--strong-write---log`
 - `operational--config-rpcs`
 - `personality-lifecycle`
 - `compliance-admin-surface`
