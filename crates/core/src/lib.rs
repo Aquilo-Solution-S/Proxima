@@ -56,9 +56,7 @@ pub use verbs::event_ingest::{
 pub use verbs::persist_mcp_call::{McpCallLogInput, McpCallLogOutcome};
 pub use verbs::*;
 
-// Re-export subscribe types explicitly for external use.
 pub use verbs::schema::FlavorRegistryFrozen;
-pub use verbs::subscribe::{ChangeEventStream, SubscribeRequest};
 
 /// Expands to `&'static str` with the calling crate's name
 /// prefixed. Per docs/08 §Schema namespacing.

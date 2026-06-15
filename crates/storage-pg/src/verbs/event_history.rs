@@ -8,7 +8,7 @@ use proxima_core::{ChangeEvent, OwnerPrincipalKind, Principal, StorageError};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::outbox::hydrate_change_events_batch;
+use crate::change_event::hydrate_change_events_batch;
 
 pub(crate) async fn event_history(
     pool: &PgPool,

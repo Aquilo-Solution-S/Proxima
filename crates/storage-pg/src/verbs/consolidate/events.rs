@@ -3,8 +3,8 @@ use proxima_core::{Owner, OwnerPrincipalKind, StorageError};
 use sqlx::PgPool;
 
 use super::rows::owner_columns;
+use crate::change_event::hydrate_change_event;
 use crate::error::map_err;
-use crate::outbox::hydrate_change_event;
 
 pub async fn list_change_events_after(
     pool: &PgPool,

@@ -100,7 +100,6 @@ async fn event_history_returns_owner_scoped_newest_first() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
         pg.run_migrations().await?;
-        pg.start_outbox().await?;
 
         let storage: Arc<dyn Storage> = Arc::new(pg.clone());
         let user1 = UserId::new(Uuid::now_v7());

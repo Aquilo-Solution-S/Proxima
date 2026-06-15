@@ -6,7 +6,6 @@ use crate::verbs::event_history::{
 };
 use crate::verbs::query::{QueryRequest, QueryResponse};
 use crate::verbs::schema::{SchemaRequest, SchemaResponse};
-use crate::verbs::subscribe::{ChangeEventStream, SubscribeRequest};
 
 impl Engine {
     /// docs/14 §"Schema" — binary-scoped, unauthenticated by
@@ -46,26 +45,6 @@ impl Engine {
         }
         self.storage
             .query_memories(&effective, self.registry.list().as_slice())
-            .await
-            .map_err(|e| ProtocolError::internal(e.to_string()))
-    }
-
-    /// docs/14 §"Subscribe" — Owner-scoped stream with optional
-    /// `since` cursor for resume.
-    ///
-    /// # Errors
-    ///
-    /// Returns `Forbidden` when the context cannot access `req.principal` or
-    /// lacks the graph-read role, or `Internal` when storage fails to open
-    /// the change stream.
-    pub async fn subscribe(
-        &self,
-        authz: &AuthzContext,
-        req: SubscribeRequest,
-    ) -> Result<ChangeEventStream, ProtocolError> {
-        super::authorize(authz, &req.principal, Role::GraphRead)?;
-        self.storage
-            .subscribe_changes(&req.principal, req.since)
             .await
             .map_err(|e| ProtocolError::internal(e.to_string()))
     }
