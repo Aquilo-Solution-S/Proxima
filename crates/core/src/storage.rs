@@ -23,7 +23,6 @@ use crate::verbs::event_ingest::{EventDraft, EventIngestOutcome};
 use crate::verbs::fact_cleanup::CleanupDueFactsOutcome;
 use crate::verbs::goal_write::{GoalDraft, GoalWriteOutcome};
 use crate::verbs::persist_mcp_call::{McpCallLogInput, McpCallLogOutcome};
-use crate::verbs::subscribe::ChangeEventStream;
 use crate::{Owner, Principal};
 
 #[derive(Debug, Clone, thiserror::Error)]
@@ -137,25 +136,11 @@ pub trait Storage: Send + Sync {
         draft: &GoalDraft,
     ) -> Result<GoalWriteOutcome, StorageError>;
 
-    /// Returns an owner-filtered stream of `ChangeEvents`. If
-    /// `since` is `Some(seq)`, the stream begins by replaying
-    /// rows whose `seq > since` and then attaches to live events.
-    /// If `None`, the live stream begins immediately (no
-    /// backfill).
-    ///
-    /// Per docs/14 §Cursor: at-least-once delivery; clients
-    /// dedupe by `seq`. The server does NOT dedupe.
-    async fn subscribe_changes(
-        &self,
-        principal: &Principal,
-        since: Option<uuid::Uuid>,
-    ) -> Result<ChangeEventStream, StorageError>;
-
     /// Owner-scoped bounded read of `change_event` rows, newest-first.
     /// Server clamps `limit` to `MAX_EVENT_HISTORY_LIMIT`. When
     /// `before` is `Some(seq)`, returns rows with `seq < before`.
     /// `seq_high_water` is the latest seq in the owner's `change_event`
-    /// log at read time (cursor for a follow-up Subscribe).
+    /// log at read time (cursor for a follow-up pull).
     async fn event_history(
         &self,
         req: &EventHistoryRequest,
@@ -484,14 +469,6 @@ impl Storage for NoopStorage {
         _draft: &GoalDraft,
     ) -> Result<GoalWriteOutcome, StorageError> {
         Err(StorageError::Internal("NoopStorage rejects writes".into()))
-    }
-
-    async fn subscribe_changes(
-        &self,
-        _principal: &Principal,
-        _since: Option<uuid::Uuid>,
-    ) -> Result<ChangeEventStream, StorageError> {
-        Ok(Box::pin(futures_util::stream::empty()))
     }
 
     async fn event_history(

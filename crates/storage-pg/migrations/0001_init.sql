@@ -1,7 +1,9 @@
 -- Proxima core schema — v0.0.1 single init.
--- Squashed 2026-06-15 from the full dev migration history; proven byte-equivalent
--- to applying every migration in order (pg_dump --schema-only diff). Regenerate
--- from a migrated DB if the schema changes — do not hand-edit.
+-- Squashed 2026-06-15 from the full dev migration history; then hand-edited
+-- 2026-06-15 to drop the change_event outbox notify trigger + function (the
+-- LISTEN/NOTIFY push path was retired — change_event is now a pull-only log).
+-- Prefer regenerating from a migrated DB (pg_dump --schema-only) for broad
+-- schema changes; targeted object drops like the above may be hand-applied.
 
 CREATE SCHEMA proxima_core;
 
@@ -300,20 +302,6 @@ CREATE FUNCTION proxima_core.memory_entity_kind(kind proxima_core.entity_kind) R
     LANGUAGE sql IMMUTABLE
     AS $$
     SELECT COALESCE(kind, 'Fact'::proxima_core.entity_kind);
-$$;
-
-
---
--- Name: notify_change_event(); Type: FUNCTION; Schema: proxima_core; Owner: -
---
-
-CREATE FUNCTION proxima_core.notify_change_event() RETURNS trigger
-    LANGUAGE plpgsql
-    AS $$
-BEGIN
-    PERFORM pg_notify('proxima_change_event', NEW.seq::text);
-    RETURN NEW;
-END;
 $$;
 
 
@@ -1346,13 +1334,6 @@ CREATE UNIQUE INDEX personality_wake_entries_active_trigger_uq ON proxima_core.p
 --
 
 CREATE INDEX personality_wake_entries_trigger_idx ON proxima_core.personality_wake_entries USING btree (trigger_kind, trigger_id) WHERE (enabled AND (tombstoned_at IS NULL));
-
-
---
--- Name: change_event change_event_notify_trg; Type: TRIGGER; Schema: proxima_core; Owner: -
---
-
-CREATE TRIGGER change_event_notify_trg AFTER INSERT ON proxima_core.change_event FOR EACH ROW EXECUTE FUNCTION proxima_core.notify_change_event();
 
 
 --

@@ -8,4 +8,3 @@ pub mod goal_write;
 pub mod persist_mcp_call;
 pub mod query;
 pub mod schema;
-pub mod subscribe;

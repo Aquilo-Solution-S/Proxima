@@ -4,9 +4,9 @@
 //! `proxima_core`.
 //!
 //! The verb logic lives under [`verbs`]; this module wires the
-//! `PgStorage` struct, connection lifecycle, migration runner, and
-//! outbox plumbing, then delegates each `Storage` trait method to its
-//! per-verb implementation.
+//! `PgStorage` struct, connection lifecycle, and migration runner,
+//! then delegates each `Storage` trait method to its per-verb
+//! implementation.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -29,25 +29,21 @@ use proxima_core::verbs::query::{
     FactCitationReadback, MemoryLineageRequest, MemoryLineageResponse, MemorySearchRequest,
     MemorySearchResult, QueryRequest, QueryResponse,
 };
-use proxima_core::verbs::subscribe::ChangeEventStream;
 use proxima_core::{
-    ChangeEvent, GoalId, MasterTokenPersonality, MemoryDependency, MemoryId, Owner, Principal,
-    SourceBatchId, Storage, StorageError, StorageHandle,
+    GoalId, MasterTokenPersonality, MemoryDependency, MemoryId, Owner, Principal, SourceBatchId,
+    Storage, StorageError, StorageHandle,
 };
 use sqlx::PgPool;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
-use tokio::sync::broadcast;
 
 mod authorship;
+mod change_event;
 mod error;
-pub mod outbox;
 mod pg_ident;
 pub mod query {
     pub use crate::verbs::query::MAX_SNAPSHOT_EDGES;
 }
 pub mod verbs;
-
-use outbox::BROADCAST_CAPACITY;
 
 /// Default DB URL when `DATABASE_URL` is unset. Matches the
 /// dev DB created locally via `createdb proxima_dev`.
@@ -67,7 +63,6 @@ pub fn core_migrator() -> sqlx::migrate::Migrator {
 #[derive(Debug, Clone)]
 pub struct PgStorage {
     pool: PgPool,
-    tx: broadcast::Sender<ChangeEvent>,
 }
 
 impl PgStorage {
@@ -95,9 +90,7 @@ impl PgStorage {
             .await
             .map_err(|e| StorageError::Unavailable(e.to_string()))?;
 
-        let tx = broadcast::channel(BROADCAST_CAPACITY).0;
-
-        Ok(Self { pool, tx })
+        Ok(Self { pool })
     }
 
     /// Read `DATABASE_URL` from env, fallback to
@@ -115,47 +108,6 @@ impl PgStorage {
     #[must_use]
     pub fn into_handle(self) -> StorageHandle {
         Arc::new(self)
-    }
-
-    /// Return a fresh broadcast receiver for `ChangeEvents`.
-    /// Multiple calls produce independent receivers that each
-    /// see all future events.
-    #[must_use]
-    pub fn changes(&self) -> broadcast::Receiver<ChangeEvent> {
-        self.tx.subscribe()
-    }
-
-    /// Spawn the outbox publisher task and await its first
-    /// successful LISTEN bind + backfill drain.
-    ///
-    /// Opens a `PgListener` on the same pool, LISTENs on
-    /// `outbox::NOTIFY_CHANNEL`, drains anything currently in
-    /// `change_event` to the broadcast channel, and only then
-    /// returns. Subsequent reconnects (on listener error) carry the
-    /// `last_seen_seq` watermark forward and do not re-signal.
-    ///
-    /// Awaiting readiness closes the boot race where a write
-    /// committing before `LISTEN` bound would have its `pg_notify`
-    /// silently dropped (`PostgreSQL` discards notifications for
-    /// sessions not `LISTEN`ing at `COMMIT` time).
-    ///
-    /// # Errors
-    ///
-    /// `StorageError::Internal` if the publisher exits before
-    /// signaling ready, or if the initial LISTEN / backfill fails.
-    pub async fn start_outbox(&self) -> Result<(), StorageError> {
-        let pool = self.pool.clone();
-        let tx = self.tx.clone();
-        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
-        tokio::spawn(async move {
-            outbox::outbox_publisher(pool, tx, Some(ready_tx)).await;
-        });
-        match ready_rx.await {
-            Ok(result) => result,
-            Err(_) => Err(StorageError::Internal(
-                "outbox publisher exited before signaling ready".into(),
-            )),
-        }
     }
 
     /// Apply all pending migrations under
@@ -247,14 +199,6 @@ impl Storage for PgStorage {
         draft: &GoalDraft,
     ) -> Result<GoalWriteOutcome, StorageError> {
         verbs::goal_write::supersede_goal_atomic(&self.pool, prior, draft).await
-    }
-
-    async fn subscribe_changes(
-        &self,
-        principal: &Principal,
-        since: Option<uuid::Uuid>,
-    ) -> Result<ChangeEventStream, StorageError> {
-        verbs::subscribe::subscribe_changes(&self.pool, &self.tx, principal, since).await
     }
 
     async fn event_history(

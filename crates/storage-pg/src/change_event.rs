@@ -1,24 +1,13 @@
-//! Outbox publisher — tails `change_event` via LISTEN and fans
-//! out typed `ChangeEvents` on a tokio broadcast channel.
+//! Hydration of `change_event` rows into typed `ChangeEvent`s for the
+//! pull-read verbs (`event_history`, `list_change_events_*`). The
+//! LISTEN/NOTIFY outbox publisher was retired — `change_event` is a
+//! pull-only durable log; consumers read it by `seq` cursor.
 
-use std::time::Duration;
-
-use futures_util::StreamExt;
 use proxima_core::{
     ChangeEvent, ChangeEventKind, ChangeEventKindTag, EntityKind, EntityRef, GoalId, MemoryId,
     OrgId, Owner, OwnerPrincipalKind, SchemaId, SchemaVersion, StorageError,
 };
-use sqlx::postgres::PgListener;
-use tokio::sync::{broadcast, oneshot};
-use tracing::error;
 use uuid::Uuid;
-
-pub const NOTIFY_CHANNEL: &str = "proxima_change_event";
-pub const BROADCAST_CAPACITY: usize = 1024;
-const MAX_BACKOFF: Duration = Duration::from_secs(30);
-const BACKFILL_BATCH: i64 = 1000;
-
-pub(crate) type ReadySignal = oneshot::Sender<Result<(), StorageError>>;
 
 #[derive(Debug, sqlx::FromRow)]
 struct ChangeEventRow {
@@ -269,108 +258,4 @@ fn decode_entity_ref(
             "change_event endpoint columns violate CHECK constraint".into(),
         )),
     }
-}
-
-/// Background task that LISTENs on `NOTIFY_CHANNEL` and publishes
-/// typed `ChangeEvent`s to the broadcast channel.
-///
-/// `ready_tx` is consumed on the first successful LISTEN+backfill
-/// pass; subsequent reconnects do not re-signal. The publisher
-/// tracks `last_seen_seq` across reconnects so backfill on a
-/// reconnect catches only what was missed during the disconnected
-/// window.
-pub async fn outbox_publisher(
-    pool: sqlx::PgPool,
-    tx: broadcast::Sender<ChangeEvent>,
-    mut ready_tx: Option<ReadySignal>,
-) {
-    let mut last_seen_seq: Option<Uuid> = None;
-    let mut backoff = Duration::from_secs(1);
-    loop {
-        match run_listener(&pool, tx.clone(), &mut last_seen_seq, ready_tx.take()).await {
-            Ok(()) => {
-                // Stream ended cleanly (shouldn't happen — listener runs forever).
-                break;
-            }
-            Err(e) => {
-                error!("outbox listener error: {e}, reconnecting in {:?}", backoff);
-                tokio::time::sleep(backoff).await;
-                backoff = backoff.saturating_mul(2).min(MAX_BACKOFF);
-            }
-        }
-    }
-}
-
-async fn run_listener(
-    pool: &sqlx::PgPool,
-    tx: broadcast::Sender<ChangeEvent>,
-    last_seen_seq: &mut Option<Uuid>,
-    ready_tx: Option<ReadySignal>,
-) -> Result<(), StorageError> {
-    // Bind LISTEN before reading so any commit that lands during
-    // the backfill SELECT below also queues a notification on this
-    // session — the dedup step at the bottom drops the overlap.
-    let mut listener = PgListener::connect_with(pool)
-        .await
-        .map_err(|e| StorageError::Internal(e.to_string()))?;
-    listener
-        .listen(NOTIFY_CHANNEL)
-        .await
-        .map_err(|e| StorageError::Internal(e.to_string()))?;
-
-    // Backfill: first boot drains everything from nil; reconnect drains
-    // anything missed while the listener session was down. Chunked so
-    // a long downtime doesn't pull millions of rows into memory at once.
-    loop {
-        let prev = last_seen_seq.unwrap_or_else(Uuid::nil);
-        let rows = sqlx::query!(
-            "SELECT seq FROM proxima_core.change_event
-             WHERE seq > $1 ORDER BY seq LIMIT $2",
-            prev,
-            BACKFILL_BATCH,
-        )
-        .fetch_all(pool)
-        .await
-        .map_err(|e| StorageError::Internal(e.to_string()))?;
-
-        if rows.is_empty() {
-            break;
-        }
-
-        for row in rows {
-            if let Some(ce) = hydrate_change_event(pool, row.seq).await? {
-                let _ = tx.send(ce);
-            }
-            *last_seen_seq = Some(row.seq);
-        }
-    }
-
-    // LISTEN bound + backfill drained — callers awaiting startup
-    // can now safely commit writes and expect their notifications.
-    if let Some(sig) = ready_tx {
-        let _ = sig.send(Ok(()));
-    }
-
-    let mut stream = listener.into_stream();
-    while let Some(notification) = stream.next().await {
-        let notification = notification.map_err(|e| StorageError::Internal(e.to_string()))?;
-
-        let payload = notification.payload();
-        let seq: Uuid = payload
-            .parse()
-            .map_err(|_| StorageError::Internal(format!("invalid seq UUID: {payload}")))?;
-
-        // Dedup against backfill: a row committed between LISTEN
-        // bind and backfill SELECT is delivered through both paths.
-        if last_seen_seq.is_some_and(|s| s >= seq) {
-            continue;
-        }
-
-        if let Some(ce) = hydrate_change_event(pool, seq).await? {
-            let _ = tx.send(ce);
-        }
-        *last_seen_seq = Some(seq);
-    }
-
-    Ok(())
 }
