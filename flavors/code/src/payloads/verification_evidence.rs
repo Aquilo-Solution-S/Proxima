@@ -155,8 +155,8 @@ impl FactPayload for VerificationEvidenceV1 {
     const SCHEMA_ID: &'static str = proxima_schema_id!("verification-evidence-v1");
     const SCHEMA_VERSION: u32 = 1;
 
-    fn sidecar_table() -> &'static str {
-        "proxima_code.verification_evidence_v1"
+    fn sidecar_table() -> Option<&'static str> {
+        Some("proxima_code.verification_evidence_v1")
     }
 
     fn search_projection() -> Option<SearchProjection> {

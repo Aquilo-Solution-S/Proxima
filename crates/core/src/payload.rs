@@ -43,7 +43,14 @@ pub trait FactPayload: serde::Serialize + serde::de::DeserializeOwned + 'static 
     /// and docs/13 §Compliance vocabulary.
     const SPECIAL_CATEGORY: bool = false;
     fn render(&self) -> String;
-    fn sidecar_table() -> &'static str;
+    /// Per-schema typed Fact sidecar table, or `None` when the Fact
+    /// carries no sidecar of its own (its typed payload lives elsewhere,
+    /// e.g. in a citation cited-object). Defaults to `None`; mirrors the
+    /// optional-sidecar treatment of `CitationMappingPayload`.
+    #[must_use]
+    fn sidecar_table() -> Option<&'static str> {
+        None
+    }
     /// Natural-key columns on the sidecar table for stateful Fact
     /// schemas. Default empty = stateless (every observation is a
     /// distinct head). When non-empty, the schema participates in

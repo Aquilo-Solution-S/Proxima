@@ -30,8 +30,8 @@ impl FactPayload for UncitedFactPayload {
         self.note.clone()
     }
 
-    fn sidecar_table() -> &'static str {
-        "public.uncited_fact_sidecar"
+    fn sidecar_table() -> Option<&'static str> {
+        Some("public.uncited_fact_sidecar")
     }
 }
 

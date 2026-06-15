@@ -29,8 +29,8 @@ pub struct CodeChunkV1 {
 impl FactPayload for CodeChunkV1 {
     const SCHEMA_ID: &'static str = proxima_schema_id!("code-chunk-v1");
     const SCHEMA_VERSION: u32 = 1;
-    fn sidecar_table() -> &'static str {
-        "proxima_code.code_chunk_v1"
+    fn sidecar_table() -> Option<&'static str> {
+        Some("proxima_code.code_chunk_v1")
     }
     fn natural_key_columns() -> &'static [&'static str] {
         &["repo_id", "file_path", "chunk_index"]

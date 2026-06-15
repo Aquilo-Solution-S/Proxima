@@ -24,7 +24,6 @@ pub struct RepoEraseReceipt {
     pub citation_mappings_deleted: u64,
     pub cited_objects_deleted: u64,
     pub source_batches_deleted: u64,
-    pub f2a_rows_deleted: u64,
     pub repo_record_deleted: bool,
 }
 

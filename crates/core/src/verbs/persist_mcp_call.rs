@@ -119,8 +119,8 @@ impl FactPayload for McpCallLoggedV1 {
         )
     }
 
-    fn sidecar_table() -> &'static str {
-        "proxima_core.mcp_call_logged_v1"
+    fn sidecar_table() -> Option<&'static str> {
+        Some("proxima_core.mcp_call_logged_v1")
     }
 }
 

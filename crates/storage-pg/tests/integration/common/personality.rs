@@ -46,8 +46,8 @@ impl FactPayload for TestFactV1 {
         self.label.clone()
     }
 
-    fn sidecar_table() -> &'static str {
-        "proxima_test.test_fact_v1"
+    fn sidecar_table() -> Option<&'static str> {
+        Some("proxima_test.test_fact_v1")
     }
 }
 
@@ -64,8 +64,8 @@ impl FactPayload for TestOtherFactV1 {
         self.label.clone()
     }
 
-    fn sidecar_table() -> &'static str {
-        "proxima_test.test_other_fact_v1"
+    fn sidecar_table() -> Option<&'static str> {
+        Some("proxima_test.test_other_fact_v1")
     }
 }
 

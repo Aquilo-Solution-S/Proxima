@@ -27,8 +27,8 @@ pub struct CommitV1 {
 impl FactPayload for CommitV1 {
     const SCHEMA_ID: &'static str = proxima_schema_id!("commit-v1");
     const SCHEMA_VERSION: u32 = 1;
-    fn sidecar_table() -> &'static str {
-        "proxima_code.commit_v1"
+    fn sidecar_table() -> Option<&'static str> {
+        Some("proxima_code.commit_v1")
     }
     fn search_projection() -> Option<SearchProjection> {
         Some(SearchProjection {

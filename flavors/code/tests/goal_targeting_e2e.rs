@@ -89,10 +89,10 @@ async fn author_inspires_edge(
         "INSERT INTO proxima_core.change_event
             (seq, owner_principal_kind, owner_principal_id, owner_org_id, kind,
              edge_id, edge_relation,
-             edge_source_kind, edge_source_goal_id,
-             edge_target_kind, edge_target_memory_id)
+             edge_source_goal_id,
+             edge_target_memory_id)
          VALUES ($1, $2, $3, $4, 'EdgeAppend', $5, $6,
-                 'Goal', $7, 'Perspective', $8)",
+                 $7, $8)",
     )
     .bind(seq)
     .bind(owner_kind)

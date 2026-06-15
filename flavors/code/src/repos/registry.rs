@@ -391,7 +391,6 @@ pub async fn erase_repo(
         citation_mappings_deleted: 0,
         cited_objects_deleted: 0,
         source_batches_deleted: 0,
-        f2a_rows_deleted: 0,
         repo_record_deleted: false,
     };
 
@@ -421,15 +420,6 @@ pub async fn erase_repo(
     )
     .execute(&mut *tx)
     .await?;
-
-    receipt.f2a_rows_deleted = sqlx::query(
-        "DELETE FROM proxima_core.source_batch_f2a \
-         WHERE batch_id IN (SELECT batch_id FROM tmp_proxima_repo_batches) \
-            OR head_memory_id IN (SELECT memory_id FROM tmp_proxima_repo_memories)",
-    )
-    .execute(&mut *tx)
-    .await?
-    .rows_affected();
 
     receipt.edges_deleted = sqlx::query(
         "DELETE FROM proxima_core.edges \

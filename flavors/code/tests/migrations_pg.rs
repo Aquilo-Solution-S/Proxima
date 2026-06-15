@@ -51,7 +51,7 @@ async fn flavor_migrations_apply_to_fresh_db() {
         }
 
         // Verify the M5 core tables exist.
-        for table in ["source_batch_f2a", "edges", "embeddings"] {
+        for table in ["edges", "embeddings"] {
             let row = sqlx::query(
                 "SELECT 1 AS ok FROM information_schema.tables
                  WHERE table_schema = 'proxima_core' AND table_name = $1",

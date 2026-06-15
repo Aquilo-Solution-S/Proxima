@@ -19,8 +19,8 @@ impl FactPayload for TestRequestV1 {
     const SCHEMA_ID: &'static str = proxima_schema_id!("test-request-v1");
     const SCHEMA_VERSION: u32 = 1;
 
-    fn sidecar_table() -> &'static str {
-        "proxima_code.test_request_v1"
+    fn sidecar_table() -> Option<&'static str> {
+        Some("proxima_code.test_request_v1")
     }
 
     fn search_projection() -> Option<SearchProjection> {

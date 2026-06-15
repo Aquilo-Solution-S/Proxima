@@ -20,8 +20,8 @@ impl FactPayload for AgentNoteV1 {
         format!("{}\n\n{}", self.title, self.body)
     }
 
-    fn sidecar_table() -> &'static str {
-        "proxima_agent_memory.agent_note_v1"
+    fn sidecar_table() -> Option<&'static str> {
+        Some("proxima_agent_memory.agent_note_v1")
     }
 
     fn search_projection() -> Option<SearchProjection> {
