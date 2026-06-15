@@ -12,8 +12,14 @@
 -- audit Fact's typed payload lives in its citation cited-object, so this
 -- sidecar was always empty), and the change_event.edge_source_kind /
 -- edge_target_kind columns (write-only — the endpoint kind is reconstructed
--- from the populated memory_id/goal_id pair on read). Prefer
--- regenerating from a migrated DB (pg_dump --schema-only) for broad schema
+-- from the populated memory_id/goal_id pair on read), and (e) the
+-- root_personality_perspective_v1 table + its pkey/fkey (a write-only
+-- self-perspective sidecar: display_name is duplicated into memories.text
+-- and read from there, purpose was never read by anything after the
+-- in-process context-builder was removed in the brain-hub contraction;
+-- identity is the emergent result of authored perspectives, not a hardwired
+-- charter — so the seed table and the `purpose` instantiate arg are gone).
+-- Prefer regenerating from a migrated DB (pg_dump --schema-only) for broad schema
 -- changes; targeted object drops like the above may be hand-applied.
 
 CREATE SCHEMA proxima_core;
@@ -846,19 +852,6 @@ CREATE TABLE proxima_core.read_scope_matrix (
 
 
 --
--- Name: root_personality_perspective_v1; Type: TABLE; Schema: proxima_core; Owner: -
---
-
-CREATE TABLE proxima_core.root_personality_perspective_v1 (
-    memory_id uuid NOT NULL,
-    display_name text NOT NULL,
-    purpose text NOT NULL,
-    CONSTRAINT root_personality_perspective_display_name_chk CHECK ((length(TRIM(BOTH FROM display_name)) > 0)),
-    CONSTRAINT root_personality_perspective_purpose_chk CHECK ((length(TRIM(BOTH FROM purpose)) > 0))
-);
-
-
---
 -- Name: source_batches; Type: TABLE; Schema: proxima_core; Owner: -
 --
 
@@ -1086,14 +1079,6 @@ ALTER TABLE ONLY proxima_core.personality_wake_entries
 
 ALTER TABLE ONLY proxima_core.read_scope_matrix
     ADD CONSTRAINT read_scope_matrix_pkey PRIMARY KEY (owner_principal_kind, owner_principal_id, owner_org_id, reader_personality_instance_id, readable_personality_instance_id);
-
-
---
--- Name: root_personality_perspective_v1 root_personality_perspective_v1_pkey; Type: CONSTRAINT; Schema: proxima_core; Owner: -
---
-
-ALTER TABLE ONLY proxima_core.root_personality_perspective_v1
-    ADD CONSTRAINT root_personality_perspective_v1_pkey PRIMARY KEY (memory_id);
 
 
 --
@@ -1500,14 +1485,6 @@ ALTER TABLE ONLY proxima_core.read_scope_matrix
 
 ALTER TABLE ONLY proxima_core.read_scope_matrix
     ADD CONSTRAINT read_scope_matrix_owner_principal_kind_owner_principal_id_fkey1 FOREIGN KEY (owner_principal_kind, owner_principal_id, owner_org_id, readable_personality_instance_id) REFERENCES proxima_core.personality(owner_principal_kind, owner_principal_id, owner_org_id, personality_instance_id);
-
-
---
--- Name: root_personality_perspective_v1 root_personality_perspective_v1_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
---
-
-ALTER TABLE ONLY proxima_core.root_personality_perspective_v1
-    ADD CONSTRAINT root_personality_perspective_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memories(memory_id);
 
 
 --

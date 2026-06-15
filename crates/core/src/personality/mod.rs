@@ -22,7 +22,7 @@ pub mod personality;
 // Re-export from personality submodule
 pub use personality::{
     MAX_WAKE_CHAIN_DEPTH, PersonalityInstanceId, PersonalityRef,
-    ROOT_PERSONALITY_PERSPECTIVE_SCHEMA_ID, ROOT_PERSONALITY_PERSPECTIVE_SIDECAR_TABLE,
+    ROOT_PERSONALITY_PERSPECTIVE_SCHEMA_ID,
 };
 
 // Re-export from types submodule

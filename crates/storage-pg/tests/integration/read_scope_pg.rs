@@ -19,7 +19,6 @@ async fn read_scope_replace_lists_explicit_non_identity_grants()
             principal: owner.principal.clone(),
             org_id: Some(owner.org_id),
             display_name: "Reader".into(),
-            purpose: "read scope test".into(),
         })
         .await?
         .instance_id;
@@ -28,7 +27,6 @@ async fn read_scope_replace_lists_explicit_non_identity_grants()
             principal: owner.principal.clone(),
             org_id: Some(owner.org_id),
             display_name: "Readable".into(),
-            purpose: "read scope test".into(),
         })
         .await?
         .instance_id;

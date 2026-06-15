@@ -181,7 +181,6 @@ async fn inspires_edge_targets_only_intended_engineer_instance() {
                     principal: owner.principal.clone(),
                     org_id: None,
                     display_name: "Alice".into(),
-                    purpose: "develop perspectives on code changes".into(),
                 },
             )
             .await?;
@@ -192,7 +191,6 @@ async fn inspires_edge_targets_only_intended_engineer_instance() {
                     principal: owner.principal.clone(),
                     org_id: None,
                     display_name: "Bob".into(),
-                    purpose: "develop perspectives on code changes".into(),
                 },
             )
             .await?;

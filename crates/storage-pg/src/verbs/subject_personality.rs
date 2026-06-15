@@ -19,7 +19,6 @@ use super::consolidate;
 use crate::error::map_err;
 
 const SUBJECT_DISPLAY_NAME: &str = "subject";
-const SUBJECT_PURPOSE: &str = "Per-subject principal identity";
 const LOCK_KEY_DOMAIN: &[u8] = b"subject_personality_lock_v1";
 
 /// Idempotent lookup-or-mint of the per-subject personality.
@@ -113,7 +112,6 @@ async fn mint_under_lock(
         principal: owner.principal.clone(),
         org_id: Some(owner.org_id),
         display_name: SUBJECT_DISPLAY_NAME.into(),
-        purpose: SUBJECT_PURPOSE.into(),
     };
     let resp = consolidate::instantiate_personality(pool, &req).await?;
     let instance_id = resp.instance_id;

@@ -7,15 +7,14 @@
 
 use uuid::Uuid;
 
-/// Canonical schema id for the Root-Perspective sidecar that backs every
-/// personality after Phase 2 Step 1. Stamped on the memory + `change_event`
-/// rows minted by `instantiate_personality`.
+/// Canonical schema id marking a personality's root self-perspective.
+/// Stamped on the `Perspective` memory + `change_event` rows minted by
+/// `instantiate_personality`. Schema-id marker only — there is no typed
+/// sidecar table: identity is the emergent result of the perspectives the
+/// agent authors, not a hardwired charter, so the root row carries only its
+/// `display_name` (in `memories.text`).
 pub const ROOT_PERSONALITY_PERSPECTIVE_SCHEMA_ID: &str =
     "proxima-core/root-personality-perspective-v1";
-
-/// Sidecar table backing [`ROOT_PERSONALITY_PERSPECTIVE_SCHEMA_ID`].
-pub const ROOT_PERSONALITY_PERSPECTIVE_SIDECAR_TABLE: &str =
-    "proxima_core.root_personality_perspective_v1";
 
 /// Maximum wake chain depth constant.
 pub const MAX_WAKE_CHAIN_DEPTH: u16 = 10;

@@ -235,8 +235,8 @@ pub trait Storage: Send + Sync {
     ) -> Result<TombstonePersonalityResponse, StorageError>;
 
     /// Instantiate one inert personality instance with its Root
-    /// Perspective and cursor rows. Writes the canonical
-    /// `proxima_core.root_personality_perspective_v1` sidecar.
+    /// Perspective (a `Perspective` memory stamped with
+    /// `ROOT_PERSONALITY_PERSPECTIVE_SCHEMA_ID`) and cursor rows.
     async fn instantiate_personality(
         &self,
         req: &InstantiatePersonalityRequest,

@@ -28,7 +28,6 @@ use super::consolidate;
 use crate::error::map_err;
 
 const SHELL_AUTHOR_DISPLAY_NAME: &str = "shell-author";
-const SHELL_AUTHOR_PURPOSE: &str = "Per-master-token MCP client identity";
 const LOCK_KEY_DOMAIN: &[u8] = b"master_token_personality_lock_v1";
 
 /// Idempotent lookup-or-mint of the per-master-token shell-author
@@ -99,7 +98,6 @@ async fn mint_under_lock(
         principal: owner.principal.clone(),
         org_id: Some(owner.org_id),
         display_name: SHELL_AUTHOR_DISPLAY_NAME.into(),
-        purpose: SHELL_AUTHOR_PURPOSE.into(),
     };
     let resp = consolidate::instantiate_personality(pool, &req).await?;
     let instance_id = resp.instance_id;
