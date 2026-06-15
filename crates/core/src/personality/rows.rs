@@ -8,7 +8,7 @@
 
 use uuid::Uuid;
 
-use crate::outbox::ChangeEvent;
+use crate::change_event::ChangeEvent;
 use crate::personality::types::{
     PersonalityStatus, WakeChainDepth, WakeEntryAuthoredBy, WakeEntryGoalScope,
     WakeEntryTriggerKind,

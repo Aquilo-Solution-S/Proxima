@@ -1,4 +1,4 @@
-use proxima_core::outbox::{EntityKind, EntityRef};
+use proxima_core::change_event::{EntityKind, EntityRef};
 use proxima_core::relation::RelationClass;
 use proxima_core::verbs::goal_write::GoalState;
 use proxima_core::verbs::query::{EdgeRow, GoalRow, MemoryRow, StatefulHeadsFilter};
