@@ -142,7 +142,6 @@ async fn personality_wake_schema_replaces_legacy_tables() {
                 "enabled",
                 "authored_by",
                 "probability_promille",
-                "disabled_reason",
                 "created_at",
                 "updated_at",
                 "tombstoned_at",

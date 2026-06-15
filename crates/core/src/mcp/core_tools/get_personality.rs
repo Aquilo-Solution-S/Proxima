@@ -32,7 +32,6 @@ pub struct GetPersonalityWakeEntry {
     pub authored_by: String,
     pub probability_promille: u16,
     pub goal_scope: String,
-    pub disabled_reason: Option<String>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -93,7 +92,6 @@ impl McpTool for GetPersonalityTool {
                     authored_by: format!("{:?}", e.authored_by),
                     probability_promille: e.probability_promille,
                     goal_scope: e.goal_scope.as_str().to_string(),
-                    disabled_reason: e.disabled_reason,
                 })
                 .collect();
             Ok(GetPersonalityOutput {

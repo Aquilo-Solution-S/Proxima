@@ -96,7 +96,6 @@ impl McpTool for GetGraphTool {
                             authored_by: format!("{:?}", e.authored_by),
                             probability_promille: e.probability_promille,
                             goal_scope: e.goal_scope.as_str().to_string(),
-                            disabled_reason: e.disabled_reason,
                         })
                         .collect();
                     GetPersonalityOutput {

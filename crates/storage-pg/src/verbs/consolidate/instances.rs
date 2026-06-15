@@ -48,8 +48,7 @@ pub async fn list_personality_instances(
                 authored_by,
                 probability_promille,
                 goal_scope,
-                instructions,
-                disabled_reason
+                instructions
            FROM proxima_core.personality_wake_entries
            WHERE owner_principal_kind = $1
              AND owner_principal_id = $2
@@ -80,7 +79,6 @@ pub async fn list_personality_instances(
             probability_promille: u16::try_from(row.probability_promille).unwrap_or(0),
             goal_scope: row.goal_scope,
             instructions: row.instructions,
-            disabled_reason: row.disabled_reason,
         });
     }
 
@@ -111,7 +109,6 @@ struct WakeEntryProjectionRow {
     probability_promille: i32,
     goal_scope: WakeEntryGoalScope,
     instructions: String,
-    disabled_reason: Option<String>,
 }
 
 pub async fn instantiate_personality(
