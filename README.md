@@ -26,7 +26,7 @@ cargo check --workspace
 
 ## What `proxima-core` Means
 
-proxima-core is the Rust runtime framework core: the domainless graph contracts, build-time flavor registry, protocol verbs, wake/personality runtime, MCP tool substrate, inference config types, and storage traits. Applications normally embed it through the `proxima` crate and add domains via flavor crates.
+proxima-core is the Rust runtime framework core: the domainless graph contracts, build-time flavor registry, protocol verbs, wake/personality runtime, MCP tool substrate, and storage traits. Applications normally embed it through the `proxima` crate and add domains via flavor crates.
 
 The formal kernel is [`docs/lean/Foundations`](docs/lean/Foundations):
 the invariant spec and proof surface, not the Rust crate boundary.
@@ -103,7 +103,7 @@ Design source of truth:
   primitives: owner deletion, source-scope deletion, pause/resume,
   export, suppression, audit.
 - [`docs/14-protocol-surface.md`](docs/14-protocol-surface.md) —
-  the engine's contract to clients. Six verbs (Query / Subscribe /
+  the engine's contract to clients. Five verbs (Query /
   EventHistory / GoalWrite / EventIngest / Schema), owner-scoped,
   transport-agnostic; operators and tool registry stay inside the
   binary.

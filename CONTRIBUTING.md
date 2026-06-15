@@ -1,7 +1,8 @@
 # Contributing to Proxima
 
-Proxima is in **design phase** — no code yet. All artefacts live in `docs/`.
-This guide covers how to contribute during this phase.
+Proxima is pre-release (implementation phase): Rust crates have landed under
+`crates/`, `flavors/`, and `apps/`; design rationale lives in `docs/` and the
+formal kernel in `docs/lean/`. This guide covers how to contribute.
 
 ## Before You Contribute
 
@@ -12,28 +13,29 @@ This guide covers how to contribute during this phase.
 
 ## How to Contribute
 
-### During Design Phase (Current)
+### Issues & Discussions
 
 1. **Open an Issue** for:
-   - Questions about the design
+   - Questions about the design or the code
    - Proposals for new numbered docs (12+, or gaps in 01-11)
    - Edge cases the spec does not cover
    - Contradictions you believe you've found (flag explicitly; don't paper over)
 
-2. **Open a Pull Request** for:
-   - Fixes to existing docs (typos, broken links, inconsistencies)
-   - Answers to open questions marked Q1-Qx in existing docs
-
-3. **Join Discussions** on existing issues/PRs to:
+2. **Join Discussions** on existing issues/PRs to:
    - Validate a proposed design decision
    - Surface tensions between docs
    - Propose concrete alternatives with tradeoffs
 
-### When Code Lands
+### Code & Docs Contributions
 
 - Follow Rust conventions and the style of existing code
-- No `unsafe` without exhaustive justification in PR description
-- All new entities must include corresponding schema migrations
+- No `unsafe` (the workspace pins `unsafe_code = "deny"`); `warnings = "deny"`
+  and `clippy::pedantic = "deny"` are enforced workspace-wide
+- `cargo clippy --workspace --all-targets` and `cargo test` must be clean
+- New entities ship their schema migrations; respect the load-bearing
+  invariants in [`AGENTS.md`](AGENTS.md)
+- Doc fixes (typos, broken links, inconsistencies) and answers to open
+  `Q1-Qx` questions are welcome as PRs
 
 ## Pull Request Process
 
@@ -88,16 +90,8 @@ harassment, or trolling will not be tolerated.
 
 ## Reporting Security Issues
 
-Do **not** open public issues for security vulnerabilities. Instead, email:
-
-> Aquilo Solutions — `heinrich.vonhelmolt@aquilo-solutions.com`
-
-Include:
-- Steps to reproduce
-- Impact assessment
-- Suggested fix (if any)
-
-We will acknowledge receipt within 24 hours and provide a timeline for resolution.
+See [`SECURITY.md`](SECURITY.md) — do **not** open public issues for
+vulnerabilities; email the address listed there.
 
 ## Getting Help
 
