@@ -10,7 +10,6 @@ repository.workspace = true
 proxima-core = { path = "../../crates/core" }
 proxima = { path = "../../crates/proxima" }
 proxima-flavor-goal = { path = "../../flavors/goal" }
-proxima-agent-memory = { path = "../../flavors/agent-memory" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 uuid = { workspace = true }
 thiserror = { workspace = true }

@@ -1,4 +1,4 @@
-use proxima_core::{AbstractionPayload, PerspectivePayload};
+use crate::{AbstractionPayload, PerspectivePayload};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -15,11 +15,11 @@ pub struct AgentDerivationV1 {
 }
 
 impl AbstractionPayload for AgentDerivationV1 {
-    const SCHEMA_ID: &'static str = "proxima-agent-memory/agent-derivation-v1";
+    const SCHEMA_ID: &'static str = "core/agent-derivation-v1";
     const SCHEMA_VERSION: u32 = 1;
 
     fn sidecar_table() -> &'static str {
-        "proxima_agent_memory.agent_derivation_v1"
+        "proxima_core.agent_derivation_v1"
     }
 
     fn json_schema() -> Option<serde_json::Value> {
@@ -31,11 +31,11 @@ impl AbstractionPayload for AgentDerivationV1 {
 }
 
 impl PerspectivePayload for AgentDerivationV1 {
-    const SCHEMA_ID: &'static str = "proxima-agent-memory/agent-derivation-v1";
+    const SCHEMA_ID: &'static str = "core/agent-derivation-v1";
     const SCHEMA_VERSION: u32 = 1;
 
     fn sidecar_table() -> &'static str {
-        "proxima_agent_memory.agent_derivation_v1"
+        "proxima_core.agent_derivation_v1"
     }
 
     fn json_schema() -> Option<serde_json::Value> {

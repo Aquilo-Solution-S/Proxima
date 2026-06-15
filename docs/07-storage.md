@@ -87,7 +87,7 @@ Flavor sidecars live under one Postgres schema per linked flavor:
 |---|---|
 | `proxima-code` | `proxima_code.*` |
 | `proxima-goal` | `proxima_goal.*` |
-| `proxima-agent-memory` | `proxima_agent_memory.*` |
+| `core memory` | `proxima_core.*` |
 
 Postgres schemas are catalog namespaces, not payload schemas. The payload
 schema registry is build-time Rust metadata (03 / 08).

@@ -1,26 +1,25 @@
 use std::sync::Arc;
 
+mod common;
+
+use common::{drop_db, fresh_pg};
 use proxima_core::engine::Engine;
 use proxima_core::mcp::{HandleTable, McpAuthorContext, McpToolCtx, OutputMode};
 use proxima_core::verbs::query::MemoryStore;
 use proxima_core::{
     AuthPath, AuthzContext, FlavorRegistry, OrgId, Owner, PersonalityInstanceId, Principal, UserId,
 };
-use proxima_pg_testkit::{db_url, drop_db, unique_db_name};
 use serde_json::json;
 use sqlx::Row;
 
 #[tokio::test]
 async fn record_utterance_stamps_personality_and_sidecar() -> Result<(), Box<dyn std::error::Error>>
 {
-    let db_name = unique_db_name("proxima_test");
-    proxima_pg_testkit::create_db(&db_name).await?;
-    let pg = proxima_storage_pg::PgStorage::connect(&db_url(&db_name)).await?;
-    pg.run_migrations().await?;
-    proxima_agent_memory::migrator().run(pg.pool()).await?;
+    let Some((pg, db_name)) = fresh_pg().await else {
+        return Ok(());
+    };
 
-    let mut registry = FlavorRegistry::new();
-    proxima_agent_memory::register(&mut registry);
+    let registry = FlavorRegistry::new();
     let frozen_inner = registry.freeze();
     let frozen = Arc::new(frozen_inner.clone());
     let owner = Owner {
@@ -35,7 +34,7 @@ async fn record_utterance_stamps_personality_and_sidecar() -> Result<(), Box<dyn
     let descriptor = frozen
         .list_mcp_tools()
         .iter()
-        .find(|tool| tool.name == "proxima-agent-memory/proxima_record_utterance")
+        .find(|tool| tool.name == "core/record_utterance")
         .expect("registered tool");
     let output = (descriptor.call)(
         McpToolCtx {
@@ -71,8 +70,8 @@ async fn record_utterance_stamps_personality_and_sidecar() -> Result<(), Box<dyn
     let row = sqlx::query(
         r"SELECT m.personality_instance_id, u.speaker, u.conversation_id, u.text
            FROM proxima_core.memories m
-           JOIN proxima_agent_memory.utterance_v1 u USING (memory_id)
-           WHERE m.schema_id = 'proxima-agent-memory/utterance-v1'",
+           JOIN proxima_core.utterance_v1 u USING (memory_id)
+           WHERE m.schema_id = 'core/utterance-v1'",
     )
     .fetch_one(pg.pool())
     .await?;

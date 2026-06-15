@@ -51,7 +51,7 @@ Schema ids are flavor-qualified:
 |---|---|---|
 | `proxima-code` | `commit-v1` | `proxima-code/commit-v1` |
 | `proxima-code` | `commit-summary-v1` | `proxima-code/commit-summary-v1` |
-| `proxima-agent-memory` | `agent-derivation-v1` | `proxima-agent-memory/agent-derivation-v1` |
+| `core` | `agent-derivation-v1` | `core/agent-derivation-v1` |
 
 `proxima_flavor!` owns the prefix discipline (see
 [08 §Macro Surface](08-core-and-flavors.md#macro-surface)).

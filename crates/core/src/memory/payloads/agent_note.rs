@@ -1,6 +1,4 @@
-use proxima_core::{
-    FactPayload, SearchProjection, SearchProjectionColumnKind, SearchProjectionField,
-};
+use crate::{FactPayload, SearchProjection, SearchProjectionColumnKind, SearchProjectionField};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -13,7 +11,7 @@ pub struct AgentNoteV1 {
 }
 
 impl FactPayload for AgentNoteV1 {
-    const SCHEMA_ID: &'static str = "proxima-agent-memory/agent-note-v1";
+    const SCHEMA_ID: &'static str = "core/agent-note-v1";
     const SCHEMA_VERSION: u32 = 1;
 
     fn render(&self) -> String {
@@ -21,7 +19,7 @@ impl FactPayload for AgentNoteV1 {
     }
 
     fn sidecar_table() -> Option<&'static str> {
-        Some("proxima_agent_memory.agent_note_v1")
+        Some("proxima_core.agent_note_v1")
     }
 
     fn search_projection() -> Option<SearchProjection> {

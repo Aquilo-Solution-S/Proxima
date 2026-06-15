@@ -2190,7 +2190,6 @@ dependencies = [
  "axum",
  "futures",
  "http 1.4.0",
- "proxima-agent-memory",
  "proxima-blob-s3",
  "proxima-core",
  "proxima-flavor-goal",
@@ -2204,26 +2203,6 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tower",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "proxima-agent-memory"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "blake3",
- "futures",
- "proxima-core",
- "proxima-pg-testkit",
- "proxima-storage-pg",
- "schemars",
- "serde",
- "serde_json",
- "sqlx",
- "time",
- "tokio",
  "tracing",
  "uuid",
 ]
@@ -2303,7 +2282,6 @@ name = "proxima-dev-migrate"
 version = "0.1.0"
 dependencies = [
  "proxima",
- "proxima-agent-memory",
  "proxima-code",
  "proxima-flavor-goal",
  "proxima-storage-pg",
@@ -2345,7 +2323,6 @@ name = "proxima-mcp"
 version = "0.1.0"
 dependencies = [
  "proxima",
- "proxima-agent-memory",
  "proxima-core",
  "proxima-flavor-goal",
  "reqwest",
@@ -2367,7 +2344,6 @@ dependencies = [
  "http 1.4.0",
  "http-body 1.0.1",
  "http-body-util",
- "proxima-agent-memory",
  "proxima-core",
  "proxima-pg-testkit",
  "proxima-storage-pg",
@@ -2402,7 +2378,6 @@ dependencies = [
  "async-trait",
  "blake3",
  "futures-util",
- "proxima-agent-memory",
  "proxima-core",
  "proxima-pg-testkit",
  "serde",

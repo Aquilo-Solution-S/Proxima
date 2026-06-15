@@ -44,7 +44,7 @@ struct AgentNoteV1 {
 }
 
 impl FactPayload for AgentNoteV1 {
-    const SCHEMA_ID: &'static str = "proxima-agent-memory/agent-note-v1";
+    const SCHEMA_ID: &'static str = "core/agent-note-v1";
     const SCHEMA_VERSION: u32 = 1;
 
     fn render(&self) -> String {
@@ -52,7 +52,7 @@ impl FactPayload for AgentNoteV1 {
     }
 
     fn sidecar_table() -> Option<&'static str> {
-        Some("proxima_agent_memory.agent_note_v1")
+        Some("proxima_core.agent_note_v1")
     }
 }
 
@@ -69,11 +69,11 @@ struct AgentDerivationV1 {
 }
 
 impl AbstractionPayload for AgentDerivationV1 {
-    const SCHEMA_ID: &'static str = "proxima-agent-memory/agent-derivation-v1";
+    const SCHEMA_ID: &'static str = "core/agent-derivation-v1";
     const SCHEMA_VERSION: u32 = 1;
 
     fn sidecar_table() -> &'static str {
-        "proxima_agent_memory.agent_derivation_v1"
+        "proxima_core.agent_derivation_v1"
     }
 }
 
@@ -83,13 +83,11 @@ async fn engine_author_derived_writes_memory_edge_and_embedding()
     let Some((pg, db_name)) = fresh_pg().await else {
         return Ok(());
     };
-    apply_agent_memory_migration(&pg).await?;
 
     let owner = owner_fixture();
     let source_abstraction = insert_source_abstraction(&pg, &owner).await?;
     let author_personality = PersonalityInstanceId::new(Uuid::now_v7());
     let mut registry = FlavorRegistry::new();
-    registry.add_abstraction_schema::<AgentDerivationV1>();
     registry.add_relation(RelationDescriptor::substrate(
         "test/derived-from-abstraction",
         RelationClass::Provenance,
@@ -159,7 +157,7 @@ async fn engine_author_derived_writes_memory_edge_and_embedding()
     assert_eq!(memory_row.2, author_personality.into_inner());
 
     let sidecar_title: String = sqlx::query_scalar(
-        "SELECT title FROM proxima_agent_memory.agent_derivation_v1 WHERE memory_id = $1",
+        "SELECT title FROM proxima_core.agent_derivation_v1 WHERE memory_id = $1",
     )
     .bind(memory_id)
     .fetch_one(pg.pool())
@@ -204,11 +202,9 @@ async fn ingest_event_with_sidecar_writes_fact_and_note_sidecar()
     let Some((pg, db_name)) = fresh_pg().await else {
         return Ok(());
     };
-    apply_agent_memory_migration(&pg).await?;
 
     let owner = owner_fixture();
-    let mut registry = FlavorRegistry::new();
-    registry.add_fact_schema::<AgentNoteV1>();
+    let registry = FlavorRegistry::new();
     let engine = proxima_core::Engine::new(registry.freeze(), MemoryStore::new());
     let authz = AuthzContext::single_owner(&owner, AuthPath::System);
     let note = AgentNoteV1 {
@@ -252,7 +248,7 @@ async fn ingest_event_with_sidecar_writes_fact_and_note_sidecar()
 
     let sidecar_row: (Uuid, String, String) = sqlx::query_as(
         "SELECT note_id, title, body
-           FROM proxima_agent_memory.agent_note_v1
+           FROM proxima_core.agent_note_v1
           WHERE memory_id = $1",
     )
     .bind(outcome.memory_id.into_inner())
@@ -266,17 +262,6 @@ async fn ingest_event_with_sidecar_writes_fact_and_note_sidecar()
     drop(pg);
     drop_db(&db_name).await?;
     Ok(())
-}
-
-async fn apply_agent_memory_migration(
-    pg: &proxima_storage_pg::PgStorage,
-) -> Result<(), sqlx::Error> {
-    sqlx::raw_sql(include_str!(
-        "../../../flavors/agent-memory/migrations/20260516000030_baseline.sql"
-    ))
-    .execute(pg.pool())
-    .await
-    .map(|_| ())
 }
 
 async fn insert_source_abstraction(

@@ -1,10 +1,8 @@
-use proxima_core::mcp::{McpTool, McpToolCtx, McpToolError};
-use proxima_core::{
-    AbstractionPayload, CORE_DERIVED_FROM_RELATION, EdgeAuthorshipKind, EdgeId, MemoryId, SchemaId,
-    SchemaVersion,
+use crate::mcp::{McpTool, McpToolCtx, McpToolError};
+use crate::{
+    AbstractionPayload, AuthorDerivedEdgeInput, AuthorDerivedRequestInput,
+    CORE_DERIVED_FROM_RELATION, EdgeAuthorshipKind, EdgeId, MemoryId, SchemaId, SchemaVersion,
 };
-use proxima_storage_pg::verbs::derive_append::{DerivedDraft, append_derived_in_tx};
-use proxima_storage_pg::verbs::edge_append::{EdgeDraft, append_edge_in_tx};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -60,10 +58,10 @@ impl DerivedKind {
         }
     }
 
-    fn to_entity_kind(self) -> proxima_core::EntityKind {
+    fn to_entity_kind(self) -> crate::EntityKind {
         match self {
-            Self::Abstraction => proxima_core::EntityKind::Abstraction,
-            Self::Perspective => proxima_core::EntityKind::Perspective,
+            Self::Abstraction => crate::EntityKind::Abstraction,
+            Self::Perspective => crate::EntityKind::Perspective,
         }
     }
 }
@@ -79,7 +77,7 @@ pub struct DeriveOutput {
 pub struct DeriveTool;
 
 impl McpTool for DeriveTool {
-    const NAME: &'static str = "proxima-agent-memory/proxima_derive";
+    const NAME: &'static str = "core/derive";
     const DESCRIPTION: &'static str =
         "Author an Abstraction or Perspective derived from existing memory handles.";
     type Args = DeriveArgs;
@@ -165,65 +163,53 @@ impl McpTool for DeriveTool {
             })
             .map_err(|err| McpToolError::InvalidInput(err.to_string()))?;
 
-            let draft = DerivedDraft {
-                memory_id,
-                owner: ctx.owner.clone(),
-                kind: args.kind.to_entity_kind(),
-                author_personality_instance_id: ctx.author.personality_instance_id,
-                schema_id: SchemaId::new(AgentDerivationV1::SCHEMA_ID.into()),
-                schema_version: SchemaVersion::new(AgentDerivationV1::SCHEMA_VERSION),
-                text: body.to_string(),
-                operator_kind: proxima_core::MemoryOperatorKind::ExternalAgent,
-                model_id: &args.model_id,
-                prompt_version: "mcp-agent-v1",
-                sidecar_table: Some("proxima_agent_memory.agent_derivation_v1"),
-                sidecar_payload: Some(sidecar),
-                embedding: None,
-                embedding_model_id: None,
-            };
-
-            let mut tx = ctx.pool.begin().await.map_err(map_storage)?;
-            let outcome = append_derived_in_tx(&mut tx, &draft)
-                .await
-                .map_err(McpToolError::Storage)?;
-
-            let mut provenance_edge_handles = Vec::new();
-            if !outcome.idempotent_replay
-                && let Some(relation) = relation
-            {
-                for (source_id, source_kind) in source_uuids.iter().zip(source_kinds) {
-                    let edge_id = provenance_edge_id(memory_id, *source_id);
-                    let edge_draft = EdgeDraft {
-                        edge_id,
+            let memory_id = MemoryId::new(memory_id);
+            let edges: Vec<_> = relation.map_or_else(Vec::new, |relation| {
+                source_uuids
+                    .iter()
+                    .zip(source_kinds.iter().copied())
+                    .map(|(source_id, source_kind)| AuthorDerivedEdgeInput {
                         relation,
                         source_kind: args.kind.to_entity_kind(),
-                        source_memory_id: Some(memory_id),
-                        source_goal_id: None,
+                        source_memory_id: memory_id,
                         target_kind: memory_kind_for_edge(source_kind),
-                        target_memory_id: Some(*source_id),
-                        target_goal_id: None,
+                        target_memory_id: MemoryId::new(*source_id),
                         authorship_kind: EdgeAuthorshipKind::ExternalAgent,
-                        authorship_owner_memory_id: ctx
-                            .caller_self_perspective
-                            .map(MemoryId::into_inner),
-                        owner: &ctx.owner,
-                    };
-                    append_edge_in_tx(&mut tx, &edge_draft, None)
-                        .await
-                        .map_err(McpToolError::Storage)?;
-                    provenance_edge_handles.push(ctx.format_edge(EdgeId::new(edge_id)));
-                }
-            }
-            tx.commit().await.map_err(map_storage)?;
+                        authorship_owner_memory_id: ctx.caller_self_perspective,
+                    })
+                    .collect()
+            });
+            let engine = ctx
+                .engine()
+                .ok_or_else(|| McpToolError::InvalidInput("engine required".into()))?;
+            let outcome = engine
+                .author_derived(AuthorDerivedRequestInput {
+                    memory_id,
+                    owner: ctx.owner.clone(),
+                    kind: args.kind.to_entity_kind(),
+                    text: body.to_string(),
+                    schema_id: SchemaId::new(AgentDerivationV1::SCHEMA_ID.into()),
+                    schema_version: SchemaVersion::new(AgentDerivationV1::SCHEMA_VERSION),
+                    operator_kind: crate::MemoryOperatorKind::ExternalAgent,
+                    model_id: &args.model_id,
+                    prompt_version: "mcp-agent-v1",
+                    author_personality_instance_id: ctx.author.personality_instance_id,
+                    sidecar_table: AgentDerivationV1::sidecar_table(),
+                    sidecar_payload: sidecar,
+                    edges: &edges,
+                })
+                .await?;
+
+            let provenance_edge_handles = if outcome.idempotent_replay || edges.is_empty() {
+                Vec::new()
+            } else {
+                load_provenance_edge_handles(&ctx, memory_id, &source_uuids).await?
+            };
 
             Ok(DeriveOutput {
                 handle: match args.kind {
-                    DerivedKind::Abstraction => {
-                        ctx.format_abstraction_memory(MemoryId::new(memory_id))
-                    }
-                    DerivedKind::Perspective => {
-                        ctx.format_perspective_memory(MemoryId::new(memory_id))
-                    }
+                    DerivedKind::Abstraction => ctx.format_abstraction_memory(memory_id),
+                    DerivedKind::Perspective => ctx.format_perspective_memory(memory_id),
                 },
                 idempotent_replay: outcome.idempotent_replay,
                 provenance_edge_handles,
@@ -234,13 +220,13 @@ impl McpTool for DeriveTool {
 
 async fn load_source_kinds(
     pool: &sqlx::PgPool,
-    owner: &proxima_core::Owner,
+    owner: &crate::Owner,
     memory_ids: &[uuid::Uuid],
-) -> Result<Vec<Option<proxima_core::EntityKind>>, McpToolError> {
+) -> Result<Vec<Option<crate::EntityKind>>, McpToolError> {
     let (owner_kind, owner_principal_id) = owner_principal(owner);
     let mut out = Vec::with_capacity(memory_ids.len());
     for memory_id in memory_ids {
-        let kind: Option<Option<proxima_core::EntityKind>> = sqlx::query_scalar(
+        let kind: Option<Option<crate::EntityKind>> = sqlx::query_scalar(
             "SELECT kind
              FROM proxima_core.memories
              WHERE memory_id = $1
@@ -260,7 +246,7 @@ async fn load_source_kinds(
     Ok(out)
 }
 
-fn derived_memory_id(owner: &proxima_core::Owner, kind: &str, key: &str) -> uuid::Uuid {
+fn derived_memory_id(owner: &crate::Owner, kind: &str, key: &str) -> uuid::Uuid {
     let (principal_kind, principal_id, org_id) = owner_columns(owner);
     let mut buf = Vec::with_capacity(96 + key.len());
     buf.extend_from_slice(principal_kind.as_str().as_bytes());
@@ -275,12 +261,35 @@ fn derived_memory_id(owner: &proxima_core::Owner, kind: &str, key: &str) -> uuid
     uuid::Uuid::new_v5(&DERIVED_NAMESPACE, &buf)
 }
 
-fn provenance_edge_id(source: uuid::Uuid, target: uuid::Uuid) -> uuid::Uuid {
-    let mut key = Vec::with_capacity(64);
-    key.extend_from_slice(CORE_DERIVED_FROM_RELATION.as_bytes());
-    key.push(0);
-    key.extend_from_slice(source.as_bytes());
-    key.push(0);
-    key.extend_from_slice(target.as_bytes());
-    uuid::Uuid::new_v5(&DERIVED_NAMESPACE, &key)
+async fn load_provenance_edge_handles(
+    ctx: &McpToolCtx,
+    memory_id: MemoryId,
+    source_ids: &[uuid::Uuid],
+) -> Result<Vec<String>, McpToolError> {
+    if source_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let (owner_kind, owner_principal_id) = owner_principal(&ctx.owner);
+    let rows: Vec<uuid::Uuid> = sqlx::query_scalar(
+        "SELECT edge_id
+         FROM proxima_core.edges
+         WHERE owner_principal_kind = $1
+           AND owner_principal_id = $2
+           AND relation = $3
+           AND source_memory_id = $4
+           AND target_memory_id = ANY($5::uuid[])
+         ORDER BY edge_id DESC",
+    )
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(CORE_DERIVED_FROM_RELATION)
+    .bind(memory_id.into_inner())
+    .bind(source_ids)
+    .fetch_all(&ctx.pool)
+    .await
+    .map_err(map_storage)?;
+    Ok(rows
+        .into_iter()
+        .map(|edge_id| ctx.format_edge(EdgeId::new(edge_id)))
+        .collect())
 }

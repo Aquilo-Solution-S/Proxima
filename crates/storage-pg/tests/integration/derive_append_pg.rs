@@ -18,13 +18,13 @@ fn agent_draft(
         owner,
         kind,
         author_personality_instance_id: author,
-        schema_id: SchemaId::new("proxima-agent-memory/agent-derivation-v1".into()),
+        schema_id: SchemaId::new("core/agent-derivation-v1".into()),
         schema_version: SchemaVersion::new(1),
         text: body.into(),
         operator_kind: MemoryOperatorKind::ExternalAgent,
         model_id: "claude-opus-4.7",
         prompt_version: "mcp-agent-v1",
-        sidecar_table: Some("proxima_agent_memory.agent_derivation_v1"),
+        sidecar_table: Some("proxima_core.agent_derivation_v1"),
         sidecar_payload: Some(serde_json::json!({
             "title": title,
             "body": body,
@@ -49,7 +49,6 @@ async fn external_agent_abstraction_persists_with_replay() -> Result<(), Box<dyn
 
     let result = async {
         pg.run_migrations().await?;
-        proxima_agent_memory::migrator().run(pg.pool()).await?;
         let owner = owner_fixture();
         let memory_id = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, b"derive-test-1");
         let draft = agent_draft(
@@ -73,7 +72,7 @@ async fn external_agent_abstraction_persists_with_replay() -> Result<(), Box<dyn
         assert!(replay.idempotent_replay);
 
         let row_count: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM proxima_agent_memory.agent_derivation_v1 WHERE memory_id = $1",
+            "SELECT count(*) FROM proxima_core.agent_derivation_v1 WHERE memory_id = $1",
         )
         .bind(memory_id)
         .fetch_one(pg.pool())
@@ -95,7 +94,6 @@ async fn external_agent_perspective_persists() -> Result<(), Box<dyn std::error:
 
     let result = async {
         pg.run_migrations().await?;
-        proxima_agent_memory::migrator().run(pg.pool()).await?;
         let memory_id = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, b"derive-test-2");
         let draft = agent_draft(
             memory_id,
@@ -131,7 +129,6 @@ async fn external_agent_abstraction_stamps_author_without_change_event_author()
 
     let result = async {
         pg.run_migrations().await?;
-        proxima_agent_memory::migrator().run(pg.pool()).await?;
 
         let owner = owner_fixture();
         let subject = owner.principal.clone();

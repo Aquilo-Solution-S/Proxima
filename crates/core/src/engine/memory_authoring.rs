@@ -74,6 +74,7 @@ impl Engine {
                 target_memory_id: edge.target_memory_id,
                 authorship_kind: edge.authorship_kind,
                 authorship_owner_memory_id: edge.authorship_owner_memory_id,
+                edge_payload: None,
             })
             .collect();
         let storage_req = AuthorDerivedRequest {

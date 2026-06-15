@@ -29,6 +29,7 @@ pub mod list_read_scope;
 pub mod list_schemas;
 pub mod list_substrate_tools;
 pub mod list_wake_entries;
+pub mod memory;
 pub mod set_fact_retention;
 pub mod set_read_scope;
 pub mod tombstone_personality;
@@ -52,6 +53,9 @@ pub use list_read_scope::ListReadScopeTool;
 pub use list_schemas::ListSchemasTool;
 pub use list_substrate_tools::ListSubstrateToolsTool;
 pub use list_wake_entries::ListWakeEntriesTool;
+pub use memory::{
+    DeriveTool, LinkTool, OpenTool, RecordUtteranceTool, RememberTool, SearchGraphTool,
+};
 pub use payload::{
     PersonalityConfigChangedCaller, PersonalityConfigChangedSubject, PersonalityConfigChangedV1,
     PersonalityConfigChangedVerb,
@@ -94,4 +98,10 @@ pub(crate) fn register_all(registry: &mut crate::FlavorRegistry) {
     registry.add_substrate_mcp_tool::<ListSubstrateToolsTool>();
     registry.add_substrate_mcp_tool::<ListSchemasTool>();
     registry.add_substrate_mcp_tool::<ListEdgeTypesTool>();
+    registry.add_substrate_mcp_tool::<SearchGraphTool>();
+    registry.add_substrate_mcp_tool::<OpenTool>();
+    registry.add_substrate_mcp_tool::<RememberTool>();
+    registry.add_substrate_mcp_tool::<RecordUtteranceTool>();
+    registry.add_substrate_mcp_tool::<DeriveTool>();
+    registry.add_substrate_mcp_tool::<LinkTool>();
 }

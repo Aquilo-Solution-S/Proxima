@@ -26,11 +26,11 @@ Endpoint:
   http://127.0.0.1:31415/mcp
 
 Tools:
-  proxima-agent-memory/proxima_search_graph
-  proxima-agent-memory/proxima_open
-  proxima-agent-memory/proxima_remember
-  proxima-agent-memory/proxima_derive
-  proxima-agent-memory/proxima_link
+  core/search_graph
+  core/open
+  core/remember
+  core/derive
+  core/link
 ";
 
 #[derive(Debug, Clone)]
