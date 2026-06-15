@@ -466,12 +466,17 @@ fn system_operator_authorship(
     let personality_instance_id = ctx.author.personality_instance_id.ok_or_else(|| {
         McpToolError::InvalidInput("goal_set requires personality author context".into())
     })?;
+    // operator_id is the authoring personality instance — a deterministic value,
+    // not a fresh random id. The goal-write idempotency check compares authorship,
+    // so a per-call random id would make every same-key retry conflict instead of
+    // replaying, defeating the tools' `idempotency_key`.
+    let pid = personality_instance_id.into_inner();
     Ok(GoalAuthorship::System(SystemOrigin::Operator {
-        operator_id: OperatorId::new(uuid::Uuid::now_v7()),
+        operator_id: OperatorId::new(pid),
         operator_kind: OperatorKind::AtoGoal,
         model_id: ModelId::new(ctx.author.model_id.clone()),
         prompt_version: PromptVersion::new(prompt_version),
-        personality_instance_id,
+        personality_instance_id: PersonalityInstanceId::new(pid),
     }))
 }
 
