@@ -41,10 +41,7 @@ async fn run_with_handle_serves_tools_list() -> Result<(), Box<dyn std::error::E
         .filter_map(|tool| tool["name"].as_str())
         .collect();
     assert!(names.contains(&"core_remember"), "got {names:?}");
-    assert!(
-        names.contains(&"proxima-goal_goal_propose"),
-        "got {names:?}"
-    );
+    assert!(names.contains(&"core_goal_set"), "got {names:?}");
 
     running.shutdown().await;
     Ok(())

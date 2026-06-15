@@ -1,8 +1,6 @@
 use crate::common::{drop_db, fresh_pg, owner_fixture};
 use proxima_core::verbs::goal_write::GoalAuthorshipKind::{External, System, User};
-use proxima_core::verbs::goal_write::GoalState::{
-    Abandoned, Achieved, Active, Paused, Proposed, Rejected,
-};
+use proxima_core::verbs::goal_write::GoalState::{Abandoned, Achieved, Active, Paused};
 use proxima_core::verbs::goal_write::{GoalAuthorshipKind, GoalAuthorshipOrigin, GoalState};
 use proxima_core::{Owner, OwnerPrincipalKind, Principal};
 use proxima_storage_pg::PgStorage;
@@ -130,32 +128,40 @@ async fn goal_transition_trigger_enforces_matrix() -> Result<(), Box<dyn std::er
         pg.run_migrations().await?;
         let owner = owner_fixture();
 
-        assert_seed_allowed(&pg, &owner, Proposed, External).await;
         assert_seed_allowed(&pg, &owner, Active, User).await;
+        assert_seed_allowed(&pg, &owner, Active, System).await;
+        assert_seed_allowed(&pg, &owner, Paused, User).await;
+        assert_seed_allowed(&pg, &owner, Paused, System).await;
+        assert_seed_allowed(&pg, &owner, Achieved, User).await;
         assert_seed_allowed(&pg, &owner, Achieved, System).await;
+        assert_seed_allowed(&pg, &owner, Abandoned, User).await;
+        assert_seed_allowed(&pg, &owner, Abandoned, System).await;
         assert_seed_forbidden(&pg, &owner, Active, External).await;
-        assert_seed_forbidden(&pg, &owner, Rejected, User).await;
-        assert_seed_forbidden(&pg, &owner, Rejected, External).await;
+        assert_seed_forbidden(&pg, &owner, Paused, External).await;
+        assert_seed_forbidden(&pg, &owner, Achieved, External).await;
+        assert_seed_forbidden(&pg, &owner, Abandoned, External).await;
 
-        assert_transition_allowed(&pg, &owner, Proposed, Active, User).await;
-        let rejected = assert_transition_allowed(&pg, &owner, Proposed, Rejected, User).await;
         assert_transition_allowed(&pg, &owner, Active, Active, User).await;
         assert_transition_allowed(&pg, &owner, Active, Paused, User).await;
         assert_transition_allowed(&pg, &owner, Active, Achieved, User).await;
         assert_transition_allowed(&pg, &owner, Active, Achieved, System).await;
         assert_transition_allowed(&pg, &owner, Active, Abandoned, User).await;
         assert_transition_allowed(&pg, &owner, Paused, Active, User).await;
+        assert_transition_allowed(&pg, &owner, Paused, Achieved, User).await;
+        assert_transition_allowed(&pg, &owner, Paused, Achieved, System).await;
         assert_transition_allowed(&pg, &owner, Paused, Abandoned, User).await;
 
-        let proposed = insert_goal(&pg, &owner, Proposed, External, None).await?;
-        assert_transition_forbidden(&pg, &owner, proposed, Active, External).await;
-        assert_transition_forbidden(&pg, &owner, proposed, Rejected, External).await;
+        let active = insert_goal(&pg, &owner, Active, User, None).await?;
+        assert_transition_forbidden(&pg, &owner, active, Paused, System).await;
+        let active = insert_goal(&pg, &owner, Active, User, None).await?;
+        assert_transition_forbidden(&pg, &owner, active, Abandoned, System).await;
+        let paused = insert_goal(&pg, &owner, Paused, User, None).await?;
+        assert_transition_forbidden(&pg, &owner, paused, Active, System).await;
 
         let achieved = insert_goal(&pg, &owner, Achieved, User, None).await?;
         let abandoned = insert_goal(&pg, &owner, Abandoned, User, None).await?;
         assert_transition_forbidden(&pg, &owner, achieved, Active, User).await;
         assert_transition_forbidden(&pg, &owner, abandoned, Active, User).await;
-        assert_transition_forbidden(&pg, &owner, rejected, Active, User).await;
 
         Ok::<(), Box<dyn std::error::Error>>(())
     }

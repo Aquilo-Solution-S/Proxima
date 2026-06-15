@@ -1,31 +1,17 @@
 //! `core/list_active_goals` substrate tool — list active Goals linked to
 //! the personality's current Self-Perspective through `core/inspires`.
 
-use async_trait::async_trait;
-use schemars::JsonSchema;
-use serde::Deserialize;
-
 use crate::error::ProtocolError;
 use crate::mcp::schema::mcp_tool_schema;
 use crate::personality::{PersonalityTool, PersonalityToolContext, PersonalityToolResult};
 use crate::{GoalId, MemoryId};
+use async_trait::async_trait;
 
 #[derive(Debug, Default)]
 pub struct ListActiveGoalsTool;
 
-#[derive(Debug, Deserialize, JsonSchema)]
-#[allow(dead_code)]
-pub struct ListActiveGoalsArgs {
-    #[serde(default = "default_scope")]
-    #[schemars(
-        description = "Goal listing scope. Use the default `linked_to_self`; other values are currently ignored."
-    )]
-    pub scope: String,
-}
-
-fn default_scope() -> String {
-    "linked_to_self".into()
-}
+#[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
+pub struct ListActiveGoalsArgs {}
 
 /// Triage-level summary of one active goal. Detail (text, `schema_id`,
 /// payload) is reachable via `core/fetch_memory(goal_activated_memory_id)`.
@@ -67,13 +53,15 @@ impl PersonalityTool for ListActiveGoalsTool {
             .map_err(|e| ProtocolError::internal(e.to_string()))?;
         let goals_payload: Vec<serde_json::Value> = goals
             .into_iter()
-            .filter_map(|g| {
-                let activated = g.goal_activated_memory_id?;
-                Some(serde_json::json!({
+            .map(|g| {
+                let activated = g
+                    .goal_activated_memory_id
+                    .expect("storage returns activation memory for every active goal");
+                serde_json::json!({
                     "goal": ctx.handles.assign_goal(g.goal_id).as_str(),
                     "goal_activated_memory": ctx.handles.assign_fact_memory(activated).as_str(),
                     "title": g.title,
-                }))
+                })
             })
             .collect();
         Ok(PersonalityToolResult::ok(serde_json::json!({
@@ -125,29 +113,22 @@ mod tests {
     }
 
     #[test]
-    fn skips_goals_without_activated_memory() {
-        let goals = vec![
-            ActiveGoalSummary {
-                goal_id: GoalId::new(uuid::Uuid::now_v7()),
-                goal_activated_memory_id: None,
-                title: "no activation".into(),
-            },
-            ActiveGoalSummary {
-                goal_id: GoalId::new(uuid::Uuid::now_v7()),
-                goal_activated_memory_id: Some(MemoryId::new(uuid::Uuid::now_v7())),
-                title: "real goal".into(),
-            },
-        ];
+    fn formats_goals_with_activated_memory() {
+        let goals = vec![ActiveGoalSummary {
+            goal_id: GoalId::new(uuid::Uuid::now_v7()),
+            goal_activated_memory_id: Some(MemoryId::new(uuid::Uuid::now_v7())),
+            title: "real goal".into(),
+        }];
         let handles = HandleTable::new();
         let payload: Vec<serde_json::Value> = goals
             .into_iter()
-            .filter_map(|g| {
-                let activated = g.goal_activated_memory_id?;
-                Some(serde_json::json!({
+            .map(|g| {
+                let activated = g.goal_activated_memory_id.expect("activation");
+                serde_json::json!({
                     "goal": handles.assign_goal(g.goal_id).as_str(),
                     "goal_activated_memory": handles.assign_fact_memory(activated).as_str(),
                     "title": g.title,
-                }))
+                })
             })
             .collect();
         assert_eq!(payload.len(), 1);

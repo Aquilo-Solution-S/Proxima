@@ -35,8 +35,8 @@ impl GoalPayload for TestGoalV1 {
     const SCHEMA_ID: &'static str = proxima_schema_id!("test-goal");
     const SCHEMA_VERSION: u32 = 1;
 
-    fn sidecar_table() -> &'static str {
-        "goal_test_goal_v1"
+    fn sidecar_table() -> Option<&'static str> {
+        Some("goal_test_goal_v1")
     }
 }
 

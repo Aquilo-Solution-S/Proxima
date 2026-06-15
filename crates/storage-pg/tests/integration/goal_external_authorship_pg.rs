@@ -1,54 +1,53 @@
-//! Regression: External authorship is admitted exactly at the
-//! Proposed seed and rejected for direct Active/Rejected seeds.
-//! Mirrors the trigger matrix encoded in
-//! `migrations/20260506000050_goal_proposed_rejected.sql`.
+//! External authorship cannot seed concrete Goal states.
 
 use crate::common::{create_db, db_url, drop_db};
-use std::sync::Arc;
 
-use proxima_core::engine::Engine;
-use proxima_core::storage::Storage;
-use proxima_core::verbs::goal_write::{GoalAuthorship, GoalAuthorshipKind, GoalDraft, GoalState};
-use proxima_core::verbs::query::MemoryStore;
-use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaInfo};
-use proxima_core::{OrgId, Owner, Principal, SchemaId, SchemaVersion, UserId};
+use proxima_core::verbs::goal_write::GoalState;
+use proxima_core::{OrgId, Owner, OwnerPrincipalKind, Principal, UserId};
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
 
-fn schemas_for_test() -> Vec<SchemaInfo> {
-    vec![SchemaInfo {
-        schema_id: SchemaId::new("test/goal_blob".into()),
-        schema_version: SchemaVersion::new(1),
-        kind: PayloadKind::Goal,
-        filter_keys: vec![],
-        sidecar_table: None,
-        natural_key_columns: vec![],
-        tombstone: None,
-        json_encoder: None,
-        sidecar_inserter: None,
-        cited_object_schema: None,
-    }]
+fn owner_parts(owner: &Owner) -> (OwnerPrincipalKind, Uuid, Uuid) {
+    let kind = OwnerPrincipalKind::of(&owner.principal);
+    let principal_id = match owner.principal {
+        Principal::User(user) => user.into_inner(),
+        Principal::Group(group) => group.into_inner(),
+    };
+    (kind, principal_id, owner.org_id.into_inner())
 }
 
-fn external_draft(owner: &Owner, state: GoalState, request_id: &str) -> GoalDraft {
-    GoalDraft {
-        principal: owner.principal.clone(),
-        org_id: Some(owner.org_id),
-        schema_id: SchemaId::new("test/goal_blob".into()),
-        schema_version: SchemaVersion::new(1),
-        title: "Test goal".to_string(),
-        text: "external-authored goal".to_string(),
-        payload: br#"{"goal":"external"}"#.to_vec(),
-        state,
-        parent_goal_ids: vec![],
-        supersedes_goal_id: None,
-        authorship: GoalAuthorship::External,
-        request_id: request_id.to_string(),
-    }
+async fn insert_external_seed(
+    pg: &PgStorage,
+    owner: &Owner,
+    state: GoalState,
+    request_id: &str,
+) -> Result<(), sqlx::Error> {
+    let (owner_kind, owner_principal_id, owner_org_id) = owner_parts(owner);
+    sqlx::query(
+        "INSERT INTO proxima_core.goals
+            (goal_id, schema_id, schema_version,
+             owner_principal_kind, owner_principal_id, owner_org_id,
+             title, text, payload, state,
+             authorship_kind, request_id)
+         VALUES ($1, 'core/simple-text-v1', 1,
+                 $2, $3, $4,
+                 $5, $5, convert_to('{}', 'UTF8'), $6,
+                 'External', $7)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(owner_org_id)
+    .bind(request_id)
+    .bind(state)
+    .bind(request_id)
+    .execute(pg.pool())
+    .await?;
+    Ok(())
 }
 
 #[tokio::test]
-async fn external_authorship_admitted_at_proposed_seed_only() {
+async fn external_authorship_cannot_seed_goal_state() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     create_db(&db_name).await.expect("PG required for tests");
     let url = db_url(&db_name);
@@ -56,60 +55,25 @@ async fn external_authorship_admitted_at_proposed_seed_only() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
         pg.run_migrations().await?;
-        let storage: Arc<dyn Storage> = Arc::new(pg.clone());
-
-        let user = UserId::new(Uuid::now_v7());
         let owner = Owner {
-            principal: Principal::User(user),
+            principal: Principal::User(UserId::new(Uuid::now_v7())),
             org_id: OrgId::new(Uuid::now_v7()),
         };
 
-        let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
-        let engine = Engine::new(registry, MemoryStore::new()).with_storage(storage);
-
-        // Proposed seed under External: allowed end-to-end through the verb.
-        let proposed = engine
-            .write_goal(
-                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
-                external_draft(&owner, GoalState::Proposed, "req-proposed"),
-            )
-            .await?;
-        assert!(!proposed.idempotent_replay);
-
-        let row: (GoalState, GoalAuthorshipKind) = sqlx::query_as(
-            "SELECT state, authorship_kind FROM proxima_core.goals WHERE goal_id = $1",
-        )
-        .bind(proposed.goal_id.into_inner())
-        .fetch_one(pg.pool())
-        .await?;
-        assert_eq!(row, (GoalState::Proposed, GoalAuthorshipKind::External));
-
-        // Active seed under External: trigger rejects.
-        let err = engine
-            .write_goal(
-                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
-                external_draft(&owner, GoalState::Active, "req-active"),
-            )
-            .await
-            .expect_err("Active seed under External must be rejected");
-        assert!(
-            err.message.contains("goal:"),
-            "unexpected error from External/Active seed: {err:?}"
-        );
-
-        // Rejected seed under External: trigger rejects (no direct seed
-        // into Rejected, regardless of authorship).
-        let err = engine
-            .write_goal(
-                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
-                external_draft(&owner, GoalState::Rejected, "req-rejected"),
-            )
-            .await
-            .expect_err("Rejected seed under External must be rejected");
-        assert!(
-            err.message.contains("goal:"),
-            "unexpected error from External/Rejected seed: {err:?}"
-        );
+        for state in [
+            GoalState::Active,
+            GoalState::Paused,
+            GoalState::Achieved,
+            GoalState::Abandoned,
+        ] {
+            let err = insert_external_seed(&pg, &owner, state, state_name(state))
+                .await
+                .expect_err("External seed must be rejected");
+            assert!(
+                err.to_string().contains("only User/System may seed"),
+                "unexpected error from External/{state:?}: {err}"
+            );
+        }
 
         Ok(())
     }
@@ -117,4 +81,13 @@ async fn external_authorship_admitted_at_proposed_seed_only() {
 
     let _ = drop_db(&db_name).await;
     result.expect("goal_external_authorship_pg test failed");
+}
+
+fn state_name(state: GoalState) -> &'static str {
+    match state {
+        GoalState::Active => "req-active",
+        GoalState::Paused => "req-paused",
+        GoalState::Achieved => "req-achieved",
+        GoalState::Abandoned => "req-abandoned",
+    }
 }

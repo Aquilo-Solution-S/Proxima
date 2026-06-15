@@ -2,14 +2,12 @@
 //!
 //! `goals` carries a flat set of nullable discriminator columns that
 //! together encode `GoalAuthorship`. The (de)serialisation is shared by
-//! the `goal_write` and `supersede_goal` verbs.
+//! the goal-write storage atoms (create / transition / achieve / modify
+//! / decompose).
 
-use proxima_core::StorageError;
 use proxima_core::verbs::goal_write::{
-    GoalAuthorship, GoalAuthorshipKind, GoalAuthorshipOrigin, GoalDraft, OperatorKind, SystemOrigin,
+    GoalAuthorship, GoalAuthorshipKind, GoalAuthorshipOrigin, OperatorKind, SystemOrigin,
 };
-
-use crate::error::map_err;
 
 /// Flat authorship columns stored on `proxima_core.goals`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -74,42 +72,4 @@ pub(crate) fn authorship_columns(authorship: &GoalAuthorship) -> AuthorshipColum
             personality_instance_id: None,
         },
     }
-}
-
-/// Idempotency comparison: does the existing goal's authorship match the
-/// one in `draft`? Used in the replay branch of `write_goal` /
-/// `supersede_goal` to decide between idempotent-replay and conflict.
-pub(crate) async fn check_authorship_match(
-    tx: &mut sqlx::PgConnection,
-    existing_goal_id: uuid::Uuid,
-    draft: &GoalDraft,
-) -> Result<bool, StorageError> {
-    let row = sqlx::query!(
-        r#"SELECT authorship_kind AS "authorship_kind: GoalAuthorshipKind",
-                  authorship_origin AS "authorship_origin: GoalAuthorshipOrigin",
-                  authorship_operator_id,
-                  authorship_tool_id,
-                  operator_kind AS "operator_kind: OperatorKind",
-                  model_id,
-                  prompt_version,
-                  personality_instance_id
-             FROM proxima_core.goals WHERE goal_id = $1"#,
-        existing_goal_id,
-    )
-    .fetch_one(tx)
-    .await
-    .map_err(map_err)?;
-
-    let existing_auth = AuthorshipColumns {
-        authorship_kind: row.authorship_kind,
-        authorship_origin: row.authorship_origin,
-        authorship_operator_id: row.authorship_operator_id,
-        authorship_tool_id: row.authorship_tool_id,
-        operator_kind: row.operator_kind,
-        model_id: row.model_id,
-        prompt_version: row.prompt_version,
-        personality_instance_id: row.personality_instance_id,
-    };
-
-    Ok(existing_auth == authorship_columns(&draft.authorship))
 }

@@ -95,6 +95,7 @@ impl Default for FlavorRegistry {
         registry
             .add_citation_mapping_schema::<crate::verbs::persist_mcp_call::McpCallIoCitationV1>();
         crate::memory::register_all(&mut registry);
+        crate::goal::register_all(&mut registry);
         crate::mcp::core_tools::register_all(&mut registry);
         registry
     }
@@ -208,17 +209,27 @@ impl FlavorRegistry {
     }
 
     pub fn add_goal_schema<G: GoalPayload>(&mut self) {
+        // Goal payload sidecar inserters receive the `goal_id` as the
+        // row id argument. This mirrors cited-object/citation mapping
+        // inserters, where the generic UUID is the owning entity id.
+        let (sidecar_table, sidecar_inserter) = match G::sidecar_table() {
+            Some(table) => (
+                Some(table.to_string()),
+                Some(insert_goal_sidecar::<G> as SidecarInserter),
+            ),
+            None => (None, None),
+        };
         self.register_schema(
             SchemaInfo {
                 schema_id: G::schema_id(),
                 schema_version: SchemaVersion::new(G::SCHEMA_VERSION),
                 kind: PayloadKind::Goal,
                 filter_keys: vec![],
-                sidecar_table: Some(G::sidecar_table().to_string()),
+                sidecar_table,
                 natural_key_columns: vec![],
                 tombstone: None,
                 json_encoder: Some(encode_payload_json::<G>),
-                sidecar_inserter: None,
+                sidecar_inserter,
                 cited_object_schema: None,
             },
             None,
@@ -630,6 +641,20 @@ where
     Ok(payload.render())
 }
 
+fn insert_goal_sidecar<'t, G>(
+    tx: &'t mut Transaction<'_, Postgres>,
+    goal_id: Uuid,
+    payload_bytes: &'t [u8],
+) -> futures::future::BoxFuture<'t, Result<(), crate::StorageError>>
+where
+    G: GoalPayload,
+{
+    Box::pin(async move {
+        let payload = decode_payload_json::<G>(payload_bytes, G::SCHEMA_ID)?;
+        payload.sidecar_insert(tx, goal_id).await
+    })
+}
+
 fn insert_citation_mapping_sidecar<'t, M>(
     tx: &'t mut Transaction<'_, Postgres>,
     sidecar_row_id: Uuid,
@@ -764,7 +789,7 @@ mod tests {
     }
 
     #[test]
-    fn default_registry_includes_all_30_substrate_mcp_tools() {
+    fn default_registry_includes_all_35_substrate_mcp_tools() {
         let frozen = FlavorRegistry::new().freeze();
         let names: std::collections::HashSet<_> =
             frozen.list_mcp_tools().iter().map(|d| d.name).collect();
@@ -799,6 +824,11 @@ mod tests {
             "core/record_utterance",
             "core/derive",
             "core/link",
+            "core/goal_set",
+            "core/goal_transition",
+            "core/goal_mark_achieved",
+            "core/goal_modify",
+            "core/goal_decompose",
         ];
         for name in expected {
             assert!(names.contains(name), "missing tool {name}");
@@ -807,6 +837,6 @@ mod tests {
             !names.contains("core/emit_budget_decision"),
             "retired tool name must not remain registered"
         );
-        assert_eq!(names.len(), 30, "exactly 30 substrate tools registered");
+        assert_eq!(names.len(), 35, "exactly 35 substrate tools registered");
     }
 }

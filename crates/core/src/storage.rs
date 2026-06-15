@@ -5,7 +5,6 @@
 
 use std::sync::Arc;
 
-use crate::GoalId;
 use crate::SourceBatchId;
 use crate::dependency::MemoryDependency;
 use crate::personality::WakeEntryDraft;
@@ -22,7 +21,10 @@ use crate::verbs::event_ingest::{
     AuthorizedEventIngest, AuthorizedFactWithCitation, EventDraft, EventIngestOutcome,
 };
 use crate::verbs::fact_cleanup::CleanupDueFactsOutcome;
-use crate::verbs::goal_write::{GoalDraft, GoalWriteOutcome};
+use crate::verbs::goal_write::{
+    AchieveGoalAtomicRequest, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest,
+    DecomposeGoalOutcome, GoalWriteOutcome, ModifyGoalAtomicRequest, TransitionGoalAtomicRequest,
+};
 use crate::verbs::persist_mcp_call::{McpCallLogInput, McpCallLogOutcome};
 use crate::{
     EdgeAuthorshipKind, EntityKind, MemoryId, MemoryOperatorKind, Owner, Principal,
@@ -35,6 +37,8 @@ pub enum StorageError {
     Unavailable(String),
     #[error("constraint violation: {0}")]
     ConstraintViolation(String),
+    #[error("conflict: {0}")]
+    Conflict(String),
     #[error("not found")]
     NotFound,
     #[error("internal storage error: {0}")]
@@ -224,33 +228,38 @@ pub trait Storage: Send + Sync {
     /// specs.
     async fn append_memory_edge(&self, edge: &DerivedEdgeSpec<'_>) -> Result<(), StorageError>;
 
-    /// Atomic Goal write per docs/14 §`GoalWrite`.
-    /// Single transaction inserting goal, `goal_parents`,
-    /// `change_event`. Replay (`request_id` collision with same body)
-    /// returns the original outcome with `idempotent_replay = true`.
-    ///
-    /// # Errors
-    ///
-    /// Constraint violations map to `ConstraintViolation` (including
-    /// `idempotency_conflict`: prefix for `request_id` reuse with
-    /// different body); `NotFound` if referenced parent missing;
-    /// sqlx failures map to Internal.
-    async fn write_goal_atomic(&self, draft: &GoalDraft) -> Result<GoalWriteOutcome, StorageError>;
-
-    /// Atomic Goal supersede per docs/14 §`GoalWrite`.
-    /// Single transaction inserting new goal with supersedes=prior,
-    /// `goal_parents`, `change_event`. Replay check same as `write_goal`.
-    ///
-    /// # Errors
-    ///
-    /// Same as `write_goal_atomic`, plus `NotFound` if prior goal
-    /// doesn't exist, `ConstraintViolation` if prior owner doesn't
-    /// match draft.owner.
-    async fn supersede_goal_atomic(
+    /// Atomic direct Active Goal create plus goal payload sidecar,
+    /// activation Fact, `core/inspires`, and `core/motivated-by`
+    /// evidence edges.
+    async fn create_goal_atomic(
         &self,
-        prior: GoalId,
-        draft: &GoalDraft,
+        req: &CreateGoalAtomicRequest<'_>,
     ) -> Result<GoalWriteOutcome, StorageError>;
+
+    /// Atomic Goal head transition. Storage rejects stale priors by
+    /// relying on the unique successor constraint, not a TOCTOU pre-read.
+    async fn transition_goal_atomic(
+        &self,
+        req: &TransitionGoalAtomicRequest<'_>,
+    ) -> Result<GoalWriteOutcome, StorageError>;
+
+    /// Atomic Goal achievement. Requires nonempty evidence.
+    async fn achieve_goal_atomic(
+        &self,
+        req: &AchieveGoalAtomicRequest<'_>,
+    ) -> Result<GoalWriteOutcome, StorageError>;
+
+    /// Atomic Active Goal content replacement.
+    async fn modify_goal_atomic(
+        &self,
+        req: &ModifyGoalAtomicRequest<'_>,
+    ) -> Result<GoalWriteOutcome, StorageError>;
+
+    /// Atomic child Goal creation plus `goal_parents` rows.
+    async fn decompose_goal_atomic(
+        &self,
+        req: &DecomposeGoalAtomicRequest<'_>,
+    ) -> Result<DecomposeGoalOutcome, StorageError>;
 
     /// Owner-scoped bounded read of `change_event` rows, newest-first.
     /// Server clamps `limit` to `MAX_EVENT_HISTORY_LIMIT`. When
@@ -629,18 +638,38 @@ impl Storage for NoopStorage {
         Err(StorageError::Internal("NoopStorage rejects writes".into()))
     }
 
-    async fn write_goal_atomic(
+    async fn create_goal_atomic(
         &self,
-        _draft: &GoalDraft,
+        _req: &CreateGoalAtomicRequest<'_>,
     ) -> Result<GoalWriteOutcome, StorageError> {
         Err(StorageError::Internal("NoopStorage rejects writes".into()))
     }
 
-    async fn supersede_goal_atomic(
+    async fn transition_goal_atomic(
         &self,
-        _prior: GoalId,
-        _draft: &GoalDraft,
+        _req: &TransitionGoalAtomicRequest<'_>,
     ) -> Result<GoalWriteOutcome, StorageError> {
+        Err(StorageError::Internal("NoopStorage rejects writes".into()))
+    }
+
+    async fn achieve_goal_atomic(
+        &self,
+        _req: &AchieveGoalAtomicRequest<'_>,
+    ) -> Result<GoalWriteOutcome, StorageError> {
+        Err(StorageError::Internal("NoopStorage rejects writes".into()))
+    }
+
+    async fn modify_goal_atomic(
+        &self,
+        _req: &ModifyGoalAtomicRequest<'_>,
+    ) -> Result<GoalWriteOutcome, StorageError> {
+        Err(StorageError::Internal("NoopStorage rejects writes".into()))
+    }
+
+    async fn decompose_goal_atomic(
+        &self,
+        _req: &DecomposeGoalAtomicRequest<'_>,
+    ) -> Result<DecomposeGoalOutcome, StorageError> {
         Err(StorageError::Internal("NoopStorage rejects writes".into()))
     }
 

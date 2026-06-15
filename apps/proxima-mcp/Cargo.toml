@@ -9,7 +9,6 @@ repository.workspace = true
 [dependencies]
 proxima-core = { path = "../../crates/core" }
 proxima = { path = "../../crates/proxima" }
-proxima-flavor-goal = { path = "../../flavors/goal" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 uuid = { workspace = true }
 thiserror = { workspace = true }

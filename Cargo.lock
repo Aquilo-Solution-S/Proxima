@@ -2192,7 +2192,6 @@ dependencies = [
  "http 1.4.0",
  "proxima-blob-s3",
  "proxima-core",
- "proxima-flavor-goal",
  "proxima-mcp-server",
  "proxima-pg-testkit",
  "proxima-storage-pg",
@@ -2236,7 +2235,6 @@ dependencies = [
  "futures",
  "hex",
  "proxima-core",
- "proxima-flavor-goal",
  "proxima-mcp-server",
  "proxima-pg-testkit",
  "proxima-storage-pg",
@@ -2283,28 +2281,8 @@ version = "0.1.0"
 dependencies = [
  "proxima",
  "proxima-code",
- "proxima-flavor-goal",
  "proxima-storage-pg",
  "tokio",
-]
-
-[[package]]
-name = "proxima-flavor-goal"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "futures",
- "proxima-core",
- "proxima-mcp-server",
- "proxima-pg-testkit",
- "proxima-storage-pg",
- "schemars",
- "serde",
- "serde_json",
- "sqlx",
- "time",
- "tokio",
- "uuid",
 ]
 
 [[package]]
@@ -2324,7 +2302,6 @@ version = "0.1.0"
 dependencies = [
  "proxima",
  "proxima-core",
- "proxima-flavor-goal",
  "reqwest",
  "serde_json",
  "thiserror",

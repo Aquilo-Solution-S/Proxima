@@ -18,5 +18,4 @@ workspace = true
 proxima = { path = "../../crates/proxima" }
 proxima-storage-pg = { path = "../../crates/storage-pg" }
 proxima-code = { path = "../../flavors/code" }
-proxima-flavor-goal = { path = "../../flavors/goal" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

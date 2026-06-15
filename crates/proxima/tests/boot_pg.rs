@@ -10,15 +10,10 @@ use uuid::Uuid;
 struct GoalTestApp;
 
 impl FlavorBundle for GoalTestApp {
-    fn register(registry: &mut FlavorRegistry) {
-        proxima_flavor_goal::register(registry);
-    }
+    fn register(_registry: &mut FlavorRegistry) {}
 
     fn migrators() -> Vec<NamedMigrator> {
-        vec![NamedMigrator::new(
-            "proxima-flavor-goal",
-            proxima_flavor_goal::migrator(),
-        )]
+        Vec::new()
     }
 }
 
@@ -33,7 +28,7 @@ impl FlavorApp for GoalTestApp {
 }
 
 #[tokio::test]
-async fn boots_engine_with_goal_flavor_on_fresh_db() {
+async fn boots_engine_with_core_goal_tools_on_fresh_db() {
     let db_name = unique_db_name("proxima_test");
     create_db(&db_name).await.expect("PG required for tests");
     let db_url = db_url(&db_name);
@@ -43,19 +38,16 @@ async fn boots_engine_with_goal_flavor_on_fresh_db() {
             EmbedConfig::from_lookup(|key| (key == "DATABASE_URL").then(|| db_url.clone()))?;
         let owner = company_owner(Uuid::now_v7());
 
-        let booted = ProximaBuilder::new(config, owner)
-            .flavor_named(
-                "proxima-flavor-goal",
-                proxima_flavor_goal::register,
-                Some(proxima_flavor_goal::migrator()),
-            )
-            .boot()
-            .await?;
+        let booted = ProximaBuilder::new(config, owner).boot().await?;
 
         assert!(booted.blobs.is_none(), "no S3 config -> no blob store");
         assert!(
-            booted.engine.registry().flavor("proxima-goal").is_some(),
-            "goal flavor registered"
+            booted
+                .engine
+                .registry()
+                .mcp_tool_ids()
+                .contains("core/goal_set"),
+            "core goal tool registered"
         );
         booted.engine.stop(booted.handle);
         Ok(())
@@ -67,7 +59,7 @@ async fn boots_engine_with_goal_flavor_on_fresh_db() {
 }
 
 #[tokio::test]
-async fn migration_facade_runs_goal_flavor_idempotently() {
+async fn migration_facade_runs_core_goal_schema_idempotently() {
     let db_name = unique_db_name("proxima_test");
     create_db(&db_name).await.expect("PG required for tests");
     let db_url = db_url(&db_name);
@@ -75,23 +67,15 @@ async fn migration_facade_runs_goal_flavor_idempotently() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&db_url).await?;
         for _ in 0..2 {
-            let report = run_core_and_flavor_migrations(
-                &pg,
-                [NamedMigrator::new(
-                    "proxima-flavor-goal",
-                    proxima_flavor_goal::migrator(),
-                )],
-            )
-            .await?;
+            let report = run_core_and_flavor_migrations(&pg, Vec::<NamedMigrator>::new()).await?;
             assert!(report.sources.contains(&"proxima-core"));
-            assert!(report.sources.contains(&"proxima-flavor-goal"));
         }
 
         let sidecar: Option<String> =
-            sqlx::query_scalar("SELECT to_regclass('proxima_goal.goal_activated_v1')::text")
+            sqlx::query_scalar("SELECT to_regclass('proxima_core.goal_activated_v1')::text")
                 .fetch_one(pg.pool())
                 .await?;
-        assert_eq!(sidecar.as_deref(), Some("proxima_goal.goal_activated_v1"));
+        assert_eq!(sidecar.as_deref(), Some("proxima_core.goal_activated_v1"));
         Ok(())
     }
     .await;

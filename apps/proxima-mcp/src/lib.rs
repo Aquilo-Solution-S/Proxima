@@ -3,8 +3,7 @@ pub mod args;
 pub use args::{ArgsError, DEFAULT_BIND, DEFAULT_DATABASE_URL, McpConfig, USAGE, parse_args};
 
 use proxima::{
-    AppInfo, FlavorApp, FlavorBundle, NamedMigrator, Proxima, ProximaError, RunningProxima,
-    RuntimeBuilder,
+    AppInfo, FlavorApp, FlavorBundle, Proxima, ProximaError, RunningProxima, RuntimeBuilder,
 };
 use proxima_core::FlavorRegistry;
 
@@ -12,15 +11,10 @@ use proxima_core::FlavorRegistry;
 pub struct ProximaMcpApp;
 
 impl FlavorBundle for ProximaMcpApp {
-    fn register(registry: &mut FlavorRegistry) {
-        proxima_flavor_goal::register(registry);
-    }
+    fn register(_registry: &mut FlavorRegistry) {}
 
-    fn migrators() -> Vec<NamedMigrator> {
-        vec![NamedMigrator::new(
-            "proxima-flavor-goal",
-            proxima_flavor_goal::migrator(),
-        )]
+    fn migrators() -> Vec<proxima::NamedMigrator> {
+        Vec::new()
     }
 }
 

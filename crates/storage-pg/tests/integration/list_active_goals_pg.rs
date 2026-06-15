@@ -2,14 +2,13 @@ use crate::common::{drop_db, fresh_pg, owner_fixture};
 
 use proxima_core::relation::CORE_INSPIRES_RELATION;
 use proxima_core::storage::Storage;
-use proxima_core::verbs::goal_write::{GoalAuthorship, GoalDraft, GoalState};
+use proxima_core::verbs::goal_write::GoalState;
 use proxima_core::{
     EdgeAuthorshipKind, EntityKind, FlavorRegistry, GoalId, MemoryId, OrgId, Owner,
-    OwnerPrincipalKind, Principal, SchemaId, SchemaVersion, UserId,
+    OwnerPrincipalKind, Principal, UserId,
 };
 use proxima_storage_pg::PgStorage;
 use proxima_storage_pg::verbs::edge_append::{EdgeDraft, append_edge_in_tx};
-use sqlx::Executor;
 use uuid::Uuid;
 
 fn owner_parts(owner: &Owner) -> (OwnerPrincipalKind, Uuid, Uuid) {
@@ -25,31 +24,6 @@ fn other_owner() -> Owner {
     Owner {
         principal: Principal::User(UserId::new(Uuid::now_v7())),
         org_id: OrgId::new(Uuid::nil()),
-    }
-}
-
-fn draft(
-    owner: &Owner,
-    state: GoalState,
-    supersedes: Option<GoalId>,
-    request_id: &str,
-) -> GoalDraft {
-    GoalDraft {
-        principal: owner.principal.clone(),
-        org_id: Some(owner.org_id),
-        schema_id: SchemaId::new("test/goal".into()),
-        schema_version: SchemaVersion::new(1),
-        title: request_id.into(),
-        text: request_id.into(),
-        payload: request_id.as_bytes().to_vec(),
-        state,
-        parent_goal_ids: Vec::new(),
-        supersedes_goal_id: supersedes,
-        authorship: match state {
-            GoalState::Proposed => GoalAuthorship::External,
-            _ => GoalAuthorship::User,
-        },
-        request_id: request_id.into(),
     }
 }
 
@@ -79,21 +53,40 @@ async fn insert_self(
     Ok(MemoryId::new(memory_id))
 }
 
-async fn write_goal(
+async fn insert_goal(
     pg: &PgStorage,
     owner: &Owner,
     state: GoalState,
     supersedes: Option<GoalId>,
     request_id: &str,
 ) -> Result<GoalId, Box<dyn std::error::Error>> {
-    let outcome = if let Some(prior) = supersedes {
-        pg.supersede_goal_atomic(prior, &draft(owner, state, Some(prior), request_id))
-            .await?
-    } else {
-        pg.write_goal_atomic(&draft(owner, state, None, request_id))
-            .await?
-    };
-    Ok(outcome.goal_id)
+    let (owner_kind, owner_principal_id, owner_org_id) = owner_parts(owner);
+    let goal_id = GoalId::new(Uuid::now_v7());
+    sqlx::query(
+        "INSERT INTO proxima_core.goals
+            (goal_id, schema_id, schema_version,
+             owner_principal_kind, owner_principal_id, owner_org_id,
+             title, text, payload, state, supersedes,
+             authorship_kind, request_id)
+         VALUES ($1, 'core/simple-text-v1', 1,
+                 $2, $3, $4,
+                 $5, $5, convert_to('{}', 'UTF8'), $6, $7,
+                 'User', $8)",
+    )
+    .bind(goal_id.into_inner())
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(owner_org_id)
+    .bind(request_id)
+    .bind(state)
+    .bind(supersedes.map(GoalId::into_inner))
+    .bind(request_id)
+    .execute(pg.pool())
+    .await?;
+    if state == GoalState::Active {
+        insert_goal_activated_fact(pg, owner, goal_id).await?;
+    }
+    Ok(goal_id)
 }
 
 async fn link_goal_to_self(
@@ -143,21 +136,20 @@ async fn list_active_goals_follows_inspires_and_goal_supersession()
         let self_a = insert_self(&pg, &owner).await?;
         let self_b = insert_self(&pg, &other).await?;
 
-        let proposed_a = write_goal(&pg, &owner, GoalState::Proposed, None, "a-proposed").await?;
-        link_goal_to_self(&pg, &owner, proposed_a, self_a).await?;
+        let base_a = insert_goal(&pg, &owner, GoalState::Active, None, "a-base").await?;
+        link_goal_to_self(&pg, &owner, base_a, self_a).await?;
         let active_a =
-            write_goal(&pg, &owner, GoalState::Active, Some(proposed_a), "a-active").await?;
+            insert_goal(&pg, &owner, GoalState::Active, Some(base_a), "a-active").await?;
 
-        let still_proposed =
-            write_goal(&pg, &owner, GoalState::Proposed, None, "a-pending").await?;
-        link_goal_to_self(&pg, &owner, still_proposed, self_a).await?;
+        let paused_pending = insert_goal(&pg, &owner, GoalState::Paused, None, "a-pending").await?;
+        link_goal_to_self(&pg, &owner, paused_pending, self_a).await?;
 
-        let unconnected = write_goal(&pg, &owner, GoalState::Active, None, "a-unlinked").await?;
+        let unconnected = insert_goal(&pg, &owner, GoalState::Active, None, "a-unlinked").await?;
         let _ = unconnected;
 
-        let paused_base = write_goal(&pg, &owner, GoalState::Active, None, "a-pause-base").await?;
+        let paused_base = insert_goal(&pg, &owner, GoalState::Active, None, "a-pause-base").await?;
         link_goal_to_self(&pg, &owner, paused_base, self_a).await?;
-        let _paused = write_goal(
+        let _paused = insert_goal(
             &pg,
             &owner,
             GoalState::Paused,
@@ -166,16 +158,14 @@ async fn list_active_goals_follows_inspires_and_goal_supersession()
         )
         .await?;
 
-        let active_b = write_goal(&pg, &other, GoalState::Active, None, "b-active").await?;
+        let active_b = insert_goal(&pg, &other, GoalState::Active, None, "b-active").await?;
         link_goal_to_self(&pg, &other, active_b, self_b).await?;
 
         let goals_a = pg.list_active_goals(&owner.principal, self_a, 100).await?;
         assert_eq!(goals_a.len(), 1);
         assert_eq!(goals_a[0].goal_id, active_a);
         assert_eq!(goals_a[0].title, "a-active");
-        // No goal-activated sidecar exists in this fixture (the goal flavor
-        // wasn't migrated) — the substrate query degrades to None.
-        assert!(goals_a[0].goal_activated_memory_id.is_none());
+        assert!(goals_a[0].goal_activated_memory_id.is_some());
 
         let goals_b = pg.list_active_goals(&other.principal, self_b, 100).await?;
         assert_eq!(goals_b.len(), 1);
@@ -186,22 +176,6 @@ async fn list_active_goals_follows_inspires_and_goal_supersession()
 
     let _ = drop_db(&db_name).await;
     result
-}
-
-async fn apply_goal_activated_sidecar(pool: &sqlx::PgPool) -> sqlx::Result<()> {
-    pool.execute(
-        "CREATE SCHEMA IF NOT EXISTS proxima_goal; \
-         CREATE TABLE IF NOT EXISTS proxima_goal.goal_activated_v1 ( \
-             memory_id      uuid PRIMARY KEY REFERENCES proxima_core.memories(memory_id), \
-             goal_id        uuid NOT NULL REFERENCES proxima_core.goals(goal_id), \
-             schema_id      text NOT NULL, \
-             title          text NOT NULL, \
-             accepted_at    timestamptz NOT NULL, \
-             evidence_count integer NOT NULL \
-         );",
-    )
-    .await
-    .map(|_| ())
 }
 
 async fn insert_dummy_fact_refs(
@@ -240,7 +214,7 @@ async fn insert_dummy_fact_refs(
     .bind(owner_org_id)
     .bind(source_batch_id)
     .bind(source_id)
-    .bind("proxima-goal/goal-activated-v1")
+    .bind("core/goal-activated-v1")
     .bind(1_i32)
     .bind(now)
     .bind(now)
@@ -259,7 +233,7 @@ async fn insert_dummy_fact_refs(
     .bind(owner_kind)
     .bind(owner_principal_id)
     .bind(owner_org_id)
-    .bind(vec![0u8; 32])
+    .bind(Uuid::now_v7().as_bytes().repeat(2))
     .execute(&mut **tx)
     .await?;
     sqlx::query(
@@ -284,7 +258,6 @@ async fn insert_goal_activated_fact(
     pg: &PgStorage,
     owner: &Owner,
     goal_id: GoalId,
-    title: &str,
 ) -> Result<MemoryId, Box<dyn std::error::Error>> {
     let (owner_kind, owner_principal_id, owner_org_id) = owner_parts(owner);
     let memory_id = Uuid::now_v7();
@@ -306,7 +279,7 @@ async fn insert_goal_activated_fact(
     .bind(owner_kind)
     .bind(owner_principal_id)
     .bind(owner_org_id)
-    .bind("proxima-goal/goal-activated-v1")
+    .bind("core/goal-activated-v1")
     .bind(1_i32)
     .bind(&event_id)
     .bind(citation_mapping_id)
@@ -314,16 +287,13 @@ async fn insert_goal_activated_fact(
     .await?;
 
     sqlx::query(
-        "INSERT INTO proxima_goal.goal_activated_v1
-            (memory_id, goal_id, schema_id, title, accepted_at, evidence_count)
-         VALUES ($1, $2, $3, $4, $5, $6)",
+        "INSERT INTO proxima_core.goal_activated_v1
+            (memory_id, goal_id, transitioned_at)
+         VALUES ($1, $2, $3)",
     )
     .bind(memory_id)
     .bind(goal_id.into_inner())
-    .bind("test/goal")
-    .bind(title)
     .bind(time::OffsetDateTime::now_utc())
-    .bind(0_i32)
     .execute(&mut *tx)
     .await?;
 
@@ -340,19 +310,16 @@ async fn list_active_goals_surfaces_goal_activated_memory_when_present()
 
     let result = async {
         pg.run_migrations().await?;
-        apply_goal_activated_sidecar(pg.pool()).await?;
 
         let owner = owner_fixture();
         let self_a = insert_self(&pg, &owner).await?;
-        let proposed = write_goal(&pg, &owner, GoalState::Proposed, None, "p-proposed").await?;
-        link_goal_to_self(&pg, &owner, proposed, self_a).await?;
-        let active = write_goal(&pg, &owner, GoalState::Active, Some(proposed), "p-active").await?;
-        let activated_memory = insert_goal_activated_fact(&pg, &owner, active, "p-active").await?;
+        let active = insert_goal(&pg, &owner, GoalState::Active, None, "p-active").await?;
+        link_goal_to_self(&pg, &owner, active, self_a).await?;
 
         let goals = pg.list_active_goals(&owner.principal, self_a, 100).await?;
         assert_eq!(goals.len(), 1);
         assert_eq!(goals[0].goal_id, active);
-        assert_eq!(goals[0].goal_activated_memory_id, Some(activated_memory));
+        assert!(goals[0].goal_activated_memory_id.is_some());
         Ok::<(), Box<dyn std::error::Error>>(())
     }
     .await;
