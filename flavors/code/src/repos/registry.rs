@@ -1,7 +1,11 @@
 use super::owner_columns;
 use super::records::{RepoEraseReceipt, RepoRecord, RepoRegistryError};
 use super::rows::RepoRow;
-use proxima_core::Owner;
+use proxima_core::verbs::schema::{PayloadKind, SchemaInfo};
+use proxima_core::{EntityKind, Owner, sidecar_tables};
+use proxima_storage_pg::verbs::hard_delete::{
+    HardDeleteSet, HardDeleteSidecars, execute_hard_delete,
+};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -186,12 +190,14 @@ pub async fn delete_repo(
 ///
 /// # Errors
 /// Returns `RepoRegistryError::NotFound` if the repo is not registered
-/// for `owner`; `RepoRegistryError::Database` on database failures.
+/// for `owner`; `RepoRegistryError::Database` on database failures;
+/// `RepoRegistryError::Storage` on shared hard-delete failures.
 #[allow(clippy::too_many_lines)]
 pub async fn erase_repo(
     pool: &PgPool,
     owner: &Owner,
     repo_id: Uuid,
+    schemas: &[SchemaInfo],
 ) -> Result<RepoEraseReceipt, RepoRegistryError> {
     let (kind, principal_id, org_id) = owner_columns(owner);
     let mut tx = pool.begin().await?;
@@ -406,78 +412,51 @@ pub async fn erase_repo(
     .execute(&mut *tx)
     .await?;
 
-    receipt.embeddings_deleted = sqlx::query(
-        "DELETE FROM proxima_core.embeddings \
-         WHERE entity_id IN (SELECT memory_id FROM tmp_proxima_repo_memories)",
-    )
-    .execute(&mut *tx)
-    .await?
-    .rows_affected();
+    let fact_ids = sqlx::query_scalar::<_, Uuid>("SELECT memory_id FROM tmp_proxima_repo_facts")
+        .fetch_all(&mut *tx)
+        .await?;
+    let abstraction_ids =
+        sqlx::query_scalar::<_, Uuid>("SELECT memory_id FROM tmp_proxima_repo_abstractions")
+            .fetch_all(&mut *tx)
+            .await?;
+    let edge_ids = sqlx::query_scalar::<_, Uuid>("SELECT edge_id FROM tmp_proxima_repo_edges")
+        .fetch_all(&mut *tx)
+        .await?;
+    let event_ids =
+        sqlx::query_scalar::<_, Vec<u8>>("SELECT event_id FROM tmp_proxima_repo_events")
+            .fetch_all(&mut *tx)
+            .await?;
 
-    sqlx::query(
-        "DELETE FROM proxima_code.code_calls_v1 \
-         WHERE edge_id IN (SELECT edge_id FROM tmp_proxima_repo_edges)",
-    )
-    .execute(&mut *tx)
-    .await?;
+    let mut memories = Vec::new();
+    memories.extend(fact_ids.into_iter().map(|id| (EntityKind::Fact, id)));
+    memories.extend(
+        abstraction_ids
+            .into_iter()
+            .map(|id| (EntityKind::Abstraction, id)),
+    );
+    let set = HardDeleteSet {
+        memories,
+        edge_ids,
+        event_ids,
+    };
 
-    receipt.edges_deleted = sqlx::query(
-        "DELETE FROM proxima_core.edges \
-         WHERE edge_id IN (SELECT edge_id FROM tmp_proxima_repo_edges)",
-    )
-    .execute(&mut *tx)
-    .await?
-    .rows_affected();
+    let mut memory_keyed = sidecar_tables(schemas, PayloadKind::Fact);
+    memory_keyed.extend(sidecar_tables(schemas, PayloadKind::Abstraction));
+    memory_keyed.sort();
+    memory_keyed.dedup();
+    let edge_keyed = sidecar_tables(schemas, PayloadKind::Edge);
+    let citation_mapping_keyed = sidecar_tables(schemas, PayloadKind::CitationMapping);
+    let sidecars = HardDeleteSidecars {
+        memory_keyed: &memory_keyed,
+        edge_keyed: &edge_keyed,
+        citation_mapping_keyed: &citation_mapping_keyed,
+    };
 
-    sqlx::query(
-        "DELETE FROM proxima_code.commit_summary_v1 \
-         WHERE memory_id IN (SELECT memory_id FROM tmp_proxima_repo_abstractions)",
-    )
-    .execute(&mut *tx)
-    .await?;
-    sqlx::query(
-        "DELETE FROM proxima_code.code_chunk_v1 \
-         WHERE memory_id IN (SELECT memory_id FROM tmp_proxima_repo_facts)",
-    )
-    .execute(&mut *tx)
-    .await?;
-    sqlx::query(
-        "DELETE FROM proxima_code.file_revision_v1 \
-         WHERE memory_id IN (SELECT memory_id FROM tmp_proxima_repo_facts)",
-    )
-    .execute(&mut *tx)
-    .await?;
-    sqlx::query(
-        "DELETE FROM proxima_code.commit_v1 \
-         WHERE memory_id IN (SELECT memory_id FROM tmp_proxima_repo_facts)",
-    )
-    .execute(&mut *tx)
-    .await?;
-
-    receipt.citation_mappings_deleted = sqlx::query(
-        "DELETE FROM proxima_core.citation_mappings \
-         WHERE citation_mapping_id IN ( \
-             SELECT citation_mapping_id FROM tmp_proxima_repo_citation_mappings \
-         )",
-    )
-    .execute(&mut *tx)
-    .await?
-    .rows_affected();
-
-    sqlx::query(
-        "DELETE FROM proxima_core.memories \
-         WHERE memory_id IN (SELECT memory_id FROM tmp_proxima_repo_memories)",
-    )
-    .execute(&mut *tx)
-    .await?;
-
-    receipt.events_deleted = sqlx::query(
-        "DELETE FROM proxima_core.events \
-         WHERE event_id IN (SELECT event_id FROM tmp_proxima_repo_events)",
-    )
-    .execute(&mut *tx)
-    .await?
-    .rows_affected();
+    let counts = execute_hard_delete(&mut tx, &set, &sidecars).await?;
+    receipt.edges_deleted = counts.edges;
+    receipt.embeddings_deleted = counts.embeddings;
+    receipt.citation_mappings_deleted = counts.citation_mappings;
+    receipt.events_deleted = counts.events;
 
     receipt.source_batches_deleted = sqlx::query(
         "DELETE FROM proxima_core.source_batches sb \

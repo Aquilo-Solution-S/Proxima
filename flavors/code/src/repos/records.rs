@@ -169,6 +169,8 @@ impl StageCounters {
 pub enum RepoRegistryError {
     #[error("database error: {0}")]
     Database(#[from] sqlx::Error),
+    #[error("storage error: {0}")]
+    Storage(#[from] proxima_core::StorageError),
     #[error("duplicate repo at path: {canonical_path}")]
     DuplicatePath { canonical_path: String },
     #[error("repo not found: {repo_id}")]

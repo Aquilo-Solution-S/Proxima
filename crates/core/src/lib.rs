@@ -58,7 +58,7 @@ pub use verbs::event_ingest::{
 pub use verbs::persist_mcp_call::{McpCallLogInput, McpCallLogOutcome};
 pub use verbs::*;
 
-pub use verbs::schema::FlavorRegistryFrozen;
+pub use verbs::schema::{FlavorRegistryFrozen, sidecar_tables};
 
 /// Expands to `&'static str` with the calling crate's name
 /// prefixed. Per docs/08 §Schema namespacing.

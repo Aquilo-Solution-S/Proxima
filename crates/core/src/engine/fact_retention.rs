@@ -2,6 +2,7 @@ use super::Engine;
 use crate::authz::{AuthzContext, Role};
 use crate::error::ProtocolError;
 use crate::owner::Owner;
+use crate::sidecar_tables;
 use crate::verbs::fact_cleanup::CleanupDueFactsOutcome;
 use crate::verbs::schema::PayloadKind;
 
@@ -109,15 +110,4 @@ impl Engine {
             .await
             .map_err(|e| ProtocolError::internal(format!("cleanup_due_facts: {e}")))
     }
-}
-
-fn sidecar_tables(schemas: &[crate::verbs::schema::SchemaInfo], kind: PayloadKind) -> Vec<String> {
-    let mut tables = schemas
-        .iter()
-        .filter(|schema| schema.kind == kind)
-        .filter_map(|schema| schema.sidecar_table.clone())
-        .collect::<Vec<_>>();
-    tables.sort();
-    tables.dedup();
-    tables
 }
