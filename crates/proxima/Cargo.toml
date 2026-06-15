@@ -29,6 +29,7 @@ uuid = { workspace = true }
 [dev-dependencies]
 async-trait = { workspace = true }
 futures = { workspace = true }
+proxima-core = { path = "../core", features = ["test-fixtures"] }
 proxima-pg-testkit = { path = "../pg-testkit" }
 serde = { workspace = true, features = ["derive"] }
 tower = { workspace = true, features = ["util"] }

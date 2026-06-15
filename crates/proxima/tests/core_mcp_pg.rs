@@ -1,12 +1,11 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use proxima::{
     AppInfo, AuthPath, AuthzContext, CapabilitySet, CoreMcpError, CoreMcpTools, FlavorApp,
     FlavorBundle, Identity, NamedMigrator, Proxima, RoleSet, ToolScope, company_owner,
 };
-use proxima_core::llm::{EMBEDDING_DIM, EmbeddingClient, LlmError};
+use proxima_core::test_fixtures::ConstantEmbedding;
 use proxima_core::{
     CitationMappingPayload, CitedObjectPayload, FlavorRegistry, MemoryId, Owner, SchemaId,
     StorageError,
@@ -17,28 +16,8 @@ use uuid::Uuid;
 struct EmptyApp;
 struct AgentMemoryApp;
 
-#[derive(Debug)]
-struct FixedEmbedding;
-
-#[async_trait]
-impl EmbeddingClient for FixedEmbedding {
-    async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
-        Ok(padded_embedding([1.0, 0.0, 0.0]))
-    }
-
-    fn model_id(&self) -> &'static str {
-        "test-embed"
-    }
-
-    fn dim(&self) -> usize {
-        EMBEDDING_DIM
-    }
-}
-
-fn padded_embedding(prefix: [f32; 3]) -> Vec<f32> {
-    let mut embedding = vec![0.0; EMBEDDING_DIM];
-    embedding[..prefix.len()].copy_from_slice(&prefix);
-    embedding
+fn test_embedding() -> Arc<ConstantEmbedding> {
+    Arc::new(ConstantEmbedding::prefixed("test-embed", &[1.0, 0.0, 0.0]))
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -279,7 +258,7 @@ async fn facade_core_search_memories_finds_remembered_fact_lexical_and_semantic(
         let built = Proxima::<AgentMemoryApp>::app()
             .database_url(db_url)
             .owner(owner.clone())
-            .embed_client(Arc::new(FixedEmbedding))
+            .embed_client(test_embedding())
             .build()
             .await?;
         let tools = built.core_mcp_tools();
@@ -391,7 +370,7 @@ async fn facade_core_citation_readback_is_owner_scoped() {
         let built = Proxima::<AgentMemoryApp>::app()
             .database_url(db_url)
             .owner(owner.clone())
-            .embed_client(Arc::new(FixedEmbedding))
+            .embed_client(test_embedding())
             .build()
             .await?;
         create_citation_sidecars(&built.pool).await?;

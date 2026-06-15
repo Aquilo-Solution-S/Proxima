@@ -2,11 +2,10 @@ mod common;
 
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use common::{create_db, db_url, drop_db};
-use proxima_core::llm::{EMBEDDING_DIM, EmbeddingClient, LlmError};
 use proxima_core::mcp::{McpAuthorContext, PrefixedUuidClass, parse_prefixed_uuid};
 use proxima_core::storage::Storage;
+use proxima_core::test_fixtures::ConstantEmbedding;
 use proxima_core::{
     AuthPath, AuthzContext, Engine, FlavorRegistry, OrgId, Owner, Principal, UserId,
 };
@@ -15,36 +14,10 @@ use proxima_storage_pg::PgStorage;
 use serde_json::json;
 use uuid::Uuid;
 
-#[derive(Debug)]
-struct FixedEmbedding;
-
-#[async_trait]
-impl EmbeddingClient for FixedEmbedding {
-    async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
-        Ok(padded_embedding([1.0, 0.0, 0.0]))
-    }
-
-    fn model_id(&self) -> &'static str {
-        "test-embed"
-    }
-
-    fn dim(&self) -> usize {
-        EMBEDDING_DIM
-    }
-}
-
-fn padded_embedding(prefix: [f32; 3]) -> Vec<f32> {
-    let mut embedding = vec![0.0; EMBEDDING_DIM];
-    embedding[..prefix.len()].copy_from_slice(&prefix);
-    embedding
-}
-
 #[tokio::test(flavor = "multi_thread")]
 async fn host_bearer_agent_memory_edges_attribute_to_subject_self_perspective()
 -> Result<(), Box<dyn std::error::Error>> {
-    let Some(db_name) = create_db().await? else {
-        return Ok(());
-    };
+    let db_name = create_db().await?;
     let database_url = db_url(&db_name);
     let pg = PgStorage::connect(&database_url).await?;
     pg.run_migrations().await?;
@@ -59,7 +32,10 @@ async fn host_bearer_agent_memory_edges_attribute_to_subject_self_perspective()
     let engine = Arc::new(
         Engine::new(frozen.clone())
             .with_storage(pg.clone().into_handle())
-            .with_embed(Arc::new(FixedEmbedding)),
+            .with_embed(Arc::new(ConstantEmbedding::prefixed(
+                "test-embed",
+                &[1.0, 0.0, 0.0],
+            ))),
     );
     let server = McpToolHost::from_pool(pg.pool().clone(), owner.clone(), Arc::new(frozen))
         .with_engine(engine);

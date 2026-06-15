@@ -7,10 +7,10 @@
 
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use proxima_core::engine::Engine;
-use proxima_core::llm::{AnthropicClient, EMBEDDING_DIM, EmbeddingClient, LlmError};
+use proxima_core::llm::AnthropicClient;
 use proxima_core::personality::InstantiatePersonalityResponse;
+use proxima_core::test_fixtures::ConstantEmbedding;
 use proxima_core::verbs::event_ingest::{
     Citation, CitationMappingHint, CitedObjectHint, EventDraft,
 };
@@ -142,29 +142,6 @@ pub async fn apply_test_schemas(pool: &sqlx::PgPool) -> sqlx::Result<()> {
     .map(|_| ())
 }
 
-/// Trivial embedding client that returns a fixed-length zero vector.
-/// Tests that exercise emit_abstraction / emit_perspective need an
-/// embedding client wired but don't care about real vectors.
-#[derive(Debug)]
-pub struct FakeEmbedding {
-    pub dim: usize,
-}
-
-#[async_trait]
-impl EmbeddingClient for FakeEmbedding {
-    async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
-        Ok(vec![0.0; self.dim])
-    }
-
-    fn model_id(&self) -> &str {
-        "fake-embed"
-    }
-
-    fn dim(&self) -> usize {
-        self.dim
-    }
-}
-
 /// Build an `Engine` over the given storage pool wired with all test
 /// schemas + an injected scripted `FlavorDescriptor` for the
 /// `proxima-test` prefix that all test payloads use.
@@ -197,7 +174,7 @@ pub fn build_test_engine(pg: PgStorage, anthropic: Arc<dyn AnthropicClient>) -> 
     Engine::new(frozen)
         .with_storage(Arc::new(pg))
         .with_anthropic(anthropic)
-        .with_embed(Arc::new(FakeEmbedding { dim: EMBEDDING_DIM }))
+        .with_embed(Arc::new(ConstantEmbedding::zero("fake-embed")))
 }
 
 /// Instantiate the test personality + return its instance id.

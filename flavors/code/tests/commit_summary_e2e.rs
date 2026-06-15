@@ -5,55 +5,19 @@
 
 use std::sync::Arc;
 
-use async_trait::async_trait;
-use proxima_code::{
-    CommitSummaryV1, CommitV1, build_engine_with, ingest_commit, migrator, register_repo,
-};
-use proxima_core::llm::{EmbeddingClient, LlmError};
+mod common;
+
+use common::{migrated_db, test_owner};
+use proxima_code::{CommitSummaryV1, CommitV1, build_engine_with, ingest_commit, register_repo};
 use proxima_core::personality::InstantiatePersonalityRequest;
-use proxima_core::{AuthPath, AuthzContext, OrgId, Owner, Principal, SourceBatchId, UserId};
-use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
-use proxima_storage_pg::PgStorage;
+use proxima_core::test_fixtures::ConstantEmbedding;
+use proxima_core::{AuthPath, AuthzContext, SourceBatchId};
+use proxima_pg_testkit::drop_db;
 use uuid::Uuid;
-
-async fn migrated_db() -> Option<(String, PgStorage)> {
-    let db_name = unique_db_name("proxima_test");
-    create_db(&db_name).await.expect("PG required for tests");
-    let url = db_url(&db_name);
-    let pg = PgStorage::connect(&url).await.expect("connect test db");
-    pg.run_migrations().await.expect("core migrations");
-    migrator().run(pg.pool()).await.expect("code migrations");
-    Some((db_name, pg))
-}
-
-fn test_owner() -> Owner {
-    Owner {
-        principal: Principal::User(UserId::new(Uuid::now_v7())),
-        org_id: OrgId::new(Uuid::now_v7()),
-    }
-}
-
-#[derive(Debug)]
-struct FakeEmbedding;
-
-#[async_trait]
-impl EmbeddingClient for FakeEmbedding {
-    async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
-        Ok(vec![0.0; 8])
-    }
-    fn model_id(&self) -> &str {
-        "fake-embed"
-    }
-    fn dim(&self) -> usize {
-        8
-    }
-}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn commit_summary_e2e_produces_abstraction_with_correct_provenance() {
-    let Some((db, pg)) = migrated_db().await else {
-        return;
-    };
+    let (db, pg) = migrated_db().await;
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = test_owner();
@@ -61,8 +25,8 @@ async fn commit_summary_e2e_produces_abstraction_with_correct_provenance() {
         let repo_id = Uuid::now_v7();
         register_repo(pg.pool(), &owner, repo_id, "/tmp/commit-summary-e2e", "e2e").await?;
 
-        let engine =
-            build_engine_with(pg.clone(), |_registry| {}).with_embed(Arc::new(FakeEmbedding));
+        let engine = build_engine_with(pg.clone(), |_registry| {})
+            .with_embed(Arc::new(ConstantEmbedding::zero("fake-embed")));
         let inst = engine
             .instantiate_personality(
                 &authz,

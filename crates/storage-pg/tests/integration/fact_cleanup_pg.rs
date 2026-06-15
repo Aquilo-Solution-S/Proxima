@@ -93,9 +93,7 @@ fn fresh_draft_with_content_hash(owner: Owner, content_hash: [u8; 32]) -> EventD
 #[tokio::test]
 async fn cleanup_due_facts_erases_fact_and_tombstones_direct_derivative()
 -> Result<(), Box<dyn std::error::Error>> {
-    let Some((pg, db_name)) = fresh_pg().await else {
-        return Ok(());
-    };
+    let (pg, db_name) = fresh_pg().await;
     pg.run_migrations().await?;
 
     let owner = owner_fixture();
@@ -155,9 +153,7 @@ async fn cleanup_due_facts_erases_fact_and_tombstones_direct_derivative()
 #[tokio::test]
 async fn cleanup_due_facts_tombstones_transitive_derivatives()
 -> Result<(), Box<dyn std::error::Error>> {
-    let Some((pg, db_name)) = fresh_pg().await else {
-        return Ok(());
-    };
+    let (pg, db_name) = fresh_pg().await;
     pg.run_migrations().await?;
 
     let owner = owner_fixture();
@@ -203,9 +199,7 @@ async fn cleanup_due_facts_tombstones_transitive_derivatives()
 #[tokio::test]
 async fn cleanup_due_facts_aggressively_tombstones_multi_support_derivative()
 -> Result<(), Box<dyn std::error::Error>> {
-    let Some((pg, db_name)) = fresh_pg().await else {
-        return Ok(());
-    };
+    let (pg, db_name) = fresh_pg().await;
     pg.run_migrations().await?;
 
     let owner = owner_fixture();
@@ -257,9 +251,7 @@ async fn cleanup_due_facts_aggressively_tombstones_multi_support_derivative()
 #[tokio::test]
 async fn cleanup_due_facts_garbage_collects_cited_objects_by_reference_count()
 -> Result<(), Box<dyn std::error::Error>> {
-    let Some((pg, db_name)) = fresh_pg().await else {
-        return Ok(());
-    };
+    let (pg, db_name) = fresh_pg().await;
     pg.run_migrations().await?;
 
     let owner = owner_fixture();
@@ -303,9 +295,7 @@ async fn cleanup_due_facts_garbage_collects_cited_objects_by_reference_count()
 #[tokio::test]
 async fn cleanup_due_facts_deletes_cited_object_sidecars_and_surfaces_s3_refs()
 -> Result<(), Box<dyn std::error::Error>> {
-    let Some((pg, db_name)) = fresh_pg().await else {
-        return Ok(());
-    };
+    let (pg, db_name) = fresh_pg().await;
     pg.run_migrations().await?;
 
     let owner = owner_fixture();

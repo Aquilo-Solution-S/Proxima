@@ -120,9 +120,7 @@ async fn assert_transition_forbidden(
 
 #[tokio::test]
 async fn goal_transition_trigger_enforces_matrix() -> Result<(), Box<dyn std::error::Error>> {
-    let Some((pg, db_name)) = fresh_pg().await else {
-        return Ok(());
-    };
+    let (pg, db_name) = fresh_pg().await;
 
     let result = async {
         pg.run_migrations().await?;

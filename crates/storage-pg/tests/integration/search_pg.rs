@@ -16,9 +16,7 @@ use uuid::Uuid;
 #[tokio::test]
 async fn semantic_search_ranks_nearest_vector_and_isolates_owner()
 -> Result<(), Box<dyn std::error::Error>> {
-    let Some((pg, db_name)) = fresh_pg().await else {
-        return Ok(());
-    };
+    let (pg, db_name) = fresh_pg().await;
     pg.run_migrations().await?;
 
     let owner = owner_fixture();
@@ -68,9 +66,7 @@ async fn semantic_search_ranks_nearest_vector_and_isolates_owner()
 #[tokio::test]
 async fn semantic_search_matches_pgvector_cosine_and_clamps_zero_query()
 -> Result<(), Box<dyn std::error::Error>> {
-    let Some((pg, db_name)) = fresh_pg().await else {
-        return Ok(());
-    };
+    let (pg, db_name) = fresh_pg().await;
     pg.run_migrations().await?;
 
     let owner = owner_fixture();
@@ -139,9 +135,7 @@ async fn semantic_search_matches_pgvector_cosine_and_clamps_zero_query()
 #[tokio::test]
 async fn lexical_search_ignores_unprojected_code_chunk_text()
 -> Result<(), Box<dyn std::error::Error>> {
-    let Some((pg, db_name)) = fresh_pg().await else {
-        return Ok(());
-    };
+    let (pg, db_name) = fresh_pg().await;
     pg.run_migrations().await?;
     sqlx::query("CREATE SCHEMA IF NOT EXISTS proxima_code")
         .execute(pg.pool())
@@ -192,9 +186,7 @@ async fn lexical_search_ignores_unprojected_code_chunk_text()
 #[tokio::test]
 async fn search_projects_authoring_personality_and_nil_as_none()
 -> Result<(), Box<dyn std::error::Error>> {
-    let Some((pg, db_name)) = fresh_pg().await else {
-        return Ok(());
-    };
+    let (pg, db_name) = fresh_pg().await;
     pg.run_migrations().await?;
 
     let owner = owner_fixture();
@@ -270,9 +262,7 @@ async fn search_projects_authoring_personality_and_nil_as_none()
 #[tokio::test]
 async fn lexical_search_ignores_sidecar_without_projection()
 -> Result<(), Box<dyn std::error::Error>> {
-    let Some((pg, db_name)) = fresh_pg().await else {
-        return Ok(());
-    };
+    let (pg, db_name) = fresh_pg().await;
     pg.run_migrations().await?;
     sqlx::query("CREATE SCHEMA IF NOT EXISTS proxima_test")
         .execute(pg.pool())
@@ -308,9 +298,7 @@ async fn lexical_search_ignores_sidecar_without_projection()
 #[tokio::test]
 async fn search_filters_tags_across_modes_and_excludes_untagged()
 -> Result<(), Box<dyn std::error::Error>> {
-    let Some((pg, db_name)) = fresh_pg().await else {
-        return Ok(());
-    };
+    let (pg, db_name) = fresh_pg().await;
     pg.run_migrations().await?;
     create_tagged_search_sidecars(pg.pool()).await?;
 
@@ -412,9 +400,7 @@ async fn search_filters_tags_across_modes_and_excludes_untagged()
 #[tokio::test]
 async fn search_filters_created_at_range_and_populates_created_at()
 -> Result<(), Box<dyn std::error::Error>> {
-    let Some((pg, db_name)) = fresh_pg().await else {
-        return Ok(());
-    };
+    let (pg, db_name) = fresh_pg().await;
     pg.run_migrations().await?;
     create_tagged_search_sidecars(pg.pool()).await?;
 
@@ -483,9 +469,7 @@ async fn search_filters_created_at_range_and_populates_created_at()
 #[tokio::test]
 async fn search_order_recency_sorts_matching_candidates_newest_first()
 -> Result<(), Box<dyn std::error::Error>> {
-    let Some((pg, db_name)) = fresh_pg().await else {
-        return Ok(());
-    };
+    let (pg, db_name) = fresh_pg().await;
     pg.run_migrations().await?;
     create_tagged_search_sidecars(pg.pool()).await?;
 
