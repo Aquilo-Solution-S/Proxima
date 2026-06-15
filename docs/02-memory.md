@@ -4,7 +4,29 @@ Memory is the cognitive graph above Event Sources.
 
 ```
 Reality ──EventSource──► Fact ──F→A──► Abstraction ──A→P──► Perspective
+                                            └────A→Goal────► Goal
 ```
+
+## Ontology at a Glance
+
+Five terms recur throughout Proxima. Four are **node kinds**; the fifth
+(Citation) is provenance, not a node. Where each lives in the schema is the
+part the table names hide:
+
+| Term | What it is | Schema home | Produced by |
+|---|---|---|---|
+| **Fact** | An accepted observation from an Event Source — the event stream. Never revised. | `memories` (`kind` NULL, `event_id` set) | EventSource ingest |
+| **Abstraction** | A re-derivable interpretation over Facts. | `memories` (`kind = 'Abstraction'`) | `F→A` operator |
+| **Perspective** | A re-derivable integration over Abstractions; the lens reads are taken through. The self-perspective anchors a personality. | `memories` (`kind = 'Perspective'`) | `A→P` operator |
+| **Goal** | A desired end-state, with a lifecycle (`state`) and a parent DAG (`goal_parents`). | `goals` (its own table) | user / external / `A→Goal` operator |
+| **Citation** | *Not a node.* An immutable, content-addressed outside-proof attached to a Fact ("I assert this because of that source"). | `cited_objects` + a `cited_<schema>` byte sidecar, linked to a Fact by `citation_mappings` | attached at Fact ingest |
+
+So `memories` is **three** node kinds in one table (Fact, Abstraction,
+Perspective), discriminated by `kind`; Goals are a separate axis; Citations
+are bibliography hanging off Facts, never a node of their own. The same
+breakdown is mirrored as `COMMENT ON` text on the tables in
+`0001_init.sql`. Goal detail is in [06](06-goals-and-self.md); Citation
+mechanics in [11](11-citations.md).
 
 ## The Layering Principle
 
@@ -68,7 +90,7 @@ Kind-specific content:
 
 | Kind | Content | Citation | Text | Supersession |
 |---|---|---|---|---|
-| Fact | Typed `FactPayload` sidecar | Required `citation_mapping_id` | none; render on demand | never |
+| Fact | Typed `FactPayload` sidecar | Optional `citation_mapping_id` | none; render on demand | never |
 | Abstraction | Typed `AbstractionPayload` sidecar + immutable `text` | none | operator-authored | allowed |
 | Perspective | Typed `PerspectivePayload` sidecar + immutable `text` | none | operator-authored | allowed |
 
@@ -329,6 +351,7 @@ Rules:
 
 ## Anchors
 
+- `ontology-at-a-glance`
 - `the-layering-principle`
 - `why-this-layering-the-trauma-test`
 - `the-core-entity`

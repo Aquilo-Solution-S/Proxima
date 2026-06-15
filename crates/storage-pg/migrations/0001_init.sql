@@ -481,6 +481,10 @@ CREATE TABLE proxima_core.citation_mappings (
 );
 
 
+COMMENT ON TABLE proxima_core.citation_mappings IS
+  'Links a Fact (memory_id) to its cited_object (the outside-proof). This row is the whole mapping for a pure-link citation; schema-specific mapping metadata, when any exists, lives in an optional citation_<schema> sidecar. See docs/11-citations.md.';
+
+
 --
 -- Name: cited_mcp_call_io_v1; Type: TABLE; Schema: proxima_core; Owner: -
 --
@@ -535,6 +539,10 @@ CREATE TABLE proxima_core.cited_objects (
 );
 
 
+COMMENT ON TABLE proxima_core.cited_objects IS
+  'Parent of a Citation''s evidence: an immutable, content-addressed outside-proof (content_hash), deduplicated across the Facts that cite it. The actual bytes live in the per-schema cited_<schema> sidecar (e.g. cited_mcp_call_io_v1, cited_uploaded_blob_v1). A Citation is NOT a node kind. See docs/11-citations.md.';
+
+
 --
 -- Name: cited_uploaded_blob_v1; Type: TABLE; Schema: proxima_core; Owner: -
 --
@@ -577,6 +585,10 @@ CREATE TABLE proxima_core.edges (
     CONSTRAINT edges_source_endpoint_chk CHECK (((source_memory_id IS NOT NULL) <> (source_goal_id IS NOT NULL))),
     CONSTRAINT edges_target_endpoint_chk CHECK (((target_memory_id IS NOT NULL) <> (target_goal_id IS NOT NULL)))
 );
+
+
+COMMENT ON TABLE proxima_core.edges IS
+  'Typed directed relations between any two nodes (memory or goal endpoints; exactly one of source_memory_id/source_goal_id per side, likewise on target). relation_class groups them: Provenance, Structural, Causal, Interpretive, Supersession. See docs/02-memory.md.';
 
 
 --
@@ -657,6 +669,10 @@ CREATE TABLE proxima_core.goals (
 );
 
 
+COMMENT ON TABLE proxima_core.goals IS
+  'The Goal node kind (desired end-states), kept out of memories because it carries a lifecycle (state), an authorship model (authorship_kind: User/System/External), and a parent DAG (goal_parents). System goals are operator-derived via the AtoGoal operator (Abstraction -> Goal). See docs/06-goals-and-self.md.';
+
+
 --
 -- Name: master_token_personality; Type: TABLE; Schema: proxima_core; Owner: -
 --
@@ -720,6 +736,19 @@ CREATE TABLE proxima_core.memories (
     CONSTRAINT memories_variant_chk CHECK ((((event_id IS NOT NULL) AND (kind IS NULL) AND (operator_kind IS NULL) AND (model_id IS NULL) AND (prompt_version IS NULL) AND (supersedes IS NULL)) OR ((kind IS NOT NULL) AND (text IS NOT NULL) AND (operator_kind IS NOT NULL) AND (model_id IS NOT NULL) AND (prompt_version IS NOT NULL) AND (event_id IS NULL) AND (citation_mapping_id IS NULL)))),
     CONSTRAINT memories_wake_chain_depth_chk CHECK ((wake_chain_depth >= 0))
 );
+
+
+COMMENT ON TABLE proxima_core.memories IS
+  'Graph nodes of kind Fact | Abstraction | Perspective (the fourth node kind, Goal, lives in goals). Discriminated by the kind column via memories_variant_chk: Fact = kind NULL + event_id set (an ingested event-stream entry, may carry an optional citation_mapping_id); Abstraction (FtoA operator) and Perspective (AtoP operator) = kind set, operator-derived (operator_kind/model_id/prompt_version), with no event_id or citation. See docs/02-memory.md for the Fact -> Abstraction -> Perspective -> Goal derivation pipeline.';
+
+COMMENT ON COLUMN proxima_core.memories.kind IS
+  'NULL => Fact; otherwise Abstraction or Perspective (constrained by memories_kind_values_chk + memories_variant_chk).';
+
+COMMENT ON COLUMN proxima_core.memories.event_id IS
+  'Set only on Facts: the source event (proxima_core.events) this Fact was ingested from. NULL on Abstractions/Perspectives.';
+
+COMMENT ON COLUMN proxima_core.memories.citation_mapping_id IS
+  'Optional outside-proof for a Fact (-> citation_mappings). Forbidden on Abstractions/Perspectives.';
 
 
 --
