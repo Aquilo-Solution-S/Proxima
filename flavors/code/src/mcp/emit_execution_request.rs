@@ -1068,7 +1068,7 @@ async fn validate_goal_activated_fact(
         "SELECT COALESCE(m.kind, 'Fact'::proxima_core.entity_kind) AS kind,
                 m.schema_id, g.goal_id
          FROM proxima_core.memories m
-         JOIN proxima_goal.goal_activated_v1 g USING (memory_id)
+         JOIN proxima_core.goal_activated_v1 g USING (memory_id)
          WHERE m.memory_id = $1
            AND m.owner_principal_kind = $2
            AND m.owner_principal_id = $3",
@@ -1085,9 +1085,9 @@ async fn validate_goal_activated_fact(
             memory_id.into_inner()
         )));
     };
-    if kind != EntityKind::Fact || schema_id != "proxima-goal/goal-activated-v1" {
+    if kind != EntityKind::Fact || schema_id != "core/goal-activated-v1" {
         return Err(McpToolError::InvalidInput(
-            "goal_activated_memory must be a proxima-goal/goal-activated-v1 Fact".into(),
+            "goal_activated_memory must be a core/goal-activated-v1 Fact".into(),
         ));
     }
     Ok(goal_id)

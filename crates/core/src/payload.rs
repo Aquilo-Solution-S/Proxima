@@ -127,12 +127,20 @@ pub trait PerspectivePayload: serde::Serialize + serde::de::DeserializeOwned + '
 /// Mirrors `FactPayload` / `AbstractionPayload` for the Goal layer.
 ///
 /// See docs/06 §Goal entity and docs/03 §Sidecar tables.
-pub trait GoalPayload: serde::Serialize + serde::de::DeserializeOwned + 'static {
+pub trait GoalPayload:
+    serde::Serialize + serde::de::DeserializeOwned + Send + Sync + 'static
+{
     const SCHEMA_ID: &'static str;
     const SCHEMA_VERSION: u32;
     /// See `FactPayload::SPECIAL_CATEGORY`.
     const SPECIAL_CATEGORY: bool = false;
-    fn sidecar_table() -> &'static str;
+    /// Per-schema typed Goal sidecar table, or `None` when the Goal's
+    /// typed payload has no schema-specific storage beyond
+    /// `proxima_core.goals.payload`.
+    #[must_use]
+    fn sidecar_table() -> Option<&'static str> {
+        None
+    }
     #[must_use]
     fn json_schema() -> Option<serde_json::Value> {
         None
@@ -140,6 +148,22 @@ pub trait GoalPayload: serde::Serialize + serde::de::DeserializeOwned + 'static 
     #[must_use]
     fn schema_id() -> SchemaId {
         SchemaId::new(Self::SCHEMA_ID.to_string())
+    }
+
+    fn sidecar_insert<'t>(
+        &'t self,
+        _tx: &'t mut sqlx::Transaction<'_, sqlx::Postgres>,
+        _goal_id: uuid::Uuid,
+    ) -> futures::future::BoxFuture<'t, Result<(), StorageError>> {
+        Box::pin(async move { Err(Self::missing_inline_sidecar_inserter_error()) })
+    }
+
+    #[must_use]
+    fn missing_inline_sidecar_inserter_error() -> StorageError {
+        StorageError::Internal(format!(
+            "goal schema {} has no inline sidecar inserter",
+            Self::SCHEMA_ID,
+        ))
     }
 }
 

@@ -24,14 +24,17 @@ use proxima_core::verbs::event_ingest::{
     AuthorizedEventIngest, AuthorizedFactWithCitation, EventDraft, EventIngestOutcome,
 };
 use proxima_core::verbs::fact_cleanup::CleanupDueFactsOutcome;
-use proxima_core::verbs::goal_write::{GoalDraft, GoalWriteOutcome};
+use proxima_core::verbs::goal_write::{
+    AchieveGoalAtomicRequest, CreateGoalAtomicRequest, DecomposeGoalAtomicRequest,
+    DecomposeGoalOutcome, GoalWriteOutcome, ModifyGoalAtomicRequest, TransitionGoalAtomicRequest,
+};
 use proxima_core::verbs::persist_mcp_call::{McpCallLogInput, McpCallLogOutcome};
 use proxima_core::verbs::query::{
     FactCitationReadback, MemoryLineageRequest, MemoryLineageResponse, MemorySearchRequest,
     MemorySearchResult, QueryRequest, QueryResponse,
 };
 use proxima_core::{
-    AuthorDerivedOutcome, AuthorDerivedRequest, DerivedEdgeSpec, EmbeddingJobClaim, GoalId,
+    AuthorDerivedOutcome, AuthorDerivedRequest, DerivedEdgeSpec, EmbeddingJobClaim,
     MasterTokenPersonality, MemoryDependency, MemoryId, Owner, Principal, SourceBatchId, Storage,
     StorageError, StorageHandle,
 };
@@ -375,16 +378,39 @@ impl Storage for PgStorage {
         tx.commit().await.map_err(crate::error::map_err)
     }
 
-    async fn write_goal_atomic(&self, draft: &GoalDraft) -> Result<GoalWriteOutcome, StorageError> {
-        verbs::goal_write::write_goal_atomic(&self.pool, draft).await
+    async fn create_goal_atomic(
+        &self,
+        req: &CreateGoalAtomicRequest<'_>,
+    ) -> Result<GoalWriteOutcome, StorageError> {
+        verbs::goal_write::create_goal_atomic(&self.pool, req).await
     }
 
-    async fn supersede_goal_atomic(
+    async fn transition_goal_atomic(
         &self,
-        prior: GoalId,
-        draft: &GoalDraft,
+        req: &TransitionGoalAtomicRequest<'_>,
     ) -> Result<GoalWriteOutcome, StorageError> {
-        verbs::goal_write::supersede_goal_atomic(&self.pool, prior, draft).await
+        verbs::goal_write::transition_goal_atomic(&self.pool, req).await
+    }
+
+    async fn achieve_goal_atomic(
+        &self,
+        req: &AchieveGoalAtomicRequest<'_>,
+    ) -> Result<GoalWriteOutcome, StorageError> {
+        verbs::goal_write::achieve_goal_atomic(&self.pool, req).await
+    }
+
+    async fn modify_goal_atomic(
+        &self,
+        req: &ModifyGoalAtomicRequest<'_>,
+    ) -> Result<GoalWriteOutcome, StorageError> {
+        verbs::goal_write::modify_goal_atomic(&self.pool, req).await
+    }
+
+    async fn decompose_goal_atomic(
+        &self,
+        req: &DecomposeGoalAtomicRequest<'_>,
+    ) -> Result<DecomposeGoalOutcome, StorageError> {
+        verbs::goal_write::decompose_goal_atomic(&self.pool, req).await
     }
 
     async fn event_history(

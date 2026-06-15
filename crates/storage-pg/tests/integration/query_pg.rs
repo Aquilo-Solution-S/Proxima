@@ -9,7 +9,7 @@ use proxima_core::storage::Storage;
 use proxima_core::verbs::event_ingest::{
     Citation, CitationMappingHint, CitedObjectHint, EventDraft,
 };
-use proxima_core::verbs::goal_write::{GoalAuthorship, GoalDraft, GoalState};
+use proxima_core::verbs::goal_write::{GoalAuthorshipKind, GoalState};
 use proxima_core::verbs::query::{
     EntityKind, MemoryStore, PersonalityRootFilter, QueryRequest, SupersessionStatus,
 };
@@ -22,6 +22,46 @@ use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
 
 use proxima_core::PersonalityStatus;
+
+/// Seed an Active, User-authored goal row directly (the query tests only
+/// need a queryable goal row; the full create-goal atom would require a
+/// self-perspective + lifecycle machinery these tests don't exercise).
+async fn seed_goal(
+    pg: &PgStorage,
+    owner: &Owner,
+    schema_id: &str,
+    schema_version: i32,
+    title: &str,
+    text: &str,
+    payload: &[u8],
+) -> Result<(), sqlx::Error> {
+    let owner_principal_id = match owner.principal {
+        Principal::User(u) => u.into_inner(),
+        Principal::Group(g) => g.into_inner(),
+    };
+    sqlx::query(
+        "INSERT INTO proxima_core.goals
+            (goal_id, schema_id, schema_version, owner_principal_kind,
+             owner_principal_id, owner_org_id, title, text, payload, state,
+             authorship_kind, request_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(schema_id)
+    .bind(schema_version)
+    .bind(OwnerPrincipalKind::of(&owner.principal))
+    .bind(owner_principal_id)
+    .bind(owner.org_id.into_inner())
+    .bind(title)
+    .bind(text)
+    .bind(payload)
+    .bind(GoalState::Active)
+    .bind(GoalAuthorshipKind::User)
+    .bind(format!("seed-{}", Uuid::now_v7()))
+    .execute(pg.pool())
+    .await
+    .map(|_| ())
+}
 
 fn schemas_for_test() -> Vec<SchemaInfo> {
     vec![
@@ -938,22 +978,17 @@ async fn query_goals_filter_by_schema_id() {
         let authz =
             proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System);
 
-        // Write a goal under "test/goal_blob" v1.
-        let goal_v1 = GoalDraft {
-            principal: owner.principal.clone(),
-            org_id: Some(owner.org_id),
-            schema_id: SchemaId::new("test/goal_blob".into()),
-            schema_version: SchemaVersion::new(1),
-            title: "Test goal".to_string(),
-            text: "v1 goal".to_string(),
-            payload: br#"{"v":1}"#.to_vec(),
-            state: GoalState::Active,
-            parent_goal_ids: vec![],
-            supersedes_goal_id: None,
-            authorship: GoalAuthorship::User,
-            request_id: "req-v1".to_string(),
-        };
-        engine.write_goal(&authz, goal_v1).await?;
+        // Seed a goal under "test/goal_blob" v1.
+        seed_goal(
+            &pg,
+            &owner,
+            "test/goal_blob",
+            1,
+            "Test goal",
+            "v1 goal",
+            br#"{"v":1}"#,
+        )
+        .await?;
 
         // Filtering by a Fact schema_id must return zero goals.
         let req_fact_filter = QueryRequest {
@@ -1041,27 +1076,17 @@ async fn query_returns_stored_goal_schema_version() {
         let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
         let engine = Engine::new(registry, MemoryStore::new()).with_storage(storage);
 
-        // Write a goal under schema_version=2.
-        let goal_v2 = GoalDraft {
-            principal: owner.principal.clone(),
-            org_id: Some(owner.org_id),
-            schema_id: SchemaId::new("test/goal_blob_v2".into()),
-            schema_version: SchemaVersion::new(2),
-            title: "Test goal".to_string(),
-            text: "v2 goal".to_string(),
-            payload: br#"{"v":2}"#.to_vec(),
-            state: GoalState::Active,
-            parent_goal_ids: vec![],
-            supersedes_goal_id: None,
-            authorship: GoalAuthorship::User,
-            request_id: "req-v2".to_string(),
-        };
-        engine
-            .write_goal(
-                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
-                goal_v2,
-            )
-            .await?;
+        // Seed a goal under schema_version=2.
+        seed_goal(
+            &pg,
+            &owner,
+            "test/goal_blob_v2",
+            2,
+            "Test goal",
+            "v2 goal",
+            br#"{"v":2}"#,
+        )
+        .await?;
 
         let resp = engine
             .query(

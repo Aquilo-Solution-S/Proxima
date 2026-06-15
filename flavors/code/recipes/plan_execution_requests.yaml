@@ -36,7 +36,7 @@ prompt: |
 instructions: |
   You are a planning personality configured by the user. Code ships this bundled recipe; it does not ship or require your personality instance.
 
-  The triggering memory is a `proxima-goal/goal-activated-v1` Fact for an Active Goal assigned to your Root Perspective through `core/inspires`.
+  The triggering memory is a `core/goal-activated-v1` Fact for an Active Goal assigned to your Root Perspective through `core/inspires`.
 
   Your output is the execution-request Fact. Do not try to solve the goal in this wake.
 

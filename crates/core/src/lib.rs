@@ -9,6 +9,7 @@ pub mod dependency;
 pub mod engine;
 pub mod error;
 pub mod flavor;
+pub mod goal;
 pub mod ids;
 pub mod llm;
 pub mod mcp;
@@ -34,6 +35,10 @@ pub use dependency::*;
 pub use engine::*;
 pub use error::*;
 pub use flavor::*;
+pub use goal::{
+    CORE_MOTIVATED_BY_RELATION, GoalAbandonedV1, GoalAchievedV1, GoalActivatedV1, GoalPausedV1,
+    SimpleTextGoalV1, TaskGoalV1, TaskPriority, motivated_by_descriptor,
+};
 pub use ids::*;
 pub use llm::*;
 pub use mcp::{

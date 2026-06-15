@@ -28,10 +28,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pg = PgStorage::connect(&url).await?;
     let report = run_core_and_flavor_migrations(
         &pg,
-        [
-            NamedMigrator::new("proxima-code", proxima_code::migrator()),
-            NamedMigrator::new("proxima-flavor-goal", proxima_flavor_goal::migrator()),
-        ],
+        [NamedMigrator::new("proxima-code", proxima_code::migrator())],
     )
     .await?;
     for source in report.sources {

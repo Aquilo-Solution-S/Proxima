@@ -124,12 +124,20 @@ CREATE TYPE proxima_core.goal_operator_kind AS ENUM (
 --
 
 CREATE TYPE proxima_core.goal_state AS ENUM (
-    'Proposed',
     'Active',
     'Paused',
     'Achieved',
-    'Abandoned',
-    'Rejected'
+    'Abandoned'
+);
+
+--
+-- Name: task_priority; Type: TYPE; Schema: proxima_core; Owner: -
+--
+
+CREATE TYPE proxima_core.task_priority AS ENUM (
+    'Low',
+    'Medium',
+    'High'
 );
 
 
@@ -243,27 +251,6 @@ $$;
 
 
 --
--- Name: goals_pair_allowed(text, text, text); Type: FUNCTION; Schema: proxima_core; Owner: -
---
-
-CREATE FUNCTION proxima_core.goals_pair_allowed(prior_state text, next_state text, authorship_kind text) RETURNS boolean
-    LANGUAGE sql IMMUTABLE
-    AS $$
-    SELECT (prior_state, next_state, authorship_kind) IN (
-        ('Proposed', 'Active', 'User'),
-        ('Proposed', 'Rejected', 'User'),
-        ('Active', 'Active', 'User'),
-        ('Active', 'Paused', 'User'),
-        ('Active', 'Achieved', 'User'),
-        ('Active', 'Achieved', 'System'),
-        ('Active', 'Abandoned', 'User'),
-        ('Paused', 'Active', 'User'),
-        ('Paused', 'Abandoned', 'User')
-    );
-$$;
-
-
---
 -- Name: goals_pair_allowed(proxima_core.goal_state, proxima_core.goal_state, proxima_core.goal_authorship_kind); Type: FUNCTION; Schema: proxima_core; Owner: -
 --
 
@@ -271,14 +258,13 @@ CREATE FUNCTION proxima_core.goals_pair_allowed(prior_state proxima_core.goal_st
     LANGUAGE sql IMMUTABLE
     AS $$
     SELECT (prior_state, next_state, authorship_kind) IN (
-        ('Proposed'::proxima_core.goal_state, 'Active'::proxima_core.goal_state, 'User'::proxima_core.goal_authorship_kind),
-        ('Proposed'::proxima_core.goal_state, 'Rejected'::proxima_core.goal_state, 'User'::proxima_core.goal_authorship_kind),
-        ('Active'::proxima_core.goal_state, 'Active'::proxima_core.goal_state, 'User'::proxima_core.goal_authorship_kind),
         ('Active'::proxima_core.goal_state, 'Paused'::proxima_core.goal_state, 'User'::proxima_core.goal_authorship_kind),
         ('Active'::proxima_core.goal_state, 'Achieved'::proxima_core.goal_state, 'User'::proxima_core.goal_authorship_kind),
         ('Active'::proxima_core.goal_state, 'Achieved'::proxima_core.goal_state, 'System'::proxima_core.goal_authorship_kind),
         ('Active'::proxima_core.goal_state, 'Abandoned'::proxima_core.goal_state, 'User'::proxima_core.goal_authorship_kind),
         ('Paused'::proxima_core.goal_state, 'Active'::proxima_core.goal_state, 'User'::proxima_core.goal_authorship_kind),
+        ('Paused'::proxima_core.goal_state, 'Achieved'::proxima_core.goal_state, 'User'::proxima_core.goal_authorship_kind),
+        ('Paused'::proxima_core.goal_state, 'Achieved'::proxima_core.goal_state, 'System'::proxima_core.goal_authorship_kind),
         ('Paused'::proxima_core.goal_state, 'Abandoned'::proxima_core.goal_state, 'User'::proxima_core.goal_authorship_kind)
     );
 $$;
@@ -295,9 +281,6 @@ DECLARE
     prior_state proxima_core.goal_state;
 BEGIN
     IF NEW.supersedes IS NULL THEN
-        IF NEW.state = 'Rejected' THEN
-            RAISE EXCEPTION 'goal: cannot create directly with state=Rejected';
-        END IF;
         IF NEW.state IN ('Active', 'Paused', 'Achieved', 'Abandoned')
            AND NEW.authorship_kind NOT IN ('User', 'System') THEN
             RAISE EXCEPTION 'goal: only User/System may seed state=%', NEW.state;
@@ -312,8 +295,13 @@ BEGIN
     IF prior_state IS NULL THEN
         RAISE EXCEPTION 'goal: supersedes references unknown id';
     END IF;
-    IF prior_state IN ('Achieved', 'Abandoned', 'Rejected') THEN
+    IF prior_state IN ('Achieved', 'Abandoned') THEN
         RAISE EXCEPTION 'goal: state=% is terminal', prior_state;
+    END IF;
+    IF prior_state = 'Active'
+       AND NEW.state = 'Active'
+       AND NEW.authorship_kind IN ('User', 'System') THEN
+        RETURN NEW;
     END IF;
     IF NOT proxima_core.goals_pair_allowed(prior_state, NEW.state, NEW.authorship_kind) THEN
         RAISE EXCEPTION 'goal: forbidden transition %->% under authorship=%',
@@ -734,7 +722,10 @@ CREATE TABLE proxima_core.goals (
     personality_instance_id uuid,
     CONSTRAINT goals_authorship_shape_chk CHECK ((((authorship_kind = 'User'::proxima_core.goal_authorship_kind) AND (authorship_origin IS NULL) AND (authorship_operator_id IS NULL) AND (authorship_tool_id IS NULL) AND (operator_kind IS NULL) AND (model_id IS NULL) AND (prompt_version IS NULL) AND (personality_instance_id IS NULL)) OR ((authorship_kind = 'System'::proxima_core.goal_authorship_kind) AND (authorship_origin = 'Operator'::proxima_core.goal_authorship_origin) AND (authorship_operator_id IS NOT NULL) AND (operator_kind IS NOT NULL) AND (model_id IS NOT NULL) AND (prompt_version IS NOT NULL) AND (personality_instance_id IS NOT NULL) AND (authorship_tool_id IS NULL)) OR ((authorship_kind = 'System'::proxima_core.goal_authorship_kind) AND (authorship_origin = 'Tool'::proxima_core.goal_authorship_origin) AND (authorship_tool_id IS NOT NULL) AND (authorship_operator_id IS NULL) AND (operator_kind IS NULL) AND (model_id IS NULL) AND (prompt_version IS NULL) AND (personality_instance_id IS NULL)) OR ((authorship_kind = 'External'::proxima_core.goal_authorship_kind) AND (authorship_origin IS NULL) AND (authorship_operator_id IS NULL) AND (authorship_tool_id IS NULL) AND (operator_kind IS NULL) AND (model_id IS NULL) AND (prompt_version IS NULL) AND (personality_instance_id IS NULL)))),
     CONSTRAINT goals_schema_version_positive_chk CHECK ((schema_version > 0)),
-    CONSTRAINT goals_payload_nonempty_chk CHECK ((octet_length(payload) > 0))
+    CONSTRAINT goals_payload_nonempty_chk CHECK ((octet_length(payload) > 0)),
+    CONSTRAINT goals_request_id_nonempty CHECK ((length(btrim(request_id)) > 0)),
+    CONSTRAINT goals_text_nonempty CHECK ((length(btrim(text)) > 0)),
+    CONSTRAINT goals_title_nonempty CHECK ((length(btrim(title)) > 0))
 );
 
 
@@ -744,6 +735,85 @@ COMMENT ON TABLE proxima_core.goals IS
 
 COMMENT ON CONSTRAINT goals_payload_nonempty_chk ON proxima_core.goals IS
   'Defense-in-depth against zero-byte payloads. Every registered Goal schema encodes to a non-empty canonical-JSON object (the smallest, SimpleTextGoalV1, is "{}"). Engine GoalWrite validates the payload against its schema (crates/core/src/engine/goals.rs); this CHECK is the last line of defense if a zero-byte payload reaches storage by another path. Replaces the former DEFAULT ''\x'' which silently admitted empty payloads.';
+
+COMMENT ON CONSTRAINT goals_request_id_nonempty ON proxima_core.goals IS
+  'Goal writes are idempotent per Owner/request_id; empty request ids are never valid.';
+
+COMMENT ON CONSTRAINT goals_text_nonempty ON proxima_core.goals IS
+  'Goal text is the retrieval body for the Goal node and must be nonblank.';
+
+COMMENT ON CONSTRAINT goals_title_nonempty ON proxima_core.goals IS
+  'Goal title is the compact display label for the Goal node and must be nonblank.';
+
+
+--
+-- Name: goal_activated_v1; Type: TABLE; Schema: proxima_core; Owner: -
+--
+
+CREATE TABLE proxima_core.goal_activated_v1 (
+    memory_id uuid NOT NULL,
+    goal_id uuid NOT NULL,
+    transitioned_at timestamp with time zone NOT NULL
+);
+
+COMMENT ON TABLE proxima_core.goal_activated_v1 IS
+  'Lifecycle Fact sidecar for core/goal-activated-v1. Skinny by design: readers join proxima_core.goals for title/schema/body.';
+
+
+--
+-- Name: goal_paused_v1; Type: TABLE; Schema: proxima_core; Owner: -
+--
+
+CREATE TABLE proxima_core.goal_paused_v1 (
+    memory_id uuid NOT NULL,
+    goal_id uuid NOT NULL,
+    transitioned_at timestamp with time zone NOT NULL
+);
+
+COMMENT ON TABLE proxima_core.goal_paused_v1 IS
+  'Lifecycle Fact sidecar for core/goal-paused-v1. Skinny by design: readers join proxima_core.goals for title/schema/body.';
+
+
+--
+-- Name: goal_achieved_v1; Type: TABLE; Schema: proxima_core; Owner: -
+--
+
+CREATE TABLE proxima_core.goal_achieved_v1 (
+    memory_id uuid NOT NULL,
+    goal_id uuid NOT NULL,
+    transitioned_at timestamp with time zone NOT NULL
+);
+
+COMMENT ON TABLE proxima_core.goal_achieved_v1 IS
+  'Lifecycle Fact sidecar for core/goal-achieved-v1. Skinny by design: readers join proxima_core.goals for title/schema/body.';
+
+
+--
+-- Name: goal_abandoned_v1; Type: TABLE; Schema: proxima_core; Owner: -
+--
+
+CREATE TABLE proxima_core.goal_abandoned_v1 (
+    memory_id uuid NOT NULL,
+    goal_id uuid NOT NULL,
+    transitioned_at timestamp with time zone NOT NULL
+);
+
+COMMENT ON TABLE proxima_core.goal_abandoned_v1 IS
+  'Lifecycle Fact sidecar for core/goal-abandoned-v1. Skinny by design: readers join proxima_core.goals for title/schema/body.';
+
+
+--
+-- Name: task_goal_v1; Type: TABLE; Schema: proxima_core; Owner: -
+--
+
+CREATE TABLE proxima_core.task_goal_v1 (
+    goal_id uuid NOT NULL,
+    due_at timestamp with time zone,
+    priority proxima_core.task_priority
+);
+
+COMMENT ON TABLE proxima_core.task_goal_v1 IS
+  'Typed sidecar for core/task-v1 Goal payloads. core/simple-text-v1 has no sidecar table.';
 
 
 --
@@ -1039,6 +1109,38 @@ ALTER TABLE ONLY proxima_core.goal_parents
 
 
 --
+-- Name: goal_abandoned_v1 goal_abandoned_v1_pkey; Type: CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.goal_abandoned_v1
+    ADD CONSTRAINT goal_abandoned_v1_pkey PRIMARY KEY (memory_id);
+
+
+--
+-- Name: goal_achieved_v1 goal_achieved_v1_pkey; Type: CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.goal_achieved_v1
+    ADD CONSTRAINT goal_achieved_v1_pkey PRIMARY KEY (memory_id);
+
+
+--
+-- Name: goal_activated_v1 goal_activated_v1_pkey; Type: CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.goal_activated_v1
+    ADD CONSTRAINT goal_activated_v1_pkey PRIMARY KEY (memory_id);
+
+
+--
+-- Name: goal_paused_v1 goal_paused_v1_pkey; Type: CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.goal_paused_v1
+    ADD CONSTRAINT goal_paused_v1_pkey PRIMARY KEY (memory_id);
+
+
+--
 -- Name: goals goals_pkey; Type: CONSTRAINT; Schema: proxima_core; Owner: -
 --
 
@@ -1052,6 +1154,14 @@ ALTER TABLE ONLY proxima_core.goals
 
 ALTER TABLE ONLY proxima_core.goals
     ADD CONSTRAINT goals_request_id_idem UNIQUE (owner_principal_kind, owner_principal_id, owner_org_id, request_id);
+
+
+--
+-- Name: task_goal_v1 task_goal_v1_pkey; Type: CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.task_goal_v1
+    ADD CONSTRAINT task_goal_v1_pkey PRIMARY KEY (goal_id);
 
 
 --
@@ -1172,13 +1282,6 @@ CREATE INDEX cited_object_uploads_upload_id_idx ON proxima_core.cited_object_upl
 
 
 --
--- Name: goals_proposed_inbox_idx; Type: INDEX; Schema: proxima_core; Owner: -
---
-
-CREATE INDEX goals_proposed_inbox_idx ON proxima_core.goals USING btree (owner_principal_kind, owner_principal_id, owner_org_id, created_at DESC) WHERE (state = 'Proposed'::proxima_core.goal_state);
-
-
---
 -- Name: idx_change_event_owner_seq; Type: INDEX; Schema: proxima_core; Owner: -
 --
 
@@ -1235,10 +1338,24 @@ CREATE INDEX idx_edges_source_memory ON proxima_core.edges USING btree (source_m
 
 
 --
+-- Name: idx_edges_source_goal; Type: INDEX; Schema: proxima_core; Owner: -
+--
+
+CREATE INDEX idx_edges_source_goal ON proxima_core.edges USING btree (source_goal_id) WHERE (source_goal_id IS NOT NULL);
+
+
+--
 -- Name: idx_edges_target_memory; Type: INDEX; Schema: proxima_core; Owner: -
 --
 
 CREATE INDEX idx_edges_target_memory ON proxima_core.edges USING btree (target_memory_id) WHERE (target_memory_id IS NOT NULL);
+
+
+--
+-- Name: idx_edges_target_goal; Type: INDEX; Schema: proxima_core; Owner: -
+--
+
+CREATE INDEX idx_edges_target_goal ON proxima_core.edges USING btree (target_goal_id) WHERE (target_goal_id IS NOT NULL);
 
 
 --
@@ -1284,6 +1401,34 @@ CREATE INDEX idx_goal_parents_parent_goal_id ON proxima_core.goal_parents USING 
 
 
 --
+-- Name: idx_goal_abandoned_v1_goal; Type: INDEX; Schema: proxima_core; Owner: -
+--
+
+CREATE INDEX idx_goal_abandoned_v1_goal ON proxima_core.goal_abandoned_v1 USING btree (goal_id);
+
+
+--
+-- Name: idx_goal_achieved_v1_goal; Type: INDEX; Schema: proxima_core; Owner: -
+--
+
+CREATE INDEX idx_goal_achieved_v1_goal ON proxima_core.goal_achieved_v1 USING btree (goal_id);
+
+
+--
+-- Name: idx_goal_activated_v1_goal; Type: INDEX; Schema: proxima_core; Owner: -
+--
+
+CREATE INDEX idx_goal_activated_v1_goal ON proxima_core.goal_activated_v1 USING btree (goal_id);
+
+
+--
+-- Name: idx_goal_paused_v1_goal; Type: INDEX; Schema: proxima_core; Owner: -
+--
+
+CREATE INDEX idx_goal_paused_v1_goal ON proxima_core.goal_paused_v1 USING btree (goal_id);
+
+
+--
 -- Name: idx_goals_owner_state; Type: INDEX; Schema: proxima_core; Owner: -
 --
 
@@ -1291,10 +1436,10 @@ CREATE INDEX idx_goals_owner_state ON proxima_core.goals USING btree (owner_prin
 
 
 --
--- Name: idx_goals_supersedes; Type: INDEX; Schema: proxima_core; Owner: -
+-- Name: goals_supersedes_unique; Type: INDEX; Schema: proxima_core; Owner: -
 --
 
-CREATE INDEX idx_goals_supersedes ON proxima_core.goals USING btree (supersedes) WHERE (supersedes IS NOT NULL);
+CREATE UNIQUE INDEX goals_supersedes_unique ON proxima_core.goals USING btree (supersedes) WHERE (supersedes IS NOT NULL);
 
 
 --
@@ -1478,6 +1623,70 @@ ALTER TABLE ONLY proxima_core.events
 
 
 --
+-- Name: goal_abandoned_v1 goal_abandoned_v1_goal_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.goal_abandoned_v1
+    ADD CONSTRAINT goal_abandoned_v1_goal_id_fkey FOREIGN KEY (goal_id) REFERENCES proxima_core.goals(goal_id);
+
+
+--
+-- Name: goal_abandoned_v1 goal_abandoned_v1_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.goal_abandoned_v1
+    ADD CONSTRAINT goal_abandoned_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memories(memory_id);
+
+
+--
+-- Name: goal_achieved_v1 goal_achieved_v1_goal_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.goal_achieved_v1
+    ADD CONSTRAINT goal_achieved_v1_goal_id_fkey FOREIGN KEY (goal_id) REFERENCES proxima_core.goals(goal_id);
+
+
+--
+-- Name: goal_achieved_v1 goal_achieved_v1_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.goal_achieved_v1
+    ADD CONSTRAINT goal_achieved_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memories(memory_id);
+
+
+--
+-- Name: goal_activated_v1 goal_activated_v1_goal_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.goal_activated_v1
+    ADD CONSTRAINT goal_activated_v1_goal_id_fkey FOREIGN KEY (goal_id) REFERENCES proxima_core.goals(goal_id);
+
+
+--
+-- Name: goal_activated_v1 goal_activated_v1_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.goal_activated_v1
+    ADD CONSTRAINT goal_activated_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memories(memory_id);
+
+
+--
+-- Name: goal_paused_v1 goal_paused_v1_goal_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.goal_paused_v1
+    ADD CONSTRAINT goal_paused_v1_goal_id_fkey FOREIGN KEY (goal_id) REFERENCES proxima_core.goals(goal_id);
+
+
+--
+-- Name: goal_paused_v1 goal_paused_v1_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.goal_paused_v1
+    ADD CONSTRAINT goal_paused_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memories(memory_id);
+
+
+--
 -- Name: goal_parents goal_parents_goal_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
 --
 
@@ -1499,6 +1708,14 @@ ALTER TABLE ONLY proxima_core.goal_parents
 
 ALTER TABLE ONLY proxima_core.goals
     ADD CONSTRAINT goals_supersedes_fkey FOREIGN KEY (supersedes) REFERENCES proxima_core.goals(goal_id);
+
+
+--
+-- Name: task_goal_v1 task_goal_v1_goal_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.task_goal_v1
+    ADD CONSTRAINT task_goal_v1_goal_id_fkey FOREIGN KEY (goal_id) REFERENCES proxima_core.goals(goal_id) ON DELETE CASCADE;
 
 
 --

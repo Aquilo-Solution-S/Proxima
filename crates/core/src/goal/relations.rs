@@ -1,11 +1,11 @@
-use proxima_core::{AuthorshipKindMask, EntityKindMask, RelationClass, RelationDescriptor};
+use crate::{AuthorshipKindMask, EntityKindMask, RelationClass, RelationDescriptor};
 
-pub const MOTIVATED_BY_RELATION: &str = "proxima-goal/motivated-by";
+pub const CORE_MOTIVATED_BY_RELATION: &str = "core/motivated-by";
 
 #[must_use]
-pub fn descriptor() -> RelationDescriptor {
+pub fn motivated_by_descriptor() -> RelationDescriptor {
     RelationDescriptor::substrate(
-        MOTIVATED_BY_RELATION,
+        CORE_MOTIVATED_BY_RELATION,
         RelationClass::Structural,
         EntityKindMask::goal(),
         EntityKindMask::fact_abstraction(),

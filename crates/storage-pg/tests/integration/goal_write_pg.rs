@@ -1,56 +1,37 @@
-//! End-to-end `GoalWrite` against a transient PG database.
+//! End-to-end core Goal storage atoms against a transient PG database.
 
 use crate::common::{create_db, db_url, drop_db};
-use std::sync::Arc;
 
-use proxima_core::engine::Engine;
-use proxima_core::error::ErrorCode;
 use proxima_core::storage::Storage;
-use proxima_core::verbs::goal_write::{GoalAuthorship, GoalDraft, GoalState};
-use proxima_core::verbs::query::MemoryStore;
-use proxima_core::verbs::schema::{FlavorRegistryFrozen, PayloadKind, SchemaInfo};
-use proxima_core::{GoalId, OrgId, Owner, Principal, SchemaId, SchemaVersion, UserId};
+use proxima_core::verbs::goal_write::{
+    CreateGoalAtomicRequest, GoalAtomicContext, GoalAuthorship, GoalDraft, GoalState,
+    GoalWriteOutcome, IdempotencyKey, TransitionGoalAtomicRequest,
+};
+use proxima_core::{
+    FlavorRegistry, MemoryId, OrgId, Owner, OwnerPrincipalKind, Principal, SchemaId, SchemaVersion,
+    UserId,
+};
 use proxima_storage_pg::PgStorage;
 use uuid::Uuid;
 
-fn schemas_for_test() -> Vec<SchemaInfo> {
-    vec![
-        SchemaInfo {
-            schema_id: SchemaId::new("test/goal_blob".into()),
-            schema_version: SchemaVersion::new(1),
-            kind: PayloadKind::Goal,
-            filter_keys: vec![],
-            sidecar_table: None,
-            natural_key_columns: vec![],
-            tombstone: None,
-            json_encoder: None,
-            sidecar_inserter: None,
-            cited_object_schema: None,
-        },
-        SchemaInfo {
-            schema_id: SchemaId::new("test/fact_blob".into()),
-            schema_version: SchemaVersion::new(1),
-            kind: PayloadKind::Fact,
-            filter_keys: vec![],
-            sidecar_table: None,
-            natural_key_columns: vec![],
-            tombstone: None,
-            json_encoder: None,
-            sidecar_inserter: None,
-            cited_object_schema: None,
-        },
-    ]
+fn owner_parts(owner: &Owner) -> (OwnerPrincipalKind, Uuid, Uuid) {
+    let kind = OwnerPrincipalKind::of(&owner.principal);
+    let principal_id = match owner.principal {
+        Principal::User(user) => user.into_inner(),
+        Principal::Group(group) => group.into_inner(),
+    };
+    (kind, principal_id, owner.org_id.into_inner())
 }
 
 fn fresh_draft(owner: &Owner, request_id: String) -> GoalDraft {
     GoalDraft {
         principal: owner.principal.clone(),
         org_id: Some(owner.org_id),
-        schema_id: SchemaId::new("test/goal_blob".into()),
+        schema_id: SchemaId::new("core/simple-text-v1".into()),
         schema_version: SchemaVersion::new(1),
         title: "Test goal".to_string(),
         text: "Test goal text".to_string(),
-        payload: br#"{"goal":"fresh"}"#.to_vec(),
+        payload: b"{}".to_vec(),
         state: GoalState::Active,
         parent_goal_ids: vec![],
         supersedes_goal_id: None,
@@ -59,25 +40,53 @@ fn fresh_draft(owner: &Owner, request_id: String) -> GoalDraft {
     }
 }
 
-fn draft_with_parent(owner: &Owner, request_id: String, parent: GoalId) -> GoalDraft {
-    GoalDraft {
-        principal: owner.principal.clone(),
-        org_id: Some(owner.org_id),
-        schema_id: SchemaId::new("test/goal_blob".into()),
-        schema_version: SchemaVersion::new(1),
-        title: "Test goal".to_string(),
-        text: "Test goal with parent".to_string(),
-        payload: br#"{"goal":"child"}"#.to_vec(),
-        state: GoalState::Active,
-        parent_goal_ids: vec![parent],
-        supersedes_goal_id: None,
-        authorship: GoalAuthorship::User,
-        request_id,
-    }
+async fn insert_self(
+    pg: &PgStorage,
+    owner: &Owner,
+) -> Result<MemoryId, Box<dyn std::error::Error>> {
+    let (owner_kind, owner_principal_id, owner_org_id) = owner_parts(owner);
+    let memory_id = Uuid::now_v7();
+    sqlx::query(
+        "INSERT INTO proxima_core.memories
+            (memory_id, owner_principal_kind, owner_principal_id, owner_org_id,
+             schema_id, schema_version, kind, text, operator_kind, model_id,
+             prompt_version, personality_instance_id)
+         VALUES ($1, $2, $3, $4, 'test/self', 1, $5,
+                 'self', $6, 'test-model', 'v1', $7)",
+    )
+    .bind(memory_id)
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(owner_org_id)
+    .bind(proxima_core::EntityKind::Perspective)
+    .bind(proxima_core::MemoryOperatorKind::AtoP)
+    .bind(Uuid::nil())
+    .execute(pg.pool())
+    .await?;
+    Ok(MemoryId::new(memory_id))
+}
+
+async fn create_goal(
+    pg: &PgStorage,
+    registry: &proxima_core::FlavorRegistryFrozen,
+    self_id: MemoryId,
+    draft: GoalDraft,
+) -> Result<GoalWriteOutcome, proxima_core::StorageError> {
+    pg.create_goal_atomic(&CreateGoalAtomicRequest {
+        draft,
+        context: GoalAtomicContext {
+            registry,
+            embedding_model_id: None,
+            author_self_perspective_id: Some(self_id),
+        },
+        target_self_perspective_id: self_id,
+        evidence: Vec::new(),
+    })
+    .await
 }
 
 #[tokio::test]
-async fn goal_write_writes_goal_and_change_event() {
+async fn goal_create_atom_writes_goal_side_effects_and_replays() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     create_db(&db_name).await.expect("PG required for tests");
     let url = db_url(&db_name);
@@ -85,27 +94,18 @@ async fn goal_write_writes_goal_and_change_event() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
         pg.run_migrations().await?;
-        let storage: Arc<dyn Storage> = Arc::new(pg.clone());
-
-        let user = UserId::new(Uuid::now_v7());
         let owner = Owner {
-            principal: Principal::User(user),
+            principal: Principal::User(UserId::new(Uuid::now_v7())),
             org_id: OrgId::new(Uuid::now_v7()),
         };
-
-        let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
-        let engine = Engine::new(registry, MemoryStore::new()).with_storage(storage);
-
+        let self_id = insert_self(&pg, &owner).await?;
+        let registry = FlavorRegistry::new().freeze();
         let draft = fresh_draft(&owner, "req-1".to_string());
 
-        // Happy path: write_goal with User authorship.
-        let outcome = engine
-            .write_goal(
-                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
-                draft.clone(),
-            )
-            .await?;
+        let outcome = create_goal(&pg, &registry, self_id, draft.clone()).await?;
         assert!(!outcome.idempotent_replay);
+        assert!(outcome.lifecycle_memory_id.is_some());
+        assert!(!outcome.edge_ids.is_empty());
 
         let payload: Vec<u8> =
             sqlx::query_scalar("SELECT payload FROM proxima_core.goals WHERE goal_id = $1")
@@ -114,75 +114,47 @@ async fn goal_write_writes_goal_and_change_event() {
                 .await?;
         assert_eq!(payload, draft.payload);
 
-        // Idempotent replay with same request_id and body.
-        let replay = engine
-            .write_goal(
-                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
-                draft.clone(),
-            )
-            .await?;
+        let replay = create_goal(&pg, &registry, self_id, draft.clone()).await?;
         assert!(replay.idempotent_replay);
         assert_eq!(replay.goal_id, outcome.goal_id);
+        assert_eq!(replay.lifecycle_memory_id, outcome.lifecycle_memory_id);
+        assert_eq!(replay.edge_ids, outcome.edge_ids);
 
-        // Idempotency conflict: same request_id but different text.
         let mut mutated = draft.clone();
         mutated.text = "Different text".to_string();
-        let err = engine
-            .write_goal(
-                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
-                mutated,
-            )
+        let err = create_goal(&pg, &registry, self_id, mutated)
             .await
-            .unwrap_err();
-        assert_eq!(err.code, ErrorCode::IdempotencyConflict);
+            .expect_err("same request id with different body conflicts");
+        assert!(err.to_string().contains("idempotency_conflict"));
 
-        // Idempotency conflict: same request_id but different payload.
-        let mut mutated_payload = draft.clone();
-        mutated_payload.payload = br#"{"goal":"different"}"#.to_vec();
-        let err = engine
-            .write_goal(
-                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
-                mutated_payload,
-            )
-            .await
-            .unwrap_err();
-        assert_eq!(err.code, ErrorCode::IdempotencyConflict);
-
-        // Schema rejection: use a Fact schema for a Goal write.
-        let mut bad_schema = draft.clone();
+        let mut bad_schema = draft;
         bad_schema.schema_id = SchemaId::new("test/fact_blob".into());
-        let err = engine
-            .write_goal(
-                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
-                bad_schema,
-            )
+        let err = create_goal(&pg, &registry, self_id, bad_schema)
             .await
-            .unwrap_err();
-        assert_eq!(err.code, ErrorCode::UnknownSchema);
+            .expect_err("unknown Goal schema rejected");
+        assert!(err.to_string().contains("unregistered GoalPayload schema"));
 
-        // Counts: 1 goal, 1 change_event.
         let goals: (i64,) = sqlx::query_as("SELECT count(*)::bigint FROM proxima_core.goals")
             .fetch_one(pg.pool())
             .await?;
         assert_eq!(goals.0, 1);
 
-        let change: (i64,) =
-            sqlx::query_as("SELECT count(*)::bigint FROM proxima_core.change_event")
+        let activated: (i64,) =
+            sqlx::query_as("SELECT count(*)::bigint FROM proxima_core.goal_activated_v1")
                 .fetch_one(pg.pool())
                 .await?;
-        assert_eq!(change.0, 1);
+        assert_eq!(activated.0, 1);
 
         Ok(())
     }
     .await;
 
     let _ = drop_db(&db_name).await;
-    result.expect("goal_write_pg test failed");
+    result.expect("goal create atom test failed");
 }
 
 #[tokio::test]
-#[expect(clippy::too_many_lines, reason = "linear supersession storage fixture")]
-async fn goal_supersede_writes_new_goal() {
+async fn goal_transition_atom_writes_superseding_goal() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     create_db(&db_name).await.expect("PG required for tests");
     let url = db_url(&db_name);
@@ -190,123 +162,71 @@ async fn goal_supersede_writes_new_goal() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
         pg.run_migrations().await?;
-        let storage: Arc<dyn Storage> = Arc::new(pg.clone());
-
-        let user = UserId::new(Uuid::now_v7());
         let owner = Owner {
-            principal: Principal::User(user),
+            principal: Principal::User(UserId::new(Uuid::now_v7())),
             org_id: OrgId::new(Uuid::now_v7()),
         };
+        let self_id = insert_self(&pg, &owner).await?;
+        let registry = FlavorRegistry::new().freeze();
+        let prior = create_goal(
+            &pg,
+            &registry,
+            self_id,
+            fresh_draft(&owner, "req-prior".to_string()),
+        )
+        .await?;
 
-        let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
-        let engine = Engine::new(registry, MemoryStore::new()).with_storage(storage);
-
-        // Write initial goal.
-        let draft = fresh_draft(&owner, "req-1".to_string());
-        let outcome = engine
-            .write_goal(
-                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
-                draft.clone(),
-            )
+        let transitioned = pg
+            .transition_goal_atomic(&TransitionGoalAtomicRequest {
+                owner: owner.clone(),
+                prior_goal_id: prior.goal_id,
+                next_state: GoalState::Paused,
+                authorship: GoalAuthorship::User,
+                request_id: IdempotencyKey::new("req-paused").expect("valid idempotency key"),
+                context: GoalAtomicContext {
+                    registry: &registry,
+                    embedding_model_id: None,
+                    author_self_perspective_id: Some(self_id),
+                },
+            })
             .await?;
-        let prior_goal_id = outcome.goal_id;
+        assert!(!transitioned.idempotent_replay);
+        assert_ne!(transitioned.goal_id, prior.goal_id);
 
-        // Supersede with Paused state.
-        let supersede_draft = GoalDraft {
-            principal: owner.principal.clone(),
-            org_id: Some(owner.org_id),
-            schema_id: SchemaId::new("test/goal_blob".into()),
-            schema_version: SchemaVersion::new(1),
-            title: "Test goal".to_string(),
-            text: "Updated goal text".to_string(),
-            payload: br#"{"goal":"updated"}"#.to_vec(),
-            state: GoalState::Paused,
-            parent_goal_ids: vec![],
-            supersedes_goal_id: None,
-            authorship: GoalAuthorship::User,
-            request_id: "req-2".to_string(),
-        };
-
-        let supersede_outcome = engine
-            .supersede_goal(
-                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
-                prior_goal_id,
-                supersede_draft.clone(),
-            )
-            .await?;
-        assert!(!supersede_outcome.idempotent_replay);
-        assert_ne!(supersede_outcome.goal_id, prior_goal_id);
-
-        // Verify the new goal has supersedes pointing to prior.
-        let supersedes: Option<Uuid> =
-            sqlx::query_scalar("SELECT supersedes FROM proxima_core.goals WHERE goal_id = $1")
-                .bind(supersede_outcome.goal_id.into_inner())
+        let row: (Option<Uuid>, GoalState) =
+            sqlx::query_as("SELECT supersedes, state FROM proxima_core.goals WHERE goal_id = $1")
+                .bind(transitioned.goal_id.into_inner())
                 .fetch_one(pg.pool())
                 .await?;
-        assert_eq!(supersedes, Some(prior_goal_id.into_inner()));
+        assert_eq!(row, (Some(prior.goal_id.into_inner()), GoalState::Paused));
 
-        let payload: Vec<u8> =
-            sqlx::query_scalar("SELECT payload FROM proxima_core.goals WHERE goal_id = $1")
-                .bind(supersede_outcome.goal_id.into_inner())
-                .fetch_one(pg.pool())
-                .await?;
-        assert_eq!(payload, supersede_draft.payload);
-
-        // Idempotent replay of supersede.
-        let replay = engine
-            .supersede_goal(
-                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
-                prior_goal_id,
-                supersede_draft.clone(),
-            )
+        let replay = pg
+            .transition_goal_atomic(&TransitionGoalAtomicRequest {
+                owner: owner.clone(),
+                prior_goal_id: prior.goal_id,
+                next_state: GoalState::Paused,
+                authorship: GoalAuthorship::User,
+                request_id: IdempotencyKey::new("req-paused").expect("valid idempotency key"),
+                context: GoalAtomicContext {
+                    registry: &registry,
+                    embedding_model_id: None,
+                    author_self_perspective_id: Some(self_id),
+                },
+            })
             .await?;
         assert!(replay.idempotent_replay);
-        assert_eq!(replay.goal_id, supersede_outcome.goal_id);
-
-        let direct_prior = engine
-            .write_goal(
-                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
-                fresh_draft(&owner, "req-direct-prior".to_string()),
-            )
-            .await?;
-        let mut direct_draft = fresh_draft(&owner, "req-direct-supersede".to_string());
-        direct_draft.text = "Direct supersede".to_string();
-        direct_draft.supersedes_goal_id = Some(direct_prior.goal_id);
-        let direct = engine
-            .write_goal(
-                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
-                direct_draft.clone(),
-            )
-            .await?;
-        let direct_supersedes: Option<Uuid> =
-            sqlx::query_scalar("SELECT supersedes FROM proxima_core.goals WHERE goal_id = $1")
-                .bind(direct.goal_id.into_inner())
-                .fetch_one(pg.pool())
-                .await?;
-        assert_eq!(direct_supersedes, Some(direct_prior.goal_id.into_inner()));
-
-        // Counts: explicit supersede path + direct draft.supersedes_goal_id path.
-        let goals: (i64,) = sqlx::query_as("SELECT count(*)::bigint FROM proxima_core.goals")
-            .fetch_one(pg.pool())
-            .await?;
-        assert_eq!(goals.0, 4);
-
-        let change: (i64,) =
-            sqlx::query_as("SELECT count(*)::bigint FROM proxima_core.change_event")
-                .fetch_one(pg.pool())
-                .await?;
-        assert_eq!(change.0, 4);
+        assert_eq!(replay.goal_id, transitioned.goal_id);
 
         Ok(())
     }
     .await;
 
     let _ = drop_db(&db_name).await;
-    result.expect("goal_supersede_pg test failed");
+    result.expect("goal transition atom test failed");
 }
 
 #[tokio::test]
-async fn goal_write_with_parent() {
+async fn goal_create_atom_with_parent_writes_goal_parent() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     create_db(&db_name).await.expect("PG required for tests");
     let url = db_url(&db_name);
@@ -314,38 +234,25 @@ async fn goal_write_with_parent() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
         pg.run_migrations().await?;
-        let storage: Arc<dyn Storage> = Arc::new(pg.clone());
-
-        let user = UserId::new(Uuid::now_v7());
         let owner = Owner {
-            principal: Principal::User(user),
+            principal: Principal::User(UserId::new(Uuid::now_v7())),
             org_id: OrgId::new(Uuid::now_v7()),
         };
+        let self_id = insert_self(&pg, &owner).await?;
+        let registry = FlavorRegistry::new().freeze();
+        let parent = create_goal(
+            &pg,
+            &registry,
+            self_id,
+            fresh_draft(&owner, "req-parent".to_string()),
+        )
+        .await?;
 
-        let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
-        let engine = Engine::new(registry, MemoryStore::new()).with_storage(storage);
-
-        // Write parent goal.
-        let parent_draft = fresh_draft(&owner, "req-parent".to_string());
-        let parent_outcome = engine
-            .write_goal(
-                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
-                parent_draft,
-            )
-            .await?;
-        let parent_id = parent_outcome.goal_id;
-
-        // Write child goal with parent.
-        let child_draft = draft_with_parent(&owner, "req-child".to_string(), parent_id);
-        let child_outcome = engine
-            .write_goal(
-                &proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System),
-                child_draft,
-            )
-            .await?;
+        let mut child = fresh_draft(&owner, "req-child".to_string());
+        child.parent_goal_ids = vec![parent.goal_id];
+        let child_outcome = create_goal(&pg, &registry, self_id, child).await?;
         assert!(!child_outcome.idempotent_replay);
 
-        // Verify goal_parents row exists.
         let parents: (i64,) = sqlx::query_as(
             "SELECT count(*)::bigint FROM proxima_core.goal_parents WHERE goal_id = $1",
         )
@@ -354,31 +261,16 @@ async fn goal_write_with_parent() {
         .await?;
         assert_eq!(parents.0, 1);
 
-        // Counts: 2 goals, 2 change_event rows, 1 goal_parents.
-        let goals: (i64,) = sqlx::query_as("SELECT count(*)::bigint FROM proxima_core.goals")
-            .fetch_one(pg.pool())
-            .await?;
-        assert_eq!(goals.0, 2);
-
-        let change: (i64,) =
-            sqlx::query_as("SELECT count(*)::bigint FROM proxima_core.change_event")
-                .fetch_one(pg.pool())
-                .await?;
-        assert_eq!(change.0, 2);
-
         Ok(())
     }
     .await;
 
     let _ = drop_db(&db_name).await;
-    result.expect("goal_write_with_parent_pg test failed");
+    result.expect("goal parent atom test failed");
 }
 
-/// Both layers reject a goal payload that is empty or not a JSON object:
-/// the engine `write_goal` guard (symmetric with `EventIngest`) and the
-/// `goals_payload_nonempty_chk` DB constraint as the last line of defense.
 #[tokio::test]
-async fn goal_write_rejects_empty_or_non_object_payload() {
+async fn goal_create_atom_rejects_empty_or_non_object_payload() {
     let db_name = format!("proxima_test_{}", Uuid::now_v7().simple());
     create_db(&db_name).await.expect("PG required for tests");
     let url = db_url(&db_name);
@@ -386,42 +278,53 @@ async fn goal_write_rejects_empty_or_non_object_payload() {
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let pg = PgStorage::connect(&url).await?;
         pg.run_migrations().await?;
-        let storage: Arc<dyn Storage> = Arc::new(pg.clone());
-
         let owner = Owner {
             principal: Principal::User(UserId::new(Uuid::now_v7())),
             org_id: OrgId::new(Uuid::now_v7()),
         };
-        let registry = FlavorRegistryFrozen::with_schemas(schemas_for_test());
-        let engine = Engine::new(registry, MemoryStore::new()).with_storage(storage);
-        let authz =
-            proxima_core::AuthzContext::single_owner(&owner, proxima_core::AuthPath::System);
+        let self_id = insert_self(&pg, &owner).await?;
+        let registry = FlavorRegistry::new().freeze();
 
-        // Engine guard: a zero-byte payload is rejected as InvalidArgument.
         let mut empty = fresh_draft(&owner, "req-empty".to_string());
         empty.payload = Vec::new();
-        let err = engine.write_goal(&authz, empty).await.unwrap_err();
-        assert_eq!(err.code, ErrorCode::InvalidArgument);
+        let err = create_goal(&pg, &registry, self_id, empty)
+            .await
+            .expect_err("empty payload rejected");
+        assert!(err.to_string().contains("EOF"));
 
-        // Engine guard: valid JSON that is not an object is rejected too.
         let mut scalar = fresh_draft(&owner, "req-scalar".to_string());
         scalar.payload = b"123".to_vec();
-        let err = engine.write_goal(&authz, scalar).await.unwrap_err();
-        assert_eq!(err.code, ErrorCode::InvalidArgument);
+        let err = create_goal(&pg, &registry, self_id, scalar)
+            .await
+            .expect_err("scalar payload rejected");
+        assert!(err.to_string().contains("must be a JSON object"));
 
-        // Nothing reached storage.
         let goals: (i64,) = sqlx::query_as("SELECT count(*)::bigint FROM proxima_core.goals")
             .fetch_one(pg.pool())
             .await?;
         assert_eq!(goals.0, 0);
 
-        // Last line of defense: the storage verb bypasses the engine guard,
-        // but goals_payload_nonempty_chk still rejects a zero-byte payload.
-        let mut raw = fresh_draft(&owner, "req-raw".to_string());
-        raw.payload = Vec::new();
+        let (owner_kind, owner_principal_id, owner_org_id) = owner_parts(&owner);
+        let raw = sqlx::query(
+            "INSERT INTO proxima_core.goals
+                (goal_id, schema_id, schema_version,
+                 owner_principal_kind, owner_principal_id, owner_org_id,
+                 title, text, payload, state, authorship_kind, request_id)
+             VALUES ($1, 'core/simple-text-v1', 1,
+                     $2, $3, $4,
+                     'raw', 'raw', $5, 'Active', 'User', 'req-raw')",
+        )
+        .bind(Uuid::now_v7())
+        .bind(owner_kind)
+        .bind(owner_principal_id)
+        .bind(owner_org_id)
+        .bind(Vec::<u8>::new())
+        .execute(pg.pool())
+        .await;
         assert!(
-            pg.write_goal_atomic(&raw).await.is_err(),
-            "DB CHECK must reject a zero-byte payload"
+            raw.expect_err("DB CHECK must reject a zero-byte payload")
+                .to_string()
+                .contains("goals_payload_nonempty_chk")
         );
 
         Ok(())
@@ -429,5 +332,5 @@ async fn goal_write_rejects_empty_or_non_object_payload() {
     .await;
 
     let _ = drop_db(&db_name).await;
-    result.expect("goal_write empty-payload rejection test failed");
+    result.expect("goal payload rejection test failed");
 }

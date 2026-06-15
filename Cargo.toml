@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/core", "crates/mcp-server", "apps/proxima-mcp", "flavors/code", "flavors/goal", "crates/llm-openai-compat", "crates/storage-pg", "crates/blob-s3", "crates/proxima", "crates/pg-testkit", "examples/embedded-minimal", "tools/dev-migrate"]
+members = ["crates/core", "crates/mcp-server", "apps/proxima-mcp", "flavors/code", "crates/llm-openai-compat", "crates/storage-pg", "crates/blob-s3", "crates/proxima", "crates/pg-testkit", "examples/embedded-minimal", "tools/dev-migrate"]
 
 [workspace.package]
 edition = "2024"

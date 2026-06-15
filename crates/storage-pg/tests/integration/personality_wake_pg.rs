@@ -257,7 +257,7 @@ async fn personality_wake_storage_round_trip() {
             entries: vec![first],
         })
         .await?;
-        let mut replacement = sample_entry(instance, "proxima-goal/goal-activated-v1");
+        let mut replacement = sample_entry(instance, "core/goal-activated-v1");
         replacement.goal_scope = WakeEntryGoalScope::TriggerGoalAssigned;
         pg.set_wake_entries(&SetWakeEntriesRequest {
             principal: owner.principal.clone(),

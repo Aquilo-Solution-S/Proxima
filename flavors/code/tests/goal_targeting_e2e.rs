@@ -124,7 +124,7 @@ async fn seed_active_goal(
             (goal_id, schema_id, schema_version,
              owner_principal_kind, owner_principal_id, owner_org_id,
              title, text, state, authorship_kind, request_id, payload)
-         VALUES ($1, 'proxima-goal/simple-text-v1', 1,
+         VALUES ($1, 'core/simple-text-v1', 1,
                  $2, $3, $4,
                  'goal targeting', 'target Alice only', 'Active', 'User',
                  'goal-targeting-e2e', convert_to('{}', 'UTF8'))",

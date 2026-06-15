@@ -3,7 +3,6 @@
 
 mod builder;
 mod fact_retention;
-mod goals;
 mod ingest;
 pub mod mcp_listener;
 mod memory_authoring;
@@ -259,16 +258,4 @@ pub(crate) fn authorize(
         return Err(ProtocolError::forbidden(role.denied_message()));
     }
     Ok(())
-}
-
-pub(super) fn map_storage_err_for_goal_write(
-    request_id: &str,
-) -> impl FnOnce(StorageError) -> ProtocolError + '_ {
-    move |e| match e {
-        StorageError::ConstraintViolation(msg) if msg.starts_with("idempotency_conflict:") => {
-            ProtocolError::idempotency_conflict(request_id)
-        }
-        StorageError::NotFound => ProtocolError::not_found("prior goal not found"),
-        other => ProtocolError::internal(other.to_string()),
-    }
 }
