@@ -4,7 +4,6 @@
 
 pub mod calls;
 pub mod chunker;
-pub mod dependency;
 pub mod ingest;
 pub mod local_git_source;
 pub mod mcp;
@@ -100,9 +99,6 @@ proxima_core::proxima_flavor! {
         mcp::CodeEmitExecutionRequestTool,
         mcp::CodeEmitExecutionPlanTool,
         mcp::CodeRetryExecutionRequestTool,
-    ],
-    dependency_satisfaction_rules = [
-        dependency::TestRequestSatisfied,
     ],
 }
 

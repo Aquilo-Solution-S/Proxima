@@ -9,7 +9,7 @@ mod memories;
 mod read_scope;
 mod wake_entries;
 
-pub use dependencies::{has_satisfied_code_test_request, list_memory_dependencies};
+pub use dependencies::list_memory_dependencies;
 pub use events::{list_change_events_after, list_change_events_for_replay};
 pub use instances::{instantiate_personality, list_personality_instances};
 pub use memories::{
