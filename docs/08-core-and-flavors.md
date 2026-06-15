@@ -11,9 +11,9 @@ vocabulary. Composite binaries choose flavor crates at build time and
 freeze the registry at startup.
 
 Proxima is a framework: core plus linked flavor crates composed into an
-app. Generic agent memory is core substrate; domain vocabularies such as
-code and goal remain flavors. There is no external flavor/tool catalog
-and no runtime registration.
+app. Generic agent memory and Goal substrate are core; domain
+vocabularies such as code remain flavors. There is no external
+flavor/tool catalog and no runtime registration.
 
 The formal kernel is `docs/lean/Foundations/`, not the Rust crate
 boundary.
@@ -24,10 +24,12 @@ boundary.
 runtime framework core (`proxima-core`)
   ids, Owner, Memory / Goal / Edge contracts
   F/A/P and Goal payload traits
+  core GoalPayload schemas + lifecycle Fact schemas
   relation descriptor validation
   frozen registry
   storage traits
   agent long-term memory sidecars + tools
+  GoalWrite, active-goal queries, core Goal tools
   wake dispatcher
   personality runtime rows + wake-entry contracts
   substrate personality tools
@@ -35,7 +37,6 @@ runtime framework core (`proxima-core`)
 
 flavor crate
   typed payload schemas
-  GoalPayload schemas
   typed EdgePayload schemas
   relation descriptors
   MCP tools
@@ -58,9 +59,10 @@ Every composite binary creates `FlavorRegistry::new()`, calls each linked
 flavor's generated `register(&mut FlavorRegistry)`, then calls
 `freeze()`. Freeze-time failure is startup failure.
 
-Core registers substrate schemas, core relation descriptors, and
-substrate MCP memory/config tools in the default registry. Flavor crates
-append their own descriptors through `proxima_flavor!`.
+Core registers substrate schemas, core GoalPayload schemas, Goal
+lifecycle Fact schemas, core relation descriptors, and substrate MCP
+memory/config/goal tools in the default registry. Flavor crates append
+their own descriptors through `proxima_flavor!`.
 
 <a id="macro-surface"></a>
 ## Macro Surface
@@ -160,15 +162,19 @@ payload validation.
 
 ## Goal Boundary
 
-`Goal` is a core entity. Core owns Goal identity, lifecycle states,
-GoalWrite semantics, active-goal query semantics, and `core/inspires`.
+Core owns:
 
-`proxima-goal` is the reference flavor for GoalPayload schemas,
-proposal/accept/decline/modify MCP tools, sidecars, renderers, and
-`proxima-goal/motivated-by`; it does not own the Goal entity contract
-(see [06 §Goal Entity](06-goals-and-self.md#goal-entity)).
+| Surface | Core contract |
+|---|---|
+| Entity | Goal identity and 4-state lifecycle (`Active`, `Paused`, `Achieved`, `Abandoned`) |
+| Verb | `GoalWrite` create / supersede semantics |
+| Query | active-goal heads and assignment traversal |
+| Relations | `core/inspires`, `core/motivated-by` |
+| Payloads | core `GoalPayload` schemas |
+| Tools | `core/goal_set`, `core/goal_transition`, `core/goal_mark_achieved`, `core/goal_modify`, `core/goal_decompose` |
 
-Goal creation uses flavor tools, not a substrate `emit_goal` tool.
+Goal creation uses the core `core/goal_set` tool. Lifecycle writes use
+the rest of the `core/goal_*` family.
 
 <a id="freeze-guards"></a>
 ## Freeze Guards
@@ -190,7 +196,7 @@ dependency rules panic during registration before freeze.
 Flavor crate = inclusion unit. Composite binary = build artifact.
 
 ```
-proxima-mcp       = substrate + goal
+proxima-mcp       = substrate
 proxima-code      = substrate + code
 ```
 
