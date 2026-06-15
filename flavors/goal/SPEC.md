@@ -18,10 +18,8 @@ Binding ADR for connection-via-lifecycle:
   pipeline is the MCP mirror of that operator family; both write the
   same shape.
 - Reference GoalPayload schemas + relations + tools naturally cluster
-  into a flavor. Putting them in `flavors/agent-memory/` would conflate
-  "substrate primitives" with "intentional-layer primitives." Putting
-  schema-aware tools in core would re-open invariant 8 ("flavor crate is
-  the unit of inclusion").
+  into a flavor. Putting them in core substrate would conflate generic
+  memory primitives with intentional-layer primitives.
 
 ## Non-goals
 
@@ -66,7 +64,7 @@ Closed gaps:
 | Layer | Crate | Owns |
 |---|---|---|
 | Core | `crates/core/`, `crates/storage-pg/` | Goal entity, `GoalState`, `GoalAuthorship`, `GoalPayload` trait, `GoalWrite` verb |
-| Substrate flavor | `flavors/agent-memory/` | Substrate primitives only — `proxima_remember` / `_derive` / `_link` / `_search_memories` / `_open`. **No Goal-specific tools.** |
+| Core substrate | `crates/core/`, `crates/storage-pg/` | Generic memory primitives only — `core/remember` / `core/record_utterance` / `core/derive` / `core/link` / `core/search_memories` / `core/open` / `core/walk_memory_lineage`. **No Goal-specific tools.** |
 | Goal flavor | `flavors/goal/` *(new)* | `MotivatedBy` (+ future `Blocks`, `Refines`) RelationDescriptors; reference GoalPayload schemas; MCP tools `goal_propose` and (optional) `goal_accept` / `goal_modify` / `goal_decline`; flavor migrations |
 | Code flavor | `flavors/code/` | Unchanged in v1; can register `code_refactor_goal` payload later |
 Invariants preserved: 1, 7, 8, 11, 12, 13, 16, 20.

@@ -79,15 +79,15 @@ predicate. Cross-owner edges and cross-owner evidence are rejected.
 
 ## Storage Layout
 
-Core rows live in `proxima_core`.
+Core rows and core memory sidecars live in `proxima_core`.
 
 Flavor sidecars live under one Postgres schema per linked flavor:
 
-| Flavor | Sidecar namespace |
+| Owner | Sidecar namespace |
 |---|---|
+| core memory | `proxima_core.agent_note_v1`, `proxima_core.agent_derivation_v1`, `proxima_core.agent_link_v1`, `proxima_core.utterance_v1` |
 | `proxima-code` | `proxima_code.*` |
 | `proxima-goal` | `proxima_goal.*` |
-| `core memory` | `proxima_core.*` |
 
 Postgres schemas are catalog namespaces, not payload schemas. The payload
 schema registry is build-time Rust metadata (03 / 08).
@@ -97,6 +97,7 @@ Rules:
 | Rule | Consequence |
 |---|---|
 | core owns entity tables | flavors do not redefine Memory / Goal / Edge |
+| core owns generic agent memory sidecars | one `proxima_core` migration stream, starting at `0001_init.sql` |
 | flavor owns its sidecars | migration ownership stays local |
 | cross-flavor reads are allowed | query composition can span all linked flavors |
 | cross-flavor sidecar writes are forbidden | one flavor never writes another flavor's typed rows |

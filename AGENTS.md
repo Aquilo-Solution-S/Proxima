@@ -40,7 +40,7 @@ explicit request.
 ```
 proxima/
 ├── apps/
-│   └── proxima-mcp/         Rust headless MCP host binary (agent-memory + goal)
+│   └── proxima-mcp/         Rust headless MCP host binary (goal)
 ├── crates/
 │   ├── blob-s3/             Rust S3 cited-blob service crate
 │   ├── core/                Rust lib crate `proxima-core`
@@ -51,8 +51,7 @@ proxima/
 │   └── storage-pg/          Rust Postgres storage crate
 ├── flavors/
 │   ├── code/                Rust code flavor crate
-│   ├── goal/                Rust goal flavor crate
-│   └── agent-memory/        Rust agent-memory substrate flavor crate
+│   └── goal/                Rust goal flavor crate
 ├── examples/
 │   └── embedded-minimal/    canonical host-binary embedding example
 ├── tools/
@@ -114,16 +113,17 @@ Tools available to attached agents:
 
 | Tier | Tools |
 |---|---|
-| Substrate (always) | `proxima_search_memories`, `proxima_open`, `proxima_remember`, `proxima_derive`, `proxima_link` |
+| Substrate (always) | `core/remember`, `core/record_utterance`, `core/derive`, `core/link`, `core/search_memories`, `core/open`, `core/walk_memory_lineage` |
 | Code flavor | `code_search_chunks`, `code_search_commits`, `code_open_file_revision` |
 | Goal flavor | `goal_propose`, `goal_accept`, `goal_decline`, `goal_modify` |
 
 Proxima self-ingests its own commits and chunks, so the graph holds
 this repo's causal chain. Prefer MCP queries over re-greppping when
-investigating commit or chunk history; use `proxima_remember` /
-`proxima_derive` / `proxima_link` to write findings back as
+investigating commit or chunk history; use `core/remember` /
+`core/derive` / `core/link` to write findings back as
 agent-authored Facts / Abstractions / edges (subject to invariants
-below). Composite-binary tool sets are flavor-registered per 13.
+below). Composite-binary tool sets combine core tools with
+flavor-registered tools per 13.
 
 ## Invariants — must not violate
 
@@ -248,7 +248,7 @@ breaks if these slip.
   `fix(<component>): <summary>` / `chore(<component>): <summary>`.
   Components include `core`, `proxima-mcp`, `storage-pg`, `mcp-server`,
   `llm-openai-compat`, `blob-s3`, `proxima`, `pg-testkit`, `flavors-code`,
-  `flavors-goal`, `flavors-agent-memory`, `examples`, `tools`.
+  `flavors-goal`, `examples`, `tools`.
 - Body: bulleted list of concrete changes; preserve the *why* when
   the change is a decision, not a fix.
 - Co-authorship trailer for AI commits matches the parent CLAUDE.md
