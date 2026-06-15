@@ -2,7 +2,7 @@
 //!
 //! `proxima-core` cannot depend on `proxima-mcp-server` (the latter
 //! depends on core, so the reverse would form a cycle). Instead, the
-//! host (Tauri shell, headless CLI, integration tests) wires a
+//! host (an embedded host, headless CLI, or integration test) wires a
 //! concrete listener that knows how to bind/serve, and hands it to
 //! the engine via [`crate::engine::Engine::with_mcp_listener`].
 //!
