@@ -678,17 +678,4 @@ impl Storage for PgStorage {
     ) -> Result<Vec<MemoryDependency>, StorageError> {
         verbs::consolidate::list_memory_dependencies(&self.pool, owner, source_memory_id).await
     }
-
-    async fn has_satisfied_code_test_request(
-        &self,
-        owner: &Owner,
-        test_request_memory_id: MemoryId,
-    ) -> Result<bool, StorageError> {
-        verbs::consolidate::has_satisfied_code_test_request(
-            &self.pool,
-            owner,
-            test_request_memory_id,
-        )
-        .await
-    }
 }

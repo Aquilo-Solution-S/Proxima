@@ -516,14 +516,6 @@ pub trait Storage: Send + Sync {
     ) -> Result<Vec<MemoryDependency>, StorageError> {
         Ok(Vec::new())
     }
-
-    async fn has_satisfied_code_test_request(
-        &self,
-        _owner: &Owner,
-        _test_request_memory_id: crate::MemoryId,
-    ) -> Result<bool, StorageError> {
-        Ok(false)
-    }
 }
 
 pub type StorageHandle = Arc<dyn Storage>;
