@@ -5,41 +5,16 @@ use crate::EmbedError;
 const DEFAULT_UPLOAD_TTL_SECONDS: u64 = 900;
 const DEFAULT_READ_TTL_SECONDS: u64 = 300;
 
-/// Env-driven configuration for an embedded Proxima engine.
+/// Low-level configuration for an embedded Proxima engine.
 ///
-/// | Var | Required | Meaning |
-/// |---|---|---|
-/// | `DATABASE_URL` | yes | Postgres for engine tables (`proxima_core` schema) |
-/// | `PROXIMA_S3_BUCKET` | no | enables the cited-blob store when set |
-/// | `PROXIMA_S3_REGION` etc. | with bucket | see `proxima_blob_s3::S3RuntimeConfig` |
+/// Plain data consumed by [`crate::ProximaBuilder::new`]. Environment
+/// resolution (`DATABASE_URL`, the `PROXIMA_S3_*` block) lives in
+/// [`crate::RuntimeBuilder`]; hosts driving the facade through it never
+/// construct this directly.
 #[derive(Debug, Clone)]
 pub struct EmbedConfig {
     pub database_url: String,
     pub s3: Option<S3RuntimeConfig>,
-}
-
-impl EmbedConfig {
-    /// Read configuration from process env.
-    ///
-    /// # Errors
-    ///
-    /// Returns `EmbedError::Config` when `DATABASE_URL` is missing or
-    /// the S3 block is partially configured.
-    pub fn from_env() -> Result<Self, EmbedError> {
-        Self::from_lookup(|key| std::env::var(key).ok())
-    }
-
-    /// Same as [`Self::from_env`] over an injected lookup.
-    ///
-    /// # Errors
-    ///
-    /// See [`Self::from_env`].
-    pub fn from_lookup(lookup: impl Fn(&str) -> Option<String>) -> Result<Self, EmbedError> {
-        let database_url = lookup("DATABASE_URL")
-            .ok_or_else(|| EmbedError::Config("DATABASE_URL is required".into()))?;
-        let s3 = s3_from_lookup(&lookup)?;
-        Ok(Self { database_url, s3 })
-    }
 }
 
 pub(crate) fn s3_from_lookup(
@@ -117,25 +92,18 @@ mod tests {
     }
 
     #[test]
-    fn requires_database_url() {
-        let err = EmbedConfig::from_lookup(env(&[])).unwrap_err();
-        assert!(err.to_string().contains("DATABASE_URL"));
-    }
-
-    #[test]
     fn s3_absent_when_bucket_unset() {
-        let cfg = EmbedConfig::from_lookup(env(&[("DATABASE_URL", "postgres://x/y")])).unwrap();
-        assert!(cfg.s3.is_none());
+        let s3 = s3_from_lookup(&env(&[])).unwrap();
+        assert!(s3.is_none());
     }
 
     #[test]
     fn s3_present_when_bucket_set() {
-        let cfg = EmbedConfig::from_lookup(env(&[
-            ("DATABASE_URL", "postgres://x/y"),
+        let s3 = s3_from_lookup(&env(&[
             ("PROXIMA_S3_BUCKET", "proxima"),
             ("PROXIMA_S3_REGION", "us-east-1"),
         ]))
         .unwrap();
-        assert_eq!(cfg.s3.as_ref().map(|s| s.bucket.as_str()), Some("proxima"));
+        assert_eq!(s3.as_ref().map(|s| s.bucket.as_str()), Some("proxima"));
     }
 }
