@@ -1,7 +1,7 @@
 //! S3-backed cited-blob service: presigned upload -> confirm -> read.
 //!
-//! Extracted from the shell's Tauri commands so any composite binary
-//! (embedded hosts included) can ingest cited blobs without the shell.
+//! Usable by any composite binary (embedded hosts included) so it can
+//! ingest cited blobs directly, independent of any frontend.
 //! Tables: `proxima_core.cited_object_uploads` / `cited_objects` /
 //! `cited_uploaded_blob_v1` (see storage-pg baseline migration).
 
