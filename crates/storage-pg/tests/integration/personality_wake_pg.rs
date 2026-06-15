@@ -92,9 +92,7 @@ async fn current_root_perspective_memory_id(
 
 #[tokio::test(flavor = "multi_thread")]
 async fn personality_wake_schema_replaces_legacy_tables() {
-    let Some((pg, db)) = fresh_pg().await else {
-        return;
-    };
+    let (pg, db) = fresh_pg().await;
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         pg.run_migrations().await?;
@@ -179,9 +177,7 @@ async fn personality_wake_schema_replaces_legacy_tables() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn personality_wake_schema_enforces_promille() {
-    let Some((pg, db)) = fresh_pg().await else {
-        return;
-    };
+    let (pg, db) = fresh_pg().await;
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         pg.run_migrations().await?;
@@ -220,9 +216,7 @@ async fn personality_wake_schema_enforces_promille() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn personality_wake_storage_round_trip() {
-    let Some((pg, db)) = fresh_pg().await else {
-        return;
-    };
+    let (pg, db) = fresh_pg().await;
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         pg.run_migrations().await?;
@@ -307,9 +301,7 @@ async fn personality_wake_storage_round_trip() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn list_personality_instances_populates_wake_entries() {
-    let Some((pg, db)) = fresh_pg().await else {
-        return;
-    };
+    let (pg, db) = fresh_pg().await;
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         pg.run_migrations().await?;
@@ -405,9 +397,7 @@ fn padded_embedding(prefix: [f32; 3]) -> Vec<f32> {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn load_perspective_heads_returns_current_same_personality_learned_heads() {
-    let Some((pg, db)) = fresh_pg().await else {
-        return;
-    };
+    let (pg, db) = fresh_pg().await;
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         pg.run_migrations().await?;
@@ -546,9 +536,7 @@ async fn load_perspective_heads_returns_current_same_personality_learned_heads()
 
 #[tokio::test(flavor = "multi_thread")]
 async fn personality_provenance_edges_use_operator_authorship() {
-    let Some((pg, db)) = fresh_pg().await else {
-        return;
-    };
+    let (pg, db) = fresh_pg().await;
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         pg.run_migrations().await?;
@@ -653,9 +641,7 @@ async fn personality_provenance_edges_use_operator_authorship() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn personality_provenance_skips_perspective_context_targets() {
-    let Some((pg, db)) = fresh_pg().await else {
-        return;
-    };
+    let (pg, db) = fresh_pg().await;
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         pg.run_migrations().await?;
@@ -730,9 +716,7 @@ async fn personality_provenance_skips_perspective_context_targets() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn personality_authored_edge_links_root_to_emitted_memory() {
-    let Some((pg, db)) = fresh_pg().await else {
-        return;
-    };
+    let (pg, db) = fresh_pg().await;
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         pg.run_migrations().await?;

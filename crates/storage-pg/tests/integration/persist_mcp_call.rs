@@ -8,9 +8,7 @@ use proxima_storage_pg::verbs::persist_mcp_call::persist_mcp_call_atomic;
 
 #[tokio::test]
 async fn persist_writes_fact_inline_io_citation_and_change_event() {
-    let Some((pg, db_name)) = crate::common::fresh_pg().await else {
-        return;
-    };
+    let (pg, db_name) = crate::common::fresh_pg().await;
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         pg.run_migrations().await?;
@@ -84,9 +82,7 @@ async fn persist_writes_fact_inline_io_citation_and_change_event() {
 
 #[tokio::test]
 async fn distinct_calls_share_one_cited_object() {
-    let Some((pg, db_name)) = crate::common::fresh_pg().await else {
-        return;
-    };
+    let (pg, db_name) = crate::common::fresh_pg().await;
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         pg.run_migrations().await?;
@@ -139,9 +135,7 @@ async fn distinct_calls_share_one_cited_object() {
 
 #[tokio::test]
 async fn identical_event_replays_idempotently() {
-    let Some((pg, db_name)) = crate::common::fresh_pg().await else {
-        return;
-    };
+    let (pg, db_name) = crate::common::fresh_pg().await;
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         pg.run_migrations().await?;
@@ -180,9 +174,7 @@ async fn identical_event_replays_idempotently() {
 
 #[tokio::test]
 async fn truncated_io_round_trips_original_byte_len() {
-    let Some((pg, db_name)) = crate::common::fresh_pg().await else {
-        return;
-    };
+    let (pg, db_name) = crate::common::fresh_pg().await;
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         pg.run_migrations().await?;
@@ -215,9 +207,7 @@ async fn truncated_io_round_trips_original_byte_len() {
 
 #[tokio::test]
 async fn storage_trait_exposes_mcp_call_persist() {
-    let Some((pg, db_name)) = crate::common::fresh_pg().await else {
-        return;
-    };
+    let (pg, db_name) = crate::common::fresh_pg().await;
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         pg.run_migrations().await?;

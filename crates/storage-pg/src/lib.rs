@@ -7,6 +7,8 @@
 //! `PgStorage` struct, connection lifecycle, and migration runner,
 //! then delegates each `Storage` trait method to its per-verb
 //! implementation.
+#[cfg(feature = "test-fixtures")]
+extern crate self as proxima_storage_pg;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -51,6 +53,8 @@ mod pgvector;
 pub mod query {
     pub use crate::verbs::query::MAX_SNAPSHOT_EDGES;
 }
+#[cfg(feature = "test-fixtures")]
+pub mod test_fixtures;
 pub mod verbs;
 
 /// Default DB URL when `DATABASE_URL` is unset. Matches the

@@ -14,9 +14,7 @@ use serde_json::json;
 #[tokio::test]
 async fn core_read_tools_return_prefixed_ids_and_author() -> Result<(), Box<dyn std::error::Error>>
 {
-    let Some(db_name) = create_db().await? else {
-        return Ok(());
-    };
+    let db_name = create_db().await?;
     let database_url = db_url(&db_name);
     let pg = PgStorage::connect(&database_url).await?;
     pg.run_migrations().await?;
