@@ -57,7 +57,7 @@ pub async fn ingest_commit(
     )?;
 
     let mut tx = pool.begin().await?;
-    let outcome = ingest_event_in_tx(&mut tx, &draft).await?;
+    let outcome = ingest_event_in_tx(&mut tx, &draft, None).await?;
     if !outcome.idempotent_replay {
         sqlx::query(
             "INSERT INTO proxima_code.commit_v1 \
@@ -108,7 +108,7 @@ pub async fn ingest_file_revision(
     )?;
 
     let mut tx = pool.begin().await?;
-    let outcome = ingest_event_in_tx(&mut tx, &draft).await?;
+    let outcome = ingest_event_in_tx(&mut tx, &draft, None).await?;
     if !outcome.idempotent_replay {
         sqlx::query(
             "INSERT INTO proxima_code.file_revision_v1 \
@@ -162,7 +162,7 @@ pub async fn ingest_code_chunk(
     )?;
 
     let mut tx = pool.begin().await?;
-    let outcome = ingest_event_in_tx(&mut tx, &draft).await?;
+    let outcome = ingest_event_in_tx(&mut tx, &draft, None).await?;
     if !outcome.idempotent_replay {
         sqlx::query(
             "INSERT INTO proxima_code.code_chunk_v1 \

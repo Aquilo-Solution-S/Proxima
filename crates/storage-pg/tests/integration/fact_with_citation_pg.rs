@@ -238,7 +238,7 @@ async fn fact_with_inline_citation_writes_rows_and_reuses_cited_object()
 
         let first_note = "first fact".to_string();
         let first_outcome =
-            ingest_fact_with_citation_atomic(pg.pool(), &first, move |tx, outcome| {
+            ingest_fact_with_citation_atomic(pg.pool(), &first, None, move |tx, outcome| {
                 Box::pin(async move {
                     sqlx::query(
                         "INSERT INTO public.inline_cited_fact_sidecar (memory_id, note)
@@ -255,7 +255,7 @@ async fn fact_with_inline_citation_writes_rows_and_reuses_cited_object()
             .await?;
         let second_note = "second fact".to_string();
         let second_outcome =
-            ingest_fact_with_citation_atomic(pg.pool(), &second, move |tx, outcome| {
+            ingest_fact_with_citation_atomic(pg.pool(), &second, None, move |tx, outcome| {
                 Box::pin(async move {
                     sqlx::query(
                         "INSERT INTO public.inline_cited_fact_sidecar (memory_id, note)
@@ -308,7 +308,7 @@ async fn fact_sidecar_failure_rolls_back_whole_inline_citation_ingest()
         let event_id = authorized.draft().event_id();
 
         let mut tx = pg.pool().begin().await?;
-        let err = ingest_fact_with_citation_in_tx(&mut tx, &authorized, |_tx, _outcome| {
+        let err = ingest_fact_with_citation_in_tx(&mut tx, &authorized, None, |_tx, _outcome| {
             Box::pin(async move { Err(StorageError::Internal("fact sidecar failed".into())) })
         })
         .await

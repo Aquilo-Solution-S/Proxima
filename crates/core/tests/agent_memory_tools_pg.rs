@@ -216,6 +216,60 @@ async fn remember_then_search_round_trip() -> Result<(), Box<dyn std::error::Err
 }
 
 #[tokio::test]
+async fn remember_enqueues_one_embedding_job_and_replay_does_not_duplicate()
+-> Result<(), Box<dyn std::error::Error>> {
+    let Some((pg, db_name)) = fresh_pg().await else {
+        return Ok(());
+    };
+
+    let registry = FlavorRegistry::new();
+    let frozen = Arc::new(registry.freeze());
+    let owner = nil_owner();
+    let handles = Arc::new(HandleTable::new());
+    let author = author_ctx();
+    let args = json!({
+        "title": "Embedding job",
+        "body": "This Fact needs async embedding.",
+        "tags": ["embedding"],
+        "idempotency_key": "remember-embedding-job-replay"
+    });
+
+    let first = call_tool(
+        &pg,
+        &owner,
+        &handles,
+        &frozen,
+        author.clone(),
+        "core/remember",
+        args.clone(),
+    )
+    .await?;
+    let replay = call_tool(
+        &pg,
+        &owner,
+        &handles,
+        &frozen,
+        author,
+        "core/remember",
+        args,
+    )
+    .await?;
+
+    assert_eq!(first["idempotent_replay"], json!(false));
+    assert_eq!(replay["idempotent_replay"], json!(true));
+    assert_eq!(replay["handle"], first["handle"]);
+    let memory_id = handles.resolve_memory(first["handle"].as_str().expect("handle"))?;
+    assert_eq!(
+        embedding_job_count(pg.pool(), memory_id, "test-embed").await?,
+        1
+    );
+
+    drop(pg);
+    drop_db(&db_name).await?;
+    Ok(())
+}
+
+#[tokio::test]
 #[expect(
     clippy::too_many_lines,
     reason = "PG integration fixture validates cited and uncited remember rows in one transaction shape"
@@ -342,6 +396,14 @@ async fn remember_cited_and_uncited_persist_personality_and_citation_rows()
         count_rows(pg.pool(), "public.remember_test_citation_mapping_v1").await?,
         1
     );
+    assert_eq!(
+        embedding_job_count(pg.pool(), MemoryId::new(cited_memory_id), "test-embed").await?,
+        1
+    );
+    assert_eq!(
+        embedding_job_count(pg.pool(), MemoryId::new(uncited_memory_id), "test-embed").await?,
+        1
+    );
 
     drop(pg);
     drop_db(&db_name).await?;
@@ -431,12 +493,14 @@ async fn search_memories_hybrid_returns_embedding_only_match()
     let handles = Arc::new(HandleTable::new());
     let author = author_ctx();
 
-    let remembered = call_tool(
+    let engine = engine_for_registry(&frozen, &pg);
+    let remembered = call_tool_with_engine(
         &pg,
         &owner,
         &handles,
         &frozen,
         author.clone(),
+        Some(engine.clone()),
         "core/remember",
         json!({
             "title": "Operational note",
@@ -446,6 +510,9 @@ async fn search_memories_hybrid_returns_embedding_only_match()
         }),
     )
     .await?;
+    let remembered_id =
+        handles.resolve_memory(remembered["handle"].as_str().expect("remember handle"))?;
+    engine.ensure_fact_embedding(&owner, remembered_id).await?;
     let lexical = call_tool(
         &pg,
         &owner,
@@ -458,11 +525,6 @@ async fn search_memories_hybrid_returns_embedding_only_match()
     .await?;
     assert!(lexical["memories"].as_array().expect("memories").is_empty());
 
-    let engine = Arc::new(
-        Engine::new(frozen_inner, MemoryStore::new())
-            .with_storage(pg.clone().into_handle())
-            .with_embed(Arc::new(FixedEmbedding)),
-    );
     let hybrid = call_tool_with_engine(
         &pg,
         &owner,
@@ -912,4 +974,23 @@ async fn create_remember_citation_sidecars(pool: &sqlx::PgPool) -> Result<(), sq
 async fn count_rows(pool: &sqlx::PgPool, table: &str) -> Result<i64, sqlx::Error> {
     let sql = format!("SELECT count(*) FROM {table}");
     sqlx::query_scalar(&sql).fetch_one(pool).await
+}
+
+async fn embedding_job_count(
+    pool: &sqlx::PgPool,
+    memory_id: MemoryId,
+    model_id: &str,
+) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT count(*)::bigint
+           FROM proxima_core.embedding_jobs
+          WHERE entity_kind = 'Fact'
+            AND entity_id = $1
+            AND model_id = $2
+            AND status = 'pending'",
+    )
+    .bind(memory_id.into_inner())
+    .bind(model_id)
+    .fetch_one(pool)
+    .await
 }

@@ -143,6 +143,12 @@ async fn event_row_counts(
     Ok((memories, events))
 }
 
+async fn embedding_job_count(pool: &sqlx::PgPool) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar("SELECT count(*)::bigint FROM proxima_core.embedding_jobs")
+        .fetch_one(pool)
+        .await
+}
+
 #[tokio::test]
 async fn authz_rejection_writes_nothing() -> Result<(), Box<dyn std::error::Error>> {
     let Some((pg, db_name)) = fresh_pg().await else {
@@ -183,14 +189,18 @@ async fn sidecar_failure_rolls_back_fact() -> Result<(), Box<dyn std::error::Err
     )?;
     let event_id = authorized.draft().event_id();
 
-    let err = event_ingest_with_sidecar_atomic(pg.pool(), &authorized, |_tx, _outcome| {
-        Box::pin(async move { Err(StorageError::Internal("boom".into())) })
-    })
+    let err = event_ingest_with_sidecar_atomic(
+        pg.pool(),
+        &authorized,
+        Some("rollback-test-embed"),
+        |_tx, _outcome| Box::pin(async move { Err(StorageError::Internal("boom".into())) }),
+    )
     .await
     .expect_err("sidecar failure must surface");
 
     assert!(err.to_string().contains("boom"));
     assert_eq!(event_row_counts(pg.pool(), event_id).await?, (0, 0));
+    assert_eq!(embedding_job_count(pg.pool()).await?, 0);
 
     drop(engine);
     drop(pg);

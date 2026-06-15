@@ -186,8 +186,9 @@ impl Storage for PgStorage {
     async fn ingest_event_atomic(
         &self,
         draft: &EventDraft,
+        embedding_model_id: Option<&str>,
     ) -> Result<EventIngestOutcome, StorageError> {
-        verbs::event_ingest::ingest_event_atomic(&self.pool, draft).await
+        verbs::event_ingest::ingest_event_atomic(&self.pool, draft, embedding_model_id).await
     }
 
     async fn load_fact_text(
@@ -238,6 +239,7 @@ impl Storage for PgStorage {
         authorized: &AuthorizedEventIngest,
         sidecar_table: &str,
         sidecar_payload: &serde_json::Value,
+        embedding_model_id: Option<&str>,
     ) -> Result<EventIngestOutcome, StorageError> {
         let mut tx = self
             .pool
@@ -249,6 +251,7 @@ impl Storage for PgStorage {
         let outcome = verbs::event_ingest::ingest_event_with_sidecar_in_tx(
             &mut tx,
             authorized,
+            embedding_model_id,
             move |tx, outcome| {
                 Box::pin(async move {
                     insert_generic_memory_sidecar(tx, outcome.memory_id, &table, &payload).await
@@ -265,6 +268,7 @@ impl Storage for PgStorage {
         authorized: &AuthorizedFactWithCitation,
         sidecar_table: &str,
         sidecar_payload: &serde_json::Value,
+        embedding_model_id: Option<&str>,
     ) -> Result<EventIngestOutcome, StorageError> {
         let mut tx = self
             .pool
@@ -276,6 +280,7 @@ impl Storage for PgStorage {
         let outcome = verbs::event_ingest::ingest_fact_with_citation_in_tx(
             &mut tx,
             authorized,
+            embedding_model_id,
             move |tx, outcome| {
                 Box::pin(async move {
                     insert_generic_memory_sidecar(tx, outcome.memory_id, &table, &payload).await

@@ -92,6 +92,23 @@ async fn count_fact_embeddings(
     .await
 }
 
+async fn count_embedding_jobs(
+    pool: &sqlx::PgPool,
+    memory_id: proxima_core::MemoryId,
+) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT count(*)::bigint
+           FROM proxima_core.embedding_jobs
+          WHERE entity_kind = 'Fact'
+            AND entity_id = $1
+            AND model_id = 'stub-fact-embed'
+            AND status = 'pending'",
+    )
+    .bind(memory_id.into_inner())
+    .fetch_one(pool)
+    .await
+}
+
 async fn load_memory_text(
     pool: &sqlx::PgPool,
     memory_id: proxima_core::MemoryId,
@@ -103,7 +120,7 @@ async fn load_memory_text(
 }
 
 #[tokio::test]
-async fn fact_ingest_with_embed_client_writes_text_and_embedding()
+async fn fact_ingest_with_embed_client_enqueues_pending_embedding_job_once()
 -> Result<(), Box<dyn std::error::Error>> {
     let Some((pg, db_name)) = fresh_pg().await else {
         return Ok(());
@@ -111,21 +128,29 @@ async fn fact_ingest_with_embed_client_writes_text_and_embedding()
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = owner_fixture();
         let engine = engine_for(pg.clone(), Some(Arc::new(StubEmbedding)));
+        let draft = fact_draft(&owner, "rendered fact");
         let outcome = engine
             .event_ingest(
                 &AuthzContext::single_owner(&owner, AuthPath::System),
-                fact_draft(&owner, "rendered fact"),
+                draft.clone(),
             )
             .await?;
+        let replay = engine
+            .event_ingest(&AuthzContext::single_owner(&owner, AuthPath::System), draft)
+            .await?;
 
+        assert!(!outcome.idempotent_replay);
+        assert!(replay.idempotent_replay);
+        assert_eq!(replay.memory_id, outcome.memory_id);
         assert_eq!(
             load_memory_text(pg.pool(), outcome.memory_id).await?,
             Some("rendered fact".to_string()),
         );
         assert_eq!(
             count_fact_embeddings(pg.pool(), outcome.memory_id).await?,
-            1
+            0
         );
+        assert_eq!(count_embedding_jobs(pg.pool(), outcome.memory_id).await?, 1);
         Ok(())
     }
     .await;
@@ -158,6 +183,7 @@ async fn fact_embedding_backfill_heals_no_client_ingest() -> Result<(), Box<dyn 
             count_fact_embeddings(pg.pool(), outcome.memory_id).await?,
             0
         );
+        assert_eq!(count_embedding_jobs(pg.pool(), outcome.memory_id).await?, 0);
 
         engine.set_embed_client(Some(Arc::new(StubEmbedding))).await;
         assert_eq!(engine.backfill_fact_embeddings(&owner, 10).await?, 1);
@@ -197,6 +223,7 @@ async fn fact_ingest_without_embed_client_still_succeeds() -> Result<(), Box<dyn
             count_fact_embeddings(pg.pool(), outcome.memory_id).await?,
             0
         );
+        assert_eq!(count_embedding_jobs(pg.pool(), outcome.memory_id).await?, 0);
         Ok(())
     }
     .await;

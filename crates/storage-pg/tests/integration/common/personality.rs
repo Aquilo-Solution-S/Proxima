@@ -252,7 +252,7 @@ pub async fn ingest_test_fact(pg: &PgStorage, owner: &Owner, label: &str) -> Mem
         }),
     };
     let outcome = pg
-        .ingest_event_atomic(&draft)
+        .ingest_event_atomic(&draft, None)
         .await
         .expect("ingest_event_atomic");
     outcome.memory_id
@@ -293,7 +293,7 @@ pub async fn ingest_other_fact(pg: &PgStorage, owner: &Owner, label: &str) -> Me
         }),
     };
     let outcome = pg
-        .ingest_event_atomic(&draft)
+        .ingest_event_atomic(&draft, None)
         .await
         .expect("ingest_event_atomic");
     outcome.memory_id

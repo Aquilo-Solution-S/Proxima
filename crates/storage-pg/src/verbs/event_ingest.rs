@@ -15,8 +15,9 @@ use std::pin::Pin;
 
 use proxima_core::verbs::event_ingest::{EventDraft, EventIngestOutcome};
 use proxima_core::{
-    AuthorizedEventIngest, AuthorizedFactWithCitation, AuthzContext, Engine, FactPayload,
-    OwnerPrincipalKind, Principal, Role, SchemaVersion, SourceBatchId, SourceId, StorageError,
+    AuthorizedEventIngest, AuthorizedFactWithCitation, AuthzContext, Engine, EntityKind,
+    FactPayload, OwnerPrincipalKind, Principal, Role, SchemaVersion, SourceBatchId, SourceId,
+    StorageError,
 };
 use sqlx::{PgPool, Postgres, Transaction};
 
@@ -35,12 +36,13 @@ pub type EventIngestSidecarFuture<'t> =
 pub async fn ingest_event_atomic(
     pool: &PgPool,
     draft: &EventDraft,
+    embedding_model_id: Option<&str>,
 ) -> Result<EventIngestOutcome, StorageError> {
     let mut tx = pool
         .begin()
         .await
         .map_err(|e| StorageError::Internal(e.to_string()))?;
-    let outcome = ingest_event_in_tx(&mut tx, draft).await?;
+    let outcome = ingest_event_in_tx(&mut tx, draft, embedding_model_id).await?;
     tx.commit().await.map_err(map_err)?;
     Ok(outcome)
 }
@@ -56,6 +58,7 @@ pub async fn ingest_event_atomic(
 pub async fn event_ingest_with_sidecar_atomic<F>(
     pool: &PgPool,
     authorized: &AuthorizedEventIngest,
+    embedding_model_id: Option<&str>,
     sidecar: F,
 ) -> Result<EventIngestOutcome, StorageError>
 where
@@ -68,7 +71,8 @@ where
         .begin()
         .await
         .map_err(|e| StorageError::Internal(e.to_string()))?;
-    let outcome = ingest_event_with_sidecar_in_tx(&mut tx, authorized, sidecar).await?;
+    let outcome =
+        ingest_event_with_sidecar_in_tx(&mut tx, authorized, embedding_model_id, sidecar).await?;
     tx.commit().await.map_err(map_err)?;
     Ok(outcome)
 }
@@ -85,6 +89,7 @@ where
 pub async fn ingest_fact_with_citation_atomic<F>(
     pool: &PgPool,
     authorized: &AuthorizedFactWithCitation,
+    embedding_model_id: Option<&str>,
     fact_sidecar: F,
 ) -> Result<EventIngestOutcome, StorageError>
 where
@@ -97,7 +102,9 @@ where
         .begin()
         .await
         .map_err(|e| StorageError::Internal(e.to_string()))?;
-    let outcome = ingest_fact_with_citation_in_tx(&mut tx, authorized, fact_sidecar).await?;
+    let outcome =
+        ingest_fact_with_citation_in_tx(&mut tx, authorized, embedding_model_id, fact_sidecar)
+            .await?;
     tx.commit().await.map_err(map_err)?;
     Ok(outcome)
 }
@@ -145,7 +152,9 @@ where
     let authorized = engine
         .authorize_event_ingest(authz, role, draft)
         .map_err(|e| StorageError::Internal(e.to_string()))?;
-    ingest_event_with_sidecar_in_tx(tx, &authorized, sidecar).await
+    let embedding_client = engine.embed_client();
+    let embedding_model_id = embedding_client.as_ref().map(|client| client.model_id());
+    ingest_event_with_sidecar_in_tx(tx, &authorized, embedding_model_id, sidecar).await
 }
 
 /// Pool-scoped uncited Fact ingest helper. Opens its own transaction;
@@ -192,6 +201,7 @@ where
 pub async fn ingest_event_in_tx(
     tx: &mut Transaction<'_, Postgres>,
     draft: &EventDraft,
+    embedding_model_id: Option<&str>,
 ) -> Result<EventIngestOutcome, StorageError> {
     let event_id = draft.event_id();
     let event_id_bytes = event_id.into_inner();
@@ -339,6 +349,17 @@ pub async fn ingest_event_in_tx(
     .await
     .map_err(map_err)?;
 
+    enqueue_embedding_job_in_tx(
+        tx,
+        owner_kind,
+        owner_principal_id,
+        owner_org_id,
+        EntityKind::Fact,
+        memory_id,
+        embedding_model_id,
+    )
+    .await?;
+
     // 5. citation_mapping — optional; memory_id FK is deferred when present.
     if let Some((citation, citation_mapping_id, cited_id)) = citation_refs {
         sqlx::query!(
@@ -401,6 +422,7 @@ pub async fn ingest_event_in_tx(
 pub async fn ingest_fact_with_citation_in_tx<F>(
     tx: &mut Transaction<'_, Postgres>,
     authorized: &AuthorizedFactWithCitation,
+    embedding_model_id: Option<&str>,
     fact_sidecar: F,
 ) -> Result<EventIngestOutcome, StorageError>
 where
@@ -546,6 +568,16 @@ where
         idempotent_replay: false,
     };
     fact_sidecar(tx, &outcome).await?;
+    enqueue_embedding_job_in_tx(
+        tx,
+        owner_kind,
+        owner_principal_id,
+        owner_org_id,
+        EntityKind::Fact,
+        memory_id,
+        embedding_model_id,
+    )
+    .await?;
 
     sqlx::query(
         r"INSERT INTO proxima_core.citation_mappings
@@ -606,6 +638,7 @@ where
 pub async fn ingest_event_with_sidecar_in_tx<F>(
     tx: &mut Transaction<'_, Postgres>,
     authorized: &AuthorizedEventIngest,
+    embedding_model_id: Option<&str>,
     sidecar: F,
 ) -> Result<EventIngestOutcome, StorageError>
 where
@@ -614,9 +647,43 @@ where
         &'t EventIngestOutcome,
     ) -> EventIngestSidecarFuture<'t>,
 {
-    let outcome = ingest_event_in_tx(tx, authorized.draft()).await?;
+    let outcome = ingest_event_in_tx(tx, authorized.draft(), embedding_model_id).await?;
     if !outcome.idempotent_replay {
         sidecar(tx, &outcome).await?;
     }
     Ok(outcome)
+}
+
+async fn enqueue_embedding_job_in_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    owner_kind: OwnerPrincipalKind,
+    owner_principal_id: uuid::Uuid,
+    owner_org_id: uuid::Uuid,
+    entity_kind: EntityKind,
+    entity_id: uuid::Uuid,
+    model_id: Option<&str>,
+) -> Result<(), StorageError> {
+    let Some(model_id) = model_id else {
+        return Ok(());
+    };
+
+    sqlx::query(
+        "INSERT INTO proxima_core.embedding_jobs
+            (owner_principal_kind, owner_principal_id, owner_org_id,
+             entity_kind, entity_id, model_id)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (owner_principal_kind, owner_principal_id, owner_org_id,
+                      entity_kind, entity_id, model_id, embedding_version)
+         DO NOTHING",
+    )
+    .bind(owner_kind)
+    .bind(owner_principal_id)
+    .bind(owner_org_id)
+    .bind(entity_kind)
+    .bind(entity_id)
+    .bind(model_id)
+    .execute(&mut **tx)
+    .await
+    .map_err(map_err)?;
+    Ok(())
 }

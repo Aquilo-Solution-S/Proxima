@@ -77,6 +77,17 @@ CREATE TYPE proxima_core.entity_kind AS ENUM (
     'Goal'
 );
 
+--
+-- Name: embedding_job_status; Type: TYPE; Schema: proxima_core; Owner: -
+--
+
+CREATE TYPE proxima_core.embedding_job_status AS ENUM (
+    'pending',
+    'processing',
+    'done',
+    'failed'
+);
+
 
 --
 -- Name: goal_authorship_kind; Type: TYPE; Schema: proxima_core; Owner: -
@@ -647,6 +658,26 @@ CREATE TABLE proxima_core.embeddings (
 
 
 --
+-- Name: embedding_jobs; Type: TABLE; Schema: proxima_core; Owner: -
+--
+
+CREATE TABLE proxima_core.embedding_jobs (
+    owner_principal_kind proxima_core.owner_principal_kind NOT NULL,
+    owner_principal_id uuid NOT NULL,
+    owner_org_id uuid NOT NULL,
+    entity_kind proxima_core.entity_kind NOT NULL,
+    entity_id uuid NOT NULL,
+    model_id text NOT NULL,
+    embedding_version integer DEFAULT 1 NOT NULL,
+    status proxima_core.embedding_job_status DEFAULT 'pending' NOT NULL,
+    attempts integer DEFAULT 0 NOT NULL,
+    last_error text,
+    enqueued_at timestamp with time zone DEFAULT now() NOT NULL,
+    updated_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
 -- Name: events; Type: TABLE; Schema: proxima_core; Owner: -
 --
 
@@ -984,6 +1015,14 @@ ALTER TABLE ONLY proxima_core.embeddings
 
 
 --
+-- Name: embedding_jobs embedding_jobs_pkey; Type: CONSTRAINT; Schema: proxima_core; Owner: -
+--
+
+ALTER TABLE ONLY proxima_core.embedding_jobs
+    ADD CONSTRAINT embedding_jobs_pkey PRIMARY KEY (owner_principal_kind, owner_principal_id, owner_org_id, entity_kind, entity_id, model_id, embedding_version);
+
+
+--
 -- Name: events events_pkey; Type: CONSTRAINT; Schema: proxima_core; Owner: -
 --
 
@@ -1207,6 +1246,13 @@ CREATE INDEX idx_edges_target_memory ON proxima_core.edges USING btree (target_m
 --
 
 CREATE INDEX idx_embeddings_owner ON proxima_core.embeddings USING btree (owner_principal_kind, owner_principal_id, owner_org_id);
+
+
+--
+-- Name: idx_embedding_jobs_status_enqueued; Type: INDEX; Schema: proxima_core; Owner: -
+--
+
+CREATE INDEX idx_embedding_jobs_status_enqueued ON proxima_core.embedding_jobs USING btree (status, enqueued_at);
 
 
 --

@@ -1,8 +1,7 @@
 use crate::mcp::{McpTool, McpToolCtx, McpToolError};
 use crate::verbs::event_ingest::{EventDraft, InlineCitationMappingDraft, InlineCitedObjectDraft};
 use crate::{
-    EventIngestOutcome, FactPayload, Role, SchemaId, SchemaVersion, SourceBatchId, SourceId,
-    canonical_json_bytes,
+    FactPayload, Role, SchemaId, SchemaVersion, SourceBatchId, SourceId, canonical_json_bytes,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -115,6 +114,8 @@ impl McpTool for RememberTool {
             let engine = ctx
                 .engine()
                 .ok_or_else(|| McpToolError::InvalidInput("engine required".into()))?;
+            let embedding_client = engine.embed_client();
+            let embedding_model_id = embedding_client.as_ref().map(|client| client.model_id());
             let outcome = if let Some(citation) = args.citation {
                 let cited_object = InlineCitedObjectDraft {
                     schema_id: SchemaId::new(citation.object_schema_id),
@@ -141,6 +142,7 @@ impl McpTool for RememberTool {
                         &authorized,
                         AgentNoteV1::sidecar_table().expect("AgentNoteV1 has a sidecar table"),
                         &payload_value,
+                        embedding_model_id,
                     )
                     .await?
             } else {
@@ -153,30 +155,16 @@ impl McpTool for RememberTool {
                         &authorized,
                         AgentNoteV1::sidecar_table().expect("AgentNoteV1 has a sidecar table"),
                         &payload_value,
+                        embedding_model_id,
                     )
                     .await?
             };
-            ensure_fact_embedding_best_effort(engine, &ctx.owner, &outcome).await;
 
             Ok(RememberOutput {
                 handle: ctx.format_fact_memory(outcome.memory_id),
                 idempotent_replay: outcome.idempotent_replay,
             })
         })
-    }
-}
-
-async fn ensure_fact_embedding_best_effort(
-    engine: &crate::Engine,
-    owner: &crate::Owner,
-    outcome: &EventIngestOutcome,
-) {
-    if let Err(err) = engine.ensure_fact_embedding(owner, outcome.memory_id).await {
-        tracing::warn!(
-            memory_id = %outcome.memory_id.into_inner(),
-            error = %err,
-            "best-effort Fact embedding failed after core/remember",
-        );
     }
 }
 

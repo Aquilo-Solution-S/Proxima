@@ -90,6 +90,8 @@ impl McpTool for RecordUtteranceTool {
             let engine = ctx
                 .engine()
                 .ok_or_else(|| McpToolError::InvalidInput("engine required".into()))?;
+            let embedding_client = engine.embed_client();
+            let embedding_model_id = embedding_client.as_ref().map(|client| client.model_id());
             let authorized = engine
                 .authorize_event_ingest(&ctx.authz, Role::GraphWrite, draft)
                 .map_err(|err| McpToolError::Other(err.to_string()))?;
@@ -99,18 +101,9 @@ impl McpTool for RecordUtteranceTool {
                     &authorized,
                     UtteranceV1::sidecar_table().expect("UtteranceV1 has a sidecar table"),
                     &payload_value,
+                    embedding_model_id,
                 )
                 .await?;
-            if let Err(err) = engine
-                .ensure_fact_embedding(&ctx.owner, outcome.memory_id)
-                .await
-            {
-                tracing::warn!(
-                    memory_id = %outcome.memory_id.into_inner(),
-                    error = %err,
-                    "best-effort Fact embedding failed after core/record_utterance",
-                );
-            }
 
             Ok(RecordUtteranceOutput {
                 handle: ctx.format_fact_memory(outcome.memory_id),

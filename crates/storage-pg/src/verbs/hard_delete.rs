@@ -53,6 +53,7 @@ pub async fn execute_hard_delete(
 
     delete_memory_keyed_sidecars(tx, sidecars.memory_keyed, &memory_ids).await?;
     counts.embeddings = delete_embeddings(tx, &set.memories).await?;
+    delete_embedding_jobs(tx, &memory_ids).await?;
 
     let citation_mapping_ids = citation_mapping_ids(tx, &memory_ids).await?;
     delete_citation_mapping_keyed_sidecars(
@@ -67,6 +68,22 @@ pub async fn execute_hard_delete(
     counts.events = delete_events(tx, &set.event_ids).await?;
 
     Ok(counts)
+}
+
+async fn delete_embedding_jobs(
+    tx: &mut Transaction<'_, Postgres>,
+    memory_ids: &[Uuid],
+) -> Result<(), StorageError> {
+    if memory_ids.is_empty() {
+        return Ok(());
+    }
+
+    sqlx::query("DELETE FROM proxima_core.embedding_jobs WHERE entity_id = ANY($1::uuid[])")
+        .bind(memory_ids)
+        .execute(&mut **tx)
+        .await
+        .map_err(map_err)?;
+    Ok(())
 }
 
 async fn delete_edge_keyed_sidecars(

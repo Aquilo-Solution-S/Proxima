@@ -178,7 +178,7 @@ async fn event_ingest_stamps_fact_author_without_change_event_author() {
 
         let mut authored = fresh_draft(owner.clone());
         authored.author_personality_instance_id = Some(personality.instance_id);
-        let authored_outcome = pg.ingest_event_atomic(&authored).await?;
+        let authored_outcome = pg.ingest_event_atomic(&authored, None).await?;
 
         let stamped: Uuid = sqlx::query_scalar(
             "SELECT personality_instance_id
@@ -201,7 +201,7 @@ async fn event_ingest_stamps_fact_author_without_change_event_author() {
         .await?;
         assert_eq!(authored_change_author, None);
 
-        let system_outcome = pg.ingest_event_atomic(&fresh_draft(owner)).await?;
+        let system_outcome = pg.ingest_event_atomic(&fresh_draft(owner), None).await?;
         let system_stamped: Uuid = sqlx::query_scalar(
             "SELECT personality_instance_id
              FROM proxima_core.memories
@@ -266,7 +266,7 @@ async fn list_change_events_for_replay_respects_bounds_and_owner() {
                 fresh_draft(owner.clone()),
             )
             .await?;
-        pg.ingest_event_atomic(&fresh_draft(other_owner.clone()))
+        pg.ingest_event_atomic(&fresh_draft(other_owner.clone()), None)
             .await?;
 
         let rows = pg

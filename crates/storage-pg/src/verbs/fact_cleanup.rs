@@ -127,6 +127,11 @@ async fn cleanup_due_facts_in_tx(
         &due_memory_ids,
     )
     .await?;
+    let tombstoned_memory_ids = tombstoned
+        .iter()
+        .map(|row| row.memory_id)
+        .collect::<Vec<_>>();
+    delete_embedding_artifacts(tx, &tombstoned_memory_ids).await?;
 
     for row in &tombstoned {
         insert_entity_delete_event(
@@ -419,4 +424,33 @@ async fn delete_orphaned_cited_objects(
     .map_err(map_err)?;
 
     Ok(deleted.rows_affected())
+}
+
+async fn delete_embedding_artifacts(
+    tx: &mut Transaction<'_, Postgres>,
+    memory_ids: &[Uuid],
+) -> Result<(), StorageError> {
+    if memory_ids.is_empty() {
+        return Ok(());
+    }
+
+    sqlx::query(
+        "DELETE FROM proxima_core.embeddings
+          WHERE entity_id = ANY($1::uuid[])",
+    )
+    .bind(memory_ids)
+    .execute(&mut **tx)
+    .await
+    .map_err(map_err)?;
+
+    sqlx::query(
+        "DELETE FROM proxima_core.embedding_jobs
+          WHERE entity_id = ANY($1::uuid[])",
+    )
+    .bind(memory_ids)
+    .execute(&mut **tx)
+    .await
+    .map_err(map_err)?;
+
+    Ok(())
 }

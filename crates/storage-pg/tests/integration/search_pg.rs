@@ -386,30 +386,33 @@ async fn ingest_fact_memory(
 
     let now = time::OffsetDateTime::now_utc();
     let outcome = pg
-        .ingest_event_atomic(&EventDraft {
-            source_id: SourceId::new("test/search"),
-            source_batch_id: SourceBatchId::new(Uuid::now_v7()),
-            principal: owner.principal.clone(),
-            org_id: Some(owner.org_id),
-            author_personality_instance_id: None,
-            schema_id: SchemaId::new(schema_id.to_string()),
-            schema_version: SchemaVersion::new(1),
-            payload: payload.to_vec(),
-            rendered_text: None,
-            observed_at: now,
-            occurred_at: now,
-            citation: Some(Citation {
-                object: CitedObjectHint {
-                    schema_id: SchemaId::new("test/search-object-v1".into()),
-                    schema_version: SchemaVersion::new(1),
-                    content_hash: *blake3::hash(payload).as_bytes(),
-                },
-                mapping: CitationMappingHint {
-                    schema_id: SchemaId::new("test/search-whole-v1".into()),
-                    schema_version: SchemaVersion::new(1),
-                },
-            }),
-        })
+        .ingest_event_atomic(
+            &EventDraft {
+                source_id: SourceId::new("test/search"),
+                source_batch_id: SourceBatchId::new(Uuid::now_v7()),
+                principal: owner.principal.clone(),
+                org_id: Some(owner.org_id),
+                author_personality_instance_id: None,
+                schema_id: SchemaId::new(schema_id.to_string()),
+                schema_version: SchemaVersion::new(1),
+                payload: payload.to_vec(),
+                rendered_text: None,
+                observed_at: now,
+                occurred_at: now,
+                citation: Some(Citation {
+                    object: CitedObjectHint {
+                        schema_id: SchemaId::new("test/search-object-v1".into()),
+                        schema_version: SchemaVersion::new(1),
+                        content_hash: *blake3::hash(payload).as_bytes(),
+                    },
+                    mapping: CitationMappingHint {
+                        schema_id: SchemaId::new("test/search-whole-v1".into()),
+                        schema_version: SchemaVersion::new(1),
+                    },
+                }),
+            },
+            None,
+        )
         .await?;
     Ok(outcome.memory_id)
 }
