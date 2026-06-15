@@ -84,7 +84,7 @@ async fn discovery_to_mutation_smoke() -> Result<(), Box<dyn std::error::Error>>
     let session = initialize(&client, &url, &bearer).await?;
     initialized(&client, &url, &session, &bearer).await?;
 
-    // 1. Discovery: list_substrate_tools includes substrate-pack + MCP CRUD.
+    // 1. Discovery: list_substrate_tools includes dispatchable MCP CRUD.
     let tools = call_tool(
         &client,
         &url,

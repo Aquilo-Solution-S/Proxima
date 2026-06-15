@@ -7,7 +7,6 @@ use crate::common::{drop_db, fresh_pg, owner_fixture};
 use proxima_core::verbs::event_ingest::{
     Citation, CitationMappingHint, CitedObjectHint, EventDraft,
 };
-use proxima_core::verbs::query::MemoryStore;
 use proxima_core::verbs::schema::{PayloadKind, SchemaInfo};
 use proxima_core::{
     AuthPath, AuthzContext, CapabilitySet, Engine, ErrorCode, FactPayload, FlavorRegistryFrozen,
@@ -116,11 +115,7 @@ fn reduced_authz(owner: &Owner) -> AuthzContext {
 
 fn engine_for(pg: &proxima_storage_pg::PgStorage) -> Engine {
     let storage: Arc<dyn Storage> = Arc::new(pg.clone());
-    Engine::new(
-        FlavorRegistryFrozen::with_schemas(schemas_for_test()),
-        MemoryStore::new(),
-    )
-    .with_storage(storage)
+    Engine::new(FlavorRegistryFrozen::with_schemas(schemas_for_test())).with_storage(storage)
 }
 
 async fn event_row_counts(

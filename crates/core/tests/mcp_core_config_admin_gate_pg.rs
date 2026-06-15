@@ -16,7 +16,6 @@ use proxima_core::personality::{
     InstantiatePersonalityRequest, ListReadScopeRequest, SetWakeEntriesRequest,
 };
 use proxima_core::storage::Storage;
-use proxima_core::verbs::query::MemoryStore;
 use proxima_core::{
     Engine, FlavorRegistry, Owner, PersonalityInstanceId, WakeEntryAuthoredBy, WakeEntryDraft,
     WakeEntryTriggerKind,
@@ -39,8 +38,7 @@ fn non_admin_authz(owner: &Owner) -> AuthzContext {
 
 fn ctx(owner: &Owner, pg: &proxima_storage_pg::PgStorage, authz: AuthzContext) -> McpToolCtx {
     let registry = FlavorRegistry::default().freeze();
-    let engine =
-        Engine::new(registry.clone(), MemoryStore::new()).with_storage(pg.clone().into_handle());
+    let engine = Engine::new(registry.clone()).with_storage(pg.clone().into_handle());
     McpToolCtx {
         pool: pg.pool().clone(),
         owner: owner.clone(),

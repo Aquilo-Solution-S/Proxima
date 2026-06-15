@@ -11,10 +11,7 @@ use super::schemas::schema_registry_with_config;
 /// Authentication lives at the transport edge.
 #[must_use]
 pub fn build_engine(storage: PgStorage) -> Engine {
-    use proxima_core::verbs::query::MemoryStore;
-
-    Engine::new(schema_registry_with_config(|_| {}), MemoryStore::new())
-        .with_storage(Arc::new(storage))
+    Engine::new(schema_registry_with_config(|_| {})).with_storage(Arc::new(storage))
 }
 
 /// Build an `Engine` whose schema registry layers `extra` flavor
@@ -28,8 +25,5 @@ pub fn build_engine_with(
     storage: PgStorage,
     extra: impl FnOnce(&mut proxima_core::FlavorRegistry),
 ) -> Engine {
-    use proxima_core::verbs::query::MemoryStore;
-
-    Engine::new(schema_registry_with_config(extra), MemoryStore::new())
-        .with_storage(Arc::new(storage))
+    Engine::new(schema_registry_with_config(extra)).with_storage(Arc::new(storage))
 }

@@ -313,51 +313,6 @@ pub struct QueryResponse {
     pub memories: Vec<MemoryRow>,
     pub goals: Vec<GoalRow>,
     pub edges: Vec<EdgeRow>,
-    /// docs/14 §"Cursor & resume" — None when the store has
-    /// not yet recorded any change events.
+    /// docs/14 §"Cursor & resume".
     pub seq_high_water: Option<Uuid>,
-}
-
-/// In-memory store. Empty for M1; storage adapters land in M2
-/// per ROADMAP.
-#[derive(Debug, Default)]
-pub struct MemoryStore {
-    memories: Vec<MemoryRow>,
-    seq_high_water: Option<Uuid>,
-}
-
-impl MemoryStore {
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    #[must_use]
-    pub fn query(&self, req: &QueryRequest) -> QueryResponse {
-        let memories: Vec<MemoryRow> = self
-            .memories
-            .iter()
-            .filter(|m| m.owner.principal == req.principal)
-            .filter(|m| req.entity_kind.is_none_or(|k| m.kind == k))
-            .filter(|m| req.schema_id.as_ref().is_none_or(|s| &m.schema_id == s))
-            .take(req.limit as usize)
-            .map(|m| MemoryRow {
-                id: m.id,
-                kind: m.kind,
-                schema_id: m.schema_id.clone(),
-                schema_version: m.schema_version,
-                owner: m.owner.clone(),
-                payload: Vec::new(),
-            })
-            .collect();
-        // SupersessionStatus is unused for M1 (no superseded
-        // rows exist yet); honoured properly when storage lands.
-        let _ = req.supersession;
-        QueryResponse {
-            memories,
-            goals: Vec::new(),
-            edges: Vec::new(),
-            seq_high_water: self.seq_high_water,
-        }
-    }
 }
