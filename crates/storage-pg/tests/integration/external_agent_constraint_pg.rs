@@ -2,9 +2,7 @@ use crate::common::{drop_db, fresh_pg, owner_fixture};
 
 #[tokio::test]
 async fn external_agent_operator_kind_is_admitted() -> Result<(), Box<dyn std::error::Error>> {
-    let Some((pg, db_name)) = fresh_pg().await else {
-        return Ok(());
-    };
+    let (pg, db_name) = fresh_pg().await;
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         pg.run_migrations().await?;

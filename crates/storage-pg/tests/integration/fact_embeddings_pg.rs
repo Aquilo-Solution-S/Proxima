@@ -4,6 +4,7 @@
 use std::sync::Arc;
 
 use proxima_core::llm::{EMBEDDING_DIM, EMBEDDING_JOB_MAX_ATTEMPTS, EmbeddingClient, LlmError};
+use proxima_core::test_fixtures::ConstantEmbedding;
 use proxima_core::verbs::event_ingest::EventDraft;
 use proxima_core::{
     AuthPath, AuthzContext, FactPayload, FlavorRegistry, Owner, SchemaVersion, SourceBatchId,
@@ -13,24 +14,6 @@ use uuid::Uuid;
 
 use crate::common::personality::TestFactV1;
 use crate::common::{drop_db, fresh_pg, owner_fixture};
-
-#[derive(Debug)]
-struct StubEmbedding;
-
-#[async_trait::async_trait]
-impl EmbeddingClient for StubEmbedding {
-    async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
-        Ok(padded_embedding([0.25, 0.5, 0.75]))
-    }
-
-    fn model_id(&self) -> &'static str {
-        "stub-fact-embed"
-    }
-
-    fn dim(&self) -> usize {
-        EMBEDDING_DIM
-    }
-}
 
 #[derive(Debug)]
 struct FailingEmbedding;
@@ -48,12 +31,6 @@ impl EmbeddingClient for FailingEmbedding {
     fn dim(&self) -> usize {
         EMBEDDING_DIM
     }
-}
-
-fn padded_embedding(prefix: [f32; 3]) -> Vec<f32> {
-    let mut embedding = vec![0.0; EMBEDDING_DIM];
-    embedding[..prefix.len()].copy_from_slice(&prefix);
-    embedding
 }
 
 fn engine_for(
@@ -153,12 +130,16 @@ async fn load_memory_text(
 #[tokio::test]
 async fn fact_ingest_with_embed_client_enqueues_pending_embedding_job_once()
 -> Result<(), Box<dyn std::error::Error>> {
-    let Some((pg, db_name)) = fresh_pg().await else {
-        return Ok(());
-    };
+    let (pg, db_name) = fresh_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = owner_fixture();
-        let engine = engine_for(pg.clone(), Some(Arc::new(StubEmbedding)));
+        let engine = engine_for(
+            pg.clone(),
+            Some(Arc::new(ConstantEmbedding::prefixed(
+                "stub-fact-embed",
+                &[0.25, 0.5, 0.75],
+            ))),
+        );
         let draft = fact_draft(&owner, "rendered fact");
         let outcome = engine
             .event_ingest(
@@ -193,12 +174,16 @@ async fn fact_ingest_with_embed_client_enqueues_pending_embedding_job_once()
 #[tokio::test]
 async fn drain_embedding_jobs_writes_embedding_and_deletes_job()
 -> Result<(), Box<dyn std::error::Error>> {
-    let Some((pg, db_name)) = fresh_pg().await else {
-        return Ok(());
-    };
+    let (pg, db_name) = fresh_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = owner_fixture();
-        let engine = engine_for(pg.clone(), Some(Arc::new(StubEmbedding)));
+        let engine = engine_for(
+            pg.clone(),
+            Some(Arc::new(ConstantEmbedding::prefixed(
+                "stub-fact-embed",
+                &[0.25, 0.5, 0.75],
+            ))),
+        );
         let outcome = engine
             .event_ingest(
                 &AuthzContext::single_owner(&owner, AuthPath::System),
@@ -230,9 +215,7 @@ async fn drain_embedding_jobs_writes_embedding_and_deletes_job()
 
 #[tokio::test]
 async fn failed_embedding_jobs_retry_until_attempt_cap() -> Result<(), Box<dyn std::error::Error>> {
-    let Some((pg, db_name)) = fresh_pg().await else {
-        return Ok(());
-    };
+    let (pg, db_name) = fresh_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = owner_fixture();
         let engine = engine_for(pg.clone(), Some(Arc::new(FailingEmbedding)));
@@ -286,12 +269,16 @@ async fn failed_embedding_jobs_retry_until_attempt_cap() -> Result<(), Box<dyn s
 
 #[tokio::test]
 async fn claimed_embedding_job_is_not_claimed_again() -> Result<(), Box<dyn std::error::Error>> {
-    let Some((pg, db_name)) = fresh_pg().await else {
-        return Ok(());
-    };
+    let (pg, db_name) = fresh_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = owner_fixture();
-        let engine = engine_for(pg.clone(), Some(Arc::new(StubEmbedding)));
+        let engine = engine_for(
+            pg.clone(),
+            Some(Arc::new(ConstantEmbedding::prefixed(
+                "stub-fact-embed",
+                &[0.25, 0.5, 0.75],
+            ))),
+        );
         let outcome = engine
             .event_ingest(
                 &AuthzContext::single_owner(&owner, AuthPath::System),
@@ -326,9 +313,7 @@ async fn claimed_embedding_job_is_not_claimed_again() -> Result<(), Box<dyn std:
 #[tokio::test]
 async fn fact_embedding_backfill_heals_no_client_ingest() -> Result<(), Box<dyn std::error::Error>>
 {
-    let Some((pg, db_name)) = fresh_pg().await else {
-        return Ok(());
-    };
+    let (pg, db_name) = fresh_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = owner_fixture();
         let engine = engine_for(pg.clone(), None);
@@ -352,7 +337,12 @@ async fn fact_embedding_backfill_heals_no_client_ingest() -> Result<(), Box<dyn 
         assert_eq!(count_embedding_jobs(pg.pool(), first.memory_id).await?, 0);
         assert_eq!(count_embedding_jobs(pg.pool(), second.memory_id).await?, 0);
 
-        engine.set_embed_client(Some(Arc::new(StubEmbedding))).await;
+        engine
+            .set_embed_client(Some(Arc::new(ConstantEmbedding::prefixed(
+                "stub-fact-embed",
+                &[0.25, 0.5, 0.75],
+            ))))
+            .await;
         assert_eq!(engine.backfill_fact_embeddings(&owner, 1).await?, 1);
         assert_eq!(
             count_embedding_jobs(pg.pool(), first.memory_id).await?
@@ -396,9 +386,7 @@ async fn fact_embedding_backfill_heals_no_client_ingest() -> Result<(), Box<dyn 
 #[tokio::test]
 async fn fact_ingest_without_embed_client_still_succeeds() -> Result<(), Box<dyn std::error::Error>>
 {
-    let Some((pg, db_name)) = fresh_pg().await else {
-        return Ok(());
-    };
+    let (pg, db_name) = fresh_pg().await;
     let result: Result<(), Box<dyn std::error::Error>> = async {
         let owner = owner_fixture();
         let engine = engine_for(pg.clone(), None);

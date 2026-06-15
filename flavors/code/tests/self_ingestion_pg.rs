@@ -11,11 +11,13 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 
-use proxima_code::{LocalGitSource, build_engine, migrator};
+mod common;
+
+use common::{migrated_db, test_owner};
+use proxima_code::{LocalGitSource, build_engine};
 use proxima_core::storage::Storage;
-use proxima_core::{Cursor, OrgId, Owner, Principal, UserId};
-use proxima_pg_testkit::{create_db, db_url, drop_db, unique_db_name};
-use proxima_storage_pg::PgStorage;
+use proxima_core::{Cursor, Owner, Principal};
+use proxima_pg_testkit::drop_db;
 use tempfile::TempDir;
 use uuid::Uuid;
 
@@ -109,20 +111,10 @@ async fn count_commit_v1_facts(pool: &sqlx::PgPool, owner: &Owner, repo_id: Uuid
 
 #[tokio::test]
 async fn self_ingestion_streams_proxima_main() {
-    let db_name = unique_db_name("proxima_test");
-    create_db(&db_name).await.expect("PG required for tests");
-    let url = db_url(&db_name);
+    let (db_name, pg) = migrated_db().await;
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
-        let pg = PgStorage::connect(&url).await?;
-        pg.run_migrations().await?;
-        migrator().run(pg.pool()).await?;
-
-        let user = UserId::new(Uuid::now_v7());
-        let owner = Owner {
-            principal: Principal::User(user),
-            org_id: OrgId::new(Uuid::now_v7()),
-        };
+        let owner = test_owner();
 
         let engine = build_engine(pg.clone());
         let _arc_storage: Arc<dyn Storage> = Arc::new(pg.clone());

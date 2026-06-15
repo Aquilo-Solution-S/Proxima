@@ -2,10 +2,8 @@ use std::sync::Arc;
 
 mod common;
 
-use async_trait::async_trait;
-use common::{drop_db, fresh_pg};
+use common::{ConstantEmbedding, drop_db, fresh_pg};
 use proxima_core::engine::Engine;
-use proxima_core::llm::{EMBEDDING_DIM, EmbeddingClient, LlmError};
 use proxima_core::mcp::{HandleTable, McpAuthorContext, McpToolCtx, OutputMode};
 use proxima_core::{
     AuthPath, AuthzContext, FlavorRegistry, OrgId, Owner, PersonalityInstanceId, Principal, UserId,
@@ -13,30 +11,10 @@ use proxima_core::{
 use serde_json::json;
 use sqlx::Row;
 
-#[derive(Debug)]
-struct FixedEmbedding;
-
-#[async_trait]
-impl EmbeddingClient for FixedEmbedding {
-    async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
-        Ok(vec![0.0; EMBEDDING_DIM])
-    }
-
-    fn model_id(&self) -> &'static str {
-        "test-utterance-embed"
-    }
-
-    fn dim(&self) -> usize {
-        EMBEDDING_DIM
-    }
-}
-
 #[tokio::test]
 async fn record_utterance_stamps_personality_and_sidecar() -> Result<(), Box<dyn std::error::Error>>
 {
-    let Some((pg, db_name)) = fresh_pg().await else {
-        return Ok(());
-    };
+    let (pg, db_name) = fresh_pg().await;
 
     let registry = FlavorRegistry::new();
     let frozen_inner = registry.freeze();
@@ -49,7 +27,7 @@ async fn record_utterance_stamps_personality_and_sidecar() -> Result<(), Box<dyn
     let engine = Arc::new(
         Engine::new(frozen_inner)
             .with_storage(pg.clone().into_handle())
-            .with_embed(Arc::new(FixedEmbedding)),
+            .with_embed(Arc::new(ConstantEmbedding::zero("test-utterance-embed"))),
     );
 
     let descriptor = frozen

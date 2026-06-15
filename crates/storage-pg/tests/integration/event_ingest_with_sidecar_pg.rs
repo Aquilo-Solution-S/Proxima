@@ -146,9 +146,7 @@ async fn embedding_job_count(pool: &sqlx::PgPool) -> Result<i64, sqlx::Error> {
 
 #[tokio::test]
 async fn authz_rejection_writes_nothing() -> Result<(), Box<dyn std::error::Error>> {
-    let Some((pg, db_name)) = fresh_pg().await else {
-        return Ok(());
-    };
+    let (pg, db_name) = fresh_pg().await;
     pg.run_migrations().await?;
     let owner = owner_fixture();
     let engine = engine_for(&pg);
@@ -170,9 +168,7 @@ async fn authz_rejection_writes_nothing() -> Result<(), Box<dyn std::error::Erro
 
 #[tokio::test]
 async fn sidecar_failure_rolls_back_fact() -> Result<(), Box<dyn std::error::Error>> {
-    let Some((pg, db_name)) = fresh_pg().await else {
-        return Ok(());
-    };
+    let (pg, db_name) = fresh_pg().await;
     pg.run_migrations().await?;
     let owner = owner_fixture();
     let engine = engine_for(&pg);
@@ -205,9 +201,7 @@ async fn sidecar_failure_rolls_back_fact() -> Result<(), Box<dyn std::error::Err
 
 #[tokio::test]
 async fn ingest_fact_writes_uncited_fact_and_sidecar() -> Result<(), Box<dyn std::error::Error>> {
-    let Some((pg, db_name)) = fresh_pg().await else {
-        return Ok(());
-    };
+    let (pg, db_name) = fresh_pg().await;
     pg.run_migrations().await?;
     sqlx::query(
         "CREATE TABLE public.uncited_fact_sidecar (

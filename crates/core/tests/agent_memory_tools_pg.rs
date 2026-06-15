@@ -3,10 +3,8 @@ use std::{future::Future, pin::Pin};
 
 mod common;
 
-use async_trait::async_trait;
-use common::{drop_db, fresh_pg};
+use common::{ConstantEmbedding, drop_db, fresh_pg, owner_fixture};
 use proxima_core::engine::Engine;
-use proxima_core::llm::{EMBEDDING_DIM, EmbeddingClient, LlmError};
 use proxima_core::mcp::{HandleTable, McpAuthorContext, McpToolCtx, OutputMode};
 use proxima_core::{
     AuthPath, AuthzContext, CitationMappingPayload, CitedObjectPayload, FlavorRegistry,
@@ -15,9 +13,6 @@ use proxima_core::{
 };
 use serde_json::json;
 use time::format_description::well_known::Rfc3339;
-
-#[derive(Debug)]
-struct FixedEmbedding;
 
 type SidecarFuture<'t> = Pin<Box<dyn Future<Output = Result<(), StorageError>> + Send + 't>>;
 
@@ -109,32 +104,9 @@ impl CitationMappingPayload for RememberTestCitationMapping {
     }
 }
 
-#[async_trait]
-impl EmbeddingClient for FixedEmbedding {
-    async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
-        Ok(padded_embedding([1.0, 0.0, 0.0]))
-    }
-
-    fn model_id(&self) -> &'static str {
-        "test-embed"
-    }
-
-    fn dim(&self) -> usize {
-        EMBEDDING_DIM
-    }
-}
-
-fn padded_embedding(prefix: [f32; 3]) -> Vec<f32> {
-    let mut embedding = vec![0.0; EMBEDDING_DIM];
-    embedding[..prefix.len()].copy_from_slice(&prefix);
-    embedding
-}
-
 #[tokio::test]
 async fn remember_then_search_round_trip() -> Result<(), Box<dyn std::error::Error>> {
-    let Some((pg, db_name)) = fresh_pg().await else {
-        return Ok(());
-    };
+    let (pg, db_name) = fresh_pg().await;
 
     let registry = FlavorRegistry::new();
     let frozen = Arc::new(registry.freeze());
@@ -228,9 +200,7 @@ async fn remember_then_search_round_trip() -> Result<(), Box<dyn std::error::Err
 #[tokio::test]
 async fn remember_enqueues_one_embedding_job_and_replay_does_not_duplicate()
 -> Result<(), Box<dyn std::error::Error>> {
-    let Some((pg, db_name)) = fresh_pg().await else {
-        return Ok(());
-    };
+    let (pg, db_name) = fresh_pg().await;
 
     let registry = FlavorRegistry::new();
     let frozen = Arc::new(registry.freeze());
@@ -286,9 +256,7 @@ async fn remember_enqueues_one_embedding_job_and_replay_does_not_duplicate()
 )]
 async fn remember_cited_and_uncited_persist_personality_and_citation_rows()
 -> Result<(), Box<dyn std::error::Error>> {
-    let Some((pg, db_name)) = fresh_pg().await else {
-        return Ok(());
-    };
+    let (pg, db_name) = fresh_pg().await;
     create_remember_citation_sidecars(pg.pool()).await?;
 
     let frozen = registry_with_remember_test_citation();
@@ -423,9 +391,7 @@ async fn remember_cited_and_uncited_persist_personality_and_citation_rows()
 #[tokio::test]
 async fn link_rejects_direct_fact_to_fact_interpretation() -> Result<(), Box<dyn std::error::Error>>
 {
-    let Some((pg, db_name)) = fresh_pg().await else {
-        return Ok(());
-    };
+    let (pg, db_name) = fresh_pg().await;
 
     let registry = FlavorRegistry::new();
     let frozen = Arc::new(registry.freeze());
@@ -492,9 +458,7 @@ async fn link_rejects_direct_fact_to_fact_interpretation() -> Result<(), Box<dyn
 #[tokio::test]
 async fn search_memories_hybrid_returns_embedding_only_match()
 -> Result<(), Box<dyn std::error::Error>> {
-    let Some((pg, db_name)) = fresh_pg().await else {
-        return Ok(());
-    };
+    let (pg, db_name) = fresh_pg().await;
 
     let registry = FlavorRegistry::new();
     let frozen_inner = registry.freeze();
@@ -557,9 +521,7 @@ async fn search_memories_hybrid_returns_embedding_only_match()
 #[tokio::test]
 async fn prefixed_search_and_open_emit_author_and_keep_company_shared_visibility()
 -> Result<(), Box<dyn std::error::Error>> {
-    let Some((pg, db_name)) = fresh_pg().await else {
-        return Ok(());
-    };
+    let (pg, db_name) = fresh_pg().await;
 
     let registry = FlavorRegistry::new();
     let frozen = Arc::new(registry.freeze());
@@ -654,9 +616,7 @@ async fn prefixed_search_and_open_emit_author_and_keep_company_shared_visibility
 
 #[tokio::test]
 async fn derive_scopes_idempotency_by_owner_and_kind() -> Result<(), Box<dyn std::error::Error>> {
-    let Some((pg, db_name)) = fresh_pg().await else {
-        return Ok(());
-    };
+    let (pg, db_name) = fresh_pg().await;
 
     let registry = FlavorRegistry::new();
     let frozen = Arc::new(registry.freeze());
@@ -763,9 +723,7 @@ async fn derive_scopes_idempotency_by_owner_and_kind() -> Result<(), Box<dyn std
 
 #[tokio::test]
 async fn derive_rejects_upward_provenance() -> Result<(), Box<dyn std::error::Error>> {
-    let Some((pg, db_name)) = fresh_pg().await else {
-        return Ok(());
-    };
+    let (pg, db_name) = fresh_pg().await;
 
     let registry = FlavorRegistry::new();
     let frozen = Arc::new(registry.freeze());
@@ -934,10 +892,7 @@ async fn call_tool_with_engine(
 }
 
 fn nil_owner() -> Owner {
-    Owner {
-        principal: Principal::User(UserId::new(uuid::Uuid::nil())),
-        org_id: OrgId::new(uuid::Uuid::nil()),
-    }
+    owner_fixture()
 }
 
 fn author_ctx() -> McpAuthorContext {
@@ -973,7 +928,10 @@ fn engine_for_registry(
     Arc::new(
         Engine::new((**registry).clone())
             .with_storage(pg.clone().into_handle())
-            .with_embed(Arc::new(FixedEmbedding)),
+            .with_embed(Arc::new(ConstantEmbedding::prefixed(
+                "test-embed",
+                &[1.0, 0.0, 0.0],
+            ))),
     )
 }
 

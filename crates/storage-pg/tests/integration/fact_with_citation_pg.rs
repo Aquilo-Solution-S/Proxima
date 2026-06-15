@@ -202,9 +202,7 @@ async fn create_sidecar_tables(pool: &sqlx::PgPool) -> Result<(), sqlx::Error> {
 #[tokio::test]
 async fn fact_with_inline_citation_writes_rows_and_reuses_cited_object()
 -> Result<(), Box<dyn std::error::Error>> {
-    let Some((pg, db_name)) = fresh_pg().await else {
-        return Ok(());
-    };
+    let (pg, db_name) = fresh_pg().await;
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         pg.run_migrations().await?;
@@ -286,9 +284,7 @@ async fn fact_with_inline_citation_writes_rows_and_reuses_cited_object()
 #[tokio::test]
 async fn fact_sidecar_failure_rolls_back_whole_inline_citation_ingest()
 -> Result<(), Box<dyn std::error::Error>> {
-    let Some((pg, db_name)) = fresh_pg().await else {
-        return Ok(());
-    };
+    let (pg, db_name) = fresh_pg().await;
 
     let result: Result<(), Box<dyn std::error::Error>> = async {
         pg.run_migrations().await?;

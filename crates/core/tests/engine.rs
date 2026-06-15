@@ -2,16 +2,19 @@
 
 use std::sync::Arc;
 
-use async_trait::async_trait;
+#[path = "../src/test_fixtures.rs"]
+mod test_fixtures;
+
 use proxima_core::engine::{EmbeddingClientReloader, Engine};
 use proxima_core::error::ErrorCode;
 use proxima_core::ids::{OrgId, SourceBatchId, UserId};
-use proxima_core::llm::{EMBEDDING_DIM, EmbeddingClient, LlmError};
+use proxima_core::llm::{EMBEDDING_DIM, EmbeddingClient};
 use proxima_core::owner::{Owner, Principal};
 use proxima_core::verbs::event_history::EventHistoryRequest;
 use proxima_core::verbs::query::QueryRequest;
 use proxima_core::verbs::schema::{FlavorRegistryFrozen, SchemaRequest};
 use proxima_core::{AuthPath, AuthzContext, McpCallLogInput, RoleSet};
+use test_fixtures::ConstantEmbedding;
 use uuid::Uuid;
 
 fn fresh_owner() -> (Principal, Owner) {
@@ -30,24 +33,6 @@ fn boot_engine(principal: Principal, owner: Owner) -> Engine {
 }
 
 #[derive(Debug)]
-struct FixedEmbeddingClient;
-
-#[async_trait]
-impl EmbeddingClient for FixedEmbeddingClient {
-    async fn embed(&self, _text: &str) -> Result<Vec<f32>, LlmError> {
-        Ok(vec![0.0; self.dim()])
-    }
-
-    fn model_id(&self) -> &'static str {
-        "test-embedding"
-    }
-
-    fn dim(&self) -> usize {
-        EMBEDDING_DIM
-    }
-}
-
-#[derive(Debug)]
 struct FixedEmbeddingReloader;
 
 impl EmbeddingClientReloader for FixedEmbeddingReloader {
@@ -57,7 +42,7 @@ impl EmbeddingClientReloader for FixedEmbeddingReloader {
     ) -> futures::future::BoxFuture<'a, Result<Option<Arc<dyn EmbeddingClient>>, String>> {
         Box::pin(async {
             Ok(Some(
-                Arc::new(FixedEmbeddingClient) as Arc<dyn EmbeddingClient>
+                Arc::new(ConstantEmbedding::zero("test-embedding")) as Arc<dyn EmbeddingClient>
             ))
         })
     }
