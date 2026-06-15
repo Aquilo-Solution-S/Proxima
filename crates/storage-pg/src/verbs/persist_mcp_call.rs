@@ -198,15 +198,8 @@ pub async fn persist_mcp_call_in_tx(
     .await
     .map_err(map_err)?;
 
-    sqlx::query(
-        r"INSERT INTO proxima_core.citation_mcp_call_io_v1
-            (citation_mapping_id)
-         VALUES ($1)",
-    )
-    .bind(citation_mapping_id)
-    .execute(tx.as_mut())
-    .await
-    .map_err(map_err)?;
+    // The mcp-call-io citation is a pure link — the citation_mappings row
+    // above is the whole mapping. No sidecar table, no extra row.
 
     sqlx::query(
         r"INSERT INTO proxima_core.mcp_call_logged_v1

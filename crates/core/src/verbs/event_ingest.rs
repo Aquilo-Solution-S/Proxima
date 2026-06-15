@@ -141,7 +141,8 @@ pub struct AuthorizedInlineCitationMapping {
     schema_id: SchemaId,
     schema_version: SchemaVersion,
     payload_bytes: Vec<u8>,
-    sidecar_inserter_fn: SidecarInserter,
+    /// `None` for a pure-link mapping with no sidecar table.
+    sidecar_inserter_fn: Option<SidecarInserter>,
 }
 
 impl AuthorizedInlineCitationMapping {
@@ -149,7 +150,7 @@ impl AuthorizedInlineCitationMapping {
         schema_id: SchemaId,
         schema_version: SchemaVersion,
         payload_bytes: Vec<u8>,
-        sidecar_inserter_fn: SidecarInserter,
+        sidecar_inserter_fn: Option<SidecarInserter>,
     ) -> Self {
         Self {
             schema_id,
@@ -175,7 +176,7 @@ impl AuthorizedInlineCitationMapping {
     }
 
     #[must_use]
-    pub const fn sidecar_inserter_fn(&self) -> SidecarInserter {
+    pub const fn sidecar_inserter_fn(&self) -> Option<SidecarInserter> {
         self.sidecar_inserter_fn
     }
 }

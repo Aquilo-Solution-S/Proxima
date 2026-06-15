@@ -8,6 +8,7 @@ use crate::mcp::schema::mcp_tool_schema;
 use crate::verbs::schema::{
     CitedObjectContentHasherEntry, FactRendererEntry, FlavorRegistryFrozen, MemorySearchProjection,
     MemorySearchProjectionField, PayloadKind, PayloadValidator, PayloadValidatorEntry, SchemaInfo,
+    SidecarInserter,
 };
 use crate::{
     AbstractionPayload, CitationMappingPayload, CitedObjectPayload, DependencySatisfactionRule,
@@ -276,17 +277,26 @@ impl FlavorRegistry {
     }
 
     pub fn add_citation_mapping_schema<M: CitationMappingPayload>(&mut self) {
+        // A pure-link mapping (`sidecar_table() == None`) writes no
+        // sidecar row, so it registers neither a table nor an inserter.
+        let (sidecar_table, sidecar_inserter) = match M::sidecar_table() {
+            Some(table) => (
+                Some(table.to_string()),
+                Some(insert_citation_mapping_sidecar::<M> as SidecarInserter),
+            ),
+            None => (None, None),
+        };
         self.register_schema(
             SchemaInfo {
                 schema_id: M::schema_id(),
                 schema_version: SchemaVersion::new(M::SCHEMA_VERSION),
                 kind: PayloadKind::CitationMapping,
                 filter_keys: vec![],
-                sidecar_table: Some(M::sidecar_table().to_string()),
+                sidecar_table,
                 natural_key_columns: vec![],
                 tombstone: None,
                 json_encoder: Some(encode_payload_json::<M>),
-                sidecar_inserter: Some(insert_citation_mapping_sidecar::<M>),
+                sidecar_inserter,
                 cited_object_schema: Some(M::cited_object_schema()),
             },
             None,

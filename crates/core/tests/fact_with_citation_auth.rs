@@ -60,8 +60,8 @@ impl CitationMappingPayload for TestCitationMapping {
     const SCHEMA_ID: &'static str = "test/citation-mapping";
     const SCHEMA_VERSION: u32 = 1;
 
-    fn sidecar_table() -> &'static str {
-        "test.citation_mapping_v1"
+    fn sidecar_table() -> Option<&'static str> {
+        Some("test.citation_mapping_v1")
     }
 
     fn cited_object_schema() -> SchemaId {
@@ -79,8 +79,8 @@ impl CitationMappingPayload for MismatchedCitationMapping {
     const SCHEMA_ID: &'static str = "test/mismatched-citation-mapping";
     const SCHEMA_VERSION: u32 = 1;
 
-    fn sidecar_table() -> &'static str {
-        "test.mismatched_citation_mapping_v1"
+    fn sidecar_table() -> Option<&'static str> {
+        Some("test.mismatched_citation_mapping_v1")
     }
 
     fn cited_object_schema() -> SchemaId {

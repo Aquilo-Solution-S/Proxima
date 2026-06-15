@@ -1,9 +1,11 @@
 -- Proxima core schema — v0.0.1 single init.
 -- Squashed 2026-06-15 from the full dev migration history; then hand-edited
--- 2026-06-15 to drop the change_event outbox notify trigger + function (the
--- LISTEN/NOTIFY push path was retired — change_event is now a pull-only log).
--- Prefer regenerating from a migrated DB (pg_dump --schema-only) for broad
--- schema changes; targeted object drops like the above may be hand-applied.
+-- 2026-06-15 to drop (a) the change_event outbox notify trigger + function
+-- (the LISTEN/NOTIFY push path was retired — change_event is now a pull-only
+-- log) and (b) the citation_mcp_call_io_v1 table + its pkey/fkey (a pure-link
+-- citation mapping carries no sidecar; the citation_mappings row is the whole
+-- mapping). Prefer regenerating from a migrated DB (pg_dump --schema-only) for
+-- broad schema changes; targeted object drops like the above may be hand-applied.
 
 CREATE SCHEMA proxima_core;
 
@@ -478,15 +480,6 @@ CREATE TABLE proxima_core.citation_mappings (
 
 
 --
--- Name: citation_mcp_call_io_v1; Type: TABLE; Schema: proxima_core; Owner: -
---
-
-CREATE TABLE proxima_core.citation_mcp_call_io_v1 (
-    citation_mapping_id uuid NOT NULL
-);
-
-
---
 -- Name: cited_mcp_call_io_v1; Type: TABLE; Schema: proxima_core; Owner: -
 --
 
@@ -913,14 +906,6 @@ ALTER TABLE ONLY proxima_core.citation_mappings
 
 ALTER TABLE ONLY proxima_core.citation_mappings
     ADD CONSTRAINT citation_mappings_pkey PRIMARY KEY (citation_mapping_id);
-
-
---
--- Name: citation_mcp_call_io_v1 citation_mcp_call_io_v1_pkey; Type: CONSTRAINT; Schema: proxima_core; Owner: -
---
-
-ALTER TABLE ONLY proxima_core.citation_mcp_call_io_v1
-    ADD CONSTRAINT citation_mcp_call_io_v1_pkey PRIMARY KEY (citation_mapping_id);
 
 
 --
@@ -1372,14 +1357,6 @@ ALTER TABLE ONLY proxima_core.citation_mappings
 
 ALTER TABLE ONLY proxima_core.citation_mappings
     ADD CONSTRAINT citation_mappings_memory_fk FOREIGN KEY (memory_id) REFERENCES proxima_core.memories(memory_id) DEFERRABLE INITIALLY DEFERRED;
-
-
---
--- Name: citation_mcp_call_io_v1 citation_mcp_call_io_v1_citation_mapping_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
---
-
-ALTER TABLE ONLY proxima_core.citation_mcp_call_io_v1
-    ADD CONSTRAINT citation_mcp_call_io_v1_citation_mapping_id_fkey FOREIGN KEY (citation_mapping_id) REFERENCES proxima_core.citation_mappings(citation_mapping_id);
 
 
 --
