@@ -106,11 +106,7 @@ async fn personality_wake_schema_replaces_legacy_tables() {
         .await?;
         assert_eq!(legacy, 0);
 
-        let expected = [
-            "personality",
-            "personality_wake_entries",
-            "personality_wake_cursor",
-        ];
+        let expected = ["personality", "personality_wake_entries"];
         for table in expected {
             let count: i64 = sqlx::query_scalar(
                 "SELECT COUNT(*) FROM information_schema.tables
@@ -164,8 +160,7 @@ async fn personality_wake_schema_replaces_legacy_tables() {
                    'change_event',
                    'goals',
                    'personality',
-                   'personality_wake_entries',
-                   'personality_wake_cursor'
+                   'personality_wake_entries'
                )
                AND column_name = $1",
         )

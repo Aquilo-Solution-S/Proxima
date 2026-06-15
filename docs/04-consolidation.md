@@ -107,28 +107,34 @@ domain prompts and does not accept runtime prompt registration.
 
 ## Execution model and isolation
 
-Wake execution is per Owner and per personality instance.
+Wake execution is per Owner and per personality instance. Proxima is a
+passive brain hub: it runs no in-process dispatcher. External harnesses
+drive the wake loop and own their own cursor position; core serves the
+loop through pull verbs and validates every write.
 
 Runtime tables:
 
 | Table | Key | Function |
 |---|---|---|
 | `personality_wake_entries` | `(Owner, personality_instance_id, wake_entry_id)` | trigger, recipe, tier, palette, status |
-| `personality_wake_cursor` | `(Owner, personality_instance_id)` | last considered `change_event.seq` |
-| `personality_wake_invocations` | `(Owner, personality_instance_id, wake_entry_id, change_event_seq)` | fired-wake idempotency |
 
-Dispatcher loop:
+Harness wake loop (driven externally, served by core pull verbs):
 
 1. Read active wake entries for `(Owner, personality_instance_id)`.
-2. Read owner `change_event` rows after the cursor.
-3. Reject self-authored events.
-4. Reject events at or above the wake-chain depth bound.
+2. Pull owner `change_event` rows after the harness-held cursor
+   (`list_change_events_after`).
+3. Reject self-authored events (`change_event.entity_personality_instance_id`).
+4. Reject events at or above the wake-chain depth bound
+   (`change_event.wake_chain_depth`).
 5. Match wake entry trigger against event kind / schema / relation.
-6. Insert invocation key before model/tool execution.
-7. Execute with the entry palette and visible read scope.
-8. Validate every write through schema and relation registries.
-9. Commit output rows and emitted `change_event` rows atomically.
-10. Advance cursor after consideration, independent of output count.
+6. Execute with the entry palette and visible read scope.
+7. Validate every write through schema and relation registries.
+8. Commit output rows and emitted `change_event` rows atomically.
+9. Advance the harness cursor after consideration, independent of output
+   count.
+
+Fired-wake idempotency is the harness's responsibility; core no longer
+keeps a server-side invocation ledger.
 
 Isolation:
 

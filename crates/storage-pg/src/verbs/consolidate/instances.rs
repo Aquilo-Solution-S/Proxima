@@ -180,21 +180,6 @@ pub async fn instantiate_personality(
     .await
     .map_err(map_err)?;
 
-    sqlx::query!(
-        r#"INSERT INTO proxima_core.personality_wake_cursor
-            (owner_principal_kind, owner_principal_id, owner_org_id,
-             personality_instance_id, last_considered_seq)
-         VALUES ($1, $2, $3, $4, $5)"#,
-        owner_kind as OwnerPrincipalKind,
-        owner_principal_id,
-        owner_org_id,
-        instance_id,
-        uuid::Uuid::nil(),
-    )
-    .execute(&mut *tx)
-    .await
-    .map_err(map_err)?;
-
     tx.commit().await.map_err(map_err)?;
     Ok(InstantiatePersonalityResponse {
         instance_id: PersonalityInstanceId::new(instance_id),

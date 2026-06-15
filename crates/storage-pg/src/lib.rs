@@ -17,7 +17,6 @@ use proxima_core::personality::{
     PersonalityInstanceId, PersonalityInstanceRow, PersonalityRef, PersonalityWriteOutcome,
     PersonalityWriteRequest, SetReadScopeRequest, SetReadScopeResponse, SetWakeEntriesRequest,
     SetWakeEntriesResponse, SidecarSpec, TombstonePersonalityRequest, TombstonePersonalityResponse,
-    WakeDispatchEntryRow,
 };
 use proxima_core::verbs::close_batch::CloseBatchOutcome;
 use proxima_core::verbs::event_history::{EventHistoryRequest, EventHistoryResponse};
@@ -377,10 +376,6 @@ impl Storage for PgStorage {
             cited_object_sidecar_tables,
         )
         .await
-    }
-
-    async fn list_active_wake_entries(&self) -> Result<Vec<WakeDispatchEntryRow>, StorageError> {
-        verbs::consolidate::list_active_wake_entries(&self.pool).await
     }
 
     async fn list_change_events_after(

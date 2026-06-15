@@ -797,20 +797,6 @@ CREATE TABLE proxima_core.personality (
 
 
 --
--- Name: personality_wake_cursor; Type: TABLE; Schema: proxima_core; Owner: -
---
-
-CREATE TABLE proxima_core.personality_wake_cursor (
-    owner_principal_kind proxima_core.owner_principal_kind NOT NULL,
-    owner_principal_id uuid NOT NULL,
-    owner_org_id uuid NOT NULL,
-    personality_instance_id uuid NOT NULL,
-    last_considered_seq uuid DEFAULT '00000000-0000-0000-0000-000000000000'::uuid NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
-);
-
-
---
 -- Name: personality_wake_entries; Type: TABLE; Schema: proxima_core; Owner: -
 --
 
@@ -1055,14 +1041,6 @@ ALTER TABLE ONLY proxima_core.personality
 
 ALTER TABLE ONLY proxima_core.personality
     ADD CONSTRAINT personality_pkey PRIMARY KEY (owner_principal_kind, owner_principal_id, owner_org_id, personality_instance_id);
-
-
---
--- Name: personality_wake_cursor personality_wake_cursor_pkey; Type: CONSTRAINT; Schema: proxima_core; Owner: -
---
-
-ALTER TABLE ONLY proxima_core.personality_wake_cursor
-    ADD CONSTRAINT personality_wake_cursor_pkey PRIMARY KEY (owner_principal_kind, owner_principal_id, owner_org_id, personality_instance_id);
 
 
 --
@@ -1453,14 +1431,6 @@ ALTER TABLE ONLY proxima_core.memories
 
 ALTER TABLE ONLY proxima_core.personality
     ADD CONSTRAINT personality_current_root_perspective_memory_id_fkey FOREIGN KEY (current_root_perspective_memory_id) REFERENCES proxima_core.memories(memory_id);
-
-
---
--- Name: personality_wake_cursor personality_wake_cursor_owner_principal_kind_owner_princip_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
---
-
-ALTER TABLE ONLY proxima_core.personality_wake_cursor
-    ADD CONSTRAINT personality_wake_cursor_owner_principal_kind_owner_princip_fkey FOREIGN KEY (owner_principal_kind, owner_principal_id, owner_org_id, personality_instance_id) REFERENCES proxima_core.personality(owner_principal_kind, owner_principal_id, owner_org_id, personality_instance_id);
 
 
 --

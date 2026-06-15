@@ -38,7 +38,7 @@ pub use drafts::{
 };
 
 // Re-export from rows submodule
-pub use rows::{ChangeEventForWake, PersonalityInstanceRow, WakeDispatchEntryRow, WakeEntryRow};
+pub use rows::{ChangeEventForWake, PersonalityInstanceRow, WakeEntryRow};
 
 // Re-export from context submodule
 pub use context::PersonalityToolContext;

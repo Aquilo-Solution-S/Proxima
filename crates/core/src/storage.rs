@@ -15,7 +15,6 @@ use crate::personality::{
     PersonalityInstanceId, PersonalityInstanceRow, PersonalityRef, PersonalityWriteOutcome,
     PersonalityWriteRequest, SetReadScopeRequest, SetReadScopeResponse, SetWakeEntriesRequest,
     SetWakeEntriesResponse, SidecarSpec, TombstonePersonalityRequest, TombstonePersonalityResponse,
-    WakeDispatchEntryRow,
 };
 use crate::verbs::close_batch::CloseBatchOutcome;
 use crate::verbs::event_history::{EventHistoryRequest, EventHistoryResponse};
@@ -314,9 +313,6 @@ pub trait Storage: Send + Sync {
         citation_mapping_sidecar_tables: &[String],
         cited_object_sidecar_tables: &[String],
     ) -> Result<CleanupDueFactsOutcome, StorageError>;
-
-    /// Active `WakeEntry` rows plus their cursor positions.
-    async fn list_active_wake_entries(&self) -> Result<Vec<WakeDispatchEntryRow>, StorageError>;
 
     async fn list_change_events_after(
         &self,
@@ -643,10 +639,6 @@ impl Storage for NoopStorage {
         _cited_object_sidecar_tables: &[String],
     ) -> Result<CleanupDueFactsOutcome, StorageError> {
         Err(StorageError::Internal("NoopStorage rejects writes".into()))
-    }
-
-    async fn list_active_wake_entries(&self) -> Result<Vec<WakeDispatchEntryRow>, StorageError> {
-        Ok(Vec::new())
     }
 
     async fn list_change_events_after(
