@@ -52,9 +52,9 @@ instructions: |
   2. If `workspace_context.goal_close.status` is not `ready`, do not call tools; end with the skip reason.
   3. If `workspace_context.latest_review.verdict` is not `approved`, do not call tools.
   4. If the Goal head in `workspace_context.active_goal.head.state` is not `Active`, do not call tools.
-  5. Otherwise call `proxima-goal_goal_mark_achieved` exactly once.
+  5. Otherwise call `core_goal_mark_achieved` exactly once.
 
-  Call `proxima-goal_goal_mark_achieved` with:
+  Call `core_goal_mark_achieved` with:
     - `goal`: `workspace_context.goal_close.goal_id`.
     - `evidence`: `workspace_context.goal_close.evidence_memory_ids`.
     - `idempotency_key`: `goal-close:` plus `workspace_context.workspace_decision_memory_id`.

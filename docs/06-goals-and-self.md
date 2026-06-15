@@ -44,23 +44,20 @@ States:
 
 | State | Active set | Terminal | Meaning |
 |---|---:|---:|---|
-| `Proposed` | no | no | Awaiting gate |
 | `Active` | yes | no | Live direction |
 | `Paused` | no | no | Suspended direction |
 | `Achieved` | no | yes | Positive close |
 | `Abandoned` | no | yes | Post-active negative close |
-| `Rejected` | no | yes | Gate-time decline |
 
 Lifecycle:
 
 ```
-(none) -> Proposed -> Active -> Paused -> Active
-                    \-> Rejected
-                    \-> Achieved
-                    \-> Abandoned
-
 (none) -> Active
 Active -> Active       # modification
+Active -> Paused
+Paused -> Active
+Active -> Achieved
+Active -> Abandoned
 ```
 
 Every transition writes a new Goal row. No in-place mutation.
@@ -167,33 +164,26 @@ return heads where state = Active
 Assignment means "this Goal may inspire this Self." It does not imply
 execution, obligation, repository scope, or wake policy.
 
-## Goal Flavor Boundary
+## Goal Core Boundary
 
 Core owns:
 
 | Surface | Owned by core |
 |---|---|
-| Entity | Goal row, Goal identity, Goal state |
-| Trait | `GoalPayload` |
+| Entity | Goal row, Goal identity, 4-state lifecycle |
+| Payloads | `GoalPayload` schemas |
 | Verb | `GoalWrite` |
-| Relation | `core/inspires` |
+| Lifecycle Facts | activated / paused / achieved / abandoned schemas |
+| Tools | `core/goal_set`, `core/goal_transition` (pause / resume / abandon), `core/goal_mark_achieved`, `core/goal_modify`, `core/goal_decompose` |
+| Relations | `core/inspires`, `core/motivated-by` |
 | Query | active-goal traversal |
-
-`proxima-goal` owns:
-
-| Surface | Owned by Goal flavor |
-|---|---|
-| Payloads | reference Goal payload schemas |
-| Lifecycle Facts | proposed / activated / achieved schemas |
-| Tools | proposal, accept, decline, modify, achievement tools |
-| Relation | `proxima-goal/motivated-by` |
 | Renderers | Goal and lifecycle payload views |
 
 Evidence:
 
 ```
-Goal --proxima-goal/motivated-by--> Fact
-Goal --proxima-goal/motivated-by--> Abstraction
+Goal --core/motivated-by--> Fact
+Goal --core/motivated-by--> Abstraction
 ```
 
 Lifecycle Fact provenance:
@@ -202,7 +192,7 @@ Lifecycle Fact provenance:
 Lifecycle Fact --core/derived-from--> Fact evidence
 ```
 
-Abstraction evidence remains represented by `proxima-goal/motivated-by`.
+Abstraction evidence remains represented by `core/motivated-by`.
 
 ## Goal-Scoped Wake Policy
 
@@ -214,7 +204,7 @@ matches the emitted event. The usual goal-reactive trigger:
 | Field | Value |
 |---|---|
 | `trigger_kind` | `on_memory` |
-| `trigger_id` | `proxima-goal/goal-activated-v1` |
+| `trigger_id` | `core/goal-activated-v1` |
 | `goal_scope` | `trigger_goal_assigned` |
 
 `goal_scope = trigger_goal_assigned` means the wake receives the Goal
@@ -240,7 +230,7 @@ Owner is per row.
 | Goal | Owner columns on Goal row |
 | Self-Perspective | Owner columns on Memory row |
 | `core/inspires` edge | same Owner as endpoints |
-| `proxima-goal/motivated-by` edge | same Owner as endpoints |
+| `core/motivated-by` edge | same Owner as endpoints |
 | Lifecycle Fact | same Owner as Goal write |
 
 Cross-owner Goal assignment and cross-owner evidence are rejected.
@@ -253,8 +243,8 @@ Goal authorship:
 
 | Author | Use |
 |---|---|
-| `User` | direct user Goal writes and gates |
-| `External` | outside-agent proposals |
+| `User` | direct user Goal writes |
+| `External` | outside-agent Goal writes |
 | `System(Tool)` | tool-authored lifecycle close |
 | `System(Operator)` | A->Goal operator output |
 
