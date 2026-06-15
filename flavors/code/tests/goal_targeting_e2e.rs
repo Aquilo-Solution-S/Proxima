@@ -127,7 +127,7 @@ async fn seed_active_goal(
          VALUES ($1, 'proxima-goal/simple-text-v1', 1,
                  $2, $3, $4,
                  'goal targeting', 'target Alice only', 'Active', 'User',
-                 'goal-targeting-e2e', ''::bytea)",
+                 'goal-targeting-e2e', convert_to('{}', 'UTF8'))",
     )
     .bind(goal_id)
     .bind(owner_kind)
