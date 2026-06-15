@@ -80,9 +80,11 @@ impl FactPayload for PersonalityConfigChangedV1 {
         format!("{:?} {:?}", self.verb, self.subject)
     }
 
-    fn sidecar_table() -> &'static str {
-        "proxima_core.personality_config_changed_v1"
-    }
+    // No fact sidecar: the typed snapshot is persisted as this Fact's
+    // citation cited-object (see `audit::write_fact`), so `sidecar_table`
+    // inherits the trait default of `None`. The former
+    // `proxima_core.personality_config_changed_v1` sidecar was always
+    // empty and has been dropped from the schema.
 }
 
 #[cfg(test)]

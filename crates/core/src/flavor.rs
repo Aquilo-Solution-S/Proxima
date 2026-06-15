@@ -142,7 +142,7 @@ impl FlavorRegistry {
                 schema_version: SchemaVersion::new(F::SCHEMA_VERSION),
                 kind: PayloadKind::Fact,
                 filter_keys: vec![],
-                sidecar_table: Some(F::sidecar_table().to_string()),
+                sidecar_table: F::sidecar_table().map(|t| t.to_string()),
                 natural_key_columns: F::natural_key_columns()
                     .iter()
                     .map(|s| (*s).to_string())

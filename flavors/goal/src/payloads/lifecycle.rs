@@ -19,8 +19,8 @@ impl FactPayload for GoalProposedV1 {
         format!("Goal proposed: {}", self.title)
     }
 
-    fn sidecar_table() -> &'static str {
-        "proxima_goal.goal_proposed_v1"
+    fn sidecar_table() -> Option<&'static str> {
+        Some("proxima_goal.goal_proposed_v1")
     }
 
     fn search_projection() -> Option<SearchProjection> {
@@ -51,8 +51,8 @@ impl FactPayload for GoalActivatedV1 {
         format!("Goal activated: {}", self.title)
     }
 
-    fn sidecar_table() -> &'static str {
-        "proxima_goal.goal_activated_v1"
+    fn sidecar_table() -> Option<&'static str> {
+        Some("proxima_goal.goal_activated_v1")
     }
 
     fn search_projection() -> Option<SearchProjection> {
@@ -83,8 +83,8 @@ impl FactPayload for GoalAchievedV1 {
         format!("Goal achieved: {}", self.title)
     }
 
-    fn sidecar_table() -> &'static str {
-        "proxima_goal.goal_achieved_v1"
+    fn sidecar_table() -> Option<&'static str> {
+        Some("proxima_goal.goal_achieved_v1")
     }
 
     fn search_projection() -> Option<SearchProjection> {

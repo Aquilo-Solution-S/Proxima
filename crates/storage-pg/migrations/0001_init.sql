@@ -4,8 +4,15 @@
 -- (the LISTEN/NOTIFY push path was retired — change_event is now a pull-only
 -- log), (b) the citation_mcp_call_io_v1 table + its pkey/fkey (a pure-link
 -- citation mapping carries no sidecar; the citation_mappings row is the whole
--- mapping), and (c) the events.payload_ref column (vestigial — never written
--- or read; the payload lives in the schema sidecar, not a ref). Prefer
+-- mapping), (c) the events.payload_ref column (vestigial — never written
+-- or read; the payload lives in the schema sidecar, not a ref), and (d) three
+-- pieces of dead weight surfaced by a per-table audit: the source_batch_f2a
+-- table (retired F2A staging stage — never written by any verb), the
+-- personality_config_changed_v1 fact sidecar + its pkey/indexes/fkey (the
+-- audit Fact's typed payload lives in its citation cited-object, so this
+-- sidecar was always empty), and the change_event.edge_source_kind /
+-- edge_target_kind columns (write-only — the endpoint kind is reconstructed
+-- from the populated memory_id/goal_id pair on read). Prefer
 -- regenerating from a migrated DB (pg_dump --schema-only) for broad schema
 -- changes; targeted object drops like the above may be hand-applied.
 
@@ -454,10 +461,8 @@ CREATE TABLE proxima_core.change_event (
     supersedes_goal_id uuid,
     edge_id uuid,
     edge_relation text,
-    edge_source_kind proxima_core.entity_kind,
     edge_source_memory_id uuid,
     edge_source_goal_id uuid,
-    edge_target_kind proxima_core.entity_kind,
     edge_target_memory_id uuid,
     edge_target_goal_id uuid,
     entity_personality_instance_id uuid,
@@ -786,20 +791,6 @@ CREATE TABLE proxima_core.personality (
 
 
 --
--- Name: personality_config_changed_v1; Type: TABLE; Schema: proxima_core; Owner: -
---
-
-CREATE TABLE proxima_core.personality_config_changed_v1 (
-    memory_id uuid NOT NULL,
-    verb text NOT NULL,
-    before jsonb,
-    after jsonb,
-    subject jsonb NOT NULL,
-    caller jsonb NOT NULL
-);
-
-
---
 -- Name: personality_wake_cursor; Type: TABLE; Schema: proxima_core; Owner: -
 --
 
@@ -864,23 +855,6 @@ CREATE TABLE proxima_core.root_personality_perspective_v1 (
     purpose text NOT NULL,
     CONSTRAINT root_personality_perspective_display_name_chk CHECK ((length(TRIM(BOTH FROM display_name)) > 0)),
     CONSTRAINT root_personality_perspective_purpose_chk CHECK ((length(TRIM(BOTH FROM purpose)) > 0))
-);
-
-
---
--- Name: source_batch_f2a; Type: TABLE; Schema: proxima_core; Owner: -
---
-
-CREATE TABLE proxima_core.source_batch_f2a (
-    batch_id uuid NOT NULL,
-    operator_id text NOT NULL,
-    prompt_version text NOT NULL,
-    head_memory_id uuid,
-    run_at timestamp with time zone DEFAULT now() NOT NULL,
-    model_id text NOT NULL,
-    personality_instance_id uuid NOT NULL,
-    wake_chain_depth smallint DEFAULT 0 NOT NULL,
-    CONSTRAINT source_batch_f2a_wake_chain_depth_check CHECK ((wake_chain_depth >= 0))
 );
 
 
@@ -1075,14 +1049,6 @@ ALTER TABLE ONLY proxima_core.owner_fact_retention
 
 
 --
--- Name: personality_config_changed_v1 personality_config_changed_v1_pkey; Type: CONSTRAINT; Schema: proxima_core; Owner: -
---
-
-ALTER TABLE ONLY proxima_core.personality_config_changed_v1
-    ADD CONSTRAINT personality_config_changed_v1_pkey PRIMARY KEY (memory_id);
-
-
---
 -- Name: personality personality_instance_id_uq; Type: CONSTRAINT; Schema: proxima_core; Owner: -
 --
 
@@ -1128,14 +1094,6 @@ ALTER TABLE ONLY proxima_core.read_scope_matrix
 
 ALTER TABLE ONLY proxima_core.root_personality_perspective_v1
     ADD CONSTRAINT root_personality_perspective_v1_pkey PRIMARY KEY (memory_id);
-
-
---
--- Name: source_batch_f2a source_batch_f2a_pkey; Type: CONSTRAINT; Schema: proxima_core; Owner: -
---
-
-ALTER TABLE ONLY proxima_core.source_batch_f2a
-    ADD CONSTRAINT source_batch_f2a_pkey PRIMARY KEY (batch_id, operator_id, prompt_version, model_id, personality_instance_id);
 
 
 --
@@ -1300,27 +1258,6 @@ CREATE INDEX idx_memories_personality_instance ON proxima_core.memories USING bt
 --
 
 CREATE INDEX idx_memories_supersedes ON proxima_core.memories USING btree (supersedes) WHERE (supersedes IS NOT NULL);
-
-
---
--- Name: idx_personality_config_changed_v1_subject_id; Type: INDEX; Schema: proxima_core; Owner: -
---
-
-CREATE INDEX idx_personality_config_changed_v1_subject_id ON proxima_core.personality_config_changed_v1 USING btree (((subject ->> 'id'::text)));
-
-
---
--- Name: idx_personality_config_changed_v1_subject_kind; Type: INDEX; Schema: proxima_core; Owner: -
---
-
-CREATE INDEX idx_personality_config_changed_v1_subject_kind ON proxima_core.personality_config_changed_v1 USING btree (((subject ->> 'kind'::text)));
-
-
---
--- Name: idx_personality_config_changed_v1_verb; Type: INDEX; Schema: proxima_core; Owner: -
---
-
-CREATE INDEX idx_personality_config_changed_v1_verb ON proxima_core.personality_config_changed_v1 USING btree (verb);
 
 
 --
@@ -1526,14 +1463,6 @@ ALTER TABLE ONLY proxima_core.memories
 
 
 --
--- Name: personality_config_changed_v1 personality_config_changed_v1_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
---
-
-ALTER TABLE ONLY proxima_core.personality_config_changed_v1
-    ADD CONSTRAINT personality_config_changed_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memories(memory_id);
-
-
---
 -- Name: personality personality_current_root_perspective_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
 --
 
@@ -1579,22 +1508,6 @@ ALTER TABLE ONLY proxima_core.read_scope_matrix
 
 ALTER TABLE ONLY proxima_core.root_personality_perspective_v1
     ADD CONSTRAINT root_personality_perspective_v1_memory_id_fkey FOREIGN KEY (memory_id) REFERENCES proxima_core.memories(memory_id);
-
-
---
--- Name: source_batch_f2a source_batch_f2a_batch_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
---
-
-ALTER TABLE ONLY proxima_core.source_batch_f2a
-    ADD CONSTRAINT source_batch_f2a_batch_id_fkey FOREIGN KEY (batch_id) REFERENCES proxima_core.source_batches(id);
-
-
---
--- Name: source_batch_f2a source_batch_f2a_head_memory_id_fkey; Type: FK CONSTRAINT; Schema: proxima_core; Owner: -
---
-
-ALTER TABLE ONLY proxima_core.source_batch_f2a
-    ADD CONSTRAINT source_batch_f2a_head_memory_id_fkey FOREIGN KEY (head_memory_id) REFERENCES proxima_core.memories(memory_id);
 
 
 --

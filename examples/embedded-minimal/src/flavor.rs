@@ -21,8 +21,8 @@ impl FactPayload for DocumentFiledV1 {
         format!("Document filed: {} ({})", self.title, self.source_path)
     }
 
-    fn sidecar_table() -> &'static str {
-        "embedded_minimal.document_filed_v1"
+    fn sidecar_table() -> Option<&'static str> {
+        Some("embedded_minimal.document_filed_v1")
     }
 
     fn search_projection() -> Option<SearchProjection> {

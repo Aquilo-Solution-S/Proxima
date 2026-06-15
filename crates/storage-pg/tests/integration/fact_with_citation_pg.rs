@@ -32,8 +32,8 @@ impl FactPayload for TestFact {
         self.note.clone()
     }
 
-    fn sidecar_table() -> &'static str {
-        "public.inline_cited_fact_sidecar"
+    fn sidecar_table() -> Option<&'static str> {
+        Some("public.inline_cited_fact_sidecar")
     }
 }
 

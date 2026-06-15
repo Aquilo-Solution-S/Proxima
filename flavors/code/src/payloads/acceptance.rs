@@ -85,8 +85,8 @@ impl FactPayload for AcceptanceCriteriaV1 {
     const SCHEMA_ID: &'static str = proxima_schema_id!("acceptance-criteria-v1");
     const SCHEMA_VERSION: u32 = 1;
 
-    fn sidecar_table() -> &'static str {
-        "proxima_code.acceptance_criteria_v1"
+    fn sidecar_table() -> Option<&'static str> {
+        Some("proxima_code.acceptance_criteria_v1")
     }
 
     fn render(&self) -> String {

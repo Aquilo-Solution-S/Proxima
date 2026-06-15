@@ -107,10 +107,12 @@ async fn wake_token_audit_attributes_caller_personality() -> Result<(), Box<dyn 
     assert_eq!(entry.label, "self-evolution");
 
     // TODO(audit-e2e): assert provenance details
-    // The full audit-Fact verification (querying proxima_core.personality_config_changed_v1
-    // sidecar table for caller.kind == "wake_personality" and matching personality_instance_id)
-    // is deferred to a follow-up task. The sidecar table is created dynamically by the
-    // schema registration in FlavorRegistry::new() which includes PersonalityConfigChangedV1.
+    // The full audit-Fact verification is deferred to a follow-up task. The
+    // PersonalityConfigChangedV1 Fact carries no sidecar of its own — its typed
+    // snapshot (verb/before/after/subject/caller) is persisted as the Fact's
+    // citation cited-object (see core_tools::audit::write_fact), so verifying
+    // caller.kind == "wake_personality" means reading the cited-object payload
+    // via the citation_mappings link, not a sidecar table.
 
     drop_db(&db_name).await?;
     Ok(())

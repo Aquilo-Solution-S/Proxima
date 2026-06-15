@@ -21,8 +21,8 @@ impl FactPayload for TestFactV1 {
     fn render(&self) -> String {
         self.body.clone()
     }
-    fn sidecar_table() -> &'static str {
-        "fact_test_fact_v1"
+    fn sidecar_table() -> Option<&'static str> {
+        Some("fact_test_fact_v1")
     }
 }
 

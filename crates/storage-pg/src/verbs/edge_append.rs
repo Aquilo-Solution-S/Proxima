@@ -126,9 +126,9 @@ pub async fn append_edge_in_tx(
         "INSERT INTO proxima_core.change_event \
             (seq, owner_principal_kind, owner_principal_id, owner_org_id, kind, \
              edge_id, edge_relation, \
-             edge_source_kind, edge_source_memory_id, edge_source_goal_id, \
-             edge_target_kind, edge_target_memory_id, edge_target_goal_id) \
-         VALUES ($1, $2, $3, $4, 'EdgeAppend', $5, $6, $7, $8, $9, $10, $11, $12)",
+             edge_source_memory_id, edge_source_goal_id, \
+             edge_target_memory_id, edge_target_goal_id) \
+         VALUES ($1, $2, $3, $4, 'EdgeAppend', $5, $6, $7, $8, $9, $10)",
     )
     .bind(seq)
     .bind(owner_kind)
@@ -136,10 +136,8 @@ pub async fn append_edge_in_tx(
     .bind(owner_org_id)
     .bind(draft.edge_id)
     .bind(descriptor.relation.as_str())
-    .bind(draft.source_kind)
     .bind(draft.source_memory_id)
     .bind(draft.source_goal_id)
-    .bind(draft.target_kind)
     .bind(draft.target_memory_id)
     .bind(draft.target_goal_id)
     .execute(&mut *tx)

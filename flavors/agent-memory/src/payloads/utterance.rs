@@ -39,7 +39,7 @@ impl FactPayload for UtteranceV1 {
         )
     }
 
-    fn sidecar_table() -> &'static str {
-        "proxima_agent_memory.utterance_v1"
+    fn sidecar_table() -> Option<&'static str> {
+        Some("proxima_agent_memory.utterance_v1")
     }
 }
